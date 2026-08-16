@@ -213,13 +213,14 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
     <section id="view-circle" class="view">
       <div class="grid-2">
         <div class="card">
-          <div class="card-h"><h2>Add to circle</h2><span>stable color • local</span></div>
+          <div class="card-h"><h2>Add to circle</h2><span>auto • cloud</span></div>
           <div class="card-b" style="display:grid; gap:10px">
             <div class="row">
-              <input id="personName" class="input" placeholder="e.g. Festus, Priya, Jamal" maxlength="32" />
+              <input id="personName" class="input" placeholder="e.g. Festus, Priya, Jamal (admin testing only)" maxlength="32" />
               <button id="addPerson" class="btn">Add</button>
             </div>
-            <div class="small muted">Colors are deterministic — same name always gets same dot. Stored in localStorage. No accounts.</div>
+            <div id="circleAutoNote" class="small muted">Circle = everyone who signed up — you are auto-included. New signups join next Sunday 08:00 BST.</div>
+            <div class="small muted">Colors deterministic — same name same dot. Circle no longer manual; signups feed weekly auto-shuffle.</div>
             <div id="peopleList" class="people"></div>
           </div>
         </div>
@@ -260,12 +261,18 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
         <div class="card">
           <div class="card-h"><h2>Sync</h2><span>cloud when signed in</span></div>
           <div class="card-b" style="display:grid; gap:10px">
-            <div class="small" style="color:var(--ink-2)">Logged-in users sync to cloud automatically. Auto-shuffle happens <b style="color:var(--ink)">Sundays 08:00 BST</b> — no one needs to hit generate. Open this page in two tabs, pairing, code, and board sync via <span class="kbd">BroadcastChannel</span> + <span class="kbd">localStorage</span> offline, Turso when signed in.</div>
+            <div class="small" style="color:var(--ink-2)">Logged-in users sync to cloud automatically. Auto-shuffle happens <b style="color:var(--ink)">Sundays 08:00 BST</b> — only <span class="kbd">Available</span> users are included. Open this page in two tabs for live board/code sync; offline via <span class="kbd">localStorage</span>, Turso when signed in.</div>
+            <div id="availabilityWrap" style="display:none; border:1px solid var(--line); border-radius:10px; padding:10px; background:var(--bg-3); display:grid; gap:8px">
+              <div class="row" style="justify-content:space-between"><b style="font-size:13px">Available this week</b><label class="pill" style="cursor:pointer"><input id="availToggle" type="checkbox" checked style="margin-right:6px"/> <span id="availLabel">ON</span></label></div>
+              <div class="small muted">If off, you are skipped Sun 08:00 BST — you can re-enable anytime. Admin reshuffle can include you early if you toggle back before Sunday.</div>
+              <div id="availBanner" class="small" style="display:none; padding:8px; border-radius:8px; background:#e6c07a22; border:1px dashed #e6c07a">You were skipped last week because you were unavailable — toggle back ON to rejoin next Sun.</div>
+            </div>
             <div id="presencePanel" class="people"></div>
             <div class="row">
               <button id="copyLinkBtn" class="btn secondary">Copy deploy path</button>
               <span class="small muted" id="syncStatus">● synced</span>
             </div>
+            <div class="small muted" id="availExplan">ℹ️ Weekly shuffle = only <span class="kbd">is_available=1</span> accounts. RESEND_API_KEY not set? Then pairs only visible in-app via <span class="kbd">/api/weeks</span>. Set RESEND_API_KEY+RESEND_FROM in Vercel to email everyone after shuffle. Unavailable users get reminder email separately.</div>
           </div>
         </div>
       </div>
@@ -396,6 +403,8 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
     }catch{ authToken=''; localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(ME_KEY); me=null; }
     updateAuthUI();
   }
+  const ADMIN_EMAIL='festusomole14@gmail.com';
+  function isAdmin(){ return !!(me && me.email && me.email.toLowerCase()===ADMIN_EMAIL); }
   function updateAuthUI(){
     const area=document.getElementById('authArea');
     const meLabel=document.getElementById('meLabel');
@@ -403,16 +412,101 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
     const outBtn=document.getElementById('signOutBtn');
     const hint=document.getElementById('historyAuthHint');
     if(me){
-      meLabel.style.display='inline-flex'; meLabel.textContent = '● '+me.name;
+      meLabel.style.display='inline-flex'; meLabel.textContent = '● '+me.name + (isAdmin()?' (admin)':'');
       meLabel.style.background = me.color+'22'; meLabel.style.borderColor=me.color+'66';
       authBtn.style.display='none';
       outBtn.style.display='inline-flex';
-      if(hint) hint.textContent = `personal history for ${me.name} • partner counts`;
+      if(hint) hint.textContent = `personal history for ${me.name} • partner counts` + (isAdmin()?' — admin view sees all':'' );
     } else {
       meLabel.style.display='none';
       authBtn.style.display='inline-flex';
       outBtn.style.display='none';
       if(hint) hint.textContent='sign in for personal history';
+    }
+    // circle admin UI toggle
+    const addRow=document.querySelector('#personName')?.parentElement;
+    const addInfo=document.getElementById('circleAutoNote');
+    if(addRow){
+      if(isAdmin()){
+        addRow.style.display='flex';
+        if(addInfo) addInfo.textContent='Admin: you see auto circle (all signed-up users, availability-filtered) + can still add manual test names above.';
+        const tt=document.querySelector('#view-circle .card-h span'); if(tt) tt.textContent='admin + auto circle';
+      } else {
+        addRow.style.display='none';
+        if(addInfo) addInfo.textContent='Circle = everyone who signed up — you are auto-included. New signups join next Sunday 08:00 BST. Toggle Available below.';
+      }
+    }
+    // shuffle buttons admin-only
+    const nb=document.getElementById('newWeekBtn');
+    const rb=document.getElementById('reshuffleBtn');
+    let badge=document.getElementById('adminOnlyBadge');
+    if(!badge && nb && nb.parentElement){
+      badge=document.createElement('span'); badge.id='adminOnlyBadge'; badge.className='kbd'; badge.style.marginLeft='8px';
+      nb.parentElement.appendChild(badge);
+    }
+    if(isAdmin()){
+      if(nb){ nb.style.display='inline-flex'; nb.textContent='Shuffle (admin)'; nb.disabled=false; nb.title='Admin reshuffle via cloud (respects Availability)'; }
+      if(rb){ rb.style.display='inline-flex'; rb.disabled=false; }
+      if(badge) badge.textContent='admin';
+    } else {
+      if(nb){ nb.style.display='none'; }
+      if(rb){ rb.style.display='none'; }
+      if(badge) badge.textContent='auto-shuffles Sun 08:00 BST';
+    }
+    // availability UI visibility
+    const avWrap=document.getElementById('availabilityWrap');
+    const cb=document.getElementById('availToggle');
+    const lb=document.getElementById('availLabel');
+    if(avWrap){
+      if(me){
+        avWrap.style.display='grid';
+        // use me.is_available if present, else true
+        const avail = (me.is_available!==undefined ? !!me.is_available : (me.isAvailable!==undefined ? !!me.isAvailable : true));
+        if(cb){ cb.checked=avail; }
+        if(lb){ lb.textContent=avail?'ON (included)':'OFF (skipped)'; lb.style.color=avail?'var(--ok)':'var(--warn)'; }
+        const banner=document.getElementById('availBanner');
+        if(banner){
+          if(!avail){
+            banner.style.display='block';
+            banner.textContent='You are currently UNAVAILABLE — you will be skipped this Sunday 08:00 BST. Toggle back ON to rejoin.';
+          }else{
+            // check last week skip via local flag? Show if last stored skipped flag true
+            const wasSkipped = localStorage.getItem('randori-was-skipped')==='1';
+            if(wasSkipped){
+              banner.style.display='block';
+              banner.textContent='You were skipped last week because you were unavailable — but you are now ON for next week.';
+              banner.style.background='#9cc0b522';
+            }else{
+              banner.style.display='none';
+            }
+          }
+        }
+      }else{
+        avWrap.style.display='none';
+      }
+    }
+  }
+  // availability toggle handler — defined after updateAuthUI so it can be hooked later
+  async function toggleAvailability(checked){
+    const lb=document.getElementById('availLabel');
+    if(lb) lb.textContent=checked?'ON...':'OFF...';
+    try{
+      const data=await api('/api/settings/availability',{method:'POST', body:{ is_available: !!checked }});
+      if(me){
+        me.is_available=data.user.is_available;
+        me.isAvailable=data.user.is_available;
+        me.availability_updated_at=data.user.availability_updated_at;
+        localStorage.setItem(ME_KEY, JSON.stringify(me));
+      }
+      updateAuthUI();
+      toast(data.message|| (checked?'Available ✓':'Unavailable — you’ll be skipped'));
+      if(!checked){ localStorage.setItem('randori-was-skipped','0'); } // clear skip flag when you intentionally go off, banner already explains
+      renderPeople(); // re-render circle with badge
+    }catch(e){
+      toast('availability update failed: '+(e.error||e.message||'offline'));
+      // revert toggle
+      const cb=document.getElementById('availToggle'); if(cb) cb.checked=!checked;
+      if(lb) lb.textContent=cb && cb.checked?'ON (included)':'OFF (skipped)';
     }
   }
   // init auth UI events
@@ -422,7 +516,42 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
   };
   document.getElementById('authCancel').onclick=()=>document.getElementById('authOverlay').classList.remove('show');
   document.getElementById('authOverlay').onclick=(e)=>{ if(e.target===document.getElementById('authOverlay')) document.getElementById('authOverlay').classList.remove('show'); };
-  document.getElementById('signOutBtn').onclick=()=>{ authToken=''; localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(ME_KEY); me=null; updateAuthUI(); toast('signed out'); renderHistory(); };
+  document.getElementById('signOutBtn').onclick=()=>{ authToken=''; localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(ME_KEY); me=null; updateAuthUI(); toast('signed out'); renderHistory(); const av=document.getElementById('availabilityWrap'); if(av) av.style.display='none'; };
+  // availability toggle binding — after DOM ready
+  (function bindAvail(){
+    const cb=document.getElementById('availToggle');
+    if(!cb) return;
+    cb.addEventListener('change', ()=>{ toggleAvailability(cb.checked); });
+    cb.addEventListener('click', (e)=>{ e.stopPropagation(); });
+  })();
+  async function checkSkippedBanner(){
+    // If user was unavailable last week, /api/weeks won't contain them this week. We infer skip when they were unavailable and new week exists where they are absent.
+    // Simpler: ask /api/history — if last history entry week_label != current cloud week label and is_available currently true but was false during last shuffle, we show banner.
+    // For now: when /api/cron/weekly returns unavailable_reminders includes you, set flag.
+    try{
+      // Peek latest weeks to see if you were excluded
+      if(!authToken) return;
+      const d = await api('/api/settings/me',{method:'GET'});
+      // if unavailable flag is OFF, banner already shown by updateAuthUI
+      if(d && d.user && !d.user.is_available && !d.user.isAvailable){
+        localStorage.setItem('randori-was-skipped','0'); return;
+      }
+      const w = await api('/api/weeks',{method:'GET'}).catch(()=>null);
+      if(!w || !w.weeks || !w.weeks.length) return;
+      const last = w.weeks[0];
+      const myId = d.user.id;
+      const inLast = last.pairs.some(p=> p.a_id===myId || p.b_id===myId);
+      if(!inLast && last.pairs.length){
+        // you were not in last shuffle but you exist — maybe skipped due to unavailable
+        const wasAvailRecently = localStorage.getItem('randori-prev-avail');
+        if(wasAvailRecently==='0'){
+          localStorage.setItem('randori-was-skipped','1');
+        }
+      }
+      localStorage.setItem('randori-prev-avail', d.user.is_available ? '1':'0');
+    }catch{}
+  }
+  setInterval(()=>{ if(me) checkSkippedBanner(); }, 15000);
   async function doSignup(){
     const email=document.getElementById('authEmail').value.trim();
     const name=document.getElementById('authName').value.trim()||email.split('@')[0];
@@ -576,35 +705,62 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
   let _toastTimer;
   function toast(msg){ const el=document.getElementById('toast'); if(!el) return; el.textContent=msg; el.classList.add('show'); clearTimeout(_toastTimer); _toastTimer=setTimeout(()=>el.classList.remove('show'),2400); }
 
-  // ---------- people ----------
+  // ---------- people (now auto = all signed-up users, manual disabled except admin testing) ----------
   const nameInput=document.getElementById('personName');
   const addBtn=document.getElementById('addPerson');
   const listEl=document.getElementById('peopleList');
   const pCount=document.getElementById('peopleCount');
 
-  function renderPeople(){
+  async function renderPeople(){
+    // try cloud circle first — auto-includes all logged-in users (with availability badge)
+    try{
+      const res = await api('/api/circle', { method:'GET' });
+      if(res && res.circle && res.circle.length){
+        const people = res.circle;
+        pCount.textContent = people.length + (res.source==='auth_accounts' || res.source==='auth' ? ' ☁' : '');
+        const admin = isAdmin();
+        listEl.innerHTML = people.map(p=>{
+          const avail = (p.is_available===undefined && p.isAvailable===undefined) ? true : (p.is_available!==undefined ? !!p.is_available : !!p.isAvailable);
+          const badge = avail ? '<span class="kbd" title="Available this week" style="background:#9cc0b522;color:#9cc0b5;border-color:#9cc0b5">● avail</span>' : '<span class="kbd" title="Unavailable — skipped Sun 08:00 BST" style="background:#e6c07a22;color:#e6c07a;border-color:#e6c07a">○ away</span>';
+          return `
+          <div class="person" data-id="${p.id}" style="${!avail?'opacity:.65':''}">
+            <div class="row"><div class="avatar" style="background:${p.color}">${(p.display_name||p.name||'??').slice(0,2).toUpperCase()}</div><b style="font-size:13px">${p.display_name||p.name}</b>${p.email?`<span class="kbd" style="font-size:10px">${p.email.split('@')[0]}</span>`:''}<span class="kbd" style="background:${p.color}22; border-color:${p.color}66; color:${p.color}">${(p.color||'').slice(1,4)}</span>${badge}</div>
+            <div class="row">${admin? `<button class="pill delBtnCloud" title="Admin cannot delete auth accounts from here – use DB">×</button>`:''}</div>
+          </div>`; }).join('');
+        // cloud list is read-only — manual names gone
+        renderRoomSelect();
+        renderPairsMeta();
+        refreshPresence();
+        return;
+      }
+    }catch(e){
+      // fall through to local
+    }
     const people=getPeople();
     pCount.textContent=people.length;
-    if(!people.length){ listEl.innerHTML=`<div class="small muted" style="padding:8px; border:1px dashed var(--line); border-radius:10px">No one yet. Add your interview circle — 2 to 12 works best.</div>`; }
+    if(!people.length){ listEl.innerHTML=`<div class="small muted" style="padding:8px; border:1px dashed var(--line); border-radius:10px">No cloud accounts yet — sign up to join circle. Auto-includes everyone signed in.<br/>Until then, local demo shown (offline).</div>`; }
     else {
+      const admin = isAdmin();
       listEl.innerHTML = people.map(p=>`
         <div class="person" data-id="${p.id}">
           <div class="row"><div class="avatar" style="background:${p.color}">${p.name.slice(0,2).toUpperCase()}</div><b style="font-size:13px">${p.name}</b><span class="kbd" style="background:${p.color}22; border-color:${p.color}66; color:${p.color}">${p.color.slice(1,4)}</span></div>
-          <div class="row"><button class="pill editBtn">edit</button><button class="pill delBtn">remove</button></div>
+          <div class="row">${admin?`<button class="pill editBtn">edit</button><button class="pill delBtn">remove</button>`:`<span class="small muted">local</span>`}</div>
         </div>`).join('');
-      listEl.querySelectorAll('.editBtn').forEach((b,i)=>{
-        b.onclick=async()=>{
-          const np=await showPrompt('Rename person', people[i].name);
-          if(np && np.trim()){ people[i].name=np.trim(); people[i].color=colorOf(np.trim()); savePeople(people); renderPeople(); renderPairs(); renderRoomSelect(); toast('renamed'); }
-        };
-      });
-      listEl.querySelectorAll('.delBtn').forEach((b,i)=>{
-        b.onclick=async()=>{
-          if(await showConfirm(`Remove ${people[i].name}?`, `Remove ${people[i].name} from circle`)){
-            people.splice(i,1); savePeople(people); renderPeople(); renderPairs(); renderRoomSelect(); toast('removed');
-          }
-        };
-      });
+      if(admin){
+        listEl.querySelectorAll('.editBtn').forEach((b,i)=>{
+          b.onclick=async()=>{
+            const np=await showPrompt('Rename person', people[i].name);
+            if(np && np.trim()){ people[i].name=np.trim(); people[i].color=colorOf(np.trim()); savePeople(people); renderPeople(); renderPairs(); renderRoomSelect(); toast('renamed'); }
+          };
+        });
+        listEl.querySelectorAll('.delBtn').forEach((b,i)=>{
+          b.onclick=async()=>{
+            if(await showConfirm(`Remove ${people[i].name}?`, `Remove ${people[i].name} from circle`)){
+              people.splice(i,1); savePeople(people); renderPeople(); renderPairs(); renderRoomSelect(); toast('removed');
+            }
+          };
+        });
+      }
     }
     renderRoomSelect();
     renderPairsMeta();
@@ -612,11 +768,15 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
   }
 
   function addPerson(){
+    if(!isAdmin()){
+      toast('Manual add disabled — circle = all signed-up users');
+      return;
+    }
     const n=nameInput.value.trim(); if(!n) return;
     const people=getPeople();
     if(people.some(x=>x.name.toLowerCase()===n.toLowerCase())){ toast('already in circle'); return; }
     people.push({id:uid(), name:n, color:colorOf(n), createdAt:Date.now()});
-    savePeople(people); nameInput.value=''; renderPeople(); toast(`added ${n}`);
+    savePeople(people); nameInput.value=''; renderPeople(); toast(`added ${n} (local test)`);
   }
   addBtn.onclick=addPerson;
   nameInput.addEventListener('keydown',e=>{ if(e.key==='Enter') addPerson(); });
@@ -632,32 +792,34 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
     }
   };
 
-  // ---------- pairing ----------
+  // ---------- pairing (auto = cloud circle, admin-only manual reshuffle, availability-filtered) ----------
   function formatWeekLabel(d=new Date()){
     return `Week of ${d.toLocaleDateString(undefined,{month:'short', day:'numeric'})}`;
   }
   function shuffle(arr){ const a=[...arr]; for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]] } return a; }
 
   function generatePairs(){
+    // offline fallback — only admin should hit this now
+    if(!isAdmin()){
+      toast('Auto-shuffle is Sun 08:00 BST ☁ — manual disabled');
+      return;
+    }
     const people=getPeople();
     if(people.length<2){ toast('need at least 2'); return; }
     const shuffled=shuffle(people);
     const pairs=[];
     for(let i=0;i<shuffled.length;i+=2){
       const a=shuffled[i]; const b=shuffled[i+1]||null;
-      if(!b){
-        // odd -> AI partner
-        pairs.push({id:uid(), aId:a.id, bId:null, isAI:true, topic:null});
-      } else {
-        pairs.push({id:uid(), aId:a.id, bId:b.id, isAI:false, topic:null});
-      }
+      if(!b) pairs.push({id:uid(), aId:a.id, bId:null, isAI:true, topic:null});
+      else pairs.push({id:uid(), aId:a.id, bId:b.id, isAI:false, topic:null});
     }
     const week={id:uid(), label:formatWeekLabel(), date: new Date().toISOString(), pairs};
     const weeks=getWeeks(); weeks.unshift(week); saveWeeks(weeks);
-    renderPairs(); renderHistory(); renderRoomSelect(); toast('new week shuffled');
+    renderPairs(); renderHistory(); renderRoomSelect(); toast('new week shuffled (local)');
   }
 
   function reshuffleCurrent(){
+    if(!isAdmin()){ toast('Only admin can reshuffle — auto Sun 08:00 BST'); return; }
     const weeks=getWeeks(); if(!weeks.length){ generatePairs(); return; }
     const people=getPeople(); if(people.length<2) return;
     const shuffled=shuffle(people);
@@ -671,20 +833,81 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
     saveWeeks(weeks); renderPairs(); renderHistory(); renderRoomSelect();
   }
 
-  function idToPerson(id){ return getPeople().find(p=>p.id===id); }
-
-  function renderPairsMeta(){
-    const weeks=getWeeks(); const cur=weeks[0];
-    const meta=document.getElementById('currentWeekMeta');
-    if(!cur){ meta.textContent='No week yet — add at least 2 people and shuffle.'; return; }
-    meta.textContent=`${cur.label} • ${cur.pairs.length} pair(s) • ${new Date(cur.date).toLocaleString()} — odd = AI partner`;
+  // Admin cloud reshuffle — hits /api/admin/reshuffle (filters is_available=1)
+  async function adminCloudReshuffle(){
+    if(!isAdmin()){
+      toast('Admin only — festusomole14@gmail.com');
+      return;
+    }
+    const nb=document.getElementById('newWeekBtn'); const rb=document.getElementById('reshuffleBtn');
+    if(nb) nb.disabled=true; if(rb) rb.disabled=true;
+    try{
+      const data=await api('/api/admin/reshuffle',{method:'POST'});
+      toast(`☁ reshuffled ${data.week_label} — ${data.count} available`);
+      // refresh cloud weeks view
+      await renderPairs();
+      await renderPeople();
+      await renderHistory();
+    }catch(e){
+      const msg=e.error||e.message||'reshuffle failed';
+      toast(msg);
+      // if less than 2 available, show bigger hint
+      if(e.available_count!==undefined){
+        await showConfirm('Not enough available', `Only ${e.available_count} available — need 2+. Unavailable: ${(e.unavailable||[]).map(u=>u.name).join(', ')||'none'}. Ask them to toggle Available ON.`);
+      }
+    }finally{
+      if(nb) nb.disabled=false; if(rb) rb.disabled=false;
+    }
   }
 
-  function renderPairs(){
-    renderPairsMeta();
-    const weeks=getWeeks(); const cur=weeks[0];
+  function idToPerson(id){ return getPeople().find(p=>p.id===id); }
+
+  function renderPairsMeta(localCur, cloudCur){
+    const meta=document.getElementById('currentWeekMeta');
+    if(cloudCur){
+      meta.textContent=`${cloudCur.week_label} • ${cloudCur.pairs.length} pair(s) • ${new Date(cloudCur.week_start||cloudCur.created_at).toLocaleString()} — ☁ cloud auto (available-filtered) — odd = AI partner`;
+      return;
+    }
+    if(!localCur){ meta.textContent='No week yet — circle = all signed-up Available users, auto-shuffles Sundays 08:00 BST.'; return; }
+    meta.textContent=`${localCur.label} • ${localCur.pairs.length} pair(s) • ${new Date(localCur.date).toLocaleString()} — odd = AI partner (offline)`;
+  }
+
+  async function renderPairs(){
+    // Try cloud first when signed in (logged-in users see real pairings)
+    let cloudWeek=null;
+    let cloudWeeks=[];
+    if(authToken){
+      try{
+        const w=await api('/api/weeks',{method:'GET'});
+        if(w && w.weeks && w.weeks.length){
+          cloudWeeks=w.weeks;
+          cloudWeek=w.weeks[0];
+        }
+      }catch{}
+    }
     const container=document.getElementById('pairsList');
-    if(!cur){ container.innerHTML=''; return; }
+    if(cloudWeek){
+      renderPairsMeta(null, cloudWeek);
+      container.innerHTML = cloudWeek.pairs.map(p=>{
+        const aName=p.a_name||'??'; const bName=p.is_ai?'AI partner':(p.b_name||'—');
+        const aCol=p.a_color||PALETTE[0]; const bCol=p.is_ai?'var(--accent)':(p.b_color||PALETTE[1]);
+        return `<div class="pair" data-pg="${p.pg_id}">
+          <div class="who"><span class="avatar" style="background:${aCol}">${aName.slice(0,2).toUpperCase()}</span><b style="font-size:12.5px">${aName}</b><span class="muted small">×</span><span class="avatar" style="background:${bCol}">${bName.slice(0,2).toUpperCase()}</span><b style="font-size:12.5px">${bName}</b>${p.is_ai? '<span class="kbd" style="color:var(--accent)">ai</span>':''}</div>
+          <div class="topic-group">
+            <span class="kbd" style="background:var(--bg-3)">${p.topic||'Pick together'}</span>
+            <span class="kbd">${p.topic_kind||'both'}</span>
+            ${isAdmin()? '<span class="kbd">☁</span>':''}
+          </div>
+        </div>`
+      }).join('') + `<div class="row" style="margin-top:10px"><span class="small muted">☁ Cloud weeks — ${cloudWeeks.length} week(s). Admin reshuffle replaces current Sun's week (respects Available). Unavailable users skipped, get reminder email if RESEND_API_KEY set else in-app banner.</span></div>`;
+      renderRoomSelect();
+      return;
+    }
+
+    // fallback local offline weeks
+    const weeks=getWeeks(); const cur=weeks[0];
+    renderPairsMeta(cur, null);
+    if(!cur){ container.innerHTML=`<div class="small muted" style="padding:8px; border:1px dashed var(--line); border-radius:10px">No week yet. Cloud auto includes all <b>Available</b> signed-up users each Sun 08:00 BST. Sign in to see cloud pairings. Local demo needs 2+ names (admin only).</div>`; return; }
     container.innerHTML = cur.pairs.map(p=>{
       const a=idToPerson(p.aId); const b=p.bId? idToPerson(p.bId):null;
       const aName=a? a.name: 'unknown'; const bName=p.isAI? 'AI partner' : (b? b.name: '—');
@@ -698,7 +921,7 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
           <button class="pill small openCodeBtn">code</button>
         </div>
       </div>`
-    }).join('') + `<div class="row" style="margin-top:10px"><button id="delWeekBtn" class="btn ghost">Delete week</button><span class="small muted">Reshuffle keeps same week; shuffle makes a new one for history.</span></div>`;
+    }).join('') + `<div class="row" style="margin-top:10px"><button id="delWeekBtn" class="btn ghost">Delete week</button><span class="small muted">Offline demo — cloud is preferred.</span></div>`;
 
     container.querySelectorAll('.pair').forEach(el=>{
       const pid=el.getAttribute('data-pair');
@@ -718,15 +941,25 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
     renderRoomSelect();
   }
 
+  // Buttons: if admin, cloud reshuffle else hide / confirm local
   document.getElementById('newWeekBtn').onclick=async()=>{
+    if(isAdmin()){
+      return adminCloudReshuffle();
+    }
     const isAuthed = !!localStorage.getItem(TOKEN_KEY);
     if(!isAuthed){
-      const go = await showConfirm('Manual shuffle?', 'Normally Randori auto-shuffles Sundays 08:00 BST for everyone signed in — no need to press. Still shuffle now for offline demo?');
+      const go = await showConfirm('Manual shuffle?', 'Randori auto-shuffles Sundays 08:00 BST for Available users — no need to press. Still shuffle offline demo?');
       if(!go) return;
+    }else{
+      toast('Auto — Sunday 08:00 BST includes Available users');
+      return;
     }
     generatePairs();
   };
-  document.getElementById('reshuffleBtn').onclick=reshuffleCurrent;
+  document.getElementById('reshuffleBtn').onclick=()=>{
+    if(isAdmin()) return adminCloudReshuffle();
+    reshuffleCurrent();
+  };
 
   // ---------- history (personalized when signed in) ----------
   async function renderPersonalHistory(){

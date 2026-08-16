@@ -1,4 +1,4 @@
-// Vercel serverless: GET /api/init -> creates tables if not exist
+// Vercel serverless: GET /api/init -> creates tables if not exist, migrates availability columns
 import { getClient } from './_db.js';
 
 export default async function handler(req, res) {
@@ -20,7 +20,9 @@ export default async function handler(req, res) {
       display_name TEXT NOT NULL,
       color TEXT NOT NULL,
       created_at TEXT DEFAULT (datetime('now')),
-      last_login TEXT
+      last_login TEXT,
+      is_available INTEGER DEFAULT 1,
+      availability_updated_at TEXT
     )`,
     `CREATE TABLE IF NOT EXISTS pairing_weeks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,5 +52,15 @@ export default async function handler(req, res) {
       description TEXT NOT NULL
     )`
   ], "write");
-  return res.json({ ok: true, message: "Tables ready (incl auth_accounts)" });
+
+  // Migration for existing DBs that were created before availability columns
+  const migrations = [
+    `ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`,
+    `ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`
+  ];
+  for (const sql of migrations) {
+    try { await db.execute(sql); } catch (_) { /* column already exists */ }
+  }
+
+  return res.json({ ok: true, message: "Tables ready (incl auth_accounts + availability)" });
 }
