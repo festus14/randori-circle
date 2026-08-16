@@ -192,6 +192,11 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
       </div>
     </div>
     <div class="top-actions">
+      <div id="authArea" class="row" style="gap:6px">
+        <span id="meLabel" class="pill" style="display:none"></span>
+        <button id="authBtn" class="pill" title="Sign in / up">Sign in</button>
+        <button id="signOutBtn" class="pill" style="display:none" title="Sign out">Sign out</button>
+      </div>
       <button id="themeToggle" class="pill" title="Toggle theme">◐ <span id="themeLabel">dark</span></button>
       <button id="exportBtn" class="pill" title="Export Vercel ready zip info">↗ vercel</button>
     </div>
@@ -243,19 +248,19 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
           <div class="card-h">
             <h2>This week</h2>
             <div class="row">
-              <button id="newWeekBtn" class="btn">Shuffle new week</button>
+              <button id="newWeekBtn" class="btn" title="Auto-shuffles Sundays 08:00 BST — normally you don't need this">Shuffle new week</button>
               <button id="reshuffleBtn" class="btn secondary" title="Re-shuffle same people">Reshuffle</button>
             </div>
           </div>
           <div class="card-b">
-            <div id="currentWeekMeta" class="small muted" style="margin-bottom:10px">No week yet — add at least 2 people and shuffle.</div>
+            <div id="currentWeekMeta" class="small muted" style="margin-bottom:10px">No week yet — auto-shuffles Sundays 08:00 BST. No need to press unless you want a manual week.</div>
             <div id="pairsList" class="weeks"></div>
           </div>
         </div>
         <div class="card">
-          <div class="card-h"><h2>Sync</h2><span>local + broadcast</span></div>
+          <div class="card-h"><h2>Sync</h2><span>cloud when signed in</span></div>
           <div class="card-b" style="display:grid; gap:10px">
-            <div class="small" style="color:var(--ink-2)">Open this page in two tabs. Pairing, code, and board sync via <span class="kbd">BroadcastChannel</span> + <span class="kbd">localStorage</span>. Works offline. Deploy folder is just <span class="kbd">client/dist</span> static.</div>
+            <div class="small" style="color:var(--ink-2)">Logged-in users sync to cloud automatically. Auto-shuffle happens <b style="color:var(--ink)">Sundays 08:00 BST</b> — no one needs to hit generate. Open this page in two tabs, pairing, code, and board sync via <span class="kbd">BroadcastChannel</span> + <span class="kbd">localStorage</span> offline, Turso when signed in.</div>
             <div id="presencePanel" class="people"></div>
             <div class="row">
               <button id="copyLinkBtn" class="btn secondary">Copy deploy path</button>
@@ -343,18 +348,108 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
     <!-- HISTORY -->
     <section id="view-history" class="view" style="display:none">
       <div class="card">
-        <div class="card-h"><h2>Week history</h2><span id="historyCount">0 weeks</span></div>
-        <div class="card-b"><div id="historyList" class="weeks"></div></div>
+        <div class="card-h"><h2>Your history</h2><span id="historyCount">0 weeks</span><span id="historyAuthHint" class="small muted" style="margin-left:8px">sign in for personal history</span></div>
+        <div class="card-b"><div id="historyList" class="weeks"></div><div id="historyPersonal" class="weeks" style="margin-top:12px"></div></div>
       </div>
     </section>
   </div>
 </div>
 <div id="confirmOverlay" class="overlay" aria-hidden="true"><div class="modal"><h3 id="confirmTitle">Confirm?</h3><p id="confirmMsg" class="small" style="color:var(--ink-2); margin:0"></p><div class="row"><button id="confirmCancel" class="btn secondary">Cancel</button><button id="confirmOk" class="btn">Confirm</button></div></div></div>
 <div id="promptOverlay" class="overlay" aria-hidden="true"><div class="modal"><h3 id="promptTitle">Enter value</h3><input id="promptInput" class="input"/><div class="row"><button id="promptCancel" class="btn secondary">Cancel</button><button id="promptOk" class="btn">Save</button></div></div></div>
+<div id="authOverlay" class="overlay" aria-hidden="true"><div class="modal" style="max-width:420px"><h3 id="authTitle">Sign in to Randori</h3>
+<p class="small" style="color:var(--ink-2);margin:0">Your name is your display name for pairings. Email is private, used only for notifications.</p>
+<div style="display:grid;gap:8px;margin-top:6px">
+<input id="authEmail" class="input" placeholder="email@example.com" type="email"/>
+<input id="authName" class="input" placeholder="display name (for signup)" maxlength="32"/>
+<input id="authPass" class="input" placeholder="password (min 6)" type="password"/>
+<div id="authErr" class="small" style="color:var(--accent-3);min-height:16px"></div>
+</div>
+<div class="row" style="justify-content:space-between;margin-top:4px"><span class="small muted">Personal history • auto-shuffle Sundays</span><span class="row"><button id="authCancel" class="btn secondary">Cancel</button><button id="authSignup" class="btn secondary">Sign up</button><button id="authSignin" class="btn">Sign in</button></span></div>
+</div></div>
 <div id="toast" class="toast"></div>
 
 <script>
 (() => {
+  // ---------- auth layer ----------
+  const TOKEN_KEY='randori-token';
+  const ME_KEY='randori-me';
+  let authToken = localStorage.getItem(TOKEN_KEY)||'';
+  let me = null; try{ me = JSON.parse(localStorage.getItem(ME_KEY)||'null')}catch{}
+  async function api(path, opts={}){
+    const headers = opts.headers||{};
+    headers['content-type']='application/json';
+    if(authToken) headers['authorization']='Bearer '+authToken;
+    const r=await fetch(path,{...opts,headers,body: opts.body? JSON.stringify(opts.body):undefined});
+    const text = await r.text();
+    let j; try{ j=JSON.parse(text)}catch{ j={raw:text,status:r.status} }
+    if(!r.ok) throw j;
+    return j;
+  }
+  async function refreshMe(){
+    if(!authToken){ me=null; updateAuthUI(); return; }
+    try{
+      const data = await api('/api/auth/me', {method:'GET'});
+      me = data.user;
+      localStorage.setItem(ME_KEY, JSON.stringify(me));
+    }catch{ authToken=''; localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(ME_KEY); me=null; }
+    updateAuthUI();
+  }
+  function updateAuthUI(){
+    const area=document.getElementById('authArea');
+    const meLabel=document.getElementById('meLabel');
+    const authBtn=document.getElementById('authBtn');
+    const outBtn=document.getElementById('signOutBtn');
+    const hint=document.getElementById('historyAuthHint');
+    if(me){
+      meLabel.style.display='inline-flex'; meLabel.textContent = '● '+me.name;
+      meLabel.style.background = me.color+'22'; meLabel.style.borderColor=me.color+'66';
+      authBtn.style.display='none';
+      outBtn.style.display='inline-flex';
+      if(hint) hint.textContent = `personal history for ${me.name} • partner counts`;
+    } else {
+      meLabel.style.display='none';
+      authBtn.style.display='inline-flex';
+      outBtn.style.display='none';
+      if(hint) hint.textContent='sign in for personal history';
+    }
+  }
+  // init auth UI events
+  document.getElementById('authBtn').onclick=()=>{
+    document.getElementById('authOverlay').classList.add('show');
+    document.getElementById('authErr').textContent='';
+  };
+  document.getElementById('authCancel').onclick=()=>document.getElementById('authOverlay').classList.remove('show');
+  document.getElementById('authOverlay').onclick=(e)=>{ if(e.target===document.getElementById('authOverlay')) document.getElementById('authOverlay').classList.remove('show'); };
+  document.getElementById('signOutBtn').onclick=()=>{ authToken=''; localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(ME_KEY); me=null; updateAuthUI(); toast('signed out'); renderHistory(); };
+  async function doSignup(){
+    const email=document.getElementById('authEmail').value.trim();
+    const name=document.getElementById('authName').value.trim()||email.split('@')[0];
+    const pass=document.getElementById('authPass').value;
+    if(!email||!pass){ document.getElementById('authErr').textContent='email + password required'; return; }
+    try{
+      const data= await fetch('/api/auth/signup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email,password:pass,name})}).then(r=>r.json().then(j=>{ if(!r.ok) throw j; return j;}));
+      authToken=data.token; localStorage.setItem(TOKEN_KEY,authToken); localStorage.setItem(ME_KEY,JSON.stringify(data.user)); me=data.user;
+      document.getElementById('authOverlay').classList.remove('show'); updateAuthUI(); toast(`welcome, ${me.name}`); renderHistory();
+    }catch(err){ document.getElementById('authErr').textContent=err.error||err.message||'signup failed'; }
+  }
+  async function doSignin(){
+    const email=document.getElementById('authEmail').value.trim();
+    const pass=document.getElementById('authPass').value;
+    if(!email||!pass){ document.getElementById('authErr').textContent='email + password required'; return; }
+    try{
+      const data= await fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email,password:pass})}).then(r=>r.json().then(j=>{ if(!r.ok) throw j; return j;}));
+      authToken=data.token; localStorage.setItem(TOKEN_KEY,authToken); localStorage.setItem(ME_KEY,JSON.stringify(data.user)); me=data.user;
+      document.getElementById('authOverlay').classList.remove('show'); updateAuthUI(); toast(`signed in as ${me.name}`); renderHistory();
+    }catch(err){ document.getElementById('authErr').textContent=err.error||err.message||'login failed'; }
+  }
+  document.getElementById('authSignup').onclick=doSignup;
+  document.getElementById('authSignin').onclick=doSignin;
+  // expose for debug
+  window._randori_auth={ get token(){return authToken}, get me(){return me}, api, refreshMe };
+  // initial UI + me refresh
+  updateAuthUI();
+  setTimeout(refreshMe, 400);
+
   // ---------- theme ----------
   const THEME_KEY='randori-theme';
   let theme = localStorage.getItem(THEME_KEY) || 'dark';
@@ -591,25 +686,56 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
     renderRoomSelect();
   }
 
-  document.getElementById('newWeekBtn').onclick=generatePairs;
+  document.getElementById('newWeekBtn').onclick=async()=>{
+    const isAuthed = !!localStorage.getItem(TOKEN_KEY);
+    if(!isAuthed){
+      const go = await showConfirm('Manual shuffle?', 'Normally Randori auto-shuffles Sundays 08:00 BST for everyone signed in — no need to press. Still shuffle now for offline demo?');
+      if(!go) return;
+    }
+    generatePairs();
+  };
   document.getElementById('reshuffleBtn').onclick=reshuffleCurrent;
 
-  // ---------- history ----------
+  // ---------- history (personalized when signed in) ----------
+  async function renderPersonalHistory(){
+    const cont = document.getElementById('historyPersonal');
+    if(!cont) return;
+    if(!authToken){ cont.innerHTML='<div class="small muted" style="padding:8px">Sign in to see your personal history and partner counts.</div>'; return; }
+    try{
+      const data = await api('/api/history',{method:'GET'});
+      if(!data.history || !data.history.length){ cont.innerHTML='<div class="small muted" style="padding:8px">No personal pairings yet — first auto-shuffle is Sunday 08:00 BST. You can also create a manual week for demo.</div>'; return; }
+      const counts = data.partner_counts||{};
+      cont.innerHTML = `
+        <div class="card" style="border-color:var(--accent)"><div class="card-h"><h3 style="font-size:13px">You — ${data.user.name}</h3><span class="kbd">${data.total} pair(s)</span></div>
+          <div class="card-b" style="display:grid;gap:6px">
+            ${data.history.map(h=>`<div class="row small"><span class="kbd">${h.week_label}</span> × ${h.partner_name} ${h.topic?`<span class="kbd">${h.topic}</span>`:''} ${h.is_ai?'<span class="kbd">ai</span>':''}</div>`).join('')}
+            <div style="margin-top:8px;border-top:1px dashed var(--line);padding-top:8px;display:flex;flex-wrap:wrap;gap:6px">${Object.entries(counts).map(([k,v])=>`<span class="kbd">${k}: ${v}</span>`).join('')||'<span class="small muted">no repeat counts yet</span>'}</div>
+          </div>
+        </div>`;
+    }catch(e){
+      cont.innerHTML=`<div class="small muted" style="padding:8px">History error: ${e.error||e.message||'offline'}</div>`;
+    }
+  }
+
   function renderHistory(){
     const weeks=getWeeks();
     document.getElementById('historyCount').textContent=`${weeks.length} week(s)`;
     const el=document.getElementById('historyList');
-    if(!weeks.length){ el.innerHTML='<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">No history yet.</div>'; return; }
-    el.innerHTML=weeks.map((w,idx)=>`
-      <div class="card" style="border-color:${idx===0?'var(--accent)':'var(--line)'}">
-        <div class="card-h"><h3 style="font-size:14px">${w.label}</h3><div class="row"><span class="kbd">${new Date(w.date).toLocaleDateString()}</span>${idx===0?'<span class="kbd" style="background:var(--accent); color:#12100f">current</span>':''}</div></div>
-        <div class="card-b" style="display:grid; gap:8px">
-          ${w.pairs.map(p=>{
-            const a=idToPerson(p.aId)||{name:'?'}; const b=p.isAI? {name:'AI'} : (idToPerson(p.bId)||{name:'?'});
-            return `<div class="row small"><span class="avatar" style="width:22px;height:22px;font-size:10px;background:${a.color||'#ddd'}">${a.name.slice(0,2).toUpperCase()}</span>${a.name} × ${b.name} ${p.topic?`<span class="kbd">${p.topic}</span>`:''}</div>`
-          }).join('')}
-        </div>
-      </div>`).join('');
+    if(!weeks.length){ el.innerHTML='<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">No history yet. Auto-shuffle creates history Sundays 08:00 BST when 2+ people are signed up.</div>'; }
+    else {
+      el.innerHTML=weeks.map((w,idx)=>`
+        <div class="card" style="border-color:${idx===0?'var(--accent)':'var(--line)'}">
+          <div class="card-h"><h3 style="font-size:14px">${w.label}</h3><div class="row"><span class="kbd">${new Date(w.date).toLocaleDateString()}</span>${idx===0?'<span class="kbd" style="background:var(--accent); color:#12100f">current</span>':''}</div></div>
+          <div class="card-b" style="display:grid; gap:8px">
+            ${w.pairs.map(p=>{
+              const a=idToPerson(p.aId)||{name:'?'}; const b=p.isAI? {name:'AI'} : (idToPerson(p.bId)||{name:'?'});
+              return `<div class="row small"><span class="avatar" style="width:22px;height:22px;font-size:10px;background:${a.color||'#ddd'}">${a.name.slice(0,2).toUpperCase()}</span>${a.name} × ${b.name} ${p.topic?`<span class="kbd">${p.topic}</span>`:''}</div>`
+            }).join('')}
+          </div>
+        </div>`).join('');
+    }
+    // personal (async)
+    renderPersonalHistory();
   }
 
   // ---------- questions ----------

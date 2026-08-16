@@ -13,6 +13,15 @@ export default async function handler(req, res) {
       color TEXT NOT NULL,
       created_at TEXT DEFAULT (datetime('now'))
     )`,
+    `CREATE TABLE IF NOT EXISTS auth_accounts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      color TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      last_login TEXT
+    )`,
     `CREATE TABLE IF NOT EXISTS pairing_weeks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       week_label TEXT NOT NULL,
@@ -41,5 +50,5 @@ export default async function handler(req, res) {
       description TEXT NOT NULL
     )`
   ], "write");
-  return res.json({ ok: true, message: "Tables ready" });
+  return res.json({ ok: true, message: "Tables ready (incl auth_accounts)" });
 }
