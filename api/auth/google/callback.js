@@ -1,8 +1,7 @@
-import { getClient, getJwtSecret, deterministicColor } from '../../_db.js';
+import { getClient, getJwtSecret, deterministicColor } from '../../api/_db.js';
 import jwt from 'jsonwebtoken';
 
 function base64UrlDecode(str){
-  // replace url safe chars, pad
   let s = str.replace(/-/g, '+').replace(/_/g, '/');
   const pad = s.length % 4;
   if (pad) s += '='.repeat(4 - pad);
@@ -20,13 +19,12 @@ function parseIdToken(idToken){
 }
 
 export default async function handler(req, res){
-  const appUrl = (process.env.APP_URL || process.env.VERCEL_URL && `https://${process.env.VERCEL_URL}` || 'https://randori-circle-self.vercel.app').replace(/\/$/, '');
+  const appUrl = (process.env.APP_URL || 'https://randori-circle-self.vercel.app').replace(/\/$/, '');
   const redirectUri = `${appUrl}/api/auth/google/callback`;
 
-  const { code, error, state } = req.query || {};
+  const { code, error } = req.query || {};
 
   if (error){
-    console.warn('google oauth error', error);
     res.writeHead(302, { Location: `${appUrl}/?google_error=${encodeURIComponent(error)}` });
     return res.end();
   }
@@ -41,7 +39,6 @@ export default async function handler(req, res){
     return res.status(500).json({ error: 'Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET' });
   }
 
-  // Exchange code for tokens
   let tokenJson;
   try{
     const body = new URLSearchParams({
@@ -59,18 +56,15 @@ export default async function handler(req, res){
     const text = await r.text();
     try{ tokenJson = JSON.parse(text); }catch{ tokenJson = { error: text, status: r.status }; }
     if (!r.ok){
-      console.error('token exchange failed', tokenJson);
       res.writeHead(302, { Location: `${appUrl}/?google_error=token_exchange_failed` });
       return res.end();
     }
-  }catch(e){
-    console.error('token fetch exception', e);
+  }catch{
     res.writeHead(302, { Location: `${appUrl}/?google_error=exception` });
     return res.end();
   }
 
   const { access_token, id_token } = tokenJson;
-
   let email = null;
   let displayName = null;
 
@@ -82,7 +76,6 @@ export default async function handler(req, res){
     }
   }
 
-  // fallback to userinfo endpoint if email still missing
   if (!email && access_token){
     try{
       const ur = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
@@ -97,7 +90,6 @@ export default async function handler(req, res){
   }
 
   if (!email){
-    console.error('no email from google', tokenJson);
     res.writeHead(302, { Location: `${appUrl}/?google_error=no_email` });
     return res.end();
   }
@@ -107,8 +99,6 @@ export default async function handler(req, res){
   const finalName = (displayName ? String(displayName).trim().slice(0,32) : nameFromEmail) || nameFromEmail;
 
   const db = getClient();
-
-  // ensure tables exist
   try{
     await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT)`);
     await db.execute(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`);
@@ -116,34 +106,30 @@ export default async function handler(req, res){
 
   const color = deterministicColor(finalName.toLowerCase());
 
-  // lookup
   let authId;
-  let existingColor = color;
   try{
-    const existing = await db.execute({ sql: `SELECT id, display_name, color FROM auth_accounts WHERE email=?`, args: [email] });
+    const existing = await db.execute({ sql: "SELECT id FROM auth_accounts WHERE email = ?", args: [email] });
     if (existing.rows.length){
       authId = existing.rows[0].id;
-      existingColor = existing.rows[0].color || color;
-      // update last_login
-      await db.execute({ sql: `UPDATE auth_accounts SET last_login=datetime('now') WHERE id=?`, args: [authId] });
-    }else{
-      const ins = await db.execute({ sql: `INSERT INTO auth_accounts (email,password_hash,display_name,color,last_login) VALUES (?,?,?,?,datetime('now')) RETURNING id`, args: [email, 'google-oauth', finalName, color] });
+      await db.execute({ sql: "UPDATE auth_accounts SET last_login = datetime('now'), display_name = COALESCE(?, display_name) WHERE id = ?", args: [finalName, authId] });
+    } else {
+      const ins = await db.execute({ sql: "INSERT INTO auth_accounts (email, password_hash, display_name, color, last_login) VALUES (?, ?, ?, ?, datetime('now')) RETURNING id", args: [email, 'google-oauth', finalName, color] });
       authId = ins.rows[0].id;
-      // insert into users for pairing compatibility
-      try{ await db.execute({ sql: `INSERT INTO users (name,color) VALUES (?,?)`, args: [finalName, color] }); }catch{}
+    }
+    // ensure in users for pairing
+    const uExist = await db.execute({ sql: "SELECT id FROM users WHERE lower(name)=?", args: [finalName.toLowerCase()] });
+    if (!uExist.rows.length){
+      await db.execute({ sql: "INSERT INTO users (name, color) VALUES (?,?)", args: [finalName, color] });
     }
   }catch(e){
-    console.error('db upsert error', e);
     res.writeHead(302, { Location: `${appUrl}/?google_error=db_error` });
     return res.end();
   }
 
-  // issue our own JWT
   let ourJwt;
   try{
-    ourJwt = jwt.sign({ id: authId, email, name: finalName, color: existingColor }, getJwtSecret(), { expiresIn: '30d' });
-  }catch(e){
-    console.error('jwt sign error', e);
+    ourJwt = jwt.sign({ uid: authId, email, name: finalName }, getJwtSecret(), { expiresIn: '30d' });
+  }catch{
     res.writeHead(302, { Location: `${appUrl}/?google_error=jwt_error` });
     return res.end();
   }
