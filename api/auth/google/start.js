@@ -6,10 +6,9 @@ export default function handler(req, res) {
   if (!clientId) {
     return res.status(500).json({ error: 'Missing GOOGLE_CLIENT_ID env', hint: 'Set GOOGLE_CLIENT_ID in Vercel Env Vars' });
   }
-  const appUrl = (process.env.APP_URL || process.env.VERCEL_URL && `https://${process.env.VERCEL_URL}` || 'https://randori-circle-self.vercel.app').replace(/\/$/, '');
+  const appUrl = (process.env.APP_URL || 'https://randori-circle-self.vercel.app').replace(/\/$/, '');
   const redirectUri = `${appUrl}/api/auth/google/callback`;
 
-  // simple random state
   const state = Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
 
   const params = new URLSearchParams({
