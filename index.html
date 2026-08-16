@@ -1,0 +1,1110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<meta name="color-scheme" content="dark light"/>
+<link rel="icon" href="data:,"/>
+<title>Randori Circle</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fragment+Mono:ital@0;1&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#12100f;
+  --bg-2:#1c1916;
+  --bg-3:#24211e;
+  --bg-4:#2e2a26;
+  --line:#2e2a26;
+  --line-strong:#3f3932;
+  --ink:#f4efe8;
+  --ink-2:#c2bbb2;
+  --ink-3:#8a847d;
+  --accent:#e6c07a;
+  --accent-2:#9cc0b5;
+  --accent-3:#d68a8a;
+  --accent-4:#a3b5d6;
+  --ok:#9cc0b5;
+  --warn:#e6c07a;
+  --radius:14px;
+  --radius-sm:10px;
+  --radius-xs:8px;
+  --shadow:0 20px 60px rgba(0,0,0,.35),0 1px 0 rgba(255,255,255,.06) inset;
+}
+:root.light{
+  --bg:#f6f2eb;
+  --bg-2:#ffffff;
+  --bg-3:#ece6dc;
+  --bg-4:#e2ddd5;
+  --line:#e6deD1;
+  --line-strong:#cbbfae;
+  --ink:#1d1a16;
+  --ink-2:#5a544e;
+  --ink-3:#8a847e;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--ink);
+  font-family:"Fragment Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+  overflow-x:hidden;
+}
+button,input,textarea,select{font:inherit}
+h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spacing:-.02em; margin:0}
+.shell{min-height:100%; display:flex; flex-direction:column}
+.topbar{
+  position:sticky; top:0; z-index:20;
+  backdrop-filter:blur(12px);
+  background:color-mix(in srgb, var(--bg) 86%, transparent);
+  border-bottom:1px solid var(--line);
+  display:flex; align-items:center; justify-content:space-between;
+  gap:16px; padding:14px 18px;
+}
+.brand{display:flex; align-items:center; gap:14px; min-width:0}
+.mark{
+  width:36px; height:36px; border-radius:9px;
+  background:var(--ink); color:var(--bg);
+  display:grid; place-items:center;
+  font-family:"Newsreader",serif; font-weight:600; font-size:16px;
+}
+.brand h1{font-size:20px; line-height:1; white-space:nowrap}
+.brand small{display:block; font-family:"Fragment Mono",monospace; font-size:11px; color:var(--ink-3); margin-top:3px; letter-spacing:.06em; text-transform:uppercase}
+.top-actions{display:flex; align-items:center; gap:8px}
+.pill{
+  border:1px solid var(--line); background:var(--bg-2);
+  border-radius:999px; padding:7px 12px;
+  display:inline-flex; align-items:center; gap:8px;
+  font-size:12px; color:var(--ink-2); cursor:pointer;
+  transition:.15s;
+}
+.pill:hover{border-color:var(--line-strong); color:var(--ink)}
+.pill:active{transform:translateY(1px)}
+.dot{width:7px; height:7px; border-radius:999px; background:var(--ok); box-shadow:0 0 0 3px color-mix(in srgb, var(--ok) 18%, transparent)}
+.tabs{
+  display:flex; gap:6px; padding:10px; margin:14px 18px 0;
+  background:var(--bg-2); border:1px solid var(--line); border-radius:14px;
+  flex-wrap:wrap;
+}
+.tab{
+  flex:0 0 auto; padding:9px 14px; border-radius:10px;
+  border:1px solid transparent; background:transparent;
+  font-size:12.5px; color:var(--ink-3); cursor:pointer; letter-spacing:.02em;
+  display:inline-flex; align-items:center; gap:8px; white-space:nowrap;
+  transition:.15s;
+}
+.tab.active{background:var(--bg-3); color:var(--ink); border-color:var(--line)}
+.tab:hover{color:var(--ink)}
+.main{padding:16px 18px 90px; display:grid; gap:16px; max-width:1200px; width:100%; margin:0 auto}
+.grid-2{display:grid; grid-template-columns:1.15fr .85fr; gap:14px}
+.grid-3{display:grid; grid-template-columns:repeat(3,1fr); gap:12px}
+.card{
+  background:var(--bg-2); border:1px solid var(--line); border-radius:var(--radius);
+  box-shadow:var(--shadow); overflow:hidden;
+}
+.card-h{padding:14px 14px 10px; display:flex; align-items:center; justify-content:space-between; gap:10px; border-bottom:1px solid var(--line)}
+.card-h h2{font-size:16.5px}
+.card-h span{font-size:11px; color:var(--ink-3); letter-spacing:.06em; text-transform:uppercase}
+.card-b{padding:14px}
+.muted{color:var(--ink-3)}
+.small{font-size:12px}
+.kbd{border:1px solid var(--line); background:var(--bg-3); padding:2px 6px; border-radius:6px; font-size:11px}
+.row{display:flex; gap:8px; align-items:center; flex-wrap:wrap}
+.input, .textarea, .select{
+  width:100%; background:var(--bg-3); border:1px solid var(--line); color:var(--ink);
+  border-radius:10px; padding:10px 11px; outline:none; transition:.15s;
+}
+.input:focus,.textarea:focus,.select:focus{border-color:var(--line-strong); background:var(--bg-4)}
+.textarea{resize:vertical; min-height:76px}
+.btn{
+  border:1px solid var(--line); background:var(--ink); color:var(--bg);
+  padding:9px 13px; border-radius:10px; cursor:pointer; font-size:12.5px;
+  display:inline-flex; align-items:center; gap:8px; transition:.15s; white-space:nowrap;
+}
+.btn.secondary{background:var(--bg-3); color:var(--ink)}
+.btn.ghost{background:transparent; color:var(--ink-2)}
+.btn:hover{transform:translateY(-1px)}
+.btn:active{transform:translateY(0)}
+.btn:disabled{opacity:.5; pointer-events:none}
+.people{display:grid; gap:8px}
+.person{
+  display:flex; align-items:center; justify-content:space-between; gap:10px;
+  padding:10px 10px; border:1px solid var(--line); border-radius:12px; background:var(--bg-3);
+}
+.avatar{width:30px; height:30px; border-radius:9px; display:grid; place-items:center; color:#12100f; font-weight:600; font-size:12px; flex:0 0 auto}
+.weeks{display:grid; gap:10px}
+.pair{
+  border:1px dashed var(--line); border-radius:12px; padding:10px; display:flex; justify-content:space-between; gap:10px; align-items:center; background:color-mix(in srgb, var(--bg-3) 88%, transparent);
+}
+.pair .who{display:flex; align-items:center; gap:9px; flex-wrap:wrap}
+.topic-group{display:flex; gap:6px; flex-shrink:0}
+.chip{border:1px solid var(--line); background:var(--bg-2); color:var(--ink-3); padding:6px 9px; border-radius:999px; font-size:11px; cursor:pointer}
+.chip.active{background:var(--ink); color:var(--bg); border-color:var(--ink)}
+.code-layout{display:grid; grid-template-columns:300px 1fr; gap:0; min-height:560px; border-radius:var(--radius); overflow:hidden; border:1px solid var(--line)}
+.q-pane{background:var(--bg-2); border-right:1px solid var(--line); display:flex; flex-direction:column; min-width:0}
+.q-head{padding:12px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center}
+.q-body{padding:12px; overflow:auto; display:grid; gap:12px; font-size:13px; line-height:1.5; color:var(--ink-2)}
+.tests{display:grid; gap:8px}
+.test{border:1px solid var(--line); border-radius:10px; padding:9px 10px; background:var(--bg-3)}
+.editor-pane{display:flex; flex-direction:column; min-width:0; background:var(--bg-3)}
+.editor-top{display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 10px; border-bottom:1px solid var(--line); flex-wrap:wrap}
+.editor{
+  flex:1; min-height:360px; background:#141210; color:#e9e2d9; border:0; outline:none; padding:14px; font-family:"Fragment Mono",monospace; font-size:13px; line-height:1.55; resize:none; tab-size:2;
+}
+.light .editor{background:#faf6ef; color:#1d1a16}
+.run-out{border-top:1px solid var(--line); background:var(--bg-2); max-height:190px; overflow:auto; padding:10px; display:grid; gap:8px}
+.board-wrap{border:1px solid var(--line); border-radius:14px; overflow:hidden; background:var(--bg-2); display:flex; flex-direction:column}
+.board-toolbar{display:flex; gap:6px; align-items:center; flex-wrap:wrap; padding:8px; border-bottom:1px solid var(--line); background:var(--bg-2)}
+.tool{width:36px; height:36px; border-radius:9px; border:1px solid var(--line); background:var(--bg-3); display:grid; place-items:center; cursor:pointer; color:var(--ink-2)}
+.tool.active{background:var(--ink); color:var(--bg); border-color:var(--ink)}
+.color-dot{width:18px; height:18px; border-radius:999px; border:2px solid var(--bg-2); cursor:pointer; box-shadow:0 0 0 1px var(--line)}
+.canvas-host{position:relative; flex:1; min-height:500px; overflow:hidden; background:radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--line) 80%, transparent) 1px, transparent 0) 0 0/20px 20px, var(--bg-2)}
+#board{position:absolute; inset:0; width:100%; height:100%; cursor:crosshair; touch-action:none}
+.toast{position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:var(--ink); color:var(--bg); padding:10px 14px; border-radius:999px; font-size:12px; box-shadow:var(--shadow); z-index:70; display:none}
+.toast.show{display:block}
+.overlay{position:fixed; inset:0; background:rgba(0,0,0,.56); backdrop-filter:blur(6px); z-index:80; display:none; align-items:center; justify-content:center; padding:18px}
+.overlay.show{display:flex}
+.modal{background:var(--bg-2); border:1px solid var(--line-strong); border-radius:16px; padding:16px; width:100%; max-width:380px; box-shadow:var(--shadow); display:grid; gap:12px}
+.modal h3{font-size:15px}
+.modal .row{justify-content:flex-end}
+@media(max-width:900px){
+  .grid-2{grid-template-columns:1fr}
+  .code-layout{grid-template-columns:1fr}
+  .q-pane{border-right:0; border-bottom:1px solid var(--line)}
+  .grid-3{grid-template-columns:1fr}
+  .topbar{padding:12px 12px}
+  .main{padding:12px 12px 88px}
+  .tabs{margin:10px 12px 0; flex-wrap:wrap; overflow:visible}
+  .overlay{padding:12px}
+}
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="topbar">
+    <div class="brand">
+      <div class="mark">R</div>
+      <div>
+        <h1>Randori Circle</h1>
+        <small>weekly mock — dark-first, no server</small>
+      </div>
+    </div>
+    <div class="top-actions">
+      <button id="themeToggle" class="pill" title="Toggle theme">◐ <span id="themeLabel">dark</span></button>
+      <button id="exportBtn" class="pill" title="Export Vercel ready zip info">↗ vercel</button>
+    </div>
+  </div>
+  <div class="tabs" role="tablist">
+    <button class="tab active" data-tab="circle">◍ Circle <span class="kbd" id="peopleCount">0</span></button>
+    <button class="tab" data-tab="pair">⇄ Pairing</button>
+    <button class="tab" data-tab="code">〈〉 Code</button>
+    <button class="tab" data-tab="board">◫ Board</button>
+    <button class="tab" data-tab="history">↺ History</button>
+  </div>
+  <div class="main">
+    <!-- CIRCLE -->
+    <section id="view-circle" class="view">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-h"><h2>Add to circle</h2><span>stable color • local</span></div>
+          <div class="card-b" style="display:grid; gap:10px">
+            <div class="row">
+              <input id="personName" class="input" placeholder="e.g. Festus, Priya, Jamal" maxlength="32" />
+              <button id="addPerson" class="btn">Add</button>
+            </div>
+            <div class="small muted">Colors are deterministic — same name always gets same dot. Stored in localStorage. No accounts.</div>
+            <div id="peopleList" class="people"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><h2>How Randori works</h2><span>randori = free practice</span></div>
+          <div class="card-b" style="display:grid; gap:12px">
+            <p class="small" style="line-height:1.6; color:var(--ink-2); margin:0">You don't pick your partner. Each Monday the circle shuffles. If odd, last person gets an AI sparring partner — no trios, no one sits out. After pairing, you choose <b style="color:var(--ink)">DSA / System Design / Both</b> yourselves. Nothing randomised after shuffle.</p>
+            <div class="grid-3">
+              <div class="card" style="border-style:dashed"><div class="card-b small"><b>1</b> Add crew<br/><span class="muted">2-12 people</span></div></div>
+              <div class="card" style="border-style:dashed"><div class="card-b small"><b>2</b> Shuffle<br/><span class="muted">AI fills odd</span></div></div>
+              <div class="card" style="border-style:dashed"><div class="card-b small"><b>3</b> Pick topic & drill<br/><span class="muted">same link</span></div></div>
+            </div>
+            <div class="row">
+              <button class="btn secondary" id="demoBtn">Load demo crew (4)</button>
+              <button class="btn ghost" id="clearAllBtn">Clear circle</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PAIRING -->
+    <section id="view-pair" class="view" style="display:none">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-h">
+            <h2>This week</h2>
+            <div class="row">
+              <button id="newWeekBtn" class="btn">Shuffle new week</button>
+              <button id="reshuffleBtn" class="btn secondary" title="Re-shuffle same people">Reshuffle</button>
+            </div>
+          </div>
+          <div class="card-b">
+            <div id="currentWeekMeta" class="small muted" style="margin-bottom:10px">No week yet — add at least 2 people and shuffle.</div>
+            <div id="pairsList" class="weeks"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><h2>Sync</h2><span>local + broadcast</span></div>
+          <div class="card-b" style="display:grid; gap:10px">
+            <div class="small" style="color:var(--ink-2)">Open this page in two tabs. Pairing, code, and board sync via <span class="kbd">BroadcastChannel</span> + <span class="kbd">localStorage</span>. Works offline. Deploy folder is just <span class="kbd">client/dist</span> static.</div>
+            <div id="presencePanel" class="people"></div>
+            <div class="row">
+              <button id="copyLinkBtn" class="btn secondary">Copy deploy path</button>
+              <span class="small muted" id="syncStatus">● synced</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- CODE -->
+    <section id="view-code" class="view" style="display:none">
+      <div class="code-layout">
+        <div class="q-pane">
+          <div class="q-head">
+            <div class="row">
+              <select id="questionSelect" class="select" style="width:200px"></select>
+              <span id="qDiff" class="kbd"></span>
+            </div>
+            <div class="row small"><span id="roomLabel" class="kbd">room —</span></div>
+          </div>
+          <div class="q-body">
+            <h3 id="qTitle" style="font-size:18px; color:var(--ink)"></h3>
+            <div id="qDesc"></div>
+            <div id="qExamples" style="display:grid; gap:8px"></div>
+            <div id="qConstraints" class="small muted"></div>
+            <div class="tests"><div class="small muted" style="margin-bottom:4px">Test cases</div><div id="qTests"></div></div>
+          </div>
+        </div>
+        <div class="editor-pane">
+          <div class="editor-top">
+            <div class="row">
+              <select id="langSelect" class="select" style="width:160px">
+                <option value="javascript">javascript</option>
+                <option value="typescript">typescript</option>
+                <option value="python">python</option>
+                <option value="java">java</option>
+                <option value="go">go</option>
+                <option value="cpp">cpp</option>
+              </select>
+              <select id="roomSelect" class="select" style="width:150px"></select>
+              <button id="runBtn" class="btn">▶ Run</button>
+            </div>
+            <div class="row" style="gap:6px">
+              <button id="roleToggle" class="pill">○ candidate</button>
+              <button id="timerBtn" class="pill">⏱ <span id="timerText">25:00</span></button>
+              <span class="pill"><span class="dot"></span><span id="presenceText">you alone</span></span>
+            </div>
+          </div>
+          <textarea id="editor" class="editor" spellcheck="false"></textarea>
+          <div id="runOut" class="run-out"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- BOARD -->
+    <section id="view-board" class="view" style="display:none">
+      <div class="board-wrap">
+        <div class="board-toolbar">
+          <button class="tool active" data-tool="select" title="Select/move">↖</button>
+          <button class="tool" data-tool="pan" title="Pan">✋</button>
+          <button class="tool" data-tool="pen" title="Pen">✎</button>
+          <button class="tool" data-tool="rect" title="Rect">▭</button>
+          <button class="tool" data-tool="ellipse" title="Ellipse">◯</button>
+          <button class="tool" data-tool="arrow" title="Arrow">↗</button>
+          <button class="tool" data-tool="text" title="Text">T</button>
+          <button class="tool" data-tool="sticky" title="Sticky">☆</button>
+          <button class="tool" data-tool="eraser" title="Eraser">⌫</button>
+          <div style="width:1px; height:24px; background:var(--line); margin:0 4px"></div>
+          <div class="row" id="colorPalette"></div>
+          <div style="flex:1"></div>
+          <button class="tool" id="undoBtn" title="Undo">↩</button>
+          <button class="tool" id="redoBtn" title="Redo">↪</button>
+          <button class="tool" id="clearBtn" title="Clear">✕</button>
+          <button class="tool" id="zoomOut" title="Zoom out">−</button>
+          <span class="kbd" id="zoomLabel">100%</span>
+          <button class="tool" id="zoomIn" title="Zoom in">+</button>
+          <button class="tool" id="fitBtn" title="Fit">⊡</button>
+        </div>
+        <div class="canvas-host" id="canvasHost"><canvas id="board"></canvas></div>
+      </div>
+      <div class="small muted" style="margin-top:8px">Touch + mouse. Infinite: pan, wheel-zoom. Live sync via localStorage — open board in another tab and draw. Sticky double-click to edit. Dark/light aware.</div>
+    </section>
+
+    <!-- HISTORY -->
+    <section id="view-history" class="view" style="display:none">
+      <div class="card">
+        <div class="card-h"><h2>Week history</h2><span id="historyCount">0 weeks</span></div>
+        <div class="card-b"><div id="historyList" class="weeks"></div></div>
+      </div>
+    </section>
+  </div>
+</div>
+<div id="confirmOverlay" class="overlay" aria-hidden="true"><div class="modal"><h3 id="confirmTitle">Confirm?</h3><p id="confirmMsg" class="small" style="color:var(--ink-2); margin:0"></p><div class="row"><button id="confirmCancel" class="btn secondary">Cancel</button><button id="confirmOk" class="btn">Confirm</button></div></div></div>
+<div id="promptOverlay" class="overlay" aria-hidden="true"><div class="modal"><h3 id="promptTitle">Enter value</h3><input id="promptInput" class="input"/><div class="row"><button id="promptCancel" class="btn secondary">Cancel</button><button id="promptOk" class="btn">Save</button></div></div></div>
+<div id="toast" class="toast"></div>
+
+<script>
+(() => {
+  // ---------- theme ----------
+  const THEME_KEY='randori-theme';
+  let theme = localStorage.getItem(THEME_KEY) || 'dark';
+  function applyTheme(t){ document.documentElement.classList.toggle('light', t==='light'); localStorage.setItem(THEME_KEY,t); document.getElementById('themeLabel').textContent=t; }
+  applyTheme(theme);
+  document.getElementById('themeToggle').onclick=()=>{ theme=theme==='dark'?'light':'dark'; applyTheme(theme); renderBoard(); };
+
+  // ---------- tiny store ----------
+  const PEOPLE_KEY='randori-people';
+  const WEEKS_KEY='randori-weeks';
+  const CODE_KEY='randori-code';
+  const BOARD_KEY='randori-board';
+  const PRES_KEY='randori-presence';
+
+  const PALETTE=['#e6c07a','#9cc0b5','#d68a8a','#a3b5d6','#c7b29a','#8ec0a5','#d3a0cb','#9aa9c9','#e3c9b2','#82b6b7','#b8a8d8','#d9b6a3'];
+  const BOARD_COLORS=['#e6c07a','#9cc0b5','#d68a8a','#a3b5d6','#f4efe8','#1d1a16','#8a847d'];
+
+  function uid(){return Math.random().toString(36).slice(2,9)}
+  function hashStr(s){let h=0;for(let i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))>>>0;return h}
+  function colorOf(name){ return PALETTE[hashStr(name.toLowerCase())%PALETTE.length] }
+
+  function getPeople(){ try{return JSON.parse(localStorage.getItem(PEOPLE_KEY)||'[]')}catch{return[]} }
+  function savePeople(p){ localStorage.setItem(PEOPLE_KEY, JSON.stringify(p)); bc?.postMessage({type:'people',p}); }
+  function getWeeks(){ try{return JSON.parse(localStorage.getItem(WEEKS_KEY)||'[]')}catch{return[]} }
+  function saveWeeks(w){ localStorage.setItem(WEEKS_KEY, JSON.stringify(w)); bc?.postMessage({type:'weeks',w}); }
+  function getCode(){ try{return JSON.parse(localStorage.getItem(CODE_KEY)||'{}')}catch{return{}} }
+  function saveCode(c){ localStorage.setItem(CODE_KEY, JSON.stringify(c)); bc?.postMessage({type:'code',c}); }
+
+  // BroadcastChannel sync
+  const bc = ('BroadcastChannel' in window) ? new BroadcastChannel('randori-sync') : null;
+  if(bc){
+    bc.onmessage=(e)=>{
+      const d=e.data||{};
+      if(d.type==='people') renderPeople();
+      if(d.type==='weeks'){ renderPairs(); renderHistory(); renderRoomSelect(); }
+      if(d.type==='code'){ /* merge later but refresh editor if stale */ }
+      if(d.type==='board'){ if(d.shapes){ boardShapes=d.shapes; boardHistoryPush(true); renderBoard(); } }
+      if(d.type==='presence'){ refreshPresence(); }
+    };
+  }
+
+  // presence
+  const clientId = uid();
+  function heartbeat(){
+    let m={}; try{m=JSON.parse(localStorage.getItem(PRES_KEY)||'{}')}catch{}
+    m[clientId]={at:Date.now(), tab: document.visibilityState};
+    // prune old >30s
+    for(let k in m) if(Date.now()-m[k].at>30000) delete m[k];
+    localStorage.setItem(PRES_KEY, JSON.stringify(m));
+    bc?.postMessage({type:'presence'});
+  }
+  setInterval(heartbeat, 2500); heartbeat();
+  function refreshPresence(){
+    let m={}; try{m=JSON.parse(localStorage.getItem(PRES_KEY)||'{}')}catch{}
+    let count=Object.keys(m).length;
+    let el=document.getElementById('presencePanel');
+    if(el) el.innerHTML = Object.entries(m).slice(0,8).map(([id,v])=>`<div class="person" style="padding:8px"><span class="small">● tab ${id.slice(0,4)} • ${Math.round((Date.now()-v.at)/1000)}s ago</span><span class="kbd">${v.tab}</span></div>`).join('') || '<div class="small muted">no other tabs yet — open another to see sync</div>';
+    document.getElementById('presenceText').textContent = count<=1? 'you alone' : `${count} tabs live`;
+  }
+  setInterval(refreshPresence, 2000);
+
+  // ---------- modal helpers (no alert/confirm/prompt — iframe blocked) ----------
+  function showConfirm(title, msg){
+    return new Promise(res=>{
+      const ov=document.getElementById('confirmOverlay');
+      document.getElementById('confirmTitle').textContent=title;
+      document.getElementById('confirmMsg').textContent=msg||'';
+      ov.classList.add('show');
+      const ok=document.getElementById('confirmOk'), cancel=document.getElementById('confirmCancel');
+      const cleanup=()=>{ ov.classList.remove('show'); ok.removeEventListener('click', onOk); cancel.removeEventListener('click', onCancel); ov.removeEventListener('click', onOv); };
+      const onOk=()=>{ cleanup(); res(true); };
+      const onCancel=()=>{ cleanup(); res(false); };
+      const onOv=(e)=>{ if(e.target===ov){ cleanup(); res(false);} };
+      ok.addEventListener('click', onOk); cancel.addEventListener('click', onCancel); ov.addEventListener('click', onOv);
+    });
+  }
+  function showPrompt(title, defVal){
+    return new Promise(res=>{
+      const ov=document.getElementById('promptOverlay');
+      document.getElementById('promptTitle').textContent=title;
+      const input=document.getElementById('promptInput');
+      input.value=defVal||''; ov.classList.add('show'); setTimeout(()=>input.focus(), 30);
+      const ok=document.getElementById('promptOk'), cancel=document.getElementById('promptCancel');
+      const cleanup=()=>{ ov.classList.remove('show'); ok.removeEventListener('click', onOk); cancel.removeEventListener('click', onCancel); ov.removeEventListener('click', onOv); input.removeEventListener('keydown', onKey); };
+      const onOk=()=>{ const v=input.value; cleanup(); res(v); };
+      const onCancel=()=>{ cleanup(); res(null); };
+      const onOv=(e)=>{ if(e.target===ov){ cleanup(); res(null);} };
+      const onKey=(e)=>{ if(e.key==='Enter') onOk(); if(e.key==='Escape') onCancel(); };
+      ok.addEventListener('click', onOk); cancel.addEventListener('click', onCancel); ov.addEventListener('click', onOv); input.addEventListener('keydown', onKey);
+    });
+  }
+  let _toastTimer;
+  function toast(msg){ const el=document.getElementById('toast'); if(!el) return; el.textContent=msg; el.classList.add('show'); clearTimeout(_toastTimer); _toastTimer=setTimeout(()=>el.classList.remove('show'),2400); }
+
+  // ---------- people ----------
+  const nameInput=document.getElementById('personName');
+  const addBtn=document.getElementById('addPerson');
+  const listEl=document.getElementById('peopleList');
+  const pCount=document.getElementById('peopleCount');
+
+  function renderPeople(){
+    const people=getPeople();
+    pCount.textContent=people.length;
+    if(!people.length){ listEl.innerHTML=`<div class="small muted" style="padding:8px; border:1px dashed var(--line); border-radius:10px">No one yet. Add your interview circle — 2 to 12 works best.</div>`; }
+    else {
+      listEl.innerHTML = people.map(p=>`
+        <div class="person" data-id="${p.id}">
+          <div class="row"><div class="avatar" style="background:${p.color}">${p.name.slice(0,2).toUpperCase()}</div><b style="font-size:13px">${p.name}</b><span class="kbd" style="background:${p.color}22; border-color:${p.color}66; color:${p.color}">${p.color.slice(1,4)}</span></div>
+          <div class="row"><button class="pill editBtn">edit</button><button class="pill delBtn">remove</button></div>
+        </div>`).join('');
+      listEl.querySelectorAll('.editBtn').forEach((b,i)=>{
+        b.onclick=async()=>{
+          const np=await showPrompt('Rename person', people[i].name);
+          if(np && np.trim()){ people[i].name=np.trim(); people[i].color=colorOf(np.trim()); savePeople(people); renderPeople(); renderPairs(); renderRoomSelect(); toast('renamed'); }
+        };
+      });
+      listEl.querySelectorAll('.delBtn').forEach((b,i)=>{
+        b.onclick=async()=>{
+          if(await showConfirm(`Remove ${people[i].name}?`, `Remove ${people[i].name} from circle`)){
+            people.splice(i,1); savePeople(people); renderPeople(); renderPairs(); renderRoomSelect(); toast('removed');
+          }
+        };
+      });
+    }
+    renderRoomSelect();
+    renderPairsMeta();
+    refreshPresence();
+  }
+
+  function addPerson(){
+    const n=nameInput.value.trim(); if(!n) return;
+    const people=getPeople();
+    if(people.some(x=>x.name.toLowerCase()===n.toLowerCase())){ toast('already in circle'); return; }
+    people.push({id:uid(), name:n, color:colorOf(n), createdAt:Date.now()});
+    savePeople(people); nameInput.value=''; renderPeople(); toast(`added ${n}`);
+  }
+  addBtn.onclick=addPerson;
+  nameInput.addEventListener('keydown',e=>{ if(e.key==='Enter') addPerson(); });
+
+  document.getElementById('demoBtn').onclick=()=>{
+    const names=['Festus','Priya','Jamal','Ava'];
+    savePeople(names.map(n=>({id:uid(), name:n, color:colorOf(n), createdAt:Date.now()})));
+    renderPeople(); toast('demo crew loaded');
+  };
+  document.getElementById('clearAllBtn').onclick=async()=>{
+    if(await showConfirm('Clear whole circle, weeks, and board?', 'This deletes local data — you can reload demo after.')){
+      localStorage.removeItem(PEOPLE_KEY); localStorage.removeItem(WEEKS_KEY); localStorage.removeItem(CODE_KEY); localStorage.removeItem(BOARD_KEY); renderPeople(); renderPairs(); renderHistory(); renderBoardReset(); toast('cleared');
+    }
+  };
+
+  // ---------- pairing ----------
+  function formatWeekLabel(d=new Date()){
+    return `Week of ${d.toLocaleDateString(undefined,{month:'short', day:'numeric'})}`;
+  }
+  function shuffle(arr){ const a=[...arr]; for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]] } return a; }
+
+  function generatePairs(){
+    const people=getPeople();
+    if(people.length<2){ toast('need at least 2'); return; }
+    const shuffled=shuffle(people);
+    const pairs=[];
+    for(let i=0;i<shuffled.length;i+=2){
+      const a=shuffled[i]; const b=shuffled[i+1]||null;
+      if(!b){
+        // odd -> AI partner
+        pairs.push({id:uid(), aId:a.id, bId:null, isAI:true, topic:null});
+      } else {
+        pairs.push({id:uid(), aId:a.id, bId:b.id, isAI:false, topic:null});
+      }
+    }
+    const week={id:uid(), label:formatWeekLabel(), date: new Date().toISOString(), pairs};
+    const weeks=getWeeks(); weeks.unshift(week); saveWeeks(weeks);
+    renderPairs(); renderHistory(); renderRoomSelect(); toast('new week shuffled');
+  }
+
+  function reshuffleCurrent(){
+    const weeks=getWeeks(); if(!weeks.length){ generatePairs(); return; }
+    const people=getPeople(); if(people.length<2) return;
+    const shuffled=shuffle(people);
+    const newPairs=[];
+    for(let i=0;i<shuffled.length;i+=2){
+      const a=shuffled[i]; const b=shuffled[i+1]||null;
+      if(!b) newPairs.push({id:uid(), aId:a.id, bId:null, isAI:true, topic:null});
+      else newPairs.push({id:uid(), aId:a.id, bId:b.id, isAI:false, topic:null});
+    }
+    weeks[0].pairs=newPairs; weeks[0].label=formatWeekLabel(new Date())+' • reshuffled';
+    saveWeeks(weeks); renderPairs(); renderHistory(); renderRoomSelect();
+  }
+
+  function idToPerson(id){ return getPeople().find(p=>p.id===id); }
+
+  function renderPairsMeta(){
+    const weeks=getWeeks(); const cur=weeks[0];
+    const meta=document.getElementById('currentWeekMeta');
+    if(!cur){ meta.textContent='No week yet — add at least 2 people and shuffle.'; return; }
+    meta.textContent=`${cur.label} • ${cur.pairs.length} pair(s) • ${new Date(cur.date).toLocaleString()} — odd = AI partner`;
+  }
+
+  function renderPairs(){
+    renderPairsMeta();
+    const weeks=getWeeks(); const cur=weeks[0];
+    const container=document.getElementById('pairsList');
+    if(!cur){ container.innerHTML=''; return; }
+    container.innerHTML = cur.pairs.map(p=>{
+      const a=idToPerson(p.aId); const b=p.bId? idToPerson(p.bId):null;
+      const aName=a? a.name: 'unknown'; const bName=p.isAI? 'AI partner' : (b? b.name: '—');
+      const aCol=a? a.color: PALETTE[0]; const bCol=p.isAI? 'var(--accent)' : (b? b.color: PALETTE[1]);
+      return `<div class="pair" data-pair="${p.id}">
+        <div class="who"><span class="avatar" style="background:${aCol}">${aName.slice(0,2).toUpperCase()}</span><b style="font-size:12.5px">${aName}</b><span class="muted small">×</span><span class="avatar" style="background:${bCol}">${bName.slice(0,2).toUpperCase()}</span><b style="font-size:12.5px">${bName}</b>${p.isAI? '<span class="kbd" style="color:var(--accent)">ai</span>':''}</div>
+        <div class="topic-group">
+          <button class="chip ${p.topic==='dsa'?'active':''}" data-t="dsa">DSA</button>
+          <button class="chip ${p.topic==='system'?'active':''}" data-t="system">Sys</button>
+          <button class="chip ${p.topic==='both'?'active':''}" data-t="both">Both</button>
+          <button class="pill small openCodeBtn">code</button>
+        </div>
+      </div>`
+    }).join('') + `<div class="row" style="margin-top:10px"><button id="delWeekBtn" class="btn ghost">Delete week</button><span class="small muted">Reshuffle keeps same week; shuffle makes a new one for history.</span></div>`;
+
+    container.querySelectorAll('.pair').forEach(el=>{
+      const pid=el.getAttribute('data-pair');
+      el.querySelectorAll('.chip').forEach(ch=>{
+        ch.onclick=()=>{
+          const weeks=getWeeks(); const cur=weeks[0]; const pair=cur.pairs.find(x=>x.id===pid);
+          if(pair){ pair.topic=ch.getAttribute('data-t'); saveWeeks(weeks); renderPairs(); renderHistory(); toast(`topic: ${pair.topic}`); }
+        };
+      });
+      el.querySelector('.openCodeBtn').onclick=()=>{
+        document.querySelector('[data-tab="code"]').click();
+        const sel=document.getElementById('roomSelect'); sel.value=pid; loadRoom(pid);
+      };
+    });
+    const del=document.getElementById('delWeekBtn');
+    if(del) del.onclick=async()=>{ if(await showConfirm('Delete this week?', 'This moves history up by one week.')){ const weeks=getWeeks(); weeks.shift(); saveWeeks(weeks); renderPairs(); renderHistory(); renderRoomSelect(); toast('week deleted'); } };
+    renderRoomSelect();
+  }
+
+  document.getElementById('newWeekBtn').onclick=generatePairs;
+  document.getElementById('reshuffleBtn').onclick=reshuffleCurrent;
+
+  // ---------- history ----------
+  function renderHistory(){
+    const weeks=getWeeks();
+    document.getElementById('historyCount').textContent=`${weeks.length} week(s)`;
+    const el=document.getElementById('historyList');
+    if(!weeks.length){ el.innerHTML='<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">No history yet.</div>'; return; }
+    el.innerHTML=weeks.map((w,idx)=>`
+      <div class="card" style="border-color:${idx===0?'var(--accent)':'var(--line)'}">
+        <div class="card-h"><h3 style="font-size:14px">${w.label}</h3><div class="row"><span class="kbd">${new Date(w.date).toLocaleDateString()}</span>${idx===0?'<span class="kbd" style="background:var(--accent); color:#12100f">current</span>':''}</div></div>
+        <div class="card-b" style="display:grid; gap:8px">
+          ${w.pairs.map(p=>{
+            const a=idToPerson(p.aId)||{name:'?'}; const b=p.isAI? {name:'AI'} : (idToPerson(p.bId)||{name:'?'});
+            return `<div class="row small"><span class="avatar" style="width:22px;height:22px;font-size:10px;background:${a.color||'#ddd'}">${a.name.slice(0,2).toUpperCase()}</span>${a.name} × ${b.name} ${p.topic?`<span class="kbd">${p.topic}</span>`:''}</div>`
+          }).join('')}
+        </div>
+      </div>`).join('');
+  }
+
+  // ---------- questions ----------
+  const QUESTIONS=[
+    {
+      id:'two-sum', title:'Two Sum', diff:'Easy', difficulty:'Easy',
+      desc:`Given an array <code>nums</code> and target <code>t</code>, return indices of two numbers that add to <code>t</code>. One solution, return in any order.`,
+      examples:[
+        {input:'nums=[2,7,11,15], t=9', output:'[0,1]', expl:'nums[0]+nums[1]=9'},
+        {input:'nums=[3,2,4], t=6', output:'[1,2]', expl:''}
+      ],
+      constraints:'2 ≤ nums.length ≤ 10⁴, -10⁹ ≤ nums[i]',
+      tests:[
+        {input:{nums:[2,7,11,15], t:9}, expect:[0,1]},
+        {input:{nums:[3,2,4], t:6}, expect:[1,2]},
+        {input:{nums:[3,3], t:6}, expect:[0,1]}
+      ],
+      starters:{
+        javascript:`function twoSum(nums, target){
+  // hashmap approach
+  const m = new Map();
+  for(let i=0;i<nums.length;i++){
+    let need = target - nums[i];
+    if(m.has(need)) return [m.get(need), i];
+    m.set(nums[i], i);
+  }
+  return [];
+}`,
+        typescript:`function twoSum(nums: number[], target: number): number[]{
+  const m = new Map<number, number>();
+  for(let i=0;i<nums.length;i++){
+    const need = target - nums[i];
+    if(m.has(need)) return [m.get(need)!, i];
+    m.set(nums[i], i);
+  }
+  return [];
+}`,
+        python:`def two_sum(nums, target):
+    seen = {}
+    for i, n in enumerate(nums):
+        need = target - n
+        if need in seen:
+            return [seen[need], i]
+        seen[n]=i
+    return []`,
+        java:`class Solution{
+  public int[] twoSum(int[] nums, int target){
+    Map<Integer,Integer> m=new HashMap<>();
+    for(int i=0;i<nums.length;i++){
+      int need=target-nums[i];
+      if(m.containsKey(need)) return new int[]{m.get(need), i};
+      m.put(nums[i], i);
+    }
+    return new int[]{};
+  }
+}`,
+        go:`func twoSum(nums []int, target int) []int{
+  m:=make(map[int]int)
+  for i,n:=range nums{
+    if j,ok:=m[target-n]; ok{ return []int{j,i} }
+    m[n]=i
+  }
+  return nil
+}`,
+        cpp:`vector<int> twoSum(vector<int>& nums, int target){
+  unordered_map<int,int> m;
+  for(int i=0;i<nums.size();++i){
+    int need=target-nums[i];
+    if(m.count(need)) return {m[need], i};
+    m[nums[i]]=i;
+  }
+  return {};
+}`
+      }
+    },
+    {
+      id:'url-short', title:'Design URL Shortener', diff:'System', difficulty:'System',
+      desc:`Design a URL shortener like TinyURL. Consider API, hash vs base62, collision, DB, cache, analytics. Whiteboard this one — code is driver for rate-limiter sketch.`,
+      examples:[
+        {input:'POST /shorten {url}', output:'{short: "aZ3k9"}', expl:'302 redirect'},
+        {input:'GET /aZ3k9', output:'301 → original', expl:'cache + analytics'}
+      ],
+      constraints:'100M URLs, low latency read',
+      tests:[
+        {input:{op:'shorten'}, expect:'ok'},
+        {input:{op:'expand'}, expect:'ok'}
+      ],
+      starters:{
+        javascript:`// rate limiter token bucket
+function allow(key, limit=5){
+  // interviewer expects Map + timestamps
+  return true;
+}`,
+        python:`# rate limiter sketch
+def allow(key, limit=5):
+    return True`,
+        typescript:`function allow(key:string, limit=5){ return true as boolean; }`,
+        java:`boolean allow(String key,int limit){ return true; }`,
+        go:`func allow(key string, limit int) bool { return true }`,
+        cpp:`bool allow(string k,int limit){ return true; }`
+      }
+    },
+    {
+      id:'lru', title:'LRU Cache', diff:'Medium', difficulty:'Medium',
+      desc:`Design LRU Cache with <code>get</code> and <code>put</code> in O(1).`,
+      examples:[
+        {input:'cache=[2], get(1)', output:'-1 then 1', expl:'eviction order'},
+      ],
+      constraints:'1 ≤ capacity ≤ 3000',
+      tests:[
+        {input:{ops:['put','put','get','put','get']}, expect:'LRU works'},
+      ],
+      starters:{
+        javascript:`class LRU{ constructor(cap){this.cap=cap; this.m=new Map()} get(k){ if(!this.m.has(k)) return -1; let v=this.m.get(k); this.m.delete(k); this.m.set(k,v); return v} put(k,v){ if(this.m.has(k)) this.m.delete(k); else if(this.m.size>=this.cap) this.m.delete(this.m.keys().next().value); this.m.set(k,v)} }`,
+        python:`class LRU:\n    def __init__(self, cap):\n        self.cap=cap; self.m={}\n    def get(self,k):\n        return -1\n    def put(self,k,v):\n        pass`,
+        typescript:`class LRU{ constructor(private cap:number){} get(k:number){return -1} put(k:number,v:number){} }`,
+        java:`class LRU{int cap; LRU(int c){cap=c;} int get(int k){return -1;} void put(int k,int v){} }`,
+        go:`type LRU struct{cap int}\n func (l *LRU) Get(k int) int {return -1}\n func (l *LRU) Put(k,v int){}`,
+        cpp:`class LRU{ int cap; public: LRU(int c):cap(c){} int get(int k){return -1;} void put(int k,int v){} };`
+      }
+    }
+  ];
+
+  const qSel=document.getElementById('questionSelect');
+  QUESTIONS.forEach(q=>{ const o=document.createElement('option'); o.value=q.id; o.textContent=q.title; qSel.appendChild(o); });
+  function renderQuestion(id){
+    const q=QUESTIONS.find(x=>x.id===id)||QUESTIONS[0];
+    document.getElementById('qTitle').textContent=q.title;
+    document.getElementById('qDiff').textContent=q.diff;
+    document.getElementById('qDesc').innerHTML=`<div style="color:var(--ink-2)">${q.desc}</div>`;
+    document.getElementById('qExamples').innerHTML=q.examples.map(e=>`<div class="test"><div class="small"><b>In:</b> ${e.input}</div><div class="small"><b>Out:</b> ${e.output}</div>${e.expl?`<div class="small muted">${e.expl}</div>`:''}</div>`).join('');
+    document.getElementById('qConstraints').textContent=q.constraints;
+    document.getElementById('qTests').innerHTML=q.tests.map((t,i)=>`<div class="test"><div class="small">Case ${i+1}: <span class="kbd">${JSON.stringify(t.input).slice(0,80)}</span> → <span class="small">${JSON.stringify(t.expect)}</span></div></div>`).join('');
+    return q;
+  }
+
+  // ---------- code room ----------
+  let role='candidate'; // or interviewer
+  let timerInt=null, timerSec=25*60, timerRun=false;
+  let currentRoom=null;
+
+  function renderRoomSelect(){
+    const sel=document.getElementById('roomSelect');
+    const weeks=getWeeks();
+    const opts=[];
+    weeks.slice(0,5).forEach(w=>{
+      w.pairs.forEach(p=>{
+        const a=idToPerson(p.aId)?.name||'a'; const b=p.isAI?'AI':(idToPerson(p.bId)?.name||'b');
+        opts.push({id:p.id, label:`${w.label.slice(0,12)} • ${a}×${b}`});
+      });
+    });
+    const curVal=sel.value;
+    sel.innerHTML = opts.map(o=>`<option value="${o.id}">${o.label}</option>`).join('') || `<option value="">no pairs — shuffle first</option>`;
+    if(curVal && opts.some(o=>o.id===curVal)) sel.value=curVal;
+    const roomLabel=document.getElementById('roomLabel');
+    if(sel.value) roomLabel.textContent=`room ${sel.value.slice(0,4)}`;
+  }
+
+  function loadRoom(roomId){
+    if(!roomId) return;
+    currentRoom=roomId;
+    document.getElementById('roomLabel').textContent=`room ${roomId.slice(0,4)}`;
+    const codeMap=getCode();
+    const lang=document.getElementById('langSelect').value;
+    const entry=codeMap[roomId]||{lang, qId:qSel.value, codes:{}, timer:25*60};
+    const qId=entry.qId||qSel.value;
+    qSel.value=qId;
+    const q=renderQuestion(qId);
+    const langCode = (entry.codes&&entry.codes[lang]) || (q.starters[lang]||q.starters.javascript);
+    document.getElementById('editor').value=langCode;
+    timerSec=entry.timerSec ?? 25*60;
+    updateTimerLabel();
+    document.getElementById('runOut').innerHTML='';
+    bc?.postMessage({type:'presence'});
+  }
+
+  function persistRoom(){
+    if(!currentRoom) return;
+    const map=getCode();
+    const lang=document.getElementById('langSelect').value;
+    const e=map[currentRoom]||{codes:{}};
+    e.lang=lang; e.qId=qSel.value; e.codes=e.codes||{}; e.codes[lang]=document.getElementById('editor').value; e.timerSec=timerSec;
+    map[currentRoom]=e; saveCode(map);
+  }
+
+  qSel.onchange=async()=>{
+    const q=renderQuestion(qSel.value); const lang=document.getElementById('langSelect').value;
+    if(!document.getElementById('editor').value.trim() || await showConfirm('Load starter?', `Load starter for ${q.title}? Your edits will be kept in other languages.`)){
+      document.getElementById('editor').value=q.starters[lang]||q.starters.javascript; persistRoom();
+    } else persistRoom();
+  };
+  document.getElementById('langSelect').onchange=()=>{
+    const lang=document.getElementById('langSelect').value;
+    const map=getCode(); const entry=map[currentRoom];
+    if(entry && entry.codes && entry.codes[lang]){ document.getElementById('editor').value=entry.codes[lang]; }
+    else { const q=QUESTIONS.find(x=>x.id===qSel.value); if(q) document.getElementById('editor').value=q.starters[lang]||''; }
+    persistRoom();
+  };
+  document.getElementById('roomSelect').onchange=(e)=> loadRoom(e.target.value);
+  document.getElementById('editor').addEventListener('input', ()=>{ persistRoom(); });
+
+  // run heuristic
+  function runCode(){
+    const q=QUESTIONS.find(x=>x.id===qSel.value)||QUESTIONS[0];
+    const lang=document.getElementById('langSelect').value;
+    const code=document.getElementById('editor').value;
+    const out=document.getElementById('runOut');
+    const cards=[];
+    if(lang==='javascript' || lang==='typescript'){
+      // try actual eval for two-sum
+      if(q.id==='two-sum'){
+        try{
+          // extract function
+          const fnWrap = new Function(code + '; return typeof twoSum!=="undefined"? twoSum : null;')();
+          if(!fnWrap) throw 'no twoSum found';
+          q.tests.forEach((t,i)=>{
+            try{
+              const got=fnWrap(t.input.nums, t.input.t);
+              const exp=t.expect;
+              const pass = JSON.stringify(got.sort())===JSON.stringify(exp.sort());
+              cards.push(`<div class="test" style="border-color:${pass?'var(--ok)':'var(--accent-3)'}"><div class="small"><b>Case ${i+1}</b> ${pass?'✓ pass':'✗ fail'} — got <span class="kbd">${JSON.stringify(got)}</span> exp <span class="kbd">${JSON.stringify(exp)}</span></div></div>`);
+            }catch(err){ cards.push(`<div class="test"><div class="small">Case ${i+1} error: ${String(err).slice(0,120)}</div></div>`)}
+          });
+        }catch(err){
+          cards.push(`<div class="test"><div class="small">Heuristic: <span class="kbd">${String(err).slice(0,200)}</span> — check function name is <code>twoSum</code>.</div></div>`);
+        }
+      } else {
+        const hasMap = /(Map|HashMap|Cache)/.test(code);
+        const hasLogic = code.length>40;
+        cards.push(`<div class="test"><div class="small">${hasLogic?'✓':'○'} code length ${code.length} — ${hasMap?'uses map/cache (good)':'consider O(1) map'}</div></div>`);
+        cards.push(`<div class="test"><div class="small">Static run: ${['looks plausible','needs get/put symmetry'].sort(()=>Math.random()-0.5)[0]}</div></div>`);
+      }
+    } else {
+      // non-js heuristic
+      const checks=[
+        {k:/return/, msg:'has return'},
+        {k:/for|while|loop/, msg:'uses iteration'},
+        {k:/map|hash|dict/, msg:'uses hash/map'},
+      ];
+      checks.forEach(c=>{
+        const ok=c.k.test(code);
+        cards.push(`<div class="test" style="border-color:${ok?'var(--ok)':'var(--line)'}"><div class="small">${ok?'✓':'○'} ${c.msg}</div></div>`);
+      });
+      cards.push(`<div class="test"><div class="small muted">Heuristic for ${lang} — actual exec needs server, this is static check.</div></div>`);
+    }
+    out.innerHTML = cards.join('') || '<div class="small muted">no tests</div>';
+  }
+  document.getElementById('runBtn').onclick=runCode;
+
+  // timer
+  function updateTimerLabel(){ const m=Math.floor(timerSec/60), s=timerSec%60; document.getElementById('timerText').textContent=`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; }
+  document.getElementById('timerBtn').onclick=()=>{
+    if(timerRun){ clearInterval(timerInt); timerRun=false; document.getElementById('timerBtn').style.background=''; }
+    else { timerRun=true; timerInt=setInterval(()=>{ timerSec=Math.max(0,timerSec-1); updateTimerLabel(); persistRoom(); if(timerSec===0){ clearInterval(timerInt); timerRun=false; toast('time'); }},1000); }
+    updateTimerLabel();
+  };
+
+  document.getElementById('roleToggle').onclick=(e)=>{
+    role = role==='candidate'? 'interviewer':'candidate';
+    e.currentTarget.textContent = role==='candidate'? '○ candidate' : '● interviewer';
+    toast(`you are ${role}`);
+  };
+
+  // ---------- board ----------
+  const canvas=document.getElementById('board');
+  const host=document.getElementById('canvasHost');
+  const ctx=canvas.getContext('2d',{alpha:false});
+  let boardShapes=[]; // objects
+  let boardTool='select';
+  let boardColor='#e6c07a';
+  let boardViewport={x:0,y:0,scale:1};
+  let isDragging=false, startPt=null, currShape=null, dragOffset=null, selectedId=null;
+  let boardHist=[], boardHistIdx=-1;
+
+  function resizeCanvas(){
+    const rect=host.getBoundingClientRect();
+    const dpr=window.devicePixelRatio||1;
+    canvas.width=rect.width*dpr; canvas.height=rect.height*dpr;
+    canvas.style.width=rect.width+'px'; canvas.style.height=rect.height+'px';
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    renderBoard();
+  }
+  window.addEventListener('resize', resizeCanvas);
+
+  function loadBoard(){
+    try{ const j=JSON.parse(localStorage.getItem(BOARD_KEY)||'null'); if(j && Array.isArray(j.shapes)){ boardShapes=j.shapes; boardViewport=j.viewport||boardViewport; boardColor=j.color||boardColor; }}catch{}
+  }
+  function saveBoard(){
+    localStorage.setItem(BOARD_KEY, JSON.stringify({shapes:boardShapes, viewport:boardViewport, color:boardColor}));
+    bc?.postMessage({type:'board', shapes:boardShapes});
+  }
+  function boardHistoryPush(skip=false){
+    if(!skip){
+      boardHist = boardHist.slice(0, boardHistIdx+1);
+      boardHist.push(JSON.stringify(boardShapes));
+      boardHistIdx++;
+      if(boardHist.length>40){ boardHist.shift(); boardHistIdx--; }
+    }
+  }
+
+  function renderBoard(){
+    const rect=host.getBoundingClientRect();
+    // background
+    ctx.fillStyle = (document.documentElement.classList.contains('light') ? '#ffffff' : '#1c1916');
+    ctx.fillRect(0,0,rect.width,rect.height);
+    // grid dots already in css; draw viewport grid logically
+    ctx.save();
+    ctx.translate(boardViewport.x, boardViewport.y);
+    ctx.scale(boardViewport.scale, boardViewport.scale);
+    // draw shapes
+    boardShapes.forEach(s=>{
+      const isSel = s.id===selectedId;
+      ctx.strokeStyle=s.color||boardColor; ctx.fillStyle=s.color||boardColor; ctx.lineWidth=s.width||2;
+      if(isSel){ ctx.shadowColor='rgba(230,192,122,.9)'; ctx.shadowBlur=8; } else { ctx.shadowBlur=0; }
+      if(s.type==='pen'){
+        if(s.points.length<2) return;
+        ctx.beginPath(); ctx.moveTo(s.points[0].x,s.points[0].y);
+        for(let i=1;i<s.points.length;i++){
+          const p=s.points[i]; const prev=s.points[i-1];
+          const mx=(prev.x+p.x)/2, my=(prev.y+p.y)/2;
+          ctx.quadraticCurveTo(prev.x,prev.y,mx,my);
+        }
+        ctx.stroke();
+      } else if(s.type==='rect'){
+        ctx.strokeRect(s.x,s.y,s.w,s.h);
+      } else if(s.type==='ellipse'){
+        ctx.beginPath(); ctx.ellipse(s.x+s.w/2, s.y+s.h/2, Math.abs(s.w/2), Math.abs(s.h/2),0,0,Math.PI*2); ctx.stroke();
+      } else if(s.type==='arrow'){
+        ctx.beginPath(); ctx.moveTo(s.x1,s.y1); ctx.lineTo(s.x2,s.y2); ctx.stroke();
+        // head
+        const ang=Math.atan2(s.y2-s.y1, s.x2-s.x1); const len=12;
+        ctx.beginPath(); ctx.moveTo(s.x2,s.y2); ctx.lineTo(s.x2-len*Math.cos(ang-Math.PI/6), s.y2-len*Math.sin(ang-Math.PI/6)); ctx.lineTo(s.x2-len*Math.cos(ang+Math.PI/6), s.y2-len*Math.sin(ang+Math.PI/6)); ctx.closePath(); ctx.fill();
+      } else if(s.type==='text'){
+        ctx.font=`${s.size||16}px "Fragment Mono", monospace`; ctx.fillStyle=s.color; ctx.fillText(s.text, s.x, s.y);
+      } else if(s.type==='sticky'){
+        ctx.fillStyle=s.bg||'#e6c07a'; ctx.fillRect(s.x,s.y,s.w,s.h);
+        ctx.fillStyle='#12100f'; ctx.font=`13px "Fragment Mono"`; const lines=(s.text||'').split('\n').slice(0,8); lines.forEach((ln,i)=>{ ctx.fillText(ln.slice(0,28), s.x+8, s.y+18+i*16); });
+        ctx.strokeStyle='rgba(0,0,0,.15)'; ctx.strokeRect(s.x,s.y,s.w,s.h);
+      }
+      ctx.shadowBlur=0;
+    });
+    if(currShape){
+      ctx.strokeStyle=currShape.color||boardColor; ctx.lineWidth=2; ctx.setLineDash([6,4]);
+      if(currShape.type==='rect') ctx.strokeRect(currShape.x,currShape.y,currShape.w,currShape.h);
+      if(currShape.type==='ellipse'){ ctx.beginPath(); ctx.ellipse(currShape.x+currShape.w/2, currShape.y+currShape.h/2, Math.abs(currShape.w/2), Math.abs(currShape.h/2),0,0,Math.PI*2); ctx.stroke(); }
+      if(currShape.type==='arrow'){ ctx.beginPath(); ctx.moveTo(currShape.x1,currShape.y1); ctx.lineTo(currShape.x2,currShape.y2); ctx.stroke(); }
+      ctx.setLineDash([]);
+    }
+    ctx.restore();
+    document.getElementById('zoomLabel').textContent=Math.round(boardViewport.scale*100)+'%';
+  }
+
+  function toWorld(e){
+    const rect=host.getBoundingClientRect();
+    const x=(e.clientX-rect.left - boardViewport.x)/boardViewport.scale;
+    const y=(e.clientY-rect.top - boardViewport.y)/boardViewport.scale;
+    return {x,y};
+  }
+  function point(e){ const t=e.touches? e.touches[0]: e; return toWorld(t); }
+
+  // color palette
+  const pal=document.getElementById('colorPalette');
+  BOARD_COLORS.forEach(c=>{
+    const b=document.createElement('button'); b.className='color-dot'; b.style.background=c; b.onclick=()=>{ boardColor=c; document.querySelectorAll('.color-dot').forEach(x=>x.style.boxShadow='0 0 0 1px var(--line)'); b.style.boxShadow=`0 0 0 2px ${c}, 0 0 0 4px var(--bg-2)`; saveBoard(); };
+    pal.appendChild(b);
+  });
+
+  // tool switching
+  document.querySelectorAll('.tool[data-tool]').forEach(btn=>{
+    btn.onclick=()=>{ document.querySelectorAll('.tool[data-tool]').forEach(x=>x.classList.remove('active')); btn.classList.add('active'); boardTool=btn.getAttribute('data-tool'); canvas.style.cursor=boardTool==='pan'?'grab': boardTool==='pen'?'crosshair':'default'; };
+  });
+
+  // canvas events
+  canvas.addEventListener('pointerdown', e=>{
+    canvas.setPointerCapture(e.pointerId);
+    const p=point(e); isDragging=true; startPt=p;
+    if(boardTool==='pen'){
+      currShape={id:uid(), type:'pen', points:[p], color:boardColor, width:2.2};
+    } else if(boardTool==='rect' || boardTool==='ellipse'){
+      currShape={id:uid(), type:boardTool, x:p.x, y:p.y, w:0,h:0, color:boardColor};
+    } else if(boardTool==='arrow'){
+      currShape={id:uid(), type:'arrow', x1:p.x, y1:p.y, x2:p.x, y2:p.y, color:boardColor};
+    } else if(boardTool==='select'){
+      // find shape under cursor (aabb simple)
+      const hit=boardShapes.slice().reverse().find(s=>{
+        if(s.type==='pen'){ return s.points.some(pt=> Math.hypot(pt.x-p.x, pt.y-p.y)<12); }
+        if(s.type==='rect'||s.type==='ellipse'||s.type==='sticky'){ return p.x>=s.x && p.x<=s.x+s.w && p.y>=s.y && p.y<=s.y+s.h; }
+        if(s.type==='text'){ return p.x>=s.x && p.x<=s.x+200 && p.y>=s.y-16 && p.y<=s.y+8; }
+        if(s.type==='arrow'){ return Math.hypot((s.x1+s.x2)/2-p.x,(s.y1+s.y2)/2-p.y)<20; }
+        return false;
+      });
+      selectedId=hit? hit.id:null;
+      if(hit){ dragOffset={x:p.x-hit.x||0, y:p.y-hit.y||0, sx:hit.x, sy:hit.y}; }
+      renderBoard();
+    } else if(boardTool==='pan'){
+      dragOffset={x:e.clientX-boardViewport.x, y:e.clientY-boardViewport.y};
+    } else if(boardTool==='text' || boardTool==='sticky'){
+      (async()=>{
+        const txt=await showPrompt(boardTool==='text'?'Add text — type it':'Add sticky note — text', '');
+        if(txt){
+          boardHistoryPush(); 
+          if(boardTool==='text') boardShapes.push({id:uid(), type:'text', x:p.x, y:p.y, text:txt.slice(0,200), color:boardColor, size:16});
+          else boardShapes.push({id:uid(), type:'sticky', x:p.x, y:p.y, w:180, h:120, text:txt.slice(0,300), bg:boardColor});
+          saveBoard(); renderBoard();
+        }
+      })();
+      isDragging=false;
+    } else if(boardTool==='eraser'){
+      // on drag erase handled in move
+    }
+  });
+
+  canvas.addEventListener('pointermove', e=>{
+    if(!isDragging) return;
+    const p=point(e);
+    if(boardTool==='pen' && currShape){ currShape.points.push(p); renderBoard(); }
+    else if((boardTool==='rect'||boardTool==='ellipse') && currShape){ currShape.w=p.x-startPt.x; currShape.h=p.y-startPt.y; renderBoard(); }
+    else if(boardTool==='arrow' && currShape){ currShape.x2=p.x; currShape.y2=p.y; renderBoard(); }
+    else if(boardTool==='select' && selectedId){ const s=boardShapes.find(x=>x.id===selectedId); if(s && dragOffset){ s.x = p.x - dragOffset.x; s.y = p.y - dragOffset.y; renderBoard(); } }
+    else if(boardTool==='pan' && dragOffset){ boardViewport.x=e.clientX-dragOffset.x; boardViewport.y=e.clientY-dragOffset.y; renderBoard(); }
+    else if(boardTool==='eraser'){
+      const hit=boardShapes.find(s=>{
+        if(s.type==='pen') return s.points.some(pt=> Math.hypot(pt.x-p.x, pt.y-p.y)<14);
+        return false;
+      }) || boardShapes.slice().reverse().find(s=> s.type!=='pen' && p.x>=s.x && p.x<=s.x+s.w && p.y>=s.y && p.y<=s.y+s.h);
+      if(hit){ boardShapes=boardShapes.filter(x=>x.id!==hit.id); renderBoard(); }
+    }
+  });
+
+  canvas.addEventListener('pointerup', e=>{
+    if(!isDragging) return; isDragging=false;
+    if(currShape && (boardTool==='pen'||boardTool==='rect'||boardTool==='ellipse'||boardTool==='arrow')){
+      if(boardTool==='pen' && currShape.points.length<2){ currShape=null; renderBoard(); return; }
+      if((boardTool==='rect'||boardTool==='ellipse') && (Math.abs(currShape.w)<6 && Math.abs(currShape.h)<6)){ currShape=null; renderBoard(); return; }
+      // normalize rect w/h negative handling for render simplicity store as is but keep positive for hit
+      if(currShape.type==='rect' && (currShape.w<0 || currShape.h<0)){
+        const nx=Math.min(currShape.x, currShape.x+currShape.w); const ny=Math.min(currShape.y, currShape.y+currShape.h);
+        currShape.w=Math.abs(currShape.w); currShape.h=Math.abs(currShape.h); currShape.x=nx; currShape.y=ny;
+      }
+      boardHistoryPush(); boardShapes.push(currShape); currShape=null; saveBoard(); renderBoard();
+    } else if(boardTool==='select'){
+      if(selectedId) saveBoard();
+    } else if(boardTool==='pan'){
+      saveBoard();
+    } else if(boardTool==='eraser'){
+      if(boardShapes.length) { boardHistoryPush(); saveBoard(); }
+    }
+  });
+
+  canvas.addEventListener('wheel', e=>{
+    if(e.ctrlKey || e.metaKey){ e.preventDefault(); const delta = e.deltaY>0?0.92:1.08; const rect=host.getBoundingClientRect(); const cx=e.clientX-rect.left, cy=e.clientY-rect.top; const wx=(cx-boardViewport.x)/boardViewport.scale; const wy=(cy-boardViewport.y)/boardViewport.scale; boardViewport.scale=Math.min(4, Math.max(0.2, boardViewport.scale*delta)); boardViewport.x=cx-wx*boardViewport.scale; boardViewport.y=cy-wy*boardViewport.scale; renderBoard(); saveBoard(); }
+  }, {passive:false});
+
+  document.getElementById('undoBtn').onclick=()=>{ if(boardHistIdx>0){ boardHistIdx--; boardShapes=JSON.parse(boardHist[boardHistIdx]||'[]'); saveBoard(); renderBoard(); } };
+  document.getElementById('redoBtn').onclick=()=>{ if(boardHistIdx<boardHist.length-1){ boardHistIdx++; boardShapes=JSON.parse(boardHist[boardHistIdx]); saveBoard(); renderBoard(); } };
+  document.getElementById('clearBtn').onclick=async()=>{ if(await showConfirm('Clear board?', 'Erase all shapes? Undo still available for one step.')){ boardHistoryPush(); boardShapes=[]; saveBoard(); renderBoard(); toast('board cleared'); } };
+  document.getElementById('zoomIn').onclick=()=>{ boardViewport.scale=Math.min(4, boardViewport.scale*1.2); renderBoard(); saveBoard(); };
+  document.getElementById('zoomOut').onclick=()=>{ boardViewport.scale=Math.max(0.2, boardViewport.scale/1.2); renderBoard(); saveBoard(); };
+  document.getElementById('fitBtn').onclick=()=>{ boardViewport={x:20,y:20,scale:1}; renderBoard(); saveBoard(); };
+
+  function renderBoardReset(){ boardShapes=[]; boardViewport={x:0,y:0,scale:1}; boardHist=[]; boardHistIdx=-1; saveBoard(); renderBoard(); }
+
+  // init board
+  loadBoard(); requestAnimationFrame(()=>{ resizeCanvas(); boardHist=[JSON.stringify(boardShapes)]; boardHistIdx=0; renderBoard(); });
+
+  // ---------- tabs ----------
+  document.querySelectorAll('.tab').forEach(t=>{
+    t.onclick=()=>{
+      document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active');
+      const id=t.getAttribute('data-tab');
+      document.querySelectorAll('.view').forEach(v=>v.style.display='none');
+      document.getElementById('view-'+id).style.display='block';
+      if(id==='board'){ setTimeout(()=>{ resizeCanvas(); renderBoard(); }, 60); }
+      if(id==='code' && !currentRoom){ renderRoomSelect(); const sel=document.getElementById('roomSelect'); if(sel.value) loadRoom(sel.value); }
+      if(id==='history') renderHistory();
+    };
+  });
+
+  // ---------- export / vercel helper ----------
+  document.getElementById('exportBtn').onclick=()=>{
+    toast('Deploy: static folder = this file. Put on Vercel as single-file static, or Cloudflare Pages. No build needed. For vite, run: vite build (out = client/dist).');
+  };
+  document.getElementById('copyLinkBtn').onclick=()=>{
+    const info=`Static: deploy client/dist (this HTML) to Vercel — no env vars. BroadcastChannel sync works cross-tab.\nBuild: npm run build → client/dist`;
+    navigator.clipboard.writeText(info).then(()=>toast('copied deploy info')); 
+  };
+
+  // ---------- initial render ----------
+  renderPeople(); renderPairs(); renderHistory(); renderRoomSelect();
+  // load initial question
+  renderQuestion(QUESTIONS[0].id);
+
+  // tiny self-test: if hash stable
+  console.assert(colorOf('Festus')===colorOf('festus'), 'color stable lowercasing');
+})();
+</script>
+</body>
+</html>
