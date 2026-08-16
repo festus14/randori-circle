@@ -359,12 +359,14 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
 <div id="authOverlay" class="overlay" aria-hidden="true"><div class="modal" style="max-width:420px"><h3 id="authTitle">Sign in to Randori</h3>
 <p class="small" style="color:var(--ink-2);margin:0">Your name is your display name for pairings. Email is private, used only for notifications.</p>
 <div style="display:grid;gap:8px;margin-top:6px">
+<button id="authGoogle" class="btn" style="width:100%;justify-content:center;background:#fff;color:#1d1a16;border-color:#e6deD1">Continue with Google</button>
+<div style="text-align:center" class="small muted">— or —</div>
 <input id="authEmail" class="input" placeholder="email@example.com" type="email"/>
 <input id="authName" class="input" placeholder="display name (for signup)" maxlength="32"/>
 <input id="authPass" class="input" placeholder="password (min 6)" type="password"/>
 <div id="authErr" class="small" style="color:var(--accent-3);min-height:16px"></div>
 </div>
-<div class="row" style="justify-content:space-between;margin-top:4px"><span class="small muted">Personal history • auto-shuffle Sundays</span><span class="row"><button id="authCancel" class="btn secondary">Cancel</button><button id="authSignup" class="btn secondary">Sign up</button><button id="authSignin" class="btn">Sign in</button></span></div>
+<div class="row" style="justify-content:space-between;margin-top:4px"><span class="small muted">Personal history • auto-shuffle Sundays 08:00 BST</span><span class="row"><button id="authCancel" class="btn secondary">Cancel</button><button id="authSignup" class="btn secondary">Sign up</button><button id="authSignin" class="btn">Sign in</button></span></div>
 </div></div>
 <div id="toast" class="toast"></div>
 
@@ -444,6 +446,36 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
   }
   document.getElementById('authSignup').onclick=doSignup;
   document.getElementById('authSignin').onclick=doSignin;
+  const authGoogleBtn=document.getElementById('authGoogle');
+  if(authGoogleBtn){ authGoogleBtn.onclick=()=>{ window.location.href='/api/auth/google/start'; }; }
+  // handle Google OAuth return ?g_token=
+  (function(){
+    try{
+      const qp=new URLSearchParams(window.location.search);
+      const gt=qp.get('g_token');
+      const gn=qp.get('g_name');
+      const ge=qp.get('google_error');
+      if(ge){
+        // show auth overlay with error
+        setTimeout(()=>{ document.getElementById('authOverlay').classList.add('show'); document.getElementById('authErr').textContent='Google sign-in failed: '+ge; }, 300);
+      }
+      if(gt){
+        authToken=gt;
+        localStorage.setItem(TOKEN_KEY, authToken);
+        if(gn){
+          // provisional me until refreshMe fetches full user
+          const provisional={ name: decodeURIComponent(gn), email: '' };
+          localStorage.setItem(ME_KEY, JSON.stringify(provisional));
+          me=provisional;
+        }
+        // clean URL
+        const cleanUrl=window.location.pathname;
+        window.history.replaceState({}, document.title, cleanUrl);
+        // toast will fire after toast defined later, so defer
+        setTimeout(()=>{ try{ toast('signed in with Google ✓'); }catch{} }, 800);
+      }
+    }catch{}
+  })();
   // expose for debug
   window._randori_auth={ get token(){return authToken}, get me(){return me}, api, refreshMe };
   // initial UI + me refresh
