@@ -1,5 +1,7 @@
 // Public: list of everyone who signed up (auto-included circle)
 // Returns { circle: [{id, display_name, name, email, color, created_at, is_available}] }
+import { getClient } from './_db.js';
+
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'GET only' });
   const db = getClient();
@@ -29,14 +31,14 @@ export default async function handler(req, res) {
       }));
       return res.json({ ok: true, circle, count: circle.length, source: 'auth_accounts' });
     }
-  } catch (e) {
-    // fall through to users
-  }
+  } catch(e){}
+
+  // fallback legacy users
   try {
     const rs2 = await db.execute(`SELECT id, name, color, created_at FROM users ORDER BY id`);
-    const circle = rs2.rows.map(r => ({ id: r.id, display_name: r.name, name: r.name, email: null, color: r.color, created_at: r.created_at, is_available: true, isAvailable: true, source: 'users' }));
-    return res.json({ ok: true, circle, count: circle.length, source: 'users' });
-  } catch (e) {
-    return res.status(500).json({ ok: false, error: 'cannot list circle', detail: String(e.message||e).slice(0,200) });
+    const circle = rs2.rows.map(r=>({ id:r.id, display_name:r.name, name:r.name, color:r.color, created_at:r.created_at, is_available:true, isAvailable:true, source:'users' }));
+    return res.json({ ok:true, circle, count:circle.length, source:'users' });
+  } catch(e){
+    return res.status(500).json({ error:'db error', detail:String(e.message||e).slice(0,200) });
   }
 }
