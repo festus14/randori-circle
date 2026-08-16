@@ -1,4 +1,4 @@
-import { getClient, getJwtSecret, deterministicColor } from '../../api/_db.js';
+import { getClient, getJwtSecret, deterministicColor } from '../../_db.js';
 import jwt from 'jsonwebtoken';
 
 function base64UrlDecode(str){
