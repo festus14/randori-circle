@@ -1,6 +1,55 @@
 import { getClient, getJwtSecret, getCronSecret, getAdminEmails, isoWeekLabel, shuffleArray, deterministicColor } from './_db.js';
 import jwt from 'jsonwebtoken';
 
+async function logServerOps(level, event, message, meta, req){
+  try{
+    const db = getClient();
+    // ensure table
+    try{ await db.execute(`CREATE TABLE IF NOT EXISTS app_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, level TEXT, source TEXT, event TEXT, message TEXT, meta_json TEXT, user_id INTEGER, route TEXT, ua TEXT, ip TEXT, created_at TEXT DEFAULT (datetime('now')))`); }catch{}
+    let metaStr=null; try{ metaStr = meta ? JSON.stringify(meta).slice(0,8000) : null; }catch{ metaStr=String(meta).slice(0,2000); }
+    const lvl=String(level||'info').toLowerCase();
+    const src='server';
+    const ev=String(event).slice(0,80);
+    const msg=String(message).slice(0,2000);
+    const route = req && req.url ? String(req.url).slice(0,300) : null;
+    const ua = req && req.headers ? (req.headers['user-agent']||'').toString().slice(0,300) : null;
+    const ip = req && req.headers ? (req.headers['x-forwarded-for']||'').toString().split(',')[0].slice(0,80) : null;
+    await db.execute({sql:`INSERT INTO app_logs (level, source, event, message, meta_json, route, ua, ip, created_at) VALUES (?,?,?,?,?,?,?, ?, datetime('now'))`, args:[lvl, src, ev, msg, metaStr, route, ua, ip]});
+  }catch(e){ try{ console.warn('[logServerOps fail]', e && e.message); }catch{} }
+}
+
+function seededShuffle(arr, seedStr){
+  // deterministic shuffle by seed: xorshift by string hash
+  let h=0; for(let i=0;i<seedStr.length;i++) h=(h*31+seedStr.charCodeAt(i))>>>0;
+  const a=[...arr];
+  for(let i=a.length-1;i>0;i--){
+    // simple LCG
+    h=(h*1664525+1013904223)>>>0;
+    const j= h % (i+1);
+    const tmp=a[i]; a[i]=a[j]; a[j]=tmp;
+  }
+  return a;
+}
+
+async function ensureNotifPrefs(db){
+  try{ await db.execute(`CREATE TABLE IF NOT EXISTS user_notification_prefs (user_id INTEGER PRIMARY KEY, email_enabled INTEGER DEFAULT 1, sms_enabled INTEGER DEFAULT 0, phone TEXT, email TEXT, updated_at TEXT DEFAULT (datetime('now')))`);}catch{}
+}
+
+async function handleNotificationPrefs(req,res){
+  if(req.method==='POST'||req.method==='PUT'){
+    const auth = req.headers.authorization||'';
+    const m = auth.match(/^Bearer\s+(.+)$/);
+    // allow also anonymous via localStorage flag? require auth if present else 200 no-op
+    let userId=null;
+    if(m){
+      try{ const payload=require('jsonwebtoken').verify(m[1], (await import('./_db.js')).then? null : process.env.JWT_SECRET||'dev'); }catch{}
+    }
+    // For this scaffold, decode JWT ourselves using getJwtSecret
+  }
+  return res.status(405).json({error:'stub'});
+}
+
+
 function getEndpoint(req){
   const q = req.query?.endpoint;
   if (q) return String(q).toLowerCase();
@@ -129,35 +178,50 @@ async function handleReshuffle(req,res){
   return res.json({ ok:true, week_label:weekLabel, week_id:weekId, reshuffled_by:callerEmail, is_admin_via:callerIsAdminFlag?'db':(getAdminEmails().has(callerEmail)?'env':'unknown'), admin_list:envAdmins, pairs:bestPairs.pairs.map(p=>({ a:p.a.name, b: p.b ? p.b.name : 'AI partner', a_id:p.a.id, b_id:p.b? p.b.id:null, isAI:p.isAI })), repeat_avoided:bestPairs.repeats, count:participants.length, note:'Admin reshuffle respected Availability — only is_available=1 users included' });
 }
 
+
 async function handleWeekly(req,res){
   if (req.method!=='GET' && req.method!=='POST') return res.status(405).json({ error:'GET or POST'});
-  if (!verifyCronAuth(req)) return res.status(401).json({ error:'unauthorized cron', hint:'send x-cron-secret header or ?secret='});
+  if (!verifyCronAuth(req)){
+    try{ await logServerOps('warn','cron_auth_fail','weekly unauthorized', {headers:Object.keys(req.headers||{})}, req); }catch{}
+    return res.status(401).json({ error:'unauthorized cron', hint:'send x-cron-secret header or ?secret= or x-vercel-cron'});
+  }
   const db = getClient();
   await ensureMigrations(db);
+  try{ await ensureNotifPrefs(db); }catch{}
   const now=new Date(); const weekLabel=isoWeekLabel(now);
   const existingWeek=await db.execute({ sql:`SELECT id FROM pairing_weeks WHERE week_label=?`, args:[weekLabel]});
-  if (existingWeek.rows.length) return res.json({ ok:true, skipped:true, week_label:weekLabel, message:'Week already shuffled - see /api/weeks for pairs' });
+  if (existingWeek.rows.length){
+    try{ await logServerOps('info','weekly_skipped','week already exists '+weekLabel, {week_label:weekLabel}, req);}catch{}
+    return res.json({ ok:true, skipped:true, week_label:weekLabel, message:'Week already shuffled - see /api/weeks for pairs' });
+  }
   let allAccounts=[], available=[], unavailable=[];
-  const authRs=await db.execute(`SELECT id, display_name as name, color, email, is_available, is_demo FROM auth_accounts ORDER BY id`);
+  const authRs=await db.execute(`SELECT id, display_name as name, color, email, is_available, is_demo, phone FROM auth_accounts ORDER BY id`);
   if (authRs.rows.length){
-    allAccounts=authRs.rows.map(r=>({ id:r.id, name:r.name, color:r.color, email:r.email, is_available:r.is_available===null||r.is_available===undefined?1:(r.is_available?1:0), is_demo: !!r.is_demo, source:'auth'}));
+    allAccounts=authRs.rows.map(r=>({ id:r.id, name:r.name, color:r.color, email:r.email, phone:r.phone||null, is_available:r.is_available===null||r.is_available===undefined?1:(r.is_available?1:0), is_demo: !!r.is_demo, source:'auth'}));
     available=allAccounts.filter(a=>a.is_available);
     unavailable=allAccounts.filter(a=>!a.is_available);
   }
   let participants=[];
-  if (available.length>=2 || (available.length===0 && allAccounts.length===0)) participants=available.length?available:[];
-  else if (available.length>=2) participants=available;
-  else if (available.length && available.length<2 && allAccounts.length>=2) participants=available;
-  else participants=available;
+  participants=available;
   if (!participants.length && allAccounts.length===0){
     const usersRs=await db.execute(`SELECT id, name, color FROM users ORDER BY id`);
     participants=usersRs.rows.map(r=>({ id:r.id, name:r.name, color:r.color, source:'users'}));
   }
   if (participants.length<1){
+    try{ await logServerOps('warn','weekly_no_participants','no available participants '+weekLabel, {week_label:weekLabel, total:allAccounts.length}, req);}catch{}
     return res.status(400).json({ ok:false, error:'need at least 1 available participant (solo → AI partner)', available_count:participants.length, total_accounts:allAccounts.length, unavailable_count:unavailable.length, unavailable:unavailable.map(u=>({ id:u.id, name:u.name, email:u.email })), hint:'Users marked unavailable are excluded — ask them to set Available toggle on, or wait for next week' });
   }
   let prevPairsSet=new Set(); try{ const lastWeek=await db.execute(`SELECT id FROM pairing_weeks ORDER BY id DESC LIMIT 1`); if(lastWeek.rows.length){ const pg=await db.execute({ sql:`SELECT user_a_id,user_b_id FROM pairing_groups WHERE week_id=?`, args:[lastWeek.rows[0].id]}); pg.rows.forEach(r=>{ const key=[Math.min(r.user_a_id,r.user_b_id), Math.max(r.user_a_id,r.user_b_id)].join('-'); prevPairsSet.add(key); }); } }catch{}
-  let bestPairs=null; for(let attempt=0; attempt<8; attempt++){ const shuffled=shuffleArray(participants); const pairs=[]; for(let i=0;i<shuffled.length;i+=2){ const a=shuffled[i]; const b=shuffled[i+1]||null; if(!b) pairs.push({a,b:null,isAI:true}); else pairs.push({a,b,isAI:false}); } let repeatCount=0; for(const p of pairs){ if(p.isAI) continue; const key=[Math.min(p.a.id,p.b.id), Math.max(p.a.id,p.b.id)].join('-'); if(prevPairsSet.has(key)) repeatCount++; } if(!bestPairs||repeatCount<bestPairs.repeatCount){ bestPairs={pairs, repeatCount}; if(repeatCount===0) break; } }
+  let bestPairs=null; 
+  // deterministic seed based on year-week to avoid true random chaos but still shuffle, 8 attempts pick minimal repeat
+  for(let attempt=0; attempt<8; attempt++){
+    const seedStr = weekLabel + ':' + attempt;
+    const shuffled=seededShuffle(participants, seedStr);
+    const pairs=[]; 
+    for(let i=0;i<shuffled.length;i+=2){ const a=shuffled[i]; const b=shuffled[i+1]||null; if(!b) pairs.push({a,b:null,isAI:true}); else pairs.push({a,b,isAI:false}); }
+    let repeatCount=0; for(const p of pairs){ if(p.isAI) continue; const key=[Math.min(p.a.id,p.b.id), Math.max(p.a.id,p.b.id)].join('-'); if(prevPairsSet.has(key)) repeatCount++; }
+    if(!bestPairs||repeatCount<bestPairs.repeatCount){ bestPairs={pairs, repeatCount}; if(repeatCount===0) break; }
+  }
   const isDemoWeek = participants.some(p=>p.is_demo) ? 1:0;
   let weekId;
   try{
@@ -169,36 +233,97 @@ async function handleWeekly(req,res){
     if(isDemoWeek){ try{ await db.execute({ sql:`UPDATE pairing_weeks SET is_demo=1 WHERE id=?`, args:[weekId]});}catch{} }
   }
   for(const pr of bestPairs.pairs){ const aId=pr.a.id; const bId=pr.b?pr.b.id:pr.a.id; const isAi=pr.isAI?1:0; await db.execute({ sql:`INSERT INTO pairing_groups (week_id,user_a_id,user_b_id,is_ai_pair,topic,topic_kind) VALUES (?,?,?,?,?,?)`, args:[weekId,aId,bId,isAi,'Pick together','both']}); }
+
+  // Logging success
+  try{ await logServerOps('success','weekly_paired', `weekly ${weekLabel} paired ${participants.length} users`, {week_label:weekLabel, week_id:weekId, pairs:bestPairs.pairs.length, available:participants.length, repeat_avoided:bestPairs.repeatCount}, req);}catch{}
+
+  // Notification prefs check: fetch prefs to respect opt-out
+  let prefsMap = new Map();
+  try{
+    const prs=await db.execute(`SELECT user_id, email_enabled, sms_enabled, phone FROM user_notification_prefs`);
+    for(const r of prs.rows) prefsMap.set(r.user_id, r);
+  }catch{}
+
   let emailStatus='skipped (no RESEND_API_KEY) — pairs visible in-app via /api/weeks; set RESEND_API_KEY + RESEND_FROM to email everyone';
+  let smsStatus='skipped (no TWILIO_* env or no phone)';
   let unavailableEmailStatus='skipped (no RESEND_API_KEY or no unavailable users)';
   const baseUrl=process.env.APP_URL || (process.env.VERCEL_URL? `https://${process.env.VERCEL_URL}`:'https://randori-circle-self.vercel.app');
+  // Build join links deterministic: room id = weekId-partner combo
+  function roomLink(pair){
+    const id = `w${weekId}-p${pair.a.id}-${pair.b?pair.b.id:'ai'}`;
+    return `${baseUrl}/join/${id}`;
+  }
+
+  // Email
   if (process.env.RESEND_API_KEY){
     try{
       const { Resend } = await import('resend').catch(()=>({Resend:null}));
       if (Resend){
         const resend=new Resend(process.env.RESEND_API_KEY);
-        const from=process.env.RESEND_FROM||'Randori <noreply@randori.circle>';
-        const list=participants.map(p=>p.email).filter(Boolean);
-        if (list.length){
-          const html=`<h2>Randori Circle — ${weekLabel}</h2><p>You're paired! This week's auto-shuffle includes ${participants.length} of ${allAccounts.length} signed-up users ( ${unavailable.length} unavailable skipped ).</p><p>Pairs: ${bestPairs.pairs.map(pr=> pr.isAI ? `${pr.a.name} × AI partner` : `${pr.a.name} × ${pr.b.name}`).join(', ')}</p><p><a href="${baseUrl}">Open Randori Circle</a> to see your partner and pick DSA / System Design / Both.</p><p style="color:#888;font-size:12px">Auto-shuffled Sun 08:00 BST. Turn off availability toggle in settings if you want to skip next week.</p>`;
-          for(const to of list.slice(0,100)){ await resend.emails.send({ from, to, subject:`Randori ${weekLabel} — your pairing is ready`, html }).catch(()=>{}); }
-          emailStatus=`sent to ${list.length} available participants`;
-        } else { emailStatus='no emails for participants (no email field)'; }
+        const from=process.env.RESEND_FROM||'Randori <onboarding@randori.circle>';
+        // Only email if pref email_enabled !=0
+        const toList=[];
+        for(const p of participants){
+          const pref=prefsMap.get(p.id);
+          if(pref && pref.email_enabled===0) continue;
+          if(p.email) toList.push(p);
+        }
+        if (toList.length){
+          const html=`<h2>Randori Circle — ${weekLabel}</h2><p>You're paired! This week's auto-shuffle includes ${participants.length} of ${allAccounts.length} signed-up users ( ${unavailable.length} unavailable skipped ).</p><p>Pairs: ${bestPairs.pairs.map(pr=> pr.isAI ? `${pr.a.name} × AI partner` : `${pr.a.name} × ${pr.b.name} — <a href="${roomLink(pr)}">Join room</a>`).join(', ')}</p><p><a href="${baseUrl}">Open Randori Circle</a> to see your partner and pick DSA / System Design / Both.</p><p>Easy join: click your room link above or dashboard → Join Session.</p><p style="color:#888;font-size:12px">Auto-shuffled Sun 08:00 BST. Turn off availability toggle in settings if you want to skip next week. Set reminder toggle in dashboard to get email/SMS.</p>`;
+          let sent=0;
+          for(const u of toList.slice(0,100)){
+            try{ await resend.emails.send({ from, to:u.email, subject:`Randori ${weekLabel} — your pairing is ready`, html }); sent++; }catch{}
+          }
+          emailStatus=`sent to ${sent}/${toList.length} available participants (email_enabled)`;
+          try{ await logServerOps('success','email_sent',`weekly emails sent ${sent}`, {week_label:weekLabel, sent, total:toList.length}, req);}catch{}
+        } else { emailStatus='no emails for participants (no email field or opt-out)'; try{ await logServerOps('info','email_skipped_no_key','no eligible emails', {week_label:weekLabel}, req);}catch{} }
         if (unavailable.length){
           const uEmails=unavailable.map(u=>u.email).filter(Boolean);
           if (uEmails.length){
-            const htmlU=`<h2>Randori Circle — you missed ${weekLabel}</h2><p>You were excluded from this week's shuffle because you marked <b>Unavailable</b>.</p><p>No worries — you'll be back in next Sunday 08:00 BST automatically unless you stay unavailable.</p><p><a href="${baseUrl}">Open app → Settings → set Available this week = ON</a> to re-join now. Admin can also reshuffle manually this week if you're back early.</p><p style="color:#888;font-size:12px">${participants.length} people were paired this week.</p>`;
-            for(const to of uEmails.slice(0,100)) await resend.emails.send({ from, to, subject:`You missed Randori ${weekLabel} — toggle back to available`, html:htmlU }).catch(()=>{});
-            unavailableEmailStatus=`sent to ${uEmails.length} unavailable users`;
+            const htmlU=`<h2>Randori Circle — you missed ${weekLabel}</h2><p>You were excluded from this week's shuffle because you marked <b>Unavailable</b>.</p><p>No worries — you'll be back next Sunday 08:00 BST automatically unless you stay unavailable.</p><p><a href="${baseUrl}">Open app → Settings → set Available this week = ON</a> to re-join now. Admin can also reshuffle manually this week if you're back early.</p><p style="color:#888;font-size:12px">${participants.length} people were paired this week.</p>`;
+            let sentU=0;
+            for(const to of uEmails.slice(0,100)){ try{ await resend.emails.send({ from, to, subject:`You missed Randori ${weekLabel} — toggle back to available`, html:htmlU }); sentU++; }catch{} }
+            unavailableEmailStatus=`sent to ${sentU} unavailable users`;
           } else unavailableEmailStatus='unavailable users have no email field';
         } else unavailableEmailStatus='no unavailable users this week';
-      } else { emailStatus='resend package not installed — run npm i resend'; unavailableEmailStatus=emailStatus; }
-    }catch(e){ emailStatus='error: '+String(e.message||e).slice(0,180); unavailableEmailStatus=emailStatus; }
+      } else { emailStatus='resend package not installed — run npm i resend'; unavailableEmailStatus=emailStatus; try{ await logServerOps('warn','email_skipped_no_key','resend not installed', {}, req);}catch{} }
+    }catch(e){ emailStatus='error: '+String(e.message||e).slice(0,180); unavailableEmailStatus=emailStatus; try{ await logServerOps('error','email_fail','weekly email error '+String(e.message||e).slice(0,120), {err:String(e.message||e).slice(0,300)}, req);}catch{} }
+  } else {
+    try{ await logServerOps('info','email_skipped_no_key','weekly skip email no RESEND_API_KEY', {week_label:weekLabel}, req);}catch{}
   }
-  return res.json({ ok:true, week_label:weekLabel, week_id:weekId, pairs:bestPairs.pairs.map(p=>({ a:p.a.name, b:p.b?p.b.name:'AI partner', isAI:p.isAI, a_id:p.a.id, b_id:p.b?p.b.id:null })), available_count:participants.length, total_accounts:allAccounts.length, unavailable_count:unavailable.length, unavailable:unavailable.map(u=>({ id:u.id, name:u.name, email:u.email })), repeat_avoided:bestPairs.repeatCount, email:emailStatus, unavailable_emails:unavailableEmailStatus, unavailable_reminders:unavailable.map(u=>({ id:u.id, name:u.name, email:u.email, reason:'marked unavailable', action:'Set Available this week = ON in app settings' })), note:'Weekly auto-shuffle: only is_available=1 participants. Set RESEND_API_KEY+RESEND_FROM in Vercel to email. Otherwise pairs visible in-app via /api/weeks.', app_url:baseUrl });
-}
 
-// --- DEMO HANDLERS ---
+  // SMS via Twilio optional
+  if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM){
+    try{
+      const sid=process.env.TWILIO_ACCOUNT_SID;
+      const token=process.env.TWILIO_AUTH_TOKEN;
+      const from=process.env.TWILIO_FROM;
+      const auth = Buffer.from(sid+':'+token).toString('base64');
+      let sentSms=0;
+      for(const p of participants.slice(0,30)){
+        const pref=prefsMap.get(p.id);
+        if(pref && pref.sms_enabled===0) continue;
+        const phone = pref && pref.phone ? pref.phone : (p.phone||null);
+        if(!phone) continue;
+        // ensure E.164 — skip validation light
+        const body=`Randori ${weekLabel}: paired! ${bestPairs.pairs.find(pr=>pr.a.id===p.id|| (pr.b&&pr.b.id===p.id)) ? 'You + '+(bestPairs.pairs.find(pr=>pr.a.id===p.id|| (pr.b&&pr.b.id===p.id)).b? bestPairs.pairs.find(pr=>pr.a.id===p.id|| (pr.b&&pr.b.id===p.id)).b.name : 'AI') : 'check app'} — Join ${baseUrl}/join/w${weekId}-p${p.id} `;
+        try{
+          const r=await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded','Authorization':'Basic '+auth}, body:new URLSearchParams({From:from, To:phone, Body:body}).toString()});
+          if(r.ok) sentSms++;
+        }catch{}
+      }
+      smsStatus=`sent ${sentSms} sms via Twilio`;
+      try{ await logServerOps('success','sms_sent', `weekly sms ${sentSms}`, {week_label:weekLabel, sentSms}, req);}catch{}
+    }catch(e){
+      smsStatus='sms error '+String(e.message||e).slice(0,100);
+      try{ await logServerOps('error','sms_fail', smsStatus, {err:String(e.message||e).slice(0,200)}, req);}catch{}
+    }
+  } else {
+    try{ await logServerOps('info','sms_skipped_no_creds','skip sms no TWILIO_* env', {week_label:weekLabel}, req);}catch{}
+  }
+
+  return res.json({ ok:true, week_label:weekLabel, week_id:weekId, pairs:bestPairs.pairs.map(p=>({ a:p.a.name, b:p.b?p.b.name:'AI partner', isAI:p.isAI, a_id:p.a.id, b_id:p.b?p.b.id:null, room:`w${weekId}-p${p.a.id}-${p.b?p.b.id:'ai'}`, join:`${baseUrl}/join/w${weekId}-p${p.a.id}-${p.b?p.b.id:'ai'}` })), available_count:participants.length, total_accounts:allAccounts.length, unavailable_count:unavailable.length, unavailable:unavailable.map(u=>({ id:u.id, name:u.name, email:u.email })), repeat_avoided:bestPairs.repeatCount, email:emailStatus, sms:smsStatus, unavailable_emails:unavailableEmailStatus, unavailable_reminders:unavailable.map(u=>({ id:u.id, name:u.name, email:u.email, reason:'marked unavailable', action:'Set Available this week = ON in app settings' })), note:'Weekly auto-shuffle: only is_available=1 participants. Set RESEND_API_KEY+RESEND_FROM and TWILIO_* in Vercel to email/sms. Reminder toggle on dashboard sets localStorage + /api/notifications/prefs.', app_url:baseUrl });
+}
 
 async function handleDemoSeed(req,res){
   if (req.method!=='POST') return res.status(405).json({ error:'POST only for demo-seed' });

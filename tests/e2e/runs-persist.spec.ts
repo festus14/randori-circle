@@ -1,11 +1,12 @@
 import { test, expect } from '@playwright/test';
-import { setNoOnboarding, setCode, selectLang, selectQuestion, twoSumCorrectJS } from './helpers';
+import { setNoOnboarding, setCode, selectLang, selectQuestion, twoSumCorrectJS, ensureCodeView } from './helpers';
 
 test.describe('session_runs persistence', () => {
   test('POST /api/runs requires auth, GET increments after run', async ({ page }) => {
     test.setTimeout(35000);
     await setNoOnboarding(page);
     await page.goto('/');
+    await ensureCodeView(page);
     await page.waitForTimeout(700);
 
     // Try anon POST should 401

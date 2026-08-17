@@ -1,11 +1,12 @@
 import { test, expect } from '@playwright/test';
-import { setNoOnboarding, setCode, selectLang } from './helpers';
+import { setNoOnboarding, setCode, selectLang, ensureCodeView } from './helpers';
 
 test.describe('IDE lint & format', () => {
   test('syntax error shows lint err count (if Monaco)', async ({ page }) => {
     test.setTimeout(20000);
     await setNoOnboarding(page);
     await page.goto('/');
+    await ensureCodeView(page);
     await page.waitForTimeout(700);
 
     await selectLang(page, 'javascript');
@@ -32,6 +33,7 @@ test.describe('IDE lint & format', () => {
     test.setTimeout(20000);
     await setNoOnboarding(page);
     await page.goto('/');
+    await ensureCodeView(page);
     await page.waitForTimeout(700);
 
     const messy = `function twoSum( nums , target ){return [0,1]}`;

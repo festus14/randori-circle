@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { setNoOnboarding, waitForMonacoOrFallback, apiLog } from './helpers';
+import { setNoOnboarding, waitForMonacoOrFallback, apiLog, ensureCodeView } from './helpers';
 
 test.describe('Monaco IDE resilient load', () => {
   test('loads Monaco or falls back gracefully without throw toast', async ({ page }) => {
@@ -16,6 +16,7 @@ test.describe('Monaco IDE resilient load', () => {
     });
 
     await page.goto('/', { waitUntil:'domcontentloaded' });
+    await ensureCodeView(page);
     // Give init 450ms + loader attempt
     await page.waitForTimeout(600);
 

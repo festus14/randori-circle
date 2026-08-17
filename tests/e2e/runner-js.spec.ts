@@ -1,11 +1,12 @@
 import { test, expect } from '@playwright/test';
-import { setNoOnboarding, setCode, selectLang, selectQuestion, twoSumCorrectJS, twoSumBrokenJS, apiLog } from './helpers';
+import { setNoOnboarding, setCode, selectLang, selectQuestion, twoSumCorrectJS, twoSumBrokenJS, apiLog, ensureCodeView } from './helpers';
 
 test.describe('JS runner — actual test case execution', () => {
   test('correct twoSum passes 3/3', async ({ page }) => {
     test.setTimeout(35000);
     await setNoOnboarding(page);
     await page.goto('/');
+    await ensureCodeView(page);
     await page.waitForTimeout(800);
 
     await selectLang(page, 'javascript');
@@ -56,6 +57,7 @@ test.describe('JS runner — actual test case execution', () => {
     test.setTimeout(25000);
     await setNoOnboarding(page);
     await page.goto('/');
+    await ensureCodeView(page);
     await selectLang(page, 'javascript');
     await selectQuestion(page, 'two-sum');
     await setCode(page, twoSumBrokenJS());

@@ -3539,7 +3539,7 @@ def allow(key, limit=5):
       if(viewLanding) viewLanding.style.display='block';
       if(tabsEl) tabsEl.style.display='flex';
       // hide circle tab for non-admin anon
-      try{ document.querySelector('[data-tab="circle"]')?.style.setProperty('display','none'); }catch{ const ct=document.querySelector('[data-tab="circle"]'); if(ct) (ct as any).style.display='none'; }
+      try{ document.querySelector('[data-tab="circle"]')?.style.setProperty('display','none'); }catch{ const ct=document.querySelector('[data-tab="circle"]'); if(ct) ct.style.display='none'; }
       try{document.getElementById('onboardChecklist').style.display='none'; document.getElementById('welcomeBanner').style.display='none';}catch{}
       // LeetCode-like: if URL wants code view or last tab was code, show code instead
       try{
@@ -3741,8 +3741,8 @@ def allow(key, limit=5):
         starter = lang==='javascript' ? `function ${fnName}(){\n  // ${q.title}\n}` : lang==='python' ? `def ${pyName}():\n    # ${q.title}\n    pass` : `// ${q.title}\n// starter for ${lang}`;
       }
       if(isSystem) starter = `// System Design: ${q.title}\n// Notes:\n// 1. Requirements (functional / non-functional)\n// 2. Estimation\n// 3. High-level design\n// 4. Deep dives\n// 5. Trade-offs, monitoring\n`;
-      const ed=document.getElementById('editor') as HTMLTextAreaElement|null;
-      const monEd=(window as any).monacoEditor;
+      const ed=document.getElementById('editor')|null;
+      const monEd=window.monacoEditor;
       const curCode = monEd? monEd.getValue() : (ed? ed.value : '');
       if(ed && (!curCode.trim() || confirm(`Load starter for ${q.title} (${lang})?`))){
         if(monEd){ monEd.setValue(starter||`// ${q.title}\nfunction solve(){\n  // implement\n}`); } else { ed.value=starter||`// ${q.title}\nfunction solve(){\n  // implement\n}`; ed.dispatchEvent(new Event('input',{bubbles:true})); }

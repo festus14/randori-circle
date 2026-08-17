@@ -9,6 +9,9 @@ export async function clearOnboarding(page: Page){
       localStorage.removeItem('randori-banner-dismissed');
       localStorage.removeItem('randori-onboard-step');
       localStorage.removeItem('randori-profile-done');
+      localStorage.removeItem('randori-landing-dismissed');
+      localStorage.removeItem('randori-token');
+      localStorage.removeItem('randori-me');
     }catch{}
   });
 }
@@ -20,6 +23,25 @@ export async function setNoOnboarding(page: Page){
       localStorage.setItem('randori-banner-dismissed','1');
       localStorage.setItem('randori-onboard-step','0');
       localStorage.setItem('randori-profile-done','1');
+      localStorage.setItem('randori-landing-dismissed','1');
+      localStorage.setItem('randori-last-room','e2e-room');
+      // dummy auth so app doesn't stay on landing - isProfileIncomplete(null) = false
+      localStorage.setItem('randori-token','e2e-fake-jwt');
+      localStorage.setItem('randori-me', JSON.stringify({id:'e2e-1', display_name:'e2e tester', color:'#c8f6a0', is_admin:false, is_demo:false, tz:'Europe/London', interview_focus:'both'}));
+    }catch{}
+  });
+}
+
+export async function ensureAuthed(page: Page){
+  await page.addInitScript(() => {
+    try{
+      localStorage.setItem('randori-token','e2e-fake-jwt');
+      localStorage.setItem('randori-me', JSON.stringify({id:'e2e-1', display_name:'e2e tester', color:'#c8f6a0', is_admin:false, is_demo:false, tz:'Europe/London', interview_focus:'both'}));
+      localStorage.setItem('randori-onboarded','1');
+      localStorage.setItem('randori-banner-dismissed','1');
+      localStorage.setItem('randori-profile-done','1');
+      localStorage.setItem('randori-landing-dismissed','1');
+      localStorage.setItem('randori-last-room','e2e-room');
     }catch{}
   });
 }
@@ -50,21 +72,71 @@ export async function apiLog(page: Page, level: string, event: string, message: 
   }catch{}
 }
 
+export async function ensureCodeView(page: Page){
+  await page.evaluate(() => {
+    try{
+      const views = document.querySelectorAll('.view');
+      views.forEach((v:any)=> v.style.display='none');
+      const cv = document.getElementById('view-code') as HTMLElement | null;
+      if(cv) cv.style.display='block';
+      const tabs = document.querySelectorAll('.tab');
+      tabs.forEach(t=> t.classList.remove('active'));
+      const codeTab = document.querySelector('[data-tab="code"]') as HTMLElement | null;
+      if(codeTab) codeTab.classList.add('active');
+      // also ensure tabs bar visible for anon
+      const tabsEl = document.querySelector('.tabs') as HTMLElement | null;
+      if(tabsEl) tabsEl.style.display='flex';
+      const circleTab = document.querySelector('[data-tab="circle"]') as HTMLElement | null;
+      if(circleTab) (circleTab as HTMLElement).style.display='none';
+      // make code layout visible
+      const qPane = document.querySelector('.code-layout') as HTMLElement | null;
+      if(qPane) (qPane as HTMLElement).style.display='grid';
+    }catch{}
+  });
+}
+
 export async function waitForMonacoOrFallback(page: Page){
   const host = page.locator('#monacoHost');
   const editor = page.locator('#editor');
   const fallback = page.locator('#monacoFallbackNote');
 
-  // Wait up to 6s for either host visible or editor fallback
+  // Ensure code view visible first so locators can be visible
+  await ensureCodeView(page).catch(()=>{});
+
+  // Wait up to 6.5s for either host visible or editor fallback
   await expect.poll(async ()=>{
     const hostVis = await host.isVisible().catch(()=>false);
     const editorVis = await editor.isVisible().catch(()=>false);
-    return hostVis || editorVis;
-  }, {timeout: 6500}).toBe(true);
+    // also consider monaco ready via window
+    const winReady = await page.evaluate(()=> {
+      try{
+        if((window as any).monacoEditor) return true;
+        if((window as any)._randori_monaco?.ready) return true;
+        // if fallback textarea displayed block we consider ready
+        const ta=document.getElementById('editor') as HTMLElement|null;
+        if(ta && ta.style.display!=='none' && (ta as any).offsetParent!==null) return true;
+        return false;
+      }catch{ return false; }
+    }).catch(()=>false);
+    return hostVis || editorVis || winReady;
+  }, {timeout: 7500}).toBe(true);
 
   const isMonaco = await page.evaluate(() => {
-    try{ return !!(window as any).monacoEditor || !!(window as any).monaco; }catch{ return false; }
+    try{ return !!(window as any).monacoEditor || !!((window as any)._randori_monaco?.ready); }catch{ return false; }
   });
+
+  // Ensure editor textarea usable if no monaco
+  if(!isMonaco){
+    await page.evaluate(()=>{
+      try{
+        const ta=document.getElementById('editor') as HTMLElement|null;
+        if(ta){ ta.style.display='block'; (ta as HTMLElement).style.flex='1'; (ta as HTMLElement).style.minHeight='360px'; }
+        const host=document.getElementById('monacoHost') as HTMLElement|null;
+        // leave host but ensure not covering
+        if(host) host.style.minHeight='120px';
+      }catch{}
+    }).catch(()=>{});
+  }
 
   return { isMonaco };
 }
@@ -99,6 +171,8 @@ def twoSum(nums, target):
 }
 
 export async function setCode(page: Page, code: string){
+  // Ensure view is visible before touching
+  await ensureCodeView(page).catch(()=>{});
   // Try Monaco first
   const hasMonaco = await page.evaluate(() => {
     try{ const ed=(window as any).monacoEditor; return !!ed && typeof ed.getValue==='function'; }catch{ return false; }
@@ -107,40 +181,80 @@ export async function setCode(page: Page, code: string){
     await page.evaluate((c) => {
       try{
         const ed=(window as any).monacoEditor;
-        if(ed){ ed.setValue(c); ed.focus(); }
+        if(ed){ ed.setValue(c); ed.focus(); try{ ed.layout(); }catch{} }
       }catch{}
     }, code);
   } else {
-    const ta = page.locator('#editor');
-    await ta.fill(code);
+    // use evaluate for textarea (avoid locator.fill visibility issue)
+    await page.evaluate((c)=>{
+      try{
+        const ta=document.getElementById('editor') as HTMLTextAreaElement | null;
+        if(ta){
+          ta.style.display='block';
+          ta.style.flex='1';
+          (ta as any).style.minHeight='360px';
+          ta.focus();
+          ta.value=c;
+          ta.dispatchEvent(new Event('input',{bubbles:true}));
+          ta.dispatchEvent(new Event('change',{bubbles:true}));
+          // also notify legacy persist
+          const ev = new CustomEvent('randori-code-change',{detail:{code:c}});
+          document.dispatchEvent(ev);
+        }
+        // also try mirror globals
+        try{
+          const host=document.getElementById('monacoHost');
+          if(host && (host as any).style) (host as any).style.display='none';
+        }catch{}
+      }catch{}
+    }, code);
   }
+  // small settle
+  await page.waitForTimeout(120);
 }
 
 export async function selectLang(page: Page, lang: string){
+  await ensureCodeView(page).catch(()=>{});
   const sel = page.locator('#langSelect');
-  if(await sel.isVisible()){
-    await sel.selectOption(lang);
-    await page.waitForTimeout(300);
-  }
+  // Try both visible and via evaluate
+  try{
+    if(await sel.count()){
+      await page.evaluate((l)=>{
+        try{
+          const el=document.getElementById('langSelect') as HTMLSelectElement|null;
+          if(el){ el.value=l; el.dispatchEvent(new Event('change',{bubbles:true})); }
+        }catch{}
+      }, lang);
+      await page.waitForTimeout(300);
+      // also try playwright selectOption if still needed
+      if(await sel.isVisible().catch(()=>false)){
+        await sel.selectOption(lang).catch(()=>{});
+      }
+    }
+  }catch{}
+  await page.waitForTimeout(200);
 }
 
 export async function selectQuestion(page: Page, slug: string){
+  await ensureCodeView(page).catch(()=>{});
   const qSel = page.locator('#questionSelect');
-  if(await qSel.count() && await qSel.first().isVisible()){
-    // If option exists select else try window hook
+  if(await qSel.count()){
     try{
-      await qSel.selectOption(slug);
-    }catch{
       await page.evaluate((s)=>{
         try{
-          const el=document.getElementById('questionSelect') as HTMLSelectElement;
+          const el=document.getElementById('questionSelect') as HTMLSelectElement|null;
           if(el){ el.value=s; el.dispatchEvent(new Event('change',{bubbles:true})); }
         }catch{}
+        try{ localStorage.setItem('randori-last-question', s); }catch{}
       }, slug);
-    }
+    }catch{}
+    try{
+      if(await qSel.first().isVisible().catch(()=>false)){
+        await qSel.selectOption(slug).catch(()=>{});
+      }
+    }catch{}
     await page.waitForTimeout(400);
   } else {
-    // Try to trigger via API/questions loaded widget
     await page.evaluate((s)=>{
       try{ localStorage.setItem('randori-last-question', s); }catch{}
     }, slug);

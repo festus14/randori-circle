@@ -1,11 +1,12 @@
 import { test, expect } from '@playwright/test';
-import { setNoOnboarding, setCode, selectLang, selectQuestion, twoSumPythonCorrect, apiLog } from './helpers';
+import { setNoOnboarding, setCode, selectLang, selectQuestion, twoSumPythonCorrect, apiLog, ensureCodeView } from './helpers';
 
 test.describe('Python multi-lang runner via Piston', () => {
   test('python two_sum passes via server', async ({ page }) => {
     test.setTimeout(40000);
     await setNoOnboarding(page);
     await page.goto('/');
+    await ensureCodeView(page);
     await page.waitForTimeout(700);
 
     await selectLang(page, 'python');

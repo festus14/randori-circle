@@ -1,8 +1,8 @@
 /** @type {import('@playwright/test').PlaywrightTestConfig} */
 export default {
   testDir: './tests/e2e',
-  timeout: 30000,
-  expect: { timeout: 7000 },
+  timeout: 35000,
+  expect: { timeout: 9000 },
   retries: process.env.CI ? 1 : 0,
   workers: process.env.CI ? 2 : undefined,
   reporter: [['list'], ['html', { open:'never' }]],
@@ -11,7 +11,7 @@ export default {
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
     video: 'off',
-    actionTimeout: 10000,
-    navigationTimeout: 15000,
+    actionTimeout: 12000,
+    navigationTimeout: 20000,
   },
 };

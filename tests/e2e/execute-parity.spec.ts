@@ -1,11 +1,12 @@
 import { test, expect } from '@playwright/test';
-import { setNoOnboarding, setCode, selectLang, selectQuestion, twoSumCorrectJS } from './helpers';
+import { setNoOnboarding, setCode, selectLang, selectQuestion, twoSumCorrectJS, ensureCodeView } from './helpers';
 
 test.describe('JS server parity vs local', () => {
   test('same JS code local and server produce same pass count (or server at least)', async ({ page }) => {
     test.setTimeout(35000);
     await setNoOnboarding(page);
     await page.goto('/');
+    await ensureCodeView(page);
     await page.waitForTimeout(600);
 
     await selectLang(page, 'javascript');
