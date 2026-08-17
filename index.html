@@ -396,6 +396,7 @@ p{margin:0}
 @keyframes dots{ 0%,100%{ opacity:.3; transform:translateY(0) } 50%{ opacity:1; transform:translateY(-2px) } }
 .btn .spinner{ vertical-align:middle; margin-left:6px }
 
+/* anon tabs fix */ .tabs{ display:flex; } [data-tab=circle]{ } 
 </style>
 
 <script>
@@ -646,6 +647,7 @@ p{margin:0}
           </div>
           <div><label class="small muted">Interview focus</label><div id="psFocus" class="pill-choice" style="margin-top:6px"><button class="chip" data-focus="dsa">DSA</button><button class="chip" data-focus="system">System Design</button><button class="chip active" data-focus="both">Both</button></div></div>
           <div class="row" style="justify-content:space-between; align-items:center; padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-3)"><div><b style="font-size:12.5px">Available this week</b><div class="small muted">You’ll be included Sunday 08:00 BST</div></div><label style="position:relative; display:inline-block; width:42px; height:26px"><input type="checkbox" id="psAvail" checked style="opacity:0;width:0;height:0"><span style="position:absolute;cursor:pointer;inset:0;background:#2a2a35;border-radius:999px;transition:.2s"></span><span style="position:absolute;left:3px;top:3px;width:20px;height:20px;background:var(--accent);border-radius:999px;transition:.2s" id="psAvailKnob"></span></label></div>
+          <div id="psRemindRow" class="row" style="justify-content:space-between; align-items:center; padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-3)"><div><b style="font-size:12.5px">Remind me</b><div class="small muted">Email + SMS when paired</div></div><div class="row" style="gap:8px"><label class="pill" style="cursor:pointer"><input id="psRemindEmail" type="checkbox" checked style="margin-right:4px"/> 📧</label><label class="pill" style="cursor:pointer"><input id="psRemindSms" type="checkbox" style="margin-right:4px"/> 📱</label></div></div>
           <div class="row" style="justify-content:flex-end"><button id="psSave" class="btn">Save & continue →</button></div>
         </div>
       </div>
@@ -1189,6 +1191,88 @@ async function refreshMe(){
     cb.addEventListener('change', ()=>{ toggleAvailability(cb.checked); });
     cb.addEventListener('click', (e)=>{ e.stopPropagation(); });
   })();
+
+  // Reminder prefs wiring — Pillar 5
+  (function bindReminders(){
+    const emailT=document.getElementById('remindEmailToggle');
+    const smsT=document.getElementById('remindSmsToggle');
+    const phoneIn=document.getElementById('remindPhone');
+    const emailIn=document.getElementById('remindEmailField');
+    const psEmail=document.getElementById('psRemindEmail');
+    const psSms=document.getElementById('psRemindSms');
+    // load localStorage
+    try{
+      const eLocal=localStorage.getItem('randori-reminder-email');
+      const sLocal=localStorage.getItem('randori-reminder-sms');
+      const pLocal=localStorage.getItem('randori-reminder-phone');
+      if(eLocal!=null && emailT) emailT.checked = eLocal==='1';
+      if(sLocal!=null && smsT) smsT.checked = sLocal==='1';
+      if(pLocal && phoneIn) phoneIn.value=pLocal;
+      if(eLocal!=null && psEmail) psEmail.checked = eLocal==='1';
+      if(sLocal!=null && psSms) psSms.checked = sLocal==='1';
+      // labels
+      const el=document.getElementById('remindEmailLabel'); if(el && emailT) el.textContent=emailT.checked?'ON':'OFF';
+      const sl=document.getElementById('remindSmsLabel'); if(sl && smsT) sl.textContent=smsT.checked?'ON':'OFF';
+    }catch{}
+
+    async function postPrefs(){
+      const email_enabled = (emailT && emailT.checked) ?? (psEmail && psEmail.checked) ?? true;
+      const sms_enabled = (smsT && smsT.checked) ?? (psSms && psSms.checked) ?? false;
+      const phone = phoneIn ? phoneIn.value.trim() : (localStorage.getItem('randori-reminder-phone')||'');
+      const email = emailIn ? emailIn.value.trim() : '';
+      try{
+        localStorage.setItem('randori-reminder-email', email_enabled?'1':'0');
+        localStorage.setItem('randori-reminder-sms', sms_enabled?'1':'0');
+        if(phone) localStorage.setItem('randori-reminder-phone', phone);
+        if(email) localStorage.setItem('randori-reminder-email-addr', email);
+      }catch{}
+      // server sync if authed
+      try{
+        const tok=localStorage.getItem('randori-token');
+        if(tok){
+          const body={email_enabled, sms_enabled};
+          if(phone) body.phone=phone;
+          if(email) body.email=email;
+          await fetch('/api/notifications/prefs', {method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok}, body: JSON.stringify(body)}).catch(()=>{});
+        }
+      }catch{}
+      // update labels
+      try{
+        const el=document.getElementById('remindEmailLabel'); if(el && emailT) el.textContent=emailT.checked?'ON':'OFF';
+        const sl=document.getElementById('remindSmsLabel'); if(sl && smsT) sl.textContent=smsT.checked?'ON':'OFF';
+      }catch{}
+    }
+    function wire(el){ if(!el) return; el.addEventListener('change', postPrefs); el.addEventListener('click', (e)=>{ e.stopPropagation(); }); }
+    wire(emailT); wire(smsT); wire(phoneIn); wire(emailIn); wire(psEmail); wire(psSms);
+    // save on typing phone
+    if(phoneIn) phoneIn.addEventListener('blur', postPrefs);
+    if(emailIn) emailIn.addEventListener('blur', postPrefs);
+
+    // hydrate from server when signed in
+    (async()=>{
+      try{
+        const tok=localStorage.getItem('randori-token');
+        if(!tok) return;
+        const r=await fetch('/api/notifications/prefs', {headers:{'Authorization':'Bearer '+tok}}).catch(()=>null);
+        if(!r || !r.ok) return;
+        const j=await r.json();
+        if(j && j.prefs){
+          if(emailT) emailT.checked = !!j.prefs.email_enabled;
+          if(smsT) smsT.checked = !!j.prefs.sms_enabled;
+          if(phoneIn && j.prefs.phone) phoneIn.value=j.prefs.phone;
+          if(emailIn && j.prefs.email) emailIn.value=j.prefs.email;
+          try{
+            localStorage.setItem('randori-reminder-email', j.prefs.email_enabled?'1':'0');
+            localStorage.setItem('randori-reminder-sms', j.prefs.sms_enabled?'1':'0');
+            if(j.prefs.phone) localStorage.setItem('randori-reminder-phone', j.prefs.phone);
+          }catch{}
+          const el=document.getElementById('remindEmailLabel'); if(el && emailT) el.textContent=emailT.checked?'ON':'OFF';
+          const sl=document.getElementById('remindSmsLabel'); if(sl && smsT) sl.textContent=smsT.checked?'ON':'OFF';
+        }
+      }catch{}
+    })();
+  })();
+
   async function checkSkippedBanner(){
     // If user was unavailable last week, /api/weeks won't contain them this week. We infer skip when they were unavailable and new week exists where they are absent.
     // Simpler: ask /api/history — if last history entry week_label != current cloud week label and is_available currently true but was false during last shuffle, we show banner.
@@ -2453,10 +2537,13 @@ def allow(key, limit=5):
   document.getElementById('zoomOut').onclick=()=>{ boardViewport.scale=Math.max(0.2, boardViewport.scale/1.2); renderBoard(); saveBoard(); };
   document.getElementById('fitBtn').onclick=()=>{ boardViewport={x:20,y:20,scale:1}; renderBoard(); saveBoard(); };
 
-  function renderBoardReset(){ boardShapes=[]; boardViewport={x:0,y:0,scale:1}; boardHist=[]; boardHistIdx=-1; saveBoard(); renderBoard(); }
+  function renderBoardReset(){ boardShapes=[]; boardViewport={x:0,y:0,scale:1}; boardHist=[]; boardHistIdx=-1; saveBoardImmediate(); renderBoard(); }
 
   // init board
   loadBoard(); requestAnimationFrame(()=>{ resizeCanvas(); boardHist=[JSON.stringify(boardShapes)]; boardHistIdx=0; renderBoard(); });
+
+  // expose board per-room helpers for cross-IIFE deterministic room switching
+  try{ window._randori_board={ load: loadBoard, save: saveBoard, saveImmediate: saveBoardImmediate, get shapes(){return boardShapes}, get key(){return getBoardRoomKey()}, render: renderBoard, reset: renderBoardReset }; }catch{}
 
   // ---------- live video (WebRTC + Turso signaling) ----------
   let webrtcPeerId = localStorage.getItem('randori-peer-id') || ('p_'+uid()+uid());
@@ -3411,8 +3498,11 @@ def allow(key, limit=5):
         // trigger loadRoom if exists
         if(typeof loadRoom==='function'){ try{ loadRoom(room); }catch{} }
         else if(window._randori_code && window._randori_code.loadRoom){ window._randori_code.loadRoom(room); }
-        // board reload per room
-        try{ if(typeof loadBoard==='function'){ loadBoard(); if(typeof renderBoard==='function') renderBoard(); } }catch{}
+        // board reload per room (cross-IIFE)
+        try{
+          if(window._randori_board && window._randori_board.load){ window._randori_board.load(); window._randori_board.render(); }
+          else if(typeof loadBoard==='function'){ loadBoard(); if(typeof renderBoard==='function') renderBoard(); }
+        }catch{}
       }
       if(typeof currentRoom!=='undefined'){ try{ currentRoom=room; }catch{} }
       try{ window.currentRoom=room; }catch{}
@@ -3458,7 +3548,7 @@ def allow(key, limit=5):
       area.querySelectorAll('.email-invite').forEach(b=>b.addEventListener('click',()=>{
         const room=b.dataset.room; const inv=(location.origin||'')+'/join/'+encodeURIComponent(room);
         const sub='Randori mock interview — join '+room;
-        const body='Hi! Let\\'s jump into our mock session.\\n\\nRoom: '+room+'\\nLink: '+inv+'\\n\\n— Randori Circle';
+        const body='Hi! Lets jump into our mock session.\\n\\nRoom: '+room+'\\nLink: '+inv+'\\n\\n— Randori Circle';
         window.open('mailto:?subject='+encodeURIComponent(sub)+'&body='+encodeURIComponent(body));
         try{ if(window._randori_log) window._randori_log.info('dashboard','email_invite',{room}); }catch{}
       }));
@@ -3486,7 +3576,7 @@ def allow(key, limit=5):
     area.querySelectorAll('.copy-invite').forEach(b=>b.addEventListener('click',()=>{ const r=b.dataset.room; localStorage.setItem('randori-last-room', r); const inv=(location.origin||'')+'/join/'+encodeURIComponent(r); try{ navigator.clipboard.writeText(inv); toast('Invite copied ✓'); }catch{ prompt('Copy invite', inv); } }));
     area.querySelectorAll('.email-invite').forEach(b=>b.addEventListener('click',()=>{
       const room=b.dataset.room; const inv=(location.origin||'')+'/join/'+encodeURIComponent(room);
-      const sub='Randori mock interview — join '+room; const body='Hi '+ (partner?.name||'there') +'!\\n\\nLet\\'s jump into our mock session.\\nRoom: '+room+'\\nLink: '+inv+'\\nTime: see agreed slot in dashboard\\n\\n— Randori Circle';
+      const sub='Randori mock interview — join '+room; const body='Hi '+ (partner?.name||'there') +'!\\n\\nLets jump into our mock session.\\nRoom: '+room+'\\nLink: '+inv+'\\nTime: see agreed slot in dashboard\\n\\n— Randori Circle';
       window.open('mailto:?subject='+encodeURIComponent(sub)+'&body='+encodeURIComponent(body));
     }));
   }
@@ -3636,7 +3726,7 @@ def allow(key, limit=5):
         if(wantsCode){
           const cv=document.getElementById('view-code');
           if(cv){
-            document.querySelectorAll('.view').forEach((v:any)=>v.style.display='none'); cv.style.display='block'; document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active')); document.querySelector('[data-tab="code"]')?.classList.add('active');
+            document.querySelectorAll('.view').forEach((v)=>v.style.display='none'); cv.style.display='block'; document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active')); document.querySelector('[data-tab="code"]')?.classList.add('active');
             // if join room present, autoset currentRoom / roomSelect after code loads
             try{
               const jr = window._randori_join_room || (pathname.match(/^\/join\/([A-Za-z0-9_\-]+)/)||[])[1];
@@ -3645,7 +3735,7 @@ def allow(key, limit=5):
                 // set room dropdown option
                 const rs=document.getElementById('roomSelect'); if(rs){ if(![...rs.options].some(o=>o.value===jr)){ const o=document.createElement('option'); o.value=jr; o.textContent='Week — Pair (invite '+jr.slice(0,6)+')'; rs.prepend(o); } rs.value=jr; }
                 if(window._randori_code && window._randori_code.loadRoom) { setTimeout(()=>{ try{ window._randori_code.loadRoom(jr); }catch{} }, 400); }
-                else { try{ const fn = (window as any)._randori_code?.loadRoom || (window as any).loadRoom; if(fn) fn(jr); }catch{} }
+                else { try{ const fn = (window._randori_code && window._randori_code.loadRoom) || window.loadRoom; if(fn) fn(jr); }catch{} }
               }
             }catch{}
           }
