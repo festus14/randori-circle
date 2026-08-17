@@ -628,6 +628,7 @@ async function handleQuestions(req,res){
   const db = getClient();
   await ensureBaseTables(db);
   await ensureProfileMigrations(db);
+  try{ await maybeSeedFromStatic(db); }catch{}
   if (req.method === 'GET'){
     try{
       const rs = await db.execute(`SELECT id, slug, title, type, difficulty, category, description, input_format, constraints_text, examples, test_cases, starter_per_lang, author_id, source, leetcode_slug, created_at FROM custom_questions ORDER BY id DESC LIMIT 100`);
@@ -941,4 +942,21 @@ export default async function handler(req,res){
   if (ep.includes('message')) return handleMessages(req,res);
   if (ep==='questions' || ep==='question' || path.includes('/questions')) return handleQuestions(req,res);
   return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','schedule','messages','questions'] });
+}
+// auto-seed from bundled file on first questions request
+async function maybeSeedFromStatic(db){
+  try{
+    const cnt=await db.execute(`SELECT COUNT(*) as c FROM custom_questions`);
+    if((cnt.rows[0]?.c||0)>0) return;
+    // try to load bundled json - in Vercel file exists at /vercel/path0/data
+    let seed=null;
+    try{ const fs=await import('fs'); const p='/vercel/path0/data/leetcode-seed.json'; if(fs.existsSync(p)) seed=JSON.parse(fs.readFileSync(p,'utf8')); }catch{}
+    if(!seed){ try{ const fs2=await import('fs'); const p2=new URL('../data/leetcode-seed.json', import.meta.url); if(fs2.existsSync(p2)) seed=JSON.parse(fs2.readFileSync(p2,'utf8')); }catch{} }
+    if(!seed||!seed.length) return;
+    for(const q of seed){
+      try{
+        await db.execute({ sql:`INSERT OR IGNORE INTO custom_questions (slug,title,type,difficulty,category,description,test_cases,examples,source,leetcode_slug) VALUES (?,?,?,?,?,?,?,?,?,?)`, args:[q.slug,q.title, q.type||'dsa', q.difficulty||'Medium', q.category||'custom', q.description, JSON.stringify(q.test_cases||[]), JSON.stringify(q.examples||[]), q.source||'leetcode', q.leetcode_slug||q.slug]});
+      }catch{}
+    }
+  }catch{}
 }

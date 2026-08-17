@@ -1,0 +1,67 @@
+[
+  {
+    "slug": "two-sum",
+    "title": "Two Sum",
+    "difficulty": "Easy",
+    "category": "array",
+    "description": "Given an array of integers nums and an integer target, return indices of the two numbers such that they add up to target. You may assume that each input would have exactly one solution, and you may not use the same element twice.",
+    "test_cases": [
+      {"input": "{\"nums\":[2,7,11,15],\"target\":9}", "expect": "[0,1]", "raw": "[2,7,11,15] 9"},
+      {"input": "{\"nums\":[3,2,4],\"target\":6}", "expect": "[1,2]", "raw": "[3,2,4] 6"},
+      {"input": "{\"nums\":[3,3],\"target\":6}", "expect": "[0,1]", "raw": "[3,3] 6"}
+    ],
+    "source": "leetcode",
+    "leetcode_slug": "two-sum"
+  },
+  {
+    "slug": "valid-parentheses",
+    "title": "Valid Parentheses",
+    "difficulty": "Easy",
+    "category": "stack",
+    "description": "Given a string s containing just the characters '(', ')', '{', '}', '[' and ']', determine if the input string is valid.",
+    "test_cases": [
+      {"input": "\"()\"", "expect": "true", "raw": "()"},
+      {"input": "\"()[]{}\"", "expect": "true", "raw": "()[]{}"},
+      {"input": "\"(]\"", "expect": "false", "raw": "(]"}
+    ],
+    "source": "leetcode",
+    "leetcode_slug": "valid-parentheses"
+  },
+  {
+    "slug": "merge-two-sorted-lists",
+    "title": "Merge Two Sorted Lists",
+    "difficulty": "Easy",
+    "category": "linked-list",
+    "description": "Merge two sorted linked lists and return it as a sorted list.",
+    "test_cases": [
+      {"input": "{\"l1\":[1,2,4],\"l2\":[1,3,4]}", "expect": "[1,1,2,3,4,4]", "raw": "[1,2,4] [1,3,4]"},
+      {"input": "{\"l1\":[],\"l2\":[]}", "expect": "[]", "raw": "[] []"}
+    ],
+    "source": "leetcode",
+    "leetcode_slug": "merge-two-sorted-lists"
+  },
+  {
+    "slug": "lru-cache",
+    "title": "LRU Cache",
+    "difficulty": "Medium",
+    "category": "design",
+    "description": "Design a data structure that follows the constraints of a Least Recently Used (LRU) cache.",
+    "test_cases": [
+      {"input": "{\"operations\":[\"LRUCache\",\"put\",\"put\",\"get\",\"put\",\"get\"]}", "expect": "[null,null,null,1,null,-1]", "raw": "LRUCache 2 put(1,1) put(2,2) get(1) put(3,3) get(2)"}
+    ],
+    "source": "leetcode",
+    "leetcode_slug": "lru-cache"
+  },
+  {
+    "slug": "design-twitter",
+    "title": "Design Twitter — System Design variant",
+    "difficulty": "Medium",
+    "category": "system-design",
+    "description": "Design a simplified version of Twitter where users can post tweets, follow/unfollow, and see news feed. System design discussion: API, storage, fan-out, timeline.",
+    "test_cases": [
+      {"input": "{\"scenario\":\"post tweet + fan-out read\"}", "expect": "feed returns recent 10", "raw": "tweet feed"}
+    ],
+    "source": "leetcode",
+    "leetcode_slug": "design-twitter"
+  }
+]
