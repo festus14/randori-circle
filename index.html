@@ -526,6 +526,14 @@ p{margin:0}
           </div>
         </div>
         <div class="editor-pane">
+          <div id="questionPanel" style="padding:8px 10px; border-bottom:1px solid var(--border); display:flex; gap:6px; flex-wrap:wrap; align-items:center; background:var(--card)">
+            <b style="font-size:11px; color:var(--ink-3); text-transform:uppercase; letter-spacing:.04em">Session Questions</b>
+            <button id="qUploadBtn" class="pill">＋ Upload Question</button>
+            <button id="qLeetBtn" class="pill" title="Fetch from LeetCode GraphQL">⎇ LeetCode Import</button>
+            <button id="qHackBtn" class="pill ghost" title="Paste HackerRank/manual">Hackerrank / Paste</button>
+            <span class="small muted" id="qCustomCount" style="margin-left:6px">• custom: loading…</span>
+            <span class="small muted" id="qLeetStatus" style="margin-left:6px"></span>
+          </div>
           <div class="editor-top">
             <div class="row">
               <select id="langSelect" class="select" style="width:160px">
@@ -615,6 +623,19 @@ p{margin:0}
 </div>
 <div id="confirmOverlay" class="overlay" aria-hidden="true"><div class="modal"><h3 id="confirmTitle">Confirm?</h3><p id="confirmMsg" class="small" style="color:var(--ink-2); margin:0"></p><div class="row"><button id="confirmCancel" class="btn secondary">Cancel</button><button id="confirmOk" class="btn">Confirm</button></div></div></div>
 <div id="promptOverlay" class="overlay" aria-hidden="true"><div class="modal"><h3 id="promptTitle">Enter value</h3><input id="promptInput" class="input"/><div class="row"><button id="promptCancel" class="btn secondary">Cancel</button><button id="promptOk" class="btn">Save</button></div></div></div>
+<div id="qUploadOverlay" class="overlay" aria-hidden="true"><div class="modal" style="max-width:560px; width:94vw; max-height:92vh; overflow:auto"><h3 id="qUpTitle">Upload Question</h3>
+<p class="small muted">Custom questions are shared to the pair via test runner. LeetCode import auto-fills below; HackerRank paste works too.</p>
+<div style="display:grid; gap:10px; margin-top:8px">
+  <div class="row" style="gap:8px"><input id="qUpSlug" class="input" placeholder="slug auto (optional)" style="flex:1"/><select id="qUpDiff" class="select" style="width:140px"><option>Easy</option><option selected>Medium</option><option>Hard</option><option>System</option></select><select id="qUpType" class="select" style="width:120px"><option value="dsa" selected>DSA</option><option value="system">System</option><option value="both">Both</option></select></div>
+  <input id="qUpTitleIn" class="input" placeholder="Title e.g. Two Sum Variation"/>
+  <textarea id="qUpDesc" class="textarea" placeholder="Description (markdown-ish) — problem statement, function signature expected" style="min-height:110px"></textarea>
+  <div class="grid-2" style="grid-template-columns:1fr 1fr; gap:8px"><input id="qUpInputFmt" class="input" placeholder="Input format (optional)"/><input id="qUpConstraints" class="input" placeholder="Constraints (e.g. 2 ≤ n ≤ 1e5)"/></div>
+  <div><label class="small muted">Test cases (JSON array of {input, expect} — min 1, max 8). Examples: [{"input":{"nums":[2,7],"t":9},"expect":[0,1]}] or [{"input":[2,7,11,15,9],"expect":[0,1]}]</label><textarea id="qUpTests" class="textarea" placeholder='[{"input":{"nums":[2,7,11,15],"t":9},"expect":[0,1]},{"input":{"nums":[3,2,4],"t":6},"expect":[1,2]},{"input":{"nums":[3,3],"t":6},"expect":[0,1]}]' style="min-height:110px; font-family:ui-monospace; font-size:12.5px"></textarea></div>
+  <div><label class="small muted">Starter per lang (JSON map, optional) e.g. {"javascript":"function twoSum...","python":"def two_sum..."}</label><textarea id="qUpStarters" class="textarea" placeholder='{"javascript":"function twoSum(nums,target){}","python":"def two_sum(nums,target):"}' style="min-height:80px; font-family:ui-monospace; font-size:12px"></textarea></div>
+  <div class="row" style="gap:8px"><input id="qUpLeetSlug" class="input" placeholder="LeetCode slug if imported (optional)" style="flex:1"/><span class="kbd" id="qUpStatus"></span></div>
+</div>
+<div class="row" style="justify-content:space-between; margin-top:12px"><span class="small muted">Saved to /api/questions — appears in your Question dropdown for the session.</span><span class="row"><button id="qUpCancel" class="btn secondary">Cancel</button><button id="qUpSave" class="btn">Save Question</button></span></div>
+</div></div>
 <div id="authOverlay" class="overlay" aria-hidden="true"><div class="modal" style="max-width:420px"><h3 id="authTitle">Sign in to Randori</h3>
 <p class="small" style="color:var(--ink-2);margin:0">Your name is your display name for pairings. Email is private, used only for notifications.</p>
 <div style="display:grid;gap:8px;margin-top:6px">
@@ -2498,6 +2519,16 @@ def allow(key, limit=5):
   // Expose for debug + empty-state buttons
   window._randori_onboard={ start:startOnboarding, next:nextOnboard, skip:skipOnboarding, get step(){return onboardStep}, get done(){return onboardCompleted} };
 
+  // Expose room helpers for deterministic Join Session (other IIFEs)
+  try{
+    window._randori_code = window._randori_code||{};
+    if(typeof loadRoom==='function') window._randori_code.loadRoom = loadRoom;
+    if(typeof renderRoomSelect==='function') window._randori_code.renderRoomSelect = renderRoomSelect;
+    Object.defineProperty(window._randori_code, 'currentRoom', { get:()=> currentRoom, set:(v)=> { currentRoom=v; }});
+    // tiny console sanity
+    Object.defineProperty(window, 'currentRoom', { get:()=> currentRoom, set:(v)=>{ currentRoom=v; }, configurable:true });
+  }catch(e){ console.warn('expose code helpers fail',e); }
+
   // ---------- tiny self-test: if hash stable
   console.assert(colorOf('Festus')===colorOf('festus'), 'color stable lowercasing');
 })();
@@ -2684,25 +2715,62 @@ def allow(key, limit=5):
     }
   }
 
+  function joinSessionDeterministic(){
+    try{
+      const weekId=currentWeekId; const pg=currentPair; if(!weekId||!pg){ if(typeof toast==='function') toast('No pair yet — wait for Sunday shuffle'); return; }
+      const pgId=pg.pg_id||pg.id;
+      const room=`week_${weekId}_pair_${pgId}`;
+      localStorage.setItem('randori-last-room', room);
+      // ensure roomSelect has option
+      const sel=document.getElementById('roomSelect');
+      if(sel){
+        let opt=[...sel.options].find(o=>o.value===room);
+        if(!opt){ opt=document.createElement('option'); opt.value=room; opt.textContent=`This Week × ${pg.topic||'Pair'}`; sel.appendChild(opt); }
+        sel.value=room;
+        // trigger loadRoom if exists
+        if(typeof loadRoom==='function'){ try{ loadRoom(room); }catch{} }
+        else if(window._randori_code && window._randori_code.loadRoom){ window._randori_code.loadRoom(room); }
+      }
+      if(typeof currentRoom!=='undefined'){ try{ currentRoom=room; }catch{} }
+      try{ window.currentRoom=room; }catch{}
+      // switch to code tab
+      document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+      const codeTab=document.querySelector('[data-tab="code"]'); if(codeTab) codeTab.classList.add('active');
+      document.querySelectorAll('.view').forEach(v=>v.style.display='none');
+      const codeView=document.getElementById('view-code'); if(codeView) codeView.style.display='block';
+      if(typeof toast==='function') toast('Joined session '+room.slice(0,12)+' • Code + Video + Board synced');
+      // update video label
+      const vr=document.getElementById('videoRoomLabel'); if(vr) vr.textContent='room '+room.slice(0,4);
+      // ensure board resizes etc
+      setTimeout(()=>{ try{ window.dispatchEvent(new Event('resize')); }catch{} },200);
+    }catch(e){ console.error('join fail',e); }
+  }
+  // expose
+  try{ window._randori_join=joinSessionDeterministic; }catch{}
+
   function renderPairCard(data){
     const partner=data.partner;
     const isAI = data.pair?.is_ai || partner?.is_ai;
     const area=document.getElementById('dashPairArea');
+    const weekId=data.week_id||data.week?.id;
+    const pg=data.pair;
+    const roomHint=`week_${weekId}_pair_${pg?.pg_id||pg?.id||'x'}`;
     if(isAI){
-      area.innerHTML=`<div class="partner-card" style="border-color:#c8f6a0"><div class="avatar" style="background:#c8f6a0">AI</div><div><b style="font-size:14px">You're paired with AI partner</b><div class="small muted" style="margin-top:4px">Odd one out this week — you get a sparring bot for DSA & System Design drills. No trios, no waiting.</div><div class="row" style="margin-top:8px"><button class="btn" onclick="document.querySelector('[data-tab=code]').click()">Start drill in Code</button></div></div></div>`;
+      area.innerHTML=`<div class="partner-card" style="border-color:#c8f6a0"><div class="avatar" style="background:#c8f6a0">AI</div><div style="flex:1"><b style="font-size:14px">You're paired with AI partner</b><div class="small muted" style="margin-top:4px">Odd one out this week — you get a sparring bot for DSA & System Design drills. No trios, no waiting.</div><div class="row" style="margin-top:12px; gap:8px"><button id="dashJoinSession" class="btn" style="background:var(--accent); color:#0f0f10; padding:11px 18px; font-size:14px; font-weight:700">▶ Join Session — Code + Video + Board</button><span class="kbd">${roomHint.slice(0,14)}</span></div></div></div>`;
+      document.getElementById('dashJoinSession')?.addEventListener('click', joinSessionDeterministic);
       return;
     }
     const focus = partner?.interview_focus || data.partner?.interview_focus || 'both';
-    area.innerHTML=`<div class="partner-card"><div class="avatar" style="background:${partner?.color||'#9aa0a6'}">${(partner?.name||'?').slice(0,2).toUpperCase()}</div><div style="flex:1"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px"><b style="font-size:14px">You're paired with ${partner?.name||'partner'} ✨</b><span class="kbd">${focus}</span></div><div class="small muted" style="margin-top:4px">${partner?.bio||'No bio yet — ask them what they’re prepping for.'} • ${partner?.tz||'TZ unknown'} • LeetCode: ${partner?.leetcode_handle||'—'}</div><div class="row" style="margin-top:10px"><span class="pill" style="font-size:11px">DSA / System / Both</span><div id="dashTopicPicker" class="pill-choice"><button class="chip" data-kind="dsa">DSA</button><button class="chip" data-kind="system">System</button><button class="chip active" data-kind="both">Both</button></div></div></div></div>`;
+    area.innerHTML=`<div class="partner-card"><div class="avatar" style="background:${partner?.color||'#9aa0a6'}">${(partner?.name||'?').slice(0,2).toUpperCase()}</div><div style="flex:1"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px"><b style="font-size:14px">You're paired with ${partner?.name||'partner'} ✨</b><span class="kbd">${focus}</span></div><div class="small muted" style="margin-top:4px">${partner?.bio||'No bio yet — ask them what they’re prepping for.'} • ${partner?.tz||'TZ unknown'} • LeetCode: ${partner?.leetcode_handle||'—'}</div><div class="row" style="margin-top:10px"><span class="pill" style="font-size:11px">DSA / System / Both</span><div id="dashTopicPicker" class="pill-choice"><button class="chip" data-kind="dsa">DSA</button><button class="chip" data-kind="system">System</button><button class="chip active" data-kind="both">Both</button></div></div><div class="row" style="margin-top:12px"><button id="dashJoinSession" class="btn" style="background:var(--accent); color:#0f0f10; padding:11px 18px; font-size:14px; font-weight:700">▶ Join Session — Code + Video + Board</button><span class="pill" style="font-size:11px">room ${roomHint.slice(-6)}</span><span class="small muted">agree time first, then jump in</span></div></div></div>`;
     // topic picker wire
     document.getElementById('dashTopicPicker')?.addEventListener('click', e=>{
       if(e.target.classList.contains('chip')){
         document.querySelectorAll('#dashTopicPicker .chip').forEach(c=>c.classList.remove('active'));
         e.target.classList.add('active');
-        // optional: toast sync
         if(typeof toast==='function') toast('Focus: '+e.target.textContent+' • tell your partner');
       }
     });
+    document.getElementById('dashJoinSession')?.addEventListener('click', joinSessionDeterministic);
   }
 
   function renderSchedule(data){
@@ -2884,6 +2952,296 @@ def allow(key, limit=5):
 
   // Expose
   window._randori_journey={ showDashboard, showProfileSetup, routeByAuth };
+})();
+</script>
+
+<script>
+// --- Question Panel: Upload + LeetCode Import + Run Upgrade + Deterministic Room Helper ---
+(function(){
+  const TOKEN_KEY='randori-token';
+  const ME_KEY='randori-me';
+
+  function tok(){ return localStorage.getItem(TOKEN_KEY)||''; }
+
+  // Custom questions store (in-memory + QUESTIONS static merge)
+  let CUSTOM_QUESTIONS=[];
+
+  async function fetchCustomQuestions(){
+    try{
+      const r=await fetch('/api/questions', {headers: tok()? {Authorization:'Bearer '+tok()} : {}});
+      const j=await r.json();
+      if(j.ok && Array.isArray(j.questions)){
+        CUSTOM_QUESTIONS=j.questions;
+        mergeIntoSelect();
+        document.getElementById('qCustomCount').textContent=`• custom: ${j.questions.length}`;
+        return j.questions;
+      }
+    }catch(e){ console.warn('custom fetch fail',e); }
+    const el=document.getElementById('qCustomCount'); if(el) el.textContent='• custom: 0 (offline)';
+    return [];
+  }
+
+  function mergeIntoSelect(){
+    const sel=document.getElementById('questionSelect');
+    if(!sel) return;
+    // keep built-ins but add custom opts if missing
+    const existingVals=new Set([...sel.options].map(o=>o.value));
+    CUSTOM_QUESTIONS.forEach(q=>{
+      if(!existingVals.has(q.slug)){
+        const o=document.createElement('option'); o.value=q.slug; o.textContent='✦ '+q.title; o.dataset.custom='1'; sel.appendChild(o);
+      }
+    });
+    // also ensure QUESTIONS global gets custom entries if window-visible? We will handle in renderQuestion patch
+  }
+
+  // Patch QUESTIONS array getter — we don't have direct reference, but we can hook renderQuestion
+  const origRenderQuestion = typeof renderQuestion==='function' ? renderQuestion : null;
+  // We will override renderQuestion if exists (hoisted var is function decl). Since this script loads after previous, renderQuestion is in scope of previous IIFE not global. So we need to find QUESTIONS array globally or implement our own.
+
+  // We'll rely on global window state: QUESTIONS defined in previous IIFE is not global, but qSelect onchange uses renderQuestion from closure. For custom, we implement parallel renderer.
+  function renderCustomQuestion(slug){
+    const q=CUSTOM_QUESTIONS.find(x=>x.slug===slug);
+    if(!q) return null;
+    const titleEl=document.getElementById('qTitle'); if(titleEl) titleEl.textContent=q.title;
+    const diffEl=document.getElementById('qDiff'); if(diffEl) diffEl.textContent=q.difficulty+' • custom';
+    const descEl=document.getElementById('qDesc'); if(descEl) descEl.innerHTML=`<div style="color:var(--ink-2)">${(q.description||'').slice(0,1200)}</div>${q.input_format?`<div class="small muted" style="margin-top:6px"><b>Input:</b> ${q.input_format}</div>`:''}${q.constraints_text?`<div class="small muted"><b>Constraints:</b> ${q.constraints_text}</div>`:''}`;
+    const exEl=document.getElementById('qExamples'); if(exEl){
+      const exs=q.examples||[];
+      exEl.innerHTML=(exs.slice(0,3).map(e=>`<div class="test"><div class="small"><b>Ex:</b> ${typeof e==='string'? e.slice(0,200) : JSON.stringify(e).slice(0,200)}</div></div>`).join('')||`<div class="small muted">No examples — see tests</div>`);
+    }
+    const consEl=document.getElementById('qConstraints'); if(consEl) consEl.textContent=q.constraints_text||'';
+    const testsEl=document.getElementById('qTests'); if(testsEl){
+      const tcs=q.test_cases||[];
+      testsEl.innerHTML=tcs.map((t,i)=>`<div class="test"><div class="small">Case ${i+1}: <span class="kbd">${JSON.stringify(t.input).slice(0,120)}</span> → <span class="small">${JSON.stringify(t.expect).slice(0,120)}</span></div></div>`).join('')||'<div class="small muted">no tests</div>';
+    }
+    // load starter into editor if empty or user agrees
+    try{
+      const lang=document.getElementById('langSelect')?.value||'javascript';
+      const starterMap=q.starter_per_lang||{};
+      const starter=starterMap[lang]||starterMap['javascript']||'';
+      const ed=document.getElementById('editor');
+      if(ed && (!ed.value.trim() || confirm(`Load starter for ${q.title} (${lang})?`))){ ed.value=starter||`// ${q.title}\nfunction solve(){\n  // implement\n}`; }
+    }catch{}
+    return q;
+  }
+
+  // Hook questionSelect change for custom handling
+  const qSel=document.getElementById('questionSelect');
+  if(qSel){
+    const baseOnChange=qSel.onchange;
+    qSel.addEventListener('change', (e)=>{
+      const v=qSel.value;
+      const isCustom=CUSTOM_QUESTIONS.some(c=>c.slug===v);
+      if(isCustom){
+        e.stopImmediatePropagation?.();
+        renderCustomQuestion(v);
+      }
+    }, true);
+  }
+
+  // Upload modal logic
+  const overlay=document.getElementById('qUploadOverlay');
+  document.getElementById('qUploadBtn')?.addEventListener('click', ()=>{
+    if(!tok()){ alert('Sign in to upload questions — needed for author tracking'); return; }
+    document.getElementById('qUpStatus').textContent='';
+    overlay?.classList.add('show');
+  });
+  document.getElementById('qUpCancel')?.addEventListener('click', ()=> overlay?.classList.remove('show'));
+  overlay?.addEventListener('click', (e)=>{ if(e.target===overlay) overlay.classList.remove('show'); });
+
+  document.getElementById('qUpSave')?.addEventListener('click', async()=>{
+    const title=document.getElementById('qUpTitleIn').value.trim();
+    const desc=document.getElementById('qUpDesc').value.trim();
+    const slug=document.getElementById('qUpSlug').value.trim();
+    const diff=document.getElementById('qUpDiff').value;
+    const type=document.getElementById('qUpType').value;
+    const inputFmt=document.getElementById('qUpInputFmt').value.trim();
+    const cons=document.getElementById('qUpConstraints').value.trim();
+    const testsRaw=document.getElementById('qUpTests').value.trim();
+    const startersRaw=document.getElementById('qUpStarters').value.trim();
+    const leetSlug=document.getElementById('qUpLeetSlug').value.trim();
+    const statusEl=document.getElementById('qUpStatus');
+    if(!title||!desc){ statusEl.textContent='title + description required'; return; }
+    let tests;
+    try{ tests=JSON.parse(testsRaw); if(!Array.isArray(tests)) throw new Error('tests array needed'); }catch(err){ statusEl.textContent='tests JSON parse error: '+err.message; return; }
+    let starters={};
+    if(startersRaw){
+      try{ starters=JSON.parse(startersRaw); }catch{ statusEl.textContent='starters JSON parse error'; return; }
+    }
+    let examples=[];
+    // try to infer examples from first 2 tests
+    examples=tests.slice(0,2).map(t=>({input:t.input, output:t.expect}));
+    try{
+      statusEl.textContent='saving…';
+      const r=await fetch('/api/questions',{ method:'POST', headers:{'content-type':'application/json', Authorization:'Bearer '+tok()}, body: JSON.stringify({ title, description:desc, slug: slug||undefined, difficulty:diff, type, input_format:inputFmt, constraints:inputFmt? cons : cons, constraints_text:cons, examples, test_cases:tests, starter_per_lang:starters, source: leetSlug? 'leetcode':'custom', leetcode_slug: leetSlug||null })});
+      const j=await r.json();
+      if(!r.ok) throw j;
+      statusEl.textContent='saved ✓ '+j.question.slug;
+      CUSTOM_QUESTIONS.unshift(j.question);
+      mergeIntoSelect();
+      if(qSel){ qSel.value=j.question.slug; renderCustomQuestion(j.question.slug); }
+      setTimeout(()=> overlay?.classList.remove('show'), 700);
+      if(window.toast) window.toast('Question saved: '+j.question.title);
+    }catch(e){ statusEl.textContent='save failed: '+(e.error||e.message||'err'); console.error(e); }
+  });
+
+  // LeetCode import
+  const leetStatus=document.getElementById('qLeetStatus');
+  async function leetImport(){
+    const slug=prompt('LeetCode slug e.g. two-sum, lru-cache, design-url-shortener — as in URL https://leetcode.com/problems/<slug>/');
+    if(!slug) return;
+    const clean=slug.trim().toLowerCase().replace(/.*problems\//,'').replace(/\/.*/,'');
+    if(leetStatus) leetStatus.textContent='fetching '+clean+'…';
+    try{
+      const query=`query questionData($titleSlug:String!){ question(titleSlug:$titleSlug){ questionId title titleSlug content exampleTestcases difficulty categoryTitle isPaidOnly sampleTestCase stats } }`;
+      const r=await fetch('https://leetcode.com/graphql', { method:'POST', headers:{'content-type':'application/json','Referer':'https://leetcode.com/','Origin':'https://leetcode.com'}, body: JSON.stringify({ query, variables:{ titleSlug: clean }})});
+      if(!r.ok) throw new Error('http '+r.status+' — likely CORS blocked');
+      const j=await r.json();
+      if(!j.data||!j.data.question) throw new Error('not found — check slug');
+      const q=j.data.question;
+      const content=q.content||'';
+      // strip HTML crudely
+      const text=content.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim().slice(0,4000);
+      const exCasesRaw=q.exampleTestcases||'';
+      let tests=[];
+      try{
+        // exampleTestcases often newline separated: for two-sum it's arrays then target
+        const lines=exCasesRaw.split('\n').filter(l=>l.trim());
+        for(let i=0;i<Math.min(lines.length,6); i+=2){
+          const a=lines[i]; const b=lines[i+1]||'';
+          // heuristic: if b exists and looks like number or small json, treat as second arg
+          if(b && lines.length%2===0){
+            tests.push({ input:{ nums: (()=>{try{return JSON.parse(a)}catch{return a}})(), t: (()=>{try{return JSON.parse(b)}catch{return b}})() }, expect: [], _raw: a+' / '+b });
+          }else{
+            tests.push({ input:{ raw:a }, expect: null, _raw:a });
+          }
+        }
+        if(!tests.length){
+          const sample=q.sampleTestCase||'';
+          if(sample) tests=[{input:{sample}, expect:null}];
+        }
+      }catch{ tests=[{input:{raw:exCasesRaw.slice(0,200)}, expect:null}] }
+      if(!tests.length) tests=[{input:{example:'see description'}, expect:'output per description'}];
+      // open upload modal prefilled
+      overlay?.classList.add('show');
+      document.getElementById('qUpTitleIn').value=q.title||clean;
+      document.getElementById('qUpSlug').value=clean;
+      document.getElementById('qUpDesc').value=text+'\n\n[source: LeetCode '+q.title+' — '+clean+']'+'\nDifficulty: '+q.difficulty+' • Category: '+q.categoryTitle;
+      document.getElementById('qUpDiff').value=q.difficulty||'Medium';
+      document.getElementById('qUpType').value='dsa';
+      document.getElementById('qUpInputFmt').value='see description';
+      document.getElementById('qUpConstraints').value='LeetCode constraints in description';
+      document.getElementById('qUpTests').value=JSON.stringify(tests.slice(0,5), null, 2);
+      document.getElementById('qUpLeetSlug').value=clean;
+      document.getElementById('qUpStarters').value=JSON.stringify({ javascript:`function ${clean.replace(/-./g, x=> x[1].toUpperCase())}(){\n  // LeetCode import: ${q.title}\n}`, python:`def ${clean.replace(/-/g,'_')}():\n    # ${q.title}\n    pass` }, null,2);
+      if(leetStatus) leetStatus.textContent='imported '+q.title+' • review tests then Save';
+      if(window.toast) window.toast('LeetCode imported: '+q.title);
+    }catch(e){
+      console.warn('leet fetch fail',e);
+      if(leetStatus) leetStatus.textContent='LeetCode fetch failed (CORS): '+e.message;
+      const fallback=confirm('LeetCode direct fetch blocked by CORS (common). Open upload modal and paste manually?\n\nTip: open https://leetcode.com/problems/'+clean+'/ in new tab, copy description + examples, then Save.');
+      if(fallback){
+        overlay?.classList.add('show');
+        document.getElementById('qUpTitleIn').value=clean;
+        document.getElementById('qUpSlug').value=clean;
+        document.getElementById('qUpLeetSlug').value=clean;
+      }
+    }
+  }
+  document.getElementById('qLeetBtn')?.addEventListener('click', leetImport);
+  document.getElementById('qHackBtn')?.addEventListener('click', ()=>{
+    overlay?.classList.add('show');
+    document.getElementById('qUpTitleIn').placeholder='HackerRank — e.g. Frequency Queries';
+    if(window.toast) window.toast('Paste HackerRank / manual question — Starter & tests needed');
+  });
+
+  // Run tests upgrade — wrap existing runCode
+  const runBtn=document.getElementById('runBtn');
+  const editor=document.getElementById('editor');
+  const runOut=document.getElementById('runOut');
+  function upgradedRun(){
+    const selVal=document.getElementById('questionSelect')?.value||'';
+    const customQ=CUSTOM_QUESTIONS.find(q=>q.slug===selVal);
+    const lang=document.getElementById('langSelect')?.value||'javascript';
+    const code=editor?.value||'';
+    if(customQ){
+      const cards=[];
+      const tcs=customQ.test_cases||[];
+      if(lang==='javascript' || lang==='typescript'){
+        // attempt to eval function: first function name detection
+        let fn=null, fnName=null;
+        try{
+          const m=code.match(/function\s+([a-zA-Z_$][0-9a-zA-Z_$]*)/);
+          if(m) fnName=m[1];
+          // build func
+          if(fnName){
+            // eslint-disable-next-line no-new-func
+            const wrapper=new Function(code+'; return typeof '+fnName+'!=="undefined"? '+fnName+' : null;');
+            fn=wrapper();
+          }
+        }catch{}
+        tcs.forEach((tc,i)=>{
+          try{
+            if(fn && tc.input!==undefined){
+              let args;
+              if(Array.isArray(tc.input)) args=tc.input;
+              else if(typeof tc.input==='object' && !Array.isArray(tc.input)){
+                // if input has single key and expect array, try Object.values
+                const vals=Object.values(tc.input);
+                // if solve expects two args, pass accordingly
+                args=vals;
+              }else args=[tc.input];
+              const got=fn.apply(null, Array.isArray(args)? args : [args]);
+              const exp=tc.expect;
+              let pass=false;
+              try{ pass=JSON.stringify(got)===JSON.stringify(exp) || (Array.isArray(got)&&Array.isArray(exp)&& JSON.stringify([...got].sort())===JSON.stringify([...exp].sort())); }catch{ pass=String(got)===String(exp); }
+              cards.push(`<div class="test" style="border-color:${pass?'var(--ok)':'var(--accent-3)'}"><div class="small"><b>Case ${i+1}</b> ${pass?'✓ pass':'✗ fail'} — got <span class="kbd">${JSON.stringify(got).slice(0,120)}</span> exp <span class="kbd">${JSON.stringify(exp).slice(0,120)}</span><div class="small muted">in: ${JSON.stringify(tc.input).slice(0,120)}</div></div></div>`);
+            }else{
+              // static heuristic
+              cards.push(`<div class="test" style="border-color:var(--line)"><div class="small">Case ${i+1}: in <span class="kbd">${JSON.stringify(tc.input).slice(0,100)}</span> → exp <span class="kbd">${JSON.stringify(tc.expect).slice(0,100)}</span><div class="small muted">no function ${fnName||'found'} — static check only, ${code.length>20?'code present':'add code'}</div></div></div>`);
+            }
+          }catch(err){
+            cards.push(`<div class="test" style="border-color:var(--accent-3)"><div class="small">Case ${i+1} error: ${String(err).slice(0,180)}</div></div>`);
+          }
+        });
+      }else{
+        // non-js heuristic for custom
+        tcs.forEach((tc,i)=>{
+          const ok = /return/.test(code) && code.length>20;
+          cards.push(`<div class="test" style="border-color:${ok?'var(--ok)':'var(--line)'}"><div class="small"><b>Case ${i+1}</b> ${ok?'✓ plausible':'○ needs work'} — language ${lang} • in <span class="kbd">${JSON.stringify(tc.input).slice(0,80)}</span> → <span class="kbd">${JSON.stringify(tc.expect).slice(0,80)}</span><div class="small muted">Heuristic only for ${lang} — JS eval for full run</div></div></div>`);
+        });
+      }
+      if(runOut) runOut.innerHTML=cards.join('')||'<div class="small muted">no tests</div>';
+      // sync to pair via video_signal question-sync if possible
+      try{
+        const room=document.getElementById('roomSelect')?.value||localStorage.getItem('randori-last-room')||'';
+        if(room){
+          fetch('/api/video/signal',{ method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ room_id:room, from_id: localStorage.getItem('randori-peer-id')||'anon', to_id:'', type:'question-sync', payload: JSON.stringify({ slug:customQ.slug, title:customQ.title, at: Date.now() })})}).catch(()=>{});
+        }
+      }catch{}
+      return;
+    }
+    // fallback to original static runner (call original runBtn onclick logic if wrapped)
+    try{
+      if(window._origRunCode){ window._origRunCode(); return; }
+    }catch{}
+    // minimal fallback: show message
+    if(runOut) runOut.innerHTML='<div class="small muted">Run: select a custom question or static one — custom run handles uploaded tests</div>';
+  }
+
+  // preserve original runCode if it's global in closure? We have access to window? The previous IIFE's runCode is not global, but runBtn.onclick was set to runCode in that IIFE. We override onclick to upgraded.
+  if(runBtn){
+    try{ window._origRunCode = runBtn.onclick; }catch{}
+    runBtn.onclick = upgradedRun;
+  }
+
+  // initial load
+  setTimeout(fetchCustomQuestions, 600);
+  document.addEventListener('DOMContentLoaded', ()=> setTimeout(fetchCustomQuestions, 400));
+
+  // Expose
+  window._randori_questions={ fetchCustomQuestions, get custom(){return CUSTOM_QUESTIONS}, mergeIntoSelect, renderCustomQuestion };
+
 })();
 </script>
 

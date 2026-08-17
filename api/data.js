@@ -35,6 +35,31 @@ async function ensureBaseTables(db){
   } catch {}
 }
 
+async function ensureCustomQuestions(db){
+  try{
+    await db.execute(`CREATE TABLE IF NOT EXISTS custom_questions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      slug TEXT UNIQUE NOT NULL,
+      title TEXT NOT NULL,
+      type TEXT DEFAULT 'dsa',
+      difficulty TEXT DEFAULT 'Medium',
+      category TEXT DEFAULT 'custom',
+      description TEXT NOT NULL,
+      input_format TEXT,
+      constraints_text TEXT,
+      examples TEXT,
+      test_cases TEXT NOT NULL,
+      starter_per_lang TEXT,
+      author_id INTEGER,
+      source TEXT DEFAULT 'custom',
+      leetcode_slug TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`);
+  }catch{}
+  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_cq_slug ON custom_questions(slug)`); }catch{}
+  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_cq_author ON custom_questions(author_id)`); }catch{}
+}
+
 async function ensureProfileMigrations(db){
   const alters=[
     `ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`,
@@ -57,6 +82,7 @@ async function ensureProfileMigrations(db){
   }catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_messages_pair ON pair_messages(pair_group_id, created_at)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_sched_pair ON pair_schedules(pair_group_id)`);}catch{}
+  await ensureCustomQuestions(db);
 }
 
 async function handleCircle(req,res){
@@ -169,7 +195,25 @@ async function handleInit(req,res){
     `CREATE TABLE IF NOT EXISTS ai_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL REFERENCES ai_sessions(id) ON DELETE CASCADE, role TEXT DEFAULT 'both', feedback_json TEXT NOT NULL, evidence TEXT, model_used TEXT, reason_for_pick TEXT, estimated_cost_cents INTEGER, confidence REAL DEFAULT 0.85, created_at TEXT DEFAULT (datetime('now')))`,
     `CREATE TABLE IF NOT EXISTS ai_usage (date TEXT PRIMARY KEY, calls INTEGER DEFAULT 0, tokens_in INTEGER DEFAULT 0, tokens_out INTEGER DEFAULT 0, updated_at TEXT DEFAULT (datetime('now')))`,
     `CREATE TABLE IF NOT EXISTS pair_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL, sender_id INTEGER NOT NULL, message TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`,
-    `CREATE TABLE IF NOT EXISTS pair_schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL, proposed_times TEXT, agreed_time TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))`
+    `CREATE TABLE IF NOT EXISTS pair_schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL, proposed_times TEXT, agreed_time TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))`,
+    `CREATE TABLE IF NOT EXISTS custom_questions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      slug TEXT UNIQUE NOT NULL,
+      title TEXT NOT NULL,
+      type TEXT DEFAULT 'dsa',
+      difficulty TEXT DEFAULT 'Medium',
+      category TEXT DEFAULT 'custom',
+      description TEXT NOT NULL,
+      input_format TEXT,
+      constraints_text TEXT,
+      examples TEXT,
+      test_cases TEXT NOT NULL,
+      starter_per_lang TEXT,
+      author_id INTEGER,
+      source TEXT DEFAULT 'custom',
+      leetcode_slug TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`
   ],"write");
   const migrations=[`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`,`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`,`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`,`ALTER TABLE auth_accounts ADD COLUMN is_demo INTEGER DEFAULT 0`,`ALTER TABLE auth_accounts ADD COLUMN bio TEXT`,`ALTER TABLE auth_accounts ADD COLUMN tz TEXT`,`ALTER TABLE auth_accounts ADD COLUMN interview_focus TEXT DEFAULT 'both'`,`ALTER TABLE auth_accounts ADD COLUMN leetcode_handle TEXT`,`ALTER TABLE pairing_weeks ADD COLUMN is_demo INTEGER DEFAULT 0`];
   for(const sql of migrations){ try{ await db.execute(sql);}catch(_){} }
@@ -177,10 +221,12 @@ async function handleInit(req,res){
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_video_signals_room_id ON video_signals(room_id, id)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_messages_pair ON pair_messages(pair_group_id, created_at)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_sched_pair ON pair_schedules(pair_group_id)`);}catch{}
-  return res.json({ ok:true, message:"Tables ready (incl profile fields bio/tz/focus + pair_messages + pair_schedules)" });
+  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_cq_slug ON custom_questions(slug)`);}catch{}
+  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_cq_author ON custom_questions(author_id)`);}catch{}
+  return res.json({ ok:true, message:"Tables ready (incl custom_questions + profile + pair_messages + pair_schedules)" });
 }
 
-// ----- NEW ENDPOINTS: profile, my-pair, schedule, messages -----
+// ----- NEW ENDPOINTS: profile, my-pair, schedule, messages, questions -----
 
 async function handleProfile(req,res){
   const payload = getAuthPayload(req);
@@ -216,14 +262,12 @@ async function handleProfile(req,res){
       updates.availability_updated_at = new Date().toISOString();
     }
     if (Object.keys(updates).length===0) return res.status(400).json({ error:'no fields to update', allowed });
-    // build set clause
     const cols = Object.keys(updates);
     const setSql = cols.map(c=>`${c}=?`).join(', ');
     const args = cols.map(c=>updates[c]).concat([userId]);
     try{
       await db.execute({ sql:`UPDATE auth_accounts SET ${setSql} WHERE id=?`, args });
     }catch(e){ return res.status(500).json({ error:'update failed', detail:String(e.message||e).slice(0,200)}); }
-    // return fresh
     const rs = await db.execute({ sql:`SELECT id,email,display_name,color,is_available,availability_updated_at,is_admin,bio,tz,interview_focus,leetcode_handle FROM auth_accounts WHERE id=?`, args:[userId] });
     const r = rs.rows[0];
     return res.json({ ok:true, user:{ id:r.id, email:r.email, name:r.display_name, display_name:r.display_name, color:r.color, is_available:!!r.is_available, availability_updated_at:r.availability_updated_at, is_admin:!!r.is_admin, bio:r.bio||'', tz:r.tz||'', interview_focus:r.interview_focus||'both', leetcode_handle:r.leetcode_handle||'' }});
@@ -239,26 +283,22 @@ async function handleMyPair(req,res){
   await ensureBaseTables(db);
   await ensureProfileMigrations(db);
   const userId = payload.id || payload.uid;
-  // latest non-demo week
   let weekId=null, weekRow=null;
   try{
     const w = await db.execute(`SELECT id, week_label, week_start, focus FROM pairing_weeks WHERE COALESCE(is_demo,0)=0 ORDER BY id DESC LIMIT 1`);
     if (w.rows.length){ weekRow=w.rows[0]; weekId=w.rows[0].id; }
   }catch{}
-  // Allow explicit week_id param override
   if (req.query?.week_id){
     const wid = parseInt(String(req.query.week_id),10);
     if (!isNaN(wid)) weekId=wid;
   }
   if (!weekId) return res.json({ ok:true, paired:false, reason:'no_week_yet', message:'No pairs yet — shuffles Sunday 08:00 BST' });
-  // find pair group for user in that week
   let grp=null;
   try{
     const g = await db.execute({ sql:`SELECT id as pg_id, week_id, user_a_id, user_b_id, is_ai_pair, topic, topic_kind FROM pairing_groups WHERE week_id=? AND (user_a_id=? OR user_b_id=?) LIMIT 1`, args:[weekId, userId, userId] });
     if (g.rows.length) grp=g.rows[0];
   }catch{}
   if (!grp){
-    // fallback any week
     try{
       const g2 = await db.execute({ sql:`SELECT pg.id as pg_id, pg.week_id, pg.user_a_id, pg.user_b_id, pg.is_ai_pair, pg.topic, pg.topic_kind, pw.week_label, pw.week_start FROM pairing_groups pg JOIN pairing_weeks pw ON pw.id=pg.week_id WHERE (pg.user_a_id=? OR pg.user_b_id=?) AND COALESCE(pw.is_demo,0)=0 ORDER BY pg.week_id DESC LIMIT 1`, args:[userId, userId] });
       if (g2.rows.length){
@@ -287,7 +327,6 @@ async function handleMyPair(req,res){
       partner={ id:partnerId, name:`User ${partnerId}`, is_ai:false };
     }
   }
-  // schedule
   let schedule=null;
   try{
     const s = await db.execute({ sql:`SELECT id, week_id, pair_group_id, proposed_times, agreed_time, updated_at FROM pair_schedules WHERE week_id=? AND pair_group_id=? LIMIT 1`, args:[weekId, grp.pg_id] });
@@ -295,13 +334,11 @@ async function handleMyPair(req,res){
       schedule={ id:s.rows[0].id, week_id:s.rows[0].week_id, pair_group_id:s.rows[0].pair_group_id, proposed_times: s.rows[0].proposed_times ? JSON.parse(s.rows[0].proposed_times) : [], agreed_time: s.rows[0].agreed_time||null, updated_at:s.rows[0].updated_at };
     }
   }catch{
-    // maybe proposed_times not JSON? fallback
     try{
       const s = await db.execute({ sql:`SELECT id, proposed_times, agreed_time FROM pair_schedules WHERE pair_group_id=? LIMIT 1`, args:[grp.pg_id] });
       if (s.rows.length) schedule={ proposed_times: s.rows[0].proposed_times ? JSON.parse(s.rows[0].proposed_times) : [], agreed_time: s.rows[0].agreed_time||null };
     }catch{}
   }
-  // last few messages preview
   let messagesPreview=[];
   try{
     const m = await db.execute({ sql:`SELECT id, sender_id, message, created_at FROM pair_messages WHERE week_id=? AND pair_group_id=? ORDER BY id DESC LIMIT 3`, args:[weekId, grp.pg_id] });
@@ -338,13 +375,11 @@ async function handleSchedule(req,res){
   const weekId = body.week_id ? parseInt(String(body.week_id),10) : (req.query?.week_id? parseInt(String(req.query.week_id),10): null);
   const pairId = body.pair_id ? parseInt(String(body.pair_id),10) : (body.pg_id ? parseInt(String(body.pg_id),10) : (req.query?.pair_id? parseInt(String(req.query.pair_id),10): null));
   if (!weekId || !pairId) return res.status(400).json({ error:'week_id and pair_id required' });
-  // verify membership
   try{
     const g = await db.execute({ sql:`SELECT user_a_id, user_b_id FROM pairing_groups WHERE id=? AND week_id=?`, args:[pairId, weekId] });
     if (!g.rows.length) return res.status(404).json({ error:'pair not found' });
     const a=g.rows[0].user_a_id, b=g.rows[0].user_b_id;
     if (a!==userId && b!==userId){
-      // allow admin to set? check admin
       const isAdminRows = await db.execute({ sql:`SELECT is_admin FROM auth_accounts WHERE id=?`, args:[userId] }).catch(()=>({rows:[]}));
       const isAdmin = isAdminRows.rows && isAdminRows.rows[0] && isAdminRows.rows[0].is_admin;
       if (!isAdmin) return res.status(403).json({ error:'not member of this pair' });
@@ -361,7 +396,6 @@ async function handleSchedule(req,res){
   if (body.agreed_time!==undefined){
     agreed = body.agreed_time ? String(body.agreed_time).trim().slice(0,200) : null;
   }
-  // upsert
   try{
     const existing = await db.execute({ sql:`SELECT id, proposed_times, agreed_time FROM pair_schedules WHERE week_id=? AND pair_group_id=? LIMIT 1`, args:[weekId, pairId] });
     if (!existing.rows.length){
@@ -371,7 +405,6 @@ async function handleSchedule(req,res){
       const cur = existing.rows[0];
       const newProposed = proposed !== null ? proposed : cur.proposed_times;
       const newAgreed = agreed !== null ? agreed : cur.agreed_time;
-      // if proposed null undefined keep existing; if agreed explicitly set to empty string means clear
       await db.execute({ sql:`UPDATE pair_schedules SET proposed_times=?, agreed_time=?, updated_at=datetime('now') WHERE id=?`, args:[newProposed, newAgreed, cur.id] });
     }
     const fresh = await db.execute({ sql:`SELECT id, week_id, pair_group_id, proposed_times, agreed_time, updated_at FROM pair_schedules WHERE week_id=? AND pair_group_id=? LIMIT 1`, args:[weekId, pairId] });
@@ -390,7 +423,6 @@ async function handleMessages(req,res){
     const weekId = req.query?.week_id ? parseInt(String(req.query.week_id),10) : null;
     const pairId = req.query?.pair_id ? parseInt(String(req.query.pair_id),10) : (req.query?.pg_id ? parseInt(String(req.query.pg_id),10) : null);
     if (!weekId || !pairId) return res.status(400).json({ error:'week_id and pair_id required' });
-    // optional after param
     const after = req.query?.after ? parseInt(String(req.query.after),10) : 0;
     try{
       let sql = `SELECT pm.id, pm.sender_id, pm.message, pm.created_at, aa.display_name as sender_name, aa.color as sender_color FROM pair_messages pm LEFT JOIN auth_accounts aa ON aa.id=pm.sender_id WHERE pm.week_id=? AND pm.pair_group_id=?`;
@@ -408,7 +440,6 @@ async function handleMessages(req,res){
     const text = body.message ? String(body.message).trim().slice(0,2000) : '';
     if (!weekId || !pairId) return res.status(400).json({ error:'week_id and pair_id required' });
     if (!text) return res.status(400).json({ error:'message required' });
-    // verify membership
     try{
       const g = await db.execute({ sql:`SELECT user_a_id, user_b_id FROM pairing_groups WHERE id=? AND week_id=?`, args:[pairId, weekId] });
       if (!g.rows.length) return res.status(404).json({ error:'pair not found' });
@@ -429,6 +460,89 @@ async function handleMessages(req,res){
   return res.status(405).json({ error:'GET or POST only' });
 }
 
+function slugify(s){
+  return String(s||'').toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,48) || ('q-'+Math.random().toString(36).slice(2,6));
+}
+
+async function handleQuestions(req,res){
+  const db = getClient();
+  await ensureBaseTables(db);
+  await ensureProfileMigrations(db);
+  if (req.method === 'GET'){
+    try{
+      const rs = await db.execute(`SELECT id, slug, title, type, difficulty, category, description, input_format, constraints_text, examples, test_cases, starter_per_lang, author_id, source, leetcode_slug, created_at FROM custom_questions ORDER BY id DESC LIMIT 100`);
+      const questions = rs.rows.map(r=>{
+        let examples=null, tcs=null, starters=null;
+        try{ examples = r.examples ? JSON.parse(r.examples) : [] }catch{ examples=[] }
+        try{ tcs = r.test_cases ? JSON.parse(r.test_cases) : [] }catch{ tcs=[] }
+        try{ starters = r.starter_per_lang ? JSON.parse(r.starter_per_lang) : {} }catch{ starters={} }
+        return { id:r.id, slug:r.slug, title:r.title, type:r.type||'dsa', difficulty:r.difficulty||'Medium', category:r.category||'custom', description:r.description, input_format:r.input_format||'', constraints_text:r.constraints_text||'', examples, test_cases:tcs, starter_per_lang:starters, author_id:r.author_id, source:r.source||'custom', leetcode_slug:r.leetcode_slug||null, created_at:r.created_at, is_custom:true };
+      });
+      return res.json({ ok:true, questions, count:questions.length });
+    }catch(e){ return res.status(500).json({ error:'questions fetch failed', detail:String(e.message||e).slice(0,300)}); }
+  }
+  if (req.method === 'POST'){
+    const payload = getAuthPayload(req);
+    if (!payload) return res.status(401).json({ error:'missing Bearer token' });
+    const userId = payload.id||payload.uid;
+    const body = req.body||{};
+    const title = body.title ? String(body.title).trim().slice(0,120) : '';
+    const description = body.description ? String(body.description).trim().slice(0,8000) : '';
+    let test_cases = body.test_cases;
+    if (typeof test_cases === 'string'){ try{ test_cases = JSON.parse(test_cases); }catch{ test_cases = null; } }
+    if (!title) return res.status(400).json({ error:'title required' });
+    if (!description) return res.status(400).json({ error:'description required' });
+    if (!Array.isArray(test_cases) || test_cases.length===0) return res.status(400).json({ error:'test_cases array min 1 required', example:'[{input:{...}, expect:...}]' });
+    if (test_cases.length>20) test_cases = test_cases.slice(0,20);
+    let slug = body.slug ? slugify(body.slug) : slugify(title);
+    // ensure uniqueness with suffix
+    try{
+      const existing = await db.execute({ sql:`SELECT id FROM custom_questions WHERE slug=?`, args:[slug] });
+      if (existing.rows.length){
+        slug = slug + '-' + Math.random().toString(36).slice(2,5);
+      }
+    }catch{}
+    const type = ['dsa','system','both','system_design'].includes(String(body.type||'').toLowerCase()) ? String(body.type).toLowerCase().replace('system_design','system') : 'dsa';
+    const difficulty = String(body.difficulty||'Medium').slice(0,20);
+    const category = String(body.category||'custom').slice(0,40);
+    const input_format = body.input_format ? String(body.input_format).slice(0,2000) : null;
+    const constraints_text = body.constraints_text || body.constraints ? String(body.constraints_text||body.constraints).slice(0,2000) : null;
+    const examples = body.examples ? JSON.stringify(body.examples).slice(0,8000) : JSON.stringify([]);
+    const tcsStr = JSON.stringify(test_cases).slice(0,16000);
+    const starters = body.starter_per_lang ? JSON.stringify(body.starter_per_lang).slice(0,12000) : (body.starters ? JSON.stringify(body.starters).slice(0,12000) : JSON.stringify({}));
+    const source = String(body.source||'custom').slice(0,20);
+    const leetSlug = body.leetcode_slug ? String(body.leetcode_slug).slice(0,120) : (body.leet_slug ? String(body.leet_slug).slice(0,120) : null);
+    try{
+      const ins = await db.execute({ sql:`INSERT INTO custom_questions (slug, title, type, difficulty, category, description, input_format, constraints_text, examples, test_cases, starter_per_lang, author_id, source, leetcode_slug, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now')) RETURNING id`, args:[slug, title, type, difficulty, category, description, input_format, constraints_text, examples, tcsStr, starters, userId, source, leetSlug] });
+      const id = ins.rows[0].id;
+      const rs = await db.execute({ sql:`SELECT id, slug, title, type, difficulty, category, description, input_format, constraints_text, examples, test_cases, starter_per_lang, author_id, source, leetcode_slug, created_at FROM custom_questions WHERE id=?`, args:[id] });
+      const r = rs.rows[0];
+      return res.json({ ok:true, question:{ id:r.id, slug:r.slug, title:r.title, type:r.type, difficulty:r.difficulty, category:r.category, description:r.description, input_format:r.input_format, constraints_text:r.constraints_text, examples: JSON.parse(r.examples||'[]'), test_cases: JSON.parse(r.test_cases||'[]'), starter_per_lang: JSON.parse(r.starter_per_lang||'{}'), author_id:r.author_id, source:r.source, leetcode_slug:r.leetcode_slug, created_at:r.created_at }});
+    }catch(e){ return res.status(500).json({ error:'insert failed', detail:String(e.message||e).slice(0,400)}); }
+  }
+  if (req.method === 'DELETE'){
+    const payload = getAuthPayload(req);
+    if (!payload) return res.status(401).json({ error:'missing Bearer token' });
+    const userId = payload.id||payload.uid;
+    const id = req.query?.id ? parseInt(String(req.query.id),10) : (req.body?.id ? parseInt(String(req.body.id),10) : null);
+    if (!id) return res.status(400).json({ error:'id required' });
+    try{
+      const rs = await db.execute({ sql:`SELECT author_id FROM custom_questions WHERE id=?`, args:[id] });
+      if (!rs.rows.length) return res.status(404).json({ error:'not found' });
+      const authorId = rs.rows[0].author_id;
+      let isAdmin=false;
+      try{
+        const adm = await db.execute({ sql:`SELECT is_admin FROM auth_accounts WHERE id=?`, args:[userId] });
+        isAdmin = !!adm.rows[0]?.is_admin;
+      }catch{}
+      if (authorId!==userId && !isAdmin) return res.status(403).json({ error:'only author or admin can delete' });
+      await db.execute({ sql:`DELETE FROM custom_questions WHERE id=?`, args:[id] });
+      return res.json({ ok:true, deleted:id });
+    }catch(e){ return res.status(500).json({ error:'delete failed', detail:String(e.message||e).slice(0,300)}); }
+  }
+  return res.status(405).json({ error:'GET, POST, DELETE only' });
+}
+
 export default async function handler(req,res){
   const ep = getEndpoint(req);
   const path = (req.url||'').toLowerCase();
@@ -440,5 +554,6 @@ export default async function handler(req,res){
   if (ep==='my-pair' || path.includes('my-pair') || ep==='mypair' || path.includes('my_pair') || ep==='my_pair') return handleMyPair(req,res);
   if (ep==='schedule' || path.includes('/schedule')) return handleSchedule(req,res);
   if (ep.includes('message')) return handleMessages(req,res);
-  return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['circle','weeks','history','init','profile','my-pair','schedule','messages'] });
+  if (ep==='questions' || ep==='question' || path.includes('/questions')) return handleQuestions(req,res);
+  return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['circle','weeks','history','init','profile','my-pair','schedule','messages','questions'] });
 }
