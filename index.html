@@ -10,57 +10,49 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 
-<!-- Sentry placeholder - set window.SENTRY_DSN or meta[name=sentry-dsn] or localStorage randori-sentry-dsn ; Vercel env SENTRY_DSN used server side -->
-<meta name="sentry-dsn" content="">
-<script src="https://browser.sentry-cdn.com/8.42.0/bundle.tracing.replay.min.js" crossorigin="anonymous" onerror="console.warn('sentry cdn failed')"></script>
+<!-- Sentry — DE loader provided by user (contains DSN, auto-inits) -->
+<script src="https://js-de.sentry-cdn.com/b4aa012a94edbcd36c8c92ef1aaeddfa.min.js" crossorigin="anonymous"></script>
 <script>
 (function(){
+  // DE loader auto-inits Sentry; just augment with Randori context + logger forwarding
   try{
-    // DSN resolution: meta > window.SENTRY_DSN > localStorage > placeholder (empty)
-    window.SENTRY_DSN = window.SENTRY_DSN || '';
-    try{
-      const m=document.querySelector('meta[name="sentry-dsn"]');
-      if(m && m.content && m.content.trim() && m.content.indexOf('__SENTRY')===-1) window.SENTRY_DSN=m.content.trim();
-    }catch{}
-    try{
-      if(!window.SENTRY_DSN){
-        const ls=localStorage.getItem('randori-sentry-dsn')||localStorage.getItem('SENTRY_DSN')||'';
-        if(ls) window.SENTRY_DSN=ls.trim();
-      }
-    }catch{}
-    if(window.SENTRY_DSN){
-      window.SENTRY_DSN=window.SENTRY_DSN.replace('__SENTRY_DSN_PLACEHOLDER__','').trim();
-    }
-    if(!window.SENTRY_DSN || window.SENTRY_DSN.indexOf('https://')!==0){
-      // no DSN -> Sentry no-op, but keep _sentryReady false
-      window._sentryReady=false;
-      return;
-    }
     if(window.Sentry){
+      window._sentryReady=true;
+      // expose last event for tagging
+      if(!window._randori_log) window._randori_log={_lastEvent:''};
+      // attach beforeSend to add route/event tags if not already set by loader
       try{
-        Sentry.init({
-          dsn: window.SENTRY_DSN,
-          environment: (location.hostname.includes('vercel.app')||location.hostname.includes('vercel')) ? 'production' : 'development',
-          tracesSampleRate: 0.1,
-          replaysSessionSampleRate: 0.0,
-          replaysOnErrorSampleRate: 0.5,
-          integrations: (typeof Sentry.browserTracingIntegration==='function' ? [Sentry.browserTracingIntegration(), Sentry.replayIntegration()] : []),
-          beforeSend(event){
-            try{
-              const last = window._randori_log && window._randori_log._lastEvent;
-              if(last){ event.tags = event.tags||{}; event.tags.randori_event=last; }
-              // attach route
-              event.tags = event.tags||{};
-              event.tags.route = location.pathname;
-            }catch(e){}
-            return event;
-          }
+        Sentry.addEventProcessor(function(event){
+          try{
+            const last = window._randori_log && window._randori_log._lastEvent;
+            if(last){ event.tags = event.tags||{}; event.tags.randori_event=last; }
+            event.tags = event.tags||{}; event.tags.app='randori-circle';
+          }catch{} return event;
         });
-        window._sentryReady=true;
-        // hook console errors maybe
-      }catch(e){ console.warn('sentry init fail', e); window._sentryReady=false; }
+      }catch{}
+      // forward logger errors to Sentry (keeps our table as source of truth)
+      var origLog = window._randori_log && window._randori_log.log;
+      if(window._randori_log && typeof window._randori_log.log==='function' && !window._randori_log._sentryPatched){
+        var base = window._randori_log.log.bind(window._randori_log);
+        window._randori_log.log = function(level,eventName,msg,meta){
+          try{ base(level,eventName,msg,meta); }catch{}
+          try{
+            window._randori_log._lastEvent = eventName||'';
+            if(level==='error' && window.Sentry){
+              Sentry.captureMessage(String(msg).slice(0,500), {level:'error', tags:{event:eventName||'unknown', source:'client'}});
+            } else if(level==='warn' && window.Sentry){
+              Sentry.captureMessage(String(msg).slice(0,500), {level:'warning', tags:{event:eventName||'unknown'}});
+            }
+          }catch{}
+        };
+        window._randori_log._sentryPatched=true;
+      }
+      console.log('[sentry] DE loader ready');
+    } else {
+      window._sentryReady=false;
+      console.warn('sentry loader failed to create window.Sentry');
     }
-  }catch(e){ console.warn('sentry bootstrap fail', e); }
+  }catch(e){ console.warn('sentry augment fail',e); window._sentryReady=false; }
 })();
 </script>
 
