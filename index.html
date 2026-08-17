@@ -501,7 +501,19 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
       if(hint) hint.textContent='sign in for personal history';
     }
     // circle admin UI toggle
-
+    const addRow=document.querySelector('#personName')?.parentElement;
+    const addInfo=document.getElementById('circleAutoNote');
+    if(addRow){
+      if(isAdmin()){
+        addRow.style.display='flex';
+        if(addInfo) addInfo.textContent='Admin: you see auto circle (all signed-up users, availability-filtered) + can still add manual test names above.';
+        const tt=document.querySelector('#view-circle .card-h span'); if(tt) tt.textContent='admin + auto circle';
+      } else {
+        addRow.style.display='none';
+        if(addInfo) addInfo.textContent='Circle = everyone who signed up — you are auto-included. New signups join next Sunday 08:00 BST. Toggle Available below.';
+      }
+    }
+    // shuffle buttons admin-only
     const nb=document.getElementById('newWeekBtn');
     const rb=document.getElementById('reshuffleBtn');
     let badge=document.getElementById('adminOnlyBadge');
