@@ -299,6 +299,8 @@ p{margin:0}
             <h2>This week</h2>
             <div class="row">
               <button id="newWeekBtn" class="btn" title="Create fresh pairs">New pairs</button>
+              <button id="demoRunBtn" class="btn" style="display:none" title="Admin: seed 6 demo users + shuffle">✦ Run Demo</button>
+              <button id="demoResetBtn" class="btn secondary" style="display:none" title="Admin: remove demo data">Reset Demo</button>
               <button id="reshuffleBtn" class="btn secondary" title="Mix again">Remix</button>
             </div>
           </div>
@@ -538,7 +540,23 @@ p{margin:0}
         if(addInfo) addInfo.textContent='You\'re in. New signups join next pairing.';
       }
     }
-    // shuffle buttons admin-only
+    // shuffle buttons admin-only (+ demo e2e)
+    const demoRun=document.getElementById('demoRunBtn');
+    const demoReset=document.getElementById('demoResetBtn');
+    if(demoRun){
+      if(isAdmin()){
+        demoRun.style.display='inline-flex';
+        // show Reset only if demo active flag
+        const demoActive = localStorage.getItem('randori-demo-active')==='1';
+        if(demoReset) demoReset.style.display = demoActive ? 'inline-flex' : 'inline-flex';
+        if(demoActive && demoReset){ demoReset.disabled=false; } // keep visible but enabled when active
+        if(!demoActive && demoReset){ demoReset.style.opacity='0.7'; }
+      } else {
+        demoRun.style.display='none';
+        if(demoReset) demoReset.style.display='none';
+      }
+    }
+
     const nb=document.getElementById('newWeekBtn');
     const rb=document.getElementById('reshuffleBtn');
     let badge=document.getElementById('adminOnlyBadge');
@@ -962,7 +980,68 @@ p{margin:0}
     }
   }
 
-  function idToPerson(id){ return getPeople().find(p=>p.id===id); }
+  
+  // ----- Admin demo E2E: seed -> shuffle, reset -----
+  async function demoRunE2E(){
+    if(!isAdmin()){ toast('admin only'); return; }
+    const runBtn=document.getElementById('demoRunBtn'); const resetBtn=document.getElementById('demoResetBtn');
+    if(runBtn){ runBtn.disabled=true; runBtn.textContent='Running demo…'; }
+    try{
+      // 1) seed
+      let seedRes;
+      try{
+        seedRes=await api('/api/admin/demo-seed',{method:'POST'});
+      }catch(e){
+        // fallback to ops endpoint directly
+        seedRes=await api('/api/ops?endpoint=demo-seed',{method:'POST'});
+      }
+      // 2) shuffle demo+real
+      let shuffleRes;
+      try{
+        shuffleRes=await api('/api/admin/demo-shuffle',{method:'POST'});
+      }catch(e){
+        shuffleRes=await api('/api/ops?endpoint=demo-shuffle',{method:'POST'});
+      }
+      localStorage.setItem('randori-demo-active','1');
+      toast(`Demo ready — ${seedRes.seeded_count||6} demo users + ${shuffleRes.count||'all'} paired`);
+      // refresh UI
+      try{ await renderPeople(); }catch{}
+      try{ await renderPairs(); }catch{}
+      try{ await renderHistory(); }catch{}
+      // update toggle visibility
+      updateAuthUI();
+      // pulse pairs view
+      document.querySelector('[data-tab="pair"]')?.click?.();
+    }catch(e){
+      const msg=e.error||e.message||'demo failed';
+      toast(msg);
+    }finally{
+      if(runBtn){ runBtn.disabled=false; runBtn.textContent='✦ Run Demo'; }
+    }
+  }
+
+  async function demoResetE2E(){
+    if(!isAdmin()){ toast('admin only'); return; }
+    const resetBtn=document.getElementById('demoResetBtn');
+    if(resetBtn){ resetBtn.disabled=true; resetBtn.textContent='Resetting…'; }
+    try{
+      let res;
+      try{ res=await api('/api/admin/demo-reset',{method:'POST'}); }
+      catch{ res=await api('/api/ops?endpoint=demo-reset',{method:'POST'}); }
+      localStorage.removeItem('randori-demo-active');
+      toast(`Demo cleared — ${res.deleted?.demo_users||0} users, ${res.deleted?.weeks||0} weeks`);
+      try{ await renderPeople(); }catch{}
+      try{ await renderPairs(); }catch{}
+      try{ await renderHistory(); }catch{}
+      updateAuthUI();
+    }catch(e){
+      toast(e.error||e.message||'reset failed');
+    }finally{
+      if(resetBtn){ resetBtn.disabled=false; resetBtn.textContent='Reset Demo'; resetBtn.style.opacity='0.7'; }
+    }
+  }
+
+function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   function renderPairsMeta(localCur, cloudCur){
     const meta=document.getElementById('currentWeekMeta');
@@ -1043,6 +1122,10 @@ p{margin:0}
   }
 
   // Buttons: if admin, fresh pairs else local demo only
+  document.getElementById('demoRunBtn')?.addEventListener('click', demoRunE2E);
+  document.getElementById('demoResetBtn')?.addEventListener('click', async()=>{
+    if(await showConfirm('Reset demo data?', 'This removes 6 demo users and demo weeks. Real users untouched.')) demoResetE2E();
+  });
   document.getElementById('newWeekBtn').onclick=async()=>{
     if(isAdmin()){
       return adminCloudReshuffle();
