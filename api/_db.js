@@ -15,6 +15,16 @@ export function getCronSecret() {
   return process.env.CRON_SECRET || getJwtSecret();
 }
 
+export function getAdminEmails() {
+  const raw = process.env.ADMIN_EMAILS || '';
+  const list = raw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  if (list.length === 0) {
+    // fallback default admin
+    return new Set(['festusomole14@gmail.com'.toLowerCase()]);
+  }
+  return new Set(list);
+}
+
 export function isoWeekLabel(d = new Date()) {
   const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
   const dayNum = date.getUTCDay() || 7;

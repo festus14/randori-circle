@@ -1,4 +1,4 @@
-import { getClient, getJwtSecret, deterministicColor } from '../../_db.js';
+import { getClient, getJwtSecret, deterministicColor, getAdminEmails } from '../../_db.js';
 import jwt from 'jsonwebtoken';
 
 function base64UrlDecode(str){
@@ -100,23 +100,28 @@ export default async function handler(req, res){
 
   const db = getClient();
   try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT)`);
+    await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0)`);
     await db.execute(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`);
+    try { await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`); } catch {}
+    try { await db.execute(`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`); } catch {}
+    try { await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`); } catch {}
   }catch{}
 
   const color = deterministicColor(finalName.toLowerCase());
 
   let authId;
+  let is_admin_final = false;
   try{
-    const existing = await db.execute({ sql: "SELECT id FROM auth_accounts WHERE email = ?", args: [email] });
+    const existing = await db.execute({ sql: "SELECT id, is_admin FROM auth_accounts WHERE email = ?", args: [email] });
     if (existing.rows.length){
       authId = existing.rows[0].id;
-      await db.execute({ sql: "UPDATE auth_accounts SET last_login = datetime('now'), display_name = COALESCE(?, display_name) WHERE id = ?", args: [finalName, authId] });
+      is_admin_final = !!existing.rows[0].is_admin || getAdminEmails().has(email);
+      await db.execute({ sql: "UPDATE auth_accounts SET last_login = datetime('now'), display_name = COALESCE(?, display_name), is_admin = ? WHERE id = ?", args: [finalName, is_admin_final ? 1 : 0, authId] });
     } else {
-      const ins = await db.execute({ sql: "INSERT INTO auth_accounts (email, password_hash, display_name, color, last_login) VALUES (?, ?, ?, ?, datetime('now')) RETURNING id", args: [email, 'google-oauth', finalName, color] });
+      is_admin_final = getAdminEmails().has(email);
+      const ins = await db.execute({ sql: "INSERT INTO auth_accounts (email, password_hash, display_name, color, last_login, is_available, is_admin) VALUES (?, ?, ?, ?, datetime('now'), 1, ?) RETURNING id", args: [email, 'google-oauth', finalName, color, is_admin_final ? 1 : 0] });
       authId = ins.rows[0].id;
     }
-    // ensure in users for pairing
     const uExist = await db.execute({ sql: "SELECT id FROM users WHERE lower(name)=?", args: [finalName.toLowerCase()] });
     if (!uExist.rows.length){
       await db.execute({ sql: "INSERT INTO users (name, color) VALUES (?,?)", args: [finalName, color] });
@@ -128,7 +133,7 @@ export default async function handler(req, res){
 
   let ourJwt;
   try{
-    ourJwt = jwt.sign({ uid: authId, email, name: finalName }, getJwtSecret(), { expiresIn: '30d' });
+    ourJwt = jwt.sign({ uid: authId, id: authId, email, name: finalName, is_admin: is_admin_final }, getJwtSecret(), { expiresIn: '30d' });
   }catch{
     res.writeHead(302, { Location: `${appUrl}/?google_error=jwt_error` });
     return res.end();

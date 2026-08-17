@@ -22,7 +22,8 @@ export default async function handler(req, res) {
       created_at TEXT DEFAULT (datetime('now')),
       last_login TEXT,
       is_available INTEGER DEFAULT 1,
-      availability_updated_at TEXT
+      availability_updated_at TEXT,
+      is_admin INTEGER DEFAULT 0
     )`,
     `CREATE TABLE IF NOT EXISTS pairing_weeks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,11 +57,12 @@ export default async function handler(req, res) {
   // Migration for existing DBs that were created before availability columns
   const migrations = [
     `ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`,
-    `ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`
+    `ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`,
+    `ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`
   ];
   for (const sql of migrations) {
     try { await db.execute(sql); } catch (_) { /* column already exists */ }
   }
 
-  return res.json({ ok: true, message: "Tables ready (incl auth_accounts + availability)" });
+  return res.json({ ok: true, message: "Tables ready (incl auth_accounts + availability + is_admin)" });
 }

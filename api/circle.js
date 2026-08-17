@@ -5,17 +5,18 @@ import { getClient } from './_db.js';
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'GET only' });
   const db = getClient();
-  // ensure tables exist (idempotent) incl availability migration
+  // ensure tables exist (idempotent) incl availability + is_admin migration
   try {
-    await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT)`);
+    await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0)`);
     await db.execute(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`);
   } catch {}
   try { await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`); } catch {}
   try { await db.execute(`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`); } catch {}
+  try { await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`); } catch {}
 
   // Prefer auth_accounts
   try {
-    const rs = await db.execute(`SELECT id, display_name, color, email, created_at, is_available, availability_updated_at FROM auth_accounts ORDER BY id`);
+    const rs = await db.execute(`SELECT id, display_name, color, email, created_at, is_available, availability_updated_at, is_admin FROM auth_accounts ORDER BY id`);
     if (rs.rows.length) {
       const circle = rs.rows.map(r => ({
         id: r.id,
@@ -27,6 +28,7 @@ export default async function handler(req, res) {
         is_available: r.is_available === null || r.is_available === undefined ? true : !!r.is_available,
         isAvailable: r.is_available === null || r.is_available === undefined ? true : !!r.is_available,
         availability_updated_at: r.availability_updated_at,
+        is_admin: !!r.is_admin,
         source: 'auth'
       }));
       return res.json({ ok: true, circle, count: circle.length, source: 'auth_accounts' });
@@ -36,7 +38,7 @@ export default async function handler(req, res) {
   // fallback legacy users
   try {
     const rs2 = await db.execute(`SELECT id, name, color, created_at FROM users ORDER BY id`);
-    const circle = rs2.rows.map(r=>({ id:r.id, display_name:r.name, name:r.name, color:r.color, created_at:r.created_at, is_available:true, isAvailable:true, source:'users' }));
+    const circle = rs2.rows.map(r=>({ id:r.id, display_name:r.name, name:r.name, color:r.color, created_at:r.created_at, is_available:true, isAvailable:true, is_admin:false, source:'users' }));
     return res.json({ ok:true, circle, count:circle.length, source:'users' });
   } catch(e){
     return res.status(500).json({ error:'db error', detail:String(e.message||e).slice(0,200) });
