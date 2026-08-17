@@ -134,6 +134,10 @@
       "destination": "/api/data?endpoint=execute"
     },
     {
+      "source": "/api/logs",
+      "destination": "/api/data?endpoint=logs"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

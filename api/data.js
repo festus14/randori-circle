@@ -244,6 +244,86 @@ async function ensureSessionRuns(db){
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_user_q ON session_runs(user_id, question_slug)`);}catch{}
 }
 
+async function ensureAppLogs(db){
+  try{
+    await db.execute(`CREATE TABLE IF NOT EXISTS app_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      level TEXT NOT NULL,
+      source TEXT NOT NULL,
+      event TEXT,
+      message TEXT NOT NULL,
+      meta_json TEXT,
+      user_id INTEGER,
+      route TEXT,
+      ua TEXT,
+      ip TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`);
+  }catch(e){ /* ignore */ }
+  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_logs_level_created ON app_logs(level, created_at DESC)`);}catch{}
+  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_logs_event_created ON app_logs(event, created_at DESC)`);}catch{}
+  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_logs_source_created ON app_logs(source, created_at DESC)`);}catch{}
+  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_logs_created ON app_logs(created_at DESC)`);}catch{}
+}
+
+// In-memory rate limit map for client logs per IP
+const __logRateMap = new Map(); // ip -> [timestamps]
+function isLogRateLimited(ip){
+  const now=Date.now();
+  const arr = __logRateMap.get(ip) || [];
+  const fresh = arr.filter(t=> now - t < 60000);
+  if(fresh.length >= 60){ __logRateMap.set(ip, fresh); return true; }
+  fresh.push(now);
+  __logRateMap.set(ip, fresh);
+  if(__logRateMap.size>500){ // prune
+    for(const [k,v] of __logRateMap.entries()){ if(v.length && now - v[0] > 120000) __logRateMap.delete(k); if(__logRateMap.size<400) break; }
+  }
+  return false;
+}
+
+async function logServer(level, event, message, meta, reqCtx){
+  try{
+    const db=getClient();
+    await ensureAppLogs(db);
+    const allowed=['info','warn','error','success','debug'];
+    let lvl=String(level||'info').toLowerCase();
+    if(!allowed.includes(lvl)) lvl='info';
+    const src = (reqCtx && reqCtx.source) ? String(reqCtx.source).slice(0,20) : 'server';
+    const ev = event ? String(event).slice(0,80) : null;
+    let msg = String(message||'').slice(0,2000);
+    let metaStr=null;
+    if(meta!=null){
+      try{ metaStr = typeof meta==='string' ? meta.slice(0,8000) : JSON.stringify(meta).slice(0,8000); }catch{ metaStr=String(meta).slice(0,8000); }
+    }
+    let user_id=null;
+    try{
+      if(reqCtx){
+        if(reqCtx.user_id) user_id=reqCtx.user_id;
+        else if(reqCtx.payload && (reqCtx.payload.id||reqCtx.payload.uid)) user_id=reqCtx.payload.id||reqCtx.payload.uid;
+        else if(reqCtx.userId) user_id=reqCtx.userId;
+      }
+    }catch{}
+    let route=null, ua=null, ip=null;
+    try{
+      if(reqCtx && reqCtx.route) route=String(reqCtx.route).slice(0,300);
+      else if(reqCtx && reqCtx.headers && reqCtx.url) route=String(reqCtx.url).slice(0,300);
+      else if(reqCtx && reqCtx.req && reqCtx.req.url) route=String(reqCtx.req.url).slice(0,300);
+      // Also allow passing route directly as string in meta? ignore
+      if(reqCtx && reqCtx.ua) ua=String(reqCtx.ua).slice(0,300);
+      else if(reqCtx && reqCtx.headers) ua = (reqCtx.headers['user-agent']||reqCtx.headers['User-Agent']||'').toString().slice(0,300);
+      else if(reqCtx && reqCtx.req && reqCtx.req.headers) ua = (reqCtx.req.headers['user-agent']||'').toString().slice(0,300);
+      if(reqCtx && reqCtx.ip) ip=String(reqCtx.ip).slice(0,80);
+      else if(reqCtx && reqCtx.headers) ip = (reqCtx.headers['x-forwarded-for']||reqCtx.headers['x-real-ip']||'').toString().split(',')[0].trim().slice(0,80);
+      else if(reqCtx && reqCtx.req && reqCtx.req.headers) ip = (reqCtx.req.headers['x-forwarded-for']||'').toString().split(',')[0].trim().slice(0,80);
+    }catch{}
+    await db.execute({sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at) VALUES (?,?,?,?,?,?,?,?,?, datetime('now'))`, args:[lvl, src, ev, msg, metaStr, user_id, route, ua, ip]});
+  }catch(e){
+    // never throw — log to console as fallback
+    try{ console.warn('[logServer fail]', e && e.message); }catch{}
+  }
+}
+
+
 async function ensureProfileMigrations(db){
   const alters=[
     `ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`,
@@ -268,6 +348,94 @@ async function ensureProfileMigrations(db){
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_sched_pair ON pair_schedules(pair_group_id)`);}catch{}
   await ensureCustomQuestions(db);
   await ensureSessionRuns(db);
+  try{ await ensureAppLogs(db); }catch{}
+}
+
+
+async function handleLogs(req,res){
+  // POST: client logs ingest, GET: admin fetch
+  const db = getClient();
+  try{ await ensureAppLogs(db); }catch{}
+  if(req.method==='POST'){
+    // rate limit by IP
+    let ip='';
+    try{ ip=(req.headers['x-forwarded-for']||req.headers['x-real-ip']||'').toString().split(',')[0].trim(); if(!ip && req.headers['x-forwarded-for']){ ip=req.headers['x-forwarded-for']; } }catch{}
+    if(ip && isLogRateLimited(ip)){
+      return res.status(429).json({error:'rate limited — too many logs', retry_after:'60s'});
+    }
+    const payload = getAuthPayload(req); // optional
+    const userId = payload ? (payload.id||payload.uid||null) : null;
+    const body = req.body || {};
+    // support batch array
+    let batch = [];
+    if(Array.isArray(body)) batch = body;
+    else if(Array.isArray(body.logs)) batch = body.logs;
+    else batch = [body];
+    const allowedLevels = new Set(['info','warn','error','success','debug']);
+    let inserted=0;
+    for(const entry of batch.slice(0,20)){ // cap 20 per request
+      let lvl = String(entry.level||'info').toLowerCase();
+      if(!allowedLevels.has(lvl)) lvl='info';
+      let src = String(entry.source||'client').slice(0,20);
+      let ev = entry.event ? String(entry.event).slice(0,80) : null;
+      let msg = String(entry.message||'').slice(0,2000);
+      if(!msg) continue;
+      let metaStr=null;
+      try{
+        if(entry.meta!=null) metaStr = typeof entry.meta==='string' ? String(entry.meta).slice(0,8000) : JSON.stringify(entry.meta).slice(0,8000);
+        else if(entry.meta_json) metaStr = String(entry.meta_json).slice(0,8000);
+      }catch{}
+      let route = entry.route ? String(entry.route).slice(0,300) : null;
+      if(!route){
+        try{ route = (req.url||'').toString().slice(0,300); }catch{}
+      }
+      let ua = entry.ua ? String(entry.ua).slice(0,300) : (req.headers['user-agent']||'').toString().slice(0,300);
+      let entryIp = ip || (req.headers['x-forwarded-for']||'').toString().split(',')[0].trim().slice(0,80);
+      try{
+        await db.execute({sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at) VALUES (?,?,?,?,?,?,?,?,?, datetime('now'))`, args:[lvl, src, ev, msg, metaStr, userId, route, ua, entryIp]});
+        inserted++;
+      }catch(e){ /* ignore per entry */ }
+      // fire console for visibility in Vercel logs
+      try{ if(lvl==='error') console.error(`[client][${ev}] ${msg}`); else if(lvl==='warn') console.warn(`[client][${ev}] ${msg}`); else console.log(`[client][${lvl}][${ev}] ${msg}`);}catch{}
+    }
+    return res.json({ok:true, inserted});
+  }
+  if(req.method==='GET'){
+    // admin only
+    const adminCtx = await requireAdminDT(req,res);
+    if(!adminCtx) return;
+    const url = new URL(req.url,'http://localhost');
+    const level = (req.query?.level || url.searchParams.get('level') || '').toString().toLowerCase().trim();
+    const event = (req.query?.event || url.searchParams.get('event') || '').toString().trim().slice(0,80);
+    const source = (req.query?.source || url.searchParams.get('source') || '').toString().trim().slice(0,20);
+    const limitRaw = parseInt(String(req.query?.limit || url.searchParams.get('limit') || '100'),10);
+    const limit = Math.min(200, Math.max(1, isNaN(limitRaw)?100:limitRaw));
+    const sinceRaw = (req.query?.since || url.searchParams.get('since') || '').toString().trim();
+    let where=[]; let args=[];
+    if(level && ['info','warn','error','success','debug'].includes(level)){ where.push('level=?'); args.push(level); }
+    if(event){ where.push('event=?'); args.push(event); }
+    if(source){ where.push('source=?'); args.push(source); }
+    if(sinceRaw){
+      // allow ISO or id > ?
+      const idSince = parseInt(sinceRaw,10);
+      if(!isNaN(idSince) && String(idSince)===sinceRaw){ where.push('id>?'); args.push(idSince); }
+      else { where.push('created_at>=?'); args.push(sinceRaw); }
+    }
+    let sql = `SELECT id, level, source, event, message, meta_json, user_id, route, ua, ip, created_at FROM app_logs`;
+    if(where.length) sql += ` WHERE ` + where.join(' AND ');
+    sql += ` ORDER BY id DESC LIMIT ?`;
+    args.push(limit);
+    try{
+      const rs = await db.execute({sql, args});
+      const logs = rs.rows.map(r=>{
+        let meta=null;
+        try{ meta = r.meta_json ? JSON.parse(r.meta_json) : null; }catch{ meta = r.meta_json; }
+        return { id:r.id, level:r.level, source:r.source, event:r.event, message:r.message, meta, meta_json:r.meta_json, user_id:r.user_id, route:r.route, ua:r.ua, ip:r.ip, created_at:r.created_at };
+      });
+      return res.json({ok:true, logs, count:logs.length});
+    }catch(e){ return res.status(500).json({error:'logs fetch failed', detail:String(e.message||e).slice(0,300)}); }
+  }
+  return res.status(405).json({error:'GET or POST only for logs'});
 }
 
 async function handleCircle(req,res){
@@ -290,7 +458,7 @@ async function handleCircle(req,res){
     const rs2 = await db.execute(`SELECT id, name, color, created_at FROM users ORDER BY id`);
     const circle = rs2.rows.map(r=>({ id:r.id, display_name:r.name, name:r.name, color:r.color, created_at:r.created_at, is_available:true, isAvailable:true, is_admin:false, is_demo:false, source:'users' }));
     return res.json({ ok:true, circle, count:circle.length, source:'users' });
-  }catch(e){ return res.status(500).json({ error:'db error', detail:String(e.message||e).slice(0,200)}); }
+  }catch(e){ try{ await logServer('error','circle_fetch_fail', `circle db error ${String(e.message||e).slice(0,150)}`, {err:String(e.message||e).slice(0,500)}, {req, source:'server'}); }catch{} return res.status(500).json({ error:'db error', detail:String(e.message||e).slice(0,200)}); }
 }
 
 async function handleWeeks(req,res){
@@ -332,7 +500,7 @@ async function handleWeeks(req,res){
       return { id:w.id, week_label:w.week_label, week_start:w.week_start, focus:w.focus, created_at:w.created_at, is_demo:!!w.is_demo, pairs };
     });
     return res.json({ ok:true, weeks, filtered_demo: !includeDemo });
-  }catch(e){ return res.status(500).json({ ok:false, error:'weeks query failed', detail:String(e.message||e).slice(0,300)}); }
+  }catch(e){ try{ await logServer('error','weeks_fetch_fail', `weeks query fail ${String(e.message||e).slice(0,120)}`, {err:String(e.message||e).slice(0,400)}, {req, source:'server'}); }catch{} return res.status(500).json({ ok:false, error:'weeks query failed', detail:String(e.message||e).slice(0,300)}); }
 }
 
 async function handleHistory(req,res){
@@ -397,6 +565,19 @@ async function handleInit(req,res){
       author_id INTEGER,
       source TEXT DEFAULT 'custom',
       leetcode_slug TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS app_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      level TEXT NOT NULL,
+      source TEXT NOT NULL,
+      event TEXT,
+      message TEXT NOT NULL,
+      meta_json TEXT,
+      user_id INTEGER,
+      route TEXT,
+      ua TEXT,
+      ip TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     )`,
     `CREATE TABLE IF NOT EXISTS session_runs (
@@ -775,6 +956,7 @@ async function handleRuns(req,res){
       const ins = await db.execute({ sql:`INSERT INTO session_runs (user_id, week_id, pair_group_id, question_id, question_slug, language, code, test_cases_snapshot, results_json, passed_count, total_count, duration_ms, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?, ?, datetime('now')) RETURNING id`, args:[userId, week_id, pair_group_id, question_id, question_slug, language, code, test_cases_snapshot, results_json, passed_count||0, total_count||0, duration_ms]});
       const id = ins.rows[0].id;
       const row = await db.execute({ sql:`SELECT id, user_id, week_id, pair_group_id, question_id, question_slug, language, passed_count, total_count, duration_ms, created_at FROM session_runs WHERE id=?`, args:[id]});
+      try{ await logServer('success','run_created',`run ${row.rows[0].id} ${question_slug||''} ${language} ${passed_count}/${total_count}`, {run_id:row.rows[0].id, question_slug, language, passed_count, total_count, duration_ms}, {req, payload, source:'server'}); }catch{}
       return res.json({ ok:true, run: row.rows[0] });
     }catch(e){ return res.status(500).json({ error:'insert failed', detail:String(e.message||e).slice(0,300)}); }
   }
@@ -929,6 +1111,7 @@ async function handleLeetcode(req,res){
     };
     return res.json({ ok:true, cached:false, question:ret });
   }catch(e){
+    try{ await logServer('warn','leetcode_fetch_fail', `leet ${slug} fail ${String(e.message||e).slice(0,120)}`, {slug, err:String(e.message||e).slice(0,300)}, {req, source:'server'}); }catch{}
     return res.status(500).json({ ok:false, error:'leetcode fetch failed', slug, detail:String(e.message||e).slice(0,300) });
   }
 }
@@ -1183,8 +1366,10 @@ function buildCppHarness(userCode, testCases){
 }
 
 async function handleExecute(req,res){
+  const _execStart=Date.now();
   if(req.method!=='POST') return res.status(405).json({error:'POST only for execute'});
   try{ await ensureBaseTables(getClient()); }catch{}
+  try{ await ensureAppLogs(getClient()); }catch{}
   const body = req.body || {};
   let language = String(body.language||body.lang||'javascript').toLowerCase();
   const map = {js:'javascript', javascript:'javascript', ts:'typescript', typescript:'typescript', py:'python', python:'python', java:'java', go:'go', golang:'go', cpp:'c++', 'c++':'c++', c:'c'};
@@ -1225,8 +1410,11 @@ async function handleExecute(req,res){
       results.push({raw:stdout.slice(0,2000), stderr:stderr.slice(0,1000)});
     }
     const passed = results.filter(r=>r.pass===true).length;
+    const dur = Date.now()-_execStart;
+    try{ await logServer(passed===testCases.length?'success':'info', 'execute_success', `piston ${pistonLang} ${passed}/${testCases.length} in ${dur}ms`, {language:pistonLang, version, passed, total:testCases.length, dur, hasStderr:!!stderr}, {req, source:'runner', route:req.url}); }catch{}
     return res.json({ok:true, language:pistonLang, version, piston:{code:run.code, signal:run.signal, stderr:stderr.slice(0,2000), stdout:stdout.slice(0,5000)}, results, passed_count:passed, total_count:testCases.length, test_cases:testCases});
   }catch(e){
+    try{ await logServer('error', 'execute_fail', `piston ${pistonLang} fail: ${String(e.message||e).slice(0,200)}`, {language:pistonLang, err:String(e.message||e).slice(0,500)}, {req, source:'runner', route:req.url}); }catch{}
     return res.status(500).json({ok:false, error:'piston execute failed', detail:String(e.message||e).slice(0,500), language:pistonLang});
   }
 }
@@ -1247,8 +1435,9 @@ export default async function handler(req,res){
   if (ep==='schedule' || path.includes('/schedule')) return handleSchedule(req,res);
   if (ep.includes('message')) return handleMessages(req,res);
   if (ep==='execute' || ep==='run' || path.includes('/execute')) return handleExecute(req,res);
+  if (ep==='logs' || path.includes('/logs') || ep==='applogs' || ep==='app_logs') return handleLogs(req,res);
   if (ep==='questions' || ep==='question' || path.includes('/questions')) return handleQuestions(req,res);
-  return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['runs','execute','leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','schedule','messages','questions'] });
+  return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['runs','execute','logs','leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','schedule','messages','questions'] });
 }
 // auto-seed from bundled file on first questions request
 async function maybeSeedFromStatic(db){

@@ -350,6 +350,100 @@ p{margin:0}
 .btn .spinner{ vertical-align:middle; margin-left:6px }
 
 </style>
+
+<script>
+/* Randori Logger — client batcher, flushed to /api/logs. Sentry/Better Stack ready */
+(function(){
+  if(window._randori_log) return;
+  const TOKEN_KEY='randori-token';
+  const q=[];
+  let flushing=false, lastFlush=0;
+  function getRoute(){ try{ return location.pathname + location.search; }catch{ return '/'; } }
+  function getTok(){ try{ return localStorage.getItem(TOKEN_KEY)||''; }catch{ return ''; } }
+  function baseMeta(extra){
+    const m={};
+    try{ m.ua=navigator.userAgent.slice(0,300); }catch{}
+    try{ m.href=location.href.slice(0,500); }catch{}
+    try{ m.route=getRoute(); }catch{}
+    try{ m.ts=new Date().toISOString(); }catch{}
+    if(extra && typeof extra==='object'){ for(const k in extra) if(!(k in m)) m[k]=extra[k]; }
+    return m;
+  }
+  function consoleMirror(level, msg){
+    try{
+      const pre='[randori:'+level+']';
+      if(level==='error') console.error(pre, msg);
+      else if(level==='warn') console.warn(pre, msg);
+      else if(level==='debug') console.debug(pre, msg);
+      else console.log(pre, msg);
+    }catch{}
+  }
+  function enqueue(level, event, message, meta){
+    const lvl=(level||'info').toLowerCase();
+    const allowed=['info','warn','error','success','debug'];
+    const lv=allowed.includes(lvl)?lvl:'info';
+    const entry={level:lv, source:'client', event: event? String(event).slice(0,80):'app', message: String(message||'').slice(0,2000), meta: meta? baseMeta(typeof meta==='object'? meta:{extra:meta}): baseMeta(), route:getRoute(), ts: new Date().toISOString()};
+    q.push(entry);
+    if(q.length>100) q.shift();
+    consoleMirror(lv, (event? '['+event+'] ':'')+message);
+    // immediate flush on error
+    if(lv==='error' || event==='monaco_load_fail' || event==='js_exception' || event==='unhandled_rejection'){
+      setTimeout(flush, 200);
+    } else if(Date.now()-lastFlush>3000 && q.length>=3){
+      setTimeout(flush, 400);
+    }
+    return entry;
+  }
+  async function flush(){
+    if(flushing||!q.length) return;
+    flushing=true; lastFlush=Date.now();
+    const batch=q.splice(0,20);
+    try{
+      const tok=getTok();
+      const headers={'content-type':'application/json'};
+      if(tok) headers['authorization']='Bearer '+tok;
+      // fire-and-forget
+      fetch('/api/logs',{method:'POST', headers, body: JSON.stringify(batch.length===1? batch[0]: {logs: batch})}).catch(()=>{});
+    }catch{}
+    flushing=false;
+    if(q.length) setTimeout(flush, 1500);
+  }
+  // interval flush
+  setInterval(flush, 5000);
+  // global error handlers
+  window.addEventListener('error', (e)=>{
+    try{
+      const msg = (e.message||'js_exception').slice(0,800) + ' @ ' + (e.filename||'')+':'+(e.lineno||'')+':'+(e.colno||'');
+      enqueue('error','js_exception', msg, {stack: e.error && e.error.stack ? String(e.error.stack).slice(0,2000) : '', filename:e.filename});
+    }catch{}
+  });
+  window.addEventListener('unhandledrejection', (e)=>{
+    try{
+      const reason = e.reason || {};
+      const msg = (reason.message||String(reason)||'unhandled_rejection').slice(0,800);
+      enqueue('error','unhandled_rejection', msg, {stack: reason.stack? String(reason.stack).slice(0,2000):''});
+    }catch{}
+  });
+  // Sentry hook placeholder:
+  // if(window.SENTRY_DSN){ SENTRY init here and forward enqueue to Sentry.captureMessage }
+  // Better Stack / Logtail hook: if window.LOGTAIL_TOKEN set, POST there too.
+
+  window._randori_log={
+    _q:q,
+    log:(level,event,msg,meta)=>enqueue(level,event,msg,meta),
+    info:(event,msg,meta)=>enqueue('info',event,msg,meta),
+    warn:(event,msg,meta)=>enqueue('warn',event,msg,meta),
+    error:(event,msg,meta)=>enqueue('error',event,msg,meta),
+    success:(event,msg,meta)=>enqueue('success',event,msg,meta),
+    debug:(event,msg,meta)=>enqueue('debug',event,msg,meta),
+    flush,
+    get queue(){ return q.slice(); }
+  };
+  // expose for console
+  try{ window._log=window._randori_log.log; }catch{}
+})();
+</script>
+
 </head>
 <body>
 <div class="shell">
@@ -455,7 +549,9 @@ p{margin:0}
         <div style="margin:14px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">History</h3><div style="flex:1;height:1px;background:var(--border)"></div><button id="dashHistAll" class="pill" style="font-size:11px">full history →</button></div>
         <div id="dashHistoryArea" class="card" style="padding:10px"><div id="dashHistList" class="small muted">Loading recent…</div></div>
         <div style="margin:14px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Recent runs</h3><div style="flex:1;height:1px;background:var(--border)"></div><button id="recentRunsRefresh" class="pill" style="font-size:11px">refresh</button></div>
+
         <div id="recentRunsArea" class="card" style="padding:10px"><div id="recentRunsList" class="small muted">No runs yet — hit ▶ Run</div></div>
+        <div id="logsArea" class="card" style="padding:10px; display:none; margin-top:12px; border-color:#2a2e38"><div style="display:flex; justify-content:space-between; align-items:center"><h3 style="font-size:12.5px; margin:0; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Logs <span class="kbd" style="font-size:10px; margin-left:6px">admin</span></h3><span class="row" style="gap:6px"><select id="logsLevelSel" class="select" style="font-size:11px; padding:4px 8px"><option value="" selected>all levels</option><option value="error">error</option><option value="warn">warn</option><option value="success">success</option><option value="info">info</option><option value="debug">debug</option></select><button id="logsRefresh" class="pill" style="font-size:11px">refresh</button><button id="logsClear" class="pill" style="font-size:11px">clear view</button></span></div><div id="logsList" class="small muted" style="margin-top:8px; max-height:320px; overflow:auto; font-family:ui-monospace, monospace; font-size:11.5px; display:grid; gap:4px">Loading…</div><div class="small muted" style="margin-top:6px">Batched client+server logs — auto every 20s, admin can filter by level/event. Backed by Sentry-ready hook (see _randori_log). For prod monitoring consider Sentry or Better Stack (see console).</div></div>
         <div id="dashSignOutWrap" style="margin-top:12px;text-align:right; display:block"><button id="dashSignOut" class="pill" style="font-size:12px;opacity:.75">Sign out</button></div><div id="dashChatArea"></div>
         <div id="dashEmpty" style="display:none" class="card"><div class="card-b"><b>No pair yet</b><div class="small muted" style="margin-top:6px">First shuffle runs Sunday 08:00 BST. Mark yourself Available to join. Meanwhile, brush up in live room.</div><div class="row" style="margin-top:10px"><button class="pill" onclick="document.querySelector('[data-tab=code]').click()">Open Code room</button><button class="pill" id="dashHow">How it works?</button></div></div></div>
       </div>
@@ -3976,6 +4072,128 @@ def allow(key, limit=5):
 </script>
 
 
+
+<script>
+/* Logs admin widget + client instrumentation hooks */
+(function(){
+  // --- Admin Logs Widget ---
+  function isAdmin(){ try{ const me=JSON.parse(localStorage.getItem('randori-me')||'null'); if(me&&me.is_admin) return true; }catch{} try{ if(window.me&&window.me.is_admin) return true; }catch{} return false; }
+  const area=document.getElementById('logsArea');
+  const listEl=document.getElementById('logsList');
+  const levelSel=document.getElementById('logsLevelSel');
+  const refreshBtn=document.getElementById('logsRefresh');
+  const clearBtn=document.getElementById('logsClear');
+  async function fetchLogs(){
+    if(!area||!listEl) return;
+    if(!isAdmin() && !localStorage.getItem('randori-token')){ area.style.display='none'; return; }
+    // cheap admin check: try token, if 401/403 hide
+    const tok=localStorage.getItem('randori-token')||'';
+    if(!tok){ area.style.display='none'; return; }
+    // Evaluate admin via me or try fetch — server will 403 if not admin; we hide quietly
+    const lvl=levelSel? levelSel.value : '';
+    const qs = lvl? '?level='+encodeURIComponent(lvl)+'&limit=30' : '?limit=30';
+    try{
+      const r=await fetch('/api/logs'+qs,{headers:{authorization:'Bearer '+tok}});
+      const j=await r.json().catch(()=>({}));
+      if(!r.ok){ if(r.status===403||r.status===401){ area.style.display='none'; return; } throw j; }
+      area.style.display='block';
+      const logs=j.logs||[];
+      if(!logs.length){ listEl.innerHTML='<span class="small muted">No logs yet</span>'; return; }
+      listEl.innerHTML=logs.map(l=>{
+        const lvl=l.level||'info';
+        const color = lvl==='error' ? '#e87a8a' : lvl==='warn' ? '#f2d07a' : lvl==='success' ? '#c8f6a0' : '#9aa0a6';
+        const badge=`<span style="display:inline-block; min-width:44px; padding:2px 6px; border-radius:999px; border:1px solid ${color}; color:${color}; font-size:10px; text-transform:uppercase">${lvl}</span>`;
+        const src=l.source||'server';
+        const ev=l.event? ` <span class="kbd" style="font-size:10px">${(l.event||'').slice(0,28)}</span>`:'';
+        const when=new Date(l.created_at).toLocaleTimeString();
+        const user=l.user_id? `#${l.user_id}`:'';
+        let metaBtn='';
+        try{
+          const meta=l.meta|| (l.meta_json? JSON.parse(l.meta_json):null);
+          if(meta && typeof meta==='object'){ metaBtn=`<details style="margin-left:6px"><summary style="cursor:pointer; font-size:10px">meta</summary><pre style="white-space:pre-wrap; font-size:10.5px; max-width:360px; background:var(--bg-3); padding:6px; border-radius:8px">${(JSON.stringify(meta,null,2)||'').slice(0,2000).replace(/</g,'&lt;')}</pre></details>`; }
+          else if(l.meta_json){ metaBtn=`<span class="small muted" style="font-size:10px; margin-left:6px">${String(l.meta_json).slice(0,120)}</span>`; }
+        }catch{}
+        return `<div style="display:flex; flex-wrap:wrap; gap:6px; padding:4px 6px; border-bottom:1px dashed var(--border); align-items:flex-start">${badge}<span style="color:var(--ink-2); font-size:10px">${when} ${src}${user}</span>${ev}<span style="flex:1; min-width:140px">${String(l.message||'').slice(0,240).replace(/</g,'&lt;')}</span>${metaBtn}</div>`;
+      }).join('');
+    }catch(e){
+      try{ window._randori_log && window._randori_log.warn('logs_widget','fetch failed', {err:String(e.message||e).slice(0,200)}); }catch{}
+      if(listEl) listEl.innerHTML='<span class="small muted">Logs fetch failed — '+(e.error||e.message||'offline')+'</span>';
+    }
+  }
+  refreshBtn && refreshBtn.addEventListener('click', ()=>{ fetchLogs(); try{ window._randori_log&&window._randori_log.info('logs_widget','manual refresh'); }catch{} });
+  clearBtn && clearBtn.addEventListener('click', ()=>{ if(listEl) listEl.innerHTML='<span class="small muted">Cleared view (DB intact)</span>'; });
+  levelSel && levelSel.addEventListener('change', ()=> fetchLogs());
+  // auto-show/poll if admin
+  setTimeout(()=>{ if(isAdmin()){ area && (area.style.display='block'); fetchLogs(); } }, 1200);
+  setInterval(()=>{ if(isAdmin() && area && area.style.display!=='none'){ fetchLogs(); } }, 20000);
+  // expose for console
+  window._randori_logs={fetchLogs, get isAdmin(){return isAdmin();}};
+
+  // --- Client hooks into existing flows ---
+  // Monaco failures already call fallback? We'll patch global fallback when possible
+  const origFallback = window._randori_monaco && window._randori_monaco._fallback;
+  // hook after monaco IIFE loads: watch for note
+  setTimeout(()=>{
+    // Monaco fallback title observer
+    const note=document.getElementById('monacoFallbackNote');
+    if(note){
+      const mo=new MutationObserver(()=>{
+        if(note.style.display!=='none' && note.textContent){
+          try{ window._randori_log && window._randori_log.error('monaco_load_fail', note.textContent.slice(0,300), {reason: note.title||note.textContent, cdn: (window.__monacoLoaderFailed?'failed':'')}); }catch{}
+        }
+      });
+      try{ mo.observe(note,{attributes:true, attributeFilter:['style','title']}); }catch{}
+    }
+  }, 1000);
+
+  // Wrap toast? Keep.
+
+  // Hook onboarding
+  try{
+    if(window._randori_onboard){
+      const origSkip=window._randori_onboard.skip;
+      if(origSkip) window._randori_onboard.skip=function(){ try{ window._randori_log&&window._randori_log.info('onboarding','skip', {step: window._randori_onboard.step}); }catch{} return origSkip.apply(this, arguments); };
+      const origNext=window._randori_onboard.next;
+      if(origNext) window._randori_onboard.next=function(){ try{ const step=window._randori_onboard.step; window._randori_log&&window._randori_log.info('onboarding','next_step', {step}); }catch{} return origNext.apply(this, arguments); };
+    }
+  }catch{}
+
+  // Hook main run flows via global events — look for window.api calls or monaco run
+  // Patch window.fetch for /api/execute and /api/runs to log
+  const origFetch=window.fetch;
+  window.fetch = function(url, opts){
+    const u=String(url||'');
+    if(u.includes('/api/execute')||u.includes('/api/data?endpoint=execute')){
+      const lang = (()=>{ try{ const b=opts&&opts.body? JSON.parse(opts.body):{}; return b.language||b.lang; }catch{ return 'unknown'; } })();
+      try{ window._randori_log&&window._randori_log.info('run_attempt', `execute ${lang}`, {url:u.slice(0,200), lang}); }catch{}
+      return origFetch.apply(this, arguments).then(async r=>{
+        const clone=r.clone();
+        try{
+          const j=await clone.json();
+          if(j.ok||j.passed_count!==undefined){
+            window._randori_log&&window._randori_log.success('execute_success', `${lang} ${j.passed_count}/${j.total_count} pass`, {lang, passed:j.passed_count, total:j.total_count});
+          } else if(!r.ok){
+            window._randori_log&&window._randori_log.warn('execute_fail', `execute ${lang} http ${r.status}`, {lang, status:r.status, j});
+          }
+        }catch{}
+        return r;
+      }).catch(e=>{ try{ window._randori_log&&window._randori_log.error('execute_fail', `network fail ${lang}`, {err:String(e.message||e).slice(0,300)}); }catch{}; throw e; });
+    }
+    if(u.includes('/api/runs')||u.includes('/api/data?endpoint=runs')){
+      return origFetch.apply(this, arguments).then(r=>{
+        try{ if(r.ok) window._randori_log&&window._randori_log.success('run_saved','run persisted'); }catch{}; return r;
+      });
+    }
+    return origFetch.apply(this, arguments);
+  };
+
+  // Sentry / Better Stack integration note
+  // To add Sentry: set <script> with DSN env via window.SENTRY_DSN, then Sentry.init({dsn: SENTRY_DSN, beforeSend(event){ _randori_log && _randori_log.error('sentry', event.message) }})
+  // To add Better Stack (Logtail): set window.LOGTAIL_TOKEN, then POST to https://in.logtail.com in _randori_log.flush
+
+})();
+</script>
+
 <!-- Monaco + Prettier IDE layer — CDN, no extra Vercel function, Hobby-safe, resilient fallback chain -->
 <link rel="preconnect" href="https://cdnjs.cloudflare.com">
 <link rel="preconnect" href="https://cdn.jsdelivr.net">
@@ -4305,8 +4523,7 @@ def allow(key, limit=5):
     });
   }
 
-  function fallback(reason){
-    console.warn('monaco fallback',reason);
+  function fallback(reason){ try{ window._randori_log&&window._randori_log.error('monaco_load_fail', String(reason||'monaco fallback').slice(0,300), {reason, cdn:MONACO_CDN}); }catch{} console.warn('monaco fallback',reason);
     monacoReady=false;
     const host=getHost(); const ta=getTA(); const note=document.getElementById(fallbackNoteId);
     try{ host && host.querySelectorAll('.monaco-loader').forEach(l=>l.remove()); }catch{}
