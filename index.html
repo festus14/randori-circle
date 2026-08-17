@@ -2755,7 +2755,9 @@ def allow(key, limit=5):
     const tok=localStorage.getItem(TOKEN_KEY);
     const wb=document.getElementById('welcomeBanner');
     if(!wb) return;
-    if(!dismissed && !tok && !onboardCompleted){
+    // never show if already onboarded/completed/dismissed once
+    if(onboardCompleted || localStorage.getItem(ONB_KEY)==='1'){ wb.style.display='none'; return; }
+    if(!dismissed && !tok){
       wb.style.display='flex';
     } else wb.style.display='none';
   }
@@ -2767,10 +2769,11 @@ def allow(key, limit=5):
     if(onboardStep===0) startOnboarding(2);
   });
   document.getElementById('welcomeHowBtn')?.addEventListener('click', ()=>{ startOnboarding(1); localStorage.setItem(ONB_DISMISSED_BANNER,'1'); document.getElementById('welcomeBanner').style.display='none'; });
-  document.getElementById('welcomeDismiss')?.addEventListener('click', ()=>{ localStorage.setItem(ONB_DISMISSED_BANNER,'1'); document.getElementById('welcomeBanner').style.display='none'; });
+  document.getElementById('welcomeDismiss')?.addEventListener('click', ()=>{ localStorage.setItem(ONB_DISMISSED_BANNER,'1'); localStorage.setItem(ONB_KEY,'1'); localStorage.setItem(ONB_STEP_KEY,'0'); onboardCompleted=true; onboardStep=0; document.getElementById('welcomeBanner').style.display='none'; });
 
   // Checklist logic
   function updateChecklist(){
+    if(localStorage.getItem(ONB_KEY)==='1'){ try{ document.getElementById('onboardChecklist').style.display='none'; }catch{} return; }
     const tok=!!localStorage.getItem(TOKEN_KEY);
     const av=document.getElementById('availToggle');
     const availChecked=av? av.checked: false;
@@ -2821,8 +2824,11 @@ def allow(key, limit=5):
   // Enhance empty states to link to onboarding
   const origRenderParis = typeof renderPairs==='function' ? renderPairs : null;
 
-  // Init onboarding on load
+  // Init onboarding on load — only first time ever, never again after complete/dismiss
   setTimeout(()=>{
+    // re-read in case token changed after load
+    try{ onboardCompleted = localStorage.getItem(ONB_KEY)==='1'; }catch{}
+    if(onboardCompleted){ document.getElementById('welcomeBanner').style.display='none'; document.getElementById('onboardOverlay').classList.remove('show'); document.getElementById('onboardChecklist').style.display='none'; return; }
     maybeShowWelcome();
     updateChecklist();
     if(!onboardCompleted && onboardStep===0 && !localStorage.getItem(TOKEN_KEY)){
