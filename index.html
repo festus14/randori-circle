@@ -3720,7 +3720,16 @@ def allow(key, limit=5):
       if(tabsEl) tabsEl.style.display='flex';
       // hide circle tab for non-admin anon
       try{ document.querySelector('[data-tab="circle"]')?.style.setProperty('display','none'); }catch{ const ct=document.querySelector('[data-tab="circle"]'); if(ct) ct.style.display='none'; }
-      try{document.getElementById('onboardChecklist').style.display='none'; document.getElementById('welcomeBanner').style.display='none';}catch{}
+      try{
+        document.getElementById('onboardChecklist').style.display='none';
+        // Fix e2e onboard first-time: don't blindly hide welcomeBanner for anon; show when first visit (no onboarded, not dismissed, no token)
+        const _onbDone = localStorage.getItem('randori-onboarded')==='1';
+        const _banDismiss = localStorage.getItem('randori-banner-dismissed')==='1';
+        const _wb=document.getElementById('welcomeBanner');
+        if(_wb){
+          if(!_onbDone && !_banDismiss){ _wb.style.display='flex'; } else { _wb.style.display='none'; }
+        }
+      }catch{}
       // LeetCode-like: if URL wants code view or last tab was code, show code instead
       try{
         const urlParams=new URLSearchParams(window.location.search);
