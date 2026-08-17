@@ -483,12 +483,17 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
     const authBtn=document.getElementById('authBtn');
     const outBtn=document.getElementById('signOutBtn');
     const hint=document.getElementById('historyAuthHint');
-    if(me){
-      meLabel.style.display='inline-flex'; meLabel.textContent = '● '+me.name + (isAdmin()?' (admin)':'');
-      meLabel.style.background = me.color+'22'; meLabel.style.borderColor=me.color+'66';
+    const tokenPresent = !!(typeof authToken !== 'undefined' && authToken) || !!localStorage.getItem('randori-token');
+    if(me || tokenPresent){
+      try{
+        meLabel.style.display='inline-flex';
+        const nm = (me && (me.name||me.display_name||me.email)) || 'you';
+        meLabel.textContent = '● '+ nm + (isAdmin()?' (admin)':'');
+        if(me && me.color){ meLabel.style.background = me.color+'22'; meLabel.style.borderColor=me.color+'66'; }
+      }catch{}
       authBtn.style.display='none';
       outBtn.style.display='inline-flex';
-      if(hint) hint.textContent = `personal history for ${me.name} • partner counts` + (isAdmin()?' — admin view sees all':'' );
+      if(hint && me) hint.textContent = `personal history for ${me.name||me.display_name||me.email} • partner counts` + (isAdmin()?' — admin view sees all':'' );
     } else {
       meLabel.style.display='none';
       authBtn.style.display='inline-flex';
@@ -496,19 +501,7 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
       if(hint) hint.textContent='sign in for personal history';
     }
     // circle admin UI toggle
-    const addRow=document.querySelector('#personName')?.parentElement;
-    const addInfo=document.getElementById('circleAutoNote');
-    if(addRow){
-      if(isAdmin()){
-        addRow.style.display='flex';
-        if(addInfo) addInfo.textContent='Admin: you see auto circle (all signed-up users, availability-filtered) + can still add manual test names above.';
-        const tt=document.querySelector('#view-circle .card-h span'); if(tt) tt.textContent='admin + auto circle';
-      } else {
-        addRow.style.display='none';
-        if(addInfo) addInfo.textContent='Circle = everyone who signed up — you are auto-included. New signups join next Sunday 08:00 BST. Toggle Available below.';
-      }
-    }
-    // shuffle buttons admin-only
+
     const nb=document.getElementById('newWeekBtn');
     const rb=document.getElementById('reshuffleBtn');
     let badge=document.getElementById('adminOnlyBadge');
