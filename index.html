@@ -228,6 +228,45 @@ p{margin:0}
   .overlay{padding:14px}
 }
 
+/* Onboarding — warm product polish */
+.onboard-banner{
+  margin:14px auto 0; max-width:var(--max); padding:12px 16px; display:flex; align-items:center; justify-content:space-between; gap:12px;
+  background:linear-gradient(100deg, color-mix(in srgb, var(--accent) 22%, var(--card)) 0%, var(--card) 70%);
+  border:1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-radius:14px; box-shadow:var(--shadow-soft);
+}
+.onboard-banner b{font-weight:600;}
+.onboard-modal{
+  background:var(--card); border:1px solid var(--border); border-radius:18px; padding:20px; width:min(480px, 92vw);
+  box-shadow:var(--shadow); display:grid; gap:14px; animation:onboardIn .22s ease;
+}
+@keyframes onboardIn{from{transform:translateY(8px) scale(.98); opacity:0} to{transform:none; opacity:1}}
+.onboard-progress{display:flex; gap:6px}
+.onboard-dot{width:22px; height:4px; border-radius:999px; background:var(--bg-3); transition:.2s}
+.onboard-dot.active{background:var(--accent)}
+.onboard-spotlight{
+  position:relative; z-index:55;
+  box-shadow:0 0 0 4px var(--accent), 0 0 0 9999px rgba(0,0,0,.52), 0 12px 30px rgba(0,0,0,.35);
+  border-radius:12px; transition:box-shadow .22s ease;
+}
+.pulse{
+  animation:pulse 1.6s infinite;
+}
+@keyframes pulse{
+  0%{box-shadow:0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent)}
+  70%{box-shadow:0 0 0 14px transparent}
+  100%{box-shadow:0 0 0 0 transparent}
+}
+.onboard-actions{display:flex; justify-content:space-between; align-items:center; gap:10px}
+.onboard-kbd{font-size:11px; color:var(--ink-3)}
+.checklist{
+  border:1px dashed var(--border); border-radius:12px; padding:12px; background:color-mix(in srgb, var(--card) 90%, var(--accent) 6%);
+  display:grid; gap:8px;
+}
+.checklist h4{font-size:13px; margin:0}
+.check-item{display:flex; align-items:center; gap:8px; font-size:12.8px; color:var(--ink-2)}
+.check-item.done{color:var(--ink); opacity:.85}
+.check-item.done .check-box{background:var(--accent); border-color:var(--accent); color:#0f0f10}
+.check-box{width:18px; height:18px; border-radius:6px; border:1.5px solid var(--border); display:grid; place-items:center; font-size:11px; font-weight:700; background:var(--bg-3)}
 </style>
 </head>
 <body>
@@ -258,6 +297,16 @@ p{margin:0}
     <button class="tab" data-tab="history">↺ History</button>
   </div>
   <div class="main">
+    <!-- Onboarding Checklist -->
+    <div id="onboardChecklist" class="checklist" style="display:none">
+      <div class="row" style="justify-content:space-between"><h4>Getting started</h4><button id="checklistToggle" class="pill" style="font-size:11px">hide</button></div>
+      <div class="check-item" id="chkSignIn"><div class="check-box">✓</div><span>Sign in — auto-joins circle</span></div>
+      <div class="check-item" id="chkAvail"><div class="check-box">✓</div><span>Mark Available for Sunday</span></div>
+      <div class="check-item" id="chkPair"><div class="check-box">✓</div><span>See your pair</span></div>
+      <div class="check-item" id="chkRoom"><div class="check-box">✓</div><span>Join a live room</span></div>
+      <div class="check-item" id="chkDemo"><div class="check-box">✓</div><span>Try demo (admin)</span></div>
+      <div class="row" style="margin-top:4px"><button id="chkStartTour" class="pill" style="font-size:11px">↺ Restart tour</button><span class="small muted" id="chkProgress">0/5</span></div>
+    </div>
     <!-- CIRCLE -->
     <section id="view-circle" class="view">
       <div class="grid-2">
@@ -474,6 +523,21 @@ p{margin:0}
 </div>
 <div class="row" style="justify-content:space-between;margin-top:4px"><span class="small muted">Personal history • auto-shuffle Sundays 08:00 BST</span><span class="row"><button id="authCancel" class="btn secondary">Cancel</button><button id="authSignup" class="btn secondary">Sign up</button><button id="authSignin" class="btn">Sign in</button></span></div>
 </div></div>
+<div id="welcomeBanner" class="onboard-banner" style="display:none">
+  <div class="small"><b>Welcome to Randori Circle</b> — weekly mock interviews with friends. Pair Sunday, practice DSA + System Design together. <span class="kbd" style="margin-left:6px">5-min setup</span></div>
+  <div class="row" style="gap:8px"><button id="welcomeStartBtn" class="btn">Start → Sign in</button><button id="welcomeHowBtn" class="btn secondary">See how it works</button><button id="welcomeDismiss" class="pill">✕</button></div>
+</div>
+
+<div id="onboardOverlay" class="overlay" aria-hidden="true" style="z-index:85">
+  <div class="onboard-modal" role="dialog" aria-modal="true" aria-labelledby="onbTitle">
+    <div class="onboard-progress"><div class="onboard-dot active"></div><div class="onboard-dot"></div><div class="onboard-dot"></div><div class="onboard-dot"></div><div class="onboard-dot"></div><span class="small muted" id="onbCount" style="margin-left:8px">1 / 5</span></div>
+    <h3 id="onbTitle">Welcome to Randori Circle</h3>
+    <p id="onbDesc" class="small" style="color:var(--ink-2); line-height:1.6">Weekly mock interview pairing with friends for DSA + System Design.</p>
+    <div id="onbExtra" class="small" style="display:grid; gap:8px"></div>
+    <div class="onboard-actions"><span class="onboard-kbd">Esc to skip • remembers progress</span><span class="row"><button id="onbSkip" class="btn ghost">Skip tour</button><button id="onbNext" class="btn">Get started →</button></span></div>
+  </div>
+</div>
+
 <div id="toast" class="toast"></div>
 
 <script>
@@ -1105,7 +1169,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     // fallback local offline weeks
     const weeks=getWeeks(); const cur=weeks[0];
     renderPairsMeta(cur, null);
-    if(!cur){ container.innerHTML=`<div class="small muted" style="padding:8px; border:1px dashed var(--line); border-radius:10px">No pairs yet — first shuffle runs Sunday 08:00 BST. Mark yourself Available to join.</div>`; return; }
+    if(!cur){ container.innerHTML=`<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">No pairs yet — first shuffle runs Sunday 08:00 BST. Mark yourself Available to join. <button class="pill" onclick="window._randori_onboard && window._randori_onboard.start(4)" style="margin-left:8px">How it works?</button></div>`; return; }
     container.innerHTML = cur.pairs.map(p=>{
       const a=idToPerson(p.aId); const b=p.bId? idToPerson(p.bId):null;
       const aName=a? a.name: 'unknown'; const bName=p.isAI? 'AI partner' : (b? b.name: '—');
@@ -2123,6 +2187,212 @@ def allow(key, limit=5):
 
   // tiny hook for parallel video subagent: expose ai globals
   window._randori_ai = { get recording(){return aiRecording}, get snaps(){return aiCodeSnaps}, analyze: aiAnalyze };
+
+  // ---------- Onboarding Journey (5-step tour + welcome + checklist) ----------
+  const ONB_KEY='randori-onboarded';
+  const ONB_STEP_KEY='randori-onboard-step';
+  const ONB_DISMISSED_BANNER='randori-banner-dismissed';
+
+  let onboardStep = parseInt(localStorage.getItem(ONB_STEP_KEY)||'0',10)||0;
+  let onboardCompleted = localStorage.getItem(ONB_KEY)==='1';
+
+  const steps=[
+    {title:'Welcome to Randori Circle', desc:'Weekly mock interviews with friends — Sunday pairing, live rooms, whiteboard. 5-min setup, then you practice DSA + System Design together.', cta:'Get started →', target:null, extra:`<div class="row" style="gap:8px"><span class="kbd">Sunday 08:00 BST</span><span class="kbd">No trios — odd gets AI</span></div>`},
+    {title:'Join your Circle', desc:'Signing up auto-includes you in Sunday 08:00 BST shuffle. No manual add needed — teammates join the next pairing automatically.', cta:'Next → Circle', target:'#authBtn', needsAuth:false, extra:`<div class="small muted">Already signed in? Nice — you're in!</div>`},
+    {title:'Stay Available', desc:'You can skip a week without leaving the circle. Toggle Available off and you’ll be excluded Sunday, but you stay in for next time.', cta:'Next → Availability', target:'#availabilityWrap', extra:`<div class="small muted">Tip: Turn off if you're away — welcome-back banner shows when you're back on.</div>`},
+    {title:'This Week pairs', desc:'Pairs appear Sunday 08:00 BST. You choose DSA / System Design / Both yourselves — nothing randomised after shuffle. Odd count? Last person gets an AI sparring partner, not a trio.', cta:'Next → Live room', target:'#view-pair', extra:`<div class="small muted">Pairs are colour-coded, click code to jump into live room.</div>`},
+    {title:'Live Room & AI', desc:'Every pair has a Code room + Whiteboard. Join video with one click, Record edits + notes, then Get AI Feedback (Groq router picks model by session, evidence-checked).', cta:'Open a room →', target:'#view-code', extra:`<div class="row" style="flex-wrap:wrap"><span class="kbd">Code ↔ Board</span><span class="kbd">📷 cam mute</span><span class="kbd">⚡ AI feedback</span></div>`},
+  ];
+
+  function updateOnboardProgress(){
+    const dots=document.querySelectorAll('#onboardOverlay .onboard-dot');
+    dots.forEach((d,i)=> d.classList.toggle('active', i<=onboardStep-1));
+    document.getElementById('onbCount').textContent=`${onboardStep} / 5`;
+  }
+
+  function clearSpotlight(){
+    document.querySelectorAll('.onboard-spotlight').forEach(el=> el.classList.remove('onboard-spotlight','pulse'));
+  }
+
+  function spotlight(el){
+    clearSpotlight();
+    if(!el) return;
+    el.classList.add('onboard-spotlight');
+    // pulse for authBtn
+    if(el.id==='authBtn') el.classList.add('pulse');
+  }
+
+  function renderOnboardStep(){
+    if(onboardStep<1 || onboardStep>5){ document.getElementById('onboardOverlay').classList.remove('show'); clearSpotlight(); return; }
+    const s=steps[onboardStep-1];
+    document.getElementById('onbTitle').textContent=s.title;
+    document.getElementById('onbDesc').textContent=s.desc;
+    document.getElementById('onbExtra').innerHTML=s.extra||'';
+    document.getElementById('onbNext').textContent=s.cta||'Next →';
+    document.getElementById('onbCount').textContent=`${onboardStep} / 5`;
+    updateOnboardProgress();
+    document.getElementById('onboardOverlay').classList.add('show');
+    // spotlight target
+    let tgt=null;
+    if(s.target){
+      if(s.target.startsWith('#')) tgt=document.querySelector(s.target);
+      else if(s.target==='#view-pair') { document.querySelector('[data-tab="pair"]')?.click(); tgt=document.getElementById('view-pair'); }
+      else if(s.target==='#view-code') tgt=document.getElementById('view-code');
+      else tgt=document.querySelector(s.target);
+      // if not signed in on step 2 highlight sign in
+      if(onboardStep===2){
+        const signed=!!(localStorage.getItem(TOKEN_KEY) || me);
+        if(!signed) tgt=document.getElementById('authBtn');
+        else {
+          document.getElementById('onbDesc').textContent='You’re in! You were auto-added to Sunday shuffle.';
+          document.getElementById('onbExtra').innerHTML='<div class="pill" style="background:var(--accent); color:#0f0f10">✓ Signed in — you’re included Sunday</div>';
+        }
+      }
+      if(onboardStep===3){
+        const av=document.getElementById('availabilityWrap');
+        if(av && me) av.style.display='grid';
+        tgt=av && av.style.display!=='none' ? av : document.querySelector('[data-tab="pair"]');
+      }
+    }
+    if(tgt) spotlight(tgt);
+    localStorage.setItem(ONB_STEP_KEY, String(onboardStep));
+  }
+
+  function startOnboarding(from=1){
+    onboardStep=from;
+    onboardCompleted=false;
+    localStorage.setItem(ONB_STEP_KEY, String(onboardStep));
+    localStorage.removeItem(ONB_KEY);
+    renderOnboardStep();
+    // open checklist
+    document.getElementById('onboardChecklist').style.display='grid';
+  }
+
+  function nextOnboard(){
+    if(onboardStep<5){
+      onboardStep++;
+      renderOnboardStep();
+    } else {
+      onboardStep=0;
+      onboardCompleted=true;
+      localStorage.setItem(ONB_KEY,'1');
+      localStorage.setItem(ONB_STEP_KEY,'0');
+      document.getElementById('onboardOverlay').classList.remove('show');
+      clearSpotlight();
+      toast('You’re all set — pair Sunday 08:00 BST');
+      // keep checklist but mark progress
+      updateChecklist();
+    }
+  }
+
+  function skipOnboarding(){
+    onboardStep=0;
+    onboardCompleted=true;
+    localStorage.setItem(ONB_KEY,'1');
+    localStorage.setItem(ONB_STEP_KEY,'0');
+    document.getElementById('onboardOverlay').classList.remove('show');
+    clearSpotlight();
+  }
+
+  document.getElementById('onbNext')?.addEventListener('click', nextOnboard);
+  document.getElementById('onbSkip')?.addEventListener('click', skipOnboarding);
+  document.addEventListener('keydown', e=>{ if(e.key==='Escape' && document.getElementById('onboardOverlay').classList.contains('show')) skipOnboarding(); });
+
+  // Welcome banner for first-time visitors (no token)
+  function maybeShowWelcome(){
+    const dismissed=localStorage.getItem(ONB_DISMISSED_BANNER)==='1';
+    const tok=localStorage.getItem(TOKEN_KEY);
+    const wb=document.getElementById('welcomeBanner');
+    if(!wb) return;
+    if(!dismissed && !tok && !onboardCompleted){
+      wb.style.display='flex';
+    } else wb.style.display='none';
+  }
+
+  document.getElementById('welcomeStartBtn')?.addEventListener('click', ()=>{
+    document.getElementById('authOverlay')?.classList.add('show');
+    localStorage.setItem(ONB_DISMISSED_BANNER,'1');
+    document.getElementById('welcomeBanner').style.display='none';
+    if(onboardStep===0) startOnboarding(2);
+  });
+  document.getElementById('welcomeHowBtn')?.addEventListener('click', ()=>{ startOnboarding(1); localStorage.setItem(ONB_DISMISSED_BANNER,'1'); document.getElementById('welcomeBanner').style.display='none'; });
+  document.getElementById('welcomeDismiss')?.addEventListener('click', ()=>{ localStorage.setItem(ONB_DISMISSED_BANNER,'1'); document.getElementById('welcomeBanner').style.display='none'; });
+
+  // Checklist logic
+  function updateChecklist(){
+    const tok=!!localStorage.getItem(TOKEN_KEY);
+    const av=document.getElementById('availToggle');
+    const availChecked=av? av.checked: false;
+    const weeksLen = (()=>{
+      try{ const w=JSON.parse(localStorage.getItem(WEEKS_KEY)||'[]'); return w.length; }catch{return 0;}
+    })();
+    const roomJoined = !!currentRoom || !!localStorage.getItem('randori-last-room');
+    const demoActive = localStorage.getItem('randori-demo-active')==='1';
+    const isAdminNow = typeof isAdmin==='function' ? isAdmin() : false;
+
+    document.getElementById('chkSignIn')?.classList.toggle('done', tok);
+    document.getElementById('chkAvail')?.classList.toggle('done', !!me);
+    // availability marked counts as avail step done even if off? require me exists
+    document.getElementById('chkPair')?.classList.toggle('done', weeksLen>0 || document.getElementById('pairsList')?.children.length>0);
+    document.getElementById('chkRoom')?.classList.toggle('done', roomJoined);
+    const demoItem=document.getElementById('chkDemo');
+    if(demoItem){
+      demoItem.style.display = isAdminNow ? 'flex' : 'none';
+      demoItem.classList.toggle('done', demoActive);
+    }
+    const doneCount=[tok, !!me, weeksLen>0, roomJoined, isAdminNow? demoActive : false].filter(Boolean).length;
+    const total=isAdminNow?5:4;
+    document.getElementById('chkProgress').textContent=`${doneCount}/${total}`;
+    const cl=document.getElementById('onboardChecklist');
+    if(cl){
+      if(onboardCompleted && doneCount===total) cl.style.display='none';
+      else cl.style.display='grid';
+    }
+  }
+
+  document.getElementById('checklistToggle')?.addEventListener('click', ()=>{
+    const cl=document.getElementById('onboardChecklist');
+    const items=[...cl.querySelectorAll('.check-item'), cl.querySelector('#chkStartTour'), cl.querySelector('#chkProgress')];
+    const hidden=cl.dataset.collapsed==='1';
+    items.forEach(el=>{ if(el) el.style.display= hidden? '': 'none'; });
+    cl.dataset.collapsed= hidden? '0':'1';
+    document.getElementById('checklistToggle').textContent = hidden? 'hide':'show';
+  });
+  document.getElementById('chkStartTour')?.addEventListener('click', ()=> startOnboarding(1));
+
+  // Hook into existing updateAuthUI to update checklist + maybe highlight
+  const _origUpdateAuthUI = typeof updateAuthUI==='function' ? updateAuthUI : null;
+  if(_origUpdateAuthUI){
+    const origRef=_origUpdateAuthUI;
+    // wrap by monkey-patching global — we reassign after definition below? Actually updateAuthUI is hoisted function, we can override
+  }
+
+  // Enhance empty states to link to onboarding
+  const origRenderParis = typeof renderPairs==='function' ? renderPairs : null;
+
+  // Init onboarding on load
+  setTimeout(()=>{
+    maybeShowWelcome();
+    updateChecklist();
+    if(!onboardCompleted && onboardStep===0 && !localStorage.getItem(TOKEN_KEY)){
+      // first-time, auto-show welcome banner already, don't auto-open modal until CTA
+    } else if(!onboardCompleted && onboardStep>0){
+      renderOnboardStep();
+    }
+    // Wrap updateAuthUI after it exists
+    if(typeof updateAuthUI==='function' && !window._onbWrapped){
+      const base=updateAuthUI;
+      window.updateAuthUI = function(){
+        const r=base.apply(this, arguments);
+        try{ updateChecklist(); }catch{}
+        return r;
+      };
+      window._onbWrapped=true;
+    }
+  }, 400);
+
+  // Expose for debug + empty-state buttons
+  window._randori_onboard={ start:startOnboarding, next:nextOnboard, skip:skipOnboarding, get step(){return onboardStep}, get done(){return onboardCompleted} };
 
   // ---------- tiny self-test: if hash stable
   console.assert(colorOf('Festus')===colorOf('festus'), 'color stable lowercasing');
