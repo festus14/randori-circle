@@ -380,7 +380,7 @@ p{margin:0}
             <div><label class="small muted">LeetCode handle (optional)</label><input id="psLeet" class="input" placeholder="leetcode username"/></div>
           </div>
           <div><label class="small muted">Interview focus</label><div id="psFocus" class="pill-choice" style="margin-top:6px"><button class="chip" data-focus="dsa">DSA</button><button class="chip" data-focus="system">System Design</button><button class="chip active" data-focus="both">Both</button></div></div>
-          <div class="row" style="justify-content:space-between; align-items:center; padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-3)"><div><b style="font-size:12.5px">Available this week</b><div class="small muted">You’ll be included Sunday 08:00 BST</div></div><label style="position:relative; display:inline-block; width:42px; height:26px"><input type="checkbox" id="psAvail" checked style="opacity:0;width:0;height:0"><span style="position:absolute;cursor:pointer;inset:0;background:#2a2a35;border-radius:999px;transition:.2s"></span><span style="position:absolute;left:3px;top:3px;width:20px;height:20px;background:var(--accent);border-radius:999px;transition:.2s" id="psAvailKnob"></span></label></div>
+          <div class="row" style="justify-content:space-between; align-items:center; padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-3)"><div><b style="font-size:12.5px">Available this week</b><div class="small muted">You’ll be included Sunday 08:00 BST</div></div><label style="position:relative; display:inline-block; width:42px; height:26px"><input type="checkbox" id="psSignOutWrap" style="margin-top:8px;text-align:right"><button id="psSignOut" class="pill" style="font-size:12px;opacity:.7">Sign out</button></div><div id="psAvail" checked style="opacity:0;width:0;height:0"><span style="position:absolute;cursor:pointer;inset:0;background:#2a2a35;border-radius:999px;transition:.2s"></span><span style="position:absolute;left:3px;top:3px;width:20px;height:20px;background:var(--accent);border-radius:999px;transition:.2s" id="psAvailKnob"></span></label></div>
           <div class="row" style="justify-content:flex-end"><button id="psSave" class="btn">Save & continue →</button></div>
         </div>
       </div>
@@ -395,7 +395,7 @@ p{margin:0}
         </div>
         <div id="dashPairArea"></div>
         <div id="dashScheduleArea"></div>
-        <div id="dashChatArea"></div>
+        <div id="dashSignOutWrap" style="margin-top:10px;text-align:right"><button id="dashSignOut" class="pill" style="font-size:12px;opacity:.75">Sign out</button></div><div id="dashChatArea"></div>
         <div id="dashEmpty" style="display:none" class="card"><div class="card-b"><b>No pair yet</b><div class="small muted" style="margin-top:6px">First shuffle runs Sunday 08:00 BST. Mark yourself Available to join. Meanwhile, brush up in live room.</div><div class="row" style="margin-top:10px"><button class="pill" onclick="document.querySelector('[data-tab=code]').click()">Open Code room</button><button class="pill" id="dashHow">How it works?</button></div></div></div>
       </div>
     </section>
@@ -837,6 +837,7 @@ async function refreshMe(){
   };
   document.getElementById('authCancel').onclick=()=>document.getElementById('authOverlay').classList.remove('show');
   document.getElementById('authOverlay').onclick=(e)=>{ if(e.target===document.getElementById('authOverlay')) document.getElementById('authOverlay').classList.remove('show'); };
+  (() => { const _wireOut = (id)=>{ const b=document.getElementById(id); if(!b||b._wired) return; b._wired=true; b.onclick=()=>{ const main=document.getElementById('signOutBtn'); if(main&&main.onclick) return main.onclick(); }; }; _wireOut('dashSignOut'); _wireOut('psSignOut'); })();
   document.getElementById('signOutBtn').onclick=()=>{
     try{
       authToken='';
