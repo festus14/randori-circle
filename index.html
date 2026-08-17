@@ -179,7 +179,19 @@ p{margin:0}
 .editor{
   flex:1; min-height:360px; background:#101013; color:#e7e6e3; border:0; outline:none; padding:14px; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; line-height:1.6; resize:none; tab-size:2;
 }
+
 .light .editor{background:#fdfcfa; color:#17130f}
+#monacoHost .monaco-editor{border-radius:0}
+.monaco-loader{position:absolute; inset:0; display:grid; place-items:center; background:var(--bg-3); color:var(--ink-3); font-size:12.5px; z-index:2}
+.spinner{width:24px;height:24px;border-radius:50%;border:2.5px solid var(--line);border-top-color:var(--accent);animation:spin .7s linear infinite; display:inline-block}
+.spinner-sm{width:16px;height:16px;border-width:2px}
+.spinner-lg{width:32px;height:32px;border-width:3px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.skeleton{height:12px;background:linear-gradient(90deg,var(--bg-3),var(--bg-4),var(--bg-3));background-size:200% 100%;animation:skel 1.6s infinite; border-radius:6px}
+@keyframes skel{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.loader-overlay{position:absolute; inset:0; background:color-mix(in srgb,var(--bg) 65%, transparent);backdrop-filter:blur(3px);display:grid;place-items:center;z-index:5;border-radius:10px}
+.dots{display:inline-flex;gap:3px} .dots i{width:4px;height:4px;border-radius:99px;background:var(--ink-2);animation:dots 1s infinite} .dots i:nth-child(2){animation-delay:.15s} .dots i:nth-child(3){animation-delay:.3s} @keyframes dots{0%,80%,100%{opacity:.3;transform:translateY(0)}40%{opacity:1;transform:translateY(-3px)}}
+
 .run-out{border-top:1px solid var(--border); background:var(--card); max-height:200px; overflow:auto; padding:10px 12px; display:grid; gap:8px}
 .board-wrap{border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; background:var(--card); display:flex; flex-direction:column}
 .board-toolbar{display:flex; gap:6px; align-items:center; flex-wrap:wrap; padding:9px 10px; border-bottom:1px solid var(--border); background:var(--card)}
@@ -583,7 +595,7 @@ p{margin:0}
           </div>
           <div class="editor-top">
             <div class="row">
-              <select id="langSelect" class="select" style="width:160px">
+              <select id="langSelect" class="select" style="width:140px">
                 <option value="javascript">javascript</option>
                 <option value="typescript">typescript</option>
                 <option value="python">python</option>
@@ -591,8 +603,10 @@ p{margin:0}
                 <option value="go">go</option>
                 <option value="cpp">cpp</option>
               </select>
-              <select id="roomSelect" class="select" style="width:150px"></select>
+              <select id="roomSelect" class="select" style="width:130px"></select>
               <button id="runBtn" class="btn">▶ Run</button>
+              <button id="formatBtn" class="pill" title="Format code (Shift+Alt+F) — Prettier where possible">↥ Format</button>
+              <span id="lintStatus" class="kbd" style="display:none; background:var(--bg-3)">lint: —</span>
             </div>
             <div class="row" style="gap:6px">
               <button id="roleToggle" class="pill">○ candidate</button>
@@ -600,7 +614,9 @@ p{margin:0}
               <span class="pill"><span class="dot"></span><span id="presenceText">you alone</span></span>
             </div>
           </div>
-          <textarea id="editor" class="editor" spellcheck="false"></textarea>
+          <div id="monacoHost" style="flex:1; min-height:420px; position:relative; border-top:1px solid var(--border); border-bottom:1px solid var(--border); background:#101013"></div>
+          <textarea id="editor" class="editor" spellcheck="false" style="display:none; flex:1; min-height:360px"></textarea>
+          <div id="monacoFallbackNote" class="small muted" style="display:none; padding:6px 10px; background:var(--bg-3); border-bottom:1px solid var(--border)">Monaco failed to load — using plain editor. <button id="monacoRetry" class="pill" style="margin-left:8px">Retry</button></div>
           <div id="runOut" class="run-out"></div>
           <!-- AI Recording & Feedback (Groq router) -->
           <div id="aiPanel" style="border-top:1px solid var(--line); background:var(--bg-2); padding:10px; display:grid; gap:10px">
@@ -3307,14 +3323,23 @@ def allow(key, limit=5):
   const runBtn=document.getElementById('runBtn');
   const editor=document.getElementById('editor');
   const runOut=document.getElementById('runOut');
+
+  function getEditorCode(){
+    try{ if(window.monacoEditor && typeof window.monacoEditor.getValue==='function') return window.monacoEditor.getValue(); }catch{}
+    try{ if(window._randori_editor && typeof window._randori_editor.getCode==='function') return window._randori_editor.getCode(); }catch{}
+    return editor?.value||'';
+  }
   function upgradedRun(){
+    const t0 = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
     const selVal=document.getElementById('questionSelect')?.value||'';
     const customQ=CUSTOM_QUESTIONS.find(q=>q.slug===selVal);
     const lang=document.getElementById('langSelect')?.value||'javascript';
-    const code=editor?.value||'';
+    const code=getEditorCode();
+    let resultsForSave=[], passedCount=0, totalCount=0, durationMs=0;
     if(customQ){
       const cards=[];
       const tcs=customQ.test_cases||[];
+      totalCount = tcs.length;
       if(lang==='javascript' || lang==='typescript'){
         // attempt to eval function: first function name detection
         let fn=null, fnName=null;
@@ -3329,6 +3354,7 @@ def allow(key, limit=5):
           }
         }catch{}
         tcs.forEach((tc,i)=>{
+          let entry={ idx:i+1, input:tc.input, expect:tc.expect, got:null, pass:false, error:null };
           try{
             if(fn && tc.input!==undefined){
               let args;
@@ -3341,25 +3367,37 @@ def allow(key, limit=5):
               }else args=[tc.input];
               const got=fn.apply(null, Array.isArray(args)? args : [args]);
               const exp=tc.expect;
+              entry.got=got;
               let pass=false;
               try{ pass=JSON.stringify(got)===JSON.stringify(exp) || (Array.isArray(got)&&Array.isArray(exp)&& JSON.stringify([...got].sort())===JSON.stringify([...exp].sort())); }catch{ pass=String(got)===String(exp); }
+              entry.pass=pass;
+              if(pass) passedCount++;
               cards.push(`<div class="test" style="border-color:${pass?'var(--ok)':'var(--accent-3)'}"><div class="small"><b>Case ${i+1}</b> ${pass?'✓ pass':'✗ fail'} — got <span class="kbd">${JSON.stringify(got).slice(0,120)}</span> exp <span class="kbd">${JSON.stringify(exp).slice(0,120)}</span><div class="small muted">in: ${JSON.stringify(tc.input).slice(0,120)}</div></div></div>`);
             }else{
               // static heuristic
               cards.push(`<div class="test" style="border-color:var(--line)"><div class="small">Case ${i+1}: in <span class="kbd">${JSON.stringify(tc.input).slice(0,100)}</span> → exp <span class="kbd">${JSON.stringify(tc.expect).slice(0,100)}</span><div class="small muted">no function ${fnName||'found'} — static check only, ${code.length>20?'code present':'add code'}</div></div></div>`);
+              entry.got=null; entry.pass=false; entry.error='no-function-found';
             }
           }catch(err){
+            entry.error=String(err).slice(0,300);
             cards.push(`<div class="test" style="border-color:var(--accent-3)"><div class="small">Case ${i+1} error: ${String(err).slice(0,180)}</div></div>`);
           }
+          resultsForSave.push(entry);
         });
       }else{
         // non-js heuristic for custom
         tcs.forEach((tc,i)=>{
           const ok = /return/.test(code) && code.length>20;
+          if(ok) passedCount++;
+          resultsForSave.push({ idx:i+1, input:tc.input, expect:tc.expect, got:null, pass:ok, heuristic:true, language:lang });
           cards.push(`<div class="test" style="border-color:${ok?'var(--ok)':'var(--line)'}"><div class="small"><b>Case ${i+1}</b> ${ok?'✓ plausible':'○ needs work'} — language ${lang} • in <span class="kbd">${JSON.stringify(tc.input).slice(0,80)}</span> → <span class="kbd">${JSON.stringify(tc.expect).slice(0,80)}</span><div class="small muted">Heuristic only for ${lang} — JS eval for full run</div></div></div>`);
         });
       }
       if(runOut) runOut.innerHTML=cards.join('')||'<div class="small muted">no tests</div>';
+      // compute duration
+      try{ durationMs = Math.round(((typeof performance!=='undefined'&&performance.now?performance.now():Date.now())-t0)); }catch{ durationMs=0; }
+      // auto-save session run
+      try{ saveSessionRunAsync({ customQ, lang, code, resultsForSave, passedCount, totalCount, durationMs, tcs }); }catch{}
       // sync to pair via video_signal question-sync if possible
       try{
         const room=document.getElementById('roomSelect')?.value||localStorage.getItem('randori-last-room')||'';
@@ -3377,15 +3415,94 @@ def allow(key, limit=5):
     if(runOut) runOut.innerHTML='<div class="small muted">Run: select a custom question or static one — custom run handles uploaded tests</div>';
   }
 
+  async function saveSessionRunAsync({ customQ, lang, code, resultsForSave, passedCount, totalCount, durationMs, tcs }){
+    try{
+      const TOKEN_KEY='randori-token';
+      const tok = localStorage.getItem(TOKEN_KEY);
+      if(!tok) return;
+      // Resolve week/pair context if available from my-pair cached?
+      let week_id=null, pair_group_id=null;
+      try{
+        const mp = window._randori_pair_cache || null;
+        if(mp && mp.week_id) week_id=mp.week_id;
+        if(mp && mp.pair && mp.pair.pg_id) pair_group_id=mp.pair.pg_id;
+      }catch{}
+      if(!week_id){
+        try{
+          const els = document.getElementById('pairWeekId'); if(els && els.dataset && els.dataset.weekId) week_id=parseInt(els.dataset.weekId,10);
+        }catch{}
+      }
+      // fallback to LS last-pair
+      if(!week_id){
+        try{ const ls=JSON.parse(localStorage.getItem('randori-last-my-pair')||'null'); if(ls && ls.week_id) week_id=ls.week_id; if(ls && ls.pair) pair_group_id=ls.pair.pg_id||ls.pair_group_id; }catch{}
+      }
+      const payload = {
+        week_id,
+        pair_group_id,
+        question_id: customQ?.id||null,
+        question_slug: customQ?.slug||null,
+        language: lang,
+        code: String(code||'').slice(0,20000),
+        test_cases_snapshot: (tcs||[]).slice(0,10),
+        results: resultsForSave.slice(0,10),
+        passed_count: passedCount,
+        total_count: totalCount,
+        duration_ms: durationMs
+      };
+      // Use existing api helper if available, else fetch
+      let r;
+      if(window.api && typeof window.api==='function'){
+        r = await window.api('/api/runs', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+      }else{
+        const fetchResp = await fetch('/api/runs', {method:'POST', headers:{'Content-Type':'application/json', 'Authorization':'Bearer '+tok}, body: JSON.stringify(payload)});
+        r = await fetchResp.json().catch(()=>({ok: fetchResp.ok}));
+        if(!fetchResp.ok) throw r;
+      }
+      if(r && r.ok){
+        if(window.toast) window.toast(`Run saved ✓ ${passedCount}/${totalCount}${durationMs? ' • '+durationMs+'ms':''}`);
+        try{ window._randori_runs && window._randori_runs.refresh && window._randori_runs.refresh(); }catch{}
+      }
+    }catch(e){ console.warn('save run failed', e?.error||e?.message||e); }
+  }
+
   // preserve original runCode if it's global in closure? We have access to window? The previous IIFE's runCode is not global, but runBtn.onclick was set to runCode in that IIFE. We override onclick to upgraded.
   if(runBtn){
     try{ window._origRunCode = runBtn.onclick; }catch{}
     runBtn.onclick = upgradedRun;
   }
 
+  // Recent runs widget logic
+  async function fetchMyRuns(limit=10, slugFilter=null){
+    try{
+      const tok=localStorage.getItem('randori-token');
+      if(!tok) return [];
+      const url = '/api/runs?limit='+limit + (slugFilter? '&question_slug='+encodeURIComponent(slugFilter):'');
+      const resp=await fetch(url,{headers:{Authorization:'Bearer '+tok}});
+      const j=await resp.json();
+      if(!resp.ok) throw j;
+      return j.runs||[];
+    }catch{ return []; }
+  }
+  function renderRunsList(runs){
+    const el=document.getElementById('recentRunsList');
+    if(!el) return;
+    if(!runs.length){ el.innerHTML='<div class="small muted">No runs yet — hit ▶ Run</div>'; return; }
+    el.innerHTML=runs.map(r=>{
+      const ok = r.total_count? (r.passed_count+'/'+r.total_count) : (r.passed_count+' pass');
+      const dt=new Date(r.created_at||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+      return `<div class="row" style="justify-content:space-between; padding:6px 0; border-bottom:1px dashed var(--border)"><span><span class="kbd" style="font-size:10px">${(r.question_slug||'custom').slice(0,16)}</span> <span class="kbd" style="font-size:10px">${r.language||'js'}</span> <span class="small">${ok}</span></span><span class="small muted" style="font-size:11px">${dt}${r.duration_ms? ' • '+r.duration_ms+'ms':''}</span></div>`;
+    }).join('');
+  }
+  async function refreshRecent(){
+    const l=await fetchMyRuns(8);
+    renderRunsList(l);
+  }
+  window._randori_runs={fetchMyRuns, renderRunsList, refresh:refreshRecent};
+
   // initial load
   setTimeout(fetchCustomQuestions, 600);
-  document.addEventListener('DOMContentLoaded', ()=> setTimeout(fetchCustomQuestions, 400));
+  document.addEventListener('DOMContentLoaded', ()=> { setTimeout(fetchCustomQuestions, 400); setTimeout(refreshRecent, 1200); if(!window._randori_runs_timer){ window._randori_runs_timer=setInterval(refreshRecent, 30000); } });
+  setTimeout(refreshRecent, 1500);
 
   // Expose
   window._randori_questions={ fetchCustomQuestions, get custom(){return CUSTOM_QUESTIONS}, mergeIntoSelect, renderCustomQuestion };
@@ -3545,6 +3662,312 @@ def allow(key, limit=5):
   document.getElementById('dashHistAll')?.addEventListener('click', ()=>{
     document.querySelector('[data-tab="history"]')?.click();
   });
+})();
+</script>
+
+
+<!-- Monaco + Prettier IDE layer — CDN, no extra Vercel function, Hobby-safe -->
+<link rel="preconnect" href="https://cdnjs.cloudflare.com">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
+<script src="https://unpkg.com/prettier@3.3.3/standalone.js"></script>
+<script src="https://unpkg.com/prettier@3.3.3/plugins/babel.js"></script>
+<script src="https://unpkg.com/prettier@3.3.3/plugins/estree.js"></script>
+<script src="https://unpkg.com/prettier@3.3.3/plugins/typescript.js"></script>
+<script>
+// Monaco IDE task — replace textarea with Monaco, keep textarea as hidden mirror for legacy runCode/AI paths
+(function(){
+  const MONACO_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs';
+  const TOKEN_KEY='randori-token';
+  const CODE_KEY='randori-code';
+  const hostId='monacoHost';
+  const taId='editor';
+  const formatBtnId='formatBtn';
+  const lintId='lintStatus';
+  const fallbackNoteId='monacoFallbackNote';
+  let monacoEditor=null;
+  let monacoReady=false;
+  let contentDebounce=null;
+  let lastLang='javascript';
+
+  const langMap = {
+    javascript:'javascript',
+    typescript:'typescript',
+    python:'python',
+    java:'java',
+    go:'go',
+    cpp:'cpp'
+  };
+
+  function getTA(){ return document.getElementById(taId); }
+  function getHost(){ return document.getElementById(hostId); }
+  function getLint(){ return document.getElementById(lintId); }
+
+  function themeIsLight(){ try{ return document.documentElement.classList.contains('light'); }catch{ return false; } }
+  function monacoTheme(){ return themeIsLight() ? 'vs' : 'vs-dark'; }
+
+  function syncTextareaToMirror(){
+    const ta=getTA();
+    if(!ta || !monacoEditor) return;
+    const v=monacoEditor.getValue();
+    if(ta.value!==v){
+      ta.value=v;
+      ta.dispatchEvent(new Event('input',{bubbles:true}));
+    }
+  }
+
+  function persistLikeOld(){
+    try{
+      const room = (window._randori_code && window._randori_code.currentRoom) || window.currentRoom || document.getElementById('roomSelect')?.value || localStorage.getItem('randori-last-room') || null;
+      if(!room) return;
+      const lang=document.getElementById('langSelect')?.value||'javascript';
+      const qId=document.getElementById('questionSelect')?.value||'two-sum';
+      const code=monacoEditor? monacoEditor.getValue() : (getTA()?.value||'');
+      let map={}; try{ map=JSON.parse(localStorage.getItem(CODE_KEY)||'{}'); }catch{ map={}; }
+      const e=map[room]||{codes:{}};
+      e.lang=lang; e.qId=qId; e.codes=e.codes||{}; e.codes[lang]=code;
+      try{ const tsEl=document.getElementById('timerText'); if(tsEl){ const txt=tsEl.textContent||'25:00'; const parts=txt.split(':'); const sec=(parseInt(parts[0]||'25',10)*60)+(parseInt(parts[1]||'0',10)); e.timerSec=sec; } }catch{}
+      map[room]=e;
+      localStorage.setItem(CODE_KEY, JSON.stringify(map));
+      // video signal code-sync (best effort, truncated)
+      try{
+        const rid = room;
+        const pid = localStorage.getItem('randori-peer-id')||'anon';
+        if(rid && window._randori_video && window._randori_video.sendSignal){
+          // no direct, use fetch inline
+          fetch('/api/video/signal',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({room_id:rid,from_id:pid,to_id:'',type:'code-sync',payload:JSON.stringify({lang, at:Date.now(), len:code.length}).slice(0,1200)})}).catch(()=>{});
+        } else if(rid){
+          fetch('/api/video/signal',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({room_id:rid,from_id:pid,to_id:'',type:'code-sync',payload:JSON.stringify({lang, at:Date.now()})})}).catch(()=>{});
+        }
+      }catch{}
+    }catch(err){ console.warn('persist monaco failed',err); }
+  }
+
+  function updateLintFromMarkers(){
+    const el=getLint();
+    if(!el) return;
+    if(!monacoEditor || !window.monaco){ el.style.display='none'; return; }
+    try{
+      const model=monacoEditor.getModel();
+      if(!model){ el.style.display='none'; return; }
+      const markers=window.monaco.editor.getModelMarkers({resource:model.uri});
+      const errs=markers.filter(m=>m.severity===8); // Error
+      const warns=markers.filter(m=>m.severity===4);
+      if(!markers.length){ el.style.display='none'; }
+      else{
+        el.style.display='inline-flex';
+        el.textContent = `lint: ${errs.length? errs.length+' err':''}${errs.length&&warns.length?' ':''}${warns.length? warns.length+' warn':''}${!errs.length&&!warns.length? markers.length+'':''}`.trim() || 'lint: ok';
+        el.style.borderColor = errs.length? 'var(--accent-3)' : (warns.length? '#e6c07a':'var(--line)');
+        el.title = markers.slice(0,3).map(m=> (m.severity===8?'✗ ':'⚠ ')+ m.message.slice(0,120)).join(' | ');
+      }
+    }catch{ el.style.display='none'; }
+  }
+
+  async function formatCode(){
+    if(!monacoEditor) return;
+    const lang=document.getElementById('langSelect')?.value||'javascript';
+    const code=monacoEditor.getValue();
+    const prettierLangMap = {
+      javascript:{parser:'babel', plugins: (window.prettierPlugins? [window.prettierPlugins.babel, window.prettierPlugins.estree] : [])},
+      typescript:{parser:'typescript', plugins: (window.prettierPlugins? [window.prettierPlugins.typescript, window.prettierPlugins.estree, window.prettierPlugins.babel] : [])},
+    };
+    const cfg = prettierLangMap[lang];
+    const btn=document.getElementById(formatBtnId);
+    let formatted=null;
+    if(cfg && window.prettier && cfg.plugins && cfg.plugins.length){
+      try{
+        if(btn){ btn.disabled=true; const old=btn.textContent; btn.textContent='…'; btn.dataset.old=old; }
+        formatted = await window.prettier.format(code, {parser:cfg.parser, plugins:cfg.plugins, semi:true, singleQuote:true, tabWidth:2, trailingComma:'es5'});
+      }catch(e){
+        if(window.toast) window.toast('format error: '+(e.message||'').slice(0,120));
+        console.warn('prettier error',e);
+        formatted=null;
+      } finally{ if(btn){ btn.disabled=false; btn.textContent=btn.dataset.old||'↥ Format'; } }
+    }
+    if(formatted && formatted!==code){
+      monacoEditor.setValue(formatted);
+      syncTextareaToMirror();
+      persistLikeOld();
+      if(window.toast) window.toast('formatted ✓');
+      return;
+    }
+    // fallback to Monaco's built-in formatter action (works for js/ts/java/python via monarch? basic)
+    try{
+      await monacoEditor.getAction('editor.action.formatDocument')?.run();
+      syncTextareaToMirror(); persistLikeOld();
+      if(window.toast) window.toast('formatted (monaco)');
+    }catch(e){ if(window.toast) window.toast('nothing to format'); }
+  }
+
+  function initMonaco(){
+    const host=getHost();
+    const ta=getTA();
+    if(!host){ console.warn('monaco host missing'); return; }
+    if(!window.require || !window.require.config){
+      fallback('require not loaded');
+      return;
+    }
+    // if already has loader overlay, show it
+    const existingLoader=host.querySelector('.monaco-loader');
+    if(!existingLoader){
+      const lo=document.createElement('div'); lo.className='monaco-loader'; lo.innerHTML='<span class="spinner spinner-sm"></span> loading Monaco…'; host.appendChild(lo);
+    }
+    window.require.config({ paths: { vs: MONACO_CDN } });
+    window.require(['vs/editor/editor.main'], function(){
+      try{
+        const loaderEl=host.querySelector('.monaco-loader'); if(loaderEl) loaderEl.remove();
+        const isLight=themeIsLight();
+        const initialValue = ta?.value || '// Randori Circle — live IDE\nfunction twoSum(nums,target){\n  // write\n}';
+        monacoEditor = window.monaco.editor.create(host, {
+          value: initialValue,
+          language: langMap[lastLang]||'javascript',
+          theme: isLight ? 'vs' : 'vs-dark',
+          automaticLayout: true,
+          minimap: {enabled:false},
+          scrollBeyondLastLine:false,
+          fontSize:13,
+          lineHeight:19,
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+          roundedSelection:true,
+          wordWrap:'on',
+          tabSize:2,
+          quickSuggestions:{other:true, comments:false, strings:false},
+          suggestOnTriggerCharacters:true,
+          formatOnType:false,
+          formatOnPaste:false,
+        });
+        monacoReady=true;
+        // mirror textarea hidden, monaco visible
+        if(ta){ ta.style.display='none'; }
+        host.style.background = isLight ? '#ffffff' : '#101013';
+
+        // diagnostics easing
+        try{
+          window.monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions({
+            noSemanticValidation:false,
+            noSyntaxValidation:false,
+          });
+          window.monaco.languages.typescript.javascriptDefaults.setCompilerOptions({
+            target: window.monaco.languages.typescript.ScriptTarget.ES2020,
+            allowNonTsExtensions:true,
+            moduleResolution: window.monaco.languages.typescript.ModuleResolutionKind.NodeJs,
+            module: window.monaco.languages.typescript.ModuleKind.CommonJS,
+            noEmit:true,
+            typeRoots:["node_modules/@types"]
+          });
+          window.monaco.languages.typescript.typescriptDefaults.setEagerModelSync(true);
+        }catch{}
+
+        // shift+alt+f action
+        try{
+          monacoEditor.addAction({
+            id:'randori.format',
+            label:'Format via Prettier',
+            keybindings:[window.monaco.KeyMod.Shift | window.monaco.KeyMod.Alt | window.monaco.KeyCode.KeyF],
+            run: function(){ formatCode(); }
+          });
+        }catch{}
+
+        // content change -> debounce persist + lint update
+        monacoEditor.onDidChangeModelContent(()=>{
+          if(contentDebounce) clearTimeout(contentDebounce);
+          contentDebounce=setTimeout(()=>{ syncTextareaToMirror(); persistLikeOld(); updateLintFromMarkers(); }, 700);
+        });
+        monacoEditor.onDidChangeModelDecorations(()=>{ updateLintFromMarkers(); });
+
+        // expose helpers
+        window._randori_code = window._randori_code || {};
+        window._randori_code.getCode = ()=> monacoEditor ? monacoEditor.getValue() : (getTA()?.value||'');
+        window._randori_code.setCode = (code, langHint)=>{
+          if(monacoEditor){ monacoEditor.setValue(code||''); if(langHint && langMap[langHint]){ const model=monacoEditor.getModel(); try{ window.monaco.editor.setModelLanguage(model, langMap[langHint]); lastLang=langHint; }catch{} } }
+          else if(getTA()){ getTA().value=code||''; }
+        };
+        window._randori_code.getEditor = ()=> monacoEditor;
+        window._randori_code.format = formatCode;
+
+        // also map to window._randori_code.currentRoom getter/setter already defined earlier? Ensure it still works
+        // expose for video/lang bridge
+        window._randori_monaco = { get editor(){return monacoEditor}, formatCode, get ready(){return monacoReady} };
+
+        // hook language select
+        const langSel=document.getElementById('langSelect');
+        if(langSel){
+          langSel.addEventListener('change', ()=>{
+            const nv=langSel.value||'javascript';
+            lastLang=nv;
+            try{ const model=monacoEditor.getModel(); window.monaco.editor.setModelLanguage(model, langMap[nv]||'plaintext'); }catch{}
+            // update starter mirror? existing logic handles textarea, but we also want to keep code per lang map (legacy persist handles)
+          });
+        }
+
+        // hook theme toggle (existing button #themeToggle toggles .light class)
+        const themeBtn=document.getElementById('themeToggle');
+        if(themeBtn){
+          const orig=themeBtn.onclick;
+          themeBtn.addEventListener('click', ()=>{
+            setTimeout(()=>{ try{ window.monaco.editor.setTheme(monacoTheme()); }catch{}; const h=getHost(); if(h){ h.style.background = themeIsLight() ? '#ffffff' : '#101013'; } }, 80);
+          });
+        }
+        // also MutationObserver on html class
+        try{
+          const mo=new MutationObserver(()=>{ try{ window.monaco.editor.setTheme(monacoTheme()); const h=getHost(); if(h) h.style.background = themeIsLight() ? '#ffffff' : '#101013'; }catch{} });
+          mo.observe(document.documentElement,{attributes:true, attributeFilter:['class']});
+        }catch{}
+
+        // format button
+        const fbtn=document.getElementById(formatBtnId);
+        if(fbtn){ fbtn.addEventListener('click', formatCode); }
+
+        // initial lint
+        setTimeout(updateLintFromMarkers, 800);
+
+        // initial load of room code — reuse existing logic that fills textarea (persistRoom/loadRoom) — we already did via textarea sync but ensure first room sync after 600ms
+        setTimeout(()=>{
+          try{
+            // if there is a currentRoom code in storage, load it
+            const room = window._randori_code?.currentRoom || window.currentRoom || document.getElementById('roomSelect')?.value;
+            if(room){
+              let map={}; try{ map=JSON.parse(localStorage.getItem(CODE_KEY)||'{}'); }catch{}
+              const entry=map[room];
+              const curLang=document.getElementById('langSelect')?.value||'javascript';
+              if(entry && entry.codes && entry.codes[curLang]){
+                monacoEditor.setValue(entry.codes[curLang]);
+                syncTextareaToMirror();
+              } else if(entry && entry.codes && Object.keys(entry.codes).length){
+                // fallback first available
+                const first=Object.values(entry.codes)[0];
+                if(first) monacoEditor.setValue(first);
+              }
+            }
+          }catch{}
+        }, 700);
+
+        if(window.toast) window.toast('Monaco IDE ready — TS lint + Prettier format');
+
+      }catch(e){
+        console.error('monaco init error',e);
+        fallback('init error '+ (e.message||''));
+      }
+    }, function(err){
+      console.error('monaco loader fail',err);
+      fallback('loader fail');
+    });
+  }
+
+  function fallback(reason){
+    console.warn('monaco fallback',reason);
+    const host=getHost(); const ta=getTA(); const note=document.getElementById(fallbackNoteId);
+    if(host){ host.style.display='none'; }
+    if(ta){ ta.style.display='block'; ta.style.minHeight='420px'; }
+    if(note){ note.style.display='block'; note.title=reason||''; }
+    document.getElementById('monacoRetry')?.addEventListener('click', ()=>{ if(host) host.style.display=''; if(note) note.style.display='none'; initMonaco(); });
+  }
+
+  // start after DOM + a tick to allow other IIFEs to set up CODE_KEY
+  if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', ()=> setTimeout(initMonaco, 450)); }
+  else setTimeout(initMonaco, 450);
+
+  // expose format for global console
+  window._randori_format = formatCode;
 })();
 </script>
 

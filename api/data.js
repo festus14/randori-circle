@@ -220,6 +220,30 @@ async function ensureCustomQuestions(db){
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_cq_author ON custom_questions(author_id)`); }catch{}
 }
 
+async function ensureSessionRuns(db){
+  try{
+    await db.execute(`CREATE TABLE IF NOT EXISTS session_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
+      week_id INTEGER,
+      pair_group_id INTEGER,
+      question_id INTEGER,
+      question_slug TEXT,
+      language TEXT,
+      code TEXT NOT NULL,
+      test_cases_snapshot TEXT,
+      results_json TEXT,
+      passed_count INTEGER DEFAULT 0,
+      total_count INTEGER DEFAULT 0,
+      duration_ms INTEGER,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`);
+  }catch{}
+  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_user ON session_runs(user_id, created_at DESC)`);}catch{}
+  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_question ON session_runs(question_slug)`);}catch{}
+  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_user_q ON session_runs(user_id, question_slug)`);}catch{}
+}
+
 async function ensureProfileMigrations(db){
   const alters=[
     `ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`,
@@ -243,6 +267,7 @@ async function ensureProfileMigrations(db){
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_messages_pair ON pair_messages(pair_group_id, created_at)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_sched_pair ON pair_schedules(pair_group_id)`);}catch{}
   await ensureCustomQuestions(db);
+  await ensureSessionRuns(db);
 }
 
 async function handleCircle(req,res){
@@ -373,6 +398,22 @@ async function handleInit(req,res){
       source TEXT DEFAULT 'custom',
       leetcode_slug TEXT,
       created_at TEXT DEFAULT (datetime('now'))
+    )`,
+    `CREATE TABLE IF NOT EXISTS session_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
+      week_id INTEGER,
+      pair_group_id INTEGER,
+      question_id INTEGER,
+      question_slug TEXT,
+      language TEXT,
+      code TEXT NOT NULL,
+      test_cases_snapshot TEXT,
+      results_json TEXT,
+      passed_count INTEGER DEFAULT 0,
+      total_count INTEGER DEFAULT 0,
+      duration_ms INTEGER,
+      created_at TEXT DEFAULT (datetime('now'))
     )`
   ],"write");
   const migrations=[`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`,`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`,`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`,`ALTER TABLE auth_accounts ADD COLUMN is_demo INTEGER DEFAULT 0`,`ALTER TABLE auth_accounts ADD COLUMN bio TEXT`,`ALTER TABLE auth_accounts ADD COLUMN tz TEXT`,`ALTER TABLE auth_accounts ADD COLUMN interview_focus TEXT DEFAULT 'both'`,`ALTER TABLE auth_accounts ADD COLUMN leetcode_handle TEXT`,`ALTER TABLE pairing_weeks ADD COLUMN is_demo INTEGER DEFAULT 0`];
@@ -383,7 +424,9 @@ async function handleInit(req,res){
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_sched_pair ON pair_schedules(pair_group_id)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_cq_slug ON custom_questions(slug)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_cq_author ON custom_questions(author_id)`);}catch{}
-  return res.json({ ok:true, message:"Tables ready (incl custom_questions + profile + pair_messages + pair_schedules)" });
+  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_user ON session_runs(user_id, created_at DESC)`);}catch{}
+  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_question ON session_runs(question_slug)`);}catch{}
+  return res.json({ ok:true, message:"Tables ready (incl custom_questions + profile + pair_messages + pair_schedules + session_runs)" });
 }
 
 // ----- NEW ENDPOINTS: profile, my-pair, schedule, messages, questions -----
@@ -704,6 +747,55 @@ async function handleQuestions(req,res){
   return res.status(405).json({ error:'GET, POST, DELETE only' });
 }
 
+async function handleRuns(req,res){
+  const db = getClient();
+  await ensureBaseTables(db);
+  await ensureProfileMigrations(db);
+  await ensureSessionRuns(db);
+  if (req.method === 'POST'){
+    const payload = getAuthPayload(req);
+    if (!payload) return res.status(401).json({ error:'missing Bearer token' });
+    const userId = payload.id || payload.uid;
+    const body = req.body||{};
+    const code = String(body.code||'').slice(0,20000);
+    if (!code) return res.status(400).json({ error:'code required' });
+    const question_slug = String(body.question_slug||body.slug||'').slice(0,120) || null;
+    const question_id = body.question_id ? parseInt(String(body.question_id),10) : null;
+    const language = String(body.language||'javascript').slice(0,20);
+    const week_id = body.week_id ? parseInt(String(body.week_id),10) : null;
+    const pair_group_id = body.pair_group_id || body.pg_id || body.pair_id ? parseInt(String(body.pair_group_id||body.pg_id||body.pair_id),10) : null;
+    let test_cases_snapshot = null;
+    try{ test_cases_snapshot = body.test_cases_snapshot ? JSON.stringify(body.test_cases_snapshot).slice(0,15000) : (body.test_cases ? JSON.stringify(body.test_cases).slice(0,15000) : null); }catch{ test_cases_snapshot=null; }
+    let results_json = null;
+    try{ results_json = body.results ? JSON.stringify(body.results).slice(0,15000) : (body.results_json ? JSON.stringify(body.results_json).slice(0,15000) : null); }catch{ results_json=null; }
+    const passed_count = body.passed_count!=null ? parseInt(String(body.passed_count),10) : 0;
+    const total_count = body.total_count!=null ? parseInt(String(body.total_count),10) : 0;
+    const duration_ms = body.duration_ms!=null ? parseInt(String(body.duration_ms),10) : null;
+    try{
+      const ins = await db.execute({ sql:`INSERT INTO session_runs (user_id, week_id, pair_group_id, question_id, question_slug, language, code, test_cases_snapshot, results_json, passed_count, total_count, duration_ms, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?, ?, datetime('now')) RETURNING id`, args:[userId, week_id, pair_group_id, question_id, question_slug, language, code, test_cases_snapshot, results_json, passed_count||0, total_count||0, duration_ms]});
+      const id = ins.rows[0].id;
+      const row = await db.execute({ sql:`SELECT id, user_id, week_id, pair_group_id, question_id, question_slug, language, passed_count, total_count, duration_ms, created_at FROM session_runs WHERE id=?`, args:[id]});
+      return res.json({ ok:true, run: row.rows[0] });
+    }catch(e){ return res.status(500).json({ error:'insert failed', detail:String(e.message||e).slice(0,300)}); }
+  }
+  if (req.method === 'GET'){
+    const payload = getAuthPayload(req);
+    if (!payload) return res.status(401).json({ error:'missing Bearer token' });
+    const userId = payload.id || payload.uid;
+    const slug = req.query?.question_slug || req.query?.slug ? String(req.query.question_slug||req.query.slug).slice(0,120) : null;
+    const limit = Math.min(50, Math.max(1, parseInt(String(req.query?.limit||'20'),10)||20));
+    try{
+      let sql = `SELECT id, week_id, pair_group_id, question_id, question_slug, language, substr(code,1,500) as code_preview, passed_count, total_count, duration_ms, created_at FROM session_runs WHERE user_id=?`;
+      let args=[userId];
+      if (slug){ sql+=` AND question_slug=?`; args.push(slug); }
+      sql+=` ORDER BY id DESC LIMIT ?`; args.push(limit);
+      const rs = await db.execute({ sql, args });
+      return res.json({ ok:true, runs: rs.rows, count: rs.rows.length });
+    }catch(e){ return res.status(500).json({ error:'fetch failed', detail:String(e.message||e).slice(0,200)}); }
+  }
+  return res.status(405).json({ error:'GET or POST only' });
+}
+
 async function handleStats(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
   const db = getClient();
@@ -929,6 +1021,7 @@ async function handleLeetcodeSync(req,res){
 export default async function handler(req,res){
   const ep = getEndpoint(req);
   const path = (req.url||'').toLowerCase();
+  if (ep==='runs' || ep==='session_runs' || ep==='session-runs' || path.includes('/runs')) return handleRuns(req,res);
   if (ep==='leetcode-sync' || ep==='leetcode_sync' || path.includes('leetcode/sync') || path.includes('leetcode-sync')) return handleLeetcodeSync(req,res);
   if (ep==='leetcode' || ep==='leetcode-detail' || ep==='leetcode_detail' || path.includes('/leetcode')) return handleLeetcode(req,res);
   if (ep==='circle' || path.includes('/circle')) return handleCircle(req,res);
@@ -941,7 +1034,7 @@ export default async function handler(req,res){
   if (ep==='schedule' || path.includes('/schedule')) return handleSchedule(req,res);
   if (ep.includes('message')) return handleMessages(req,res);
   if (ep==='questions' || ep==='question' || path.includes('/questions')) return handleQuestions(req,res);
-  return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','schedule','messages','questions'] });
+  return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['runs','leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','schedule','messages','questions'] });
 }
 // auto-seed from bundled file on first questions request
 async function maybeSeedFromStatic(db){
@@ -950,8 +1043,26 @@ async function maybeSeedFromStatic(db){
     if((cnt.rows[0]?.c||0)>0) return;
     // try to load bundled json - in Vercel file exists at /vercel/path0/data
     let seed=null;
-    try{ const fs=await import('fs'); const p='/vercel/path0/data/leetcode-seed.json'; if(fs.existsSync(p)) seed=JSON.parse(fs.readFileSync(p,'utf8')); }catch{}
-    if(!seed){ try{ const fs2=await import('fs'); const p2=new URL('../data/leetcode-seed.json', import.meta.url); if(fs2.existsSync(p2)) seed=JSON.parse(fs2.readFileSync(p2,'utf8')); }catch{} }
+    const tryPaths = ['/vercel/path0/data/leetcode-seed.json', './data/leetcode-seed.json', 'data/leetcode-seed.json', '../data/leetcode-seed.json'];
+    for(const cand of tryPaths){
+      try{
+        const fs=await import('fs');
+        const pathMod=await import('path');
+        const abs=cand.startsWith('/')?cand:pathMod.resolve(cand);
+        if(fs.existsSync(abs) || fs.existsSync(cand)){
+          const file = fs.existsSync(cand) ? cand : abs;
+          seed=JSON.parse(fs.readFileSync(file,'utf8'));
+          if(seed) break;
+        }
+      }catch{}
+    }
+    if(!seed){
+      try{
+        const fs2=await import('fs');
+        const p2=new URL('../data/leetcode-seed.json', import.meta.url);
+        if(fs2.existsSync(p2)) seed=JSON.parse(fs2.readFileSync(p2,'utf8'));
+      }catch{}
+    }
     if(!seed||!seed.length) return;
     for(const q of seed){
       try{
