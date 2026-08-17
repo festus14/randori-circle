@@ -872,6 +872,7 @@ async function refreshMe(){
     }catch{}
     try{ updateAuthUI(); }catch{}
     try{ toast('signed out'); }catch{}
+    setTimeout(()=>{ location.reload(); }, 250);
     try{ renderHistory(); }catch{}
     const av=document.getElementById('availabilityWrap'); if(av) av.style.display='none';
     // hard fallback: if still signed in view, do full view switch
@@ -934,7 +935,8 @@ async function refreshMe(){
     try{
       const data= await fetch('/api/auth/signup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email,password:pass,name})}).then(r=>r.json().then(j=>{ if(!r.ok) throw j; return j;}));
       authToken=data.token; localStorage.setItem(TOKEN_KEY,authToken); localStorage.setItem(ME_KEY,JSON.stringify(data.user)); me=data.user;
-      document.getElementById('authOverlay').classList.remove('show'); updateAuthUI(); toast(`welcome, ${me.name}`); renderHistory();
+      document.getElementById('authOverlay').classList.remove('show'); try{updateAuthUI();}catch{} try{renderHistory();}catch{} toast(`welcome, ${me.name}`);
+        setTimeout(()=>{ try{ if(window._randori_journey&&window._randori_journey.routeByAuth) window._randori_journey.routeByAuth(); }catch{} setTimeout(()=>{ location.reload(); }, 350); }, 200);
     }catch(err){ document.getElementById('authErr').textContent=err.error||err.message||'signup failed'; }
   }
   async function doSignin(){
@@ -944,7 +946,8 @@ async function refreshMe(){
     try{
       const data= await fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email,password:pass})}).then(r=>r.json().then(j=>{ if(!r.ok) throw j; return j;}));
       authToken=data.token; localStorage.setItem(TOKEN_KEY,authToken); localStorage.setItem(ME_KEY,JSON.stringify(data.user)); me=data.user;
-      document.getElementById('authOverlay').classList.remove('show'); updateAuthUI(); toast(`signed in as ${me.name}`); renderHistory();
+      document.getElementById('authOverlay').classList.remove('show'); try{updateAuthUI();}catch{} try{renderHistory();}catch{} toast(`signed in as ${me.name}`);
+        setTimeout(()=>{ try{ if(window._randori_journey&&window._randori_journey.routeByAuth) window._randori_journey.routeByAuth(); }catch{} setTimeout(()=>{ location.reload(); }, 350); }, 200);
     }catch(err){ document.getElementById('authErr').textContent=err.error||err.message||'login failed'; }
   }
   document.getElementById('authSignup').onclick=doSignup;
