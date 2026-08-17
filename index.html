@@ -317,7 +317,10 @@ p{margin:0}
     </div>
     <div class="top-actions">
       <div id="authArea" class="row" style="gap:6px">
-        <span id="meLabel" class="pill" style="display:none"></span>
+        <span id="meLabel" class="pill" style="display:none; cursor:pointer; position:relative"></span>
+      <div id="meMenu" style="display:none; position:absolute; top:44px; right:60px; background:var(--bg-2); border:1px solid var(--border); border-radius:10px; padding:6px; min-width:120px; z-index:50; box-shadow:0 8px 24px rgba(0,0,0,.3)">
+        <button id="meSignOut" style="width:100%; text-align:left; background:none; border:none; color:var(--ink); padding:8px 10px; border-radius:8px; font-size:12.5px; cursor:pointer">Sign out</button>
+      </div>
         <button id="authBtn" class="pill" title="Sign in / up">Sign in</button>
         <button id="signOutBtn" class="pill" style="display:none" title="Sign out">Sign out</button>
       </div>
@@ -395,7 +398,7 @@ p{margin:0}
         </div>
         <div id="dashPairArea"></div>
         <div id="dashScheduleArea"></div>
-        <div id="dashSignOutWrap" style="margin-top:10px;text-align:right"><button id="dashSignOut" class="pill" style="font-size:12px;opacity:.75">Sign out</button></div><div id="dashChatArea"></div>
+        <div id="dashSignOutWrap" style="margin-top:12px;text-align:right; display:block"><button id="dashSignOut" class="pill" style="font-size:12px;opacity:.75">Sign out</button></div><div id="dashChatArea"></div>
         <div id="dashEmpty" style="display:none" class="card"><div class="card-b"><b>No pair yet</b><div class="small muted" style="margin-top:6px">First shuffle runs Sunday 08:00 BST. Mark yourself Available to join. Meanwhile, brush up in live room.</div><div class="row" style="margin-top:10px"><button class="pill" onclick="document.querySelector('[data-tab=code]').click()">Open Code room</button><button class="pill" id="dashHow">How it works?</button></div></div></div>
       </div>
     </section>
@@ -715,6 +718,7 @@ async function refreshMe(){
       try{
         meLabel.style.display='inline-flex';
         const nm = (me && (me.name||me.display_name||me.email)) || 'you';
+        try{ if(meLabel) meLabel.title='Click for sign out'; }catch{}
         meLabel.textContent = '● '+ nm + (isAdmin()?' (admin)':'');
         if(me && me.color){ meLabel.style.background = me.color+'22'; meLabel.style.borderColor=me.color+'66'; }
       }catch{}
@@ -837,7 +841,9 @@ async function refreshMe(){
   };
   document.getElementById('authCancel').onclick=()=>document.getElementById('authOverlay').classList.remove('show');
   document.getElementById('authOverlay').onclick=(e)=>{ if(e.target===document.getElementById('authOverlay')) document.getElementById('authOverlay').classList.remove('show'); };
-  (() => { const _wireOut = (id)=>{ const b=document.getElementById(id); if(!b||b._wired) return; b._wired=true; b.onclick=()=>{ const main=document.getElementById('signOutBtn'); if(main&&main.onclick) return main.onclick(); }; }; _wireOut('dashSignOut'); _wireOut('psSignOut'); })();
+  (() => { const _wireOut = (id)=>{ const b=document.getElementById(id); if(!b||b._wired) return; b._wired=true; b.onclick=()=>{ const main=document.getElementById('signOutBtn'); if(main&&main.onclick) return main.onclick(); }; }; _wireOut('dashSignOut'); _wireOut('psSignOut'); _wireOut('meSignOut');
+        const ml=document.getElementById('meLabel'); const mm=document.getElementById('meMenu'); if(ml&&mm&&!ml._menuWired){ ml._menuWired=true; ml.addEventListener('click', (e)=>{ e.stopPropagation(); mm.style.display=mm.style.display==='none'||!mm.style.display?'block':'none'; }); document.addEventListener('click', (e)=>{ if(!mm.contains(e.target)&&e.target!==ml) mm.style.display='none'; }); }
+      })();
   document.getElementById('signOutBtn').onclick=()=>{
     try{
       authToken='';
