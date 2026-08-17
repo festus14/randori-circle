@@ -1,4 +1,5 @@
-import { getClient, getJwtSecret, getAdminEmails } from './_db.js';
+import { getClient, getJwtSecret, getAdminEmails, initSentry, getSentry } from './_db.js';
+import * as SentryLib from '@sentry/node';
 import jwt from 'jsonwebtoken';
 
 function isAdminCheck(email, flag){
@@ -281,6 +282,47 @@ function isLogRateLimited(ip){
   return false;
 }
 
+
+async function handleHealth(req,res){
+  // public lightweight health, counts last hour, last 5 errors
+  try{
+    const db=getClient();
+    try{ await ensureAppLogs(db); }catch{}
+    let errors_last_hour=0, warns_last_hour=0, infos_last_hour=0, success_last_hour=0;
+    let last_errors=[];
+    try{
+      const rs1=await db.execute(`SELECT level, COUNT(*) as c FROM app_logs WHERE datetime(created_at) >= datetime('now','-1 hour') GROUP BY level`);
+      for(const r of rs1.rows){
+        const lvl=String(r.level||'').toLowerCase();
+        const c=Number(r.c||0);
+        if(lvl==='error') errors_last_hour=c;
+        else if(lvl==='warn') warns_last_hour=c;
+        else if(lvl==='info') infos_last_hour=c;
+        else if(lvl==='success') success_last_hour=c;
+      }
+    }catch{}
+    try{
+      const rs2=await db.execute(`SELECT id, level, source, event, message, created_at FROM app_logs WHERE level='error' ORDER BY id DESC LIMIT 5`);
+      last_errors=rs2.rows.map(r=>({id:r.id, level:r.level, source:r.source, event:r.event, message:String(r.message||'').slice(0,300), created_at:r.created_at}));
+    }catch{}
+    // also counts last 10 events of interest
+    let monaco_fails=0, piston_fails=0;
+    try{
+      const rs3=await db.execute(`SELECT event, COUNT(*) as c FROM app_logs WHERE datetime(created_at) >= datetime('now','-6 hours') AND event IN ('monaco_load_fail','execute_fail','piston_fail','api_fail') GROUP BY event`);
+      for(const r of rs3.rows){
+        if(r.event==='monaco_load_fail') monaco_fails=Number(r.c||0);
+        if(r.event==='execute_fail' || r.event==='piston_fail') piston_fails+=Number(r.c||0);
+      }
+    }catch{}
+    const spike = errors_last_hour>5;
+    try{ await logServer('info','health_check','health '+ (spike?'spike':'ok')+' errs='+errors_last_hour+' warns='+warns_last_hour, {errors_last_hour, warns_last_hour, infos_last_hour, success_last_hour, spike, monaco_fails, piston_fails}, {req, source:'server', route:req.url}); }catch{}
+    return res.json({ok:true, ts:new Date().toISOString(), errors_last_hour, warns_last_hour, infos_last_hour, success_last_hour, monaco_fails_6h:monaco_fails, piston_fails_6h:piston_fails, spike, warning: spike? 'error spike detected — >5 errors last hour': null, last_5_errors:last_errors});
+  }catch(e){
+    return res.status(500).json({ok:false, error:'health failed', detail:String(e.message||e).slice(0,300)});
+  }
+}
+
+
 async function logServer(level, event, message, meta, reqCtx){
   try{
     const db=getClient();
@@ -308,7 +350,6 @@ async function logServer(level, event, message, meta, reqCtx){
       if(reqCtx && reqCtx.route) route=String(reqCtx.route).slice(0,300);
       else if(reqCtx && reqCtx.headers && reqCtx.url) route=String(reqCtx.url).slice(0,300);
       else if(reqCtx && reqCtx.req && reqCtx.req.url) route=String(reqCtx.req.url).slice(0,300);
-      // Also allow passing route directly as string in meta? ignore
       if(reqCtx && reqCtx.ua) ua=String(reqCtx.ua).slice(0,300);
       else if(reqCtx && reqCtx.headers) ua = (reqCtx.headers['user-agent']||reqCtx.headers['User-Agent']||'').toString().slice(0,300);
       else if(reqCtx && reqCtx.req && reqCtx.req.headers) ua = (reqCtx.req.headers['user-agent']||'').toString().slice(0,300);
@@ -317,12 +358,35 @@ async function logServer(level, event, message, meta, reqCtx){
       else if(reqCtx && reqCtx.req && reqCtx.req.headers) ip = (reqCtx.req.headers['x-forwarded-for']||'').toString().split(',')[0].trim().slice(0,80);
     }catch{}
     await db.execute({sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at) VALUES (?,?,?,?,?,?,?,?,?, datetime('now'))`, args:[lvl, src, ev, msg, metaStr, user_id, route, ua, ip]});
+    // Forward to Sentry server if error/warn
+    try{
+      if((lvl==='error' || lvl==='warn') && process.env.SENTRY_DSN){
+        try{ initSentry(); }catch{}
+        const {Sentry, ready} = (()=>{ try{ return getSentry(); }catch{ return {Sentry:null, ready:false}; } })();
+        if(ready && Sentry){
+          const tags={event: ev||'server', level:lvl, source:src};
+          if(lvl==='error'){
+            if(meta && meta.stack){
+              const e=new Error(msg.slice(0,500));
+              e.name=String(ev||'ServerError');
+              Sentry.captureException(e, {tags, extra: {meta: metaStr?.slice(0,2000), route, user_id}});
+            }else{
+              Sentry.captureMessage(msg, {level:'error', tags, extra:{meta: metaStr?.slice(0,2000), route}});
+            }
+          }else if(lvl==='warn'){
+            Sentry.captureMessage(msg, {level:'warning', tags, extra:{meta: metaStr?.slice(0,1500)}});
+          }
+        } else if(SentryLib && SentryLib.captureMessage && process.env.SENTRY_DSN){
+          // fallback if init not via _db but direct
+          SentryLib.captureMessage(msg, {level:lvl==='error'?'error':'warning'});
+        }
+      }
+    }catch(e){ try{ console.warn('[sentry server forward fail]', e && e.message);}catch{} }
   }catch(e){
     // never throw — log to console as fallback
     try{ console.warn('[logServer fail]', e && e.message); }catch{}
   }
 }
-
 
 async function ensureProfileMigrations(db){
   const alters=[
@@ -1420,6 +1484,10 @@ async function handleExecute(req,res){
 }
 
 export default async function handler(req,res){
+  try{ 
+    try{ initSentry(); }catch{}
+  }catch{}
+  try{
   const ep = getEndpoint(req);
   const path = (req.url||'').toLowerCase();
   if (ep==='runs' || ep==='session_runs' || ep==='session-runs' || path.includes('/runs')) return handleRuns(req,res);
@@ -1435,9 +1503,22 @@ export default async function handler(req,res){
   if (ep==='schedule' || path.includes('/schedule')) return handleSchedule(req,res);
   if (ep.includes('message')) return handleMessages(req,res);
   if (ep==='execute' || ep==='run' || path.includes('/execute')) return handleExecute(req,res);
+  if (ep==='health' || path.includes('/health') || ep==='healthz') return handleHealth(req,res);
   if (ep==='logs' || path.includes('/logs') || ep==='applogs' || ep==='app_logs') return handleLogs(req,res);
   if (ep==='questions' || ep==='question' || path.includes('/questions')) return handleQuestions(req,res);
-  return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['runs','execute','logs','leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','schedule','messages','questions'] });
+  return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['health','runs','execute','logs','leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','schedule','messages','questions'] });
+  }catch(e){
+    try{ await logServer('error','api_unhandled', String(e && e.message||e).slice(0,500), {stack: e && e.stack ? String(e.stack).slice(0,2000):'', url: req && req.url}, {req, source:'server', route: req && req.url}); }catch{}
+    try{
+      const {Sentry} = (()=>{ try{ return getSentry(); }catch{ return {Sentry:null}; } })();
+      if(Sentry && Sentry.captureException) Sentry.captureException(e);
+      else{
+        try{ const SL = await import('@sentry/node'); SL.captureException && SL.captureException(e); }catch{}
+      }
+    }catch{}
+    try{ console.error('[api unhandled]', e && e.stack||e); }catch{}
+    return res.status(500).json({error:'internal', detail: String(e && e.message||e).slice(0,300)});
+  }
 }
 // auto-seed from bundled file on first questions request
 async function maybeSeedFromStatic(db){

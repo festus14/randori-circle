@@ -138,6 +138,10 @@
       "destination": "/api/data?endpoint=logs"
     },
     {
+      "source": "/api/health",
+      "destination": "/api/data?endpoint=health"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

@@ -9,6 +9,61 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+
+<!-- Sentry placeholder - set window.SENTRY_DSN or meta[name=sentry-dsn] or localStorage randori-sentry-dsn ; Vercel env SENTRY_DSN used server side -->
+<meta name="sentry-dsn" content="">
+<script src="https://browser.sentry-cdn.com/8.42.0/bundle.tracing.replay.min.js" crossorigin="anonymous" onerror="console.warn('sentry cdn failed')"></script>
+<script>
+(function(){
+  try{
+    // DSN resolution: meta > window.SENTRY_DSN > localStorage > placeholder (empty)
+    window.SENTRY_DSN = window.SENTRY_DSN || '';
+    try{
+      const m=document.querySelector('meta[name="sentry-dsn"]');
+      if(m && m.content && m.content.trim() && m.content.indexOf('__SENTRY')===-1) window.SENTRY_DSN=m.content.trim();
+    }catch{}
+    try{
+      if(!window.SENTRY_DSN){
+        const ls=localStorage.getItem('randori-sentry-dsn')||localStorage.getItem('SENTRY_DSN')||'';
+        if(ls) window.SENTRY_DSN=ls.trim();
+      }
+    }catch{}
+    if(window.SENTRY_DSN){
+      window.SENTRY_DSN=window.SENTRY_DSN.replace('__SENTRY_DSN_PLACEHOLDER__','').trim();
+    }
+    if(!window.SENTRY_DSN || window.SENTRY_DSN.indexOf('https://')!==0){
+      // no DSN -> Sentry no-op, but keep _sentryReady false
+      window._sentryReady=false;
+      return;
+    }
+    if(window.Sentry){
+      try{
+        Sentry.init({
+          dsn: window.SENTRY_DSN,
+          environment: (location.hostname.includes('vercel.app')||location.hostname.includes('vercel')) ? 'production' : 'development',
+          tracesSampleRate: 0.1,
+          replaysSessionSampleRate: 0.0,
+          replaysOnErrorSampleRate: 0.5,
+          integrations: (typeof Sentry.browserTracingIntegration==='function' ? [Sentry.browserTracingIntegration(), Sentry.replayIntegration()] : []),
+          beforeSend(event){
+            try{
+              const last = window._randori_log && window._randori_log._lastEvent;
+              if(last){ event.tags = event.tags||{}; event.tags.randori_event=last; }
+              // attach route
+              event.tags = event.tags||{};
+              event.tags.route = location.pathname;
+            }catch(e){}
+            return event;
+          }
+        });
+        window._sentryReady=true;
+        // hook console errors maybe
+      }catch(e){ console.warn('sentry init fail', e); window._sentryReady=false; }
+    }
+  }catch(e){ console.warn('sentry bootstrap fail', e); }
+})();
+</script>
+
 <style>
 :root{
   --bg:#0f0f10;
@@ -358,6 +413,7 @@ p{margin:0}
   const TOKEN_KEY='randori-token';
   const q=[];
   let flushing=false, lastFlush=0;
+  let _lastEvent=null;
   function getRoute(){ try{ return location.pathname + location.search; }catch{ return '/'; } }
   function getTok(){ try{ return localStorage.getItem(TOKEN_KEY)||''; }catch{ return ''; } }
   function baseMeta(extra){
@@ -378,20 +434,49 @@ p{margin:0}
       else console.log(pre, msg);
     }catch{}
   }
+  function forwardToSentry(level, event, message, meta){
+    try{
+      if(!window.Sentry || !window._sentryReady) return;
+      _lastEvent=event||null;
+      const tags={event: event||'app', source:'client', route:getRoute()};
+      const extra=meta||{};
+      if(level==='error'){
+        if(extra && extra.stack && typeof extra.stack==='string'){
+          // create synthetic error
+          const err=new Error(String(message).slice(0,500));
+          err.name=String(event||'ClientError');
+          Sentry.captureException(err, {tags, extra});
+        }else{
+          Sentry.captureMessage(String(message).slice(0,800), {level:'error', tags, extra});
+        }
+      }else if(level==='warn'){
+        Sentry.captureMessage(String(message).slice(0,800), {level:'warning', tags, extra});
+      }
+    }catch(e){ try{ console.warn('sentry forward fail', e.message);}catch{} }
+  }
   function enqueue(level, event, message, meta){
     const lvl=(level||'info').toLowerCase();
     const allowed=['info','warn','error','success','debug'];
     const lv=allowed.includes(lvl)?lvl:'info';
     const entry={level:lv, source:'client', event: event? String(event).slice(0,80):'app', message: String(message||'').slice(0,2000), meta: meta? baseMeta(typeof meta==='object'? meta:{extra:meta}): baseMeta(), route:getRoute(), ts: new Date().toISOString()};
     q.push(entry);
+    _lastEvent=event||null;
     if(q.length>100) q.shift();
     consoleMirror(lv, (event? '['+event+'] ':'')+message);
+    // Sentry forward (non-blocking)
+    forwardToSentry(lv, event, message, meta);
     // immediate flush on error
     if(lv==='error' || event==='monaco_load_fail' || event==='js_exception' || event==='unhandled_rejection'){
       setTimeout(flush, 200);
     } else if(Date.now()-lastFlush>3000 && q.length>=3){
       setTimeout(flush, 400);
     }
+    // breadcrumbs
+    try{
+      if(window.Sentry && window.Sentry.addBreadcrumb){
+        Sentry.addBreadcrumb({category:'randori', message: String(event||'')+': '+String(message).slice(0,200), level: lv==='error'?'error': (lv==='warn'?'warning':'info'), data:{event, route:getRoute()}});
+      }
+    }catch{}
     return entry;
   }
   async function flush(){
@@ -404,6 +489,13 @@ p{margin:0}
       if(tok) headers['authorization']='Bearer '+tok;
       // fire-and-forget
       fetch('/api/logs',{method:'POST', headers, body: JSON.stringify(batch.length===1? batch[0]: {logs: batch})}).catch(()=>{});
+      // Optional Better Stack forward if LOGTAIL_TOKEN present
+      try{
+        const lt = window.LOGTAIL_TOKEN || localStorage.getItem('logtail-token');
+        if(lt){
+          fetch('https://in.logtail.com/',{method:'POST', headers:{'Authorization':'Bearer '+lt, 'Content-Type':'application/json'}, body: JSON.stringify({dt:new Date().toISOString(), level: batch[0]?.level, message: batch.map(b=>b.event+': '+b.message).join(' | ').slice(0,1500), ...baseMeta({batch_len: batch.length})})}).catch(()=>{});
+        }
+      }catch{}
     }catch{}
     flushing=false;
     if(q.length) setTimeout(flush, 1500);
@@ -415,6 +507,7 @@ p{margin:0}
     try{
       const msg = (e.message||'js_exception').slice(0,800) + ' @ ' + (e.filename||'')+':'+(e.lineno||'')+':'+(e.colno||'');
       enqueue('error','js_exception', msg, {stack: e.error && e.error.stack ? String(e.error.stack).slice(0,2000) : '', filename:e.filename});
+      try{ if(window.Sentry && e.error) Sentry.captureException(e.error, {tags:{event:'js_exception', filename:e.filename}}); else if(window.Sentry) Sentry.captureMessage(msg,{level:'error',tags:{event:'js_exception'}}); }catch{}
     }catch{}
   });
   window.addEventListener('unhandledrejection', (e)=>{
@@ -422,25 +515,60 @@ p{margin:0}
       const reason = e.reason || {};
       const msg = (reason.message||String(reason)||'unhandled_rejection').slice(0,800);
       enqueue('error','unhandled_rejection', msg, {stack: reason.stack? String(reason.stack).slice(0,2000):''});
+      try{ if(window.Sentry){ if(reason && reason.stack) Sentry.captureException(reason, {tags:{event:'unhandled_rejection'}}); else Sentry.captureMessage(msg,{level:'error',tags:{event:'unhandled_rejection'}}); } }catch{}
     }catch{}
   });
-  // Sentry hook placeholder:
-  // if(window.SENTRY_DSN){ SENTRY init here and forward enqueue to Sentry.captureMessage }
-  // Better Stack / Logtail hook: if window.LOGTAIL_TOKEN set, POST there too.
+  // safe wrapper util exposed globally
+  function safe(fn, evt){
+    try{ return fn(); }catch(e){
+      try{
+        const message=(e && e.message)||String(e);
+        enqueue('error', evt||'js_exception', message, {stack: e && e.stack ? String(e.stack).slice(0,2000):''});
+        if(window.Sentry) Sentry.captureException(e, {tags:{event: evt||'safe_wrapper'}});
+      }catch{}
+    }
+  }
 
   window._randori_log={
     _q:q,
-    log:(level,event,msg,meta)=>enqueue(level,event,msg,meta),
-    info:(event,msg,meta)=>enqueue('info',event,msg,meta),
-    warn:(event,msg,meta)=>enqueue('warn',event,msg,meta),
-    error:(event,msg,meta)=>enqueue('error',event,msg,meta),
-    success:(event,msg,meta)=>enqueue('success',event,msg,meta),
-    debug:(event,msg,meta)=>enqueue('debug',event,msg,meta),
+    _lastEvent:null,
+    log:(level,event,msg,meta)=>{ try{_lastEvent=event;}catch{}; try{ window._randori_log._lastEvent=event; }catch{}; return enqueue(level,event,msg,meta); },
+    info:(event,msg,meta)=>{ try{_lastEvent=event; window._randori_log._lastEvent=event;}catch{}; return enqueue('info',event,msg,meta); },
+    warn:(event,msg,meta)=>{ try{_lastEvent=event; window._randori_log._lastEvent=event;}catch{}; return enqueue('warn',event,msg,meta); },
+    error:(event,msg,meta)=>{ try{_lastEvent=event; window._randori_log._lastEvent=event;}catch{}; return enqueue('error',event,msg,meta); },
+    success:(event,msg,meta)=>{ try{_lastEvent=event; window._randori_log._lastEvent=event;}catch{}; return enqueue('success',event,msg,meta); },
+    debug:(event,msg,meta)=>{ try{_lastEvent=event; window._randori_log._lastEvent=event;}catch{}; return enqueue('debug',event,msg,meta); },
     flush,
-    get queue(){ return q.slice(); }
+    safe,
+    get queue(){ return q.slice(); },
+    get _lastEventVal(){ return _lastEvent; }
   };
   // expose for console
   try{ window._log=window._randori_log.log; }catch{}
+  // expose safe globally for inline try-catch sugar
+  try{ window._randori_safe=safe; }catch{}
+})();
+<script>
+/* Global safe event wrapper - ensures try/catch + log + Sentry for UI events */
+(function(){
+  try{
+    const origAdd = EventTarget.prototype.addEventListener;
+    EventTarget.prototype.addEventListener = function(type, listener, opts){
+      if(typeof listener!=='function') return origAdd.call(this, type, listener, opts);
+      // avoid double wrapping if marked
+      if(listener && listener._randoriWrapped) return origAdd.call(this, type, listener, opts);
+      const wrapped = function(){
+        try{ return listener.apply(this, arguments); }
+        catch(e){
+          try{ window._randori_log && window._randori_log.error('js_exception', 'event '+type+' handler fail: '+(e&&e.message||e), {stack: e&&e.stack?String(e.stack).slice(0,1500):'', type}); }catch{}
+          try{ if(window.Sentry) Sentry.captureException(e, {tags:{event:'event_handler_fail', type}}); }catch{}
+          // optionally toast? no spam
+        }
+      };
+      wrapped._randoriWrapped=true;
+      return origAdd.call(this, type, wrapped, opts);
+    };
+  }catch(e){ console.warn('event wrapper fail', e); }
 })();
 </script>
 
@@ -835,14 +963,32 @@ p{margin:0}
   let authToken = localStorage.getItem(TOKEN_KEY)||'';
   let me = null; try{ me = JSON.parse(localStorage.getItem(ME_KEY)||'null')}catch{}
   async function api(path, opts={}){
-    const headers = opts.headers||{};
-    headers['content-type']='application/json';
-    if(authToken) headers['authorization']='Bearer '+authToken;
-    const r=await fetch(path,{...opts,headers,body: opts.body? JSON.stringify(opts.body):undefined});
-    const text = await r.text();
-    let j; try{ j=JSON.parse(text)}catch{ j={raw:text,status:r.status} }
-    if(!r.ok) throw j;
-    return j;
+    const _apiStart = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+    try{
+      const headers = opts.headers||{};
+      headers['content-type']='application/json';
+      if(authToken) headers['authorization']='Bearer '+authToken;
+      const r=await fetch(path,{...opts,headers,body: opts.body? JSON.stringify(opts.body):undefined});
+      const text = await r.text();
+      let j; try{ j=JSON.parse(text)}catch{ j={raw:text,status:r.status} }
+      if(!r.ok){
+        try{ window._randori_log && window._randori_log.warn('api_fail', path+' -> '+r.status, {status:r.status, body: (j && (j.error||j.message||'')).toString().slice(0,400), path}); }catch{}
+        try{ if(window.Sentry) Sentry.captureMessage('api_fail '+path, {level:'warning', tags:{event:'api_fail', path, status:r.status}}); }catch{}
+        throw j;
+      }
+      try{
+        const dur = Math.round(((typeof performance!=='undefined'&&performance.now?performance.now():Date.now())-_apiStart));
+        if(dur>3000){ try{ window._randori_log && window._randori_log.warn('api_slow', path+' slow '+dur+'ms', {dur, path}); }catch{} }
+      }catch{}
+      return j;
+    }catch(e){
+      try{
+        const msg = (e && (e.error||e.message||e.detail)) ? String(e.error||e.message||e.detail) : String(e);
+        window._randori_log && window._randori_log.error('api_fail', 'api '+path+' failed: '+msg.slice(0,300), {path, err: msg.slice(0,800), stack: e && e.stack ? String(e.stack).slice(0,1500):''});
+      }catch{}
+      try{ if(window.Sentry){ Sentry.captureException(e instanceof Error ? e : new Error('api_fail '+path+': '+String(e).slice(0,400)), {tags:{event:'api_fail', path}}); } }catch{}
+      throw e;
+    }
   }
 async function refreshMe(){
     // sync token from storage every call (handles reopened tab)
@@ -3696,6 +3842,8 @@ def allow(key, limit=5):
 
 
   async function upgradedRun(){
+    const _upRunStart = Date.now();
+    try{
     const t0 = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
     const selVal=document.getElementById('questionSelect')?.value||'';
     const customQ=CUSTOM_QUESTIONS.find(q=>q.slug===selVal);
@@ -3898,6 +4046,15 @@ def allow(key, limit=5):
   async function refreshRecent(){
     const l=await fetchMyRuns(8);
     renderRunsList(l);
+    }catch(e){
+      try{
+        const msg=String(e&&e.message||e).slice(0,500);
+        window._randori_log && window._randori_log.error('run_fail','upgradedRun failed: '+msg, {stack:e&&e.stack?String(e.stack).slice(0,2000):''});
+        if(window.Sentry) Sentry.captureException(e,{tags:{event:'run_fail'}});
+        const outEl=document.getElementById('runOut');
+        if(outEl){ outEl.innerHTML='<div class="test" style="border-color:var(--accent-3)"><div class="small">Run failed: '+msg.replace(/</g,'&lt;')+'</div></div>'; }
+      }catch{}
+    }
   }
   window._randori_runs={fetchMyRuns, renderRunsList, refresh:refreshRecent};
 
@@ -4282,10 +4439,11 @@ def allow(key, limit=5):
           fetch('/api/video/signal',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({room_id:rid,from_id:pid,to_id:'',type:'code-sync',payload:JSON.stringify({lang, at:Date.now()})})}).catch(()=>{});
         }
       }catch{}
-    }catch(err){ console.warn('persist monaco failed',err); }
+    }catch(err){ try{ console.warn('persist monaco failed',err); window._randori_log && window._randori_log.warn('monaco_persist_fail','persistLikeOld fail', {err:String(err&&err.message||err).slice(0,300)}); if(window.Sentry) Sentry.captureException(err,{tags:{event:'monaco_persist_fail'}});}catch{} }
   }
 
   function updateLintFromMarkers(){
+    try{
     const el=getLint();
     if(!el) return;
     if(!monacoEditor || !window.monaco){ el.style.display='none'; return; }
@@ -4303,9 +4461,11 @@ def allow(key, limit=5):
         el.title = markers.slice(0,3).map(m=> (m.severity===8?'✗ ':'⚠ ')+ m.message.slice(0,120)).join(' | ');
       }
     }catch{ el.style.display='none'; }
+    }catch(e){ try{ window._randori_log && window._randori_log.warn('lint_markers_fail','updateLintFromMarkers fail', {err:String(e&&e.message||e).slice(0,300)});}catch{} }
   }
 
   async function formatCode(){
+    try{
     if(!monacoEditor) return;
     const lang=document.getElementById('langSelect')?.value||'javascript';
     const code=monacoEditor.getValue();
@@ -4341,6 +4501,8 @@ def allow(key, limit=5):
     }catch(e){ try{ if(typeof window.toast==='function') (typeof window.toast==='function' && window.toast)('nothing to format'); }catch{} }
   }
 
+    }catch(e){ try{ window._randori_log && window._randori_log.error('format_fail','formatCode failed', {err:String(e&&e.message||e).slice(0,400), stack:e&&e.stack?String(e.stack).slice(0,1500):''}); if(window.Sentry) Sentry.captureException(e,{tags:{event:'format_fail'}});}catch{} }
+  }
   function initMonaco(){
     const host=getHost();
     const ta=getTA();
@@ -4523,7 +4685,9 @@ def allow(key, limit=5):
     });
   }
 
-  function fallback(reason){ try{ window._randori_log&&window._randori_log.error('monaco_load_fail', String(reason||'monaco fallback').slice(0,300), {reason, cdn:MONACO_CDN}); }catch{} console.warn('monaco fallback',reason);
+  function fallback(reason){ try{ window._randori_log&&window._randori_log.error('monaco_load_fail', String(reason||'monaco fallback').slice(0,300), {reason, cdn:MONACO_CDN}); try{ window._randori_log&&window._randori_log.flush&&window._randori_log.flush(); }catch{} }catch{} console.warn('monaco fallback',reason);
+    // auto-retry once after 3s if not yet tried fallback CDN
+    try{ if(!window.__monacoRetryScheduled){ window.__monacoRetryScheduled=true; setTimeout(()=>{ try{ if(!monacoReady){ const host=getHost(); if(host) host.style.display=''; const note=document.getElementById(fallbackNoteId); if(note) note.style.display='none'; if(!monacoTriedFallback) loadMonacoLoaderFallback((e)=>{ if(!e) initMonaco(); }); else initMonaco(); } }catch{} }, 3000); } }catch{}
     monacoReady=false;
     const host=getHost(); const ta=getTA(); const note=document.getElementById(fallbackNoteId);
     try{ host && host.querySelectorAll('.monaco-loader').forEach(l=>l.remove()); }catch{}
