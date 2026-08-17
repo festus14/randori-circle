@@ -2986,7 +2986,10 @@ def allow(key, limit=5):
   try{ updateAuthUI = wrappedUpdateAuthUI; }catch{ window.updateAuthUI = wrappedUpdateAuthUI; }
 
   // Initial routing after page load
-  setTimeout(()=>{ routeByAuth(); }, 500);
+  document.getElementById('homeBtn')?.addEventListener('click', ()=>{ try{ (window._randori_journey&&window._randori_journey.routeByAuth?window._randori_journey.routeByAuth():routeByAuth()); }catch{} window.scrollTo({top:0,behavior:'smooth'}); });
+    document.querySelector('.brand')?.addEventListener('click', (e)=>{ if(e.target.closest('button')) return; try{ (window._randori_journey&&window._randori_journey.routeByAuth?window._randori_journey.routeByAuth():routeByAuth()); }catch{} window.scrollTo({top:0,behavior:'smooth'}); });
+    try{ document.querySelector('.brand').style.cursor='pointer'; }catch{}
+    setTimeout(()=>{ routeByAuth(); }, 500);
   document.getElementById('homeBtn')?.addEventListener('click', ()=>{ try{ if(window._randori_journey && window._randori_journey.routeByAuth) window._randori_journey.routeByAuth(); else if(typeof routeByAuth==='function') routeByAuth(); }catch{} window.scrollTo({top:0,behavior:'smooth'}); });
   document.addEventListener('DOMContentLoaded', ()=>{ setTimeout(routeByAuth, 300); });
 
