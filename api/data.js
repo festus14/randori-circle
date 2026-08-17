@@ -348,7 +348,7 @@ async function leetGraphQLQuestion(slug){
       stats
     }
   }`;
-  const r = await fetchWithTimeout('https://leetcode.com/graphql', {
+  const r = await fetchWithRetry('https://leetcode.com/graphql', {
     method:'POST',
     headers:{
       'Content-Type':'application/json',
@@ -357,7 +357,7 @@ async function leetGraphQLQuestion(slug){
       'Origin':'https://leetcode.com'
     },
     body: JSON.stringify({ query, variables:{ titleSlug: slug } })
-  }, 8000);
+  }, 2, 600);
   if (!r.ok) throw new Error(`leetcode gql ${r.status}`);
   const j = await r.json();
   if (j.errors) throw new Error(`gql error ${JSON.stringify(j.errors).slice(0,200)}`);
@@ -367,9 +367,9 @@ async function leetGraphQLQuestion(slug){
 }
 async function leetEnrichAlfa(slug){
   try{
-    const r = await fetchWithTimeout(`https://alfa-leetcode-api.onrender.com/select?titleSlug=${encodeURIComponent(slug)}`, {
+    const r = await fetchWithRetry(`https://alfa-leetcode-api.onrender.com/select?titleSlug=${encodeURIComponent(slug)}`, {
       headers:{ 'User-Agent':'Randori-Circle/1.0' }
-    }, 4000);
+    }, 1, 400);
     if (!r.ok) return null;
     const j = await r.json();
     // structure: { questionId, exampleTestcases, ... } varying
@@ -388,12 +388,12 @@ async function leetListSlugs(limit=100, skip=0){
         }
       }
     }`;
-    const r = await fetchWithTimeout('https://leetcode.com/graphql', {
+    const r = await fetchWithRetry('https://leetcode.com/graphql', {
       method:'POST',
       headers:{ 'Content-Type':'application/json', 'User-Agent':'Randori-Circle/1.0' },
       body: JSON.stringify({ query, variables:{ categorySlug:"", skip, limit, filters:{} } })
-    }, 7000);
-    if (r.ok){
+    }, 2, 500);
+    if (r && r.ok){
       const j = await r.json();
       const total = j.data?.problemsetQuestionList?.total ?? null;
       const qs = j.data?.problemsetQuestionList?.questions?.map(q=>q.titleSlug).filter(Boolean) ?? [];
@@ -402,7 +402,7 @@ async function leetListSlugs(limit=100, skip=0){
   }catch{}
   // fallback static problems/all (large ~2800) – need to slice
   try{
-    const r = await fetchWithTimeout('https://leetcode.com/api/problems/all/', { headers:{ 'User-Agent':'Randori-Circle/1.0' } }, 7000);
+    const r = await fetchWithRetry('https://leetcode.com/api/problems/all/', { headers:{ 'User-Agent':'Randori-Circle/1.0' } }, 2, 500);
     if (r.ok){
       const j = await r.json();
       const pairs = j.stat_status_pairs||[];

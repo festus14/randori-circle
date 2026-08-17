@@ -4,26 +4,22 @@ import jwt from 'jsonwebtoken';
 async function logServerOps(level, event, message, meta, req){
   try{
     const db = getClient();
-    // ensure table
-    try{ await db.execute(`CREATE TABLE IF NOT EXISTS app_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, level TEXT, source TEXT, event TEXT, message TEXT, meta_json TEXT, user_id INTEGER, route TEXT, ua TEXT, ip TEXT, created_at TEXT DEFAULT (datetime('now')))`); }catch{}
+    try{ await db.execute("CREATE TABLE IF NOT EXISTS app_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, level TEXT, source TEXT, event TEXT, message TEXT, meta_json TEXT, user_id INTEGER, route TEXT, ua TEXT, ip TEXT, created_at TEXT DEFAULT (datetime('now')))"); }catch{}
     let metaStr=null; try{ metaStr = meta ? JSON.stringify(meta).slice(0,8000) : null; }catch{ metaStr=String(meta).slice(0,2000); }
-    const lvl=String(level||'info').toLowerCase();
-    const src='server';
+    const lvl=String(level||"info").toLowerCase();
     const ev=String(event).slice(0,80);
     const msg=String(message).slice(0,2000);
     const route = req && req.url ? String(req.url).slice(0,300) : null;
-    const ua = req && req.headers ? (req.headers['user-agent']||'').toString().slice(0,300) : null;
-    const ip = req && req.headers ? (req.headers['x-forwarded-for']||'').toString().split(',')[0].slice(0,80) : null;
-    await db.execute({sql:`INSERT INTO app_logs (level, source, event, message, meta_json, route, ua, ip, created_at) VALUES (?,?,?,?,?,?,?, ?, datetime('now'))`, args:[lvl, src, ev, msg, metaStr, route, ua, ip]});
-  }catch(e){ try{ console.warn('[logServerOps fail]', e && e.message); }catch{} }
+    const ua = req && req.headers ? (req.headers["user-agent"]||"").toString().slice(0,300) : null;
+    const ip = req && req.headers ? (req.headers["x-forwarded-for"]||"").toString().split(",")[0].slice(0,80) : null;
+    await db.execute({sql:"INSERT INTO app_logs (level, source, event, message, meta_json, route, ua, ip, created_at) VALUES (?,?,?,?,?,?,?, ?, datetime('now'))", args:[lvl, "server", ev, msg, metaStr, route, ua, ip]});
+  }catch(e){ try{ console.warn("[logServerOps fail]", e && e.message); }catch{} }
 }
 
 function seededShuffle(arr, seedStr){
-  // deterministic shuffle by seed: xorshift by string hash
   let h=0; for(let i=0;i<seedStr.length;i++) h=(h*31+seedStr.charCodeAt(i))>>>0;
   const a=[...arr];
   for(let i=a.length-1;i>0;i--){
-    // simple LCG
     h=(h*1664525+1013904223)>>>0;
     const j= h % (i+1);
     const tmp=a[i]; a[i]=a[j]; a[j]=tmp;
@@ -32,22 +28,47 @@ function seededShuffle(arr, seedStr){
 }
 
 async function ensureNotifPrefs(db){
-  try{ await db.execute(`CREATE TABLE IF NOT EXISTS user_notification_prefs (user_id INTEGER PRIMARY KEY, email_enabled INTEGER DEFAULT 1, sms_enabled INTEGER DEFAULT 0, phone TEXT, email TEXT, updated_at TEXT DEFAULT (datetime('now')))`);}catch{}
+  try{ await db.execute("CREATE TABLE IF NOT EXISTS user_notification_prefs (user_id INTEGER PRIMARY KEY, email_enabled INTEGER DEFAULT 1, sms_enabled INTEGER DEFAULT 0, phone TEXT, email TEXT, updated_at TEXT DEFAULT (datetime('now')))"); }catch{}
 }
 
 async function handleNotificationPrefs(req,res){
-  if(req.method==='POST'||req.method==='PUT'){
-    const auth = req.headers.authorization||'';
-    const m = auth.match(/^Bearer\s+(.+)$/);
-    // allow also anonymous via localStorage flag? require auth if present else 200 no-op
-    let userId=null;
-    if(m){
-      try{ const payload=require('jsonwebtoken').verify(m[1], (await import('./_db.js')).then? null : process.env.JWT_SECRET||'dev'); }catch{}
-    }
-    // For this scaffold, decode JWT ourselves using getJwtSecret
+  const db=getClient();
+  try{ await ensureNotifPrefs(db); }catch{}
+  if(req.method==="GET"){
+    const auth=req.headers.authorization||"";
+    const m=auth.match(/^Bearer\s+(.+)$/);
+    if(!m) return res.status(401).json({error:"missing Bearer"});
+    let payload; try{ payload=jwt.verify(m[1], getJwtSecret()); }catch(e){ return res.status(401).json({error:"invalid token"}); }
+    const uid=payload.id||payload.uid;
+    try{
+      const rs=await db.execute({sql:"SELECT user_id,email_enabled,sms_enabled,phone,email,updated_at FROM user_notification_prefs WHERE user_id=?", args:[uid]});
+      if(rs.rows.length) return res.json({ok:true, prefs:rs.rows[0]});
+      return res.json({ok:true, prefs:{user_id:uid,email_enabled:1,sms_enabled:0,phone:null}});
+    }catch(e){ return res.status(500).json({error:"fetch failed"}); }
   }
-  return res.status(405).json({error:'stub'});
+  if(req.method==="POST" || req.method==="PUT"){
+    const auth=req.headers.authorization||"";
+    const m=auth.match(/^Bearer\s+(.+)$/);
+    if(!m) return res.status(401).json({error:"missing Bearer"});
+    let payload; try{ payload=jwt.verify(m[1], getJwtSecret()); }catch(e){ return res.status(401).json({error:"invalid token"}); }
+    const uid=payload.id||payload.uid;
+    const body=req.body||{};
+    const email_enabled = body.email_enabled!=null ? (body.email_enabled?1:0) : 1;
+    const sms_enabled = body.sms_enabled!=null ? (body.sms_enabled?1:0) : 0;
+    const phone = body.phone ? String(body.phone).slice(0,20) : null;
+    const email = body.email ? String(body.email).slice(0,120) : null;
+    try{
+      await db.execute({sql:"INSERT INTO user_notification_prefs (user_id,email_enabled,sms_enabled,phone,email,updated_at) VALUES (?,?,?,?,?,datetime('now')) ON CONFLICT(user_id) DO UPDATE SET email_enabled=excluded.email_enabled, sms_enabled=excluded.sms_enabled, phone=COALESCE(excluded.phone,phone), email=COALESCE(excluded.email,email), updated_at=datetime('now')", args:[uid,email_enabled,sms_enabled,phone,email]});
+    }catch{
+      try{ await db.execute({sql:"INSERT OR IGNORE INTO user_notification_prefs (user_id,email_enabled,sms_enabled,phone,email) VALUES (?,?,?,?,?)", args:[uid,email_enabled,sms_enabled,phone,email]}); }catch{}
+      try{ await db.execute({sql:"UPDATE user_notification_prefs SET email_enabled=?, sms_enabled=?, phone=COALESCE(?,phone), email=COALESCE(?,email), updated_at=datetime('now') WHERE user_id=?", args:[email_enabled,sms_enabled,phone,email,uid]}); }catch{}
+    }
+    try{ await logServerOps("info","notif_prefs_updated","prefs uid "+uid+" email="+email_enabled+" sms="+sms_enabled, {uid,email_enabled,sms_enabled,phone}, req); }catch{}
+    return res.json({ok:true, prefs:{user_id:uid,email_enabled:!!email_enabled,sms_enabled:!!sms_enabled,phone,email}});
+  }
+  return res.status(405).json({error:"GET or POST/PUT"});
 }
+
 
 
 function getEndpoint(req){
@@ -213,7 +234,6 @@ async function handleWeekly(req,res){
   }
   let prevPairsSet=new Set(); try{ const lastWeek=await db.execute(`SELECT id FROM pairing_weeks ORDER BY id DESC LIMIT 1`); if(lastWeek.rows.length){ const pg=await db.execute({ sql:`SELECT user_a_id,user_b_id FROM pairing_groups WHERE week_id=?`, args:[lastWeek.rows[0].id]}); pg.rows.forEach(r=>{ const key=[Math.min(r.user_a_id,r.user_b_id), Math.max(r.user_a_id,r.user_b_id)].join('-'); prevPairsSet.add(key); }); } }catch{}
   let bestPairs=null; 
-  // deterministic seed based on year-week to avoid true random chaos but still shuffle, 8 attempts pick minimal repeat
   for(let attempt=0; attempt<8; attempt++){
     const seedStr = weekLabel + ':' + attempt;
     const shuffled=seededShuffle(participants, seedStr);
@@ -234,10 +254,8 @@ async function handleWeekly(req,res){
   }
   for(const pr of bestPairs.pairs){ const aId=pr.a.id; const bId=pr.b?pr.b.id:pr.a.id; const isAi=pr.isAI?1:0; await db.execute({ sql:`INSERT INTO pairing_groups (week_id,user_a_id,user_b_id,is_ai_pair,topic,topic_kind) VALUES (?,?,?,?,?,?)`, args:[weekId,aId,bId,isAi,'Pick together','both']}); }
 
-  // Logging success
   try{ await logServerOps('success','weekly_paired', `weekly ${weekLabel} paired ${participants.length} users`, {week_label:weekLabel, week_id:weekId, pairs:bestPairs.pairs.length, available:participants.length, repeat_avoided:bestPairs.repeatCount}, req);}catch{}
 
-  // Notification prefs check: fetch prefs to respect opt-out
   let prefsMap = new Map();
   try{
     const prs=await db.execute(`SELECT user_id, email_enabled, sms_enabled, phone FROM user_notification_prefs`);
@@ -248,20 +266,17 @@ async function handleWeekly(req,res){
   let smsStatus='skipped (no TWILIO_* env or no phone)';
   let unavailableEmailStatus='skipped (no RESEND_API_KEY or no unavailable users)';
   const baseUrl=process.env.APP_URL || (process.env.VERCEL_URL? `https://${process.env.VERCEL_URL}`:'https://randori-circle-self.vercel.app');
-  // Build join links deterministic: room id = weekId-partner combo
   function roomLink(pair){
     const id = `w${weekId}-p${pair.a.id}-${pair.b?pair.b.id:'ai'}`;
     return `${baseUrl}/join/${id}`;
   }
 
-  // Email
   if (process.env.RESEND_API_KEY){
     try{
-      const { Resend } = await import('resend').catch(()=>({Resend:null}));
-      if (Resend){
-        const resend=new Resend(process.env.RESEND_API_KEY);
+      const resendMod = await import('resend').catch(()=>null);
+      if (resendMod && resendMod.Resend){
+        const resend=new resendMod.Resend(process.env.RESEND_API_KEY);
         const from=process.env.RESEND_FROM||'Randori <onboarding@randori.circle>';
-        // Only email if pref email_enabled !=0
         const toList=[];
         for(const p of participants){
           const pref=prefsMap.get(p.id);
@@ -292,7 +307,6 @@ async function handleWeekly(req,res){
     try{ await logServerOps('info','email_skipped_no_key','weekly skip email no RESEND_API_KEY', {week_label:weekLabel}, req);}catch{}
   }
 
-  // SMS via Twilio optional
   if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM){
     try{
       const sid=process.env.TWILIO_ACCOUNT_SID;
@@ -305,7 +319,6 @@ async function handleWeekly(req,res){
         if(pref && pref.sms_enabled===0) continue;
         const phone = pref && pref.phone ? pref.phone : (p.phone||null);
         if(!phone) continue;
-        // ensure E.164 — skip validation light
         const body=`Randori ${weekLabel}: paired! ${bestPairs.pairs.find(pr=>pr.a.id===p.id|| (pr.b&&pr.b.id===p.id)) ? 'You + '+(bestPairs.pairs.find(pr=>pr.a.id===p.id|| (pr.b&&pr.b.id===p.id)).b? bestPairs.pairs.find(pr=>pr.a.id===p.id|| (pr.b&&pr.b.id===p.id)).b.name : 'AI') : 'check app'} — Join ${baseUrl}/join/w${weekId}-p${p.id} `;
         try{
           const r=await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded','Authorization':'Basic '+auth}, body:new URLSearchParams({From:from, To:phone, Body:body}).toString()});
@@ -324,6 +337,7 @@ async function handleWeekly(req,res){
 
   return res.json({ ok:true, week_label:weekLabel, week_id:weekId, pairs:bestPairs.pairs.map(p=>({ a:p.a.name, b:p.b?p.b.name:'AI partner', isAI:p.isAI, a_id:p.a.id, b_id:p.b?p.b.id:null, room:`w${weekId}-p${p.a.id}-${p.b?p.b.id:'ai'}`, join:`${baseUrl}/join/w${weekId}-p${p.a.id}-${p.b?p.b.id:'ai'}` })), available_count:participants.length, total_accounts:allAccounts.length, unavailable_count:unavailable.length, unavailable:unavailable.map(u=>({ id:u.id, name:u.name, email:u.email })), repeat_avoided:bestPairs.repeatCount, email:emailStatus, sms:smsStatus, unavailable_emails:unavailableEmailStatus, unavailable_reminders:unavailable.map(u=>({ id:u.id, name:u.name, email:u.email, reason:'marked unavailable', action:'Set Available this week = ON in app settings' })), note:'Weekly auto-shuffle: only is_available=1 participants. Set RESEND_API_KEY+RESEND_FROM and TWILIO_* in Vercel to email/sms. Reminder toggle on dashboard sets localStorage + /api/notifications/prefs.', app_url:baseUrl });
 }
+
 
 async function handleDemoSeed(req,res){
   if (req.method!=='POST') return res.status(405).json({ error:'POST only for demo-seed' });
@@ -427,6 +441,7 @@ async function handleDemoReset(req,res){
 export default async function handler(req,res){
   const ep = getEndpoint(req);
   const pathLower = (req.url||'').toLowerCase();
+  if (ep==='notifications-prefs' || ep==='notifications' || ep==='prefs' || ep.includes('notification') || pathLower.includes('notifications') || pathLower.includes('notif') ) return handleNotificationPrefs(req,res);
   if (ep==='availability' || pathLower.includes('availability')) return handleAvailability(req,res);
   if (ep==='demo-seed' || ep==='demo_seed' || pathLower.includes('demo-seed')) return handleDemoSeed(req,res);
   if (ep==='demo-shuffle' || ep==='demo_shuffle' || ep==='dem0-shuffle' || pathLower.includes('demo-shuffle')) return handleDemoShuffle(req,res);
