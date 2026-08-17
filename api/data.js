@@ -1932,9 +1932,6 @@ export default async function handler(req,res){
 // auto-seed from bundled file on first questions request
 async function maybeSeedFromStatic(db){
   try{
-    const cnt=await db.execute(`SELECT COUNT(*) as c FROM custom_questions`);
-    if((cnt.rows[0]?.c||0)>0) return;
-    // try to load bundled json - in Vercel file exists at /vercel/path0/data
     let seed=null;
     const tryPaths = ['/vercel/path0/data/leetcode-seed.json', './data/leetcode-seed.json', 'data/leetcode-seed.json', '../data/leetcode-seed.json'];
     for(const cand of tryPaths){
@@ -1957,9 +1954,28 @@ async function maybeSeedFromStatic(db){
       }catch{}
     }
     if(!seed||!seed.length) return;
+    // Upsert enriched seed (ON CONFLICT) — always upsert to migrate old 3-case seeds to enriched 6-case
     for(const q of seed){
       try{
-        await db.execute({ sql:`INSERT OR IGNORE INTO custom_questions (slug,title,type,difficulty,category,description,test_cases,examples,source,leetcode_slug) VALUES (?,?,?,?,?,?,?,?,?,?)`, args:[q.slug,q.title, q.type||'dsa', q.difficulty||'Medium', q.category||'custom', q.description, JSON.stringify(q.test_cases||[]), JSON.stringify(q.examples||[]), q.source||'leetcode', q.leetcode_slug||q.slug]});
+        const enrichedTC = q.test_cases || [];
+        const slug = q.slug;
+        let mergedTC = enrichedTC;
+        try{
+          const edges = enrichmentEdges(slug);
+          const seen = new Set((enrichedTC||[]).map(t=>t.input));
+          for(const e of edges){ if(!seen.has(e.input)){ mergedTC.push(e); seen.add(e.input); } }
+        }catch{}
+        await db.execute({ sql:`INSERT INTO custom_questions (slug,title,type,difficulty,category,description,test_cases,examples,source,leetcode_slug) VALUES (?,?,?,?,?,?,?,?,?,?)
+          ON CONFLICT(slug) DO UPDATE SET
+            title=excluded.title,
+            difficulty=excluded.difficulty,
+            category=excluded.category,
+            description=excluded.description,
+            test_cases=excluded.test_cases,
+            examples=excluded.examples,
+            source=excluded.source,
+            leetcode_slug=excluded.leetcode_slug
+        `, args:[q.slug,q.title, q.type||'dsa', q.difficulty||'Medium', q.category||'custom', q.description, JSON.stringify(mergedTC||[]), JSON.stringify(q.examples||[]), q.source||'leetcode', q.leetcode_slug||q.slug]});
       }catch{}
     }
   }catch{}
