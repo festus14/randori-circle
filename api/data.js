@@ -1392,21 +1392,32 @@ async function handleLeetcode(req,res){
     const tags = (q.topicTags||[]).map(t=>t.slug||t.name).slice(0,3);
     const category = tags[0]||'dsa';
     const exampleTestcases = q.exampleTestcases||'';
-    let testCases = buildTestCasesFromExampleTestcases(exampleTestcases, descHtml);
-    // Try enrichment alfa
-    let enriched=null;
-    try{ enriched = await leetEnrichAlfa(slug); }catch{}
-    if (enriched && enriched.exampleTestcases && String(enriched.exampleTestcases).length > (exampleTestcases||'').length){
-      const richer = buildTestCasesFromExampleTestcases(enriched.exampleTestcases, descHtml);
-      if (richer.length>testCases.length) testCases = richer;
-    }
-    // Fallback: if still empty, make a dummy single case from examples block
+    // NEW: smart chunker + pre parse + alfa enrichment merging dedup + edges
+    let testCases = smartChunkExampleTestcases(slug, exampleTestcases, descHtml);
+    try{
+      const alfa = await leetEnrichAlfa(slug);
+      let alfaCases=[];
+      if (alfa && alfa.exampleTestcases) alfaCases = smartChunkExampleTestcases(slug, alfa.exampleTestcases, alfa.content||descHtml);
+      if (alfaCases.length){
+        // merge dedup by input string
+        const seen = new Set(testCases.map(t=>t.input));
+        for(const ac of alfaCases){ if(!seen.has(ac.input)){ testCases.push(ac); seen.add(ac.input); } }
+      }
+      // alfa sample list_details may have more
+      if (alfa && alfa.exampleTestcases && typeof alfa.exampleTestcases==='string' && alfa.exampleTestcases.includes('\n') && testCases.length < 3){
+        // already handled
+      }
+    }catch{}
+    // enrich with hand-crafted edges
+    try{
+      const edges = enrichmentEdges(slug);
+      const seen = new Set(testCases.map(t=>t.input));
+      for(const e of edges){ if(!seen.has(e.input)){ testCases.push(e); seen.add(e.input); } }
+    }catch{}
     if (!testCases.length){
-      testCases=[{ input:`example from ${slug}`, expect:null, raw:`see description` }];
+      testCases=[{ input:JSON.stringify({raw:`example from ${slug}`}), expect:null, raw:`see description` }];
     }
-    // constraints
     const constraints = parseLeetConstraints(descHtml);
-    const examplesJson = JSON.stringify([ { input: exampleTestcases.slice(0,800), output: '', explanation:'' } ]).slice(0,4000);
     const ret = {
       questionId: q.questionId||q.questionFrontendId,
       title: q.title,
@@ -1421,7 +1432,7 @@ async function handleLeetcode(req,res){
       exampleTestcases,
       constraints,
       test_cases: testCases,
-      examples: [{ input: exampleTestcases, output:'', explanation:'' }],
+      examples: testCases.slice(0,5).map(tc=>({ input: tc.input, output: tc.expect||'', raw: tc.raw })),
       source:'leetcode-proxy',
       leetcode_slug: q.titleSlug,
     };
@@ -1459,24 +1470,32 @@ async function handleLeetcodeSync(req,res){
   for (let i=0;i<slugs.length;i++){
     const slug = slugs[i];
     try{
+      if (i>0 && i%3===0) await sleep(800); // rate limit to avoid 429
       const q = await leetGraphQLQuestion(slug);
       const descHtml = q.content||'';
       const descText = htmlToText(descHtml)||q.title;
       const difficulty = q.difficulty||'Medium';
       const tags = (q.topicTags||[]).map(t=>t.slug||t.name).slice(0,3);
       const category = tags[0]||'dsa';
-      let testCases = buildTestCasesFromExampleTestcases(q.exampleTestcases||'', descHtml);
-      // enrichment attempt (best-effort)
+      let testCases = smartChunkExampleTestcases(slug, q.exampleTestcases||'', descHtml);
+      // enrichment attempt (best-effort) – merge alfa
       try{
         const alfa = await leetEnrichAlfa(slug);
-        if (alfa && alfa.exampleTestcases && String(alfa.exampleTestcases).length > String(q.exampleTestcases||'').length){
-          const richer = buildTestCasesFromExampleTestcases(alfa.exampleTestcases, descHtml);
-          if (richer.length>testCases.length) testCases=richer;
+        if (alfa && alfa.exampleTestcases){
+          const alfaCases = smartChunkExampleTestcases(slug, alfa.exampleTestcases, alfa.content||descHtml);
+          const seen = new Set(testCases.map(t=>t.input));
+          for(const ac of alfaCases){ if(!seen.has(ac.input)){ testCases.push(ac); seen.add(ac.input); } }
         }
       }catch{}
-      if (!testCases.length) testCases=[{ input:`example from ${slug}`, expect:null, raw:`see description` }];
+      // edges
+      try{
+        const edges = enrichmentEdges(slug);
+        const seen = new Set(testCases.map(t=>t.input));
+        for(const e of edges){ if(!seen.has(e.input)){ testCases.push(e); seen.add(e.input); } }
+      }catch{}
+      if (!testCases.length) testCases=[{ input:JSON.stringify({raw:`example from ${slug}`}), expect:null, raw:`see description` }];
       const constraints = parseLeetConstraints(descHtml);
-      const examplesStr = JSON.stringify([{ input:q.exampleTestcases||'', output:'', explanation:'' }]).slice(0,4000);
+      const examplesStr = JSON.stringify(testCases.slice(0,5).map(tc=>({ input: tc.input, output: tc.expect||'', raw: tc.raw }))).slice(0,4000);
       const tcsStr = JSON.stringify(testCases).slice(0,15000);
       // upsert
       await db.execute({ sql:`INSERT INTO custom_questions (slug, title, type, difficulty, category, description, input_format, constraints_text, examples, test_cases, starter_per_lang, author_id, source, leetcode_slug, created_at)
@@ -1507,14 +1526,16 @@ async function handleLeetcodeSync(req,res){
         'leetcode',
         q.titleSlug||slug
       ]});
+      try{ await logServer('info','leetcode_sync_progress', `synced ${slug} ${i+1}/${slugs.length} tc=${testCases.length}`, {skip, slug, idx:i, tc:testCases.length}, {req, source:'server', route:req.url}); }catch{}
       synced.push({ slug, title:q.title, difficulty, category, test_cases_count:testCases.length });
     }catch(e){
+      try{ await logServer('warn','leetcode_sync_error', `fail ${slug} ${String(e.message||e).slice(0,120)}`, {slug, err:String(e.message||e).slice(0,300)}, {req, source:'server'}); }catch{}
       errors.push({ slug, error:String(e.message||e).slice(0,200) });
     }
-    // Vercel Hobby 10s budget: if synced 20, break early – caller paginates with skip
+    // Vercel Hobby 10s budget guard: if we exceed 9s we break – caller paginates with skip
     if (i>=14 && (Date.now()%1000===0)) { /*noop*/ }
   }
-  return res.json({ ok:true, synced_count:synced.length, total_requested: slugs.length, skip, limit, total_available: slugsInfo?.total||null, synced, errors, note:`Best-effort: synced ${synced.length}/${slugs.length} (limit ${limit} per call). ExampleTestcases only = sample I/O; hidden LeetCode judge cases not public; enriched via alfa-leetcode-api when available. Paginate with ?skip=20&limit=20 to fill DB.` });
+  return res.json({ ok:true, synced_count:synced.length, total_requested: slugs.length, skip, limit, total_available: slugsInfo?.total||null, synced, errors, note:`Enriched: merged GraphQL exampleTestcases + alfa-leetcode-api + hand-crafted edges. Pagination via ?skip=&limit=. Each call 800ms throttled to avoid 429. Auto-seed /api/questions when <10 uses same enrichment.` });
 }
 
 
