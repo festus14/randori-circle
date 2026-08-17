@@ -3987,6 +3987,7 @@ def allow(key, limit=5):
 <script>
 // Monaco IDE task — replace textarea with Monaco, keep textarea as hidden mirror for legacy runCode/AI paths
 (function(){
+  if(typeof window.toast!=='function'){ window.toast=function(m){ try{ console.log('[toast]',m); }catch{} }; }
   const MONACO_CDN_PRIMARY = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs';
   const MONACO_CDN_FALLBACK = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs';
   let MONACO_CDN = MONACO_CDN_PRIMARY;
@@ -4102,7 +4103,7 @@ def allow(key, limit=5):
         if(btn){ btn.disabled=true; const old=btn.textContent; btn.textContent='…'; btn.dataset.old=old; }
         formatted = await window.prettier.format(code, {parser:cfg.parser, plugins:cfg.plugins, semi:true, singleQuote:true, tabWidth:2, trailingComma:'es5'});
       }catch(e){
-        if(window.toast) window.toast('format error: '+(e.message||'').slice(0,120));
+        try{ if(typeof window.toast==='function') (typeof window.toast==='function' && window.toast)('format error: '+(e.message||'').slice(0,120)); }catch{}
         console.warn('prettier error',e);
         formatted=null;
       } finally{ if(btn){ btn.disabled=false; btn.textContent=btn.dataset.old||'↥ Format'; } }
@@ -4111,15 +4112,15 @@ def allow(key, limit=5):
       monacoEditor.setValue(formatted);
       syncTextareaToMirror();
       persistLikeOld();
-      if(window.toast) window.toast('formatted ✓');
+      try{ if(typeof window.toast==='function') try{ if(typeof window.toast==='function') window.toast('formatted ✓'); }catch{}; }catch{}
       return;
     }
     // fallback to Monaco's built-in formatter action (works for js/ts/java/python via monarch? basic)
     try{
       await monacoEditor.getAction('editor.action.formatDocument')?.run();
       syncTextareaToMirror(); persistLikeOld();
-      if(window.toast) window.toast('formatted (monaco)');
-    }catch(e){ if(window.toast) window.toast('nothing to format'); }
+      try{ if(typeof window.toast==='function') (typeof window.toast==='function' && window.toast)('formatted (monaco)'); }catch{}
+    }catch(e){ try{ if(typeof window.toast==='function') (typeof window.toast==='function' && window.toast)('nothing to format'); }catch{} }
   }
 
   function initMonaco(){
@@ -4285,7 +4286,7 @@ def allow(key, limit=5):
           }catch{}
         }, 700);
 
-        if(window.toast) window.toast('Monaco IDE ready — TS lint + Prettier format');
+        try{ if(typeof window.toast==='function') (typeof window.toast==='function' && window.toast)('Monaco IDE ready — TS lint + Prettier format'); }catch{}
 
       }catch(e){
         console.error('monaco init error',e);
