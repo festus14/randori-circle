@@ -1,5 +1,31 @@
 import { createClient } from '@libsql/client';
 
+// ---- Sentry server init (optional, DSN via env) ----
+import * as Sentry from '@sentry/node';
+let sentryInit = false;
+export function initSentry() {
+  if (sentryInit) return;
+  try {
+    const dsn = process.env.SENTRY_DSN || process.env.NEXT_PUBLIC_SENTRY_DSN || '';
+    if (!dsn) return;
+    Sentry.init({
+      dsn,
+      environment: process.env.VERCEL_ENV || process.env.NODE_ENV || 'production',
+      tracesSampleRate: 0.1,
+      beforeSend(event) {
+        // tag common
+        return event;
+      }
+    });
+    sentryInit = true;
+  } catch (e) {
+    try { console.warn('[sentry server init fail]', e && e.message); } catch {}
+  }
+}
+initSentry();
+
+export function getSentry() { return { Sentry, ready: sentryInit }; }
+
 export function getClient() {
   const url = process.env.TURSO_DATABASE_URL;
   const authToken = process.env.TURSO_AUTH_TOKEN;

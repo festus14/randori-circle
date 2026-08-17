@@ -1,1 +1,11 @@
-{"dependencies":{"@libsql/client":"^0.12.0","bcryptjs":"^2.4.3","jsonwebtoken":"^9.0.2"},"name":"randori-circle","private":true,"type":"module"}
+{
+  "dependencies": {
+    "@libsql/client": "^0.12.0",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
+    "@sentry/node": "^8.42.0"
+  },
+  "name": "randori-circle",
+  "private": true,
+  "type": "module"
+}
