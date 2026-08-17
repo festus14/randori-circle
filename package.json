@@ -7,5 +7,13 @@
   },
   "name": "randori-circle",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "scripts": {
+    "test:e2e": "npx playwright test --reporter=list",
+    "test:e2e:ui": "npx playwright test --ui"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0",
+    "ms": "^2.1.3"
+  }
 }
