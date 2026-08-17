@@ -8,6 +8,10 @@
     { "source": "/api/settings/availability", "destination": "/api/ops/availability" },
     { "source": "/api/admin/reshuffle", "destination": "/api/ops/reshuffle" },
     { "source": "/api/cron/weekly", "destination": "/api/ops/weekly" },
+    { "source": "/api/ai/analyze", "destination": "/api/ai/analyze" },
+    { "source": "/api/ai/feedback/:id", "destination": "/api/ai/feedback/:id" },
+    { "source": "/api/ai/feedback", "destination": "/api/ai/feedback" },
+    { "source": "/api/ai/history", "destination": "/api/ai/history" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }

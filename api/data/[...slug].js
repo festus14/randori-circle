@@ -239,6 +239,15 @@ async function handleInit(req, res) {
       difficulty TEXT NOT NULL,
       category TEXT NOT NULL,
       description TEXT NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS video_signals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      room_id TEXT NOT NULL,
+      from_id TEXT NOT NULL,
+      to_id TEXT,
+      type TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
     )`
   ], "write");
   const migrations = [

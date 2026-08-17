@@ -179,6 +179,30 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
   .tabs{margin:10px 12px 0; flex-wrap:wrap; overflow:visible}
   .overlay{padding:12px}
 }
+/* --- video tiles --- */
+.video-bar{
+  display:flex; flex-direction:column; gap:10px;
+  background:var(--bg-2); border:1px solid var(--line);
+  border-radius:var(--radius); padding:10px; margin-bottom:12px;
+  box-shadow:var(--shadow);
+}
+.video-bar-head{display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap}
+.video-tiles{display:flex; gap:10px; flex-wrap:wrap}
+.video-tile{
+  position:relative; width:260px; max-width:100%; aspect-ratio:16/9;
+  background:var(--bg-3); border:1px solid var(--line); border-radius:12px;
+  overflow:hidden; display:flex; flex-direction:column;
+}
+.video-tile.local{border-color:var(--accent); box-shadow:0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent)}
+.video-tile video{width:100%; height:100%; object-fit:cover; background:#0d0c0b; display:block}
+.video-tile .vid-label{
+  position:absolute; bottom:6px; left:6px; background:rgba(0,0,0,.55);
+  color:#fff; font-size:11px; padding:3px 7px; border-radius:999px; backdrop-filter:blur(4px);
+  border:1px solid rgba(255,255,255,.12)
+}
+.video-tile .vid-mute{position:absolute; top:6px; right:6px; background:rgba(0,0,0,.55); color:#fff; border-radius:999px; padding:3px 6px; font-size:10px; border:1px solid rgba(255,255,255,.12)}
+.video-controls{display:flex; gap:6px; align-items:center; flex-wrap:wrap}
+.video-controls .pill.off{opacity:.55; text-decoration:line-through}
 </style>
 </head>
 <body>
@@ -280,6 +304,30 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
 
     <!-- CODE -->
     <section id="view-code" class="view" style="display:none">
+      <div id="videoBar" class="video-bar">
+        <div class="video-bar-head">
+          <div class="row small"><b style="font-size:13px">Live video</b><span class="kbd" id="videoRoomLabel">room —</span><span id="videoStatus" class="kbd">off</span></div>
+          <div class="video-controls">
+            <button id="vidCamBtn" class="pill">📷 cam</button>
+            <button id="vidMicBtn" class="pill">🎤 mic</button>
+            <button id="vidJoinBtn" class="btn">Join video</button>
+            <button id="vidLeaveBtn" class="pill" style="display:none">Leave</button>
+            <button id="vidScreenBtn" class="pill" title="Screen share (placeholder)">🖥 screen</button>
+          </div>
+        </div>
+        <div class="video-tiles" id="videoTiles">
+          <div class="video-tile local" id="tileLocal">
+            <video id="localVideo" autoplay muted playsinline></video>
+            <div class="vid-label" id="localLabel">you</div>
+            <div class="vid-mute" id="localMuteBadge" style="display:none">muted</div>
+          </div>
+          <div class="video-tile" id="tileRemote">
+            <video id="remoteVideo" autoplay playsinline></video>
+            <div class="vid-label" id="remoteLabel">pair</div>
+          </div>
+        </div>
+        <div class="small muted">WebRTC mesh via Turso polling — 2s signal. No SDK. If cam blocked, tiles fall back to name dots. Screen share placeholder for future capture.</div>
+      </div>
       <div class="code-layout">
         <div class="q-pane">
           <div class="q-head">
@@ -319,6 +367,30 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
           </div>
           <textarea id="editor" class="editor" spellcheck="false"></textarea>
           <div id="runOut" class="run-out"></div>
+          <!-- AI Recording & Feedback (Groq router) -->
+          <div id="aiPanel" style="border-top:1px solid var(--line); background:var(--bg-2); padding:10px; display:grid; gap:10px">
+            <div class="row" style="justify-content:space-between; flex-wrap:wrap">
+              <b style="font-size:12.5px">AI Recording & Feedback <span class="kbd" style="background:#e6c07a22">Groq</span></b>
+              <div class="row" style="gap:6px">
+                <button id="aiRecordBtn" class="pill" title="Record code edits + transcript notes">● Record</button>
+                <button id="aiAnalyzeBtn" class="btn" style="font-size:11.5px">⚡ Get AI Feedback</button>
+                <button id="aiHistoryBtn" class="pill" style="font-size:11px">history</button>
+              </div>
+            </div>
+            <div class="grid-2" style="grid-template-columns:1fr 1fr; gap:8px">
+              <div>
+                <div class="small muted" style="margin-bottom:4px">Transcript / notes (what was said, questions asked) — this becomes evidence</div>
+                <textarea id="aiTranscript" class="textarea" placeholder="e.g. Interviewer: 'Can you explain time complexity?'\nCandidate: 'I used hashmap because...'\nInterviewer question: 'What if nums length is 10^5?'\n(candidate types fast but forgets edge-case)" style="min-height:90px; font-size:12.5px"></textarea>
+              </div>
+              <div>
+                <div class="small muted" style="margin-bottom:4px">Interviewer questions (for interviewer coaching)</div>
+                <textarea id="aiInterviewerQs" class="textarea" placeholder="e.g. Q1: Two Sum follow-up – duplicate handling\nQ2: What if we need to return all pairs?" style="min-height:90px; font-size:12.5px"></textarea>
+              </div>
+            </div>
+            <div id="aiStatus" class="small muted" style="min-height:16px">Ready. Hit Record before you start, it auto-captures code diffs. Works offline, calls Groq when signed-in.</div>
+            <div id="aiRouterDebug" class="small" style="display:none; padding:8px; border:1px dashed var(--line); border-radius:8px; background:var(--bg-3); font-size:11px; line-height:1.5"></div>
+            <div id="aiFeedback" style="display:grid; gap:10px"></div>
+          </div>
         </div>
       </div>
     </section>
@@ -1465,6 +1537,260 @@ def allow(key, limit=5):
 
   // init board
   loadBoard(); requestAnimationFrame(()=>{ resizeCanvas(); boardHist=[JSON.stringify(boardShapes)]; boardHistIdx=0; renderBoard(); });
+
+  // ---------- live video (WebRTC + Turso signaling) ----------
+  let webrtcPeerId = localStorage.getItem('randori-peer-id') || ('p_'+uid()+uid());
+  localStorage.setItem('randori-peer-id', webrtcPeerId);
+  let localStream = null;
+  let pc = null;
+  let videoPollTimer = null;
+  let videoLastSignalId = 0;
+  let videoJoined = false;
+  let videoMicEnabled = true;
+  let videoCamEnabled = true;
+
+  const iceServers = [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }];
+
+  function videoUpdateStatus(txt){ const el=document.getElementById('videoStatus'); if(el) el.textContent=txt; const rl=document.getElementById('videoRoomLabel'); if(rl) rl.textContent=currentRoom? 'room '+currentRoom.slice(0,4): 'room —'; }
+
+  function getVideoRoomId(){ return currentRoom || document.getElementById('roomSelect')?.value || 'lobby'; }
+
+  async function ensureLocalStream(needCam = true){
+    if(localStream){
+      videoCamEnabled = needCam ? videoCamEnabled : false;
+      return localStream;
+    }
+    const constraints = { audio: true, video: needCam ? { width:{ideal:640}, height:{ideal:360} } : false };
+    try{
+      localStream = await navigator.mediaDevices.getUserMedia(constraints);
+    }catch(e){
+      // fallback audio only
+      try{
+        localStream = await navigator.mediaDevices.getUserMedia({ audio:true, video:false });
+        videoCamEnabled = false;
+        toast('cam blocked — audio only fallback');
+      }catch(e2){
+        toast('no mic/cam access — video fallback to name dots');
+        return null;
+      }
+    }
+    const lv=document.getElementById('localVideo');
+    if(lv){ lv.srcObject=localStream; lv.play().catch(()=>{}); }
+    updateVideoMicCamUI();
+    return localStream;
+  }
+
+  function updateVideoMicCamUI(){
+    const camBtn=document.getElementById('vidCamBtn');
+    const micBtn=document.getElementById('vidMicBtn');
+    const muteBadge=document.getElementById('localMuteBadge');
+    if(camBtn) camBtn.classList.toggle('off', !videoCamEnabled);
+    if(micBtn) micBtn.classList.toggle('off', !videoMicEnabled);
+    if(muteBadge) muteBadge.style.display = videoMicEnabled ? 'none' : 'block';
+    if(localStream){
+      localStream.getVideoTracks().forEach(t=> t.enabled = videoCamEnabled);
+      localStream.getAudioTracks().forEach(t=> t.enabled = videoMicEnabled);
+    }
+  }
+
+  async function sendSignal(type, payload, toId=''){
+    const room_id = getVideoRoomId();
+    if(!room_id) return;
+    const body = { room_id, from_id: webrtcPeerId, to_id: toId, type, payload: typeof payload==='string' ? payload : JSON.stringify(payload) };
+    try{
+      await fetch('/api/video/signal', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body) });
+    }catch{}
+  }
+
+  async function pollSignals(){
+    if(!videoJoined) return;
+    const room_id = getVideoRoomId();
+    if(!room_id) return;
+    try{
+      const u = new URL('/api/video/signal', location.origin);
+      u.searchParams.set('room_id', room_id);
+      u.searchParams.set('peer_id', webrtcPeerId);
+      u.searchParams.set('after', String(videoLastSignalId));
+      const r = await fetch(u.toString());
+      if(!r.ok) return;
+      const data = await r.json();
+      if(!data.ok) return;
+      if(data.after) videoLastSignalId = data.after;
+      for(const s of data.signals||[]){
+        await handleRemoteSignal(s);
+      }
+    }catch{}
+  }
+
+  async function handleRemoteSignal(sig){
+    try{
+      const type = sig.type;
+      const payloadStr = sig.payload;
+      let payload;
+      try{ payload = JSON.parse(payloadStr); }catch{ payload = payloadStr; }
+      if(type==='offer'){
+        if(!pc) await createPeer(false);
+        if(pc.signalingState!=='stable'){
+          // polite handling: rollback if needed
+          try{ await pc.setLocalDescription({type:'rollback'});}catch{}
+        }
+        await pc.setRemoteDescription(new RTCSessionDescription(payload));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        await sendSignal('answer', pc.localDescription, sig.from_id);
+      } else if(type==='answer'){
+        if(pc) await pc.setRemoteDescription(new RTCSessionDescription(payload));
+      } else if(type==='ice' || type==='candidate'){
+        if(pc && payload) {
+          try{ await pc.addIceCandidate(new RTCIceCandidate(payload)); }catch{}
+        }
+      } else if(type==='join'){
+        // someone joined: if we already in room and are lexicographically larger, initiate offer to them
+        if(videoJoined && webrtcPeerId > sig.from_id){
+          if(!pc) await createPeer(true);
+          // createOffer will happen in createPeer if initiator
+        }
+      }
+    }catch(e){ /* ignore */ }
+  }
+
+  async function createPeer(isInitiator){
+    if(pc) { try{ pc.close(); }catch{}; pc=null; }
+    pc = new RTCPeerConnection({ iceServers });
+    videoUpdateStatus('connecting');
+
+    if(localStream){
+      localStream.getTracks().forEach(track=> pc.addTrack(track, localStream));
+    }
+    pc.ontrack = (e)=>{
+      const rv=document.getElementById('remoteVideo');
+      if(rv){
+        if(rv.srcObject !== e.streams[0]){
+          rv.srcObject = e.streams[0];
+          rv.play().catch(()=>{});
+        }
+      }
+      const lbl=document.getElementById('remoteLabel');
+      if(lbl) lbl.textContent = 'pair • live';
+      videoUpdateStatus('live');
+    };
+    pc.onicecandidate = (e)=>{
+      if(e.candidate){
+        sendSignal('ice', e.candidate, '');
+      }
+    };
+    pc.onconnectionstatechange = ()=>{
+      const st = pc.connectionState;
+      videoUpdateStatus(st);
+      if(st==='connected') toast('video connected ✓');
+      if(st==='failed' || st==='disconnected'){
+        const lbl=document.getElementById('remoteLabel');
+        if(lbl) lbl.textContent='pair • retrying';
+      }
+    };
+
+    if(isInitiator){
+      const offer = await pc.createOffer({ offerToReceiveAudio:true, offerToReceiveVideo:true });
+      await pc.setLocalDescription(offer);
+      await sendSignal('offer', pc.localDescription, '');
+    }
+    return pc;
+  }
+
+  async function joinVideo(){
+    const room = getVideoRoomId();
+    if(!room){ toast('pick a pair room first'); return; }
+    const camBtn=document.getElementById('vidCamBtn');
+    const needCam = camBtn ? !camBtn.classList.contains('off') : true;
+    const stream = await ensureLocalStream(needCam);
+    if(!stream && !videoCamEnabled && !videoMicEnabled){
+      // still allow signaling without media for fallback
+    }
+    videoJoined = true;
+    videoLastSignalId = 0;
+    document.getElementById('vidJoinBtn').style.display='none';
+    document.getElementById('vidLeaveBtn').style.display='inline-flex';
+    videoUpdateStatus('joining '+room.slice(0,4));
+    await sendSignal('join', { peer: webrtcPeerId, name: me?.name||localStorage.getItem(ME_KEY)?.slice?.(0,20)||'you' }, '');
+    // start polling
+    if(videoPollTimer) clearInterval(videoPollTimer);
+    videoPollTimer = setInterval(pollSignals, 2000);
+    pollSignals();
+    // If we are initiator by being second, create peer soon after join to ensure we send offer
+    setTimeout(async()=>{
+      // check if there is at least presence >1 (tabs) to decide initiator; simple: wait 1.2s then if no remote offer yet, create peer as initiator
+      if(!pc){
+        const needInitiate = true; // for 2-person rooms, second joiner should initiate; lexicographic tie-breaking in handleRemoteSignal covers glare
+        if(needInitiate){
+          await createPeer(true);
+        }
+      }
+    }, 1200);
+    toast('video joined room '+room.slice(0,4)+' • polling');
+  }
+
+  function leaveVideo(){
+    videoJoined = false;
+    if(videoPollTimer){ clearInterval(videoPollTimer); videoPollTimer=null; }
+    sendSignal('leave', { peer: webrtcPeerId }, '').catch(()=>{});
+    if(pc){ try{ pc.close(); }catch{}; pc=null; }
+    videoUpdateStatus('off');
+    const rv=document.getElementById('remoteVideo'); if(rv){ rv.srcObject=null; }
+    const lbl=document.getElementById('remoteLabel'); if(lbl) lbl.textContent='pair';
+    document.getElementById('vidJoinBtn').style.display='inline-flex';
+    document.getElementById('vidLeaveBtn').style.display='none';
+    // keep local stream for quick rejoin but pause cam/mic UI stays
+  }
+
+  // hooks
+  document.getElementById('vidJoinBtn')?.addEventListener('click', joinVideo);
+  document.getElementById('vidLeaveBtn')?.addEventListener('click', leaveVideo);
+  document.getElementById('vidCamBtn')?.addEventListener('click', async()=>{
+    videoCamEnabled = !videoCamEnabled;
+    if(videoCamEnabled && !localStream){
+      await ensureLocalStream(true);
+    }
+    updateVideoMicCamUI();
+    if(pc){
+      // replace video track if needed
+      const videoTrack = localStream?.getVideoTracks()[0];
+      if(videoTrack){
+        const sender = pc.getSenders().find(s=> s.track && s.track.kind==='video');
+        if(sender) { try{ await sender.replaceTrack(videoTrack); }catch{} }
+        else { try{ pc.addTrack(videoTrack, localStream); }catch{} }
+        if(pc.signalingState==='stable' && !pc.remoteDescription){ /* renegotiate needed only if initiator */ }
+      }
+    }
+    toast(videoCamEnabled?'cam on':'cam off');
+  });
+  document.getElementById('vidMicBtn')?.addEventListener('click', ()=>{
+    videoMicEnabled = !videoMicEnabled;
+    updateVideoMicCamUI();
+    toast(videoMicEnabled?'mic on':'mic muted');
+  });
+  document.getElementById('vidScreenBtn')?.addEventListener('click', ()=>{
+    toast('screen share placeholder — captureDisplay media in next iter');
+  });
+
+  // sync video room label when room changes
+  const origLoadRoom = typeof loadRoom !== 'undefined' ? loadRoom : null; // will be hoisted below, so use event instead
+  // We'll hook into roomSelect change & loadRoom override via interval check
+  setInterval(()=>{ videoUpdateStatus(videoJoined? (pc?.connectionState||'live') : 'off'); }, 3000);
+
+  // When switching code rooms, leave video of old room (to avoid cross-talk) — keep simple
+  document.getElementById('roomSelect')?.addEventListener('change', ()=>{
+    if(videoJoined){
+      // reset polling to new room
+      videoLastSignalId=0;
+      if(pc){ try{ pc.close(); }catch{}; pc=null; }
+      // send join for new room
+      setTimeout(()=>{ sendSignal('join',{peer:webrtcPeerId},''); if(!pc) createPeer(true).catch(()=>{}); }, 600);
+    }
+    videoUpdateStatus(videoJoined? 'switching' : 'off');
+  });
+
+  // expose for debug
+  window._randori_video = { get peerId(){return webrtcPeerId}, joinVideo, leaveVideo, get pc(){return pc}, sendSignal };
 
   // ---------- tabs ----------
   document.querySelectorAll('.tab').forEach(t=>{
