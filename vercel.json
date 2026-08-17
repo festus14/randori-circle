@@ -1,7 +1,1 @@
-{
-  "cleanUrls": true,
-  "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/$1" },
-    { "source": "/(.*)", "destination": "/index.html" }
-  ]
-}
+{"cleanUrls":true,"rewrites":[{"destination":"/api/data/circle","source":"/api/circle"},{"destination":"/api/data/weeks","source":"/api/weeks"},{"destination":"/api/data/history","source":"/api/history"},{"destination":"/api/data/init","source":"/api/init"},{"destination":"/api/ops/availability","source":"/api/settings/availability"},{"destination":"/api/ops/reshuffle","source":"/api/admin/reshuffle"},{"destination":"/api/ops/weekly","source":"/api/cron/weekly"},{"destination":"/api/$1","source":"/api/(.*)"},{"destination":"/index.html","source":"/(.*)"}]}
