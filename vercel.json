@@ -1,7 +1,1 @@
-{
-  "cleanUrls": true,
-  "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/$1" },
-    { "source": "/(.*)", "destination": "/index.html" }
-  ]
-}
+{"cleanUrls":true,"rewrites":[{"destination":"/api/data/circle","source":"/api/circle"},{"destination":"/api/data/weeks","source":"/api/weeks"},{"destination":"/api/data/history","source":"/api/history"},{"destination":"/api/data/init","source":"/api/init"},{"destination":"/api/ops/availability","source":"/api/settings/availability"},{"destination":"/api/ops/reshuffle","source":"/api/admin/reshuffle"},{"destination":"/api/ops/weekly","source":"/api/cron/weekly"},{"destination":"/api/ai/analyze","source":"/api/ai/analyze"},{"destination":"/api/ai/feedback/:id","source":"/api/ai/feedback/:id"},{"destination":"/api/ai/feedback","source":"/api/ai/feedback"},{"destination":"/api/ai/history","source":"/api/ai/history"},{"destination":"/api/video/ice","source":"/api/video/ice"},{"destination":"/api/video/signal","source":"/api/video/signal"},{"destination":"/api/video/join","source":"/api/video/join"},{"destination":"/api/video/leave","source":"/api/video/leave"},{"destination":"/api/$1","source":"/api/(.*)"},{"destination":"/index.html","source":"/(.*)"}]}
