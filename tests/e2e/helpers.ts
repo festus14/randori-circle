@@ -5,13 +5,9 @@ export const BASE = process.env.E2E_BASE || 'https://randori-circle-self.vercel.
 export async function clearOnboarding(page: Page){
   await page.addInitScript(() => {
     try{
-      localStorage.removeItem('randori-onboarded');
-      localStorage.removeItem('randori-banner-dismissed');
-      localStorage.removeItem('randori-onboard-step');
-      localStorage.removeItem('randori-profile-done');
-      localStorage.removeItem('randori-landing-dismissed');
-      localStorage.removeItem('randori-token');
-      localStorage.removeItem('randori-me');
+      const keys=['randori-onboarded','randori-banner-dismissed','randori-onboard-step','randori-profile-done','randori-landing-dismissed','randori-token','randori-me','randori-last-room','randori-was-skipped','randori-prev-avail','randori-reminder-email','randori-reminder-sms','randori-reminder-phone','randori-people','randori-weeks','randori-code'];
+      for(const k of keys) localStorage.removeItem(k);
+      try{ sessionStorage.clear(); }catch{}
     }catch{}
   });
 }
@@ -253,7 +249,33 @@ export async function selectQuestion(page: Page, slug: string){
         await qSel.selectOption(slug).catch(()=>{});
       }
     }catch{}
-    await page.waitForTimeout(400);
+    await page.waitForTimeout(350);
+    // If confirm overlay appeared due to existing code (Load starter? prompt), auto-confirm so Run remains clickable
+    try{
+      const overlay = page.locator('#confirmOverlay');
+      if(await overlay.count()){
+        const isShow = await overlay.evaluate(el=> el.classList.contains('show')).catch(()=>false);
+        if(isShow){
+          const ok = page.locator('#confirmOk');
+          if(await ok.isVisible().catch(()=>false)){
+            await ok.click().catch(()=>{});
+            await page.waitForTimeout(200);
+          } else {
+            // fallback evaluate click
+            await page.evaluate(()=>{
+              try{
+                const ok2=document.getElementById('confirmOk') as HTMLElement|null;
+                if(ok2) ok2.click();
+                else {
+                  const ov=document.getElementById('confirmOverlay'); if(ov) ov.classList.remove('show');
+                }
+              }catch{}
+            });
+          }
+        }
+      }
+    }catch{}
+    await page.waitForTimeout(150);
   } else {
     await page.evaluate((s)=>{
       try{ localStorage.setItem('randori-last-question', s); }catch{}
