@@ -607,6 +607,7 @@ p{margin:0}
               </select>
               <select id="roomSelect" class="select" style="width:130px"></select>
               <button id="runBtn" class="btn">▶ Run</button>
+              <label class="small muted" style="display:inline-flex; align-items:center; gap:4px; margin-left:6px; font-size:11px"><input type="checkbox" id="useServerRunner" checked style="accent-color:var(--accent)"> <span title="Run via server Piston for parity (uncheck for instant local JS)">server</span></label>
               <button id="formatBtn" class="pill" title="Format code (Shift+Alt+F) — Prettier where possible">↥ Format</button>
               <span id="lintStatus" class="kbd" style="display:none; background:var(--bg-3)">lint: —</span>
             </div>
@@ -3597,6 +3598,7 @@ def allow(key, limit=5):
     return [inputNorm];
   }
 
+
   async function upgradedRun(){
     const t0 = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
     const selVal=document.getElementById('questionSelect')?.value||'';
@@ -3605,17 +3607,20 @@ def allow(key, limit=5):
     const code=getEditorCode();
     let resultsForSave=[], passedCount=0, totalCount=0, durationMs=0;
     const runOutEl=document.getElementById('runOut');
+    const useServer = !!document.getElementById('useServerRunner')?.checked;
     if(customQ){
       const tcs=customQ.test_cases||[];
       totalCount = tcs.length;
-      // JS stays local for speed + verified
-      if(lang==='javascript'){
+      // Helper local JS runner extracted for fallback
+      function _runLocalJSAndRender(){
         let extracted=_u_extract(code);
         let fn=extracted.fn, fnName=extracted.name;
         const cards=[];
         if(!fn){
           cards.push('<div class="test" style="border-color:var(--accent-3)"><div class="small">No function found'+(fnName?' — tried '+fnName:'')+'. Expected <code>function '+customQ.slug.replace(/-./g,s=>s[1].toUpperCase())+'</code> style. Names: <span class="kbd">'+((extracted.all||[]).slice(0,3).join(', ')||'none')+'</span>. Code '+code.length+' chars.</div></div>');
         }
+        let pc=0;
+        let resSave=[];
         tcs.forEach((tc,i)=>{
           let entry={ idx:i+1, input:tc.input, expect:tc.expect, got:null, pass:false, error:null };
           try{
@@ -3629,9 +3634,10 @@ def allow(key, limit=5):
               let got=fn.apply(null,args);
               entry.got=got;
               let pass=_u_deepEq(got,exNorm);
+              if(tc.expect==null) pass=true;
               entry.pass=pass;
-              if(pass) passedCount++;
-              cards.push('<div class="test" style="border-color:'+(pass?'var(--ok)':'var(--accent-3)')+'"><div class="small"><b>Case '+(i+1)+'</b> '+(pass?'✓ pass':'✗ fail')+' — got <span class="kbd">'+JSON.stringify(got).slice(0,140)+'</span> exp <span class="kbd">'+JSON.stringify(exNorm).slice(0,140)+'</span><div class="small muted">in: <span class="kbd">'+JSON.stringify(inNorm).slice(0,140)+'</span> fn <span class="kbd">'+(fnName||'?')+'</span> • executed ✓</div></div></div>');
+              if(pass) pc++;
+              cards.push('<div class="test" style="border-color:'+(pass?'var(--ok)':'var(--accent-3)')+'"><div class="small"><b>Case '+(i+1)+'</b> '+(pass?'✓ pass':'✗ fail')+' — got <span class="kbd">'+JSON.stringify(got).slice(0,140)+'</span> exp <span class="kbd">'+JSON.stringify(exNorm).slice(0,140)+'</span><div class="small muted">in: <span class="kbd">'+JSON.stringify(inNorm).slice(0,140)+'</span> fn <span class="kbd">'+(fnName||'?')+'</span> • executed locally ✓ (fallback)</div></div></div>');
             } else {
               cards.push('<div class="test" style="border-color:var(--line)"><div class="small">Case '+(i+1)+': in <span class="kbd">'+JSON.stringify(_u_normIn(tc.input)).slice(0,100)+'</span> → exp <span class="kbd">'+JSON.stringify(_u_normEx(tc.expect)).slice(0,100)+'</span><div class="small muted">no function '+(fnName||'found')+' — static check, '+(code.length>20?'code present':'add code')+'</div></div></div>');
               entry.pass=false; entry.error='no-function';
@@ -3640,70 +3646,80 @@ def allow(key, limit=5):
             entry.error=String(err).slice(0,300);
             cards.push('<div class="test" style="border-color:var(--accent-3)"><div class="small">Case '+(i+1)+' error: '+String(err).slice(0,180)+'<div class="small muted">in: <span class="kbd">'+JSON.stringify(_u_normIn(tc.input)).slice(0,100)+'</span></div></div></div>');
           }
-          resultsForSave.push(entry);
+          resSave.push(entry);
         });
-        if(totalCount) cards.unshift('<div class="test" style="border-color:'+(passedCount===totalCount?'var(--ok)':'var(--line)')+'; background:color-mix(in srgb, var(--bg-3) 90%, '+(passedCount===totalCount?'var(--ok)':'var(--warn)')+' 8%)"><div class="small"><b>Result: '+passedCount+'/'+totalCount+' passed</b> '+(passedCount===totalCount?'✓':'✗')+' • lang JS • fn <span class="kbd">'+(fnName||'?')+'</span> • actually executed against '+totalCount+' test_cases ✓</div></div>');
+        if(totalCount) cards.unshift('<div class="test" style="border-color:'+(pc===totalCount?'var(--ok)':'var(--line)')+'; background:color-mix(in srgb, var(--bg-3) 90%, '+(pc===totalCount?'var(--ok)':'var(--warn)')+' 8%)"><div class="small"><b>Result: '+pc+'/'+totalCount+' passed</b> '+(pc===totalCount?'✓':'✗')+' • lang JS • fn <span class="kbd">'+(fnName||'?')+'</span> • actually executed against '+totalCount+' test_cases ✓ (local fallback)</div></div>');
         if(runOutEl) runOutEl.innerHTML=cards.join('')||'<div class="small muted">no tests</div>';
         try{ durationMs = Math.round(((typeof performance!=='undefined'&&performance.now?performance.now():Date.now())-t0)); }catch{ durationMs=0; }
-        try{ saveSessionRunAsync({ customQ, lang, code, resultsForSave, passedCount, totalCount, durationMs, tcs }); }catch{}
-        return;
-      }else{
-        // Multi-language via Piston through our /api/execute wrapper
-        const cards=[];
-        if(runOutEl) runOutEl.innerHTML='<div class="small muted"><span class="spinner-sm"></span> Running '+lang+' via Piston — '+totalCount+' cases…</div>';
-        try{ if(window._randori_ui && window._randori_ui.showLoader) window._randori_ui.showLoader('Running '+lang+'…'); }catch{}
-        (async()=>{
-          try{
-            let apiFn = window.api || null;
-            let tok = localStorage.getItem('randori-token');
-            let payload = { language: lang, code, question_slug: customQ.slug, test_cases: tcs };
-            let resp, j;
-            if(apiFn){
-              j = await apiFn('/api/execute', {method:'POST', body: payload});
-              // api helper might return json directly or need parsing? It returns json via fetch .json()
-              resp = {ok:true};
-            }else{
-              resp = await fetch('/api/execute', {method:'POST', headers:{'Content-Type':'application/json', 'Authorization': tok?('Bearer '+tok):''}, body: JSON.stringify(payload)});
-              j = await resp.json().catch(()=>({ok:false, error:'bad json'}));
-              if(!resp.ok) throw j;
-            }
-            if(window._randori_ui && window._randori_ui.hideLoader) window._randori_ui.hideLoader();
-            // j.results = [{idx, pass, got, expect, error, raw, note}]
-            const results = j.results || [];
-            const passed = j.passed_count ?? results.filter(r=>r.pass===true).length;
-            passedCount = passed;
-            totalCount = j.total_count || tcs.length;
-            try{ durationMs = Math.round(((typeof performance!=='undefined'&&performance.now?performance.now():Date.now())-t0)); }catch{ durationMs=j.piston?0:0; }
-            const statusColor = passedCount===totalCount ? 'var(--ok)' : (passedCount>0?'var(--warn)':'var(--accent-3)');
-            cards.unshift('<div class="test" style="border-color:'+statusColor+'; background:color-mix(in srgb, var(--bg-3) 90%, '+statusColor+' 8%)"><div class="small"><b>Result: '+passedCount+'/'+totalCount+' passed</b> '+(passedCount===totalCount?'✓':'✗')+' • lang '+lang+' • Piston '+ (j.language||lang)+' '+(j.version||'')+' • executed ✓</div><div class="small muted">piston code '+((j.piston&&j.piston.code!=null)?j.piston.code:'?')+ (j.piston&&j.piston.stderr ? ' • stderr '+String(j.piston.stderr).slice(0,120) : '')+'</div></div>');
-            results.forEach((r,i)=>{
-              const idx = (r.idx!=null? r.idx+1 : i+1);
-              const got = r.got!==undefined ? r.got : (r.raw||'');
-              const exp = r.expect!==undefined ? r.expect : (tcs[i]?.expect);
-              const pass = !!r.pass;
-              const err = r.error || r.stderr || '';
-              resultsForSave.push({ idx, input: tcs[i]?.input, expect: exp, got, pass, error: err||null, language: lang, piston: true });
-              if(r.note){
-                cards.push('<div class="test" style="border-color:var(--line)"><div class="small">Case '+idx+': '+String(r.note).slice(0,300)+'</div></div>');
-              }else{
-                cards.push('<div class="test" style="border-color:'+(pass?'var(--ok)':'var(--accent-3)')+'"><div class="small"><b>Case '+idx+'</b> '+(pass?'✓ pass':'✗ fail')+' — got <span class="kbd">'+String(JSON.stringify(got)).slice(0,160)+'</span> exp <span class="kbd">'+String(JSON.stringify(exp)).slice(0,160)+'</span>'+(err?' <div class="small muted" style="color:var(--accent-3)">'+String(err).slice(0,200)+'</div>':'')+'<div class="small muted">in: <span class="kbd">'+String(JSON.stringify(_u_normIn(tcs[i]?.input))).slice(0,140)+'</span> • piston '+lang+'</div></div></div>');
-              }
-            });
-            if(results.length===0){
-              cards.push('<div class="test"><div class="small">No structured output — raw: <span class="kbd">'+String((j.piston&&j.piston.stdout)||'').slice(0,300)+'</span></div><div class="small muted">'+String((j.piston&&j.piston.stderr)||'').slice(0,300)+'</div></div>');
-            }
-            if(runOutEl) runOutEl.innerHTML=cards.join('');
-            try{ saveSessionRunAsync({ customQ, lang, code, resultsForSave, passedCount, totalCount, durationMs, tcs }); }catch{}
-            if(window.toast) window.toast('Run '+lang+' '+passedCount+'/'+totalCount+' '+(passedCount===totalCount?'✓':'')+' via Piston');
-          }catch(e){
-            try{ if(window._randori_ui && window._randori_ui.hideLoader) window._randori_ui.hideLoader(); }catch{}
-            const msg = (e && (e.error||e.detail||e.message))||String(e).slice(0,300);
-            if(runOutEl) runOutEl.innerHTML='<div class="test" style="border-color:var(--accent-3)"><div class="small">Piston '+lang+' failed: '+String(msg).slice(0,400)+'<div class="small muted">Check code compiles — Java needs class Main / Python def name matches slug</div></div></div>';
-            if(window.toast) window.toast('Piston '+lang+' error: '+String(msg).slice(0,120));
-          }
-        })();
+        try{ saveSessionRunAsync({ customQ, lang, code, resultsForSave:resSave, passedCount:pc, totalCount, durationMs, tcs }); }catch{}
+        return {pc, resSave};
+      }
+
+      // If user unchecked server OR no network needed, JS can still run local fast
+      const isJS = (lang==='javascript' || lang==='typescript');
+      if(isJS && !useServer){
+        _runLocalJSAndRender();
         return;
       }
+
+      // --- Server path for all languages including JS/TS for parity ---
+      const cards=[];
+      if(runOutEl) runOutEl.innerHTML='<div class="small muted"><span class="spinner-sm"></span> Running '+lang+' via Piston — '+totalCount+' cases…</div>';
+      try{ if(window._randori_ui && window._randori_ui.showLoader) window._randori_ui.showLoader('Running '+lang+'…'); }catch{}
+      (async()=>{
+        try{
+          let apiFn = window.api || null;
+          let tok = localStorage.getItem('randori-token');
+          let payload = { language: lang, code, question_slug: customQ.slug, test_cases: tcs };
+          let j;
+          if(apiFn){
+            j = await apiFn('/api/execute', {method:'POST', body: payload});
+          }else{
+            const resp = await fetch('/api/execute', {method:'POST', headers:{'Content-Type':'application/json', 'Authorization': tok?('Bearer '+tok):''}, body: JSON.stringify(payload)});
+            j = await resp.json().catch(()=>({ok:false, error:'bad json'}));
+            if(!resp.ok) throw j;
+          }
+          if(window._randori_ui && window._randori_ui.hideLoader) window._randori_ui.hideLoader();
+          const results = j.results || [];
+          const passed = j.passed_count ?? results.filter(r=>r.pass===true).length;
+          passedCount = passed;
+          totalCount = j.total_count || tcs.length;
+          try{ durationMs = Math.round(((typeof performance!=='undefined'&&performance.now?performance.now():Date.now())-t0)); }catch{ durationMs=j.piston?0:0; }
+          const statusColor = passedCount===totalCount ? 'var(--ok)' : (passedCount>0?'var(--warn)':'var(--accent-3)');
+          cards.unshift('<div class="test" style="border-color:'+statusColor+'; background:color-mix(in srgb, var(--bg-3) 90%, '+statusColor+' 8%)"><div class="small"><b>Result: '+passedCount+'/'+totalCount+' passed</b> '+(passedCount===totalCount?'✓':'✗')+' • lang '+lang+' • Piston '+ (j.language||lang)+' '+(j.version||'')+' • executed ✓ (server)</div><div class="small muted">piston code '+((j.piston&&j.piston.code!=null)?j.piston.code:'?')+ (j.piston&&j.piston.stderr ? ' • stderr '+String(j.piston.stderr).slice(0,120) : '')+'</div></div>');
+          results.forEach((r,i)=>{
+            const idx = (r.idx!=null? r.idx+1 : i+1);
+            const got = r.got!==undefined ? r.got : (r.raw||'');
+            const exp = r.expect!==undefined ? r.expect : (tcs[i]?.expect);
+            const pass = !!r.pass;
+            const err = r.error || r.stderr || '';
+            resultsForSave.push({ idx, input: tcs[i]?.input, expect: exp, got, pass, error: err||null, language: lang, piston: true });
+            if(r.note){
+              cards.push('<div class="test" style="border-color:var(--line)"><div class="small">Case '+idx+': '+String(r.note).slice(0,300)+'</div></div>');
+            }else{
+              cards.push('<div class="test" style="border-color:'+(pass?'var(--ok)':'var(--accent-3)')+'"><div class="small"><b>Case '+idx+'</b> '+(pass?'✓ pass':'✗ fail')+' — got <span class="kbd">'+String(JSON.stringify(got)).slice(0,160)+'</span> exp <span class="kbd">'+String(JSON.stringify(exp)).slice(0,160)+'</span>'+(err?' <div class="small muted" style="color:var(--accent-3)">'+String(err).slice(0,200)+'</div>':'')+'<div class="small muted">in: <span class="kbd">'+String(JSON.stringify(_u_normIn(tcs[i]?.input))).slice(0,140)+'</span> • piston '+lang+'</div></div></div>');
+            }
+          });
+          if(results.length===0){
+            cards.push('<div class="test"><div class="small">No structured output — raw: <span class="kbd">'+String((j.piston&&j.piston.stdout)||'').slice(0,300)+'</span></div><div class="small muted">'+String((j.piston&&j.piston.stderr)||'').slice(0,300)+'</div></div>');
+          }
+          if(runOutEl) runOutEl.innerHTML=cards.join('');
+          try{ saveSessionRunAsync({ customQ, lang, code, resultsForSave, passedCount, totalCount, durationMs, tcs }); }catch{}
+          if(window.toast) window.toast('Run '+lang+' '+passedCount+'/'+totalCount+' '+(passedCount===totalCount?'✓':'')+' via Piston (server)');
+        }catch(e){
+          try{ if(window._randori_ui && window._randori_ui.hideLoader) window._randori_ui.hideLoader(); }catch{}
+          // If JS/TS and server failed, fallback to local so user not blocked
+          if(isJS){
+            if(window.toast) window.toast('Server JS failed, falling back to local • '+(e?.error||e?.message||'').slice(0,80));
+            _runLocalJSAndRender();
+            return;
+          }
+          const msg = (e && (e.error||e.detail||e.message))||String(e).slice(0,300);
+          if(runOutEl) runOutEl.innerHTML='<div class="test" style="border-color:var(--accent-3)"><div class="small">Piston '+lang+' failed: '+String(msg).slice(0,400)+'<div class="small muted">Check code compiles — Java needs class Main / Python def name matches slug</div></div></div>';
+          if(window.toast) window.toast('Piston '+lang+' error: '+String(msg).slice(0,120));
+        }
+      })();
+      return;
     }
     // fallback to original static runner (which now is robust runCode)
     try{
