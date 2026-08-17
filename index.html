@@ -3931,17 +3931,31 @@ def allow(key, limit=5):
 </script>
 
 
-<!-- Monaco + Prettier IDE layer — CDN, no extra Vercel function, Hobby-safe -->
+<!-- Monaco + Prettier IDE layer — CDN, no extra Vercel function, Hobby-safe, resilient fallback chain -->
 <link rel="preconnect" href="https://cdnjs.cloudflare.com">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
-<script src="https://unpkg.com/prettier@3.3.3/standalone.js"></script>
-<script src="https://unpkg.com/prettier@3.3.3/plugins/babel.js"></script>
-<script src="https://unpkg.com/prettier@3.3.3/plugins/estree.js"></script>
-<script src="https://unpkg.com/prettier@3.3.3/plugins/typescript.js"></script>
+<link rel="preconnect" href="https://cdn.jsdelivr.net">
+<script id="monacoLoader" src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js" onerror="window.__monacoLoaderFailed=1"></script>
+<script src="https://unpkg.com/prettier@3.3.3/standalone.js" onerror="console.warn('prettier standalone failed')"></script>
+<script src="https://unpkg.com/prettier@3.3.3/plugins/babel.js" onerror="console.warn('prettier babel failed')"></script>
+<script src="https://unpkg.com/prettier@3.3.3/plugins/estree.js" onerror="console.warn('prettier estree failed')"></script>
+<script src="https://unpkg.com/prettier@3.3.3/plugins/typescript.js" onerror="console.warn('prettier ts failed')"></script>
 <script>
 // Monaco IDE task — replace textarea with Monaco, keep textarea as hidden mirror for legacy runCode/AI paths
 (function(){
-  const MONACO_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs';
+  const MONACO_CDN_PRIMARY = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs';
+  const MONACO_CDN_FALLBACK = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs';
+  let MONACO_CDN = MONACO_CDN_PRIMARY;
+  let monacoTriedFallback=false;
+  function loadMonacoLoaderFallback(cb){
+    if(monacoTriedFallback){ cb && cb(new Error('both cdns failed')); return; }
+    monacoTriedFallback=true;
+    MONACO_CDN=MONACO_CDN_FALLBACK;
+    const s=document.createElement('script');
+    s.src=MONACO_CDN_FALLBACK+'/loader.min.js';
+    s.onload=()=>cb && cb(null);
+    s.onerror=()=>cb && cb(new Error('fallback loader fail'));
+    document.head.appendChild(s);
+  }
   const TOKEN_KEY='randori-token';
   const CODE_KEY='randori-code';
   const hostId='monacoHost';
@@ -4067,17 +4081,37 @@ def allow(key, limit=5):
     const host=getHost();
     const ta=getTA();
     if(!host){ console.warn('monaco host missing'); return; }
+    // loader may have failed entirely
+    if(window.__monacoLoaderFailed && !window.require){
+      console.warn('primary monaco loader failed, trying jsDelivr fallback');
+      loadMonacoLoaderFallback((err)=>{
+        if(err){ fallback('primary+fallback loader failed'); return; }
+        initMonaco();
+      });
+      return;
+    }
     if(!window.require || !window.require.config){
-      fallback('require not loaded');
+      // wait a bit for loader script async? retry once
+      setTimeout(()=>{
+        if(!window.require || !window.require.config){
+          if(!monacoTriedFallback){
+            loadMonacoLoaderFallback((e)=>{ if(e) fallback('require not loaded'); else initMonaco(); });
+          } else fallback('require not loaded');
+        } else initMonaco();
+      }, 800);
       return;
     }
     // if already has loader overlay, show it
     const existingLoader=host.querySelector('.monaco-loader');
     if(!existingLoader){
-      const lo=document.createElement('div'); lo.className='monaco-loader'; lo.innerHTML='<span class="spinner spinner-sm"></span> loading Monaco…'; host.appendChild(lo);
+      const lo=document.createElement('div'); lo.className='monaco-loader'; lo.innerHTML='<span class="spinner spinner-sm"></span> loading Monaco… <span class="small muted" style="margin-left:8px">If stuck, plain editor appears in 4s</span>'; host.appendChild(lo);
     }
-    window.require.config({ paths: { vs: MONACO_CDN } });
-    window.require(['vs/editor/editor.main'], function(){
+    // timeout guard: if monaco doesn't load in 4.5s, fallback to textarea so user not blocked
+    const timeoutGuard=setTimeout(()=>{
+      if(!monacoReady){ console.warn('monaco load timeout 4.5s, falling back'); fallback('load timeout 4.5s — CDN slow/busy, using plain editor'); }
+    }, 4500);
+    try{ window.require.config({ paths: { vs: MONACO_CDN } }); }catch(e){ clearTimeout(timeoutGuard); console.warn('require.config error',e); }
+    window.require(['vs/editor/editor.main'], function(){ clearTimeout(timeoutGuard);
       try{
         const loaderEl=host.querySelector('.monaco-loader'); if(loaderEl) loaderEl.remove();
         const isLight=themeIsLight();
@@ -4213,17 +4247,26 @@ def allow(key, limit=5):
         fallback('init error '+ (e.message||''));
       }
     }, function(err){
+      clearTimeout(timeoutGuard);
       console.error('monaco loader fail',err);
-      fallback('loader fail');
+      if(!monacoTriedFallback){
+        console.warn('monaco main load failed, trying fallback CDN');
+        loadMonacoLoaderFallback((e)=>{
+          if(e){ fallback('loader fail '+ (err && (err.requireType||err.message)||'')); }
+          else { MONACO_CDN=MONACO_CDN_FALLBACK; initMonaco(); }
+        });
+      } else fallback('loader fail '+ (err && (err.requireType||err.message)||''));
     });
   }
 
   function fallback(reason){
     console.warn('monaco fallback',reason);
+    monacoReady=false;
     const host=getHost(); const ta=getTA(); const note=document.getElementById(fallbackNoteId);
+    try{ host && host.querySelectorAll('.monaco-loader').forEach(l=>l.remove()); }catch{}
     if(host){ host.style.display='none'; }
-    if(ta){ ta.style.display='block'; ta.style.minHeight='420px'; }
-    if(note){ note.style.display='block'; note.title=reason||''; }
+    if(ta){ ta.style.display='block'; ta.style.minHeight='420px'; ta.focus && ta.focus(); }
+    if(note){ note.style.display='block'; note.title=reason||''; note.innerHTML='Monaco failed to load ('+(reason||'unknown')+') — using plain editor with lint off. <button id="monacoRetry" class="pill" style="margin-left:8px">Retry CDN</button>'; }
     document.getElementById('monacoRetry')?.addEventListener('click', ()=>{ if(host) host.style.display=''; if(note) note.style.display='none'; initMonaco(); });
   }
 
