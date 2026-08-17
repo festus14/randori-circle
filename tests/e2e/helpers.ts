@@ -3,11 +3,24 @@ import { Page, expect } from '@playwright/test';
 export const BASE = process.env.E2E_BASE || 'https://randori-circle-self.vercel.app';
 
 export async function clearOnboarding(page: Page){
+  // One-time clear that survives reload persistence for the dismiss->reload part of the test:
+  // We use sessionStorage as a guard so second navigation (reload) doesn't re-clear after dismiss sets flags.
   await page.addInitScript(() => {
     try{
+      // If we've already cleared once in this tab session and onboarding flags are set, skip re-clear to allow reload persistence
+      try{
+        if(sessionStorage.getItem('__clearOnboarding_done')==='1'){
+          // If onboarded flag already set by dismiss, don't wipe again
+          if(localStorage.getItem('randori-onboarded')==='1' || localStorage.getItem('randori-banner-dismissed')==='1'){
+            return;
+          }
+          // Otherwise allow re-clear? keep guard to avoid wiping on reload after dismiss
+          if(sessionStorage.getItem('__clearOnboarding_keep')==='1') return;
+        }
+      }catch{}
       const keys=['randori-onboarded','randori-banner-dismissed','randori-onboard-step','randori-profile-done','randori-landing-dismissed','randori-token','randori-me','randori-last-room','randori-was-skipped','randori-prev-avail','randori-reminder-email','randori-reminder-sms','randori-reminder-phone','randori-people','randori-weeks','randori-code'];
       for(const k of keys) localStorage.removeItem(k);
-      try{ sessionStorage.clear(); }catch{}
+      try{ sessionStorage.clear(); sessionStorage.setItem('__clearOnboarding_done','1'); }catch{}
     }catch{}
   });
 }
