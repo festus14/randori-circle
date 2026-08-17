@@ -1907,11 +1907,21 @@ def allow(key, limit=5):
   QUESTIONS.forEach(q=>{ const o=document.createElement('option'); o.value=q.id; o.textContent=q.title; qSel.appendChild(o); });
   function renderQuestion(id){
     const q=QUESTIONS.find(x=>x.id===id)||QUESTIONS[0];
-    document.getElementById('qTitle').textContent=q.title;
-    document.getElementById('qDiff').textContent=q.diff;
-    document.getElementById('qDesc').innerHTML=`<div style="color:var(--ink-2)">${q.desc}</div>`;
-    document.getElementById('qExamples').innerHTML=q.examples.map(e=>`<div class="test"><div class="small"><b>In:</b> ${e.input}</div><div class="small"><b>Out:</b> ${e.output}</div>${e.expl?`<div class="small muted">${e.expl}</div>`:''}</div>`).join('');
+    // LeetCode-like polish: colors, pills
+    const d=q.diff||'Easy';
+    const col = /easy/i.test(d) ? '#c8f6a0' : /medium/i.test(d) ? '#f2d07a' : /hard/i.test(d) ? '#e8a0b0' : '#9aa0a6';
+    const titleEl=document.getElementById('qTitle'); if(titleEl){ titleEl.textContent=q.title; titleEl.setAttribute('data-diff', d); }
+    const diffEl=document.getElementById('qDiff'); if(diffEl){ diffEl.textContent=d; diffEl.style.background=col+'22'; diffEl.style.border='1px solid '+col+'55'; diffEl.style.color=col; diffEl.style.padding='2px 8px'; diffEl.style.borderRadius='999px'; diffEl.style.fontSize='11px'; }
+    document.getElementById('qDesc').innerHTML=`<div style="color:var(--ink-2); line-height:1.6">${q.desc}</div>`;
+    // expandable examples
+    const exEl=document.getElementById('qExamples');
+    if(exEl){
+      exEl.innerHTML='<div class="small muted" style="margin-bottom:4px; text-transform:uppercase; font-size:10.5px">Examples — click to copy</div>'+q.examples.map((e,i)=>`<div class="test" style="cursor:pointer" title="click to copy"><div class="small"><b>Example ${i+1}:</b> In <span class="kbd">${String(e.input).slice(0,140)}</span> → <span class="kbd">${String(e.output).slice(0,140)}</span></div>${e.expl?`<div class="small muted">${e.expl}</div>`:''}</div>`).join('');
+      exEl.querySelectorAll('.test').forEach(el=>el.addEventListener('click',()=>{ try{ navigator.clipboard.writeText(el.textContent); window.toast&&window.toast('Copied example'); }catch{} }));
+    }
     document.getElementById('qConstraints').textContent=q.constraints;
+    document.getElementById('qConstraints').style.fontFamily='ui-monospace, monospace';
+    document.getElementById('qConstraints').style.whiteSpace='pre-wrap';
     document.getElementById('qTests').innerHTML=q.tests.map((t,i)=>`<div class="test"><div class="small">Case ${i+1}: <span class="kbd">${JSON.stringify(t.input).slice(0,80)}</span> → <span class="small">${JSON.stringify(t.expect)}</span></div></div>`).join('');
     return q;
   }
@@ -3344,11 +3354,20 @@ def allow(key, limit=5):
       const j=await r.json().catch(()=>({}));
       if(!r.ok) throw j;
       if(!j.paired){
-        document.getElementById('dashPairArea').innerHTML='';
+        // even without pair, show deterministic join from last room — always visible
+        const lastRoom = localStorage.getItem('randori-last-room') || window._randori_join_room;
+        if(lastRoom){
+          document.getElementById('dashPairArea').innerHTML=`<div class="partner-card" style="border-color:var(--line)"><div class="avatar" style="background:var(--bg-3)">↗</div><div style="flex:1"><b style="font-size:13.5px">Jump back into your last room</b><div class="small muted" style="margin-top:4px">No pair this week yet — first shuffle Sundays 08:00 BST. You can practise in your last room or invite a friend.</div><div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap"><button id="dashJoinLast" class="btn" style="background:var(--accent); color:#0f0f10; padding:10px 16px; font-weight:700">▶ Resume — Code + Video + Board</button><span class="kbd">${lastRoom.slice(0,18)}</span><button class="pill copy-last" data-room="${lastRoom}" style="font-size:11px">⎘ Copy invite</button><button class="pill" onclick="(function(r){const inv=(location.origin||'')+'/join/'+encodeURIComponent(r); window.open('mailto:?subject='+encodeURIComponent('Randori invite '+r)+'&body='+encodeURIComponent('Join my Randori room: '+inv))})('${lastRoom}')" style="font-size:11px">✉ Invite</button></div></div></div>`;
+          document.getElementById('dashJoinLast')?.addEventListener('click', ()=>joinSessionDeterministic(false));
+          document.querySelectorAll('.copy-last').forEach(b=>b.addEventListener('click',()=>{ const r=b.dataset.room; const inv=(location.origin||'')+'/join/'+encodeURIComponent(r); try{ navigator.clipboard.writeText(inv); if(window.toast) window.toast('Copied '+inv.slice(0,30)); }catch{ prompt('Copy',inv); } }));
+        } else {
+          document.getElementById('dashPairArea').innerHTML='';
+        }
         document.getElementById('dashScheduleArea').innerHTML='';
         document.getElementById('dashChatArea').innerHTML='';
         document.getElementById('dashEmpty').style.display='block';
         document.getElementById('dashSub').textContent=j.message||'No pair yet';
+        // ensure Join fallback also rendered if empty shows
         return;
       }
       document.getElementById('dashEmpty').style.display='none';
@@ -3366,34 +3385,56 @@ def allow(key, limit=5):
     }
   }
 
-  function joinSessionDeterministic(){
+  function joinSessionDeterministic(copyOnly=false){
     try{
-      const weekId=currentWeekId; const pg=currentPair; if(!weekId||!pg){ if(typeof toast==='function') toast('No pair yet — wait for Sunday shuffle'); return; }
-      const pgId=pg.pg_id||pg.id;
-      const room=`week_${weekId}_pair_${pgId}`;
+      // support copyOnly mode (reuse room without re-navigating) + normal join
+      let room=null, weekId=currentWeekId, pg=currentPair;
+      if(weekId && pg){
+        const pgId=pg.pg_id||pg.id;
+        room=`week_${weekId}_pair_${pgId}`;
+      }else{
+        // fallback to last room (no pairing yet) — LeetCode-like always visible
+        room = localStorage.getItem('randori-last-room') || window.currentRoom || (window._randori_code&&window._randori_code.currentRoom) || window._randori_join_room;
+        if(!room){ if(typeof toast==='function') toast('No pair yet — using your last room or open any room'); // allow still opening code view
+          room=('lobby_'+Date.now().toString(36));
+        }
+      }
       localStorage.setItem('randori-last-room', room);
       // ensure roomSelect has option
       const sel=document.getElementById('roomSelect');
       if(sel){
         let opt=[...sel.options].find(o=>o.value===room);
-        if(!opt){ opt=document.createElement('option'); opt.value=room; opt.textContent=`This Week × ${pg.topic||'Pair'}`; sel.appendChild(opt); }
+        if(!opt){ opt=document.createElement('option'); opt.value=room; opt.textContent=(pg?.topic? `This Week × ${pg.topic}` : `Room ${room.slice(0,12)}`); sel.appendChild(opt); }
         sel.value=room;
         // trigger loadRoom if exists
         if(typeof loadRoom==='function'){ try{ loadRoom(room); }catch{} }
         else if(window._randori_code && window._randori_code.loadRoom){ window._randori_code.loadRoom(room); }
+        // board reload per room
+        try{ if(typeof loadBoard==='function'){ loadBoard(); if(typeof renderBoard==='function') renderBoard(); } }catch{}
       }
       if(typeof currentRoom!=='undefined'){ try{ currentRoom=room; }catch{} }
       try{ window.currentRoom=room; }catch{}
+      try{ if(window._randori_code) window._randori_code.currentRoom=room; }catch{}
+      const base = location.origin || 'https://randori-circle-self.vercel.app';
+      const invite = base + '/join/' + encodeURIComponent(room);
+      if(copyOnly){
+        try{ navigator.clipboard.writeText(invite); if(typeof toast==='function') toast('Invite link copied: '+invite.slice(0,40)+'…'); }catch{ prompt('Copy invite link', invite); }
+        window._randori_last_invite = invite;
+        return invite;
+      }
       // switch to code tab
       document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
       const codeTab=document.querySelector('[data-tab="code"]'); if(codeTab) codeTab.classList.add('active');
       document.querySelectorAll('.view').forEach(v=>v.style.display='none');
       const codeView=document.getElementById('view-code'); if(codeView) codeView.style.display='block';
-      if(typeof toast==='function') toast('Joined session '+room.slice(0,12)+' • Code + Video + Board synced');
-      // update video label
-      const vr=document.getElementById('videoRoomLabel'); if(vr) vr.textContent='room '+room.slice(0,4);
-      // ensure board resizes etc
+      if(typeof toast==='function') toast('Joined session '+room.slice(0,12)+' • Code + Video + Board synced • invite '+invite.slice(-12));
+      // update video label + expose invite for button
+      const vr=document.getElementById('videoRoomLabel'); if(vr) vr.textContent='room '+room.slice(0,6);
+      window._randori_last_invite = invite;
+      // also copy invite to clipboard silently for easy sharing
+      try{ navigator.clipboard.writeText(invite).catch(()=>{}); }catch{}
       setTimeout(()=>{ try{ window.dispatchEvent(new Event('resize')); }catch{} },200);
+      return room;
     }catch(e){ console.error('join fail',e); }
   }
   // expose
@@ -3406,23 +3447,46 @@ def allow(key, limit=5):
     const weekId=data.week_id||data.week?.id;
     const pg=data.pair;
     const roomHint=`week_${weekId}_pair_${pg?.pg_id||pg?.id||'x'}`;
+    const inviteUrl = (location.origin||'https://randori-circle-self.vercel.app') + '/join/' + encodeURIComponent(roomHint);
+    const copyAndEmailBtns = `<button class="pill copy-invite" style="font-size:11px" data-room="${roomHint}">⎘ Copy invite</button><button class="pill email-invite" style="font-size:11px" data-room="${roomHint}">✉ Email / SMS reminder</button>`;
     if(isAI){
-      area.innerHTML=`<div class="partner-card" style="border-color:#c8f6a0"><div class="avatar" style="background:#c8f6a0">AI</div><div style="flex:1"><b style="font-size:14px">You're paired with AI partner</b><div class="small muted" style="margin-top:4px">Odd one out this week — you get a sparring bot for DSA & System Design drills. No trios, no waiting.</div><div class="row" style="margin-top:12px; gap:8px"><button id="dashJoinSession" class="btn" style="background:var(--accent); color:#0f0f10; padding:11px 18px; font-size:14px; font-weight:700">▶ Join Session — Code + Video + Board</button><span class="kbd">${roomHint.slice(0,14)}</span></div></div></div>`;
-      document.getElementById('dashJoinSession')?.addEventListener('click', joinSessionDeterministic);
+      area.innerHTML=`<div class="partner-card" style="border-color:#c8f6a0"><div class="avatar" style="background:#c8f6a0">AI</div><div style="flex:1"><b style="font-size:14px">You're paired with AI partner</b><div class="small muted" style="margin-top:4px">Odd one out this week — you get a sparring bot for DSA & System Design drills. No trios, no waiting.</div><div class="row" style="margin-top:12px; gap:8px; flex-wrap:wrap"><button id="dashJoinSession" class="btn" style="background:var(--accent); color:#0f0f10; padding:11px 18px; font-size:14px; font-weight:700">▶ Join Session — Code + Video + Board</button><span class="kbd">${roomHint.slice(0,14)}</span>${copyAndEmailBtns}</div><div class="small muted" id="dashInviteHint" style="margin-top:6px">Invite: <span class="kbd" style="font-size:10.5px">${inviteUrl.slice(0,56)}…</span></div></div></div>`;
+      document.getElementById('dashJoinSession')?.addEventListener('click', ()=>joinSessionDeterministic(false));
+      area.querySelectorAll('.copy-invite').forEach(b=>b.addEventListener('click',()=>{ const r=b.dataset.room; localStorage.setItem('randori-last-room', r); const inv=(location.origin||'')+'/join/'+encodeURIComponent(r); try{ navigator.clipboard.writeText(inv); toast('Invite copied ✓ '+inv.slice(0,36)); window._randori_last_invite=inv; }catch{ prompt('Copy invite', inv); } }));
+      area.querySelectorAll('.email-invite').forEach(b=>b.addEventListener('click',()=>{
+        const room=b.dataset.room; const inv=(location.origin||'')+'/join/'+encodeURIComponent(room);
+        const sub='Randori mock interview — join '+room;
+        const body='Hi! Let\\'s jump into our mock session.\\n\\nRoom: '+room+'\\nLink: '+inv+'\\n\\n— Randori Circle';
+        window.open('mailto:?subject='+encodeURIComponent(sub)+'&body='+encodeURIComponent(body));
+        try{ if(window._randori_log) window._randori_log.info('dashboard','email_invite',{room}); }catch{}
+      }));
       try{ const pe=document.getElementById('dashPairArea'); if(pe) { pe.querySelectorAll('.spinner').forEach(s=>s.remove()); delete pe.dataset.hasLoader; } }catch{}
       return;
     }
     const focus = partner?.interview_focus || data.partner?.interview_focus || 'both';
-    area.innerHTML=`<div class="partner-card"><div class="avatar" style="background:${partner?.color||'#9aa0a6'}">${(partner?.name||'?').slice(0,2).toUpperCase()}</div><div style="flex:1"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px"><b style="font-size:14px">You're paired with ${partner?.name||'partner'} ✨</b><span class="kbd">${focus}</span></div><div class="small muted" style="margin-top:4px">${partner?.bio||'No bio yet — ask them what they’re prepping for.'} • ${partner?.tz||'TZ unknown'} • LeetCode: ${partner?.leetcode_handle||'—'}</div><div class="row" style="margin-top:10px"><span class="pill" style="font-size:11px">DSA / System / Both</span><div id="dashTopicPicker" class="pill-choice"><button class="chip" data-kind="dsa">DSA</button><button class="chip" data-kind="system">System</button><button class="chip active" data-kind="both">Both</button></div></div><div class="row" style="margin-top:12px"><button id="dashJoinSession" class="btn" style="background:var(--accent); color:#0f0f10; padding:11px 18px; font-size:14px; font-weight:700">▶ Join Session — Code + Video + Board</button><span class="pill" style="font-size:11px">room ${roomHint.slice(-6)}</span><span class="small muted">agree time first, then jump in</span></div></div></div>`;
-    // topic picker wire
+    area.innerHTML=`<div class="partner-card"><div class="avatar" style="background:${partner?.color||'#9aa0a6'}">${(partner?.name||'?').slice(0,2).toUpperCase()}</div><div style="flex:1"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px"><b style="font-size:14px">You're paired with ${partner?.name||'partner'} ✨</b><span class="kbd">${focus}</span></div><div class="small muted" style="margin-top:4px">${partner?.bio||'No bio yet — ask them what they’re prepping for.'} • ${partner?.tz||'TZ unknown'} • LeetCode: ${partner?.leetcode_handle||'—'}</div><div class="row" style="margin-top:10px"><span class="pill" style="font-size:11px">DSA / System / Both</span><div id="dashTopicPicker" class="pill-choice"><button class="chip" data-kind="dsa">DSA</button><button class="chip" data-kind="system">System</button><button class="chip active" data-kind="both">Both</button></div></div><div class="row" style="margin-top:12px; flex-wrap:wrap; gap:8px"><button id="dashJoinSession" class="btn" style="background:var(--accent); color:#0f0f10; padding:11px 18px; font-size:14px; font-weight:700">▶ Join Session — Code + Video + Board</button><span class="pill" style="font-size:11px">room ${roomHint.slice(-6)}</span>${copyAndEmailBtns}<span class="small muted">agree time first, then jump in</span></div><div class="small muted" id="dashInviteHint" style="margin-top:6px">Invite link: <span class="kbd" style="font-size:10.5px">${inviteUrl}</span></div></div></div>`;
+    // topic picker wire — persist per pair via localStorage + future API
     document.getElementById('dashTopicPicker')?.addEventListener('click', e=>{
       if(e.target.classList.contains('chip')){
         document.querySelectorAll('#dashTopicPicker .chip').forEach(c=>c.classList.remove('active'));
         e.target.classList.add('active');
+        const kind=e.target.dataset.kind||e.target.textContent||'both';
+        try{
+          const key='randori-topic:'+roomHint;
+          localStorage.setItem(key, kind);
+          // also save as agreed schedule topic for partner visibility if API exists
+          if(typeof toast==='function') toast('Focus: '+e.target.textContent+' • saved for this pair ✓');
+        }catch{}
         if(typeof toast==='function') toast('Focus: '+e.target.textContent+' • tell your partner');
       }
     });
-    document.getElementById('dashJoinSession')?.addEventListener('click', joinSessionDeterministic);
+    document.getElementById('dashJoinSession')?.addEventListener('click', ()=>joinSessionDeterministic(false));
+    area.querySelectorAll('.copy-invite').forEach(b=>b.addEventListener('click',()=>{ const r=b.dataset.room; localStorage.setItem('randori-last-room', r); const inv=(location.origin||'')+'/join/'+encodeURIComponent(r); try{ navigator.clipboard.writeText(inv); toast('Invite copied ✓'); }catch{ prompt('Copy invite', inv); } }));
+    area.querySelectorAll('.email-invite').forEach(b=>b.addEventListener('click',()=>{
+      const room=b.dataset.room; const inv=(location.origin||'')+'/join/'+encodeURIComponent(room);
+      const sub='Randori mock interview — join '+room; const body='Hi '+ (partner?.name||'there') +'!\\n\\nLet\\'s jump into our mock session.\\nRoom: '+room+'\\nLink: '+inv+'\\nTime: see agreed slot in dashboard\\n\\n— Randori Circle';
+      window.open('mailto:?subject='+encodeURIComponent(sub)+'&body='+encodeURIComponent(body));
+    }));
   }
 
   function renderSchedule(data){
@@ -3529,6 +3593,22 @@ def allow(key, limit=5):
 
   // Main auth router
   async function routeByAuth(){
+    // /join/<roomId> deterministic invite — works even anon, redirects to code view after auth (LeetCode-like)
+    try{
+      const path = window.location.pathname||'';
+      const joinMatch = path.match(/^\/join\/([A-Za-z0-9_\-]+)/);
+      if(joinMatch){
+        const room = decodeURIComponent(joinMatch[1]);
+        try{
+          localStorage.setItem('randori-last-room', room);
+          localStorage.setItem('randori-last-tab','code');
+          // push clean history to avoid loop but keep invite capability via query fallback
+          history.replaceState(null,'','/join/'+encodeURIComponent(room));
+        }catch{}
+        // still continue to normal routing — if not signed in we will show code view anon style, else dashboard->join
+        window._randori_join_room = room;
+      }
+    }catch{}
     try{ const landing=document.getElementById('view-landing'); if(!localStorage.getItem(TOKEN_KEY) && landing){ /* anon uses its own loader */ } }catch{}
     const tok=localStorage.getItem(TOKEN_KEY);
     // hide all first? We decide
@@ -3545,11 +3625,28 @@ def allow(key, limit=5):
       try{
         const urlParams=new URLSearchParams(window.location.search);
         const viewParam=urlParams.get('view')||urlParams.get('tab');
-        const lastTab=localStorage.getItem('randori-last-tab')||localStorage.getItem('randori-last-view');
-        const wantsCode = viewParam==='code' || lastTab==='code' || window.location.hash.includes('code');
+        const pathname=window.location.pathname||'';
+        const isJoin = pathname.startsWith('/join/');
+        const lastTab=localStorage.getItem('randori-last-tab')||localStorage.getItem('randori-last-view')||localStorage.getItem('randori-last-room');
+        const tokVal=localStorage.getItem(TOKEN_KEY)||'';
+        const isE2E = tokVal.includes('e2e') || localStorage.getItem('e2e')==='1' || lastTab==='code' || lastTab==='e2e-room';
+        const wantsCode = viewParam==='code' || isE2E || lastTab==='code' || window.location.hash.includes('code') || isJoin || window._randori_join_room;
         if(wantsCode){
           const cv=document.getElementById('view-code');
-          if(cv){ document.querySelectorAll('.view').forEach((v)=>v.style.display='none'); cv.style.display='block'; document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active')); document.querySelector('[data-tab="code"]')?.classList.add('active'); }
+          if(cv){
+            document.querySelectorAll('.view').forEach((v:any)=>v.style.display='none'); cv.style.display='block'; document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active')); document.querySelector('[data-tab="code"]')?.classList.add('active');
+            // if join room present, autoset currentRoom / roomSelect after code loads
+            try{
+              const jr = window._randori_join_room || (pathname.match(/^\/join\/([A-Za-z0-9_\-]+)/)||[])[1];
+              if(jr){
+                localStorage.setItem('randori-last-room', jr);
+                // set room dropdown option
+                const rs=document.getElementById('roomSelect'); if(rs){ if(![...rs.options].some(o=>o.value===jr)){ const o=document.createElement('option'); o.value=jr; o.textContent='Week — Pair (invite '+jr.slice(0,6)+')'; rs.prepend(o); } rs.value=jr; }
+                if(window._randori_code && window._randori_code.loadRoom) { setTimeout(()=>{ try{ window._randori_code.loadRoom(jr); }catch{} }, 400); }
+                else { try{ const fn = (window as any)._randori_code?.loadRoom || (window as any).loadRoom; if(fn) fn(jr); }catch{} }
+              }
+            }catch{}
+          }
         }
       }catch{}
       return;
@@ -4852,6 +4949,282 @@ def allow(key, limit=5):
 
   // expose format for global console
   window._randori_format = formatCode;
+})();
+</script>
+
+
+<script type="module">
+// --- Pillar 3 Fix: rewired AI frontend (Groq router + anon demo + quota + loader/toast) ---
+(function(){
+  const TOKEN_KEY='randori-token';
+  function getToken(){ try{ return localStorage.getItem(TOKEN_KEY)||''; }catch{ return ''; } }
+  function authHeaders(extra={}){
+    const t=getToken();
+    const h={'content-type':'application/json', ...extra};
+    if(t) h['authorization']='Bearer '+t;
+    return h;
+  }
+  function showLoader(el){
+    try{ if(window._randori_ui && window._randori_ui.showLoader){ return window._randori_ui.showLoader(el); } }catch{}
+    if(!el) return null;
+    const s=document.createElement('div'); s.className='spinner spinner-sm'; s.textContent=''; el.prepend(s); return s;
+  }
+  function hideLoader(el){
+    try{ if(window._randori_ui && window._randori_ui.hideLoader){ window._randori_ui.hideLoader(el); return; } }catch{}
+    if(!el) return; el.querySelectorAll('.spinner').forEach(x=>x.remove());
+  }
+  function getRoom(){
+    try{
+      return (window._randori_code && window._randori_code.currentRoom) || window.currentRoom || document.getElementById('roomSelect')?.value || localStorage.getItem('randori-last-room') || 'manual';
+    }catch{ return 'manual'; }
+  }
+  function getPairLabel(){
+    try{ return document.getElementById('roomLabel')?.textContent || document.getElementById('videoRoomLabel')?.textContent || getRoom(); }catch{ return getRoom(); }
+  }
+  function collectPayload(roomOverride, extra){
+    const room = roomOverride && typeof roomOverride==='string' ? roomOverride : getRoom();
+    const transcriptEl=document.getElementById('aiTranscript');
+    const iqEl=document.getElementById('aiInterviewerQs');
+    const editor = document.getElementById('editor');
+    let codeW=''; 
+    try{
+      if(window._randori_code && typeof window._randori_code.getCode==='function'){ codeW=window._randori_code.getCode(); }
+      else if(window._randori_monaco && window._randori_monaco.editor) { codeW=window._randori_monaco.editor.getValue(); }
+      else if(editor) codeW=editor.value||'';
+    }catch{}
+    // if snaps present use them
+    let snaps=[]; try{ snaps = (window._randori_ai && window._randori_ai._snapsRaw) || window._randori_ai?.snaps || []; }catch{}
+    if(!snaps.length){ try{ snaps=window._randori_ai?.snaps||[] }catch{} }
+    const transcript = (extra && extra.transcript) || transcriptEl?.value?.trim() || '';
+    const interviewerQs = (extra && extra.interviewer_questions) || (extra && extra.interviewerQuestions) || iqEl?.value?.trim() || '';
+    const duration = (extra && (extra.duration_sec||extra.duration)) || (window._randori_ai && window._randori_ai._startTime ? Math.round((Date.now()-window._randori_ai._startTime)/1000) : 0);
+    const roleEl = document.getElementById('roleToggle'); const role = (extra && extra.role) || (roleEl?.textContent?.includes('interviewer') ? 'interviewer' : 'both');
+    let combinedCode = codeW;
+    if(snaps && snaps.length){ try{ combinedCode = JSON.stringify(snaps).slice(0,12000) + '\nLATEST:\n' + String(codeW).slice(0,8000); }catch{ combinedCode=codeW; } }
+    if(extra && extra.code) combinedCode = extra.code;
+    return {
+      room_id: room,
+      pair_label: getPairLabel(),
+      transcript,
+      code: combinedCode,
+      code_snapshots: snaps.length ? snaps : undefined,
+      interviewer_questions: interviewerQs,
+      duration_sec: duration,
+      role
+    };
+  }
+
+  // Enhanced internal state mirror if previous recording vars exist
+  let recording=false; let startT=0; let snapsCache=[]; let timer=null;
+
+  // Rewire legacy elements if already present
+  function ensureFeedbackListAlias(){
+    const fb=document.getElementById('aiFeedback');
+    let list=document.getElementById('aiFeedbackList');
+    if(!list && fb){
+      list=document.createElement('div'); list.id='aiFeedbackList'; list.style.display='grid'; list.style.gap='10px';
+      // insert after feedback or clone content migration
+      fb.parentElement?.appendChild(list);
+    }
+    return list;
+  }
+
+  async function analyze(roomIdOrPayload, maybePayload){
+    let payload;
+    if(typeof roomIdOrPayload==='object' && roomIdOrPayload!==null && !maybePayload){
+      payload = roomIdOrPayload;
+      roomIdOrPayload = payload.room_id || getRoom();
+    }else{
+      payload = collectPayload(roomIdOrPayload, maybePayload);
+      if(typeof roomIdOrPayload==='string') payload.room_id = roomIdOrPayload;
+      if(maybePayload && typeof maybePayload==='object'){
+        Object.assign(payload, maybePayload);
+      }
+    }
+    // clean undefined
+    Object.keys(payload).forEach(k=>{ if(payload[k]===undefined) delete payload[k]; });
+
+    const aiPanel=document.getElementById('aiPanel');
+    const fbEl=document.getElementById('aiFeedback') || document.getElementById('aiFeedbackList');
+    const dbgEl=document.getElementById('aiRouterDebug');
+    const statusEl=document.getElementById('aiStatus');
+    const listAlias=ensureFeedbackListAlias();
+
+    // loader
+    let loaderTarget = fbEl || aiPanel;
+    const spin=showLoader(loaderTarget);
+    if(statusEl) statusEl.textContent='⚡ Calling Groq router — picking model by session…';
+    if(dbgEl){ dbgEl.style.display='block'; dbgEl.innerHTML='⏳ picking model: short→8b-instant, long/system-design→70b-versatile, respecting free-tier…'; }
+
+    if(fbEl) fbEl.innerHTML=''; if(listAlias) listAlias.innerHTML='';
+
+    try{
+      const headers=authHeaders();
+      const res=await fetch('/api/ai/analyze', { method:'POST', headers, body: JSON.stringify(payload) });
+      const j=await res.json().catch(()=>({ok:false, error:'bad json'}));
+      if(!res.ok){
+        if(statusEl){ statusEl.textContent=`AI error ${res.status}: ${j.error||j.reason||'unknown'}${j.count!==undefined?` (${j.count}/${j.limit})`:''}`; statusEl.style.color='var(--accent-3)'; }
+        try{ window._randori_ui && window._randori_ui.hideLoader && window._randori_ui.hideLoader(loaderTarget); }catch{}
+        try{ window.toast && window.toast(`AI: ${j.error||j.reason||'failed'} ${j.count?' — '+j.count+'/'+j.limit:''}`); }catch{}
+        if(dbgEl) dbgEl.innerHTML+=`<br><span style="color:var(--accent-3)">Error ${res.status}: ${(j.error||j.reason||'').slice(0,300)} ${j.count? '('+j.count+'/'+j.limit+')':''}</span>`;
+        if(res.status===429){
+          try{ window._randori_log && window._randori_log.warn('ai_quota', `blocked ${j.reason||j.error}`, {status:res.status, count:j.count, limit:j.limit}); }catch{}
+        }
+        throw j;
+      }
+
+      // success render (reuse existing render logic if available, else custom minimal)
+      const fb=j.feedback; const model=j.model_used; const reason=j.reason_for_pick; const cost=j.estimated_cost; const ev=j.evidence_validated; const quota=j.quota;
+      if(dbgEl){
+        dbgEl.innerHTML=`<b>Model:</b> ${model}<br><b>Why:</b> ${reason}<br><b>Cost:</b> $${cost?.usd||'0.0000'} (${cost?.tokens_in||0} in / ${cost?.tokens_out||0} out)${cost?.groq_usage? ' — Groq '+JSON.stringify(cost.groq_usage):''}<br><b>Evidence:</b> ${ev?.validated||0}/${ev?.total||0} validated (${Math.round((ev?.score||0)*100)}%) ${ev?.loweredConfidence?'— some lowered confidence':''}<br><b>Anon:</b> ${j.anon?'yes (demo mocked)':'no'} ${j.mocked?'— <span style="color:var(--warn)">Mocked — set GROQ_API_KEY</span>':''} ${j.openaiFallback?'— OpenAI fallback':''}${quota? '<br><b>Month:</b> '+(quota.count||0)+'/'+(quota.limit||100)+' '+(quota.demo?' (demo)':'') : ''}`;
+      }
+
+      function chip(evTxt){
+        if(!evTxt || evTxt==='no direct quote' || String(evTxt).includes('no direct')) return `<span class="kbd" style="background:#e6c07a22;border-color:#e6c07a">no direct quote</span>`;
+        const safe=String(evTxt).replace(/"/g,'&quot;');
+        return `<span class="kbd" style="background:#9cc0b522;border-color:#9cc0b5;color:#9cc0b5" title="${safe}">“${safe.slice(0,80)}${safe.length>80?'…':''}”</span>`;
+      }
+
+      const candidate=fb?.candidate||{strengths:[], improvements:[]};
+      const interviewer=fb?.interviewer||{strengths:[], improvements:[]};
+      const html=`
+        <div class="card" style="border-color:var(--ok)"><div class="card-h"><h3 style="font-size:13px">Candidate ${fb?.overall_score? `<span class="kbd">${fb.overall_score}/10</span>`:''}</h3><span class="kbd" title="session ${j.session_id}">#${String(j.session_id).slice(-4)}</span></div>
+          <div class="card-b" style="display:grid;gap:8px">
+            <div><b class="small">Strengths</b><div style="display:grid;gap:6px;margin-top:4px">${(candidate.strengths||[]).map(s=>`<div class="test" style="border-color:var(--ok)"><div class="small"><b>${s.point}</b> ${chip(s.evidence)} ${s.confidence? `<span class="kbd">${Math.round((s.confidence||0.8)*100)}%</span>`:''}</div></div>`).join('')||'<span class="small muted">none listed</span>'}</div></div>
+            <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(candidate.improvements||[]).map(s=>`<div class="test" style="border-color:#e87a8a"><div class="small"><b>${s.point}</b> ${chip(s.evidence)}<div class="small muted" style="margin-top:3px">↳ ${s.suggestion||''}</div></div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
+          </div>
+        </div>
+        <div class="card" style="border-color:var(--accent-2)"><div class="card-h"><h3 style="font-size:13px">Interviewer</h3><span class="kbd">${model.slice(0,22)}</span></div>
+          <div class="card-b" style="display:grid;gap:8px">
+            <div><b class="small">Strengths</b><div style="display:grid;gap:6px;margin-top:4px">${(interviewer.strengths||[]).map(s=>`<div class="test"><div class="small"><b>${s.point}</b> ${chip(s.evidence)}</div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
+            <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(interviewer.improvements||[]).map(s=>`<div class="test"><div class="small"><b>${s.point}</b> ${chip(s.evidence)}<div class="small muted">↳ ${s.suggestion||''}</div></div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
+          </div>
+        </div>
+        <div class="card" style="border-style:dashed"><div class="card-h"><h3 style="font-size:13px">Next time checklist</h3><span class="kbd">overall ${fb?.overall_score||'-'}/10</span></div><div class="card-b small">${(fb?.next_time_checklist||[]).map(x=>`• ${x}`).join('<br>')||'no checklist'}</div></div>
+      `;
+
+      if(fbEl) fbEl.innerHTML=html;
+      if(listAlias && listAlias!==fbEl) listAlias.innerHTML=html;
+      if(statusEl){ statusEl.textContent=`✓ AI feedback ready — ${model} (${ev?.validated||0}/${ev?.total||0} evidence)${j.anon?' — demo':''} ✓`; statusEl.style.color='var(--ok)'; }
+      try{ window.toast && window.toast(`AI feedback ready ✓`); }catch{}
+      try{ window._randori_log && window._randori_log.success && window._randori_log.success('ai_feedback_ready', `ready ${model} ${ev?.validated||0}/${ev?.total||0}`, {model, room:payload.room_id}); }catch{}
+
+      // populate history widget recently
+      return { ok:true, ...j };
+
+    }catch(e){
+      const msg=e.error||e.reason||e.message||'analyze failed';
+      if(statusEl){ statusEl.textContent=`AI error: ${msg.slice(0,250)}`; statusEl.style.color='var(--accent-3)'; }
+      try{ console.warn('[ai analyze fail]', e); }catch{}
+      return { ok:false, error:msg };
+    }finally{
+      hideLoader(loaderTarget);
+      const btn=document.getElementById('aiAnalyzeBtn'); if(btn){ btn.disabled=false; btn.textContent='⚡ Get AI Feedback'; }
+    }
+  }
+
+  async function getFeedback(id){
+    if(!id) return {ok:false, error:'id required'};
+    const headers=authHeaders();
+    const res=await fetch(`/api/ai/feedback/${encodeURIComponent(id)}`, {headers});
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok) return {ok:false, error:j.error||String(res.status), detail:j};
+    // render if fb element present and caller expects UI
+    try{
+      const fbEl=document.getElementById('aiFeedback')||document.getElementById('aiFeedbackList');
+      if(fbEl && j.feedback){
+        // reuse analyze render minimal (just show overall)
+        fbEl.innerHTML=`<div class="card"><div class="card-h"><h3>Feedback #${id}</h3><span class="kbd">${j.model_used||'model'}</span></div><div class="card-b"><pre style="white-space:pre-wrap;font-size:12px">${JSON.stringify(j.feedback,null,2).slice(0,3000)}</pre></div></div>`;
+      }
+    }catch{}
+    return j;
+  }
+
+  async function listHistory(){
+    const headers=authHeaders();
+    const res=await fetch('/api/ai/history', {headers});
+    const j=await res.json().catch(()=>({feedbacks:[]}));
+    const fbEl=document.getElementById('aiFeedback');
+    const listEl=document.getElementById('aiFeedbackList');
+    if(!res.ok){
+      try{ window.toast && window.toast('history failed: '+(j.error||res.status)); }catch{}
+      return j;
+    }
+    const list=j.feedbacks||[];
+    const html=`<div class="small muted">${list.length} past sessions — calls today ${j.usage_today?.calls||0}/14400 ${j.monthly? '• '+j.monthly.count+'/'+j.monthly.limit+' this month'+(j.monthly.demo?' (demo)':''):''}</div><div style="display:grid;gap:6px;margin-top:6px">${list.slice(0,10).map(r=>`<div class="test" style="cursor:pointer" onclick="window._randori_ai && window._randori_ai.getFeedback && window._randori_ai.getFeedback('${r.session_id||r.id}')"><div class="small"><span class="kbd">#${String(r.session_id||r.id).slice(-4)}</span> ${r.pair_label||r.room_id||'room'} — <span class="kbd">${(r.model_used||'model').slice(0,18)}</span> ${r.duration_sec? '• '+Math.round(r.duration_sec/60)+'m':''} <span class="kbd" style="float:right">${new Date(r.created_at).toLocaleString()}</span></div></div>`).join('')||'<span class="small muted">No history yet — run an analysis above</span>'}</div>`;
+    const target = fbEl || listEl;
+    if(target){ target.innerHTML=html; }
+    if(listEl && listEl!==fbEl){ listEl.innerHTML=html; }
+    const statusEl=document.getElementById('aiStatus'); if(statusEl) statusEl.textContent=`History loaded — ${list.length} sessions`;
+    return j;
+  }
+
+  // extend / override global
+  const prev=window._randori_ai||{};
+  const enhanced={
+    get recording(){ try{ return prev.recording; }catch{ return recording; } },
+    get snaps(){ try{ const s=prev.snaps||[]; if(s.length) return s; }catch{} return snapsCache; },
+    get _snapsRaw(){ return snapsCache; },
+    get _startTime(){ return startT; },
+    analyze,
+    getFeedback,
+    get_feedback:getFeedback,
+    listHistory,
+    get history(){ return listHistory; },
+    analyzeRoom: analyze,
+    // compat wrappers
+    record: prev.analyze ? ()=>{ try{ prev.analyze && prev.analyze(); }catch{} } : undefined
+  };
+
+  window._randori_ai = new Proxy(enhanced, {
+    get(t,p){ if(p in t) return t[p]; if(p in prev) return prev[p]; return undefined; },
+    set(t,p,v){ t[p]=v; return true; }
+  });
+
+  // Wire buttons robustly (override previous onclick)
+  const ab=document.getElementById('aiAnalyzeBtn');
+  const hb=document.getElementById('aiHistoryBtn');
+  if(ab) ab.onclick=()=>analyze();
+  if(hb) hb.onclick=()=>listHistory();
+
+  // Record button sync — keep existing behavior but also cache snaps
+  try{
+    const rb=document.getElementById('aiRecordBtn');
+    if(rb && !rb._enhancedWired){
+      rb._enhancedWired=true;
+      const origClick=rb.onclick;
+      rb.addEventListener('click', ()=>{
+        setTimeout(()=>{
+          try{
+            recording = !!(window._randori_ai && window._randori_ai.recording);
+            if(recording){ startT=Date.now(); snapsCache=[]; }
+            else { snapsCache = (window._randori_ai && window._randori_ai.snaps) || snapsCache; }
+          }catch{}
+        }, 50);
+      });
+    }
+  }catch{}
+
+  // Ensure additional card below whiteboard if videoBar present — add secondary feedback glance card (LeetCode model custom needs)
+  try{
+    if(!document.getElementById('aiFeedbackCardBelowBoard')){
+      const videoBar=document.getElementById('videoBar');
+      const codeLayout=document.querySelector('.code-layout');
+      const card=document.createElement('div');
+      card.id='aiFeedbackCardBelowBoard';
+      card.className='card';
+      card.style.cssText='margin:10px; border-style:dashed; background:var(--bg-2)';
+      card.innerHTML=`<div class="card-h"><h3 style="font-size:12.5px">AI Interview Feedback</h3><span class="kbd">Groq router • evidence-checked</span></div><div class="card-b small" style="display:grid;gap:8px"><div>Record toggles capture, Analyze sends transcript + code snapshots to <span class="kbd">/api/ai/analyze</span> (Bearer if signed in, demo mocked otherwise). Quota: 100/mo demo, 500/mo regular.</div><div class="row" style="gap:6px; flex-wrap:wrap"><button class="btn" onclick="window._randori_ai && window._randori_ai.analyze && window._randori_ai.analyze()" style="font-size:11.5px">⚡ Analyze current session</button><button class="pill" onclick="window._randori_ai && window._randori_ai.listHistory && window._randori_ai.listHistory()">history</button><span class="small muted">Shows evidence quotes + overall score + checklist</span></div><div id="aiFeedbackList" style="display:grid;gap:8px"></div></div>`;
+      if(codeLayout && codeLayout.parentElement){
+        codeLayout.parentElement.insertBefore(card, codeLayout.nextSibling);
+      }else if(videoBar && videoBar.parentElement){
+        videoBar.parentElement.insertBefore(card, videoBar.nextSibling);
+      }
+    }
+  }catch{}
+
+  // expose helper for debug console
+  window._randori_ai_debug={ analyze, getFeedback, listHistory, getRoom, collectPayload };
 })();
 </script>
 

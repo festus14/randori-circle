@@ -142,6 +142,10 @@
       "destination": "/api/data?endpoint=health"
     },
     {
+      "source": "/api/notifications/prefs",
+      "destination": "/api/ops?endpoint=notifications-prefs"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
