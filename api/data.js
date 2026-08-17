@@ -45,31 +45,264 @@ function parseLeetConstraints(contentHtml){
   // fallback: look for <code> with exponents
   return '';
 }
+// Known problem metadata for smart chunking + enrichment
+const KNOWN_LEET = {
+  'two-sum': { params:['nums','target'], examples:3, category:'array' },
+  'valid-parentheses': { params:['s'], examples:3, category:'stack' },
+  'merge-two-sorted-lists': { params:['l1','l2'], examples:2, category:'linked-list' },
+  'lru-cache': { params:['operations'], examples:1, category:'design' },
+  'design-twitter': { params:['scenario'], examples:1, category:'system-design' },
+};
+function cleanLeetLine(line){
+  let l=String(line||'').trim();
+  if(!l) return '';
+  // Leet strips "nums = [2,7,11,15]" -> "[2,7,11,15]"
+  const eq = l.indexOf('=');
+  if(eq>0 && eq<30){
+    const rhs = l.slice(eq+1).trim();
+    // avoid capturing comparator (==) quickly
+    if(rhs) return rhs;
+  }
+  return l;
+}
+function tryParseJsonish(s){
+  try{ return JSON.parse(s); }catch{
+    // leet sometimes uses '[1,2,4]' which is JSON, but '"()"' is JSON string too
+    // fallback: if looks like Python list
+    try{ if(s.startsWith('[') && s.endsWith(']')) return JSON.parse(s.replace(/'/g,'"')); }catch{}
+    return null;
+  }
+}
+function parsePreExamples(contentHtml){
+  const out=[];
+  if(!contentHtml) return out;
+  const preMatches = [...String(contentHtml).matchAll(/<pre[^>]*>([\s\S]*?)<\/pre>/gi)];
+  for(const pm of preMatches.slice(0,6)){
+    const raw = pm[1];
+    const text = htmlToText(raw);
+    // Normalize: look for Input:/Output: pairs, possibly multi-line
+    // Common format: Input: X\nOutput: Y\nExplanation: Z
+    // Split using regex with lookahead
+    const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
+    let curInput=null, curOutput=null, bufInput=[];
+    for(let i=0;i<lines.length;i++){
+      const l=lines[i];
+      const low=l.toLowerCase();
+      if(low.startsWith('input:')){
+        if(curInput && curOutput!=null){
+          out.push({inputRaw: bufInput.join(' ').slice(6).trim() || curInput, outputRaw:curOutput});
+        }
+        bufInput=[l];
+        curInput=l.slice(6).trim();
+        curOutput=null;
+      } else if(low.startsWith('output:')){
+        curOutput=l.slice(7).trim();
+        // collect following lines if output seems incomplete '[' missing ']'
+        if(curOutput && curOutput.startsWith('[') && !curOutput.endsWith(']')){
+          // try next line join
+          if(i+1<lines.length && !lines[i+1].toLowerCase().startsWith('explanation')) curOutput+=lines[++i];
+        }
+        if(curInput) {
+          out.push({inputRaw: (bufInput.length? bufInput.join(' ').slice(6).trim(): curInput), outputRaw:curOutput});
+          curInput=null; bufInput=[]; curOutput=null;
+        } else if(bufInput.length){
+          out.push({inputRaw: bufInput.join(' ').slice(6).trim(), outputRaw:curOutput});
+          bufInput=[]; curOutput=null;
+        }
+      } else if(low.startsWith('explanation:')){
+        // end of example, already pushed
+        curInput=null; bufInput=[]; curOutput=null;
+      } else {
+        // continuation of Input: if we are still in Input collection and no Output yet
+        if(bufInput.length && curOutput===null){
+          bufInput.push(l);
+          curInput = bufInput.join(' ').slice(6).trim();
+        }
+      }
+    }
+    if(curInput && curOutput){
+      out.push({inputRaw:curInput, outputRaw:curOutput});
+    }
+    if(out.length>=8) break;
+  }
+  return out;
+}
+function inputRawToObj(inputRaw, paramNames){
+  // inputRaw like "nums = [2,7,11,15], target = 9" or "[2,7,11,15], 9" or "s = \"()\""
+  if(!inputRaw) return {};
+  const s = String(inputRaw).trim();
+  const obj={};
+  // Try split by comma but not inside brackets
+  // First attempt: detect "a = b, c = d" pattern
+  if(s.includes('=') ){
+    // split by ',' then extract each k=v
+    const parts=[];
+    let depth=0, cur='';
+    for(let ch of s){
+      if(ch==='['||ch==='{'||ch==='(') depth++;
+      if(ch===']'||ch==='}'||ch===')') depth--;
+      if(ch===',' && depth===0){ parts.push(cur); cur=''; continue; }
+      cur+=ch;
+    }
+    if(cur) parts.push(cur);
+    for(const p of parts){
+      const trimmed=p.trim();
+      if(!trimmed) continue;
+      const eq=trimmed.indexOf('=');
+      if(eq>0){
+        const k=trimmed.slice(0,eq).trim();
+        const v=trimmed.slice(eq+1).trim();
+        const pv = tryParseJsonish(v);
+        obj[k]= pv!==null ? pv : v.replace(/^"|"$/g,'').replace(/^'|'$/g,'');
+      } else {
+        // positional without name – map sequentially
+        const pv=tryParseJsonish(trimmed);
+        const name = paramNames && paramNames[Object.keys(obj).length] ? paramNames[Object.keys(obj).length] : `arg${Object.keys(obj).length}`;
+        obj[name]= pv!==null? pv: trimmed;
+      }
+    }
+    if(Object.keys(obj).length) return obj;
+  }
+  // No '=', try single value positional
+  const p = tryParseJsonish(s);
+  if(p!==null && paramNames && paramNames[0]){
+    if(Array.isArray(p) && paramNames.length===1) return {[paramNames[0]]: p};
+    if(typeof p!=='object' || Array.isArray(p)) {
+      const single={}; single[paramNames[0]]=p; return single;
+    }
+    return p;
+  }
+  // multi values without '=' but separated? ExampleTwoSum exampleTestcases per line grouping uses separate lines. This helper expects single block - fallback raw string
+  return {raw:s};
+}
 function buildTestCasesFromExampleTestcases(exampleTestcases, content){
   const out=[];
-  if (!exampleTestcases) return out;
+  const known = content ? null : null;
+  if(content){
+    const preEx = parsePreExamples(content);
+    for(const pe of preEx.slice(0,6)){
+      const slugLower = ''; // caller will map
+      // Try to convert inputRaw directly; param names extracted later by caller
+      out.push({ __preInput: pe.inputRaw, __preOutput: pe.outputRaw, raw: `${pe.inputRaw} => ${pe.outputRaw}`, __isPre:true });
+      if(out.length>=10) break;
+    }
+  }
+  if (!exampleTestcases){
+    // only pre examples
+    return out.filter(o=>o.__isPre).map(o=>({input:o.__preInput, expect:o.__preOutput, raw:o.raw}));
+  }
   const lines = String(exampleTestcases).split('\n').map(s=>s.trim()).filter(Boolean);
-  // Heuristic: LeetCode exampleTestcases is either single test per line bundle where lines grouped oddly; each line is whole input set.
-  // e.g. "[2,7,11,15]\n9\n[3,2,4]\n6" actually two separate testcases each with 2 lines? Real API separates by newline where each testcase may be 1 or 2 lines.
-  // For MVP we treat each non-empty line as one raw case, but also attempt pair-wise if we detect even split.
-  // Use raw + input = raw
   for (let i=0;i<lines.length;i++){
     const raw = lines[i];
-    // Try parse as JSON-ish to produce input object later; keep raw
     out.push({ input: raw, expect:null, raw });
     if (out.length>=12) break;
   }
-  // Enrich from examples HTML if we can extract <pre> Example I/O
-  if (content){
-    const preMatches = [...String(content).matchAll(/<pre[^>]*>([\s\S]*?)<\/pre>/gi)];
-    for (const pm of preMatches.slice(0,3)){
-      const txt = htmlToText(pm[1]).slice(0,800);
-      if (txt.toLowerCase().includes('example') || out.length<2){
-        // keep as example, not testcase duplication
+  return out;
+}
+function smartChunkExampleTestcases(slug, exampleTestcases, content){
+  // Unified smart chunker returning {input: JSONstring, expect: JSONstring|null, raw}
+  const known = KNOWN_LEET[slug] || null;
+  const paramNames = known?.params || null;
+  const preCases = parsePreExamples(content); // [{inputRaw, outputRaw}]
+  const enriched=[];
+
+  // Use pre cases first as gold – they have both input & output
+  for(const pc of preCases){
+    const inObj = inputRawToObj(pc.inputRaw, paramNames);
+    let inStr;
+    try{ inStr = JSON.stringify(inObj); }catch{ inStr = JSON.stringify({raw:pc.inputRaw}); }
+    const outVal = tryParseJsonish(pc.outputRaw) ?? pc.outputRaw;
+    let outStr;
+    try{ outStr = JSON.stringify(outVal); }catch{ outStr = String(pc.outputRaw); }
+    enriched.push({input:inStr, expect:outStr, raw:`${pc.inputRaw} -> ${pc.outputRaw}`, __source:'pre'});
+  }
+
+  if(exampleTestcases){
+    const rawLines = String(exampleTestcases).split('\n').map(s=>cleanLeetLine(s.trim())).filter(Boolean);
+    const paramCount = paramNames ? paramNames.length : (rawLines.length%2===0 && rawLines.length>=2 ? 2 : 1);
+    // If paramCount inferred 2 but lines groups maybe includes expected third line for some APIs (rare)
+    let idx=0;
+    let loopGuard=0;
+    while(idx < rawLines.length && loopGuard<12){
+      loopGuard++;
+      const group = rawLines.slice(idx, idx+paramCount);
+      if(group.length < paramCount) break;
+      const inObj={};
+      let ok=true;
+      for(let pi=0; pi<paramCount; pi++){
+        const line = group[pi];
+        const pv = tryParseJsonish(line);
+        const key = paramNames ? paramNames[pi] : `arg${pi}`;
+        if(pv!==null) inObj[key]=pv;
+        else {
+          // if can't parse but looks like JSON-ish array missing quotes, keep as string
+          inObj[key]=line;
+        }
       }
+      // Try to align with pre enriched case if same inputs already covered — skip duplicate else add without expect (or try to find expect in next line if 3-group)
+      let expectVal=null, advance=paramCount;
+      if(rawLines.length >= idx+paramCount+1){
+        const possibleExpect = rawLines[idx+paramCount];
+        // heuristic: if we have 2 params, third line often is expected answer like "[0,1]" or "true" — check if it looks like an expected boolean/array
+        const pvExp = tryParseJsonish(possibleExpect);
+        // If next group would start with '[' for nums again, not expected. Heuristic: for two-sum, expected is array of 2 numbers, while next nums is array length >2 usually. Ambiguous.
+        // We'll treat as expected if lines length mod (paramCount+1)==0 or paramCount==1 && possible pattern differs.
+        if(paramNames && paramNames.length===2 && (slug==='two-sum' || slug.includes('two'))){
+          // for two-sum, third line is expected [0,1] length2 small — likely
+          if(possibleExpect.startsWith('[') && possibleExpect.length<12) { expectVal=possibleExpect; advance=paramCount+1; }
+        } else if(paramNames && paramNames.length===1){
+          // for valid-parentheses, exampleTestcases has no expected separate – skip
+        } else {
+          // If we have 3 lines left pattern and we haven't yet covered with pre
+          if(enriched.length===0 && paramCount===2 && rawLines.length%3===0){
+            const expTry = possibleExpect;
+            expectVal=expTry; advance=3;
+          }
+        }
+      }
+      let inputStr;
+      try{ inputStr = JSON.stringify(inObj); }catch{ inputStr = JSON.stringify({raw:group.join('|')}); }
+      let expectStr=null;
+      if(expectVal!==null){
+        const ev = tryParseJsonish(expectVal);
+        expectStr = JSON.stringify(ev!==null? ev: expectVal);
+      }
+      // dedup vs enriched
+      const dup = enriched.some(e=> e.input===inputStr);
+      if(!dup){
+        enriched.push({input:inputStr, expect:expectStr, raw: group.join(' | ') + (expectVal? ` => ${expectVal}`:'' ), __source:'exampleTestcases'});
+      }
+      idx+=advance;
     }
   }
-  return out;
+
+  // Fallback if still empty
+  if(!enriched.length){
+    const raw = String(exampleTestcases||'').trim().slice(0,200);
+    enriched.push({input: JSON.stringify({raw}), expect:null, raw: raw || 'see description'});
+  }
+
+  // Normalize to final shape required by custom_questions (input JSON string, expect JSON string|null, raw)
+  return enriched.slice(0,12).map(c=>({input:c.input, expect:c.expect, raw:c.raw}));
+}
+function enrichmentEdges(slug){
+  const edges=[];
+  if(slug==='two-sum'){
+    edges.push({input:JSON.stringify({nums:[-1,-2,-3,-4,-5], target:-8}), expect:JSON.stringify([2,4]), raw:"nums=[-1,-2,-3,-4,-5] target=-8 => [2,4]"});
+    edges.push({input:JSON.stringify({nums:[0,4,3,0], target:0}), expect:JSON.stringify([0,3]), raw:"nums=[0,4,3,0] target=0 => [0,3]"});
+    edges.push({input:JSON.stringify({nums:[1000000,2,3,999999], target:1000002}), expect:JSON.stringify([0,1]), raw:"large nums => [0,1]"});
+  } else if(slug==='valid-parentheses'){
+    edges.push({input:JSON.stringify({s:""}), expect:JSON.stringify(true), raw:"s=\"\" => true (empty valid)"});
+    edges.push({input:JSON.stringify({s:"((((((("}), expect:JSON.stringify(false), raw:"s=\"((((((( \" => false"});
+    edges.push({input:JSON.stringify({s:"{{{}}}"}), expect:JSON.stringify(false), raw:"s=\"{{{}}}\" => false (mismatch)"});
+  } else if(slug==='merge-two-sorted-lists'){
+    edges.push({input:JSON.stringify({l1:[1], l2:[]}), expect:JSON.stringify([1]), raw:"l1=[1] l2=[] => [1]"});
+    edges.push({input:JSON.stringify({l1:[], l2:[]}), expect:JSON.stringify([]), raw:"both empty => []"});
+    edges.push({input:JSON.stringify({l1:[5], l2:[1,2,3]}), expect:JSON.stringify([1,2,3,5]), raw:"l1=[5] l2=[1,2,3] => [1,2,3,5]"});
+  } else if(slug==='lru-cache'){
+    edges.push({input:JSON.stringify({operations:["LRUCache","put","get"], capacity:1, data:[[1],[1,1],[1]]}), expect:JSON.stringify([null,null,1]), raw:"LRU 1 ops put-get"});
+  }
+  return edges;
 }
 async function fetchWithTimeout(url, opts={}, timeoutMs=6000){
   const ctrl = new AbortController();
@@ -80,6 +313,25 @@ async function fetchWithTimeout(url, opts={}, timeoutMs=6000){
     return r;
   }catch(e){ clearTimeout(id); throw e; }
   finally{ clearTimeout(id); }
+}
+function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
+async function fetchWithRetry(url, opts={}, retries=2, backoff=400){
+  let lastErr;
+  for(let i=0;i<=retries;i++){
+    try{
+      const r=await fetchWithTimeout(url, opts, opts.timeoutMs||6000);
+      // if 429, respect Retry-After
+      if(r.status===429){
+        const ra = parseInt(r.headers.get('retry-after')||'2',10);
+        if(i<retries) { await sleep((isNaN(ra)?2:ra)*1000 + Math.random()*300); continue; }
+      }
+      return r;
+    }catch(e){
+      lastErr=e;
+      if(i<retries) await sleep(backoff*(i+1)+Math.random()*200);
+    }
+  }
+  throw lastErr||new Error('fetch failed after retries');
 }
 async function leetGraphQLQuestion(slug){
   const query = `

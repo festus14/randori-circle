@@ -4314,6 +4314,7 @@ def allow(key, limit=5):
 
   // Expose
   window._randori_questions={ fetchCustomQuestions, get custom(){return CUSTOM_QUESTIONS}, mergeIntoSelect, renderCustomQuestion };
+  try{ window._randori_code = window._randori_code||{}; window._randori_code.getCustomQuestion=(slug)=> CUSTOM_QUESTIONS.find(x=>x.slug===slug||x.id===slug); window._randori_code.customQuestions=CUSTOM_QUESTIONS; }catch{}
 
 })();
 </script>
@@ -4889,6 +4890,38 @@ def allow(key, limit=5):
         // format button
         const fbtn=document.getElementById(formatBtnId);
         if(fbtn){ fbtn.addEventListener('click', formatCode); }
+        // copy starter / reset
+        try{
+          document.getElementById('copyStarterBtn')?.addEventListener('click', ()=>{
+            try{
+              const lang=document.getElementById('langSelect')?.value||'javascript';
+              const qId=document.getElementById('questionSelect')?.value||null;
+              let starter='';
+              // try built-in QUESTIONS first
+              try{ const qs = QUESTIONS.find(x=>x.id===qId); if(qs){ starter = qs.starters?.[lang]||qs.starters?.javascript||''; } }catch{}
+              // fallback custom questions cache
+              if(!starter && window._randori_code?.getCustomQuestion){
+                const cq = window._randori_code.getCustomQuestion?.(qId);
+                if(cq){ const mp=cq.starter_per_lang||{}; starter=mp[lang]||mp.javascript||''; }
+              }
+              if(!starter) starter = (monacoEditor? monacoEditor.getValue() : (document.getElementById('editor')?.value||'')).slice(0,1200);
+              if(starter){ navigator.clipboard.writeText(starter).then(()=>{ if(window.toast) window.toast('Starter copied ✓'); }).catch(()=>{ prompt('Copy starter', starter); }); }
+            }catch(e){ console.warn('copy starter fail',e); }
+          });
+          document.getElementById('editorResetBtn')?.addEventListener('click', async ()=>{
+            try{
+              if(!await window.showConfirm?.('Reset editor?', 'Load fresh starter — current edits moved to other language store.')) return;
+              const lang=document.getElementById('langSelect')?.value||'javascript';
+              const qId=document.getElementById('questionSelect')?.value||null;
+              let starter='';
+              try{ const qs=QUESTIONS.find(x=>x.id===qId); if(qs) starter=qs.starters?.[lang]||qs.starters?.javascript||''; }catch{}
+              if(!starter && window._randori_code?.getCustomQuestion){ const cq=window._randori_code.getCustomQuestion?.(qId); if(cq){ starter=(cq.starter_per_lang||{})[lang]||''; } }
+              if(!starter) starter='// '+ (qId||'reset');
+              if(monacoEditor){ monacoEditor.setValue(starter); try{ if(typeof syncTextareaToMirror==='function') syncTextareaToMirror(); }catch{}; try{ if(typeof persistLikeOld==='function') persistLikeOld(); }catch{}; if(window.toast) window.toast('Reset ✓'); }
+              else { const ta=document.getElementById('editor'); if(ta){ ta.value=starter; ta.dispatchEvent(new Event('input',{bubbles:true})); } }
+            }catch(e){ console.warn('reset fail',e); }
+          });
+        }catch{}
 
         // initial lint
         setTimeout(updateLintFromMarkers, 800);

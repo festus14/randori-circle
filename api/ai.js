@@ -304,8 +304,21 @@ async function handleAnalyze(req,res){
     try{ isDemo = await resolveDemoFlag(db, authInfo); }catch{}
   }
 
-  // quota
+  // quota — monthly (demo 100 / regular 500) + daily free-tier guard
   try{
+    const todayCheck=todayISO();
+    try{
+      const du=await db.execute({sql:`SELECT calls FROM ai_usage WHERE date=?`, args:[todayCheck]});
+      const todayCalls=du.rows[0]?.calls||0;
+      if(isDemo && todayCalls>=100){
+        await logServer('warn','ai_quota_daily_demo', `demo daily 100 reached (${todayCalls})`, {userId, todayCalls}, {req, source:'server-ai'});
+        return res.status(429).json({ ok:false, error:'daily demo limit 100 reached', detail:`${todayCalls} calls today — regular users have 14.4k/day`, calls_today:todayCalls, limit:100, demo:true });
+      }
+      if(todayCalls>=14400){
+        await logServer('warn','ai_quota_daily_global', `global 14.4k reached`, {todayCalls}, {req, source:'server-ai'});
+        return res.status(429).json({ ok:false, error:'free-tier daily pool 14,400 exhausted', calls_today:todayCalls });
+      }
+    }catch{}
     const quota=await checkMonthlyQuota(db, userId, isDemo);
     if(quota.blocked){
       await logServer('warn','ai_quota_blocked', `quota blocked user ${userId||'anon'} ${quota.reason}`, {userId, isDemo, count:quota.count, limit:quota.limit}, {req, source:'server-ai', payload:payloadCtx});
