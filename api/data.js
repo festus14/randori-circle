@@ -1018,6 +1018,219 @@ async function handleLeetcodeSync(req,res){
   return res.json({ ok:true, synced_count:synced.length, total_requested: slugs.length, skip, limit, total_available: slugsInfo?.total||null, synced, errors, note:`Best-effort: synced ${synced.length}/${slugs.length} (limit ${limit} per call). ExampleTestcases only = sample I/O; hidden LeetCode judge cases not public; enriched via alfa-leetcode-api when available. Paginate with ?skip=20&limit=20 to fill DB.` });
 }
 
+
+async function pistonVersions(){
+  try{
+    const r = await fetchWithTimeout('https://emkc.org/api/v2/piston/runtimes', {}, 6000);
+    if(r.ok){ const j=await r.json(); return j; }
+  }catch{} return [];
+}
+
+async function callPistonAPI(language, version, files){
+  const body = { language, version, files: files.map(f=>({name:f.name, content:f.content})) };
+  const r = await fetchWithTimeout('https://emkc.org/api/v2/piston/execute', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)}, 12000);
+  if(!r.ok){
+    const txt = await r.text().catch(()=> '');
+    throw new Error('piston '+r.status+' '+txt.slice(0,200));
+  }
+  const j = await r.json();
+  return j;
+}
+
+function buildJsHarness(userCode, testCases){
+  const tc = JSON.stringify(testCases.slice(0,6));
+  return userCode + `
+globalThis.__randori_tests__ = ${tc};
+function __deepUnwrap(s){ try{ let v=s; for(let i=0;i<4;i++){ if(typeof v==='string'){ try{ const p=JSON.parse(v); if(typeof p==='string'&&p!==v) {v=p; continue;} v=p; break; }catch{ break; } } else break; } return v; }catch{ return s; } }
+function __normExp(e){ const u=__deepUnwrap(e); return u; }
+function __normInp(inp){ return __deepUnwrap(inp); }
+function __argsFrom(inp){
+  const v=__deepUnwrap(inp);
+  if(v && typeof v==='object' && !Array.isArray(v)){
+    if('nums' in v && ('target' in v || 't' in v)) return [v.nums, v.target ?? v.t];
+    if('l1' in v && 'l2' in v) return [v.l1, v.l2];
+    if('s' in v) return [v.s];
+    if('strs' in v) return [v.strs];
+    return Object.values(v);
+  }
+  if(Array.isArray(v)) return [v];
+  return [v];
+}
+function __deepEq(a,b){
+  const da=__deepUnwrap(a), db=__deepUnwrap(b);
+  if(Array.isArray(da)&&Array.isArray(db)){
+    if(da.length!==db.length) { return false; }
+    return da.every((x,i)=>__deepEq(x,db[i]));
+  }
+  return JSON.stringify(da)===JSON.stringify(db);
+}
+function __findFn(){
+  const candidates=['twoSum','two_sum','isValid','is_valid','isPalindrome','mergeTwoLists','merge_two_lists','lengthOfLongestSubstring','threeSum','lru','isAnagram'];
+  for(const n of candidates) { try{ if(typeof globalThis[n]==='function') return globalThis[n]; if(typeof eval(n)==='function') return eval(n);}catch{} }
+  return null;
+}
+(function(){
+  const fn=__findFn();
+  const out=[];
+  for(let i=0;i<__randori_tests__.length;i++){
+    const tc=__randori_tests__[i];
+    try{
+      const args=__argsFrom(tc.input);
+      if(!fn) throw new Error('function not found');
+      const got=fn(...args);
+      const exp=__normExp(tc.expect);
+      const pass = tc.expect==null ? true : __deepEq(got, exp);
+      console.log(JSON.stringify({idx:i, pass, got, expect:exp, input:tc.input}));
+    }catch(e){ console.log(JSON.stringify({idx:i, pass:false, error:String(e.message||e), input:tc.input})); }
+  }
+})();
+`;
+}
+
+function buildTsHarness(userCode, testCases){
+  return buildJsHarness(userCode, testCases);
+}
+
+function buildPythonHarness(userCode, testCases){
+  const tcStr = JSON.stringify(testCases.slice(0,6)).replace(/'/g, "__SQ__");
+  return `import json, sys, traceback
+tests = json.loads('''${tcStr.replace(/__SQ__/g, "'")}'''.replace("__SQ__","'"))
+
+def deep_unwrap(s):
+    v=s
+    for _ in range(4):
+        if isinstance(v, str):
+            try:
+                p=json.loads(v)
+                v=p
+                continue
+            except:
+                break
+        else:
+            break
+    return v
+
+def deep_equal(a,b):
+    a=deep_unwrap(a); b=deep_unwrap(b)
+    if isinstance(a,(list,tuple)) and isinstance(b,(list,tuple)):
+        if len(a)!=len(b): return False
+        return all(deep_equal(x,y) for x,y in zip(a,b))
+    return a==b
+
+def args_from(inp):
+    v=deep_unwrap(inp)
+    if isinstance(v, dict):
+        if 'nums' in v and ('target' in v or 't' in v):
+            return [v.get('nums'), v.get('target', v.get('t'))]
+        if 'l1' in v and 'l2' in v:
+            return [v['l1'], v['l2']]
+        if 's' in v and len(v)==1:
+            return [v['s']]
+        if 'strs' in v:
+            return [v['strs']]
+        return list(v.values())
+    if isinstance(v, list) and v and isinstance(v[0], list):
+        return [v]
+    return [v]
+
+def find_fn():
+    candidates=['two_sum','twoSum','is_valid','isValid','is_palindrome','merge_two_lists','mergeTwoLists','length_of_longest_substring','three_sum']
+    g=globals()
+    for name in candidates:
+        if name in g and callable(g[name]):
+            return g[name]
+    for k,v in list(g.items()):
+        if callable(v) and k not in ('deep_unwrap','deep_equal','args_from','find_fn','main') and not k.startswith('_'):
+            return v
+    return None
+
+${userCode}
+
+def main():
+    fn=find_fn()
+    if not fn:
+        for i, tc in enumerate(tests):
+            print(json.dumps({"idx":i,"pass":False,"error":"function not found - define two_sum or similar","input":tc.get('input')}))
+        return
+    for i, tc in enumerate(tests):
+        try:
+            args=args_from(tc.get('input'))
+            got=fn(*args)
+            exp=deep_unwrap(tc.get('expect'))
+            passed=True if exp is None else deep_equal(got, exp)
+            print(json.dumps({"idx":i,"pass":bool(passed),"got":got,"expect":exp,"input":tc.get('input')}, default=str))
+        except Exception as e:
+            print(json.dumps({"idx":i,"pass":False,"error":str(e)[:400],"input":tc.get('input')}))
+
+main()
+`;
+}
+
+function buildJavaHarness(userCode, testCases){
+  const hasSolution = userCode.includes('class Solution');
+  if(hasSolution){
+    return userCode + "\nimport java.util.*;\npublic class Main{ public static void main(String[] args){ System.out.println(\"{\\\"note\\\":\\\"java execution ready - provide class Solution\\\"}\"); } }";
+  }
+  return "import java.util.*;\npublic class Main{\n"+userCode+"\npublic static void main(String[] args){ System.out.println(\"{\\\"note\\\":\\\"java harness pending\\\"}\"); } }";
+}
+
+function buildGoHarness(userCode, testCases){
+  return "package main\nimport (\"fmt\")\n"+userCode+"\nfunc main(){ fmt.Println(\"{\\\"note\\\":\\\"go harness pending\\\"}\") }";
+}
+
+function buildCppHarness(userCode, testCases){
+  return "#include <bits/stdc++.h>\nusing namespace std;\n"+userCode+"\nint main(){ cout << \"{\\\"note\\\":\\\"cpp pending\\\"}\" << endl; return 0; }";
+}
+
+async function handleExecute(req,res){
+  if(req.method!=='POST') return res.status(405).json({error:'POST only for execute'});
+  try{ await ensureBaseTables(getClient()); }catch{}
+  const body = req.body || {};
+  let language = String(body.language||body.lang||'javascript').toLowerCase();
+  const map = {js:'javascript', javascript:'javascript', ts:'typescript', typescript:'typescript', py:'python', python:'python', java:'java', go:'go', golang:'go', cpp:'c++', 'c++':'c++', c:'c'};
+  const pistonLang = map[language] || 'javascript';
+  const code = String(body.code||'').slice(0,20000);
+  if(!code) return res.status(400).json({error:'code required'});
+  let testCases = body.test_cases || body.testCases || [];
+  if(typeof testCases==='string'){ try{ testCases=JSON.parse(testCases);}catch{ testCases=[]; } }
+  if(!Array.isArray(testCases)) testCases=[];
+  testCases=testCases.slice(0,6);
+  if(!testCases.length){ testCases=[{input:'', expect:null}]; }
+  const versionMap = {javascript:'18.15.0', typescript:'5.0.3', python:'3.10.0', java:'15.0.2', go:'1.16.2', 'c++':'10.2.0', c:'10.2.0'};
+  let version = versionMap[pistonLang] || 'latest';
+  let harness='', filename='';
+  if(pistonLang==='javascript'){ harness=buildJsHarness(code, testCases); filename='main.js'; }
+  else if(pistonLang==='typescript'){ harness=buildTsHarness(code, testCases); filename='main.ts'; }
+  else if(pistonLang==='python'){ harness=buildPythonHarness(code, testCases); filename='main.py'; }
+  else if(pistonLang==='java'){ harness=buildJavaHarness(code, testCases); filename='Main.java'; }
+  else if(pistonLang==='go'){ harness=buildGoHarness(code, testCases); filename='main.go'; }
+  else if(pistonLang==='c++'){ harness=buildCppHarness(code, testCases); filename='main.cpp'; }
+  else { harness=code; filename='main.js'; }
+  try{
+    const pistonRes = await callPistonAPI(pistonLang, version, [{name:filename, content:harness}]);
+    const run = pistonRes.run || {};
+    const stdout = String(run.stdout||'');
+    const stderr = String(run.stderr||'');
+    const results=[];
+    for(const line of stdout.split('\n')){
+      const t=line.trim();
+      if(!t) continue;
+      if(t.startsWith('{') && t.endsWith('}')){
+        try{ const o=JSON.parse(t); results.push(o); }catch{ results.push({raw:t}); }
+      } else {
+        results.push({raw:t});
+      }
+    }
+    if(results.length===0){
+      results.push({raw:stdout.slice(0,2000), stderr:stderr.slice(0,1000)});
+    }
+    const passed = results.filter(r=>r.pass===true).length;
+    return res.json({ok:true, language:pistonLang, version, piston:{code:run.code, signal:run.signal, stderr:stderr.slice(0,2000), stdout:stdout.slice(0,5000)}, results, passed_count:passed, total_count:testCases.length, test_cases:testCases});
+  }catch(e){
+    return res.status(500).json({ok:false, error:'piston execute failed', detail:String(e.message||e).slice(0,500), language:pistonLang});
+  }
+}
+
 export default async function handler(req,res){
   const ep = getEndpoint(req);
   const path = (req.url||'').toLowerCase();
@@ -1033,8 +1246,9 @@ export default async function handler(req,res){
   if (ep==='my-pair' || path.includes('my-pair') || ep==='mypair' || path.includes('my_pair') || ep==='my_pair') return handleMyPair(req,res);
   if (ep==='schedule' || path.includes('/schedule')) return handleSchedule(req,res);
   if (ep.includes('message')) return handleMessages(req,res);
+  if (ep==='execute' || ep==='run' || path.includes('/execute')) return handleExecute(req,res);
   if (ep==='questions' || ep==='question' || path.includes('/questions')) return handleQuestions(req,res);
-  return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['runs','leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','schedule','messages','questions'] });
+  return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['runs','execute','leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','schedule','messages','questions'] });
 }
 // auto-seed from bundled file on first questions request
 async function maybeSeedFromStatic(db){
