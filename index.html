@@ -237,7 +237,7 @@ p{margin:0}
       <div class="mark">R</div>
       <div>
         <h1>Randori Circle</h1>
-        <small>weekly mock — dark-first, no server</small>
+        <small>Practice DSA + System Design together — Sunday pairing, live rooms, whiteboard.</small>
       </div>
     </div>
     <div class="top-actions">
@@ -247,7 +247,7 @@ p{margin:0}
         <button id="signOutBtn" class="pill" style="display:none" title="Sign out">Sign out</button>
       </div>
       <button id="themeToggle" class="pill" title="Toggle theme">◐ <span id="themeLabel">dark</span></button>
-      <button id="exportBtn" class="pill" title="Export Vercel ready zip info">↗ vercel</button>
+      <button id="exportBtn" class="pill" title="Export notes" style="display:none">↗ export</button>
     </div>
   </div>
   <div class="tabs" role="tablist">
@@ -262,14 +262,14 @@ p{margin:0}
     <section id="view-circle" class="view">
       <div class="grid-2">
         <div class="card">
-          <div class="card-h"><h2>Add to circle</h2><span>auto • cloud</span></div>
+          <div class="card-h"><h2>Add to circle</h2><span>auto • everyone</span></div>
           <div class="card-b" style="display:grid; gap:10px">
             <div class="row">
-              <input id="personName" class="input" placeholder="e.g. Festus, Priya, Jamal (admin testing only)" maxlength="32" />
+              <input id="personName" class="input" placeholder="Teammate name (testing only)" maxlength="32" />
               <button id="addPerson" class="btn">Add</button>
             </div>
-            <div id="circleAutoNote" class="small muted">Circle = everyone who signed up — you are auto-included. New signups join next Sunday 08:00 BST.</div>
-            <div class="small muted">Colors deterministic — same name same dot. Circle no longer manual; signups feed weekly auto-shuffle.</div>
+            <div id="circleAutoNote" class="small muted">Your circle — everyone who's joined. You're in by default. Add a teammate if you're testing solo.</div>
+            <div class="small muted">Same name, same color. New teammates join the next pairing automatically.</div>
             <div id="peopleList" class="people"></div>
           </div>
         </div>
@@ -298,30 +298,30 @@ p{margin:0}
           <div class="card-h">
             <h2>This week</h2>
             <div class="row">
-              <button id="newWeekBtn" class="btn" title="Auto-shuffles Sundays 08:00 BST — normally you don't need this">Shuffle new week</button>
-              <button id="reshuffleBtn" class="btn secondary" title="Re-shuffle same people">Reshuffle</button>
+              <button id="newWeekBtn" class="btn" title="Create fresh pairs">New pairs</button>
+              <button id="reshuffleBtn" class="btn secondary" title="Mix again">Remix</button>
             </div>
           </div>
           <div class="card-b">
-            <div id="currentWeekMeta" class="small muted" style="margin-bottom:10px">No week yet — auto-shuffles Sundays 08:00 BST. No need to press unless you want a manual week.</div>
+            <div id="currentWeekMeta" class="small muted" style="margin-bottom:10px">Pairs arrive Sunday 08:00 BST. You're in when you're marked Available.</div>
             <div id="pairsList" class="weeks"></div>
           </div>
         </div>
         <div class="card">
-          <div class="card-h"><h2>Sync</h2><span>cloud when signed in</span></div>
+          <div class="card-h"><h2>Sync</h2><span>automatic</span></div>
           <div class="card-b" style="display:grid; gap:10px">
-            <div class="small" style="color:var(--ink-2)">Logged-in users sync to cloud automatically. Auto-shuffle happens <b style="color:var(--ink)">Sundays 08:00 BST</b> — only <span class="kbd">Available</span> users are included. Open this page in two tabs for live board/code sync; offline via <span class="kbd">localStorage</span>, Turso when signed in.</div>
+            <div class="small" style="color:var(--ink-2)">You stay in sync when signed in. Pairs refresh <b style="color:var(--ink)">Sundays 08:00 BST</b> — only <span class="kbd">Available</span> teammates are included.</div>
             <div id="availabilityWrap" style="display:none; border:1px solid var(--line); border-radius:10px; padding:10px; background:var(--bg-3); display:grid; gap:8px">
               <div class="row" style="justify-content:space-between"><b style="font-size:13px">Available this week</b><label class="pill" style="cursor:pointer"><input id="availToggle" type="checkbox" checked style="margin-right:6px"/> <span id="availLabel">ON</span></label></div>
-              <div class="small muted">If off, you are skipped Sun 08:00 BST — you can re-enable anytime. Admin reshuffle can include you early if you toggle back before Sunday.</div>
-              <div id="availBanner" class="small" style="display:none; padding:8px; border-radius:8px; background:#e6c07a22; border:1px dashed #e6c07a">You were skipped last week because you were unavailable — toggle back ON to rejoin next Sun.</div>
+              <div class="small muted">Turn off if you're away — you'll be skipped this Sunday but stay in the circle for next time.</div>
+              <div id="availBanner" class="small" style="display:none; padding:8px; border-radius:8px; background:#e6c07a22; border:1px dashed #e6c07a">You were away — welcome back, you're in for next Sunday.</div>
             </div>
             <div id="presencePanel" class="people"></div>
             <div class="row">
-              <button id="copyLinkBtn" class="btn secondary">Copy deploy path</button>
+              <button id="copyLinkBtn" class="btn secondary">Copy invite</button>
               <span class="small muted" id="syncStatus">● synced</span>
             </div>
-            <div class="small muted" id="availExplan">ℹ️ Weekly shuffle = only <span class="kbd">is_available=1</span> accounts. RESEND_API_KEY not set? Then pairs only visible in-app via <span class="kbd">/api/weeks</span>. Set RESEND_API_KEY+RESEND_FROM in Vercel to email everyone after shuffle. Unavailable users get reminder email separately.</div>
+            <div class="small muted" id="availExplan" style="display:none"></div>
           </div>
         </div>
       </div>
@@ -331,7 +331,7 @@ p{margin:0}
     <section id="view-code" class="view" style="display:none">
       <div id="videoBar" class="video-bar">
         <div class="video-bar-head">
-          <div class="row small"><b style="font-size:13px">Live video</b><span class="kbd" id="videoRoomLabel">room —</span><span id="videoStatus" class="kbd">off</span></div>
+          <div class="row small"><b style="font-size:13px">Live room</b><span class="kbd" id="videoRoomLabel">room —</span><span id="videoStatus" class="kbd">off</span></div>
           <div class="video-controls">
             <button id="vidCamBtn" class="pill">📷 cam</button>
             <button id="vidMicBtn" class="pill">🎤 mic</button>
@@ -351,7 +351,7 @@ p{margin:0}
             <div class="vid-label" id="remoteLabel">pair</div>
           </div>
         </div>
-        <div class="small muted">WebRTC mesh via Turso polling — 2s signal. No SDK. If cam blocked, tiles fall back to name dots. Screen share placeholder for future capture.</div>
+        <div class="small muted">Video + code stay in sync. If your camera is blocked, you’ll still see names.</div>
       </div>
       <div class="code-layout">
         <div class="q-pane">
@@ -446,13 +446,13 @@ p{margin:0}
         </div>
         <div class="canvas-host" id="canvasHost"><canvas id="board"></canvas></div>
       </div>
-      <div class="small muted" style="margin-top:8px">Touch + mouse. Infinite: pan, wheel-zoom. Live sync via localStorage — open board in another tab and draw. Sticky double-click to edit. Dark/light aware.</div>
+      <div class="small muted" style="margin-top:8px">Draw together — zoom, pan, sticky notes. Opens in another tab in sync.</div>
     </section>
 
     <!-- HISTORY -->
     <section id="view-history" class="view" style="display:none">
       <div class="card">
-        <div class="card-h"><h2>Your history</h2><span id="historyCount">0 weeks</span><span id="historyAuthHint" class="small muted" style="margin-left:8px">sign in for personal history</span></div>
+        <div class="card-h"><h2>Your history</h2><span id="historyCount">0 weeks</span><span id="historyAuthHint" class="small muted" style="margin-left:8px">Sign in to see your pairings</span></div>
         <div class="card-b"><div id="historyList" class="weeks"></div><div id="historyPersonal" class="weeks" style="margin-top:12px"></div></div>
       </div>
     </section>
@@ -518,12 +518,12 @@ p{margin:0}
       }catch{}
       authBtn.style.display='none';
       outBtn.style.display='inline-flex';
-      if(hint && me) hint.textContent = `personal history for ${me.name||me.display_name||me.email} • partner counts` + (isAdmin()?' — admin view sees all':'' );
+      if(hint && me) hint.textContent = `pairings for ${me.name||me.display_name||me.email}` + (isAdmin()?' • admin':'');
     } else {
       meLabel.style.display='none';
       authBtn.style.display='inline-flex';
       outBtn.style.display='none';
-      if(hint) hint.textContent='sign in for personal history';
+      if(hint) hint.textContent='Sign in to see your pairings';
     }
     // circle admin UI toggle
     const addRow=document.querySelector('#personName')?.parentElement;
@@ -531,11 +531,11 @@ p{margin:0}
     if(addRow){
       if(isAdmin()){
         addRow.style.display='flex';
-        if(addInfo) addInfo.textContent='Admin: you see auto circle (all signed-up users, availability-filtered) + can still add manual test names above.';
-        const tt=document.querySelector('#view-circle .card-h span'); if(tt) tt.textContent='admin + auto circle';
+        if(addInfo) addInfo.textContent='You\'re admin — you see everyone + can add test names for local demo.';
+        const tt=document.querySelector('#view-circle .card-h span'); if(tt) tt.textContent='auto • everyone';
       } else {
         addRow.style.display='none';
-        if(addInfo) addInfo.textContent='Circle = everyone who signed up — you are auto-included. New signups join next Sunday 08:00 BST. Toggle Available below.';
+        if(addInfo) addInfo.textContent='You\'re in. New signups join next pairing.';
       }
     }
     // shuffle buttons admin-only
@@ -547,13 +547,13 @@ p{margin:0}
       nb.parentElement.appendChild(badge);
     }
     if(isAdmin()){
-      if(nb){ nb.style.display='inline-flex'; nb.textContent='Shuffle (admin)'; nb.disabled=false; nb.title='Admin reshuffle via cloud (respects Availability)'; }
+      if(nb){ nb.style.display='inline-flex'; nb.textContent='New pairs'; nb.disabled=false; nb.title='Create a fresh set of pairs'; }
       if(rb){ rb.style.display='inline-flex'; rb.disabled=false; }
-      if(badge) badge.textContent='admin';
+      if(badge) badge.textContent='admin • auto';
     } else {
       if(nb){ nb.style.display='none'; }
       if(rb){ rb.style.display='none'; }
-      if(badge) badge.textContent='auto-shuffles Sun 08:00 BST';
+      if(badge) badge.textContent='pairs Sun 08:00 BST';
     }
     // availability UI visibility
     const avWrap=document.getElementById('availabilityWrap');
@@ -570,7 +570,7 @@ p{margin:0}
         if(banner){
           if(!avail){
             banner.style.display='block';
-            banner.textContent='You are currently UNAVAILABLE — you will be skipped this Sunday 08:00 BST. Toggle back ON to rejoin.';
+            banner.textContent='You\'re set to skip this week — flip back on to rejoin next Sunday.';
           }else{
             // check last week skip via local flag? Show if last stored skipped flag true
             const wasSkipped = localStorage.getItem('randori-was-skipped')==='1';
@@ -814,20 +814,20 @@ p{margin:0}
   const pCount=document.getElementById('peopleCount');
 
   async function renderPeople(){
-    // try cloud circle first — auto-includes all logged-in users (with availability badge)
+    // try cloud circle first — everyone who has joined
     try{
       const res = await api('/api/circle', { method:'GET' });
       if(res && res.circle && res.circle.length){
         const people = res.circle;
-        pCount.textContent = people.length + (res.source==='auth_accounts' || res.source==='auth' ? ' ☁' : '');
+        pCount.textContent = people.length;
         const admin = isAdmin();
         listEl.innerHTML = people.map(p=>{
           const avail = (p.is_available===undefined && p.isAvailable===undefined) ? true : (p.is_available!==undefined ? !!p.is_available : !!p.isAvailable);
-          const badge = avail ? '<span class="kbd" title="Available this week" style="background:#9cc0b522;color:#9cc0b5;border-color:#9cc0b5">● avail</span>' : '<span class="kbd" title="Unavailable — skipped Sun 08:00 BST" style="background:#e6c07a22;color:#e6c07a;border-color:#e6c07a">○ away</span>';
+          const badge = avail ? '<span class="kbd" title="Available this week" style="background:#9cc0b522;color:#9cc0b5;border-color:#9cc0b5">● available</span>' : '<span class="kbd" title="Skipping this week" style="background:#e6c07a22;color:#e6c07a;border-color:#e6c07a">○ away</span>';
           return `
           <div class="person" data-id="${p.id}" style="${!avail?'opacity:.65':''}">
-            <div class="row"><div class="avatar" style="background:${p.color}">${(p.display_name||p.name||'??').slice(0,2).toUpperCase()}</div><b style="font-size:13px">${p.display_name||p.name}</b>${p.email?`<span class="kbd" style="font-size:10px">${p.email.split('@')[0]}</span>`:''}<span class="kbd" style="background:${p.color}22; border-color:${p.color}66; color:${p.color}">${(p.color||'').slice(1,4)}</span>${badge}</div>
-            <div class="row">${admin? `<button class="pill delBtnCloud" title="Admin cannot delete auth accounts from here – use DB">×</button>`:''}</div>
+            <div class="row"><div class="avatar" style="background:${p.color}">${(p.display_name||p.name||'??').slice(0,2).toUpperCase()}</div><b style="font-size:13px">${p.display_name||p.name}</b>${badge}</div>
+            <div class="row">${admin? `<button class="pill delBtnCloud" title="Remove test account">×</button>`:''}</div>
           </div>`; }).join('');
         // cloud list is read-only — manual names gone
         renderRoomSelect();
@@ -840,7 +840,7 @@ p{margin:0}
     }
     const people=getPeople();
     pCount.textContent=people.length;
-    if(!people.length){ listEl.innerHTML=`<div class="small muted" style="padding:8px; border:1px dashed var(--line); border-radius:10px">No cloud accounts yet — sign up to join circle. Auto-includes everyone signed in.<br/>Until then, local demo shown (offline).</div>`; }
+    if(!people.length){ listEl.innerHTML=`<div class="small muted" style="padding:8px; border:1px dashed var(--line); border-radius:10px">No one in your circle yet — invite teammates to get paired Sunday.</div>`; }
     else {
       const admin = isAdmin();
       listEl.innerHTML = people.map(p=>`
@@ -871,14 +871,14 @@ p{margin:0}
 
   function addPerson(){
     if(!isAdmin()){
-      toast('Manual add disabled — circle = all signed-up users');
+      toast('Adding teammates is for testing — your real circle is everyone who joined');
       return;
     }
     const n=nameInput.value.trim(); if(!n) return;
     const people=getPeople();
     if(people.some(x=>x.name.toLowerCase()===n.toLowerCase())){ toast('already in circle'); return; }
     people.push({id:uid(), name:n, color:colorOf(n), createdAt:Date.now()});
-    savePeople(people); nameInput.value=''; renderPeople(); toast(`added ${n} (local test)`);
+    savePeople(people); nameInput.value=''; renderPeople(); toast(`added ${n}`);
   }
   addBtn.onclick=addPerson;
   nameInput.addEventListener('keydown',e=>{ if(e.key==='Enter') addPerson(); });
@@ -901,9 +901,9 @@ p{margin:0}
   function shuffle(arr){ const a=[...arr]; for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]] } return a; }
 
   function generatePairs(){
-    // offline fallback — only admin should hit this now
+    // offline fallback — local demo
     if(!isAdmin()){
-      toast('Auto-shuffle is Sun 08:00 BST ☁ — manual disabled');
+      toast('Pairs are created Sunday — sign in and set Available');
       return;
     }
     const people=getPeople();
@@ -921,7 +921,7 @@ p{margin:0}
   }
 
   function reshuffleCurrent(){
-    if(!isAdmin()){ toast('Only admin can reshuffle — auto Sun 08:00 BST'); return; }
+    if(!isAdmin()){ toast('New pairs are created Sunday'); return; }
     const weeks=getWeeks(); if(!weeks.length){ generatePairs(); return; }
     const people=getPeople(); if(people.length<2) return;
     const shuffled=shuffle(people);
@@ -935,27 +935,27 @@ p{margin:0}
     saveWeeks(weeks); renderPairs(); renderHistory(); renderRoomSelect();
   }
 
-  // Admin cloud reshuffle — hits /api/admin/reshuffle (filters is_available=1)
+  // Admin cloud reshuffle — creates fresh pairs
   async function adminCloudReshuffle(){
     if(!isAdmin()){
-      toast('Admin only — festusomole14@gmail.com');
+      toast('Only admins can create new pairs');
       return;
     }
     const nb=document.getElementById('newWeekBtn'); const rb=document.getElementById('reshuffleBtn');
     if(nb) nb.disabled=true; if(rb) rb.disabled=true;
     try{
       const data=await api('/api/admin/reshuffle',{method:'POST'});
-      toast(`☁ reshuffled ${data.week_label} — ${data.count} available`);
+      toast(`New pairs for ${data.week_label} — ${data.count} people`);
       // refresh cloud weeks view
       await renderPairs();
       await renderPeople();
       await renderHistory();
     }catch(e){
-      const msg=e.error||e.message||'reshuffle failed';
+      const msg=e.error||e.message||'could not create pairs';
       toast(msg);
       // if less than 2 available, show bigger hint
       if(e.available_count!==undefined){
-        await showConfirm('Not enough available', `Only ${e.available_count} available — need 2+. Unavailable: ${(e.unavailable||[]).map(u=>u.name).join(', ')||'none'}. Ask them to toggle Available ON.`);
+        await showConfirm('Not enough people', `Only ${e.available_count} available — need 2+. Ask them to set Available ON.`);
       }
     }finally{
       if(nb) nb.disabled=false; if(rb) rb.disabled=false;
@@ -967,11 +967,11 @@ p{margin:0}
   function renderPairsMeta(localCur, cloudCur){
     const meta=document.getElementById('currentWeekMeta');
     if(cloudCur){
-      meta.textContent=`${cloudCur.week_label} • ${cloudCur.pairs.length} pair(s) • ${new Date(cloudCur.week_start||cloudCur.created_at).toLocaleString()} — ☁ cloud auto (available-filtered) — odd = AI partner`;
+      meta.textContent=`${cloudCur.week_label} • ${cloudCur.pairs.length} pair(s) • ${new Date(cloudCur.week_start||cloudCur.created_at).toLocaleString()}`;
       return;
     }
-    if(!localCur){ meta.textContent='No week yet — circle = all signed-up Available users, auto-shuffles Sundays 08:00 BST.'; return; }
-    meta.textContent=`${localCur.label} • ${localCur.pairs.length} pair(s) • ${new Date(localCur.date).toLocaleString()} — odd = AI partner (offline)`;
+    if(!localCur){ meta.textContent='Pairs update Sunday 08:00 BST — set yourself Available to join.'; return; }
+    meta.textContent=`${localCur.label} • ${localCur.pairs.length} pair(s) • ${new Date(localCur.date).toLocaleString()}`;
   }
 
   async function renderPairs(){
@@ -998,10 +998,9 @@ p{margin:0}
           <div class="topic-group">
             <span class="kbd" style="background:var(--bg-3)">${p.topic||'Pick together'}</span>
             <span class="kbd">${p.topic_kind||'both'}</span>
-            ${isAdmin()? '<span class="kbd">☁</span>':''}
           </div>
         </div>`
-      }).join('') + `<div class="row" style="margin-top:10px"><span class="small muted">☁ Cloud weeks — ${cloudWeeks.length} week(s). Admin reshuffle replaces current Sun's week (respects Available). Unavailable users skipped, get reminder email if RESEND_API_KEY set else in-app banner.</span></div>`;
+      }).join('') + `<div class="row" style="margin-top:10px"><span class="small muted">${cloudWeeks.length} week(s) of pairings. Unavailable teammates are skipped automatically.</span></div>`;
       renderRoomSelect();
       return;
     }
@@ -1009,7 +1008,7 @@ p{margin:0}
     // fallback local offline weeks
     const weeks=getWeeks(); const cur=weeks[0];
     renderPairsMeta(cur, null);
-    if(!cur){ container.innerHTML=`<div class="small muted" style="padding:8px; border:1px dashed var(--line); border-radius:10px">No week yet. Cloud auto includes all <b>Available</b> signed-up users each Sun 08:00 BST. Sign in to see cloud pairings. Local demo needs 2+ names (admin only).</div>`; return; }
+    if(!cur){ container.innerHTML=`<div class="small muted" style="padding:8px; border:1px dashed var(--line); border-radius:10px">No pairs yet — first shuffle runs Sunday 08:00 BST. Mark yourself Available to join.</div>`; return; }
     container.innerHTML = cur.pairs.map(p=>{
       const a=idToPerson(p.aId); const b=p.bId? idToPerson(p.bId):null;
       const aName=a? a.name: 'unknown'; const bName=p.isAI? 'AI partner' : (b? b.name: '—');
@@ -1023,7 +1022,7 @@ p{margin:0}
           <button class="pill small openCodeBtn">code</button>
         </div>
       </div>`
-    }).join('') + `<div class="row" style="margin-top:10px"><button id="delWeekBtn" class="btn ghost">Delete week</button><span class="small muted">Offline demo — cloud is preferred.</span></div>`;
+    }).join('') + `<div class="row" style="margin-top:10px"><button id="delWeekBtn" class="btn ghost">Delete week</button><span class="small muted">Local demo only.</span></div>`;
 
     container.querySelectorAll('.pair').forEach(el=>{
       const pid=el.getAttribute('data-pair');
@@ -1043,17 +1042,17 @@ p{margin:0}
     renderRoomSelect();
   }
 
-  // Buttons: if admin, cloud reshuffle else hide / confirm local
+  // Buttons: if admin, fresh pairs else local demo only
   document.getElementById('newWeekBtn').onclick=async()=>{
     if(isAdmin()){
       return adminCloudReshuffle();
     }
     const isAuthed = !!localStorage.getItem(TOKEN_KEY);
     if(!isAuthed){
-      const go = await showConfirm('Manual shuffle?', 'Randori auto-shuffles Sundays 08:00 BST for Available users — no need to press. Still shuffle offline demo?');
+      const go = await showConfirm('Create local demo pairs?', 'This is just for testing offline. Your real pairs arrive Sunday.');
       if(!go) return;
     }else{
-      toast('Auto — Sunday 08:00 BST includes Available users');
+      toast('Pairs refresh Sunday 08:00 BST');
       return;
     }
     generatePairs();
@@ -1067,10 +1066,10 @@ p{margin:0}
   async function renderPersonalHistory(){
     const cont = document.getElementById('historyPersonal');
     if(!cont) return;
-    if(!authToken){ cont.innerHTML='<div class="small muted" style="padding:8px">Sign in to see your personal history and partner counts.</div>'; return; }
+    if(!authToken){ cont.innerHTML='<div class="small muted" style="padding:8px">Sign in to see your pairings and past partners.</div>'; return; }
     try{
       const data = await api('/api/history',{method:'GET'});
-      if(!data.history || !data.history.length){ cont.innerHTML='<div class="small muted" style="padding:8px">No personal pairings yet — first auto-shuffle is Sunday 08:00 BST. You can also create a manual week for demo.</div>'; return; }
+      if(!data.history || !data.history.length){ cont.innerHTML='<div class="small muted" style="padding:8px">No pairings yet — first shuffle is Sunday 08:00 BST.</div>'; return; }
       const counts = data.partner_counts||{};
       cont.innerHTML = `
         <div class="card" style="border-color:var(--accent)"><div class="card-h"><h3 style="font-size:13px">You — ${data.user.name}</h3><span class="kbd">${data.total} pair(s)</span></div>
@@ -1088,7 +1087,7 @@ p{margin:0}
     const weeks=getWeeks();
     document.getElementById('historyCount').textContent=`${weeks.length} week(s)`;
     const el=document.getElementById('historyList');
-    if(!weeks.length){ el.innerHTML='<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">No history yet. Auto-shuffle creates history Sundays 08:00 BST when 2+ people are signed up.</div>'; }
+    if(!weeks.length){ el.innerHTML='<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">No history yet. Pairs appear here after each Sunday shuffle.</div>'; }
     else {
       el.innerHTML=weeks.map((w,idx)=>`
         <div class="card" style="border-color:${idx===0?'var(--accent)':'var(--line)'}">
