@@ -837,7 +837,43 @@ async function refreshMe(){
   };
   document.getElementById('authCancel').onclick=()=>document.getElementById('authOverlay').classList.remove('show');
   document.getElementById('authOverlay').onclick=(e)=>{ if(e.target===document.getElementById('authOverlay')) document.getElementById('authOverlay').classList.remove('show'); };
-  document.getElementById('signOutBtn').onclick=()=>{ authToken=''; localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(ME_KEY); me=null; updateAuthUI(); toast('signed out'); renderHistory(); const av=document.getElementById('availabilityWrap'); if(av) av.style.display='none'; };
+  document.getElementById('signOutBtn').onclick=()=>{
+    try{
+      authToken='';
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(ME_KEY);
+      localStorage.removeItem('randori-demo-active');
+      localStorage.removeItem('randori-last-room');
+      me=null;
+      // clear any in-memory video state quietly
+      try{ if(typeof videoJoined!=='undefined' && videoJoined){ videoJoined=false; } }catch{}
+      // force UI to landing
+      if(window._randori_journey && window._randori_journey.routeByAuth){
+        // clear then route (route will see no token and show landing)
+        window._randori_journey.routeByAuth().catch(()=>{});
+      }
+    }catch{}
+    try{ updateAuthUI(); }catch{}
+    try{ toast('signed out'); }catch{}
+    try{ renderHistory(); }catch{}
+    const av=document.getElementById('availabilityWrap'); if(av) av.style.display='none';
+    // hard fallback: if still signed in view, do full view switch
+    setTimeout(()=>{
+      try{
+        const tok=localStorage.getItem(TOKEN_KEY);
+        if(!tok){
+          const land=document.getElementById('view-landing');
+          const dash=document.getElementById('view-dashboard');
+          const prof=document.getElementById('view-profile-setup');
+          if(land) land.style.display='';
+          if(dash) dash.style.display='none';
+          if(prof) prof.style.display='none';
+          // hide tab bar if we have one
+          document.querySelectorAll('[data-tab]').forEach(t=>t.classList.remove('active'));
+        }
+      }catch{}
+    }, 80);
+  };
   // availability toggle binding — after DOM ready
   (function bindAvail(){
     const cb=document.getElementById('availToggle');
