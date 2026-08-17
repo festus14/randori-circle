@@ -543,17 +543,81 @@ async function handleQuestions(req,res){
   return res.status(405).json({ error:'GET, POST, DELETE only' });
 }
 
+async function handleStats(req,res){
+  if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
+  const db = getClient();
+  await ensureBaseTables(db);
+  await ensureProfileMigrations(db);
+  const payload = getAuthPayload(req); // optional
+  let total_users=0, total_weeks=0, total_pairs=0;
+  try{
+    const u = await db.execute(`SELECT COUNT(*) as c FROM auth_accounts WHERE COALESCE(is_demo,0)=0`);
+    total_users = u.rows[0]?.c ?? 0;
+  }catch{}
+  try{
+    const w = await db.execute(`SELECT COUNT(*) as c FROM pairing_weeks WHERE COALESCE(is_demo,0)=0`);
+    total_weeks = w.rows[0]?.c ?? 0;
+  }catch{}
+  try{
+    // count pairs in non-demo weeks
+    const p = await db.execute(`SELECT COUNT(*) as c FROM pairing_groups pg JOIN pairing_weeks pw ON pw.id=pg.week_id WHERE COALESCE(pw.is_demo,0)=0`);
+    total_pairs = p.rows[0]?.c ?? 0;
+  }catch{
+    try{
+      const p2 = await db.execute(`SELECT COUNT(*) as c FROM pairing_groups`);
+      total_pairs = p2.rows[0]?.c ?? 0;
+    }catch{}
+  }
+  // Public stats
+  const out = { ok:true, total_users, total_weeks, total_pairs, total_sessions: total_pairs, generated_at: new Date().toISOString() };
+  if (payload){
+    const userId = payload.id || payload.uid;
+    try{
+      const my = await db.execute({ sql:`SELECT COUNT(*) as c FROM pairing_groups WHERE user_a_id=? OR user_b_id=?`, args:[userId,userId] });
+      out.your_sessions = my.rows[0]?.c ?? 0;
+    }catch{}
+    try{
+      const last = await db.execute({ sql:`SELECT pg.id as pg_id, pg.week_id, pw.week_label, pw.week_start, pg.is_ai_pair FROM pairing_groups pg JOIN pairing_weeks pw ON pw.id=pg.week_id WHERE (pg.user_a_id=? OR pg.user_b_id=?) AND COALESCE(pw.is_demo,0)=0 ORDER BY pw.id DESC LIMIT 1`, args:[userId,userId] });
+      if (last.rows.length) out.your_last = last.rows[0];
+    }catch{}
+    try{
+      const yWeeks = await db.execute({ sql:`SELECT COUNT(DISTINCT week_id) as c FROM pairing_groups WHERE user_a_id=? OR user_b_id=?`, args:[userId,userId] });
+      out.your_weeks = yWeeks.rows[0]?.c ?? 0;
+    }catch{}
+  }
+  // next shuffle countdown — Sunday 07:00 UTC == 08:00 BST
+  try{
+    const now = new Date();
+    const next = new Date(now);
+    // compute next Sunday 07:00 UTC
+    const day = next.getUTCDay(); // 0 Sun
+    let diff = (7 - day) % 7;
+    if (diff===0){
+      // today is Sunday, check if past 07:00
+      const h = next.getUTCHours();
+      if (h>=7) diff=7;
+    }
+    next.setUTCDate(now.getUTCDate()+diff);
+    next.setUTCHours(7,0,0,0);
+    out.next_shuffle_utc = next.toISOString();
+    out.next_shuffle_bst = new Date(next.getTime()).toLocaleString('en-GB',{timeZone:'Europe/London', weekday:'long', hour:'2-digit', minute:'2-digit'}) + ' BST';
+    out.next_shuffle_label = `Sunday 08:00 BST • ${next.toLocaleDateString('en-GB',{timeZone:'Europe/London', day:'numeric', month:'short'})}`;
+  }catch{}
+  return res.json(out);
+}
+
 export default async function handler(req,res){
   const ep = getEndpoint(req);
   const path = (req.url||'').toLowerCase();
   if (ep==='circle' || path.includes('/circle')) return handleCircle(req,res);
   if (ep==='weeks' || path.includes('/weeks')) return handleWeeks(req,res);
   if (ep==='history' || path.includes('/history')) return handleHistory(req,res);
+  if (ep==='stats' || path.includes('/stats')) return handleStats(req,res);
   if (ep==='init' || path.includes('/init')) return handleInit(req,res);
   if (ep==='profile' || path.includes('/profile')) return handleProfile(req,res);
   if (ep==='my-pair' || path.includes('my-pair') || ep==='mypair' || path.includes('my_pair') || ep==='my_pair') return handleMyPair(req,res);
   if (ep==='schedule' || path.includes('/schedule')) return handleSchedule(req,res);
   if (ep.includes('message')) return handleMessages(req,res);
   if (ep==='questions' || ep==='question' || path.includes('/questions')) return handleQuestions(req,res);
-  return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['circle','weeks','history','init','profile','my-pair','schedule','messages','questions'] });
+  return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['circle','weeks','history','stats','init','profile','my-pair','schedule','messages','questions'] });
 }

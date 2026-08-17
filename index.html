@@ -358,7 +358,9 @@ p{margin:0}
           </div>
           <div style="display:grid; gap:10px">
             <div class="mock-card"><div class="row" style="justify-content:space-between"><b style="font-size:12px">This Week</b><span class="kbd">Sun 08:00</span></div><div class="pair" style="padding:8px"><div class="who"><span class="avatar" style="background:#c8f6a0">FC</span><b style="font-size:12px">You × Priya Shah</b></div><span class="kbd">DSA • picked</span></div><div class="small muted">You set the time together — no auto-scheduling nag.</div></div>
-            <div class="mock-card"><b style="font-size:12px">What people say</b><div class="small" style="color:var(--ink-2)">“Got me through Stripe & DeepL loops. AI feedback nailed my weak spots with exact quotes.” — Festus, London</div></div>
+            <div id="landingStats" class="card" style="padding:12px; border:1px dashed var(--border); background:var(--bg-2)"><div class="row" style="gap:10px; flex-wrap:wrap; justify-content:space-between"><span class="small muted">Circle Pulse • live</span><span id="landingStatsUpdated" class="kbd" style="font-size:10px">loading…</span></div><div class="grid-3" style="margin-top:10px; gap:10px; display:grid; grid-template-columns:repeat(3,1fr)"><div style="text-align:center"><div id="statMembers" style="font-size:22px; font-weight:600">—</div><div class="small muted">members</div></div><div style="text-align:center"><div id="statWeeks" style="font-size:22px; font-weight:600">—</div><div class="small muted">weeks paired</div></div><div style="text-align:center"><div id="statSessions" style="font-size:22px; font-weight:600">—</div><div class="small muted">sessions run</div></div></div></div>
+      <div id="landingNext" class="card" style="border-color:#c8f6a0; background:color-mix(in srgb, var(--accent) 8%, var(--bg-2))"><div class="card-h" style="padding:10px 12px"><h2 style="font-size:13px">Next session</h2><span id="landingNextCountdown" class="kbd">Sun 08:00 BST</span></div><div class="card-b" style="padding:10px 12px"><div style="font-size:13px"><b id="landingNextLabel">Sunday 08:00 BST • London</b><div class="small muted" id="landingNextSub" style="margin-top:4px">Shuffles automatically. Sign up before then to be included.</div></div><div id="landingNextBar" style="margin-top:10px; height:6px; background:var(--bg-3); border-radius:999px; overflow:hidden"><div id="landingNextProg" style="height:100%; width:40%; background:var(--accent)"></div></div></div></div>
+      <div class="mock-card"><b style="font-size:12px">What people say</b><div class="small" style="color:var(--ink-2)">“Got me through Stripe & DeepL loops. AI feedback nailed my weak spots with exact quotes.” — Festus, London</div></div>
           </div>
         </div>
       </div>
@@ -396,8 +398,16 @@ p{margin:0}
           <div><h2 id="dashWelcome">Welcome back</h2><div id="dashSub" class="small muted">Checking pairings…</div></div>
           <div class="row"><span id="dashAvailBadge" class="kbd">Available</span><button id="dashProfileBtn" class="pill">Edit profile</button></div>
         </div>
+        <div id="dashStatsGrid" style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:14px 0">
+          <div class="card" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Your sessions</div><div id="dashStatYou" style="font-size:20px; font-weight:600; margin-top:4px">—</div><div class="small muted" id="dashStatYouSub" style="font-size:11px">across — weeks</div></div>
+          <div class="card" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Circle</div><div id="dashStatCircle" style="font-size:20px; font-weight:600; margin-top:4px">—</div><div class="small muted" style="font-size:11px"><span id="dashStatCircleSub">members</span> • <span id="dashStatWeeks">— weeks</span></div></div>
+          <div class="card" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Next shuffle</div><div id="dashNextLabel" style="font-size:13px; font-weight:600; margin-top:4px">Sun 08:00 BST</div><div class="small muted" id="dashNextCount" style="font-size:11px; margin-top:2px">calculating…</div></div>
+        </div>
+        <div style="margin:6px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Next session</h3><div style="flex:1;height:1px;background:var(--border)"></div></div>
         <div id="dashPairArea"></div>
         <div id="dashScheduleArea"></div>
+        <div style="margin:14px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">History</h3><div style="flex:1;height:1px;background:var(--border)"></div><button id="dashHistAll" class="pill" style="font-size:11px">full history →</button></div>
+        <div id="dashHistoryArea" class="card" style="padding:10px"><div id="dashHistList" class="small muted">Loading recent…</div></div>
         <div id="dashSignOutWrap" style="margin-top:12px;text-align:right; display:block"><button id="dashSignOut" class="pill" style="font-size:12px;opacity:.75">Sign out</button></div><div id="dashChatArea"></div>
         <div id="dashEmpty" style="display:none" class="card"><div class="card-b"><b>No pair yet</b><div class="small muted" style="margin-top:6px">First shuffle runs Sunday 08:00 BST. Mark yourself Available to join. Meanwhile, brush up in live room.</div><div class="row" style="margin-top:10px"><button class="pill" onclick="document.querySelector('[data-tab=code]').click()">Open Code room</button><button class="pill" id="dashHow">How it works?</button></div></div></div>
       </div>
@@ -3286,6 +3296,161 @@ def allow(key, limit=5):
   // Expose
   window._randori_questions={ fetchCustomQuestions, get custom(){return CUSTOM_QUESTIONS}, mergeIntoSelect, renderCustomQuestion };
 
+})();
+</script>
+
+
+<script>
+/* HOME differentiated — stats / next session / history for anon vs authed */
+(function(){
+  const TOKEN_KEY='randori-token';
+  const ME_KEY='randori-me';
+
+  function nextSunday0700UTC(){
+    const now=new Date();
+    const next=new Date(now);
+    const day=next.getUTCDay();
+    let diff=(7-day)%7;
+    if(diff===0){ if(next.getUTCHours()>=7) diff=7; }
+    next.setUTCDate(now.getUTCDate()+diff);
+    next.setUTCHours(7,0,0,0);
+    next.setUTCMinutes(0); next.setUTCSeconds(0);
+    return next;
+  }
+  function fmtCountdown(to){
+    const ms=to-new Date();
+    if(ms<=0) return 'shuffling now…';
+    const d=Math.floor(ms/86400000);
+    const h=Math.floor(ms%86400000/3600000);
+    const m=Math.floor(ms%3600000/60000);
+    if(d>0) return d+'d '+h+'h to shuffle';
+    if(h>0) return h+'h '+(m%60)+'m to shuffle';
+    return m+'m to shuffle';
+  }
+
+  async function fetchStats(auth){
+    try{
+      const opts={};
+      if(auth){
+        const tok=localStorage.getItem(TOKEN_KEY);
+        if(!tok) throw new Error('no tok');
+        opts.headers={Authorization:'Bearer '+tok};
+      }
+      // add cache buster
+      const r=await fetch('/api/stats?_='+(Date.now()%10000), opts);
+      const j=await r.json();
+      if(!r.ok) throw j;
+      return j;
+    }catch(e){ console.warn('stats failed',e); return null; }
+  }
+
+  function populateLanding(stats){
+    if(!stats) return;
+    const m=document.getElementById('statMembers'); if(m) m.textContent=String(stats.total_users ?? '—');
+    const w=document.getElementById('statWeeks'); if(w) w.textContent=String(stats.total_weeks ?? '—');
+    const s=document.getElementById('statSessions'); if(s) s.textContent=String(stats.total_sessions ?? stats.total_pairs ?? '—');
+    const up=document.getElementById('landingStatsUpdated'); if(up) up.textContent='live • just now';
+    const nextLabel=document.getElementById('landingNextLabel');
+    const nextSub=document.getElementById('landingNextSub');
+    const cnt=document.getElementById('landingNextCountdown');
+    const prog=document.getElementById('landingNextProg');
+    const next= nextSunday0700UTC();
+    if(nextLabel) nextLabel.textContent=stats.next_shuffle_label || ('Sunday 08:00 BST • ' + next.toLocaleDateString('en-GB',{timeZone:'Europe/London', day:'numeric', month:'short'}));
+    if(nextSub) nextSub.textContent='Shuffles automatically. '+fmtCountdown(next)+' • All Available members included.';
+    if(cnt) cnt.textContent=fmtCountdown(next);
+    if(prog){
+      const weekMs=7*86400000;
+      const elapsed= weekMs - (next - new Date());
+      const pct=Math.max(8, Math.min(96, 100*elapsed/weekMs));
+      prog.style.width=pct+'%';
+    }
+    // ticker
+    let ti=setInterval(()=>{
+      const c=document.getElementById('landingNextCountdown'); if(!c){clearInterval(ti); return;}
+      c.textContent=fmtCountdown(nextSunday0700UTC());
+    }, 30000);
+  }
+
+  function populateDash(stats){
+    const you=document.getElementById('dashStatYou');
+    const youSub=document.getElementById('dashStatYouSub');
+    const circ=document.getElementById('dashStatCircle');
+    const circSub=document.getElementById('dashStatCircleSub');
+    const weeks=document.getElementById('dashStatWeeks');
+    const nxtLbl=document.getElementById('dashNextLabel');
+    const nxtCnt=document.getElementById('dashNextCount');
+    if(!stats) return;
+    if(you) you.textContent = stats.your_sessions!=null ? String(stats.your_sessions) : (stats.your_weeks!=null? String(stats.your_weeks)+' wks' : '—');
+    if(youSub) youSub.textContent = stats.your_weeks!=null ? 'across '+stats.your_weeks+' weeks' : (stats.your_last? 'last '+stats.your_last.week_label : 'no sessions yet');
+    if(circ) circ.textContent = String(stats.total_users ?? '—');
+    if(circSub) circSub.textContent = (stats.total_users ?? '?') + ' members';
+    if(weeks) weeks.textContent = (stats.total_weeks ?? '—') + ' weeks';
+    if(nxtLbl) nxtLbl.textContent = stats.next_shuffle_label || 'Sun 08:00 BST';
+    if(nxtCnt) nxtCnt.textContent = fmtCountdown(nextSunday0700UTC());
+  }
+
+  async function populateHistory(){
+    const listEl=document.getElementById('dashHistList');
+    if(!listEl) return;
+    const tok=localStorage.getItem(TOKEN_KEY);
+    if(!tok){ listEl.innerHTML='<span class="small muted">Sign in to see your history</span>'; return; }
+    try{
+      const r=await fetch('/api/history',{headers:{Authorization:'Bearer '+tok}});
+      const j=await r.json();
+      if(!r.ok) throw j;
+      if(!j.history || !j.history.length){ listEl.innerHTML='<div class="small muted">No sessions yet — your first pair will appear here after Sunday shuffle.</div>'; return; }
+      const last5=j.history.slice(0,5);
+      listEl.innerHTML= last5.map(h=>`<div class="row" style="justify-content:space-between; padding:6px 0; border-bottom:1px dashed var(--border)"><span><span class="kbd" style="font-size:10px">${h.week_label}</span> × ${h.partner_name} ${h.is_ai?'<span class="kbd" style="color:var(--accent)">ai</span>':''}</span><span class="small muted" style="font-size:11px">${h.topic? h.topic : h.topic_kind}</span></div>`).join('') + '<div class="small muted" style="margin-top:8px">Total: '+j.total+' • repeated partners: '+Object.entries(j.partner_counts||{}).filter(([,c])=>c>1).map(([n,c])=>n+' ×'+c).join(', ') + '</div>';
+    }catch(e){ listEl.innerHTML='<div class="small muted">History: '+(e.error||e.message||'offline')+' — try full History tab.</div>'; }
+  }
+
+  // Bootstrapping
+  async function bootHome(){
+    const isAuthed = !!localStorage.getItem(TOKEN_KEY);
+    if(!isAuthed){
+      // anon home = landing
+      const stats=await fetchStats(false);
+      populateLanding(stats);
+      // also tick for dash hidden
+    } else {
+      const stats=await fetchStats(true);
+      if(stats) populateDash(stats);
+      // public stats may have more fresh anon numbers? reuse same stats if authed lacked total_users? stats includes both
+      if(!stats || stats.total_users==null){
+        const pub=await fetchStats(false);
+        if(pub) populateDash({...pub, ...(stats||{})});
+      }
+      populateHistory();
+    }
+  }
+
+  // expose
+  window._randori_home={bootHome, fetchStats};
+
+  // Trigger on route changes
+  document.addEventListener('DOMContentLoaded', ()=> setTimeout(bootHome, 600));
+  // when auth changes, rerun after 400ms
+  let lastTok=localStorage.getItem(TOKEN_KEY);
+  setInterval(()=>{
+    const cur=localStorage.getItem(TOKEN_KEY);
+    if(cur!==lastTok){ lastTok=cur; setTimeout(bootHome, 500); }
+  }, 1000);
+  // also hook into routeByAuth if exists
+  setTimeout(()=>{
+    if(window._randori_journey && window._randori_journey.routeByAuth){
+      const orig=window._randori_journey.routeByAuth;
+      window._randori_journey.routeByAuth = async function(){
+        const r=await orig.apply(this, arguments);
+        setTimeout(bootHome, 450);
+        return r;
+      }
+    }
+  }, 800);
+  setTimeout(bootHome, 900);
+
+  document.getElementById('dashHistAll')?.addEventListener('click', ()=>{
+    document.querySelector('[data-tab="history"]')?.click();
+  });
 })();
 </script>
 
