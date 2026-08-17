@@ -718,8 +718,8 @@ async function refreshMe(){
         meLabel.textContent = '● '+ nm + (isAdmin()?' (admin)':'');
         if(me && me.color){ meLabel.style.background = me.color+'22'; meLabel.style.borderColor=me.color+'66'; }
       }catch{}
-      if(authBtn){ authBtn.style.display='none'; authBtn.hidden=true; authBtn.setAttribute('aria-hidden','true'); }
-      if(outBtn){ outBtn.style.display='inline-flex'; outBtn.hidden=false; outBtn.removeAttribute('aria-hidden'); }
+      if(authBtn){ authBtn.style.display='none'; authBtn.hidden=true; authBtn.setAttribute('hidden',''); authBtn.setAttribute('aria-hidden','true'); }
+      if(outBtn){ outBtn.style.display='none'; outBtn.hidden=true; outBtn.setAttribute('hidden',''); outBtn.setAttribute('aria-hidden','true'); }
       if(hint && me) hint.textContent = `pairings for ${me.name||me.display_name||me.email}` + (isAdmin()?' • admin':'');
       else if(hint && !me && effectiveSignedIn) hint.textContent='Signed in — syncing profile…';
     } else {
