@@ -110,8 +110,9 @@ async function ensureMigrations(db){
     `ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`,
     `ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`,
     `ALTER TABLE auth_accounts ADD COLUMN is_demo INTEGER DEFAULT 0`,
-    `ALTER TABLE pairing_weeks ADD COLUMN is_demo INTEGER DEFAULT 0`,
-  ];
+    `ALTER TABLE pairing_weeks ADD COLUMN is_demo INTEGER DEFAULT 0`,,
+    `ALTER TABLE auth_accounts ADD COLUMN phone TEXT`,
+];
   for(const sql of alters){ try{ await db.execute(sql); }catch{} }
 }
 
@@ -216,7 +217,9 @@ async function handleWeekly(req,res){
     return res.json({ ok:true, skipped:true, week_label:weekLabel, message:'Week already shuffled - see /api/weeks for pairs' });
   }
   let allAccounts=[], available=[], unavailable=[];
-  const authRs=await db.execute(`SELECT id, display_name as name, color, email, is_available, is_demo, phone FROM auth_accounts ORDER BY id`);
+  let authRs;
+  try{ authRs=await db.execute(`SELECT id, display_name as name, color, email, is_available, is_demo, phone FROM auth_accounts ORDER BY id`); }
+  catch{ try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN phone TEXT`);}catch{}; try{ authRs=await db.execute(`SELECT id, display_name as name, color, email, is_available, is_demo, phone FROM auth_accounts ORDER BY id`);}catch{ authRs=await db.execute(`SELECT id, display_name as name, color, email, is_available, is_demo FROM auth_accounts ORDER BY id`);} }
   if (authRs.rows.length){
     allAccounts=authRs.rows.map(r=>({ id:r.id, name:r.name, color:r.color, email:r.email, phone:r.phone||null, is_available:r.is_available===null||r.is_available===undefined?1:(r.is_available?1:0), is_demo: !!r.is_demo, source:'auth'}));
     available=allAccounts.filter(a=>a.is_available);
