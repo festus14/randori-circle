@@ -1696,12 +1696,23 @@ def allow(key, limit=5):
     const camBtn=document.getElementById('vidCamBtn');
     const micBtn=document.getElementById('vidMicBtn');
     const muteBadge=document.getElementById('localMuteBadge');
+    const lv=document.getElementById('localVideo');
+    const tile=document.getElementById('tileLocal');
     if(camBtn) camBtn.classList.toggle('off', !videoCamEnabled);
     if(micBtn) micBtn.classList.toggle('off', !videoMicEnabled);
     if(muteBadge) muteBadge.style.display = videoMicEnabled ? 'none' : 'block';
+    if(tile) tile.classList.toggle('cam-off', !videoCamEnabled);
+    if(lv) lv.style.display = videoCamEnabled ? '' : 'none';
     if(localStream){
-      localStream.getVideoTracks().forEach(t=> t.enabled = videoCamEnabled);
+      localStream.getVideoTracks().forEach(t=>{ t.enabled = videoCamEnabled; if(!videoCamEnabled) { try{ t.stop(); }catch{} } });
       localStream.getAudioTracks().forEach(t=> t.enabled = videoMicEnabled);
+    }
+    // if cam is turned off and we have a PC, remove video sender to stop black frames
+    if(!videoCamEnabled && typeof pc!=='undefined' && pc){
+      try{
+        const sender=pc.getSenders().find(s=>s.track && s.track.kind==='video');
+        if(sender){ try{ sender.replaceTrack(null); }catch{ try{ pc.removeTrack(sender); }catch{} } }
+      }catch{}
     }
   }
 
@@ -1859,20 +1870,37 @@ def allow(key, limit=5):
   document.getElementById('vidLeaveBtn')?.addEventListener('click', leaveVideo);
   document.getElementById('vidCamBtn')?.addEventListener('click', async()=>{
     videoCamEnabled = !videoCamEnabled;
-    if(videoCamEnabled && !localStream){
-      await ensureLocalStream(true);
+    if(videoCamEnabled){
+      // cam turned on – if we previously stopped tracks, need fresh getUserMedia
+      const hasLiveVideo = localStream && localStream.getVideoTracks().some(t=> t.readyState==='live');
+      if(!localStream || !hasLiveVideo){
+        // clear stopped stream ref so ensureLocalStream grabs fresh
+        if(localStream){ try{ localStream.getTracks().forEach(t=>{ if(t.kind==='video') { try{t.stop();}catch{} } }); }catch{}; localStream=null; }
+        await ensureLocalStream(true);
+        const lv=document.getElementById('localVideo');
+        if(lv && localStream){ lv.srcObject=localStream; try{ lv.play(); }catch{} }
+      }
+      // re-add / replace sender
+      if(pc && localStream){
+        const videoTrack = localStream.getVideoTracks().find(t=> t.readyState==='live');
+        if(videoTrack){
+          const sender = pc.getSenders().find(s=> s.track && s.track.kind==='video');
+          if(sender){ try{ await sender.replaceTrack(videoTrack); }catch{} }
+          else { try{ pc.addTrack(videoTrack, localStream); }catch{} }
+          // trigger renegotiation for new track
+          try{
+            if(pc.signalingState==='stable'){
+              const offer=await pc.createOffer({ offerToReceiveAudio:true, offerToReceiveVideo:true });
+              await pc.setLocalDescription(offer);
+              await sendSignal('offer', offer);
+            }
+          }catch{}
+        }
+      }
+    } else {
+      // cam turning off handled in updateVideoMicCamUI (stops tracks, hides video, removes sender)
     }
     updateVideoMicCamUI();
-    if(pc){
-      // replace video track if needed
-      const videoTrack = localStream?.getVideoTracks()[0];
-      if(videoTrack){
-        const sender = pc.getSenders().find(s=> s.track && s.track.kind==='video');
-        if(sender) { try{ await sender.replaceTrack(videoTrack); }catch{} }
-        else { try{ pc.addTrack(videoTrack, localStream); }catch{} }
-        if(pc.signalingState==='stable' && !pc.remoteDescription){ /* renegotiate needed only if initiator */ }
-      }
-    }
     toast(videoCamEnabled?'cam on':'cam off');
   });
   document.getElementById('vidMicBtn')?.addEventListener('click', ()=>{
