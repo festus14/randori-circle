@@ -823,6 +823,7 @@ p{margin:0}
               </select>
               <select id="roomSelect" class="select" style="width:130px"></select>
               <button id="runBtn" class="btn">▶ Run</button>
+              <button id="codeJoinSessionBtn" class="btn" style="background:var(--accent,#c8f6a0);color:#0f0f10;font-weight:700;padding:7px 12px">▶ Join Session</button>
               <label class="small muted" style="display:inline-flex; align-items:center; gap:4px; margin-left:6px; font-size:11px"><input type="checkbox" id="useServerRunner" checked style="accent-color:var(--accent)"> <span title="Run via server Piston for parity (uncheck for instant local JS)">server</span></label>
               <button id="formatBtn" class="pill" title="Format code (Shift+Alt+F) — Prettier where possible">↥ Format</button>
               <span id="lintStatus" class="kbd" style="display:none; background:var(--bg-3)">lint: —</span>
@@ -1416,6 +1417,8 @@ async function refreshMe(){
 
   let _toastTimer;
   function toast(msg){ const el=document.getElementById('toast'); if(!el) return; el.textContent=msg; el.classList.add('show'); clearTimeout(_toastTimer); _toastTimer=setTimeout(()=>el.classList.remove('show'),2400); }
+  try{ if(typeof window!=='undefined'){ if(typeof window.toast!=='function'){ window.toast=toast; } } }catch{}
+  // early toast guard for Monaco fails before Monaco block loads
 
   // ---------- people (now auto = all signed-up users, manual disabled except admin testing) ----------
   const nameInput=document.getElementById('personName');
@@ -2237,13 +2240,38 @@ def allow(key, limit=5):
   }
   window.addEventListener('resize', resizeCanvas);
 
+  function getBoardRoomKey(){
+    try{
+      const r = (window._randori_code && window._randori_code.currentRoom) || window.currentRoom || localStorage.getItem('randori-last-room') || 'global';
+      return BOARD_KEY + ':' + String(r).slice(0,80);
+    }catch{ return BOARD_KEY; }
+  }
+  let _boardSaveTimer=null;
   function loadBoard(){
-    try{ const j=JSON.parse(localStorage.getItem(BOARD_KEY)||'null'); if(j && Array.isArray(j.shapes)){ boardShapes=j.shapes; boardViewport=j.viewport||boardViewport; boardColor=j.color||boardColor; }}catch{}
+    try{
+      const roomKey=getBoardRoomKey();
+      let raw = localStorage.getItem(roomKey);
+      if(!raw) raw = localStorage.getItem(BOARD_KEY); // fallback global
+      const j=JSON.parse(raw||'null');
+      if(j && Array.isArray(j.shapes)){ boardShapes=j.shapes; boardViewport=j.viewport||boardViewport; boardColor=j.color||boardColor; return; }
+      if(j && j.shapes && Array.isArray(j.shapes)){ boardShapes=j.shapes; boardViewport=j.viewport||boardViewport; boardColor=j.color||boardColor; }
+    }catch{}
+  }
+  function _doSaveBoard(){
+    try{
+      const payload=JSON.stringify({shapes:boardShapes, viewport:boardViewport, color:boardColor, at:Date.now()});
+      localStorage.setItem(getBoardRoomKey(), payload);
+      localStorage.setItem(BOARD_KEY, payload); // keep global for anon/no-room
+      bc?.postMessage({type:'board', shapes:boardShapes});
+      try{ window._randori_log && window._randori_log.debug('board', 'persist', {count: boardShapes.length, room: getBoardRoomKey().slice(-24)}); }catch{}
+    }catch{}
   }
   function saveBoard(){
-    localStorage.setItem(BOARD_KEY, JSON.stringify({shapes:boardShapes, viewport:boardViewport, color:boardColor}));
-    bc?.postMessage({type:'board', shapes:boardShapes});
+    // debounce 700ms like Monaco
+    if(_boardSaveTimer) clearTimeout(_boardSaveTimer);
+    _boardSaveTimer=setTimeout(_doSaveBoard, 700);
   }
+  function saveBoardImmediate(){ if(_boardSaveTimer) clearTimeout(_boardSaveTimer); _doSaveBoard(); }
   function boardHistoryPush(skip=false){
     if(!skip){
       boardHist = boardHist.slice(0, boardHistIdx+1);
@@ -2429,11 +2457,19 @@ def allow(key, limit=5):
   let videoMicEnabled = true;
   let videoCamEnabled = true;
 
-  const iceServers = [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }];
+  const iceServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' }
+    // TURN fallback can be added via env: { urls:'turn:global.relay.metered.ca:80', username:'...', credential:'...' }
+  ];
 
-  function videoUpdateStatus(txt){ const el=document.getElementById('videoStatus'); if(el) el.textContent=txt; const rl=document.getElementById('videoRoomLabel'); if(rl) rl.textContent=currentRoom? 'room '+currentRoom.slice(0,4): 'room —'; }
+  function videoUpdateStatus(txt){ const el=document.getElementById('videoStatus'); if(el) el.textContent=txt; const rl=document.getElementById('videoRoomLabel'); if(rl){ const r = currentRoom || localStorage.getItem('randori-last-room') || document.getElementById('roomSelect')?.value; rl.textContent = r ? 'room '+String(r).slice(0,6) : 'room —'; } }
 
-  function getVideoRoomId(){ return currentRoom || document.getElementById('roomSelect')?.value || 'lobby'; }
+  function getVideoRoomId(){ return currentRoom || document.getElementById('roomSelect')?.value || localStorage.getItem('randori-last-room') || 'lobby'; }
+
+  function _isAIpair(){ try{ const c=JSON.parse(localStorage.getItem('randori-last-my-pair')||'null'); if(!c) return false; const p=c.pair; if(!p) return false; return !!(p.is_ai || p.isAI || c.partner?.is_ai || p.is_ai_pair); }catch{ return false; } }
 
   async function ensureLocalStream(needCam = true){
     if(localStream){
@@ -2591,6 +2627,14 @@ def allow(key, limit=5):
   async function joinVideo(){
     const room = getVideoRoomId();
     if(!room){ toast('pick a pair room first'); return; }
+    // AI partner guard: don't attempt WebRTC for AI odd-user out
+    try{
+      if(typeof _isAIpair==='function' && _isAIpair()){
+        toast('AI partner — video disabled, use Code + Board + AI feedback');
+        videoUpdateStatus('AI mode');
+        return;
+      }
+    }catch{}
     const camBtn=document.getElementById('vidCamBtn');
     const needCam = camBtn ? !camBtn.classList.contains('off') : true;
     const stream = await ensureLocalStream(needCam);
@@ -2601,8 +2645,8 @@ def allow(key, limit=5):
     videoLastSignalId = 0;
     document.getElementById('vidJoinBtn').style.display='none';
     document.getElementById('vidLeaveBtn').style.display='inline-flex';
-    videoUpdateStatus('joining '+room.slice(0,4));
-    await sendSignal('join', { peer: webrtcPeerId, name: me?.name||localStorage.getItem(ME_KEY)?.slice?.(0,20)||'you' }, '');
+    videoUpdateStatus('joining '+room.slice(0,6));
+    await sendSignal('join', { peer: webrtcPeerId, name: (typeof me!=='undefined'&&me?.name)||localStorage.getItem('randori-me')?.slice?.(0,20)||'you' }, '');
     // start polling
     if(videoPollTimer) clearInterval(videoPollTimer);
     videoPollTimer = setInterval(pollSignals, 2000);
@@ -2617,7 +2661,7 @@ def allow(key, limit=5):
         }
       }
     }, 1200);
-    toast('video joined room '+room.slice(0,4)+' • polling');
+    toast('video joined room '+room.slice(0,6)+' • polling');
   }
 
   function leaveVideo(){
@@ -2636,6 +2680,27 @@ def allow(key, limit=5):
   // hooks
   document.getElementById('vidJoinBtn')?.addEventListener('click', joinVideo);
   document.getElementById('vidLeaveBtn')?.addEventListener('click', leaveVideo);
+  // Prominent Join Session button in code toolbar copies room link / triggers deterministic join
+  document.getElementById('codeJoinSessionBtn')?.addEventListener('click', async()=>{
+    try{
+      const room = getVideoRoomId();
+      if(!room || room==='lobby'){
+        // try deterministic from dashboard cache if no room yet
+        if(window._randori_join && typeof window._randori_join==='function'){
+          window._randori_join();
+          return;
+        }
+        toast('Pick a room or Join from Dashboard — creates a deterministic room');
+        return;
+      }
+      const link = location.origin + location.pathname + '?room=' + encodeURIComponent(room);
+      try{ await navigator.clipboard.writeText(link); toast('Link copied • '+room.slice(0,12)+' — send to partner'); }catch{ toast('Room '+room.slice(0,12)+' • share id with partner'); }
+      // also ensure video joins if not yet
+      if(!videoJoined){
+        joinVideo().catch(()=>{});
+      }
+    }catch(e){ console.warn('codeJoinSession fail',e); }
+  });
   document.getElementById('vidCamBtn')?.addEventListener('click', async()=>{
     videoCamEnabled = !videoCamEnabled;
     if(videoCamEnabled){
@@ -3469,12 +3534,24 @@ def allow(key, limit=5):
     // hide all first? We decide
     const tabsEl=document.querySelector('.tabs');
     if(!tok){
-      // anon -> landing
+      // anon -> allow exploring code like LeetCode, landing default but tabs navigable
       hideAllViews();
       if(viewLanding) viewLanding.style.display='block';
-      if(tabsEl) tabsEl.style.display='none';
-      document.getElementById('onboardChecklist').style.display='none';
-      document.getElementById('welcomeBanner').style.display='none';
+      if(tabsEl) tabsEl.style.display='flex';
+      // hide circle tab for non-admin anon
+      try{ document.querySelector('[data-tab="circle"]')?.style.setProperty('display','none'); }catch{ const ct=document.querySelector('[data-tab="circle"]'); if(ct) (ct as any).style.display='none'; }
+      try{document.getElementById('onboardChecklist').style.display='none'; document.getElementById('welcomeBanner').style.display='none';}catch{}
+      // LeetCode-like: if URL wants code view or last tab was code, show code instead
+      try{
+        const urlParams=new URLSearchParams(window.location.search);
+        const viewParam=urlParams.get('view')||urlParams.get('tab');
+        const lastTab=localStorage.getItem('randori-last-tab')||localStorage.getItem('randori-last-view');
+        const wantsCode = viewParam==='code' || lastTab==='code' || window.location.hash.includes('code');
+        if(wantsCode){
+          const cv=document.getElementById('view-code');
+          if(cv){ document.querySelectorAll('.view').forEach((v)=>v.style.display='none'); cv.style.display='block'; document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active')); document.querySelector('[data-tab="code"]')?.classList.add('active'); }
+        }
+      }catch{}
       return;
     }
     // signed in
@@ -3595,24 +3672,81 @@ def allow(key, limit=5):
     const q=CUSTOM_QUESTIONS.find(x=>x.slug===slug);
     if(!q) return null;
     const titleEl=document.getElementById('qTitle'); if(titleEl) titleEl.textContent=q.title;
-    const diffEl=document.getElementById('qDiff'); if(diffEl) diffEl.textContent=q.difficulty+' • custom';
-    const descEl=document.getElementById('qDesc'); if(descEl) descEl.innerHTML=`<div style="color:var(--ink-2)">${(q.description||'').slice(0,1200)}</div>${q.input_format?`<div class="small muted" style="margin-top:6px"><b>Input:</b> ${q.input_format}</div>`:''}${q.constraints_text?`<div class="small muted"><b>Constraints:</b> ${q.constraints_text}</div>`:''}`;
+    const diffEl=document.getElementById('qDiff'); if(diffEl) {
+      const diffColor = q.difficulty==='Easy'?'#c8f6a0': q.difficulty==='Hard'?'#e8a0b0':'#f2d07a';
+      diffEl.innerHTML=`<span style="color:${diffColor}">${q.difficulty}</span> • custom ${q.type? '• '+q.type:''}`;
+      diffEl.style.display='inline-flex';
+    }
+    const isSystem = (q.type==='system') || (q.difficulty==='System') || (q.category==='system-design') || (q.slug||'').includes('system') || (q.slug||'').includes('design');
+    const descEl=document.getElementById('qDesc'); 
+    if(descEl){
+      // LeetCode-like: title already handled, description HTML sanitized (strip script), examples, constraints, tags
+      let safeDesc='';
+      try{
+        safeDesc = (q.description||'').replace(/<script[\s\S]*?<\/script>/gi,'').slice(0,6000);
+        // if plain text without html tags, preserve line breaks
+        if(!/<[a-z][\s\S]*>/i.test(safeDesc)) safeDesc = safeDesc.replace(/\n/g,'<br/>');
+      }catch{ safeDesc = (q.description||'').slice(0,4000); }
+      let html=`<div style="color:var(--ink-2); line-height:1.7; font-size:13.5px">${safeDesc}</div>`;
+      if(q.input_format) html+=`<div class="small muted" style="margin-top:10px"><b>Input:</b> ${q.input_format}</div>`;
+      if(q.constraints_text) html+=`<div class="small muted" style="margin-top:6px"><b>Constraints:</b> ${q.constraints_text}</div>`;
+      if(q.tags||q.topicTags){
+        const tags = q.tags|| (q.topicTags||[]).map((t)=>t.name||t.slug);
+        if(tags && tags.length) html+=`<div class="row" style="margin-top:8px; flex-wrap:wrap; gap:6px">${tags.slice(0,6).map((tg)=>`<span class="kbd" style="font-size:11px">${tg}</span>`).join('')}</div>`;
+      }
+      // System design special UI
+      if(isSystem){
+        html+=`<div style="margin-top:14px; padding:12px; border:1px dashed var(--accent); border-radius:10px; background:color-mix(in srgb, var(--accent) 10%, var(--card))"><b style="font-size:12.5px">System Design Drill</b><div class="small muted" style="margin-top:6px">Discuss requirements → estimate → high-level → deep-dive → trade-offs. Use <span class="kbd">Board</span> tab for architecture sketch, then walk through verbally. No code tests needed.</div><div class="row" style="margin-top:8px"><button class="pill" onclick="document.querySelector('[data-tab=board]').click()">Open Board</button><button class="pill" onclick="document.getElementById('aiTranscript').focus()">Add notes</button></div></div>`;
+      }
+      // Store last view
+      try{ localStorage.setItem('randori-last-tab','code'); localStorage.setItem('randori-last-question', slug); }catch{}
+      descEl.innerHTML=html;
+    }
     const exEl=document.getElementById('qExamples'); if(exEl){
-      const exs=q.examples||[];
-      exEl.innerHTML=(exs.slice(0,3).map(e=>`<div class="test"><div class="small"><b>Ex:</b> ${typeof e==='string'? e.slice(0,200) : JSON.stringify(e).slice(0,200)}</div></div>`).join('')||`<div class="small muted">No examples — see tests</div>`);
+      if(isSystem){
+        exEl.innerHTML=`<div class="small muted">System design — examples are in description. Sketch on board, discuss scalability.</div>`;
+      } else {
+        const exs=q.examples||[];
+        if(exs && exs.length){
+          exEl.innerHTML=exs.slice(0,3).map((e,i)=>{
+            if(typeof e==='string') return `<div class="test"><div class="small"><b>Example ${i+1}:</b> ${e.slice(0,300).replace(/</g,'&lt;')}</div></div>`;
+            if(e && e.input!==undefined) return `<div class="test"><div class="small"><b>Example ${i+1}:</b> Input: <span class="kbd">${JSON.stringify(e.input).slice(0,140)}</span> → <span class="kbd">${JSON.stringify(e.output||e.expect||'').slice(0,120)}</span></div>${e.explanation? `<div class="small muted">${e.explanation.slice(0,200)}</div>`:''}</div>`;
+            return `<div class="test"><div class="small"><b>Example ${i+1}:</b> ${JSON.stringify(e).slice(0,200)}</div></div>`;
+          }).join('');
+        } else {
+          // infer from test_cases
+          const tcs=q.test_cases||[];
+          exEl.innerHTML=tcs.slice(0,2).map((t,j)=>`<div class="test"><div class="small"><b>Example ${j+1}:</b> in <span class="kbd">${JSON.stringify(t.input).slice(0,120)}</span> → <span class="kbd">${JSON.stringify(t.expect).slice(0,120)}</span></div></div>`).join('')||`<div class="small muted">No examples — see tests below</div>`;
+        }
+      }
     }
-    const consEl=document.getElementById('qConstraints'); if(consEl) consEl.textContent=q.constraints_text||'';
+    const consEl=document.getElementById('qConstraints'); if(consEl) consEl.textContent=isSystem?'Discuss latency, throughput, consistency': (q.constraints_text||'');
     const testsEl=document.getElementById('qTests'); if(testsEl){
-      const tcs=q.test_cases||[];
-      testsEl.innerHTML=tcs.map((t,i)=>`<div class="test"><div class="small">Case ${i+1}: <span class="kbd">${JSON.stringify(t.input).slice(0,120)}</span> → <span class="small">${JSON.stringify(t.expect).slice(0,120)}</span></div></div>`).join('')||'<div class="small muted">no tests</div>';
+      if(isSystem){
+        testsEl.innerHTML=`<div class="small muted" style="padding:8px; border:1px dashed var(--border); border-radius:8px">System design — no auto tests. Use Run to save notes + whiteboard snapshot.</div>`;
+      } else {
+        const tcs=q.test_cases||[];
+        testsEl.innerHTML=tcs.map((t,i)=>`<div class="test"><div class="small">Case ${i+1}: <span class="kbd">${JSON.stringify(t.input).slice(0,120)}</span> → <span class="small">${JSON.stringify(t.expect).slice(0,120)}</span></div></div>`).join('')||'<div class="small muted">no tests</div>';
+      }
     }
-    // load starter into editor if empty or user agrees
+    // LeetCode model: load starter into editor if empty or user agrees
     try{
       const lang=document.getElementById('langSelect')?.value||'javascript';
       const starterMap=q.starter_per_lang||{};
-      const starter=starterMap[lang]||starterMap['javascript']||'';
-      const ed=document.getElementById('editor');
-      if(ed && (!ed.value.trim() || confirm(`Load starter for ${q.title} (${lang})?`))){ ed.value=starter||`// ${q.title}\nfunction solve(){\n  // implement\n}`; }
+      let starter=starterMap[lang]||starterMap['javascript']||'';
+      if(!starter && !isSystem){
+        // generate minimal starter from slug
+        const fnName = q.slug.replace(/-./g,(x)=> x[1].toUpperCase());
+        const pyName = fnName.replace(/([A-Z])/g,(m)=>'_'+m.toLowerCase()).replace(/^_/,'');
+        starter = lang==='javascript' ? `function ${fnName}(){\n  // ${q.title}\n}` : lang==='python' ? `def ${pyName}():\n    # ${q.title}\n    pass` : `// ${q.title}\n// starter for ${lang}`;
+      }
+      if(isSystem) starter = `// System Design: ${q.title}\n// Notes:\n// 1. Requirements (functional / non-functional)\n// 2. Estimation\n// 3. High-level design\n// 4. Deep dives\n// 5. Trade-offs, monitoring\n`;
+      const ed=document.getElementById('editor') as HTMLTextAreaElement|null;
+      const monEd=(window as any).monacoEditor;
+      const curCode = monEd? monEd.getValue() : (ed? ed.value : '');
+      if(ed && (!curCode.trim() || confirm(`Load starter for ${q.title} (${lang})?`))){
+        if(monEd){ monEd.setValue(starter||`// ${q.title}\nfunction solve(){\n  // implement\n}`); } else { ed.value=starter||`// ${q.title}\nfunction solve(){\n  // implement\n}`; ed.dispatchEvent(new Event('input',{bubbles:true})); }
+      }
     }catch{}
     return q;
   }
@@ -3885,7 +4019,7 @@ def allow(key, limit=5):
           resSave.push(entry);
         });
         if(totalCount) cards.unshift('<div class="test" style="border-color:'+(pc===totalCount?'var(--ok)':'var(--line)')+'; background:color-mix(in srgb, var(--bg-3) 90%, '+(pc===totalCount?'var(--ok)':'var(--warn)')+' 8%)"><div class="small"><b>Result: '+pc+'/'+totalCount+' passed</b> '+(pc===totalCount?'✓':'✗')+' • lang JS • fn <span class="kbd">'+(fnName||'?')+'</span> • actually executed against '+totalCount+' test_cases ✓ (local fallback)</div></div>');
-        if(runOutEl) runOutEl.innerHTML=cards.join('')||'<div class="small muted">no tests</div>';
+        if(runOutEl){ runOutEl.innerHTML=cards.join('')||'<div class="small muted">no tests</div>'; runOutEl.scrollTop=runOutEl.scrollHeight; try{ runOutEl.scrollIntoView({behavior:'smooth', block:'nearest'});}catch{} }
         try{ durationMs = Math.round(((typeof performance!=='undefined'&&performance.now?performance.now():Date.now())-t0)); }catch{ durationMs=0; }
         try{ saveSessionRunAsync({ customQ, lang, code, resultsForSave:resSave, passedCount:pc, totalCount, durationMs, tcs }); }catch{}
         return {pc, resSave};
@@ -3939,7 +4073,7 @@ def allow(key, limit=5):
           if(results.length===0){
             cards.push('<div class="test"><div class="small">No structured output — raw: <span class="kbd">'+String((j.piston&&j.piston.stdout)||'').slice(0,300)+'</span></div><div class="small muted">'+String((j.piston&&j.piston.stderr)||'').slice(0,300)+'</div></div>');
           }
-          if(runOutEl) runOutEl.innerHTML=cards.join('');
+          if(runOutEl){ runOutEl.innerHTML=cards.join(''); runOutEl.scrollTop=runOutEl.scrollHeight; try{ runOutEl.scrollIntoView({behavior:'smooth', block:'nearest'});}catch{} }
           try{ saveSessionRunAsync({ customQ, lang, code, resultsForSave, passedCount, totalCount, durationMs, tcs }); }catch{}
           if(window.toast) window.toast('Run '+lang+' '+passedCount+'/'+totalCount+' '+(passedCount===totalCount?'✓':'')+' via Piston (server)');
         }catch(e){
@@ -3951,7 +4085,7 @@ def allow(key, limit=5):
             return;
           }
           const msg = (e && (e.error||e.detail||e.message))||String(e).slice(0,300);
-          if(runOutEl) runOutEl.innerHTML='<div class="test" style="border-color:var(--accent-3)"><div class="small">Piston '+lang+' failed: '+String(msg).slice(0,400)+'<div class="small muted">Check code compiles — Java needs class Main / Python def name matches slug</div></div></div>';
+          if(runOutEl){ runOutEl.innerHTML='<div class="test" style="border-color:var(--accent-3)"><div class="small">Piston '+lang+' failed: '+String(msg).slice(0,400)+'<div class="small muted">Check code compiles — Java needs class Main / Python def name matches slug</div></div></div>'; runOutEl.scrollTop=runOutEl.scrollHeight; }
           if(window.toast) window.toast('Piston '+lang+' error: '+String(msg).slice(0,120));
         }
       })();
@@ -3971,7 +4105,19 @@ def allow(key, limit=5):
     try{
       const TOKEN_KEY='randori-token';
       const tok = localStorage.getItem(TOKEN_KEY);
-      if(!tok) return;
+      if(!tok){
+        // LeetCode-like: anon local-only save (so recent runs still shows something)
+        try{
+          const key='randori-runs-local';
+          const arr=JSON.parse(localStorage.getItem(key)||'[]');
+          arr.unshift({id:Date.now(), question_slug:customQ?.slug||'custom', language:lang, passed_count:passedCount, total_count:totalCount, duration_ms:durationMs, created_at:new Date().toISOString(), results:resultsForSave.slice(0,5), code:(code||'').slice(0,4000), local:true});
+          if(arr.length>20) arr.length=20;
+          localStorage.setItem(key, JSON.stringify(arr));
+          // merge into recent list UI instantly
+          try{ const el=document.getElementById('recentRunsList'); if(el) { const cur=JSON.parse(localStorage.getItem(key)||'[]'); renderRunsList(cur); } }catch{}
+        }catch{}
+        return;
+      }
       let week_id=null, pair_group_id=null;
       try{
         const mp = window._randori_pair_cache || null;
@@ -4017,13 +4163,24 @@ def allow(key, limit=5):
   async function fetchMyRuns(limit=10, slugFilter=null){
     try{
       const tok=localStorage.getItem('randori-token');
-      if(!tok) return [];
+      let localRuns=[];
+      try{ const key='randori-runs-local'; localRuns=JSON.parse(localStorage.getItem(key)||'[]'); }catch{}
+      if(!tok){
+        // anon LeetCode-like local only
+        if(slugFilter) localRuns = localRuns.filter((r)=> (r.question_slug||'').includes(slugFilter));
+        return localRuns.slice(0,limit);
+      }
       const url = '/api/runs?limit='+limit + (slugFilter? '&question_slug='+encodeURIComponent(slugFilter):'');
       const resp=await fetch(url,{headers:{Authorization:'Bearer '+tok}});
       const j=await resp.json();
       if(!resp.ok) throw j;
-      return j.runs||[];
-    }catch{ return []; }
+      const serverRuns=j.runs||[];
+      // merge local on top for quick feedback if server empty
+      if(!serverRuns.length && localRuns.length) return localRuns.slice(0,limit);
+      return serverRuns;
+    }catch{ 
+      try{ const key='randori-runs-local'; const arr=JSON.parse(localStorage.getItem(key)||'[]'); return arr.slice(0,10); }catch{ return []; } 
+    }
   }
   function renderRunsList(runs){
     const el=document.getElementById('recentRunsList');
