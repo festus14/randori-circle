@@ -17,22 +17,27 @@ async function handleCircle(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
   const db = getClient();
   try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0)`);
+    await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0, is_demo INTEGER DEFAULT 0)`);
     await db.execute(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`);
   }catch{}
   try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`);}catch{}
   try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`);}catch{}
   try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`);}catch{}
+  try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_demo INTEGER DEFAULT 0`);}catch{}
+  const includeDemo = (req.query?.include_demo === '1' || req.query?.includeDemo === '1' || req.query?.demo === '1');
   try{
-    const rs = await db.execute(`SELECT id, display_name, color, email, created_at, is_available, availability_updated_at, is_admin FROM auth_accounts ORDER BY id`);
+    let sql = includeDemo
+      ? `SELECT id, display_name, color, email, created_at, is_available, availability_updated_at, is_admin, is_demo FROM auth_accounts ORDER BY id`
+      : `SELECT id, display_name, color, email, created_at, is_available, availability_updated_at, is_admin, is_demo FROM auth_accounts WHERE COALESCE(is_demo,0)=0 ORDER BY id`;
+    const rs = await db.execute(sql);
     if (rs.rows.length){
-      const circle = rs.rows.map(r=>({ id:r.id, display_name:r.display_name, name:r.display_name, email:r.email, color:r.color, created_at:r.created_at, is_available:r.is_available===null||r.is_available===undefined?true:!!r.is_available, isAvailable:r.is_available===null||r.is_available===undefined?true:!!r.is_available, availability_updated_at:r.availability_updated_at, is_admin:!!r.is_admin, source:'auth' }));
-      return res.json({ ok:true, circle, count:circle.length, source:'auth_accounts' });
+      const circle = rs.rows.map(r=>({ id:r.id, display_name:r.display_name, name:r.display_name, email:r.email, color:r.color, created_at:r.created_at, is_available:r.is_available===null||r.is_available===undefined?true:!!r.is_available, isAvailable:r.is_available===null||r.is_available===undefined?true:!!r.is_available, availability_updated_at:r.availability_updated_at, is_admin:!!r.is_admin, is_demo:!!r.is_demo, source:'auth' }));
+      return res.json({ ok:true, circle, count:circle.length, source:'auth_accounts', filtered_demo: !includeDemo });
     }
   }catch{}
   try{
     const rs2 = await db.execute(`SELECT id, name, color, created_at FROM users ORDER BY id`);
-    const circle = rs2.rows.map(r=>({ id:r.id, display_name:r.name, name:r.name, color:r.color, created_at:r.created_at, is_available:true, isAvailable:true, is_admin:false, source:'users' }));
+    const circle = rs2.rows.map(r=>({ id:r.id, display_name:r.name, name:r.name, color:r.color, created_at:r.created_at, is_available:true, isAvailable:true, is_admin:false, is_demo:false, source:'users' }));
     return res.json({ ok:true, circle, count:circle.length, source:'users' });
   }catch(e){ return res.status(500).json({ error:'db error', detail:String(e.message||e).slice(0,200)}); }
 }
@@ -41,11 +46,16 @@ async function handleWeeks(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
   const db = getClient();
   try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS pairing_weeks (id INTEGER PRIMARY KEY AUTOINCREMENT, week_label TEXT NOT NULL, week_start TEXT NOT NULL, focus TEXT NOT NULL DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')))`);
+    await db.execute(`CREATE TABLE IF NOT EXISTS pairing_weeks (id INTEGER PRIMARY KEY AUTOINCREMENT, week_label TEXT NOT NULL, week_start TEXT NOT NULL, focus TEXT NOT NULL DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')), is_demo INTEGER DEFAULT 0)`);
     await db.execute(`CREATE TABLE IF NOT EXISTS pairing_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, user_a_id INTEGER NOT NULL, user_b_id INTEGER NOT NULL, user_c_id INTEGER, is_ai_pair INTEGER DEFAULT 0, topic TEXT DEFAULT 'Pick together', topic_kind TEXT DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')))`);
   }catch{}
+  try{ await db.execute(`ALTER TABLE pairing_weeks ADD COLUMN is_demo INTEGER DEFAULT 0`);}catch{}
+  const includeDemo = (req.query?.include_demo === '1' || req.query?.includeDemo === '1' || req.query?.demo === '1' || req.query?.include_demo === 'true');
   try{
-    const weeksRs = await db.execute(`SELECT id, week_label, week_start, focus, created_at FROM pairing_weeks ORDER BY id DESC LIMIT 20`);
+    let sql = includeDemo
+      ? `SELECT id, week_label, week_start, focus, created_at, is_demo FROM pairing_weeks ORDER BY id DESC LIMIT 20`
+      : `SELECT id, week_label, week_start, focus, created_at, is_demo FROM pairing_weeks WHERE COALESCE(is_demo,0)=0 ORDER BY id DESC LIMIT 20`;
+    const weeksRs = await db.execute(sql);
     if (!weeksRs.rows.length) return res.json({ ok:true, weeks:[] });
     const weekIds = weeksRs.rows.map(w=>w.id);
     const placeholders = weekIds.map(()=>'?').join(',');
@@ -69,11 +79,11 @@ async function handleWeeks(req,res){
       const pairs = groupsRs.rows.filter(g=>g.week_id===w.id).map(g=>{
         const a = idTo[g.user_a_id]||{name:`User ${g.user_a_id}`, color:'#999'};
         const b = g.is_ai_pair ? {name:'AI partner', color:'var(--accent)'} : (idTo[g.user_b_id]||{name:`User ${g.user_b_id}`, color:'#999'});
-        return { pg_id:g.pg_id, a_id:g.user_a_id, b_id:g.user_b_id, a_name:a.name, b_name:b.name, a_color:a.color, b_color:b.color, is_ai:!!g.is_ai_pair, topic:g.topic, topic_kind:g.topic_kind, created_at:g.created_at };
+        return { pg_id:g.pg_id, a_id:g.user_a_id, b_id:g.user_b_id, a_name:a.name, b_name:b.name, a_color:a.color, b_color:b.color, is_ai:!!g.is_ai_pair, is_demo_week: !!w.is_demo, topic:g.topic, topic_kind:g.topic_kind, created_at:g.created_at };
       });
-      return { id:w.id, week_label:w.week_label, week_start:w.week_start, focus:w.focus, created_at:w.created_at, pairs };
+      return { id:w.id, week_label:w.week_label, week_start:w.week_start, focus:w.focus, created_at:w.created_at, is_demo:!!w.is_demo, pairs };
     });
-    return res.json({ ok:true, weeks });
+    return res.json({ ok:true, weeks, filtered_demo: !includeDemo });
   }catch(e){ return res.status(500).json({ ok:false, error:'weeks query failed', detail:String(e.message||e).slice(0,300)}); }
 }
 
@@ -81,7 +91,7 @@ async function handleHistory(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
   const auth = req.headers.authorization||'';
   const m = auth.match(/^Bearer\s+(.+)$/);
-  if (!m) return res.status(401).json({ error:'missing Bearer <redacted>' });
+  if (!m) return res.status(401).json({ error:'missing Bearer token' });
   let payload; try{ payload=jwt.verify(m[1], getJwtSecret()); }catch(e){ return res.status(401).json({ error:'invalid token'}); }
   const db = getClient();
   const userId = payload.id;
@@ -114,8 +124,8 @@ async function handleInit(req,res){
   const db = getClient();
   await db.batch([
     `CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`,
-    `CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0)`,
-    `CREATE TABLE IF NOT EXISTS pairing_weeks (id INTEGER PRIMARY KEY AUTOINCREMENT, week_label TEXT NOT NULL, week_start TEXT NOT NULL, focus TEXT NOT NULL DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')))`,
+    `CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0, is_demo INTEGER DEFAULT 0)`,
+    `CREATE TABLE IF NOT EXISTS pairing_weeks (id INTEGER PRIMARY KEY AUTOINCREMENT, week_label TEXT NOT NULL, week_start TEXT NOT NULL, focus TEXT NOT NULL DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')), is_demo INTEGER DEFAULT 0)`,
     `CREATE TABLE IF NOT EXISTS pairing_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL REFERENCES pairing_weeks(id) ON DELETE CASCADE, user_a_id INTEGER NOT NULL, user_b_id INTEGER NOT NULL, user_c_id INTEGER, is_ai_pair INTEGER DEFAULT 0, topic TEXT DEFAULT 'Pick together', topic_kind TEXT DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')))`,
     `CREATE TABLE IF NOT EXISTS questions (id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT UNIQUE NOT NULL, title TEXT NOT NULL, type TEXT NOT NULL, difficulty TEXT NOT NULL, category TEXT NOT NULL, description TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS video_signals (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT NOT NULL, from_id TEXT NOT NULL, to_id TEXT, type TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`,
@@ -123,11 +133,11 @@ async function handleInit(req,res){
     `CREATE TABLE IF NOT EXISTS ai_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL REFERENCES ai_sessions(id) ON DELETE CASCADE, role TEXT DEFAULT 'both', feedback_json TEXT NOT NULL, evidence TEXT, model_used TEXT, reason_for_pick TEXT, estimated_cost_cents INTEGER, confidence REAL DEFAULT 0.85, created_at TEXT DEFAULT (datetime('now')))`,
     `CREATE TABLE IF NOT EXISTS ai_usage (date TEXT PRIMARY KEY, calls INTEGER DEFAULT 0, tokens_in INTEGER DEFAULT 0, tokens_out INTEGER DEFAULT 0, updated_at TEXT DEFAULT (datetime('now')))`
   ],"write");
-  const migrations=[`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`,`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`,`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`];
+  const migrations=[`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`,`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`,`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`,`ALTER TABLE auth_accounts ADD COLUMN is_demo INTEGER DEFAULT 0`,`ALTER TABLE pairing_weeks ADD COLUMN is_demo INTEGER DEFAULT 0`];
   for(const sql of migrations){ try{ await db.execute(sql);}catch(_){} }
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_video_signals_room ON video_signals(room_id, created_at)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_video_signals_room_id ON video_signals(room_id, id)`);}catch{}
-  return res.json({ ok:true, message:"Tables ready (incl auth_accounts + availability + is_admin + video + ai)" });
+  return res.json({ ok:true, message:"Tables ready (incl auth_accounts + availability + is_admin + is_demo + video + ai)" });
 }
 
 export default async function handler(req,res){

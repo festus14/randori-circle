@@ -493,13 +493,21 @@ p{margin:0}
     if(!r.ok) throw j;
     return j;
   }
-  async function refreshMe(){
+async function refreshMe(){
+    // sync token from storage every call (handles reopened tab)
+    try{ const fresh = localStorage.getItem(TOKEN_KEY); if(fresh && fresh!==authToken) authToken=fresh; }catch{}
     if(!authToken){ me=null; updateAuthUI(); return; }
     try{
       const data = await api('/api/auth/me', {method:'GET'});
       me = data.user;
       localStorage.setItem(ME_KEY, JSON.stringify(me));
-    }catch{ authToken=''; localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(ME_KEY); me=null; }
+      localStorage.setItem(TOKEN_KEY, authToken);
+    }catch(err){
+      console.warn('refreshMe failed', err && err.error ? err.error : err);
+      if(!me){
+        try{ const cached = JSON.parse(localStorage.getItem(ME_KEY)||'null'); if(cached) me=cached; }catch{}
+      }
+    }
     updateAuthUI();
   }
   const ADMIN_EMAIL='festusomole14@gmail.com';
@@ -511,20 +519,24 @@ p{margin:0}
     const outBtn=document.getElementById('signOutBtn');
     const hint=document.getElementById('historyAuthHint');
     const tokenPresent = !!(typeof authToken !== 'undefined' && authToken) || !!localStorage.getItem('randori-token');
-    if(me || tokenPresent){
+    // robust token check each UI refresh
+    try{ const lsTok = localStorage.getItem(TOKEN_KEY); if(lsTok && !authToken) authToken=lsTok; }catch{}
+    const effectiveSignedIn = !!(me || (typeof tokenPresent!=='undefined' && tokenPresent) || authToken || (typeof localStorage!=='undefined' && localStorage.getItem(TOKEN_KEY)));
+    if(effectiveSignedIn){
       try{
         meLabel.style.display='inline-flex';
         const nm = (me && (me.name||me.display_name||me.email)) || 'you';
         meLabel.textContent = '● '+ nm + (isAdmin()?' (admin)':'');
         if(me && me.color){ meLabel.style.background = me.color+'22'; meLabel.style.borderColor=me.color+'66'; }
       }catch{}
-      authBtn.style.display='none';
-      outBtn.style.display='inline-flex';
+      if(authBtn){ authBtn.style.display='none'; authBtn.hidden=true; authBtn.setAttribute('aria-hidden','true'); }
+      if(outBtn){ outBtn.style.display='inline-flex'; outBtn.hidden=false; outBtn.removeAttribute('aria-hidden'); }
       if(hint && me) hint.textContent = `pairings for ${me.name||me.display_name||me.email}` + (isAdmin()?' • admin':'');
+      else if(hint && !me && effectiveSignedIn) hint.textContent='Signed in — syncing profile…';
     } else {
-      meLabel.style.display='none';
-      authBtn.style.display='inline-flex';
-      outBtn.style.display='none';
+      if(meLabel) meLabel.style.display='none';
+      if(authBtn){ authBtn.style.display='inline-flex'; authBtn.hidden=false; authBtn.removeAttribute('aria-hidden'); }
+      if(outBtn){ outBtn.style.display='none'; outBtn.hidden=true; outBtn.setAttribute('aria-hidden','true'); }
       if(hint) hint.textContent='Sign in to see your pairings';
     }
     // circle admin UI toggle
@@ -729,7 +741,13 @@ p{margin:0}
   window._randori_auth={ get token(){return authToken}, get me(){return me}, api, refreshMe };
   // initial UI + me refresh
   updateAuthUI();
+    // immediate UI to hide sign-in before network returns
+  try{ updateAuthUI(); }catch{}
+  // DOMContentLoaded token sync
+  document.addEventListener('DOMContentLoaded', ()=>{ try{ const tok=localStorage.getItem(TOKEN_KEY); if(tok) authToken=tok; updateAuthUI(); }catch{} setTimeout(refreshMe, 150); });
   setTimeout(refreshMe, 400);
+  // extra retry for Vercel cold start
+  setTimeout(()=>{ try{ updateAuthUI(); refreshMe(); }catch{} }, 1200);
 
   // ---------- theme ----------
   const THEME_KEY='randori-theme';
