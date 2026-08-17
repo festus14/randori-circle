@@ -476,7 +476,7 @@ h1,h2,h3{font-family:"Newsreader", Georgia, serif; font-weight:500; letter-spaci
     updateAuthUI();
   }
   const ADMIN_EMAIL='festusomole14@gmail.com';
-  function isAdmin(){ return !!(me && me.email && me.email.toLowerCase()===ADMIN_EMAIL); }
+  function isAdmin(){ return !!(me && (me.is_admin || me.isAdmin || (me.email && me.email.toLowerCase()===ADMIN_EMAIL))); }
   function updateAuthUI(){
     const area=document.getElementById('authArea');
     const meLabel=document.getElementById('meLabel');
