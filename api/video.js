@@ -30,8 +30,10 @@ async function cleanupOld(db){ try{ await db.execute(`DELETE FROM video_signals 
 
 async function handleSignal(req,res){
   const db=getClient();
-  await ensureTable(db);
-  await cleanupOld(db);
+  try{
+    await ensureTable(db);
+    await cleanupOld(db);
+  }catch(e){ return res.status(500).json({ ok:false, error:'ensureTable failed', detail:String(e.message||e).slice(0,400)}); }
   if(req.method==='POST'){
     const body=req.body||{};
     const room_id=(body.room_id||body.roomId||'').toString().trim().slice(0,128);
