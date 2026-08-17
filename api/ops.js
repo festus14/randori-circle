@@ -202,32 +202,21 @@ async function handleWeekly(req,res){
 
 async function handleDemoSeed(req,res){
   if (req.method!=='POST') return res.status(405).json({ error:'POST only for demo-seed' });
-  const ctx = await requireAdmin(req,res);
-  if (!ctx) return;
-  const {db} = ctx;
-  const names=["Mia Chen","Alex Rivera","Priya Shah","Jordan Kim","Samir Desai","Lena Wu"];
-  const ts = Date.now();
-  let seeded=[];
+  const ctx=await requireAdmin(req,res); if(!ctx) return; const db=ctx.db;
+  await ensureMigrations(db);
+  const names=['Mia Chen','Alex Rivera','Priya Shah','Jordan Kim','Samir Desai','Lena Wu'];
+  const palette=['#e6c07a','#9cc0b5','#d68a8a','#a3b5d6','#c7b29a','#8ec0a5'];
+  const ts=Date.now();
+  const seeded=[];
   for(let i=0;i<names.length;i++){
-    const name=names[i];
+    const name=names[i]; const color=palette[i%palette.length];
     const email = `demo+${ts}+${i+1}@randori.demo`.toLowerCase();
-    const color = deterministicColor(email);
     try{
-      const ins = await db.execute({ sql:`INSERT OR IGNORE INTO auth_accounts (email, password_hash, display_name, color, is_available, is_admin, is_demo, created_at, last_login) VALUES (?,?,?,?,?,?,?,datetime('now'),datetime('now')) RETURNING id`, args:[email, 'demo', name, color, 1, 0, 1]});
-      // libsql with OR IGNORE may not return id when ignored; fetch if needed
-      if(ins.rows && ins.rows.length){ seeded.push({id:ins.rows[0].id, email, name, color}); }
-      else {
-        // fetch existing
-        const got = await db.execute({ sql:`SELECT id,email,display_name,color FROM auth_accounts WHERE email=?`, args:[email]});
-        if(got.rows.length) seeded.push({id:got.rows[0].id, email:got.rows[0].email, name:got.rows[0].display_name, color:got.rows[0].color});
-      }
+      await db.execute({ sql:`INSERT OR IGNORE INTO auth_accounts (email, password_hash, display_name, color, is_available, is_admin, is_demo) VALUES (?,?,?,?,?,?,?)`, args:[email, 'demo_hash_placeholder_$2a$10$demo', name, color, 1, 0, 1]});
+      const row=await db.execute({ sql:`SELECT id FROM auth_accounts WHERE email=?`, args:[email]});
+      if(row.rows.length) seeded.push({ id:row.rows[0].id, name, email, color });
     }catch(e){
-      // fallback try without RETURNING if unsupported
-      try{
-        await db.execute({ sql:`INSERT OR IGNORE INTO auth_accounts (email, password_hash, display_name, color, is_available, is_admin, is_demo) VALUES (?,?,?,?,?,?,?)`, args:[email, 'demo', name, color, 1,0,1]});
-        const got = await db.execute({ sql:`SELECT id,email,display_name,color FROM auth_accounts WHERE email=?`, args:[email]});
-        if(got.rows.length) seeded.push({id:got.rows[0].id, email:got.rows[0].email, name:got.rows[0].display_name, color:got.rows[0].color});
-      }catch{}
+      // ignore duplicate / error
     }
   }
   return res.json({ ok:true, seeded_count:seeded.length, seeded, note:'6 demo users ready (is_demo=1, is_available=1). They surface in /api/circle and weekly shuffles.' });
