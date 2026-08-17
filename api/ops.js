@@ -107,7 +107,7 @@ async function handleReshuffle(req,res){
     }catch(e){ return res.status(500).json({ error:'db error promoting', detail:String(e.message||e).slice(0,200)}); }
   }
   let authRs; try{ authRs=await db.execute(`SELECT id, display_name as name, email, color, is_available, is_demo FROM auth_accounts WHERE COALESCE(is_available,1)=1 ORDER BY id`);}catch{ authRs=await db.execute(`SELECT id, display_name as name, email, color FROM auth_accounts ORDER BY id`); }
-  if (authRs.rows.length<2){ const allCount=(await db.execute(`SELECT COUNT(*) as c FROM auth_accounts`).catch(()=>({rows:[{c:0}]}))).rows[0].c; return res.status(400).json({ ok:false, error:'need at least 2 available signed-up users to shuffle', available_count:authRs.rows.length, total_accounts:allCount, hint:'Ask unavailable users to toggle Available ON in settings, or invite more people' }); }
+  if (authRs.rows.length<1){ const allCount=(await db.execute(`SELECT COUNT(*) as c FROM auth_accounts`).catch(()=>({rows:[{c:0}]}))).rows[0].c; return res.status(400).json({ ok:false, error:'need at least 1 available user to shuffle (solo → AI partner)', available_count:authRs.rows.length, total_accounts:allCount, hint:'Mark yourself Available ON, then reshuffle — solo users get AI partner' }); }
   const participants = authRs.rows.map(r=>({ id:r.id, name:r.name, email:r.email, color:r.color, source:'auth', is_demo: !!r.is_demo }));
   const now = new Date(); const weekLabel = isoWeekLabel(now);
   let weekId; const existing = await db.execute({ sql:`SELECT id FROM pairing_weeks WHERE week_label=?`, args:[weekLabel]});
@@ -153,8 +153,8 @@ async function handleWeekly(req,res){
     const usersRs=await db.execute(`SELECT id, name, color FROM users ORDER BY id`);
     participants=usersRs.rows.map(r=>({ id:r.id, name:r.name, color:r.color, source:'users'}));
   }
-  if (participants.length<2){
-    return res.status(400).json({ ok:false, error:'need at least 2 available participants after filtering', available_count:participants.length, total_accounts:allAccounts.length, unavailable_count:unavailable.length, unavailable:unavailable.map(u=>({ id:u.id, name:u.name, email:u.email })), hint:'Users marked unavailable are excluded — ask them to set Available toggle on, or wait for next week' });
+  if (participants.length<1){
+    return res.status(400).json({ ok:false, error:'need at least 1 available participant (solo → AI partner)', available_count:participants.length, total_accounts:allAccounts.length, unavailable_count:unavailable.length, unavailable:unavailable.map(u=>({ id:u.id, name:u.name, email:u.email })), hint:'Users marked unavailable are excluded — ask them to set Available toggle on, or wait for next week' });
   }
   let prevPairsSet=new Set(); try{ const lastWeek=await db.execute(`SELECT id FROM pairing_weeks ORDER BY id DESC LIMIT 1`); if(lastWeek.rows.length){ const pg=await db.execute({ sql:`SELECT user_a_id,user_b_id FROM pairing_groups WHERE week_id=?`, args:[lastWeek.rows[0].id]}); pg.rows.forEach(r=>{ const key=[Math.min(r.user_a_id,r.user_b_id), Math.max(r.user_a_id,r.user_b_id)].join('-'); prevPairsSet.add(key); }); } }catch{}
   let bestPairs=null; for(let attempt=0; attempt<8; attempt++){ const shuffled=shuffleArray(participants); const pairs=[]; for(let i=0;i<shuffled.length;i+=2){ const a=shuffled[i]; const b=shuffled[i+1]||null; if(!b) pairs.push({a,b:null,isAI:true}); else pairs.push({a,b,isAI:false}); } let repeatCount=0; for(const p of pairs){ if(p.isAI) continue; const key=[Math.min(p.a.id,p.b.id), Math.max(p.a.id,p.b.id)].join('-'); if(prevPairsSet.has(key)) repeatCount++; } if(!bestPairs||repeatCount<bestPairs.repeatCount){ bestPairs={pairs, repeatCount}; if(repeatCount===0) break; } }
