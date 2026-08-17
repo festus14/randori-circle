@@ -303,6 +303,40 @@ p{margin:0}
 .chat-input{border-top:1px solid var(--border); padding:8px; display:flex; gap:6px}
 @media(max-width:840px){ .hero{grid-template-columns:1fr} }
 
+/* Loaders & spinners – dark-first, accent #c8f6a0 */
+.spinner{
+  width:24px; height:24px;
+  border:2.5px solid var(--line);
+  border-top-color:var(--accent);
+  border-radius:999px;
+  animation:spin 0.7s linear infinite;
+  display:inline-block; flex-shrink:0;
+}
+.spinner-sm{ width:16px; height:16px; border-width:2px }
+.spinner-lg{ width:32px; height:32px; border-width:3px }
+@keyframes spin{ to{ transform:rotate(360deg) } }
+.skeleton{
+  background:var(--bg-2);
+  background:linear-gradient(90deg, var(--bg-2) 25%, var(--bg-3) 50%, var(--bg-2) 75%);
+  background-size:200% 100%;
+  animation:skeleton-pulse 1.6s ease-in-out infinite;
+  border-radius:8px; min-height:12px;
+}
+@keyframes skeleton-pulse{
+  0%{ background-position:200% 0 }
+  100%{ background-position:-200% 0 }
+}
+.loader-row{ display:flex; align-items:center; gap:10px; justify-content:center; padding:12px }
+.loader-overlay{
+  position:absolute; inset:0; background:color-mix(in srgb, var(--bg) 72%, transparent);
+  backdrop-filter:blur(2px); display:flex; align-items:center; justify-content:center; z-index:3; border-radius:inherit;
+}
+.dots{ display:inline-flex; gap:4px; align-items:center }
+.dots i{ width:5px; height:5px; border-radius:999px; background:var(--ink-3); animation:dots 1.2s infinite }
+.dots i:nth-child(2){ animation-delay:.2s } .dots i:nth-child(3){ animation-delay:.4s }
+@keyframes dots{ 0%,100%{ opacity:.3; transform:translateY(0) } 50%{ opacity:1; transform:translateY(-2px) } }
+.btn .spinner{ vertical-align:middle; margin-left:6px }
+
 </style>
 </head>
 <body>
@@ -928,6 +962,7 @@ async function refreshMe(){
   }
   setInterval(()=>{ if(me) checkSkippedBanner(); }, 15000);
   async function doSignup(){
+    const signupBtn=document.getElementById('authSignup'); const origSignup=signupBtn?signupBtn.innerHTML:''; if(signupBtn){ signupBtn.disabled=true; signupBtn.innerHTML='Signing up… <span class="spinner spinner-sm" style="display:inline-block;vertical-align:middle"></span>'; }
     const email=document.getElementById('authEmail').value.trim();
     const name=document.getElementById('authName').value.trim()||email.split('@')[0];
     const pass=document.getElementById('authPass').value;
@@ -938,8 +973,10 @@ async function refreshMe(){
       document.getElementById('authOverlay').classList.remove('show'); try{updateAuthUI();}catch{} try{renderHistory();}catch{} toast(`welcome, ${me.name}`);
         setTimeout(()=>{ try{ if(window._randori_journey&&window._randori_journey.routeByAuth) window._randori_journey.routeByAuth(); }catch{} setTimeout(()=>{ location.reload(); }, 350); }, 200);
     }catch(err){ document.getElementById('authErr').textContent=err.error||err.message||'signup failed'; }
+    finally{ const b=document.getElementById('authSignup'); if(b){ b.disabled=false; b.innerHTML=origSignup||'Sign up'; } }
   }
   async function doSignin(){
+    const signinBtn=document.getElementById('authSignin'); const origSignin=signinBtn?signinBtn.innerHTML:''; if(signinBtn){ signinBtn.disabled=true; signinBtn.innerHTML='Signing in… <span class="spinner spinner-sm"></span>'; }
     const email=document.getElementById('authEmail').value.trim();
     const pass=document.getElementById('authPass').value;
     if(!email||!pass){ document.getElementById('authErr').textContent='email + password required'; return; }
@@ -949,6 +986,7 @@ async function refreshMe(){
       document.getElementById('authOverlay').classList.remove('show'); try{updateAuthUI();}catch{} try{renderHistory();}catch{} toast(`signed in as ${me.name}`);
         setTimeout(()=>{ try{ if(window._randori_journey&&window._randori_journey.routeByAuth) window._randori_journey.routeByAuth(); }catch{} setTimeout(()=>{ location.reload(); }, 350); }, 200);
     }catch(err){ document.getElementById('authErr').textContent=err.error||err.message||'login failed'; }
+    finally{ const b=document.getElementById('authSignin'); if(b){ b.disabled=false; b.innerHTML=origSignin||'Sign in'; } }
   }
   document.getElementById('authSignup').onclick=doSignup;
   document.getElementById('authSignin').onclick=doSignin;
@@ -1085,6 +1123,44 @@ async function refreshMe(){
       ok.addEventListener('click', onOk); cancel.addEventListener('click', onCancel); ov.addEventListener('click', onOv); input.addEventListener('keydown', onKey);
     });
   }
+  
+  // ---------- loaders UI utility ----------
+  window._randori_ui = window._randori_ui || {};
+  window._randori_ui.showLoader = function(el, size){
+    if(!el) return null;
+    if(el.dataset.hasLoader==='1') return el.querySelector('.spinner');
+    const s=document.createElement('div');
+    s.className='spinner'+(size==='sm'?' spinner-sm':size==='lg'?' spinner-lg':'');
+    s.setAttribute('aria-live','polite'); s.setAttribute('aria-busy','true'); s.setAttribute('role','status');
+    s.title='loading…';
+    // If el is empty or placeholder, replace content; else append overlay
+    if(!el.firstChild || el.dataset.loaderReplace==='1'){
+      el.innerHTML=''; el.appendChild(s); el.dataset.hasLoader='1';
+    } else if(el.classList.contains('btn')){
+      el.disabled=true; el.dataset.prevText=el.innerHTML; el.appendChild(s);
+    } else {
+      s.style.margin='6px';
+      el.prepend(s);
+    }
+    return s;
+  };
+  window._randori_ui.hideLoader = function(el){
+    if(!el) return;
+    el.querySelectorAll('.spinner').forEach(sp=>sp.remove());
+    if(el.dataset.prevText){ el.innerHTML=el.dataset.prevText; delete el.dataset.prevText; el.disabled=false; }
+    delete el.dataset.hasLoader;
+  };
+  window._randori_ui.showSkeleton = function(el, rows){
+    if(!el) return;
+    el.innerHTML=(rows||3).toString().split('').map(()=>'<div class="skeleton" style="height:'+(12+Math.random()*18|0)+'px; margin:6px 0"></div>').join('') || '<div class="skeleton" style="height:14px"></div>'.repeat(rows||3);
+    el.setAttribute('aria-live','polite'); el.setAttribute('aria-busy','true');
+  };
+  window._randori_ui.showDots = function(el){
+    if(!el) return;
+    el.innerHTML='<span class="dots"><i></i><i></i><i></i></span>';
+  };
+  // -------------------------------
+
   let _toastTimer;
   function toast(msg){ const el=document.getElementById('toast'); if(!el) return; el.textContent=msg; el.classList.add('show'); clearTimeout(_toastTimer); _toastTimer=setTimeout(()=>el.classList.remove('show'),2400); }
 
@@ -1218,12 +1294,11 @@ async function refreshMe(){
 
   // Admin cloud reshuffle — creates fresh pairs
   async function adminCloudReshuffle(){
-    if(!isAdmin()){
-      toast('Only admins can create new pairs');
-      return;
-    }
+    if(!isAdmin()){ toast('Only admins can create new pairs'); return; }
     const nb=document.getElementById('newWeekBtn'); const rb=document.getElementById('reshuffleBtn');
     if(nb) nb.disabled=true; if(rb) rb.disabled=true;
+    const pairsList=document.getElementById('pairsList'); let overlay=null;
+    if(pairsList){ overlay=document.createElement('div'); overlay.className='loader-overlay'; overlay.innerHTML='<span class="spinner spinner-lg"></span><span class="small muted" style="margin-left:8px">Shuffling circle…</span>'; overlay.style.display='flex'; overlay.style.gap='10px'; pairsList.style.position='relative'; pairsList.appendChild(overlay); }
     try{
       const data=await api('/api/admin/reshuffle',{method:'POST'});
       toast(`New pairs for ${data.week_label} — ${data.count} people`);
@@ -1240,6 +1315,7 @@ async function refreshMe(){
       }
     }finally{
       if(nb) nb.disabled=false; if(rb) rb.disabled=false;
+      try{ document.querySelectorAll('.loader-overlay').forEach(o=>o.remove()); }catch{}
     }
   }
 
@@ -2739,8 +2815,19 @@ def allow(key, limit=5):
   async function showDashboard(){
     hideAllViews();
     if(viewDashboard) viewDashboard.style.display='block';
+    try{
+      const pairEl=document.getElementById('dashPairArea');
+      if(pairEl && window._randori_ui) window._randori_ui.showLoader(pairEl);
+      const sub=document.getElementById('dashSub'); if(sub) sub.textContent='Checking Sunday pairings…';
+    }catch{}
     // update welcome
     const m = (()=>{ try{ return JSON.parse(localStorage.getItem(ME_KEY)||'null')}catch{return null} })();
+    try{
+      const sg=document.getElementById('dashStatsGrid'); if(sg && window._randori_ui){ /* subtle skeleton for stats if empty */ 
+        ['dashStatYou','dashStatCircle','dashNextLabel'].forEach(id=>{ const el=document.getElementById(id); if(el && el.textContent.trim()==='—') el.innerHTML='<span class="spinner spinner-sm" style="display:inline-block"></span>'; });
+      }
+      const hist=document.getElementById('dashHistList'); if(hist && /Loading/.test(hist.textContent||'')){ window._randori_ui.showSkeleton(hist,3); }
+    }catch{}
     const name=m?.name||m?.display_name||'friend';
     document.getElementById('dashWelcome').textContent='Welcome, '+name;
     document.getElementById('dashSub').textContent='Checking Sunday pairings…';
@@ -2821,6 +2908,7 @@ def allow(key, limit=5):
     if(isAI){
       area.innerHTML=`<div class="partner-card" style="border-color:#c8f6a0"><div class="avatar" style="background:#c8f6a0">AI</div><div style="flex:1"><b style="font-size:14px">You're paired with AI partner</b><div class="small muted" style="margin-top:4px">Odd one out this week — you get a sparring bot for DSA & System Design drills. No trios, no waiting.</div><div class="row" style="margin-top:12px; gap:8px"><button id="dashJoinSession" class="btn" style="background:var(--accent); color:#0f0f10; padding:11px 18px; font-size:14px; font-weight:700">▶ Join Session — Code + Video + Board</button><span class="kbd">${roomHint.slice(0,14)}</span></div></div></div>`;
       document.getElementById('dashJoinSession')?.addEventListener('click', joinSessionDeterministic);
+      try{ const pe=document.getElementById('dashPairArea'); if(pe) { pe.querySelectorAll('.spinner').forEach(s=>s.remove()); delete pe.dataset.hasLoader; } }catch{}
       return;
     }
     const focus = partner?.interview_focus || data.partner?.interview_focus || 'both';
@@ -2885,10 +2973,8 @@ def allow(key, limit=5):
     const pair=data.pair; const weekId=data.week_id||data.week?.id; const pgId=pair.pg_id||pair.id;
     area.innerHTML=`<div class="chat-box"><div class="card-h" style="padding:10px 12px"><h2 style="font-size:13px">Chat with ${data.partner?.name||'partner'}</h2><span class="kbd">pair #${pgId}</span></div><div id="chatList" class="chat-list"><div class="small muted" style="padding:8px">Loading messages…</div></div><div class="chat-input"><input id="chatIn" class="input" placeholder="Message ${data.partner?.name||''} about a time or topic…" style="flex:1"/><button id="chatSend" class="btn">Send</button></div></div>`;
     document.getElementById('chatSend')?.addEventListener('click', async()=>{
-      const txt=document.getElementById('chatIn').value.trim();
-      if(!txt) return;
-      await sendMsg(weekId, pgId, txt);
-      document.getElementById('chatIn').value='';
+      const btn=document.getElementById('chatSend'); const prev=btn?btn.innerHTML:''; if(btn){ btn.disabled=true; btn.innerHTML='<span class="spinner spinner-sm"></span> Sending'; }
+      try{ const txt=document.getElementById('chatIn').value.trim(); if(!txt) return; await sendMsg(weekId, pgId, txt); document.getElementById('chatIn').value=''; } finally{ if(btn){ btn.disabled=false; btn.innerHTML=prev||'Send'; } }
     });
     document.getElementById('chatIn')?.addEventListener('keydown', e=>{ if(e.key==='Enter') document.getElementById('chatSend').click(); });
   }
@@ -2942,6 +3028,7 @@ def allow(key, limit=5):
 
   // Main auth router
   async function routeByAuth(){
+    try{ const landing=document.getElementById('view-landing'); if(!localStorage.getItem(TOKEN_KEY) && landing){ /* anon uses its own loader */ } }catch{}
     const tok=localStorage.getItem(TOKEN_KEY);
     // hide all first? We decide
     const tabsEl=document.querySelector('.tabs');
@@ -3034,13 +3121,15 @@ def allow(key, limit=5):
   let CUSTOM_QUESTIONS=[];
 
   async function fetchCustomQuestions(){
+    try{ const badge=document.getElementById('qCustomCount'); if(badge){ const already=badge.textContent||''; if(already.includes('loading')||already.includes('…')) badge.innerHTML='<span class="spinner spinner-sm"></span> loading…'; } }catch{}
     try{
       const r=await fetch('/api/questions', {headers: tok()? {Authorization:'Bearer '+tok()} : {}});
       const j=await r.json();
       if(j.ok && Array.isArray(j.questions)){
         CUSTOM_QUESTIONS=j.questions;
         mergeIntoSelect();
-        document.getElementById('qCustomCount').textContent=`• custom: ${j.questions.length}`;
+        document.getElementById('qCustomCount').innerHTML='<span class="spinner spinner-sm"></span> '+j.questions.length;
+        document.getElementById('qCustomCount').textContent='• custom: '+j.questions.length;
         return j.questions;
       }
     }catch(e){ console.warn('custom fetch fail',e); }
