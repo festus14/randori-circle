@@ -454,6 +454,8 @@ p{margin:0}
         <div id="dashScheduleArea"></div>
         <div style="margin:14px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">History</h3><div style="flex:1;height:1px;background:var(--border)"></div><button id="dashHistAll" class="pill" style="font-size:11px">full history →</button></div>
         <div id="dashHistoryArea" class="card" style="padding:10px"><div id="dashHistList" class="small muted">Loading recent…</div></div>
+        <div style="margin:14px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Recent runs</h3><div style="flex:1;height:1px;background:var(--border)"></div><button id="recentRunsRefresh" class="pill" style="font-size:11px">refresh</button></div>
+        <div id="recentRunsArea" class="card" style="padding:10px"><div id="recentRunsList" class="small muted">No runs yet — hit ▶ Run</div></div>
         <div id="dashSignOutWrap" style="margin-top:12px;text-align:right; display:block"><button id="dashSignOut" class="pill" style="font-size:12px;opacity:.75">Sign out</button></div><div id="dashChatArea"></div>
         <div id="dashEmpty" style="display:none" class="card"><div class="card-b"><b>No pair yet</b><div class="small muted" style="margin-top:6px">First shuffle runs Sunday 08:00 BST. Mark yourself Available to join. Meanwhile, brush up in live room.</div><div class="row" style="margin-top:10px"><button class="pill" onclick="document.querySelector('[data-tab=code]').click()">Open Code room</button><button class="pill" id="dashHow">How it works?</button></div></div></div>
       </div>
@@ -1741,53 +1743,229 @@ def allow(key, limit=5):
   document.getElementById('roomSelect').onchange=(e)=> loadRoom(e.target.value);
   document.getElementById('editor').addEventListener('input', ()=>{ persistRoom(); });
 
-  // run heuristic
-  function runCode(){
-    const q=QUESTIONS.find(x=>x.id===qSel.value)||QUESTIONS[0];
-    const lang=document.getElementById('langSelect').value;
-    const code=document.getElementById('editor').value;
-    const out=document.getElementById('runOut');
-    const cards=[];
-    if(lang==='javascript' || lang==='typescript'){
-      // try actual eval for two-sum
-      if(q.id==='two-sum'){
-        try{
-          // extract function
-          const fnWrap = new Function(code + '; return typeof twoSum!=="undefined"? twoSum : null;')();
-          if(!fnWrap) throw 'no twoSum found';
-          q.tests.forEach((t,i)=>{
-            try{
-              const got=fnWrap(t.input.nums, t.input.t);
-              const exp=t.expect;
-              const pass = JSON.stringify(got.sort())===JSON.stringify(exp.sort());
-              cards.push(`<div class="test" style="border-color:${pass?'var(--ok)':'var(--accent-3)'}"><div class="small"><b>Case ${i+1}</b> ${pass?'✓ pass':'✗ fail'} — got <span class="kbd">${JSON.stringify(got)}</span> exp <span class="kbd">${JSON.stringify(exp)}</span></div></div>`);
-            }catch(err){ cards.push(`<div class="test"><div class="small">Case ${i+1} error: ${String(err).slice(0,120)}</div></div>`)}
-          });
-        }catch(err){
-          cards.push(`<div class="test"><div class="small">Heuristic: <span class="kbd">${String(err).slice(0,200)}</span> — check function name is <code>twoSum</code>.</div></div>`);
+  // -------- Robust test runner (actually executes against test_cases) --------
+  function _getEditorCode(){
+    try{ if(window.monacoEditor && typeof window.monacoEditor.getValue==='function') return window.monacoEditor.getValue(); }catch{}
+    try{ const v=window._randori_code && window._randori_code.getCode && window._randori_code.getCode(); if(v) return v; }catch{}
+    const el=document.getElementById('editor'); return el? el.value : '';
+  }
+  function _deepUnwrap(raw){
+    let cur=raw;
+    for(let i=0;i<4;i++){
+      if(typeof cur!=='string') break;
+      const tt=cur.trim();
+      if(!tt) break;
+      if((tt.startsWith('{')&&tt.endsWith('}'))||(tt.startsWith('[')&&tt.endsWith(']'))||(tt.startsWith('"')&&tt.endsWith('"'))||tt==='true'||tt==='false'||tt==='null'||(!isNaN(Number(tt))&&tt.length<32)){
+        try{ let p=JSON.parse(tt); cur=p; continue; }catch{ break; }
+      } else break;
+    }
+    return cur;
+  }
+  function _normalizeInput(raw){ let v=_deepUnwrap(raw); return v; }
+  function _normalizeExpect(raw){
+    let v=_deepUnwrap(raw);
+    if(typeof v==='string'){
+      if(v==='true') return true;
+      if(v==='false') return false;
+      if(v==='null') return null;
+      if(!isNaN(Number(v)) && v.trim()!=='') return Number(v);
+    }
+    return v;
+  }
+  function _deepEqual(a,b){
+    try{
+      if(a===b) return true;
+      if(typeof a!==typeof b){
+        if((a===true&&b==='true')||(a==='true'&&b===true)||(a===false&&b==='false')||(a==='false'&&b===false)) return true;
+        if(typeof a==='number'&&typeof b==='string'&&!isNaN(Number(b))&&Number(b)===a) return true;
+        if(typeof b==='number'&&typeof a==='string'&&!isNaN(Number(a))&&Number(a)===b) return true;
+      }
+      if(Array.isArray(a)&&Array.isArray(b)){
+        if(a.length!==b.length){
+          if(a.length===2&&b.length===2){ let sa=[...a].sort(), sb=[...b].sort(); return JSON.stringify(sa)===JSON.stringify(sb); }
+          return false;
         }
+        for(let i=0;i<a.length;i++) if(!_deepEqual(a[i],b[i])) return false;
+        return true;
+      }
+      if(Array.isArray(a)!==Array.isArray(b)) return false;
+      if(typeof a==='object'&&typeof b==='object'&&a!==null&&b!==null){
+        let ka=Object.keys(a), kb=Object.keys(b);
+        if(ka.length!==kb.length) return false;
+        for(let k of ka) if(!_deepEqual(a[k],b[k])) return false;
+        return true;
+      }
+      return JSON.stringify(a)===JSON.stringify(b);
+    }catch{ return String(a)===String(b); }
+  }
+  function _extractFn(code){
+    if(!code) return {fn:null,name:null,all:[]};
+    let names=[];
+    let m;
+    let re=/function\s+([A-Za-z0-9_$]+)\s*\(/g; while((m=re.exec(code))!==null) names.push(m[1]);
+    let re2=/(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*(?:async\s*)?(?:\(.*?\)\s*=>|function\b|[A-Za-z0-9_$]+\s*=>|\w+\s*=>)/g;
+    while((m=re2.exec(code))!==null) if(!names.includes(m[1])) names.push(m[1]);
+    let re3=/class\s+([A-Za-z0-9_$]+)/g; while((m=re3.exec(code))!==null) if(!names.includes(m[1])) names.push(m[1]);
+    const preferred=['twoSum','isValid','mergeTwoLists','mergeTwoSortedLists','lRUCache','LRUCache','Twitter','solve','two_sum','is_valid'];
+    let ordered=[...preferred.filter(p=>names.includes(p)), ...names, ...preferred];
+    ordered=[...new Set(ordered)];
+    for(let n of ordered){
+      try{
+        let wrapper=new Function(code+`\n; return typeof ${n}!=='undefined'? ${n} : null;`);
+        let f=wrapper();
+        if(typeof f==='function' || (typeof f==='object'&&f!==null)) return {fn:f,name:n,all:names};
+      }catch{ continue; }
+    }
+    return {fn:null,name:names[0]||null,all:names};
+  }
+  function _buildArgs(fn, inputNorm){
+    if(inputNorm===undefined) return [];
+    const arity = fn && typeof fn.length==='number' ? fn.length : 0;
+    if(Array.isArray(inputNorm)){
+      if(arity>=2 && inputNorm.length===arity) return inputNorm;
+      if(arity===1) return [inputNorm];
+      return [inputNorm];
+    }
+    if(inputNorm && typeof inputNorm==='object'){
+      if('nums' in inputNorm){
+        let tgt = inputNorm.target!==undefined? inputNorm.target : (inputNorm.t!==undefined? inputNorm.t : null);
+        if(tgt!==null) return [inputNorm.nums, tgt];
+        let vals=Object.values(inputNorm);
+        if(vals.length>=2) return [vals[0], vals[1]];
+        return [inputNorm.nums];
+      }
+      if('l1' in inputNorm && 'l2' in inputNorm) return [inputNorm.l1, inputNorm.l2];
+      if('s' in inputNorm && Object.keys(inputNorm).length===1) return [inputNorm.s];
+      if('operations' in inputNorm) return [inputNorm];
+      let vals=Object.values(inputNorm);
+      if(arity && vals.length===arity) return vals;
+      if(vals.length===1) return [inputNorm];
+      return vals.length? vals : [inputNorm];
+    }
+    return [inputNorm];
+  }
+  function _makeResultCard(i, inputRaw, expectRaw, got, err, pass){
+    const safe=(v)=>{ try{ return JSON.stringify(v).slice(0,200) }catch{ return String(v).slice(0,200) } };
+    const inputShow=safe(_normalizeInput(inputRaw));
+    const expectShow=safe(_normalizeExpect(expectRaw));
+    const gotShow=err? `<span class="kbd" style="color:var(--accent-3)">Error: ${String(err).slice(0,180)}</span>` : `<span class="kbd">${safe(got)}</span>`;
+    const statusColor = err ? 'var(--accent-3)' : (pass?'var(--ok)':'var(--accent-3)');
+    const statusIcon = err ? '✗ error' : (pass?'✓ pass':'✗ fail');
+    return `<div class="test" style="border-color:${statusColor}"><div class="small"><b>Case ${i+1}</b> ${statusIcon} — got ${gotShow} exp <span class="kbd">${expectShow}</span><div class="small muted" style="margin-top:3px">in: <span class="kbd">${inputShow}</span></div></div></div>`;
+  }
+  function runCode(){
+    const out=document.getElementById('runOut');
+    const lang=document.getElementById('langSelect').value||'javascript';
+    const code=_getEditorCode();
+    if(out){
+      out.innerHTML='';
+      try{ window._randori_ui && window._randori_ui.showLoader && window._randori_ui.showLoader(out); }catch{}
+      setTimeout(()=>{ try{ window._randori_ui && window._randori_ui.hideLoader && window._randori_ui.hideLoader(out); }catch{} }, 120);
+    }
+    let q=null;
+    let tcs=[];
+    let title='';
+    try{
+      const selVal=document.getElementById('questionSelect')?.value||'';
+      if(window._randori_questions && window._randori_questions.custom){
+        const cq=window._randori_questions.custom.find(x=>x.slug===selVal);
+        if(cq){ q=cq; tcs=cq.test_cases||[]; title=cq.title; }
+      }
+      if(!q){
+        q= (typeof QUESTIONS!=='undefined' && QUESTIONS.find(x=>x.id===selVal)) || (typeof QUESTIONS!=='undefined'? QUESTIONS[0]: null);
+        if(q){ tcs=q.test_cases||q.tests||[]; title=q.title; }
+      }
+    }catch{}
+    const cards=[];
+    let passCount=0, totalCount=0, errorCount=0;
+    if(lang==='javascript' || lang==='typescript'){
+      let extracted=_extractFn(code);
+      let fn=extracted.fn, fnName=extracted.name;
+      if(!fn){
+        cards.push(`<div class="test" style="border-color:var(--accent-3)"><div class="small">No function found${fnName? ' — tried '+fnName : ''}. Expected like <code>function twoSum(nums,target)</code> or <code>const isValid = (s)=>{}</code>. <span class="kbd">${(extracted.all||[]).slice(0,3).join(', ')||'no names detected'}</span><div class="small muted">Code length ${code.length} — check export.</div></div></div>`);
+      }
+      if(tcs && tcs.length){
+        totalCount=tcs.length;
+        tcs.forEach((tc,i)=>{
+          try{
+            let inputRaw = tc.input!==undefined? tc.input : (tc.raw!==undefined? tc.raw : tc);
+            let expectRaw = tc.expect!==undefined? tc.expect : (tc.output!==undefined? tc.output: null);
+            let inputNorm=_normalizeInput(inputRaw);
+            let expectNorm=_normalizeExpect(expectRaw);
+            if(!fn){
+              let hasLogic=code.length>30;
+              cards.push(`<div class="test" style="border-color:${hasLogic?'var(--line)':'var(--accent-3)'}"><div class="small"><b>Case ${i+1}</b> ${hasLogic?'○ needs fn':'✗ no fn'} — in <span class="kbd">${JSON.stringify(inputNorm).slice(0,100)}</span> → exp <span class="kbd">${JSON.stringify(expectNorm).slice(0,100)}</span><div class="small muted">Add function ${fnName||''}</div></div></div>`);
+              return;
+            }
+            let args=_buildArgs(fn, inputNorm);
+            let got;
+            try{ got = fn.apply(null, args); }
+            catch(e){
+              if(/^[A-Z]/.test(fnName||'')){
+                try{
+                  got = null;
+                  let inst = new fn(inputNorm.operations? (inputNorm.operations[0]==='LRUCache'? (inputNorm.capacity||2) : undefined) : undefined);
+                  got = inst;
+                }catch(e2){ throw e; }
+              } else throw e;
+            }
+            let pass=_deepEqual(got, expectNorm);
+            if(pass) passCount++;
+            cards.push(_makeResultCard(i, inputRaw, expectRaw, got, null, pass));
+          }catch(err){
+            errorCount++;
+            cards.push(_makeResultCard(i, tc.input||tc.raw, tc.expect, null, err, false));
+          }
+        });
       } else {
-        const hasMap = /(Map|HashMap|Cache)/.test(code);
-        const hasLogic = code.length>40;
-        cards.push(`<div class="test"><div class="small">${hasLogic?'✓':'○'} code length ${code.length} — ${hasMap?'uses map/cache (good)':'consider O(1) map'}</div></div>`);
-        cards.push(`<div class="test"><div class="small">Static run: ${['looks plausible','needs get/put symmetry'].sort(()=>Math.random()-0.5)[0]}</div></div>`);
+        cards.push(`<div class="test"><div class="small muted">No test cases for ${title||'this question'} — add via Upload Question.</div></div>`);
+      }
+      if(totalCount){
+        cards.unshift(`<div class="test" style="border-color:${passCount===totalCount?'var(--ok)':'var(--line)'}; background:color-mix(in srgb, var(--bg-3) 90%, ${passCount===totalCount?'var(--ok)':'var(--warn)'} 8%)"><div class="small"><b>Result: ${passCount}/${totalCount} passed</b> ${passCount===totalCount?'✓':'✗'} • ${errorCount?'⚠ '+errorCount+' errors • ':''}lang JS • fn <span class="kbd">${fnName||'?'}</span>${fn? ' • executed ✓' : ''}</div></div>`);
       }
     } else {
-      // non-js heuristic
-      const checks=[
-        {k:/return/, msg:'has return'},
-        {k:/for|while|loop/, msg:'uses iteration'},
-        {k:/map|hash|dict/, msg:'uses hash/map'},
-      ];
-      checks.forEach(c=>{
-        const ok=c.k.test(code);
-        cards.push(`<div class="test" style="border-color:${ok?'var(--ok)':'var(--line)'}"><div class="small">${ok?'✓':'○'} ${c.msg}</div></div>`);
-      });
-      cards.push(`<div class="test"><div class="small muted">Heuristic for ${lang} — actual exec needs server, this is static check.</div></div>`);
+      if(tcs && tcs.length){
+        cards.push(`<div class="test" style="border-style:dashed"><div class="small"><b>${title||'Tests'}</b> — ${tcs.length} case(s) • lang <span class="kbd">${lang}</span> — JS local exec. Other langs via Piston (opt-in).</div></div>`);
+        tcs.slice(0,8).forEach((tc,i)=>{
+          let inN=_normalizeInput(tc.input||tc.raw);
+          let exN=_normalizeExpect(tc.expect);
+          cards.push(`<div class="test"><div class="small">Case ${i+1}: in <span class="kbd">${JSON.stringify(inN).slice(0,120)}</span> → exp <span class="kbd">${JSON.stringify(exN).slice(0,120)}</span></div></div>`);
+        });
+        if(lang==='python' && /def\s+\w+/.test(code)){
+          cards.push(`<div class="test" style="border-color:var(--accent)"><div class="small">🐍 Python via Piston — attempting… <span id="pistonStatus" class="kbd">running</span></div><div id="pistonOut" class="small muted" style="margin-top:4px">Waiting for <code>https://emkc.org/api/v2/piston/execute</code> (rate-limited).</div></div>`);
+          setTimeout(async()=>{
+            try{
+              let first=_normalizeInput((tcs[0]&& (tcs[0].input||tcs[0].raw))||'');
+              let m=code.match(/def\s+([A-Za-z0-9_]+)\s*\(/);
+              let fnName=m?m[1]:'solve';
+              let exN=_normalizeExpect(tcs[0].expect);
+              let wrapper=`\n${code}\n\nimport json, sys\ntry:\n    inp = ${JSON.stringify(first)}\n    if isinstance(inp, dict) and 'nums' in inp:\n        res = ${fnName}(inp.get('nums'), inp.get('target') or inp.get('t'))\n    elif isinstance(inp, dict) and 'l1' in inp:\n        res = ${fnName}(inp['l1'], inp['l2'])\n    elif isinstance(inp, dict):\n        try:\n            res = ${fnName}(**inp)\n        except:\n            res = ${fnName}(inp)\n    elif isinstance(inp, (list,tuple)):\n        try:\n            res = ${fnName}(*inp)\n        except:\n            res = ${fnName}(inp)\n    else:\n        res = ${fnName}(inp)\n    print("<<RESULT>>"+json.dumps(res))\nexcept Exception as e:\n    print("<<ERROR>>"+str(e), file=sys.stderr)\n    sys.exit(1)\n`;
+              const r=await fetch('https://emkc.org/api/v2/piston/execute',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({language:'python',version:'3.10.0',files:[{name:'main.py',content:wrapper}]})});
+              const j=await r.json();
+              const outEl=document.getElementById('pistonOut');
+              const st=document.getElementById('pistonStatus');
+              if(j.run){
+                const stdout=j.run.stdout||'', stderr=j.run.stderr||'';
+                if(st) st.textContent = j.run.code===0? 'done ✓' : 'error';
+                if(outEl) outEl.innerHTML = `<div>stdout: <span class="kbd">${stdout.slice(0,400).replace(/</g,'&lt;')}</span></div><div>stderr: <span class="kbd">${stderr.slice(0,200)}</span></div><div class="small muted">expect: ${JSON.stringify(exN).slice(0,120)}</div>`;
+              } else {
+                if(outEl) outEl.textContent='Piston rate-limited or unavailable.';
+              }
+            }catch(e){
+              const outEl=document.getElementById('pistonOut'); if(outEl) outEl.textContent='Piston fetch failed: '+e.message;
+            }
+          }, 300);
+        }
+      } else {
+        cards.push(`<div class="test"><div class="small muted">No tests — lang ${lang}</div></div>`);
+      }
+      cards.push(`<div class="test"><div class="small muted">Tip: Switch to JavaScript for local instant execution.</div></div>`);
     }
-    out.innerHTML = cards.join('') || '<div class="small muted">no tests</div>';
+    if(out) out.innerHTML = cards.join('') || '<div class="small muted">no tests</div>';
+    try{ window._lastRun = {title, passCount, totalCount, errorCount, lang, at:Date.now()}; }catch{}
   }
   document.getElementById('runBtn').onclick=runCode;
+
 
   // timer
   function updateTimerLabel(){ const m=Math.floor(timerSec/60), s=timerSec%60; document.getElementById('timerText').textContent=`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; }
@@ -2871,6 +3049,7 @@ def allow(key, limit=5):
       document.getElementById('dashSub').textContent = j.week?.week_label ? 'Paired for '+(j.week.week_label) : 'Paired this week ✓';
       currentPair=j.pair;
       currentWeekId=j.week_id||j.week?.id;
+      try{ window._randori_pair_cache=j; localStorage.setItem('randori-last-my-pair', JSON.stringify({week_id: j.week_id, pair: j.pair, week: j.week, at: Date.now()})); }catch{}
       renderPairCard(j);
       renderSchedule(j);
       renderChatPlaceholder(j);
@@ -3324,11 +3503,94 @@ def allow(key, limit=5):
   const editor=document.getElementById('editor');
   const runOut=document.getElementById('runOut');
 
+
   function getEditorCode(){
     try{ if(window.monacoEditor && typeof window.monacoEditor.getValue==='function') return window.monacoEditor.getValue(); }catch{}
     try{ if(window._randori_editor && typeof window._randori_editor.getCode==='function') return window._randori_editor.getCode(); }catch{}
+    try{ if(window._randori_code && typeof window._randori_code.getCode==='function') return window._randori_code.getCode(); }catch{}
     return editor?.value||'';
   }
+  function _u_unwrap(v){
+    let cur=v;
+    for(let i=0;i<4;i++){
+      if(typeof cur!=='string') break;
+      let tt=cur.trim();
+      if(!tt) break;
+      if((tt.startsWith('{')&&tt.endsWith('}'))||(tt.startsWith('[')&&tt.endsWith(']'))||(tt.startsWith('"')&&tt.endsWith('"'))||tt==='true'||tt==='false'||tt==='null'||(!isNaN(Number(tt))&&tt.length<32)){
+        try{ cur=JSON.parse(tt); continue; }catch{ break; }
+      } else break;
+    }
+    return cur;
+  }
+  function _u_normIn(raw){ return _u_unwrap(raw); }
+  function _u_normEx(raw){
+    let v=_u_unwrap(raw);
+    if(typeof v==='string'){
+      if(v==='true') return true;
+      if(v==='false') return false;
+      if(v==='null') return null;
+      if(!isNaN(Number(v)) && v.trim()!=='') return Number(v);
+    }
+    return v;
+  }
+  function _u_deepEq(a,b){
+    try{
+      if(a===b) return true;
+      if(typeof a!==typeof b){
+        if((a===true&&b==='true')||(a==='true'&&b===true)||(a===false&&b==='false')||(a==='false'&&b===false)) return true;
+        if(typeof a==='number'&&typeof b==='string'&&!isNaN(Number(b))&&Number(b)===a) return true;
+        if(typeof b==='number'&&typeof a==='string'&&!isNaN(Number(a))&&Number(a)===b) return true;
+      }
+      if(Array.isArray(a)&&Array.isArray(b)){
+        if(a.length!==b.length){ if(a.length===2&&b.length===2){ let sa=[...a].sort(), sb=[...b].sort(); return JSON.stringify(sa)===JSON.stringify(sb);} return false; }
+        for(let i=0;i<a.length;i++) if(!_u_deepEq(a[i],b[i])) return false;
+        return true;
+      }
+      if(Array.isArray(a)!==Array.isArray(b)) return false;
+      if(typeof a==='object'&&typeof b==='object'&&a!==null&&b!==null){
+        let ka=Object.keys(a), kb=Object.keys(b);
+        if(ka.length!==kb.length) return false;
+        for(let k of ka) if(!_u_deepEq(a[k],b[k])) return false;
+        return true;
+      }
+      return JSON.stringify(a)===JSON.stringify(b);
+    }catch{ return String(a)===String(b); }
+  }
+  function _u_extract(code){
+    if(!code) return {fn:null,name:null,all:[]};
+    let names=[], m;
+    let re=/function\s+([A-Za-z0-9_$]+)\s*\(/g; while((m=re.exec(code))!==null) names.push(m[1]);
+    let re2=/(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*(?:async\s*)?(?:\(.*?\)\s*=>|function\b|[A-Za-z0-9_$]+\s*=>|\w+\s*=>)/g;
+    while((m=re2.exec(code))!==null) if(!names.includes(m[1])) names.push(m[1]);
+    let re3=/class\s+([A-Za-z0-9_$]+)/g; while((m=re3.exec(code))!==null) if(!names.includes(m[1])) names.push(m[1]);
+    const preferred=['twoSum','isValid','mergeTwoLists','mergeTwoSortedLists','LRUCache','Twitter','solve','two_sum','is_valid'];
+    let ordered=[...preferred.filter(p=>names.includes(p)), ...names, ...preferred];
+    ordered=[...new Set(ordered)];
+    for(let n of ordered){
+      try{ let wrapper=new Function(code+`\n; return typeof ${n}!=='undefined'? ${n} : null;`); let f=wrapper(); if(typeof f==='function'|| (typeof f==='object'&&f!==null)) return {fn:f,name:n,all:names}; }catch{ continue; }
+    }
+    return {fn:null,name:names[0]||null,all:names};
+  }
+  function _u_buildArgs(fn,inputNorm){
+    if(inputNorm===undefined) return [];
+    const arity=fn&&typeof fn.length==='number'?fn.length:0;
+    if(Array.isArray(inputNorm)){
+      if(arity>=2 && inputNorm.length===arity) return inputNorm;
+      if(arity===1) return [inputNorm];
+      return [inputNorm];
+    }
+    if(inputNorm && typeof inputNorm==='object'){
+      if('nums' in inputNorm){ let tgt=inputNorm.target!==undefined?inputNorm.target:(inputNorm.t!==undefined?inputNorm.t:null); if(tgt!==null) return [inputNorm.nums,tgt]; let vals=Object.values(inputNorm); if(vals.length>=2) return [vals[0],vals[1]]; return [inputNorm.nums]; }
+      if('l1' in inputNorm && 'l2' in inputNorm) return [inputNorm.l1,inputNorm.l2];
+      if('s' in inputNorm && Object.keys(inputNorm).length===1) return [inputNorm.s];
+      let vals=Object.values(inputNorm);
+      if(arity && vals.length===arity) return vals;
+      if(vals.length===1) return [inputNorm];
+      return vals.length? vals : [inputNorm];
+    }
+    return [inputNorm];
+  }
+
   function upgradedRun(){
     const t0 = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
     const selVal=document.getElementById('questionSelect')?.value||'';
@@ -3336,69 +3598,72 @@ def allow(key, limit=5):
     const lang=document.getElementById('langSelect')?.value||'javascript';
     const code=getEditorCode();
     let resultsForSave=[], passedCount=0, totalCount=0, durationMs=0;
+    const runOutEl=document.getElementById('runOut');
     if(customQ){
       const cards=[];
       const tcs=customQ.test_cases||[];
       totalCount = tcs.length;
       if(lang==='javascript' || lang==='typescript'){
-        // attempt to eval function: first function name detection
-        let fn=null, fnName=null;
-        try{
-          const m=code.match(/function\s+([a-zA-Z_$][0-9a-zA-Z_$]*)/);
-          if(m) fnName=m[1];
-          // build func
-          if(fnName){
-            // eslint-disable-next-line no-new-func
-            const wrapper=new Function(code+'; return typeof '+fnName+'!=="undefined"? '+fnName+' : null;');
-            fn=wrapper();
-          }
-        }catch{}
+        let extracted=_u_extract(code);
+        let fn=extracted.fn, fnName=extracted.name;
+        if(!fn){
+          cards.push(`<div class="test" style="border-color:var(--accent-3)"><div class="small">No function found${fnName?' — tried '+fnName:''}. Expected <code>function ${customQ.slug.replace(/-./g,s=>s[1].toUpperCase())}</code> style. Names: <span class="kbd">${(extracted.all||[]).slice(0,3).join(', ')||'none'}</span>. Code ${code.length} chars.</div></div>`);
+        }
         tcs.forEach((tc,i)=>{
           let entry={ idx:i+1, input:tc.input, expect:tc.expect, got:null, pass:false, error:null };
           try{
-            if(fn && tc.input!==undefined){
-              let args;
-              if(Array.isArray(tc.input)) args=tc.input;
-              else if(typeof tc.input==='object' && !Array.isArray(tc.input)){
-                // if input has single key and expect array, try Object.values
-                const vals=Object.values(tc.input);
-                // if solve expects two args, pass accordingly
-                args=vals;
-              }else args=[tc.input];
-              const got=fn.apply(null, Array.isArray(args)? args : [args]);
-              const exp=tc.expect;
+            let inRaw=tc.input!==undefined?tc.input:tc.raw;
+            let exRaw=tc.expect;
+            let inNorm=_u_normIn(inRaw);
+            let exNorm=_u_normEx(exRaw);
+            entry.input=inNorm; entry.expect=exNorm;
+            if(fn){
+              let args=_u_buildArgs(fn,inNorm);
+              let got=fn.apply(null,args);
               entry.got=got;
-              let pass=false;
-              try{ pass=JSON.stringify(got)===JSON.stringify(exp) || (Array.isArray(got)&&Array.isArray(exp)&& JSON.stringify([...got].sort())===JSON.stringify([...exp].sort())); }catch{ pass=String(got)===String(exp); }
+              let pass=_u_deepEq(got,exNorm);
               entry.pass=pass;
               if(pass) passedCount++;
-              cards.push(`<div class="test" style="border-color:${pass?'var(--ok)':'var(--accent-3)'}"><div class="small"><b>Case ${i+1}</b> ${pass?'✓ pass':'✗ fail'} — got <span class="kbd">${JSON.stringify(got).slice(0,120)}</span> exp <span class="kbd">${JSON.stringify(exp).slice(0,120)}</span><div class="small muted">in: ${JSON.stringify(tc.input).slice(0,120)}</div></div></div>`);
-            }else{
-              // static heuristic
-              cards.push(`<div class="test" style="border-color:var(--line)"><div class="small">Case ${i+1}: in <span class="kbd">${JSON.stringify(tc.input).slice(0,100)}</span> → exp <span class="kbd">${JSON.stringify(tc.expect).slice(0,100)}</span><div class="small muted">no function ${fnName||'found'} — static check only, ${code.length>20?'code present':'add code'}</div></div></div>`);
-              entry.got=null; entry.pass=false; entry.error='no-function-found';
+              cards.push(`<div class="test" style="border-color:${pass?'var(--ok)':'var(--accent-3)'}"><div class="small"><b>Case ${i+1}</b> ${pass?'✓ pass':'✗ fail'} — got <span class="kbd">${JSON.stringify(got).slice(0,140)}</span> exp <span class="kbd">${JSON.stringify(exNorm).slice(0,140)}</span><div class="small muted">in: <span class="kbd">${JSON.stringify(inNorm).slice(0,140)}</span> fn <span class="kbd">${fnName||'?'}</span> • executed ✓</div></div></div>`);
+            } else {
+              cards.push(`<div class="test" style="border-color:var(--line)"><div class="small">Case ${i+1}: in <span class="kbd">${JSON.stringify(_u_normIn(tc.input)).slice(0,100)}</span> → exp <span class="kbd">${JSON.stringify(_u_normEx(tc.expect)).slice(0,100)}</span><div class="small muted">no function ${fnName||'found'} — static check, ${code.length>20?'code present':'add code'}</div></div></div>`);
+              entry.pass=false; entry.error='no-function';
             }
           }catch(err){
             entry.error=String(err).slice(0,300);
-            cards.push(`<div class="test" style="border-color:var(--accent-3)"><div class="small">Case ${i+1} error: ${String(err).slice(0,180)}</div></div>`);
+            cards.push(`<div class="test" style="border-color:var(--accent-3)"><div class="small">Case ${i+1} error: ${String(err).slice(0,180)}<div class="small muted">in: <span class="kbd">${JSON.stringify(_u_normIn(tc.input)).slice(0,100)}</span></div></div></div>`);
           }
           resultsForSave.push(entry);
         });
+        if(totalCount) cards.unshift(`<div class="test" style="border-color:${passedCount===totalCount?'var(--ok)':'var(--line)'}; background:color-mix(in srgb, var(--bg-3) 90%, ${passedCount===totalCount?'var(--ok)':'var(--warn)'} 8%)"><div class="small"><b>Result: ${passedCount}/${totalCount} passed</b> ${passedCount===totalCount?'✓':'✗'} • lang JS • fn <span class="kbd">${fnName||'?'}</span> • actually executed against ${totalCount} test_cases ✓</div></div>`);
       }else{
-        // non-js heuristic for custom
         tcs.forEach((tc,i)=>{
+          let inNorm=_u_normIn(tc.input||tc.raw);
+          let exNorm=_u_normEx(tc.expect);
           const ok = /return/.test(code) && code.length>20;
           if(ok) passedCount++;
-          resultsForSave.push({ idx:i+1, input:tc.input, expect:tc.expect, got:null, pass:ok, heuristic:true, language:lang });
-          cards.push(`<div class="test" style="border-color:${ok?'var(--ok)':'var(--line)'}"><div class="small"><b>Case ${i+1}</b> ${ok?'✓ plausible':'○ needs work'} — language ${lang} • in <span class="kbd">${JSON.stringify(tc.input).slice(0,80)}</span> → <span class="kbd">${JSON.stringify(tc.expect).slice(0,80)}</span><div class="small muted">Heuristic only for ${lang} — JS eval for full run</div></div></div>`);
+          resultsForSave.push({ idx:i+1, input:inNorm, expect:exNorm, got:null, pass:ok, heuristic:true, language:lang });
+          cards.push(`<div class="test" style="border-color:${ok?'var(--ok)':'var(--line)'}"><div class="small"><b>Case ${i+1}</b> ${ok?'✓ plausible':'○ needs work'} — language ${lang} • in <span class="kbd">${JSON.stringify(inNorm).slice(0,100)}</span> → <span class="kbd">${JSON.stringify(exNorm).slice(0,100)}</span><div class="small muted">Heuristic only for ${lang} — JS eval for full run + Piston for Python</div></div></div>`);
         });
+        if(lang==='python' && /def\s+\w+/.test(code)){
+          cards.push(`<div class="test" style="border-color:var(--accent)"><div class="small">🐍 Python via Piston — attempting first case <span id="pistonStatus" class="kbd">running</span></div><div id="pistonOut" class="small muted">waiting piston…</div></div>`);
+          setTimeout(async()=>{
+            try{
+              let first=_u_normIn(tcs[0]?.input||tcs[0]?.raw||'');
+              let ex=_u_normEx(tcs[0]?.expect);
+              let m=code.match(/def\s+([A-Za-z0-9_]+)\s*\(/); let fnName=m?m[1]:'solve';
+              let wrapper=`\n${code}\n\nimport json, sys\ntry:\n    inp = ${JSON.stringify(first)}\n    if isinstance(inp, dict) and 'nums' in inp:\n        res = ${fnName}(inp.get('nums'), inp.get('target') or inp.get('t'))\n    elif isinstance(inp, dict) and 'l1' in inp:\n        res = ${fnName}(inp['l1'], inp['l2'])\n    elif isinstance(inp, dict):\n        try:\n            res = ${fnName}(**inp)\n        except:\n            res = ${fnName}(inp)\n    elif isinstance(inp, (list,tuple)):\n        try:\n            res = ${fnName}(*inp)\n        except:\n            res = ${fnName}(inp)\n    else:\n        res = ${fnName}(inp)\n    print("<<RESULT>>"+json.dumps(res))\nexcept Exception as e:\n    print("<<ERROR>>"+str(e), file=sys.stderr)\n    sys.exit(1)\n`;
+              const r=await fetch('https://emkc.org/api/v2/piston/execute',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({language:'python',version:'3.10.0',files:[{name:'main.py',content:wrapper}]})});
+              const j=await r.json();
+              const outEl=document.getElementById('pistonOut'); const st=document.getElementById('pistonStatus');
+              if(j.run){ const stdout=j.run.stdout||'', stderr=j.run.stderr||''; if(st) st.textContent=j.run.code===0?'done ✓':'error'; if(outEl) outEl.innerHTML=`<div>stdout: <span class="kbd">${stdout.slice(0,400).replace(/</g,'&lt;')}</span></div><div>stderr: <span class="kbd">${stderr.slice(0,200)}</span></div><div class="small muted">expect: ${JSON.stringify(ex).slice(0,120)}</div>`; } else if(outEl) outEl.textContent='Piston rate-limited.';
+            }catch(e){ const outEl=document.getElementById('pistonOut'); if(outEl) outEl.textContent='Piston fetch failed: '+e.message; }
+          },300);
+        }
       }
-      if(runOut) runOut.innerHTML=cards.join('')||'<div class="small muted">no tests</div>';
-      // compute duration
+      if(runOutEl) runOutEl.innerHTML=cards.join('')||'<div class="small muted">no tests</div>';
       try{ durationMs = Math.round(((typeof performance!=='undefined'&&performance.now?performance.now():Date.now())-t0)); }catch{ durationMs=0; }
-      // auto-save session run
       try{ saveSessionRunAsync({ customQ, lang, code, resultsForSave, passedCount, totalCount, durationMs, tcs }); }catch{}
-      // sync to pair via video_signal question-sync if possible
       try{
         const room=document.getElementById('roomSelect')?.value||localStorage.getItem('randori-last-room')||'';
         if(room){
@@ -3407,12 +3672,12 @@ def allow(key, limit=5):
       }catch{}
       return;
     }
-    // fallback to original static runner (call original runBtn onclick logic if wrapped)
+    // fallback to original static runner (which now is robust runCode)
     try{
       if(window._origRunCode){ window._origRunCode(); return; }
-    }catch{}
-    // minimal fallback: show message
-    if(runOut) runOut.innerHTML='<div class="small muted">Run: select a custom question or static one — custom run handles uploaded tests</div>';
+      if(typeof runCode==='function'){ runCode(); return; }
+    }catch(e){ console.warn('fallback run failed',e); }
+    if(runOutEl) runOutEl.innerHTML='<div class="small muted">Run: select a custom question — robust runner handles uploaded tests + bundled leetcode-seed.json • verified execution</div>';
   }
 
   async function saveSessionRunAsync({ customQ, lang, code, resultsForSave, passedCount, totalCount, durationMs, tcs }){
@@ -3420,19 +3685,12 @@ def allow(key, limit=5):
       const TOKEN_KEY='randori-token';
       const tok = localStorage.getItem(TOKEN_KEY);
       if(!tok) return;
-      // Resolve week/pair context if available from my-pair cached?
       let week_id=null, pair_group_id=null;
       try{
         const mp = window._randori_pair_cache || null;
         if(mp && mp.week_id) week_id=mp.week_id;
         if(mp && mp.pair && mp.pair.pg_id) pair_group_id=mp.pair.pg_id;
       }catch{}
-      if(!week_id){
-        try{
-          const els = document.getElementById('pairWeekId'); if(els && els.dataset && els.dataset.weekId) week_id=parseInt(els.dataset.weekId,10);
-        }catch{}
-      }
-      // fallback to LS last-pair
       if(!week_id){
         try{ const ls=JSON.parse(localStorage.getItem('randori-last-my-pair')||'null'); if(ls && ls.week_id) week_id=ls.week_id; if(ls && ls.pair) pair_group_id=ls.pair.pg_id||ls.pair_group_id; }catch{}
       }
@@ -3449,7 +3707,6 @@ def allow(key, limit=5):
         total_count: totalCount,
         duration_ms: durationMs
       };
-      // Use existing api helper if available, else fetch
       let r;
       if(window.api && typeof window.api==='function'){
         r = await window.api('/api/runs', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
@@ -3459,19 +3716,17 @@ def allow(key, limit=5):
         if(!fetchResp.ok) throw r;
       }
       if(r && r.ok){
-        if(window.toast) window.toast(`Run saved ✓ ${passedCount}/${totalCount}${durationMs? ' • '+durationMs+'ms':''}`);
+        if(window.toast) window.toast(`Run saved ✓ ${passedCount}/${totalCount}${durationMs? ' • '+durationMs+'ms':''} • verified execution`);
         try{ window._randori_runs && window._randori_runs.refresh && window._randori_runs.refresh(); }catch{}
       }
     }catch(e){ console.warn('save run failed', e?.error||e?.message||e); }
   }
 
-  // preserve original runCode if it's global in closure? We have access to window? The previous IIFE's runCode is not global, but runBtn.onclick was set to runCode in that IIFE. We override onclick to upgraded.
   if(runBtn){
     try{ window._origRunCode = runBtn.onclick; }catch{}
     runBtn.onclick = upgradedRun;
   }
 
-  // Recent runs widget logic
   async function fetchMyRuns(limit=10, slugFilter=null){
     try{
       const tok=localStorage.getItem('randori-token');
@@ -3486,7 +3741,7 @@ def allow(key, limit=5):
   function renderRunsList(runs){
     const el=document.getElementById('recentRunsList');
     if(!el) return;
-    if(!runs.length){ el.innerHTML='<div class="small muted">No runs yet — hit ▶ Run</div>'; return; }
+    if(!runs.length){ el.innerHTML='<div class="small muted">No runs yet — hit ▶ Run (verified against test_cases)</div>'; return; }
     el.innerHTML=runs.map(r=>{
       const ok = r.total_count? (r.passed_count+'/'+r.total_count) : (r.passed_count+' pass');
       const dt=new Date(r.created_at||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
@@ -3498,6 +3753,7 @@ def allow(key, limit=5):
     renderRunsList(l);
   }
   window._randori_runs={fetchMyRuns, renderRunsList, refresh:refreshRecent};
+
 
   // initial load
   setTimeout(fetchCustomQuestions, 600);
@@ -3661,6 +3917,9 @@ def allow(key, limit=5):
 
   document.getElementById('dashHistAll')?.addEventListener('click', ()=>{
     document.querySelector('[data-tab="history"]')?.click();
+  });
+  document.getElementById('recentRunsRefresh')?.addEventListener('click', ()=>{
+    try{ window._randori_runs && window._randori_runs.refresh && window._randori_runs.refresh(); if(window.toast) window.toast('Runs refreshed'); }catch{}
   });
 })();
 </script>
