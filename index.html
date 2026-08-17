@@ -1819,7 +1819,154 @@ def allow(key, limit=5):
   // load initial question
   renderQuestion(QUESTIONS[0].id);
 
-  // tiny self-test: if hash stable
+  // ---------- AI Recording + Groq Feedback (video-aware, evidence-enforced) ----------
+  let aiRecording = false;
+  let aiStartTime = null;
+  let aiCodeSnaps = [];
+  let aiRecordTimer = null;
+
+  const aiRecordBtn = document.getElementById('aiRecordBtn');
+  const aiAnalyzeBtn = document.getElementById('aiAnalyzeBtn');
+  const aiHistoryBtn = document.getElementById('aiHistoryBtn');
+  const aiTranscript = document.getElementById('aiTranscript');
+  const aiInterviewerQs = document.getElementById('aiInterviewerQs');
+  const aiStatus = document.getElementById('aiStatus');
+  const aiDebug = document.getElementById('aiRouterDebug');
+  const aiFeedbackEl = document.getElementById('aiFeedback');
+
+  function aiSetStatus(msg, isError){
+    if(!aiStatus) return;
+    aiStatus.textContent = msg;
+    aiStatus.style.color = isError ? 'var(--accent-3)' : 'var(--ink-3)';
+  }
+
+  if (aiRecordBtn) {
+    aiRecordBtn.onclick = () => {
+      aiRecording = !aiRecording;
+      if (aiRecording) {
+        aiStartTime = Date.now();
+        aiCodeSnaps = [];
+        const curCode = document.getElementById('editor')?.value || '';
+        aiCodeSnaps.push({ at: 0, code: curCode.slice(0,4000), note: 'start' });
+        aiSetStatus('● Recording — code edits + transcript being captured…');
+        aiRecordBtn.textContent = '■ Stop';
+        aiRecordBtn.style.background = '#e6c07a';
+        aiRecordBtn.style.color = '#12100f';
+        // capture edits every 8s debounced via existing persistRoom input handler hook
+        document.getElementById('editor')?.addEventListener('input', aiCaptureEdit);
+        if (aiRecordTimer) clearInterval(aiRecordTimer);
+        aiRecordTimer = setInterval(()=>{ if(aiRecording) aiSetStatus(`● Recording ${Math.round((Date.now()-aiStartTime)/1000)}s — ${aiCodeSnaps.length} snapshots, ${ (aiTranscript?.value||'').length} transcript chars`); }, 5000);
+      } else {
+        aiRecording = false;
+        if (aiRecordTimer) clearInterval(aiRecordTimer);
+        document.getElementById('editor')?.removeEventListener('input', aiCaptureEdit);
+        aiRecordBtn.textContent = '● Record';
+        aiRecordBtn.style.background = '';
+        aiRecordBtn.style.color = '';
+        aiSetStatus(`Paused — ${aiCodeSnaps.length} code snapshots, ready to Analyze`);
+      }
+    };
+  }
+
+  function aiCaptureEdit(){
+    if(!aiRecording) return;
+    const code = document.getElementById('editor')?.value || '';
+    const last = aiCodeSnaps[aiCodeSnaps.length-1];
+    if (last && last.code === code.slice(0,4000)) return;
+    aiCodeSnaps.push({ at: Math.round((Date.now()-aiStartTime)/1000), code: code.slice(0,4000), lang: document.getElementById('langSelect')?.value||'js' });
+    // trim to last 6
+    if (aiCodeSnaps.length>6) aiCodeSnaps = aiCodeSnaps.slice(-6);
+  }
+
+  async function aiAnalyze(){
+    const room = document.getElementById('roomSelect')?.value || currentRoom || 'manual';
+    const pairLabel = document.getElementById('roomLabel')?.textContent || room;
+    const transcript = aiTranscript?.value?.trim() || '';
+    const iq = aiInterviewerQs?.value?.trim() || '';
+    const editorCode = document.getElementById('editor')?.value || '';
+    const combinedCode = aiCodeSnaps.length ? JSON.stringify(aiCodeSnaps).slice(0,12000) + '\nLATEST:\n'+editorCode.slice(0,8000) : editorCode;
+    const durationSec = aiStartTime ? Math.round((Date.now()-aiStartTime)/1000) : (timerSec ? (25*60 - timerSec) : 0);
+
+    if (!transcript && !combinedCode) { toast('Add transcript or have code to analyze'); return; }
+    if (!authToken) { toast('Sign in to use Groq AI — free tier 14k req/day'); return; }
+
+    aiSetStatus('⚡ Calling Groq router — picking model by session…');
+    if (aiAnalyzeBtn) { aiAnalyzeBtn.disabled = true; aiAnalyzeBtn.textContent = '…analyzing'; }
+    if (aiDebug) { aiDebug.style.display='block'; aiDebug.innerHTML = '⏳ picking model: short→8b-instant, long/system-design→70b-versatile, respecting free-tier…'; }
+    if (aiFeedbackEl) aiFeedbackEl.innerHTML = '';
+
+    try {
+      const j = await api('/api/ai/analyze', { method:'POST', body:{ room_id: room, pair_label: pairLabel, transcript, code: combinedCode, interviewer_questions: iq, duration_sec: durationSec, role: role||'both', started_at: aiStartTime? new Date(aiStartTime).toISOString(): null } });
+      const fb = j.feedback;
+      const model = j.model_used;
+      const reason = j.reason_for_pick;
+      const cost = j.estimated_cost;
+      const ev = j.evidence_validated;
+      const dbg = j.debug;
+
+      if (aiDebug) {
+        aiDebug.innerHTML = `<b>Model:</b> ${model}<br><b>Why:</b> ${reason}<br><b>Cost:</b> $${cost?.usd||'0.0000'} (${cost?.tokens_in||'?'} in / ${cost?.tokens_out||'?'} out)${cost?.groq_usage? ' — Groq usage '+JSON.stringify(cost.groq_usage): ''}<br><b>Evidence:</b> ${ev.validated}/${ev.total} validated (${Math.round((ev.score||0)*100)}%) ${ev.loweredConfidence?' — some lowered confidence due to no direct quote':''}<br><b>Free-tier:</b> ${dbg?.groq_router?.free_tier_calls_today||0}/14400 today • ${dbg?.groq_router?.alternatives?.join(' vs ')||''}<br>${j.mocked?'<span style="color:var(--warn)">Mocked — set GROQ_API_KEY in Vercel env to get real Groq</span>':''}`;
+      }
+
+      if (!fb) throw { error:'no feedback returned' };
+
+      const c = fb.candidate||{strengths:[],improvements:[]};
+      const iv = fb.interviewer||{strengths:[],improvements:[]};
+
+      function chipForEvidence(ev){
+        if (!ev || ev==='no direct quote' || ev.includes('no direct')) return `<span class="kbd" style="background:#e6c07a22;border-color:#e6c07a">no direct quote</span>`;
+        return `<span class="kbd" style="background:#9cc0b522;border-color:#9cc0b5;color:#9cc0b5" title="${ev.replace(/"/g,'&quot;')}">“${ev.slice(0,80)}${ev.length>80?'…':''}”</span>`;
+      }
+
+      const html = `
+        <div class="card" style="border-color:var(--ok)"><div class="card-h"><h3 style="font-size:13px">Candidate ${fb.overall_score? `<span class="kbd">${fb.overall_score}/10</span>` : ''}</h3><span class="kbd" title="session ${j.session_id}">#${String(j.session_id).slice(-4)}</span></div>
+          <div class="card-b" style="display:grid;gap:8px">
+            <div><b class="small">Strengths</b><div style="display:grid;gap:6px;margin-top:4px">${(c.strengths||[]).map(s=>`<div class="test" style="border-color:var(--ok)"><div class="small"><b>${s.point}</b> ${chipForEvidence(s.evidence)} ${s.confidence? `<span class="kbd">${Math.round((s.confidence||0.8)*100)}%</span>`:''}</div></div>`).join('')||'<span class="small muted">none listed</span>'}</div></div>
+            <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(c.improvements||[]).map(s=>`<div class="test" style="border-color:var(--accent-3)"><div class="small"><b>${s.point}</b> ${chipForEvidence(s.evidence)}<div class="small muted" style="margin-top:3px">↳ ${s.suggestion||''}</div></div></div>`).join('')||'<span class="small muted">none listed</span>'}</div></div>
+          </div>
+        </div>
+        <div class="card" style="border-color:var(--accent-2)"><div class="card-h"><h3 style="font-size:13px">Interviewer</h3><span class="kbd">${model}</span></div>
+          <div class="card-b" style="display:grid;gap:8px">
+            <div><b class="small">Strengths</b><div style="display:grid;gap:6px;margin-top:4px">${(iv.strengths||[]).map(s=>`<div class="test"><div class="small"><b>${s.point}</b> ${chipForEvidence(s.evidence)}</div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
+            <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(iv.improvements||[]).map(s=>`<div class="test"><div class="small"><b>${s.point}</b> ${chipForEvidence(s.evidence)}<div class="small muted">↳ ${s.suggestion||''}</div></div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
+          </div>
+        </div>
+        <div class="card" style="border-style:dashed"><div class="card-h"><h3 style="font-size:13px">Next time checklist</h3><span class="kbd">overall ${fb.overall_score||'-'}/10</span></div><div class="card-b small">${(fb.next_time_checklist||[]).map(x=>`• ${x}`).join('<br>')||'no checklist'}</div></div>
+      `;
+
+      if (aiFeedbackEl) aiFeedbackEl.innerHTML = html;
+      aiSetStatus(`✓ Feedback ready — ${model} — evidence ${ev.validated}/${ev.total}`);
+      toast(`AI ready ${model}`);
+
+    } catch(e){
+      const msg = e.error || e.message || (e.raw?.slice?.(0,200)) || 'analyze failed';
+      aiSetStatus(`AI error: ${msg}`, true);
+      if (aiDebug) aiDebug.innerHTML += `<br><span style="color:var(--accent-3)">Error: ${msg}</span>`;
+      toast(`AI: ${msg}`);
+    } finally {
+      if (aiAnalyzeBtn) { aiAnalyzeBtn.disabled = false; aiAnalyzeBtn.textContent = '⚡ Get AI Feedback'; }
+    }
+  }
+
+  async function aiLoadHistory(){
+    if (!authToken) { toast('Sign in for AI history'); return; }
+    try{
+      const j = await api('/api/ai/history', {method:'GET'});
+      const list = j.feedbacks||[];
+      if (!list.length) { aiSetStatus('No AI feedback yet — run one above'); return; }
+      const html = `<div class="small muted">${list.length} past sessions — calls today ${j.usage_today?.calls||0}/14400</div><div style="display:grid;gap:6px;margin-top:6px">${list.slice(0,8).map(r=>`<div class="test"><div class="small"><span class="kbd">#${r.session_id}</span> ${r.pair_label||r.room_id||'room'} — <span class="kbd">${r.model_used?.slice(0,18)||'model'}</span> ${r.duration_sec? `• ${Math.round(r.duration_sec/60)}m`:''} <span class="kbd" style="float:right">${new Date(r.created_at).toLocaleString()}</span></div></div>`).join('')}</div>`;
+      if (aiFeedbackEl) aiFeedbackEl.innerHTML = html;
+      aiSetStatus(`History loaded ${list.length}`);
+    }catch(e){ toast('history error: '+(e.error||e.message)); }
+  }
+
+  if (aiAnalyzeBtn) aiAnalyzeBtn.onclick = aiAnalyze;
+  if (aiHistoryBtn) aiHistoryBtn.onclick = aiLoadHistory;
+
+  // tiny hook for parallel video subagent: expose ai globals
+  window._randori_ai = { get recording(){return aiRecording}, get snaps(){return aiCodeSnaps}, analyze: aiAnalyze };
+
+  // ---------- tiny self-test: if hash stable
   console.assert(colorOf('Festus')===colorOf('festus'), 'color stable lowercasing');
 })();
 </script>

@@ -116,6 +116,48 @@ curl -s http://localhost:3000/api/weeks | jq
 curl -s -X POST http://localhost:3000/api/admin/reshuffle -H "Authorization: Bearer $ADMIN_TOKEN" | jq
 # cron manual
 curl -s "http://localhost:3000/api/cron/weekly?secret=$CRON_SECRET" | jq
+# AI feedback (Groq router)
+# set GROQ_API_KEY in Vercel env first — free tier 14,400 req/day, ~$0.05/1M for 8b-instant
+curl -s http://localhost:3000/api/ai/analyze -H "Authorization: Bearer $TOKEN" -H content-type:application/json -d '{"room_id":"room-abc","pair_label":"Festus×Priya","transcript":"Interviewer: explain hashmap?\nCandidate: I used Map because O(1)...\nInterviewer: edge case empty?", "code":"function twoSum(nums,t){ const m=new Map(); }","interviewer_questions":"What if duplicate?","duration_sec":480}' | jq
+# get feedback by session id
+curl -s http://localhost:3000/api/ai/feedback/1 -H "Authorization: Bearer $TOKEN" | jq
+# history + usage today
+curl -s http://localhost:3000/api/ai/history -H "Authorization: Bearer $TOKEN" | jq
 ```
+
+### AI / Groq Router (video-aware)
+
+**Why Groq:** fastest inference, free 14.4k req/day, OpenAI-compatible HTTP, no heavy SDK. Cheap-first routing keeps cost near zero for friends circle.
+
+**Env var in Vercel → Env Vars:**
+```
+GROQ_API_KEY=gsk_xxx  # https://console.groq.com/keys — free tier 14k req/day, 6k TPM
+```
+
+**Endpoints:**
+- `POST /api/ai/analyze` — Bearer required. Body `{room_id, pair_label, transcript, code (or code_snapshots frozen array), interviewer_questions, duration_sec, role}`. Returns `{ok, mocked?, session_id, feedback_id, model_used, reason_for_pick, estimated_cost:{cents,usd,tokens_in,tokens_out,groq_usage}, evidence_validated:{validated,total,score}, feedback:{candidate:{strengths:[{point,evidence,confidence}],improvements:[{point,evidence,suggestion}]}, interviewer:{...}, overall_score, next_time_checklist}, debug:{groq_router:{picked, why, alternatives, free_tier_calls_today}}}`.
+- `GET /api/ai/feedback/:id` or `?id=` — Bearer — single session feedback
+- `GET /api/ai/history` — Bearer — last 20 feedbacks + `usage_today:{date,calls,tokens_in,tokens_out}`.
+
+**Tables auto-created on first call:**
+```sql
+ai_sessions (id PK, room_id TEXT, pair_label TEXT, transcript TEXT, code_snapshots TEXT, interviewer_questions TEXT, started_at, ended_at, duration_sec INTEGER, cost_cents INTEGER, created_at, created_by INTEGER)
+ai_feedback (id PK, session_id INTEGER FK, role TEXT, feedback_json TEXT, evidence TEXT, model_used TEXT, reason_for_pick TEXT, estimated_cost_cents INTEGER, confidence REAL, created_at)
+ai_usage (date TEXT PK, calls INTEGER, tokens_in INTEGER, tokens_out INTEGER, updated_at TEXT)
+```
+
+**Router logic (cheap/free-first):**
+- No key → mocked template feedback that still pulls evidence from transcript/code (so UI works without key, flags `mocked:true`).
+- Estimates tokens as len/4. Checks `ai_usage` daily counts. If >13k calls today or >8M tokens — forces `llama-3.1-8b-instant` cheapest.
+- If totalIn >6k tokens or transcript >24k chars → `llama-3.3-70b-versatile` for summarization.
+- If duration >20m or interviewer_questions >500 chars or system-design-ish → 70b versatile.
+- Else short code review/quick → 8b-instant $0.05/1M in / $0.08 out vs $0.59/$0.79 for 70b. Cost cents stored per session, summed in `ai_usage`.
+
+**Prompt / evidence enforcement:** Groq prompt demands JSON with `evidence` being exact verbatim substring from transcript/code. Post-process verifies case-insensitive substring existence; fuzzy 5-word then 3-word chunk check. If not found, replaces evidence with `no direct quote - inferred` and caps confidence ≤0.6. Returns `evidence_validated` score (validated/total). Evidence chips in UI show green quote chip vs yellow "no direct quote".
+
+**Frontend:** Live Code view now has AI panel under Run output — Record button toggles recording of code snapshots (every edit, trimmed to last 6) + manual transcript / interviewer Qs textareas. Get AI Feedback calls `/api/ai/analyze`, spinner, then renders two cards (Candidate strengths/improvements, Interviewer strengths/improvements) with evidence chips + checklist + overall score. Debug box shows which model picked + why + cost + free-tier calls + alternatives (8b vs 70b). History button fetches `/api/ai/history`. Works video-aware via `window._randori_ai` exposed for parallel video subagent.
+
+**Without GROQ_API_KEY:** returns mocked feedback from same JSON shape so UI still demoable, `model_used` suffixed "(mocked - no key)" and debug notes.
+
 
 
