@@ -1,5 +1,165 @@
-import { getClient, getJwtSecret } from './_db.js';
+import { getClient, getJwtSecret, getAdminEmails } from './_db.js';
 import jwt from 'jsonwebtoken';
+
+function isAdminCheck(email, flag){
+  if (flag) return true;
+  if (!email) return false;
+  try{ return getAdminEmails().has(String(email).toLowerCase().trim()); }catch{ return false; }
+}
+async function getCallerAdmin(db, payload){
+  const callerEmail = (payload.email||payload.e||'').toString().toLowerCase().trim();
+  const callerId = payload.id||payload.uid;
+  let callerIsAdminFlag=false, callerDbRow=null;
+  if (callerId){ try{ const cr=await db.execute({ sql:`SELECT id,email,is_admin FROM auth_accounts WHERE id=?`, args:[callerId]}); if(cr.rows.length){ callerDbRow=cr.rows[0]; callerIsAdminFlag=!!cr.rows[0].is_admin; }}catch{} }
+  if (!callerDbRow && callerEmail){ try{ const cr2=await db.execute({ sql:`SELECT id,email,is_admin FROM auth_accounts WHERE lower(email)=?`, args:[callerEmail]}); if(cr2.rows.length){ callerDbRow=cr2.rows[0]; callerIsAdminFlag=!!cr2.rows[0].is_admin; }}catch{} }
+  if (payload?.is_admin) callerIsAdminFlag=true;
+  const callerIsAdmin = isAdminCheck(callerEmail, callerIsAdminFlag) || !!callerIsAdminFlag;
+  return {callerEmail, callerId, callerIsAdminFlag, callerIsAdmin};
+}
+async function requireAdminDT(req,res){
+  const auth = req.headers.authorization||'';
+  const m = auth.match(/^Bearer\s+(.+)$/);
+  if (!m){ res.status(401).json({ error:'missing Bearer - admin only' }); return null; }
+  let payload; try{ payload=jwt.verify(m[1], getJwtSecret()); }catch(e){ res.status(401).json({ error:'invalid token', detail:String(e.message||e).slice(0,100)}); return null; }
+  const db=getClient(); await ensureBaseTables(db); await ensureProfileMigrations(db);
+  const ctx=await getCallerAdmin(db,payload);
+  if(!ctx.callerIsAdmin){ res.status(403).json({ error:'admin only', you_are:ctx.callerEmail||'unknown' }); return null; }
+  return {db, payload, ...ctx};
+}
+
+// ----- LeetCode proxy + DB cache helpers -----
+function htmlToText(html){
+  if(!html) return '';
+  let t = String(html);
+  t = t.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi,'\n\n').replace(/<\/li>/gi,'\n').replace(/<\/div>/gi,'\n');
+  t = t.replace(/<[^>]*>/g,' ').replace(/&nbsp;/g,' ').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'");
+  t = t.replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').replace(/ {2,}/g,' ');
+  return t.trim().slice(0,12000);
+}
+function parseLeetConstraints(contentHtml){
+  const text = htmlToText(contentHtml);
+  // naive: look for lines like "Constraints:" or bullet list
+  const m = text.match(/Constraints:\s*([\s\S]{0,800})/i);
+  if (m) return m[1].trim().split('\n').slice(0,8).join(' | ').slice(0,1000);
+  // fallback: look for <code> with exponents
+  return '';
+}
+function buildTestCasesFromExampleTestcases(exampleTestcases, content){
+  const out=[];
+  if (!exampleTestcases) return out;
+  const lines = String(exampleTestcases).split('\n').map(s=>s.trim()).filter(Boolean);
+  // Heuristic: LeetCode exampleTestcases is either single test per line bundle where lines grouped oddly; each line is whole input set.
+  // e.g. "[2,7,11,15]\n9\n[3,2,4]\n6" actually two separate testcases each with 2 lines? Real API separates by newline where each testcase may be 1 or 2 lines.
+  // For MVP we treat each non-empty line as one raw case, but also attempt pair-wise if we detect even split.
+  // Use raw + input = raw
+  for (let i=0;i<lines.length;i++){
+    const raw = lines[i];
+    // Try parse as JSON-ish to produce input object later; keep raw
+    out.push({ input: raw, expect:null, raw });
+    if (out.length>=12) break;
+  }
+  // Enrich from examples HTML if we can extract <pre> Example I/O
+  if (content){
+    const preMatches = [...String(content).matchAll(/<pre[^>]*>([\s\S]*?)<\/pre>/gi)];
+    for (const pm of preMatches.slice(0,3)){
+      const txt = htmlToText(pm[1]).slice(0,800);
+      if (txt.toLowerCase().includes('example') || out.length<2){
+        // keep as example, not testcase duplication
+      }
+    }
+  }
+  return out;
+}
+async function fetchWithTimeout(url, opts={}, timeoutMs=6000){
+  const ctrl = new AbortController();
+  const id = setTimeout(()=>ctrl.abort(), timeoutMs);
+  try{
+    const r = await fetch(url, {...opts, signal: ctrl.signal});
+    clearTimeout(id);
+    return r;
+  }catch(e){ clearTimeout(id); throw e; }
+  finally{ clearTimeout(id); }
+}
+async function leetGraphQLQuestion(slug){
+  const query = `
+  query questionData($titleSlug:String!){
+    question(titleSlug:$titleSlug){
+      questionId
+      questionFrontendId
+      title
+      titleSlug
+      content
+      difficulty
+      exampleTestcases
+      topicTags{ name slug }
+      stats
+    }
+  }`;
+  const r = await fetchWithTimeout('https://leetcode.com/graphql', {
+    method:'POST',
+    headers:{
+      'Content-Type':'application/json',
+      'User-Agent':'Randori-Circle/1.0 (+https://randori.circle) LeetCode-proxy',
+      'Referer':'https://leetcode.com/',
+      'Origin':'https://leetcode.com'
+    },
+    body: JSON.stringify({ query, variables:{ titleSlug: slug } })
+  }, 8000);
+  if (!r.ok) throw new Error(`leetcode gql ${r.status}`);
+  const j = await r.json();
+  if (j.errors) throw new Error(`gql error ${JSON.stringify(j.errors).slice(0,200)}`);
+  const q = j.data?.question;
+  if (!q) throw new Error('question not found');
+  return q;
+}
+async function leetEnrichAlfa(slug){
+  try{
+    const r = await fetchWithTimeout(`https://alfa-leetcode-api.onrender.com/select?titleSlug=${encodeURIComponent(slug)}`, {
+      headers:{ 'User-Agent':'Randori-Circle/1.0' }
+    }, 4000);
+    if (!r.ok) return null;
+    const j = await r.json();
+    // structure: { questionId, exampleTestcases, ... } varying
+    return j;
+  }catch{ return null; }
+}
+async function leetListSlugs(limit=100, skip=0){
+  // try GraphQL list
+  try{
+    const query = `
+    query problemsetQuestionList($categorySlug: String, $skip: Int, $limit: Int, $filters: {}) {
+      problemsetQuestionList: questionList(categorySlug: $categorySlug, skip: $skip, limit: $limit, filters: $filters) {
+        total: totalNum
+        questions: data {
+          titleSlug
+        }
+      }
+    }`;
+    const r = await fetchWithTimeout('https://leetcode.com/graphql', {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'User-Agent':'Randori-Circle/1.0' },
+      body: JSON.stringify({ query, variables:{ categorySlug:"", skip, limit, filters:{} } })
+    }, 7000);
+    if (r.ok){
+      const j = await r.json();
+      const total = j.data?.problemsetQuestionList?.total ?? null;
+      const qs = j.data?.problemsetQuestionList?.questions?.map(q=>q.titleSlug).filter(Boolean) ?? [];
+      if (qs.length) return { slugs: qs, total };
+    }
+  }catch{}
+  // fallback static problems/all (large ~2800) – need to slice
+  try{
+    const r = await fetchWithTimeout('https://leetcode.com/api/problems/all/', { headers:{ 'User-Agent':'Randori-Circle/1.0' } }, 7000);
+    if (r.ok){
+      const j = await r.json();
+      const pairs = j.stat_status_pairs||[];
+      const slugs = pairs.map(p=>p.stat?.question__title__slug).filter(Boolean);
+      const sliced = slugs.slice(skip, skip+limit);
+      return { slugs: sliced, total: slugs.length };
+    }
+  }catch{}
+  return { slugs: [], total: 0 };
+}
 
 function getEndpoint(req){
   const q = req.query?.endpoint;
@@ -606,9 +766,170 @@ async function handleStats(req,res){
   return res.json(out);
 }
 
+// ----- LeetCode proxy endpoints -----
+async function handleLeetcode(req,res){
+  // GET ?slug=two-sum or /api/leetcode/two-sum
+  if (req.method!=='GET') return res.status(405).json({ error:'GET only for leetcode detail' });
+  const db = getClient();
+  await ensureBaseTables(db); await ensureProfileMigrations(db);
+  const url = new URL(req.url, 'http://localhost');
+  let slug = (req.query?.slug || url.searchParams.get('slug') || '').toString().trim().toLowerCase();
+  if (!slug){
+    // try to parse from pathname /api/leetcode/two-sum
+    const parts = url.pathname.split('/').filter(Boolean);
+    const idx = parts.findIndex(p=>p.toLowerCase().includes('leet'));
+    if (idx>=0 && parts[idx+1]) slug = parts[idx+1].toLowerCase();
+  }
+  if (!slug) return res.status(400).json({ error:'slug required, e.g. ?slug=two-sum' });
+
+  // Check cache first (DB)
+  try{
+    const cached = await db.execute({ sql:`SELECT id, slug, title, difficulty, category, description, test_cases, examples, leetcode_slug, source FROM custom_questions WHERE leetcode_slug=? OR slug=? LIMIT 1`, args:[slug, slug] });
+    if (cached.rows.length){
+      const r=cached.rows[0];
+      let tcs=[]; try{ tcs=JSON.parse(r.test_cases||'[]')}catch{}
+      let ex=[]; try{ ex=JSON.parse(r.examples||'[]')}catch{}
+      return res.json({ ok:true, cached:true, question:{ id:r.id, slug:r.slug, title:r.title, difficulty:r.difficulty, category:r.category, description:r.description, test_cases:tcs, examples:ex, leetcode_slug:r.leetcode_slug, source:r.source, slug }});
+    }
+  }catch{}
+
+  try{
+    const q = await leetGraphQLQuestion(slug);
+    const descHtml = q.content||'';
+    const descText = htmlToText(descHtml) || q.title;
+    const difficulty = q.difficulty || 'Medium';
+    const tags = (q.topicTags||[]).map(t=>t.slug||t.name).slice(0,3);
+    const category = tags[0]||'dsa';
+    const exampleTestcases = q.exampleTestcases||'';
+    let testCases = buildTestCasesFromExampleTestcases(exampleTestcases, descHtml);
+    // Try enrichment alfa
+    let enriched=null;
+    try{ enriched = await leetEnrichAlfa(slug); }catch{}
+    if (enriched && enriched.exampleTestcases && String(enriched.exampleTestcases).length > (exampleTestcases||'').length){
+      const richer = buildTestCasesFromExampleTestcases(enriched.exampleTestcases, descHtml);
+      if (richer.length>testCases.length) testCases = richer;
+    }
+    // Fallback: if still empty, make a dummy single case from examples block
+    if (!testCases.length){
+      testCases=[{ input:`example from ${slug}`, expect:null, raw:`see description` }];
+    }
+    // constraints
+    const constraints = parseLeetConstraints(descHtml);
+    const examplesJson = JSON.stringify([ { input: exampleTestcases.slice(0,800), output: '', explanation:'' } ]).slice(0,4000);
+    const ret = {
+      questionId: q.questionId||q.questionFrontendId,
+      title: q.title,
+      titleSlug: q.titleSlug,
+      slug: q.titleSlug,
+      content: descHtml,
+      description: descText,
+      description_html: descHtml,
+      difficulty,
+      category,
+      topicTags: q.topicTags||[],
+      exampleTestcases,
+      constraints,
+      test_cases: testCases,
+      examples: [{ input: exampleTestcases, output:'', explanation:'' }],
+      source:'leetcode-proxy',
+      leetcode_slug: q.titleSlug,
+    };
+    return res.json({ ok:true, cached:false, question:ret });
+  }catch(e){
+    return res.status(500).json({ ok:false, error:'leetcode fetch failed', slug, detail:String(e.message||e).slice(0,300) });
+  }
+}
+
+async function handleLeetcodeSync(req,res){
+  if (req.method!=='POST') return res.status(405).json({ error:'POST only for leetcode-sync' });
+  const adminCtx = await requireAdminDT(req,res);
+  if (!adminCtx) return;
+  const db = adminCtx.db;
+  await ensureBaseTables(db); await ensureProfileMigrations(db);
+  const url = new URL(req.url,'http://localhost');
+  const limit = Math.min(50, Math.max(1, parseInt(String(req.query?.limit||url.searchParams.get('limit')||'20'),10)||20));
+  const skip = Math.max(0, parseInt(String(req.query?.skip||url.searchParams.get('skip')||'0'),10)||0);
+  const singleSlug = (req.query?.slug||url.searchParams.get('slug')||req.body?.slug||'').toString().trim().toLowerCase();
+  let slugsInfo;
+  let slugs=[];
+  if (singleSlug){
+    slugs=[singleSlug];
+    slugsInfo={ total:1, slugs };
+  }else{
+    try{ slugsInfo = await leetListSlugs(limit, skip); slugs = slugsInfo.slugs||[]; }
+    catch(e){ return res.status(500).json({ error:'failed to list slugs', detail:String(e.message||e).slice(0,200)}); }
+  }
+  // If list empty, try to fallback to provided body.slugs array
+  if (!slugs.length && Array.isArray(req.body?.slugs)) slugs = req.body.slugs.map(s=>String(s).toLowerCase().trim()).filter(Boolean).slice(0,limit);
+  if (!slugs.length) return res.status(400).json({ error:'no slugs to sync', hint:'pass ?slug=two-sum or ensure LeetCode list fetch works' });
+
+  const synced=[]; const errors=[];
+  for (let i=0;i<slugs.length;i++){
+    const slug = slugs[i];
+    try{
+      const q = await leetGraphQLQuestion(slug);
+      const descHtml = q.content||'';
+      const descText = htmlToText(descHtml)||q.title;
+      const difficulty = q.difficulty||'Medium';
+      const tags = (q.topicTags||[]).map(t=>t.slug||t.name).slice(0,3);
+      const category = tags[0]||'dsa';
+      let testCases = buildTestCasesFromExampleTestcases(q.exampleTestcases||'', descHtml);
+      // enrichment attempt (best-effort)
+      try{
+        const alfa = await leetEnrichAlfa(slug);
+        if (alfa && alfa.exampleTestcases && String(alfa.exampleTestcases).length > String(q.exampleTestcases||'').length){
+          const richer = buildTestCasesFromExampleTestcases(alfa.exampleTestcases, descHtml);
+          if (richer.length>testCases.length) testCases=richer;
+        }
+      }catch{}
+      if (!testCases.length) testCases=[{ input:`example from ${slug}`, expect:null, raw:`see description` }];
+      const constraints = parseLeetConstraints(descHtml);
+      const examplesStr = JSON.stringify([{ input:q.exampleTestcases||'', output:'', explanation:'' }]).slice(0,4000);
+      const tcsStr = JSON.stringify(testCases).slice(0,15000);
+      // upsert
+      await db.execute({ sql:`INSERT INTO custom_questions (slug, title, type, difficulty, category, description, input_format, constraints_text, examples, test_cases, starter_per_lang, author_id, source, leetcode_slug, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))
+        ON CONFLICT(slug) DO UPDATE SET
+          title=excluded.title,
+          difficulty=excluded.difficulty,
+          category=excluded.category,
+          description=excluded.description,
+          constraints_text=excluded.constraints_text,
+          examples=excluded.examples,
+          test_cases=excluded.test_cases,
+          source=excluded.source,
+          leetcode_slug=excluded.leetcode_slug
+      `, args:[
+        slug,
+        q.title||slug,
+        'dsa',
+        difficulty,
+        category,
+        descText,
+        null,
+        constraints||null,
+        examplesStr,
+        tcsStr,
+        JSON.stringify({}),
+        adminCtx.payload.id||adminCtx.callerId||null,
+        'leetcode',
+        q.titleSlug||slug
+      ]});
+      synced.push({ slug, title:q.title, difficulty, category, test_cases_count:testCases.length });
+    }catch(e){
+      errors.push({ slug, error:String(e.message||e).slice(0,200) });
+    }
+    // Vercel Hobby 10s budget: if synced 20, break early – caller paginates with skip
+    if (i>=14 && (Date.now()%1000===0)) { /*noop*/ }
+  }
+  return res.json({ ok:true, synced_count:synced.length, total_requested: slugs.length, skip, limit, total_available: slugsInfo?.total||null, synced, errors, note:`Best-effort: synced ${synced.length}/${slugs.length} (limit ${limit} per call). ExampleTestcases only = sample I/O; hidden LeetCode judge cases not public; enriched via alfa-leetcode-api when available. Paginate with ?skip=20&limit=20 to fill DB.` });
+}
+
 export default async function handler(req,res){
   const ep = getEndpoint(req);
   const path = (req.url||'').toLowerCase();
+  if (ep==='leetcode-sync' || ep==='leetcode_sync' || path.includes('leetcode/sync') || path.includes('leetcode-sync')) return handleLeetcodeSync(req,res);
+  if (ep==='leetcode' || ep==='leetcode-detail' || ep==='leetcode_detail' || path.includes('/leetcode')) return handleLeetcode(req,res);
   if (ep==='circle' || path.includes('/circle')) return handleCircle(req,res);
   if (ep==='weeks' || path.includes('/weeks')) return handleWeeks(req,res);
   if (ep==='history' || path.includes('/history')) return handleHistory(req,res);
@@ -619,5 +940,5 @@ export default async function handler(req,res){
   if (ep==='schedule' || path.includes('/schedule')) return handleSchedule(req,res);
   if (ep.includes('message')) return handleMessages(req,res);
   if (ep==='questions' || ep==='question' || path.includes('/questions')) return handleQuestions(req,res);
-  return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['circle','weeks','history','stats','init','profile','my-pair','schedule','messages','questions'] });
+  return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','schedule','messages','questions'] });
 }

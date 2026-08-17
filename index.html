@@ -3241,61 +3241,53 @@ def allow(key, limit=5):
     }catch(e){ statusEl.textContent='save failed: '+(e.error||e.message||'err'); console.error(e); }
   });
 
-  // LeetCode import
+  // LeetCode import — via server proxy /api/leetcode?slug= (no CORS, DB cache, enriched)
   const leetStatus=document.getElementById('qLeetStatus');
   async function leetImport(){
     const slug=prompt('LeetCode slug e.g. two-sum, lru-cache, design-url-shortener — as in URL https://leetcode.com/problems/<slug>/');
     if(!slug) return;
     const clean=slug.trim().toLowerCase().replace(/.*problems\//,'').replace(/\/.*/,'');
-    if(leetStatus) leetStatus.textContent='fetching '+clean+'…';
+    if(leetStatus) leetStatus.textContent='fetching '+clean+' via proxy… ⏳';
     try{
-      const query=`query questionData($titleSlug:String!){ question(titleSlug:$titleSlug){ questionId title titleSlug content exampleTestcases difficulty categoryTitle isPaidOnly sampleTestCase stats } }`;
-      const r=await fetch('https://leetcode.com/graphql', { method:'POST', headers:{'content-type':'application/json','Referer':'https://leetcode.com/','Origin':'https://leetcode.com'}, body: JSON.stringify({ query, variables:{ titleSlug: clean }})});
-      if(!r.ok) throw new Error('http '+r.status+' — likely CORS blocked');
-      const j=await r.json();
-      if(!j.data||!j.data.question) throw new Error('not found — check slug');
-      const q=j.data.question;
-      const content=q.content||'';
-      // strip HTML crudely
-      const text=content.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim().slice(0,4000);
-      const exCasesRaw=q.exampleTestcases||'';
-      let tests=[];
-      try{
-        // exampleTestcases often newline separated: for two-sum it's arrays then target
-        const lines=exCasesRaw.split('\n').filter(l=>l.trim());
-        for(let i=0;i<Math.min(lines.length,6); i+=2){
-          const a=lines[i]; const b=lines[i+1]||'';
-          // heuristic: if b exists and looks like number or small json, treat as second arg
-          if(b && lines.length%2===0){
-            tests.push({ input:{ nums: (()=>{try{return JSON.parse(a)}catch{return a}})(), t: (()=>{try{return JSON.parse(b)}catch{return b}})() }, expect: [], _raw: a+' / '+b });
-          }else{
-            tests.push({ input:{ raw:a }, expect: null, _raw:a });
-          }
-        }
-        if(!tests.length){
-          const sample=q.sampleTestCase||'';
-          if(sample) tests=[{input:{sample}, expect:null}];
-        }
-      }catch{ tests=[{input:{raw:exCasesRaw.slice(0,200)}, expect:null}] }
-      if(!tests.length) tests=[{input:{example:'see description'}, expect:'output per description'}];
+      const token=tok();
+      const headers = token ? { Authorization:'Bearer '+token } : {};
+      // proxy avoids CORS
+      const r = await fetch('/api/leetcode?slug='+encodeURIComponent(clean), { headers });
+      const j = await r.json();
+      if(!r.ok) throw j;
+      const q = j.question||j.data||j;
+      // normalize shape: either our proxy ret {question:{title, content,...}} or cached DB shape
+      const title = q.title || q.titleSlug || clean;
+      const contentHtml = q.content || q.description_html || q.description || '';
+      const descriptionText = q.description || (contentHtml ? contentHtml.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim().slice(0,4000) : title);
+      const difficulty = q.difficulty || 'Medium';
+      const category = q.category || (q.topicTags&&q.topicTags[0]&&q.topicTags[0].slug) || 'dsa';
+      const exampleTestcases = q.exampleTestcases || (q.test_cases&&Array.isArray(q.test_cases)? q.test_cases.map(t=>typeof t.input==='string'? t.input : JSON.stringify(t.input)).join('\n') : '') || '';
+      let tests = q.test_cases || q.testCases || [];
+      if (!Array.isArray(tests) || !tests.length){
+        // build from exampleTestcases
+        const lines = String(exampleTestcases).split('\n').filter(l=>l.trim());
+        tests = lines.slice(0,6).map(l=>({ input:l, expect:null, raw:l }));
+      }
+      if (!tests.length) tests=[{input:{example:'see description'}, expect:'output per description'}];
       // open upload modal prefilled
       overlay?.classList.add('show');
-      document.getElementById('qUpTitleIn').value=q.title||clean;
+      document.getElementById('qUpTitleIn').value=title||clean;
       document.getElementById('qUpSlug').value=clean;
-      document.getElementById('qUpDesc').value=text+'\n\n[source: LeetCode '+q.title+' — '+clean+']'+'\nDifficulty: '+q.difficulty+' • Category: '+q.categoryTitle;
-      document.getElementById('qUpDiff').value=q.difficulty||'Medium';
+      document.getElementById('qUpDesc').value=descriptionText.slice(0,6000)+'\n\n[source: LeetCode '+title+' — '+clean+']'+'\nDifficulty: '+difficulty+' • Category: '+category;
+      document.getElementById('qUpDiff').value=difficulty||'Medium';
       document.getElementById('qUpType').value='dsa';
       document.getElementById('qUpInputFmt').value='see description';
-      document.getElementById('qUpConstraints').value='LeetCode constraints in description';
-      document.getElementById('qUpTests').value=JSON.stringify(tests.slice(0,5), null, 2);
+      document.getElementById('qUpConstraints').value=q.constraints||q.constraints_text||'LeetCode constraints in description';
+      document.getElementById('qUpTests').value=JSON.stringify(tests.slice(0,8), null, 2);
       document.getElementById('qUpLeetSlug').value=clean;
-      document.getElementById('qUpStarters').value=JSON.stringify({ javascript:`function ${clean.replace(/-./g, x=> x[1].toUpperCase())}(){\n  // LeetCode import: ${q.title}\n}`, python:`def ${clean.replace(/-/g,'_')}():\n    # ${q.title}\n    pass` }, null,2);
-      if(leetStatus) leetStatus.textContent='imported '+q.title+' • review tests then Save';
-      if(window.toast) window.toast('LeetCode imported: '+q.title);
+      document.getElementById('qUpStarters').value=JSON.stringify({ javascript:`function ${clean.replace(/-./g, x=> x[1].toUpperCase())}(){\n  // LeetCode import: ${title}\n}`, python:`def ${clean.replace(/-/g,'_')}():\n    # ${title}\n    pass` }, null,2);
+      if(leetStatus) leetStatus.textContent='imported '+title+' • cached? '+(j.cached?'yes':'no')+' — review tests then Save';
+      if(window.toast) window.toast('LeetCode via proxy: '+title+' ✓');
     }catch(e){
-      console.warn('leet fetch fail',e);
-      if(leetStatus) leetStatus.textContent='LeetCode fetch failed (CORS): '+e.message;
-      const fallback=confirm('LeetCode direct fetch blocked by CORS (common). Open upload modal and paste manually?\n\nTip: open https://leetcode.com/problems/'+clean+'/ in new tab, copy description + examples, then Save.');
+      console.warn('leet proxy fail',e);
+      if(leetStatus) leetStatus.textContent='Proxy fetch failed: '+(e.error||e.detail||e.message||'err');
+      const fallback=confirm('Proxy fetch failed (maybe slug wrong). Open upload modal and paste manually?\\n\\nTip: open https://leetcode.com/problems/'+clean+'/ in new tab, copy description + examples, then Save.');
       if(fallback){
         overlay?.classList.add('show');
         document.getElementById('qUpTitleIn').value=clean;
