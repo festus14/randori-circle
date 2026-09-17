@@ -1982,6 +1982,7 @@ def allow(key, limit=5):
       }
     }
   ];
+  window._randori_builtin_questions=QUESTIONS;
 
   const qSel=document.getElementById('questionSelect');
   QUESTIONS.forEach(q=>{ const o=document.createElement('option'); o.value=q.id; o.textContent=q.title; qSel.appendChild(o); });
@@ -4155,7 +4156,7 @@ def allow(key, limit=5):
     const t0 = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
     const selVal=document.getElementById('questionSelect')?.value||'';
     const customQ=CUSTOM_QUESTIONS.find(q=>q.slug===selVal)
-      || ((typeof QUESTIONS!=='undefined' && QUESTIONS.find(q=>q.id===selVal || q.slug===selVal)) || null);
+      || ((window._randori_builtin_questions||[]).find(q=>q.id===selVal || q.slug===selVal) || null);
     const lang=document.getElementById('langSelect')?.value||'javascript';
     const code=getEditorCode();
     let resultsForSave=[], passedCount=0, totalCount=0, durationMs=0;
@@ -4655,11 +4656,11 @@ def allow(key, limit=5):
 <!-- Monaco + Prettier IDE layer — CDN, no extra Vercel function, Hobby-safe, resilient fallback chain -->
 <link rel="preconnect" href="https://cdnjs.cloudflare.com">
 <link rel="preconnect" href="https://cdn.jsdelivr.net">
-<script id="monacoLoader" src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js" onerror="window.__monacoLoaderFailed=1"></script>
 <script src="https://unpkg.com/prettier@3.3.3/standalone.js" onerror="console.warn('prettier standalone failed')"></script>
 <script src="https://unpkg.com/prettier@3.3.3/plugins/babel.js" onerror="console.warn('prettier babel failed')"></script>
 <script src="https://unpkg.com/prettier@3.3.3/plugins/estree.js" onerror="console.warn('prettier estree failed')"></script>
 <script src="https://unpkg.com/prettier@3.3.3/plugins/typescript.js" onerror="console.warn('prettier ts failed')"></script>
+<script id="monacoLoader" src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js" onerror="window.__monacoLoaderFailed=1"></script>
 <script>
 // Monaco IDE task — replace textarea with Monaco, keep textarea as hidden mirror for legacy runCode/AI paths
 (function(){
