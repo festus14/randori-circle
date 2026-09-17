@@ -55,7 +55,7 @@ See [GOOGLE_OAUTH.md](GOOGLE_OAUTH.md) and [TURSO.md](TURSO.md) for provider set
 
 ## Development and tests
 
-Requires Node.js 22.3 or newer.
+Requires Node.js 24 or newer.
 
 ```bash
 npm ci
