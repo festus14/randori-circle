@@ -3,20 +3,31 @@ import { mockApi, resetClientState } from './helpers';
 
 test('the checked-out app boots without JavaScript exceptions and its tabs navigate', async ({ page }) => {
   const pageErrors: string[] = [];
+  let authChecks = 0;
   page.on('pageerror', error => pageErrors.push(error.message));
-  await mockApi(page);
+  await mockApi(page, {
+    '/api/auth/me': () => {
+      authChecks += 1;
+      return { _status: 401, ok: false, error: 'authentication required' };
+    },
+  });
   await resetClientState(page);
 
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await expect(page.getByRole('heading', { name: 'Randori Circle', exact: true })).toBeVisible();
+  // The app performs three scheduled session refreshes during startup. Wait for
+  // the last anonymous route before testing navigation so it cannot hide a view
+  // after the corresponding tab has been clicked.
+  await expect.poll(() => authChecks).toBeGreaterThanOrEqual(3);
+  await expect(page.locator('#view-landing')).toBeVisible();
 
   for (const [tab, view] of [
-    ['Pairing', '#view-pair'],
-    ['Code', '#view-code'],
-    ['Board', '#view-board'],
-    ['History', '#view-history'],
+    ['pair', '#view-pair'],
+    ['code', '#view-code'],
+    ['board', '#view-board'],
+    ['history', '#view-history'],
   ] as const) {
-    await page.getByRole('button', { name: new RegExp(tab) }).click();
+    await page.locator(`[data-tab="${tab}"]`).click();
     await expect(page.locator(view)).toBeVisible();
   }
 

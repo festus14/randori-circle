@@ -16,7 +16,7 @@ test('the server JavaScript runner reports exact results for correct and broken 
     '/api/execute': async request => {
       const payload = request.postDataJSON();
       payloads.push(payload);
-      const passed = String(payload.code).includes('return [];') ? 0 : 3;
+      const passed = String(payload.code) === twoSumBroken ? 0 : 3;
       return {
         ok: true,
         passed_count: passed,
