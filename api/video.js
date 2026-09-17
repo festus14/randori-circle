@@ -13,8 +13,8 @@ const WORKSPACE_FIELDS = [
   'question_id',
   'schema_version',
 ];
-const tableInitPromises=new WeakMap();
-const lastCleanupAt=new WeakMap();
+let tableInitPromise=null;
+let lastCleanupTimestamp=0;
 const CLEANUP_INTERVAL_MS=5*60*1000;
 
 function getEndpoint(req){
@@ -24,9 +24,8 @@ function getEndpoint(req){
 }
 
 async function ensureTable(db){
-  let pending=tableInitPromises.get(db);
-  if(!pending){
-    pending=(async()=>{
+  if(!tableInitPromise){
+    tableInitPromise=(async()=>{
       await db.execute(`CREATE TABLE IF NOT EXISTS video_signals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     room_id TEXT NOT NULL,
@@ -56,16 +55,15 @@ async function ensureTable(db){
     FOREIGN KEY(pair_group_id) REFERENCES pairing_groups(id) ON DELETE CASCADE
       )`);
     })();
-    tableInitPromises.set(db,pending);
   }
-  try{ await pending; }
-  catch(error){ tableInitPromises.delete(db); throw error; }
+  try{ await tableInitPromise; }
+  catch(error){ tableInitPromise=null; throw error; }
 }
 
 async function cleanupOld(db){
   const now=Date.now();
-  if(now-(lastCleanupAt.get(db)||0)<CLEANUP_INTERVAL_MS) return;
-  lastCleanupAt.set(db,now);
+  if(now-lastCleanupTimestamp<CLEANUP_INTERVAL_MS) return;
+  lastCleanupTimestamp=now;
   try{ await db.execute(`DELETE FROM video_signals WHERE created_at < datetime('now','-1 hour')`);}catch{}
   try{ await db.execute(`DELETE FROM pair_room_snapshots
     WHERE updated_at < datetime('now','-90 days')
