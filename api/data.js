@@ -1,5 +1,7 @@
 import { getClient, getAdminEmails, initSentry, getSentry, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 import * as SentryLib from '@sentry/node';
+import { readMigrationLedger, runMigrations } from '../db/migrate.js';
+import { checkDatabaseReadiness } from '../db/readiness.js';
 
 function isAdminCheck(email, flag){
   if (flag) return true;
@@ -10,14 +12,26 @@ async function getCallerAdmin(db, payload){
   let callerEmail = '';
   const callerId = payload.id||payload.uid;
   let callerIsAdminFlag=false, callerDbRow=null;
-  if (callerId){ try{ const cr=await db.execute({ sql:`SELECT id,email,is_admin FROM auth_accounts WHERE id=?`, args:[callerId]}); if(cr.rows.length){ callerDbRow=cr.rows[0]; callerEmail=String(cr.rows[0].email||'').toLowerCase().trim(); callerIsAdminFlag=!!cr.rows[0].is_admin; }}catch{} }
+  if (callerId){
+    try{
+      const cr=await db.execute({ sql:`SELECT id,email,is_admin FROM auth_accounts WHERE id=?`, args:[callerId]});
+      if(cr.rows.length){ callerDbRow=cr.rows[0]; callerEmail=String(cr.rows[0].email||'').toLowerCase().trim(); callerIsAdminFlag=!!cr.rows[0].is_admin; }
+    }catch{
+      // Legacy databases may predate is_admin. An existing account can still be
+      // authorized through the server-side ADMIN_EMAILS allowlist to run migrations.
+      try{
+        const cr=await db.execute({ sql:`SELECT id,email FROM auth_accounts WHERE id=?`, args:[callerId]});
+        if(cr.rows.length){ callerDbRow=cr.rows[0]; callerEmail=String(cr.rows[0].email||'').toLowerCase().trim(); }
+      }catch{}
+    }
+  }
   const callerIsAdmin = !!callerDbRow && isAdminCheck(callerEmail, callerIsAdminFlag);
   return {callerEmail, callerId, callerIsAdminFlag, callerIsAdmin};
 }
 async function requireAdminDT(req,res){
   const payload=verifyRequestAuth(req);
   if (!payload){ res.status(401).json({ error:'authentication required' }); return null; }
-  const db=getClient(); await ensureBaseTables(db); await ensureProfileMigrations(db);
+  const db=getClient();
   const ctx=await getCallerAdmin(db,payload);
   if(!ctx.callerIsAdmin){ res.status(403).json({ error:'admin only', you_are:ctx.callerEmail||'unknown' }); return null; }
   return {db, payload, ...ctx};
@@ -434,92 +448,6 @@ async function getPairAccess(db, payload, weekId, pairId){
   return {allowed:Number(row.user_a_id)===userId || Number(row.user_b_id)===userId, exists:true};
 }
 
-async function ensureBaseTables(db){
-  try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0, is_demo INTEGER DEFAULT 0)`);
-  } catch {}
-  try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`);
-  } catch {}
-  try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS pairing_weeks (id INTEGER PRIMARY KEY AUTOINCREMENT, week_label TEXT NOT NULL, week_start TEXT NOT NULL, focus TEXT NOT NULL DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')), is_demo INTEGER DEFAULT 0)`);
-  } catch {}
-  try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS pairing_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, user_a_id INTEGER NOT NULL, user_b_id INTEGER NOT NULL, user_c_id INTEGER, is_ai_pair INTEGER DEFAULT 0, topic TEXT DEFAULT 'Pick together', topic_kind TEXT DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')))`);
-  } catch {}
-}
-
-async function ensureCustomQuestions(db){
-  try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS custom_questions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      slug TEXT UNIQUE NOT NULL,
-      title TEXT NOT NULL,
-      type TEXT DEFAULT 'dsa',
-      difficulty TEXT DEFAULT 'Medium',
-      category TEXT DEFAULT 'custom',
-      description TEXT NOT NULL,
-      input_format TEXT,
-      constraints_text TEXT,
-      examples TEXT,
-      test_cases TEXT NOT NULL,
-      starter_per_lang TEXT,
-      author_id INTEGER,
-      source TEXT DEFAULT 'custom',
-      leetcode_slug TEXT,
-      created_at TEXT DEFAULT (datetime('now'))
-    )`);
-  }catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_cq_slug ON custom_questions(slug)`); }catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_cq_author ON custom_questions(author_id)`); }catch{}
-}
-
-async function ensureSessionRuns(db){
-  try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS session_runs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER,
-      week_id INTEGER,
-      pair_group_id INTEGER,
-      question_id INTEGER,
-      question_slug TEXT,
-      language TEXT,
-      code TEXT NOT NULL,
-      test_cases_snapshot TEXT,
-      results_json TEXT,
-      passed_count INTEGER DEFAULT 0,
-      total_count INTEGER DEFAULT 0,
-      duration_ms INTEGER,
-      created_at TEXT DEFAULT (datetime('now'))
-    )`);
-  }catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_user ON session_runs(user_id, created_at DESC)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_question ON session_runs(question_slug)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_user_q ON session_runs(user_id, question_slug)`);}catch{}
-}
-
-async function ensureAppLogs(db){
-  try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS app_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      level TEXT NOT NULL,
-      source TEXT NOT NULL,
-      event TEXT,
-      message TEXT NOT NULL,
-      meta_json TEXT,
-      user_id INTEGER,
-      route TEXT,
-      ua TEXT,
-      ip TEXT,
-      created_at TEXT DEFAULT (datetime('now'))
-    )`);
-  }catch(e){ /* ignore */ }
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_logs_level_created ON app_logs(level, created_at DESC)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_logs_event_created ON app_logs(event, created_at DESC)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_logs_source_created ON app_logs(source, created_at DESC)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_logs_created ON app_logs(created_at DESC)`);}catch{}
-}
-
 // In-memory rate limit map for client logs per IP
 const __logRateMap = new Map(); // ip -> [timestamps]
 function isLogRateLimited(ip){
@@ -535,12 +463,74 @@ function isLogRateLimited(ip){
   return false;
 }
 
+function readinessSummary(readiness){
+  const status=['ready','migration_required','schema_invalid','unreachable'].includes(readiness?.status)
+    ? readiness.status
+    : 'unreachable';
+  const allowedReasons=new Set([
+    'database_unreachable',
+    'schema_uninitialized',
+    'schema_outdated',
+    'schema_ahead',
+    'schema_mismatch',
+    'schema_drift',
+  ]);
+  const fallbackReason=status==='unreachable'
+    ? 'database_unreachable'
+    : (status==='migration_required' ? 'schema_outdated' : 'schema_mismatch');
+  return {
+    ready:readiness?.ready===true,
+    status,
+    reason:readiness?.ready===true
+      ? null
+      : (allowedReasons.has(readiness?.reason) ? readiness.reason : fallbackReason),
+    current_version:Number.isInteger(readiness?.currentVersion) ? readiness.currentVersion : null,
+    latest_version:Number.isInteger(readiness?.latestVersion) ? readiness.latestVersion : null,
+    pending_versions:Array.isArray(readiness?.pendingVersions)
+      ? readiness.pendingVersions.filter(Number.isInteger)
+      : [],
+  };
+}
+
+function migrationFailureReason(error){
+  if(error?.code==='MIGRATION_LEDGER_INVALID') return 'migration_ledger_invalid';
+  if(error?.code==='MIGRATION_PREFLIGHT_FAILED') return 'migration_preflight_failed';
+  return 'migration_failed';
+}
+
+async function migrationFailureState(db,before){
+  const beforeVersion=Number.isInteger(before?.currentVersion) ? before.currentVersion : 0;
+  let applied=[];
+  try{
+    const ledger=await readMigrationLedger(db);
+    applied=ledger
+      .filter(row=>Number(row.version)>beforeVersion)
+      .map(row=>({
+        version:Number(row.version),
+        name:String(row.name),
+        checksum:String(row.checksum),
+        durationMs:Number(row.execution_ms)||0,
+      }));
+  }catch{}
+  let after=null;
+  try{ after=readinessSummary(await checkDatabaseReadiness(db)); }catch{}
+  return {applied,after};
+}
+
 
 async function handleHealth(req,res){
-  // Public health is deliberately aggregate-only; detailed logs are admin-only.
+  // Public health is deliberately aggregate-only. Readiness never mutates the DB.
   try{
     const db=getClient();
-    try{ await ensureAppLogs(db); }catch{}
+    const readiness=await checkDatabaseReadiness(db);
+    const summary=readinessSummary(readiness);
+    if(!readiness?.ready){
+      return res.status(503).json({
+        ok:false,
+        ready:false,
+        ...summary,
+      });
+    }
     let errors_last_hour=0, warns_last_hour=0, infos_last_hour=0, success_last_hour=0;
     try{
       const rs1=await db.execute(`SELECT level, COUNT(*) as c FROM app_logs WHERE datetime(created_at) >= datetime('now','-1 hour') GROUP BY level`);
@@ -563,9 +553,9 @@ async function handleHealth(req,res){
       }
     }catch{}
     const spike = errors_last_hour>5;
-    return res.json({ok:true, ts:new Date().toISOString(), errors_last_hour, warns_last_hour, infos_last_hour, success_last_hour, monaco_fails_6h:monaco_fails, piston_fails_6h:piston_fails, spike, warning: spike? 'error spike detected — >5 errors last hour': null, last_5_errors:[]});
+    return res.json({ok:true, ...summary, ts:new Date().toISOString(), errors_last_hour, warns_last_hour, infos_last_hour, success_last_hour, monaco_fails_6h:monaco_fails, piston_fails_6h:piston_fails, spike, warning: spike? 'error spike detected — >5 errors last hour': null, last_5_errors:[]});
   }catch(e){
-    return res.status(503).json({ok:false, error:'health unavailable'});
+    return res.status(503).json({ok:false, ready:false, status:'unreachable', reason:'database_unreachable', current_version:null, latest_version:null});
   }
 }
 
@@ -573,7 +563,6 @@ async function handleHealth(req,res){
 async function logServer(level, event, message, meta, reqCtx){
   try{
     const db=getClient();
-    await ensureAppLogs(db);
     const allowed=['info','warn','error','success','debug'];
     let lvl=String(level||'info').toLowerCase();
     if(!allowed.includes(lvl)) lvl='info';
@@ -635,41 +624,12 @@ async function logServer(level, event, message, meta, reqCtx){
   }
 }
 
-async function ensureProfileMigrations(db){
-  const alters=[
-    `ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`,
-    `ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`,
-    `ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`,
-    `ALTER TABLE auth_accounts ADD COLUMN is_demo INTEGER DEFAULT 0`,
-    `ALTER TABLE auth_accounts ADD COLUMN bio TEXT`,
-    `ALTER TABLE auth_accounts ADD COLUMN tz TEXT`,
-    `ALTER TABLE auth_accounts ADD COLUMN interview_focus TEXT DEFAULT 'both'`,
-    `ALTER TABLE auth_accounts ADD COLUMN leetcode_handle TEXT`,
-    `ALTER TABLE pairing_weeks ADD COLUMN is_demo INTEGER DEFAULT 0`,
-  ];
-  for(const sql of alters){ try{ await db.execute(sql); }catch{} }
-  // new tables
-  try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS pair_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL, sender_id INTEGER NOT NULL, message TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`);
-  }catch{}
-  try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS pair_schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL, proposed_times TEXT, agreed_time TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')), UNIQUE(week_id,pair_group_id))`);
-  }catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_messages_pair ON pair_messages(pair_group_id, created_at)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_sched_pair ON pair_schedules(pair_group_id)`);}catch{}
-  await ensureCustomQuestions(db);
-  await ensureSessionRuns(db);
-  try{ await ensureAppLogs(db); }catch{}
-}
-
-
 async function handleLogs(req,res){
   // POST: client logs ingest, GET: admin fetch
   if(req.method==='POST'){
     const payload = getAuthPayload(req);
     if(!payload) return res.status(401).json({error:'authentication required'});
     const db = getClient();
-    try{ await ensureAppLogs(db); }catch{}
     // rate limit by IP
     let ip='';
     try{ ip=(req.headers['x-forwarded-for']||req.headers['x-real-ip']||'').toString().split(',')[0].trim(); if(!ip && req.headers['x-forwarded-for']){ ip=req.headers['x-forwarded-for']; } }catch{}
@@ -717,7 +677,6 @@ async function handleLogs(req,res){
     const adminCtx = await requireAdminDT(req,res);
     if(!adminCtx) return;
     const db=adminCtx.db;
-    try{ await ensureAppLogs(db); }catch{}
     const url = new URL(req.url,'http://localhost');
     const level = (req.query?.level || url.searchParams.get('level') || '').toString().toLowerCase().trim();
     const event = (req.query?.event || url.searchParams.get('event') || '').toString().trim().slice(0,80);
@@ -757,8 +716,6 @@ async function handleCircle(req,res){
   const viewer=getAuthPayload(req);
   if(!viewer) return res.status(401).json({error:'authentication required'});
   const db = getClient();
-  await ensureBaseTables(db);
-  await ensureProfileMigrations(db);
   const includeDemo = (req.query?.include_demo === '1' || req.query?.includeDemo === '1' || req.query?.demo === '1');
   try{
     let sql = includeDemo
@@ -790,8 +747,6 @@ async function handleWeeks(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
   if (!getAuthPayload(req)) return res.status(401).json({ error:'authentication required' });
   const db = getClient();
-  await ensureBaseTables(db);
-  await ensureProfileMigrations(db);
   const includeDemo = (req.query?.include_demo === '1' || req.query?.includeDemo === '1' || req.query?.demo === '1' || req.query?.include_demo === 'true');
   try{
     let sql = includeDemo
@@ -834,7 +789,6 @@ async function handleHistory(req,res){
   const payload = getAuthPayload(req);
   if (!payload) return res.status(401).json({ error:'missing Bearer token' });
   const db = getClient();
-  await ensureProfileMigrations(db);
   const userId = payload.id || payload.uid;
   const groups = await db.execute({ sql:`
     SELECT pg.id as pg_id, pg.week_id, pg.user_a_id, pg.user_b_id, pg.is_ai_pair, pg.topic, pg.topic_kind,
@@ -865,90 +819,49 @@ async function handleInit(req,res){
   const adminCtx=await requireAdminDT(req,res);
   if(!adminCtx) return;
   const db = adminCtx.db;
-  await db.batch([
-    `CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`,
-    `CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0, is_demo INTEGER DEFAULT 0, bio TEXT, tz TEXT, interview_focus TEXT DEFAULT 'both', leetcode_handle TEXT)`,
-    `CREATE TABLE IF NOT EXISTS pairing_weeks (id INTEGER PRIMARY KEY AUTOINCREMENT, week_label TEXT NOT NULL, week_start TEXT NOT NULL, focus TEXT NOT NULL DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')), is_demo INTEGER DEFAULT 0)`,
-    `CREATE TABLE IF NOT EXISTS pairing_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL REFERENCES pairing_weeks(id) ON DELETE CASCADE, user_a_id INTEGER NOT NULL, user_b_id INTEGER NOT NULL, user_c_id INTEGER, is_ai_pair INTEGER DEFAULT 0, topic TEXT DEFAULT 'Pick together', topic_kind TEXT DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')))`,
-    `CREATE TABLE IF NOT EXISTS questions (id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT UNIQUE NOT NULL, title TEXT NOT NULL, type TEXT NOT NULL, difficulty TEXT NOT NULL, category TEXT NOT NULL, description TEXT NOT NULL)`,
-    `CREATE TABLE IF NOT EXISTS video_signals (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT NOT NULL, from_id TEXT NOT NULL, to_id TEXT, type TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`,
-    `CREATE TABLE IF NOT EXISTS ai_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT, pair_label TEXT, transcript TEXT, code_snapshots TEXT, interviewer_questions TEXT, started_at TEXT DEFAULT (datetime('now')), ended_at TEXT, duration_sec INTEGER, cost_cents INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now')), created_by INTEGER)`,
-    `CREATE TABLE IF NOT EXISTS ai_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL REFERENCES ai_sessions(id) ON DELETE CASCADE, role TEXT DEFAULT 'both', feedback_json TEXT NOT NULL, evidence TEXT, model_used TEXT, reason_for_pick TEXT, estimated_cost_cents INTEGER, confidence REAL DEFAULT 0.85, created_at TEXT DEFAULT (datetime('now')))`,
-    `CREATE TABLE IF NOT EXISTS ai_usage (date TEXT PRIMARY KEY, calls INTEGER DEFAULT 0, tokens_in INTEGER DEFAULT 0, tokens_out INTEGER DEFAULT 0, updated_at TEXT DEFAULT (datetime('now')))`,
-    `CREATE TABLE IF NOT EXISTS pair_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL, sender_id INTEGER NOT NULL, message TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`,
-    `CREATE TABLE IF NOT EXISTS pair_schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL, proposed_times TEXT, agreed_time TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')), UNIQUE(week_id,pair_group_id))`,
-    `CREATE TABLE IF NOT EXISTS custom_questions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      slug TEXT UNIQUE NOT NULL,
-      title TEXT NOT NULL,
-      type TEXT DEFAULT 'dsa',
-      difficulty TEXT DEFAULT 'Medium',
-      category TEXT DEFAULT 'custom',
-      description TEXT NOT NULL,
-      input_format TEXT,
-      constraints_text TEXT,
-      examples TEXT,
-      test_cases TEXT NOT NULL,
-      starter_per_lang TEXT,
-      author_id INTEGER,
-      source TEXT DEFAULT 'custom',
-      leetcode_slug TEXT,
-      created_at TEXT DEFAULT (datetime('now'))
-    )`,
-    `CREATE TABLE IF NOT EXISTS app_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      level TEXT NOT NULL,
-      source TEXT NOT NULL,
-      event TEXT,
-      message TEXT NOT NULL,
-      meta_json TEXT,
-      user_id INTEGER,
-      route TEXT,
-      ua TEXT,
-      ip TEXT,
-      created_at TEXT DEFAULT (datetime('now'))
-    )`,
-    `CREATE TABLE IF NOT EXISTS session_runs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER,
-      week_id INTEGER,
-      pair_group_id INTEGER,
-      question_id INTEGER,
-      question_slug TEXT,
-      language TEXT,
-      code TEXT NOT NULL,
-      test_cases_snapshot TEXT,
-      results_json TEXT,
-      passed_count INTEGER DEFAULT 0,
-      total_count INTEGER DEFAULT 0,
-      duration_ms INTEGER,
-      created_at TEXT DEFAULT (datetime('now'))
-    )`
-  ],"write");
-  const migrations=[`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`,`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`,`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`,`ALTER TABLE auth_accounts ADD COLUMN is_demo INTEGER DEFAULT 0`,`ALTER TABLE auth_accounts ADD COLUMN bio TEXT`,`ALTER TABLE auth_accounts ADD COLUMN tz TEXT`,`ALTER TABLE auth_accounts ADD COLUMN interview_focus TEXT DEFAULT 'both'`,`ALTER TABLE auth_accounts ADD COLUMN leetcode_handle TEXT`,`ALTER TABLE pairing_weeks ADD COLUMN is_demo INTEGER DEFAULT 0`];
-  for(const sql of migrations){ try{ await db.execute(sql);}catch(_){} }
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_video_signals_room ON video_signals(room_id, created_at)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_video_signals_room_id ON video_signals(room_id, id)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_messages_pair ON pair_messages(pair_group_id, created_at)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_sched_pair ON pair_schedules(pair_group_id)`);}catch{}
+  let before;
   try{
-    // This one-time cleanup is intentionally admin-triggered: it can delete legacy
-    // duplicates and must never run as a side effect of an ordinary API request.
-    await db.execute(`DELETE FROM pair_schedules WHERE id NOT IN (SELECT MAX(id) FROM pair_schedules GROUP BY week_id,pair_group_id)`);
-    await db.execute(`CREATE UNIQUE INDEX IF NOT EXISTS uq_pair_schedules_week_pair ON pair_schedules(week_id,pair_group_id)`);
-  }catch(e){
+    before=await checkDatabaseReadiness(db);
+  }catch{
+    return res.status(503).json({ok:false, error:'database unavailable', reason:'database_unreachable', before:null, applied:[], after:null});
+  }
+  if(before?.status==='unreachable'){
+    return res.status(503).json({ok:false, error:'database unavailable', reason:'database_unreachable', before:readinessSummary(before), applied:[], after:null});
+  }
+  let migration;
+  try{
+    migration=await runMigrations(db);
+  }catch(error){
+    const failureState=await migrationFailureState(db,before);
     return res.status(500).json({
       ok:false,
-      error:'pair schedule uniqueness migration failed',
-      detail:String(e.message||e).slice(0,300),
+      error:'database migration failed',
+      reason:migrationFailureReason(error),
+      before:readinessSummary(before),
+      applied:failureState.applied,
+      after:failureState.after,
     });
   }
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_cq_slug ON custom_questions(slug)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_cq_author ON custom_questions(author_id)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_user ON session_runs(user_id, created_at DESC)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_question ON session_runs(question_slug)`);}catch{}
-  await maybeSeedFromStatic(db);
-  return res.json({ ok:true, message:"Tables ready (incl custom_questions + profile + pair_messages + pair_schedules + session_runs)" });
+
+  // Bundled catalog seeding is intentionally separate from schema migration.
+  const seed=await maybeSeedFromStatic(db);
+  let after;
+  try{
+    after=await checkDatabaseReadiness(db);
+  }catch{
+    after={ready:false,status:'unreachable'};
+  }
+  const response={
+    ok:!!after?.ready,
+    before:readinessSummary(before),
+    applied:Array.isArray(migration?.applied) ? migration.applied : [],
+    after:readinessSummary(after),
+    seed,
+  };
+  if(!after?.ready){
+    return res.status(503).json({...response, error:'database is not ready', reason:response.after.reason});
+  }
+  return res.json(response);
 }
 
 // ----- NEW ENDPOINTS: profile, my-pair, schedule, messages, questions -----
@@ -957,8 +870,6 @@ async function handleProfile(req,res){
   const payload = getAuthPayload(req);
   if (!payload) return res.status(401).json({ error:'missing Bearer token' });
   const db = getClient();
-  await ensureBaseTables(db);
-  await ensureProfileMigrations(db);
   const userId = payload.id || payload.uid;
   if (!userId) return res.status(401).json({ error:'invalid token payload' });
   if (req.method === 'GET'){
@@ -1005,8 +916,6 @@ async function handleMyPair(req,res){
   const payload = getAuthPayload(req);
   if (!payload) return res.status(401).json({ error:'missing Bearer token' });
   const db = getClient();
-  await ensureBaseTables(db);
-  await ensureProfileMigrations(db);
   const userId = payload.id || payload.uid;
   let weekId=null, weekRow=null;
   try{
@@ -1066,7 +975,6 @@ async function handleSchedule(req,res){
     const payload = getAuthPayload(req);
     if (!payload) return res.status(401).json({ error:'missing Bearer' });
     const db = getClient();
-    await ensureProfileMigrations(db);
     const weekId = req.query?.week_id ? parseInt(String(req.query.week_id),10) : null;
     const pairId = req.query?.pair_id ? parseInt(String(req.query.pair_id),10) : (req.query?.pg_id ? parseInt(String(req.query.pg_id),10) : null);
     if (!weekId || !pairId) return res.status(400).json({ error:'week_id and pair_id required' });
@@ -1084,7 +992,6 @@ async function handleSchedule(req,res){
   const payload = getAuthPayload(req);
   if (!payload) return res.status(401).json({ error:'missing Bearer token' });
   const db = getClient();
-  await ensureProfileMigrations(db);
   const userId = payload.id||payload.uid;
   const body = req.body||{};
   const weekId = body.week_id ? parseInt(String(body.week_id),10) : (req.query?.week_id? parseInt(String(req.query.week_id),10): null);
@@ -1128,7 +1035,6 @@ async function handleMessages(req,res){
   const payload = getAuthPayload(req);
   if (!payload) return res.status(401).json({ error:'missing Bearer token' });
   const db = getClient();
-  await ensureProfileMigrations(db);
   const userId = payload.id||payload.uid;
   if (req.method === 'GET'){
     const weekId = req.query?.week_id ? parseInt(String(req.query.week_id),10) : null;
@@ -1178,8 +1084,6 @@ async function handleQuestions(req,res){
   const viewer=getAuthPayload(req);
   if(!viewer) return res.status(401).json({error:'authentication required'});
   const db = getClient();
-  await ensureBaseTables(db);
-  await ensureProfileMigrations(db);
   if (req.method === 'GET'){
     try{
       const rs = await db.execute(`SELECT id, slug, title, type, difficulty, category, description, input_format, constraints_text, examples, test_cases, starter_per_lang, author_id, source, leetcode_slug, created_at FROM custom_questions ORDER BY id DESC LIMIT 100`);
@@ -1261,9 +1165,6 @@ async function handleRuns(req,res){
   if (!payload) return res.status(401).json({ error:'authentication required' });
   const userId = payload.id || payload.uid;
   const db = getClient();
-  await ensureBaseTables(db);
-  await ensureProfileMigrations(db);
-  await ensureSessionRuns(db);
   if (req.method === 'POST'){
     const body = req.body||{};
     const code = String(body.code||'').slice(0,20000);
@@ -1305,8 +1206,6 @@ async function handleRuns(req,res){
 async function handleStats(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
   const db = getClient();
-  await ensureBaseTables(db);
-  await ensureProfileMigrations(db);
   const payload = getAuthPayload(req); // optional
   let total_users=0, total_weeks=0, total_pairs=0;
   try{
@@ -1371,7 +1270,6 @@ async function handleLeetcode(req,res){
   if (req.method!=='GET') return res.status(405).json({ error:'GET only for leetcode detail' });
   if(!getAuthPayload(req)) return res.status(401).json({error:'authentication required'});
   const db = getClient();
-  await ensureBaseTables(db); await ensureProfileMigrations(db);
   const url = new URL(req.url, 'http://localhost');
   let slug = (req.query?.slug || url.searchParams.get('slug') || '').toString().trim().toLowerCase();
   if (!slug){
@@ -1410,7 +1308,6 @@ async function handleLeetcodeSync(req,res){
     return res.status(403).json({error:'automated LeetCode ingestion is disabled pending written authorization'});
   }
   const db = adminCtx.db;
-  await ensureBaseTables(db); await ensureProfileMigrations(db);
   const url = new URL(req.url,'http://localhost');
   const limit = Math.min(50, Math.max(1, parseInt(String(req.query?.limit||url.searchParams.get('limit')||'20'),10)||20));
   const skip = Math.max(0, parseInt(String(req.query?.skip||url.searchParams.get('skip')||'0'),10)||0);
@@ -1804,8 +1701,6 @@ async function handleExecute(req,res){
   const _execStart=Date.now();
   if(req.method!=='POST') return res.status(405).json({error:'POST only for execute'});
   if(!getAuthPayload(req)) return res.status(401).json({error:'authentication required'});
-  try{ await ensureBaseTables(getClient()); }catch{}
-  try{ await ensureAppLogs(getClient()); }catch{}
   const body = req.body || {};
   let language = String(body.language||body.lang||'javascript').toLowerCase();
   const map = {js:'javascript', javascript:'javascript', py:'python', python:'python'};
@@ -1918,11 +1813,13 @@ async function maybeSeedFromStatic(db){
         if(fs2.existsSync(p2)) seed=JSON.parse(fs2.readFileSync(p2,'utf8'));
       }catch{}
     }
-    if(!seed||!seed.length) return;
+    if(!seed||!seed.length) return {ok:true, found:false, attempted:0, upserted:0, failed:0};
     // Upsert enriched seed (ON CONFLICT) — always upsert to migrate old 3-case seeds to enriched 6-case
+    let upserted=0;
+    let failed=0;
     for(const q of seed){
       try{
-        const enrichedTC = q.test_cases || [];
+        const enrichedTC = [...(q.test_cases || [])];
         const slug = q.slug;
         let mergedTC = enrichedTC;
         try{
@@ -1941,7 +1838,11 @@ async function maybeSeedFromStatic(db){
             source=excluded.source,
             leetcode_slug=excluded.leetcode_slug
         `, args:[q.slug,q.title, q.type||'dsa', q.difficulty||'Medium', q.category||'custom', q.description, JSON.stringify(mergedTC||[]), JSON.stringify(q.examples||[]), q.source||'leetcode', q.leetcode_slug||q.slug]});
-      }catch{}
+        upserted++;
+      }catch{ failed++; }
     }
-  }catch{}
+    return {ok:failed===0, found:true, attempted:seed.length, upserted, failed};
+  }catch{
+    return {ok:false, found:false, attempted:0, upserted:0, failed:0};
+  }
 }

@@ -13,9 +13,12 @@
     "node": ">=24"
   },
   "scripts": {
-    "check:syntax": "node tests/static/check-syntax.mjs",
+    "check:syntax": "node tests/static/check-syntax.mjs && npm run check:schema",
+    "check:schema": "node tests/static/check-schema-boundaries.mjs",
+    "db:migrate": "node scripts/migrate.mjs",
+    "db:status": "node scripts/migrate.mjs --status",
     "test:unit": "node --experimental-test-module-mocks --test tests/unit/*.test.mjs",
-    "test:coverage": "node --experimental-test-module-mocks --experimental-test-coverage --test-coverage-include='api/*.js' --test-coverage-lines=52 --test-coverage-branches=52 --test-coverage-functions=52 --test tests/unit/*.test.mjs",
+    "test:coverage": "node --experimental-test-module-mocks --experimental-test-coverage --test-coverage-include='api/*.js' --test-coverage-include='db/**/*.js' --test-coverage-include='scripts/**/*.mjs' --test-coverage-lines=52 --test-coverage-branches=52 --test-coverage-functions=52 --test tests/unit/*.test.mjs",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test": "npm run check:syntax && npm run test:coverage && npm run test:e2e",

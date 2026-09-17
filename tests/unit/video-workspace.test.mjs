@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { after, before, beforeEach, mock, test } from 'node:test';
 import { createClient } from '@libsql/client';
+import { runMigrations } from '../../db/migrate.js';
 
-const db=createClient({url:'file::memory:'});
+const databaseDirectory=mkdtempSync(join(tmpdir(),'randori-video-workspace-'));
+const db=createClient({url:`file:${join(databaseDirectory,'test.sqlite')}`});
 
 function authPayload(req){
   const value=Number(req?.headers?.['x-test-user']);
@@ -69,26 +74,23 @@ function get(afterRevision=0,overrides={}){
 }
 
 before(async()=>{
-  await db.execute(`CREATE TABLE pairing_groups (
-    id INTEGER PRIMARY KEY,
-    week_id INTEGER NOT NULL,
-    user_a_id INTEGER NOT NULL,
-    user_b_id INTEGER NOT NULL,
-    user_c_id INTEGER
-  )`);
+  await runMigrations(db,{maxAttempts:4,baseDelayMs:0,maxDelayMs:0});
 });
 
 beforeEach(async()=>{
+  await db.execute(`DELETE FROM pair_room_snapshots`);
+  await db.execute(`DELETE FROM video_signals`);
   await db.execute(`DELETE FROM pairing_groups`);
   await db.execute({
     sql:`INSERT INTO pairing_groups (id,week_id,user_a_id,user_b_id,user_c_id) VALUES (?,?,?,?,?)`,
     args:[20,10,2,4,6],
   });
-  try{ await db.execute(`DELETE FROM pair_room_snapshots`); }catch{}
-  try{ await db.execute(`DELETE FROM video_signals`); }catch{}
 });
 
-after(()=>db.close());
+after(()=>{
+  db.close();
+  rmSync(databaseDirectory,{recursive:true,force:true});
+});
 
 test('workspace reads and writes require authentication and exact room membership', async()=>{
   const anonymous=await invoke({

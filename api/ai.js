@@ -21,73 +21,9 @@ function getEndpoint(req){
 
 function todayISO(){ const d=new Date(); return d.toISOString().slice(0,10); }
 
-async function ensureTables(db){
-  await db.execute(`CREATE TABLE IF NOT EXISTS ai_sessions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    room_id TEXT,
-    pair_label TEXT,
-    transcript TEXT,
-    code_snapshots TEXT,
-    interviewer_questions TEXT,
-    started_at TEXT DEFAULT (datetime('now')),
-    ended_at TEXT,
-    duration_sec INTEGER,
-    cost_cents INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now')),
-    created_by INTEGER
-  )`);
-  await db.execute(`CREATE TABLE IF NOT EXISTS ai_feedback (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id INTEGER NOT NULL REFERENCES ai_sessions(id) ON DELETE CASCADE,
-    role TEXT DEFAULT 'both',
-    feedback_json TEXT NOT NULL,
-    evidence TEXT,
-    model_used TEXT,
-    reason_for_pick TEXT,
-    estimated_cost_cents INTEGER,
-    confidence REAL DEFAULT 0.85,
-    created_at TEXT DEFAULT (datetime('now'))
-  )`);
-  await db.execute(`CREATE TABLE IF NOT EXISTS ai_usage (
-    date TEXT PRIMARY KEY,
-    calls INTEGER DEFAULT 0,
-    tokens_in INTEGER DEFAULT 0,
-    tokens_out INTEGER DEFAULT 0,
-    updated_at TEXT DEFAULT (datetime('now'))
-  )`);
-  // monthly aggregate optional
-  try{ await db.execute(`CREATE TABLE IF NOT EXISTS ai_monthly_usage (month TEXT PRIMARY KEY, user_id INTEGER, calls INTEGER DEFAULT 0, tokens_in INTEGER DEFAULT 0, updated_at TEXT DEFAULT (datetime('now')))`) }catch{}
-  await db.execute(`CREATE TABLE IF NOT EXISTS ai_consents (
-    user_id INTEGER PRIMARY KEY,
-    consented_at TEXT NOT NULL DEFAULT (datetime('now')),
-    revoked_at TEXT,
-    policy_version TEXT NOT NULL
-  )`);
-}
-
-async function ensureAppLogs(db){
-  try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS app_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      level TEXT,
-      source TEXT,
-      event TEXT,
-      message TEXT,
-      meta_json TEXT,
-      user_id INTEGER,
-      route TEXT,
-      ua TEXT,
-      ip TEXT,
-      created_at TEXT DEFAULT (datetime('now'))
-    )`);
-  }catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_logs_level_created ON app_logs(level, created_at DESC)`) }catch{}
-}
-
 async function logServer(level, event, message, meta, reqCtx){
   try{
     const db=getClient();
-    await ensureAppLogs(db);
     const allowed=['info','warn','error','success','debug'];
     let lvl=String(level||'info').toLowerCase();
     if(!allowed.includes(lvl)) lvl='info';
@@ -411,8 +347,6 @@ async function handleAnalyze(req,res){
   try{ db=getClient(); }catch(e){
     return res.status(503).json({ error:'AI service temporarily unavailable' });
   }
-  try{ await ensureTables(db); await ensureAppLogs(db); }catch{}
-
   const trustedRoom=await resolveAnalysisRoom(db,requestedRoomId).catch(()=>null);
   const numericUserId=Number(userId);
   if(!trustedRoom || !trustedRoom.participantIds.includes(numericUserId)){
@@ -588,7 +522,7 @@ async function handleFeedback(req,res){
   if(!id){ try{ const u=new URL(req.url,'http://localhost'); id=u.searchParams.get('id')||u.searchParams.get('sessionId'); const parts=u.pathname.split('/'); const last=parts.pop(); if(last && last!=='feedback' && last!=='analyze' && last!=='history' && !isNaN(Number(last))) id=last; }catch{} }
   const authInfo=tryAuth(req);
   if(!authInfo.authed) return res.status(401).json({error:'authentication required'});
-  const db=getClient(); await ensureTables(db);
+  const db=getClient();
 
   const uid=authInfo.userId;
   if(id){
@@ -619,7 +553,7 @@ async function handleHistory(req,res){
   if(!authInfo.authed){
     return res.status(401).json({error:'authentication required'});
   }
-  const db=getClient(); await ensureTables(db);
+  const db=getClient();
   const rs=await db.execute({ sql:`SELECT af.id, af.session_id, af.role, af.model_used, af.estimated_cost_cents, af.confidence, af.created_at, ase.room_id, ase.pair_label, ase.duration_sec FROM ai_feedback af JOIN ai_sessions ase ON ase.id=af.session_id WHERE ase.created_by=? ORDER BY af.created_at DESC LIMIT 20`, args:[uid]});
   const today=todayISO(); let usage=null; try{ const u=await db.execute({ sql:`SELECT * FROM ai_usage WHERE date=?`, args:[today]}); usage=u.rows[0]||null; }catch{}
   // monthly quota info

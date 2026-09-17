@@ -3,20 +3,23 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 import vm from 'node:vm';
 
+function sourceFilesUnder(directory) {
+  return readdirSync(directory, { withFileTypes: true })
+    .flatMap(entry => entry.isDirectory()
+      ? sourceFilesUnder(`${directory}/${entry.name}`)
+      : (entry.name.endsWith('.js') || entry.name.endsWith('.mjs'))
+        ? [`${directory}/${entry.name}`]
+        : [])
+    .sort();
+}
+
 const sourceFiles = [
-  ...readdirSync('api')
-    .filter(file => file.endsWith('.js'))
-    .sort()
-    .map(file => `api/${file}`),
+  ...sourceFilesUnder('api'),
+  ...sourceFilesUnder('db'),
+  ...sourceFilesUnder('scripts'),
   'playwright.config.js',
-  ...readdirSync('tests/support')
-    .filter(file => file.endsWith('.mjs'))
-    .sort()
-    .map(file => `tests/support/${file}`),
-  ...readdirSync('tests/unit')
-    .filter(file => file.endsWith('.mjs'))
-    .sort()
-    .map(file => `tests/unit/${file}`),
+  ...sourceFilesUnder('tests/support'),
+  ...sourceFilesUnder('tests/unit'),
 ];
 
 for (const file of sourceFiles) {

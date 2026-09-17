@@ -81,7 +81,6 @@ async function enforceAuthRateLimit(db, req, action, email){
   const ip=forwarded || String(req.socket?.remoteAddress||'unknown');
   const windowSeconds=15*60;
   const bucket=Math.floor(Date.now()/1000/windowSeconds);
-  await db.execute(`CREATE TABLE IF NOT EXISTS auth_rate_limits (key TEXT PRIMARY KEY, attempts INTEGER NOT NULL DEFAULT 0, expires_at INTEGER NOT NULL)`);
   const limits=action==='signup'
     ? [[`ip:${ip}`,5],[`email:${email}`,5]]
     : [[`ip:${ip}`,20],[`email:${email}`,10]];
@@ -147,11 +146,6 @@ async function handleSignup(req,res){
   if(display.length<2) return res.status(400).json({ error:'display name must be 2-32 chars' });
   if(!registrationAllowed(e)) return res.status(403).json({error:'private beta signup is invite-only'});
   const db = getClient();
-  await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0)`);
-  await db.execute(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`);
-  try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`);}catch{}
-  try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`);}catch{}
-  try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`);}catch{}
   try{ await enforceAuthRateLimit(db,req,'signup',e); }catch(err){
     if(err?.statusCode===429) return res.status(429).json({error:'too many signup attempts; try again later'});
     return res.status(503).json({error:'signup temporarily unavailable'});
@@ -176,10 +170,6 @@ async function handleLogin(req,res){
   if (!email || !password) return res.status(400).json({ error:'email,password required' });
   const e = String(email).trim().toLowerCase();
   const db = getClient();
-  await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0)`);
-  try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`);}catch{}
-  try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`);}catch{}
-  try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`);}catch{}
   try{ await enforceAuthRateLimit(db,req,'login',e); }catch(err){
     if(err?.statusCode===429) return res.status(429).json({error:'too many login attempts; try again later'});
     return res.status(503).json({error:'login temporarily unavailable'});
@@ -207,9 +197,6 @@ async function handleMe(req,res){
   if (!payload) return res.status(401).json({ error:'authentication required' });
   try{
     const db = getClient();
-    try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`);}catch{}
-    try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`);}catch{}
-    try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`);}catch{}
     const id = payload.id || payload.uid;
     if (!id) return res.status(401).json({ error:'invalid token payload' });
     const rs = await db.execute({ sql:`SELECT id,email,display_name,color,created_at,last_login,is_available,availability_updated_at,is_admin FROM auth_accounts WHERE id=?`, args:[id] });
@@ -300,14 +287,6 @@ async function handleGoogleCallback(req,res){
   const nameFromEmail = email.split('@')[0].slice(0,32);
   const finalName = (displayName ? String(displayName).trim().slice(0,32) : nameFromEmail) || nameFromEmail;
   const db = getClient();
-  try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0)`);
-    await db.execute(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`);
-    try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`);}catch{}
-    try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`);}catch{}
-    try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`);}catch{}
-    try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN google_sub TEXT`);}catch{}
-  }catch{}
   const color = deterministicColor(finalName.toLowerCase());
   let authId, is_admin_final=false;
   try{

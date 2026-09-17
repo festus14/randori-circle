@@ -1,14 +1,31 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { after, beforeEach, mock, test } from 'node:test';
 import { createClient } from '@libsql/client';
 import bcrypt from 'bcryptjs';
+import { MIGRATIONS, runMigrations } from '../../db/migrate.js';
 
 const realFetch = globalThis.fetch;
+const fastMigrations = Object.freeze({ maxAttempts: 4, baseDelayMs: 0, maxDelayMs: 0 });
 let executeHandler = () => ({ rows: [], rowsAffected: 0 });
 let databaseDelegate = null;
 const executed = [];
 let lastPairingRun = null;
 let persistedPairGroups = [];
+
+function temporaryDatabase(prefix = 'randori-api-behavior-') {
+  const directory = mkdtempSync(join(tmpdir(), prefix));
+  const client = createClient({ url: `file:${join(directory, 'test.sqlite')}` });
+  return {
+    client,
+    close() {
+      client.close();
+      rmSync(directory, { recursive: true, force: true });
+    },
+  };
+}
 
 function sqlText(statement) {
   return typeof statement === 'string' ? statement : String(statement?.sql || '');
@@ -51,6 +68,10 @@ const db = {
     }
     if (nextGroups.length) persistedPairGroups = nextGroups;
     return statements.map(() => ({ rows: [], rowsAffected: 0 }));
+  },
+  async transaction(mode) {
+    if (!databaseDelegate) throw new Error('transaction unavailable without a database delegate');
+    return databaseDelegate.transaction(mode);
   },
 };
 
@@ -355,9 +376,33 @@ test('data read models map database rows into circle, weeks, history, stats, and
     return rows();
   };
   const auth = { 'x-test-auth': 'user' };
-  const health = await invoke(dataHandler, { url: '/api/health', query: { endpoint: 'health' } });
-  assert.equal(health.body.spike, true);
-  assert.equal(health.body.piston_fails_6h, 2);
+  const healthFixture = temporaryDatabase('randori-health-');
+  const healthDb = healthFixture.client;
+  try {
+    await runMigrations(healthDb, fastMigrations);
+    await healthDb.batch([
+      ...Array.from({ length: 7 }, (_, index) => ({
+        sql: `INSERT INTO app_logs (level,event,message) VALUES ('error',?,?)`,
+        args: [index < 2 ? 'execute_fail' : 'other', `error ${index}`],
+      })),
+      { sql: `INSERT INTO app_logs (level,event,message) VALUES ('warn','monaco_load_fail','warning')`, args: [] },
+    ], 'write');
+    databaseDelegate = healthDb;
+    executed.length = 0;
+    const health = await invoke(dataHandler, { url: '/api/health', query: { endpoint: 'health' } });
+    assert.equal(health.status, 200);
+    assert.equal(health.body.ready, true);
+    assert.equal(health.body.status, 'ready');
+    assert.equal(health.body.spike, true);
+    assert.equal(health.body.piston_fails_6h, 2);
+    assert.equal(health.body.monaco_fails_6h, 1);
+    assert.ok(executed.length > 0);
+    assert.equal(executed.every(call => /^\s*(SELECT|PRAGMA)\b/i.test(call.sql)), true,
+      'health readiness must never mutate or initialize the database');
+  } finally {
+    databaseDelegate = null;
+    healthFixture.close();
+  }
 
   const circle = await invoke(dataHandler, { url: '/api/circle', query: { endpoint: 'circle' }, headers: auth });
   assert.equal(circle.body.circle.length, 2);
@@ -572,29 +617,108 @@ test('questions require authentication and bundled seed ingestion runs only thro
   assert.equal(executed.some(call => call.sql.includes('CREATE UNIQUE INDEX IF NOT EXISTS uq_pair_schedules_week_pair')), false,
     'ordinary requests must not create the legacy schedule uniqueness index');
 
-  executed.length = 0;
-  const initialized = await invoke(dataHandler, {
-    method: 'POST', url: '/api/init', query: { endpoint: 'init' }, headers: { 'x-test-auth': 'admin' },
-  });
-  assert.equal(initialized.status, 200);
-  assert.equal(executed.some(call => call.sql.includes('INSERT INTO custom_questions')), true);
-  const dedupe = executed.findIndex(call => call.sql.includes('DELETE FROM pair_schedules WHERE id NOT IN'));
-  const uniqueIndex = executed.findIndex(call => call.sql.includes('CREATE UNIQUE INDEX IF NOT EXISTS uq_pair_schedules_week_pair'));
-  assert.ok(dedupe >= 0 && uniqueIndex > dedupe, 'legacy schedules must be deterministically deduped before the unique index');
+  const initFixture = temporaryDatabase('randori-init-');
+  const memoryDb = initFixture.client;
+  try {
+    await runMigrations(memoryDb, { ...fastMigrations, migrations: MIGRATIONS.slice(0, 1) });
+    await memoryDb.execute({
+      sql: `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_admin) VALUES (?,?,?,?,?,1)`,
+      args: [1, 'admin@example.test', 'unused', 'Admin', '#123456'],
+    });
+    databaseDelegate = memoryDb;
+    const initialized = await invoke(dataHandler, {
+      method: 'POST', url: '/api/init', query: { endpoint: 'init' }, headers: { 'x-test-auth': 'admin' },
+    });
+    assert.equal(initialized.status, 200, JSON.stringify(initialized.body));
+    assert.equal(initialized.body.before.status, 'migration_required');
+    assert.equal(initialized.body.before.current_version, 1);
+    assert.deepEqual(initialized.body.applied.map(item => item.version), [2, 3, 4]);
+    assert.equal(initialized.body.after.ready, true);
+    assert.equal(initialized.body.after.status, 'ready');
+    assert.equal(initialized.body.seed.found, true);
+    const seeded = await memoryDb.execute(`SELECT COUNT(*) AS count FROM custom_questions`);
+    assert.ok(Number(seeded.rows[0].count) > 0);
+  } finally {
+    databaseDelegate = null;
+    initFixture.close();
+  }
 });
 
-test('admin init reports a visible error when the legacy schedule migration fails', async () => {
-  executeHandler = sql => {
-    if (sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')) return rows([{ id: 1, email: 'admin@example.test', is_admin: 1 }]);
-    if (sql.includes('DELETE FROM pair_schedules WHERE id NOT IN')) throw new Error('database is read only');
-    return rows();
-  };
-  const result = await invoke(dataHandler, {
-    method: 'POST', url: '/api/init', query: { endpoint: 'init' }, headers: { 'x-test-auth': 'admin' },
-  });
-  assert.equal(result.status, 500);
-  assert.match(result.body.error, /schedule uniqueness migration failed/i);
-  assert.match(result.body.detail, /read only/i);
+test('admin init reports migration preflight failures and the resulting readiness state', async () => {
+  const initFixture = temporaryDatabase('randori-init-failure-');
+  const memoryDb = initFixture.client;
+  try {
+    await runMigrations(memoryDb, { ...fastMigrations, migrations: MIGRATIONS.slice(0, 3) });
+    await memoryDb.batch([
+      {
+        sql: `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_admin) VALUES (?,?,?,?,?,1)`,
+        args: [1, 'admin@example.test', 'unused', 'Admin', '#123456'],
+      },
+      {
+        sql: `INSERT INTO pairing_weeks (week_label,week_start) VALUES (?,?)`,
+        args: ['2026-W38', '2026-09-20'],
+      },
+      {
+        sql: `INSERT INTO pairing_weeks (week_label,week_start) VALUES (?,?)`,
+        args: ['2026-W38', '2026-09-21'],
+      },
+    ], 'write');
+    databaseDelegate = memoryDb;
+    const result = await invoke(dataHandler, {
+      method: 'POST', url: '/api/init', query: { endpoint: 'init' }, headers: { 'x-test-auth': 'admin' },
+    });
+    assert.equal(result.status, 500);
+    assert.equal(result.body.error, 'database migration failed');
+    assert.equal(result.body.reason, 'migration_preflight_failed');
+    assert.equal(result.body.before.current_version, 3);
+    assert.deepEqual(result.body.applied, []);
+    assert.equal(result.body.after.status, 'migration_required');
+    assert.equal(result.body.after.current_version, 3);
+    assert.deepEqual(result.body.after.pending_versions, [4]);
+    const ledger = await memoryDb.execute(`SELECT version FROM schema_migrations ORDER BY version`);
+    assert.deepEqual(ledger.rows.map(row => Number(row.version)), [1, 2, 3]);
+  } finally {
+    databaseDelegate = null;
+    initFixture.close();
+  }
+});
+
+test('admin init reports migrations committed before a later preflight failure', async () => {
+  const initFixture = temporaryDatabase('randori-init-partial-');
+  const memoryDb = initFixture.client;
+  try {
+    await memoryDb.batch([
+      `CREATE TABLE auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT)`,
+      `CREATE TABLE pairing_weeks (id INTEGER PRIMARY KEY AUTOINCREMENT, week_label TEXT NOT NULL, week_start TEXT NOT NULL, focus TEXT NOT NULL DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')))`,
+      {
+        sql: `INSERT INTO auth_accounts (id,email,password_hash,display_name,color) VALUES (?,?,?,?,?)`,
+        args: [1, 'admin@example.test', 'unused', 'Admin', '#123456'],
+      },
+      {
+        sql: `INSERT INTO pairing_weeks (week_label,week_start) VALUES (?,?)`,
+        args: ['2026-W38', '2026-09-20'],
+      },
+      {
+        sql: `INSERT INTO pairing_weeks (week_label,week_start) VALUES (?,?)`,
+        args: ['2026-W38', '2026-09-21'],
+      },
+    ], 'write');
+    databaseDelegate = memoryDb;
+    const result = await invoke(dataHandler, {
+      method: 'POST', url: '/api/init', query: { endpoint: 'init' }, headers: { 'x-test-auth': 'admin' },
+    });
+    assert.equal(result.status, 500);
+    assert.equal(result.body.reason, 'migration_preflight_failed');
+    assert.equal(result.body.before.current_version, 0);
+    assert.deepEqual(result.body.applied.map(item => item.version), [1, 2, 3]);
+    assert.equal(result.body.after.current_version, 3);
+    assert.deepEqual(result.body.after.pending_versions, [4]);
+    const ledger = await memoryDb.execute(`SELECT version FROM schema_migrations ORDER BY version`);
+    assert.deepEqual(ledger.rows.map(row => Number(row.version)), [1, 2, 3]);
+  } finally {
+    databaseDelegate = null;
+    initFixture.close();
+  }
 });
 
 test('data validation and access-control branches reject malformed or cross-pair requests', async () => {
@@ -802,22 +926,14 @@ test('AI provider network failures preserve Groq retries and OpenAI fallback', a
 test('AI rejects malformed provider feedback with the generic provider error', async () => {
   process.env.AI_ENABLED = 'true';
   process.env.GROQ_API_KEY = 'test-groq-key';
-  const memoryDb = createClient({ url: 'file::memory:' });
+  const aiFixture = temporaryDatabase('randori-ai-');
+  const memoryDb = aiFixture.client;
   databaseDelegate = memoryDb;
   try {
+    await runMigrations(memoryDb, fastMigrations);
     await memoryDb.batch([
-      `CREATE TABLE auth_accounts (id INTEGER PRIMARY KEY, email TEXT NOT NULL, is_demo INTEGER DEFAULT 0)`,
-      `CREATE TABLE pairing_weeks (id INTEGER PRIMARY KEY, week_label TEXT NOT NULL)`,
-      `CREATE TABLE pairing_groups (
-        id INTEGER PRIMARY KEY,
-        week_id INTEGER NOT NULL,
-        user_a_id INTEGER NOT NULL,
-        user_b_id INTEGER NOT NULL,
-        user_c_id INTEGER,
-        is_ai_pair INTEGER DEFAULT 0
-      )`,
-      `INSERT INTO auth_accounts (id,email,is_demo) VALUES (2,'user@example.test',0)`,
-      `INSERT INTO pairing_weeks (id,week_label) VALUES (10,'2026-W38')`,
+      `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_demo) VALUES (2,'user@example.test','unused','User','#123456',0)`,
+      `INSERT INTO pairing_weeks (id,week_label,week_start) VALUES (10,'2026-W38','2026-09-20')`,
       `INSERT INTO pairing_groups (id,week_id,user_a_id,user_b_id,user_c_id,is_ai_pair) VALUES (23,10,2,2,NULL,1)`,
     ], 'write');
 
@@ -858,7 +974,7 @@ test('AI rejects malformed provider feedback with the generic provider error', a
     assert.equal(Number(consentCount.rows[0].count), 1);
   } finally {
     databaseDelegate = null;
-    memoryDb.close();
+    aiFixture.close();
   }
 });
 

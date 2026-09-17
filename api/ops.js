@@ -7,7 +7,6 @@ const MAX_EMAIL_ATTEMPTS=5;
 async function logServerOps(level, event, message, meta, req){
   try{
     const db = getClient();
-    try{ await db.execute("CREATE TABLE IF NOT EXISTS app_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, level TEXT, source TEXT, event TEXT, message TEXT, meta_json TEXT, user_id INTEGER, route TEXT, ua TEXT, ip TEXT, created_at TEXT DEFAULT (datetime('now')))"); }catch{}
     let metaStr=null; try{ metaStr = meta ? JSON.stringify(meta).slice(0,8000) : null; }catch{ metaStr=String(meta).slice(0,2000); }
     const lvl=String(level||"info").toLowerCase();
     const ev=String(event).slice(0,80);
@@ -19,13 +18,8 @@ async function logServerOps(level, event, message, meta, req){
   }catch(e){ try{ console.warn("[logServerOps fail]", e && e.message); }catch{} }
 }
 
-async function ensureNotifPrefs(db){
-  try{ await db.execute("CREATE TABLE IF NOT EXISTS user_notification_prefs (user_id INTEGER PRIMARY KEY, email_enabled INTEGER DEFAULT 1, sms_enabled INTEGER DEFAULT 0, phone TEXT, email TEXT, updated_at TEXT DEFAULT (datetime('now')))"); }catch{}
-}
-
 async function handleNotificationPrefs(req,res){
   const db=getClient();
-  try{ await ensureNotifPrefs(db); }catch{}
   if(req.method==="GET"){
     const payload=verifyRequestAuth(req);
     if(!payload) return res.status(401).json({error:"authentication required"});
@@ -48,8 +42,12 @@ async function handleNotificationPrefs(req,res){
     try{
       await db.execute({sql:"INSERT INTO user_notification_prefs (user_id,email_enabled,sms_enabled,phone,email,updated_at) VALUES (?,?,?,?,?,datetime('now')) ON CONFLICT(user_id) DO UPDATE SET email_enabled=excluded.email_enabled, sms_enabled=excluded.sms_enabled, phone=COALESCE(excluded.phone,phone), email=COALESCE(excluded.email,email), updated_at=datetime('now')", args:[uid,email_enabled,sms_enabled,phone,email]});
     }catch{
-      try{ await db.execute({sql:"INSERT OR IGNORE INTO user_notification_prefs (user_id,email_enabled,sms_enabled,phone,email) VALUES (?,?,?,?,?)", args:[uid,email_enabled,sms_enabled,phone,email]}); }catch{}
-      try{ await db.execute({sql:"UPDATE user_notification_prefs SET email_enabled=?, sms_enabled=?, phone=COALESCE(?,phone), email=COALESCE(?,email), updated_at=datetime('now') WHERE user_id=?", args:[email_enabled,sms_enabled,phone,email,uid]}); }catch{}
+      try{
+        await db.execute({sql:"INSERT OR IGNORE INTO user_notification_prefs (user_id,email_enabled,sms_enabled,phone,email) VALUES (?,?,?,?,?)", args:[uid,email_enabled,sms_enabled,phone,email]});
+        await db.execute({sql:"UPDATE user_notification_prefs SET email_enabled=?, sms_enabled=?, phone=COALESCE(?,phone), email=COALESCE(?,email), updated_at=datetime('now') WHERE user_id=?", args:[email_enabled,sms_enabled,phone,email,uid]});
+      }catch{
+        return res.status(500).json({error:"notification preferences unavailable"});
+      }
     }
     try{ await logServerOps("info","notif_prefs_updated","prefs uid "+uid+" email="+email_enabled+" sms="+sms_enabled, {uid,email_enabled,sms_enabled}, req); }catch{}
     return res.json({ok:true, prefs:{user_id:uid,email_enabled:!!email_enabled,sms_enabled:!!sms_enabled,phone,email}});
@@ -84,30 +82,6 @@ function verifyCronAuth(req){
   const expectedBuf=Buffer.from(secret);
   const presentedBuf=Buffer.from(presented);
   return expectedBuf.length===presentedBuf.length && timingSafeEqual(expectedBuf,presentedBuf);
-}
-
-async function ensureMigrations(db){
-  try{ await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0, is_demo INTEGER DEFAULT 0)`);}catch{}
-  try{ await db.execute(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`);}catch{}
-  try{ await db.execute(`CREATE TABLE IF NOT EXISTS pairing_weeks (id INTEGER PRIMARY KEY AUTOINCREMENT, week_label TEXT NOT NULL, week_start TEXT NOT NULL, focus TEXT NOT NULL DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')), is_demo INTEGER DEFAULT 0)`);}catch{}
-  try{ await db.execute(`CREATE TABLE IF NOT EXISTS pairing_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, user_a_id INTEGER NOT NULL, user_b_id INTEGER NOT NULL, user_c_id INTEGER, is_ai_pair INTEGER DEFAULT 0, topic TEXT DEFAULT 'Pick together', topic_kind TEXT DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')))`);}catch{}
-  try{ await db.execute(`CREATE TABLE IF NOT EXISTS pairing_week_runs (week_label TEXT PRIMARY KEY, week_id INTEGER, generation_token TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 1, algorithm_version TEXT NOT NULL, algorithm_seed TEXT NOT NULL, participant_count INTEGER NOT NULL, participants_json TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))`);}catch{}
-  try{ await db.execute(`CREATE TABLE IF NOT EXISTS pairing_participants (week_id INTEGER NOT NULL, user_id INTEGER NOT NULL, position INTEGER NOT NULL, source TEXT NOT NULL DEFAULT 'auth', created_at TEXT DEFAULT (datetime('now')), PRIMARY KEY (week_id, user_id))`);}catch{}
-  try{ await db.execute(`CREATE TABLE IF NOT EXISTS pairing_email_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, user_id INTEGER NOT NULL, kind TEXT NOT NULL, recipient_email TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', attempt_count INTEGER NOT NULL DEFAULT 0, claimed_at TEXT, sent_at TEXT, provider_message_id TEXT, last_error TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')), UNIQUE (week_id,user_id,kind))`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pairing_email_outbox_pending ON pairing_email_outbox(week_id,status,created_at)`);}catch{}
-  // New installs get a direct invariant; pairing_week_runs remains the concurrency guard
-  // for older databases where historical duplicate labels prevent this index.
-  try{ await db.execute(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pairing_weeks_week_label ON pairing_weeks(week_label)`);}catch{}
-  const alters=[
-    `ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`,
-    `ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`,
-    `ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`,
-    `ALTER TABLE auth_accounts ADD COLUMN is_demo INTEGER DEFAULT 0`,
-    `ALTER TABLE pairing_weeks ADD COLUMN is_demo INTEGER DEFAULT 0`,
-    `ALTER TABLE auth_accounts ADD COLUMN phone TEXT`,
-    `ALTER TABLE pairing_week_runs ADD COLUMN generation INTEGER NOT NULL DEFAULT 1`,
-];
-  for(const sql of alters){ try{ await db.execute(sql); }catch{} }
 }
 
 async function loadPairingHistory(db, weekLabel, {includeDemo=false,includeCurrent=false}={}){
@@ -295,7 +269,6 @@ async function requireAdmin(req,res){
   const payload=verifyRequestAuth(req);
   if (!payload) { res.status(401).json({ error:'authentication required' }); return null; }
   const db = getClient();
-  await ensureMigrations(db);
   const ctx = await getCallerAdmin(db, payload);
   if (!ctx.callerIsAdmin){ res.status(403).json({ error:'forbidden: admin only' }); return null; }
   return {db, payload, ...ctx};
@@ -311,7 +284,6 @@ async function handleAvailability(req,res){
   const val = raw?1:0;
   const userId=payload.id||payload.uid;
   const db = getClient();
-  await ensureMigrations(db);
   try{
     await db.execute({ sql:`UPDATE auth_accounts SET is_available=?, availability_updated_at=datetime('now') WHERE id=?`, args:[val, userId]});
     const rs = await db.execute({ sql:`SELECT id,email,display_name,is_available,availability_updated_at FROM auth_accounts WHERE id=?`, args:[userId]});
@@ -369,8 +341,6 @@ async function handleWeekly(req,res){
     return res.status(401).json({ error:'unauthorized cron', hint:'send x-cron-secret: <CRON_SECRET> or Authorization: Bearer <CRON_SECRET>'});
   }
   const db = getClient();
-  await ensureMigrations(db);
-  try{ await ensureNotifPrefs(db); }catch{}
   const now=new Date(); const weekLabel=isoWeekLabel(now);
   const baseUrl=(process.env.APP_URL || (process.env.VERCEL_URL? `https://${process.env.VERCEL_URL}`:'https://randori-circle-self.vercel.app')).replace(/\/$/,'');
   const existingWeek=await db.execute({ sql:`SELECT id FROM pairing_weeks WHERE week_label=?`, args:[weekLabel]});
@@ -426,7 +396,6 @@ async function handleWeekly(req,res){
 async function handleDemoSeed(req,res){
   if (req.method!=='POST') return res.status(405).json({ error:'POST only for demo-seed' });
   const ctx=await requireAdmin(req,res); if(!ctx) return; const db=ctx.db;
-  await ensureMigrations(db);
   const names=['Mia Chen','Alex Rivera','Priya Shah','Jordan Kim','Samir Desai','Lena Wu'];
   const palette=['#e6c07a','#9cc0b5','#d68a8a','#a3b5d6','#c7b29a','#8ec0a5'];
   const ts=Date.now();

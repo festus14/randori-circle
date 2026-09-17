@@ -13,7 +13,6 @@ const WORKSPACE_FIELDS = [
   'question_id',
   'schema_version',
 ];
-let tableInitPromise=null;
 let lastCleanupTimestamp=0;
 const CLEANUP_INTERVAL_MS=5*60*1000;
 
@@ -21,43 +20,6 @@ function getEndpoint(req){
   const q=req.query?.endpoint;
   if(q) return String(q).toLowerCase();
   try{ const u=new URL(req.url,'http://localhost'); const ep=u.searchParams.get('endpoint'); if(ep) return ep.toLowerCase(); const parts=u.pathname.split('/').filter(Boolean); return parts.pop()?.toLowerCase()||''; }catch{ return (req.url||'').split('?')[0].split('/').filter(Boolean).pop()?.toLowerCase()||''; }
-}
-
-async function ensureTable(db){
-  if(!tableInitPromise){
-    tableInitPromise=(async()=>{
-      await db.execute(`CREATE TABLE IF NOT EXISTS video_signals (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    room_id TEXT NOT NULL,
-    from_id TEXT NOT NULL,
-    to_id TEXT,
-    type TEXT NOT NULL,
-    payload TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now'))
-      )`);
-      try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_video_signals_room ON video_signals(room_id, created_at)`);}catch{}
-      try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_video_signals_room_id ON video_signals(room_id, id)`);}catch{}
-      await db.execute(`CREATE TABLE IF NOT EXISTS pair_room_snapshots (
-    room_id TEXT PRIMARY KEY,
-    week_id INTEGER NOT NULL,
-    pair_group_id INTEGER NOT NULL,
-    revision INTEGER NOT NULL,
-    schema_version INTEGER NOT NULL,
-    client_id TEXT NOT NULL,
-    client_seq INTEGER NOT NULL,
-    language TEXT NOT NULL,
-    question_id TEXT NOT NULL,
-    code TEXT NOT NULL,
-    updated_by INTEGER NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(week_id, pair_group_id),
-    FOREIGN KEY(pair_group_id) REFERENCES pairing_groups(id) ON DELETE CASCADE
-      )`);
-    })();
-  }
-  try{ await tableInitPromise; }
-  catch(error){ tableInitPromise=null; throw error; }
 }
 
 async function cleanupOld(db){
@@ -285,7 +247,7 @@ async function handleSignal(req,res){
   const payload=verifyRequestAuth(req);
   if(!payload) return res.status(401).json({ok:false,error:'authentication required'});
   const db=getClient();
-  try{ await ensureTable(db); await cleanupOld(db); }catch{ return res.status(503).json({ok:false,error:'video signaling unavailable'}); }
+  await cleanupOld(db);
 
   if(req.method==='POST'){
     const body=req.body||{};

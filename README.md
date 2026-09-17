@@ -9,10 +9,10 @@ Production deploys from `main` through Vercel. Development is iterative; the arc
 1. An allowlisted member signs in through verified Google OAuth.
 2. The Sunday cron creates one deterministic, repeat-aware pairing cycle.
 3. Each participant receives a personalised email containing only their partner and private room link.
-4. Partners propose a time, chat, and open the session workspace.
+4. Partners follow a private invite, propose a time, chat, and open their authorised session workspace.
 5. JavaScript and Python execute through the authenticated server gateway; browser-origin code execution is disabled.
 
-The current collaboration UI still uses local browser state and `BroadcastChannel`. Cross-device collaborative editing, managed video, AI coaching, and authorised content ingestion remain later increments.
+Code, language, and question choice now synchronize across devices through bounded, revisioned pair-room snapshots. Managed video, durable board collaboration, consented AI coaching, and authorised content expansion remain later increments.
 
 ## Security baseline
 
@@ -38,6 +38,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/video.js` | authenticated pair-scoped WebRTC signaling |
 | `api/_db.js` | Turso client, JWT verification, CSRF helpers |
 | `api/_pairing.js` | deterministic fairness and canonical room identifiers |
+| `db/` | canonical schema, ordered migrations, ledger validation, read-only readiness |
 
 The target Next.js/Supabase architecture is intentionally phased rather than introduced as a big-bang rewrite.
 
@@ -59,12 +60,14 @@ Requires Node.js 24 or newer.
 
 ```bash
 npm ci
+npm run db:migrate
+npm run db:status
 npm run check:syntax
 npm run test:coverage
 npm run test:e2e
 ```
 
-CI tests the checked-out candidate build on localhost. It enforces at least 52% line, branch, and function coverage across every `api/*.js` module and runs seven Playwright flows on Ubuntu.
+CI tests the checked-out candidate build on localhost. It rejects request-path schema DDL, enforces at least 52% line, branch, and function coverage across application, migration, and migration-CLI modules, and runs the Playwright flows on Ubuntu.
 
 ## Next increments
 
