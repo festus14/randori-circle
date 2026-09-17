@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-GB
+tone_instructions: Be concise and prioritise correctness, security, privacy, data integrity, and missing tests.
+
+reviews:
+  profile: assertive
+  request_changes_workflow: true
+  high_level_summary: true
+  review_status: true
+  changed_files_summary: true
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+    base_branches:
+      - main
+  path_filters:
+    - "!package-lock.json"
+    - "!docs/**/*.png"
+    - "!docs/**/*.svg"
+    - "!docs/**/*.excalidraw"
+  path_instructions:
+    - path: api/**/*.js
+      instructions: Check authentication, object-level authorisation, CSRF, input bounds, secret handling, privacy, idempotency, concurrency, migrations, provider failures, and internal error leakage.
+    - path: index.html
+      instructions: Flag DOM XSS, unsafe execution, leaked tokens/private data, broken auth state, and divergence from authenticated API behaviour.
+    - path: tests/**/*
+      instructions: Reject vacuous assertions, production access, hidden network dependencies, and missing negative security or concurrency cases.
+    - path: .github/workflows/**/*
+      instructions: Check least privileges, reproducible installs, candidate-build testing, secret exposure, and useful failure artefacts.

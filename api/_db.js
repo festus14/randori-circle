@@ -1,4 +1,8 @@
 import { createClient } from '@libsql/client';
+import jwt from 'jsonwebtoken';
+
+export const JWT_ISSUER = 'randori-circle';
+export const JWT_AUDIENCE = 'randori-web';
 
 // ---- Sentry server init (optional, DSN via env) ----
 import * as Sentry from '@sentry/node';
@@ -34,20 +38,69 @@ export function getClient() {
 }
 
 export function getJwtSecret() {
-  return process.env.JWT_SECRET || 'dev-randori-jwt-secret-change-me';
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    throw new Error('Missing JWT_SECRET');
+  }
+  return secret;
 }
 
 export function getCronSecret() {
-  return process.env.CRON_SECRET || getJwtSecret();
+  const secret = process.env.CRON_SECRET;
+  if (!secret) {
+    throw new Error('Missing CRON_SECRET');
+  }
+  return secret;
+}
+
+function parseCookies(header = '') {
+  const cookies = {};
+  for (const part of String(header).split(';')) {
+    const idx = part.indexOf('=');
+    if (idx < 1) continue;
+    const key = part.slice(0, idx).trim();
+    if (!key) continue;
+    try { cookies[key] = decodeURIComponent(part.slice(idx + 1).trim()); }
+    catch { cookies[key] = part.slice(idx + 1).trim(); }
+  }
+  return cookies;
+}
+
+export function verifyRequestAuth(req) {
+  const auth = req?.headers?.authorization || req?.headers?.Authorization || '';
+  const bearer = typeof auth === 'string' ? auth.match(/^Bearer\s+(.+)$/i)?.[1] : null;
+  const cookieToken = parseCookies(req?.headers?.cookie || req?.headers?.Cookie || '').randori_session;
+  const token = bearer || cookieToken;
+  if (!token) return null;
+  try {
+    const payload = jwt.verify(token, getJwtSecret(), {
+      algorithms: ['HS256'],
+      issuer: JWT_ISSUER,
+      audience: JWT_AUDIENCE,
+    });
+    const userId = Number(payload?.id ?? payload?.uid);
+    return Number.isInteger(userId) && userId > 0 ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+export function verifyMutationOrigin(req) {
+  const method=String(req?.method||'GET').toUpperCase();
+  if(['GET','HEAD','OPTIONS'].includes(method)) return true;
+  const auth=String(req?.headers?.authorization||req?.headers?.Authorization||'');
+  if(/^Bearer\s+\S+/i.test(auth)) return true;
+  const cookies=parseCookies(req?.headers?.cookie||req?.headers?.Cookie||'');
+  if(!cookies.randori_session) return true;
+  const origin=String(req?.headers?.origin||req?.headers?.Origin||'').trim();
+  const host=String(req?.headers?.['x-forwarded-host']||req?.headers?.host||'').split(',')[0].trim();
+  if(!origin || !host) return false;
+  try{ return new URL(origin).host===host; }catch{ return false; }
 }
 
 export function getAdminEmails() {
   const raw = process.env.ADMIN_EMAILS || '';
   const list = raw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
-  if (list.length === 0) {
-    // fallback default admin
-    return new Set(['festusomole14@gmail.com'.toLowerCase()]);
-  }
   return new Set(list);
 }
 

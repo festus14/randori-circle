@@ -2,7 +2,7 @@
 
 LeetCode does **not** offer public OAuth (no client_id/secret, no consent screen) — it's internal GraphQL + cookies only. So we use Google OAuth 2.0.
 
-This repo already has email/password auth (`auth_accounts` in Turso + JWT). Google SSO builds on same JWT — after Google login we issue our own 30-day JWT and store it in `localStorage randori-token`.
+This repo already has email/password auth (`auth_accounts` in Turso + JWT). Google SSO builds on the same account store, but the application session is kept in a 12-hour `Secure`, `HttpOnly`, `SameSite=Lax` cookie rather than a URL or `localStorage`.
 
 ### What to set in Vercel
 
@@ -12,7 +12,8 @@ In Vercel Dashboard → your project → Settings → Environment Variables add:
 - `GOOGLE_CLIENT_SECRET` — from Google Cloud
 - `APP_URL` — optional, defaults to `https://randori-circle-self.vercel.app`. Set to same prod URL. If you also test locally add `http://localhost:3000` separately and add both redirect URIs in Google.
 - `JWT_SECRET` — already required (e.g. `openssl rand -base64 48`)
-- `CRON_SECRET` — optional, protects weekly cron
+- `CRON_SECRET` — required separately from `JWT_SECRET`; protects the weekly cron
+- `SIGNUP_ALLOWLIST` — comma-separated private-beta Google email addresses
 - Keep existing `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN`
 
 Redeploy after adding.
@@ -44,13 +45,14 @@ No extra API needs enabling — Google Identity is on by default.
 
 ### Flow
 
-- User clicks "Continue with Google" (`#authGoogle`) → `GET /api/auth/google/start` 302 → `accounts.google.com/o/oauth2/v2/auth` with `client_id`, `redirect_uri=${APP_URL}/api/auth/google/callback`, `scope=openid email profile`.
+- User clicks "Continue with Google" (`#authGoogle`) → `GET /api/auth/google/start` creates cryptographically random OAuth state and a PKCE verifier in short-lived HttpOnly cookies, then redirects to Google.
 - Google → consent → redirects to `/api/auth/google/callback?code=...`
-- Callback exchanges code for tokens (`oauth2.googleapis.com/token`), decodes `id_token` (base64url) for email/name, fallback to `userinfo` endpoint.
+- Callback verifies state, exchanges the code with the PKCE verifier, and loads a verified email, name, and stable subject from Google's OpenID userinfo endpoint.
 - Lookup `auth_accounts` by lowercased email case-insensitive:
-  - not exists → INSERT with `display_name` from Google, `color` deterministicColor(name), `password_hash='google-oauth'`, also INSERT into `users` for pairing.
-  - exists → UPDATE `last_login`.
-- Signs own JWT (`jsonwebtoken` with `JWT_SECRET`, 30d) and redirects to `/?g_token=<jwt>&g_name=<name>` → frontend catches param, stores in `randori-token` + `randori-me`, strips URL via `replaceState`, then `refreshMe()` fetches full user.
+  - not exists → create a Google-only account associated with the verified Google subject.
+  - existing Google account → require the same Google subject before updating `last_login`.
+  - existing password account → do not silently link it; the user must sign in with the existing method until an explicit linking flow exists.
+- Signs a 12-hour application JWT with pinned algorithm, issuer, and audience, stores it only in the session cookie, and redirects to `/?google=success`.
 
 No secrets in git. Native `fetch` used — no new deps.
 
@@ -58,7 +60,8 @@ No secrets in git. Native `fetch` used — no new deps.
 
 - `GET /api/auth/google/start` — starts flow
 - `GET /api/auth/google/callback?code=` — finishes, issues JWT, redirects
-- Existing `POST /api/auth/signup`, `POST /api/auth/login`, `GET /api/auth/me` still work
+- `POST /api/auth/signup` is development-only until email verification exists. Existing password users may still use `POST /api/auth/login`; `GET /api/auth/me` reads the protected session.
+- `POST /api/auth/logout` clears the session cookie
 
 ### Common gotchas
 
@@ -67,4 +70,4 @@ No secrets in git. Native `fetch` used — no new deps.
 - `Missing GOOGLE_CLIENT_ID` JSON → you didn't set env var / didn't redeploy after set.
 - Test users: while app in Testing mode, only test emails can sign in — add your circle friends emails to Test users list.
 
-Optional hardening later: store `state` in cookie, verify; add picture from Google token.
+Password email verification and an explicit Google/password account-linking flow remain follow-up work before a broad public launch. Production private-beta enrollment therefore requires verified Google sign-in plus `SIGNUP_ALLOWLIST`.

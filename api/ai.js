@@ -1,5 +1,4 @@
-import { getClient, getJwtSecret, initSentry, getSentry } from './_db.js';
-import jwt from 'jsonwebtoken';
+import { getClient, initSentry, getSentry, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 import * as SentryLib from '@sentry/node';
 
 initSentry();
@@ -58,6 +57,12 @@ async function ensureTables(db){
   )`);
   // monthly aggregate optional
   try{ await db.execute(`CREATE TABLE IF NOT EXISTS ai_monthly_usage (month TEXT PRIMARY KEY, user_id INTEGER, calls INTEGER DEFAULT 0, tokens_in INTEGER DEFAULT 0, updated_at TEXT DEFAULT (datetime('now')))`) }catch{}
+  await db.execute(`CREATE TABLE IF NOT EXISTS ai_consents (
+    user_id INTEGER PRIMARY KEY,
+    consented_at TEXT NOT NULL DEFAULT (datetime('now')),
+    revoked_at TEXT,
+    policy_version TEXT NOT NULL
+  )`);
 }
 
 async function ensureAppLogs(db){
@@ -192,7 +197,10 @@ async function callGroq({ modelName, prompt }){
   const key=process.env.GROQ_API_KEY;
   if(!key) return { error:'missing GROQ_API_KEY', mocked:true };
   const body={ model:modelName, messages:[{role:'system',content:'You are JSON generator only.'},{role:'user',content:prompt}], temperature:0.25, max_tokens:1600, response_format:{type:'json_object'} };
-  const res=await fetch('https://api.groq.com/openai/v1/chat/completions',{ method:'POST', headers:{ Authorization:`Bearer ${key}`, 'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  const controller=new AbortController(); const timer=setTimeout(()=>controller.abort(),15000);
+  let res;
+  try{ res=await fetch('https://api.groq.com/openai/v1/chat/completions',{ method:'POST', headers:{ Authorization:`Bearer ${key}`, 'Content-Type':'application/json'}, body:JSON.stringify(body), signal:controller.signal}); }
+  finally{ clearTimeout(timer); }
   const text=await res.text(); let json; try{ json=JSON.parse(text);}catch{ json={error:`parse ${res.status}`, raw:text.slice(0,1200)}; }
   if(!res.ok) return { error:`groq ${res.status}: ${json.error?.message||json.error||text.slice(0,400)}`, status:res.status, raw:json };
   const content=json.choices?.[0]?.message?.content||''; return { content, usage:json.usage||{}, raw:json };
@@ -203,21 +211,21 @@ async function callOpenAI({ modelName, prompt }){
   if(!key) return { error:'missing OPENAI_API_KEY' };
   const model = modelName.includes('70b') ? 'gpt-4o-mini' : 'gpt-4o-mini';
   const body={ model, messages:[{role:'system',content:'You are JSON generator only. Output JSON.'},{role:'user',content:prompt}], temperature:0.25, max_tokens:1500, response_format:{type:'json_object'} };
-  const res=await fetch('https://api.openai.com/v1/chat/completions',{ method:'POST', headers:{ Authorization:`Bearer ${key}`, 'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  const controller=new AbortController(); const timer=setTimeout(()=>controller.abort(),15000);
+  let res;
+  try{ res=await fetch('https://api.openai.com/v1/chat/completions',{ method:'POST', headers:{ Authorization:`Bearer ${key}`, 'Content-Type':'application/json'}, body:JSON.stringify(body), signal:controller.signal}); }
+  finally{ clearTimeout(timer); }
   const text=await res.text(); let json; try{ json=JSON.parse(text);}catch{ json={error:`parse ${res.status}`, raw:text.slice(0,1200)}; }
   if(!res.ok) return { error:`openai ${res.status}: ${json.error?.message||json.error||text.slice(0,400)}`, status:res.status, raw:json };
   const content=json.choices?.[0]?.message?.content||''; return { content, usage:json.usage||{} };
 }
 
 function tryAuth(req){
-  const auth=req.headers.authorization||''; const m=auth.match(/^Bearer\s+(.+)$/);
-  if(!m) return { authed:false, userId:null, payload:null, isDemo:true };
-  try{
-    const payload=jwt.verify(m[1], getJwtSecret());
-    const uid=payload.id??payload.uid??null;
-    const isDemo = !!payload.is_demo || String(payload.email||'').includes('randori.demo');
-    return { authed:true, userId:uid, payload, isDemo };
-  }catch{ return { authed:false, userId:null, payload:null, isDemo:true, tokenInvalid:true }; }
+  const payload=verifyRequestAuth(req);
+  if(!payload) return { authed:false, userId:null, payload:null, isDemo:true };
+  const uid=payload.id??payload.uid;
+  const isDemo=!!payload.is_demo || String(payload.email||'').includes('randori.demo');
+  return {authed:true,userId:uid,payload,isDemo};
 }
 
 async function resolveDemoFlag(db, authInfo){
@@ -266,14 +274,17 @@ async function parseBody(req){
 }
 
 async function handleAnalyze(req,res){
+  if(req.method!=='POST') return res.status(405).json({error:'POST only'});
+  if(process.env.AI_ENABLED!=='true') return res.status(503).json({error:'AI coaching is not enabled for this release'});
   let authInfo=tryAuth(req);
+  if(!authInfo.authed) return res.status(401).json({error:'authentication required'});
   let userId=authInfo.userId;
   let isDemo=authInfo.isDemo;
   let payloadCtx=authInfo.payload;
-  // allow anon demo: do not early 401, just flag
   const anonMode = !authInfo.authed;
   let body;
   try{ body=await parseBody(req); }catch{ body={}; }
+  if(body.ai_consent!==true) return res.status(403).json({error:'explicit AI processing consent required'});
 
   // FormData / multipart plain handling: if body has FormData fields named payload etc
   // Body may include room_id etc in top-level
@@ -295,9 +306,14 @@ async function handleAnalyze(req,res){
 
   let db;
   try{ db=getClient(); }catch(e){
-    return res.status(500).json({ error:'db unavailable', detail:String(e.message||e).slice(0,120) });
+    return res.status(503).json({ error:'AI service temporarily unavailable' });
   }
   try{ await ensureTables(db); await ensureAppLogs(db); }catch{}
+  try{
+    await db.execute({sql:`INSERT INTO ai_consents (user_id, consented_at, revoked_at, policy_version) VALUES (?,datetime('now'),NULL,?) ON CONFLICT(user_id) DO UPDATE SET consented_at=datetime('now'), revoked_at=NULL, policy_version=excluded.policy_version`, args:[userId,'2026-09-17']});
+  }catch{
+    return res.status(500).json({error:'unable to record AI consent'});
+  }
 
   // resolve real is_demo from DB if authed
   if(authInfo.authed){
@@ -354,7 +370,7 @@ async function handleAnalyze(req,res){
       sessId=ins2.rows[0].id;
     }catch(e){
       await logServer('error','ai_session_insert_fail', String(e.message||e).slice(0,300), {room_id}, {req, source:'server-ai'});
-      return res.status(500).json({ error:'session create failed', detail:String(e.message||e).slice(0,200) });
+      return res.status(500).json({ error:'session create failed' });
     }
   }
 
@@ -387,7 +403,7 @@ async function handleAnalyze(req,res){
       const retry=await callGroq({ modelName:MODELS.fast.name, prompt:buildPrompt({ role, transcript:transStr.slice(0,8000), code:String(codeFlat).slice(0,6000), interviewerQuestions:iq, durationSec:duration_sec, pairLabel:pair_label })});
       if(retry.content){ modelUsed=MODELS.fast.name; reason+=` | primary failed (${groqRes.error.slice(0,80)}), fallback fast`; groqRes=retry; } else {
         await logServer('error','ai_groq_both_fail', groqRes.error.slice(0,300), {room_id, model:picking.model.name}, {req, source:'server-ai'});
-        return res.status(502).json({ ok:false, error:'groq failed both', detail:groqRes.error, session_id:sessId });
+        return res.status(502).json({ ok:false, error:'AI provider temporarily unavailable', session_id:sessId });
       }
     } else if(groqRes.error && !groqRes.content){
       // try openai fallback if available
@@ -399,11 +415,11 @@ async function handleAnalyze(req,res){
           groqUsage=oRes.usage;
         }else{
           await logServer('error','ai_groq_fail', groqRes.error.slice(0,300), {room_id}, {req, source:'server-ai'});
-          return res.status(502).json({ ok:false, error:'groq error', detail:groqRes.error, session_id:sessId });
+          return res.status(502).json({ ok:false, error:'AI provider temporarily unavailable', session_id:sessId });
         }
       } else {
         await logServer('error','ai_groq_fail', groqRes.error.slice(0,300), {room_id}, {req, source:'server-ai'});
-        return res.status(502).json({ ok:false, error:'groq error', detail:groqRes.error, session_id:sessId });
+        return res.status(502).json({ ok:false, error:'AI provider temporarily unavailable', session_id:sessId });
       }
     }
     if(groqRes && groqRes.content && !feedbackJson){
@@ -423,7 +439,7 @@ async function handleAnalyze(req,res){
     const insFb=await db.execute({ sql:`INSERT INTO ai_feedback (session_id, role, feedback_json, evidence, model_used, reason_for_pick, estimated_cost_cents, confidence) VALUES (?,?,?,?,?,?,?,?) RETURNING id`, args:[sessId, role||'both', JSON.stringify(feedbackJson||{}), JSON.stringify({validation:verification, combined_len:combined.length}), modelUsed, reason, costCents, verification.score]});
     fbId=insFb.rows[0].id;
   }catch{
-    try{ await db.execute({ sql:`INSERT INTO ai_feedback (session_id, role, feedback_json, model_used) VALUES (?,?,?,?)`, args:[sessId, role||'both', JSON.stringify(feedbackJson||{}), modelUsed]}); fbId=Date.now(); }catch(e){ fbIdsessId; }
+    try{ await db.execute({ sql:`INSERT INTO ai_feedback (session_id, role, feedback_json, model_used) VALUES (?,?,?,?)`, args:[sessId, role||'both', JSON.stringify(feedbackJson||{}), modelUsed]}); fbId=Date.now(); }catch{ fbId=sessId; }
   }
 
   try{ await db.execute({ sql:`UPDATE ai_sessions SET cost_cents=?, ended_at=datetime('now') WHERE id=?`, args:[costCents, sessId]});}catch{}
@@ -434,24 +450,12 @@ async function handleAnalyze(req,res){
 }
 
 async function handleFeedback(req,res){
+  if(req.method!=='GET') return res.status(405).json({error:'GET only'});
   let id=req.query?.id || req.query?.sessionId;
   if(!id){ try{ const u=new URL(req.url,'http://localhost'); id=u.searchParams.get('id')||u.searchParams.get('sessionId'); const parts=u.pathname.split('/'); const last=parts.pop(); if(last && last!=='feedback' && last!=='analyze' && last!=='history' && !isNaN(Number(last))) id=last; }catch{} }
   const authInfo=tryAuth(req);
+  if(!authInfo.authed) return res.status(401).json({error:'authentication required'});
   const db=getClient(); await ensureTables(db);
-  // anon demo allowed: if no auth, only allow if session created_by IS NULL
-  if(!authInfo.authed){
-    if(!id) return res.status(400).json({ error:'id required for anon feedback' });
-    try{
-      const rs=await db.execute({ sql:`SELECT af.*, ase.room_id, ase.pair_label, ase.created_by FROM ai_feedback af JOIN ai_sessions ase ON ase.id=af.session_id WHERE af.session_id=? OR af.id=? ORDER BY af.created_at DESC LIMIT 1`, args:[id,id]});
-      if(!rs.rows.length) return res.status(404).json({ error:'not found', session_id:id});
-      const row=rs.rows[0];
-      if(row.created_by!==null && row.created_by!==undefined){
-        return res.status(401).json({ error:'auth required for user sessions — sign in', demo_hint:'anon only for demo sessions where created_by IS NULL' });
-      }
-      try{ await logServer('info','ai_feedback_anon', `anon fetch feedback ${id}`, {session_id:id}, {req, source:'server-ai'}); }catch{}
-      return res.json({ ok:true, anon:true, session_id:row.session_id, feedback: (()=>{ try{ return JSON.parse(row.feedback_json||'{}'); }catch{ return {}; }})(), model_used:row.model_used, reason_for_pick:row.reason_for_pick, confidence:row.confidence, created_at:row.created_at, evidence: (()=>{ try{ return JSON.parse(row.evidence||'null'); }catch{ return row.evidence; }})() });
-    }catch(e){ return res.status(500).json({ error:'db fail', detail:String(e.message||e).slice(0,150) }); }
-  }
 
   const uid=authInfo.userId;
   if(id){
@@ -459,8 +463,8 @@ async function handleFeedback(req,res){
     if(!rs.rows.length){
       return res.status(404).json({ error:'not found', session_id:id});
     }
-    // filter to own sessions unless admin? For now own or admin demo: if created_by matches uid or created_by IS NULL and authed user wants demo, allow first row
-    const own = rs.rows.filter(r=> r.created_by==uid || r.created_by==null);
+    // Legacy anonymous rows are intentionally inaccessible; only the creator may read feedback.
+    const own = rs.rows.filter(r=> r.created_by==uid);
     if(!own.length){
       // allow if payload is admin (loosely) — we skip check for now and return first but with restricted?
       return res.status(403).json({ error:'forbidden — session owned by other user', session_owner: rs.rows[0].created_by });
@@ -479,9 +483,8 @@ async function handleHistory(req,res){
   if(req.method!=='GET') return res.status(405).json({ error:'GET only'});
   const authInfo=tryAuth(req);
   let uid=authInfo.userId;
-  // anon history not allowed — return empty but ok anon flag
   if(!authInfo.authed){
-    return res.json({ ok:true, anon:true, feedbacks:[], usage_today:null, message:'Sign in for persistent history — anon sessions ephemeral' });
+    return res.status(401).json({error:'authentication required'});
   }
   const db=getClient(); await ensureTables(db);
   const rs=await db.execute({ sql:`SELECT af.id, af.session_id, af.role, af.model_used, af.estimated_cost_cents, af.confidence, af.created_at, ase.room_id, ase.pair_label, ase.duration_sec FROM ai_feedback af JOIN ai_sessions ase ON ase.id=af.session_id WHERE ase.created_by=? ORDER BY af.created_at DESC LIMIT 20`, args:[uid]});
@@ -493,6 +496,7 @@ async function handleHistory(req,res){
 
 export default async function handler(req,res){
   try{
+    if(!verifyMutationOrigin(req)) return res.status(403).json({error:'cross-origin mutation rejected'});
     initSentry();
     const epRaw=getEndpoint(req);
     const ep=epRaw.replace('feedback/','feedback ').split(' ')[0];
@@ -509,6 +513,6 @@ export default async function handler(req,res){
       if(ready && Sentry) Sentry.captureException(e);
       else if(SentryLib && SentryLib.captureException) SentryLib.captureException(e);
     }catch{}
-    return res.status(500).json({ ok:false, error:'ai_unhandled', message:String(e.message||e).slice(0,300) });
+    return res.status(500).json({ ok:false, error:'ai_unhandled' });
   }
 }

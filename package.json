@@ -9,9 +9,17 @@
   "name": "randori-circle",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22.3"
+  },
   "scripts": {
-    "test:e2e": "npx playwright test --reporter=list",
-    "test:e2e:ui": "npx playwright test --ui"
+    "check:syntax": "node tests/static/check-syntax.mjs",
+    "test:unit": "node --experimental-test-module-mocks --test tests/unit/*.test.mjs",
+    "test:coverage": "node --experimental-test-module-mocks --experimental-test-coverage --test-coverage-include='api/*.js' --test-coverage-lines=52 --test-coverage-branches=52 --test-coverage-functions=52 --test tests/unit/*.test.mjs",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test": "npm run check:syntax && npm run test:coverage && npm run test:e2e",
+    "start:test": "node tests/support/static-server.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0",

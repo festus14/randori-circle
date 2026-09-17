@@ -1,0 +1,132 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">Randori Circle recommended production architecture</title>
+  <desc id="desc">An incremental architecture showing the first useful release and later collaboration, media, execution, AI, and approved content services.</desc>
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#0f172a" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+    <style>
+      .title { font: 700 34px Inter, Arial, sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 17px Inter, Arial, sans-serif; fill: #475569; }
+      .section { font: 700 15px Inter, Arial, sans-serif; letter-spacing: 1.4px; fill: #475569; }
+      .box-title { font: 700 20px Inter, Arial, sans-serif; fill: #0f172a; }
+      .box-copy { font: 400 15px Inter, Arial, sans-serif; fill: #334155; }
+      .small { font: 600 13px Inter, Arial, sans-serif; fill: #475569; }
+      .badge { font: 700 12px Inter, Arial, sans-serif; fill: #ffffff; }
+      .arrow { stroke: #475569; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+      .dashed { stroke-dasharray: 8 8; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="1000" fill="#f8fafc"/>
+  <text x="64" y="62" class="title">Randori Circle — Recommended Production Architecture</text>
+  <text x="64" y="94" class="subtitle">Ship weekly coordination first; introduce specialist services only when the preceding product slice proves useful.</text>
+
+  <text x="64" y="150" class="section">PEOPLE</text>
+  <rect x="64" y="172" width="180" height="92" rx="18" fill="#ffffff" stroke="#94a3b8" stroke-width="2" filter="url(#shadow)"/>
+  <circle cx="104" cy="210" r="15" fill="#2563eb"/>
+  <path d="M82 247c2-18 12-27 22-27s20 9 22 27" fill="#93c5fd"/>
+  <text x="142" y="210" class="box-title">Members</text>
+  <text x="142" y="235" class="box-copy">Browser / mobile</text>
+
+  <rect x="64" y="286" width="180" height="76" rx="18" fill="#ffffff" stroke="#94a3b8" stroke-width="2"/>
+  <text x="92" y="319" class="box-title">Circle admin</text>
+  <text x="92" y="344" class="box-copy">No implicit room access</text>
+
+  <text x="300" y="150" class="section">PRODUCT EDGE · INCREMENT 1</text>
+  <rect x="300" y="172" width="300" height="190" rx="20" fill="#eff6ff" stroke="#2563eb" stroke-width="3" filter="url(#shadow)"/>
+  <rect x="324" y="193" width="96" height="24" rx="12" fill="#2563eb"/>
+  <text x="340" y="210" class="badge">SHIP FIRST</text>
+  <text x="324" y="251" class="box-title">Next.js + TypeScript</text>
+  <text x="324" y="278" class="box-copy">Vercel previews and production</text>
+  <text x="324" y="306" class="box-copy">Server routes + Zod contracts</text>
+  <text x="324" y="334" class="box-copy">Secure HttpOnly sessions + CSRF</text>
+
+  <text x="656" y="150" class="section">DURABLE CORE · INCREMENT 1</text>
+  <rect x="656" y="172" width="330" height="190" rx="20" fill="#ecfdf5" stroke="#059669" stroke-width="3" filter="url(#shadow)"/>
+  <rect x="680" y="193" width="158" height="24" rx="12" fill="#059669"/>
+  <text x="692" y="210" class="badge">SYSTEM OF RECORD</text>
+  <text x="680" y="251" class="box-title">Supabase</text>
+  <text x="680" y="278" class="box-copy">Auth + PostgreSQL + RLS</text>
+  <text x="680" y="306" class="box-copy">Drizzle versioned migrations</text>
+  <text x="680" y="334" class="box-copy">Sessions, consent, history, permissions</text>
+
+  <text x="1042" y="150" class="section">REALTIME EXPERIENCE · LATER SLICES</text>
+  <rect x="1042" y="172" width="246" height="190" rx="20" fill="#faf5ff" stroke="#9333ea" stroke-width="2.5" filter="url(#shadow)"/>
+  <rect x="1066" y="193" width="98" height="24" rx="12" fill="#9333ea"/>
+  <text x="1083" y="210" class="badge">INCR. 2 / 4</text>
+  <text x="1066" y="251" class="box-title">Liveblocks + Yjs</text>
+  <text x="1066" y="278" class="box-copy">Shared Monaco editor</text>
+  <text x="1066" y="306" class="box-copy">Whiteboard + presence</text>
+  <text x="1066" y="334" class="box-copy">Versioned checkpoints</text>
+
+  <rect x="1310" y="172" width="226" height="190" rx="20" fill="#fff7ed" stroke="#ea580c" stroke-width="2.5" filter="url(#shadow)"/>
+  <rect x="1334" y="193" width="72" height="24" rx="12" fill="#ea580c"/>
+  <text x="1350" y="210" class="badge">INCR. 3</text>
+  <text x="1334" y="251" class="box-title">LiveKit Cloud</text>
+  <text x="1334" y="278" class="box-copy">Video + audio + TURN</text>
+  <text x="1334" y="306" class="box-copy">Screen sharing</text>
+  <text x="1334" y="334" class="box-copy">Short-lived room tokens</text>
+
+  <path class="arrow" d="M244 218 H300"/>
+  <path class="arrow" d="M244 324 H274 V300 H300"/>
+  <path class="arrow" d="M600 267 H656"/>
+  <path class="arrow" d="M986 245 H1042"/>
+  <path class="arrow" d="M986 308 H1018 V390 H1423 V362"/>
+
+  <text x="300" y="424" class="section">RELIABLE WORKFLOWS</text>
+  <rect x="300" y="446" width="686" height="150" rx="20" fill="#ffffff" stroke="#0f766e" stroke-width="2.5" filter="url(#shadow)"/>
+  <rect x="324" y="467" width="72" height="24" rx="12" fill="#0f766e"/>
+  <text x="340" y="484" class="badge">INCR. 1</text>
+  <text x="324" y="525" class="box-title">PostgreSQL scheduler + transactional outbox</text>
+  <text x="324" y="553" class="box-copy">Pairing cycles, reminders, retries, deduplication, dead-letter replay</text>
+  <text x="324" y="579" class="small">Add Trigger.dev in increments 5–6 for long-running AI and approved ingestion workflows.</text>
+  <path class="arrow" d="M821 362 V446"/>
+
+  <text x="1042" y="424" class="section">REPLACEABLE PROVIDER ADAPTERS</text>
+  <rect x="1042" y="446" width="238" height="150" rx="20" fill="#ffffff" stroke="#64748b" stroke-width="2"/>
+  <text x="1066" y="483" class="box-title">Notifications</text>
+  <text x="1066" y="511" class="box-copy">Resend email first</text>
+  <text x="1066" y="539" class="box-copy">SMS only after demand</text>
+  <text x="1066" y="567" class="small">Increment 1</text>
+
+  <rect x="1298" y="446" width="238" height="150" rx="20" fill="#ffffff" stroke="#64748b" stroke-width="2"/>
+  <text x="1322" y="483" class="box-title">Execution gateway</text>
+  <text x="1322" y="511" class="box-copy">E2B spike: JS + Python</text>
+  <text x="1322" y="539" class="box-copy">Judge0 / Piston options</text>
+  <text x="1322" y="567" class="small">Increment 2</text>
+
+  <path class="arrow" d="M986 500 H1042"/>
+  <path class="arrow" d="M900 596 V615 H1417 V596"/>
+
+  <rect x="300" y="636" width="330" height="150" rx="20" fill="#ffffff" stroke="#64748b" stroke-width="2"/>
+  <rect x="324" y="657" width="72" height="24" rx="12" fill="#7c3aed"/>
+  <text x="340" y="674" class="badge">INCR. 5</text>
+  <text x="324" y="717" class="box-title">AI gateway</text>
+  <text x="324" y="745" class="box-copy">Groq primary; OpenAI optional</text>
+  <text x="324" y="773" class="small">Consent · deletion · cost limits</text>
+
+  <rect x="656" y="636" width="330" height="150" rx="20" fill="#ffffff" stroke="#64748b" stroke-width="2"/>
+  <rect x="680" y="657" width="72" height="24" rx="12" fill="#be123c"/>
+  <text x="696" y="674" class="badge">INCR. 6</text>
+  <text x="680" y="717" class="box-title">Problem ingestion</text>
+  <text x="680" y="745" class="box-copy">Original / licensed / authorized</text>
+  <text x="680" y="773" class="small">No Premium cookies or bot evasion</text>
+
+  <path class="arrow dashed" d="M650 596 V615 H465 V636"/>
+  <path class="arrow dashed" d="M650 596 V615 H821 V636"/>
+
+  <text x="1042" y="636" class="section">CROSS-CUTTING CONTROLS</text>
+  <rect x="1042" y="658" width="494" height="128" rx="20" fill="#f1f5f9" stroke="#334155" stroke-width="2.5"/>
+  <text x="1066" y="699" class="box-title">Security, reliability, and operations</text>
+  <text x="1066" y="729" class="box-copy">Sentry · logs/traces · audit events · rate limits</text>
+  <text x="1066" y="757" class="box-copy">Backups/restore drills · kill switches · privacy controls</text>
+
+  <rect x="64" y="842" width="1472" height="102" rx="20" fill="#0f172a"/>
+  <text x="92" y="881" style="font:700 18px Inter,Arial,sans-serif;fill:#ffffff">Agile release rule</text>
+  <text x="92" y="913" style="font:400 17px Inter,Arial,sans-serif;fill:#e2e8f0">Deliver one end-to-end user outcome at a time. Feature-flag it, test it in preview, release to a small cohort, measure usage/reliability/cost,</text>
+  <text x="92" y="938" style="font:400 17px Inter,Arial,sans-serif;fill:#e2e8f0">then retain, revise, or remove it before adding the next provider or subsystem.</text>
+</svg>
