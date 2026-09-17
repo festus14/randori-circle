@@ -103,7 +103,7 @@ async function ensureMigrations(db){
     `ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`,
     `ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`,
     `ALTER TABLE auth_accounts ADD COLUMN is_demo INTEGER DEFAULT 0`,
-    `ALTER TABLE pairing_weeks ADD COLUMN is_demo INTEGER DEFAULT 0`,,
+    `ALTER TABLE pairing_weeks ADD COLUMN is_demo INTEGER DEFAULT 0`,
     `ALTER TABLE auth_accounts ADD COLUMN phone TEXT`,
     `ALTER TABLE pairing_week_runs ADD COLUMN generation INTEGER NOT NULL DEFAULT 1`,
 ];

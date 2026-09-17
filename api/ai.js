@@ -172,6 +172,46 @@ Produce STRICT JSON only:
 Rules: evidence MUST be verbatim 5-20 words from TRANSCRIPT/CODE, else "". 2-3 per role. JSON only.`;
 }
 
+function normalizeFeedbackItem(item, improvement){
+  if(!item || typeof item!=='object' || Array.isArray(item)) return null;
+  if(typeof item.point!=='string' || !item.point.trim() || typeof item.evidence!=='string') return null;
+  if(improvement && (typeof item.suggestion!=='string' || !item.suggestion.trim())) return null;
+  if(item.confidence!==undefined && (!Number.isFinite(item.confidence) || item.confidence<0 || item.confidence>1)) return null;
+  const normalized={ point:item.point.trim().slice(0,500), evidence:item.evidence.trim().slice(0,500) };
+  if(improvement) normalized.suggestion=item.suggestion.trim().slice(0,800);
+  if(item.confidence!==undefined) normalized.confidence=item.confidence;
+  return normalized;
+}
+
+function normalizeFeedbackSection(section){
+  if(!section || typeof section!=='object' || Array.isArray(section)) return null;
+  if(!Array.isArray(section.strengths) || !Array.isArray(section.improvements)) return null;
+  const strengths=section.strengths.slice(0,10).map(item=>normalizeFeedbackItem(item,false));
+  const improvements=section.improvements.slice(0,10).map(item=>normalizeFeedbackItem(item,true));
+  if(strengths.some(item=>!item) || improvements.some(item=>!item)) return null;
+  return {strengths,improvements};
+}
+
+function normalizeFeedback(feedback){
+  if(!feedback || typeof feedback!=='object' || Array.isArray(feedback)) return null;
+  const candidate=normalizeFeedbackSection(feedback.candidate);
+  const interviewer=normalizeFeedbackSection(feedback.interviewer);
+  if(!candidate || !interviewer) return null;
+  if(!Number.isFinite(feedback.overall_score) || feedback.overall_score<1 || feedback.overall_score>10) return null;
+  if(!Array.isArray(feedback.next_time_checklist) || feedback.next_time_checklist.some(item=>typeof item!=='string')) return null;
+  return {
+    candidate,
+    interviewer,
+    overall_score:feedback.overall_score,
+    next_time_checklist:feedback.next_time_checklist.slice(0,20).map(item=>item.trim().slice(0,500)).filter(Boolean),
+  };
+}
+
+function parseProviderFeedback(content){
+  if(typeof content!=='string') return content;
+  try{ return JSON.parse(content); }catch{ return null; }
+}
+
 function verifyEvidence(feedback, combined){
   const low=(combined||'').toLowerCase(); let val=0, tot=0, lowered=false;
   for(const r of ['candidate','interviewer']){
@@ -450,7 +490,7 @@ async function handleAnalyze(req,res){
     const prompt=buildPrompt({ role, transcript:transStr, code:codeFlat, interviewerQuestions:iq, durationSec:duration_sec, pairLabel:pair_label });
     let oRes=await callOpenAI({ modelName:picking.model.name, prompt });
     if(oRes.content){
-      try{ feedbackJson=typeof oRes.content==='string'?JSON.parse(oRes.content):oRes.content; }catch{ try{ feedbackJson=JSON.parse(oRes.content);}catch{ feedbackJson={ candidate:{strengths:[], improvements:[]}, interviewer:{strengths:[], improvements:[]}, overall_score:6, next_time_checklist:[oRes.content.slice(0,200)]}; } }
+      feedbackJson=parseProviderFeedback(oRes.content);
       groqUsage=oRes.usage;
       if(groqUsage?.prompt_tokens) estIn=groqUsage.prompt_tokens;
       if(groqUsage?.completion_tokens) estOut=groqUsage.completion_tokens;
@@ -475,7 +515,7 @@ async function handleAnalyze(req,res){
         const oRes=await callOpenAI({ modelName:picking.model.name, prompt:buildPrompt({ role, transcript:transStr, code:codeFlat, interviewerQuestions:iq, durationSec:duration_sec, pairLabel:pair_label })});
         if(oRes.content){
           openaiFallback=true; modelUsed='gpt-4o-mini (fallback)'; reason+=' | groq fail -> openai';
-          try{ feedbackJson=typeof oRes.content==='string'?JSON.parse(oRes.content):oRes.content; }catch{ feedbackJson={ candidate:{strengths:[], improvements:[]}, overall_score:6, next_time_checklist:[oRes.content.slice(0,200)]}; }
+          feedbackJson=parseProviderFeedback(oRes.content);
           groqUsage=oRes.usage;
         }else{
           await logServer('error','ai_groq_fail', groqRes.error.slice(0,300), {room_id}, {req, source:'server-ai'});
@@ -487,10 +527,16 @@ async function handleAnalyze(req,res){
       }
     }
     if(groqRes && groqRes.content && !feedbackJson){
-      try{ feedbackJson=typeof groqRes.content==='string'?JSON.parse(groqRes.content):groqRes.content; }catch{ try{ feedbackJson=JSON.parse(groqRes.content);}catch{ feedbackJson={ candidate:{strengths:[], improvements:[]}, interviewer:{strengths:[], improvements:[]}, overall_score:6, next_time_checklist:[groqRes.content.slice(0,200)]}; } }
+      feedbackJson=parseProviderFeedback(groqRes.content);
       groqUsage=groqRes.usage; if(groqUsage?.prompt_tokens) estIn=groqUsage.prompt_tokens; if(groqUsage?.completion_tokens) estOut=groqUsage.completion_tokens;
       costCents=Math.ceil((estIn/1e6*picking.model.price_in_per_mtok + estOut/1e6*picking.model.price_out_per_mtok)*100);
     }
+  }
+
+  feedbackJson=normalizeFeedback(feedbackJson);
+  if(!feedbackJson){
+    await logServer('error','ai_provider_invalid_feedback','AI provider returned invalid feedback JSON',{room_id,model:modelUsed},{req,source:'server-ai'});
+    return res.status(502).json({ok:false,error:'AI provider temporarily unavailable',session_id:sessId});
   }
 
   const combined=`${transStr}\n${typeof codeFlat==='string'?codeFlat:JSON.stringify(codeFlat)}\n${iq}`;

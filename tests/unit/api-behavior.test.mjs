@@ -741,6 +741,45 @@ test('AI provider network failures preserve Groq retries and OpenAI fallback', a
   assert.match(openAiTimeout.body.reason_for_pick, /openai failed openai request timed out/);
 });
 
+test('AI rejects malformed provider feedback with the generic provider error', async () => {
+  process.env.AI_ENABLED = 'true';
+  process.env.GROQ_API_KEY = 'test-groq-key';
+  executeHandler = sql => {
+    if (sql.includes('SELECT pg.id AS pair_group_id')) return rows([{ pair_group_id: 23, week_id: 10, user_a_id: 2, user_b_id: 2, user_c_id: null, is_ai_pair: 1, week_label: '2026-W38' }]);
+    if (sql.includes('SELECT user_id FROM ai_consents')) return rows([{ user_id: 2 }]);
+    if (sql.includes('SELECT is_demo FROM auth_accounts')) return rows([{ is_demo: 0 }]);
+    if (sql.includes('SELECT calls FROM ai_usage')) return rows([{ calls: 0 }]);
+    if (sql.includes('SELECT calls,tokens_in FROM ai_usage')) return rows([{ calls: 0, tokens_in: 0 }]);
+    if (sql.includes('COUNT(*) as c FROM ai_sessions')) return rows([{ c: 0 }]);
+    if (sql.includes('INSERT INTO ai_sessions') && sql.includes('RETURNING id')) return rows([{ id: 84 }]);
+    return rows();
+  };
+  let providerContent=JSON.stringify({
+    candidate: { strengths: {}, improvements: [] },
+    interviewer: { strengths: [], improvements: [] },
+    overall_score: 7,
+    next_time_checklist: ['practice'],
+  });
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    choices: [{ message: { content: providerContent } }],
+    usage: { prompt_tokens: 20, completion_tokens: 10 },
+  }), { status: 200 });
+  const request = () => invoke(aiHandler, {
+    method: 'POST', url: '/api/ai/analyze', query: { endpoint: 'analyze' }, headers: { 'x-test-auth': 'user' },
+    body: { room_id: 'week_10_pair_23', transcript: 'A short solo analysis.', ai_consent: true },
+  });
+
+  const malformedShape = await request();
+  assert.equal(malformedShape.status, 502);
+  assert.deepEqual(malformedShape.body, { ok: false, error: 'AI provider temporarily unavailable', session_id: 84 });
+
+  providerContent='{not valid json';
+  const malformedJson = await request();
+  assert.equal(malformedJson.status, 502);
+  assert.equal(malformedJson.body.error, 'AI provider temporarily unavailable');
+  assert.equal(executed.some(entry => entry.sql.includes('INSERT INTO ai_feedback')), false);
+});
+
 test('AI provider selection, quota, and ownership branches remain fail-closed', async () => {
   process.env.AI_ENABLED = 'true';
   executeHandler = sql => {
@@ -879,6 +918,7 @@ test('operations cover preferences, availability, admin promotion, demo lifecycl
   const weekly = await invoke(opsHandler, { method: 'POST', url: '/api/cron/weekly', query: { endpoint: 'weekly' }, headers: { 'x-cron-secret': 'cron-secret' } });
   assert.equal(weekly.status, 200);
   assert.equal(weekly.body.pairs.length, 1);
+  assert.equal(executed.some(call => !call.sql.trim()), false, 'migration arrays must not execute undefined DDL entries');
 });
 
 test('weekly email delivery caps stale outbox retries and exhausts the fifth failed attempt', async () => {
