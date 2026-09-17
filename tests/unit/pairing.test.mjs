@@ -29,19 +29,24 @@ test('seeded pairing is deterministic and independent of input order', () => {
 
 test('pairing avoids previous-week repeats when alternatives exist', () => {
   const history = [
-    { user_a_id: 1, user_b_id: 2, week_label: '2026-W37', is_ai_pair: 0 },
-    { user_a_id: 3, user_b_id: 4, week_label: '2026-W37', is_ai_pair: 0 },
+    { user_a_id: 1, user_b_id: 2, week_id: 37, week_label: '2026-W37', is_ai_pair: 0 },
+    { user_a_id: 3, user_b_id: 4, week_id: 37, week_label: '2026-W37', is_ai_pair: 0 },
+    { user_a_id: 1, user_b_id: 3, week_id: 36, week_label: '2026-W36', is_ai_pair: 0 },
+    { user_a_id: 2, user_b_id: 4, week_id: 36, week_label: '2026-W36', is_ai_pair: 0 },
+    { user_a_id: 1, user_b_id: 4, week_id: 35, week_label: '2026-W35', is_ai_pair: 0 },
+    { user_a_id: 2, user_b_id: 3, week_id: 35, week_label: '2026-W35', is_ai_pair: 0 },
   ];
   const result = buildFairPairing(people, history, { seed: '2026-W38' });
   const pairs = new Set(normalizedPairs(result));
   assert.equal(pairs.has(pairKey(1, 2)), false);
   assert.equal(pairs.has(pairKey(3, 4)), false);
   assert.equal(result.score.previousWeekRepeats, 0);
+  assert.equal(result.score.historicalRepeats, 2);
 });
 
 test('odd-user AI assignment rotates away from prior AI recipients', () => {
   const oddPeople = people.slice(0, 3);
-  const history = [{ user_a_id: 1, user_b_id: 1, week_label: '2026-W37', is_ai_pair: 1 }];
+  const history = [{ user_a_id: 1, user_b_id: 1, week_id: 37, week_label: '2026-W37', is_ai_pair: 1 }];
   const result = buildFairPairing(oddPeople, history, { seed: '2026-W38' });
   const aiPair = result.pairs.find(pair => pair.isAI);
   assert.ok(aiPair);

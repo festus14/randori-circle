@@ -4,6 +4,7 @@ import { mockApi, resetClientState } from './helpers';
 test('the checked-out app boots without JavaScript exceptions and its tabs navigate', async ({ page }) => {
   const pageErrors: string[] = [];
   let authChecks = 0;
+  await page.clock.install();
   page.on('pageerror', error => pageErrors.push(error.message));
   await mockApi(page, {
     '/api/auth/me': () => {
@@ -15,9 +16,9 @@ test('the checked-out app boots without JavaScript exceptions and its tabs navig
 
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await expect(page.getByRole('heading', { name: 'Randori Circle', exact: true })).toBeVisible();
-  // The app performs three scheduled session refreshes during startup. Wait for
-  // the last anonymous route before testing navigation so it cannot hide a view
-  // after the corresponding tab has been clicked.
+  // Advance all scheduled session refreshes deterministically so the final
+  // anonymous route cannot race a subsequent tab click.
+  await page.clock.fastForward(1_300);
   await expect.poll(() => authChecks).toBeGreaterThanOrEqual(3);
   await expect(page.locator('#view-landing')).toBeVisible();
 

@@ -512,6 +512,10 @@ test('questions require authentication and bundled seed ingestion runs only thro
   assert.equal(questions.status, 200);
   assert.equal(questions.body.questions[0].slug, 'two-sum');
   assert.equal(executed.some(call => call.sql.includes('INSERT INTO custom_questions')), false);
+  assert.equal(executed.some(call => call.sql.includes('DELETE FROM pair_schedules WHERE id NOT IN')), false,
+    'ordinary requests must not run the destructive legacy schedule migration');
+  assert.equal(executed.some(call => call.sql.includes('CREATE UNIQUE INDEX IF NOT EXISTS uq_pair_schedules_week_pair')), false,
+    'ordinary requests must not create the legacy schedule uniqueness index');
 
   executed.length = 0;
   const initialized = await invoke(dataHandler, {
@@ -522,6 +526,20 @@ test('questions require authentication and bundled seed ingestion runs only thro
   const dedupe = executed.findIndex(call => call.sql.includes('DELETE FROM pair_schedules WHERE id NOT IN'));
   const uniqueIndex = executed.findIndex(call => call.sql.includes('CREATE UNIQUE INDEX IF NOT EXISTS uq_pair_schedules_week_pair'));
   assert.ok(dedupe >= 0 && uniqueIndex > dedupe, 'legacy schedules must be deterministically deduped before the unique index');
+});
+
+test('admin init reports a visible error when the legacy schedule migration fails', async () => {
+  executeHandler = sql => {
+    if (sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')) return rows([{ id: 1, email: 'admin@example.test', is_admin: 1 }]);
+    if (sql.includes('DELETE FROM pair_schedules WHERE id NOT IN')) throw new Error('database is read only');
+    return rows();
+  };
+  const result = await invoke(dataHandler, {
+    method: 'POST', url: '/api/init', query: { endpoint: 'init' }, headers: { 'x-test-auth': 'admin' },
+  });
+  assert.equal(result.status, 500);
+  assert.match(result.body.error, /schedule uniqueness migration failed/i);
+  assert.match(result.body.detail, /read only/i);
 });
 
 test('data validation and access-control branches reject malformed or cross-pair requests', async () => {
@@ -593,6 +611,8 @@ test('authorized LeetCode ingestion parses approved remote metadata through mock
 test('AI consent path stores a template analysis and exposes owned feedback history', async () => {
   process.env.AI_ENABLED = 'true';
   executeHandler = sql => {
+    if (sql.includes('SELECT pg.id AS pair_group_id')) return rows([{ pair_group_id: 20, week_id: 10, user_a_id: 2, user_b_id: 3, user_c_id: null, is_ai_pair: 0, week_label: '2026-W38' }]);
+    if (sql.includes('SELECT user_id FROM ai_consents')) return rows([{ user_id: 2 }, { user_id: 3 }]);
     if (sql.includes('SELECT is_demo FROM auth_accounts')) return rows([{ is_demo: 0 }]);
     if (sql.includes('COUNT(*) as c FROM ai_sessions')) return rows([{ c: 2 }]);
     if (sql.includes('SELECT calls FROM ai_usage')) return rows([{ calls: 3 }]);
@@ -610,17 +630,20 @@ test('AI consent path stores a template analysis and exposes owned feedback hist
   const headers = { 'x-test-auth': 'user' };
   const denied = await invoke(aiHandler, {
     method: 'POST', url: '/api/ai/analyze', query: { endpoint: 'analyze' }, headers,
-    body: { transcript: 'I explained the approach clearly.', ai_consent: false },
+    body: { room_id: 'week_10_pair_20', transcript: 'I explained the approach clearly.', ai_consent: false },
   });
   assert.equal(denied.status, 403);
 
   const analyzed = await invoke(aiHandler, {
     method: 'POST', url: '/api/ai/analyze', query: { endpoint: 'analyze' }, headers,
-    body: { transcript: 'I explained the approach clearly and discussed complexity.', code: 'return answer;', ai_consent: true, duration_sec: 600 },
+    body: { room_id: 'week_10_pair_20', pair_label: 'untrusted label', transcript: 'I explained the approach clearly and discussed complexity.', code: 'return answer;', ai_consent: true, duration_sec: 600 },
   });
   assert.equal(analyzed.status, 200);
   assert.equal(analyzed.body.mocked, true);
   assert.equal(analyzed.body.session_id, 70);
+  const sessionInsert = executed.find(entry => entry.sql.includes('INSERT INTO ai_sessions'));
+  assert.equal(sessionInsert.args[0], 'week_10_pair_20');
+  assert.equal(sessionInsert.args[1], '2026-W38 · Pair 20');
 
   const feedback = await invoke(aiHandler, {
     url: '/api/ai/feedback?id=70', query: { endpoint: 'feedback', id: 70 }, headers,
@@ -634,9 +657,95 @@ test('AI consent path stores a template analysis and exposes owned feedback hist
   assert.equal(history.body.feedbacks.length, 1);
 });
 
+test('AI analysis requires trusted room membership and every human participant consent', async () => {
+  process.env.AI_ENABLED = 'true';
+  let consentedIds = [2];
+  executeHandler = (sql, args) => {
+    if (sql.includes('SELECT pg.id AS pair_group_id')) {
+      if (Number(args[0]) === 20) return rows([{ pair_group_id: 20, week_id: 10, user_a_id: 2, user_b_id: 3, user_c_id: null, is_ai_pair: 0, week_label: '2026-W38' }]);
+      if (Number(args[0]) === 21) return rows([{ pair_group_id: 21, week_id: 10, user_a_id: 1, user_b_id: 3, user_c_id: null, is_ai_pair: 0, week_label: '2026-W38' }]);
+      return rows([]);
+    }
+    if (sql.includes('SELECT user_id FROM ai_consents')) return rows(consentedIds.map(user_id => ({ user_id })));
+    if (sql.includes('SELECT is_demo FROM auth_accounts')) return rows([{ is_demo: 0 }]);
+    if (sql.includes('SELECT calls FROM ai_usage')) return rows([{ calls: 0 }]);
+    if (sql.includes('SELECT calls,tokens_in FROM ai_usage')) return rows([{ calls: 0, tokens_in: 0 }]);
+    if (sql.includes('COUNT(*) as c FROM ai_sessions')) return rows([{ c: 0 }]);
+    if (sql.includes('INSERT INTO ai_sessions') && sql.includes('RETURNING id')) return rows([{ id: 80 }]);
+    if (sql.includes('INSERT INTO ai_feedback') && sql.includes('RETURNING id')) return rows([{ id: 81 }]);
+    return rows();
+  };
+  const request = room_id => invoke(aiHandler, {
+    method: 'POST', url: '/api/ai/analyze', query: { endpoint: 'analyze' }, headers: { 'x-test-auth': 'user' },
+    body: { room_id, transcript: 'Candidate and interviewer discussed a solution.', ai_consent: true },
+  });
+
+  assert.equal((await request('untrusted-room')).status, 403);
+  assert.equal((await request('week_10_pair_21')).status, 403);
+
+  const missingPartnerConsent = await request('week_10_pair_20');
+  assert.equal(missingPartnerConsent.status, 403);
+  assert.equal(missingPartnerConsent.body.pending_participant_count, 1);
+  assert.equal(executed.some(entry => entry.sql.includes('INSERT INTO ai_sessions')), false);
+
+  consentedIds = [2, 3];
+  const approved = await request('week_10_pair_20');
+  assert.equal(approved.status, 200);
+  assert.equal(approved.body.session_id, 80);
+});
+
+test('AI provider network failures preserve Groq retries and OpenAI fallback', async () => {
+  process.env.AI_ENABLED = 'true';
+  process.env.GROQ_API_KEY = 'test-groq-key';
+  process.env.OPENAI_API_KEY = 'test-openai-key';
+  executeHandler = sql => {
+    if (sql.includes('SELECT pg.id AS pair_group_id')) return rows([{ pair_group_id: 22, week_id: 10, user_a_id: 2, user_b_id: 2, user_c_id: null, is_ai_pair: 1, week_label: '2026-W38' }]);
+    if (sql.includes('SELECT user_id FROM ai_consents')) return rows([{ user_id: 2 }]);
+    if (sql.includes('SELECT is_demo FROM auth_accounts')) return rows([{ is_demo: 0 }]);
+    if (sql.includes('SELECT calls FROM ai_usage')) return rows([{ calls: 0 }]);
+    if (sql.includes('SELECT calls,tokens_in FROM ai_usage')) return rows([{ calls: 0, tokens_in: 0 }]);
+    if (sql.includes('COUNT(*) as c FROM ai_sessions')) return rows([{ c: 0 }]);
+    if (sql.includes('INSERT INTO ai_sessions') && sql.includes('RETURNING id')) return rows([{ id: 82 }]);
+    if (sql.includes('INSERT INTO ai_feedback') && sql.includes('RETURNING id')) return rows([{ id: 83 }]);
+    return rows();
+  };
+  const providerCalls = [];
+  globalThis.fetch = async url => {
+    providerCalls.push(String(url));
+    if (String(url).includes('api.groq.com')) throw new TypeError('simulated network failure');
+    return new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({
+        candidate: { strengths: [], improvements: [] }, interviewer: { strengths: [], improvements: [] },
+        overall_score: 8, next_time_checklist: ['practice'],
+      }) } }],
+      usage: { prompt_tokens: 20, completion_tokens: 10 },
+    }), { status: 200 });
+  };
+
+  const result = await invoke(aiHandler, {
+    method: 'POST', url: '/api/ai/analyze', query: { endpoint: 'analyze' }, headers: { 'x-test-auth': 'user' },
+    body: { room_id: 'week_10_pair_22', transcript: 'detailed analysis '.repeat(2_000), ai_consent: true },
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.openaiFallback, true);
+  assert.deepEqual(providerCalls.map(url => url.includes('api.groq.com') ? 'groq' : 'openai'), ['groq', 'groq', 'openai']);
+
+  delete process.env.GROQ_API_KEY;
+  globalThis.fetch = async () => { throw Object.assign(new Error('simulated timeout'), { name: 'AbortError' }); };
+  const openAiTimeout = await invoke(aiHandler, {
+    method: 'POST', url: '/api/ai/analyze', query: { endpoint: 'analyze' }, headers: { 'x-test-auth': 'user' },
+    body: { room_id: 'week_10_pair_22', transcript: 'A short solo analysis.', ai_consent: true },
+  });
+  assert.equal(openAiTimeout.status, 200);
+  assert.equal(openAiTimeout.body.mocked, true);
+  assert.match(openAiTimeout.body.reason_for_pick, /openai failed openai request timed out/);
+});
+
 test('AI provider selection, quota, and ownership branches remain fail-closed', async () => {
   process.env.AI_ENABLED = 'true';
   executeHandler = sql => {
+    if (sql.includes('SELECT pg.id AS pair_group_id')) return rows([{ pair_group_id: 21, week_id: 10, user_a_id: 2, user_b_id: 2, user_c_id: null, is_ai_pair: 1, week_label: '2026-W38' }]);
+    if (sql.includes('SELECT user_id FROM ai_consents')) return rows([{ user_id: 2 }]);
     if (sql.includes('SELECT is_demo FROM auth_accounts')) return rows([{ is_demo: 0 }]);
     if (sql.includes('COUNT(*) as c FROM ai_sessions')) return rows([{ c: 0 }]);
     if (sql.includes('SELECT calls FROM ai_usage')) return rows([{ calls: 0 }]);
@@ -660,7 +769,7 @@ test('AI provider selection, quota, and ownership branches remain fail-closed', 
   const headers = { 'x-test-auth': 'user' };
   const analyzed = await invoke(aiHandler, {
     method: 'POST', url: '/api/ai/analyze', query: { endpoint: 'analyze' }, headers,
-    body: { transcript: 'A sufficiently detailed interview transcript.', ai_consent: true, interviewer_questions: 'Why this approach?' },
+    body: { room_id: 'week_10_pair_21', transcript: 'A sufficiently detailed interview transcript.', ai_consent: true, interviewer_questions: 'Why this approach?' },
   });
   assert.equal(analyzed.status, 200);
   assert.equal(analyzed.body.openaiFallback, true);
@@ -687,13 +796,15 @@ test('AI rejects missing content and enforces demo quota before provider calls',
   assert.equal(empty.status, 400);
 
   executeHandler = sql => {
+    if (sql.includes('SELECT pg.id AS pair_group_id')) return rows([{ pair_group_id: 22, week_id: 10, user_a_id: 3, user_b_id: 3, user_c_id: null, is_ai_pair: 1, week_label: '2026-W38' }]);
+    if (sql.includes('SELECT user_id FROM ai_consents')) return rows([{ user_id: 3 }]);
     if (sql.includes('SELECT is_demo FROM auth_accounts')) return rows([{ is_demo: 1 }]);
     if (sql.includes('SELECT calls FROM ai_usage')) return rows([{ calls: 100 }]);
     return rows();
   };
   const limited = await invoke(aiHandler, {
     method: 'POST', url: '/api/ai/analyze', query: { endpoint: 'analyze' }, headers,
-    body: { transcript: 'A detailed transcript.', ai_consent: true },
+    body: { room_id: 'week_10_pair_22', transcript: 'A detailed transcript.', ai_consent: true },
   });
   assert.equal(limited.status, 429);
   assert.equal(limited.body.demo, true);
@@ -762,10 +873,109 @@ test('operations cover preferences, availability, admin promotion, demo lifecycl
 
   const cronDenied = await invoke(opsHandler, { method: 'POST', url: '/api/cron/weekly', query: { endpoint: 'weekly' }, headers: { 'x-cron-secret': 'wrong' } });
   assert.equal(cronDenied.status, 401);
+  assert.match(cronDenied.body.hint, /x-cron-secret.*Authorization: Bearer/);
+  assert.doesNotMatch(cronDenied.body.hint, /\?secret=|x-vercel-cron/);
 
   const weekly = await invoke(opsHandler, { method: 'POST', url: '/api/cron/weekly', query: { endpoint: 'weekly' }, headers: { 'x-cron-secret': 'cron-secret' } });
   assert.equal(weekly.status, 200);
   assert.equal(weekly.body.pairs.length, 1);
+});
+
+test('weekly email delivery caps stale outbox retries and exhausts the fifth failed attempt', async () => {
+  process.env.CRON_SECRET = 'cron-secret';
+  process.env.RESEND_API_KEY = 're_test';
+  globalThis.fetch = async () => new Response(JSON.stringify({ message: 'provider unavailable' }), {
+    status: 503,
+    headers: { 'content-type': 'application/json' },
+  });
+  executeHandler = sql => {
+    if (sql.includes('SELECT id FROM pairing_weeks WHERE week_label=')) return rows([{ id: 10 }]);
+    if (sql.startsWith("UPDATE pairing_email_outbox SET status='exhausted'")) return rows([], { rowsAffected: 0 });
+    if (sql.includes('SELECT id,week_id,user_id,kind,recipient_email,status,attempt_count')) return rows([{
+      id: 70,
+      week_id: 10,
+      user_id: 2,
+      kind: 'paired',
+      recipient_email: 'user@example.test',
+      status: 'sending',
+      attempt_count: 4,
+    }]);
+    if (sql.includes('SELECT week_label FROM pairing_weeks')) return rows([{ week_label: '2026-W38' }]);
+    if (sql.includes("SET status='sending',attempt_count=attempt_count+1")) return rows([{ id: 70, attempt_count: 5 }]);
+    if (sql.includes('SELECT is_demo FROM auth_accounts')) return rows([{ is_demo: 0 }]);
+    if (sql.includes('SELECT email_enabled FROM user_notification_prefs')) return rows([{ email_enabled: 1 }]);
+    if (sql.includes('SELECT id,user_a_id,user_b_id,is_ai_pair FROM pairing_groups')) return rows([{
+      id: 20, user_a_id: 2, user_b_id: 2, is_ai_pair: 1,
+    }]);
+    if (sql.includes("SET status=CASE WHEN attempt_count>=? THEN 'exhausted'")) return rows([{ status: 'exhausted' }]);
+    if (sql.includes('SELECT COUNT(*) AS c FROM pairing_email_outbox')) return rows([{ c: 0 }]);
+    return rows();
+  };
+
+  const result = await invoke(opsHandler, {
+    method: 'POST', url: '/api/cron/weekly', query: { endpoint: 'weekly' },
+    headers: { 'x-cron-secret': 'cron-secret' },
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.skipped, true);
+  assert.equal(result.body.email_delivery.failed, 1);
+  assert.equal(result.body.email_delivery.exhausted, 1);
+  assert.equal(result.body.email_delivery.pending, 0);
+
+  const candidateQuery = executed.find(call => call.sql.includes('SELECT id,week_id,user_id,kind,recipient_email,status,attempt_count'));
+  assert.match(candidateQuery.sql, /attempt_count<\?/);
+  assert.match(candidateQuery.sql, /status='sending'.*claimed_at<datetime/);
+  assert.deepEqual(candidateQuery.args, [10, 5]);
+  const claim = executed.find(call => call.sql.includes("SET status='sending',attempt_count=attempt_count+1"));
+  assert.deepEqual(claim.args, [70, 5]);
+  const transition = executed.find(call => call.sql.includes("SET status=CASE WHEN attempt_count>=? THEN 'exhausted'"));
+  assert.match(transition.sql, /status='sending' AND attempt_count=\?/);
+  assert.deepEqual(transition.args, [5, 'provider unavailable', 70, 5]);
+});
+
+test('stale email workers cannot overwrite a newer lease or inflate delivery counters', async () => {
+  process.env.CRON_SECRET = 'cron-secret';
+  process.env.RESEND_API_KEY = 're_test';
+  globalThis.fetch = async () => new Response(JSON.stringify({ id: 'mail_123' }), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+  executeHandler = (sql,args) => {
+    if (sql.includes('SELECT id FROM pairing_weeks WHERE week_label=')) return rows([{ id: 10 }]);
+    if (sql.startsWith("UPDATE pairing_email_outbox SET status='exhausted'")) return rows([], { rowsAffected: 0 });
+    if (sql.includes('SELECT id,week_id,user_id,kind,recipient_email,status,attempt_count')) return rows([
+      { id: 70, week_id: 10, user_id: 2, kind: 'paired', recipient_email: 'demo@example.test', status: 'failed', attempt_count: 1 },
+      { id: 71, week_id: 10, user_id: 3, kind: 'paired', recipient_email: 'disabled@example.test', status: 'failed', attempt_count: 1 },
+      { id: 72, week_id: 10, user_id: 4, kind: 'paired', recipient_email: 'active@example.test', status: 'failed', attempt_count: 1 },
+    ]);
+    if (sql.includes('SELECT week_label FROM pairing_weeks')) return rows([{ week_label: '2026-W38' }]);
+    if (sql.includes("SET status='sending',attempt_count=attempt_count+1")) return rows([{ id: args[0], attempt_count: 2 }]);
+    if (sql.includes('SELECT is_demo FROM auth_accounts')) return rows([{ is_demo: Number(args[0])===2 ? 1 : 0 }]);
+    if (sql.includes('SELECT email_enabled FROM user_notification_prefs')) return rows([{ email_enabled: Number(args[0])===3 ? 0 : 1 }]);
+    if (sql.includes("SET status='suppressed'")) return Number(args[0])===71 ? rows([{ id: 71 }]) : rows([]);
+    if (sql.includes('SELECT id,user_a_id,user_b_id,is_ai_pair FROM pairing_groups')) return rows([{
+      id: 20, user_a_id: 4, user_b_id: 4, is_ai_pair: 1,
+    }]);
+    if (sql.includes("SET status='sent'")) return rows([]);
+    if (sql.includes('SELECT COUNT(*) AS c FROM pairing_email_outbox')) return rows([{ c: 0 }]);
+    return rows();
+  };
+
+  const result = await invoke(opsHandler, {
+    method: 'POST', url: '/api/cron/weekly', query: { endpoint: 'weekly' },
+    headers: { 'x-cron-secret': 'cron-secret' },
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.email_delivery.sent, 0, 'a stale successful sender must not count an uncommitted transition');
+  assert.equal(result.body.email_delivery.suppressed, 1, 'only the worker that still owns its lease may count suppression');
+  assert.equal(result.body.email_delivery.failed, 0);
+
+  const terminalUpdates=executed.filter(call => call.sql.includes("SET status='sent'") || call.sql.includes("SET status='suppressed'"));
+  assert.equal(terminalUpdates.length, 3);
+  for(const update of terminalUpdates){
+    assert.match(update.sql, /status='sending' AND attempt_count=\? RETURNING/);
+    assert.equal(update.args.at(-1), 2);
+  }
 });
 
 test('operation validation rejects unsupported methods and non-admin mutations', async () => {
@@ -900,6 +1110,22 @@ test('video signaling validates membership and supports post, filtered poll, and
     body: { room_id: 'week_10_pair_20', from_id: 'peer', type: 'offer', payload: 'x'.repeat(20_001) },
   });
   assert.equal(tooLarge.status, 413);
+
+  const missingPayload = await invoke(videoHandler, {
+    method: 'POST', url: '/api/video/signal', query: { endpoint: 'signal' }, headers,
+    body: { room_id: 'week_10_pair_20', from_id: 'peer', type: 'offer' },
+  });
+  assert.equal(missingPayload.status, 400);
+  assert.match(missingPayload.body.error, /payload required/i);
+
+  const cyclicPayload = {};
+  cyclicPayload.self = cyclicPayload;
+  const invalidPayload = await invoke(videoHandler, {
+    method: 'POST', url: '/api/video/signal', query: { endpoint: 'signal' }, headers,
+    body: { room_id: 'week_10_pair_20', from_id: 'peer', type: 'offer', payload: cyclicPayload },
+  });
+  assert.equal(invalidPayload.status, 400);
+  assert.match(invalidPayload.body.error, /JSON serializable/i);
 
   const unsupported = await invoke(videoHandler, { method: 'PATCH', url: '/api/video/signal', query: { endpoint: 'signal' }, headers });
   assert.equal(unsupported.status, 405);

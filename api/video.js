@@ -78,10 +78,13 @@ async function handleSignal(req,res){
     const to_id=(body.to_id||body.toId||'').toString().trim().slice(0,128)||null;
     const type=(body.type||'').toString().trim().toLowerCase().slice(0,32);
     let signalPayload=body.payload;
-    if(!room_id||!from_id||!type) return res.status(400).json({ok:false,error:'room_id, from_id, type required'});
+    if(!room_id||!from_id||!type||signalPayload===undefined) return res.status(400).json({ok:false,error:'room_id, from_id, type, payload required'});
     if(!['offer','answer','ice','candidate','join','leave','code-sync'].includes(type)) return res.status(400).json({ok:false,error:'invalid signal type'});
     if(!await canAccessRoom(db,payload,room_id)) return res.status(403).json({ok:false,error:'not a member of this room'});
-    if(typeof signalPayload!=='string'){ try{ signalPayload=JSON.stringify(signalPayload);}catch{ signalPayload=String(signalPayload);} }
+    if(typeof signalPayload!=='string'){
+      try{ signalPayload=JSON.stringify(signalPayload); }catch{ return res.status(400).json({ok:false,error:'signal payload must be JSON serializable'}); }
+      if(typeof signalPayload!=='string') return res.status(400).json({ok:false,error:'signal payload required'});
+    }
     if(signalPayload.length>20000) return res.status(413).json({ok:false,error:'signal payload too large'});
     try{
       const ins=await db.execute({sql:`INSERT INTO video_signals (room_id, from_id, to_id, type, payload) VALUES (?,?,?,?,?) RETURNING id`,args:[room_id,from_id,to_id,type,signalPayload]});

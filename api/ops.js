@@ -2,6 +2,8 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { getClient, getCronSecret, getAdminEmails, isoWeekLabel, deterministicColor, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 import { buildFairPairing, canonicalRoomId, escapeHtml } from './_pairing.js';
 
+const MAX_EMAIL_ATTEMPTS=5;
+
 async function logServerOps(level, event, message, meta, req){
   try{
     const db = getClient();
@@ -215,56 +217,68 @@ async function renderOutboxEmail(db,item,weekLabel,baseUrl){
 }
 
 async function deliverPendingPairingEmails(db,weekId,baseUrl,req){
+  let exhausted=0;
   let pending;
   try{
-    pending=await db.execute({sql:`SELECT id,week_id,user_id,kind,recipient_email,status,attempt_count FROM pairing_email_outbox WHERE week_id=? AND (status IN ('pending','failed') OR (status='sending' AND claimed_at<datetime('now','-15 minutes'))) ORDER BY id LIMIT 100`,args:[weekId]});
+    const exhaustedResult=await db.execute({sql:`UPDATE pairing_email_outbox SET status='exhausted',last_error=COALESCE(last_error,'maximum delivery attempts reached'),updated_at=datetime('now') WHERE week_id=? AND attempt_count>=? AND (status IN ('pending','failed') OR (status='sending' AND claimed_at<datetime('now','-15 minutes')))`,args:[weekId,MAX_EMAIL_ATTEMPTS]});
+    exhausted=Number(exhaustedResult.rowsAffected||0);
+    pending=await db.execute({sql:`SELECT id,week_id,user_id,kind,recipient_email,status,attempt_count FROM pairing_email_outbox WHERE week_id=? AND attempt_count<? AND (status IN ('pending','failed') OR (status='sending' AND claimed_at<datetime('now','-15 minutes'))) ORDER BY id LIMIT 100`,args:[weekId,MAX_EMAIL_ATTEMPTS]});
   }catch(e){
-    return {summary:'email outbox unavailable',sent:0,failed:0,pending:0,error:String(e.message||e).slice(0,180)};
+    return {summary:'email outbox unavailable',sent:0,failed:0,exhausted,pending:0,error:String(e.message||e).slice(0,180)};
   }
-  if(!pending.rows.length) return {summary:'no pending email reminders',sent:0,failed:0,pending:0};
-  if(!process.env.RESEND_API_KEY) return {summary:`${pending.rows.length} email reminder(s) pending — set RESEND_API_KEY + RESEND_FROM`,sent:0,failed:0,pending:pending.rows.length};
+  if(!pending.rows.length) return {summary:exhausted?`${exhausted} email reminder(s) exhausted after ${MAX_EMAIL_ATTEMPTS} attempts`:'no pending email reminders',sent:0,failed:0,exhausted,pending:0};
+  if(!process.env.RESEND_API_KEY) return {summary:`${pending.rows.length} email reminder(s) pending — set RESEND_API_KEY + RESEND_FROM`,sent:0,failed:0,exhausted,pending:pending.rows.length};
 
   const resendMod=await import('resend').catch(()=>null);
-  if(!resendMod?.Resend) return {summary:`${pending.rows.length} email reminder(s) pending — resend package unavailable`,sent:0,failed:0,pending:pending.rows.length};
+  if(!resendMod?.Resend) return {summary:`${pending.rows.length} email reminder(s) pending — resend package unavailable`,sent:0,failed:0,exhausted,pending:pending.rows.length};
   const weekRs=await db.execute({sql:`SELECT week_label FROM pairing_weeks WHERE id=?`,args:[weekId]});
   const weekLabel=weekRs.rows[0]?.week_label;
-  if(!weekLabel) return {summary:'email reminders pending — pairing week missing',sent:0,failed:pending.rows.length,pending:pending.rows.length};
+  if(!weekLabel) return {summary:'email reminders pending — pairing week missing',sent:0,failed:pending.rows.length,exhausted,pending:pending.rows.length};
 
   const resend=new resendMod.Resend(process.env.RESEND_API_KEY);
   const from=process.env.RESEND_FROM||'Randori <onboarding@randori.circle>';
   let sent=0,failed=0,suppressed=0;
   for(const item of pending.rows){
+    let claimedAttempt=null;
     try{
+      const claim=await db.execute({sql:`UPDATE pairing_email_outbox SET status='sending',attempt_count=attempt_count+1,claimed_at=datetime('now'),last_error=NULL,updated_at=datetime('now') WHERE id=? AND attempt_count<? AND (status IN ('pending','failed') OR (status='sending' AND claimed_at<datetime('now','-15 minutes'))) RETURNING id,attempt_count`,args:[item.id,MAX_EMAIL_ATTEMPTS]});
+      if(!claim.rows.length) continue;
+      claimedAttempt=Number(claim.rows[0].attempt_count);
       const account=await db.execute({sql:`SELECT is_demo FROM auth_accounts WHERE id=?`,args:[item.user_id]});
       if(account.rows[0]?.is_demo){
-        await db.execute({sql:`UPDATE pairing_email_outbox SET status='suppressed',last_error='demo account excluded from production reminders',updated_at=datetime('now') WHERE id=? AND status<>'sent'`,args:[item.id]});
-        suppressed+=1;
+        const transition=await db.execute({sql:`UPDATE pairing_email_outbox SET status='suppressed',last_error='demo account excluded from production reminders',updated_at=datetime('now') WHERE id=? AND status='sending' AND attempt_count=? RETURNING id`,args:[item.id,claimedAttempt]});
+        if(transition.rows.length) suppressed+=1;
         continue;
       }
       const pref=await db.execute({sql:`SELECT email_enabled FROM user_notification_prefs WHERE user_id=?`,args:[item.user_id]});
       if(pref.rows[0]?.email_enabled===0){
-        await db.execute({sql:`UPDATE pairing_email_outbox SET status='suppressed',last_error='email disabled by user',updated_at=datetime('now') WHERE id=? AND status<>'sent'`,args:[item.id]});
-        suppressed+=1;
+        const transition=await db.execute({sql:`UPDATE pairing_email_outbox SET status='suppressed',last_error='email disabled by user',updated_at=datetime('now') WHERE id=? AND status='sending' AND attempt_count=? RETURNING id`,args:[item.id,claimedAttempt]});
+        if(transition.rows.length) suppressed+=1;
         continue;
       }
-      const claim=await db.execute({sql:`UPDATE pairing_email_outbox SET status='sending',attempt_count=attempt_count+1,claimed_at=datetime('now'),last_error=NULL,updated_at=datetime('now') WHERE id=? AND (status IN ('pending','failed') OR (status='sending' AND claimed_at<datetime('now','-15 minutes'))) RETURNING id`,args:[item.id]});
-      if(!claim.rows.length) continue;
       const content=await renderOutboxEmail(db,item,weekLabel,baseUrl);
       const idempotencyKey=`randori/${item.week_id}/${item.kind}/${item.user_id}`;
       const result=await resend.emails.send({from,to:item.recipient_email,subject:content.subject,html:content.html},{idempotencyKey});
       if(result?.error) throw new Error(result.error.message||'email provider rejected request');
-      await db.execute({sql:`UPDATE pairing_email_outbox SET status='sent',sent_at=datetime('now'),provider_message_id=?,last_error=NULL,updated_at=datetime('now') WHERE id=? AND status='sending'`,args:[result?.data?.id||null,item.id]});
-      sent+=1;
+      const transition=await db.execute({sql:`UPDATE pairing_email_outbox SET status='sent',sent_at=datetime('now'),provider_message_id=?,last_error=NULL,updated_at=datetime('now') WHERE id=? AND status='sending' AND attempt_count=? RETURNING id`,args:[result?.data?.id||null,item.id,claimedAttempt]});
+      if(transition.rows.length) sent+=1;
     }catch(e){
-      failed+=1;
-      try{ await db.execute({sql:`UPDATE pairing_email_outbox SET status='failed',last_error=?,updated_at=datetime('now') WHERE id=? AND status='sending'`,args:[String(e.message||e).slice(0,500),item.id]}); }catch{}
+      if(claimedAttempt!==null){
+        try{
+          const transition=await db.execute({sql:`UPDATE pairing_email_outbox SET status=CASE WHEN attempt_count>=? THEN 'exhausted' ELSE 'failed' END,last_error=?,updated_at=datetime('now') WHERE id=? AND status='sending' AND attempt_count=? RETURNING status`,args:[MAX_EMAIL_ATTEMPTS,String(e.message||e).slice(0,500),item.id,claimedAttempt]});
+          if(transition.rows.length){
+            failed+=1;
+            if(transition.rows[0].status==='exhausted') exhausted+=1;
+          }
+        }catch{}
+      }
     }
   }
   const remaining=await db.execute({sql:`SELECT COUNT(*) AS c FROM pairing_email_outbox WHERE week_id=? AND status IN ('pending','failed','sending')`,args:[weekId]}).catch(()=>({rows:[{c:failed}]}));
   const pendingCount=Number(remaining.rows[0]?.c||0);
-  const summary=`sent ${sent}, failed ${failed}, suppressed ${suppressed}, pending ${pendingCount}`;
-  try{ await logServerOps(failed?'warn':'success','pairing_email_delivery',summary,{week_id:weekId,sent,failed,suppressed,pending:pendingCount},req); }catch{}
-  return {summary,sent,failed,suppressed,pending:pendingCount};
+  const summary=`sent ${sent}, failed ${failed}, exhausted ${exhausted}, suppressed ${suppressed}, pending ${pendingCount}`;
+  try{ await logServerOps(failed?'warn':'success','pairing_email_delivery',summary,{week_id:weekId,sent,failed,exhausted,suppressed,pending:pendingCount},req); }catch{}
+  return {summary,sent,failed,exhausted,suppressed,pending:pendingCount};
 }
 
 async function getCallerAdmin(db, payload){
@@ -352,7 +366,7 @@ async function handleWeekly(req,res){
   if (req.method!=='GET' && req.method!=='POST') return res.status(405).json({ error:'GET or POST'});
   if (!verifyCronAuth(req)){
     if(process.env.TURSO_DATABASE_URL){ try{ await logServerOps('warn','cron_auth_fail','weekly unauthorized', {headers:Object.keys(req.headers||{})}, req); }catch{} }
-    return res.status(401).json({ error:'unauthorized cron', hint:'send x-cron-secret header or ?secret= or x-vercel-cron'});
+    return res.status(401).json({ error:'unauthorized cron', hint:'send x-cron-secret: <CRON_SECRET> or Authorization: Bearer <CRON_SECRET>'});
   }
   const db = getClient();
   await ensureMigrations(db);
