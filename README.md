@@ -1,24 +1,75 @@
-# Randori Circle — Vercel Deploy (main)
+# Randori Circle
 
-This is the current Vercel-deployable prototype of Randori Circle. Production hardening is being delivered as small, measurable vertical slices; see [the production architecture plan](docs/PRODUCTION_ARCHITECTURE_PLAN.md).
+Randori Circle is a private peer mock-interview app. Members publish availability, receive a fair weekly pairing, schedule a session, chat, and practise JavaScript or Python questions together.
 
-- Static single-file app, no Hatch SDK, no file: deps
-- Dark-mode-first, AI partner for odd counts, DSA/System/Both picker, live coding room, whiteboard
-- The current collaboration layer uses localStorage + BroadcastChannel and is intentionally limited to local-tab sync until the managed realtime slice ships.
-- To add shared Turso DB later: set `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN` and add a `/api` proxy — see docs.
+Production deploys from `main` through Vercel. Development is iterative; the architecture and rollout decisions are documented in [the production plan](docs/PRODUCTION_ARCHITECTURE_PLAN.md).
 
-Grouped API under Hobby 12-function limit:
-- `api/auth/[...slug].js` — signup/login/me + Google OAuth
-- `api/data/[...slug].js` — circle/weeks/history/init
-- `api/ops/[...slug].js` — availability/reshuffle/weekly
-- `api/ai/[...slug].js` — Groq AI feedback router (analyze/feedback/history) with evidence-enforced JSON
-- `api/video/[...slug].js` — WebRTC signaling + STUN (parallel subagent)
+## Current private-beta workflow
 
-Env beyond Turso:
-- `GROQ_API_KEY=gsk_...` — https://console.groq.com/keys — free 14.4k req/day, OpenAI-compatible https://api.groq.com/openai/v1/chat/completions
-- `JWT_SECRET`, `CRON_SECRET`, `RESEND_API_KEY`, `GOOGLE_CLIENT_ID/SECRET`
-- Copy `.env.example` for the complete local configuration contract.
+1. An allowlisted member signs in through verified Google OAuth.
+2. The Sunday cron creates one deterministic, repeat-aware pairing cycle.
+3. Each participant receives a personalised email containing only their partner and private room link.
+4. Partners propose a time, chat, and open the session workspace.
+5. JavaScript and Python execute through the authenticated server gateway; browser-origin code execution is disabled.
 
-Deployed branch is `main`. Vercel auto-deploys on push.
+The current collaboration UI still uses local browser state and `BroadcastChannel`. Cross-device collaborative editing, managed video, AI coaching, and authorised content ingestion remain later increments.
 
-AI coaching is disabled by default. It requires `AI_ENABLED=true`, an authenticated session, explicit consent, and a configured provider key. This keeps the coordination workflow usable without exposing interview content during the hardening phase.
+## Security baseline
+
+- Sessions use 12-hour `Secure`, `HttpOnly`, `SameSite=Lax` cookies.
+- Google OAuth uses cryptographic state, PKCE, and verified OpenID userinfo.
+- Production password signup is disabled until email verification exists.
+- Mutations enforce same-origin requests for cookie sessions; API callers may use pinned Bearer JWTs.
+- Circle, pairing, schedule, chat, feedback, execution, and signaling endpoints require scoped authorisation.
+- Weekly pairing writes are atomic and concurrency-safe. Notifications use an idempotent retryable outbox.
+- AI is disabled unless explicitly enabled and consented to.
+- Automated LeetCode retrieval is disabled without written authorisation. The app uses approved local content or outbound links.
+
+## Architecture
+
+The current deployable prototype is a single-page `index.html` backed by grouped Vercel serverless functions:
+
+| Module | Responsibility |
+|---|---|
+| `api/auth.js` | signup/login compatibility, logout, session lookup, Google OAuth |
+| `api/data.js` | profiles, circle, weeks, schedules, messages, questions, runs, execution |
+| `api/ops.js` | availability, fair pairing, cron, notification outbox, demo administration |
+| `api/ai.js` | disabled-by-default consent-gated feedback workflows |
+| `api/video.js` | authenticated pair-scoped WebRTC signaling |
+| `api/_db.js` | Turso client, JWT verification, CSRF helpers |
+| `api/_pairing.js` | deterministic fairness and canonical room identifiers |
+
+The target Next.js/Supabase architecture is intentionally phased rather than introduced as a big-bang rewrite.
+
+## Environment
+
+Copy `.env.example` and configure at least:
+
+- `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`
+- `JWT_SECRET` and a separate `CRON_SECRET`
+- `APP_URL`, `GOOGLE_CLIENT_ID`, and `GOOGLE_CLIENT_SECRET`
+- `SIGNUP_ALLOWLIST` for private-beta Google accounts
+- `RESEND_API_KEY` and `RESEND_FROM` for pairing notifications
+
+See [GOOGLE_OAUTH.md](GOOGLE_OAUTH.md) and [TURSO.md](TURSO.md) for provider setup. Back up the database before first deploying migrations.
+
+## Development and tests
+
+Requires Node.js 22.3 or newer.
+
+```bash
+npm ci
+npm run check:syntax
+npm run test:coverage
+npm run test:e2e
+```
+
+CI tests the checked-out candidate build on localhost. It enforces at least 52% line, branch, and function coverage across every `api/*.js` module and runs seven Playwright flows on Ubuntu.
+
+## Next increments
+
+1. Pilot the secure weekly coordination loop and measure completed sessions.
+2. Introduce managed shared editing and isolated code execution.
+3. Add managed video after the coordination workflow is reliable.
+4. Add durable workspace artifacts, then consented AI coaching.
+5. Expand only with original, licensed, or formally authorised question sources.

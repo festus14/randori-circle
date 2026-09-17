@@ -1,30 +1,138 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
-language: en-GB
-tone_instructions: Be concise and prioritise correctness, security, privacy, data integrity, and missing tests.
+language: "en-GB"
+early_access: false
+enable_free_tier: true
+tone_instructions: >-
+  Be concise, evidence-based, and actionable. Prioritise correctness, security,
+  privacy, data integrity, and missing tests over stylistic preferences.
 
 reviews:
-  profile: assertive
+  profile: "chill"
   request_changes_workflow: true
   high_level_summary: true
+  high_level_summary_in_walkthrough: true
   review_status: true
+  review_details: false
+  review_progress: true
+  fail_commit_status: false
+  collapse_walkthrough: true
   changed_files_summary: true
-  auto_review:
-    enabled: true
-    auto_incremental_review: true
-    drafts: false
-    base_branches:
-      - main
+  sequence_diagrams: false
+  estimate_code_review_effort: true
+  assess_linked_issues: true
+  related_issues: false
+  related_prs: true
+  suggested_labels: false
+  suggested_reviewers: false
+  poem: false
+
   path_filters:
     - "!package-lock.json"
     - "!docs/**/*.png"
     - "!docs/**/*.svg"
     - "!docs/**/*.excalidraw"
+    - "!playwright-report/**"
+    - "!test-results/**"
+
   path_instructions:
-    - path: api/**/*.js
-      instructions: Check authentication, object-level authorisation, CSRF, input bounds, secret handling, privacy, idempotency, concurrency, migrations, provider failures, and internal error leakage.
-    - path: index.html
-      instructions: Flag DOM XSS, unsafe execution, leaked tokens/private data, broken auth state, and divergence from authenticated API behaviour.
-    - path: tests/**/*
-      instructions: Reject vacuous assertions, production access, hidden network dependencies, and missing negative security or concurrency cases.
-    - path: .github/workflows/**/*
-      instructions: Check least privileges, reproducible installs, candidate-build testing, secret exposure, and useful failure artefacts.
+    - path: "api/**/*.js"
+      instructions: |
+        Treat these files as security-sensitive serverless API code.
+        Verify authentication and object-level authorisation on every read and
+        mutation, including circle, pair, session, message, feedback, and room
+        membership. Flag fail-open secret handling, information leakage,
+        unvalidated input, unsafe SQL construction, missing method checks,
+        unbounded requests, weak rate limiting, non-idempotent retries, and
+        internal error details returned to clients. Require production-safe
+        behaviour when environment variables or external services are missing.
+
+    - path: "api/auth.js"
+      instructions: |
+        Closely review cookie flags, JWT verification and expiry, OAuth state
+        and redirect validation, password handling, session fixation, account
+        enumeration, CSRF protection, and whether secrets fail closed in
+        production. Do not accept client-supplied identity or role claims as an
+        authorisation boundary.
+
+    - path: "api/_db.js"
+      instructions: |
+        Check schema changes and migrations for repeatability, transactional
+        safety, data preservation, constraints, indexes, parameterised queries,
+        and concurrency behaviour. Flag schema initialisation that can be
+        invoked without strict administrative authorisation.
+
+    - path: "api/ai.js"
+      instructions: |
+        Verify authentication, explicit participant consent, minimised data sent
+        to providers, prompt-injection boundaries, response-schema validation,
+        timeouts, rate and cost limits, and deletion or retention behaviour.
+        Never allow model output to establish identity, permissions, or trusted
+        executable content.
+
+    - path: "api/video.js"
+      instructions: |
+        Verify that signalling operations require authenticated membership in
+        the exact opaque room or session, expire promptly, resist replay and
+        enumeration, and do not expose SDP, ICE, participant, or room data to
+        unrelated users.
+
+    - path: "index.html"
+      instructions: |
+        This is the current monolithic browser prototype. Focus on executable
+        defects and regressions rather than requesting broad rewrites in each
+        pull request. Flag unsafe HTML injection, DOM XSS, unsafe URL handling,
+        leaked secrets or private data, duplicate listeners, broken async state,
+        race conditions, inaccessible critical flows, and divergence between
+        local fallback behaviour and authenticated API behaviour.
+
+    - path: "tests/**/*"
+      instructions: |
+        Ensure tests exercise production behaviour rather than reimplementing
+        it. Look for missing negative authorisation cases, cross-user or
+        cross-circle access, malicious input, missing-secret behaviour, retries,
+        persistence, and browser reload or reconnect scenarios. Flag flaky
+        timing, production writes, hidden network dependencies, and assertions
+        that can pass without testing the intended outcome.
+
+    - path: ".github/workflows/**/*"
+      instructions: |
+        Check least-privilege permissions, pinned or trusted actions, secret
+        exposure, dependency caching correctness, deterministic installs, useful
+        failure artefacts, and safeguards preventing tests from touching
+        production services or data.
+
+    - path: "vercel.json"
+      instructions: |
+        Verify rewrite ordering and endpoint coverage, security headers, CSP
+        sources, cache behaviour, cron authentication assumptions, and that no
+        sensitive API route becomes reachable without its intended checks.
+
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 5
+    ignore_title_keywords:
+      - "WIP"
+      - "DO NOT MERGE"
+    drafts: false
+    base_branches:
+      - "main"
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  web_search:
+    enabled: false
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "README.md"
+      - "docs/PRODUCTION_ARCHITECTURE_PLAN.md"
+  learnings:
+    scope: "local"
+  issues:
+    scope: "local"
+  pull_requests:
+    scope: "local"
+  automatic_linking_mode: "disabled"
