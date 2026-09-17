@@ -86,17 +86,76 @@ export async function openCodeView(
 }
 
 export async function setCode(page: Page, code: string) {
-  await page.waitForFunction(() => Boolean(document.getElementById('editor')));
-  await page.evaluate(value => {
-    const editor = (window as typeof window & { monacoEditor?: { setValue(value: string): void } }).monacoEditor;
-    if (editor) editor.setValue(value);
+  await page.waitForFunction(() => {
+    const app = window as typeof window & {
+      _randori_code?: { getEditor?: () => { getValue(): string } | null };
+      _randori_monaco?: { editor?: { getValue(): string }; ready?: boolean };
+    };
+    const monaco = app._randori_code?.getEditor?.() || app._randori_monaco?.editor;
+    if (monaco && typeof monaco.getValue === 'function') return true;
+
     const textarea = document.querySelector<HTMLTextAreaElement>('#editor');
+    return Boolean(textarea && getComputedStyle(textarea).display !== 'none');
+  });
+
+  await page.evaluate(value => {
+    type Editor = { getValue(): string; setValue(value: string): void };
+    type CodeApi = {
+      currentRoom?: string;
+      getCode?: () => string;
+      getEditor?: () => Editor | null;
+      setCode?: (value: string, language?: string) => void;
+    };
+    const app = window as typeof window & {
+      _randori_code?: CodeApi;
+      _randori_monaco?: { editor?: Editor };
+      currentRoom?: string;
+    };
+    const textarea = document.querySelector<HTMLTextAreaElement>('#editor');
+    const language = document.querySelector<HTMLSelectElement>('#langSelect')?.value || 'javascript';
+    const question = document.querySelector<HTMLSelectElement>('#questionSelect')?.value || 'two-sum';
+    const room = app._randori_code?.currentRoom
+      || app.currentRoom
+      || document.querySelector<HTMLSelectElement>('#roomSelect')?.value;
+
+    // Monaco performs one deferred room hydration after it becomes ready. Keep
+    // that source synchronized so it cannot restore stale starter code.
+    if (room) {
+      let saved: Record<string, { lang?: string; qId?: string; codes?: Record<string, string> }> = {};
+      try { saved = JSON.parse(localStorage.getItem('randori-code') || '{}'); } catch {}
+      const entry = saved[room] || { codes: {} };
+      entry.lang = language;
+      entry.qId = question;
+      entry.codes = entry.codes || {};
+      entry.codes[language] = value;
+      saved[room] = entry;
+      localStorage.setItem('randori-code', JSON.stringify(saved));
+    }
+
+    const monaco = app._randori_code?.getEditor?.() || app._randori_monaco?.editor;
+    if (monaco) {
+      if (app._randori_code?.setCode) app._randori_code.setCode(value, language);
+      else monaco.setValue(value);
+    }
     if (textarea) {
       textarea.value = value;
       textarea.dispatchEvent(new Event('input', { bubbles: true }));
       textarea.dispatchEvent(new Event('change', { bubbles: true }));
     }
   }, code);
+
+  await expect.poll(() => page.evaluate(expected => {
+    type Editor = { getValue(): string };
+    const app = window as typeof window & {
+      _randori_code?: { getCode?: () => string; getEditor?: () => Editor | null };
+      _randori_monaco?: { editor?: Editor };
+    };
+    const monaco = app._randori_code?.getEditor?.() || app._randori_monaco?.editor;
+    const textarea = document.querySelector<HTMLTextAreaElement>('#editor');
+    const editorValue = monaco?.getValue() ?? textarea?.value ?? '';
+    const appValue = app._randori_code?.getCode?.() ?? textarea?.value ?? '';
+    return editorValue === expected && appValue === expected;
+  }, code)).toBe(true);
 }
 
 export async function selectLanguage(page: Page, language: string) {
