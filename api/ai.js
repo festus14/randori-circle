@@ -234,6 +234,26 @@ function verifyEvidence(feedback, combined){
   return { validated:val, total:tot, score:tot?val/tot:1, loweredConfidence:lowered };
 }
 
+function parseProviderEnvelope(provider,res,text){
+  let json;
+  try{ json=JSON.parse(text); }catch{ json=null; }
+  const validObject=!!json && typeof json==='object' && !Array.isArray(json);
+  if(!res.ok){
+    const providerError=validObject
+      ? (typeof json.error==='object' && json.error ? json.error.message : json.error)
+      : null;
+    return {error:`${provider} ${res.status}: ${providerError||text.slice(0,400)}`,status:res.status,raw:validObject?json:null};
+  }
+  const choice=validObject && Array.isArray(json.choices) ? json.choices[0] : null;
+  const message=choice && typeof choice==='object' && !Array.isArray(choice) ? choice.message : null;
+  const content=message && typeof message==='object' && !Array.isArray(message) ? message.content : null;
+  if(typeof content!=='string' || !content.trim()){
+    return {error:`${provider} ${res.status}: invalid provider response`,status:res.status,raw:validObject?json:null,invalid_response:true};
+  }
+  const usage=json.usage && typeof json.usage==='object' && !Array.isArray(json.usage) ? json.usage : {};
+  return {content,usage,raw:json};
+}
+
 async function callGroq({ modelName, prompt }){
   const key=process.env.GROQ_API_KEY;
   if(!key) return { error:'missing GROQ_API_KEY', mocked:true };
@@ -246,9 +266,7 @@ async function callGroq({ modelName, prompt }){
   }
   catch(error){ return { error:error?.name==='AbortError'?'groq request timed out':'groq request failed', network_error:true }; }
   finally{ clearTimeout(timer); }
-  let json; try{ json=JSON.parse(text);}catch{ json={error:`parse ${res.status}`, raw:text.slice(0,1200)}; }
-  if(!res.ok) return { error:`groq ${res.status}: ${json.error?.message||json.error||text.slice(0,400)}`, status:res.status, raw:json };
-  const content=json.choices?.[0]?.message?.content||''; return { content, usage:json.usage||{}, raw:json };
+  return parseProviderEnvelope('groq',res,text);
 }
 
 async function callOpenAI({ modelName, prompt }){
@@ -264,9 +282,7 @@ async function callOpenAI({ modelName, prompt }){
   }
   catch(error){ return { error:error?.name==='AbortError'?'openai request timed out':'openai request failed', network_error:true }; }
   finally{ clearTimeout(timer); }
-  let json; try{ json=JSON.parse(text);}catch{ json={error:`parse ${res.status}`, raw:text.slice(0,1200)}; }
-  if(!res.ok) return { error:`openai ${res.status}: ${json.error?.message||json.error||text.slice(0,400)}`, status:res.status, raw:json };
-  const content=json.choices?.[0]?.message?.content||''; return { content, usage:json.usage||{} };
+  return parseProviderEnvelope('openai',res,text);
 }
 
 function tryAuth(req){
@@ -496,6 +512,10 @@ async function handleAnalyze(req,res){
       if(groqUsage?.completion_tokens) estOut=groqUsage.completion_tokens;
       costCents=Math.ceil((estIn/1e6*0.15 + estOut/1e6*0.6)*100);
     } else {
+      if(oRes.invalid_response){
+        await logServer('error','ai_provider_invalid_envelope','AI provider returned an invalid response envelope',{room_id,model:modelUsed},{req,source:'server-ai'});
+        return res.status(502).json({ok:false,error:'AI provider temporarily unavailable',session_id:sessId});
+      }
       mocked=true; reason+=' | openai failed '+ (oRes.error||'unknown');
       feedbackJson={ candidate:{ strengths:[], improvements:[]}, interviewer:{strengths:[], improvements:[]}, overall_score:6, next_time_checklist:['retry with smaller transcript'] };
     }

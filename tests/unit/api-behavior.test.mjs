@@ -800,11 +800,16 @@ test('AI rejects malformed provider feedback with the generic provider error', a
     assert.equal(malformedJson.status, 502);
     assert.equal(malformedJson.body.error, 'AI provider temporarily unavailable');
 
+    globalThis.fetch = async () => new Response('null', { status: 200 });
+    const nullEnvelope = await request();
+    assert.equal(nullEnvelope.status, 502);
+    assert.deepEqual(nullEnvelope.body, { ok: false, error: 'AI provider temporarily unavailable', session_id: 3 });
+
     const feedbackCount = await memoryDb.execute(`SELECT COUNT(*) AS count FROM ai_feedback`);
     const sessionCount = await memoryDb.execute(`SELECT COUNT(*) AS count FROM ai_sessions`);
     const consentCount = await memoryDb.execute(`SELECT COUNT(*) AS count FROM ai_consents WHERE user_id=2 AND revoked_at IS NULL`);
     assert.equal(Number(feedbackCount.rows[0].count), 0);
-    assert.equal(Number(sessionCount.rows[0].count), 2);
+    assert.equal(Number(sessionCount.rows[0].count), 3);
     assert.equal(Number(consentCount.rows[0].count), 1);
   } finally {
     databaseDelegate = null;
