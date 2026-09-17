@@ -5358,7 +5358,7 @@ def allow(key, limit=5):
 (function(){
   const CODE_KEY='randori-code';
   const clientId=(window.crypto?.randomUUID?.()||('client-'+Math.random().toString(36).slice(2)));
-  const state={room:null,revision:0,hydrated:false,epoch:0,clientSeq:0,lastAckSeq:0,authoritative:null,pending:null,inFlight:null,pollInFlight:null,pollAbort:null,writeAbort:null,applying:false,retryCount:0};
+  const state={room:null,revision:0,hydrated:false,epoch:0,clientSeq:0,lastAckSeq:0,authoritative:null,pending:null,baseline:null,inFlight:null,pollInFlight:null,pollAbort:null,writeAbort:null,applying:false,retryCount:0};
   let saveTimer=null;
   let retryTimer=null;
   let accessEpoch=0;
@@ -5471,12 +5471,13 @@ def allow(key, limit=5):
     state.hydrated=false;
     state.authoritative=null;
     state.pending=null;
+    state.baseline=draft();
     if(saveTimer) clearTimeout(saveTimer);
     await poll(true,room,epoch);
   }
   function deactivate(){
     accessEpoch+=1;
-    state.epoch+=1; state.room=null; state.revision=0; state.hydrated=false; state.authoritative=null; state.pending=null; state.retryCount=0;
+    state.epoch+=1; state.room=null; state.revision=0; state.hydrated=false; state.authoritative=null; state.pending=null; state.baseline=null; state.retryCount=0;
     if(saveTimer) clearTimeout(saveTimer);
     if(retryTimer){ clearTimeout(retryTimer); retryTimer=null; }
     state.pollAbort?.abort();
@@ -5506,23 +5507,25 @@ def allow(key, limit=5):
       const data=await response.json();
       if(state.room!==room||state.epoch!==epoch) return;
       const next=unpack(data);
+      let hydrationDirty=false;
       if(needsHydration||next.revision>state.revision){
         if(next.snapshot){
           const ownEcho=next.snapshot.client_id===clientId&&next.snapshot.client_seq<=state.lastAckSeq;
-          const locallyDirty=state.hydrated&&(
+          const locallyDirty=(state.hydrated||!same(draft(),state.baseline))&&(
             !!state.pending ||
             (state.inFlight?.room===room&&state.inFlight?.epoch===epoch) ||
             !same(draft(),state.authoritative)
           );
           if(ownEcho) { state.revision=next.revision; state.authoritative=next.snapshot; persistLocal(room,next.snapshot); }
-          else if(locallyDirty){ state.revision=next.revision; state.authoritative=next.snapshot; }
+          else if(locallyDirty){ hydrationDirty=true; state.revision=next.revision; state.authoritative=next.snapshot; }
           else applySnapshot(next.snapshot,next.revision,room,epoch);
         }else if(next.revision>state.revision) state.revision=next.revision;
       }
       if(needsHydration){
         state.hydrated=true;
+        state.baseline=null;
         // With no server snapshot, publish the authenticated editor state once.
-        if(!next.snapshot) scheduleSave();
+        if(!next.snapshot||hydrationDirty) scheduleSave();
       }
     }catch{} finally{
       clearTimeout(timeout);

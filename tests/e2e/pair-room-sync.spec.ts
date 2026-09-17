@@ -66,6 +66,66 @@ test('an authenticated invite is denied unless it exactly matches /api/my-pair r
   expect(workspaceRequests).toBe(0);
 });
 
+test('an edit made during initial hydration is preserved and rebased onto the server snapshot', async ({ page }) => {
+  let revision = 1;
+  let snapshot = {
+    schema_version: 1,
+    revision,
+    client_id: 'server-seed',
+    client_seq: 1,
+    code: 'function shared() { return "server"; }',
+    language: 'javascript',
+    question_id: 'two-sum',
+  };
+  let releaseInitialPoll: (() => void) | null = null;
+  let markInitialPollStarted: (() => void) | null = null;
+  const initialPollStarted = new Promise<void>(resolve => { markInitialPollStarted = resolve; });
+  const initialPollGate = new Promise<void>(resolve => { releaseInitialPoll = resolve; });
+  let firstPoll = true;
+
+  await stopExternalEditors(page);
+  await mockApi(page, {
+    '/api/auth/me': { ok: true, user: signedInUser },
+    '/api/profile': { ok: true, user: signedInUser },
+    '/api/my-pair': pairResponse(),
+    '/api/video/signal': async request => {
+      const url = new URL(request.url());
+      if (request.method() === 'GET' && url.searchParams.get('channel') === 'workspace') {
+        if (firstPoll) {
+          firstPoll = false;
+          markInitialPollStarted?.();
+          await initialPollGate;
+        }
+        return { ok: true, revision, snapshot };
+      }
+      const body = request.postDataJSON() as { payload?: typeof snapshot & { base_revision?: number } };
+      if (!body.payload || body.payload.base_revision !== revision) {
+        return { _status: 409, ok: false, error: 'revision conflict', current: snapshot };
+      }
+      revision += 1;
+      snapshot = { ...body.payload, schema_version: 1, revision };
+      return { ok: true, snapshot };
+    },
+  });
+  await resetClientState(page, true);
+
+  try {
+    await page.goto(`/join/${roomId}`, { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('#view-code')).toBeVisible();
+    await initialPollStarted;
+
+    const localEdit = 'function shared() { return "typed during hydration"; }';
+    await page.locator('#editor').fill(localEdit);
+    releaseInitialPoll?.();
+
+    await expect.poll(() => snapshot.code, { timeout: 10_000 }).toBe(localEdit);
+    await expect.poll(() => page.locator('#editor').inputValue()).toBe(localEdit);
+    expect(revision).toBe(2);
+  } finally {
+    releaseInitialPoll?.();
+  }
+});
+
 test('two authenticated browser contexts hydrate from the server and exchange ordered workspace revisions', async ({ browser }) => {
   let revision = 1;
   let snapshot = {
