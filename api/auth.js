@@ -2,10 +2,12 @@ import { JWT_AUDIENCE, JWT_ISSUER, getClient, getJwtSecret, deterministicColor, 
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { parseCanonicalRoomPath } from './_pairing.js';
 
 const SESSION_COOKIE = 'randori_session';
 const OAUTH_STATE_COOKIE = 'randori_oauth_state';
 const OAUTH_VERIFIER_COOKIE = 'randori_oauth_verifier';
+const OAUTH_RETURN_COOKIE = 'randori_oauth_return';
 const JWT_OPTIONS = Object.freeze({
   algorithm: 'HS256',
   issuer: JWT_ISSUER,
@@ -52,6 +54,15 @@ function constantTimeEqual(a,b){
   const left=Buffer.from(String(a||''));
   const right=Buffer.from(String(b||''));
   return left.length===right.length && timingSafeEqual(left,right);
+}
+
+function safeOAuthReturnPath(value){
+  return parseCanonicalRoomPath(value)?.path || '/';
+}
+
+function oauthResultLocation(appUrl, returnPath, key, value){
+  const query=new URLSearchParams({[key]:String(value)});
+  return `${appUrl}${safeOAuthReturnPath(returnPath)}?${query.toString()}`;
 }
 
 function signSession(user){
@@ -234,9 +245,14 @@ function handleGoogleStart(req,res){
   const state = randomBytes(32).toString('base64url');
   const verifier=randomBytes(48).toString('base64url');
   const challenge=createHash('sha256').update(verifier).digest('base64url');
+  const returnPath=safeOAuthReturnPath(req.query?.return_to);
   const params = new URLSearchParams({ client_id:clientId, redirect_uri:redirectUri, response_type:'code', scope:'openid email profile', access_type:'online', state, code_challenge:challenge, code_challenge_method:'S256' });
   const url = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
-  appendCookies(res,[transientCookie(req,OAUTH_STATE_COOKIE,state),transientCookie(req,OAUTH_VERIFIER_COOKIE,verifier)]);
+  appendCookies(res,[
+    transientCookie(req,OAUTH_STATE_COOKIE,state),
+    transientCookie(req,OAUTH_VERIFIER_COOKIE,verifier),
+    transientCookie(req,OAUTH_RETURN_COOKIE,returnPath),
+  ]);
   res.writeHead(302, { Location:url });
   res.end();
 }
@@ -248,23 +264,29 @@ async function handleGoogleCallback(req,res){
   const { code, error, state } = req.query || {};
   const expectedState=cookieValue(req,OAUTH_STATE_COOKIE);
   const verifier=cookieValue(req,OAUTH_VERIFIER_COOKIE);
-  appendCookies(res,[clearCookie(req,OAUTH_STATE_COOKIE,'/api/auth/google'),clearCookie(req,OAUTH_VERIFIER_COOKIE,'/api/auth/google')]);
-  if (error){ res.writeHead(302, { Location:`${appUrl}/?google_error=${encodeURIComponent(error)}`}); return res.end(); }
-  if (!code){ res.writeHead(302, { Location:`${appUrl}/?google_error=missing_code`}); return res.end(); }
+  const returnPath=safeOAuthReturnPath(cookieValue(req,OAUTH_RETURN_COOKIE));
+  const redirectError=errorCode=>oauthResultLocation(appUrl,returnPath,'google_error',errorCode);
+  appendCookies(res,[
+    clearCookie(req,OAUTH_STATE_COOKIE,'/api/auth/google'),
+    clearCookie(req,OAUTH_VERIFIER_COOKIE,'/api/auth/google'),
+    clearCookie(req,OAUTH_RETURN_COOKIE,'/api/auth/google'),
+  ]);
   if(!state || !expectedState || !verifier || !constantTimeEqual(state,expectedState)){
-    res.writeHead(302,{Location:`${appUrl}/?google_error=invalid_state`}); return res.end();
+    res.writeHead(302,{Location:redirectError('invalid_state')}); return res.end();
   }
+  if (error){ res.writeHead(302, { Location:redirectError(error)}); return res.end(); }
+  if (!code){ res.writeHead(302, { Location:redirectError('missing_code')}); return res.end(); }
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  if (!clientId || !clientSecret) return res.status(500).json({ error:'Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET' });
+  if (!clientId || !clientSecret){ res.writeHead(302,{Location:redirectError('oauth_not_configured')}); return res.end(); }
   let tokenJson;
   try{
     const body = new URLSearchParams({ client_id:clientId, client_secret:clientSecret, code:String(code), code_verifier:verifier, redirect_uri:redirectUri, grant_type:'authorization_code' });
     const r = await fetchWithTimeout('https://oauth2.googleapis.com/token',{ method:'POST', headers:{'content-type':'application/x-www-form-urlencoded'}, body:body.toString() });
     const text = await r.text();
     try{ tokenJson = JSON.parse(text); }catch{ tokenJson = { error:text, status:r.status }; }
-    if (!r.ok){ res.writeHead(302,{ Location:`${appUrl}/?google_error=token_exchange_failed`}); return res.end(); }
-  }catch{ res.writeHead(302,{ Location:`${appUrl}/?google_error=exception`}); return res.end(); }
+    if (!r.ok){ res.writeHead(302,{ Location:redirectError('token_exchange_failed')}); return res.end(); }
+  }catch{ res.writeHead(302,{ Location:redirectError('exception')}); return res.end(); }
   const { access_token } = tokenJson;
   let email=null, displayName=null, googleSub=null, emailVerified=false;
   if (access_token){
@@ -273,7 +295,7 @@ async function handleGoogleCallback(req,res){
       if (ur.ok){ const uj=await ur.json(); email=uj.email||null; displayName=uj.name||null; googleSub=uj.sub||null; emailVerified=uj.email_verified===true; }
     }catch{}
   }
-  if (!email || !googleSub || !emailVerified){ res.writeHead(302,{ Location:`${appUrl}/?google_error=unverified_google_identity`}); return res.end(); }
+  if (!email || !googleSub || !emailVerified){ res.writeHead(302,{ Location:redirectError('unverified_google_identity')}); return res.end(); }
   email = String(email).trim().toLowerCase();
   const nameFromEmail = email.split('@')[0].slice(0,32);
   const finalName = (displayName ? String(displayName).trim().slice(0,32) : nameFromEmail) || nameFromEmail;
@@ -293,17 +315,17 @@ async function handleGoogleCallback(req,res){
     if (existing.rows.length){
       const account=existing.rows[0];
       if(account.google_sub && account.google_sub!==googleSub){
-        res.writeHead(302,{Location:`${appUrl}/?google_error=identity_mismatch`}); return res.end();
+        res.writeHead(302,{Location:redirectError('identity_mismatch')}); return res.end();
       }
       if(!account.google_sub && String(account.password_hash||'').startsWith('$2')){
-        res.writeHead(302,{Location:`${appUrl}/?google_error=account_exists_use_password`}); return res.end();
+        res.writeHead(302,{Location:redirectError('account_exists_use_password')}); return res.end();
       }
       authId = existing.rows[0].id;
       is_admin_final = !!existing.rows[0].is_admin || getAdminEmails().has(email);
       await db.execute({ sql:"UPDATE auth_accounts SET last_login = datetime('now'), display_name = COALESCE(?, display_name), is_admin = ?, google_sub = ? WHERE id = ?", args:[finalName, is_admin_final?1:0, googleSub, authId]});
     } else {
       if(!registrationAllowed(email)){
-        res.writeHead(302,{Location:`${appUrl}/?google_error=private_beta`}); return res.end();
+        res.writeHead(302,{Location:redirectError('private_beta')}); return res.end();
       }
       is_admin_final = getAdminEmails().has(email);
       const ins = await db.execute({ sql:"INSERT INTO auth_accounts (email, password_hash, display_name, color, last_login, is_available, is_admin, google_sub) VALUES (?, ?, ?, ?, datetime('now'), 1, ?, ?) RETURNING id", args:[email,`!oauth:${randomBytes(24).toString('base64url')}`,finalName,color, is_admin_final?1:0,googleSub]});
@@ -311,11 +333,11 @@ async function handleGoogleCallback(req,res){
     }
     const uExist = await db.execute({ sql:"SELECT id FROM users WHERE lower(name)=?", args:[finalName.toLowerCase()] });
     if (!uExist.rows.length) await db.execute({ sql:"INSERT INTO users (name, color) VALUES (?,?)", args:[finalName,color]});
-  }catch(e){ res.writeHead(302,{ Location:`${appUrl}/?google_error=db_error`}); return res.end(); }
+  }catch(e){ res.writeHead(302,{ Location:redirectError('db_error')}); return res.end(); }
   let ourJwt;
-  try{ ourJwt = signSession({ uid:authId, id:authId, email, name:finalName, is_admin:is_admin_final }); }catch{ res.writeHead(302,{ Location:`${appUrl}/?google_error=jwt_error`}); return res.end(); }
+  try{ ourJwt = signSession({ uid:authId, id:authId, email, name:finalName, is_admin:is_admin_final }); }catch{ res.writeHead(302,{ Location:redirectError('jwt_error')}); return res.end(); }
   appendCookies(res,[sessionCookie(req,ourJwt)]);
-  const dest = `${appUrl}/?google=success`;
+  const dest = oauthResultLocation(appUrl,returnPath,'google','success');
   res.writeHead(302, { Location:dest });
   res.end();
 }

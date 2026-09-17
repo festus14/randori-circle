@@ -45,14 +45,16 @@ No extra API needs enabling — Google Identity is on by default.
 
 ### Flow
 
-- User clicks "Continue with Google" (`#authGoogle`) → `GET /api/auth/google/start` creates cryptographically random OAuth state and a PKCE verifier in short-lived HttpOnly cookies, then redirects to Google.
+- User clicks "Continue with Google" (`#authGoogle`) → `GET /api/auth/google/start` creates cryptographically random OAuth state and a PKCE verifier in short-lived HttpOnly cookies, then redirects to Google. Pair invites may add an exact canonical `return_to` such as `/join/week_12_pair_34`; the server stores the validated path in a separate short-lived cookie.
 - Google → consent → redirects to `/api/auth/google/callback?code=...`
 - Callback verifies state, exchanges the code with the PKCE verifier, and loads a verified email, name, and stable subject from Google's OpenID userinfo endpoint.
 - Lookup `auth_accounts` by lowercased email case-insensitive:
   - not exists → create a Google-only account associated with the verified Google subject.
   - existing Google account → require the same Google subject before updating `last_login`.
   - existing password account → do not silently link it; the user must sign in with the existing method until an explicit linking flow exists.
-- Signs a 12-hour application JWT with pinned algorithm, issuer, and audience, stores it only in the session cookie, and redirects to `/?google=success`.
+- Signs a 12-hour application JWT with pinned algorithm, issuer, and audience, stores it only in the session cookie, and redirects to `/?google=success` or the validated pair invite path with `?google=success`.
+
+The callback never accepts a return destination from its query string. It consumes the destination captured at OAuth start, validates it again, and clears all transient cookies. Only `/join/week_<positive integer>_pair_<positive integer>` is accepted; absolute URLs, protocol-relative URLs, encoded or backslash separators, queries, fragments, zeroes, leading zeroes, and malformed room IDs fall back to `/`.
 
 No secrets in git. Native `fetch` used — no new deps.
 
