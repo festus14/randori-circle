@@ -5,6 +5,14 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   e2e:
     runs-on: ubuntu-latest
@@ -13,21 +21,25 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-      - name: Install deps
-        run: npm install
+          node-version: '24'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Check JavaScript syntax
+        run: npm run check:syntax
+      - name: Run API tests with enforced coverage
+        run: npm run test:coverage
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
-      - name: Run e2e against prod
-        env:
-          E2E_BASE: ${{ secrets.E2E_BASE || 'https://randori-circle-self.vercel.app' }}
-        run: npx playwright test --reporter=list
+      - name: Run browser tests against checkout
+        run: npm run test:e2e
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
+          name: playwright-report-${{ github.run_attempt }}
           path: |
             playwright-report
             test-results
           retention-days: 7
+          if-no-files-found: ignore

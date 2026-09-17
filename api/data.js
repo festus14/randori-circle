@@ -1,6 +1,5 @@
-import { getClient, getJwtSecret, getAdminEmails, initSentry, getSentry } from './_db.js';
+import { getClient, getAdminEmails, initSentry, getSentry, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 import * as SentryLib from '@sentry/node';
-import jwt from 'jsonwebtoken';
 
 function isAdminCheck(email, flag){
   if (flag) return true;
@@ -8,20 +7,16 @@ function isAdminCheck(email, flag){
   try{ return getAdminEmails().has(String(email).toLowerCase().trim()); }catch{ return false; }
 }
 async function getCallerAdmin(db, payload){
-  const callerEmail = (payload.email||payload.e||'').toString().toLowerCase().trim();
+  let callerEmail = '';
   const callerId = payload.id||payload.uid;
   let callerIsAdminFlag=false, callerDbRow=null;
-  if (callerId){ try{ const cr=await db.execute({ sql:`SELECT id,email,is_admin FROM auth_accounts WHERE id=?`, args:[callerId]}); if(cr.rows.length){ callerDbRow=cr.rows[0]; callerIsAdminFlag=!!cr.rows[0].is_admin; }}catch{} }
-  if (!callerDbRow && callerEmail){ try{ const cr2=await db.execute({ sql:`SELECT id,email,is_admin FROM auth_accounts WHERE lower(email)=?`, args:[callerEmail]}); if(cr2.rows.length){ callerDbRow=cr2.rows[0]; callerIsAdminFlag=!!cr2.rows[0].is_admin; }}catch{} }
-  if (payload?.is_admin) callerIsAdminFlag=true;
-  const callerIsAdmin = isAdminCheck(callerEmail, callerIsAdminFlag) || !!callerIsAdminFlag;
+  if (callerId){ try{ const cr=await db.execute({ sql:`SELECT id,email,is_admin FROM auth_accounts WHERE id=?`, args:[callerId]}); if(cr.rows.length){ callerDbRow=cr.rows[0]; callerEmail=String(cr.rows[0].email||'').toLowerCase().trim(); callerIsAdminFlag=!!cr.rows[0].is_admin; }}catch{} }
+  const callerIsAdmin = !!callerDbRow && isAdminCheck(callerEmail, callerIsAdminFlag);
   return {callerEmail, callerId, callerIsAdminFlag, callerIsAdmin};
 }
 async function requireAdminDT(req,res){
-  const auth = req.headers.authorization||'';
-  const m = auth.match(/^Bearer\s+(.+)$/);
-  if (!m){ res.status(401).json({ error:'missing Bearer - admin only' }); return null; }
-  let payload; try{ payload=jwt.verify(m[1], getJwtSecret()); }catch(e){ res.status(401).json({ error:'invalid token', detail:String(e.message||e).slice(0,100)}); return null; }
+  const payload=verifyRequestAuth(req);
+  if (!payload){ res.status(401).json({ error:'authentication required' }); return null; }
   const db=getClient(); await ensureBaseTables(db); await ensureProfileMigrations(db);
   const ctx=await getCallerAdmin(db,payload);
   if(!ctx.callerIsAdmin){ res.status(403).json({ error:'admin only', you_are:ctx.callerEmail||'unknown' }); return null; }
@@ -427,10 +422,16 @@ function getEndpoint(req){
 }
 
 function getAuthPayload(req){
-  const auth = req.headers.authorization||'';
-  const m = auth.match(/^Bearer\s+(.+)$/);
-  if (!m) return null;
-  try { return jwt.verify(m[1], getJwtSecret()); } catch { return null; }
+  return verifyRequestAuth(req);
+}
+
+async function getPairAccess(db, payload, weekId, pairId){
+  const userId=Number(payload?.id||payload?.uid);
+  if(!Number.isInteger(userId) || !Number.isInteger(weekId) || !Number.isInteger(pairId)) return {allowed:false, exists:false};
+  const group=await db.execute({sql:`SELECT id,user_a_id,user_b_id FROM pairing_groups WHERE id=? AND week_id=? LIMIT 1`, args:[pairId,weekId]});
+  if(!group.rows.length) return {allowed:false, exists:false};
+  const row=group.rows[0];
+  return {allowed:Number(row.user_a_id)===userId || Number(row.user_b_id)===userId, exists:true};
 }
 
 async function ensureBaseTables(db){
@@ -536,12 +537,11 @@ function isLogRateLimited(ip){
 
 
 async function handleHealth(req,res){
-  // public lightweight health, counts last hour, last 5 errors
+  // Public health is deliberately aggregate-only; detailed logs are admin-only.
   try{
     const db=getClient();
     try{ await ensureAppLogs(db); }catch{}
     let errors_last_hour=0, warns_last_hour=0, infos_last_hour=0, success_last_hour=0;
-    let last_errors=[];
     try{
       const rs1=await db.execute(`SELECT level, COUNT(*) as c FROM app_logs WHERE datetime(created_at) >= datetime('now','-1 hour') GROUP BY level`);
       for(const r of rs1.rows){
@@ -553,10 +553,6 @@ async function handleHealth(req,res){
         else if(lvl==='success') success_last_hour=c;
       }
     }catch{}
-    try{
-      const rs2=await db.execute(`SELECT id, level, source, event, message, created_at FROM app_logs WHERE level='error' ORDER BY id DESC LIMIT 5`);
-      last_errors=rs2.rows.map(r=>({id:r.id, level:r.level, source:r.source, event:r.event, message:String(r.message||'').slice(0,300), created_at:r.created_at}));
-    }catch{}
     // also counts last 10 events of interest
     let monaco_fails=0, piston_fails=0;
     try{
@@ -567,10 +563,9 @@ async function handleHealth(req,res){
       }
     }catch{}
     const spike = errors_last_hour>5;
-    try{ await logServer('info','health_check','health '+ (spike?'spike':'ok')+' errs='+errors_last_hour+' warns='+warns_last_hour, {errors_last_hour, warns_last_hour, infos_last_hour, success_last_hour, spike, monaco_fails, piston_fails}, {req, source:'server', route:req.url}); }catch{}
-    return res.json({ok:true, ts:new Date().toISOString(), errors_last_hour, warns_last_hour, infos_last_hour, success_last_hour, monaco_fails_6h:monaco_fails, piston_fails_6h:piston_fails, spike, warning: spike? 'error spike detected — >5 errors last hour': null, last_5_errors:last_errors});
+    return res.json({ok:true, ts:new Date().toISOString(), errors_last_hour, warns_last_hour, infos_last_hour, success_last_hour, monaco_fails_6h:monaco_fails, piston_fails_6h:piston_fails, spike, warning: spike? 'error spike detected — >5 errors last hour': null, last_5_errors:[]});
   }catch(e){
-    return res.status(500).json({ok:false, error:'health failed', detail:String(e.message||e).slice(0,300)});
+    return res.status(503).json({ok:false, error:'health unavailable'});
   }
 }
 
@@ -658,7 +653,7 @@ async function ensureProfileMigrations(db){
     await db.execute(`CREATE TABLE IF NOT EXISTS pair_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL, sender_id INTEGER NOT NULL, message TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`);
   }catch{}
   try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS pair_schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL, proposed_times TEXT, agreed_time TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))`);
+    await db.execute(`CREATE TABLE IF NOT EXISTS pair_schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL, proposed_times TEXT, agreed_time TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')), UNIQUE(week_id,pair_group_id))`);
   }catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_messages_pair ON pair_messages(pair_group_id, created_at)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_sched_pair ON pair_schedules(pair_group_id)`);}catch{}
@@ -670,17 +665,18 @@ async function ensureProfileMigrations(db){
 
 async function handleLogs(req,res){
   // POST: client logs ingest, GET: admin fetch
-  const db = getClient();
-  try{ await ensureAppLogs(db); }catch{}
   if(req.method==='POST'){
+    const payload = getAuthPayload(req);
+    if(!payload) return res.status(401).json({error:'authentication required'});
+    const db = getClient();
+    try{ await ensureAppLogs(db); }catch{}
     // rate limit by IP
     let ip='';
     try{ ip=(req.headers['x-forwarded-for']||req.headers['x-real-ip']||'').toString().split(',')[0].trim(); if(!ip && req.headers['x-forwarded-for']){ ip=req.headers['x-forwarded-for']; } }catch{}
     if(ip && isLogRateLimited(ip)){
       return res.status(429).json({error:'rate limited — too many logs', retry_after:'60s'});
     }
-    const payload = getAuthPayload(req); // optional
-    const userId = payload ? (payload.id||payload.uid||null) : null;
+    const userId = payload.id||payload.uid||null;
     const body = req.body || {};
     // support batch array
     let batch = [];
@@ -720,6 +716,8 @@ async function handleLogs(req,res){
     // admin only
     const adminCtx = await requireAdminDT(req,res);
     if(!adminCtx) return;
+    const db=adminCtx.db;
+    try{ await ensureAppLogs(db); }catch{}
     const url = new URL(req.url,'http://localhost');
     const level = (req.query?.level || url.searchParams.get('level') || '').toString().toLowerCase().trim();
     const event = (req.query?.event || url.searchParams.get('event') || '').toString().trim().slice(0,80);
@@ -756,6 +754,8 @@ async function handleLogs(req,res){
 
 async function handleCircle(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
+  const viewer=getAuthPayload(req);
+  if(!viewer) return res.status(401).json({error:'authentication required'});
   const db = getClient();
   await ensureBaseTables(db);
   await ensureProfileMigrations(db);
@@ -766,7 +766,16 @@ async function handleCircle(req,res){
       : `SELECT id, display_name, color, email, created_at, is_available, availability_updated_at, is_admin, is_demo, bio, tz, interview_focus, leetcode_handle FROM auth_accounts WHERE COALESCE(is_demo,0)=0 ORDER BY id`;
     const rs = await db.execute(sql);
     if (rs.rows.length){
-      const circle = rs.rows.map(r=>({ id:r.id, display_name:r.display_name, name:r.display_name, email:r.email, color:r.color, created_at:r.created_at, is_available:r.is_available===null||r.is_available===undefined?true:!!r.is_available, isAvailable:r.is_available===null||r.is_available===undefined?true:!!r.is_available, availability_updated_at:r.availability_updated_at, is_admin:!!r.is_admin, is_demo:!!r.is_demo, bio:r.bio||null, tz:r.tz||null, interview_focus:r.interview_focus||'both', leetcode_handle:r.leetcode_handle||null, source:'auth' }));
+      const circle = rs.rows.map(r=>{
+        const item={ id:r.id, display_name:r.display_name, name:r.display_name, color:r.color, is_demo:!!r.is_demo, source:'auth' };
+        item.is_available=r.is_available===null||r.is_available===undefined?true:!!r.is_available;
+        item.isAvailable=item.is_available;
+        item.bio=r.bio||null;
+        item.tz=r.tz||null;
+        item.interview_focus=r.interview_focus||'both';
+        item.leetcode_handle=r.leetcode_handle||null;
+        return item;
+      });
       return res.json({ ok:true, circle, count:circle.length, source:'auth_accounts', filtered_demo: !includeDemo });
     }
   }catch{}
@@ -779,6 +788,7 @@ async function handleCircle(req,res){
 
 async function handleWeeks(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
+  if (!getAuthPayload(req)) return res.status(401).json({ error:'authentication required' });
   const db = getClient();
   await ensureBaseTables(db);
   await ensureProfileMigrations(db);
@@ -851,8 +861,10 @@ async function handleHistory(req,res){
 }
 
 async function handleInit(req,res){
-  if (req.method!=='POST' && req.method!=='GET') return res.status(405).json({ error:'POST or GET' });
-  const db = getClient();
+  if (req.method!=='POST') return res.status(405).json({ error:'POST only' });
+  const adminCtx=await requireAdminDT(req,res);
+  if(!adminCtx) return;
+  const db = adminCtx.db;
   await db.batch([
     `CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`,
     `CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0, is_demo INTEGER DEFAULT 0, bio TEXT, tz TEXT, interview_focus TEXT DEFAULT 'both', leetcode_handle TEXT)`,
@@ -864,7 +876,7 @@ async function handleInit(req,res){
     `CREATE TABLE IF NOT EXISTS ai_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL REFERENCES ai_sessions(id) ON DELETE CASCADE, role TEXT DEFAULT 'both', feedback_json TEXT NOT NULL, evidence TEXT, model_used TEXT, reason_for_pick TEXT, estimated_cost_cents INTEGER, confidence REAL DEFAULT 0.85, created_at TEXT DEFAULT (datetime('now')))`,
     `CREATE TABLE IF NOT EXISTS ai_usage (date TEXT PRIMARY KEY, calls INTEGER DEFAULT 0, tokens_in INTEGER DEFAULT 0, tokens_out INTEGER DEFAULT 0, updated_at TEXT DEFAULT (datetime('now')))`,
     `CREATE TABLE IF NOT EXISTS pair_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL, sender_id INTEGER NOT NULL, message TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`,
-    `CREATE TABLE IF NOT EXISTS pair_schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL, proposed_times TEXT, agreed_time TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))`,
+    `CREATE TABLE IF NOT EXISTS pair_schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL, proposed_times TEXT, agreed_time TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')), UNIQUE(week_id,pair_group_id))`,
     `CREATE TABLE IF NOT EXISTS custom_questions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       slug TEXT UNIQUE NOT NULL,
@@ -919,10 +931,23 @@ async function handleInit(req,res){
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_video_signals_room_id ON video_signals(room_id, id)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_messages_pair ON pair_messages(pair_group_id, created_at)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_sched_pair ON pair_schedules(pair_group_id)`);}catch{}
+  try{
+    // This one-time cleanup is intentionally admin-triggered: it can delete legacy
+    // duplicates and must never run as a side effect of an ordinary API request.
+    await db.execute(`DELETE FROM pair_schedules WHERE id NOT IN (SELECT MAX(id) FROM pair_schedules GROUP BY week_id,pair_group_id)`);
+    await db.execute(`CREATE UNIQUE INDEX IF NOT EXISTS uq_pair_schedules_week_pair ON pair_schedules(week_id,pair_group_id)`);
+  }catch(e){
+    return res.status(500).json({
+      ok:false,
+      error:'pair schedule uniqueness migration failed',
+      detail:String(e.message||e).slice(0,300),
+    });
+  }
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_cq_slug ON custom_questions(slug)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_cq_author ON custom_questions(author_id)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_user ON session_runs(user_id, created_at DESC)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_question ON session_runs(question_slug)`);}catch{}
+  await maybeSeedFromStatic(db);
   return res.json({ ok:true, message:"Tables ready (incl custom_questions + profile + pair_messages + pair_schedules + session_runs)" });
 }
 
@@ -1058,6 +1083,9 @@ async function handleSchedule(req,res){
     const weekId = req.query?.week_id ? parseInt(String(req.query.week_id),10) : null;
     const pairId = req.query?.pair_id ? parseInt(String(req.query.pair_id),10) : (req.query?.pg_id ? parseInt(String(req.query.pg_id),10) : null);
     if (!weekId || !pairId) return res.status(400).json({ error:'week_id and pair_id required' });
+    const access=await getPairAccess(db,payload,weekId,pairId);
+    if(!access.exists) return res.status(404).json({error:'pair not found'});
+    if(!access.allowed) return res.status(403).json({error:'not member of this pair'});
     const s = await db.execute({ sql:`SELECT id, week_id, pair_group_id, proposed_times, agreed_time, created_at, updated_at FROM pair_schedules WHERE week_id=? AND pair_group_id=? LIMIT 1`, args:[weekId, pairId] }).catch(()=>({rows:[]}));
     if (!s.rows || !s.rows.length) return res.json({ ok:true, schedule:null });
     const row=s.rows[0];
@@ -1076,41 +1104,37 @@ async function handleSchedule(req,res){
   const pairId = body.pair_id ? parseInt(String(body.pair_id),10) : (body.pg_id ? parseInt(String(body.pg_id),10) : (req.query?.pair_id? parseInt(String(req.query.pair_id),10): null));
   if (!weekId || !pairId) return res.status(400).json({ error:'week_id and pair_id required' });
   try{
-    const g = await db.execute({ sql:`SELECT user_a_id, user_b_id FROM pairing_groups WHERE id=? AND week_id=?`, args:[pairId, weekId] });
-    if (!g.rows.length) return res.status(404).json({ error:'pair not found' });
-    const a=g.rows[0].user_a_id, b=g.rows[0].user_b_id;
-    if (a!==userId && b!==userId){
-      const isAdminRows = await db.execute({ sql:`SELECT is_admin FROM auth_accounts WHERE id=?`, args:[userId] }).catch(()=>({rows:[]}));
-      const isAdmin = isAdminRows.rows && isAdminRows.rows[0] && isAdminRows.rows[0].is_admin;
-      if (!isAdmin) return res.status(403).json({ error:'not member of this pair' });
-    }
-  }catch(e){ return res.status(500).json({ error:'db check failed', detail:String(e.message||e).slice(0,200)}); }
+    const access=await getPairAccess(db,payload,weekId,pairId);
+    if(!access.exists) return res.status(404).json({error:'pair not found'});
+    if(!access.allowed) return res.status(403).json({error:'not member of this pair'});
+  }catch{ return res.status(500).json({ error:'db check failed' }); }
+  const hasProposed=Object.prototype.hasOwnProperty.call(body,'proposed_times');
+  const hasAgreed=Object.prototype.hasOwnProperty.call(body,'agreed_time');
   let proposed = null, agreed = null;
-  if (body.proposed_times!==undefined){
+  if (hasProposed){
     if (Array.isArray(body.proposed_times)){
       proposed = JSON.stringify(body.proposed_times.map(s=>String(s).slice(0,200)).slice(0,20));
     } else if (typeof body.proposed_times==='string'){
       try{ const arr=JSON.parse(body.proposed_times); if(Array.isArray(arr)) proposed=JSON.stringify(arr.slice(0,20)); else proposed=JSON.stringify([body.proposed_times]); }catch{ proposed=JSON.stringify([String(body.proposed_times).slice(0,200)]); }
     }
   }
-  if (body.agreed_time!==undefined){
+  if (hasAgreed){
     agreed = body.agreed_time ? String(body.agreed_time).trim().slice(0,200) : null;
   }
   try{
-    const existing = await db.execute({ sql:`SELECT id, proposed_times, agreed_time FROM pair_schedules WHERE week_id=? AND pair_group_id=? LIMIT 1`, args:[weekId, pairId] });
-    if (!existing.rows.length){
-      const toInsertProposed = proposed || JSON.stringify([]);
-      await db.execute({ sql:`INSERT INTO pair_schedules (week_id, pair_group_id, proposed_times, agreed_time, created_at, updated_at) VALUES (?,?,?,?, datetime('now'), datetime('now'))`, args:[weekId, pairId, toInsertProposed, agreed] });
-    }else{
-      const cur = existing.rows[0];
-      const newProposed = proposed !== null ? proposed : cur.proposed_times;
-      const newAgreed = agreed !== null ? agreed : cur.agreed_time;
-      await db.execute({ sql:`UPDATE pair_schedules SET proposed_times=?, agreed_time=?, updated_at=datetime('now') WHERE id=?`, args:[newProposed, newAgreed, cur.id] });
-    }
+    await db.execute({
+      sql:`INSERT INTO pair_schedules (week_id, pair_group_id, proposed_times, agreed_time, created_at, updated_at)
+           VALUES (?,?,?,?,datetime('now'),datetime('now'))
+           ON CONFLICT(week_id,pair_group_id) DO UPDATE SET
+             proposed_times=CASE WHEN ?=1 THEN excluded.proposed_times ELSE pair_schedules.proposed_times END,
+             agreed_time=CASE WHEN ?=1 THEN excluded.agreed_time ELSE pair_schedules.agreed_time END,
+             updated_at=datetime('now')`,
+      args:[weekId,pairId,hasProposed?proposed:JSON.stringify([]),agreed,hasProposed?1:0,hasAgreed?1:0],
+    });
     const fresh = await db.execute({ sql:`SELECT id, week_id, pair_group_id, proposed_times, agreed_time, updated_at FROM pair_schedules WHERE week_id=? AND pair_group_id=? LIMIT 1`, args:[weekId, pairId] });
     const f=fresh.rows[0];
     return res.json({ ok:true, schedule:{ id:f.id, week_id:f.week_id, pair_group_id:f.pair_group_id, proposed_times: f.proposed_times? JSON.parse(f.proposed_times):[], agreed_time:f.agreed_time||null, updated_at:f.updated_at }});
-  }catch(e){ return res.status(500).json({ error:'schedule upsert failed', detail:String(e.message||e).slice(0,250)}); }
+  }catch{ return res.status(500).json({ error:'schedule upsert failed; verify the unique schedule migration' }); }
 }
 
 async function handleMessages(req,res){
@@ -1125,6 +1149,9 @@ async function handleMessages(req,res){
     if (!weekId || !pairId) return res.status(400).json({ error:'week_id and pair_id required' });
     const after = req.query?.after ? parseInt(String(req.query.after),10) : 0;
     try{
+      const access=await getPairAccess(db,payload,weekId,pairId);
+      if(!access.exists) return res.status(404).json({error:'pair not found'});
+      if(!access.allowed) return res.status(403).json({error:'not member of this pair'});
       let sql = `SELECT pm.id, pm.sender_id, pm.message, pm.created_at, aa.display_name as sender_name, aa.color as sender_color FROM pair_messages pm LEFT JOIN auth_accounts aa ON aa.id=pm.sender_id WHERE pm.week_id=? AND pm.pair_group_id=?`;
       const args=[weekId, pairId];
       if (after){ sql+=` AND pm.id>?`; args.push(after); }
@@ -1141,14 +1168,10 @@ async function handleMessages(req,res){
     if (!weekId || !pairId) return res.status(400).json({ error:'week_id and pair_id required' });
     if (!text) return res.status(400).json({ error:'message required' });
     try{
-      const g = await db.execute({ sql:`SELECT user_a_id, user_b_id FROM pairing_groups WHERE id=? AND week_id=?`, args:[pairId, weekId] });
-      if (!g.rows.length) return res.status(404).json({ error:'pair not found' });
-      const a=g.rows[0].user_a_id, b=g.rows[0].user_b_id;
-      if (a!==userId && b!==userId){
-        const adminCheck = await db.execute({ sql:`SELECT is_admin FROM auth_accounts WHERE id=?`, args:[userId] }).catch(()=>({rows:[]}));
-        if (!adminCheck.rows[0]?.is_admin) return res.status(403).json({ error:'not member of this pair' });
-      }
-    }catch(e){ return res.status(500).json({ error:'db check failed', detail:e.message?.slice(0,200)}); }
+      const access=await getPairAccess(db,payload,weekId,pairId);
+      if(!access.exists) return res.status(404).json({error:'pair not found'});
+      if(!access.allowed) return res.status(403).json({error:'not member of this pair'});
+    }catch{ return res.status(500).json({ error:'db check failed' }); }
     try{
       const ins = await db.execute({ sql:`INSERT INTO pair_messages (week_id, pair_group_id, sender_id, message, created_at) VALUES (?,?,?, ?, datetime('now')) RETURNING id`, args:[weekId, pairId, userId, text] });
       const id = ins.rows[0].id;
@@ -1165,10 +1188,11 @@ function slugify(s){
 }
 
 async function handleQuestions(req,res){
+  const viewer=getAuthPayload(req);
+  if(!viewer) return res.status(401).json({error:'authentication required'});
   const db = getClient();
   await ensureBaseTables(db);
   await ensureProfileMigrations(db);
-  try{ await maybeSeedFromStatic(db); }catch{}
   if (req.method === 'GET'){
     try{
       const rs = await db.execute(`SELECT id, slug, title, type, difficulty, category, description, input_format, constraints_text, examples, test_cases, starter_per_lang, author_id, source, leetcode_slug, created_at FROM custom_questions ORDER BY id DESC LIMIT 100`);
@@ -1183,9 +1207,9 @@ async function handleQuestions(req,res){
     }catch(e){ return res.status(500).json({ error:'questions fetch failed', detail:String(e.message||e).slice(0,300)}); }
   }
   if (req.method === 'POST'){
-    const payload = getAuthPayload(req);
-    if (!payload) return res.status(401).json({ error:'missing Bearer token' });
-    const userId = payload.id||payload.uid;
+    const adminCtx=await requireAdminDT(req,res);
+    if(!adminCtx) return;
+    const userId=adminCtx.callerId;
     const body = req.body||{};
     const title = body.title ? String(body.title).trim().slice(0,120) : '';
     const description = body.description ? String(body.description).trim().slice(0,8000) : '';
@@ -1245,14 +1269,15 @@ async function handleQuestions(req,res){
 }
 
 async function handleRuns(req,res){
+  if(req.method!=='GET' && req.method!=='POST') return res.status(405).json({ error:'GET or POST only' });
+  const payload = getAuthPayload(req);
+  if (!payload) return res.status(401).json({ error:'authentication required' });
+  const userId = payload.id || payload.uid;
   const db = getClient();
   await ensureBaseTables(db);
   await ensureProfileMigrations(db);
   await ensureSessionRuns(db);
   if (req.method === 'POST'){
-    const payload = getAuthPayload(req);
-    if (!payload) return res.status(401).json({ error:'missing Bearer token' });
-    const userId = payload.id || payload.uid;
     const body = req.body||{};
     const code = String(body.code||'').slice(0,20000);
     if (!code) return res.status(400).json({ error:'code required' });
@@ -1277,9 +1302,6 @@ async function handleRuns(req,res){
     }catch(e){ return res.status(500).json({ error:'insert failed', detail:String(e.message||e).slice(0,300)}); }
   }
   if (req.method === 'GET'){
-    const payload = getAuthPayload(req);
-    if (!payload) return res.status(401).json({ error:'missing Bearer token' });
-    const userId = payload.id || payload.uid;
     const slug = req.query?.question_slug || req.query?.slug ? String(req.query.question_slug||req.query.slug).slice(0,120) : null;
     const limit = Math.min(50, Math.max(1, parseInt(String(req.query?.limit||'20'),10)||20));
     try{
@@ -1291,7 +1313,6 @@ async function handleRuns(req,res){
       return res.json({ ok:true, runs: rs.rows, count: rs.rows.length });
     }catch(e){ return res.status(500).json({ error:'fetch failed', detail:String(e.message||e).slice(0,200)}); }
   }
-  return res.status(405).json({ error:'GET or POST only' });
 }
 
 async function handleStats(req,res){
@@ -1361,6 +1382,7 @@ async function handleStats(req,res){
 async function handleLeetcode(req,res){
   // GET ?slug=two-sum or /api/leetcode/two-sum
   if (req.method!=='GET') return res.status(405).json({ error:'GET only for leetcode detail' });
+  if(!getAuthPayload(req)) return res.status(401).json({error:'authentication required'});
   const db = getClient();
   await ensureBaseTables(db); await ensureProfileMigrations(db);
   const url = new URL(req.url, 'http://localhost');
@@ -1384,69 +1406,22 @@ async function handleLeetcode(req,res){
     }
   }catch{}
 
-  try{
-    const q = await leetGraphQLQuestion(slug);
-    const descHtml = q.content||'';
-    const descText = htmlToText(descHtml) || q.title;
-    const difficulty = q.difficulty || 'Medium';
-    const tags = (q.topicTags||[]).map(t=>t.slug||t.name).slice(0,3);
-    const category = tags[0]||'dsa';
-    const exampleTestcases = q.exampleTestcases||'';
-    // NEW: smart chunker + pre parse + alfa enrichment merging dedup + edges
-    let testCases = smartChunkExampleTestcases(slug, exampleTestcases, descHtml);
-    try{
-      const alfa = await leetEnrichAlfa(slug);
-      let alfaCases=[];
-      if (alfa && alfa.exampleTestcases) alfaCases = smartChunkExampleTestcases(slug, alfa.exampleTestcases, alfa.content||descHtml);
-      if (alfaCases.length){
-        // merge dedup by input string
-        const seen = new Set(testCases.map(t=>t.input));
-        for(const ac of alfaCases){ if(!seen.has(ac.input)){ testCases.push(ac); seen.add(ac.input); } }
-      }
-      // alfa sample list_details may have more
-      if (alfa && alfa.exampleTestcases && typeof alfa.exampleTestcases==='string' && alfa.exampleTestcases.includes('\n') && testCases.length < 3){
-        // already handled
-      }
-    }catch{}
-    // enrich with hand-crafted edges
-    try{
-      const edges = enrichmentEdges(slug);
-      const seen = new Set(testCases.map(t=>t.input));
-      for(const e of edges){ if(!seen.has(e.input)){ testCases.push(e); seen.add(e.input); } }
-    }catch{}
-    if (!testCases.length){
-      testCases=[{ input:JSON.stringify({raw:`example from ${slug}`}), expect:null, raw:`see description` }];
-    }
-    const constraints = parseLeetConstraints(descHtml);
-    const ret = {
-      questionId: q.questionId||q.questionFrontendId,
-      title: q.title,
-      titleSlug: q.titleSlug,
-      slug: q.titleSlug,
-      content: descHtml,
-      description: descText,
-      description_html: descHtml,
-      difficulty,
-      category,
-      topicTags: q.topicTags||[],
-      exampleTestcases,
-      constraints,
-      test_cases: testCases,
-      examples: testCases.slice(0,5).map(tc=>({ input: tc.input, output: tc.expect||'', raw: tc.raw })),
-      source:'leetcode-proxy',
-      leetcode_slug: q.titleSlug,
-    };
-    return res.json({ ok:true, cached:false, question:ret });
-  }catch(e){
-    try{ await logServer('warn','leetcode_fetch_fail', `leet ${slug} fail ${String(e.message||e).slice(0,120)}`, {slug, err:String(e.message||e).slice(0,300)}, {req, source:'server'}); }catch{}
-    return res.status(500).json({ ok:false, error:'leetcode fetch failed', slug, detail:String(e.message||e).slice(0,300) });
-  }
+  return res.status(404).json({
+    ok:false,
+    error:'problem is not in the approved local catalog',
+    slug,
+    external_url:`https://leetcode.com/problems/${encodeURIComponent(slug)}/`,
+    automated_fetch:false,
+  });
 }
 
 async function handleLeetcodeSync(req,res){
   if (req.method!=='POST') return res.status(405).json({ error:'POST only for leetcode-sync' });
   const adminCtx = await requireAdminDT(req,res);
   if (!adminCtx) return;
+  if(process.env.LEETCODE_INGESTION_AUTHORIZED!=='true'){
+    return res.status(403).json({error:'automated LeetCode ingestion is disabled pending written authorization'});
+  }
   const db = adminCtx.db;
   await ensureBaseTables(db); await ensureProfileMigrations(db);
   const url = new URL(req.url,'http://localhost');
@@ -1841,12 +1816,14 @@ function buildCppHarness(userCode, testCases){
 async function handleExecute(req,res){
   const _execStart=Date.now();
   if(req.method!=='POST') return res.status(405).json({error:'POST only for execute'});
+  if(!getAuthPayload(req)) return res.status(401).json({error:'authentication required'});
   try{ await ensureBaseTables(getClient()); }catch{}
   try{ await ensureAppLogs(getClient()); }catch{}
   const body = req.body || {};
   let language = String(body.language||body.lang||'javascript').toLowerCase();
-  const map = {js:'javascript', javascript:'javascript', ts:'typescript', typescript:'typescript', py:'python', python:'python', java:'java', go:'go', golang:'go', cpp:'c++', 'c++':'c++', c:'c'};
-  const pistonLang = map[language] || 'javascript';
+  const map = {js:'javascript', javascript:'javascript', py:'python', python:'python'};
+  const pistonLang = map[language];
+  if(!pistonLang) return res.status(400).json({error:'supported languages are javascript and python'});
   const code = String(body.code||'').slice(0,20000);
   if(!code) return res.status(400).json({error:'code required'});
   let testCases = body.test_cases || body.testCases || [];
@@ -1893,6 +1870,7 @@ async function handleExecute(req,res){
 }
 
 export default async function handler(req,res){
+  if(!verifyMutationOrigin(req)) return res.status(403).json({error:'cross-origin mutation rejected'});
   try{ 
     try{ initSentry(); }catch{}
   }catch{}

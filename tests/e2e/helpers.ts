@@ -1,297 +1,181 @@
-import { Page, expect } from '@playwright/test';
+import { expect, Page, Request } from '@playwright/test';
 
-export const BASE = process.env.E2E_BASE || 'https://randori-circle-self.vercel.app';
+type Json = Record<string, unknown>;
+const testOrigin = `http://127.0.0.1:${Number(process.env.E2E_PORT || 4173)}`;
 
-export async function clearOnboarding(page: Page){
-  // One-time clear that survives reload persistence for the dismiss->reload part of the test:
-  // We use sessionStorage as a guard so second navigation (reload) doesn't re-clear after dismiss sets flags.
-  await page.addInitScript(() => {
-    try{
-      // If we've already cleared once in this tab session and onboarding flags are set, skip re-clear to allow reload persistence
-      try{
-        if(sessionStorage.getItem('__clearOnboarding_done')==='1'){
-          // If onboarded flag already set by dismiss, don't wipe again
-          if(localStorage.getItem('randori-onboarded')==='1' || localStorage.getItem('randori-banner-dismissed')==='1'){
-            return;
-          }
-          // Otherwise allow re-clear? keep guard to avoid wiping on reload after dismiss
-          if(sessionStorage.getItem('__clearOnboarding_keep')==='1') return;
-        }
-      }catch{}
-      const keys=['randori-onboarded','randori-banner-dismissed','randori-onboard-step','randori-profile-done','randori-landing-dismissed','randori-token','randori-me','randori-last-room','randori-was-skipped','randori-prev-avail','randori-reminder-email','randori-reminder-sms','randori-reminder-phone','randori-people','randori-weeks','randori-code'];
-      for(const k of keys) localStorage.removeItem(k);
-      try{ sessionStorage.clear(); sessionStorage.setItem('__clearOnboarding_done','1'); }catch{}
-    }catch{}
-  });
-}
+const defaultApiResponses: Record<string, Json> = {
+  '/api/auth/me': { _status: 401, ok: false, error: 'authentication required' },
+  '/api/circle': { ok: true, circle: [], count: 0 },
+  '/api/weeks': { ok: true, weeks: [] },
+  '/api/history': { ok: true, history: [], partner_counts: {}, total: 0 },
+  '/api/stats': { ok: true, total_users: 0, total_weeks: 0, total_pairs: 0, total_sessions: 0 },
+  '/api/my-pair': { ok: true, paired: false, reason: 'no_week_yet' },
+  '/api/profile': { ok: true, user: null },
+  '/api/questions': { ok: true, questions: [], count: 0 },
+  '/api/runs': { ok: true, runs: [], count: 0 },
+  '/api/logs': { ok: true, inserted: 1 },
+  '/api/ai/history': { ok: true, feedbacks: [], usage_today: null },
+  '/api/video/signal': { ok: true, signals: [], after: 0, count: 0 },
+};
 
-export async function setNoOnboarding(page: Page){
-  await page.addInitScript(() => {
-    try{
-      localStorage.setItem('randori-onboarded','1');
-      localStorage.setItem('randori-banner-dismissed','1');
-      localStorage.setItem('randori-onboard-step','0');
-      localStorage.setItem('randori-profile-done','1');
-      localStorage.setItem('randori-landing-dismissed','1');
-      localStorage.setItem('randori-last-room','e2e-room');
-      // dummy auth so app doesn't stay on landing - isProfileIncomplete(null) = false
-      localStorage.setItem('randori-token','e2e-fake-jwt');
-      localStorage.setItem('randori-me', JSON.stringify({id:'e2e-1', display_name:'e2e tester', color:'#c8f6a0', is_admin:false, is_demo:false, tz:'Europe/London', interview_focus:'both'}));
-    }catch{}
-  });
-}
-
-export async function ensureAuthed(page: Page){
-  await page.addInitScript(() => {
-    try{
-      localStorage.setItem('randori-token','e2e-fake-jwt');
-      localStorage.setItem('randori-me', JSON.stringify({id:'e2e-1', display_name:'e2e tester', color:'#c8f6a0', is_admin:false, is_demo:false, tz:'Europe/London', interview_focus:'both'}));
-      localStorage.setItem('randori-onboarded','1');
-      localStorage.setItem('randori-banner-dismissed','1');
-      localStorage.setItem('randori-profile-done','1');
-      localStorage.setItem('randori-landing-dismissed','1');
-      localStorage.setItem('randori-last-room','e2e-room');
-    }catch{}
-  });
-}
-
-export async function getToken(page: Page): Promise<string|null> {
-  try{
-    return await page.evaluate(() => {
-      try{ return localStorage.getItem('randori-token'); }catch{ return null; }
+export async function mockApi(
+  page: Page,
+  overrides: Record<string, Json | ((request: Request) => Json | Promise<Json>)> = {},
+) {
+  await page.route('**/api/**', async route => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    const configured = overrides[pathname] ?? defaultApiResponses[pathname];
+    const body = typeof configured === 'function' ? await configured(request) : configured;
+    const status = Number(body?._status || (body ? 200 : 404));
+    const responseBody = body ? { ...body } : { ok: false, error: `Unmocked API route: ${pathname}` };
+    delete responseBody._status;
+    await route.fulfill({
+      status,
+      contentType: 'application/json',
+      body: JSON.stringify(responseBody),
     });
-  }catch{ return null; }
-}
-
-export async function apiLog(page: Page, level: string, event: string, message: string, meta: any = {}){
-  try{
-    await page.evaluate(async ({level, event, message, meta}) => {
-      try{
-        const log = (window as any)._randori_log;
-        if(log && log.error){
-          if(level==='error') log.error(event, message, meta);
-          else if(level==='warn') log.warn(event, message, meta);
-          else log.info(event, message, meta);
-          if(log.flush) log.flush();
-        } else {
-          await fetch('/api/logs', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({level, event, message, meta})}).catch(()=>{});
-        }
-      }catch{}
-    }, {level, event, message, meta});
-  }catch{}
-}
-
-export async function ensureCodeView(page: Page){
-  await page.evaluate(() => {
-    try{
-      const views = document.querySelectorAll('.view');
-      views.forEach((v:any)=> v.style.display='none');
-      const cv = document.getElementById('view-code') as HTMLElement | null;
-      if(cv) cv.style.display='block';
-      const tabs = document.querySelectorAll('.tab');
-      tabs.forEach(t=> t.classList.remove('active'));
-      const codeTab = document.querySelector('[data-tab="code"]') as HTMLElement | null;
-      if(codeTab) codeTab.classList.add('active');
-      // also ensure tabs bar visible for anon
-      const tabsEl = document.querySelector('.tabs') as HTMLElement | null;
-      if(tabsEl) tabsEl.style.display='flex';
-      const circleTab = document.querySelector('[data-tab="circle"]') as HTMLElement | null;
-      if(circleTab) (circleTab as HTMLElement).style.display='none';
-      // make code layout visible
-      const qPane = document.querySelector('.code-layout') as HTMLElement | null;
-      if(qPane) (qPane as HTMLElement).style.display='grid';
-    }catch{}
   });
 }
 
-export async function waitForMonacoOrFallback(page: Page){
-  const host = page.locator('#monacoHost');
-  const editor = page.locator('#editor');
-  const fallback = page.locator('#monacoFallbackNote');
-
-  // Ensure code view visible first so locators can be visible
-  await ensureCodeView(page).catch(()=>{});
-
-  // Wait up to 6.5s for either host visible or editor fallback
-  await expect.poll(async ()=>{
-    const hostVis = await host.isVisible().catch(()=>false);
-    const editorVis = await editor.isVisible().catch(()=>false);
-    // also consider monaco ready via window
-    const winReady = await page.evaluate(()=> {
-      try{
-        if((window as any).monacoEditor) return true;
-        if((window as any)._randori_monaco?.ready) return true;
-        // if fallback textarea displayed block we consider ready
-        const ta=document.getElementById('editor') as HTMLElement|null;
-        if(ta && ta.style.display!=='none' && (ta as any).offsetParent!==null) return true;
-        return false;
-      }catch{ return false; }
-    }).catch(()=>false);
-    return hostVis || editorVis || winReady;
-  }, {timeout: 7500}).toBe(true);
-
-  const isMonaco = await page.evaluate(() => {
-    try{ return !!(window as any).monacoEditor || !!((window as any)._randori_monaco?.ready); }catch{ return false; }
-  });
-
-  // Ensure editor textarea usable if no monaco
-  if(!isMonaco){
-    await page.evaluate(()=>{
-      try{
-        const ta=document.getElementById('editor') as HTMLElement|null;
-        if(ta){ ta.style.display='block'; (ta as HTMLElement).style.flex='1'; (ta as HTMLElement).style.minHeight='360px'; }
-        const host=document.getElementById('monacoHost') as HTMLElement|null;
-        // leave host but ensure not covering
-        if(host) host.style.minHeight='120px';
-      }catch{}
-    }).catch(()=>{});
+export async function resetClientState(page: Page, authenticated = false) {
+  await page.context().clearCookies();
+  if (authenticated) {
+    await page.context().addCookies([{
+      name: 'randori_session',
+      value: 'local-e2e-session',
+      url: testOrigin,
+      httpOnly: true,
+      sameSite: 'Lax',
+    }]);
   }
-
-  return { isMonaco };
+  await page.addInitScript(({ authenticated }) => {
+    localStorage.clear();
+    sessionStorage.clear();
+    localStorage.setItem('randori-onboarded', '1');
+    localStorage.setItem('randori-banner-dismissed', '1');
+    localStorage.setItem('randori-profile-done', '1');
+    localStorage.setItem('randori-landing-dismissed', '1');
+    if (authenticated) {
+      localStorage.setItem('randori-me', JSON.stringify({
+        id: 1,
+        email: 'e2e@example.test',
+        name: 'E2E Tester',
+        display_name: 'E2E Tester',
+        color: '#c8f6a0',
+        is_admin: false,
+        is_available: true,
+        tz: 'Europe/London',
+        interview_focus: 'both',
+      }));
+    }
+  }, { authenticated });
 }
 
-export function twoSumCorrectJS(): string {
-  return `function twoSum(nums, target){
-  const m=new Map();
-  for(let i=0;i<nums.length;i++){
-    const need=target-nums[i];
-    if(m.has(need)) return [m.get(need), i];
-    m.set(nums[i], i);
+export async function openCodeView(
+  page: Page,
+  overrides: Record<string, Json | ((request: Request) => Json | Promise<Json>)> = {},
+) {
+  await mockApi(page, overrides);
+  await resetClientState(page);
+  await page.goto('/?view=code', { waitUntil: 'domcontentloaded' });
+  const tab = page.locator('[data-tab="code"]');
+  await expect(tab).toBeVisible();
+  await tab.click();
+  await expect(page.locator('#view-code')).toBeVisible();
+}
+
+export async function setCode(page: Page, code: string) {
+  await page.waitForFunction(() => {
+    const app = window as typeof window & {
+      _randori_code?: { getEditor?: () => { getValue(): string } | null };
+      _randori_monaco?: { editor?: { getValue(): string }; ready?: boolean };
+    };
+    const monaco = app._randori_code?.getEditor?.() || app._randori_monaco?.editor;
+    if (monaco && typeof monaco.getValue === 'function') return true;
+
+    const textarea = document.querySelector<HTMLTextAreaElement>('#editor');
+    return Boolean(textarea && getComputedStyle(textarea).display !== 'none');
+  });
+
+  await page.evaluate(value => {
+    type Editor = { getValue(): string; setValue(value: string): void };
+    type CodeApi = {
+      currentRoom?: string;
+      getCode?: () => string;
+      getEditor?: () => Editor | null;
+      setCode?: (value: string, language?: string) => void;
+    };
+    const app = window as typeof window & {
+      _randori_code?: CodeApi;
+      _randori_monaco?: { editor?: Editor };
+      currentRoom?: string;
+    };
+    const textarea = document.querySelector<HTMLTextAreaElement>('#editor');
+    const language = document.querySelector<HTMLSelectElement>('#langSelect')?.value || 'javascript';
+    const question = document.querySelector<HTMLSelectElement>('#questionSelect')?.value || 'two-sum';
+    const room = app._randori_code?.currentRoom
+      || app.currentRoom
+      || document.querySelector<HTMLSelectElement>('#roomSelect')?.value;
+
+    // Monaco performs one deferred room hydration after it becomes ready. Keep
+    // that source synchronized so it cannot restore stale starter code.
+    if (room) {
+      let saved: Record<string, { lang?: string; qId?: string; codes?: Record<string, string> }> = {};
+      try { saved = JSON.parse(localStorage.getItem('randori-code') || '{}'); } catch {}
+      const entry = saved[room] || { codes: {} };
+      entry.lang = language;
+      entry.qId = question;
+      entry.codes = entry.codes || {};
+      entry.codes[language] = value;
+      saved[room] = entry;
+      localStorage.setItem('randori-code', JSON.stringify(saved));
+    }
+
+    const monaco = app._randori_code?.getEditor?.() || app._randori_monaco?.editor;
+    if (monaco) {
+      if (app._randori_code?.setCode) app._randori_code.setCode(value, language);
+      else monaco.setValue(value);
+    }
+    if (textarea) {
+      textarea.value = value;
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      textarea.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  }, code);
+
+  await expect.poll(() => page.evaluate(expected => {
+    type Editor = { getValue(): string };
+    const app = window as typeof window & {
+      _randori_code?: { getCode?: () => string; getEditor?: () => Editor | null };
+      _randori_monaco?: { editor?: Editor };
+    };
+    const monaco = app._randori_code?.getEditor?.() || app._randori_monaco?.editor;
+    const textarea = document.querySelector<HTMLTextAreaElement>('#editor');
+    const editorValue = monaco?.getValue() ?? textarea?.value ?? '';
+    const appValue = app._randori_code?.getCode?.() ?? textarea?.value ?? '';
+    return editorValue === expected && appValue === expected;
+  }, code)).toBe(true);
+}
+
+export async function selectLanguage(page: Page, language: string) {
+  await page.locator('#langSelect').selectOption(language);
+}
+
+export async function selectQuestion(page: Page, slug: string) {
+  await page.locator('#questionSelect').selectOption(slug);
+  const overlay = page.locator('#confirmOverlay.show');
+  if (await overlay.isVisible()) await page.locator('#confirmOk').click();
+}
+
+export const twoSumCorrect = `function twoSum(nums, target) {
+  const seen = new Map();
+  for (let index = 0; index < nums.length; index += 1) {
+    const needed = target - nums[index];
+    if (seen.has(needed)) return [seen.get(needed), index];
+    seen.set(nums[index], index);
   }
   return [];
 }`;
-}
 
-export function twoSumBrokenJS(): string {
-  return `function twoSum(nums,target){ return []; }`;
-}
-
-export function twoSumPythonCorrect(): string {
-  return `def two_sum(nums, target):
-    m={}
-    for i,n in enumerate(nums):
-        need=target-n
-        if need in m:
-            return [m[need], i]
-        m[n]=i
-    return []
-def twoSum(nums, target):
-    return two_sum(nums, target)`;
-}
-
-export async function setCode(page: Page, code: string){
-  // Ensure view is visible before touching
-  await ensureCodeView(page).catch(()=>{});
-  // Try Monaco first
-  const hasMonaco = await page.evaluate(() => {
-    try{ const ed=(window as any).monacoEditor; return !!ed && typeof ed.getValue==='function'; }catch{ return false; }
-  });
-  if(hasMonaco){
-    await page.evaluate((c) => {
-      try{
-        const ed=(window as any).monacoEditor;
-        if(ed){ ed.setValue(c); ed.focus(); try{ ed.layout(); }catch{} }
-      }catch{}
-    }, code);
-  } else {
-    // use evaluate for textarea (avoid locator.fill visibility issue)
-    await page.evaluate((c)=>{
-      try{
-        const ta=document.getElementById('editor') as HTMLTextAreaElement | null;
-        if(ta){
-          ta.style.display='block';
-          ta.style.flex='1';
-          (ta as any).style.minHeight='360px';
-          ta.focus();
-          ta.value=c;
-          ta.dispatchEvent(new Event('input',{bubbles:true}));
-          ta.dispatchEvent(new Event('change',{bubbles:true}));
-          // also notify legacy persist
-          const ev = new CustomEvent('randori-code-change',{detail:{code:c}});
-          document.dispatchEvent(ev);
-        }
-        // also try mirror globals
-        try{
-          const host=document.getElementById('monacoHost');
-          if(host && (host as any).style) (host as any).style.display='none';
-        }catch{}
-      }catch{}
-    }, code);
-  }
-  // small settle
-  await page.waitForTimeout(120);
-}
-
-export async function selectLang(page: Page, lang: string){
-  await ensureCodeView(page).catch(()=>{});
-  const sel = page.locator('#langSelect');
-  // Try both visible and via evaluate
-  try{
-    if(await sel.count()){
-      await page.evaluate((l)=>{
-        try{
-          const el=document.getElementById('langSelect') as HTMLSelectElement|null;
-          if(el){ el.value=l; el.dispatchEvent(new Event('change',{bubbles:true})); }
-        }catch{}
-      }, lang);
-      await page.waitForTimeout(300);
-      // also try playwright selectOption if still needed
-      if(await sel.isVisible().catch(()=>false)){
-        await sel.selectOption(lang).catch(()=>{});
-      }
-    }
-  }catch{}
-  await page.waitForTimeout(200);
-}
-
-export async function selectQuestion(page: Page, slug: string){
-  await ensureCodeView(page).catch(()=>{});
-  const qSel = page.locator('#questionSelect');
-  if(await qSel.count()){
-    try{
-      await page.evaluate((s)=>{
-        try{
-          const el=document.getElementById('questionSelect') as HTMLSelectElement|null;
-          if(el){ el.value=s; el.dispatchEvent(new Event('change',{bubbles:true})); }
-        }catch{}
-        try{ localStorage.setItem('randori-last-question', s); }catch{}
-      }, slug);
-    }catch{}
-    try{
-      if(await qSel.first().isVisible().catch(()=>false)){
-        await qSel.selectOption(slug).catch(()=>{});
-      }
-    }catch{}
-    await page.waitForTimeout(350);
-    // If confirm overlay appeared due to existing code (Load starter? prompt), auto-confirm so Run remains clickable
-    try{
-      const overlay = page.locator('#confirmOverlay');
-      if(await overlay.count()){
-        const isShow = await overlay.evaluate(el=> el.classList.contains('show')).catch(()=>false);
-        if(isShow){
-          const ok = page.locator('#confirmOk');
-          if(await ok.isVisible().catch(()=>false)){
-            await ok.click().catch(()=>{});
-            await page.waitForTimeout(200);
-          } else {
-            // fallback evaluate click
-            await page.evaluate(()=>{
-              try{
-                const ok2=document.getElementById('confirmOk') as HTMLElement|null;
-                if(ok2) ok2.click();
-                else {
-                  const ov=document.getElementById('confirmOverlay'); if(ov) ov.classList.remove('show');
-                }
-              }catch{}
-            });
-          }
-        }
-      }
-    }catch{}
-    await page.waitForTimeout(150);
-  } else {
-    await page.evaluate((s)=>{
-      try{ localStorage.setItem('randori-last-question', s); }catch{}
-    }, slug);
-  }
-}
+export const twoSumBroken = 'function twoSum() { return []; }';

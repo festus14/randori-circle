@@ -1,5 +1,8 @@
-import { getClient, getJwtSecret, getCronSecret, getAdminEmails, isoWeekLabel, shuffleArray, deterministicColor } from './_db.js';
-import jwt from 'jsonwebtoken';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { getClient, getCronSecret, getAdminEmails, isoWeekLabel, deterministicColor, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
+import { buildFairPairing, canonicalRoomId, escapeHtml } from './_pairing.js';
+
+const MAX_EMAIL_ATTEMPTS=5;
 
 async function logServerOps(level, event, message, meta, req){
   try{
@@ -16,17 +19,6 @@ async function logServerOps(level, event, message, meta, req){
   }catch(e){ try{ console.warn("[logServerOps fail]", e && e.message); }catch{} }
 }
 
-function seededShuffle(arr, seedStr){
-  let h=0; for(let i=0;i<seedStr.length;i++) h=(h*31+seedStr.charCodeAt(i))>>>0;
-  const a=[...arr];
-  for(let i=a.length-1;i>0;i--){
-    h=(h*1664525+1013904223)>>>0;
-    const j= h % (i+1);
-    const tmp=a[i]; a[i]=a[j]; a[j]=tmp;
-  }
-  return a;
-}
-
 async function ensureNotifPrefs(db){
   try{ await db.execute("CREATE TABLE IF NOT EXISTS user_notification_prefs (user_id INTEGER PRIMARY KEY, email_enabled INTEGER DEFAULT 1, sms_enabled INTEGER DEFAULT 0, phone TEXT, email TEXT, updated_at TEXT DEFAULT (datetime('now')))"); }catch{}
 }
@@ -35,10 +27,8 @@ async function handleNotificationPrefs(req,res){
   const db=getClient();
   try{ await ensureNotifPrefs(db); }catch{}
   if(req.method==="GET"){
-    const auth=req.headers.authorization||"";
-    const m=auth.match(/^Bearer\s+(.+)$/);
-    if(!m) return res.status(401).json({error:"missing Bearer"});
-    let payload; try{ payload=jwt.verify(m[1], getJwtSecret()); }catch(e){ return res.status(401).json({error:"invalid token"}); }
+    const payload=verifyRequestAuth(req);
+    if(!payload) return res.status(401).json({error:"authentication required"});
     const uid=payload.id||payload.uid;
     try{
       const rs=await db.execute({sql:"SELECT user_id,email_enabled,sms_enabled,phone,email,updated_at FROM user_notification_prefs WHERE user_id=?", args:[uid]});
@@ -47,10 +37,8 @@ async function handleNotificationPrefs(req,res){
     }catch(e){ return res.status(500).json({error:"fetch failed"}); }
   }
   if(req.method==="POST" || req.method==="PUT"){
-    const auth=req.headers.authorization||"";
-    const m=auth.match(/^Bearer\s+(.+)$/);
-    if(!m) return res.status(401).json({error:"missing Bearer"});
-    let payload; try{ payload=jwt.verify(m[1], getJwtSecret()); }catch(e){ return res.status(401).json({error:"invalid token"}); }
+    const payload=verifyRequestAuth(req);
+    if(!payload) return res.status(401).json({error:"authentication required"});
     const uid=payload.id||payload.uid;
     const body=req.body||{};
     const email_enabled = body.email_enabled!=null ? (body.email_enabled?1:0) : 1;
@@ -63,7 +51,7 @@ async function handleNotificationPrefs(req,res){
       try{ await db.execute({sql:"INSERT OR IGNORE INTO user_notification_prefs (user_id,email_enabled,sms_enabled,phone,email) VALUES (?,?,?,?,?)", args:[uid,email_enabled,sms_enabled,phone,email]}); }catch{}
       try{ await db.execute({sql:"UPDATE user_notification_prefs SET email_enabled=?, sms_enabled=?, phone=COALESCE(?,phone), email=COALESCE(?,email), updated_at=datetime('now') WHERE user_id=?", args:[email_enabled,sms_enabled,phone,email,uid]}); }catch{}
     }
-    try{ await logServerOps("info","notif_prefs_updated","prefs uid "+uid+" email="+email_enabled+" sms="+sms_enabled, {uid,email_enabled,sms_enabled,phone}, req); }catch{}
+    try{ await logServerOps("info","notif_prefs_updated","prefs uid "+uid+" email="+email_enabled+" sms="+sms_enabled, {uid,email_enabled,sms_enabled}, req); }catch{}
     return res.json({ok:true, prefs:{user_id:uid,email_enabled:!!email_enabled,sms_enabled:!!sms_enabled,phone,email}});
   }
   return res.status(405).json({error:"GET or POST/PUT"});
@@ -88,16 +76,14 @@ function isAdminCheck(email, flag){
   return getAdminEmails().has(String(email).toLowerCase().trim());
 }
 function verifyCronAuth(req){
-  const hdr = req.headers['x-cron-secret'] || req.headers['authorization'] || '';
-  const secret = getCronSecret();
-  if (typeof hdr==='string' && hdr.startsWith('Bearer ')){
-    try{ jwt.verify(hdr.slice(7), getJwtSecret()); return true; }catch{}
-  }
-  if (hdr && hdr===secret) return true;
-  if (req.headers['x-vercel-cron']!==undefined) return true;
-  if (req.query && req.query.secret && req.query.secret===secret) return true;
-  if (!process.env.CRON_SECRET && !process.env.JWT_SECRET) return true;
-  return false;
+  let secret;
+  try{ secret=getCronSecret(); }catch{ return false; }
+  const raw = req.headers['x-cron-secret'] || req.headers['X-Cron-Secret'] || req.headers['authorization'] || req.headers['Authorization'] || '';
+  const presented = typeof raw==='string' && raw.startsWith('Bearer ') ? raw.slice(7) : String(raw||'');
+  if(!presented) return false;
+  const expectedBuf=Buffer.from(secret);
+  const presentedBuf=Buffer.from(presented);
+  return expectedBuf.length===presentedBuf.length && timingSafeEqual(expectedBuf,presentedBuf);
 }
 
 async function ensureMigrations(db){
@@ -105,55 +91,231 @@ async function ensureMigrations(db){
   try{ await db.execute(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`);}catch{}
   try{ await db.execute(`CREATE TABLE IF NOT EXISTS pairing_weeks (id INTEGER PRIMARY KEY AUTOINCREMENT, week_label TEXT NOT NULL, week_start TEXT NOT NULL, focus TEXT NOT NULL DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')), is_demo INTEGER DEFAULT 0)`);}catch{}
   try{ await db.execute(`CREATE TABLE IF NOT EXISTS pairing_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, user_a_id INTEGER NOT NULL, user_b_id INTEGER NOT NULL, user_c_id INTEGER, is_ai_pair INTEGER DEFAULT 0, topic TEXT DEFAULT 'Pick together', topic_kind TEXT DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')))`);}catch{}
+  try{ await db.execute(`CREATE TABLE IF NOT EXISTS pairing_week_runs (week_label TEXT PRIMARY KEY, week_id INTEGER, generation_token TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 1, algorithm_version TEXT NOT NULL, algorithm_seed TEXT NOT NULL, participant_count INTEGER NOT NULL, participants_json TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))`);}catch{}
+  try{ await db.execute(`CREATE TABLE IF NOT EXISTS pairing_participants (week_id INTEGER NOT NULL, user_id INTEGER NOT NULL, position INTEGER NOT NULL, source TEXT NOT NULL DEFAULT 'auth', created_at TEXT DEFAULT (datetime('now')), PRIMARY KEY (week_id, user_id))`);}catch{}
+  try{ await db.execute(`CREATE TABLE IF NOT EXISTS pairing_email_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, user_id INTEGER NOT NULL, kind TEXT NOT NULL, recipient_email TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', attempt_count INTEGER NOT NULL DEFAULT 0, claimed_at TEXT, sent_at TEXT, provider_message_id TEXT, last_error TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')), UNIQUE (week_id,user_id,kind))`);}catch{}
+  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pairing_email_outbox_pending ON pairing_email_outbox(week_id,status,created_at)`);}catch{}
+  // New installs get a direct invariant; pairing_week_runs remains the concurrency guard
+  // for older databases where historical duplicate labels prevent this index.
+  try{ await db.execute(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pairing_weeks_week_label ON pairing_weeks(week_label)`);}catch{}
   const alters=[
     `ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`,
     `ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`,
     `ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`,
     `ALTER TABLE auth_accounts ADD COLUMN is_demo INTEGER DEFAULT 0`,
-    `ALTER TABLE pairing_weeks ADD COLUMN is_demo INTEGER DEFAULT 0`,,
+    `ALTER TABLE pairing_weeks ADD COLUMN is_demo INTEGER DEFAULT 0`,
     `ALTER TABLE auth_accounts ADD COLUMN phone TEXT`,
+    `ALTER TABLE pairing_week_runs ADD COLUMN generation INTEGER NOT NULL DEFAULT 1`,
 ];
   for(const sql of alters){ try{ await db.execute(sql); }catch{} }
 }
 
+async function loadPairingHistory(db, weekLabel, {includeDemo=false,includeCurrent=false}={}){
+  try{
+    const demoFilter=includeDemo?'':`AND COALESCE(pw.is_demo,0)=0`;
+    const currentFilter=includeCurrent?'1=1':'pw.week_label<>?';
+    const rs=await db.execute({ sql:`SELECT pg.user_a_id,pg.user_b_id,pg.is_ai_pair,pw.id AS week_id,pw.week_label FROM pairing_groups pg JOIN pairing_weeks pw ON pw.id=pg.week_id WHERE ${currentFilter} ${demoFilter} ORDER BY pw.week_start DESC,pw.id DESC,pg.id ASC LIMIT 1000`, args:includeCurrent?[]:[weekLabel]});
+    return rs.rows;
+  }catch{ return []; }
+}
+
+function pairingMetadata(pairing){
+  return {
+    version:pairing.algorithmVersion,
+    seed:pairing.seed,
+    generation:pairing.generation,
+    attempts:pairing.attempts,
+    previous_week_repeats:pairing.score.previousWeekRepeats,
+    historical_repeats:pairing.score.historicalRepeats,
+    prior_ai_assignments:pairing.score.aiHistory,
+  };
+}
+
+/** Persist the week, participant snapshot, and every pair in one write transaction. */
+async function persistPairingWeek(db, {weekLabel, weekStart, participants, pairing, isDemoWeek=0, replace=false, notificationRecipients=[], generation=1, expectedGeneration=null}){
+  const generationToken=randomUUID();
+  const participantSnapshot=JSON.stringify(participants.map(p=>({user_id:Number(p.id),source:p.source||'auth'})));
+  const runArgs=[weekLabel,generationToken,generation,pairing.algorithmVersion,pairing.seed,participants.length,participantSnapshot];
+  const statements=[];
+
+  if(replace){
+    statements.push({sql:`INSERT INTO pairing_week_runs (week_label,generation_token,generation,algorithm_version,algorithm_seed,participant_count,participants_json,updated_at) VALUES (?,?,?,?,?,?,?,datetime('now')) ON CONFLICT(week_label) DO UPDATE SET generation_token=excluded.generation_token,generation=excluded.generation,algorithm_version=excluded.algorithm_version,algorithm_seed=excluded.algorithm_seed,participant_count=excluded.participant_count,participants_json=excluded.participants_json,updated_at=datetime('now') WHERE pairing_week_runs.generation=?`,args:[...runArgs,expectedGeneration]});
+  }else{
+    statements.push({sql:`INSERT INTO pairing_week_runs (week_label,generation_token,generation,algorithm_version,algorithm_seed,participant_count,participants_json) VALUES (?,?,?,?,?,?,?) ON CONFLICT(week_label) DO NOTHING`,args:runArgs});
+  }
+
+  statements.push({sql:`INSERT INTO pairing_weeks (week_label,week_start,focus,is_demo) SELECT ?,?,'both',? WHERE EXISTS (SELECT 1 FROM pairing_week_runs WHERE week_label=? AND generation_token=?) AND NOT EXISTS (SELECT 1 FROM pairing_weeks WHERE week_label=?)`,args:[weekLabel,weekStart,isDemoWeek,weekLabel,generationToken,weekLabel]});
+  statements.push({sql:`UPDATE pairing_week_runs SET week_id=(SELECT MIN(id) FROM pairing_weeks WHERE week_label=?),updated_at=datetime('now') WHERE week_label=? AND generation_token=?`,args:[weekLabel,weekLabel,generationToken]});
+
+  if(replace){
+    statements.push({sql:`UPDATE pairing_weeks SET week_start=?,is_demo=? WHERE id=(SELECT week_id FROM pairing_week_runs WHERE week_label=? AND generation_token=?)`,args:[weekStart,isDemoWeek,weekLabel,generationToken]});
+    statements.push({sql:`DELETE FROM pairing_groups WHERE week_id=(SELECT week_id FROM pairing_week_runs WHERE week_label=? AND generation_token=?)`,args:[weekLabel,generationToken]});
+    statements.push({sql:`DELETE FROM pairing_participants WHERE week_id=(SELECT week_id FROM pairing_week_runs WHERE week_label=? AND generation_token=?)`,args:[weekLabel,generationToken]});
+  }
+
+  participants.forEach((participant,index)=>{
+    statements.push({sql:`INSERT INTO pairing_participants (week_id,user_id,position,source) SELECT week_id,?,?,? FROM pairing_week_runs WHERE week_label=? AND generation_token=?`,args:[Number(participant.id),index,participant.source||'auth',weekLabel,generationToken]});
+  });
+  pairing.pairs.forEach(pair=>{
+    statements.push({sql:`INSERT INTO pairing_groups (week_id,user_a_id,user_b_id,is_ai_pair,topic,topic_kind) SELECT week_id,?,?,?,?,'both' FROM pairing_week_runs WHERE week_label=? AND generation_token=?`,args:[Number(pair.a.id),Number(pair.b?.id||pair.a.id),pair.isAI?1:0,'Pick together',weekLabel,generationToken]});
+  });
+  notificationRecipients.forEach(recipient=>{
+    if(!recipient.email) return;
+    statements.push({sql:`INSERT INTO pairing_email_outbox (week_id,user_id,kind,recipient_email) SELECT week_id,?,?,? FROM pairing_week_runs WHERE week_label=? AND generation_token=? ON CONFLICT(week_id,user_id,kind) DO NOTHING`,args:[Number(recipient.id),recipient.kind,String(recipient.email).slice(0,320),weekLabel,generationToken]});
+  });
+
+  await db.batch(statements,'write');
+  const runRs=await db.execute({sql:`SELECT week_id,generation_token,generation FROM pairing_week_runs WHERE week_label=?`,args:[weekLabel]});
+  const run=runRs.rows[0];
+  if(!run || run.generation_token!==generationToken) return {created:false,weekId:run?.week_id||null,generation:run?.generation||null,pairs:[]};
+  const groups=await db.execute({sql:`SELECT id,user_a_id,user_b_id,is_ai_pair FROM pairing_groups WHERE week_id=? ORDER BY id`,args:[run.week_id]});
+  const queues=new Map();
+  for(const group of groups.rows){
+    const key=`${group.user_a_id}:${group.user_b_id}:${group.is_ai_pair?1:0}`;
+    if(!queues.has(key)) queues.set(key,[]);
+    queues.get(key).push(group);
+  }
+  const pairs=pairing.pairs.map(pair=>{
+    const key=`${pair.a.id}:${pair.b?.id||pair.a.id}:${pair.isAI?1:0}`;
+    const group=queues.get(key)?.shift();
+    return {...pair,groupId:group?.id||null};
+  });
+  return {created:true,weekId:run.week_id,generation:Number(run.generation),pairs};
+}
+
+async function lookupDisplayName(db,userId){
+  try{
+    const auth=await db.execute({sql:`SELECT display_name AS name FROM auth_accounts WHERE id=? AND COALESCE(is_demo,0)=0`,args:[userId]});
+    if(auth.rows.length) return auth.rows[0].name;
+  }catch{}
+  try{
+    const legacy=await db.execute({sql:`SELECT name FROM users WHERE id=?`,args:[userId]});
+    if(legacy.rows.length) return legacy.rows[0].name;
+  }catch{}
+  return 'your partner';
+}
+
+async function renderOutboxEmail(db,item,weekLabel,baseUrl){
+  const safeWeekLabel=escapeHtml(weekLabel);
+  const safeBaseUrl=escapeHtml(baseUrl);
+  if(item.kind==='unavailable'){
+    return {
+      subject:`You missed Randori ${weekLabel} — toggle back to available`,
+      html:`<h2>Randori Circle — you missed ${safeWeekLabel}</h2><p>You were excluded from this week's shuffle because you marked <b>Unavailable</b>.</p><p>No worries — you'll be back next Sunday automatically unless you stay unavailable.</p><p><a href="${safeBaseUrl}">Open app → Settings → set Available this week = ON</a> to re-join.</p>`,
+    };
+  }
+  const groupRs=await db.execute({sql:`SELECT id,user_a_id,user_b_id,is_ai_pair FROM pairing_groups WHERE week_id=? AND (user_a_id=? OR (user_b_id=? AND COALESCE(is_ai_pair,0)=0)) LIMIT 1`,args:[item.week_id,item.user_id,item.user_id]});
+  if(!groupRs.rows.length) throw new Error('pair group missing for notification recipient');
+  const group=groupRs.rows[0];
+  const partnerName=group.is_ai_pair?'AI partner':await lookupDisplayName(db,Number(group.user_a_id)===Number(item.user_id)?group.user_b_id:group.user_a_id);
+  const room=canonicalRoomId(item.week_id,group.id);
+  const joinUrl=`${baseUrl}/join/${room}`;
+  return {
+    subject:`Randori ${weekLabel} — your pairing is ready`,
+    html:`<h2>Randori Circle — ${safeWeekLabel}</h2><p>You're paired with <b>${escapeHtml(partnerName)}</b>.</p><p><a href="${escapeHtml(joinUrl)}">Join your private pairing room</a></p><p><a href="${safeBaseUrl}">Open Randori Circle</a> to choose DSA, System Design, or Both.</p><p style="color:#888;font-size:12px">Turn off availability in settings if you want to skip next week.</p>`,
+  };
+}
+
+async function deliverPendingPairingEmails(db,weekId,baseUrl,req){
+  let exhausted=0;
+  let pending;
+  try{
+    const exhaustedResult=await db.execute({sql:`UPDATE pairing_email_outbox SET status='exhausted',last_error=COALESCE(last_error,'maximum delivery attempts reached'),updated_at=datetime('now') WHERE week_id=? AND attempt_count>=? AND (status IN ('pending','failed') OR (status='sending' AND claimed_at<datetime('now','-15 minutes')))`,args:[weekId,MAX_EMAIL_ATTEMPTS]});
+    exhausted=Number(exhaustedResult.rowsAffected||0);
+    pending=await db.execute({sql:`SELECT id,week_id,user_id,kind,recipient_email,status,attempt_count FROM pairing_email_outbox WHERE week_id=? AND attempt_count<? AND (status IN ('pending','failed') OR (status='sending' AND claimed_at<datetime('now','-15 minutes'))) ORDER BY id LIMIT 100`,args:[weekId,MAX_EMAIL_ATTEMPTS]});
+  }catch(e){
+    return {summary:'email outbox unavailable',sent:0,failed:0,exhausted,pending:0,error:String(e.message||e).slice(0,180)};
+  }
+  if(!pending.rows.length) return {summary:exhausted?`${exhausted} email reminder(s) exhausted after ${MAX_EMAIL_ATTEMPTS} attempts`:'no pending email reminders',sent:0,failed:0,exhausted,pending:0};
+  if(!process.env.RESEND_API_KEY) return {summary:`${pending.rows.length} email reminder(s) pending — set RESEND_API_KEY + RESEND_FROM`,sent:0,failed:0,exhausted,pending:pending.rows.length};
+
+  const resendMod=await import('resend').catch(()=>null);
+  if(!resendMod?.Resend) return {summary:`${pending.rows.length} email reminder(s) pending — resend package unavailable`,sent:0,failed:0,exhausted,pending:pending.rows.length};
+  const weekRs=await db.execute({sql:`SELECT week_label FROM pairing_weeks WHERE id=?`,args:[weekId]});
+  const weekLabel=weekRs.rows[0]?.week_label;
+  if(!weekLabel) return {summary:'email reminders pending — pairing week missing',sent:0,failed:pending.rows.length,exhausted,pending:pending.rows.length};
+
+  const resend=new resendMod.Resend(process.env.RESEND_API_KEY);
+  const from=process.env.RESEND_FROM||'Randori <onboarding@randori.circle>';
+  let sent=0,failed=0,suppressed=0;
+  for(const item of pending.rows){
+    let claimedAttempt=null;
+    try{
+      const claim=await db.execute({sql:`UPDATE pairing_email_outbox SET status='sending',attempt_count=attempt_count+1,claimed_at=datetime('now'),last_error=NULL,updated_at=datetime('now') WHERE id=? AND attempt_count<? AND (status IN ('pending','failed') OR (status='sending' AND claimed_at<datetime('now','-15 minutes'))) RETURNING id,attempt_count`,args:[item.id,MAX_EMAIL_ATTEMPTS]});
+      if(!claim.rows.length) continue;
+      claimedAttempt=Number(claim.rows[0].attempt_count);
+      const account=await db.execute({sql:`SELECT is_demo FROM auth_accounts WHERE id=?`,args:[item.user_id]});
+      if(account.rows[0]?.is_demo){
+        const transition=await db.execute({sql:`UPDATE pairing_email_outbox SET status='suppressed',last_error='demo account excluded from production reminders',updated_at=datetime('now') WHERE id=? AND status='sending' AND attempt_count=? RETURNING id`,args:[item.id,claimedAttempt]});
+        if(transition.rows.length) suppressed+=1;
+        continue;
+      }
+      const pref=await db.execute({sql:`SELECT email_enabled FROM user_notification_prefs WHERE user_id=?`,args:[item.user_id]});
+      if(pref.rows[0]?.email_enabled===0){
+        const transition=await db.execute({sql:`UPDATE pairing_email_outbox SET status='suppressed',last_error='email disabled by user',updated_at=datetime('now') WHERE id=? AND status='sending' AND attempt_count=? RETURNING id`,args:[item.id,claimedAttempt]});
+        if(transition.rows.length) suppressed+=1;
+        continue;
+      }
+      const content=await renderOutboxEmail(db,item,weekLabel,baseUrl);
+      const idempotencyKey=`randori/${item.week_id}/${item.kind}/${item.user_id}`;
+      const result=await resend.emails.send({from,to:item.recipient_email,subject:content.subject,html:content.html},{idempotencyKey});
+      if(result?.error) throw new Error(result.error.message||'email provider rejected request');
+      const transition=await db.execute({sql:`UPDATE pairing_email_outbox SET status='sent',sent_at=datetime('now'),provider_message_id=?,last_error=NULL,updated_at=datetime('now') WHERE id=? AND status='sending' AND attempt_count=? RETURNING id`,args:[result?.data?.id||null,item.id,claimedAttempt]});
+      if(transition.rows.length) sent+=1;
+    }catch(e){
+      if(claimedAttempt!==null){
+        try{
+          const transition=await db.execute({sql:`UPDATE pairing_email_outbox SET status=CASE WHEN attempt_count>=? THEN 'exhausted' ELSE 'failed' END,last_error=?,updated_at=datetime('now') WHERE id=? AND status='sending' AND attempt_count=? RETURNING status`,args:[MAX_EMAIL_ATTEMPTS,String(e.message||e).slice(0,500),item.id,claimedAttempt]});
+          if(transition.rows.length){
+            failed+=1;
+            if(transition.rows[0].status==='exhausted') exhausted+=1;
+          }
+        }catch{}
+      }
+    }
+  }
+  const remaining=await db.execute({sql:`SELECT COUNT(*) AS c FROM pairing_email_outbox WHERE week_id=? AND status IN ('pending','failed','sending')`,args:[weekId]}).catch(()=>({rows:[{c:failed}]}));
+  const pendingCount=Number(remaining.rows[0]?.c||0);
+  const summary=`sent ${sent}, failed ${failed}, exhausted ${exhausted}, suppressed ${suppressed}, pending ${pendingCount}`;
+  try{ await logServerOps(failed?'warn':'success','pairing_email_delivery',summary,{week_id:weekId,sent,failed,exhausted,suppressed,pending:pendingCount},req); }catch{}
+  return {summary,sent,failed,exhausted,suppressed,pending:pendingCount};
+}
+
 async function getCallerAdmin(db, payload){
-  const callerEmail = (payload.email||payload.e||'').toString().toLowerCase().trim();
+  let callerEmail = '';
   const callerId = payload.id||payload.uid;
   let callerIsAdminFlag=false, callerDbRow=null;
-  if (callerId){ try{ const cr=await db.execute({ sql:`SELECT id,email,is_admin FROM auth_accounts WHERE id=?`, args:[callerId]}); if(cr.rows.length){ callerDbRow=cr.rows[0]; callerIsAdminFlag=!!cr.rows[0].is_admin; }}catch{} }
-  if (!callerDbRow && callerEmail){ try{ const cr2=await db.execute({ sql:`SELECT id,email,is_admin FROM auth_accounts WHERE lower(email)=?`, args:[callerEmail]}); if(cr2.rows.length){ callerDbRow=cr2.rows[0]; callerIsAdminFlag=!!cr2.rows[0].is_admin; }}catch{} }
+  if (callerId){ try{ const cr=await db.execute({ sql:`SELECT id,email,is_admin FROM auth_accounts WHERE id=?`, args:[callerId]}); if(cr.rows.length){ callerDbRow=cr.rows[0]; callerEmail=String(cr.rows[0].email||'').toLowerCase().trim(); callerIsAdminFlag=!!cr.rows[0].is_admin; }}catch{} }
   if (getAdminEmails().has(callerEmail) && callerDbRow && !callerIsAdminFlag){ try{ await db.execute({ sql:`UPDATE auth_accounts SET is_admin=1 WHERE id=?`, args:[callerDbRow.id]}); callerIsAdminFlag=true; }catch{} }
-  const callerIsAdmin = isAdminCheck(callerEmail, callerIsAdminFlag) || (payload.is_admin===true);
+  const callerIsAdmin = !!callerDbRow && isAdminCheck(callerEmail, callerIsAdminFlag);
   return {callerEmail, callerId, callerIsAdminFlag, callerDbRow, callerIsAdmin};
 }
 
 async function requireAdmin(req,res){
-  const auth = req.headers.authorization||'';
-  const m = auth.match(/^Bearer\s+(.+)$/);
-  if (!m) { res.status(401).json({ error:'missing Bearer - sign in as admin' }); return null; }
-  let payload; try{ payload=jwt.verify(m[1], getJwtSecret()); }catch(e){ res.status(401).json({ error:'invalid token', detail:String(e.message||e).slice(0,120)}); return null; }
+  const payload=verifyRequestAuth(req);
+  if (!payload) { res.status(401).json({ error:'authentication required' }); return null; }
   const db = getClient();
   await ensureMigrations(db);
   const ctx = await getCallerAdmin(db, payload);
-  if (!ctx.callerIsAdmin){ const envAdmins=Array.from(getAdminEmails()); res.status(403).json({ error:'forbidden: admin only', required_admins:envAdmins, you_are:ctx.callerEmail||payload.email||'unknown' }); return null; }
+  if (!ctx.callerIsAdmin){ res.status(403).json({ error:'forbidden: admin only' }); return null; }
   return {db, payload, ...ctx};
 }
 
 async function handleAvailability(req,res){
   if (req.method!=='POST') return res.status(405).json({ error:'POST only' });
-  const auth = req.headers.authorization||'';
-  const m = auth.match(/^Bearer\s+(.+)$/);
-  if (!m) return res.status(401).json({ error:'missing Bearer <redacted>' });
-  let payload; try{ payload=jwt.verify(m[1], getJwtSecret()); }catch(e){ return res.status(401).json({ error:'invalid token'}); }
+  const payload=verifyRequestAuth(req);
+  if (!payload) return res.status(401).json({ error:'authentication required' });
   const { is_available, isAvailable } = req.body||{};
   const raw = (is_available!==undefined ? is_available : isAvailable);
   if (raw===undefined||raw===null) return res.status(400).json({ error:'is_available boolean required' });
   const val = raw?1:0;
+  const userId=payload.id||payload.uid;
   const db = getClient();
   await ensureMigrations(db);
   try{
-    await db.execute({ sql:`UPDATE auth_accounts SET is_available=?, availability_updated_at=datetime('now') WHERE id=?`, args:[val, payload.id]});
-    const rs = await db.execute({ sql:`SELECT id,email,display_name,is_available,availability_updated_at FROM auth_accounts WHERE id=?`, args:[payload.id]});
+    await db.execute({ sql:`UPDATE auth_accounts SET is_available=?, availability_updated_at=datetime('now') WHERE id=?`, args:[val, userId]});
+    const rs = await db.execute({ sql:`SELECT id,email,display_name,is_available,availability_updated_at FROM auth_accounts WHERE id=?`, args:[userId]});
+    if(!rs.rows.length) return res.status(401).json({error:'account not found'});
     const u = rs.rows[0];
     return res.json({ ok:true, user:{ id:u.id, email:u.email, name:u.display_name, is_available: !!u.is_available, isAvailable: !!u.is_available, availability_updated_at:u.availability_updated_at }, message: val ? 'You are marked AVAILABLE — you will be included Sun 08:00 BST' : 'You are marked UNAVAILABLE — you will be SKIPPED Sun 08:00 BST until you re-enable' });
   }catch(e){ return res.status(500).json({ ok:false, error:'update failed', detail:String(e.message||e).slice(0,200)}); }
@@ -177,49 +339,48 @@ async function handleReshuffle(req,res){
       return res.json({ ok:true, promoted:targetEmail, id:existing.rows[0].id, by:callerEmail, note:'User is now admin (is_admin=1). They will get admin flag on next login/token refresh.' });
     }catch(e){ return res.status(500).json({ error:'db error promoting', detail:String(e.message||e).slice(0,200)}); }
   }
-  let authRs; try{ authRs=await db.execute(`SELECT id, display_name as name, email, color, is_available, is_demo FROM auth_accounts WHERE COALESCE(is_available,1)=1 ORDER BY id`);}catch{ authRs=await db.execute(`SELECT id, display_name as name, email, color FROM auth_accounts ORDER BY id`); }
-  if (authRs.rows.length<1){ const allCount=(await db.execute(`SELECT COUNT(*) as c FROM auth_accounts`).catch(()=>({rows:[{c:0}]}))).rows[0].c; return res.status(400).json({ ok:false, error:'need at least 1 available user to shuffle (solo → AI partner)', available_count:authRs.rows.length, total_accounts:allCount, hint:'Mark yourself Available ON, then reshuffle — solo users get AI partner' }); }
+  const authRs=await db.execute(`SELECT id, display_name as name, email, color, is_available, is_demo FROM auth_accounts WHERE COALESCE(is_available,1)=1 AND COALESCE(is_demo,0)=0 ORDER BY id`);
+  if (authRs.rows.length<1){ const allCount=(await db.execute(`SELECT COUNT(*) as c FROM auth_accounts WHERE COALESCE(is_demo,0)=0`).catch(()=>({rows:[{c:0}]}))).rows[0].c; return res.status(400).json({ ok:false, error:'need at least 1 available user to shuffle (solo → AI partner)', available_count:authRs.rows.length, total_accounts:allCount, hint:'Mark yourself Available ON, then reshuffle — solo users get AI partner' }); }
   const participants = authRs.rows.map(r=>({ id:r.id, name:r.name, email:r.email, color:r.color, source:'auth', is_demo: !!r.is_demo }));
   const now = new Date(); const weekLabel = isoWeekLabel(now);
-  let weekId; const existing = await db.execute({ sql:`SELECT id FROM pairing_weeks WHERE week_label=?`, args:[weekLabel]});
-  if (existing.rows.length){ weekId=existing.rows[0].id; await db.execute({ sql:`DELETE FROM pairing_groups WHERE week_id=?`, args:[weekId]}); await db.execute({ sql:`UPDATE pairing_weeks SET week_start=? WHERE id=?`, args:[now.toISOString(), weekId]}); } else {
-    const isDemoWeek = participants.some(p=>p.is_demo) ? 1:0;
-    try{
-      const ins=await db.execute({ sql:`INSERT INTO pairing_weeks (week_label, week_start, focus, is_demo) VALUES (?,?,?,?) RETURNING id`, args:[weekLabel, now.toISOString(),'both', isDemoWeek]});
-      weekId=ins.rows[0].id;
-    }catch{
-      const ins=await db.execute({ sql:`INSERT INTO pairing_weeks (week_label, week_start, focus) VALUES (?,?,?) RETURNING id`, args:[weekLabel, now.toISOString(),'both']});
-      weekId=ins.rows[0].id;
-      if(isDemoWeek){ try{ await db.execute({ sql:`UPDATE pairing_weeks SET is_demo=1 WHERE id=?`, args:[weekId]}); }catch{} }
-    }
+  let pairing=null,persisted=null;
+  for(let retry=0;retry<5;retry+=1){
+    const run=await db.execute({sql:`SELECT COALESCE(generation,0) AS generation FROM pairing_week_runs WHERE week_label=?`,args:[weekLabel]});
+    const currentGeneration=Number(run.rows[0]?.generation||0);
+    const nextGeneration=currentGeneration+1;
+    // Current displayed pairs are intentionally the newest history so a reshuffle
+    // avoids them before considering older repeat and AI-assignment scores.
+    const history=await loadPairingHistory(db,weekLabel,{includeCurrent:true});
+    pairing=buildFairPairing(participants,history,{seed:`${weekLabel}:admin:${nextGeneration}`});
+    pairing.generation=nextGeneration;
+    persisted=await persistPairingWeek(db,{weekLabel,weekStart:now.toISOString(),participants,pairing,isDemoWeek:0,replace:true,generation:nextGeneration,expectedGeneration:currentGeneration});
+    if(persisted.created) break;
   }
-  let prevPairsSet=new Set(); try{ const lw=await db.execute({ sql:`SELECT id FROM pairing_weeks WHERE id != ? ORDER BY id DESC LIMIT 1`, args:[weekId]}); const lwRow=lw && lw.rows && lw.rows[0]; if(lwRow){ const pg=await db.execute({ sql:`SELECT user_a_id,user_b_id FROM pairing_groups WHERE week_id=?`, args:[lwRow.id]}); pg.rows.forEach(r=>{ const key=[Math.min(r.user_a_id,r.user_b_id), Math.max(r.user_a_id,r.user_b_id)].join('-'); prevPairsSet.add(key); }); } }catch{}
-  let bestPairs=null; for(let attempt=0; attempt<8; attempt++){ const shuffled=shuffleArray(participants); const pairs=[]; for(let i=0;i<shuffled.length;i+=2){ const a=shuffled[i]; const b=shuffled[i+1]||null; if(!b) pairs.push({a,b:null,isAI:true}); else pairs.push({a,b,isAI:false}); } let repeats=0; for(const p of pairs){ if(p.isAI) continue; const key=[Math.min(p.a.id,p.b.id), Math.max(p.a.id,p.b.id)].join('-'); if(prevPairsSet.has(key)) repeats++; } if(!bestPairs||repeats<bestPairs.repeats){ bestPairs={pairs,repeats}; if(repeats===0) break; } }
-  for(const pr of bestPairs.pairs){ const aId=pr.a.id; const bId= pr.b ? pr.b.id : pr.a.id; const isAi=pr.isAI?1:0; await db.execute({ sql:`INSERT INTO pairing_groups (week_id,user_a_id,user_b_id,is_ai_pair,topic,topic_kind) VALUES (?,?,?,?,?,?)`, args:[weekId,aId,bId,isAi,'Pick together','both'] }); }
-  const envAdmins=Array.from(getAdminEmails());
-  return res.json({ ok:true, week_label:weekLabel, week_id:weekId, reshuffled_by:callerEmail, is_admin_via:callerIsAdminFlag?'db':(getAdminEmails().has(callerEmail)?'env':'unknown'), admin_list:envAdmins, pairs:bestPairs.pairs.map(p=>({ a:p.a.name, b: p.b ? p.b.name : 'AI partner', a_id:p.a.id, b_id:p.b? p.b.id:null, isAI:p.isAI })), repeat_avoided:bestPairs.repeats, count:participants.length, note:'Admin reshuffle respected Availability — only is_available=1 users included' });
+  if(!persisted?.created) return res.status(409).json({ok:false,error:'pairing changed concurrently; retry reshuffle'});
+  return res.json({ ok:true, week_label:weekLabel, week_id:persisted.weekId, generation:persisted.generation, reshuffled_by:callerEmail, is_admin_via:callerIsAdminFlag?'db':(getAdminEmails().has(callerEmail)?'env':'unknown'), pairs:persisted.pairs.map(p=>({ a:p.a.name, b: p.b ? p.b.name : 'AI partner', a_id:p.a.id, b_id:p.b? p.b.id:null, isAI:p.isAI, pg_id:p.groupId, room:canonicalRoomId(persisted.weekId,p.groupId) })), repeat_avoided:pairing.repeatCount, count:participants.length, algorithm:pairingMetadata(pairing), note:'Admin reshuffle excludes demo accounts and advances a persisted generation while avoiding the currently displayed pairs when alternatives exist.' });
 }
 
 
 async function handleWeekly(req,res){
+  // Vercel Cron invokes configured paths with GET; authentication below is mandatory.
   if (req.method!=='GET' && req.method!=='POST') return res.status(405).json({ error:'GET or POST'});
   if (!verifyCronAuth(req)){
-    try{ await logServerOps('warn','cron_auth_fail','weekly unauthorized', {headers:Object.keys(req.headers||{})}, req); }catch{}
-    return res.status(401).json({ error:'unauthorized cron', hint:'send x-cron-secret header or ?secret= or x-vercel-cron'});
+    if(process.env.TURSO_DATABASE_URL){ try{ await logServerOps('warn','cron_auth_fail','weekly unauthorized', {headers:Object.keys(req.headers||{})}, req); }catch{} }
+    return res.status(401).json({ error:'unauthorized cron', hint:'send x-cron-secret: <CRON_SECRET> or Authorization: Bearer <CRON_SECRET>'});
   }
   const db = getClient();
   await ensureMigrations(db);
   try{ await ensureNotifPrefs(db); }catch{}
   const now=new Date(); const weekLabel=isoWeekLabel(now);
+  const baseUrl=(process.env.APP_URL || (process.env.VERCEL_URL? `https://${process.env.VERCEL_URL}`:'https://randori-circle-self.vercel.app')).replace(/\/$/,'');
   const existingWeek=await db.execute({ sql:`SELECT id FROM pairing_weeks WHERE week_label=?`, args:[weekLabel]});
   if (existingWeek.rows.length){
+    const emailDelivery=await deliverPendingPairingEmails(db,existingWeek.rows[0].id,baseUrl,req);
     try{ await logServerOps('info','weekly_skipped','week already exists '+weekLabel, {week_label:weekLabel}, req);}catch{}
-    return res.json({ ok:true, skipped:true, week_label:weekLabel, message:'Week already shuffled - see /api/weeks for pairs' });
+    return res.json({ ok:true, skipped:true, week_label:weekLabel, week_id:existingWeek.rows[0].id, email:emailDelivery.summary, email_delivery:emailDelivery, message:'Week already shuffled; pending reminders were retried without regenerating pairs' });
   }
   let allAccounts=[], available=[], unavailable=[];
-  let authRs;
-  try{ authRs=await db.execute(`SELECT id, display_name as name, color, email, is_available, is_demo, phone FROM auth_accounts ORDER BY id`); }
-  catch{ try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN phone TEXT`);}catch{}; try{ authRs=await db.execute(`SELECT id, display_name as name, color, email, is_available, is_demo, phone FROM auth_accounts ORDER BY id`);}catch{ authRs=await db.execute(`SELECT id, display_name as name, color, email, is_available, is_demo FROM auth_accounts ORDER BY id`);} }
+  const authRs=await db.execute(`SELECT id, display_name as name, color, email, is_available, is_demo, phone FROM auth_accounts WHERE COALESCE(is_demo,0)=0 ORDER BY id`);
   if (authRs.rows.length){
     allAccounts=authRs.rows.map(r=>({ id:r.id, name:r.name, color:r.color, email:r.email, phone:r.phone||null, is_available:r.is_available===null||r.is_available===undefined?1:(r.is_available?1:0), is_demo: !!r.is_demo, source:'auth'}));
     available=allAccounts.filter(a=>a.is_available);
@@ -235,110 +396,30 @@ async function handleWeekly(req,res){
     try{ await logServerOps('warn','weekly_no_participants','no available participants '+weekLabel, {week_label:weekLabel, total:allAccounts.length}, req);}catch{}
     return res.status(400).json({ ok:false, error:'need at least 1 available participant (solo → AI partner)', available_count:participants.length, total_accounts:allAccounts.length, unavailable_count:unavailable.length, unavailable:unavailable.map(u=>({ id:u.id, name:u.name, email:u.email })), hint:'Users marked unavailable are excluded — ask them to set Available toggle on, or wait for next week' });
   }
-  let prevPairsSet=new Set(); try{ const lastWeek=await db.execute(`SELECT id FROM pairing_weeks ORDER BY id DESC LIMIT 1`); if(lastWeek.rows.length){ const pg=await db.execute({ sql:`SELECT user_a_id,user_b_id FROM pairing_groups WHERE week_id=?`, args:[lastWeek.rows[0].id]}); pg.rows.forEach(r=>{ const key=[Math.min(r.user_a_id,r.user_b_id), Math.max(r.user_a_id,r.user_b_id)].join('-'); prevPairsSet.add(key); }); } }catch{}
-  let bestPairs=null; 
-  for(let attempt=0; attempt<8; attempt++){
-    const seedStr = weekLabel + ':' + attempt;
-    const shuffled=seededShuffle(participants, seedStr);
-    const pairs=[]; 
-    for(let i=0;i<shuffled.length;i+=2){ const a=shuffled[i]; const b=shuffled[i+1]||null; if(!b) pairs.push({a,b:null,isAI:true}); else pairs.push({a,b,isAI:false}); }
-    let repeatCount=0; for(const p of pairs){ if(p.isAI) continue; const key=[Math.min(p.a.id,p.b.id), Math.max(p.a.id,p.b.id)].join('-'); if(prevPairsSet.has(key)) repeatCount++; }
-    if(!bestPairs||repeatCount<bestPairs.repeatCount){ bestPairs={pairs, repeatCount}; if(repeatCount===0) break; }
+  const history=await loadPairingHistory(db,weekLabel);
+  const pairing=buildFairPairing(participants,history,{seed:`${weekLabel}:weekly`});
+  const notificationRecipients=[
+    ...participants.filter(p=>p.email).map(p=>({id:p.id,email:p.email,kind:'paired'})),
+    ...unavailable.filter(p=>p.email).map(p=>({id:p.id,email:p.email,kind:'unavailable'})),
+  ];
+  const persisted=await persistPairingWeek(db,{weekLabel,weekStart:now.toISOString(),participants,pairing,isDemoWeek:0,notificationRecipients});
+  if(!persisted.created){
+    const emailDelivery=await deliverPendingPairingEmails(db,persisted.weekId,baseUrl,req);
+    try{ await logServerOps('info','weekly_skipped','week concurrently created '+weekLabel,{week_label:weekLabel,week_id:persisted.weekId},req); }catch{}
+    return res.json({ok:true,skipped:true,week_label:weekLabel,week_id:persisted.weekId,email:emailDelivery.summary,email_delivery:emailDelivery,message:'Week already shuffled; pending reminders were retried without regenerating pairs'});
   }
-  const isDemoWeek = participants.some(p=>p.is_demo) ? 1:0;
-  let weekId;
-  try{
-    const weekIns=await db.execute({ sql:`INSERT INTO pairing_weeks (week_label, week_start, focus, is_demo) VALUES (?,?,?,?) RETURNING id`, args:[weekLabel, now.toISOString(),'both', isDemoWeek]});
-    weekId=weekIns.rows[0].id;
-  }catch{
-    const weekIns=await db.execute({ sql:`INSERT INTO pairing_weeks (week_label, week_start, focus) VALUES (?,?,?) RETURNING id`, args:[weekLabel, now.toISOString(),'both']});
-    weekId=weekIns.rows[0].id;
-    if(isDemoWeek){ try{ await db.execute({ sql:`UPDATE pairing_weeks SET is_demo=1 WHERE id=?`, args:[weekId]});}catch{} }
-  }
-  for(const pr of bestPairs.pairs){ const aId=pr.a.id; const bId=pr.b?pr.b.id:pr.a.id; const isAi=pr.isAI?1:0; await db.execute({ sql:`INSERT INTO pairing_groups (week_id,user_a_id,user_b_id,is_ai_pair,topic,topic_kind) VALUES (?,?,?,?,?,?)`, args:[weekId,aId,bId,isAi,'Pick together','both']}); }
+  const weekId=persisted.weekId;
+  pairing.generation=persisted.generation;
+  const bestPairs={pairs:persisted.pairs,repeatCount:pairing.repeatCount};
 
-  try{ await logServerOps('success','weekly_paired', `weekly ${weekLabel} paired ${participants.length} users`, {week_label:weekLabel, week_id:weekId, pairs:bestPairs.pairs.length, available:participants.length, repeat_avoided:bestPairs.repeatCount}, req);}catch{}
+  try{ await logServerOps('success','weekly_paired', `weekly ${weekLabel} paired ${participants.length} users`, {week_label:weekLabel, week_id:weekId, pairs:bestPairs.pairs.length, available:participants.length, repeat_avoided:bestPairs.repeatCount, algorithm:pairingMetadata(pairing)}, req);}catch{}
 
-  let prefsMap = new Map();
-  try{
-    const prs=await db.execute(`SELECT user_id, email_enabled, sms_enabled, phone FROM user_notification_prefs`);
-    for(const r of prs.rows) prefsMap.set(r.user_id, r);
-  }catch{}
+  const emailDelivery=await deliverPendingPairingEmails(db,weekId,baseUrl,req);
+  const emailStatus=emailDelivery.summary;
+  const unavailableEmailStatus=emailDelivery.summary;
+  const smsStatus='disabled until SMS delivery has a durable idempotent outbox';
 
-  let emailStatus='skipped (no RESEND_API_KEY) — pairs visible in-app via /api/weeks; set RESEND_API_KEY + RESEND_FROM to email everyone';
-  let smsStatus='skipped (no TWILIO_* env or no phone)';
-  let unavailableEmailStatus='skipped (no RESEND_API_KEY or no unavailable users)';
-  const baseUrl=process.env.APP_URL || (process.env.VERCEL_URL? `https://${process.env.VERCEL_URL}`:'https://randori-circle-self.vercel.app');
-  function roomLink(pair){
-    const id = `w${weekId}-p${pair.a.id}-${pair.b?pair.b.id:'ai'}`;
-    return `${baseUrl}/join/${id}`;
-  }
-
-  if (process.env.RESEND_API_KEY){
-    try{
-      const resendMod = await import('resend').catch(()=>null);
-      if (resendMod && resendMod.Resend){
-        const resend=new resendMod.Resend(process.env.RESEND_API_KEY);
-        const from=process.env.RESEND_FROM||'Randori <onboarding@randori.circle>';
-        const toList=[];
-        for(const p of participants){
-          const pref=prefsMap.get(p.id);
-          if(pref && pref.email_enabled===0) continue;
-          if(p.email) toList.push(p);
-        }
-        if (toList.length){
-          const html=`<h2>Randori Circle — ${weekLabel}</h2><p>You're paired! This week's auto-shuffle includes ${participants.length} of ${allAccounts.length} signed-up users ( ${unavailable.length} unavailable skipped ).</p><p>Pairs: ${bestPairs.pairs.map(pr=> pr.isAI ? `${pr.a.name} × AI partner` : `${pr.a.name} × ${pr.b.name} — <a href="${roomLink(pr)}">Join room</a>`).join(', ')}</p><p><a href="${baseUrl}">Open Randori Circle</a> to see your partner and pick DSA / System Design / Both.</p><p>Easy join: click your room link above or dashboard → Join Session.</p><p style="color:#888;font-size:12px">Auto-shuffled Sun 08:00 BST. Turn off availability toggle in settings if you want to skip next week. Set reminder toggle in dashboard to get email/SMS.</p>`;
-          let sent=0;
-          for(const u of toList.slice(0,100)){
-            try{ await resend.emails.send({ from, to:u.email, subject:`Randori ${weekLabel} — your pairing is ready`, html }); sent++; }catch{}
-          }
-          emailStatus=`sent to ${sent}/${toList.length} available participants (email_enabled)`;
-          try{ await logServerOps('success','email_sent',`weekly emails sent ${sent}`, {week_label:weekLabel, sent, total:toList.length}, req);}catch{}
-        } else { emailStatus='no emails for participants (no email field or opt-out)'; try{ await logServerOps('info','email_skipped_no_key','no eligible emails', {week_label:weekLabel}, req);}catch{} }
-        if (unavailable.length){
-          const uEmails=unavailable.map(u=>u.email).filter(Boolean);
-          if (uEmails.length){
-            const htmlU=`<h2>Randori Circle — you missed ${weekLabel}</h2><p>You were excluded from this week's shuffle because you marked <b>Unavailable</b>.</p><p>No worries — you'll be back next Sunday 08:00 BST automatically unless you stay unavailable.</p><p><a href="${baseUrl}">Open app → Settings → set Available this week = ON</a> to re-join now. Admin can also reshuffle manually this week if you're back early.</p><p style="color:#888;font-size:12px">${participants.length} people were paired this week.</p>`;
-            let sentU=0;
-            for(const to of uEmails.slice(0,100)){ try{ await resend.emails.send({ from, to, subject:`You missed Randori ${weekLabel} — toggle back to available`, html:htmlU }); sentU++; }catch{} }
-            unavailableEmailStatus=`sent to ${sentU} unavailable users`;
-          } else unavailableEmailStatus='unavailable users have no email field';
-        } else unavailableEmailStatus='no unavailable users this week';
-      } else { emailStatus='resend package not installed — run npm i resend'; unavailableEmailStatus=emailStatus; try{ await logServerOps('warn','email_skipped_no_key','resend not installed', {}, req);}catch{} }
-    }catch(e){ emailStatus='error: '+String(e.message||e).slice(0,180); unavailableEmailStatus=emailStatus; try{ await logServerOps('error','email_fail','weekly email error '+String(e.message||e).slice(0,120), {err:String(e.message||e).slice(0,300)}, req);}catch{} }
-  } else {
-    try{ await logServerOps('info','email_skipped_no_key','weekly skip email no RESEND_API_KEY', {week_label:weekLabel}, req);}catch{}
-  }
-
-  if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM){
-    try{
-      const sid=process.env.TWILIO_ACCOUNT_SID;
-      const token=process.env.TWILIO_AUTH_TOKEN;
-      const from=process.env.TWILIO_FROM;
-      const auth = Buffer.from(sid+':'+token).toString('base64');
-      let sentSms=0;
-      for(const p of participants.slice(0,30)){
-        const pref=prefsMap.get(p.id);
-        if(pref && pref.sms_enabled===0) continue;
-        const phone = pref && pref.phone ? pref.phone : (p.phone||null);
-        if(!phone) continue;
-        const body=`Randori ${weekLabel}: paired! ${bestPairs.pairs.find(pr=>pr.a.id===p.id|| (pr.b&&pr.b.id===p.id)) ? 'You + '+(bestPairs.pairs.find(pr=>pr.a.id===p.id|| (pr.b&&pr.b.id===p.id)).b? bestPairs.pairs.find(pr=>pr.a.id===p.id|| (pr.b&&pr.b.id===p.id)).b.name : 'AI') : 'check app'} — Join ${baseUrl}/join/w${weekId}-p${p.id} `;
-        try{
-          const r=await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded','Authorization':'Basic '+auth}, body:new URLSearchParams({From:from, To:phone, Body:body}).toString()});
-          if(r.ok) sentSms++;
-        }catch{}
-      }
-      smsStatus=`sent ${sentSms} sms via Twilio`;
-      try{ await logServerOps('success','sms_sent', `weekly sms ${sentSms}`, {week_label:weekLabel, sentSms}, req);}catch{}
-    }catch(e){
-      smsStatus='sms error '+String(e.message||e).slice(0,100);
-      try{ await logServerOps('error','sms_fail', smsStatus, {err:String(e.message||e).slice(0,200)}, req);}catch{}
-    }
-  } else {
-    try{ await logServerOps('info','sms_skipped_no_creds','skip sms no TWILIO_* env', {week_label:weekLabel}, req);}catch{}
-  }
-
-  return res.json({ ok:true, week_label:weekLabel, week_id:weekId, pairs:bestPairs.pairs.map(p=>({ a:p.a.name, b:p.b?p.b.name:'AI partner', isAI:p.isAI, a_id:p.a.id, b_id:p.b?p.b.id:null, room:`w${weekId}-p${p.a.id}-${p.b?p.b.id:'ai'}`, join:`${baseUrl}/join/w${weekId}-p${p.a.id}-${p.b?p.b.id:'ai'}` })), available_count:participants.length, total_accounts:allAccounts.length, unavailable_count:unavailable.length, unavailable:unavailable.map(u=>({ id:u.id, name:u.name, email:u.email })), repeat_avoided:bestPairs.repeatCount, email:emailStatus, sms:smsStatus, unavailable_emails:unavailableEmailStatus, unavailable_reminders:unavailable.map(u=>({ id:u.id, name:u.name, email:u.email, reason:'marked unavailable', action:'Set Available this week = ON in app settings' })), note:'Weekly auto-shuffle: only is_available=1 participants. Set RESEND_API_KEY+RESEND_FROM and TWILIO_* in Vercel to email/sms. Reminder toggle on dashboard sets localStorage + /api/notifications/prefs.', app_url:baseUrl });
+  return res.json({ ok:true, week_label:weekLabel, week_id:weekId, pairs:bestPairs.pairs.map(p=>{ const room=canonicalRoomId(weekId,p.groupId); return { a:p.a.name, b:p.b?p.b.name:'AI partner', isAI:p.isAI, a_id:p.a.id, b_id:p.b?p.b.id:null, pg_id:p.groupId, room, join:`${baseUrl}/join/${room}` }; }), available_count:participants.length, total_accounts:allAccounts.length, unavailable_count:unavailable.length, unavailable:unavailable.map(u=>({ id:u.id, name:u.name, email:u.email })), repeat_avoided:bestPairs.repeatCount, algorithm:pairingMetadata(pairing), email:emailStatus, email_delivery:emailDelivery, sms:smsStatus, unavailable_emails:unavailableEmailStatus, unavailable_reminders:unavailable.map(u=>({ id:u.id, name:u.name, email:u.email, reason:'marked unavailable', action:'Set Available this week = ON in app settings' })), note:'Weekly auto-shuffle excludes demo accounts and uses a durable idempotent email outbox. SMS remains disabled until it has equivalent delivery safety.', app_url:baseUrl });
 }
 
 
@@ -361,7 +442,7 @@ async function handleDemoSeed(req,res){
       // ignore duplicate / error
     }
   }
-  return res.json({ ok:true, seeded_count:seeded.length, seeded, note:'6 demo users ready (is_demo=1, is_available=1). They surface in /api/circle and weekly shuffles.' });
+  return res.json({ ok:true, seeded_count:seeded.length, seeded, note:'6 demo users ready (is_demo=1, is_available=1). They are isolated to explicit demo flows and excluded from normal weekly pairing.' });
 }
 
 async function handleDemoShuffle(req,res){
@@ -391,25 +472,16 @@ async function handleDemoShuffle(req,res){
   if (authRs.rows.length<2){
     return res.status(400).json({ ok:false, error:'need at least 2 available users (demo or real) to shuffle', available_count:authRs.rows.length });
   }
-  const participants = authRs.rows.map(r=>({ id:r.id, name:r.name, email:r.email, color:r.color, is_demo: !!r.is_demo }));
+  const participants = authRs.rows.map(r=>({ id:r.id, name:r.name, email:r.email, color:r.color, source:'auth', is_demo: !!r.is_demo }));
   const now=new Date();
   const weekLabel = isoWeekLabel(now) + `-demo-${String(Date.now()).slice(-4)}`;
   const isDemoWeek = participants.some(p=>p.is_demo) ? 1:0;
-  let weekId;
-  try{
-    const ins=await db.execute({ sql:`INSERT INTO pairing_weeks (week_label, week_start, focus, is_demo) VALUES (?,?,?,?) RETURNING id`, args:[weekLabel, now.toISOString(),'both', isDemoWeek]});
-    weekId=ins.rows[0].id;
-  }catch{
-    const ins=await db.execute({ sql:`INSERT INTO pairing_weeks (week_label, week_start, focus) VALUES (?,?,?) RETURNING id`, args:[weekLabel, now.toISOString(),'both']});
-    weekId=ins.rows[0].id;
-    if(isDemoWeek){ try{ await db.execute({ sql:`UPDATE pairing_weeks SET is_demo=1 WHERE id=?`, args:[weekId]});}catch{} }
-  }
-  let prevPairsSet=new Set();
-  try{ const lw=await db.execute({ sql:`SELECT id FROM pairing_weeks WHERE id != ? ORDER BY id DESC LIMIT 1`, args:[weekId]}); const lwRow=lw && lw.rows && lw.rows[0]; if(lwRow){ const pg=await db.execute({ sql:`SELECT user_a_id,user_b_id FROM pairing_groups WHERE week_id=?`, args:[lwRow.id]}); pg.rows.forEach(r=>{ const key=[Math.min(r.user_a_id,r.user_b_id), Math.max(r.user_a_id,r.user_b_id)].join('-'); prevPairsSet.add(key); }); } }catch{}
-  let bestPairs=null; for(let attempt=0; attempt<8; attempt++){ const shuffled=shuffleArray(participants); const pairs=[]; for(let i=0;i<shuffled.length;i+=2){ const a=shuffled[i]; const b=shuffled[i+1]||null; if(!b) pairs.push({a,b:null,isAI:true}); else pairs.push({a,b,isAI:false}); } let repeats=0; for(const p of pairs){ if(p.isAI) continue; const key=[Math.min(p.a.id,p.b.id), Math.max(p.a.id,p.b.id)].join('-'); if(prevPairsSet.has(key)) repeats++; } if(!bestPairs||repeats<bestPairs.repeats){ bestPairs={pairs,repeats}; if(repeats===0) break; } }
-  for(const pr of bestPairs.pairs){ const aId=pr.a.id; const bId= pr.b ? pr.b.id : pr.a.id; const isAi=pr.isAI?1:0; await db.execute({ sql:`INSERT INTO pairing_groups (week_id,user_a_id,user_b_id,is_ai_pair,topic,topic_kind) VALUES (?,?,?,?,?,?)`, args:[weekId,aId,bId,isAi,'Pick together','both'] }); }
-  const envAdmins=Array.from(getAdminEmails());
-  return res.json({ ok:true, demo:true, week_label:weekLabel, week_id:weekId, reshuffled_by:callerEmail, is_admin_via:callerIsAdminFlag?'db':'env', admin_list:envAdmins, pairs:bestPairs.pairs.map(p=>({ a:p.a.name, b: p.b ? p.b.name : 'AI partner', a_id:p.a.id, b_id:p.b? p.b.id:null, isAI:p.isAI, is_demo_a: !!p.a.is_demo, is_demo_b: p.b ? !!p.b.is_demo : false })), repeat_avoided:bestPairs.repeats, count:participants.length, note:'Demo shuffle — all available users (demo+real) paired, week marked is_demo=1 if any demo participant' });
+  const history=await loadPairingHistory(db,weekLabel,{includeDemo:true});
+  const pairing=buildFairPairing(participants,history,{seed:`${weekLabel}:demo`});
+  const persisted=await persistPairingWeek(db,{weekLabel,weekStart:now.toISOString(),participants,pairing,isDemoWeek});
+  if(!persisted.created) return res.status(409).json({ok:false,error:'demo shuffle label collision; retry',week_label:weekLabel});
+  pairing.generation=persisted.generation;
+  return res.json({ ok:true, demo:true, week_label:weekLabel, week_id:persisted.weekId, reshuffled_by:callerEmail, is_admin_via:callerIsAdminFlag?'db':'env', pairs:persisted.pairs.map(p=>({ a:p.a.name, b: p.b ? p.b.name : 'AI partner', a_id:p.a.id, b_id:p.b? p.b.id:null, isAI:p.isAI, is_demo_a: !!p.a.is_demo, is_demo_b: p.b ? !!p.b.is_demo : false, pg_id:p.groupId, room:canonicalRoomId(persisted.weekId,p.groupId) })), repeat_avoided:pairing.repeatCount, algorithm:pairingMetadata(pairing), count:participants.length, note:'Demo shuffle — all available users (demo+real) paired, week marked is_demo=1 if any demo participant' });
 }
 
 async function handleDemoReset(req,res){
@@ -418,30 +490,21 @@ async function handleDemoReset(req,res){
   if (!ctx) return;
   const {db} = ctx;
   let deletedGroups=0, deletedWeeks=0, deletedUsers=0;
-  try{
-    const groupsDel = await db.execute(`DELETE FROM pairing_groups WHERE week_id IN (SELECT id FROM pairing_weeks WHERE is_demo=1)`);
-    deletedGroups = groupsDel.rowsAffected || 0;
-  }catch{}
-  try{
-    // fallback count via changes(); libsql driver may not expose; do count before
-  }catch{}
-  try{
-    // count weeks before delete for response
-    const cntW = await db.execute(`SELECT COUNT(*) as c FROM pairing_weeks WHERE is_demo=1`);
-    deletedWeeks = cntW.rows[0]?.c || 0;
-    await db.execute(`DELETE FROM pairing_weeks WHERE is_demo=1`);
-  }catch{}
-  try{
-    const cntU = await db.execute(`SELECT COUNT(*) as c FROM auth_accounts WHERE is_demo=1`);
-    deletedUsers = cntU.rows[0]?.c || 0;
-    await db.execute(`DELETE FROM auth_accounts WHERE is_demo=1`);
-  }catch{}
-  // Also clean orphan groups where user no longer exists (defensive)
-  try{ await db.execute(`DELETE FROM pairing_groups WHERE user_a_id NOT IN (SELECT id FROM auth_accounts) OR user_b_id NOT IN (SELECT id FROM auth_accounts)`); }catch{}
+  try{ const cnt=await db.execute(`SELECT COUNT(*) AS c FROM pairing_groups WHERE week_id IN (SELECT id FROM pairing_weeks WHERE is_demo=1)`); deletedGroups=cnt.rows[0]?.c||0; }catch{}
+  try{ const cnt=await db.execute(`SELECT COUNT(*) AS c FROM pairing_weeks WHERE is_demo=1`); deletedWeeks=cnt.rows[0]?.c||0; }catch{}
+  try{ const cnt=await db.execute(`SELECT COUNT(*) AS c FROM auth_accounts WHERE is_demo=1`); deletedUsers=cnt.rows[0]?.c||0; }catch{}
+  await db.batch([
+    `DELETE FROM pairing_participants WHERE week_id IN (SELECT id FROM pairing_weeks WHERE is_demo=1)`,
+    `DELETE FROM pairing_groups WHERE week_id IN (SELECT id FROM pairing_weeks WHERE is_demo=1)`,
+    `DELETE FROM pairing_week_runs WHERE week_id IN (SELECT id FROM pairing_weeks WHERE is_demo=1)`,
+    `DELETE FROM pairing_weeks WHERE is_demo=1`,
+    `DELETE FROM auth_accounts WHERE is_demo=1`,
+  ],'write');
   return res.json({ ok:true, deleted:{ groups:deletedGroups, weeks:deletedWeeks, demo_users:deletedUsers }, note:'Demo reset complete — demo users + demo weeks + their groups deleted. Real users untouched.' });
 }
 
 export default async function handler(req,res){
+  if(!verifyMutationOrigin(req)) return res.status(403).json({error:'cross-origin mutation rejected'});
   const ep = getEndpoint(req);
   const pathLower = (req.url||'').toLowerCase();
   if (ep==='notifications-prefs' || ep==='notifications' || ep==='prefs' || ep.includes('notification') || pathLower.includes('notifications') || pathLower.includes('notif') ) return handleNotificationPrefs(req,res);

@@ -4,8 +4,31 @@
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
 <meta name="color-scheme" content="dark light"/>
+<meta name="referrer" content="no-referrer"/>
 <link rel="icon" href="data:,"/>
 <title>Randori Circle</title>
+<script>
+/* Shared escaping for the legacy template renderers. Keep untrusted text out of HTML contexts. */
+function escapeHtml(value){
+  return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch];
+  });
+}
+function safeProfileColor(value){
+  const color=String(value||'');
+  return /^(#[0-9a-f]{3,8}|var\(--(?:accent|ink|bg)(?:-[1-4])?\))$/i.test(color) ? color : '#9aa0a6';
+}
+// Legacy OAuth callbacks exposed bearer tokens in the URL. Never consume them client-side.
+try{
+  const oauthParams=new URLSearchParams(window.location.search);
+  if(oauthParams.has('g_token') || oauthParams.has('g_name')){
+    oauthParams.delete('g_token');
+    oauthParams.delete('g_name');
+    const cleanQuery=oauthParams.toString();
+    window.history.replaceState({}, document.title, window.location.pathname+(cleanQuery?'?'+cleanQuery:'')+window.location.hash);
+  }
+}catch{}
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
@@ -403,12 +426,10 @@ p{margin:0}
 /* Randori Logger — client batcher, flushed to /api/logs. Sentry/Better Stack ready */
 (function(){
   if(window._randori_log) return;
-  const TOKEN_KEY='randori-token';
   const q=[];
   let flushing=false, lastFlush=0;
   let _lastEvent=null;
   function getRoute(){ try{ return location.pathname + location.search; }catch{ return '/'; } }
-  function getTok(){ try{ return localStorage.getItem(TOKEN_KEY)||''; }catch{ return ''; } }
   function baseMeta(extra){
     const m={};
     try{ m.ua=navigator.userAgent.slice(0,300); }catch{}
@@ -477,18 +498,9 @@ p{margin:0}
     flushing=true; lastFlush=Date.now();
     const batch=q.splice(0,20);
     try{
-      const tok=getTok();
       const headers={'content-type':'application/json'};
-      if(tok) headers['authorization']='Bearer '+tok;
       // fire-and-forget
-      fetch('/api/logs',{method:'POST', headers, body: JSON.stringify(batch.length===1? batch[0]: {logs: batch})}).catch(()=>{});
-      // Optional Better Stack forward if LOGTAIL_TOKEN present
-      try{
-        const lt = window.LOGTAIL_TOKEN || localStorage.getItem('logtail-token');
-        if(lt){
-          fetch('https://in.logtail.com/',{method:'POST', headers:{'Authorization':'Bearer '+lt, 'Content-Type':'application/json'}, body: JSON.stringify({dt:new Date().toISOString(), level: batch[0]?.level, message: batch.map(b=>b.event+': '+b.message).join(' | ').slice(0,1500), ...baseMeta({batch_len: batch.length})})}).catch(()=>{});
-        }
-      }catch{}
+      fetch('/api/logs',{method:'POST', credentials:'same-origin', headers, body: JSON.stringify(batch.length===1? batch[0]: {logs: batch})}).catch(()=>{});
     }catch{}
     flushing=false;
     if(q.length) setTimeout(flush, 1500);
@@ -541,6 +553,7 @@ p{margin:0}
   // expose safe globally for inline try-catch sugar
   try{ window._randori_safe=safe; }catch{}
 })();
+</script>
 <script>
 /* Global safe event wrapper - ensures try/catch + log + Sentry for UI events */
 (function(){
@@ -817,16 +830,12 @@ p{margin:0}
             <div class="row">
               <select id="langSelect" class="select" style="width:140px">
                 <option value="javascript">javascript</option>
-                <option value="typescript">typescript</option>
                 <option value="python">python</option>
-                <option value="java">java</option>
-                <option value="go">go</option>
-                <option value="cpp">cpp</option>
               </select>
               <select id="roomSelect" class="select" style="width:130px"></select>
               <button id="runBtn" class="btn">▶ Run</button>
               <button id="codeJoinSessionBtn" class="btn" style="background:var(--accent,#c8f6a0);color:#0f0f10;font-weight:700;padding:7px 12px">▶ Join Session</button>
-              <label class="small muted" style="display:inline-flex; align-items:center; gap:4px; margin-left:6px; font-size:11px"><input type="checkbox" id="useServerRunner" checked style="accent-color:var(--accent)"> <span title="Run via server Piston for parity (uncheck for instant local JS)">server</span></label>
+              <label class="small muted" style="display:inline-flex; align-items:center; gap:4px; margin-left:6px; font-size:11px"><input type="checkbox" id="useServerRunner" checked disabled style="accent-color:var(--accent)"> <span title="Code always runs through the authenticated execution gateway">secure server</span></label>
               <button id="formatBtn" class="pill" title="Format code (Shift+Alt+F) — Prettier where possible">↥ Format</button>
               <button id="copyStarterBtn" class="pill" title="Copy starter for current lang">⎘ Copy starter</button>
               <button id="editorResetBtn" class="pill" title="Reset editor to starter">↺ Reset</button>
@@ -930,10 +939,11 @@ p{margin:0}
 <div style="text-align:center" class="small muted">— or —</div>
 <input id="authEmail" class="input" placeholder="email@example.com" type="email"/>
 <input id="authName" class="input" placeholder="display name (for signup)" maxlength="32"/>
-<input id="authPass" class="input" placeholder="password (min 6)" type="password"/>
+<input id="authPass" class="input" placeholder="password (10+ chars, existing users)" type="password"/>
 <div id="authErr" class="small" style="color:var(--accent-3);min-height:16px"></div>
+<div class="small muted">Private beta: new members sign in with an allowlisted Google account.</div>
 </div>
-<div class="row" style="justify-content:space-between;margin-top:4px"><span class="small muted">Personal history • auto-shuffle Sundays 08:00 BST</span><span class="row"><button id="authCancel" class="btn secondary">Cancel</button><button id="authSignup" class="btn secondary">Sign up</button><button id="authSignin" class="btn">Sign in</button></span></div>
+<div class="row" style="justify-content:space-between;margin-top:4px"><span class="small muted">Personal history • auto-shuffle Sundays 08:00 BST</span><span class="row"><button id="authCancel" class="btn secondary">Cancel</button><button id="authSignup" class="btn secondary" hidden style="display:none">Sign up</button><button id="authSignin" class="btn">Sign in</button></span></div>
 </div></div>
 <div id="welcomeBanner" class="onboard-banner" style="display:none">
   <div class="small"><b>Welcome to Randori Circle</b> — weekly mock interviews with friends. Pair Sunday, practice DSA + System Design together. <span class="kbd" style="margin-left:6px">5-min setup</span></div>
@@ -957,15 +967,15 @@ p{margin:0}
   // ---------- auth layer ----------
   const TOKEN_KEY='randori-token';
   const ME_KEY='randori-me';
-  let authToken = localStorage.getItem(TOKEN_KEY)||'';
-  let me = null; try{ me = JSON.parse(localStorage.getItem(ME_KEY)||'null')}catch{}
+  let me = null;
+  // Authentication now uses an HttpOnly session cookie. Remove legacy bearer material.
+  try{ localStorage.removeItem(TOKEN_KEY); }catch{}
   async function api(path, opts={}){
     const _apiStart = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
     try{
       const headers = opts.headers||{};
       headers['content-type']='application/json';
-      if(authToken) headers['authorization']='Bearer '+authToken;
-      const r=await fetch(path,{...opts,headers,body: opts.body? JSON.stringify(opts.body):undefined});
+      const r=await fetch(path,{...opts,credentials:'same-origin',headers,body: opts.body? JSON.stringify(opts.body):undefined});
       const text = await r.text();
       let j; try{ j=JSON.parse(text)}catch{ j={raw:text,status:r.status} }
       if(!r.ok){
@@ -988,19 +998,14 @@ p{margin:0}
     }
   }
 async function refreshMe(){
-    // sync token from storage every call (handles reopened tab)
-    try{ const fresh = localStorage.getItem(TOKEN_KEY); if(fresh && fresh!==authToken) authToken=fresh; }catch{}
-    if(!authToken){ me=null; updateAuthUI(); return; }
     try{
       const data = await api('/api/auth/me', {method:'GET'});
       me = data.user;
       localStorage.setItem(ME_KEY, JSON.stringify(me));
-      localStorage.setItem(TOKEN_KEY, authToken);
     }catch(err){
       console.warn('refreshMe failed', err && err.error ? err.error : err);
-      if(!me){
-        try{ const cached = JSON.parse(localStorage.getItem(ME_KEY)||'null'); if(cached) me=cached; }catch{}
-      }
+      me=null;
+      try{ localStorage.removeItem(ME_KEY); }catch{}
     }
     updateAuthUI();
   }
@@ -1012,17 +1017,14 @@ async function refreshMe(){
     const authBtn=document.getElementById('authBtn');
     const outBtn=document.getElementById('signOutBtn');
     const hint=document.getElementById('historyAuthHint');
-    const tokenPresent = !!(typeof authToken !== 'undefined' && authToken) || !!localStorage.getItem('randori-token');
-    // robust token check each UI refresh
-    try{ const lsTok = localStorage.getItem(TOKEN_KEY); if(lsTok && !authToken) authToken=lsTok; }catch{}
-    const effectiveSignedIn = !!(me || (typeof tokenPresent!=='undefined' && tokenPresent) || authToken || (typeof localStorage!=='undefined' && localStorage.getItem(TOKEN_KEY)));
+    const effectiveSignedIn = !!me;
     if(effectiveSignedIn){
       try{
         meLabel.style.display='inline-flex';
         const nm = (me && (me.name||me.display_name||me.email)) || 'you';
         try{ if(meLabel) meLabel.title='Click for sign out'; }catch{}
         meLabel.textContent = '● '+ nm + (isAdmin()?' (admin)':'');
-        if(me && me.color){ meLabel.style.background = me.color+'22'; meLabel.style.borderColor=me.color+'66'; }
+        if(me && me.color){ const color=safeProfileColor(me.color); meLabel.style.background = color+'22'; meLabel.style.borderColor=color+'66'; }
       }catch{}
       if(authBtn){ authBtn.style.display='none'; authBtn.hidden=true; authBtn.setAttribute('hidden',''); authBtn.setAttribute('aria-hidden','true'); }
       if(outBtn){ outBtn.style.display='none'; outBtn.hidden=true; outBtn.setAttribute('hidden',''); outBtn.setAttribute('aria-hidden','true'); }
@@ -1146,9 +1148,9 @@ async function refreshMe(){
   (() => { const _wireOut = (id)=>{ const b=document.getElementById(id); if(!b||b._wired) return; b._wired=true; b.onclick=()=>{ const main=document.getElementById('signOutBtn'); if(main&&main.onclick) return main.onclick(); }; }; _wireOut('dashSignOut'); _wireOut('psSignOut'); _wireOut('meSignOut');
         const ml=document.getElementById('meLabel'); const mm=document.getElementById('meMenu'); if(ml&&mm&&!ml._menuWired){ ml._menuWired=true; ml.addEventListener('click', (e)=>{ e.stopPropagation(); mm.style.display=mm.style.display==='none'||!mm.style.display?'block':'none'; }); document.addEventListener('click', (e)=>{ if(!mm.contains(e.target)&&e.target!==ml) mm.style.display='none'; }); }
       })();
-  document.getElementById('signOutBtn').onclick=()=>{
+  document.getElementById('signOutBtn').onclick=async()=>{
+    try{ await fetch('/api/auth/logout',{method:'POST',credentials:'same-origin'}); }catch{}
     try{
-      authToken='';
       localStorage.removeItem(TOKEN_KEY);
       localStorage.removeItem(ME_KEY);
       localStorage.removeItem('randori-demo-active');
@@ -1170,8 +1172,7 @@ async function refreshMe(){
     // hard fallback: if still signed in view, do full view switch
     setTimeout(()=>{
       try{
-        const tok=localStorage.getItem(TOKEN_KEY);
-        if(!tok){
+        if(!me){
           const land=document.getElementById('view-landing');
           const dash=document.getElementById('view-dashboard');
           const prof=document.getElementById('view-profile-setup');
@@ -1228,12 +1229,11 @@ async function refreshMe(){
       }catch{}
       // server sync if authed
       try{
-        const tok=localStorage.getItem('randori-token');
-        if(tok){
+        if(me){
           const body={email_enabled, sms_enabled};
           if(phone) body.phone=phone;
           if(email) body.email=email;
-          await fetch('/api/notifications/prefs', {method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok}, body: JSON.stringify(body)}).catch(()=>{});
+          await fetch('/api/notifications/prefs', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)}).catch(()=>{});
         }
       }catch{}
       // update labels
@@ -1251,9 +1251,7 @@ async function refreshMe(){
     // hydrate from server when signed in
     (async()=>{
       try{
-        const tok=localStorage.getItem('randori-token');
-        if(!tok) return;
-        const r=await fetch('/api/notifications/prefs', {headers:{'Authorization':'Bearer '+tok}}).catch(()=>null);
+        const r=await fetch('/api/notifications/prefs', {credentials:'same-origin'}).catch(()=>null);
         if(!r || !r.ok) return;
         const j=await r.json();
         if(j && j.prefs){
@@ -1279,8 +1277,8 @@ async function refreshMe(){
     // For now: when /api/cron/weekly returns unavailable_reminders includes you, set flag.
     try{
       // Peek latest weeks to see if you were excluded
-      if(!authToken) return;
-      const d = await api('/api/settings/me',{method:'GET'});
+      if(!me) return;
+      const d = await api('/api/auth/me',{method:'GET'});
       // if unavailable flag is OFF, banner already shown by updateAuthUI
       if(d && d.user && !d.user.is_available && !d.user.isAvailable){
         localStorage.setItem('randori-was-skipped','0'); return;
@@ -1308,8 +1306,8 @@ async function refreshMe(){
     const pass=document.getElementById('authPass').value;
     if(!email||!pass){ document.getElementById('authErr').textContent='email + password required'; return; }
     try{
-      const data= await fetch('/api/auth/signup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email,password:pass,name})}).then(r=>r.json().then(j=>{ if(!r.ok) throw j; return j;}));
-      authToken=data.token; localStorage.setItem(TOKEN_KEY,authToken); localStorage.setItem(ME_KEY,JSON.stringify(data.user)); me=data.user;
+      const data= await fetch('/api/auth/signup',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({email,password:pass,name})}).then(r=>r.json().then(j=>{ if(!r.ok) throw j; return j;}));
+      localStorage.removeItem(TOKEN_KEY); localStorage.setItem(ME_KEY,JSON.stringify(data.user)); me=data.user;
       document.getElementById('authOverlay').classList.remove('show'); try{updateAuthUI();}catch{} try{renderHistory();}catch{} toast(`welcome, ${me.name}`);
         setTimeout(()=>{ try{ if(window._randori_journey&&window._randori_journey.routeByAuth) window._randori_journey.routeByAuth(); }catch{} setTimeout(()=>{ location.reload(); }, 350); }, 200);
     }catch(err){ document.getElementById('authErr').textContent=err.error||err.message||'signup failed'; }
@@ -1321,8 +1319,8 @@ async function refreshMe(){
     const pass=document.getElementById('authPass').value;
     if(!email||!pass){ document.getElementById('authErr').textContent='email + password required'; return; }
     try{
-      const data= await fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email,password:pass})}).then(r=>r.json().then(j=>{ if(!r.ok) throw j; return j;}));
-      authToken=data.token; localStorage.setItem(TOKEN_KEY,authToken); localStorage.setItem(ME_KEY,JSON.stringify(data.user)); me=data.user;
+      const data= await fetch('/api/auth/login',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({email,password:pass})}).then(r=>r.json().then(j=>{ if(!r.ok) throw j; return j;}));
+      localStorage.removeItem(TOKEN_KEY); localStorage.setItem(ME_KEY,JSON.stringify(data.user)); me=data.user;
       document.getElementById('authOverlay').classList.remove('show'); try{updateAuthUI();}catch{} try{renderHistory();}catch{} toast(`signed in as ${me.name}`);
         setTimeout(()=>{ try{ if(window._randori_journey&&window._randori_journey.routeByAuth) window._randori_journey.routeByAuth(); }catch{} setTimeout(()=>{ location.reload(); }, 350); }, 200);
     }catch(err){ document.getElementById('authErr').textContent=err.error||err.message||'login failed'; }
@@ -1332,42 +1330,33 @@ async function refreshMe(){
   document.getElementById('authSignin').onclick=doSignin;
   const authGoogleBtn=document.getElementById('authGoogle');
   if(authGoogleBtn){ authGoogleBtn.onclick=()=>{ window.location.href='/api/auth/google/start'; }; }
-  // handle Google OAuth return ?g_token=
+  // Google OAuth now establishes an HttpOnly session and returns ?google=success.
   (function(){
     try{
       const qp=new URLSearchParams(window.location.search);
-      const gt=qp.get('g_token');
-      const gn=qp.get('g_name');
+      const googleSuccess=qp.get('google')==='success';
       const ge=qp.get('google_error');
       if(ge){
         // show auth overlay with error
         setTimeout(()=>{ document.getElementById('authOverlay').classList.add('show'); document.getElementById('authErr').textContent='Google sign-in failed: '+ge; }, 300);
       }
-      if(gt){
-        authToken=gt;
-        localStorage.setItem(TOKEN_KEY, authToken);
-        if(gn){
-          // provisional me until refreshMe fetches full user
-          const provisional={ name: decodeURIComponent(gn), email: '' };
-          localStorage.setItem(ME_KEY, JSON.stringify(provisional));
-          me=provisional;
-        }
-        // clean URL
-        const cleanUrl=window.location.pathname;
-        window.history.replaceState({}, document.title, cleanUrl);
-        // toast will fire after toast defined later, so defer
-        setTimeout(()=>{ try{ toast('signed in with Google ✓'); }catch{} }, 800);
+      if(googleSuccess || ge){
+        qp.delete('google'); qp.delete('google_error');
+        const cleanQuery=qp.toString();
+        window.history.replaceState({}, document.title, window.location.pathname+(cleanQuery?'?'+cleanQuery:'')+window.location.hash);
+      }
+      if(googleSuccess){
+        setTimeout(()=>{ refreshMe(); try{ toast('signed in with Google ✓'); }catch{} }, 100);
       }
     }catch{}
   })();
   // expose for debug
-  window._randori_auth={ get token(){return authToken}, get me(){return me}, api, refreshMe };
+  window._randori_auth={ get token(){return ''}, get me(){return me}, get signedIn(){return !!me}, api, refreshMe };
   // initial UI + me refresh
   updateAuthUI();
     // immediate UI to hide sign-in before network returns
   try{ updateAuthUI(); }catch{}
-  // DOMContentLoaded token sync
-  document.addEventListener('DOMContentLoaded', ()=>{ try{ const tok=localStorage.getItem(TOKEN_KEY); if(tok) authToken=tok; updateAuthUI(); }catch{} setTimeout(refreshMe, 150); });
+  document.addEventListener('DOMContentLoaded', ()=>{ setTimeout(refreshMe, 150); });
   setTimeout(refreshMe, 400);
   // extra retry for Vercel cold start
   setTimeout(()=>{ try{ updateAuthUI(); refreshMe(); }catch{} }, 1200);
@@ -1428,7 +1417,7 @@ async function refreshMe(){
     let m={}; try{m=JSON.parse(localStorage.getItem(PRES_KEY)||'{}')}catch{}
     let count=Object.keys(m).length;
     let el=document.getElementById('presencePanel');
-    if(el) el.innerHTML = Object.entries(m).slice(0,8).map(([id,v])=>`<div class="person" style="padding:8px"><span class="small">● tab ${id.slice(0,4)} • ${Math.round((Date.now()-v.at)/1000)}s ago</span><span class="kbd">${v.tab}</span></div>`).join('') || '<div class="small muted">no other tabs yet — open another to see sync</div>';
+    if(el) el.innerHTML = Object.entries(m).slice(0,8).map(([id,v])=>`<div class="person" style="padding:8px"><span class="small">● tab ${escapeHtml(id.slice(0,4))} • ${escapeHtml(Math.round((Date.now()-v.at)/1000))}s ago</span><span class="kbd">${escapeHtml(v.tab)}</span></div>`).join('') || '<div class="small muted">no other tabs yet — open another to see sync</div>';
     document.getElementById('presenceText').textContent = count<=1? 'you alone' : `${count} tabs live`;
   }
   setInterval(refreshPresence, 2000);
@@ -1523,9 +1512,11 @@ async function refreshMe(){
         listEl.innerHTML = people.map(p=>{
           const avail = (p.is_available===undefined && p.isAvailable===undefined) ? true : (p.is_available!==undefined ? !!p.is_available : !!p.isAvailable);
           const badge = avail ? '<span class="kbd" title="Available this week" style="background:#9cc0b522;color:#9cc0b5;border-color:#9cc0b5">● available</span>' : '<span class="kbd" title="Skipping this week" style="background:#e6c07a22;color:#e6c07a;border-color:#e6c07a">○ away</span>';
+          const displayName=String(p.display_name||p.name||'??');
+          const color=safeProfileColor(p.color);
           return `
-          <div class="person" data-id="${p.id}" style="${!avail?'opacity:.65':''}">
-            <div class="row"><div class="avatar" style="background:${p.color}">${(p.display_name||p.name||'??').slice(0,2).toUpperCase()}</div><b style="font-size:13px">${p.display_name||p.name}</b>${badge}</div>
+          <div class="person" data-id="${escapeHtml(p.id)}" style="${!avail?'opacity:.65':''}">
+            <div class="row"><div class="avatar" style="background:${color}">${escapeHtml(displayName.slice(0,2).toUpperCase())}</div><b style="font-size:13px">${escapeHtml(displayName)}</b>${badge}</div>
             <div class="row">${admin? `<button class="pill delBtnCloud" title="Remove test account">×</button>`:''}</div>
           </div>`; }).join('');
         // cloud list is read-only — manual names gone
@@ -1542,11 +1533,14 @@ async function refreshMe(){
     if(!people.length){ listEl.innerHTML=`<div class="small muted" style="padding:8px; border:1px dashed var(--line); border-radius:10px">No one in your circle yet — invite teammates to get paired Sunday.</div>`; }
     else {
       const admin = isAdmin();
-      listEl.innerHTML = people.map(p=>`
-        <div class="person" data-id="${p.id}">
-          <div class="row"><div class="avatar" style="background:${p.color}">${p.name.slice(0,2).toUpperCase()}</div><b style="font-size:13px">${p.name}</b><span class="kbd" style="background:${p.color}22; border-color:${p.color}66; color:${p.color}">${p.color.slice(1,4)}</span></div>
+      listEl.innerHTML = people.map(p=>{
+        const color=safeProfileColor(p.color);
+        return `
+        <div class="person" data-id="${escapeHtml(p.id)}">
+          <div class="row"><div class="avatar" style="background:${color}">${escapeHtml(String(p.name||'').slice(0,2).toUpperCase())}</div><b style="font-size:13px">${escapeHtml(p.name)}</b><span class="kbd" style="background:${color}22; border-color:${color}66; color:${color}">${escapeHtml(color.slice(1,4))}</span></div>
           <div class="row">${admin?`<button class="pill editBtn">edit</button><button class="pill delBtn">remove</button>`:`<span class="small muted">local</span>`}</div>
-        </div>`).join('');
+        </div>`;
+      }).join('');
       if(admin){
         listEl.querySelectorAll('.editBtn').forEach((b,i)=>{
           b.onclick=async()=>{
@@ -1738,7 +1732,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     // Try cloud first when signed in (logged-in users see real pairings)
     let cloudWeek=null;
     let cloudWeeks=[];
-    if(authToken){
+    if(me){
       try{
         const w=await api('/api/weeks',{method:'GET'});
         if(w && w.weeks && w.weeks.length){
@@ -1752,12 +1746,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       renderPairsMeta(null, cloudWeek);
       container.innerHTML = cloudWeek.pairs.map(p=>{
         const aName=p.a_name||'??'; const bName=p.is_ai?'AI partner':(p.b_name||'—');
-        const aCol=p.a_color||PALETTE[0]; const bCol=p.is_ai?'var(--accent)':(p.b_color||PALETTE[1]);
-        return `<div class="pair" data-pg="${p.pg_id}">
-          <div class="who"><span class="avatar" style="background:${aCol}">${aName.slice(0,2).toUpperCase()}</span><b style="font-size:12.5px">${aName}</b><span class="muted small">×</span><span class="avatar" style="background:${bCol}">${bName.slice(0,2).toUpperCase()}</span><b style="font-size:12.5px">${bName}</b>${p.is_ai? '<span class="kbd" style="color:var(--accent)">ai</span>':''}</div>
+        const aCol=safeProfileColor(p.a_color||PALETTE[0]); const bCol=safeProfileColor(p.is_ai?'var(--accent)':(p.b_color||PALETTE[1]));
+        return `<div class="pair" data-pg="${escapeHtml(p.pg_id)}">
+          <div class="who"><span class="avatar" style="background:${aCol}">${escapeHtml(aName.slice(0,2).toUpperCase())}</span><b style="font-size:12.5px">${escapeHtml(aName)}</b><span class="muted small">×</span><span class="avatar" style="background:${bCol}">${escapeHtml(bName.slice(0,2).toUpperCase())}</span><b style="font-size:12.5px">${escapeHtml(bName)}</b>${p.is_ai? '<span class="kbd" style="color:var(--accent)">ai</span>':''}</div>
           <div class="topic-group">
-            <span class="kbd" style="background:var(--bg-3)">${p.topic||'Pick together'}</span>
-            <span class="kbd">${p.topic_kind||'both'}</span>
+            <span class="kbd" style="background:var(--bg-3)">${escapeHtml(p.topic||'Pick together')}</span>
+            <span class="kbd">${escapeHtml(p.topic_kind||'both')}</span>
           </div>
         </div>`
       }).join('') + `<div class="row" style="margin-top:10px"><span class="small muted">${cloudWeeks.length} week(s) of pairings. Unavailable teammates are skipped automatically.</span></div>`;
@@ -1772,9 +1766,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     container.innerHTML = cur.pairs.map(p=>{
       const a=idToPerson(p.aId); const b=p.bId? idToPerson(p.bId):null;
       const aName=a? a.name: 'unknown'; const bName=p.isAI? 'AI partner' : (b? b.name: '—');
-      const aCol=a? a.color: PALETTE[0]; const bCol=p.isAI? 'var(--accent)' : (b? b.color: PALETTE[1]);
-      return `<div class="pair" data-pair="${p.id}">
-        <div class="who"><span class="avatar" style="background:${aCol}">${aName.slice(0,2).toUpperCase()}</span><b style="font-size:12.5px">${aName}</b><span class="muted small">×</span><span class="avatar" style="background:${bCol}">${bName.slice(0,2).toUpperCase()}</span><b style="font-size:12.5px">${bName}</b>${p.isAI? '<span class="kbd" style="color:var(--accent)">ai</span>':''}</div>
+      const aCol=safeProfileColor(a? a.color: PALETTE[0]); const bCol=safeProfileColor(p.isAI? 'var(--accent)' : (b? b.color: PALETTE[1]));
+      return `<div class="pair" data-pair="${escapeHtml(p.id)}">
+        <div class="who"><span class="avatar" style="background:${aCol}">${escapeHtml(aName.slice(0,2).toUpperCase())}</span><b style="font-size:12.5px">${escapeHtml(aName)}</b><span class="muted small">×</span><span class="avatar" style="background:${bCol}">${escapeHtml(bName.slice(0,2).toUpperCase())}</span><b style="font-size:12.5px">${escapeHtml(bName)}</b>${p.isAI? '<span class="kbd" style="color:var(--accent)">ai</span>':''}</div>
         <div class="topic-group">
           <button class="chip ${p.topic==='dsa'?'active':''}" data-t="dsa">DSA</button>
           <button class="chip ${p.topic==='system'?'active':''}" data-t="system">Sys</button>
@@ -1811,7 +1805,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(isAdmin()){
       return adminCloudReshuffle();
     }
-    const isAuthed = !!localStorage.getItem(TOKEN_KEY);
+    const isAuthed = !!me;
     if(!isAuthed){
       const go = await showConfirm('Create local demo pairs?', 'This is just for testing offline. Your real pairs arrive Sunday.');
       if(!go) return;
@@ -1830,20 +1824,20 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   async function renderPersonalHistory(){
     const cont = document.getElementById('historyPersonal');
     if(!cont) return;
-    if(!authToken){ cont.innerHTML='<div class="small muted" style="padding:8px">Sign in to see your pairings and past partners.</div>'; return; }
+    if(!me){ cont.innerHTML='<div class="small muted" style="padding:8px">Sign in to see your pairings and past partners.</div>'; return; }
     try{
       const data = await api('/api/history',{method:'GET'});
       if(!data.history || !data.history.length){ cont.innerHTML='<div class="small muted" style="padding:8px">No pairings yet — first shuffle is Sunday 08:00 BST.</div>'; return; }
       const counts = data.partner_counts||{};
       cont.innerHTML = `
-        <div class="card" style="border-color:var(--accent)"><div class="card-h"><h3 style="font-size:13px">You — ${data.user.name}</h3><span class="kbd">${data.total} pair(s)</span></div>
+        <div class="card" style="border-color:var(--accent)"><div class="card-h"><h3 style="font-size:13px">You — ${escapeHtml(data.user.name)}</h3><span class="kbd">${escapeHtml(data.total)} pair(s)</span></div>
           <div class="card-b" style="display:grid;gap:6px">
-            ${data.history.map(h=>`<div class="row small"><span class="kbd">${h.week_label}</span> × ${h.partner_name} ${h.topic?`<span class="kbd">${h.topic}</span>`:''} ${h.is_ai?'<span class="kbd">ai</span>':''}</div>`).join('')}
-            <div style="margin-top:8px;border-top:1px dashed var(--line);padding-top:8px;display:flex;flex-wrap:wrap;gap:6px">${Object.entries(counts).map(([k,v])=>`<span class="kbd">${k}: ${v}</span>`).join('')||'<span class="small muted">no repeat counts yet</span>'}</div>
+            ${data.history.map(h=>`<div class="row small"><span class="kbd">${escapeHtml(h.week_label)}</span> × ${escapeHtml(h.partner_name)} ${h.topic?`<span class="kbd">${escapeHtml(h.topic)}</span>`:''} ${h.is_ai?'<span class="kbd">ai</span>':''}</div>`).join('')}
+            <div style="margin-top:8px;border-top:1px dashed var(--line);padding-top:8px;display:flex;flex-wrap:wrap;gap:6px">${Object.entries(counts).map(([k,v])=>`<span class="kbd">${escapeHtml(k)}: ${escapeHtml(v)}</span>`).join('')||'<span class="small muted">no repeat counts yet</span>'}</div>
           </div>
         </div>`;
     }catch(e){
-      cont.innerHTML=`<div class="small muted" style="padding:8px">History error: ${e.error||e.message||'offline'}</div>`;
+      cont.innerHTML=`<div class="small muted" style="padding:8px">History error: ${escapeHtml(e.error||e.message||'offline')}</div>`;
     }
   }
 
@@ -1859,7 +1853,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           <div class="card-b" style="display:grid; gap:8px">
             ${w.pairs.map(p=>{
               const a=idToPerson(p.aId)||{name:'?'}; const b=p.isAI? {name:'AI'} : (idToPerson(p.bId)||{name:'?'});
-              return `<div class="row small"><span class="avatar" style="width:22px;height:22px;font-size:10px;background:${a.color||'#ddd'}">${a.name.slice(0,2).toUpperCase()}</span>${a.name} × ${b.name} ${p.topic?`<span class="kbd">${p.topic}</span>`:''}</div>`
+              return `<div class="row small"><span class="avatar" style="width:22px;height:22px;font-size:10px;background:${safeProfileColor(a.color||'#ddd')}">${escapeHtml(a.name.slice(0,2).toUpperCase())}</span>${escapeHtml(a.name)} × ${escapeHtml(b.name)} ${p.topic?`<span class="kbd">${escapeHtml(p.topic)}</span>`:''}</div>`
             }).join('')}
           </div>
         </div>`).join('');
@@ -1988,6 +1982,7 @@ def allow(key, limit=5):
       }
     }
   ];
+  window._randori_builtin_questions=QUESTIONS;
 
   const qSel=document.getElementById('questionSelect');
   QUESTIONS.forEach(q=>{ const o=document.createElement('option'); o.value=q.id; o.textContent=q.title; qSel.appendChild(o); });
@@ -2028,7 +2023,7 @@ def allow(key, limit=5):
       });
     });
     const curVal=sel.value;
-    sel.innerHTML = opts.map(o=>`<option value="${o.id}">${o.label}</option>`).join('') || `<option value="">no pairs — shuffle first</option>`;
+    sel.innerHTML = opts.map(o=>`<option value="${escapeHtml(o.id)}">${escapeHtml(o.label)}</option>`).join('') || `<option value="">no pairs — shuffle first</option>`;
     if(curVal && opts.some(o=>o.id===curVal)) sel.value=curVal;
     const roomLabel=document.getElementById('roomLabel');
     if(sel.value) roomLabel.textContent=`room ${sel.value.slice(0,4)}`;
@@ -2064,7 +2059,7 @@ def allow(key, limit=5):
   qSel.onchange=async()=>{
     const q=renderQuestion(qSel.value); const lang=document.getElementById('langSelect').value;
     // e2e auto-confirm: when running under Playwright fake auth, skip modal to keep Run clickable
-    const isE2E = (()=>{ try{ return localStorage.getItem('randori-token')==='e2e-fake-jwt' || localStorage.getItem('randori-token')?.startsWith('e2e-'); }catch{ return false; } })();
+    const isE2E = (()=>{ try{ return localStorage.getItem('e2e')==='1'; }catch{ return false; } })();
     const editorEmpty = !document.getElementById('editor').value.trim();
     let shouldLoad = editorEmpty;
     if(!shouldLoad){
@@ -2148,16 +2143,6 @@ def allow(key, limit=5):
     let re2=/(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*(?:async\s*)?(?:\(.*?\)\s*=>|function\b|[A-Za-z0-9_$]+\s*=>|\w+\s*=>)/g;
     while((m=re2.exec(code))!==null) if(!names.includes(m[1])) names.push(m[1]);
     let re3=/class\s+([A-Za-z0-9_$]+)/g; while((m=re3.exec(code))!==null) if(!names.includes(m[1])) names.push(m[1]);
-    const preferred=['twoSum','isValid','mergeTwoLists','mergeTwoSortedLists','lRUCache','LRUCache','Twitter','solve','two_sum','is_valid'];
-    let ordered=[...preferred.filter(p=>names.includes(p)), ...names, ...preferred];
-    ordered=[...new Set(ordered)];
-    for(let n of ordered){
-      try{
-        let wrapper=new Function(code+`\n; return typeof ${n}!=='undefined'? ${n} : null;`);
-        let f=wrapper();
-        if(typeof f==='function' || (typeof f==='object'&&f!==null)) return {fn:f,name:n,all:names};
-      }catch{ continue; }
-    }
     return {fn:null,name:names[0]||null,all:names};
   }
   function _buildArgs(fn, inputNorm){
@@ -2289,7 +2274,7 @@ def allow(key, limit=5):
               if(j.run){
                 const stdout=j.run.stdout||'', stderr=j.run.stderr||'';
                 if(st) st.textContent = j.run.code===0? 'done ✓' : 'error';
-                if(outEl) outEl.innerHTML = `<div>stdout: <span class="kbd">${stdout.slice(0,400).replace(/</g,'&lt;')}</span></div><div>stderr: <span class="kbd">${stderr.slice(0,200)}</span></div><div class="small muted">expect: ${JSON.stringify(exN).slice(0,120)}</div>`;
+                if(outEl) outEl.innerHTML = `<div>stdout: <span class="kbd">${escapeHtml(stdout.slice(0,400))}</span></div><div>stderr: <span class="kbd">${escapeHtml(stderr.slice(0,200))}</span></div><div class="small muted">expect: ${escapeHtml(JSON.stringify(exN).slice(0,120))}</div>`;
               } else {
                 if(outEl) outEl.textContent='Piston rate-limited or unavailable.';
               }
@@ -2968,7 +2953,7 @@ def allow(key, limit=5):
     const durationSec = aiStartTime ? Math.round((Date.now()-aiStartTime)/1000) : (timerSec ? (25*60 - timerSec) : 0);
 
     if (!transcript && !combinedCode) { toast('Add transcript or have code to analyze'); return; }
-    if (!authToken) { toast('Sign in to use Groq AI — free tier 14k req/day'); return; }
+    if (!me) { toast('Sign in to use Groq AI — free tier 14k req/day'); return; }
 
     aiSetStatus('⚡ Calling Groq router — picking model by session…');
     if (aiAnalyzeBtn) { aiAnalyzeBtn.disabled = true; aiAnalyzeBtn.textContent = '…analyzing'; }
@@ -2985,7 +2970,7 @@ def allow(key, limit=5):
       const dbg = j.debug;
 
       if (aiDebug) {
-        aiDebug.innerHTML = `<b>Model:</b> ${model}<br><b>Why:</b> ${reason}<br><b>Cost:</b> $${cost?.usd||'0.0000'} (${cost?.tokens_in||'?'} in / ${cost?.tokens_out||'?'} out)${cost?.groq_usage? ' — Groq usage '+JSON.stringify(cost.groq_usage): ''}<br><b>Evidence:</b> ${ev.validated}/${ev.total} validated (${Math.round((ev.score||0)*100)}%) ${ev.loweredConfidence?' — some lowered confidence due to no direct quote':''}<br><b>Free-tier:</b> ${dbg?.groq_router?.free_tier_calls_today||0}/14400 today • ${dbg?.groq_router?.alternatives?.join(' vs ')||''}<br>${j.mocked?'<span style="color:var(--warn)">Mocked — set GROQ_API_KEY in Vercel env to get real Groq</span>':''}`;
+        aiDebug.innerHTML = `<b>Model:</b> ${escapeHtml(model)}<br><b>Why:</b> ${escapeHtml(reason)}<br><b>Cost:</b> $${escapeHtml(cost?.usd||'0.0000')} (${escapeHtml(cost?.tokens_in||'?')} in / ${escapeHtml(cost?.tokens_out||'?')} out)${cost?.groq_usage? ' — Groq usage '+escapeHtml(JSON.stringify(cost.groq_usage)): ''}<br><b>Evidence:</b> ${escapeHtml(ev.validated)}/${escapeHtml(ev.total)} validated (${escapeHtml(Math.round((ev.score||0)*100))}%) ${ev.loweredConfidence?' — some lowered confidence due to no direct quote':''}<br><b>Free-tier:</b> ${escapeHtml(dbg?.groq_router?.free_tier_calls_today||0)}/14400 today • ${escapeHtml(dbg?.groq_router?.alternatives?.join(' vs ')||'')}<br>${j.mocked?'<span style="color:var(--warn)">Mocked — set GROQ_API_KEY in Vercel env to get real Groq</span>':''}`;
       }
 
       if (!fb) throw { error:'no feedback returned' };
@@ -2995,23 +2980,24 @@ def allow(key, limit=5):
 
       function chipForEvidence(ev){
         if (!ev || ev==='no direct quote' || ev.includes('no direct')) return `<span class="kbd" style="background:#e6c07a22;border-color:#e6c07a">no direct quote</span>`;
-        return `<span class="kbd" style="background:#9cc0b522;border-color:#9cc0b5;color:#9cc0b5" title="${ev.replace(/"/g,'&quot;')}">“${ev.slice(0,80)}${ev.length>80?'…':''}”</span>`;
+        const safe=escapeHtml(ev);
+        return `<span class="kbd" style="background:#9cc0b522;border-color:#9cc0b5;color:#9cc0b5" title="${safe}">“${safe.slice(0,80)}${safe.length>80?'…':''}”</span>`;
       }
 
       const html = `
-        <div class="card" style="border-color:var(--ok)"><div class="card-h"><h3 style="font-size:13px">Candidate ${fb.overall_score? `<span class="kbd">${fb.overall_score}/10</span>` : ''}</h3><span class="kbd" title="session ${j.session_id}">#${String(j.session_id).slice(-4)}</span></div>
+        <div class="card" style="border-color:var(--ok)"><div class="card-h"><h3 style="font-size:13px">Candidate ${fb.overall_score? `<span class="kbd">${escapeHtml(fb.overall_score)}/10</span>` : ''}</h3><span class="kbd" title="session ${escapeHtml(j.session_id)}">#${escapeHtml(String(j.session_id).slice(-4))}</span></div>
           <div class="card-b" style="display:grid;gap:8px">
-            <div><b class="small">Strengths</b><div style="display:grid;gap:6px;margin-top:4px">${(c.strengths||[]).map(s=>`<div class="test" style="border-color:var(--ok)"><div class="small"><b>${s.point}</b> ${chipForEvidence(s.evidence)} ${s.confidence? `<span class="kbd">${Math.round((s.confidence||0.8)*100)}%</span>`:''}</div></div>`).join('')||'<span class="small muted">none listed</span>'}</div></div>
-            <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(c.improvements||[]).map(s=>`<div class="test" style="border-color:var(--accent-3)"><div class="small"><b>${s.point}</b> ${chipForEvidence(s.evidence)}<div class="small muted" style="margin-top:3px">↳ ${s.suggestion||''}</div></div></div>`).join('')||'<span class="small muted">none listed</span>'}</div></div>
+            <div><b class="small">Strengths</b><div style="display:grid;gap:6px;margin-top:4px">${(c.strengths||[]).map(s=>`<div class="test" style="border-color:var(--ok)"><div class="small"><b>${escapeHtml(s.point)}</b> ${chipForEvidence(s.evidence)} ${s.confidence? `<span class="kbd">${escapeHtml(Math.round((s.confidence||0.8)*100))}%</span>`:''}</div></div>`).join('')||'<span class="small muted">none listed</span>'}</div></div>
+            <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(c.improvements||[]).map(s=>`<div class="test" style="border-color:var(--accent-3)"><div class="small"><b>${escapeHtml(s.point)}</b> ${chipForEvidence(s.evidence)}<div class="small muted" style="margin-top:3px">↳ ${escapeHtml(s.suggestion||'')}</div></div></div>`).join('')||'<span class="small muted">none listed</span>'}</div></div>
           </div>
         </div>
-        <div class="card" style="border-color:var(--accent-2)"><div class="card-h"><h3 style="font-size:13px">Interviewer</h3><span class="kbd">${model}</span></div>
+        <div class="card" style="border-color:var(--accent-2)"><div class="card-h"><h3 style="font-size:13px">Interviewer</h3><span class="kbd">${escapeHtml(model)}</span></div>
           <div class="card-b" style="display:grid;gap:8px">
-            <div><b class="small">Strengths</b><div style="display:grid;gap:6px;margin-top:4px">${(iv.strengths||[]).map(s=>`<div class="test"><div class="small"><b>${s.point}</b> ${chipForEvidence(s.evidence)}</div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
-            <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(iv.improvements||[]).map(s=>`<div class="test"><div class="small"><b>${s.point}</b> ${chipForEvidence(s.evidence)}<div class="small muted">↳ ${s.suggestion||''}</div></div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
+            <div><b class="small">Strengths</b><div style="display:grid;gap:6px;margin-top:4px">${(iv.strengths||[]).map(s=>`<div class="test"><div class="small"><b>${escapeHtml(s.point)}</b> ${chipForEvidence(s.evidence)}</div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
+            <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(iv.improvements||[]).map(s=>`<div class="test"><div class="small"><b>${escapeHtml(s.point)}</b> ${chipForEvidence(s.evidence)}<div class="small muted">↳ ${escapeHtml(s.suggestion||'')}</div></div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
           </div>
         </div>
-        <div class="card" style="border-style:dashed"><div class="card-h"><h3 style="font-size:13px">Next time checklist</h3><span class="kbd">overall ${fb.overall_score||'-'}/10</span></div><div class="card-b small">${(fb.next_time_checklist||[]).map(x=>`• ${x}`).join('<br>')||'no checklist'}</div></div>
+        <div class="card" style="border-style:dashed"><div class="card-h"><h3 style="font-size:13px">Next time checklist</h3><span class="kbd">overall ${escapeHtml(fb.overall_score||'-')}/10</span></div><div class="card-b small">${(fb.next_time_checklist||[]).map(x=>`• ${escapeHtml(x)}`).join('<br>')||'no checklist'}</div></div>
       `;
 
       if (aiFeedbackEl) aiFeedbackEl.innerHTML = html;
@@ -3021,7 +3007,7 @@ def allow(key, limit=5):
     } catch(e){
       const msg = e.error || e.message || (e.raw?.slice?.(0,200)) || 'analyze failed';
       aiSetStatus(`AI error: ${msg}`, true);
-      if (aiDebug) aiDebug.innerHTML += `<br><span style="color:var(--accent-3)">Error: ${msg}</span>`;
+      if (aiDebug) aiDebug.innerHTML += `<br><span style="color:var(--accent-3)">Error: ${escapeHtml(msg)}</span>`;
       toast(`AI: ${msg}`);
     } finally {
       if (aiAnalyzeBtn) { aiAnalyzeBtn.disabled = false; aiAnalyzeBtn.textContent = '⚡ Get AI Feedback'; }
@@ -3029,12 +3015,12 @@ def allow(key, limit=5):
   }
 
   async function aiLoadHistory(){
-    if (!authToken) { toast('Sign in for AI history'); return; }
+    if (!me) { toast('Sign in for AI history'); return; }
     try{
       const j = await api('/api/ai/history', {method:'GET'});
       const list = j.feedbacks||[];
       if (!list.length) { aiSetStatus('No AI feedback yet — run one above'); return; }
-      const html = `<div class="small muted">${list.length} past sessions — calls today ${j.usage_today?.calls||0}/14400</div><div style="display:grid;gap:6px;margin-top:6px">${list.slice(0,8).map(r=>`<div class="test"><div class="small"><span class="kbd">#${r.session_id}</span> ${r.pair_label||r.room_id||'room'} — <span class="kbd">${r.model_used?.slice(0,18)||'model'}</span> ${r.duration_sec? `• ${Math.round(r.duration_sec/60)}m`:''} <span class="kbd" style="float:right">${new Date(r.created_at).toLocaleString()}</span></div></div>`).join('')}</div>`;
+      const html = `<div class="small muted">${escapeHtml(list.length)} past sessions — calls today ${escapeHtml(j.usage_today?.calls||0)}/14400</div><div style="display:grid;gap:6px;margin-top:6px">${list.slice(0,8).map(r=>`<div class="test"><div class="small"><span class="kbd">#${escapeHtml(r.session_id)}</span> ${escapeHtml(r.pair_label||r.room_id||'room')} — <span class="kbd">${escapeHtml(r.model_used?.slice(0,18)||'model')}</span> ${r.duration_sec? `• ${escapeHtml(Math.round(r.duration_sec/60))}m`:''} <span class="kbd" style="float:right">${escapeHtml(new Date(r.created_at).toLocaleString())}</span></div></div>`).join('')}</div>`;
       if (aiFeedbackEl) aiFeedbackEl.innerHTML = html;
       aiSetStatus(`History loaded ${list.length}`);
     }catch(e){ toast('history error: '+(e.error||e.message)); }
@@ -3099,7 +3085,7 @@ def allow(key, limit=5):
       else tgt=document.querySelector(s.target);
       // if not signed in on step 2 highlight sign in
       if(onboardStep===2){
-        const signed=!!(localStorage.getItem(TOKEN_KEY) || me);
+        const signed=!!me;
         if(!signed) tgt=document.getElementById('authBtn');
         else {
           document.getElementById('onbDesc').textContent='You’re in! You were auto-added to Sunday shuffle.';
@@ -3159,12 +3145,11 @@ def allow(key, limit=5):
   // Welcome banner for first-time visitors (no token)
   function maybeShowWelcome(){
     const dismissed=localStorage.getItem(ONB_DISMISSED_BANNER)==='1';
-    const tok=localStorage.getItem(TOKEN_KEY);
     const wb=document.getElementById('welcomeBanner');
     if(!wb) return;
     // never show if already onboarded/completed/dismissed once
     if(onboardCompleted || localStorage.getItem(ONB_KEY)==='1'){ wb.style.display='none'; return; }
-    if(!dismissed && !tok){
+    if(!dismissed && !me){
       wb.style.display='flex';
     } else wb.style.display='none';
   }
@@ -3181,7 +3166,7 @@ def allow(key, limit=5):
   // Checklist logic
   function updateChecklist(){
     if(localStorage.getItem(ONB_KEY)==='1'){ try{ document.getElementById('onboardChecklist').style.display='none'; }catch{} return; }
-    const tok=!!localStorage.getItem(TOKEN_KEY);
+    const signedIn=!!me;
     const av=document.getElementById('availToggle');
     const availChecked=av? av.checked: false;
     const weeksLen = (()=>{
@@ -3191,7 +3176,7 @@ def allow(key, limit=5):
     const demoActive = localStorage.getItem('randori-demo-active')==='1';
     const isAdminNow = typeof isAdmin==='function' ? isAdmin() : false;
 
-    document.getElementById('chkSignIn')?.classList.toggle('done', tok);
+    document.getElementById('chkSignIn')?.classList.toggle('done', signedIn);
     document.getElementById('chkAvail')?.classList.toggle('done', !!me);
     // availability marked counts as avail step done even if off? require me exists
     document.getElementById('chkPair')?.classList.toggle('done', weeksLen>0 || document.getElementById('pairsList')?.children.length>0);
@@ -3201,7 +3186,7 @@ def allow(key, limit=5):
       demoItem.style.display = isAdminNow ? 'flex' : 'none';
       demoItem.classList.toggle('done', demoActive);
     }
-    const doneCount=[tok, !!me, weeksLen>0, roomJoined, isAdminNow? demoActive : false].filter(Boolean).length;
+    const doneCount=[signedIn, !!me, weeksLen>0, roomJoined, isAdminNow? demoActive : false].filter(Boolean).length;
     const total=isAdminNow?5:4;
     document.getElementById('chkProgress').textContent=`${doneCount}/${total}`;
     const cl=document.getElementById('onboardChecklist');
@@ -3238,7 +3223,7 @@ def allow(key, limit=5):
     if(onboardCompleted){ document.getElementById('welcomeBanner').style.display='none'; document.getElementById('onboardOverlay').classList.remove('show'); document.getElementById('onboardChecklist').style.display='none'; return; }
     maybeShowWelcome();
     updateChecklist();
-    if(!onboardCompleted && onboardStep===0 && !localStorage.getItem(TOKEN_KEY)){
+    if(!onboardCompleted && onboardStep===0 && !me){
       // first-time, auto-show welcome banner already, don't auto-open modal until CTA
     } else if(!onboardCompleted && onboardStep>0){
       renderOnboardStep();
@@ -3276,7 +3261,6 @@ def allow(key, limit=5):
 <script>
 // --- New User Journey: landing / profile-setup / dashboard + pairing + schedule + chat ---
 (function(){
-  const TOKEN_KEY='randori-token';
   const ME_KEY='randori-me';
   const LANDING_DONE_KEY='randori-landing-dismissed';
 
@@ -3349,10 +3333,8 @@ def allow(key, limit=5):
   });
 
   async function fetchProfile(){
-    const tok=localStorage.getItem(TOKEN_KEY);
-    if(!tok) return null;
     try{
-      const r=await fetch('/api/profile', {headers:{ Authorization:'Bearer '+tok }});
+      const r=await fetch('/api/profile', {credentials:'same-origin'});
       if(!r.ok) throw new Error('fail');
       const j=await r.json();
       const user=j.user||null;
@@ -3382,7 +3364,7 @@ def allow(key, limit=5):
     profileFocus = user?.interview_focus||'both';
     document.querySelectorAll('#psFocus .chip').forEach(c=>{ c.classList.toggle('active', c.dataset.focus===profileFocus); });
     document.getElementById('psAvail').checked = user?.is_available!==undefined ? !!user.is_available : true;
-    const col = user?.color||me?.color||PALETTE[0];
+    const col = safeProfileColor(user?.color||me?.color||PALETTE[0]);
     document.getElementById('psAvatar').style.background=col;
     document.getElementById('psAvatar').textContent=( (user?.display_name||user?.name||me?.name||'ME').slice(0,2).toUpperCase());
     hideAllViews();
@@ -3401,13 +3383,11 @@ def allow(key, limit=5):
     // simple validation
     if(!name){ alert('Name required'); return; }
     try{
-      const tok=localStorage.getItem(TOKEN_KEY);
-      const r=await fetch('/api/profile',{ method:'POST', headers:{'content-type':'application/json', Authorization:'Bearer '+tok}, body: JSON.stringify(payload) });
+      const r=await fetch('/api/profile',{ method:'POST', credentials:'same-origin', headers:{'content-type':'application/json'}, body: JSON.stringify(payload) });
       const j=await r.json();
       if(!r.ok) throw j;
       localStorage.setItem(ME_KEY, JSON.stringify(j.user));
-      // update global me if exists
-      try{ if(typeof me!=='undefined') me=j.user; }catch{}
+      try{ await window._randori_auth?.refreshMe?.(); }catch{}
       // go dashboard
       await showDashboard();
       if(typeof window.toast==='function') window.toast('Profile saved ✓');
@@ -3446,17 +3426,17 @@ def allow(key, limit=5):
     }
     // fetch my pair
     try{
-      const tok=localStorage.getItem(TOKEN_KEY);
-      const r=await fetch('/api/my-pair',{ headers:{ Authorization:'Bearer '+tok }});
+      const r=await fetch('/api/my-pair',{credentials:'same-origin'});
       const j=await r.json().catch(()=>({}));
       if(!r.ok) throw j;
       if(!j.paired){
         // even without pair, show deterministic join from last room — always visible
         const lastRoom = localStorage.getItem('randori-last-room') || window._randori_join_room;
         if(lastRoom){
-          document.getElementById('dashPairArea').innerHTML=`<div class="partner-card" style="border-color:var(--line)"><div class="avatar" style="background:var(--bg-3)">↗</div><div style="flex:1"><b style="font-size:13.5px">Jump back into your last room</b><div class="small muted" style="margin-top:4px">No pair this week yet — first shuffle Sundays 08:00 BST. You can practise in your last room or invite a friend.</div><div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap"><button id="dashJoinLast" class="btn" style="background:var(--accent); color:#0f0f10; padding:10px 16px; font-weight:700">▶ Resume — Code + Video + Board</button><span class="kbd">${lastRoom.slice(0,18)}</span><button class="pill copy-last" data-room="${lastRoom}" style="font-size:11px">⎘ Copy invite</button><button class="pill" onclick="(function(r){const inv=(location.origin||'')+'/join/'+encodeURIComponent(r); window.open('mailto:?subject='+encodeURIComponent('Randori invite '+r)+'&body='+encodeURIComponent('Join my Randori room: '+inv))})('${lastRoom}')" style="font-size:11px">✉ Invite</button></div></div></div>`;
+          document.getElementById('dashPairArea').innerHTML=`<div class="partner-card" style="border-color:var(--line)"><div class="avatar" style="background:var(--bg-3)">↗</div><div style="flex:1"><b style="font-size:13.5px">Jump back into your last room</b><div class="small muted" style="margin-top:4px">No pair this week yet — first shuffle Sundays 08:00 BST. You can practise in your last room or invite a friend.</div><div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap"><button id="dashJoinLast" class="btn" style="background:var(--accent); color:#0f0f10; padding:10px 16px; font-weight:700">▶ Resume — Code + Video + Board</button><span class="kbd">${escapeHtml(lastRoom.slice(0,18))}</span><button class="pill copy-last" data-room="${escapeHtml(lastRoom)}" style="font-size:11px">⎘ Copy invite</button><button class="pill email-last" data-room="${escapeHtml(lastRoom)}" style="font-size:11px">✉ Invite</button></div></div></div>`;
           document.getElementById('dashJoinLast')?.addEventListener('click', ()=>joinSessionDeterministic(false));
           document.querySelectorAll('.copy-last').forEach(b=>b.addEventListener('click',()=>{ const r=b.dataset.room; const inv=(location.origin||'')+'/join/'+encodeURIComponent(r); try{ navigator.clipboard.writeText(inv); if(window.toast) window.toast('Copied '+inv.slice(0,30)); }catch{ prompt('Copy',inv); } }));
+          document.querySelectorAll('.email-last').forEach(b=>b.addEventListener('click',()=>{ const room=b.dataset.room||''; const inv=(location.origin||'')+'/join/'+encodeURIComponent(room); window.open('mailto:?subject='+encodeURIComponent('Randori invite '+room)+'&body='+encodeURIComponent('Join my Randori room: '+inv)); }));
         } else {
           document.getElementById('dashPairArea').innerHTML='';
         }
@@ -3478,7 +3458,7 @@ def allow(key, limit=5):
       startChatPolling();
     }catch(e){
       console.error('dashboard fetch failed',e);
-      document.getElementById('dashPairArea').innerHTML='<div class="small muted">Could not load pairing — '+ (e.error||e.message||'')+'</div>';
+      document.getElementById('dashPairArea').innerHTML='<div class="small muted">Could not load pairing — '+escapeHtml(e.error||e.message||'')+'</div>';
     }
   }
 
@@ -3548,7 +3528,7 @@ def allow(key, limit=5):
     const pg=data.pair;
     const roomHint=`week_${weekId}_pair_${pg?.pg_id||pg?.id||'x'}`;
     const inviteUrl = (location.origin||'https://randori-circle-self.vercel.app') + '/join/' + encodeURIComponent(roomHint);
-    const copyAndEmailBtns = `<button class="pill copy-invite" style="font-size:11px" data-room="${roomHint}">⎘ Copy invite</button><button class="pill email-invite" style="font-size:11px" data-room="${roomHint}">✉ Email / SMS reminder</button>`;
+    const copyAndEmailBtns = `<button class="pill copy-invite" style="font-size:11px" data-room="${escapeHtml(roomHint)}">⎘ Copy invite</button><button class="pill email-invite" style="font-size:11px" data-room="${escapeHtml(roomHint)}">✉ Email / SMS reminder</button>`;
     if(isAI){
       area.innerHTML=`<div class="partner-card" style="border-color:#c8f6a0"><div class="avatar" style="background:#c8f6a0">AI</div><div style="flex:1"><b style="font-size:14px">You're paired with AI partner</b><div class="small muted" style="margin-top:4px">Odd one out this week — you get a sparring bot for DSA & System Design drills. No trios, no waiting.</div><div class="row" style="margin-top:12px; gap:8px; flex-wrap:wrap"><button id="dashJoinSession" class="btn" style="background:var(--accent); color:#0f0f10; padding:11px 18px; font-size:14px; font-weight:700">▶ Join Session — Code + Video + Board</button><span class="kbd">${roomHint.slice(0,14)}</span>${copyAndEmailBtns}</div><div class="small muted" id="dashInviteHint" style="margin-top:6px">Invite: <span class="kbd" style="font-size:10.5px">${inviteUrl.slice(0,56)}…</span></div></div></div>`;
       document.getElementById('dashJoinSession')?.addEventListener('click', ()=>joinSessionDeterministic(false));
@@ -3564,7 +3544,9 @@ def allow(key, limit=5):
       return;
     }
     const focus = partner?.interview_focus || data.partner?.interview_focus || 'both';
-    area.innerHTML=`<div class="partner-card"><div class="avatar" style="background:${partner?.color||'#9aa0a6'}">${(partner?.name||'?').slice(0,2).toUpperCase()}</div><div style="flex:1"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px"><b style="font-size:14px">You're paired with ${partner?.name||'partner'} ✨</b><span class="kbd">${focus}</span></div><div class="small muted" style="margin-top:4px">${partner?.bio||'No bio yet — ask them what they’re prepping for.'} • ${partner?.tz||'TZ unknown'} • LeetCode: ${partner?.leetcode_handle||'—'}</div><div class="row" style="margin-top:10px"><span class="pill" style="font-size:11px">DSA / System / Both</span><div id="dashTopicPicker" class="pill-choice"><button class="chip" data-kind="dsa">DSA</button><button class="chip" data-kind="system">System</button><button class="chip active" data-kind="both">Both</button></div></div><div class="row" style="margin-top:12px; flex-wrap:wrap; gap:8px"><button id="dashJoinSession" class="btn" style="background:var(--accent); color:#0f0f10; padding:11px 18px; font-size:14px; font-weight:700">▶ Join Session — Code + Video + Board</button><span class="pill" style="font-size:11px">room ${roomHint.slice(-6)}</span>${copyAndEmailBtns}<span class="small muted">agree time first, then jump in</span></div><div class="small muted" id="dashInviteHint" style="margin-top:6px">Invite link: <span class="kbd" style="font-size:10.5px">${inviteUrl}</span></div></div></div>`;
+    const partnerName=String(partner?.name||'partner');
+    const partnerColor=safeProfileColor(partner?.color);
+    area.innerHTML=`<div class="partner-card"><div class="avatar" style="background:${partnerColor}">${escapeHtml(partnerName.slice(0,2).toUpperCase())}</div><div style="flex:1"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px"><b style="font-size:14px">You're paired with ${escapeHtml(partnerName)} ✨</b><span class="kbd">${escapeHtml(focus)}</span></div><div class="small muted" style="margin-top:4px">${escapeHtml(partner?.bio||'No bio yet — ask them what they’re prepping for.')} • ${escapeHtml(partner?.tz||'TZ unknown')} • LeetCode: ${escapeHtml(partner?.leetcode_handle||'—')}</div><div class="row" style="margin-top:10px"><span class="pill" style="font-size:11px">DSA / System / Both</span><div id="dashTopicPicker" class="pill-choice"><button class="chip" data-kind="dsa">DSA</button><button class="chip" data-kind="system">System</button><button class="chip active" data-kind="both">Both</button></div></div><div class="row" style="margin-top:12px; flex-wrap:wrap; gap:8px"><button id="dashJoinSession" class="btn" style="background:var(--accent); color:#0f0f10; padding:11px 18px; font-size:14px; font-weight:700">▶ Join Session — Code + Video + Board</button><span class="pill" style="font-size:11px">room ${escapeHtml(roomHint.slice(-6))}</span>${copyAndEmailBtns}<span class="small muted">agree time first, then jump in</span></div><div class="small muted" id="dashInviteHint" style="margin-top:6px">Invite link: <span class="kbd" style="font-size:10.5px">${escapeHtml(inviteUrl)}</span></div></div></div>`;
     // topic picker wire — persist per pair via localStorage + future API
     document.getElementById('dashTopicPicker')?.addEventListener('click', e=>{
       if(e.target.classList.contains('chip')){
@@ -3601,9 +3583,9 @@ def allow(key, limit=5):
       <div class="card"><div class="card-h"><h2>Agree a time</h2><span>${weekId? 'week '+weekId : ''}</span></div>
       <div class="card-b" style="display:grid; gap:10px">
         <div class="small muted">Propose a few slots that work — your partner picks, or set an exact time you both agree.</div>
-        <div id="proposedList" style="display:grid; gap:6px">${proposed.map((t,i)=>`<div class="row" style="justify-content:space-between; font-size:12.5px"><span class="kbd">${t}</span><button class="pill" data-agree="${t}" style="font-size:10px">✓ Agree this</button></div>`).join('')||'<span class="small muted">No proposals yet — add one below.</span>'}</div>
+        <div id="proposedList" style="display:grid; gap:6px">${proposed.map((t,i)=>`<div class="row" style="justify-content:space-between; font-size:12.5px"><span class="kbd">${escapeHtml(t)}</span><button class="pill" data-agree="${escapeHtml(t)}" style="font-size:10px">✓ Agree this</button></div>`).join('')||'<span class="small muted">No proposals yet — add one below.</span>'}</div>
         <div class="row"><input id="newProposed" class="input" placeholder="e.g. Tue 20:00 BST / 19:00 UTC, 45m" style="flex:1" /><button id="addProposed" class="btn secondary">Add slot</button></div>
-        ${agreed? `<div style="padding:8px 10px; background:var(--accent)22; border:1px solid var(--accent); border-radius:10px; font-size:12.5px"><b>Agreed:</b> ${agreed}</div>` : '<div class="small muted">No time agreed yet.</div>'}
+        ${agreed? `<div style="padding:8px 10px; background:var(--accent)22; border:1px solid var(--accent); border-radius:10px; font-size:12.5px"><b>Agreed:</b> ${escapeHtml(agreed)}</div>` : '<div class="small muted">No time agreed yet.</div>'}
         <div class="row"><input id="agreedInput" class="input" placeholder="Set final time e.g. 2026-08-19T19:00:00Z or Tue 20:00 BST" style="flex:1"/><button id="setAgreed" class="btn">Save time</button></div>
       </div></div>`;
     document.getElementById('addProposed')?.addEventListener('click', async()=>{
@@ -3622,9 +3604,8 @@ def allow(key, limit=5):
 
   async function saveSchedule(weekId, pgId, payload){
     try{
-      const tok=localStorage.getItem(TOKEN_KEY);
       const body={ week_id:weekId, pair_id:pgId, ...payload };
-      const r=await fetch('/api/schedule',{ method:'POST', headers:{'content-type':'application/json', Authorization:'Bearer '+tok}, body: JSON.stringify(body)});
+      const r=await fetch('/api/schedule',{ method:'POST', credentials:'same-origin', headers:{'content-type':'application/json'}, body: JSON.stringify(body)});
       const j=await r.json();
       if(!r.ok) throw j;
       // refresh dashboard part
@@ -3636,7 +3617,7 @@ def allow(key, limit=5):
   function renderChatPlaceholder(data){
     const area=document.getElementById('dashChatArea');
     const pair=data.pair; const weekId=data.week_id||data.week?.id; const pgId=pair.pg_id||pair.id;
-    area.innerHTML=`<div class="chat-box"><div class="card-h" style="padding:10px 12px"><h2 style="font-size:13px">Chat with ${data.partner?.name||'partner'}</h2><span class="kbd">pair #${pgId}</span></div><div id="chatList" class="chat-list"><div class="small muted" style="padding:8px">Loading messages…</div></div><div class="chat-input"><input id="chatIn" class="input" placeholder="Message ${data.partner?.name||''} about a time or topic…" style="flex:1"/><button id="chatSend" class="btn">Send</button></div></div>`;
+    area.innerHTML=`<div class="chat-box"><div class="card-h" style="padding:10px 12px"><h2 style="font-size:13px">Chat with ${escapeHtml(data.partner?.name||'partner')}</h2><span class="kbd">pair #${escapeHtml(pgId)}</span></div><div id="chatList" class="chat-list"><div class="small muted" style="padding:8px">Loading messages…</div></div><div class="chat-input"><input id="chatIn" class="input" placeholder="Message ${escapeHtml(data.partner?.name||'')} about a time or topic…" style="flex:1"/><button id="chatSend" class="btn">Send</button></div></div>`;
     document.getElementById('chatSend')?.addEventListener('click', async()=>{
       const btn=document.getElementById('chatSend'); const prev=btn?btn.innerHTML:''; if(btn){ btn.disabled=true; btn.innerHTML='<span class="spinner spinner-sm"></span> Sending'; }
       try{ const txt=document.getElementById('chatIn').value.trim(); if(!txt) return; await sendMsg(weekId, pgId, txt); document.getElementById('chatIn').value=''; } finally{ if(btn){ btn.disabled=false; btn.innerHTML=prev||'Send'; } }
@@ -3646,8 +3627,7 @@ def allow(key, limit=5):
 
   async function sendMsg(weekId, pgId, text){
     try{
-      const tok=localStorage.getItem(TOKEN_KEY);
-      const r=await fetch('/api/messages',{ method:'POST', headers:{'content-type':'application/json', Authorization:'Bearer '+tok}, body: JSON.stringify({ week_id:weekId, pair_id:pgId, message:text })});
+      const r=await fetch('/api/messages',{ method:'POST', credentials:'same-origin', headers:{'content-type':'application/json'}, body: JSON.stringify({ week_id:weekId, pair_id:pgId, message:text })});
       const j=await r.json();
       if(!r.ok) throw j;
       // append immediately
@@ -3663,7 +3643,16 @@ def allow(key, limit=5):
     msgs.forEach(m=>{
       const d=document.createElement('div');
       d.className='msg'+(m.sender_id===meId?' mine':'');
-      d.innerHTML=`<b style="font-size:11px; color:var(--ink-3)">${m.sender_name||''}</b> ${m.message}<div class="small muted" style="font-size:10px; margin-top:2px">${new Date(m.created_at).toLocaleString()}</div>`;
+      const sender=document.createElement('b');
+      sender.style.cssText='font-size:11px; color:var(--ink-3)';
+      sender.textContent=String(m.sender_name||'');
+      d.appendChild(sender);
+      d.appendChild(document.createTextNode(' '+String(m.message||'')));
+      const when=document.createElement('div');
+      when.className='small muted';
+      when.style.cssText='font-size:10px; margin-top:2px';
+      when.textContent=new Date(m.created_at).toLocaleString();
+      d.appendChild(when);
       list.appendChild(d);
     });
     list.scrollTop=list.scrollHeight;
@@ -3678,10 +3667,9 @@ def allow(key, limit=5):
       if(!currentPair) return;
       const weekId=currentWeekId; const pgId=currentPair.pg_id||currentPair.id;
       try{
-        const tok=localStorage.getItem(TOKEN_KEY);
         const u=new URL('/api/messages', location.origin);
         u.searchParams.set('week_id', weekId); u.searchParams.set('pair_id', pgId); u.searchParams.set('after', lastMsgId);
-        const r=await fetch(u, {headers:{ Authorization:'Bearer '+tok }});
+        const r=await fetch(u, {credentials:'same-origin'});
         const j=await r.json();
         if(j.ok && j.messages?.length){
           appendMsgs(j.messages);
@@ -3709,11 +3697,10 @@ def allow(key, limit=5):
         window._randori_join_room = room;
       }
     }catch{}
-    try{ const landing=document.getElementById('view-landing'); if(!localStorage.getItem(TOKEN_KEY) && landing){ /* anon uses its own loader */ } }catch{}
-    const tok=localStorage.getItem(TOKEN_KEY);
+    const signedIn=!!(window._randori_auth && window._randori_auth.me);
     // hide all first? We decide
     const tabsEl=document.querySelector('.tabs');
-    if(!tok){
+    if(!signedIn){
       // anon -> allow exploring code like LeetCode, landing default but tabs navigable
       hideAllViews();
       if(viewLanding) viewLanding.style.display='block';
@@ -3737,8 +3724,7 @@ def allow(key, limit=5):
         const pathname=window.location.pathname||'';
         const isJoin = pathname.startsWith('/join/');
         const lastTab=localStorage.getItem('randori-last-tab')||localStorage.getItem('randori-last-view')||localStorage.getItem('randori-last-room');
-        const tokVal=localStorage.getItem(TOKEN_KEY)||'';
-        const isE2E = tokVal.includes('e2e') || localStorage.getItem('e2e')==='1' || lastTab==='code' || lastTab==='e2e-room';
+        const isE2E = localStorage.getItem('e2e')==='1' || lastTab==='code' || lastTab==='e2e-room';
         const wantsCode = viewParam==='code' || isE2E || lastTab==='code' || window.location.hash.includes('code') || isJoin || window._randori_join_room;
         if(wantsCode){
           const cv=document.getElementById('view-code');
@@ -3831,10 +3817,9 @@ def allow(key, limit=5):
 <script>
 // --- Question Panel: Upload + LeetCode Import + Run Upgrade + Deterministic Room Helper ---
 (function(){
-  const TOKEN_KEY='randori-token';
   const ME_KEY='randori-me';
 
-  function tok(){ return localStorage.getItem(TOKEN_KEY)||''; }
+  function signedIn(){ return !!(window._randori_auth && window._randori_auth.me); }
 
   // Custom questions store (in-memory + QUESTIONS static merge)
   let CUSTOM_QUESTIONS=[];
@@ -3842,7 +3827,7 @@ def allow(key, limit=5):
   async function fetchCustomQuestions(){
     try{ const badge=document.getElementById('qCustomCount'); if(badge){ const already=badge.textContent||''; if(already.includes('loading')||already.includes('…')) badge.innerHTML='<span class="spinner spinner-sm"></span> loading…'; } }catch{}
     try{
-      const r=await fetch('/api/questions', {headers: tok()? {Authorization:'Bearer '+tok()} : {}});
+      const r=await fetch('/api/questions', {credentials:'same-origin'});
       const j=await r.json();
       if(j.ok && Array.isArray(j.questions)){
         CUSTOM_QUESTIONS=j.questions;
@@ -3880,25 +3865,23 @@ def allow(key, limit=5):
     const titleEl=document.getElementById('qTitle'); if(titleEl) titleEl.textContent=q.title;
     const diffEl=document.getElementById('qDiff'); if(diffEl) {
       const diffColor = q.difficulty==='Easy'?'#c8f6a0': q.difficulty==='Hard'?'#e8a0b0':'#f2d07a';
-      diffEl.innerHTML=`<span style="color:${diffColor}">${q.difficulty}</span> • custom ${q.type? '• '+q.type:''}`;
+      diffEl.textContent='';
+      const difficulty=document.createElement('span'); difficulty.style.color=diffColor; difficulty.textContent=String(q.difficulty||'');
+      diffEl.appendChild(difficulty);
+      diffEl.appendChild(document.createTextNode(' • custom '+(q.type?'• '+q.type:'')));
       diffEl.style.display='inline-flex';
     }
     const isSystem = (q.type==='system') || (q.difficulty==='System') || (q.category==='system-design') || (q.slug||'').includes('system') || (q.slug||'').includes('design');
     const descEl=document.getElementById('qDesc'); 
     if(descEl){
-      // LeetCode-like: title already handled, description HTML sanitized (strip script), examples, constraints, tags
-      let safeDesc='';
-      try{
-        safeDesc = (q.description||'').replace(/<script[\s\S]*?<\/script>/gi,'').slice(0,6000);
-        // if plain text without html tags, preserve line breaks
-        if(!/<[a-z][\s\S]*>/i.test(safeDesc)) safeDesc = safeDesc.replace(/\n/g,'<br/>');
-      }catch{ safeDesc = (q.description||'').slice(0,4000); }
+      // Question content is untrusted. Render it as escaped text while preserving line breaks.
+      const safeDesc=escapeHtml(String(q.description||'').slice(0,6000)).replace(/\r?\n/g,'<br/>');
       let html=`<div style="color:var(--ink-2); line-height:1.7; font-size:13.5px">${safeDesc}</div>`;
-      if(q.input_format) html+=`<div class="small muted" style="margin-top:10px"><b>Input:</b> ${q.input_format}</div>`;
-      if(q.constraints_text) html+=`<div class="small muted" style="margin-top:6px"><b>Constraints:</b> ${q.constraints_text}</div>`;
+      if(q.input_format) html+=`<div class="small muted" style="margin-top:10px"><b>Input:</b> ${escapeHtml(q.input_format)}</div>`;
+      if(q.constraints_text) html+=`<div class="small muted" style="margin-top:6px"><b>Constraints:</b> ${escapeHtml(q.constraints_text)}</div>`;
       if(q.tags||q.topicTags){
         const tags = q.tags|| (q.topicTags||[]).map((t)=>t.name||t.slug);
-        if(tags && tags.length) html+=`<div class="row" style="margin-top:8px; flex-wrap:wrap; gap:6px">${tags.slice(0,6).map((tg)=>`<span class="kbd" style="font-size:11px">${tg}</span>`).join('')}</div>`;
+        if(tags && tags.length) html+=`<div class="row" style="margin-top:8px; flex-wrap:wrap; gap:6px">${tags.slice(0,6).map((tg)=>`<span class="kbd" style="font-size:11px">${escapeHtml(tg)}</span>`).join('')}</div>`;
       }
       // System design special UI
       if(isSystem){
@@ -3915,14 +3898,14 @@ def allow(key, limit=5):
         const exs=q.examples||[];
         if(exs && exs.length){
           exEl.innerHTML=exs.slice(0,3).map((e,i)=>{
-            if(typeof e==='string') return `<div class="test"><div class="small"><b>Example ${i+1}:</b> ${e.slice(0,300).replace(/</g,'&lt;')}</div></div>`;
-            if(e && e.input!==undefined) return `<div class="test"><div class="small"><b>Example ${i+1}:</b> Input: <span class="kbd">${JSON.stringify(e.input).slice(0,140)}</span> → <span class="kbd">${JSON.stringify(e.output||e.expect||'').slice(0,120)}</span></div>${e.explanation? `<div class="small muted">${e.explanation.slice(0,200)}</div>`:''}</div>`;
-            return `<div class="test"><div class="small"><b>Example ${i+1}:</b> ${JSON.stringify(e).slice(0,200)}</div></div>`;
+            if(typeof e==='string') return `<div class="test"><div class="small"><b>Example ${i+1}:</b> ${escapeHtml(e.slice(0,300))}</div></div>`;
+            if(e && e.input!==undefined) return `<div class="test"><div class="small"><b>Example ${i+1}:</b> Input: <span class="kbd">${escapeHtml(JSON.stringify(e.input).slice(0,140))}</span> → <span class="kbd">${escapeHtml(JSON.stringify(e.output||e.expect||'').slice(0,120))}</span></div>${e.explanation? `<div class="small muted">${escapeHtml(e.explanation.slice(0,200))}</div>`:''}</div>`;
+            return `<div class="test"><div class="small"><b>Example ${i+1}:</b> ${escapeHtml(JSON.stringify(e).slice(0,200))}</div></div>`;
           }).join('');
         } else {
           // infer from test_cases
           const tcs=q.test_cases||[];
-          exEl.innerHTML=tcs.slice(0,2).map((t,j)=>`<div class="test"><div class="small"><b>Example ${j+1}:</b> in <span class="kbd">${JSON.stringify(t.input).slice(0,120)}</span> → <span class="kbd">${JSON.stringify(t.expect).slice(0,120)}</span></div></div>`).join('')||`<div class="small muted">No examples — see tests below</div>`;
+          exEl.innerHTML=tcs.slice(0,2).map((t,j)=>`<div class="test"><div class="small"><b>Example ${j+1}:</b> in <span class="kbd">${escapeHtml(JSON.stringify(t.input).slice(0,120))}</span> → <span class="kbd">${escapeHtml(JSON.stringify(t.expect).slice(0,120))}</span></div></div>`).join('')||`<div class="small muted">No examples — see tests below</div>`;
         }
       }
     }
@@ -3932,7 +3915,7 @@ def allow(key, limit=5):
         testsEl.innerHTML=`<div class="small muted" style="padding:8px; border:1px dashed var(--border); border-radius:8px">System design — no auto tests. Use Run to save notes + whiteboard snapshot.</div>`;
       } else {
         const tcs=q.test_cases||[];
-        testsEl.innerHTML=tcs.map((t,i)=>`<div class="test"><div class="small">Case ${i+1}: <span class="kbd">${JSON.stringify(t.input).slice(0,120)}</span> → <span class="small">${JSON.stringify(t.expect).slice(0,120)}</span></div></div>`).join('')||'<div class="small muted">no tests</div>';
+        testsEl.innerHTML=tcs.map((t,i)=>`<div class="test"><div class="small">Case ${i+1}: <span class="kbd">${escapeHtml(JSON.stringify(t.input).slice(0,120))}</span> → <span class="small">${escapeHtml(JSON.stringify(t.expect).slice(0,120))}</span></div></div>`).join('')||'<div class="small muted">no tests</div>';
       }
     }
     // LeetCode model: load starter into editor if empty or user agrees
@@ -3942,9 +3925,11 @@ def allow(key, limit=5):
       let starter=starterMap[lang]||starterMap['javascript']||'';
       if(!starter && !isSystem){
         // generate minimal starter from slug
-        const fnName = q.slug.replace(/-./g,(x)=> x[1].toUpperCase());
+        const proposedFnName = String(q.slug||'solve').replace(/-./g,(x)=> x[1].toUpperCase());
+        const fnName = /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(proposedFnName) ? proposedFnName : 'solve';
         const pyName = fnName.replace(/([A-Z])/g,(m)=>'_'+m.toLowerCase()).replace(/^_/,'');
-        starter = lang==='javascript' ? `function ${fnName}(){\n  // ${q.title}\n}` : lang==='python' ? `def ${pyName}():\n    # ${q.title}\n    pass` : `// ${q.title}\n// starter for ${lang}`;
+        const safeTitle=String(q.title||'').replace(/[\r\n\u2028\u2029]/g,' ');
+        starter = lang==='javascript' ? `function ${fnName}(){\n  // ${safeTitle}\n}` : lang==='python' ? `def ${pyName}():\n    # ${safeTitle}\n    pass` : `// ${safeTitle}\n// starter for ${lang}`;
       }
       if(isSystem) starter = `// System Design: ${q.title}\n// Notes:\n// 1. Requirements (functional / non-functional)\n// 2. Estimation\n// 3. High-level design\n// 4. Deep dives\n// 5. Trade-offs, monitoring\n`;
       const ed=document.getElementById('editor')|null;
@@ -3974,7 +3959,7 @@ def allow(key, limit=5):
   // Upload modal logic
   const overlay=document.getElementById('qUploadOverlay');
   document.getElementById('qUploadBtn')?.addEventListener('click', ()=>{
-    if(!tok()){ alert('Sign in to upload questions — needed for author tracking'); return; }
+    if(!signedIn()){ alert('Sign in to upload questions — needed for author tracking'); return; }
     document.getElementById('qUpStatus').textContent='';
     overlay?.classList.add('show');
   });
@@ -4005,7 +3990,7 @@ def allow(key, limit=5):
     examples=tests.slice(0,2).map(t=>({input:t.input, output:t.expect}));
     try{
       statusEl.textContent='saving…';
-      const r=await fetch('/api/questions',{ method:'POST', headers:{'content-type':'application/json', Authorization:'Bearer '+tok()}, body: JSON.stringify({ title, description:desc, slug: slug||undefined, difficulty:diff, type, input_format:inputFmt, constraints:inputFmt? cons : cons, constraints_text:cons, examples, test_cases:tests, starter_per_lang:starters, source: leetSlug? 'leetcode':'custom', leetcode_slug: leetSlug||null })});
+      const r=await fetch('/api/questions',{ method:'POST', credentials:'same-origin', headers:{'content-type':'application/json'}, body: JSON.stringify({ title, description:desc, slug: slug||undefined, difficulty:diff, type, input_format:inputFmt, constraints:inputFmt? cons : cons, constraints_text:cons, examples, test_cases:tests, starter_per_lang:starters, source: leetSlug? 'leetcode':'custom', leetcode_slug: leetSlug||null })});
       const j=await r.json();
       if(!r.ok) throw j;
       statusEl.textContent='saved ✓ '+j.question.slug;
@@ -4025,10 +4010,8 @@ def allow(key, limit=5):
     const clean=slug.trim().toLowerCase().replace(/.*problems\//,'').replace(/\/.*/,'');
     if(leetStatus) leetStatus.textContent='fetching '+clean+' via proxy… ⏳';
     try{
-      const token=tok();
-      const headers = token ? { Authorization:'Bearer '+token } : {};
       // proxy avoids CORS
-      const r = await fetch('/api/leetcode?slug='+encodeURIComponent(clean), { headers });
+      const r = await fetch('/api/leetcode?slug='+encodeURIComponent(clean), {credentials:'same-origin'});
       const j = await r.json();
       if(!r.ok) throw j;
       const q = j.question||j.data||j;
@@ -4144,12 +4127,6 @@ def allow(key, limit=5):
     let re2=/(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*(?:async\s*)?(?:\(.*?\)\s*=>|function\b|[A-Za-z0-9_$]+\s*=>|\w+\s*=>)/g;
     while((m=re2.exec(code))!==null) if(!names.includes(m[1])) names.push(m[1]);
     let re3=/class\s+([A-Za-z0-9_$]+)/g; while((m=re3.exec(code))!==null) if(!names.includes(m[1])) names.push(m[1]);
-    const preferred=['twoSum','isValid','mergeTwoLists','mergeTwoSortedLists','LRUCache','Twitter','solve','two_sum','is_valid'];
-    let ordered=[...preferred.filter(p=>names.includes(p)), ...names, ...preferred];
-    ordered=[...new Set(ordered)];
-    for(let n of ordered){
-      try{ let wrapper=new Function(code+`\n; return typeof ${n}!=='undefined'? ${n} : null;`); let f=wrapper(); if(typeof f==='function'|| (typeof f==='object'&&f!==null)) return {fn:f,name:n,all:names}; }catch{ continue; }
-    }
     return {fn:null,name:names[0]||null,all:names};
   }
   function _u_buildArgs(fn,inputNorm){
@@ -4178,14 +4155,15 @@ def allow(key, limit=5):
     try{
     const t0 = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
     const selVal=document.getElementById('questionSelect')?.value||'';
-    const customQ=CUSTOM_QUESTIONS.find(q=>q.slug===selVal);
+    const customQ=CUSTOM_QUESTIONS.find(q=>q.slug===selVal)
+      || ((window._randori_builtin_questions||[]).find(q=>q.id===selVal || q.slug===selVal) || null);
     const lang=document.getElementById('langSelect')?.value||'javascript';
     const code=getEditorCode();
     let resultsForSave=[], passedCount=0, totalCount=0, durationMs=0;
     const runOutEl=document.getElementById('runOut');
-    const useServer = !!document.getElementById('useServerRunner')?.checked;
+    const useServer = true;
     if(customQ){
-      const tcs=customQ.test_cases||[];
+      const tcs=customQ.test_cases||customQ.tests||[];
       totalCount = tcs.length;
       // Helper local JS runner extracted for fallback
       function _runLocalJSAndRender(){
@@ -4193,7 +4171,7 @@ def allow(key, limit=5):
         let fn=extracted.fn, fnName=extracted.name;
         const cards=[];
         if(!fn){
-          cards.push('<div class="test" style="border-color:var(--accent-3)"><div class="small">No function found'+(fnName?' — tried '+fnName:'')+'. Expected <code>function '+customQ.slug.replace(/-./g,s=>s[1].toUpperCase())+'</code> style. Names: <span class="kbd">'+((extracted.all||[]).slice(0,3).join(', ')||'none')+'</span>. Code '+code.length+' chars.</div></div>');
+          cards.push('<div class="test" style="border-color:var(--accent-3)"><div class="small">No function found'+(fnName?' — tried '+escapeHtml(fnName):'')+'. Expected <code>function '+escapeHtml(String(customQ.slug||'').replace(/-./g,s=>s[1].toUpperCase()))+'</code> style. Names: <span class="kbd">'+escapeHtml((extracted.all||[]).slice(0,3).join(', ')||'none')+'</span>. Code '+escapeHtml(code.length)+' chars.</div></div>');
         }
         let pc=0;
         let resSave=[];
@@ -4213,14 +4191,14 @@ def allow(key, limit=5):
               if(tc.expect==null) pass=true;
               entry.pass=pass;
               if(pass) pc++;
-              cards.push('<div class="test" style="border-color:'+(pass?'var(--ok)':'var(--accent-3)')+'"><div class="small"><b>Case '+(i+1)+'</b> '+(pass?'✓ pass':'✗ fail')+' — got <span class="kbd">'+JSON.stringify(got).slice(0,140)+'</span> exp <span class="kbd">'+JSON.stringify(exNorm).slice(0,140)+'</span><div class="small muted">in: <span class="kbd">'+JSON.stringify(inNorm).slice(0,140)+'</span> fn <span class="kbd">'+(fnName||'?')+'</span> • executed locally ✓ (fallback)</div></div></div>');
+              cards.push('<div class="test" style="border-color:'+(pass?'var(--ok)':'var(--accent-3)')+'"><div class="small"><b>Case '+(i+1)+'</b> '+(pass?'✓ pass':'✗ fail')+' — got <span class="kbd">'+escapeHtml(JSON.stringify(got).slice(0,140))+'</span> exp <span class="kbd">'+escapeHtml(JSON.stringify(exNorm).slice(0,140))+'</span><div class="small muted">in: <span class="kbd">'+escapeHtml(JSON.stringify(inNorm).slice(0,140))+'</span> fn <span class="kbd">'+escapeHtml(fnName||'?')+'</span> • executed locally ✓ (fallback)</div></div></div>');
             } else {
-              cards.push('<div class="test" style="border-color:var(--line)"><div class="small">Case '+(i+1)+': in <span class="kbd">'+JSON.stringify(_u_normIn(tc.input)).slice(0,100)+'</span> → exp <span class="kbd">'+JSON.stringify(_u_normEx(tc.expect)).slice(0,100)+'</span><div class="small muted">no function '+(fnName||'found')+' — static check, '+(code.length>20?'code present':'add code')+'</div></div></div>');
+              cards.push('<div class="test" style="border-color:var(--line)"><div class="small">Case '+(i+1)+': in <span class="kbd">'+escapeHtml(JSON.stringify(_u_normIn(tc.input)).slice(0,100))+'</span> → exp <span class="kbd">'+escapeHtml(JSON.stringify(_u_normEx(tc.expect)).slice(0,100))+'</span><div class="small muted">no function '+escapeHtml(fnName||'found')+' — static check, '+(code.length>20?'code present':'add code')+'</div></div></div>');
               entry.pass=false; entry.error='no-function';
             }
           }catch(err){
             entry.error=String(err).slice(0,300);
-            cards.push('<div class="test" style="border-color:var(--accent-3)"><div class="small">Case '+(i+1)+' error: '+String(err).slice(0,180)+'<div class="small muted">in: <span class="kbd">'+JSON.stringify(_u_normIn(tc.input)).slice(0,100)+'</span></div></div></div>');
+            cards.push('<div class="test" style="border-color:var(--accent-3)"><div class="small">Case '+(i+1)+' error: '+escapeHtml(String(err).slice(0,180))+'<div class="small muted">in: <span class="kbd">'+escapeHtml(JSON.stringify(_u_normIn(tc.input)).slice(0,100))+'</span></div></div></div>');
           }
           resSave.push(entry);
         });
@@ -4233,11 +4211,6 @@ def allow(key, limit=5):
 
       // If user unchecked server OR no network needed, JS can still run local fast
       const isJS = (lang==='javascript' || lang==='typescript');
-      if(isJS && !useServer){
-        _runLocalJSAndRender();
-        return;
-      }
-
       // --- Server path for all languages including JS/TS for parity ---
       const cards=[];
       if(runOutEl) runOutEl.innerHTML='<div class="small muted"><span class="spinner-sm"></span> Running '+lang+' via Piston — '+totalCount+' cases…</div>';
@@ -4245,13 +4218,12 @@ def allow(key, limit=5):
       (async()=>{
         try{
           let apiFn = window.api || null;
-          let tok = localStorage.getItem('randori-token');
-          let payload = { language: lang, code, question_slug: customQ.slug, test_cases: tcs };
+          let payload = { language: lang, code, question_slug: customQ.slug||customQ.id, test_cases: tcs };
           let j;
           if(apiFn){
             j = await apiFn('/api/execute', {method:'POST', body: payload});
           }else{
-            const resp = await fetch('/api/execute', {method:'POST', headers:{'Content-Type':'application/json', 'Authorization': tok?('Bearer '+tok):''}, body: JSON.stringify(payload)});
+            const resp = await fetch('/api/execute', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
             j = await resp.json().catch(()=>({ok:false, error:'bad json'}));
             if(!resp.ok) throw j;
           }
@@ -4262,7 +4234,7 @@ def allow(key, limit=5):
           totalCount = j.total_count || tcs.length;
           try{ durationMs = Math.round(((typeof performance!=='undefined'&&performance.now?performance.now():Date.now())-t0)); }catch{ durationMs=j.piston?0:0; }
           const statusColor = passedCount===totalCount ? 'var(--ok)' : (passedCount>0?'var(--warn)':'var(--accent-3)');
-          cards.unshift('<div class="test" style="border-color:'+statusColor+'; background:color-mix(in srgb, var(--bg-3) 90%, '+statusColor+' 8%)"><div class="small"><b>Result: '+passedCount+'/'+totalCount+' passed</b> '+(passedCount===totalCount?'✓':'✗')+' • lang '+lang+' • Piston '+ (j.language||lang)+' '+(j.version||'')+' • executed ✓ (server)</div><div class="small muted">piston code '+((j.piston&&j.piston.code!=null)?j.piston.code:'?')+ (j.piston&&j.piston.stderr ? ' • stderr '+String(j.piston.stderr).slice(0,120) : '')+'</div></div>');
+          cards.unshift('<div class="test" style="border-color:'+statusColor+'; background:color-mix(in srgb, var(--bg-3) 90%, '+statusColor+' 8%)"><div class="small"><b>Result: '+escapeHtml(passedCount)+'/'+escapeHtml(totalCount)+' passed</b> '+(passedCount===totalCount?'✓':'✗')+' • lang '+escapeHtml(lang)+' • Piston '+escapeHtml(j.language||lang)+' '+escapeHtml(j.version||'')+' • executed ✓ (server)</div><div class="small muted">piston code '+escapeHtml((j.piston&&j.piston.code!=null)?j.piston.code:'?')+ (j.piston&&j.piston.stderr ? ' • stderr '+escapeHtml(String(j.piston.stderr).slice(0,120)) : '')+'</div></div>');
           results.forEach((r,i)=>{
             const idx = (r.idx!=null? r.idx+1 : i+1);
             const got = r.got!==undefined ? r.got : (r.raw||'');
@@ -4271,47 +4243,43 @@ def allow(key, limit=5):
             const err = r.error || r.stderr || '';
             resultsForSave.push({ idx, input: tcs[i]?.input, expect: exp, got, pass, error: err||null, language: lang, piston: true });
             if(r.note){
-              cards.push('<div class="test" style="border-color:var(--line)"><div class="small">Case '+idx+': '+String(r.note).slice(0,300)+'</div></div>');
+              cards.push('<div class="test" style="border-color:var(--line)"><div class="small">Case '+escapeHtml(idx)+': '+escapeHtml(String(r.note).slice(0,300))+'</div></div>');
             }else{
-              cards.push('<div class="test" style="border-color:'+(pass?'var(--ok)':'var(--accent-3)')+'"><div class="small"><b>Case '+idx+'</b> '+(pass?'✓ pass':'✗ fail')+' — got <span class="kbd">'+String(JSON.stringify(got)).slice(0,160)+'</span> exp <span class="kbd">'+String(JSON.stringify(exp)).slice(0,160)+'</span>'+(err?' <div class="small muted" style="color:var(--accent-3)">'+String(err).slice(0,200)+'</div>':'')+'<div class="small muted">in: <span class="kbd">'+String(JSON.stringify(_u_normIn(tcs[i]?.input))).slice(0,140)+'</span> • piston '+lang+'</div></div></div>');
+              cards.push('<div class="test" style="border-color:'+(pass?'var(--ok)':'var(--accent-3)')+'"><div class="small"><b>Case '+escapeHtml(idx)+'</b> '+(pass?'✓ pass':'✗ fail')+' — got <span class="kbd">'+escapeHtml(String(JSON.stringify(got)).slice(0,160))+'</span> exp <span class="kbd">'+escapeHtml(String(JSON.stringify(exp)).slice(0,160))+'</span>'+(err?' <div class="small muted" style="color:var(--accent-3)">'+escapeHtml(String(err).slice(0,200))+'</div>':'')+'<div class="small muted">in: <span class="kbd">'+escapeHtml(String(JSON.stringify(_u_normIn(tcs[i]?.input))).slice(0,140))+'</span> • piston '+escapeHtml(lang)+'</div></div></div>');
             }
           });
           if(results.length===0){
-            cards.push('<div class="test"><div class="small">No structured output — raw: <span class="kbd">'+String((j.piston&&j.piston.stdout)||'').slice(0,300)+'</span></div><div class="small muted">'+String((j.piston&&j.piston.stderr)||'').slice(0,300)+'</div></div>');
+            cards.push('<div class="test"><div class="small">No structured output — raw: <span class="kbd">'+escapeHtml(String((j.piston&&j.piston.stdout)||'').slice(0,300))+'</span></div><div class="small muted">'+escapeHtml(String((j.piston&&j.piston.stderr)||'').slice(0,300))+'</div></div>');
           }
           if(runOutEl){ runOutEl.innerHTML=cards.join(''); runOutEl.scrollTop=runOutEl.scrollHeight; try{ runOutEl.scrollIntoView({behavior:'smooth', block:'nearest'});}catch{} }
           try{ saveSessionRunAsync({ customQ, lang, code, resultsForSave, passedCount, totalCount, durationMs, tcs }); }catch{}
           if(window.toast) window.toast('Run '+lang+' '+passedCount+'/'+totalCount+' '+(passedCount===totalCount?'✓':'')+' via Piston (server)');
         }catch(e){
           try{ if(window._randori_ui && window._randori_ui.hideLoader) window._randori_ui.hideLoader(); }catch{}
-          // If JS/TS and server failed, fallback to local so user not blocked
-          if(isJS){
-            if(window.toast) window.toast('Server JS failed, falling back to local • '+(e?.error||e?.message||'').slice(0,80));
-            _runLocalJSAndRender();
-            return;
-          }
           const msg = (e && (e.error||e.detail||e.message))||String(e).slice(0,300);
-          if(runOutEl){ runOutEl.innerHTML='<div class="test" style="border-color:var(--accent-3)"><div class="small">Piston '+lang+' failed: '+String(msg).slice(0,400)+'<div class="small muted">Check code compiles — Java needs class Main / Python def name matches slug</div></div></div>'; runOutEl.scrollTop=runOutEl.scrollHeight; }
+          if(runOutEl){ runOutEl.innerHTML='<div class="test" style="border-color:var(--accent-3)"><div class="small">Piston '+escapeHtml(lang)+' failed: '+escapeHtml(String(msg).slice(0,400))+'<div class="small muted">Check code compiles — Java needs class Main / Python def name matches slug</div></div></div>'; runOutEl.scrollTop=runOutEl.scrollHeight; }
           if(window.toast) window.toast('Piston '+lang+' error: '+String(msg).slice(0,120));
         }
       })();
       return;
     }
-    // fallback to original static runner (which now is robust runCode)
-    try{
-      if(window._origRunCode){ window._origRunCode(); return; }
-      if(typeof runCode==='function'){ runCode(); return; }
-    }catch(e){ console.warn('fallback run failed',e); }
-    if(runOutEl) runOutEl.innerHTML='<div class="small muted">Run: select a custom question — robust runner handles uploaded tests + bundled leetcode-seed.json • verified execution</div>';
+    if(runOutEl) runOutEl.innerHTML='<div class="small muted">Select an approved catalog question to run code through the authenticated execution gateway.</div>';
+    }catch(e){
+      try{
+        const msg=String(e&&e.message||e).slice(0,500);
+        window._randori_log && window._randori_log.error('run_fail','upgradedRun failed: '+msg, {stack:e&&e.stack?String(e.stack).slice(0,2000):''});
+        if(window.Sentry) Sentry.captureException(e,{tags:{event:'run_fail'}});
+        const outEl=document.getElementById('runOut');
+        if(outEl){ outEl.innerHTML='<div class="test" style="border-color:var(--accent-3)"><div class="small">Run failed: '+escapeHtml(msg)+'</div></div>'; }
+      }catch{}
+    }
   }
 
 
 
   async function saveSessionRunAsync({ customQ, lang, code, resultsForSave, passedCount, totalCount, durationMs, tcs }){
     try{
-      const TOKEN_KEY='randori-token';
-      const tok = localStorage.getItem(TOKEN_KEY);
-      if(!tok){
+      if(!signedIn()){
         // LeetCode-like: anon local-only save (so recent runs still shows something)
         try{
           const key='randori-runs-local';
@@ -4350,7 +4318,7 @@ def allow(key, limit=5):
       if(window.api && typeof window.api==='function'){
         r = await window.api('/api/runs', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
       }else{
-        const fetchResp = await fetch('/api/runs', {method:'POST', headers:{'Content-Type':'application/json', 'Authorization':'Bearer '+tok}, body: JSON.stringify(payload)});
+        const fetchResp = await fetch('/api/runs', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
         r = await fetchResp.json().catch(()=>({ok: fetchResp.ok}));
         if(!fetchResp.ok) throw r;
       }
@@ -4362,22 +4330,20 @@ def allow(key, limit=5):
   }
 
   if(runBtn){
-    try{ window._origRunCode = runBtn.onclick; }catch{}
     runBtn.onclick = upgradedRun;
   }
 
   async function fetchMyRuns(limit=10, slugFilter=null){
     try{
-      const tok=localStorage.getItem('randori-token');
       let localRuns=[];
       try{ const key='randori-runs-local'; localRuns=JSON.parse(localStorage.getItem(key)||'[]'); }catch{}
-      if(!tok){
+      if(!signedIn()){
         // anon LeetCode-like local only
         if(slugFilter) localRuns = localRuns.filter((r)=> (r.question_slug||'').includes(slugFilter));
         return localRuns.slice(0,limit);
       }
       const url = '/api/runs?limit='+limit + (slugFilter? '&question_slug='+encodeURIComponent(slugFilter):'');
-      const resp=await fetch(url,{headers:{Authorization:'Bearer '+tok}});
+      const resp=await fetch(url,{credentials:'same-origin'});
       const j=await resp.json();
       if(!resp.ok) throw j;
       const serverRuns=j.runs||[];
@@ -4395,21 +4361,12 @@ def allow(key, limit=5):
     el.innerHTML=runs.map(r=>{
       const ok = r.total_count? (r.passed_count+'/'+r.total_count) : (r.passed_count+' pass');
       const dt=new Date(r.created_at||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
-      return `<div class="row" style="justify-content:space-between; padding:6px 0; border-bottom:1px dashed var(--border)"><span><span class="kbd" style="font-size:10px">${(r.question_slug||'custom').slice(0,16)}</span> <span class="kbd" style="font-size:10px">${r.language||'js'}</span> <span class="small">${ok}</span></span><span class="small muted" style="font-size:11px">${dt}${r.duration_ms? ' • '+r.duration_ms+'ms':''}</span></div>`;
+      return `<div class="row" style="justify-content:space-between; padding:6px 0; border-bottom:1px dashed var(--border)"><span><span class="kbd" style="font-size:10px">${escapeHtml((r.question_slug||'custom').slice(0,16))}</span> <span class="kbd" style="font-size:10px">${escapeHtml(r.language||'js')}</span> <span class="small">${escapeHtml(ok)}</span></span><span class="small muted" style="font-size:11px">${escapeHtml(dt)}${r.duration_ms? ' • '+escapeHtml(r.duration_ms)+'ms':''}</span></div>`;
     }).join('');
   }
   async function refreshRecent(){
     const l=await fetchMyRuns(8);
     renderRunsList(l);
-    }catch(e){
-      try{
-        const msg=String(e&&e.message||e).slice(0,500);
-        window._randori_log && window._randori_log.error('run_fail','upgradedRun failed: '+msg, {stack:e&&e.stack?String(e.stack).slice(0,2000):''});
-        if(window.Sentry) Sentry.captureException(e,{tags:{event:'run_fail'}});
-        const outEl=document.getElementById('runOut');
-        if(outEl){ outEl.innerHTML='<div class="test" style="border-color:var(--accent-3)"><div class="small">Run failed: '+msg.replace(/</g,'&lt;')+'</div></div>'; }
-      }catch{}
-    }
   }
   window._randori_runs={fetchMyRuns, renderRunsList, refresh:refreshRecent};
 
@@ -4430,7 +4387,6 @@ def allow(key, limit=5):
 <script>
 /* HOME differentiated — stats / next session / history for anon vs authed */
 (function(){
-  const TOKEN_KEY='randori-token';
   const ME_KEY='randori-me';
 
   function nextSunday0700UTC(){
@@ -4457,14 +4413,8 @@ def allow(key, limit=5):
 
   async function fetchStats(auth){
     try{
-      const opts={};
-      if(auth){
-        const tok=localStorage.getItem(TOKEN_KEY);
-        if(!tok) throw new Error('no tok');
-        opts.headers={Authorization:'Bearer '+tok};
-      }
       // add cache buster
-      const r=await fetch('/api/stats?_='+(Date.now()%10000), opts);
+      const r=await fetch('/api/stats?_='+(Date.now()%10000), {credentials:'same-origin'});
       const j=await r.json();
       if(!r.ok) throw j;
       return j;
@@ -4519,21 +4469,20 @@ def allow(key, limit=5):
   async function populateHistory(){
     const listEl=document.getElementById('dashHistList');
     if(!listEl) return;
-    const tok=localStorage.getItem(TOKEN_KEY);
-    if(!tok){ listEl.innerHTML='<span class="small muted">Sign in to see your history</span>'; return; }
+    if(!(window._randori_auth && window._randori_auth.me)){ listEl.innerHTML='<span class="small muted">Sign in to see your history</span>'; return; }
     try{
-      const r=await fetch('/api/history',{headers:{Authorization:'Bearer '+tok}});
+      const r=await fetch('/api/history',{credentials:'same-origin'});
       const j=await r.json();
       if(!r.ok) throw j;
       if(!j.history || !j.history.length){ listEl.innerHTML='<div class="small muted">No sessions yet — your first pair will appear here after Sunday shuffle.</div>'; return; }
       const last5=j.history.slice(0,5);
-      listEl.innerHTML= last5.map(h=>`<div class="row" style="justify-content:space-between; padding:6px 0; border-bottom:1px dashed var(--border)"><span><span class="kbd" style="font-size:10px">${h.week_label}</span> × ${h.partner_name} ${h.is_ai?'<span class="kbd" style="color:var(--accent)">ai</span>':''}</span><span class="small muted" style="font-size:11px">${h.topic? h.topic : h.topic_kind}</span></div>`).join('') + '<div class="small muted" style="margin-top:8px">Total: '+j.total+' • repeated partners: '+Object.entries(j.partner_counts||{}).filter(([,c])=>c>1).map(([n,c])=>n+' ×'+c).join(', ') + '</div>';
-    }catch(e){ listEl.innerHTML='<div class="small muted">History: '+(e.error||e.message||'offline')+' — try full History tab.</div>'; }
+      listEl.innerHTML= last5.map(h=>`<div class="row" style="justify-content:space-between; padding:6px 0; border-bottom:1px dashed var(--border)"><span><span class="kbd" style="font-size:10px">${escapeHtml(h.week_label)}</span> × ${escapeHtml(h.partner_name)} ${h.is_ai?'<span class="kbd" style="color:var(--accent)">ai</span>':''}</span><span class="small muted" style="font-size:11px">${escapeHtml(h.topic? h.topic : h.topic_kind)}</span></div>`).join('') + '<div class="small muted" style="margin-top:8px">Total: '+escapeHtml(j.total)+' • repeated partners: '+Object.entries(j.partner_counts||{}).filter(([,c])=>c>1).map(([n,c])=>escapeHtml(n)+' ×'+escapeHtml(c)).join(', ') + '</div>';
+    }catch(e){ listEl.innerHTML='<div class="small muted">History: '+escapeHtml(e.error||e.message||'offline')+' — try full History tab.</div>'; }
   }
 
   // Bootstrapping
   async function bootHome(){
-    const isAuthed = !!localStorage.getItem(TOKEN_KEY);
+    const isAuthed = !!(window._randori_auth && window._randori_auth.me);
     if(!isAuthed){
       // anon home = landing
       const stats=await fetchStats(false);
@@ -4557,10 +4506,10 @@ def allow(key, limit=5):
   // Trigger on route changes
   document.addEventListener('DOMContentLoaded', ()=> setTimeout(bootHome, 600));
   // when auth changes, rerun after 400ms
-  let lastTok=localStorage.getItem(TOKEN_KEY);
+  let lastAuth=!!(window._randori_auth && window._randori_auth.me);
   setInterval(()=>{
-    const cur=localStorage.getItem(TOKEN_KEY);
-    if(cur!==lastTok){ lastTok=cur; setTimeout(bootHome, 500); }
+    const cur=!!(window._randori_auth && window._randori_auth.me);
+    if(cur!==lastAuth){ lastAuth=cur; setTimeout(bootHome, 500); }
   }, 1000);
   // also hook into routeByAuth if exists
   setTimeout(()=>{
@@ -4598,15 +4547,12 @@ def allow(key, limit=5):
   const clearBtn=document.getElementById('logsClear');
   async function fetchLogs(){
     if(!area||!listEl) return;
-    if(!isAdmin() && !localStorage.getItem('randori-token')){ area.style.display='none'; return; }
-    // cheap admin check: try token, if 401/403 hide
-    const tok=localStorage.getItem('randori-token')||'';
-    if(!tok){ area.style.display='none'; return; }
+    if(!isAdmin()){ area.style.display='none'; return; }
     // Evaluate admin via me or try fetch — server will 403 if not admin; we hide quietly
     const lvl=levelSel? levelSel.value : '';
     const qs = lvl? '?level='+encodeURIComponent(lvl)+'&limit=30' : '?limit=30';
     try{
-      const r=await fetch('/api/logs'+qs,{headers:{authorization:'Bearer '+tok}});
+      const r=await fetch('/api/logs'+qs,{credentials:'same-origin'});
       const j=await r.json().catch(()=>({}));
       if(!r.ok){ if(r.status===403||r.status===401){ area.style.display='none'; return; } throw j; }
       area.style.display='block';
@@ -4615,22 +4561,22 @@ def allow(key, limit=5):
       listEl.innerHTML=logs.map(l=>{
         const lvl=l.level||'info';
         const color = lvl==='error' ? '#e87a8a' : lvl==='warn' ? '#f2d07a' : lvl==='success' ? '#c8f6a0' : '#9aa0a6';
-        const badge=`<span style="display:inline-block; min-width:44px; padding:2px 6px; border-radius:999px; border:1px solid ${color}; color:${color}; font-size:10px; text-transform:uppercase">${lvl}</span>`;
+        const badge=`<span style="display:inline-block; min-width:44px; padding:2px 6px; border-radius:999px; border:1px solid ${color}; color:${color}; font-size:10px; text-transform:uppercase">${escapeHtml(lvl)}</span>`;
         const src=l.source||'server';
-        const ev=l.event? ` <span class="kbd" style="font-size:10px">${(l.event||'').slice(0,28)}</span>`:'';
+        const ev=l.event? ` <span class="kbd" style="font-size:10px">${escapeHtml((l.event||'').slice(0,28))}</span>`:'';
         const when=new Date(l.created_at).toLocaleTimeString();
         const user=l.user_id? `#${l.user_id}`:'';
         let metaBtn='';
         try{
           const meta=l.meta|| (l.meta_json? JSON.parse(l.meta_json):null);
-          if(meta && typeof meta==='object'){ metaBtn=`<details style="margin-left:6px"><summary style="cursor:pointer; font-size:10px">meta</summary><pre style="white-space:pre-wrap; font-size:10.5px; max-width:360px; background:var(--bg-3); padding:6px; border-radius:8px">${(JSON.stringify(meta,null,2)||'').slice(0,2000).replace(/</g,'&lt;')}</pre></details>`; }
-          else if(l.meta_json){ metaBtn=`<span class="small muted" style="font-size:10px; margin-left:6px">${String(l.meta_json).slice(0,120)}</span>`; }
+          if(meta && typeof meta==='object'){ metaBtn=`<details style="margin-left:6px"><summary style="cursor:pointer; font-size:10px">meta</summary><pre style="white-space:pre-wrap; font-size:10.5px; max-width:360px; background:var(--bg-3); padding:6px; border-radius:8px">${escapeHtml((JSON.stringify(meta,null,2)||'').slice(0,2000))}</pre></details>`; }
+          else if(l.meta_json){ metaBtn=`<span class="small muted" style="font-size:10px; margin-left:6px">${escapeHtml(String(l.meta_json).slice(0,120))}</span>`; }
         }catch{}
-        return `<div style="display:flex; flex-wrap:wrap; gap:6px; padding:4px 6px; border-bottom:1px dashed var(--border); align-items:flex-start">${badge}<span style="color:var(--ink-2); font-size:10px">${when} ${src}${user}</span>${ev}<span style="flex:1; min-width:140px">${String(l.message||'').slice(0,240).replace(/</g,'&lt;')}</span>${metaBtn}</div>`;
+        return `<div style="display:flex; flex-wrap:wrap; gap:6px; padding:4px 6px; border-bottom:1px dashed var(--border); align-items:flex-start">${badge}<span style="color:var(--ink-2); font-size:10px">${escapeHtml(when)} ${escapeHtml(src)}${escapeHtml(user)}</span>${ev}<span style="flex:1; min-width:140px">${escapeHtml(String(l.message||'').slice(0,240))}</span>${metaBtn}</div>`;
       }).join('');
     }catch(e){
       try{ window._randori_log && window._randori_log.warn('logs_widget','fetch failed', {err:String(e.message||e).slice(0,200)}); }catch{}
-      if(listEl) listEl.innerHTML='<span class="small muted">Logs fetch failed — '+(e.error||e.message||'offline')+'</span>';
+      if(listEl) listEl.innerHTML='<span class="small muted">Logs fetch failed — '+escapeHtml(e.error||e.message||'offline')+'</span>';
     }
   }
   refreshBtn && refreshBtn.addEventListener('click', ()=>{ fetchLogs(); try{ window._randori_log&&window._randori_log.info('logs_widget','manual refresh'); }catch{} });
@@ -4710,11 +4656,11 @@ def allow(key, limit=5):
 <!-- Monaco + Prettier IDE layer — CDN, no extra Vercel function, Hobby-safe, resilient fallback chain -->
 <link rel="preconnect" href="https://cdnjs.cloudflare.com">
 <link rel="preconnect" href="https://cdn.jsdelivr.net">
-<script id="monacoLoader" src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js" onerror="window.__monacoLoaderFailed=1"></script>
 <script src="https://unpkg.com/prettier@3.3.3/standalone.js" onerror="console.warn('prettier standalone failed')"></script>
 <script src="https://unpkg.com/prettier@3.3.3/plugins/babel.js" onerror="console.warn('prettier babel failed')"></script>
 <script src="https://unpkg.com/prettier@3.3.3/plugins/estree.js" onerror="console.warn('prettier estree failed')"></script>
 <script src="https://unpkg.com/prettier@3.3.3/plugins/typescript.js" onerror="console.warn('prettier ts failed')"></script>
+<script id="monacoLoader" src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js" onerror="window.__monacoLoaderFailed=1"></script>
 <script>
 // Monaco IDE task — replace textarea with Monaco, keep textarea as hidden mirror for legacy runCode/AI paths
 (function(){
@@ -4733,7 +4679,6 @@ def allow(key, limit=5):
     s.onerror=()=>cb && cb(new Error('fallback loader fail'));
     document.head.appendChild(s);
   }
-  const TOKEN_KEY='randori-token';
   const CODE_KEY='randori-code';
   const hostId='monacoHost';
   const taId='editor';
@@ -4855,8 +4800,6 @@ def allow(key, limit=5):
       syncTextareaToMirror(); persistLikeOld();
       try{ if(typeof window.toast==='function') (typeof window.toast==='function' && window.toast)('formatted (monaco)'); }catch{}
     }catch(e){ try{ if(typeof window.toast==='function') (typeof window.toast==='function' && window.toast)('nothing to format'); }catch{} }
-  }
-
     }catch(e){ try{ window._randori_log && window._randori_log.error('format_fail','formatCode failed', {err:String(e&&e.message||e).slice(0,400), stack:e&&e.stack?String(e.stack).slice(0,1500):''}); if(window.Sentry) Sentry.captureException(e,{tags:{event:'format_fail'}});}catch{} }
   }
   function initMonaco(){
@@ -5081,7 +5024,7 @@ def allow(key, limit=5):
     try{ host && host.querySelectorAll('.monaco-loader').forEach(l=>l.remove()); }catch{}
     if(host){ host.style.display='none'; }
     if(ta){ ta.style.display='block'; ta.style.minHeight='420px'; ta.focus && ta.focus(); }
-    if(note){ note.style.display='block'; note.title=reason||''; note.innerHTML='Monaco failed to load ('+(reason||'unknown')+') — using plain editor with lint off. <button id="monacoRetry" class="pill" style="margin-left:8px">Retry CDN</button>'; }
+    if(note){ note.style.display='block'; note.title=reason||''; note.innerHTML='Monaco failed to load ('+escapeHtml(reason||'unknown')+') — using plain editor with lint off. <button id="monacoRetry" class="pill" style="margin-left:8px">Retry CDN</button>'; }
     document.getElementById('monacoRetry')?.addEventListener('click', ()=>{ if(host) host.style.display=''; if(note) note.style.display='none'; initMonaco(); });
   }
 
@@ -5098,13 +5041,8 @@ def allow(key, limit=5):
 <script type="module">
 // --- Pillar 3 Fix: rewired AI frontend (Groq router + anon demo + quota + loader/toast) ---
 (function(){
-  const TOKEN_KEY='randori-token';
-  function getToken(){ try{ return localStorage.getItem(TOKEN_KEY)||''; }catch{ return ''; } }
   function authHeaders(extra={}){
-    const t=getToken();
-    const h={'content-type':'application/json', ...extra};
-    if(t) h['authorization']='Bearer '+t;
-    return h;
+    return {'content-type':'application/json', ...extra};
   }
   function showLoader(el){
     try{ if(window._randori_ui && window._randori_ui.showLoader){ return window._randori_ui.showLoader(el); } }catch{}
@@ -5208,7 +5146,7 @@ def allow(key, limit=5):
         if(statusEl){ statusEl.textContent=`AI error ${res.status}: ${j.error||j.reason||'unknown'}${j.count!==undefined?` (${j.count}/${j.limit})`:''}`; statusEl.style.color='var(--accent-3)'; }
         try{ window._randori_ui && window._randori_ui.hideLoader && window._randori_ui.hideLoader(loaderTarget); }catch{}
         try{ window.toast && window.toast(`AI: ${j.error||j.reason||'failed'} ${j.count?' — '+j.count+'/'+j.limit:''}`); }catch{}
-        if(dbgEl) dbgEl.innerHTML+=`<br><span style="color:var(--accent-3)">Error ${res.status}: ${(j.error||j.reason||'').slice(0,300)} ${j.count? '('+j.count+'/'+j.limit+')':''}</span>`;
+        if(dbgEl) dbgEl.innerHTML+=`<br><span style="color:var(--accent-3)">Error ${escapeHtml(res.status)}: ${escapeHtml((j.error||j.reason||'').slice(0,300))} ${j.count? '('+escapeHtml(j.count)+'/'+escapeHtml(j.limit)+')':''}</span>`;
         if(res.status===429){
           try{ window._randori_log && window._randori_log.warn('ai_quota', `blocked ${j.reason||j.error}`, {status:res.status, count:j.count, limit:j.limit}); }catch{}
         }
@@ -5218,31 +5156,31 @@ def allow(key, limit=5):
       // success render (reuse existing render logic if available, else custom minimal)
       const fb=j.feedback; const model=j.model_used; const reason=j.reason_for_pick; const cost=j.estimated_cost; const ev=j.evidence_validated; const quota=j.quota;
       if(dbgEl){
-        dbgEl.innerHTML=`<b>Model:</b> ${model}<br><b>Why:</b> ${reason}<br><b>Cost:</b> $${cost?.usd||'0.0000'} (${cost?.tokens_in||0} in / ${cost?.tokens_out||0} out)${cost?.groq_usage? ' — Groq '+JSON.stringify(cost.groq_usage):''}<br><b>Evidence:</b> ${ev?.validated||0}/${ev?.total||0} validated (${Math.round((ev?.score||0)*100)}%) ${ev?.loweredConfidence?'— some lowered confidence':''}<br><b>Anon:</b> ${j.anon?'yes (demo mocked)':'no'} ${j.mocked?'— <span style="color:var(--warn)">Mocked — set GROQ_API_KEY</span>':''} ${j.openaiFallback?'— OpenAI fallback':''}${quota? '<br><b>Month:</b> '+(quota.count||0)+'/'+(quota.limit||100)+' '+(quota.demo?' (demo)':'') : ''}`;
+        dbgEl.innerHTML=`<b>Model:</b> ${escapeHtml(model)}<br><b>Why:</b> ${escapeHtml(reason)}<br><b>Cost:</b> $${escapeHtml(cost?.usd||'0.0000')} (${escapeHtml(cost?.tokens_in||0)} in / ${escapeHtml(cost?.tokens_out||0)} out)${cost?.groq_usage? ' — Groq '+escapeHtml(JSON.stringify(cost.groq_usage)):''}<br><b>Evidence:</b> ${escapeHtml(ev?.validated||0)}/${escapeHtml(ev?.total||0)} validated (${escapeHtml(Math.round((ev?.score||0)*100))}%) ${ev?.loweredConfidence?'— some lowered confidence':''}<br><b>Anon:</b> ${j.anon?'yes (demo mocked)':'no'} ${j.mocked?'— <span style="color:var(--warn)">Mocked — set GROQ_API_KEY</span>':''} ${j.openaiFallback?'— OpenAI fallback':''}${quota? '<br><b>Month:</b> '+escapeHtml(quota.count||0)+'/'+escapeHtml(quota.limit||100)+' '+(quota.demo?' (demo)':'') : ''}`;
       }
 
       function chip(evTxt){
         if(!evTxt || evTxt==='no direct quote' || String(evTxt).includes('no direct')) return `<span class="kbd" style="background:#e6c07a22;border-color:#e6c07a">no direct quote</span>`;
-        const safe=String(evTxt).replace(/"/g,'&quot;');
+        const safe=escapeHtml(evTxt);
         return `<span class="kbd" style="background:#9cc0b522;border-color:#9cc0b5;color:#9cc0b5" title="${safe}">“${safe.slice(0,80)}${safe.length>80?'…':''}”</span>`;
       }
 
       const candidate=fb?.candidate||{strengths:[], improvements:[]};
       const interviewer=fb?.interviewer||{strengths:[], improvements:[]};
       const html=`
-        <div class="card" style="border-color:var(--ok)"><div class="card-h"><h3 style="font-size:13px">Candidate ${fb?.overall_score? `<span class="kbd">${fb.overall_score}/10</span>`:''}</h3><span class="kbd" title="session ${j.session_id}">#${String(j.session_id).slice(-4)}</span></div>
+        <div class="card" style="border-color:var(--ok)"><div class="card-h"><h3 style="font-size:13px">Candidate ${fb?.overall_score? `<span class="kbd">${escapeHtml(fb.overall_score)}/10</span>`:''}</h3><span class="kbd" title="session ${escapeHtml(j.session_id)}">#${escapeHtml(String(j.session_id).slice(-4))}</span></div>
           <div class="card-b" style="display:grid;gap:8px">
-            <div><b class="small">Strengths</b><div style="display:grid;gap:6px;margin-top:4px">${(candidate.strengths||[]).map(s=>`<div class="test" style="border-color:var(--ok)"><div class="small"><b>${s.point}</b> ${chip(s.evidence)} ${s.confidence? `<span class="kbd">${Math.round((s.confidence||0.8)*100)}%</span>`:''}</div></div>`).join('')||'<span class="small muted">none listed</span>'}</div></div>
-            <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(candidate.improvements||[]).map(s=>`<div class="test" style="border-color:#e87a8a"><div class="small"><b>${s.point}</b> ${chip(s.evidence)}<div class="small muted" style="margin-top:3px">↳ ${s.suggestion||''}</div></div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
+            <div><b class="small">Strengths</b><div style="display:grid;gap:6px;margin-top:4px">${(candidate.strengths||[]).map(s=>`<div class="test" style="border-color:var(--ok)"><div class="small"><b>${escapeHtml(s.point)}</b> ${chip(s.evidence)} ${s.confidence? `<span class="kbd">${escapeHtml(Math.round((s.confidence||0.8)*100))}%</span>`:''}</div></div>`).join('')||'<span class="small muted">none listed</span>'}</div></div>
+            <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(candidate.improvements||[]).map(s=>`<div class="test" style="border-color:#e87a8a"><div class="small"><b>${escapeHtml(s.point)}</b> ${chip(s.evidence)}<div class="small muted" style="margin-top:3px">↳ ${escapeHtml(s.suggestion||'')}</div></div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
           </div>
         </div>
-        <div class="card" style="border-color:var(--accent-2)"><div class="card-h"><h3 style="font-size:13px">Interviewer</h3><span class="kbd">${model.slice(0,22)}</span></div>
+        <div class="card" style="border-color:var(--accent-2)"><div class="card-h"><h3 style="font-size:13px">Interviewer</h3><span class="kbd">${escapeHtml(String(model||'model').slice(0,22))}</span></div>
           <div class="card-b" style="display:grid;gap:8px">
-            <div><b class="small">Strengths</b><div style="display:grid;gap:6px;margin-top:4px">${(interviewer.strengths||[]).map(s=>`<div class="test"><div class="small"><b>${s.point}</b> ${chip(s.evidence)}</div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
-            <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(interviewer.improvements||[]).map(s=>`<div class="test"><div class="small"><b>${s.point}</b> ${chip(s.evidence)}<div class="small muted">↳ ${s.suggestion||''}</div></div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
+            <div><b class="small">Strengths</b><div style="display:grid;gap:6px;margin-top:4px">${(interviewer.strengths||[]).map(s=>`<div class="test"><div class="small"><b>${escapeHtml(s.point)}</b> ${chip(s.evidence)}</div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
+            <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(interviewer.improvements||[]).map(s=>`<div class="test"><div class="small"><b>${escapeHtml(s.point)}</b> ${chip(s.evidence)}<div class="small muted">↳ ${escapeHtml(s.suggestion||'')}</div></div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
           </div>
         </div>
-        <div class="card" style="border-style:dashed"><div class="card-h"><h3 style="font-size:13px">Next time checklist</h3><span class="kbd">overall ${fb?.overall_score||'-'}/10</span></div><div class="card-b small">${(fb?.next_time_checklist||[]).map(x=>`• ${x}`).join('<br>')||'no checklist'}</div></div>
+        <div class="card" style="border-style:dashed"><div class="card-h"><h3 style="font-size:13px">Next time checklist</h3><span class="kbd">overall ${escapeHtml(fb?.overall_score||'-')}/10</span></div><div class="card-b small">${(fb?.next_time_checklist||[]).map(x=>`• ${escapeHtml(x)}`).join('<br>')||'no checklist'}</div></div>
       `;
 
       if(fbEl) fbEl.innerHTML=html;
@@ -5276,7 +5214,7 @@ def allow(key, limit=5):
       const fbEl=document.getElementById('aiFeedback')||document.getElementById('aiFeedbackList');
       if(fbEl && j.feedback){
         // reuse analyze render minimal (just show overall)
-        fbEl.innerHTML=`<div class="card"><div class="card-h"><h3>Feedback #${id}</h3><span class="kbd">${j.model_used||'model'}</span></div><div class="card-b"><pre style="white-space:pre-wrap;font-size:12px">${JSON.stringify(j.feedback,null,2).slice(0,3000)}</pre></div></div>`;
+        fbEl.innerHTML=`<div class="card"><div class="card-h"><h3>Feedback #${escapeHtml(id)}</h3><span class="kbd">${escapeHtml(j.model_used||'model')}</span></div><div class="card-b"><pre style="white-space:pre-wrap;font-size:12px">${escapeHtml(JSON.stringify(j.feedback,null,2).slice(0,3000))}</pre></div></div>`;
       }
     }catch{}
     return j;
@@ -5293,10 +5231,11 @@ def allow(key, limit=5):
       return j;
     }
     const list=j.feedbacks||[];
-    const html=`<div class="small muted">${list.length} past sessions — calls today ${j.usage_today?.calls||0}/14400 ${j.monthly? '• '+j.monthly.count+'/'+j.monthly.limit+' this month'+(j.monthly.demo?' (demo)':''):''}</div><div style="display:grid;gap:6px;margin-top:6px">${list.slice(0,10).map(r=>`<div class="test" style="cursor:pointer" onclick="window._randori_ai && window._randori_ai.getFeedback && window._randori_ai.getFeedback('${r.session_id||r.id}')"><div class="small"><span class="kbd">#${String(r.session_id||r.id).slice(-4)}</span> ${r.pair_label||r.room_id||'room'} — <span class="kbd">${(r.model_used||'model').slice(0,18)}</span> ${r.duration_sec? '• '+Math.round(r.duration_sec/60)+'m':''} <span class="kbd" style="float:right">${new Date(r.created_at).toLocaleString()}</span></div></div>`).join('')||'<span class="small muted">No history yet — run an analysis above</span>'}</div>`;
+    const html=`<div class="small muted">${escapeHtml(list.length)} past sessions — calls today ${escapeHtml(j.usage_today?.calls||0)}/14400 ${j.monthly? '• '+escapeHtml(j.monthly.count)+'/'+escapeHtml(j.monthly.limit)+' this month'+(j.monthly.demo?' (demo)':''):''}</div><div style="display:grid;gap:6px;margin-top:6px">${list.slice(0,10).map(r=>`<div class="test ai-feedback-history-item" data-feedback-id="${escapeHtml(r.session_id||r.id)}" style="cursor:pointer"><div class="small"><span class="kbd">#${escapeHtml(String(r.session_id||r.id).slice(-4))}</span> ${escapeHtml(r.pair_label||r.room_id||'room')} — <span class="kbd">${escapeHtml((r.model_used||'model').slice(0,18))}</span> ${r.duration_sec? '• '+escapeHtml(Math.round(r.duration_sec/60))+'m':''} <span class="kbd" style="float:right">${escapeHtml(new Date(r.created_at).toLocaleString())}</span></div></div>`).join('')||'<span class="small muted">No history yet — run an analysis above</span>'}</div>`;
     const target = fbEl || listEl;
     if(target){ target.innerHTML=html; }
     if(listEl && listEl!==fbEl){ listEl.innerHTML=html; }
+    document.querySelectorAll('.ai-feedback-history-item').forEach(el=>el.addEventListener('click', ()=>getFeedback(el.dataset.feedbackId)));
     const statusEl=document.getElementById('aiStatus'); if(statusEl) statusEl.textContent=`History loaded — ${list.length} sessions`;
     return j;
   }
@@ -5356,7 +5295,7 @@ def allow(key, limit=5):
       card.id='aiFeedbackCardBelowBoard';
       card.className='card';
       card.style.cssText='margin:10px; border-style:dashed; background:var(--bg-2)';
-      card.innerHTML=`<div class="card-h"><h3 style="font-size:12.5px">AI Interview Feedback</h3><span class="kbd">Groq router • evidence-checked</span></div><div class="card-b small" style="display:grid;gap:8px"><div>Record toggles capture, Analyze sends transcript + code snapshots to <span class="kbd">/api/ai/analyze</span> (Bearer if signed in, demo mocked otherwise). Quota: 100/mo demo, 500/mo regular.</div><div class="row" style="gap:6px; flex-wrap:wrap"><button class="btn" onclick="window._randori_ai && window._randori_ai.analyze && window._randori_ai.analyze()" style="font-size:11.5px">⚡ Analyze current session</button><button class="pill" onclick="window._randori_ai && window._randori_ai.listHistory && window._randori_ai.listHistory()">history</button><span class="small muted">Shows evidence quotes + overall score + checklist</span></div><div id="aiFeedbackList" style="display:grid;gap:8px"></div></div>`;
+      card.innerHTML=`<div class="card-h"><h3 style="font-size:12.5px">AI Interview Feedback</h3><span class="kbd">Groq router • evidence-checked</span></div><div class="card-b small" style="display:grid;gap:8px"><div>Record toggles capture, Analyze sends transcript + code snapshots to <span class="kbd">/api/ai/analyze</span> using your secure session. Quota: 100/mo demo, 500/mo regular.</div><div class="row" style="gap:6px; flex-wrap:wrap"><button class="btn" onclick="window._randori_ai && window._randori_ai.analyze && window._randori_ai.analyze()" style="font-size:11.5px">⚡ Analyze current session</button><button class="pill" onclick="window._randori_ai && window._randori_ai.listHistory && window._randori_ai.listHistory()">history</button><span class="small muted">Shows evidence quotes + overall score + checklist</span></div><div id="aiFeedbackList" style="display:grid;gap:8px"></div></div>`;
       if(codeLayout && codeLayout.parentElement){
         codeLayout.parentElement.insertBefore(card, codeLayout.nextSibling);
       }else if(videoBar && videoBar.parentElement){

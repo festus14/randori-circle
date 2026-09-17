@@ -1,5 +1,4 @@
-import { getClient, getJwtSecret, initSentry, getSentry } from './_db.js';
-import jwt from 'jsonwebtoken';
+import { getClient, initSentry, getSentry, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 import * as SentryLib from '@sentry/node';
 
 initSentry();
@@ -58,6 +57,12 @@ async function ensureTables(db){
   )`);
   // monthly aggregate optional
   try{ await db.execute(`CREATE TABLE IF NOT EXISTS ai_monthly_usage (month TEXT PRIMARY KEY, user_id INTEGER, calls INTEGER DEFAULT 0, tokens_in INTEGER DEFAULT 0, updated_at TEXT DEFAULT (datetime('now')))`) }catch{}
+  await db.execute(`CREATE TABLE IF NOT EXISTS ai_consents (
+    user_id INTEGER PRIMARY KEY,
+    consented_at TEXT NOT NULL DEFAULT (datetime('now')),
+    revoked_at TEXT,
+    policy_version TEXT NOT NULL
+  )`);
 }
 
 async function ensureAppLogs(db){
@@ -135,6 +140,7 @@ const MODELS = {
   fast: { name:'llama-3.1-8b-instant', price_in_per_mtok:0.05, price_out_per_mtok:0.08, context:131072 },
   balanced: { name:'llama-3.3-70b-versatile', price_in_per_mtok:0.59, price_out_per_mtok:0.79, context:131072 },
 };
+const AI_CONSENT_POLICY_VERSION='2026-09-17';
 
 function estimateTokens(str){ if(!str) return 0; return Math.ceil(String(str).length/4); }
 
@@ -166,6 +172,46 @@ Produce STRICT JSON only:
 Rules: evidence MUST be verbatim 5-20 words from TRANSCRIPT/CODE, else "". 2-3 per role. JSON only.`;
 }
 
+function normalizeFeedbackItem(item, improvement){
+  if(!item || typeof item!=='object' || Array.isArray(item)) return null;
+  if(typeof item.point!=='string' || !item.point.trim() || typeof item.evidence!=='string') return null;
+  if(improvement && (typeof item.suggestion!=='string' || !item.suggestion.trim())) return null;
+  if(item.confidence!==undefined && (!Number.isFinite(item.confidence) || item.confidence<0 || item.confidence>1)) return null;
+  const normalized={ point:item.point.trim().slice(0,500), evidence:item.evidence.trim().slice(0,500) };
+  if(improvement) normalized.suggestion=item.suggestion.trim().slice(0,800);
+  if(item.confidence!==undefined) normalized.confidence=item.confidence;
+  return normalized;
+}
+
+function normalizeFeedbackSection(section){
+  if(!section || typeof section!=='object' || Array.isArray(section)) return null;
+  if(!Array.isArray(section.strengths) || !Array.isArray(section.improvements)) return null;
+  const strengths=section.strengths.slice(0,10).map(item=>normalizeFeedbackItem(item,false));
+  const improvements=section.improvements.slice(0,10).map(item=>normalizeFeedbackItem(item,true));
+  if(strengths.some(item=>!item) || improvements.some(item=>!item)) return null;
+  return {strengths,improvements};
+}
+
+function normalizeFeedback(feedback){
+  if(!feedback || typeof feedback!=='object' || Array.isArray(feedback)) return null;
+  const candidate=normalizeFeedbackSection(feedback.candidate);
+  const interviewer=normalizeFeedbackSection(feedback.interviewer);
+  if(!candidate || !interviewer) return null;
+  if(!Number.isFinite(feedback.overall_score) || feedback.overall_score<1 || feedback.overall_score>10) return null;
+  if(!Array.isArray(feedback.next_time_checklist) || feedback.next_time_checklist.some(item=>typeof item!=='string')) return null;
+  return {
+    candidate,
+    interviewer,
+    overall_score:feedback.overall_score,
+    next_time_checklist:feedback.next_time_checklist.slice(0,20).map(item=>item.trim().slice(0,500)).filter(Boolean),
+  };
+}
+
+function parseProviderFeedback(content){
+  if(typeof content!=='string') return content;
+  try{ return JSON.parse(content); }catch{ return null; }
+}
+
 function verifyEvidence(feedback, combined){
   const low=(combined||'').toLowerCase(); let val=0, tot=0, lowered=false;
   for(const r of ['candidate','interviewer']){
@@ -188,14 +234,39 @@ function verifyEvidence(feedback, combined){
   return { validated:val, total:tot, score:tot?val/tot:1, loweredConfidence:lowered };
 }
 
+function parseProviderEnvelope(provider,res,text){
+  let json;
+  try{ json=JSON.parse(text); }catch{ json=null; }
+  const validObject=!!json && typeof json==='object' && !Array.isArray(json);
+  if(!res.ok){
+    const providerError=validObject
+      ? (typeof json.error==='object' && json.error ? json.error.message : json.error)
+      : null;
+    return {error:`${provider} ${res.status}: ${providerError||text.slice(0,400)}`,status:res.status,raw:validObject?json:null};
+  }
+  const choice=validObject && Array.isArray(json.choices) ? json.choices[0] : null;
+  const message=choice && typeof choice==='object' && !Array.isArray(choice) ? choice.message : null;
+  const content=message && typeof message==='object' && !Array.isArray(message) ? message.content : null;
+  if(typeof content!=='string' || !content.trim()){
+    return {error:`${provider} ${res.status}: invalid provider response`,status:res.status,raw:validObject?json:null,invalid_response:true};
+  }
+  const usage=json.usage && typeof json.usage==='object' && !Array.isArray(json.usage) ? json.usage : {};
+  return {content,usage,raw:json};
+}
+
 async function callGroq({ modelName, prompt }){
   const key=process.env.GROQ_API_KEY;
   if(!key) return { error:'missing GROQ_API_KEY', mocked:true };
   const body={ model:modelName, messages:[{role:'system',content:'You are JSON generator only.'},{role:'user',content:prompt}], temperature:0.25, max_tokens:1600, response_format:{type:'json_object'} };
-  const res=await fetch('https://api.groq.com/openai/v1/chat/completions',{ method:'POST', headers:{ Authorization:`Bearer ${key}`, 'Content-Type':'application/json'}, body:JSON.stringify(body)});
-  const text=await res.text(); let json; try{ json=JSON.parse(text);}catch{ json={error:`parse ${res.status}`, raw:text.slice(0,1200)}; }
-  if(!res.ok) return { error:`groq ${res.status}: ${json.error?.message||json.error||text.slice(0,400)}`, status:res.status, raw:json };
-  const content=json.choices?.[0]?.message?.content||''; return { content, usage:json.usage||{}, raw:json };
+  const controller=new AbortController(); const timer=setTimeout(()=>controller.abort(),15000);
+  let res, text;
+  try{
+    res=await fetch('https://api.groq.com/openai/v1/chat/completions',{ method:'POST', headers:{ Authorization:`Bearer ${key}`, 'Content-Type':'application/json'}, body:JSON.stringify(body), signal:controller.signal});
+    text=await res.text();
+  }
+  catch(error){ return { error:error?.name==='AbortError'?'groq request timed out':'groq request failed', network_error:true }; }
+  finally{ clearTimeout(timer); }
+  return parseProviderEnvelope('groq',res,text);
 }
 
 async function callOpenAI({ modelName, prompt }){
@@ -203,21 +274,23 @@ async function callOpenAI({ modelName, prompt }){
   if(!key) return { error:'missing OPENAI_API_KEY' };
   const model = modelName.includes('70b') ? 'gpt-4o-mini' : 'gpt-4o-mini';
   const body={ model, messages:[{role:'system',content:'You are JSON generator only. Output JSON.'},{role:'user',content:prompt}], temperature:0.25, max_tokens:1500, response_format:{type:'json_object'} };
-  const res=await fetch('https://api.openai.com/v1/chat/completions',{ method:'POST', headers:{ Authorization:`Bearer ${key}`, 'Content-Type':'application/json'}, body:JSON.stringify(body)});
-  const text=await res.text(); let json; try{ json=JSON.parse(text);}catch{ json={error:`parse ${res.status}`, raw:text.slice(0,1200)}; }
-  if(!res.ok) return { error:`openai ${res.status}: ${json.error?.message||json.error||text.slice(0,400)}`, status:res.status, raw:json };
-  const content=json.choices?.[0]?.message?.content||''; return { content, usage:json.usage||{} };
+  const controller=new AbortController(); const timer=setTimeout(()=>controller.abort(),15000);
+  let res, text;
+  try{
+    res=await fetch('https://api.openai.com/v1/chat/completions',{ method:'POST', headers:{ Authorization:`Bearer ${key}`, 'Content-Type':'application/json'}, body:JSON.stringify(body), signal:controller.signal});
+    text=await res.text();
+  }
+  catch(error){ return { error:error?.name==='AbortError'?'openai request timed out':'openai request failed', network_error:true }; }
+  finally{ clearTimeout(timer); }
+  return parseProviderEnvelope('openai',res,text);
 }
 
 function tryAuth(req){
-  const auth=req.headers.authorization||''; const m=auth.match(/^Bearer\s+(.+)$/);
-  if(!m) return { authed:false, userId:null, payload:null, isDemo:true };
-  try{
-    const payload=jwt.verify(m[1], getJwtSecret());
-    const uid=payload.id??payload.uid??null;
-    const isDemo = !!payload.is_demo || String(payload.email||'').includes('randori.demo');
-    return { authed:true, userId:uid, payload, isDemo };
-  }catch{ return { authed:false, userId:null, payload:null, isDemo:true, tokenInvalid:true }; }
+  const payload=verifyRequestAuth(req);
+  if(!payload) return { authed:false, userId:null, payload:null, isDemo:true };
+  const uid=payload.id??payload.uid;
+  const isDemo=!!payload.is_demo || String(payload.email||'').includes('randori.demo');
+  return {authed:true,userId:uid,payload,isDemo};
 }
 
 async function resolveDemoFlag(db, authInfo){
@@ -227,6 +300,45 @@ async function resolveDemoFlag(db, authInfo){
     if(rs.rows.length) return !!rs.rows[0].is_demo;
   }catch{}
   return !!authInfo.isDemo;
+}
+
+async function resolveAnalysisRoom(db, roomId){
+  const match=String(roomId||'').trim().match(/^week_(\d+)_pair_(\d+)$/i);
+  if(!match) return null;
+  const weekId=Number(match[1]);
+  const pairGroupId=Number(match[2]);
+  if(!Number.isSafeInteger(weekId) || !Number.isSafeInteger(pairGroupId) || weekId<1 || pairGroupId<1) return null;
+
+  let result;
+  try{
+    result=await db.execute({sql:`SELECT pg.id AS pair_group_id,pg.week_id,pg.user_a_id,pg.user_b_id,pg.user_c_id,COALESCE(pg.is_ai_pair,0) AS is_ai_pair,pw.week_label FROM pairing_groups pg JOIN pairing_weeks pw ON pw.id=pg.week_id WHERE pg.id=? AND pg.week_id=? LIMIT 1`,args:[pairGroupId,weekId]});
+  }catch{
+    // Compatibility for databases created before optional triad support.
+    result=await db.execute({sql:`SELECT pg.id AS pair_group_id,pg.week_id,pg.user_a_id,pg.user_b_id,NULL AS user_c_id,COALESCE(pg.is_ai_pair,0) AS is_ai_pair,pw.week_label FROM pairing_groups pg JOIN pairing_weeks pw ON pw.id=pg.week_id WHERE pg.id=? AND pg.week_id=? LIMIT 1`,args:[pairGroupId,weekId]}).catch(()=>({rows:[]}));
+  }
+  const row=result.rows?.[0];
+  if(!row) return null;
+
+  const participantIds=[row.user_a_id,row.user_b_id,row.user_c_id]
+    .map(Number)
+    .filter(Number.isSafeInteger)
+    .filter((id,index,all)=>id>0 && all.indexOf(id)===index);
+  if(!participantIds.length) return null;
+
+  return {
+    roomId:`week_${Number(row.week_id)}_pair_${Number(row.pair_group_id)}`,
+    pairLabel:`${row.week_label||`Week ${Number(row.week_id)}`} · Pair ${Number(row.pair_group_id)}`,
+    participantIds,
+    singleUser:!!row.is_ai_pair && participantIds.length===1,
+  };
+}
+
+async function recordAndVerifyRoomConsent(db, userId, participantIds){
+  await db.execute({sql:`INSERT INTO ai_consents (user_id, consented_at, revoked_at, policy_version) VALUES (?,datetime('now'),NULL,?) ON CONFLICT(user_id) DO UPDATE SET consented_at=datetime('now'), revoked_at=NULL, policy_version=excluded.policy_version`, args:[userId,AI_CONSENT_POLICY_VERSION]});
+  const placeholders=participantIds.map(()=>'?').join(',');
+  const result=await db.execute({sql:`SELECT user_id FROM ai_consents WHERE user_id IN (${placeholders}) AND revoked_at IS NULL AND policy_version=?`,args:[...participantIds,AI_CONSENT_POLICY_VERSION]});
+  const consented=new Set((result.rows||[]).map(row=>Number(row.user_id)));
+  return participantIds.filter(id=>!consented.has(Number(id)));
 }
 
 async function checkMonthlyQuota(db, userId, isDemo){
@@ -266,19 +378,21 @@ async function parseBody(req){
 }
 
 async function handleAnalyze(req,res){
+  if(req.method!=='POST') return res.status(405).json({error:'POST only'});
+  if(process.env.AI_ENABLED!=='true') return res.status(503).json({error:'AI coaching is not enabled for this release'});
   let authInfo=tryAuth(req);
+  if(!authInfo.authed) return res.status(401).json({error:'authentication required'});
   let userId=authInfo.userId;
   let isDemo=authInfo.isDemo;
   let payloadCtx=authInfo.payload;
-  // allow anon demo: do not early 401, just flag
   const anonMode = !authInfo.authed;
   let body;
   try{ body=await parseBody(req); }catch{ body={}; }
+  if(body.ai_consent!==true) return res.status(403).json({error:'explicit AI processing consent required'});
 
   // FormData / multipart plain handling: if body has FormData fields named payload etc
   // Body may include room_id etc in top-level
-  const room_id = body.room_id || body.roomId || body.room || 'room-unknown';
-  const pair_label = body.pair_label || body.pairLabel || '';
+  const requestedRoomId = body.room_id || body.roomId || body.room || '';
   const transcript = body.transcript || body.notes || '';
   const code = body.code || body.code_snapshots || body.codeSnapshots || '';
   const interviewer_questions = body.interviewer_questions || body.interviewerQuestions || body.iqs || '';
@@ -295,9 +409,30 @@ async function handleAnalyze(req,res){
 
   let db;
   try{ db=getClient(); }catch(e){
-    return res.status(500).json({ error:'db unavailable', detail:String(e.message||e).slice(0,120) });
+    return res.status(503).json({ error:'AI service temporarily unavailable' });
   }
   try{ await ensureTables(db); await ensureAppLogs(db); }catch{}
+
+  const trustedRoom=await resolveAnalysisRoom(db,requestedRoomId).catch(()=>null);
+  const numericUserId=Number(userId);
+  if(!trustedRoom || !trustedRoom.participantIds.includes(numericUserId)){
+    return res.status(403).json({error:'trusted room membership required'});
+  }
+  if(trustedRoom.participantIds.length===1 && !trustedRoom.singleUser){
+    return res.status(403).json({error:'single-user analysis requires a trusted AI-pair room'});
+  }
+  const room_id=trustedRoom.roomId;
+  const pair_label=trustedRoom.pairLabel;
+
+  let missingConsents;
+  try{
+    missingConsents=await recordAndVerifyRoomConsent(db,numericUserId,trustedRoom.participantIds);
+  }catch{
+    return res.status(500).json({error:'unable to record AI consent'});
+  }
+  if(missingConsents.length){
+    return res.status(403).json({error:'AI consent required from every room participant',pending_participant_count:missingConsents.length});
+  }
 
   // resolve real is_demo from DB if authed
   if(authInfo.authed){
@@ -354,7 +489,7 @@ async function handleAnalyze(req,res){
       sessId=ins2.rows[0].id;
     }catch(e){
       await logServer('error','ai_session_insert_fail', String(e.message||e).slice(0,300), {room_id}, {req, source:'server-ai'});
-      return res.status(500).json({ error:'session create failed', detail:String(e.message||e).slice(0,200) });
+      return res.status(500).json({ error:'session create failed' });
     }
   }
 
@@ -371,12 +506,16 @@ async function handleAnalyze(req,res){
     const prompt=buildPrompt({ role, transcript:transStr, code:codeFlat, interviewerQuestions:iq, durationSec:duration_sec, pairLabel:pair_label });
     let oRes=await callOpenAI({ modelName:picking.model.name, prompt });
     if(oRes.content){
-      try{ feedbackJson=typeof oRes.content==='string'?JSON.parse(oRes.content):oRes.content; }catch{ try{ feedbackJson=JSON.parse(oRes.content);}catch{ feedbackJson={ candidate:{strengths:[], improvements:[]}, interviewer:{strengths:[], improvements:[]}, overall_score:6, next_time_checklist:[oRes.content.slice(0,200)]}; } }
+      feedbackJson=parseProviderFeedback(oRes.content);
       groqUsage=oRes.usage;
       if(groqUsage?.prompt_tokens) estIn=groqUsage.prompt_tokens;
       if(groqUsage?.completion_tokens) estOut=groqUsage.completion_tokens;
       costCents=Math.ceil((estIn/1e6*0.15 + estOut/1e6*0.6)*100);
     } else {
+      if(oRes.invalid_response){
+        await logServer('error','ai_provider_invalid_envelope','AI provider returned an invalid response envelope',{room_id,model:modelUsed},{req,source:'server-ai'});
+        return res.status(502).json({ok:false,error:'AI provider temporarily unavailable',session_id:sessId});
+      }
       mocked=true; reason+=' | openai failed '+ (oRes.error||'unknown');
       feedbackJson={ candidate:{ strengths:[], improvements:[]}, interviewer:{strengths:[], improvements:[]}, overall_score:6, next_time_checklist:['retry with smaller transcript'] };
     }
@@ -386,31 +525,41 @@ async function handleAnalyze(req,res){
     if(groqRes.error && !groqRes.content && picking.model.name!==MODELS.fast.name){
       const retry=await callGroq({ modelName:MODELS.fast.name, prompt:buildPrompt({ role, transcript:transStr.slice(0,8000), code:String(codeFlat).slice(0,6000), interviewerQuestions:iq, durationSec:duration_sec, pairLabel:pair_label })});
       if(retry.content){ modelUsed=MODELS.fast.name; reason+=` | primary failed (${groqRes.error.slice(0,80)}), fallback fast`; groqRes=retry; } else {
-        await logServer('error','ai_groq_both_fail', groqRes.error.slice(0,300), {room_id, model:picking.model.name}, {req, source:'server-ai'});
-        return res.status(502).json({ ok:false, error:'groq failed both', detail:groqRes.error, session_id:sessId });
+        reason+=` | primary and fast Groq failed`;
+        groqRes=retry;
       }
-    } else if(groqRes.error && !groqRes.content){
+    }
+    if(groqRes.error && !groqRes.content){
       // try openai fallback if available
       if(process.env.OPENAI_API_KEY){
         const oRes=await callOpenAI({ modelName:picking.model.name, prompt:buildPrompt({ role, transcript:transStr, code:codeFlat, interviewerQuestions:iq, durationSec:duration_sec, pairLabel:pair_label })});
         if(oRes.content){
           openaiFallback=true; modelUsed='gpt-4o-mini (fallback)'; reason+=' | groq fail -> openai';
-          try{ feedbackJson=typeof oRes.content==='string'?JSON.parse(oRes.content):oRes.content; }catch{ feedbackJson={ candidate:{strengths:[], improvements:[]}, overall_score:6, next_time_checklist:[oRes.content.slice(0,200)]}; }
+          feedbackJson=parseProviderFeedback(oRes.content);
           groqUsage=oRes.usage;
+          if(groqUsage?.prompt_tokens) estIn=groqUsage.prompt_tokens;
+          if(groqUsage?.completion_tokens) estOut=groqUsage.completion_tokens;
+          costCents=Math.ceil((estIn/1e6*0.15 + estOut/1e6*0.6)*100);
         }else{
           await logServer('error','ai_groq_fail', groqRes.error.slice(0,300), {room_id}, {req, source:'server-ai'});
-          return res.status(502).json({ ok:false, error:'groq error', detail:groqRes.error, session_id:sessId });
+          return res.status(502).json({ ok:false, error:'AI provider temporarily unavailable', session_id:sessId });
         }
       } else {
         await logServer('error','ai_groq_fail', groqRes.error.slice(0,300), {room_id}, {req, source:'server-ai'});
-        return res.status(502).json({ ok:false, error:'groq error', detail:groqRes.error, session_id:sessId });
+        return res.status(502).json({ ok:false, error:'AI provider temporarily unavailable', session_id:sessId });
       }
     }
     if(groqRes && groqRes.content && !feedbackJson){
-      try{ feedbackJson=typeof groqRes.content==='string'?JSON.parse(groqRes.content):groqRes.content; }catch{ try{ feedbackJson=JSON.parse(groqRes.content);}catch{ feedbackJson={ candidate:{strengths:[], improvements:[]}, interviewer:{strengths:[], improvements:[]}, overall_score:6, next_time_checklist:[groqRes.content.slice(0,200)]}; } }
+      feedbackJson=parseProviderFeedback(groqRes.content);
       groqUsage=groqRes.usage; if(groqUsage?.prompt_tokens) estIn=groqUsage.prompt_tokens; if(groqUsage?.completion_tokens) estOut=groqUsage.completion_tokens;
       costCents=Math.ceil((estIn/1e6*picking.model.price_in_per_mtok + estOut/1e6*picking.model.price_out_per_mtok)*100);
     }
+  }
+
+  feedbackJson=normalizeFeedback(feedbackJson);
+  if(!feedbackJson){
+    await logServer('error','ai_provider_invalid_feedback','AI provider returned invalid feedback JSON',{room_id,model:modelUsed},{req,source:'server-ai'});
+    return res.status(502).json({ok:false,error:'AI provider temporarily unavailable',session_id:sessId});
   }
 
   const combined=`${transStr}\n${typeof codeFlat==='string'?codeFlat:JSON.stringify(codeFlat)}\n${iq}`;
@@ -423,7 +572,7 @@ async function handleAnalyze(req,res){
     const insFb=await db.execute({ sql:`INSERT INTO ai_feedback (session_id, role, feedback_json, evidence, model_used, reason_for_pick, estimated_cost_cents, confidence) VALUES (?,?,?,?,?,?,?,?) RETURNING id`, args:[sessId, role||'both', JSON.stringify(feedbackJson||{}), JSON.stringify({validation:verification, combined_len:combined.length}), modelUsed, reason, costCents, verification.score]});
     fbId=insFb.rows[0].id;
   }catch{
-    try{ await db.execute({ sql:`INSERT INTO ai_feedback (session_id, role, feedback_json, model_used) VALUES (?,?,?,?)`, args:[sessId, role||'both', JSON.stringify(feedbackJson||{}), modelUsed]}); fbId=Date.now(); }catch(e){ fbIdsessId; }
+    try{ await db.execute({ sql:`INSERT INTO ai_feedback (session_id, role, feedback_json, model_used) VALUES (?,?,?,?)`, args:[sessId, role||'both', JSON.stringify(feedbackJson||{}), modelUsed]}); fbId=Date.now(); }catch{ fbId=sessId; }
   }
 
   try{ await db.execute({ sql:`UPDATE ai_sessions SET cost_cents=?, ended_at=datetime('now') WHERE id=?`, args:[costCents, sessId]});}catch{}
@@ -434,24 +583,12 @@ async function handleAnalyze(req,res){
 }
 
 async function handleFeedback(req,res){
+  if(req.method!=='GET') return res.status(405).json({error:'GET only'});
   let id=req.query?.id || req.query?.sessionId;
   if(!id){ try{ const u=new URL(req.url,'http://localhost'); id=u.searchParams.get('id')||u.searchParams.get('sessionId'); const parts=u.pathname.split('/'); const last=parts.pop(); if(last && last!=='feedback' && last!=='analyze' && last!=='history' && !isNaN(Number(last))) id=last; }catch{} }
   const authInfo=tryAuth(req);
+  if(!authInfo.authed) return res.status(401).json({error:'authentication required'});
   const db=getClient(); await ensureTables(db);
-  // anon demo allowed: if no auth, only allow if session created_by IS NULL
-  if(!authInfo.authed){
-    if(!id) return res.status(400).json({ error:'id required for anon feedback' });
-    try{
-      const rs=await db.execute({ sql:`SELECT af.*, ase.room_id, ase.pair_label, ase.created_by FROM ai_feedback af JOIN ai_sessions ase ON ase.id=af.session_id WHERE af.session_id=? OR af.id=? ORDER BY af.created_at DESC LIMIT 1`, args:[id,id]});
-      if(!rs.rows.length) return res.status(404).json({ error:'not found', session_id:id});
-      const row=rs.rows[0];
-      if(row.created_by!==null && row.created_by!==undefined){
-        return res.status(401).json({ error:'auth required for user sessions — sign in', demo_hint:'anon only for demo sessions where created_by IS NULL' });
-      }
-      try{ await logServer('info','ai_feedback_anon', `anon fetch feedback ${id}`, {session_id:id}, {req, source:'server-ai'}); }catch{}
-      return res.json({ ok:true, anon:true, session_id:row.session_id, feedback: (()=>{ try{ return JSON.parse(row.feedback_json||'{}'); }catch{ return {}; }})(), model_used:row.model_used, reason_for_pick:row.reason_for_pick, confidence:row.confidence, created_at:row.created_at, evidence: (()=>{ try{ return JSON.parse(row.evidence||'null'); }catch{ return row.evidence; }})() });
-    }catch(e){ return res.status(500).json({ error:'db fail', detail:String(e.message||e).slice(0,150) }); }
-  }
 
   const uid=authInfo.userId;
   if(id){
@@ -459,8 +596,8 @@ async function handleFeedback(req,res){
     if(!rs.rows.length){
       return res.status(404).json({ error:'not found', session_id:id});
     }
-    // filter to own sessions unless admin? For now own or admin demo: if created_by matches uid or created_by IS NULL and authed user wants demo, allow first row
-    const own = rs.rows.filter(r=> r.created_by==uid || r.created_by==null);
+    // Legacy anonymous rows are intentionally inaccessible; only the creator may read feedback.
+    const own = rs.rows.filter(r=> r.created_by==uid);
     if(!own.length){
       // allow if payload is admin (loosely) — we skip check for now and return first but with restricted?
       return res.status(403).json({ error:'forbidden — session owned by other user', session_owner: rs.rows[0].created_by });
@@ -479,9 +616,8 @@ async function handleHistory(req,res){
   if(req.method!=='GET') return res.status(405).json({ error:'GET only'});
   const authInfo=tryAuth(req);
   let uid=authInfo.userId;
-  // anon history not allowed — return empty but ok anon flag
   if(!authInfo.authed){
-    return res.json({ ok:true, anon:true, feedbacks:[], usage_today:null, message:'Sign in for persistent history — anon sessions ephemeral' });
+    return res.status(401).json({error:'authentication required'});
   }
   const db=getClient(); await ensureTables(db);
   const rs=await db.execute({ sql:`SELECT af.id, af.session_id, af.role, af.model_used, af.estimated_cost_cents, af.confidence, af.created_at, ase.room_id, ase.pair_label, ase.duration_sec FROM ai_feedback af JOIN ai_sessions ase ON ase.id=af.session_id WHERE ase.created_by=? ORDER BY af.created_at DESC LIMIT 20`, args:[uid]});
@@ -493,6 +629,7 @@ async function handleHistory(req,res){
 
 export default async function handler(req,res){
   try{
+    if(!verifyMutationOrigin(req)) return res.status(403).json({error:'cross-origin mutation rejected'});
     initSentry();
     const epRaw=getEndpoint(req);
     const ep=epRaw.replace('feedback/','feedback ').split(' ')[0];
@@ -509,6 +646,6 @@ export default async function handler(req,res){
       if(ready && Sentry) Sentry.captureException(e);
       else if(SentryLib && SentryLib.captureException) SentryLib.captureException(e);
     }catch{}
-    return res.status(500).json({ ok:false, error:'ai_unhandled', message:String(e.message||e).slice(0,300) });
+    return res.status(500).json({ ok:false, error:'ai_unhandled' });
   }
 }
