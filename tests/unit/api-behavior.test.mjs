@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { after, beforeEach, mock, test } from 'node:test';
+import { createClient } from '@libsql/client';
 import bcrypt from 'bcryptjs';
 
 const realFetch = globalThis.fetch;
 let executeHandler = () => ({ rows: [], rowsAffected: 0 });
+let databaseDelegate = null;
 const executed = [];
 let lastPairingRun = null;
 let persistedPairGroups = [];
@@ -16,10 +18,17 @@ const db = {
   async execute(statement) {
     const sql = sqlText(statement);
     executed.push({ sql, args: statement?.args || [] });
+    if (databaseDelegate) return databaseDelegate.execute(statement);
     const result = await executeHandler(sql, statement?.args || []);
     return result || { rows: [], rowsAffected: 0 };
   },
-  async batch(statements) {
+  async batch(statements, mode) {
+    if (databaseDelegate) {
+      for (const statement of statements) {
+        executed.push({ sql: sqlText(statement), args: statement?.args || [] });
+      }
+      return databaseDelegate.batch(statements, mode);
+    }
     const nextGroups = [];
     for (const statement of statements) {
       if (sqlText(statement).includes('INSERT INTO pairing_week_runs')) {
@@ -126,6 +135,7 @@ function invoke(handler, { method = 'GET', url = '/', query = {}, headers = {}, 
 
 beforeEach(() => {
   executed.length = 0;
+  databaseDelegate = null;
   lastPairingRun = null;
   persistedPairGroups = [];
   executeHandler = () => rows();
@@ -728,6 +738,9 @@ test('AI provider network failures preserve Groq retries and OpenAI fallback', a
   });
   assert.equal(result.status, 200);
   assert.equal(result.body.openaiFallback, true);
+  assert.equal(result.body.estimated_cost.tokens_in, 20);
+  assert.equal(result.body.estimated_cost.tokens_out, 10);
+  assert.equal(result.body.estimated_cost.cents, 1);
   assert.deepEqual(providerCalls.map(url => url.includes('api.groq.com') ? 'groq' : 'openai'), ['groq', 'groq', 'openai']);
 
   delete process.env.GROQ_API_KEY;
@@ -744,40 +757,59 @@ test('AI provider network failures preserve Groq retries and OpenAI fallback', a
 test('AI rejects malformed provider feedback with the generic provider error', async () => {
   process.env.AI_ENABLED = 'true';
   process.env.GROQ_API_KEY = 'test-groq-key';
-  executeHandler = sql => {
-    if (sql.includes('SELECT pg.id AS pair_group_id')) return rows([{ pair_group_id: 23, week_id: 10, user_a_id: 2, user_b_id: 2, user_c_id: null, is_ai_pair: 1, week_label: '2026-W38' }]);
-    if (sql.includes('SELECT user_id FROM ai_consents')) return rows([{ user_id: 2 }]);
-    if (sql.includes('SELECT is_demo FROM auth_accounts')) return rows([{ is_demo: 0 }]);
-    if (sql.includes('SELECT calls FROM ai_usage')) return rows([{ calls: 0 }]);
-    if (sql.includes('SELECT calls,tokens_in FROM ai_usage')) return rows([{ calls: 0, tokens_in: 0 }]);
-    if (sql.includes('COUNT(*) as c FROM ai_sessions')) return rows([{ c: 0 }]);
-    if (sql.includes('INSERT INTO ai_sessions') && sql.includes('RETURNING id')) return rows([{ id: 84 }]);
-    return rows();
-  };
-  let providerContent=JSON.stringify({
-    candidate: { strengths: {}, improvements: [] },
-    interviewer: { strengths: [], improvements: [] },
-    overall_score: 7,
-    next_time_checklist: ['practice'],
-  });
-  globalThis.fetch = async () => new Response(JSON.stringify({
-    choices: [{ message: { content: providerContent } }],
-    usage: { prompt_tokens: 20, completion_tokens: 10 },
-  }), { status: 200 });
-  const request = () => invoke(aiHandler, {
-    method: 'POST', url: '/api/ai/analyze', query: { endpoint: 'analyze' }, headers: { 'x-test-auth': 'user' },
-    body: { room_id: 'week_10_pair_23', transcript: 'A short solo analysis.', ai_consent: true },
-  });
+  const memoryDb = createClient({ url: 'file::memory:' });
+  databaseDelegate = memoryDb;
+  try {
+    await memoryDb.batch([
+      `CREATE TABLE auth_accounts (id INTEGER PRIMARY KEY, email TEXT NOT NULL, is_demo INTEGER DEFAULT 0)`,
+      `CREATE TABLE pairing_weeks (id INTEGER PRIMARY KEY, week_label TEXT NOT NULL)`,
+      `CREATE TABLE pairing_groups (
+        id INTEGER PRIMARY KEY,
+        week_id INTEGER NOT NULL,
+        user_a_id INTEGER NOT NULL,
+        user_b_id INTEGER NOT NULL,
+        user_c_id INTEGER,
+        is_ai_pair INTEGER DEFAULT 0
+      )`,
+      `INSERT INTO auth_accounts (id,email,is_demo) VALUES (2,'user@example.test',0)`,
+      `INSERT INTO pairing_weeks (id,week_label) VALUES (10,'2026-W38')`,
+      `INSERT INTO pairing_groups (id,week_id,user_a_id,user_b_id,user_c_id,is_ai_pair) VALUES (23,10,2,2,NULL,1)`,
+    ], 'write');
 
-  const malformedShape = await request();
-  assert.equal(malformedShape.status, 502);
-  assert.deepEqual(malformedShape.body, { ok: false, error: 'AI provider temporarily unavailable', session_id: 84 });
+    let providerContent=JSON.stringify({
+      candidate: { strengths: {}, improvements: [] },
+      interviewer: { strengths: [], improvements: [] },
+      overall_score: 7,
+      next_time_checklist: ['practice'],
+    });
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      choices: [{ message: { content: providerContent } }],
+      usage: { prompt_tokens: 20, completion_tokens: 10 },
+    }), { status: 200 });
+    const request = () => invoke(aiHandler, {
+      method: 'POST', url: '/api/ai/analyze', query: { endpoint: 'analyze' }, headers: { 'x-test-auth': 'user' },
+      body: { room_id: 'week_10_pair_23', transcript: 'A short solo analysis.', ai_consent: true },
+    });
 
-  providerContent='{not valid json';
-  const malformedJson = await request();
-  assert.equal(malformedJson.status, 502);
-  assert.equal(malformedJson.body.error, 'AI provider temporarily unavailable');
-  assert.equal(executed.some(entry => entry.sql.includes('INSERT INTO ai_feedback')), false);
+    const malformedShape = await request();
+    assert.equal(malformedShape.status, 502);
+    assert.deepEqual(malformedShape.body, { ok: false, error: 'AI provider temporarily unavailable', session_id: 1 });
+
+    providerContent='{not valid json';
+    const malformedJson = await request();
+    assert.equal(malformedJson.status, 502);
+    assert.equal(malformedJson.body.error, 'AI provider temporarily unavailable');
+
+    const feedbackCount = await memoryDb.execute(`SELECT COUNT(*) AS count FROM ai_feedback`);
+    const sessionCount = await memoryDb.execute(`SELECT COUNT(*) AS count FROM ai_sessions`);
+    const consentCount = await memoryDb.execute(`SELECT COUNT(*) AS count FROM ai_consents WHERE user_id=2 AND revoked_at IS NULL`);
+    assert.equal(Number(feedbackCount.rows[0].count), 0);
+    assert.equal(Number(sessionCount.rows[0].count), 2);
+    assert.equal(Number(consentCount.rows[0].count), 1);
+  } finally {
+    databaseDelegate = null;
+    memoryDb.close();
+  }
 });
 
 test('AI provider selection, quota, and ownership branches remain fail-closed', async () => {

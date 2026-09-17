@@ -517,6 +517,9 @@ async function handleAnalyze(req,res){
           openaiFallback=true; modelUsed='gpt-4o-mini (fallback)'; reason+=' | groq fail -> openai';
           feedbackJson=parseProviderFeedback(oRes.content);
           groqUsage=oRes.usage;
+          if(groqUsage?.prompt_tokens) estIn=groqUsage.prompt_tokens;
+          if(groqUsage?.completion_tokens) estOut=groqUsage.completion_tokens;
+          costCents=Math.ceil((estIn/1e6*0.15 + estOut/1e6*0.6)*100);
         }else{
           await logServer('error','ai_groq_fail', groqRes.error.slice(0,300), {room_id}, {req, source:'server-ai'});
           return res.status(502).json({ ok:false, error:'AI provider temporarily unavailable', session_id:sessId });
