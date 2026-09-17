@@ -1013,26 +1013,12 @@ async function handleMyPair(req,res){
     const w = await db.execute(`SELECT id, week_label, week_start, focus FROM pairing_weeks WHERE COALESCE(is_demo,0)=0 ORDER BY id DESC LIMIT 1`);
     if (w.rows.length){ weekRow=w.rows[0]; weekId=w.rows[0].id; }
   }catch{}
-  if (req.query?.week_id){
-    const wid = parseInt(String(req.query.week_id),10);
-    if (!isNaN(wid)) weekId=wid;
-  }
   if (!weekId) return res.json({ ok:true, paired:false, reason:'no_week_yet', message:'No pairs yet — shuffles Sunday 08:00 BST' });
   let grp=null;
   try{
     const g = await db.execute({ sql:`SELECT id as pg_id, week_id, user_a_id, user_b_id, is_ai_pair, topic, topic_kind FROM pairing_groups WHERE week_id=? AND (user_a_id=? OR user_b_id=?) LIMIT 1`, args:[weekId, userId, userId] });
     if (g.rows.length) grp=g.rows[0];
   }catch{}
-  if (!grp){
-    try{
-      const g2 = await db.execute({ sql:`SELECT pg.id as pg_id, pg.week_id, pg.user_a_id, pg.user_b_id, pg.is_ai_pair, pg.topic, pg.topic_kind, pw.week_label, pw.week_start FROM pairing_groups pg JOIN pairing_weeks pw ON pw.id=pg.week_id WHERE (pg.user_a_id=? OR pg.user_b_id=?) AND COALESCE(pw.is_demo,0)=0 ORDER BY pg.week_id DESC LIMIT 1`, args:[userId, userId] });
-      if (g2.rows.length){
-        grp=g2.rows[0];
-        weekId=grp.week_id;
-        weekRow={ id:grp.week_id, week_label:grp.week_label, week_start:grp.week_start };
-      }
-    }catch{}
-  }
   if (!grp) return res.json({ ok:true, paired:false, week_id:weekId, week:weekRow||null, reason:'not_paired_this_week', message:'You were not paired in the latest shuffle — you may have been marked unavailable.' });
   const isAI = !!grp.is_ai_pair;
   let partner=null;
@@ -1041,10 +1027,10 @@ async function handleMyPair(req,res){
   }else{
     const partnerId = grp.user_a_id===userId ? grp.user_b_id : grp.user_a_id;
     try{
-      const pr = await db.execute({ sql:`SELECT id, display_name, color, email, bio, tz, interview_focus, leetcode_handle FROM auth_accounts WHERE id=?`, args:[partnerId] });
+      const pr = await db.execute({ sql:`SELECT id, display_name, color, bio, tz, interview_focus, leetcode_handle FROM auth_accounts WHERE id=?`, args:[partnerId] });
       if (pr.rows.length){
         const r=pr.rows[0];
-        partner={ id:r.id, name:r.display_name, display_name:r.display_name, color:r.color, email:r.email, bio:r.bio||'', tz:r.tz||'', interview_focus:r.interview_focus||'both', leetcode_handle:r.leetcode_handle||'', is_ai:false };
+        partner={ id:r.id, name:r.display_name, display_name:r.display_name, color:r.color, bio:r.bio||'', tz:r.tz||'', interview_focus:r.interview_focus||'both', leetcode_handle:r.leetcode_handle||'', is_ai:false };
       } else {
         partner={ id:partnerId, name:`User ${partnerId}`, display_name:`User ${partnerId}`, color:'#9aa0a6', is_ai:false };
       }
@@ -1071,7 +1057,8 @@ async function handleMyPair(req,res){
   }catch{}
   const meRow = await db.execute({ sql:`SELECT id, display_name, color, tz, interview_focus FROM auth_accounts WHERE id=?`, args:[userId] }).catch(()=>({rows:[]}));
   const me = meRow.rows && meRow.rows[0] ? { id:meRow.rows[0].id, name:meRow.rows[0].display_name, color:meRow.rows[0].color, tz:meRow.rows[0].tz, interview_focus:meRow.rows[0].interview_focus } : { id:userId };
-  return res.json({ ok:true, paired:true, week_id:weekId, week: weekRow ? { id:weekRow.id||weekId, week_label:weekRow.week_label, week_start:weekRow.week_start, focus:weekRow.focus } : { id:weekId }, pair: { pg_id:grp.pg_id, week_id:weekId, user_a_id:grp.user_a_id, user_b_id:grp.user_b_id, is_ai_pair:isAI, is_ai:isAI, topic:grp.topic, topic_kind:grp.topic_kind }, partner, me, schedule, messagesPreview });
+  const roomId = `week_${weekId}_pair_${grp.pg_id}`;
+  return res.json({ ok:true, paired:true, room_id:roomId, week_id:weekId, week: weekRow ? { id:weekRow.id||weekId, week_label:weekRow.week_label, week_start:weekRow.week_start, focus:weekRow.focus } : { id:weekId }, pair: { pg_id:grp.pg_id, week_id:weekId, room_id:roomId, user_a_id:grp.user_a_id, user_b_id:grp.user_b_id, is_ai_pair:isAI, is_ai:isAI, topic:grp.topic, topic_kind:grp.topic_kind }, partner, me, schedule, messagesPreview });
 }
 
 async function handleSchedule(req,res){

@@ -475,6 +475,51 @@ test('profile, pair schedule, messages, questions, and runs enforce ownership an
   assert.equal(run.body.run.id, 60);
 });
 
+test('my-pair returns only the latest week membership and a canonical room id', async () => {
+  let paired = true;
+  executeHandler = sql => {
+    if (sql.includes('FROM pairing_weeks WHERE COALESCE(is_demo,0)=0 ORDER BY id DESC LIMIT 1')) {
+      return rows([{ id: 10, week_label: '2026-W38', week_start: '2026-09-20', focus: 'both' }]);
+    }
+    if (sql.includes('FROM pairing_groups WHERE week_id=')) {
+      return rows(paired ? [{
+        pg_id: 20,
+        week_id: 10,
+        user_a_id: 2,
+        user_b_id: 4,
+        is_ai_pair: 0,
+        topic: 'Arrays',
+        topic_kind: 'dsa',
+      }] : []);
+    }
+    if (sql.includes('SELECT id, display_name, color, bio, tz, interview_focus, leetcode_handle')) {
+      return rows([{ id: 4, display_name: 'Partner', color: '#abcdef', bio: '', tz: 'UTC', interview_focus: 'dsa', leetcode_handle: 'partner' }]);
+    }
+    if (sql.includes('SELECT id, display_name, color, tz, interview_focus FROM auth_accounts')) {
+      return rows([{ id: 2, display_name: 'User', color: '#123456', tz: 'UTC', interview_focus: 'both' }]);
+    }
+    return rows();
+  };
+
+  const current = await invoke(dataHandler, {
+    url: '/api/my-pair', query: { endpoint: 'my-pair' }, headers: { 'x-test-auth': 'user' },
+  });
+  assert.equal(current.status, 200);
+  assert.equal(current.body.room_id, 'week_10_pair_20');
+  assert.equal(current.body.pair.room_id, 'week_10_pair_20');
+  assert.equal('email' in current.body.partner, false);
+
+  paired = false;
+  executed.length = 0;
+  const absent = await invoke(dataHandler, {
+    url: '/api/my-pair', query: { endpoint: 'my-pair' }, headers: { 'x-test-auth': 'user' },
+  });
+  assert.equal(absent.status, 200);
+  assert.equal(absent.body.paired, false);
+  assert.equal(absent.body.reason, 'not_paired_this_week');
+  assert.equal(executed.some(call => call.sql.includes('JOIN pairing_weeks')), false);
+});
+
 test('execution supports only JavaScript and Python and normalizes Piston results without executing locally', async () => {
   const submitted = [];
   globalThis.fetch = async (url, options) => {

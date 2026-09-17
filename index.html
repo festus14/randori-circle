@@ -1155,6 +1155,7 @@ async function refreshMe(){
       localStorage.removeItem(ME_KEY);
       localStorage.removeItem('randori-demo-active');
       localStorage.removeItem('randori-last-room');
+      localStorage.removeItem('randori-code');
       me=null;
       // clear any in-memory video state quietly
       try{ if(typeof videoJoined!=='undefined' && videoJoined){ videoJoined=false; } }catch{}
@@ -1329,7 +1330,12 @@ async function refreshMe(){
   document.getElementById('authSignup').onclick=doSignup;
   document.getElementById('authSignin').onclick=doSignin;
   const authGoogleBtn=document.getElementById('authGoogle');
-  if(authGoogleBtn){ authGoogleBtn.onclick=()=>{ window.location.href='/api/auth/google/start'; }; }
+  if(authGoogleBtn){ authGoogleBtn.onclick=()=>{
+    const match=(window.location.pathname||'').match(/^\/join\/(week_[1-9]\d*_pair_[1-9]\d*)$/);
+    const ids=match?.[1]?.match(/^week_(\d+)_pair_(\d+)$/);
+    const returnTo=ids&&Number.isSafeInteger(Number(ids[1]))&&Number.isSafeInteger(Number(ids[2]))?`/join/${match[1]}`:'';
+    window.location.href='/api/auth/google/start'+(returnTo?`?return_to=${encodeURIComponent(returnTo)}`:'');
+  }; }
   // Google OAuth now establishes an HttpOnly session and returns ?google=success.
   (function(){
     try{
@@ -1386,8 +1392,8 @@ async function refreshMe(){
   function savePeople(p){ localStorage.setItem(PEOPLE_KEY, JSON.stringify(p)); bc?.postMessage({type:'people',p}); }
   function getWeeks(){ try{return JSON.parse(localStorage.getItem(WEEKS_KEY)||'[]')}catch{return[]} }
   function saveWeeks(w){ localStorage.setItem(WEEKS_KEY, JSON.stringify(w)); bc?.postMessage({type:'weeks',w}); }
-  function getCode(){ try{return JSON.parse(localStorage.getItem(CODE_KEY)||'{}')}catch{return{}} }
-  function saveCode(c){ localStorage.setItem(CODE_KEY, JSON.stringify(c)); bc?.postMessage({type:'code',c}); }
+  function getCode(){ if(!(window._randori_auth&&window._randori_auth.me)) return {}; try{return JSON.parse(localStorage.getItem(CODE_KEY)||'{}')}catch{return{}} }
+  function saveCode(c){ if(!(window._randori_auth&&window._randori_auth.me)) return; localStorage.setItem(CODE_KEY, JSON.stringify(c)); bc?.postMessage({type:'code',c}); }
 
   // BroadcastChannel sync
   const bc = ('BroadcastChannel' in window) ? new BroadcastChannel('randori-sync') : null;
@@ -2031,6 +2037,11 @@ def allow(key, limit=5):
 
   function loadRoom(roomId){
     if(!roomId) return;
+    const isPairRoom=/^week_[1-9]\d*_pair_[1-9]\d*$/.test(String(roomId));
+    if(isPairRoom&&window._randori_workspace?.requestAccess&&window._randori_authorized_room!==roomId){
+      window._randori_workspace.requestAccess(roomId);
+      return;
+    }
     currentRoom=roomId;
     document.getElementById('roomLabel').textContent=`room ${roomId.slice(0,4)}`;
     const codeMap=getCode();
@@ -2045,15 +2056,17 @@ def allow(key, limit=5):
     updateTimerLabel();
     document.getElementById('runOut').innerHTML='';
     bc?.postMessage({type:'presence'});
+    window.dispatchEvent(new CustomEvent('randori:room-change',{detail:{roomId}}));
   }
 
   function persistRoom(){
-    if(!currentRoom) return;
+    if(!currentRoom || !(window._randori_auth&&window._randori_auth.me)) return;
     const map=getCode();
     const lang=document.getElementById('langSelect').value;
     const e=map[currentRoom]||{codes:{}};
     e.lang=lang; e.qId=qSel.value; e.codes=e.codes||{}; e.codes[lang]=document.getElementById('editor').value; e.timerSec=timerSec;
     map[currentRoom]=e; saveCode(map);
+    window.dispatchEvent(new CustomEvent('randori:workspace-edit',{detail:{roomId:currentRoom}}));
   }
 
   qSel.onchange=async()=>{
@@ -3248,6 +3261,7 @@ def allow(key, limit=5):
     window._randori_code = window._randori_code||{};
     if(typeof loadRoom==='function') window._randori_code.loadRoom = loadRoom;
     if(typeof renderRoomSelect==='function') window._randori_code.renderRoomSelect = renderRoomSelect;
+    if(typeof renderQuestion==='function') window._randori_code.renderQuestion = renderQuestion;
     Object.defineProperty(window._randori_code, 'currentRoom', { get:()=> currentRoom, set:(v)=> { currentRoom=v; }});
     // tiny console sanity
     Object.defineProperty(window, 'currentRoom', { get:()=> currentRoom, set:(v)=>{ currentRoom=v; }, configurable:true });
@@ -3451,6 +3465,7 @@ def allow(key, limit=5):
       document.getElementById('dashSub').textContent = j.week?.week_label ? 'Paired for '+(j.week.week_label) : 'Paired this week ✓';
       currentPair=j.pair;
       currentWeekId=j.week_id||j.week?.id;
+      window._randori_authorized_room=j.room_id||`week_${currentWeekId}_pair_${j.pair?.pg_id||j.pair?.id}`;
       try{ window._randori_pair_cache=j; localStorage.setItem('randori-last-my-pair', JSON.stringify({week_id: j.week_id, pair: j.pair, week: j.week, at: Date.now()})); }catch{}
       renderPairCard(j);
       renderSchedule(j);
@@ -3507,7 +3522,7 @@ def allow(key, limit=5):
       const codeTab=document.querySelector('[data-tab="code"]'); if(codeTab) codeTab.classList.add('active');
       document.querySelectorAll('.view').forEach(v=>v.style.display='none');
       const codeView=document.getElementById('view-code'); if(codeView) codeView.style.display='block';
-      if(typeof toast==='function') toast('Joined session '+room.slice(0,12)+' • Code + Video + Board synced • invite '+invite.slice(-12));
+      if(typeof toast==='function') toast('Joined session '+room.slice(0,12)+' • Code workspace ready • invite '+invite.slice(-12));
       // update video label + expose invite for button
       const vr=document.getElementById('videoRoomLabel'); if(vr) vr.textContent='room '+room.slice(0,6);
       window._randori_last_invite = invite;
@@ -3679,32 +3694,69 @@ def allow(key, limit=5):
     }, 2000);
   }
 
+  function canonicalJoinRoom(){
+    try{
+      const match=(window.location.pathname||'').match(/^\/join\/(week_([1-9]\d*)_pair_([1-9]\d*))$/);
+      if(!match||!Number.isSafeInteger(Number(match[2]))||!Number.isSafeInteger(Number(match[3]))) return null;
+      return match[1];
+    }catch{ return null; }
+  }
+  let joinDecision=null;
+  async function openAuthorizedJoin(room){
+    if(joinDecision?.room===room && joinDecision.status==='denied') return false;
+    try{
+      const response=await fetch('/api/my-pair',{credentials:'same-origin'});
+      const data=await response.json().catch(()=>({}));
+      if(!response.ok) throw new Error(data.error||`pair lookup ${response.status}`);
+      if(!data.paired || String(data.room_id||'')!==room){
+        joinDecision={room,status:'denied'};
+        window._randori_join_room=null;
+        window._randori_workspace?.deactivate?.();
+        if(typeof toast==='function') toast('This invite is not your current pairing room.');
+        return false;
+      }
+      joinDecision={room,status:'allowed'};
+      window._randori_join_room=room;
+      window._randori_authorized_room=room;
+      // Workspace state is persisted only after server-authenticated membership succeeds.
+      localStorage.setItem('randori-last-room',room);
+      localStorage.setItem('randori-last-tab','code');
+      const selector=document.getElementById('roomSelect');
+      if(selector){
+        let option=[...selector.options].find(item=>item.value===room);
+        if(!option){ option=document.createElement('option'); option.value=room; option.textContent='Your pairing room'; selector.prepend(option); }
+        selector.value=room;
+      }
+      if(window._randori_code?.loadRoom) window._randori_code.loadRoom(room);
+      else window.dispatchEvent(new CustomEvent('randori:room-change',{detail:{roomId:room}}));
+      document.querySelectorAll('.view').forEach(view=>view.style.display='none');
+      document.getElementById('view-code').style.display='block';
+      document.querySelectorAll('.tab').forEach(tab=>tab.classList.remove('active'));
+      document.querySelector('[data-tab="code"]')?.classList.add('active');
+      return true;
+    }catch{
+      if(typeof toast==='function') toast('Could not validate this pairing invite.');
+      return false;
+    }
+  }
+
   // Main auth router
   async function routeByAuth(){
-    // /join/<roomId> deterministic invite — works even anon, redirects to code view after auth (LeetCode-like)
-    try{
-      const path = window.location.pathname||'';
-      const joinMatch = path.match(/^\/join\/([A-Za-z0-9_\-]+)/);
-      if(joinMatch){
-        const room = decodeURIComponent(joinMatch[1]);
-        try{
-          localStorage.setItem('randori-last-room', room);
-          localStorage.setItem('randori-last-tab','code');
-          // push clean history to avoid loop but keep invite capability via query fallback
-          history.replaceState(null,'','/join/'+encodeURIComponent(room));
-        }catch{}
-        // still continue to normal routing — if not signed in we will show code view anon style, else dashboard->join
-        window._randori_join_room = room;
-      }
-    }catch{}
+    const joinRoom=canonicalJoinRoom();
     const signedIn=!!(window._randori_auth && window._randori_auth.me);
     // hide all first? We decide
     const tabsEl=document.querySelector('.tabs');
     if(!signedIn){
-      // anon -> allow exploring code like LeetCode, landing default but tabs navigable
+      // Canonical pair invites are private capabilities: preserve the URL and require sign-in.
       hideAllViews();
       if(viewLanding) viewLanding.style.display='block';
       if(tabsEl) tabsEl.style.display='flex';
+      if(joinRoom){
+        window._randori_pending_join_room=joinRoom;
+        const overlay=document.getElementById('authOverlay');
+        if(overlay){ overlay.classList.add('show'); overlay.setAttribute('aria-hidden','false'); }
+        const title=document.getElementById('authTitle'); if(title) title.textContent='Sign in to join your pairing room';
+      }
       // hide circle tab for non-admin anon
       try{ document.querySelector('[data-tab="circle"]')?.style.setProperty('display','none'); }catch{ const ct=document.querySelector('[data-tab="circle"]'); if(ct) ct.style.display='none'; }
       try{
@@ -3722,25 +3774,13 @@ def allow(key, limit=5):
         const urlParams=new URLSearchParams(window.location.search);
         const viewParam=urlParams.get('view')||urlParams.get('tab');
         const pathname=window.location.pathname||'';
-        const isJoin = pathname.startsWith('/join/');
         const lastTab=localStorage.getItem('randori-last-tab')||localStorage.getItem('randori-last-view')||localStorage.getItem('randori-last-room');
         const isE2E = localStorage.getItem('e2e')==='1' || lastTab==='code' || lastTab==='e2e-room';
-        const wantsCode = viewParam==='code' || isE2E || lastTab==='code' || window.location.hash.includes('code') || isJoin || window._randori_join_room;
+        const wantsCode = !joinRoom && (viewParam==='code' || isE2E || lastTab==='code' || window.location.hash.includes('code'));
         if(wantsCode){
           const cv=document.getElementById('view-code');
           if(cv){
             document.querySelectorAll('.view').forEach((v)=>v.style.display='none'); cv.style.display='block'; document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active')); document.querySelector('[data-tab="code"]')?.classList.add('active');
-            // if join room present, autoset currentRoom / roomSelect after code loads
-            try{
-              const jr = window._randori_join_room || (pathname.match(/^\/join\/([A-Za-z0-9_\-]+)/)||[])[1];
-              if(jr){
-                localStorage.setItem('randori-last-room', jr);
-                // set room dropdown option
-                const rs=document.getElementById('roomSelect'); if(rs){ if(![...rs.options].some(o=>o.value===jr)){ const o=document.createElement('option'); o.value=jr; o.textContent='Week — Pair (invite '+jr.slice(0,6)+')'; rs.prepend(o); } rs.value=jr; }
-                if(window._randori_code && window._randori_code.loadRoom) { setTimeout(()=>{ try{ window._randori_code.loadRoom(jr); }catch{} }, 400); }
-                else { try{ const fn = (window._randori_code && window._randori_code.loadRoom) || window.loadRoom; if(fn) fn(jr); }catch{} }
-              }
-            }catch{}
           }
         }
       }catch{}
@@ -3748,6 +3788,12 @@ def allow(key, limit=5):
     }
     // signed in
     if(tabsEl) tabsEl.style.display='flex';
+    if(joinRoom){
+      const allowed=await openAuthorizedJoin(joinRoom);
+      if(allowed) return;
+      await showDashboard();
+      return;
+    }
     // fetch profile to see if incomplete
     const profile = await fetchProfile();
     if(isProfileIncomplete(profile)){
@@ -3847,8 +3893,14 @@ def allow(key, limit=5):
     // keep built-ins but add custom opts if missing
     const existingVals=new Set([...sel.options].map(o=>o.value));
     CUSTOM_QUESTIONS.forEach(q=>{
-      if(!existingVals.has(q.slug)){
+      const existing=[...sel.options].find(option=>option.value===q.slug);
+      if(!existing){
         const o=document.createElement('option'); o.value=q.slug; o.textContent='✦ '+q.title; o.dataset.custom='1'; sel.appendChild(o);
+      }else if(existing.dataset.workspacePlaceholder==='1'){
+        existing.textContent='✦ '+q.title;
+        existing.dataset.custom='1';
+        delete existing.dataset.workspacePlaceholder;
+        if(sel.value===q.slug) renderCustomQuestion(q.slug);
       }
     });
     // also ensure QUESTIONS global gets custom entries if window-visible? We will handle in renderQuestion patch
@@ -4718,6 +4770,7 @@ def allow(key, limit=5):
 
   function persistLikeOld(){
     try{
+      if(!(window._randori_auth&&window._randori_auth.me)) return;
       const room = (window._randori_code && window._randori_code.currentRoom) || window.currentRoom || document.getElementById('roomSelect')?.value || localStorage.getItem('randori-last-room') || null;
       if(!room) return;
       const lang=document.getElementById('langSelect')?.value||'javascript';
@@ -4729,17 +4782,7 @@ def allow(key, limit=5):
       try{ const tsEl=document.getElementById('timerText'); if(tsEl){ const txt=tsEl.textContent||'25:00'; const parts=txt.split(':'); const sec=(parseInt(parts[0]||'25',10)*60)+(parseInt(parts[1]||'0',10)); e.timerSec=sec; } }catch{}
       map[room]=e;
       localStorage.setItem(CODE_KEY, JSON.stringify(map));
-      // video signal code-sync (best effort, truncated)
-      try{
-        const rid = room;
-        const pid = localStorage.getItem('randori-peer-id')||'anon';
-        if(rid && window._randori_video && window._randori_video.sendSignal){
-          // no direct, use fetch inline
-          fetch('/api/video/signal',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({room_id:rid,from_id:pid,to_id:'',type:'code-sync',payload:JSON.stringify({lang, at:Date.now(), len:code.length}).slice(0,1200)})}).catch(()=>{});
-        } else if(rid){
-          fetch('/api/video/signal',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({room_id:rid,from_id:pid,to_id:'',type:'code-sync',payload:JSON.stringify({lang, at:Date.now()})})}).catch(()=>{});
-        }
-      }catch{}
+      window.dispatchEvent(new CustomEvent('randori:workspace-edit',{detail:{roomId:room}}));
     }catch(err){ try{ console.warn('persist monaco failed',err); window._randori_log && window._randori_log.warn('monaco_persist_fail','persistLikeOld fail', {err:String(err&&err.message||err).slice(0,300)}); if(window.Sentry) Sentry.captureException(err,{tags:{event:'monaco_persist_fail'}});}catch{} }
   }
 
@@ -5306,6 +5349,302 @@ def allow(key, limit=5):
 
   // expose helper for debug console
   window._randori_ai_debug={ analyze, getFeedback, listHistory, getRoom, collectPayload };
+})();
+</script>
+
+<script>
+// Authenticated, revisioned pair-room workspace synchronization.
+// Deliberately independent from WebRTC signaling and its polling lifecycle.
+(function(){
+  const CODE_KEY='randori-code';
+  const clientId=(window.crypto?.randomUUID?.()||('client-'+Math.random().toString(36).slice(2)));
+  const state={room:null,revision:0,hydrated:false,epoch:0,clientSeq:0,lastAckSeq:0,authoritative:null,pending:null,baseline:null,inFlight:null,pollInFlight:null,pollAbort:null,writeAbort:null,applying:false,retryCount:0};
+  let saveTimer=null;
+  let retryTimer=null;
+  let accessEpoch=0;
+  const MAX_SAVE_RETRIES=5;
+
+  function signedIn(){ return !!(window._randori_auth&&window._randori_auth.me); }
+  function canonical(room){
+    const match=/^week_([1-9]\d*)_pair_([1-9]\d*)$/.exec(String(room||''));
+    return !!match&&Number.isSafeInteger(Number(match[1]))&&Number.isSafeInteger(Number(match[2]));
+  }
+  function activeRoom(){ return window._randori_code?.currentRoom||window.currentRoom||document.getElementById('roomSelect')?.value||null; }
+  function currentCode(){
+    try{ return window._randori_code?.getCode?.()??window._randori_code?.getEditor?.()?.getValue?.()??document.getElementById('editor')?.value??''; }
+    catch{ return document.getElementById('editor')?.value||''; }
+  }
+  function draft(){
+    return {
+      code:String(currentCode()),
+      language:String(document.getElementById('langSelect')?.value||'javascript'),
+      question_id:String(document.getElementById('questionSelect')?.value||'two-sum'),
+    };
+  }
+  function same(left,right){ return !!left&&!!right&&left.code===right.code&&left.language===right.language&&left.question_id===right.question_id; }
+  function unpack(data){
+    const envelope=data?.current||data||{};
+    const candidate=envelope.snapshot||data?.snapshot||envelope;
+    const snapshot=candidate&&typeof candidate.code==='string'?{
+      code:String(candidate.code),
+      language:String(candidate.language||'javascript'),
+      question_id:String(candidate.question_id||'two-sum'),
+      client_id:String(candidate.client_id||''),
+      client_seq:Number(candidate.client_seq||0),
+    }:null;
+    return {revision:Number(envelope.revision??data?.revision??candidate?.revision??0),snapshot};
+  }
+  function persistLocal(room,snapshot){
+    if(!signedIn()||!room||!snapshot) return;
+    try{
+      let map={}; try{ map=JSON.parse(localStorage.getItem(CODE_KEY)||'{}'); }catch{}
+      const entry=map[room]||{codes:{}};
+      entry.lang=snapshot.language;
+      entry.qId=snapshot.question_id;
+      entry.codes=entry.codes||{};
+      entry.codes[snapshot.language]=snapshot.code;
+      map[room]=entry;
+      localStorage.setItem(CODE_KEY,JSON.stringify(map));
+      localStorage.setItem('randori-last-room',room);
+    }catch{}
+  }
+  function applySnapshot(snapshot,revision,room,epoch){
+    if(!snapshot||state.room!==room||state.epoch!==epoch||revision<state.revision) return;
+    state.revision=revision;
+    state.authoritative=snapshot;
+    state.applying=true;
+    try{
+      const lang=document.getElementById('langSelect'); if(lang) lang.value=snapshot.language;
+      const question=document.getElementById('questionSelect');
+      if(question){
+        let option=[...question.options].find(item=>item.value===snapshot.question_id);
+        const hadOption=!!option;
+        if(!option){
+          option=document.createElement('option');
+          option.value=snapshot.question_id;
+          option.textContent=snapshot.question_id;
+          option.dataset.workspacePlaceholder='1';
+          question.appendChild(option);
+        }
+        question.value=snapshot.question_id;
+        const custom=window._randori_questions?.custom?.find?.(item=>item.slug===snapshot.question_id||item.id===snapshot.question_id);
+        if(custom) window._randori_questions?.renderCustomQuestion?.(snapshot.question_id);
+        else if(hadOption) window._randori_code?.renderQuestion?.(snapshot.question_id);
+      }
+      if(window._randori_code?.setCode) window._randori_code.setCode(snapshot.code,snapshot.language);
+      const textarea=document.getElementById('editor'); if(textarea) textarea.value=snapshot.code;
+      persistLocal(room,snapshot);
+    }finally{
+      queueMicrotask(()=>{ state.applying=false; });
+    }
+  }
+  async function validateRoom(room){
+    if(window._randori_authorized_room===room) return true;
+    const controller=new AbortController();
+    const timeout=setTimeout(()=>controller.abort(),8000);
+    try{
+      const response=await fetch('/api/my-pair',{credentials:'same-origin',signal:controller.signal});
+      const data=await response.json().catch(()=>({}));
+      if(response.ok&&data.paired&&String(data.room_id||'')===room) return true;
+    }catch{} finally{ clearTimeout(timeout); }
+    return false;
+  }
+  async function activate(room){
+    room=String(room||'');
+    if(!signedIn()||!canonical(room)){ deactivate(); return; }
+    if(state.room&&state.room!==room) deactivate();
+    if(state.room===room&&(state.hydrated||state.pollInFlight===`${state.epoch}:${room}`)) return;
+    const requestEpoch=++accessEpoch;
+    if(!await validateRoom(room)){
+      if(requestEpoch!==accessEpoch) return;
+      deactivate();
+      if(typeof toast==='function') toast('Pair-room access denied.');
+      return;
+    }
+    if(requestEpoch!==accessEpoch) return;
+    window._randori_authorized_room=room;
+    if(state.room===room&&state.hydrated) return;
+    state.epoch+=1;
+    const epoch=state.epoch;
+    state.room=room;
+    state.revision=0;
+    state.hydrated=false;
+    state.authoritative=null;
+    state.pending=null;
+    state.baseline=draft();
+    if(saveTimer) clearTimeout(saveTimer);
+    await poll(true,room,epoch);
+  }
+  function deactivate(){
+    accessEpoch+=1;
+    state.epoch+=1; state.room=null; state.revision=0; state.hydrated=false; state.authoritative=null; state.pending=null; state.baseline=null; state.retryCount=0;
+    if(saveTimer) clearTimeout(saveTimer);
+    if(retryTimer){ clearTimeout(retryTimer); retryTimer=null; }
+    state.pollAbort?.abort();
+    state.writeAbort?.abort();
+  }
+  async function poll(initial=false,room=state.room,epoch=state.epoch){
+    const pollToken=`${epoch}:${room}`;
+    const needsHydration=initial||!state.hydrated;
+    if(!signedIn()||!canonical(room)||state.pollInFlight===pollToken) return;
+    state.pollInFlight=pollToken;
+    const controller=new AbortController();
+    state.pollAbort=controller;
+    const timeout=setTimeout(()=>controller.abort(),8000);
+    try{
+      const url=new URL('/api/video/signal',location.origin);
+      url.searchParams.set('channel','workspace');
+      url.searchParams.set('room_id',room);
+      url.searchParams.set('after_revision',String(state.revision));
+      const response=await fetch(url,{credentials:'same-origin',signal:controller.signal});
+      if(state.room!==room||state.epoch!==epoch) return;
+      if(response.status===401||response.status===403){
+        if(window._randori_authorized_room===room) window._randori_authorized_room=null;
+        deactivate();
+        return;
+      }
+      if(!response.ok) return;
+      const data=await response.json();
+      if(state.room!==room||state.epoch!==epoch) return;
+      const next=unpack(data);
+      let hydrationDirty=false;
+      if(needsHydration||next.revision>state.revision){
+        if(next.snapshot){
+          const ownEcho=next.snapshot.client_id===clientId&&next.snapshot.client_seq<=state.lastAckSeq;
+          const locallyDirty=(state.hydrated||!same(draft(),state.baseline))&&(
+            !!state.pending ||
+            (state.inFlight?.room===room&&state.inFlight?.epoch===epoch) ||
+            !same(draft(),state.authoritative)
+          );
+          if(ownEcho) { state.revision=next.revision; state.authoritative=next.snapshot; persistLocal(room,next.snapshot); }
+          else if(locallyDirty){ hydrationDirty=true; state.revision=next.revision; state.authoritative=next.snapshot; }
+          else applySnapshot(next.snapshot,next.revision,room,epoch);
+        }else if(next.revision>state.revision) state.revision=next.revision;
+      }
+      if(needsHydration){
+        state.hydrated=true;
+        state.baseline=null;
+        // With no server snapshot, publish the authenticated editor state once.
+        if(!next.snapshot||hydrationDirty) scheduleSave();
+      }
+    }catch{} finally{
+      clearTimeout(timeout);
+      if(state.pollInFlight===pollToken) state.pollInFlight=null;
+      if(state.pollAbort===controller) state.pollAbort=null;
+    }
+  }
+  function scheduleSave(){
+    if(state.applying||!state.hydrated||!signedIn()||!canonical(state.room)||activeRoom()!==state.room) return;
+    const next=draft();
+    if(same(next,state.authoritative)&&!state.inFlight){
+      state.pending=null;
+      if(saveTimer){ clearTimeout(saveTimer); saveTimer=null; }
+      if(retryTimer){ clearTimeout(retryTimer); retryTimer=null; }
+      state.retryCount=0;
+      return;
+    }
+    state.pending=next;
+    state.retryCount=0;
+    if(retryTimer){ clearTimeout(retryTimer); retryTimer=null; }
+    if(saveTimer) clearTimeout(saveTimer);
+    saveTimer=setTimeout(drainSave,350);
+  }
+  function retrySave(change,room,epoch){
+    if(state.room!==room||state.epoch!==epoch) return false;
+    state.pending=state.pending||change;
+    if(state.retryCount>=MAX_SAVE_RETRIES){
+      state.pending=null;
+      if(typeof toast==='function') toast('Workspace is still saved on this device, but could not sync. Edit again to retry.');
+      return false;
+    }
+    const delay=Math.min(500*(2**state.retryCount),8000);
+    state.retryCount+=1;
+    retryTimer=setTimeout(()=>{ retryTimer=null; drainSave(); },delay);
+    return true;
+  }
+  async function drainSave(){
+    if(state.inFlight||!state.pending||!state.room||!signedIn()||activeRoom()!==state.room) return;
+    if(same(state.pending,state.authoritative)){ state.pending=null; return; }
+    const room=state.room,epoch=state.epoch,change=state.pending;
+    state.pending=null;
+    const request={room,epoch,change};
+    state.inFlight=request;
+    const controller=new AbortController();
+    state.writeAbort=controller;
+    const timeout=setTimeout(()=>controller.abort(),8000);
+    const clientSeq=++state.clientSeq;
+    let retryLater=false;
+    try{
+      const response=await fetch('/api/video/signal',{
+        method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},signal:controller.signal,
+        body:JSON.stringify({room_id:room,type:'code-sync',payload:{schema_version:1,base_revision:state.revision,client_id:clientId,client_seq:clientSeq,code:change.code,language:change.language,question_id:change.question_id}}),
+      });
+      const data=await response.json().catch(()=>({}));
+      if(state.room!==room||state.epoch!==epoch) return;
+      const next=unpack(data);
+      if(response.status===401||response.status===403){
+        if(window._randori_authorized_room===room) window._randori_authorized_room=null;
+        deactivate();
+        if(typeof toast==='function') toast('Pair-room access expired. Sign in again or reopen your current invite.');
+        return;
+      }
+      if(response.status===409){
+        if(next.snapshot&&next.revision>=state.revision){
+          state.revision=next.revision;
+          state.authoritative=next.snapshot;
+        }
+        retryLater=retrySave(change,room,epoch);
+        return;
+      }
+      if(response.status===408||response.status===429||response.status>=500) throw new Error(data.error||`workspace save ${response.status}`);
+      if(!response.ok){
+        if(typeof toast==='function') toast(data.error||'This workspace change could not be synced.');
+        return;
+      }
+      if(next.revision<state.revision) return;
+      state.retryCount=0;
+      state.lastAckSeq=Math.max(state.lastAckSeq,clientSeq);
+      state.revision=next.revision;
+      if(next.snapshot){
+        state.authoritative=next.snapshot;
+        // Do not overwrite edits coalesced while this save was in flight.
+        if(!state.pending&&same(draft(),change)) applySnapshot(next.snapshot,next.revision,room,epoch);
+      }
+    }catch{
+      retryLater=retrySave(change,room,epoch);
+    }finally{
+      clearTimeout(timeout);
+      if(state.inFlight===request) state.inFlight=null;
+      if(state.writeAbort===controller) state.writeAbort=null;
+      if(state.pending&&!retryLater) queueMicrotask(drainSave);
+    }
+  }
+
+  async function requestAccess(room){
+    room=String(room||'');
+    if(!signedIn()||!canonical(room)){ deactivate(); return false; }
+    if(state.room&&state.room!==room) deactivate();
+    const requestEpoch=++accessEpoch;
+    if(!await validateRoom(room)){
+      if(requestEpoch!==accessEpoch) return false;
+      deactivate();
+      if(typeof toast==='function') toast('Pair-room access denied.');
+      return false;
+    }
+    if(requestEpoch!==accessEpoch) return false;
+    window._randori_authorized_room=room;
+    window._randori_code?.loadRoom?.(room);
+    return true;
+  }
+
+  window.addEventListener('randori:room-change',event=>{ activate(event.detail?.roomId); });
+  window.addEventListener('randori:workspace-edit',scheduleSave);
+  document.getElementById('editor')?.addEventListener('input',scheduleSave);
+  document.getElementById('langSelect')?.addEventListener('change',scheduleSave);
+  document.getElementById('questionSelect')?.addEventListener('change',scheduleSave);
+  setInterval(()=>{ if(!signedIn()) deactivate(); else if(state.room) poll(false,state.room,state.epoch); },1200);
+  setInterval(()=>{ const room=activeRoom(); if(signedIn()&&canonical(room)&&room!==state.room&&window._randori_authorized_room===room) activate(room); },500);
+  window._randori_workspace={activate,requestAccess,deactivate,poll,get room(){return state.room},get revision(){return state.revision},get hydrated(){return state.hydrated},get clientId(){return clientId}};
 })();
 </script>
 

@@ -152,6 +152,28 @@ export function canonicalRoomId(weekId, pairGroupId) {
   return `week_${Number(weekId)}_pair_${Number(pairGroupId)}`;
 }
 
+/**
+ * Parse the only room path accepted at authentication boundaries.
+ *
+ * Keeping this deliberately narrower than URL parsing prevents absolute URLs,
+ * protocol-relative URLs, encoded separators, and path-normalisation tricks
+ * from becoming post-authentication redirects.
+ */
+export function parseCanonicalRoomPath(value) {
+  if (typeof value !== 'string') return null;
+  const match = /^\/join\/week_([1-9]\d*)_pair_([1-9]\d*)$/.exec(value);
+  if (!match) return null;
+
+  const weekId = Number(match[1]);
+  const pairGroupId = Number(match[2]);
+  if (!Number.isSafeInteger(weekId) || !Number.isSafeInteger(pairGroupId)) return null;
+
+  const roomId = canonicalRoomId(weekId, pairGroupId);
+  const path = `/join/${roomId}`;
+  if (path !== value) return null;
+  return { path, roomId, weekId, pairGroupId };
+}
+
 export function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
