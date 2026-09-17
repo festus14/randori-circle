@@ -167,15 +167,15 @@ test('two authenticated browser contexts hydrate from the server and exchange or
       const editor = document.querySelector<HTMLTextAreaElement>('#editor');
       if (!language || !question || !editor) throw new Error('workspace controls unavailable');
       language.value = 'python';
-      question.value = 'valid-parentheses';
+      question.value = 'lru';
       editor.value = code;
       editor.dispatchEvent(new Event('input', { bubbles: true }));
     }, pythonCode);
     await expect.poll(() => snapshot.code).toBe(pythonCode);
     expect(snapshot.language).toBe('python');
-    expect(snapshot.question_id).toBe('valid-parentheses');
+    expect(snapshot.question_id).toBe('lru');
     await expect.poll(() => pages[1].locator('#langSelect').inputValue()).toBe('python');
-    await expect.poll(() => pages[1].locator('#questionSelect').inputValue()).toBe('valid-parentheses');
+    await expect.poll(() => pages[1].locator('#questionSelect').inputValue()).toBe('lru');
 
     let conflictBegan = new Promise<void>(resolve => { conflictStarted = resolve; });
     forceConflict = true;
