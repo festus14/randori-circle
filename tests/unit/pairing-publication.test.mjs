@@ -492,6 +492,40 @@ test('verified loopback transport does not weaken circle publication scope or re
   assert.deepEqual(result.publication.participants.map(row=>row.userId),[1,2]);
 });
 
+test('stale, current, and future publications stay cycle-scoped across a file database restart',async()=>{
+  const fixture=await createDatabase();
+  await seedCircle(fixture.db,[
+    {id:1,role:'owner'},{id:2,role:'member'},{id:3,role:'member'},
+  ]);
+  const windows=[
+    {now:'2026-09-13T08:00:00.000Z',cycleId:'2026-W38'},
+    {now:'2026-09-20T08:00:00.000Z',cycleId:'2026-W39'},
+    {now:'2026-09-27T08:00:00.000Z',cycleId:'2026-W40'},
+  ];
+  const publications=[];
+  for(const window of windows){
+    const result=await publishPairingCycle(fixture.db,publicationOptions({now:window.now}));
+    assert.equal(result.created,true);
+    assert.equal(result.publication.cycle.cycleId,window.cycleId);
+    assertPairCoverage(result.publication,[1,2,3]);
+    publications.push(result.publication);
+  }
+  assert.equal(await count(fixture.db,'pairing_week_runs'),3);
+  assert.equal(await count(fixture.db,'pairing_email_outbox'),9);
+
+  await fixture.close();
+  const restarted=await fixture.open();
+  for(const [index,window] of windows.entries()){
+    assert.deepEqual(await getPairingPublication(restarted,{now:window.now}),publications[index]);
+  }
+  const repeat=await publishPairingCycle(restarted,publicationOptions({now:windows[1].now}));
+  assert.equal(repeat.created,false);
+  assert.deepEqual(repeat.publication,publications[1]);
+  assert.equal(await count(restarted,'pairing_week_runs'),3);
+  assert.equal(await count(restarted,'pairing_email_outbox'),9,
+    'restart and repeat publication must not duplicate reminders');
+});
+
 test('the production write path contains no destructive remix or request-time DDL',async()=>{
   const fixture=await createDatabase();
   await seedCircle(fixture.db,[{id:1,role:'owner'},{id:2,role:'member'}]);

@@ -4,6 +4,7 @@ import {createClient} from '@libsql/client';
 
 let currentDb=null;
 let providerCalls=0;
+const originalMembershipFlag=process.env.CIRCLE_MEMBERSHIP_ENABLED;
 
 function authPayload(req){
   if(req?.headers?.['x-test-auth']==='member'){
@@ -28,7 +29,7 @@ mock.module('../../api/_db.js',{
 
 const [
   {default:dataHandler},
-  {AUTH_PAIR_ACCESS_SQL,authPairAccessArgs,getAuthenticatedPairAccess},
+  {AUTH_PAIR_ACCESS_SQL,authPairAccessArgs,authPairAccessSql,getAuthenticatedPairAccess},
   {listPublicExercises},
   {resolvePairingCycle},
 ]=await Promise.all([
@@ -146,11 +147,17 @@ afterEach(()=>{
   try{ currentDb?.close?.(); }catch{}
   currentDb=null;
   providerCalls=0;
+  if(originalMembershipFlag===undefined) delete process.env.CIRCLE_MEMBERSHIP_ENABLED;
+  else process.env.CIRCLE_MEMBERSHIP_ENABLED=originalMembershipFlag;
 });
 
 test('shared pair access requires exact positive identifiers and an auth-source snapshot',async()=>{
   assert.match(AUTH_PAIR_ACCESS_SQL,/pg\.id AS pair_group_id/);
   assert.match(AUTH_PAIR_ACCESS_SQL,/viewer\.source='auth'/);
+  assert.doesNotMatch(AUTH_PAIR_ACCESS_SQL,/viewer_membership/);
+  const membershipAccessSql=authPairAccessSql({requireActiveMembership:true});
+  assert.match(membershipAccessSql,/viewer_membership\.status='active'/);
+  assert.match(membershipAccessSql,/viewer_circle\.is_primary=1/);
   assert.deepEqual(authPairAccessArgs({userId:2,weekId:10,pairGroupId:20}),[2,20,10,2,2,2]);
   for(const input of [
     {userId:0,weekId:10,pairGroupId:20},
@@ -165,11 +172,15 @@ test('shared pair access requires exact positive identifiers and an auth-source 
     {userId:2,weekId:10,pairGroupId:Number.MAX_SAFE_INTEGER+1},
   ]) assert.throws(()=>authPairAccessArgs(input),TypeError);
 
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
   currentDb=await seededDatabase({source:'users'});
   assert.equal(await getAuthenticatedPairAccess(currentDb,{userId:2,weekId:10,pairGroupId:20}),null);
   await currentDb.execute(`UPDATE pairing_participants SET source='auth' WHERE week_id=10 AND user_id=2`);
   const access=await getAuthenticatedPairAccess(currentDb,{userId:2,weekId:10,pairGroupId:20});
   assert.equal(Number(access.pair_group_id),20);
+  await currentDb.execute(`UPDATE circle_memberships SET status='inactive' WHERE user_id=2`);
+  assert.equal(await getAuthenticatedPairAccess(currentDb,{userId:2,weekId:10,pairGroupId:20}),null,
+    'an immutable participant snapshot cannot outlive active circle membership');
 });
 
 test('all data room entry points reject a colliding legacy participant without work or leakage',async()=>{
