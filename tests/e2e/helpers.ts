@@ -39,6 +39,11 @@ export const originalQuestionFixture = {
 };
 
 const defaultApiResponses: Record<string, ApiResponse> = {
+  '/api/auth/capabilities': {
+    ok: true,
+    capabilities: { passwordLogin: true, passwordSignup: false, googleOAuth: true },
+    registrationMode: 'private_beta',
+  },
   '/api/auth/me': { _status: 401, ok: false, error: 'authentication required' },
   '/api/circle': request => hasSessionCookie(request)
     ? {

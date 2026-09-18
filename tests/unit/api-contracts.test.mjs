@@ -26,6 +26,14 @@ const originalEnvironment = {
   JWT_SECRET: process.env.JWT_SECRET,
   GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
   APP_URL: process.env.APP_URL,
+  ALLOW_OPEN_SIGNUP: process.env.ALLOW_OPEN_SIGNUP,
+  CIRCLE_MEMBERSHIP_ENABLED: process.env.CIRCLE_MEMBERSHIP_ENABLED,
+  RANDORI_LOCAL_RUNTIME: process.env.RANDORI_LOCAL_RUNTIME,
+  TURSO_AUTH_TOKEN: process.env.TURSO_AUTH_TOKEN,
+  TURSO_DATABASE_URL: process.env.TURSO_DATABASE_URL,
+  VERCEL: process.env.VERCEL,
+  VERCEL_ENV: process.env.VERCEL_ENV,
+  VERCEL_URL: process.env.VERCEL_URL,
   AI_ENABLED: process.env.AI_ENABLED,
   ADMIN_EMAILS: process.env.ADMIN_EMAILS,
   CRON_SECRET: process.env.CRON_SECRET,
@@ -63,7 +71,7 @@ function invoke(handler, { method = 'GET', url = '/', query = {}, headers = {}, 
       },
       end(payload) { finish(payload); },
     };
-    Promise.resolve(handler({ method, url, query, headers, body }, response))
+    Promise.resolve(handler({ method, url, query, headers, body, socket:{remoteAddress:'127.0.0.1'} }, response))
       .then(() => finish(undefined))
       .catch(reject);
   });
@@ -154,11 +162,17 @@ test('database utility configuration and deterministic helpers have stable behav
 });
 
 test('auth endpoints reject malformed or unauthenticated requests before database access', async () => {
+  process.env.NODE_ENV='development';
+  process.env.RANDORI_LOCAL_RUNTIME='true';
+  process.env.ALLOW_OPEN_SIGNUP='true';
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='false';
+  process.env.TURSO_DATABASE_URL='file:///tmp/randori-api-contracts.sqlite';
+  process.env.APP_URL='http://127.0.0.1:3000';
   const signup = await invoke(authHandler, {
     method: 'POST',
     url: '/api/auth/signup',
     query: { endpoint: 'signup' },
-    headers: sameOriginHeaders,
+    headers: {origin:'http://127.0.0.1:3000',host:'127.0.0.1:3000'},
     body: { email: 'person@example.com', password: 'short' },
   });
   assert.equal(signup.status, 400);
