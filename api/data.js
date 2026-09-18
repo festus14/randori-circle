@@ -25,6 +25,7 @@ import {
   UNAVAILABLE_RESPONSE,
   coalescedDatabaseReadiness,
   databaseReadinessConfiguration,
+  readinessTargetExists,
   resolveHealthProbe,
   setHealthHeaders,
 } from './_health.js';
@@ -709,10 +710,14 @@ async function handleHealth(req,res){
   if(probe==='live') return res.status(200).json(HEALTH_RESPONSE);
   if(probe!=='ready') return res.status(400).json(UNAVAILABLE_RESPONSE);
   const configuration=databaseReadinessConfiguration();
-  if(!configuration) return res.status(503).json(UNAVAILABLE_RESPONSE);
+  if(!configuration||!readinessTargetExists(configuration)){
+    return res.status(503).json(UNAVAILABLE_RESPONSE);
+  }
   try{
     const db=getClient();
-    const ready=await coalescedDatabaseReadiness(configuration.cacheKey,db);
+    const ready=await coalescedDatabaseReadiness(configuration.cacheKey,db,{
+      membershipRequired:configuration.membershipRequired,
+    });
     return ready
       ?res.status(200).json(READY_RESPONSE)
       :res.status(503).json(UNAVAILABLE_RESPONSE);

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash, createHmac } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -14,6 +14,7 @@ const realFetch = globalThis.fetch;
 const TEST_JWT_SECRET = 'unit-test-secret-at-least-thirty-two-characters';
 let executeHandler = () => ({ rows: [], rowsAffected: 0 });
 let databaseDelegate = null;
+let getClientCalls = 0;
 const executed = [];
 const sentryMessageCalls = [];
 const sentryExceptionCalls = [];
@@ -125,7 +126,7 @@ mock.module('../../api/_db.js', {
   exports: {
     JWT_AUDIENCE: 'randori-web',
     JWT_ISSUER: 'randori-circle',
-    getClient: () => db,
+    getClient: () => { getClientCalls+=1; return db; },
     getJwtSecret: () => TEST_JWT_SECRET,
     getCronSecret: () => {
       if (!process.env.CRON_SECRET) throw new Error('Missing CRON_SECRET');
@@ -261,6 +262,7 @@ beforeEach(() => {
   sentryMessageCalls.length = 0;
   sentryExceptionCalls.length = 0;
   databaseDelegate = null;
+  getClientCalls = 0;
   lastPairingRun = null;
   persistedPairGroups = [];
   persistedPairingParticipants = [];
@@ -272,6 +274,7 @@ beforeEach(() => {
     'NEXT_PUBLIC_SENTRY_DSN', 'SENTRY_DSN',
     'ALLOW_OPEN_SIGNUP', 'SIGNUP_ALLOWLIST', 'LEETCODE_INGESTION_AUTHORIZED',
     'AUTH_SCHEMA_BOOTSTRAP_ENABLED', 'CIRCLE_MEMBERSHIP_ENABLED', 'RANDORI_LOCAL_RUNTIME',
+    'RANDORI_LOCAL_DATABASE_PATH',
     'TURSO_AUTH_TOKEN', 'TURSO_DATABASE_URL', 'VERCEL', 'VERCEL_ENV', 'VERCEL_URL',
     'RUN_ATTESTATION_SECRET', 'RUN_ATTESTATION_PREVIOUS_SECRETS',
     'TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM',
@@ -667,6 +670,28 @@ test('database readiness failures are generic, private, and never logged through
   assert.equal(invalidMethod.status,405);
   assert.equal(invalidMethod.headers.allow,'GET, HEAD');
   assert.deepEqual(invalidMethod.body,{ok:false,status:'unavailable'});
+});
+
+test('local readiness refuses an absent database before client construction or file creation',async()=>{
+  const directory=mkdtempSync(join(tmpdir(),'randori-health-handler-'));
+  const databasePath=join(directory,'missing.sqlite');
+  try{
+    process.env.NODE_ENV='development';
+    process.env.RANDORI_LOCAL_RUNTIME='true';
+    process.env.TURSO_DATABASE_URL=pathToFileURL(databasePath).href;
+    process.env.RANDORI_LOCAL_DATABASE_PATH=databasePath;
+    process.env.CIRCLE_MEMBERSHIP_ENABLED='false';
+    const result=await invoke(dataHandler,{
+      url:'/api/health/ready',query:{endpoint:'health',probe:'ready'},
+    });
+    assert.equal(result.status,503);
+    assert.deepEqual(result.body,{ok:false,status:'unavailable'});
+    assert.equal(result.headers['cache-control'],'no-store');
+    assert.equal(getClientCalls,0);
+    assert.equal(existsSync(databasePath),false);
+  }finally{
+    rmSync(directory,{recursive:true,force:true});
+  }
 });
 
 test('profile, pair schedule, and messages enforce ownership while catalogue and run history are read-only', async () => {

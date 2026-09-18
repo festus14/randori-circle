@@ -775,6 +775,7 @@ function installRuntimeEnvironment(config,url,secret,envTarget=process.env){
   const values={
     NODE_ENV:'development',
     TURSO_DATABASE_URL:config.databaseUrl,
+    RANDORI_LOCAL_DATABASE_PATH:config.databasePath,
     TURSO_AUTH_TOKEN:'',
     JWT_SECRET:secret,
     RUN_ATTESTATION_SECRET:'',

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { readdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
@@ -9,6 +9,7 @@ import {
   coalescedDatabaseReadiness,
   databaseReadinessConfiguration,
   inspectDatabaseReadiness,
+  readinessTargetExists,
   resolveHealthProbe,
 } from '../../api/_health.js';
 import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
@@ -94,6 +95,7 @@ test('ready inspection is exact, read-only, and creates no schema objects or fil
     },
   };
   assert.equal(await inspectDatabaseReadiness(spy),true);
+  assert.equal(await inspectDatabaseReadiness(spy,{membershipRequired:true}),false);
   assert.ok(statements.length>50);
   assert.ok(statements.every(({sql})=>/^(?:SELECT|PRAGMA)\b/i.test(sql)));
   assert.deepEqual(
@@ -203,6 +205,7 @@ test('completed rollout readiness permits inactive members and historical actors
   assert.ok(adoption.blockers.includes('closed_rollout_has_uncovered_accounts'));
   assert.equal((await inspectCompletedMembershipRollout(db)).ok,true);
   assert.equal(await inspectDatabaseReadiness(db),true);
+  assert.equal(await inspectDatabaseReadiness(db,{membershipRequired:true}),true);
 
   await db.execute(`DELETE FROM circle_audit_events
     WHERE event_type='membership.backfilled' AND subject_user_id=2`);
@@ -248,16 +251,42 @@ test('configuration and probe routing distinguish liveness from readiness withou
     TURSO_DATABASE_URL:'libsql://database.example.test',TURSO_AUTH_TOKEN:'private-token',
   });
   assert.match(remote.cacheKey,/^[a-f0-9]{64}$/);
+  assert.equal(remote.membershipRequired,false);
   assert.doesNotMatch(JSON.stringify(remote),/private-token|database\.example/);
   assert.ok(databaseReadinessConfiguration({
-    NODE_ENV:'development',RANDORI_LOCAL_RUNTIME:'true',TURSO_DATABASE_URL:'file:///tmp/local.sqlite',
+    NODE_ENV:'development',RANDORI_LOCAL_RUNTIME:'true',
+    TURSO_DATABASE_URL:'file:///tmp/local.sqlite',RANDORI_LOCAL_DATABASE_PATH:'/tmp/local.sqlite',
   }));
+  assert.equal(databaseReadinessConfiguration({
+    NODE_ENV:'development',RANDORI_LOCAL_RUNTIME:'true',
+    TURSO_DATABASE_URL:'file:///tmp/local.sqlite',RANDORI_LOCAL_DATABASE_PATH:'/tmp/other.sqlite',
+  }),null);
+  const membership=databaseReadinessConfiguration({
+    TURSO_DATABASE_URL:'libsql://database.example.test',TURSO_AUTH_TOKEN:'private-token',
+    CIRCLE_MEMBERSHIP_ENABLED:'true',
+  });
+  assert.equal(membership.membershipRequired,true);
+  assert.notEqual(membership.cacheKey,remote.cacheKey);
   assert.equal(resolveHealthProbe({url:'/api/health'}),'ready');
   assert.equal(resolveHealthProbe({url:'/api/health/live'}),'live');
   assert.equal(resolveHealthProbe({url:'/api/healthz'}),'live');
   assert.equal(resolveHealthProbe({url:'/api/readyz'}),'ready');
   assert.equal(resolveHealthProbe({url:'/api/health',query:{probe:'liveness'}}),'live');
   assert.equal(resolveHealthProbe({url:'/api/health',query:{probe:'unknown'}}),'invalid');
+});
+
+test('local readiness target preflight rejects missing, linked, and non-regular paths',()=>{
+  const directory=realpathSync(mkdtempSync(join(tmpdir(),'randori-health-target-')));
+  resources.push(()=>rmSync(directory,{recursive:true,force:true}));
+  const databasePath=join(directory,'database.sqlite');
+  const configuration={local:true,localDatabasePath:databasePath};
+  assert.equal(readinessTargetExists(configuration),false);
+  writeFileSync(databasePath,'not opened by readiness');
+  assert.equal(readinessTargetExists(configuration),true);
+  const linkedPath=join(directory,'linked.sqlite');
+  symlinkSync(databasePath,linkedPath);
+  assert.equal(readinessTargetExists({local:true,localDatabasePath:linkedPath}),false);
+  assert.equal(readinessTargetExists({local:false,localDatabasePath:null}),true);
 });
 
 test('concurrent readiness is coalesced without retaining a stale result',async()=>{

@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto';
+import { lstatSync, realpathSync } from 'node:fs';
+import { isAbsolute, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { inspectMembershipRolloutReadiness } from '../db/membership-readiness.js';
+import {
+  inspectCompletedMembershipRollout,
+  inspectMembershipRolloutReadiness,
+} from '../db/membership-readiness.js';
 import { LATEST_MIGRATION_VERSION, MIGRATION_CONTRACTS } from '../db/migration-contract.js';
 import {
   assertMigrationLedgerContract,
@@ -30,9 +36,15 @@ export function databaseReadinessConfiguration(env=process.env){
   try{ url=new URL(rawUrl); }catch{ return null; }
   if(url.username||url.password||url.search||url.hash) return null;
   const local=env.RANDORI_LOCAL_RUNTIME==='true';
+  const membershipRequired=env.CIRCLE_MEMBERSHIP_ENABLED==='true';
   const authToken=String(env.TURSO_AUTH_TOKEN||'').trim();
+  let localDatabasePath=null;
   if(local){
     if(env.NODE_ENV==='production'||url.protocol!=='file:'||url.host||!url.pathname.startsWith('/')||authToken) return null;
+    const expectedPath=String(env.RANDORI_LOCAL_DATABASE_PATH||'').trim();
+    try{ localDatabasePath=fileURLToPath(url); }catch{ return null; }
+    if(!expectedPath||!isAbsolute(expectedPath)||resolve(expectedPath)!==expectedPath
+      ||localDatabasePath!==expectedPath) return null;
   }else if(!url.host||!configured(authToken)||authToken.length>32_768
     ||!(env.NODE_ENV==='production'
       ?['libsql:','https:'].includes(url.protocol)
@@ -41,9 +53,23 @@ export function databaseReadinessConfiguration(env=process.env){
   }
   return Object.freeze({
     cacheKey:createHash('sha256')
-      .update(`${local?'local':'remote'}\0${rawUrl}\0${authToken}`,'utf8')
+      .update(`${local?'local':'remote'}\0${membershipRequired?'membership':'legacy'}\0${rawUrl}\0${authToken}`,'utf8')
       .digest('hex'),
+    local,
+    localDatabasePath,
+    membershipRequired,
   });
+}
+
+export function readinessTargetExists(configuration){
+  if(!configuration?.local) return true;
+  try{
+    const metadata=lstatSync(configuration.localDatabasePath);
+    return metadata.isFile()&&!metadata.isSymbolicLink()&&metadata.nlink===1
+      &&realpathSync(configuration.localDatabasePath)===configuration.localDatabasePath;
+  }catch{
+    return false;
+  }
 }
 
 export function resolveHealthProbe(req){
@@ -56,7 +82,7 @@ export function resolveHealthProbe(req){
   return 'ready';
 }
 
-export async function inspectDatabaseReadiness(database){
+export async function inspectDatabaseReadiness(database,{membershipRequired=false}={}){
   const db=readOnlyDatabase(database);
   const schema=await inspectSchema(db,{
     manifest:READINESS_SCHEMA_MANIFEST,
@@ -70,7 +96,9 @@ export async function inspectDatabaseReadiness(database){
   }),MIGRATION_CONTRACTS);
   if(ledger.currentVersion!==LATEST_MIGRATION_VERSION
     ||ledger.rows.length!==MIGRATION_CONTRACTS.length) return false;
-  const membership=await inspectMembershipRolloutReadiness(db);
+  const membership=membershipRequired
+    ?await inspectCompletedMembershipRollout(db)
+    :await inspectMembershipRolloutReadiness(db);
   return membership.ok===true;
 }
 
@@ -84,14 +112,17 @@ function timeout(promise,timeoutMs){
 
 // Share only an in-flight probe. Results are never retained, so a schema or
 // rollout change cannot be hidden behind a stale success cache.
-export function coalescedDatabaseReadiness(cacheKey,database,{timeoutMs=READINESS_TIMEOUT_MS}={}){
+export function coalescedDatabaseReadiness(cacheKey,database,{
+  membershipRequired=false,
+  timeoutMs=READINESS_TIMEOUT_MS,
+}={}){
   if(!/^[a-f0-9]{64}$/.test(String(cacheKey||''))) throw new TypeError('invalid readiness cache key');
   if(!Number.isSafeInteger(timeoutMs)||timeoutMs<1||timeoutMs>30_000){
     throw new TypeError('readiness timeout must be an integer from 1 to 30000 milliseconds');
   }
   const existing=inFlightReadiness.get(cacheKey);
   if(existing) return timeout(existing,timeoutMs);
-  const pending=Promise.resolve().then(()=>inspectDatabaseReadiness(database));
+  const pending=Promise.resolve().then(()=>inspectDatabaseReadiness(database,{membershipRequired}));
   inFlightReadiness.set(cacheKey,pending);
   pending.finally(()=>{
     if(inFlightReadiness.get(cacheKey)===pending) inFlightReadiness.delete(cacheKey);
