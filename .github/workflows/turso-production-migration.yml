@@ -1,0 +1,143 @@
+name: Turso production migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Inspect, adopt an exact unmanaged prefix, or apply one pending migration
+        required: true
+        type: choice
+        options:
+          - status
+          - adopt
+          - apply
+      rehearsal_run_id:
+        description: Successful protected rehearsal workflow run ID from this exact main commit
+        required: true
+        type: string
+      rehearsal_run_attempt:
+        description: Exact rehearsal workflow run attempt
+        required: true
+        default: '1'
+        type: string
+      expected_state_fingerprint:
+        description: Empty for status; exact lowercase fingerprint returned by the immediately preceding status for mutations
+        required: false
+        type: string
+      confirmation:
+        description: Type INSPECT_PRODUCTION_DATABASE for status or MIGRATE_PRODUCTION_DATABASE for adopt/apply
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: turso-production-database-operations
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    environment: turso-production-migration
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Validate dispatch inputs
+        timeout-minutes: 2
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          OPERATION: ${{ inputs.operation }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          EXPECTED_STATE: ${{ inputs.expected_state_fingerprint }}
+          REHEARSAL_RUN_ID: ${{ inputs.rehearsal_run_id }}
+          REHEARSAL_RUN_ATTEMPT: ${{ inputs.rehearsal_run_attempt }}
+        run: |
+          set -euo pipefail
+          test "${DEFAULT_BRANCH}" = 'main'
+          [[ "${REHEARSAL_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${REHEARSAL_RUN_ATTEMPT}" =~ ^[1-9][0-9]*$ ]]
+          if [[ "${OPERATION}" = 'status' ]]; then
+            test "${CONFIRMATION}" = 'INSPECT_PRODUCTION_DATABASE'
+            test -z "${EXPECTED_STATE}"
+          else
+            test "${CONFIRMATION}" = 'MIGRATE_PRODUCTION_DATABASE'
+            [[ "${EXPECTED_STATE}" =~ ^[a-f0-9]{64}$ ]]
+          fi
+
+      - name: Check out the latest default branch
+        timeout-minutes: 5
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Refuse a stale main checkout
+        timeout-minutes: 5
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+          checked_out_commit="$(git rev-parse HEAD)"
+          latest_main_commit="$(git rev-parse "origin/${DEFAULT_BRANCH}")"
+          test "${checked_out_commit}" = "${latest_main_commit}"
+          echo "MIGRATION_REPO_COMMIT=${checked_out_commit}" >> "${GITHUB_ENV}"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        timeout-minutes: 5
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install locked dependencies
+        id: install
+        timeout-minutes: 10
+        run: npm ci
+
+      - name: Run protected remote migration operation
+        id: migration
+        timeout-minutes: 10
+        env:
+          PRODUCTION_MIGRATION_CONFIRM: ${{ inputs.confirmation }}
+          MIGRATION_OPERATION: ${{ inputs.operation }}
+          MIGRATION_REHEARSAL_RUN_ID: ${{ inputs.rehearsal_run_id }}
+          MIGRATION_REHEARSAL_RUN_ATTEMPT: ${{ inputs.rehearsal_run_attempt }}
+          MIGRATION_EXPECTED_STATE: ${{ inputs.expected_state_fingerprint }}
+          MIGRATION_GITHUB_ENVIRONMENT: turso-production-migration
+          TURSO_PRODUCTION_MIGRATIONS_ENABLED: ${{ vars.TURSO_PRODUCTION_MIGRATIONS_ENABLED }}
+          TURSO_ORGANIZATION: ${{ vars.TURSO_ORGANIZATION }}
+          TURSO_GROUP: ${{ vars.TURSO_GROUP }}
+          TURSO_PRODUCTION_DATABASE_NAME: ${{ vars.TURSO_PRODUCTION_DATABASE_NAME }}
+          TURSO_PRODUCTION_DATABASE_ID: ${{ vars.TURSO_PRODUCTION_DATABASE_ID }}
+          TURSO_PRODUCTION_EXPECTED_BLOCK_WRITES: ${{ vars.TURSO_PRODUCTION_EXPECTED_BLOCK_WRITES }}
+          TURSO_PRODUCTION_PLATFORM_TOKEN: ${{ secrets.TURSO_PRODUCTION_PLATFORM_TOKEN }}
+          MIGRATION_DIGEST_HMAC_KEY: ${{ secrets.MIGRATION_DIGEST_HMAC_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_API_TIMEOUT_MS: '15000'
+          TURSO_PLATFORM_TIMEOUT_MS: '15000'
+          TURSO_DATABASE_TIMEOUT_MS: '30000'
+          MIGRATION_REHEARSAL_MAX_AGE_MS: ${{ vars.MIGRATION_REHEARSAL_MAX_AGE_MS }}
+          REHEARSAL_RPO_TARGET_MS: ${{ vars.REHEARSAL_RPO_TARGET_MS }}
+          REHEARSAL_RTO_TARGET_MS: ${{ vars.REHEARSAL_RTO_TARGET_MS }}
+        run: |
+          timeout --signal=TERM --kill-after=30s 9m \
+            node scripts/turso-production-migrate.mjs \
+            --operation "${MIGRATION_OPERATION}" \
+            --rehearsal-run-id "${MIGRATION_REHEARSAL_RUN_ID}" \
+            --rehearsal-run-attempt "${MIGRATION_REHEARSAL_RUN_ATTEMPT}" \
+            --expected-state "${MIGRATION_EXPECTED_STATE}" \
+            --artifact-dir "${RUNNER_TEMP}/public-artifacts"
+
+      - name: Upload sanitized migration result
+        if: always() && steps.install.outcome == 'success' && steps.migration.outcome != 'skipped'
+        timeout-minutes: 3
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: turso-production-migration-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/public-artifacts/migration-result.json
+          retention-days: 90
+          if-no-files-found: error

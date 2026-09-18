@@ -17,6 +17,7 @@
     "dev": "node --env-file-if-exists=.env.local scripts/local-server.mjs",
     "dev:reset": "node --env-file-if-exists=.env.local scripts/local-reset.mjs",
     "db:migrate": "node scripts/db-migrate.mjs",
+    "db:migrate:turso": "node scripts/turso-production-migrate.mjs",
     "db:plan": "node scripts/db-inspect.mjs plan",
     "db:rehearse-restore": "node scripts/turso-backup-restore-rehearsal.mjs",
     "db:status": "node scripts/db-inspect.mjs status",
