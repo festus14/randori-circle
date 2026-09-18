@@ -93,13 +93,14 @@ npm run audit:prod
 npm run validate:catalog
 npm run check:runtime-ddl
 npm run check:syntax
+npm run test:migrations
 npm run test:coverage
 npm run test:e2e
 ```
 
 CI tests the checked-out candidate build on localhost. It validates the catalogue, freezes the existing request-time DDL allowlist, enforces at least 52% line, branch, and function coverage across API, database-foundation, and operational-script modules, and runs the Playwright flows on Ubuntu.
 
-Operators can run `npm run --silent db:status` or `npm run --silent db:plan` with Turso credentials to receive structured JSON drift reports. Both commands are guarded to `SELECT`/`PRAGMA`; the plan is explicitly non-executable and this increment does not modify a database. See [Database schema inspection](docs/DATABASE_SCHEMA_OPERATIONS.md).
+Operators can run `npm run --silent db:status` or `npm run --silent db:plan` with Turso credentials to receive structured JSON drift reports. Both commands are guarded to `SELECT`/`PRAGMA`, and the plan is non-executable. A separate fingerprint-gated `db:migrate` command supports transactional apply or verified adoption only for explicit local `file:` URLs; it rejects every remote target and does not read production credentials. See [Database schema operations](docs/DATABASE_SCHEMA_OPERATIONS.md).
 
 ## Next increments
 

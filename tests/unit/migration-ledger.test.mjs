@@ -1,0 +1,111 @@
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import { createClient } from '@libsql/client';
+
+import {
+  EXECUTABLE_MIGRATIONS,
+  LATEST_MIGRATION_VERSION,
+  checksumExecutableMigration,
+  validateExecutableMigrations,
+} from '../../db/executable-migrations.js';
+import {
+  MIGRATION_LEDGER_CHECKSUM,
+  MigrationLedgerError,
+  assertMigrationLedgerContract,
+  createMigrationLedger,
+  insertMigrationLedgerRow,
+  readMigrationLedger,
+  validateMigrationLedger,
+} from '../../db/migration-ledger.js';
+
+function temporaryDatabase(){
+  const directory=mkdtempSync(join(tmpdir(),'randori-ledger-'));
+  const db=createClient({url:`file:${join(directory,'test.sqlite')}`});
+  return {db,close(){ db.close(); rmSync(directory,{recursive:true,force:true}); }};
+}
+
+test('executable migrations are contiguous and fingerprint every executable operation',()=>{
+  assert.equal(validateExecutableMigrations(),true);
+  assert.equal(LATEST_MIGRATION_VERSION,2);
+  assert.match(MIGRATION_LEDGER_CHECKSUM,/^[a-f0-9]{64}$/);
+  for(const migration of EXECUTABLE_MIGRATIONS){
+    assert.equal(checksumExecutableMigration(migration),migration.checksum);
+    assert.ok(Object.isFrozen(migration));
+    assert.ok(Object.isFrozen(migration.operations));
+  }
+  assert.equal(EXECUTABLE_MIGRATIONS[1].operations.at(-1).operation,'ensure-row');
+
+  const changed=structuredClone(EXECUTABLE_MIGRATIONS);
+  changed[1].operations.at(-1).sql+=' ';
+  assert.throws(()=>validateExecutableMigrations(changed),/unsupported state operation|checksum/i);
+  assert.throws(()=>validateExecutableMigrations([]),/non-empty migration-plan prefix/i);
+});
+
+test('ledger contract and immutable rows are validated exactly',async()=>{
+  const fixture=temporaryDatabase();
+  try{
+    await fixture.db.execute('PRAGMA foreign_keys=ON');
+    await fixture.db.execute('PRAGMA ignore_check_constraints=OFF');
+    await createMigrationLedger(fixture.db);
+    assert.equal(await assertMigrationLedgerContract(fixture.db),true);
+    await insertMigrationLedgerRow(fixture.db,EXECUTABLE_MIGRATIONS[0],{
+      executionMs:3,
+      disposition:'applied',
+    });
+    const valid=validateMigrationLedger(await readMigrationLedger(fixture.db),EXECUTABLE_MIGRATIONS);
+    assert.equal(valid.currentVersion,1);
+    assert.equal(valid.rows[0].disposition,'applied');
+
+    await fixture.db.execute("UPDATE schema_migrations SET applied_at='not-a-date' WHERE version=1");
+    assert.throws(
+      ()=>validateMigrationLedger([{...
+        valid.rows[0],applied_at:'not-a-date',execution_ms:3,
+      }],EXECUTABLE_MIGRATIONS),
+      error=>error instanceof MigrationLedgerError&&/metadata/i.test(error.message),
+    );
+    assert.throws(
+      ()=>validateMigrationLedger([{...
+        valid.rows[0],applied_at:'2026-99-99 99:99:99',execution_ms:3,
+      }],EXECUTABLE_MIGRATIONS),
+      error=>error instanceof MigrationLedgerError&&/metadata/i.test(error.message),
+    );
+  }finally{ fixture.close(); }
+});
+
+test('ledger rejects gaps, future versions, checksum drift, and owned schema additions',async()=>{
+  const fixture=temporaryDatabase();
+  try{
+    await fixture.db.execute('PRAGMA foreign_keys=ON');
+    await createMigrationLedger(fixture.db);
+    const row=(version,overrides={})=>({
+      version,
+      name:EXECUTABLE_MIGRATIONS[version-1]?.name||'future',
+      checksum:EXECUTABLE_MIGRATIONS[version-1]?.checksum||'f'.repeat(64),
+      applied_at:'2026-09-18 10:00:00',
+      execution_ms:0,
+      disposition:'applied',
+      ...overrides,
+    });
+    assert.throws(()=>validateMigrationLedger([row(2)],EXECUTABLE_MIGRATIONS),/gap/i);
+    assert.throws(()=>validateMigrationLedger([row(1),row(2),row(3)],EXECUTABLE_MIGRATIONS),/newer/i);
+    assert.throws(()=>validateMigrationLedger([row(1,{checksum:'0'.repeat(64)})],EXECUTABLE_MIGRATIONS),/immutable/i);
+    assert.throws(()=>validateMigrationLedger([
+      row(1),row(2,{disposition:'adopted'}),
+    ],EXECUTABLE_MIGRATIONS),/metadata/i);
+    assert.throws(()=>validateMigrationLedger([
+      row(1,{disposition:'adopted',execution_ms:1}),
+    ],EXECUTABLE_MIGRATIONS),/metadata/i);
+    assert.equal(validateMigrationLedger([
+      row(1,{disposition:'adopted'}),row(2),
+    ],EXECUTABLE_MIGRATIONS).currentVersion,2);
+
+    await fixture.db.execute('CREATE INDEX idx_schema_migrations_disposition ON schema_migrations(disposition)');
+    await assert.rejects(
+      assertMigrationLedgerContract(fixture.db),
+      error=>error instanceof MigrationLedgerError&&/unexpected schema objects/i.test(error.message),
+    );
+  }finally{ fixture.close(); }
+});

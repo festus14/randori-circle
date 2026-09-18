@@ -33,6 +33,8 @@ jobs:
         run: npm run check:runtime-ddl
       - name: Check JavaScript syntax
         run: npm run check:syntax
+      - name: Rehearse local database migrations
+        run: npm run test:migrations
       - name: Run API tests with enforced coverage
         run: npm run test:coverage
       - name: Install Playwright browsers

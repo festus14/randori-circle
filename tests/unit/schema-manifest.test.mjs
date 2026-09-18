@@ -35,7 +35,7 @@ test('schema manifest pins all current tables and named indexes',()=>{
   assert.equal(new Set(TABLES.map(item=>item.name)).size,TABLES.length);
   assert.equal(new Set(INDEXES.map(item=>item.name)).size,INDEXES.length);
   assert.equal(SCHEMA_MANIFEST_CHECKSUM,PINNED_SCHEMA_MANIFEST_CHECKSUM);
-  assert.deepEqual(TOLERATED_LEGACY_TABLES,['ai_monthly_usage']);
+  assert.deepEqual(TOLERATED_LEGACY_TABLES,['ai_monthly_usage','schema_migrations']);
   assert.ok(TABLES.some(item=>item.name==='circle_invitations'));
   assert.ok(TABLES.some(item=>item.name==='ai_account_monthly_usage'));
   assert.ok(!TABLES.some(item=>item.name==='ai_monthly_usage'));
