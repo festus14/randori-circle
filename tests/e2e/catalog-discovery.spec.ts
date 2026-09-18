@@ -443,11 +443,6 @@ test('keeps an off-filter hydrated workspace question versioned when editing and
     code: editedCode,
   });
 
-  await page.evaluate(() => {
-    (window as typeof window & {
-      _randori_workspace?: { deactivate?: () => void };
-    })._randori_workspace?.deactivate?.();
-  });
   await page.locator('#questionSelect').selectOption('capacity-upgrade-index');
   await expect(page.getByTestId('catalog-filtered-current')).toHaveCount(0);
   await expect(page.locator('#questionSelect option')).toHaveCount(1);
@@ -458,6 +453,46 @@ test('keeps an off-filter hydrated workspace question versioned when editing and
       _randori_questions?: { selectedIdentity?: () => { slug: string; version: number | null } };
     })._randori_questions?.selectedIdentity?.()
   ))).toEqual({ slug: 'capacity-upgrade-index', version: 1 });
+
+  const capacityFlush = await page.evaluate(async () => {
+    return (window as typeof window & {
+      _randori_workspace?: { flush?: () => Promise<boolean> };
+    })._randori_workspace?.flush?.();
+  });
+  expect(capacityFlush).toBe(true);
+  await expect.poll(() => workspaceWrites.length, { timeout: 10_000 }).toBe(2);
+  expect(workspaceWrites[1]).toMatchObject({
+    room_id: workspaceRoom,
+    type: 'code-sync',
+    payload: {
+      schema_version: 3,
+      base_revision: 2,
+      question_id: 'capacity-upgrade-index',
+      question_version: 1,
+      language: 'javascript',
+      board: { shapes: [] },
+    },
+  });
+
+  await page.evaluate(standaloneRoom => {
+    const app = window as typeof window & {
+      _randori_authorized_room?: string | null;
+      _randori_code?: { currentRoom?: string };
+      currentRoom?: string;
+      _randori_workspace?: { deactivate?: () => void; room?: string | null };
+    };
+    // Deactivation alone is intentionally recoverable: the workspace watchdog
+    // reactivates an authorized canonical current room. Move to a genuine
+    // standalone context before testing programmatic placeholder replacement.
+    app._randori_authorized_room = null;
+    if (app._randori_code) app._randori_code.currentRoom = standaloneRoom;
+    app.currentRoom = standaloneRoom;
+    app._randori_workspace?.deactivate?.();
+  }, 'catalog-standalone');
+  await expect.poll(() => page.evaluate(() => (
+    (window as typeof window & { _randori_workspace?: { room?: string | null } })
+      ._randori_workspace?.room ?? null
+  ))).toBeNull();
 
   await page.evaluate(() => {
     const questions = (window as typeof window & {
