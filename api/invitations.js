@@ -20,6 +20,7 @@ import {
   normalizeInvitationEmail,
   prepareInvitationClaim,
 } from './_circle-membership.js';
+import { localIdentityAdapterEnabled } from './_local-runtime.js';
 
 const PREPARE_RATE_LIMIT=12;
 const PREPARE_RATE_WINDOW_SECONDS=10*60;
@@ -160,7 +161,8 @@ async function handlePrepare(req,res){
   if(!isSameOrigin(req)) return res.status(403).json({error:'cross-origin mutation rejected'});
   // A failed same-origin replacement must not leave a previously prepared
   // capability live. Cross-origin requests cannot mutate invitation state.
-  res.setHeader('Set-Cookie',clearInviteClaimCookie());
+  const claimCookieOptions={secure:!localIdentityAdapterEnabled(req)};
+  res.setHeader('Set-Cookie',clearInviteClaimCookie(claimCookieOptions));
   if(!exactObject(req.body,['token'])||typeof req.body.token!=='string'){
     return res.status(400).json({error:'invitation unavailable'});
   }
@@ -175,7 +177,10 @@ async function handlePrepare(req,res){
     }
     const prepared=await prepareInvitationClaim(db,{token:req.body.token});
     if(!prepared.ok) return res.status(400).json({error:'invitation unavailable'});
-    res.setHeader('Set-Cookie',[clearInviteClaimCookie(),inviteClaimCookie(prepared.claim)]);
+    res.setHeader('Set-Cookie',[
+      clearInviteClaimCookie(claimCookieOptions),
+      inviteClaimCookie(prepared.claim,claimCookieOptions),
+    ]);
     return res.json({ok:true,expires_in_seconds:INVITE_CLAIM_TTL_SECONDS});
   }catch(error){
     captureSentryException(error,{tags:{event:'circle_invitation_prepare_fail',source:'server'}});

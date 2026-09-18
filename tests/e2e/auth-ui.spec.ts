@@ -160,6 +160,54 @@ test('a stalled signup can be cancelled without accepting a stale response and t
   expect(signupCalls).toBe(2);
 });
 
+test('a pre-auth refresh cannot clear a newer successful signup identity', async ({ page }) => {
+  const user = { id: 4, email: 'fresh@example.test', name: 'Fresh User', is_admin: true, tz: 'Europe/London' };
+  let signedUp = false;
+  let delayNextRefresh = false;
+  let delayedRefreshStarted = false;
+  let releaseDelayedRefresh: (() => void) | undefined;
+  const delayedRefreshGate = new Promise<void>(resolve => { releaseDelayedRefresh = resolve; });
+
+  await mockApi(page, {
+    '/api/auth/capabilities': localCapabilities,
+    '/api/auth/me': async () => {
+      if(delayNextRefresh){
+        delayNextRefresh=false;
+        delayedRefreshStarted=true;
+        await delayedRefreshGate;
+        return { _status: 401, ok: false, error: 'authentication required' };
+      }
+      return signedUp
+        ? { ok: true, user }
+        : { _status: 401, ok: false, error: 'authentication required' };
+    },
+    '/api/auth/signup': () => {
+      signedUp=true;
+      return { ok: true, user };
+    },
+  });
+  await resetClientState(page);
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+
+  delayNextRefresh=true;
+  const staleRefresh=page.evaluate(()=>(window as any)._randori_auth.refreshMe());
+  await expect.poll(()=>delayedRefreshStarted).toBe(true);
+
+  await page.locator('#landingSignup').click();
+  await page.locator('#authEmail').fill('fresh@example.test');
+  await page.locator('#authName').fill('Fresh User');
+  await page.locator('#authPass').fill('correct horse battery');
+  await page.locator('#authSignup').click();
+  await expect(page.getByRole('dialog', { name: 'Join Randori Circle' })).toBeHidden();
+  await expect(page.locator('#meLabel')).toContainText('Fresh User (admin)');
+
+  releaseDelayedRefresh?.();
+  await staleRefresh;
+  await expect(page.locator('#meLabel')).toContainText('Fresh User (admin)');
+  expect(await page.evaluate(()=>(window as any)._randori_auth.me?.email)).toBe('fresh@example.test');
+  expect(await page.evaluate(()=>JSON.parse(localStorage.getItem('randori-me')||'null')?.email)).toBe('fresh@example.test');
+});
+
 test('existing members recover from a wrong password and can sign out after login', async ({ page }) => {
   const loginCapabilities = {
     ok: true,
@@ -176,11 +224,23 @@ test('existing members recover from a wrong password and can sign out after logi
   let signedIn = false;
   let loginCalls = 0;
   let logoutCalls = 0;
+  let delayNextRefresh = false;
+  let delayedRefreshStarted = false;
+  let releaseDelayedRefresh: (() => void) | undefined;
+  const delayedRefreshGate = new Promise<void>(resolve => { releaseDelayedRefresh = resolve; });
   await mockApi(page, {
     '/api/auth/capabilities': loginCapabilities,
-    '/api/auth/me': () => signedIn
-      ? { ok: true, user }
-      : { _status: 401, ok: false, error: 'authentication required' },
+    '/api/auth/me': async () => {
+      if(delayNextRefresh){
+        delayNextRefresh=false;
+        delayedRefreshStarted=true;
+        await delayedRefreshGate;
+        return { ok: true, user };
+      }
+      return signedIn
+        ? { ok: true, user }
+        : { _status: 401, ok: false, error: 'authentication required' };
+    },
     '/api/auth/login': () => {
       loginCalls += 1;
       if (loginCalls === 1) return { _status: 401, ok: false, error: 'invalid credentials' };
@@ -210,11 +270,18 @@ test('existing members recover from a wrong password and can sign out after logi
   await expect(page.locator('#meLabel')).toContainText('Existing Member');
   expect(loginCalls).toBe(2);
 
+  delayNextRefresh=true;
+  const staleRefresh=page.evaluate(()=>(window as any)._randori_auth.refreshMe());
+  await expect.poll(()=>delayedRefreshStarted).toBe(true);
   await page.locator('#meLabel').click();
   await expect(page.locator('#meSignOut')).toBeVisible();
   await page.locator('#meSignOut').click();
   await expect.poll(() => logoutCalls).toBe(1);
   await expect(page.locator('#authBtn')).toBeVisible();
+  releaseDelayedRefresh?.();
+  await staleRefresh;
+  await expect(page.locator('#authBtn')).toBeVisible();
+  expect(await page.evaluate(()=>(window as any)._randori_auth.me)).toBeNull();
 });
 
 test('private beta capabilities offer Google for joining and password only for existing members', async ({ page }) => {

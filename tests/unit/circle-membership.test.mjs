@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
+import {mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {pathToFileURL} from 'node:url';
 import {afterEach,beforeEach,mock,test} from 'node:test';
 import {createClient} from '@libsql/client';
 
 let currentDb=null;
+const temporaryDirectories=[];
 
 function authPayload(req){
   const identity=req?.headers?.['x-test-auth'];
@@ -54,7 +59,9 @@ function invoke(handler,{method='GET',url='/',query={},headers={},body={}}={}){
 }
 
 async function createDatabase(){
-  const db=createClient({url:'file::memory:'});
+  const directory=mkdtempSync(join(tmpdir(),'randori-circle-membership-'));
+  temporaryDirectories.push(directory);
+  const db=createClient({url:pathToFileURL(join(directory,'membership.sqlite')).href});
   await db.batch([
     `CREATE TABLE auth_accounts (
       id INTEGER PRIMARY KEY,email TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,
@@ -95,6 +102,7 @@ beforeEach(()=>{
 afterEach(()=>{
   try{ currentDb?.close?.(); }catch{}
   currentDb=null;
+  while(temporaryDirectories.length) rmSync(temporaryDirectories.pop(),{recursive:true,force:true});
   delete process.env.CIRCLE_MEMBERSHIP_ENABLED;
 });
 
@@ -274,6 +282,123 @@ test('new Google account creation and invitation acceptance commit atomically',a
     sql:`SELECT email FROM auth_accounts WHERE google_sub='stable-google-sub'`,
   });
   assert.deepEqual(duplicateAccounts.rows.map(row=>String(row.email)),['old-address@example.test']);
+});
+
+test('new local password account creation uses the same atomic invitation and membership contract',async()=>{
+  currentDb=await createDatabase();
+  const email='local.invitee@example.test';
+  const token=membership.createInvitationToken();
+  const invitationId='d4948c6c-23e0-4b0f-9dd2-45e9367fc456';
+  await currentDb.execute({
+    sql:`INSERT INTO circle_invitations
+      (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at)
+      VALUES (?,?,?,?,?,datetime('now'),datetime('now','+7 days'))`,
+    args:[invitationId,10,membership.hashInvitationToken(token),membership.hashInvitationEmail(email),1],
+  });
+  const prepared=await membership.prepareInvitationClaim(currentDb,{token});
+  const claim=membership.readInviteClaim({headers:{cookie:
+    `${membership.INVITE_CLAIM_COOKIE}=${prepared.claim}`}});
+  const passwordHash=`$2b$10$${'A'.repeat(53)}`;
+  const accepted=await membership.createPasswordAccountFromPreparedInvitation(currentDb,{
+    claim,email,passwordHash,displayName:'Local Invitee',color:'#123456',isAdmin:false,
+  });
+  assert.equal(accepted.ok,true);
+  assert.equal(accepted.created,true);
+  const state=await currentDb.execute({
+    sql:`SELECT account.password_hash,account.google_sub,membership.role,membership.status,
+        invitation.used_by,audit.event_type
+      FROM auth_accounts account
+      JOIN circle_memberships membership ON membership.user_id=account.id AND membership.circle_id=10
+      JOIN circle_invitations invitation ON invitation.id=? AND invitation.used_by=account.id
+      JOIN circle_audit_events audit ON audit.invitation_id=invitation.id
+      WHERE account.email=?`,
+    args:[invitationId,email],
+  });
+  assert.equal(state.rows.length,1);
+  assert.equal(state.rows[0].password_hash,passwordHash);
+  assert.equal(state.rows[0].google_sub,null);
+  assert.equal(state.rows[0].role,'member');
+  assert.equal(state.rows[0].status,'active');
+  assert.equal(state.rows[0].event_type,'invitation.accepted');
+
+  const replay=await membership.createPasswordAccountFromPreparedInvitation(currentDb,{
+    claim,email,passwordHash:`$2b$10$${'B'.repeat(53)}`,displayName:'Local Invitee',color:'#123456',
+  });
+  assert.deepEqual(replay,{ok:false});
+  const accounts=await currentDb.execute({sql:`SELECT COUNT(*) AS count FROM auth_accounts WHERE email=?`,args:[email]});
+  assert.equal(Number(accounts.rows[0].count),1);
+
+  const wrongEmail=await membership.createPasswordAccountFromPreparedInvitation(currentDb,{
+    claim,email:'other@example.test',passwordHash:`$2b$10$${'C'.repeat(53)}`,
+    displayName:'Other User',color:'#654321',
+  });
+  assert.deepEqual(wrongEmail,{ok:false});
+});
+
+test('password invitation account creation rolls back on expiry and a later acceptance no-op',async()=>{
+  currentDb=await createDatabase();
+  const passwordHash=`$2b$10$${'D'.repeat(53)}`;
+  const createPrepared=async({id,email})=>{
+    const token=membership.createInvitationToken();
+    await currentDb.execute({
+      sql:`INSERT INTO circle_invitations
+        (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at)
+        VALUES (?,?,?,?,?,datetime('now'),datetime('now','+7 days'))`,
+      args:[id,10,membership.hashInvitationToken(token),membership.hashInvitationEmail(email),1],
+    });
+    const prepared=await membership.prepareInvitationClaim(currentDb,{token});
+    return membership.readInviteClaim({headers:{cookie:
+      `${membership.INVITE_CLAIM_COOKIE}=${prepared.claim}`}});
+  };
+
+  const expiredId='e4948c6c-23e0-4b0f-9dd2-45e9367fc456';
+  const expiredEmail='expired.local@example.test';
+  const expiredClaim=await createPrepared({id:expiredId,email:expiredEmail});
+  await currentDb.execute({
+    sql:`UPDATE circle_invitations SET expires_at=datetime('now','-1 second') WHERE id=?`,args:[expiredId],
+  });
+  const expired=await membership.createPasswordAccountFromPreparedInvitation(currentDb,{
+    claim:expiredClaim,email:expiredEmail,passwordHash,displayName:'Expired Local',color:'#123456',
+  });
+  assert.deepEqual(expired,{ok:false});
+
+  const racedId='f4948c6c-23e0-4b0f-9dd2-45e9367fc456';
+  const racedEmail='raced.local@example.test';
+  const racedClaim=await createPrepared({id:racedId,email:racedEmail});
+  const base=currentDb;
+  let statementNumber=0;
+  const failingDb={
+    async transaction(mode){
+      const transaction=await base.transaction(mode);
+      return {
+        async execute(statement){
+          statementNumber+=1;
+          if(statementNumber===2) return {rows:[],rowsAffected:0};
+          return transaction.execute(statement);
+        },
+        commit:transaction.commit.bind(transaction),
+        rollback:transaction.rollback.bind(transaction),
+      };
+    },
+  };
+  const raced=await membership.createPasswordAccountFromPreparedInvitation(failingDb,{
+    claim:racedClaim,email:racedEmail,passwordHash,displayName:'Raced Local',color:'#654321',
+  });
+  assert.deepEqual(raced,{ok:false});
+
+  for(const [invitationId,email] of [[expiredId,expiredEmail],[racedId,racedEmail]]){
+    const account=await currentDb.execute({sql:`SELECT id FROM auth_accounts WHERE email=?`,args:[email]});
+    assert.equal(account.rows.length,0);
+    const invitation=await currentDb.execute({
+      sql:`SELECT used_at,used_by FROM circle_invitations WHERE id=?`,args:[invitationId],
+    });
+    assert.equal(invitation.rows[0].used_at,null);
+    assert.equal(invitation.rows[0].used_by,null);
+    const audit=await currentDb.execute({
+      sql:`SELECT id FROM circle_audit_events WHERE invitation_id=?`,args:[invitationId],
+    });
+    assert.equal(audit.rows.length,0);
+  }
 });
 
 test('controlled initialization backfills only non-demo auth accounts and audits once',async()=>{

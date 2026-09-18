@@ -7,6 +7,59 @@ export const JWT_AUDIENCE = 'randori-web';
 
 let localDevelopmentClient=null;
 let localDevelopmentClientUrl='';
+let localDevelopmentSqlObserver=null;
+
+function localStatementSql(statement){
+  if(typeof statement==='string') return statement;
+  return typeof statement?.sql==='string'?statement.sql:'';
+}
+
+function observeLocalStatement(statement){
+  const sql=localStatementSql(statement);
+  if(!sql||typeof localDevelopmentSqlObserver!=='function') return;
+  try{ localDevelopmentSqlObserver(sql); }catch{}
+}
+
+function observedLocalDatabase(target,{client=false}={}){
+  return new Proxy(target,{
+    get(database,property){
+      if(property==='execute') return async statement=>{
+        observeLocalStatement(statement);
+        return database.execute(statement);
+      };
+      if(property==='executeMultiple') return async sql=>{
+        observeLocalStatement(sql);
+        return database.executeMultiple(sql);
+      };
+      if(property==='batch') return async(statements,...args)=>{
+        for(const statement of statements||[]) observeLocalStatement(statement);
+        return database.batch(statements,...args);
+      };
+      if(client&&property==='transaction') return async(...args)=>{
+        const transaction=await database.transaction(...args);
+        return observedLocalDatabase(transaction);
+      };
+      const value=Reflect.get(database,property,database);
+      return typeof value==='function'?value.bind(database):value;
+    },
+  });
+}
+
+export function installLocalDevelopmentSqlObserver(observer){
+  if(observer!=null&&typeof observer!=='function') throw new TypeError('Local SQL observer must be a function');
+  if(observer&&(process.env.NODE_ENV!=='development'||process.env.RANDORI_LOCAL_RUNTIME!=='true')){
+    throw new Error('Local SQL observation is development-only');
+  }
+  const installed=observer||null;
+  const previous=localDevelopmentSqlObserver;
+  localDevelopmentSqlObserver=installed;
+  let restored=false;
+  return ()=>{
+    if(restored) return;
+    restored=true;
+    if(localDevelopmentSqlObserver===installed) localDevelopmentSqlObserver=previous;
+  };
+}
 
 // ---- Sentry server init (optional, DSN via env) ----
 import * as Sentry from '@sentry/node';
@@ -85,7 +138,7 @@ export function getClient() {
       throw new Error('Local runtime database changed without shutdown');
     }
     if(!localDevelopmentClient){
-      localDevelopmentClient=createClient({url});
+      localDevelopmentClient=observedLocalDatabase(createClient({url}),{client:true});
       localDevelopmentClientUrl=url;
     }
     return localDevelopmentClient;

@@ -3,6 +3,7 @@ import { getClient, getCronSecret, getAdminEmails, isoWeekLabel, deterministicCo
 import { buildFairPairing, canonicalRoomId, escapeHtml } from './_pairing.js';
 import { pairingCronIsDue, resolvePairingCycle } from './_pairing-cycle.js';
 import { getPairingPublication, publishPairingCycle } from './_pairing-publication.js';
+import { localIdentityAdapterEnabled } from './_local-runtime.js';
 
 const MAX_EMAIL_ATTEMPTS=5;
 const PAIRING_TRANSACTION_ATTEMPTS=4;
@@ -46,7 +47,11 @@ function productionAccountQuery({availableOnly=false,includePhone=false,countOnl
 async function logServerOps(level, event, message, meta, req){
   try{
     const db = getClient();
-    try{ await db.execute("CREATE TABLE IF NOT EXISTS app_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, level TEXT, source TEXT, event TEXT, message TEXT, meta_json TEXT, user_id INTEGER, route TEXT, ua TEXT, ip TEXT, created_at TEXT DEFAULT (datetime('now')))"); }catch{}
+    if(localIdentityAdapterEnabled(req)){
+      await db.execute(`SELECT id,level,source,event,message,meta_json,user_id,route,ua,ip,created_at FROM app_logs LIMIT 0`);
+    }else{
+      try{ await db.execute("CREATE TABLE IF NOT EXISTS app_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, level TEXT, source TEXT, event TEXT, message TEXT, meta_json TEXT, user_id INTEGER, route TEXT, ua TEXT, ip TEXT, created_at TEXT DEFAULT (datetime('now')))"); }catch{}
+    }
     let metaStr=null; try{ metaStr = meta ? JSON.stringify(meta).slice(0,8000) : null; }catch{ metaStr=String(meta).slice(0,2000); }
     const lvl=String(level||"info").toLowerCase();
     const ev=String(event).slice(0,80);
@@ -58,16 +63,24 @@ async function logServerOps(level, event, message, meta, req){
   }catch(e){ try{ console.warn("[logServerOps fail]", e && e.message); }catch{} }
 }
 
-async function ensureNotifPrefs(db){
+async function ensureNotifPrefs(db,req){
+  if(localIdentityAdapterEnabled(req)){
+    await db.execute(`SELECT user_id,email_enabled,sms_enabled,phone,email,updated_at FROM user_notification_prefs LIMIT 0`);
+    return;
+  }
   try{ await db.execute("CREATE TABLE IF NOT EXISTS user_notification_prefs (user_id INTEGER PRIMARY KEY, email_enabled INTEGER DEFAULT 1, sms_enabled INTEGER DEFAULT 0, phone TEXT, email TEXT, updated_at TEXT DEFAULT (datetime('now')))"); }catch{}
 }
 
 async function handleNotificationPrefs(req,res){
+  if(req.method!=="GET"&&req.method!=="POST"&&req.method!=="PUT"){
+    return res.status(405).json({error:"GET or POST/PUT"});
+  }
+  const payload=verifyRequestAuth(req);
+  if(!payload) return res.status(401).json({error:"authentication required"});
   const db=getClient();
-  try{ await ensureNotifPrefs(db); }catch{}
+  try{ await ensureNotifPrefs(db,req); }
+  catch{ return res.status(503).json({error:"notification preferences unavailable"}); }
   if(req.method==="GET"){
-    const payload=verifyRequestAuth(req);
-    if(!payload) return res.status(401).json({error:"authentication required"});
     const uid=payload.id||payload.uid;
     try{
       const rs=await db.execute({sql:"SELECT user_id,email_enabled,sms_enabled,phone,email,updated_at FROM user_notification_prefs WHERE user_id=?", args:[uid]});
@@ -76,8 +89,6 @@ async function handleNotificationPrefs(req,res){
     }catch(e){ return res.status(500).json({error:"fetch failed"}); }
   }
   if(req.method==="POST" || req.method==="PUT"){
-    const payload=verifyRequestAuth(req);
-    if(!payload) return res.status(401).json({error:"authentication required"});
     const uid=payload.id||payload.uid;
     const body=req.body||{};
     const email_enabled = body.email_enabled!=null ? (body.email_enabled?1:0) : 1;
@@ -93,7 +104,6 @@ async function handleNotificationPrefs(req,res){
     try{ await logServerOps("info","notif_prefs_updated","prefs uid "+uid+" email="+email_enabled+" sms="+sms_enabled, {uid,email_enabled,sms_enabled}, req); }catch{}
     return res.json({ok:true, prefs:{user_id:uid,email_enabled:!!email_enabled,sms_enabled:!!sms_enabled,phone,email}});
   }
-  return res.status(405).json({error:"GET or POST/PUT"});
 }
 
 
@@ -352,6 +362,28 @@ async function deliverPendingPairingEmails(db,weekId,baseUrl,req){
     return {summary:'email outbox unavailable',sent:0,failed:0,exhausted,pending:0,error:String(e.message||e).slice(0,180)};
   }
   if(!pending.rows.length) return {summary:exhausted?`${exhausted} email reminder(s) exhausted after ${MAX_EMAIL_ATTEMPTS} attempts`:'no pending email reminders',sent:0,failed:0,exhausted,pending:0};
+  if(localIdentityAdapterEnabled(req)){
+    const weekRs=await db.execute({sql:`SELECT week_label FROM pairing_weeks WHERE id=?`,args:[weekId]});
+    const weekLabel=weekRs.rows[0]?.week_label;
+    if(!weekLabel) return {summary:'local mail capture unavailable — pairing week missing',sent:0,failed:0,exhausted,pending:pending.rows.length,captured:[]};
+    const captured=[];
+    let failed=0,suppressed=0;
+    for(const item of pending.rows){
+      try{
+        const pref=await db.execute({sql:`SELECT email_enabled FROM user_notification_prefs WHERE user_id=?`,args:[item.user_id]});
+        if(pref.rows[0]?.email_enabled===0){ suppressed+=1; continue; }
+        const content=await renderOutboxEmail(db,item,weekLabel,baseUrl);
+        const links=[...content.html.matchAll(/href="([^"]+)"/gu)].map(match=>match[1]).slice(0,4);
+        captured.push({recipient_email:String(item.recipient_email),kind:String(item.kind),subject:content.subject,links});
+      }catch{
+        failed+=1;
+      }
+    }
+    return {
+      summary:`captured ${captured.length} local email reminder(s), failed ${failed}; no external delivery`,
+      sent:0,failed,exhausted,pending:pending.rows.length,suppressed,captured,
+    };
+  }
   if(!process.env.RESEND_API_KEY||!process.env.RESEND_FROM) return {summary:`${pending.rows.length} email reminder(s) pending — email disabled until RESEND_API_KEY + RESEND_FROM are set`,sent:0,failed:0,exhausted,pending:pending.rows.length};
 
   const resendMod=await import('resend').catch(()=>null);
@@ -472,7 +504,7 @@ async function handleReshuffle(req,res){
 
 function safeEmailDelivery(value){
   const delivery=value&&typeof value==='object'?value:{};
-  return {
+  const result={
     summary:String(delivery.summary||'email delivery unavailable').slice(0,180),
     sent:Number(delivery.sent||0),
     failed:Number(delivery.failed||0),
@@ -480,6 +512,15 @@ function safeEmailDelivery(value){
     pending:Number(delivery.pending||0),
     suppressed:Number(delivery.suppressed||0),
   };
+  if(Array.isArray(delivery.captured)){
+    result.captured=delivery.captured.slice(0,100).map(item=>({
+      recipient_email:String(item?.recipient_email||'').slice(0,254),
+      kind:String(item?.kind||'').slice(0,32),
+      subject:String(item?.subject||'').slice(0,200),
+      links:Array.isArray(item?.links)?item.links.slice(0,4).map(link=>String(link).slice(0,2048)):[],
+    }));
+  }
+  return result;
 }
 
 async function pairingCandidates(db,{localRuntime}){

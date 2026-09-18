@@ -20,6 +20,7 @@ import { randomBytes } from 'node:crypto';
 import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createClient } from '@libsql/client';
+import bcrypt from 'bcryptjs';
 import {
   applyMigrations,
   inspectMigrationState,
@@ -39,15 +40,29 @@ const LOCAL_CONTENT_SECURITY_POLICY=[
   "base-uri 'self'",
   "object-src 'none'",
   "frame-ancestors 'none'",
-  "form-action 'self' https://accounts.google.com",
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net",
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net",
-  "font-src 'self' data: https://fonts.gstatic.com https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net",
+  "form-action 'self'",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+  "style-src 'self' 'unsafe-inline'",
+  "font-src 'self' data:",
   "img-src 'self' data: blob:",
   "media-src 'self' blob:",
   "worker-src 'self' blob:",
   "connect-src 'self'",
 ].join('; ');
+const LOCAL_RUNTIME_MARKER='<meta name="randori-runtime" content="local"><script>window.__RANDORI_LOCAL_RUNTIME__=true;</script>';
+const LOCAL_EXTERNAL_ASSET_TAGS=Object.freeze([
+  '<link rel="preconnect" href="https://fonts.googleapis.com">',
+  '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>',
+  '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">',
+  '<script src="https://js-de.sentry-cdn.com/b4aa012a94edbcd36c8c92ef1aaeddfa.min.js" crossorigin="anonymous"></script>',
+  '<link rel="preconnect" href="https://cdnjs.cloudflare.com">',
+  '<link rel="preconnect" href="https://cdn.jsdelivr.net">',
+  '<script src="https://unpkg.com/prettier@3.3.3/standalone.js" onerror="console.warn(\'prettier standalone failed\')"></script>',
+  '<script src="https://unpkg.com/prettier@3.3.3/plugins/babel.js" onerror="console.warn(\'prettier babel failed\')"></script>',
+  '<script src="https://unpkg.com/prettier@3.3.3/plugins/estree.js" onerror="console.warn(\'prettier estree failed\')"></script>',
+  '<script src="https://unpkg.com/prettier@3.3.3/plugins/typescript.js" onerror="console.warn(\'prettier ts failed\')"></script>',
+  '<script id="monacoLoader" src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js" onerror="window.__monacoLoaderFailed=1"></script>',
+]);
 const MIME_TYPES=Object.freeze({
   '.css':'text/css; charset=utf-8',
   '.gif':'image/gif',
@@ -65,6 +80,10 @@ const MIME_TYPES=Object.freeze({
   '.woff2':'font/woff2',
 });
 const BROWSER_ASSET_DIRECTORIES=Object.freeze(['assets','public']);
+export const LOCAL_OWNER_EMAIL='owner@randori.test';
+export const LOCAL_OWNER_PASSWORD='randori-local-owner';
+export const LOCAL_OWNER_NAME='Local Circle Owner';
+const LOCAL_OWNER_COLOR='#c8f6a0';
 
 export class LocalServerError extends Error {
   constructor(code,message,{cause}={}){
@@ -391,6 +410,91 @@ export async function prepareLocalDatabase(config,{
   }
 }
 
+export async function seedLocalOnboarding(config,{
+  createDatabaseClient=createClient,
+  hashPassword=(value,cost)=>bcrypt.hash(value,cost),
+  comparePassword=(value,hash)=>bcrypt.compare(value,hash),
+}={}){
+  if(!config?.databaseUrl||!config?.databasePath||!config?.localDirectory
+    ||dirname(config.databasePath)!==config.localDirectory
+    ||!isWithin(config.localDirectory,config.databasePath)){
+    refuse('LOCAL_DATABASE_REFUSED','A resolved isolated local database is required for development seeding.');
+  }
+  let parsed;
+  try{ parsed=new URL(config.databaseUrl); }
+  catch(error){ refuse('LOCAL_DATABASE_REFUSED','The local seed database URL is invalid.',error); }
+  if(parsed.protocol!=='file:'||parsed.host||parsed.username||parsed.password||parsed.search||parsed.hash
+    ||resolve(fileURLToPath(parsed))!==config.databasePath){
+    refuse('LOCAL_DATABASE_REFUSED','Development seed data may be written only to the configured local file database.');
+  }
+
+  const client=createDatabaseClient({url:config.databaseUrl});
+  try{
+    await prepareMigrationConnection(client);
+    const state=await inspectMigrationState(client);
+    if(state.classification!=='managed'||!state.ready||state.currentVersion!==state.latestVersion){
+      refuse('LOCAL_DATABASE_NOT_READY','The local database must be fully migrated before development seeding.');
+    }
+    const existing=await client.execute({
+      sql:`SELECT id,password_hash FROM auth_accounts WHERE email=? LIMIT 1`,
+      args:[LOCAL_OWNER_EMAIL],
+    });
+    let ownerId;
+    let created=false;
+    if(existing.rows?.length){
+      ownerId=Number(existing.rows[0].id);
+      const expectedPassword=await comparePassword(LOCAL_OWNER_PASSWORD,String(existing.rows[0].password_hash||''));
+      if(!Number.isSafeInteger(ownerId)||ownerId<1||!expectedPassword){
+        refuse('LOCAL_SEED_CONFLICT','The reserved local owner identity conflicts with existing data; use the scoped reset command.');
+      }
+      await client.execute({
+        sql:`UPDATE auth_accounts SET is_admin=1,is_demo=0 WHERE id=?`,
+        args:[ownerId],
+      });
+    }else{
+      const passwordHash=await hashPassword(LOCAL_OWNER_PASSWORD,10);
+      const inserted=await client.execute({
+        sql:`INSERT INTO auth_accounts
+          (email,password_hash,display_name,color,is_available,is_admin,is_demo,bio,tz,interview_focus)
+          VALUES (?,?,?,?,1,1,0,'Local development owner','Europe/London','both')
+          RETURNING id`,
+        args:[LOCAL_OWNER_EMAIL,passwordHash,LOCAL_OWNER_NAME,LOCAL_OWNER_COLOR],
+      });
+      ownerId=Number(inserted.rows?.[0]?.id);
+      created=true;
+    }
+    if(!Number.isSafeInteger(ownerId)||ownerId<1){
+      refuse('LOCAL_DATABASE_NOT_READY','The deterministic local owner could not be prepared.');
+    }
+    const {initializePrimaryCircle}=await import('../api/_circle-membership.js');
+    const {circleId}=await initializePrimaryCircle(client,{ownerUserId:ownerId,ownerEmails:[LOCAL_OWNER_EMAIL]});
+    const verified=await client.execute({
+      sql:`SELECT account.id,membership.role,membership.status,rollout.registrations_closed
+        FROM auth_accounts account
+        JOIN circle_memberships membership ON membership.user_id=account.id
+        JOIN circles circle ON circle.id=membership.circle_id
+        JOIN circle_membership_rollout rollout ON rollout.id=1
+        WHERE account.id=? AND account.email=? AND account.is_admin=1 AND account.is_demo=0
+          AND membership.circle_id=? AND membership.role='owner' AND membership.status='active'
+          AND circle.is_primary=1 AND circle.archived_at IS NULL
+        LIMIT 1`,
+      args:[ownerId,LOCAL_OWNER_EMAIL,circleId],
+    });
+    if(verified.rows?.length!==1||Number(verified.rows[0].registrations_closed)!==1){
+      refuse('LOCAL_DATABASE_NOT_READY','The local owner and private circle seed could not be verified.');
+    }
+    return Object.freeze({created,ownerId,circleId,email:LOCAL_OWNER_EMAIL});
+  }catch(error){
+    if(error instanceof LocalServerError) throw error;
+    throw new LocalServerError('LOCAL_DATABASE_NOT_READY','The local onboarding seed could not be prepared.',{cause:error});
+  }finally{
+    try{ await client.close(); }
+    catch(error){
+      throw new LocalServerError('LOCAL_DATABASE_NOT_READY','The local seed database did not close safely.',{cause:error});
+    }
+  }
+}
+
 function localResetFile(path,localDirectory){
   if(!isWithin(localDirectory,path)){
     refuse('LOCAL_DATABASE_REFUSED','Local reset escaped the configured project data directory.');
@@ -605,6 +709,7 @@ async function loadDefaultRuntime(){
       ops:ops.default,ai:ai.default,video:video.default,
     }),
     closeDatabase:database.closeLocalDevelopmentClient,
+    installSqlObserver:database.installLocalDevelopmentSqlObserver,
   });
 }
 
@@ -703,6 +808,16 @@ function requestIsLoopback(request){
   return (hostname==='localhost'||LOOPBACK_HOSTS.has(hostname))&&isLoopbackAddress(request.socket?.remoteAddress);
 }
 
+function requestUsesAdvertisedHost(request,advertisedUrl){
+  try{
+    const requestHost=String(request.headers.host||'').trim().toLowerCase();
+    const advertisedHost=new URL(advertisedUrl).host.toLowerCase();
+    return requestHost!==''&&requestHost===advertisedHost;
+  }catch{
+    return false;
+  }
+}
+
 function unsafeEncodedPath(pathname){
   const raw=String(pathname||'');
   if(/%25|%00|%2f|%5c/i.test(raw)) return true;
@@ -763,6 +878,30 @@ function serveFile(response,file,contentType,allowedRoot){
   }
 }
 
+function serveLocalIndex(response,file,allowedRoot){
+  try{
+    const metadata=lstatSync(file);
+    if(metadata.isSymbolicLink()||!metadata.isFile()||realpathSync(file)!==file
+      ||!isWithin(allowedRoot,file)) throw new Error('unsafe file');
+    let document=readFileSync(file,'utf8');
+    for(const tag of LOCAL_EXTERNAL_ASSET_TAGS) document=document.replaceAll(tag,'');
+    document=document.replace('<head>',`<head>\n${LOCAL_RUNTIME_MARKER}`);
+    response.writeHead(200,{
+      'content-type':'text/html; charset=utf-8',
+      'cache-control':'no-store',
+      'x-content-type-options':'nosniff',
+      'x-frame-options':'DENY',
+      'referrer-policy':'no-referrer',
+      'content-security-policy':LOCAL_CONTENT_SECURITY_POLICY,
+      'permissions-policy':'camera=(self), microphone=(self), geolocation=()',
+    });
+    response.end(response.req?.method==='HEAD'?'':document);
+  }catch{
+    response.writeHead(404,{'content-type':'text/plain; charset=utf-8','x-content-type-options':'nosniff'});
+    response.end('Not found');
+  }
+}
+
 function safeLogger(logger){
   if(typeof logger==='function') return {log:logger,error:logger};
   return {
@@ -781,11 +920,12 @@ function installRuntimeEnvironment(config,url,secret,envTarget=process.env){
     RUN_ATTESTATION_SECRET:'',
     RUN_ATTESTATION_PREVIOUS_SECRETS:'',
     APP_URL:url,
-    ALLOW_OPEN_SIGNUP:'true',
-    CIRCLE_MEMBERSHIP_ENABLED:'false',
+    ALLOW_OPEN_SIGNUP:'false',
+    CIRCLE_MEMBERSHIP_ENABLED:'true',
     AUTH_SCHEMA_BOOTSTRAP_ENABLED:'false',
     RANDORI_LOCAL_RUNTIME:'true',
-    RANDORI_LOCAL_FIRST_USER_ADMIN:'true',
+    RANDORI_LOCAL_IDENTITY:'true',
+    RANDORI_LOCAL_FIRST_USER_ADMIN:'false',
     LEETCODE_INGESTION_AUTHORIZED:'false',
     GOOGLE_CLIENT_ID:'',
     GOOGLE_CLIENT_SECRET:'',
@@ -825,6 +965,7 @@ function installRuntimeEnvironment(config,url,secret,envTarget=process.env){
 export async function createLocalDevelopmentServer({
   config,
   handlers,
+  sqlObserver,
   logger=console,
   envTarget=process.env,
 }={}){
@@ -832,6 +973,7 @@ export async function createLocalDevelopmentServer({
   const log=safeLogger(logger);
   const runtimeLock=acquireLocalRuntimeLock(config);
   let database;
+  let onboarding;
   let secret;
   try{
     database=await prepareLocalDatabase(config);
@@ -842,6 +984,7 @@ export async function createLocalDevelopmentServer({
   }
   let runtimeHandlers=null;
   let closeRequestDatabase=async()=>{};
+  let restoreSqlObserver=()=>{};
   let restoreEnvironment=()=>{};
   let started=false;
   let closed=false;
@@ -849,7 +992,7 @@ export async function createLocalDevelopmentServer({
   const sockets=new Set();
 
   const handleRequest=async(request,response)=>{
-    if(!requestIsLoopback(request)){
+    if(!requestIsLoopback(request)||!requestUsesAdvertisedHost(request,url)){
       sendJson(response,403,{ok:false,error:'LOCAL_HOST_REFUSED'});
       return;
     }
@@ -893,7 +1036,7 @@ export async function createLocalDevelopmentServer({
       return;
     }
     if(navigationPath(parsedUrl.pathname)){
-      serveFile(response,resolve(config.rootDir,'index.html'),'text/html; charset=utf-8',config.rootDir);
+      serveLocalIndex(response,resolve(config.rootDir,'index.html'),config.rootDir);
       return;
     }
     const file=assetPath(parsedUrl.pathname,config.rootDir);
@@ -927,8 +1070,10 @@ export async function createLocalDevelopmentServer({
       const displayHost=config.host==='::1'?'[::1]':config.host;
       url=`http://${displayHost}:${address.port}`;
       restoreEnvironment=installRuntimeEnvironment(config,url,secret,envTarget);
+      onboarding=await seedLocalOnboarding(config);
       const defaultRuntime=await loadDefaultRuntime();
       closeRequestDatabase=defaultRuntime.closeDatabase;
+      restoreSqlObserver=defaultRuntime.installSqlObserver(sqlObserver);
       runtimeHandlers={...defaultRuntime.handlers,...(handlers||{})};
       for(const name of ['auth','data','invitations','ops','ai','video']){
         if(typeof runtimeHandlers[name]!=='function'){
@@ -944,6 +1089,8 @@ export async function createLocalDevelopmentServer({
       catch(closeError){
         failure=new LocalServerError('LOCAL_INTERNAL_ERROR','The local API database did not close safely.',{cause:closeError});
       }finally{
+        restoreSqlObserver();
+        restoreSqlObserver=()=>{};
         restoreEnvironment();
         restoreEnvironment=()=>{};
         runtimeLock.release();
@@ -957,6 +1104,7 @@ export async function createLocalDevelopmentServer({
       event:'local-server-ready',
       url,
       database:{kind:'local-file',created:database.created,currentVersion:database.currentVersion},
+      onboarding:{mode:'invite-bound-local-identity',ownerEmail:onboarding.email,ownerPassword:LOCAL_OWNER_PASSWORD},
     }));
     return lifecycle;
   };
@@ -982,6 +1130,7 @@ export async function createLocalDevelopmentServer({
     }finally{
       try{ await closeRequestDatabase(); }
       finally{
+        restoreSqlObserver();
         restoreEnvironment();
         runtimeLock.release();
       }
@@ -999,10 +1148,11 @@ export async function startLocalDevelopmentServer({
   argv=process.argv.slice(2),
   logger=console,
   handlers,
+  sqlObserver,
   envTarget=process.env,
 }={}){
   const resolvedConfig=config||resolveLocalServerConfig({env,rootDir,argv});
-  const lifecycle=await createLocalDevelopmentServer({config:resolvedConfig,logger,handlers,envTarget});
+  const lifecycle=await createLocalDevelopmentServer({config:resolvedConfig,logger,handlers,sqlObserver,envTarget});
   await lifecycle.start();
   return lifecycle;
 }

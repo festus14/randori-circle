@@ -10,15 +10,21 @@ import {
   circleMembershipEnabled,
   clearInviteClaimCookie,
   createGoogleAccountFromPreparedInvitation,
+  createPasswordAccountFromPreparedInvitation,
+  ensureCircleMembershipReadiness,
   hasActivePrimaryCircleMembership,
   readInviteClaim,
   validatePreparedInvitation,
 } from './_circle-membership.js';
+import { localIdentityAdapterEnabled, localRuntimeRequest } from './_local-runtime.js';
 
 const SESSION_COOKIE = 'randori_session';
 const OAUTH_STATE_COOKIE = 'randori_oauth_state';
 const OAUTH_VERIFIER_COOKIE = 'randori_oauth_verifier';
 const OAUTH_RETURN_COOKIE = 'randori_oauth_return';
+const PASSWORD_MIN_BYTES = 10;
+const PASSWORD_MAX_BYTES = 72;
+const DUMMY_LOGIN_PASSWORD_HASH = '$2a$10$PBpMY4NLVseWPP6G9VtPveLltge4ovpON5/cJwqL8JU.khDEvJ9De';
 const JWT_OPTIONS = Object.freeze({
   algorithm: 'HS256',
   issuer: JWT_ISSUER,
@@ -80,6 +86,12 @@ function signSession(user){
   return jwt.sign(user, getJwtSecret(), JWT_OPTIONS);
 }
 
+export function validSignupPassword(value){
+  if(typeof value!=='string') return false;
+  const bytes=Buffer.byteLength(value,'utf8');
+  return bytes>=PASSWORD_MIN_BYTES&&bytes<=PASSWORD_MAX_BYTES;
+}
+
 async function fetchWithTimeout(url, options={}, timeoutMs=10000){
   const controller=new AbortController();
   const timer=setTimeout(()=>controller.abort(),timeoutMs);
@@ -92,7 +104,6 @@ async function enforceAuthRateLimit(db, req, action, email){
   const ip=forwarded || String(req.socket?.remoteAddress||'unknown');
   const windowSeconds=15*60;
   const bucket=Math.floor(Date.now()/1000/windowSeconds);
-  await db.execute(`CREATE TABLE IF NOT EXISTS auth_rate_limits (key TEXT PRIMARY KEY, attempts INTEGER NOT NULL DEFAULT 0, expires_at INTEGER NOT NULL)`);
   const limits=action==='signup'
     ? [[`ip:${ip}`,5],[`email:${email}`,5]]
     : [[`ip:${ip}`,20],[`email:${email}`,10]];
@@ -121,22 +132,6 @@ function registrationAllowed(email){
   return process.env.NODE_ENV!=='production' && allowlist.length===0;
 }
 
-function isLoopbackHost(value){
-  const raw=String(value||'').split(',')[0].trim();
-  if(!raw) return false;
-  try{
-    const hostname=new URL(`http://${raw}`).hostname.replace(/^\[|\]$/g,'').toLowerCase();
-    return hostname==='localhost'||hostname==='127.0.0.1'||hostname==='::1';
-  }catch{
-    return false;
-  }
-}
-
-function isLoopbackAddress(value){
-  const address=String(value||'').trim().toLowerCase();
-  return address==='127.0.0.1'||address==='::1'||address==='::ffff:127.0.0.1';
-}
-
 /**
  * Password registration is deliberately a local-development capability, not
  * a general non-production escape hatch. Keep this predicate shared by the
@@ -144,41 +139,27 @@ function isLoopbackAddress(value){
  * authority than the server will enforce.
  */
 export function localPasswordSignupEnabled(req){
-  if(process.env.NODE_ENV!=='development'
-    ||process.env.RANDORI_LOCAL_RUNTIME!=='true'
-    ||process.env.ALLOW_OPEN_SIGNUP!=='true'
-    ||process.env.CIRCLE_MEMBERSHIP_ENABLED==='true'
-    ||process.env.VERCEL||process.env.VERCEL_ENV||process.env.VERCEL_URL
-    ||String(process.env.TURSO_AUTH_TOKEN||'').trim()) return false;
-  let databaseUrl;
-  try{ databaseUrl=new URL(String(process.env.TURSO_DATABASE_URL||'')); }
-  catch{ return false; }
-  if(databaseUrl.protocol!=='file:'||databaseUrl.host||databaseUrl.username||databaseUrl.password
-    ||databaseUrl.search||databaseUrl.hash) return false;
-  let appUrl,requestUrl;
-  try{
-    appUrl=new URL(String(process.env.APP_URL||''));
-    requestUrl=new URL(`http://${String(req?.headers?.host||'')}`);
-  }catch{ return false; }
-  if(appUrl.protocol!=='http:'||appUrl.username||appUrl.password||appUrl.search||appUrl.hash
-    ||(appUrl.pathname!=='/'&&appUrl.pathname!=='')||!isLoopbackHost(appUrl.host)
-    ||appUrl.host.toLowerCase()!==requestUrl.host.toLowerCase()) return false;
-  return isLoopbackHost(req?.headers?.host)&&isLoopbackAddress(req?.socket?.remoteAddress);
+  if(localIdentityAdapterEnabled(req)) return true;
+  return localRuntimeRequest(req)
+    &&process.env.ALLOW_OPEN_SIGNUP==='true'
+    &&process.env.CIRCLE_MEMBERSHIP_ENABLED!=='true';
 }
 
 function handleCapabilities(req,res){
   res.setHeader('Cache-Control','no-store');
   if(req.method!=='GET') return res.status(405).json({error:'GET only'});
   const passwordSignup=localPasswordSignupEnabled(req);
+  const localIdentity=localIdentityAdapterEnabled(req);
   return res.json({
     ok:true,
     capabilities:{
       passwordLogin:true,
       passwordSignup,
+      localIdentity,
       googleOAuth:Boolean(String(process.env.GOOGLE_CLIENT_ID||'').trim()
         &&String(process.env.GOOGLE_CLIENT_SECRET||'').trim()),
     },
-    registrationMode:passwordSignup?'local_open':'private_beta',
+    registrationMode:localIdentity?'local_invite':(passwordSignup?'local_open':'private_beta'),
   });
 }
 
@@ -237,12 +218,52 @@ async function handleSignup(req,res){
   }
   const { email, password, name } = req.body || {};
   if (!email || !password || !name) return res.status(400).json({ error: 'email,password,name required' });
-  if (String(password).length < 10 || String(password).length > 128) return res.status(400).json({ error: 'password must be 10-128 chars' });
+  if(!validSignupPassword(password)) return res.status(400).json({error:'password must be 10-72 UTF-8 bytes'});
   const e = String(email).trim().toLowerCase();
   if (e.length>254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) return res.status(400).json({ error: 'invalid email' });
   const display = String(name).trim().slice(0,32);
   if(display.length<2) return res.status(400).json({ error:'display name must be 2-32 chars' });
-  if(circleMembershipEnabled()) return res.status(403).json({error:'private beta signup requires a Google invitation'});
+  const membershipRequired=circleMembershipEnabled();
+  if(membershipRequired){
+    if(!localIdentityAdapterEnabled(req)){
+      return res.status(403).json({error:'private beta signup requires a Google invitation'});
+    }
+    const inviteClaim=readInviteClaim(req);
+    if(!inviteClaim) return res.status(403).json({error:'a valid local invitation is required'});
+    const db=getClient();
+    try{ await ensureCircleMembershipReadiness(db); }
+    catch{ return res.status(503).json({error:'signup temporarily unavailable'}); }
+    try{ await enforceAuthRateLimit(db,req,'signup',e); }
+    catch(err){
+      if(err?.statusCode===429) return res.status(429).json({error:'too many signup attempts; try again later'});
+      return res.status(503).json({error:'signup temporarily unavailable'});
+    }
+    const color=deterministicColor(display.toLowerCase());
+    const hash=await bcrypt.hash(password,10);
+    let preparedInvitation;
+    try{ preparedInvitation=await validatePreparedInvitation(db,{claim:inviteClaim,email:e}); }
+    catch{ return res.status(503).json({error:'signup temporarily unavailable'}); }
+    if(!preparedInvitation?.ok||preparedInvitation.used_by!==null){
+      return res.status(403).json({error:'invitation unavailable or does not match this email'});
+    }
+    let registered;
+    try{
+      registered=await createPasswordAccountFromPreparedInvitation(db,{
+        claim:inviteClaim,email:e,passwordHash:hash,displayName:display,color,isAdmin:false,
+      });
+    }catch{
+      return res.status(503).json({error:'signup temporarily unavailable'});
+    }
+    if(!registered?.ok){
+      return res.status(403).json({error:'invitation unavailable or does not match this email'});
+    }
+    const token=signSession({id:registered.user_id,email:e,name:display,color,is_admin:false});
+    appendCookies(res,[sessionCookie(req,token),clearInviteClaimCookie({secure:false})]);
+    return res.json({
+      ok:true,
+      user:{id:registered.user_id,email:e,name:display,color,is_admin:false,isAdmin:false},
+    });
+  }
   if(!registrationAllowed(e)) return res.status(403).json({error:'private beta signup is invite-only'});
   const db = getClient();
   let registrationState;
@@ -296,19 +317,29 @@ async function handleLogin(req,res){
   if (!email || !password) return res.status(400).json({ error:'email,password required' });
   const e = String(email).trim().toLowerCase();
   const db = getClient();
-  await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0)`);
-  try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`);}catch{}
-  try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`);}catch{}
-  try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`);}catch{}
+  if(localIdentityAdapterEnabled(req)){
+    try{ await ensureCircleMembershipReadiness(db); }
+    catch{ return res.status(503).json({error:'login temporarily unavailable'}); }
+  }else{
+    await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0)`);
+    try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`);}catch{}
+    try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`);}catch{}
+    try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`);}catch{}
+  }
   try{ await enforceAuthRateLimit(db,req,'login',e); }catch(err){
     if(err?.statusCode===429) return res.status(429).json({error:'too many login attempts; try again later'});
     return res.status(503).json({error:'login temporarily unavailable'});
   }
   const rs = await db.execute({ sql:`SELECT id,email,password_hash,display_name,color,is_admin FROM auth_accounts WHERE email=?`, args:[e] });
-  if (!rs.rows.length) return res.status(401).json({ error:'invalid credentials' });
-  const row = rs.rows[0];
-  const ok = String(row.password_hash||'').startsWith('$2') && await bcrypt.compare(String(password), row.password_hash);
-  if (!ok) return res.status(401).json({ error:'invalid credentials' });
+  const row=rs.rows[0]||null;
+  const storedPasswordHash=String(row?.password_hash||'');
+  const passwordBytes=Buffer.byteLength(String(password),'utf8');
+  const passwordWithinPolicy=passwordBytes>=PASSWORD_MIN_BYTES&&passwordBytes<=PASSWORD_MAX_BYTES;
+  const comparableHash=storedPasswordHash.startsWith('$2')?storedPasswordHash:DUMMY_LOGIN_PASSWORD_HASH;
+  const passwordMatches=await bcrypt.compare(String(password),comparableHash);
+  if(!row||!passwordWithinPolicy||!storedPasswordHash.startsWith('$2')||!passwordMatches){
+    return res.status(401).json({error:'invalid credentials'});
+  }
   if(circleMembershipEnabled()){
     try{
       if(!await hasActivePrimaryCircleMembership(db,row.id)) return res.status(403).json({error:'active circle membership required'});
@@ -332,11 +363,18 @@ async function handleMe(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
   const payload=verifyRequestAuth(req);
   if (!payload) return res.status(401).json({ error:'authentication required' });
+  const localIdentity=localIdentityAdapterEnabled(req);
   try{
     const db = getClient();
-    try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`);}catch{}
-    try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`);}catch{}
-    try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`);}catch{}
+    if(localIdentity){
+      try{ await ensureCircleMembershipReadiness(db); }
+      catch{ return res.status(503).json({error:'session validation temporarily unavailable'}); }
+    }
+    else{
+      try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`);}catch{}
+      try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`);}catch{}
+      try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`);}catch{}
+    }
     const id = payload.id || payload.uid;
     if (!id) return res.status(401).json({ error:'invalid token payload' });
     const rs = await db.execute({ sql:`SELECT id,email,display_name,color,created_at,last_login,is_available,availability_updated_at,is_admin FROM auth_accounts WHERE id=?`, args:[id] });

@@ -153,6 +153,7 @@ const [
   { default: opsHandler },
   { default: videoHandler },
   { createEvaluationSuite, listPublicExercises },
+  { localIdentityAdapterEnabled },
 ] = await Promise.all([
   import('../../api/ai.js'),
   import('../../api/auth.js'),
@@ -160,6 +161,7 @@ const [
   import('../../api/ops.js'),
   import('../../api/video.js'),
   import('../../api/_catalog.js'),
+  import('../../api/_local-runtime.js'),
 ]);
 
 function rows(values = [], extra = {}) {
@@ -229,6 +231,13 @@ function enableLocalPasswordSignup(){
   process.env.APP_URL='http://127.0.0.1:3000';
 }
 
+function enableLocalInviteSignup(){
+  enableLocalPasswordSignup();
+  process.env.ALLOW_OPEN_SIGNUP='false';
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  process.env.RANDORI_LOCAL_IDENTITY='true';
+}
+
 function invoke(handler, { method = 'GET', url = '/', query = {}, headers = {}, body = {}, remoteAddress='127.0.0.1' } = {}) {
   return new Promise((resolve, reject) => {
     let statusCode = 200;
@@ -274,7 +283,7 @@ beforeEach(() => {
     'NEXT_PUBLIC_SENTRY_DSN', 'SENTRY_DSN',
     'ALLOW_OPEN_SIGNUP', 'SIGNUP_ALLOWLIST', 'LEETCODE_INGESTION_AUTHORIZED',
     'AUTH_SCHEMA_BOOTSTRAP_ENABLED', 'CIRCLE_MEMBERSHIP_ENABLED', 'RANDORI_LOCAL_RUNTIME',
-    'RANDORI_LOCAL_DATABASE_PATH',
+    'RANDORI_LOCAL_DATABASE_PATH', 'RANDORI_LOCAL_IDENTITY',
     'TURSO_AUTH_TOKEN', 'TURSO_DATABASE_URL', 'VERCEL', 'VERCEL_ENV', 'VERCEL_URL',
     'RUN_ATTESTATION_SECRET', 'RUN_ATTESTATION_PREVIOUS_SECRETS',
     'TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM',
@@ -392,7 +401,7 @@ test('auth capabilities report the exact local or private-beta contract without 
   assert.equal(result.headers['cache-control'],'no-store');
   assert.deepEqual(result.body,{
     ok:true,
-    capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:false},
+    capabilities:{passwordLogin:true,passwordSignup:false,localIdentity:false,googleOAuth:false},
     registrationMode:'private_beta',
   });
   assert.equal(executed.length,0);
@@ -405,7 +414,7 @@ test('auth capabilities report the exact local or private-beta contract without 
   });
   assert.deepEqual(result.body,{
     ok:true,
-    capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true},
+    capabilities:{passwordLogin:true,passwordSignup:false,localIdentity:false,googleOAuth:true},
     registrationMode:'private_beta',
   });
 
@@ -416,7 +425,7 @@ test('auth capabilities report the exact local or private-beta contract without 
   assert.equal(result.status,200);
   assert.deepEqual(result.body,{
     ok:true,
-    capabilities:{passwordLogin:true,passwordSignup:true,googleOAuth:true},
+    capabilities:{passwordLogin:true,passwordSignup:true,localIdentity:false,googleOAuth:true},
     registrationMode:'local_open',
   });
   assert.equal(executed.length,0);
@@ -458,6 +467,39 @@ test('local password signup guard fails closed outside the isolated loopback run
   assert.equal(localPasswordSignupEnabled({headers:{host:'127.0.0.1:3000'},socket:{remoteAddress:'203.0.113.8'}}),false);
   process.env.APP_URL='http://localhost:3000';
   assert.equal(localPasswordSignupEnabled({headers:{host:'localhost:3000'},socket:{remoteAddress:'::1'}}),true);
+});
+
+test('local verified-identity adapter requires invite mode and fails closed in preview, production, remote, or non-loopback contexts',()=>{
+  const localRequest={headers:{host:'127.0.0.1:3000'},socket:{remoteAddress:'127.0.0.1'}};
+  enableLocalInviteSignup();
+  assert.equal(localIdentityAdapterEnabled(localRequest),true);
+  assert.equal(localPasswordSignupEnabled(localRequest),true);
+
+  const cases=[
+    ['NODE_ENV','production'],
+    ['RANDORI_LOCAL_RUNTIME','false'],
+    ['RANDORI_LOCAL_IDENTITY','false'],
+    ['ALLOW_OPEN_SIGNUP','true'],
+    ['CIRCLE_MEMBERSHIP_ENABLED','false'],
+    ['VERCEL','1'],
+    ['VERCEL_ENV','preview'],
+    ['VERCEL_URL','preview.example.test'],
+    ['TURSO_AUTH_TOKEN','remote-token'],
+    ['TURSO_DATABASE_URL','libsql://production.example.test'],
+    ['APP_URL','https://127.0.0.1:3000'],
+    ['APP_URL','http://randori.example.test'],
+  ];
+  for(const [key,value] of cases){
+    for(const cleanupKey of ['VERCEL','VERCEL_ENV','VERCEL_URL','TURSO_AUTH_TOKEN']) delete process.env[cleanupKey];
+    enableLocalInviteSignup();
+    process.env[key]=value;
+    assert.equal(localIdentityAdapterEnabled(localRequest),false,`${key} must disable local identity`);
+    delete process.env[key];
+  }
+  enableLocalInviteSignup();
+  assert.equal(localIdentityAdapterEnabled({headers:{host:'randori.example.test'},socket:{remoteAddress:'127.0.0.1'}}),false);
+  assert.equal(localIdentityAdapterEnabled({headers:{host:'127.0.0.1:3001'},socket:{remoteAddress:'127.0.0.1'}}),false);
+  assert.equal(localIdentityAdapterEnabled({headers:{host:'127.0.0.1:3000'},socket:{remoteAddress:'203.0.113.9'}}),false);
 });
 
 test('capabilities and signup enforce the same production, preview, remote-db, and network boundary', async () => {
@@ -823,6 +865,25 @@ test('profile, pair schedule, and messages enforce ownership while catalogue and
   assert.equal(history.body.runs[0].authoritative,false);
   assert.equal(history.body.runs[0].code_preview,'function binarySearch() {}');
   assert.equal('test_cases_snapshot' in history.body.runs[0],false);
+});
+
+test('migrated local profile requests probe schema without request-time DDL',async()=>{
+  enableLocalInviteSignup();
+  const profileRow={
+    id:2,email:'user@example.test',display_name:'Local User',color:'#123456',is_available:1,
+    is_admin:0,is_demo:0,bio:'',tz:'UTC',interview_focus:'both',leetcode_handle:'',
+  };
+  executeHandler=sql=>sql.includes('FROM auth_accounts WHERE id=?')?rows([profileRow]):rows();
+  const headers={...localOriginHeaders,'x-test-auth':'user'};
+  const read=await invoke(dataHandler,{url:'/api/profile',query:{endpoint:'profile'},headers});
+  assert.equal(read.status,200);
+  const write=await invoke(dataHandler,{
+    method:'POST',url:'/api/profile',query:{endpoint:'profile'},headers,
+    body:{display_name:'Local User',tz:'UTC',is_available:true},
+  });
+  assert.equal(write.status,200);
+  assert.equal(executed.some(call=>/\b(?:CREATE|ALTER|DROP)\b/i.test(call.sql)),false);
+  assert.equal(executed.some(call=>/FROM auth_accounts LIMIT 0/i.test(call.sql)),true);
 });
 
 test('run history verifies signed authoritative results and rejects legacy or tampered attestations', async () => {

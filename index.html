@@ -707,7 +707,7 @@ p{margin:0}
         <div class="card">
           <div class="card-h"><h2>You’re invited to Randori</h2><span>private circle</span></div>
           <div class="card-b" style="display:grid;gap:14px">
-            <p class="small muted" style="line-height:1.6;margin:0">Confirm the Google account that received this invitation. The invitation is single-use and expires automatically.</p>
+            <p id="inviteInstructions" class="small muted" style="line-height:1.6;margin:0">Confirm the Google account that received this invitation. The invitation is single-use and expires automatically.</p>
             <div id="inviteStatus" data-testid="invite-status" class="small muted" role="status" aria-live="polite">Checking invitation…</div>
             <div><button id="inviteContinue" data-testid="invite-continue" class="btn" type="button" disabled>Continue with Google</button></div>
           </div>
@@ -1054,7 +1054,7 @@ p{margin:0}
       <div id="authPasswordFields" class="auth-fields" hidden>
         <label class="auth-field" for="authEmail"><span>Email</span><input id="authEmail" class="input" placeholder="email@example.com" type="email" inputmode="email" autocomplete="email" maxlength="254" aria-describedby="authErr" required/></label>
         <label id="authNameField" class="auth-field" for="authName" hidden><span>Display name</span><input id="authName" class="input" placeholder="How your pair will see you" type="text" autocomplete="name" minlength="2" maxlength="32" aria-describedby="authErr"/></label>
-        <label class="auth-field" for="authPass"><span>Password</span><input id="authPass" class="input" placeholder="At least 10 characters" type="password" autocomplete="current-password" maxlength="128" aria-describedby="authErr" required/></label>
+        <label class="auth-field" for="authPass"><span>Password</span><input id="authPass" class="input" placeholder="10–72 UTF-8 bytes" type="password" autocomplete="current-password" maxlength="72" aria-describedby="authErr" required/></label>
       </div>
       <p id="authErr" class="small auth-error" role="alert" aria-live="assertive"></p>
       <div class="auth-actions">
@@ -1087,7 +1087,9 @@ p{margin:0}
   const TOKEN_KEY='randori-token';
   const ME_KEY='randori-me';
   let me = null;
-  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,googleOAuth:false});
+  let authSessionEpoch=0;
+  let authRefreshSequence=0;
+  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,localIdentity:false,googleOAuth:false,registrationMode:'private_beta'});
   let authCapabilities=CLOSED_AUTH_CAPABILITIES;
   let authCapabilitiesLoaded=false;
   let authCapabilitiesFailed=false;
@@ -1126,14 +1128,25 @@ p{margin:0}
     const landing=document.getElementById('view-invite'); if(landing) landing.style.display='block';
     const status=document.getElementById('inviteStatus');
     const button=document.getElementById('inviteContinue');
+    const instructions=document.getElementById('inviteInstructions');
+    const localInvite=authCapabilitiesLoaded&&authCapabilities.localIdentity
+      &&authCapabilities.registrationMode==='local_invite';
+    if(instructions) instructions.textContent=localInvite
+      ?'Create a local account with the email that received this invitation. The development identity adapter treats that email as verified and never contacts an external provider.'
+      :'Confirm the Google account that received this invitation. The invitation is single-use and expires automatically.';
     if(status){
       status.textContent=inviteState.rateLimited
         ? `Too many attempts. Try again${inviteState.retryAfter?` in ${inviteState.retryAfter} seconds`: ' later'}.`
         : (inviteState.failed
           ? 'This invitation is unavailable or has expired.'
-          : (inviteState.ready?'Invitation verified. Continue with the invited Google account.':'Checking invitation…'));
+          : (inviteState.ready
+            ?(localInvite?'Invitation verified. Create the invited local account.':'Invitation verified. Continue with the invited Google account.')
+            :'Checking invitation…'));
     }
-    if(button) button.disabled=!inviteState.ready;
+    if(button){
+      button.disabled=!inviteState.ready;
+      button.textContent=localInvite?'Create local account':'Continue with Google';
+    }
     return true;
   }
   async function finishInvitePreparation(){
@@ -1151,14 +1164,23 @@ p{margin:0}
     }
     renderInviteLanding();
   }
-  document.getElementById('inviteContinue')?.addEventListener('click',()=>{
+  document.getElementById('inviteContinue')?.addEventListener('click',async()=>{
     if(!inviteState.ready) return;
+    await authCapabilitiesPromise;
+    if(authCapabilities.localIdentity&&authCapabilities.registrationMode==='local_invite'){
+      openAuthModal('signup');
+      return;
+    }
     window.location.href='/api/auth/google/start';
   });
   window._randori_invite_flow={
     get active(){ return inviteState.active; },
     get ready(){ return inviteState.ready; },
     show:renderInviteLanding,
+    complete(){
+      inviteState.active=false;
+      try{ window.history.replaceState({},document.title,'/'); }catch{}
+    },
   };
   if(inviteState.active) renderInviteLanding();
   finishInvitePreparation();
@@ -1191,20 +1213,35 @@ p{margin:0}
       throw e;
     }
   }
+  function invalidateAuthRefreshes(){
+    authSessionEpoch+=1;
+    authRefreshSequence+=1;
+  }
 async function refreshMe(){
+    const requestEpoch=authSessionEpoch;
+    const requestSequence=++authRefreshSequence;
+    let nextUser=null;
+    let failure=null;
     try{
       const data = await api('/api/auth/me', {method:'GET'});
-      me = data.user;
-      localStorage.setItem(ME_KEY, JSON.stringify(me));
+      nextUser=data.user;
     }catch(err){
-      console.warn('refreshMe failed', err && err.error ? err.error : err);
+      failure=err;
+    }
+    if(requestEpoch!==authSessionEpoch||requestSequence!==authRefreshSequence) return false;
+    if(failure){
+      console.warn('refreshMe failed', failure && failure.error ? failure.error : failure);
       me=null;
       try{ localStorage.removeItem(ME_KEY); }catch{}
+    }else{
+      me=nextUser;
+      try{ localStorage.setItem(ME_KEY, JSON.stringify(me)); }catch{}
     }
     updateAuthUI();
     try{
       window.dispatchEvent(new CustomEvent('randori:auth-refreshed',{detail:{signedIn:!!me,userId:me?.id||me?.uid||null}}));
     }catch{}
+    return true;
   }
   const ADMIN_EMAIL='festusomole14@gmail.com';
   function isAdmin(){ return !!(me && (me.is_admin || me.isAdmin || (me.email && me.email.toLowerCase()===ADMIN_EMAIL))); }
@@ -1346,11 +1383,13 @@ async function refreshMe(){
     if(payload?.ok!==true||!capabilities||typeof capabilities!=='object'
       ||typeof capabilities.passwordLogin!=='boolean'
       ||typeof capabilities.passwordSignup!=='boolean'
+      ||(capabilities.localIdentity!==undefined&&typeof capabilities.localIdentity!=='boolean')
       ||typeof capabilities.googleOAuth!=='boolean'
-      ||!['local_open','private_beta'].includes(mode)) throw new Error('invalid auth capabilities');
+      ||!['local_open','local_invite','private_beta'].includes(mode)) throw new Error('invalid auth capabilities');
     return Object.freeze({
       passwordLogin:capabilities.passwordLogin,
       passwordSignup:capabilities.passwordSignup,
+      localIdentity:capabilities.localIdentity===true,
       googleOAuth:capabilities.googleOAuth,
       registrationMode:mode,
     });
@@ -1367,6 +1406,11 @@ async function refreshMe(){
     if(!authCapabilitiesLoaded) return 'Checking sign-in options…';
     if(authCapabilitiesFailed) return 'New-account options could not be verified. Existing members can still try password sign-in.';
     if(authMode==='signup'&&authCapabilities.passwordSignup){
+      if(authCapabilities.registrationMode==='local_invite'){
+        return inviteState.ready
+          ?'This local account will use the verified invitation and join the private circle.'
+          :'A valid local invitation is required before creating an account.';
+      }
       return authCapabilities.registrationMode==='local_open'
         ? 'Create a local account. The first account can manage weekly pairing.'
         : 'Create your account to join the circle.';
@@ -1470,6 +1514,7 @@ async function refreshMe(){
       authCapabilitiesLoaded=true;
       authMode=resolvedAuthMode(authMode);
       renderAuthModal();
+      renderInviteLanding();
       focusAuthControl();
     }
     return authCapabilities;
@@ -1570,7 +1615,9 @@ async function refreshMe(){
         const ml=document.getElementById('meLabel'); const mm=document.getElementById('meMenu'); if(ml&&mm&&!ml._menuWired){ ml._menuWired=true; ml.addEventListener('click', (e)=>{ e.stopPropagation(); mm.style.display=mm.style.display==='none'||!mm.style.display?'block':'none'; }); document.addEventListener('click', (e)=>{ if(!mm.contains(e.target)&&e.target!==ml) mm.style.display='none'; }); }
       })();
   document.getElementById('signOutBtn').onclick=async()=>{
+    invalidateAuthRefreshes();
     try{ await fetch('/api/auth/logout',{method:'POST',credentials:'same-origin'}); }catch{}
+    invalidateAuthRefreshes();
     try{
       localStorage.removeItem(TOKEN_KEY);
       localStorage.removeItem(ME_KEY);
@@ -1743,8 +1790,9 @@ async function refreshMe(){
     if(!email||!emailInput.validity.valid){ setAuthError('Enter a valid email address.'); emailInput.setAttribute('aria-invalid','true'); emailInput.focus(); return null; }
     if(mode==='signup'&&(name.length<2||name.length>32)){ setAuthError('Display name must be 2–32 characters.'); nameInput.setAttribute('aria-invalid','true'); nameInput.focus(); return null; }
     if(!password){ setAuthError('Enter your password.'); passwordInput.setAttribute('aria-invalid','true'); passwordInput.focus(); return null; }
-    if(mode==='signup'&&(password.length<10||password.length>128)){
-      setAuthError('Password must be 10–128 characters.'); passwordInput.setAttribute('aria-invalid','true'); passwordInput.focus(); return null;
+    const passwordBytes=new TextEncoder().encode(password).length;
+    if(mode==='signup'&&(passwordBytes<10||passwordBytes>72)){
+      setAuthError('Password must be 10–72 UTF-8 bytes.'); passwordInput.setAttribute('aria-invalid','true'); passwordInput.focus(); return null;
     }
     setAuthError('');
     return mode==='signup'?{email,password,name}:{email,password};
@@ -1768,9 +1816,13 @@ async function refreshMe(){
       if(!response.ok||!data?.user) throw data||new Error('authentication unavailable');
       authRequest=null;
       setAuthBusy(false);
+      invalidateAuthRefreshes();
       localStorage.removeItem(TOKEN_KEY);
       localStorage.setItem(ME_KEY,JSON.stringify(data.user));
       me=data.user;
+      if(mode==='signup'&&authCapabilities.registrationMode==='local_invite'){
+        window._randori_invite_flow?.complete?.();
+      }
       closeAuthModal();
       try{ updateAuthUI(); }catch{}
       try{ renderHistory(); }catch{}
@@ -4619,6 +4671,11 @@ def allow(key, limit=5):
     return false;
   }
 
+  function currentProfileUserId(){
+    const value=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0);
+    return Number.isSafeInteger(value)&&value>0?value:null;
+  }
+
   async function showProfileSetup(prefill){
     const user = prefill || await fetchProfile();
     const me= (()=>{ try{ return JSON.parse(localStorage.getItem(ME_KEY)||'null')}catch{return null} })();
@@ -4637,22 +4694,27 @@ def allow(key, limit=5):
   }
 
   document.getElementById('psSave')?.addEventListener('click', async()=>{
+    const userId=currentProfileUserId();
+    if(!userId){ alert('Sign in again before saving your profile.'); return; }
     const name=document.getElementById('psName').value.trim();
     const bio=document.getElementById('psBio').value.trim();
     const tz=document.getElementById('psTz').value;
     const leet=document.getElementById('psLeet').value.trim();
     const color=document.getElementById('psColors')?.dataset.selected||undefined;
-    try{ localStorage.setItem('randori-profile-done','1'); }catch{}
-      const isAvail=document.getElementById('psAvail')?.checked;
+    const isAvail=document.getElementById('psAvail')?.checked;
     const payload={ display_name:name, bio, tz, interview_focus:profileFocus, leetcode_handle:leet, color, is_available:isAvail };
     // simple validation
     if(!name){ alert('Name required'); return; }
     try{
       const r=await fetch('/api/profile',{ method:'POST', credentials:'same-origin', headers:{'content-type':'application/json'}, body: JSON.stringify(payload) });
       const j=await r.json();
-      if(!r.ok||Number(j.user?.id)!==userId) throw j;
+      if(!r.ok) throw j;
+      if(Number(j.user?.id)!==userId) throw new Error('profile response did not match signed-in account');
+      if(currentProfileUserId()!==userId) return;
+      try{ localStorage.setItem('randori-profile-done','1'); }catch{}
       localStorage.setItem(ME_KEY, JSON.stringify(j.user));
       try{ await window._randori_auth?.refreshMe?.(); }catch{}
+      if(currentProfileUserId()!==userId) return;
       // go dashboard
       await showDashboard();
       if(typeof window.toast==='function') window.toast('Profile saved ✓');
@@ -7315,11 +7377,13 @@ def allow(key, limit=5):
 // Monaco IDE task — replace textarea with Monaco, keep textarea as hidden mirror for legacy runCode/AI paths
 (function(){
   if(typeof window.toast!=='function'){ window.toast=function(m){ try{ console.log('[toast]',m); }catch{} }; }
+  const LOCAL_RUNTIME=window.__RANDORI_LOCAL_RUNTIME__===true;
   const MONACO_CDN_PRIMARY = 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs';
   const MONACO_CDN_FALLBACK = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs';
   let MONACO_CDN = MONACO_CDN_PRIMARY;
   let monacoTriedFallback=false;
   function loadMonacoLoaderFallback(cb){
+    if(LOCAL_RUNTIME){ cb && cb(new Error('remote editor assets are disabled locally')); return; }
     if(monacoTriedFallback){ cb && cb(new Error('both cdns failed')); return; }
     monacoTriedFallback=true;
     MONACO_CDN=MONACO_CDN_FALLBACK;
@@ -7448,6 +7512,7 @@ def allow(key, limit=5):
     const host=getHost();
     const ta=getTA();
     if(!host){ console.warn('monaco host missing'); return; }
+    if(LOCAL_RUNTIME){ fallback('local runtime uses the plain editor'); return; }
     // loader may have failed entirely
     if(window.__monacoLoaderFailed && !window.require){
       console.warn('primary monaco loader failed, trying jsDelivr fallback');
@@ -7640,16 +7705,18 @@ def allow(key, limit=5):
     });
   }
 
-  function fallback(reason){ try{ window._randori_log&&window._randori_log.error('monaco_load_fail', String(reason||'monaco fallback').slice(0,300), {reason, cdn:MONACO_CDN}); try{ window._randori_log&&window._randori_log.flush&&window._randori_log.flush(); }catch{} }catch{} console.warn('monaco fallback',reason);
+  function fallback(reason){ if(!LOCAL_RUNTIME){ try{ window._randori_log&&window._randori_log.error('monaco_load_fail', String(reason||'monaco fallback').slice(0,300), {reason, cdn:MONACO_CDN}); try{ window._randori_log&&window._randori_log.flush&&window._randori_log.flush(); }catch{} }catch{} } console.warn('monaco fallback',reason);
     // auto-retry once after 3s if not yet tried fallback CDN
-    try{ if(!window.__monacoRetryScheduled){ window.__monacoRetryScheduled=true; setTimeout(()=>{ try{ if(!monacoReady){ const host=getHost(); if(host) host.style.display=''; const note=document.getElementById(fallbackNoteId); if(note) note.style.display='none'; if(!monacoTriedFallback) loadMonacoLoaderFallback((e)=>{ if(!e) initMonaco(); }); else initMonaco(); } }catch{} }, 3000); } }catch{}
+    try{ if(!LOCAL_RUNTIME&&!window.__monacoRetryScheduled){ window.__monacoRetryScheduled=true; setTimeout(()=>{ try{ if(!monacoReady){ const host=getHost(); if(host) host.style.display=''; const note=document.getElementById(fallbackNoteId); if(note) note.style.display='none'; if(!monacoTriedFallback) loadMonacoLoaderFallback((e)=>{ if(!e) initMonaco(); }); else initMonaco(); } }catch{} }, 3000); } }catch{}
     monacoReady=false;
     const host=getHost(); const ta=getTA(); const note=document.getElementById(fallbackNoteId);
     try{ host && host.querySelectorAll('.monaco-loader').forEach(l=>l.remove()); }catch{}
     if(host){ host.style.display='none'; }
     if(ta){ ta.style.display='block'; ta.style.minHeight='420px'; ta.focus && ta.focus(); }
-    if(note){ note.style.display='block'; note.title=reason||''; note.innerHTML='Monaco failed to load ('+escapeHtml(reason||'unknown')+') — using plain editor with lint off. <button id="monacoRetry" class="pill" style="margin-left:8px">Retry CDN</button>'; }
-    document.getElementById('monacoRetry')?.addEventListener('click', ()=>{ if(host) host.style.display=''; if(note) note.style.display='none'; initMonaco(); });
+    if(note){ note.style.display='block'; note.title=reason||''; note.innerHTML=LOCAL_RUNTIME
+      ?'Local mode uses the plain editor with lint off.'
+      :'Monaco failed to load ('+escapeHtml(reason||'unknown')+') — using plain editor with lint off. <button id="monacoRetry" class="pill" style="margin-left:8px">Retry CDN</button>'; }
+    if(!LOCAL_RUNTIME) document.getElementById('monacoRetry')?.addEventListener('click', ()=>{ if(host) host.style.display=''; if(note) note.style.display='none'; initMonaco(); });
   }
 
   // start after DOM + a tick to allow other IIFEs to set up CODE_KEY
