@@ -1,8 +1,8 @@
-# Turso — why we picked it for Randori Circle
+# Turso — current database and rollout runbook
 
-**Current schema is SQLite (Drizzle `sqliteTable`). Turso is SQLite at the edge (libSQL). Zero migration.**
+**The current application uses handwritten SQLite/libSQL statements through `@libsql/client`. Turso keeps that model deployable from Vercel. The new membership schema uses the reviewed admin rollout below; issue #8 tracks removal of older request-path DDL elsewhere in the application.**
 
-- **Zero rewrite**: Your tables (`users`, `pairing_weeks`, `pairing_groups`, `questions`) are already `sqliteTable`. Turso speaks libSQL protocol, so `drizzle-orm` + `@libsql/client` connects with one URL. Postgres/Supabase would require rewriting all schemas to `pgTable`, changing types, handling serial vs autoincrement, enums, etc.
+- **Low migration cost for the current app**: tables such as `users`, `pairing_weeks`, `pairing_groups`, and `questions` already use SQLite syntax. Turso speaks the libSQL protocol, so the existing `@libsql/client` access layer connects with one URL. PostgreSQL would require a substantive schema, query, and operations migration.
 
 - **Free tier that actually fits**: Turso free = 500 DBs, 9GB total, 500M rows read/month, 25M rows written. For a circle of friends doing weekly pairings, that's absurdly generous. Supabase free is also generous but gives you 2 projects cap, 500MB, and shared pooler limits. Neon free sleeps.
 
@@ -10,75 +10,83 @@
 
 - **No pooling, no `DATABASE_URL` drama**: Postgres serverless needs PgBouncer / connection strings. libSQL is HTTP-based — works from Vercel serverless functions AND edge functions with one auth token. No lingering connections.
 
-- **Browser-possible if you want offline-first later**: `@libsql/client/web` can even query Turso directly from the static app (read-only token) — handy for your static-first build where you currently use localStorage + BroadcastChannel.
+- **Serverless-compatible**: the libSQL HTTP client works in Vercel functions without exposing database credentials to browser code.
 
 ### What about others?
 
-- **Supabase / Postgres (incl. Vercel Postgres, Neon)**: Great if you need serious relational features, foreign key heavy, Row Level Security, auth built-in. Migration cost: rewrite drizzle schemas to pg, setup pooling, handle connection limits. We can still switch later — Drizzle makes that mechanical.
+- **Supabase / Postgres (incl. Vercel Postgres, Neon)**: Great if you need richer relational features, Row Level Security, or integrated auth. Migration cost includes translating handwritten SQLite DDL and queries, choosing a migration tool, and configuring serverless connection management.
 
 - **PlanetScale (MySQL/vitess)**: Excellent branching, but MySQL dialect. Your app is SQLite-native, would need MySQL types, different autoincrement handling. Free tier row-read limits tighter now.
 
 - **Firebase / Firestore**: Realtime is nice for live coding presence, but you'd remodel everything to collections/documents, lose SQL joins for pair history. Better as a complement for live sync, not primary relational store.
 
-- **MongoDB Atlas**: NoSQL — lose Drizzle typed schema, you'd rewrite to documents. Not worth for strongly relational pair weeks/groups.
+- **MongoDB Atlas**: NoSQL — the relational pair-week/group model would need to be redesigned as documents.
 
-**Bottom line:** Turso let us go from your local `app.db` file to a global free DB with **one env var** and keep Drizzle SQLite code intact. If Randori grows beyond friends (hundreds of concurrent sessions), we can migrate to Postgres (Supabase/Neon) — Drizzle makes that a search-replace of dialects.
+**Bottom line:** Turso preserves the current SQLite model and works well for the present serverless workload. A later PostgreSQL move remains possible, but it is an explicit migration project rather than a dialect search-and-replace.
 
 ### Using Turso in this repo
 
 1. Create DB: `turso db create randori-circle --location lhr` (London, since you're Royal Wharf)
 2. `turso db show randori-circle --url`
-   `turso db tokens create randori-circle --expiration Never` (or 30d for safety)
+   `turso db tokens create randori-circle --expiration 30d`
+   Rotate the application token before it expires. Use a non-expiring token only as a documented exception with an owner and rotation plan.
 3. In Vercel Dashboard → your project → Settings → Environment Variables:
    ```
    TURSO_DATABASE_URL=libsql://randori-circle-xxxx.turso.io
    TURSO_AUTH_TOKEN=eyJ...
    JWT_SECRET=some-random-64-char-string  # openssl rand -base64 48
-   CRON_SECRET=same-or-another-random-string
-   RESEND_API_KEY=re_xxx  # optional for email notify
-   RESEND_FROM=Randori <noreply@yourdomain.com>
+   CRON_SECRET=a-different-random-string
+   ADMIN_EMAILS=owner@example.com
+   CIRCLE_MEMBERSHIP_ENABLED=false
+   AUTH_SCHEMA_BOOTSTRAP_ENABLED=false
+   RESEND_API_KEY=re_xxx  # omit both Resend values to keep email disabled
+   RESEND_FROM=Randori <noreply@your-verified-domain.com>
    APP_URL=https://randori-circle-self.vercel.app
    GOOGLE_CLIENT_ID=...
    GOOGLE_CLIENT_SECRET=...
    ```
-4. After first deploy, hit `POST https://your-app.vercel.app/api/init` once to create tables (now also creates auth_accounts + availability columns).
-5. Frontend will still work with localStorage-only if those env vars are missing — it falls back gracefully.
+4. Complete and verify the production backup/restore work tracked by issue #6 and the migration controls tracked by issue #8 before changing production data.
+5. Deploy with `CIRCLE_MEMBERSHIP_ENABLED=false` and `AUTH_SCHEMA_BOOTSTRAP_ENABLED=false`. The rollout-state checks are read-only; any legacy registration that races initialization is atomically included or rejected.
+6. If this is a fresh database with no account, temporarily set `AUTH_SCHEMA_BOOTSTRAP_ENABLED=true` and restrict `SIGNUP_ALLOWLIST` to the normalized `ADMIN_EMAILS` address. Sign in once with that Google account, immediately restore `AUTH_SCHEMA_BOOTSTRAP_ENABLED=false`, and redeploy. This explicit maintenance switch creates only the legacy auth baseline; it does not create membership tables.
+7. Sign in with the bootstrap account and verify `GET /api/auth/me` reports `is_admin: true`.
+8. Call the authenticated admin-only `POST https://your-app.vercel.app/api/init`. This creates the membership schema, closes new uninvited registration, and atomically backfills existing non-demo accounts.
+9. Verify the rollout queries below before setting `CIRCLE_MEMBERSHIP_ENABLED=true` and redeploying.
 
 ### Personalization + Scaling layer (auto-circle + admin-only reshuffle)
 
-**New table columns:** `auth_accounts (… is_available INTEGER DEFAULT 1, availability_updated_at TEXT)`
+**Membership data:** `circles`, `circle_memberships`, hashed `circle_invitations`, `circle_audit_events`, and the singleton `circle_membership_rollout` latch.
 
-Migration is automatic in `api/init.js`, `api/cron/weekly.js`, `api/admin/reshuffle.js`, `api/circle.js`, `api/auth/me.js` via `ALTER TABLE … ADD COLUMN` idempotent.
+Membership-schema migration is explicit through authenticated `POST /api/init`; rollout-state probes and ordinary circle, pairing, and invitation requests do not create membership schema. The temporary fresh-database auth bootstrap in step 6 is the only exception introduced by this rollout.
 
 **Scaling rule:**
-- Circle = **all** `auth_accounts` (everyone who signed up via email/password or Google SSO). Manual names assumption removed.
-- Manual Shuffle/Reshuffle = **admin only** — email `festusomole14@gmail.com` (case-insensitive) with valid JWT. All others see "Auto-shuffles Sun 08:00 BST".
+- Circle = active `circle_memberships` in the one operational primary circle. The one-time migration backfills existing non-demo authenticated accounts; legacy `users` rows are never inferred as members.
+- Manual Shuffle/Reshuffle = **admin only** — configured through `ADMIN_EMAILS` and authenticated by the session cookie or a valid JWT. All others see "Auto-shuffles Sun 08:00 BST".
 - Availability — each user can toggle `Available this week` via `/api/settings/availability`. Weekly cron & admin reshuffle both filter `COALESCE(is_available,1)=1`. Unavailable users get skipped + reminder.
 
 **Env vars added beyond section above:**
-- `JWT_SECRET` — HS256 secret for signing auth tokens (30d expiry). If missing, dev fallback `dev-randori-jwt-secret-change-me` — set a real one in prod.
-- `CRON_SECRET` — secret protecting `/api/cron/weekly`. If missing, defaults to JWT_SECRET. Send as `x-cron-secret` header or `?secret=` or Vercel Cron header (auto).
-- `RESEND_API_KEY` (optional) — if set, weekly cron emails **available** participants after shuffle + separate reminder email to unavailable participants. Without it, pairs only visible in-app via `/api/weeks`. `resend` package is dynamically imported — cron skips gracefully if lib not installed.
-- `RESEND_FROM` optional from address.
+- `JWT_SECRET` — at least 32 random bytes, used for 12-hour HS256 session cookies and keyed invitation/email hashes. Rotating it signs out all sessions and invalidates every outstanding invitation; revoke/reissue invitations as part of rotation.
+- `CRON_SECRET` — separate secret protecting `/api/cron/weekly`. Send it as the `x-cron-secret` header or use Vercel Cron authentication.
+- `RESEND_API_KEY` and `RESEND_FROM` (optional as a pair) — when both are set, weekly cron emails **available** participants after shuffle and sends a separate reminder to unavailable participants. If either is absent, delivery remains disabled and pairs are visible in-app via `/api/weeks`. The sender must be verified in Resend.
 - `APP_URL` — canonical production URL, used for Google OAuth redirect URI and email links. Defaults to `https://randori-circle-self.vercel.app` if missing.
 - `GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET` — for Google SSO (`/api/auth/google/*`). Configure in Google Cloud Console → OAuth client → Web → origins + redirect: `https://randori-circle-self.vercel.app/api/auth/google/callback` plus localhost variants.
 
 **Endpoints:**
-- `POST /api/auth/signup` — `{email,password,name}` → `{token,user}`. Hash bcryptjs, also creates deterministic color.
-- `POST /api/auth/login` — `{email,password}` → token
-- `GET /api/auth/me` — Bearer → user with `is_available`, `availability_updated_at`
-- `GET /api/auth/google/start` / `callback` — OAuth flow, creates auth_accounts + users entry if new, issues own JWT, redirects `/?g_token=&g_name=`
-- `GET /api/circle` — public — returns `{circle: [{id,display_name,name,email,color,is_available,source}], count}` source = auth_accounts preferred else legacy users. Shows availability badge (● avail / ○ away).
-- `GET /api/users` — backwards compat — same as circle but shape `{users: [{id,name,color...}]}` from auth_accounts if any, else users. POST now admin-only JWT required.
+- `POST /api/auth/signup` — development compatibility only; production password signup is disabled, and the rollout latch prevents late uninvited accounts.
+- `POST /api/auth/login` — existing password users only; establishes an HttpOnly session cookie.
+- `GET /api/auth/me` — authenticated session profile with availability and admin status.
+- `GET /api/auth/google/start` / `callback` — OAuth/PKCE flow. With membership enforcement on, a new verified account is created atomically with invitation consumption, membership, and audit; the JWT remains only in an HttpOnly cookie.
+- `GET /api/circle` — authenticated and membership-scoped; returns safe profile fields for active members only and never returns email addresses.
+- `POST /api/invitations` / `GET /api/invitations` / `DELETE /api/invitations/:id` — primary-circle owner invitation lifecycle.
+- `POST /api/invitations/prepare` — same-origin, rate-limited exchange from a URL-fragment token to a 10-minute Secure/HttpOnly claim cookie.
 - `GET /api/weeks` — returns `{weeks: [{id,week_label,week_start,focus,pairs:[{a_id,b_id,a_name,b_name,is_ai,topic]}]}` latest 20 weeks enriched, join auth_accounts + users.
 - `GET /api/history` — Bearer → personal history where you appear, partner counts.
-- `GET|POST /api/cron/weekly` — Protected: header `x-cron-secret` or Bearer admin JWT or Vercel Cron header or `?secret=`. Shuffles only `is_available=1` auth_accounts (NULL treated as 1). Avoids repeat pairing where possible (8 attempts), handles odd → is_ai_pair=1. Skips if ISO week already exists. Returns `{available_count,total_accounts,unavailable_count,unavailable:[…], email, unavailable_emails, unavailable_reminders, note, app_url}`. 
-  - If `RESEND_API_KEY` set, sends email to available users + reminder to unavailable ("You missed … toggle back ON").
-  - If not set, `email` field explains fallback: pairs visible in-app via `/api/weeks` only.
-- `POST /api/admin/reshuffle` — admin-only (Bearer JWT where email.toLowerCase() === festusomole14@gmail.com). Forces reshuffle for current ISO week (deletes old groups, replaces). Respects availability filter. Use when someone toggles Available back mid-week.
+- `GET|POST /api/cron/weekly` — Protected by the `x-cron-secret` header, `Authorization: Bearer <CRON_SECRET>`, or Vercel Cron authentication. Shuffles only active, available primary-circle members. Avoids repeat pairing where possible, handles odd membership with an AI partner, and skips a week already generated.
+  - If both `RESEND_API_KEY` and `RESEND_FROM` are set, sends email to available users plus a reminder to unavailable users.
+  - If either is absent, the delivery summary explains that email is disabled and pairs remain visible in-app via `/api/weeks`.
+- `POST /api/admin/reshuffle` — admin-only through a valid session cookie or Bearer JWT; authorization comes from the database admin bit or normalized `ADMIN_EMAILS`. Forces a reshuffle for the current ISO week and respects availability.
 - `POST /api/settings/availability` — Bearer → `{is_available:boolean}` updates your row `is_available`, `availability_updated_at=datetime('now')`
-- `GET /api/settings/me` — Bearer → user + availability + admin flag + `settings.note`
-- `GET /api/init` — creates tables + migrates availability cols.
+- `GET /api/auth/me` — session cookie or Bearer token → current user, availability, and admin status.
+- `POST /api/init` — authenticated admin-only schema migration and one-time primary-circle backfill. It also closes the durable registration latch.
 
 **Vercel crons:**
 ```json
@@ -87,43 +95,67 @@ Migration is automatic in `api/init.js`, `api/cron/weekly.js`, `api/admin/reshuf
 = Sun 07:00 UTC = 08:00 BST (BST is UTC+1 Apr-Oct). Winter GMT it will be 07:00 GMT — still morning.
 
 **Weekly reminder status question:**
-Current cron emails via Resend *only if* `RESEND_API_KEY` + `RESEND_FROM` set in Vercel. Otherwise `email` field says "skipped (no RESEND_API_KEY) — pairs visible in-app via /api/weeks". Same for unavailable reminders: they are returned in API field `unavailable_reminders: [{id,name,email,reason,action}]` and logged in response JSON even when no email sent, so frontend can show in-app banner ("You were skipped this week") on next login. To fully enable emails, set both Resend vars & redeploy. Example `RESEND_FROM`: `Randori Circle <randori@yourdomain.com>` must be verified domain in Resend dashboard.
+Current cron emails via Resend *only if* `RESEND_API_KEY` + `RESEND_FROM` are both set in Vercel. Otherwise the delivery summary reports that email is disabled and pairs remain visible in-app via `/api/weeks`. Same for unavailable reminders: they are returned in API field `unavailable_reminders: [{id,name,email,reason,action}]`, so the frontend can show an in-app banner on next login. To enable email, set both values and redeploy. Example `RESEND_FROM`: `Randori Circle <randori@yourdomain.com>` must use a verified Resend domain.
 
 **Frontend behavior (scaling + availability):**
 - Topbar sign-in/out + `meLabel` shows `(admin)` if you're admin email.
-- Circle tab: Add input hidden for non-admin (admin sees testing input). Main circle comes from `GET /api/circle` — displays all signed-up auto-included users with availability dot green (`● avail`) grey (`○ away`). Offline fallback shows local demo only.
+- Circle tab: with membership enforcement enabled, `GET /api/circle` displays only active primary-circle members and owners receive invitation controls. The legacy flag-off response remains supported during rollout.
 - Pairing tab: Shuffle/Reshuffle buttons hidden for non-admin, replaced by `admin` pill or "auto-shuffles Sun 08:00 BST". Admin click triggers `POST /api/admin/reshuffle` cloud (respects available). Non-admin manual path disabled.
 - Pair list: if signed in, `GET /api/weeks` cloud weeks shown first (☁ cloud auto). Else shows local demo weeks. Cloud weeks are read-only topics (Pick together). Topic picker disabled for cloud (future).
 - Sync card: new `Available this week` toggle — POSTs to `/api/settings/availability`, updates UI, shows banner if you are currently unavailable + another banner if you were skipped last week (`randori-was-skipped` local flag). Also notes email fallback status. Presence still via BroadcastChannel.
 - History tab: left offline history, right personal history via `/api/history` when signed in.
-- Auth: email/password + Google SSO, token stored `randori-token`.
+- Auth: existing password login plus Google SSO, with the application token stored only in an HttpOnly cookie.
 
 **Testing locally:**
 ```bash
-# init
-curl -s http://localhost:3000/api/init | jq
-# signup
-curl -s http://localhost:3000/api/auth/signup -H content-type:application/json -d '{"email":"test@example.com","password":"secret12","name":"Test"}' | jq
-# circle
-curl -s http://localhost:3000/api/circle | jq
+# With NODE_ENV!=production, ALLOW_OPEN_SIGNUP=true, and
+# ADMIN_EMAILS=admin@example.com, create the bootstrap owner before init.
+curl -s -c /tmp/randori-admin.cookies -X POST http://localhost:3000/api/auth/signup \
+  -H 'Origin: http://localhost:3000' -H 'content-type: application/json' \
+  -d '{"email":"admin@example.com","password":"replace-me-now","name":"Admin"}' | jq
+
+# Initialize once. This closes new uninvited registration.
+curl -s -b /tmp/randori-admin.cookies -X POST http://localhost:3000/api/init \
+  -H 'Origin: http://localhost:3000' | jq
+
+# Authenticated circle read
+curl -s -b /tmp/randori-admin.cookies http://localhost:3000/api/circle | jq
 # availability off
-TOKEN=...
-curl -s http://localhost:3000/api/settings/availability -H "Authorization: Bearer $TOKEN" -H content-type:application/json -d '{"is_available":false}' | jq
-curl -s http://localhost:3000/api/settings/me -H "Authorization: Bearer $TOKEN" | jq
+curl -s -b /tmp/randori-admin.cookies -X POST http://localhost:3000/api/settings/availability \
+  -H 'Origin: http://localhost:3000' -H 'content-type:application/json' \
+  -d '{"is_available":false}' | jq
+curl -s -b /tmp/randori-admin.cookies http://localhost:3000/api/auth/me | jq
 # weeks
-curl -s http://localhost:3000/api/weeks | jq
-# admin reshuffle (only festusomole14@gmail.com token)
-curl -s -X POST http://localhost:3000/api/admin/reshuffle -H "Authorization: Bearer $ADMIN_TOKEN" | jq
+curl -s -b /tmp/randori-admin.cookies http://localhost:3000/api/weeks | jq
+# admin reshuffle
+curl -s -b /tmp/randori-admin.cookies -X POST http://localhost:3000/api/admin/reshuffle \
+  -H 'Origin: http://localhost:3000' | jq
 # cron manual
-curl -s "http://localhost:3000/api/cron/weekly?secret=$CRON_SECRET" | jq
-# AI feedback (Groq router)
-# set GROQ_API_KEY in Vercel env first — free tier 14,400 req/day, ~$0.05/1M for 8b-instant
-curl -s http://localhost:3000/api/ai/analyze -H "Authorization: Bearer $TOKEN" -H content-type:application/json -d '{"room_id":"room-abc","pair_label":"Festus×Priya","transcript":"Interviewer: explain hashmap?\nCandidate: I used Map because O(1)...\nInterviewer: edge case empty?", "code":"function twoSum(nums,t){ const m=new Map(); }","interviewer_questions":"What if duplicate?","duration_sec":480}' | jq
-# get feedback by session id
-curl -s http://localhost:3000/api/ai/feedback/1 -H "Authorization: Bearer $TOKEN" | jq
-# history + usage today
-curl -s http://localhost:3000/api/ai/history -H "Authorization: Bearer $TOKEN" | jq
+curl -s -X POST http://localhost:3000/api/cron/weekly \
+  -H "x-cron-secret: $CRON_SECRET" | jq
 ```
+
+Before enabling `CIRCLE_MEMBERSHIP_ENABLED`, verify the production database with the Turso shell:
+
+```sql
+SELECT id, public_id, name FROM circles WHERE is_primary=1 AND archived_at IS NULL;
+SELECT cm.role, cm.status, COUNT(*)
+  FROM circle_memberships cm
+  JOIN circles c ON c.id=cm.circle_id
+  WHERE c.is_primary=1 AND c.archived_at IS NULL
+  GROUP BY cm.role, cm.status;
+SELECT cae.event_type, COUNT(*)
+  FROM circle_audit_events cae
+  JOIN circles c ON c.id=cae.circle_id
+  WHERE c.is_primary=1 AND c.archived_at IS NULL
+    AND cae.event_type IN ('membership.backfilled','membership.backfill.completed')
+  GROUP BY cae.event_type;
+SELECT registrations_closed FROM circle_membership_rollout WHERE id=1;
+SELECT google_sub, COUNT(*) FROM auth_accounts
+  WHERE google_sub IS NOT NULL GROUP BY google_sub HAVING COUNT(*)>1;
+```
+
+Expect one primary circle, at least one active owner, the intended active member count, one completed-backfill event, `registrations_closed=1`, and no duplicate Google subjects. If verification fails, keep the feature flag off and restore the verified backup. Turning the flag off restores legacy sign-in and roster reads for existing accounts, but intentionally does not reopen registration; reopening the latch is a separate operator decision and must not be used as an automatic rollback.
 
 ### AI / Groq Router (video-aware)
 
@@ -158,6 +190,3 @@ ai_usage (date TEXT PK, calls INTEGER, tokens_in INTEGER, tokens_out INTEGER, up
 **Frontend:** Live Code view now has AI panel under Run output — Record button toggles recording of code snapshots (every edit, trimmed to last 6) + manual transcript / interviewer Qs textareas. Get AI Feedback calls `/api/ai/analyze`, spinner, then renders two cards (Candidate strengths/improvements, Interviewer strengths/improvements) with evidence chips + checklist + overall score. Debug box shows which model picked + why + cost + free-tier calls + alternatives (8b vs 70b). History button fetches `/api/ai/history`. Works video-aware via `window._randori_ai` exposed for parallel video subagent.
 
 **Without GROQ_API_KEY:** returns mocked feedback from same JSON shape so UI still demoable, `model_used` suffixed "(mocked - no key)" and debug notes.
-
-
-

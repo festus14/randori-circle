@@ -51,6 +51,14 @@
       "destination": "/api/data?endpoint=circle"
     },
     {
+      "source": "/api/invitations/prepare",
+      "destination": "/api/invitations?endpoint=prepare"
+    },
+    {
+      "source": "/api/invitations/:id",
+      "destination": "/api/invitations?endpoint=invitations&id=:id"
+    },
+    {
       "source": "/api/weeks",
       "destination": "/api/data?endpoint=weeks"
     },

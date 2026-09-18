@@ -4,10 +4,18 @@ import { afterEach, mock, test } from 'node:test';
 const database = {
   async execute(statement) {
     const sql = typeof statement === 'string' ? statement : String(statement?.sql || '');
+    if (sql.includes('SELECT registrations_closed FROM circle_membership_rollout')) {
+      return { rows: [{ registrations_closed: 0 }] };
+    }
     if (sql.includes('SELECT id, is_admin, password_hash, google_sub')) return { rows: [] };
     if (sql.includes('INSERT INTO auth_accounts') && sql.includes('RETURNING id')) return { rows: [{ id: 41 }] };
     if (sql.includes('SELECT id FROM users')) return { rows: [] };
     return { rows: [], rowsAffected: 0 };
+  },
+  async batch(statements) {
+    const results=[];
+    for(const statement of statements) results.push(await this.execute(statement));
+    return results;
   },
 };
 
@@ -72,7 +80,7 @@ function oauthCookies({ state = 'expected-state', verifier = 'verifier', returnP
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
-  for (const key of ['APP_URL', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'NODE_ENV']) {
+  for (const key of ['APP_URL', 'CIRCLE_MEMBERSHIP_ENABLED', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'NODE_ENV']) {
     delete process.env[key];
   }
 });

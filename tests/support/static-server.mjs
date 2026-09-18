@@ -32,7 +32,7 @@ const server = createServer((request, response) => {
     return;
   }
 
-  const requested = url.pathname === '/' || url.pathname.startsWith('/join/')
+  const requested = url.pathname === '/' || url.pathname === '/invite' || url.pathname.startsWith('/join/')
     ? 'index.html'
     : decodeURIComponent(url.pathname).replace(/^\/+/, '');
   const file = resolve(root, requested);

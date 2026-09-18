@@ -21,6 +21,8 @@ test('server-provided profile fields are rendered as text, not executable markup
     '/api/circle': {
       ok: true,
       count: 1,
+      circle_meta: { id: 1, public_id: 'circle_security', name: 'Security Circle' },
+      membership: { role: 'member' },
       circle: [{ id: 2, display_name: hostileName, color: '#c8f6a0', is_available: true }],
     },
   });

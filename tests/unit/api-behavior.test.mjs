@@ -170,7 +170,7 @@ beforeEach(() => {
   globalThis.fetch = realFetch;
   for (const key of [
     'ADMIN_EMAILS', 'AI_ENABLED', 'APP_URL', 'CRON_SECRET', 'GOOGLE_CLIENT_ID', 'NODE_ENV',
-    'GOOGLE_CLIENT_SECRET', 'GROQ_API_KEY', 'OPENAI_API_KEY', 'RESEND_API_KEY',
+    'GOOGLE_CLIENT_SECRET', 'GROQ_API_KEY', 'OPENAI_API_KEY', 'RESEND_API_KEY', 'RESEND_FROM',
     'NEXT_PUBLIC_SENTRY_DSN', 'SENTRY_DSN',
     'ALLOW_OPEN_SIGNUP', 'SIGNUP_ALLOWLIST', 'LEETCODE_INGESTION_AUTHORIZED',
     'RUN_ATTESTATION_SECRET', 'RUN_ATTESTATION_PREVIOUS_SECRETS',
@@ -1428,6 +1428,7 @@ test('questions expose only the active original catalogue and make no LeetCode o
 test('bundled legacy seed ingestion runs only through admin init', async () => {
   executeHandler = sql => {
     if (sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')) return rows([{ id: 1, email: 'admin@example.test', is_admin: 1 }]);
+    if (sql.includes('SELECT id FROM circles WHERE is_primary=1')) return rows([{ id: 1 }]);
     return rows();
   };
   executed.length = 0;
@@ -1957,6 +1958,13 @@ test('weekly email delivery caps stale outbox retries and exhausts the fifth fai
     return rows();
   };
 
+  const disabled = await invoke(opsHandler, {
+    method: 'POST', url: '/api/cron/weekly', query: { endpoint: 'weekly' },
+    headers: { 'x-cron-secret': 'cron-secret' },
+  });
+  assert.match(disabled.body.email_delivery.summary, /email disabled.*RESEND_API_KEY \+ RESEND_FROM/);
+  process.env.RESEND_FROM = 'Randori <verified@example.test>';
+
   const result = await invoke(opsHandler, {
     method: 'POST', url: '/api/cron/weekly', query: { endpoint: 'weekly' },
     headers: { 'x-cron-secret': 'cron-secret' },
@@ -1981,6 +1989,7 @@ test('weekly email delivery caps stale outbox retries and exhausts the fifth fai
 test('stale email workers cannot overwrite a newer lease or inflate delivery counters', async () => {
   process.env.CRON_SECRET = 'cron-secret';
   process.env.RESEND_API_KEY = 're_test';
+  process.env.RESEND_FROM = 'Randori <verified@example.test>';
   globalThis.fetch = async () => new Response(JSON.stringify({ id: 'mail_123' }), {
     status: 200,
     headers: { 'content-type': 'application/json' },

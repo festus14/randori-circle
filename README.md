@@ -6,12 +6,13 @@ Production deploys from `main` through Vercel. Development is iterative; the arc
 
 ## Current private-beta workflow
 
-1. An allowlisted member signs in through verified Google OAuth.
-2. The Sunday cron creates one deterministic, repeat-aware pairing cycle.
-3. Each participant receives a personalised email containing only their partner and private room link.
-4. Partners propose a time, chat, and open the session workspace, where code and completed whiteboard gestures are saved as one room-scoped checkpoint.
-5. Members choose from the original, provenance-checked catalogue; JavaScript and Python are evaluated against server-owned cases and the authoritative result is saved by the API.
-6. Both partners see a room-scoped feed of verified run summaries; source code, hidden cases, provider output, and unrelated personal runs remain private.
+1. A circle owner creates a single-use, email-bound invitation and sends its link privately.
+2. The recipient opens the link and signs in with the invited, verified Google account; existing active members can sign in normally.
+3. The Sunday cron creates one deterministic, repeat-aware pairing cycle from active primary-circle members.
+4. Each participant receives a personalised email containing only their partner and private room link.
+5. Partners propose a time, chat, and open the session workspace, where code and completed whiteboard gestures are saved as one room-scoped checkpoint.
+6. Members choose from the original, provenance-checked catalogue; JavaScript and Python are evaluated against server-owned cases and the authoritative result is saved by the API.
+7. Both partners see a room-scoped feed of verified run summaries; source code, hidden cases, provider output, and unrelated personal runs remain private.
 
 Pair workspaces now persist authenticated, revisioned code and whiteboard snapshots across devices. A completed board gesture is saved locally immediately and then synced; if the network is unavailable, the room keeps a dirty local checkpoint and retries after hydration. Viewport, selected tool, and colour are intentionally device-local. Snapshots expire after 90 days, and v1/v2 code-only rooms upgrade without losing their draft.
 
@@ -55,6 +56,8 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_schedule.js` | strict schedule validation, legacy projection, opaque versions, and conflict-safe mutations |
 | `api/_messages.js` | strict chat input, cursor, storage projection, and schema-readiness validation |
 | `api/_pair-access.js` | shared source-aware authorization for canonical private pair rooms |
+| `api/_circle-membership.js` | primary-circle membership, keyed invite hashes, signed short-lived claims, and audited acceptance |
+| `api/invitations.js` | owner-only invitation lifecycle and rate-limited public preparation |
 
 The target Next.js/Supabase architecture is intentionally phased rather than introduced as a big-bang rewrite.
 
@@ -63,12 +66,18 @@ The target Next.js/Supabase architecture is intentionally phased rather than int
 Copy `.env.example` and configure at least:
 
 - `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`
-- `JWT_SECRET` and a separate `CRON_SECRET`; `RUN_ATTESTATION_SECRET` is optional and falls back to `JWT_SECRET` when blank
+- `JWT_SECRET` with at least 32 random bytes and a separate `CRON_SECRET`; `RUN_ATTESTATION_SECRET` is optional and falls back to `JWT_SECRET` when blank
 - `APP_URL`, `GOOGLE_CLIENT_ID`, and `GOOGLE_CLIENT_SECRET`
-- `SIGNUP_ALLOWLIST` for private-beta Google accounts
+- `SIGNUP_ALLOWLIST` for the legacy private-beta Google flow while circle membership enforcement is off
+- `CIRCLE_MEMBERSHIP_ENABLED=true` to enforce invitation-gated primary-circle access after the staged migration below
+- `AUTH_SCHEMA_BOOTSTRAP_ENABLED=true` only during the documented first-admin bootstrap for a fresh database; otherwise keep it false
 - `RESEND_API_KEY` and `RESEND_FROM` for pairing notifications
 
 See [GOOGLE_OAUTH.md](GOOGLE_OAUTH.md) and [TURSO.md](TURSO.md) for provider setup. Back up the database before first deploying migrations.
+
+To roll out circle membership without locking out operators: first complete the production backup/restore rehearsal, deploy with `CIRCLE_MEMBERSHIP_ENABLED=false`, verify an authenticated `ADMIN_EMAILS` account, call the admin-only `POST /api/init`, verify the primary circle and audited non-demo account backfill, then enable the flag. Rollout probes are read-only. Atomic registration guards ensure an account racing initialization is either included or rejected while existing accounts continue to sign in. Invitation tokens are returned only once by the create endpoint; the database stores keyed hashes, and list responses expose only an email fingerprint. Disabling the flag restores the legacy roster behavior without removing membership data, but does not reopen registration after the cutover latch is closed.
+
+Rotating `JWT_SECRET` signs out every session and invalidates outstanding invitation links because the same secret keys invitation/email hashes. Revoke and reissue pending invitations during rotation.
 
 For attestation-key rotation, move each former `RUN_ATTESTATION_SECRET` into the comma-separated `RUN_ATTESTATION_PREVIOUS_SECRETS` list. Retain it there until runs signed with that key no longer need to be verified; removing it makes those historical runs appear unverified.
 
