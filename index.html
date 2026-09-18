@@ -383,6 +383,7 @@ p{margin:0}
 .chat-list{flex:1; overflow:auto; padding:10px; display:grid; gap:8px}
 .msg{padding:8px 10px; border-radius:10px; background:var(--bg-3); font-size:12.5px}
 .msg.mine{background:color-mix(in srgb, var(--accent) 22%, var(--bg-3))}
+.msg-body{white-space:pre-wrap; overflow-wrap:anywhere; margin-top:3px}
 .chat-input{border-top:1px solid var(--border); padding:8px; display:flex; gap:6px}
 @media(max-width:840px){ .hero{grid-template-columns:1fr} }
 
@@ -682,13 +683,14 @@ p{margin:0}
         <div style="margin:6px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Next session</h3><div style="flex:1;height:1px;background:var(--border)"></div></div>
         <div id="dashPairArea"></div>
         <div id="dashScheduleArea" data-testid="schedule-area"></div>
+        <div id="dashChatArea"></div>
         <div style="margin:14px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">History</h3><div style="flex:1;height:1px;background:var(--border)"></div><button id="dashHistAll" class="pill" style="font-size:11px">full history →</button></div>
         <div id="dashHistoryArea" class="card" style="padding:10px"><div id="dashHistList" class="small muted">Loading recent…</div></div>
         <div style="margin:14px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Recent runs</h3><div style="flex:1;height:1px;background:var(--border)"></div><button id="recentRunsRefresh" class="pill" style="font-size:11px">refresh</button></div>
 
         <div id="recentRunsArea" class="card" style="padding:10px"><div id="recentRunsList" class="small muted">No runs yet — hit ▶ Run</div></div>
         <div id="logsArea" class="card" style="padding:10px; display:none; margin-top:12px; border-color:#2a2e38"><div style="display:flex; justify-content:space-between; align-items:center"><h3 style="font-size:12.5px; margin:0; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Logs <span class="kbd" style="font-size:10px; margin-left:6px">admin</span></h3><span class="row" style="gap:6px"><select id="logsLevelSel" class="select" style="font-size:11px; padding:4px 8px"><option value="" selected>all levels</option><option value="error">error</option><option value="warn">warn</option><option value="success">success</option><option value="info">info</option><option value="debug">debug</option></select><button id="logsRefresh" class="pill" style="font-size:11px">refresh</button><button id="logsClear" class="pill" style="font-size:11px">clear view</button></span></div><div id="logsList" class="small muted" style="margin-top:8px; max-height:320px; overflow:auto; font-family:ui-monospace, monospace; font-size:11.5px; display:grid; gap:4px">Loading…</div><div class="small muted" style="margin-top:6px">Batched client+server logs — auto every 20s, admin can filter by level/event. Backed by Sentry-ready hook (see _randori_log). For prod monitoring consider Sentry or Better Stack (see console).</div></div>
-        <div id="dashSignOutWrap" style="margin-top:12px;text-align:right; display:block"><button id="dashSignOut" class="pill" style="font-size:12px;opacity:.75">Sign out</button></div><div id="dashChatArea"></div>
+        <div id="dashSignOutWrap" style="margin-top:12px;text-align:right; display:block"><button id="dashSignOut" class="pill" style="font-size:12px;opacity:.75">Sign out</button></div>
         <div id="dashEmpty" style="display:none" class="card"><div class="card-b"><b>No pair yet</b><div class="small muted" style="margin-top:6px">First shuffle runs Sunday 08:00 BST. Mark yourself Available to join. Meanwhile, brush up in live room.</div><div class="row" style="margin-top:10px"><button class="pill" onclick="document.querySelector('[data-tab=code]').click()">Open Code room</button><button class="pill" id="dashHow">How it works?</button></div></div></div>
       </div>
     </section>
@@ -3504,6 +3506,7 @@ def allow(key, limit=5):
 
   function hideAllViews(){
     stopSchedulePolling({clear:true});
+    stopChatPolling({clear:true});
     document.querySelectorAll('.view').forEach(v=>v.style.display='none');
     document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   }
@@ -3629,12 +3632,21 @@ def allow(key, limit=5):
   });
 
   // Dashboard
-  let chatPollTimer=null;
+  const CHAT_POLL_MS=3000;
+  const CHAT_REQUEST_TIMEOUT_MS=8000;
+  const CHAT_PAGE_LIMIT=50;
+  const CHAT_VISIBLE_LIMIT=100;
+  const CHAT_MESSAGE_MAX_CODE_POINTS=2000;
+  const CHAT_MESSAGE_MAX_BYTES=8000;
+  const CHAT_RATE_RETRY_DEFAULT_SECONDS=60;
+  const CHAT_RATE_RETRY_MAX_SECONDS=300;
+  const chatState={room:null,userId:null,epoch:0,after:0,messages:new Map(),drafts:new Map(),draftStatuses:new Map(),uncertainties:new Map(),uncertaintyGeneration:0,rateLimits:new Map(),roomFull:new Set(),rateTimer:null,pollTimer:null,pollAbort:null,pollInFlight:false,sendAbort:null,sending:false,status:'',loaded:false};
   let currentPair=null;
   let currentWeekId=null;
 
   async function showDashboard(){
     hideAllViews();
+    currentPair=null; currentWeekId=null;
     const dashboardEpoch=scheduleState.epoch;
     if(viewDashboard) viewDashboard.style.display='block';
     try{
@@ -3692,10 +3704,11 @@ def allow(key, limit=5):
       try{ window._randori_pair_cache=j; localStorage.setItem('randori-last-my-pair', JSON.stringify({week_id: j.week_id, pair: j.pair, week: j.week, at: Date.now()})); }catch{}
       renderPairCard(j);
       renderSchedule(j);
-      renderChatPlaceholder(j);
-      startChatPolling();
+      renderChat(j);
     }catch(e){
       console.error('dashboard fetch failed',e);
+      currentPair=null; currentWeekId=null;
+      stopChatPolling({clear:true});
       document.getElementById('dashPairArea').innerHTML='<div class="small muted">Could not load pairing — '+escapeHtml(e.error||e.message||'')+'</div>';
     }
   }
@@ -4156,69 +4169,520 @@ def allow(key, limit=5):
     window._randori_schedule_timer=setInterval(()=>{ pollSchedule(); },3000);
   }
 
-  function renderChatPlaceholder(data){
+  function chatUserId(){
+    const value=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid);
+    return Number.isSafeInteger(value)&&value>0?value:null;
+  }
+
+  function canonicalChatRoom(value){ return canonicalScheduleRoom(value); }
+
+  function chatRoomFromPair(data){
+    const room=String(data?.room_id||'');
+    return canonicalChatRoom(room)?room:null;
+  }
+
+  function chatNode(tag,{className='',text='',testId=''}={}){
+    const node=document.createElement(tag);
+    if(className) node.className=className;
+    if(text!=='') node.textContent=String(text);
+    if(testId) node.dataset.testid=testId;
+    return node;
+  }
+
+  function rememberChatDraft(){
+    const input=document.getElementById('chatIn');
+    if(input&&chatState.room) chatState.drafts.set(chatState.room,input.value);
+  }
+
+  function clearChatPollTimer(){
+    if(chatState.pollTimer){ clearTimeout(chatState.pollTimer); chatState.pollTimer=null; }
+  }
+
+  function clearChatRateTimer(){
+    if(chatState.rateTimer){ clearTimeout(chatState.rateTimer); chatState.rateTimer=null; }
+  }
+
+  function chatRetryAfterSeconds(response){
+    const raw=response?.headers?.get?.('Retry-After');
+    if(typeof raw!=='string'||!/^[1-9]\d{0,2}$/.test(raw)) return CHAT_RATE_RETRY_DEFAULT_SECONDS;
+    const seconds=Number(raw);
+    return Number.isSafeInteger(seconds)&&seconds<=CHAT_RATE_RETRY_MAX_SECONDS
+      ?seconds
+      :CHAT_RATE_RETRY_DEFAULT_SECONDS;
+  }
+
+  function chatRateSeconds(room){
+    const deadline=chatState.rateLimits.get(room);
+    if(!Number.isFinite(deadline)) return 0;
+    return Math.max(0,Math.ceil((deadline-Date.now())/1000));
+  }
+
+  function chatRateStatus(seconds){ return `Rate limited — retry in ${seconds}s`; }
+
+  function chatSendBlocked(){
+    return /^Delivery uncertain\b/.test(chatState.status)
+      || !!(chatState.room&&chatState.roomFull.has(chatState.room))
+      || !!(chatState.room&&chatRateSeconds(chatState.room)>0);
+  }
+
+  function resumeChatRateLimit(room=chatState.room){
+    clearChatRateTimer();
+    if(!room||room!==chatState.room) return;
+    const seconds=chatRateSeconds(room);
+    if(seconds<=0){
+      chatState.rateLimits.delete(room);
+      if(/^Rate limited\b/.test(chatState.draftStatuses.get(room)||'')) chatState.draftStatuses.delete(room);
+      if(/^Rate limited\b/.test(chatState.status)) setChatStatus('Rate limit ended — retry when ready');
+      else setChatBusy();
+      return;
+    }
+    const status=chatRateStatus(seconds);
+    chatState.draftStatuses.set(room,status);
+    setChatStatus(status);
+    chatState.rateTimer=setTimeout(()=>{ chatState.rateTimer=null; resumeChatRateLimit(room); },Math.max(100,(chatState.rateLimits.get(room)||0)-Date.now()+25));
+  }
+
+  function setChatBusy(){
+    const box=document.querySelector('[data-testid="pair-chat"]');
+    if(box) box.setAttribute('aria-busy',chatState.pollInFlight||chatState.sending?'true':'false');
+    const send=document.getElementById('chatSend');
+    if(send) send.disabled=chatState.sending||chatSendBlocked();
+  }
+
+  function setChatStatus(message){
+    const next=String(message||'');
+    if(chatState.status===next) return;
+    chatState.status=next;
+    const status=document.querySelector('[data-testid="pair-chat-status"]');
+    if(status) status.textContent=chatState.status;
+    setChatBusy();
+  }
+
+  function chatHasPrioritySendStatus(){
+    return chatState.sending||/^(?:Not sent|Delivery uncertain|Rate limited|Room is full)\b/.test(chatState.status);
+  }
+
+  function markChatDeliveryUncertain(room){
+    if(!room) return;
+    const generation=++chatState.uncertaintyGeneration;
+    chatState.uncertainties.set(room,generation);
+    const status='Delivery uncertain — refresh before retry';
+    chatState.draftStatuses.set(room,status);
+    clearChatPollTimer();
+    const pollAbort=chatState.pollAbort; chatState.pollAbort=null; pollAbort?.abort();
+    chatState.pollInFlight=false;
+    if(chatState.room===room) setChatStatus(status);
+  }
+
+  function cancelChatRequests({invalidate=true,abortSend=true}={}){
+    if(invalidate) chatState.epoch+=1;
+    clearChatPollTimer();
+    clearChatRateTimer();
+    const pollAbort=chatState.pollAbort; chatState.pollAbort=null; pollAbort?.abort();
+    chatState.pollInFlight=false;
+    if(abortSend){
+      const sendAbort=chatState.sendAbort; chatState.sendAbort=null; sendAbort?.abort();
+      chatState.sending=false;
+    }
+    setChatBusy();
+  }
+
+  function stopChatPolling({clear=true,discardDraft=false}={}){
+    rememberChatDraft();
+    if(chatState.sending&&chatState.room){
+      markChatDeliveryUncertain(chatState.room);
+    }
+    cancelChatRequests({invalidate:true,abortSend:true});
+    if(discardDraft){
+      chatState.drafts.clear(); chatState.draftStatuses.clear();
+      chatState.uncertainties.clear();
+      chatState.rateLimits.clear(); chatState.roomFull.clear();
+    }
+    if(clear){
+      chatState.room=null; chatState.userId=null; chatState.after=0; chatState.messages.clear();
+      chatState.status=''; chatState.loaded=false;
+      document.getElementById('dashChatArea')?.replaceChildren();
+    }
+  }
+
+  function clearUnavailableChatRoom(room){
+    if(!room||chatState.room!==room) return;
+    stopChatPolling({clear:true});
+    chatState.drafts.delete(room);
+    chatState.draftStatuses.delete(room);
+    chatState.uncertainties.delete(room);
+    chatState.rateLimits.delete(room);
+    chatState.roomFull.delete(room);
+    if(window._randori_authorized_room===room) window._randori_authorized_room=null;
+    if(window._randori_pair_cache?.room_id===room) window._randori_pair_cache=null;
+    currentPair=null; currentWeekId=null;
+    stopSchedulePolling({clear:true});
     const area=document.getElementById('dashChatArea');
-    const pair=data.pair; const weekId=data.week_id||data.week?.id; const pgId=pair.pg_id||pair.id;
-    area.innerHTML=`<div class="chat-box"><div class="card-h" style="padding:10px 12px"><h2 style="font-size:13px">Chat with ${escapeHtml(data.partner?.name||'partner')}</h2><span class="kbd">pair #${escapeHtml(pgId)}</span></div><div id="chatList" class="chat-list"><div class="small muted" style="padding:8px">Loading messages…</div></div><div class="chat-input"><input id="chatIn" class="input" placeholder="Message ${escapeHtml(data.partner?.name||'')} about a time or topic…" style="flex:1"/><button id="chatSend" class="btn">Send</button></div></div>`;
-    document.getElementById('chatSend')?.addEventListener('click', async()=>{
-      const btn=document.getElementById('chatSend'); const prev=btn?btn.innerHTML:''; if(btn){ btn.disabled=true; btn.innerHTML='<span class="spinner spinner-sm"></span> Sending'; }
-      try{ const txt=document.getElementById('chatIn').value.trim(); if(!txt) return; await sendMsg(weekId, pgId, txt); document.getElementById('chatIn').value=''; } finally{ if(btn){ btn.disabled=false; btn.innerHTML=prev||'Send'; } }
-    });
-    document.getElementById('chatIn')?.addEventListener('keydown', e=>{ if(e.key==='Enter') document.getElementById('chatSend').click(); });
+    if(area){
+      const status=chatNode('div',{className:'small muted',text:'Pair room no longer available — refresh dashboard',testId:'pair-chat-status'});
+      status.setAttribute('role','status');
+      area.replaceChildren(status);
+    }
+    chatState.status='Pair room no longer available — refresh dashboard';
   }
 
-  async function sendMsg(weekId, pgId, text){
-    try{
-      const r=await fetch('/api/messages',{ method:'POST', credentials:'same-origin', headers:{'content-type':'application/json'}, body: JSON.stringify({ week_id:weekId, pair_id:pgId, message:text })});
-      const j=await r.json();
-      if(!r.ok) throw j;
-      // append immediately
-      appendMsgs([j.message]);
-    }catch(e){ if(typeof toast==='function') toast('Message failed: '+(e.error||e.message)); }
+  function eligibleChatRoom(){
+    const room=pairedDashboardRoom();
+    return room
+      && room===chatState.room
+      && chatState.userId===chatUserId()
+      ?room:null;
   }
 
-  function appendMsgs(msgs){
+  function normalizeChatInstant(value){
+    if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) return null;
+    const candidate=value;
+    const parsed=new Date(candidate);
+    if(Number.isNaN(parsed.getTime())) return null;
+    const normalized=parsed.toISOString();
+    return normalized===candidate?normalized:null;
+  }
+
+  function normalizeChatMessage(raw){
+    if(!raw||typeof raw!=='object') return null;
+    const id=raw.id;
+    const senderId=raw.sender_id;
+    const createdAt=normalizeChatInstant(raw.created_at);
+    if(!Number.isSafeInteger(id)||id<1||!Number.isSafeInteger(senderId)||senderId<1||!createdAt) return null;
+    if(typeof raw.sender_name!=='string'||![...raw.sender_name].length||[...raw.sender_name].length>80) return null;
+    if(typeof raw.message!=='string'||!raw.message) return null;
+    const message=raw.message;
+    if([...message].length>CHAT_MESSAGE_MAX_CODE_POINTS||new TextEncoder().encode(message).byteLength>CHAT_MESSAGE_MAX_BYTES) return null;
+    return {
+      id,
+      sender_id:senderId,
+      sender_name:raw.sender_name,
+      message,
+      created_at:createdAt,
+    };
+  }
+
+  function localChatTime(instant){
+    const date=new Date(instant);
+    try{ return new Intl.DateTimeFormat(undefined,{dateStyle:'medium',timeStyle:'short'}).format(date); }
+    catch{ return date.toLocaleString(); }
+  }
+
+  function updateChatMessageNode(item,message){
+    item.className='msg'+(message.sender_id===chatUserId()?' mine':'');
+    item.dataset.messageId=String(message.id);
+    item.setAttribute('role','listitem');
+    const sender=chatNode('b',{text:message.sender_name});
+    sender.style.cssText='font-size:11px; color:var(--ink-3)';
+    const body=chatNode('div',{className:'msg-body',text:message.message});
+    const time=chatNode('time',{className:'small muted',text:localChatTime(message.created_at)});
+    time.dateTime=message.created_at; time.style.cssText='font-size:10px; margin-top:2px';
+    item.replaceChildren(sender,body,time);
+  }
+
+  function renderChatMessages({changedIds=new Set()}={}){
     const list=document.getElementById('chatList');
-    if(!list) return;
-    if(list.innerHTML.includes('Loading')) list.innerHTML='';
-    const meId = (()=>{ try{ const me=JSON.parse(localStorage.getItem(ME_KEY)||'null'); return me?.id }catch{return null} })();
-    msgs.forEach(m=>{
-      const d=document.createElement('div');
-      d.className='msg'+(m.sender_id===meId?' mine':'');
-      const sender=document.createElement('b');
-      sender.style.cssText='font-size:11px; color:var(--ink-3)';
-      sender.textContent=String(m.sender_name||'');
-      d.appendChild(sender);
-      d.appendChild(document.createTextNode(' '+String(m.message||'')));
-      const when=document.createElement('div');
-      when.className='small muted';
-      when.style.cssText='font-size:10px; margin-top:2px';
-      when.textContent=new Date(m.created_at).toLocaleString();
-      d.appendChild(when);
-      list.appendChild(d);
-    });
-    list.scrollTop=list.scrollHeight;
+    if(!list||!chatState.room) return;
+    const stayAtBottom=list.scrollHeight-list.scrollTop-list.clientHeight<36;
+    const ordered=[...chatState.messages.values()].sort((left,right)=>left.id-right.id).slice(-CHAT_VISIBLE_LIMIT);
+    if(!ordered.length){
+      list.querySelectorAll('[data-message-id]').forEach(node=>node.remove());
+      let empty=list.querySelector('[data-testid="pair-chat-empty"]');
+      if(!empty){ empty=chatNode('div',{className:'small muted',testId:'pair-chat-empty'}); empty.style.padding='8px'; list.append(empty); }
+      const emptyText=chatState.loaded?'No messages yet — say hello.':'Loading messages…';
+      if(empty.textContent!==emptyText) empty.textContent=emptyText;
+    }else{
+      list.querySelector('[data-testid="pair-chat-empty"]')?.remove();
+      const existing=new Map([...list.querySelectorAll('[data-message-id]')].map(node=>[Number(node.dataset.messageId),node]));
+      const retained=new Set(ordered.map(message=>message.id));
+      existing.forEach((node,id)=>{ if(!retained.has(id)) node.remove(); });
+      ordered.forEach((message,index)=>{
+        let item=existing.get(message.id);
+        if(!item){
+          item=chatNode('div');
+          updateChatMessageNode(item,message);
+        }else if(changedIds.has(message.id)){
+          updateChatMessageNode(item,message);
+        }
+        const expected=list.children[index]||null;
+        if(expected!==item) list.insertBefore(item,expected);
+      });
+    }
+    if(stayAtBottom) requestAnimationFrame(()=>{ if(list.isConnected) list.scrollTop=list.scrollHeight; });
   }
 
-  let lastMsgId=0;
-  function startChatPolling(){
-    if(chatPollTimer) clearInterval(chatPollTimer);
-    lastMsgId=0;
-    chatPollTimer=setInterval(async()=>{
-      const listEl=document.getElementById('chatList'); if(!listEl) return;
-      if(!currentPair) return;
-      const weekId=currentWeekId; const pgId=currentPair.pg_id||currentPair.id;
-      try{
-        const u=new URL('/api/messages', location.origin);
-        u.searchParams.set('week_id', weekId); u.searchParams.set('pair_id', pgId); u.searchParams.set('after', lastMsgId);
-        const r=await fetch(u, {credentials:'same-origin'});
-        const j=await r.json();
-        if(j.ok && j.messages?.length){
-          appendMsgs(j.messages);
-          lastMsgId = j.after || Math.max(...j.messages.map(m=>m.id), lastMsgId);
-        }
-      }catch{}
-    }, 2000);
+  function mergeChatMessages(messages,{forceRender=false}={}){
+    const normalized=(Array.isArray(messages)?messages:[]).map(normalizeChatMessage).filter(Boolean);
+    let changed=false;
+    const changedIds=new Set();
+    normalized.forEach(message=>{
+      const current=chatState.messages.get(message.id);
+      if(
+        !current
+        || current.sender_id!==message.sender_id
+        || current.sender_name!==message.sender_name
+        || current.message!==message.message
+        || current.created_at!==message.created_at
+      ){
+        chatState.messages.set(message.id,message);
+        changed=true;
+        changedIds.add(message.id);
+      }
+    });
+    const ordered=[...chatState.messages.values()].sort((left,right)=>left.id-right.id);
+    if(ordered.length>CHAT_VISIBLE_LIMIT){
+      chatState.messages=new Map(ordered.slice(-CHAT_VISIBLE_LIMIT).map(message=>[message.id,message]));
+      changed=true;
+    }
+    if(changed||forceRender) renderChatMessages({changedIds});
+    return {normalized,changed};
+  }
+
+  function renderChatView(room){
+    const area=document.getElementById('dashChatArea');
+    if(!area) return;
+    const box=chatNode('section',{className:'chat-box',testId:'pair-chat'});
+    box.setAttribute('role','region'); box.setAttribute('aria-labelledby','pairChatTitle'); box.setAttribute('aria-busy','false');
+    const header=chatNode('div',{className:'card-h'}); header.style.padding='10px 12px';
+    const title=chatNode('h2',{text:'Pair chat'}); title.id='pairChatTitle'; title.style.fontSize='13px';
+    const roomLabel=chatNode('span',{className:'kbd',text:room});
+    header.append(title,roomLabel);
+    const list=chatNode('div',{className:'chat-list',testId:'pair-chat-list'}); list.id='chatList';
+    list.setAttribute('role','log'); list.setAttribute('aria-live','off'); list.setAttribute('aria-relevant','additions');
+    const controls=chatNode('div',{className:'chat-input'}); controls.style.flexWrap='wrap';
+    const label=chatNode('label',{className:'small muted',text:'Message your pair'}); label.htmlFor='chatIn'; label.style.width='100%';
+    const input=chatNode('input',{className:'input',testId:'pair-chat-input'}); input.id='chatIn'; input.type='text';
+    input.autocomplete='off'; input.placeholder='Write a message…'; input.style.flex='1'; input.value=chatState.drafts.get(room)||'';
+    input.setAttribute('aria-describedby','pairChatStatus');
+    const send=chatNode('button',{className:'btn',text:'Send',testId:'pair-chat-send'}); send.id='chatSend'; send.type='button';
+    const status=chatNode('span',{className:'small muted',text:chatState.status,testId:'pair-chat-status'}); status.id='pairChatStatus';
+    status.setAttribute('role','status'); status.setAttribute('aria-live','polite'); status.style.width='100%';
+    input.addEventListener('input',()=>{
+      if(chatState.room!==room) return;
+      chatState.drafts.set(room,input.value);
+      if(
+        !input.value.trim()
+        && /^(?:Not sent|Delivery uncertain)\b/.test(chatState.draftStatuses.get(room)||'')
+      ){
+        chatState.draftStatuses.delete(room);
+        chatState.uncertainties.delete(room);
+        if(/^(?:Not sent|Delivery uncertain)\b/.test(chatState.status)) setChatStatus(chatState.loaded?(chatState.messages.size?'Up to date':'No messages yet'):'Loading messages…');
+      }
+    });
+    send.addEventListener('click',()=>{ sendChatMessage(); });
+    input.addEventListener('keydown',event=>{
+      if(event.key==='Enter'&&!event.isComposing){ event.preventDefault(); send.click(); }
+    });
+    controls.append(label,input,send,status); box.append(header,list,controls); area.replaceChildren(box);
+    renderChatMessages(); setChatBusy();
+  }
+
+  function scheduleChatPoll(delay=CHAT_POLL_MS){
+    clearChatPollTimer();
+    if(!eligibleChatRoom()) return;
+    chatState.pollTimer=setTimeout(()=>{ chatState.pollTimer=null; pollChat(); },delay);
+  }
+
+  async function pollChat(){
+    const room=eligibleChatRoom();
+    if(!room||chatState.pollInFlight) return false;
+    clearChatPollTimer();
+    const captured={room,epoch:chatState.epoch,after:chatState.after,uncertainty:chatState.uncertainties.get(room)||0};
+    const controller=new AbortController(); chatState.pollAbort=controller; chatState.pollInFlight=true;
+    let timedOut=false;
+    const priorStatus=chatState.status;
+    const timeout=setTimeout(()=>{ timedOut=true; controller.abort(); },CHAT_REQUEST_TIMEOUT_MS);
+    if(
+      !chatState.loaded
+      && priorStatus!=='Messages unavailable — retrying…'
+      && !chatHasPrioritySendStatus()
+    ) setChatStatus('Loading messages…');
+    setChatBusy();
+    try{
+      const url=new URL('/api/messages',location.origin);
+      url.searchParams.set('room_id',captured.room);
+      url.searchParams.set('after_id',String(captured.after));
+      url.searchParams.set('limit',String(CHAT_PAGE_LIMIT));
+      const response=await fetch(url,{credentials:'same-origin',cache:'no-store',signal:controller.signal});
+      const data=await response.json().catch(()=>({}));
+      if(chatState.room!==captured.room||chatState.epoch!==captured.epoch||eligibleChatRoom()!==captured.room) return false;
+      if(response.status===401||response.status===403){ stopChatPolling({clear:true,discardDraft:true}); return false; }
+      if(response.status===404){ clearUnavailableChatRoom(captured.room); return false; }
+      if(!response.ok) throw new Error(data.error||`messages ${response.status}`);
+      if(data.ok!==true||!Array.isArray(data.messages)) throw new Error('invalid message response');
+      if(data.room_id!==captured.room) throw new Error('message room mismatch');
+      const normalized=data.messages.map(normalizeChatMessage);
+      if(normalized.length>CHAT_PAGE_LIMIT||normalized.some(message=>!message)) throw new Error('invalid message response');
+      const responseAfter=data.after;
+      const ordered=normalized.every((message,index)=>index===0||message.id>normalized[index-1].id);
+      const lastId=normalized.length?normalized[normalized.length-1].id:captured.after;
+      if(
+        !Number.isSafeInteger(responseAfter)
+        || !ordered
+        || responseAfter!==lastId
+        || (captured.after>0&&normalized.some(message=>message.id<=captured.after))
+      ) throw new Error('invalid message cursor');
+      const firstLoad=!chatState.loaded;
+      const currentUncertainty=chatState.uncertainties.get(captured.room)||0;
+      const resolvesUncertainty=currentUncertainty>0&&captured.uncertainty===currentUncertainty;
+      chatState.after=responseAfter; chatState.loaded=true;
+      const merged=mergeChatMessages(normalized,{forceRender:firstLoad});
+      if(firstLoad) document.getElementById('chatList')?.setAttribute('aria-live','polite');
+      if(resolvesUncertainty){
+        chatState.uncertainties.delete(captured.room);
+        chatState.draftStatuses.delete(captured.room);
+        setChatStatus('Latest messages loaded — check before retry');
+      }else if(
+        !chatHasPrioritySendStatus()
+        && (firstLoad||merged.changed||priorStatus==='Messages unavailable — retrying…')
+      ) setChatStatus(chatState.messages.size?'Up to date':'No messages yet');
+      return true;
+    }catch(error){
+      if((error?.name!=='AbortError'||timedOut)&&chatState.room===captured.room&&chatState.epoch===captured.epoch){
+        if(!chatHasPrioritySendStatus()) setChatStatus('Messages unavailable — retrying…');
+      }
+      return false;
+    }finally{
+      clearTimeout(timeout);
+      if(chatState.pollAbort===controller){
+        chatState.pollAbort=null; chatState.pollInFlight=false; setChatBusy(); scheduleChatPoll();
+      }
+    }
+  }
+
+  async function sendChatMessage(){
+    const room=eligibleChatRoom();
+    const input=document.getElementById('chatIn');
+    if(!room||!input||chatState.sending) return false;
+    if(chatSendBlocked()) return false;
+    const raw=input.value;
+    const message=raw.trim();
+    if(!message){ setChatStatus('Write a message first.'); input.focus(); return false; }
+    if([...message].length>CHAT_MESSAGE_MAX_CODE_POINTS||new TextEncoder().encode(message).byteLength>CHAT_MESSAGE_MAX_BYTES){
+      setChatStatus('Message is too long.'); input.focus(); return false;
+    }
+    const captured={room,epoch:chatState.epoch,raw};
+    const controller=new AbortController(); chatState.sendAbort=controller; chatState.sending=true;
+    const timeout=setTimeout(()=>controller.abort(),CHAT_REQUEST_TIMEOUT_MS);
+    chatState.drafts.set(room,raw); chatState.draftStatuses.delete(room); setChatStatus('Sending…'); setChatBusy();
+    let accepted=false;
+    let rejectionConfirmed=false;
+    try{
+      const response=await fetch('/api/messages',{
+        method:'POST',credentials:'same-origin',signal:controller.signal,headers:{'content-type':'application/json'},
+        body:JSON.stringify({room_id:captured.room,message}),
+      });
+      rejectionConfirmed=!response.ok;
+      const data=await response.json().catch(()=>({}));
+      if(chatState.room!==captured.room||chatState.epoch!==captured.epoch||eligibleChatRoom()!==captured.room) return false;
+      if(response.status===401||response.status===403){ stopChatPolling({clear:true,discardDraft:true}); return false; }
+      if(response.status===404){ clearUnavailableChatRoom(captured.room); return false; }
+      if(response.status===429){
+        const seconds=chatRetryAfterSeconds(response);
+        chatState.rateLimits.set(captured.room,Date.now()+seconds*1000);
+        const status=chatRateStatus(seconds);
+        chatState.draftStatuses.set(captured.room,status);
+        setChatStatus(status);
+        resumeChatRateLimit(captured.room);
+        return false;
+      }
+      if(response.status===409){
+        clearChatRateTimer();
+        chatState.rateLimits.delete(captured.room);
+        chatState.roomFull.add(captured.room);
+        const status='Room is full — sending is disabled';
+        chatState.draftStatuses.set(captured.room,status);
+        setChatStatus(status);
+        return false;
+      }
+      if(response.status!==201||data.ok!==true) throw new Error(data.error||`message ${response.status}`);
+      if(data.room_id!==captured.room) throw new Error('message room mismatch');
+      const acknowledged=normalizeChatMessage(data.message);
+      if(!acknowledged) throw new Error('invalid message response');
+      // Do not advance the poll cursor from an acknowledgement: messages sent by
+      // a partner between the last poll and this write must still be fetched.
+      mergeChatMessages([acknowledged]);
+      if(input.value===captured.raw){ input.value=''; chatState.drafts.set(captured.room,''); }
+      else chatState.drafts.set(captured.room,input.value);
+      chatState.draftStatuses.delete(captured.room);
+      chatState.uncertainties.delete(captured.room);
+      setChatStatus('Sent'); accepted=true;
+      return true;
+    }catch(error){
+      if(chatState.room===captured.room&&chatState.epoch===captured.epoch){
+        const current=document.getElementById('chatIn');
+        if(current) chatState.drafts.set(captured.room,current.value);
+        const status=rejectionConfirmed?'Not sent — retry':'Delivery uncertain — refresh before retry';
+        if(rejectionConfirmed){ chatState.draftStatuses.set(captured.room,status); setChatStatus(status); }
+        else{ markChatDeliveryUncertain(captured.room); scheduleChatPoll(0); }
+        current?.focus();
+        if(typeof toast==='function') toast(rejectionConfirmed?'Message not sent — retry when ready.':'Delivery uncertain — refresh before retrying.');
+      }
+      return false;
+    }finally{
+      clearTimeout(timeout);
+      if(chatState.sendAbort===controller){ chatState.sendAbort=null; chatState.sending=false; setChatBusy(); }
+      if(accepted&&eligibleChatRoom()===captured.room) pollChat();
+    }
+  }
+
+  function renderChat(data){
+    const room=chatRoomFromPair(data);
+    const userId=chatUserId();
+    if(!room||!userId){ stopChatPolling({clear:true}); return false; }
+    stopChatPolling({clear:true});
+    chatState.room=room; chatState.userId=userId; chatState.after=0; chatState.messages=new Map();
+    const remaining=chatRateSeconds(room);
+    if(!remaining){
+      chatState.rateLimits.delete(room);
+      if(/^Rate limited\b/.test(chatState.draftStatuses.get(room)||'')) chatState.draftStatuses.delete(room);
+    }
+    chatState.loaded=false;
+    chatState.status=chatState.roomFull.has(room)
+      ?'Room is full — sending is disabled'
+      :(remaining?chatRateStatus(remaining):(chatState.draftStatuses.get(room)||'Loading messages…'));
+    renderChatView(room);
+    if(remaining) resumeChatRateLimit(room);
+    pollChat();
+    return true;
+  }
+
+  function pauseChatForVisibility(){
+    rememberChatDraft();
+    const interruptedSend=chatState.sending;
+    if(interruptedSend&&chatState.room){
+      markChatDeliveryUncertain(chatState.room);
+    }
+    cancelChatRequests({invalidate:true,abortSend:true});
+    if(interruptedSend) setChatStatus('Delivery uncertain — refresh before retry');
+  }
+
+  window._randori_chat={
+    refresh:pollChat,
+    stop:stopChatPolling,
+    get room(){ return chatState.room; },
+    get epoch(){ return chatState.epoch; },
+    get after(){ return chatState.after; },
+    get status(){ return chatState.status; },
+    get draft(){ return chatState.room?chatState.drafts.get(chatState.room)||'':''; },
+    get messages(){ return [...chatState.messages.values()].sort((left,right)=>left.id-right.id).map(message=>({...message})); },
+  };
+  if(!window._randori_chat_initialized){
+    window._randori_chat_initialized=true;
+    window.addEventListener('randori:room-change',()=>{ stopChatPolling({clear:true}); });
+    document.querySelector('.tabs')?.addEventListener('click',()=>{ stopChatPolling({clear:true}); });
+    document.addEventListener('visibilitychange',()=>{
+      if(document.visibilityState==='visible'){ resumeChatRateLimit(); pollChat(); }
+      else pauseChatForVisibility();
+    });
+    window.addEventListener('randori:auth-refreshed',()=>{
+      if(!chatUserId()) stopChatPolling({clear:true,discardDraft:true});
+      else if(chatState.userId&&chatState.userId!==chatUserId()) stopChatPolling({clear:true,discardDraft:true});
+      else pollChat();
+    });
+    document.addEventListener('click',event=>{
+      if(event.target?.closest?.('#signOutBtn,#dashSignOut,#psSignOut,#meSignOut')) stopChatPolling({clear:true,discardDraft:true});
+    },{capture:true});
   }
 
   function canonicalJoinRoom(){

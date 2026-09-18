@@ -2,6 +2,7 @@ import { captureSentryException, captureSentryMessage, getClient, getAdminEmails
 import { createEvaluationSuite, getPublicExercise, listPublicExercises } from './_catalog.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
 import { applyScheduleMutation, nextScheduleUpdatedAt, parseScheduleMutation, projectSchedule, readScheduleState, ScheduleDataError, ScheduleInputError } from './_schedule.js';
+import { ensureMessagesReadiness, MAX_MESSAGES_PER_ROOM, MAX_MESSAGES_PER_USER_PER_MINUTE, MESSAGE_RATE_RETRY_SECONDS, MessageDataError, MessageInputError, parseMessageSend, parseMessagesQuery, projectMessage, validateMessagesPostQuery } from './_messages.js';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 function isAdminCheck(email, flag){
@@ -1190,15 +1191,10 @@ async function handleMyPair(req,res){
       else throw error;
     }
   }
-  let messagesPreview=[];
-  try{
-    const m = await db.execute({ sql:`SELECT id, sender_id, message, created_at FROM pair_messages WHERE week_id=? AND pair_group_id=? ORDER BY id DESC LIMIT 3`, args:[weekId, grp.pg_id] });
-    messagesPreview = m.rows.reverse().map(r=>({ id:r.id, sender_id:r.sender_id, message:r.message, created_at:r.created_at }));
-  }catch{}
   const meRow = await db.execute({ sql:`SELECT id, display_name, color, tz, interview_focus FROM auth_accounts WHERE id=?`, args:[userId] }).catch(()=>({rows:[]}));
   const me = meRow.rows && meRow.rows[0] ? { id:meRow.rows[0].id, name:meRow.rows[0].display_name, color:meRow.rows[0].color, tz:meRow.rows[0].tz, interview_focus:meRow.rows[0].interview_focus } : { id:userId };
   const roomId = `week_${weekId}_pair_${grp.pg_id}`;
-  return res.json({ ok:true, paired:true, room_id:roomId, week_id:weekId, week: weekRow ? { id:weekRow.id||weekId, week_label:weekRow.week_label, week_start:weekRow.week_start, focus:weekRow.focus } : { id:weekId }, pair: { pg_id:grp.pg_id, week_id:weekId, room_id:roomId, user_a_id:grp.user_a_id, user_b_id:grp.user_b_id, user_c_id:grp.user_c_id??null, is_ai_pair:isAI, is_ai:isAI, topic:grp.topic, topic_kind:grp.topic_kind }, partner, partners, me, schedule, messagesPreview });
+  return res.json({ ok:true, paired:true, room_id:roomId, week_id:weekId, week: weekRow ? { id:weekRow.id||weekId, week_label:weekRow.week_label, week_start:weekRow.week_start, focus:weekRow.focus } : { id:weekId }, pair: { pg_id:grp.pg_id, week_id:weekId, room_id:roomId, user_a_id:grp.user_a_id, user_b_id:grp.user_b_id, user_c_id:grp.user_c_id??null, is_ai_pair:isAI, is_ai:isAI, topic:grp.topic, topic_kind:grp.topic_kind }, partner, partners, me, schedule });
 }
 
 async function fetchScheduleState(db,weekId,pairId){
@@ -1301,49 +1297,143 @@ async function handleSchedule(req,res){
 }
 
 async function handleMessages(req,res){
-  const payload = getAuthPayload(req);
-  if (!payload) return res.status(401).json({ error:'missing Bearer token' });
-  const db = getClient();
-  await ensureProfileMigrations(db);
-  const userId = payload.id||payload.uid;
-  if (req.method === 'GET'){
-    const weekId = req.query?.week_id ? parseInt(String(req.query.week_id),10) : null;
-    const pairId = req.query?.pair_id ? parseInt(String(req.query.pair_id),10) : (req.query?.pg_id ? parseInt(String(req.query.pg_id),10) : null);
-    if (!weekId || !pairId) return res.status(400).json({ error:'week_id and pair_id required' });
-    const after = req.query?.after ? parseInt(String(req.query.after),10) : 0;
-    try{
-      const access=await getPairAccess(db,payload,weekId,pairId);
-      if(!access.exists) return res.status(404).json({error:'pair not found'});
-      if(!access.allowed) return res.status(403).json({error:'not member of this pair'});
-      let sql = `SELECT pm.id, pm.sender_id, pm.message, pm.created_at, aa.display_name as sender_name, aa.color as sender_color FROM pair_messages pm LEFT JOIN auth_accounts aa ON aa.id=pm.sender_id WHERE pm.week_id=? AND pm.pair_group_id=?`;
-      const args=[weekId, pairId];
-      if (after){ sql+=` AND pm.id>?`; args.push(after); }
-      sql+=` ORDER BY pm.id ASC LIMIT 100`;
-      const rs = await db.execute({ sql, args });
-      return res.json({ ok:true, messages: rs.rows.map(r=>({ id:r.id, sender_id:r.sender_id, sender_name:r.sender_name||`User ${r.sender_id}`, sender_color:r.sender_color||'#9aa0a6', message:r.message, created_at:r.created_at })), after: rs.rows.length? rs.rows[rs.rows.length-1].id : after });
-    }catch(e){ return res.status(500).json({ error:'messages fetch failed', detail:String(e.message||e).slice(0,200)}); }
+  res.setHeader('Cache-Control','private, no-store');
+  if(req.method!=='GET'&&req.method!=='POST'){
+    res.setHeader('Allow','GET, POST');
+    return res.status(405).json({error:'GET or POST only'});
   }
-  if (req.method === 'POST'){
-    const body = req.body||{};
-    const weekId = body.week_id ? parseInt(String(body.week_id),10) : null;
-    const pairId = body.pair_id ? parseInt(String(body.pair_id),10) : (body.pg_id ? parseInt(String(body.pg_id),10) : null);
-    const text = body.message ? String(body.message).trim().slice(0,2000) : '';
-    if (!weekId || !pairId) return res.status(400).json({ error:'week_id and pair_id required' });
-    if (!text) return res.status(400).json({ error:'message required' });
-    try{
-      const access=await getPairAccess(db,payload,weekId,pairId);
-      if(!access.exists) return res.status(404).json({error:'pair not found'});
-      if(!access.allowed) return res.status(403).json({error:'not member of this pair'});
-    }catch{ return res.status(500).json({ error:'db check failed' }); }
-    try{
-      const ins = await db.execute({ sql:`INSERT INTO pair_messages (week_id, pair_group_id, sender_id, message, created_at) VALUES (?,?,?, ?, datetime('now')) RETURNING id`, args:[weekId, pairId, userId, text] });
-      const id = ins.rows[0].id;
-      const rs = await db.execute({ sql:`SELECT pm.id, pm.sender_id, pm.message, pm.created_at, aa.display_name as sender_name, aa.color as sender_color FROM pair_messages pm LEFT JOIN auth_accounts aa ON aa.id=pm.sender_id WHERE pm.id=?`, args:[id] });
-      const r=rs.rows[0];
-      return res.json({ ok:true, message:{ id:r.id, sender_id:r.sender_id, sender_name:r.sender_name||`User`, sender_color:r.sender_color, message:r.message, created_at:r.created_at }});
-    }catch(e){ return res.status(500).json({ error:'insert failed', detail:String(e.message||e).slice(0,200)}); }
+  const payload=getAuthPayload(req);
+  if(!payload) return res.status(401).json({error:'authentication required'});
+
+  let input;
+  try{
+    if(req.method==='GET') input=parseMessagesQuery(req);
+    else{ validateMessagesPostQuery(req); input=parseMessageSend(req.body); }
   }
-  return res.status(405).json({ error:'GET or POST only' });
+  catch(error){
+    if(error instanceof MessageInputError) return res.status(error.statusCode).json({error:error.message});
+    throw error;
+  }
+
+  const db=getClient();
+  let access;
+  try{ access=await getPairAccess(db,payload,input.weekId,input.pairGroupId); }
+  catch{ return res.status(503).json({error:'messages unavailable'}); }
+  if(!access.exists||!access.allowed) return res.status(404).json({error:'pair not found'});
+
+  try{ await ensureMessagesReadiness(db); }
+  catch{ return res.status(503).json({error:'messages unavailable'}); }
+
+  if(req.method==='GET'){
+    try{
+      const projection=`pm.id,pm.sender_id,pm.message,pm.created_at,aa.display_name AS sender_name`;
+      let sql,args;
+      if(input.afterId===0){
+        sql=`WITH access AS (
+          SELECT 1 FROM pairing_groups
+          WHERE id=? AND week_id=? AND (user_a_id=? OR user_b_id=? OR user_c_id=?)
+        ), selected AS (
+          SELECT ${projection}
+          FROM pair_messages pm LEFT JOIN auth_accounts aa ON aa.id=pm.sender_id
+          WHERE pm.week_id=? AND pm.pair_group_id=? AND EXISTS (SELECT 1 FROM access)
+          ORDER BY pm.id DESC LIMIT ?
+        )
+        SELECT id,sender_id,message,created_at,sender_name FROM selected
+        UNION ALL SELECT NULL,NULL,NULL,NULL,NULL
+          WHERE EXISTS (SELECT 1 FROM access) AND NOT EXISTS (SELECT 1 FROM selected)
+        ORDER BY id ASC`;
+        args=[input.pairGroupId,input.weekId,payload.id||payload.uid,payload.id||payload.uid,payload.id||payload.uid,
+          input.weekId,input.pairGroupId,input.limit];
+      }else{
+        sql=`WITH access AS (
+          SELECT 1 FROM pairing_groups
+          WHERE id=? AND week_id=? AND (user_a_id=? OR user_b_id=? OR user_c_id=?)
+        ), selected AS (
+          SELECT ${projection}
+          FROM pair_messages pm LEFT JOIN auth_accounts aa ON aa.id=pm.sender_id
+          WHERE pm.week_id=? AND pm.pair_group_id=? AND pm.id>? AND EXISTS (SELECT 1 FROM access)
+          ORDER BY pm.id ASC LIMIT ?
+        )
+        SELECT id,sender_id,message,created_at,sender_name FROM selected
+        UNION ALL SELECT NULL,NULL,NULL,NULL,NULL
+          WHERE EXISTS (SELECT 1 FROM access) AND NOT EXISTS (SELECT 1 FROM selected)
+        ORDER BY id ASC`;
+        args=[input.pairGroupId,input.weekId,payload.id||payload.uid,payload.id||payload.uid,payload.id||payload.uid,
+          input.weekId,input.pairGroupId,input.afterId,input.limit];
+      }
+      const result=await db.execute({sql,args});
+      if(!result.rows.length){
+        let latest;
+        try{ latest=await getPairAccess(db,payload,input.weekId,input.pairGroupId); }
+        catch{ return res.status(503).json({error:'messages unavailable'}); }
+        if(!latest.exists||!latest.allowed) return res.status(404).json({error:'pair not found'});
+        return res.status(503).json({error:'messages unavailable'});
+      }
+      const messages=result.rows.filter(row=>row.id!==null&&row.id!==undefined).map(projectMessage);
+      return res.json({ok:true,room_id:input.roomId,messages,after:messages.length?messages.at(-1).id:input.afterId});
+    }catch(error){
+      if(error instanceof MessageDataError) return res.status(503).json({error:'messages unavailable'});
+      return res.status(503).json({error:'messages unavailable'});
+    }
+  }
+
+  const userId=Number(payload.id||payload.uid);
+  try{
+    const senderResult=await db.execute({
+      sql:`SELECT id,display_name FROM auth_accounts WHERE id=? LIMIT 1`,
+      args:[userId],
+    });
+    if(!senderResult.rows.length) return res.status(503).json({error:'messages unavailable'});
+    const inserted=await db.execute({
+      sql:`INSERT INTO pair_messages (week_id,pair_group_id,sender_id,message,created_at)
+        SELECT ?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE EXISTS (
+          SELECT 1 FROM pairing_groups
+          WHERE id=? AND week_id=? AND (user_a_id=? OR user_b_id=? OR user_c_id=?)
+        )
+          AND (SELECT COUNT(*) FROM pair_messages
+            WHERE sender_id=? AND datetime(created_at)>=datetime('now','-1 minute'))<?
+          AND (SELECT COUNT(*) FROM pair_messages
+            WHERE week_id=? AND pair_group_id=?)<?
+        RETURNING id,sender_id,message,created_at`,
+      args:[input.weekId,input.pairGroupId,userId,input.message,input.pairGroupId,input.weekId,userId,userId,userId,
+        userId,MAX_MESSAGES_PER_USER_PER_MINUTE,input.weekId,input.pairGroupId,MAX_MESSAGES_PER_ROOM],
+    });
+    if(!inserted.rows.length){
+      let state;
+      try{
+        state=await db.execute({
+          sql:`SELECT
+            EXISTS(SELECT 1 FROM pairing_groups WHERE id=? AND week_id=?) AS pair_exists,
+            EXISTS(SELECT 1 FROM pairing_groups
+              WHERE id=? AND week_id=? AND (user_a_id=? OR user_b_id=? OR user_c_id=?)) AS allowed,
+            (SELECT COUNT(*) FROM pair_messages
+              WHERE sender_id=? AND datetime(created_at)>=datetime('now','-1 minute')) AS recent_count,
+            (SELECT COUNT(*) FROM pair_messages WHERE week_id=? AND pair_group_id=?) AS room_count`,
+          args:[input.pairGroupId,input.weekId,input.pairGroupId,input.weekId,userId,userId,userId,
+            userId,input.weekId,input.pairGroupId],
+        });
+      }
+      catch{ return res.status(503).json({error:'messages unavailable'}); }
+      const latest=state.rows[0];
+      if(!latest||!Number(latest.pair_exists)||!Number(latest.allowed)){
+        return res.status(404).json({error:'pair not found'});
+      }
+      if(Number(latest.recent_count)>=MAX_MESSAGES_PER_USER_PER_MINUTE){
+        res.setHeader('Retry-After',String(MESSAGE_RATE_RETRY_SECONDS));
+        return res.status(429).json({error:'message rate limit exceeded'});
+      }
+      if(Number(latest.room_count)>=MAX_MESSAGES_PER_ROOM){
+        return res.status(409).json({error:'message room is full'});
+      }
+      return res.status(503).json({error:'messages unavailable'});
+    }
+    const message=projectMessage({...inserted.rows[0],sender_name:senderResult.rows[0].display_name});
+    return res.status(201).json({ok:true,room_id:input.roomId,message});
+  }catch(error){
+    if(error instanceof MessageDataError) return res.status(503).json({error:'messages unavailable'});
+    return res.status(503).json({error:'messages unavailable'});
+  }
 }
 
 async function handleQuestions(req,res){

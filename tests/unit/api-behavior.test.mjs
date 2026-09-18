@@ -465,12 +465,12 @@ test('profile, pair schedule, and messages enforce ownership while catalogue and
       return rows([{...scheduleState}],{rowsAffected:1});
     }
     if (sql.includes('FROM pair_schedules WHERE week_id=? AND pair_group_id=? LIMIT 1')) return rows([{...scheduleState}]);
-    if (sql.includes('INSERT INTO pair_messages') && sql.includes('RETURNING id')) return rows([{ id: 40 }]);
-    if (sql.includes('FROM pair_messages pm') && sql.includes('WHERE pm.id=')) return rows([{
-      id: 40, sender_id: 2, sender_name: 'Updated User', sender_color: '#123456', message: 'Sunday works', created_at: 'now',
+    if (sql.includes('SELECT id,display_name FROM auth_accounts WHERE id=')) return rows([{ id: 2, display_name: 'Updated User' }]);
+    if (sql.includes('INSERT INTO pair_messages') && sql.includes('RETURNING id')) return rows([{
+      id: 40, sender_id: 2, message: 'Sunday works', created_at: '2026-09-18T06:00:00.000Z',
     }]);
     if (sql.includes('FROM pair_messages pm')) return rows([{
-      id: 40, sender_id: 2, sender_name: 'Updated User', sender_color: '#123456', message: 'Sunday works', created_at: 'now',
+      id: 40, sender_id: 2, sender_name: 'Updated User', message: 'Sunday works', created_at: '2026-09-18T06:00:00.000Z',
     }]);
     if (sql.includes('FROM session_runs WHERE user_id=')) return rows([{
       id:60,
@@ -524,8 +524,10 @@ test('profile, pair schedule, and messages enforce ownership while catalogue and
 
   const message = await invoke(dataHandler, {
     method: 'POST', url: '/api/messages', query: { endpoint: 'messages' }, headers,
-    body: { week_id: 10, pair_id: 20, message: 'Sunday works' },
+    body: { room_id: 'week_10_pair_20', message: 'Sunday works' },
   });
+  assert.equal(message.status, 201);
+  assert.equal(message.body.room_id, 'week_10_pair_20');
   assert.equal(message.body.message.message, 'Sunday works');
 
   const question = await invoke(dataHandler, {
@@ -1455,7 +1457,7 @@ test('data validation and access-control branches reject malformed or cross-pair
     [{ url: '/api/schedule', query: { endpoint: 'schedule' }, headers }, 400],
     [{ url: '/api/schedule', query: { endpoint: 'schedule', room_id:'week_10_pair_20' }, headers }, 403],
     [{ method: 'POST', url: '/api/messages', query: { endpoint: 'messages' }, headers, body: {} }, 400],
-    [{ method: 'POST', url: '/api/messages', query: { endpoint: 'messages' }, headers, body: { week_id: 10, pair_id: 20, message: 'no access' } }, 403],
+    [{ method: 'POST', url: '/api/messages', query: { endpoint: 'messages' }, headers, body: { room_id: 'week_10_pair_20', message: 'no access' } }, 404],
     [{ method: 'POST', url: '/api/questions', query: { endpoint: 'questions' }, headers, body: {} }, 405],
     [{ method: 'POST', url: '/api/questions', query: { endpoint: 'questions' }, headers, body: { title: 'Title' } }, 405],
     [{ method: 'DELETE', url: '/api/questions', query: { endpoint: 'questions' }, headers, body: {} }, 405],
