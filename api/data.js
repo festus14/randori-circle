@@ -1,6 +1,7 @@
 import { captureSentryException, captureSentryMessage, getClient, getAdminEmails, getJwtSecret, initSentry, isSentryConfigured, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 import { createEvaluationSuite, getPublicExercise, listPublicExercises } from './_catalog.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
+import { AUTH_PAIR_ACCESS_SQL, authPairAccessArgs, getAuthenticatedPairAccess } from './_pair-access.js';
 import { applyScheduleMutation, nextScheduleUpdatedAt, parseScheduleMutation, projectSchedule, readScheduleState, ScheduleDataError, ScheduleInputError } from './_schedule.js';
 import { ensureMessagesReadiness, MAX_MESSAGES_PER_ROOM, MAX_MESSAGES_PER_USER_PER_MINUTE, MESSAGE_RATE_RETRY_SECONDS, MessageDataError, MessageInputError, parseMessageSend, parseMessagesQuery, projectMessage, validateMessagesPostQuery } from './_messages.js';
 import { ensurePairRecapReadiness, MAX_RECAP_ACTIVITY, MAX_RECAP_RUN_SCAN, newestRecapActivity, PairRecapDataError, PairRecapInputError, parsePairRecapQuery, projectRecapMessage, projectRecapPair, projectRecapRun, projectRecapSchedule, projectRecapWorkspace } from './_pair-recap.js';
@@ -454,16 +455,26 @@ function parseBoundedQueryInteger(value,{defaultValue,min,max}){
   return Number.isSafeInteger(parsed)&&parsed>=min&&parsed<=max ? parsed : null;
 }
 
+function authenticatedUserId(payload){
+  const value=payload?.id??payload?.uid;
+  if(typeof value==='number') return Number.isSafeInteger(value)&&value>0?value:null;
+  if(typeof value!=='string'||!/^[1-9]\d*$/.test(value)) return null;
+  const parsed=Number(value);
+  return Number.isSafeInteger(parsed)?parsed:null;
+}
+
 async function getPairAccess(db, payload, weekId, pairId){
-  const userId=Number(payload?.id||payload?.uid);
-  if(!Number.isInteger(userId) || !Number.isInteger(weekId) || !Number.isInteger(pairId)) return {allowed:false, exists:false};
-  const group=await db.execute({sql:`SELECT id,user_a_id,user_b_id,user_c_id FROM pairing_groups WHERE id=? AND week_id=? LIMIT 1`, args:[pairId,weekId]});
-  if(!group.rows.length) return {allowed:false, exists:false};
-  const row=group.rows[0];
-  return {
-    allowed:[row.user_a_id,row.user_b_id,row.user_c_id].some(memberId=>Number(memberId)===userId),
-    exists:true,
-  };
+  const userId=authenticatedUserId(payload);
+  if(!userId) return {allowed:false,exists:false,row:null};
+  try{
+    const row=await getAuthenticatedPairAccess(db,{userId,weekId,pairGroupId:pairId});
+    // Do not expose whether a denied room exists: a missing source snapshot, a
+    // legacy participant collision, and an absent pair all have one result.
+    return {allowed:!!row,exists:!!row,row};
+  }catch(error){
+    if(error instanceof TypeError) return {allowed:false,exists:false,row:null};
+    throw error;
+  }
 }
 
 async function ensureBaseTables(db){
@@ -709,6 +720,7 @@ async function probeRunsSchema(db){
   // explicit reads are the success boundary for the schema this route uses.
   await db.execute(`SELECT id,display_name FROM auth_accounts LIMIT 0`);
   await db.execute(`SELECT id,week_id,user_a_id,user_b_id,user_c_id FROM pairing_groups LIMIT 0`);
+  await db.execute(`SELECT week_id,user_id,source FROM pairing_participants LIMIT 0`);
   await db.execute(`SELECT id,user_id,week_id,pair_group_id,question_id,question_slug,language,code,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at FROM session_runs LIMIT 0`);
 }
 
@@ -1042,9 +1054,28 @@ async function handleInit(req,res){
     `CREATE TABLE IF NOT EXISTS pairing_participants (week_id INTEGER NOT NULL, user_id INTEGER NOT NULL, position INTEGER NOT NULL, source TEXT NOT NULL DEFAULT 'auth', created_at TEXT DEFAULT (datetime('now')), PRIMARY KEY (week_id, user_id))`,
     `CREATE TABLE IF NOT EXISTS questions (id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT UNIQUE NOT NULL, title TEXT NOT NULL, type TEXT NOT NULL, difficulty TEXT NOT NULL, category TEXT NOT NULL, description TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS video_signals (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT NOT NULL, from_id TEXT NOT NULL, to_id TEXT, type TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`,
+    `CREATE TABLE IF NOT EXISTS pair_room_snapshots (
+      room_id TEXT PRIMARY KEY,
+      week_id INTEGER NOT NULL,
+      pair_group_id INTEGER NOT NULL,
+      revision INTEGER NOT NULL,
+      schema_version INTEGER NOT NULL,
+      client_id TEXT NOT NULL,
+      client_seq INTEGER NOT NULL,
+      language TEXT NOT NULL,
+      question_id TEXT NOT NULL,
+      code TEXT NOT NULL,
+      updated_by INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(week_id,pair_group_id),
+      FOREIGN KEY(pair_group_id) REFERENCES pairing_groups(id) ON DELETE CASCADE
+    )`,
     `CREATE TABLE IF NOT EXISTS ai_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT, pair_label TEXT, transcript TEXT, code_snapshots TEXT, interviewer_questions TEXT, started_at TEXT DEFAULT (datetime('now')), ended_at TEXT, duration_sec INTEGER, cost_cents INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now')), created_by INTEGER)`,
     `CREATE TABLE IF NOT EXISTS ai_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL REFERENCES ai_sessions(id) ON DELETE CASCADE, role TEXT DEFAULT 'both', feedback_json TEXT NOT NULL, evidence TEXT, model_used TEXT, reason_for_pick TEXT, estimated_cost_cents INTEGER, confidence REAL DEFAULT 0.85, created_at TEXT DEFAULT (datetime('now')))`,
     `CREATE TABLE IF NOT EXISTS ai_usage (date TEXT PRIMARY KEY, calls INTEGER DEFAULT 0, tokens_in INTEGER DEFAULT 0, tokens_out INTEGER DEFAULT 0, updated_at TEXT DEFAULT (datetime('now')))`,
+    `CREATE TABLE IF NOT EXISTS ai_account_monthly_usage (month TEXT NOT NULL CHECK(length(month)=7 AND month GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]'), user_id INTEGER NOT NULL CHECK(user_id>0), calls INTEGER NOT NULL DEFAULT 0 CHECK(calls>=0), tokens_in INTEGER NOT NULL DEFAULT 0 CHECK(tokens_in>=0), updated_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY(month,user_id))`,
+    `CREATE TABLE IF NOT EXISTS ai_account_monthly_reservations (reservation_id TEXT PRIMARY KEY, month TEXT NOT NULL, user_id INTEGER NOT NULL CHECK(user_id>0), tokens_in INTEGER NOT NULL DEFAULT 0 CHECK(tokens_in>=0), session_id INTEGER UNIQUE, refunded_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')))`,
     `CREATE TABLE IF NOT EXISTS pair_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL, sender_id INTEGER NOT NULL, message TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`,
     `CREATE TABLE IF NOT EXISTS pair_schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL, proposed_times TEXT, agreed_time TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')), UNIQUE(week_id,pair_group_id))`,
     `CREATE TABLE IF NOT EXISTS custom_questions (
@@ -1119,6 +1150,7 @@ async function handleInit(req,res){
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_question ON session_runs(question_slug)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_pair_activity ON session_runs(week_id,pair_group_id,julianday(created_at) DESC,id DESC)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_messages_pair_activity ON pair_messages(week_id,pair_group_id,julianday(created_at) DESC,id DESC)`);}catch{}
+  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_room_snapshots_updated_at ON pair_room_snapshots(updated_at)`);}catch{}
   await maybeSeedFromStatic(db);
   return res.json({ ok:true, message:"Tables ready (incl custom_questions + profile + pair_messages + pair_schedules + session_runs)" });
 }
@@ -1176,21 +1208,39 @@ async function handleMyPair(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
   const payload = getAuthPayload(req);
   if (!payload) return res.status(401).json({ error:'missing Bearer token' });
-  const db = getClient();
-  await ensureBaseTables(db);
-  await ensureProfileMigrations(db);
-  const userId = payload.id || payload.uid;
+  const userId=authenticatedUserId(payload);
+  if(!userId) return res.status(401).json({error:'authentication required'});
+  let db;
+  try{
+    db=getClient();
+    await ensureBaseTables(db);
+    await ensureProfileMigrations(db);
+  }catch{
+    return res.status(503).json({error:'pairing unavailable'});
+  }
   let weekId=null, weekRow=null;
   try{
     const w = await db.execute(`SELECT id, week_label, week_start, focus FROM pairing_weeks WHERE COALESCE(is_demo,0)=0 ORDER BY id DESC LIMIT 1`);
     if (w.rows.length){ weekRow=w.rows[0]; weekId=w.rows[0].id; }
-  }catch{}
+  }catch{
+    return res.status(503).json({error:'pairing unavailable'});
+  }
   if (!weekId) return res.json({ ok:true, paired:false, reason:'no_week_yet', message:'No pairs yet — shuffles Sunday 08:00 BST' });
   let grp=null;
   try{
-    const g = await db.execute({ sql:`SELECT id as pg_id, week_id, user_a_id, user_b_id, user_c_id, is_ai_pair, topic, topic_kind FROM pairing_groups WHERE week_id=? AND (user_a_id=? OR user_b_id=? OR user_c_id=?) LIMIT 1`, args:[weekId, userId, userId, userId] });
+    const g = await db.execute({ sql:`SELECT pairing_groups.id as pg_id,pairing_groups.week_id,
+      user_a_id,user_b_id,user_c_id,is_ai_pair,topic,topic_kind
+      FROM pairing_groups
+      JOIN pairing_participants AS viewer
+        ON viewer.week_id=pairing_groups.week_id
+       AND viewer.user_id=? AND viewer.source='auth'
+      WHERE pairing_groups.week_id=?
+        AND (user_a_id=? OR user_b_id=? OR user_c_id=?)
+      LIMIT 1`, args:[userId,weekId,userId,userId,userId] });
     if (g.rows.length) grp=g.rows[0];
-  }catch{}
+  }catch{
+    return res.status(503).json({error:'pairing unavailable'});
+  }
   if (!grp) return res.json({ ok:true, paired:false, week_id:weekId, week:weekRow||null, reason:'not_paired_this_week', message:'You were not paired in the latest shuffle — you may have been marked unavailable.' });
   const isAI = !!grp.is_ai_pair;
   let partner=null, partners=[];
@@ -1202,7 +1252,14 @@ async function handleMyPair(req,res){
       .filter(id=>id!=null && Number(id)!==Number(userId));
     try{
       const placeholders=partnerIds.map(()=>'?').join(',');
-      const pr = await db.execute({ sql:`SELECT id, display_name, color, bio, tz, interview_focus, leetcode_handle FROM auth_accounts WHERE id IN (${placeholders})`, args:partnerIds });
+      const accessArgs=authPairAccessArgs({userId,weekId,pairGroupId:grp.pg_id});
+      const pr = await db.execute({ sql:`WITH pair_access AS (${AUTH_PAIR_ACCESS_SQL})
+        SELECT aa.id,aa.display_name,aa.color,aa.bio,aa.tz,aa.interview_focus,aa.leetcode_handle
+        FROM auth_accounts aa
+        JOIN pairing_participants member
+          ON member.week_id=? AND member.user_id=aa.id AND member.source='auth'
+        WHERE aa.id IN (${placeholders}) AND EXISTS (SELECT 1 FROM pair_access)`,
+        args:[...accessArgs,weekId,...partnerIds] });
       const byId=new Map(pr.rows.map(r=>[Number(r.id),r]));
       partners=partnerIds.map(id=>{
         const r=byId.get(Number(id));
@@ -1218,11 +1275,23 @@ async function handleMyPair(req,res){
   let schedule=projectSchedule(readScheduleState(null));
   let scheduleRow=null;
   try{
-    const s = await db.execute({ sql:`SELECT id, week_id, pair_group_id, proposed_times, agreed_time, updated_at FROM pair_schedules WHERE week_id=? AND pair_group_id=? LIMIT 1`, args:[weekId, grp.pg_id] });
-    scheduleRow=s.rows[0]||null;
+    const accessArgs=authPairAccessArgs({userId,weekId,pairGroupId:grp.pg_id});
+    const s = await db.execute({ sql:`WITH pair_access AS (${AUTH_PAIR_ACCESS_SQL}), selected AS (
+        SELECT id,week_id,pair_group_id,proposed_times,agreed_time,updated_at
+        FROM pair_schedules
+        WHERE week_id=? AND pair_group_id=? AND EXISTS (SELECT 1 FROM pair_access)
+        LIMIT 1
+      )
+      SELECT id,week_id,pair_group_id,proposed_times,agreed_time,updated_at,1 AS access_present FROM selected
+      UNION ALL SELECT NULL,NULL,NULL,NULL,NULL,NULL,1
+        WHERE EXISTS (SELECT 1 FROM pair_access) AND NOT EXISTS (SELECT 1 FROM selected)`,
+      args:[...accessArgs,weekId,grp.pg_id] });
+    if(!s.rows.length) grp=null;
+    else scheduleRow=s.rows.find(row=>row.id!==null&&row.id!==undefined)||null;
   }catch{
-    schedule=null;
+    return res.status(503).json({error:'pairing unavailable'});
   }
+  if(!grp) return res.json({ ok:true, paired:false, week_id:weekId, week:weekRow||null, reason:'not_paired_this_week', message:'You were not paired in the latest shuffle — you may have been marked unavailable.' });
   if(scheduleRow){
     try{ schedule=projectSchedule(readScheduleState(scheduleRow)); }
     catch(error){
@@ -1236,12 +1305,21 @@ async function handleMyPair(req,res){
   return res.json({ ok:true, paired:true, room_id:roomId, week_id:weekId, week: weekRow ? { id:weekRow.id||weekId, week_label:weekRow.week_label, week_start:weekRow.week_start, focus:weekRow.focus } : { id:weekId }, pair: { pg_id:grp.pg_id, week_id:weekId, room_id:roomId, user_a_id:grp.user_a_id, user_b_id:grp.user_b_id, user_c_id:grp.user_c_id??null, is_ai_pair:isAI, is_ai:isAI, topic:grp.topic, topic_kind:grp.topic_kind }, partner, partners, me, schedule });
 }
 
-async function fetchScheduleState(db,weekId,pairId){
+async function fetchAuthorizedScheduleState(db,accessArgs,weekId,pairId){
   const result=await db.execute({
-    sql:`SELECT proposed_times,agreed_time,updated_at FROM pair_schedules WHERE week_id=? AND pair_group_id=? LIMIT 1`,
-    args:[weekId,pairId],
+    sql:`WITH pair_access AS (${AUTH_PAIR_ACCESS_SQL}), selected AS (
+        SELECT proposed_times,agreed_time,updated_at FROM pair_schedules WHERE week_id=? AND pair_group_id=?
+          AND EXISTS (SELECT 1 FROM pair_access)
+        LIMIT 1
+      )
+      SELECT proposed_times,agreed_time,updated_at,1 AS data_present FROM selected
+      UNION ALL SELECT NULL,NULL,NULL,0
+        WHERE EXISTS (SELECT 1 FROM pair_access) AND NOT EXISTS (SELECT 1 FROM selected)`,
+    args:[...accessArgs,weekId,pairId],
   });
-  return readScheduleState(result.rows[0]||null);
+  if(!result.rows.length) return {authorized:false,state:null};
+  const row=result.rows.find(item=>Number(item.data_present)===1)||null;
+  return {authorized:true,state:readScheduleState(row)};
 }
 
 async function handleSchedule(req,res){
@@ -1271,10 +1349,12 @@ async function handleSchedule(req,res){
   if(!room) return res.status(400).json({error:'canonical room_id required'});
 
   const db=getClient();
+  const userId=Number(payload.id||payload.uid);
+  let accessArgs;
   try{
     const access=await getPairAccess(db,payload,room.weekId,room.pairGroupId);
-    if(!access.exists) return res.status(404).json({error:'pair not found'});
-    if(!access.allowed) return res.status(403).json({error:'not member of this pair'});
+    if(!access.allowed) return res.status(404).json({error:'pair not found'});
+    accessArgs=authPairAccessArgs({userId,weekId:room.weekId,pairGroupId:room.pairGroupId});
   }catch{
     return res.status(503).json({error:'schedule unavailable'});
   }
@@ -1283,7 +1363,11 @@ async function handleSchedule(req,res){
   catch{ return res.status(503).json({error:'schedule unavailable'}); }
 
   let current;
-  try{ current=await fetchScheduleState(db,room.weekId,room.pairGroupId); }
+  try{
+    const fetched=await fetchAuthorizedScheduleState(db,accessArgs,room.weekId,room.pairGroupId);
+    if(!fetched.authorized) return res.status(404).json({error:'pair not found'});
+    current=fetched.state;
+  }
   catch(error){
     if(error instanceof ScheduleDataError) return res.status(503).json({error:'schedule unavailable'});
     return res.status(503).json({error:'schedule unavailable'});
@@ -1296,7 +1380,7 @@ async function handleSchedule(req,res){
   }
 
   let nextValues;
-  try{ nextValues=applyScheduleMutation(current,mutation,payload.id||payload.uid); }
+  try{ nextValues=applyScheduleMutation(current,mutation,userId); }
   catch(error){
     if(error instanceof ScheduleInputError) return res.status(400).json({error:error.message});
     throw error;
@@ -1311,22 +1395,24 @@ async function handleSchedule(req,res){
           SET proposed_times=?,agreed_time=?,updated_at=?
           WHERE week_id=? AND pair_group_id=?
             AND proposed_times IS ? AND agreed_time IS ? AND updated_at IS ?
+            AND EXISTS (${AUTH_PAIR_ACCESS_SQL})
           RETURNING proposed_times,agreed_time,updated_at`,
         args:[nextValues.proposedTimes,nextValues.agreedTime,nextUpdatedAt,
-          room.weekId,room.pairGroupId,current.rawProposedTimes,current.rawAgreedTime,current.rawUpdatedAt],
+          room.weekId,room.pairGroupId,current.rawProposedTimes,current.rawAgreedTime,current.rawUpdatedAt,...accessArgs],
       });
     }else{
       written=await db.execute({
         sql:`INSERT INTO pair_schedules (week_id,pair_group_id,proposed_times,agreed_time,created_at,updated_at)
-          VALUES (?,?,?,?,?,?)
+          SELECT ?,?,?,?,?,? WHERE EXISTS (${AUTH_PAIR_ACCESS_SQL})
           ON CONFLICT(week_id,pair_group_id) DO NOTHING
           RETURNING proposed_times,agreed_time,updated_at`,
-        args:[room.weekId,room.pairGroupId,nextValues.proposedTimes,nextValues.agreedTime,nextUpdatedAt,nextUpdatedAt],
+        args:[room.weekId,room.pairGroupId,nextValues.proposedTimes,nextValues.agreedTime,nextUpdatedAt,nextUpdatedAt,...accessArgs],
       });
     }
     if(!written.rows.length){
-      const latest=await fetchScheduleState(db,room.weekId,room.pairGroupId);
-      return res.status(409).json({error:'schedule changed',room_id:room.roomId,schedule:projectSchedule(latest)});
+      const latest=await fetchAuthorizedScheduleState(db,accessArgs,room.weekId,room.pairGroupId);
+      if(!latest.authorized) return res.status(404).json({error:'pair not found'});
+      return res.status(409).json({error:'schedule changed',room_id:room.roomId,schedule:projectSchedule(latest.state)});
     }
     const updated=readScheduleState(written.rows[0]);
     return res.json({ok:true,room_id:room.roomId,schedule:projectSchedule(updated)});
@@ -1359,6 +1445,8 @@ async function handleMessages(req,res){
   try{ access=await getPairAccess(db,payload,input.weekId,input.pairGroupId); }
   catch{ return res.status(503).json({error:'messages unavailable'}); }
   if(!access.exists||!access.allowed) return res.status(404).json({error:'pair not found'});
+  const userId=Number(payload.id||payload.uid);
+  const accessArgs=authPairAccessArgs({userId,weekId:input.weekId,pairGroupId:input.pairGroupId});
 
   try{ await ensureMessagesReadiness(db); }
   catch{ return res.status(503).json({error:'messages unavailable'}); }
@@ -1368,37 +1456,39 @@ async function handleMessages(req,res){
       const projection=`pm.id,pm.sender_id,pm.message,pm.created_at,aa.display_name AS sender_name`;
       let sql,args;
       if(input.afterId===0){
-        sql=`WITH access AS (
-          SELECT 1 FROM pairing_groups
-          WHERE id=? AND week_id=? AND (user_a_id=? OR user_b_id=? OR user_c_id=?)
-        ), selected AS (
+        sql=`WITH access AS (${AUTH_PAIR_ACCESS_SQL}), selected AS (
           SELECT ${projection}
-          FROM pair_messages pm LEFT JOIN auth_accounts aa ON aa.id=pm.sender_id
-          WHERE pm.week_id=? AND pm.pair_group_id=? AND EXISTS (SELECT 1 FROM access)
+          FROM pair_messages pm
+          JOIN pairing_participants sender
+            ON sender.week_id=pm.week_id AND sender.user_id=pm.sender_id AND sender.source='auth'
+          LEFT JOIN auth_accounts aa ON aa.id=pm.sender_id
+          WHERE pm.week_id=? AND pm.pair_group_id=?
+            AND EXISTS (SELECT 1 FROM access
+              WHERE pm.sender_id=user_a_id OR pm.sender_id=user_b_id OR pm.sender_id=user_c_id)
           ORDER BY pm.id DESC LIMIT ?
         )
         SELECT id,sender_id,message,created_at,sender_name FROM selected
         UNION ALL SELECT NULL,NULL,NULL,NULL,NULL
           WHERE EXISTS (SELECT 1 FROM access) AND NOT EXISTS (SELECT 1 FROM selected)
         ORDER BY id ASC`;
-        args=[input.pairGroupId,input.weekId,payload.id||payload.uid,payload.id||payload.uid,payload.id||payload.uid,
-          input.weekId,input.pairGroupId,input.limit];
+        args=[...accessArgs,input.weekId,input.pairGroupId,input.limit];
       }else{
-        sql=`WITH access AS (
-          SELECT 1 FROM pairing_groups
-          WHERE id=? AND week_id=? AND (user_a_id=? OR user_b_id=? OR user_c_id=?)
-        ), selected AS (
+        sql=`WITH access AS (${AUTH_PAIR_ACCESS_SQL}), selected AS (
           SELECT ${projection}
-          FROM pair_messages pm LEFT JOIN auth_accounts aa ON aa.id=pm.sender_id
-          WHERE pm.week_id=? AND pm.pair_group_id=? AND pm.id>? AND EXISTS (SELECT 1 FROM access)
+          FROM pair_messages pm
+          JOIN pairing_participants sender
+            ON sender.week_id=pm.week_id AND sender.user_id=pm.sender_id AND sender.source='auth'
+          LEFT JOIN auth_accounts aa ON aa.id=pm.sender_id
+          WHERE pm.week_id=? AND pm.pair_group_id=? AND pm.id>?
+            AND EXISTS (SELECT 1 FROM access
+              WHERE pm.sender_id=user_a_id OR pm.sender_id=user_b_id OR pm.sender_id=user_c_id)
           ORDER BY pm.id ASC LIMIT ?
         )
         SELECT id,sender_id,message,created_at,sender_name FROM selected
         UNION ALL SELECT NULL,NULL,NULL,NULL,NULL
           WHERE EXISTS (SELECT 1 FROM access) AND NOT EXISTS (SELECT 1 FROM selected)
         ORDER BY id ASC`;
-        args=[input.pairGroupId,input.weekId,payload.id||payload.uid,payload.id||payload.uid,payload.id||payload.uid,
-          input.weekId,input.pairGroupId,input.afterId,input.limit];
+        args=[...accessArgs,input.weekId,input.pairGroupId,input.afterId,input.limit];
       }
       const result=await db.execute({sql,args});
       if(!result.rows.length){
@@ -1416,7 +1506,6 @@ async function handleMessages(req,res){
     }
   }
 
-  const userId=Number(payload.id||payload.uid);
   try{
     const senderResult=await db.execute({
       sql:`SELECT id,display_name FROM auth_accounts WHERE id=? LIMIT 1`,
@@ -1424,18 +1513,16 @@ async function handleMessages(req,res){
     });
     if(!senderResult.rows.length) return res.status(503).json({error:'messages unavailable'});
     const inserted=await db.execute({
-      sql:`INSERT INTO pair_messages (week_id,pair_group_id,sender_id,message,created_at)
+      sql:`WITH access AS (${AUTH_PAIR_ACCESS_SQL})
+        INSERT INTO pair_messages (week_id,pair_group_id,sender_id,message,created_at)
         SELECT ?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now')
-        WHERE EXISTS (
-          SELECT 1 FROM pairing_groups
-          WHERE id=? AND week_id=? AND (user_a_id=? OR user_b_id=? OR user_c_id=?)
-        )
+        WHERE EXISTS (SELECT 1 FROM access)
           AND (SELECT COUNT(*) FROM pair_messages
             WHERE sender_id=? AND datetime(created_at)>=datetime('now','-1 minute'))<?
           AND (SELECT COUNT(*) FROM pair_messages
             WHERE week_id=? AND pair_group_id=?)<?
         RETURNING id,sender_id,message,created_at`,
-      args:[input.weekId,input.pairGroupId,userId,input.message,input.pairGroupId,input.weekId,userId,userId,userId,
+      args:[...accessArgs,input.weekId,input.pairGroupId,userId,input.message,
         userId,MAX_MESSAGES_PER_USER_PER_MINUTE,input.weekId,input.pairGroupId,MAX_MESSAGES_PER_ROOM],
     });
     if(!inserted.rows.length){
@@ -1443,19 +1530,16 @@ async function handleMessages(req,res){
       try{
         state=await db.execute({
           sql:`SELECT
-            EXISTS(SELECT 1 FROM pairing_groups WHERE id=? AND week_id=?) AS pair_exists,
-            EXISTS(SELECT 1 FROM pairing_groups
-              WHERE id=? AND week_id=? AND (user_a_id=? OR user_b_id=? OR user_c_id=?)) AS allowed,
+            EXISTS(${AUTH_PAIR_ACCESS_SQL}) AS allowed,
             (SELECT COUNT(*) FROM pair_messages
               WHERE sender_id=? AND datetime(created_at)>=datetime('now','-1 minute')) AS recent_count,
             (SELECT COUNT(*) FROM pair_messages WHERE week_id=? AND pair_group_id=?) AS room_count`,
-          args:[input.pairGroupId,input.weekId,input.pairGroupId,input.weekId,userId,userId,userId,
-            userId,input.weekId,input.pairGroupId],
+          args:[...accessArgs,userId,input.weekId,input.pairGroupId],
         });
       }
       catch{ return res.status(503).json({error:'messages unavailable'}); }
       const latest=state.rows[0];
-      if(!latest||!Number(latest.pair_exists)||!Number(latest.allowed)){
+      if(!latest||!Number(latest.allowed)){
         return res.status(404).json({error:'pair not found'});
       }
       if(Number(latest.recent_count)>=MAX_MESSAGES_PER_USER_PER_MINUTE){
@@ -1495,13 +1579,8 @@ async function handlePairRecap(req,res){
   let db;
   try{ db=getClient(); }
   catch{ return res.status(503).json({error:'pair recap unavailable'}); }
-  const accessSql=`SELECT 1 FROM pairing_groups access_group
-    JOIN pairing_participants access_viewer
-      ON access_viewer.week_id=access_group.week_id
-      AND access_viewer.user_id=? AND access_viewer.source='auth'
-    WHERE access_group.id=? AND access_group.week_id=?
-      AND (access_group.user_a_id=? OR access_group.user_b_id=? OR access_group.user_c_id=?)`;
-  const accessArgs=[userId,room.pairGroupId,room.weekId,userId,userId,userId];
+  const accessSql=AUTH_PAIR_ACCESS_SQL;
+  const accessArgs=authPairAccessArgs({userId,weekId:room.weekId,pairGroupId:room.pairGroupId});
   try{
     const access=await db.execute({sql:accessSql,args:accessArgs});
     if(!access.rows?.length) return res.status(404).json({error:'pair not found'});
@@ -1783,7 +1862,8 @@ async function handleRuns(req,res){
   if (req.method === 'POST'){
     return res.status(405).json({error:'run records are created only by the execution service'});
   }
-  const userId = payload.id || payload.uid;
+  const userId=authenticatedUserId(payload);
+  if(!userId) return res.status(401).json({error:'authentication required'});
   const rawRoomId=requestQueryValue(req,'room_id');
   const room=rawRoomId===undefined?null:parseCanonicalRoomId(rawRoomId);
   if(rawRoomId!==undefined&&!room) return res.status(400).json({error:'canonical room_id required'});
@@ -1791,42 +1871,67 @@ async function handleRuns(req,res){
   if(room&&pairAfterId===null) return res.status(400).json({error:'after_id must be a safe non-negative integer'});
   const pairLimit=room?parseBoundedQueryInteger(requestQueryValue(req,'limit'),{defaultValue:20,min:1,max:20}):null;
   if(room&&pairLimit===null) return res.status(400).json({error:'limit must be an integer from 1 to 20'});
-  const db = getClient();
-  await ensureRunsReadiness(db);
+  let db;
+  try{
+    db=getClient();
+    await ensureRunsReadiness(db);
+  }catch{
+    return res.status(503).json({error:'runs unavailable'});
+  }
   if (req.method === 'GET'){
     const slug = req.query?.question_slug || req.query?.slug ? String(req.query.question_slug||req.query.slug).slice(0,120) : null;
     const limit = Math.min(50, Math.max(1, parseInt(String(req.query?.limit||'20'),10)||20));
     try{
       if(room){
         const access=await getPairAccess(db,payload,room.weekId,room.pairGroupId);
-        if(!access.exists) return res.status(404).json({error:'pair not found'});
-        if(!access.allowed) return res.status(403).json({error:'not member of this pair'});
+        if(!access.allowed) return res.status(404).json({error:'pair not found'});
+        const accessArgs=authPairAccessArgs({userId,weekId:room.weekId,pairGroupId:room.pairGroupId});
         let pairSql;
         let pairArgs;
         const pairProjection=`sr.id,sr.user_id,sr.question_slug,sr.language,sr.test_cases_snapshot,sr.results_json,sr.passed_count,sr.total_count,sr.duration_ms,sr.created_at,aa.display_name AS runner_display_name`;
+        const selectedProjection=`id,user_id,question_slug,language,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at,runner_display_name`;
         if(pairAfterId===0){
           // Bootstrap from the newest bounded window, but return it in the same
           // ascending order used by subsequent incremental requests.
-          pairSql=`SELECT * FROM (
+          pairSql=`WITH pair_access AS (${AUTH_PAIR_ACCESS_SQL}), selected AS (
             SELECT ${pairProjection}
-            FROM session_runs sr LEFT JOIN auth_accounts aa ON aa.id=sr.user_id
-            WHERE sr.week_id=? AND sr.pair_group_id=?`;
-          pairArgs=[room.weekId,room.pairGroupId];
+            FROM session_runs sr
+            JOIN pairing_participants runner
+              ON runner.week_id=sr.week_id AND runner.user_id=sr.user_id AND runner.source='auth'
+            LEFT JOIN auth_accounts aa ON aa.id=sr.user_id
+            WHERE sr.week_id=? AND sr.pair_group_id=?
+              AND EXISTS (SELECT 1 FROM pair_access
+                WHERE sr.user_id=user_a_id OR sr.user_id=user_b_id OR sr.user_id=user_c_id)`;
+          pairArgs=[...accessArgs,room.weekId,room.pairGroupId];
           if(slug){ pairSql+=` AND sr.question_slug=?`; pairArgs.push(slug); }
-          pairSql+=` ORDER BY sr.id DESC LIMIT ?
-          ) recent ORDER BY id ASC`;
+          pairSql+=` ORDER BY sr.id DESC LIMIT ?)
+            SELECT ${selectedProjection} FROM selected
+            UNION ALL SELECT NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL
+              WHERE EXISTS (SELECT 1 FROM pair_access) AND NOT EXISTS (SELECT 1 FROM selected)
+            ORDER BY id ASC`;
           pairArgs.push(pairLimit);
         }else{
-          pairSql=`SELECT ${pairProjection}
-            FROM session_runs sr LEFT JOIN auth_accounts aa ON aa.id=sr.user_id
-            WHERE sr.week_id=? AND sr.pair_group_id=? AND sr.id>?`;
-          pairArgs=[room.weekId,room.pairGroupId,pairAfterId];
+          pairSql=`WITH pair_access AS (${AUTH_PAIR_ACCESS_SQL}), selected AS (
+            SELECT ${pairProjection}
+            FROM session_runs sr
+            JOIN pairing_participants runner
+              ON runner.week_id=sr.week_id AND runner.user_id=sr.user_id AND runner.source='auth'
+            LEFT JOIN auth_accounts aa ON aa.id=sr.user_id
+            WHERE sr.week_id=? AND sr.pair_group_id=? AND sr.id>?
+              AND EXISTS (SELECT 1 FROM pair_access
+                WHERE sr.user_id=user_a_id OR sr.user_id=user_b_id OR sr.user_id=user_c_id)`;
+          pairArgs=[...accessArgs,room.weekId,room.pairGroupId,pairAfterId];
           if(slug){ pairSql+=` AND sr.question_slug=?`; pairArgs.push(slug); }
-          pairSql+=` ORDER BY sr.id ASC LIMIT ?`;
+          pairSql+=` ORDER BY sr.id ASC LIMIT ?)
+            SELECT ${selectedProjection} FROM selected
+            UNION ALL SELECT NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL
+              WHERE EXISTS (SELECT 1 FROM pair_access) AND NOT EXISTS (SELECT 1 FROM selected)
+            ORDER BY id ASC`;
           pairArgs.push(pairLimit);
         }
         const pairRows=await db.execute({sql:pairSql,args:pairArgs});
-        const pairRuns=pairRows.rows.map(row=>runSummary(row,{includeRunner:true}));
+        if(!pairRows.rows.length) return res.status(404).json({error:'pair not found'});
+        const pairRuns=pairRows.rows.filter(row=>row.id!==null&&row.id!==undefined).map(row=>runSummary(row,{includeRunner:true}));
         return res.json({ok:true,room_id:room.roomId,runs:pairRuns,after:pairRuns.length?pairRuns[pairRuns.length-1].id:pairAfterId});
       }
       let sql = `SELECT id,user_id,week_id,pair_group_id,question_id,question_slug,language,substr(code,1,500) as code_preview,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at FROM session_runs WHERE user_id=?`;
@@ -1836,7 +1941,10 @@ async function handleRuns(req,res){
       const rs = await db.execute({ sql, args });
       const runs=rs.rows.map(row=>runSummary(row));
       return res.json({ ok:true, runs, count:runs.length });
-    }catch(e){ return res.status(500).json({ error:'fetch failed', detail:String(e.message||e).slice(0,200)}); }
+    }catch(e){
+      if(room) return res.status(503).json({error:'runs unavailable'});
+      return res.status(500).json({ error:'fetch failed', detail:String(e.message||e).slice(0,200)});
+    }
   }
 }
 
@@ -1870,15 +1978,23 @@ async function handleStats(req,res){
   if (payload){
     const userId = payload.id || payload.uid;
     try{
-      const my = await db.execute({ sql:`SELECT COUNT(*) as c FROM pairing_groups WHERE user_a_id=? OR user_b_id=? OR user_c_id=?`, args:[userId,userId,userId] });
+      const my = await db.execute({ sql:`SELECT COUNT(*) as c FROM pairing_groups
+        JOIN pairing_participants viewer
+          ON viewer.week_id=pairing_groups.week_id AND viewer.user_id=? AND viewer.source='auth'
+        WHERE user_a_id=? OR user_b_id=? OR user_c_id=?`, args:[userId,userId,userId,userId] });
       out.your_sessions = my.rows[0]?.c ?? 0;
     }catch{}
     try{
-      const last = await db.execute({ sql:`SELECT pg.id as pg_id, pg.week_id, pw.week_label, pw.week_start, pg.is_ai_pair FROM pairing_groups pg JOIN pairing_weeks pw ON pw.id=pg.week_id WHERE (pg.user_a_id=? OR pg.user_b_id=? OR pg.user_c_id=?) AND COALESCE(pw.is_demo,0)=0 ORDER BY pw.id DESC LIMIT 1`, args:[userId,userId,userId] });
+      const last = await db.execute({ sql:`SELECT pg.id as pg_id, pg.week_id, pw.week_label, pw.week_start, pg.is_ai_pair FROM pairing_groups pg JOIN pairing_weeks pw ON pw.id=pg.week_id
+        JOIN pairing_participants viewer ON viewer.week_id=pg.week_id AND viewer.user_id=? AND viewer.source='auth'
+        WHERE (pg.user_a_id=? OR pg.user_b_id=? OR pg.user_c_id=?) AND COALESCE(pw.is_demo,0)=0 ORDER BY pw.id DESC LIMIT 1`, args:[userId,userId,userId,userId] });
       if (last.rows.length) out.your_last = last.rows[0];
     }catch{}
     try{
-      const yWeeks = await db.execute({ sql:`SELECT COUNT(DISTINCT week_id) as c FROM pairing_groups WHERE user_a_id=? OR user_b_id=? OR user_c_id=?`, args:[userId,userId,userId] });
+      const yWeeks = await db.execute({ sql:`SELECT COUNT(DISTINCT pairing_groups.week_id) as c FROM pairing_groups
+        JOIN pairing_participants viewer
+          ON viewer.week_id=pairing_groups.week_id AND viewer.user_id=? AND viewer.source='auth'
+        WHERE user_a_id=? OR user_b_id=? OR user_c_id=?`, args:[userId,userId,userId,userId] });
       out.your_weeks = yWeeks.rows[0]?.c ?? 0;
     }catch{}
   }
@@ -2293,11 +2409,18 @@ async function handleExecute(req,res){
   // Schema creation is a deploy-time migration concern. Request handling stays
   // read/write-only and fails closed if the deployment has not been prepared.
   // Resolve and validate client room identifiers before touching the database.
-  const db=getClient();
+  let db;
+  try{ db=getClient(); }
+  catch{ return res.status(503).json({error:'execution service unavailable'}); }
+  let accessArgs=null;
   if(weekId && pairId){
-    const access=await getPairAccess(db,payload,weekId,pairId);
-    if(!access.exists) return res.status(404).json({error:'pair not found'});
-    if(!access.allowed) return res.status(403).json({error:'not member of this pair'});
+    try{
+      const access=await getPairAccess(db,payload,weekId,pairId);
+      if(!access.allowed) return res.status(404).json({error:'pair not found'});
+      accessArgs=authPairAccessArgs({userId:Number(payload.id||payload.uid),weekId,pairGroupId:pairId});
+    }catch{
+      return res.status(503).json({error:'execution service unavailable'});
+    }
   }
 
   // Client test cases and result/count fields are deliberately ignored. The exact
@@ -2368,13 +2491,30 @@ async function handleExecute(req,res){
         resultsJson:storedResults,
       });
       const testSnapshot=JSON.stringify({source:'original-catalog',version:questionVersion,total_count:total,attestation_version:2,attestation_key_id:attestation.keyId,attestation:attestation.signature});
-      const inserted=await db.execute({
-        sql:`INSERT INTO session_runs (user_id, week_id, pair_group_id, question_id, question_slug, language, code, test_cases_snapshot, results_json, passed_count, total_count, duration_ms, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?, ?, datetime('now')) RETURNING id`,
-        args:[payload.id||payload.uid,weekId,pairId,null,questionSlug,pistonLang,code,testSnapshot,storedResults,passed,total,dur],
-      });
+      const runArgs=[payload.id||payload.uid,weekId,pairId,null,questionSlug,pistonLang,code,testSnapshot,storedResults,passed,total,dur];
+      const inserted=accessArgs
+        ? await db.execute({
+          sql:`WITH pair_access AS (${AUTH_PAIR_ACCESS_SQL})
+            INSERT INTO session_runs (user_id,week_id,pair_group_id,question_id,question_slug,language,code,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at)
+            SELECT ?,?,?,?,?,?,?,?,?,?,?,?,datetime('now')
+            WHERE EXISTS (SELECT 1 FROM pair_access)
+            RETURNING id`,
+          args:[...accessArgs,...runArgs],
+        })
+        : await db.execute({
+          sql:`INSERT INTO session_runs (user_id,week_id,pair_group_id,question_id,question_slug,language,code,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now')) RETURNING id`,
+          args:runArgs,
+        });
+      if(accessArgs&&!inserted.rows.length){
+        const latest=await getPairAccess(db,payload,weekId,pairId);
+        if(!latest.allowed) return res.status(404).json({error:'pair not found'});
+        throw new Error('authorized run insert returned no row');
+      }
       runId=inserted.rows[0]?.id??null;
     }catch(e){
       captureSentryException(e,{tags:{event:'run_persist_fail',source:'runner'},extra:{question_slug:questionSlug,question_version:questionVersion}});
+      if(accessArgs) return res.status(503).json({ok:false,error:'execution service unavailable'});
       return res.status(500).json({ok:false,error:'execution result could not be saved'});
     }
     try{ await logServer(passed===total?'success':'info','execute_success',`piston ${pistonLang} ${passed}/${total} in ${dur}ms`,{language:pistonLang,runtimeVersion,questionSlug,questionVersion,passed,total,dur,hasStderr:!!stderr,runId},{req,payload,source:'runner',route:req.url,skipEnsure:true}); }catch{}

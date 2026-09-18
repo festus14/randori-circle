@@ -1,4 +1,7 @@
+import { randomUUID } from 'node:crypto';
 import { captureSentryException, captureSentryMessage, getClient, initSentry, isSentryConfigured, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
+import { AUTH_PAIR_ACCESS_SQL, authPairAccessArgs } from './_pair-access.js';
+import { parseCanonicalRoomPath } from './_pairing.js';
 
 initSentry();
 
@@ -19,6 +22,25 @@ function getEndpoint(req){
 }
 
 function todayISO(){ const d=new Date(); return d.toISOString().slice(0,10); }
+function currentMonthISO(){ return todayISO().slice(0,7); }
+
+const AI_ACCOUNT_MONTHLY_USAGE_TABLE_SQL=`CREATE TABLE IF NOT EXISTS ai_account_monthly_usage (
+  month TEXT NOT NULL CHECK(length(month)=7 AND month GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]'),
+  user_id INTEGER NOT NULL CHECK(user_id>0),
+  calls INTEGER NOT NULL DEFAULT 0 CHECK(calls>=0),
+  tokens_in INTEGER NOT NULL DEFAULT 0 CHECK(tokens_in>=0),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY(month,user_id)
+)`;
+const AI_ACCOUNT_MONTHLY_RESERVATIONS_TABLE_SQL=`CREATE TABLE IF NOT EXISTS ai_account_monthly_reservations (
+  reservation_id TEXT PRIMARY KEY,
+  month TEXT NOT NULL,
+  user_id INTEGER NOT NULL CHECK(user_id>0),
+  tokens_in INTEGER NOT NULL DEFAULT 0 CHECK(tokens_in>=0),
+  session_id INTEGER UNIQUE,
+  refunded_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`;
 
 async function ensureTables(db){
   await db.execute(`CREATE TABLE IF NOT EXISTS ai_sessions (
@@ -54,8 +76,11 @@ async function ensureTables(db){
     tokens_out INTEGER DEFAULT 0,
     updated_at TEXT DEFAULT (datetime('now'))
   )`);
-  // monthly aggregate optional
-  try{ await db.execute(`CREATE TABLE IF NOT EXISTS ai_monthly_usage (month TEXT PRIMARY KEY, user_id INTEGER, calls INTEGER DEFAULT 0, tokens_in INTEGER DEFAULT 0, updated_at TEXT DEFAULT (datetime('now')))`) }catch{}
+  // The legacy ai_monthly_usage table used month as its sole primary key, so it
+  // cannot safely represent more than one account and its numeric ids have no
+  // provenance. Keep it untouched and use this additive auth-account ledger.
+  await db.execute(AI_ACCOUNT_MONTHLY_USAGE_TABLE_SQL);
+  await db.execute(AI_ACCOUNT_MONTHLY_RESERVATIONS_TABLE_SQL);
   await db.execute(`CREATE TABLE IF NOT EXISTS ai_consents (
     user_id INTEGER PRIMARY KEY,
     consented_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -134,6 +159,50 @@ const MODELS = {
   balanced: { name:'llama-3.3-70b-versatile', price_in_per_mtok:0.59, price_out_per_mtok:0.79, context:131072 },
 };
 const AI_CONSENT_POLICY_VERSION='2026-09-17';
+
+class AiPairAccessError extends Error{
+  constructor(){
+    super('trusted room membership required');
+    this.name='AiPairAccessError';
+  }
+}
+
+// AI processing requires consent from every human participant. A room with a
+// legacy or missing participant identity cannot satisfy that contract, even if
+// the authenticated caller's own membership is source-tagged.
+const AUTH_ONLY_PAIR_ACCESS_SQL=`SELECT access.* FROM (${AUTH_PAIR_ACCESS_SQL}) AS access
+  WHERE EXISTS (
+    SELECT 1 FROM pairing_participants participant_a
+    WHERE participant_a.week_id=access.week_id
+      AND participant_a.user_id=access.user_a_id
+      AND participant_a.source='auth'
+  )
+    AND EXISTS (
+      SELECT 1 FROM pairing_participants participant_b
+      WHERE participant_b.week_id=access.week_id
+        AND participant_b.user_id=access.user_b_id
+        AND participant_b.source='auth'
+    )
+    AND (access.user_c_id IS NULL OR EXISTS (
+      SELECT 1 FROM pairing_participants participant_c
+      WHERE participant_c.week_id=access.week_id
+        AND participant_c.user_id=access.user_c_id
+        AND participant_c.source='auth'
+    ))`;
+
+function canonicalAnalysisRoom(value){
+  if(typeof value!=='string') return null;
+  const parsed=parseCanonicalRoomPath(`/join/${value}`);
+  return parsed?.roomId===value?parsed:null;
+}
+
+function pairAccessArgs(userId,room){
+  return authPairAccessArgs({
+    userId,
+    weekId:room.weekId,
+    pairGroupId:room.pairGroupId,
+  });
+}
 
 function estimateTokens(str){ if(!str) return 0; return Math.ceil(String(str).length/4); }
 
@@ -295,20 +364,19 @@ async function resolveDemoFlag(db, authInfo){
   return !!authInfo.isDemo;
 }
 
-async function resolveAnalysisRoom(db, roomId){
-  const match=String(roomId||'').trim().match(/^week_(\d+)_pair_(\d+)$/i);
-  if(!match) return null;
-  const weekId=Number(match[1]);
-  const pairGroupId=Number(match[2]);
-  if(!Number.isSafeInteger(weekId) || !Number.isSafeInteger(pairGroupId) || weekId<1 || pairGroupId<1) return null;
-
-  let result;
-  try{
-    result=await db.execute({sql:`SELECT pg.id AS pair_group_id,pg.week_id,pg.user_a_id,pg.user_b_id,pg.user_c_id,COALESCE(pg.is_ai_pair,0) AS is_ai_pair,pw.week_label FROM pairing_groups pg JOIN pairing_weeks pw ON pw.id=pg.week_id WHERE pg.id=? AND pg.week_id=? LIMIT 1`,args:[pairGroupId,weekId]});
-  }catch{
-    // Compatibility for databases created before optional triad support.
-    result=await db.execute({sql:`SELECT pg.id AS pair_group_id,pg.week_id,pg.user_a_id,pg.user_b_id,NULL AS user_c_id,COALESCE(pg.is_ai_pair,0) AS is_ai_pair,pw.week_label FROM pairing_groups pg JOIN pairing_weeks pw ON pw.id=pg.week_id WHERE pg.id=? AND pg.week_id=? LIMIT 1`,args:[pairGroupId,weekId]}).catch(()=>({rows:[]}));
-  }
+async function resolveAnalysisRoom(db, roomId, userId){
+  const room=canonicalAnalysisRoom(roomId);
+  if(!room) return null;
+  const result=await db.execute({
+    sql:`SELECT pg.id AS pair_group_id,pg.week_id,pg.user_a_id,pg.user_b_id,pg.user_c_id,
+        COALESCE(pg.is_ai_pair,0) AS is_ai_pair,pw.week_label
+      FROM pairing_groups pg
+      JOIN pairing_weeks pw ON pw.id=pg.week_id
+      WHERE pg.id=? AND pg.week_id=?
+        AND EXISTS (${AUTH_ONLY_PAIR_ACCESS_SQL})
+      LIMIT 1`,
+    args:[room.pairGroupId,room.weekId,...pairAccessArgs(userId,room)],
+  });
   const row=result.rows?.[0];
   if(!row) return null;
 
@@ -319,31 +387,234 @@ async function resolveAnalysisRoom(db, roomId){
   if(!participantIds.length) return null;
 
   return {
-    roomId:`week_${Number(row.week_id)}_pair_${Number(row.pair_group_id)}`,
+    roomId:room.roomId,
+    weekId:room.weekId,
+    pairGroupId:room.pairGroupId,
     pairLabel:`${row.week_label||`Week ${Number(row.week_id)}`} · Pair ${Number(row.pair_group_id)}`,
     participantIds,
     singleUser:!!row.is_ai_pair && participantIds.length===1,
   };
 }
 
-async function recordAndVerifyRoomConsent(db, userId, participantIds){
-  await db.execute({sql:`INSERT INTO ai_consents (user_id, consented_at, revoked_at, policy_version) VALUES (?,datetime('now'),NULL,?) ON CONFLICT(user_id) DO UPDATE SET consented_at=datetime('now'), revoked_at=NULL, policy_version=excluded.policy_version`, args:[userId,AI_CONSENT_POLICY_VERSION]});
+async function recordAndVerifyRoomConsent(db, userId, room, participantIds){
+  await db.execute({
+    sql:`INSERT INTO ai_consents (user_id,consented_at,revoked_at,policy_version)
+      SELECT ?,datetime('now'),NULL,?
+      WHERE EXISTS (${AUTH_ONLY_PAIR_ACCESS_SQL})
+      ON CONFLICT(user_id) DO UPDATE SET
+        consented_at=datetime('now'),revoked_at=NULL,policy_version=excluded.policy_version`,
+    args:[userId,AI_CONSENT_POLICY_VERSION,...pairAccessArgs(userId,room)],
+  });
   const placeholders=participantIds.map(()=>'?').join(',');
-  const result=await db.execute({sql:`SELECT user_id FROM ai_consents WHERE user_id IN (${placeholders}) AND revoked_at IS NULL AND policy_version=?`,args:[...participantIds,AI_CONSENT_POLICY_VERSION]});
-  const consented=new Set((result.rows||[]).map(row=>Number(row.user_id)));
+  const result=await db.execute({
+    sql:`WITH access AS (${AUTH_ONLY_PAIR_ACCESS_SQL}), consented AS (
+        SELECT user_id FROM ai_consents
+        WHERE user_id IN (${placeholders}) AND revoked_at IS NULL AND policy_version=?
+      )
+      SELECT consented.user_id
+      FROM access LEFT JOIN consented ON 1=1`,
+    args:[...pairAccessArgs(userId,room),...participantIds,AI_CONSENT_POLICY_VERSION],
+  });
+  if(!result.rows?.length) throw new AiPairAccessError();
+  const consented=new Set(result.rows.map(row=>Number(row.user_id)).filter(Number.isSafeInteger));
   return participantIds.filter(id=>!consented.has(Number(id)));
 }
 
-async function checkMonthlyQuota(db, userId, isDemo){
-  if(!userId) return {blocked:false};
+function isLegacyAiSessionSchemaError(error){
+  return /(?:has no column named|no such column)[^\n]*(?:started_at|ended_at)/i.test(String(error?.message||error||''));
+}
+
+async function createAuthorizedSession(db,{room,userId,pairLabel,transcript,code,questions,durationSec,reservationId}){
+  const accessArgs=pairAccessArgs(userId,room);
+  const attachReservation={
+    sql:`UPDATE ai_account_monthly_reservations
+      SET session_id=last_insert_rowid()
+      WHERE reservation_id=? AND user_id=? AND session_id IS NULL AND refunded_at IS NULL
+        AND changes()=1
+      RETURNING session_id`,
+    args:[reservationId,userId],
+  };
+  let results;
   try{
-    const rs=await db.execute({sql:`SELECT COUNT(*) as c FROM ai_sessions WHERE created_by=? AND datetime(created_at) >= datetime('now','start of month')`, args:[userId]});
-    const cnt=rs.rows[0]?.c||0;
-    const limit = isDemo ? 100 : 500;
-    if(cnt>=limit) return {blocked:true, count:cnt, limit, reason:`monthly limit ${limit} reached (${cnt} used) — upgrade or wait next month`};
-    return {blocked:false, count:cnt, limit};
+    results=await db.batch([{
+        sql:`INSERT INTO ai_sessions (
+            room_id,pair_label,transcript,code_snapshots,interviewer_questions,
+            started_at,ended_at,duration_sec,created_by
+          )
+          SELECT ?,?,?,?,?,datetime('now'),datetime('now'),?,?
+          WHERE EXISTS (${AUTH_ONLY_PAIR_ACCESS_SQL})
+          RETURNING id`,
+        args:[room.roomId,pairLabel||'mock',transcript.slice(0,28000),code.slice(0,28000),questions.slice(0,8000),Number(durationSec)||0,userId,...accessArgs],
+      },attachReservation], 'write');
+  }catch(error){
+    if(!isLegacyAiSessionSchemaError(error)) throw error;
+    results=await db.batch([{
+        sql:`INSERT INTO ai_sessions (
+            room_id,pair_label,transcript,code_snapshots,interviewer_questions,duration_sec,created_by
+          )
+          SELECT ?,?,?,?,?,?,?
+          WHERE EXISTS (${AUTH_ONLY_PAIR_ACCESS_SQL})
+          RETURNING id`,
+        args:[room.roomId,pairLabel||'mock',transcript.slice(0,8000),code.slice(0,8000),questions.slice(0,3000),Number(durationSec)||0,userId,...accessArgs],
+      },attachReservation], 'write');
+  }
+  const [inserted,attached]=results;
+  const sessionId=Number(inserted.rows?.[0]?.id);
+  if(!Number.isSafeInteger(sessionId)||sessionId<1) throw new AiPairAccessError();
+  if(Number(attached?.rows?.[0]?.session_id)!==sessionId){
+    throw new Error('AI quota reservation was not attached to its session');
+  }
+  return sessionId;
+}
+
+async function createAuthorizedFeedback(db,{room,userId,sessionId,role,feedback,verification,modelUsed,reason,costCents,combinedLength}){
+  const accessArgs=pairAccessArgs(userId,room);
+  const sessionGuard=`EXISTS (
+    SELECT 1 FROM ai_sessions guarded_session
+    WHERE guarded_session.id=? AND guarded_session.room_id=? AND guarded_session.created_by=?
+  )`;
+  let inserted;
+  try{
+    inserted=await db.execute({
+      sql:`INSERT INTO ai_feedback (
+          session_id,role,feedback_json,evidence,model_used,reason_for_pick,
+          estimated_cost_cents,confidence
+        )
+        SELECT ?,?,?,?,?,?,?,?
+        WHERE EXISTS (${AUTH_ONLY_PAIR_ACCESS_SQL}) AND ${sessionGuard}
+        RETURNING id`,
+      args:[sessionId,role||'both',JSON.stringify(feedback||{}),JSON.stringify({validation:verification,combined_len:combinedLength}),modelUsed,reason,costCents,verification.score,
+        ...accessArgs,sessionId,room.roomId,userId],
+    });
   }catch{
-    return {blocked:false};
+    inserted=await db.execute({
+      sql:`INSERT INTO ai_feedback (session_id,role,feedback_json,model_used)
+        SELECT ?,?,?,?
+        WHERE EXISTS (${AUTH_ONLY_PAIR_ACCESS_SQL}) AND ${sessionGuard}
+        RETURNING id`,
+      args:[sessionId,role||'both',JSON.stringify(feedback||{}),modelUsed,
+        ...accessArgs,sessionId,room.roomId,userId],
+    });
+  }
+  const feedbackId=Number(inserted.rows?.[0]?.id);
+  if(!Number.isSafeInteger(feedbackId)||feedbackId<1) throw new AiPairAccessError();
+  return feedbackId;
+}
+
+// History queries need to authorize rows from multiple rooms at once, so they
+// use the same invariant as AUTH_PAIR_ACCESS_SQL as correlated joins.
+const AUTH_SESSION_OWNERSHIP_JOINS=`JOIN pairing_groups owner_group
+    ON ase.room_id=printf('week_%d_pair_%d',owner_group.week_id,owner_group.id)
+  JOIN pairing_participants owner_viewer
+    ON owner_viewer.week_id=owner_group.week_id
+   AND owner_viewer.user_id=? AND owner_viewer.source='auth'`;
+const AUTH_SESSION_OWNERSHIP_WHERE=`ase.created_by=?
+  AND (owner_group.user_a_id=? OR owner_group.user_b_id=? OR owner_group.user_c_id=?)
+  AND EXISTS (
+    SELECT 1 FROM pairing_participants owner_a
+    WHERE owner_a.week_id=owner_group.week_id
+      AND owner_a.user_id=owner_group.user_a_id AND owner_a.source='auth'
+  )
+  AND EXISTS (
+    SELECT 1 FROM pairing_participants owner_b
+    WHERE owner_b.week_id=owner_group.week_id
+      AND owner_b.user_id=owner_group.user_b_id AND owner_b.source='auth'
+  )
+  AND (owner_group.user_c_id IS NULL OR EXISTS (
+    SELECT 1 FROM pairing_participants owner_c
+    WHERE owner_c.week_id=owner_group.week_id
+      AND owner_c.user_id=owner_group.user_c_id AND owner_c.source='auth'
+  ))`;
+
+function authSessionOwnershipArgs(userId){
+  return [userId,userId,userId,userId,userId];
+}
+
+async function checkMonthlyQuota(db, userId, isDemo){
+  if(!userId) return {blocked:false,count:0,limit:isDemo?100:500};
+  const month=currentMonthISO();
+  const rs=await db.execute({
+    sql:`SELECT calls FROM ai_account_monthly_usage WHERE month=? AND user_id=?`,
+    args:[month,userId],
+  });
+  const stored=Number(rs.rows?.[0]?.calls||0);
+  if(!Number.isSafeInteger(stored)||stored<0) throw new Error('invalid monthly AI usage');
+  const limit=isDemo?100:500;
+  if(stored>=limit) return {blocked:true,count:stored,limit,reason:`monthly limit ${limit} reached (${stored} used) — upgrade or wait next month`};
+  return {blocked:false,count:stored,limit};
+}
+
+async function reserveMonthlyQuota(db,{userId,isDemo,tokensIn,room}){
+  const limit=isDemo?100:500;
+  const month=currentMonthISO();
+  const reservationId=randomUUID();
+  const normalizedTokens=Math.max(0,Number(tokensIn)||0);
+  const accessArgs=pairAccessArgs(userId,room);
+  const [reserved,usage]=await db.batch([
+    {
+      sql:`WITH access AS (${AUTH_ONLY_PAIR_ACCESS_SQL})
+        INSERT INTO ai_account_monthly_reservations
+          (reservation_id,month,user_id,tokens_in,session_id,refunded_at,created_at)
+        SELECT ?,?,?,?,NULL,NULL,datetime('now') FROM access
+        WHERE COALESCE((SELECT calls FROM ai_account_monthly_usage
+          WHERE month=? AND user_id=?),0)<?
+        RETURNING reservation_id`,
+      args:[...accessArgs,reservationId,month,userId,normalizedTokens,month,userId,limit],
+    },
+    {
+      sql:`INSERT INTO ai_account_monthly_usage (month,user_id,calls,tokens_in,updated_at)
+        SELECT month,user_id,1,tokens_in,datetime('now')
+        FROM ai_account_monthly_reservations
+        WHERE reservation_id=? AND refunded_at IS NULL
+        ON CONFLICT(month,user_id) DO UPDATE SET
+          calls=ai_account_monthly_usage.calls+1,
+          tokens_in=ai_account_monthly_usage.tokens_in+excluded.tokens_in,
+          updated_at=datetime('now')
+        WHERE ai_account_monthly_usage.calls<?
+        RETURNING calls`,
+      args:[reservationId,limit],
+    },
+  ],'write');
+  const count=Number(usage?.rows?.[0]?.calls);
+  if(reserved?.rows?.length===1 && Number.isSafeInteger(count) && count>0){
+    return {blocked:false,count,limit,reservationId,month,userId,tokensIn:normalizedTokens};
+  }
+  const access=await db.execute({sql:AUTH_ONLY_PAIR_ACCESS_SQL,args:accessArgs});
+  if(!access.rows?.length) throw new AiPairAccessError();
+  const quota=await checkMonthlyQuota(db,userId,isDemo);
+  if(quota.blocked) return quota;
+  throw new Error('monthly AI quota was not reserved');
+}
+
+async function refundMonthlyQuota(db,reservation){
+  if(!reservation?.reservationId) return;
+  const [usage,refunded]=await db.batch([
+    {
+      sql:`UPDATE ai_account_monthly_usage
+        SET calls=calls-1,
+          tokens_in=MAX(0,tokens_in-?),
+          updated_at=datetime('now')
+        WHERE month=? AND user_id=? AND calls>0
+          AND EXISTS (
+            SELECT 1 FROM ai_account_monthly_reservations
+            WHERE reservation_id=? AND month=? AND user_id=?
+              AND session_id IS NULL AND refunded_at IS NULL
+          )
+        RETURNING calls`,
+      args:[reservation.tokensIn,reservation.month,reservation.userId,
+        reservation.reservationId,reservation.month,reservation.userId],
+    },
+    {
+      sql:`UPDATE ai_account_monthly_reservations
+        SET refunded_at=datetime('now')
+        WHERE reservation_id=? AND month=? AND user_id=?
+          AND session_id IS NULL AND refunded_at IS NULL
+        RETURNING reservation_id`,
+      args:[reservation.reservationId,reservation.month,reservation.userId],
+    },
+  ],'write');
+  if(refunded?.rows?.length && !usage?.rows?.length){
+    throw new Error('monthly AI quota refund was inconsistent');
   }
 }
 
@@ -406,8 +677,13 @@ async function handleAnalyze(req,res){
   }
   try{ await ensureTables(db); await ensureAppLogs(db); }catch{}
 
-  const trustedRoom=await resolveAnalysisRoom(db,requestedRoomId).catch(()=>null);
   const numericUserId=Number(userId);
+  if(!Number.isSafeInteger(numericUserId)||numericUserId<1){
+    return res.status(401).json({error:'authentication required'});
+  }
+  let trustedRoom;
+  try{ trustedRoom=await resolveAnalysisRoom(db,requestedRoomId,numericUserId); }
+  catch{ return res.status(503).json({error:'AI service temporarily unavailable'}); }
   if(!trustedRoom || !trustedRoom.participantIds.includes(numericUserId)){
     return res.status(403).json({error:'trusted room membership required'});
   }
@@ -419,8 +695,9 @@ async function handleAnalyze(req,res){
 
   let missingConsents;
   try{
-    missingConsents=await recordAndVerifyRoomConsent(db,numericUserId,trustedRoom.participantIds);
-  }catch{
+    missingConsents=await recordAndVerifyRoomConsent(db,numericUserId,trustedRoom,trustedRoom.participantIds);
+  }catch(error){
+    if(error instanceof AiPairAccessError) return res.status(403).json({error:'trusted room membership required'});
     return res.status(500).json({error:'unable to record AI consent'});
   }
   if(missingConsents.length){
@@ -447,12 +724,14 @@ async function handleAnalyze(req,res){
         return res.status(429).json({ ok:false, error:'free-tier daily pool 14,400 exhausted', calls_today:todayCalls });
       }
     }catch{}
-    const quota=await checkMonthlyQuota(db, userId, isDemo);
-    if(quota.blocked){
-      await logServer('warn','ai_quota_blocked', `quota blocked user ${userId||'anon'} ${quota.reason}`, {userId, isDemo, count:quota.count, limit:quota.limit}, {req, source:'server-ai', payload:payloadCtx});
-      return res.status(429).json({ ok:false, error:'quota exceeded', reason:quota.reason, count:quota.count, limit:quota.limit });
-    }
   }catch{}
+  let monthlyQuota;
+  try{ monthlyQuota=await checkMonthlyQuota(db,numericUserId,isDemo); }
+  catch{ return res.status(503).json({error:'AI quota temporarily unavailable'}); }
+  if(monthlyQuota.blocked){
+    await logServer('warn','ai_quota_blocked', `quota blocked user ${userId||'anon'} ${monthlyQuota.reason}`, {userId, isDemo, count:monthlyQuota.count, limit:monthlyQuota.limit}, {req, source:'server-ai', payload:payloadCtx});
+    return res.status(429).json({ ok:false, error:'quota exceeded', reason:monthlyQuota.reason, count:monthlyQuota.count, limit:monthlyQuota.limit });
+  }
 
   // daily pool guard (global) for anon
   if(anonMode){
@@ -472,18 +751,33 @@ async function handleAnalyze(req,res){
 
   const picking=pickModel({ transcript:transStr, code:codeFlat, role, durationSec:duration_sec, interviewerQuestions:iq, usage:usageRow });
 
+  let reservation;
+  try{
+    reservation=await reserveMonthlyQuota(db,{
+      userId:numericUserId,isDemo,tokensIn:picking.totalIn,room:trustedRoom,
+    });
+  }catch(error){
+    if(error instanceof AiPairAccessError) return res.status(403).json({error:'trusted room membership required'});
+    return res.status(503).json({error:'AI quota temporarily unavailable'});
+  }
+  if(reservation.blocked){
+    await logServer('warn','ai_quota_blocked', `quota blocked user ${userId||'anon'} ${reservation.reason}`, {userId, isDemo, count:reservation.count, limit:reservation.limit}, {req, source:'server-ai', payload:payloadCtx});
+    return res.status(429).json({ ok:false, error:'quota exceeded', reason:reservation.reason, count:reservation.count, limit:reservation.limit });
+  }
+  monthlyQuota=reservation;
+
   let sessId;
   try{
-    const ins=await db.execute({ sql:`INSERT INTO ai_sessions (room_id, pair_label, transcript, code_snapshots, interviewer_questions, started_at, ended_at, duration_sec, created_by) VALUES (?,?,?,?,?,datetime('now'),datetime('now'),?,?) RETURNING id`, args:[room_id, pair_label||'mock', (transStr||'').slice(0,28000), (typeof code==='string'?code:JSON.stringify(code)).slice(0,28000), (iq||'').slice(0,8000), Number(duration_sec)||0, userId||null]});
-    sessId=ins.rows[0].id;
-  }catch{
-    try{
-      const ins2=await db.execute({ sql:`INSERT INTO ai_sessions (room_id, pair_label, transcript, code_snapshots, interviewer_questions, duration_sec, created_by) VALUES (?,?,?,?,?,?,?) RETURNING id`, args:[room_id, pair_label||'mock', (transStr||'').slice(0,8000), (typeof code==='string'?code.slice(0,8000):JSON.stringify(code).slice(0,8000)), (iq||'').slice(0,3000), Number(duration_sec)||0, userId||null]});
-      sessId=ins2.rows[0].id;
-    }catch(e){
-      await logServer('error','ai_session_insert_fail', String(e.message||e).slice(0,300), {room_id}, {req, source:'server-ai'});
-      return res.status(500).json({ error:'session create failed' });
-    }
+    sessId=await createAuthorizedSession(db,{
+      room:trustedRoom,userId:numericUserId,pairLabel:pair_label,
+      transcript:transStr,code:codeFlat,questions:iq,durationSec:duration_sec,
+      reservationId:reservation.reservationId,
+    });
+  }catch(error){
+    try{ await refundMonthlyQuota(db,reservation); }catch{}
+    if(error instanceof AiPairAccessError) return res.status(403).json({error:'trusted room membership required'});
+    await logServer('error','ai_session_insert_fail',String(error?.message||error).slice(0,300),{room_id},{req,source:'server-ai'});
+    return res.status(500).json({error:'session create failed'});
   }
 
   let modelUsed=picking.model.name, reason=picking.reason, estIn=picking.totalIn, estOut=900, costCents=Math.ceil((estIn/1e6*picking.model.price_in_per_mtok + estOut/1e6*picking.model.price_out_per_mtok)*100);
@@ -558,21 +852,33 @@ async function handleAnalyze(req,res){
   const combined=`${transStr}\n${typeof codeFlat==='string'?codeFlat:JSON.stringify(codeFlat)}\n${iq}`;
   const verification=feedbackJson?verifyEvidence(feedbackJson, combined):{validated:0,total:0,score:0};
 
-  try{ await db.execute({ sql:`INSERT INTO ai_usage (date,calls,tokens_in,tokens_out,updated_at) VALUES (?,?,?, ?, datetime('now')) ON CONFLICT(date) DO UPDATE SET calls=calls+1, tokens_in=tokens_in+excluded.tokens_in, tokens_out=tokens_out+excluded.tokens_out, updated_at=datetime('now')`, args:[today,1,estIn,estOut]}); }catch{}
-
   let fbId;
   try{
-    const insFb=await db.execute({ sql:`INSERT INTO ai_feedback (session_id, role, feedback_json, evidence, model_used, reason_for_pick, estimated_cost_cents, confidence) VALUES (?,?,?,?,?,?,?,?) RETURNING id`, args:[sessId, role||'both', JSON.stringify(feedbackJson||{}), JSON.stringify({validation:verification, combined_len:combined.length}), modelUsed, reason, costCents, verification.score]});
-    fbId=insFb.rows[0].id;
-  }catch{
-    try{ await db.execute({ sql:`INSERT INTO ai_feedback (session_id, role, feedback_json, model_used) VALUES (?,?,?,?)`, args:[sessId, role||'both', JSON.stringify(feedbackJson||{}), modelUsed]}); fbId=Date.now(); }catch{ fbId=sessId; }
+    fbId=await createAuthorizedFeedback(db,{
+      room:trustedRoom,userId:numericUserId,sessionId:sessId,role,
+      feedback:feedbackJson,verification,modelUsed,reason,costCents,
+      combinedLength:combined.length,
+    });
+  }catch(error){
+    if(error instanceof AiPairAccessError) return res.status(403).json({error:'trusted room membership required'});
+    await logServer('error','ai_feedback_insert_fail',String(error?.message||error).slice(0,300),{room_id,session_id:sessId},{req,source:'server-ai'});
+    return res.status(500).json({error:'feedback create failed'});
   }
 
-  try{ await db.execute({ sql:`UPDATE ai_sessions SET cost_cents=?, ended_at=datetime('now') WHERE id=?`, args:[costCents, sessId]});}catch{}
+  try{ await db.execute({ sql:`INSERT INTO ai_usage (date,calls,tokens_in,tokens_out,updated_at) VALUES (?,?,?, ?, datetime('now')) ON CONFLICT(date) DO UPDATE SET calls=calls+1, tokens_in=tokens_in+excluded.tokens_in, tokens_out=tokens_out+excluded.tokens_out, updated_at=datetime('now')`, args:[today,1,estIn,estOut]}); }catch{}
+
+  try{
+    await db.execute({
+      sql:`UPDATE ai_sessions SET cost_cents=?,ended_at=datetime('now')
+        WHERE id=? AND room_id=? AND created_by=?
+          AND EXISTS (${AUTH_ONLY_PAIR_ACCESS_SQL})`,
+      args:[costCents,sessId,room_id,numericUserId,...pairAccessArgs(numericUserId,trustedRoom)],
+    });
+  }catch{}
 
   try{ await logServer('success','ai_analyze_success', `${anonMode?'anon':'user '+userId} -> ${modelUsed} ${verification.validated}/${verification.total} evidence cost ${costCents}c`, {session_id:sessId, feedback_id:fbId, model_used:modelUsed, mocked, openaiFallback, costCents, tokens_in:estIn, tokens_out:estOut, room_id, anon:anonMode, isDemo}, {req, source:'server-ai', user_id:userId, payload:payloadCtx}); }catch{}
 
-  return res.json({ ok:true, mocked, openaiFallback, anon:anonMode, session_id:sessId, feedback_id:fbId, model_used:modelUsed, reason_for_pick:reason, estimated_cost:{ cents:costCents, usd:(costCents/100).toFixed(4), tokens_in:estIn, tokens_out:estOut, groq_usage:groqUsage||null }, evidence_validated:verification, feedback:feedbackJson, quota:{ demo:isDemo, calls_this_month: (await checkMonthlyQuota(db, userId, isDemo)).count ?? 0 } });
+  return res.json({ ok:true, mocked, openaiFallback, anon:anonMode, session_id:sessId, feedback_id:fbId, model_used:modelUsed, reason_for_pick:reason, estimated_cost:{ cents:costCents, usd:(costCents/100).toFixed(4), tokens_in:estIn, tokens_out:estOut, groq_usage:groqUsage||null }, evidence_validated:verification, feedback:feedbackJson, quota:{ demo:isDemo, calls_this_month:monthlyQuota.count } });
 }
 
 async function handleFeedback(req,res){
@@ -583,17 +889,25 @@ async function handleFeedback(req,res){
   if(!authInfo.authed) return res.status(401).json({error:'authentication required'});
   const db=getClient(); await ensureTables(db);
 
-  const uid=authInfo.userId;
+  const uid=Number(authInfo.userId);
+  if(!Number.isSafeInteger(uid)||uid<1) return res.status(401).json({error:'authentication required'});
   if(id){
-    const rs=await db.execute({ sql:`SELECT af.*, ase.room_id, ase.pair_label, ase.created_by FROM ai_feedback af JOIN ai_sessions ase ON ase.id=af.session_id WHERE (af.session_id=? OR af.id=?) ORDER BY af.created_at DESC LIMIT 5`, args:[id,id]});
+    const rs=await db.execute({
+      sql:`SELECT af.*,ase.room_id,ase.pair_label,ase.created_by
+        FROM ai_feedback af JOIN ai_sessions ase ON ase.id=af.session_id
+        ${AUTH_SESSION_OWNERSHIP_JOINS}
+        WHERE (af.session_id=? OR af.id=?) AND ${AUTH_SESSION_OWNERSHIP_WHERE}
+        ORDER BY af.created_at DESC LIMIT 5`,
+      args:[uid,id,id,...authSessionOwnershipArgs(uid).slice(1)],
+    });
     if(!rs.rows.length){
       return res.status(404).json({ error:'not found', session_id:id});
     }
-    // Legacy anonymous rows are intentionally inaccessible; only the creator may read feedback.
+    // SQL enforces both creator ownership and source-tagged canonical-room membership.
+    // Keep the postcondition because tests and adapters may return unexpected rows.
     const own = rs.rows.filter(r=> r.created_by==uid);
     if(!own.length){
-      // allow if payload is admin (loosely) — we skip check for now and return first but with restricted?
-      return res.status(403).json({ error:'forbidden — session owned by other user', session_owner: rs.rows[0].created_by });
+      return res.status(403).json({error:'forbidden'});
     }
     const r=own[0];
     const parsedFeedback = (()=>{ try{ return JSON.parse(r.feedback_json);}catch{ return {}; }})();
@@ -601,19 +915,35 @@ async function handleFeedback(req,res){
     return res.json({ ok:true, session_id:r.session_id, feedback_id:r.id, feedback:parsedFeedback, evidence:parsedEvidence, model_used:r.model_used, reason_for_pick:r.reason_for_pick, confidence:r.confidence, created_at:r.created_at, room_id:r.room_id, pair_label:r.pair_label, created_by:r.created_by });
   }
 
-  const list=await db.execute({ sql:`SELECT af.id, af.session_id, af.model_used, af.created_at, ase.room_id, ase.pair_label, af.confidence FROM ai_feedback af JOIN ai_sessions ase ON ase.id=af.session_id WHERE ase.created_by=? ORDER BY af.created_at DESC LIMIT 20`, args:[uid]});
+  const list=await db.execute({
+    sql:`SELECT af.id,af.session_id,af.model_used,af.created_at,ase.room_id,ase.pair_label,af.confidence
+      FROM ai_feedback af JOIN ai_sessions ase ON ase.id=af.session_id
+      ${AUTH_SESSION_OWNERSHIP_JOINS}
+      WHERE ${AUTH_SESSION_OWNERSHIP_WHERE}
+      ORDER BY af.created_at DESC LIMIT 20`,
+    args:authSessionOwnershipArgs(uid),
+  });
   return res.json({ ok:true, count:list.rows.length, feedbacks:list.rows });
 }
 
 async function handleHistory(req,res){
   if(req.method!=='GET') return res.status(405).json({ error:'GET only'});
   const authInfo=tryAuth(req);
-  let uid=authInfo.userId;
+  const uid=Number(authInfo.userId);
   if(!authInfo.authed){
     return res.status(401).json({error:'authentication required'});
   }
+  if(!Number.isSafeInteger(uid)||uid<1) return res.status(401).json({error:'authentication required'});
   const db=getClient(); await ensureTables(db);
-  const rs=await db.execute({ sql:`SELECT af.id, af.session_id, af.role, af.model_used, af.estimated_cost_cents, af.confidence, af.created_at, ase.room_id, ase.pair_label, ase.duration_sec FROM ai_feedback af JOIN ai_sessions ase ON ase.id=af.session_id WHERE ase.created_by=? ORDER BY af.created_at DESC LIMIT 20`, args:[uid]});
+  const rs=await db.execute({
+    sql:`SELECT af.id,af.session_id,af.role,af.model_used,af.estimated_cost_cents,
+        af.confidence,af.created_at,ase.room_id,ase.pair_label,ase.duration_sec
+      FROM ai_feedback af JOIN ai_sessions ase ON ase.id=af.session_id
+      ${AUTH_SESSION_OWNERSHIP_JOINS}
+      WHERE ${AUTH_SESSION_OWNERSHIP_WHERE}
+      ORDER BY af.created_at DESC LIMIT 20`,
+    args:authSessionOwnershipArgs(uid),
+  });
   const today=todayISO(); let usage=null; try{ const u=await db.execute({ sql:`SELECT * FROM ai_usage WHERE date=?`, args:[today]}); usage=u.rows[0]||null; }catch{}
   // monthly quota info
   let monthly=null; try{ const q=await checkMonthlyQuota(db, uid, authInfo.isDemo); monthly={count:q.count, limit:q.limit, demo:authInfo.isDemo}; }catch{}

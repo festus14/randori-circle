@@ -71,6 +71,12 @@ async function readyDatabase({withUnique=true}={}){
   )`);
   await db.execute(`INSERT INTO pairing_groups (id,week_id,user_a_id,user_b_id,user_c_id)
     VALUES (20,10,2,4,NULL),(21,10,4,5,NULL)`);
+  await db.execute(`CREATE TABLE pairing_participants (
+    week_id INTEGER NOT NULL,user_id INTEGER NOT NULL,position INTEGER NOT NULL,source TEXT NOT NULL,
+    PRIMARY KEY(week_id,user_id)
+  )`);
+  await db.execute(`INSERT INTO pairing_participants (week_id,user_id,position,source) VALUES
+    (10,2,0,'auth'),(10,4,1,'auth'),(10,5,2,'auth')`);
   await db.execute(`CREATE TABLE pair_schedules (
     id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL,
     proposed_times TEXT, agreed_time TEXT, created_at TEXT, updated_at TEXT
@@ -323,7 +329,7 @@ test('schedule endpoints require canonical rooms and exact membership before sto
   const forbidden=await invoke({
     url:'/api/schedule?room_id=week_10_pair_21',query:{endpoint:'schedule',room_id:'week_10_pair_21'},
   });
-  assert.equal(forbidden.status,403);
+  assert.equal(forbidden.status,404);
   const anonymous=await invoke({
     url:'/api/schedule?room_id=week_10_pair_20',query:{endpoint:'schedule',room_id:'week_10_pair_20'},headers:{},
   });
@@ -462,6 +468,10 @@ test('schema readiness coalesces probes and retries after missing table or uniqu
     id INTEGER PRIMARY KEY,week_id INTEGER,user_a_id INTEGER,user_b_id INTEGER,user_c_id INTEGER
   )`);
   await delegate.execute(`INSERT INTO pairing_groups VALUES (20,10,2,4,NULL)`);
+  await delegate.execute(`CREATE TABLE pairing_participants (
+    week_id INTEGER,user_id INTEGER,position INTEGER,source TEXT,PRIMARY KEY(week_id,user_id)
+  )`);
+  await delegate.execute(`INSERT INTO pairing_participants VALUES (10,2,0,'auth')`);
   const calls=[];
   currentDb=tracedClient(delegate,calls);
   const request={url:'/api/schedule?room_id=week_10_pair_20',query:{endpoint:'schedule',room_id:'week_10_pair_20'}};
@@ -499,9 +509,9 @@ test('concurrent schedule reads share one in-flight schema probe',async()=>{
   currentDb={
     async execute(statement){
       const sql=sqlText(statement);
-      if(sql.includes('SELECT id,user_a_id,user_b_id')){
+      if(sql.includes('FROM pairing_groups AS pg')&&sql.includes("viewer.source='auth'")){
         accessChecks+=1;
-        return {rows:[{id:20,user_a_id:2,user_b_id:4,user_c_id:null}]};
+        return {rows:[{pair_group_id:20,week_id:10,user_a_id:2,user_b_id:4,user_c_id:null}]};
       }
       if(sql.startsWith("PRAGMA table_info('pair_schedules')")){
         tableProbes+=1;

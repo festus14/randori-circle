@@ -116,8 +116,14 @@ export function verifyRequestAuth(req) {
       issuer: JWT_ISSUER,
       audience: JWT_AUDIENCE,
     });
-    const userId = Number(payload?.id ?? payload?.uid);
-    return Number.isInteger(userId) && userId > 0 ? payload : null;
+    const rawUserId=payload?.id??payload?.uid;
+    const userId=typeof rawUserId==='number'
+      ? rawUserId
+      : (typeof rawUserId==='string'&&/^[1-9]\d*$/.test(rawUserId) ? Number(rawUserId) : null);
+    if(!Number.isSafeInteger(userId)||userId<1) return null;
+    // Normalize at the trust boundary so every downstream authorization path
+    // sees one strict identity type, including JWTs minted by older clients.
+    return {...payload,id:userId};
   } catch {
     return null;
   }

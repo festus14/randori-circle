@@ -1,4 +1,5 @@
 import { getClient, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
+import { AUTH_PAIR_ACCESS_SQL, authPairAccessArgs } from './_pair-access.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
 
 const WORKSPACE_SCHEMA_VERSION = 3;
@@ -51,7 +52,6 @@ const BOARD_SHAPE_FIELDS = {
   text:['color','id','size','text','type','x','y'],
   sticky:['bg','h','id','text','type','w','x','y'],
 };
-let tableInitPromise=null;
 let lastCleanupTimestamp=0;
 const CLEANUP_INTERVAL_MS=5*60*1000;
 
@@ -59,43 +59,6 @@ function getEndpoint(req){
   const q=req.query?.endpoint;
   if(q) return String(q).toLowerCase();
   try{ const u=new URL(req.url,'http://localhost'); const ep=u.searchParams.get('endpoint'); if(ep) return ep.toLowerCase(); const parts=u.pathname.split('/').filter(Boolean); return parts.pop()?.toLowerCase()||''; }catch{ return (req.url||'').split('?')[0].split('/').filter(Boolean).pop()?.toLowerCase()||''; }
-}
-
-async function ensureTable(db){
-  if(!tableInitPromise){
-    tableInitPromise=(async()=>{
-      await db.execute(`CREATE TABLE IF NOT EXISTS video_signals (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    room_id TEXT NOT NULL,
-    from_id TEXT NOT NULL,
-    to_id TEXT,
-    type TEXT NOT NULL,
-    payload TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now'))
-      )`);
-      try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_video_signals_room ON video_signals(room_id, created_at)`);}catch{}
-      try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_video_signals_room_id ON video_signals(room_id, id)`);}catch{}
-      await db.execute(`CREATE TABLE IF NOT EXISTS pair_room_snapshots (
-    room_id TEXT PRIMARY KEY,
-    week_id INTEGER NOT NULL,
-    pair_group_id INTEGER NOT NULL,
-    revision INTEGER NOT NULL,
-    schema_version INTEGER NOT NULL,
-    client_id TEXT NOT NULL,
-    client_seq INTEGER NOT NULL,
-    language TEXT NOT NULL,
-    question_id TEXT NOT NULL,
-    code TEXT NOT NULL,
-    updated_by INTEGER NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(week_id, pair_group_id),
-    FOREIGN KEY(pair_group_id) REFERENCES pairing_groups(id) ON DELETE CASCADE
-      )`);
-    })();
-  }
-  try{ await tableInitPromise; }
-  catch(error){ tableInitPromise=null; throw error; }
 }
 
 async function cleanupOld(db){
@@ -106,47 +69,6 @@ async function cleanupOld(db){
   try{ await db.execute(`DELETE FROM pair_room_snapshots
     WHERE updated_at < datetime('now','-90 days')
        OR NOT EXISTS (SELECT 1 FROM pairing_groups pg WHERE pg.id=pair_room_snapshots.pair_group_id AND pg.week_id=pair_room_snapshots.week_id)`);}catch{}
-}
-
-async function canAccessRoom(db,payload,roomId){
-  const userId=Number(payload?.id||payload?.uid);
-  if(!Number.isInteger(userId) || !roomId) return false;
-
-  const canonical=String(roomId).match(/^week_(\d+)_pair_(\d+)$/i);
-  if(canonical){
-    const weekId=Number(canonical[1]);
-    const pairId=Number(canonical[2]);
-    const rs=await db.execute({sql:`SELECT user_a_id,user_b_id,user_c_id FROM pairing_groups WHERE id=? AND week_id=? LIMIT 1`,args:[pairId,weekId]}).catch(()=>({rows:[]}));
-    const row=rs.rows[0];
-    return !!row && [row.user_a_id,row.user_b_id,row.user_c_id].some(id=>Number(id)===userId);
-  }
-
-  // Compatibility with room links emitted by existing weekly email/SMS code.
-  const legacy=String(roomId).match(/^w(\d+)-p(\d+)(?:-(\d+|ai))?$/i);
-  if(legacy){
-    const weekId=Number(legacy[1]);
-    const firstId=Number(legacy[2]);
-    const secondRaw=legacy[3];
-    let sql=`SELECT user_a_id,user_b_id,user_c_id FROM pairing_groups WHERE week_id=? AND (user_a_id=? OR user_b_id=? OR user_c_id=?)`;
-    const args=[weekId,userId,userId,userId];
-    if(secondRaw && secondRaw.toLowerCase()!=='ai'){
-      const secondId=Number(secondRaw);
-      sql+=` AND ((user_a_id=? AND user_b_id=?) OR (user_a_id=? AND user_b_id=?))`;
-      args.push(firstId,secondId,secondId,firstId);
-    }else if(secondRaw?.toLowerCase()==='ai'){
-      sql+=` AND user_a_id=? AND COALESCE(is_ai_pair,0)=1`;
-      args.push(firstId);
-    }else{
-      sql+=` AND (user_a_id=? OR user_b_id=? OR user_c_id=?)`;
-      args.push(firstId,firstId,firstId);
-    }
-    sql+=` LIMIT 1`;
-    const rs=await db.execute({sql,args}).catch(()=>({rows:[]}));
-    return !!rs.rows.length;
-  }
-
-  // Unknown/ad-hoc names have no server-verifiable room capability.
-  return false;
 }
 
 function byteLength(value){
@@ -160,15 +82,71 @@ function parseCanonicalRoomId(value){
   return parsed?.roomId===roomId ? parsed : null;
 }
 
-async function canAccessCanonicalRoom(db,payload,room){
+function authenticatedUserId(payload){
   const userId=Number(payload?.id||payload?.uid);
-  if(!Number.isSafeInteger(userId) || userId<=0 || !room) return false;
-  const rs=await db.execute({
-    sql:`SELECT user_a_id,user_b_id,user_c_id FROM pairing_groups WHERE id=? AND week_id=? LIMIT 1`,
-    args:[room.pairGroupId,room.weekId],
-  }).catch(()=>({rows:[]}));
-  const row=rs.rows?.[0];
-  return !!row && [row.user_a_id,row.user_b_id,row.user_c_id].some(id=>Number(id)===userId);
+  return Number.isSafeInteger(userId) && userId>0 ? userId : null;
+}
+
+function pairAccessArgs(userId,room){
+  return authPairAccessArgs({userId,weekId:room.weekId,pairGroupId:room.pairGroupId});
+}
+
+function parseSignalRoom(value){
+  if(typeof value!=='string') return null;
+  const normalized=value.trim();
+  const canonical=normalized.match(/^week_([1-9]\d*)_pair_([1-9]\d*)$/i);
+  if(canonical){
+    const weekId=Number(canonical[1]);
+    const pairGroupId=Number(canonical[2]);
+    if(!Number.isSafeInteger(weekId) || !Number.isSafeInteger(pairGroupId)) return null;
+    return {kind:'canonical',weekId,pairGroupId,roomId:`week_${weekId}_pair_${pairGroupId}`};
+  }
+  const legacy=normalized.match(/^w([1-9]\d*)-p([1-9]\d*)(?:-([1-9]\d*|ai))?$/i);
+  if(!legacy) return null;
+  const weekId=Number(legacy[1]);
+  const firstId=Number(legacy[2]);
+  const secondRaw=legacy[3]?.toLowerCase()||null;
+  const secondId=secondRaw && secondRaw!=='ai' ? Number(secondRaw) : null;
+  if(![weekId,firstId,...(secondId===null?[]:[secondId])].every(Number.isSafeInteger)) return null;
+  return {kind:'legacy',weekId,firstId,secondId,isAi:secondRaw==='ai'};
+}
+
+async function resolveSignalRoom(db,userId,value){
+  const parsed=parseSignalRoom(value);
+  if(!parsed) return null;
+  if(parsed.kind==='canonical') return parsed;
+
+  let descriptorSql;
+  const descriptorArgs=[];
+  if(parsed.secondId!==null){
+    descriptorSql=`((pg.user_a_id=? AND pg.user_b_id=?) OR (pg.user_a_id=? AND pg.user_b_id=?))`;
+    descriptorArgs.push(parsed.firstId,parsed.secondId,parsed.secondId,parsed.firstId);
+  }else if(parsed.isAi){
+    descriptorSql=`pg.user_a_id=? AND COALESCE(pg.is_ai_pair,0)=1`;
+    descriptorArgs.push(parsed.firstId);
+  }else{
+    descriptorSql=`(pg.user_a_id=? OR pg.user_b_id=? OR pg.user_c_id=?)`;
+    descriptorArgs.push(parsed.firstId,parsed.firstId,parsed.firstId);
+  }
+  const result=await db.execute({
+    sql:`SELECT pg.id AS pair_group_id,pg.week_id
+      FROM pairing_groups pg
+      JOIN pairing_participants viewer
+        ON viewer.week_id=pg.week_id
+       AND viewer.user_id=?
+       AND viewer.source='auth'
+      WHERE pg.week_id=?
+        AND (pg.user_a_id=? OR pg.user_b_id=? OR pg.user_c_id=?)
+        AND ${descriptorSql}
+      ORDER BY pg.id ASC
+      LIMIT 2`,
+    args:[userId,parsed.weekId,userId,userId,userId,...descriptorArgs],
+  });
+  if(result.rows?.length!==1) return null;
+  const pairGroupId=Number(result.rows[0].pair_group_id);
+  const weekId=Number(result.rows[0].week_id);
+  if(!Number.isSafeInteger(pairGroupId) || pairGroupId<=0 || weekId!==parsed.weekId) return null;
+  return {kind:'canonical',weekId,pairGroupId,roomId:`week_${weekId}_pair_${pairGroupId}`};
 }
 
 function scalarString(value){
@@ -403,12 +381,27 @@ function snapshotFromRow(row){
   };
 }
 
-async function readWorkspaceSnapshot(db,roomId){
+async function readAuthorizedWorkspaceSnapshot(db,userId,room){
   const rs=await db.execute({
-    sql:`SELECT room_id,revision,schema_version,client_id,client_seq,language,question_id,code,updated_by,updated_at FROM pair_room_snapshots WHERE room_id=? LIMIT 1`,
-    args:[roomId],
+    sql:`WITH access AS (${AUTH_PAIR_ACCESS_SQL})
+      SELECT snapshot.room_id,snapshot.revision,snapshot.schema_version,snapshot.client_id,
+        snapshot.client_seq,snapshot.language,snapshot.question_id,snapshot.code,
+        snapshot.updated_by,snapshot.updated_at,
+        CASE WHEN snapshot.room_id IS NULL THEN 0 ELSE 1 END AS snapshot_present
+      FROM access
+      LEFT JOIN pair_room_snapshots snapshot
+        ON snapshot.room_id=?
+       AND snapshot.week_id=?
+       AND snapshot.pair_group_id=?
+      LIMIT 1`,
+    args:[...pairAccessArgs(userId,room),room.roomId,room.weekId,room.pairGroupId],
   });
-  return snapshotFromRow(rs.rows?.[0]);
+  const row=rs.rows?.[0];
+  if(!row) return {authorized:false,snapshot:null};
+  return {
+    authorized:true,
+    snapshot:Number(row.snapshot_present)===1 ? snapshotFromRow(row) : null,
+  };
 }
 
 function workspaceConflict(res,current){
@@ -423,7 +416,11 @@ async function handleWorkspacePost(req,res,db,auth,room){
     ? `${workspace.question_id}@${workspace.question_version}`
     : workspace.question_id;
   const codeEnvelope=storedWorkspaceCode(workspace);
-  const current=await readWorkspaceSnapshot(db,room.roomId);
+  const userId=authenticatedUserId(auth);
+  if(!userId) return res.status(403).json({ok:false,error:'not a member of this room'});
+  const initial=await readAuthorizedWorkspaceSnapshot(db,userId,room);
+  if(!initial.authorized) return res.status(403).json({ok:false,error:'not a member of this room'});
+  const current=initial.snapshot;
   if(current && workspace.schema_version<current.schema_version){
     return res.status(409).json({
       ok:false,
@@ -441,26 +438,32 @@ async function handleWorkspacePost(req,res,db,auth,room){
   let writeResult;
   if(current){
     writeResult=await db.execute({
-      sql:`UPDATE pair_room_snapshots
+      sql:`WITH access AS (${AUTH_PAIR_ACCESS_SQL})
+        UPDATE pair_room_snapshots
         SET revision=revision+1,schema_version=?,client_id=?,client_seq=?,language=?,question_id=?,code=?,updated_by=?,updated_at=datetime('now')
-        WHERE room_id=? AND revision=?
+        WHERE room_id=? AND week_id=? AND pair_group_id=? AND revision=?
+          AND EXISTS (SELECT 1 FROM access)
         RETURNING room_id,revision,schema_version,client_id,client_seq,language,question_id,code,updated_by,updated_at`,
       args:[
+        ...pairAccessArgs(userId,room),
         workspace.schema_version,workspace.client_id,workspace.client_seq,workspace.language,
-        storedQuestionId,codeEnvelope,Number(auth.id||auth.uid),room.roomId,workspace.base_revision,
+        storedQuestionId,codeEnvelope,userId,room.roomId,room.weekId,room.pairGroupId,workspace.base_revision,
       ],
     });
   }else{
     writeResult=await db.execute({
-      sql:`INSERT INTO pair_room_snapshots
+      sql:`WITH access AS (${AUTH_PAIR_ACCESS_SQL})
+        INSERT INTO pair_room_snapshots
         (room_id,week_id,pair_group_id,revision,schema_version,client_id,client_seq,language,question_id,code,updated_by)
-        VALUES (?,?,?,1,?,?,?,?,?,?,?)
+        SELECT ?,?,?,1,?,?,?,?,?,?,?
+        WHERE EXISTS (SELECT 1 FROM access)
         ON CONFLICT DO NOTHING
         RETURNING room_id,revision,schema_version,client_id,client_seq,language,question_id,code,updated_by,updated_at`,
       args:[
+        ...pairAccessArgs(userId,room),
         room.roomId,room.weekId,room.pairGroupId,workspace.schema_version,workspace.client_id,
         workspace.client_seq,workspace.language,storedQuestionId,codeEnvelope,
-        Number(auth.id||auth.uid),
+        userId,
       ],
     });
   }
@@ -468,8 +471,11 @@ async function handleWorkspacePost(req,res,db,auth,room){
   const written=snapshotFromRow(writeResult.rows?.[0]);
   if(written) return res.json({ok:true,idempotent:false,snapshot:written});
 
-  // A competing request won the compare-and-swap after our initial read.
-  const raced=await readWorkspaceSnapshot(db,room.roomId);
+  // A competing request may have won the compare-and-swap, or membership may
+  // have changed since the initial read. Re-authorize before returning data.
+  const latest=await readAuthorizedWorkspaceSnapshot(db,userId,room);
+  if(!latest.authorized) return res.status(403).json({ok:false,error:'not a member of this room'});
+  const raced=latest.snapshot;
   if(raced?.client_id===workspace.client_id && raced.client_seq===workspace.client_seq){
     return res.json({ok:true,idempotent:true,snapshot:raced});
   }
@@ -484,14 +490,16 @@ function parseAfterRevision(value){
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
-async function handleWorkspaceGet(req,res,db,room){
+async function handleWorkspaceGet(req,res,db,userId,room){
   let rawAfter=req.query?.after_revision;
   if(rawAfter===undefined){
     try{ rawAfter=new URL(req.url,'http://localhost').searchParams.get('after_revision')??undefined; }catch{}
   }
   const afterRevision=parseAfterRevision(rawAfter);
   if(afterRevision===null) return res.status(400).json({ok:false,error:'after_revision must be a safe non-negative integer'});
-  const current=await readWorkspaceSnapshot(db,room.roomId);
+  const result=await readAuthorizedWorkspaceSnapshot(db,userId,room);
+  if(!result.authorized) return res.status(403).json({ok:false,error:'not a member of this room'});
+  const current=result.snapshot;
   return res.json({
     ok:true,
     snapshot:current && current.revision>afterRevision ? current : null,
@@ -499,11 +507,80 @@ async function handleWorkspaceGet(req,res,db,room){
   });
 }
 
+async function insertAuthorizedSignal(db,userId,room,{fromId,toId,type,payload}){
+  return db.execute({
+    sql:`WITH access AS (${AUTH_PAIR_ACCESS_SQL})
+      INSERT INTO video_signals (room_id,from_id,to_id,type,payload)
+      SELECT ?,?,?,?,? WHERE EXISTS (SELECT 1 FROM access)
+      RETURNING id`,
+    args:[...pairAccessArgs(userId,room),room.roomId,fromId,toId,type,payload],
+  });
+}
+
+async function trimAuthorizedSignals(db,userId,room){
+  return db.execute({
+    sql:`WITH access AS (${AUTH_PAIR_ACCESS_SQL})
+      DELETE FROM video_signals
+      WHERE room_id=?
+        AND EXISTS (SELECT 1 FROM access)
+        AND id NOT IN (
+          SELECT id FROM video_signals WHERE room_id=? ORDER BY id DESC LIMIT 500
+        )`,
+    args:[...pairAccessArgs(userId,room),room.roomId,room.roomId],
+  });
+}
+
+async function readAuthorizedSignals(db,userId,room,after,peerId){
+  const result=await db.execute({
+    sql:`WITH access AS (${AUTH_PAIR_ACCESS_SQL})
+      SELECT signal.id,signal.room_id,signal.from_id,signal.to_id,signal.type,
+        signal.payload,signal.created_at,
+        CASE WHEN signal.id IS NULL THEN 0 ELSE 1 END AS signal_present
+      FROM access
+      LEFT JOIN video_signals signal
+        ON signal.room_id=?
+       AND signal.id>?
+       AND signal.created_at>datetime('now','-1 hour')
+       AND (?='' OR signal.from_id!=?)
+      ORDER BY signal.id ASC
+      LIMIT 100`,
+    args:[...pairAccessArgs(userId,room),room.roomId,after,peerId,peerId],
+  });
+  if(!result.rows?.length) return {authorized:false,signals:[]};
+  return {
+    authorized:true,
+    signals:result.rows
+      .filter(row=>Number(row.signal_present)===1)
+      .map(row=>({
+        id:row.id,
+        room_id:row.room_id,
+        from_id:row.from_id,
+        to_id:row.to_id,
+        type:row.type,
+        payload:row.payload,
+        created_at:row.created_at,
+      })),
+  };
+}
+
+async function purgeAuthorizedSignals(db,userId,room){
+  await db.execute({
+    sql:`WITH access AS (${AUTH_PAIR_ACCESS_SQL})
+      DELETE FROM video_signals
+      WHERE room_id=? AND EXISTS (SELECT 1 FROM access)`,
+    args:[...pairAccessArgs(userId,room),room.roomId],
+  });
+  const access=await db.execute({sql:AUTH_PAIR_ACCESS_SQL,args:pairAccessArgs(userId,room)});
+  return !!access.rows?.length;
+}
+
 async function handleSignal(req,res){
   const payload=verifyRequestAuth(req);
   if(!payload) return res.status(401).json({ok:false,error:'authentication required'});
+  const userId=authenticatedUserId(payload);
+  if(!userId) return res.status(401).json({ok:false,error:'authentication required'});
   const db=getClient();
-  try{ await ensureTable(db); await cleanupOld(db); }catch{ return res.status(503).json({ok:false,error:'video signaling unavailable'}); }
+  try{ await cleanupOld(db); }catch{ return res.status(503).json({ok:false,error:'video signaling unavailable'}); }
 
   if(req.method==='POST'){
     const body=req.body||{};
@@ -517,22 +594,23 @@ async function handleSignal(req,res){
     if(type==='code-sync'){
       const room=parseCanonicalRoomId(suppliedRoomId);
       if(!room) return res.status(400).json({ok:false,error:'canonical room_id required for workspace sync'});
-      if(!await canAccessCanonicalRoom(db,payload,room)) return res.status(403).json({ok:false,error:'not a member of this room'});
       try{ return await handleWorkspacePost(req,res,db,payload,room); }
       catch{ return res.status(500).json({ok:false,error:'workspace update failed'}); }
     }
     if(!room_id||!from_id||!type||signalPayload===undefined) return res.status(400).json({ok:false,error:'room_id, from_id, type, payload required'});
     if(!['offer','answer','ice','candidate','join','leave'].includes(type)) return res.status(400).json({ok:false,error:'invalid signal type'});
-    if(!await canAccessRoom(db,payload,room_id)) return res.status(403).json({ok:false,error:'not a member of this room'});
     if(typeof signalPayload!=='string'){
       try{ signalPayload=JSON.stringify(signalPayload); }catch{ return res.status(400).json({ok:false,error:'signal payload must be JSON serializable'}); }
       if(typeof signalPayload!=='string') return res.status(400).json({ok:false,error:'signal payload required'});
     }
     if(signalPayload.length>20000) return res.status(413).json({ok:false,error:'signal payload too large'});
     try{
-      const ins=await db.execute({sql:`INSERT INTO video_signals (room_id, from_id, to_id, type, payload) VALUES (?,?,?,?,?) RETURNING id`,args:[room_id,from_id,to_id,type,signalPayload]});
-      try{ await db.execute({sql:`DELETE FROM video_signals WHERE room_id=? AND id NOT IN (SELECT id FROM video_signals WHERE room_id=? ORDER BY id DESC LIMIT 500)`,args:[room_id,room_id]}); }catch{}
-      return res.json({ok:true,id:ins.rows?.[0]?.id??null,room_id,from_id,type});
+      const room=await resolveSignalRoom(db,userId,rawRoomId);
+      if(!room) return res.status(403).json({ok:false,error:'not a member of this room'});
+      const ins=await insertAuthorizedSignal(db,userId,room,{fromId:from_id,toId:to_id,type,payload:signalPayload});
+      if(!ins.rows?.length) return res.status(403).json({ok:false,error:'not a member of this room'});
+      try{ await trimAuthorizedSignals(db,userId,room); }catch{}
+      return res.json({ok:true,id:ins.rows[0].id??null,room_id:room.roomId,from_id,type});
     }catch{ return res.status(500).json({ok:false,error:'signal insert failed'}); }
   }
 
@@ -551,29 +629,30 @@ async function handleSignal(req,res){
     if(channel==='workspace'){
       const room=parseCanonicalRoomId(suppliedRoomId);
       if(!room) return res.status(400).json({ok:false,error:'canonical room_id required for workspace sync'});
-      if(!await canAccessCanonicalRoom(db,payload,room)) return res.status(403).json({ok:false,error:'not a member of this room'});
-      try{ return await handleWorkspaceGet(req,res,db,room); }
+      try{ return await handleWorkspaceGet(req,res,db,userId,room); }
       catch{ return res.status(500).json({ok:false,error:'workspace query failed'}); }
     }
-    if(!await canAccessRoom(db,payload,room_id)) return res.status(403).json({ok:false,error:'not a member of this room'});
     after=Number.isSafeInteger(after) && after>=0 ? after : 0;
     try{
-      let sql=`SELECT id, room_id, from_id, to_id, type, payload, created_at FROM video_signals WHERE room_id=? AND id>? AND created_at > datetime('now','-1 hour')`;
-      const args=[room_id,after];
-      if(peer_id){ sql+=` AND from_id != ?`; args.push(peer_id); }
-      sql+=` ORDER BY id ASC LIMIT 100`;
-      const rs=await db.execute({sql,args});
-      let rows=rs.rows;
+      const room=await resolveSignalRoom(db,userId,rawRoomId);
+      if(!room) return res.status(403).json({ok:false,error:'not a member of this room'});
+      const result=await readAuthorizedSignals(db,userId,room,after,peer_id);
+      if(!result.authorized) return res.status(403).json({ok:false,error:'not a member of this room'});
+      let rows=result.signals;
       if(peer_id) rows=rows.filter(r=>!r.to_id || r.to_id===peer_id || r.to_id==='');
-      return res.json({ok:true,signals:rows,after:rows.length?rows[rows.length-1].id:after,count:rows.length});
+      return res.json({ok:true,room_id:room.roomId,signals:rows,after:rows.length?rows[rows.length-1].id:after,count:rows.length});
     }catch{ return res.status(500).json({ok:false,error:'signal query failed'}); }
   }
 
   if(req.method==='DELETE'){
-    const room_id=scalarString(req.body?.room_id||req.query?.room_id).trim().slice(0,128);
-    if(!room_id) return res.status(400).json({ok:false,error:'room_id required'});
-    if(!await canAccessRoom(db,payload,room_id)) return res.status(403).json({ok:false,error:'not a member of this room'});
-    try{ await db.execute({sql:`DELETE FROM video_signals WHERE room_id=?`,args:[room_id]}); return res.json({ok:true,purged:true}); }
+    const suppliedRoomId=scalarString(req.body?.room_id||req.query?.room_id).trim();
+    if(!suppliedRoomId) return res.status(400).json({ok:false,error:'room_id required'});
+    try{
+      const room=await resolveSignalRoom(db,userId,suppliedRoomId);
+      if(!room) return res.status(403).json({ok:false,error:'not a member of this room'});
+      if(!await purgeAuthorizedSignals(db,userId,room)) return res.status(403).json({ok:false,error:'not a member of this room'});
+      return res.json({ok:true,purged:true,room_id:room.roomId});
+    }
     catch{ return res.status(500).json({ok:false,error:'signal purge failed'}); }
   }
   return res.status(405).json({ok:false,error:'GET, POST or DELETE only'});

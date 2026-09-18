@@ -21,7 +21,7 @@ Pair chat is a private, canonical-room feed rather than a local preview. It load
 
 Authenticated History is a server-backed Pairings & Activity view. A member can explicitly load a private pairing recap containing the agreed schedule, a bounded timeline of messages and verified run summaries, and safe metadata for the latest workspace checkpoint. Source code, whiteboard shapes, hidden cases, provider output, transcripts, and unrelated users' activity are never included. Available checkpoints reopen through the existing authenticated workspace hydration path; pair assignments are not described as completed sessions until lifecycle and attendance tracking exist.
 
-Recaps and personal history require the source-tagged `pairing_participants` snapshot written by current shuffles, preventing collisions between legacy `users` IDs and authenticated account IDs. Pre-snapshot pairings intentionally remain unavailable until an operator can audit and backfill their identity source. The admin-only `/api/init` migration installs the pair-activity indexes; production rollout/backfill tracking remains in issue #27.
+Every private pair surface requires the source-tagged `pairing_participants` snapshot written by current shuffles, including current-pair discovery, schedules, chat, run feeds and execution, video signaling, workspace checkpoints, recaps, personal history, and AI consent or feedback. This prevents collisions between legacy `users` IDs and authenticated account IDs. Pre-snapshot pairings intentionally remain unavailable until an operator can audit and backfill their identity source; numeric IDs alone are never enough evidence. The admin-only `/api/init` migration installs the required snapshot table and pair-activity indexes; production rollout/backfill tracking remains in issues #27 and #30.
 
 The active catalogue contains 10 original exercises across arrays, windows, graphs, intervals, simulation, stacks and strings, binary search, breadth-first search, hash maps, and dynamic programming. Search, difficulty, and pattern filters run entirely in the browser against the public catalogue projection; server-owned generated cases and reference oracles stay outside browser payloads.
 
@@ -54,6 +54,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_pairing.js` | deterministic fairness and canonical room identifiers |
 | `api/_schedule.js` | strict schedule validation, legacy projection, opaque versions, and conflict-safe mutations |
 | `api/_messages.js` | strict chat input, cursor, storage projection, and schema-readiness validation |
+| `api/_pair-access.js` | shared source-aware authorization for canonical private pair rooms |
 
 The target Next.js/Supabase architecture is intentionally phased rather than introduced as a big-bang rewrite.
 

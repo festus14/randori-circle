@@ -82,6 +82,13 @@ async function readyDatabase(){
   )`);
   await db.execute(`INSERT INTO pairing_groups (id,week_id,user_a_id,user_b_id,user_c_id) VALUES
     (20,10,2,4,6),(21,10,4,9,NULL),(22,11,2,4,NULL)`);
+  await db.execute(`CREATE TABLE pairing_participants (
+    week_id INTEGER NOT NULL,user_id INTEGER NOT NULL,position INTEGER NOT NULL,source TEXT NOT NULL,
+    PRIMARY KEY(week_id,user_id)
+  )`);
+  await db.execute(`INSERT INTO pairing_participants (week_id,user_id,position,source) VALUES
+    (10,2,0,'auth'),(10,4,1,'auth'),(10,6,2,'auth'),(10,9,3,'auth'),
+    (11,2,0,'auth'),(11,4,1,'auth')`);
   await db.execute(`CREATE TABLE pair_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL,
     pair_group_id INTEGER NOT NULL, sender_id INTEGER NOT NULL,
