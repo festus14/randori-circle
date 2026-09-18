@@ -341,7 +341,7 @@ test('real invited members opt in, publish that cycle, share a room, and agree a
     const faultClient = createClient({ url: fixture.databaseUrl });
     try {
       await faultClient.execute(`CREATE TRIGGER reject_pairing_outbox
-        BEFORE INSERT ON pairing_email_outbox BEGIN
+        BEFORE INSERT ON outbox_events BEGIN
           SELECT RAISE(ABORT,'injected publication failure');
         END`);
       const failedResponse = pages[0].waitForResponse(response =>
@@ -350,7 +350,7 @@ test('real invited members opt in, publish that cycle, share a room, and agree a
       const failed = await failedResponse;
       expect(failed.status()).toBe(503);
       expect(await failed.json()).toEqual({ error: 'pairing unavailable' });
-      for (const table of ['pairing_week_runs', 'pairing_groups', 'pairing_participants', 'pairing_email_outbox']) {
+      for (const table of ['pairing_week_runs', 'pairing_groups', 'pairing_participants', 'outbox_events']) {
         expect(await countRows(fixture.databaseUrl, table), table).toBe(0);
       }
       await faultClient.execute('DROP TRIGGER reject_pairing_outbox');
@@ -371,9 +371,11 @@ test('real invited members opt in, publish that cycle, share a room, and agree a
       participant_count: 2,
       pair_count: 1,
       solo_count: 0,
-      email_delivery: { sent: 0, failed: 0, pending: 2 },
+      email_delivery: { sent: 0, failed: 0, exhausted: 0, pending: 0, suppressed: 0 },
     });
-    expect(await countRows(fixture.databaseUrl, 'pairing_email_outbox')).toBe(2);
+    expect(publication.email_delivery.captured).toHaveLength(2);
+    expect(await countRows(fixture.databaseUrl, 'outbox_events')).toBe(2);
+    expect(await countRows(fixture.databaseUrl, 'pairing_email_outbox')).toBe(0);
 
     await Promise.all(pages.slice(0, 2).map(page => page.clock.setFixedTime(publicationInstant)));
     await Promise.all([openDashboard(pages[0]), openDashboard(pages[1])]);
@@ -402,7 +404,7 @@ test('real invited members opt in, publish that cycle, share a room, and agree a
 
     const repeat = await browserJson(pages[0], '/api/pairing/run', 'POST', {});
     expect(repeat).toMatchObject({ status: 200, body: { ok: true, created: false, skipped: true } });
-    expect(await countRows(fixture.databaseUrl, 'pairing_email_outbox')).toBe(2);
+    expect(await countRows(fixture.databaseUrl, 'outbox_events')).toBe(2);
 
     const laterEmail = 'later.member@example.test';
     const laterInvitation = await createInvitation(pages[0], runtime.url, laterEmail);
@@ -450,11 +452,12 @@ test('real invited members opt in, publish that cycle, share a room, and agree a
 
     const outbox = createClient({ url: fixture.databaseUrl });
     const reminders = await outbox.execute(`SELECT status,attempt_count,provider_message_id
-      FROM pairing_email_outbox ORDER BY id`);
+      FROM outbox_events ORDER BY id`);
     await outbox.close();
     expect(reminders.rows).toHaveLength(2);
-    expect(reminders.rows.every(row => row.status === 'pending'
-      && Number(row.attempt_count) === 0 && row.provider_message_id === null)).toBe(true);
+    expect(reminders.rows.every(row => row.status === 'delivered'
+      && Number(row.attempt_count) === 1
+      && /^local-[0-9a-f-]{36}$/.test(String(row.provider_message_id)))).toBe(true);
     expect(requestSql.filter(sql => /^\s*(?:CREATE|ALTER|DROP)\b/iu.test(sql))).toEqual([]);
     expect(externalRequests).toEqual([]);
   } finally {

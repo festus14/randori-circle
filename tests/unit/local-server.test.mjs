@@ -246,7 +246,7 @@ test('database preparation migrates before serving and rejects unmanaged state',
   const ledger=await db.execute('SELECT version,disposition FROM schema_migrations ORDER BY version');
   assert.deepEqual(
     ledger.rows.map(row=>[Number(row.version),String(row.disposition)]),
-    [[1,'applied'],[2,'applied'],[3,'applied'],[4,'applied'],[5,'applied']],
+    [[1,'applied'],[2,'applied'],[3,'applied'],[4,'applied'],[5,'applied'],[6,'applied']],
   );
   await db.close();
   cleanup.pop();
@@ -647,18 +647,24 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
   assert.equal(capture.captured.flatMap(item=>item.links).some(link=>
     new RegExp(`^${first.url}/join/week_${pairingPayloads[0].body.week_id}_pair_[1-9]\\d*$`).test(link)),true);
   await firstSharedClient.execute({
-    sql:`INSERT INTO pairing_email_outbox
-      (week_id,user_id,kind,recipient_email,status,attempt_count,created_at,updated_at)
-      VALUES (?,999999,'paired','broken@example.test','pending',0,datetime('now'),datetime('now'))`,
-    args:[pairingPayloads[0].body.week_id],
+    sql:`INSERT INTO outbox_events
+      (event_type,event_version,idempotency_key,payload_json,status,not_before,next_attempt_at,
+       attempt_count,max_attempts,delivery_timeout_ms)
+      VALUES ('pairing.email.requested',1,'local-test/broken-recipient',?,'pending',
+        strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now'),0,5,10000)`,
+    args:[JSON.stringify({
+      week_id:pairingPayloads[0].body.week_id,user_id:999999,kind:'paired',
+      recipient_email:'broken@example.test',
+    })],
   });
   const degradedCaptureResponse=await pairingRequest();
   const degradedCapturePayload=await jsonResponse(degradedCaptureResponse);
   assert.equal(degradedCaptureResponse.status,200,degradedCapturePayload.text);
-  assert.equal(degradedCapturePayload.body.email_delivery.failed,1);
-  assert.equal(degradedCapturePayload.body.email_delivery.captured.length,2);
-  assert.equal(degradedCapturePayload.body.email_delivery.captured.flatMap(item=>item.links).some(link=>
-    new RegExp(`^${first.url}/join/week_${pairingPayloads[0].body.week_id}_pair_[1-9]\\d*$`).test(link)),true);
+  assert.equal(degradedCapturePayload.body.email_delivery.failed,0);
+  assert.equal(degradedCapturePayload.body.email_delivery.suppressed,1,
+    'a removed recipient is terminally suppressed before local provider access');
+  assert.equal(degradedCapturePayload.body.email_delivery.captured.length,0,
+    'already delivered events are not replayed by a later request');
   const reshufflePayload=pairingPayloads[0];
 
   const weeks=await fetch(new URL('/api/weeks',first.url),{headers:{cookie:memberCookie}});

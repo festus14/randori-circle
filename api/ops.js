@@ -7,12 +7,18 @@ import {
   getAvailabilityState,
   updateAvailability,
 } from './_availability.js';
-import { buildFairPairing, canonicalRoomId, escapeHtml } from './_pairing.js';
+import { buildFairPairing, canonicalRoomId } from './_pairing.js';
 import { pairingCronIsDue, resolvePairingCycle } from './_pairing-cycle.js';
 import { publishPairingCycle } from './_pairing-publication.js';
+import {
+  createResendEmailSender,
+  deliverPairingEmails,
+  migrateLegacyPairingEmails,
+  PAIRING_EMAIL_EVENT_TYPE,
+  pairingEmailStatus,
+} from './_pairing-email.js';
+import { replayDeadLetter } from './_outbox.js';
 import { localIdentityAdapterEnabled, localRuntimeRequest } from './_local-runtime.js';
-
-const MAX_EMAIL_ATTEMPTS=5;
 
 async function logServerOps(level, event, message, meta, req){
   try{
@@ -239,7 +245,7 @@ function pairingMetadata(pairing){
 }
 
 /** Persist the week, participant snapshot, and every pair in one write transaction. */
-async function persistPairingWeek(db, {weekLabel, weekStart, participants, pairing, isDemoWeek=0, notificationRecipients=[], generation=1}){
+async function persistPairingWeek(db, {weekLabel, weekStart, participants, pairing, isDemoWeek=0, generation=1}){
   const generationToken=randomUUID();
   const participantSnapshot=JSON.stringify(participants.map(p=>({user_id:Number(p.id),source:p.source||'auth'})));
   const runArgs=[weekLabel,generationToken,generation,pairing.algorithmVersion,pairing.seed,participants.length,participantSnapshot];
@@ -256,11 +262,6 @@ async function persistPairingWeek(db, {weekLabel, weekStart, participants, pairi
   pairing.pairs.forEach(pair=>{
     statements.push({sql:`INSERT INTO pairing_groups (week_id,user_a_id,user_b_id,is_ai_pair,topic,topic_kind) SELECT week_id,?,?,?,?,'both' FROM pairing_week_runs WHERE week_label=? AND generation_token=?`,args:[Number(pair.a.id),Number(pair.b?.id||pair.a.id),pair.isAI?1:0,'Pick together',weekLabel,generationToken]});
   });
-  notificationRecipients.forEach(recipient=>{
-    if(!recipient.email) return;
-    statements.push({sql:`INSERT INTO pairing_email_outbox (week_id,user_id,kind,recipient_email) SELECT week_id,?,?,? FROM pairing_week_runs WHERE week_label=? AND generation_token=? ON CONFLICT(week_id,user_id,kind) DO NOTHING`,args:[Number(recipient.id),recipient.kind,String(recipient.email).slice(0,320),weekLabel,generationToken]});
-  });
-
   await db.batch(statements,'write');
   const runRs=await db.execute({sql:`SELECT week_id,generation_token,generation FROM pairing_week_runs WHERE week_label=?`,args:[weekLabel]});
   const run=runRs.rows[0];
@@ -280,124 +281,132 @@ async function persistPairingWeek(db, {weekLabel, weekStart, participants, pairi
   return {created:true,weekId:run.week_id,generation:Number(run.generation),pairs};
 }
 
-async function lookupDisplayName(db,userId){
-  try{
-    const auth=await db.execute({sql:`SELECT display_name AS name FROM auth_accounts WHERE id=? AND COALESCE(is_demo,0)=0`,args:[userId]});
-    if(auth.rows.length) return auth.rows[0].name;
-  }catch{}
-  try{
-    const legacy=await db.execute({sql:`SELECT name FROM users WHERE id=?`,args:[userId]});
-    if(legacy.rows.length) return legacy.rows[0].name;
-  }catch{}
-  return 'your partner';
-}
-
-async function renderOutboxEmail(db,item,weekLabel,baseUrl){
-  const safeWeekLabel=escapeHtml(weekLabel);
-  const safeBaseUrl=escapeHtml(baseUrl);
-  if(item.kind==='unavailable'){
-    return {
-      subject:`You missed Randori ${weekLabel} — toggle back to available`,
-      html:`<h2>Randori Circle — you missed ${safeWeekLabel}</h2><p>You were excluded from this week's shuffle because you marked <b>Unavailable</b>.</p><p>No worries — you'll be back next Sunday automatically unless you stay unavailable.</p><p><a href="${safeBaseUrl}">Open app → Settings → set Available this week = ON</a> to re-join.</p>`,
+async function deliverPendingPairingEmails(db,weekId,baseUrl,req){
+  await migrateLegacyPairingEmails(db);
+  const captured=[];
+  const local=localIdentityAdapterEnabled(req);
+  let send;
+  if(local){
+    send=async message=>{
+      const links=[...message.html.matchAll(/href="([^"]+)"/gu)].map(match=>match[1]).slice(0,4);
+      captured.push({
+        recipient_email:String(message.to),kind:message.subject.includes('missed')?'unavailable':'paired',
+        subject:String(message.subject),links,
+      });
+      return {providerName:'local-capture',providerMessageId:`local-${randomUUID()}`};
     };
+  }else{
+    if(!process.env.RESEND_API_KEY||!process.env.RESEND_FROM){
+      const status=await pairingEmailStatus(db);
+      const pending=status.pending+status.retry+status.processing;
+      return {summary:`${pending} email reminder(s) pending — email disabled until RESEND_API_KEY + RESEND_FROM are set`,sent:0,failed:0,exhausted:status.dead_letter,pending,suppressed:status.suppressed};
+    }
+    const resendMod=await import('resend').catch(()=>null);
+    if(!resendMod?.Resend){
+      const status=await pairingEmailStatus(db);
+      const pending=status.pending+status.retry+status.processing;
+      return {summary:`${pending} email reminder(s) pending — resend package unavailable`,sent:0,failed:0,exhausted:status.dead_letter,pending,suppressed:status.suppressed};
+    }
+    send=createResendEmailSender({
+      resend:new resendMod.Resend(process.env.RESEND_API_KEY),from:process.env.RESEND_FROM,
+    });
   }
-  const groupRs=await db.execute({sql:`SELECT id,user_a_id,user_b_id,is_ai_pair FROM pairing_groups WHERE week_id=? AND (user_a_id=? OR (user_b_id=? AND COALESCE(is_ai_pair,0)=0)) LIMIT 1`,args:[item.week_id,item.user_id,item.user_id]});
-  if(!groupRs.rows.length) throw new Error('pair group missing for notification recipient');
-  const group=groupRs.rows[0];
-  const partnerName=group.is_ai_pair?'Solo practice':await lookupDisplayName(db,Number(group.user_a_id)===Number(item.user_id)?group.user_b_id:group.user_a_id);
-  const room=canonicalRoomId(item.week_id,group.id);
-  const joinUrl=`${baseUrl}/join/${room}`;
+  const delivery=await deliverPairingEmails({
+    db,baseUrl,send,workerId:`pairing-${randomUUID()}`,localRuntime:local,
+  });
+  const pending=delivery.status.pending+delivery.status.retry+delivery.status.processing;
+  const failed=delivery.retried+delivery.deadLettered;
+  const exhausted=delivery.status.dead_letter;
+  const summary=local
+    ?`captured ${captured.length} local email reminder(s), failed ${failed}, exhausted ${exhausted}; no external delivery`
+    :`sent ${delivery.delivered}, failed ${failed}, exhausted ${exhausted}, suppressed ${delivery.suppressed}, pending ${pending}`;
+  try{ await logServerOps(failed||exhausted?'warn':'success','pairing_email_delivery',summary,{
+    week_id:weekId,sent:delivery.delivered,failed,exhausted,
+    suppressed:delivery.suppressed,pending,event_type:PAIRING_EMAIL_EVENT_TYPE,
+  },null); }catch{}
   return {
-    subject:`Randori ${weekLabel} — your pairing is ready`,
-    html:`<h2>Randori Circle — ${safeWeekLabel}</h2><p>You're paired with <b>${escapeHtml(partnerName)}</b>.</p><p><a href="${escapeHtml(joinUrl)}">Join your private pairing room</a></p><p><a href="${safeBaseUrl}">Open Randori Circle</a> to choose DSA, System Design, or Both.</p><p style="color:#888;font-size:12px">Turn off availability in settings if you want to skip next week.</p>`,
+    summary,sent:local?0:delivery.delivered,failed,exhausted,
+    pending,suppressed:delivery.suppressed,...(local?{captured}:{}),
   };
 }
 
-async function deliverPendingPairingEmails(db,weekId,baseUrl,req){
-  let exhausted=0;
-  let pending;
+function configuredOutboxBaseUrl(){
+  let url;
+  try{ url=new URL(String(process.env.APP_URL||'')); }
+  catch{ return null; }
+  const local=process.env.NODE_ENV==='development'&&process.env.RANDORI_LOCAL_RUNTIME==='true';
+  const loopback=url.hostname==='127.0.0.1'||url.hostname==='[::1]'||url.hostname==='localhost';
+  if(url.username||url.password||url.search||url.hash||(url.pathname&&url.pathname!=='/')
+    ||(local?(url.protocol!=='http:'||!loopback):(url.protocol!=='https:'||loopback))){
+    return null;
+  }
+  return url.origin;
+}
+
+async function handleOutboxWorker(req,res){
+  if(req.method!=='GET'&&req.method!=='POST') return res.status(405).json({error:'GET or POST'});
+  if(!verifyCronAuth(req)) return res.status(401).json({error:'unauthorized cron'});
+  const baseUrl=configuredOutboxBaseUrl();
+  if(!baseUrl) return res.status(503).json({error:'outbox unavailable'});
+  let db;
+  try{ db=getClient(); }
+  catch{ return res.status(503).json({error:'outbox unavailable'}); }
   try{
-    const exhaustedResult=await db.execute({sql:`UPDATE pairing_email_outbox SET status='exhausted',last_error=COALESCE(last_error,'maximum delivery attempts reached'),updated_at=datetime('now') WHERE week_id=? AND attempt_count>=? AND (status IN ('pending','failed') OR (status='sending' AND claimed_at<datetime('now','-15 minutes')))`,args:[weekId,MAX_EMAIL_ATTEMPTS]});
-    exhausted=Number(exhaustedResult.rowsAffected||0);
-    pending=await db.execute({sql:`SELECT id,week_id,user_id,kind,recipient_email,status,attempt_count FROM pairing_email_outbox WHERE week_id=? AND attempt_count<? AND (status IN ('pending','failed') OR (status='sending' AND claimed_at<datetime('now','-15 minutes'))) ORDER BY id LIMIT 100`,args:[weekId,MAX_EMAIL_ATTEMPTS]});
-  }catch(e){
-    return {summary:'email outbox unavailable',sent:0,failed:0,exhausted,pending:0,error:String(e.message||e).slice(0,180)};
+    const delivery=await deliverPendingPairingEmails(db,null,baseUrl,req);
+    return res.json({ok:true,email_delivery:safeEmailDelivery(delivery)});
+  }catch{
+    return res.status(503).json({error:'outbox unavailable'});
   }
-  if(!pending.rows.length) return {summary:exhausted?`${exhausted} email reminder(s) exhausted after ${MAX_EMAIL_ATTEMPTS} attempts`:'no pending email reminders',sent:0,failed:0,exhausted,pending:0};
-  if(localIdentityAdapterEnabled(req)){
-    const weekRs=await db.execute({sql:`SELECT week_label FROM pairing_weeks WHERE id=?`,args:[weekId]});
-    const weekLabel=weekRs.rows[0]?.week_label;
-    if(!weekLabel) return {summary:'local mail capture unavailable — pairing week missing',sent:0,failed:0,exhausted,pending:pending.rows.length,captured:[]};
-    const captured=[];
-    let failed=0,suppressed=0;
-    for(const item of pending.rows){
-      try{
-        const pref=await db.execute({sql:`SELECT email_enabled FROM user_notification_prefs WHERE user_id=?`,args:[item.user_id]});
-        if(pref.rows[0]?.email_enabled===0){ suppressed+=1; continue; }
-        const content=await renderOutboxEmail(db,item,weekLabel,baseUrl);
-        const links=[...content.html.matchAll(/href="([^"]+)"/gu)].map(match=>match[1]).slice(0,4);
-        captured.push({recipient_email:String(item.recipient_email),kind:String(item.kind),subject:content.subject,links});
-      }catch{
-        failed+=1;
-      }
-    }
-    return {
-      summary:`captured ${captured.length} local email reminder(s), failed ${failed}; no external delivery`,
-      sent:0,failed,exhausted,pending:pending.rows.length,suppressed,captured,
-    };
-  }
-  if(!process.env.RESEND_API_KEY||!process.env.RESEND_FROM) return {summary:`${pending.rows.length} email reminder(s) pending — email disabled until RESEND_API_KEY + RESEND_FROM are set`,sent:0,failed:0,exhausted,pending:pending.rows.length};
+}
 
-  const resendMod=await import('resend').catch(()=>null);
-  if(!resendMod?.Resend) return {summary:`${pending.rows.length} email reminder(s) pending — resend package unavailable`,sent:0,failed:0,exhausted,pending:pending.rows.length};
-  const weekRs=await db.execute({sql:`SELECT week_label FROM pairing_weeks WHERE id=?`,args:[weekId]});
-  const weekLabel=weekRs.rows[0]?.week_label;
-  if(!weekLabel) return {summary:'email reminders pending — pairing week missing',sent:0,failed:pending.rows.length,exhausted,pending:pending.rows.length};
-
-  const resend=new resendMod.Resend(process.env.RESEND_API_KEY);
-  const from=process.env.RESEND_FROM;
-  let sent=0,failed=0,suppressed=0;
-  for(const item of pending.rows){
-    let claimedAttempt=null;
-    try{
-      const claim=await db.execute({sql:`UPDATE pairing_email_outbox SET status='sending',attempt_count=attempt_count+1,claimed_at=datetime('now'),last_error=NULL,updated_at=datetime('now') WHERE id=? AND attempt_count<? AND (status IN ('pending','failed') OR (status='sending' AND claimed_at<datetime('now','-15 minutes'))) RETURNING id,attempt_count`,args:[item.id,MAX_EMAIL_ATTEMPTS]});
-      if(!claim.rows.length) continue;
-      claimedAttempt=Number(claim.rows[0].attempt_count);
-      const account=await db.execute({sql:`SELECT is_demo FROM auth_accounts WHERE id=?`,args:[item.user_id]});
-      if(account.rows[0]?.is_demo){
-        const transition=await db.execute({sql:`UPDATE pairing_email_outbox SET status='suppressed',last_error='demo account excluded from production reminders',updated_at=datetime('now') WHERE id=? AND status='sending' AND attempt_count=? RETURNING id`,args:[item.id,claimedAttempt]});
-        if(transition.rows.length) suppressed+=1;
-        continue;
-      }
-      const pref=await db.execute({sql:`SELECT email_enabled FROM user_notification_prefs WHERE user_id=?`,args:[item.user_id]});
-      if(pref.rows[0]?.email_enabled===0){
-        const transition=await db.execute({sql:`UPDATE pairing_email_outbox SET status='suppressed',last_error='email disabled by user',updated_at=datetime('now') WHERE id=? AND status='sending' AND attempt_count=? RETURNING id`,args:[item.id,claimedAttempt]});
-        if(transition.rows.length) suppressed+=1;
-        continue;
-      }
-      const content=await renderOutboxEmail(db,item,weekLabel,baseUrl);
-      const idempotencyKey=`randori/${item.week_id}/${item.kind}/${item.user_id}`;
-      const result=await resend.emails.send({from,to:item.recipient_email,subject:content.subject,html:content.html},{idempotencyKey});
-      if(result?.error) throw new Error(result.error.message||'email provider rejected request');
-      const transition=await db.execute({sql:`UPDATE pairing_email_outbox SET status='sent',sent_at=datetime('now'),provider_message_id=?,last_error=NULL,updated_at=datetime('now') WHERE id=? AND status='sending' AND attempt_count=? RETURNING id`,args:[result?.data?.id||null,item.id,claimedAttempt]});
-      if(transition.rows.length) sent+=1;
-    }catch(e){
-      if(claimedAttempt!==null){
-        try{
-          const transition=await db.execute({sql:`UPDATE pairing_email_outbox SET status=CASE WHEN attempt_count>=? THEN 'exhausted' ELSE 'failed' END,last_error=?,updated_at=datetime('now') WHERE id=? AND status='sending' AND attempt_count=? RETURNING status`,args:[MAX_EMAIL_ATTEMPTS,String(e.message||e).slice(0,500),item.id,claimedAttempt]});
-          if(transition.rows.length){
-            failed+=1;
-            if(transition.rows[0].status==='exhausted') exhausted+=1;
-          }
-        }catch{}
-      }
-    }
+async function handleOutboxReplay(req,res){
+  if(req.method!=='POST') return res.status(405).json({error:'POST only'});
+  const context=await requireOutboxOperator(req,res);
+  if(!context) return;
+  const body=req.body;
+  if(!body||typeof body!=='object'||Array.isArray(body)
+    ||Object.keys(body).some(key=>!['event_id','reason_code','not_before'].includes(key))){
+    return res.status(400).json({error:'invalid replay request'});
   }
-  const remaining=await db.execute({sql:`SELECT COUNT(*) AS c FROM pairing_email_outbox WHERE week_id=? AND status IN ('pending','failed','sending')`,args:[weekId]}).catch(()=>({rows:[{c:failed}]}));
-  const pendingCount=Number(remaining.rows[0]?.c||0);
-  const summary=`sent ${sent}, failed ${failed}, exhausted ${exhausted}, suppressed ${suppressed}, pending ${pendingCount}`;
-  try{ await logServerOps(failed?'warn':'success','pairing_email_delivery',summary,{week_id:weekId,sent,failed,exhausted,suppressed,pending:pendingCount},req); }catch{}
-  return {summary,sent,failed,exhausted,suppressed,pending:pendingCount};
+  try{
+    const replayed=await replayDeadLetter(context.db,{
+      eventId:body.event_id,operatorUserId:context.callerId,
+      reasonCode:body.reason_code,notBefore:body.not_before||null,
+    });
+    if(!replayed) return res.status(409).json({error:'event is not replayable'});
+    return res.json({ok:true,replayed:true});
+  }catch(error){
+    if(error instanceof TypeError) return res.status(400).json({error:'invalid replay request'});
+    return res.status(503).json({error:'outbox unavailable'});
+  }
+}
+
+async function requireOutboxOperator(req,res){
+  const payload=await verifyRequestAuth(req);
+  if(!payload){ res.status(401).json({error:'authentication required'}); return null; }
+  let db;
+  try{ db=getClient(); }
+  catch{ res.status(503).json({error:'outbox unavailable'}); return null; }
+  const callerId=Number(payload.id||payload.uid);
+  if(!Number.isSafeInteger(callerId)||callerId<1){
+    res.status(401).json({error:'authentication required'});
+    return null;
+  }
+  try{
+    const result=await db.execute({
+      sql:`SELECT id,is_admin,is_demo FROM auth_accounts WHERE id=? LIMIT 2`,args:[callerId],
+    });
+    const rows=result.rows||[];
+    if(rows.length!==1||Number(rows[0].id)!==callerId
+      ||Number(rows[0].is_admin)!==1||Number(rows[0].is_demo)===1){
+      res.status(403).json({error:'outbox operator required'});
+      return null;
+    }
+    return {db,callerId};
+  }catch{
+    res.status(503).json({error:'outbox unavailable'});
+    return null;
+  }
 }
 
 async function getCallerAdmin(db, payload){
@@ -685,9 +694,11 @@ export default async function handler(req,res){
   if (ep==='demo-shuffle' || ep==='demo_shuffle' || ep==='dem0-shuffle' || pathLower.includes('demo-shuffle')) return handleDemoShuffle(req,res);
   if (ep==='demo-reset' || ep==='demo_reset' || pathLower.includes('demo-reset')) return handleDemoReset(req,res);
   if (ep==='pairing-run' || pathLower.includes('/pairing/run')) return handlePairingRun(req,res);
+  if (ep==='outbox-replay' || pathLower.includes('/outbox/replay')) return handleOutboxReplay(req,res);
+  if (ep==='outbox' || pathLower.includes('/cron/outbox')) return handleOutboxWorker(req,res);
   if (ep==='reshuffle' || ep==='promote' || pathLower.includes('reshuffle') || pathLower.includes('promote')) return handleReshuffle(req,res);
   if (ep==='weekly' || pathLower.includes('weekly') || pathLower.includes('/cron/')) return handleWeekly(req,res);
   if (pathLower.includes('reshuffle')) return handleReshuffle(req,res);
   if (pathLower.includes('weekly')) return handleWeekly(req,res);
-  return res.status(404).json({ error:`unknown ops endpoint '${ep}'`, available:['availability','pairing-run','weekly','promote via reshuffle?action=promote','demo-seed','demo-shuffle','demo-reset'] });
+  return res.status(404).json({ error:`unknown ops endpoint '${ep}'`, available:['availability','pairing-run','weekly','outbox','outbox-replay','promote via reshuffle?action=promote','demo-seed','demo-shuffle','demo-reset'] });
 }

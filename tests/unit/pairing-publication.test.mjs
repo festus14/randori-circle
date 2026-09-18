@@ -14,9 +14,9 @@ import {
   publishPairingCycle,
 } from '../../api/_pairing-publication.js';
 import {
-  PAIRING_SCHEMA_V3_FINGERPRINT,
-  pairingSchemaV3Fingerprint,
-  pairingSchemaV3Ready,
+  PAIRING_SCHEMA_V6_FINGERPRINT,
+  pairingSchemaV6Fingerprint,
+  pairingSchemaV6Ready,
 } from '../../api/_pairing-readiness.js';
 import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
 import {
@@ -139,7 +139,7 @@ function assertPairCoverage(publication,expectedIds){
   assert.deepEqual(ids.sort((a,b)=>a-b),[...expectedIds].sort((a,b)=>a-b));
 }
 
-test('managed-v3 publication safely covers one, two, three, and odd participant counts',async()=>{
+test('managed-v6 publication safely covers one, two, three, and odd participant counts',async()=>{
   for(const size of [1,2,3,5]){
     const fixture=await createDatabase();
     await seedCircle(fixture.db,Array.from({length:size},(_,index)=>({
@@ -152,7 +152,7 @@ test('managed-v3 publication safely covers one, two, three, and odd participant 
     assert.equal(result.publication.pairs.length,Math.ceil(size/2));
     assert.equal(result.publication.pairs.filter(pair=>pair.isAI).length,size%2);
     assertPairCoverage(result.publication,Array.from({length:size},(_,index)=>index+1));
-    assert.equal(await count(fixture.db,'pairing_email_outbox'),size);
+    assert.equal(await count(fixture.db,'outbox_events'),size);
     assert.equal(Object.isFrozen(result),true);
     assert.doesNotMatch(JSON.stringify(result),/@private\.example|recipient_email|generationToken/i);
 
@@ -175,7 +175,7 @@ test('eligibility is the exact active non-demo primary-circle availability snaps
     {id:4,role:'member',membership:'none'},
     {id:5,role:'member',demo:true},
   ]);
-  assert.equal(await pairingSchemaV3Ready(db,{requireClosedMembership:true}),true,
+  assert.equal(await pairingSchemaV6Ready(db,{requireClosedMembership:true}),true,
     'historically audited inactive and removed members do not invalidate the completed rollout');
   const auditSubjects=await db.execute(`SELECT subject_user_id FROM circle_audit_events
     WHERE event_type='membership.backfilled' ORDER BY subject_user_id`);
@@ -186,8 +186,11 @@ test('eligibility is the exact active non-demo primary-circle availability snaps
   assert.equal(result.publication.participantCount,1);
   assert.deepEqual(result.publication.participants.map(item=>item.userId),[2]);
   assertPairCoverage(result.publication,[2]);
-  const outbox=await db.execute(`SELECT user_id,kind,recipient_email
-    FROM pairing_email_outbox ORDER BY user_id`);
+  const outbox=await db.execute(`SELECT
+      json_extract(payload_json,'$.user_id') AS user_id,
+      json_extract(payload_json,'$.kind') AS kind,
+      json_extract(payload_json,'$.recipient_email') AS recipient_email
+    FROM outbox_events ORDER BY user_id`);
   assert.deepEqual(outbox.rows.map(row=>[Number(row.user_id),row.kind]),[
     [2,'paired'],[3,'unavailable'],
   ]);
@@ -217,7 +220,7 @@ test('owner and cron paths share an immutable no-op publication with no duplicat
   assert.equal(await count(db,'pairing_weeks'),1);
   assert.equal(await count(db,'pairing_groups'),2);
   assert.equal(await count(db,'pairing_participants'),3);
-  assert.equal(await count(db,'pairing_email_outbox'),3);
+  assert.equal(await count(db,'outbox_events'),3);
 });
 
 test('concurrent owner and cron clients converge on one complete publication',async()=>{
@@ -240,7 +243,7 @@ test('concurrent owner and cron clients converge on one complete publication',as
   assert.equal(await count(ownerDb,'pairing_weeks'),1);
   assert.equal(await count(ownerDb,'pairing_participants'),4);
   assert.equal(await count(ownerDb,'pairing_groups'),2);
-  assert.equal(await count(ownerDb,'pairing_email_outbox'),4);
+  assert.equal(await count(ownerDb,'outbox_events'),4);
 });
 
 test('a mid-write failure rolls back cycle, claim, participants, groups, and outbox',async()=>{
@@ -273,12 +276,12 @@ test('a mid-write failure rolls back cycle, claim, participants, groups, and out
   );
   for(const table of [
     'pairing_cycles','pairing_week_runs','pairing_weeks','pairing_participants',
-    'pairing_groups','pairing_email_outbox',
+    'pairing_groups','outbox_events',
   ]) assert.equal(await count(fixture.db,table),0,table);
 });
 
-test('managed schema v3 and an explicit safe app URL are required before mutation',async()=>{
-  const stale=await createDatabase({migrations:EXECUTABLE_MIGRATIONS.slice(0,2)});
+test('managed schema v6 and an explicit safe app URL are required before mutation',async()=>{
+  const stale=await createDatabase({migrations:EXECUTABLE_MIGRATIONS.slice(0,3)});
   await assert.rejects(
     publishPairingCycle(stale.db,publicationOptions()),
     error=>error instanceof PairingPublicationError
@@ -305,7 +308,7 @@ test('managed schema v3 and an explicit safe app URL are required before mutatio
 
 test('production publication requires a complete closed membership rollout',async()=>{
   const open=await createDatabase();
-  assert.equal(await pairingSchemaV3Ready(open.db,{requireClosedMembership:true}),false);
+  assert.equal(await pairingSchemaV6Ready(open.db,{requireClosedMembership:true}),false);
   await assert.rejects(
     publishPairingCycle(open.db,publicationOptions()),
     error=>error instanceof PairingPublicationError
@@ -318,7 +321,7 @@ test('production publication requires a complete closed membership rollout',asyn
     {id:2,role:'member',membership:'inactive'},
     {id:3,role:'member',membership:'none'},
   ],{closeRollout:false});
-  assert.equal(await pairingSchemaV3Ready(partial.db,{requireClosedMembership:true}),false);
+  assert.equal(await pairingSchemaV6Ready(partial.db,{requireClosedMembership:true}),false);
   await assert.rejects(
     publishPairingCycle(partial.db,publicationOptions()),
     error=>error instanceof PairingPublicationError
@@ -337,7 +340,7 @@ test('production publication requires a complete closed membership rollout',asyn
   await closedInvalid.db.execute(`INSERT INTO circle_audit_events
       (circle_id,event_type,actor_user_id,subject_user_id,dedupe_key)
     VALUES (1,'membership.backfill.completed',1,NULL,'primary-membership-backfill:1:v1')`);
-  assert.equal(await pairingSchemaV3Ready(closedInvalid.db,{requireClosedMembership:true}),false);
+  assert.equal(await pairingSchemaV6Ready(closedInvalid.db,{requireClosedMembership:true}),false);
   await assert.rejects(
     publishPairingCycle(closedInvalid.db,publicationOptions()),
     error=>error instanceof PairingPublicationError
@@ -347,53 +350,53 @@ test('production publication requires a complete closed membership rollout',asyn
 
   const closedValid=await createDatabase();
   await seedCircle(closedValid.db,[{id:1,role:'owner'},{id:2,role:'member'}]);
-  assert.equal(await pairingSchemaV3Ready(closedValid.db,{requireClosedMembership:true}),true);
+  assert.equal(await pairingSchemaV6Ready(closedValid.db,{requireClosedMembership:true}),true);
   await closedValid.db.execute(`UPDATE circle_audit_events SET actor_user_id=999
     WHERE event_type='membership.backfill.completed'`);
-  assert.equal(await pairingSchemaV3Ready(closedValid.db,{requireClosedMembership:true}),false,
+  assert.equal(await pairingSchemaV6Ready(closedValid.db,{requireClosedMembership:true}),false,
     'a nonexistent completion actor is rejected');
   await closedValid.db.execute(`UPDATE circle_audit_events SET actor_user_id=2
     WHERE event_type='membership.backfill.completed'`);
-  assert.equal(await pairingSchemaV3Ready(closedValid.db,{requireClosedMembership:true}),false,
+  assert.equal(await pairingSchemaV6Ready(closedValid.db,{requireClosedMembership:true}),false,
     'a completion actor different from the primary-circle creator is rejected');
   await closedValid.db.execute(`UPDATE circle_audit_events SET actor_user_id=1
     WHERE event_type='membership.backfill.completed'`);
   await closedValid.db.execute(`UPDATE circle_audit_events SET actor_user_id=999
     WHERE event_type='membership.backfilled' AND subject_user_id=2`);
-  assert.equal(await pairingSchemaV3Ready(closedValid.db,{requireClosedMembership:true}),false,
+  assert.equal(await pairingSchemaV6Ready(closedValid.db,{requireClosedMembership:true}),false,
     'a nonexistent backfill actor is rejected');
   await closedValid.db.execute(`UPDATE circle_audit_events SET actor_user_id=2
     WHERE event_type='membership.backfilled' AND subject_user_id=2`);
-  assert.equal(await pairingSchemaV3Ready(closedValid.db,{requireClosedMembership:true}),false,
+  assert.equal(await pairingSchemaV6Ready(closedValid.db,{requireClosedMembership:true}),false,
     'backfill actors must match the completion actor and primary-circle creator');
   await closedValid.db.execute(`UPDATE circle_audit_events SET actor_user_id=1
     WHERE event_type='membership.backfilled' AND subject_user_id=2`);
-  assert.equal(await pairingSchemaV3Ready(closedValid.db,{requireClosedMembership:true}),true);
+  assert.equal(await pairingSchemaV6Ready(closedValid.db,{requireClosedMembership:true}),true);
   const published=await publishPairingCycle(closedValid.db,publicationOptions());
   assert.equal(published.created,true);
   assert.equal(published.publication.participantCount,2);
 });
 
-test('readiness pins the complete managed-v3 structure, ledger, and connection guards',async()=>{
+test('readiness pins the complete managed-v6 structure, ledger, and connection guards',async()=>{
   const {db}=await createDatabase();
-  assert.equal(await pairingSchemaV3Fingerprint(db),PAIRING_SCHEMA_V3_FINGERPRINT);
-  assert.equal(await pairingSchemaV3Ready(db),true);
+  assert.equal(await pairingSchemaV6Fingerprint(db),PAIRING_SCHEMA_V6_FINGERPRINT);
+  assert.equal(await pairingSchemaV6Ready(db),true);
 
   await db.execute(`UPDATE schema_migrations SET checksum='${'0'.repeat(64)}' WHERE version=3`);
-  assert.equal(await pairingSchemaV3Ready(db),false,'a changed immutable ledger row is stale');
+  assert.equal(await pairingSchemaV6Ready(db),false,'a changed immutable ledger row is stale');
   await db.execute({
     sql:`UPDATE schema_migrations SET checksum=? WHERE version=3`,
     args:[EXECUTABLE_MIGRATIONS[2].checksum],
   });
-  assert.equal(await pairingSchemaV3Ready(db),true);
+  assert.equal(await pairingSchemaV6Ready(db),true);
 
   const futureVersion=Math.max(...EXECUTABLE_MIGRATIONS.map(migration=>migration.version))+1;
   await db.execute({sql:`INSERT INTO schema_migrations
       (version,name,checksum,execution_ms,disposition) VALUES (?,'future-migration',?,0,'applied')`,
     args:[futureVersion,'f'.repeat(64)]});
-  assert.equal(await pairingSchemaV3Ready(db),false,'a future ledger version is rejected');
+  assert.equal(await pairingSchemaV6Ready(db),false,'a future ledger version is rejected');
   await db.execute({sql:`DELETE FROM schema_migrations WHERE version=?`,args:[futureVersion]});
-  assert.equal(await pairingSchemaV3Ready(db),true);
+  assert.equal(await pairingSchemaV6Ready(db),true);
 
   await db.execute(`CREATE TABLE future_auth_metadata (
     id INTEGER PRIMARY KEY,
@@ -403,23 +406,23 @@ test('readiness pins the complete managed-v3 structure, ledger, and connection g
   await db.execute(`CREATE INDEX idx_future_auth_metadata_account
     ON future_auth_metadata(account_id)`);
   await db.execute(`CREATE INDEX idx_future_auth_email_lookup ON auth_accounts(email)`);
-  assert.equal(await pairingSchemaV3Fingerprint(db),PAIRING_SCHEMA_V3_FINGERPRINT,
-    'additive future tables and indexes do not invalidate the managed-v3 projection');
-  assert.equal(await pairingSchemaV3Ready(db),true,
+  assert.equal(await pairingSchemaV6Fingerprint(db),PAIRING_SCHEMA_V6_FINGERPRINT,
+    'additive future tables and indexes do not invalidate the managed-v6 projection');
+  assert.equal(await pairingSchemaV6Ready(db),true,
     'pairing remains ready after unrelated additive schema changes');
 
   await db.execute(`CREATE UNIQUE INDEX unexpected_user_once
     ON pairing_participants(user_id)`);
-  assert.equal(await pairingSchemaV3Ready(db),false,
+  assert.equal(await pairingSchemaV6Ready(db),false,
     'an unknown unique index that can reject future publications is schema drift');
   await db.execute(`DROP INDEX unexpected_user_once`);
-  assert.equal(await pairingSchemaV3Ready(db),true);
+  assert.equal(await pairingSchemaV6Ready(db),true);
 
   await db.execute(`CREATE TRIGGER unexpected_pairing_trigger AFTER INSERT ON pairing_weeks
     BEGIN SELECT 1; END`);
-  assert.equal(await pairingSchemaV3Ready(db),false,'unexpected mutation hooks are schema drift');
+  assert.equal(await pairingSchemaV6Ready(db),false,'unexpected mutation hooks are schema drift');
   await db.execute(`DROP TRIGGER unexpected_pairing_trigger`);
-  assert.equal(await pairingSchemaV3Ready(db),true);
+  assert.equal(await pairingSchemaV6Ready(db),true);
 
   const membershipSql=String((await db.execute(`SELECT sql FROM sqlite_schema
     WHERE type='table' AND name='circle_memberships'`)).rows[0].sql);
@@ -431,14 +434,27 @@ test('readiness pins the complete managed-v3 structure, ledger, and connection g
   await db.execute('PRAGMA writable_schema=ON');
   await db.execute({sql:`UPDATE sqlite_schema SET sql=? WHERE type='table' AND name='circle_memberships'`,args:[weakenedSql]});
   await db.execute('PRAGMA writable_schema=OFF');
-  assert.equal(await pairingSchemaV3Ready(db),false,'changed CHECK SQL is schema drift');
+  assert.equal(await pairingSchemaV6Ready(db),false,'changed CHECK SQL is schema drift');
   await db.execute('PRAGMA writable_schema=ON');
   await db.execute({sql:`UPDATE sqlite_schema SET sql=? WHERE type='table' AND name='circle_memberships'`,args:[membershipSql]});
   await db.execute('PRAGMA writable_schema=OFF');
-  assert.equal(await pairingSchemaV3Ready(db),true);
+  assert.equal(await pairingSchemaV6Ready(db),true);
 
   await db.execute('PRAGMA foreign_keys=OFF');
-  assert.equal(await pairingSchemaV3Ready(db),false);
+  assert.equal(await pairingSchemaV6Ready(db),false);
+});
+
+test('readiness rejects missing provider identity and revocable session structures',async()=>{
+  for(const object of [
+    {type:'TABLE',name:'auth_provider_identities'},
+    {type:'TABLE',name:'auth_sessions'},
+    {type:'INDEX',name:'idx_auth_sessions_user_active'},
+  ]){
+    const {db}=await createDatabase();
+    await db.execute(`DROP ${object.type} ${object.name}`);
+    assert.equal(await pairingSchemaV6Ready(db),false,
+      `missing ${object.name} must fail the managed-v6 readiness projection`);
+  }
 });
 
 test('an ordinary member is denied and owner authorization is rechecked in the transaction',async()=>{
@@ -511,7 +527,16 @@ test('stale, current, and future publications stay cycle-scoped across a file da
     publications.push(result.publication);
   }
   assert.equal(await count(fixture.db,'pairing_week_runs'),3);
-  assert.equal(await count(fixture.db,'pairing_email_outbox'),9);
+  assert.equal(await count(fixture.db,'outbox_events'),9);
+  const originalOutbox=(await fixture.db.execute(
+    'SELECT idempotency_key,payload_json FROM outbox_events ORDER BY idempotency_key',
+  )).rows;
+  assert.equal(originalOutbox.length,9);
+  for(const row of originalOutbox){
+    const payload=JSON.parse(row.payload_json);
+    assert.equal(row.idempotency_key,
+      `randori/${payload.week_id}/${payload.kind}/${payload.user_id}`);
+  }
 
   await fixture.close();
   const restarted=await fixture.open();
@@ -522,8 +547,12 @@ test('stale, current, and future publications stay cycle-scoped across a file da
   assert.equal(repeat.created,false);
   assert.deepEqual(repeat.publication,publications[1]);
   assert.equal(await count(restarted,'pairing_week_runs'),3);
-  assert.equal(await count(restarted,'pairing_email_outbox'),9,
+  assert.equal(await count(restarted,'outbox_events'),9,
     'restart and repeat publication must not duplicate reminders');
+  assert.deepEqual((await restarted.execute(
+    'SELECT idempotency_key FROM outbox_events ORDER BY idempotency_key',
+  )).rows,originalOutbox.map(row=>({idempotency_key:row.idempotency_key})),
+  'restart and repeat publication preserve every stable provider idempotency key');
 });
 
 test('the production write path contains no destructive remix or request-time DDL',async()=>{

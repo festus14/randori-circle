@@ -143,7 +143,7 @@ mock.module('../../api/_circle-membership.js',{
 
 mock.module('../../api/_pairing-readiness.js',{
   exports:{
-    pairingSchemaV3Ready:async()=>true,
+    pairingSchemaV6Ready:async()=>true,
   },
 });
 
