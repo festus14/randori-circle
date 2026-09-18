@@ -19,46 +19,50 @@ function sqlText(statement) {
   return typeof statement === 'string' ? statement : String(statement?.sql || '');
 }
 
-const db = {
-  async execute(statement) {
-    const sql = sqlText(statement);
-    executed.push({ sql, args: statement?.args || [] });
-    if (databaseDelegate) return databaseDelegate.execute(statement);
-    const result = await executeHandler(sql, statement?.args || []);
-    return result || { rows: [], rowsAffected: 0 };
-  },
-  async batch(statements, mode) {
-    if (databaseDelegate) {
+function createMockDb(){
+  return {
+    async execute(statement) {
+      const sql = sqlText(statement);
+      executed.push({ sql, args: statement?.args || [] });
+      if (databaseDelegate) return databaseDelegate.execute(statement);
+      const result = await executeHandler(sql, statement?.args || []);
+      return result || { rows: [], rowsAffected: 0 };
+    },
+    async batch(statements, mode) {
+      if (databaseDelegate) {
+        for (const statement of statements) {
+          executed.push({ sql: sqlText(statement), args: statement?.args || [] });
+        }
+        return databaseDelegate.batch(statements, mode);
+      }
+      const nextGroups = [];
+      const results = [];
       for (const statement of statements) {
-        executed.push({ sql: sqlText(statement), args: statement?.args || [] });
+        if (sqlText(statement).includes('INSERT INTO pairing_week_runs')) {
+          lastPairingRun = {
+            weekLabel: statement.args[0],
+            generationToken: statement.args[1],
+            generation: Number(statement.args[2]),
+            weekId: 10,
+          };
+        }
+        if (sqlText(statement).includes('INSERT INTO pairing_groups')) {
+          nextGroups.push({
+            id: 90 + nextGroups.length,
+            user_a_id: Number(statement.args[0]),
+            user_b_id: Number(statement.args[1]),
+            is_ai_pair: Number(statement.args[2]),
+          });
+        }
+        results.push(await this.execute(statement));
       }
-      return databaseDelegate.batch(statements, mode);
-    }
-    const nextGroups = [];
-    const results = [];
-    for (const statement of statements) {
-      if (sqlText(statement).includes('INSERT INTO pairing_week_runs')) {
-        lastPairingRun = {
-          weekLabel: statement.args[0],
-          generationToken: statement.args[1],
-          generation: Number(statement.args[2]),
-          weekId: 10,
-        };
-      }
-      if (sqlText(statement).includes('INSERT INTO pairing_groups')) {
-        nextGroups.push({
-          id: 90 + nextGroups.length,
-          user_a_id: Number(statement.args[0]),
-          user_b_id: Number(statement.args[1]),
-          is_ai_pair: Number(statement.args[2]),
-        });
-      }
-      results.push(await this.execute(statement));
-    }
-    if (nextGroups.length) persistedPairGroups = nextGroups;
-    return results;
-  },
-};
+      if (nextGroups.length) persistedPairGroups = nextGroups;
+      return results;
+    },
+  };
+}
+
+let db=createMockDb();
 
 function authPayload(req) {
   const identity = req?.headers?.['x-test-auth'];
@@ -155,6 +159,7 @@ function invoke(handler, { method = 'GET', url = '/', query = {}, headers = {}, 
 }
 
 beforeEach(() => {
+  db=createMockDb();
   executed.length = 0;
   sentryMessageCalls.length = 0;
   sentryExceptionCalls.length = 0;
@@ -462,7 +467,9 @@ test('profile, pair schedule, and messages enforce ownership while catalogue and
     }]);
     if (sql.includes('FROM session_runs WHERE user_id=')) return rows([{
       id:60,
+      user_id:2,
       question_slug:'binary-search',
+      code_preview:'function binarySearch() {}',
       test_cases_snapshot:'{"source":"original-catalog","version":3,"total_count":5}',
     }]);
     return rows();
@@ -525,6 +532,7 @@ test('profile, pair schedule, and messages enforce ownership while catalogue and
   assert.equal(history.body.runs[0].id, 60);
   assert.equal(history.body.runs[0].question_version,null);
   assert.equal(history.body.runs[0].authoritative,false);
+  assert.equal(history.body.runs[0].code_preview,'function binarySearch() {}');
   assert.equal('test_cases_snapshot' in history.body.runs[0],false);
 });
 
@@ -552,10 +560,10 @@ test('run history verifies signed authoritative results and rejects legacy or ta
   process.env.RUN_ATTESTATION_PREVIOUS_SECRETS=TEST_JWT_SECRET;
   executeHandler=sql=>{
     if(sql.includes('FROM session_runs WHERE user_id=')) return rows([
-      {id:71,question_slug:fields.questionSlug,language:fields.language,passed_count:1,total_count:2,results_json:resultsJson,test_cases_snapshot:signedSnapshot},
-      {id:72,question_slug:fields.questionSlug,language:fields.language,passed_count:2,total_count:2,results_json:resultsJson,test_cases_snapshot:signedSnapshot},
-      {id:73,question_slug:fields.questionSlug,language:fields.language,passed_count:1,total_count:2,results_json:'[]',test_cases_snapshot:signedSnapshot},
-      {id:74,question_slug:'legacy-question',language:'javascript',passed_count:999,total_count:999,results_json:'[]',test_cases_snapshot:null},
+      {id:71,user_id:2,question_slug:fields.questionSlug,language:fields.language,code_preview:'const privatePersonalCode = true;',passed_count:1,total_count:2,results_json:resultsJson,test_cases_snapshot:signedSnapshot},
+      {id:72,user_id:2,question_slug:fields.questionSlug,language:fields.language,code_preview:'preview 72',passed_count:2,total_count:2,results_json:resultsJson,test_cases_snapshot:signedSnapshot},
+      {id:73,user_id:2,question_slug:fields.questionSlug,language:fields.language,code_preview:'preview 73',passed_count:1,total_count:2,results_json:'[]',test_cases_snapshot:signedSnapshot},
+      {id:74,user_id:2,question_slug:'legacy-question',language:'javascript',code_preview:'preview 74',passed_count:999,total_count:999,results_json:'[]',test_cases_snapshot:null},
     ]);
     return rows();
   };
@@ -565,7 +573,243 @@ test('run history verifies signed authoritative results and rejects legacy or ta
   assert.equal(history.status,200);
   assert.deepEqual(history.body.runs.map(run=>run.authoritative),[true,false,false,false]);
   assert.deepEqual(history.body.runs.map(run=>run.question_version),[1,null,null,null]);
-  assert.equal(history.body.runs.every(run=>!('results_json' in run) && !('test_cases_snapshot' in run)),true);
+  assert.equal(history.body.runs[0].code_preview,'const privatePersonalCode = true;');
+  assert.equal(history.body.runs.every(run=>
+    !('code' in run) && !('results_json' in run) && !('test_cases_snapshot' in run)
+  ),true);
+});
+
+test('run schema readiness coalesces concurrent pair-feed initialization and probes before access', async () => {
+  let releaseInitialization;
+  let reportInitializationStarted;
+  const initializationGate=new Promise(resolve=>{ releaseInitialization=resolve; });
+  const initializationStarted=new Promise(resolve=>{ reportInitializationStarted=resolve; });
+  let baseInitializations=0;
+  let completedProbes=0;
+  let accessChecks=0;
+  executeHandler=async sql=>{
+    if(sql.startsWith('CREATE TABLE IF NOT EXISTS auth_accounts')){
+      baseInitializations+=1;
+      reportInitializationStarted();
+      await initializationGate;
+      return rows();
+    }
+    if(sql.startsWith('SELECT id,display_name FROM auth_accounts LIMIT 0')
+      || sql.startsWith('SELECT id,week_id,user_a_id,user_b_id,user_c_id FROM pairing_groups LIMIT 0')
+      || sql.startsWith('SELECT id,user_id,week_id,pair_group_id,question_id,question_slug,language,code,test_cases_snapshot')){
+      completedProbes+=1;
+      return rows();
+    }
+    if(sql.includes('SELECT id,user_a_id,user_b_id')){
+      assert.equal(completedProbes,3,'pair access must wait for every readiness probe');
+      accessChecks+=1;
+      return rows([{id:20,user_a_id:2,user_b_id:4,user_c_id:null}]);
+    }
+    if(sql.includes('FROM session_runs sr')) return rows([]);
+    return rows();
+  };
+  const request={
+    url:'/api/runs?room_id=week_10_pair_20&after_id=0&limit=20',
+    query:{endpoint:'runs',room_id:'week_10_pair_20',after_id:'0',limit:'20'},
+    headers:{'x-test-auth':'user'},
+  };
+
+  const first=invoke(dataHandler,request);
+  await initializationStarted;
+  const second=invoke(dataHandler,request);
+  await Promise.resolve();
+  assert.equal(baseInitializations,1,'concurrent requests must share one in-flight initialization');
+  assert.equal(accessChecks,0,'membership checks must not race ahead of readiness');
+  releaseInitialization();
+
+  const responses=await Promise.all([first,second]);
+  assert.deepEqual(responses.map(response=>response.status),[200,200]);
+  assert.equal(baseInitializations,1);
+  assert.equal(completedProbes,3,'the shared readiness promise probes each required table once');
+  assert.equal(accessChecks,2,'each request still performs its own membership authorization');
+});
+
+test('failed run schema readiness is not cached and the next request retries initialization', async () => {
+  let baseInitializations=0;
+  let authProbeAttempts=0;
+  let accessChecks=0;
+  executeHandler=sql=>{
+    if(sql.startsWith('CREATE TABLE IF NOT EXISTS auth_accounts')) baseInitializations+=1;
+    if(sql.startsWith('SELECT id,display_name FROM auth_accounts LIMIT 0')){
+      authProbeAttempts+=1;
+      if(authProbeAttempts===1) throw new Error('schema probe unavailable');
+      return rows();
+    }
+    if(sql.includes('SELECT id,user_a_id,user_b_id')){
+      accessChecks+=1;
+      return rows([{id:20,user_a_id:2,user_b_id:4,user_c_id:null}]);
+    }
+    if(sql.includes('FROM session_runs sr')) return rows([]);
+    return rows();
+  };
+  const request={
+    url:'/api/runs?room_id=week_10_pair_20&after_id=0&limit=20',
+    query:{endpoint:'runs',room_id:'week_10_pair_20',after_id:'0',limit:'20'},
+    headers:{'x-test-auth':'user'},
+  };
+  const originalError=console.error;
+  console.error=()=>{};
+  try{
+    const failed=await invoke(dataHandler,request);
+    assert.equal(failed.status,500);
+    assert.equal(accessChecks,0);
+
+    const retried=await invoke(dataHandler,request);
+    assert.equal(retried.status,200);
+    assert.equal(baseInitializations,2,'a rejected readiness promise must be cleared');
+    assert.equal(authProbeAttempts,2);
+    assert.equal(accessChecks,1);
+  }finally{
+    console.error=originalError;
+  }
+});
+
+test('pair run feed is member-scoped, incremental, private, and verifies the submitting user', async () => {
+  const memoryDb=createClient({url:'file::memory:'});
+  const validResults=JSON.stringify([{idx:0,pass:true,error:null}]);
+  const validFields={
+    userId:4,
+    questionSlug:'focus-block-rollup',
+    questionVersion:1,
+    language:'javascript',
+    passedCount:1,
+    totalCount:1,
+    resultsJson:validResults,
+  };
+  const validSnapshot=JSON.stringify({
+    source:'original-catalog',version:1,total_count:1,attestation_version:2,
+    attestation_key_id:runKeyIdForTest(),attestation:signRunForTest(validFields),
+  });
+  const tamperedSnapshot=JSON.stringify({
+    source:'original-catalog',version:1,total_count:1,attestation_version:2,
+    attestation_key_id:runKeyIdForTest(),attestation:'0'.repeat(64),
+  });
+  try{
+    await memoryDb.batch([
+      `CREATE TABLE auth_accounts (id INTEGER PRIMARY KEY,email TEXT,display_name TEXT,color TEXT)`,
+      `CREATE TABLE pairing_groups (id INTEGER PRIMARY KEY,week_id INTEGER NOT NULL,user_a_id INTEGER NOT NULL,user_b_id INTEGER NOT NULL,user_c_id INTEGER)`,
+      `CREATE TABLE session_runs (id INTEGER PRIMARY KEY,user_id INTEGER,week_id INTEGER,pair_group_id INTEGER,question_id INTEGER,question_slug TEXT,language TEXT,code TEXT NOT NULL,test_cases_snapshot TEXT,results_json TEXT,passed_count INTEGER,total_count INTEGER,duration_ms INTEGER,created_at TEXT)`,
+      `INSERT INTO auth_accounts (id,email,display_name,color) VALUES (2,'viewer@example.test','Viewer','#123456'),(4,'partner@example.test','Partner','#654321'),(5,'outsider@example.test','Outsider','#abcdef')`,
+      `INSERT INTO pairing_groups (id,week_id,user_a_id,user_b_id,user_c_id) VALUES (20,10,2,4,NULL),(21,11,4,5,NULL)`,
+    ],'write');
+    await memoryDb.execute({
+      sql:`INSERT INTO session_runs (id,user_id,week_id,pair_group_id,question_slug,language,code,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      args:[79,4,10,20,'focus-block-rollup','javascript','PRIVATE OLD CODE',validSnapshot,validResults,1,1,9,'2026-09-18T08:00:00Z'],
+    });
+    await memoryDb.execute({
+      sql:`INSERT INTO session_runs (id,user_id,week_id,pair_group_id,question_slug,language,code,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      args:[81,4,10,20,'focus-block-rollup','javascript','PRIVATE PARTNER CODE',validSnapshot,validResults,1,1,12,'2026-09-18T08:01:00Z'],
+    });
+    await memoryDb.execute({
+      sql:`INSERT INTO session_runs (id,user_id,week_id,pair_group_id,question_slug,language,code,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      args:[82,4,11,21,'focus-block-rollup','javascript','OTHER ROOM CODE',validSnapshot,validResults,1,1,13,'2026-09-18T08:02:00Z'],
+    });
+    await memoryDb.execute({
+      sql:`INSERT INTO session_runs (id,user_id,week_id,pair_group_id,question_slug,language,code,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      args:[83,2,10,20,'focus-block-rollup','python','PRIVATE VIEWER CODE',tamperedSnapshot,validResults,1,1,14,'2026-09-18T08:03:00Z'],
+    });
+    databaseDelegate=memoryDb;
+
+    const feed=await invoke(dataHandler,{
+      url:'/api/runs?room_id=week_10_pair_20&after_id=80&limit=2',
+      query:{endpoint:'runs',room_id:'week_10_pair_20',after_id:'80',limit:'2'},
+      headers:{'x-test-auth':'user'},
+    });
+    assert.equal(feed.status,200);
+    assert.deepEqual(feed.body,{
+      ok:true,
+      room_id:'week_10_pair_20',
+      runs:[{
+        id:81,
+        runner:{id:4,display_name:'Partner'},
+        question_slug:'focus-block-rollup',question_version:1,language:'javascript',
+        passed_count:1,total_count:1,duration_ms:12,created_at:'2026-09-18T08:01:00Z',authoritative:true,
+      },{
+        id:83,
+        runner:{id:2,display_name:'Viewer'},
+        question_slug:'focus-block-rollup',question_version:null,language:'python',
+        passed_count:1,total_count:1,duration_ms:14,created_at:'2026-09-18T08:03:00Z',authoritative:false,
+      }],
+      after:83,
+    });
+    assert.equal(JSON.stringify(feed.body).includes('PRIVATE'),false);
+    for(const field of ['code','code_preview','test_cases_snapshot','results_json','attestation','email','piston','stdout','stderr']){
+      assert.equal(Object.hasOwn(feed.body.runs[0],field),false,`${field} must stay private`);
+    }
+
+    const bootstrap=await invoke(dataHandler,{
+      url:'/api/runs?room_id=week_10_pair_20&after_id=0&limit=2',
+      query:{endpoint:'runs',room_id:'week_10_pair_20',after_id:'0',limit:'2'},
+      headers:{'x-test-auth':'user'},
+    });
+    assert.equal(bootstrap.status,200);
+    assert.deepEqual(bootstrap.body.runs.map(run=>run.id),[81,83],
+      'initial load returns the newest bounded window in ascending display order');
+    assert.equal(bootstrap.body.after,83);
+  }finally{
+    databaseDelegate=null;
+    memoryDb.close();
+  }
+});
+
+test('pair run feed strictly validates cursors and authorizes the exact canonical room', async () => {
+  const headers={'x-test-auth':'user'};
+  const invalidQueries=[
+    {endpoint:'runs',room_id:''},
+    {endpoint:'runs',room_id:'week_01_pair_2'},
+    {endpoint:'runs',room_id:'week_1_pair_2/extra'},
+    {endpoint:'runs',room_id:['week_1_pair_2','week_2_pair_3']},
+    {endpoint:'runs',room_id:'week_1_pair_2',after_id:'-1'},
+    {endpoint:'runs',room_id:'week_1_pair_2',after_id:'01'},
+    {endpoint:'runs',room_id:'week_1_pair_2',after_id:['1','2']},
+    {endpoint:'runs',room_id:'week_1_pair_2',after_id:'9007199254740992'},
+    {endpoint:'runs',room_id:'week_1_pair_2',limit:'0'},
+    {endpoint:'runs',room_id:'week_1_pair_2',limit:'21'},
+    {endpoint:'runs',room_id:'week_1_pair_2',limit:'01'},
+    {endpoint:'runs',room_id:'week_1_pair_2',limit:['1','2']},
+  ];
+  for(const query of invalidQueries){
+    executed.length=0;
+    const invalid=await invoke(dataHandler,{url:'/api/runs',query,headers});
+    assert.equal(invalid.status,400,JSON.stringify(query));
+    assert.equal(executed.length,0,'invalid room feed queries must fail before database access');
+  }
+
+  let access='missing';
+  executeHandler=sql=>{
+    if(sql.includes('SELECT id,user_a_id,user_b_id')){
+      if(access==='missing') return rows([]);
+      return rows([{id:2,user_a_id:7,user_b_id:8,user_c_id:null}]);
+    }
+    if(sql.includes('FROM session_runs sr')) throw new Error('unauthorized run feed must not be queried');
+    return rows();
+  };
+  const missing=await invoke(dataHandler,{
+    url:'/api/runs',query:{endpoint:'runs',room_id:'week_1_pair_2'},headers,
+  });
+  assert.equal(missing.status,404);
+  access='forbidden';
+  const forbidden=await invoke(dataHandler,{
+    url:'/api/runs',query:{endpoint:'runs',room_id:'week_1_pair_2'},headers,
+  });
+  assert.equal(forbidden.status,403);
+
+  executeHandler=(sql,args)=>{
+    if(sql.includes('FROM session_runs WHERE user_id=')){
+      assert.equal(args.at(-1),50,'personal history retains its existing limit contract');
+      return rows([]);
+    }
+    return rows();
+  };
+  const personal=await invoke(dataHandler,{
+    url:'/api/runs',query:{endpoint:'runs',limit:'50',after_id:'not-a-room-cursor'},headers,
+  });
+  assert.equal(personal.status,200);
 });
 
 test('my-pair returns only the latest week membership and a canonical room id', async () => {
@@ -794,6 +1038,104 @@ test('execution uses only server-owned versioned cases and persists exact author
     assert.equal(rejected.status,400,language);
     assert.match(rejected.body.error,/javascript and python/i);
   }
+});
+
+test('canonical room execution authorizes membership before work and persists the derived pair', async () => {
+  const question=listPublicExercises()[0];
+  const entrypoint=question.languages.javascript.entrypoint;
+  let networkCalls=0;
+  executeHandler=(sql,args)=>{
+    if(sql.includes('SELECT id,user_a_id,user_b_id')){
+      assert.deepEqual(args,[20,42]);
+      return rows([{id:20,user_a_id:2,user_b_id:4,user_c_id:null}]);
+    }
+    if(sql.includes("'execute_lease_start'") && sql.includes('RETURNING id')) return rows([{id:220}]);
+    if(sql.includes("event='execute_attempt'")) return rows([{c:1}]);
+    if(sql.includes('INSERT INTO session_runs') && sql.includes('RETURNING id')) return rows([{id:120}]);
+    return rows();
+  };
+  globalThis.fetch=async url=>{
+    networkCalls+=1;
+    assert.match(String(url),/piston\/execute/);
+    return new Response(JSON.stringify({run:{code:0,stdout:'',stderr:''}}),{status:200});
+  };
+
+  const result=await invoke(dataHandler,{
+    method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers:{'x-test-auth':'user'},
+    body:{
+      room_id:'week_42_pair_20',
+      language:'javascript',
+      code:`function ${entrypoint}(){ return null; }`,
+      question_slug:question.slug,
+      question_version:question.version,
+    },
+  });
+  assert.equal(result.status,200);
+  assert.equal(result.body.run_id,120);
+  assert.equal(networkCalls,1);
+
+  const membershipIndex=executed.findIndex(call=>call.sql.includes('SELECT id,user_a_id,user_b_id'));
+  const firstWriteIndex=executed.findIndex(call=>call.sql.includes('INSERT INTO app_logs'));
+  assert.ok(membershipIndex>=0);
+  assert.ok(firstWriteIndex>membershipIndex,'membership must be proven before leases, quota writes, or provider work');
+  const insert=executed.find(call=>call.sql.includes('INSERT INTO session_runs') && call.sql.includes('RETURNING id'));
+  assert.ok(insert);
+  assert.equal(insert.args[1],42);
+  assert.equal(insert.args[2],20);
+});
+
+test('canonical room execution rejects ambiguous, malformed, missing, and unauthorized rooms before work', async () => {
+  const question=listPublicExercises()[0];
+  const entrypoint=question.languages.javascript.entrypoint;
+  const base={
+    language:'javascript',
+    code:`function ${entrypoint}(){ return null; }`,
+    question_slug:question.slug,
+    question_version:question.version,
+  };
+  let networkCalls=0;
+  globalThis.fetch=async()=>{ networkCalls+=1; throw new Error('unauthorized request must not reach Piston'); };
+
+  for(const room_id of ['',null,42,'week_0_pair_20','week_01_pair_20','week_42_pair_020','week_42_pair_20/extra','week_9007199254740992_pair_20']){
+    executed.length=0;
+    const malformed=await invoke(dataHandler,{
+      method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers:{'x-test-auth':'user'},
+      body:{...base,room_id},
+    });
+    assert.equal(malformed.status,400,String(room_id));
+    assert.equal(executed.length,0,'malformed room ids fail before database access');
+  }
+
+  for(const field of ['week_id','pair_group_id','pg_id','pair_id']){
+    executed.length=0;
+    const ambiguous=await invoke(dataHandler,{
+      method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers:{'x-test-auth':'user'},
+      body:{...base,room_id:'week_42_pair_20',[field]:null},
+    });
+    assert.equal(ambiguous.status,400,field);
+    assert.equal(executed.length,0,'ambiguous identifiers fail before database access');
+  }
+
+  let access='missing';
+  executeHandler=sql=>{
+    if(sql.includes('SELECT id,user_a_id,user_b_id')){
+      return access==='missing' ? rows([]) : rows([{id:20,user_a_id:7,user_b_id:8,user_c_id:null}]);
+    }
+    throw new Error('room access denial must stop all later database work');
+  };
+  const missing=await invoke(dataHandler,{
+    method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers:{'x-test-auth':'user'},
+    body:{...base,room_id:'week_42_pair_20'},
+  });
+  assert.equal(missing.status,404);
+  access='forbidden';
+  const forbidden=await invoke(dataHandler,{
+    method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers:{'x-test-auth':'user'},
+    body:{...base,room_id:'week_42_pair_20'},
+  });
+  assert.equal(forbidden.status,403);
+  assert.equal(networkCalls,0);
+  assert.equal(executed.some(call=>call.sql.includes('INSERT INTO app_logs') || call.sql.includes('INSERT INTO session_runs')),false);
 });
 
 test('execution rejects unavailable questions and enforces pair membership before calling Piston', async () => {

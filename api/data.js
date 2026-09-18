@@ -1,5 +1,6 @@
 import { captureSentryException, captureSentryMessage, getClient, getAdminEmails, getJwtSecret, initSentry, isSentryConfigured, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 import { createEvaluationSuite, getPublicExercise, listPublicExercises } from './_catalog.js';
+import { parseCanonicalRoomPath } from './_pairing.js';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 function isAdminCheck(email, flag){
@@ -426,6 +427,30 @@ function getAuthPayload(req){
   return verifyRequestAuth(req);
 }
 
+function requestQueryValue(req,name){
+  if(req.query && Object.prototype.hasOwnProperty.call(req.query,name)) return req.query[name];
+  try{
+    const values=new URL(req.url,'http://localhost').searchParams.getAll(name);
+    if(values.length===1) return values[0];
+    if(values.length>1) return values;
+  }catch{}
+  return undefined;
+}
+
+function parseCanonicalRoomId(value){
+  if(typeof value!=='string') return null;
+  const parsed=parseCanonicalRoomPath(`/join/${value}`);
+  return parsed?.roomId===value ? parsed : null;
+}
+
+function parseBoundedQueryInteger(value,{defaultValue,min,max}){
+  if(value===undefined) return defaultValue;
+  if(typeof value==='number') return Number.isSafeInteger(value)&&value>=min&&value<=max ? value : null;
+  if(typeof value!=='string'||!/^(0|[1-9]\d*)$/.test(value)) return null;
+  const parsed=Number(value);
+  return Number.isSafeInteger(parsed)&&parsed>=min&&parsed<=max ? parsed : null;
+}
+
 async function getPairAccess(db, payload, weekId, pairId){
   const userId=Number(payload?.id||payload?.uid);
   if(!Number.isInteger(userId) || !Number.isInteger(weekId) || !Number.isInteger(pairId)) return {allowed:false, exists:false};
@@ -659,6 +684,47 @@ async function ensureProfileMigrations(db){
   await ensureCustomQuestions(db);
   await ensureSessionRuns(db);
   try{ await ensureAppLogs(db); }catch{}
+}
+
+// Serverless instances may serve many pair-feed polls during their lifetime.
+// Cache readiness by database URL (or by client in tests/local use) so those
+// requests share both an in-flight initialization and its successful result.
+const __runsReadinessByDatabaseUrl=new Map();
+const __runsReadinessByClient=new WeakMap();
+
+function runsReadinessCache(db){
+  const databaseUrl=String(process.env.TURSO_DATABASE_URL||'').trim();
+  return databaseUrl
+    ? {cache:__runsReadinessByDatabaseUrl,key:databaseUrl}
+    : {cache:__runsReadinessByClient,key:db};
+}
+
+async function probeRunsSchema(db){
+  // The DDL helpers intentionally tolerate already-applied migrations, so
+  // explicit reads are the success boundary for the schema this route uses.
+  await db.execute(`SELECT id,display_name FROM auth_accounts LIMIT 0`);
+  await db.execute(`SELECT id,week_id,user_a_id,user_b_id,user_c_id FROM pairing_groups LIMIT 0`);
+  await db.execute(`SELECT id,user_id,week_id,pair_group_id,question_id,question_slug,language,code,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at FROM session_runs LIMIT 0`);
+}
+
+async function ensureRunsReadiness(db){
+  const {cache,key}=runsReadinessCache(db);
+  const existing=cache.get(key);
+  if(existing) return existing;
+
+  const pending=(async()=>{
+    await ensureBaseTables(db);
+    await ensureProfileMigrations(db);
+    await ensureSessionRuns(db);
+    await probeRunsSchema(db);
+  })();
+  cache.set(key,pending);
+  try{
+    return await pending;
+  }catch(error){
+    if(cache.get(key)===pending) cache.delete(key);
+    throw error;
+  }
 }
 
 
@@ -1281,6 +1347,57 @@ function verifyRunAttestation(signature,keyId,fields){
   }catch{ return false; }
 }
 
+function runSummary(row,{includeRunner=false}={}){
+  let questionVersion=null;
+  let authoritative=false;
+  try{
+    const snapshot=row.test_cases_snapshot?JSON.parse(row.test_cases_snapshot):null;
+    const version=positiveInteger(snapshot?.version);
+    const submittingUserId=positiveInteger(row.user_id);
+    if(
+      submittingUserId
+      && snapshot?.source==='original-catalog'
+      && snapshot?.attestation_version===2
+      && version
+      && Number(snapshot.total_count)===Number(row.total_count)
+    ){
+      authoritative=verifyRunAttestation(snapshot.attestation,snapshot.attestation_key_id,{
+        userId:submittingUserId,
+        questionSlug:row.question_slug,
+        questionVersion:version,
+        language:row.language,
+        passedCount:row.passed_count,
+        totalCount:row.total_count,
+        resultsJson:row.results_json,
+      });
+      if(authoritative) questionVersion=version;
+    }
+  }catch{}
+
+  const summary={
+    id:row.id,
+    question_slug:row.question_slug,
+    question_version:questionVersion,
+    language:row.language,
+    passed_count:row.passed_count,
+    total_count:row.total_count,
+    duration_ms:row.duration_ms,
+    created_at:row.created_at,
+    authoritative,
+  };
+  if(includeRunner){
+    summary.runner={id:row.user_id,display_name:String(row.runner_display_name||'Member').slice(0,80)};
+  }else{
+    // Preserve the legacy personal-history projection. Pair feeds deliberately
+    // omit the code preview because every member can read those rows.
+    summary.week_id=row.week_id;
+    summary.pair_group_id=row.pair_group_id;
+    summary.question_id=row.question_id;
+    summary.code_preview=row.code_preview;
+  }
+  return summary;
+}
+
 async function handleRuns(req,res){
   if(req.method!=='GET' && req.method!=='POST') return res.status(405).json({ error:'GET only' });
   const payload = getAuthPayload(req);
@@ -1289,46 +1406,57 @@ async function handleRuns(req,res){
     return res.status(405).json({error:'run records are created only by the execution service'});
   }
   const userId = payload.id || payload.uid;
+  const rawRoomId=requestQueryValue(req,'room_id');
+  const room=rawRoomId===undefined?null:parseCanonicalRoomId(rawRoomId);
+  if(rawRoomId!==undefined&&!room) return res.status(400).json({error:'canonical room_id required'});
+  const pairAfterId=room?parseBoundedQueryInteger(requestQueryValue(req,'after_id'),{defaultValue:0,min:0,max:Number.MAX_SAFE_INTEGER}):0;
+  if(room&&pairAfterId===null) return res.status(400).json({error:'after_id must be a safe non-negative integer'});
+  const pairLimit=room?parseBoundedQueryInteger(requestQueryValue(req,'limit'),{defaultValue:20,min:1,max:20}):null;
+  if(room&&pairLimit===null) return res.status(400).json({error:'limit must be an integer from 1 to 20'});
   const db = getClient();
-  await ensureBaseTables(db);
-  await ensureProfileMigrations(db);
-  await ensureSessionRuns(db);
+  await ensureRunsReadiness(db);
   if (req.method === 'GET'){
     const slug = req.query?.question_slug || req.query?.slug ? String(req.query.question_slug||req.query.slug).slice(0,120) : null;
     const limit = Math.min(50, Math.max(1, parseInt(String(req.query?.limit||'20'),10)||20));
     try{
-      let sql = `SELECT id, week_id, pair_group_id, question_id, question_slug, language, substr(code,1,500) as code_preview, test_cases_snapshot, results_json, passed_count, total_count, duration_ms, created_at FROM session_runs WHERE user_id=?`;
+      if(room){
+        const access=await getPairAccess(db,payload,room.weekId,room.pairGroupId);
+        if(!access.exists) return res.status(404).json({error:'pair not found'});
+        if(!access.allowed) return res.status(403).json({error:'not member of this pair'});
+        let pairSql;
+        let pairArgs;
+        const pairProjection=`sr.id,sr.user_id,sr.question_slug,sr.language,sr.test_cases_snapshot,sr.results_json,sr.passed_count,sr.total_count,sr.duration_ms,sr.created_at,aa.display_name AS runner_display_name`;
+        if(pairAfterId===0){
+          // Bootstrap from the newest bounded window, but return it in the same
+          // ascending order used by subsequent incremental requests.
+          pairSql=`SELECT * FROM (
+            SELECT ${pairProjection}
+            FROM session_runs sr LEFT JOIN auth_accounts aa ON aa.id=sr.user_id
+            WHERE sr.week_id=? AND sr.pair_group_id=?`;
+          pairArgs=[room.weekId,room.pairGroupId];
+          if(slug){ pairSql+=` AND sr.question_slug=?`; pairArgs.push(slug); }
+          pairSql+=` ORDER BY sr.id DESC LIMIT ?
+          ) recent ORDER BY id ASC`;
+          pairArgs.push(pairLimit);
+        }else{
+          pairSql=`SELECT ${pairProjection}
+            FROM session_runs sr LEFT JOIN auth_accounts aa ON aa.id=sr.user_id
+            WHERE sr.week_id=? AND sr.pair_group_id=? AND sr.id>?`;
+          pairArgs=[room.weekId,room.pairGroupId,pairAfterId];
+          if(slug){ pairSql+=` AND sr.question_slug=?`; pairArgs.push(slug); }
+          pairSql+=` ORDER BY sr.id ASC LIMIT ?`;
+          pairArgs.push(pairLimit);
+        }
+        const pairRows=await db.execute({sql:pairSql,args:pairArgs});
+        const pairRuns=pairRows.rows.map(row=>runSummary(row,{includeRunner:true}));
+        return res.json({ok:true,room_id:room.roomId,runs:pairRuns,after:pairRuns.length?pairRuns[pairRuns.length-1].id:pairAfterId});
+      }
+      let sql = `SELECT id,user_id,week_id,pair_group_id,question_id,question_slug,language,substr(code,1,500) as code_preview,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at FROM session_runs WHERE user_id=?`;
       let args=[userId];
       if (slug){ sql+=` AND question_slug=?`; args.push(slug); }
       sql+=` ORDER BY id DESC LIMIT ?`; args.push(limit);
       const rs = await db.execute({ sql, args });
-      const runs=rs.rows.map(row=>{
-        let questionVersion=null;
-        let authoritative=false;
-        try{
-          const snapshot=row.test_cases_snapshot?JSON.parse(row.test_cases_snapshot):null;
-          const version=positiveInteger(snapshot?.version);
-          if(
-            snapshot?.source==='original-catalog'
-            && snapshot?.attestation_version===2
-            && version
-            && Number(snapshot.total_count)===Number(row.total_count)
-          ){
-            authoritative=verifyRunAttestation(snapshot.attestation,snapshot.attestation_key_id,{
-              userId,
-              questionSlug:row.question_slug,
-              questionVersion:version,
-              language:row.language,
-              passedCount:row.passed_count,
-              totalCount:row.total_count,
-              resultsJson:row.results_json,
-            });
-            if(authoritative) questionVersion=version;
-          }
-        }catch{}
-        const {test_cases_snapshot:_privateSnapshot,results_json:_privateResults,...publicRun}=row;
-        return {...publicRun,question_version:questionVersion,authoritative};
-      });
+      const runs=rs.rows.map(row=>runSummary(row));
       return res.json({ ok:true, runs, count:runs.length });
     }catch(e){ return res.status(500).json({ error:'fetch failed', detail:String(e.message||e).slice(0,200)}); }
   }
@@ -1764,17 +1892,30 @@ async function handleExecute(req,res){
   const testSuite=createEvaluationSuite(questionSlug,questionVersion,pistonLang);
   if(!testSuite) return res.status(404).json({error:'question not found or unavailable'});
 
+  const hasRoomId=Object.prototype.hasOwnProperty.call(body,'room_id');
+  const numericRoomFields=['week_id','pair_group_id','pg_id','pair_id'];
+  if(hasRoomId&&numericRoomFields.some(field=>Object.prototype.hasOwnProperty.call(body,field))){
+    return res.status(400).json({error:'room_id cannot be combined with numeric room identifiers'});
+  }
+  const room=hasRoomId?parseCanonicalRoomId(body.room_id):null;
+  if(hasRoomId&&!room) return res.status(400).json({error:'canonical room_id required'});
+
+  let weekId=room?.weekId??null;
+  let pairId=room?.pairGroupId??null;
+  if(!hasRoomId){
+    weekId=body.week_id==null || body.week_id==='' ? null : positiveInteger(body.week_id);
+    const rawPairId=body.pair_group_id??body.pg_id??body.pair_id;
+    pairId=rawPairId==null || rawPairId==='' ? null : positiveInteger(rawPairId);
+    if((weekId===null)!==(pairId===null)) return res.status(400).json({error:'week_id and pair_group_id must be provided together'});
+    if((body.week_id!=null && body.week_id!=='' && !weekId) || (rawPairId!=null && rawPairId!=='' && !pairId)){
+      return res.status(400).json({error:'week_id and pair_group_id must be positive integers'});
+    }
+  }
+
   // Schema creation is a deploy-time migration concern. Request handling stays
   // read/write-only and fails closed if the deployment has not been prepared.
+  // Resolve and validate client room identifiers before touching the database.
   const db=getClient();
-
-  const weekId=body.week_id==null || body.week_id==='' ? null : positiveInteger(body.week_id);
-  const rawPairId=body.pair_group_id??body.pg_id??body.pair_id;
-  const pairId=rawPairId==null || rawPairId==='' ? null : positiveInteger(rawPairId);
-  if((weekId===null)!==(pairId===null)) return res.status(400).json({error:'week_id and pair_group_id must be provided together'});
-  if((body.week_id!=null && body.week_id!=='' && !weekId) || (rawPairId!=null && rawPairId!=='' && !pairId)){
-    return res.status(400).json({error:'week_id and pair_group_id must be positive integers'});
-  }
   if(weekId && pairId){
     const access=await getPairAccess(db,payload,weekId,pairId);
     if(!access.exists) return res.status(404).json({error:'pair not found'});

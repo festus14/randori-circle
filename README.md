@@ -11,6 +11,7 @@ Production deploys from `main` through Vercel. Development is iterative; the arc
 3. Each participant receives a personalised email containing only their partner and private room link.
 4. Partners propose a time, chat, and open the session workspace, where code and completed whiteboard gestures are saved as one room-scoped checkpoint.
 5. Members choose from the original, provenance-checked catalogue; JavaScript and Python are evaluated against server-owned cases and the authoritative result is saved by the API.
+6. Both partners see a room-scoped feed of verified run summaries; source code, hidden cases, provider output, and unrelated personal runs remain private.
 
 Pair workspaces now persist authenticated, revisioned code and whiteboard snapshots across devices. A completed board gesture is saved locally immediately and then synced; if the network is unavailable, the room keeps a dirty local checkpoint and retries after hydration. Viewport, selected tool, and colour are intentionally device-local. Snapshots expire after 90 days, and v1/v2 code-only rooms upgrade without losing their draft.
 
@@ -34,7 +35,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | Module | Responsibility |
 |---|---|
 | `api/auth.js` | signup/login compatibility, logout, session lookup, Google OAuth |
-| `api/data.js` | profiles, circle, weeks, schedules, messages, questions, runs, execution |
+| `api/data.js` | profiles, circle, weeks, schedules, messages, questions, private pair run summaries, execution |
 | `api/ops.js` | availability, fair pairing, cron, notification outbox, demo administration |
 | `api/ai.js` | disabled-by-default consent-gated feedback workflows |
 | `api/video.js` | authenticated pair-scoped WebRTC signaling and revisioned code/board checkpoints |
