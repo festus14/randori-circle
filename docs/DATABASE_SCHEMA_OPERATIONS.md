@@ -1,6 +1,6 @@
 # Database schema operations
 
-Randori has read-only schema inspection for configured databases and a transactional migration runner for local database files. Remote migration remains disabled until the backup and restore verifier is complete.
+Randori has read-only schema inspection for configured databases, a transactional migration runner for local database files, and a protected Turso PITR rehearsal that mutates only a disposable restore. Production migration remains disabled until a real rehearsal has completed successfully.
 
 ## Contract
 
@@ -138,6 +138,18 @@ Every invocation emits exactly one redacted JSON document. Successful results an
 
 Output includes only the target kind and whether it existed before opening. It never includes the file path, SQL, credentials, or raw provider errors.
 
+## Protected Turso PITR rehearsal
+
+The manually dispatched `turso-backup-restore-rehearsal.yml` workflow is the remote counterpart to the local migration rehearsal. It runs only on the latest default-branch commit and obtains credentials from the protected `turso-migration-rehearsal` environment. It does not expose a general remote migration command.
+
+The workflow verifies the configured production name, immutable `DbId`, group, and base-database status before any mutation. It preserves the existing `block_writes` configuration, confirms a write block before choosing the PITR timestamp, and restores the original state on every exit path. Its source connection is additionally restricted by a read-only, database-scoped token and a statement guard. The migration runner receives only the disposable restore connection.
+
+The restore must have a new exact `DbId` and an exact parent binding to the production ID and name. Before migration, authenticated evidence must match at the same exact managed or unmanaged migration prefix. Unmanaged history is adopted only on the restore; the restore is then advanced to the repository latest version. A second evidence pass proves every pre-existing table digest/count and SQLite sequence digest remains unchanged.
+
+Cleanup re-fetches and deletes only the exact restored identity. An ambiguous create, identity change, or failed delete is never resolved by name-only deletion. Exact recovery data is written under `$RUNNER_TEMP/private-recovery` with mode `0600` and is excluded from artifact uploads. The uploaded summary is constructed from an allowlist and contains no database names/IDs, URLs, tokens, SQL, row values, or raw provider errors.
+
+See [Turso backup/restore rehearsal](TURSO_BACKUP_RESTORE_REHEARSAL.md) for environment setup, execution, artifact interpretation, and recovery steps.
+
 ## Runtime DDL debt
 
 Several existing request paths still contain best-effort `CREATE` and `ALTER` statements. `npm run check:runtime-ddl` fingerprints the exact normalized statement set and occurrence counts per API module. CI fails when a statement is added, changed, assembled from string fragments, or removed without an intentional allowlist update.
@@ -146,11 +158,12 @@ This is a freeze, not an endorsement. Existing statements remain temporarily for
 
 ## Operator sequence
 
-1. Create a local copy or restore rehearsal database. Never point the migration runner at a remote URL.
+1. Rehearse locally first. Never point `db:migrate` at a remote URL.
 2. Run local `db:migrate status` and retain its JSON result and fingerprint. For a known historical unmanaged schema, use the reviewed `--through-version` value.
-3. Run `db:migrate apply` for a fresh or managed file, or `db:migrate adopt` only for an exact unmanaged file. A prefix may be adopted, but never partially applied.
+3. Run local `db:migrate apply` for a fresh or managed file, or `db:migrate adopt` only for an exact unmanaged file. A prefix may be adopted, but never partially applied.
 4. Run local `db:migrate status` again, then run the existing `db:status` and `db:plan` inspections against the same rehearsal database.
-5. If exit code `1` or `2` occurs, retain the JSON, do not edit `schema_migrations` by hand, and run `status` again. A failed version is rolled back with its ledger insert; recover from the source backup if external file damage is suspected.
-6. Continue using the authenticated `/api/init` membership rollout documented in `TURSO.md` for production until remote migration is explicitly enabled.
+5. Configure the protected GitHub environment and execute the manual PITR workflow from current `main`. Retain its sanitized successful artifact in issue #38.
+6. If any rehearsal fails, do not edit `schema_migrations` or delete a database by name. Follow the exact recovery steps in the PITR runbook.
+7. Continue using the authenticated `/api/init` membership rollout documented in `TURSO.md` for production until a separate protected remote migration workflow is explicitly enabled.
 
-Production migration remains blocked until real Turso credentials, a verified backup, and a restore rehearsal are available.
+Production migration remains blocked until real Turso credentials and a successful protected PITR rehearsal are available. Mocked CI tests do not satisfy that operational gate.

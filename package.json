@@ -18,6 +18,7 @@
     "dev:reset": "node --env-file-if-exists=.env.local scripts/local-reset.mjs",
     "db:migrate": "node scripts/db-migrate.mjs",
     "db:plan": "node scripts/db-inspect.mjs plan",
+    "db:rehearse-restore": "node scripts/turso-backup-restore-rehearsal.mjs",
     "db:status": "node scripts/db-inspect.mjs status",
     "check:runtime-ddl": "node scripts/check-runtime-ddl.mjs",
     "check:syntax": "node tests/static/check-syntax.mjs",

@@ -1,0 +1,83 @@
+name: Turso backup restore rehearsal
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type RESTORE_DISPOSABLE_ONLY to confirm the maintenance window
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: turso-production-backup-restore-rehearsal
+  cancel-in-progress: false
+
+jobs:
+  rehearse:
+    if: >-
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+      && inputs.confirmation == 'RESTORE_DISPOSABLE_ONLY'
+    environment: turso-migration-rehearsal
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RESTORE_REHEARSAL_CONFIRM: ${{ inputs.confirmation }}
+      TURSO_ORGANIZATION: ${{ vars.TURSO_ORGANIZATION }}
+      TURSO_GROUP: ${{ vars.TURSO_GROUP }}
+      TURSO_PRODUCTION_DATABASE_NAME: ${{ vars.TURSO_PRODUCTION_DATABASE_NAME }}
+      TURSO_PRODUCTION_DATABASE_ID: ${{ vars.TURSO_PRODUCTION_DATABASE_ID }}
+      TURSO_RESTORE_DATABASE_PREFIX: ${{ vars.TURSO_RESTORE_DATABASE_PREFIX }}
+      TURSO_PRODUCTION_PLATFORM_TOKEN: ${{ secrets.TURSO_PRODUCTION_PLATFORM_TOKEN }}
+      MIGRATION_DIGEST_HMAC_KEY: ${{ secrets.MIGRATION_DIGEST_HMAC_KEY }}
+      TURSO_PLATFORM_TIMEOUT_MS: '15000'
+      TURSO_DATABASE_TIMEOUT_MS: '30000'
+      REHEARSAL_MAX_SNAPSHOT_AGE_MS: ${{ vars.REHEARSAL_MAX_SNAPSHOT_AGE_MS }}
+      REHEARSAL_MAX_EVIDENCE_AGE_MS: ${{ vars.REHEARSAL_MAX_EVIDENCE_AGE_MS }}
+      REHEARSAL_RPO_TARGET_MS: ${{ vars.REHEARSAL_RPO_TARGET_MS }}
+      REHEARSAL_RTO_TARGET_MS: ${{ vars.REHEARSAL_RTO_TARGET_MS }}
+      REHEARSAL_POLL_ATTEMPTS: '60'
+      REHEARSAL_POLL_INTERVAL_MS: '5000'
+    steps:
+      - name: Check out the latest default branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Refuse a stale main checkout
+        id: source
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+          checked_out_commit="$(git rev-parse HEAD)"
+          latest_main_commit="$(git rev-parse "origin/${DEFAULT_BRANCH}")"
+          test "${checked_out_commit}" = "${latest_main_commit}"
+          echo "REHEARSAL_REPO_COMMIT=${checked_out_commit}" >> "${GITHUB_ENV}"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run protected PITR rehearsal
+        run: >-
+          npm run --silent db:rehearse-restore --
+          --artifact-dir "${RUNNER_TEMP}/public-artifacts"
+
+      - name: Upload sanitized rehearsal summary
+        if: always() && steps.source.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: turso-backup-restore-rehearsal-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/public-artifacts/rehearsal-summary.json
+          retention-days: 30
+          if-no-files-found: error
