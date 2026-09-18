@@ -10,7 +10,7 @@ import {
   validateMigrationLedger,
 } from './migration-ledger.js';
 import { MIGRATION_PLANS } from './migration-plan.js';
-import { inspectMembershipRolloutReadiness } from './membership-readiness.js';
+import { inspectMembershipAdoptionReadiness } from './membership-readiness.js';
 import { inspectSchema } from './schema-inspector.js';
 import { SCHEMA_MANIFEST, checksum } from './schema-manifest.js';
 
@@ -119,7 +119,7 @@ function applicationObjects(objects){
 }
 
 export async function inspectMembershipAdoption(db){
-  const state=await inspectMembershipRolloutReadiness(db);
+  const state=await inspectMembershipAdoptionReadiness(db);
   if(state.registrationState==='invalid') return state;
   const evidenceResults=await Promise.all([
     db.execute(`SELECT id,is_demo FROM auth_accounts ORDER BY id`),
