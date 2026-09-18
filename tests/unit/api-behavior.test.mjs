@@ -392,9 +392,9 @@ test('data read models map database rows into circle, weeks, history, stats, and
       { id: 6, name: 'Third', color: '#fedcba', tz: 'UTC' },
     ]);
     if (sql.includes('FROM pairing_groups pg') && sql.includes('ORDER BY pw.week_start')) return rows([
-      { pg_id: 20, week_id: 10, user_a_id: 2, user_b_id: 4, is_ai_pair: 0, week_label: '2026-W38', week_start: '2026-09-20' },
+      { pg_id: 20, week_id: 10, user_a_id: 2, user_b_id: 4, user_a_source:'auth', user_b_source:'auth', is_ai_pair: 0, week_label: '2026-W38', week_start: '2026-09-20' },
     ]);
-    if (sql.includes('display_name as name FROM auth_accounts')) return rows([{ id: 2, name: 'User' }, { id: 4, name: 'Partner' }]);
+    if (/SELECT id,\s*display_name AS name FROM auth_accounts/i.test(sql)) return rows([{ id: 2, name: 'User' }, { id: 4, name: 'Partner' }]);
     if (sql.includes('COUNT(*) as c FROM auth_accounts')) return rows([{ c: 4 }]);
     if (sql.includes('COUNT(*) as c FROM pairing_weeks')) return rows([{ c: 2 }]);
     if (sql.includes('COUNT(*) as c FROM pairing_groups pg JOIN')) return rows([{ c: 3 }]);
@@ -912,10 +912,11 @@ test('my-pair returns only the latest week membership and a canonical room id', 
 test('history includes every other member when the viewer is user_c', async () => {
   executeHandler=sql=>{
     if(sql.includes('FROM pairing_groups pg') && sql.includes('ORDER BY pw.week_start')) return rows([{
-      pg_id:20,week_id:10,user_a_id:4,user_b_id:5,user_c_id:2,is_ai_pair:0,
+      pg_id:20,week_id:10,user_a_id:4,user_b_id:5,user_c_id:2,
+      user_a_source:'auth',user_b_source:'auth',user_c_source:'auth',is_ai_pair:0,
       week_label:'2026-W38',week_start:'2026-09-20',topic:'Arrays',topic_kind:'dsa',
     }]);
-    if(sql.includes('display_name as name FROM auth_accounts')) return rows([
+    if(/SELECT id,\s*display_name AS name FROM auth_accounts/i.test(sql)) return rows([
       {id:2,name:'User'},
       {id:4,name:'First partner'},
       {id:5,name:'Second partner'},
