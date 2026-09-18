@@ -221,6 +221,12 @@ mock.module('../../api/_db.js', {
   },
 });
 
+mock.module('../../api/_pairing-readiness.js',{
+  exports:{
+    pairingSchemaV3Ready:async()=>true,
+  },
+});
+
 const [
   { default: aiHandler },
   { default: authHandler, localPasswordSignupEnabled },
@@ -2418,6 +2424,7 @@ test('AI rejects missing content and enforces demo quota before provider calls',
 });
 
 test('operations cover preferences, availability, admin promotion, demo lifecycle, and cron auth', async () => {
+  process.env.APP_URL='https://randori.example.test';
   process.env.CRON_SECRET = 'cron-secret';
   let insertedId = 100;
   executeHandler = sql => {
@@ -2438,9 +2445,9 @@ test('operations cover preferences, availability, admin promotion, demo lifecycl
       { id: 1, name: 'Admin', email: 'admin@example.test', color: '#1', is_available: 1, is_demo: 0 },
       { id: 2, name: 'User', email: 'user@example.test', color: '#2', is_available: 1, is_demo: 1 },
     ]);
-    if(sql.includes('SELECT aa.id,aa.display_name AS name')&&sql.includes('circle_memberships')) return rows([
-      {id:1,name:'Admin',email:'admin@example.test',color:'#1',is_available:1},
-      {id:2,name:'User',email:'user@example.test',color:'#2',is_available:1},
+    if(sql.includes('SELECT account.id,account.email,account.is_available')&&sql.includes('circle_memberships')) return rows([
+      {id:1,email:'admin@example.test',is_available:1},
+      {id:2,email:'user@example.test',is_available:1},
     ]);
     if (sql.includes('SELECT week_id,generation_token,generation FROM pairing_week_runs')) return rows([{
       week_id: lastPairingRun?.weekId,
@@ -2507,12 +2514,13 @@ test('operations cover preferences, availability, admin promotion, demo lifecycl
 
   const weekly = await withFixedNow('2026-09-20T08:15:00.000Z',()=>invoke(opsHandler, { method: 'POST', url: '/api/cron/weekly', query: { endpoint:'weekly' }, headers: { 'x-cron-secret': 'cron-secret' } }));
   assert.equal(weekly.status, 200);
-  assert.equal(weekly.body.pairs.length, 1);
+  assert.equal(weekly.body.pair_count, 1);
   assert.doesNotMatch(JSON.stringify(weekly.body),/@example\.test/);
   assert.equal(executed.some(call => !call.sql.trim()), false, 'migration arrays must not execute undefined DDL entries');
 });
 
 test('weekly email delivery caps stale outbox retries and exhausts the fifth failed attempt', async () => {
+  process.env.APP_URL='https://randori.example.test';
   process.env.CRON_SECRET = 'cron-secret';
   process.env.RESEND_API_KEY = 're_test';
   globalThis.fetch = async () => new Response(JSON.stringify({ message: 'provider unavailable' }), {
@@ -2560,6 +2568,8 @@ test('weekly email delivery caps stale outbox retries and exhausts the fifth fai
   assert.equal(result.body.email_delivery.failed, 1);
   assert.equal(result.body.email_delivery.exhausted, 1);
   assert.equal(result.body.email_delivery.pending, 0);
+  assert.equal(executed.some(call=>/^\s*(?:CREATE|ALTER|DROP)\b/i.test(call.sql)),false,
+    'the complete cron publication and delivery path must not issue request-time DDL');
   assert.equal(executed.some(call=>call.sql.includes('pairing_cycles')),false,
     'an immutable existing publication must not materialize or consume an availability bridge');
 
@@ -2575,6 +2585,7 @@ test('weekly email delivery caps stale outbox retries and exhausts the fifth fai
 });
 
 test('stale email workers cannot overwrite a newer lease or inflate delivery counters', async () => {
+  process.env.APP_URL='https://randori.example.test';
   process.env.CRON_SECRET = 'cron-secret';
   process.env.RESEND_API_KEY = 're_test';
   process.env.RESEND_FROM = 'Randori <verified@example.test>';
@@ -2667,6 +2678,7 @@ test('operation validation rejects unsupported methods and non-admin mutations',
 });
 
 test('owner publication is immutable and the legacy reshuffle URL cannot remix it', async () => {
+  process.env.APP_URL='https://randori.example.test';
   const participants = [
     { id: 1, name: 'Admin', email: 'admin@example.test', color: '#1', is_available: 1, is_demo: 0 },
     { id: 2, name: 'Ada', email: 'ada@example.test', color: '#2', is_available: 1, is_demo: 0 },
@@ -2674,8 +2686,8 @@ test('owner publication is immutable and the legacy reshuffle URL cannot remix i
     { id: 4, name: 'Linus', email: 'linus@example.test', color: '#4', is_available: 1, is_demo: 0 },
   ];
   executeHandler = sql => {
-    if (sql.includes("cm.role='owner'")) return rows([{ id: 1, role: 'owner', circle_id:1 }]);
-    if (sql.includes('SELECT aa.id,aa.display_name AS name') && sql.includes('circle_memberships')) return rows(participants);
+    if (sql.includes("cm.role='owner'")||sql.includes("membership.role='owner'")) return rows([{ id: 1, role: 'owner', circle_id:1 }]);
+    if (sql.includes('SELECT account.id,account.email,account.is_available') && sql.includes('circle_memberships')) return rows(participants);
     return rows();
   };
   const cycle=resolvePairingCycle();
@@ -2697,16 +2709,18 @@ test('owner publication is immutable and the legacy reshuffle URL cannot remix i
   assert.equal(first.body.created, true);
   assert.equal(second.body.created, false);
   assert.equal(first.body.generation, 1);
-  assert.equal(first.body.total_accounts,4);
   assert.equal(first.body.available_count,3);
-  assert.equal(first.body.unavailable_count,1);
-  assert.equal(first.body.pairs.some(pair=>pair.a_id===2||pair.b_id===2),false);
+  assert.equal(first.body.pair_count,2);
+  assert.equal(first.body.solo_count,1);
+  assert.equal('pairs' in first.body,false,'operational responses must not expose member names or identifiers');
   assert.ok(executed.some(call=>call.sql.includes('INSERT INTO pairing_email_outbox')
     &&Number(call.args[0])===2&&call.args[1]==='unavailable'),
   'the dated opt-out receives the unavailable notification instead of a paired outbox row');
   assert.equal(second.body.generation, 1);
-  assert.deepEqual(second.body.pairs,first.body.pairs);
+  assert.equal(second.body.week_id,first.body.week_id);
+  assert.equal(second.body.count,first.body.count);
   assert.doesNotMatch(JSON.stringify(first.body),/@example\.test/);
+  assert.doesNotMatch(JSON.stringify(first.body),/Admin|Ada|Grace|Linus|"a_id"|"b_id"|"room"/);
 
   const claims = executed.filter(call => call.sql.includes('INSERT INTO pairing_week_runs'));
   assert.equal(claims.length,1);
@@ -2719,14 +2733,15 @@ test('owner publication is immutable and the legacy reshuffle URL cannot remix i
 });
 
 test('current-cycle publication fails before its irreversible claim when scoped history cannot be read',async()=>{
+  process.env.APP_URL='https://randori.example.test';
   const participants=[
     {id:1,name:'Admin',email:'admin@example.test',color:'#1',is_available:1,is_demo:0},
     {id:2,name:'Ada',email:'ada@example.test',color:'#2',is_available:1,is_demo:0},
   ];
   executeHandler=sql=>{
-    if(sql.includes("cm.role='owner'")) return rows([{id:1,role:'owner',circle_id:1}]);
-    if(sql.includes('SELECT aa.id,aa.display_name AS name')&&sql.includes('circle_memberships')) return rows(participants);
-    if(sql.includes('FROM pairing_groups pg')&&sql.includes('JOIN pairing_week_runs pwr')&&sql.includes("ppa.source='auth'")) throw new Error('history unavailable');
+    if(sql.includes("cm.role='owner'")||sql.includes("membership.role='owner'")) return rows([{id:1,role:'owner',circle_id:1}]);
+    if(sql.includes('SELECT account.id,account.email,account.is_available')&&sql.includes('circle_memberships')) return rows(participants);
+    if(sql.includes('FROM pairing_groups group_row')&&sql.includes('JOIN pairing_week_runs run')&&sql.includes("participant_a.source='auth'")) throw new Error('history unavailable');
     return rows();
   };
 
@@ -2736,17 +2751,18 @@ test('current-cycle publication fails before its irreversible claim when scoped 
   });
   assert.equal(result.status,503);
   assert.deepEqual(result.body,{error:'pairing unavailable'});
-  const historyQuery=executed.find(call=>call.sql.includes('FROM pairing_groups pg')&&call.sql.includes("ppa.source='auth'"));
+  const historyQuery=executed.find(call=>call.sql.includes('FROM pairing_groups group_row')&&call.sql.includes("participant_a.source='auth'"));
   assert.ok(historyQuery);
-  assert.match(historyQuery.sql,/ppa\.source='auth'/);
-  assert.match(historyQuery.sql,/ppb\.source='auth'/);
+  assert.match(historyQuery.sql,/participant_a\.source='auth'/);
+  assert.match(historyQuery.sql,/participant_b\.source='auth'/);
   assert.equal(executed.some(call=>call.sql.includes('INSERT INTO pairing_week_runs')),false);
 });
 
 test('manual publication revalidates owner authority inside the write transaction',async()=>{
+  process.env.APP_URL='https://randori.example.test';
   let ownerChecks=0;
   executeHandler=sql=>{
-    if(sql.includes("cm.role='owner'")){
+    if(sql.includes("cm.role='owner'")||sql.includes("membership.role='owner'")){
       ownerChecks+=1;
       return rows(ownerChecks===1?[{id:1,role:'owner',circle_id:1}]:[]);
     }
@@ -2765,13 +2781,14 @@ test('manual publication revalidates owner authority inside the write transactio
 });
 
 test('publication retries only vetted pre-commit lock conflicts and never an ambiguous commit',async()=>{
+  process.env.APP_URL='https://randori.example.test';
   const participants=[
     {id:1,name:'Admin',email:'admin@example.test',color:'#1',is_available:1,is_demo:0},
     {id:2,name:'Ada',email:'ada@example.test',color:'#2',is_available:1,is_demo:0},
   ];
   executeHandler=sql=>{
-    if(sql.includes("cm.role='owner'")) return rows([{id:1,role:'owner',circle_id:1}]);
-    if(sql.includes('SELECT aa.id,aa.display_name AS name')&&sql.includes('circle_memberships')) return rows(participants);
+    if(sql.includes("cm.role='owner'")||sql.includes("membership.role='owner'")) return rows([{id:1,role:'owner',circle_id:1}]);
+    if(sql.includes('SELECT account.id,account.email,account.is_available')&&sql.includes('circle_memberships')) return rows(participants);
     return rows();
   };
   const delegate=createMockDb();
@@ -2832,6 +2849,7 @@ test('publication retries only vetted pre-commit lock conflicts and never an amb
 });
 
 test('concurrent handler publications across two file-backed clients converge on one result',async()=>{
+  process.env.APP_URL='https://randori.example.test';
   const directory=mkdtempSync(join(tmpdir(),'randori-handler-pairing-'));
   const databaseUrl=pathToFileURL(join(directory,'pairing.sqlite')).href;
   const setup=createClient({url:databaseUrl});
@@ -2871,7 +2889,8 @@ test('concurrent handler publications across two file-backed clients converge on
     assert.equal(results.filter(result=>result.body.created===true).length,1);
     assert.equal(results.filter(result=>result.body.created===false).length,1);
     assert.equal(results[0].body.week_id,results[1].body.week_id);
-    assert.deepEqual(results[0].body.pairs,results[1].body.pairs);
+    assert.equal(results[0].body.count,results[1].body.count);
+    assert.equal(results[0].body.pair_count,results[1].body.pair_count);
     assert.ok(transactionIndex>=2);
   }finally{
     try{ await setup.close(); }catch{}

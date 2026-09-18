@@ -2,19 +2,33 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { afterEach, test } from 'node:test';
 
 import { createClient } from '@libsql/client';
 
+import { materializeAvailabilityCycle } from '../../api/_availability.js';
 import { resolvePairingCycle } from '../../api/_pairing-cycle.js';
 import {
   getPairingPublication,
   PairingPublicationError,
   publishPairingCycle,
 } from '../../api/_pairing-publication.js';
+import {
+  PAIRING_SCHEMA_V3_FINGERPRINT,
+  pairingSchemaV3Fingerprint,
+  pairingSchemaV3Ready,
+} from '../../api/_pairing-readiness.js';
+import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
+import {
+  applyMigrations,
+  inspectMigrationState,
+  prepareMigrationConnection,
+} from '../../db/migration-runner.js';
 
 const NOW='2026-09-20T07:00:00.000Z';
+const APP_URL='https://randori.example.test';
+const SCOPE=Object.freeze({kind:'circle',scopeKey:'circle:1',circleId:1});
+const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const cleanup=[];
 
 afterEach(async()=>{
@@ -24,36 +38,90 @@ afterEach(async()=>{
   }
 });
 
-function statement(sql,args=[]){ return {sql,args}; }
-
-async function createDatabase(){
+async function createDatabase({migrations=EXECUTABLE_MIGRATIONS}={}){
   const directory=mkdtempSync(join(tmpdir(),'randori-pair-publication-'));
-  const url=pathToFileURL(join(directory,'pairing.sqlite')).href;
+  const url=`file:${join(directory,'pairing.sqlite')}`;
   const db=createClient({url});
-  await db.batch([
-    statement(`CREATE TABLE pairing_weeks (id INTEGER PRIMARY KEY AUTOINCREMENT, week_label TEXT NOT NULL, week_start TEXT NOT NULL, focus TEXT NOT NULL DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')), is_demo INTEGER DEFAULT 0)`),
-    statement(`CREATE UNIQUE INDEX idx_pairing_weeks_week_label ON pairing_weeks(week_label)`),
-    statement(`CREATE TABLE pairing_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL REFERENCES pairing_weeks(id) ON DELETE CASCADE, user_a_id INTEGER NOT NULL, user_b_id INTEGER NOT NULL, user_c_id INTEGER, is_ai_pair INTEGER DEFAULT 0, topic TEXT DEFAULT 'Pick together', topic_kind TEXT DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')))`),
-    statement(`CREATE TABLE pairing_participants (week_id INTEGER NOT NULL, user_id INTEGER NOT NULL, position INTEGER NOT NULL, source TEXT NOT NULL DEFAULT 'auth', created_at TEXT DEFAULT (datetime('now')), PRIMARY KEY (week_id,user_id))`),
-    statement(`CREATE TABLE pairing_week_runs (week_label TEXT PRIMARY KEY, week_id INTEGER, generation_token TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 1, algorithm_version TEXT NOT NULL, algorithm_seed TEXT NOT NULL, participant_count INTEGER NOT NULL, participants_json TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))`),
-    statement(`CREATE TABLE pairing_email_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, user_id INTEGER NOT NULL, kind TEXT NOT NULL, recipient_email TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', attempt_count INTEGER NOT NULL DEFAULT 0, claimed_at TEXT, sent_at TEXT, provider_message_id TEXT, last_error TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')), UNIQUE (week_id,user_id,kind))`),
-  ],'write');
+  await prepareMigrationConnection(db);
+  const initial=await inspectMigrationState(db,{migrations});
+  await applyMigrations(db,{
+    expectedStateFingerprint:initial.stateFingerprint,migrations,retry:NO_RETRY,
+  });
   let closed=false;
   cleanup.push(async()=>{
     if(!closed){ closed=true; await db.close(); }
     rmSync(directory,{recursive:true,force:true});
   });
-  return {db,url,directory,close:async()=>{ if(!closed){ closed=true; await db.close(); } }};
+  return {
+    db,url,
+    close:async()=>{ if(!closed){ closed=true; await db.close(); } },
+    open:async()=>{
+      const client=createClient({url});
+      await prepareMigrationConnection(client);
+      cleanup.push(()=>client.close());
+      return client;
+    },
+  };
 }
 
-function people(count,start=1){
-  return Array.from({length:count},(_,index)=>({
-    id:start+index,
-    name:`Person ${start+index}`,
-    email:`person-${start+index}@private.example`,
-    color:'#123456',
-    source:'auth',
-  }));
+async function seedCircle(db,accounts,{closeRollout=true,createdBy=1}={}){
+  await db.execute({sql:`INSERT INTO circles (id,public_id,slug,name,is_primary,created_by)
+    VALUES (1,'circle_test','test-circle','Test Circle',1,?)`,args:[createdBy]});
+  for(const account of accounts){
+    await db.execute({sql:`INSERT INTO auth_accounts
+        (id,email,password_hash,display_name,color,is_available,is_admin,is_demo)
+      VALUES (?,?,?,?,?,?,?,?)`,args:[
+      account.id,account.email||`person-${account.id}@private.example`,'unused-password-hash',
+      account.name||`Person ${account.id}`,'#123456',account.legacyAvailable??1,
+      account.role==='owner'?1:0,account.demo?1:0,
+    ]});
+    if(account.membership!=='none'){
+      await db.execute({sql:`INSERT INTO circle_memberships
+          (circle_id,user_id,role,status,invited_by)
+        VALUES (1,?,?,?,1)`,args:[account.id,account.role||'member',account.membership||'active']});
+    }
+  }
+  if(closeRollout){
+    const owner=accounts.find(account=>account.role==='owner'
+      &&account.membership!=='none'&&account.membership!=='inactive'&&!account.demo);
+    if(!owner) throw new Error('a closed rollout fixture requires an active non-demo owner');
+    const creator=accounts.find(account=>account.id===createdBy&&!account.demo);
+    if(!creator) throw new Error('a closed rollout fixture requires its non-demo creator');
+    await db.execute(`UPDATE circle_membership_rollout SET registrations_closed=1 WHERE id=1`);
+    for(const account of accounts.filter(item=>!item.demo)){
+      await db.execute({sql:`INSERT INTO circle_audit_events
+          (circle_id,event_type,actor_user_id,subject_user_id,dedupe_key)
+        VALUES (1,'membership.backfilled',?,?,?)`,args:[
+        creator.id,account.id,`membership-backfilled:1:${account.id}`,
+      ]});
+    }
+    await db.execute({sql:`INSERT INTO circle_audit_events
+        (circle_id,event_type,actor_user_id,subject_user_id,dedupe_key)
+      VALUES (1,'membership.backfill.completed',?,NULL,'primary-membership-backfill:1:v1')`,
+    args:[creator.id]});
+  }
+}
+
+async function setAvailability(db,{userId,isAvailable,now=NOW}){
+  const cycle=resolvePairingCycle({now});
+  const record=await materializeAvailabilityCycle(db,{scope:SCOPE,cycle});
+  await db.execute({sql:`INSERT INTO pairing_cycle_availability
+      (scope_key,cycle_key,user_id,is_available,version,decision_source,created_at,updated_at)
+    VALUES (?,?,?,?,1,'user',?,?)`,args:[
+    SCOPE.scopeKey,record.cycleKey,userId,isAvailable?1:0,now,now,
+  ]});
+  return record.cycleKey;
+}
+
+function publicationOptions(overrides={}){
+  return {
+    now:NOW,
+    appUrl:APP_URL,
+    localRuntime:false,
+    callerId:1,
+    authorizedScope:SCOPE,
+    ...overrides,
+  };
 }
 
 async function count(db,table){
@@ -71,199 +139,387 @@ function assertPairCoverage(publication,expectedIds){
   assert.deepEqual(ids.sort((a,b)=>a-b),[...expectedIds].sort((a,b)=>a-b));
 }
 
-test('one, two, three, and odd participant snapshots publish complete non-duplicating pairs',async()=>{
-  const {db}=await createDatabase();
-  const sizes=[1,2,3,5];
-  for(let index=0;index<sizes.length;index+=1){
-    const participants=people(sizes[index],index*10+1);
-    const now=new Date(Date.parse(NOW)+index*7*24*60*60*1000).toISOString();
-    const result=await publishPairingCycle(db,{
-      now,
-      participants,
-      notificationRecipients:participants.map(person=>({id:person.id,email:person.email,kind:'paired'})),
-    });
+test('managed-v3 publication safely covers one, two, three, and odd participant counts',async()=>{
+  for(const size of [1,2,3,5]){
+    const fixture=await createDatabase();
+    await seedCircle(fixture.db,Array.from({length:size},(_,index)=>({
+      id:index+1,role:index===0?'owner':'member',
+    })));
+    const result=await publishPairingCycle(fixture.db,publicationOptions());
     assert.equal(result.created,true);
-    assert.equal(result.publication.participantCount,participants.length);
-    assert.equal(result.publication.participants.length,participants.length);
-    assert.equal(result.publication.pairs.length,Math.ceil(participants.length/2));
-    assertPairCoverage(result.publication,participants.map(person=>person.id));
-    assert.equal(result.publication.pairs.filter(pair=>pair.isAI).length,participants.length%2);
-    assert.equal(Object.isFrozen(result.publication),true);
+    assert.equal(result.publication.participantCount,size);
+    assert.equal(result.publication.participants.length,size);
+    assert.equal(result.publication.pairs.length,Math.ceil(size/2));
+    assert.equal(result.publication.pairs.filter(pair=>pair.isAI).length,size%2);
+    assertPairCoverage(result.publication,Array.from({length:size},(_,index)=>index+1));
+    assert.equal(await count(fixture.db,'pairing_email_outbox'),size);
+    assert.equal(Object.isFrozen(result),true);
     assert.doesNotMatch(JSON.stringify(result),/@private\.example|recipient_email|generationToken/i);
+
+    const snapshot=JSON.parse(String((await fixture.db.execute(
+      `SELECT participants_json FROM pairing_week_runs`,
+    )).rows[0].participants_json));
+    assert.equal(snapshot.length,size);
+    assert.equal(new Set(snapshot.map(item=>item.availability_cycle_key)).size,1);
+    assert.ok(snapshot.every(item=>Number.isSafeInteger(Number(item.availability_version))
+      &&['user','legacy_bridge','cycle_default'].includes(item.availability_source)));
   }
-  assert.equal(await count(db,'pairing_week_runs'),sizes.length);
-  assert.equal(await count(db,'pairing_weeks'),sizes.length);
-  assert.equal(await count(db,'pairing_email_outbox'),sizes.reduce((sum,size)=>sum+size,0));
 });
 
-test('repeated publication is immutable and returns the stored result without touching rows',async()=>{
+test('eligibility is the exact active non-demo primary-circle availability snapshot',async()=>{
   const {db}=await createDatabase();
-  const original=people(3);
-  const first=await publishPairingCycle(db,{
-    now:NOW,
-    participants:original,
-    notificationRecipients:original.map(person=>({id:person.id,email:person.email,kind:'paired'})),
-  });
+  await seedCircle(db,[
+    {id:1,role:'member',membership:'inactive'},
+    {id:2,role:'owner'},
+    {id:3,role:'member'},
+    {id:4,role:'member',membership:'none'},
+    {id:5,role:'member',demo:true},
+  ]);
+  assert.equal(await pairingSchemaV3Ready(db,{requireClosedMembership:true}),true,
+    'historically audited inactive and removed members do not invalidate the completed rollout');
+  const auditSubjects=await db.execute(`SELECT subject_user_id FROM circle_audit_events
+    WHERE event_type='membership.backfilled' ORDER BY subject_user_id`);
+  assert.deepEqual(auditSubjects.rows.map(row=>Number(row.subject_user_id)),[1,2,3,4]);
+  const cycleKey=await setAvailability(db,{userId:3,isAvailable:false});
+
+  const result=await publishPairingCycle(db,publicationOptions({callerId:2}));
+  assert.equal(result.publication.participantCount,1);
+  assert.deepEqual(result.publication.participants.map(item=>item.userId),[2]);
+  assertPairCoverage(result.publication,[2]);
+  const outbox=await db.execute(`SELECT user_id,kind,recipient_email
+    FROM pairing_email_outbox ORDER BY user_id`);
+  assert.deepEqual(outbox.rows.map(row=>[Number(row.user_id),row.kind]),[
+    [2,'paired'],[3,'unavailable'],
+  ]);
+  assert.ok(outbox.rows.every(row=>!String(row.recipient_email).includes('person-1')
+    &&!String(row.recipient_email).includes('person-4')
+    &&!String(row.recipient_email).includes('person-5')));
+  const snapshot=JSON.parse(String((await db.execute(
+    `SELECT participants_json FROM pairing_week_runs`,
+  )).rows[0].participants_json));
+  assert.equal(snapshot[0].availability_cycle_key,cycleKey);
+});
+
+test('owner and cron paths share an immutable no-op publication with no duplicate outbox',async()=>{
+  const {db}=await createDatabase();
+  await seedCircle(db,[{id:1,role:'owner'},{id:2,role:'member'},{id:3,role:'member'}]);
+  const first=await publishPairingCycle(db,publicationOptions());
   const before=(await db.execute(`SELECT generation_token,updated_at FROM pairing_week_runs`)).rows[0];
+  await setAvailability(db,{userId:2,isAvailable:false});
 
-  const second=await publishPairingCycle(db,{
-    now:'2026-09-25T12:00:00.000Z',
-    participants:people(1,90),
-    notificationRecipients:[{id:90,email:'replacement@private.example',kind:'paired'}],
-  });
+  const second=await publishPairingCycle(db,publicationOptions({callerId:null,authorizedScope:null}));
   const after=(await db.execute(`SELECT generation_token,updated_at FROM pairing_week_runs`)).rows[0];
-
   assert.equal(first.created,true);
   assert.equal(second.created,false);
   assert.deepEqual(second.publication,first.publication);
   assert.deepEqual(after,before);
+  assert.equal(await count(db,'pairing_week_runs'),1);
   assert.equal(await count(db,'pairing_weeks'),1);
   assert.equal(await count(db,'pairing_groups'),2);
   assert.equal(await count(db,'pairing_participants'),3);
   assert.equal(await count(db,'pairing_email_outbox'),3);
 });
 
-test('concurrent clients converge on one complete immutable publication',async()=>{
+test('concurrent owner and cron clients converge on one complete publication',async()=>{
   const fixture=await createDatabase();
-  await fixture.close();
-  const firstDb=createClient({url:fixture.url});
-  const secondDb=createClient({url:fixture.url});
-  cleanup.push(()=>firstDb.close(),()=>secondDb.close());
-  const firstPeople=people(4,1);
-  const secondPeople=people(3,20);
-
-  const [first,second]=await Promise.all([
-    publishPairingCycle(firstDb,{now:NOW,participants:firstPeople}),
-    publishPairingCycle(secondDb,{now:NOW,participants:secondPeople}),
+  await seedCircle(fixture.db,[
+    {id:1,role:'owner'},{id:2,role:'member'},{id:3,role:'member'},{id:4,role:'member'},
   ]);
+  await fixture.close();
+  const ownerDb=await fixture.open();
+  const cronDb=await fixture.open();
 
-  assert.equal(Number(first.created)+Number(second.created),1);
-  assert.deepEqual(first.publication,second.publication);
-  assert.ok([3,4].includes(first.publication.participantCount));
-  assertPairCoverage(first.publication,first.publication.participants.map(item=>item.userId));
-  assert.equal(await count(firstDb,'pairing_week_runs'),1);
-  assert.equal(await count(firstDb,'pairing_weeks'),1);
-  assert.equal(await count(firstDb,'pairing_participants'),first.publication.participantCount);
-  assert.equal(await count(firstDb,'pairing_groups'),Math.ceil(first.publication.participantCount/2));
+  const [owner,cron]=await Promise.all([
+    publishPairingCycle(ownerDb,publicationOptions()),
+    publishPairingCycle(cronDb,publicationOptions({callerId:null,authorizedScope:null})),
+  ]);
+  assert.equal(Number(owner.created)+Number(cron.created),1);
+  assert.deepEqual(owner.publication,cron.publication);
+  assertPairCoverage(owner.publication,[1,2,3,4]);
+  assert.equal(await count(ownerDb,'pairing_week_runs'),1);
+  assert.equal(await count(ownerDb,'pairing_weeks'),1);
+  assert.equal(await count(ownerDb,'pairing_participants'),4);
+  assert.equal(await count(ownerDb,'pairing_groups'),2);
+  assert.equal(await count(ownerDb,'pairing_email_outbox'),4);
 });
 
-test('a transaction failure rolls back the claim, week, participants, groups, and outbox',async()=>{
-  const {db}=await createDatabase();
-  // Fail on the second outbox row so every earlier publication write,
-  // including the first outbox row, must be rolled back together.
-  await db.execute(`CREATE TRIGGER reject_second_outbox BEFORE INSERT ON pairing_email_outbox WHEN NEW.user_id=2 BEGIN SELECT RAISE(ABORT,'forced pairing failure'); END`);
-  const participants=people(2);
-
-  await assert.rejects(
-    publishPairingCycle(db,{
-      now:NOW,
-      participants,
-      notificationRecipients:participants.map(person=>({id:person.id,email:person.email,kind:'paired'})),
-    }),
-    error=>error instanceof PairingPublicationError
-      &&error.code==='PAIRING_PUBLICATION_FAILED'
-      &&error.message==='Pairing publication could not be committed.'
-      &&!JSON.stringify(error).includes('@private.example'),
-  );
-  for(const table of ['pairing_week_runs','pairing_weeks','pairing_participants','pairing_groups','pairing_email_outbox']){
-    assert.equal(await count(db,table),0,table);
-  }
-});
-
-test('legacy weeks and incomplete run claims fail closed without appending or replacing rows',async()=>{
-  const {db}=await createDatabase();
-  const cycle=resolvePairingCycle({now:NOW});
-  await db.execute({
-    sql:`INSERT INTO pairing_weeks (week_label,week_start,focus,is_demo) VALUES (?,?,'both',0)`,
-    args:[cycle.cycleId,cycle.startsAt],
-  });
-  const weekId=Number((await db.execute(`SELECT id FROM pairing_weeks`)).rows[0].id);
-  await db.execute({
-    sql:`INSERT INTO pairing_groups (week_id,user_a_id,user_b_id,is_ai_pair) VALUES (?,?,?,0)`,
-    args:[weekId,70,71],
-  });
-
-  await assert.rejects(
-    publishPairingCycle(db,{now:NOW,participants:people(2)}),
-    error=>error?.code==='PAIRING_PUBLICATION_LEGACY_CONFLICT',
-  );
-  assert.equal(await count(db,'pairing_week_runs'),0);
-  assert.equal(await count(db,'pairing_weeks'),1);
-  assert.equal(await count(db,'pairing_groups'),1);
-
-  await db.execute({sql:`DELETE FROM pairing_groups WHERE week_id=?`,args:[weekId]});
-  await db.execute({sql:`DELETE FROM pairing_weeks WHERE id=?`,args:[weekId]});
-  await db.execute({
-    sql:`INSERT INTO pairing_weeks (week_label,week_start,focus,is_demo) VALUES (?,?,'both',0)`,
-    args:[cycle.cycleId,cycle.startsAt],
-  });
-  const incompleteWeekId=Number((await db.execute(`SELECT id FROM pairing_weeks`)).rows[0].id);
-  await db.execute({
-    sql:`INSERT INTO pairing_week_runs (week_label,week_id,generation_token,generation,algorithm_version,algorithm_seed,participant_count,participants_json) VALUES (?,?,'orphan-token',1,'fair-seeded-v1','seed',2,'[{"user_id":1,"source":"auth"},{"user_id":2,"source":"auth"}]')`,
-    args:[cycle.cycleId,incompleteWeekId],
-  });
-  await assert.rejects(
-    publishPairingCycle(db,{now:NOW,participants:people(2)}),
-    error=>error?.code==='PAIRING_PUBLICATION_INTEGRITY',
-  );
-  assert.equal(await count(db,'pairing_weeks'),1);
-  assert.equal(await count(db,'pairing_groups'),0);
-});
-
-test('a stored week must match the exact London cycle boundary',async()=>{
-  const {db}=await createDatabase();
-  await publishPairingCycle(db,{now:NOW,participants:people(2)});
-  await db.execute(`UPDATE pairing_weeks SET week_start='2026-09-20T08:00:00.000Z'`);
-
-  for(const operation of [
-    ()=>getPairingPublication(db,{now:NOW}),
-    ()=>publishPairingCycle(db,{now:NOW,participants:people(2)}),
-  ]){
-    await assert.rejects(operation,error=>error?.code==='PAIRING_PUBLICATION_INTEGRITY');
-  }
-  assert.equal(await count(db,'pairing_week_runs'),1);
-  assert.equal(await count(db,'pairing_weeks'),1);
-});
-
-test('reads are current-cycle scoped and malformed inputs fail before publication',async()=>{
-  const {db}=await createDatabase();
-  assert.equal(await getPairingPublication(db,{now:NOW}),null);
-  const input=people(2);
-  const inputBefore=structuredClone(input);
-  await publishPairingCycle(db,{now:NOW,participants:input});
-  assert.deepEqual(input,inputBefore,'the supplied eligibility snapshot must not be mutated');
-  assert.equal((await getPairingPublication(db,{now:'2026-09-27T07:00:00.000Z'})),null);
-
-  for(const options of [
-    {now:'2026-09-27T07:00:00.000Z',participants:[]},
-    {now:'2026-09-27T07:00:00.000Z',participants:[...people(1),...people(1)]},
-    {now:'2026-09-27T07:00:00.000Z',participants:[{id:1,source:'untrusted'}]},
-    {now:'2026-09-27T07:00:00.000Z',participants:people(1),notificationRecipients:[{id:99,email:'wrong@example.test',kind:'paired'}]},
-    {now:'2026-09-27T07:00:00.000Z',participants:people(1),notificationRecipients:[{id:1,email:'wrong@example.test',kind:'unavailable'}]},
-    {now:'2026-09-27T07:00:00.000Z',state:'upcoming',participants:people(1)},
-    {now:'not-an-instant',participants:people(1)},
-  ]){
-    await assert.rejects(
-      publishPairingCycle(db,options),
-      error=>error instanceof PairingPublicationError,
-    );
-  }
-  assert.equal(await count(db,'pairing_week_runs'),1);
-});
-
-test('write batches contain only a token-guarded immutable create path',async()=>{
+test('a mid-write failure rolls back cycle, claim, participants, groups, and outbox',async()=>{
   const fixture=await createDatabase();
-  const writeBatches=[];
-  const db={
-    batch(statements,mode){
-      if(mode==='write') writeBatches.push(statements);
-      return fixture.db.batch(statements,mode);
+  await seedCircle(fixture.db,[{id:1,role:'owner'},{id:2,role:'member'}]);
+  const wrapped={
+    execute:fixture.db.execute.bind(fixture.db),
+    batch:fixture.db.batch.bind(fixture.db),
+    async transaction(mode){
+      const transaction=await fixture.db.transaction(mode);
+      return {
+        execute:transaction.execute.bind(transaction),
+        async batch(statements,batchMode){
+          if(batchMode!=='write') return transaction.batch(statements,batchMode);
+          for(const statement of statements.slice(0,5)) await transaction.execute(statement);
+          throw new Error('forced publication write failure');
+        },
+        commit:transaction.commit.bind(transaction),
+        rollback:transaction.rollback.bind(transaction),
+        close:transaction.close?.bind(transaction),
+      };
     },
   };
-  await publishPairingCycle(db,{now:NOW,participants:people(2)});
-  assert.equal(writeBatches.length,1);
-  const sql=writeBatches[0].map(item=>item.sql).join('\n');
+
+  await assert.rejects(
+    publishPairingCycle(wrapped,publicationOptions()),
+    error=>error instanceof PairingPublicationError
+      &&error.code==='PAIRING_PUBLICATION_FAILED'
+      &&!JSON.stringify(error).includes('@private.example'),
+  );
+  for(const table of [
+    'pairing_cycles','pairing_week_runs','pairing_weeks','pairing_participants',
+    'pairing_groups','pairing_email_outbox',
+  ]) assert.equal(await count(fixture.db,table),0,table);
+});
+
+test('managed schema v3 and an explicit safe app URL are required before mutation',async()=>{
+  const stale=await createDatabase({migrations:EXECUTABLE_MIGRATIONS.slice(0,2)});
+  await assert.rejects(
+    publishPairingCycle(stale.db,publicationOptions()),
+    error=>error instanceof PairingPublicationError
+      &&error.code==='PAIRING_PUBLICATION_SCHEMA_UNAVAILABLE',
+  );
+  assert.equal(await count(stale.db,'pairing_week_runs'),0);
+
+  const current=await createDatabase();
+  let transactionCount=0;
+  const wrapped={
+    execute:current.db.execute.bind(current.db),
+    batch:current.db.batch.bind(current.db),
+    async transaction(mode){ transactionCount+=1; return current.db.transaction(mode); },
+  };
+  for(const appUrl of [undefined,'http://randori.example.test','https://user:pass@randori.example.test','https://randori.example.test/path']){
+    await assert.rejects(
+      publishPairingCycle(wrapped,publicationOptions({appUrl})),
+      error=>error instanceof PairingPublicationError
+        &&error.code==='PAIRING_PUBLICATION_CONFIG_INVALID',
+    );
+  }
+  assert.equal(transactionCount,0);
+});
+
+test('production publication requires a complete closed membership rollout',async()=>{
+  const open=await createDatabase();
+  assert.equal(await pairingSchemaV3Ready(open.db,{requireClosedMembership:true}),false);
+  await assert.rejects(
+    publishPairingCycle(open.db,publicationOptions()),
+    error=>error instanceof PairingPublicationError
+      &&error.code==='PAIRING_PUBLICATION_SCHEMA_UNAVAILABLE',
+  );
+
+  const partial=await createDatabase();
+  await seedCircle(partial.db,[
+    {id:1,role:'owner'},
+    {id:2,role:'member',membership:'inactive'},
+    {id:3,role:'member',membership:'none'},
+  ],{closeRollout:false});
+  assert.equal(await pairingSchemaV3Ready(partial.db,{requireClosedMembership:true}),false);
+  await assert.rejects(
+    publishPairingCycle(partial.db,publicationOptions()),
+    error=>error instanceof PairingPublicationError
+      &&error.code==='PAIRING_PUBLICATION_SCHEMA_UNAVAILABLE',
+  );
+  assert.equal(await count(partial.db,'pairing_week_runs'),0);
+  assert.equal(await count(partial.db,'pairing_cycles'),0);
+
+  const closedInvalid=await createDatabase();
+  await seedCircle(closedInvalid.db,[{id:1,role:'owner'},{id:2,role:'member'}],{
+    closeRollout:false,
+  });
+  await closedInvalid.db.execute(
+    `UPDATE circle_membership_rollout SET registrations_closed=1 WHERE id=1`,
+  );
+  await closedInvalid.db.execute(`INSERT INTO circle_audit_events
+      (circle_id,event_type,actor_user_id,subject_user_id,dedupe_key)
+    VALUES (1,'membership.backfill.completed',1,NULL,'primary-membership-backfill:1:v1')`);
+  assert.equal(await pairingSchemaV3Ready(closedInvalid.db,{requireClosedMembership:true}),false);
+  await assert.rejects(
+    publishPairingCycle(closedInvalid.db,publicationOptions()),
+    error=>error instanceof PairingPublicationError
+      &&error.code==='PAIRING_PUBLICATION_SCHEMA_UNAVAILABLE',
+  );
+  assert.equal(await count(closedInvalid.db,'pairing_week_runs'),0);
+
+  const closedValid=await createDatabase();
+  await seedCircle(closedValid.db,[{id:1,role:'owner'},{id:2,role:'member'}]);
+  assert.equal(await pairingSchemaV3Ready(closedValid.db,{requireClosedMembership:true}),true);
+  await closedValid.db.execute(`UPDATE circle_audit_events SET actor_user_id=999
+    WHERE event_type='membership.backfill.completed'`);
+  assert.equal(await pairingSchemaV3Ready(closedValid.db,{requireClosedMembership:true}),false,
+    'a nonexistent completion actor is rejected');
+  await closedValid.db.execute(`UPDATE circle_audit_events SET actor_user_id=2
+    WHERE event_type='membership.backfill.completed'`);
+  assert.equal(await pairingSchemaV3Ready(closedValid.db,{requireClosedMembership:true}),false,
+    'a completion actor different from the primary-circle creator is rejected');
+  await closedValid.db.execute(`UPDATE circle_audit_events SET actor_user_id=1
+    WHERE event_type='membership.backfill.completed'`);
+  await closedValid.db.execute(`UPDATE circle_audit_events SET actor_user_id=999
+    WHERE event_type='membership.backfilled' AND subject_user_id=2`);
+  assert.equal(await pairingSchemaV3Ready(closedValid.db,{requireClosedMembership:true}),false,
+    'a nonexistent backfill actor is rejected');
+  await closedValid.db.execute(`UPDATE circle_audit_events SET actor_user_id=2
+    WHERE event_type='membership.backfilled' AND subject_user_id=2`);
+  assert.equal(await pairingSchemaV3Ready(closedValid.db,{requireClosedMembership:true}),false,
+    'backfill actors must match the completion actor and primary-circle creator');
+  await closedValid.db.execute(`UPDATE circle_audit_events SET actor_user_id=1
+    WHERE event_type='membership.backfilled' AND subject_user_id=2`);
+  assert.equal(await pairingSchemaV3Ready(closedValid.db,{requireClosedMembership:true}),true);
+  const published=await publishPairingCycle(closedValid.db,publicationOptions());
+  assert.equal(published.created,true);
+  assert.equal(published.publication.participantCount,2);
+});
+
+test('readiness pins the complete managed-v3 structure, ledger, and connection guards',async()=>{
+  const {db}=await createDatabase();
+  assert.equal(await pairingSchemaV3Fingerprint(db),PAIRING_SCHEMA_V3_FINGERPRINT);
+  assert.equal(await pairingSchemaV3Ready(db),true);
+
+  await db.execute(`UPDATE schema_migrations SET checksum='${'0'.repeat(64)}' WHERE version=3`);
+  assert.equal(await pairingSchemaV3Ready(db),false,'a changed immutable ledger row is stale');
+  await db.execute({
+    sql:`UPDATE schema_migrations SET checksum=? WHERE version=3`,
+    args:[EXECUTABLE_MIGRATIONS[2].checksum],
+  });
+  assert.equal(await pairingSchemaV3Ready(db),true);
+
+  const futureVersion=Math.max(...EXECUTABLE_MIGRATIONS.map(migration=>migration.version))+1;
+  await db.execute({sql:`INSERT INTO schema_migrations
+      (version,name,checksum,execution_ms,disposition) VALUES (?,'future-migration',?,0,'applied')`,
+    args:[futureVersion,'f'.repeat(64)]});
+  assert.equal(await pairingSchemaV3Ready(db),false,'a future ledger version is rejected');
+  await db.execute({sql:`DELETE FROM schema_migrations WHERE version=?`,args:[futureVersion]});
+  assert.equal(await pairingSchemaV3Ready(db),true);
+
+  await db.execute(`CREATE TABLE future_auth_metadata (
+    id INTEGER PRIMARY KEY,
+    account_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+  )`);
+  await db.execute(`CREATE INDEX idx_future_auth_metadata_account
+    ON future_auth_metadata(account_id)`);
+  await db.execute(`CREATE INDEX idx_future_auth_email_lookup ON auth_accounts(email)`);
+  assert.equal(await pairingSchemaV3Fingerprint(db),PAIRING_SCHEMA_V3_FINGERPRINT,
+    'additive future tables and indexes do not invalidate the managed-v3 projection');
+  assert.equal(await pairingSchemaV3Ready(db),true,
+    'pairing remains ready after unrelated additive schema changes');
+
+  await db.execute(`CREATE UNIQUE INDEX unexpected_user_once
+    ON pairing_participants(user_id)`);
+  assert.equal(await pairingSchemaV3Ready(db),false,
+    'an unknown unique index that can reject future publications is schema drift');
+  await db.execute(`DROP INDEX unexpected_user_once`);
+  assert.equal(await pairingSchemaV3Ready(db),true);
+
+  await db.execute(`CREATE TRIGGER unexpected_pairing_trigger AFTER INSERT ON pairing_weeks
+    BEGIN SELECT 1; END`);
+  assert.equal(await pairingSchemaV3Ready(db),false,'unexpected mutation hooks are schema drift');
+  await db.execute(`DROP TRIGGER unexpected_pairing_trigger`);
+  assert.equal(await pairingSchemaV3Ready(db),true);
+
+  const membershipSql=String((await db.execute(`SELECT sql FROM sqlite_schema
+    WHERE type='table' AND name='circle_memberships'`)).rows[0].sql);
+  const weakenedSql=membershipSql.replace(
+    "CHECK(role IN ('owner','member'))",
+    "CHECK(role IN ('owner','member','admin'))",
+  );
+  assert.notEqual(weakenedSql,membershipSql);
+  await db.execute('PRAGMA writable_schema=ON');
+  await db.execute({sql:`UPDATE sqlite_schema SET sql=? WHERE type='table' AND name='circle_memberships'`,args:[weakenedSql]});
+  await db.execute('PRAGMA writable_schema=OFF');
+  assert.equal(await pairingSchemaV3Ready(db),false,'changed CHECK SQL is schema drift');
+  await db.execute('PRAGMA writable_schema=ON');
+  await db.execute({sql:`UPDATE sqlite_schema SET sql=? WHERE type='table' AND name='circle_memberships'`,args:[membershipSql]});
+  await db.execute('PRAGMA writable_schema=OFF');
+  assert.equal(await pairingSchemaV3Ready(db),true);
+
+  await db.execute('PRAGMA foreign_keys=OFF');
+  assert.equal(await pairingSchemaV3Ready(db),false);
+});
+
+test('an ordinary member is denied and owner authorization is rechecked in the transaction',async()=>{
+  const {db}=await createDatabase();
+  await seedCircle(db,[{id:1,role:'owner'},{id:2,role:'member'}]);
+  await assert.rejects(
+    publishPairingCycle(db,publicationOptions({callerId:2})),
+    error=>error instanceof PairingPublicationError&&error.code==='PAIRING_PUBLISHER_REVOKED',
+  );
+  await assert.rejects(
+    publishPairingCycle(db,publicationOptions({
+      authorizedScope:{kind:'circle',scopeKey:'circle:99',circleId:99},
+    })),
+    error=>error instanceof PairingPublicationError&&error.code==='PAIRING_PUBLISHER_REVOKED',
+  );
+  assert.equal(await count(db,'pairing_week_runs'),0);
+});
+
+test('publication uses exact Sunday, DST, and ISO-year cycle boundaries',async()=>{
+  const cases=[
+    ['2026-03-29T06:59:59.999Z','2026-W13','2026-03-22T08:00:00.000Z'],
+    ['2026-03-29T07:00:00.000Z','2026-W14','2026-03-29T07:00:00.000Z'],
+    ['2026-10-25T08:00:00.000Z','2026-W44','2026-10-25T08:00:00.000Z'],
+    ['2027-01-03T08:00:00.000Z','2027-W01','2027-01-03T08:00:00.000Z'],
+  ];
+  for(const [now,cycleId,startsAt] of cases){
+    const {db}=await createDatabase();
+    await seedCircle(db,[{id:1,role:'owner'}]);
+    const result=await publishPairingCycle(db,publicationOptions({now}));
+    assert.equal(result.publication.cycle.cycleId,cycleId);
+    assert.equal(result.publication.cycle.startsAt,startsAt);
+    const stored=await getPairingPublication(db,{now});
+    assert.deepEqual(stored,result.publication);
+  }
+});
+
+test('verified loopback transport does not weaken circle publication scope or readiness',async()=>{
+  const {db}=await createDatabase();
+  await seedCircle(db,[{id:1,role:'owner'},{id:2,role:'member'}]);
+  await assert.rejects(
+    publishPairingCycle(db,publicationOptions({appUrl:'http://127.0.0.1:3000'})),
+    error=>error instanceof PairingPublicationError
+      &&error.code==='PAIRING_PUBLICATION_CONFIG_INVALID',
+  );
+  const result=await publishPairingCycle(db,publicationOptions({
+    appUrl:'http://127.0.0.1:3000',allowLocalAppUrl:true,
+  }));
+  assert.equal(result.created,true);
+  assert.equal(result.appUrl,'http://127.0.0.1:3000');
+  assert.equal(result.publication.participantCount,2);
+  assert.deepEqual(result.publication.participants.map(row=>row.userId),[1,2]);
+});
+
+test('the production write path contains no destructive remix or request-time DDL',async()=>{
+  const fixture=await createDatabase();
+  await seedCircle(fixture.db,[{id:1,role:'owner'},{id:2,role:'member'}]);
+  const statements=[];
+  const wrapped={
+    execute:fixture.db.execute.bind(fixture.db),
+    batch:fixture.db.batch.bind(fixture.db),
+    async transaction(mode){
+      const transaction=await fixture.db.transaction(mode);
+      return {
+        async execute(statement){
+          statements.push(typeof statement==='string'?statement:String(statement.sql||''));
+          return transaction.execute(statement);
+        },
+        async batch(batchStatements,batchMode){
+          statements.push(...batchStatements.map(statement=>typeof statement==='string'?statement:String(statement.sql||'')));
+          return transaction.batch(batchStatements,batchMode);
+        },
+        commit:transaction.commit.bind(transaction),
+        rollback:transaction.rollback.bind(transaction),
+        close:transaction.close?.bind(transaction),
+      };
+    },
+  };
+  await publishPairingCycle(wrapped,publicationOptions());
+  const sql=statements.join('\n');
   assert.doesNotMatch(sql,/\bDELETE\b|ON\s+CONFLICT[^\n]*DO\s+UPDATE/i);
+  assert.doesNotMatch(sql,/^\s*(?:CREATE|ALTER|DROP)\b/im);
   assert.match(sql,/generation_token=\?/);
-  assert.match(sql,/WHERE NOT EXISTS \(SELECT 1 FROM pairing_weeks/);
+  assert.match(sql,/pairing_cycle_availability/);
 });

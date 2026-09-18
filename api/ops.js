@@ -2,49 +2,21 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { getClient, getCronSecret, getAdminEmails, isoWeekLabel, deterministicColor, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 import {
   AVAILABILITY_CACHE_CONTROL,
-  applyCycleAvailability,
   availabilityFailure,
   availabilityResponse,
   getAvailabilityState,
-  resolveAvailabilityPublicationScope,
   updateAvailability,
 } from './_availability.js';
 import { buildFairPairing, canonicalRoomId, escapeHtml } from './_pairing.js';
 import { pairingCronIsDue, resolvePairingCycle } from './_pairing-cycle.js';
-import { getPairingPublication, publishPairingCycle } from './_pairing-publication.js';
-import { localIdentityAdapterEnabled } from './_local-runtime.js';
+import { publishPairingCycle } from './_pairing-publication.js';
+import { localIdentityAdapterEnabled, localRuntimeRequest } from './_local-runtime.js';
 
 const MAX_EMAIL_ATTEMPTS=5;
-const PAIRING_TRANSACTION_ATTEMPTS=4;
-
-function pairingRetryDelay(attempt){
-  return new Promise(resolve=>setTimeout(resolve,Math.min(200,25*(2**(attempt-1)))));
-}
-
-function isRetryablePairingConflict(error){
-  let current=error;
-  for(let depth=0;current&&depth<5;depth+=1){
-    const codes=[current.code,current.rawCode].filter(Boolean).map(value=>String(value).toUpperCase());
-    if(codes.some(code=>[
-      'SQLITE_BUSY','SQLITE_BUSY_SNAPSHOT','SQLITE_LOCKED','SQLITE_LOCKED_SHAREDCACHE',
-      'TRANSACTION_CONFLICT','LIBSQL_TRANSACTION_BUSY',
-    ].includes(code))) return true;
-    const message=String(current.message||'').trim();
-    if(/^(?:SQLITE_(?:BUSY|LOCKED)(?::|\s+-)\s*)?database (?:table )?is locked$/i.test(message)
-      ||/^database is busy$/i.test(message)) return true;
-    current=current.cause;
-  }
-  return false;
-}
 
 async function logServerOps(level, event, message, meta, req){
   try{
     const db = getClient();
-    if(localIdentityAdapterEnabled(req)){
-      await db.execute(`SELECT id,level,source,event,message,meta_json,user_id,route,ua,ip,created_at FROM app_logs LIMIT 0`);
-    }else{
-      try{ await db.execute("CREATE TABLE IF NOT EXISTS app_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, level TEXT, source TEXT, event TEXT, message TEXT, meta_json TEXT, user_id INTEGER, route TEXT, ua TEXT, ip TEXT, created_at TEXT DEFAULT (datetime('now')))"); }catch{}
-    }
     let metaStr=null; try{ metaStr = meta ? JSON.stringify(meta).slice(0,8000) : null; }catch{ metaStr=String(meta).slice(0,2000); }
     const lvl=String(level||"info").toLowerCase();
     const ev=String(event).slice(0,80);
@@ -203,7 +175,7 @@ async function requirePairingPublisher(req,res){
   const scope=localRuntime
     ?{kind:'local',scopeKey:'local',circleId:null}
     :{kind:'circle',scopeKey:`circle:${Number(row.circle_id)}`,circleId:Number(row.circle_id)};
-  return {db,callerId,localRuntime,scope};
+  return {db,callerId,localRuntime,localRequest:localRuntimeRequest(req),scope};
 }
 
 async function ensureMigrations(db){
@@ -267,26 +239,16 @@ function pairingMetadata(pairing){
 }
 
 /** Persist the week, participant snapshot, and every pair in one write transaction. */
-async function persistPairingWeek(db, {weekLabel, weekStart, participants, pairing, isDemoWeek=0, replace=false, notificationRecipients=[], generation=1, expectedGeneration=null}){
+async function persistPairingWeek(db, {weekLabel, weekStart, participants, pairing, isDemoWeek=0, notificationRecipients=[], generation=1}){
   const generationToken=randomUUID();
   const participantSnapshot=JSON.stringify(participants.map(p=>({user_id:Number(p.id),source:p.source||'auth'})));
   const runArgs=[weekLabel,generationToken,generation,pairing.algorithmVersion,pairing.seed,participants.length,participantSnapshot];
   const statements=[];
 
-  if(replace){
-    statements.push({sql:`INSERT INTO pairing_week_runs (week_label,generation_token,generation,algorithm_version,algorithm_seed,participant_count,participants_json,updated_at) VALUES (?,?,?,?,?,?,?,datetime('now')) ON CONFLICT(week_label) DO UPDATE SET generation_token=excluded.generation_token,generation=excluded.generation,algorithm_version=excluded.algorithm_version,algorithm_seed=excluded.algorithm_seed,participant_count=excluded.participant_count,participants_json=excluded.participants_json,updated_at=datetime('now') WHERE pairing_week_runs.generation=?`,args:[...runArgs,expectedGeneration]});
-  }else{
-    statements.push({sql:`INSERT INTO pairing_week_runs (week_label,generation_token,generation,algorithm_version,algorithm_seed,participant_count,participants_json) VALUES (?,?,?,?,?,?,?) ON CONFLICT(week_label) DO NOTHING`,args:runArgs});
-  }
+  statements.push({sql:`INSERT INTO pairing_week_runs (week_label,generation_token,generation,algorithm_version,algorithm_seed,participant_count,participants_json) VALUES (?,?,?,?,?,?,?) ON CONFLICT(week_label) DO NOTHING`,args:runArgs});
 
   statements.push({sql:`INSERT INTO pairing_weeks (week_label,week_start,focus,is_demo) SELECT ?,?,'both',? WHERE EXISTS (SELECT 1 FROM pairing_week_runs WHERE week_label=? AND generation_token=?) AND NOT EXISTS (SELECT 1 FROM pairing_weeks WHERE week_label=?)`,args:[weekLabel,weekStart,isDemoWeek,weekLabel,generationToken,weekLabel]});
   statements.push({sql:`UPDATE pairing_week_runs SET week_id=(SELECT MIN(id) FROM pairing_weeks WHERE week_label=?),updated_at=datetime('now') WHERE week_label=? AND generation_token=?`,args:[weekLabel,weekLabel,generationToken]});
-
-  if(replace){
-    statements.push({sql:`UPDATE pairing_weeks SET week_start=?,is_demo=? WHERE id=(SELECT week_id FROM pairing_week_runs WHERE week_label=? AND generation_token=?)`,args:[weekStart,isDemoWeek,weekLabel,generationToken]});
-    statements.push({sql:`DELETE FROM pairing_groups WHERE week_id=(SELECT week_id FROM pairing_week_runs WHERE week_label=? AND generation_token=?)`,args:[weekLabel,generationToken]});
-    statements.push({sql:`DELETE FROM pairing_participants WHERE week_id=(SELECT week_id FROM pairing_week_runs WHERE week_label=? AND generation_token=?)`,args:[weekLabel,generationToken]});
-  }
 
   participants.forEach((participant,index)=>{
     statements.push({sql:`INSERT INTO pairing_participants (week_id,user_id,position,source) SELECT week_id,?,?,? FROM pairing_week_runs WHERE week_label=? AND generation_token=?`,args:[Number(participant.id),index,participant.source||'auth',weekLabel,generationToken]});
@@ -532,57 +494,9 @@ function safeEmailDelivery(value){
   return result;
 }
 
-async function pairingAccounts(db,{scope}){
-  const result=await db.execute(scope.kind==='local'
-    ? `SELECT id,display_name AS name,email,color,is_available
-       FROM auth_accounts
-       WHERE COALESCE(is_demo,0)=0
-       ORDER BY id`
-    :{
-      sql:`SELECT aa.id,aa.display_name AS name,aa.email,aa.color,aa.is_available
-        FROM auth_accounts aa
-        JOIN circle_memberships cm ON cm.user_id=aa.id AND cm.circle_id=?
-        JOIN circles c ON c.id=cm.circle_id
-        WHERE COALESCE(aa.is_demo,0)=0 AND cm.status='active'
-          AND c.is_primary=1 AND c.archived_at IS NULL
-        ORDER BY aa.id`,
-      args:[scope.circleId],
-    });
-  return (result.rows||[]).map(row=>({
-    id:Number(row.id),
-    name:String(row.name||`Member ${row.id}`).slice(0,80),
-    color:String(row.color||'#9aa0a6').slice(0,32),
-    email:String(row.email||'').trim().slice(0,320),
-    is_available:row.is_available,
-  })).filter(account=>Number.isSafeInteger(account.id)&&account.id>0);
-}
-
-async function pairingCandidates(db,{scope,cycle}){
-  const accounts=await applyCycleAvailability(db,{
-    scope,cycle,accounts:await pairingAccounts(db,{scope}),
-  });
-  const participants=accounts.filter(account=>account.isAvailable).map(account=>({
-    id:account.id,name:account.name,color:account.color,source:'auth',
-  }));
-  const notificationRecipients=[
-    ...accounts.filter(account=>account.isAvailable&&account.email).map(account=>({id:account.id,email:account.email,kind:'paired'})),
-    ...accounts.filter(account=>!account.isAvailable&&account.email).map(account=>({id:account.id,email:account.email,kind:'unavailable'})),
-  ];
-  return {accounts,participants,notificationRecipients};
-}
-
-async function pairingDatabaseNow(db){
-  const result=await db.execute(`SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc`);
-  const value=result.rows?.[0]?.now_utc;
-  const instant=new Date(value);
-  if(!value||!Number.isFinite(instant.getTime())) throw new Error('database time unavailable');
-  return instant;
-}
-
-function pairingPublicationPayload(result,accounts,emailDelivery){
+function pairingPublicationPayload(result,emailDelivery){
   const publication=result.publication;
-  const names=new Map(accounts.map(account=>[account.id,account.name]));
-  const displayName=id=>names.get(Number(id))||`Member ${Number(id)}`;
+  const soloCount=publication.pairs.filter(pair=>pair.isAI).length;
   return {
     ok:true,
     created:result.created,
@@ -594,19 +508,9 @@ function pairingPublicationPayload(result,accounts,emailDelivery){
     count:publication.participantCount,
     participant_count:publication.participantCount,
     available_count:publication.participantCount,
-    total_accounts:accounts.length,
-    unavailable_count:Math.max(0,accounts.length-publication.participantCount),
-    pairs:publication.pairs.map(pair=>({
-      a:displayName(pair.aId),
-      b:pair.isAI?'Solo practice':displayName(pair.bId),
-      a_id:pair.aId,
-      b_id:pair.isAI?null:pair.bId,
-      isAI:pair.isAI,
-      solo_practice:pair.isAI,
-      pg_id:pair.groupId,
-      room:canonicalRoomId(publication.weekId,pair.groupId),
-    })),
-    algorithm:publication.algorithm,
+    pair_count:publication.pairs.length,
+    solo_count:soloCount,
+    algorithm_version:publication.algorithm.version,
     email_delivery:safeEmailDelivery(emailDelivery),
     message:result.created
       ?'Current-cycle pairings published. Solo members receive a Solo practice room.'
@@ -627,79 +531,24 @@ function pairingFailure(res,error){
   return res.status(503).json({error:'pairing unavailable'});
 }
 
-async function runCurrentPairing(req,res,{db,localRuntime,callerId=null,scope:authorizedScope=null}){
+async function runCurrentPairing(req,res,{
+  db,localRuntime,localRequest=false,callerId=null,scope:authorizedScope=null,
+}){
   try{
-    if(typeof db.transaction!=='function') throw new Error('pairing transaction unavailable');
-    let completed=null;
-    let lastError=null;
-    for(let attempt=1;attempt<=PAIRING_TRANSACTION_ATTEMPTS;attempt+=1){
-      let transaction=null;
-      let commitStarted=false;
-      try{
-        transaction=await db.transaction('write');
-        const now=await pairingDatabaseNow(transaction);
-        const scope=await resolveAvailabilityPublicationScope(transaction,{localRuntime});
-        if(authorizedScope&&(scope.scopeKey!==authorizedScope.scopeKey
-          ||scope.circleId!==authorizedScope.circleId)){
-          const error=new Error('publisher scope changed');
-          error.code='PAIRING_PUBLISHER_REVOKED';
-          throw error;
-        }
-        if(callerId){
-          const publisherId=Number(callerId);
-          const authorization=await transaction.execute(localRuntime?{
-            sql:`SELECT id,is_admin FROM auth_accounts
-              WHERE id=? AND COALESCE(is_demo,0)=0`,args:[publisherId],
-          }:{
-            sql:`SELECT aa.id,cm.role,c.id AS circle_id
-              FROM auth_accounts aa
-              JOIN circle_memberships cm ON cm.user_id=aa.id
-              JOIN circles c ON c.id=cm.circle_id
-              WHERE aa.id=? AND cm.circle_id=? AND cm.status='active' AND cm.role='owner'
-                AND COALESCE(aa.is_demo,0)=0 AND c.is_primary=1 AND c.archived_at IS NULL
-              LIMIT 2`,args:[publisherId,scope.circleId],
-          });
-          const rows=authorization.rows||[];
-          const allowed=localRuntime
-            ?rows.length===1&&Number(rows[0].id)===publisherId&&Number(rows[0].is_admin)===1
-            :rows.length===1&&Number(rows[0].id)===publisherId&&String(rows[0].role)==='owner';
-          if(!allowed){ const error=new Error('publisher authorization was revoked'); error.code='PAIRING_PUBLISHER_REVOKED'; throw error; }
-        }
-        const cycle=resolvePairingCycle({now,state:'current'});
-        const existing=await getPairingPublication(transaction,{now});
-        let accounts,result;
-        if(existing){
-          accounts=await pairingAccounts(transaction,{scope});
-          result={created:false,publication:existing};
-        }else{
-          const candidates=await pairingCandidates(transaction,{scope,cycle});
-          accounts=candidates.accounts;
-          result=await publishPairingCycle(transaction,{
-            now,participants:candidates.participants,
-            history:await loadPairingHistory(transaction,cycle.cycleId,{strict:true,authOnly:true,managedOnly:true}),
-            notificationRecipients:candidates.notificationRecipients,
-          });
-        }
-        commitStarted=true;
-        await transaction.commit();
-        completed={accounts,result};
-        break;
-      }catch(error){
-        lastError=error;
-        if(transaction){ try{ await transaction.rollback(); }catch{} }
-        if(commitStarted||attempt===PAIRING_TRANSACTION_ATTEMPTS||!isRetryablePairingConflict(error)) throw error;
-        await pairingRetryDelay(attempt);
-      }finally{
-        try{ transaction?.close?.(); }catch{}
-      }
-    }
-    if(!completed) throw lastError||new Error('pairing transaction failed');
-    const {accounts,result}=completed;
-    const baseUrl=(process.env.APP_URL || (process.env.VERCEL_URL? `https://${process.env.VERCEL_URL}`:'https://randori-circle-self.vercel.app')).replace(/\/$/,'');
+    const result=await publishPairingCycle(db,{
+      localRuntime,callerId,authorizedScope,
+      appUrl:process.env.APP_URL,
+      // Loopback transport is independent from publication scope. Invite-bound
+      // local identity still uses audited circle membership and v3 readiness.
+      allowLocalAppUrl:localRequest,
+      // The isolated local runtime shares the application clock with its read
+      // models; production remains pinned to the database-owned timestamp.
+      ...(localRequest?{now:new Date()}:{}),
+    });
     let emailDelivery;
-    try{ emailDelivery=await deliverPendingPairingEmails(db,result.publication.weekId,baseUrl,req); }
+    try{ emailDelivery=await deliverPendingPairingEmails(db,result.publication.weekId,result.appUrl,req); }
     catch{ emailDelivery={summary:'email delivery unavailable'}; }
-    return res.json(pairingPublicationPayload(result,accounts,emailDelivery));
+    return res.json(pairingPublicationPayload(result,emailDelivery));
   }catch(error){
     return pairingFailure(res,error);
   }
@@ -734,7 +583,11 @@ async function handleWeekly(req,res){
   let db;
   try{ db=getClient(); }
   catch{ return res.status(503).json({error:'pairing unavailable'}); }
-  return runCurrentPairing(req,res,{db,localRuntime:strictLocalPairingRuntime(req)});
+  return runCurrentPairing(req,res,{
+    db,
+    localRuntime:strictLocalPairingRuntime(req),
+    localRequest:localRuntimeRequest(req),
+  });
 }
 
 
