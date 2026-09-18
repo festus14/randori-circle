@@ -3897,9 +3897,13 @@ def allow(key, limit=5):
     }catch{ return null; }
   }
   let joinDecision=null;
+  let joinRequest=null;
   async function openAuthorizedJoin(room){
+    const activeRoom=window._randori_code?.currentRoom||window.currentRoom||null;
+    if(joinDecision?.room===room&&joinDecision.status==='allowed'&&activeRoom===room&&window._randori_authorized_room===room) return true;
     if(joinDecision?.room===room && joinDecision.status==='denied') return false;
-    try{
+    if(joinRequest?.room===room) return joinRequest.promise;
+    const operation=(async()=>{ try{
       const response=await fetch('/api/my-pair',{credentials:'same-origin'});
       const data=await response.json().catch(()=>({}));
       if(!response.ok) throw new Error(data.error||`pair lookup ${response.status}`);
@@ -3932,7 +3936,10 @@ def allow(key, limit=5):
     }catch{
       if(typeof toast==='function') toast('Could not validate this pairing invite.');
       return false;
-    }
+    }})();
+    joinRequest={room,promise:operation};
+    try{ return await operation; }
+    finally{ if(joinRequest?.promise===operation) joinRequest=null; }
   }
 
   // Main auth router
@@ -5612,7 +5619,7 @@ def allow(key, limit=5):
 (function(){
   const CODE_KEY='randori-code';
   const clientId=(window.crypto?.randomUUID?.()||('client-'+Math.random().toString(36).slice(2)));
-  const state={room:null,revision:0,hydrated:false,hydrationDirtyCode:false,hydrationDirtyBoard:false,forceBoardUpgrade:false,syncBlocked:false,epoch:0,clientSeq:0,lastAckSeq:0,authoritative:null,pending:null,baseline:null,inFlight:null,pollInFlight:null,pollAbort:null,writeAbort:null,applying:false,retryCount:0};
+  const state={room:null,revision:0,hydrated:false,hydrationDirtyCode:false,hydrationDirtyBoard:false,forceBoardUpgrade:false,syncBlocked:false,epoch:0,clientSeq:0,lastAckSeq:0,authoritative:null,pending:null,inFlight:null,pollInFlight:null,pollAbort:null,writeAbort:null,applying:false,retryCount:0};
   let saveTimer=null;
   let retryTimer=null;
   let accessEpoch=0;
@@ -5754,14 +5761,13 @@ def allow(key, limit=5):
     state.syncBlocked=false;
     state.authoritative=null;
     state.pending=null;
-    state.baseline=draft();
     window._randori_board?.setSyncState?.('connecting');
     if(saveTimer) clearTimeout(saveTimer);
     await poll(true,room,epoch);
   }
   function deactivate(){
     accessEpoch+=1;
-    state.epoch+=1; state.room=null; state.revision=0; state.hydrated=false; state.hydrationDirtyCode=false; state.hydrationDirtyBoard=false; state.forceBoardUpgrade=false; state.syncBlocked=false; state.authoritative=null; state.pending=null; state.baseline=null; state.retryCount=0;
+    state.epoch+=1; state.room=null; state.revision=0; state.hydrated=false; state.hydrationDirtyCode=false; state.hydrationDirtyBoard=false; state.forceBoardUpgrade=false; state.syncBlocked=false; state.authoritative=null; state.pending=null; state.retryCount=0;
     if(saveTimer) clearTimeout(saveTimer);
     if(retryTimer){ clearTimeout(retryTimer); retryTimer=null; }
     state.pollAbort?.abort();
@@ -5795,12 +5801,11 @@ def allow(key, limit=5):
       if(needsHydration||next.revision>state.revision){
         if(next.snapshot){
           const local=draft();
-          const changedDuringHydration=needsHydration&&state.baseline;
           const ownEcho=next.snapshot.client_id===clientId&&(
             next.snapshot.client_seq<=state.lastAckSeq||next.snapshot.client_seq===state.inFlight?.clientSeq
           );
-          let preserveCode=state.hydrationDirtyCode||!!state.pending?.codeDirty||(!ownEcho&&!!state.inFlight?.codeDirty)||!!(changedDuringHydration&&!sameCode(local,state.baseline));
-          let preserveBoard=window._randori_board?.dirty===true||state.hydrationDirtyBoard||!!state.pending?.boardDirty||(!ownEcho&&!!state.inFlight?.boardDirty)||!!(changedDuringHydration&&!sameBoard(local,state.baseline));
+          let preserveCode=state.hydrationDirtyCode||!!state.pending?.codeDirty||(!ownEcho&&!!state.inFlight?.codeDirty);
+          let preserveBoard=window._randori_board?.dirty===true||state.hydrationDirtyBoard||!!state.pending?.boardDirty||(!ownEcho&&!!state.inFlight?.boardDirty);
           if(state.hydrated&&!needsHydration){
             preserveCode=preserveCode||domainDirty('code',local,state.authoritative);
             preserveBoard=preserveBoard||domainDirty('board',local,state.authoritative);
@@ -5813,7 +5818,6 @@ def allow(key, limit=5):
         state.hydrated=true;
         state.hydrationDirtyCode=false;
         state.hydrationDirtyBoard=false;
-        state.baseline=null;
         if(!next.snapshot){ state.forceBoardUpgrade=true; state.pending={codeDirty:true,boardDirty:true}; }
         else refreshPending();
         if(state.pending) scheduleSave('resume');
@@ -6008,7 +6012,9 @@ def allow(key, limit=5):
   window.addEventListener('randori:workspace-edit',event=>{
     const room=event.detail?.roomId;
     if(room&&String(room)!==String(state.room||'')) return;
-    markHydrationEdit('code'); scheduleSave('code');
+    // Generic persistence events also come from catalogue/Monaco setup. Only
+    // direct user input/change handlers below may claim a pre-hydration edit.
+    scheduleSave('code');
   });
   window.addEventListener('randori:board-edit',event=>{
     const room=event.detail?.roomId;
