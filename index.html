@@ -634,7 +634,7 @@ p{margin:0}
           </div>
           <div style="display:grid; gap:10px">
             <div class="mock-card"><div class="row" style="justify-content:space-between"><b style="font-size:12px">This Week</b><span class="kbd">Sun 08:00</span></div><div class="pair" style="padding:8px"><div class="who"><span class="avatar" style="background:#c8f6a0">FC</span><b style="font-size:12px">You × Priya Shah</b></div><span class="kbd">DSA • picked</span></div><div class="small muted">You set the time together — no auto-scheduling nag.</div></div>
-            <div id="landingStats" class="card" style="padding:12px; border:1px dashed var(--border); background:var(--bg-2)"><div class="row" style="gap:10px; flex-wrap:wrap; justify-content:space-between"><span class="small muted">Circle Pulse • live</span><span id="landingStatsUpdated" class="kbd" style="font-size:10px">loading…</span></div><div class="grid-3" style="margin-top:10px; gap:10px; display:grid; grid-template-columns:repeat(3,1fr)"><div style="text-align:center"><div id="statMembers" style="font-size:22px; font-weight:600">—</div><div class="small muted">members</div></div><div style="text-align:center"><div id="statWeeks" style="font-size:22px; font-weight:600">—</div><div class="small muted">weeks paired</div></div><div style="text-align:center"><div id="statSessions" style="font-size:22px; font-weight:600">—</div><div class="small muted">sessions run</div></div></div></div>
+            <div id="landingStats" class="card" style="padding:12px; border:1px dashed var(--border); background:var(--bg-2)"><div class="row" style="gap:10px; flex-wrap:wrap; justify-content:space-between"><span class="small muted">Circle Pulse • live</span><span id="landingStatsUpdated" class="kbd" style="font-size:10px">loading…</span></div><div class="grid-3" style="margin-top:10px; gap:10px; display:grid; grid-template-columns:repeat(3,1fr)"><div style="text-align:center"><div id="statMembers" style="font-size:22px; font-weight:600">—</div><div class="small muted">members</div></div><div style="text-align:center"><div id="statWeeks" style="font-size:22px; font-weight:600">—</div><div class="small muted">weeks paired</div></div><div style="text-align:center"><div id="statSessions" style="font-size:22px; font-weight:600">—</div><div class="small muted">pairings made</div></div></div></div>
       <div id="landingNext" class="card" style="border-color:#c8f6a0; background:color-mix(in srgb, var(--accent) 8%, var(--bg-2))"><div class="card-h" style="padding:10px 12px"><h2 style="font-size:13px">Next session</h2><span id="landingNextCountdown" class="kbd">Sun 08:00 BST</span></div><div class="card-b" style="padding:10px 12px"><div style="font-size:13px"><b id="landingNextLabel">Sunday 08:00 BST • London</b><div class="small muted" id="landingNextSub" style="margin-top:4px">Shuffles automatically. Sign up before then to be included.</div></div><div id="landingNextBar" style="margin-top:10px; height:6px; background:var(--bg-3); border-radius:999px; overflow:hidden"><div id="landingNextProg" style="height:100%; width:40%; background:var(--accent)"></div></div></div></div>
       <div class="mock-card"><b style="font-size:12px">What people say</b><div class="small" style="color:var(--ink-2)">“Got me through Stripe & DeepL loops. AI feedback nailed my weak spots with exact quotes.” — Festus, London</div></div>
           </div>
@@ -676,7 +676,7 @@ p{margin:0}
           <div class="row"><span id="dashAvailBadge" class="kbd">Available</span><button id="dashProfileBtn" class="pill">Edit profile</button></div>
         </div>
         <div id="dashStatsGrid" style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:14px 0">
-          <div class="card" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Your sessions</div><div id="dashStatYou" style="font-size:20px; font-weight:600; margin-top:4px">—</div><div class="small muted" id="dashStatYouSub" style="font-size:11px">across — weeks</div></div>
+          <div class="card" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Your pairings</div><div id="dashStatYou" style="font-size:20px; font-weight:600; margin-top:4px">—</div><div class="small muted" id="dashStatYouSub" style="font-size:11px">across — weeks</div></div>
           <div class="card" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Circle</div><div id="dashStatCircle" style="font-size:20px; font-weight:600; margin-top:4px">—</div><div class="small muted" style="font-size:11px"><span id="dashStatCircleSub">members</span> • <span id="dashStatWeeks">— weeks</span></div></div>
           <div class="card" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Next shuffle</div><div id="dashNextLabel" style="font-size:13px; font-weight:600; margin-top:4px">Sun 08:00 BST</div><div class="small muted" id="dashNextCount" style="font-size:11px; margin-top:2px">calculating…</div></div>
         </div>
@@ -684,7 +684,7 @@ p{margin:0}
         <div id="dashPairArea"></div>
         <div id="dashScheduleArea" data-testid="schedule-area"></div>
         <div id="dashChatArea"></div>
-        <div style="margin:14px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">History</h3><div style="flex:1;height:1px;background:var(--border)"></div><button id="dashHistAll" class="pill" style="font-size:11px">full history →</button></div>
+        <div style="margin:14px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Recent pairings</h3><div style="flex:1;height:1px;background:var(--border)"></div><button id="dashHistAll" class="pill" style="font-size:11px">Pairings &amp; activity →</button></div>
         <div id="dashHistoryArea" class="card" style="padding:10px"><div id="dashHistList" class="small muted">Loading recent…</div></div>
         <div style="margin:14px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Recent runs</h3><div style="flex:1;height:1px;background:var(--border)"></div><button id="recentRunsRefresh" class="pill" style="font-size:11px">refresh</button></div>
 
@@ -930,11 +930,15 @@ p{margin:0}
       <div class="small muted" id="boardSyncHint" style="margin-top:8px">Draw together — completed changes sync to authenticated members of this pair room and recover after refresh.</div>
     </section>
 
-    <!-- HISTORY -->
+    <!-- PAIRINGS / ACTIVITY HISTORY -->
     <section id="view-history" class="view" style="display:none">
-      <div class="card">
-        <div class="card-h"><h2>Your history</h2><span id="historyCount">0 weeks</span><span id="historyAuthHint" class="small muted" style="margin-left:8px">Sign in to see your pairings</span></div>
-        <div class="card-b"><div id="historyList" class="weeks"></div><div id="historyPersonal" class="weeks" style="margin-top:12px"></div></div>
+      <div class="card" data-testid="pair-history">
+        <div class="card-h"><h2>Pairings &amp; activity</h2><span id="historyCount">0 pairings</span><span id="historyAuthHint" class="small muted" style="margin-left:8px">Sign in to see your pairings</span></div>
+        <div class="card-b">
+          <div id="historyList" class="weeks"></div>
+          <div id="pairRecapArea" style="margin-top:12px" data-testid="pair-recap"></div>
+          <div id="historyPersonal" class="weeks" style="margin-top:12px" data-testid="pair-history-list"></div>
+        </div>
       </div>
     </section>
   </div>
@@ -1854,47 +1858,402 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     reshuffleCurrent();
   };
 
-  // ---------- history (personalized when signed in) ----------
-  async function renderPersonalHistory(){
-    const cont = document.getElementById('historyPersonal');
-    if(!cont) return;
-    if(!me){ cont.innerHTML='<div class="small muted" style="padding:8px">Sign in to see your pairings and past partners.</div>'; return; }
-    try{
-      const data = await api('/api/history',{method:'GET'});
-      if(!data.history || !data.history.length){ cont.innerHTML='<div class="small muted" style="padding:8px">No pairings yet — first shuffle is Sunday 08:00 BST.</div>'; return; }
-      const counts = data.partner_counts||{};
-      cont.innerHTML = `
-        <div class="card" style="border-color:var(--accent)"><div class="card-h"><h3 style="font-size:13px">You — ${escapeHtml(data.user.name)}</h3><span class="kbd">${escapeHtml(data.total)} pair(s)</span></div>
-          <div class="card-b" style="display:grid;gap:6px">
-            ${data.history.map(h=>`<div class="row small"><span class="kbd">${escapeHtml(h.week_label)}</span> × ${escapeHtml(h.partner_name)} ${h.topic?`<span class="kbd">${escapeHtml(h.topic)}</span>`:''} ${h.is_ai?'<span class="kbd">ai</span>':''}</div>`).join('')}
-            <div style="margin-top:8px;border-top:1px dashed var(--line);padding-top:8px;display:flex;flex-wrap:wrap;gap:6px">${Object.entries(counts).map(([k,v])=>`<span class="kbd">${escapeHtml(k)}: ${escapeHtml(v)}</span>`).join('')||'<span class="small muted">no repeat counts yet</span>'}</div>
-          </div>
-        </div>`;
-    }catch(e){
-      cont.innerHTML=`<div class="small muted" style="padding:8px">History error: ${escapeHtml(e.error||e.message||'offline')}</div>`;
+  // ---------- server-backed pairing/activity history ----------
+  const pairRecapState={historyEpoch:0,historyAbort:null,historyUserId:null,epoch:0,abort:null,room:null,userId:null,recap:null,status:'idle',visibilityResumeHistory:false,visibilityResumeRoom:null};
+
+  function currentHistoryUserId(){
+    const value=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||me?.id||me?.uid);
+    return Number.isSafeInteger(value)&&value>0?value:null;
+  }
+
+  function canonicalHistoryRoom(weekId,pairId){
+    const week=Number(weekId),pair=Number(pairId);
+    if(!Number.isSafeInteger(week)||week<1||!Number.isSafeInteger(pair)||pair<1) return null;
+    return `week_${week}_pair_${pair}`;
+  }
+
+  function historyViewVisible(){
+    const view=document.getElementById('view-history');
+    return document.visibilityState==='visible'
+      &&!!view&&view.style.display!=='none'
+      &&document.querySelector('[data-tab="history"]')?.classList.contains('active');
+  }
+
+  function historyText(value,max=160,{empty=false}={}){
+    if(typeof value!=='string') return null;
+    const text=value.trim();
+    return (empty||text)&&[...text].length<=max?text:null;
+  }
+
+  function historyUtf8Length(value){
+    try{ return new TextEncoder().encode(value).length; }
+    catch{ return unescape(encodeURIComponent(value)).length; }
+  }
+
+  function historyInstant(value){
+    if(typeof value!=='string'||value.length>40||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) return null;
+    const millis=Date.parse(value);
+    if(!Number.isFinite(millis)) return null;
+    const normalized=new Date(millis).toISOString();
+    return normalized===value?normalized:null;
+  }
+
+  function localTime(instant){
+    try{ return new Intl.DateTimeFormat(undefined,{dateStyle:'medium',timeStyle:'short'}).format(new Date(instant)); }
+    catch{ return instant; }
+  }
+
+  function setPairRecapStatus(message){
+    pairRecapState.status=String(message||'');
+    const status=document.querySelector('[data-testid="pair-recap-status"]');
+    if(status) status.textContent=pairRecapState.status;
+  }
+
+  function stopPairRecap({clear=false}={}){
+    pairRecapState.historyEpoch+=1;
+    pairRecapState.epoch+=1;
+    const historyAbort=pairRecapState.historyAbort; pairRecapState.historyAbort=null; historyAbort?.abort();
+    const recapAbort=pairRecapState.abort; pairRecapState.abort=null; recapAbort?.abort();
+    if(clear){
+      pairRecapState.historyUserId=null; pairRecapState.room=null; pairRecapState.userId=null; pairRecapState.recap=null; pairRecapState.status='idle';
+      pairRecapState.visibilityResumeHistory=false; pairRecapState.visibilityResumeRoom=null;
+      document.getElementById('pairRecapArea')?.replaceChildren();
+      const history=document.getElementById('historyPersonal');
+      history?.replaceChildren(); history?.setAttribute('aria-busy','false');
     }
   }
 
-  function renderHistory(){
-    const weeks=getWeeks();
-    document.getElementById('historyCount').textContent=`${weeks.length} week(s)`;
-    const el=document.getElementById('historyList');
-    if(!weeks.length){ el.innerHTML='<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">No history yet. Pairs appear here after each Sunday shuffle.</div>'; }
-    else {
-      el.innerHTML=weeks.map((w,idx)=>`
-        <div class="card" style="border-color:${idx===0?'var(--accent)':'var(--line)'}">
-          <div class="card-h"><h3 style="font-size:14px">${w.label}</h3><div class="row"><span class="kbd">${new Date(w.date).toLocaleDateString()}</span>${idx===0?'<span class="kbd" style="background:var(--accent); color:#12100f">current</span>':''}</div></div>
-          <div class="card-b" style="display:grid; gap:8px">
-            ${w.pairs.map(p=>{
-              const a=idToPerson(p.aId)||{name:'?'}; const b=p.isAI? {name:'AI'} : (idToPerson(p.bId)||{name:'?'});
-              return `<div class="row small"><span class="avatar" style="width:22px;height:22px;font-size:10px;background:${safeProfileColor(a.color||'#ddd')}">${escapeHtml(a.name.slice(0,2).toUpperCase())}</span>${escapeHtml(a.name)} × ${escapeHtml(b.name)} ${p.topic?`<span class="kbd">${escapeHtml(p.topic)}</span>`:''}</div>`
-            }).join('')}
-          </div>
-        </div>`).join('');
+  function recapTimeNode(instant){
+    const time=document.createElement('time');
+    time.dateTime=instant;
+    time.textContent=localTime(instant);
+    return time;
+  }
+
+  function normalizeRecapActivity(raw){
+    if(!raw||typeof raw!=='object'||Array.isArray(raw)) return null;
+    const kind=raw.kind;
+    const idMatch=typeof raw.event_id==='string'&&raw.event_id.match(/^(message|run):([1-9]\d*)$/);
+    const createdAt=historyInstant(raw.created_at);
+    const actorId=Number(raw.actor?.id);
+    const actorName=historyText(raw.actor?.display_name,80);
+    if(!idMatch||idMatch[1]!==kind||!createdAt||!Number.isSafeInteger(actorId)||actorId<1||!actorName) return null;
+    if(kind==='message'){
+      if(typeof raw.message!=='string'||!raw.message.trim()||[...raw.message].length>2000||historyUtf8Length(raw.message)>8000) return null;
+      return {kind,event_id:raw.event_id,created_at:createdAt,actor:{id:actorId,display_name:actorName},message:raw.message};
     }
-    // personal (async)
+    if(kind!=='run'||raw.authoritative!==true) return null;
+    const slug=historyText(raw.question_slug,120);
+    const language=historyText(raw.language,32);
+    const version=Number(raw.question_version),passed=Number(raw.passed_count),total=Number(raw.total_count);
+    const duration=raw.duration_ms==null?null:Number(raw.duration_ms);
+    if(!slug||!language||!Number.isSafeInteger(version)||version<1||!Number.isSafeInteger(passed)||passed<0||!Number.isSafeInteger(total)||total<passed||(duration!==null&&(!Number.isSafeInteger(duration)||duration<0))) return null;
+    return {kind,event_id:raw.event_id,created_at:createdAt,actor:{id:actorId,display_name:actorName},question_slug:slug,question_version:version,language,passed_count:passed,total_count:total,duration_ms:duration,authoritative:true};
+  }
+
+  function normalizePairRecap(raw,room){
+    if(!raw||typeof raw!=='object'||Array.isArray(raw)) return null;
+    const pairId=Number(raw.pair?.id),weekId=Number(raw.pair?.week_id);
+    if(!Number.isSafeInteger(pairId)||pairId<1||!Number.isSafeInteger(weekId)||weekId<1||canonicalHistoryRoom(weekId,pairId)!==room) return null;
+    const weekLabel=historyText(raw.pair.week_label,80),weekStart=historyInstant(raw.pair.week_start);
+    const topic=raw.pair.topic==null?null:historyText(raw.pair.topic,200);
+    const topicKind=raw.pair.topic_kind==null?null:historyText(raw.pair.topic_kind,80);
+    if(!weekLabel||!weekStart||(raw.pair.topic!=null&&!topic)||(raw.pair.topic_kind!=null&&!topicKind)||typeof raw.pair.is_ai!=='boolean'||!Array.isArray(raw.pair.members)||raw.pair.members.length<2||raw.pair.members.length>3) return null;
+    const members=raw.pair.members.map(member=>{
+      const isAi=member?.is_ai===true;
+      const id=member?.id==null&&isAi?null:Number(member?.id);
+      const displayName=historyText(member?.display_name,80);
+      if((id!==null&&(!Number.isSafeInteger(id)||id<1))||!displayName||typeof member?.is_me!=='boolean'||typeof member?.is_ai!=='boolean') return null;
+      return {id,display_name:displayName,is_me:member.is_me,is_ai:isAi};
+    });
+    if(members.some(member=>!member)) return null;
+    const humanIds=members.filter(member=>!member.is_ai).map(member=>member.id);
+    const aiMembers=members.filter(member=>member.is_ai);
+    const meMembers=members.filter(member=>member.is_me);
+    if(new Set(humanIds).size!==humanIds.length||meMembers.length!==1||meMembers[0].is_ai
+      ||meMembers[0].id!==currentHistoryUserId()
+      ||raw.pair.is_ai!==(aiMembers.length===1)
+      ||raw.pair.is_ai&&(aiMembers.length!==1||humanIds.length!==1)
+      ||!raw.pair.is_ai&&aiMembers.length){
+      return null;
+    }
+    let schedule=null;
+    if(raw.schedule!==null&&raw.schedule!==undefined){
+      if(typeof raw.schedule!=='object'||Array.isArray(raw.schedule)) return null;
+      const agreed=raw.schedule.agreed_time==null?null:historyInstant(raw.schedule.agreed_time);
+      const legacy=raw.schedule.legacy_agreed_time==null?null:historyText(raw.schedule.legacy_agreed_time,4096);
+      const updated=raw.schedule.updated_at==null?null:historyInstant(raw.schedule.updated_at);
+      if(raw.schedule.agreed_time!=null&&!agreed||raw.schedule.legacy_agreed_time!=null&&(!legacy||historyUtf8Length(legacy)>4096)||raw.schedule.updated_at!=null&&!updated||(agreed&&legacy)) return null;
+      schedule={agreed_time:agreed,legacy_agreed_time:legacy,updated_at:updated};
+    }
+    if(!Array.isArray(raw.activity)||raw.activity.length>50) return null;
+    const activity=[];
+    const eventIds=new Set();
+    for(const item of raw.activity){
+      const normalized=normalizeRecapActivity(item);
+      if(!normalized||eventIds.has(normalized.event_id)) return null;
+      if(!humanIds.includes(normalized.actor.id)) return null;
+      const previous=activity.at(-1);
+      if(previous){
+        const previousId=Number(previous.event_id.split(':')[1]);
+        const currentId=Number(normalized.event_id.split(':')[1]);
+        const order=previous.created_at.localeCompare(normalized.created_at)
+          ||previous.kind.localeCompare(normalized.kind)
+          ||previousId-currentId;
+        if(order>0) return null;
+      }
+      eventIds.add(normalized.event_id);
+      activity.push(normalized);
+    }
+    if(!raw.workspace||typeof raw.workspace!=='object'||Array.isArray(raw.workspace)||typeof raw.workspace.artifact_available!=='boolean') return null;
+    let workspace={artifact_available:false};
+    if(raw.workspace.artifact_available){
+      const revision=Number(raw.workspace.revision),schemaVersion=Number(raw.workspace.schema_version),questionSlug=historyText(raw.workspace.question_slug,120),questionVersion=raw.workspace.question_version==null?null:Number(raw.workspace.question_version),language=historyText(raw.workspace.language,32),updatedAt=historyInstant(raw.workspace.updated_at);
+      if(!Number.isSafeInteger(revision)||revision<1||!Number.isSafeInteger(schemaVersion)||schemaVersion<1||schemaVersion>3||!questionSlug||!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(questionSlug)||(questionVersion!==null&&(!Number.isSafeInteger(questionVersion)||questionVersion<1))||!language||!/^[a-z][a-z0-9_+-]{0,31}$/.test(language)||!updatedAt) return null;
+      workspace={artifact_available:true,revision,schema_version:schemaVersion,question_slug:questionSlug,question_version:questionVersion,language,updated_at:updatedAt};
+    }
+    return {pair:{id:pairId,week_id:weekId,week_label:weekLabel,week_start:weekStart,topic,topic_kind:topicKind,is_ai:raw.pair.is_ai===true,members},schedule,activity,workspace};
+  }
+
+  function renderPairRecap(recap,room){
+    const area=document.getElementById('pairRecapArea');
+    if(!area||pairRecapState.room!==room) return;
+    area.replaceChildren();
+    const card=document.createElement('article'); card.className='card'; card.setAttribute('aria-labelledby','pairRecapTitle');
+    const head=document.createElement('div'); head.className='card-h';
+    const title=document.createElement('h3'); title.id='pairRecapTitle'; title.tabIndex=-1; title.style.fontSize='14px'; title.textContent=`${recap.pair.week_label} recap`;
+    const actions=document.createElement('div'); actions.className='row';
+    const refresh=document.createElement('button'); refresh.type='button'; refresh.className='pill'; refresh.dataset.testid='pair-recap-refresh'; refresh.textContent='Refresh'; refresh.addEventListener('click',()=>{ fetchPairRecap(room); });
+    actions.appendChild(refresh);
+    if(recap.workspace.artifact_available){
+      const reopen=document.createElement('button'); reopen.type='button'; reopen.className='btn'; reopen.dataset.testid='pair-recap-reopen'; reopen.textContent='Reopen workspace'; reopen.addEventListener('click',()=>{ reopenPairWorkspace(room); });
+      actions.appendChild(reopen);
+    }
+    head.append(title,actions); card.appendChild(head);
+    const body=document.createElement('div'); body.className='card-b'; body.style.display='grid'; body.style.gap='12px';
+    const status=document.createElement('div'); status.className='small muted'; status.dataset.testid='pair-recap-status'; status.setAttribute('role','status'); status.setAttribute('aria-live','polite'); status.textContent='Recap loaded'; body.appendChild(status);
+
+    const summary=document.createElement('section'); summary.setAttribute('aria-label','Pairing summary');
+    const names=recap.pair.members.map(member=>member.is_me?`${member.display_name} (you)`:member.display_name).join(' × ');
+    const pairing=document.createElement('div'); pairing.className='small'; pairing.textContent=names;
+    const week=document.createElement('div'); week.className='small muted'; week.append('Paired '); week.appendChild(recapTimeNode(recap.pair.week_start));
+    if(recap.pair.topic||recap.pair.topic_kind) week.append(` · ${recap.pair.topic||recap.pair.topic_kind}`);
+    summary.append(pairing,week); body.appendChild(summary);
+
+    const schedule=document.createElement('section'); schedule.dataset.testid='pair-recap-schedule'; schedule.setAttribute('aria-label','Agreed schedule');
+    const scheduleTitle=document.createElement('b'); scheduleTitle.textContent='Schedule'; schedule.appendChild(scheduleTitle);
+    const scheduleValue=document.createElement('div'); scheduleValue.className='small muted';
+    if(recap.schedule?.agreed_time){ scheduleValue.append('Agreed for '); scheduleValue.appendChild(recapTimeNode(recap.schedule.agreed_time)); }
+    else if(recap.schedule?.legacy_agreed_time) scheduleValue.textContent=`Legacy schedule: ${recap.schedule.legacy_agreed_time}`;
+    else scheduleValue.textContent='No agreed time recorded.';
+    schedule.appendChild(scheduleValue); body.appendChild(schedule);
+
+    const activitySection=document.createElement('section'); activitySection.setAttribute('aria-label','Pair activity');
+    const activityTitle=document.createElement('b'); activityTitle.textContent='Activity'; activitySection.appendChild(activityTitle);
+    if(!recap.activity.length){
+      const empty=document.createElement('div'); empty.className='small muted'; empty.dataset.testid='pair-recap-empty'; empty.textContent='No saved messages or verified runs for this pairing.'; activitySection.appendChild(empty);
+    }else{
+      const list=document.createElement('ol'); list.className='weeks'; list.dataset.testid='pair-recap-activity';
+      recap.activity.forEach(event=>{
+        const item=document.createElement('li'); item.className='small'; item.dataset.eventId=event.event_id;
+        const meta=document.createElement('div'); meta.className='muted';
+        const actor=document.createElement('b'); actor.textContent=event.actor.display_name; meta.append(actor,' · '); meta.appendChild(recapTimeNode(event.created_at));
+        const detail=document.createElement('div');
+        if(event.kind==='message') detail.textContent=event.message;
+        else detail.textContent=`Verified run · ${event.question_slug} v${event.question_version} · ${event.language} · ${event.passed_count}/${event.total_count} passed${event.duration_ms===null?'':` · ${event.duration_ms} ms`}`;
+        item.append(meta,detail); list.appendChild(item);
+      });
+      activitySection.appendChild(list);
+    }
+    body.appendChild(activitySection);
+
+    const workspace=document.createElement('section'); workspace.dataset.testid='pair-recap-workspace'; workspace.setAttribute('aria-label','Workspace checkpoint');
+    const workspaceTitle=document.createElement('b'); workspaceTitle.textContent='Workspace'; workspace.appendChild(workspaceTitle);
+    const workspaceValue=document.createElement('div'); workspaceValue.className='small muted';
+    if(recap.workspace.artifact_available){
+      workspaceValue.append(`Checkpoint r${recap.workspace.revision} · ${recap.workspace.question_slug}${recap.workspace.question_version===null?'':` v${recap.workspace.question_version}`} · ${recap.workspace.language} · updated `);
+      workspaceValue.appendChild(recapTimeNode(recap.workspace.updated_at));
+    }else workspaceValue.textContent='No recoverable workspace checkpoint is available.';
+    workspace.appendChild(workspaceValue); body.appendChild(workspace);
+    card.appendChild(body); area.appendChild(card);
+    pairRecapState.status='loaded';
+    title.focus({preventScroll:true});
+    area.scrollIntoView({block:'nearest'});
+  }
+
+  function renderPairRecapLoading(room){
+    const area=document.getElementById('pairRecapArea'); if(!area) return;
+    const card=document.createElement('article'); card.className='card';
+    const body=document.createElement('div'); body.className='card-b';
+    const status=document.createElement('div'); status.className='small muted'; status.dataset.testid='pair-recap-status'; status.setAttribute('role','status'); status.setAttribute('aria-live','polite'); status.textContent='Loading pairing recap…';
+    body.appendChild(status); card.appendChild(body); area.replaceChildren(card);
+    pairRecapState.room=room; pairRecapState.recap=null; pairRecapState.status='loading';
+  }
+
+  async function fetchPairRecap(room){
+    room=String(room||'');
+    const userId=currentHistoryUserId();
+    const roomMatch=room.match(/^week_([1-9]\d*)_pair_([1-9]\d*)$/);
+    if(!roomMatch||canonicalHistoryRoom(roomMatch[1],roomMatch[2])!==room||!userId||!historyViewVisible()) return false;
+    const epoch=++pairRecapState.epoch;
+    const prior=pairRecapState.abort; prior?.abort();
+    const controller=new AbortController(); pairRecapState.abort=controller; pairRecapState.userId=userId;
+    renderPairRecapLoading(room);
+    try{
+      const url=new URL('/api/pair-recap',location.origin); url.searchParams.set('room_id',room);
+      const response=await fetch(url,{credentials:'same-origin',cache:'no-store',signal:controller.signal});
+      const data=await response.json().catch(()=>({}));
+      if(pairRecapState.epoch!==epoch||pairRecapState.room!==room||currentHistoryUserId()!==userId||!historyViewVisible()) return false;
+      if(!response.ok||data.ok!==true||data.room_id!==room) throw new Error('recap unavailable');
+      const recap=normalizePairRecap(data.recap,room);
+      if(!recap) throw new Error('invalid recap response');
+      pairRecapState.recap=recap;
+      renderPairRecap(recap,room);
+      return true;
+    }catch(error){
+      if(controller.signal.aborted||pairRecapState.epoch!==epoch||pairRecapState.room!==room||currentHistoryUserId()!==userId||!historyViewVisible()) return false;
+      pairRecapState.recap=null; pairRecapState.status='error';
+      const area=document.getElementById('pairRecapArea'); if(area) area.replaceChildren();
+      const status=document.createElement('div'); status.className='small muted'; status.dataset.testid='pair-recap-status'; status.setAttribute('role','status'); status.textContent='Pairing recap unavailable — try again.';
+      const retry=document.createElement('button'); retry.type='button'; retry.className='pill'; retry.dataset.testid='pair-recap-refresh'; retry.textContent='Retry'; retry.addEventListener('click',()=>{ fetchPairRecap(room); });
+      area?.append(status,retry);
+      return false;
+    }finally{ if(pairRecapState.abort===controller) pairRecapState.abort=null; }
+  }
+
+  async function reopenPairWorkspace(room){
+    const recap=pairRecapState.recap,userId=currentHistoryUserId();
+    if(!recap?.workspace?.artifact_available||room!==pairRecapState.room||userId!==pairRecapState.userId||!historyViewVisible()) return false;
+    const opener=window._randori_journey?.openAuthorizedJoin;
+    if(typeof opener!=='function'){ setPairRecapStatus('Workspace could not be reopened.'); return false; }
+    setPairRecapStatus('Checking workspace access…');
+    const expectedEpoch=pairRecapState.epoch;
+    const allowed=await opener(room,{forceOpen:true,canApply:()=>pairRecapState.epoch===expectedEpoch&&pairRecapState.room===room&&currentHistoryUserId()===userId&&historyViewVisible()});
+    if(!allowed){
+      if(historyViewVisible()&&currentHistoryUserId()===userId&&pairRecapState.room===room) setPairRecapStatus('Workspace is no longer available.');
+      return false;
+    }
+    // Use a real navigation so browser Back/Forward re-runs the authenticated
+    // router instead of leaving the URL and visible workspace out of sync.
+    window.location.assign(`/join/${room}`);
+    return true;
+  }
+
+  function historyRow(item){
+    const room=canonicalHistoryRoom(item?.week_id,item?.pg_id);
+    if(!room) return null;
+    const partner=historyText(item?.partner_name,240)||'Pair member';
+    const week=historyText(item?.week_label,80)||`Week ${item.week_id}`;
+    const row=document.createElement('li'); row.className='row small'; row.style.justifyContent='space-between'; row.style.gap='10px'; row.dataset.testid='pair-history-row'; row.dataset.roomId=room;
+    const description=document.createElement('span');
+    const label=document.createElement('span'); label.className='kbd'; label.textContent=week;
+    description.append(label,` × ${partner}`);
+    if(item?.topic||item?.topic_kind){ const topic=document.createElement('span'); topic.className='kbd'; topic.style.marginLeft='6px'; topic.textContent=String(item.topic||item.topic_kind).slice(0,160); description.appendChild(topic); }
+    const button=document.createElement('button'); button.type='button'; button.className='pill'; button.dataset.testid='pair-history-view-recap'; button.dataset.roomId=room; button.textContent='View recap'; button.setAttribute('aria-label',`View recap for ${week} with ${partner}`); button.addEventListener('click',()=>{ fetchPairRecap(room); });
+    row.append(description,button);
+    return row;
+  }
+
+  async function renderPersonalHistory(){
+    const cont=document.getElementById('historyPersonal'); if(!cont) return false;
+    const userId=currentHistoryUserId();
+    if(!userId){
+      pairRecapState.historyUserId=null;
+      cont.replaceChildren();
+      const status=document.createElement('div'); status.className='small muted'; status.style.padding='8px'; status.textContent='Sign in to see your pairings and activity.'; cont.appendChild(status);
+      return false;
+    }
+    if(!historyViewVisible()) return false;
+    pairRecapState.historyUserId=userId;
+    const epoch=++pairRecapState.historyEpoch;
+    const previous=pairRecapState.historyAbort; previous?.abort();
+    const controller=new AbortController(); pairRecapState.historyAbort=controller;
+    cont.replaceChildren(); cont.setAttribute('aria-busy','true');
+    const loading=document.createElement('div'); loading.className='small muted'; loading.setAttribute('role','status'); loading.dataset.testid='pair-history-status'; loading.textContent='Loading pairings…'; cont.appendChild(loading);
+    try{
+      const response=await fetch('/api/history',{credentials:'same-origin',cache:'no-store',signal:controller.signal});
+      const data=await response.json().catch(()=>({}));
+      if(pairRecapState.historyEpoch!==epoch||currentHistoryUserId()!==userId||!historyViewVisible()) return false;
+      if(!response.ok||data.ok!==true||Number(data.user?.id)!==userId||!Array.isArray(data.history)) throw new Error('history unavailable');
+      const rows=data.history.slice(0,100).map(historyRow).filter(Boolean);
+      cont.replaceChildren(); cont.setAttribute('aria-busy','false');
+      const status=document.createElement('div'); status.className='small muted'; status.setAttribute('role','status'); status.dataset.testid='pair-history-status'; status.textContent=rows.length?`${rows.length} pairing${rows.length===1?'':'s'} loaded`:'No pairings yet — your first pairing will appear after the Sunday shuffle.'; cont.appendChild(status);
+      if(rows.length){ const list=document.createElement('ol'); list.className='weeks'; list.setAttribute('aria-label','Your pairings'); rows.forEach(row=>list.appendChild(row)); cont.appendChild(list); }
+      const count=document.getElementById('historyCount'); if(count) count.textContent=`${rows.length} pairing${rows.length===1?'':'s'}`;
+      const hint=document.getElementById('historyAuthHint'); if(hint) hint.textContent='Server-backed pairings and saved activity';
+      return true;
+    }catch(error){
+      if(controller.signal.aborted||pairRecapState.historyEpoch!==epoch||currentHistoryUserId()!==userId||!historyViewVisible()) return false;
+      cont.replaceChildren(); cont.setAttribute('aria-busy','false');
+      const status=document.createElement('div'); status.className='small muted'; status.setAttribute('role','status'); status.dataset.testid='pair-history-status'; status.textContent='Pairing history unavailable — retry by reopening History.'; cont.appendChild(status);
+      const count=document.getElementById('historyCount'); if(count) count.textContent='Pairings unavailable';
+      return false;
+    }finally{ if(pairRecapState.historyAbort===controller) pairRecapState.historyAbort=null; }
+  }
+
+  function renderHistory(){
+    stopPairRecap({clear:true});
+    const local=document.getElementById('historyList');
+    const hint=document.getElementById('historyAuthHint');
+    if(currentHistoryUserId()){
+      local?.replaceChildren();
+      document.getElementById('historyCount').textContent='Loading pairings…';
+      if(hint) hint.textContent='Server-backed pairings and saved activity';
+      renderPersonalHistory();
+      return;
+    }
+    const weeks=getWeeks();
+    document.getElementById('historyCount').textContent=`${weeks.length} local week${weeks.length===1?'':'s'}`;
+    if(hint) hint.textContent='Local demo only — sign in for private server history';
+    if(!local) return;
+    local.replaceChildren();
+    const note=document.createElement('div'); note.className='small muted'; note.textContent='Local demo pairing history — stored only in this browser.'; local.appendChild(note);
+    if(!weeks.length){ const empty=document.createElement('div'); empty.className='small muted'; empty.style.padding='10px'; empty.textContent='No local demo pairings yet.'; local.appendChild(empty); }
+    else weeks.forEach((week,index)=>{
+      const card=document.createElement('section'); card.className='card'; card.style.borderColor=index===0?'var(--accent)':'var(--line)';
+      const head=document.createElement('div'); head.className='card-h';
+      const title=document.createElement('h3'); title.style.fontSize='14px'; title.textContent=String(week?.label||'Local week').slice(0,100); head.appendChild(title); card.appendChild(head);
+      const body=document.createElement('div'); body.className='card-b'; body.style.display='grid'; body.style.gap='8px';
+      (Array.isArray(week?.pairs)?week.pairs:[]).forEach(pair=>{
+        const a=idToPerson(pair.aId)||{name:'?'}; const b=pair.isAI?{name:'AI'}:(idToPerson(pair.bId)||{name:'?'});
+        const row=document.createElement('div'); row.className='small'; row.textContent=`${a.name} × ${b.name}${pair.topic?` · ${pair.topic}`:''}`; body.appendChild(row);
+      });
+      card.appendChild(body); local.appendChild(card);
+    });
     renderPersonalHistory();
   }
+
+  document.querySelector('.tabs')?.addEventListener('click',event=>{
+    const tab=event.target?.closest?.('.tab[data-tab]');
+    if(tab&&tab.getAttribute('data-tab')!=='history') stopPairRecap({clear:false});
+  });
+  document.addEventListener('visibilitychange',()=>{
+    if(document.visibilityState!=='visible'){
+      pairRecapState.visibilityResumeHistory=!!pairRecapState.historyAbort;
+      pairRecapState.visibilityResumeRoom=pairRecapState.abort?pairRecapState.room:null;
+      stopPairRecap({clear:false});
+      return;
+    }
+    if(!historyViewVisible()) return;
+    const resumeHistory=pairRecapState.visibilityResumeHistory;
+    const resumeRoom=pairRecapState.visibilityResumeRoom;
+    pairRecapState.visibilityResumeHistory=false; pairRecapState.visibilityResumeRoom=null;
+    if(resumeHistory) renderPersonalHistory();
+    if(resumeRoom) fetchPairRecap(resumeRoom);
+  });
+  window.addEventListener('randori:auth-refreshed',event=>{
+    const nextId=Number(event.detail?.userId||0)||null;
+    const changed=!nextId
+      ||pairRecapState.historyUserId!==null&&pairRecapState.historyUserId!==nextId
+      ||pairRecapState.userId!==null&&pairRecapState.userId!==nextId;
+    if(changed){
+      stopPairRecap({clear:true});
+      const count=document.getElementById('historyCount'); if(count) count.textContent=nextId?'Loading pairings…':'0 pairings';
+      const hint=document.getElementById('historyAuthHint'); if(hint) hint.textContent=nextId?'Loading your private pairings…':'Sign in to see your pairings';
+      queueMicrotask(()=>{ if(nextId&&historyViewVisible()) renderHistory(); });
+    }
+  });
+  window._randori_pair_recap={open:fetchPairRecap,refresh:()=>pairRecapState.room?fetchPairRecap(pairRecapState.room):Promise.resolve(false),stop:stopPairRecap,roomFor:canonicalHistoryRoom,get room(){return pairRecapState.room},get status(){return pairRecapState.status},get recap(){return pairRecapState.recap}};
 
   // ---------- questions ----------
   const QUESTIONS=[
@@ -3065,6 +3424,7 @@ def allow(key, limit=5):
       if(['pair','code','board','history'].includes(id)){
         try{
           const url=new URL(window.location.href);
+          if((id==='pair'||id==='history')&&/^\/join\/week_[1-9]\d*_pair_[1-9]\d*$/.test(url.pathname)) url.pathname='/';
           url.searchParams.delete('tab');
           url.searchParams.set('view',id);
           if(url.hash.includes('code')) url.hash='';
@@ -3073,6 +3433,7 @@ def allow(key, limit=5):
       }else{
         try{
           const url=new URL(window.location.href);
+          if(/^\/join\/week_[1-9]\d*_pair_[1-9]\d*$/.test(url.pathname)) url.pathname='/';
           url.searchParams.delete('view');
           url.searchParams.delete('tab');
           if(url.hash.includes('code')) url.hash='';
@@ -3622,7 +3983,7 @@ def allow(key, limit=5):
     try{
       const r=await fetch('/api/profile',{ method:'POST', credentials:'same-origin', headers:{'content-type':'application/json'}, body: JSON.stringify(payload) });
       const j=await r.json();
-      if(!r.ok) throw j;
+      if(!r.ok||Number(j.user?.id)!==userId) throw j;
       localStorage.setItem(ME_KEY, JSON.stringify(j.user));
       try{ await window._randori_auth?.refreshMe?.(); }catch{}
       // go dashboard
@@ -4694,41 +5055,92 @@ def allow(key, limit=5):
   }
   let joinDecision=null;
   let joinRequest=null;
-  async function openAuthorizedJoin(room){
+  let joinRequestEpoch=0;
+  let joinAuthUserId=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null;
+  document.querySelector('.tabs')?.addEventListener('click',()=>{
+    joinRequestEpoch+=1;
+    joinRequest=null;
+  });
+  async function showAuthorizedRoom(room,{load=true,canApply=null}={}){
+    const guard=()=>typeof canApply!=='function'||canApply()===true;
+    if(!guard()) return false;
+    if(load&&window._randori_workspace?.requestAccess){
+      // The outer join check has already authorized this exact room. Let the
+      // workspace finish (or refuse) its old-room flush before changing the
+      // visible room, URL state, or persisted selection.
+      let switched=false;
+      try{ switched=await window._randori_workspace.requestAccess(room,{canApply:guard,preauthorized:true}); }
+      catch{}
+      if(!switched||!guard()) return false;
+    }else if(load&&window._randori_code?.loadRoom){
+      window._randori_authorized_room=room;
+      window._randori_code.loadRoom(room);
+    }else window._randori_authorized_room=room;
+    window._randori_join_room=room;
+    localStorage.setItem('randori-last-room',room);
+    localStorage.setItem('randori-last-tab','code');
+    const selector=document.getElementById('roomSelect');
+    if(selector){
+      let option=[...selector.options].find(item=>item.value===room);
+      if(!option){ option=document.createElement('option'); option.value=room; option.textContent='Your pairing room'; selector.prepend(option); }
+      selector.value=room;
+    }
+    if(load&&!window._randori_workspace?.requestAccess&&!window._randori_code?.loadRoom) window.dispatchEvent(new CustomEvent('randori:room-change',{detail:{roomId:room}}));
+    window._randori_pair_recap?.stop?.({clear:false});
+    document.querySelectorAll('.view').forEach(view=>view.style.display='none');
+    document.getElementById('view-code').style.display='block';
+    document.querySelectorAll('.tab').forEach(tab=>tab.classList.remove('active'));
+    document.querySelector('[data-tab="code"]')?.classList.add('active');
+    return true;
+  }
+  async function openAuthorizedJoin(room,{forceOpen=false,canApply=null}={}){
     const activeRoom=window._randori_code?.currentRoom||window.currentRoom||null;
-    if(joinDecision?.room===room&&joinDecision.status==='allowed'&&activeRoom===room&&window._randori_authorized_room===room) return true;
-    if(joinDecision?.room===room && joinDecision.status==='denied') return false;
-    if(joinRequest?.room===room) return joinRequest.promise;
+    const guard=()=>typeof canApply!=='function'||canApply()===true;
+    if(joinDecision?.room===room&&joinDecision.status==='allowed'&&activeRoom===room&&window._randori_authorized_room===room){
+      if(!guard()) return false;
+      if(forceOpen) return await showAuthorizedRoom(room,{load:false,canApply:guard});
+      return true;
+    }
+    if(!forceOpen&&joinDecision?.room===room && joinDecision.status==='denied') return false;
+    if(!forceOpen&&joinRequest?.room===room) return joinRequest.promise;
+    const requestEpoch=++joinRequestEpoch;
+    const requesterId=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null;
+    const operationGuard=()=>requestEpoch===joinRequestEpoch
+      &&requesterId===(Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null)
+      &&guard();
     const operation=(async()=>{ try{
       const response=await fetch('/api/my-pair',{credentials:'same-origin'});
       const data=await response.json().catch(()=>({}));
+      if(!operationGuard()) return false;
       if(!response.ok) throw new Error(data.error||`pair lookup ${response.status}`);
-      if(!data.paired || String(data.room_id||'')!==room){
+      let allowed=!!data.paired&&String(data.room_id||'')===room;
+      if(!allowed){
+        // Historical rooms are absent from /api/my-pair. A private recap is the
+        // server-authorized bridge back to an existing checkpoint; its response
+        // must echo the exact room and explicitly confirm an artifact.
+        const recapUrl=new URL('/api/pair-recap',location.origin); recapUrl.searchParams.set('room_id',room);
+        const recapResponse=await fetch(recapUrl,{credentials:'same-origin',cache:'no-store'});
+        const recapData=await recapResponse.json().catch(()=>({}));
+        if(!operationGuard()) return false;
+        allowed=recapResponse.ok
+          &&recapData.ok===true
+          &&String(recapData.room_id||'')===room
+          &&recapData.recap?.workspace?.artifact_available===true;
+      }
+      if(!allowed){
         joinDecision={room,status:'denied'};
         window._randori_join_room=null;
-        window._randori_workspace?.deactivate?.();
-        if(typeof toast==='function') toast('This invite is not your current pairing room.');
+        if(window._randori_workspace?.room===room||window._randori_authorized_room===room){
+          window._randori_workspace?.deactivate?.();
+          if(window._randori_authorized_room===room) window._randori_authorized_room=null;
+        }
+        if(typeof toast==='function') toast('This pairing room is not available to your account.');
         return false;
       }
+      if(!operationGuard()) return false;
       joinDecision={room,status:'allowed'};
-      window._randori_join_room=room;
-      window._randori_authorized_room=room;
       // Workspace state is persisted only after server-authenticated membership succeeds.
-      localStorage.setItem('randori-last-room',room);
-      localStorage.setItem('randori-last-tab','code');
-      const selector=document.getElementById('roomSelect');
-      if(selector){
-        let option=[...selector.options].find(item=>item.value===room);
-        if(!option){ option=document.createElement('option'); option.value=room; option.textContent='Your pairing room'; selector.prepend(option); }
-        selector.value=room;
-      }
-      if(window._randori_code?.loadRoom) window._randori_code.loadRoom(room);
-      else window.dispatchEvent(new CustomEvent('randori:room-change',{detail:{roomId:room}}));
-      document.querySelectorAll('.view').forEach(view=>view.style.display='none');
-      document.getElementById('view-code').style.display='block';
-      document.querySelectorAll('.tab').forEach(tab=>tab.classList.remove('active'));
-      document.querySelector('[data-tab="code"]')?.classList.add('active');
-      return true;
+      return await showAuthorizedRoom(room,{canApply:operationGuard});
     }catch{
       if(typeof toast==='function') toast('Could not validate this pairing invite.');
       return false;
@@ -4850,6 +5262,12 @@ def allow(key, limit=5):
     try{ return await operation; }
     finally{ if(automaticRouteRequest===operation) automaticRouteRequest=null; }
   }
+  window.addEventListener('popstate',()=>{
+    joinRequestEpoch+=1;
+    joinRequest=null;
+    lastAutomaticRouteKey=null;
+    requestAutomaticRoute({force:true}).catch(()=>{});
+  });
 
   // Wrap existing updateAuthUI to also reroute when authentication or route intent changes.
   const origUpdateAuthUI = typeof window.updateAuthUI === 'function' ? window.updateAuthUI : (typeof updateAuthUI==='function'? updateAuthUI : null);
@@ -4863,7 +5281,11 @@ def allow(key, limit=5):
   }
   // Also expose for direct calls
   try{ updateAuthUI = wrappedUpdateAuthUI; }catch{ window.updateAuthUI = wrappedUpdateAuthUI; }
-  window.addEventListener('randori:auth-refreshed',()=>{ requestAutomaticRoute().catch(()=>{}); });
+  window.addEventListener('randori:auth-refreshed',()=>{
+    const nextId=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null;
+    if(nextId!==joinAuthUserId){ joinRequestEpoch+=1; joinRequest=null; joinDecision=null; joinAuthUserId=nextId; }
+    requestAutomaticRoute().catch(()=>{});
+  });
 
   // Initial routing after page load
   document.getElementById('homeBtn')?.addEventListener('click', ()=>{ clearRequestedView(); requestAutomaticRoute({force:true}).catch(()=>{}); window.scrollTo({top:0,behavior:'smooth'}); });
@@ -4891,7 +5313,7 @@ def allow(key, limit=5):
   renderColorPicker(); populateTz();
 
   // Expose
-  window._randori_journey={ showDashboard, showProfileSetup, routeByAuth };
+  window._randori_journey={ showDashboard, showProfileSetup, routeByAuth, openAuthorizedJoin };
 })();
 </script>
 
@@ -5978,7 +6400,7 @@ def allow(key, limit=5):
     const nxtCnt=document.getElementById('dashNextCount');
     if(!stats) return;
     if(you) you.textContent = stats.your_sessions!=null ? String(stats.your_sessions) : (stats.your_weeks!=null? String(stats.your_weeks)+' wks' : '—');
-    if(youSub) youSub.textContent = stats.your_weeks!=null ? 'across '+stats.your_weeks+' weeks' : (stats.your_last? 'last '+stats.your_last.week_label : 'no sessions yet');
+    if(youSub) youSub.textContent = stats.your_weeks!=null ? 'across '+stats.your_weeks+' weeks' : (stats.your_last? 'last '+stats.your_last.week_label : 'no pairings yet');
     if(circ) circ.textContent = String(stats.total_users ?? '—');
     if(circSub) circSub.textContent = (stats.total_users ?? '?') + ' members';
     if(weeks) weeks.textContent = (stats.total_weeks ?? '—') + ' weeks';
@@ -5986,18 +6408,47 @@ def allow(key, limit=5):
     if(nxtCnt) nxtCnt.textContent = fmtCountdown(nextSunday0700UTC());
   }
 
+  let dashboardHistoryUserId=null;
   async function populateHistory(){
     const listEl=document.getElementById('dashHistList');
     if(!listEl) return;
-    if(!(window._randori_auth && window._randori_auth.me)){ listEl.innerHTML='<span class="small muted">Sign in to see your history</span>'; return; }
+    if(!(window._randori_auth && window._randori_auth.me)){
+      dashboardHistoryUserId=null; listEl.replaceChildren();
+      const signedOut=document.createElement('span'); signedOut.className='small muted'; signedOut.textContent='Sign in to see your history'; listEl.appendChild(signedOut); return;
+    }
+    const userId=Number(window._randori_auth.me.id||window._randori_auth.me.uid||0)||null;
+    dashboardHistoryUserId=userId;
+    listEl.replaceChildren();
+    const loading=document.createElement('span'); loading.className='small muted'; loading.textContent='Loading recent pairings…'; listEl.appendChild(loading);
     try{
-      const r=await fetch('/api/history',{credentials:'same-origin'});
+      const r=await fetch('/api/history',{credentials:'same-origin',cache:'no-store'});
       const j=await r.json();
+      if(userId!==(Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null)||document.getElementById('view-dashboard')?.style.display==='none') return;
       if(!r.ok) throw j;
-      if(!j.history || !j.history.length){ listEl.innerHTML='<div class="small muted">No sessions yet — your first pair will appear here after Sunday shuffle.</div>'; return; }
+      if(!j.history || !j.history.length){ listEl.replaceChildren(); const empty=document.createElement('div'); empty.className='small muted'; empty.textContent='No pairings yet — your first pairing will appear after the Sunday shuffle.'; listEl.appendChild(empty); return; }
       const last5=j.history.slice(0,5);
-      listEl.innerHTML= last5.map(h=>`<div class="row" style="justify-content:space-between; padding:6px 0; border-bottom:1px dashed var(--border)"><span><span class="kbd" style="font-size:10px">${escapeHtml(h.week_label)}</span> × ${escapeHtml(h.partner_name)} ${h.is_ai?'<span class="kbd" style="color:var(--accent)">ai</span>':''}</span><span class="small muted" style="font-size:11px">${escapeHtml(h.topic? h.topic : h.topic_kind)}</span></div>`).join('') + '<div class="small muted" style="margin-top:8px">Total: '+escapeHtml(j.total)+' • repeated partners: '+Object.entries(j.partner_counts||{}).filter(([,c])=>c>1).map(([n,c])=>escapeHtml(n)+' ×'+escapeHtml(c)).join(', ') + '</div>';
-    }catch(e){ listEl.innerHTML='<div class="small muted">History: '+escapeHtml(e.error||e.message||'offline')+' — try full History tab.</div>'; }
+      listEl.replaceChildren();
+      last5.forEach(item=>{
+        const row=document.createElement('div'); row.className='row'; row.style.cssText='justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px dashed var(--border)';
+        const summary=document.createElement('span');
+        const label=document.createElement('span'); label.className='kbd'; label.style.fontSize='10px'; label.textContent=String(item?.week_label||'Pairing').slice(0,80);
+        summary.append(label,` × ${String(item?.partner_name||'Pair member').slice(0,240)}`);
+        if(item?.is_ai){ const ai=document.createElement('span'); ai.className='kbd'; ai.style.cssText='color:var(--accent);margin-left:6px'; ai.textContent='ai'; summary.appendChild(ai); }
+        row.appendChild(summary);
+        const room=window._randori_pair_recap?.roomFor?.(item?.week_id,item?.pg_id);
+        if(room){
+          const button=document.createElement('button'); button.type='button'; button.className='pill'; button.dataset.testid='pair-history-view-recap'; button.dataset.roomId=room; button.textContent='View recap';
+          button.setAttribute('aria-label',`View recap for ${String(item?.week_label||'pairing').slice(0,80)} with ${String(item?.partner_name||'pair member').slice(0,240)}`);
+          button.addEventListener('click',()=>{ document.querySelector('[data-tab="history"]')?.click(); window._randori_pair_recap?.open?.(room); });
+          row.appendChild(button);
+        }
+        listEl.appendChild(row);
+      });
+      const total=document.createElement('div'); total.className='small muted'; total.style.marginTop='8px'; total.textContent=`Total pairings: ${Number.isSafeInteger(Number(j.total))?Number(j.total):last5.length}`; listEl.appendChild(total);
+    }catch(e){
+      if(userId!==(Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null)||document.getElementById('view-dashboard')?.style.display==='none') return;
+      listEl.replaceChildren(); const error=document.createElement('div'); error.className='small muted'; error.textContent=`History: ${String(e.error||e.message||'offline').slice(0,200)} — try Pairings & activity.`; listEl.appendChild(error);
+    }
   }
 
   // Bootstrapping
@@ -6026,11 +6477,20 @@ def allow(key, limit=5):
   // Trigger on route changes
   document.addEventListener('DOMContentLoaded', ()=> setTimeout(bootHome, 600));
   // when auth changes, rerun after 400ms
-  let lastAuth=!!(window._randori_auth && window._randori_auth.me);
+  let lastAuthUserId=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null;
   setInterval(()=>{
-    const cur=!!(window._randori_auth && window._randori_auth.me);
-    if(cur!==lastAuth){ lastAuth=cur; setTimeout(bootHome, 500); }
+    const currentUserId=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null;
+    if(currentUserId!==lastAuthUserId){ lastAuthUserId=currentUserId; setTimeout(bootHome, 500); }
   }, 1000);
+  window.addEventListener('randori:auth-refreshed',event=>{
+    const nextId=Number(event.detail?.userId||0)||null;
+    if(nextId!==dashboardHistoryUserId){
+      dashboardHistoryUserId=nextId;
+      const list=document.getElementById('dashHistList');
+      if(list){ list.replaceChildren(); const status=document.createElement('span'); status.className='small muted'; status.textContent=nextId?'Loading recent pairings…':'Sign in to see your history'; list.appendChild(status); }
+    }
+    setTimeout(bootHome,0);
+  });
   // also hook into routeByAuth if exists
   setTimeout(()=>{
     if(window._randori_journey && window._randori_journey.routeByAuth){
@@ -7139,8 +7599,10 @@ def allow(key, limit=5):
     }
   }
 
-  async function flushCurrentWorkspace(timeoutMs=12000){
+  async function flushCurrentWorkspace(timeoutMs=12000,canContinue=null){
     const room=state.room,epoch=state.epoch;
+    const guard=()=>typeof canContinue!=='function'||canContinue()===true;
+    if(!guard()) return false;
     if(!room) return true;
     if(!signedIn()||!canonical(room)||activeRoom()!==room) return false;
     // Turn the board's gesture debounce into a workspace edit while the old
@@ -7148,7 +7610,7 @@ def allow(key, limit=5):
     window._randori_board?.flush?.();
     const deadline=Date.now()+timeoutMs;
     while(Date.now()<deadline){
-      if(state.room!==room||state.epoch!==epoch||!signedIn()||activeRoom()!==room) return false;
+      if(!guard()||state.room!==room||state.epoch!==epoch||!signedIn()||activeRoom()!==room) return false;
       if(!state.hydrated){
         if(!state.pollInFlight) await poll(true,room,epoch);
         await new Promise(resolve=>setTimeout(resolve,25));
@@ -7168,31 +7630,34 @@ def allow(key, limit=5):
     return false;
   }
 
-  async function requestAccess(room){
+  async function requestAccess(room,{canApply=null,preauthorized=false}={}){
     room=String(room||'');
+    const guard=()=>typeof canApply!=='function'||canApply()===true;
+    if(!guard()) return false;
     if(!signedIn()||!canonical(room)){ deactivate(); return false; }
     const previousRoom=state.room;
     const switching=!!previousRoom&&previousRoom!==room;
     const requestEpoch=++accessEpoch;
-    if(!await validateRoom(room)){
-      if(requestEpoch!==accessEpoch) return false;
+    if(!preauthorized&&!await validateRoom(room)){
+      if(requestEpoch!==accessEpoch||!guard()) return false;
       if(!switching) deactivate();
       if(typeof toast==='function') toast('Pair-room access denied.');
       return false;
     }
-    if(requestEpoch!==accessEpoch) return false;
+    if(requestEpoch!==accessEpoch||!guard()) return false;
     if(switching){
-      if(!await flushCurrentWorkspace()){
-        if(requestEpoch!==accessEpoch) return false;
+      if(!await flushCurrentWorkspace(12000,guard)){
+        if(requestEpoch!==accessEpoch||!guard()) return false;
         const selector=document.getElementById('roomSelect');
         if(selector&&[...selector.options].some(option=>option.value===previousRoom)) selector.value=previousRoom;
         window._randori_board?.setSyncState?.('error','Sync this room before switching. Your drawing remains saved on this device.');
         if(typeof toast==='function') toast('Could not sync this room yet, so the room switch was stopped.');
         return false;
       }
-      if(requestEpoch!==accessEpoch) return false;
+      if(requestEpoch!==accessEpoch||!guard()) return false;
       deactivate();
     }
+    if(!guard()) return false;
     window._randori_authorized_room=room;
     window._randori_code?.loadRoom?.(room);
     return true;

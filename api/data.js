@@ -3,6 +3,7 @@ import { createEvaluationSuite, getPublicExercise, listPublicExercises } from '.
 import { parseCanonicalRoomPath } from './_pairing.js';
 import { applyScheduleMutation, nextScheduleUpdatedAt, parseScheduleMutation, projectSchedule, readScheduleState, ScheduleDataError, ScheduleInputError } from './_schedule.js';
 import { ensureMessagesReadiness, MAX_MESSAGES_PER_ROOM, MAX_MESSAGES_PER_USER_PER_MINUTE, MESSAGE_RATE_RETRY_SECONDS, MessageDataError, MessageInputError, parseMessageSend, parseMessagesQuery, projectMessage, validateMessagesPostQuery } from './_messages.js';
+import { ensurePairRecapReadiness, MAX_RECAP_ACTIVITY, MAX_RECAP_RUN_SCAN, newestRecapActivity, PairRecapDataError, PairRecapInputError, parsePairRecapQuery, projectRecapMessage, projectRecapPair, projectRecapRun, projectRecapSchedule, projectRecapWorkspace } from './_pair-recap.js';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 function isAdminCheck(email, flag){
@@ -959,34 +960,69 @@ async function handleWeeks(req,res){
 }
 
 async function handleHistory(req,res){
+  res.setHeader('Cache-Control','private, no-store');
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
   const payload = getAuthPayload(req);
   if (!payload) return res.status(401).json({ error:'missing Bearer token' });
-  const db = getClient();
-  await ensureProfileMigrations(db);
+  let db;
+  let groups;
   const userId = payload.id || payload.uid;
-  const groups = await db.execute({ sql:`
-    SELECT pg.id as pg_id, pg.week_id, pg.user_a_id, pg.user_b_id, pg.user_c_id, pg.is_ai_pair, pg.topic, pg.topic_kind,
-           pw.week_label, pw.week_start
-    FROM pairing_groups pg
-    JOIN pairing_weeks pw ON pw.id = pg.week_id
-    WHERE pg.user_a_id = ? OR pg.user_b_id = ? OR pg.user_c_id = ?
-    ORDER BY pw.week_start DESC, pg.id DESC
-  `, args:[userId,userId,userId] });
-  const allIds = new Set(); groups.rows.forEach(r=>{ allIds.add(r.user_a_id); allIds.add(r.user_b_id); if(r.user_c_id!=null) allIds.add(r.user_c_id); });
-  let idToName={};
-  if (allIds.size){
-    const ids=[...allIds]; const placeholders=ids.map(()=>'?').join(',');
-    try{ const authRows=await db.execute({ sql:`SELECT id, display_name as name FROM auth_accounts WHERE id IN (${placeholders})`, args:ids }); authRows.rows.forEach(r=>{ idToName[r.id]=r.name; }); const missing=ids.filter(i=>!idToName[i]); if(missing.length){ const ph2=missing.map(()=>'?').join(','); const uRows=await db.execute({ sql:`SELECT id, name FROM users WHERE id IN (${ph2})`, args:missing }); uRows.rows.forEach(r=>{ idToName[r.id]=r.name; }); } }catch{}
+  try{
+    db=getClient();
+    await ensureProfileMigrations(db);
+    groups=await db.execute({ sql:`
+      SELECT pg.id as pg_id, pg.week_id, pg.user_a_id, pg.user_b_id, pg.user_c_id,
+             pa.source AS user_a_source,pb.source AS user_b_source,pc.source AS user_c_source,
+             pg.is_ai_pair, pg.topic, pg.topic_kind, pw.week_label, pw.week_start
+      FROM pairing_groups pg
+      JOIN pairing_weeks pw ON pw.id = pg.week_id
+      JOIN pairing_participants viewer ON viewer.week_id=pg.week_id AND viewer.user_id=? AND viewer.source='auth'
+      LEFT JOIN pairing_participants pa ON pa.week_id=pg.week_id AND pa.user_id=pg.user_a_id
+      LEFT JOIN pairing_participants pb ON pb.week_id=pg.week_id AND pb.user_id=pg.user_b_id
+      LEFT JOIN pairing_participants pc ON pc.week_id=pg.week_id AND pc.user_id=pg.user_c_id
+      WHERE (pg.user_a_id = ? OR pg.user_b_id = ? OR pg.user_c_id = ?)
+      ORDER BY pw.week_start DESC, pg.id DESC
+    `, args:[userId,userId,userId,userId] });
+  }catch{
+    return res.status(503).json({error:'history unavailable'});
   }
-  const enriched = groups.rows.map(r=>{
+  const safeGroups=groups.rows.filter(row=>[
+    [row.user_a_id,row.user_a_source],[row.user_b_id,row.user_b_source],[row.user_c_id,row.user_c_source],
+  ].every(([id,source])=>id==null||source==='auth'||source==='users'));
+  const authIds=new Set(),legacyIds=new Set();
+  safeGroups.forEach(row=>{
+    for(const [id,source] of [[row.user_a_id,row.user_a_source],[row.user_b_id,row.user_b_source],[row.user_c_id,row.user_c_source]]){
+      if(id==null) continue;
+      (source==='auth'?authIds:legacyIds).add(id);
+    }
+  });
+  const idToName=new Map();
+  if(authIds.size){
+    const ids=[...authIds],placeholders=ids.map(()=>'?').join(',');
+    try{
+      const rows=await db.execute({sql:`SELECT id,display_name AS name FROM auth_accounts WHERE id IN (${placeholders})`,args:ids});
+      rows.rows.forEach(row=>idToName.set(`auth:${row.id}`,row.name));
+    }catch{}
+  }
+  if(legacyIds.size){
+    const ids=[...legacyIds],placeholders=ids.map(()=>'?').join(',');
+    try{
+      const rows=await db.execute({sql:`SELECT id,name FROM users WHERE id IN (${placeholders})`,args:ids});
+      rows.rows.forEach(row=>idToName.set(`users:${row.id}`,row.name));
+    }catch{}
+  }
+  const enriched = safeGroups.map(r=>{
     const isA = Number(r.user_a_id)===Number(userId);
-    const participantIds=[r.user_a_id,r.user_b_id,r.user_c_id]
-      .filter(id=>id!=null && Number(id)!==Number(userId));
-    const partnerIds=r.is_ai_pair ? [] : participantIds;
+    const participants=[
+      {id:r.user_a_id,source:r.user_a_source},
+      {id:r.user_b_id,source:r.user_b_source},
+      {id:r.user_c_id,source:r.user_c_source},
+    ].filter(member=>member.id!=null&&Number(member.id)!==Number(userId));
+    const partners=r.is_ai_pair?[]:participants;
+    const partnerIds=partners.map(partner=>partner.id);
     const partnerNames=r.is_ai_pair
       ? ['AI partner']
-      : partnerIds.map(id=>idToName[id]||`User ${id}`);
+      : partners.map(partner=>idToName.get(`${partner.source}:${partner.id}`)||`User ${partner.id}`);
     return { pg_id:r.pg_id, week_id:r.week_id, week_label:r.week_label, week_start:r.week_start, is_ai:!!r.is_ai_pair, topic:r.topic, topic_kind:r.topic_kind, partner_id:partnerIds[0]??null, partner_name:partnerNames.join(' & '), partner_ids:partnerIds, partner_names:partnerNames, you_are_a:isA };
   });
   const partnerCounts={}; enriched.forEach(e=>{ if(!e.is_ai) e.partner_names.forEach(name=>{ partnerCounts[name]=(partnerCounts[name]||0)+1; }); });
@@ -1003,6 +1039,7 @@ async function handleInit(req,res){
     `CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0, is_demo INTEGER DEFAULT 0, bio TEXT, tz TEXT, interview_focus TEXT DEFAULT 'both', leetcode_handle TEXT)`,
     `CREATE TABLE IF NOT EXISTS pairing_weeks (id INTEGER PRIMARY KEY AUTOINCREMENT, week_label TEXT NOT NULL, week_start TEXT NOT NULL, focus TEXT NOT NULL DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')), is_demo INTEGER DEFAULT 0)`,
     `CREATE TABLE IF NOT EXISTS pairing_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL REFERENCES pairing_weeks(id) ON DELETE CASCADE, user_a_id INTEGER NOT NULL, user_b_id INTEGER NOT NULL, user_c_id INTEGER, is_ai_pair INTEGER DEFAULT 0, topic TEXT DEFAULT 'Pick together', topic_kind TEXT DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')))`,
+    `CREATE TABLE IF NOT EXISTS pairing_participants (week_id INTEGER NOT NULL, user_id INTEGER NOT NULL, position INTEGER NOT NULL, source TEXT NOT NULL DEFAULT 'auth', created_at TEXT DEFAULT (datetime('now')), PRIMARY KEY (week_id, user_id))`,
     `CREATE TABLE IF NOT EXISTS questions (id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT UNIQUE NOT NULL, title TEXT NOT NULL, type TEXT NOT NULL, difficulty TEXT NOT NULL, category TEXT NOT NULL, description TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS video_signals (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT NOT NULL, from_id TEXT NOT NULL, to_id TEXT, type TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`,
     `CREATE TABLE IF NOT EXISTS ai_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT, pair_label TEXT, transcript TEXT, code_snapshots TEXT, interviewer_questions TEXT, started_at TEXT DEFAULT (datetime('now')), ended_at TEXT, duration_sec INTEGER, cost_cents INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now')), created_by INTEGER)`,
@@ -1080,6 +1117,8 @@ async function handleInit(req,res){
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_cq_author ON custom_questions(author_id)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_user ON session_runs(user_id, created_at DESC)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_question ON session_runs(question_slug)`);}catch{}
+  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_pair_activity ON session_runs(week_id,pair_group_id,julianday(created_at) DESC,id DESC)`);}catch{}
+  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_messages_pair_activity ON pair_messages(week_id,pair_group_id,julianday(created_at) DESC,id DESC)`);}catch{}
   await maybeSeedFromStatic(db);
   return res.json({ ok:true, message:"Tables ready (incl custom_questions + profile + pair_messages + pair_schedules + session_runs)" });
 }
@@ -1433,6 +1472,166 @@ async function handleMessages(req,res){
   }catch(error){
     if(error instanceof MessageDataError) return res.status(503).json({error:'messages unavailable'});
     return res.status(503).json({error:'messages unavailable'});
+  }
+}
+
+async function handlePairRecap(req,res){
+  res.setHeader('Cache-Control','private, no-store');
+  const payload=getAuthPayload(req);
+  if(!payload) return res.status(401).json({error:'authentication required'});
+  if(req.method!=='GET'){
+    res.setHeader('Allow','GET');
+    return res.status(405).json({error:'GET only'});
+  }
+
+  let room;
+  try{ room=parsePairRecapQuery(req); }
+  catch(error){
+    if(error instanceof PairRecapInputError) return res.status(400).json({error:error.message});
+    throw error;
+  }
+
+  const userId=Number(payload.id||payload.uid);
+  let db;
+  try{ db=getClient(); }
+  catch{ return res.status(503).json({error:'pair recap unavailable'}); }
+  const accessSql=`SELECT 1 FROM pairing_groups access_group
+    JOIN pairing_participants access_viewer
+      ON access_viewer.week_id=access_group.week_id
+      AND access_viewer.user_id=? AND access_viewer.source='auth'
+    WHERE access_group.id=? AND access_group.week_id=?
+      AND (access_group.user_a_id=? OR access_group.user_b_id=? OR access_group.user_c_id=?)`;
+  const accessArgs=[userId,room.pairGroupId,room.weekId,userId,userId,userId];
+  try{
+    const access=await db.execute({sql:accessSql,args:accessArgs});
+    if(!access.rows?.length) return res.status(404).json({error:'pair not found'});
+    await ensurePairRecapReadiness(db);
+  }catch{ return res.status(503).json({error:'pair recap unavailable'}); }
+
+  const pairStatement={
+    sql:`WITH access AS (${accessSql})
+      SELECT pg.id AS pair_id,pg.week_id,pw.week_label,pw.week_start,
+        pg.topic,pg.topic_kind,pg.is_ai_pair,
+        pg.user_a_id,CASE pa.source WHEN 'auth' THEN COALESCE(ua.display_name,printf('User %d',pg.user_a_id)) WHEN 'users' THEN COALESCE(ula.name,printf('User %d',pg.user_a_id)) END AS user_a_name,
+        pg.user_b_id,CASE pb.source WHEN 'auth' THEN COALESCE(ub.display_name,printf('User %d',pg.user_b_id)) WHEN 'users' THEN COALESCE(ulb.name,printf('User %d',pg.user_b_id)) END AS user_b_name,
+        pg.user_c_id,CASE pc.source WHEN 'auth' THEN COALESCE(uc.display_name,printf('User %d',pg.user_c_id)) WHEN 'users' THEN COALESCE(ulc.name,printf('User %d',pg.user_c_id)) END AS user_c_name
+      FROM pairing_groups pg
+      JOIN pairing_weeks pw ON pw.id=pg.week_id
+      LEFT JOIN pairing_participants pa ON pa.week_id=pg.week_id AND pa.user_id=pg.user_a_id
+      LEFT JOIN pairing_participants pb ON pb.week_id=pg.week_id AND pb.user_id=pg.user_b_id
+      LEFT JOIN pairing_participants pc ON pc.week_id=pg.week_id AND pc.user_id=pg.user_c_id
+      LEFT JOIN auth_accounts ua ON ua.id=pg.user_a_id
+      LEFT JOIN auth_accounts ub ON ub.id=pg.user_b_id
+      LEFT JOIN auth_accounts uc ON uc.id=pg.user_c_id
+      LEFT JOIN users ula ON ula.id=pg.user_a_id
+      LEFT JOIN users ulb ON ulb.id=pg.user_b_id
+      LEFT JOIN users ulc ON ulc.id=pg.user_c_id
+      WHERE pg.id=? AND pg.week_id=?
+        AND EXISTS (SELECT 1 FROM access)
+      LIMIT 1`,
+    args:[...accessArgs,room.pairGroupId,room.weekId],
+  };
+  const scheduleStatement={
+    sql:`WITH access AS (${accessSql}), selected AS (
+        SELECT ps.agreed_time,ps.updated_at
+        FROM pair_schedules ps
+        WHERE ps.week_id=? AND ps.pair_group_id=? AND EXISTS (SELECT 1 FROM access)
+        LIMIT 1
+      )
+      SELECT agreed_time,updated_at,1 AS data_present FROM selected
+      UNION ALL SELECT NULL,NULL,0
+        WHERE EXISTS (SELECT 1 FROM access) AND NOT EXISTS (SELECT 1 FROM selected)`,
+    args:[...accessArgs,room.weekId,room.pairGroupId],
+  };
+  const messagesStatement={
+    sql:`WITH access AS (${accessSql}), selected AS (
+        SELECT pm.id,pm.sender_id,pm.message,pm.created_at,
+          CASE sender.source WHEN 'auth' THEN COALESCE(aa.display_name,printf('User %d',pm.sender_id)) WHEN 'users' THEN COALESCE(legacy.name,printf('User %d',pm.sender_id)) END AS sender_name
+        FROM pair_messages pm LEFT JOIN auth_accounts aa ON aa.id=pm.sender_id
+        LEFT JOIN users legacy ON legacy.id=pm.sender_id
+        LEFT JOIN pairing_participants sender ON sender.week_id=pm.week_id AND sender.user_id=pm.sender_id
+        WHERE pm.week_id=? AND pm.pair_group_id=? AND sender.source='auth'
+          AND EXISTS (SELECT 1 FROM access)
+        ORDER BY julianday(pm.created_at) DESC,pm.id DESC LIMIT 50
+      )
+      SELECT id,sender_id,message,created_at,sender_name,1 AS data_present FROM selected
+      UNION ALL SELECT NULL,NULL,NULL,NULL,NULL,0
+        WHERE EXISTS (SELECT 1 FROM access) AND NOT EXISTS (SELECT 1 FROM selected)
+      ORDER BY id DESC`,
+    args:[...accessArgs,room.weekId,room.pairGroupId],
+  };
+  const runsStatement={
+    sql:`WITH access AS (${accessSql}), selected AS (
+        SELECT sr.id,sr.user_id,sr.question_slug,sr.language,sr.test_cases_snapshot,
+          sr.results_json,sr.passed_count,sr.total_count,sr.duration_ms,sr.created_at,
+          CASE runner.source WHEN 'auth' THEN COALESCE(aa.display_name,printf('User %d',sr.user_id)) WHEN 'users' THEN COALESCE(legacy.name,printf('User %d',sr.user_id)) END AS runner_display_name
+        FROM session_runs sr LEFT JOIN auth_accounts aa ON aa.id=sr.user_id
+        LEFT JOIN users legacy ON legacy.id=sr.user_id
+        LEFT JOIN pairing_participants runner ON runner.week_id=sr.week_id AND runner.user_id=sr.user_id
+        WHERE sr.week_id=? AND sr.pair_group_id=? AND runner.source='auth'
+          AND EXISTS (SELECT 1 FROM access)
+        ORDER BY julianday(sr.created_at) DESC,sr.id DESC LIMIT ?
+      )
+      SELECT id,user_id,question_slug,language,test_cases_snapshot,results_json,
+        passed_count,total_count,duration_ms,created_at,runner_display_name,1 AS data_present
+        FROM selected
+      UNION ALL SELECT NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,0
+        WHERE EXISTS (SELECT 1 FROM access) AND NOT EXISTS (SELECT 1 FROM selected)
+      ORDER BY id DESC`,
+    args:[...accessArgs,room.weekId,room.pairGroupId,MAX_RECAP_RUN_SCAN+1],
+  };
+  const workspaceStatement={
+    sql:`WITH access AS (${accessSql}), selected AS (
+        SELECT revision,schema_version,language,question_id,updated_at
+        FROM pair_room_snapshots
+        WHERE room_id=? AND week_id=? AND pair_group_id=?
+          AND EXISTS (SELECT 1 FROM access)
+        LIMIT 1
+      )
+      SELECT revision,schema_version,language,question_id,updated_at,1 AS data_present FROM selected
+      UNION ALL SELECT NULL,NULL,NULL,NULL,NULL,0
+        WHERE EXISTS (SELECT 1 FROM access) AND NOT EXISTS (SELECT 1 FROM selected)`,
+    args:[...accessArgs,room.roomId,room.weekId,room.pairGroupId],
+  };
+
+  try{
+    const results=await db.batch([
+      pairStatement,scheduleStatement,messagesStatement,runsStatement,workspaceStatement,
+    ],'read');
+    if(!Array.isArray(results)||results.length!==5){
+      return res.status(503).json({error:'pair recap unavailable'});
+    }
+    const [pairRows,scheduleRows,messageRows,runRows,workspaceRows]=results;
+    if(!pairRows?.rows?.length||!scheduleRows?.rows?.length||!messageRows?.rows?.length
+      ||!runRows?.rows?.length||!workspaceRows?.rows?.length){
+      return res.status(404).json({error:'pair not found'});
+    }
+
+    const pair=projectRecapPair(pairRows.rows[0],userId);
+    const memberIds=new Set(pair.members.filter(member=>!member.is_ai).map(member=>member.id));
+    const scheduleRow=scheduleRows.rows.find(row=>Number(row.data_present)===1)||null;
+    const schedule=projectRecapSchedule(scheduleRow);
+    const messages=messageRows.rows
+      .filter(row=>Number(row.data_present)===1)
+      .map(projectRecapMessage);
+    const storedRuns=runRows.rows.filter(row=>Number(row.data_present)===1);
+    const runScanOverflow=storedRuns.length>MAX_RECAP_RUN_SCAN;
+    const runs=storedRuns.slice(0,MAX_RECAP_RUN_SCAN)
+      .map(row=>projectRecapRun(row,verifyRunAttestation))
+      .filter(Boolean);
+    if(messages.some(event=>!memberIds.has(event.actor.id))||runs.some(event=>!memberIds.has(event.actor.id))){
+      return res.status(503).json({error:'pair recap unavailable'});
+    }
+    const activity=newestRecapActivity(messages,runs);
+    if(runScanOverflow&&runs.length<MAX_RECAP_ACTIVITY){
+      return res.status(503).json({error:'pair recap unavailable'});
+    }
+    const workspaceRow=workspaceRows.rows.find(row=>Number(row.data_present)===1)||null;
+    const workspace=projectRecapWorkspace(workspaceRow);
+    return res.json({ok:true,room_id:room.roomId,recap:{pair,schedule,activity,workspace}});
+  }catch(error){
+    if(error instanceof PairRecapDataError) return res.status(503).json({error:'pair recap unavailable'});
+    return res.status(503).json({error:'pair recap unavailable'});
   }
 }
 
@@ -2226,13 +2425,14 @@ export default async function handler(req,res){
   if (ep==='init' || path.includes('/init')) return await handleInit(req,res);
   if (ep==='profile' || path.includes('/profile')) return await handleProfile(req,res);
   if (ep==='my-pair' || path.includes('my-pair') || ep==='mypair' || path.includes('my_pair') || ep==='my_pair') return await handleMyPair(req,res);
+  if (ep==='pair-recap' || path.includes('/pair-recap')) return await handlePairRecap(req,res);
   if (ep==='schedule' || path.includes('/schedule')) return await handleSchedule(req,res);
   if (ep.includes('message')) return await handleMessages(req,res);
   if (ep==='execute' || ep==='run' || path.includes('/execute')) return await handleExecute(req,res);
   if (ep==='health' || path.includes('/health') || ep==='healthz') return await handleHealth(req,res);
   if (ep==='logs' || path.includes('/logs') || ep==='applogs' || ep==='app_logs') return await handleLogs(req,res);
   if (ep==='questions' || ep==='question' || path.includes('/questions')) return await handleQuestions(req,res);
-  return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['health','runs','execute','logs','leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','schedule','messages','questions'] });
+  return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['health','runs','execute','logs','leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','pair-recap','schedule','messages','questions'] });
   }catch(e){
     const failedEndpoint=getEndpoint(req);
     const failedPath=String(req?.url||'').toLowerCase();

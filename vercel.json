@@ -71,6 +71,10 @@
       "destination": "/api/data?endpoint=my-pair"
     },
     {
+      "source": "/api/pair-recap",
+      "destination": "/api/data?endpoint=pair-recap"
+    },
+    {
       "source": "/api/stats",
       "destination": "/api/data?endpoint=stats"
     },

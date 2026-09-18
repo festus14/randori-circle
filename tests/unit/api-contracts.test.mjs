@@ -216,6 +216,7 @@ test('private data endpoints reject anonymous callers before database access', a
     ['profile', 'GET', {}],
     ['history', 'GET', {}],
     ['my-pair', 'GET', {}],
+    ['pair-recap', 'GET', {}],
     ['schedule', 'GET', {}],
     ['messages', 'GET', {}],
     ['questions', 'GET', {}],
