@@ -288,7 +288,7 @@ test('pair recap returns one exact redacted historical-room response',async()=>{
   assert.equal(readBatch.statements.length,5);
   for(const statement of readBatch.statements){
     assert.match(statement.sql,/pairing_groups/);
-    assert.match(statement.sql,/(?:access_group\.)?user_a_id=\? OR (?:access_group\.)?user_b_id=\? OR (?:access_group\.)?user_c_id=\?/);
+    assert.match(statement.sql,/pg\.user_a_id=\? OR pg\.user_b_id=\? OR pg\.user_c_id=\?/);
   }
   const workspaceSql=readBatch.statements[4].sql;
   assert.doesNotMatch(workspaceSql,/\b(?:code|board|client_id|client_seq|updated_by)\b/);

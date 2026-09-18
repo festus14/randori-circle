@@ -398,9 +398,9 @@ test('data read models map database rows into circle, weeks, history, stats, and
     if (sql.includes('COUNT(*) as c FROM auth_accounts')) return rows([{ c: 4 }]);
     if (sql.includes('COUNT(*) as c FROM pairing_weeks')) return rows([{ c: 2 }]);
     if (sql.includes('COUNT(*) as c FROM pairing_groups pg JOIN')) return rows([{ c: 3 }]);
-    if (sql.includes('COUNT(*) as c FROM pairing_groups WHERE user_a_id')) return rows([{ c: 2 }]);
-    if (sql.includes('COUNT(DISTINCT week_id)')) return rows([{ c: 2 }]);
-    if (sql.includes('ORDER BY pw.id DESC LIMIT 1')) return rows([{ pg_id: 20, week_id: 10 }]);
+    if (sql.includes('COUNT(*) as c FROM pairing_groups') && sql.includes('pairing_participants viewer')) return rows([{ c: 2 }]);
+    if (sql.includes('COUNT(DISTINCT pairing_groups.week_id)')) return rows([{ c: 2 }]);
+    if (sql.includes('ORDER BY pw.id DESC LIMIT 1') && sql.includes('pairing_participants viewer')) return rows([{ pg_id: 20, week_id: 10 }]);
     return rows();
   };
   const auth = { 'x-test-auth': 'user' };
@@ -441,7 +441,7 @@ test('profile, pair schedule, and messages enforce ownership while catalogue and
   };
   executeHandler = (sql, args) => {
     if (sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')) return rows([{ id: 1, email: 'admin@example.test', is_admin: 1 }]);
-    if (sql.includes('SELECT id,user_a_id,user_b_id')) return rows([{ id: 20, user_a_id: 2, user_b_id: 4, is_ai_pair: 0 }]);
+    if (sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')) return rows([{ pair_group_id: 20, week_id:10, user_a_id: 2, user_b_id: 4, user_c_id:null }]);
     if (sql.includes('SELECT id,email,display_name,color') || sql.includes('SELECT id,email,display_name,color,is_available')) return rows([profileRow]);
     if (sql.startsWith("PRAGMA table_info('pair_schedules')")) return rows([
       'week_id','pair_group_id','proposed_times','agreed_time','created_at','updated_at',
@@ -464,7 +464,7 @@ test('profile, pair schedule, and messages enforce ownership while catalogue and
       };
       return rows([{...scheduleState}],{rowsAffected:1});
     }
-    if (sql.includes('FROM pair_schedules WHERE week_id=? AND pair_group_id=? LIMIT 1')) return rows([{...scheduleState}]);
+    if (sql.includes('FROM pair_schedules') && sql.includes('pair_access')) return rows([{...scheduleState,data_present:1}]);
     if (sql.includes('SELECT id,display_name FROM auth_accounts WHERE id=')) return rows([{ id: 2, display_name: 'Updated User' }]);
     if (sql.includes('INSERT INTO pair_messages') && sql.includes('RETURNING id')) return rows([{
       id: 40, sender_id: 2, message: 'Sunday works', created_at: '2026-09-18T06:00:00.000Z',
@@ -616,16 +616,17 @@ test('run schema readiness coalesces concurrent pair-feed initialization and pro
     }
     if(sql.startsWith('SELECT id,display_name FROM auth_accounts LIMIT 0')
       || sql.startsWith('SELECT id,week_id,user_a_id,user_b_id,user_c_id FROM pairing_groups LIMIT 0')
+      || sql.startsWith('SELECT week_id,user_id,source FROM pairing_participants LIMIT 0')
       || sql.startsWith('SELECT id,user_id,week_id,pair_group_id,question_id,question_slug,language,code,test_cases_snapshot')){
       completedProbes+=1;
       return rows();
     }
-    if(sql.includes('SELECT id,user_a_id,user_b_id')){
-      assert.equal(completedProbes,3,'pair access must wait for every readiness probe');
+    if(sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')){
+      assert.equal(completedProbes,4,'pair access must wait for every readiness probe');
       accessChecks+=1;
-      return rows([{id:20,user_a_id:2,user_b_id:4,user_c_id:null}]);
+      return rows([{pair_group_id:20,week_id:10,user_a_id:2,user_b_id:4,user_c_id:null}]);
     }
-    if(sql.includes('FROM session_runs sr')) return rows([]);
+    if(sql.includes('FROM session_runs sr')) return rows([{id:null}]);
     return rows();
   };
   const request={
@@ -645,7 +646,7 @@ test('run schema readiness coalesces concurrent pair-feed initialization and pro
   const responses=await Promise.all([first,second]);
   assert.deepEqual(responses.map(response=>response.status),[200,200]);
   assert.equal(baseInitializations,1);
-  assert.equal(completedProbes,3,'the shared readiness promise probes each required table once');
+  assert.equal(completedProbes,4,'the shared readiness promise probes each required table once');
   assert.equal(accessChecks,2,'each request still performs its own membership authorization');
 });
 
@@ -660,11 +661,11 @@ test('failed run schema readiness is not cached and the next request retries ini
       if(authProbeAttempts===1) throw new Error('schema probe unavailable');
       return rows();
     }
-    if(sql.includes('SELECT id,user_a_id,user_b_id')){
+    if(sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')){
       accessChecks+=1;
-      return rows([{id:20,user_a_id:2,user_b_id:4,user_c_id:null}]);
+      return rows([{pair_group_id:20,week_id:10,user_a_id:2,user_b_id:4,user_c_id:null}]);
     }
-    if(sql.includes('FROM session_runs sr')) return rows([]);
+    if(sql.includes('FROM session_runs sr')) return rows([{id:null}]);
     return rows();
   };
   const request={
@@ -676,7 +677,8 @@ test('failed run schema readiness is not cached and the next request retries ini
   console.error=()=>{};
   try{
     const failed=await invoke(dataHandler,request);
-    assert.equal(failed.status,500);
+    assert.equal(failed.status,503);
+    assert.deepEqual(failed.body,{error:'runs unavailable'});
     assert.equal(accessChecks,0);
 
     const retried=await invoke(dataHandler,request);
@@ -713,9 +715,11 @@ test('pair run feed is member-scoped, incremental, private, and verifies the sub
     await memoryDb.batch([
       `CREATE TABLE auth_accounts (id INTEGER PRIMARY KEY,email TEXT,display_name TEXT,color TEXT)`,
       `CREATE TABLE pairing_groups (id INTEGER PRIMARY KEY,week_id INTEGER NOT NULL,user_a_id INTEGER NOT NULL,user_b_id INTEGER NOT NULL,user_c_id INTEGER)`,
+      `CREATE TABLE pairing_participants (week_id INTEGER NOT NULL,user_id INTEGER NOT NULL,position INTEGER NOT NULL,source TEXT NOT NULL,PRIMARY KEY(week_id,user_id))`,
       `CREATE TABLE session_runs (id INTEGER PRIMARY KEY,user_id INTEGER,week_id INTEGER,pair_group_id INTEGER,question_id INTEGER,question_slug TEXT,language TEXT,code TEXT NOT NULL,test_cases_snapshot TEXT,results_json TEXT,passed_count INTEGER,total_count INTEGER,duration_ms INTEGER,created_at TEXT)`,
       `INSERT INTO auth_accounts (id,email,display_name,color) VALUES (2,'viewer@example.test','Viewer','#123456'),(4,'partner@example.test','Partner','#654321'),(5,'outsider@example.test','Outsider','#abcdef')`,
       `INSERT INTO pairing_groups (id,week_id,user_a_id,user_b_id,user_c_id) VALUES (20,10,2,4,NULL),(21,11,4,5,NULL)`,
+      `INSERT INTO pairing_participants (week_id,user_id,position,source) VALUES (10,2,0,'auth'),(10,4,1,'auth'),(11,4,0,'auth'),(11,5,1,'auth')`,
     ],'write');
     await memoryDb.execute({
       sql:`INSERT INTO session_runs (id,user_id,week_id,pair_group_id,question_slug,language,code,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -800,24 +804,31 @@ test('pair run feed strictly validates cursors and authorizes the exact canonica
     assert.equal(executed.length,0,'invalid room feed queries must fail before database access');
   }
 
-  let access='missing';
-  executeHandler=sql=>{
-    if(sql.includes('SELECT id,user_a_id,user_b_id')){
-      if(access==='missing') return rows([]);
-      return rows([{id:2,user_a_id:7,user_b_id:8,user_c_id:null}]);
+  for(const access of ['missing','forbidden']){
+    const accessDb=createClient({url:'file::memory:'});
+    try{
+      await accessDb.batch([
+        `CREATE TABLE auth_accounts (id INTEGER PRIMARY KEY,email TEXT,display_name TEXT,color TEXT)`,
+        `CREATE TABLE pairing_groups (id INTEGER PRIMARY KEY,week_id INTEGER NOT NULL,user_a_id INTEGER NOT NULL,user_b_id INTEGER NOT NULL,user_c_id INTEGER)`,
+        `CREATE TABLE pairing_participants (week_id INTEGER NOT NULL,user_id INTEGER NOT NULL,position INTEGER NOT NULL,source TEXT NOT NULL,PRIMARY KEY(week_id,user_id))`,
+        `CREATE TABLE session_runs (id INTEGER PRIMARY KEY,user_id INTEGER,week_id INTEGER,pair_group_id INTEGER,question_id INTEGER,question_slug TEXT,language TEXT,code TEXT NOT NULL,test_cases_snapshot TEXT,results_json TEXT,passed_count INTEGER,total_count INTEGER,duration_ms INTEGER,created_at TEXT)`,
+      ],'write');
+      if(access==='forbidden'){
+        await accessDb.batch([
+          `INSERT INTO pairing_groups (id,week_id,user_a_id,user_b_id,user_c_id) VALUES (2,1,4,5,NULL)`,
+          `INSERT INTO pairing_participants (week_id,user_id,position,source) VALUES (1,4,0,'auth'),(1,5,1,'auth')`,
+        ],'write');
+      }
+      databaseDelegate=accessDb;
+      const denied=await invoke(dataHandler,{
+        url:'/api/runs',query:{endpoint:'runs',room_id:'week_1_pair_2'},headers,
+      });
+      assert.equal(denied.status,404,access);
+    }finally{
+      databaseDelegate=null;
+      accessDb.close();
     }
-    if(sql.includes('FROM session_runs sr')) throw new Error('unauthorized run feed must not be queried');
-    return rows();
-  };
-  const missing=await invoke(dataHandler,{
-    url:'/api/runs',query:{endpoint:'runs',room_id:'week_1_pair_2'},headers,
-  });
-  assert.equal(missing.status,404);
-  access='forbidden';
-  const forbidden=await invoke(dataHandler,{
-    url:'/api/runs',query:{endpoint:'runs',room_id:'week_1_pair_2'},headers,
-  });
-  assert.equal(forbidden.status,403);
+  }
 
   executeHandler=(sql,args)=>{
     if(sql.includes('FROM session_runs WHERE user_id=')){
@@ -840,7 +851,7 @@ test('my-pair returns only the latest week membership and a canonical room id', 
     if (sql.includes('FROM pairing_weeks WHERE COALESCE(is_demo,0)=0 ORDER BY id DESC LIMIT 1')) {
       return rows([{ id: 10, week_label: '2026-W38', week_start: '2026-09-20', focus: 'both' }]);
     }
-    if (sql.includes('FROM pairing_groups WHERE week_id=')) {
+    if (sql.includes('FROM pairing_groups') && sql.includes('JOIN pairing_participants AS viewer') && sql.includes('WHERE pairing_groups.week_id=')) {
       return rows(paired ? [thirdMember ? {
         pg_id: 20,
         week_id: 10,
@@ -861,14 +872,16 @@ test('my-pair returns only the latest week membership and a canonical room id', 
         topic_kind: 'dsa',
       }] : []);
     }
-    if (sql.includes('SELECT id, display_name, color, bio, tz, interview_focus, leetcode_handle')) {
+    if (sql.includes('SELECT aa.id,aa.display_name,aa.color,aa.bio,aa.tz,aa.interview_focus,aa.leetcode_handle')) {
       return rows([{ id: 4, display_name: 'Partner', color: '#abcdef', bio: '', tz: 'UTC', interview_focus: 'dsa', leetcode_handle: 'partner' }]);
     }
     if (sql.includes('SELECT id, display_name, color, tz, interview_focus FROM auth_accounts')) {
       return rows([{ id: 2, display_name: 'User', color: '#123456', tz: 'UTC', interview_focus: 'both' }]);
     }
-    if (sql.includes('FROM pair_schedules WHERE week_id=')) {
-      return rows(poisonedSchedule?[{proposed_times:'not-json',agreed_time:null,updated_at:'now'}]:[]);
+    if (sql.includes('FROM pair_schedules') && sql.includes('pair_access')) {
+      return rows(poisonedSchedule
+        ? [{id:30,proposed_times:'not-json',agreed_time:null,updated_at:'now',access_present:1}]
+        : [{id:null,proposed_times:null,agreed_time:null,updated_at:null,access_present:1}]);
     }
     return rows();
   };
@@ -938,7 +951,7 @@ test('execution uses only server-owned versioned cases and persists exact author
   const submitted=[];
   let nextRunId=70;
   executeHandler = sql => {
-    if(sql.includes('SELECT id,user_a_id,user_b_id')) return rows([{id:20,user_a_id:8,user_b_id:9,user_c_id:2}]);
+    if(sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')) return rows([{pair_group_id:20,week_id:10,user_a_id:8,user_b_id:9,user_c_id:2}]);
     if(sql.includes("'execute_lease_start'") && sql.includes('RETURNING id')) return rows([{id:500+nextRunId}]);
     if(sql.includes('INSERT INTO session_runs') && sql.includes('RETURNING id')) return rows([{id:nextRunId++}]);
     return rows();
@@ -1023,12 +1036,13 @@ test('execution uses only server-owned versioned cases and persists exact author
 
     const insert=executed.find(call=>call.sql.includes('INSERT INTO session_runs') && call.sql.includes('RETURNING id'));
     assert.ok(insert,'execute must persist its server-computed result');
-    assert.equal(insert.args[4],question.slug);
-    assert.equal(insert.args[1],language==='python'?10:null);
-    assert.equal(insert.args[2],language==='python'?20:null);
-    assert.equal(insert.args[9],suite.tests.length);
-    assert.equal(insert.args[10],suite.tests.length);
-    const snapshot=JSON.parse(insert.args[7]);
+    const persistedArgs=insert.args.slice(-12);
+    assert.equal(persistedArgs[4],question.slug);
+    assert.equal(persistedArgs[1],language==='python'?10:null);
+    assert.equal(persistedArgs[2],language==='python'?20:null);
+    assert.equal(persistedArgs[9],suite.tests.length);
+    assert.equal(persistedArgs[10],suite.tests.length);
+    const snapshot=JSON.parse(persistedArgs[7]);
     assert.equal(snapshot.source,'original-catalog');
     assert.equal(snapshot.version,question.version);
     assert.equal(snapshot.total_count,suite.tests.length);
@@ -1041,9 +1055,9 @@ test('execution uses only server-owned versioned cases and persists exact author
       language,
       passedCount:suite.tests.length,
       totalCount:suite.tests.length,
-      resultsJson:insert.args[8],
+      resultsJson:persistedArgs[8],
     }));
-    assert.deepEqual(JSON.parse(insert.args[8]),result.body.results);
+    assert.deepEqual(JSON.parse(persistedArgs[8]),result.body.results);
     assert.equal(executed.some(call=>/CREATE TABLE|ALTER TABLE|CREATE INDEX/i.test(call.sql)),false);
   }
 
@@ -1077,9 +1091,9 @@ test('canonical room execution authorizes membership before work and persists th
   const entrypoint=question.languages.javascript.entrypoint;
   let networkCalls=0;
   executeHandler=(sql,args)=>{
-    if(sql.includes('SELECT id,user_a_id,user_b_id')){
-      assert.deepEqual(args,[20,42]);
-      return rows([{id:20,user_a_id:2,user_b_id:4,user_c_id:null}]);
+    if(sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')){
+      assert.deepEqual(args,[2,20,42,2,2,2]);
+      return rows([{pair_group_id:20,week_id:42,user_a_id:2,user_b_id:4,user_c_id:null}]);
     }
     if(sql.includes("'execute_lease_start'") && sql.includes('RETURNING id')) return rows([{id:220}]);
     if(sql.includes("event='execute_attempt'")) return rows([{c:1}]);
@@ -1106,14 +1120,14 @@ test('canonical room execution authorizes membership before work and persists th
   assert.equal(result.body.run_id,120);
   assert.equal(networkCalls,1);
 
-  const membershipIndex=executed.findIndex(call=>call.sql.includes('SELECT id,user_a_id,user_b_id'));
+  const membershipIndex=executed.findIndex(call=>call.sql.trimStart().startsWith('SELECT pg.id AS pair_group_id'));
   const firstWriteIndex=executed.findIndex(call=>call.sql.includes('INSERT INTO app_logs'));
   assert.ok(membershipIndex>=0);
   assert.ok(firstWriteIndex>membershipIndex,'membership must be proven before leases, quota writes, or provider work');
   const insert=executed.find(call=>call.sql.includes('INSERT INTO session_runs') && call.sql.includes('RETURNING id'));
   assert.ok(insert);
-  assert.equal(insert.args[1],42);
-  assert.equal(insert.args[2],20);
+  assert.equal(insert.args.slice(-12)[1],42);
+  assert.equal(insert.args.slice(-12)[2],20);
 });
 
 test('canonical room execution rejects ambiguous, malformed, missing, and unauthorized rooms before work', async () => {
@@ -1150,8 +1164,8 @@ test('canonical room execution rejects ambiguous, malformed, missing, and unauth
 
   let access='missing';
   executeHandler=sql=>{
-    if(sql.includes('SELECT id,user_a_id,user_b_id')){
-      return access==='missing' ? rows([]) : rows([{id:20,user_a_id:7,user_b_id:8,user_c_id:null}]);
+    if(sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')){
+      return rows([]);
     }
     throw new Error('room access denial must stop all later database work');
   };
@@ -1165,7 +1179,7 @@ test('canonical room execution rejects ambiguous, malformed, missing, and unauth
     method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers:{'x-test-auth':'user'},
     body:{...base,room_id:'week_42_pair_20'},
   });
-  assert.equal(forbidden.status,403);
+  assert.equal(forbidden.status,404);
   assert.equal(networkCalls,0);
   assert.equal(executed.some(call=>call.sql.includes('INSERT INTO app_logs') || call.sql.includes('INSERT INTO session_runs')),false);
 });
@@ -1175,7 +1189,7 @@ test('execution rejects unavailable questions and enforces pair membership befor
   let networkCalls=0;
   globalThis.fetch=async()=>{ networkCalls+=1; throw new Error('network must not be reached'); };
   executeHandler=sql=>{
-    if(sql.includes('SELECT id,user_a_id,user_b_id')) return rows([{id:20,user_a_id:8,user_b_id:9,user_c_id:null}]);
+    if(sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')) return rows([]);
     return rows();
   };
   const headers={'x-test-auth':'user'};
@@ -1203,7 +1217,7 @@ test('execution rejects unavailable questions and enforces pair membership befor
     method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers,
     body:{language:'javascript',code:'function answer(){}',question_slug:question.slug,week_id:10,pair_group_id:20},
   });
-  assert.equal(forbidden.status,403);
+  assert.equal(forbidden.status,404);
 
   executeHandler=sql=>{
     if(sql.includes("'execute_lease_start'") && sql.includes('RETURNING id')) return rows([{id:201}]);
@@ -1223,7 +1237,7 @@ test('execution rejects unavailable questions and enforces pair membership befor
 test('execution failures never run request-time schema DDL', async () => {
   const question=listPublicExercises()[0];
   executeHandler=sql=>{
-    if(sql.includes('SELECT id,user_a_id,user_b_id,user_c_id')) throw new Error('forced membership lookup failure');
+    if(sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')) throw new Error('forced membership lookup failure');
     return rows();
   };
   const originalError=console.error;
@@ -1233,7 +1247,8 @@ test('execution failures never run request-time schema DDL', async () => {
       method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers:{'x-test-auth':'user'},
       body:{language:'javascript',code:'function answer(){}',question_slug:question.slug,week_id:10,pair_group_id:20},
     });
-    assert.equal(result.status,500);
+    assert.equal(result.status,503);
+    assert.deepEqual(result.body,{error:'execution service unavailable'});
     assert.equal(executed.some(call=>/CREATE TABLE|ALTER TABLE|CREATE INDEX/i.test(call.sql)),false);
   }finally{
     console.error=originalError;
@@ -1442,7 +1457,7 @@ test('admin init reports a visible error when the legacy schedule migration fail
 
 test('data validation and access-control branches reject malformed or cross-pair requests', async () => {
   executeHandler = sql => {
-    if (sql.includes('SELECT id,user_a_id,user_b_id')) return rows([{ id: 20, user_a_id: 7, user_b_id: 8 }]);
+    if (sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')) return rows([]);
     if (sql.includes('SELECT author_id FROM custom_questions')) return rows([{ author_id: 7 }]);
     if (sql.includes('SELECT is_admin FROM auth_accounts')) return rows([{ is_admin: 0 }]);
     return rows();
@@ -1456,7 +1471,7 @@ test('data validation and access-control branches reject malformed or cross-pair
     [{ method: 'PUT', url: '/api/profile', query: { endpoint: 'profile' }, headers }, 405],
     [{ method: 'POST', url: '/api/profile', query: { endpoint: 'profile' }, headers, body: {} }, 400],
     [{ url: '/api/schedule', query: { endpoint: 'schedule' }, headers }, 400],
-    [{ url: '/api/schedule', query: { endpoint: 'schedule', room_id:'week_10_pair_20' }, headers }, 403],
+    [{ url: '/api/schedule', query: { endpoint:'schedule', room_id:'week_10_pair_20' }, headers }, 404],
     [{ method: 'POST', url: '/api/messages', query: { endpoint: 'messages' }, headers, body: {} }, 400],
     [{ method: 'POST', url: '/api/messages', query: { endpoint: 'messages' }, headers, body: { room_id: 'week_10_pair_20', message: 'no access' } }, 404],
     [{ method: 'POST', url: '/api/questions', query: { endpoint: 'questions' }, headers, body: {} }, 405],
@@ -1545,13 +1560,16 @@ test('authorized LeetCode ingestion parses approved remote metadata through mock
 test('AI consent path stores a template analysis and exposes owned feedback history', async () => {
   process.env.AI_ENABLED = 'true';
   executeHandler = sql => {
-    if (sql.includes('SELECT pg.id AS pair_group_id')) return rows([{ pair_group_id: 20, week_id: 10, user_a_id: 2, user_b_id: 3, user_c_id: null, is_ai_pair: 0, week_label: '2026-W38' }]);
+    if (sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')) return rows([{ pair_group_id: 20, week_id: 10, user_a_id: 2, user_b_id: 3, user_c_id: null, is_ai_pair: 0, week_label: '2026-W38' }]);
     if (sql.includes('SELECT user_id FROM ai_consents')) return rows([{ user_id: 2 }, { user_id: 3 }]);
     if (sql.includes('SELECT is_demo FROM auth_accounts')) return rows([{ is_demo: 0 }]);
-    if (sql.includes('COUNT(*) as c FROM ai_sessions')) return rows([{ c: 2 }]);
+    if (sql.trimStart().startsWith('SELECT calls FROM ai_account_monthly_usage')) return rows([{ calls: 2 }]);
+    if (sql.includes('INSERT INTO ai_account_monthly_reservations') && sql.includes('RETURNING reservation_id')) return rows([{ reservation_id: 'reservation-70' }]);
+    if (sql.includes('INSERT INTO ai_account_monthly_usage') && sql.includes('RETURNING calls')) return rows([{ calls: 3 }]);
     if (sql.includes('SELECT calls FROM ai_usage')) return rows([{ calls: 3 }]);
     if (sql.includes('SELECT calls,tokens_in FROM ai_usage')) return rows([{ calls: 3, tokens_in: 100 }]);
     if (sql.includes('INSERT INTO ai_sessions') && sql.includes('RETURNING id')) return rows([{ id: 70 }]);
+    if (sql.includes('UPDATE ai_account_monthly_reservations') && sql.includes('RETURNING session_id')) return rows([{ session_id: 70 }]);
     if (sql.includes('INSERT INTO ai_feedback') && sql.includes('RETURNING id')) return rows([{ id: 71 }]);
     if (sql.includes('FROM ai_feedback af JOIN ai_sessions ase') && sql.includes('af.session_id=')) return rows([{
       id: 71, session_id: 70, feedback_json: '{"overall_score":7}', evidence: '{"validation":true}',
@@ -1595,7 +1613,7 @@ test('AI analysis requires trusted room membership and every human participant c
   process.env.AI_ENABLED = 'true';
   let consentedIds = [2];
   executeHandler = (sql, args) => {
-    if (sql.includes('SELECT pg.id AS pair_group_id')) {
+    if (sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')) {
       if (Number(args[0]) === 20) return rows([{ pair_group_id: 20, week_id: 10, user_a_id: 2, user_b_id: 3, user_c_id: null, is_ai_pair: 0, week_label: '2026-W38' }]);
       if (Number(args[0]) === 21) return rows([{ pair_group_id: 21, week_id: 10, user_a_id: 1, user_b_id: 3, user_c_id: null, is_ai_pair: 0, week_label: '2026-W38' }]);
       return rows([]);
@@ -1604,8 +1622,11 @@ test('AI analysis requires trusted room membership and every human participant c
     if (sql.includes('SELECT is_demo FROM auth_accounts')) return rows([{ is_demo: 0 }]);
     if (sql.includes('SELECT calls FROM ai_usage')) return rows([{ calls: 0 }]);
     if (sql.includes('SELECT calls,tokens_in FROM ai_usage')) return rows([{ calls: 0, tokens_in: 0 }]);
-    if (sql.includes('COUNT(*) as c FROM ai_sessions')) return rows([{ c: 0 }]);
+    if (sql.trimStart().startsWith('SELECT calls FROM ai_account_monthly_usage')) return rows([]);
+    if (sql.includes('INSERT INTO ai_account_monthly_reservations') && sql.includes('RETURNING reservation_id')) return rows([{ reservation_id: 'reservation-80' }]);
+    if (sql.includes('INSERT INTO ai_account_monthly_usage') && sql.includes('RETURNING calls')) return rows([{ calls: 1 }]);
     if (sql.includes('INSERT INTO ai_sessions') && sql.includes('RETURNING id')) return rows([{ id: 80 }]);
+    if (sql.includes('UPDATE ai_account_monthly_reservations') && sql.includes('RETURNING session_id')) return rows([{ session_id: 80 }]);
     if (sql.includes('INSERT INTO ai_feedback') && sql.includes('RETURNING id')) return rows([{ id: 81 }]);
     return rows();
   };
@@ -1634,13 +1655,16 @@ test('AI provider network failures preserve Groq retries and OpenAI fallback', a
   process.env.GROQ_API_KEY = 'test-groq-key';
   process.env.OPENAI_API_KEY = 'test-openai-key';
   executeHandler = sql => {
-    if (sql.includes('SELECT pg.id AS pair_group_id')) return rows([{ pair_group_id: 22, week_id: 10, user_a_id: 2, user_b_id: 2, user_c_id: null, is_ai_pair: 1, week_label: '2026-W38' }]);
+    if (sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')) return rows([{ pair_group_id: 22, week_id: 10, user_a_id: 2, user_b_id: 2, user_c_id: null, is_ai_pair: 1, week_label: '2026-W38' }]);
     if (sql.includes('SELECT user_id FROM ai_consents')) return rows([{ user_id: 2 }]);
     if (sql.includes('SELECT is_demo FROM auth_accounts')) return rows([{ is_demo: 0 }]);
     if (sql.includes('SELECT calls FROM ai_usage')) return rows([{ calls: 0 }]);
     if (sql.includes('SELECT calls,tokens_in FROM ai_usage')) return rows([{ calls: 0, tokens_in: 0 }]);
-    if (sql.includes('COUNT(*) as c FROM ai_sessions')) return rows([{ c: 0 }]);
+    if (sql.trimStart().startsWith('SELECT calls FROM ai_account_monthly_usage')) return rows([]);
+    if (sql.includes('INSERT INTO ai_account_monthly_reservations') && sql.includes('RETURNING reservation_id')) return rows([{ reservation_id: 'reservation-82' }]);
+    if (sql.includes('INSERT INTO ai_account_monthly_usage') && sql.includes('RETURNING calls')) return rows([{ calls: 1 }]);
     if (sql.includes('INSERT INTO ai_sessions') && sql.includes('RETURNING id')) return rows([{ id: 82 }]);
+    if (sql.includes('UPDATE ai_account_monthly_reservations') && sql.includes('RETURNING session_id')) return rows([{ session_id: 82 }]);
     if (sql.includes('INSERT INTO ai_feedback') && sql.includes('RETURNING id')) return rows([{ id: 83 }]);
     return rows();
   };
@@ -1704,9 +1728,17 @@ test('AI rejects malformed provider feedback with the generic provider error', a
         user_c_id INTEGER,
         is_ai_pair INTEGER DEFAULT 0
       )`,
+      `CREATE TABLE pairing_participants (
+        week_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        position INTEGER NOT NULL,
+        source TEXT NOT NULL,
+        PRIMARY KEY (week_id,user_id)
+      )`,
       `INSERT INTO auth_accounts (id,email,is_demo) VALUES (2,'user@example.test',0)`,
       `INSERT INTO pairing_weeks (id,week_label) VALUES (10,'2026-W38')`,
       `INSERT INTO pairing_groups (id,week_id,user_a_id,user_b_id,user_c_id,is_ai_pair) VALUES (23,10,2,2,NULL,1)`,
+      `INSERT INTO pairing_participants (week_id,user_id,position,source) VALUES (10,2,0,'auth')`,
     ], 'write');
 
     let providerContent=JSON.stringify({
@@ -1753,13 +1785,16 @@ test('AI rejects malformed provider feedback with the generic provider error', a
 test('AI provider selection, quota, and ownership branches remain fail-closed', async () => {
   process.env.AI_ENABLED = 'true';
   executeHandler = sql => {
-    if (sql.includes('SELECT pg.id AS pair_group_id')) return rows([{ pair_group_id: 21, week_id: 10, user_a_id: 2, user_b_id: 2, user_c_id: null, is_ai_pair: 1, week_label: '2026-W38' }]);
+    if (sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')) return rows([{ pair_group_id: 21, week_id: 10, user_a_id: 2, user_b_id: 2, user_c_id: null, is_ai_pair: 1, week_label: '2026-W38' }]);
     if (sql.includes('SELECT user_id FROM ai_consents')) return rows([{ user_id: 2 }]);
     if (sql.includes('SELECT is_demo FROM auth_accounts')) return rows([{ is_demo: 0 }]);
-    if (sql.includes('COUNT(*) as c FROM ai_sessions')) return rows([{ c: 0 }]);
+    if (sql.trimStart().startsWith('SELECT calls FROM ai_account_monthly_usage')) return rows([]);
+    if (sql.includes('INSERT INTO ai_account_monthly_reservations') && sql.includes('RETURNING reservation_id')) return rows([{ reservation_id: 'reservation-72' }]);
+    if (sql.includes('INSERT INTO ai_account_monthly_usage') && sql.includes('RETURNING calls')) return rows([{ calls: 1 }]);
     if (sql.includes('SELECT calls FROM ai_usage')) return rows([{ calls: 0 }]);
     if (sql.includes('SELECT calls,tokens_in FROM ai_usage')) return rows([{ calls: 0, tokens_in: 0 }]);
     if (sql.includes('INSERT INTO ai_sessions') && sql.includes('RETURNING id')) return rows([{ id: 72 }]);
+    if (sql.includes('UPDATE ai_account_monthly_reservations') && sql.includes('RETURNING session_id')) return rows([{ session_id: 72 }]);
     if (sql.includes('INSERT INTO ai_feedback') && sql.includes('RETURNING id')) return rows([{ id: 73 }]);
     if (sql.includes('FROM ai_feedback af JOIN ai_sessions ase') && sql.includes('af.session_id=')) return rows([{ id: 73, session_id: 72, feedback_json: '{}', created_by: 99 }]);
     return rows();
@@ -1805,7 +1840,7 @@ test('AI rejects missing content and enforces demo quota before provider calls',
   assert.equal(empty.status, 400);
 
   executeHandler = sql => {
-    if (sql.includes('SELECT pg.id AS pair_group_id')) return rows([{ pair_group_id: 22, week_id: 10, user_a_id: 3, user_b_id: 3, user_c_id: null, is_ai_pair: 1, week_label: '2026-W38' }]);
+    if (sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')) return rows([{ pair_group_id: 22, week_id: 10, user_a_id: 3, user_b_id: 3, user_c_id: null, is_ai_pair: 1, week_label: '2026-W38' }]);
     if (sql.includes('SELECT user_id FROM ai_consents')) return rows([{ user_id: 3 }]);
     if (sql.includes('SELECT is_demo FROM auth_accounts')) return rows([{ is_demo: 1 }]);
     if (sql.includes('SELECT calls FROM ai_usage')) return rows([{ calls: 100 }]);
@@ -2078,12 +2113,20 @@ test('adjacent manual reshuffles advance the CAS generation and avoid current pa
 
 test('video signaling validates membership and supports post, filtered poll, and purge', async () => {
   executeHandler = sql => {
-    if (sql.includes('SELECT user_a_id,user_b_id')) return rows([{ user_a_id: 2, user_b_id: 4, user_c_id:null }]);
     if (sql.includes('INSERT INTO video_signals')) return rows([{ id: 80 }]);
-    if (sql.includes('SELECT id, room_id, from_id')) return rows([
-      { id: 80, room_id: 'week_10_pair_20', from_id: 'other', to_id: 'peer', type: 'offer', payload: '{}', created_at: 'now' },
-      { id: 81, room_id: 'week_10_pair_20', from_id: 'third', to_id: 'someone-else', type: 'ice', payload: '{}', created_at: 'now' },
+    if (sql.includes('LEFT JOIN video_signals signal')) return rows([
+      { id: 80, room_id: 'week_10_pair_20', from_id: 'other', to_id: 'peer', type: 'offer', payload: '{}', created_at: 'now', signal_present:1 },
+      { id: 81, room_id: 'week_10_pair_20', from_id: 'third', to_id: 'someone-else', type: 'ice', payload: '{}', created_at: 'now', signal_present:1 },
     ]);
+    if (sql.includes('DELETE FROM video_signals')) return rows();
+    if (sql.includes("JOIN pairing_participants AS viewer")) return rows([{
+      pair_group_id:20,
+      week_id:10,
+      user_a_id:2,
+      user_b_id:4,
+      user_c_id:null,
+      is_ai_pair:0,
+    }]);
     return rows();
   };
   const headers = { 'x-test-auth': 'user' };

@@ -91,6 +91,22 @@ test('request authentication accepts session cookies and Bearer tokens only with
   assert.equal(verifyRequestAuth({ headers: { cookie: `randori_session=${validToken}` } })?.id, 42);
   assert.equal(verifyRequestAuth({ headers: { authorization: `Bearer ${validToken}` } })?.id, 42);
 
+  const compatibleStringId = jwt.sign(
+    { id: '42', email: 'legacy-client@example.test' },
+    process.env.JWT_SECRET,
+    { algorithm: 'HS256', issuer: JWT_ISSUER, audience: JWT_AUDIENCE, expiresIn: '5m' },
+  );
+  assert.equal(verifyRequestAuth({ headers: { authorization: `Bearer ${compatibleStringId}` } })?.id, 42);
+
+  for(const invalidId of [true,[42],' 42 ','042','4.2',Number.MAX_SAFE_INTEGER+1]){
+    const malformedToken=jwt.sign(
+      {id:invalidId},
+      process.env.JWT_SECRET,
+      {algorithm:'HS256',issuer:JWT_ISSUER,audience:JWT_AUDIENCE,expiresIn:'5m'},
+    );
+    assert.equal(verifyRequestAuth({headers:{authorization:`Bearer ${malformedToken}`}}),null);
+  }
+
   const wrongIssuer = jwt.sign(
     { id: 42 },
     process.env.JWT_SECRET,

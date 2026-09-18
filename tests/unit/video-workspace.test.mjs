@@ -92,18 +92,59 @@ before(async()=>{
     week_id INTEGER NOT NULL,
     user_a_id INTEGER NOT NULL,
     user_b_id INTEGER NOT NULL,
-    user_c_id INTEGER
+    user_c_id INTEGER,
+    is_ai_pair INTEGER DEFAULT 0,
+    topic TEXT,
+    topic_kind TEXT
+  )`);
+  await db.execute(`CREATE TABLE pairing_participants (
+    week_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    PRIMARY KEY (week_id,user_id)
+  )`);
+  await db.execute(`CREATE TABLE video_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_id TEXT NOT NULL,
+    from_id TEXT NOT NULL,
+    to_id TEXT,
+    type TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  )`);
+  await db.execute(`CREATE TABLE pair_room_snapshots (
+    room_id TEXT PRIMARY KEY,
+    week_id INTEGER NOT NULL,
+    pair_group_id INTEGER NOT NULL,
+    revision INTEGER NOT NULL,
+    schema_version INTEGER NOT NULL,
+    client_id TEXT NOT NULL,
+    client_seq INTEGER NOT NULL,
+    language TEXT NOT NULL,
+    question_id TEXT NOT NULL,
+    code TEXT NOT NULL,
+    updated_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(week_id,pair_group_id)
   )`);
 });
 
 beforeEach(async()=>{
+  await db.execute(`DELETE FROM pair_room_snapshots`);
+  await db.execute(`DELETE FROM video_signals`);
+  await db.execute(`DELETE FROM pairing_participants`);
   await db.execute(`DELETE FROM pairing_groups`);
   await db.execute({
     sql:`INSERT INTO pairing_groups (id,week_id,user_a_id,user_b_id,user_c_id) VALUES (?,?,?,?,?)`,
     args:[20,10,2,4,6],
   });
-  try{ await db.execute(`DELETE FROM pair_room_snapshots`); }catch{}
-  try{ await db.execute(`DELETE FROM video_signals`); }catch{}
+  await db.batch([
+    {sql:`INSERT INTO pairing_participants (week_id,user_id,position,source) VALUES (?,?,?,?)`,args:[10,2,0,'auth']},
+    {sql:`INSERT INTO pairing_participants (week_id,user_id,position,source) VALUES (?,?,?,?)`,args:[10,4,1,'auth']},
+    {sql:`INSERT INTO pairing_participants (week_id,user_id,position,source) VALUES (?,?,?,?)`,args:[10,6,2,'auth']},
+  ],'write');
 });
 
 after(()=>db.close());
@@ -434,7 +475,7 @@ test('workspace snapshots use monotonic CAS revisions and idempotent client sequ
 });
 
 test('competing writes from the same base allow exactly one CAS winner', async()=>{
-  // Create the runtime tables before racing so the test isolates snapshot CAS.
+  // Confirm access before racing so the test isolates snapshot CAS.
   assert.equal((await get(0)).status,200);
   const [left,right]=await Promise.all([
     post(workspace({client_id:'client_C3',code:'left'})),
