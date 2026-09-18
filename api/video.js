@@ -1,5 +1,5 @@
 import { getClient, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
-import { AUTH_PAIR_ACCESS_SQL, authPairAccessArgs } from './_pair-access.js';
+import { authPairAccessArgs, authPairAccessSql } from './_pair-access.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
 
 const WORKSPACE_SCHEMA_VERSION = 3;
@@ -383,7 +383,7 @@ function snapshotFromRow(row){
 
 async function readAuthorizedWorkspaceSnapshot(db,userId,room){
   const rs=await db.execute({
-    sql:`WITH access AS (${AUTH_PAIR_ACCESS_SQL})
+    sql:`WITH access AS (${authPairAccessSql()})
       SELECT snapshot.room_id,snapshot.revision,snapshot.schema_version,snapshot.client_id,
         snapshot.client_seq,snapshot.language,snapshot.question_id,snapshot.code,
         snapshot.updated_by,snapshot.updated_at,
@@ -438,7 +438,7 @@ async function handleWorkspacePost(req,res,db,auth,room){
   let writeResult;
   if(current){
     writeResult=await db.execute({
-      sql:`WITH access AS (${AUTH_PAIR_ACCESS_SQL})
+      sql:`WITH access AS (${authPairAccessSql()})
         UPDATE pair_room_snapshots
         SET revision=revision+1,schema_version=?,client_id=?,client_seq=?,language=?,question_id=?,code=?,updated_by=?,updated_at=datetime('now')
         WHERE room_id=? AND week_id=? AND pair_group_id=? AND revision=?
@@ -452,7 +452,7 @@ async function handleWorkspacePost(req,res,db,auth,room){
     });
   }else{
     writeResult=await db.execute({
-      sql:`WITH access AS (${AUTH_PAIR_ACCESS_SQL})
+      sql:`WITH access AS (${authPairAccessSql()})
         INSERT INTO pair_room_snapshots
         (room_id,week_id,pair_group_id,revision,schema_version,client_id,client_seq,language,question_id,code,updated_by)
         SELECT ?,?,?,1,?,?,?,?,?,?,?
@@ -509,7 +509,7 @@ async function handleWorkspaceGet(req,res,db,userId,room){
 
 async function insertAuthorizedSignal(db,userId,room,{fromId,toId,type,payload}){
   return db.execute({
-    sql:`WITH access AS (${AUTH_PAIR_ACCESS_SQL})
+    sql:`WITH access AS (${authPairAccessSql()})
       INSERT INTO video_signals (room_id,from_id,to_id,type,payload)
       SELECT ?,?,?,?,? WHERE EXISTS (SELECT 1 FROM access)
       RETURNING id`,
@@ -519,7 +519,7 @@ async function insertAuthorizedSignal(db,userId,room,{fromId,toId,type,payload})
 
 async function trimAuthorizedSignals(db,userId,room){
   return db.execute({
-    sql:`WITH access AS (${AUTH_PAIR_ACCESS_SQL})
+    sql:`WITH access AS (${authPairAccessSql()})
       DELETE FROM video_signals
       WHERE room_id=?
         AND EXISTS (SELECT 1 FROM access)
@@ -532,7 +532,7 @@ async function trimAuthorizedSignals(db,userId,room){
 
 async function readAuthorizedSignals(db,userId,room,after,peerId){
   const result=await db.execute({
-    sql:`WITH access AS (${AUTH_PAIR_ACCESS_SQL})
+    sql:`WITH access AS (${authPairAccessSql()})
       SELECT signal.id,signal.room_id,signal.from_id,signal.to_id,signal.type,
         signal.payload,signal.created_at,
         CASE WHEN signal.id IS NULL THEN 0 ELSE 1 END AS signal_present
@@ -565,12 +565,12 @@ async function readAuthorizedSignals(db,userId,room,after,peerId){
 
 async function purgeAuthorizedSignals(db,userId,room){
   await db.execute({
-    sql:`WITH access AS (${AUTH_PAIR_ACCESS_SQL})
+    sql:`WITH access AS (${authPairAccessSql()})
       DELETE FROM video_signals
       WHERE room_id=? AND EXISTS (SELECT 1 FROM access)`,
     args:[...pairAccessArgs(userId,room),room.roomId],
   });
-  const access=await db.execute({sql:AUTH_PAIR_ACCESS_SQL,args:pairAccessArgs(userId,room)});
+  const access=await db.execute({sql:authPairAccessSql(),args:pairAccessArgs(userId,room)});
   return !!access.rows?.length;
 }
 

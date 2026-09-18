@@ -3,7 +3,7 @@ import { createEvaluationSuite, getPublicExercise, listPublicExercises } from '.
 import { parseCanonicalRoomPath } from './_pairing.js';
 import { resolvePairingCycle } from './_pairing-cycle.js';
 import { getPairingPublication } from './_pairing-publication.js';
-import { AUTH_PAIR_ACCESS_SQL, authPairAccessArgs, getAuthenticatedPairAccess } from './_pair-access.js';
+import { authPairAccessArgs, authPairAccessSql, getAuthenticatedPairAccess } from './_pair-access.js';
 import { applyScheduleMutation, nextScheduleUpdatedAt, parseScheduleMutation, projectSchedule, readScheduleState, ScheduleDataError, ScheduleInputError } from './_schedule.js';
 import { ensureMessagesReadiness, MAX_MESSAGES_PER_ROOM, MAX_MESSAGES_PER_USER_PER_MINUTE, MESSAGE_RATE_RETRY_SECONDS, MessageDataError, MessageInputError, parseMessageSend, parseMessagesQuery, projectMessage, validateMessagesPostQuery } from './_messages.js';
 import { ensurePairRecapReadiness, MAX_RECAP_ACTIVITY, MAX_RECAP_RUN_SCAN, newestRecapActivity, PairRecapDataError, PairRecapInputError, parsePairRecapQuery, projectRecapMessage, projectRecapPair, projectRecapRun, projectRecapSchedule, projectRecapWorkspace } from './_pair-recap.js';
@@ -1539,7 +1539,7 @@ async function handleMyPair(req,res){
     try{
       const placeholders=partnerIds.map(()=>'?').join(',');
       const accessArgs=authPairAccessArgs({userId,weekId,pairGroupId:grp.pg_id});
-      const pr = await db.execute({ sql:`WITH pair_access AS (${AUTH_PAIR_ACCESS_SQL})
+      const pr = await db.execute({ sql:`WITH pair_access AS (${authPairAccessSql()})
         SELECT aa.id,aa.display_name,aa.color,aa.bio,aa.tz,aa.interview_focus,aa.leetcode_handle
         FROM auth_accounts aa
         JOIN pairing_participants member
@@ -1562,7 +1562,7 @@ async function handleMyPair(req,res){
   let scheduleRow=null;
   try{
     const accessArgs=authPairAccessArgs({userId,weekId,pairGroupId:grp.pg_id});
-    const s = await db.execute({ sql:`WITH pair_access AS (${AUTH_PAIR_ACCESS_SQL}), selected AS (
+    const s = await db.execute({ sql:`WITH pair_access AS (${authPairAccessSql()}), selected AS (
         SELECT id,week_id,pair_group_id,proposed_times,agreed_time,updated_at
         FROM pair_schedules
         WHERE week_id=? AND pair_group_id=? AND EXISTS (SELECT 1 FROM pair_access)
@@ -1606,7 +1606,7 @@ async function handleMyPair(req,res){
 
 async function fetchAuthorizedScheduleState(db,accessArgs,weekId,pairId){
   const result=await db.execute({
-    sql:`WITH pair_access AS (${AUTH_PAIR_ACCESS_SQL}), selected AS (
+    sql:`WITH pair_access AS (${authPairAccessSql()}), selected AS (
         SELECT proposed_times,agreed_time,updated_at FROM pair_schedules WHERE week_id=? AND pair_group_id=?
           AND EXISTS (SELECT 1 FROM pair_access)
         LIMIT 1
@@ -1694,7 +1694,7 @@ async function handleSchedule(req,res){
           SET proposed_times=?,agreed_time=?,updated_at=?
           WHERE week_id=? AND pair_group_id=?
             AND proposed_times IS ? AND agreed_time IS ? AND updated_at IS ?
-            AND EXISTS (${AUTH_PAIR_ACCESS_SQL})
+            AND EXISTS (${authPairAccessSql()})
           RETURNING proposed_times,agreed_time,updated_at`,
         args:[nextValues.proposedTimes,nextValues.agreedTime,nextUpdatedAt,
           room.weekId,room.pairGroupId,current.rawProposedTimes,current.rawAgreedTime,current.rawUpdatedAt,...accessArgs],
@@ -1702,7 +1702,7 @@ async function handleSchedule(req,res){
     }else{
       written=await db.execute({
         sql:`INSERT INTO pair_schedules (week_id,pair_group_id,proposed_times,agreed_time,created_at,updated_at)
-          SELECT ?,?,?,?,?,? WHERE EXISTS (${AUTH_PAIR_ACCESS_SQL})
+          SELECT ?,?,?,?,?,? WHERE EXISTS (${authPairAccessSql()})
           ON CONFLICT(week_id,pair_group_id) DO NOTHING
           RETURNING proposed_times,agreed_time,updated_at`,
         args:[room.weekId,room.pairGroupId,nextValues.proposedTimes,nextValues.agreedTime,nextUpdatedAt,nextUpdatedAt,...accessArgs],
@@ -1755,7 +1755,7 @@ async function handleMessages(req,res){
       const projection=`pm.id,pm.sender_id,pm.message,pm.created_at,aa.display_name AS sender_name`;
       let sql,args;
       if(input.afterId===0){
-        sql=`WITH access AS (${AUTH_PAIR_ACCESS_SQL}), selected AS (
+        sql=`WITH access AS (${authPairAccessSql()}), selected AS (
           SELECT ${projection}
           FROM pair_messages pm
           JOIN pairing_participants sender
@@ -1772,7 +1772,7 @@ async function handleMessages(req,res){
         ORDER BY id ASC`;
         args=[...accessArgs,input.weekId,input.pairGroupId,input.limit];
       }else{
-        sql=`WITH access AS (${AUTH_PAIR_ACCESS_SQL}), selected AS (
+        sql=`WITH access AS (${authPairAccessSql()}), selected AS (
           SELECT ${projection}
           FROM pair_messages pm
           JOIN pairing_participants sender
@@ -1812,7 +1812,7 @@ async function handleMessages(req,res){
     });
     if(!senderResult.rows.length) return res.status(503).json({error:'messages unavailable'});
     const inserted=await db.execute({
-      sql:`WITH access AS (${AUTH_PAIR_ACCESS_SQL})
+      sql:`WITH access AS (${authPairAccessSql()})
         INSERT INTO pair_messages (week_id,pair_group_id,sender_id,message,created_at)
         SELECT ?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now')
         WHERE EXISTS (SELECT 1 FROM access)
@@ -1829,7 +1829,7 @@ async function handleMessages(req,res){
       try{
         state=await db.execute({
           sql:`SELECT
-            EXISTS(${AUTH_PAIR_ACCESS_SQL}) AS allowed,
+            EXISTS(${authPairAccessSql()}) AS allowed,
             (SELECT COUNT(*) FROM pair_messages
               WHERE sender_id=? AND datetime(created_at)>=datetime('now','-1 minute')) AS recent_count,
             (SELECT COUNT(*) FROM pair_messages WHERE week_id=? AND pair_group_id=?) AS room_count`,
@@ -1878,7 +1878,7 @@ async function handlePairRecap(req,res){
   let db;
   try{ db=getClient(); }
   catch{ return res.status(503).json({error:'pair recap unavailable'}); }
-  const accessSql=AUTH_PAIR_ACCESS_SQL;
+  const accessSql=authPairAccessSql();
   const accessArgs=authPairAccessArgs({userId,weekId:room.weekId,pairGroupId:room.pairGroupId});
   try{
     const access=await db.execute({sql:accessSql,args:accessArgs});
@@ -2192,7 +2192,7 @@ async function handleRuns(req,res){
         if(pairAfterId===0){
           // Bootstrap from the newest bounded window, but return it in the same
           // ascending order used by subsequent incremental requests.
-          pairSql=`WITH pair_access AS (${AUTH_PAIR_ACCESS_SQL}), selected AS (
+          pairSql=`WITH pair_access AS (${authPairAccessSql()}), selected AS (
             SELECT ${pairProjection}
             FROM session_runs sr
             JOIN pairing_participants runner
@@ -2210,7 +2210,7 @@ async function handleRuns(req,res){
             ORDER BY id ASC`;
           pairArgs.push(pairLimit);
         }else{
-          pairSql=`WITH pair_access AS (${AUTH_PAIR_ACCESS_SQL}), selected AS (
+          pairSql=`WITH pair_access AS (${authPairAccessSql()}), selected AS (
             SELECT ${pairProjection}
             FROM session_runs sr
             JOIN pairing_participants runner
@@ -2788,7 +2788,7 @@ async function handleExecute(req,res){
       const runArgs=[payload.id||payload.uid,weekId,pairId,null,questionSlug,pistonLang,code,testSnapshot,storedResults,passed,total,dur];
       const inserted=accessArgs
         ? await db.execute({
-          sql:`WITH pair_access AS (${AUTH_PAIR_ACCESS_SQL})
+          sql:`WITH pair_access AS (${authPairAccessSql()})
             INSERT INTO session_runs (user_id,week_id,pair_group_id,question_id,question_slug,language,code,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at)
             SELECT ?,?,?,?,?,?,?,?,?,?,?,?,datetime('now')
             WHERE EXISTS (SELECT 1 FROM pair_access)

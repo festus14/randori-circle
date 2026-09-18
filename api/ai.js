@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { captureSentryException, captureSentryMessage, getClient, initSentry, isSentryConfigured, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
-import { AUTH_PAIR_ACCESS_SQL, authPairAccessArgs } from './_pair-access.js';
+import { authPairAccessArgs, authPairAccessSql } from './_pair-access.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
 
 initSentry();
@@ -170,7 +170,7 @@ class AiPairAccessError extends Error{
 // AI processing requires consent from every human participant. A room with a
 // legacy or missing participant identity cannot satisfy that contract, even if
 // the authenticated caller's own membership is source-tagged.
-const AUTH_ONLY_PAIR_ACCESS_SQL=`SELECT access.* FROM (${AUTH_PAIR_ACCESS_SQL}) AS access
+function authOnlyPairAccessSql(){ return `SELECT access.* FROM (${authPairAccessSql()}) AS access
   WHERE EXISTS (
     SELECT 1 FROM pairing_participants participant_a
     WHERE participant_a.week_id=access.week_id
@@ -188,7 +188,7 @@ const AUTH_ONLY_PAIR_ACCESS_SQL=`SELECT access.* FROM (${AUTH_PAIR_ACCESS_SQL}) 
       WHERE participant_c.week_id=access.week_id
         AND participant_c.user_id=access.user_c_id
         AND participant_c.source='auth'
-    ))`;
+    ))`; }
 
 function canonicalAnalysisRoom(value){
   if(typeof value!=='string') return null;
@@ -373,7 +373,7 @@ async function resolveAnalysisRoom(db, roomId, userId){
       FROM pairing_groups pg
       JOIN pairing_weeks pw ON pw.id=pg.week_id
       WHERE pg.id=? AND pg.week_id=?
-        AND EXISTS (${AUTH_ONLY_PAIR_ACCESS_SQL})
+        AND EXISTS (${authOnlyPairAccessSql()})
       LIMIT 1`,
     args:[room.pairGroupId,room.weekId,...pairAccessArgs(userId,room)],
   });
@@ -400,14 +400,14 @@ async function recordAndVerifyRoomConsent(db, userId, room, participantIds){
   await db.execute({
     sql:`INSERT INTO ai_consents (user_id,consented_at,revoked_at,policy_version)
       SELECT ?,datetime('now'),NULL,?
-      WHERE EXISTS (${AUTH_ONLY_PAIR_ACCESS_SQL})
+      WHERE EXISTS (${authOnlyPairAccessSql()})
       ON CONFLICT(user_id) DO UPDATE SET
         consented_at=datetime('now'),revoked_at=NULL,policy_version=excluded.policy_version`,
     args:[userId,AI_CONSENT_POLICY_VERSION,...pairAccessArgs(userId,room)],
   });
   const placeholders=participantIds.map(()=>'?').join(',');
   const result=await db.execute({
-    sql:`WITH access AS (${AUTH_ONLY_PAIR_ACCESS_SQL}), consented AS (
+    sql:`WITH access AS (${authOnlyPairAccessSql()}), consented AS (
         SELECT user_id FROM ai_consents
         WHERE user_id IN (${placeholders}) AND revoked_at IS NULL AND policy_version=?
       )
@@ -442,7 +442,7 @@ async function createAuthorizedSession(db,{room,userId,pairLabel,transcript,code
             started_at,ended_at,duration_sec,created_by
           )
           SELECT ?,?,?,?,?,datetime('now'),datetime('now'),?,?
-          WHERE EXISTS (${AUTH_ONLY_PAIR_ACCESS_SQL})
+          WHERE EXISTS (${authOnlyPairAccessSql()})
           RETURNING id`,
         args:[room.roomId,pairLabel||'mock',transcript.slice(0,28000),code.slice(0,28000),questions.slice(0,8000),Number(durationSec)||0,userId,...accessArgs],
       },attachReservation], 'write');
@@ -453,7 +453,7 @@ async function createAuthorizedSession(db,{room,userId,pairLabel,transcript,code
             room_id,pair_label,transcript,code_snapshots,interviewer_questions,duration_sec,created_by
           )
           SELECT ?,?,?,?,?,?,?
-          WHERE EXISTS (${AUTH_ONLY_PAIR_ACCESS_SQL})
+          WHERE EXISTS (${authOnlyPairAccessSql()})
           RETURNING id`,
         args:[room.roomId,pairLabel||'mock',transcript.slice(0,8000),code.slice(0,8000),questions.slice(0,3000),Number(durationSec)||0,userId,...accessArgs],
       },attachReservation], 'write');
@@ -481,7 +481,7 @@ async function createAuthorizedFeedback(db,{room,userId,sessionId,role,feedback,
           estimated_cost_cents,confidence
         )
         SELECT ?,?,?,?,?,?,?,?
-        WHERE EXISTS (${AUTH_ONLY_PAIR_ACCESS_SQL}) AND ${sessionGuard}
+        WHERE EXISTS (${authOnlyPairAccessSql()}) AND ${sessionGuard}
         RETURNING id`,
       args:[sessionId,role||'both',JSON.stringify(feedback||{}),JSON.stringify({validation:verification,combined_len:combinedLength}),modelUsed,reason,costCents,verification.score,
         ...accessArgs,sessionId,room.roomId,userId],
@@ -490,7 +490,7 @@ async function createAuthorizedFeedback(db,{room,userId,sessionId,role,feedback,
     inserted=await db.execute({
       sql:`INSERT INTO ai_feedback (session_id,role,feedback_json,model_used)
         SELECT ?,?,?,?
-        WHERE EXISTS (${AUTH_ONLY_PAIR_ACCESS_SQL}) AND ${sessionGuard}
+        WHERE EXISTS (${authOnlyPairAccessSql()}) AND ${sessionGuard}
         RETURNING id`,
       args:[sessionId,role||'both',JSON.stringify(feedback||{}),modelUsed,
         ...accessArgs,sessionId,room.roomId,userId],
@@ -552,7 +552,7 @@ async function reserveMonthlyQuota(db,{userId,isDemo,tokensIn,room}){
   const accessArgs=pairAccessArgs(userId,room);
   const [reserved,usage]=await db.batch([
     {
-      sql:`WITH access AS (${AUTH_ONLY_PAIR_ACCESS_SQL})
+      sql:`WITH access AS (${authOnlyPairAccessSql()})
         INSERT INTO ai_account_monthly_reservations
           (reservation_id,month,user_id,tokens_in,session_id,refunded_at,created_at)
         SELECT ?,?,?,?,NULL,NULL,datetime('now') FROM access
@@ -579,7 +579,7 @@ async function reserveMonthlyQuota(db,{userId,isDemo,tokensIn,room}){
   if(reserved?.rows?.length===1 && Number.isSafeInteger(count) && count>0){
     return {blocked:false,count,limit,reservationId,month,userId,tokensIn:normalizedTokens};
   }
-  const access=await db.execute({sql:AUTH_ONLY_PAIR_ACCESS_SQL,args:accessArgs});
+  const access=await db.execute({sql:authOnlyPairAccessSql(),args:accessArgs});
   if(!access.rows?.length) throw new AiPairAccessError();
   const quota=await checkMonthlyQuota(db,userId,isDemo);
   if(quota.blocked) return quota;
@@ -871,7 +871,7 @@ async function handleAnalyze(req,res){
     await db.execute({
       sql:`UPDATE ai_sessions SET cost_cents=?,ended_at=datetime('now')
         WHERE id=? AND room_id=? AND created_by=?
-          AND EXISTS (${AUTH_ONLY_PAIR_ACCESS_SQL})`,
+          AND EXISTS (${authOnlyPairAccessSql()})`,
       args:[costCents,sessId,room_id,numericUserId,...pairAccessArgs(numericUserId,trustedRoom)],
     });
   }catch{}
