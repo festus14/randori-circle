@@ -15,6 +15,8 @@ Production deploys from `main` through Vercel. Development is iterative; the arc
 
 Pair workspaces now persist authenticated, revisioned code and whiteboard snapshots across devices. A completed board gesture is saved locally immediately and then synced; if the network is unavailable, the room keeps a dirty local checkpoint and retries after hydration. Viewport, selected tool, and colour are intentionally device-local. Snapshots expire after 90 days, and v1/v2 code-only rooms upgrade without losing their draft.
 
+Pair scheduling uses timezone-aware instants: each browser displays the same UTC value in its local timezone, while compare-and-swap updates prevent one partner from silently overwriting the other. The dashboard polls only while it is visible, preserves unsent input through conflicts, and keeps older free-text schedule values visible and removable during migration.
+
 This private-beta sync is whole-document compare-and-swap, not a CRDT: members see durable checkpoints rather than each pointer stroke in real time. Managed realtime collaboration, video, production AI coaching, circle tenancy, and authorised third-party content adapters remain later increments.
 
 ## Security baseline
@@ -42,6 +44,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_db.js` | Turso client, JWT verification, CSRF helpers |
 | `api/_catalog.js` | original exercise catalogue validation, public projections, server-owned evaluation cases |
 | `api/_pairing.js` | deterministic fairness and canonical room identifiers |
+| `api/_schedule.js` | strict schedule validation, legacy projection, opaque versions, and conflict-safe mutations |
 
 The target Next.js/Supabase architecture is intentionally phased rather than introduced as a big-bang rewrite.
 

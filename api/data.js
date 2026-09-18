@@ -1,6 +1,7 @@
 import { captureSentryException, captureSentryMessage, getClient, getAdminEmails, getJwtSecret, initSentry, isSentryConfigured, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 import { createEvaluationSuite, getPublicExercise, listPublicExercises } from './_catalog.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
+import { applyScheduleMutation, nextScheduleUpdatedAt, parseScheduleMutation, projectSchedule, readScheduleState, ScheduleDataError, ScheduleInputError } from './_schedule.js';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 function isAdminCheck(email, flag){
@@ -691,6 +692,8 @@ async function ensureProfileMigrations(db){
 // requests share both an in-flight initialization and its successful result.
 const __runsReadinessByDatabaseUrl=new Map();
 const __runsReadinessByClient=new WeakMap();
+const __scheduleReadinessByDatabaseUrl=new Map();
+const __scheduleReadinessByClient=new WeakMap();
 
 function runsReadinessCache(db){
   const databaseUrl=String(process.env.TURSO_DATABASE_URL||'').trim();
@@ -718,6 +721,53 @@ async function ensureRunsReadiness(db){
     await ensureSessionRuns(db);
     await probeRunsSchema(db);
   })();
+  cache.set(key,pending);
+  try{
+    return await pending;
+  }catch(error){
+    if(cache.get(key)===pending) cache.delete(key);
+    throw error;
+  }
+}
+
+function scheduleReadinessCache(db){
+  const databaseUrl=String(process.env.TURSO_DATABASE_URL||'').trim();
+  return databaseUrl
+    ? {cache:__scheduleReadinessByDatabaseUrl,key:databaseUrl}
+    : {cache:__scheduleReadinessByClient,key:db};
+}
+
+async function probeScheduleSchema(db){
+  const tableInfo=await db.execute(`PRAGMA table_info('pair_schedules')`);
+  const columns=new Set(tableInfo.rows.map(row=>String(row.name||'')));
+  for(const required of ['week_id','pair_group_id','proposed_times','agreed_time','created_at','updated_at']){
+    if(!columns.has(required)) throw new Error(`pair_schedules.${required} is unavailable`);
+  }
+
+  const indexList=await db.execute(`PRAGMA index_list('pair_schedules')`);
+  const uniqueIndexes=indexList.rows.filter(row=>
+    Number(row.unique)===1 && Number(row.partial||0)===0 && typeof row.name==='string'
+  );
+  let hasPairConstraint=false;
+  for(const index of uniqueIndexes){
+    const quotedName=index.name.replaceAll('"','""');
+    const info=await db.execute(`PRAGMA index_info("${quotedName}")`);
+    const names=[...info.rows]
+      .sort((left,right)=>Number(left.seqno)-Number(right.seqno))
+      .map(row=>String(row.name||''));
+    if(names.length===2 && names[0]==='week_id' && names[1]==='pair_group_id'){
+      hasPairConstraint=true;
+      break;
+    }
+  }
+  if(!hasPairConstraint) throw new Error('pair schedule uniqueness constraint is unavailable');
+}
+
+async function ensureScheduleReadiness(db){
+  const {cache,key}=scheduleReadinessCache(db);
+  const existing=cache.get(key);
+  if(existing) return existing;
+  const pending=probeScheduleSchema(db);
   cache.set(key,pending);
   try{
     return await pending;
@@ -1125,17 +1175,20 @@ async function handleMyPair(req,res){
     }
     partner=partners[0]||null;
   }
-  let schedule=null;
+  let schedule=projectSchedule(readScheduleState(null));
+  let scheduleRow=null;
   try{
     const s = await db.execute({ sql:`SELECT id, week_id, pair_group_id, proposed_times, agreed_time, updated_at FROM pair_schedules WHERE week_id=? AND pair_group_id=? LIMIT 1`, args:[weekId, grp.pg_id] });
-    if (s.rows.length){
-      schedule={ id:s.rows[0].id, week_id:s.rows[0].week_id, pair_group_id:s.rows[0].pair_group_id, proposed_times: s.rows[0].proposed_times ? JSON.parse(s.rows[0].proposed_times) : [], agreed_time: s.rows[0].agreed_time||null, updated_at:s.rows[0].updated_at };
-    }
+    scheduleRow=s.rows[0]||null;
   }catch{
-    try{
-      const s = await db.execute({ sql:`SELECT id, proposed_times, agreed_time FROM pair_schedules WHERE pair_group_id=? LIMIT 1`, args:[grp.pg_id] });
-      if (s.rows.length) schedule={ proposed_times: s.rows[0].proposed_times ? JSON.parse(s.rows[0].proposed_times) : [], agreed_time: s.rows[0].agreed_time||null };
-    }catch{}
+    schedule=null;
+  }
+  if(scheduleRow){
+    try{ schedule=projectSchedule(readScheduleState(scheduleRow)); }
+    catch(error){
+      if(error instanceof ScheduleDataError) schedule=null;
+      else throw error;
+    }
   }
   let messagesPreview=[];
   try{
@@ -1148,67 +1201,103 @@ async function handleMyPair(req,res){
   return res.json({ ok:true, paired:true, room_id:roomId, week_id:weekId, week: weekRow ? { id:weekRow.id||weekId, week_label:weekRow.week_label, week_start:weekRow.week_start, focus:weekRow.focus } : { id:weekId }, pair: { pg_id:grp.pg_id, week_id:weekId, room_id:roomId, user_a_id:grp.user_a_id, user_b_id:grp.user_b_id, user_c_id:grp.user_c_id??null, is_ai_pair:isAI, is_ai:isAI, topic:grp.topic, topic_kind:grp.topic_kind }, partner, partners, me, schedule, messagesPreview });
 }
 
+async function fetchScheduleState(db,weekId,pairId){
+  const result=await db.execute({
+    sql:`SELECT proposed_times,agreed_time,updated_at FROM pair_schedules WHERE week_id=? AND pair_group_id=? LIMIT 1`,
+    args:[weekId,pairId],
+  });
+  return readScheduleState(result.rows[0]||null);
+}
+
 async function handleSchedule(req,res){
-  if (req.method === 'GET'){
-    const payload = getAuthPayload(req);
-    if (!payload) return res.status(401).json({ error:'missing Bearer' });
-    const db = getClient();
-    await ensureProfileMigrations(db);
-    const weekId = req.query?.week_id ? parseInt(String(req.query.week_id),10) : null;
-    const pairId = req.query?.pair_id ? parseInt(String(req.query.pair_id),10) : (req.query?.pg_id ? parseInt(String(req.query.pg_id),10) : null);
-    if (!weekId || !pairId) return res.status(400).json({ error:'week_id and pair_id required' });
-    const access=await getPairAccess(db,payload,weekId,pairId);
-    if(!access.exists) return res.status(404).json({error:'pair not found'});
-    if(!access.allowed) return res.status(403).json({error:'not member of this pair'});
-    const s = await db.execute({ sql:`SELECT id, week_id, pair_group_id, proposed_times, agreed_time, created_at, updated_at FROM pair_schedules WHERE week_id=? AND pair_group_id=? LIMIT 1`, args:[weekId, pairId] }).catch(()=>({rows:[]}));
-    if (!s.rows || !s.rows.length) return res.json({ ok:true, schedule:null });
-    const row=s.rows[0];
-    return res.json({ ok:true, schedule:{ id:row.id, week_id:row.week_id, pair_group_id:row.pair_group_id, proposed_times: row.proposed_times? JSON.parse(row.proposed_times):[], agreed_time:row.agreed_time||null, created_at:row.created_at, updated_at:row.updated_at }});
+  if(req.method!=='GET' && req.method!=='POST') return res.status(405).json({error:'GET or POST only'});
+  const payload=getAuthPayload(req);
+  if(!payload) return res.status(401).json({error:'authentication required'});
+  res.setHeader('Cache-Control','private, no-store');
+  const numericRoomFields=['week_id','pair_group_id','pair_id','pg_id'];
+  if(numericRoomFields.some(field=>requestQueryValue(req,field)!==undefined)){
+    return res.status(400).json({error:'canonical room_id required'});
   }
-  if (req.method !== 'POST'){
-    return res.status(405).json({ error:'GET or POST only' });
-  }
-  const payload = getAuthPayload(req);
-  if (!payload) return res.status(401).json({ error:'missing Bearer token' });
-  const db = getClient();
-  await ensureProfileMigrations(db);
-  const userId = payload.id||payload.uid;
-  const body = req.body||{};
-  const weekId = body.week_id ? parseInt(String(body.week_id),10) : (req.query?.week_id? parseInt(String(req.query.week_id),10): null);
-  const pairId = body.pair_id ? parseInt(String(body.pair_id),10) : (body.pg_id ? parseInt(String(body.pg_id),10) : (req.query?.pair_id? parseInt(String(req.query.pair_id),10): null));
-  if (!weekId || !pairId) return res.status(400).json({ error:'week_id and pair_id required' });
-  try{
-    const access=await getPairAccess(db,payload,weekId,pairId);
-    if(!access.exists) return res.status(404).json({error:'pair not found'});
-    if(!access.allowed) return res.status(403).json({error:'not member of this pair'});
-  }catch{ return res.status(500).json({ error:'db check failed' }); }
-  const hasProposed=Object.prototype.hasOwnProperty.call(body,'proposed_times');
-  const hasAgreed=Object.prototype.hasOwnProperty.call(body,'agreed_time');
-  let proposed = null, agreed = null;
-  if (hasProposed){
-    if (Array.isArray(body.proposed_times)){
-      proposed = JSON.stringify(body.proposed_times.map(s=>String(s).slice(0,200)).slice(0,20));
-    } else if (typeof body.proposed_times==='string'){
-      try{ const arr=JSON.parse(body.proposed_times); if(Array.isArray(arr)) proposed=JSON.stringify(arr.slice(0,20)); else proposed=JSON.stringify([body.proposed_times]); }catch{ proposed=JSON.stringify([String(body.proposed_times).slice(0,200)]); }
+
+  let mutation=null;
+  let rawRoomId;
+  if(req.method==='POST'){
+    try{
+      mutation=parseScheduleMutation(req.body);
+      rawRoomId=mutation.roomId;
+    }catch(error){
+      if(error instanceof ScheduleInputError) return res.status(400).json({error:error.message});
+      throw error;
     }
+  }else{
+    rawRoomId=requestQueryValue(req,'room_id');
   }
-  if (hasAgreed){
-    agreed = body.agreed_time ? String(body.agreed_time).trim().slice(0,200) : null;
-  }
+  const room=parseCanonicalRoomId(rawRoomId);
+  if(!room) return res.status(400).json({error:'canonical room_id required'});
+
+  const db=getClient();
   try{
-    await db.execute({
-      sql:`INSERT INTO pair_schedules (week_id, pair_group_id, proposed_times, agreed_time, created_at, updated_at)
-           VALUES (?,?,?,?,datetime('now'),datetime('now'))
-           ON CONFLICT(week_id,pair_group_id) DO UPDATE SET
-             proposed_times=CASE WHEN ?=1 THEN excluded.proposed_times ELSE pair_schedules.proposed_times END,
-             agreed_time=CASE WHEN ?=1 THEN excluded.agreed_time ELSE pair_schedules.agreed_time END,
-             updated_at=datetime('now')`,
-      args:[weekId,pairId,hasProposed?proposed:JSON.stringify([]),agreed,hasProposed?1:0,hasAgreed?1:0],
-    });
-    const fresh = await db.execute({ sql:`SELECT id, week_id, pair_group_id, proposed_times, agreed_time, updated_at FROM pair_schedules WHERE week_id=? AND pair_group_id=? LIMIT 1`, args:[weekId, pairId] });
-    const f=fresh.rows[0];
-    return res.json({ ok:true, schedule:{ id:f.id, week_id:f.week_id, pair_group_id:f.pair_group_id, proposed_times: f.proposed_times? JSON.parse(f.proposed_times):[], agreed_time:f.agreed_time||null, updated_at:f.updated_at }});
-  }catch{ return res.status(500).json({ error:'schedule upsert failed; verify the unique schedule migration' }); }
+    const access=await getPairAccess(db,payload,room.weekId,room.pairGroupId);
+    if(!access.exists) return res.status(404).json({error:'pair not found'});
+    if(!access.allowed) return res.status(403).json({error:'not member of this pair'});
+  }catch{
+    return res.status(503).json({error:'schedule unavailable'});
+  }
+
+  try{ await ensureScheduleReadiness(db); }
+  catch{ return res.status(503).json({error:'schedule unavailable'}); }
+
+  let current;
+  try{ current=await fetchScheduleState(db,room.weekId,room.pairGroupId); }
+  catch(error){
+    if(error instanceof ScheduleDataError) return res.status(503).json({error:'schedule unavailable'});
+    return res.status(503).json({error:'schedule unavailable'});
+  }
+  if(req.method==='GET'){
+    return res.json({ok:true,room_id:room.roomId,schedule:projectSchedule(current)});
+  }
+  if(mutation.baseVersion!==current.version){
+    return res.status(409).json({error:'schedule changed',room_id:room.roomId,schedule:projectSchedule(current)});
+  }
+
+  let nextValues;
+  try{ nextValues=applyScheduleMutation(current,mutation,payload.id||payload.uid); }
+  catch(error){
+    if(error instanceof ScheduleInputError) return res.status(400).json({error:error.message});
+    throw error;
+  }
+  const nextUpdatedAt=nextScheduleUpdatedAt(current.rawUpdatedAt);
+
+  try{
+    let written;
+    if(current.exists){
+      written=await db.execute({
+        sql:`UPDATE pair_schedules
+          SET proposed_times=?,agreed_time=?,updated_at=?
+          WHERE week_id=? AND pair_group_id=?
+            AND proposed_times IS ? AND agreed_time IS ? AND updated_at IS ?
+          RETURNING proposed_times,agreed_time,updated_at`,
+        args:[nextValues.proposedTimes,nextValues.agreedTime,nextUpdatedAt,
+          room.weekId,room.pairGroupId,current.rawProposedTimes,current.rawAgreedTime,current.rawUpdatedAt],
+      });
+    }else{
+      written=await db.execute({
+        sql:`INSERT INTO pair_schedules (week_id,pair_group_id,proposed_times,agreed_time,created_at,updated_at)
+          VALUES (?,?,?,?,?,?)
+          ON CONFLICT(week_id,pair_group_id) DO NOTHING
+          RETURNING proposed_times,agreed_time,updated_at`,
+        args:[room.weekId,room.pairGroupId,nextValues.proposedTimes,nextValues.agreedTime,nextUpdatedAt,nextUpdatedAt],
+      });
+    }
+    if(!written.rows.length){
+      const latest=await fetchScheduleState(db,room.weekId,room.pairGroupId);
+      return res.status(409).json({error:'schedule changed',room_id:room.roomId,schedule:projectSchedule(latest)});
+    }
+    const updated=readScheduleState(written.rows[0]);
+    return res.json({ok:true,room_id:room.roomId,schedule:projectSchedule(updated)});
+  }catch{
+    return res.status(503).json({error:'schedule unavailable'});
+  }
 }
 
 async function handleMessages(req,res){
