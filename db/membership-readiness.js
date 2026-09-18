@@ -174,11 +174,13 @@ export async function inspectCompletedMembershipRollout(db){
   if(Number(rolloutRows[0].registrations_closed)!==1){
     return {ok:false,registrationState:'open',blockers:['rollout_not_completed']};
   }
-  const primaryResult=await db.execute(`SELECT id FROM circles
+  const primaryResult=await db.execute(`SELECT id,created_by FROM circles
     WHERE is_primary=1 AND archived_at IS NULL ORDER BY id LIMIT 2`);
   const primaryRows=primaryResult.rows||[];
   const primaryId=Number(primaryRows[0]?.id);
-  if(primaryRows.length!==1||!Number.isSafeInteger(primaryId)||primaryId<1){
+  const rolloutActorId=Number(primaryRows[0]?.created_by);
+  if(primaryRows.length!==1||!Number.isSafeInteger(primaryId)||primaryId<1
+    ||!Number.isSafeInteger(rolloutActorId)||rolloutActorId<1){
     return {ok:false,registrationState:'closed',blockers:['closed_rollout_primary_circle_invalid']};
   }
   const stateResult=await db.execute({
@@ -188,16 +190,18 @@ export async function inspectCompletedMembershipRollout(db){
           AND COALESCE(account.is_demo,0)=0
         WHERE membership.circle_id=?
           AND membership.role='owner' AND membership.status='active') AS activeOwners,
+      (SELECT COUNT(*) FROM auth_accounts account
+        WHERE account.id=? AND COALESCE(account.is_demo,0)=0) AS rolloutActors,
       (SELECT COUNT(*) FROM circle_audit_events event
         WHERE event.event_type='membership.backfill.completed') AS completedBackfills,
       (SELECT COUNT(*) FROM circle_audit_events event
         WHERE event.circle_id=? AND event.event_type='membership.backfill.completed'
-          AND event.actor_user_id IS NOT NULL
+          AND event.actor_user_id=?
           AND event.subject_user_id IS NULL AND event.invitation_id IS NULL
           AND event.dedupe_key=?) AS matchingBackfills,
       (SELECT COUNT(*) FROM circle_audit_events event
         WHERE event.event_type='membership.backfill.completed' AND (
-          event.circle_id<>? OR event.actor_user_id IS NULL
+          event.circle_id<>? OR event.actor_user_id IS NOT ?
           OR event.subject_user_id IS NOT NULL OR event.invitation_id IS NOT NULL
           OR event.dedupe_key IS NOT ?
         )) AS malformedCompletionAudits,
@@ -206,7 +210,7 @@ export async function inspectCompletedMembershipRollout(db){
           AND NOT EXISTS (
             SELECT 1 FROM circle_audit_events event
             WHERE event.circle_id=? AND event.event_type='membership.backfilled'
-              AND event.actor_user_id IS NOT NULL
+              AND event.actor_user_id=?
               AND event.subject_user_id=account.id
               AND event.invitation_id IS NULL
               AND event.dedupe_key=printf('membership-backfilled:%d:%d',?,account.id)
@@ -225,7 +229,7 @@ export async function inspectCompletedMembershipRollout(db){
       (SELECT COUNT(*) FROM circle_audit_events event
         LEFT JOIN auth_accounts account ON account.id=event.subject_user_id
         WHERE event.event_type='membership.backfilled' AND (
-          event.circle_id<>? OR event.actor_user_id IS NULL
+          event.circle_id<>? OR event.actor_user_id IS NOT ?
           OR account.id IS NULL OR COALESCE(account.is_demo,0)<>0
           OR event.invitation_id IS NOT NULL
           OR event.dedupe_key IS NOT printf('membership-backfilled:%d:%d',?,account.id)
@@ -246,16 +250,18 @@ export async function inspectCompletedMembershipRollout(db){
         WHERE membership.status='active' AND account.id IS NULL) AS orphanMemberships`,
     args:[
       primaryId,
-      primaryId,`primary-membership-backfill:${primaryId}:v1`,
-      primaryId,`primary-membership-backfill:${primaryId}:v1`,
-      primaryId,primaryId,primaryId,
-      primaryId,primaryId,
+      rolloutActorId,
+      primaryId,rolloutActorId,`primary-membership-backfill:${primaryId}:v1`,
+      primaryId,rolloutActorId,`primary-membership-backfill:${primaryId}:v1`,
+      primaryId,rolloutActorId,primaryId,primaryId,
+      primaryId,rolloutActorId,primaryId,
       primaryId,primaryId,
     ],
   });
   const row=stateResult.rows?.[0];
   const counts={
     activeOwners:numericValue(row,'activeOwners'),
+    rolloutActors:numericValue(row,'rolloutActors'),
     completedBackfills:numericValue(row,'completedBackfills'),
     matchingBackfills:numericValue(row,'matchingBackfills'),
     malformedCompletionAudits:numericValue(row,'malformedCompletionAudits'),
@@ -265,7 +271,7 @@ export async function inspectCompletedMembershipRollout(db){
     orphanMemberships:numericValue(row,'orphanMemberships'),
   };
   if(counts.activeOwners<1) blockers.push('closed_rollout_has_no_owner');
-  if(counts.completedBackfills!==1||counts.matchingBackfills!==1
+  if(counts.rolloutActors!==1||counts.completedBackfills!==1||counts.matchingBackfills!==1
     ||counts.malformedCompletionAudits){
     blockers.push('closed_rollout_backfill_audit_invalid');
   }
@@ -280,7 +286,12 @@ export async function inspectCompletedMembershipRollout(db){
 // Health accepts only a pristine pre-cutover state or a valid completed
 // steady state. Mixed open-rollout data and all invalid singleton states fail.
 export async function inspectMembershipRolloutReadiness(db){
-  const adoption=await inspectMembershipAdoptionReadiness(db);
-  if(adoption.registrationState!=='closed') return adoption;
-  return inspectCompletedMembershipRollout(db);
+  if(!db||typeof db.execute!=='function') throw new TypeError('a database client with execute() is required');
+  const rolloutResult=await db.execute(`SELECT id,registrations_closed
+    FROM circle_membership_rollout ORDER BY id LIMIT 2`);
+  const rows=rolloutResult.rows||[];
+  if(rows.length===1&&Number(rows[0]?.id)===1&&Number(rows[0]?.registrations_closed)===1){
+    return inspectCompletedMembershipRollout(db);
+  }
+  return inspectMembershipAdoptionReadiness(db);
 }

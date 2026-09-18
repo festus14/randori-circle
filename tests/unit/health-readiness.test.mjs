@@ -14,11 +14,19 @@ import {
 import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
 import { MIGRATION_CONTRACTS } from '../../db/migration-contract.js';
 import {
+  MIGRATION_LEDGER_CHECKSUM,
+  MIGRATION_LEDGER_SQL,
+  MIGRATION_LEDGER_TABLE,
+} from '../../db/migration-ledger.js';
+import { MIGRATION_LEDGER_READINESS_MANIFEST } from '../../db/migration-ledger-readiness.js';
+import {
   inspectCompletedMembershipRollout,
   inspectMembershipAdoptionReadiness,
 } from '../../db/membership-readiness.js';
 import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
-import { assertReadOnlyStatement } from '../../db/schema-inspector.js';
+import { assertReadOnlyStatement, compileSchemaReadinessManifest } from '../../db/schema-inspector.js';
+import { SCHEMA_MANIFEST } from '../../db/schema-manifest.js';
+import { READINESS_SCHEMA_MANIFEST } from '../../db/schema-readiness-manifest.js';
 
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const resources=[];
@@ -62,6 +70,14 @@ test('runtime migration contracts remain identical to executable migrations',()=
     MIGRATION_CONTRACTS,
     EXECUTABLE_MIGRATIONS.map(({version,name,checksum})=>({version,name,checksum})),
   );
+  assert.deepEqual(READINESS_SCHEMA_MANIFEST,compileSchemaReadinessManifest(SCHEMA_MANIFEST));
+  assert.deepEqual(MIGRATION_LEDGER_READINESS_MANIFEST,compileSchemaReadinessManifest({
+    version:1,
+    checksum:MIGRATION_LEDGER_CHECKSUM,
+    tables:[{name:MIGRATION_LEDGER_TABLE,sql:MIGRATION_LEDGER_SQL}],
+    indexes:[],
+    toleratedLegacyTables:[],
+  }));
 });
 
 test('ready inspection is exact, read-only, and creates no schema objects or files',async()=>{
@@ -161,20 +177,24 @@ test('completed rollout readiness permits inactive members and historical actors
   await db.execute(`INSERT INTO auth_accounts
     (id,email,password_hash,display_name,color,is_admin,is_demo)
     VALUES
-      (1,'owner@example.test','!oauth:test','Owner','#123456',1,0),
-      (2,'inactive@example.test','!oauth:test','Inactive','#654321',0,0)`);
+      (1,'creator@example.test','!oauth:test','Creator','#123456',1,0),
+      (2,'inactive@example.test','!oauth:test','Inactive','#654321',0,0),
+      (3,'owner@example.test','!oauth:test','Owner','#abcdef',1,0)`);
   await db.execute(`INSERT INTO circles
     (id,public_id,slug,name,is_primary,created_by)
     VALUES (1,'primary-public-id','randori-circle','Randori Circle',1,1)`);
   await db.execute(`INSERT INTO circle_memberships
     (circle_id,user_id,role,status,joined_at,updated_at)
-    VALUES (1,1,'owner','active',datetime('now'),datetime('now'))`);
+    VALUES
+      (1,1,'owner','inactive',datetime('now'),datetime('now')),
+      (1,3,'owner','active',datetime('now'),datetime('now'))`);
   await db.execute(`INSERT INTO circle_audit_events
     (circle_id,event_type,actor_user_id,subject_user_id,dedupe_key)
     VALUES
       (1,'membership.backfilled',1,1,'membership-backfilled:1:1'),
-      (1,'membership.backfilled',999,2,'membership-backfilled:1:2'),
-      (1,'membership.backfill.completed',999,NULL,'primary-membership-backfill:1:v1')`);
+      (1,'membership.backfilled',1,2,'membership-backfilled:1:2'),
+      (1,'membership.backfilled',1,3,'membership-backfilled:1:3'),
+      (1,'membership.backfill.completed',1,NULL,'primary-membership-backfill:1:v1')`);
   await db.execute(`UPDATE circle_membership_rollout
     SET registrations_closed=1,updated_at=datetime('now') WHERE id=1`);
 
@@ -191,7 +211,15 @@ test('completed rollout readiness permits inactive members and historical actors
   assert.ok(missingProvenance.blockers.includes('closed_rollout_account_audit_invalid'));
   await db.execute(`INSERT INTO circle_audit_events
     (circle_id,event_type,actor_user_id,subject_user_id,dedupe_key)
-    VALUES (1,'membership.backfilled',999,2,'membership-backfilled:1:2')`);
+    VALUES (1,'membership.backfilled',1,2,'membership-backfilled:1:2')`);
+
+  await db.execute(`UPDATE circle_audit_events SET actor_user_id=999
+    WHERE event_type='membership.backfilled' AND subject_user_id=2`);
+  const wrongActor=await inspectCompletedMembershipRollout(db);
+  assert.equal(wrongActor.ok,false);
+  assert.ok(wrongActor.blockers.includes('closed_rollout_account_audit_invalid'));
+  await db.execute(`UPDATE circle_audit_events SET actor_user_id=1
+    WHERE event_type='membership.backfilled' AND subject_user_id=2`);
 
   await db.execute(`UPDATE circle_audit_events SET dedupe_key='tampered'
     WHERE event_type='membership.backfill.completed'`);

@@ -474,7 +474,11 @@ test('the real auth handler signs up locally and persists the account and sessio
 
   const health=await fetch(new URL('/api/health',first.url));
   assert.equal(health.status,200);
-  assert.equal((await health.json()).ok,true);
+  assert.equal(health.headers.get('cache-control'),'no-store');
+  assert.deepEqual(await health.json(),{ok:true,status:'ready'});
+  const liveness=await fetch(new URL('/api/health/live',first.url));
+  assert.equal(liveness.status,200);
+  assert.deepEqual(await liveness.json(),{ok:true,status:'live'});
   const {getClient}=await import('../../api/_db.js');
   const firstSharedClient=getClient();
   assert.equal(getClient(),firstSharedClient,'local requests must reuse one database client');

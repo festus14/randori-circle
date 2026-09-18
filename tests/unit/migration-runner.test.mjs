@@ -7,6 +7,7 @@ import { createClient } from '@libsql/client';
 
 import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
 import { inspectSchema } from '../../db/schema-inspector.js';
+import { SCHEMA_MANIFEST } from '../../db/schema-manifest.js';
 import {
   MigrationError,
   adoptMigrations,
@@ -62,7 +63,7 @@ test('fresh apply is transactional, seeds an open rollout, and repeats as a no-o
     assert.deepEqual(rollout.rows.map(row=>[Number(row.id),Number(row.registrations_closed)]),[[1,0]]);
     const ledger=await fixture.db.execute('SELECT version,disposition FROM schema_migrations ORDER BY version');
     assert.deepEqual(ledger.rows.map(row=>[Number(row.version),row.disposition]),[[1,'applied'],[2,'applied'],[3,'applied']]);
-    const generalInspection=await inspectSchema(fixture.db);
+    const generalInspection=await inspectSchema(fixture.db,{manifest:SCHEMA_MANIFEST});
     assert.equal(generalInspection.warnings.length,0);
     assert.deepEqual(generalInspection.tolerated.legacyTables,['schema_migrations']);
 
