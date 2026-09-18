@@ -69,6 +69,11 @@ async function createDatabase(){
       is_available INTEGER,availability_updated_at TEXT,is_admin INTEGER,is_demo INTEGER,
       bio TEXT,tz TEXT,interview_focus TEXT,leetcode_handle TEXT,google_sub TEXT
     )`,
+    `CREATE TABLE auth_provider_identities (
+      issuer TEXT NOT NULL,subject TEXT NOT NULL,user_id INTEGER NOT NULL,created_at TEXT NOT NULL,
+      last_login TEXT NOT NULL,PRIMARY KEY(issuer,subject),UNIQUE(issuer,user_id),
+      FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE CASCADE
+    )`,
     membership.CIRCLES_TABLE_SQL,
     membership.CIRCLE_MEMBERSHIPS_TABLE_SQL,
     membership.CIRCLE_INVITATIONS_TABLE_SQL,
@@ -218,7 +223,7 @@ test('new Google account creation and invitation acceptance commit atomically',a
   const claim=membership.readInviteClaim({headers:{cookie:`${membership.INVITE_CLAIM_COOKIE}=${prepared.claim}`}});
   const accepted=await membership.createGoogleAccountFromPreparedInvitation(currentDb,{
     claim,email,passwordHash:`!oauth:${'A'.repeat(32)}`,displayName:'New Google',color:'#123456',
-    isAdmin:false,googleSub:'google-new-1',
+    isAdmin:false,googleIssuer:'https://accounts.google.com',googleSub:'google-new-1',
   });
   assert.equal(accepted.ok,true);
   assert.equal(accepted.created,true);
@@ -234,6 +239,12 @@ test('new Google account creation and invitation acceptance commit atomically',a
   assert.equal(state.rows.length,1);
   assert.equal(state.rows[0].status,'active');
   assert.equal(state.rows[0].event_type,'invitation.accepted');
+  const identity=await currentDb.execute({
+    sql:`SELECT issuer,subject,user_id FROM auth_provider_identities WHERE user_id=?`,args:[accepted.user_id],
+  });
+  assert.deepEqual(identity.rows.map(row=>[String(row.issuer),String(row.subject),Number(row.user_id)]),[
+    ['https://accounts.google.com','google-new-1',accepted.user_id],
+  ]);
 
   const revokedToken=membership.createInvitationToken();
   const revokedId='a4948c6c-23e0-4b0f-9dd2-45e9367fc456';
@@ -250,7 +261,8 @@ test('new Google account creation and invitation acceptance commit atomically',a
   await currentDb.execute({sql:`UPDATE circle_invitations SET revoked_at=datetime('now') WHERE id=?`,args:[revokedId]});
   const rejected=await membership.createGoogleAccountFromPreparedInvitation(currentDb,{
     claim:revokedClaim,email:rejectedEmail,passwordHash:`!oauth:${'B'.repeat(32)}`,
-    displayName:'Rejected Google',color:'#654321',isAdmin:false,googleSub:'google-rejected-1',
+    displayName:'Rejected Google',color:'#654321',isAdmin:false,
+    googleIssuer:'https://accounts.google.com',googleSub:'google-rejected-1',
   });
   assert.deepEqual(rejected,{ok:false});
   const orphan=await currentDb.execute({sql:`SELECT id FROM auth_accounts WHERE email=?`,args:[rejectedEmail]});
@@ -275,7 +287,8 @@ test('new Google account creation and invitation acceptance commit atomically',a
     `${membership.INVITE_CLAIM_COOKIE}=${changedEmailPrepared.claim}`}});
   const duplicateIdentity=await membership.createGoogleAccountFromPreparedInvitation(currentDb,{
     claim:changedEmailClaim,email:changedEmail,passwordHash:`!oauth:${'C'.repeat(32)}`,
-    displayName:'Duplicate Google',color:'#abcdef',isAdmin:false,googleSub:'stable-google-sub',
+    displayName:'Duplicate Google',color:'#abcdef',isAdmin:false,
+    googleIssuer:'https://accounts.google.com',googleSub:'stable-google-sub',
   });
   assert.deepEqual(duplicateIdentity,{ok:false});
   const duplicateAccounts=await currentDb.execute({

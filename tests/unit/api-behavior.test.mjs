@@ -9,6 +9,7 @@ import { after, beforeEach, mock, test } from 'node:test';
 import { createClient } from '@libsql/client';
 import bcrypt from 'bcryptjs';
 import { resolvePairingCycle } from '../../api/_pairing-cycle.js';
+import {googleOAuthCookieHeader,googleProviderFetch} from '../support/google-oidc.mjs';
 
 const realFetch = globalThis.fetch;
 const TEST_JWT_SECRET = 'unit-test-secret-at-least-thirty-two-characters';
@@ -33,6 +34,9 @@ function createMockDb(){
       executed.push({ sql, args: statement?.args || [] });
       if (databaseDelegate) return databaseDelegate.execute(statement);
       const result = await executeHandler(sql, statement?.args || []);
+      if(!(result?.rows?.length)&&sql.includes('INSERT INTO auth_provider_identities')&&sql.includes('RETURNING user_id')){
+        return rows([{user_id:Number(statement?.args?.[2])}]);
+      }
       if((result?.rows?.length||result?.rowsAffected)||!lastPairingRun) return result || { rows: [], rowsAffected: 0 };
       if(sql.includes('FROM pairing_week_runs WHERE week_label=?')&&String(statement?.args?.[0])===lastPairingRun.weekLabel) return rows([{
         week_label:lastPairingRun.weekLabel,
@@ -582,16 +586,11 @@ test('Google callback validates state and establishes a cookie session without l
   process.env.APP_URL = 'https://preview.example.test';
   process.env.GOOGLE_CLIENT_ID = 'client';
   process.env.GOOGLE_CLIENT_SECRET = 'secret';
-  globalThis.fetch = async url => {
-    if (String(url).includes('/token')) {
-      return new Response(JSON.stringify({ access_token: 'google-access' }), { status: 200 });
-    }
-    return new Response(JSON.stringify({
-      email: 'oauth@example.test', name: 'OAuth User', sub: 'google-123', email_verified: true,
-    }), { status: 200 });
-  };
+  globalThis.fetch = googleProviderFetch({claims:{
+    email:'oauth@example.test',name:'OAuth User',sub:'google-123',
+  }});
   executeHandler = sql => {
-    if (sql.includes('SELECT id, is_admin, password_hash, google_sub')) return rows([]);
+    if (sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return rows([]);
     if (sql.includes('INSERT INTO auth_accounts') && sql.includes('RETURNING id')) return rows([{ id: 8 }]);
     if (sql.includes('SELECT id FROM users')) return rows([]);
     return rows();
@@ -602,7 +601,7 @@ test('Google callback validates state and establishes a cookie session without l
     query: { endpoint: 'callback', code: 'ok', state },
     headers: {
       host:'preview.example.test','x-forwarded-proto':'https',
-      cookie:`randori_oauth_state=${state}; randori_oauth_verifier=verifier`,
+      cookie:googleOAuthCookieHeader({state}),
     },
   });
   assert.equal(result.status, 302);

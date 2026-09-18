@@ -4,7 +4,7 @@ Randori has read-only schema inspection for configured databases, a transactiona
 
 ## Contract
 
-- `db/schema-manifest.js` is the current contract: 30 application tables and 27 named indexes.
+- `db/schema-manifest.js` is the current contract: 31 application tables and 27 named indexes.
 - The manifest includes column/default/primary-key contracts, checks, foreign keys, unique constraints, AUTOINCREMENT/collation/table options, and unique, partial, descending, and expression-index semantics. SQLite-created `sqlite_autoindex_*` indexes are intentionally outside the named-index count.
 - `ai_monthly_usage` is a retired table. Its presence is reported as tolerated legacy state; it is not treated as current schema and is never changed.
 - `schema_migrations` is a runner-owned operational table. General schema inspection recognizes it without treating it as unexpected application drift; the migration runner validates its exact schema and rows separately.
@@ -12,6 +12,7 @@ Randori has read-only schema inspection for configured databases, a transactiona
 - Each plan owns a frozen ordered snapshot of its canonical table/index definitions. Both that operation snapshot and the surrounding plan metadata have pinned SHA-256 checksums, while the resolved current schema has a separate checksum. A reviewed schema change must append a plan containing the replacement definition; later definitions for the same artifact supersede earlier ones without rewriting their history.
 - `db:plan` remains descriptive and non-executable. The local runner uses separately checksummed executable migrations and records their exact version, name, checksum, timing, and disposition in `schema_migrations`.
 - Migration v3 adds the canonical `pairing_cycles` and `pairing_cycle_availability` contracts. It is additive: v1 and v2 definitions and checksums remain unchanged. A cycle row binds the full UTC boundary/time-zone descriptor to a tenant scope, while availability rows use an optimistic integer version and an exact integer boolean. The legacy account boolean is not the durable source of truth for these tables.
+- Migration v4 adds the provider-identity contract keyed by OpenID Connect issuer and subject, with a second uniqueness constraint allowing at most one identity from an issuer per account. Existing Google subjects remain in `auth_accounts.google_sub` for compatibility and are bound to the canonical issuer on their next verified sign-in.
 
 ## Commands
 
@@ -41,7 +42,7 @@ Representative output fields:
   "manifest": {"version": 1, "checksum": "..."},
   "foreignKeysEnabled": true,
   "checkConstraintsEnabled": true,
-  "summary": {"expectedTables": 30, "expectedIndexes": 27, "blockers": 0},
+  "summary": {"expectedTables": 31, "expectedIndexes": 27, "blockers": 0},
   "drift": {
     "missingTables": [],
     "missingColumns": [],
@@ -93,8 +94,8 @@ npm run --silent db:migrate -- \
   adopt --database file:///absolute/path/to/restored-randori.db \
   --expected-state <v2StateFingerprint> --through-version 2
 
-# Inspect again without a prefix. The result must be managed at v2 with v3
-# pending before using its new full-set fingerprint for the upgrade.
+# Inspect again without a prefix. The result must be managed at v2 with v3 and
+# v4 pending before using its new full-set fingerprint for the upgrade.
 npm run --silent db:migrate -- \
   status --database file:///absolute/path/to/restored-randori.db
 
@@ -157,7 +158,7 @@ The manual `turso-production-migration.yml` workflow consumes only a successful,
 
 Status is read-only. Adopt and apply require both the protected enable variable and the exact state fingerprint returned by a preceding status. Apply refuses more than one pending version, and ambiguous commit failures are never retried. The workflow is serialized with the PITR rehearsal, writes only a redacted audit artifact, and is disabled for mutations by default.
 
-See [Protected Turso production migration](TURSO_PRODUCTION_MIGRATION.md) for environment setup, the initial v2 adoption/v3 apply sequence, failure handling, and rollback boundaries.
+See [Protected Turso production migration](TURSO_PRODUCTION_MIGRATION.md) for environment setup, the historical-prefix adoption/current-version apply sequence, failure handling, and rollback boundaries.
 
 ## Runtime DDL debt
 

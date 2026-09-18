@@ -128,7 +128,7 @@ test('v3 enforces availability scope, digest, value, version, source, and foreig
   }finally{ database.close(); }
 });
 
-test('a managed v2 database upgrades only through v3 and persists availability rows',async()=>{
+test('a managed v2 database upgrades through the current schema and persists availability rows',async()=>{
   const database=fixture();
   try{
     const prefix=EXECUTABLE_MIGRATIONS.slice(0,2);
@@ -144,8 +144,8 @@ test('a managed v2 database upgrades only through v3 and persists availability r
       expectedStateFingerprint:before.stateFingerprint,
       retry:NO_RETRY,
     });
-    assert.deepEqual(upgraded.applied.map(item=>item.version),[3]);
-    assert.equal(upgraded.toVersion,3);
+    assert.deepEqual(upgraded.applied.map(item=>item.version),[3,4]);
+    assert.equal(upgraded.toVersion,4);
     await insertCycle(database.db);
     await database.db.execute({
       sql:`INSERT INTO pairing_cycle_availability
@@ -157,7 +157,7 @@ test('a managed v2 database upgrades only through v3 and persists availability r
     const reopened=database.reopen();
     await prepareMigrationConnection(reopened);
     const state=await inspectMigrationState(reopened);
-    assert.equal(state.currentVersion,3);
+    assert.equal(state.currentVersion,4);
     assert.equal(state.ready,true);
     const rows=await reopened.execute(`SELECT scope_key,cycle_key,user_id,is_available,version,decision_source
       FROM pairing_cycle_availability`);
@@ -216,7 +216,7 @@ test('v3 index drift makes a managed database non-ready and blocks migration no-
     await database.db.execute(`CREATE INDEX idx_pairing_cycle_availability_candidates
       ON pairing_cycle_availability(user_id,is_available)`);
     const drifted=await inspectMigrationState(database.db);
-    assert.equal(drifted.currentVersion,3);
+    assert.equal(drifted.currentVersion,4);
     assert.equal(drifted.schemaExact,false);
     assert.equal(drifted.ready,false);
     await assert.rejects(

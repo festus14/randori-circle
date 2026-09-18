@@ -1057,6 +1057,7 @@ p{margin:0}
         <label class="auth-field" for="authPass"><span>Password</span><input id="authPass" class="input" placeholder="10–72 UTF-8 bytes" type="password" autocomplete="current-password" maxlength="72" aria-describedby="authErr" required/></label>
       </div>
       <p id="authErr" class="small auth-error" role="alert" aria-live="assertive"></p>
+      <button id="authGoogleRetry" class="btn secondary" type="button" hidden aria-describedby="authErr" style="width:100%;justify-content:center">Try Google sign-in again</button>
       <div class="auth-actions">
         <button id="authModeSwitch" class="btn ghost" type="button" hidden></button>
         <span class="auth-actions-primary"><button id="authCancel" class="btn secondary" type="button">Cancel</button><button id="authSignup" class="btn" type="submit" hidden>Sign up</button><button id="authSignin" class="btn" type="submit" hidden>Sign in</button></span>
@@ -1098,6 +1099,7 @@ p{margin:0}
   let authBusy=false;
   let authRequest=null;
   let authReturnFocus=null;
+  let googleRetryPending=false;
   let activeCircleRole=null;
   let currentCloudPairingWeek=null;
   let currentCloudPairingLoaded=false;
@@ -1439,7 +1441,9 @@ async function refreshMe(){
     const passwordEnabled=authMode==='signup'?authCapabilities.passwordSignup:authCapabilities.passwordLogin;
     const target=authBusy
       ?document.getElementById('authCancel')
-      :(passwordEnabled
+      :(googleRetryPending&&authCapabilities.googleOAuth
+      ?document.getElementById('authGoogleRetry')
+      :passwordEnabled
       ?document.getElementById('authEmail')
       :(authCapabilities.googleOAuth?document.getElementById('authGoogle'):document.getElementById('authCancel')));
     target?.focus();
@@ -1451,6 +1455,7 @@ async function refreshMe(){
     const description=document.getElementById('authDescription');
     const status=document.getElementById('authCapabilityStatus');
     const google=document.getElementById('authGoogle');
+    const googleRetry=document.getElementById('authGoogleRetry');
     const divider=document.getElementById('authDivider');
     const fields=document.getElementById('authPasswordFields');
     const nameField=document.getElementById('authNameField');
@@ -1465,7 +1470,11 @@ async function refreshMe(){
       ?'Create an account to join weekly practice pairings.'
       :'Access your private pairing history and practice rooms.';
     if(status) status.textContent=authStatusMessage();
-    if(google){ google.hidden=!authCapabilitiesLoaded||!googleEnabled; google.disabled=authBusy||!authCapabilitiesLoaded; }
+    if(google){ google.hidden=!authCapabilitiesLoaded||!googleEnabled||googleRetryPending; google.disabled=authBusy||!authCapabilitiesLoaded; }
+    if(googleRetry){
+      googleRetry.hidden=!googleRetryPending||!authCapabilitiesLoaded||!googleEnabled;
+      googleRetry.disabled=authBusy||!authCapabilitiesLoaded;
+    }
     if(fields) fields.hidden=!authCapabilitiesLoaded||!passwordEnabled;
     if(divider) divider.hidden=!authCapabilitiesLoaded||!googleEnabled||!passwordEnabled;
     if(nameField) nameField.hidden=authMode!=='signup'||!passwordEnabled;
@@ -1528,16 +1537,18 @@ async function refreshMe(){
   }
   function setAuthMode(mode){
     authMode=resolvedAuthMode(mode);
+    googleRetryPending=false;
     clearAuthValidation();
     renderAuthModal();
     focusAuthControl();
   }
-  function openAuthModal(mode='signin',{message=''}={}){
+  function openAuthModal(mode='signin',{message='',googleRetry=false}={}){
     const overlay=document.getElementById('authOverlay');
     if(!overlay) return;
     const active=document.activeElement;
     if(active&&active!==document.body&&!overlay.contains(active)) authReturnFocus=active;
     authMode=resolvedAuthMode(mode);
+    googleRetryPending=googleRetry===true;
     clearAuthValidation({clearError:false});
     setAuthError(message);
     overlay.classList.add('show');
@@ -1563,6 +1574,7 @@ async function refreshMe(){
     overlay.classList.remove('show');
     overlay.setAttribute('aria-hidden','true');
     clearAuthValidation();
+    googleRetryPending=false;
     const password=document.getElementById('authPass');
     if(password) password.value='';
     const returnFocus=authReturnFocus;
@@ -1843,14 +1855,30 @@ async function refreshMe(){
     event.preventDefault();
     submitAuth(authMode);
   });
-  const authGoogleBtn=document.getElementById('authGoogle');
-  if(authGoogleBtn){ authGoogleBtn.onclick=()=>{
+  function beginGoogleSignIn(){
     if(authBusy||!authCapabilitiesLoaded||!authCapabilities.googleOAuth) return;
     const match=(window.location.pathname||'').match(/^\/join\/(week_[1-9]\d*_pair_[1-9]\d*)$/);
     const ids=match?.[1]?.match(/^week_(\d+)_pair_(\d+)$/);
     const returnTo=ids&&Number.isSafeInteger(Number(ids[1]))&&Number.isSafeInteger(Number(ids[2]))?`/join/${match[1]}`:'';
     window.location.href='/api/auth/google/start'+(returnTo?`?return_to=${encodeURIComponent(returnTo)}`:'');
-  }; }
+  }
+  const authGoogleBtn=document.getElementById('authGoogle');
+  if(authGoogleBtn) authGoogleBtn.onclick=beginGoogleSignIn;
+  const authGoogleRetryBtn=document.getElementById('authGoogleRetry');
+  if(authGoogleRetryBtn) authGoogleRetryBtn.onclick=beginGoogleSignIn;
+  function googleFailureMessage(code){
+    switch(code){
+      case 'access_denied': return 'Google sign-in was cancelled. You can try again when ready.';
+      case 'invalid_state': return 'Your Google sign-in session expired. Start again to continue safely.';
+      case 'provider_unavailable': return 'Google sign-in is temporarily unavailable. Please try again.';
+      case 'identity_invalid':
+      case 'provider_response_invalid': return 'We could not verify that Google account. Please try again.';
+      case 'account_exists_use_password': return 'This email already uses password sign-in. Sign in with your password.';
+      case 'identity_mismatch': return 'That Google account conflicts with an existing identity. Contact the circle owner.';
+      case 'private_beta': return 'A valid invitation for this Google account is required.';
+      default: return 'Google sign-in did not complete. Please try again.';
+    }
+  }
   // Google OAuth now establishes an HttpOnly session and returns ?google=success.
   (function(){
     try{
@@ -1858,7 +1886,7 @@ async function refreshMe(){
       const googleSuccess=qp.get('google')==='success';
       const ge=qp.get('google_error');
       if(ge){
-        setTimeout(()=>openAuthModal('signin',{message:'Google sign-in failed. Please try again.'}),300);
+        setTimeout(()=>openAuthModal('signin',{message:googleFailureMessage(ge),googleRetry:true}),300);
       }
       if(googleSuccess || ge){
         qp.delete('google'); qp.delete('google_error');

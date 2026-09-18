@@ -16,6 +16,11 @@ export const MIGRATION_CONTRACTS=Object.freeze([
     name:'cycle-scoped-availability',
     checksum:'dd467c77944b1da0b722ddd91ebef1071811fb24c65fdff7d2121b67fb204270',
   }),
+  Object.freeze({
+    version:4,
+    name:'provider-scoped-identities',
+    checksum:'99e63a04a8617d4dcc12d5ff71ac8590e21ba5a44bdcaba90ead405f42f5625e',
+  }),
 ]);
 
 export const LATEST_MIGRATION_VERSION=MIGRATION_CONTRACTS.at(-1)?.version||0;

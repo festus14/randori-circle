@@ -20,7 +20,7 @@ test('schema manifest pins all current tables and named indexes',()=>{
     'ai_usage','ai_account_monthly_usage','ai_account_monthly_reservations','ai_consents','app_logs',
     'user_notification_prefs','auth_rate_limits','circles','circle_memberships','circle_invitations',
     'circle_audit_events','circle_membership_rollout','pairing_cycles',
-    'pairing_cycle_availability',
+    'pairing_cycle_availability','auth_provider_identities',
   ]);
   assert.deepEqual(INDEXES.map(item=>item.name),[
     'idx_video_signals_room','idx_video_signals_room_id','idx_pair_messages_pair','idx_pair_sched_pair',
@@ -44,7 +44,7 @@ test('schema manifest pins all current tables and named indexes',()=>{
 
 test('immutable migration metadata is contiguous and checksum protected',()=>{
   assert.equal(validateMigrationPlans(),true);
-  assert.deepEqual(MIGRATION_PLANS.map(plan=>plan.version),[1,2,3]);
+  assert.deepEqual(MIGRATION_PLANS.map(plan=>plan.version),[1,2,3,4]);
   assert.deepEqual(MIGRATION_PLANS.slice(0,2).map(plan=>({
     version:plan.version,operationsChecksum:plan.operationsChecksum,checksum:plan.checksum,
   })),[{
@@ -61,6 +61,9 @@ test('immutable migration metadata is contiguous and checksum protected',()=>{
     'ensure-table:pairing_cycle_availability',
     'ensure-index:idx_pairing_cycle_availability_candidates',
   ]);
+  assert.deepEqual(MIGRATION_PLANS[3].operations.map(operation=>`${operation.operation}:${operation.name}`),[
+    'ensure-table:auth_provider_identities',
+  ]);
   assert.ok(MIGRATION_PLANS.every(plan=>/^[a-f0-9]{64}$/.test(plan.operationsChecksum)));
   assert.ok(MIGRATION_PLANS.flatMap(plan=>plan.operations).every(operation=>{
     return typeof operation.sql==='string'&&/^CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX)/i.test(operation.sql);
@@ -73,14 +76,18 @@ test('immutable migration metadata is contiguous and checksum protected',()=>{
   assert.throws(()=>validateMigrationPlans(gap),/gap at version 2/);
 });
 
-test('baseline owns Google subjects while membership adds their uniqueness index',()=>{
+test('provider identities add issuer-scoped subject and account uniqueness without rewriting the baseline',()=>{
   const baseAuth=MIGRATION_PLANS[0].operations.find(item=>item.name==='auth_accounts');
   const membershipAuth=MIGRATION_PLANS[1].operations.find(item=>item.name==='auth_accounts');
+  const providerIdentities=MIGRATION_PLANS[3].operations.find(item=>item.name==='auth_provider_identities');
   assert.ok(baseAuth);
   assert.match(baseAuth.sql,/\bgoogle_sub\b/);
   assert.equal(membershipAuth,undefined);
   assert.ok(MIGRATION_PLANS[1].operations.some(item=>item.name==='uq_auth_accounts_google_sub'));
   assert.equal(TABLES.find(item=>item.name==='auth_accounts').sql,baseAuth.sql);
+  assert.match(providerIdentities.sql,/PRIMARY KEY\(issuer,subject\)/);
+  assert.match(providerIdentities.sql,/UNIQUE\(issuer,user_id\)/);
+  assert.match(providerIdentities.sql,/issuer='https:\/\/accounts\.google\.com'/);
 });
 
 test('current-artifact resolution preserves order and uses the latest pairing-weeks definition',()=>{
@@ -119,25 +126,25 @@ test('migration metadata covers every artifact and supports append-only replacem
   assert.throws(()=>validateMigrationPlans(duplicate.map(repin)),/repeats canonical operations/);
 
   const unsupported=repin({
-    version:4,name:'unsupported-operation',description:'Invalid operation example.',
+    version:5,name:'unsupported-operation',description:'Invalid operation example.',
     operations:[{operation:'drop-table',name:'users',sql:'DROP TABLE users'}],
   });
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,unsupported]),/unsupported operation/);
 
   const mislabeled=repin({
-    version:4,name:'mislabeled-table',description:'Invalid table example.',
+    version:5,name:'mislabeled-table',description:'Invalid table example.',
     operations:[{operation:'ensure-table',name:'users',sql:'DROP TABLE users'}],
   });
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,mislabeled]),/non-canonical CREATE TABLE/);
 
   const multipleStatements=repin({
-    version:4,name:'multiple-statements',description:'Invalid SQL example.',
+    version:5,name:'multiple-statements',description:'Invalid SQL example.',
     operations:[{operation:'ensure-table',name:'users',sql:'CREATE TABLE users (id INTEGER); DROP TABLE auth_accounts'}],
   });
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,multipleStatements]),/invalid ensure-table definition/);
 
   const danglingIndex=repin({
-    version:4,name:'dangling-index',description:'Invalid index example.',
+    version:5,name:'dangling-index',description:'Invalid index example.',
     operations:[{
       operation:'ensure-index',name:'idx_video_signals_room',table:'missing_table',
       keyParts:['room_id'],unique:false,where:null,
@@ -147,7 +154,7 @@ test('migration metadata covers every artifact and supports append-only replacem
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,danglingIndex]),/references unknown table/);
 
   const replacement={...MIGRATION_PLANS[0].operations.find(operation=>operation.name==='users'),sql:'CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)'};
-  const appended=repin({version:4,name:'future-users-contract',description:'Future replacement example.',operations:[replacement]});
+  const appended=repin({version:5,name:'future-users-contract',description:'Future replacement example.',operations:[replacement]});
   assert.equal(validateMigrationPlans([...MIGRATION_PLANS,appended]),true);
 });
 

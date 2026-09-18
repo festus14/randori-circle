@@ -22,6 +22,13 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'73abd55d97917fc5fede6aff7a5bc8394a6408319e87a6bd295eaca3d7a0e7b5',
     checksum:'0f88f5d6c9b305cb2bef7601aeaf3259615c8d7e59443ea66060bdafe1a6e948',
   }),
+  Object.freeze({
+    version:4,
+    name:'provider-scoped-identities',
+    description:'Stable OpenID Connect issuer and subject mappings for authenticated accounts.',
+    operationsChecksum:'18831c331d9bd1fdf835eae05dc1457ecc761bfabb673601f0920329f9811121',
+    checksum:'9c234c1b040b0470db8a4e6edcce957adcdbc9efa5a02275a468cc6854df6bb0',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){

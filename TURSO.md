@@ -49,7 +49,7 @@
    Run `npm run --silent db:status` and `npm run --silent db:plan` against the restored copy and retain their JSON reports. These commands use only `SELECT`/`PRAGMA`; `db:plan` is descriptive and cannot apply changes. See [the schema inspection runbook](docs/DATABASE_SCHEMA_OPERATIONS.md).
    The fingerprint-gated `db:migrate status`, `apply`, and `adopt` commands accept only an explicit local `file:` URL. The protected, manual Turso PITR workflow creates a disposable remote restore, verifies authenticated source/restore evidence, adopts and advances only that restore, checks preservation, then performs identity-guarded cleanup through Turso's name-addressed delete API. A successful run publishes a short-lived, domain-separated HMAC attestation only after the separate cleanup step also succeeds. Configure and run it with [the backup/restore rehearsal runbook](docs/TURSO_BACKUP_RESTORE_REHEARSAL.md). Remote production migration remains blocked until a real rehearsal succeeds and its attestation is retained with the authoritative GitHub Actions run conclusion.
 5. Deploy with `CIRCLE_MEMBERSHIP_ENABLED=false` and `AUTH_SCHEMA_BOOTSTRAP_ENABLED=false`. The rollout-state checks are read-only; any legacy registration that races initialization is atomically included or rejected.
-6. If this is a fresh database with no account, temporarily set `AUTH_SCHEMA_BOOTSTRAP_ENABLED=true` and restrict `SIGNUP_ALLOWLIST` to the normalized `ADMIN_EMAILS` address. Sign in once with that Google account, immediately restore `AUTH_SCHEMA_BOOTSTRAP_ENABLED=false`, and redeploy. This explicit maintenance switch creates only the legacy auth baseline; it does not create membership tables.
+6. Keep `AUTH_SCHEMA_BOOTSTRAP_ENABLED=false`. The legacy request-time bootstrap does not create provider identities and cannot bypass the current migration/readiness gate. Create the first account only after the protected migration workflow reports the current schema ready.
 7. Sign in with the bootstrap account and verify `GET /api/auth/me` reports `is_admin: true`.
 8. Call the authenticated admin-only `POST https://your-app.vercel.app/api/init`. This creates the membership schema, closes new uninvited registration, and atomically backfills existing non-demo accounts.
 9. Verify the rollout queries below before setting `CIRCLE_MEMBERSHIP_ENABLED=true` and redeploying.
@@ -58,7 +58,7 @@
 
 **Membership data:** `circles`, `circle_memberships`, hashed `circle_invitations`, `circle_audit_events`, and the singleton `circle_membership_rollout` latch.
 
-Membership-schema migration is explicit through authenticated `POST /api/init`; rollout-state probes and ordinary circle, pairing, and invitation requests do not create membership schema. The temporary fresh-database auth bootstrap in step 6 is the only exception introduced by this rollout.
+Provider-identity and other migration-managed schema changes use the protected migration workflow. Membership schema creation remains an explicit authenticated `POST /api/init` operator step; rollout-state probes and ordinary auth, circle, pairing, and invitation requests do not create it. Keep `AUTH_SCHEMA_BOOTSTRAP_ENABLED=false` so unauthenticated request-time auth bootstrap remains disabled.
 
 **Scaling rule:**
 - Circle = active `circle_memberships` in the one operational primary circle. The one-time migration backfills existing non-demo authenticated accounts; legacy `users` rows are never inferred as members.

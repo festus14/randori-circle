@@ -91,6 +91,10 @@ const PLAN_3_OPERATIONS=Object.freeze([
   index('idx_pairing_cycle_availability_candidates','pairing_cycle_availability',['scope_key','cycle_key','is_available','user_id']),
 ]);
 
+const PLAN_4_OPERATIONS=Object.freeze([
+  table('auth_provider_identities',`CREATE TABLE IF NOT EXISTS auth_provider_identities (issuer TEXT NOT NULL CHECK(issuer='https://accounts.google.com'), subject TEXT NOT NULL CHECK(length(subject)>=1 AND length(subject)<=255 AND subject NOT GLOB '*[^A-Za-z0-9_-]*'), user_id INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), last_login TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY(issuer,subject), UNIQUE(issuer,user_id), FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE CASCADE)`),
+]);
+
 export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:1,
@@ -106,6 +110,10 @@ export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:3,
     operations:PLAN_3_OPERATIONS,
+  }),
+  Object.freeze({
+    version:4,
+    operations:PLAN_4_OPERATIONS,
   }),
 ]);
 
@@ -146,7 +154,7 @@ export const SCHEMA_MANIFEST_CHECKSUM=checksum({
 
 // Updating the schema is intentional only when this pinned checksum is updated
 // in the same reviewed change.
-export const PINNED_SCHEMA_MANIFEST_CHECKSUM='deb67194cd49e57520c351553fa3e9249adae9d93a6b20b9ffe3c6bc04fceedd';
+export const PINNED_SCHEMA_MANIFEST_CHECKSUM='32a611b8aba76e9cfc245404453d43cf6209c2d17500a88894693adcd8527637';
 
 if(SCHEMA_MANIFEST_CHECKSUM!==PINNED_SCHEMA_MANIFEST_CHECKSUM){
   throw new Error(`Schema manifest checksum changed: ${SCHEMA_MANIFEST_CHECKSUM}`);

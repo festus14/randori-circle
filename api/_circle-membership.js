@@ -374,7 +374,7 @@ export async function acceptPreparedInvitation(db,{claim,email,userId}){
 }
 
 export async function createGoogleAccountFromPreparedInvitation(db,{
-  claim,email,passwordHash,displayName,color,isAdmin=false,googleSub,
+  claim,email,passwordHash,displayName,color,isAdmin=false,googleIssuer,googleSub,
 }){
   const parsed=validClaimObject(claim);
   const normalizedEmail=normalizeInvitationEmail(email);
@@ -382,9 +382,10 @@ export async function createGoogleAccountFromPreparedInvitation(db,{
   const safePasswordHash=typeof passwordHash==='string'&&passwordHash.startsWith('!oauth:')&&passwordHash.length<=128?passwordHash:null;
   const safeDisplayName=typeof displayName==='string'&&displayName.trim()?displayName.trim().slice(0,32):null;
   const safeColor=typeof color==='string'&&color.length<=32?color:null;
-  const safeGoogleSub=typeof googleSub==='string'&&googleSub.length>0&&googleSub.length<=255?googleSub:null;
+  const safeGoogleIssuer=googleIssuer==='https://accounts.google.com'?googleIssuer:null;
+  const safeGoogleSub=typeof googleSub==='string'&&/^[A-Za-z0-9_-]{1,255}$/.test(googleSub)?googleSub:null;
   if(!parsed||!normalizedEmail||!emailHash||!safeEqual(parsed.email_hash,emailHash)
-    ||!safePasswordHash||!safeDisplayName||!safeColor||!safeGoogleSub){
+    ||!safePasswordHash||!safeDisplayName||!safeColor||!safeGoogleIssuer||!safeGoogleSub){
     return {ok:false};
   }
   const acceptedAt=new Date().toISOString();
@@ -413,6 +414,12 @@ export async function createGoogleAccountFromPreparedInvitation(db,{
     const account=created.rows[0];
     const userId=safePositiveInteger(account.id);
     if(!userId) return await reject();
+    const identity=await transaction.execute({
+      sql:`INSERT INTO auth_provider_identities (issuer,subject,user_id,created_at,last_login)
+        VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING RETURNING user_id`,
+      args:[safeGoogleIssuer,safeGoogleSub,userId,acceptedAt,acceptedAt],
+    });
+    if(identity.rows?.length!==1||Number(identity.rows[0].user_id)!==userId) return await reject();
     const accepted=await transaction.execute({
       sql:`UPDATE circle_invitations SET used_at=?,used_by=?
         WHERE id=? AND circle_id=? AND token_hash=? AND email_hash=?
