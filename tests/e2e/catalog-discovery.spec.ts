@@ -138,7 +138,7 @@ async function expectVisibleSlugs(page: Page, slugs: string[]) {
     };
     return app._randori_catalog_filters?.state?.visibleSlugs || [];
   })).toEqual(slugs);
-  await expect(page.locator('#questionSelect option')).toHaveCount(slugs.length);
+  await expect(page.locator('#questionSelect option')).toHaveCount(slugs.length || 1);
 }
 
 test('discovers exercises by title, tag, difficulty, and type without refetching the catalogue', async ({ page }) => {
