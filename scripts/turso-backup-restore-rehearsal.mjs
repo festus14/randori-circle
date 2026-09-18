@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-import { mkdir, open, realpath } from 'node:fs/promises';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { constants } from 'node:fs';
+import { lstat, mkdir, open, realpath, rename, unlink } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { basename, dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createClient } from '@libsql/client';
 
@@ -22,6 +24,7 @@ import {
 } from '../db/turso-platform.js';
 
 export const REHEARSAL_FORMAT='randori.turso-backup-restore-rehearsal.v1';
+export const REHEARSAL_JOURNAL_FORMAT='randori.turso-backup-restore-journal.v1';
 
 const PUBLIC_MESSAGES=Object.freeze({
   REHEARSAL_INVALID:'Backup/restore rehearsal configuration is invalid.',
@@ -102,6 +105,11 @@ function hmacKey(value){
   return key;
 }
 
+function exactBoolean(value,name){
+  if(typeof value!=='boolean') fail('REHEARSAL_INVALID',`${name} is invalid`,'configuration');
+  return value;
+}
+
 function milliseconds(clock){
   let value;
   try{ value=clock(); }catch(error){
@@ -115,6 +123,18 @@ function milliseconds(clock){
 }
 
 function timestamp(clock){ return new Date(milliseconds(clock)).toISOString(); }
+function pitrTimestamp(clock){
+  return new Date(Math.floor(milliseconds(clock)/1000)*1000).toISOString();
+}
+
+function exactTimestamp(value,label){
+  if(typeof value!=='string') fail('REHEARSAL_INVALID',`${label} is invalid`,'configuration');
+  const parsed=Date.parse(value);
+  if(!Number.isFinite(parsed)||new Date(parsed).toISOString()!==value){
+    fail('REHEARSAL_INVALID',`${label} is invalid`,'configuration');
+  }
+  return value;
+}
 
 function hostnameUrl(hostname){
   if(typeof hostname!=='string'||hostname.length>253||hostname!==hostname.toLowerCase()
@@ -184,7 +204,8 @@ function sourceIdentity(database,expected){
 function restoreIdentity(database,expected){
   if(database?.id!==expected.id||database?.name!==expected.name||database?.group!==expected.group
     ||database?.id===expected.sourceId||database?.name===expected.sourceName
-    ||database?.parent?.id!==expected.sourceId||database?.parent?.name!==expected.sourceName){
+    ||database?.parent?.id!==expected.sourceId||database?.parent?.name!==expected.sourceName
+    ||database?.parent?.branchedAt!==expected.pitrAt){
     fail('REHEARSAL_RESTORE_IDENTITY_MISMATCH','restore identity mismatch','restore_ready');
   }
   return database;
@@ -212,8 +233,18 @@ function readonlyTransaction(transaction){
   });
 }
 
-async function withDatabaseTimeout(operation,timeoutMs,phase){
+function interruptionError(phase){
+  return new RehearsalError('REHEARSAL_FAILED','rehearsal interrupted',{phase});
+}
+
+function throwIfAborted(signal,phase){
+  if(signal?.aborted) throw interruptionError(phase);
+}
+
+async function withDatabaseTimeout(operation,timeoutMs,phase,signal){
+  throwIfAborted(signal,phase);
   let timer;
+  let abortListener;
   try{
     return await Promise.race([
       Promise.resolve().then(operation),
@@ -222,15 +253,22 @@ async function withDatabaseTimeout(operation,timeoutMs,phase){
           'REHEARSAL_DATABASE_TIMEOUT','database operation timed out',{phase},
         )),timeoutMs);
       }),
+      ...(signal?[new Promise((_resolve,reject)=>{
+        abortListener=()=>reject(interruptionError(phase));
+        signal.addEventListener('abort',abortListener,{once:true});
+      })]:[]),
     ]);
-  }finally{ clearTimeout(timer); }
+  }finally{
+    clearTimeout(timer);
+    if(abortListener) signal.removeEventListener('abort',abortListener);
+  }
 }
 
-function timedTransaction(transaction,timeoutMs,phase){
+function timedTransaction(transaction,timeoutMs,phase,signal){
   return new Proxy(transaction,{
     get(target,property){
       if(['execute','batch','commit','rollback'].includes(property)&&typeof target[property]==='function'){
-        return (...args)=>withDatabaseTimeout(()=>target[property](...args),timeoutMs,phase);
+        return (...args)=>withDatabaseTimeout(()=>target[property](...args),timeoutMs,phase,signal);
       }
       const value=target[property];
       return typeof value==='function'?value.bind(target):value;
@@ -238,17 +276,17 @@ function timedTransaction(transaction,timeoutMs,phase){
   });
 }
 
-function timedDatabaseClient(client,timeoutMs,phase){
+function timedDatabaseClient(client,timeoutMs,phase,signal){
   return Object.freeze({
-    execute:(...args)=>withDatabaseTimeout(()=>client.execute(...args),timeoutMs,phase),
-    batch:(...args)=>withDatabaseTimeout(()=>client.batch(...args),timeoutMs,phase),
+    execute:(...args)=>withDatabaseTimeout(()=>client.execute(...args),timeoutMs,phase,signal),
+    batch:(...args)=>withDatabaseTimeout(()=>client.batch(...args),timeoutMs,phase,signal),
     async transaction(...args){
-      const transaction=await withDatabaseTimeout(()=>client.transaction(...args),timeoutMs,phase);
-      return timedTransaction(transaction,timeoutMs,phase);
+      const transaction=await withDatabaseTimeout(()=>client.transaction(...args),timeoutMs,phase,signal);
+      return timedTransaction(transaction,timeoutMs,phase,signal);
     },
     close(){
       return typeof client.close==='function'
-        ?withDatabaseTimeout(()=>client.close(),timeoutMs,phase):undefined;
+        ?withDatabaseTimeout(()=>client.close(),Math.min(timeoutMs,2_000),phase):undefined;
     },
   });
 }
@@ -276,12 +314,17 @@ function waitConfiguration(value={}){
   return Object.freeze({
     maxAttempts:integer(value.maxAttempts??60,'poll attempts',{maximum:120}),
     intervalMs:integer(value.intervalMs??5_000,'poll interval',{maximum:30_000}),
+    maxDurationMs:integer(value.maxDurationMs??5*60_000,'poll duration',{maximum:10*60_000}),
   });
 }
 
-async function boundedPoll(operation,{maxAttempts,intervalMs},sleep){
+async function boundedPoll(
+  operation,{maxAttempts,intervalMs,maxDurationMs},sleep,signal,
+  deadline=Date.now()+maxDurationMs,
+){
   let lastError=null;
   for(let attempt=1;attempt<=maxAttempts;attempt+=1){
+    throwIfAborted(signal,'restore_ready');
     try{
       const value=await operation(attempt);
       if(value?.done) return value.value;
@@ -290,15 +333,22 @@ async function boundedPoll(operation,{maxAttempts,intervalMs},sleep){
       if(!(error instanceof TursoPlatformError)||!error.retryable) throw error;
       lastError=error;
     }
-    if(attempt<maxAttempts) await sleep(intervalMs);
+    if(attempt<maxAttempts&&Date.now()<deadline){
+      const waitMs=Math.min(intervalMs,Math.max(1,deadline-Date.now()));
+      await withDatabaseTimeout(()=>sleep(waitMs),waitMs+1_000,'restore_ready',signal);
+    }
+    if(Date.now()>=deadline) break;
   }
   if(lastError) throw lastError;
   return null;
 }
 
-async function setAndConfirmWriteState(platform,source,blockWrites,poll,sleep){
+async function setAndConfirmWriteState(platform,source,blockWrites,poll,sleep,signal){
   let lastError=null;
+  const deadline=Date.now()+poll.maxDurationMs;
   for(let attempt=1;attempt<=Math.min(3,poll.maxAttempts);attempt+=1){
+    if(Date.now()>=deadline) break;
+    throwIfAborted(signal,'write_block');
     try{
       sourceIdentity(await platform.getDatabase(source.name),source);
       await platform.setDatabaseBlockWrites(source.name,blockWrites);
@@ -310,17 +360,23 @@ async function setAndConfirmWriteState(platform,source,blockWrites,poll,sleep){
         sourceIdentity(database,source);
         return configuration.blockWrites===blockWrites&&database.blockWrites===blockWrites
           ?{done:true,value:true}:{done:false};
-      },poll,sleep);
+      },poll,sleep,signal,deadline);
       if(confirmed===true) return;
       fail('REHEARSAL_SOURCE_WRITE_BLOCK_FAILED','source write state was not confirmed','write_block');
     }catch(error){
       lastError=error;
       if(attempt>=Math.min(3,poll.maxAttempts)
         ||(!(error instanceof TursoPlatformError)||!error.retryable)) throw error;
-      await sleep(poll.intervalMs);
+      if(Date.now()<deadline){
+        const waitMs=Math.min(poll.intervalMs,Math.max(1,deadline-Date.now()));
+        await withDatabaseTimeout(()=>sleep(waitMs),waitMs+1_000,'write_block',signal);
+      }
     }
   }
-  throw lastError;
+  throw lastError??new RehearsalError(
+    'REHEARSAL_SOURCE_WRITE_BLOCK_FAILED','source write-state deadline elapsed',
+    {phase:'write_block'},
+  );
 }
 
 export async function detectEvidenceMigration(db){
@@ -359,6 +415,7 @@ function evidenceOptions(options,{role,identity,pitrAt,contract,restoreStartedAt
     clock:options.clock,
     migrations:contract.migrations,
     expectedLedger:contract.expectedLedger,
+    limits:{maxDurationMs:options.evidenceMaxDurationMs},
     ...(role==='restore'?{restoreStartedAt,restoreCompletedAt}:{}),
   };
 }
@@ -385,6 +442,7 @@ export function verifyPostMigrationPreservation(before,after){
     fail('REHEARSAL_PRESERVATION_FAILED','restore did not reach the latest migration','post_migration_evidence');
   }
   const afterTables=new Map((after.tables||[]).map(table=>[table.name,table]));
+  const beforeNames=new Set((before?.tables||[]).map(table=>table.name));
   for(const table of before?.tables||[]){
     const migrated=afterTables.get(table.name);
     if(!migrated||migrated.count!==table.count||migrated.digest!==table.digest){
@@ -394,6 +452,22 @@ export function verifyPostMigrationPreservation(before,after){
   if(before?.storage?.sequenceRows!==after?.storage?.sequenceRows
     ||before?.storage?.sequenceDigest!==after?.storage?.sequenceDigest){
     fail('REHEARSAL_PRESERVATION_FAILED','sequence state changed','post_migration_evidence');
+  }
+  const sourceVersion=before?.migration?.selectedVersion;
+  if(!Number.isSafeInteger(sourceVersion)||sourceVersion<1||sourceVersion>LATEST_MIGRATION_VERSION){
+    fail('REHEARSAL_PRESERVATION_FAILED','source migration version is invalid','post_migration_evidence');
+  }
+  const laterOperations=EXECUTABLE_MIGRATIONS
+    .filter(migration=>migration.version>sourceVersion)
+    .flatMap(migration=>migration.operations);
+  const expectedAdditions=[...new Set(laterOperations
+    .filter(operation=>operation.operation==='ensure-table'&&!beforeNames.has(operation.name))
+    .map(operation=>operation.name))].sort();
+  const actualAdditions=[...afterTables.keys()].filter(tableName=>!beforeNames.has(tableName)).sort();
+  if(JSON.stringify(actualAdditions)!==JSON.stringify(expectedAdditions)
+    ||actualAdditions.some(tableName=>afterTables.get(tableName)?.count!==laterOperations
+      .filter(operation=>operation.operation==='ensure-row'&&operation.table===tableName).length)){
+    fail('REHEARSAL_PRESERVATION_FAILED','migration additions are not exact and empty','post_migration_evidence');
   }
   return true;
 }
@@ -476,6 +550,7 @@ function normalizedOptions(value){
   const key=hmacKey(value.hmacKey);
   return Object.freeze({
     platform:value.platform,
+    recoveryPlatform:value.recoveryPlatform??value.platform,
     source,
     restoreName,
     repoCommit:commit(value.repoCommit),
@@ -483,13 +558,55 @@ function normalizedOptions(value){
     clock,
     policy,
     poll:waitConfiguration(value.poll),
+    cleanupPoll:waitConfiguration(value.cleanupPoll??{
+      maxAttempts:12,intervalMs:2_000,maxDurationMs:2*60_000,
+    }),
     databaseOperationTimeoutMs:integer(
       value.databaseOperationTimeoutMs??30_000,'database operation timeout',{maximum:120_000},
     ),
-    backupRef:`turso-pitr:${source.id}`,
+    evidenceMaxDurationMs:integer(
+      value.evidenceMaxDurationMs??5*60_000,'evidence duration',{maximum:10*60_000},
+    ),
+    expectedSourceBlockWrites:exactBoolean(
+      value.expectedSourceBlockWrites,'expected source block_writes',
+    ),
+    backupRef:`turso-pitr:${source.id}:${source.name}:${source.group}`,
     tokenExpiration:'30m',
     recoveryWriter:value.recoveryWriter,
+    journalWriter:value.journalWriter,
+    signal:value.signal,
   });
+}
+
+function journalSnapshot(options,originalWriteState){
+  return {
+    kind:'turso-backup-restore-journal',
+    format:REHEARSAL_JOURNAL_FORMAT,
+    repoCommit:options.repoCommit,
+    status:'prepared',
+    phase:'write_block',
+    updatedAt:timestamp(options.clock),
+    source:{
+      id:options.source.id,name:options.source.name,group:options.source.group,
+      originalBlockWrites:originalWriteState,writeStateRestored:false,
+    },
+    restore:{
+      attempted:false,id:null,name:options.restoreName,group:options.source.group,pitrAt:null,
+      sourceId:options.source.id,sourceName:options.source.name,
+      identityVerified:false,deleted:false,
+    },
+  };
+}
+
+async function persistJournal(options,state,phase){
+  state.phase=phase;
+  state.updatedAt=timestamp(options.clock);
+  try{ await options.journalWriter(structuredClone(state)); }
+  catch(error){
+    throw new RehearsalError('REHEARSAL_RECOVERY_STATE_FAILED','journal update failed',{
+      cause:error,phase,
+    });
+  }
 }
 
 function publicResult(candidate,safety){
@@ -521,20 +638,34 @@ function publicResult(candidate,safety){
   });
 }
 
+function publicCleanupResult({repoCommit,safety,noState=false,recoveryRequired=false}){
+  return Object.freeze({
+    ok:!recoveryRequired,
+    kind:'turso-backup-restore-cleanup',
+    format:REHEARSAL_FORMAT,
+    repoCommit,
+    noState:noState===true,
+    recoveryRequired:recoveryRequired===true,
+    safety:publicSafety(safety),
+  });
+}
+
 export async function runBackupRestoreRehearsal(rawOptions={},dependencies={}){
   const options=normalizedOptions(rawOptions);
   const platform=options.platform;
-  if(!platform||[
+  const recoveryPlatform=options.recoveryPlatform;
+  if(!platform||!recoveryPlatform||[
     'getDatabase','getDatabaseConfiguration','setDatabaseBlockWrites','createPitrDatabase',
     'createDatabaseToken','deleteDatabase',
-  ].some(method=>typeof platform[method]!=='function')){
+  ].some(method=>typeof platform[method]!=='function'||typeof recoveryPlatform[method]!=='function')){
     options.hmacKey.fill(0);
     fail('REHEARSAL_INVALID','platform client is invalid','configuration');
   }
   const connectDatabase=dependencies.connectDatabase??(({role:_role,...configuration})=>createClient(configuration));
   const sleep=dependencies.sleep??(duration=>new Promise(resolve=>setTimeout(resolve,duration)));
   const recoveryWriter=dependencies.writeRecoveryState??options.recoveryWriter;
-  if(typeof connectDatabase!=='function'||typeof sleep!=='function'||typeof recoveryWriter!=='function'){
+  if(typeof connectDatabase!=='function'||typeof sleep!=='function'||typeof recoveryWriter!=='function'
+    ||typeof options.journalWriter!=='function'){
     options.hmacKey.fill(0);
     fail('REHEARSAL_INVALID','rehearsal dependencies are invalid','configuration');
   }
@@ -542,7 +673,7 @@ export async function runBackupRestoreRehearsal(rawOptions={},dependencies={}){
   const safety={};
   const restoreState={
     attempted:false,id:null,name:options.restoreName,group:options.source.group,
-    sourceId:options.source.id,sourceName:options.source.name,
+    sourceId:options.source.id,sourceName:options.source.name,pitrAt:null,
   };
   let phase='source_identity';
   let originalWriteState;
@@ -553,6 +684,8 @@ export async function runBackupRestoreRehearsal(rawOptions={},dependencies={}){
   let primaryError=null;
   let cleanup={deleted:true,recovery:null};
   let sourceRecovery=null;
+  let journal=null;
+  let journalError=null;
   try{
     const source=sourceIdentity(await platform.getDatabase(options.source.name),options.source);
     safety.sourceIdentityVerified=true;
@@ -561,12 +694,19 @@ export async function runBackupRestoreRehearsal(rawOptions={},dependencies={}){
       fail('REHEARSAL_SOURCE_IDENTITY_MISMATCH','source configuration is inconsistent','source_identity');
     }
     originalWriteState=configuration.blockWrites;
+    if(originalWriteState!==options.expectedSourceBlockWrites){
+      fail('REHEARSAL_SOURCE_IDENTITY_MISMATCH','source write state is not the protected expectation','source_identity');
+    }
+    journal=journalSnapshot(options,originalWriteState);
+    await persistJournal(options,journal,'write_block');
 
     phase='write_block';
+    throwIfAborted(options.signal,phase);
     blockTouched=true;
-    await setAndConfirmWriteState(platform,options.source,true,options.poll,sleep);
+    await setAndConfirmWriteState(platform,options.source,true,options.poll,sleep,options.signal);
     safety.writesBlockedBeforePitr=true;
-    const pitrAt=timestamp(options.clock);
+    const pitrAt=pitrTimestamp(options.clock);
+    restoreState.pitrAt=pitrAt;
     const lockedSource=sourceIdentity(await platform.getDatabase(options.source.name),options.source);
     if(lockedSource.blockWrites!==true){
       fail('REHEARSAL_SOURCE_WRITE_BLOCK_FAILED','source write block was lost','write_block');
@@ -578,7 +718,7 @@ export async function runBackupRestoreRehearsal(rawOptions={},dependencies={}){
     });
     sourceDb=readonlySourceClient(timedDatabaseClient(await connectDatabase({
       url:hostnameUrl(lockedSource.hostname),authToken:sourceToken,intMode:'bigint',role:'source',
-    }),options.databaseOperationTimeoutMs,'source_evidence'));
+    }),options.databaseOperationTimeoutMs,'source_evidence',options.signal));
     const contract=await detectEvidenceMigration(sourceDb);
     const boundOptions={...options,backupRef:`${options.backupRef}:${pitrAt}`};
     const sourceEvidence=await collectDatabaseEvidence(sourceDb,evidenceOptions(boundOptions,{
@@ -590,6 +730,10 @@ export async function runBackupRestoreRehearsal(rawOptions={},dependencies={}){
     phase='restore_create';
     const restoreStartedAt=timestamp(options.clock);
     restoreState.attempted=true;
+    journal.status='active';
+    journal.restore.attempted=true;
+    journal.restore.pitrAt=pitrAt;
+    await persistJournal(options,journal,'restore_create');
     const created=await platform.createPitrDatabase({
       name:options.restoreName,
       group:options.source.group,
@@ -600,15 +744,27 @@ export async function runBackupRestoreRehearsal(rawOptions={},dependencies={}){
       fail('REHEARSAL_RESTORE_IDENTITY_MISMATCH','created restore identity is invalid','restore_create');
     }
     restoreState.id=created.id;
+    journal.restore.id=created.id;
+    await persistJournal(options,journal,'write_state_restore');
+
+    await setAndConfirmWriteState(
+      platform,options.source,originalWriteState,options.poll,sleep,options.signal,
+    );
+    safety.sourceWriteStateRestored=true;
+    blockTouched=false;
+    journal.source.writeStateRestored=true;
+    await persistJournal(options,journal,'restore_ready');
 
     phase='restore_ready';
     const ready=await boundedPoll(async()=>{
       const current=await platform.getDatabase(options.restoreName,{allowNotFound:true});
       if(current===null||current.parent===null) return {done:false};
       return {done:true,value:restoreIdentity(current,restoreState)};
-    },options.poll,sleep);
+    },options.poll,sleep,options.signal);
     if(!ready) fail('REHEARSAL_RESTORE_NOT_READY','restore did not become ready','restore_ready');
     safety.restoreIdentityVerified=true;
+    journal.restore.identityVerified=true;
+    await persistJournal(options,journal,'restore_evidence');
     const restoreCompletedAt=timestamp(options.clock);
 
     phase='restore_evidence';
@@ -617,7 +773,7 @@ export async function runBackupRestoreRehearsal(rawOptions={},dependencies={}){
     });
     restoreDb=timedDatabaseClient(await connectDatabase({
       url:hostnameUrl(ready.hostname),authToken:restoreToken,intMode:'bigint',role:'restore',
-    }),options.databaseOperationTimeoutMs,'restore_evidence');
+    }),options.databaseOperationTimeoutMs,'restore_evidence',options.signal);
     const restoredBefore=await collectDatabaseEvidence(restoreDb,evidenceOptions(boundOptions,{
       role:'restore',identity:restoreState.id,pitrAt,contract,restoreStartedAt,restoreCompletedAt,
     }));
@@ -647,15 +803,18 @@ export async function runBackupRestoreRehearsal(rawOptions={},dependencies={}){
   }catch(error){
     primaryError=normalizeError(error,phase);
   }finally{
-    await closeQuietly(restoreDb);
-    await closeQuietly(sourceDb);
     if(blockTouched){
       phase='write_state_restore';
       try{
         await setAndConfirmWriteState(
-          platform,options.source,originalWriteState,options.poll,sleep,
+          recoveryPlatform,options.source,originalWriteState,options.cleanupPoll,sleep,
         );
         safety.sourceWriteStateRestored=true;
+        if(journal){
+          journal.source.writeStateRestored=true;
+          try{ await persistJournal(options,journal,'restore_cleanup'); }
+          catch(error){ journalError=error; }
+        }
       }catch{
         safety.sourceWriteStateRestored=false;
         sourceRecovery={
@@ -667,9 +826,18 @@ export async function runBackupRestoreRehearsal(rawOptions={},dependencies={}){
         };
       }
     }
+    await closeQuietly(sourceDb);
+    await closeQuietly(restoreDb);
     phase='restore_cleanup';
-    cleanup=await cleanupRestore(platform,restoreState,options.poll,sleep);
+    cleanup=await cleanupRestore(recoveryPlatform,restoreState,options.cleanupPoll,sleep);
     safety.restoreDeleted=cleanup.deleted;
+    if(journal){
+      journal.restore.deleted=cleanup.deleted;
+      journal.status=cleanup.deleted&&safety.sourceWriteStateRestored
+        ?(primaryError?'failed_clean':'complete'):'recovery_required';
+      try{ await persistJournal(options,journal,'complete'); }
+      catch(error){ journalError=error; }
+    }
   }
 
   const recoveryItems=[cleanup.recovery,sourceRecovery].filter(Boolean);
@@ -703,18 +871,193 @@ export async function runBackupRestoreRehearsal(rawOptions={},dependencies={}){
       {cause:primaryError,phase:'restore_cleanup'},
     ),safety);
   }
+  if(journalError) throw withSafety(journalError,safety);
   if(primaryError) throw withSafety(primaryError,safety);
   return publicResult(candidate,safety);
 }
 
-function parseArguments(argv){
-  if(!Array.isArray(argv)||argv.length!==2||argv[0]!=='--artifact-dir'||!argv[1]){
-    fail('REHEARSAL_INVALID','usage is invalid','configuration');
+const JOURNAL_STATUSES=new Set(['prepared','active','failed_clean','recovery_required','complete']);
+
+function validateJournal(value,expected){
+  if(!value||typeof value!=='object'||Array.isArray(value)
+    ||value.kind!=='turso-backup-restore-journal'||value.format!==REHEARSAL_JOURNAL_FORMAT
+    ||value.repoCommit!==expected.repoCommit||!JOURNAL_STATUSES.has(value.status)
+    ||!PHASES.has(value.phase)){
+    fail('REHEARSAL_RECOVERY_STATE_FAILED','journal envelope is invalid','restore_cleanup');
   }
-  return {artifactDirectory:argv[1]};
+  exactTimestamp(value.updatedAt,'journal timestamp');
+  const source=value.source;
+  if(source?.id!==expected.source.id||source?.name!==expected.source.name
+    ||source?.group!==expected.source.group
+    ||source?.originalBlockWrites!==expected.expectedSourceBlockWrites
+    ||typeof source?.writeStateRestored!=='boolean'){
+    fail('REHEARSAL_RECOVERY_STATE_FAILED','journal source identity is invalid','restore_cleanup');
+  }
+  const restore=value.restore;
+  if(restore?.name!==expected.restoreName||restore?.group!==expected.source.group
+    ||restore?.sourceId!==expected.source.id||restore?.sourceName!==expected.source.name
+    ||typeof restore?.attempted!=='boolean'||typeof restore?.identityVerified!=='boolean'
+    ||typeof restore?.deleted!=='boolean'
+    ||(restore.id!==null&&(typeof restore.id!=='string'||restore.id.length===0))
+    ||(restore.pitrAt!==null&&exactTimestamp(restore.pitrAt,'journal PITR timestamp')!==restore.pitrAt)
+    ||(!restore.attempted&&(restore.id!==null||restore.pitrAt!==null))
+    ||(restore.id!==null&&restore.pitrAt===null)){
+    fail('REHEARSAL_RECOVERY_STATE_FAILED','journal restore identity is invalid','restore_cleanup');
+  }
+  return structuredClone(value);
 }
 
-function environmentOptions(environment,platform){
+function normalizedCleanupOptions(value){
+  if(!value||typeof value!=='object'||Array.isArray(value)){
+    fail('REHEARSAL_INVALID','cleanup options are invalid','configuration');
+  }
+  const source=Object.freeze({
+    id:opaque(value.sourceDatabaseId,'source database ID'),
+    name:name(value.sourceDatabaseName,'source database name'),
+    group:name(value.sourceGroup,'source database group'),
+  });
+  const restoreName=name(value.restoreDatabaseName,'restore database name');
+  if(restoreName===source.name) fail('REHEARSAL_INVALID','restore name must differ from source','configuration');
+  if(!value.platform||[
+    'getDatabase','getDatabaseConfiguration','setDatabaseBlockWrites','deleteDatabase',
+  ].some(method=>typeof value.platform[method]!=='function')){
+    fail('REHEARSAL_INVALID','platform client is invalid','configuration');
+  }
+  if(typeof value.journalReader!=='function'||typeof value.journalWriter!=='function'){
+    fail('REHEARSAL_INVALID','journal access is invalid','configuration');
+  }
+  return Object.freeze({
+    platform:value.platform,source,restoreName,repoCommit:commit(value.repoCommit),
+    expectedSourceBlockWrites:exactBoolean(
+      value.expectedSourceBlockWrites,'expected source block_writes',
+    ),
+    journalReader:value.journalReader,journalWriter:value.journalWriter,
+    clock:typeof value.clock==='function'?value.clock:Date.now,
+    poll:waitConfiguration(value.poll??{
+      maxAttempts:12,intervalMs:2_000,maxDurationMs:2*60_000,
+    }),
+  });
+}
+
+export async function runInterruptedCleanup(rawOptions={},dependencies={}){
+  const options=normalizedCleanupOptions(rawOptions);
+  const sleep=dependencies.sleep??(duration=>new Promise(resolve=>setTimeout(resolve,duration)));
+  if(typeof sleep!=='function') fail('REHEARSAL_INVALID','cleanup sleep is invalid','configuration');
+  const rawJournal=await options.journalReader();
+  if(rawJournal===null){
+    const source=sourceIdentity(await options.platform.getDatabase(options.source.name),options.source);
+    const configuration=await options.platform.getDatabaseConfiguration(options.source.name);
+    if(configuration.blockWrites!==source.blockWrites){
+      fail('REHEARSAL_SOURCE_IDENTITY_MISMATCH','source configuration is inconsistent','write_state_restore');
+    }
+    if(configuration.blockWrites!==options.expectedSourceBlockWrites){
+      throw withSafety(new RehearsalError(
+        'REHEARSAL_SOURCE_WRITE_STATE_RECOVERY_REQUIRED',
+        'source state differs without an owned journal',{phase:'write_state_restore'},
+      ),{sourceIdentityVerified:true,sourceWriteStateRestored:false,restoreDeleted:false});
+    }
+    const possibleRestore=await options.platform.getDatabase(options.restoreName,{allowNotFound:true});
+    if(possibleRestore!==null){
+      throw withSafety(new RehearsalError(
+        'REHEARSAL_RESTORE_CLEANUP_REQUIRED','unbound restore requires operator cleanup',
+        {phase:'restore_cleanup'},
+      ),{
+        sourceIdentityVerified:true,sourceWriteStateRestored:true,restoreDeleted:false,
+      });
+    }
+    return publicCleanupResult({
+      repoCommit:options.repoCommit,noState:true,
+      safety:{sourceIdentityVerified:true,sourceWriteStateRestored:true,restoreDeleted:true},
+    });
+  }
+  const journal=validateJournal(rawJournal,options);
+  const safety={
+    sourceIdentityVerified:false,
+    writesBlockedBeforePitr:journal.status!=='prepared',
+    sourceWriteStateRestored:journal.source.writeStateRestored,
+    restoreIdentityVerified:journal.restore.identityVerified,
+    restoreDeleted:journal.restore.deleted,
+  };
+  if(journal.status==='complete'
+    &&journal.source.writeStateRestored&&journal.restore.deleted){
+    return publicCleanupResult({repoCommit:options.repoCommit,safety});
+  }
+
+  const source=sourceIdentity(await options.platform.getDatabase(options.source.name),options.source);
+  safety.sourceIdentityVerified=true;
+  const configuration=await options.platform.getDatabaseConfiguration(options.source.name);
+  if(configuration.blockWrites!==source.blockWrites){
+    fail('REHEARSAL_SOURCE_IDENTITY_MISMATCH','source configuration is inconsistent','write_state_restore');
+  }
+  if(configuration.blockWrites!==journal.source.originalBlockWrites){
+    try{
+      await setAndConfirmWriteState(
+        options.platform,options.source,journal.source.originalBlockWrites,options.poll,sleep,
+      );
+    }catch(error){
+      throw withSafety(new RehearsalError(
+        'REHEARSAL_SOURCE_WRITE_STATE_RECOVERY_REQUIRED',
+        'source write state restoration failed',
+        {cause:error,phase:'write_state_restore'},
+      ),safety);
+    }
+  }
+  journal.source.writeStateRestored=true;
+  safety.sourceWriteStateRestored=true;
+  journal.status='active';
+  await persistJournal(options,journal,'restore_cleanup');
+
+  const restoreState={
+    attempted:journal.restore.attempted,
+    id:journal.restore.id,
+    name:journal.restore.name,
+    group:journal.restore.group,
+    sourceId:journal.restore.sourceId,
+    sourceName:journal.restore.sourceName,
+    pitrAt:journal.restore.pitrAt,
+  };
+  const cleanup=await cleanupRestore(options.platform,restoreState,options.poll,sleep);
+  journal.restore.deleted=cleanup.deleted;
+  safety.restoreDeleted=cleanup.deleted;
+  journal.status=cleanup.deleted?'complete':'recovery_required';
+  await persistJournal(options,journal,cleanup.deleted?'complete':'restore_cleanup');
+  if(cleanup.recovery){
+    throw withSafety(new RehearsalError(
+      'REHEARSAL_RESTORE_CLEANUP_REQUIRED','restore cleanup is required',
+      {phase:'restore_cleanup'},
+    ),safety);
+  }
+  return publicCleanupResult({repoCommit:options.repoCommit,safety});
+}
+
+function parseArguments(argv){
+  if(!Array.isArray(argv)||argv.length!==6){
+    fail('REHEARSAL_INVALID','usage is invalid','configuration');
+  }
+  const flags=new Map();
+  for(let index=0;index<argv.length;index+=2){
+    if(!['--mode','--artifact-dir','--state-file'].includes(argv[index])
+      ||flags.has(argv[index])||!argv[index+1]){
+      fail('REHEARSAL_INVALID','usage is invalid','configuration');
+    }
+    flags.set(argv[index],argv[index+1]);
+  }
+  const mode=flags.get('--mode');
+  if(!['run','cleanup'].includes(mode)||!flags.has('--artifact-dir')||!flags.has('--state-file')){
+    fail('REHEARSAL_INVALID','usage is invalid','configuration');
+  }
+  return {
+    mode,artifactDirectory:flags.get('--artifact-dir'),stateFile:flags.get('--state-file'),
+  };
+}
+
+function booleanEnvironment(value,label){
+  if(value==='true') return true;
+  if(value==='false') return false;
+  fail('REHEARSAL_INVALID',`${label} is invalid`,'configuration');
+}
+
+function environmentIdentity(environment,platform){
   const runId=opaque(environment.GITHUB_RUN_ID,'GitHub run ID',{maximum:32});
   const runAttempt=opaque(environment.GITHUB_RUN_ATTEMPT,'GitHub run attempt',{maximum:8});
   if(!/^[1-9][0-9]*$/.test(runId)||!/^[1-9][0-9]*$/.test(runAttempt)){
@@ -723,13 +1066,24 @@ function environmentOptions(environment,platform){
   const prefix=name(environment.TURSO_RESTORE_DATABASE_PREFIX,'restore database prefix');
   const suffix=`-${runId}-${runAttempt}`;
   const restoreDatabaseName=`${prefix.slice(0,64-suffix.length).replace(/-+$/,'')}${suffix}`;
-  return {
+  return Object.freeze({
     platform,
     sourceDatabaseId:environment.TURSO_PRODUCTION_DATABASE_ID,
     sourceDatabaseName:environment.TURSO_PRODUCTION_DATABASE_NAME,
     sourceGroup:environment.TURSO_GROUP,
     restoreDatabaseName,
     repoCommit:environment.REHEARSAL_REPO_COMMIT,
+    expectedSourceBlockWrites:booleanEnvironment(
+      environment.TURSO_PRODUCTION_EXPECTED_BLOCK_WRITES,
+      'expected source block_writes',
+    ),
+  });
+}
+
+function environmentOptions(environment,platform,recoveryPlatform,signal){
+  return {
+    ...environmentIdentity(environment,platform),
+    recoveryPlatform,
     hmacKey:environment.MIGRATION_DIGEST_HMAC_KEY,
     confirmation:environment.RESTORE_REHEARSAL_CONFIRM,
     maxSnapshotAgeMs:environment.REHEARSAL_MAX_SNAPSHOT_AGE_MS,
@@ -739,8 +1093,27 @@ function environmentOptions(environment,platform){
     poll:{
       maxAttempts:environment.REHEARSAL_POLL_ATTEMPTS,
       intervalMs:environment.REHEARSAL_POLL_INTERVAL_MS,
+      maxDurationMs:environment.REHEARSAL_POLL_DURATION_MS,
+    },
+    cleanupPoll:{
+      maxAttempts:environment.REHEARSAL_CLEANUP_POLL_ATTEMPTS,
+      intervalMs:environment.REHEARSAL_CLEANUP_POLL_INTERVAL_MS,
+      maxDurationMs:environment.REHEARSAL_CLEANUP_POLL_DURATION_MS,
     },
     databaseOperationTimeoutMs:environment.TURSO_DATABASE_TIMEOUT_MS,
+    evidenceMaxDurationMs:environment.REHEARSAL_EVIDENCE_DURATION_MS,
+    signal,
+  };
+}
+
+function environmentCleanupOptions(environment,platform){
+  return {
+    ...environmentIdentity(environment,platform),
+    poll:{
+      maxAttempts:environment.REHEARSAL_CLEANUP_POLL_ATTEMPTS,
+      intervalMs:environment.REHEARSAL_CLEANUP_POLL_INTERVAL_MS,
+      maxDurationMs:environment.REHEARSAL_CLEANUP_POLL_DURATION_MS,
+    },
   };
 }
 
@@ -770,40 +1143,132 @@ async function writeExclusiveJson(path,value){
   finally{ await handle.close(); }
 }
 
+const MAX_JOURNAL_BYTES=64*1024;
+
+export function createPrivateStateJournal(path){
+  if(!isAbsolute(path)||basename(path)!=='state.json'){
+    fail('REHEARSAL_INVALID','journal path is invalid','configuration');
+  }
+  async function read(){
+    let metadata;
+    try{ metadata=await lstat(path,{bigint:true}); }
+    catch(error){
+      if(error?.code==='ENOENT') return null;
+      throw error;
+    }
+    if(metadata.isSymbolicLink()||!metadata.isFile()||metadata.size>BigInt(MAX_JOURNAL_BYTES)){
+      fail('REHEARSAL_RECOVERY_STATE_FAILED','journal file is unsafe','restore_cleanup');
+    }
+    const descriptor=await open(path,constants.O_RDONLY|(constants.O_NOFOLLOW||0));
+    try{
+      const opened=await descriptor.stat({bigint:true});
+      if(!opened.isFile()||opened.dev!==metadata.dev||opened.ino!==metadata.ino
+        ||opened.size>BigInt(MAX_JOURNAL_BYTES)){
+        fail('REHEARSAL_RECOVERY_STATE_FAILED','journal file changed','restore_cleanup');
+      }
+      const content=await descriptor.readFile({encoding:'utf8'});
+      const current=await lstat(path,{bigint:true});
+      if(current.isSymbolicLink()||current.dev!==opened.dev||current.ino!==opened.ino){
+        fail('REHEARSAL_RECOVERY_STATE_FAILED','journal file changed','restore_cleanup');
+      }
+      try{ return JSON.parse(content); }
+      catch(error){
+        throw new RehearsalError('REHEARSAL_RECOVERY_STATE_FAILED','journal JSON is invalid',{
+          cause:error,phase:'restore_cleanup',
+        });
+      }
+    }finally{ await descriptor.close(); }
+  }
+  async function write(value){
+    let serialized;
+    try{ serialized=`${JSON.stringify(value)}\n`; }
+    catch(error){
+      throw new RehearsalError('REHEARSAL_RECOVERY_STATE_FAILED','journal value is invalid',{
+        cause:error,phase:'restore_cleanup',
+      });
+    }
+    if(Buffer.byteLength(serialized,'utf8')>MAX_JOURNAL_BYTES){
+      fail('REHEARSAL_RECOVERY_STATE_FAILED','journal value is too large','restore_cleanup');
+    }
+    const temporary=resolve(dirname(path),`.state.${process.pid}.${randomUUID()}.tmp`);
+    let descriptor;
+    try{
+      descriptor=await open(
+        temporary,
+        constants.O_CREAT|constants.O_EXCL|constants.O_WRONLY|(constants.O_NOFOLLOW||0),
+        0o600,
+      );
+      await descriptor.writeFile(serialized,{encoding:'utf8'});
+      await descriptor.sync();
+      await descriptor.close();
+      descriptor=null;
+      await rename(temporary,path);
+    }finally{
+      try{ await descriptor?.close(); }catch{}
+      try{ await unlink(temporary); }catch(error){ if(error?.code!=='ENOENT') throw error; }
+    }
+  }
+  return Object.freeze({read,write});
+}
+
 export async function main({
   argv=process.argv.slice(2),
   environment=process.env,
   stdout=process.stdout,
   createPlatform=createTursoPlatformClient,
   run=runBackupRestoreRehearsal,
+  cleanup=runInterruptedCleanup,
+  signal,
 }={}){
   let artifactDirectory=null;
   let repoCommit=null;
+  let mode=null;
   let result;
   try{
     const parsed=parseArguments(argv);
+    mode=parsed.mode;
     const runnerTemp=opaque(environment.RUNNER_TEMP,'RUNNER_TEMP',{maximum:4096});
     artifactDirectory=await directoryWithinRunnerTemp(parsed.artifactDirectory,runnerTemp);
     const recoveryDirectory=await directoryWithinRunnerTemp(
-      resolve(runnerTemp,'private-recovery'),runnerTemp,
+      dirname(parsed.stateFile),runnerTemp,
     );
+    if(basename(parsed.stateFile)!=='state.json'){
+      fail('REHEARSAL_INVALID','state file path is invalid','configuration');
+    }
     repoCommit=environment.REHEARSAL_REPO_COMMIT;
-    const platform=createPlatform({
+    const platformConfiguration={
       organization:environment.TURSO_ORGANIZATION,
       token:environment.TURSO_PRODUCTION_PLATFORM_TOKEN,
       timeoutMs:integer(environment.TURSO_PLATFORM_TIMEOUT_MS,'platform timeout',{maximum:60_000}),
+    };
+    const platform=createPlatform({
+      ...platformConfiguration,...(parsed.mode==='run'&&signal?{signal}:{}),
     });
+    const recoveryPlatform=parsed.mode==='run'
+      ?createPlatform(platformConfiguration):platform;
     const recoveryPath=resolve(recoveryDirectory,'recovery.json');
-    const options=environmentOptions(environment,platform);
-    result=await run({
-      ...options,
-      recoveryWriter:value=>writeExclusiveJson(recoveryPath,value),
-    });
+    const journal=createPrivateStateJournal(resolve(recoveryDirectory,'state.json'));
+    if(parsed.mode==='run'){
+      const options=environmentOptions(environment,platform,recoveryPlatform,signal);
+      result=await run({
+        ...options,
+        recoveryWriter:value=>writeExclusiveJson(recoveryPath,value),
+        journalWriter:journal.write,
+      });
+    }else{
+      result=await cleanup({
+        ...environmentCleanupOptions(environment,platform),
+        journalReader:journal.read,
+        journalWriter:journal.write,
+      });
+    }
   }catch(error){
     result=publicRehearsalError(error,{repoCommit});
   }
   if(artifactDirectory){
-    try{ await writeExclusiveJson(resolve(artifactDirectory,'rehearsal-summary.json'),result); }
+    const artifactName=mode==='run'
+      ?'rehearsal-summary.json':'cleanup-summary.json';
+    try{ await writeExclusiveJson(resolve(artifactDirectory,artifactName),result); }
     catch(error){
       result=publicRehearsalError(new RehearsalError(
         'REHEARSAL_RECOVERY_STATE_FAILED','artifact write failed',{cause:error,phase:'complete'},
@@ -817,6 +1282,13 @@ export async function main({
 const isEntryPoint=process.argv[1]
   &&fileURLToPath(import.meta.url)===resolve(process.argv[1]);
 if(isEntryPoint){
-  const execution=await main();
-  process.exitCode=execution.exitCode;
+  const controller=new AbortController();
+  let interrupted=false;
+  const interrupt=()=>{ interrupted=true; controller.abort(); };
+  process.once('SIGINT',interrupt);
+  process.once('SIGTERM',interrupt);
+  const execution=await main({signal:controller.signal});
+  process.removeListener('SIGINT',interrupt);
+  process.removeListener('SIGTERM',interrupt);
+  process.exitCode=interrupted?130:execution.exitCode;
 }

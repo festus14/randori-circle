@@ -48,7 +48,9 @@ test('Platform adapter uses exact database, PITR, configuration, token, and dele
     json({database:{DbId:RESTORE_ID,Name:'restore-1',Hostname:'restore-1-randori.turso.io'}}),
     json({database:{
       DbId:RESTORE_ID,Name:'restore-1',Hostname:'restore-1-randori.turso.io',group:'default',
-      block_writes:false,parent:{id:SOURCE_ID,name:'production'},
+      block_writes:false,parent:{
+        id:SOURCE_ID,name:'production',branched_at:'2026-09-18T12:00:00.000000000Z',
+      },
     }}),
     json({jwt:'short-lived-database-token'}),
     json({database:'restore-1'}),
@@ -65,7 +67,9 @@ test('Platform adapter uses exact database, PITR, configuration, token, and dele
   assert.deepEqual(await platform.createPitrDatabase({
     name:'restore-1',group:'default',sourceName:'production',pitrAt:'2026-09-18T12:00:00.000Z',
   }),{id:RESTORE_ID,name:'restore-1',hostname:'restore-1-randori.turso.io'});
-  assert.equal((await platform.getDatabase('restore-1')).parent.id,SOURCE_ID);
+  assert.deepEqual((await platform.getDatabase('restore-1')).parent,{
+    id:SOURCE_ID,name:'production',branchedAt:'2026-09-18T12:00:00.000Z',
+  });
   assert.equal(await platform.createDatabaseToken('restore-1',{
     expiration:'30m',authorization:'full-access',
   }),'short-lived-database-token');
@@ -138,12 +142,30 @@ test('timeouts, HTTP failures, malformed bodies, and oversized bodies are saniti
   }
 });
 
+test('an external abort reaches the in-flight Platform fetch immediately',async()=>{
+  const controller=new AbortController();
+  let observedSignal;
+  const platform=client({
+    fetch(_url,{signal}){
+      observedSignal=signal;
+      return new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>{
+        reject(Object.assign(new Error('interrupted provider detail'),{name:'AbortError'}));
+      },{once:true}));
+    },
+  },{timeoutMs:10_000,signal:controller.signal});
+  const pending=platform.getDatabase('production');
+  controller.abort();
+  await assert.rejects(pending,error=>error.code==='TURSO_PLATFORM_TIMEOUT');
+  assert.equal(observedSignal.aborted,true);
+});
+
 test('provider responses must retain exact authoritative identity and configuration fields',async()=>{
   const invalidResponses=[
     {database:{DbId:SOURCE_ID,Name:'other',Hostname:'other.turso.io',group:'default',block_writes:false,parent:null}},
     {database:{DbId:SOURCE_ID,Name:'production',Hostname:'https://secret.example/x',group:'default',block_writes:false,parent:null}},
     {database:{DbId:SOURCE_ID,Name:'production',Hostname:'production.turso.io',group:'default',block_writes:'false',parent:null}},
     {database:{DbId:SOURCE_ID,Name:'production',Hostname:'production.turso.io',group:'default',block_writes:false,parent:{name:'source'}}},
+    {database:{DbId:SOURCE_ID,Name:'production',Hostname:'production.turso.io',group:'default',block_writes:false}},
   ];
   for(const value of invalidResponses){
     const platform=client(recorder([json(value)]));

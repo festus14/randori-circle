@@ -68,6 +68,15 @@ function timestamp(value,name='timestamp'){
   return value;
 }
 
+function providerTimestamp(value,name){
+  if(typeof value!=='string'||!/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z$/.test(value)){
+    fail('TURSO_PLATFORM_RESPONSE_INVALID',`${name} is invalid`);
+  }
+  const milliseconds=Date.parse(value);
+  if(!Number.isFinite(milliseconds)) fail('TURSO_PLATFORM_RESPONSE_INVALID',`${name} is invalid`);
+  return new Date(milliseconds).toISOString();
+}
+
 function baseUrl(value){
   let parsed;
   try{ parsed=new URL(value); }catch{ fail('TURSO_PLATFORM_INVALID','base URL is invalid'); }
@@ -94,12 +103,15 @@ function canonicalDatabase(value,{created=false}={}){
       fail('TURSO_PLATFORM_RESPONSE_INVALID','database write state is invalid');
     }
     result.blockWrites=database.block_writes;
-    if(database.parent===null||database.parent===undefined){
+    if(database.parent===null){
       result.parent=null;
+    }else if(database.parent===undefined){
+      fail('TURSO_PLATFORM_RESPONSE_INVALID','database parent status is missing');
     }else{
       result.parent=Object.freeze({
         id:opaque(database.parent?.id,'parent database ID'),
         name:platformName(database.parent?.name,'parent database name'),
+        branchedAt:providerTimestamp(database.parent?.branched_at,'parent branch timestamp'),
       });
     }
   }
@@ -184,6 +196,12 @@ export function createTursoPlatformClient(options={}){
   const fetchImpl=options.fetchImpl??globalThis.fetch;
   if(typeof fetchImpl!=='function') fail('TURSO_PLATFORM_INVALID','fetch implementation is invalid');
   const origin=baseUrl(options.baseUrl??DEFAULT_BASE_URL);
+  const externalSignal=options.signal;
+  if(externalSignal!==undefined
+    &&(!externalSignal||typeof externalSignal.aborted!=='boolean'
+      ||typeof externalSignal.addEventListener!=='function')){
+    fail('TURSO_PLATFORM_INVALID','abort signal is invalid');
+  }
   const timeoutMs=boundedInteger(options.timeoutMs??DEFAULT_TIMEOUT_MS,'request timeout',{maximum:60_000});
   const maxResponseBytes=boundedInteger(
     options.maxResponseBytes??DEFAULT_MAX_RESPONSE_BYTES,
@@ -194,6 +212,7 @@ export function createTursoPlatformClient(options={}){
 
   async function request(method,path,{body,allowNotFound=false}={}){
     const controller=new AbortController();
+    const signal=externalSignal?AbortSignal.any([controller.signal,externalSignal]):controller.signal;
     const timer=setTimeout(()=>controller.abort(),timeoutMs);
     try{
       let response;
@@ -206,11 +225,11 @@ export function createTursoPlatformClient(options={}){
             ...(body===undefined?{}:{'content-type':'application/json'}),
           },
           ...(body===undefined?{}:{body:JSON.stringify(body)}),
-          signal:controller.signal,
+          signal,
           redirect:'error',
         });
       }catch(error){
-        if(isAbort(error,controller.signal)){
+        if(isAbort(error,signal)){
           throw new TursoPlatformError('TURSO_PLATFORM_TIMEOUT','platform request timed out',{cause:error,retryable:true});
         }
         throw new TursoPlatformError('TURSO_PLATFORM_FAILED','platform request failed',{cause:error,retryable:true});
