@@ -19,46 +19,50 @@ function sqlText(statement) {
   return typeof statement === 'string' ? statement : String(statement?.sql || '');
 }
 
-const db = {
-  async execute(statement) {
-    const sql = sqlText(statement);
-    executed.push({ sql, args: statement?.args || [] });
-    if (databaseDelegate) return databaseDelegate.execute(statement);
-    const result = await executeHandler(sql, statement?.args || []);
-    return result || { rows: [], rowsAffected: 0 };
-  },
-  async batch(statements, mode) {
-    if (databaseDelegate) {
+function createMockDb(){
+  return {
+    async execute(statement) {
+      const sql = sqlText(statement);
+      executed.push({ sql, args: statement?.args || [] });
+      if (databaseDelegate) return databaseDelegate.execute(statement);
+      const result = await executeHandler(sql, statement?.args || []);
+      return result || { rows: [], rowsAffected: 0 };
+    },
+    async batch(statements, mode) {
+      if (databaseDelegate) {
+        for (const statement of statements) {
+          executed.push({ sql: sqlText(statement), args: statement?.args || [] });
+        }
+        return databaseDelegate.batch(statements, mode);
+      }
+      const nextGroups = [];
+      const results = [];
       for (const statement of statements) {
-        executed.push({ sql: sqlText(statement), args: statement?.args || [] });
+        if (sqlText(statement).includes('INSERT INTO pairing_week_runs')) {
+          lastPairingRun = {
+            weekLabel: statement.args[0],
+            generationToken: statement.args[1],
+            generation: Number(statement.args[2]),
+            weekId: 10,
+          };
+        }
+        if (sqlText(statement).includes('INSERT INTO pairing_groups')) {
+          nextGroups.push({
+            id: 90 + nextGroups.length,
+            user_a_id: Number(statement.args[0]),
+            user_b_id: Number(statement.args[1]),
+            is_ai_pair: Number(statement.args[2]),
+          });
+        }
+        results.push(await this.execute(statement));
       }
-      return databaseDelegate.batch(statements, mode);
-    }
-    const nextGroups = [];
-    const results = [];
-    for (const statement of statements) {
-      if (sqlText(statement).includes('INSERT INTO pairing_week_runs')) {
-        lastPairingRun = {
-          weekLabel: statement.args[0],
-          generationToken: statement.args[1],
-          generation: Number(statement.args[2]),
-          weekId: 10,
-        };
-      }
-      if (sqlText(statement).includes('INSERT INTO pairing_groups')) {
-        nextGroups.push({
-          id: 90 + nextGroups.length,
-          user_a_id: Number(statement.args[0]),
-          user_b_id: Number(statement.args[1]),
-          is_ai_pair: Number(statement.args[2]),
-        });
-      }
-      results.push(await this.execute(statement));
-    }
-    if (nextGroups.length) persistedPairGroups = nextGroups;
-    return results;
-  },
-};
+      if (nextGroups.length) persistedPairGroups = nextGroups;
+      return results;
+    },
+  };
+}
+
+let db=createMockDb();
 
 function authPayload(req) {
   const identity = req?.headers?.['x-test-auth'];
@@ -155,6 +159,7 @@ function invoke(handler, { method = 'GET', url = '/', query = {}, headers = {}, 
 }
 
 beforeEach(() => {
+  db=createMockDb();
   executed.length = 0;
   sentryMessageCalls.length = 0;
   sentryExceptionCalls.length = 0;
@@ -572,6 +577,96 @@ test('run history verifies signed authoritative results and rejects legacy or ta
   assert.equal(history.body.runs.every(run=>
     !('code' in run) && !('results_json' in run) && !('test_cases_snapshot' in run)
   ),true);
+});
+
+test('run schema readiness coalesces concurrent pair-feed initialization and probes before access', async () => {
+  let releaseInitialization;
+  let reportInitializationStarted;
+  const initializationGate=new Promise(resolve=>{ releaseInitialization=resolve; });
+  const initializationStarted=new Promise(resolve=>{ reportInitializationStarted=resolve; });
+  let baseInitializations=0;
+  let completedProbes=0;
+  let accessChecks=0;
+  executeHandler=async sql=>{
+    if(sql.startsWith('CREATE TABLE IF NOT EXISTS auth_accounts')){
+      baseInitializations+=1;
+      reportInitializationStarted();
+      await initializationGate;
+      return rows();
+    }
+    if(sql.startsWith('SELECT id,display_name FROM auth_accounts LIMIT 0')
+      || sql.startsWith('SELECT id,week_id,user_a_id,user_b_id,user_c_id FROM pairing_groups LIMIT 0')
+      || sql.startsWith('SELECT id,user_id,week_id,pair_group_id,question_id,question_slug,language,code,test_cases_snapshot')){
+      completedProbes+=1;
+      return rows();
+    }
+    if(sql.includes('SELECT id,user_a_id,user_b_id')){
+      assert.equal(completedProbes,3,'pair access must wait for every readiness probe');
+      accessChecks+=1;
+      return rows([{id:20,user_a_id:2,user_b_id:4,user_c_id:null}]);
+    }
+    if(sql.includes('FROM session_runs sr')) return rows([]);
+    return rows();
+  };
+  const request={
+    url:'/api/runs?room_id=week_10_pair_20&after_id=0&limit=20',
+    query:{endpoint:'runs',room_id:'week_10_pair_20',after_id:'0',limit:'20'},
+    headers:{'x-test-auth':'user'},
+  };
+
+  const first=invoke(dataHandler,request);
+  await initializationStarted;
+  const second=invoke(dataHandler,request);
+  await Promise.resolve();
+  assert.equal(baseInitializations,1,'concurrent requests must share one in-flight initialization');
+  assert.equal(accessChecks,0,'membership checks must not race ahead of readiness');
+  releaseInitialization();
+
+  const responses=await Promise.all([first,second]);
+  assert.deepEqual(responses.map(response=>response.status),[200,200]);
+  assert.equal(baseInitializations,1);
+  assert.equal(completedProbes,3,'the shared readiness promise probes each required table once');
+  assert.equal(accessChecks,2,'each request still performs its own membership authorization');
+});
+
+test('failed run schema readiness is not cached and the next request retries initialization', async () => {
+  let baseInitializations=0;
+  let authProbeAttempts=0;
+  let accessChecks=0;
+  executeHandler=sql=>{
+    if(sql.startsWith('CREATE TABLE IF NOT EXISTS auth_accounts')) baseInitializations+=1;
+    if(sql.startsWith('SELECT id,display_name FROM auth_accounts LIMIT 0')){
+      authProbeAttempts+=1;
+      if(authProbeAttempts===1) throw new Error('schema probe unavailable');
+      return rows();
+    }
+    if(sql.includes('SELECT id,user_a_id,user_b_id')){
+      accessChecks+=1;
+      return rows([{id:20,user_a_id:2,user_b_id:4,user_c_id:null}]);
+    }
+    if(sql.includes('FROM session_runs sr')) return rows([]);
+    return rows();
+  };
+  const request={
+    url:'/api/runs?room_id=week_10_pair_20&after_id=0&limit=20',
+    query:{endpoint:'runs',room_id:'week_10_pair_20',after_id:'0',limit:'20'},
+    headers:{'x-test-auth':'user'},
+  };
+  const originalError=console.error;
+  console.error=()=>{};
+  try{
+    const failed=await invoke(dataHandler,request);
+    assert.equal(failed.status,500);
+    assert.equal(accessChecks,0);
+
+    const retried=await invoke(dataHandler,request);
+    assert.equal(retried.status,200);
+    assert.equal(baseInitializations,2,'a rejected readiness promise must be cleared');
+    assert.equal(authProbeAttempts,2);
+    assert.equal(accessChecks,1);
+  }finally{
+    console.error=originalError;
+  }
 });
 
 test('pair run feed is member-scoped, incremental, private, and verifies the submitting user', async () => {

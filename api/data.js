@@ -686,6 +686,47 @@ async function ensureProfileMigrations(db){
   try{ await ensureAppLogs(db); }catch{}
 }
 
+// Serverless instances may serve many pair-feed polls during their lifetime.
+// Cache readiness by database URL (or by client in tests/local use) so those
+// requests share both an in-flight initialization and its successful result.
+const __runsReadinessByDatabaseUrl=new Map();
+const __runsReadinessByClient=new WeakMap();
+
+function runsReadinessCache(db){
+  const databaseUrl=String(process.env.TURSO_DATABASE_URL||'').trim();
+  return databaseUrl
+    ? {cache:__runsReadinessByDatabaseUrl,key:databaseUrl}
+    : {cache:__runsReadinessByClient,key:db};
+}
+
+async function probeRunsSchema(db){
+  // The DDL helpers intentionally tolerate already-applied migrations, so
+  // explicit reads are the success boundary for the schema this route uses.
+  await db.execute(`SELECT id,display_name FROM auth_accounts LIMIT 0`);
+  await db.execute(`SELECT id,week_id,user_a_id,user_b_id,user_c_id FROM pairing_groups LIMIT 0`);
+  await db.execute(`SELECT id,user_id,week_id,pair_group_id,question_id,question_slug,language,code,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at FROM session_runs LIMIT 0`);
+}
+
+async function ensureRunsReadiness(db){
+  const {cache,key}=runsReadinessCache(db);
+  const existing=cache.get(key);
+  if(existing) return existing;
+
+  const pending=(async()=>{
+    await ensureBaseTables(db);
+    await ensureProfileMigrations(db);
+    await ensureSessionRuns(db);
+    await probeRunsSchema(db);
+  })();
+  cache.set(key,pending);
+  try{
+    return await pending;
+  }catch(error){
+    if(cache.get(key)===pending) cache.delete(key);
+    throw error;
+  }
+}
+
 
 async function handleLogs(req,res){
   // POST: client logs ingest, GET: admin fetch
@@ -1373,9 +1414,7 @@ async function handleRuns(req,res){
   const pairLimit=room?parseBoundedQueryInteger(requestQueryValue(req,'limit'),{defaultValue:20,min:1,max:20}):null;
   if(room&&pairLimit===null) return res.status(400).json({error:'limit must be an integer from 1 to 20'});
   const db = getClient();
-  await ensureBaseTables(db);
-  await ensureProfileMigrations(db);
-  await ensureSessionRuns(db);
+  await ensureRunsReadiness(db);
   if (req.method === 'GET'){
     const slug = req.query?.question_slug || req.query?.slug ? String(req.query.question_slug||req.query.slug).slice(0,120) : null;
     const limit = Math.min(50, Math.max(1, parseInt(String(req.query?.limit||'20'),10)||20));
