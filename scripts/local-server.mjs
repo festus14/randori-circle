@@ -40,15 +40,29 @@ const LOCAL_CONTENT_SECURITY_POLICY=[
   "base-uri 'self'",
   "object-src 'none'",
   "frame-ancestors 'none'",
-  "form-action 'self' https://accounts.google.com",
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net",
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net",
-  "font-src 'self' data: https://fonts.gstatic.com https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net",
+  "form-action 'self'",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+  "style-src 'self' 'unsafe-inline'",
+  "font-src 'self' data:",
   "img-src 'self' data: blob:",
   "media-src 'self' blob:",
   "worker-src 'self' blob:",
   "connect-src 'self'",
 ].join('; ');
+const LOCAL_RUNTIME_MARKER='<meta name="randori-runtime" content="local"><script>window.__RANDORI_LOCAL_RUNTIME__=true;</script>';
+const LOCAL_EXTERNAL_ASSET_TAGS=Object.freeze([
+  '<link rel="preconnect" href="https://fonts.googleapis.com">',
+  '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>',
+  '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">',
+  '<script src="https://js-de.sentry-cdn.com/b4aa012a94edbcd36c8c92ef1aaeddfa.min.js" crossorigin="anonymous"></script>',
+  '<link rel="preconnect" href="https://cdnjs.cloudflare.com">',
+  '<link rel="preconnect" href="https://cdn.jsdelivr.net">',
+  '<script src="https://unpkg.com/prettier@3.3.3/standalone.js" onerror="console.warn(\'prettier standalone failed\')"></script>',
+  '<script src="https://unpkg.com/prettier@3.3.3/plugins/babel.js" onerror="console.warn(\'prettier babel failed\')"></script>',
+  '<script src="https://unpkg.com/prettier@3.3.3/plugins/estree.js" onerror="console.warn(\'prettier estree failed\')"></script>',
+  '<script src="https://unpkg.com/prettier@3.3.3/plugins/typescript.js" onerror="console.warn(\'prettier ts failed\')"></script>',
+  '<script id="monacoLoader" src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js" onerror="window.__monacoLoaderFailed=1"></script>',
+]);
 const MIME_TYPES=Object.freeze({
   '.css':'text/css; charset=utf-8',
   '.gif':'image/gif',
@@ -853,6 +867,30 @@ function serveFile(response,file,contentType,allowedRoot){
   }
 }
 
+function serveLocalIndex(response,file,allowedRoot){
+  try{
+    const metadata=lstatSync(file);
+    if(metadata.isSymbolicLink()||!metadata.isFile()||realpathSync(file)!==file
+      ||!isWithin(allowedRoot,file)) throw new Error('unsafe file');
+    let document=readFileSync(file,'utf8');
+    for(const tag of LOCAL_EXTERNAL_ASSET_TAGS) document=document.replaceAll(tag,'');
+    document=document.replace('<head>',`<head>\n${LOCAL_RUNTIME_MARKER}`);
+    response.writeHead(200,{
+      'content-type':'text/html; charset=utf-8',
+      'cache-control':'no-store',
+      'x-content-type-options':'nosniff',
+      'x-frame-options':'DENY',
+      'referrer-policy':'no-referrer',
+      'content-security-policy':LOCAL_CONTENT_SECURITY_POLICY,
+      'permissions-policy':'camera=(self), microphone=(self), geolocation=()',
+    });
+    response.end(response.req?.method==='HEAD'?'':document);
+  }catch{
+    response.writeHead(404,{'content-type':'text/plain; charset=utf-8','x-content-type-options':'nosniff'});
+    response.end('Not found');
+  }
+}
+
 function safeLogger(logger){
   if(typeof logger==='function') return {log:logger,error:logger};
   return {
@@ -985,7 +1023,7 @@ export async function createLocalDevelopmentServer({
       return;
     }
     if(navigationPath(parsedUrl.pathname)){
-      serveFile(response,resolve(config.rootDir,'index.html'),'text/html; charset=utf-8',config.rootDir);
+      serveLocalIndex(response,resolve(config.rootDir,'index.html'),config.rootDir);
       return;
     }
     const file=assetPath(parsedUrl.pathname,config.rootDir);

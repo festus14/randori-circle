@@ -388,89 +388,77 @@ export async function createGoogleAccountFromPreparedInvitation(db,{
     return {ok:false};
   }
   const acceptedAt=new Date().toISOString();
-  const auditKey=`invite-accepted:${parsed.invitation_id}`;
-  const accountArgs=[normalizedEmail,safePasswordHash,safeDisplayName,safeColor,isAdmin?1:0,safeGoogleSub,
-    parsed.invitation_id,parsed.circle_id,parsed.token_hash,emailHash];
-  const accountLookupArgs=[normalizedEmail,safeGoogleSub];
-  const [created,accepted,membership,audit,account]=await db.batch([{
-    sql:`INSERT INTO auth_accounts
-        (email,password_hash,display_name,color,last_login,is_available,is_admin,google_sub)
-      SELECT ?,?,?,?,datetime('now'),1,?,?
-      WHERE EXISTS (
-        SELECT 1 FROM circle_invitations ci JOIN circles c ON c.id=ci.circle_id
-        WHERE ci.id=? AND ci.circle_id=? AND ci.token_hash=? AND ci.email_hash=?
-          AND ci.used_at IS NULL AND ci.used_by IS NULL AND ci.revoked_at IS NULL
-          AND datetime(ci.expires_at)>datetime('now')
-          AND c.is_primary=1 AND c.archived_at IS NULL
-      )
-      AND NOT EXISTS (SELECT 1 FROM auth_accounts WHERE google_sub=?)
-      ON CONFLICT(email) DO NOTHING
-      RETURNING id`,
-    args:[...accountArgs,safeGoogleSub],
-  },{
-    sql:`UPDATE circle_invitations
-      SET used_at=COALESCE(used_at,?),
-        used_by=COALESCE(used_by,(SELECT id FROM auth_accounts WHERE email=? AND google_sub=?))
-      WHERE id=? AND circle_id=? AND token_hash=? AND email_hash=? AND revoked_at IS NULL
-        AND ((used_at IS NULL AND used_by IS NULL AND datetime(expires_at)>datetime('now'))
-          OR used_by=(SELECT id FROM auth_accounts WHERE email=? AND google_sub=?))
-        AND EXISTS (SELECT 1 FROM circles WHERE id=circle_id AND is_primary=1 AND archived_at IS NULL)
-        AND EXISTS (SELECT 1 FROM auth_accounts WHERE email=? AND google_sub=?)
-        AND NOT EXISTS (
-          SELECT 1 FROM circle_memberships existing_membership
-          WHERE existing_membership.circle_id=circle_invitations.circle_id
-            AND existing_membership.user_id=(
-              SELECT id FROM auth_accounts WHERE email=? AND google_sub=?
-            )
-            AND existing_membership.status<>'active'
+  const transaction=await db.transaction('write');
+  let finished=false;
+  const reject=async()=>{ await transaction.rollback(); finished=true; return {ok:false}; };
+  try{
+    const created=await transaction.execute({
+      sql:`INSERT INTO auth_accounts
+          (email,password_hash,display_name,color,last_login,is_available,is_admin,google_sub)
+        SELECT ?,?,?,?,datetime('now'),1,?,?
+        WHERE EXISTS (
+          SELECT 1 FROM circle_invitations ci JOIN circles c ON c.id=ci.circle_id
+          WHERE ci.id=? AND ci.circle_id=? AND ci.token_hash=? AND ci.email_hash=?
+            AND ci.used_at IS NULL AND ci.used_by IS NULL AND ci.revoked_at IS NULL
+            AND datetime(ci.expires_at)>datetime('now')
+            AND c.is_primary=1 AND c.archived_at IS NULL
         )
-      RETURNING circle_id,used_by`,
-    args:[acceptedAt,...accountLookupArgs,parsed.invitation_id,parsed.circle_id,parsed.token_hash,emailHash,
-      ...accountLookupArgs,...accountLookupArgs,...accountLookupArgs],
-  },{
-    sql:`INSERT INTO circle_memberships (circle_id,user_id,role,status,invited_by,joined_at,updated_at)
-      SELECT ci.circle_id,account.id,'member','active',ci.created_by,COALESCE(ci.used_at,?),?
-      FROM circle_invitations ci JOIN circles c ON c.id=ci.circle_id
-      JOIN auth_accounts account ON account.email=? AND account.google_sub=?
-      WHERE ci.id=? AND ci.circle_id=? AND ci.token_hash=? AND ci.email_hash=?
-        AND ci.used_by=account.id AND ci.revoked_at IS NULL
-        AND c.is_primary=1 AND c.archived_at IS NULL
-      ON CONFLICT(circle_id,user_id) DO UPDATE SET updated_at=excluded.updated_at
-      WHERE circle_memberships.status='active'
-      RETURNING circle_id,user_id,role,status`,
-    args:[acceptedAt,acceptedAt,...accountLookupArgs,parsed.invitation_id,parsed.circle_id,parsed.token_hash,emailHash],
-  },{
-    sql:`INSERT INTO circle_audit_events
-        (circle_id,event_type,actor_user_id,subject_user_id,invitation_id,dedupe_key,created_at)
-      SELECT ci.circle_id,'invitation.accepted',account.id,account.id,ci.id,?,?
-      FROM circle_invitations ci JOIN circles c ON c.id=ci.circle_id
-      JOIN auth_accounts account ON account.email=? AND account.google_sub=?
-      WHERE ci.id=? AND ci.circle_id=? AND ci.token_hash=? AND ci.email_hash=?
-        AND ci.used_by=account.id AND ci.revoked_at IS NULL
-        AND c.is_primary=1 AND c.archived_at IS NULL
-      ON CONFLICT(dedupe_key) DO NOTHING
-      RETURNING id`,
-    args:[auditKey,acceptedAt,...accountLookupArgs,parsed.invitation_id,parsed.circle_id,parsed.token_hash,emailHash],
-  },{
-    sql:`SELECT account.id,account.is_admin,membership.status
-      FROM auth_accounts account JOIN circle_memberships membership ON membership.user_id=account.id
-      WHERE account.email=? AND account.google_sub=? AND membership.circle_id=?
-        AND membership.status='active'
-      LIMIT 1`,
-    args:[...accountLookupArgs,parsed.circle_id],
-  }], 'write');
-  const acceptedRow=accepted?.rows?.[0];
-  const memberRow=membership?.rows?.[0];
-  const accountRow=account?.rows?.[0];
-  if(!acceptedRow||!memberRow||!accountRow||Number(acceptedRow.used_by)!==Number(accountRow.id)) return {ok:false};
-  return {
-    ok:true,
-    user_id:Number(accountRow.id),
-    is_admin:!!accountRow.is_admin,
-    circle_id:Number(acceptedRow.circle_id),
-    created:!!created?.rows?.length,
-    idempotent:!audit?.rows?.length,
-  };
+        AND NOT EXISTS (SELECT 1 FROM auth_accounts WHERE google_sub=?)
+        ON CONFLICT(email) DO NOTHING
+        RETURNING id,is_admin`,
+      args:[normalizedEmail,safePasswordHash,safeDisplayName,safeColor,isAdmin?1:0,safeGoogleSub,
+        parsed.invitation_id,parsed.circle_id,parsed.token_hash,emailHash,safeGoogleSub],
+    });
+    if(created.rows?.length!==1) return await reject();
+    const account=created.rows[0];
+    const userId=safePositiveInteger(account.id);
+    if(!userId) return await reject();
+    const accepted=await transaction.execute({
+      sql:`UPDATE circle_invitations SET used_at=?,used_by=?
+        WHERE id=? AND circle_id=? AND token_hash=? AND email_hash=?
+          AND used_at IS NULL AND used_by IS NULL AND revoked_at IS NULL
+          AND datetime(expires_at)>datetime('now')
+          AND EXISTS (SELECT 1 FROM circles WHERE id=circle_id AND is_primary=1 AND archived_at IS NULL)
+          AND EXISTS (SELECT 1 FROM auth_accounts WHERE id=? AND email=? AND google_sub=?)
+        RETURNING circle_id,used_by`,
+      args:[acceptedAt,userId,parsed.invitation_id,parsed.circle_id,parsed.token_hash,emailHash,
+        userId,normalizedEmail,safeGoogleSub],
+    });
+    const acceptedRow=accepted.rows?.[0];
+    if(accepted.rows?.length!==1||Number(acceptedRow.used_by)!==userId
+      ||Number(acceptedRow.circle_id)!==parsed.circle_id) return await reject();
+    const membership=await transaction.execute({
+      sql:`INSERT INTO circle_memberships (circle_id,user_id,role,status,invited_by,joined_at,updated_at)
+        SELECT ci.circle_id,?,'member','active',ci.created_by,?,?
+        FROM circle_invitations ci JOIN circles c ON c.id=ci.circle_id
+        WHERE ci.id=? AND ci.circle_id=? AND ci.token_hash=? AND ci.email_hash=?
+          AND ci.used_at=? AND ci.used_by=? AND ci.revoked_at IS NULL
+          AND c.is_primary=1 AND c.archived_at IS NULL
+        ON CONFLICT(circle_id,user_id) DO NOTHING
+        RETURNING circle_id,user_id,role,status`,
+      args:[userId,acceptedAt,acceptedAt,parsed.invitation_id,parsed.circle_id,parsed.token_hash,emailHash,
+        acceptedAt,userId],
+    });
+    const memberRow=membership.rows?.[0];
+    if(membership.rows?.length!==1||Number(memberRow.user_id)!==userId
+      ||Number(memberRow.circle_id)!==parsed.circle_id||memberRow.status!=='active') return await reject();
+    const audit=await transaction.execute({
+      sql:`INSERT INTO circle_audit_events
+          (circle_id,event_type,actor_user_id,subject_user_id,invitation_id,dedupe_key,created_at)
+        VALUES (?,'invitation.accepted',?,?,?,?,?)
+        ON CONFLICT(dedupe_key) DO NOTHING
+        RETURNING id`,
+      args:[parsed.circle_id,userId,userId,parsed.invitation_id,
+        `invite-accepted:${parsed.invitation_id}`,acceptedAt],
+    });
+    if(audit.rows?.length!==1) return await reject();
+    await transaction.commit();
+    finished=true;
+    return {ok:true,user_id:userId,is_admin:!!account.is_admin,circle_id:parsed.circle_id,created:true,idempotent:false};
+  }catch(error){
+    if(!finished){ try{ await transaction.rollback(); }catch{} }
+    throw error;
+  }
 }
 
 export async function createPasswordAccountFromPreparedInvitation(db,{
@@ -488,81 +476,77 @@ export async function createPasswordAccountFromPreparedInvitation(db,{
     return {ok:false};
   }
   const acceptedAt=new Date().toISOString();
-  const auditKey=`invite-accepted:${parsed.invitation_id}`;
-  const accountArgs=[normalizedEmail,safePasswordHash,safeDisplayName,safeColor,isAdmin?1:0,
-    parsed.invitation_id,parsed.circle_id,parsed.token_hash,emailHash];
-  const accountLookupArgs=[normalizedEmail,safePasswordHash];
-  const [created,accepted,membership,audit,account]=await db.batch([{
-    sql:`INSERT INTO auth_accounts
-        (email,password_hash,display_name,color,last_login,is_available,is_admin,google_sub)
-      SELECT ?,?,?,?,datetime('now'),1,?,NULL
-      WHERE EXISTS (
-        SELECT 1 FROM circle_invitations ci JOIN circles c ON c.id=ci.circle_id
+  const transaction=await db.transaction('write');
+  let finished=false;
+  const reject=async()=>{ await transaction.rollback(); finished=true; return {ok:false}; };
+  try{
+    const created=await transaction.execute({
+      sql:`INSERT INTO auth_accounts
+          (email,password_hash,display_name,color,last_login,is_available,is_admin,google_sub)
+        SELECT ?,?,?,?,datetime('now'),1,?,NULL
+        WHERE EXISTS (
+          SELECT 1 FROM circle_invitations ci JOIN circles c ON c.id=ci.circle_id
+          WHERE ci.id=? AND ci.circle_id=? AND ci.token_hash=? AND ci.email_hash=?
+            AND ci.used_at IS NULL AND ci.used_by IS NULL AND ci.revoked_at IS NULL
+            AND datetime(ci.expires_at)>datetime('now')
+            AND c.is_primary=1 AND c.archived_at IS NULL
+        )
+        ON CONFLICT(email) DO NOTHING
+        RETURNING id,is_admin`,
+      args:[normalizedEmail,safePasswordHash,safeDisplayName,safeColor,isAdmin?1:0,
+        parsed.invitation_id,parsed.circle_id,parsed.token_hash,emailHash],
+    });
+    if(created.rows?.length!==1) return await reject();
+    const account=created.rows[0];
+    const userId=safePositiveInteger(account.id);
+    if(!userId) return await reject();
+    const accepted=await transaction.execute({
+      sql:`UPDATE circle_invitations SET used_at=?,used_by=?
+        WHERE id=? AND circle_id=? AND token_hash=? AND email_hash=?
+          AND used_at IS NULL AND used_by IS NULL AND revoked_at IS NULL
+          AND datetime(expires_at)>datetime('now')
+          AND EXISTS (SELECT 1 FROM circles WHERE id=circle_id AND is_primary=1 AND archived_at IS NULL)
+          AND EXISTS (SELECT 1 FROM auth_accounts
+            WHERE id=? AND email=? AND password_hash=? AND google_sub IS NULL)
+        RETURNING circle_id,used_by`,
+      args:[acceptedAt,userId,parsed.invitation_id,parsed.circle_id,parsed.token_hash,emailHash,
+        userId,normalizedEmail,safePasswordHash],
+    });
+    const acceptedRow=accepted.rows?.[0];
+    if(accepted.rows?.length!==1||Number(acceptedRow.used_by)!==userId
+      ||Number(acceptedRow.circle_id)!==parsed.circle_id) return await reject();
+    const membership=await transaction.execute({
+      sql:`INSERT INTO circle_memberships (circle_id,user_id,role,status,invited_by,joined_at,updated_at)
+        SELECT ci.circle_id,?,'member','active',ci.created_by,?,?
+        FROM circle_invitations ci JOIN circles c ON c.id=ci.circle_id
         WHERE ci.id=? AND ci.circle_id=? AND ci.token_hash=? AND ci.email_hash=?
-          AND ci.used_at IS NULL AND ci.used_by IS NULL AND ci.revoked_at IS NULL
-          AND datetime(ci.expires_at)>datetime('now')
+          AND ci.used_at=? AND ci.used_by=? AND ci.revoked_at IS NULL
           AND c.is_primary=1 AND c.archived_at IS NULL
-      )
-      ON CONFLICT(email) DO NOTHING
-      RETURNING id`,
-    args:accountArgs,
-  },{
-    sql:`UPDATE circle_invitations
-      SET used_at=COALESCE(used_at,?),
-        used_by=COALESCE(used_by,(SELECT id FROM auth_accounts
-          WHERE email=? AND password_hash=? AND google_sub IS NULL))
-      WHERE id=? AND circle_id=? AND token_hash=? AND email_hash=? AND revoked_at IS NULL
-        AND used_at IS NULL AND used_by IS NULL AND datetime(expires_at)>datetime('now')
-        AND EXISTS (SELECT 1 FROM circles WHERE id=circle_id AND is_primary=1 AND archived_at IS NULL)
-        AND EXISTS (SELECT 1 FROM auth_accounts
-          WHERE email=? AND password_hash=? AND google_sub IS NULL)
-      RETURNING circle_id,used_by`,
-    args:[acceptedAt,...accountLookupArgs,parsed.invitation_id,parsed.circle_id,parsed.token_hash,emailHash,
-      ...accountLookupArgs],
-  },{
-    sql:`INSERT INTO circle_memberships (circle_id,user_id,role,status,invited_by,joined_at,updated_at)
-      SELECT ci.circle_id,account.id,'member','active',ci.created_by,COALESCE(ci.used_at,?),?
-      FROM circle_invitations ci JOIN circles c ON c.id=ci.circle_id
-      JOIN auth_accounts account ON account.email=? AND account.password_hash=? AND account.google_sub IS NULL
-      WHERE ci.id=? AND ci.circle_id=? AND ci.token_hash=? AND ci.email_hash=?
-        AND ci.used_by=account.id AND ci.revoked_at IS NULL
-        AND c.is_primary=1 AND c.archived_at IS NULL
-      ON CONFLICT(circle_id,user_id) DO NOTHING
-      RETURNING circle_id,user_id,role,status`,
-    args:[acceptedAt,acceptedAt,...accountLookupArgs,parsed.invitation_id,parsed.circle_id,parsed.token_hash,emailHash],
-  },{
-    sql:`INSERT INTO circle_audit_events
-        (circle_id,event_type,actor_user_id,subject_user_id,invitation_id,dedupe_key,created_at)
-      SELECT ci.circle_id,'invitation.accepted',account.id,account.id,ci.id,?,?
-      FROM circle_invitations ci JOIN circles c ON c.id=ci.circle_id
-      JOIN auth_accounts account ON account.email=? AND account.password_hash=? AND account.google_sub IS NULL
-      WHERE ci.id=? AND ci.circle_id=? AND ci.token_hash=? AND ci.email_hash=?
-        AND ci.used_by=account.id AND ci.revoked_at IS NULL
-        AND c.is_primary=1 AND c.archived_at IS NULL
-      ON CONFLICT(dedupe_key) DO NOTHING
-      RETURNING id`,
-    args:[auditKey,acceptedAt,...accountLookupArgs,parsed.invitation_id,parsed.circle_id,parsed.token_hash,emailHash],
-  },{
-    sql:`SELECT account.id,account.is_admin,membership.status
-      FROM auth_accounts account JOIN circle_memberships membership ON membership.user_id=account.id
-      WHERE account.email=? AND account.password_hash=? AND account.google_sub IS NULL
-        AND membership.circle_id=? AND membership.status='active'
-      LIMIT 1`,
-    args:[...accountLookupArgs,parsed.circle_id],
-  }], 'write');
-  const acceptedRow=accepted?.rows?.[0];
-  const memberRow=membership?.rows?.[0];
-  const accountRow=account?.rows?.[0];
-  if(!created?.rows?.length||!acceptedRow||!memberRow||!accountRow
-    ||Number(acceptedRow.used_by)!==Number(accountRow.id)) return {ok:false};
-  return {
-    ok:true,
-    user_id:Number(accountRow.id),
-    is_admin:!!accountRow.is_admin,
-    circle_id:Number(acceptedRow.circle_id),
-    created:true,
-    idempotent:!audit?.rows?.length,
-  };
+        ON CONFLICT(circle_id,user_id) DO NOTHING
+        RETURNING circle_id,user_id,role,status`,
+      args:[userId,acceptedAt,acceptedAt,parsed.invitation_id,parsed.circle_id,parsed.token_hash,emailHash,
+        acceptedAt,userId],
+    });
+    const memberRow=membership.rows?.[0];
+    if(membership.rows?.length!==1||Number(memberRow.user_id)!==userId
+      ||Number(memberRow.circle_id)!==parsed.circle_id||memberRow.status!=='active') return await reject();
+    const audit=await transaction.execute({
+      sql:`INSERT INTO circle_audit_events
+          (circle_id,event_type,actor_user_id,subject_user_id,invitation_id,dedupe_key,created_at)
+        VALUES (?,'invitation.accepted',?,?,?,?,?)
+        ON CONFLICT(dedupe_key) DO NOTHING
+        RETURNING id`,
+      args:[parsed.circle_id,userId,userId,parsed.invitation_id,
+        `invite-accepted:${parsed.invitation_id}`,acceptedAt],
+    });
+    if(audit.rows?.length!==1) return await reject();
+    await transaction.commit();
+    finished=true;
+    return {ok:true,user_id:userId,is_admin:!!account.is_admin,circle_id:parsed.circle_id,created:true,idempotent:false};
+  }catch(error){
+    if(!finished){ try{ await transaction.rollback(); }catch{} }
+    throw error;
+  }
 }
 
 export async function initializePrimaryCircle(db,{ownerUserId,ownerEmails=[]}={}){

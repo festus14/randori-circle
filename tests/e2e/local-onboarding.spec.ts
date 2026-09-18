@@ -1,4 +1,6 @@
 import { expect, test } from '@playwright/test';
+import { createClient } from '@libsql/client';
+import { randomUUID } from 'node:crypto';
 import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,12 +11,14 @@ import {
   resolveLocalServerConfig,
   startLocalDevelopmentServer,
 } from '../../scripts/local-server.mjs';
+import { createInvitationToken, hashInvitationEmail, hashInvitationToken } from '../../api/_circle-membership.js';
 
 const repositoryRoot=fileURLToPath(new URL('../..',import.meta.url));
 
 test.describe('unmocked local onboarding',()=>{
   test.describe.configure({mode:'serial'});
   let directory='';
+  let config:ReturnType<typeof resolveLocalServerConfig>;
   let runtime:Awaited<ReturnType<typeof startLocalDevelopmentServer>>|null=null;
 
   test.beforeAll(async()=>{
@@ -22,7 +26,7 @@ test.describe('unmocked local onboarding',()=>{
     mkdirSync(join(directory,'.local'),{mode:0o700});
     copyFileSync(join(repositoryRoot,'index.html'),join(directory,'index.html'));
     const databaseUrl=pathToFileURL(join(directory,'.local','onboarding.sqlite')).href;
-    const config=resolveLocalServerConfig({
+    config=resolveLocalServerConfig({
       rootDir:directory,
       argv:[],
       env:{
@@ -41,20 +45,47 @@ test.describe('unmocked local onboarding',()=>{
   });
 
   test('owner invites, invited identity signs up, joins the circle, and receives an authenticated pair',async({browser})=>{
-    test.setTimeout(60_000);
+    test.setTimeout(90_000);
     if(!runtime?.url) throw new Error('local runtime unavailable');
     const ownerContext=await browser.newContext();
     const memberContext=await browser.newContext();
-    await Promise.all([ownerContext,memberContext].map(context=>context.route('https://**/*',route=>route.abort())));
+    const noInviteContext=await browser.newContext();
+    const reusedInviteContext=await browser.newContext();
+    const externalRequests:string[]=[];
+    for(const context of [ownerContext,memberContext,noInviteContext,reusedInviteContext]){
+      context.on('request',request=>{
+        const url=new URL(request.url());
+        if(url.protocol!=='http:'||url.hostname!=='127.0.0.1') externalRequests.push(request.url());
+      });
+    }
     const owner=await ownerContext.newPage();
     const member=await memberContext.newPage();
+    const noInvite=await noInviteContext.newPage();
+    const reusedInvite=await reusedInviteContext.newPage();
     try{
+      await noInvite.goto(runtime.url,{waitUntil:'domcontentloaded'});
+      expect(await noInvite.evaluate(()=>(window as any).__RANDORI_LOCAL_RUNTIME__)).toBe(true);
+      const noInviteSignup=await noInvite.evaluate(async()=>{
+        const response=await fetch('/api/auth/signup',{
+          method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},
+          body:JSON.stringify({email:'no.invite@example.test',password:'member-password-123',name:'No Invite'}),
+        });
+        return {status:response.status,body:await response.json()};
+      });
+      expect(noInviteSignup).toEqual({status:403,body:{error:'a valid local invitation is required'}});
+
       await owner.goto(runtime.url,{waitUntil:'domcontentloaded'});
       await owner.locator('#landingSignin').click();
       await owner.locator('#authEmail').fill(LOCAL_OWNER_EMAIL);
       await owner.locator('#authPass').fill(LOCAL_OWNER_PASSWORD);
       await owner.locator('#authSignin').click();
       await expect(owner.locator('#meLabel')).toContainText('Local Circle Owner');
+
+      const csrfResponse=await ownerContext.request.post(new URL('/api/invitations',runtime.url).href,{
+        headers:{origin:'https://attacker.example.test'},
+        data:{email:'csrf@example.test'},
+      });
+      expect(csrfResponse.status()).toBe(403);
 
       await owner.locator('[data-tab="circle"]').click();
       await expect(owner.getByTestId('circle-invite-email')).toBeVisible();
@@ -76,16 +107,91 @@ test.describe('unmocked local onboarding',()=>{
       await expect(member.getByTestId('invite-continue')).toHaveText('Create local account');
       await member.getByTestId('invite-continue').click();
       await expect(member.locator('#authOverlay')).toHaveClass(/show/);
+      await member.locator('#authEmail').fill(LOCAL_OWNER_EMAIL);
+      await member.locator('#authName').fill('Wrong Identity');
+      await member.locator('#authPass').fill('member-password-123');
+      const wrongIdentityResponse=member.waitForResponse(response=>
+        new URL(response.url()).pathname==='/api/auth/signup'&&response.request().method()==='POST',
+      );
+      await member.locator('#authSignup').click();
+      const rejectedIdentity=await wrongIdentityResponse;
+      expect(rejectedIdentity.status()).toBe(403);
+      expect(await rejectedIdentity.json()).toEqual({error:'invitation unavailable or does not match this email'});
+      await expect(member.locator('#authErr')).toContainText('invitation unavailable');
+
       await member.locator('#authEmail').fill('invited.member@example.test');
       await member.locator('#authName').fill('Invited Member');
-      await member.locator('#authPass').fill('member-password-123');
       await member.locator('#authSignup').click();
 
       await expect(member).toHaveURL(new RegExp(`${runtime.url.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}/?$`));
       await expect(member.locator('#view-profile-setup')).toBeVisible();
+      const profileResponse=member.waitForResponse(response=>
+        new URL(response.url()).pathname==='/api/profile'&&response.request().method()==='POST',
+      );
       await member.locator('#psSave').click();
+      const savedProfile=await profileResponse;
+      expect(savedProfile.status()).toBe(200);
+      expect(Number((await savedProfile.json()).user?.id)).toBeGreaterThan(0);
       await expect(member.locator('#view-dashboard')).toBeVisible();
       await expect(member.locator('#dashWelcome')).toContainText('Invited Member');
+      const memberCookies=await memberContext.cookies(runtime.url);
+      expect(memberCookies.some(cookie=>cookie.name==='randori_session'&&cookie.httpOnly)).toBe(true);
+      expect(memberCookies.some(cookie=>cookie.name==='randori_invite_claim')).toBe(false);
+
+      await reusedInvite.goto(inviteUrl.href,{waitUntil:'domcontentloaded'});
+      await expect(reusedInvite.getByTestId('invite-status')).toContainText('unavailable');
+      expect((await reusedInviteContext.cookies(runtime.url)).some(cookie=>cookie.name==='randori_invite_claim')).toBe(false);
+
+      const createNegativeInvite=async(email:string)=>{
+        const response=await ownerContext.request.post(new URL('/api/invitations',runtime!.url).href,{
+          headers:{origin:runtime!.url},data:{email},
+        });
+        expect(response.status()).toBe(201);
+        const payload=await response.json();
+        return {
+          id:String(payload.invitation.id),
+          url:new URL(String(payload.invitation.invite_url),runtime!.url),
+        };
+      };
+      const expectUnavailable=async(url:URL)=>{
+        await reusedInvite.goto(runtime!.url,{waitUntil:'domcontentloaded'});
+        await reusedInvite.goto(url.href,{waitUntil:'domcontentloaded'});
+        await expect(reusedInvite.getByTestId('invite-status')).toContainText('unavailable');
+        expect((await reusedInviteContext.cookies(runtime!.url)).some(cookie=>cookie.name==='randori_invite_claim')).toBe(false);
+      };
+
+      const revokedInvite=await createNegativeInvite('revoked.member@example.test');
+      const revoked=await ownerContext.request.delete(new URL(`/api/invitations/${revokedInvite.id}`,runtime.url).href,{
+        headers:{origin:runtime.url},
+      });
+      expect(revoked.status()).toBe(200);
+      await expectUnavailable(revokedInvite.url);
+
+      const expiredInvite=await createNegativeInvite('expired.member@example.test');
+      const directDatabase=createClient({url:config.databaseUrl});
+      try{
+        await directDatabase.execute({
+          sql:`UPDATE circle_invitations SET expires_at=datetime('now','-1 second') WHERE id=?`,
+          args:[expiredInvite.id],
+        });
+        const crossCircleToken=createInvitationToken();
+        const crossCircleId=randomUUID();
+        await directDatabase.batch([{
+          sql:`INSERT INTO circles (public_id,slug,name,is_primary,created_by,created_at)
+            VALUES (?,'e2e-secondary-circle','Secondary Circle',0,1,datetime('now'))`,
+          args:[randomUUID()],
+        },{
+          sql:`INSERT INTO circle_invitations
+              (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at)
+            SELECT ?,id,?,?,1,datetime('now'),datetime('now','+7 days')
+            FROM circles WHERE slug='e2e-secondary-circle'`,
+          args:[crossCircleId,hashInvitationToken(crossCircleToken),hashInvitationEmail('cross.circle@example.test')],
+        }],'write');
+        await expectUnavailable(expiredInvite.url);
+        await expectUnavailable(new URL(`/invite#invite=${crossCircleToken}`,runtime.url));
+      }finally{
+        await directDatabase.close();
+      }
 
       await owner.locator('[data-tab="pair"]').click();
       await expect(owner.locator('#newWeekBtn')).toBeVisible();
@@ -98,10 +204,17 @@ test.describe('unmocked local onboarding',()=>{
       await member.reload({waitUntil:'domcontentloaded'});
       await expect(member.locator('#view-dashboard')).toBeVisible();
       await expect(member.locator('#dashPairArea')).toContainText('Local Circle Owner');
-      const session=await memberContext.cookies(runtime.url);
-      expect(session.some(cookie=>cookie.name==='randori_session'&&cookie.httpOnly)).toBe(true);
+      await member.locator('[data-tab="code"]').click();
+      await expect(member.locator('#editor')).toBeVisible();
+
+      await runtime.close();
+      runtime=await startLocalDevelopmentServer({config,logger:{log(){},error(){}}});
+      await member.goto(runtime.url,{waitUntil:'domcontentloaded'});
+      await expect(member.locator('#view-dashboard')).toBeVisible();
+      await expect(member.locator('#dashPairArea')).toContainText('Local Circle Owner');
+      expect(externalRequests).toEqual([]);
     }finally{
-      await Promise.all([ownerContext.close(),memberContext.close()]);
+      await Promise.all([ownerContext.close(),memberContext.close(),noInviteContext.close(),reusedInviteContext.close()]);
     }
   });
 });

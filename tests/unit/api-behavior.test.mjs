@@ -867,6 +867,25 @@ test('profile, pair schedule, and messages enforce ownership while catalogue and
   assert.equal('test_cases_snapshot' in history.body.runs[0],false);
 });
 
+test('migrated local profile requests probe schema without request-time DDL',async()=>{
+  enableLocalInviteSignup();
+  const profileRow={
+    id:2,email:'user@example.test',display_name:'Local User',color:'#123456',is_available:1,
+    is_admin:0,is_demo:0,bio:'',tz:'UTC',interview_focus:'both',leetcode_handle:'',
+  };
+  executeHandler=sql=>sql.includes('FROM auth_accounts WHERE id=?')?rows([profileRow]):rows();
+  const headers={...localOriginHeaders,'x-test-auth':'user'};
+  const read=await invoke(dataHandler,{url:'/api/profile',query:{endpoint:'profile'},headers});
+  assert.equal(read.status,200);
+  const write=await invoke(dataHandler,{
+    method:'POST',url:'/api/profile',query:{endpoint:'profile'},headers,
+    body:{display_name:'Local User',tz:'UTC',is_available:true},
+  });
+  assert.equal(write.status,200);
+  assert.equal(executed.some(call=>/\b(?:CREATE|ALTER|DROP)\b/i.test(call.sql)),false);
+  assert.equal(executed.some(call=>/FROM auth_accounts LIMIT 0/i.test(call.sql)),true);
+});
+
 test('run history verifies signed authoritative results and rejects legacy or tampered attestations', async () => {
   const resultsJson=JSON.stringify([{idx:0,pass:true,error:null},{idx:1,pass:false,error:null}]);
   const fields={

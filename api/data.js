@@ -18,6 +18,7 @@ import {
   ensureCircleMembershipReadiness,
   initializePrimaryCircle,
 } from './_circle-membership.js';
+import { localRuntimeRequest } from './_local-runtime.js';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import {
   HEALTH_RESPONSE,
@@ -46,7 +47,7 @@ async function getCallerAdmin(db, payload){
 async function requireAdminDT(req,res){
   const payload=verifyRequestAuth(req);
   if (!payload){ res.status(401).json({ error:'authentication required' }); return null; }
-  const db=getClient(); await ensureBaseTables(db); await ensureProfileMigrations(db);
+  const db=getClient(); await ensureBaseTables(db,req); await ensureProfileMigrations(db,req);
   const ctx=await getCallerAdmin(db,payload);
   if(!ctx.callerIsAdmin){ res.status(403).json({ error:'admin only', you_are:ctx.callerEmail||'unknown' }); return null; }
   return {db, payload, ...ctx};
@@ -596,7 +597,14 @@ async function getPairAccess(db, payload, weekId, pairId){
   }
 }
 
-async function ensureBaseTables(db){
+async function ensureBaseTables(db,req){
+  if(localRuntimeRequest(req)){
+    await db.execute(`SELECT id,email,password_hash,display_name,color,created_at,last_login,is_available,availability_updated_at,is_admin,is_demo FROM auth_accounts LIMIT 0`);
+    await db.execute(`SELECT id,name,color,created_at FROM users LIMIT 0`);
+    await db.execute(`SELECT id,week_label,week_start,focus,created_at,is_demo FROM pairing_weeks LIMIT 0`);
+    await db.execute(`SELECT id,week_id,user_a_id,user_b_id,user_c_id,is_ai_pair,topic,topic_kind,created_at FROM pairing_groups LIMIT 0`);
+    return;
+  }
   try{
     await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0, is_demo INTEGER DEFAULT 0)`);
   } catch {}
@@ -785,7 +793,16 @@ async function logServer(level, event, message, meta, reqCtx){
   }
 }
 
-async function ensureProfileMigrations(db){
+async function ensureProfileMigrations(db,req){
+  if(localRuntimeRequest(req)){
+    await db.execute(`SELECT id,bio,tz,interview_focus,leetcode_handle,google_sub FROM auth_accounts LIMIT 0`);
+    await db.execute(`SELECT id,week_id,pair_group_id,sender_id,message,created_at FROM pair_messages LIMIT 0`);
+    await db.execute(`SELECT id,week_id,pair_group_id,proposed_times,agreed_time,created_at,updated_at FROM pair_schedules LIMIT 0`);
+    await db.execute(`SELECT id,slug,title,test_cases,starter_per_lang FROM custom_questions LIMIT 0`);
+    await db.execute(`SELECT id,user_id,week_id,pair_group_id,question_slug,language,code,results_json FROM session_runs LIMIT 0`);
+    await db.execute(`SELECT id,level,source,event,message,created_at FROM app_logs LIMIT 0`);
+    return;
+  }
   const alters=[
     `ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`,
     `ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`,
@@ -836,12 +853,16 @@ async function probeRunsSchema(db){
   await db.execute(`SELECT id,user_id,week_id,pair_group_id,question_id,question_slug,language,code,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at FROM session_runs LIMIT 0`);
 }
 
-async function ensureRunsReadiness(db){
+async function ensureRunsReadiness(db,req){
   const {cache,key}=runsReadinessCache(db);
   const existing=cache.get(key);
   if(existing) return existing;
 
   const pending=(async()=>{
+    if(localRuntimeRequest(req)){
+      await probeRunsSchema(db);
+      return;
+    }
     await ensureBaseTables(db);
     await ensureProfileMigrations(db);
     await ensureSessionRuns(db);
@@ -1066,8 +1087,8 @@ async function handleCircle(req,res){
     }
   }
   const db = getClient();
-  await ensureBaseTables(db);
-  await ensureProfileMigrations(db);
+  await ensureBaseTables(db,req);
+  await ensureProfileMigrations(db,req);
   const includeDemo = (req.query?.include_demo === '1' || req.query?.includeDemo === '1' || req.query?.demo === '1');
   try{
     let sql = includeDemo
@@ -1105,8 +1126,8 @@ async function handleWeeks(req,res){
   let db;
   try{
     db=getClient();
-    await ensureBaseTables(db);
-    await ensureProfileMigrations(db);
+    await ensureBaseTables(db,req);
+    await ensureProfileMigrations(db,req);
   }catch{ return res.status(503).json({error:'pairing unavailable'}); }
   const readerAccess=await requireCurrentPairingReader(req,res,db,userId);
   if(!readerAccess) return;
@@ -1150,7 +1171,7 @@ async function handleHistory(req,res){
   const userId = payload.id || payload.uid;
   try{
     db=getClient();
-    await ensureProfileMigrations(db);
+    await ensureProfileMigrations(db,req);
     groups=await db.execute({ sql:`
       SELECT pg.id as pg_id, pg.week_id, pg.user_a_id, pg.user_b_id, pg.user_c_id,
              pa.source AS user_a_source,pb.source AS user_b_source,pc.source AS user_c_source,
@@ -1376,8 +1397,8 @@ async function handleProfile(req,res){
   const payload = getAuthPayload(req);
   if (!payload) return res.status(401).json({ error:'missing Bearer token' });
   const db = getClient();
-  await ensureBaseTables(db);
-  await ensureProfileMigrations(db);
+  await ensureBaseTables(db,req);
+  await ensureProfileMigrations(db,req);
   const userId = payload.id || payload.uid;
   if (!userId) return res.status(401).json({ error:'invalid token payload' });
   if (req.method === 'GET'){
@@ -1429,8 +1450,8 @@ async function handleMyPair(req,res){
   let db;
   try{
     db=getClient();
-    await ensureBaseTables(db);
-    await ensureProfileMigrations(db);
+    await ensureBaseTables(db,req);
+    await ensureProfileMigrations(db,req);
   }catch{
     return res.status(503).json({error:'pairing unavailable'});
   }
@@ -2096,7 +2117,7 @@ async function handleRuns(req,res){
   let db;
   try{
     db=getClient();
-    await ensureRunsReadiness(db);
+    await ensureRunsReadiness(db,req);
   }catch{
     return res.status(503).json({error:'runs unavailable'});
   }
@@ -2173,8 +2194,8 @@ async function handleRuns(req,res){
 async function handleStats(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
   const db = getClient();
-  await ensureBaseTables(db);
-  await ensureProfileMigrations(db);
+  await ensureBaseTables(db,req);
+  await ensureProfileMigrations(db,req);
   const payload = getAuthPayload(req); // optional
   let total_users=0, total_weeks=0, total_pairs=0;
   try{
@@ -2279,7 +2300,7 @@ async function handleLeetcodeSync(req,res){
     return res.status(403).json({error:'automated LeetCode ingestion is disabled pending written authorization'});
   }
   const db = adminCtx.db;
-  await ensureBaseTables(db); await ensureProfileMigrations(db);
+  await ensureBaseTables(db,req); await ensureProfileMigrations(db,req);
   const url = new URL(req.url,'http://localhost');
   const limit = Math.min(50, Math.max(1, parseInt(String(req.query?.limit||url.searchParams.get('limit')||'20'),10)||20));
   const skip = Math.max(0, parseInt(String(req.query?.skip||url.searchParams.get('skip')||'0'),10)||0);

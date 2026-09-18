@@ -474,7 +474,14 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
   const index=await fetch(first.url);
   assert.equal(index.status,200);
   assert.match(index.headers.get('content-type')||'',/^text\/html/);
-  assert.match(await index.text(),/<title>Randori Circle<\/title>/);
+  const localDocument=await index.text();
+  assert.match(localDocument,/<title>Randori Circle<\/title>/);
+  assert.match(localDocument,/<meta name="randori-runtime" content="local">/);
+  assert.match(localDocument,/window\.__RANDORI_LOCAL_RUNTIME__=true/);
+  assert.doesNotMatch(localDocument,/<(?:script|link)\b[^>]*(?:src|href)="https:\/\//i);
+  const localCsp=index.headers.get('content-security-policy')||'';
+  assert.match(localCsp,/connect-src 'self'/);
+  assert.doesNotMatch(localCsp,/https?:/);
 
   const capabilities=await fetch(new URL('/api/auth/capabilities',first.url));
   assert.equal(capabilities.status,200);

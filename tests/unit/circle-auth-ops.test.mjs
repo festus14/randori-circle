@@ -14,10 +14,14 @@ let acceptanceResult={ok:false};
 let cutoverStarted=false;
 let registrationState='open';
 let accountAcceptanceResult={ok:false};
+let passwordAccountResult={ok:false};
+let readinessError=null;
 const membershipCalls=[];
 const validationCalls=[];
 const acceptanceCalls=[];
 const accountAcceptanceCalls=[];
+const passwordAccountCalls=[];
+const readinessCalls=[];
 
 const db={
   async execute(statement){
@@ -87,11 +91,18 @@ mock.module('../../api/_circle-membership.js',{
       accountAcceptanceCalls.push(input);
       return accountAcceptanceResult;
     },
-    createPasswordAccountFromPreparedInvitation:async()=>({ok:false}),
+    createPasswordAccountFromPreparedInvitation:async(_db,input)=>{
+      passwordAccountCalls.push(input);
+      return passwordAccountResult;
+    },
+    ensureCircleMembershipReadiness:async dbValue=>{
+      readinessCalls.push(dbValue);
+      if(readinessError) throw readinessError;
+    },
   },
 });
 
-const [{default:authHandler},{default:opsHandler}]=await Promise.all([
+const [{default:authHandler,validSignupPassword},{default:opsHandler}]=await Promise.all([
   import('../../api/auth.js'),
   import('../../api/ops.js'),
 ]);
@@ -159,6 +170,8 @@ beforeEach(()=>{
   validationCalls.length=0;
   acceptanceCalls.length=0;
   accountAcceptanceCalls.length=0;
+  passwordAccountCalls.length=0;
+  readinessCalls.length=0;
   membershipResult=true;
   membershipError=null;
   validationResult={ok:false};
@@ -166,12 +179,14 @@ beforeEach(()=>{
   cutoverStarted=false;
   registrationState='open';
   accountAcceptanceResult={ok:false};
+  passwordAccountResult={ok:false};
+  readinessError=null;
   executeHandler=()=>rows();
   globalThis.fetch=originalFetch;
   for(const key of [
     'ALLOW_OPEN_SIGNUP','APP_URL','CIRCLE_MEMBERSHIP_ENABLED','CRON_SECRET',
     'GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','NODE_ENV','SIGNUP_ALLOWLIST',
-    'RANDORI_LOCAL_RUNTIME','TURSO_AUTH_TOKEN','TURSO_DATABASE_URL','VERCEL','VERCEL_ENV','VERCEL_URL',
+    'RANDORI_LOCAL_RUNTIME','RANDORI_LOCAL_IDENTITY','TURSO_AUTH_TOKEN','TURSO_DATABASE_URL','VERCEL','VERCEL_ENV','VERCEL_URL',
   ]) delete process.env[key];
 });
 
@@ -256,6 +271,78 @@ test('prepared invitation OAuth forces explicit Google account selection',async(
   });
   assert.equal(regular.status,302);
   assert.equal(new URL(regular.headers.location).searchParams.get('prompt'),null);
+});
+
+test('local invite signup validates the invitation before account work and never enumerates an email',async()=>{
+  Object.assign(process.env,{
+    NODE_ENV:'development',RANDORI_LOCAL_RUNTIME:'true',RANDORI_LOCAL_IDENTITY:'true',
+    ALLOW_OPEN_SIGNUP:'false',CIRCLE_MEMBERSHIP_ENABLED:'true',
+    TURSO_DATABASE_URL:'file:///tmp/randori-circle-auth.sqlite',APP_URL:'http://127.0.0.1:3000',
+  });
+  executeHandler=sql=>{
+    if(sql.includes('RETURNING attempts')) return rows([{attempts:1}]);
+    if(accountSql(sql)||sql.includes('SELECT id FROM auth_accounts WHERE email=')){
+      return rows([{id:1,email:'owner@example.test'}]);
+    }
+    return rows();
+  };
+  const request=body=>invoke(authHandler,{
+    method:'POST',url:'/api/auth/signup',query:{endpoint:'signup'},
+    headers:{...localOriginHeaders,cookie:'randori_invite_claim=valid-claim'},body,
+  });
+  const wrong=await request({email:'owner@example.test',password:PASSWORD,name:'Wrong Identity'});
+  assert.equal(wrong.status,403);
+  assert.deepEqual(wrong.body,{error:'invitation unavailable or does not match this email'});
+  assert.equal(executed.some(call=>accountSql(call.sql)||call.sql.includes('SELECT id FROM auth_accounts WHERE email=')),false);
+  assert.equal(passwordAccountCalls.length,0);
+
+  validationResult={ok:true,circle_id:1,invitation_id:'invite-1',email_hash:'email-hash',used_by:null};
+  const conflict=await request({email:'owner@example.test',password:PASSWORD,name:'Existing Identity'});
+  assert.equal(conflict.status,403);
+  assert.deepEqual(conflict.body,wrong.body);
+  assert.equal(executed.some(call=>accountSql(call.sql)||call.sql.includes('SELECT id FROM auth_accounts WHERE email=')),false);
+  assert.equal(passwordAccountCalls.length,1);
+  assert.match(passwordAccountCalls[0].passwordHash,/^\$2/);
+  assert.equal(readinessCalls.length,2);
+});
+
+test('password byte limits reject bcrypt-truncated inputs and accept exact UTF-8 boundaries',()=>{
+  assert.equal(validSignupPassword('a'.repeat(9)),false);
+  assert.equal(validSignupPassword('a'.repeat(10)),true);
+  assert.equal(validSignupPassword('a'.repeat(72)),true);
+  assert.equal(validSignupPassword('a'.repeat(73)),false);
+  assert.equal(validSignupPassword('é'.repeat(36)),true);
+  assert.equal(validSignupPassword('é'.repeat(37)),false);
+  assert.equal(validSignupPassword('🙂'.repeat(18)),true);
+  assert.equal(validSignupPassword('🙂'.repeat(19)),false);
+});
+
+test('migrated local login probes readiness, avoids DDL, and bcrypt-compares absent accounts',async()=>{
+  Object.assign(process.env,{
+    NODE_ENV:'development',RANDORI_LOCAL_RUNTIME:'true',RANDORI_LOCAL_IDENTITY:'true',
+    ALLOW_OPEN_SIGNUP:'false',CIRCLE_MEMBERSHIP_ENABLED:'true',
+    TURSO_DATABASE_URL:'file:///tmp/randori-circle-auth.sqlite',APP_URL:'http://127.0.0.1:3000',
+  });
+  executeHandler=sql=>sql.includes('RETURNING attempts')?rows([{attempts:1}]):rows();
+  const originalCompare=bcrypt.compare;
+  const compared=[];
+  bcrypt.compare=async(password,hash)=>{ compared.push({password,hash}); return false; };
+  let response;
+  try{
+    response=await invoke(authHandler,{
+      method:'POST',url:'/api/auth/login',query:{endpoint:'login'},headers:localOriginHeaders,
+      body:{email:'absent@example.test',password:PASSWORD},
+    });
+  }finally{
+    bcrypt.compare=originalCompare;
+  }
+  assert.equal(response.status,401);
+  assert.deepEqual(response.body,{error:'invalid credentials'});
+  assert.equal(compared.length,1);
+  assert.equal(compared[0].password,PASSWORD);
+  assert.match(compared[0].hash,/^\$2/);
+  assert.equal(readinessCalls.length,1);
+  assert.equal(executed.some(call=>/\b(?:CREATE|ALTER|DROP)\b/i.test(call.sql)),false);
 });
 
 test('password login and profile require active primary-circle membership when enabled',async()=>{

@@ -19,7 +19,7 @@ const SOURCE_EXTENSION=/\.[cm]?js$/i;
 export const RUNTIME_DDL_ALLOWLIST=Object.freeze([
   Object.freeze({file:'api/_circle-membership.js',statementCount:6,digest:'5177c04805431cf5514ea3f9f6083e843e68f7220851ed58efcde85e6abc1dad'}),
   Object.freeze({file:'api/ai.js',statementCount:8,digest:'0433ffdc8aadad44f242d739a544df62f0d6584538c37eee323942085b3d0082'}),
-  Object.freeze({file:'api/auth.js',statementCount:19,digest:'6b31d3a9987b386aec11a6891e377378375dc67ef4fde06bcfb92ef782d78034'}),
+  Object.freeze({file:'api/auth.js',statementCount:18,digest:'9f4bf63e774b04f5c02fc304dc01d528498648db128c00e76a93b772a1d068f3'}),
   Object.freeze({file:'api/data.js',statementCount:76,digest:'08123561556e15040080addeb06aa17e5e8d0fadb514d4a8dad2d9b380c325b5'}),
   Object.freeze({file:'api/ops.js',statementCount:18,digest:'87dcb5747500899355e4ea786370d9a054253a367341346af4e438f0337d2094'}),
 ]);
