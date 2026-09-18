@@ -9,10 +9,12 @@ Production deploys from `main` through Vercel. Development is iterative; the arc
 1. An allowlisted member signs in through verified Google OAuth.
 2. The Sunday cron creates one deterministic, repeat-aware pairing cycle.
 3. Each participant receives a personalised email containing only their partner and private room link.
-4. Partners propose a time, chat, and open the session workspace.
+4. Partners propose a time, chat, and open the session workspace, where code and completed whiteboard gestures are saved as one room-scoped checkpoint.
 5. Members choose from the original, provenance-checked catalogue; JavaScript and Python are evaluated against server-owned cases and the authoritative result is saved by the API.
 
-Pair workspaces now persist authenticated, revisioned snapshots across devices. Managed video, production AI coaching, circle tenancy, and authorised third-party content adapters remain later increments.
+Pair workspaces now persist authenticated, revisioned code and whiteboard snapshots across devices. A completed board gesture is saved locally immediately and then synced; if the network is unavailable, the room keeps a dirty local checkpoint and retries after hydration. Viewport, selected tool, and colour are intentionally device-local. Snapshots expire after 90 days, and v1/v2 code-only rooms upgrade without losing their draft.
+
+This private-beta sync is whole-document compare-and-swap, not a CRDT: members see durable checkpoints rather than each pointer stroke in real time. Managed realtime collaboration, video, production AI coaching, circle tenancy, and authorised third-party content adapters remain later increments.
 
 ## Security baseline
 
@@ -35,7 +37,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/data.js` | profiles, circle, weeks, schedules, messages, questions, runs, execution |
 | `api/ops.js` | availability, fair pairing, cron, notification outbox, demo administration |
 | `api/ai.js` | disabled-by-default consent-gated feedback workflows |
-| `api/video.js` | authenticated pair-scoped WebRTC signaling |
+| `api/video.js` | authenticated pair-scoped WebRTC signaling and revisioned code/board checkpoints |
 | `api/_db.js` | Turso client, JWT verification, CSRF helpers |
 | `api/_catalog.js` | original exercise catalogue validation, public projections, server-owned evaluation cases |
 | `api/_pairing.js` | deterministic fairness and canonical room identifiers |
