@@ -367,7 +367,7 @@ beforeEach(() => {
     'NEXT_PUBLIC_SENTRY_DSN', 'SENTRY_DSN',
     'ALLOW_OPEN_SIGNUP', 'SIGNUP_ALLOWLIST', 'LEETCODE_INGESTION_AUTHORIZED',
     'AUTH_SCHEMA_BOOTSTRAP_ENABLED', 'CIRCLE_MEMBERSHIP_ENABLED', 'RANDORI_LOCAL_RUNTIME',
-    'RANDORI_LOCAL_DATABASE_PATH', 'RANDORI_LOCAL_IDENTITY',
+    'PAIRING_TIME_ZONE', 'RANDORI_LOCAL_DATABASE_PATH', 'RANDORI_LOCAL_IDENTITY',
     'TURSO_AUTH_TOKEN', 'TURSO_DATABASE_URL', 'VERCEL', 'VERCEL_ENV', 'VERCEL_URL',
     'RUN_ATTESTATION_SECRET', 'RUN_ATTESTATION_PREVIOUS_SECRETS',
     'TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM',
@@ -815,6 +815,7 @@ test('data read models map database rows and expose non-mutating health probes',
   assert.equal(weeks.body.weeks[0].is_current,true);
   assert.equal(weeks.body.weeks[0].week_label,currentCycleId);
   assert.equal(weeks.body.current_week_id,10);
+  assert.equal(weeks.body.current_cycle.endsAt,weeks.body.upcoming_cycle.startsAt);
 
   const history = await invoke(dataHandler, { url: '/api/history', query: { endpoint: 'history' }, headers: auth });
   assert.equal(history.body.history[0].partner_name, 'Partner');
@@ -822,6 +823,25 @@ test('data read models map database rows and expose non-mutating health probes',
   const stats = await invoke(dataHandler, { url: '/api/stats', query: { endpoint: 'stats' }, headers: auth });
   assert.equal(stats.body.total_users, 4);
   assert.equal(stats.body.your_sessions, 2);
+  assert.equal(stats.body.next_cycle.state,'upcoming');
+  assert.equal(stats.body.next_shuffle_utc,stats.body.next_cycle.startsAt);
+  assert.match(stats.body.next_shuffle_label,/Europe\/London$/);
+  assert.equal('next_shuffle_bst' in stats.body,false);
+});
+
+test('stats derives the next run label from the configured cycle timezone',async()=>{
+  process.env.PAIRING_TIME_ZONE='Pacific/Auckland';
+  const now='2026-09-19T12:00:00.000Z';
+  const expected=resolvePairingCycle({now,timeZone:'Pacific/Auckland',state:'upcoming'});
+  const result=await withFixedNow(now,()=>invoke(dataHandler,{
+    url:'/api/stats',query:{endpoint:'stats'},
+  }));
+  assert.equal(result.status,200);
+  assert.deepEqual(result.body.next_cycle,expected);
+  assert.equal(result.body.next_shuffle_utc,expected.startsAt);
+  assert.match(result.body.next_shuffle_label,/Pacific\/Auckland$/);
+  assert.doesNotMatch(result.body.next_shuffle_label,/London|BST/);
+  assert.equal('next_shuffle_bst' in result.body,false);
 });
 
 test('database readiness failures are generic, private, and never logged through mutating health paths',async()=>{
@@ -1316,6 +1336,7 @@ test('pair run feed strictly validates cursors and authorizes the exact canonica
 test('my-pair returns only current-cycle membership and a canonical room id', async () => {
   let paired = true;
   let solo = false;
+  let unavailable = false;
   let poisonedSchedule = false;
   executeHandler = (sql,args) => {
     if(sql.includes('SELECT aa.id')&&sql.includes('JOIN circle_memberships cm')&&sql.includes('LIMIT 2')) return rows([{id:2,circle_id:1}]);
@@ -1346,6 +1367,9 @@ test('my-pair returns only current-cycle membership and a canonical room id', as
         ? [{id:30,proposed_times:'not-json',agreed_time:null,updated_at:'now',access_present:1}]
         : [{id:null,proposed_times:null,agreed_time:null,updated_at:null,access_present:1}]);
     }
+    if(sql.includes('FROM pairing_email_outbox')){
+      return rows(unavailable?[{unavailable:1}]:[]);
+    }
     return rows();
   };
 
@@ -1355,6 +1379,10 @@ test('my-pair returns only current-cycle membership and a canonical room id', as
   assert.equal(current.status, 200);
   assert.equal(current.body.room_id, 'week_10_pair_20');
   assert.equal(current.body.pair.room_id, 'week_10_pair_20');
+  assert.equal(current.body.pairing_status,'paired');
+  assert.equal(current.body.current_cycle.state,'current');
+  assert.equal(current.body.upcoming_cycle.state,'upcoming');
+  assert.equal(current.body.current_cycle.endsAt,current.body.upcoming_cycle.startsAt);
   assert.equal('email' in current.body.partner, false);
 
   solo = true;
@@ -1364,6 +1392,7 @@ test('my-pair returns only current-cycle membership and a canonical room id', as
   assert.equal(soloPractice.status,200);
   assert.equal(soloPractice.body.partner.name,'Solo practice');
   assert.equal(soloPractice.body.pair.solo_practice,true);
+  assert.equal(soloPractice.body.pairing_status,'solo');
 
   solo = false;
   poisonedSchedule = true;
@@ -1381,7 +1410,18 @@ test('my-pair returns only current-cycle membership and a canonical room id', as
   assert.equal(absent.status, 200);
   assert.equal(absent.body.paired, false);
   assert.equal(absent.body.reason, 'not_paired_this_cycle');
+  assert.equal(absent.body.pairing_status,'missed');
+  assert.equal(executed.some(call=>call.sql.includes('FROM pairing_email_outbox')&&call.args[0]===10&&call.args[1]===2),true);
   assert.equal(executed.some(call => call.sql.includes('JOIN pairing_weeks')), false);
+
+  unavailable=true;
+  const optedOut=await invoke(dataHandler,{
+    url:'/api/my-pair',query:{endpoint:'my-pair'},headers:{'x-test-auth':'user'},
+  });
+  assert.equal(optedOut.status,200);
+  assert.equal(optedOut.body.paired,false);
+  assert.equal(optedOut.body.pairing_status,'unavailable');
+  assert.equal(optedOut.body.reason,'unavailable_current_cycle');
 });
 
 test('my-pair ignores stale and future weeks but fails closed on a current legacy week',async()=>{
@@ -1412,6 +1452,10 @@ test('my-pair ignores stale and future weeks but fails closed on a current legac
   assert.equal(result.status,200);
   assert.equal(result.body.paired,false);
   assert.equal(result.body.reason,'no_pairing_for_current_cycle');
+  assert.equal(result.body.pairing_status,'unpublished');
+  assert.equal(result.body.current_cycle.state,'current');
+  assert.equal(result.body.upcoming_cycle.state,'upcoming');
+  assert.equal(result.body.current_cycle.endsAt,result.body.upcoming_cycle.startsAt);
   assert.ok(currentCycleQuery);
   assert.equal(currentCycleQuery.args.length,1);
   assert.match(String(currentCycleQuery.args[0]),/^\d{4}-W\d{2}$/);

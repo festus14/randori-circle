@@ -1144,9 +1144,13 @@ async function handleWeeks(req,res){
   try{
     const now=new Date();
     const currentCycle=resolvePairingCycle({now});
+    const upcomingCycle=resolvePairingCycle({now,state:'upcoming'});
     const publication=await getPairingPublication(db,{now});
     if(!publication){
-      return res.json({ok:true,weeks:[],current_cycle:currentCycle,current_week_id:null,filtered_demo:true});
+      return res.json({
+        ok:true,weeks:[],current_cycle:currentCycle,upcoming_cycle:upcomingCycle,
+        current_week_id:null,filtered_demo:true,
+      });
     }
     const idTo=await loadCurrentPublicationAccounts(db,publication,readerAccess);
     const person=id=>idTo.get(Number(id))||{name:`Member ${Number(id)}`,color:'#999'};
@@ -1164,7 +1168,10 @@ async function handleWeeks(req,res){
       id:publication.weekId,week_label:publication.cycle.cycleId,week_start:publication.cycle.startsAt,
       focus:'both',created_at:publication.publishedAt,is_demo:false,is_current:true,pairs,
     };
-    return res.json({ok:true,weeks:[week],current_cycle:publication.cycle,current_week_id:publication.weekId,filtered_demo:true});
+    return res.json({
+      ok:true,weeks:[week],current_cycle:publication.cycle,upcoming_cycle:upcomingCycle,
+      current_week_id:publication.weekId,filtered_demo:true,
+    });
   }catch(e){
     try{ await logServer('error','weeks_fetch_fail','current pairing publication could not be read',{code:String(e?.code||'PAIRING_READ_FAILED')},{req,source:'server'}); }catch{}
     return res.status(503).json({ok:false,error:'pairing unavailable'});
@@ -1469,11 +1476,12 @@ async function handleMyPair(req,res){
   }
   const readerAccess=await requireCurrentPairingReader(req,res,db,userId);
   if(!readerAccess) return;
-  let weekId=null, weekRow=null, cycle=null;
+  let weekId=null, weekRow=null, cycle=null, upcomingCycle=null;
   let publication=null;
   try{
     const now=new Date();
     cycle=resolvePairingCycle({now});
+    upcomingCycle=resolvePairingCycle({now,state:'upcoming'});
     publication=await getPairingPublication(db,{now});
     if(publication){
       await loadCurrentPublicationAccounts(db,publication,readerAccess);
@@ -1485,7 +1493,8 @@ async function handleMyPair(req,res){
     return res.status(503).json({error:'pairing unavailable'});
   }
   if (!weekId) return res.json({
-    ok:true,paired:false,reason:'no_pairing_for_current_cycle',cycle,
+    ok:true,paired:false,pairing_status:'unpublished',reason:'no_pairing_for_current_cycle',
+    cycle,current_cycle:cycle,upcoming_cycle:upcomingCycle,
     message:'No pairing has been published for the current cycle yet.',
   });
   const isParticipant=publication.participants.some(item=>item.userId===userId&&item.source==='auth');
@@ -1496,7 +1505,29 @@ async function handleMyPair(req,res){
     pg_id:publishedPair.groupId,week_id:weekId,user_a_id:publishedPair.aId,user_b_id:publishedPair.bId,
     user_c_id:null,is_ai_pair:publishedPair.isAI?1:0,topic:'Pick together',topic_kind:'both',
   }:null;
-  if (!grp) return res.json({ ok:true, paired:false, cycle, week_id:weekId, week:weekRow||null, reason:'not_paired_this_cycle', message:'You are not in this cycle. Turn availability on before the next Sunday cutoff.' });
+  if (!grp){
+    let unavailable=false;
+    try{
+      const snapshot=await db.execute({
+        sql:`SELECT 1 AS unavailable FROM pairing_email_outbox
+          WHERE week_id=? AND user_id=? AND kind='unavailable' LIMIT 1`,
+        args:[weekId,userId],
+      });
+      unavailable=!!snapshot.rows?.length;
+    }catch{
+      return res.status(503).json({error:'pairing unavailable'});
+    }
+    const pairingStatus=unavailable?'unavailable':'missed';
+    return res.json({
+      ok:true,paired:false,pairing_status:pairingStatus,
+      cycle,current_cycle:cycle,upcoming_cycle:upcomingCycle,
+      week_id:weekId,week:weekRow||null,
+      reason:unavailable?'unavailable_current_cycle':'not_paired_this_cycle',
+      message:unavailable
+        ?'The published eligibility snapshot records you as unavailable for this cycle.'
+        :'You are not in the published eligibility snapshot for this cycle.',
+    });
+  }
   const isAI = !!grp.is_ai_pair;
   let partner=null, partners=[];
   if (isAI){
@@ -1546,7 +1577,7 @@ async function handleMyPair(req,res){
   }catch{
     return res.status(503).json({error:'pairing unavailable'});
   }
-  if(!grp) return res.json({ ok:true, paired:false, cycle, week_id:weekId, week:weekRow||null, reason:'not_paired_this_cycle', message:'You are not in this cycle. Turn availability on before the next Sunday cutoff.' });
+  if(!grp) return res.status(503).json({error:'pairing unavailable'});
   if(scheduleRow){
     try{ schedule=projectSchedule(readScheduleState(scheduleRow)); }
     catch(error){
@@ -1557,7 +1588,20 @@ async function handleMyPair(req,res){
   const meRow = await db.execute({ sql:`SELECT id, display_name, color, tz, interview_focus FROM auth_accounts WHERE id=?`, args:[userId] }).catch(()=>({rows:[]}));
   const me = meRow.rows && meRow.rows[0] ? { id:meRow.rows[0].id, name:meRow.rows[0].display_name, color:meRow.rows[0].color, tz:meRow.rows[0].tz, interview_focus:meRow.rows[0].interview_focus } : { id:userId };
   const roomId = `week_${weekId}_pair_${grp.pg_id}`;
-  return res.json({ ok:true, paired:true, cycle, room_id:roomId, week_id:weekId, week: weekRow ? { id:weekRow.id||weekId, week_label:weekRow.week_label, week_start:weekRow.week_start, focus:weekRow.focus } : { id:weekId }, pair: { pg_id:grp.pg_id, week_id:weekId, room_id:roomId, user_a_id:grp.user_a_id, user_b_id:grp.user_b_id, user_c_id:grp.user_c_id??null, is_ai_pair:isAI, is_ai:isAI, solo_practice:isAI, topic:grp.topic, topic_kind:grp.topic_kind }, partner, partners, me, schedule });
+  return res.json({
+    ok:true,paired:true,pairing_status:isAI?'solo':'paired',
+    cycle,current_cycle:cycle,upcoming_cycle:upcomingCycle,
+    room_id:roomId,week_id:weekId,
+    week:weekRow
+      ?{id:weekRow.id||weekId,week_label:weekRow.week_label,week_start:weekRow.week_start,focus:weekRow.focus}
+      :{id:weekId},
+    pair:{
+      pg_id:grp.pg_id,week_id:weekId,room_id:roomId,
+      user_a_id:grp.user_a_id,user_b_id:grp.user_b_id,user_c_id:grp.user_c_id??null,
+      is_ai_pair:isAI,is_ai:isAI,solo_practice:isAI,topic:grp.topic,topic_kind:grp.topic_kind,
+    },
+    partner,partners,me,schedule,
+  });
 }
 
 async function fetchAuthorizedScheduleState(db,accessArgs,weekId,pairId){
@@ -2242,7 +2286,8 @@ async function handleStats(req,res){
     try{
       const last = await db.execute({ sql:`SELECT pg.id as pg_id, pg.week_id, pw.week_label, pw.week_start, pg.is_ai_pair FROM pairing_groups pg JOIN pairing_weeks pw ON pw.id=pg.week_id
         JOIN pairing_participants viewer ON viewer.week_id=pg.week_id AND viewer.user_id=? AND viewer.source='auth'
-        WHERE (pg.user_a_id=? OR pg.user_b_id=? OR pg.user_c_id=?) AND COALESCE(pw.is_demo,0)=0 ORDER BY pw.id DESC LIMIT 1`, args:[userId,userId,userId,userId] });
+        WHERE (pg.user_a_id=? OR pg.user_b_id=? OR pg.user_c_id=?) AND COALESCE(pw.is_demo,0)=0
+        ORDER BY pw.week_start DESC,pg.id DESC LIMIT 1`, args:[userId,userId,userId,userId] });
       if (last.rows.length) out.your_last = last.rows[0];
     }catch{}
     try{
@@ -2255,10 +2300,15 @@ async function handleStats(req,res){
   }
   // The shared cycle resolver keeps this boundary correct across GMT/BST.
   try{
-    const next = new Date(resolvePairingCycle({state:'upcoming'}).startsAt);
+    const nextCycle=resolvePairingCycle({state:'upcoming'});
+    const next = new Date(nextCycle.startsAt);
+    const nextLabel=new Intl.DateTimeFormat('en-GB',{
+      timeZone:nextCycle.timeZone,weekday:'long',year:'numeric',month:'short',day:'numeric',
+      hour:'2-digit',minute:'2-digit',timeZoneName:'short',
+    }).format(next);
+    out.next_cycle=nextCycle;
     out.next_shuffle_utc = next.toISOString();
-    out.next_shuffle_bst = new Date(next.getTime()).toLocaleString('en-GB',{timeZone:'Europe/London', weekday:'long', hour:'2-digit', minute:'2-digit',timeZoneName:'short'});
-    out.next_shuffle_label = `Sunday 08:00 London time • ${next.toLocaleDateString('en-GB',{timeZone:'Europe/London', day:'numeric', month:'short'})}`;
+    out.next_shuffle_label = `${nextLabel} • ${nextCycle.timeZone}`;
   }catch{}
   return res.json(out);
 }
