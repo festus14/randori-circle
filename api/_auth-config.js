@@ -20,8 +20,8 @@ function secureDeployment(env){
 }
 
 function loopbackHostname(value){
-  const hostname=String(value||'').replace(/^\[|\]$/g,'').toLowerCase();
-  if(LOOPBACK_HOSTNAMES.has(hostname)) return true;
+  const hostname=String(value||'').replace(/^\[|\]$/g,'').toLowerCase().replace(/\.$/u,'');
+  if(LOOPBACK_HOSTNAMES.has(hostname)||hostname.endsWith('.localhost')) return true;
   const family=isIP(hostname);
   return family===4
     ?LOOPBACK_ADDRESSES.check(hostname,'ipv4')
