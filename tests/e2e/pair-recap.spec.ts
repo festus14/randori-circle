@@ -577,12 +577,10 @@ test('both members see the same safe recap, literal messages, explicit updates, 
     expect(sharedRecap(await recapSnapshot(pages[0]))).toEqual(sharedRecap(await recapSnapshot(pages[1])));
     expect(await pages[0].getByTestId('pair-recap-activity').locator('li').allInnerTexts())
       .toEqual(await pages[1].getByTestId('pair-recap-activity').locator('li').allInnerTexts());
-    await expect(pages[0].getByTestId('pair-recap-schedule')).toHaveText(
-      await pages[1].getByTestId('pair-recap-schedule').innerText(),
-    );
-    await expect(pages[0].getByTestId('pair-recap-workspace')).toHaveText(
-      await pages[1].getByTestId('pair-recap-workspace').innerText(),
-    );
+    expect(await pages[0].getByTestId('pair-recap-schedule').textContent())
+      .toBe(await pages[1].getByTestId('pair-recap-schedule').textContent());
+    expect(await pages[0].getByTestId('pair-recap-workspace').textContent())
+      .toBe(await pages[1].getByTestId('pair-recap-workspace').textContent());
 
     for (const page of pages) {
       const xssRow = page.locator('[data-event-id="message:11"]');
