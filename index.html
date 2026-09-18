@@ -4570,6 +4570,16 @@ def allow(key, limit=5):
     return !!catalogueFilterState.search||catalogueFilterState.difficulty!=='all'||catalogueFilterState.type!=='all';
   }
 
+  function hydratedWorkspaceOwnsSelection(identity){
+    const workspace=window._randori_workspace;
+    const room=activeRoom();
+    return !!room
+      && workspace?.hydrated===true
+      && workspace.room===room
+      && identity.slug===activeQuestionSlug
+      && identity.version===activeQuestionVersion;
+  }
+
   function filteredCatalogueQuestions(){
     const terms=catalogueFilterState.search.toLocaleLowerCase().split(/\s+/).filter(Boolean);
     return CUSTOM_QUESTIONS.filter(question=>{
@@ -4670,9 +4680,20 @@ def allow(key, limit=5):
     }
     matches.forEach(question=>appendCatalogueOption(sel,question));
     const preserved=matches.find(question=>question.slug===previous.slug&&question.version===previous.version)||null;
-    const next=preserved||matches[0];
-    sel.disabled=false; sel.value=next.slug;
-    if(!preserved) handleQuestionChange(next.slug);
+    const activeQuestion=previous.version==null||!hydratedWorkspaceOwnsSelection(previous)?null:CUSTOM_QUESTIONS.find(question=>
+      question.slug===previous.slug
+      && question.version===previous.version
+    );
+    if(preserved){
+      sel.disabled=false; sel.value=preserved.slug;
+    }else if(activeQuestion){
+      const option=appendFilteredWorkspaceOption(sel,activeQuestion);
+      sel.disabled=false; sel.value=option.value;
+    }else{
+      const next=matches[0];
+      sel.disabled=false; sel.value=next.slug;
+      handleQuestionChange(next.slug);
+    }
     return true;
   }
 

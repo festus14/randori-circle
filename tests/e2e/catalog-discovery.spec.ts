@@ -344,6 +344,52 @@ test('keeps an off-filter hydrated workspace question versioned when editing and
       ._randori_code?.getCode?.() || document.querySelector<HTMLTextAreaElement>('#editor')?.value || ''
   ))).toBe(hydratedCode);
 
+  const expectWorkspacePreserved = async (visibleSlugs: string[]) => {
+    await expect.poll(() => page.evaluate(() => {
+      const app = window as typeof window & {
+        _randori_catalog_filters?: { state?: { visibleSlugs?: string[] } };
+      };
+      return app._randori_catalog_filters?.state?.visibleSlugs || [];
+    })).toEqual(visibleSlugs);
+    await expect(page.getByTestId('catalog-filtered-current')).toHaveCount(1);
+    await expect(page.locator('#questionSelect option')).toHaveCount(visibleSlugs.length + 1);
+    await expect(page.locator('#questionSelect')).toHaveValue('shortest-handoff-path');
+    await expect(page.locator('#qTitle')).toHaveText('Shortest Handoff Path');
+    await expect.poll(() => page.evaluate(() => {
+      const app = window as typeof window & {
+        _randori_questions?: { selectedIdentity?: () => { slug: string; version: number | null } };
+      };
+      return app._randori_questions?.selectedIdentity?.();
+    })).toEqual({ slug: 'shortest-handoff-path', version: 1 });
+    await expect.poll(() => page.evaluate(() => (
+      (window as typeof window & { _randori_code?: { getCode?: () => string } })
+        ._randori_code?.getCode?.() || document.querySelector<HTMLTextAreaElement>('#editor')?.value || ''
+    ))).toBe(hydratedCode);
+  };
+
+  const search = page.getByTestId('catalog-search');
+  const difficulty = page.getByTestId('catalog-difficulty');
+  const type = page.getByTestId('catalog-type');
+  await search.fill('capacity');
+  await expectWorkspacePreserved(['capacity-upgrade-index']);
+  await search.fill('');
+  await expectWorkspacePreserved(['capacity-upgrade-index']);
+  await difficulty.selectOption('Easy');
+  await expectWorkspacePreserved(['capacity-upgrade-index']);
+  await difficulty.selectOption('all');
+  await expectWorkspacePreserved(['capacity-upgrade-index']);
+  await type.selectOption('stack-string');
+  await expectWorkspacePreserved(['balanced-template-markers']);
+  await type.selectOption('binary-search');
+  await expectWorkspacePreserved(['capacity-upgrade-index']);
+  const filterFlush = await page.evaluate(async () => {
+    return (window as typeof window & {
+      _randori_workspace?: { flush?: () => Promise<boolean> };
+    })._randori_workspace?.flush?.();
+  });
+  expect(filterFlush).toBe(true);
+  expect(workspaceWrites).toHaveLength(0);
+
   await setCode(page, editedCode);
   await expect.poll(() => workspaceWrites.length, { timeout: 10_000 }).toBe(1);
   const write = workspaceWrites[0] as {
