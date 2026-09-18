@@ -122,6 +122,7 @@ try{
   --ink-3:#9a9692;
 }
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{height:100%}
 html{scroll-behavior:smooth}
 body{
@@ -2875,6 +2876,23 @@ def allow(key, limit=5):
     t.onclick=()=>{
       document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active');
       const id=t.getAttribute('data-tab');
+      if(['pair','code','board','history'].includes(id)){
+        try{
+          const url=new URL(window.location.href);
+          url.searchParams.delete('tab');
+          url.searchParams.set('view',id);
+          if(url.hash.includes('code')) url.hash='';
+          window.history.replaceState({},document.title,url.pathname+url.search+url.hash);
+        }catch{}
+      }else{
+        try{
+          const url=new URL(window.location.href);
+          url.searchParams.delete('view');
+          url.searchParams.delete('tab');
+          if(url.hash.includes('code')) url.hash='';
+          window.history.replaceState({},document.title,url.pathname+url.search+url.hash);
+        }catch{}
+      }
       document.querySelectorAll('.view').forEach(v=>v.style.display='none');
       document.getElementById('view-'+id).style.display='block';
       if(id==='board'){ setTimeout(()=>{ resizeCanvas(); renderBoard(); }, 60); }
@@ -3288,6 +3306,16 @@ def allow(key, limit=5):
   const viewProfile=document.getElementById('view-profile-setup');
   const viewDashboard=document.getElementById('view-dashboard');
   const viewCircle=document.getElementById('view-circle');
+
+  function clearRequestedView(){
+    try{
+      const url=new URL(window.location.href);
+      url.searchParams.delete('view');
+      url.searchParams.delete('tab');
+      if(url.hash.includes('code')) url.hash='';
+      window.history.replaceState({},document.title,url.pathname+url.search+url.hash);
+    }catch{}
+  }
 
   function hideAllViews(){
     document.querySelectorAll('.view').forEach(v=>v.style.display='none');
@@ -3815,7 +3843,8 @@ def allow(key, limit=5):
     // keep the requested workspace visible instead of routing back to the
     // dashboard on the delayed auth refresh.
     try{
-      const requestedView=new URLSearchParams(window.location.search).get('view');
+      const params=new URLSearchParams(window.location.search);
+      const requestedView=params.get('view')||params.get('tab')||(window.location.hash.includes('code')?'code':null);
       if(['pair','code','board','history'].includes(requestedView)){
         document.querySelector(`[data-tab="${requestedView}"]`)?.click();
         return;
@@ -3847,11 +3876,11 @@ def allow(key, limit=5):
   try{ updateAuthUI = wrappedUpdateAuthUI; }catch{ window.updateAuthUI = wrappedUpdateAuthUI; }
 
   // Initial routing after page load
-  document.getElementById('homeBtn')?.addEventListener('click', ()=>{ try{ (window._randori_journey&&window._randori_journey.routeByAuth?window._randori_journey.routeByAuth():routeByAuth()); }catch{} window.scrollTo({top:0,behavior:'smooth'}); });
-    document.querySelector('.brand')?.addEventListener('click', (e)=>{ if(e.target.closest('button')) return; try{ (window._randori_journey&&window._randori_journey.routeByAuth?window._randori_journey.routeByAuth():routeByAuth()); }catch{} window.scrollTo({top:0,behavior:'smooth'}); });
+  document.getElementById('homeBtn')?.addEventListener('click', ()=>{ clearRequestedView(); try{ (window._randori_journey&&window._randori_journey.routeByAuth?window._randori_journey.routeByAuth():routeByAuth()); }catch{} window.scrollTo({top:0,behavior:'smooth'}); });
+    document.querySelector('.brand')?.addEventListener('click', (e)=>{ if(e.target.closest('button')) return; clearRequestedView(); try{ (window._randori_journey&&window._randori_journey.routeByAuth?window._randori_journey.routeByAuth():routeByAuth()); }catch{} window.scrollTo({top:0,behavior:'smooth'}); });
     try{ document.querySelector('.brand').style.cursor='pointer'; }catch{}
     setTimeout(()=>{ routeByAuth(); }, 500);
-  document.getElementById('homeBtn')?.addEventListener('click', ()=>{ try{ if(window._randori_journey && window._randori_journey.routeByAuth) window._randori_journey.routeByAuth(); else if(typeof routeByAuth==='function') routeByAuth(); }catch{} window.scrollTo({top:0,behavior:'smooth'}); });
+  document.getElementById('homeBtn')?.addEventListener('click', ()=>{ clearRequestedView(); try{ if(window._randori_journey && window._randori_journey.routeByAuth) window._randori_journey.routeByAuth(); else if(typeof routeByAuth==='function') routeByAuth(); }catch{} window.scrollTo({top:0,behavior:'smooth'}); });
   document.addEventListener('DOMContentLoaded', ()=>{ setTimeout(routeByAuth, 300); });
 
   // Dash profile edit button

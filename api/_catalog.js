@@ -47,30 +47,49 @@ function rollUpFocusBlocks(blocks) {
 }
 
 function findSteadyWindows(readings, width, maxSpread) {
+  const minimums = [];
+  const maximums = [];
+  let minimumHead = 0;
+  let maximumHead = 0;
   const result = [];
-  for (let start = 0; start <= readings.length - width; start += 1) {
-    const window = readings.slice(start, start + width);
-    if (Math.max(...window) - Math.min(...window) <= maxSpread) result.push(start);
+  for (let right = 0; right < readings.length; right += 1) {
+    while (minimums.length > minimumHead && readings[minimums.at(-1)] >= readings[right]) minimums.pop();
+    while (maximums.length > maximumHead && readings[maximums.at(-1)] <= readings[right]) maximums.pop();
+    minimums.push(right);
+    maximums.push(right);
+    const left = right - width + 1;
+    if (left < 0) continue;
+    while (minimums[minimumHead] < left) minimumHead += 1;
+    while (maximums[maximumHead] < left) maximumHead += 1;
+    if (readings[maximums[maximumHead]] - readings[minimums[minimumHead]] <= maxSpread) result.push(left);
   }
   return result;
 }
 
 function planReviewWaves(tasks, dependencies) {
-  const remaining = new Set(tasks);
-  const complete = new Set();
-  const waves = [];
-  while (remaining.size > 0) {
-    const wave = [...remaining]
-      .filter(task => dependencies.every(([before, after]) => after !== task || complete.has(before)))
-      .sort();
-    if (wave.length === 0) return [];
-    waves.push(wave);
-    for (const task of wave) {
-      remaining.delete(task);
-      complete.add(task);
-    }
+  const indegree = new Map(tasks.map(task => [task, 0]));
+  const dependents = new Map(tasks.map(task => [task, []]));
+  for (const [before, after] of dependencies) {
+    indegree.set(after, indegree.get(after) + 1);
+    dependents.get(before).push(after);
   }
-  return waves;
+  let ready = tasks.filter(task => indegree.get(task) === 0).sort();
+  const waves = [];
+  let completed = 0;
+  while (ready.length > 0) {
+    waves.push(ready);
+    completed += ready.length;
+    const next = [];
+    for (const task of ready) {
+      for (const dependent of dependents.get(task)) {
+        const remaining = indegree.get(dependent) - 1;
+        indegree.set(dependent, remaining);
+        if (remaining === 0) next.push(dependent);
+      }
+    }
+    ready = next.sort();
+  }
+  return completed === tasks.length ? waves : [];
 }
 
 function allocateWorkshopSeats(capacity, requests) {
@@ -113,6 +132,12 @@ const SERVER_EXERCISE_DEFINITIONS = {
   'focus-block-rollup@1': {
     generateArgs(random, caseIndex) {
       if (caseIndex === 0) return [[]];
+      if (caseIndex === GENERATED_CASE_COUNT - 1) {
+        return [Array.from({ length: 10_000 }, (_, index) => ({
+          label: 'f',
+          minutes: index % 2 === 0 ? 1 : 1440,
+        }))];
+      }
       const labels = ['focus', 'review', 'break', 'pairing'];
       const primary = randomItem(random, labels);
       if (caseIndex === 1) {
@@ -136,6 +161,9 @@ const SERVER_EXERCISE_DEFINITIONS = {
   },
   'steady-sensor-windows@1': {
     generateArgs(random, caseIndex) {
+      if (caseIndex === GENERATED_CASE_COUNT - 1) {
+        return [Array.from({ length: 20_000 }, (_, index) => index % 2 === 0 ? 0 : 1_000_000), 10_000, 999_999];
+      }
       const length = caseIndex === 0 ? 1 : randomInteger(random, 4, 14);
       const width = caseIndex === 0
         ? 1
@@ -154,6 +182,10 @@ const SERVER_EXERCISE_DEFINITIONS = {
   'review-wave-planner@1': {
     generateArgs(random, caseIndex) {
       if (caseIndex === 0) return [[], []];
+      if (caseIndex === GENERATED_CASE_COUNT - 1) {
+        const tasks = Array.from({ length: 5_000 }, (_, index) => `t${index.toString(36)}`);
+        return [[...tasks].reverse(), tasks.slice(1).map(task => [tasks[0], task])];
+      }
       const count = randomInteger(random, 3, 8);
       const offset = randomInteger(random, 10, 999);
       const tasks = Array.from({ length: count }, (_, index) => 'task-' + (offset + index));
@@ -177,6 +209,12 @@ const SERVER_EXERCISE_DEFINITIONS = {
   },
   'workshop-seat-allocation@1': {
     generateArgs(random, caseIndex) {
+      if (caseIndex === GENERATED_CASE_COUNT - 1) {
+        return [1_000_000, Array.from({ length: 10_000 }, (_, index) => ({
+          team: `t${index.toString(36)}`,
+          seats: 1,
+        }))];
+      }
       const capacity = caseIndex === 1 ? 0 : randomInteger(random, 3, 25);
       if (caseIndex === 0) return [capacity, []];
       const count = randomInteger(random, 4, 10);
@@ -191,6 +229,9 @@ const SERVER_EXERCISE_DEFINITIONS = {
   },
   'coverage-gap-finder@1': {
     generateArgs(random, caseIndex) {
+      if (caseIndex === GENERATED_CASE_COUNT - 1) {
+        return [0, 10_000, Array.from({ length: 10_000 }, (_, index) => [9_999 - index, 10_000 - index])];
+      }
       const dayStart = randomInteger(random, -20, 50);
       const dayEnd = dayStart + randomInteger(random, 8, 40);
       if (caseIndex === 0) return [dayStart, dayEnd, []];

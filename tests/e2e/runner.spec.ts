@@ -57,6 +57,33 @@ const signedInUser = {
   is_available: true,
 };
 
+test('authenticated deep links survive delayed auth refreshes and follow later tab navigation', async ({ page }) => {
+  await mockApi(page, {
+    '/api/auth/me': { ok: true, user: signedInUser },
+    '/api/questions': { ok: true, questions: [originalQuestion], count: 1 },
+  });
+  await resetClientState(page, true);
+  await page.goto('/?view=code', { waitUntil: 'domcontentloaded' });
+
+  await expect(page.locator('#view-code')).toBeVisible();
+  await page.waitForTimeout(1_500);
+  await expect(page.locator('#view-code')).toBeVisible();
+
+  await page.locator('[data-tab="pair"]').click();
+  await expect(page).toHaveURL(/(?:\?|&)view=pair(?:&|$)/);
+  await page.evaluate(async () => {
+    const journey = (window as typeof window & {
+      _randori_journey?: { routeByAuth?: () => Promise<void> };
+    })._randori_journey;
+    await journey?.routeByAuth?.();
+  });
+  await expect(page.locator('#view-pair')).toBeVisible();
+
+  await page.locator('#homeBtn').click();
+  await expect(page).not.toHaveURL(/(?:\?|&)(?:view|tab)=/);
+  await expect(page.locator('#view-dashboard')).toBeVisible();
+});
+
 test('selects an original exercise and renders authoritative server results without sending tests', async ({ page }) => {
   let executePayload: Record<string, unknown> | undefined;
   const leetCodeRequests: string[] = [];

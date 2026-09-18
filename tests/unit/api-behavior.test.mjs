@@ -1086,7 +1086,7 @@ test('data validation and access-control branches reject malformed or cross-pair
     [{ method: 'POST', url: '/api/runs', query: { endpoint: 'runs' }, headers, body: {} }, 405],
     [{ method: 'POST', url: '/api/execute', query: { endpoint: 'execute' }, headers, body: {} }, 400],
     [{ method: 'POST', url: '/api/leetcode', query: { endpoint: 'leetcode' }, headers }, 405],
-    [{ url: '/api/leetcode', query: { endpoint: 'leetcode' }, headers }, 400],
+    [{ url: '/api/leetcode', query: { endpoint: 'leetcode' }, headers }, 403],
     [{ method: 'PUT', url: '/api/logs', query: { endpoint: 'logs' }, headers }, 405],
     [{ url: '/api/not-real', query: { endpoint: 'not-real' }, headers }, 404],
   ];
@@ -1094,6 +1094,42 @@ test('data validation and access-control branches reject malformed or cross-pair
     const result = await invoke(dataHandler, request);
     assert.equal(result.status, status, `${request.method || 'GET'} ${request.url}`);
   }
+});
+
+test('LeetCode detail cannot publish cached content while authorization is disabled', async () => {
+  let queriedCache = false;
+  executeHandler = sql => {
+    if (sql.includes('FROM custom_questions WHERE leetcode_slug=')) queriedCache = true;
+    return rows();
+  };
+  const result = await invoke(dataHandler, {
+    method: 'GET', url: '/api/leetcode/two-sum',
+    query: { endpoint: 'leetcode', slug: 'two-sum' },
+    headers: { 'x-test-auth': 'admin' },
+  });
+  assert.equal(result.status, 403);
+  assert.match(result.body.error, /written authorization/i);
+  assert.equal(queriedCache, false);
+});
+
+test('authorized LeetCode detail remains admin-only', async () => {
+  process.env.LEETCODE_INGESTION_AUTHORIZED = 'true';
+  let queriedCache = false;
+  executeHandler = sql => {
+    if (sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')) {
+      return rows([{ id: 2, email: 'user@example.test', is_admin: 0 }]);
+    }
+    if (sql.includes('FROM custom_questions WHERE leetcode_slug=')) queriedCache = true;
+    return rows();
+  };
+  const result = await invoke(dataHandler, {
+    method: 'GET', url: '/api/leetcode/two-sum',
+    query: { endpoint: 'leetcode', slug: 'two-sum' },
+    headers: { 'x-test-auth': 'user' },
+  });
+  assert.equal(result.status, 403);
+  assert.match(result.body.error, /admin only/i);
+  assert.equal(queriedCache, false);
 });
 
 test('authorized LeetCode ingestion parses approved remote metadata through mocked HTTP only', async () => {

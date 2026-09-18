@@ -232,6 +232,8 @@ test('every generator guarantees its required boundary shapes', () => {
   const focusCases = suites['focus-block-rollup'].tests;
   assert.ok(focusCases.some(testCase => testCase.args[0].length === 0), 'focus includes empty blocks');
   assert.ok(focusCases.some(testCase => testCase.args[0].length === 1), 'focus includes one block');
+  assert.equal(focusCases.at(-1).args[0].length, 10_000, 'focus includes its maximum input length');
+  assert.deepEqual(focusCases.at(-1).expected, [{ label: 'f', minutes: 7_205_000 }]);
 
   const sensorCases = suites['steady-sensor-windows'].tests;
   assert.ok(sensorCases.some(testCase => testCase.args[1] === 1), 'sensor includes width one');
@@ -239,6 +241,9 @@ test('every generator guarantees its required boundary shapes', () => {
     sensorCases.some(testCase => testCase.args[0].length > 1 && testCase.args[1] === testCase.args[0].length),
     'sensor includes a full-length window',
   );
+  assert.equal(sensorCases.at(-1).args[0].length, 20_000, 'sensor includes its maximum input length');
+  assert.equal(sensorCases.at(-1).args[1], 10_000);
+  assert.deepEqual(sensorCases.at(-1).expected, []);
 
   const graphCases = suites['review-wave-planner'].tests;
   assert.ok(
@@ -253,6 +258,10 @@ test('every generator guarantees its required boundary shapes', () => {
     graphCases.some(testCase => graphHasCycle(testCase.args[0], testCase.args[1])),
     'graph includes a dependency cycle',
   );
+  assert.equal(graphCases.at(-1).args[0].length, 5_000, 'graph includes its maximum task count');
+  assert.equal(graphCases.at(-1).args[1].length, 4_999);
+  assert.equal(graphCases.at(-1).expected.length, 2);
+  assert.deepEqual(graphCases.at(-1).expected[0], ['t0']);
 
   const seatCases = suites['workshop-seat-allocation'].tests;
   assert.ok(seatCases.some(testCase => testCase.args[1].length === 0), 'seats include no requests');
@@ -260,6 +269,9 @@ test('every generator guarantees its required boundary shapes', () => {
     seatCases.some(testCase => testCase.args[0] === 0 && testCase.args[1].length > 0),
     'seats include zero capacity with requests',
   );
+  assert.equal(seatCases.at(-1).args[1].length, 10_000, 'seats include the maximum request count');
+  assert.equal(seatCases.at(-1).expected.accepted.length, 10_000);
+  assert.equal(seatCases.at(-1).expected.remaining, 990_000);
 
   const coverageCases = suites['coverage-gap-finder'].tests;
   assert.ok(coverageCases.some(testCase => testCase.args[2].length === 0), 'coverage includes no shifts');
@@ -271,6 +283,46 @@ test('every generator guarantees its required boundary shapes', () => {
     }),
     'coverage includes shifts that require clipping',
   );
+  assert.equal(coverageCases.at(-1).args[2].length, 10_000, 'coverage includes the maximum shift count');
+  assert.deepEqual(coverageCases.at(-1).expected, []);
+});
+
+test('scale cases are deterministic and fit conservative runner envelopes', () => {
+  const prefix = '__RANDORI_RESULT_0123456789abcdef0123456789abcdef__:';
+  for (const exercise of listPublicExercises()) {
+    const first = createEvaluationSuite(
+      exercise.slug,
+      exercise.version,
+      'javascript',
+      { random: seededRandom(700) },
+    );
+    const second = createEvaluationSuite(
+      exercise.slug,
+      exercise.version,
+      'javascript',
+      { random: seededRandom(701) },
+    );
+    assert.deepEqual(first.tests.at(-1), second.tests.at(-1), `${exercise.slug} scale case is seed-independent`);
+    const runnerBundle = Buffer.from(JSON.stringify({
+      entrypoint: first.entrypoint,
+      tests: first.tests.map(testCase => ({ args: testCase.args })),
+    }), 'utf8').toString('base64');
+    assert.ok(
+      Buffer.byteLength(runnerBundle, 'utf8') < 512 * 1024,
+      `${exercise.slug} encoded runner bundle remains below the conservative request budget`,
+    );
+    const stdout = first.tests.map((testCase, index) => (
+      prefix + JSON.stringify({ idx: index, ok: true, got: testCase.expected, error: null })
+    )).join('\n') + '\n';
+    assert.ok(
+      Buffer.byteLength(prefix + JSON.stringify({ idx: 7, ok: true, got: first.tests.at(-1).expected, error: null }), 'utf8') < 100_000,
+      `${exercise.slug} scale result remains parseable by the runner`,
+    );
+    assert.ok(
+      Buffer.byteLength(JSON.stringify({ run: { stdout, output: stdout, stderr: '' } }), 'utf8') < 240 * 1024,
+      `${exercise.slug} successful response stays below the provider response cap`,
+    );
+  }
 });
 
 test('every generator retains randomised non-boundary cases', () => {
@@ -296,8 +348,8 @@ test('every generator retains randomised non-boundary cases', () => {
     );
     const start = boundaryCounts[exercise.slug];
     assert.notDeepEqual(
-      first.tests.slice(start).map(testCase => testCase.args),
-      second.tests.slice(start).map(testCase => testCase.args),
+      first.tests.slice(start, -1).map(testCase => testCase.args),
+      second.tests.slice(start, -1).map(testCase => testCase.args),
       `${exercise.slug} keeps randomised cases after its guaranteed boundaries`,
     );
   }

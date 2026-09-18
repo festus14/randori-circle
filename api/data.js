@@ -1402,8 +1402,12 @@ async function handleLeetcode(req,res){
   // GET ?slug=two-sum or /api/leetcode/two-sum
   if (req.method!=='GET') return res.status(405).json({ error:'GET only for leetcode detail' });
   if(!getAuthPayload(req)) return res.status(401).json({error:'authentication required'});
-  const db = getClient();
-  await ensureBaseTables(db); await ensureProfileMigrations(db);
+  if(process.env.LEETCODE_INGESTION_AUTHORIZED!=='true'){
+    return res.status(403).json({error:'LeetCode content access is disabled pending written authorization'});
+  }
+  const adminCtx=await requireAdminDT(req,res);
+  if(!adminCtx) return;
+  const db=adminCtx.db;
   const url = new URL(req.url, 'http://localhost');
   let slug = (req.query?.slug || url.searchParams.get('slug') || '').toString().trim().toLowerCase();
   if (!slug){
