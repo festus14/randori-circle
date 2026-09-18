@@ -85,7 +85,6 @@ test('local capabilities expose an accessible signup flow with validation and on
   await page.locator('#authForm').evaluate(form => {
     form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }));
   });
-  await page.waitForTimeout(50);
   expect(signupCalls).toBe(1);
 
   releaseSignup?.();
@@ -110,6 +109,7 @@ test('a stalled signup can be cancelled without accepting a stale response and t
   const staleUser = { id: 1, email: 'stale@example.test', name: 'Stale User', is_admin: true };
   const retryUser = { id: 2, email: 'retry@example.test', name: 'Retry User', is_admin: true };
   let signupCalls = 0;
+  let firstResponseReady = false;
   let releaseFirst: (() => void) | undefined;
   const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
 
@@ -119,6 +119,7 @@ test('a stalled signup can be cancelled without accepting a stale response and t
       signupCalls += 1;
       if (signupCalls === 1) {
         await firstGate;
+        firstResponseReady = true;
         return { ok: true, user: staleUser };
       }
       return { ok: true, user: retryUser };
@@ -136,12 +137,18 @@ test('a stalled signup can be cancelled without accepting a stale response and t
   await page.locator('#authSignup').click();
   await expect.poll(() => signupCalls).toBe(1);
   await expect(page.locator('#authCancel')).toBeEnabled();
+  await expect(page.locator('#authCancel')).toBeFocused();
+
+  // Chromium may move focus outside a modal after its submit control becomes
+  // disabled. Escape must remain owned by the visible auth modal regardless.
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await expect(page.locator('body')).toBeFocused();
 
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
   await expect(join).toBeFocused();
   releaseFirst?.();
-  await page.waitForTimeout(100);
+  await expect.poll(() => firstResponseReady).toBe(true);
   await expect(page.locator('#meLabel')).toBeHidden();
   await expect(page.locator('#authBtn')).toBeVisible();
 
@@ -235,7 +242,11 @@ test('capability failures fail closed for account creation while preserving exis
   await mockApi(page, {
     '/api/auth/capabilities': { _status: 503, ok: false, error: 'temporarily unavailable' },
   });
-  await resetClientState(page);
+  await resetClientState(page, false, {
+    'randori-onboarded': '0',
+    'randori-banner-dismissed': '0',
+    'randori-onboard-step': '0',
+  });
   await page.goto('/', { waitUntil: 'domcontentloaded' });
 
   await expect(page.locator('#landingSignup')).toBeHidden();
@@ -249,8 +260,45 @@ test('capability failures fail closed for account creation while preserving exis
   await expect(page.locator('#authModeSwitch')).toBeHidden();
 
   await page.keyboard.press('Escape');
-  await page.locator('#welcomeBanner').evaluate(element => { element.style.display = 'flex'; });
+  await expect(page.getByRole('dialog', { name: 'Sign in to Randori' })).toBeHidden();
+  await expect(page.locator('#welcomeBanner')).toBeVisible();
   await page.locator('#welcomeStartBtn').click();
   await expect(page.getByRole('dialog', { name: 'Sign in to Randori' })).toBeVisible();
   await expect(page.getByRole('dialog', { name: 'Join Randori Circle' })).toBeHidden();
+  await expect(page.locator('#onboardOverlay')).not.toHaveClass(/show/);
+});
+
+test('closing auth while capabilities load does not reopen the dialog or steal focus', async ({ page }) => {
+  let capabilityRequestStarted = false;
+  let capabilityResponseReady = false;
+  let releaseCapabilities: (() => void) | undefined;
+  const capabilityGate = new Promise<void>(resolve => { releaseCapabilities = resolve; });
+
+  await mockApi(page, {
+    '/api/auth/capabilities': async () => {
+      capabilityRequestStarted = true;
+      await capabilityGate;
+      capabilityResponseReady = true;
+      return localCapabilities;
+    },
+  });
+  await resetClientState(page);
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await expect.poll(() => capabilityRequestStarted).toBe(true);
+
+  const entry = page.locator('#authBtn');
+  await entry.click();
+  const dialog = page.getByRole('dialog', { name: 'Sign in to Randori' });
+  await expect(dialog).toBeVisible();
+  await expect(page.locator('#authCapabilityStatus')).toHaveText('Checking sign-in options…');
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(entry).toBeFocused();
+
+  releaseCapabilities?.();
+  await expect.poll(() => capabilityResponseReady).toBe(true);
+  await expect(page.locator('#authCapabilityStatus')).toContainText('Sign in with your existing email and password');
+  await expect(dialog).toBeHidden();
+  await expect(entry).toBeFocused();
 });
