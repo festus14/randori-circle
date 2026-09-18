@@ -53,6 +53,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_db.js` | Turso client, durable session issuance/revocation, JWT verification, CSRF helpers |
 | `api/_catalog.js` | original exercise catalogue validation, public projections, server-owned evaluation cases |
 | `api/_pairing.js` | deterministic fairness and canonical room identifiers |
+| `api/_pairing-publication.js` | managed-v3 readiness, transaction-bound owner/cron publication, immutable snapshots, and idempotency |
 | `api/_availability.js` | tenant-scoped weekly cycle identity, strict optimistic availability updates, and publication filtering |
 | `api/_schedule.js` | strict schedule validation, legacy projection, opaque versions, and conflict-safe mutations |
 | `api/_messages.js` | strict chat input, cursor, storage projection, and schema-readiness validation |

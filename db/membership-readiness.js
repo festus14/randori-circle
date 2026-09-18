@@ -178,10 +178,12 @@ export async function inspectCompletedMembershipRollout(db){
     WHERE is_primary=1 AND archived_at IS NULL ORDER BY id LIMIT 2`);
   const primaryRows=primaryResult.rows||[];
   const primaryId=Number(primaryRows[0]?.id);
-  const rolloutActorId=Number(primaryRows[0]?.created_by);
-  if(primaryRows.length!==1||!Number.isSafeInteger(primaryId)||primaryId<1
-    ||!Number.isSafeInteger(rolloutActorId)||rolloutActorId<1){
+  const creatorId=Number(primaryRows[0]?.created_by);
+  if(primaryRows.length!==1||!Number.isSafeInteger(primaryId)||primaryId<1){
     return {ok:false,registrationState:'closed',blockers:['closed_rollout_primary_circle_invalid']};
+  }
+  if(!Number.isSafeInteger(creatorId)||creatorId<1){
+    return {ok:false,registrationState:'closed',blockers:['closed_rollout_backfill_audit_invalid']};
   }
   const stateResult=await db.execute({
     sql:`SELECT
@@ -191,7 +193,7 @@ export async function inspectCompletedMembershipRollout(db){
         WHERE membership.circle_id=?
           AND membership.role='owner' AND membership.status='active') AS activeOwners,
       (SELECT COUNT(*) FROM auth_accounts account
-        WHERE account.id=? AND COALESCE(account.is_demo,0)=0) AS rolloutActors,
+        WHERE account.id=? AND COALESCE(account.is_demo,0)=0) AS canonicalBackfillActors,
       (SELECT COUNT(*) FROM circle_audit_events event
         WHERE event.event_type='membership.backfill.completed') AS completedBackfills,
       (SELECT COUNT(*) FROM circle_audit_events event
@@ -250,18 +252,18 @@ export async function inspectCompletedMembershipRollout(db){
         WHERE membership.status='active' AND account.id IS NULL) AS orphanMemberships`,
     args:[
       primaryId,
-      rolloutActorId,
-      primaryId,rolloutActorId,`primary-membership-backfill:${primaryId}:v1`,
-      primaryId,rolloutActorId,`primary-membership-backfill:${primaryId}:v1`,
-      primaryId,rolloutActorId,primaryId,primaryId,
-      primaryId,rolloutActorId,primaryId,
+      creatorId,
+      primaryId,creatorId,`primary-membership-backfill:${primaryId}:v1`,
+      primaryId,creatorId,`primary-membership-backfill:${primaryId}:v1`,
+      primaryId,creatorId,primaryId,primaryId,
+      primaryId,creatorId,primaryId,
       primaryId,primaryId,
     ],
   });
   const row=stateResult.rows?.[0];
   const counts={
     activeOwners:numericValue(row,'activeOwners'),
-    rolloutActors:numericValue(row,'rolloutActors'),
+    canonicalBackfillActors:numericValue(row,'canonicalBackfillActors'),
     completedBackfills:numericValue(row,'completedBackfills'),
     matchingBackfills:numericValue(row,'matchingBackfills'),
     malformedCompletionAudits:numericValue(row,'malformedCompletionAudits'),
@@ -271,7 +273,7 @@ export async function inspectCompletedMembershipRollout(db){
     orphanMemberships:numericValue(row,'orphanMemberships'),
   };
   if(counts.activeOwners<1) blockers.push('closed_rollout_has_no_owner');
-  if(counts.rolloutActors!==1||counts.completedBackfills!==1||counts.matchingBackfills!==1
+  if(counts.canonicalBackfillActors!==1||counts.completedBackfills!==1||counts.matchingBackfills!==1
     ||counts.malformedCompletionAudits){
     blockers.push('closed_rollout_backfill_audit_invalid');
   }

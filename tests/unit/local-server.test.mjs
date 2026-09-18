@@ -632,18 +632,20 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
     assert.equal(pairingResponses[index].status,200,pairingPayloads[index].text);
     assert.equal(pairingPayloads[index].body.ok,true);
     assert.equal(pairingPayloads[index].body.count,2);
-    assert.equal(pairingPayloads[index].body.pairs.length,1);
+    assert.equal(pairingPayloads[index].body.pair_count,1);
+    assert.equal(pairingPayloads[index].body.solo_count,0);
+    assert.equal('pairs' in pairingPayloads[index].body,false);
   }
   assert.equal(pairingPayloads.filter(item=>item.body.created===true).length,1);
   assert.equal(pairingPayloads.filter(item=>item.body.created===false).length,1);
   assert.equal(pairingPayloads[0].body.week_id,pairingPayloads[1].body.week_id);
-  assert.deepEqual(pairingPayloads[0].body.pairs,pairingPayloads[1].body.pairs);
+  assert.equal(pairingPayloads[0].body.pair_count,pairingPayloads[1].body.pair_count);
   const capture=pairingPayloads.find(item=>item.body.email_delivery?.captured?.length)?.body.email_delivery;
   assert.equal(capture.captured.length,2);
   assert.match(capture.summary,/no external delivery/);
   assert.equal(capture.captured.some(item=>item.recipient_email==='member@example.test'),true);
   assert.equal(capture.captured.flatMap(item=>item.links).some(link=>
-    link===`${first.url}/join/${pairingPayloads[0].body.pairs[0].room}`),true);
+    new RegExp(`^${first.url}/join/week_${pairingPayloads[0].body.week_id}_pair_[1-9]\\d*$`).test(link)),true);
   await firstSharedClient.execute({
     sql:`INSERT INTO pairing_email_outbox
       (week_id,user_id,kind,recipient_email,status,attempt_count,created_at,updated_at)
@@ -656,7 +658,7 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
   assert.equal(degradedCapturePayload.body.email_delivery.failed,1);
   assert.equal(degradedCapturePayload.body.email_delivery.captured.length,2);
   assert.equal(degradedCapturePayload.body.email_delivery.captured.flatMap(item=>item.links).some(link=>
-    link===`${first.url}/join/${pairingPayloads[0].body.pairs[0].room}`),true);
+    new RegExp(`^${first.url}/join/week_${pairingPayloads[0].body.week_id}_pair_[1-9]\\d*$`).test(link)),true);
   const reshufflePayload=pairingPayloads[0];
 
   const weeks=await fetch(new URL('/api/weeks',first.url),{headers:{cookie:memberCookie}});
@@ -670,7 +672,7 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
   const myPairPayload=await jsonResponse(myPair);
   assert.equal(myPair.status,200,myPairPayload.text);
   assert.equal(myPairPayload.body.paired,true);
-  assert.equal(myPairPayload.body.room_id,reshufflePayload.body.pairs[0].room);
+  assert.match(myPairPayload.body.room_id,new RegExp(`^week_${reshufflePayload.body.week_id}_pair_[1-9]\\d*$`));
 
   const me=await fetch(new URL('/api/auth/me',first.url),{
     headers:{cookie:memberCookie},

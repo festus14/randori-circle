@@ -141,6 +141,12 @@ mock.module('../../api/_circle-membership.js',{
   },
 });
 
+mock.module('../../api/_pairing-readiness.js',{
+  exports:{
+    pairingSchemaV3Ready:async()=>true,
+  },
+});
+
 mock.module('../../api/_availability.js',{
   exports:{
     AVAILABILITY_CACHE_CONTROL:'private, no-store',
@@ -792,11 +798,13 @@ test('transient OAuth database failure retains the prepared invite claim for a s
 });
 
 test('manual and weekly production pairing queries are primary-circle scoped when enabled',async()=>{
+  process.env.APP_URL='https://randori.example.test';
   process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
   process.env.CRON_SECRET='cron-secret';
   executeHandler=sql=>{
-    if(sql.includes("cm.role='owner'")) return rows([{id:1,role:'owner',circle_id:1}]);
+    if(sql.includes("cm.role='owner'")||sql.includes("membership.role='owner'")) return rows([{id:1,role:'owner',circle_id:1}]);
     if(sql.includes('FROM auth_accounts')&&sql.includes("cm.status='active'")) return rows([]);
+    if(sql.includes('FROM auth_accounts account')&&sql.includes("membership.status='active'")) return rows([]);
     return rows();
   };
 
@@ -804,13 +812,13 @@ test('manual and weekly production pairing queries are primary-circle scoped whe
     method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers:{'x-test-auth':'admin'},
   });
   assert.equal(manual.status,400);
-  let candidateQueries=executed.filter(call=>call.sql.includes('display_name AS name')&&call.sql.includes('circle_memberships'));
+  let candidateQueries=executed.filter(call=>call.sql.includes('account.email')&&call.sql.includes('circle_memberships'));
   assert.equal(candidateQueries.length,1);
   for(const call of candidateQueries){
-    assert.match(call.sql,/cm\.status='active'/);
-    assert.match(call.sql,/c\.is_primary=1/);
-    assert.match(call.sql,/c\.archived_at IS NULL/);
-    assert.match(call.sql,/COALESCE\(aa\.is_demo,0\)=0/);
+    assert.match(call.sql,/membership\.status='active'/);
+    assert.match(call.sql,/circle\.is_primary=1/);
+    assert.match(call.sql,/circle\.archived_at IS NULL/);
+    assert.match(call.sql,/COALESCE\(account\.is_demo,0\)=0/);
     assert.deepEqual(call.args,[1]);
   }
   assert.equal(availabilityApplications.length,1);
@@ -822,14 +830,15 @@ test('manual and weekly production pairing queries are primary-circle scoped whe
     method:'POST',url:'/api/cron/weekly',query:{endpoint:'weekly'},headers:{'x-cron-secret':'cron-secret'},
   }));
   assert.equal(weekly.status,400);
-  candidateQueries=executed.filter(call=>call.sql.includes('display_name AS name')&&call.sql.includes('circle_memberships'));
+  candidateQueries=executed.filter(call=>call.sql.includes('account.email')&&call.sql.includes('circle_memberships'));
   assert.equal(candidateQueries.length,1);
   assert.equal(executed.some(call=>call.sql.includes('FROM users ORDER BY id')),false);
 });
 
 test('pairing publication requires a primary-circle owner in production and only a database admin in the isolated local runtime',async()=>{
+  process.env.APP_URL='https://randori.example.test';
   executeHandler=sql=>{
-    if(sql.includes("cm.role='owner'")) return rows([]);
+    if(sql.includes("cm.role='owner'")||sql.includes("membership.role='owner'")) return rows([]);
     return rows();
   };
   const production=await invoke(opsHandler,{
@@ -904,9 +913,10 @@ test('availability local scope requires every loopback and provider-isolation gu
 });
 
 test('production pairing stays primary-circle scoped when the rollout flag is disabled',async()=>{
+  process.env.APP_URL='https://randori.example.test';
   process.env.CRON_SECRET='cron-secret';
   executeHandler=sql=>{
-    if(sql.includes("cm.role='owner'")) return rows([{id:1,role:'owner',circle_id:1}]);
+    if(sql.includes("cm.role='owner'")||sql.includes("membership.role='owner'")) return rows([{id:1,role:'owner',circle_id:1}]);
     return rows();
   };
 
@@ -926,6 +936,7 @@ test('production pairing stays primary-circle scoped when the rollout flag is di
 });
 
 test('membership-scoped pairing database failures fail closed with a generic response',async()=>{
+  process.env.APP_URL='https://randori.example.test';
   process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
   process.env.CRON_SECRET='cron-secret';
   executeHandler=sql=>{
