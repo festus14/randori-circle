@@ -79,7 +79,7 @@ test('authenticated deep links survive delayed auth refreshes and follow later t
   });
   await expect(page.locator('#view-pair')).toBeVisible();
 
-  await page.locator('#homeBtn').click();
+  await page.locator('.brand').click();
   await expect(page).not.toHaveURL(/(?:\?|&)(?:view|tab)=/);
   await expect(page.locator('#view-dashboard')).toBeVisible();
 });
