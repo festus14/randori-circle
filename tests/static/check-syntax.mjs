@@ -8,7 +8,15 @@ const sourceFiles = [
     .filter(file => file.endsWith('.js'))
     .sort()
     .map(file => `api/${file}`),
+  ...readdirSync('db')
+    .filter(file => file.endsWith('.js'))
+    .sort()
+    .map(file => `db/${file}`),
   'playwright.config.js',
+  ...readdirSync('scripts')
+    .filter(file => file.endsWith('.mjs'))
+    .sort()
+    .map(file => `scripts/${file}`),
   ...readdirSync('tests/support')
     .filter(file => file.endsWith('.mjs'))
     .sort()
