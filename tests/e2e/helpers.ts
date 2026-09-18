@@ -104,6 +104,23 @@ export async function mockApi(
     const body = typeof configured === 'function' ? await configured(request) : configured;
     const status = Number(body?._status || (body ? 200 : 404));
     const responseBody = body ? { ...body } : { ok: false, error: `Unmocked API route: ${pathname}` };
+    // Most feature fixtures predate the explicit cycle envelope now guaranteed
+    // by /api/my-pair. Keep them representative without hiding tests that
+    // deliberately supply a null or malformed cycle.
+    if(routeKey==='/api/my-pair'&&responseBody.ok===true
+      &&!Object.prototype.hasOwnProperty.call(responseBody,'current_cycle')
+      &&!Object.prototype.hasOwnProperty.call(responseBody,'cycle')){
+      const startsAt=Date.now()-86_400_000;
+      const endsAt=startsAt+7*86_400_000;
+      responseBody.current_cycle={
+        cycleId:'2026-W38',startsAt:new Date(startsAt).toISOString(),endsAt:new Date(endsAt).toISOString(),
+        cutoffAt:new Date(startsAt).toISOString(),timeZone:'Europe/London',state:'current',
+      };
+      responseBody.upcoming_cycle={
+        cycleId:'2026-W39',startsAt:new Date(endsAt).toISOString(),endsAt:new Date(endsAt+7*86_400_000).toISOString(),
+        cutoffAt:new Date(endsAt).toISOString(),timeZone:'Europe/London',state:'upcoming',
+      };
+    }
     delete responseBody._status;
     await route.fulfill({
       status,

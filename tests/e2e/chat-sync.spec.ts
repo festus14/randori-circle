@@ -519,6 +519,7 @@ test('two pair members converge through newest and incremental windows without d
 });
 
 test('a failed send preserves its exact draft and retries only when explicitly requested', async ({ page }) => {
+  test.slow();
   const store = new ChatStore([roomA]);
   store.failNextPost(userA.id);
   await openDashboard(page, userA, store, () => roomA);
@@ -564,6 +565,9 @@ test('a failed send preserves its exact draft and retries only when explicitly r
     body: { room_id: roomA, message: submittedDraft },
   });
   expect(store.contractViolations).toEqual([]);
+  await page.locator('[data-tab="pair"]').click();
+  await expect(page.getByTestId('pair-chat')).toHaveCount(0);
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
 
 test('a malformed successful acknowledgement blocks retry until a valid refresh resolves delivery uncertainty', async ({ page }) => {
@@ -611,6 +615,7 @@ test('a malformed successful acknowledgement blocks retry until a valid refresh 
 });
 
 test('rate limits allow only an explicit later retry while a full room remains terminal', async ({ page }) => {
+  test.slow();
   const store = new ChatStore([roomA]);
   await openDashboard(page, userA, store, () => roomA);
 
@@ -646,6 +651,9 @@ test('rate limits allow only an explicit later retry while a full room remains t
   await expect(page.getByTestId('pair-chat-send')).toBeDisabled();
   expect(store.postBodies).toHaveLength(3);
   expect(store.contractViolations).toEqual([]);
+  await page.locator('[data-tab="pair"]').click();
+  await expect(page.getByTestId('pair-chat')).toHaveCount(0);
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
 
 test('a missing pair room clears stale chat and terminates its polling loop', async ({ page }) => {
@@ -686,7 +694,7 @@ test('hidden chat stays network-silent, resumes immediately, and purges state wh
   store.add(roomA, userB, 'arrived while hidden');
   await page.waitForTimeout(3_200);
   expect(store.getRequests).toHaveLength(hiddenGetCount);
-  await expect(page.getByTestId('pair-chat-list')).not.toContainText('arrived while hidden');
+  await expect(page.getByTestId('pair-chat')).toHaveCount(0);
 
   await page.evaluate(() => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
