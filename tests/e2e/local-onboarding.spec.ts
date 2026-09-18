@@ -20,6 +20,7 @@ test.describe('unmocked local onboarding',()=>{
   let directory='';
   let config:ReturnType<typeof resolveLocalServerConfig>;
   let runtime:Awaited<ReturnType<typeof startLocalDevelopmentServer>>|null=null;
+  const requestSql:string[]=[];
 
   test.beforeAll(async()=>{
     directory=realpathSync(mkdtempSync(join(tmpdir(),'randori-local-onboarding-e2e-')));
@@ -36,7 +37,11 @@ test.describe('unmocked local onboarding',()=>{
         RANDORI_LOCAL_DATABASE_URL:databaseUrl,
       },
     });
-    runtime=await startLocalDevelopmentServer({config,logger:{log(){},error(){}}});
+    runtime=await startLocalDevelopmentServer({
+      config,
+      logger:{log(){},error(){}},
+      sqlObserver:(sql:string)=>requestSql.push(sql),
+    });
   });
 
   test.afterAll(async()=>{
@@ -138,6 +143,22 @@ test.describe('unmocked local onboarding',()=>{
       expect(memberCookies.some(cookie=>cookie.name==='randori_session'&&cookie.httpOnly)).toBe(true);
       expect(memberCookies.some(cookie=>cookie.name==='randori_invite_claim')).toBe(false);
 
+      const meResponse=await memberContext.request.get(new URL('/api/auth/me',runtime.url).href);
+      expect(meResponse.status()).toBe(200);
+      expect((await meResponse.json()).user.email).toBe('invited.member@example.test');
+      const preferencesResponse=await memberContext.request.get(new URL('/api/notifications/prefs',runtime.url).href);
+      expect(preferencesResponse.status()).toBe(200);
+      const savePreferencesResponse=await memberContext.request.post(new URL('/api/notifications/prefs',runtime.url).href,{
+        headers:{origin:runtime.url},data:{email_enabled:true,sms_enabled:false},
+      });
+      expect(savePreferencesResponse.status()).toBe(200);
+      const clientLogResponse=await memberContext.request.post(new URL('/api/logs',runtime.url).href,{
+        headers:{origin:runtime.url},
+        data:{level:'info',source:'client',event:'local_sql_trace',message:'authenticated local log'},
+      });
+      expect(clientLogResponse.status()).toBe(200);
+      expect((await clientLogResponse.json()).inserted).toBe(1);
+
       await reusedInvite.goto(inviteUrl.href,{waitUntil:'domcontentloaded'});
       await expect(reusedInvite.getByTestId('invite-status')).toContainText('unavailable');
       expect((await reusedInviteContext.cookies(runtime.url)).some(cookie=>cookie.name==='randori_invite_claim')).toBe(false);
@@ -208,10 +229,15 @@ test.describe('unmocked local onboarding',()=>{
       await expect(member.locator('#editor')).toBeVisible();
 
       await runtime.close();
-      runtime=await startLocalDevelopmentServer({config,logger:{log(){},error(){}}});
+      runtime=await startLocalDevelopmentServer({
+        config,
+        logger:{log(){},error(){}},
+        sqlObserver:(sql:string)=>requestSql.push(sql),
+      });
       await member.goto(runtime.url,{waitUntil:'domcontentloaded'});
       await expect(member.locator('#view-dashboard')).toBeVisible();
       await expect(member.locator('#dashPairArea')).toContainText('Local Circle Owner');
+      expect(requestSql.filter(sql=>/^\s*(?:CREATE|ALTER|DROP)\b/iu.test(sql))).toEqual([]);
       expect(externalRequests).toEqual([]);
     }finally{
       await Promise.all([ownerContext.close(),memberContext.close(),noInviteContext.close(),reusedInviteContext.close()]);

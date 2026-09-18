@@ -709,6 +709,7 @@ async function loadDefaultRuntime(){
       ops:ops.default,ai:ai.default,video:video.default,
     }),
     closeDatabase:database.closeLocalDevelopmentClient,
+    installSqlObserver:database.installLocalDevelopmentSqlObserver,
   });
 }
 
@@ -954,6 +955,7 @@ function installRuntimeEnvironment(config,url,secret,envTarget=process.env){
 export async function createLocalDevelopmentServer({
   config,
   handlers,
+  sqlObserver,
   logger=console,
   envTarget=process.env,
 }={}){
@@ -972,6 +974,7 @@ export async function createLocalDevelopmentServer({
   }
   let runtimeHandlers=null;
   let closeRequestDatabase=async()=>{};
+  let restoreSqlObserver=()=>{};
   let restoreEnvironment=()=>{};
   let started=false;
   let closed=false;
@@ -1060,6 +1063,7 @@ export async function createLocalDevelopmentServer({
       onboarding=await seedLocalOnboarding(config);
       const defaultRuntime=await loadDefaultRuntime();
       closeRequestDatabase=defaultRuntime.closeDatabase;
+      restoreSqlObserver=defaultRuntime.installSqlObserver(sqlObserver);
       runtimeHandlers={...defaultRuntime.handlers,...(handlers||{})};
       for(const name of ['auth','data','invitations','ops','ai','video']){
         if(typeof runtimeHandlers[name]!=='function'){
@@ -1075,6 +1079,8 @@ export async function createLocalDevelopmentServer({
       catch(closeError){
         failure=new LocalServerError('LOCAL_INTERNAL_ERROR','The local API database did not close safely.',{cause:closeError});
       }finally{
+        restoreSqlObserver();
+        restoreSqlObserver=()=>{};
         restoreEnvironment();
         restoreEnvironment=()=>{};
         runtimeLock.release();
@@ -1114,6 +1120,7 @@ export async function createLocalDevelopmentServer({
     }finally{
       try{ await closeRequestDatabase(); }
       finally{
+        restoreSqlObserver();
         restoreEnvironment();
         runtimeLock.release();
       }
@@ -1131,10 +1138,11 @@ export async function startLocalDevelopmentServer({
   argv=process.argv.slice(2),
   logger=console,
   handlers,
+  sqlObserver,
   envTarget=process.env,
 }={}){
   const resolvedConfig=config||resolveLocalServerConfig({env,rootDir,argv});
-  const lifecycle=await createLocalDevelopmentServer({config:resolvedConfig,logger,handlers,envTarget});
+  const lifecycle=await createLocalDevelopmentServer({config:resolvedConfig,logger,handlers,sqlObserver,envTarget});
   await lifecycle.start();
   return lifecycle;
 }

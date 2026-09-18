@@ -363,11 +363,18 @@ async function handleMe(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
   const payload=verifyRequestAuth(req);
   if (!payload) return res.status(401).json({ error:'authentication required' });
+  const localIdentity=localIdentityAdapterEnabled(req);
   try{
     const db = getClient();
-    try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`);}catch{}
-    try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`);}catch{}
-    try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`);}catch{}
+    if(localIdentity){
+      try{ await ensureCircleMembershipReadiness(db); }
+      catch{ return res.status(503).json({error:'session validation temporarily unavailable'}); }
+    }
+    else{
+      try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`);}catch{}
+      try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`);}catch{}
+      try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`);}catch{}
+    }
     const id = payload.id || payload.uid;
     if (!id) return res.status(401).json({ error:'invalid token payload' });
     const rs = await db.execute({ sql:`SELECT id,email,display_name,color,created_at,last_login,is_available,availability_updated_at,is_admin FROM auth_accounts WHERE id=?`, args:[id] });

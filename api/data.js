@@ -668,7 +668,11 @@ async function ensureSessionRuns(db){
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_user_q ON session_runs(user_id, question_slug)`);}catch{}
 }
 
-async function ensureAppLogs(db){
+async function ensureAppLogs(db,req){
+  if(localRuntimeRequest(req)){
+    await db.execute(`SELECT id,level,source,event,message,meta_json,user_id,route,ua,ip,created_at FROM app_logs LIMIT 0`);
+    return;
+  }
   try{
     await db.execute(`CREATE TABLE IF NOT EXISTS app_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -738,7 +742,7 @@ async function handleHealth(req,res){
 async function logServer(level, event, message, meta, reqCtx){
   try{
     const db=getClient();
-    if(!reqCtx?.skipEnsure) await ensureAppLogs(db);
+    if(!reqCtx?.skipEnsure) await ensureAppLogs(db,reqCtx?.req||reqCtx);
     const allowed=['info','warn','error','success','debug'];
     let lvl=String(level||'info').toLowerCase();
     if(!allowed.includes(lvl)) lvl='info';
@@ -931,7 +935,10 @@ async function handleLogs(req,res){
     const payload = getAuthPayload(req);
     if(!payload) return res.status(401).json({error:'authentication required'});
     const db = getClient();
-    try{ await ensureAppLogs(db); }catch{}
+    try{ await ensureAppLogs(db,req); }
+    catch{
+      if(localRuntimeRequest(req)) return res.status(503).json({error:'logging unavailable'});
+    }
     // rate limit by IP
     let ip='';
     try{ ip=(req.headers['x-forwarded-for']||req.headers['x-real-ip']||'').toString().split(',')[0].trim(); if(!ip && req.headers['x-forwarded-for']){ ip=req.headers['x-forwarded-for']; } }catch{}
@@ -986,7 +993,10 @@ async function handleLogs(req,res){
     const adminCtx = await requireAdminDT(req,res);
     if(!adminCtx) return;
     const db=adminCtx.db;
-    try{ await ensureAppLogs(db); }catch{}
+    try{ await ensureAppLogs(db,req); }
+    catch{
+      if(localRuntimeRequest(req)) return res.status(503).json({error:'logging unavailable'});
+    }
     const url = new URL(req.url,'http://localhost');
     const level = (req.query?.level || url.searchParams.get('level') || '').toString().toLowerCase().trim();
     const event = (req.query?.event || url.searchParams.get('event') || '').toString().trim().slice(0,80);

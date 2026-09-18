@@ -469,7 +469,9 @@ test('reset preflights every sidecar and secret before deleting any local state'
 test('the real local runtime persists owner, invite-bound signup, membership, session, and pairing across restart',async()=>{
   const directory=temporaryDirectory();
   const {config,databaseUrl}=localConfig(directory);
-  const first=registerRuntime(await startLocalDevelopmentServer({config,logger:SILENT_LOGGER}));
+  const requestSql=[];
+  const observeSql=sql=>requestSql.push(sql);
+  const first=registerRuntime(await startLocalDevelopmentServer({config,logger:SILENT_LOGGER,sqlObserver:observeSql}));
 
   const index=await fetch(first.url);
   assert.equal(index.status,200);
@@ -499,6 +501,10 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
   const liveness=await fetch(new URL('/api/health/live',first.url));
   assert.equal(liveness.status,200);
   assert.deepEqual(await liveness.json(),{ok:true,status:'live'});
+  const sqlBeforeUnauthorizedPreferences=requestSql.length;
+  const unauthorizedPreferences=await fetch(new URL('/api/notifications/prefs',first.url));
+  assert.equal(unauthorizedPreferences.status,401);
+  assert.equal(requestSql.length,sqlBeforeUnauthorizedPreferences,'preferences must authenticate before storage access');
   const {getClient}=await import('../../api/_db.js');
   const firstSharedClient=getClient();
   assert.equal(getClient(),firstSharedClient,'local requests must reuse one database client');
@@ -565,6 +571,15 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
   assert.equal('token' in signupPayload.body,false);
   const memberCookie=namedCookie(signup,'randori_session');
 
+  const profile=await fetch(new URL('/api/profile',first.url),{
+    method:'POST',
+    headers:{'content-type':'application/json',origin:first.url,cookie:memberCookie},
+    body:JSON.stringify({name:'Invited Member',bio:'Local onboarding',tz:'Europe/London',interview_focus:'both'}),
+  });
+  const profilePayload=await jsonResponse(profile);
+  assert.equal(profile.status,200,profilePayload.text);
+  assert.equal(profilePayload.body.user.name,'Invited Member');
+
   const memberCircle=await fetch(new URL('/api/circle',first.url),{headers:{cookie:memberCookie}});
   const memberCirclePayload=await jsonResponse(memberCircle);
   assert.equal(memberCircle.status,200,memberCirclePayload.text);
@@ -572,6 +587,26 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
   assert.deepEqual(memberCirclePayload.body.circle.map(person=>person.name).sort(),[
     'Invited Member','Local Circle Owner',
   ]);
+
+  const preferences=await fetch(new URL('/api/notifications/prefs',first.url),{
+    headers:{cookie:memberCookie},
+  });
+  assert.equal(preferences.status,200,await preferences.clone().text());
+  const savedPreferences=await fetch(new URL('/api/notifications/prefs',first.url),{
+    method:'POST',
+    headers:{'content-type':'application/json',origin:first.url,cookie:memberCookie},
+    body:JSON.stringify({email_enabled:true,sms_enabled:false}),
+  });
+  assert.equal(savedPreferences.status,200,await savedPreferences.clone().text());
+
+  const clientLog=await fetch(new URL('/api/logs',first.url),{
+    method:'POST',
+    headers:{'content-type':'application/json',origin:first.url,cookie:memberCookie},
+    body:JSON.stringify({level:'info',source:'client',event:'local_sql_trace',message:'authenticated local log'}),
+  });
+  const clientLogPayload=await jsonResponse(clientLog);
+  assert.equal(clientLog.status,200,clientLogPayload.text);
+  assert.equal(clientLogPayload.body.inserted,1);
 
   const pairingRequest=()=>fetch(new URL('/api/pairing/run',first.url),{
     method:'POST',headers:{'content-type':'application/json',origin:first.url,cookie:ownerCookie},body:'{}',
@@ -593,6 +628,19 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
   assert.match(capture.summary,/no external delivery/);
   assert.equal(capture.captured.some(item=>item.recipient_email==='member@example.test'),true);
   assert.equal(capture.captured.flatMap(item=>item.links).some(link=>
+    link===`${first.url}/join/${pairingPayloads[0].body.pairs[0].room}`),true);
+  await firstSharedClient.execute({
+    sql:`INSERT INTO pairing_email_outbox
+      (week_id,user_id,kind,recipient_email,status,attempt_count,created_at,updated_at)
+      VALUES (?,999999,'paired','broken@example.test','pending',0,datetime('now'),datetime('now'))`,
+    args:[pairingPayloads[0].body.week_id],
+  });
+  const degradedCaptureResponse=await pairingRequest();
+  const degradedCapturePayload=await jsonResponse(degradedCaptureResponse);
+  assert.equal(degradedCaptureResponse.status,200,degradedCapturePayload.text);
+  assert.equal(degradedCapturePayload.body.email_delivery.failed,1);
+  assert.equal(degradedCapturePayload.body.email_delivery.captured.length,2);
+  assert.equal(degradedCapturePayload.body.email_delivery.captured.flatMap(item=>item.links).some(link=>
     link===`${first.url}/join/${pairingPayloads[0].body.pairs[0].room}`),true);
   const reshufflePayload=pairingPayloads[0];
 
@@ -644,7 +692,7 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
   assert.equal(Number(pairingRows.rows[0]?.count),1);
   await persisted.close();
 
-  const second=registerRuntime(await startLocalDevelopmentServer({config,logger:SILENT_LOGGER}));
+  const second=registerRuntime(await startLocalDevelopmentServer({config,logger:SILENT_LOGGER,sqlObserver:observeSql}));
   assert.notEqual(getClient(),firstSharedClient,'shutdown must close and release the shared database client');
   const existingSession=await fetch(new URL('/api/auth/me',second.url),{
     headers:{cookie:memberCookie},
@@ -660,6 +708,11 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
   assert.equal(login.status,200);
   assert.equal((await login.json()).user.name,'Invited Member');
   assert.match(cookiePair(login),/^randori_session=/);
+  assert.deepEqual(
+    requestSql.filter(sql=>/^\s*(?:CREATE|ALTER|DROP)\b/iu.test(sql)),
+    [],
+    'the migrated onboarding, auth/me, preferences, logging, pairing, and restart journey must execute no DDL',
+  );
 });
 
 test('different local databases use different session keys',async()=>{
