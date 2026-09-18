@@ -1,8 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {spawnSync} from 'node:child_process';
 import { createClient } from '@libsql/client';
+import {fileURLToPath} from 'node:url';
 import { INDEXES, TABLES } from '../../db/schema-manifest.js';
 import { databaseConfig, main, parseMode, publicCliError } from '../../scripts/db-inspect.mjs';
+
+const REPOSITORY_ROOT=fileURLToPath(new URL('../..',import.meta.url));
 
 function outputBuffer(){
   let value='';
@@ -57,5 +61,21 @@ test('db:status fails closed on drift while db:plan remains inspectable',async()
       assert.equal(payload.executable,false);
       assert.equal(payload.summary.actions,54);
     }
+  }
+});
+
+test('documented silent npm commands emit exactly one JSON document',()=>{
+  const npmCommand=process.platform==='win32'?'npm.cmd':'npm';
+  for(const mode of ['status','plan']){
+    const execution=spawnSync(npmCommand,['run','--silent',`db:${mode}`],{
+      cwd:REPOSITORY_ROOT,
+      encoding:'utf8',
+      env:{...process.env,TURSO_DATABASE_URL:'file::memory:',TURSO_AUTH_TOKEN:''},
+    });
+    assert.equal(execution.status,mode==='status'?2:0,execution.stderr);
+    assert.equal(execution.stderr,'');
+    const payload=JSON.parse(execution.stdout);
+    assert.equal(payload.command,`db:${mode}`);
+    assert.equal(execution.stdout.trim(),JSON.stringify(payload));
   }
 });

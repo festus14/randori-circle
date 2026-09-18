@@ -17,11 +17,11 @@ Use database credentials only in an operator environment, never in browser code 
 ```bash
 TURSO_DATABASE_URL=libsql://... \
 TURSO_AUTH_TOKEN=... \
-npm run db:status
+npm run --silent db:status
 
 TURSO_DATABASE_URL=libsql://... \
 TURSO_AUTH_TOKEN=... \
-npm run db:plan
+npm run --silent db:plan
 ```
 
 Both commands execute only `SELECT` and `PRAGMA` statements. A guard rejects a non-read-only statement before it reaches the client.
@@ -63,8 +63,8 @@ This is a freeze, not an endorsement. Existing statements remain temporarily for
 ## Operator sequence
 
 1. Complete a backup and restore rehearsal.
-2. Run `npm run db:status` against the restored copy and retain its JSON output.
-3. Run `npm run db:plan` and review every blocker and proposed artifact.
+2. Run `npm run --silent db:status` against the restored copy and retain its JSON output.
+3. Run `npm run --silent db:plan` and review every blocker and proposed artifact.
 4. Do not make production changes from this plan. The current slice has no apply command.
 5. Continue using the authenticated `/api/init` membership rollout documented in `TURSO.md` until an explicit migration runner supersedes it.
 

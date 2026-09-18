@@ -45,8 +45,46 @@ function definePlan(operationSet,metadata){
 export const MIGRATION_PLANS=Object.freeze(SCHEMA_OPERATION_SETS.map((operationSet,index)=>definePlan(operationSet,PLAN_METADATA[index])));
 export const LATEST_PLAN_VERSION=MIGRATION_PLANS.at(-1)?.version||0;
 
+const SQLITE_IDENTIFIER=/^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function validateCanonicalOperation(operation,planVersion,availableTables){
+  if(!operation||typeof operation!=='object'||Array.isArray(operation)){
+    throw new Error(`migration plan ${planVersion} contains an invalid canonical operation`);
+  }
+  if(!['ensure-table','ensure-index'].includes(operation.operation)){
+    throw new Error(`migration plan ${planVersion} contains unsupported operation ${JSON.stringify(operation.operation)}`);
+  }
+  if(typeof operation.name!=='string'||!SQLITE_IDENTIFIER.test(operation.name)
+    ||typeof operation.sql!=='string'||operation.sql.includes(';')){
+    throw new Error(`migration plan ${planVersion} contains an invalid ${operation.operation} definition`);
+  }
+  if(operation.operation==='ensure-table'){
+    const match=/^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\([\s\S]*\)\s*$/i.exec(operation.sql);
+    if(!match||match[1]!==operation.name){
+      throw new Error(`migration plan ${planVersion} table ${operation.name} has a non-canonical CREATE TABLE definition`);
+    }
+    availableTables.add(operation.name);
+    return;
+  }
+  if(typeof operation.table!=='string'||!SQLITE_IDENTIFIER.test(operation.table)
+    ||!Array.isArray(operation.keyParts)||operation.keyParts.length===0
+    ||operation.keyParts.some(part=>typeof part!=='string'||!part.trim())
+    ||typeof operation.unique!=='boolean'
+    ||!(operation.where===null||(typeof operation.where==='string'&&operation.where.trim()))){
+    throw new Error(`migration plan ${planVersion} index ${operation.name} has an invalid canonical definition`);
+  }
+  if(!availableTables.has(operation.table)){
+    throw new Error(`migration plan ${planVersion} index ${operation.name} references unknown table ${operation.table}`);
+  }
+  const expectedSql=`CREATE ${operation.unique?'UNIQUE ':''}INDEX IF NOT EXISTS ${operation.name} ON ${operation.table}(${operation.keyParts.join(',')})${operation.where?` WHERE ${operation.where}`:''}`;
+  if(operation.sql!==expectedSql){
+    throw new Error(`migration plan ${planVersion} index ${operation.name} has a non-canonical CREATE INDEX definition`);
+  }
+}
+
 export function validateMigrationPlans(plans=MIGRATION_PLANS){
   if(!Array.isArray(plans)||plans.length===0) throw new TypeError('migration plans must not be empty');
+  const availableTables=new Set();
   plans.forEach((plan,index)=>{
     const expectedVersion=index+1;
     if(plan.version!==expectedVersion) throw new Error(`migration plan gap at version ${expectedVersion}`);
@@ -60,6 +98,7 @@ export function validateMigrationPlans(plans=MIGRATION_PLANS){
     if(checksum(plan.operations)!==plan.operationsChecksum){
       throw new Error(`migration plan ${plan.version} operations checksum does not match its canonical operations`);
     }
+    plan.operations.forEach(operation=>validateCanonicalOperation(operation,plan.version,availableTables));
     const tables=plan.operations.filter(item=>item.operation==='ensure-table').map(item=>item.name);
     const indexes=plan.operations.filter(item=>item.operation==='ensure-index').map(item=>item.name);
     if(JSON.stringify(tables)!==JSON.stringify(plan.tables)||JSON.stringify(indexes)!==JSON.stringify(plan.indexes)){

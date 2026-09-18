@@ -55,7 +55,7 @@ test('inspection reports missing, incompatible, and unexpected artifacts structu
   assert.deepEqual(status.drift.missingColumns,[{table:'widgets',column:'created_at'}]);
   assert.equal(status.drift.columnDrift[0].column,'label');
   assert.deepEqual(status.drift.unexpectedColumns,[{table:'widgets',column:'extra'}]);
-  assert.deepEqual(status.drift.constraintDrift.map(item=>item.kind),['checks','unique']);
+  assert.deepEqual(status.drift.constraintDrift.map(item=>item.kind),['checks','unique','conflictPolicies']);
   assert.deepEqual(status.drift.missingIndexes,['idx_missing']);
   assert.equal(status.drift.indexDrift[0].index,'idx_widgets_label');
   assert.deepEqual(status.drift.unexpectedTables,['unrelated']);
@@ -156,6 +156,146 @@ test('write-affecting table options and conflict semantics are drift',async()=>{
   db.close();
 });
 
+test('conflict policies remain bound to the constraints they govern',async()=>{
+  const db=createClient({url:'file::memory:'});
+  await db.execute(`CREATE TABLE policies (
+    a TEXT UNIQUE ON CONFLICT REPLACE,
+    b TEXT UNIQUE ON CONFLICT IGNORE
+  )`);
+  const status=await inspectSchema(db,{manifest:{
+    version:1,checksum:'test',toleratedLegacyTables:[],indexes:[],
+    tables:[{name:'policies',sql:`CREATE TABLE policies (
+      a TEXT UNIQUE ON CONFLICT IGNORE,
+      b TEXT UNIQUE ON CONFLICT REPLACE
+    )`}],
+  }});
+  const drift=status.drift.constraintDrift.find(item=>item.kind==='conflictPolicies');
+  assert.ok(drift);
+  assert.notDeepEqual(drift.actual,drift.expected);
+  assert.equal(status.ready,false);
+  db.close();
+});
+
+test('table primary-key conflict clauses preserve expected composite columns',async()=>{
+  const db=createClient({url:'file::memory:'});
+  const sql=`CREATE TABLE policies (
+    a TEXT,
+    b TEXT,
+    PRIMARY KEY(a,b) ON CONFLICT REPLACE
+  )`;
+  await db.execute(sql);
+  const status=await inspectSchema(db,{manifest:{
+    version:1,checksum:'test',toleratedLegacyTables:[],indexes:[],
+    tables:[{name:'policies',sql}],
+  }});
+  assert.deepEqual(status.drift.missingColumns,[]);
+  assert.deepEqual(status.drift.columnDrift,[]);
+  assert.equal(status.ready,true);
+  db.close();
+});
+
+test('equivalent inline and table primary keys share indexed-term semantics',async()=>{
+  const db=createClient({url:'file::memory:'});
+  await db.execute(`CREATE TABLE policies (
+    a TEXT COLLATE NOCASE PRIMARY KEY DESC ON CONFLICT REPLACE
+  )`);
+  const status=await inspectSchema(db,{manifest:{
+    version:1,checksum:'test',toleratedLegacyTables:[],indexes:[],
+    tables:[{name:'policies',sql:`CREATE TABLE policies (
+      a TEXT COLLATE NOCASE,
+      PRIMARY KEY(a COLLATE NOCASE DESC) ON CONFLICT REPLACE
+    )`}],
+  }});
+  assert.deepEqual(status.drift.columnDrift,[]);
+  assert.deepEqual(status.drift.constraintDrift,[]);
+  assert.equal(status.ready,true);
+  db.close();
+});
+
+test('primary-key collation, order, and conflict policy remain drift',async()=>{
+  const db=createClient({url:'file::memory:'});
+  await db.execute(`CREATE TABLE policies (
+    a TEXT COLLATE NOCASE,
+    b TEXT,
+    PRIMARY KEY(a DESC,b) ON CONFLICT REPLACE
+  )`);
+  const inspect=sql=>inspectSchema(db,{manifest:{
+    version:1,checksum:'test',toleratedLegacyTables:[],indexes:[],
+    tables:[{name:'policies',sql}],
+  }});
+  const changedCollation=await inspect(`CREATE TABLE policies (
+    a TEXT COLLATE NOCASE,
+    b TEXT,
+    PRIMARY KEY(a COLLATE BINARY DESC,b) ON CONFLICT REPLACE
+  )`);
+  assert.ok(changedCollation.drift.constraintDrift.some(item=>item.kind==='primaryKeyTerms'));
+  assert.ok(changedCollation.drift.constraintDrift.some(item=>item.kind==='conflictPolicies'));
+
+  const changedOrder=await inspect(`CREATE TABLE policies (
+    a TEXT COLLATE NOCASE,
+    b TEXT,
+    PRIMARY KEY(b,a DESC) ON CONFLICT REPLACE
+  )`);
+  assert.ok(changedOrder.drift.constraintDrift.some(item=>item.kind==='primaryKeyTerms'));
+  assert.ok(changedOrder.drift.constraintDrift.some(item=>item.kind==='conflictPolicies'));
+
+  const changedPolicy=await inspect(`CREATE TABLE policies (
+    a TEXT COLLATE NOCASE,
+    b TEXT,
+    PRIMARY KEY(a DESC,b) ON CONFLICT IGNORE
+  )`);
+  assert.ok(changedPolicy.drift.constraintDrift.some(item=>item.kind==='conflictPolicies'));
+  assert.ok(!changedPolicy.drift.constraintDrift.some(item=>item.kind==='primaryKeyTerms'));
+  db.close();
+});
+
+test('equivalent inline and table UNIQUE policies have one canonical target',async()=>{
+  const db=createClient({url:'file::memory:'});
+  await db.execute(`CREATE TABLE policies (a TEXT COLLATE NOCASE UNIQUE ON CONFLICT REPLACE)`);
+  const status=await inspectSchema(db,{manifest:{
+    version:1,checksum:'test',toleratedLegacyTables:[],indexes:[],
+    tables:[{name:'policies',sql:`CREATE TABLE policies (a TEXT COLLATE NOCASE, UNIQUE(a) ON CONFLICT REPLACE)`}],
+  }});
+  assert.deepEqual(status.drift.constraintDrift,[]);
+  assert.equal(status.ready,true);
+  db.close();
+});
+
+test('named table constraints retain primary-key, unique, foreign-key, and policy semantics',async()=>{
+  const db=createClient({url:'file::memory:'});
+  await db.execute(`CREATE TABLE parents (id INTEGER PRIMARY KEY)`);
+  const sql=`CREATE TABLE children (
+    parent_id INTEGER,
+    code TEXT,
+    CONSTRAINT child_pk PRIMARY KEY(parent_id,code) ON CONFLICT REPLACE,
+    CONSTRAINT child_unique UNIQUE(code) ON CONFLICT IGNORE,
+    CONSTRAINT child_parent FOREIGN KEY(parent_id) REFERENCES parents(id) ON DELETE CASCADE,
+    CONSTRAINT child_code CHECK(length(code)>0)
+  )`;
+  await db.execute(sql);
+  const status=await inspectSchema(db,{manifest:{
+    version:1,checksum:'test',toleratedLegacyTables:[],indexes:[],
+    tables:[
+      {name:'parents',sql:`CREATE TABLE parents (id INTEGER PRIMARY KEY)`},
+      {name:'children',sql},
+    ],
+  }});
+  assert.deepEqual(status.drift.missingColumns,[]);
+  assert.deepEqual(status.drift.columnDrift,[]);
+  assert.deepEqual(status.drift.constraintDrift,[]);
+  assert.equal(status.ready,true);
+  const changedPolicy=await inspectSchema(db,{manifest:{
+    version:1,checksum:'test',toleratedLegacyTables:[],indexes:[],
+    tables:[
+      {name:'parents',sql:`CREATE TABLE parents (id INTEGER PRIMARY KEY)`},
+      {name:'children',sql:sql.replace('UNIQUE(code) ON CONFLICT IGNORE','UNIQUE(code) ON CONFLICT REPLACE')},
+    ],
+  }});
+  assert.ok(changedPolicy.drift.constraintDrift.some(item=>item.kind==='conflictPolicies'));
+  assert.equal(changedPolicy.ready,false);
+  db.close();
+});
+
 test('comments, generated columns, and AUTOINCREMENT loss cannot spoof readiness',async()=>{
   const db=createClient({url:'file::memory:'});
   await db.execute(`CREATE TABLE widgets (id INTEGER PRIMARY KEY, value TEXT /* UNIQUE */, derived TEXT GENERATED ALWAYS AS (lower(value)) STORED)`);
@@ -197,6 +337,20 @@ test('arithmetic expression indexes are recognized without false drift',async()=
     version:1,checksum:'test',toleratedLegacyTables:[],
     tables:[{name:'values_table',sql:`CREATE TABLE values_table (a INTEGER, b INTEGER)`}],
     indexes:[{name:'idx_values_sum',table:'values_table',keyParts:['a+b'],unique:false,where:null,sql:'CREATE INDEX idx_values_sum ON values_table(a+b)'}],
+  }});
+  assert.equal(status.ok,true);
+  assert.deepEqual(status.drift.indexDrift,[]);
+  db.close();
+});
+
+test('explicit ASC index ordering matches SQLite implicit ascending order',async()=>{
+  const db=createClient({url:'file::memory:'});
+  await db.execute(`CREATE TABLE labels (value TEXT)`);
+  await db.execute(`CREATE INDEX idx_labels_value ON labels(value ASC)`);
+  const status=await inspectSchema(db,{manifest:{
+    version:1,checksum:'test',toleratedLegacyTables:[],
+    tables:[{name:'labels',sql:`CREATE TABLE labels (value TEXT)`}],
+    indexes:[{name:'idx_labels_value',table:'labels',keyParts:['value'],unique:false,where:null,sql:'CREATE INDEX idx_labels_value ON labels(value)'}],
   }});
   assert.equal(status.ok,true);
   assert.deepEqual(status.drift.indexDrift,[]);

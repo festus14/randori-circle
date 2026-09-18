@@ -120,6 +120,18 @@ function unquote(value){
   return String(value||'').trim().replace(/^(?:"([^"]+)"|`([^`]+)`|\[([^\]]+)\])$/,'$1$2$3');
 }
 
+function unnamedTableConstraint(value){
+  return String(value||'').replace(
+    /^CONSTRAINT\s+(?:"[^"]+"|`[^`]+`|\[[^\]]+\]|[^\s]+)\s+/i,
+    '',
+  );
+}
+
+function indexedColumnName(value){
+  const match=/^("[^"]+"|`[^`]+`|\[[^\]]+\]|[^\s]+)/.exec(String(value||'').trim());
+  return match?unquote(match[1]):null;
+}
+
 function normalizeDefault(value){
   if(value===null||value===undefined) return null;
   let result=String(value).trim();
@@ -139,13 +151,14 @@ function defaultExpression(definition){
 export function expectedColumns(tableDefinition){
   const columns=[];
   const primaryKey=[];
-  for(const part of splitSqlList(createBody(stripSqlComments(tableDefinition.sql)))){
-    const tablePrimary=/^PRIMARY\s+KEY\s*\((.*)\)$/i.exec(part);
+  for(const rawPart of splitSqlList(createBody(stripSqlComments(tableDefinition.sql)))){
+    const part=unnamedTableConstraint(rawPart);
+    const tablePrimary=/^PRIMARY\s+KEY\s*\((.*?)\)(?:\s+ON\s+CONFLICT\s+(?:ROLLBACK|ABORT|FAIL|IGNORE|REPLACE))?$/i.exec(part);
     if(tablePrimary){
-      primaryKey.push(...splitSqlList(tablePrimary[1]).map(item=>unquote(item.split(/\s+/)[0])));
+      primaryKey.push(...splitSqlList(tablePrimary[1]).map(indexedColumnName).filter(Boolean));
       continue;
     }
-    if(/^(?:CONSTRAINT|UNIQUE|FOREIGN\s+KEY|CHECK)\b/i.test(part)) continue;
+    if(/^(?:PRIMARY\s+KEY|UNIQUE|FOREIGN\s+KEY|CHECK)\b/i.test(part)) continue;
     const match=/^("[^"]+"|`[^`]+`|\[[^\]]+\]|[^\s]+)\s+([^\s]+)/.exec(part);
     if(!match) continue;
     const name=unquote(match[1]);
@@ -183,6 +196,10 @@ function normalizeSqlFragment(value,{unquoteIdentifiers=false}={}){
 
 function normalizeExpression(value){
   return normalizeSqlFragment(value,{unquoteIdentifiers:true});
+}
+
+function normalizeIndexKeyPart(value){
+  return normalizeExpression(value).replace(/\s+asc$/i,'');
 }
 
 function parenthesizedExpressions(sql,keyword){
@@ -233,6 +250,13 @@ function indexedTerm(value,defaultCollation='BINARY'){
   };
 }
 
+function indexedTerms(value,columnCollations){
+  return splitSqlList(value).map(item=>{
+    const expression=indexedTerm(item).expression;
+    return indexedTerm(item,columnCollations.get(expression)||'BINARY');
+  });
+}
+
 function foreignKeyTiming(fragment){
   if(/\bNOT\s+DEFERRABLE\b/i.test(fragment)) return 'NOT DEFERRABLE';
   if(/\bDEFERRABLE\s+INITIALLY\s+DEFERRED\b/i.test(fragment)) return 'DEFERRABLE INITIALLY DEFERRED';
@@ -240,11 +264,63 @@ function foreignKeyTiming(fragment){
   return 'NOT DEFERRABLE';
 }
 
+function maskQuotedSql(value){
+  const characters=[...String(value||'')];
+  let quote=null;
+  for(let index=0;index<characters.length;index+=1){
+    const character=characters[index];
+    if(quote){
+      characters[index]=' ';
+      if(character===quote){
+        if(characters[index+1]===quote) characters[++index]=' ';
+        else quote=null;
+      }
+      continue;
+    }
+    if(character==="'"||character==='"'||character==='`'){
+      quote=character;
+      characters[index]=' ';
+    }else if(character==='['){
+      quote=']';
+      characters[index]=' ';
+    }
+  }
+  return characters.join('');
+}
+
+const CONFLICT_ACTION='(ROLLBACK|ABORT|FAIL|IGNORE|REPLACE)';
+
+function conflictPolicy(value){
+  return String(value||'ABORT').toUpperCase();
+}
+
+function inlineConflictPolicies(part,columnName,collation){
+  const source=maskQuotedSql(part);
+  const defaultCollation=collation?normalizeExpression(collation).toUpperCase():'BINARY';
+  const primaryKeyDirection=/\bPRIMARY\s+KEY\s+(ASC|DESC)\b/i.exec(source)?.[1]||'';
+  const definitions=[
+    ['NOT NULL',new RegExp(`\\bNOT\\s+NULL(?:\\s+ON\\s+CONFLICT\\s+${CONFLICT_ACTION})?`,'i')],
+    ['PRIMARY KEY',new RegExp(`\\bPRIMARY\\s+KEY(?:\\s+(?:ASC|DESC))?(?:\\s+ON\\s+CONFLICT\\s+${CONFLICT_ACTION})?`,'i')],
+    ['UNIQUE',new RegExp(`\\bUNIQUE(?:\\s+ON\\s+CONFLICT\\s+${CONFLICT_ACTION})?`,'i')],
+  ];
+  return definitions.flatMap(([constraint,pattern])=>{
+    const match=pattern.exec(source);
+    if(!match) return [];
+    const target=constraint==='UNIQUE'
+      ?[indexedTerm(columnName,defaultCollation)]
+      :constraint==='PRIMARY KEY'
+        ?[indexedTerm(`${columnName} ${primaryKeyDirection}`.trim(),defaultCollation)]
+        :[normalizeExpression(columnName)];
+    return [{constraint,target,policy:conflictPolicy(match[1])}];
+  });
+}
+
 function tableConstraints(sql){
   sql=stripSqlComments(sql);
   const parts=splitSqlList(createBody(sql));
   const columnCollations=new Map();
-  for(const part of parts){
+  for(const rawPart of parts){
+    const part=unnamedTableConstraint(rawPart);
     if(/^(?:CONSTRAINT|UNIQUE|PRIMARY\s+KEY|FOREIGN\s+KEY|CHECK)\b/i.test(part)) continue;
     const column=/^("[^"]+"|`[^`]+`|\[[^\]]+\]|[^\s]+)/.exec(part);
     const collation=/\bCOLLATE\s+([^\s,]+)/i.exec(part)?.[1];
@@ -256,7 +332,9 @@ function tableConstraints(sql){
   const collations=[];
   const primaryKeyTerms=[];
   const foreignKeyTimings=[];
-  for(const part of parts){
+  const conflictPolicies=[];
+  for(const rawPart of parts){
+    const part=unnamedTableConstraint(rawPart);
     const tableForeign=/^FOREIGN\s+KEY\s*\((.*?)\)\s+REFERENCES\s+("[^"]+"|`[^`]+`|\[[^\]]+\]|[^\s(]+)\s*\((.*?)\)([\s\S]*)$/i.exec(part);
     if(tableForeign){
       foreignKeys.push({
@@ -274,17 +352,22 @@ function tableConstraints(sql){
       });
       continue;
     }
-    const tableUnique=/^UNIQUE\s*\((.*?)\)(?:\s+ON\s+CONFLICT\s+\w+)?$/i.exec(part);
+    const tableUnique=new RegExp(`^UNIQUE\\s*\\((.*?)\\)(?:\\s+ON\\s+CONFLICT\\s+${CONFLICT_ACTION})?$`,'i').exec(part);
     if(tableUnique){
-      unique.push(splitSqlList(tableUnique[1]).map(item=>{
-        const expression=indexedTerm(item).expression;
-        return indexedTerm(item,columnCollations.get(expression)||'BINARY');
-      }));
+      const terms=indexedTerms(tableUnique[1],columnCollations);
+      unique.push(terms);
+      conflictPolicies.push({
+        constraint:'UNIQUE',
+        target:terms,
+        policy:conflictPolicy(tableUnique[2]),
+      });
       continue;
     }
-    const tablePrimary=/^PRIMARY\s+KEY\s*\((.*?)\)/i.exec(part);
+    const tablePrimary=new RegExp(`^PRIMARY\\s+KEY\\s*\\((.*?)\\)(?:\\s+ON\\s+CONFLICT\\s+${CONFLICT_ACTION})?`,'i').exec(part);
     if(tablePrimary){
-      primaryKeyTerms.push(...splitSqlList(tablePrimary[1]).map(item=>normalizeExpression(item)));
+      const terms=indexedTerms(tablePrimary[1],columnCollations);
+      primaryKeyTerms.push(...terms);
+      conflictPolicies.push({constraint:'PRIMARY KEY',target:terms,policy:conflictPolicy(tablePrimary[2])});
       continue;
     }
     if(/^(?:CONSTRAINT|CHECK)\b/i.test(part)) continue;
@@ -295,7 +378,14 @@ function tableConstraints(sql){
     if(/\bUNIQUE\b/i.test(part)) unique.push([indexedTerm(columnName,collation?normalizeExpression(collation).toUpperCase():'BINARY')]);
     if(/\bAUTOINCREMENT\b/i.test(part)) autoincrementColumns.push(columnName);
     if(collation) collations.push({column:columnName,collation:normalizeExpression(collation)});
-    if(/\bPRIMARY\s+KEY\b/i.test(part)) primaryKeyTerms.push(normalizeExpression(`${columnName}${/\bDESC\b/i.test(part)?' DESC':''}`));
+    const primaryKeyDirection=/\bPRIMARY\s+KEY\s+(ASC|DESC)\b/i.exec(maskQuotedSql(part))?.[1]||'';
+    if(/\bPRIMARY\s+KEY\b/i.test(part)){
+      primaryKeyTerms.push(indexedTerm(
+        `${columnName} ${primaryKeyDirection}`.trim(),
+        collation?normalizeExpression(collation).toUpperCase():'BINARY',
+      ));
+    }
+    conflictPolicies.push(...inlineConflictPolicies(part,columnName,collation));
     const inlineForeign=/\bREFERENCES\s+("[^"]+"|`[^`]+`|\[[^\]]+\]|[^\s(]+)\s*\((.*?)\)([\s\S]*)$/i.exec(part);
     if(inlineForeign){
       foreignKeys.push({
@@ -318,7 +408,7 @@ function tableConstraints(sql){
     checks:parenthesizedExpressions(sql,'CHECK'),
     autoincrementColumns:autoincrementColumns.sort(),
     collations:collations.sort((left,right)=>JSON.stringify(left).localeCompare(JSON.stringify(right))),
-    conflictPolicies:[...sql.matchAll(/\bON\s+CONFLICT\s+(ROLLBACK|FAIL|IGNORE|REPLACE)\b/ig)].map(match=>match[1].toUpperCase()).sort(),
+    conflictPolicies:conflictPolicies.sort((left,right)=>JSON.stringify(left).localeCompare(JSON.stringify(right))),
     primaryKeyTerms,
     tableOptions:[
       ...(/\)\s*(?:STRICT\b|[^;]*,\s*STRICT\b)/i.test(sql)?['STRICT']:[]),
@@ -343,7 +433,7 @@ export function parseIndexSql(sql){
   return {
     unique:!!prefix[1],
     table:unquote(prefix[2]),
-    keyParts:splitSqlList(body).map(normalizeExpression),
+    keyParts:splitSqlList(body).map(normalizeIndexKeyPart),
     where:where?normalizeExpression(where):null,
   };
 }
@@ -352,7 +442,7 @@ function expectedIndexSignature(definition){
   return {
     unique:definition.unique,
     table:definition.table,
-    keyParts:definition.keyParts.map(normalizeExpression),
+    keyParts:definition.keyParts.map(normalizeIndexKeyPart),
     where:definition.where?normalizeExpression(definition.where):null,
   };
 }
