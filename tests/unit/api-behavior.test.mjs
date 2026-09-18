@@ -98,7 +98,7 @@ mock.module('../../api/_db.js', {
 
 const [
   { default: aiHandler },
-  { default: authHandler },
+  { default: authHandler, localPasswordSignupEnabled },
   { default: dataHandler },
   { default: opsHandler },
   { default: videoHandler },
@@ -131,7 +131,21 @@ const sameOriginHeaders = {
   host: 'randori.example.test',
 };
 
-function invoke(handler, { method = 'GET', url = '/', query = {}, headers = {}, body = {} } = {}) {
+const localOriginHeaders = {
+  origin: 'http://127.0.0.1:3000',
+  host: '127.0.0.1:3000',
+};
+
+function enableLocalPasswordSignup(){
+  process.env.NODE_ENV='development';
+  process.env.RANDORI_LOCAL_RUNTIME='true';
+  process.env.ALLOW_OPEN_SIGNUP='true';
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='false';
+  process.env.TURSO_DATABASE_URL='file:///tmp/randori-circle-unit-test.sqlite';
+  process.env.APP_URL='http://127.0.0.1:3000';
+}
+
+function invoke(handler, { method = 'GET', url = '/', query = {}, headers = {}, body = {}, remoteAddress='127.0.0.1' } = {}) {
   return new Promise((resolve, reject) => {
     let statusCode = 200;
     let settled = false;
@@ -153,7 +167,7 @@ function invoke(handler, { method = 'GET', url = '/', query = {}, headers = {}, 
       },
       end(payload) { finish(payload); },
     };
-    const request = { method, url, query, headers, body, socket: { remoteAddress: '127.0.0.1' } };
+    const request = { method, url, query, headers, body, socket: { remoteAddress } };
     Promise.resolve(handler(request, response)).then(() => finish(undefined)).catch(reject);
   });
 }
@@ -173,6 +187,8 @@ beforeEach(() => {
     'GOOGLE_CLIENT_SECRET', 'GROQ_API_KEY', 'OPENAI_API_KEY', 'RESEND_API_KEY', 'RESEND_FROM',
     'NEXT_PUBLIC_SENTRY_DSN', 'SENTRY_DSN',
     'ALLOW_OPEN_SIGNUP', 'SIGNUP_ALLOWLIST', 'LEETCODE_INGESTION_AUTHORIZED',
+    'AUTH_SCHEMA_BOOTSTRAP_ENABLED', 'CIRCLE_MEMBERSHIP_ENABLED', 'RANDORI_LOCAL_RUNTIME',
+    'TURSO_AUTH_TOKEN', 'TURSO_DATABASE_URL', 'VERCEL', 'VERCEL_ENV', 'VERCEL_URL',
     'RUN_ATTESTATION_SECRET', 'RUN_ATTESTATION_PREVIOUS_SECRETS',
     'TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM',
   ]) delete process.env[key];
@@ -201,6 +217,7 @@ after(() => {
 });
 
 test('password signup, login, and authenticated profile lookup return cookie sessions', async () => {
+  enableLocalPasswordSignup();
   const passwordHash = await bcrypt.hash('correct horse battery', 4);
   executeHandler = sql => {
     if (sql.includes('RETURNING attempts')) return rows([{ attempts: 1 }]);
@@ -229,7 +246,7 @@ test('password signup, login, and authenticated profile lookup return cookie ses
     method: 'POST',
     url: '/api/auth/signup',
     query: { endpoint: 'signup' },
-    headers: { ...sameOriginHeaders, 'x-forwarded-proto': 'https' },
+    headers: { ...localOriginHeaders, 'x-forwarded-proto': 'https' },
     body: { email: 'PERSON@example.test', password: 'correct horse battery', name: 'Person' },
   });
   assert.equal(signup.status, 200);
@@ -257,7 +274,7 @@ test('password signup, login, and authenticated profile lookup return cookie ses
   assert.equal(me.body.user.email, 'user@example.test');
 });
 
-test('private-beta signup is invite-only and production password signup stays disabled', async () => {
+test('password signup is local-only while production and private-beta registration stay disabled', async () => {
   process.env.NODE_ENV = 'production';
   process.env.ALLOW_OPEN_SIGNUP = 'true';
   const production = await invoke(authHandler, {
@@ -268,29 +285,124 @@ test('private-beta signup is invite-only and production password signup stays di
   assert.equal(production.status, 503);
   assert.equal(executed.length, 0, 'production password signup must be rejected before database access');
 
-  delete process.env.NODE_ENV;
-  delete process.env.ALLOW_OPEN_SIGNUP;
+  process.env.NODE_ENV='development';
+  delete process.env.RANDORI_LOCAL_RUNTIME;
   process.env.SIGNUP_ALLOWLIST = 'invited@example.test';
   const denied = await invoke(authHandler, {
     method: 'POST', url: '/api/auth/signup', query: { endpoint: 'signup' },
     headers: sameOriginHeaders,
     body: { email: 'outsider@example.test', password: 'correct horse battery', name: 'Outsider' },
   });
-  assert.equal(denied.status, 403);
-  assert.equal(executed.length, 0, 'an uninvited signup must be rejected before database access');
+  assert.equal(denied.status, 503);
+  assert.equal(executed.length, 0, 'non-local signup must be rejected before database access');
+});
 
-  executeHandler = sql => {
-    if (sql.includes('RETURNING attempts')) return rows([{ attempts: 1 }]);
-    if (sql.includes('SELECT id FROM auth_accounts WHERE email=')) return rows([]);
-    if (sql.includes('INSERT INTO auth_accounts') && sql.includes('RETURNING id')) return rows([{ id: 9 }]);
-    return rows();
-  };
-  const invited = await invoke(authHandler, {
-    method: 'POST', url: '/api/auth/signup', query: { endpoint: 'signup' },
-    headers: sameOriginHeaders,
-    body: { email: 'invited@example.test', password: 'correct horse battery', name: 'Invited' },
+test('auth capabilities report the exact local or private-beta contract without database access', async () => {
+  let result=await invoke(authHandler,{
+    url:'/api/auth/capabilities',query:{endpoint:'capabilities'},headers:{host:'randori.example.test'},
   });
-  assert.equal(invited.status, 200);
+  assert.equal(result.status,200);
+  assert.equal(result.headers['cache-control'],'no-store');
+  assert.deepEqual(result.body,{
+    ok:true,
+    capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:false},
+    registrationMode:'private_beta',
+  });
+  assert.equal(executed.length,0);
+
+  process.env.GOOGLE_CLIENT_ID='google-client';
+  process.env.GOOGLE_CLIENT_SECRET='google-secret';
+  process.env.NODE_ENV='production';
+  result=await invoke(authHandler,{
+    url:'/api/auth/capabilities',query:{endpoint:'capabilities'},headers:{host:'randori.example.test'},
+  });
+  assert.deepEqual(result.body,{
+    ok:true,
+    capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true},
+    registrationMode:'private_beta',
+  });
+
+  enableLocalPasswordSignup();
+  result=await invoke(authHandler,{
+    url:'/api/auth/capabilities',query:{endpoint:'capabilities'},headers:{host:'127.0.0.1:3000'},
+  });
+  assert.equal(result.status,200);
+  assert.deepEqual(result.body,{
+    ok:true,
+    capabilities:{passwordLogin:true,passwordSignup:true,googleOAuth:true},
+    registrationMode:'local_open',
+  });
+  assert.equal(executed.length,0);
+
+  const wrongMethod=await invoke(authHandler,{
+    method:'POST',url:'/api/auth/capabilities',query:{endpoint:'capabilities'},headers:localOriginHeaders,
+  });
+  assert.equal(wrongMethod.status,405);
+  assert.deepEqual(wrongMethod.body,{error:'GET only'});
+});
+
+test('local password signup guard fails closed outside the isolated loopback runtime', () => {
+  enableLocalPasswordSignup();
+  const localRequest={headers:{host:'127.0.0.1:3000'},socket:{remoteAddress:'127.0.0.1'}};
+  assert.equal(localPasswordSignupEnabled(localRequest),true);
+
+  const cases=[
+    ['NODE_ENV','production'],
+    ['RANDORI_LOCAL_RUNTIME','false'],
+    ['ALLOW_OPEN_SIGNUP','false'],
+    ['CIRCLE_MEMBERSHIP_ENABLED','true'],
+    ['VERCEL','1'],
+    ['VERCEL_ENV','preview'],
+    ['VERCEL_URL','preview.example.test'],
+    ['TURSO_AUTH_TOKEN','remote-token'],
+    ['TURSO_DATABASE_URL','libsql://production.example.test'],
+    ['APP_URL','https://127.0.0.1:3000'],
+    ['APP_URL','http://randori.example.test'],
+  ];
+  for(const [key,value] of cases){
+    enableLocalPasswordSignup();
+    process.env[key]=value;
+    assert.equal(localPasswordSignupEnabled(localRequest),false,`${key} must disable local signup`);
+    delete process.env[key];
+  }
+  enableLocalPasswordSignup();
+  assert.equal(localPasswordSignupEnabled({headers:{host:'randori.example.test'},socket:{remoteAddress:'127.0.0.1'}}),false);
+  assert.equal(localPasswordSignupEnabled({headers:{host:'127.0.0.1:3001'},socket:{remoteAddress:'127.0.0.1'}}),false);
+  assert.equal(localPasswordSignupEnabled({headers:{host:'127.0.0.1:3000'},socket:{remoteAddress:'203.0.113.8'}}),false);
+  process.env.APP_URL='http://localhost:3000';
+  assert.equal(localPasswordSignupEnabled({headers:{host:'localhost:3000'},socket:{remoteAddress:'::1'}}),true);
+});
+
+test('capabilities and signup enforce the same production, preview, remote-db, and network boundary', async () => {
+  const cases=[
+    {name:'production',env:{NODE_ENV:'production'}},
+    {name:'preview',env:{VERCEL_ENV:'preview'}},
+    {name:'remote database',env:{TURSO_DATABASE_URL:'libsql://production.example.test'}},
+    {name:'remote token',env:{TURSO_AUTH_TOKEN:'remote-token'}},
+    {name:'public host',headers:{origin:'http://randori.example.test',host:'randori.example.test'}},
+    {name:'remote peer',remoteAddress:'203.0.113.9'},
+  ];
+  for(const testCase of cases){
+    for(const key of ['VERCEL','VERCEL_ENV','VERCEL_URL','TURSO_AUTH_TOKEN']) delete process.env[key];
+    enableLocalPasswordSignup();
+    Object.assign(process.env,testCase.env||{});
+    const headers=testCase.headers||localOriginHeaders;
+    const capabilities=await invoke(authHandler,{
+      url:'/api/auth/capabilities',query:{endpoint:'capabilities'},headers,
+      remoteAddress:testCase.remoteAddress,
+    });
+    assert.equal(capabilities.status,200,testCase.name);
+    assert.equal(capabilities.body.capabilities.passwordSignup,false,testCase.name);
+    assert.equal(capabilities.body.registrationMode,'private_beta',testCase.name);
+    executed.length=0;
+    const signup=await invoke(authHandler,{
+      method:'POST',url:'/api/auth/signup',query:{endpoint:'signup'},headers,
+      remoteAddress:testCase.remoteAddress,
+      body:{email:'person@example.test',password:'correct horse battery',name:'Person'},
+    });
+    assert.equal(signup.status,503,testCase.name);
+    assert.equal(executed.length,0,`${testCase.name} must be rejected before database access`);
+  }
 });
 
 test('Google callback validates state and establishes a cookie session without leaking a token', async () => {
@@ -324,7 +436,7 @@ test('Google callback validates state and establishes a cookie session without l
 });
 
 test('auth validation and OAuth failure paths fail closed', async () => {
-  process.env.ALLOW_OPEN_SIGNUP = 'true';
+  enableLocalPasswordSignup();
   const cases = [
     [{ method: 'GET', url: '/api/auth/signup', query: { endpoint: 'signup' } }, 405],
     [{ method: 'POST', url: '/api/auth/signup', query: { endpoint: 'signup' }, body: { email: 'bad', password: 'long-enough-password', name: 'Name' } }, 400],
@@ -340,7 +452,7 @@ test('auth validation and OAuth failure paths fail closed', async () => {
   for (const [request, status] of cases) {
     const result = await invoke(authHandler, {
       ...request,
-      headers: request.method === 'POST' ? sameOriginHeaders : request.headers,
+      headers: request.method === 'POST' ? localOriginHeaders : request.headers,
     });
     assert.equal(result.status, status, request.url);
   }

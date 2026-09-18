@@ -89,6 +89,7 @@ const [{default:authHandler},{default:opsHandler}]=await Promise.all([
 
 const originalFetch=globalThis.fetch;
 const sameOriginHeaders={origin:'https://randori.example.test',host:'randori.example.test'};
+const localOriginHeaders={origin:'http://127.0.0.1:3000',host:'127.0.0.1:3000'};
 
 function rows(values=[],extra={}){ return {rows:values,rowsAffected:0,...extra}; }
 
@@ -150,20 +151,25 @@ beforeEach(()=>{
   for(const key of [
     'ALLOW_OPEN_SIGNUP','APP_URL','CIRCLE_MEMBERSHIP_ENABLED','CRON_SECRET',
     'GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','NODE_ENV','SIGNUP_ALLOWLIST',
+    'RANDORI_LOCAL_RUNTIME','TURSO_AUTH_TOKEN','TURSO_DATABASE_URL','VERCEL','VERCEL_ENV','VERCEL_URL',
   ]) delete process.env[key];
 });
 
 after(()=>{ globalThis.fetch=originalFetch; });
 
-test('membership flag keeps password signup closed and preserves disabled behavior',async()=>{
+test('local password signup remains closed when membership rollout is enabled',async()=>{
+  process.env.NODE_ENV='development';
+  process.env.RANDORI_LOCAL_RUNTIME='true';
   process.env.ALLOW_OPEN_SIGNUP='true';
+  process.env.TURSO_DATABASE_URL='file:///tmp/randori-circle-auth.sqlite';
+  process.env.APP_URL='http://127.0.0.1:3000';
   process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
   const denied=await invoke(authHandler,{
-    method:'POST',url:'/api/auth/signup',query:{endpoint:'signup'},headers:sameOriginHeaders,
+    method:'POST',url:'/api/auth/signup',query:{endpoint:'signup'},headers:localOriginHeaders,
     body:{email:'new@example.test',password:PASSWORD,name:'New Member'},
   });
-  assert.equal(denied.status,403);
-  assert.deepEqual(denied.body,{error:'private beta signup requires a Google invitation'});
+  assert.equal(denied.status,503);
+  assert.deepEqual(denied.body,{error:'password signup is disabled during the private beta; use Google sign-in'});
   assert.equal(executed.length,0);
 
   delete process.env.CIRCLE_MEMBERSHIP_ENABLED;
@@ -174,7 +180,7 @@ test('membership flag keeps password signup closed and preserves disabled behavi
     return rows();
   };
   const allowed=await invoke(authHandler,{
-    method:'POST',url:'/api/auth/signup',query:{endpoint:'signup'},headers:sameOriginHeaders,
+    method:'POST',url:'/api/auth/signup',query:{endpoint:'signup'},headers:localOriginHeaders,
     body:{email:'new@example.test',password:PASSWORD,name:'New Member'},
   });
   assert.equal(allowed.status,200);
@@ -183,7 +189,7 @@ test('membership flag keeps password signup closed and preserves disabled behavi
   executed.length=0;
   registrationState='uninitialized';
   const bootstrap=await invoke(authHandler,{
-    method:'POST',url:'/api/auth/signup',query:{endpoint:'signup'},headers:sameOriginHeaders,
+    method:'POST',url:'/api/auth/signup',query:{endpoint:'signup'},headers:localOriginHeaders,
     body:{email:'bootstrap@example.test',password:PASSWORD,name:'Bootstrap Admin'},
   });
   assert.equal(bootstrap.status,200);
@@ -193,7 +199,7 @@ test('membership flag keeps password signup closed and preserves disabled behavi
 
   cutoverStarted=true;
   const frozen=await invoke(authHandler,{
-    method:'POST',url:'/api/auth/signup',query:{endpoint:'signup'},headers:sameOriginHeaders,
+    method:'POST',url:'/api/auth/signup',query:{endpoint:'signup'},headers:localOriginHeaders,
     body:{email:'late@example.test',password:PASSWORD,name:'Late Member'},
   });
   assert.equal(frozen.status,403);
@@ -208,7 +214,7 @@ test('membership flag keeps password signup closed and preserves disabled behavi
     return rows();
   };
   const raced=await invoke(authHandler,{
-    method:'POST',url:'/api/auth/signup',query:{endpoint:'signup'},headers:sameOriginHeaders,
+    method:'POST',url:'/api/auth/signup',query:{endpoint:'signup'},headers:localOriginHeaders,
     body:{email:'race@example.test',password:PASSWORD,name:'Race Member'},
   });
   assert.equal(raced.status,403);

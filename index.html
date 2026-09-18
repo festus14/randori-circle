@@ -327,6 +327,17 @@ p{margin:0}
 .modal{background:var(--card); border:1px solid var(--border); border-radius:16px; padding:18px; width:100%; max-width:400px; box-shadow:var(--shadow); display:grid; gap:14px}
 .modal h3{font-size:15px; font-weight:600; letter-spacing:-0.02em}
 .modal .row{justify-content:flex-end}
+.auth-form{display:grid; gap:14px}
+.auth-fields{display:grid; gap:10px}
+.auth-field{display:grid; gap:5px}
+.auth-field > span{font-size:12px; color:var(--ink-2); font-weight:500}
+.auth-divider{display:flex; align-items:center; gap:10px; color:var(--ink-3); font-size:12px}
+.auth-divider::before,.auth-divider::after{content:""; height:1px; background:var(--border); flex:1}
+.auth-status{min-height:19px; margin:0}
+.auth-error{color:var(--accent-3); min-height:19px; margin:0}
+.auth-actions{display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap}
+.auth-actions-primary{display:flex; align-items:center; justify-content:flex-end; gap:8px; margin-left:auto}
+[hidden]{display:none!important}
 .video-bar{
   display:flex; flex-direction:column; gap:12px;
   background:var(--card); border:1px solid var(--border);
@@ -1031,19 +1042,29 @@ p{margin:0}
 </div>
 <div class="row" style="justify-content:space-between; margin-top:12px"><span class="small muted">Saved to /api/questions — appears in your Question dropdown for the session.</span><span class="row"><button id="qUpCancel" class="btn secondary">Cancel</button><button id="qUpSave" class="btn">Save Question</button></span></div>
 </div></div>
-<div id="authOverlay" class="overlay" aria-hidden="true"><div class="modal" style="max-width:420px"><h3 id="authTitle">Sign in to Randori</h3>
-<p class="small" style="color:var(--ink-2);margin:0">Your name is your display name for pairings. Email is private, used only for notifications.</p>
-<div style="display:grid;gap:8px;margin-top:6px">
-<button id="authGoogle" class="btn" style="width:100%;justify-content:center;background:#fff;color:#1d1a16;border-color:#e6deD1">Continue with Google</button>
-<div style="text-align:center" class="small muted">— or —</div>
-<input id="authEmail" class="input" placeholder="email@example.com" type="email"/>
-<input id="authName" class="input" placeholder="display name (for signup)" maxlength="32"/>
-<input id="authPass" class="input" placeholder="password (10+ chars, existing users)" type="password"/>
-<div id="authErr" class="small" style="color:var(--accent-3);min-height:16px"></div>
-<div class="small muted">Private beta: new members use verified Google access approved by the circle owner.</div>
+<div id="authOverlay" class="overlay" aria-hidden="true">
+  <div id="authDialog" class="modal" style="max-width:420px" role="dialog" aria-modal="true" aria-labelledby="authTitle" aria-describedby="authDescription" tabindex="-1">
+    <form id="authForm" class="auth-form" novalidate>
+      <div>
+        <h3 id="authTitle">Sign in to Randori</h3>
+        <p id="authDescription" class="small" style="color:var(--ink-2);margin:6px 0 0">Use an enabled sign-in method to access your private pairing history.</p>
+      </div>
+      <p id="authCapabilityStatus" class="small muted auth-status" role="status" aria-live="polite">Checking sign-in options…</p>
+      <button id="authGoogle" class="btn" type="button" hidden style="width:100%;justify-content:center;background:#fff;color:#1d1a16;border-color:#e6deD1">Continue with Google</button>
+      <div id="authDivider" class="auth-divider" hidden>or use email</div>
+      <div id="authPasswordFields" class="auth-fields" hidden>
+        <label class="auth-field" for="authEmail"><span>Email</span><input id="authEmail" class="input" placeholder="email@example.com" type="email" inputmode="email" autocomplete="email" maxlength="254" aria-describedby="authErr" required/></label>
+        <label id="authNameField" class="auth-field" for="authName" hidden><span>Display name</span><input id="authName" class="input" placeholder="How your pair will see you" type="text" autocomplete="name" minlength="2" maxlength="32" aria-describedby="authErr"/></label>
+        <label class="auth-field" for="authPass"><span>Password</span><input id="authPass" class="input" placeholder="At least 10 characters" type="password" autocomplete="current-password" maxlength="128" aria-describedby="authErr" required/></label>
+      </div>
+      <p id="authErr" class="small auth-error" role="alert" aria-live="assertive"></p>
+      <div class="auth-actions">
+        <button id="authModeSwitch" class="btn ghost" type="button" hidden></button>
+        <span class="auth-actions-primary"><button id="authCancel" class="btn secondary" type="button">Cancel</button><button id="authSignup" class="btn" type="submit" hidden>Sign up</button><button id="authSignin" class="btn" type="submit" hidden>Sign in</button></span>
+      </div>
+    </form>
+  </div>
 </div>
-<div class="row" style="justify-content:space-between;margin-top:4px"><span class="small muted">Personal history • auto-shuffle Sundays 08:00 BST</span><span class="row"><button id="authCancel" class="btn secondary">Cancel</button><button id="authSignup" class="btn secondary" hidden style="display:none">Sign up</button><button id="authSignin" class="btn">Sign in</button></span></div>
-</div></div>
 <div id="welcomeBanner" class="onboard-banner" style="display:none">
   <div class="small"><b>Welcome to Randori Circle</b> — weekly mock interviews with friends. Pair Sunday, practice DSA + System Design together. <span class="kbd" style="margin-left:6px">5-min setup</span></div>
   <div class="row" style="gap:8px"><button id="welcomeStartBtn" class="btn">Start → Sign in</button><button id="welcomeHowBtn" class="btn secondary">See how it works</button><button id="welcomeDismiss" class="pill">✕</button></div>
@@ -1067,6 +1088,16 @@ p{margin:0}
   const TOKEN_KEY='randori-token';
   const ME_KEY='randori-me';
   let me = null;
+  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,googleOAuth:false});
+  let authCapabilities=CLOSED_AUTH_CAPABILITIES;
+  let authCapabilitiesLoaded=false;
+  let authCapabilitiesFailed=false;
+  let authCapabilitiesPromise=null;
+  let authMode='signin';
+  let authBusy=false;
+  let authRequest=null;
+  let authReturnFocus=null;
+  const AUTH_CAPABILITY_TIMEOUT_MS=8000;
   const invitePreparation=(()=>{
     try{
       const pending=window.__randoriInvitePreparation;
@@ -1297,13 +1328,219 @@ async function refreshMe(){
       if(lb) lb.textContent=cb && cb.checked?'ON (included)':'OFF (skipped)';
     }
   }
-  // init auth UI events
-  document.getElementById('authBtn').onclick=()=>{
-    document.getElementById('authOverlay').classList.add('show');
-    document.getElementById('authErr').textContent='';
-  };
-  document.getElementById('authCancel').onclick=()=>document.getElementById('authOverlay').classList.remove('show');
-  document.getElementById('authOverlay').onclick=(e)=>{ if(e.target===document.getElementById('authOverlay')) document.getElementById('authOverlay').classList.remove('show'); };
+  function parseAuthCapabilities(payload){
+    const capabilities=payload?.capabilities;
+    const mode=payload?.registrationMode;
+    if(payload?.ok!==true||!capabilities||typeof capabilities!=='object'
+      ||typeof capabilities.passwordLogin!=='boolean'
+      ||typeof capabilities.passwordSignup!=='boolean'
+      ||typeof capabilities.googleOAuth!=='boolean'
+      ||!['local_open','private_beta'].includes(mode)) throw new Error('invalid auth capabilities');
+    return Object.freeze({
+      passwordLogin:capabilities.passwordLogin,
+      passwordSignup:capabilities.passwordSignup,
+      googleOAuth:capabilities.googleOAuth,
+      registrationMode:mode,
+    });
+  }
+  function setAuthError(message=''){
+    const error=document.getElementById('authErr');
+    if(error) error.textContent=String(message||'');
+  }
+  function clearAuthValidation({clearError=true}={}){
+    for(const input of document.querySelectorAll('#authPasswordFields input')) input.removeAttribute('aria-invalid');
+    if(clearError) setAuthError('');
+  }
+  function authStatusMessage(){
+    if(!authCapabilitiesLoaded) return 'Checking sign-in options…';
+    if(authCapabilitiesFailed) return 'New-account options could not be verified. Existing members can still try password sign-in.';
+    if(authMode==='signup'&&authCapabilities.passwordSignup){
+      return authCapabilities.registrationMode==='local_open'
+        ? 'Create a local account. The first account can manage weekly pairing.'
+        : 'Create your account to join the circle.';
+    }
+    if(authMode==='signup'&&authCapabilities.googleOAuth){
+      return 'New members join with an invitation and their verified Google account.';
+    }
+    if(authCapabilities.googleOAuth&&authCapabilities.passwordLogin) return 'Use your existing password or Google account.';
+    if(authCapabilities.googleOAuth) return 'Continue with your verified Google account.';
+    if(authCapabilities.passwordLogin) return 'Sign in with your existing email and password.';
+    return 'No sign-in method is currently available.';
+  }
+  function updateAuthEntryPoints(){
+    const canJoin=authCapabilities.passwordSignup||authCapabilities.googleOAuth;
+    const canSignIn=authCapabilities.passwordLogin||authCapabilities.googleOAuth;
+    const join=document.getElementById('landingSignup');
+    const signIn=document.getElementById('landingSignin');
+    if(join){ join.hidden=authCapabilitiesLoaded&&!canJoin; join.disabled=!authCapabilitiesLoaded||!canJoin; }
+    if(signIn){ signIn.hidden=authCapabilitiesLoaded&&!canSignIn; signIn.disabled=!authCapabilitiesLoaded||!canSignIn; }
+  }
+  function focusAuthControl(){
+    const overlay=document.getElementById('authOverlay');
+    if(!overlay?.classList.contains('show')) return;
+    const active=document.activeElement;
+    if(active&&overlay.contains(active)&&active.id!=='authDialog') return;
+    const passwordEnabled=authMode==='signup'?authCapabilities.passwordSignup:authCapabilities.passwordLogin;
+    const target=passwordEnabled
+      ?document.getElementById('authEmail')
+      :(authCapabilities.googleOAuth?document.getElementById('authGoogle'):document.getElementById('authCancel'));
+    target?.focus();
+  }
+  function renderAuthModal(){
+    const passwordEnabled=authMode==='signup'?authCapabilities.passwordSignup:authCapabilities.passwordLogin;
+    const googleEnabled=authCapabilities.googleOAuth;
+    const title=document.getElementById('authTitle');
+    const description=document.getElementById('authDescription');
+    const status=document.getElementById('authCapabilityStatus');
+    const google=document.getElementById('authGoogle');
+    const divider=document.getElementById('authDivider');
+    const fields=document.getElementById('authPasswordFields');
+    const nameField=document.getElementById('authNameField');
+    const name=document.getElementById('authName');
+    const password=document.getElementById('authPass');
+    const signup=document.getElementById('authSignup');
+    const signin=document.getElementById('authSignin');
+    const modeSwitch=document.getElementById('authModeSwitch');
+    const cancel=document.getElementById('authCancel');
+    if(title) title.textContent=authMode==='signup'?'Join Randori Circle':'Sign in to Randori';
+    if(description) description.textContent=authMode==='signup'
+      ?'Create an account to join weekly practice pairings.'
+      :'Access your private pairing history and practice rooms.';
+    if(status) status.textContent=authStatusMessage();
+    if(google){ google.hidden=!authCapabilitiesLoaded||!googleEnabled; google.disabled=authBusy||!authCapabilitiesLoaded; }
+    if(fields) fields.hidden=!authCapabilitiesLoaded||!passwordEnabled;
+    if(divider) divider.hidden=!authCapabilitiesLoaded||!googleEnabled||!passwordEnabled;
+    if(nameField) nameField.hidden=authMode!=='signup'||!passwordEnabled;
+    if(name) name.required=authMode==='signup'&&passwordEnabled;
+    if(password){
+      password.minLength=authMode==='signup'?10:0;
+      password.autocomplete=authMode==='signup'?'new-password':'current-password';
+      password.placeholder=authMode==='signup'?'At least 10 characters':'Your password';
+    }
+    if(signup){
+      signup.hidden=!authCapabilitiesLoaded||authMode!=='signup'||!authCapabilities.passwordSignup;
+      signup.disabled=authBusy||!authCapabilitiesLoaded;
+      signup.textContent=authBusy&&authMode==='signup'?'Creating account…':'Create account';
+    }
+    if(signin){
+      signin.hidden=!authCapabilitiesLoaded||authMode!=='signin'||!authCapabilities.passwordLogin;
+      signin.disabled=authBusy||!authCapabilitiesLoaded;
+      signin.textContent=authBusy&&authMode==='signin'?'Signing in…':'Sign in';
+    }
+    const alternateAvailable=authMode==='signup'?authCapabilities.passwordLogin:authCapabilities.passwordSignup;
+    if(modeSwitch){
+      modeSwitch.hidden=!authCapabilitiesLoaded||!alternateAvailable;
+      modeSwitch.disabled=authBusy;
+      modeSwitch.textContent=authMode==='signup'?'Already a member? Sign in':'New here? Create an account';
+    }
+    for(const input of document.querySelectorAll('#authPasswordFields input')) input.disabled=authBusy||!authCapabilitiesLoaded||!passwordEnabled;
+    if(cancel) cancel.disabled=false;
+    document.getElementById('authForm')?.setAttribute('aria-busy',authBusy?'true':'false');
+    updateAuthEntryPoints();
+  }
+  async function loadAuthCapabilities(){
+    const controller=new AbortController();
+    const timeout=setTimeout(()=>controller.abort(),AUTH_CAPABILITY_TIMEOUT_MS);
+    try{
+      const response=await fetch('/api/auth/capabilities',{method:'GET',credentials:'same-origin',cache:'no-store',signal:controller.signal});
+      if(!response.ok) throw new Error('capabilities unavailable');
+      authCapabilities=parseAuthCapabilities(await response.json());
+      authCapabilitiesFailed=false;
+    }catch{
+      authCapabilities=CLOSED_AUTH_CAPABILITIES;
+      authCapabilitiesFailed=true;
+      if(authMode==='signup') authMode='signin';
+    }finally{
+      clearTimeout(timeout);
+      authCapabilitiesLoaded=true;
+      authMode=resolvedAuthMode(authMode);
+      renderAuthModal();
+      focusAuthControl();
+    }
+    return authCapabilities;
+  }
+  function resolvedAuthMode(mode){
+    const requested=mode==='signup'?'signup':'signin';
+    if(requested==='signup'&&!authCapabilitiesLoaded) return 'signup';
+    return requested==='signup'&&(authCapabilities.passwordSignup||authCapabilities.googleOAuth)
+      ?'signup'
+      :'signin';
+  }
+  function setAuthMode(mode){
+    authMode=resolvedAuthMode(mode);
+    clearAuthValidation();
+    renderAuthModal();
+    focusAuthControl();
+  }
+  function openAuthModal(mode='signin',{message=''}={}){
+    const overlay=document.getElementById('authOverlay');
+    if(!overlay) return;
+    const active=document.activeElement;
+    if(active&&active!==document.body&&!overlay.contains(active)) authReturnFocus=active;
+    authMode=resolvedAuthMode(mode);
+    clearAuthValidation({clearError:false});
+    setAuthError(message);
+    overlay.classList.add('show');
+    overlay.setAttribute('aria-hidden','false');
+    renderAuthModal();
+    document.getElementById('authDialog')?.focus();
+    Promise.resolve(authCapabilitiesPromise).finally(()=>focusAuthControl());
+  }
+  function abortAuthRequest(){
+    const active=authRequest;
+    authRequest=null;
+    if(active) active.controller.abort();
+    if(authBusy){
+      authBusy=false;
+      renderAuthModal();
+    }
+  }
+  function closeAuthModal(){
+    const overlay=document.getElementById('authOverlay');
+    if(!overlay) return;
+    abortAuthRequest();
+    overlay.classList.remove('show');
+    overlay.setAttribute('aria-hidden','true');
+    clearAuthValidation();
+    const password=document.getElementById('authPass');
+    if(password) password.value='';
+    const returnFocus=authReturnFocus;
+    authReturnFocus=null;
+    if(returnFocus&&returnFocus.isConnected) setTimeout(()=>returnFocus.focus(),0);
+  }
+  function setAuthBusy(busy){
+    authBusy=!!busy;
+    renderAuthModal();
+  }
+  function authDialogKeydown(event){
+    const overlay=document.getElementById('authOverlay');
+    if(!overlay?.classList.contains('show')) return;
+    if(event.key==='Escape'){
+      event.preventDefault();
+      closeAuthModal();
+      return;
+    }
+    if(event.key!=='Tab') return;
+    const focusable=[...overlay.querySelectorAll('button:not([disabled]):not([hidden]), input:not([disabled]):not([hidden])')]
+      .filter(element=>element.getClientRects().length>0);
+    if(!focusable.length){ event.preventDefault(); document.getElementById('authDialog')?.focus(); return; }
+    const first=focusable[0];
+    const last=focusable[focusable.length-1];
+    if(event.shiftKey&&document.activeElement===first){ event.preventDefault(); last.focus(); }
+    else if(!event.shiftKey&&document.activeElement===last){ event.preventDefault(); first.focus(); }
+  }
+  // Centralized auth dialog entry points keep capability, focus, and dismissal state consistent.
+  document.getElementById('authBtn').onclick=()=>openAuthModal('signin');
+  document.getElementById('authCancel').onclick=()=>closeAuthModal();
+  document.getElementById('authModeSwitch').onclick=()=>setAuthMode(authMode==='signup'?'signin':'signup');
+  document.getElementById('authOverlay').onclick=(event)=>{ if(event.target===event.currentTarget) closeAuthModal(); };
+  document.getElementById('authOverlay').addEventListener('keydown',authDialogKeydown);
+  for(const input of document.querySelectorAll('#authPasswordFields input')){
+    input.addEventListener('input',()=>{
+      input.removeAttribute('aria-invalid');
+      if(document.getElementById('authErr')?.textContent) setAuthError('');
+    });
+  }
   (() => { const _wireOut = (id)=>{ const b=document.getElementById(id); if(!b||b._wired) return; b._wired=true; b.onclick=()=>{ const main=document.getElementById('signOutBtn'); if(main&&main.onclick) return main.onclick(); }; }; _wireOut('dashSignOut'); _wireOut('psSignOut'); _wireOut('meSignOut');
         const ml=document.getElementById('meLabel'); const mm=document.getElementById('meMenu'); if(ml&&mm&&!ml._menuWired){ ml._menuWired=true; ml.addEventListener('click', (e)=>{ e.stopPropagation(); mm.style.display=mm.style.display==='none'||!mm.style.display?'block':'none'; }); document.addEventListener('click', (e)=>{ if(!mm.contains(e.target)&&e.target!==ml) mm.style.display='none'; }); }
       })();
@@ -1459,37 +1696,78 @@ async function refreshMe(){
     }catch{}
   }
   setInterval(()=>{ if(me) checkSkippedBanner(); }, 15000);
-  async function doSignup(){
-    const signupBtn=document.getElementById('authSignup'); const origSignup=signupBtn?signupBtn.innerHTML:''; if(signupBtn){ signupBtn.disabled=true; signupBtn.innerHTML='Signing up… <span class="spinner spinner-sm" style="display:inline-block;vertical-align:middle"></span>'; }
-    const email=document.getElementById('authEmail').value.trim();
-    const name=document.getElementById('authName').value.trim()||email.split('@')[0];
-    const pass=document.getElementById('authPass').value;
-    if(!email||!pass){ document.getElementById('authErr').textContent='email + password required'; return; }
-    try{
-      const data= await fetch('/api/auth/signup',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({email,password:pass,name})}).then(r=>r.json().then(j=>{ if(!r.ok) throw j; return j;}));
-      localStorage.removeItem(TOKEN_KEY); localStorage.setItem(ME_KEY,JSON.stringify(data.user)); me=data.user;
-      document.getElementById('authOverlay').classList.remove('show'); try{updateAuthUI();}catch{} try{renderHistory();}catch{} toast(`welcome, ${me.name}`);
-        setTimeout(()=>{ try{ if(window._randori_journey&&window._randori_journey.routeByAuth) window._randori_journey.routeByAuth(); }catch{} setTimeout(()=>{ location.reload(); }, 350); }, 200);
-    }catch(err){ document.getElementById('authErr').textContent=err.error||err.message||'signup failed'; }
-    finally{ const b=document.getElementById('authSignup'); if(b){ b.disabled=false; b.innerHTML=origSignup||'Sign up'; } }
+  function authFailureMessage(error,mode){
+    const code=String(error?.error||error?.message||'');
+    if(code==='email already registered') return 'That email already has an account. Sign in instead.';
+    if(code==='invalid credentials') return 'Email or password is incorrect.';
+    if(code.includes('temporarily unavailable')) return mode==='signup'
+      ?'Account creation is temporarily unavailable. Try again.'
+      :'Sign in is temporarily unavailable. Try again.';
+    if(code.includes('too many')) return 'Too many attempts. Wait a few minutes and try again.';
+    if(code.includes('cross-origin')||code.includes('same-origin')) return 'This sign-in request was rejected. Refresh and try again.';
+    return code||(mode==='signup'?'Account creation failed. Try again.':'Sign in failed. Try again.');
   }
-  async function doSignin(){
-    const signinBtn=document.getElementById('authSignin'); const origSignin=signinBtn?signinBtn.innerHTML:''; if(signinBtn){ signinBtn.disabled=true; signinBtn.innerHTML='Signing in… <span class="spinner spinner-sm"></span>'; }
-    const email=document.getElementById('authEmail').value.trim();
-    const pass=document.getElementById('authPass').value;
-    if(!email||!pass){ document.getElementById('authErr').textContent='email + password required'; return; }
-    try{
-      const data= await fetch('/api/auth/login',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({email,password:pass})}).then(r=>r.json().then(j=>{ if(!r.ok) throw j; return j;}));
-      localStorage.removeItem(TOKEN_KEY); localStorage.setItem(ME_KEY,JSON.stringify(data.user)); me=data.user;
-      document.getElementById('authOverlay').classList.remove('show'); try{updateAuthUI();}catch{} try{renderHistory();}catch{} toast(`signed in as ${me.name}`);
-        setTimeout(()=>{ try{ if(window._randori_journey&&window._randori_journey.routeByAuth) window._randori_journey.routeByAuth(); }catch{} setTimeout(()=>{ location.reload(); }, 350); }, 200);
-    }catch(err){ document.getElementById('authErr').textContent=err.error||err.message||'login failed'; }
-    finally{ const b=document.getElementById('authSignin'); if(b){ b.disabled=false; b.innerHTML=origSignin||'Sign in'; } }
+  function validateAuthForm(mode){
+    const emailInput=document.getElementById('authEmail');
+    const nameInput=document.getElementById('authName');
+    const passwordInput=document.getElementById('authPass');
+    for(const input of [emailInput,nameInput,passwordInput]) input.removeAttribute('aria-invalid');
+    const email=emailInput.value.trim().toLowerCase();
+    const name=nameInput.value.trim();
+    const password=passwordInput.value;
+    if(!email||!emailInput.validity.valid){ setAuthError('Enter a valid email address.'); emailInput.setAttribute('aria-invalid','true'); emailInput.focus(); return null; }
+    if(mode==='signup'&&(name.length<2||name.length>32)){ setAuthError('Display name must be 2–32 characters.'); nameInput.setAttribute('aria-invalid','true'); nameInput.focus(); return null; }
+    if(!password){ setAuthError('Enter your password.'); passwordInput.setAttribute('aria-invalid','true'); passwordInput.focus(); return null; }
+    if(mode==='signup'&&(password.length<10||password.length>128)){
+      setAuthError('Password must be 10–128 characters.'); passwordInput.setAttribute('aria-invalid','true'); passwordInput.focus(); return null;
+    }
+    setAuthError('');
+    return mode==='signup'?{email,password,name}:{email,password};
   }
-  document.getElementById('authSignup').onclick=doSignup;
-  document.getElementById('authSignin').onclick=doSignin;
+  async function submitAuth(mode){
+    if(authBusy||!authCapabilitiesLoaded) return;
+    const enabled=mode==='signup'?authCapabilities.passwordSignup:authCapabilities.passwordLogin;
+    if(!enabled) return;
+    const body=validateAuthForm(mode);
+    if(!body) return;
+    const request={controller:new AbortController()};
+    authRequest=request;
+    setAuthBusy(true);
+    try{
+      const response=await fetch(`/api/auth/${mode==='signup'?'signup':'login'}`,{
+        method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify(body),signal:request.controller.signal,
+      });
+      let data=null;
+      try{ data=await response.json(); }catch{}
+      if(authRequest!==request) return;
+      if(!response.ok||!data?.user) throw data||new Error('authentication unavailable');
+      authRequest=null;
+      setAuthBusy(false);
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.setItem(ME_KEY,JSON.stringify(data.user));
+      me=data.user;
+      closeAuthModal();
+      try{ updateAuthUI(); }catch{}
+      try{ renderHistory(); }catch{}
+      toast(mode==='signup'?`welcome, ${me.name}`:`signed in as ${me.name}`);
+      setTimeout(()=>{ try{ window._randori_journey?.routeByAuth?.(); }catch{} },0);
+    }catch(error){
+      if(authRequest!==request||request.controller.signal.aborted) return;
+      setAuthError(authFailureMessage(error,mode));
+    }finally{
+      if(authRequest===request){
+        authRequest=null;
+        setAuthBusy(false);
+      }
+    }
+  }
+  document.getElementById('authForm').addEventListener('submit',event=>{
+    event.preventDefault();
+    submitAuth(authMode);
+  });
   const authGoogleBtn=document.getElementById('authGoogle');
   if(authGoogleBtn){ authGoogleBtn.onclick=()=>{
+    if(authBusy||!authCapabilitiesLoaded||!authCapabilities.googleOAuth) return;
     const match=(window.location.pathname||'').match(/^\/join\/(week_[1-9]\d*_pair_[1-9]\d*)$/);
     const ids=match?.[1]?.match(/^week_(\d+)_pair_(\d+)$/);
     const returnTo=ids&&Number.isSafeInteger(Number(ids[1]))&&Number.isSafeInteger(Number(ids[2]))?`/join/${match[1]}`:'';
@@ -1502,8 +1780,7 @@ async function refreshMe(){
       const googleSuccess=qp.get('google')==='success';
       const ge=qp.get('google_error');
       if(ge){
-        // show auth overlay with error
-        setTimeout(()=>{ document.getElementById('authOverlay').classList.add('show'); document.getElementById('authErr').textContent='Google sign-in failed: '+ge; }, 300);
+        setTimeout(()=>openAuthModal('signin',{message:'Google sign-in failed. Please try again.'}),300);
       }
       if(googleSuccess || ge){
         qp.delete('google'); qp.delete('google_error');
@@ -1516,8 +1793,15 @@ async function refreshMe(){
     }catch{}
   })();
   // expose for debug
-  window._randori_auth={ get token(){return ''}, get me(){return me}, get signedIn(){return !!me}, api, refreshMe };
+  window._randori_auth={
+    get token(){return ''}, get me(){return me}, get signedIn(){return !!me},
+    get capabilities(){return {...authCapabilities}},
+    api,refreshMe,openModal:openAuthModal,closeModal:closeAuthModal,
+  };
   // initial UI + me refresh
+  updateAuthEntryPoints();
+  renderAuthModal();
+  authCapabilitiesPromise=loadAuthCapabilities();
   updateAuthUI();
     // immediate UI to hide sign-in before network returns
   try{ updateAuthUI(); }catch{}
@@ -4069,7 +4353,7 @@ def allow(key, limit=5):
   }
 
   document.getElementById('welcomeStartBtn')?.addEventListener('click', ()=>{
-    document.getElementById('authOverlay')?.classList.add('show');
+    openAuthModal('signup');
     localStorage.setItem(ONB_DISMISSED_BANNER,'1');
     document.getElementById('welcomeBanner').style.display='none';
     if(onboardStep===0) startOnboarding(2);
@@ -4211,15 +4495,8 @@ def allow(key, limit=5):
   window._randori_nav = { showView, hideAllViews };
 
   // Landing CTA wiring
-  document.getElementById('landingSignup')?.addEventListener('click', ()=>{
-    document.getElementById('authOverlay')?.classList.add('show');
-    // pre-select signup tab
-    document.getElementById('authTitle').textContent='Join Randori Circle';
-  });
-  document.getElementById('landingSignin')?.addEventListener('click', ()=>{
-    document.getElementById('authOverlay')?.classList.add('show');
-    document.getElementById('authTitle').textContent='Sign in to Randori';
-  });
+  document.getElementById('landingSignup')?.addEventListener('click', ()=>window._randori_auth?.openModal?.('signup'));
+  document.getElementById('landingSignin')?.addEventListener('click', ()=>window._randori_auth?.openModal?.('signin'));
 
   // Profile setup helpers
   const PALETTE=['#e6c07a','#9cc0b5','#d68a8a','#a3b5d6','#c7b29a','#8ec0a5','#d3a0cb','#9aa9c9','#e3c9b2','#82b6b7','#b8a8d8','#d9b6a3'];
@@ -5497,8 +5774,7 @@ def allow(key, limit=5):
       if(tabsEl) tabsEl.style.display='flex';
       if(joinRoom){
         window._randori_pending_join_room=joinRoom;
-        const overlay=document.getElementById('authOverlay');
-        if(overlay){ overlay.classList.add('show'); overlay.setAttribute('aria-hidden','false'); }
+        window._randori_auth?.openModal?.('signin');
         const title=document.getElementById('authTitle'); if(title) title.textContent='Sign in to join your pairing room';
       }
       // hide circle tab for non-admin anon

@@ -121,6 +121,67 @@ function registrationAllowed(email){
   return process.env.NODE_ENV!=='production' && allowlist.length===0;
 }
 
+function isLoopbackHost(value){
+  const raw=String(value||'').split(',')[0].trim();
+  if(!raw) return false;
+  try{
+    const hostname=new URL(`http://${raw}`).hostname.replace(/^\[|\]$/g,'').toLowerCase();
+    return hostname==='localhost'||hostname==='127.0.0.1'||hostname==='::1';
+  }catch{
+    return false;
+  }
+}
+
+function isLoopbackAddress(value){
+  const address=String(value||'').trim().toLowerCase();
+  return address==='127.0.0.1'||address==='::1'||address==='::ffff:127.0.0.1';
+}
+
+/**
+ * Password registration is deliberately a local-development capability, not
+ * a general non-production escape hatch. Keep this predicate shared by the
+ * discovery endpoint and the mutation so the UI can never advertise more
+ * authority than the server will enforce.
+ */
+export function localPasswordSignupEnabled(req){
+  if(process.env.NODE_ENV!=='development'
+    ||process.env.RANDORI_LOCAL_RUNTIME!=='true'
+    ||process.env.ALLOW_OPEN_SIGNUP!=='true'
+    ||process.env.CIRCLE_MEMBERSHIP_ENABLED==='true'
+    ||process.env.VERCEL||process.env.VERCEL_ENV||process.env.VERCEL_URL
+    ||String(process.env.TURSO_AUTH_TOKEN||'').trim()) return false;
+  let databaseUrl;
+  try{ databaseUrl=new URL(String(process.env.TURSO_DATABASE_URL||'')); }
+  catch{ return false; }
+  if(databaseUrl.protocol!=='file:'||databaseUrl.host||databaseUrl.username||databaseUrl.password
+    ||databaseUrl.search||databaseUrl.hash) return false;
+  let appUrl,requestUrl;
+  try{
+    appUrl=new URL(String(process.env.APP_URL||''));
+    requestUrl=new URL(`http://${String(req?.headers?.host||'')}`);
+  }catch{ return false; }
+  if(appUrl.protocol!=='http:'||appUrl.username||appUrl.password||appUrl.search||appUrl.hash
+    ||(appUrl.pathname!=='/'&&appUrl.pathname!=='')||!isLoopbackHost(appUrl.host)
+    ||appUrl.host.toLowerCase()!==requestUrl.host.toLowerCase()) return false;
+  return isLoopbackHost(req?.headers?.host)&&isLoopbackAddress(req?.socket?.remoteAddress);
+}
+
+function handleCapabilities(req,res){
+  res.setHeader('Cache-Control','no-store');
+  if(req.method!=='GET') return res.status(405).json({error:'GET only'});
+  const passwordSignup=localPasswordSignupEnabled(req);
+  return res.json({
+    ok:true,
+    capabilities:{
+      passwordLogin:true,
+      passwordSignup,
+      googleOAuth:Boolean(String(process.env.GOOGLE_CLIENT_ID||'').trim()
+        &&String(process.env.GOOGLE_CLIENT_SECRET||'').trim()),
+    },
+    registrationMode:passwordSignup?'local_open':'private_beta',
+  });
+}
+
 function localFirstUserAdminEnabled(){
   if(process.env.NODE_ENV!=='development'||process.env.RANDORI_LOCAL_RUNTIME!=='true'
     ||process.env.RANDORI_LOCAL_FIRST_USER_ADMIN!=='true'||process.env.TURSO_AUTH_TOKEN) return false;
@@ -171,7 +232,7 @@ function getEndpoint(req){
 // --- signup ---
 async function handleSignup(req,res){
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' });
-  if(process.env.NODE_ENV==='production'){
+  if(!localPasswordSignupEnabled(req)){
     return res.status(503).json({error:'password signup is disabled during the private beta; use Google sign-in'});
   }
   const { email, password, name } = req.body || {};
@@ -498,6 +559,7 @@ export default async function handler(req,res){
   }
   if (ep.includes('start')) return handleGoogleStart(req,res);
   if (ep.includes('callback')) return handleGoogleCallback(req,res);
+  if (ep === 'capabilities' || ep.includes('capabilities')) return handleCapabilities(req,res);
   if (ep === 'signup' || ep.includes('signup')) return handleSignup(req,res);
   if (ep === 'login' || ep.includes('login')) return handleLogin(req,res);
   if (ep === 'me' || ep.includes('me')) return handleMe(req,res);
@@ -505,9 +567,10 @@ export default async function handler(req,res){
   // fallback try to infer from original path: /api/auth/google/start etc
   if (urlPath.includes('/google/start')) return handleGoogleStart(req,res);
   if (urlPath.includes('/google/callback') || urlPath.includes('google-callback')) return handleGoogleCallback(req,res);
+  if (urlPath.includes('/capabilities')) return handleCapabilities(req,res);
   if (urlPath.includes('signup')) return handleSignup(req,res);
   if (urlPath.includes('login')) return handleLogin(req,res);
   if (urlPath.includes('logout')) return handleLogout(req,res);
   if (urlPath.includes('/me')) return handleMe(req,res);
-  return res.status(404).json({ error:`unknown auth endpoint '${ep}'`, available:['signup','login','logout','me','google/start','google/callback'], hint:'endpoint query param ?endpoint=signup etc' });
+  return res.status(404).json({ error:`unknown auth endpoint '${ep}'`, available:['capabilities','signup','login','logout','me','google/start','google/callback'], hint:'endpoint query param ?endpoint=signup etc' });
 }

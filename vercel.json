@@ -23,6 +23,10 @@
   ],
   "rewrites": [
     {
+      "source": "/api/auth/capabilities",
+      "destination": "/api/auth?endpoint=capabilities"
+    },
+    {
       "source": "/api/auth/signup",
       "destination": "/api/auth?endpoint=signup"
     },

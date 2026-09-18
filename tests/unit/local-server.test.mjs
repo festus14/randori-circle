@@ -463,6 +463,15 @@ test('the real auth handler signs up locally and persists the account and sessio
   assert.match(index.headers.get('content-type')||'',/^text\/html/);
   assert.match(await index.text(),/<title>Randori Circle<\/title>/);
 
+  const capabilities=await fetch(new URL('/api/auth/capabilities',first.url));
+  assert.equal(capabilities.status,200);
+  assert.equal(capabilities.headers.get('cache-control'),'no-store');
+  assert.deepEqual(await capabilities.json(),{
+    ok:true,
+    capabilities:{passwordLogin:true,passwordSignup:true,googleOAuth:false},
+    registrationMode:'local_open',
+  });
+
   const health=await fetch(new URL('/api/health',first.url));
   assert.equal(health.status,200);
   assert.equal((await health.json()).ok,true);
@@ -657,6 +666,10 @@ test('the adapter preserves route query, dynamic ids, redirects, cookies, status
   assert.match(auth.headers.get('set-cookie')||'',/first=one/);
   assert.match(auth.headers.get('set-cookie')||'',/second=two/);
 
+  const capabilities=await fetch(new URL('/api/auth/capabilities',runtime.url));
+  assert.equal(capabilities.status,201);
+  assert.equal((await capabilities.json()).query.endpoint,'capabilities');
+
   const invitation=await fetch(new URL('/api/invitations/invite-123?view=compact',runtime.url),{
     redirect:'manual',
   });
@@ -668,6 +681,7 @@ test('the adapter preserves route query, dynamic ids, redirects, cookies, status
       query:{tag:['one','two'],plain:'value',endpoint:'signup'},
       body:{email:'adapter@example.test'},
     },
+    {kind:'auth',method:'GET',url:'/api/auth/capabilities',query:{endpoint:'capabilities'},body:{}},
     {kind:'invitations',query:{view:'compact',endpoint:'invitations',id:'invite-123'}},
   ]);
 });
