@@ -434,7 +434,7 @@ test('profile, pair schedule, and messages enforce ownership while catalogue and
     agreed_time: null,
     updated_at: 'now',
   };
-  let scheduleUpserts = 0;
+  let scheduleWrites = 0;
   const profileRow = {
     id: 2, email: 'user@example.test', display_name: 'Updated User', color: '#123456',
     is_available: 1, is_admin: 0, bio: 'Ready', tz: 'UTC', interview_focus: 'system', leetcode_handle: 'coder',
@@ -443,21 +443,28 @@ test('profile, pair schedule, and messages enforce ownership while catalogue and
     if (sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')) return rows([{ id: 1, email: 'admin@example.test', is_admin: 1 }]);
     if (sql.includes('SELECT id,user_a_id,user_b_id')) return rows([{ id: 20, user_a_id: 2, user_b_id: 4, is_ai_pair: 0 }]);
     if (sql.includes('SELECT id,email,display_name,color') || sql.includes('SELECT id,email,display_name,color,is_available')) return rows([profileRow]);
-    if (sql.includes('INSERT INTO pair_schedules') && sql.includes('ON CONFLICT')) {
-      scheduleUpserts += 1;
-      const [weekId, pairId, proposed, agreed, hasProposed, hasAgreed] = args;
+    if (sql.startsWith("PRAGMA table_info('pair_schedules')")) return rows([
+      'week_id','pair_group_id','proposed_times','agreed_time','created_at','updated_at',
+    ].map(name=>({name})));
+    if (sql.startsWith("PRAGMA index_list('pair_schedules')")) return rows([{name:'uq_pair_schedules_week_pair',unique:1}]);
+    if (sql.startsWith('PRAGMA index_info')) return rows([{seqno:0,name:'week_id'},{seqno:1,name:'pair_group_id'}]);
+    if (sql.includes('UPDATE pair_schedules') && sql.includes('RETURNING proposed_times')) {
+      scheduleWrites += 1;
+      const [proposed,agreed,updatedAt,weekId,pairId,oldProposed,oldAgreed,oldUpdatedAt]=args;
+      if(oldProposed!==scheduleState.proposed_times || oldAgreed!==scheduleState.agreed_time || oldUpdatedAt!==scheduleState.updated_at){
+        return rows([]);
+      }
       scheduleState = {
         ...scheduleState,
         week_id: weekId,
         pair_group_id: pairId,
-        proposed_times: hasProposed ? proposed : scheduleState.proposed_times,
-        agreed_time: hasAgreed ? agreed : scheduleState.agreed_time,
+        proposed_times: proposed,
+        agreed_time: agreed,
+        updated_at: updatedAt,
       };
-      return rows();
+      return rows([{...scheduleState}],{rowsAffected:1});
     }
-    if (sql.includes('SELECT id, week_id, pair_group_id, proposed_times')) return rows([{
-      ...scheduleState,
-    }]);
+    if (sql.includes('FROM pair_schedules WHERE week_id=? AND pair_group_id=? LIMIT 1')) return rows([{...scheduleState}]);
     if (sql.includes('INSERT INTO pair_messages') && sql.includes('RETURNING id')) return rows([{ id: 40 }]);
     if (sql.includes('FROM pair_messages pm') && sql.includes('WHERE pm.id=')) return rows([{
       id: 40, sender_id: 2, sender_name: 'Updated User', sender_color: '#123456', message: 'Sunday works', created_at: 'now',
@@ -482,27 +489,38 @@ test('profile, pair schedule, and messages enforce ownership while catalogue and
   assert.equal(profile.status, 200);
   assert.equal(profile.body.user.interview_focus, 'system');
 
+  const initialSchedule = await invoke(dataHandler, {
+    url: '/api/schedule?room_id=week_10_pair_20', query: { endpoint: 'schedule', room_id:'week_10_pair_20' }, headers,
+  });
+  assert.equal(initialSchedule.status,200);
+  assert.deepEqual(initialSchedule.body.schedule.proposals,[]);
+
   const schedule = await invoke(dataHandler, {
     method: 'POST', url: '/api/schedule', query: { endpoint: 'schedule' }, headers,
-    body: { week_id: 10, pair_id: 20, proposed_times: ['2026-09-20T08:00:00Z'], agreed_time: '2026-09-20T08:00:00Z' },
+    body: { room_id:'week_10_pair_20', action:'propose', base_version:initialSchedule.body.schedule.version, instant:'2026-09-20T08:00:00+01:00' },
   });
   assert.equal(schedule.status, 200);
-  assert.deepEqual(schedule.body.schedule.proposed_times, ['2026-09-20T08:00:00Z']);
-  assert.equal(schedule.body.schedule.agreed_time, '2026-09-20T08:00:00Z');
+  assert.equal(schedule.body.schedule.proposals[0].instant,'2026-09-20T07:00:00.000Z');
+  assert.equal(schedule.body.schedule.proposals[0].proposed_by,2);
+
+  const accepted = await invoke(dataHandler, {
+    method: 'POST', url: '/api/schedule', query: { endpoint: 'schedule' }, headers,
+    body: { room_id:'week_10_pair_20', action:'accept', base_version:schedule.body.schedule.version, proposal_id:schedule.body.schedule.proposals[0].proposal_id },
+  });
+  assert.equal(accepted.body.schedule.agreed_time,'2026-09-20T07:00:00.000Z');
 
   const clearedAgreement = await invoke(dataHandler, {
     method: 'POST', url: '/api/schedule', query: { endpoint: 'schedule' }, headers,
-    body: { week_id: 10, pair_id: 20, agreed_time: '' },
+    body: { room_id:'week_10_pair_20', action:'clear', base_version:accepted.body.schedule.version },
   });
-  assert.deepEqual(clearedAgreement.body.schedule.proposed_times, ['2026-09-20T08:00:00Z']);
-  assert.equal(clearedAgreement.body.schedule.agreed_time, null);
+  assert.equal(clearedAgreement.body.schedule.agreed_time,null);
 
-  const clearedProposals = await invoke(dataHandler, {
+  const removed = await invoke(dataHandler, {
     method: 'POST', url: '/api/schedule', query: { endpoint: 'schedule' }, headers,
-    body: { week_id: 10, pair_id: 20, proposed_times: [] },
+    body: { room_id:'week_10_pair_20', action:'remove', base_version:clearedAgreement.body.schedule.version, proposal_id:schedule.body.schedule.proposals[0].proposal_id },
   });
-  assert.deepEqual(clearedProposals.body.schedule.proposed_times, []);
-  assert.equal(scheduleUpserts, 3);
+  assert.deepEqual(removed.body.schedule.proposals,[]);
+  assert.equal(scheduleWrites,4);
 
   const message = await invoke(dataHandler, {
     method: 'POST', url: '/api/messages', query: { endpoint: 'messages' }, headers,
@@ -815,6 +833,7 @@ test('pair run feed strictly validates cursors and authorizes the exact canonica
 test('my-pair returns only the latest week membership and a canonical room id', async () => {
   let paired = true;
   let thirdMember = false;
+  let poisonedSchedule = false;
   executeHandler = sql => {
     if (sql.includes('FROM pairing_weeks WHERE COALESCE(is_demo,0)=0 ORDER BY id DESC LIMIT 1')) {
       return rows([{ id: 10, week_label: '2026-W38', week_start: '2026-09-20', focus: 'both' }]);
@@ -846,6 +865,9 @@ test('my-pair returns only the latest week membership and a canonical room id', 
     if (sql.includes('SELECT id, display_name, color, tz, interview_focus FROM auth_accounts')) {
       return rows([{ id: 2, display_name: 'User', color: '#123456', tz: 'UTC', interview_focus: 'both' }]);
     }
+    if (sql.includes('FROM pair_schedules WHERE week_id=')) {
+      return rows(poisonedSchedule?[{proposed_times:'not-json',agreed_time:null,updated_at:'now'}]:[]);
+    }
     return rows();
   };
 
@@ -866,6 +888,13 @@ test('my-pair returns only the latest week membership and a canonical room id', 
   assert.equal(third.body.room_id, 'week_10_pair_20');
   assert.equal(third.body.pair.user_c_id, 2);
   assert.deepEqual(third.body.partners.map(member=>member.id),[4,5]);
+
+  poisonedSchedule = true;
+  const poisoned = await invoke(dataHandler, {
+    url: '/api/my-pair', query: { endpoint: 'my-pair' }, headers: { 'x-test-auth': 'user' },
+  });
+  assert.equal(poisoned.status,200);
+  assert.equal(poisoned.body.schedule,null,'invalid legacy schedule data must not take down the pair dashboard');
 
   paired = false;
   executed.length = 0;
@@ -1424,7 +1453,7 @@ test('data validation and access-control branches reject malformed or cross-pair
     [{ method: 'PUT', url: '/api/profile', query: { endpoint: 'profile' }, headers }, 405],
     [{ method: 'POST', url: '/api/profile', query: { endpoint: 'profile' }, headers, body: {} }, 400],
     [{ url: '/api/schedule', query: { endpoint: 'schedule' }, headers }, 400],
-    [{ url: '/api/schedule', query: { endpoint: 'schedule', week_id: 10, pair_id: 20 }, headers }, 403],
+    [{ url: '/api/schedule', query: { endpoint: 'schedule', room_id:'week_10_pair_20' }, headers }, 403],
     [{ method: 'POST', url: '/api/messages', query: { endpoint: 'messages' }, headers, body: {} }, 400],
     [{ method: 'POST', url: '/api/messages', query: { endpoint: 'messages' }, headers, body: { week_id: 10, pair_id: 20, message: 'no access' } }, 403],
     [{ method: 'POST', url: '/api/questions', query: { endpoint: 'questions' }, headers, body: {} }, 405],

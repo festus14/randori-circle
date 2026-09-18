@@ -681,7 +681,7 @@ p{margin:0}
         </div>
         <div style="margin:6px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Next session</h3><div style="flex:1;height:1px;background:var(--border)"></div></div>
         <div id="dashPairArea"></div>
-        <div id="dashScheduleArea"></div>
+        <div id="dashScheduleArea" data-testid="schedule-area"></div>
         <div style="margin:14px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">History</h3><div style="flex:1;height:1px;background:var(--border)"></div><button id="dashHistAll" class="pill" style="font-size:11px">full history →</button></div>
         <div id="dashHistoryArea" class="card" style="padding:10px"><div id="dashHistList" class="small muted">Loading recent…</div></div>
         <div style="margin:14px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Recent runs</h3><div style="flex:1;height:1px;background:var(--border)"></div><button id="recentRunsRefresh" class="pill" style="font-size:11px">refresh</button></div>
@@ -1015,6 +1015,9 @@ async function refreshMe(){
       try{ localStorage.removeItem(ME_KEY); }catch{}
     }
     updateAuthUI();
+    try{
+      window.dispatchEvent(new CustomEvent('randori:auth-refreshed',{detail:{signedIn:!!me,userId:me?.id||me?.uid||null}}));
+    }catch{}
   }
   const ADMIN_EMAIL='festusomole14@gmail.com';
   function isAdmin(){ return !!(me && (me.is_admin || me.isAdmin || (me.email && me.email.toLowerCase()===ADMIN_EMAIL))); }
@@ -3474,6 +3477,7 @@ def allow(key, limit=5):
   const viewProfile=document.getElementById('view-profile-setup');
   const viewDashboard=document.getElementById('view-dashboard');
   const viewCircle=document.getElementById('view-circle');
+  const scheduleState={room:null,epoch:0,version:'',schedule:null,draft:'',draftRoom:null,people:new Map(),abort:null,inFlight:false,status:'waiting for pair'};
 
   function clearRequestedView(){
     try{
@@ -3486,6 +3490,7 @@ def allow(key, limit=5):
   }
 
   function hideAllViews(){
+    stopSchedulePolling({clear:true});
     document.querySelectorAll('.view').forEach(v=>v.style.display='none');
     document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   }
@@ -3617,6 +3622,7 @@ def allow(key, limit=5):
 
   async function showDashboard(){
     hideAllViews();
+    const dashboardEpoch=scheduleState.epoch;
     if(viewDashboard) viewDashboard.style.display='block';
     try{
       const pairEl=document.getElementById('dashPairArea');
@@ -3645,7 +3651,9 @@ def allow(key, limit=5):
       const r=await fetch('/api/my-pair',{credentials:'same-origin'});
       const j=await r.json().catch(()=>({}));
       if(!r.ok) throw j;
+      if(dashboardEpoch!==scheduleState.epoch||viewDashboard?.style.display==='none') return;
       if(!j.paired){
+        currentPair=null; currentWeekId=null;
         // even without pair, show deterministic join from last room — always visible
         const lastRoom = localStorage.getItem('randori-last-room') || window._randori_join_room;
         if(lastRoom){
@@ -3788,47 +3796,351 @@ def allow(key, limit=5):
     }));
   }
 
-  function renderSchedule(data){
-    const area=document.getElementById('dashScheduleArea');
-    const sched=data.schedule;
-    const pair=data.pair;
-    const weekId=data.week_id||data.week?.id;
-    const pgId=pair.pg_id||pair.id;
-    const proposed = sched?.proposed_times||[];
-    const agreed = sched?.agreed_time||'';
-    area.innerHTML=`
-      <div class="card"><div class="card-h"><h2>Agree a time</h2><span>${weekId? 'week '+weekId : ''}</span></div>
-      <div class="card-b" style="display:grid; gap:10px">
-        <div class="small muted">Propose a few slots that work — your partner picks, or set an exact time you both agree.</div>
-        <div id="proposedList" style="display:grid; gap:6px">${proposed.map((t,i)=>`<div class="row" style="justify-content:space-between; font-size:12.5px"><span class="kbd">${escapeHtml(t)}</span><button class="pill" data-agree="${escapeHtml(t)}" style="font-size:10px">✓ Agree this</button></div>`).join('')||'<span class="small muted">No proposals yet — add one below.</span>'}</div>
-        <div class="row"><input id="newProposed" class="input" placeholder="e.g. Tue 20:00 BST / 19:00 UTC, 45m" style="flex:1" /><button id="addProposed" class="btn secondary">Add slot</button></div>
-        ${agreed? `<div style="padding:8px 10px; background:var(--accent)22; border:1px solid var(--accent); border-radius:10px; font-size:12.5px"><b>Agreed:</b> ${escapeHtml(agreed)}</div>` : '<div class="small muted">No time agreed yet.</div>'}
-        <div class="row"><input id="agreedInput" class="input" placeholder="Set final time e.g. 2026-08-19T19:00:00Z or Tue 20:00 BST" style="flex:1"/><button id="setAgreed" class="btn">Save time</button></div>
-      </div></div>`;
-    document.getElementById('addProposed')?.addEventListener('click', async()=>{
-      const v=document.getElementById('newProposed').value.trim();
-      if(!v) return;
-      const updated=[...proposed, v];
-      await saveSchedule(weekId, pgId, {proposed_times:updated});
-    });
-    document.getElementById('setAgreed')?.addEventListener('click', async()=>{
-      const v=document.getElementById('agreedInput').value.trim();
-      if(!v) return;
-      await saveSchedule(weekId, pgId, {agreed_time:v});
-    });
-    area.querySelectorAll('[data-agree]')?.forEach(btn=>{ btn.addEventListener('click', async()=>{ const t=btn.dataset.agree; await saveSchedule(weekId, pgId, {agreed_time:t}); }); });
+  function canonicalScheduleRoom(value){
+    const match=/^week_([1-9]\d*)_pair_([1-9]\d*)$/.exec(String(value||''));
+    return !!match&&Number.isSafeInteger(Number(match[1]))&&Number.isSafeInteger(Number(match[2]));
   }
 
-  async function saveSchedule(weekId, pgId, payload){
+  function scheduleRoomFromPair(data){
+    const supplied=String(data?.room_id||'');
+    if(canonicalScheduleRoom(supplied)) return supplied;
+    const weekId=Number(data?.week_id||data?.week?.id);
+    const pairId=Number(data?.pair?.pg_id||data?.pair?.id);
+    const derived=`week_${weekId}_pair_${pairId}`;
+    return canonicalScheduleRoom(derived)?derived:null;
+  }
+
+  function normalizeSchedule(raw){
+    const source=raw&&typeof raw==='object'?raw:{};
+    const version=typeof source.version==='string'&&/^[a-f0-9]{64}$/.test(source.version)?source.version:'';
+    const seen=new Set();
+    const proposals=(Array.isArray(source.proposals)?source.proposals:[]).map(proposal=>{
+      if(!proposal||typeof proposal!=='object') return null;
+      const rawId=proposal.proposal_id;
+      const proposalId=typeof rawId==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(rawId)
+        ? rawId
+        : (Number.isSafeInteger(rawId)&&rawId>0?String(rawId):'');
+      if(!proposalId||seen.has(proposalId)) return null;
+      seen.add(proposalId);
+      const instantDate=new Date(String(proposal.instant||''));
+      const instant=Number.isNaN(instantDate.getTime())?null:instantDate.toISOString();
+      const legacy=proposal.legacy===true||!instant;
+      return {
+        proposal_id:proposalId,
+        value:String(proposal.value||proposal.instant||'').slice(0,300),
+        instant,
+        proposed_by:Number.isSafeInteger(Number(proposal.proposed_by))&&Number(proposal.proposed_by)>0?Number(proposal.proposed_by):null,
+        legacy,
+      };
+    }).filter(Boolean);
+    const agreedDate=new Date(String(source.agreed_time||''));
+    const agreedTime=Number.isNaN(agreedDate.getTime())?null:agreedDate.toISOString();
+    return {
+      version,
+      proposals,
+      agreed_time:agreedTime,
+      legacy_agreed_time:source.legacy_agreed_time?String(source.legacy_agreed_time).slice(0,300):null,
+    };
+  }
+
+  function rememberScheduleDraft(){
+    const input=document.querySelector('[data-testid="schedule-input"]');
+    if(input&&scheduleState.room&&scheduleState.draftRoom===scheduleState.room) scheduleState.draft=input.value;
+  }
+
+  function cancelScheduleRequest(invalidate=true){
+    if(invalidate) scheduleState.epoch+=1;
+    scheduleState.abort?.abort();
+    scheduleState.abort=null;
+    scheduleState.inFlight=false;
+  }
+
+  function stopSchedulePolling({clear=true,discardDraft=false}={}){
+    rememberScheduleDraft();
+    cancelScheduleRequest(true);
+    if(discardDraft){ scheduleState.draft=''; scheduleState.draftRoom=null; }
+    if(clear){
+      scheduleState.room=null; scheduleState.version=''; scheduleState.schedule=null; scheduleState.people=new Map();
+      const area=document.getElementById('dashScheduleArea');
+      if(area) area.replaceChildren();
+    }
+  }
+
+  function pairedDashboardRoom(){
+    const weekId=Number(currentWeekId);
+    const pairId=Number(currentPair?.pg_id||currentPair?.id);
+    const room=`week_${weekId}_pair_${pairId}`;
+    if(!window._randori_auth?.me||!canonicalScheduleRoom(room)) return null;
+    if(window._randori_authorized_room!==room) return null;
+    if(!viewDashboard||viewDashboard.style.display==='none'||document.visibilityState!=='visible') return null;
+    return room;
+  }
+
+  function localScheduleTime(instant){
+    const date=new Date(String(instant||''));
+    if(Number.isNaN(date.getTime())) return 'Invalid time';
     try{
-      const body={ week_id:weekId, pair_id:pgId, ...payload };
-      const r=await fetch('/api/schedule',{ method:'POST', credentials:'same-origin', headers:{'content-type':'application/json'}, body: JSON.stringify(body)});
-      const j=await r.json();
-      if(!r.ok) throw j;
-      // refresh dashboard part
-      showDashboard();
-      if(typeof toast==='function') toast('Time saved ✓');
-    }catch(e){ alert('Save time failed: '+(e.error||e.message)); }
+      return new Intl.DateTimeFormat(undefined,{
+        year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',timeZoneName:'short',
+      }).format(date);
+    }catch{ return date.toLocaleString(); }
+  }
+
+  function scheduleInstantFromLocal(value){
+    const match=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/.exec(String(value||''));
+    if(!match) return null;
+    const expected={
+      year:Number(match[1]),month:Number(match[2])-1,day:Number(match[3]),hour:Number(match[4]),minute:Number(match[5]),
+      second:Number(match[6]||0),millisecond:Number(String(match[7]||'').padEnd(3,'0')||0),
+    };
+    const date=new Date(String(value));
+    if(Number.isNaN(date.getTime())) return null;
+    if(
+      date.getFullYear()!==expected.year||date.getMonth()!==expected.month||date.getDate()!==expected.day||
+      date.getHours()!==expected.hour||date.getMinutes()!==expected.minute||date.getSeconds()!==expected.second||
+      date.getMilliseconds()!==expected.millisecond
+    ) return null;
+    return date.toISOString();
+  }
+
+  function scheduleProposerLabel(proposedBy){
+    const id=Number(proposedBy);
+    const meId=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid);
+    if(Number.isSafeInteger(id)&&id===meId) return 'You';
+    return scheduleState.people.get(id)||'Pair member';
+  }
+
+  function scheduleNode(tag,{className='',text='',testId=''}={}){
+    const node=document.createElement(tag);
+    if(className) node.className=className;
+    if(text!=='') node.textContent=String(text);
+    if(testId) node.dataset.testid=testId;
+    return node;
+  }
+
+  function setScheduleStatus(message){
+    scheduleState.status=String(message||'');
+    const status=document.querySelector('[data-testid="schedule-status"]');
+    if(status) status.textContent=scheduleState.status;
+  }
+
+  function toggleScheduleActions(disabled){
+    const unavailable=!/^[a-f0-9]{64}$/.test(scheduleState.version);
+    document.querySelectorAll('#dashScheduleArea [data-schedule-action]').forEach(button=>{ button.disabled=!!disabled||unavailable; });
+  }
+
+  function renderScheduleView(){
+    const area=document.getElementById('dashScheduleArea');
+    if(!area||!scheduleState.room||!scheduleState.schedule) return;
+    rememberScheduleDraft();
+    const schedule=scheduleState.schedule;
+    const timezone=(()=>{ try{return Intl.DateTimeFormat().resolvedOptions().timeZone||'local timezone';}catch{return 'local timezone';} })();
+    const card=scheduleNode('div',{className:'card'});
+    const header=scheduleNode('div',{className:'card-h'});
+    header.append(scheduleNode('h2',{text:'Agree a time'}));
+    const status=scheduleNode('span',{className:'small muted',text:scheduleState.status||'up to date',testId:'schedule-status'});
+    status.setAttribute('role','status'); status.setAttribute('aria-live','polite');
+    header.append(status);
+    const body=scheduleNode('div',{className:'card-b'}); body.style.cssText='display:grid; gap:10px';
+    body.append(scheduleNode('div',{className:'small muted',text:`Times are shown in ${timezone}. During the repeated hour when clocks go back, your browser uses the earlier occurrence.`}));
+
+    const proposals=scheduleNode('div',{testId:'schedule-proposals'}); proposals.id='proposedList'; proposals.style.cssText='display:grid; gap:6px';
+    if(!schedule.proposals.length){
+      proposals.append(scheduleNode('span',{className:'small muted',text:'No proposals yet — add one below.'}));
+    }else{
+      schedule.proposals.forEach(proposal=>{
+        const row=scheduleNode('div',{className:'row',testId:'schedule-proposal'});
+        row.style.cssText='justify-content:space-between; align-items:center; gap:8px; font-size:12.5px; flex-wrap:wrap';
+        row.dataset.proposalId=proposal.proposal_id;
+        const detail=document.createElement('div'); detail.style.cssText='display:grid; gap:3px';
+        if(proposal.legacy){
+          detail.append(scheduleNode('span',{className:'kbd',text:proposal.value||'Legacy schedule text'}));
+          detail.append(scheduleNode('span',{className:'small muted',text:'Legacy proposal · not directly acceptable'}));
+        }else{
+          const time=scheduleNode('time',{className:'kbd',text:localScheduleTime(proposal.instant)});
+          time.setAttribute('datetime',proposal.instant);
+          detail.append(time);
+          detail.append(scheduleNode('span',{className:'small muted',text:`Proposed by ${scheduleProposerLabel(proposal.proposed_by)}`}));
+        }
+        const actions=scheduleNode('div',{className:'row'}); actions.style.gap='6px';
+        if(!proposal.legacy&&proposal.instant){
+          const accept=scheduleNode('button',{className:'pill',text:'✓ Accept',testId:'schedule-accept'});
+          accept.type='button'; accept.dataset.scheduleAction='accept'; accept.dataset.proposalId=proposal.proposal_id;
+          accept.setAttribute('aria-label',`Accept ${localScheduleTime(proposal.instant)}`);
+          accept.addEventListener('click',()=>{ mutateSchedule('accept',{proposal_id:proposal.proposal_id}); });
+          actions.append(accept);
+        }
+        const remove=scheduleNode('button',{className:'pill',text:'Remove',testId:'schedule-remove'});
+        remove.type='button'; remove.dataset.scheduleAction='remove'; remove.dataset.proposalId=proposal.proposal_id;
+        remove.setAttribute('aria-label',`Remove ${proposal.legacy?String(proposal.value||'legacy proposal').slice(0,80):localScheduleTime(proposal.instant)}`);
+        remove.addEventListener('click',()=>{ mutateSchedule('remove',{proposal_id:proposal.proposal_id}); });
+        actions.append(remove); row.append(detail,actions); proposals.append(row);
+      });
+    }
+    body.append(proposals);
+
+    const inputActions=scheduleNode('div',{className:'row',testId:'schedule-actions'}); inputActions.style.cssText='gap:8px; flex-wrap:wrap';
+    const input=scheduleNode('input',{className:'input',testId:'schedule-input'});
+    input.id='newProposed'; input.type='datetime-local'; input.value=scheduleState.draft; input.style.flex='1';
+    input.setAttribute('aria-label',`Proposed time in ${timezone}`);
+    input.addEventListener('input',()=>{ scheduleState.draft=input.value; scheduleState.draftRoom=scheduleState.room; });
+    const propose=scheduleNode('button',{className:'btn secondary',text:'Add proposal',testId:'schedule-propose'});
+    propose.id='addProposed'; propose.type='button'; propose.dataset.scheduleAction='propose';
+    propose.addEventListener('click',()=>{
+      const instant=scheduleInstantFromLocal(input.value);
+      if(!instant){ if(typeof toast==='function') toast('Choose a valid local date and time. This time may not exist because clocks change.'); return; }
+      mutateSchedule('propose',{instant});
+    });
+    inputActions.append(input,propose); body.append(inputActions);
+
+    const agreement=scheduleNode('div');
+    if(schedule.agreed_time){
+      agreement.style.cssText='padding:8px 10px; background:var(--accent)22; border:1px solid var(--accent); border-radius:10px; font-size:12.5px';
+      agreement.append(scheduleNode('b',{text:'Agreed: '}));
+      const time=scheduleNode('time',{text:localScheduleTime(schedule.agreed_time)}); time.setAttribute('datetime',schedule.agreed_time); agreement.append(time);
+    }else if(schedule.legacy_agreed_time){
+      agreement.style.cssText='padding:8px 10px; border:1px solid var(--warn); border-radius:10px; font-size:12.5px';
+      agreement.append(scheduleNode('b',{text:'Legacy agreement: '}),document.createTextNode(schedule.legacy_agreed_time));
+      agreement.append(scheduleNode('div',{className:'small muted',text:'Legacy text is not a normalized instant. Clear it and agree on a proposal.'}));
+    }else{
+      agreement.append(scheduleNode('div',{className:'small muted',text:'No time agreed yet.'}));
+    }
+    if(schedule.agreed_time||schedule.legacy_agreed_time){
+      const clear=scheduleNode('button',{className:'pill',text:'Clear agreement',testId:'schedule-clear'});
+      clear.type='button'; clear.dataset.scheduleAction='clear'; clear.style.marginTop='7px';
+      clear.addEventListener('click',()=>{ mutateSchedule('clear'); });
+      agreement.append(clear);
+    }
+    body.append(agreement); card.append(header,body); area.replaceChildren(card);
+    toggleScheduleActions(scheduleState.inFlight);
+  }
+
+  function applySchedule(room,raw,{status='up to date',force=false}={}){
+    if(room!==scheduleState.room) return false;
+    const next=normalizeSchedule(raw);
+    const changed=force||next.version!==scheduleState.version;
+    scheduleState.version=next.version; scheduleState.schedule=next; scheduleState.status=status;
+    if(changed) renderScheduleView(); else setScheduleStatus(status);
+    return true;
+  }
+
+  function renderSchedule(data){
+    const room=scheduleRoomFromPair(data);
+    if(!room){ stopSchedulePolling({clear:true}); return; }
+    rememberScheduleDraft();
+    if(scheduleState.room!==room){
+      cancelScheduleRequest(true);
+      if(scheduleState.draftRoom!==room) scheduleState.draft='';
+      scheduleState.draftRoom=room; scheduleState.room=room; scheduleState.version='';
+    }
+    scheduleState.people=new Map((Array.isArray(data.partners)?data.partners:[data.partner]).filter(Boolean).map(person=>[
+      Number(person.id),String(person.display_name||person.name||'Pair member').slice(0,80),
+    ]));
+    applySchedule(room,data.schedule,{status:data.schedule?'up to date':'checking…',force:true});
+    if(!scheduleState.version) setTimeout(()=>{ pollSchedule(); },0);
+  }
+
+  async function pollSchedule(){
+    const room=pairedDashboardRoom();
+    if(!room||room!==scheduleState.room||scheduleState.inFlight) return false;
+    const captured={room,epoch:scheduleState.epoch};
+    const controller=new AbortController(); scheduleState.abort=controller; scheduleState.inFlight=true;
+    setScheduleStatus('checking…'); toggleScheduleActions(true);
+    try{
+      const url=new URL('/api/schedule',location.origin); url.searchParams.set('room_id',room);
+      const response=await fetch(url,{credentials:'same-origin',cache:'no-store',signal:controller.signal});
+      const data=await response.json().catch(()=>({}));
+      if(response.status===401||response.status===403){
+        if(scheduleState.room===captured.room&&scheduleState.epoch===captured.epoch) stopSchedulePolling({clear:true});
+        return false;
+      }
+      if(!response.ok) throw new Error(data.error||`schedule ${response.status}`);
+      if(
+        scheduleState.room!==captured.room||scheduleState.epoch!==captured.epoch||
+        pairedDashboardRoom()!==captured.room
+      ) return false;
+      if(String(data.room_id||'')!==captured.room) throw new Error('schedule room mismatch');
+      return applySchedule(captured.room,data.schedule);
+    }catch(error){
+      if(error?.name!=='AbortError'&&scheduleState.room===captured.room&&scheduleState.epoch===captured.epoch) setScheduleStatus('retrying…');
+      return false;
+    }finally{
+      if(scheduleState.abort===controller){ scheduleState.abort=null; scheduleState.inFlight=false; toggleScheduleActions(false); }
+    }
+  }
+
+  async function mutateSchedule(action,extra={}){
+    const room=pairedDashboardRoom();
+    if(!room||room!==scheduleState.room||scheduleState.inFlight) return false;
+    if(!/^[a-f0-9]{64}$/.test(scheduleState.version)){
+      setScheduleStatus('checking…');
+      pollSchedule();
+      return false;
+    }
+    rememberScheduleDraft();
+    cancelScheduleRequest(true);
+    const captured={room,epoch:scheduleState.epoch};
+    const controller=new AbortController(); scheduleState.abort=controller; scheduleState.inFlight=true;
+    setScheduleStatus('saving…'); toggleScheduleActions(true);
+    try{
+      const response=await fetch('/api/schedule',{
+        method:'POST',credentials:'same-origin',signal:controller.signal,headers:{'content-type':'application/json'},
+        body:JSON.stringify({room_id:room,base_version:scheduleState.version,action,...extra}),
+      });
+      const data=await response.json().catch(()=>({}));
+      if(
+        scheduleState.room!==captured.room||scheduleState.epoch!==captured.epoch||
+        pairedDashboardRoom()!==captured.room
+      ) return false;
+      if(response.status===401||response.status===403){ stopSchedulePolling({clear:true}); return false; }
+      if(response.status===409){
+        if(String(data.room_id||'')!==captured.room) throw new Error('schedule room mismatch');
+        applySchedule(captured.room,data.schedule,{status:'conflict — refreshed',force:true});
+        if(typeof toast==='function') toast('Schedule changed — refreshed to your partner’s latest version.');
+        return false;
+      }
+      if(!response.ok) throw new Error(data.error||`schedule ${response.status}`);
+      if(String(data.room_id||'')!==captured.room) throw new Error('schedule room mismatch');
+      if(action==='propose'){
+        scheduleState.draft=''; scheduleState.draftRoom=room;
+        const input=document.querySelector('[data-testid="schedule-input"]'); if(input) input.value='';
+      }
+      applySchedule(captured.room,data.schedule,{status:'up to date',force:true});
+      if(typeof toast==='function') toast('Schedule updated ✓');
+      return true;
+    }catch(error){
+      if(error?.name!=='AbortError'&&scheduleState.room===captured.room&&scheduleState.epoch===captured.epoch){
+        setScheduleStatus('retrying…');
+        if(typeof toast==='function') toast('Schedule update failed: '+String(error?.message||error?.error||'try again').slice(0,120));
+      }
+      return false;
+    }finally{
+      if(scheduleState.abort===controller){ scheduleState.abort=null; scheduleState.inFlight=false; toggleScheduleActions(false); }
+    }
+  }
+
+  window._randori_schedule={
+    refresh:pollSchedule,
+    stop:stopSchedulePolling,
+    get room(){ return scheduleState.room; },
+    get version(){ return scheduleState.version; },
+    get schedule(){ return scheduleState.schedule?JSON.parse(JSON.stringify(scheduleState.schedule)):null; },
+    get draft(){ return scheduleState.draft; },
+  };
+  if(!window._randori_schedule_initialized){
+    window._randori_schedule_initialized=true;
+    window.addEventListener('randori:room-change',()=>{ stopSchedulePolling({clear:true}); });
+    document.querySelector('.tabs')?.addEventListener('click',()=>{ stopSchedulePolling({clear:true}); });
+    document.addEventListener('visibilitychange',()=>{
+      if(document.visibilityState==='visible') pollSchedule();
+      else cancelScheduleRequest(true);
+    });
+    document.addEventListener('click',event=>{
+      if(event.target?.closest?.('#signOutBtn,#dashSignOut,#psSignOut,#meSignOut')){
+        stopSchedulePolling({clear:true,discardDraft:true});
+      }
+    },{capture:true});
+    window._randori_schedule_timer=setInterval(()=>{ pollSchedule(); },3000);
   }
 
   function renderChatPlaceholder(data){
@@ -4037,11 +4349,36 @@ def allow(key, limit=5):
     // if we have dashboard tab (we don't) else keep none active or highlight Pairing as dashboard
   }
 
-  // Wrap existing updateAuthUI to also reroute
+  // Coalesce repeated startup/auth refreshes so a late duplicate route cannot
+  // tear down an already interactive dashboard.
+  let automaticRouteRequest=null;
+  let lastAutomaticRouteKey=null;
+  function automaticRouteKey(){
+    const user=window._randori_auth?.me;
+    return `${user?.id||user?.uid||user?.email||'anonymous'}|${location.pathname}${location.search}${location.hash}`;
+  }
+  async function requestAutomaticRoute({force=false}={}){
+    const key=automaticRouteKey();
+    if(!force&&key===lastAutomaticRouteKey) return true;
+    if(automaticRouteRequest){
+      try{ await automaticRouteRequest; }catch{}
+      return requestAutomaticRoute({force});
+    }
+    const operation=(async()=>{
+      await routeByAuth();
+      if(automaticRouteKey()===key) lastAutomaticRouteKey=key;
+      return true;
+    })();
+    automaticRouteRequest=operation;
+    try{ return await operation; }
+    finally{ if(automaticRouteRequest===operation) automaticRouteRequest=null; }
+  }
+
+  // Wrap existing updateAuthUI to also reroute when authentication or route intent changes.
   const origUpdateAuthUI = typeof window.updateAuthUI === 'function' ? window.updateAuthUI : (typeof updateAuthUI==='function'? updateAuthUI : null);
   async function wrappedUpdateAuthUI(){
     if(origUpdateAuthUI) try{ origUpdateAuthUI.apply(this, arguments); }catch{}
-    try{ await routeByAuth(); }catch{}
+    try{ await requestAutomaticRoute(); }catch{}
   }
   // Patch global
   if(typeof window!=='undefined'){
@@ -4049,14 +4386,15 @@ def allow(key, limit=5):
   }
   // Also expose for direct calls
   try{ updateAuthUI = wrappedUpdateAuthUI; }catch{ window.updateAuthUI = wrappedUpdateAuthUI; }
+  window.addEventListener('randori:auth-refreshed',()=>{ requestAutomaticRoute().catch(()=>{}); });
 
   // Initial routing after page load
-  document.getElementById('homeBtn')?.addEventListener('click', ()=>{ clearRequestedView(); try{ (window._randori_journey&&window._randori_journey.routeByAuth?window._randori_journey.routeByAuth():routeByAuth()); }catch{} window.scrollTo({top:0,behavior:'smooth'}); });
-    document.querySelector('.brand')?.addEventListener('click', (e)=>{ if(e.target.closest('button')) return; clearRequestedView(); try{ (window._randori_journey&&window._randori_journey.routeByAuth?window._randori_journey.routeByAuth():routeByAuth()); }catch{} window.scrollTo({top:0,behavior:'smooth'}); });
+  document.getElementById('homeBtn')?.addEventListener('click', ()=>{ clearRequestedView(); requestAutomaticRoute({force:true}).catch(()=>{}); window.scrollTo({top:0,behavior:'smooth'}); });
+    document.querySelector('.brand')?.addEventListener('click', (e)=>{ if(e.target.closest('button')) return; clearRequestedView(); requestAutomaticRoute({force:true}).catch(()=>{}); window.scrollTo({top:0,behavior:'smooth'}); });
     try{ document.querySelector('.brand').style.cursor='pointer'; }catch{}
-    setTimeout(()=>{ routeByAuth(); }, 500);
-  document.getElementById('homeBtn')?.addEventListener('click', ()=>{ clearRequestedView(); try{ if(window._randori_journey && window._randori_journey.routeByAuth) window._randori_journey.routeByAuth(); else if(typeof routeByAuth==='function') routeByAuth(); }catch{} window.scrollTo({top:0,behavior:'smooth'}); });
-  document.addEventListener('DOMContentLoaded', ()=>{ setTimeout(routeByAuth, 300); });
+  const scheduleInitialRoute=()=>{ setTimeout(()=>{ requestAutomaticRoute(); },300); };
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',scheduleInitialRoute,{once:true});
+  else scheduleInitialRoute();
 
   // Dash profile edit button
   document.getElementById('dashProfileBtn')?.addEventListener('click', ()=>{ renderColorPicker(); populateTz(); showProfileSetup(); });
