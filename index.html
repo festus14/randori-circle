@@ -8,6 +8,54 @@
 <link rel="icon" href="data:,"/>
 <title>Randori Circle</title>
 <script>
+/* Consume invitation capabilities before any telemetry or third-party script can observe the URL. */
+(()=>{
+  let present=false;
+  let token=null;
+  let preparation;
+  try{
+    const hash=String(window.location.hash||'');
+    const canonical=hash.match(/^#invite=([A-Za-z0-9_-]{43})$/);
+    if(hash.startsWith('#')){
+      const fragment=new URLSearchParams(hash.slice(1));
+      if(fragment.has('invite')){
+        present=true;
+        if(canonical) token=canonical[1];
+        window.history.replaceState(window.history.state,document.title,window.location.pathname+window.location.search);
+      }
+    }
+    if(present&&token){
+      const body=JSON.stringify({token});
+      token=null;
+      preparation=fetch('/api/invitations/prepare',{
+        method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body,
+      }).then(async response=>{
+        let result=null;
+        try{ result=await response.json(); }catch{}
+        return {
+          present:true,
+          ok:response.ok&&result?.ok===true,
+          rateLimited:response.status===429,
+          retryAfter:Number(result?.retry_after_seconds)||null,
+        };
+      }).catch(()=>({present:true,ok:false,rateLimited:false,retryAfter:null}));
+    }else{
+      token=null;
+      preparation=Promise.resolve({present,ok:false,rateLimited:false,retryAfter:null});
+    }
+  }catch{
+    token=null;
+    try{
+      if(String(window.location.hash||'').includes('invite=')){
+        window.history.replaceState(window.history.state,document.title,window.location.pathname+window.location.search);
+      }
+    }catch{}
+    preparation=Promise.resolve({present,ok:false,rateLimited:false,retryAfter:null});
+  }
+  Object.defineProperty(window,'__randoriInvitePreparation',{
+    configurable:true,value:preparation,
+  });
+})();
 /* Shared escaping for the legacy template renderers. Keep untrusted text out of HTML contexts. */
 function escapeHtml(value){
   return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch){
@@ -622,12 +670,12 @@ p{margin:0}
             <h1>Randori Circle<br/>Practice <span style="background:var(--accent); color:#0f0f10; padding:0 8px; border-radius:8px">together</span></h1>
             <div class="hero-sub">A small circle of friends who mock-interview each other, every Sunday 08:00 BST. No recruiters, no trios — odd gets an AI sparring partner.</div>
             <div class="bullets">
-              <div class="bullet"><span class="dot" style="margin-top:6px"></span><span><b>Sign up in 30s</b> — you're auto-included next shuffle. No invite needed.</span></div>
+              <div class="bullet"><span class="dot" style="margin-top:6px"></span><span><b>Join a private circle</b> — use verified Google access approved by the circle owner.</span></div>
               <div class="bullet"><span class="dot" style="margin-top:6px;background:#a9b6ff"></span><span><b>Pick your focus</b> — DSA, System Design, or both. You decide with your partner.</span></div>
               <div class="bullet"><span class="dot" style="margin-top:6px;background:#e8a0b0"></span><span><b>Meet + drill</b> — agree a time, chat, then jump into live code / whiteboard / video.</span></div>
             </div>
             <div class="cta-row">
-              <button id="landingSignup" class="btn" style="padding:11px 18px; font-size:14px">Sign up — join circle</button>
+              <button id="landingSignup" class="btn" style="padding:11px 18px; font-size:14px">Join the circle</button>
               <button id="landingSignin" class="btn secondary" style="padding:11px 18px;">Sign in</button>
             </div>
             <div class="small muted" style="margin-top:10px">Join 50+ mock interviewers • Free • Dark-first</div>
@@ -637,6 +685,20 @@ p{margin:0}
             <div id="landingStats" class="card" style="padding:12px; border:1px dashed var(--border); background:var(--bg-2)"><div class="row" style="gap:10px; flex-wrap:wrap; justify-content:space-between"><span class="small muted">Circle Pulse • live</span><span id="landingStatsUpdated" class="kbd" style="font-size:10px">loading…</span></div><div class="grid-3" style="margin-top:10px; gap:10px; display:grid; grid-template-columns:repeat(3,1fr)"><div style="text-align:center"><div id="statMembers" style="font-size:22px; font-weight:600">—</div><div class="small muted">members</div></div><div style="text-align:center"><div id="statWeeks" style="font-size:22px; font-weight:600">—</div><div class="small muted">weeks paired</div></div><div style="text-align:center"><div id="statSessions" style="font-size:22px; font-weight:600">—</div><div class="small muted">pairings made</div></div></div></div>
       <div id="landingNext" class="card" style="border-color:#c8f6a0; background:color-mix(in srgb, var(--accent) 8%, var(--bg-2))"><div class="card-h" style="padding:10px 12px"><h2 style="font-size:13px">Next session</h2><span id="landingNextCountdown" class="kbd">Sun 08:00 BST</span></div><div class="card-b" style="padding:10px 12px"><div style="font-size:13px"><b id="landingNextLabel">Sunday 08:00 BST • London</b><div class="small muted" id="landingNextSub" style="margin-top:4px">Shuffles automatically. Sign up before then to be included.</div></div><div id="landingNextBar" style="margin-top:10px; height:6px; background:var(--bg-3); border-radius:999px; overflow:hidden"><div id="landingNextProg" style="height:100%; width:40%; background:var(--accent)"></div></div></div></div>
       <div class="mock-card"><b style="font-size:12px">What people say</b><div class="small" style="color:var(--ink-2)">“Got me through Stripe & DeepL loops. AI feedback nailed my weak spots with exact quotes.” — Festus, London</div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- INVITATION LANDING -->
+    <section id="view-invite" class="view" data-testid="invite-landing" style="display:none">
+      <div class="landing" style="max-width:680px;margin:0 auto">
+        <div class="card">
+          <div class="card-h"><h2>You’re invited to Randori</h2><span>private circle</span></div>
+          <div class="card-b" style="display:grid;gap:14px">
+            <p class="small muted" style="line-height:1.6;margin:0">Confirm the Google account that received this invitation. The invitation is single-use and expires automatically.</p>
+            <div id="inviteStatus" data-testid="invite-status" class="small muted" role="status" aria-live="polite">Checking invitation…</div>
+            <div><button id="inviteContinue" data-testid="invite-continue" class="btn" type="button" disabled>Continue with Google</button></div>
           </div>
         </div>
       </div>
@@ -699,7 +761,7 @@ p{margin:0}
     <!-- Onboarding Checklist -->
     <div id="onboardChecklist" class="checklist" style="display:none">
       <div class="row" style="justify-content:space-between"><h4>Getting started</h4><button id="checklistToggle" class="pill" style="font-size:11px">hide</button></div>
-      <div class="check-item" id="chkSignIn"><div class="check-box">✓</div><span>Sign in — auto-joins circle</span></div>
+      <div class="check-item" id="chkSignIn"><div class="check-box">✓</div><span>Sign in to your private circle</span></div>
       <div class="check-item" id="chkAvail"><div class="check-box">✓</div><span>Mark Available for Sunday</span></div>
       <div class="check-item" id="chkPair"><div class="check-box">✓</div><span>See your pair</span></div>
       <div class="check-item" id="chkRoom"><div class="check-box">✓</div><span>Join a live room</span></div>
@@ -710,15 +772,26 @@ p{margin:0}
     <section id="view-circle" class="view">
       <div class="grid-2">
         <div class="card">
-          <div class="card-h"><h2>Add to circle</h2><span>auto • everyone</span></div>
+          <div class="card-h"><h2>Circle members</h2><span id="circleRoleLabel">private</span></div>
           <div class="card-b" style="display:grid; gap:10px">
-            <div class="row">
+            <div class="row" id="legacyCircleAddActions" style="display:none" aria-hidden="true">
               <input id="personName" class="input" placeholder="Teammate name (testing only)" maxlength="32" />
               <button id="addPerson" class="btn">Add</button>
             </div>
-            <div id="circleAutoNote" class="small muted">Your circle — everyone who's joined. You're in by default. Add a teammate if you're testing solo.</div>
-            <div class="small muted">Same name, same color. New teammates join the next pairing automatically.</div>
-            <div id="peopleList" class="people"></div>
+            <div id="circleAutoNote" class="small muted">Loading your private circle…</div>
+            <div id="peopleList" data-testid="circle-members" class="people" aria-live="polite" aria-busy="true"></div>
+            <div id="circleOwnerPanel" hidden style="display:none;gap:10px;border-top:1px solid var(--border);padding-top:12px">
+              <div><b style="font-size:13px">Invite a member</b><div class="small muted" style="margin-top:3px">Invitations are email-bound, single-use, and expire after seven days.</div></div>
+              <form id="circleInviteForm" class="row" style="align-items:flex-end">
+                <label class="small muted" style="display:grid;gap:5px;flex:1">Google account email
+                  <input id="circleInviteEmail" data-testid="circle-invite-email" class="input" type="email" autocomplete="email" required placeholder="teammate@example.com" />
+                </label>
+                <button id="circleInviteCreate" data-testid="circle-invite-create" class="btn" type="submit">Create invite</button>
+              </form>
+              <div id="circleInviteStatus" class="small muted" role="status" aria-live="polite"></div>
+              <button id="circleInviteLink" data-testid="circle-invite-link" class="pill" type="button" hidden>Copy invitation link</button>
+              <div id="circleInvites" data-testid="circle-invites" class="people"></div>
+            </div>
           </div>
         </div>
         <div class="card">
@@ -730,7 +803,7 @@ p{margin:0}
               <div class="card" style="border-style:dashed"><div class="card-b small"><b>2</b> Shuffle<br/><span class="muted">AI fills odd</span></div></div>
               <div class="card" style="border-style:dashed"><div class="card-b small"><b>3</b> Pick topic & drill<br/><span class="muted">same link</span></div></div>
             </div>
-            <div class="row">
+            <div class="row" id="legacyCircleDemoActions" style="display:none" aria-hidden="true">
               <button class="btn secondary" id="demoBtn">Load demo crew (4)</button>
               <button class="btn ghost" id="clearAllBtn">Clear circle</button>
             </div>
@@ -967,7 +1040,7 @@ p{margin:0}
 <input id="authName" class="input" placeholder="display name (for signup)" maxlength="32"/>
 <input id="authPass" class="input" placeholder="password (10+ chars, existing users)" type="password"/>
 <div id="authErr" class="small" style="color:var(--accent-3);min-height:16px"></div>
-<div class="small muted">Private beta: new members sign in with an allowlisted Google account.</div>
+<div class="small muted">Private beta: new members use verified Google access approved by the circle owner.</div>
 </div>
 <div class="row" style="justify-content:space-between;margin-top:4px"><span class="small muted">Personal history • auto-shuffle Sundays 08:00 BST</span><span class="row"><button id="authCancel" class="btn secondary">Cancel</button><button id="authSignup" class="btn secondary" hidden style="display:none">Sign up</button><button id="authSignin" class="btn">Sign in</button></span></div>
 </div></div>
@@ -994,6 +1067,66 @@ p{margin:0}
   const TOKEN_KEY='randori-token';
   const ME_KEY='randori-me';
   let me = null;
+  const invitePreparation=(()=>{
+    try{
+      const pending=window.__randoriInvitePreparation;
+      delete window.__randoriInvitePreparation;
+      return pending&&typeof pending.then==='function'
+        ? pending
+        : Promise.resolve({present:false,ok:false,rateLimited:false,retryAfter:null});
+    }catch{ return Promise.resolve({present:false,ok:false,rateLimited:false,retryAfter:null}); }
+  })();
+  const inviteState={
+    active:window.location.pathname==='/invite',
+    ready:false,
+    failed:false,
+    rateLimited:false,
+    retryAfter:null,
+  };
+  function renderInviteLanding(){
+    if(!inviteState.active) return false;
+    document.querySelectorAll('.view').forEach(view=>{ view.style.display='none'; });
+    document.querySelectorAll('.tab').forEach(tab=>{ tab.classList.remove('active'); });
+    const tabs=document.querySelector('.tabs'); if(tabs) tabs.style.display='none';
+    const landing=document.getElementById('view-invite'); if(landing) landing.style.display='block';
+    const status=document.getElementById('inviteStatus');
+    const button=document.getElementById('inviteContinue');
+    if(status){
+      status.textContent=inviteState.rateLimited
+        ? `Too many attempts. Try again${inviteState.retryAfter?` in ${inviteState.retryAfter} seconds`: ' later'}.`
+        : (inviteState.failed
+          ? 'This invitation is unavailable or has expired.'
+          : (inviteState.ready?'Invitation verified. Continue with the invited Google account.':'Checking invitation…'));
+    }
+    if(button) button.disabled=!inviteState.ready;
+    return true;
+  }
+  async function finishInvitePreparation(){
+    try{
+      const result=await invitePreparation;
+      if(result?.present===true) inviteState.active=true;
+      if(!inviteState.active) return;
+      inviteState.ready=result?.ok===true;
+      inviteState.rateLimited=result?.rateLimited===true;
+      inviteState.retryAfter=Number.isSafeInteger(result?.retryAfter)&&result.retryAfter>0?result.retryAfter:null;
+      inviteState.failed=!inviteState.ready&&!inviteState.rateLimited;
+    }catch{
+      if(!inviteState.active) return;
+      inviteState.failed=true;
+    }
+    renderInviteLanding();
+  }
+  document.getElementById('inviteContinue')?.addEventListener('click',()=>{
+    if(!inviteState.ready) return;
+    window.location.href='/api/auth/google/start';
+  });
+  window._randori_invite_flow={
+    get active(){ return inviteState.active; },
+    get ready(){ return inviteState.ready; },
+    show:renderInviteLanding,
+  };
+  if(inviteState.active) renderInviteLanding();
+  finishInvitePreparation();
   // Authentication now uses an HttpOnly session cookie. Remove legacy bearer material.
   try{ localStorage.removeItem(TOKEN_KEY); }catch{}
   async function api(path, opts={}){
@@ -1047,6 +1180,8 @@ async function refreshMe(){
     const outBtn=document.getElementById('signOutBtn');
     const hint=document.getElementById('historyAuthHint');
     const effectiveSignedIn = !!me;
+    const circleTab=document.querySelector('[data-tab="circle"]');
+    if(circleTab) circleTab.style.display=effectiveSignedIn?'':'none';
     if(effectiveSignedIn){
       try{
         meLabel.style.display='inline-flex';
@@ -1069,14 +1204,9 @@ async function refreshMe(){
     const addRow=document.querySelector('#personName')?.parentElement;
     const addInfo=document.getElementById('circleAutoNote');
     if(addRow){
-      if(isAdmin()){
-        addRow.style.display='flex';
-        if(addInfo) addInfo.textContent='You\'re admin — you see everyone + can add test names for local demo.';
-        const tt=document.querySelector('#view-circle .card-h span'); if(tt) tt.textContent='auto • everyone';
-      } else {
-        addRow.style.display='none';
-        if(addInfo) addInfo.textContent='You\'re in. New signups join next pairing.';
-      }
+      addRow.style.display='none';
+      addRow.setAttribute('aria-hidden','true');
+      if(addInfo) addInfo.textContent=me?'Loading your private circle…':'Sign in to view your private circle.';
     }
     // shuffle buttons admin-only (+ demo e2e)
     const demoRun=document.getElementById('demoRunBtn');
@@ -1538,67 +1668,266 @@ async function refreshMe(){
   const addBtn=document.getElementById('addPerson');
   const listEl=document.getElementById('peopleList');
   const pCount=document.getElementById('peopleCount');
+  const circleOwnerPanel=document.getElementById('circleOwnerPanel');
+  const circleInvites=document.getElementById('circleInvites');
+  const circleInviteStatus=document.getElementById('circleInviteStatus');
+  const circleInviteLink=document.getElementById('circleInviteLink');
+  const legacyCircleAddActions=document.getElementById('legacyCircleAddActions');
+  const legacyCircleDemoActions=document.getElementById('legacyCircleDemoActions');
+  let circleRenderEpoch=0;
+  let activeCircleRole=null;
+  let circleInviteCreatePending=false;
+  let latestInviteUrl=null;
+  let latestInviteId=null;
+  let latestInviteOwnerId=null;
+
+  function clearLatestInvite(){
+    latestInviteUrl=null;
+    latestInviteId=null;
+    latestInviteOwnerId=null;
+    if(circleInviteLink) circleInviteLink.hidden=true;
+  }
+
+  function resetOwnerInvites(){
+    activeCircleRole=null;
+    const currentUserId=Number(me?.id||me?.uid);
+    if(!Number.isSafeInteger(currentUserId)||currentUserId!==latestInviteOwnerId) clearLatestInvite();
+    if(circleOwnerPanel){ circleOwnerPanel.hidden=true; circleOwnerPanel.style.display='none'; }
+    if(circleInvites) circleInvites.replaceChildren();
+    if(circleInviteStatus) circleInviteStatus.textContent='';
+    if(circleInviteLink) circleInviteLink.hidden=true;
+  }
+
+  function setLegacyCircleControls(enabled){
+    const allowed=enabled&&isAdmin();
+    const addRow=nameInput?.parentElement;
+    if(addRow){ addRow.style.display=allowed?'flex':'none'; addRow.setAttribute('aria-hidden',allowed?'false':'true'); }
+    for(const controls of [legacyCircleAddActions,legacyCircleDemoActions]){
+      if(!controls) continue;
+      controls.style.display=allowed?'flex':'none';
+      controls.setAttribute('aria-hidden',allowed?'false':'true');
+    }
+  }
+
+  function renderCircleFailure(){
+    pCount.textContent='—';
+    resetOwnerInvites();
+    setLegacyCircleControls(false);
+    const note=document.getElementById('circleAutoNote');
+    if(note) note.textContent='We could not load your private circle.';
+    listEl.replaceChildren();
+    listEl.setAttribute('aria-busy','false');
+    const message=document.createElement('div');
+    message.className='small muted';
+    message.textContent='Circle unavailable. Your member list has not been replaced with local or demo data.';
+    const retry=document.createElement('button');
+    retry.type='button'; retry.className='pill'; retry.textContent='Retry';
+    retry.addEventListener('click',()=>{ renderPeople(); });
+    listEl.append(message,retry);
+  }
+
+  function renderInvitationRows(invitations){
+    if(!circleInvites) return;
+    circleInvites.replaceChildren();
+    if(!invitations.length){
+      const empty=document.createElement('div'); empty.className='small muted'; empty.textContent='No invitations yet.';
+      circleInvites.appendChild(empty);
+      return;
+    }
+    invitations.forEach(invitation=>{
+      const id=String(invitation?.id||'').toLowerCase();
+      if(!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)) return;
+      const row=document.createElement('div'); row.className='person';
+      const details=document.createElement('div'); details.style.minWidth='0';
+      const fingerprint=document.createElement('b'); fingerprint.style.fontSize='13px';
+      fingerprint.textContent=String(invitation?.email_fingerprint||'private recipient');
+      const meta=document.createElement('div'); meta.className='small muted'; meta.style.marginTop='3px';
+      const status=String(invitation?.status||'pending');
+      meta.textContent=`${status}${invitation?.expires_at?` • expires ${String(invitation.expires_at)}`:''}`;
+      details.append(fingerprint,meta);
+      row.appendChild(details);
+      if(status==='pending'){
+        const revoke=document.createElement('button');
+        revoke.type='button'; revoke.className='pill'; revoke.dataset.testid='circle-invite-revoke';
+        revoke.textContent='Revoke'; revoke.setAttribute('aria-label','Revoke invitation');
+        revoke.addEventListener('click',async()=>{
+          if(activeCircleRole!=='owner') return;
+          revoke.disabled=true;
+          if(circleInviteStatus) circleInviteStatus.textContent='Revoking invitation…';
+          try{
+            await api(`/api/invitations/${encodeURIComponent(String(id))}`,{method:'DELETE'});
+            if(latestInviteId===id) clearLatestInvite();
+            if(circleInviteStatus) circleInviteStatus.textContent='Invitation revoked.';
+            await loadOwnerInvitations(circleRenderEpoch);
+          }catch{
+            revoke.disabled=false;
+            if(circleInviteStatus) circleInviteStatus.textContent='Could not revoke invitation. Try again.';
+          }
+        });
+        row.appendChild(revoke);
+      }
+      circleInvites.appendChild(row);
+    });
+  }
+
+  async function loadOwnerInvitations(epoch=circleRenderEpoch){
+    if(activeCircleRole!=='owner'||!me) return;
+    const userId=Number(me.id||me.uid);
+    if(circleInviteStatus) circleInviteStatus.textContent='Loading invitations…';
+    try{
+      const result=await api('/api/invitations',{method:'GET'});
+      if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==userId) return;
+      const invitations=Array.isArray(result?.invitations)?result.invitations:[];
+      renderInvitationRows(invitations);
+      if(circleInviteStatus) circleInviteStatus.textContent=`${invitations.length} invitation${invitations.length===1?'':'s'}.`;
+    }catch{
+      if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==userId) return;
+      if(circleInvites){
+        circleInvites.replaceChildren();
+        const retry=document.createElement('button'); retry.type='button'; retry.className='pill'; retry.textContent='Retry invitations';
+        retry.addEventListener('click',()=>{ loadOwnerInvitations(circleRenderEpoch); });
+        circleInvites.appendChild(retry);
+      }
+      if(circleInviteStatus) circleInviteStatus.textContent='Invitations unavailable. Try again.';
+    }
+  }
 
   async function renderPeople(){
-    // try cloud circle first — everyone who has joined
+    const epoch=++circleRenderEpoch;
+    resetOwnerInvites();
+    setLegacyCircleControls(false);
+    const note=document.getElementById('circleAutoNote');
+    const roleLabel=document.getElementById('circleRoleLabel');
+    if(roleLabel) roleLabel.textContent='private';
+    listEl.replaceChildren();
+    listEl.setAttribute('aria-busy','true');
+    if(!me){
+      pCount.textContent='0';
+      if(note) note.textContent='Sign in to view your private circle.';
+      const prompt=document.createElement('div'); prompt.className='small muted'; prompt.textContent='Circle membership is available after sign-in.';
+      listEl.appendChild(prompt); listEl.setAttribute('aria-busy','false');
+      return;
+    }
+    const userId=Number(me.id||me.uid);
     try{
       const res = await api('/api/circle', { method:'GET' });
-      if(res && res.circle && res.circle.length){
-        const people = res.circle;
-        pCount.textContent = people.length;
-        const admin = isAdmin();
-        listEl.innerHTML = people.map(p=>{
-          const avail = (p.is_available===undefined && p.isAvailable===undefined) ? true : (p.is_available!==undefined ? !!p.is_available : !!p.isAvailable);
-          const badge = avail ? '<span class="kbd" title="Available this week" style="background:#9cc0b522;color:#9cc0b5;border-color:#9cc0b5">● available</span>' : '<span class="kbd" title="Skipping this week" style="background:#e6c07a22;color:#e6c07a;border-color:#e6c07a">○ away</span>';
-          const displayName=String(p.display_name||p.name||'??');
-          const color=safeProfileColor(p.color);
-          return `
-          <div class="person" data-id="${escapeHtml(p.id)}" style="${!avail?'opacity:.65':''}">
-            <div class="row"><div class="avatar" style="background:${color}">${escapeHtml(displayName.slice(0,2).toUpperCase())}</div><b style="font-size:13px">${escapeHtml(displayName)}</b>${badge}</div>
-            <div class="row">${admin? `<button class="pill delBtnCloud" title="Remove test account">×</button>`:''}</div>
-          </div>`; }).join('');
-        // cloud list is read-only — manual names gone
-        renderRoomSelect();
-        renderPairsMeta();
-        refreshPresence();
-        return;
-      }
-    }catch(e){
-      // fall through to local
-    }
-    const people=getPeople();
-    pCount.textContent=people.length;
-    if(!people.length){ listEl.innerHTML=`<div class="small muted" style="padding:8px; border:1px dashed var(--line); border-radius:10px">No one in your circle yet — invite teammates to get paired Sunday.</div>`; }
-    else {
-      const admin = isAdmin();
-      listEl.innerHTML = people.map(p=>{
-        const color=safeProfileColor(p.color);
-        return `
-        <div class="person" data-id="${escapeHtml(p.id)}">
-          <div class="row"><div class="avatar" style="background:${color}">${escapeHtml(String(p.name||'').slice(0,2).toUpperCase())}</div><b style="font-size:13px">${escapeHtml(p.name)}</b><span class="kbd" style="background:${color}22; border-color:${color}66; color:${color}">${escapeHtml(color.slice(1,4))}</span></div>
-          <div class="row">${admin?`<button class="pill editBtn">edit</button><button class="pill delBtn">remove</button>`:`<span class="small muted">local</span>`}</div>
-        </div>`;
-      }).join('');
-      if(admin){
-        listEl.querySelectorAll('.editBtn').forEach((b,i)=>{
-          b.onclick=async()=>{
-            const np=await showPrompt('Rename person', people[i].name);
-            if(np && np.trim()){ people[i].name=np.trim(); people[i].color=colorOf(np.trim()); savePeople(people); renderPeople(); renderPairs(); renderRoomSelect(); toast('renamed'); }
-          };
-        });
-        listEl.querySelectorAll('.delBtn').forEach((b,i)=>{
-          b.onclick=async()=>{
-            if(await showConfirm(`Remove ${people[i].name}?`, `Remove ${people[i].name} from circle`)){
-              people.splice(i,1); savePeople(people); renderPeople(); renderPairs(); renderRoomSelect(); toast('removed');
+      if(epoch!==circleRenderEpoch||Number(me?.id||me?.uid)!==userId) return;
+      const gatedRole=['owner','member'].includes(res?.membership?.role)?res.membership.role:null;
+      const legacyEnvelope=res?.ok===true&&Array.isArray(res.circle)
+        &&!res.membership&&['auth_accounts','users'].includes(res.source);
+      if(res?.ok!==true||!Array.isArray(res.circle)||(!gatedRole&&!legacyEnvelope)) throw new Error('invalid circle response');
+      const usingLocalLegacy=legacyEnvelope&&res.circle.length===0;
+      const people=usingLocalLegacy?getPeople():res.circle;
+      activeCircleRole=gatedRole||'legacy';
+      if(gatedRole!=='owner') clearLatestInvite();
+      setLegacyCircleControls(legacyEnvelope);
+      pCount.textContent=String(people.length);
+      if(note) note.textContent=legacyEnvelope
+        ? (usingLocalLegacy?'Local testing circle • membership enforcement is not enabled':`Your circle • ${people.length} member${people.length===1?'':'s'}`)
+        : `${String(res.circle_meta?.name||'Your circle')} • ${people.length} active member${people.length===1?'':'s'}`;
+      if(roleLabel) roleLabel.textContent=legacyEnvelope?'legacy':activeCircleRole;
+      people.forEach((person,index)=>{
+        const displayName=String(person?.display_name||person?.name||'Member');
+        const color=safeProfileColor(person?.color);
+        const available=person?.is_available===undefined&&person?.isAvailable===undefined
+          ? true : (person.is_available!==undefined?!!person.is_available:!!person.isAvailable);
+        const row=document.createElement('div'); row.className='person'; row.style.opacity=available?'1':'.65';
+        const identity=document.createElement('div'); identity.className='row';
+        const avatar=document.createElement('div'); avatar.className='avatar'; avatar.style.background=color; avatar.textContent=displayName.slice(0,2).toUpperCase();
+        const name=document.createElement('b'); name.style.fontSize='13px'; name.textContent=displayName;
+        const badge=document.createElement('span'); badge.className='kbd'; badge.textContent=available?'● available':'○ away'; badge.title=available?'Available this week':'Skipping this week';
+        badge.style.background=available?'#9cc0b522':'#e6c07a22'; badge.style.color=available?'#9cc0b5':'#e6c07a'; badge.style.borderColor=available?'#9cc0b5':'#e6c07a';
+        identity.append(avatar,name,badge); row.appendChild(identity);
+        if(usingLocalLegacy&&isAdmin()){
+          const actions=document.createElement('div'); actions.className='row';
+          const edit=document.createElement('button'); edit.type='button'; edit.className='pill'; edit.textContent='edit';
+          edit.addEventListener('click',async()=>{
+            const current=getPeople(); const selected=current[index]; if(!selected) return;
+            const next=await showPrompt('Rename person',selected.name);
+            if(next&&next.trim()){
+              selected.name=next.trim(); selected.color=colorOf(selected.name); savePeople(current);
+              renderPeople(); renderPairs(); renderRoomSelect(); toast('renamed');
             }
-          };
-        });
+          });
+          const remove=document.createElement('button'); remove.type='button'; remove.className='pill'; remove.textContent='remove';
+          remove.addEventListener('click',async()=>{
+            const current=getPeople(); const selected=current[index]; if(!selected) return;
+            if(await showConfirm(`Remove ${selected.name}?`,`Remove ${selected.name} from circle`)){
+              current.splice(index,1); savePeople(current); renderPeople(); renderPairs(); renderRoomSelect(); toast('removed');
+            }
+          });
+          actions.append(edit,remove); row.appendChild(actions);
+        }
+        listEl.appendChild(row);
+      });
+      if(!people.length){
+        const empty=document.createElement('div'); empty.className='small muted'; empty.textContent='No active members are available in this circle.'; listEl.appendChild(empty);
       }
+      listEl.setAttribute('aria-busy','false');
+      if(gatedRole==='owner'&&circleOwnerPanel){
+        circleOwnerPanel.hidden=false; circleOwnerPanel.style.display='grid';
+        const createButton=document.getElementById('circleInviteCreate');
+        if(createButton) createButton.disabled=circleInviteCreatePending;
+        if(circleInviteLink) circleInviteLink.hidden=!latestInviteUrl;
+        await loadOwnerInvitations(epoch);
+      }
+    }catch{
+      if(epoch!==circleRenderEpoch||Number(me?.id||me?.uid)!==userId) return;
+      renderCircleFailure();
+      return;
     }
     renderRoomSelect();
     renderPairsMeta();
     refreshPresence();
   }
+
+  document.getElementById('circleInviteForm')?.addEventListener('submit',async event=>{
+    event.preventDefault();
+    if(activeCircleRole!=='owner'||!me) return;
+    const input=document.getElementById('circleInviteEmail');
+    const button=document.getElementById('circleInviteCreate');
+    const email=String(input?.value||'').trim();
+    const userId=Number(me.id||me.uid);
+    if(!email) return;
+    circleInviteCreatePending=true;
+    if(button) button.disabled=true;
+    if(circleInviteStatus) circleInviteStatus.textContent='Creating invitation…';
+    try{
+      const result=await api('/api/invitations',{method:'POST',body:{email}});
+      // A same-account roster refresh may advance the render epoch while this
+      // one-time secret is in flight. Retain it for the initiating owner; only
+      // discard it after an actual identity change.
+      if(!me||Number(me.id||me.uid)!==userId) return;
+      const inviteUrl=String(result?.invitation?.invite_url||'');
+      const invitationId=String(result?.invitation?.id||'').toLowerCase();
+      if(result?.ok!==true||!/^\/invite#invite=[A-Za-z0-9_-]{43}$/.test(inviteUrl)
+        ||!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(invitationId)) throw new Error('invalid invitation response');
+      const absoluteInviteUrl=new URL(inviteUrl,window.location.origin);
+      if(absoluteInviteUrl.origin!==window.location.origin||absoluteInviteUrl.pathname!=='/invite'||absoluteInviteUrl.search) throw new Error('invalid invitation response');
+      latestInviteUrl=absoluteInviteUrl.href;
+      latestInviteId=invitationId;
+      latestInviteOwnerId=userId;
+      if(input) input.value='';
+      if(circleInviteLink) circleInviteLink.hidden=false;
+      if(circleInviteStatus) circleInviteStatus.textContent='Invitation created. Copy the link and send it privately.';
+      if(activeCircleRole==='owner') await loadOwnerInvitations(circleRenderEpoch);
+    }catch{
+      if(circleInviteStatus) circleInviteStatus.textContent='Could not create invitation. Check the email and try again.';
+    }finally{
+      circleInviteCreatePending=false;
+      if(button) button.disabled=activeCircleRole!=='owner';
+    }
+  });
+  circleInviteLink?.addEventListener('click',async()=>{
+    if(activeCircleRole!=='owner'||!latestInviteUrl) return;
+    try{
+      await navigator.clipboard.writeText(latestInviteUrl);
+      if(circleInviteStatus) circleInviteStatus.textContent='Invitation link copied.';
+    }catch{
+      if(circleInviteStatus) circleInviteStatus.textContent='Copy failed. Create a new invitation and try again.';
+    }
+  });
+  window.addEventListener('randori:auth-refreshed',()=>{ renderPeople(); });
 
   function addPerson(){
     if(!isAdmin()){
@@ -3442,6 +3771,7 @@ def allow(key, limit=5):
       }
       document.querySelectorAll('.view').forEach(v=>v.style.display='none');
       document.getElementById('view-'+id).style.display='block';
+      if(id==='circle') renderPeople();
       if(id==='board'){ setTimeout(()=>{ resizeCanvas(); renderBoard(); }, 60); }
       if(id==='code' && !currentRoom){ renderRoomSelect(); const sel=document.getElementById('roomSelect'); if(sel.value) loadRoom(sel.value); }
       if(id==='history') renderHistory();
@@ -5152,6 +5482,10 @@ def allow(key, limit=5):
 
   // Main auth router
   async function routeByAuth(){
+    if(window._randori_invite_flow?.active){
+      window._randori_invite_flow.show();
+      return;
+    }
     const joinRoom=canonicalJoinRoom();
     const signedIn=!!(window._randori_auth && window._randori_auth.me);
     // hide all first? We decide
@@ -5299,13 +5633,12 @@ def allow(key, limit=5):
   document.getElementById('dashProfileBtn')?.addEventListener('click', ()=>{ renderColorPicker(); populateTz(); showProfileSetup(); });
   document.getElementById('dashHow')?.addEventListener('click', ()=>{ if(window._randori_onboard) window._randori_onboard.start(1); });
 
-  // Hide circle member list from non-admin (task: only admin sees list)
-  // Done by routeByAuth + extra css toggling in wrapped update
+  // Every authenticated circle member can view the roster; owner controls are
+  // enabled only by the server-returned membership role inside renderPeople.
   const observer = new MutationObserver(()=>{ 
     const me=(()=>{try{return JSON.parse(localStorage.getItem(ME_KEY)||'null')}catch{return null}})();
-    const isAdmin=!!(me?.is_admin||me?.isAdmin);
     const circleTab=document.querySelector('[data-tab="circle"]');
-    if(circleTab) circleTab.style.display = isAdmin ? '' : 'none';
+    if(circleTab) circleTab.style.display = me ? '' : 'none';
   });
   observer.observe(document.body, {attributes:true, subtree:true, childList:true});
 

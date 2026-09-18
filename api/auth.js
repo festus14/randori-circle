@@ -3,6 +3,17 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { parseCanonicalRoomPath } from './_pairing.js';
+import {
+  INVITE_CLAIM_COOKIE,
+  acceptPreparedInvitation,
+  circleMembershipRegistrationState,
+  circleMembershipEnabled,
+  clearInviteClaimCookie,
+  createGoogleAccountFromPreparedInvitation,
+  hasActivePrimaryCircleMembership,
+  readInviteClaim,
+  validatePreparedInvitation,
+} from './_circle-membership.js';
 
 const SESSION_COOKIE = 'randori_session';
 const OAUTH_STATE_COOKIE = 'randori_oauth_state';
@@ -110,6 +121,20 @@ function registrationAllowed(email){
   return process.env.NODE_ENV!=='production' && allowlist.length===0;
 }
 
+async function bootstrapGoogleAuthSchema(db){
+  if(process.env.AUTH_SCHEMA_BOOTSTRAP_ENABLED!=='true') return;
+  await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0, google_sub TEXT)`);
+  await db.execute(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`);
+  for(const sql of [
+    `ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`,
+    `ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`,
+    `ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`,
+    `ALTER TABLE auth_accounts ADD COLUMN google_sub TEXT`,
+  ]){
+    try{ await db.execute(sql); }catch{}
+  }
+}
+
 function verifyAuthMutationOrigin(req){
   const origin=String(req.headers?.origin||req.headers?.Origin||'').trim();
   const host=String(req.headers?.['x-forwarded-host']||req.headers?.host||'').split(',')[0].trim();
@@ -145,8 +170,18 @@ async function handleSignup(req,res){
   if (e.length>254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) return res.status(400).json({ error: 'invalid email' });
   const display = String(name).trim().slice(0,32);
   if(display.length<2) return res.status(400).json({ error:'display name must be 2-32 chars' });
+  if(circleMembershipEnabled()) return res.status(403).json({error:'private beta signup requires a Google invitation'});
   if(!registrationAllowed(e)) return res.status(403).json({error:'private beta signup is invite-only'});
   const db = getClient();
+  let registrationState;
+  try{
+    registrationState=await circleMembershipRegistrationState(db);
+    if(registrationState==='closed'){
+      return res.status(403).json({error:'private beta signup requires a Google invitation'});
+    }
+  }catch{
+    return res.status(503).json({error:'signup temporarily unavailable'});
+  }
   await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0)`);
   await db.execute(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`);
   try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`);}catch{}
@@ -161,7 +196,17 @@ async function handleSignup(req,res){
   const color = deterministicColor(display.toLowerCase());
   const hash = await bcrypt.hash(password,10);
   const isAdmin = getAdminEmails().has(e) ? 1 : 0;
-  const ins = await db.execute({ sql:`INSERT INTO auth_accounts (email,password_hash,display_name,color,last_login,is_available,is_admin) VALUES (?,?,?,?,datetime('now'),1,?) RETURNING id`, args:[e, hash, display, color, isAdmin] });
+  const registrationGuard=registrationState==='uninitialized'
+    ? `NOT EXISTS (SELECT 1 FROM sqlite_schema WHERE type='table' AND name='circle_membership_rollout')`
+    : `EXISTS (SELECT 1 FROM circle_membership_rollout WHERE id=1 AND registrations_closed=0)`;
+  const ins = await db.execute({
+    sql:`INSERT INTO auth_accounts (email,password_hash,display_name,color,last_login,is_available,is_admin)
+      SELECT ?,?,?,?,datetime('now'),1,?
+      WHERE ${registrationGuard}
+      RETURNING id`,
+    args:[e,hash,display,color,isAdmin],
+  });
+  if(!ins.rows?.length) return res.status(403).json({error:'private beta signup requires a Google invitation'});
   const authId = ins.rows[0].id;
   try{ await db.execute({ sql:`INSERT INTO users (name,color) VALUES (?,?)`, args:[display,color]});}catch{}
   const token = signSession({ id:authId, email:e, name:display, color, is_admin: !!isAdmin });
@@ -189,6 +234,13 @@ async function handleLogin(req,res){
   const row = rs.rows[0];
   const ok = String(row.password_hash||'').startsWith('$2') && await bcrypt.compare(String(password), row.password_hash);
   if (!ok) return res.status(401).json({ error:'invalid credentials' });
+  if(circleMembershipEnabled()){
+    try{
+      if(!await hasActivePrimaryCircleMembership(db,row.id)) return res.status(403).json({error:'active circle membership required'});
+    }catch{
+      return res.status(503).json({error:'login temporarily unavailable'});
+    }
+  }
   await db.execute({ sql:`UPDATE auth_accounts SET last_login=datetime('now') WHERE id=?`, args:[row.id]}).catch(()=>{});
   const envAdmins = getAdminEmails();
   if (envAdmins.has(e) && !row.is_admin){
@@ -215,6 +267,15 @@ async function handleMe(req,res){
     const rs = await db.execute({ sql:`SELECT id,email,display_name,color,created_at,last_login,is_available,availability_updated_at,is_admin FROM auth_accounts WHERE id=?`, args:[id] });
     if (!rs.rows.length) return res.status(401).json({ error:'user not found' });
     const u = rs.rows[0];
+    if(circleMembershipEnabled()){
+      let hasMembership;
+      try{ hasMembership=await hasActivePrimaryCircleMembership(db,u.id); }
+      catch{ return res.status(503).json({error:'session validation temporarily unavailable'}); }
+      if(!hasMembership){
+        appendCookies(res,[clearCookie(req,SESSION_COOKIE)]);
+        return res.status(403).json({error:'active circle membership required'});
+      }
+    }
     const is_available = u.is_available===null||u.is_available===undefined ? 1 : (u.is_available?1:0);
     const is_admin_db = !!u.is_admin;
     const envAdmins = getAdminEmails();
@@ -247,6 +308,7 @@ function handleGoogleStart(req,res){
   const challenge=createHash('sha256').update(verifier).digest('base64url');
   const returnPath=safeOAuthReturnPath(req.query?.return_to);
   const params = new URLSearchParams({ client_id:clientId, redirect_uri:redirectUri, response_type:'code', scope:'openid email profile', access_type:'online', state, code_challenge:challenge, code_challenge_method:'S256' });
+  if(circleMembershipEnabled()&&readInviteClaim(req)) params.set('prompt','select_account');
   const url = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
   appendCookies(res,[
     transientCookie(req,OAUTH_STATE_COOKIE,state),
@@ -265,6 +327,8 @@ async function handleGoogleCallback(req,res){
   const expectedState=cookieValue(req,OAUTH_STATE_COOKIE);
   const verifier=cookieValue(req,OAUTH_VERIFIER_COOKIE);
   const returnPath=safeOAuthReturnPath(cookieValue(req,OAUTH_RETURN_COOKIE));
+  const inviteClaimPresent=Boolean(cookieValue(req,INVITE_CLAIM_COOKIE));
+  const inviteClaim=readInviteClaim(req);
   const redirectError=errorCode=>oauthResultLocation(appUrl,returnPath,'google_error',errorCode);
   appendCookies(res,[
     clearCookie(req,OAUTH_STATE_COOKIE,'/api/auth/google'),
@@ -300,16 +364,23 @@ async function handleGoogleCallback(req,res){
   const nameFromEmail = email.split('@')[0].slice(0,32);
   const finalName = (displayName ? String(displayName).trim().slice(0,32) : nameFromEmail) || nameFromEmail;
   const db = getClient();
-  try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0)`);
-    await db.execute(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`);
-    try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`);}catch{}
-    try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`);}catch{}
-    try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`);}catch{}
-    try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN google_sub TEXT`);}catch{}
-  }catch{}
   const color = deterministicColor(finalName.toLowerCase());
-  let authId, is_admin_final=false;
+  const membershipRequired=circleMembershipEnabled();
+  if(!membershipRequired&&process.env.AUTH_SCHEMA_BOOTSTRAP_ENABLED==='true'){
+    try{ await bootstrapGoogleAuthSchema(db); }
+    catch{ res.writeHead(302,{Location:redirectError('db_error')}); return res.end(); }
+  }
+  let registrationState=membershipRequired?'closed':null;
+  if(!membershipRequired){
+    try{ registrationState=await circleMembershipRegistrationState(db); }
+    catch{ res.writeHead(302,{Location:redirectError('db_error')}); return res.end(); }
+  }
+  let preparedInvitation={ok:false};
+  if(membershipRequired && inviteClaim){
+    try{ preparedInvitation=await validatePreparedInvitation(db,{claim:inviteClaim,email}); }
+    catch{ res.writeHead(302,{Location:redirectError('db_error')}); return res.end(); }
+  }
+  let authId, is_admin_final=false,invitationAcceptedDuringAccountCreation=false;
   try{
     const existing = await db.execute({ sql:"SELECT id, is_admin, password_hash, google_sub FROM auth_accounts WHERE email = ?", args:[email] });
     if (existing.rows.length){
@@ -324,19 +395,76 @@ async function handleGoogleCallback(req,res){
       is_admin_final = !!existing.rows[0].is_admin || getAdminEmails().has(email);
       await db.execute({ sql:"UPDATE auth_accounts SET last_login = datetime('now'), display_name = COALESCE(?, display_name), is_admin = ?, google_sub = ? WHERE id = ?", args:[finalName, is_admin_final?1:0, googleSub, authId]});
     } else {
-      if(!registrationAllowed(email)){
+      const existingIdentity=await db.execute({
+        sql:"SELECT id,email FROM auth_accounts WHERE google_sub=? LIMIT 1",
+        args:[googleSub],
+      });
+      if(existingIdentity.rows?.length){
+        if(inviteClaimPresent) appendCookies(res,[clearInviteClaimCookie()]);
+        res.writeHead(302,{Location:redirectError('identity_mismatch')}); return res.end();
+      }
+      const invitationMayRegister=membershipRequired&&preparedInvitation?.ok&&preparedInvitation.used_by===null;
+      const legacyMayRegister=!membershipRequired&&registrationState!=='closed'&&registrationAllowed(email);
+      if(!invitationMayRegister&&!legacyMayRegister){
+        if(inviteClaimPresent) appendCookies(res,[clearInviteClaimCookie()]);
         res.writeHead(302,{Location:redirectError('private_beta')}); return res.end();
       }
       is_admin_final = getAdminEmails().has(email);
-      const ins = await db.execute({ sql:"INSERT INTO auth_accounts (email, password_hash, display_name, color, last_login, is_available, is_admin, google_sub) VALUES (?, ?, ?, ?, datetime('now'), 1, ?, ?) RETURNING id", args:[email,`!oauth:${randomBytes(24).toString('base64url')}`,finalName,color, is_admin_final?1:0,googleSub]});
-      authId = ins.rows[0].id;
+      const passwordHash=`!oauth:${randomBytes(24).toString('base64url')}`;
+      if(membershipRequired){
+        const registered=await createGoogleAccountFromPreparedInvitation(db,{
+          claim:inviteClaim,email,passwordHash,displayName:finalName,color,
+          isAdmin:is_admin_final,googleSub,
+        });
+        if(!registered?.ok){
+          if(inviteClaimPresent) appendCookies(res,[clearInviteClaimCookie()]);
+          res.writeHead(302,{Location:redirectError('private_beta')}); return res.end();
+        }
+        authId=registered.user_id;
+        is_admin_final=registered.is_admin;
+        invitationAcceptedDuringAccountCreation=true;
+      }else{
+        const registrationGuard=registrationState==='uninitialized'
+          ? `NOT EXISTS (SELECT 1 FROM sqlite_schema WHERE type='table' AND name='circle_membership_rollout')`
+          : `EXISTS (SELECT 1 FROM circle_membership_rollout WHERE id=1 AND registrations_closed=0)`;
+        const ins=await db.execute({
+          sql:`INSERT INTO auth_accounts (email,password_hash,display_name,color,last_login,is_available,is_admin,google_sub)
+            SELECT ?,?,?,?,datetime('now'),1,?,?
+            WHERE ${registrationGuard}
+            RETURNING id`,
+          args:[email,passwordHash,finalName,color,is_admin_final?1:0,googleSub],
+        });
+        if(!ins.rows?.length){
+          res.writeHead(302,{Location:redirectError('private_beta')}); return res.end();
+        }
+        authId=ins.rows[0].id;
+      }
     }
-    const uExist = await db.execute({ sql:"SELECT id FROM users WHERE lower(name)=?", args:[finalName.toLowerCase()] });
-    if (!uExist.rows.length) await db.execute({ sql:"INSERT INTO users (name, color) VALUES (?,?)", args:[finalName,color]});
+    if(!membershipRequired){
+      const uExist = await db.execute({ sql:"SELECT id FROM users WHERE lower(name)=?", args:[finalName.toLowerCase()] });
+      if (!uExist.rows.length) await db.execute({ sql:"INSERT INTO users (name, color) VALUES (?,?)", args:[finalName,color]});
+    }
   }catch(e){ res.writeHead(302,{ Location:redirectError('db_error')}); return res.end(); }
+  if(membershipRequired){
+    let hasMembership=invitationAcceptedDuringAccountCreation;
+    if(!hasMembership){
+      try{ hasMembership=await hasActivePrimaryCircleMembership(db,authId); }
+      catch{ res.writeHead(302,{Location:redirectError('db_error')}); return res.end(); }
+    }
+    if(preparedInvitation?.ok&&!invitationAcceptedDuringAccountCreation){
+      let accepted;
+      try{ accepted=await acceptPreparedInvitation(db,{claim:inviteClaim,email,userId:authId}); }
+      catch{ res.writeHead(302,{Location:redirectError('db_error')}); return res.end(); }
+      hasMembership=hasMembership||accepted?.ok===true;
+    }
+    if(!hasMembership){
+      if(inviteClaimPresent) appendCookies(res,[clearInviteClaimCookie()]);
+      res.writeHead(302,{Location:redirectError('private_beta')}); return res.end();
+    }
+  }
   let ourJwt;
   try{ ourJwt = signSession({ uid:authId, id:authId, email, name:finalName, is_admin:is_admin_final }); }catch{ res.writeHead(302,{ Location:redirectError('jwt_error')}); return res.end(); }
-  appendCookies(res,[sessionCookie(req,ourJwt)]);
+  appendCookies(res,[sessionCookie(req,ourJwt),...(inviteClaimPresent?[clearInviteClaimCookie()]:[])]);
   const dest = oauthResultLocation(appUrl,returnPath,'google','success');
   res.writeHead(302, { Location:dest });
   res.end();

@@ -1,8 +1,25 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { getClient, getCronSecret, getAdminEmails, isoWeekLabel, deterministicColor, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 import { buildFairPairing, canonicalRoomId, escapeHtml } from './_pairing.js';
+import { circleMembershipEnabled } from './_circle-membership.js';
 
 const MAX_EMAIL_ATTEMPTS=5;
+
+function productionAccountQuery({availableOnly=false,includePhone=false,countOnly=false}={}){
+  const membership=`EXISTS (
+    SELECT 1
+    FROM circle_memberships cm
+    JOIN circles c ON c.id=cm.circle_id
+    WHERE cm.user_id=auth_accounts.id
+      AND cm.status='active'
+      AND c.is_primary=1
+      AND c.archived_at IS NULL
+  )`;
+  const availability=availableOnly?' AND COALESCE(is_available,1)=1':'';
+  if(countOnly) return `SELECT COUNT(*) as c FROM auth_accounts WHERE COALESCE(is_demo,0)=0${availability} AND ${membership}`;
+  const phone=includePhone?', phone':'';
+  return `SELECT id, display_name as name, email, color, is_available, is_demo${phone} FROM auth_accounts WHERE COALESCE(is_demo,0)=0${availability} AND ${membership} ORDER BY id`;
+}
 
 async function logServerOps(level, event, message, meta, req){
   try{
@@ -227,7 +244,7 @@ async function deliverPendingPairingEmails(db,weekId,baseUrl,req){
     return {summary:'email outbox unavailable',sent:0,failed:0,exhausted,pending:0,error:String(e.message||e).slice(0,180)};
   }
   if(!pending.rows.length) return {summary:exhausted?`${exhausted} email reminder(s) exhausted after ${MAX_EMAIL_ATTEMPTS} attempts`:'no pending email reminders',sent:0,failed:0,exhausted,pending:0};
-  if(!process.env.RESEND_API_KEY) return {summary:`${pending.rows.length} email reminder(s) pending — set RESEND_API_KEY + RESEND_FROM`,sent:0,failed:0,exhausted,pending:pending.rows.length};
+  if(!process.env.RESEND_API_KEY||!process.env.RESEND_FROM) return {summary:`${pending.rows.length} email reminder(s) pending — email disabled until RESEND_API_KEY + RESEND_FROM are set`,sent:0,failed:0,exhausted,pending:pending.rows.length};
 
   const resendMod=await import('resend').catch(()=>null);
   if(!resendMod?.Resend) return {summary:`${pending.rows.length} email reminder(s) pending — resend package unavailable`,sent:0,failed:0,exhausted,pending:pending.rows.length};
@@ -236,7 +253,7 @@ async function deliverPendingPairingEmails(db,weekId,baseUrl,req){
   if(!weekLabel) return {summary:'email reminders pending — pairing week missing',sent:0,failed:pending.rows.length,exhausted,pending:pending.rows.length};
 
   const resend=new resendMod.Resend(process.env.RESEND_API_KEY);
-  const from=process.env.RESEND_FROM||'Randori <onboarding@randori.circle>';
+  const from=process.env.RESEND_FROM;
   let sent=0,failed=0,suppressed=0;
   for(const item of pending.rows){
     let claimedAttempt=null;
@@ -339,8 +356,27 @@ async function handleReshuffle(req,res){
       return res.json({ ok:true, promoted:targetEmail, id:existing.rows[0].id, by:callerEmail, note:'User is now admin (is_admin=1). They will get admin flag on next login/token refresh.' });
     }catch(e){ return res.status(500).json({ error:'db error promoting', detail:String(e.message||e).slice(0,200)}); }
   }
-  const authRs=await db.execute(`SELECT id, display_name as name, email, color, is_available, is_demo FROM auth_accounts WHERE COALESCE(is_available,1)=1 AND COALESCE(is_demo,0)=0 ORDER BY id`);
-  if (authRs.rows.length<1){ const allCount=(await db.execute(`SELECT COUNT(*) as c FROM auth_accounts WHERE COALESCE(is_demo,0)=0`).catch(()=>({rows:[{c:0}]}))).rows[0].c; return res.status(400).json({ ok:false, error:'need at least 1 available user to shuffle (solo → AI partner)', available_count:authRs.rows.length, total_accounts:allCount, hint:'Mark yourself Available ON, then reshuffle — solo users get AI partner' }); }
+  const membershipEnabled=circleMembershipEnabled();
+  let authRs;
+  try{
+    authRs=await db.execute(membershipEnabled
+      ? productionAccountQuery({availableOnly:true})
+      : `SELECT id, display_name as name, email, color, is_available, is_demo FROM auth_accounts WHERE COALESCE(is_available,1)=1 AND COALESCE(is_demo,0)=0 ORDER BY id`);
+  }catch(error){
+    if(membershipEnabled) return res.status(503).json({error:'pairing unavailable'});
+    throw error;
+  }
+  if (authRs.rows.length<1){
+    const countSql=membershipEnabled
+      ? productionAccountQuery({countOnly:true})
+      : `SELECT COUNT(*) as c FROM auth_accounts WHERE COALESCE(is_demo,0)=0`;
+    let allCount=0;
+    try{ allCount=(await db.execute(countSql)).rows[0]?.c||0; }
+    catch(error){
+      if(membershipEnabled) return res.status(503).json({error:'pairing unavailable'});
+    }
+    return res.status(400).json({ ok:false, error:'need at least 1 available user to shuffle (solo → AI partner)', available_count:authRs.rows.length, total_accounts:allCount, hint:'Mark yourself Available ON, then reshuffle — solo users get AI partner' });
+  }
   const participants = authRs.rows.map(r=>({ id:r.id, name:r.name, email:r.email, color:r.color, source:'auth', is_demo: !!r.is_demo }));
   const now = new Date(); const weekLabel = isoWeekLabel(now);
   let pairing=null,persisted=null;
@@ -380,7 +416,16 @@ async function handleWeekly(req,res){
     return res.json({ ok:true, skipped:true, week_label:weekLabel, week_id:existingWeek.rows[0].id, email:emailDelivery.summary, email_delivery:emailDelivery, message:'Week already shuffled; pending reminders were retried without regenerating pairs' });
   }
   let allAccounts=[], available=[], unavailable=[];
-  const authRs=await db.execute(`SELECT id, display_name as name, color, email, is_available, is_demo, phone FROM auth_accounts WHERE COALESCE(is_demo,0)=0 ORDER BY id`);
+  const membershipEnabled=circleMembershipEnabled();
+  let authRs;
+  try{
+    authRs=await db.execute(membershipEnabled
+      ? productionAccountQuery({includePhone:true})
+      : `SELECT id, display_name as name, color, email, is_available, is_demo, phone FROM auth_accounts WHERE COALESCE(is_demo,0)=0 ORDER BY id`);
+  }catch(error){
+    if(membershipEnabled) return res.status(503).json({error:'pairing unavailable'});
+    throw error;
+  }
   if (authRs.rows.length){
     allAccounts=authRs.rows.map(r=>({ id:r.id, name:r.name, color:r.color, email:r.email, phone:r.phone||null, is_available:r.is_available===null||r.is_available===undefined?1:(r.is_available?1:0), is_demo: !!r.is_demo, source:'auth'}));
     available=allAccounts.filter(a=>a.is_available);
@@ -388,7 +433,7 @@ async function handleWeekly(req,res){
   }
   let participants=[];
   participants=available;
-  if (!participants.length && allAccounts.length===0){
+  if (!membershipEnabled && !participants.length && allAccounts.length===0){
     const usersRs=await db.execute(`SELECT id, name, color FROM users ORDER BY id`);
     participants=usersRs.rows.map(r=>({ id:r.id, name:r.name, color:r.color, source:'users'}));
   }

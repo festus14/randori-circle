@@ -40,7 +40,18 @@ export const originalQuestionFixture = {
 
 const defaultApiResponses: Record<string, ApiResponse> = {
   '/api/auth/me': { _status: 401, ok: false, error: 'authentication required' },
-  '/api/circle': { ok: true, circle: [], count: 0 },
+  '/api/circle': request => hasSessionCookie(request)
+    ? {
+        ok: true,
+        circle_meta: { id: 1, public_id: 'circle_e2e', name: 'E2E Circle' },
+        membership: { role: 'member' },
+        circle: [],
+        count: 0,
+      }
+    : { _status: 401, error: 'authentication required' },
+  '/api/invitations': { _status: 403, error: 'owner access required' },
+  '/api/invitations/:id': { _status: 403, error: 'owner access required' },
+  '/api/invitations/prepare': { _status: 400, error: 'invitation unavailable' },
   '/api/weeks': { ok: true, weeks: [] },
   '/api/history': { ok: true, history: [], partner_counts: {}, total: 0 },
   '/api/stats': { ok: true, total_users: 0, total_weeks: 0, total_pairs: 0, total_sessions: 0 },
@@ -62,7 +73,8 @@ export async function mockApi(
   await page.route('**/api/**', async route => {
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
-    const configured = overrides[pathname] ?? defaultApiResponses[pathname];
+    const routeKey = /^\/api\/invitations\/[0-9a-f-]+$/i.test(pathname) ? '/api/invitations/:id' : pathname;
+    const configured = overrides[routeKey] ?? defaultApiResponses[routeKey];
     const body = typeof configured === 'function' ? await configured(request) : configured;
     const status = Number(body?._status || (body ? 200 : 404));
     const responseBody = body ? { ...body } : { ok: false, error: `Unmocked API route: ${pathname}` };

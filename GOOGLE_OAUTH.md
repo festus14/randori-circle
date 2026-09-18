@@ -13,7 +13,8 @@ In Vercel Dashboard → your project → Settings → Environment Variables add:
 - `APP_URL` — optional, defaults to `https://randori-circle-self.vercel.app`. Set to same prod URL. If you also test locally add `http://localhost:3000` separately and add both redirect URIs in Google.
 - `JWT_SECRET` — already required (e.g. `openssl rand -base64 48`)
 - `CRON_SECRET` — required separately from `JWT_SECRET`; protects the weekly cron
-- `SIGNUP_ALLOWLIST` — comma-separated private-beta Google email addresses
+- `SIGNUP_ALLOWLIST` — comma-separated private-beta Google email addresses used before circle-membership cutover
+- `CIRCLE_MEMBERSHIP_ENABLED` — leave `false` while running and verifying `/api/init`, then set `true` to require active primary-circle membership or an email-bound invitation
 - Keep existing `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN`
 
 Redeploy after adding.
@@ -49,7 +50,7 @@ No extra API needs enabling — Google Identity is on by default.
 - Google → consent → redirects to `/api/auth/google/callback?code=...`
 - Callback verifies state, exchanges the code with the PKCE verifier, and loads a verified email, name, and stable subject from Google's OpenID userinfo endpoint.
 - Lookup `auth_accounts` by lowercased email case-insensitive:
-  - not exists → create a Google-only account associated with the verified Google subject.
+  - not exists → create a Google-only account associated with the verified Google subject only when the legacy allowlist is still open, or after validating an unused invitation bound to that email.
   - existing Google account → require the same Google subject before updating `last_login`.
   - existing password account → do not silently link it; the user must sign in with the existing method until an explicit linking flow exists.
 - Signs a 12-hour application JWT with pinned algorithm, issuer, and audience, stores it only in the session cookie, and redirects to `/?google=success` or the validated pair invite path with `?google=success`.
@@ -72,4 +73,4 @@ No secrets in git. Native `fetch` used — no new deps.
 - `Missing GOOGLE_CLIENT_ID` JSON → you didn't set env var / didn't redeploy after set.
 - Test users: while app in Testing mode, only test emails can sign in — add your circle friends emails to Test users list.
 
-Password email verification and an explicit Google/password account-linking flow remain follow-up work before a broad public launch. Production private-beta enrollment therefore requires verified Google sign-in plus `SIGNUP_ALLOWLIST`.
+Password email verification and an explicit Google/password account-linking flow remain follow-up work before a broad public launch. Before membership cutover, production enrollment requires verified Google sign-in plus `SIGNUP_ALLOWLIST`; after cutover, it requires a prepared owner-issued invitation and active primary-circle membership.
