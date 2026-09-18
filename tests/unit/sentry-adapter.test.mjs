@@ -67,6 +67,7 @@ test('Sentry remains disabled when neither server nor public DSN is configured',
   adapter.initSentry();
 
   assert.equal(initCalls.length, 0);
+  assert.equal(adapter.isSentryConfigured(), false);
   assert.equal(adapter.getSentry().ready, false);
   assert.equal(adapter.captureSentryMessage('not sent'), null);
   assert.equal(adapter.captureSentryException(new Error('not sent')), null);
@@ -119,6 +120,7 @@ test('capture wrappers forward sanitized messages, exceptions, and contexts', as
   process.env.NEXT_PUBLIC_SENTRY_DSN = 'https://public@example.test/2';
 
   const adapter = await loadAdapter('capture-forwarding');
+  assert.equal(adapter.isSentryConfigured(), true);
   const error = new Error('email=owner@example.test token=abc phone=+44 7700 900123');
   error.stack = `Error: ${error.message}\n    at safe-file.js:1:1`;
   const messageContext = {

@@ -9,10 +9,18 @@ export const JWT_AUDIENCE = 'randori-web';
 import * as Sentry from '@sentry/node';
 let sentryInit = false;
 
+function getSentryDsn() {
+  return process.env.SENTRY_DSN || process.env.NEXT_PUBLIC_SENTRY_DSN || '';
+}
+
+export function isSentryConfigured() {
+  return Boolean(getSentryDsn());
+}
+
 export function initSentry() {
   if (sentryInit) return;
   try {
-    const dsn = process.env.SENTRY_DSN || process.env.NEXT_PUBLIC_SENTRY_DSN || '';
+    const dsn = getSentryDsn();
     if (!dsn) return;
     Sentry.init({
       dsn,

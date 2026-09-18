@@ -1,4 +1,4 @@
-import { captureSentryException, captureSentryMessage, getClient, initSentry, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
+import { captureSentryException, captureSentryMessage, getClient, initSentry, isSentryConfigured, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 
 initSentry();
 
@@ -117,7 +117,7 @@ async function logServer(level, event, message, meta, reqCtx){
     }catch{}
     await db.execute({sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at) VALUES (?,?,?,?,?,?,?,?,?, datetime('now'))`, args:[lvl, src, ev, msg, metaStr, user_id, route, ua, ip]});
     try{
-      if((lvl==='error' || lvl==='warn') && process.env.SENTRY_DSN && !reqCtx?.skipSentry){
+      if((lvl==='error' || lvl==='warn') && isSentryConfigured() && !reqCtx?.skipSentry){
         const tags={event: ev||'ai', level:lvl, source:src};
         captureSentryMessage(msg, {
           level:lvl==='error'?'error':'warning',

@@ -1,4 +1,4 @@
-import { captureSentryException, captureSentryMessage, getClient, getAdminEmails, initSentry, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
+import { captureSentryException, captureSentryMessage, getClient, getAdminEmails, initSentry, isSentryConfigured, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 
 function isAdminCheck(email, flag){
   if (flag) return true;
@@ -606,7 +606,7 @@ async function logServer(level, event, message, meta, reqCtx){
     await db.execute({sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at) VALUES (?,?,?,?,?,?,?,?,?, datetime('now'))`, args:[lvl, src, ev, msg, metaStr, user_id, route, ua, ip]});
     // Forward to Sentry server if error/warn
     try{
-      if((lvl==='error' || lvl==='warn') && process.env.SENTRY_DSN && !reqCtx?.skipSentry){
+      if((lvl==='error' || lvl==='warn') && isSentryConfigured() && !reqCtx?.skipSentry){
         const tags={event: ev||'server', level:lvl, source:src};
         if(lvl==='error'){
           if(meta && meta.stack){
