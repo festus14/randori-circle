@@ -395,6 +395,42 @@ test('owner invitation history is bounded to the newest 200 rows',async()=>{
   assert.equal(result.body.invitations.at(-1).id,'invite-006');
 });
 
+test('primary-circle owner cannot list or revoke a secondary-circle invitation',async()=>{
+  currentDb=await createDatabase();
+  const invitationId='65b269ea-4f19-4ee3-8735-e35d9ecfae1a';
+  await currentDb.batch([
+    `INSERT INTO circles (id,public_id,slug,name,is_primary,created_by,created_at)
+      VALUES (20,'59b57183-0378-4fe2-9d89-9659111bc3c4','secondary-circle','Secondary Circle',0,1,datetime('now'))`,
+    `INSERT INTO circle_memberships (circle_id,user_id,role,status,joined_at,updated_at)
+      VALUES (20,1,'owner','active',datetime('now'),datetime('now'))`,
+    {
+      sql:`INSERT INTO circle_invitations
+        (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at)
+        VALUES (?,?,?,?,?,datetime('now'),datetime('now','+7 days'))`,
+      args:[invitationId,20,'a'.repeat(64),'b'.repeat(64),1],
+    },
+  ],'write');
+
+  const listed=await invoke(invitationsHandler,{
+    url:'/api/invitations',query:{endpoint:'invitations'},headers:{'x-test-auth':'owner'},
+  });
+  assert.equal(listed.status,200);
+  assert.equal(listed.body.count,0);
+  assert.deepEqual(listed.body.invitations,[]);
+
+  const revoked=await invoke(invitationsHandler,{
+    method:'DELETE',url:`/api/invitations/${invitationId}`,
+    query:{endpoint:'invitations',id:invitationId},
+    headers:{'x-test-auth':'owner',origin:'https://randori.example.test',host:'randori.example.test'},
+  });
+  assert.equal(revoked.status,404);
+  assert.deepEqual(revoked.body,{error:'invitation not found'});
+  const stored=await currentDb.execute({
+    sql:`SELECT revoked_at FROM circle_invitations WHERE id=?`,args:[invitationId],
+  });
+  assert.equal(stored.rows[0].revoked_at,null);
+});
+
 test('public prepare is same-origin and atomically rate limited without revealing token validity',async()=>{
   currentDb=await createDatabase();
   const crossOrigin=await invoke(invitationsHandler,{
@@ -415,6 +451,55 @@ test('public prepare is same-origin and atomically rate limited without revealin
   assert.equal(last.status,429);
   assert.equal(Number(last.headers['retry-after'])>0,true);
   assert.equal(last.body.error,'too many attempts');
+});
+
+test('public prepare prunes expired rate-limit rows before enforcing the current request',async()=>{
+  currentDb=await createDatabase();
+  await currentDb.execute({
+    sql:`INSERT INTO auth_rate_limits (key,attempts,expires_at) VALUES (?,?,?)`,
+    args:['expired-client',99,Math.floor(Date.now()/1000)-1],
+  });
+
+  const result=await invoke(invitationsHandler,{
+    method:'POST',url:'/api/invitations/prepare',query:{endpoint:'prepare'},
+    headers:{origin:'https://randori.example.test',host:'randori.example.test','x-forwarded-for':'203.0.113.41'},
+    body:{token:'x'.repeat(43)},
+  });
+  assert.equal(result.status,400);
+  const rows=await currentDb.execute(`SELECT key,attempts FROM auth_rate_limits ORDER BY key`);
+  assert.equal(rows.rows.some(row=>row.key==='expired-client'),false);
+  assert.equal(rows.rows.length,1);
+  assert.equal(Number(rows.rows[0].attempts),1);
+});
+
+test('public prepare still enforces rate limits when expired-row cleanup fails',async()=>{
+  const database=await createDatabase();
+  let cleanupAttempts=0;
+  currentDb={
+    execute(statement){
+      const sql=typeof statement==='string'?statement:statement?.sql;
+      if(/^DELETE FROM auth_rate_limits WHERE expires_at<=\?/u.test(String(sql).trim())){
+        cleanupAttempts+=1;
+        return Promise.reject(new Error('cleanup unavailable'));
+      }
+      return database.execute(statement);
+    },
+    batch(statements,mode){ return database.batch(statements,mode); },
+    close(){ database.close(); },
+  };
+
+  let result;
+  for(let attempt=0;attempt<13;attempt++){
+    result=await invoke(invitationsHandler,{
+      method:'POST',url:'/api/invitations/prepare',query:{endpoint:'prepare'},
+      headers:{origin:'https://randori.example.test',host:'randori.example.test','x-forwarded-for':'203.0.113.42'},
+      body:{token:'x'.repeat(43)},
+    });
+  }
+  assert.equal(cleanupAttempts,13);
+  assert.equal(result.status,429);
+  const rows=await database.execute(`SELECT attempts FROM auth_rate_limits`);
+  assert.equal(Number(rows.rows[0].attempts),13);
 });
 
 test('membership-scoped circle exposes only active primary-circle auth members',async()=>{

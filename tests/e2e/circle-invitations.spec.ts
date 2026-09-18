@@ -172,6 +172,8 @@ test('circle owner can view members, create a private copy action, and revoke in
   await page.getByTestId('circle-invite-link').click();
   await expect.poll(() => copiedInvite).toBe(new URL(`/invite#invite=${rawInvite}`, page.url()).href);
 
+  await expect(page.getByTestId('circle-invites')).toContainText('f6e5d4c3b2a1');
+  await expect(page.getByTestId('circle-invite-revoke')).toHaveCount(2);
   await page.getByTestId('circle-invite-revoke').last().click();
   await expect.poll(() => revokedIds).toEqual([secondInvitationId]);
   await expect(page.getByTestId('circle-invite-link')).toBeHidden();

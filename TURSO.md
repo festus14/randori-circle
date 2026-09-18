@@ -139,10 +139,17 @@ Before enabling `CIRCLE_MEMBERSHIP_ENABLED`, verify the production database with
 
 ```sql
 SELECT id, public_id, name FROM circles WHERE is_primary=1 AND archived_at IS NULL;
-SELECT role, status, COUNT(*) FROM circle_memberships GROUP BY role, status;
-SELECT event_type, COUNT(*) FROM circle_audit_events
-  WHERE event_type IN ('membership.backfilled','membership.backfill.completed')
-  GROUP BY event_type;
+SELECT cm.role, cm.status, COUNT(*)
+  FROM circle_memberships cm
+  JOIN circles c ON c.id=cm.circle_id
+  WHERE c.is_primary=1 AND c.archived_at IS NULL
+  GROUP BY cm.role, cm.status;
+SELECT cae.event_type, COUNT(*)
+  FROM circle_audit_events cae
+  JOIN circles c ON c.id=cae.circle_id
+  WHERE c.is_primary=1 AND c.archived_at IS NULL
+    AND cae.event_type IN ('membership.backfilled','membership.backfill.completed')
+  GROUP BY cae.event_type;
 SELECT registrations_closed FROM circle_membership_rollout WHERE id=1;
 SELECT google_sub, COUNT(*) FROM auth_accounts
   WHERE google_sub IS NOT NULL GROUP BY google_sub HAVING COUNT(*)>1;

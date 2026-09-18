@@ -95,6 +95,14 @@ function prepareRateKey(req){
 async function consumePrepareRateLimit(db,req){
   const now=Math.floor(Date.now()/1000);
   const expiresAt=now+PREPARE_RATE_WINDOW_SECONDS;
+  try{
+    await db.execute({
+      sql:`DELETE FROM auth_rate_limits WHERE expires_at<=?`,
+      args:[now],
+    });
+  }catch{
+    // Expired-row cleanup is opportunistic; a cleanup failure must not bypass enforcement.
+  }
   const result=await db.execute({
     sql:`INSERT INTO auth_rate_limits (key,attempts,expires_at) VALUES (?,1,?)
       ON CONFLICT(key) DO UPDATE SET
