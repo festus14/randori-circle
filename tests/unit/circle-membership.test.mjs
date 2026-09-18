@@ -495,6 +495,7 @@ test('public prepare still enforces rate limits when expired-row cleanup fails',
       headers:{origin:'https://randori.example.test',host:'randori.example.test','x-forwarded-for':'203.0.113.42'},
       body:{token:'x'.repeat(43)},
     });
+    assert.equal(result.status,attempt===12?429:400);
   }
   assert.equal(cleanupAttempts,13);
   assert.equal(result.status,429);
