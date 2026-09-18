@@ -18,6 +18,8 @@ Platform requests time out after 15 seconds, individual database operations afte
 
 Create an environment named `turso-migration-rehearsal`. Restrict deployment branches to `main`, prevent concurrent runs, and require an operations approver before environment secrets are released. Store these values in that environment, not as repository-wide credentials:
 
+Every workflow that can mutate or temporarily block the production database, including the later issue #43 apply workflow, must use the same `turso-production-database-operations` concurrency group with `cancel-in-progress: false`.
+
 | Kind | Name | Purpose |
 |---|---|---|
 | Secret | `TURSO_PRODUCTION_PLATFORM_TOKEN` | Platform API access scoped to the production organization |

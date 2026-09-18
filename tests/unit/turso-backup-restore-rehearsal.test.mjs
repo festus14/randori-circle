@@ -1050,6 +1050,7 @@ test('CLI writes only an allowlisted public artifact beneath RUNNER_TEMP',async(
     assert.match(workflow,/\$\{\{ runner\.temp \}\}\/public-artifacts\/cleanup-summary\.json/);
     assert.doesNotMatch(workflow,/path:[^\n]*(?:private-recovery|RUNNER_TEMP)/);
     assert.doesNotMatch(workflow,/uses: actions\/(?:checkout|setup-node|upload-artifact)@v[0-9]/);
+    assert.match(workflow,/concurrency:\n\s+group: turso-production-database-operations\n\s+cancel-in-progress: false/);
     assert.match(workflow,/Restore source state and clean disposable restore\n\s+id: cleanup\n\s+if: always\(\)/);
     assert.match(workflow,/steps\.cleanup\.outcome == 'success'/);
     assert.match(workflow,/steps\.cleanup_upload\.outcome == 'success'/);
