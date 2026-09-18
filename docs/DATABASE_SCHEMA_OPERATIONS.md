@@ -1,14 +1,15 @@
-# Database schema inspection
+# Database schema operations
 
-Randori now has a versioned, read-only schema inspection foundation. It does **not** migrate a database. Its purpose is to make the current state measurable before an apply/restore workflow is introduced.
+Randori has read-only schema inspection for configured databases and a transactional migration runner for local database files. Remote migration remains disabled until the backup and restore verifier is complete.
 
 ## Contract
 
 - `db/schema-manifest.js` is the current contract: 28 application tables and 26 named indexes.
 - The manifest includes column/default/primary-key contracts, checks, foreign keys, unique constraints, AUTOINCREMENT/collation/table options, and unique, partial, descending, and expression-index semantics. SQLite-created `sqlite_autoindex_*` indexes are intentionally outside the named-index count.
 - `ai_monthly_usage` is a retired table. Its presence is reported as tolerated legacy state; it is not treated as current schema and is never changed.
+- `schema_migrations` is a runner-owned operational table. General schema inspection recognizes it without treating it as unexpected application drift; the migration runner validates its exact schema and rows separately.
 - Each plan owns a frozen ordered snapshot of its canonical table/index definitions. Both that operation snapshot and the surrounding plan metadata have pinned SHA-256 checksums, while the resolved current schema has a separate checksum. A reviewed schema change must append a plan containing the replacement definition; later definitions for the same artifact supersede earlier ones without rewriting their history.
-- The plan metadata is descriptive and non-executable. No migration ledger is claimed and no schema version is inferred from table presence.
+- `db:plan` remains descriptive and non-executable. The local runner uses separately checksummed executable migrations and records their exact version, name, checksum, timing, and disposition in `schema_migrations`.
 
 ## Commands
 
@@ -52,20 +53,68 @@ Representative output fields:
 }
 ```
 
-Do not pipe `db:plan` into a database shell. The output is an inspection artifact for review, backup planning, and the future explicit migration runner.
+Do not pipe `db:plan` into a database shell. Its output is an inspection artifact only; the local migration runner executes its own immutable, checksummed operations.
+
+## Local migration rehearsal
+
+The migration runner never reads `TURSO_DATABASE_URL` or `TURSO_AUTH_TOKEN`. It requires an explicit, absolute `file:` URL and rejects remote URLs, relative paths, in-memory targets, URL query parameters, directories, special files, and final-component symbolic links. Parent aliases such as macOS `/tmp` are resolved to their canonical directory before the database is opened.
+
+First inspect the target and retain its `stateFingerprint`:
+
+```bash
+npm run --silent db:migrate -- \
+  status --database file:///absolute/path/to/restored-randori.db
+```
+
+Then pass that exact fingerprint to one mutation command:
+
+```bash
+npm run --silent db:migrate -- \
+  apply --database file:///absolute/path/to/restored-randori.db \
+  --expected-state <stateFingerprint>
+
+npm run --silent db:migrate -- \
+  adopt --database file:///absolute/path/to/restored-randori.db \
+  --expected-state <stateFingerprint>
+```
+
+`status` is read-only, including for a missing target: it reports a fresh-state fingerprint without creating the file. `apply` accepts only fresh databases or valid managed databases and applies each pending version transactionally with its ledger row. `adopt` accepts only a fully compatible unmanaged database and writes only the ledger; it never repairs or changes application schema or data.
+
+The runner reports three states:
+
+| State | Meaning | Allowed next action |
+| --- | --- | --- |
+| `fresh` | No application schema and no ledger. | `apply` |
+| `managed` | A ledger exists and its contiguous history matches the executable migrations. | `apply`, including a latest-version no-op, only while its recorded schema is exact |
+| `unmanaged` | Application objects exist without a valid ledger history. | `adopt` only when the complete schema and membership invariants are exact |
+
+The fingerprint binds the inspected schema, ledger, and membership rollout evidence. Both mutation modes recompute it inside their write transaction before making changes. A stale fingerprint is refused without a write; run `status` again and investigate the change rather than copying a new value blindly.
+
+For an unmanaged database, adoption requires the exact current schema. The membership rollout must contain exactly the singleton row with ID `1`. An open latch may not contain circles, memberships, invitations, or audit state. A closed latch must have exactly one active primary circle, an active owner, exact owner-authored backfill completion evidence, canonical backfill or accepted-invitation provenance for every non-demo account, no uncovered accounts, and no orphan active memberships. The runner preserves the latch; it never reopens registration.
+
+Every invocation emits exactly one redacted JSON document. Successful results and controlled refusals use stdout; invocation or operational failures use stderr.
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | Status is actionable, or apply/adopt completed safely (including a no-op). |
+| `2` | A state or safety precondition refused the current step. A previous migration version may already have committed; run `status` again. |
+| `1` | Usage, target validation, I/O, or migration execution failed. |
+
+Output includes only the target kind and whether it existed before opening. It never includes the file path, SQL, credentials, or raw provider errors.
 
 ## Runtime DDL debt
 
 Several existing request paths still contain best-effort `CREATE` and `ALTER` statements. `npm run check:runtime-ddl` fingerprints the exact normalized statement set and occurrence counts per API module. CI fails when a statement is added, changed, assembled from string fragments, or removed without an intentional allowlist update.
 
-This is a freeze, not an endorsement. Existing statements remain temporarily for compatibility. New schema work belongs in the forthcoming explicit migration runner; the allowlist should shrink as request-path DDL is removed.
+This is a freeze, not an endorsement. Existing statements remain temporarily for compatibility. New schema work belongs in appended, checksummed executable migrations; the allowlist should shrink as request-path DDL is removed.
 
 ## Operator sequence
 
-1. Complete a backup and restore rehearsal.
-2. Run `npm run --silent db:status` against the restored copy and retain its JSON output.
-3. Run `npm run --silent db:plan` and review every blocker and proposed artifact.
-4. Do not make production changes from this plan. The current slice has no apply command.
-5. Continue using the authenticated `/api/init` membership rollout documented in `TURSO.md` until an explicit migration runner supersedes it.
+1. Create a local copy or restore rehearsal database. Never point the migration runner at a remote URL.
+2. Run local `db:migrate status` and retain its JSON result and fingerprint.
+3. Run `db:migrate apply` for a fresh or managed file, or `db:migrate adopt` only for an exact unmanaged file.
+4. Run local `db:migrate status` again, then run the existing `db:status` and `db:plan` inspections against the same rehearsal database.
+5. If exit code `1` or `2` occurs, retain the JSON, do not edit `schema_migrations` by hand, and run `status` again. A failed version is rolled back with its ledger insert; recover from the source backup if external file damage is suspected.
+6. Continue using the authenticated `/api/init` membership rollout documented in `TURSO.md` for production until remote migration is explicitly enabled.
 
 Production migration remains blocked until real Turso credentials, a verified backup, and a restore rehearsal are available.
