@@ -1391,11 +1391,13 @@ async function refreshMe(){
     const overlay=document.getElementById('authOverlay');
     if(!overlay?.classList.contains('show')) return;
     const active=document.activeElement;
-    if(active&&overlay.contains(active)&&active.id!=='authDialog') return;
+    if(active&&overlay.contains(active)&&active.id!=='authDialog'&&!active.disabled&&active.getClientRects().length>0) return;
     const passwordEnabled=authMode==='signup'?authCapabilities.passwordSignup:authCapabilities.passwordLogin;
-    const target=passwordEnabled
+    const target=authBusy
+      ?document.getElementById('authCancel')
+      :(passwordEnabled
       ?document.getElementById('authEmail')
-      :(authCapabilities.googleOAuth?document.getElementById('authGoogle'):document.getElementById('authCancel'));
+      :(authCapabilities.googleOAuth?document.getElementById('authGoogle'):document.getElementById('authCancel')));
     target?.focus();
   }
   function renderAuthModal(){
@@ -1495,6 +1497,7 @@ async function refreshMe(){
     setAuthError(message);
     overlay.classList.add('show');
     overlay.setAttribute('aria-hidden','false');
+    document.dispatchEvent(new CustomEvent('randori:auth-modal-opened'));
     renderAuthModal();
     document.getElementById('authDialog')?.focus();
     Promise.resolve(authCapabilitiesPromise).finally(()=>focusAuthControl());
@@ -1519,17 +1522,23 @@ async function refreshMe(){
     if(password) password.value='';
     const returnFocus=authReturnFocus;
     authReturnFocus=null;
-    if(returnFocus&&returnFocus.isConnected) setTimeout(()=>returnFocus.focus(),0);
+    queueMicrotask(()=>{
+      if(overlay.classList.contains('show')) return;
+      if(returnFocus&&returnFocus.isConnected&&returnFocus.getClientRects().length>0&&!returnFocus.disabled) returnFocus.focus();
+      document.dispatchEvent(new CustomEvent('randori:auth-modal-closed'));
+    });
   }
   function setAuthBusy(busy){
     authBusy=!!busy;
     renderAuthModal();
+    if(authBusy) focusAuthControl();
   }
   function authDialogKeydown(event){
     const overlay=document.getElementById('authOverlay');
     if(!overlay?.classList.contains('show')) return;
     if(event.key==='Escape'){
       event.preventDefault();
+      event.stopImmediatePropagation();
       closeAuthModal();
       return;
     }
@@ -1539,7 +1548,8 @@ async function refreshMe(){
     if(!focusable.length){ event.preventDefault(); document.getElementById('authDialog')?.focus(); return; }
     const first=focusable[0];
     const last=focusable[focusable.length-1];
-    if(event.shiftKey&&document.activeElement===first){ event.preventDefault(); last.focus(); }
+    if(!overlay.contains(document.activeElement)){ event.preventDefault(); first.focus(); }
+    else if(event.shiftKey&&document.activeElement===first){ event.preventDefault(); last.focus(); }
     else if(!event.shiftKey&&document.activeElement===last){ event.preventDefault(); first.focus(); }
   }
   // Centralized auth dialog entry points keep capability, focus, and dismissal state consistent.
@@ -1547,7 +1557,9 @@ async function refreshMe(){
   document.getElementById('authCancel').onclick=()=>closeAuthModal();
   document.getElementById('authModeSwitch').onclick=()=>setAuthMode(authMode==='signup'?'signin':'signup');
   document.getElementById('authOverlay').onclick=(event)=>{ if(event.target===event.currentTarget) closeAuthModal(); };
-  document.getElementById('authOverlay').addEventListener('keydown',authDialogKeydown);
+  // Capture at the document boundary: disabling the focused submit control can
+  // move focus to body in Chromium, but the open modal must still own Escape/Tab.
+  document.addEventListener('keydown',authDialogKeydown,true);
   for(const input of document.querySelectorAll('#authPasswordFields input')){
     input.addEventListener('input',()=>{
       input.removeAttribute('aria-invalid');
@@ -4280,6 +4292,14 @@ def allow(key, limit=5):
     document.querySelectorAll('.onboard-spotlight').forEach(el=> el.classList.remove('onboard-spotlight','pulse'));
   }
 
+  function setOnboardingModalVisible(visible){
+    const overlay=document.getElementById('onboardOverlay');
+    if(!overlay) return;
+    overlay.classList.toggle('show',visible);
+    overlay.setAttribute('aria-hidden',visible?'false':'true');
+    if(!visible) clearSpotlight();
+  }
+
   function spotlight(el){
     clearSpotlight();
     if(!el) return;
@@ -4289,7 +4309,13 @@ def allow(key, limit=5):
   }
 
   function renderOnboardStep(){
-    if(onboardStep<1 || onboardStep>5){ document.getElementById('onboardOverlay').classList.remove('show'); clearSpotlight(); return; }
+    if(onboardStep<1 || onboardStep>5){ setOnboardingModalVisible(false); return; }
+    // Auth owns the modal layer while it is open. Keep the tour step queued so
+    // it can resume after auth closes instead of stacking two aria-modal dialogs.
+    if(document.getElementById('authOverlay')?.classList.contains('show')){
+      setOnboardingModalVisible(false);
+      return;
+    }
     const s=steps[onboardStep-1];
     document.getElementById('onbTitle').textContent=s.title;
     document.getElementById('onbDesc').textContent=s.desc;
@@ -4297,7 +4323,7 @@ def allow(key, limit=5):
     document.getElementById('onbNext').textContent=s.cta||'Next →';
     document.getElementById('onbCount').textContent=`${onboardStep} / 5`;
     updateOnboardProgress();
-    document.getElementById('onboardOverlay').classList.add('show');
+    setOnboardingModalVisible(true);
     // spotlight target
     let tgt=null;
     if(s.target){
@@ -4322,6 +4348,9 @@ def allow(key, limit=5):
     }
     if(tgt) spotlight(tgt);
     localStorage.setItem(ONB_STEP_KEY, String(onboardStep));
+    queueMicrotask(()=>{
+      if(document.getElementById('onboardOverlay')?.classList.contains('show')) document.getElementById('onbNext')?.focus();
+    });
   }
 
   function startOnboarding(from=1){
@@ -4343,8 +4372,7 @@ def allow(key, limit=5):
       onboardCompleted=true;
       localStorage.setItem(ONB_KEY,'1');
       localStorage.setItem(ONB_STEP_KEY,'0');
-      document.getElementById('onboardOverlay').classList.remove('show');
-      clearSpotlight();
+      setOnboardingModalVisible(false);
       toast('You’re all set — pair Sunday at 08:00 London time');
       // keep checklist but mark progress
       updateChecklist();
@@ -4356,13 +4384,21 @@ def allow(key, limit=5):
     onboardCompleted=true;
     localStorage.setItem(ONB_KEY,'1');
     localStorage.setItem(ONB_STEP_KEY,'0');
-    document.getElementById('onboardOverlay').classList.remove('show');
-    clearSpotlight();
+    setOnboardingModalVisible(false);
   }
 
   document.getElementById('onbNext')?.addEventListener('click', nextOnboard);
   document.getElementById('onbSkip')?.addEventListener('click', skipOnboarding);
-  document.addEventListener('keydown', e=>{ if(e.key==='Escape' && document.getElementById('onboardOverlay').classList.contains('show')) skipOnboarding(); });
+  document.addEventListener('keydown', e=>{
+    if(e.key==='Escape' && document.getElementById('onboardOverlay').classList.contains('show')){
+      e.preventDefault();
+      skipOnboarding();
+    }
+  });
+  document.addEventListener('randori:auth-modal-opened',()=>setOnboardingModalVisible(false));
+  document.addEventListener('randori:auth-modal-closed',()=>{
+    if(!onboardCompleted&&onboardStep>0) renderOnboardStep();
+  });
 
   // Welcome banner for first-time visitors (no token)
   function maybeShowWelcome(){
@@ -4442,7 +4478,7 @@ def allow(key, limit=5):
   setTimeout(()=>{
     // re-read in case token changed after load
     try{ onboardCompleted = localStorage.getItem(ONB_KEY)==='1'; }catch{}
-    if(onboardCompleted){ document.getElementById('welcomeBanner').style.display='none'; document.getElementById('onboardOverlay').classList.remove('show'); document.getElementById('onboardChecklist').style.display='none'; return; }
+    if(onboardCompleted){ document.getElementById('welcomeBanner').style.display='none'; setOnboardingModalVisible(false); document.getElementById('onboardChecklist').style.display='none'; return; }
     maybeShowWelcome();
     updateChecklist();
     if(!onboardCompleted && onboardStep===0 && !me){
