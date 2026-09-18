@@ -19,6 +19,16 @@ import {
   initializePrimaryCircle,
 } from './_circle-membership.js';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import {
+  HEALTH_RESPONSE,
+  READY_RESPONSE,
+  UNAVAILABLE_RESPONSE,
+  coalescedDatabaseReadiness,
+  databaseReadinessConfiguration,
+  readinessTargetExists,
+  resolveHealthProbe,
+  setHealthHeaders,
+} from './_health.js';
 
 function isAdminCheck(email, flag){
   if (flag) return true;
@@ -691,35 +701,28 @@ function isLogRateLimited(ip){
 
 
 async function handleHealth(req,res){
-  // Public health is deliberately aggregate-only; detailed logs are admin-only.
+  setHealthHeaders(res);
+  if(!['GET','HEAD'].includes(String(req?.method||'GET').toUpperCase())){
+    res.setHeader('Allow','GET, HEAD');
+    return res.status(405).json(UNAVAILABLE_RESPONSE);
+  }
+  const probe=resolveHealthProbe(req);
+  if(probe==='live') return res.status(200).json(HEALTH_RESPONSE);
+  if(probe!=='ready') return res.status(400).json(UNAVAILABLE_RESPONSE);
+  const configuration=databaseReadinessConfiguration();
+  if(!configuration||!readinessTargetExists(configuration)){
+    return res.status(503).json(UNAVAILABLE_RESPONSE);
+  }
   try{
     const db=getClient();
-    try{ await ensureAppLogs(db); }catch{}
-    let errors_last_hour=0, warns_last_hour=0, infos_last_hour=0, success_last_hour=0;
-    try{
-      const rs1=await db.execute(`SELECT level, COUNT(*) as c FROM app_logs WHERE datetime(created_at) >= datetime('now','-1 hour') GROUP BY level`);
-      for(const r of rs1.rows){
-        const lvl=String(r.level||'').toLowerCase();
-        const c=Number(r.c||0);
-        if(lvl==='error') errors_last_hour=c;
-        else if(lvl==='warn') warns_last_hour=c;
-        else if(lvl==='info') infos_last_hour=c;
-        else if(lvl==='success') success_last_hour=c;
-      }
-    }catch{}
-    // also counts last 10 events of interest
-    let monaco_fails=0, piston_fails=0;
-    try{
-      const rs3=await db.execute(`SELECT event, COUNT(*) as c FROM app_logs WHERE datetime(created_at) >= datetime('now','-6 hours') AND event IN ('monaco_load_fail','execute_fail','piston_fail','api_fail') GROUP BY event`);
-      for(const r of rs3.rows){
-        if(r.event==='monaco_load_fail') monaco_fails=Number(r.c||0);
-        if(r.event==='execute_fail' || r.event==='piston_fail') piston_fails+=Number(r.c||0);
-      }
-    }catch{}
-    const spike = errors_last_hour>5;
-    return res.json({ok:true, ts:new Date().toISOString(), errors_last_hour, warns_last_hour, infos_last_hour, success_last_hour, monaco_fails_6h:monaco_fails, piston_fails_6h:piston_fails, spike, warning: spike? 'error spike detected — >5 errors last hour': null, last_5_errors:[]});
-  }catch(e){
-    return res.status(503).json({ok:false, error:'health unavailable'});
+    const ready=await coalescedDatabaseReadiness(configuration.cacheKey,db,{
+      membershipRequired:configuration.membershipRequired,
+    });
+    return ready
+      ?res.status(200).json(READY_RESPONSE)
+      :res.status(503).json(UNAVAILABLE_RESPONSE);
+  }catch{
+    return res.status(503).json(UNAVAILABLE_RESPONSE);
   }
 }
 

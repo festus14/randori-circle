@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash, createHmac } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -14,6 +14,7 @@ const realFetch = globalThis.fetch;
 const TEST_JWT_SECRET = 'unit-test-secret-at-least-thirty-two-characters';
 let executeHandler = () => ({ rows: [], rowsAffected: 0 });
 let databaseDelegate = null;
+let getClientCalls = 0;
 const executed = [];
 const sentryMessageCalls = [];
 const sentryExceptionCalls = [];
@@ -125,7 +126,7 @@ mock.module('../../api/_db.js', {
   exports: {
     JWT_AUDIENCE: 'randori-web',
     JWT_ISSUER: 'randori-circle',
-    getClient: () => db,
+    getClient: () => { getClientCalls+=1; return db; },
     getJwtSecret: () => TEST_JWT_SECRET,
     getCronSecret: () => {
       if (!process.env.CRON_SECRET) throw new Error('Missing CRON_SECRET');
@@ -261,6 +262,7 @@ beforeEach(() => {
   sentryMessageCalls.length = 0;
   sentryExceptionCalls.length = 0;
   databaseDelegate = null;
+  getClientCalls = 0;
   lastPairingRun = null;
   persistedPairGroups = [];
   persistedPairingParticipants = [];
@@ -272,6 +274,7 @@ beforeEach(() => {
     'NEXT_PUBLIC_SENTRY_DSN', 'SENTRY_DSN',
     'ALLOW_OPEN_SIGNUP', 'SIGNUP_ALLOWLIST', 'LEETCODE_INGESTION_AUTHORIZED',
     'AUTH_SCHEMA_BOOTSTRAP_ENABLED', 'CIRCLE_MEMBERSHIP_ENABLED', 'RANDORI_LOCAL_RUNTIME',
+    'RANDORI_LOCAL_DATABASE_PATH',
     'TURSO_AUTH_TOKEN', 'TURSO_DATABASE_URL', 'VERCEL', 'VERCEL_ENV', 'VERCEL_URL',
     'RUN_ATTESTATION_SECRET', 'RUN_ATTESTATION_PREVIOUS_SECRETS',
     'TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM',
@@ -568,7 +571,7 @@ test('login rejects missing or cross-origin requests before credential or databa
   }
 });
 
-test('data read models map database rows into circle, weeks, history, stats, and health responses', async () => {
+test('data read models map database rows and expose non-mutating health probes', async () => {
   const currentCycleId=resolvePairingCycle().cycleId;
   executeHandler = sql => {
     if(sql.includes('SELECT aa.id')&&sql.includes('JOIN circle_memberships cm')&&sql.includes('LIMIT 2')) return rows([{id:2,circle_id:1}]);
@@ -580,8 +583,6 @@ test('data read models map database rows into circle, weeks, history, stats, and
       groupRows:[{id:20,user_a_id:2,user_b_id:4,user_c_id:null,is_ai_pair:0}],
     });
     if(publication) return publication;
-    if (sql.includes("GROUP BY level")) return rows([{ level: 'error', c: 7 }, { level: 'warn', c: 2 }, { level: 'success', c: 3 }]);
-    if (sql.includes("event IN")) return rows([{ event: 'monaco_load_fail', c: 1 }, { event: 'execute_fail', c: 2 }]);
     if (sql.includes('FROM auth_accounts WHERE COALESCE(is_demo,0)=0 ORDER BY id')) return rows([
       { id: 2, display_name: 'User', color: '#123456', is_available: 1, bio: '', tz: 'UTC', interview_focus: 'dsa' },
       { id: 4, display_name: 'Partner', color: '#abcdef', is_available: 0, bio: 'bio', tz: 'UTC', interview_focus: 'both' },
@@ -612,9 +613,19 @@ test('data read models map database rows into circle, weeks, history, stats, and
     return rows();
   };
   const auth = { 'x-test-auth': 'user' };
-  const health = await invoke(dataHandler, { url: '/api/health', query: { endpoint: 'health' } });
-  assert.equal(health.body.spike, true);
-  assert.equal(health.body.piston_fails_6h, 2);
+  const health = await invoke(dataHandler, {
+    url: '/api/health/live', query: { endpoint: 'health', probe:'live' },
+  });
+  assert.equal(health.status,200);
+  assert.deepEqual(health.body,{ok:true,status:'live'});
+  assert.equal(health.headers['cache-control'],'no-store');
+  assert.equal(executed.length,0,'liveness must not touch the database');
+  const unavailable = await invoke(dataHandler, {
+    url: '/api/health/ready', query: { endpoint: 'health', probe:'ready' },
+  });
+  assert.equal(unavailable.status,503);
+  assert.deepEqual(unavailable.body,{ok:false,status:'unavailable'});
+  assert.equal(executed.length,0,'missing readiness configuration must not touch the database');
 
   const circle = await invoke(dataHandler, { url: '/api/circle', query: { endpoint: 'circle' }, headers: auth });
   assert.equal(circle.body.circle.length, 2);
@@ -636,6 +647,51 @@ test('data read models map database rows into circle, weeks, history, stats, and
   const stats = await invoke(dataHandler, { url: '/api/stats', query: { endpoint: 'stats' }, headers: auth });
   assert.equal(stats.body.total_users, 4);
   assert.equal(stats.body.your_sessions, 2);
+});
+
+test('database readiness failures are generic, private, and never logged through mutating health paths',async()=>{
+  process.env.TURSO_DATABASE_URL='libsql://private-database.example.test';
+  process.env.TURSO_AUTH_TOKEN='private-readiness-token';
+  executeHandler=()=>{ throw new Error('SELECT secret FROM private_table using private-readiness-token'); };
+  const result=await invoke(dataHandler,{
+    url:'/api/health/ready',query:{endpoint:'health',probe:'ready'},
+  });
+  assert.equal(result.status,503);
+  assert.equal(result.headers['cache-control'],'no-store');
+  assert.deepEqual(result.body,{ok:false,status:'unavailable'});
+  assert.doesNotMatch(JSON.stringify(result.body),/secret|private|select|libsql/i);
+  assert.equal(sentryExceptionCalls.length,0);
+  assert.equal(sentryMessageCalls.length,0);
+  assert.equal(executed.some(call=>/\b(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE)\b/i.test(call.sql)),false);
+
+  const invalidMethod=await invoke(dataHandler,{
+    method:'POST',url:'/api/health/ready',query:{endpoint:'health',probe:'ready'},
+  });
+  assert.equal(invalidMethod.status,405);
+  assert.equal(invalidMethod.headers.allow,'GET, HEAD');
+  assert.deepEqual(invalidMethod.body,{ok:false,status:'unavailable'});
+});
+
+test('local readiness refuses an absent database before client construction or file creation',async()=>{
+  const directory=mkdtempSync(join(tmpdir(),'randori-health-handler-'));
+  const databasePath=join(directory,'missing.sqlite');
+  try{
+    process.env.NODE_ENV='development';
+    process.env.RANDORI_LOCAL_RUNTIME='true';
+    process.env.TURSO_DATABASE_URL=pathToFileURL(databasePath).href;
+    process.env.RANDORI_LOCAL_DATABASE_PATH=databasePath;
+    process.env.CIRCLE_MEMBERSHIP_ENABLED='false';
+    const result=await invoke(dataHandler,{
+      url:'/api/health/ready',query:{endpoint:'health',probe:'ready'},
+    });
+    assert.equal(result.status,503);
+    assert.deepEqual(result.body,{ok:false,status:'unavailable'});
+    assert.equal(result.headers['cache-control'],'no-store');
+    assert.equal(getClientCalls,0);
+    assert.equal(existsSync(databasePath),false);
+  }finally{
+    rmSync(directory,{recursive:true,force:true});
+  }
 });
 
 test('profile, pair schedule, and messages enforce ownership while catalogue and run history are read-only', async () => {

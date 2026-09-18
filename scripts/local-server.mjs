@@ -559,10 +559,14 @@ function apiRoute(pathname,query){
     ['/api/profile','profile'],['/api/my-pair','my-pair'],['/api/pair-recap','pair-recap'],
     ['/api/stats','stats'],['/api/schedule','schedule'],['/api/messages','messages'],
     ['/api/questions','questions'],['/api/runs','runs'],['/api/leetcode','leetcode'],
-    ['/api/leetcode/sync','leetcode-sync'],['/api/execute','execute'],['/api/logs','logs'],['/api/health','health'],
+    ['/api/leetcode/sync','leetcode-sync'],['/api/execute','execute'],['/api/logs','logs'],
+    ['/api/health','health'],['/api/health/live','health'],['/api/health/ready','health'],
+    ['/api/healthz','health'],['/api/readyz','health'],
   ]);
   if(dataEndpoints.has(pathname)){
     query.endpoint=dataEndpoints.get(pathname);
+    if(pathname==='/api/health/live'||pathname==='/api/healthz') query.probe='live';
+    if(pathname==='/api/health/ready'||pathname==='/api/readyz') query.probe='ready';
     return 'data';
   }
   const opsEndpoints=new Map([
@@ -771,6 +775,7 @@ function installRuntimeEnvironment(config,url,secret,envTarget=process.env){
   const values={
     NODE_ENV:'development',
     TURSO_DATABASE_URL:config.databaseUrl,
+    RANDORI_LOCAL_DATABASE_PATH:config.databasePath,
     TURSO_AUTH_TOKEN:'',
     JWT_SECRET:secret,
     RUN_ATTESTATION_SECRET:'',

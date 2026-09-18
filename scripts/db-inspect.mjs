@@ -3,6 +3,8 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createClient } from '@libsql/client';
 import { buildReadOnlyPlan, inspectSchema } from '../db/schema-inspector.js';
+import { MIGRATION_PLANS } from '../db/migration-plan.js';
+import { SCHEMA_MANIFEST } from '../db/schema-manifest.js';
 
 export function parseMode(argv){
   if(argv.length!==1||!['status','plan'].includes(argv[0])){
@@ -34,8 +36,10 @@ export async function main({
   const mode=parseMode(argv);
   const client=createDatabaseClient(databaseConfig(env));
   try{
-    const status=await inspectSchema(client);
-    const result=mode==='status'?{command:'db:status',...status}:{command:'db:plan',...buildReadOnlyPlan(status)};
+    const status=await inspectSchema(client,{manifest:SCHEMA_MANIFEST});
+    const result=mode==='status'?{command:'db:status',...status}:{
+      command:'db:plan',...buildReadOnlyPlan(status,{manifest:SCHEMA_MANIFEST,plans:MIGRATION_PLANS}),
+    };
     stdout.write(`${JSON.stringify(result)}\n`);
     return {result,exitCode:mode==='status'&&!status.ok?2:0};
   }finally{

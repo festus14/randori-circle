@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createClient } from '@libsql/client';
 import { INDEXES, SCHEMA_MANIFEST, TABLES } from '../../db/schema-manifest.js';
+import { MIGRATION_PLANS } from '../../db/migration-plan.js';
 import { assertReadOnlyStatement, buildReadOnlyPlan, inspectSchema, planVersionFor, readOnlyDatabase } from '../../db/schema-inspector.js';
 
 async function currentDatabase({legacy=false}={}){
@@ -18,7 +19,7 @@ test('current schema passes read-only inspection and tolerates the retired AI ta
   const status=await inspectSchema({execute(statement){
     statements.push(typeof statement==='string'?statement:statement.sql);
     return db.execute(statement);
-  }});
+  }},{manifest:SCHEMA_MANIFEST});
   assert.equal(status.ok,true);
   assert.deepEqual(status.summary,{
     expectedTables:30,presentTables:30,expectedIndexes:27,presentIndexes:27,blockers:0,warnings:0,
@@ -68,8 +69,8 @@ test('inspection reports missing, incompatible, and unexpected artifacts structu
 
 test('empty database produces a non-executable, checksum-bearing plan',async()=>{
   const db=createClient({url:'file::memory:'});
-  const status=await inspectSchema(db);
-  const plan=buildReadOnlyPlan(status);
+  const status=await inspectSchema(db,{manifest:SCHEMA_MANIFEST});
+  const plan=buildReadOnlyPlan(status,{manifest:SCHEMA_MANIFEST,plans:MIGRATION_PLANS});
   assert.equal(status.blockers.length,57);
   assert.equal(plan.readOnly,true);
   assert.equal(plan.executable,false);
@@ -78,6 +79,34 @@ test('empty database produces a non-executable, checksum-bearing plan',async()=>
   assert.ok(plan.actions.some(action=>action.artifact.name==='uq_circles_active_primary'&&action.kind==='create_index'));
   assert.ok(plan.plans.every(item=>/^[a-f0-9]{64}$/.test(item.checksum)));
   db.close();
+});
+
+test('bounded schema inspection fails closed when metadata exceeds its cap',async()=>{
+  const calls=[];
+  const status=await inspectSchema({execute(statement){
+    const sql=typeof statement==='string'?statement:statement.sql;
+    calls.push({sql,args:statement?.args||[]});
+    if(sql.includes('FROM sqlite_schema')) return {rows:[
+      {type:'table',name:'a',tbl_name:'a',sql:'CREATE TABLE a (id INTEGER)'},
+      {type:'table',name:'b',tbl_name:'b',sql:'CREATE TABLE b (id INTEGER)'},
+      {type:'table',name:'c',tbl_name:'c',sql:'CREATE TABLE c (id INTEGER)'},
+    ]};
+    if(sql==='PRAGMA foreign_keys') return {rows:[{foreign_keys:1}]};
+    if(sql==='PRAGMA ignore_check_constraints') return {rows:[{ignore_check_constraints:0}]};
+    return {rows:[]};
+  }},{
+    manifest:{version:1,checksum:'test',tables:[],indexes:[],toleratedLegacyTables:[]},
+    maxSchemaObjects:2,
+  });
+  assert.equal(status.ok,false);
+  assert.ok(status.blockers.some(item=>item.code==='schema_object_limit_exceeded'));
+  assert.deepEqual(calls[0].args,[3]);
+  await assert.rejects(
+    inspectSchema({execute(){ return {rows:[]}; }},{
+      manifest:{tables:[],indexes:[],toleratedLegacyTables:[]},maxSchemaObjects:0,
+    }),
+    /maxSchemaObjects/,
+  );
 });
 
 test('read-only adapter rejects mutations before delegating',async()=>{
@@ -113,7 +142,7 @@ test('plan marks column and index repairs as manually blocked',()=>{
     },
     blockers:[],warnings:[],tolerated:{legacyTables:[]},
   };
-  const plan=buildReadOnlyPlan(status,{manifest:SCHEMA_MANIFEST});
+  const plan=buildReadOnlyPlan(status,{manifest:SCHEMA_MANIFEST,plans:MIGRATION_PLANS});
   assert.equal(plan.actions.length,3);
   assert.ok(plan.actions.every(action=>action.blocked&&action.sql===null));
 });
@@ -378,7 +407,7 @@ test('unknown CHECK-enforcement state fails closed',async()=>{
     const sql=typeof statement==='string'?statement:statement.sql;
     if(sql==='PRAGMA ignore_check_constraints') return {rows:[]};
     return db.execute(statement);
-  }});
+  }},{manifest:SCHEMA_MANIFEST});
   assert.equal(status.checkConstraintsEnabled,false);
   assert.ok(status.blockers.some(item=>item.code==='check_constraints_disabled'));
   db.close();

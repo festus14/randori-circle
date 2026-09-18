@@ -183,6 +183,22 @@
       "destination": "/api/data?endpoint=logs"
     },
     {
+      "source": "/api/health/live",
+      "destination": "/api/data?endpoint=health&probe=live"
+    },
+    {
+      "source": "/api/health/ready",
+      "destination": "/api/data?endpoint=health&probe=ready"
+    },
+    {
+      "source": "/api/healthz",
+      "destination": "/api/data?endpoint=health&probe=live"
+    },
+    {
+      "source": "/api/readyz",
+      "destination": "/api/data?endpoint=health&probe=ready"
+    },
+    {
       "source": "/api/health",
       "destination": "/api/data?endpoint=health"
     },

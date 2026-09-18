@@ -1,4 +1,5 @@
 import { MIGRATION_PLANS, validateMigrationPlans } from './migration-plan.js';
+import { LATEST_MIGRATION_VERSION, MIGRATION_CONTRACTS } from './migration-contract.js';
 import { checksum } from './schema-manifest.js';
 
 export const ROLLOUT_SINGLETON_OPERATION=Object.freeze({
@@ -8,21 +9,6 @@ export const ROLLOUT_SINGLETON_OPERATION=Object.freeze({
   sql:`INSERT INTO circle_membership_rollout (id,registrations_closed,updated_at)
     VALUES (1,0,datetime('now')) ON CONFLICT(id) DO NOTHING`,
 });
-
-const EXECUTION_METADATA=Object.freeze([
-  Object.freeze({
-    version:1,
-    checksum:'27944847696265114fbbb0e70ffa961a7f766a8f85cc4fe251ef00a779aac0df',
-  }),
-  Object.freeze({
-    version:2,
-    checksum:'ceca22b30cc4f546359dc8d5731e1ab157e82b748b468e6eed510a8a4379444d',
-  }),
-  Object.freeze({
-    version:3,
-    checksum:'dd467c77944b1da0b722ddd91ebef1071811fb24c65fdff7d2121b67fb204270',
-  }),
-]);
 
 function executableOperations(plan){
   return Object.freeze([
@@ -36,7 +22,7 @@ export function checksumExecutableMigration({version,name,planChecksum,operation
 }
 
 function defineExecutableMigration(plan,metadata){
-  if(!metadata||metadata.version!==plan.version){
+  if(!metadata||metadata.version!==plan.version||metadata.name!==plan.name){
     throw new Error(`migration plan ${plan.version} has no execution metadata`);
   }
   const operations=executableOperations(plan);
@@ -49,10 +35,10 @@ function defineExecutableMigration(plan,metadata){
 }
 
 export const EXECUTABLE_MIGRATIONS=Object.freeze(
-  MIGRATION_PLANS.map((plan,index)=>defineExecutableMigration(plan,EXECUTION_METADATA[index])),
+  MIGRATION_PLANS.map((plan,index)=>defineExecutableMigration(plan,MIGRATION_CONTRACTS[index])),
 );
 
-export const LATEST_MIGRATION_VERSION=EXECUTABLE_MIGRATIONS.at(-1)?.version||0;
+export { LATEST_MIGRATION_VERSION };
 
 export function validateExecutableMigrations(migrations=EXECUTABLE_MIGRATIONS,plans=MIGRATION_PLANS){
   validateMigrationPlans(plans);

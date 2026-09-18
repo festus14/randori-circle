@@ -1,6 +1,3 @@
-import { SCHEMA_MANIFEST } from './schema-manifest.js';
-import { LATEST_PLAN_VERSION, MIGRATION_PLANS } from './migration-plan.js';
-
 const READ_ONLY_SELECT=/^SELECT\b/i;
 const READ_ONLY_PRAGMA=/^PRAGMA\s+(?:foreign_keys|ignore_check_constraints|(?:table_info|table_xinfo|foreign_key_list|index_list|index_info|index_xinfo)\s*\(\s*"[A-Za-z_][A-Za-z0-9_]*"\s*\))$/i;
 
@@ -447,6 +444,26 @@ function expectedIndexSignature(definition){
   };
 }
 
+export function compileSchemaReadinessManifest(manifest){
+  if(!manifest||!Array.isArray(manifest.tables)||!Array.isArray(manifest.indexes)){
+    throw new TypeError('a schema manifest is required');
+  }
+  return {
+    version:manifest.version,
+    checksum:manifest.checksum,
+    tables:manifest.tables.map(definition=>({
+      name:definition.name,
+      columns:expectedColumns(definition),
+      constraints:tableConstraints(definition.sql),
+    })),
+    indexes:manifest.indexes.map(definition=>({
+      name:definition.name,
+      ...expectedIndexSignature(definition),
+    })),
+    toleratedLegacyTables:[...manifest.toleratedLegacyTables],
+  };
+}
+
 function quoteIdentifier(value){
   if(!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) throw new TypeError(`unsafe SQLite identifier: ${value}`);
   return `"${value}"`;
@@ -471,10 +488,23 @@ function sameArray(left,right){
   return left.length===right.length&&left.every((value,index)=>value===right[index]);
 }
 
-export async function inspectSchema(database,{manifest=SCHEMA_MANIFEST}={}){
+export async function inspectSchema(database,{manifest,maxSchemaObjects}={}){
+  if(!manifest||!Array.isArray(manifest.tables)||!Array.isArray(manifest.indexes)){
+    throw new TypeError('a schema manifest is required');
+  }
+  if(maxSchemaObjects!==undefined
+    &&(!Number.isSafeInteger(maxSchemaObjects)||maxSchemaObjects<1||maxSchemaObjects>10_000)){
+    throw new TypeError('maxSchemaObjects must be a positive safe integer no greater than 10000');
+  }
   const db=readOnlyDatabase(database);
-  const schemaResult=await db.execute(`SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE type IN ('table','index','view','trigger') ORDER BY type,name`);
-  const rows=schemaResult.rows||[];
+  const schemaSql=`SELECT type,name,tbl_name,sql FROM sqlite_schema
+    WHERE type IN ('table','index','view','trigger') ORDER BY type,name`;
+  const schemaResult=maxSchemaObjects===undefined
+    ?await db.execute(schemaSql)
+    :await db.execute({sql:`${schemaSql} LIMIT ?`,args:[maxSchemaObjects+1]});
+  const allRows=schemaResult.rows||[];
+  const schemaObjectLimitExceeded=maxSchemaObjects!==undefined&&allRows.length>maxSchemaObjects;
+  const rows=schemaObjectLimitExceeded?allRows.slice(0,maxSchemaObjects):allRows;
   const tableRows=new Map(rows.filter(row=>row.type==='table').map(row=>[String(row.name),row]));
   const indexRows=new Map(rows.filter(row=>row.type==='index'&&!String(row.name).startsWith('sqlite_')).map(row=>[String(row.name),row]));
   const unexpectedViews=rows.filter(row=>row.type==='view').map(row=>String(row.name)).sort();
@@ -503,7 +533,7 @@ export async function inspectSchema(database,{manifest=SCHEMA_MANIFEST}={}){
     }
     const result=await db.execute(`PRAGMA table_xinfo(${quoteIdentifier(definition.name)})`);
     const actualColumns=new Map((result.rows||[]).map(row=>[String(row.name),row]));
-    const expectedColumnList=expectedColumns(definition);
+    const expectedColumnList=definition.columns||expectedColumns(definition);
     const expectedColumnNames=new Set(expectedColumnList.map(column=>column.name));
     for(const columnName of actualColumns.keys()){
       if(!expectedColumnNames.has(columnName)) unexpectedColumns.push({table:definition.name,column:columnName});
@@ -527,7 +557,7 @@ export async function inspectSchema(database,{manifest=SCHEMA_MANIFEST}={}){
         .map(key=>({property:key,expected:expectedContract[key],actual:actualContract[key]}));
       if(differences.length) columnDrift.push({table:definition.name,column:expected.name,differences});
     }
-    const expectedConstraints=tableConstraints(definition.sql);
+    const expectedConstraints=definition.constraints||tableConstraints(definition.sql);
     const actualConstraints=tableConstraints(String(tableRows.get(definition.name).sql||''));
     const foreignKeyResult=await db.execute(`PRAGMA foreign_key_list(${quoteIdentifier(definition.name)})`);
     const foreignKeyGroups=new Map();
@@ -619,6 +649,7 @@ export async function inspectSchema(database,{manifest=SCHEMA_MANIFEST}={}){
   const checkConstraintsEnabled=checkConstraintResult.rows?.length===1
     &&asNumber(checkConstraintResult.rows[0].ignore_check_constraints)===0;
   const blockers=[
+    ...(schemaObjectLimitExceeded?[{code:'schema_object_limit_exceeded',artifact:{type:'schema',name:'object_limit'}}]:[]),
     ...missingTables.map(tableName=>({code:'missing_table',artifact:{type:'table',name:tableName}})),
     ...missingColumns.map(item=>({code:'missing_column',artifact:{type:'column',name:`${item.table}.${item.column}`}})),
     ...unexpectedColumns.map(item=>({code:'unexpected_column',artifact:{type:'column',name:`${item.table}.${item.column}`}})),
@@ -658,12 +689,16 @@ export async function inspectSchema(database,{manifest=SCHEMA_MANIFEST}={}){
   };
 }
 
-export function planVersionFor(type,name,plans=MIGRATION_PLANS){
+export function planVersionFor(type,name,plans){
+  if(!Array.isArray(plans)) throw new TypeError('migration plans are required');
   const field=type==='table'?'tables':'indexes';
   return [...plans].reverse().find(plan=>plan[field].includes(name))?.version??null;
 }
 
-export function buildReadOnlyPlan(status,{manifest=SCHEMA_MANIFEST,plans=MIGRATION_PLANS}={}){
+export function buildReadOnlyPlan(status,{manifest,plans}={}){
+  if(!manifest||!Array.isArray(plans)||plans.length===0){
+    throw new TypeError('a schema manifest and migration plans are required');
+  }
   const tables=new Map(manifest.tables.map(item=>[item.name,item]));
   const indexes=new Map(manifest.indexes.map(item=>[item.name,item]));
   const versionFor=(type,name)=>planVersionFor(type,name,plans);
@@ -704,7 +739,7 @@ export function buildReadOnlyPlan(status,{manifest=SCHEMA_MANIFEST,plans=MIGRATI
     ok:status.ok,
     readOnly:true,
     executable:false,
-    latestPlanVersion:LATEST_PLAN_VERSION,
+    latestPlanVersion:plans.at(-1)?.version||0,
     manifest:{version:manifest.version,checksum:manifest.checksum},
     plans:plans.map(({version,name,description,checksum,operationsChecksum,operations})=>({
       version,name,description,checksum,operationsChecksum,operationCount:operations.length,
