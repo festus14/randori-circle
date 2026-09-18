@@ -31,6 +31,14 @@ const db={
     for(const statement of statements) results.push(await this.execute(statement));
     return results;
   },
+  async transaction(){
+    return {
+      execute:this.execute.bind(this),
+      batch:this.batch.bind(this),
+      async commit(){},
+      async rollback(){},
+    };
+  },
 };
 
 mock.module('../../api/_db.js',{
@@ -92,6 +100,17 @@ const sameOriginHeaders={origin:'https://randori.example.test',host:'randori.exa
 const localOriginHeaders={origin:'http://127.0.0.1:3000',host:'127.0.0.1:3000'};
 
 function rows(values=[],extra={}){ return {rows:values,rowsAffected:0,...extra}; }
+
+async function withFixedNow(iso,callback){
+  const NativeDate=globalThis.Date;
+  const instant=new NativeDate(iso).getTime();
+  globalThis.Date=class FixedDate extends NativeDate{
+    constructor(...args){ super(...(args.length?args:[instant])); }
+    static now(){ return instant; }
+  };
+  try{ return await callback(); }
+  finally{ globalThis.Date=NativeDate; }
+}
 
 function invoke(handler,{method='GET',url='/',query={},headers={},body={}}={}){
   return new Promise((resolve,reject)=>{
@@ -563,20 +582,17 @@ test('manual and weekly production pairing queries are primary-circle scoped whe
   process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
   process.env.CRON_SECRET='cron-secret';
   executeHandler=sql=>{
-    if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')) return rows([{
-      id:1,email:'admin@example.test',is_admin:1,
-    }]);
-    if(sql.includes('SELECT id FROM pairing_weeks WHERE week_label=')) return rows([]);
+    if(sql.includes("cm.role='owner'")) return rows([{id:1,role:'owner'}]);
     if(sql.includes('FROM auth_accounts')&&sql.includes("cm.status='active'")) return rows([]);
     return rows();
   };
 
   const manual=await invoke(opsHandler,{
-    method:'POST',url:'/api/admin/reshuffle',query:{endpoint:'reshuffle'},headers:{'x-test-auth':'admin'},
+    method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers:{'x-test-auth':'admin'},
   });
   assert.equal(manual.status,400);
-  let candidateQueries=executed.filter(call=>call.sql.includes('FROM auth_accounts')&&call.sql.includes('circle_memberships'));
-  assert.ok(candidateQueries.length>=2);
+  let candidateQueries=executed.filter(call=>call.sql.includes('display_name as name')&&call.sql.includes('circle_memberships'));
+  assert.equal(candidateQueries.length,1);
   for(const call of candidateQueries){
     assert.match(call.sql,/cm\.status='active'/);
     assert.match(call.sql,/c\.is_primary=1/);
@@ -585,57 +601,90 @@ test('manual and weekly production pairing queries are primary-circle scoped whe
   }
 
   executed.length=0;
-  const weekly=await invoke(opsHandler,{
+  const weekly=await withFixedNow('2026-09-20T08:15:00.000Z',()=>invoke(opsHandler,{
     method:'POST',url:'/api/cron/weekly',query:{endpoint:'weekly'},headers:{'x-cron-secret':'cron-secret'},
-  });
+  }));
   assert.equal(weekly.status,400);
-  candidateQueries=executed.filter(call=>call.sql.includes('FROM auth_accounts')&&call.sql.includes('circle_memberships'));
+  candidateQueries=executed.filter(call=>call.sql.includes('display_name as name')&&call.sql.includes('circle_memberships'));
   assert.equal(candidateQueries.length,1);
   assert.equal(executed.some(call=>call.sql.includes('FROM users ORDER BY id')),false);
 });
 
-test('disabled membership flag preserves legacy weekly fallback and unscoped manual query',async()=>{
+test('pairing publication requires a primary-circle owner in production and only a database admin in the isolated local runtime',async()=>{
+  executeHandler=sql=>{
+    if(sql.includes("cm.role='owner'")) return rows([]);
+    return rows();
+  };
+  const production=await invoke(opsHandler,{
+    method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers:{'x-test-auth':'admin'},
+  });
+  assert.equal(production.status,403,'a production is_admin claim is not circle-owner authority');
+
+  process.env.NODE_ENV='development';
+  process.env.RANDORI_LOCAL_RUNTIME='true';
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='false';
+  process.env.TURSO_DATABASE_URL='file:///tmp/randori-pairing-local.sqlite';
+  process.env.APP_URL='http://127.0.0.1:3000';
+  executed.length=0;
+  executeHandler=sql=>{
+    if(sql.includes('SELECT id,is_admin FROM auth_accounts')) return rows([{id:1,is_admin:1}]);
+    return rows();
+  };
+  const local=await invoke(opsHandler,{
+    method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},
+    headers:{'x-test-auth':'admin',host:'127.0.0.1:3000'},
+  });
+  assert.equal(local.status,400,'an authorized local admin reaches participant validation');
+  assert.equal(executed.some(call=>call.sql.includes('circle_memberships')),false);
+
+  executeHandler=sql=>{
+    if(sql.includes('SELECT id,is_admin FROM auth_accounts')) return rows([{id:1,is_admin:0}]);
+    return rows();
+  };
+  const localMember=await invoke(opsHandler,{
+    method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},
+    headers:{'x-test-auth':'admin',host:'127.0.0.1:3000'},
+  });
+  assert.equal(localMember.status,403);
+});
+
+test('production pairing stays primary-circle scoped when the rollout flag is disabled',async()=>{
   process.env.CRON_SECRET='cron-secret';
   executeHandler=sql=>{
-    if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')) return rows([{
-      id:1,email:'admin@example.test',is_admin:1,
-    }]);
-    if(sql.includes('SELECT id FROM pairing_weeks WHERE week_label=')) return rows([]);
+    if(sql.includes("cm.role='owner'")) return rows([{id:1,role:'owner'}]);
     return rows();
   };
 
   const manual=await invoke(opsHandler,{
-    method:'POST',url:'/api/admin/reshuffle',query:{endpoint:'reshuffle'},headers:{'x-test-auth':'admin'},
+    method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers:{'x-test-auth':'admin'},
   });
   assert.equal(manual.status,400);
-  assert.equal(executed.some(call=>call.sql.includes('circle_memberships')),false);
+  assert.equal(executed.some(call=>call.sql.includes('circle_memberships')),true);
 
   executed.length=0;
-  const weekly=await invoke(opsHandler,{
+  const weekly=await withFixedNow('2026-09-20T08:15:00.000Z',()=>invoke(opsHandler,{
     method:'POST',url:'/api/cron/weekly',query:{endpoint:'weekly'},headers:{'x-cron-secret':'cron-secret'},
-  });
+  }));
   assert.equal(weekly.status,400);
-  assert.equal(executed.some(call=>call.sql.includes('FROM users ORDER BY id')),true);
-  assert.equal(executed.some(call=>call.sql.includes('circle_memberships')),false);
+  assert.equal(executed.some(call=>call.sql.includes('FROM users ORDER BY id')),false);
+  assert.equal(executed.some(call=>call.sql.includes('circle_memberships')),true);
 });
 
 test('membership-scoped pairing database failures fail closed with a generic response',async()=>{
   process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
   process.env.CRON_SECRET='cron-secret';
   executeHandler=sql=>{
-    if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')) return rows([{
-      id:1,email:'admin@example.test',is_admin:1,
-    }]);
-    if(sql.includes('SELECT id FROM pairing_weeks WHERE week_label=')) return rows([]);
     if(sql.includes('circle_memberships')) throw new Error('sensitive database failure');
     return rows();
   };
 
   for(const request of [
-    {method:'POST',url:'/api/admin/reshuffle',query:{endpoint:'reshuffle'},headers:{'x-test-auth':'admin'}},
+    {method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers:{'x-test-auth':'admin'}},
     {method:'POST',url:'/api/cron/weekly',query:{endpoint:'weekly'},headers:{'x-cron-secret':'cron-secret'}},
   ]){
-    const result=await invoke(opsHandler,request);
+    const result=request.query.endpoint==='weekly'
+      ?await withFixedNow('2026-09-20T08:15:00.000Z',()=>invoke(opsHandler,request))
+      :await invoke(opsHandler,request);
     assert.equal(result.status,503);
     assert.deepEqual(result.body,{error:'pairing unavailable'});
     assert.doesNotMatch(JSON.stringify(result.body),/sensitive database failure/);

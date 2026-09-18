@@ -1,6 +1,8 @@
 import { captureSentryException, captureSentryMessage, getClient, getAdminEmails, getJwtSecret, initSentry, isSentryConfigured, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 import { createEvaluationSuite, getPublicExercise, listPublicExercises } from './_catalog.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
+import { resolvePairingCycle } from './_pairing-cycle.js';
+import { getPairingPublication } from './_pairing-publication.js';
 import { AUTH_PAIR_ACCESS_SQL, authPairAccessArgs, getAuthenticatedPairAccess } from './_pair-access.js';
 import { applyScheduleMutation, nextScheduleUpdatedAt, parseScheduleMutation, projectSchedule, readScheduleState, ScheduleDataError, ScheduleInputError } from './_schedule.js';
 import { ensureMessagesReadiness, MAX_MESSAGES_PER_ROOM, MAX_MESSAGES_PER_USER_PER_MINUTE, MESSAGE_RATE_RETRY_SECONDS, MessageDataError, MessageInputError, parseMessageSend, parseMessagesQuery, projectMessage, validateMessagesPostQuery } from './_messages.js';
@@ -472,6 +474,102 @@ function authenticatedUserId(payload){
   if(typeof value!=='string'||!/^[1-9]\d*$/.test(value)) return null;
   const parsed=Number(value);
   return Number.isSafeInteger(parsed)?parsed:null;
+}
+
+function isLoopbackHost(value){
+  try{
+    const hostname=new URL(`http://${String(value||'')}`).hostname.toLowerCase();
+    return hostname==='localhost'||hostname==='127.0.0.1'||hostname==='[::1]';
+  }catch{ return false; }
+}
+
+function isLoopbackAddress(value){
+  const address=String(value||'').trim().toLowerCase();
+  return address==='127.0.0.1'||address==='::1'||address==='::ffff:127.0.0.1';
+}
+
+function strictLocalPairingRuntime(req){
+  if(process.env.NODE_ENV!=='development'
+    ||process.env.RANDORI_LOCAL_RUNTIME!=='true'
+    ||process.env.CIRCLE_MEMBERSHIP_ENABLED==='true'
+    ||process.env.VERCEL||process.env.VERCEL_ENV||process.env.VERCEL_URL
+    ||String(process.env.TURSO_AUTH_TOKEN||'').trim()) return false;
+  let databaseUrl,appUrl,requestUrl;
+  try{
+    databaseUrl=new URL(String(process.env.TURSO_DATABASE_URL||''));
+    appUrl=new URL(String(process.env.APP_URL||''));
+    requestUrl=new URL(`http://${String(req?.headers?.host||'')}`);
+  }catch{ return false; }
+  if(databaseUrl.protocol!=='file:'||databaseUrl.host||databaseUrl.username||databaseUrl.password
+    ||databaseUrl.search||databaseUrl.hash) return false;
+  if(appUrl.protocol!=='http:'||appUrl.username||appUrl.password||appUrl.search||appUrl.hash
+    ||(appUrl.pathname!=='/'&&appUrl.pathname!=='')||!isLoopbackHost(appUrl.host)
+    ||appUrl.host.toLowerCase()!==requestUrl.host.toLowerCase()) return false;
+  return isLoopbackHost(req?.headers?.host)&&isLoopbackAddress(req?.socket?.remoteAddress);
+}
+
+async function requireCurrentPairingReader(req,res,db,userId){
+  const localRuntime=strictLocalPairingRuntime(req);
+  try{
+    const result=await db.execute(localRuntime?{
+      sql:`SELECT id FROM auth_accounts
+        WHERE id=? AND COALESCE(is_demo,0)=0
+        LIMIT 2`,
+      args:[userId],
+    }:{
+      sql:`SELECT aa.id,c.id AS circle_id
+        FROM auth_accounts aa
+        JOIN circle_memberships cm ON cm.user_id=aa.id
+        JOIN circles c ON c.id=cm.circle_id
+        WHERE aa.id=? AND cm.status='active'
+          AND COALESCE(aa.is_demo,0)=0 AND c.is_primary=1 AND c.archived_at IS NULL
+        LIMIT 2`,
+      args:[userId],
+    });
+    const rows=result.rows||[];
+    if(rows.length!==1||Number(rows[0].id)!==userId){
+      res.status(403).json({error:'circle membership required'});
+      return false;
+    }
+    const circleId=localRuntime?null:Number(rows[0].circle_id);
+    if(!localRuntime&&(!Number.isSafeInteger(circleId)||circleId<1)){
+      res.status(503).json({error:'pairing unavailable'});
+      return false;
+    }
+    return {localRuntime,circleId};
+  }catch{
+    res.status(503).json({error:'pairing unavailable'});
+    return false;
+  }
+}
+
+async function loadCurrentPublicationAccounts(db,publication,readerAccess){
+  if(!publication.participants.every(item=>item.source==='auth')) throw new Error('unsupported pairing participant source');
+  const ids=publication.participants.map(item=>item.userId);
+  if(!ids.length) throw new Error('empty pairing publication');
+  const placeholders=ids.map(()=>'?').join(',');
+  const result=await db.execute(readerAccess.localRuntime?{
+    sql:`SELECT id,display_name AS name,color FROM auth_accounts
+      WHERE COALESCE(is_demo,0)=0 AND id IN (${placeholders})`,args:ids,
+  }:{
+    sql:`SELECT aa.id,aa.display_name AS name,aa.color
+      FROM auth_accounts aa
+      JOIN circle_memberships cm ON cm.user_id=aa.id
+      JOIN circles c ON c.id=cm.circle_id
+      WHERE cm.circle_id=? AND cm.status='active'
+        AND c.is_primary=1 AND c.archived_at IS NULL
+        AND COALESCE(aa.is_demo,0)=0 AND aa.id IN (${placeholders})`,
+    args:[readerAccess.circleId,...ids],
+  });
+  const accounts=result.rows||[];
+  const accountIds=new Set(accounts.map(row=>Number(row.id)));
+  if(accounts.length!==ids.length||accountIds.size!==ids.length||ids.some(id=>!accountIds.has(id))){
+    throw new Error('pairing publication is outside the active circle');
+  }
+  return new Map(accounts.map(row=>[
+    Number(row.id),
+    {name:String(row.name||`Member ${row.id}`).slice(0,80),color:String(row.color||'#999').slice(0,32)},
+  ]));
 }
 
 async function getPairAccess(db, payload, weekId, pairId){
@@ -996,51 +1094,47 @@ async function handleCircle(req,res){
 
 async function handleWeeks(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
-  if (!getAuthPayload(req)) return res.status(401).json({ error:'authentication required' });
-  const db = getClient();
-  await ensureBaseTables(db);
-  await ensureProfileMigrations(db);
-  const includeDemo = (req.query?.include_demo === '1' || req.query?.includeDemo === '1' || req.query?.demo === '1' || req.query?.include_demo === 'true');
+  res.setHeader('Cache-Control','private, no-store');
+  const payload=getAuthPayload(req);
+  if (!payload) return res.status(401).json({ error:'authentication required' });
+  const userId=authenticatedUserId(payload);
+  if(!userId) return res.status(401).json({error:'authentication required'});
+  let db;
   try{
-    let sql = includeDemo
-      ? `SELECT id, week_label, week_start, focus, created_at, is_demo FROM pairing_weeks ORDER BY id DESC LIMIT 20`
-      : `SELECT id, week_label, week_start, focus, created_at, is_demo FROM pairing_weeks WHERE COALESCE(is_demo,0)=0 ORDER BY id DESC LIMIT 20`;
-    const weeksRs = await db.execute(sql);
-    if (!weeksRs.rows.length) return res.json({ ok:true, weeks:[], filtered_demo: !includeDemo });
-    const weekIds = weeksRs.rows.map(w=>w.id);
-    const placeholders = weekIds.map(()=>'?').join(',');
-    const groupsRs = await db.execute({ sql:`SELECT id as pg_id, week_id, user_a_id, user_b_id, user_c_id, is_ai_pair, topic, topic_kind, created_at FROM pairing_groups WHERE week_id IN (${placeholders}) ORDER BY week_id DESC, id ASC`, args:weekIds });
-    const allIds = new Set(); groupsRs.rows.forEach(r=>{ allIds.add(r.user_a_id); allIds.add(r.user_b_id); if(r.user_c_id!=null) allIds.add(r.user_c_id); });
-    let idTo={};
-    if (allIds.size){
-      const ids=[...allIds]; const ph=ids.map(()=>'?').join(',');
-      try{
-        const authRows = await db.execute({ sql:`SELECT id, display_name as name, color, tz, interview_focus FROM auth_accounts WHERE id IN (${ph})`, args:ids });
-        authRows.rows.forEach(r=>{ idTo[r.id]={name:r.name,color:r.color,tz:r.tz,focus:r.interview_focus,source:'auth'}; });
-        const missing = ids.filter(i=>!idTo[i]);
-        if (missing.length){
-          const ph2 = missing.map(()=>'?').join(',');
-          const uRows = await db.execute({ sql:`SELECT id, name, color FROM users WHERE id IN (${ph2})`, args:missing });
-          uRows.rows.forEach(r=>{ idTo[r.id]={name:r.name,color:r.color,source:'users'}; });
-        }
-      }catch{}
+    db=getClient();
+    await ensureBaseTables(db);
+    await ensureProfileMigrations(db);
+  }catch{ return res.status(503).json({error:'pairing unavailable'}); }
+  const readerAccess=await requireCurrentPairingReader(req,res,db,userId);
+  if(!readerAccess) return;
+  try{
+    const now=new Date();
+    const currentCycle=resolvePairingCycle({now});
+    const publication=await getPairingPublication(db,{now});
+    if(!publication){
+      return res.json({ok:true,weeks:[],current_cycle:currentCycle,current_week_id:null,filtered_demo:true});
     }
-    const weeks = weeksRs.rows.map(w=>{
-      const pairs = groupsRs.rows.filter(g=>g.week_id===w.id).map(g=>{
-        const a = idTo[g.user_a_id]||{name:`User ${g.user_a_id}`, color:'#999'};
-        const b = g.is_ai_pair ? {name:'AI partner', color:'var(--accent)'} : (idTo[g.user_b_id]||{name:`User ${g.user_b_id}`, color:'#999'});
-        const c = g.user_c_id==null ? null : (idTo[g.user_c_id]||{name:`User ${g.user_c_id}`, color:'#999'});
-        const members=[
-          {id:g.user_a_id,name:a.name,color:a.color},
-          {id:g.user_b_id,name:b.name,color:b.color,is_ai:!!g.is_ai_pair},
-          ...(c?[{id:g.user_c_id,name:c.name,color:c.color}]:[]),
-        ];
-        return { pg_id:g.pg_id, a_id:g.user_a_id, b_id:g.user_b_id, c_id:g.user_c_id??null, a_name:a.name, b_name:b.name, c_name:c?.name??null, a_color:a.color, b_color:b.color, c_color:c?.color??null, members, is_ai:!!g.is_ai_pair, is_demo_week: !!w.is_demo, topic:g.topic, topic_kind:g.topic_kind, created_at:g.created_at };
-      });
-      return { id:w.id, week_label:w.week_label, week_start:w.week_start, focus:w.focus, created_at:w.created_at, is_demo:!!w.is_demo, pairs };
+    const idTo=await loadCurrentPublicationAccounts(db,publication,readerAccess);
+    const person=id=>idTo.get(Number(id))||{name:`Member ${Number(id)}`,color:'#999'};
+    const pairs=publication.pairs.map(pair=>{
+      const a=person(pair.aId);
+      const b=pair.isAI?{name:'Solo practice',color:'var(--accent)'}:person(pair.bId);
+      return {
+        pg_id:pair.groupId,week_id:publication.weekId,a_id:pair.aId,b_id:pair.bId,c_id:null,
+        a_name:a.name,b_name:b.name,c_name:null,a_color:a.color,b_color:b.color,c_color:null,
+        members:[{id:pair.aId,name:a.name,color:a.color},{id:pair.bId,name:b.name,color:b.color,is_ai:pair.isAI}],
+        is_ai:pair.isAI,is_demo_week:false,topic:'Pick together',topic_kind:'both',created_at:publication.publishedAt,
+      };
     });
-    return res.json({ ok:true, weeks, filtered_demo: !includeDemo });
-  }catch(e){ try{ await logServer('error','weeks_fetch_fail', `weeks query fail ${String(e.message||e).slice(0,120)}`, {err:String(e.message||e).slice(0,400)}, {req, source:'server'}); }catch{} return res.status(500).json({ ok:false, error:'weeks query failed', detail:String(e.message||e).slice(0,300)}); }
+    const week={
+      id:publication.weekId,week_label:publication.cycle.cycleId,week_start:publication.cycle.startsAt,
+      focus:'both',created_at:publication.publishedAt,is_demo:false,is_current:true,pairs,
+    };
+    return res.json({ok:true,weeks:[week],current_cycle:publication.cycle,current_week_id:publication.weekId,filtered_demo:true});
+  }catch(e){
+    try{ await logServer('error','weeks_fetch_fail','current pairing publication could not be read',{code:String(e?.code||'PAIRING_READ_FAILED')},{req,source:'server'}); }catch{}
+    return res.status(503).json({ok:false,error:'pairing unavailable'});
+  }
 }
 
 async function handleHistory(req,res){
@@ -1105,7 +1199,7 @@ async function handleHistory(req,res){
     const partners=r.is_ai_pair?[]:participants;
     const partnerIds=partners.map(partner=>partner.id);
     const partnerNames=r.is_ai_pair
-      ? ['AI partner']
+      ? ['Solo practice']
       : partners.map(partner=>idToName.get(`${partner.source}:${partner.id}`)||`User ${partner.id}`);
     return { pg_id:r.pg_id, week_id:r.week_id, week_label:r.week_label, week_start:r.week_start, is_ai:!!r.is_ai_pair, topic:r.topic, topic_kind:r.topic_kind, partner_id:partnerIds[0]??null, partner_name:partnerNames.join(' & '), partner_ids:partnerIds, partner_names:partnerNames, you_are_a:isA };
   });
@@ -1324,6 +1418,7 @@ async function handleProfile(req,res){
 
 async function handleMyPair(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
+  res.setHeader('Cache-Control','private, no-store');
   const payload = getAuthPayload(req);
   if (!payload) return res.status(401).json({ error:'missing Bearer token' });
   const userId=authenticatedUserId(payload);
@@ -1336,34 +1431,40 @@ async function handleMyPair(req,res){
   }catch{
     return res.status(503).json({error:'pairing unavailable'});
   }
-  let weekId=null, weekRow=null;
+  const readerAccess=await requireCurrentPairingReader(req,res,db,userId);
+  if(!readerAccess) return;
+  let weekId=null, weekRow=null, cycle=null;
+  let publication=null;
   try{
-    const w = await db.execute(`SELECT id, week_label, week_start, focus FROM pairing_weeks WHERE COALESCE(is_demo,0)=0 ORDER BY id DESC LIMIT 1`);
-    if (w.rows.length){ weekRow=w.rows[0]; weekId=w.rows[0].id; }
+    const now=new Date();
+    cycle=resolvePairingCycle({now});
+    publication=await getPairingPublication(db,{now});
+    if(publication){
+      await loadCurrentPublicationAccounts(db,publication,readerAccess);
+      cycle=publication.cycle;
+      weekId=publication.weekId;
+      weekRow={id:weekId,week_label:cycle.cycleId,week_start:cycle.startsAt,focus:'both'};
+    }
   }catch{
     return res.status(503).json({error:'pairing unavailable'});
   }
-  if (!weekId) return res.json({ ok:true, paired:false, reason:'no_week_yet', message:'No pairs yet — shuffles Sunday 08:00 BST' });
-  let grp=null;
-  try{
-    const g = await db.execute({ sql:`SELECT pairing_groups.id as pg_id,pairing_groups.week_id,
-      user_a_id,user_b_id,user_c_id,is_ai_pair,topic,topic_kind
-      FROM pairing_groups
-      JOIN pairing_participants AS viewer
-        ON viewer.week_id=pairing_groups.week_id
-       AND viewer.user_id=? AND viewer.source='auth'
-      WHERE pairing_groups.week_id=?
-        AND (user_a_id=? OR user_b_id=? OR user_c_id=?)
-      LIMIT 1`, args:[userId,weekId,userId,userId,userId] });
-    if (g.rows.length) grp=g.rows[0];
-  }catch{
-    return res.status(503).json({error:'pairing unavailable'});
-  }
-  if (!grp) return res.json({ ok:true, paired:false, week_id:weekId, week:weekRow||null, reason:'not_paired_this_week', message:'You were not paired in the latest shuffle — you may have been marked unavailable.' });
+  if (!weekId) return res.json({
+    ok:true,paired:false,reason:'no_pairing_for_current_cycle',cycle,
+    message:'No pairing has been published for the current cycle yet.',
+  });
+  const isParticipant=publication.participants.some(item=>item.userId===userId&&item.source==='auth');
+  const publishedPair=isParticipant
+    ?publication.pairs.find(pair=>pair.aId===userId||(!pair.isAI&&pair.bId===userId))
+    :null;
+  let grp=publishedPair?{
+    pg_id:publishedPair.groupId,week_id:weekId,user_a_id:publishedPair.aId,user_b_id:publishedPair.bId,
+    user_c_id:null,is_ai_pair:publishedPair.isAI?1:0,topic:'Pick together',topic_kind:'both',
+  }:null;
+  if (!grp) return res.json({ ok:true, paired:false, cycle, week_id:weekId, week:weekRow||null, reason:'not_paired_this_cycle', message:'You are not in this cycle. Turn availability on before the next Sunday cutoff.' });
   const isAI = !!grp.is_ai_pair;
   let partner=null, partners=[];
   if (isAI){
-    partner={ id:null, name:'AI partner', display_name:'AI partner', color:'#c8f6a0', is_ai:true, is_ai_partner:true };
+    partner={ id:null, name:'Solo practice', display_name:'Solo practice', color:'#c8f6a0', is_ai:true, is_ai_partner:true, solo_practice:true };
     partners=[partner];
   }else{
     const partnerIds=[grp.user_a_id,grp.user_b_id,grp.user_c_id]
@@ -1409,7 +1510,7 @@ async function handleMyPair(req,res){
   }catch{
     return res.status(503).json({error:'pairing unavailable'});
   }
-  if(!grp) return res.json({ ok:true, paired:false, week_id:weekId, week:weekRow||null, reason:'not_paired_this_week', message:'You were not paired in the latest shuffle — you may have been marked unavailable.' });
+  if(!grp) return res.json({ ok:true, paired:false, cycle, week_id:weekId, week:weekRow||null, reason:'not_paired_this_cycle', message:'You are not in this cycle. Turn availability on before the next Sunday cutoff.' });
   if(scheduleRow){
     try{ schedule=projectSchedule(readScheduleState(scheduleRow)); }
     catch(error){
@@ -1420,7 +1521,7 @@ async function handleMyPair(req,res){
   const meRow = await db.execute({ sql:`SELECT id, display_name, color, tz, interview_focus FROM auth_accounts WHERE id=?`, args:[userId] }).catch(()=>({rows:[]}));
   const me = meRow.rows && meRow.rows[0] ? { id:meRow.rows[0].id, name:meRow.rows[0].display_name, color:meRow.rows[0].color, tz:meRow.rows[0].tz, interview_focus:meRow.rows[0].interview_focus } : { id:userId };
   const roomId = `week_${weekId}_pair_${grp.pg_id}`;
-  return res.json({ ok:true, paired:true, room_id:roomId, week_id:weekId, week: weekRow ? { id:weekRow.id||weekId, week_label:weekRow.week_label, week_start:weekRow.week_start, focus:weekRow.focus } : { id:weekId }, pair: { pg_id:grp.pg_id, week_id:weekId, room_id:roomId, user_a_id:grp.user_a_id, user_b_id:grp.user_b_id, user_c_id:grp.user_c_id??null, is_ai_pair:isAI, is_ai:isAI, topic:grp.topic, topic_kind:grp.topic_kind }, partner, partners, me, schedule });
+  return res.json({ ok:true, paired:true, cycle, room_id:roomId, week_id:weekId, week: weekRow ? { id:weekRow.id||weekId, week_label:weekRow.week_label, week_start:weekRow.week_start, focus:weekRow.focus } : { id:weekId }, pair: { pg_id:grp.pg_id, week_id:weekId, room_id:roomId, user_a_id:grp.user_a_id, user_b_id:grp.user_b_id, user_c_id:grp.user_c_id??null, is_ai_pair:isAI, is_ai:isAI, solo_practice:isAI, topic:grp.topic, topic_kind:grp.topic_kind }, partner, partners, me, schedule });
 }
 
 async function fetchAuthorizedScheduleState(db,accessArgs,weekId,pairId){
@@ -2116,23 +2217,12 @@ async function handleStats(req,res){
       out.your_weeks = yWeeks.rows[0]?.c ?? 0;
     }catch{}
   }
-  // next shuffle countdown — Sunday 07:00 UTC == 08:00 BST
+  // The shared cycle resolver keeps this boundary correct across GMT/BST.
   try{
-    const now = new Date();
-    const next = new Date(now);
-    // compute next Sunday 07:00 UTC
-    const day = next.getUTCDay(); // 0 Sun
-    let diff = (7 - day) % 7;
-    if (diff===0){
-      // today is Sunday, check if past 07:00
-      const h = next.getUTCHours();
-      if (h>=7) diff=7;
-    }
-    next.setUTCDate(now.getUTCDate()+diff);
-    next.setUTCHours(7,0,0,0);
+    const next = new Date(resolvePairingCycle({state:'upcoming'}).startsAt);
     out.next_shuffle_utc = next.toISOString();
-    out.next_shuffle_bst = new Date(next.getTime()).toLocaleString('en-GB',{timeZone:'Europe/London', weekday:'long', hour:'2-digit', minute:'2-digit'}) + ' BST';
-    out.next_shuffle_label = `Sunday 08:00 BST • ${next.toLocaleDateString('en-GB',{timeZone:'Europe/London', day:'numeric', month:'short'})}`;
+    out.next_shuffle_bst = new Date(next.getTime()).toLocaleString('en-GB',{timeZone:'Europe/London', weekday:'long', hour:'2-digit', minute:'2-digit',timeZoneName:'short'});
+    out.next_shuffle_label = `Sunday 08:00 London time • ${next.toLocaleDateString('en-GB',{timeZone:'Europe/London', day:'numeric', month:'short'})}`;
   }catch{}
   return res.json(out);
 }

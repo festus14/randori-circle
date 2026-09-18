@@ -54,7 +54,7 @@
 8. Call the authenticated admin-only `POST https://your-app.vercel.app/api/init`. This creates the membership schema, closes new uninvited registration, and atomically backfills existing non-demo accounts.
 9. Verify the rollout queries below before setting `CIRCLE_MEMBERSHIP_ENABLED=true` and redeploying.
 
-### Personalization + Scaling layer (auto-circle + admin-only reshuffle)
+### Personalization + Scaling layer (primary circle + immutable weekly publication)
 
 **Membership data:** `circles`, `circle_memberships`, hashed `circle_invitations`, `circle_audit_events`, and the singleton `circle_membership_rollout` latch.
 
@@ -62,8 +62,8 @@ Membership-schema migration is explicit through authenticated `POST /api/init`; 
 
 **Scaling rule:**
 - Circle = active `circle_memberships` in the one operational primary circle. The one-time migration backfills existing non-demo authenticated accounts; legacy `users` rows are never inferred as members.
-- Manual Shuffle/Reshuffle = **admin only** — configured through `ADMIN_EMAILS` and authenticated by the session cookie or a valid JWT. All others see "Auto-shuffles Sun 08:00 BST".
-- Availability — each user can toggle `Available this week` via `/api/settings/availability`. Weekly cron & admin reshuffle both filter `COALESCE(is_available,1)=1`. Unavailable users get skipped + reminder.
+- Manual publication = **primary-circle owner only** in production. The isolated loopback/local-file development runtime permits its database admin. `POST /api/pairing/run` is idempotent: once the current London cycle is published, later calls return that publication without changing pairs.
+- Availability — each user can toggle `Available this week` via `/api/settings/availability`. The weekly cron and manual publication both filter `COALESCE(is_available,1)=1`. Unavailable users are skipped and can receive a reminder.
 
 **Env vars added beyond section above:**
 - `JWT_SECRET` — at least 32 random bytes, used for 12-hour HS256 session cookies and keyed invitation/email hashes. Rotating it signs out all sessions and invalidates every outstanding invitation; revoke/reissue invitations as part of rotation.
@@ -80,30 +80,32 @@ Membership-schema migration is explicit through authenticated `POST /api/init`; 
 - `GET /api/circle` — authenticated and membership-scoped; returns safe profile fields for active members only and never returns email addresses.
 - `POST /api/invitations` / `GET /api/invitations` / `DELETE /api/invitations/:id` — primary-circle owner invitation lifecycle.
 - `POST /api/invitations/prepare` — same-origin, rate-limited exchange from a URL-fragment token to a 10-minute Secure/HttpOnly claim cookie.
-- `GET /api/weeks` — returns `{weeks: [{id,week_label,week_start,focus,pairs:[{a_id,b_id,a_name,b_name,is_ai,topic]}]}` latest 20 weeks enriched, join auth_accounts + users.
+- `GET /api/weeks` — active primary-circle membership required (or a non-demo local account in the isolated local runtime). Returns only the strictly validated current immutable publication; it never falls back to historical, demo, or legacy-user rows.
+- `GET /api/my-pair` — returns only the authenticated member's pair from that same strictly validated current publication. Revoked members and incomplete/corrupt publications fail closed.
 - `GET /api/history` — Bearer → personal history where you appear, partner counts.
-- `GET|POST /api/cron/weekly` — Protected by the `x-cron-secret` header, `Authorization: Bearer <CRON_SECRET>`, or Vercel Cron authentication. Shuffles only active, available primary-circle members. Avoids repeat pairing where possible, handles odd membership with an AI partner, and skips a week already generated.
+- `POST /api/pairing/run` — primary-circle owner publication endpoint. Owner authorization, eligible members, source-scoped history, and the immutable publication are processed in one write transaction. Vetted pre-commit database-lock conflicts retry with a bound; an ambiguous commit is never retried.
+- `GET|POST /api/cron/weekly` — protected by `x-cron-secret` or `Authorization: Bearer <CRON_SECRET>`. It accepts the configured Sunday 08:00 UTC run after the London cycle boundary, publishes the same immutable cycle as the owner endpoint, avoids repeat pairing where possible, and gives an odd member Solo practice.
   - If both `RESEND_API_KEY` and `RESEND_FROM` are set, sends email to available users plus a reminder to unavailable users.
   - If either is absent, the delivery summary explains that email is disabled and pairs remain visible in-app via `/api/weeks`.
-- `POST /api/admin/reshuffle` — admin-only through a valid session cookie or Bearer JWT; authorization comes from the database admin bit or normalized `ADMIN_EMAILS`. Forces a reshuffle for the current ISO week and respects availability.
+- `POST /api/admin/reshuffle` — compatibility URL only. Pairing requests delegate to the immutable current-cycle endpoint and cannot force/remix a published cycle; `action=promote` retains its separate legacy admin operation.
 - `POST /api/settings/availability` — Bearer → `{is_available:boolean}` updates your row `is_available`, `availability_updated_at=datetime('now')`
 - `GET /api/auth/me` — session cookie or Bearer token → current user, availability, and admin status.
 - `POST /api/init` — authenticated admin-only schema migration and one-time primary-circle backfill. It also closes the durable registration latch.
 
 **Vercel crons:**
 ```json
-{ "crons":[{ "path":"/api/cron/weekly","schedule":"0 7 * * 0" }] }
+{ "crons":[{ "path":"/api/cron/weekly","schedule":"0 8 * * 0" }] }
 ```
-= Sun 07:00 UTC = 08:00 BST (BST is UTC+1 Apr-Oct). Winter GMT it will be 07:00 GMT — still morning.
+Vercel Hobby permits only one invocation per day. The fixed 08:00 UTC trigger runs at the Sunday 08:00 London cycle boundary in GMT and one hour after it in BST; the endpoint accepts that bounded post-cutoff window and immutable publication prevents duplicates. This deliberately prefers a one-hour summer delay over publishing before the availability cutoff.
 
 **Weekly reminder status question:**
-Current cron emails via Resend *only if* `RESEND_API_KEY` + `RESEND_FROM` are both set in Vercel. Otherwise the delivery summary reports that email is disabled and pairs remain visible in-app via `/api/weeks`. Same for unavailable reminders: they are returned in API field `unavailable_reminders: [{id,name,email,reason,action}]`, so the frontend can show an in-app banner on next login. To enable email, set both values and redeploy. Example `RESEND_FROM`: `Randori Circle <randori@yourdomain.com>` must use a verified Resend domain.
+Current cron emails via Resend *only if* `RESEND_API_KEY` + `RESEND_FROM` are both set in Vercel. Otherwise the sanitized delivery summary reports that email is disabled and pairs remain visible in-app via `/api/weeks`. Pairing responses expose aggregate delivery counts only—never recipient addresses or generation tokens. To enable email, set both values and redeploy. Example `RESEND_FROM`: `Randori Circle <randori@yourdomain.com>` must use a verified Resend domain.
 
 **Frontend behavior (scaling + availability):**
 - Topbar sign-in/out + `meLabel` shows `(admin)` if you're admin email.
 - Circle tab: with membership enforcement enabled, `GET /api/circle` displays only active primary-circle members and owners receive invitation controls. The legacy flag-off response remains supported during rollout.
-- Pairing tab: Shuffle/Reshuffle buttons hidden for non-admin, replaced by `admin` pill or "auto-shuffles Sun 08:00 BST". Admin click triggers `POST /api/admin/reshuffle` cloud (respects available). Non-admin manual path disabled.
-- Pair list: if signed in, `GET /api/weeks` cloud weeks shown first (☁ cloud auto). Else shows local demo weeks. Cloud weeks are read-only topics (Pick together). Topic picker disabled for cloud (future).
+- Pairing tab: the primary-circle owner sees **Run current cycle**; ordinary members see the Sunday 08:00 London-time schedule. The action calls `POST /api/pairing/run` and is safe to repeat because an existing publication is returned unchanged.
+- Pair list: signed-in users see only the server-marked current publication and never a local-storage fallback. Anonymous users may still use local demo data. Current cloud topics are read-only.
 - Sync card: new `Available this week` toggle — POSTs to `/api/settings/availability`, updates UI, shows banner if you are currently unavailable + another banner if you were skipped last week (`randori-was-skipped` local flag). Also notes email fallback status. Presence still via BroadcastChannel.
 - History tab: left offline history, right personal history via `/api/history` when signed in.
 - Auth: existing password login plus Google SSO, with the application token stored only in an HttpOnly cookie.
@@ -127,11 +129,11 @@ curl -s -b /tmp/randori-admin.cookies -X POST http://localhost:3000/api/settings
   -H 'Origin: http://localhost:3000' -H 'content-type:application/json' \
   -d '{"is_available":false}' | jq
 curl -s -b /tmp/randori-admin.cookies http://localhost:3000/api/auth/me | jq
-# weeks
+# strictly validated current publication
 curl -s -b /tmp/randori-admin.cookies http://localhost:3000/api/weeks | jq
-# admin reshuffle
-curl -s -b /tmp/randori-admin.cookies -X POST http://localhost:3000/api/admin/reshuffle \
-  -H 'Origin: http://localhost:3000' | jq
+# idempotent owner publication (empty JSON body only)
+curl -s -b /tmp/randori-admin.cookies -X POST http://localhost:3000/api/pairing/run \
+  -H 'Origin: http://localhost:3000' -H 'content-type: application/json' -d '{}' | jq
 # cron manual
 curl -s -X POST http://localhost:3000/api/cron/weekly \
   -H "x-cron-secret: $CRON_SECRET" | jq

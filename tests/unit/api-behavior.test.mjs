@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash, createHmac } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { after, beforeEach, mock, test } from 'node:test';
 import { createClient } from '@libsql/client';
 import bcrypt from 'bcryptjs';
+import { resolvePairingCycle } from '../../api/_pairing-cycle.js';
 
 const realFetch = globalThis.fetch;
 const TEST_JWT_SECRET = 'unit-test-secret-at-least-thirty-two-characters';
@@ -14,6 +19,7 @@ const sentryMessageCalls = [];
 const sentryExceptionCalls = [];
 let lastPairingRun = null;
 let persistedPairGroups = [];
+let persistedPairingParticipants = [];
 
 function sqlText(statement) {
   return typeof statement === 'string' ? statement : String(statement?.sql || '');
@@ -26,6 +32,26 @@ function createMockDb(){
       executed.push({ sql, args: statement?.args || [] });
       if (databaseDelegate) return databaseDelegate.execute(statement);
       const result = await executeHandler(sql, statement?.args || []);
+      if((result?.rows?.length||result?.rowsAffected)||!lastPairingRun) return result || { rows: [], rowsAffected: 0 };
+      if(sql.includes('FROM pairing_week_runs WHERE week_label=?')&&String(statement?.args?.[0])===lastPairingRun.weekLabel) return rows([{
+        week_label:lastPairingRun.weekLabel,
+        week_id:lastPairingRun.weekId,
+        generation_token:lastPairingRun.generationToken,
+        generation:lastPairingRun.generation,
+        algorithm_version:lastPairingRun.algorithmVersion||'fair-v2',
+        algorithm_seed:lastPairingRun.algorithmSeed||`${lastPairingRun.weekLabel}:weekly`,
+        participant_count:lastPairingRun.participantCount||persistedPairingParticipants.length,
+        participants_json:lastPairingRun.participantsJson||JSON.stringify(persistedPairingParticipants.map(item=>({user_id:item.user_id,source:item.source}))),
+        created_at:'2026-09-20T07:00:00.000Z',
+      }]);
+      if(sql.includes('FROM pairing_weeks WHERE week_label=?')&&String(statement?.args?.[0])===lastPairingRun.weekLabel) return rows([{
+        id:lastPairingRun.weekId,week_label:lastPairingRun.weekLabel,
+        week_start:lastPairingRun.weekStart||resolvePairingCycle().startsAt,is_demo:0,
+      }]);
+      if(sql.includes('FROM pairing_participants pp')) return rows(persistedPairingParticipants);
+      if(sql.includes('FROM pairing_groups pg')&&sql.includes('JOIN pairing_week_runs pwr')) return rows(persistedPairGroups.map(group=>({
+        id:group.id,user_a_id:group.user_a_id,user_b_id:group.user_b_id,user_c_id:null,is_ai_pair:group.is_ai_pair,
+      })));
       return result || { rows: [], rowsAffected: 0 };
     },
     async batch(statements, mode) {
@@ -36,15 +62,29 @@ function createMockDb(){
         return databaseDelegate.batch(statements, mode);
       }
       const nextGroups = [];
+      const nextParticipants = [];
       const results = [];
       for (const statement of statements) {
         if (sqlText(statement).includes('INSERT INTO pairing_week_runs')) {
+          const publicationWrite=sqlText(statement).includes('SELECT ?,NULL,?,1');
           lastPairingRun = {
             weekLabel: statement.args[0],
             generationToken: statement.args[1],
-            generation: Number(statement.args[2]),
+            generation: publicationWrite?1:Number(statement.args[2]),
             weekId: 10,
+            algorithmVersion:publicationWrite?statement.args[2]:statement.args[3],
+            algorithmSeed:publicationWrite?statement.args[3]:statement.args[4],
+            participantCount:publicationWrite?Number(statement.args[4]):Number(statement.args[5]),
+            participantsJson:publicationWrite?statement.args[5]:statement.args[6],
           };
+        }
+        if(sqlText(statement).includes('INSERT INTO pairing_weeks')&&lastPairingRun){
+          lastPairingRun.weekStart=String(statement.args[1]);
+        }
+        if (sqlText(statement).includes('INSERT INTO pairing_participants')) {
+          nextParticipants.push({
+            user_id:Number(statement.args[0]),position:Number(statement.args[1]),source:String(statement.args[2]),
+          });
         }
         if (sqlText(statement).includes('INSERT INTO pairing_groups')) {
           nextGroups.push({
@@ -57,7 +97,16 @@ function createMockDb(){
         results.push(await this.execute(statement));
       }
       if (nextGroups.length) persistedPairGroups = nextGroups;
+      if (nextParticipants.length) persistedPairingParticipants = nextParticipants;
       return results;
+    },
+    async transaction(){
+      return {
+        execute:this.execute.bind(this),
+        batch:this.batch.bind(this),
+        async commit(){},
+        async rollback(){},
+      };
     },
   };
 }
@@ -114,6 +163,40 @@ const [
 
 function rows(values = [], extra = {}) {
   return { rows: values, rowsAffected: 0, ...extra };
+}
+
+async function withFixedNow(iso,callback){
+  const NativeDate=globalThis.Date;
+  const instant=new NativeDate(iso).getTime();
+  globalThis.Date=class FixedDate extends NativeDate{
+    constructor(...args){ super(...(args.length?args:[instant])); }
+    static now(){ return instant; }
+  };
+  try{ return await callback(); }
+  finally{ globalThis.Date=NativeDate; }
+}
+
+function existingPairingPublication(sql,{
+  participantId=2,
+  participantRows=null,
+  groupRows=null,
+  weekId=10,
+  cycleId=resolvePairingCycle().cycleId,
+  startsAt=resolvePairingCycle().startsAt,
+}={}){
+  const storedParticipants=participantRows||[{user_id:participantId,position:0,source:'auth'}];
+  const storedGroups=groupRows||[{id:20,user_a_id:participantId,user_b_id:participantId,user_c_id:null,is_ai_pair:1}];
+  if(sql.includes('FROM pairing_week_runs WHERE week_label=?')) return rows([{
+    week_label:cycleId,week_id:weekId,generation_token:'existing-token',generation:1,
+    algorithm_version:'fair-v2',algorithm_seed:`${cycleId}:weekly`,participant_count:storedParticipants.length,
+    participants_json:JSON.stringify(storedParticipants.map(item=>({user_id:item.user_id,source:item.source}))),created_at:startsAt,
+  }]);
+  if(sql.includes('FROM pairing_weeks WHERE week_label=?')) return rows([{
+    id:weekId,week_label:cycleId,week_start:startsAt,is_demo:0,
+  }]);
+  if(sql.includes('FROM pairing_participants pp')) return rows(storedParticipants);
+  if(sql.includes('FROM pairing_groups pg')&&sql.includes('JOIN pairing_week_runs pwr')) return rows(storedGroups);
+  return null;
 }
 
 function signRunForTest({userId,questionSlug,questionVersion,language,passedCount,totalCount,resultsJson}){
@@ -180,6 +263,7 @@ beforeEach(() => {
   databaseDelegate = null;
   lastPairingRun = null;
   persistedPairGroups = [];
+  persistedPairingParticipants = [];
   executeHandler = () => rows();
   globalThis.fetch = realFetch;
   for (const key of [
@@ -485,18 +569,30 @@ test('login rejects missing or cross-origin requests before credential or databa
 });
 
 test('data read models map database rows into circle, weeks, history, stats, and health responses', async () => {
+  const currentCycleId=resolvePairingCycle().cycleId;
   executeHandler = sql => {
+    if(sql.includes('SELECT aa.id')&&sql.includes('JOIN circle_memberships cm')&&sql.includes('LIMIT 2')) return rows([{id:2,circle_id:1}]);
+    const publication=existingPairingPublication(sql,{
+      participantRows:[
+        {user_id:2,position:0,source:'auth'},
+        {user_id:4,position:1,source:'auth'},
+      ],
+      groupRows:[{id:20,user_a_id:2,user_b_id:4,user_c_id:null,is_ai_pair:0}],
+    });
+    if(publication) return publication;
     if (sql.includes("GROUP BY level")) return rows([{ level: 'error', c: 7 }, { level: 'warn', c: 2 }, { level: 'success', c: 3 }]);
     if (sql.includes("event IN")) return rows([{ event: 'monaco_load_fail', c: 1 }, { event: 'execute_fail', c: 2 }]);
     if (sql.includes('FROM auth_accounts WHERE COALESCE(is_demo,0)=0 ORDER BY id')) return rows([
       { id: 2, display_name: 'User', color: '#123456', is_available: 1, bio: '', tz: 'UTC', interview_focus: 'dsa' },
       { id: 4, display_name: 'Partner', color: '#abcdef', is_available: 0, bio: 'bio', tz: 'UTC', interview_focus: 'both' },
     ]);
-    if (sql.includes('FROM pairing_weeks WHERE COALESCE(is_demo,0)=0 ORDER BY id DESC LIMIT 20')) return rows([
-      { id: 10, week_label: '2026-W38', week_start: '2026-09-20', focus: 'both', is_demo: 0 },
+    if (sql.includes('SELECT id,display_name AS name,color FROM auth_accounts')) return rows([
+      { id: 2, name: 'User', color: '#123456' },
+      { id: 4, name: 'Partner', color: '#abcdef' },
     ]);
-    if (sql.includes('FROM pairing_groups WHERE week_id IN')) return rows([
-      { pg_id: 20, week_id: 10, user_a_id: 2, user_b_id: 4, user_c_id: 6, is_ai_pair: 0, topic: 'Arrays', topic_kind: 'dsa' },
+    if(sql.includes('SELECT aa.id,aa.display_name AS name,aa.color')) return rows([
+      {id:2,name:'User',color:'#123456'},
+      {id:4,name:'Partner',color:'#abcdef'},
     ]);
     if (sql.includes('display_name as name, color, tz')) return rows([
       { id: 2, name: 'User', color: '#123456', tz: 'UTC' },
@@ -525,9 +621,14 @@ test('data read models map database rows into circle, weeks, history, stats, and
   assert.equal(circle.body.circle[1].is_available, false);
 
   const weeks = await invoke(dataHandler, { url: '/api/weeks', query: { endpoint: 'weeks' }, headers: auth });
-  assert.equal(weeks.body.weeks[0].pairs[0].b_name, 'Partner');
-  assert.equal(weeks.body.weeks[0].pairs[0].c_name, 'Third');
-  assert.equal(weeks.body.weeks[0].pairs[0].members.length, 3);
+  assert.equal(weeks.body.weeks.length,1);
+  assert.equal(weeks.body.weeks[0].pairs[0].b_name,'Partner');
+  assert.equal(weeks.body.weeks[0].pairs[0].c_name,null);
+  assert.equal(weeks.body.weeks[0].members,undefined);
+  assert.equal(weeks.body.weeks[0].pairs[0].members.length,2);
+  assert.equal(weeks.body.weeks[0].is_current,true);
+  assert.equal(weeks.body.weeks[0].week_label,currentCycleId);
+  assert.equal(weeks.body.current_week_id,10);
 
   const history = await invoke(dataHandler, { url: '/api/history', query: { endpoint: 'history' }, headers: auth });
   assert.equal(history.body.history[0].partner_name, 'Partner');
@@ -955,35 +1056,28 @@ test('pair run feed strictly validates cursors and authorizes the exact canonica
   assert.equal(personal.status,200);
 });
 
-test('my-pair returns only the latest week membership and a canonical room id', async () => {
+test('my-pair returns only current-cycle membership and a canonical room id', async () => {
   let paired = true;
-  let thirdMember = false;
+  let solo = false;
   let poisonedSchedule = false;
-  executeHandler = sql => {
-    if (sql.includes('FROM pairing_weeks WHERE COALESCE(is_demo,0)=0 ORDER BY id DESC LIMIT 1')) {
-      return rows([{ id: 10, week_label: '2026-W38', week_start: '2026-09-20', focus: 'both' }]);
-    }
-    if (sql.includes('FROM pairing_groups') && sql.includes('JOIN pairing_participants AS viewer') && sql.includes('WHERE pairing_groups.week_id=')) {
-      return rows(paired ? [thirdMember ? {
-        pg_id: 20,
-        week_id: 10,
-        user_a_id: 4,
-        user_b_id: 5,
-        user_c_id: 2,
-        is_ai_pair: 0,
-        topic: 'Arrays',
-        topic_kind: 'dsa',
-      } : {
-        pg_id: 20,
-        week_id: 10,
-        user_a_id: 2,
-        user_b_id: 4,
-        user_c_id: null,
-        is_ai_pair: 0,
-        topic: 'Arrays',
-        topic_kind: 'dsa',
-      }] : []);
-    }
+  executeHandler = (sql,args) => {
+    if(sql.includes('SELECT aa.id')&&sql.includes('JOIN circle_memberships cm')&&sql.includes('LIMIT 2')) return rows([{id:2,circle_id:1}]);
+    const participantRows=paired
+      ?(solo?[{user_id:2,position:0,source:'auth'}]:[
+        {user_id:2,position:0,source:'auth'},
+        {user_id:4,position:1,source:'auth'},
+      ])
+      :[{user_id:4,position:0,source:'auth'}];
+    const groupRows=paired
+      ?[solo
+        ?{id:20,user_a_id:2,user_b_id:2,user_c_id:null,is_ai_pair:1}
+        :{id:20,user_a_id:2,user_b_id:4,user_c_id:null,is_ai_pair:0}]
+      :[{id:20,user_a_id:4,user_b_id:4,user_c_id:null,is_ai_pair:1}];
+    const publication=existingPairingPublication(sql,{participantRows,groupRows});
+    if(publication) return publication;
+    if(sql.includes('SELECT aa.id,aa.display_name AS name,aa.color')) return rows(participantRows.map(item=>({
+      id:item.user_id,name:item.user_id===2?'User':'Partner',color:item.user_id===2?'#123456':'#abcdef',
+    })));
     if (sql.includes('SELECT aa.id,aa.display_name,aa.color,aa.bio,aa.tz,aa.interview_focus,aa.leetcode_handle')) {
       return rows([{ id: 4, display_name: 'Partner', color: '#abcdef', bio: '', tz: 'UTC', interview_focus: 'dsa', leetcode_handle: 'partner' }]);
     }
@@ -1006,16 +1100,15 @@ test('my-pair returns only the latest week membership and a canonical room id', 
   assert.equal(current.body.pair.room_id, 'week_10_pair_20');
   assert.equal('email' in current.body.partner, false);
 
-  thirdMember = true;
-  const third = await invoke(dataHandler, {
+  solo = true;
+  const soloPractice = await invoke(dataHandler, {
     url: '/api/my-pair', query: { endpoint: 'my-pair' }, headers: { 'x-test-auth': 'user' },
   });
-  assert.equal(third.status, 200);
-  assert.equal(third.body.paired, true);
-  assert.equal(third.body.room_id, 'week_10_pair_20');
-  assert.equal(third.body.pair.user_c_id, 2);
-  assert.deepEqual(third.body.partners.map(member=>member.id),[4,5]);
+  assert.equal(soloPractice.status,200);
+  assert.equal(soloPractice.body.partner.name,'Solo practice');
+  assert.equal(soloPractice.body.pair.solo_practice,true);
 
+  solo = false;
   poisonedSchedule = true;
   const poisoned = await invoke(dataHandler, {
     url: '/api/my-pair', query: { endpoint: 'my-pair' }, headers: { 'x-test-auth': 'user' },
@@ -1030,8 +1123,114 @@ test('my-pair returns only the latest week membership and a canonical room id', 
   });
   assert.equal(absent.status, 200);
   assert.equal(absent.body.paired, false);
-  assert.equal(absent.body.reason, 'not_paired_this_week');
+  assert.equal(absent.body.reason, 'not_paired_this_cycle');
   assert.equal(executed.some(call => call.sql.includes('JOIN pairing_weeks')), false);
+});
+
+test('my-pair ignores stale and future weeks but fails closed on a current legacy week',async()=>{
+  let currentCycleQuery=null;
+  let legacyCurrent=true;
+  executeHandler=(sql,args)=>{
+    if(sql.includes('SELECT aa.id')&&sql.includes('JOIN circle_memberships cm')&&sql.includes('LIMIT 2')) return rows([{id:2,circle_id:1}]);
+    if(sql.includes('FROM pairing_week_runs WHERE week_label=?')) return rows([]);
+    if(sql.includes('FROM pairing_weeks WHERE week_label=?')){
+      currentCycleQuery={sql,args};
+      return legacyCurrent?rows([{
+        id:10,week_label:resolvePairingCycle().cycleId,week_start:resolvePairingCycle().startsAt,is_demo:0,
+      }]):rows([]);
+    }
+    return rows();
+  };
+
+  const legacy=await invoke(dataHandler,{
+    url:'/api/my-pair',query:{endpoint:'my-pair'},headers:{'x-test-auth':'user'},
+  });
+  assert.equal(legacy.status,503);
+  assert.deepEqual(legacy.body,{error:'pairing unavailable'});
+
+  legacyCurrent=false;
+  const result=await invoke(dataHandler,{
+    url:'/api/my-pair',query:{endpoint:'my-pair'},headers:{'x-test-auth':'user'},
+  });
+  assert.equal(result.status,200);
+  assert.equal(result.body.paired,false);
+  assert.equal(result.body.reason,'no_pairing_for_current_cycle');
+  assert.ok(currentCycleQuery);
+  assert.equal(currentCycleQuery.args.length,1);
+  assert.match(String(currentCycleQuery.args[0]),/^\d{4}-W\d{2}$/);
+  assert.equal(executed.some(call=>call.sql.includes('JOIN pairing_participants AS viewer')),false);
+});
+
+test('current pairing reads reject revoked members and incomplete publications without leaking history',async()=>{
+  let member=false;
+  let corrupt=false;
+  let outsideCircle=false;
+  executeHandler=sql=>{
+    if(sql.includes('SELECT aa.id')&&sql.includes('JOIN circle_memberships cm')&&sql.includes('LIMIT 2')){
+      return rows(member?[{id:2,circle_id:1}]:[]);
+    }
+    if(corrupt){
+      const cycle=resolvePairingCycle();
+      if(sql.includes('FROM pairing_week_runs WHERE week_label=?')) return rows([{
+        week_label:cycle.cycleId,week_id:10,generation_token:'corrupt-token',generation:1,
+        algorithm_version:'fair-v2',algorithm_seed:`${cycle.cycleId}:weekly`,participant_count:2,
+        participants_json:'[{"user_id":2,"source":"auth"},{"user_id":4,"source":"auth"}]',created_at:cycle.startsAt,
+      }]);
+      if(sql.includes('FROM pairing_weeks WHERE week_label=?')) return rows([{
+        id:10,week_label:cycle.cycleId,week_start:cycle.startsAt,is_demo:0,
+      }]);
+      if(sql.includes('FROM pairing_participants pp')) return rows([{user_id:2,position:0,source:'auth'}]);
+      if(sql.includes('FROM pairing_groups pg')&&sql.includes('JOIN pairing_week_runs pwr')) return rows([{
+        id:20,user_a_id:2,user_b_id:4,user_c_id:null,is_ai_pair:0,
+      }]);
+    }
+    if(outsideCircle){
+      const publication=existingPairingPublication(sql,{
+        participantRows:[
+          {user_id:2,position:0,source:'auth'},
+          {user_id:99,position:1,source:'auth'},
+        ],
+        groupRows:[{id:20,user_a_id:2,user_b_id:99,user_c_id:null,is_ai_pair:0}],
+      });
+      if(publication) return publication;
+      if(sql.includes('SELECT aa.id,aa.display_name AS name,aa.color')){
+        return rows([{id:2,name:'User',color:'#123456'}]);
+      }
+    }
+    return rows();
+  };
+
+  for(const endpoint of ['weeks','my-pair']){
+    executed.length=0;
+    const revoked=await invoke(dataHandler,{
+      url:`/api/${endpoint}`,query:{endpoint},headers:{'x-test-auth':'user'},
+    });
+    assert.equal(revoked.status,403);
+    assert.deepEqual(revoked.body,{error:'circle membership required'});
+    assert.equal(executed.some(call=>call.sql.includes('FROM pairing_week_runs WHERE week_label=?')),false);
+  }
+
+  member=true;
+  corrupt=true;
+  for(const endpoint of ['weeks','my-pair']){
+    const result=await invoke(dataHandler,{
+      url:`/api/${endpoint}`,query:{endpoint},headers:{'x-test-auth':'user'},
+    });
+    assert.equal(result.status,503);
+    assert.equal(result.body.error,'pairing unavailable');
+    assert.doesNotMatch(JSON.stringify(result.body),/corrupt-token|participants_json/);
+  }
+
+  corrupt=false;
+  outsideCircle=true;
+  for(const endpoint of ['weeks','my-pair']){
+    const result=await invoke(dataHandler,{
+      url:`/api/${endpoint}`,query:{endpoint},headers:{'x-test-auth':'user'},
+    });
+    assert.equal(result.status,503);
+    assert.equal(result.body.error,'pairing unavailable');
+    assert.doesNotMatch(JSON.stringify(result.body),/99/);
+  }
 });
 
 test('history includes every other member when the viewer is user_c', async () => {
@@ -2033,9 +2232,18 @@ test('operations cover preferences, availability, admin promotion, demo lifecycl
   assert.match(cronDenied.body.hint, /x-cron-secret.*Authorization: Bearer/);
   assert.doesNotMatch(cronDenied.body.hint, /\?secret=|x-vercel-cron/);
 
-  const weekly = await invoke(opsHandler, { method: 'POST', url: '/api/cron/weekly', query: { endpoint: 'weekly' }, headers: { 'x-cron-secret': 'cron-secret' } });
+  executed.length=0;
+  const outsideWindow=await withFixedNow('2026-09-18T12:00:00.000Z',()=>invoke(opsHandler,{
+    method:'GET',url:'/api/cron/weekly',query:{endpoint:'weekly'},headers:{'x-cron-secret':'cron-secret'},
+  }));
+  assert.equal(outsideWindow.status,200);
+  assert.equal(outsideWindow.body.reason,'outside_due_window');
+  assert.equal(executed.length,0,'an authenticated off-window cron must not touch storage');
+
+  const weekly = await withFixedNow('2026-09-20T08:15:00.000Z',()=>invoke(opsHandler, { method: 'POST', url: '/api/cron/weekly', query: { endpoint:'weekly' }, headers: { 'x-cron-secret': 'cron-secret' } }));
   assert.equal(weekly.status, 200);
   assert.equal(weekly.body.pairs.length, 1);
+  assert.doesNotMatch(JSON.stringify(weekly.body),/@example\.test/);
   assert.equal(executed.some(call => !call.sql.trim()), false, 'migration arrays must not execute undefined DDL entries');
 });
 
@@ -2047,7 +2255,8 @@ test('weekly email delivery caps stale outbox retries and exhausts the fifth fai
     headers: { 'content-type': 'application/json' },
   });
   executeHandler = sql => {
-    if (sql.includes('SELECT id FROM pairing_weeks WHERE week_label=')) return rows([{ id: 10 }]);
+    const publication=existingPairingPublication(sql,{participantId:2});
+    if(publication) return publication;
     if (sql.startsWith("UPDATE pairing_email_outbox SET status='exhausted'")) return rows([], { rowsAffected: 0 });
     if (sql.includes('SELECT id,week_id,user_id,kind,recipient_email,status,attempt_count')) return rows([{
       id: 70,
@@ -2070,17 +2279,17 @@ test('weekly email delivery caps stale outbox retries and exhausts the fifth fai
     return rows();
   };
 
-  const disabled = await invoke(opsHandler, {
+  const disabled = await withFixedNow('2026-09-20T08:15:00.000Z',()=>invoke(opsHandler, {
     method: 'POST', url: '/api/cron/weekly', query: { endpoint: 'weekly' },
     headers: { 'x-cron-secret': 'cron-secret' },
-  });
+  }));
   assert.match(disabled.body.email_delivery.summary, /email disabled.*RESEND_API_KEY \+ RESEND_FROM/);
   process.env.RESEND_FROM = 'Randori <verified@example.test>';
 
-  const result = await invoke(opsHandler, {
+  const result = await withFixedNow('2026-09-20T08:15:00.000Z',()=>invoke(opsHandler, {
     method: 'POST', url: '/api/cron/weekly', query: { endpoint: 'weekly' },
     headers: { 'x-cron-secret': 'cron-secret' },
-  });
+  }));
   assert.equal(result.status, 200);
   assert.equal(result.body.skipped, true);
   assert.equal(result.body.email_delivery.failed, 1);
@@ -2107,7 +2316,8 @@ test('stale email workers cannot overwrite a newer lease or inflate delivery cou
     headers: { 'content-type': 'application/json' },
   });
   executeHandler = (sql,args) => {
-    if (sql.includes('SELECT id FROM pairing_weeks WHERE week_label=')) return rows([{ id: 10 }]);
+    const publication=existingPairingPublication(sql,{participantId:4});
+    if(publication) return publication;
     if (sql.startsWith("UPDATE pairing_email_outbox SET status='exhausted'")) return rows([], { rowsAffected: 0 });
     if (sql.includes('SELECT id,week_id,user_id,kind,recipient_email,status,attempt_count')) return rows([
       { id: 70, week_id: 10, user_id: 2, kind: 'paired', recipient_email: 'demo@example.test', status: 'failed', attempt_count: 1 },
@@ -2127,10 +2337,10 @@ test('stale email workers cannot overwrite a newer lease or inflate delivery cou
     return rows();
   };
 
-  const result = await invoke(opsHandler, {
+  const result = await withFixedNow('2026-09-20T08:15:00.000Z',()=>invoke(opsHandler, {
     method: 'POST', url: '/api/cron/weekly', query: { endpoint: 'weekly' },
     headers: { 'x-cron-secret': 'cron-secret' },
-  });
+  }));
   assert.equal(result.status, 200);
   assert.equal(result.body.email_delivery.sent, 0, 'a stale successful sender must not count an uncommitted transition');
   assert.equal(result.body.email_delivery.suppressed, 1, 'only the worker that still owns its lease may count suppression');
@@ -2151,6 +2361,7 @@ test('operation validation rejects unsupported methods and non-admin mutations',
     [{ method: 'PATCH', url: '/api/notifications/prefs', query: { endpoint: 'notifications-prefs' }, headers: user }, 405],
     [{ method: 'GET', url: '/api/availability', query: { endpoint: 'availability' }, headers: user }, 405],
     [{ method: 'POST', url: '/api/availability', query: { endpoint: 'availability' }, headers: user, body: {} }, 400],
+    [{ method: 'GET', url: '/api/pairing/run', query: { endpoint: 'pairing-run' }, headers: admin }, 405],
     [{ method: 'PUT', url: '/api/cron/weekly', query: { endpoint: 'weekly' } }, 405],
     [{ method: 'GET', url: '/api/demo-seed', query: { endpoint: 'demo-seed' }, headers: admin }, 405],
     [{ method: 'GET', url: '/api/demo-shuffle', query: { endpoint: 'demo-shuffle' }, headers: admin }, 405],
@@ -2188,7 +2399,7 @@ test('operation validation rejects unsupported methods and non-admin mutations',
   }
 });
 
-test('adjacent manual reshuffles advance the CAS generation and avoid current pairs', async () => {
+test('owner publication is immutable and the legacy reshuffle URL cannot remix it', async () => {
   const participants = [
     { id: 1, name: 'Admin', email: 'admin@example.test', color: '#1', is_available: 1, is_demo: 0 },
     { id: 2, name: 'Ada', email: 'ada@example.test', color: '#2', is_available: 1, is_demo: 0 },
@@ -2196,40 +2407,182 @@ test('adjacent manual reshuffles advance the CAS generation and avoid current pa
     { id: 4, name: 'Linus', email: 'linus@example.test', color: '#4', is_available: 1, is_demo: 0 },
   ];
   executeHandler = sql => {
-    if (sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')) return rows([{ id: 1, email: 'admin@example.test', is_admin: 1 }]);
-    if (sql.includes('SELECT id, display_name as name') && sql.includes('COALESCE(is_demo,0)=0')) return rows(participants);
-    if (sql.includes('SELECT COALESCE(generation,0) AS generation')) {
-      return rows(lastPairingRun ? [{ generation: lastPairingRun.generation }] : []);
-    }
-    if (sql.includes('SELECT pg.user_a_id,pg.user_b_id')) {
-      return rows(persistedPairGroups.map(group => ({ ...group, week_id: 10, week_label: '2026-W38' })));
-    }
-    if (sql.includes('SELECT week_id,generation_token,generation FROM pairing_week_runs')) return rows([{
-      week_id: lastPairingRun?.weekId,
-      generation_token: lastPairingRun?.generationToken,
-      generation: lastPairingRun?.generation,
-    }]);
-    if (sql.includes('SELECT id,user_a_id,user_b_id,is_ai_pair FROM pairing_groups')) return rows(persistedPairGroups);
+    if (sql.includes("cm.role='owner'")) return rows([{ id: 1, role: 'owner' }]);
+    if (sql.includes('SELECT id, display_name as name') && sql.includes('circle_memberships')) return rows(participants);
     return rows();
   };
   const request = {
-    method: 'POST', url: '/api/admin/reshuffle', query: { endpoint: 'reshuffle' },
+    method: 'POST', url: '/api/pairing/run', query: { endpoint: 'pairing-run' },
     headers: { 'x-test-auth': 'admin' }, body: {},
   };
   const first = await invoke(opsHandler, request);
-  const second = await invoke(opsHandler, request);
+  const second = await invoke(opsHandler, {
+    ...request,url:'/api/admin/reshuffle',query:{endpoint:'reshuffle'},
+  });
   assert.equal(first.status, 200);
   assert.equal(second.status, 200);
+  assert.equal(first.body.created, true);
+  assert.equal(second.body.created, false);
   assert.equal(first.body.generation, 1);
-  assert.equal(second.body.generation, 2);
-
-  const firstKeys = new Set(first.body.pairs.map(pair => [pair.a_id, pair.b_id].sort((a, b) => a - b).join('-')));
-  const secondKeys = new Set(second.body.pairs.map(pair => [pair.a_id, pair.b_id].sort((a, b) => a - b).join('-')));
-  assert.equal([...secondKeys].some(key => firstKeys.has(key)), false);
+  assert.equal(second.body.generation, 1);
+  assert.deepEqual(second.body.pairs,first.body.pairs);
+  assert.doesNotMatch(JSON.stringify(first.body),/@example\.test/);
 
   const claims = executed.filter(call => call.sql.includes('INSERT INTO pairing_week_runs'));
-  assert.deepEqual(claims.map(call => call.args[2]), [1, 2]);
-  assert.deepEqual(claims.map(call => call.args.at(-1)), [0, 1]);
+  assert.equal(claims.length,1);
+  assert.equal(executed.some(call=>/^\s*(?:CREATE|ALTER|DROP)\b/i.test(call.sql)),false);
+
+  const remix=await invoke(opsHandler,{...request,body:{remix:true}});
+  assert.equal(remix.status,400);
+  assert.match(remix.body.error,/cannot be remixed/);
+  assert.equal(executed.filter(call=>call.sql.includes('INSERT INTO pairing_week_runs')).length,1);
+});
+
+test('current-cycle publication fails before its irreversible claim when scoped history cannot be read',async()=>{
+  const participants=[
+    {id:1,name:'Admin',email:'admin@example.test',color:'#1',is_available:1,is_demo:0},
+    {id:2,name:'Ada',email:'ada@example.test',color:'#2',is_available:1,is_demo:0},
+  ];
+  executeHandler=sql=>{
+    if(sql.includes("cm.role='owner'")) return rows([{id:1,role:'owner'}]);
+    if(sql.includes('SELECT id, display_name as name')&&sql.includes('circle_memberships')) return rows(participants);
+    if(sql.includes('FROM pairing_groups pg')&&sql.includes('JOIN pairing_week_runs pwr')&&sql.includes("ppa.source='auth'")) throw new Error('history unavailable');
+    return rows();
+  };
+
+  const result=await invoke(opsHandler,{
+    method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},
+    headers:{'x-test-auth':'admin'},body:{},
+  });
+  assert.equal(result.status,503);
+  assert.deepEqual(result.body,{error:'pairing unavailable'});
+  const historyQuery=executed.find(call=>call.sql.includes('FROM pairing_groups pg')&&call.sql.includes("ppa.source='auth'"));
+  assert.ok(historyQuery);
+  assert.match(historyQuery.sql,/ppa\.source='auth'/);
+  assert.match(historyQuery.sql,/ppb\.source='auth'/);
+  assert.equal(executed.some(call=>call.sql.includes('INSERT INTO pairing_week_runs')),false);
+});
+
+test('manual publication revalidates owner authority inside the write transaction',async()=>{
+  let ownerChecks=0;
+  executeHandler=sql=>{
+    if(sql.includes("cm.role='owner'")){
+      ownerChecks+=1;
+      return rows(ownerChecks===1?[{id:1,role:'owner'}]:[]);
+    }
+    return rows();
+  };
+
+  const result=await invoke(opsHandler,{
+    method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},
+    headers:{'x-test-auth':'admin'},body:{},
+  });
+  assert.equal(result.status,403);
+  assert.deepEqual(result.body,{error:'primary circle owner required'});
+  assert.equal(ownerChecks,2);
+  assert.equal(executed.some(call=>call.sql.includes('display_name as name')),false);
+  assert.equal(executed.some(call=>call.sql.includes('INSERT INTO pairing_week_runs')),false);
+});
+
+test('publication retries only vetted pre-commit lock conflicts and never an ambiguous commit',async()=>{
+  const participants=[
+    {id:1,name:'Admin',email:'admin@example.test',color:'#1',is_available:1,is_demo:0},
+    {id:2,name:'Ada',email:'ada@example.test',color:'#2',is_available:1,is_demo:0},
+  ];
+  executeHandler=sql=>{
+    if(sql.includes("cm.role='owner'")) return rows([{id:1,role:'owner'}]);
+    if(sql.includes('SELECT id, display_name as name')&&sql.includes('circle_memberships')) return rows(participants);
+    return rows();
+  };
+  const delegate=createMockDb();
+  let transactionAttempts=0;
+  db={
+    execute:delegate.execute.bind(delegate),
+    batch:delegate.batch.bind(delegate),
+    async transaction(){
+      transactionAttempts+=1;
+      if(transactionAttempts<3) throw Object.assign(new Error('database is busy'),{code:'SQLITE_BUSY'});
+      return delegate.transaction();
+    },
+  };
+  const request={
+    method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers:{'x-test-auth':'admin'},body:{},
+  };
+  const retried=await invoke(opsHandler,request);
+  assert.equal(retried.status,200);
+  assert.equal(retried.body.created,true);
+  assert.equal(transactionAttempts,3);
+
+  lastPairingRun=null;
+  persistedPairGroups=[];
+  persistedPairingParticipants=[];
+  const committedDelegate=createMockDb();
+  transactionAttempts=0;
+  db={
+    execute:committedDelegate.execute.bind(committedDelegate),
+    batch:committedDelegate.batch.bind(committedDelegate),
+    async transaction(){
+      transactionAttempts+=1;
+      const transaction=await committedDelegate.transaction();
+      return {
+        ...transaction,
+        async commit(){
+          await transaction.commit();
+          throw Object.assign(new Error('database is busy'),{code:'SQLITE_BUSY'});
+        },
+      };
+    },
+  };
+  const ambiguous=await invoke(opsHandler,request);
+  assert.equal(ambiguous.status,503);
+  assert.deepEqual(ambiguous.body,{error:'pairing unavailable'});
+  assert.equal(transactionAttempts,1);
+});
+
+test('concurrent handler publications across two file-backed clients converge on one result',async()=>{
+  const directory=mkdtempSync(join(tmpdir(),'randori-handler-pairing-'));
+  const databaseUrl=pathToFileURL(join(directory,'pairing.sqlite')).href;
+  const setup=createClient({url:databaseUrl});
+  const clients=[];
+  try{
+    await setup.batch([
+      `CREATE TABLE auth_accounts (id INTEGER PRIMARY KEY,email TEXT NOT NULL,display_name TEXT NOT NULL,color TEXT NOT NULL,is_available INTEGER,is_admin INTEGER,is_demo INTEGER)`,
+      `CREATE TABLE circles (id INTEGER PRIMARY KEY,public_id TEXT,slug TEXT,name TEXT,is_primary INTEGER,archived_at TEXT)`,
+      `CREATE TABLE circle_memberships (circle_id INTEGER,user_id INTEGER,role TEXT,status TEXT,PRIMARY KEY(circle_id,user_id))`,
+      `CREATE TABLE pairing_weeks (id INTEGER PRIMARY KEY AUTOINCREMENT,week_label TEXT NOT NULL UNIQUE,week_start TEXT NOT NULL,focus TEXT NOT NULL DEFAULT 'both',created_at TEXT DEFAULT (datetime('now')),is_demo INTEGER DEFAULT 0)`,
+      `CREATE TABLE pairing_groups (id INTEGER PRIMARY KEY AUTOINCREMENT,week_id INTEGER NOT NULL,user_a_id INTEGER NOT NULL,user_b_id INTEGER NOT NULL,user_c_id INTEGER,is_ai_pair INTEGER DEFAULT 0,topic TEXT,topic_kind TEXT,created_at TEXT DEFAULT (datetime('now')))`,
+      `CREATE TABLE pairing_participants (week_id INTEGER NOT NULL,user_id INTEGER NOT NULL,position INTEGER NOT NULL,source TEXT NOT NULL,created_at TEXT DEFAULT (datetime('now')),PRIMARY KEY(week_id,user_id))`,
+      `CREATE TABLE pairing_week_runs (week_label TEXT PRIMARY KEY,week_id INTEGER,generation_token TEXT NOT NULL,generation INTEGER NOT NULL,algorithm_version TEXT NOT NULL,algorithm_seed TEXT NOT NULL,participant_count INTEGER NOT NULL,participants_json TEXT NOT NULL,created_at TEXT DEFAULT (datetime('now')),updated_at TEXT DEFAULT (datetime('now')))`,
+      `CREATE TABLE pairing_email_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT,week_id INTEGER NOT NULL,user_id INTEGER NOT NULL,kind TEXT NOT NULL,recipient_email TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',attempt_count INTEGER NOT NULL DEFAULT 0,claimed_at TEXT,sent_at TEXT,provider_message_id TEXT,last_error TEXT,created_at TEXT DEFAULT (datetime('now')),updated_at TEXT DEFAULT (datetime('now')),UNIQUE(week_id,user_id,kind))`,
+      `INSERT INTO auth_accounts (id,email,display_name,color,is_available,is_admin,is_demo) VALUES (1,'admin@example.test','Admin','#111',1,1,0),(2,'ada@example.test','Ada','#222',1,0,0)`,
+      `INSERT INTO circles (id,public_id,slug,name,is_primary) VALUES (1,'circle_test','randori-circle','Test Circle',1)`,
+      `INSERT INTO circle_memberships (circle_id,user_id,role,status) VALUES (1,1,'owner','active'),(1,2,'member','active')`,
+    ],'write');
+    await setup.close();
+    clients.push(createClient({url:databaseUrl}),createClient({url:databaseUrl}));
+    let transactionIndex=0;
+    db={
+      execute:statement=>clients[0].execute(statement),
+      batch:(statements,mode)=>clients[0].batch(statements,mode),
+      transaction:mode=>clients[transactionIndex++%clients.length].transaction(mode),
+    };
+    const request={
+      method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers:{'x-test-auth':'admin'},body:{},
+    };
+    const results=await withFixedNow('2026-09-20T07:15:00.000Z',()=>Promise.all([
+      invoke(opsHandler,request),invoke(opsHandler,request),
+    ]));
+    assert.deepEqual(results.map(result=>result.status),[200,200]);
+    assert.equal(results.filter(result=>result.body.created===true).length,1);
+    assert.equal(results.filter(result=>result.body.created===false).length,1);
+    assert.equal(results[0].body.week_id,results[1].body.week_id);
+    assert.deepEqual(results[0].body.pairs,results[1].body.pairs);
+    assert.ok(transactionIndex>=2);
+  }finally{
+    try{ await setup.close(); }catch{}
+    for(const client of clients){ try{ client.close(); }catch{} }
+    rmSync(directory,{recursive:true,force:true});
+  }
 });
 
 test('video signaling validates membership and supports post, filtered poll, and purge', async () => {

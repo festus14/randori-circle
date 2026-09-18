@@ -509,16 +509,35 @@ test('the real auth handler signs up locally and persists the account and sessio
   assert.equal(secondSignup.status,200,secondPayload.text);
   assert.equal(secondPayload.body.user.is_admin,false);
 
-  const reshuffle=await fetch(new URL('/api/admin/reshuffle',first.url),{
-    method:'POST',
-    headers:{'content-type':'application/json',origin:first.url,cookie:sessionCookie},
-    body:'{}',
+  const pairingRequest=()=>fetch(new URL('/api/pairing/run',first.url),{
+    method:'POST',headers:{'content-type':'application/json',origin:first.url,cookie:sessionCookie},body:'{}',
   });
-  const reshufflePayload=await jsonResponse(reshuffle);
-  assert.equal(reshuffle.status,200,reshufflePayload.text);
-  assert.equal(reshufflePayload.body.ok,true);
-  assert.equal(reshufflePayload.body.count,2);
-  assert.equal(reshufflePayload.body.pairs.length,1);
+  const pairingResponses=await Promise.all([pairingRequest(),pairingRequest()]);
+  const pairingPayloads=await Promise.all(pairingResponses.map(jsonResponse));
+  for(let index=0;index<pairingResponses.length;index+=1){
+    assert.equal(pairingResponses[index].status,200,pairingPayloads[index].text);
+    assert.equal(pairingPayloads[index].body.ok,true);
+    assert.equal(pairingPayloads[index].body.count,2);
+    assert.equal(pairingPayloads[index].body.pairs.length,1);
+  }
+  assert.equal(pairingPayloads.filter(item=>item.body.created===true).length,1);
+  assert.equal(pairingPayloads.filter(item=>item.body.created===false).length,1);
+  assert.equal(pairingPayloads[0].body.week_id,pairingPayloads[1].body.week_id);
+  assert.deepEqual(pairingPayloads[0].body.pairs,pairingPayloads[1].body.pairs);
+  const reshufflePayload=pairingPayloads[0];
+
+  const weeks=await fetch(new URL('/api/weeks',first.url),{headers:{cookie:sessionCookie}});
+  const weeksPayload=await jsonResponse(weeks);
+  assert.equal(weeks.status,200,weeksPayload.text);
+  assert.equal(weeksPayload.body.weeks.length,1);
+  assert.equal(weeksPayload.body.weeks[0].is_current,true);
+  assert.equal(weeksPayload.body.current_week_id,reshufflePayload.body.week_id);
+
+  const myPair=await fetch(new URL('/api/my-pair',first.url),{headers:{cookie:sessionCookie}});
+  const myPairPayload=await jsonResponse(myPair);
+  assert.equal(myPair.status,200,myPairPayload.text);
+  assert.equal(myPairPayload.body.paired,true);
+  assert.equal(myPairPayload.body.room_id,reshufflePayload.body.pairs[0].room);
 
   const me=await fetch(new URL('/api/auth/me',first.url),{
     headers:{cookie:sessionCookie},

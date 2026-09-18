@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {afterEach,beforeEach,mock,test} from 'node:test';
+import {resolvePairingCycle} from '../../api/_pairing-cycle.js';
 
 const SECRET_DATABASE_ERROR='private database diagnostic with sensitive details';
 const realFetch=globalThis.fetch;
@@ -42,10 +43,36 @@ function sqlText(statement){
   return typeof statement==='string'?statement:String(statement?.sql||'');
 }
 
+function currentPairingFixture(sql){
+  const cycle=resolvePairingCycle();
+  const cycleId=cycle.cycleId;
+  const startsAt=cycle.startsAt;
+  if(sql.includes('SELECT aa.id,c.id AS circle_id')&&sql.includes('LIMIT 2')) return rows([{id:2,circle_id:1}]);
+  if(sql.includes('FROM pairing_week_runs WHERE week_label=?')) return rows([{
+    week_label:cycleId,week_id:10,generation_token:'published-token',generation:1,
+    algorithm_version:'fair-v2',algorithm_seed:`${cycleId}:weekly`,participant_count:2,
+    participants_json:'[{"user_id":2,"source":"auth"},{"user_id":4,"source":"auth"}]',created_at:startsAt,
+  }]);
+  if(sql.includes('FROM pairing_weeks WHERE week_label=?')) return rows([{id:10,week_label:cycleId,week_start:startsAt,is_demo:0}]);
+  if(sql.includes('FROM pairing_participants pp')) return rows([
+    {user_id:2,position:0,source:'auth'},{user_id:4,position:1,source:'auth'},
+  ]);
+  if(sql.includes('FROM pairing_groups pg')&&sql.includes('JOIN pairing_week_runs pwr')) return rows([{
+    id:20,user_a_id:2,user_b_id:4,user_c_id:null,is_ai_pair:0,
+  }]);
+  if(sql.includes('SELECT aa.id,aa.display_name AS name,aa.color')) return rows([
+    {id:2,name:'Member',color:'#654321'},{id:4,name:'Partner',color:'#123456'},
+  ]);
+  return null;
+}
+
 function mockDb(executeHandler){
   const db={
     async execute(statement){
-      return executeHandler(sqlText(statement),statement?.args||[]);
+      const sql=sqlText(statement);
+      const result=await executeHandler(sql,statement?.args||[]);
+      if((result?.rows?.length||0)>0||(result?.rowsAffected||0)>0) return result;
+      return currentPairingFixture(sql)||result;
     },
     async batch(statements,mode){
       if(mode==='write'&&statements.length===2&&sqlText(statements[1]).includes(`event='execute_attempt'`)){
@@ -90,6 +117,10 @@ function latestWeek(){
   return {id:10,week_label:'2026-W38',week_start:'2026-09-14',focus:'both'};
 }
 
+function isCurrentPublicationQuery(sql){
+  return sql.includes('FROM pairing_week_runs WHERE week_label=?');
+}
+
 function pairAccess(){
   return {
     pair_group_id:20,week_id:10,user_a_id:2,user_b_id:4,user_c_id:null,
@@ -110,8 +141,7 @@ afterEach(()=>{
 
 test('my-pair reports source-aware membership query failures as generic unavailable',async()=>{
   currentDb=mockDb(sql=>{
-    if(sql.includes('FROM pairing_weeks')&&sql.includes('ORDER BY id DESC LIMIT 1')) return rows([latestWeek()]);
-    if(sql.includes('JOIN pairing_participants AS viewer')) throw new Error(SECRET_DATABASE_ERROR);
+    if(sql.includes('FROM pairing_participants pp')) throw new Error(SECRET_DATABASE_ERROR);
     return rows();
   });
   const response=await invoke({url:'/api/my-pair',query:{endpoint:'my-pair'}});
@@ -122,9 +152,7 @@ test('my-pair normalizes numeric-string IDs and rejects malformed authenticated 
   const calls=[];
   currentDb=mockDb((sql,args)=>{
     calls.push({sql,args});
-    if(sql.includes('FROM pairing_weeks')&&sql.includes('ORDER BY id DESC LIMIT 1')) return rows([latestWeek()]);
-    if(sql.includes('SELECT pairing_groups.id as pg_id')) return rows([{pg_id:20,...pairAccess()}]);
-    if(sql.includes('FROM auth_accounts aa')) return rows([{
+    if(sql.includes('SELECT aa.id,aa.display_name,aa.color,aa.bio')&&sql.includes('WITH pair_access AS')) return rows([{
       id:4,display_name:'Partner',color:'#123456',bio:'',tz:'UTC',interview_focus:'both',leetcode_handle:'',
     }]);
     if(sql.includes('FROM pair_schedules')&&sql.includes('WITH pair_access AS')){
@@ -143,8 +171,8 @@ test('my-pair normalizes numeric-string IDs and rejects malformed authenticated 
   });
   assert.equal(accepted.status,200);
   assert.equal(accepted.body.paired,true);
-  const membershipCall=calls.find(call=>call.sql.includes('SELECT pairing_groups.id as pg_id'));
-  assert.deepEqual(membershipCall.args,[2,10,2,2,2]);
+  const membershipCall=calls.find(call=>call.sql.includes('SELECT aa.id,c.id AS circle_id'));
+  assert.deepEqual(membershipCall.args,[2]);
 
   let storageCalls=0;
   currentDb=mockDb(()=>{ storageCalls+=1; throw new Error('must not reach storage'); });
@@ -164,7 +192,7 @@ test('my-pair reports database setup and latest-week failures as generic unavail
   assertGenericUnavailable(setupFailure,{error:'pairing unavailable'});
 
   currentDb=mockDb(sql=>{
-    if(sql.includes('FROM pairing_weeks')&&sql.includes('ORDER BY id DESC LIMIT 1')){
+    if(isCurrentPublicationQuery(sql)){
       throw new Error(SECRET_DATABASE_ERROR);
     }
     return rows();
@@ -175,12 +203,10 @@ test('my-pair reports database setup and latest-week failures as generic unavail
 
 test('my-pair does not continue when its final source-aware schedule check fails',async()=>{
   currentDb=mockDb(sql=>{
-    if(sql.includes('FROM pairing_weeks')&&sql.includes('ORDER BY id DESC LIMIT 1')) return rows([latestWeek()]);
-    if(sql.includes('SELECT pairing_groups.id as pg_id')) return rows([{pg_id:20,...pairAccess()}]);
     if(sql.includes('FROM pair_schedules')&&sql.includes('WITH pair_access AS')){
       throw new Error(SECRET_DATABASE_ERROR);
     }
-    if(sql.includes('FROM auth_accounts aa')) return rows([{
+    if(sql.includes('SELECT aa.id,aa.display_name,aa.color,aa.bio')&&sql.includes('WITH pair_access AS')) return rows([{
       id:4,display_name:'Partner',color:'#123456',bio:'',tz:'UTC',interview_focus:'both',leetcode_handle:'',
     }]);
     return rows();
