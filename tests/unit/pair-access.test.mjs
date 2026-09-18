@@ -30,10 +30,12 @@ const [
   {default:dataHandler},
   {AUTH_PAIR_ACCESS_SQL,authPairAccessArgs,getAuthenticatedPairAccess},
   {listPublicExercises},
+  {resolvePairingCycle},
 ]=await Promise.all([
   import('../../api/data.js'),
   import('../../api/_pair-access.js'),
   import('../../api/_catalog.js'),
+  import('../../api/_pairing-cycle.js'),
 ]);
 
 function sqlText(statement){
@@ -63,6 +65,8 @@ function invoke({method='GET',url='/',query={},headers={'x-test-auth':'member'},
 
 async function seededDatabase({source='auth'}={}){
   const db=createClient({url:'file::memory:'});
+  const cycle=resolvePairingCycle();
+  const cycleId=cycle.cycleId;
   await db.batch([
     `CREATE TABLE users (id INTEGER PRIMARY KEY,name TEXT,color TEXT,created_at TEXT)`,
     `CREATE TABLE auth_accounts (
@@ -81,6 +85,19 @@ async function seededDatabase({source='auth'}={}){
       week_id INTEGER NOT NULL,user_id INTEGER NOT NULL,position INTEGER NOT NULL,
       source TEXT NOT NULL,created_at TEXT,PRIMARY KEY(week_id,user_id)
     )`,
+    `CREATE TABLE pairing_week_runs (
+      week_label TEXT PRIMARY KEY,week_id INTEGER,generation_token TEXT,generation INTEGER,
+      algorithm_version TEXT,algorithm_seed TEXT,participant_count INTEGER,participants_json TEXT,
+      created_at TEXT,updated_at TEXT
+    )`,
+    `CREATE TABLE circles (
+      id INTEGER PRIMARY KEY,public_id TEXT NOT NULL UNIQUE,slug TEXT NOT NULL UNIQUE,name TEXT NOT NULL,
+      is_primary INTEGER NOT NULL,created_by INTEGER,created_at TEXT,archived_at TEXT
+    )`,
+    `CREATE TABLE circle_memberships (
+      circle_id INTEGER NOT NULL,user_id INTEGER NOT NULL,role TEXT NOT NULL,status TEXT NOT NULL,
+      invited_by INTEGER,joined_at TEXT,updated_at TEXT,PRIMARY KEY(circle_id,user_id)
+    )`,
     `CREATE TABLE session_runs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,week_id INTEGER,pair_group_id INTEGER,
       question_id INTEGER,question_slug TEXT,language TEXT,code TEXT NOT NULL,test_cases_snapshot TEXT,
@@ -95,8 +112,16 @@ async function seededDatabase({source='auth'}={}){
       (id,email,password_hash,display_name,color,is_available,is_admin,is_demo,tz,interview_focus)
       VALUES (2,'member@example.test','x','Member','#123456',1,0,0,'UTC','both'),
              (4,'partner@example.test','x','Partner','#654321',1,0,0,'UTC','both')`},
+    {sql:`INSERT INTO circles (id,public_id,slug,name,is_primary,created_by,created_at)
+      VALUES (1,'circle_test','randori-circle','Test Circle',1,2,datetime('now'))`},
+    {sql:`INSERT INTO circle_memberships (circle_id,user_id,role,status,joined_at,updated_at)
+      VALUES (1,2,'member','active',datetime('now'),datetime('now')),
+             (1,4,'member','active',datetime('now'),datetime('now'))`},
     {sql:`INSERT INTO pairing_weeks (id,week_label,week_start,focus,is_demo)
-      VALUES (10,'2026-W38','2026-09-14','both',0)`},
+      VALUES (10,?,?,'both',0)`,args:[cycleId,cycle.startsAt]},
+    {sql:`INSERT INTO pairing_week_runs
+      (week_label,week_id,generation_token,generation,algorithm_version,algorithm_seed,participant_count,participants_json)
+      VALUES (?,10,'published-token',1,'fair-v2',?,2,?)`,args:[cycleId,`${cycleId}:weekly`,JSON.stringify([{user_id:2,source},{user_id:4,source:'auth'}])]},
     {sql:`INSERT INTO pairing_groups
       (id,week_id,user_a_id,user_b_id,user_c_id,is_ai_pair,topic,topic_kind)
       VALUES (20,10,2,4,NULL,0,'Arrays','dsa')`},
@@ -169,8 +194,8 @@ test('all data room entry points reject a colliding legacy participant without w
   assert.equal(providerCalls,0);
 
   const pair=await invoke({url:'/api/my-pair',query:{endpoint:'my-pair'}});
-  assert.equal(pair.status,200);
-  assert.equal(pair.body.paired,false);
+  assert.equal(pair.status,503);
+  assert.deepEqual(pair.body,{error:'pairing unavailable'});
   const stats=await invoke({url:'/api/stats',query:{endpoint:'stats'}});
   assert.equal(stats.body.your_sessions,0);
   assert.equal(stats.body.your_weeks,0);

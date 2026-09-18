@@ -119,6 +119,10 @@
       "destination": "/api/ops?endpoint=availability"
     },
     {
+      "source": "/api/pairing/run",
+      "destination": "/api/ops?endpoint=pairing-run"
+    },
+    {
       "source": "/api/admin/reshuffle",
       "destination": "/api/ops?endpoint=reshuffle"
     },
@@ -194,7 +198,7 @@
   "crons": [
     {
       "path": "/api/cron/weekly",
-      "schedule": "0 7 * * 0"
+      "schedule": "0 8 * * 0"
     }
   ]
 }

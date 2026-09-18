@@ -679,7 +679,7 @@ p{margin:0}
           <div>
             <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><span class="kbd" style="background:var(--accent);color:#0f0f10;border-color:var(--accent)">new</span><span class="small muted">Sunday pairing • DSA + System Design</span></div>
             <h1>Randori Circle<br/>Practice <span style="background:var(--accent); color:#0f0f10; padding:0 8px; border-radius:8px">together</span></h1>
-            <div class="hero-sub">A small circle of friends who mock-interview each other, every Sunday 08:00 BST. No recruiters, no trios — odd gets an AI sparring partner.</div>
+            <div class="hero-sub">A small circle of friends who mock-interview each other, every Sunday at 08:00 London time. No recruiters, no trios — an odd member gets a Solo practice room.</div>
             <div class="bullets">
               <div class="bullet"><span class="dot" style="margin-top:6px"></span><span><b>Join a private circle</b> — use verified Google access approved by the circle owner.</span></div>
               <div class="bullet"><span class="dot" style="margin-top:6px;background:#a9b6ff"></span><span><b>Pick your focus</b> — DSA, System Design, or both. You decide with your partner.</span></div>
@@ -694,7 +694,7 @@ p{margin:0}
           <div style="display:grid; gap:10px">
             <div class="mock-card"><div class="row" style="justify-content:space-between"><b style="font-size:12px">This Week</b><span class="kbd">Sun 08:00</span></div><div class="pair" style="padding:8px"><div class="who"><span class="avatar" style="background:#c8f6a0">FC</span><b style="font-size:12px">You × Priya Shah</b></div><span class="kbd">DSA • picked</span></div><div class="small muted">You set the time together — no auto-scheduling nag.</div></div>
             <div id="landingStats" class="card" style="padding:12px; border:1px dashed var(--border); background:var(--bg-2)"><div class="row" style="gap:10px; flex-wrap:wrap; justify-content:space-between"><span class="small muted">Circle Pulse • live</span><span id="landingStatsUpdated" class="kbd" style="font-size:10px">loading…</span></div><div class="grid-3" style="margin-top:10px; gap:10px; display:grid; grid-template-columns:repeat(3,1fr)"><div style="text-align:center"><div id="statMembers" style="font-size:22px; font-weight:600">—</div><div class="small muted">members</div></div><div style="text-align:center"><div id="statWeeks" style="font-size:22px; font-weight:600">—</div><div class="small muted">weeks paired</div></div><div style="text-align:center"><div id="statSessions" style="font-size:22px; font-weight:600">—</div><div class="small muted">pairings made</div></div></div></div>
-      <div id="landingNext" class="card" style="border-color:#c8f6a0; background:color-mix(in srgb, var(--accent) 8%, var(--bg-2))"><div class="card-h" style="padding:10px 12px"><h2 style="font-size:13px">Next session</h2><span id="landingNextCountdown" class="kbd">Sun 08:00 BST</span></div><div class="card-b" style="padding:10px 12px"><div style="font-size:13px"><b id="landingNextLabel">Sunday 08:00 BST • London</b><div class="small muted" id="landingNextSub" style="margin-top:4px">Shuffles automatically. Sign up before then to be included.</div></div><div id="landingNextBar" style="margin-top:10px; height:6px; background:var(--bg-3); border-radius:999px; overflow:hidden"><div id="landingNextProg" style="height:100%; width:40%; background:var(--accent)"></div></div></div></div>
+      <div id="landingNext" class="card" style="border-color:#c8f6a0; background:color-mix(in srgb, var(--accent) 8%, var(--bg-2))"><div class="card-h" style="padding:10px 12px"><h2 style="font-size:13px">Next session</h2><span id="landingNextCountdown" class="kbd">Sunday 08:00 London time</span></div><div class="card-b" style="padding:10px 12px"><div style="font-size:13px"><b id="landingNextLabel">Sunday 08:00 London time</b><div class="small muted" id="landingNextSub" style="margin-top:4px">Pairings publish once per cycle. Sign up before then to be included.</div></div><div id="landingNextBar" style="margin-top:10px; height:6px; background:var(--bg-3); border-radius:999px; overflow:hidden"><div id="landingNextProg" style="height:100%; width:40%; background:var(--accent)"></div></div></div></div>
       <div class="mock-card"><b style="font-size:12px">What people say</b><div class="small" style="color:var(--ink-2)">“Got me through Stripe & DeepL loops. AI feedback nailed my weak spots with exact quotes.” — Festus, London</div></div>
           </div>
         </div>
@@ -734,7 +734,7 @@ p{margin:0}
             <div><label class="small muted">LeetCode handle (optional)</label><input id="psLeet" class="input" placeholder="leetcode username"/></div>
           </div>
           <div><label class="small muted">Interview focus</label><div id="psFocus" class="pill-choice" style="margin-top:6px"><button class="chip" data-focus="dsa">DSA</button><button class="chip" data-focus="system">System Design</button><button class="chip active" data-focus="both">Both</button></div></div>
-          <div class="row" style="justify-content:space-between; align-items:center; padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-3)"><div><b style="font-size:12.5px">Available this week</b><div class="small muted">You’ll be included Sunday 08:00 BST</div></div><label style="position:relative; display:inline-block; width:42px; height:26px"><input type="checkbox" id="psAvail" checked style="opacity:0;width:0;height:0"><span style="position:absolute;cursor:pointer;inset:0;background:#2a2a35;border-radius:999px;transition:.2s"></span><span style="position:absolute;left:3px;top:3px;width:20px;height:20px;background:var(--accent);border-radius:999px;transition:.2s" id="psAvailKnob"></span></label></div>
+          <div class="row" style="justify-content:space-between; align-items:center; padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-3)"><div><b style="font-size:12.5px">Available this week</b><div class="small muted">You’ll be included Sunday at 08:00 London time</div></div><label style="position:relative; display:inline-block; width:42px; height:26px"><input type="checkbox" id="psAvail" checked style="opacity:0;width:0;height:0"><span style="position:absolute;cursor:pointer;inset:0;background:#2a2a35;border-radius:999px;transition:.2s"></span><span style="position:absolute;left:3px;top:3px;width:20px;height:20px;background:var(--accent);border-radius:999px;transition:.2s" id="psAvailKnob"></span></label></div>
           <div id="psRemindRow" class="row" style="justify-content:space-between; align-items:center; padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-3)"><div><b style="font-size:12.5px">Remind me</b><div class="small muted">Email + SMS when paired</div></div><div class="row" style="gap:8px"><label class="pill" style="cursor:pointer"><input id="psRemindEmail" type="checkbox" checked style="margin-right:4px"/> 📧</label><label class="pill" style="cursor:pointer"><input id="psRemindSms" type="checkbox" style="margin-right:4px"/> 📱</label></div></div>
           <div class="row" style="justify-content:flex-end"><button id="psSave" class="btn">Save & continue →</button></div>
         </div>
@@ -751,7 +751,7 @@ p{margin:0}
         <div id="dashStatsGrid" style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:14px 0">
           <div class="card" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Your pairings</div><div id="dashStatYou" style="font-size:20px; font-weight:600; margin-top:4px">—</div><div class="small muted" id="dashStatYouSub" style="font-size:11px">across — weeks</div></div>
           <div class="card" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Circle</div><div id="dashStatCircle" style="font-size:20px; font-weight:600; margin-top:4px">—</div><div class="small muted" style="font-size:11px"><span id="dashStatCircleSub">members</span> • <span id="dashStatWeeks">— weeks</span></div></div>
-          <div class="card" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Next shuffle</div><div id="dashNextLabel" style="font-size:13px; font-weight:600; margin-top:4px">Sun 08:00 BST</div><div class="small muted" id="dashNextCount" style="font-size:11px; margin-top:2px">calculating…</div></div>
+          <div class="card" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Next pairing cycle</div><div id="dashNextLabel" style="font-size:13px; font-weight:600; margin-top:4px">Sunday 08:00 London time</div><div class="small muted" id="dashNextCount" style="font-size:11px; margin-top:2px">calculating…</div></div>
         </div>
         <div style="margin:6px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Next session</h3><div style="flex:1;height:1px;background:var(--border)"></div></div>
         <div id="dashPairArea"></div>
@@ -764,7 +764,7 @@ p{margin:0}
         <div id="recentRunsArea" class="card" style="padding:10px"><div id="recentRunsList" class="small muted">No runs yet — hit ▶ Run</div></div>
         <div id="logsArea" class="card" style="padding:10px; display:none; margin-top:12px; border-color:#2a2e38"><div style="display:flex; justify-content:space-between; align-items:center"><h3 style="font-size:12.5px; margin:0; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Logs <span class="kbd" style="font-size:10px; margin-left:6px">admin</span></h3><span class="row" style="gap:6px"><select id="logsLevelSel" class="select" style="font-size:11px; padding:4px 8px"><option value="" selected>all levels</option><option value="error">error</option><option value="warn">warn</option><option value="success">success</option><option value="info">info</option><option value="debug">debug</option></select><button id="logsRefresh" class="pill" style="font-size:11px">refresh</button><button id="logsClear" class="pill" style="font-size:11px">clear view</button></span></div><div id="logsList" class="small muted" style="margin-top:8px; max-height:320px; overflow:auto; font-family:ui-monospace, monospace; font-size:11.5px; display:grid; gap:4px">Loading…</div><div class="small muted" style="margin-top:6px">Batched client+server logs — auto every 20s, admin can filter by level/event. Backed by Sentry-ready hook (see _randori_log). For prod monitoring consider Sentry or Better Stack (see console).</div></div>
         <div id="dashSignOutWrap" style="margin-top:12px;text-align:right; display:block"><button id="dashSignOut" class="pill" style="font-size:12px;opacity:.75">Sign out</button></div>
-        <div id="dashEmpty" style="display:none" class="card"><div class="card-b"><b>No pair yet</b><div class="small muted" style="margin-top:6px">First shuffle runs Sunday 08:00 BST. Mark yourself Available to join. Meanwhile, brush up in live room.</div><div class="row" style="margin-top:10px"><button class="pill" onclick="document.querySelector('[data-tab=code]').click()">Open Code room</button><button class="pill" id="dashHow">How it works?</button></div></div></div>
+        <div id="dashEmpty" style="display:none" class="card"><div class="card-b"><b>No pair yet</b><div class="small muted" style="margin-top:6px">Pairings publish Sunday at 08:00 London time. Mark yourself Available before the cutoff.</div><div class="row" style="margin-top:10px"><button class="pill" onclick="document.querySelector('[data-tab=code]').click()">Open Code room</button><button class="pill" id="dashHow">How it works?</button></div></div></div>
       </div>
     </section>
 
@@ -808,7 +808,7 @@ p{margin:0}
         <div class="card">
           <div class="card-h"><h2>How Randori works</h2><span>randori = free practice</span></div>
           <div class="card-b" style="display:grid; gap:12px">
-            <p class="small" style="line-height:1.6; color:var(--ink-2); margin:0">You don't pick your partner. Each Monday the circle shuffles. If odd, last person gets an AI sparring partner — no trios, no one sits out. After pairing, you choose <b style="color:var(--ink)">DSA / System Design / Both</b> yourselves. Nothing randomised after shuffle.</p>
+            <p class="small" style="line-height:1.6; color:var(--ink-2); margin:0">You don't pick your partner. Each Sunday the circle publishes one pairing cycle. If the count is odd, one member gets Solo practice — no trios, no one sits out. After pairing, you choose <b style="color:var(--ink)">DSA / System Design / Both</b> yourselves. Published pairs do not change during the cycle.</p>
             <div class="grid-3">
               <div class="card" style="border-style:dashed"><div class="card-b small"><b>1</b> Add crew<br/><span class="muted">2-12 people</span></div></div>
               <div class="card" style="border-style:dashed"><div class="card-b small"><b>2</b> Shuffle<br/><span class="muted">AI fills odd</span></div></div>
@@ -830,21 +830,20 @@ p{margin:0}
           <div class="card-h">
             <h2>This week</h2>
             <div class="row">
-              <button id="newWeekBtn" class="btn" title="Create fresh pairs">New pairs</button>
+              <button id="newWeekBtn" class="btn" style="display:none" title="Publish this Sunday cycle once">Run current cycle</button>
               <button id="demoRunBtn" class="btn" style="display:none" title="Admin: seed 6 demo users + shuffle">✦ Run Demo</button>
               <button id="demoResetBtn" class="btn secondary" style="display:none" title="Admin: remove demo data">Reset Demo</button>
-              <button id="reshuffleBtn" class="btn secondary" title="Mix again">Remix</button>
             </div>
           </div>
           <div class="card-b">
-            <div id="currentWeekMeta" class="small muted" style="margin-bottom:10px">Pairs arrive Sunday 08:00 BST. You're in when you're marked Available.</div>
+            <div id="currentWeekMeta" class="small muted" style="margin-bottom:10px">Pairs arrive Sunday at 08:00 London time. You're in when you're marked Available.</div>
             <div id="pairsList" class="weeks"></div>
           </div>
         </div>
         <div class="card">
           <div class="card-h"><h2>Sync</h2><span>automatic</span></div>
           <div class="card-b" style="display:grid; gap:10px">
-            <div class="small" style="color:var(--ink-2)">You stay in sync when signed in. Pairs refresh <b style="color:var(--ink)">Sundays 08:00 BST</b> — only <span class="kbd">Available</span> teammates are included.</div>
+            <div class="small" style="color:var(--ink-2)">You stay in sync when signed in. Pairings publish <b style="color:var(--ink)">Sundays at 08:00 London time</b> — only <span class="kbd">Available</span> teammates are included.</div>
             <div id="availabilityWrap" style="display:none; border:1px solid var(--line); border-radius:10px; padding:10px; background:var(--bg-3); display:grid; gap:8px">
               <div class="row" style="justify-content:space-between"><b style="font-size:13px">Available this week</b><label class="pill" style="cursor:pointer"><input id="availToggle" type="checkbox" checked style="margin-right:6px"/> <span id="availLabel">ON</span></label></div>
               <div class="small muted">Turn off if you're away — you'll be skipped this Sunday but stay in the circle for next time.</div>
@@ -1097,6 +1096,11 @@ p{margin:0}
   let authBusy=false;
   let authRequest=null;
   let authReturnFocus=null;
+  let activeCircleRole=null;
+  let currentCloudPairingWeek=null;
+  let currentCloudPairingLoaded=false;
+  let currentCloudPairingUserId=null;
+  let pairingRenderEpoch=0;
   const AUTH_CAPABILITY_TIMEOUT_MS=8000;
   const invitePreparation=(()=>{
     try{
@@ -1204,6 +1208,29 @@ async function refreshMe(){
   }
   const ADMIN_EMAIL='festusomole14@gmail.com';
   function isAdmin(){ return !!(me && (me.is_admin || me.isAdmin || (me.email && me.email.toLowerCase()===ADMIN_EMAIL))); }
+  function canRunCurrentPairing(){
+    return !!me&&(activeCircleRole==='owner'
+      ||(activeCircleRole==='legacy'&&authCapabilitiesLoaded&&!authCapabilitiesFailed
+        &&authCapabilities.registrationMode==='local_open'&&isAdmin()));
+  }
+  function updatePairingRunAccess(){
+    const button=document.getElementById('newWeekBtn');
+    let badge=document.getElementById('adminOnlyBadge');
+    if(!badge&&button?.parentElement){
+      badge=document.createElement('span'); badge.id='adminOnlyBadge'; badge.className='kbd'; badge.style.marginLeft='8px';
+      button.parentElement.appendChild(badge);
+    }
+    const allowed=canRunCurrentPairing();
+    if(button){
+      button.style.display=allowed?'inline-flex':'none';
+      button.disabled=false;
+      button.textContent='Run current cycle';
+      button.title='Publish the current Sunday cycle once';
+    }
+    if(badge) badge.textContent=allowed
+      ?(activeCircleRole==='owner'?'owner • idempotent':'local admin • idempotent')
+      :'cycle starts Sunday 08:00 London time';
+  }
   function updateAuthUI(){
     const area=document.getElementById('authArea');
     const meLabel=document.getElementById('meLabel');
@@ -1256,22 +1283,7 @@ async function refreshMe(){
       }
     }
 
-    const nb=document.getElementById('newWeekBtn');
-    const rb=document.getElementById('reshuffleBtn');
-    let badge=document.getElementById('adminOnlyBadge');
-    if(!badge && nb && nb.parentElement){
-      badge=document.createElement('span'); badge.id='adminOnlyBadge'; badge.className='kbd'; badge.style.marginLeft='8px';
-      nb.parentElement.appendChild(badge);
-    }
-    if(isAdmin()){
-      if(nb){ nb.style.display='inline-flex'; nb.textContent='New pairs'; nb.disabled=false; nb.title='Create a fresh set of pairs'; }
-      if(rb){ rb.style.display='inline-flex'; rb.disabled=false; }
-      if(badge) badge.textContent='admin • auto';
-    } else {
-      if(nb){ nb.style.display='none'; }
-      if(rb){ rb.style.display='none'; }
-      if(badge) badge.textContent='pairs Sun 08:00 BST';
-    }
+    updatePairingRunAccess();
     // availability UI visibility
     const avWrap=document.getElementById('availabilityWrap');
     const cb=document.getElementById('availToggle');
@@ -1437,6 +1449,7 @@ async function refreshMe(){
     if(cancel) cancel.disabled=false;
     document.getElementById('authForm')?.setAttribute('aria-busy',authBusy?'true':'false');
     updateAuthEntryPoints();
+    updatePairingRunAccess();
   }
   async function loadAuthCapabilities(){
     const controller=new AbortController();
@@ -1749,6 +1762,7 @@ async function refreshMe(){
       closeAuthModal();
       try{ updateAuthUI(); }catch{}
       try{ renderHistory(); }catch{}
+      try{ window.dispatchEvent(new CustomEvent('randori:auth-refreshed',{detail:{signedIn:true,userId:me.id||me.uid||null}})); }catch{}
       toast(mode==='signup'?`welcome, ${me.name}`:`signed in as ${me.name}`);
       setTimeout(()=>{ try{ window._randori_journey?.routeByAuth?.(); }catch{} },0);
     }catch(error){
@@ -1959,7 +1973,6 @@ async function refreshMe(){
   const legacyCircleAddActions=document.getElementById('legacyCircleAddActions');
   const legacyCircleDemoActions=document.getElementById('legacyCircleDemoActions');
   let circleRenderEpoch=0;
-  let activeCircleRole=null;
   let circleInviteCreatePending=false;
   let latestInviteUrl=null;
   let latestInviteId=null;
@@ -1974,6 +1987,7 @@ async function refreshMe(){
 
   function resetOwnerInvites(){
     activeCircleRole=null;
+    updatePairingRunAccess();
     const currentUserId=Number(me?.id||me?.uid);
     if(!Number.isSafeInteger(currentUserId)||currentUserId!==latestInviteOwnerId) clearLatestInvite();
     if(circleOwnerPanel){ circleOwnerPanel.hidden=true; circleOwnerPanel.style.display='none'; }
@@ -2103,6 +2117,7 @@ async function refreshMe(){
       const usingLocalLegacy=legacyEnvelope&&res.circle.length===0;
       const people=usingLocalLegacy?getPeople():res.circle;
       activeCircleRole=gatedRole||'legacy';
+      updatePairingRunAccess();
       if(gatedRole!=='owner') clearLatestInvite();
       setLegacyCircleControls(legacyEnvelope);
       pCount.textContent=String(people.length);
@@ -2161,7 +2176,6 @@ async function refreshMe(){
       return;
     }
     renderRoomSelect();
-    renderPairsMeta();
     refreshPresence();
   }
 
@@ -2211,7 +2225,13 @@ async function refreshMe(){
       if(circleInviteStatus) circleInviteStatus.textContent='Copy failed. Create a new invitation and try again.';
     }
   });
-  window.addEventListener('randori:auth-refreshed',()=>{ renderPeople(); });
+  window.addEventListener('randori:auth-refreshed',()=>{
+    renderPeople();
+    // The first paint is anonymous/local while the cookie session is being
+    // resolved. Refresh pairings only when that view is active so auth refresh
+    // cannot tear down an explicitly authorized code-room deep link.
+    if(document.getElementById('view-pair')?.style.display!=='none') renderPairs();
+  });
 
   function addPerson(){
     if(!isAdmin()){
@@ -2238,70 +2258,29 @@ async function refreshMe(){
     }
   };
 
-  // ---------- pairing (auto = cloud circle, admin-only manual reshuffle, availability-filtered) ----------
-  function formatWeekLabel(d=new Date()){
-    return `Week of ${d.toLocaleDateString(undefined,{month:'short', day:'numeric'})}`;
-  }
-  function shuffle(arr){ const a=[...arr]; for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]] } return a; }
-
-  function generatePairs(){
-    // offline fallback — local demo
-    if(!isAdmin()){
-      toast('Pairs are created Sunday — sign in and set Available');
-      return;
-    }
-    const people=getPeople();
-    if(people.length<2){ toast('need at least 2'); return; }
-    const shuffled=shuffle(people);
-    const pairs=[];
-    for(let i=0;i<shuffled.length;i+=2){
-      const a=shuffled[i]; const b=shuffled[i+1]||null;
-      if(!b) pairs.push({id:uid(), aId:a.id, bId:null, isAI:true, topic:null});
-      else pairs.push({id:uid(), aId:a.id, bId:b.id, isAI:false, topic:null});
-    }
-    const week={id:uid(), label:formatWeekLabel(), date: new Date().toISOString(), pairs};
-    const weeks=getWeeks(); weeks.unshift(week); saveWeeks(weeks);
-    renderPairs(); renderHistory(); renderRoomSelect(); toast('new week shuffled (local)');
-  }
-
-  function reshuffleCurrent(){
-    if(!isAdmin()){ toast('New pairs are created Sunday'); return; }
-    const weeks=getWeeks(); if(!weeks.length){ generatePairs(); return; }
-    const people=getPeople(); if(people.length<2) return;
-    const shuffled=shuffle(people);
-    const newPairs=[];
-    for(let i=0;i<shuffled.length;i+=2){
-      const a=shuffled[i]; const b=shuffled[i+1]||null;
-      if(!b) newPairs.push({id:uid(), aId:a.id, bId:null, isAI:true, topic:null});
-      else newPairs.push({id:uid(), aId:a.id, bId:b.id, isAI:false, topic:null});
-    }
-    weeks[0].pairs=newPairs; weeks[0].label=formatWeekLabel(new Date())+' • reshuffled';
-    saveWeeks(weeks); renderPairs(); renderHistory(); renderRoomSelect();
-  }
-
-  // Admin cloud reshuffle — creates fresh pairs
-  async function adminCloudReshuffle(){
-    if(!isAdmin()){ toast('Only admins can create new pairs'); return; }
-    const nb=document.getElementById('newWeekBtn'); const rb=document.getElementById('reshuffleBtn');
-    if(nb) nb.disabled=true; if(rb) rb.disabled=true;
+  // ---------- pairing (one immutable publication per current server cycle) ----------
+  async function publishCurrentCycle(){
+    if(!canRunCurrentPairing()){ toast('Only the circle owner can run the current cycle'); return; }
+    const nb=document.getElementById('newWeekBtn');
+    if(nb){ nb.disabled=true; nb.textContent='Running current cycle…'; }
     const pairsList=document.getElementById('pairsList'); let overlay=null;
-    if(pairsList){ overlay=document.createElement('div'); overlay.className='loader-overlay'; overlay.innerHTML='<span class="spinner spinner-lg"></span><span class="small muted" style="margin-left:8px">Shuffling circle…</span>'; overlay.style.display='flex'; overlay.style.gap='10px'; pairsList.style.position='relative'; pairsList.appendChild(overlay); }
+    if(pairsList){ overlay=document.createElement('div'); overlay.className='loader-overlay'; overlay.innerHTML='<span class="spinner spinner-lg"></span><span class="small muted" style="margin-left:8px">Publishing current cycle…</span>'; overlay.style.display='flex'; overlay.style.gap='10px'; pairsList.style.position='relative'; pairsList.appendChild(overlay); }
     try{
-      const data=await api('/api/admin/reshuffle',{method:'POST'});
-      toast(`New pairs for ${data.week_label} — ${data.count} people`);
-      // refresh cloud weeks view
+      const data=await api('/api/pairing/run',{method:'POST',body:{}});
+      toast(data.created
+        ?`Current cycle ready — ${data.count} participant${data.count===1?'':'s'}`
+        :'Current cycle was already published');
       await renderPairs();
       await renderPeople();
       await renderHistory();
     }catch(e){
-      const msg=e.error||e.message||'could not create pairs';
+      const msg=e.error||e.message||'could not publish the current cycle';
       toast(msg);
-      // if less than 2 available, show bigger hint
       if(e.available_count!==undefined){
-        await showConfirm('Not enough people', `Only ${e.available_count} available — need 2+. Ask them to set Available ON.`);
+        await showConfirm('No available members', 'At least one available member is required. A single member gets Solo practice.');
       }
     }finally{
-      if(nb) nb.disabled=false; if(rb) rb.disabled=false;
+      if(nb){ nb.disabled=false; nb.textContent='Run current cycle'; }
       try{ document.querySelectorAll('.loader-overlay').forEach(o=>o.remove()); }catch{}
     }
   }
@@ -2369,57 +2348,112 @@ async function refreshMe(){
 
 function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
+  function renderSignedInRoomSelect(cloudWeek=null,{preserveAuthorized=false}={}){
+    const selector=document.getElementById('roomSelect');
+    if(!selector) return;
+    const userId=Number(me?.id||me?.uid);
+    const pair=Array.isArray(cloudWeek?.pairs)
+      ?cloudWeek.pairs.find(item=>[item?.a_id,item?.b_id,item?.c_id].some(id=>Number(id)===userId))
+      :null;
+    const weekId=Number(cloudWeek?.id);
+    const pairId=Number(pair?.pg_id);
+    let room=Number.isSafeInteger(weekId)&&weekId>0&&Number.isSafeInteger(pairId)&&pairId>0
+      ?`week_${weekId}_pair_${pairId}`
+      :'';
+    let label=room?'Your current-cycle room':'No current-cycle room';
+    const authorizedRoom=String(window._randori_authorized_room||'');
+    if(!room&&preserveAuthorized&&/^week_[1-9]\d*_pair_[1-9]\d*$/.test(authorizedRoom)){
+      room=authorizedRoom;
+      label='Authorized pairing room';
+    }
+    selector.replaceChildren();
+    const option=document.createElement('option');
+    option.value=room;
+    option.textContent=label;
+    selector.appendChild(option);
+    selector.value=room;
+    if(currentRoom!==room) currentRoom=null;
+    const roomLabel=document.getElementById('roomLabel');
+    if(roomLabel) roomLabel.textContent=room?`room ${room.slice(0,12)}`:'room —';
+  }
+
   function renderPairsMeta(localCur, cloudCur){
     const meta=document.getElementById('currentWeekMeta');
     if(cloudCur){
       meta.textContent=`${cloudCur.week_label} • ${cloudCur.pairs.length} pair(s) • ${new Date(cloudCur.week_start||cloudCur.created_at).toLocaleString()}`;
       return;
     }
-    if(!localCur){ meta.textContent='Pairs update Sunday 08:00 BST — set yourself Available to join.'; return; }
+    if(!localCur){ meta.textContent='The pairing cycle starts Sunday at 08:00 London time — set yourself Available to join.'; return; }
     meta.textContent=`${localCur.label} • ${localCur.pairs.length} pair(s) • ${new Date(localCur.date).toLocaleString()}`;
   }
 
   async function renderPairs(){
-    // Try cloud first when signed in (logged-in users see real pairings)
-    let cloudWeek=null;
-    let cloudWeeks=[];
-    if(me){
-      try{
-        const w=await api('/api/weeks',{method:'GET'});
-        if(w && w.weeks && w.weeks.length){
-          cloudWeeks=w.weeks;
-          cloudWeek=w.weeks[0];
-        }
-      }catch{}
-    }
+    const renderEpoch=++pairingRenderEpoch;
     const container=document.getElementById('pairsList');
-    if(cloudWeek){
+    if(me){
+      const userId=Number(me.id||me.uid);
+      if(currentCloudPairingUserId!==userId){
+        currentCloudPairingWeek=null;
+        currentCloudPairingLoaded=false;
+        currentCloudPairingUserId=userId;
+      }
+      let response;
+      try{
+        response=await api('/api/weeks',{method:'GET'});
+      }catch{
+        if(renderEpoch!==pairingRenderEpoch||Number(me?.id||me?.uid)!==userId) return;
+        currentCloudPairingWeek=null;
+        currentCloudPairingLoaded=false;
+        renderSignedInRoomSelect(null,{preserveAuthorized:true});
+        document.getElementById('currentWeekMeta').textContent='Current-cycle pairings could not be loaded.';
+        container.innerHTML='<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">Pairings are unavailable. Local or cached pairs are not shown while signed in. <button id="pairsRetryBtn" class="pill" type="button" style="margin-left:8px">Retry</button></div>';
+        document.getElementById('pairsRetryBtn')?.addEventListener('click',renderPairs);
+        return;
+      }
+      if(renderEpoch!==pairingRenderEpoch||Number(me?.id||me?.uid)!==userId) return;
+      const cloudWeeks=Array.isArray(response?.weeks)?response.weeks:[];
+      const currentCycleId=String(response?.current_cycle?.cycleId||'');
+      const cloudWeek=cloudWeeks.find(week=>week?.is_current===true&&(!currentCycleId||String(week.week_label)===currentCycleId))||null;
+      currentCloudPairingLoaded=true;
+      currentCloudPairingWeek=cloudWeek;
+      if(!cloudWeek){
+        renderSignedInRoomSelect();
+        const meta=document.getElementById('currentWeekMeta');
+        meta.textContent=currentCycleId
+          ?`${currentCycleId} • awaiting current-cycle publication`
+          :'Awaiting current-cycle publication';
+        container.innerHTML='<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">No pairings have been published for the current cycle. Historical and local demo pairs are not shown here.</div>';
+        return;
+      }
       renderPairsMeta(null, cloudWeek);
+      renderSignedInRoomSelect(cloudWeek);
       container.innerHTML = cloudWeek.pairs.map(p=>{
-        const aName=p.a_name||'??'; const bName=p.is_ai?'AI partner':(p.b_name||'—');
+        const aName=p.a_name||'??'; const bName=p.is_ai?'Solo practice':(p.b_name||'—');
         const aCol=safeProfileColor(p.a_color||PALETTE[0]); const bCol=safeProfileColor(p.is_ai?'var(--accent)':(p.b_color||PALETTE[1]));
         return `<div class="pair" data-pg="${escapeHtml(p.pg_id)}">
-          <div class="who"><span class="avatar" style="background:${aCol}">${escapeHtml(aName.slice(0,2).toUpperCase())}</span><b style="font-size:12.5px">${escapeHtml(aName)}</b><span class="muted small">×</span><span class="avatar" style="background:${bCol}">${escapeHtml(bName.slice(0,2).toUpperCase())}</span><b style="font-size:12.5px">${escapeHtml(bName)}</b>${p.is_ai? '<span class="kbd" style="color:var(--accent)">ai</span>':''}</div>
+          <div class="who"><span class="avatar" style="background:${aCol}">${escapeHtml(aName.slice(0,2).toUpperCase())}</span><b style="font-size:12.5px">${escapeHtml(aName)}</b><span class="muted small">×</span><span class="avatar" style="background:${bCol}">${escapeHtml(bName.slice(0,2).toUpperCase())}</span><b style="font-size:12.5px">${escapeHtml(bName)}</b>${p.is_ai? '<span class="kbd" style="color:var(--accent)">solo</span>':''}</div>
           <div class="topic-group">
             <span class="kbd" style="background:var(--bg-3)">${escapeHtml(p.topic||'Pick together')}</span>
             <span class="kbd">${escapeHtml(p.topic_kind||'both')}</span>
           </div>
         </div>`
       }).join('') + `<div class="row" style="margin-top:10px"><span class="small muted">${cloudWeeks.length} week(s) of pairings. Unavailable teammates are skipped automatically.</span></div>`;
-      renderRoomSelect();
       return;
     }
 
-    // fallback local offline weeks
+    // Anonymous local-demo preview only. Authenticated views never mix in this state.
+    currentCloudPairingWeek=null;
+    currentCloudPairingLoaded=false;
+    currentCloudPairingUserId=null;
     const weeks=getWeeks(); const cur=weeks[0];
     renderPairsMeta(cur, null);
-    if(!cur){ container.innerHTML=`<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">No pairs yet — first shuffle runs Sunday 08:00 BST. Mark yourself Available to join. <button class="pill" onclick="window._randori_onboard && window._randori_onboard.start(4)" style="margin-left:8px">How it works?</button></div>`; return; }
+    if(!cur){ container.innerHTML=`<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">No pairs yet — the cycle starts Sunday at 08:00 London time. Mark yourself Available to join. <button class="pill" onclick="window._randori_onboard && window._randori_onboard.start(4)" style="margin-left:8px">How it works?</button></div>`; return; }
     container.innerHTML = cur.pairs.map(p=>{
       const a=idToPerson(p.aId); const b=p.bId? idToPerson(p.bId):null;
-      const aName=a? a.name: 'unknown'; const bName=p.isAI? 'AI partner' : (b? b.name: '—');
+      const aName=a? a.name: 'unknown'; const bName=p.isAI? 'Solo practice' : (b? b.name: '—');
       const aCol=safeProfileColor(a? a.color: PALETTE[0]); const bCol=safeProfileColor(p.isAI? 'var(--accent)' : (b? b.color: PALETTE[1]));
       return `<div class="pair" data-pair="${escapeHtml(p.id)}">
-        <div class="who"><span class="avatar" style="background:${aCol}">${escapeHtml(aName.slice(0,2).toUpperCase())}</span><b style="font-size:12.5px">${escapeHtml(aName)}</b><span class="muted small">×</span><span class="avatar" style="background:${bCol}">${escapeHtml(bName.slice(0,2).toUpperCase())}</span><b style="font-size:12.5px">${escapeHtml(bName)}</b>${p.isAI? '<span class="kbd" style="color:var(--accent)">ai</span>':''}</div>
+        <div class="who"><span class="avatar" style="background:${aCol}">${escapeHtml(aName.slice(0,2).toUpperCase())}</span><b style="font-size:12.5px">${escapeHtml(aName)}</b><span class="muted small">×</span><span class="avatar" style="background:${bCol}">${escapeHtml(bName.slice(0,2).toUpperCase())}</span><b style="font-size:12.5px">${escapeHtml(bName)}</b>${p.isAI? '<span class="kbd" style="color:var(--accent)">solo</span>':''}</div>
         <div class="topic-group">
           <button class="chip ${p.topic==='dsa'?'active':''}" data-t="dsa">DSA</button>
           <button class="chip ${p.topic==='system'?'active':''}" data-t="system">Sys</button>
@@ -2453,22 +2487,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(await showConfirm('Reset demo data?', 'This removes 6 demo users and demo weeks. Real users untouched.')) demoResetE2E();
   });
   document.getElementById('newWeekBtn').onclick=async()=>{
-    if(isAdmin()){
-      return adminCloudReshuffle();
-    }
-    const isAuthed = !!me;
-    if(!isAuthed){
-      const go = await showConfirm('Create local demo pairs?', 'This is just for testing offline. Your real pairs arrive Sunday.');
-      if(!go) return;
-    }else{
-      toast('Pairs refresh Sunday 08:00 BST');
-      return;
-    }
-    generatePairs();
-  };
-  document.getElementById('reshuffleBtn').onclick=()=>{
-    if(isAdmin()) return adminCloudReshuffle();
-    reshuffleCurrent();
+    return publishCurrentCycle();
   };
 
   // ---------- server-backed pairing/activity history ----------
@@ -3026,6 +3045,10 @@ def allow(key, limit=5):
 
   function renderRoomSelect(){
     const sel=document.getElementById('roomSelect');
+    if(me){
+      renderSignedInRoomSelect(currentCloudPairingWeek,{preserveAuthorized:!currentCloudPairingLoaded});
+      return;
+    }
     const weeks=getWeeks();
     const opts=[];
     weeks.slice(0,5).forEach(w=>{
@@ -3891,10 +3914,10 @@ def allow(key, limit=5):
   async function joinVideo(){
     const room = getVideoRoomId();
     if(!room){ toast('pick a pair room first'); return; }
-    // AI partner guard: don't attempt WebRTC for AI odd-user out
+    // Solo-practice guard: no remote peer exists for an odd-user room.
     try{
       if(typeof _isAIpair==='function' && _isAIpair()){
-        toast('AI partner — video disabled, use Code + Board + AI feedback');
+        toast('Solo practice — video is disabled; use Code + Board + AI feedback');
         videoUpdateStatus('AI mode');
         return;
       }
@@ -4056,6 +4079,7 @@ def allow(key, limit=5):
       document.querySelectorAll('.view').forEach(v=>v.style.display='none');
       document.getElementById('view-'+id).style.display='block';
       if(id==='circle') renderPeople();
+      if(id==='pair') renderPairs();
       if(id==='board'){ setTimeout(()=>{ resizeCanvas(); renderBoard(); }, 60); }
       if(id==='code' && !currentRoom){ renderRoomSelect(); const sel=document.getElementById('roomSelect'); if(sel.value) loadRoom(sel.value); }
       if(id==='history') renderHistory();
@@ -4239,10 +4263,10 @@ def allow(key, limit=5):
   let onboardCompleted = localStorage.getItem(ONB_KEY)==='1';
 
   const steps=[
-    {title:'Welcome to Randori Circle', desc:'Weekly mock interviews with friends — Sunday pairing, live rooms, whiteboard. 5-min setup, then you practice DSA + System Design together.', cta:'Get started →', target:null, extra:`<div class="row" style="gap:8px"><span class="kbd">Sunday 08:00 BST</span><span class="kbd">No trios — odd gets AI</span></div>`},
-    {title:'Join your Circle', desc:'Signing up auto-includes you in Sunday 08:00 BST shuffle. No manual add needed — teammates join the next pairing automatically.', cta:'Next → Circle', target:'#authBtn', needsAuth:false, extra:`<div class="small muted">Already signed in? Nice — you're in!</div>`},
+    {title:'Welcome to Randori Circle', desc:'Weekly mock interviews with friends — Sunday pairing, live rooms, whiteboard. 5-min setup, then you practice DSA + System Design together.', cta:'Get started →', target:null, extra:`<div class="row" style="gap:8px"><span class="kbd">Sunday 08:00 London time</span><span class="kbd">No trios — odd gets Solo practice</span></div>`},
+    {title:'Join your Circle', desc:'Signing up includes you in the Sunday 08:00 London-time cycle. No manual add needed — teammates join the next pairing automatically.', cta:'Next → Circle', target:'#authBtn', needsAuth:false, extra:`<div class="small muted">Already signed in? Nice — you're in!</div>`},
     {title:'Stay Available', desc:'You can skip a week without leaving the circle. Toggle Available off and you’ll be excluded Sunday, but you stay in for next time.', cta:'Next → Availability', target:'#availabilityWrap', extra:`<div class="small muted">Tip: Turn off if you're away — welcome-back banner shows when you're back on.</div>`},
-    {title:'This Week pairs', desc:'Pairs appear Sunday 08:00 BST. You choose DSA / System Design / Both yourselves — nothing randomised after shuffle. Odd count? Last person gets an AI sparring partner, not a trio.', cta:'Next → Live room', target:'#view-pair', extra:`<div class="small muted">Pairs are colour-coded, click code to jump into live room.</div>`},
+    {title:'This Week pairs', desc:'Pairs appear Sunday at 08:00 London time. You choose DSA / System Design / Both yourselves, and published pairs stay fixed for the cycle. With an odd count, one member gets Solo practice.', cta:'Next → Live room', target:'#view-pair', extra:`<div class="small muted">Pairs are colour-coded, click code to jump into live room.</div>`},
     {title:'Live Room & AI', desc:'Every pair has a Code room + Whiteboard. Join video with one click, Record edits + notes, then Get AI Feedback (Groq router picks model by session, evidence-checked).', cta:'Open a room →', target:'#view-code', extra:`<div class="row" style="flex-wrap:wrap"><span class="kbd">Code ↔ Board</span><span class="kbd">📷 cam mute</span><span class="kbd">⚡ AI feedback</span></div>`},
   ];
 
@@ -4321,7 +4345,7 @@ def allow(key, limit=5):
       localStorage.setItem(ONB_STEP_KEY,'0');
       document.getElementById('onboardOverlay').classList.remove('show');
       clearSpotlight();
-      toast('You’re all set — pair Sunday 08:00 BST');
+      toast('You’re all set — pair Sunday at 08:00 London time');
       // keep checklist but mark progress
       updateChecklist();
     }
@@ -4650,7 +4674,7 @@ def allow(key, limit=5):
         // even without pair, show deterministic join from last room — always visible
         const lastRoom = localStorage.getItem('randori-last-room') || window._randori_join_room;
         if(lastRoom){
-          document.getElementById('dashPairArea').innerHTML=`<div class="partner-card" style="border-color:var(--line)"><div class="avatar" style="background:var(--bg-3)">↗</div><div style="flex:1"><b style="font-size:13.5px">Jump back into your last room</b><div class="small muted" style="margin-top:4px">No pair this week yet — first shuffle Sundays 08:00 BST. You can practise in your last room or invite a friend.</div><div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap"><button id="dashJoinLast" class="btn" style="background:var(--accent); color:#0f0f10; padding:10px 16px; font-weight:700">▶ Resume — Code + Video + Board</button><span class="kbd">${escapeHtml(lastRoom.slice(0,18))}</span><button class="pill copy-last" data-room="${escapeHtml(lastRoom)}" style="font-size:11px">⎘ Copy invite</button><button class="pill email-last" data-room="${escapeHtml(lastRoom)}" style="font-size:11px">✉ Invite</button></div></div></div>`;
+          document.getElementById('dashPairArea').innerHTML=`<div class="partner-card" style="border-color:var(--line)"><div class="avatar" style="background:var(--bg-3)">↗</div><div style="flex:1"><b style="font-size:13.5px">Jump back into your last room</b><div class="small muted" style="margin-top:4px">No pair this cycle yet — pairings publish Sunday at 08:00 London time. You can practise in your last room or invite a friend.</div><div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap"><button id="dashJoinLast" class="btn" style="background:var(--accent); color:#0f0f10; padding:10px 16px; font-weight:700">▶ Resume — Code + Video + Board</button><span class="kbd">${escapeHtml(lastRoom.slice(0,18))}</span><button class="pill copy-last" data-room="${escapeHtml(lastRoom)}" style="font-size:11px">⎘ Copy invite</button><button class="pill email-last" data-room="${escapeHtml(lastRoom)}" style="font-size:11px">✉ Invite</button></div></div></div>`;
           document.getElementById('dashJoinLast')?.addEventListener('click', ()=>joinSessionDeterministic(false));
           document.querySelectorAll('.copy-last').forEach(b=>b.addEventListener('click',()=>{ const r=b.dataset.room; const inv=(location.origin||'')+'/join/'+encodeURIComponent(r); try{ navigator.clipboard.writeText(inv); if(window.toast) window.toast('Copied '+inv.slice(0,30)); }catch{ prompt('Copy',inv); } }));
           document.querySelectorAll('.email-last').forEach(b=>b.addEventListener('click',()=>{ const room=b.dataset.room||''; const inv=(location.origin||'')+'/join/'+encodeURIComponent(room); window.open('mailto:?subject='+encodeURIComponent('Randori invite '+room)+'&body='+encodeURIComponent('Join my Randori room: '+inv)); }));
@@ -4749,7 +4773,7 @@ def allow(key, limit=5):
     const inviteUrl = (location.origin||'https://randori-circle-self.vercel.app') + '/join/' + encodeURIComponent(roomHint);
     const copyAndEmailBtns = `<button class="pill copy-invite" style="font-size:11px" data-room="${escapeHtml(roomHint)}">⎘ Copy invite</button><button class="pill email-invite" style="font-size:11px" data-room="${escapeHtml(roomHint)}">✉ Email / SMS reminder</button>`;
     if(isAI){
-      area.innerHTML=`<div class="partner-card" style="border-color:#c8f6a0"><div class="avatar" style="background:#c8f6a0">AI</div><div style="flex:1"><b style="font-size:14px">You're paired with AI partner</b><div class="small muted" style="margin-top:4px">Odd one out this week — you get a sparring bot for DSA & System Design drills. No trios, no waiting.</div><div class="row" style="margin-top:12px; gap:8px; flex-wrap:wrap"><button id="dashJoinSession" class="btn" style="background:var(--accent); color:#0f0f10; padding:11px 18px; font-size:14px; font-weight:700">▶ Join Session — Code + Video + Board</button><span class="kbd">${roomHint.slice(0,14)}</span>${copyAndEmailBtns}</div><div class="small muted" id="dashInviteHint" style="margin-top:6px">Invite: <span class="kbd" style="font-size:10.5px">${inviteUrl.slice(0,56)}…</span></div></div></div>`;
+      area.innerHTML=`<div class="partner-card" style="border-color:#c8f6a0"><div class="avatar" style="background:#c8f6a0">SP</div><div style="flex:1"><b style="font-size:14px">Solo practice</b><div class="small muted" style="margin-top:4px">This cycle gives you a private practice room for DSA and System Design drills. No trios, no waiting.</div><div class="row" style="margin-top:12px; gap:8px; flex-wrap:wrap"><button id="dashJoinSession" class="btn" style="background:var(--accent); color:#0f0f10; padding:11px 18px; font-size:14px; font-weight:700">▶ Start Solo Practice — Code + Board</button><span class="kbd">${roomHint.slice(0,14)}</span>${copyAndEmailBtns}</div><div class="small muted" id="dashInviteHint" style="margin-top:6px">Room: <span class="kbd" style="font-size:10.5px">${inviteUrl.slice(0,56)}…</span></div></div></div>`;
       document.getElementById('dashJoinSession')?.addEventListener('click', ()=>joinSessionDeterministic(false));
       area.querySelectorAll('.copy-invite').forEach(b=>b.addEventListener('click',()=>{ const r=b.dataset.room; localStorage.setItem('randori-last-room', r); const inv=(location.origin||'')+'/join/'+encodeURIComponent(r); try{ navigator.clipboard.writeText(inv); toast('Invite copied ✓ '+inv.slice(0,36)); window._randori_last_invite=inv; }catch{ prompt('Copy invite', inv); } }));
       area.querySelectorAll('.email-invite').forEach(b=>b.addEventListener('click',()=>{
@@ -6939,27 +6963,22 @@ def allow(key, limit=5):
 /* HOME differentiated — stats / next session / history for anon vs authed */
 (function(){
   const ME_KEY='randori-me';
+  let landingCountdownTimer=null;
 
-  function nextSunday0700UTC(){
-    const now=new Date();
-    const next=new Date(now);
-    const day=next.getUTCDay();
-    let diff=(7-day)%7;
-    if(diff===0){ if(next.getUTCHours()>=7) diff=7; }
-    next.setUTCDate(now.getUTCDate()+diff);
-    next.setUTCHours(7,0,0,0);
-    next.setUTCMinutes(0); next.setUTCSeconds(0);
-    return next;
+  function pairingBoundaryFromStats(stats){
+    const instant=new Date(stats?.next_shuffle_utc||'');
+    return Number.isFinite(instant.getTime())?instant:null;
   }
   function fmtCountdown(to){
+    if(!(to instanceof Date)||!Number.isFinite(to.getTime())) return 'schedule pending';
     const ms=to-new Date();
-    if(ms<=0) return 'shuffling now…';
+    if(ms<=0) return 'publishing now…';
     const d=Math.floor(ms/86400000);
     const h=Math.floor(ms%86400000/3600000);
     const m=Math.floor(ms%3600000/60000);
-    if(d>0) return d+'d '+h+'h to shuffle';
-    if(h>0) return h+'h '+(m%60)+'m to shuffle';
-    return m+'m to shuffle';
+    if(d>0) return d+'d '+h+'h to pairing';
+    if(h>0) return h+'h '+(m%60)+'m to pairing';
+    return m+'m to pairing';
   }
 
   async function fetchStats(auth){
@@ -6982,21 +7001,27 @@ def allow(key, limit=5):
     const nextSub=document.getElementById('landingNextSub');
     const cnt=document.getElementById('landingNextCountdown');
     const prog=document.getElementById('landingNextProg');
-    const next= nextSunday0700UTC();
-    if(nextLabel) nextLabel.textContent=stats.next_shuffle_label || ('Sunday 08:00 BST • ' + next.toLocaleDateString('en-GB',{timeZone:'Europe/London', day:'numeric', month:'short'}));
-    if(nextSub) nextSub.textContent='Shuffles automatically. '+fmtCountdown(next)+' • All Available members included.';
+    const next=pairingBoundaryFromStats(stats);
+    if(nextLabel) nextLabel.textContent=stats.next_shuffle_label || 'Sunday 08:00 London time';
+    if(nextSub) nextSub.textContent='Pairings publish once per cycle. '+fmtCountdown(next)+' • All Available members included.';
     if(cnt) cnt.textContent=fmtCountdown(next);
     if(prog){
       const weekMs=7*86400000;
-      const elapsed= weekMs - (next - new Date());
+      const elapsed=next?weekMs-(next-new Date()):0;
       const pct=Math.max(8, Math.min(96, 100*elapsed/weekMs));
       prog.style.width=pct+'%';
     }
-    // ticker
-    let ti=setInterval(()=>{
-      const c=document.getElementById('landingNextCountdown'); if(!c){clearInterval(ti); return;}
-      c.textContent=fmtCountdown(nextSunday0700UTC());
-    }, 30000);
+    if(landingCountdownTimer) clearInterval(landingCountdownTimer);
+    if(next) landingCountdownTimer=setInterval(()=>{
+      const c=document.getElementById('landingNextCountdown');
+      if(!c){ clearInterval(landingCountdownTimer); landingCountdownTimer=null; return; }
+      if(Date.now()>=next.getTime()){
+        clearInterval(landingCountdownTimer); landingCountdownTimer=null;
+        fetchStats(false).then(fresh=>{ if(fresh) populateLanding(fresh); });
+        return;
+      }
+      c.textContent=fmtCountdown(next);
+    },30000);
   }
 
   function populateDash(stats){
@@ -7013,8 +7038,8 @@ def allow(key, limit=5):
     if(circ) circ.textContent = String(stats.total_users ?? '—');
     if(circSub) circSub.textContent = (stats.total_users ?? '?') + ' members';
     if(weeks) weeks.textContent = (stats.total_weeks ?? '—') + ' weeks';
-    if(nxtLbl) nxtLbl.textContent = stats.next_shuffle_label || 'Sun 08:00 BST';
-    if(nxtCnt) nxtCnt.textContent = fmtCountdown(nextSunday0700UTC());
+    if(nxtLbl) nxtLbl.textContent = stats.next_shuffle_label || 'Sunday 08:00 London time';
+    if(nxtCnt) nxtCnt.textContent = fmtCountdown(pairingBoundaryFromStats(stats));
   }
 
   let dashboardHistoryUserId=null;

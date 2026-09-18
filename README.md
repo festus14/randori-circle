@@ -69,6 +69,7 @@ Copy `.env.example` and configure at least:
 
 - `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`
 - `JWT_SECRET` with at least 32 random bytes and a separate `CRON_SECRET`; `RUN_ATTESTATION_SECRET` is optional and falls back to `JWT_SECRET` when blank
+- `PAIRING_TIME_ZONE=Europe/London`; each pairing cycle runs from Sunday 08:00 in that zone until the next Sunday boundary
 - `APP_URL`, `GOOGLE_CLIENT_ID`, and `GOOGLE_CLIENT_SECRET`
 - `SIGNUP_ALLOWLIST` for the legacy private-beta Google flow while circle membership enforcement is off
 - `CIRCLE_MEMBERSHIP_ENABLED=true` to enforce invitation-gated primary-circle access after the staged migration below

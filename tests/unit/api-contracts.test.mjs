@@ -307,6 +307,13 @@ test('admin operations reject anonymous callers before database access', async (
   });
   assert.equal(reshuffle.status, 401);
 
+  const pairingRun = await invoke(opsHandler, {
+    method: 'POST',
+    url: '/api/pairing/run',
+    query: { endpoint: 'pairing-run' },
+  });
+  assert.equal(pairingRun.status, 401);
+
   const weekly = await invoke(opsHandler, {
     method: 'POST',
     url: '/api/cron/weekly',
