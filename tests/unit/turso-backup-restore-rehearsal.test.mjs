@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { createHmac } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -18,8 +19,10 @@ import { createClient } from '@libsql/client';
 import { EXECUTABLE_MIGRATIONS, LATEST_MIGRATION_VERSION } from '../../db/executable-migrations.js';
 import { applyMigrations, inspectMigrationState } from '../../db/migration-runner.js';
 import { TursoPlatformError } from '../../db/turso-platform.js';
+import { stableJson } from '../../db/schema-manifest.js';
 import {
   RehearsalError,
+  REHEARSAL_ATTESTATION_FORMAT,
   REHEARSAL_JOURNAL_FORMAT,
   createPrivateStateJournal,
   main,
@@ -27,6 +30,7 @@ import {
   readonlySourceClient,
   runBackupRestoreRehearsal,
   runInterruptedCleanup,
+  verifyRehearsalAttestation,
   verifyPostMigrationPreservation,
 } from '../../scripts/turso-backup-restore-rehearsal.mjs';
 
@@ -36,6 +40,13 @@ const COMMIT='0123456789abcdef0123456789abcdef01234567';
 const HMAC_KEY=Buffer.from('rehearsal-evidence-key-32-bytes!!','utf8');
 const NOW=Date.parse('2026-09-18T12:00:00.000Z');
 const FAST_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
+const ATTESTATION_CONTEXT=Object.freeze({
+  repository:'festus14/randori-circle',repositoryId:123456,
+  workflowPath:'.github/workflows/turso-backup-restore-rehearsal.yml',
+  workflowRef:'festus14/randori-circle/.github/workflows/turso-backup-restore-rehearsal.yml@refs/heads/main',
+  workflowSha:COMMIT,runId:100,runAttempt:1,environment:'turso-migration-rehearsal',
+  repoCommit:COMMIT,
+});
 
 function fixture(){
   const directory=mkdtempSync(join(tmpdir(),'randori-rehearsal-'));
@@ -150,6 +161,7 @@ function options(platform,recovery,overrides={}){
     sourceGroup:'default',
     restoreDatabaseName:'restore-100-1',
     repoCommit:COMMIT,
+    attestationContext:ATTESTATION_CONTEXT,
     hmacKey:HMAC_KEY,
     confirmation:'RESTORE_DISPOSABLE_ONLY',
     maxSnapshotAgeMs:30*60*1000,
@@ -178,6 +190,20 @@ function dependencies(item,connections=[]){
       });
     },
   };
+}
+
+function resignAttestation(value,mutate){
+  const attestation=structuredClone(value);
+  mutate(attestation);
+  const signingKey=createHmac('sha256',HMAC_KEY)
+    .update('randori:turso-rehearsal-attestation:v1:key','utf8').digest();
+  try{
+    attestation.signature=createHmac('sha256',signingKey)
+      .update('randori:turso-rehearsal-attestation:v1:payload','utf8').update('\0','utf8')
+      .update(stableJson({format:REHEARSAL_ATTESTATION_FORMAT,payload:attestation.payload}),'utf8')
+      .digest('hex');
+  }finally{ signingKey.fill(0); }
+  return attestation;
 }
 
 if(process.env.RANDORI_REHEARSAL_SIGNAL_FIXTURE==='1'){
@@ -244,13 +270,26 @@ test('managed prefix rehearsal blocks writes, verifies PITR, migrates only the r
     );
 
     assert.equal(result.ok,true);
-    assert.deepEqual(result.migration,{
+    assert.deepEqual(result.payload.migration,{
       sourceClassification:'managed',sourceVersion:2,adoptedOnRestore:false,
       appliedVersions:[3],finalVersion:3,
     });
-    assert.equal(result.verification.preMigrationMatch,true);
-    assert.equal(result.verification.postMigrationPreserved,true);
-    assert.deepEqual(result.safety,{
+    assert.equal(result.payload.verification.preMigrationMatch,true);
+    assert.equal(result.payload.verification.postMigrationPreserved,true);
+    assert.equal(result.format,REHEARSAL_ATTESTATION_FORMAT);
+    assert.deepEqual(Object.keys(result).sort(),['format','kind','ok','payload','signature']);
+    const verified=verifyRehearsalAttestation(result,{
+      hmacKey:HMAC_KEY,repoCommit:COMMIT,context:ATTESTATION_CONTEXT,
+      sourceIdentity:SOURCE_ID,
+      backupRef:`turso-pitr:${SOURCE_ID}:production:default`,
+      rpoTargetMs:30*60*1000,rtoTargetMs:15*60*1000,
+      runConclusion:'success',maxAgeMs:30*60*1000,clock:()=>NOW,
+    });
+    assert.equal(verified.context.runId,100);
+    assert.equal(verified.migration.finalVersion,LATEST_MIGRATION_VERSION);
+    assert.equal(verified.safety.sourceWriteStateRestored,true);
+    assert.equal(verified.safety.restoreDeleted,true);
+    assert.deepEqual(result.payload.safety,{
       sourceIdentityVerified:true,writesBlockedBeforePitr:true,
       sourceWriteStateRestored:true,restoreIdentityVerified:true,restoreDeleted:true,
       sourceMigrated:false,sourceDeleted:false,credentialsInvalidated:false,
@@ -290,6 +329,139 @@ test('managed prefix rehearsal blocks writes, verifies PITR, migrates only the r
       SOURCE_ID,RESTORE_ID,'production','restore-100-1','turso.io',
       'secret-source-database-token','secret-restore-database-token','preserved-value','SELECT',
     ]) assert.equal(serialized.includes(secret),false,`public result leaked ${secret}`);
+  }finally{ item.close(); }
+});
+
+test('attestation verifier rejects tampering, replay, expiry, schema drift, and unsafe outcomes',async()=>{
+  const item=fixture();
+  try{
+    await installManaged(item.sourcePath,2);
+    const result=await runBackupRestoreRehearsal(
+      options(platformMock(item),[]),dependencies(item),
+    );
+    const verification={
+      hmacKey:HMAC_KEY,repoCommit:COMMIT,context:ATTESTATION_CONTEXT,
+      sourceIdentity:SOURCE_ID,
+      backupRef:`turso-pitr:${SOURCE_ID}:production:default`,
+      rpoTargetMs:30*60*1000,rtoTargetMs:15*60*1000,
+      runConclusion:'success',maxAgeMs:30*60*1000,clock:()=>NOW,
+    };
+    const invalid=[];
+    const alteredSignature=structuredClone(result);
+    alteredSignature.signature='0'.repeat(64);
+    invalid.push(alteredSignature);
+    invalid.push(resignAttestation(result,value=>{ value.extra=true; }));
+    invalid.push(resignAttestation(result,value=>{ value.payload.context.runId=101; }));
+    invalid.push(resignAttestation(result,value=>{
+      value.payload.context.runAttempt='1';
+    }));
+    invalid.push(resignAttestation(result,value=>{
+      value.payload.schema.manifestChecksum='0'.repeat(64);
+    }));
+    invalid.push(resignAttestation(result,value=>{
+      value.payload.schema.finalExecutableMigrationsChecksum='0'.repeat(64);
+    }));
+    invalid.push(resignAttestation(result,value=>{
+      value.payload.migration.finalVersion=LATEST_MIGRATION_VERSION-1;
+    }));
+    invalid.push(resignAttestation(result,value=>{
+      value.payload.identities.restoreIdentityDigest=value.payload.identities.sourceIdentityDigest;
+    }));
+    invalid.push(resignAttestation(result,value=>{
+      value.payload.pitr.authoritativeAt='2026-09-18T11:59:59.000Z';
+    }));
+    const alteredEvidence=structuredClone(result);
+    alteredEvidence.payload.evidence.comparisonDigest='0'.repeat(64);
+    invalid.push(alteredEvidence);
+    invalid.push(resignAttestation(result,value=>{
+      value.payload.verification.rpoMet=false;
+    }));
+    invalid.push(resignAttestation(result,value=>{
+      value.payload.safety.restoreDeleted=false;
+    }));
+    invalid.push(resignAttestation(result,value=>{
+      value.payload.schema.unexpected=true;
+    }));
+    invalid.push(resignAttestation(result,value=>{
+      delete value.payload.evidence.sourceEvidenceDigest;
+    }));
+    invalid.push(resignAttestation(result,value=>{
+      value.payload.issuedAt='2026-09-18T12:00:00Z';
+    }));
+    for(const value of invalid){
+      assert.throws(
+        ()=>verifyRehearsalAttestation(value,verification),
+        error=>error.code==='REHEARSAL_ATTESTATION_INVALID',
+      );
+    }
+    assert.throws(
+      ()=>verifyRehearsalAttestation(result,{...verification,hmacKey:'b'.repeat(32)}),
+      error=>error.code==='REHEARSAL_ATTESTATION_INVALID',
+    );
+    assert.throws(
+      ()=>verifyRehearsalAttestation(result,{
+        ...verification,context:{...ATTESTATION_CONTEXT,runId:101},
+      }),
+      error=>error.code==='REHEARSAL_ATTESTATION_INVALID',
+    );
+    const otherCommit='abcdef0123456789abcdef0123456789abcdef01';
+    const wrongExpectations=[
+      {...verification,sourceIdentity:'33333333-3333-4333-8333-333333333333'},
+      {...verification,backupRef:'turso-pitr:wrong'},
+      {...verification,rpoTargetMs:1},
+      {...verification,rtoTargetMs:1},
+      {...verification,runConclusion:'failure'},
+      {...verification,context:{...ATTESTATION_CONTEXT,runAttempt:2}},
+      {...verification,context:{
+        ...ATTESTATION_CONTEXT,repository:'other/randori-circle',
+        workflowRef:'other/randori-circle/.github/workflows/turso-backup-restore-rehearsal.yml@refs/heads/main',
+      }},
+      {...verification,repoCommit:otherCommit,context:{
+        ...ATTESTATION_CONTEXT,repoCommit:otherCommit,workflowSha:otherCommit,
+      }},
+      {...verification,context:{
+        ...ATTESTATION_CONTEXT,
+        workflowRef:'festus14/randori-circle/.github/workflows/turso-backup-restore-rehearsal.yml@refs/heads/other',
+      }},
+    ];
+    for(const expected of wrongExpectations){
+      assert.throws(
+        ()=>verifyRehearsalAttestation(result,expected),
+        error=>error.code==='REHEARSAL_ATTESTATION_INVALID',
+      );
+    }
+    assert.throws(
+      ()=>verifyRehearsalAttestation(result,{
+        ...verification,clock:()=>Date.parse(result.payload.validUntil)+1,
+      }),
+      error=>error.code==='REHEARSAL_ATTESTATION_INVALID',
+    );
+    assert.throws(
+      ()=>verifyRehearsalAttestation(result,{
+        ...verification,clock:()=>Date.parse(result.payload.validUntil),
+      }),
+      error=>error.code==='REHEARSAL_ATTESTATION_INVALID',
+    );
+    assert.throws(
+      ()=>verifyRehearsalAttestation(result,{...verification,clock:()=>NOW-1}),
+      error=>error.code==='REHEARSAL_ATTESTATION_INVALID',
+    );
+    assert.throws(
+      ()=>verifyRehearsalAttestation(result,{...verification,maxAgeMs:1}),
+      error=>error.code==='REHEARSAL_ATTESTATION_INVALID',
+    );
+  }finally{ item.close(); }
+});
+
+test('rehearsal signer refuses an evidence lifetime beyond its attestation TTL cap',async()=>{
+  const item=fixture();
+  try{
+    await assert.rejects(
+      runBackupRestoreRehearsal(options(platformMock(item),[],{
+        maxEvidenceAgeMs:30*60*1000+1,
+      }),dependencies(item)),
+      error=>error.code==='REHEARSAL_INVALID'&&error.phase==='configuration',
+    );
   }finally{ item.close(); }
 });
 
@@ -493,9 +665,9 @@ test('exact unmanaged prefix is adopted and advanced only on the disposable rest
     const platform=platformMock(item);
     const result=await runBackupRestoreRehearsal(options(platform,recovery),dependencies(item));
     assert.equal(result.ok,true);
-    assert.equal(result.migration.sourceClassification,'unmanaged');
-    assert.equal(result.migration.adoptedOnRestore,true);
-    assert.deepEqual(result.migration.appliedVersions,[3]);
+    assert.equal(result.payload.migration.sourceClassification,'unmanaged');
+    assert.equal(result.payload.migration.adoptedOnRestore,true);
+    assert.deepEqual(result.payload.migration.appliedVersions,[3]);
     const source=await databaseState(item.sourcePath,EXECUTABLE_MIGRATIONS.slice(0,2));
     assert.equal(source.classification,'unmanaged');
     assert.equal(source.ledgerPresent,false);
@@ -515,10 +687,10 @@ for(const classification of ['managed','unmanaged']){
       const platform=platformMock(item);
       const result=await runBackupRestoreRehearsal(options(platform,recovery),dependencies(item));
       assert.equal(result.ok,true);
-      assert.equal(result.migration.sourceVersion,1);
-      assert.equal(result.migration.sourceClassification,classification);
-      assert.equal(result.migration.adoptedOnRestore,classification==='unmanaged');
-      assert.deepEqual(result.migration.appliedVersions,[2,3]);
+      assert.equal(result.payload.migration.sourceVersion,1);
+      assert.equal(result.payload.migration.sourceClassification,classification);
+      assert.equal(result.payload.migration.adoptedOnRestore,classification==='unmanaged');
+      assert.deepEqual(result.payload.migration.appliedVersions,[2,3]);
       const restored=createClient({url:`file:${item.restorePath}`,intMode:'bigint'});
       try{
         const singleton=await restored.execute('SELECT id,registrations_closed FROM circle_membership_rollout');
@@ -820,8 +992,8 @@ test('CLI writes only an allowlisted public artifact beneath RUNNER_TEMP',async(
   const directory=mkdtempSync(join(tmpdir(),'randori-rehearsal-cli-'));
   let output='';
   const successful={
-    ok:true,kind:'turso-backup-restore-rehearsal',format:'randori.turso-backup-restore-rehearsal.v1',
-    repoCommit:COMMIT,safety:{sourceDeleted:false},
+    ok:true,kind:'turso-rehearsal-attestation',format:REHEARSAL_ATTESTATION_FORMAT,
+    payload:{context:ATTESTATION_CONTEXT,safety:{sourceDeleted:false}},signature:'0'.repeat(64),
   };
   try{
     const execution=await main({
@@ -831,6 +1003,10 @@ test('CLI writes only an allowlisted public artifact beneath RUNNER_TEMP',async(
       ],
       environment:{
         RUNNER_TEMP:directory,GITHUB_RUN_ID:'100',GITHUB_RUN_ATTEMPT:'1',
+        GITHUB_REPOSITORY:'festus14/randori-circle',GITHUB_REPOSITORY_ID:'123456',
+        GITHUB_WORKFLOW_REF:ATTESTATION_CONTEXT.workflowRef,GITHUB_WORKFLOW_SHA:COMMIT,
+        REHEARSAL_WORKFLOW_PATH:ATTESTATION_CONTEXT.workflowPath,
+        REHEARSAL_GITHUB_ENVIRONMENT:ATTESTATION_CONTEXT.environment,
         TURSO_ORGANIZATION:'randori-org',TURSO_PRODUCTION_PLATFORM_TOKEN:'platform-token-secret-value',
         TURSO_PLATFORM_TIMEOUT_MS:'1000',TURSO_PRODUCTION_DATABASE_ID:SOURCE_ID,
         TURSO_DATABASE_TIMEOUT_MS:'1000',
@@ -848,6 +1024,9 @@ test('CLI writes only an allowlisted public artifact beneath RUNNER_TEMP',async(
       createPlatform:()=>({}),
       run:async received=>{
         assert.equal(received.restoreDatabaseName,'randori-rehearsal-100-1');
+        assert.deepEqual(received.attestationContext,{
+          ...ATTESTATION_CONTEXT,repositoryId:'123456',runId:'100',runAttempt:'1',
+        });
         assert.equal(typeof received.recoveryWriter,'function');
         assert.equal(typeof received.journalWriter,'function');
         return successful;
@@ -857,6 +1036,8 @@ test('CLI writes only an allowlisted public artifact beneath RUNNER_TEMP',async(
     assert.deepEqual(JSON.parse(output),successful);
     const artifact=readFileSync(join(directory,'public-artifacts','rehearsal-summary.json'),'utf8');
     assert.deepEqual(JSON.parse(artifact),successful);
+    assert.equal(JSON.parse(artifact).format,REHEARSAL_ATTESTATION_FORMAT);
+    assert.match(JSON.parse(artifact).signature,/^[a-f0-9]{64}$/);
     for(const forbidden of [SOURCE_ID,'production','platform-token-secret-value','turso.io','SELECT']){
       assert.equal(artifact.includes(forbidden),false);
     }
@@ -869,7 +1050,14 @@ test('CLI writes only an allowlisted public artifact beneath RUNNER_TEMP',async(
     assert.match(workflow,/\$\{\{ runner\.temp \}\}\/public-artifacts\/cleanup-summary\.json/);
     assert.doesNotMatch(workflow,/path:[^\n]*(?:private-recovery|RUNNER_TEMP)/);
     assert.doesNotMatch(workflow,/uses: actions\/(?:checkout|setup-node|upload-artifact)@v[0-9]/);
-    assert.match(workflow,/Restore source state and clean disposable restore\n\s+if: always\(\)/);
+    assert.match(workflow,/Restore source state and clean disposable restore\n\s+id: cleanup\n\s+if: always\(\)/);
+    assert.match(workflow,/steps\.cleanup\.outcome == 'success'/);
+    assert.match(workflow,/steps\.cleanup_upload\.outcome == 'success'/);
+    assert.equal(
+      workflow.indexOf('Upload sanitized cleanup summary')
+        <workflow.indexOf('Upload signed rehearsal attestation'),
+      true,
+    );
     assert.equal((workflow.match(/secrets\.MIGRATION_DIGEST_HMAC_KEY/g)||[]).length,1);
     assert.equal((workflow.match(/secrets\.TURSO_PRODUCTION_PLATFORM_TOKEN/g)||[]).length,2);
   }finally{ rmSync(directory,{recursive:true,force:true}); }
@@ -886,6 +1074,10 @@ test('CLI failure artifact redacts raw provider errors and configured identities
       ],
       environment:{
         RUNNER_TEMP:directory,GITHUB_RUN_ID:'100',GITHUB_RUN_ATTEMPT:'1',
+        GITHUB_REPOSITORY:'festus14/randori-circle',GITHUB_REPOSITORY_ID:'123456',
+        GITHUB_WORKFLOW_REF:ATTESTATION_CONTEXT.workflowRef,GITHUB_WORKFLOW_SHA:COMMIT,
+        REHEARSAL_WORKFLOW_PATH:ATTESTATION_CONTEXT.workflowPath,
+        REHEARSAL_GITHUB_ENVIRONMENT:ATTESTATION_CONTEXT.environment,
         TURSO_ORGANIZATION:'randori-org',TURSO_PRODUCTION_PLATFORM_TOKEN:'platform-token-secret-value',
         TURSO_PLATFORM_TIMEOUT_MS:'1000',TURSO_PRODUCTION_DATABASE_ID:SOURCE_ID,
         TURSO_DATABASE_TIMEOUT_MS:'1000',

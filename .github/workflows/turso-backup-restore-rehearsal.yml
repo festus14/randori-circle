@@ -61,6 +61,8 @@ jobs:
         timeout-minutes: 32
         env:
           RESTORE_REHEARSAL_CONFIRM: ${{ inputs.confirmation }}
+          REHEARSAL_WORKFLOW_PATH: .github/workflows/turso-backup-restore-rehearsal.yml
+          REHEARSAL_GITHUB_ENVIRONMENT: turso-migration-rehearsal
           TURSO_ORGANIZATION: ${{ vars.TURSO_ORGANIZATION }}
           TURSO_GROUP: ${{ vars.TURSO_GROUP }}
           TURSO_PRODUCTION_DATABASE_NAME: ${{ vars.TURSO_PRODUCTION_DATABASE_NAME }}
@@ -90,6 +92,7 @@ jobs:
             --state-file "${RUNNER_TEMP}/private-recovery/state.json"
 
       - name: Restore source state and clean disposable restore
+        id: cleanup
         if: always() && steps.source.outcome == 'success' && steps.install.outcome == 'success'
         timeout-minutes: 7
         env:
@@ -111,14 +114,26 @@ jobs:
             --artifact-dir "${RUNNER_TEMP}/public-artifacts" \
             --state-file "${RUNNER_TEMP}/private-recovery/state.json"
 
-      - name: Upload sanitized rehearsal summary
+      - name: Upload sanitized cleanup summary
+        id: cleanup_upload
         if: always() && steps.source.outcome == 'success'
         timeout-minutes: 5
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
+          name: turso-backup-restore-cleanup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/public-artifacts/cleanup-summary.json
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload signed rehearsal attestation
+        if: >-
+          always() && steps.rehearsal.outcome == 'success'
+          && steps.cleanup.outcome == 'success'
+          && steps.cleanup_upload.outcome == 'success'
+        timeout-minutes: 5
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
           name: turso-backup-restore-rehearsal-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/public-artifacts/rehearsal-summary.json
-            ${{ runner.temp }}/public-artifacts/cleanup-summary.json
+          path: ${{ runner.temp }}/public-artifacts/rehearsal-summary.json
           retention-days: 30
           if-no-files-found: error

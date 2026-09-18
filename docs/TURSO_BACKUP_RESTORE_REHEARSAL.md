@@ -12,7 +12,7 @@ Turso's documented delete endpoint accepts a database name, not an ID or conditi
 
 Both connections use short-lived, database-scoped tokens: read-only for the source and full-access for the disposable restore. Tokens expire naturally. Do not add token invalidation: Turso invalidation can rotate a group signing key and disrupt unrelated clients.
 
-Platform requests time out after 15 seconds, individual database operations after 30 seconds, and each forward restore/configuration poll has one shared five-minute deadline across all retries. Evidence collection has its own five-minute bound. The forward command is interrupted at 28 minutes with three minutes reserved for its signal-aware fallback; the separate cleanup step has a two-minute poll budget and a six-minute process bound. Checkout, freshness verification, Node setup, dependency installation, the rehearsal, cleanup, and artifact upload have explicit step caps totaling 69 minutes inside an 80-minute job cap, leaving an 11-minute scheduler margin. Source restoration runs before client close and disposable cleanup.
+Platform requests time out after 15 seconds, individual database operations after 30 seconds, and each forward restore/configuration poll has one shared five-minute deadline across all retries. Evidence collection has its own five-minute bound. The forward command is interrupted at 28 minutes with three minutes reserved for its signal-aware fallback; the separate cleanup step has a two-minute poll budget and a six-minute process bound. Checkout, freshness verification, Node setup, dependency installation, the rehearsal, cleanup, and both conditional artifact uploads have explicit step caps totaling 74 minutes inside an 80-minute job cap, leaving a six-minute scheduler margin. Source restoration runs before client close and disposable cleanup.
 
 ## One-time GitHub setup
 
@@ -56,7 +56,11 @@ The workflow fetches `origin/main` after checkout and refuses to continue if `HE
 
 ## Evidence and failure recovery
 
-The uploaded `rehearsal-summary.json` and `cleanup-summary.json` are allowlisted, sanitized artifacts. A successful result has `preMigrationMatch`, `postMigrationPreserved`, `rpoMet`, and `rtoMet` set to `true`; `sourceWriteStateRestored` and `restoreDeleted` must also be `true`. They contain authenticated digests and safety booleans, never credentials or database identifiers.
+The success artifact `rehearsal-summary.json` is itself a canonical `randori.turso-rehearsal-attestation.v1` envelope, rather than an unsigned projection plus a nested signature. Its domain-separated HMAC payload binds the repository ID/name, workflow path/ref/SHA, protected environment, run ID/attempt, checked-out commit, issue/expiry times, local schema manifest and executable-migration checksums, source/final migration state, requested and provider-authoritative PITR instant, source/restore/backup-reference digests, every evidence/comparison digest, exact RPO/RTO policy and observations, preservation results, and all safety results. The signing lifetime is capped at 30 minutes and `validUntil` is the earliest source, pre-migration restore, or post-migration evidence expiry.
+
+The workflow uploads that signed success artifact only when both the forward rehearsal and the separate cleanup step succeed. `cleanup-summary.json` is uploaded separately for diagnosis. Both are allowlisted and sanitized; they never contain credentials, raw database names/IDs, URLs, tokens, SQL, row values, raw errors, or the private journal.
+
+The exported `verifyRehearsalAttestation` function is the only supported authorization parser for the later remote-apply workflow. Its caller must fetch the bound run ID and attempt from the GitHub Actions API and require the authoritative run conclusion to be `success`; a user-supplied conclusion or the mere existence of an artifact is not sufficient. The caller must also supply the other trusted GitHub run context, pin the maximum accepted lifetime and exact RPO/RTO targets, and provide the protected source ID and base backup reference so their digests can be recomputed. The verifier recomputes those durable expectations, while the distinct restore identity digest is the signed proof that the rehearsal process observed the exact new provider `DbId` it had already checked against the restored database and its parent. It rejects extra or missing claims, non-canonical values, future/expired or over-policy lifetimes, code-version drift, cross-run/context replay, unsafe outcomes, and a non-matching signature.
 
 Before blocking writes, the run atomically writes mode-`0600` state to `$RUNNER_TEMP/private-recovery/state.json`. It updates the journal after the create attempt, returned ID, source restoration, restore verification, and cleanup. The `always()` step consumes it idempotently, even when the forward process received `SIGINT`/`SIGTERM`. That private directory is intentionally absent from every upload and is not retrievable after a GitHub-hosted runner ends.
 
@@ -64,7 +68,7 @@ Durable recovery does not depend on retrieving that file. The protected environm
 
 On a failed run:
 
-1. Check both sanitized summaries. If no artifact exists because the runner was lost, use the protected variables and deterministic name described above.
+1. Check the sanitized cleanup summary and run logs. A failed cleanup deliberately prevents upload of the signed success attestation. If no diagnostic artifact exists because the runner was lost, use the protected variables and deterministic name described above.
 2. If the error is `REHEARSAL_SOURCE_WRITE_STATE_RECOVERY_REQUIRED`, immediately inspect the exact configured production database and restore `TURSO_PRODUCTION_EXPECTED_BLOCK_WRITES`. Do not assume writes were re-enabled.
 3. If the error is `REHEARSAL_RESTORE_CLEANUP_REQUIRED`, resolve the deterministic restore name, record and re-check its current `DbId`, parent ID/name, and branch timestamp under exclusive operator access before using Turso's name-based delete endpoint. Never delete an unknown or mismatched identity.
 4. Do not migrate, rename, or delete the production source while investigating.
@@ -72,4 +76,4 @@ On a failed run:
 
 ## Promotion gate
 
-A green mocked test suite proves orchestration behavior, not provider access. Remote production migration remains disabled until a real protected run from current `main` produces a successful retained artifact and an operator records its run URL, RPO/RTO result, and source write-state restoration in issue #38. The later remote-migration workflow must independently re-check the immutable production identity and exact schema state.
+A green mocked test suite proves orchestration behavior, not provider access. Remote production migration remains disabled until a real protected run from current `main` produces a successful retained attestation. Record its run URL, RPO/RTO result, source write-state restoration, and successful final workflow conclusion in issue #38. The later remote-migration workflow must independently re-check the immutable production identity and exact schema state.

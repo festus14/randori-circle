@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, realpath, rename, unlink } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { basename, dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createClient } from '@libsql/client';
@@ -18,6 +18,7 @@ import {
   applyMigrations,
   inspectMigrationState,
 } from '../db/migration-runner.js';
+import { SCHEMA_MANIFEST, checksum, stableJson } from '../db/schema-manifest.js';
 import {
   TursoPlatformError,
   createTursoPlatformClient,
@@ -25,6 +26,13 @@ import {
 
 export const REHEARSAL_FORMAT='randori.turso-backup-restore-rehearsal.v1';
 export const REHEARSAL_JOURNAL_FORMAT='randori.turso-backup-restore-journal.v1';
+export const REHEARSAL_ATTESTATION_FORMAT='randori.turso-rehearsal-attestation.v1';
+
+const REHEARSAL_WORKFLOW_PATH='.github/workflows/turso-backup-restore-rehearsal.yml';
+const REHEARSAL_ENVIRONMENT='turso-migration-rehearsal';
+const ATTESTATION_KEY_DOMAIN='randori:turso-rehearsal-attestation:v1:key';
+const ATTESTATION_SIGNATURE_DOMAIN='randori:turso-rehearsal-attestation:v1:payload';
+const MAX_ATTESTATION_AGE_MS=30*60*1000;
 
 const PUBLIC_MESSAGES=Object.freeze({
   REHEARSAL_INVALID:'Backup/restore rehearsal configuration is invalid.',
@@ -41,6 +49,7 @@ const PUBLIC_MESSAGES=Object.freeze({
   REHEARSAL_DATABASE_TIMEOUT:'A database operation timed out.',
   REHEARSAL_PLATFORM_FAILED:'A Turso Platform API operation failed.',
   REHEARSAL_RECOVERY_STATE_FAILED:'Private recovery state could not be recorded.',
+  REHEARSAL_ATTESTATION_INVALID:'The backup/restore rehearsal attestation is invalid.',
   REHEARSAL_FAILED:'The backup/restore rehearsal failed.',
 });
 
@@ -191,6 +200,244 @@ export function publicRehearsalError(error,{repoCommit=null,safety={}}={}){
 function withSafety(error,safety){
   Object.defineProperty(error,'safety',{value:publicSafety(safety),enumerable:false});
   return error;
+}
+
+function attestationFailure(cause){
+  throw new RehearsalError(
+    'REHEARSAL_ATTESTATION_INVALID','rehearsal attestation is invalid',
+    {cause,phase:'complete'},
+  );
+}
+
+function exactObjectKeys(value,keys){
+  return value!==null&&typeof value==='object'&&!Array.isArray(value)
+    &&JSON.stringify(Object.keys(value).sort())===JSON.stringify([...keys].sort());
+}
+
+function digest(value){ return typeof value==='string'&&/^[a-f0-9]{64}$/.test(value); }
+
+function equalDigest(left,right){
+  return digest(left)&&digest(right)
+    &&timingSafeEqual(Buffer.from(left,'hex'),Buffer.from(right,'hex'));
+}
+
+function canonicalAttestationTimestamp(value){
+  if(typeof value!=='string') attestationFailure();
+  const parsed=Date.parse(value);
+  if(!Number.isFinite(parsed)||new Date(parsed).toISOString()!==value) attestationFailure();
+  return parsed;
+}
+
+function executableMigrationsChecksum(migrations=EXECUTABLE_MIGRATIONS){
+  return checksum(migrations.map(migration=>({
+    version:migration.version,checksum:migration.checksum,
+  })));
+}
+
+function normalizedAttestationContext(value,repoCommit){
+  if(!value||typeof value!=='object'||Array.isArray(value)){
+    fail('REHEARSAL_INVALID','GitHub attestation context is invalid','configuration');
+  }
+  const repository=opaque(value.repository,'GitHub repository',{maximum:200});
+  if(!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)){
+    fail('REHEARSAL_INVALID','GitHub repository is invalid','configuration');
+  }
+  const repositoryId=integer(value.repositoryId,'GitHub repository ID');
+  const workflowPath=opaque(value.workflowPath,'GitHub workflow path',{maximum:256});
+  if(workflowPath!==REHEARSAL_WORKFLOW_PATH){
+    fail('REHEARSAL_INVALID','GitHub workflow path is invalid','configuration');
+  }
+  const workflowRef=opaque(value.workflowRef,'GitHub workflow ref',{maximum:512});
+  if(workflowRef!==`${repository}/${workflowPath}@refs/heads/main`){
+    fail('REHEARSAL_INVALID','GitHub workflow ref is invalid','configuration');
+  }
+  const workflowSha=commit(value.workflowSha);
+  if(workflowSha!==repoCommit){
+    fail('REHEARSAL_INVALID','GitHub workflow commit is invalid','configuration');
+  }
+  const runId=integer(value.runId,'GitHub run ID');
+  const runAttempt=integer(value.runAttempt,'GitHub run attempt',{maximum:1_000_000});
+  const environment=opaque(value.environment,'GitHub environment',{maximum:128});
+  if(environment!==REHEARSAL_ENVIRONMENT){
+    fail('REHEARSAL_INVALID','GitHub environment is invalid','configuration');
+  }
+  return Object.freeze({
+    repository,repositoryId,workflowPath,workflowRef,workflowSha,runId,runAttempt,
+    environment,repoCommit,
+  });
+}
+
+function attestationSignature(payload,keyValue){
+  const key=hmacKey(keyValue);
+  let signingKey;
+  try{
+    signingKey=createHmac('sha256',key).update(ATTESTATION_KEY_DOMAIN,'utf8').digest();
+    return createHmac('sha256',signingKey)
+      .update(ATTESTATION_SIGNATURE_DOMAIN,'utf8').update('\0','utf8')
+      .update(stableJson({format:REHEARSAL_ATTESTATION_FORMAT,payload}),'utf8')
+      .digest('hex');
+  }finally{
+    key.fill(0);
+    signingKey?.fill(0);
+  }
+}
+
+function evidenceKeyedDigest(keyValue,label,value){
+  const key=hmacKey(keyValue);
+  let derived;
+  try{
+    derived=createHmac('sha256',key)
+      .update(`randori-backup-evidence-key:v1:${label}`,'utf8').digest();
+    return createHmac('sha256',derived).update(value,'utf8').digest('hex');
+  }finally{
+    key.fill(0);
+    derived?.fill(0);
+  }
+}
+
+function expectedAppliedVersions(sourceVersion){
+  return EXECUTABLE_MIGRATIONS
+    .filter(migration=>migration.version>sourceVersion)
+    .map(migration=>migration.version);
+}
+
+function validateAttestationPayload(payload,expectedContext,now,maxAgeMs){
+  if(!exactObjectKeys(payload,[
+    'context','issuedAt','validUntil','schema','migration','identities','pitr','evidence',
+    'verification','safety',
+  ])||!exactObjectKeys(payload.context,[
+    'repository','repositoryId','workflowPath','workflowRef','workflowSha','runId','runAttempt',
+    'environment','repoCommit',
+  ])||stableJson(payload.context)!==stableJson(expectedContext)) attestationFailure();
+
+  const issuedAt=canonicalAttestationTimestamp(payload.issuedAt);
+  const validUntil=canonicalAttestationTimestamp(payload.validUntil);
+  if(issuedAt>now||validUntil<=now||validUntil<=issuedAt||validUntil-issuedAt>maxAgeMs){
+    attestationFailure();
+  }
+
+  if(!exactObjectKeys(payload.schema,[
+    'manifestVersion','manifestChecksum','sourceExecutableMigrationsChecksum',
+    'finalExecutableMigrationsChecksum','latestMigrationVersion',
+  ])||payload.schema.manifestVersion!==SCHEMA_MANIFEST.version
+    ||payload.schema.manifestChecksum!==SCHEMA_MANIFEST.checksum
+    ||payload.schema.latestMigrationVersion!==LATEST_MIGRATION_VERSION) attestationFailure();
+
+  if(!exactObjectKeys(payload.migration,[
+    'sourceClassification','sourceVersion','finalVersion','adoptedOnRestore','appliedVersions',
+  ])||!['managed','unmanaged'].includes(payload.migration.sourceClassification)
+    ||!Number.isSafeInteger(payload.migration.sourceVersion)
+    ||payload.migration.sourceVersion<1
+    ||payload.migration.sourceVersion>LATEST_MIGRATION_VERSION
+    ||payload.migration.finalVersion!==LATEST_MIGRATION_VERSION
+    ||payload.migration.adoptedOnRestore
+      !==(payload.migration.sourceClassification==='unmanaged')
+    ||!Array.isArray(payload.migration.appliedVersions)
+    ||stableJson(payload.migration.appliedVersions)
+      !==stableJson(expectedAppliedVersions(payload.migration.sourceVersion))) attestationFailure();
+  const sourceExecutableChecksum=executableMigrationsChecksum(
+    EXECUTABLE_MIGRATIONS.slice(0,payload.migration.sourceVersion),
+  );
+  if(payload.schema.sourceExecutableMigrationsChecksum!==sourceExecutableChecksum
+    ||payload.schema.finalExecutableMigrationsChecksum
+      !==executableMigrationsChecksum(EXECUTABLE_MIGRATIONS)) attestationFailure();
+
+  if(!exactObjectKeys(payload.identities,[
+    'sourceIdentityDigest','restoreIdentityDigest','backupRefDigest',
+  ])||!digest(payload.identities.sourceIdentityDigest)
+    ||!digest(payload.identities.restoreIdentityDigest)
+    ||equalDigest(payload.identities.sourceIdentityDigest,payload.identities.restoreIdentityDigest)
+    ||!digest(payload.identities.backupRefDigest)) attestationFailure();
+
+  if(!exactObjectKeys(payload.pitr,['requestedAt','authoritativeAt'])) attestationFailure();
+  canonicalAttestationTimestamp(payload.pitr.requestedAt);
+  canonicalAttestationTimestamp(payload.pitr.authoritativeAt);
+  if(payload.pitr.requestedAt!==payload.pitr.authoritativeAt) attestationFailure();
+
+  if(!exactObjectKeys(payload.evidence,[
+    'sourceEvidenceDigest','restoredEvidenceDigest','postMigrationEvidenceDigest',
+    'comparisonDigest',
+  ])||Object.values(payload.evidence).some(value=>!digest(value))) attestationFailure();
+
+  const verification=payload.verification;
+  if(!exactObjectKeys(verification,[
+    'preMigrationMatch','postMigrationPreserved','rpoMet','rtoMet','rpoTargetMs',
+    'rtoTargetMs','sourceSnapshotAgeMs','restoredSnapshotAgeMs','restoreDurationMs',
+  ])||verification.preMigrationMatch!==true||verification.postMigrationPreserved!==true
+    ||verification.rpoMet!==true||verification.rtoMet!==true
+    ||!Number.isSafeInteger(verification.rpoTargetMs)||verification.rpoTargetMs<1
+    ||!Number.isSafeInteger(verification.rtoTargetMs)||verification.rtoTargetMs<1
+    ||!Number.isSafeInteger(verification.sourceSnapshotAgeMs)
+    ||verification.sourceSnapshotAgeMs<0
+    ||!Number.isSafeInteger(verification.restoredSnapshotAgeMs)
+    ||verification.restoredSnapshotAgeMs<0
+    ||!Number.isSafeInteger(verification.restoreDurationMs)||verification.restoreDurationMs<0
+    ||verification.sourceSnapshotAgeMs>verification.rpoTargetMs
+    ||verification.restoredSnapshotAgeMs>verification.rpoTargetMs
+    ||verification.restoreDurationMs>verification.rtoTargetMs) attestationFailure();
+
+  const safety=payload.safety;
+  if(!exactObjectKeys(safety,[
+    'sourceIdentityVerified','writesBlockedBeforePitr','sourceWriteStateRestored',
+    'restoreIdentityVerified','restoreDeleted','sourceMigrated','sourceDeleted',
+    'credentialsInvalidated',
+  ])||safety.sourceIdentityVerified!==true||safety.writesBlockedBeforePitr!==true
+    ||safety.sourceWriteStateRestored!==true||safety.restoreIdentityVerified!==true
+    ||safety.restoreDeleted!==true||safety.sourceMigrated!==false||safety.sourceDeleted!==false
+    ||safety.credentialsInvalidated!==false) attestationFailure();
+  return true;
+}
+
+function freeze(value){
+  if(Array.isArray(value)) return Object.freeze(value.map(freeze));
+  if(value&&typeof value==='object'){
+    return Object.freeze(Object.fromEntries(
+      Object.entries(value).map(([key,item])=>[key,freeze(item)]),
+    ));
+  }
+  return value;
+}
+
+export function verifyRehearsalAttestation(value,options={}){
+  try{
+    if(!exactObjectKeys(value,['ok','kind','format','payload','signature'])||value.ok!==true
+      ||value.kind!=='turso-rehearsal-attestation'
+      ||value.format!==REHEARSAL_ATTESTATION_FORMAT||!digest(value.signature)){
+      attestationFailure();
+    }
+    const repoCommit=commit(options.repoCommit);
+    const expectedContext=normalizedAttestationContext(options.context,repoCommit);
+    const maxAgeMs=integer(options.maxAgeMs,'attestation maximum age',{
+      maximum:MAX_ATTESTATION_AGE_MS,
+    });
+    const expectedRpoTargetMs=integer(options.rpoTargetMs,'attestation RPO target',{
+      maximum:90*24*60*60*1000,
+    });
+    const expectedRtoTargetMs=integer(options.rtoTargetMs,'attestation RTO target',{
+      maximum:90*24*60*60*1000,
+    });
+    if(options.runConclusion!=='success') attestationFailure();
+    const clock=typeof options.clock==='function'?options.clock:Date.now;
+    validateAttestationPayload(value.payload,expectedContext,milliseconds(clock),maxAgeMs);
+    if(value.payload.verification.rpoTargetMs!==expectedRpoTargetMs
+      ||value.payload.verification.rtoTargetMs!==expectedRtoTargetMs) attestationFailure();
+    const sourceIdentity=opaque(options.sourceIdentity,'expected source identity');
+    const backupRef=opaque(options.backupRef,'expected backup reference',{maximum:1024});
+    const boundBackupRef=`${backupRef}:${value.payload.pitr.requestedAt}`;
+    if(!equalDigest(
+        value.payload.identities.sourceIdentityDigest,
+        evidenceKeyedDigest(options.hmacKey,'database-identity',sourceIdentity),
+      )||!equalDigest(
+        value.payload.identities.backupRefDigest,
+        evidenceKeyedDigest(options.hmacKey,'backup-reference',boundBackupRef),
+      )) attestationFailure();
+    const expectedSignature=attestationSignature(value.payload,options.hmacKey);
+    if(!equalDigest(value.signature,expectedSignature)) attestationFailure();
+    return freeze(structuredClone(value.payload));
+  }catch(error){
+    if(error instanceof RehearsalError&&error.code==='REHEARSAL_ATTESTATION_INVALID') throw error;
+    attestationFailure(error);
+  }
 }
 
 function sourceIdentity(database,expected){
@@ -541,19 +788,25 @@ function normalizedOptions(value){
   const restoreName=name(value.restoreDatabaseName,'restore database name');
   if(restoreName===source.name) fail('REHEARSAL_INVALID','restore name must differ from source','configuration');
   const clock=typeof value.clock==='function'?value.clock:Date.now;
+  const repoCommit=commit(value.repoCommit);
   const policy=Object.freeze({
     maxSnapshotAgeMs:integer(value.maxSnapshotAgeMs,'maximum snapshot age',{maximum:90*24*60*60*1000}),
     maxEvidenceAgeMs:integer(value.maxEvidenceAgeMs,'maximum evidence age',{maximum:90*24*60*60*1000}),
     rpoTargetMs:integer(value.rpoTargetMs,'RPO target',{maximum:90*24*60*60*1000}),
     rtoTargetMs:integer(value.rtoTargetMs,'RTO target',{maximum:90*24*60*60*1000}),
   });
+  if(policy.maxEvidenceAgeMs>MAX_ATTESTATION_AGE_MS){
+    fail('REHEARSAL_INVALID','evidence age exceeds the attestation TTL cap','configuration');
+  }
+  const attestationContext=normalizedAttestationContext(value.attestationContext,repoCommit);
   const key=hmacKey(value.hmacKey);
   return Object.freeze({
     platform:value.platform,
     recoveryPlatform:value.recoveryPlatform??value.platform,
     source,
     restoreName,
-    repoCommit:commit(value.repoCommit),
+    repoCommit,
+    attestationContext,
     hmacKey:key,
     clock,
     policy,
@@ -609,33 +862,90 @@ async function persistJournal(options,state,phase){
   }
 }
 
-function publicResult(candidate,safety){
-  return Object.freeze({
-    ok:true,
-    kind:'turso-backup-restore-rehearsal',
-    format:REHEARSAL_FORMAT,
-    repoCommit:candidate.repoCommit,
-    completedAt:candidate.completedAt,
-    migration:Object.freeze({
+function createRehearsalAttestation(candidate,safety,key,issuedAt){
+  const source=candidate.sourceEvidence;
+  const restored=candidate.restoredEvidence;
+  const post=candidate.postEvidence;
+  const sourceExecutableChecksum=executableMigrationsChecksum(candidate.contract.migrations);
+  const finalExecutableChecksum=executableMigrationsChecksum(EXECUTABLE_MIGRATIONS);
+  if(source.schema?.manifestVersion!==SCHEMA_MANIFEST.version
+    ||restored.schema?.manifestVersion!==SCHEMA_MANIFEST.version
+    ||post.schema?.manifestVersion!==SCHEMA_MANIFEST.version
+    ||source.schema?.manifestChecksum!==SCHEMA_MANIFEST.checksum
+    ||restored.schema?.manifestChecksum!==SCHEMA_MANIFEST.checksum
+    ||post.schema?.manifestChecksum!==SCHEMA_MANIFEST.checksum
+    ||source.schema?.executableMigrationsChecksum!==sourceExecutableChecksum
+    ||restored.schema?.executableMigrationsChecksum!==sourceExecutableChecksum
+    ||post.schema?.executableMigrationsChecksum!==finalExecutableChecksum
+    ||source.bindings?.repoCommit!==candidate.context.repoCommit
+    ||restored.bindings?.repoCommit!==candidate.context.repoCommit
+    ||post.bindings?.repoCommit!==candidate.context.repoCommit
+    ||!equalDigest(source.bindings?.backupRefDigest,restored.bindings?.backupRefDigest)
+    ||!equalDigest(source.bindings?.backupRefDigest,post.bindings?.backupRefDigest)
+    ||!equalDigest(restored.bindings?.identityDigest,post.bindings?.identityDigest)
+    ||candidate.comparison.sourceEvidenceDigest!==source.bindingDigest
+    ||candidate.comparison.restoredEvidenceDigest!==restored.bindingDigest){
+    attestationFailure();
+  }
+  const expiresAt=[source.expiresAt,restored.expiresAt,post.expiresAt]
+    .map(canonicalAttestationTimestamp);
+  const validUntil=new Date(Math.min(...expiresAt)).toISOString();
+  const observedSafety=publicSafety(safety);
+  const payload={
+    context:{...candidate.context},
+    issuedAt,
+    validUntil,
+    schema:{
+      manifestVersion:SCHEMA_MANIFEST.version,
+      manifestChecksum:SCHEMA_MANIFEST.checksum,
+      sourceExecutableMigrationsChecksum:sourceExecutableChecksum,
+      finalExecutableMigrationsChecksum:finalExecutableChecksum,
+      latestMigrationVersion:LATEST_MIGRATION_VERSION,
+    },
+    migration:{
       sourceClassification:candidate.contract.classification,
       sourceVersion:candidate.contract.version,
-      adoptedOnRestore:candidate.migration.adopted,
-      appliedVersions:Object.freeze([...candidate.migration.appliedVersions]),
       finalVersion:candidate.migration.toVersion,
-    }),
-    verification:Object.freeze({
+      adoptedOnRestore:candidate.migration.adopted,
+      appliedVersions:[...candidate.migration.appliedVersions],
+    },
+    identities:{
+      sourceIdentityDigest:source.bindings.identityDigest,
+      restoreIdentityDigest:restored.bindings.identityDigest,
+      backupRefDigest:source.bindings.backupRefDigest,
+    },
+    pitr:{requestedAt:candidate.pitrAt,authoritativeAt:candidate.authoritativePitrAt},
+    evidence:{
+      sourceEvidenceDigest:source.bindingDigest,
+      restoredEvidenceDigest:restored.bindingDigest,
+      postMigrationEvidenceDigest:post.bindingDigest,
+      comparisonDigest:candidate.comparison.comparisonDigest,
+    },
+    verification:{
       preMigrationMatch:true,
       postMigrationPreserved:true,
-      comparisonDigest:candidate.comparison.comparisonDigest,
-      sourceEvidenceDigest:candidate.comparison.sourceEvidenceDigest,
-      restoredEvidenceDigest:candidate.comparison.restoredEvidenceDigest,
-      postMigrationEvidenceDigest:candidate.postEvidence.bindingDigest,
       rpoMet:candidate.comparison.rpoMet,
       rtoMet:candidate.comparison.rtoMet,
+      rpoTargetMs:candidate.comparison.rpoTargetMs,
+      rtoTargetMs:candidate.comparison.rtoTargetMs,
+      sourceSnapshotAgeMs:candidate.comparison.sourceSnapshotAgeMs,
+      restoredSnapshotAgeMs:candidate.comparison.restoredSnapshotAgeMs,
       restoreDurationMs:candidate.comparison.restoreDurationMs,
-    }),
-    safety:publicSafety(safety),
+    },
+    safety:{...observedSafety},
+  };
+  const issuedMilliseconds=canonicalAttestationTimestamp(issuedAt);
+  validateAttestationPayload(
+    payload,candidate.context,issuedMilliseconds,candidate.maxAttestationAgeMs,
+  );
+  return freeze({
+    ok:true,kind:'turso-rehearsal-attestation',format:REHEARSAL_ATTESTATION_FORMAT,payload,
+    signature:attestationSignature(payload,key),
   });
+}
+
+function publicResult(candidate,safety,key,issuedAt){
+  return createRehearsalAttestation(candidate,safety,key,issuedAt);
 }
 
 function publicCleanupResult({repoCommit,safety,noState=false,recoveryRequired=false}){
@@ -797,8 +1107,10 @@ export async function runBackupRestoreRehearsal(rawOptions={},dependencies={}){
     }));
     verifyPostMigrationPreservation(restoredBefore,postEvidence);
     candidate={
-      repoCommit:options.repoCommit,contract,migration,comparison,postEvidence,
-      completedAt:timestamp(options.clock),
+      repoCommit:options.repoCommit,context:options.attestationContext,
+      contract,migration,sourceEvidence,restoredEvidence:restoredBefore,comparison,postEvidence,
+      pitrAt,authoritativePitrAt:ready.parent.branchedAt,
+      maxAttestationAgeMs:options.policy.maxEvidenceAgeMs,
     };
   }catch(error){
     primaryError=normalizeError(error,phase);
@@ -856,24 +1168,25 @@ export async function runBackupRestoreRehearsal(rawOptions={},dependencies={}){
       }),safety);
     }
   }
-  options.hmacKey.fill(0);
-  if(sourceRecovery){
-    throw withSafety(new RehearsalError(
-      'REHEARSAL_SOURCE_WRITE_STATE_RECOVERY_REQUIRED',
-      'source write state recovery is required',
-      {cause:primaryError,phase:'write_state_restore'},
-    ),safety);
-  }
-  if(cleanup.recovery){
-    throw withSafety(new RehearsalError(
-      'REHEARSAL_RESTORE_CLEANUP_REQUIRED',
-      'restore cleanup is required',
-      {cause:primaryError,phase:'restore_cleanup'},
-    ),safety);
-  }
-  if(journalError) throw withSafety(journalError,safety);
-  if(primaryError) throw withSafety(primaryError,safety);
-  return publicResult(candidate,safety);
+  try{
+    if(sourceRecovery){
+      throw withSafety(new RehearsalError(
+        'REHEARSAL_SOURCE_WRITE_STATE_RECOVERY_REQUIRED',
+        'source write state recovery is required',
+        {cause:primaryError,phase:'write_state_restore'},
+      ),safety);
+    }
+    if(cleanup.recovery){
+      throw withSafety(new RehearsalError(
+        'REHEARSAL_RESTORE_CLEANUP_REQUIRED',
+        'restore cleanup is required',
+        {cause:primaryError,phase:'restore_cleanup'},
+      ),safety);
+    }
+    if(journalError) throw withSafety(journalError,safety);
+    if(primaryError) throw withSafety(primaryError,safety);
+    return publicResult(candidate,safety,options.hmacKey,timestamp(options.clock));
+  }finally{ options.hmacKey.fill(0); }
 }
 
 const JOURNAL_STATUSES=new Set(['prepared','active','failed_clean','recovery_required','complete']);
@@ -1081,9 +1394,21 @@ function environmentIdentity(environment,platform){
 }
 
 function environmentOptions(environment,platform,recoveryPlatform,signal){
+  const repoCommit=environment.REHEARSAL_REPO_COMMIT;
   return {
     ...environmentIdentity(environment,platform),
     recoveryPlatform,
+    attestationContext:{
+      repository:environment.GITHUB_REPOSITORY,
+      repositoryId:environment.GITHUB_REPOSITORY_ID,
+      workflowPath:environment.REHEARSAL_WORKFLOW_PATH,
+      workflowRef:environment.GITHUB_WORKFLOW_REF,
+      workflowSha:environment.GITHUB_WORKFLOW_SHA,
+      runId:environment.GITHUB_RUN_ID,
+      runAttempt:environment.GITHUB_RUN_ATTEMPT,
+      environment:environment.REHEARSAL_GITHUB_ENVIRONMENT,
+      repoCommit,
+    },
     hmacKey:environment.MIGRATION_DIGEST_HMAC_KEY,
     confirmation:environment.RESTORE_REHEARSAL_CONFIRM,
     maxSnapshotAgeMs:environment.REHEARSAL_MAX_SNAPSHOT_AGE_MS,
