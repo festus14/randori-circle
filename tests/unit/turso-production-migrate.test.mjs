@@ -84,11 +84,11 @@ function options(overrides={}){
   };
 }
 
-function attestation(classification='managed',sourceVersion=2){
+function attestation(classification='managed',sourceVersion=3){
   return Object.freeze({
     issuedAt:'2026-09-18T11:55:00.000Z',
     validUntil:'2026-09-18T12:25:00.000Z',
-    migration:{sourceClassification:classification,sourceVersion,finalVersion:3},
+    migration:{sourceClassification:classification,sourceVersion,finalVersion:4},
     identities:{
       sourceIdentityDigest:'a'.repeat(64),restoreIdentityDigest:'b'.repeat(64),
     },
@@ -121,7 +121,7 @@ function platformMock(overrides={}){
   };
 }
 
-function dependencies(path,{classification='managed',sourceVersion=2,platform,connectDatabase}={}){
+function dependencies(path,{classification='managed',sourceVersion=3,platform,connectDatabase}={}){
   const calls=[];
   const github={
     async downloadSuccessfulWorkflowArtifact(value){
@@ -157,7 +157,7 @@ function dependencies(path,{classification='managed',sourceVersion=2,platform,co
 test('status uses a read-only token and returns one actionable pending migration',async()=>{
   const item=fixture();
   try{
-    await installManaged(item.path,4);
+    await installManaged(item.path,5);
     const platform=platformMock();
     const deps=dependencies(item.path,{platform});
     const result=await runRemoteMigration(options(),deps.value);
@@ -165,8 +165,8 @@ test('status uses a read-only token and returns one actionable pending migration
     assert.equal(result.operation,'status');
     assert.equal(result.readOnly,true);
     assert.equal(result.state,'managed');
-    assert.equal(result.currentVersion,4);
-    assert.deepEqual(result.pendingVersions,[5]);
+    assert.equal(result.currentVersion,5);
+    assert.deepEqual(result.pendingVersions,[6]);
     assert.deepEqual(result.capabilities,{adopt:false,apply:true});
     assert.match(result.stateFingerprint,/^[a-f0-9]{64}$/);
     assert.deepEqual(platform.calls.filter(call=>call[0]==='token'),[
@@ -199,17 +199,17 @@ test('status uses a read-only token and returns one actionable pending migration
 test('apply advances one managed version per run and a fully migrated run is an explicit no-op',async()=>{
   const item=fixture();
   try{
-    await installManaged(item.path,4);
+    await installManaged(item.path,5);
     const fingerprint=(await state(item.path)).stateFingerprint;
     const platform=platformMock();
     const first=await runRemoteMigration(options({
       operation:'apply',expectedStateFingerprint:fingerprint,
     }),dependencies(item.path,{platform}).value);
     assert.equal(first.result,'applied');
-    assert.deepEqual(first.appliedVersions,[5]);
-    assert.equal(first.fromVersion,4);
-    assert.equal(first.toVersion,5);
-    assert.equal((await state(item.path)).currentVersion,5);
+    assert.deepEqual(first.appliedVersions,[6]);
+    assert.equal(first.fromVersion,5);
+    assert.equal(first.toVersion,6);
+    assert.equal((await state(item.path)).currentVersion,6);
     assert.deepEqual(platform.calls.filter(call=>call[0]==='token'),[
       ['token','production',{expiration:'10m',authorization:'full-access'}],
     ]);
@@ -219,8 +219,8 @@ test('apply advances one managed version per run and a fully migrated run is an 
     }),dependencies(item.path).value);
     assert.equal(second.result,'noop');
     assert.deepEqual(second.appliedVersions,[]);
-    assert.equal(second.fromVersion,5);
-    assert.equal(second.toVersion,5);
+    assert.equal(second.fromVersion,6);
+    assert.equal(second.toVersion,6);
   }finally{ item.close(); }
 });
 
@@ -232,7 +232,7 @@ test('an exact rehearsed unmanaged prefix can be adopted without applying the ne
     const fingerprint=(await state(item.path,prefix)).stateFingerprint;
     const result=await runRemoteMigration(options({
       operation:'adopt',expectedStateFingerprint:fingerprint,
-    }),dependencies(item.path,{classification:'unmanaged'}).value);
+    }),dependencies(item.path,{classification:'unmanaged',sourceVersion:2}).value);
     assert.equal(result.result,'adopted');
     assert.deepEqual(result.adoptedVersions,[1,2]);
     assert.equal(result.toVersion,2);
@@ -339,14 +339,14 @@ test('stale state, unadopted state, and more than one pending migration never wr
   const unmanaged=fixture();
   const old=fixture();
   try{
-    await installManaged(stale.path,2);
+    await installManaged(stale.path,3);
     await assert.rejects(
       runRemoteMigration(options({
         operation:'apply',expectedStateFingerprint:'f'.repeat(64),
       }),dependencies(stale.path).value),
       error=>error instanceof Error&&error.code==='MIGRATION_STATE_CHANGED',
     );
-    assert.equal((await state(stale.path)).currentVersion,2);
+    assert.equal((await state(stale.path)).currentVersion,3);
 
     await installUnmanaged(unmanaged.path,2);
     const unmanagedFingerprint=(await state(
@@ -355,7 +355,7 @@ test('stale state, unadopted state, and more than one pending migration never wr
     await assert.rejects(
       runRemoteMigration(options({
         operation:'apply',expectedStateFingerprint:unmanagedFingerprint,
-      }),dependencies(unmanaged.path,{classification:'unmanaged'}).value),
+      }),dependencies(unmanaged.path,{classification:'unmanaged',sourceVersion:2}).value),
       error=>error.code==='REMOTE_MIGRATION_TARGET_STATE_MISMATCH',
     );
     assert.equal((await state(
@@ -381,7 +381,7 @@ test('stale state, unadopted state, and more than one pending migration never wr
 test('an ambiguous commit failure is not retried and the transaction rolls back',async()=>{
   const item=fixture();
   try{
-    await installManaged(item.path,4);
+    await installManaged(item.path,5);
     const fingerprint=(await state(item.path)).stateFingerprint;
     let transactions=0;
     const connectDatabase=()=>{
@@ -412,7 +412,7 @@ test('an ambiguous commit failure is not retried and the transaction rolls back'
       error=>error.code==='MIGRATION_FAILED',
     );
     assert.equal(transactions,1);
-    assert.equal((await state(item.path)).currentVersion,4);
+    assert.equal((await state(item.path)).currentVersion,5);
   }finally{ item.close(); }
 });
 

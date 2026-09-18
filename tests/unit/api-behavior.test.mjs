@@ -23,6 +23,9 @@ const sentryExceptionCalls = [];
 let lastPairingRun = null;
 let persistedPairGroups = [];
 let persistedPairingParticipants = [];
+let pairingEmailDeliveryResult = null;
+let outboxReplayResult = true;
+const outboxReplayCalls=[];
 const mockAvailabilityCycles=new Map();
 const mockAvailabilityDecisions=new Map();
 
@@ -223,7 +226,31 @@ mock.module('../../api/_db.js', {
 
 mock.module('../../api/_pairing-readiness.js',{
   exports:{
-    pairingSchemaV3Ready:async()=>true,
+    pairingSchemaV6Ready:async()=>true,
+  },
+});
+
+mock.module('../../api/_pairing-email.js',{
+  exports:{
+    PAIRING_EMAIL_EVENT_TYPE:'pairing.email.requested',
+    createResendEmailSender:()=>async()=>({providerName:'resend',providerMessageId:'mock-message'}),
+    migrateLegacyPairingEmails:async()=>0,
+    pairingEmailStatus:async()=>pairingEmailDeliveryResult?.status||{
+      pending:1,processing:0,retry:0,delivered:0,suppressed:0,dead_letter:0,
+    },
+    deliverPairingEmails:async()=>pairingEmailDeliveryResult||{
+      claimed:0,delivered:0,suppressed:0,retried:0,deadLettered:0,leaseLost:0,
+      status:{pending:0,processing:0,retry:0,delivered:0,suppressed:0,dead_letter:0},
+    },
+  },
+});
+
+mock.module('../../api/_outbox.js',{
+  exports:{
+    replayDeadLetter:async(_db,request)=>{
+      outboxReplayCalls.push(request);
+      return outboxReplayResult;
+    },
   },
 });
 
@@ -357,6 +384,9 @@ beforeEach(() => {
   lastPairingRun = null;
   persistedPairGroups = [];
   persistedPairingParticipants = [];
+  pairingEmailDeliveryResult = null;
+  outboxReplayResult = true;
+  outboxReplayCalls.length=0;
   mockAvailabilityCycles.clear();
   mockAvailabilityDecisions.clear();
   executeHandler = () => rows();
@@ -2563,7 +2593,7 @@ test('operations cover preferences, availability, admin promotion, demo lifecycl
   assert.equal(executed.some(call => !call.sql.trim()), false, 'migration arrays must not execute undefined DDL entries');
 });
 
-test('weekly email delivery caps stale outbox retries and exhausts the fifth failed attempt', async () => {
+test('weekly email delivery exposes bounded worker outcomes without recipient data', async () => {
   process.env.APP_URL='https://randori.example.test';
   process.env.CRON_SECRET = 'cron-secret';
   process.env.RESEND_API_KEY = 're_test';
@@ -2602,6 +2632,10 @@ test('weekly email delivery caps stale outbox retries and exhausts the fifth fai
   }));
   assert.match(disabled.body.email_delivery.summary, /email disabled.*RESEND_API_KEY \+ RESEND_FROM/);
   process.env.RESEND_FROM = 'Randori <verified@example.test>';
+  pairingEmailDeliveryResult={
+    claimed:1,delivered:0,suppressed:0,retried:0,deadLettered:1,leaseLost:0,
+    status:{pending:0,processing:0,retry:0,delivered:0,suppressed:0,dead_letter:1},
+  };
 
   const result = await withFixedNow('2026-09-20T08:15:00.000Z',()=>invoke(opsHandler, {
     method: 'POST', url: '/api/cron/weekly', query: { endpoint: 'weekly' },
@@ -2612,23 +2646,15 @@ test('weekly email delivery caps stale outbox retries and exhausts the fifth fai
   assert.equal(result.body.email_delivery.failed, 1);
   assert.equal(result.body.email_delivery.exhausted, 1);
   assert.equal(result.body.email_delivery.pending, 0);
+  assert.doesNotMatch(JSON.stringify(result.body),/@example\.test|secret-token/);
   assert.equal(executed.some(call=>/^\s*(?:CREATE|ALTER|DROP)\b/i.test(call.sql)),false,
     'the complete cron publication and delivery path must not issue request-time DDL');
   assert.equal(executed.some(call=>call.sql.includes('pairing_cycles')),false,
     'an immutable existing publication must not materialize or consume an availability bridge');
 
-  const candidateQuery = executed.find(call => call.sql.includes('SELECT id,week_id,user_id,kind,recipient_email,status,attempt_count'));
-  assert.match(candidateQuery.sql, /attempt_count<\?/);
-  assert.match(candidateQuery.sql, /status='sending'.*claimed_at<datetime/);
-  assert.deepEqual(candidateQuery.args, [10, 5]);
-  const claim = executed.find(call => call.sql.includes("SET status='sending',attempt_count=attempt_count+1"));
-  assert.deepEqual(claim.args, [70, 5]);
-  const transition = executed.find(call => call.sql.includes("SET status=CASE WHEN attempt_count>=? THEN 'exhausted'"));
-  assert.match(transition.sql, /status='sending' AND attempt_count=\?/);
-  assert.deepEqual(transition.args, [5, 'provider unavailable', 70, 5]);
 });
 
-test('stale email workers cannot overwrite a newer lease or inflate delivery counters', async () => {
+test('weekly response counts only committed worker outcomes', async () => {
   process.env.APP_URL='https://randori.example.test';
   process.env.CRON_SECRET = 'cron-secret';
   process.env.RESEND_API_KEY = 're_test';
@@ -2658,6 +2684,10 @@ test('stale email workers cannot overwrite a newer lease or inflate delivery cou
     if (sql.includes('SELECT COUNT(*) AS c FROM pairing_email_outbox')) return rows([{ c: 0 }]);
     return rows();
   };
+  pairingEmailDeliveryResult={
+    claimed:3,delivered:0,suppressed:1,retried:0,deadLettered:0,leaseLost:2,
+    status:{pending:0,processing:2,retry:0,delivered:0,suppressed:1,dead_letter:2},
+  };
 
   const result = await withFixedNow('2026-09-20T08:15:00.000Z',()=>invoke(opsHandler, {
     method: 'POST', url: '/api/cron/weekly', query: { endpoint: 'weekly' },
@@ -2667,13 +2697,66 @@ test('stale email workers cannot overwrite a newer lease or inflate delivery cou
   assert.equal(result.body.email_delivery.sent, 0, 'a stale successful sender must not count an uncommitted transition');
   assert.equal(result.body.email_delivery.suppressed, 1, 'only the worker that still owns its lease may count suppression');
   assert.equal(result.body.email_delivery.failed, 0);
+  assert.equal(result.body.email_delivery.exhausted,2,
+    'historical dead letters remain visible when no new event exhausts in this run');
+  assert.match(result.body.email_delivery.summary,/exhausted 2/);
+  assert.equal(result.body.email_delivery.pending,2);
+});
 
-  const terminalUpdates=executed.filter(call => call.sql.includes("SET status='sent'") || call.sql.includes("SET status='suppressed'"));
-  assert.equal(terminalUpdates.length, 3);
-  for(const update of terminalUpdates){
-    assert.match(update.sql, /status='sending' AND attempt_count=\? RETURNING/);
-    assert.equal(update.args.at(-1), 2);
-  }
+test('outbox drain is cron-protected, non-identifying, and dead-letter replay is operator-only',async()=>{
+  process.env.APP_URL='https://randori.example.test';
+  process.env.CRON_SECRET='cron-secret';
+  process.env.RESEND_API_KEY='re_test';
+  process.env.RESEND_FROM='Randori <verified@example.test>';
+  assert.equal((await invoke(opsHandler,{
+    method:'POST',url:'/api/cron/outbox',query:{endpoint:'outbox'},headers:{},
+  })).status,401);
+  assert.equal((await invoke(opsHandler,{
+    method:'DELETE',url:'/api/cron/outbox',query:{endpoint:'outbox'},headers:{'x-cron-secret':'cron-secret'},
+  })).status,405);
+  pairingEmailDeliveryResult={
+    claimed:2,delivered:1,suppressed:1,retried:0,deadLettered:0,leaseLost:0,
+    status:{pending:0,processing:0,retry:0,delivered:1,suppressed:1,dead_letter:0},
+  };
+  const drained=await invoke(opsHandler,{
+    method:'POST',url:'/api/cron/outbox',query:{endpoint:'outbox'},
+    headers:{'x-cron-secret':'cron-secret','user-agent':'private-agent','x-forwarded-for':'203.0.113.9'},
+  });
+  assert.equal(drained.status,200);
+  assert.deepEqual(drained.body.email_delivery,{
+    summary:'sent 1, failed 0, exhausted 0, suppressed 1, pending 0',
+    sent:1,failed:0,exhausted:0,pending:0,suppressed:1,
+  });
+  const deliveryLog=executed.find(call=>call.sql.includes('INSERT INTO app_logs')
+    &&call.args[1]==='server'&&call.args[2]==='pairing_email_delivery');
+  assert.ok(deliveryLog);
+  assert.equal(deliveryLog.args[5],null);
+  assert.equal(deliveryLog.args[6],null);
+  assert.equal(deliveryLog.args[7],null);
+
+  assert.equal((await invoke(opsHandler,{
+    method:'POST',url:'/api/admin/outbox/replay',query:{endpoint:'outbox-replay'},
+    body:{event_id:7,reason_code:'PROVIDER_RECOVERED'},
+  })).status,401);
+  executeHandler=sql=>sql.includes('SELECT id,is_admin,is_demo FROM auth_accounts')
+    ?rows([{id:1,is_admin:1,is_demo:0}]):rows();
+  assert.equal((await invoke(opsHandler,{
+    method:'POST',url:'/api/admin/outbox/replay',query:{endpoint:'outbox-replay'},
+    headers:{'x-test-auth':'user'},body:{event_id:7,reason_code:'PROVIDER_RECOVERED'},
+  })).status,403);
+  const replayed=await invoke(opsHandler,{
+    method:'POST',url:'/api/admin/outbox/replay',query:{endpoint:'outbox-replay'},
+    headers:{'x-test-auth':'admin'},body:{event_id:7,reason_code:'PROVIDER_RECOVERED'},
+  });
+  assert.deepEqual(replayed.body,{ok:true,replayed:true});
+  assert.deepEqual(outboxReplayCalls,[{
+    eventId:7,operatorUserId:1,reasonCode:'PROVIDER_RECOVERED',notBefore:null,
+  }]);
+  outboxReplayResult=false;
+  assert.equal((await invoke(opsHandler,{
+    method:'POST',url:'/api/admin/outbox/replay',query:{endpoint:'outbox-replay'},
+    headers:{'x-test-auth':'admin'},body:{event_id:7,reason_code:'OPERATOR_RETRY'},
+  })).status,409);
 });
 
 test('operation validation rejects unsupported methods and non-admin mutations', async () => {
@@ -2757,8 +2840,9 @@ test('owner publication is immutable and the legacy reshuffle URL cannot remix i
   assert.equal(first.body.pair_count,2);
   assert.equal(first.body.solo_count,1);
   assert.equal('pairs' in first.body,false,'operational responses must not expose member names or identifiers');
-  assert.ok(executed.some(call=>call.sql.includes('INSERT INTO pairing_email_outbox')
-    &&Number(call.args[0])===2&&call.args[1]==='unavailable'),
+  assert.ok(executed.some(call=>call.sql.includes('INSERT INTO outbox_events')
+    &&call.args[0]==='unavailable'&&Number(call.args[1])===2
+    &&Number(call.args[2])===2&&call.args[3]==='unavailable'),
   'the dated opt-out receives the unavailable notification instead of a paired outbox row');
   assert.equal(second.body.generation, 1);
   assert.equal(second.body.week_id,first.body.week_id);
@@ -2908,6 +2992,7 @@ test('concurrent handler publications across two file-backed clients converge on
       `CREATE TABLE pairing_participants (week_id INTEGER NOT NULL,user_id INTEGER NOT NULL,position INTEGER NOT NULL,source TEXT NOT NULL,created_at TEXT DEFAULT (datetime('now')),PRIMARY KEY(week_id,user_id))`,
       `CREATE TABLE pairing_week_runs (week_label TEXT PRIMARY KEY,week_id INTEGER,generation_token TEXT NOT NULL,generation INTEGER NOT NULL,algorithm_version TEXT NOT NULL,algorithm_seed TEXT NOT NULL,participant_count INTEGER NOT NULL,participants_json TEXT NOT NULL,created_at TEXT DEFAULT (datetime('now')),updated_at TEXT DEFAULT (datetime('now')))`,
       `CREATE TABLE pairing_email_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT,week_id INTEGER NOT NULL,user_id INTEGER NOT NULL,kind TEXT NOT NULL,recipient_email TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',attempt_count INTEGER NOT NULL DEFAULT 0,claimed_at TEXT,sent_at TEXT,provider_message_id TEXT,last_error TEXT,created_at TEXT DEFAULT (datetime('now')),updated_at TEXT DEFAULT (datetime('now')),UNIQUE(week_id,user_id,kind))`,
+      `CREATE TABLE outbox_events (id INTEGER PRIMARY KEY AUTOINCREMENT,event_type TEXT NOT NULL,event_version INTEGER NOT NULL,idempotency_key TEXT NOT NULL UNIQUE,payload_json TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',not_before TEXT NOT NULL,next_attempt_at TEXT NOT NULL,attempt_count INTEGER NOT NULL DEFAULT 0,max_attempts INTEGER NOT NULL DEFAULT 5,delivery_timeout_ms INTEGER NOT NULL DEFAULT 10000,lease_owner TEXT,lease_token TEXT,leased_until TEXT,claim_from_status TEXT,provider_name TEXT,provider_message_id TEXT,last_error_code TEXT,delivered_at TEXT,dead_lettered_at TEXT,replay_count INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL)`,
       `CREATE TABLE pairing_cycles (scope_key TEXT NOT NULL,circle_id INTEGER,cycle_key TEXT NOT NULL,cycle_id TEXT NOT NULL,starts_at TEXT NOT NULL,ends_at TEXT NOT NULL,cutoff_at TEXT NOT NULL,time_zone TEXT NOT NULL,default_source TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT (datetime('now')),PRIMARY KEY(scope_key,cycle_key))`,
       `CREATE TABLE pairing_cycle_availability (scope_key TEXT NOT NULL,cycle_key TEXT NOT NULL,user_id INTEGER NOT NULL,is_available INTEGER NOT NULL,version INTEGER NOT NULL,decision_source TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(scope_key,cycle_key,user_id))`,
       `CREATE INDEX idx_pairing_cycle_availability_candidates ON pairing_cycle_availability(scope_key,cycle_key,is_available,user_id)`,

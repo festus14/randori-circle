@@ -7,12 +7,15 @@ const REQUIRED_MIGRATIONS=Object.freeze([
   Object.freeze({version:1,name:'current-application-schema-baseline',checksum:'27944847696265114fbbb0e70ffa961a7f766a8f85cc4fe251ef00a779aac0df'}),
   Object.freeze({version:2,name:'primary-circle-membership-schema',checksum:'ceca22b30cc4f546359dc8d5731e1ab157e82b748b468e6eed510a8a4379444d'}),
   Object.freeze({version:3,name:'cycle-scoped-availability',checksum:'dd467c77944b1da0b722ddd91ebef1071811fb24c65fdff7d2121b67fb204270'}),
+  Object.freeze({version:4,name:'provider-scoped-identities',checksum:'99e63a04a8617d4dcc12d5ff71ac8590e21ba5a44bdcaba90ead405f42f5625e'}),
+  Object.freeze({version:5,name:'durable-revocable-sessions',checksum:'cad0dcadb3b75ae267dd6d7ff9393507e122f0d104e648357631a1c4af0b98ad'}),
+  Object.freeze({version:6,name:'durable-provider-neutral-outbox',checksum:'e62bdb26e9055eeae387e80bbd3dba08130228bf9a42673b2fceecddd9fc2f6b'}),
 ]);
 
-// Generated from canonical managed-v3 object SQL and the structural projection
+// Generated from canonical managed-v6 object SQL and the structural projection
 // below. It intentionally excludes sqlite internals and the one tolerated
 // optional legacy table, while including the migration ledger.
-export const PAIRING_SCHEMA_V3_FINGERPRINT='25c9aefa29bb7a47627291712a83ba689323cf1189f5e2db5b584329f3d8d22f';
+export const PAIRING_SCHEMA_V6_FINGERPRINT='bdbdaa2a7b564e40a10badbfdb8bf26455e6375e51535151548d45fa26c57a37';
 
 const TOLERATED_TABLES=new Set(['ai_monthly_usage']);
 const REQUIRED_TABLES=new Set([
@@ -24,6 +27,7 @@ const REQUIRED_TABLES=new Set([
   'app_logs','user_notification_prefs','auth_rate_limits','circles',
   'circle_memberships','circle_invitations','circle_audit_events',
   'circle_membership_rollout','pairing_cycles','pairing_cycle_availability',
+  'auth_provider_identities','auth_sessions','outbox_events','outbox_audit_events',
 ]);
 const REQUIRED_INDEXES=new Set([
   'idx_video_signals_room','idx_video_signals_room_id','idx_pair_messages_pair',
@@ -36,6 +40,8 @@ const REQUIRED_INDEXES=new Set([
   'idx_circle_memberships_user_active','idx_circle_memberships_circle_active',
   'idx_circle_invitations_circle_created','idx_circle_invitations_email',
   'idx_circle_audit_circle_created','idx_pairing_cycle_availability_candidates',
+  'idx_auth_sessions_user_active',
+  'idx_outbox_events_dispatch','idx_outbox_events_lease','idx_outbox_audit_event',
 ]);
 const REQUIRED_OBJECTS=new Set([...REQUIRED_TABLES,...REQUIRED_INDEXES]);
 
@@ -103,7 +109,7 @@ async function validateLedger(db){
 }
 
 /** Build a data-independent fingerprint using only SELECT and bounded PRAGMA. */
-export async function pairingSchemaV3Fingerprint(db){
+export async function pairingSchemaV6Fingerprint(db){
   if(!db||typeof db.execute!=='function') throw new TypeError('database client required');
   const objectResult=await db.execute(`SELECT type,name,tbl_name,sql FROM sqlite_schema
     WHERE type IN ('table','index','view','trigger') ORDER BY type,name LIMIT 256`);
@@ -162,7 +168,7 @@ export async function pairingSchemaV3Fingerprint(db){
 }
 
 /** Read-only, request-safe verification of the exact managed state needed by publication. */
-export async function pairingSchemaV3Ready(db,{requireClosedMembership=false}={}){
+export async function pairingSchemaV6Ready(db,{requireClosedMembership=false}={}){
   if(!db||typeof db.execute!=='function') return false;
   try{
     const foreignKeys=await db.execute('PRAGMA foreign_keys');
@@ -170,7 +176,7 @@ export async function pairingSchemaV3Ready(db,{requireClosedMembership=false}={}
     if(Number(foreignKeys.rows?.[0]?.foreign_keys)!==1
       ||Number(checks.rows?.[0]?.ignore_check_constraints)!==0
       ||!(await validateLedger(db))) return false;
-    if((await pairingSchemaV3Fingerprint(db))!==PAIRING_SCHEMA_V3_FINGERPRINT) return false;
+    if((await pairingSchemaV6Fingerprint(db))!==PAIRING_SCHEMA_V6_FINGERPRINT) return false;
     if(requireClosedMembership){
       const membership=await inspectCompletedMembershipRollout(db);
       if(!membership.ok||membership.registrationState!=='closed') return false;

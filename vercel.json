@@ -135,6 +135,14 @@
       "destination": "/api/ops?endpoint=weekly"
     },
     {
+      "source": "/api/cron/outbox",
+      "destination": "/api/ops?endpoint=outbox"
+    },
+    {
+      "source": "/api/admin/outbox/replay",
+      "destination": "/api/ops?endpoint=outbox-replay"
+    },
+    {
       "source": "/api/admin/demo-seed",
       "destination": "/api/ops?endpoint=demo-seed"
     },

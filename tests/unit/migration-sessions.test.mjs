@@ -22,15 +22,18 @@ test('v5 adds only durable hashed sessions and remains exact after restart',asyn
   const directory=mkdtempSync(join(tmpdir(),'randori-session-migration-'));
   const url=`file:${join(directory,'database.sqlite')}`;
   const db=createClient({url});
+  const sessionMigrations=EXECUTABLE_MIGRATIONS.slice(0,5);
   try{
     await apply(db,EXECUTABLE_MIGRATIONS.slice(0,4));
     await db.execute(`INSERT INTO auth_accounts (id,email,password_hash,display_name,color)
       VALUES (1,'member@example.test','hash','Member','#123456')`);
-    const before=await inspectMigrationState(db);
+    const before=await inspectMigrationState(db,{migrations:sessionMigrations});
     assert.equal(before.currentVersion,4);
     assert.equal(before.latestVersion,5);
     assert.equal(before.ready,true);
-    const result=await applyMigrations(db,{expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY});
+    const result=await applyMigrations(db,{
+      migrations:sessionMigrations,expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY,
+    });
     assert.deepEqual(result.applied.map(item=>item.version),[5]);
 
     const validHash='a'.repeat(64);
@@ -64,7 +67,7 @@ test('v5 adds only durable hashed sessions and remains exact after restart',asyn
     const reopened=createClient({url});
     try{
       await prepareMigrationConnection(reopened);
-      const state=await inspectMigrationState(reopened);
+      const state=await inspectMigrationState(reopened,{migrations:sessionMigrations});
       assert.equal(state.currentVersion,5);
       assert.equal(state.ready,true);
       const rows=await reopened.execute(`SELECT session_hash,user_id,created_at,expires_at FROM auth_sessions`);

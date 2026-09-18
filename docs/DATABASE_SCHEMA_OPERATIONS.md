@@ -4,7 +4,7 @@ Randori has read-only schema inspection for configured databases, a transactiona
 
 ## Contract
 
-- `db/schema-manifest.js` is the current contract: 32 application tables and 28 named indexes.
+- `db/schema-manifest.js` is the current contract: 34 application tables and 31 named indexes.
 - The manifest includes column/default/primary-key contracts, checks, foreign keys, unique constraints, AUTOINCREMENT/collation/table options, and unique, partial, descending, and expression-index semantics. SQLite-created `sqlite_autoindex_*` indexes are intentionally outside the named-index count.
 - `ai_monthly_usage` is a retired table. Its presence is reported as tolerated legacy state; it is not treated as current schema and is never changed.
 - `schema_migrations` is a runner-owned operational table. General schema inspection recognizes it without treating it as unexpected application drift; the migration runner validates its exact schema and rows separately.
@@ -14,6 +14,7 @@ Randori has read-only schema inspection for configured databases, a transactiona
 - Migration v3 adds the canonical `pairing_cycles` and `pairing_cycle_availability` contracts. It is additive: v1 and v2 definitions and checksums remain unchanged. A cycle row binds the full UTC boundary/time-zone descriptor to a tenant scope, while availability rows use an optimistic integer version and an exact integer boolean. The legacy account boolean is not the durable source of truth for these tables.
 - Migration v4 adds the provider-identity contract keyed by OpenID Connect issuer and subject, with a second uniqueness constraint allowing at most one identity from an issuer per account. Existing Google subjects remain in `auth_accounts.google_sub` for compatibility and are bound to the canonical issuer on their next verified sign-in.
 - Migration v5 adds durable application sessions keyed only by a hashed random identifier, with fixed creation/expiry bounds, explicit revocation metadata, account cascading, and an account-scoped active-session lookup index. Runtime authentication probes this schema read-only and fails closed; it never creates session storage on a request path.
+- Migration v6 adds the provider-neutral `outbox_events` and `outbox_audit_events` contracts plus dispatch, lease, and audit indexes. It is additive: earlier migration definitions and checksums remain immutable. Pairing email is the first event adapter; request paths never create or alter these tables. Before each drain, an idempotent DML-only compatibility bridge copies actionable rows from the legacy pairing queue using the exact historical provider idempotency key; terminal legacy rows are not redelivered.
 
 ## Commands
 
@@ -43,7 +44,7 @@ Representative output fields:
   "manifest": {"version": 1, "checksum": "..."},
   "foreignKeysEnabled": true,
   "checkConstraintsEnabled": true,
-  "summary": {"expectedTables": 32, "expectedIndexes": 28, "blockers": 0},
+  "summary": {"expectedTables": 34, "expectedIndexes": 31, "blockers": 0},
   "drift": {
     "missingTables": [],
     "missingColumns": [],
@@ -95,8 +96,8 @@ npm run --silent db:migrate -- \
   adopt --database file:///absolute/path/to/restored-randori.db \
   --expected-state <v2StateFingerprint> --through-version 2
 
-# Inspect again without a prefix. The result must be managed at v2 with v3 and
-# v3, v4, and v5 pending before using its new full-set fingerprint for the upgrade.
+# Inspect again without a prefix. The result must be managed at v2 with v3,
+# v4, v5, and v6 pending before using its new full-set fingerprint for the upgrade.
 npm run --silent db:migrate -- \
   status --database file:///absolute/path/to/restored-randori.db
 

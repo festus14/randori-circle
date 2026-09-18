@@ -36,6 +36,13 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'d5a2f7fc1beded3486c29cd419ac4941ad5d8b43ae5485764606575c7e64a918',
     checksum:'f6dcccada588712be68f1e02ea48c688b6cc3d48d3f4ff36764d6e1259ca5e34',
   }),
+  Object.freeze({
+    version:6,
+    name:'durable-provider-neutral-outbox',
+    description:'Versioned transactional events with bounded leases, retries, dead letters, and replay audit.',
+    operationsChecksum:'8cb0d17a3c0fb53519d3b02843e534b90447b48b00c3fb0f1da0af75b38ee17b',
+    checksum:'f64e694d6f493128347f3544a6a03af62b77d4e4a8f00592ed85055ae2a5d68b',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){

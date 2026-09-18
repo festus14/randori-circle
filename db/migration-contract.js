@@ -26,6 +26,11 @@ export const MIGRATION_CONTRACTS=Object.freeze([
     name:'durable-revocable-sessions',
     checksum:'cad0dcadb3b75ae267dd6d7ff9393507e122f0d104e648357631a1c4af0b98ad',
   }),
+  Object.freeze({
+    version:6,
+    name:'durable-provider-neutral-outbox',
+    checksum:'e62bdb26e9055eeae387e80bbd3dba08130228bf9a42673b2fceecddd9fc2f6b',
+  }),
 ]);
 
 export const LATEST_MIGRATION_VERSION=MIGRATION_CONTRACTS.at(-1)?.version||0;

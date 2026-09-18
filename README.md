@@ -36,6 +36,7 @@ This private-beta sync is whole-document compare-and-swap, not a CRDT: members s
 - Mutations enforce same-origin requests for cookie sessions; API callers may use pinned Bearer JWTs.
 - Circle, pairing, schedule, chat, feedback, execution, and signaling endpoints require scoped authorisation.
 - Weekly pairing writes are atomic and concurrency-safe. Notifications use an idempotent retryable outbox.
+- Outbox workers use expiring token-bound leases, heartbeats, provider timeouts, bounded backoff, dead letters, and audited operator replay. Provider idempotency keys remain stable across crashes and replay; metrics and logs contain aggregate state only.
 - AI is disabled unless explicitly enabled and consented to.
 - Automated LeetCode retrieval is disabled without written authorisation. The app uses approved local content or outbound links.
 
@@ -53,7 +54,9 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_db.js` | Turso client, durable session issuance/revocation, JWT verification, CSRF helpers |
 | `api/_catalog.js` | original exercise catalogue validation, public projections, server-owned evaluation cases |
 | `api/_pairing.js` | deterministic fairness and canonical room identifiers |
-| `api/_pairing-publication.js` | managed-v3 readiness, transaction-bound owner/cron publication, immutable snapshots, and idempotency |
+| `api/_pairing-publication.js` | managed-v6 readiness, transaction-bound owner/cron publication, immutable snapshots, and idempotency |
+| `api/_outbox.js` | provider-neutral leases, heartbeats, timeouts, retry/dead-letter transitions, replay audit, and aggregate metrics |
+| `api/_pairing-email.js` | versioned pairing-email event validation, rendering, preferences, and provider adaptation |
 | `api/_availability.js` | tenant-scoped weekly cycle identity, strict optimistic availability updates, and publication filtering |
 | `api/_schedule.js` | strict schedule validation, legacy projection, opaque versions, and conflict-safe mutations |
 | `api/_messages.js` | strict chat input, cursor, storage projection, and schema-readiness validation |
@@ -61,7 +64,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_pair-access.js` | shared source-aware authorization for canonical private pair rooms |
 | `api/_circle-membership.js` | primary-circle membership, keyed invite hashes, signed short-lived claims, and audited acceptance |
 | `api/invitations.js` | owner-only invitation lifecycle and rate-limited public preparation |
-| `db/schema-manifest.js` | checksummed contract for 32 application tables and 28 named indexes |
+| `db/schema-manifest.js` | checksummed contract for 34 application tables and 31 named indexes |
 | `db/schema-inspector.js` | read-only SQLite drift inspection and non-executable planning |
 
 The target Next.js/Supabase architecture is intentionally phased rather than introduced as a big-bang rewrite.
@@ -82,6 +85,8 @@ Copy `.env.example` and configure at least:
 See [GOOGLE_OAUTH.md](GOOGLE_OAUTH.md) and [TURSO.md](TURSO.md) for provider setup. Back up the database before first deploying migrations.
 
 Authentication rate limiting is migration-owned: runtime requests never create `auth_rate_limits`. A deployment with missing or stale migration state fails authentication closed with a temporary-unavailability response; complete the migration/readiness gate before serving traffic rather than enabling request-time schema writes.
+
+Pairing publication and its versioned email events commit in one transaction. Provider calls begin only after that commit. `GET|POST /api/cron/outbox` uses the existing `CRON_SECRET` and drains due events independently of the weekly publication endpoint; configure a five-minute scheduler on a platform that supports that cadence. `POST /api/admin/outbox/replay` lets a non-demo global administrator replay only a dead-letter event with one of the bounded reason codes `OPERATOR_RETRY`, `PROVIDER_RECOVERED`, or `CONFIGURATION_FIXED`. Replay preserves the original provider idempotency key.
 
 Google OAuth has one fail-closed configuration boundary shared by capability discovery, start, and callback. Production and hosted deployments require both provider credentials, an explicit canonical HTTPS `APP_URL`, and matching trusted proxy host/protocol headers. Invalid configuration returns only a generic unavailable response and performs no provider or database work. The isolated local runtime always disables Google credentials.
 

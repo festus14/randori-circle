@@ -6,7 +6,7 @@ import {
 } from './_availability.js';
 import { buildFairPairing } from './_pairing.js';
 import { resolvePairingCycle } from './_pairing-cycle.js';
-import { pairingSchemaV3Ready } from './_pairing-readiness.js';
+import { pairingSchemaV6Ready } from './_pairing-readiness.js';
 
 const PARTICIPANT_SOURCES=new Set(['auth','users']);
 const NOTIFICATION_KINDS=new Set(['paired','unavailable']);
@@ -339,11 +339,17 @@ function writeStatements({cycle,participants,pairing,recipients,generationToken}
   });
   recipients.forEach(recipient=>{
     statements.push({
-      sql:`INSERT INTO pairing_email_outbox (week_id,user_id,kind,recipient_email)
-        SELECT week_id,?,?,? FROM pairing_week_runs
+      sql:`INSERT INTO outbox_events
+          (event_type,event_version,idempotency_key,payload_json,status,not_before,next_attempt_at,
+           attempt_count,max_attempts,delivery_timeout_ms,created_at,updated_at)
+        SELECT 'pairing.email.requested',1,'randori/'||week_id||'/'||?||'/'||CAST(? AS INTEGER),
+          json_object('week_id',week_id,'user_id',?,'kind',?,'recipient_email',?),
+          'pending',strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+          0,5,10000,strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        FROM pairing_week_runs
         WHERE week_label=? AND generation_token=? AND week_id IS NOT NULL
-        ON CONFLICT(week_id,user_id,kind) DO NOTHING`,
-      args:[recipient.id,recipient.kind,recipient.email,cycle.cycleId,generationToken],
+        ON CONFLICT(idempotency_key) DO NOTHING`,
+      args:[recipient.kind,recipient.id,recipient.id,recipient.kind,recipient.email,cycle.cycleId,generationToken],
     });
   });
   return statements;
@@ -452,9 +458,9 @@ async function publicationNow(db,value){
   return instant;
 }
 
-async function assertSchemaV3Readiness(db,{localRuntime}){
+async function assertSchemaV6Readiness(db,{localRuntime}){
   let ready;
-  try{ ready=await pairingSchemaV3Ready(db,{requireClosedMembership:!localRuntime}); }
+  try{ ready=await pairingSchemaV6Ready(db,{requireClosedMembership:!localRuntime}); }
   catch(error){ fail('PAIRING_PUBLICATION_SCHEMA_UNAVAILABLE','Pairing publication schema is unavailable.',error); }
   if(ready!==true){
     fail('PAIRING_PUBLICATION_SCHEMA_UNAVAILABLE','Pairing publication schema is unavailable.');
@@ -592,7 +598,7 @@ export async function publishPairingCycle(db,options={}){
     let commitStarted=false;
     try{
       transaction=await db.transaction('write');
-      await assertSchemaV3Readiness(transaction,{localRuntime:options.localRuntime});
+      await assertSchemaV6Readiness(transaction,{localRuntime:options.localRuntime});
       const now=await publicationNow(transaction,options.now);
       const scope=await resolveAvailabilityPublicationScope(transaction,{
         localRuntime:options.localRuntime,

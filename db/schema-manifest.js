@@ -100,6 +100,14 @@ const PLAN_5_OPERATIONS=Object.freeze([
   index('idx_auth_sessions_user_active','auth_sessions',['user_id','revoked_at','expires_at']),
 ]);
 
+const PLAN_6_OPERATIONS=Object.freeze([
+  table('outbox_events',`CREATE TABLE IF NOT EXISTS outbox_events (id INTEGER PRIMARY KEY AUTOINCREMENT, event_type TEXT NOT NULL CHECK(length(event_type)>=3 AND length(event_type)<=100), event_version INTEGER NOT NULL CHECK(typeof(event_version)='integer' AND event_version>=1 AND event_version<=1000), idempotency_key TEXT NOT NULL UNIQUE CHECK(length(idempotency_key)>=8 AND length(idempotency_key)<=255), payload_json TEXT NOT NULL CHECK(length(payload_json)<=65536 AND json_valid(payload_json) AND json_type(payload_json)='object'), status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','retry','delivered','suppressed','dead_letter')), not_before TEXT NOT NULL, next_attempt_at TEXT NOT NULL, attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(typeof(attempt_count)='integer' AND attempt_count>=0), max_attempts INTEGER NOT NULL DEFAULT 5 CHECK(typeof(max_attempts)='integer' AND max_attempts BETWEEN 1 AND 100), delivery_timeout_ms INTEGER NOT NULL DEFAULT 10000 CHECK(typeof(delivery_timeout_ms)='integer' AND delivery_timeout_ms BETWEEN 100 AND 120000), lease_owner TEXT, lease_token TEXT, leased_until TEXT, claim_from_status TEXT CHECK(claim_from_status IS NULL OR claim_from_status IN ('pending','processing','retry')), provider_name TEXT, provider_message_id TEXT, last_error_code TEXT, delivered_at TEXT, dead_lettered_at TEXT, replay_count INTEGER NOT NULL DEFAULT 0 CHECK(typeof(replay_count)='integer' AND replay_count>=0), created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), CHECK((status='processing' AND lease_owner IS NOT NULL AND lease_token IS NOT NULL AND leased_until IS NOT NULL) OR (status<>'processing' AND lease_owner IS NULL AND lease_token IS NULL AND leased_until IS NULL)))`),
+  table('outbox_audit_events',`CREATE TABLE IF NOT EXISTS outbox_audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, outbox_event_id INTEGER NOT NULL, action TEXT NOT NULL CHECK(action IN ('claimed','lease_renewed','retry_scheduled','delivered','suppressed','dead_lettered','replayed')), actor_type TEXT NOT NULL CHECK(actor_type IN ('worker','operator','system')), actor_ref TEXT NOT NULL CHECK(length(actor_ref)>=1 AND length(actor_ref)<=100), from_status TEXT, to_status TEXT NOT NULL, reason_code TEXT CHECK(reason_code IS NULL OR (length(reason_code)>=1 AND length(reason_code)<=64)), attempt_number INTEGER NOT NULL CHECK(typeof(attempt_number)='integer' AND attempt_number>=0), created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), FOREIGN KEY(outbox_event_id) REFERENCES outbox_events(id) ON DELETE RESTRICT)`),
+  index('idx_outbox_events_dispatch','outbox_events',['status','next_attempt_at','not_before','id']),
+  index('idx_outbox_events_lease','outbox_events',['status','leased_until','id']),
+  index('idx_outbox_audit_event','outbox_audit_events',['outbox_event_id','id']),
+]);
+
 export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:1,
@@ -123,6 +131,10 @@ export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:5,
     operations:PLAN_5_OPERATIONS,
+  }),
+  Object.freeze({
+    version:6,
+    operations:PLAN_6_OPERATIONS,
   }),
 ]);
 
@@ -163,7 +175,7 @@ export const SCHEMA_MANIFEST_CHECKSUM=checksum({
 
 // Updating the schema is intentional only when this pinned checksum is updated
 // in the same reviewed change.
-export const PINNED_SCHEMA_MANIFEST_CHECKSUM='8811175d83d7fbfdf7ac2f2ad4eecb708b007bd0907361d3c4432c6ce8fb8692';
+export const PINNED_SCHEMA_MANIFEST_CHECKSUM='8bfdd7481bf89d3613ffaaa7fba38da4d7af7603d32269b444e44b47632c820f';
 
 if(SCHEMA_MANIFEST_CHECKSUM!==PINNED_SCHEMA_MANIFEST_CHECKSUM){
   throw new Error(`Schema manifest checksum changed: ${SCHEMA_MANIFEST_CHECKSUM}`);
