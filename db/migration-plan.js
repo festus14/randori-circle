@@ -15,6 +15,13 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'896b4f35344c19a0c70ef091d95a0b50af36d66259893ef6a0b0782c8b8d574a',
     checksum:'ceb0f119d72971762c5c1d9c93e6000386fc90fe43bbf0a9713f326932059d28',
   }),
+  Object.freeze({
+    version:3,
+    name:'cycle-scoped-availability',
+    description:'Per-scope weekly availability with immutable cycle contracts and optimistic versions.',
+    operationsChecksum:'73abd55d97917fc5fede6aff7a5bc8394a6408319e87a6bd295eaca3d7a0e7b5',
+    checksum:'0f88f5d6c9b305cb2bef7601aeaf3259615c8d7e59443ea66060bdafe1a6e948',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){

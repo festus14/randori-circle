@@ -19,7 +19,8 @@ test('schema manifest pins all current tables and named indexes',()=>{
     'pair_room_snapshots','pair_messages','pair_schedules','session_runs','ai_sessions','ai_feedback',
     'ai_usage','ai_account_monthly_usage','ai_account_monthly_reservations','ai_consents','app_logs',
     'user_notification_prefs','auth_rate_limits','circles','circle_memberships','circle_invitations',
-    'circle_audit_events','circle_membership_rollout',
+    'circle_audit_events','circle_membership_rollout','pairing_cycles',
+    'pairing_cycle_availability',
   ]);
   assert.deepEqual(INDEXES.map(item=>item.name),[
     'idx_video_signals_room','idx_video_signals_room_id','idx_pair_messages_pair','idx_pair_sched_pair',
@@ -30,7 +31,7 @@ test('schema manifest pins all current tables and named indexes',()=>{
     'idx_pairing_weeks_week_label','uq_auth_accounts_google_sub','uq_circles_active_primary',
     'idx_circle_memberships_user_active','idx_circle_memberships_circle_active',
     'idx_circle_invitations_circle_created','idx_circle_invitations_email',
-    'idx_circle_audit_circle_created',
+    'idx_circle_audit_circle_created','idx_pairing_cycle_availability_candidates',
   ]);
   assert.equal(new Set(TABLES.map(item=>item.name)).size,TABLES.length);
   assert.equal(new Set(INDEXES.map(item=>item.name)).size,INDEXES.length);
@@ -43,7 +44,23 @@ test('schema manifest pins all current tables and named indexes',()=>{
 
 test('immutable migration metadata is contiguous and checksum protected',()=>{
   assert.equal(validateMigrationPlans(),true);
-  assert.deepEqual(MIGRATION_PLANS.map(plan=>plan.version),[1,2]);
+  assert.deepEqual(MIGRATION_PLANS.map(plan=>plan.version),[1,2,3]);
+  assert.deepEqual(MIGRATION_PLANS.slice(0,2).map(plan=>({
+    version:plan.version,operationsChecksum:plan.operationsChecksum,checksum:plan.checksum,
+  })),[{
+    version:1,
+    operationsChecksum:'2291bdea8c396ce13b3760c15e81b42f027e40cf3d4748400b208f3b06834cdf',
+    checksum:'f5d7b032abc2848fe63fbcc14264f210e488c7b9b9fd33b073affb191dca085a',
+  },{
+    version:2,
+    operationsChecksum:'896b4f35344c19a0c70ef091d95a0b50af36d66259893ef6a0b0782c8b8d574a',
+    checksum:'ceb0f119d72971762c5c1d9c93e6000386fc90fe43bbf0a9713f326932059d28',
+  }]);
+  assert.deepEqual(MIGRATION_PLANS[2].operations.map(operation=>`${operation.operation}:${operation.name}`),[
+    'ensure-table:pairing_cycles',
+    'ensure-table:pairing_cycle_availability',
+    'ensure-index:idx_pairing_cycle_availability_candidates',
+  ]);
   assert.ok(MIGRATION_PLANS.every(plan=>/^[a-f0-9]{64}$/.test(plan.operationsChecksum)));
   assert.ok(MIGRATION_PLANS.flatMap(plan=>plan.operations).every(operation=>{
     return typeof operation.sql==='string'&&/^CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX)/i.test(operation.sql);
@@ -102,25 +119,25 @@ test('migration metadata covers every artifact and supports append-only replacem
   assert.throws(()=>validateMigrationPlans(duplicate.map(repin)),/repeats canonical operations/);
 
   const unsupported=repin({
-    version:3,name:'unsupported-operation',description:'Invalid operation example.',
+    version:4,name:'unsupported-operation',description:'Invalid operation example.',
     operations:[{operation:'drop-table',name:'users',sql:'DROP TABLE users'}],
   });
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,unsupported]),/unsupported operation/);
 
   const mislabeled=repin({
-    version:3,name:'mislabeled-table',description:'Invalid table example.',
+    version:4,name:'mislabeled-table',description:'Invalid table example.',
     operations:[{operation:'ensure-table',name:'users',sql:'DROP TABLE users'}],
   });
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,mislabeled]),/non-canonical CREATE TABLE/);
 
   const multipleStatements=repin({
-    version:3,name:'multiple-statements',description:'Invalid SQL example.',
+    version:4,name:'multiple-statements',description:'Invalid SQL example.',
     operations:[{operation:'ensure-table',name:'users',sql:'CREATE TABLE users (id INTEGER); DROP TABLE auth_accounts'}],
   });
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,multipleStatements]),/invalid ensure-table definition/);
 
   const danglingIndex=repin({
-    version:3,name:'dangling-index',description:'Invalid index example.',
+    version:4,name:'dangling-index',description:'Invalid index example.',
     operations:[{
       operation:'ensure-index',name:'idx_video_signals_room',table:'missing_table',
       keyParts:['room_id'],unique:false,where:null,
@@ -130,7 +147,7 @@ test('migration metadata covers every artifact and supports append-only replacem
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,danglingIndex]),/references unknown table/);
 
   const replacement={...MIGRATION_PLANS[0].operations.find(operation=>operation.name==='users'),sql:'CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)'};
-  const appended=repin({version:3,name:'future-users-contract',description:'Future replacement example.',operations:[replacement]});
+  const appended=repin({version:4,name:'future-users-contract',description:'Future replacement example.',operations:[replacement]});
   assert.equal(validateMigrationPlans([...MIGRATION_PLANS,appended]),true);
 });
 
@@ -142,6 +159,13 @@ test('table contracts expose column defaults and composite primary keys',()=>{
   const usage=expectedColumns(TABLES.find(item=>item.name==='ai_account_monthly_usage'));
   assert.equal(usage.find(item=>item.name==='month').primaryKeyPosition,1);
   assert.equal(usage.find(item=>item.name==='user_id').primaryKeyPosition,2);
+  const cycles=expectedColumns(TABLES.find(item=>item.name==='pairing_cycles'));
+  assert.equal(cycles.find(item=>item.name==='scope_key').primaryKeyPosition,1);
+  assert.equal(cycles.find(item=>item.name==='cycle_key').primaryKeyPosition,2);
+  const availability=expectedColumns(TABLES.find(item=>item.name==='pairing_cycle_availability'));
+  assert.equal(availability.find(item=>item.name==='scope_key').primaryKeyPosition,1);
+  assert.equal(availability.find(item=>item.name==='cycle_key').primaryKeyPosition,2);
+  assert.equal(availability.find(item=>item.name==='user_id').primaryKeyPosition,3);
 });
 
 test('index parser preserves unique, partial, expression, and sort semantics',()=>{

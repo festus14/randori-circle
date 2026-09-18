@@ -4,12 +4,13 @@ Randori has read-only schema inspection for configured databases and a transacti
 
 ## Contract
 
-- `db/schema-manifest.js` is the current contract: 28 application tables and 26 named indexes.
+- `db/schema-manifest.js` is the current contract: 30 application tables and 27 named indexes.
 - The manifest includes column/default/primary-key contracts, checks, foreign keys, unique constraints, AUTOINCREMENT/collation/table options, and unique, partial, descending, and expression-index semantics. SQLite-created `sqlite_autoindex_*` indexes are intentionally outside the named-index count.
 - `ai_monthly_usage` is a retired table. Its presence is reported as tolerated legacy state; it is not treated as current schema and is never changed.
 - `schema_migrations` is a runner-owned operational table. General schema inspection recognizes it without treating it as unexpected application drift; the migration runner validates its exact schema and rows separately.
 - Each plan owns a frozen ordered snapshot of its canonical table/index definitions. Both that operation snapshot and the surrounding plan metadata have pinned SHA-256 checksums, while the resolved current schema has a separate checksum. A reviewed schema change must append a plan containing the replacement definition; later definitions for the same artifact supersede earlier ones without rewriting their history.
 - `db:plan` remains descriptive and non-executable. The local runner uses separately checksummed executable migrations and records their exact version, name, checksum, timing, and disposition in `schema_migrations`.
+- Migration v3 adds the canonical `pairing_cycles` and `pairing_cycle_availability` contracts. It is additive: v1 and v2 definitions and checksums remain unchanged. A cycle row binds the full UTC boundary/time-zone descriptor to a tenant scope, while availability rows use an optimistic integer version and an exact integer boolean. The legacy account boolean is not the durable source of truth for these tables.
 
 ## Commands
 
@@ -39,7 +40,7 @@ Representative output fields:
   "manifest": {"version": 1, "checksum": "..."},
   "foreignKeysEnabled": true,
   "checkConstraintsEnabled": true,
-  "summary": {"expectedTables": 28, "expectedIndexes": 26, "blockers": 0},
+  "summary": {"expectedTables": 30, "expectedIndexes": 27, "blockers": 0},
   "drift": {
     "missingTables": [],
     "missingColumns": [],
