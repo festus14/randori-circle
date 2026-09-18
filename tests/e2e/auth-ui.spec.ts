@@ -163,6 +163,7 @@ test('a stalled signup can be cancelled without accepting a stale response and t
 test('a pre-auth refresh cannot clear a newer successful signup identity', async ({ page }) => {
   const user = { id: 4, email: 'fresh@example.test', name: 'Fresh User', is_admin: true, tz: 'Europe/London' };
   let signedUp = false;
+  let authMeCalls = 0;
   let delayNextRefresh = false;
   let delayedRefreshStarted = false;
   let releaseDelayedRefresh: (() => void) | undefined;
@@ -171,6 +172,7 @@ test('a pre-auth refresh cannot clear a newer successful signup identity', async
   await mockApi(page, {
     '/api/auth/capabilities': localCapabilities,
     '/api/auth/me': async () => {
+      authMeCalls += 1;
       if(delayNextRefresh){
         delayNextRefresh=false;
         delayedRefreshStarted=true;
@@ -189,8 +191,13 @@ test('a pre-auth refresh cannot clear a newer successful signup identity', async
   await resetClientState(page);
   await page.goto('/', { waitUntil: 'domcontentloaded' });
 
+  // Let the page's three scheduled bootstrap refreshes finish so the request
+  // armed below is unambiguously the pre-auth request under test.
+  await expect.poll(()=>authMeCalls).toBeGreaterThanOrEqual(3);
+  const bootstrapRefreshCount=authMeCalls;
   delayNextRefresh=true;
   const staleRefresh=page.evaluate(()=>(window as any)._randori_auth.refreshMe());
+  await expect.poll(()=>authMeCalls).toBe(bootstrapRefreshCount+1);
   await expect.poll(()=>delayedRefreshStarted).toBe(true);
 
   await page.locator('#landingSignup').click();
