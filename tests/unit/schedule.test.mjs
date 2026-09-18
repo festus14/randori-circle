@@ -509,7 +509,8 @@ test('concurrent schedule reads share one in-flight schema probe',async()=>{
   currentDb={
     async execute(statement){
       const sql=sqlText(statement);
-      if(sql.includes('FROM pairing_groups AS pg')&&sql.includes("viewer.source='auth'")){
+      if(sql.includes('FROM pairing_groups AS pg')&&sql.includes("viewer.source='auth'")
+        &&!sql.includes('FROM pair_schedules')){
         accessChecks+=1;
         return {rows:[{pair_group_id:20,week_id:10,user_a_id:2,user_b_id:4,user_c_id:null}]};
       }
@@ -521,7 +522,9 @@ test('concurrent schedule reads share one in-flight schema probe',async()=>{
       }
       if(sql.startsWith("PRAGMA index_list('pair_schedules')")) return {rows:[{name:'unique_pair',unique:1}]};
       if(sql.startsWith('PRAGMA index_info')) return {rows:[{seqno:0,name:'week_id'},{seqno:1,name:'pair_group_id'}]};
-      if(sql.includes('FROM pair_schedules WHERE week_id=')) return {rows:[]};
+      if(sql.includes('FROM pair_schedules WHERE week_id=')){
+        return {rows:[{proposed_times:null,agreed_time:null,updated_at:null,data_present:0}]};
+      }
       return {rows:[]};
     },
   };

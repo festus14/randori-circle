@@ -804,24 +804,31 @@ test('pair run feed strictly validates cursors and authorizes the exact canonica
     assert.equal(executed.length,0,'invalid room feed queries must fail before database access');
   }
 
-  let access='missing';
-  executeHandler=sql=>{
-    if(sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')){
-      if(access==='missing') return rows([]);
-      return rows([]);
+  for(const access of ['missing','forbidden']){
+    const accessDb=createClient({url:'file::memory:'});
+    try{
+      await accessDb.batch([
+        `CREATE TABLE auth_accounts (id INTEGER PRIMARY KEY,email TEXT,display_name TEXT,color TEXT)`,
+        `CREATE TABLE pairing_groups (id INTEGER PRIMARY KEY,week_id INTEGER NOT NULL,user_a_id INTEGER NOT NULL,user_b_id INTEGER NOT NULL,user_c_id INTEGER)`,
+        `CREATE TABLE pairing_participants (week_id INTEGER NOT NULL,user_id INTEGER NOT NULL,position INTEGER NOT NULL,source TEXT NOT NULL,PRIMARY KEY(week_id,user_id))`,
+        `CREATE TABLE session_runs (id INTEGER PRIMARY KEY,user_id INTEGER,week_id INTEGER,pair_group_id INTEGER,question_id INTEGER,question_slug TEXT,language TEXT,code TEXT NOT NULL,test_cases_snapshot TEXT,results_json TEXT,passed_count INTEGER,total_count INTEGER,duration_ms INTEGER,created_at TEXT)`,
+      ],'write');
+      if(access==='forbidden'){
+        await accessDb.batch([
+          `INSERT INTO pairing_groups (id,week_id,user_a_id,user_b_id,user_c_id) VALUES (2,1,4,5,NULL)`,
+          `INSERT INTO pairing_participants (week_id,user_id,position,source) VALUES (1,4,0,'auth'),(1,5,1,'auth')`,
+        ],'write');
+      }
+      databaseDelegate=accessDb;
+      const denied=await invoke(dataHandler,{
+        url:'/api/runs',query:{endpoint:'runs',room_id:'week_1_pair_2'},headers,
+      });
+      assert.equal(denied.status,404,access);
+    }finally{
+      databaseDelegate=null;
+      accessDb.close();
     }
-    if(sql.includes('FROM session_runs sr')) throw new Error('unauthorized run feed must not be queried');
-    return rows();
-  };
-  const missing=await invoke(dataHandler,{
-    url:'/api/runs',query:{endpoint:'runs',room_id:'week_1_pair_2'},headers,
-  });
-  assert.equal(missing.status,404);
-  access='forbidden';
-  const forbidden=await invoke(dataHandler,{
-    url:'/api/runs',query:{endpoint:'runs',room_id:'week_1_pair_2'},headers,
-  });
-  assert.equal(forbidden.status,404);
+  }
 
   executeHandler=(sql,args)=>{
     if(sql.includes('FROM session_runs WHERE user_id=')){
