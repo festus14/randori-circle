@@ -20,6 +20,7 @@ import { randomBytes } from 'node:crypto';
 import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createClient } from '@libsql/client';
+import bcrypt from 'bcryptjs';
 import {
   applyMigrations,
   inspectMigrationState,
@@ -65,6 +66,10 @@ const MIME_TYPES=Object.freeze({
   '.woff2':'font/woff2',
 });
 const BROWSER_ASSET_DIRECTORIES=Object.freeze(['assets','public']);
+export const LOCAL_OWNER_EMAIL='owner@randori.test';
+export const LOCAL_OWNER_PASSWORD='randori-local-owner';
+export const LOCAL_OWNER_NAME='Local Circle Owner';
+const LOCAL_OWNER_COLOR='#c8f6a0';
 
 export class LocalServerError extends Error {
   constructor(code,message,{cause}={}){
@@ -387,6 +392,91 @@ export async function prepareLocalDatabase(config,{
     guard.close();
     if(closeError){
       throw new LocalServerError('LOCAL_DATABASE_NOT_READY','The local database connection did not close safely.',{cause:closeError});
+    }
+  }
+}
+
+export async function seedLocalOnboarding(config,{
+  createDatabaseClient=createClient,
+  hashPassword=(value,cost)=>bcrypt.hash(value,cost),
+  comparePassword=(value,hash)=>bcrypt.compare(value,hash),
+}={}){
+  if(!config?.databaseUrl||!config?.databasePath||!config?.localDirectory
+    ||dirname(config.databasePath)!==config.localDirectory
+    ||!isWithin(config.localDirectory,config.databasePath)){
+    refuse('LOCAL_DATABASE_REFUSED','A resolved isolated local database is required for development seeding.');
+  }
+  let parsed;
+  try{ parsed=new URL(config.databaseUrl); }
+  catch(error){ refuse('LOCAL_DATABASE_REFUSED','The local seed database URL is invalid.',error); }
+  if(parsed.protocol!=='file:'||parsed.host||parsed.username||parsed.password||parsed.search||parsed.hash
+    ||resolve(fileURLToPath(parsed))!==config.databasePath){
+    refuse('LOCAL_DATABASE_REFUSED','Development seed data may be written only to the configured local file database.');
+  }
+
+  const client=createDatabaseClient({url:config.databaseUrl});
+  try{
+    await prepareMigrationConnection(client);
+    const state=await inspectMigrationState(client);
+    if(state.classification!=='managed'||!state.ready||state.currentVersion!==state.latestVersion){
+      refuse('LOCAL_DATABASE_NOT_READY','The local database must be fully migrated before development seeding.');
+    }
+    const existing=await client.execute({
+      sql:`SELECT id,password_hash FROM auth_accounts WHERE email=? LIMIT 1`,
+      args:[LOCAL_OWNER_EMAIL],
+    });
+    let ownerId;
+    let created=false;
+    if(existing.rows?.length){
+      ownerId=Number(existing.rows[0].id);
+      const expectedPassword=await comparePassword(LOCAL_OWNER_PASSWORD,String(existing.rows[0].password_hash||''));
+      if(!Number.isSafeInteger(ownerId)||ownerId<1||!expectedPassword){
+        refuse('LOCAL_SEED_CONFLICT','The reserved local owner identity conflicts with existing data; use the scoped reset command.');
+      }
+      await client.execute({
+        sql:`UPDATE auth_accounts SET is_admin=1,is_demo=0 WHERE id=?`,
+        args:[ownerId],
+      });
+    }else{
+      const passwordHash=await hashPassword(LOCAL_OWNER_PASSWORD,10);
+      const inserted=await client.execute({
+        sql:`INSERT INTO auth_accounts
+          (email,password_hash,display_name,color,is_available,is_admin,is_demo,bio,tz,interview_focus)
+          VALUES (?,?,?,?,1,1,0,'Local development owner','Europe/London','both')
+          RETURNING id`,
+        args:[LOCAL_OWNER_EMAIL,passwordHash,LOCAL_OWNER_NAME,LOCAL_OWNER_COLOR],
+      });
+      ownerId=Number(inserted.rows?.[0]?.id);
+      created=true;
+    }
+    if(!Number.isSafeInteger(ownerId)||ownerId<1){
+      refuse('LOCAL_DATABASE_NOT_READY','The deterministic local owner could not be prepared.');
+    }
+    const {initializePrimaryCircle}=await import('../api/_circle-membership.js');
+    const {circleId}=await initializePrimaryCircle(client,{ownerUserId:ownerId,ownerEmails:[LOCAL_OWNER_EMAIL]});
+    const verified=await client.execute({
+      sql:`SELECT account.id,membership.role,membership.status,rollout.registrations_closed
+        FROM auth_accounts account
+        JOIN circle_memberships membership ON membership.user_id=account.id
+        JOIN circles circle ON circle.id=membership.circle_id
+        JOIN circle_membership_rollout rollout ON rollout.id=1
+        WHERE account.id=? AND account.email=? AND account.is_admin=1 AND account.is_demo=0
+          AND membership.circle_id=? AND membership.role='owner' AND membership.status='active'
+          AND circle.is_primary=1 AND circle.archived_at IS NULL
+        LIMIT 1`,
+      args:[ownerId,LOCAL_OWNER_EMAIL,circleId],
+    });
+    if(verified.rows?.length!==1||Number(verified.rows[0].registrations_closed)!==1){
+      refuse('LOCAL_DATABASE_NOT_READY','The local owner and private circle seed could not be verified.');
+    }
+    return Object.freeze({created,ownerId,circleId,email:LOCAL_OWNER_EMAIL});
+  }catch(error){
+    if(error instanceof LocalServerError) throw error;
+    throw new LocalServerError('LOCAL_DATABASE_NOT_READY','The local onboarding seed could not be prepared.',{cause:error});
+  }finally{
+    try{ await client.close(); }
+    catch(error){
+      throw new LocalServerError('LOCAL_DATABASE_NOT_READY','The local seed database did not close safely.',{cause:error});
     }
   }
 }
@@ -781,11 +871,12 @@ function installRuntimeEnvironment(config,url,secret,envTarget=process.env){
     RUN_ATTESTATION_SECRET:'',
     RUN_ATTESTATION_PREVIOUS_SECRETS:'',
     APP_URL:url,
-    ALLOW_OPEN_SIGNUP:'true',
-    CIRCLE_MEMBERSHIP_ENABLED:'false',
+    ALLOW_OPEN_SIGNUP:'false',
+    CIRCLE_MEMBERSHIP_ENABLED:'true',
     AUTH_SCHEMA_BOOTSTRAP_ENABLED:'false',
     RANDORI_LOCAL_RUNTIME:'true',
-    RANDORI_LOCAL_FIRST_USER_ADMIN:'true',
+    RANDORI_LOCAL_IDENTITY:'true',
+    RANDORI_LOCAL_FIRST_USER_ADMIN:'false',
     LEETCODE_INGESTION_AUTHORIZED:'false',
     GOOGLE_CLIENT_ID:'',
     GOOGLE_CLIENT_SECRET:'',
@@ -832,6 +923,7 @@ export async function createLocalDevelopmentServer({
   const log=safeLogger(logger);
   const runtimeLock=acquireLocalRuntimeLock(config);
   let database;
+  let onboarding;
   let secret;
   try{
     database=await prepareLocalDatabase(config);
@@ -927,6 +1019,7 @@ export async function createLocalDevelopmentServer({
       const displayHost=config.host==='::1'?'[::1]':config.host;
       url=`http://${displayHost}:${address.port}`;
       restoreEnvironment=installRuntimeEnvironment(config,url,secret,envTarget);
+      onboarding=await seedLocalOnboarding(config);
       const defaultRuntime=await loadDefaultRuntime();
       closeRequestDatabase=defaultRuntime.closeDatabase;
       runtimeHandlers={...defaultRuntime.handlers,...(handlers||{})};
@@ -957,6 +1050,7 @@ export async function createLocalDevelopmentServer({
       event:'local-server-ready',
       url,
       database:{kind:'local-file',created:database.created,currentVersion:database.currentVersion},
+      onboarding:{mode:'invite-bound-local-identity',ownerEmail:onboarding.email,ownerPassword:LOCAL_OWNER_PASSWORD},
     }));
     return lifecycle;
   };

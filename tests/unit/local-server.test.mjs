@@ -26,6 +26,8 @@ import {
 } from '../../db/migration-runner.js';
 import {
   createLocalDevelopmentServer,
+  LOCAL_OWNER_EMAIL,
+  LOCAL_OWNER_PASSWORD,
   prepareLocalDatabase,
   resetLocalDatabase,
   resolveLocalServerConfig,
@@ -87,6 +89,17 @@ function cookiePair(response){
   const setCookie=response.headers.get('set-cookie');
   assert.ok(setCookie,'response must set the session cookie');
   return setCookie.split(';',1)[0];
+}
+
+function namedCookie(response,name){
+  const values=typeof response.headers.getSetCookie==='function'
+    ?response.headers.getSetCookie()
+    :[response.headers.get('set-cookie')||''];
+  const matches=values.flatMap(value=>[...String(value).matchAll(
+    new RegExp(`(?:^|[,;]\\s*)${name}=([^;,]*)`,'g'),
+  )]).filter(match=>match[1]);
+  assert.ok(matches.length,`response must set ${name}`);
+  return `${name}=${matches.at(-1)[1]}`;
 }
 
 function requestRaw(baseUrl,{path='/',method='GET',headers={},body=''}={}){
@@ -453,7 +466,7 @@ test('reset preflights every sidecar and secret before deleting any local state'
   assert.equal(existsSync(external),true);
 });
 
-test('the real auth handler signs up locally and persists the account and session across restart',async()=>{
+test('the real local runtime persists owner, invite-bound signup, membership, session, and pairing across restart',async()=>{
   const directory=temporaryDirectory();
   const {config,databaseUrl}=localConfig(directory);
   const first=registerRuntime(await startLocalDevelopmentServer({config,logger:SILENT_LOGGER}));
@@ -468,8 +481,8 @@ test('the real auth handler signs up locally and persists the account and sessio
   assert.equal(capabilities.headers.get('cache-control'),'no-store');
   assert.deepEqual(await capabilities.json(),{
     ok:true,
-    capabilities:{passwordLogin:true,passwordSignup:true,googleOAuth:false},
-    registrationMode:'local_open',
+    capabilities:{passwordLogin:true,passwordSignup:true,localIdentity:true,googleOAuth:false},
+    registrationMode:'local_invite',
   });
 
   const health=await fetch(new URL('/api/health',first.url));
@@ -483,38 +496,78 @@ test('the real auth handler signs up locally and persists the account and sessio
   const firstSharedClient=getClient();
   assert.equal(getClient(),firstSharedClient,'local requests must reuse one database client');
 
-  const signup=await fetch(new URL('/api/auth/signup',first.url),{
+  const ownerLogin=await fetch(new URL('/api/auth/login',first.url),{
     method:'POST',
     headers:{'content-type':'application/json',origin:first.url},
     body:JSON.stringify({
-      email:'LOCAL.User@example.test',
-      password:'correct horse battery',
-      name:'Local User',
+      email:LOCAL_OWNER_EMAIL,
+      password:LOCAL_OWNER_PASSWORD,
     }),
+  });
+  const ownerPayload=await jsonResponse(ownerLogin);
+  assert.equal(ownerLogin.status,200,ownerPayload.text);
+  assert.equal(ownerPayload.body.user.email,LOCAL_OWNER_EMAIL);
+  assert.equal(ownerPayload.body.user.is_admin,true);
+  const ownerCookie=cookiePair(ownerLogin);
+
+  const noInvite=await fetch(new URL('/api/auth/signup',first.url),{
+    method:'POST',
+    headers:{'content-type':'application/json',origin:first.url},
+    body:JSON.stringify({
+      email:'member@example.test',password:'another correct horse battery',name:'Invited Member',
+    }),
+  });
+  assert.equal(noInvite.status,403);
+
+  const invitation=await fetch(new URL('/api/invitations',first.url),{
+    method:'POST',
+    headers:{'content-type':'application/json',origin:first.url,cookie:ownerCookie},
+    body:JSON.stringify({email:'member@example.test'}),
+  });
+  const invitationPayload=await jsonResponse(invitation);
+  assert.equal(invitation.status,201,invitationPayload.text);
+  const inviteUrl=String(invitationPayload.body.invitation.invite_url);
+  assert.match(inviteUrl,/^\/invite#invite=[A-Za-z0-9_-]{43}$/);
+  const inviteToken=inviteUrl.split('=')[1];
+
+  const prepared=await fetch(new URL('/api/invitations/prepare',first.url),{
+    method:'POST',
+    headers:{'content-type':'application/json',origin:first.url},
+    body:JSON.stringify({token:inviteToken}),
+  });
+  assert.equal(prepared.status,200,await prepared.clone().text());
+  const inviteCookie=namedCookie(prepared,'randori_invite_claim');
+  assert.doesNotMatch(prepared.headers.get('set-cookie')||'',/randori_invite_claim=[^;,]+[^;]*; Secure/);
+
+  const wrongEmail=await fetch(new URL('/api/auth/signup',first.url),{
+    method:'POST',
+    headers:{'content-type':'application/json',origin:first.url,cookie:inviteCookie},
+    body:JSON.stringify({email:'wrong@example.test',password:'another correct horse battery',name:'Wrong Member'}),
+  });
+  assert.equal(wrongEmail.status,403);
+
+  const signup=await fetch(new URL('/api/auth/signup',first.url),{
+    method:'POST',
+    headers:{'content-type':'application/json',origin:first.url,cookie:inviteCookie},
+    body:JSON.stringify({email:'member@example.test',password:'another correct horse battery',name:'Invited Member'}),
   });
   const signupPayload=await jsonResponse(signup);
   assert.equal(signup.status,200,signupPayload.text);
-  assert.equal(signupPayload.body.ok,true);
-  assert.equal(signupPayload.body.user.email,'local.user@example.test');
-  assert.equal(signupPayload.body.user.is_admin,true);
+  assert.equal(signupPayload.body.user.email,'member@example.test');
+  assert.equal(signupPayload.body.user.is_admin,false);
   assert.equal('token' in signupPayload.body,false);
-  const sessionCookie=cookiePair(signup);
+  const memberCookie=namedCookie(signup,'randori_session');
 
-  const secondSignup=await fetch(new URL('/api/auth/signup',first.url),{
-    method:'POST',
-    headers:{'content-type':'application/json',origin:first.url},
-    body:JSON.stringify({
-      email:'second.local@example.test',
-      password:'another correct horse battery',
-      name:'Second Local',
-    }),
-  });
-  const secondPayload=await jsonResponse(secondSignup);
-  assert.equal(secondSignup.status,200,secondPayload.text);
-  assert.equal(secondPayload.body.user.is_admin,false);
+  const memberCircle=await fetch(new URL('/api/circle',first.url),{headers:{cookie:memberCookie}});
+  const memberCirclePayload=await jsonResponse(memberCircle);
+  assert.equal(memberCircle.status,200,memberCirclePayload.text);
+  assert.equal(memberCirclePayload.body.membership.role,'member');
+  assert.deepEqual(memberCirclePayload.body.circle.map(person=>person.name).sort(),[
+    'Invited Member','Local Circle Owner',
+  ]);
 
   const pairingRequest=()=>fetch(new URL('/api/pairing/run',first.url),{
-    method:'POST',headers:{'content-type':'application/json',origin:first.url,cookie:sessionCookie},body:'{}',
+    method:'POST',headers:{'content-type':'application/json',origin:first.url,cookie:ownerCookie},body:'{}',
   });
   const pairingResponses=await Promise.all([pairingRequest(),pairingRequest()]);
   const pairingPayloads=await Promise.all(pairingResponses.map(jsonResponse));
@@ -528,26 +581,32 @@ test('the real auth handler signs up locally and persists the account and sessio
   assert.equal(pairingPayloads.filter(item=>item.body.created===false).length,1);
   assert.equal(pairingPayloads[0].body.week_id,pairingPayloads[1].body.week_id);
   assert.deepEqual(pairingPayloads[0].body.pairs,pairingPayloads[1].body.pairs);
+  const capture=pairingPayloads.find(item=>item.body.email_delivery?.captured?.length)?.body.email_delivery;
+  assert.equal(capture.captured.length,2);
+  assert.match(capture.summary,/no external delivery/);
+  assert.equal(capture.captured.some(item=>item.recipient_email==='member@example.test'),true);
+  assert.equal(capture.captured.flatMap(item=>item.links).some(link=>
+    link===`${first.url}/join/${pairingPayloads[0].body.pairs[0].room}`),true);
   const reshufflePayload=pairingPayloads[0];
 
-  const weeks=await fetch(new URL('/api/weeks',first.url),{headers:{cookie:sessionCookie}});
+  const weeks=await fetch(new URL('/api/weeks',first.url),{headers:{cookie:memberCookie}});
   const weeksPayload=await jsonResponse(weeks);
   assert.equal(weeks.status,200,weeksPayload.text);
   assert.equal(weeksPayload.body.weeks.length,1);
   assert.equal(weeksPayload.body.weeks[0].is_current,true);
   assert.equal(weeksPayload.body.current_week_id,reshufflePayload.body.week_id);
 
-  const myPair=await fetch(new URL('/api/my-pair',first.url),{headers:{cookie:sessionCookie}});
+  const myPair=await fetch(new URL('/api/my-pair',first.url),{headers:{cookie:memberCookie}});
   const myPairPayload=await jsonResponse(myPair);
   assert.equal(myPair.status,200,myPairPayload.text);
   assert.equal(myPairPayload.body.paired,true);
   assert.equal(myPairPayload.body.room_id,reshufflePayload.body.pairs[0].room);
 
   const me=await fetch(new URL('/api/auth/me',first.url),{
-    headers:{cookie:sessionCookie},
+    headers:{cookie:memberCookie},
   });
   assert.equal(me.status,200);
-  assert.equal((await me.json()).user.email,'local.user@example.test');
+  assert.equal((await me.json()).user.email,'member@example.test');
 
   await first.close();
   cleanup.pop();
@@ -555,11 +614,20 @@ test('the real auth handler signs up locally and persists the account and sessio
   const persisted=createClient({url:databaseUrl});
   const accountRows=await persisted.execute({
     sql:'SELECT email,display_name,password_hash FROM auth_accounts WHERE email=?',
-    args:['local.user@example.test'],
+    args:['member@example.test'],
   });
   assert.equal(accountRows.rows.length,1);
-  assert.equal(accountRows.rows[0].display_name,'Local User');
+  assert.equal(accountRows.rows[0].display_name,'Invited Member');
   assert.match(String(accountRows.rows[0].password_hash),/^\$2/);
+  const membershipRows=await persisted.execute({
+    sql:`SELECT membership.role,invitation.used_by
+      FROM auth_accounts account
+      JOIN circle_memberships membership ON membership.user_id=account.id
+      JOIN circle_invitations invitation ON invitation.used_by=account.id
+      WHERE account.email=?`,
+    args:['member@example.test'],
+  });
+  assert.deepEqual(membershipRows.rows.map(row=>String(row.role)),['member']);
   const pairingRows=await persisted.execute({
     sql:`SELECT COUNT(*) AS count FROM pairing_groups pg
       JOIN pairing_week_runs pwr ON pwr.week_id=pg.week_id
@@ -572,18 +640,18 @@ test('the real auth handler signs up locally and persists the account and sessio
   const second=registerRuntime(await startLocalDevelopmentServer({config,logger:SILENT_LOGGER}));
   assert.notEqual(getClient(),firstSharedClient,'shutdown must close and release the shared database client');
   const existingSession=await fetch(new URL('/api/auth/me',second.url),{
-    headers:{cookie:sessionCookie},
+    headers:{cookie:memberCookie},
   });
   assert.equal(existingSession.status,200);
-  assert.equal((await existingSession.json()).user.email,'local.user@example.test');
+  assert.equal((await existingSession.json()).user.email,'member@example.test');
 
   const login=await fetch(new URL('/api/auth/login',second.url),{
     method:'POST',
     headers:{'content-type':'application/json',origin:second.url},
-    body:JSON.stringify({email:'local.user@example.test',password:'correct horse battery'}),
+    body:JSON.stringify({email:'member@example.test',password:'another correct horse battery'}),
   });
   assert.equal(login.status,200);
-  assert.equal((await login.json()).user.name,'Local User');
+  assert.equal((await login.json()).user.name,'Invited Member');
   assert.match(cookiePair(login),/^randori_session=/);
 });
 
@@ -599,22 +667,22 @@ test('different local databases use different session keys',async()=>{
   assert.notEqual(firstConfig.secretPath,secondConfig.secretPath);
 
   const first=await startLocalDevelopmentServer({config:firstConfig,logger:SILENT_LOGGER});
-  const firstSignup=await fetch(new URL('/api/auth/signup',first.url),{
+  const firstLogin=await fetch(new URL('/api/auth/login',first.url),{
     method:'POST',
     headers:{'content-type':'application/json',origin:first.url},
-    body:JSON.stringify({email:'first-db@example.test',password:'correct horse battery',name:'First DB'}),
+    body:JSON.stringify({email:LOCAL_OWNER_EMAIL,password:LOCAL_OWNER_PASSWORD}),
   });
-  assert.equal(firstSignup.status,200);
-  const firstCookie=cookiePair(firstSignup);
+  assert.equal(firstLogin.status,200);
+  const firstCookie=cookiePair(firstLogin);
   await first.close();
 
   const second=registerRuntime(await startLocalDevelopmentServer({config:secondConfig,logger:SILENT_LOGGER}));
-  const secondSignup=await fetch(new URL('/api/auth/signup',second.url),{
+  const secondLogin=await fetch(new URL('/api/auth/login',second.url),{
     method:'POST',
     headers:{'content-type':'application/json',origin:second.url},
-    body:JSON.stringify({email:'second-db@example.test',password:'another correct horse',name:'Second DB'}),
+    body:JSON.stringify({email:LOCAL_OWNER_EMAIL,password:LOCAL_OWNER_PASSWORD}),
   });
-  assert.equal(secondSignup.status,200);
+  assert.equal(secondLogin.status,200);
   const crossedSession=await fetch(new URL('/api/auth/me',second.url),{headers:{cookie:firstCookie}});
   assert.equal(crossedSession.status,401);
   assert.deepEqual(await crossedSession.json(),{error:'authentication required'});
@@ -750,6 +818,9 @@ test('runtime environment disables ambient providers and restores the caller env
           ingestionAuthorized:envTarget.LEETCODE_INGESTION_AUTHORIZED,
           runAttestationSecret:envTarget.RUN_ATTESTATION_SECRET,
           previousAttestationSecrets:envTarget.RUN_ATTESTATION_PREVIOUS_SECRETS,
+          membershipEnabled:envTarget.CIRCLE_MEMBERSHIP_ENABLED,
+          localIdentity:envTarget.RANDORI_LOCAL_IDENTITY,
+          openSignup:envTarget.ALLOW_OPEN_SIGNUP,
         });
       },
     },
@@ -769,6 +840,9 @@ test('runtime environment disables ambient providers and restores the caller env
     ingestionAuthorized:'false',
     runAttestationSecret:'',
     previousAttestationSecrets:'',
+    membershipEnabled:'true',
+    localIdentity:'true',
+    openSignup:'false',
   });
   await runtime.close();
   cleanup.pop();

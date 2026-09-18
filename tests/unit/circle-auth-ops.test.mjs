@@ -87,6 +87,7 @@ mock.module('../../api/_circle-membership.js',{
       accountAcceptanceCalls.push(input);
       return accountAcceptanceResult;
     },
+    createPasswordAccountFromPreparedInvitation:async()=>({ok:false}),
   },
 });
 

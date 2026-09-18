@@ -174,12 +174,12 @@ export function readInviteClaim(req){
   return {invitation_id,circle_id,token_hash,email_hash,iat:value.iat,exp:value.exp};
 }
 
-export function inviteClaimCookie(claim){
-  return `${INVITE_CLAIM_COOKIE}=${encodeURIComponent(claim)}; Path=/api/auth; HttpOnly; Secure; SameSite=Lax; Max-Age=${INVITE_CLAIM_TTL_SECONDS}`;
+export function inviteClaimCookie(claim,{secure=true}={}){
+  return `${INVITE_CLAIM_COOKIE}=${encodeURIComponent(claim)}; Path=/api/auth; HttpOnly${secure?'; Secure':''}; SameSite=Lax; Max-Age=${INVITE_CLAIM_TTL_SECONDS}`;
 }
 
-export function clearInviteClaimCookie(){
-  return `${INVITE_CLAIM_COOKIE}=; Path=/api/auth; HttpOnly; Secure; SameSite=Lax; Max-Age=0`;
+export function clearInviteClaimCookie({secure=true}={}){
+  return `${INVITE_CLAIM_COOKIE}=; Path=/api/auth; HttpOnly${secure?'; Secure':''}; SameSite=Lax; Max-Age=0`;
 }
 
 function readinessCache(db){
@@ -469,6 +469,98 @@ export async function createGoogleAccountFromPreparedInvitation(db,{
     is_admin:!!accountRow.is_admin,
     circle_id:Number(acceptedRow.circle_id),
     created:!!created?.rows?.length,
+    idempotent:!audit?.rows?.length,
+  };
+}
+
+export async function createPasswordAccountFromPreparedInvitation(db,{
+  claim,email,passwordHash,displayName,color,isAdmin=false,
+}){
+  const parsed=validClaimObject(claim);
+  const normalizedEmail=normalizeInvitationEmail(email);
+  const emailHash=hashInvitationEmail(normalizedEmail);
+  const safePasswordHash=typeof passwordHash==='string'&&passwordHash.startsWith('$2')&&passwordHash.length<=128
+    ?passwordHash:null;
+  const safeDisplayName=typeof displayName==='string'&&displayName.trim()?displayName.trim().slice(0,32):null;
+  const safeColor=typeof color==='string'&&color.length<=32?color:null;
+  if(!parsed||!normalizedEmail||!emailHash||!safeEqual(parsed.email_hash,emailHash)
+    ||!safePasswordHash||!safeDisplayName||!safeColor){
+    return {ok:false};
+  }
+  const acceptedAt=new Date().toISOString();
+  const auditKey=`invite-accepted:${parsed.invitation_id}`;
+  const accountArgs=[normalizedEmail,safePasswordHash,safeDisplayName,safeColor,isAdmin?1:0,
+    parsed.invitation_id,parsed.circle_id,parsed.token_hash,emailHash];
+  const accountLookupArgs=[normalizedEmail,safePasswordHash];
+  const [created,accepted,membership,audit,account]=await db.batch([{
+    sql:`INSERT INTO auth_accounts
+        (email,password_hash,display_name,color,last_login,is_available,is_admin,google_sub)
+      SELECT ?,?,?,?,datetime('now'),1,?,NULL
+      WHERE EXISTS (
+        SELECT 1 FROM circle_invitations ci JOIN circles c ON c.id=ci.circle_id
+        WHERE ci.id=? AND ci.circle_id=? AND ci.token_hash=? AND ci.email_hash=?
+          AND ci.used_at IS NULL AND ci.used_by IS NULL AND ci.revoked_at IS NULL
+          AND datetime(ci.expires_at)>datetime('now')
+          AND c.is_primary=1 AND c.archived_at IS NULL
+      )
+      ON CONFLICT(email) DO NOTHING
+      RETURNING id`,
+    args:accountArgs,
+  },{
+    sql:`UPDATE circle_invitations
+      SET used_at=COALESCE(used_at,?),
+        used_by=COALESCE(used_by,(SELECT id FROM auth_accounts
+          WHERE email=? AND password_hash=? AND google_sub IS NULL))
+      WHERE id=? AND circle_id=? AND token_hash=? AND email_hash=? AND revoked_at IS NULL
+        AND used_at IS NULL AND used_by IS NULL AND datetime(expires_at)>datetime('now')
+        AND EXISTS (SELECT 1 FROM circles WHERE id=circle_id AND is_primary=1 AND archived_at IS NULL)
+        AND EXISTS (SELECT 1 FROM auth_accounts
+          WHERE email=? AND password_hash=? AND google_sub IS NULL)
+      RETURNING circle_id,used_by`,
+    args:[acceptedAt,...accountLookupArgs,parsed.invitation_id,parsed.circle_id,parsed.token_hash,emailHash,
+      ...accountLookupArgs],
+  },{
+    sql:`INSERT INTO circle_memberships (circle_id,user_id,role,status,invited_by,joined_at,updated_at)
+      SELECT ci.circle_id,account.id,'member','active',ci.created_by,COALESCE(ci.used_at,?),?
+      FROM circle_invitations ci JOIN circles c ON c.id=ci.circle_id
+      JOIN auth_accounts account ON account.email=? AND account.password_hash=? AND account.google_sub IS NULL
+      WHERE ci.id=? AND ci.circle_id=? AND ci.token_hash=? AND ci.email_hash=?
+        AND ci.used_by=account.id AND ci.revoked_at IS NULL
+        AND c.is_primary=1 AND c.archived_at IS NULL
+      ON CONFLICT(circle_id,user_id) DO NOTHING
+      RETURNING circle_id,user_id,role,status`,
+    args:[acceptedAt,acceptedAt,...accountLookupArgs,parsed.invitation_id,parsed.circle_id,parsed.token_hash,emailHash],
+  },{
+    sql:`INSERT INTO circle_audit_events
+        (circle_id,event_type,actor_user_id,subject_user_id,invitation_id,dedupe_key,created_at)
+      SELECT ci.circle_id,'invitation.accepted',account.id,account.id,ci.id,?,?
+      FROM circle_invitations ci JOIN circles c ON c.id=ci.circle_id
+      JOIN auth_accounts account ON account.email=? AND account.password_hash=? AND account.google_sub IS NULL
+      WHERE ci.id=? AND ci.circle_id=? AND ci.token_hash=? AND ci.email_hash=?
+        AND ci.used_by=account.id AND ci.revoked_at IS NULL
+        AND c.is_primary=1 AND c.archived_at IS NULL
+      ON CONFLICT(dedupe_key) DO NOTHING
+      RETURNING id`,
+    args:[auditKey,acceptedAt,...accountLookupArgs,parsed.invitation_id,parsed.circle_id,parsed.token_hash,emailHash],
+  },{
+    sql:`SELECT account.id,account.is_admin,membership.status
+      FROM auth_accounts account JOIN circle_memberships membership ON membership.user_id=account.id
+      WHERE account.email=? AND account.password_hash=? AND account.google_sub IS NULL
+        AND membership.circle_id=? AND membership.status='active'
+      LIMIT 1`,
+    args:[...accountLookupArgs,parsed.circle_id],
+  }], 'write');
+  const acceptedRow=accepted?.rows?.[0];
+  const memberRow=membership?.rows?.[0];
+  const accountRow=account?.rows?.[0];
+  if(!created?.rows?.length||!acceptedRow||!memberRow||!accountRow
+    ||Number(acceptedRow.used_by)!==Number(accountRow.id)) return {ok:false};
+  return {
+    ok:true,
+    user_id:Number(accountRow.id),
+    is_admin:!!accountRow.is_admin,
+    circle_id:Number(acceptedRow.circle_id),
+    created:true,
     idempotent:!audit?.rows?.length,
   };
 }

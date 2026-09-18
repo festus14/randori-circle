@@ -707,7 +707,7 @@ p{margin:0}
         <div class="card">
           <div class="card-h"><h2>You’re invited to Randori</h2><span>private circle</span></div>
           <div class="card-b" style="display:grid;gap:14px">
-            <p class="small muted" style="line-height:1.6;margin:0">Confirm the Google account that received this invitation. The invitation is single-use and expires automatically.</p>
+            <p id="inviteInstructions" class="small muted" style="line-height:1.6;margin:0">Confirm the Google account that received this invitation. The invitation is single-use and expires automatically.</p>
             <div id="inviteStatus" data-testid="invite-status" class="small muted" role="status" aria-live="polite">Checking invitation…</div>
             <div><button id="inviteContinue" data-testid="invite-continue" class="btn" type="button" disabled>Continue with Google</button></div>
           </div>
@@ -1087,7 +1087,7 @@ p{margin:0}
   const TOKEN_KEY='randori-token';
   const ME_KEY='randori-me';
   let me = null;
-  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,googleOAuth:false});
+  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,localIdentity:false,googleOAuth:false,registrationMode:'private_beta'});
   let authCapabilities=CLOSED_AUTH_CAPABILITIES;
   let authCapabilitiesLoaded=false;
   let authCapabilitiesFailed=false;
@@ -1126,14 +1126,25 @@ p{margin:0}
     const landing=document.getElementById('view-invite'); if(landing) landing.style.display='block';
     const status=document.getElementById('inviteStatus');
     const button=document.getElementById('inviteContinue');
+    const instructions=document.getElementById('inviteInstructions');
+    const localInvite=authCapabilitiesLoaded&&authCapabilities.localIdentity
+      &&authCapabilities.registrationMode==='local_invite';
+    if(instructions) instructions.textContent=localInvite
+      ?'Create a local account with the email that received this invitation. The development identity adapter treats that email as verified and never contacts an external provider.'
+      :'Confirm the Google account that received this invitation. The invitation is single-use and expires automatically.';
     if(status){
       status.textContent=inviteState.rateLimited
         ? `Too many attempts. Try again${inviteState.retryAfter?` in ${inviteState.retryAfter} seconds`: ' later'}.`
         : (inviteState.failed
           ? 'This invitation is unavailable or has expired.'
-          : (inviteState.ready?'Invitation verified. Continue with the invited Google account.':'Checking invitation…'));
+          : (inviteState.ready
+            ?(localInvite?'Invitation verified. Create the invited local account.':'Invitation verified. Continue with the invited Google account.')
+            :'Checking invitation…'));
     }
-    if(button) button.disabled=!inviteState.ready;
+    if(button){
+      button.disabled=!inviteState.ready;
+      button.textContent=localInvite?'Create local account':'Continue with Google';
+    }
     return true;
   }
   async function finishInvitePreparation(){
@@ -1151,14 +1162,23 @@ p{margin:0}
     }
     renderInviteLanding();
   }
-  document.getElementById('inviteContinue')?.addEventListener('click',()=>{
+  document.getElementById('inviteContinue')?.addEventListener('click',async()=>{
     if(!inviteState.ready) return;
+    await authCapabilitiesPromise;
+    if(authCapabilities.localIdentity&&authCapabilities.registrationMode==='local_invite'){
+      openAuthModal('signup');
+      return;
+    }
     window.location.href='/api/auth/google/start';
   });
   window._randori_invite_flow={
     get active(){ return inviteState.active; },
     get ready(){ return inviteState.ready; },
     show:renderInviteLanding,
+    complete(){
+      inviteState.active=false;
+      try{ window.history.replaceState({},document.title,'/'); }catch{}
+    },
   };
   if(inviteState.active) renderInviteLanding();
   finishInvitePreparation();
@@ -1346,11 +1366,13 @@ async function refreshMe(){
     if(payload?.ok!==true||!capabilities||typeof capabilities!=='object'
       ||typeof capabilities.passwordLogin!=='boolean'
       ||typeof capabilities.passwordSignup!=='boolean'
+      ||(capabilities.localIdentity!==undefined&&typeof capabilities.localIdentity!=='boolean')
       ||typeof capabilities.googleOAuth!=='boolean'
-      ||!['local_open','private_beta'].includes(mode)) throw new Error('invalid auth capabilities');
+      ||!['local_open','local_invite','private_beta'].includes(mode)) throw new Error('invalid auth capabilities');
     return Object.freeze({
       passwordLogin:capabilities.passwordLogin,
       passwordSignup:capabilities.passwordSignup,
+      localIdentity:capabilities.localIdentity===true,
       googleOAuth:capabilities.googleOAuth,
       registrationMode:mode,
     });
@@ -1367,6 +1389,11 @@ async function refreshMe(){
     if(!authCapabilitiesLoaded) return 'Checking sign-in options…';
     if(authCapabilitiesFailed) return 'New-account options could not be verified. Existing members can still try password sign-in.';
     if(authMode==='signup'&&authCapabilities.passwordSignup){
+      if(authCapabilities.registrationMode==='local_invite'){
+        return inviteState.ready
+          ?'This local account will use the verified invitation and join the private circle.'
+          :'A valid local invitation is required before creating an account.';
+      }
       return authCapabilities.registrationMode==='local_open'
         ? 'Create a local account. The first account can manage weekly pairing.'
         : 'Create your account to join the circle.';
@@ -1470,6 +1497,7 @@ async function refreshMe(){
       authCapabilitiesLoaded=true;
       authMode=resolvedAuthMode(authMode);
       renderAuthModal();
+      renderInviteLanding();
       focusAuthControl();
     }
     return authCapabilities;
@@ -1771,6 +1799,9 @@ async function refreshMe(){
       localStorage.removeItem(TOKEN_KEY);
       localStorage.setItem(ME_KEY,JSON.stringify(data.user));
       me=data.user;
+      if(mode==='signup'&&authCapabilities.registrationMode==='local_invite'){
+        window._randori_invite_flow?.complete?.();
+      }
       closeAuthModal();
       try{ updateAuthUI(); }catch{}
       try{ renderHistory(); }catch{}

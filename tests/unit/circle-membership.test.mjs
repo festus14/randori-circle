@@ -276,6 +276,57 @@ test('new Google account creation and invitation acceptance commit atomically',a
   assert.deepEqual(duplicateAccounts.rows.map(row=>String(row.email)),['old-address@example.test']);
 });
 
+test('new local password account creation uses the same atomic invitation and membership contract',async()=>{
+  currentDb=await createDatabase();
+  const email='local.invitee@example.test';
+  const token=membership.createInvitationToken();
+  const invitationId='d4948c6c-23e0-4b0f-9dd2-45e9367fc456';
+  await currentDb.execute({
+    sql:`INSERT INTO circle_invitations
+      (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at)
+      VALUES (?,?,?,?,?,datetime('now'),datetime('now','+7 days'))`,
+    args:[invitationId,10,membership.hashInvitationToken(token),membership.hashInvitationEmail(email),1],
+  });
+  const prepared=await membership.prepareInvitationClaim(currentDb,{token});
+  const claim=membership.readInviteClaim({headers:{cookie:
+    `${membership.INVITE_CLAIM_COOKIE}=${prepared.claim}`}});
+  const passwordHash=`$2b$10$${'A'.repeat(53)}`;
+  const accepted=await membership.createPasswordAccountFromPreparedInvitation(currentDb,{
+    claim,email,passwordHash,displayName:'Local Invitee',color:'#123456',isAdmin:false,
+  });
+  assert.equal(accepted.ok,true);
+  assert.equal(accepted.created,true);
+  const state=await currentDb.execute({
+    sql:`SELECT account.password_hash,account.google_sub,membership.role,membership.status,
+        invitation.used_by,audit.event_type
+      FROM auth_accounts account
+      JOIN circle_memberships membership ON membership.user_id=account.id AND membership.circle_id=10
+      JOIN circle_invitations invitation ON invitation.id=? AND invitation.used_by=account.id
+      JOIN circle_audit_events audit ON audit.invitation_id=invitation.id
+      WHERE account.email=?`,
+    args:[invitationId,email],
+  });
+  assert.equal(state.rows.length,1);
+  assert.equal(state.rows[0].password_hash,passwordHash);
+  assert.equal(state.rows[0].google_sub,null);
+  assert.equal(state.rows[0].role,'member');
+  assert.equal(state.rows[0].status,'active');
+  assert.equal(state.rows[0].event_type,'invitation.accepted');
+
+  const replay=await membership.createPasswordAccountFromPreparedInvitation(currentDb,{
+    claim,email,passwordHash:`$2b$10$${'B'.repeat(53)}`,displayName:'Local Invitee',color:'#123456',
+  });
+  assert.deepEqual(replay,{ok:false});
+  const accounts=await currentDb.execute({sql:`SELECT COUNT(*) AS count FROM auth_accounts WHERE email=?`,args:[email]});
+  assert.equal(Number(accounts.rows[0].count),1);
+
+  const wrongEmail=await membership.createPasswordAccountFromPreparedInvitation(currentDb,{
+    claim,email:'other@example.test',passwordHash:`$2b$10$${'C'.repeat(53)}`,
+    displayName:'Other User',color:'#654321',
+  });
+  assert.deepEqual(wrongEmail,{ok:false});
+});
+
 test('controlled initialization backfills only non-demo auth accounts and audits once',async()=>{
   currentDb=await createDatabase();
   assert.equal(await membership.circleMembershipCutoverStarted(currentDb),false);

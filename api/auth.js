@@ -10,10 +10,12 @@ import {
   circleMembershipEnabled,
   clearInviteClaimCookie,
   createGoogleAccountFromPreparedInvitation,
+  createPasswordAccountFromPreparedInvitation,
   hasActivePrimaryCircleMembership,
   readInviteClaim,
   validatePreparedInvitation,
 } from './_circle-membership.js';
+import { localIdentityAdapterEnabled, localRuntimeRequest } from './_local-runtime.js';
 
 const SESSION_COOKIE = 'randori_session';
 const OAUTH_STATE_COOKIE = 'randori_oauth_state';
@@ -121,22 +123,6 @@ function registrationAllowed(email){
   return process.env.NODE_ENV!=='production' && allowlist.length===0;
 }
 
-function isLoopbackHost(value){
-  const raw=String(value||'').split(',')[0].trim();
-  if(!raw) return false;
-  try{
-    const hostname=new URL(`http://${raw}`).hostname.replace(/^\[|\]$/g,'').toLowerCase();
-    return hostname==='localhost'||hostname==='127.0.0.1'||hostname==='::1';
-  }catch{
-    return false;
-  }
-}
-
-function isLoopbackAddress(value){
-  const address=String(value||'').trim().toLowerCase();
-  return address==='127.0.0.1'||address==='::1'||address==='::ffff:127.0.0.1';
-}
-
 /**
  * Password registration is deliberately a local-development capability, not
  * a general non-production escape hatch. Keep this predicate shared by the
@@ -144,41 +130,27 @@ function isLoopbackAddress(value){
  * authority than the server will enforce.
  */
 export function localPasswordSignupEnabled(req){
-  if(process.env.NODE_ENV!=='development'
-    ||process.env.RANDORI_LOCAL_RUNTIME!=='true'
-    ||process.env.ALLOW_OPEN_SIGNUP!=='true'
-    ||process.env.CIRCLE_MEMBERSHIP_ENABLED==='true'
-    ||process.env.VERCEL||process.env.VERCEL_ENV||process.env.VERCEL_URL
-    ||String(process.env.TURSO_AUTH_TOKEN||'').trim()) return false;
-  let databaseUrl;
-  try{ databaseUrl=new URL(String(process.env.TURSO_DATABASE_URL||'')); }
-  catch{ return false; }
-  if(databaseUrl.protocol!=='file:'||databaseUrl.host||databaseUrl.username||databaseUrl.password
-    ||databaseUrl.search||databaseUrl.hash) return false;
-  let appUrl,requestUrl;
-  try{
-    appUrl=new URL(String(process.env.APP_URL||''));
-    requestUrl=new URL(`http://${String(req?.headers?.host||'')}`);
-  }catch{ return false; }
-  if(appUrl.protocol!=='http:'||appUrl.username||appUrl.password||appUrl.search||appUrl.hash
-    ||(appUrl.pathname!=='/'&&appUrl.pathname!=='')||!isLoopbackHost(appUrl.host)
-    ||appUrl.host.toLowerCase()!==requestUrl.host.toLowerCase()) return false;
-  return isLoopbackHost(req?.headers?.host)&&isLoopbackAddress(req?.socket?.remoteAddress);
+  if(localIdentityAdapterEnabled(req)) return true;
+  return localRuntimeRequest(req)
+    &&process.env.ALLOW_OPEN_SIGNUP==='true'
+    &&process.env.CIRCLE_MEMBERSHIP_ENABLED!=='true';
 }
 
 function handleCapabilities(req,res){
   res.setHeader('Cache-Control','no-store');
   if(req.method!=='GET') return res.status(405).json({error:'GET only'});
   const passwordSignup=localPasswordSignupEnabled(req);
+  const localIdentity=localIdentityAdapterEnabled(req);
   return res.json({
     ok:true,
     capabilities:{
       passwordLogin:true,
       passwordSignup,
+      localIdentity,
       googleOAuth:Boolean(String(process.env.GOOGLE_CLIENT_ID||'').trim()
         &&String(process.env.GOOGLE_CLIENT_SECRET||'').trim()),
     },
-    registrationMode:passwordSignup?'local_open':'private_beta',
+    registrationMode:localIdentity?'local_invite':(passwordSignup?'local_open':'private_beta'),
   });
 }
 
@@ -242,7 +214,43 @@ async function handleSignup(req,res){
   if (e.length>254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) return res.status(400).json({ error: 'invalid email' });
   const display = String(name).trim().slice(0,32);
   if(display.length<2) return res.status(400).json({ error:'display name must be 2-32 chars' });
-  if(circleMembershipEnabled()) return res.status(403).json({error:'private beta signup requires a Google invitation'});
+  const membershipRequired=circleMembershipEnabled();
+  if(membershipRequired){
+    if(!localIdentityAdapterEnabled(req)){
+      return res.status(403).json({error:'private beta signup requires a Google invitation'});
+    }
+    const inviteClaim=readInviteClaim(req);
+    if(!inviteClaim) return res.status(403).json({error:'a valid local invitation is required'});
+    const db=getClient();
+    try{ await enforceAuthRateLimit(db,req,'signup',e); }
+    catch(err){
+      if(err?.statusCode===429) return res.status(429).json({error:'too many signup attempts; try again later'});
+      return res.status(503).json({error:'signup temporarily unavailable'});
+    }
+    let existing;
+    try{ existing=await db.execute({sql:`SELECT id FROM auth_accounts WHERE email=?`,args:[e]}); }
+    catch{ return res.status(503).json({error:'signup temporarily unavailable'}); }
+    if(existing.rows?.length) return res.status(409).json({error:'email already registered'});
+    const color=deterministicColor(display.toLowerCase());
+    const hash=await bcrypt.hash(password,10);
+    let registered;
+    try{
+      registered=await createPasswordAccountFromPreparedInvitation(db,{
+        claim:inviteClaim,email:e,passwordHash:hash,displayName:display,color,isAdmin:false,
+      });
+    }catch{
+      return res.status(503).json({error:'signup temporarily unavailable'});
+    }
+    if(!registered?.ok){
+      return res.status(403).json({error:'invitation unavailable or does not match this email'});
+    }
+    const token=signSession({id:registered.user_id,email:e,name:display,color,is_admin:false});
+    appendCookies(res,[sessionCookie(req,token),clearInviteClaimCookie({secure:false})]);
+    return res.json({
+      ok:true,
+      user:{id:registered.user_id,email:e,name:display,color,is_admin:false,isAdmin:false},
+    });
+  }
   if(!registrationAllowed(e)) return res.status(403).json({error:'private beta signup is invite-only'});
   const db = getClient();
   let registrationState;
