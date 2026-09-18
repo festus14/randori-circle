@@ -251,13 +251,13 @@ test('CLI status fingerprint authorizes a real fresh-file apply',async()=>{
   assert.equal(apply.exitCode,0);
   assert.equal(apply.result.result,'applied');
   assert.deepEqual(apply.result.target,{kind:'local-file',existedBefore:false});
-  assert.deepEqual(apply.result.appliedVersions,[1,2]);
+  assert.deepEqual(apply.result.appliedVersions,[1,2,3]);
   assert.equal(localDatabaseTarget(database).exists,true);
   const after=await main({
     argv:['status','--database',database],stdout:outputBuffer().stream,
   });
   assert.equal(after.result.state,'managed');
-  assert.equal(after.result.ledger.currentVersion,2);
+  assert.equal(after.result.ledger.currentVersion,3);
   assert.equal(after.result.stateFingerprint,apply.result.stateFingerprint);
 });
 

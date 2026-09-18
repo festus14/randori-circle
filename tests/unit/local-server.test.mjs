@@ -233,7 +233,7 @@ test('database preparation migrates before serving and rejects unmanaged state',
   const ledger=await db.execute('SELECT version,disposition FROM schema_migrations ORDER BY version');
   assert.deepEqual(
     ledger.rows.map(row=>[Number(row.version),String(row.disposition)]),
-    [[1,'applied'],[2,'applied']],
+    [[1,'applied'],[2,'applied'],[3,'applied']],
   );
   await db.close();
   cleanup.pop();

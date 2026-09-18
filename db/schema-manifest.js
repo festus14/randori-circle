@@ -85,6 +85,12 @@ const PLAN_2_OPERATIONS=Object.freeze([
   index('idx_circle_audit_circle_created','circle_audit_events',['circle_id','created_at DESC','id DESC']),
 ]);
 
+const PLAN_3_OPERATIONS=Object.freeze([
+  table('pairing_cycles',`CREATE TABLE IF NOT EXISTS pairing_cycles (scope_key TEXT NOT NULL, circle_id INTEGER, cycle_key TEXT NOT NULL CHECK(length(cycle_key)=64 AND cycle_key NOT GLOB '*[^0-9a-f]*'), cycle_id TEXT NOT NULL CHECK(length(cycle_id)=8 AND cycle_id GLOB '[0-9][0-9][0-9][0-9]-W[0-9][0-9]' AND substr(cycle_id,7,2) BETWEEN '01' AND '53'), starts_at TEXT NOT NULL CHECK(length(starts_at)=24 AND starts_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND julianday(starts_at) IS NOT NULL AND strftime('%Y-%m-%dT%H:%M:%fZ',starts_at)=starts_at), ends_at TEXT NOT NULL CHECK(length(ends_at)=24 AND ends_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND julianday(ends_at) IS NOT NULL AND strftime('%Y-%m-%dT%H:%M:%fZ',ends_at)=ends_at), cutoff_at TEXT NOT NULL CHECK(length(cutoff_at)=24 AND cutoff_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND julianday(cutoff_at) IS NOT NULL AND strftime('%Y-%m-%dT%H:%M:%fZ',cutoff_at)=cutoff_at), time_zone TEXT NOT NULL CHECK(length(time_zone)>=1 AND length(time_zone)<=100 AND time_zone=trim(time_zone)), default_source TEXT NOT NULL CHECK(default_source IN ('legacy_bridge','cycle_default')), created_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY(scope_key,cycle_key), CHECK((scope_key='local' AND circle_id IS NULL) OR (typeof(circle_id)='integer' AND circle_id>0 AND scope_key=('circle:'||circle_id))), CHECK(cutoff_at<=starts_at AND starts_at<ends_at), FOREIGN KEY(circle_id) REFERENCES circles(id))`),
+  table('pairing_cycle_availability',`CREATE TABLE IF NOT EXISTS pairing_cycle_availability (scope_key TEXT NOT NULL, cycle_key TEXT NOT NULL CHECK(length(cycle_key)=64 AND cycle_key NOT GLOB '*[^0-9a-f]*'), user_id INTEGER NOT NULL CHECK(typeof(user_id)='integer' AND user_id>0), is_available INTEGER NOT NULL CHECK(typeof(is_available)='integer' AND is_available IN (0,1)), version INTEGER NOT NULL DEFAULT 1 CHECK(typeof(version)='integer' AND version>=1), decision_source TEXT NOT NULL CHECK(decision_source IN ('user','legacy_bridge','cycle_default')), created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY(scope_key,cycle_key,user_id), FOREIGN KEY(scope_key,cycle_key) REFERENCES pairing_cycles(scope_key,cycle_key), FOREIGN KEY(user_id) REFERENCES auth_accounts(id))`),
+  index('idx_pairing_cycle_availability_candidates','pairing_cycle_availability',['scope_key','cycle_key','is_available','user_id']),
+]);
+
 export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:1,
@@ -96,6 +102,10 @@ export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:2,
     operations:PLAN_2_OPERATIONS,
+  }),
+  Object.freeze({
+    version:3,
+    operations:PLAN_3_OPERATIONS,
   }),
 ]);
 
@@ -136,7 +146,7 @@ export const SCHEMA_MANIFEST_CHECKSUM=checksum({
 
 // Updating the schema is intentional only when this pinned checksum is updated
 // in the same reviewed change.
-export const PINNED_SCHEMA_MANIFEST_CHECKSUM='c3d0b6f8c2d78d173f2c3b1ab56289e4aab687a466b21d57cd0197898b3f8c24';
+export const PINNED_SCHEMA_MANIFEST_CHECKSUM='deb67194cd49e57520c351553fa3e9249adae9d93a6b20b9ffe3c6bc04fceedd';
 
 if(SCHEMA_MANIFEST_CHECKSUM!==PINNED_SCHEMA_MANIFEST_CHECKSUM){
   throw new Error(`Schema manifest checksum changed: ${SCHEMA_MANIFEST_CHECKSUM}`);

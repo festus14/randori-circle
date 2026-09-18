@@ -18,6 +18,10 @@ const EXECUTION_METADATA=Object.freeze([
     version:2,
     checksum:'ceca22b30cc4f546359dc8d5731e1ab157e82b748b468e6eed510a8a4379444d',
   }),
+  Object.freeze({
+    version:3,
+    checksum:'dd467c77944b1da0b722ddd91ebef1071811fb24c65fdff7d2121b67fb204270',
+  }),
 ]);
 
 function executableOperations(plan){

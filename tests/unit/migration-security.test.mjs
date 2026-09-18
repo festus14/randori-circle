@@ -150,7 +150,7 @@ test('ledger gaps, names, checksums, and future versions fail closed without fur
     db=>db.execute({sql:'UPDATE schema_migrations SET checksum=? WHERE version=1',args:['0'.repeat(64)]}),
     db=>db.execute({
       sql:`INSERT INTO schema_migrations
-        (version,name,checksum,execution_ms,disposition) VALUES (3,'future',?,0,'applied')`,
+        (version,name,checksum,execution_ms,disposition) VALUES (4,'future',?,0,'applied')`,
       args:['f'.repeat(64)],
     }),
   ];
@@ -227,8 +227,8 @@ test('retry handling is bounded and never retries non-conflict failures',async t
       expectedStateFingerprint:planned.stateFingerprint,
       retry:{maxAttempts:3,baseDelayMs:1,maxDelayMs:2,sleep:async delay=>delays.push(delay)},
     });
-    assert.equal(result.toVersion,2);
-    assert.equal(attempts,4);
+    assert.equal(result.toVersion,3);
+    assert.equal(attempts,EXECUTABLE_MIGRATIONS.length+2);
     assert.deepEqual(delays,[1,2]);
   }
   {
@@ -301,10 +301,11 @@ test('concurrent runners allow one planned-state winner and converge without dup
   assert.deepEqual(plainRows(ledger.rows),[
     {version:1,count:1},
     {version:2,count:1},
+    {version:3,count:1},
   ]);
   const finalState=await inspectMigrationState(first);
   assert.equal(finalState.classification,'managed');
-  assert.equal(finalState.currentVersion,2);
+  assert.equal(finalState.currentVersion,3);
   assert.equal(finalState.schemaExact,true);
 });
 
@@ -363,7 +364,7 @@ test('schema-ahead and unexpected artifacts block managed and unmanaged mutation
 test('fresh migration creates only the valid pristine-open rollout state',async t=>{
   const {db}=fixture(t);
   const result=await applyCurrent(db);
-  assert.equal(result.toVersion,2);
+  assert.equal(result.toVersion,3);
   const membership=await inspectMembershipAdoption(db);
   assert.equal(membership.ok,true);
   assert.equal(membership.registrationState,'open');
@@ -385,10 +386,31 @@ test('adoption accepts pristine-open and complete-closed states and writes only 
     if(completed){
       await completeMembershipRollout(db);
       await addInvitedMember(db);
+    }else{
+      await db.execute(`INSERT INTO auth_accounts
+        (id,email,password_hash,display_name,color,is_admin,is_demo)
+        VALUES (1,'local@example.test','!oauth:test','Local','#123456',1,0)`);
     }
+    const cycleKey='c'.repeat(64);
+    await db.execute({
+      sql:`INSERT INTO pairing_cycles
+        (scope_key,circle_id,cycle_key,cycle_id,starts_at,ends_at,cutoff_at,time_zone,default_source)
+        VALUES ('local',NULL,?,'2026-W39','2026-09-20T07:00:00.000Z',
+          '2026-09-27T07:00:00.000Z','2026-09-20T07:00:00.000Z','Europe/London','legacy_bridge')`,
+      args:[cycleKey],
+    });
+    await db.execute({
+      sql:`INSERT INTO pairing_cycle_availability
+        (scope_key,cycle_key,user_id,is_available,version,decision_source)
+        VALUES ('local',?,1,0,1,'legacy_bridge')`,
+      args:[cycleKey],
+    });
     await db.execute("INSERT INTO users (id,name,color) VALUES (91,'Preserved User','#abcdef')");
     const beforeObjects=(await snapshot(db)).objects;
     const beforeUser=plainRows((await db.execute('SELECT * FROM users WHERE id=91')).rows);
+    const beforeAvailability=plainRows((await db.execute(
+      'SELECT * FROM pairing_cycle_availability ORDER BY scope_key,cycle_key,user_id',
+    )).rows);
     const beforeMembership=await inspectMembershipAdoption(db);
     assert.equal(beforeMembership.ok,true);
     assert.equal(beforeMembership.registrationState,completed?'closed':'open');
@@ -398,13 +420,17 @@ test('adoption accepts pristine-open and complete-closed states and writes only 
       expectedStateFingerprint:beforeState.stateFingerprint,
       retry:NO_RETRY,
     });
-    assert.equal(result.toVersion,2);
+    assert.equal(result.toVersion,3);
     const ledger=await db.execute('SELECT version,disposition FROM schema_migrations ORDER BY version');
     assert.deepEqual(plainRows(ledger.rows),[
       {version:1,disposition:'adopted'},
       {version:2,disposition:'adopted'},
+      {version:3,disposition:'adopted'},
     ]);
     assert.deepEqual(plainRows((await db.execute('SELECT * FROM users WHERE id=91')).rows),beforeUser);
+    assert.deepEqual(plainRows((await db.execute(
+      'SELECT * FROM pairing_cycle_availability ORDER BY scope_key,cycle_key,user_id',
+    )).rows),beforeAvailability);
     assert.deepEqual((await snapshot(db)).objects.filter(item=>item.name!=='schema_migrations'),beforeObjects);
     assert.deepEqual(await inspectMembershipAdoption(db),beforeMembership);
   }

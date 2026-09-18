@@ -56,12 +56,12 @@ test('fresh apply is transactional, seeds an open rollout, and repeats as a no-o
       retry:fastRetry,
     });
     assert.equal(result.fromVersion,0);
-    assert.equal(result.toVersion,2);
-    assert.deepEqual(result.applied.map(item=>item.version),[1,2]);
+    assert.equal(result.toVersion,3);
+    assert.deepEqual(result.applied.map(item=>item.version),[1,2,3]);
     const rollout=await fixture.db.execute('SELECT id,registrations_closed FROM circle_membership_rollout');
     assert.deepEqual(rollout.rows.map(row=>[Number(row.id),Number(row.registrations_closed)]),[[1,0]]);
     const ledger=await fixture.db.execute('SELECT version,disposition FROM schema_migrations ORDER BY version');
-    assert.deepEqual(ledger.rows.map(row=>[Number(row.version),row.disposition]),[[1,'applied'],[2,'applied']]);
+    assert.deepEqual(ledger.rows.map(row=>[Number(row.version),row.disposition]),[[1,'applied'],[2,'applied'],[3,'applied']]);
     const generalInspection=await inspectSchema(fixture.db);
     assert.equal(generalInspection.warnings.length,0);
     assert.deepEqual(generalInspection.tolerated.legacyTables,['schema_migrations']);
@@ -72,12 +72,12 @@ test('fresh apply is transactional, seeds an open rollout, and repeats as a no-o
       retry:fastRetry,
     });
     assert.deepEqual(repeat.applied,[]);
-    assert.equal(repeat.fromVersion,2);
-    assert.equal(repeat.toVersion,2);
+    assert.equal(repeat.fromVersion,3);
+    assert.equal(repeat.toVersion,3);
   }finally{ fixture.close(); }
 });
 
-test('a valid managed v1 database resumes through only the pending migration',async()=>{
+test('a valid managed v1 database resumes through only the pending migrations',async()=>{
   const fixture=temporaryDatabase();
   const firstMigration=EXECUTABLE_MIGRATIONS.slice(0,1);
   try{
@@ -98,10 +98,10 @@ test('a valid managed v1 database resumes through only the pending migration',as
       retry:fastRetry,
     });
     assert.equal(resumed.fromVersion,1);
-    assert.equal(resumed.toVersion,2);
-    assert.deepEqual(resumed.applied.map(item=>item.version),[2]);
+    assert.equal(resumed.toVersion,3);
+    assert.deepEqual(resumed.applied.map(item=>item.version),[2,3]);
     const ledger=await fixture.db.execute('SELECT version FROM schema_migrations ORDER BY version');
-    assert.deepEqual(ledger.rows.map(row=>Number(row.version)),[1,2]);
+    assert.deepEqual(ledger.rows.map(row=>Number(row.version)),[1,2,3]);
   }finally{ fixture.close(); }
 });
 
@@ -157,10 +157,10 @@ test('exact open schema can be explicitly adopted and adoption is auditable',asy
       expectedStateFingerprint:before.stateFingerprint,
       retry:fastRetry,
     });
-    assert.equal(adopted.toVersion,2);
+    assert.equal(adopted.toVersion,3);
     const rows=await fixture.db.execute('SELECT version,execution_ms,disposition FROM schema_migrations ORDER BY version');
     assert.deepEqual(rows.rows.map(row=>[Number(row.version),Number(row.execution_ms),row.disposition]),[
-      [1,0,'adopted'],[2,0,'adopted'],
+      [1,0,'adopted'],[2,0,'adopted'],[3,0,'adopted'],
     ]);
     const after=await state(fixture.db);
     assert.equal(after.classification,'managed');
@@ -377,7 +377,7 @@ test('concurrent callers cannot silently apply from the same stale fingerprint',
     const rejected=results.find(result=>result.status==='rejected');
     assert.equal(rejected.reason.code,'MIGRATION_STATE_CHANGED');
     const final=await state(first);
-    assert.equal(final.currentVersion,2);
+    assert.equal(final.currentVersion,3);
     assert.equal(final.ready,true);
   }finally{ fixture.close(); }
 });
