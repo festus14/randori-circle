@@ -329,6 +329,8 @@ test('concurrent migrators converge and retry a real database lock', async () =>
   let announceFirst;
   const firstEntered = new Promise(resolve => { announceFirst = resolve; });
   const releaseGate = new Promise(resolve => { releaseFirst = resolve; });
+  const failsafe=setTimeout(()=>releaseFirst?.(),2000);
+  failsafe.unref?.();
   let retryCount = 0;
   let upCalls = 0;
   const migrations = [
@@ -364,6 +366,7 @@ test('concurrent migrators converge and retry a real database lock', async () =>
     assert.ok(results.every(result => result.toVersion === 1));
     assert.deepEqual(await ledgerVersions(firstDb), [1]);
   } finally {
+    clearTimeout(failsafe);
     releaseFirst?.();
     fixture.close();
   }
