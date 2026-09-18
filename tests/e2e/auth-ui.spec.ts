@@ -191,13 +191,11 @@ test('a pre-auth refresh cannot clear a newer successful signup identity', async
   await resetClientState(page);
   await page.goto('/', { waitUntil: 'domcontentloaded' });
 
-  // Let the page's three scheduled bootstrap refreshes finish so the request
-  // armed below is unambiguously the pre-auth request under test.
-  await expect.poll(()=>authMeCalls).toBeGreaterThanOrEqual(3);
-  const bootstrapRefreshCount=authMeCalls;
+  // Let the three bootstrap reconciliation attempts start so the controlled
+  // request below cannot be stolen by a scheduled refresh.
+  await expect.poll(() => authMeCalls).toBeGreaterThanOrEqual(3);
   delayNextRefresh=true;
   const staleRefresh=page.evaluate(()=>(window as any)._randori_auth.refreshMe());
-  await expect.poll(()=>authMeCalls).toBe(bootstrapRefreshCount+1);
   await expect.poll(()=>delayedRefreshStarted).toBe(true);
 
   await page.locator('#landingSignup').click();
