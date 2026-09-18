@@ -964,22 +964,28 @@ async function handleHistory(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
   const payload = getAuthPayload(req);
   if (!payload) return res.status(401).json({ error:'missing Bearer token' });
-  const db = getClient();
-  await ensureProfileMigrations(db);
+  let db;
+  let groups;
   const userId = payload.id || payload.uid;
-  const groups = await db.execute({ sql:`
-    SELECT pg.id as pg_id, pg.week_id, pg.user_a_id, pg.user_b_id, pg.user_c_id,
-           pa.source AS user_a_source,pb.source AS user_b_source,pc.source AS user_c_source,
-           pg.is_ai_pair, pg.topic, pg.topic_kind, pw.week_label, pw.week_start
-    FROM pairing_groups pg
-    JOIN pairing_weeks pw ON pw.id = pg.week_id
-    JOIN pairing_participants viewer ON viewer.week_id=pg.week_id AND viewer.user_id=? AND viewer.source='auth'
-    LEFT JOIN pairing_participants pa ON pa.week_id=pg.week_id AND pa.user_id=pg.user_a_id
-    LEFT JOIN pairing_participants pb ON pb.week_id=pg.week_id AND pb.user_id=pg.user_b_id
-    LEFT JOIN pairing_participants pc ON pc.week_id=pg.week_id AND pc.user_id=pg.user_c_id
-    WHERE (pg.user_a_id = ? OR pg.user_b_id = ? OR pg.user_c_id = ?)
-    ORDER BY pw.week_start DESC, pg.id DESC
-  `, args:[userId,userId,userId,userId] });
+  try{
+    db=getClient();
+    await ensureProfileMigrations(db);
+    groups=await db.execute({ sql:`
+      SELECT pg.id as pg_id, pg.week_id, pg.user_a_id, pg.user_b_id, pg.user_c_id,
+             pa.source AS user_a_source,pb.source AS user_b_source,pc.source AS user_c_source,
+             pg.is_ai_pair, pg.topic, pg.topic_kind, pw.week_label, pw.week_start
+      FROM pairing_groups pg
+      JOIN pairing_weeks pw ON pw.id = pg.week_id
+      JOIN pairing_participants viewer ON viewer.week_id=pg.week_id AND viewer.user_id=? AND viewer.source='auth'
+      LEFT JOIN pairing_participants pa ON pa.week_id=pg.week_id AND pa.user_id=pg.user_a_id
+      LEFT JOIN pairing_participants pb ON pb.week_id=pg.week_id AND pb.user_id=pg.user_b_id
+      LEFT JOIN pairing_participants pc ON pc.week_id=pg.week_id AND pc.user_id=pg.user_c_id
+      WHERE (pg.user_a_id = ? OR pg.user_b_id = ? OR pg.user_c_id = ?)
+      ORDER BY pw.week_start DESC, pg.id DESC
+    `, args:[userId,userId,userId,userId] });
+  }catch{
+    return res.status(503).json({error:'history unavailable'});
+  }
   const safeGroups=groups.rows.filter(row=>[
     [row.user_a_id,row.user_a_source],[row.user_b_id,row.user_b_source],[row.user_c_id,row.user_c_source],
   ].every(([id,source])=>id==null||source==='auth'||source==='users'));

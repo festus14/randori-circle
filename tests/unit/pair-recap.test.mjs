@@ -352,6 +352,25 @@ test('history excludes a colliding legacy identity while retaining source-tagged
   assert.equal(response.body.history.find(item=>item.pg_id===23).partner_name,'Legacy Partner');
 });
 
+test('history reports source-snapshot storage failures without exposing database details',async()=>{
+  const delegate=await readyDatabase();
+  currentDb={
+    async execute(statement){
+      const sql=sqlText(statement);
+      if(sql.includes('JOIN pairing_participants viewer')){
+        throw new Error('private database diagnostic: no such table pairing_participants');
+      }
+      return delegate.execute(statement);
+    },
+    batch:(statements,mode)=>delegate.batch(statements,mode),
+    close:()=>delegate.close(),
+  };
+  const response=await invoke({url:'/api/history',query:{endpoint:'history'}});
+  assert.equal(response.status,503);
+  assert.deepEqual(response.body,{error:'history unavailable'});
+  assert.equal('detail' in response.body,false);
+});
+
 test('pair recap readiness coalesces probes, performs no DDL, and retries failures',async()=>{
   let release;
   const gate=new Promise(resolve=>{ release=resolve; });
