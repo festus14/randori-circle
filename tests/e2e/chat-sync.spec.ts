@@ -109,6 +109,7 @@ class ChatStore {
   private nextGetStatus: { userId: number; room: string; status: number; error: string } | null = null;
   private malformedPostUserId: number | null = null;
   private mismatch: { userId: number; room: string; responseRoom: string } | null = null;
+  private _mismatchConsumed = false;
   private deferredGet: {
     userId: number;
     room: string;
@@ -126,6 +127,10 @@ class ChatStore {
 
   constructor(rooms: string[]) {
     rooms.forEach(room => this.messages.set(room, []));
+  }
+
+  get mismatchConsumed(): boolean {
+    return this._mismatchConsumed;
   }
 
   add(room: string, user: TestUser, message: string): SafeMessage {
@@ -170,6 +175,7 @@ class ChatStore {
   }
 
   mismatchNextGet(userId: number, room: string, responseRoom: string) {
+    this._mismatchConsumed = false;
     this.mismatch = { userId, room, responseRoom };
   }
 
@@ -237,16 +243,18 @@ class ChatStore {
         }
         const available = (this.messages.get(room) || []).filter(message => message.id > after);
         const selected = after === 0 ? available.slice(-limit) : available.slice(0, limit);
-        const responseRoom = this.mismatch?.userId === user.id && this.mismatch.room === room
-          ? this.mismatch.responseRoom
-          : room;
-        if (responseRoom !== room) this.mismatch = null;
+        const configuredMismatch = this.mismatch?.userId === user.id && this.mismatch.room === room
+          ? this.mismatch
+          : null;
+        const responseRoom = configuredMismatch?.responseRoom || room;
+        if (configuredMismatch) this.mismatch = null;
         await this.fulfill(route, {
           ok: true,
           room_id: responseRoom,
           messages: selected.map(message => this.safe(message)),
           after: selected.length ? selected.at(-1)?.id : after,
         });
+        if (configuredMismatch) this._mismatchConsumed = true;
         return;
       }
 
@@ -743,12 +751,21 @@ test('stale room responses and mismatched envelopes cannot leak after navigation
 
   const beforeMismatch = await chatSnapshot(page);
   store.mismatchNextGet(userA.id, roomB, roomA);
-  expect(await refreshChat(page)).toBe(false);
-  await expect(page.getByTestId('pair-chat-status')).toHaveText('Messages unavailable — retrying…');
+  const mismatchRefresh = refreshChat(page);
+  await expect.poll(() => store.mismatchConsumed).toBe(true);
+  await mismatchRefresh;
   const afterMismatch = await chatSnapshot(page);
-  expect(afterMismatch.room).toBe(beforeMismatch.room);
-  expect(afterMismatch.after).toBe(beforeMismatch.after);
-  expect(afterMismatch.messages).toEqual(beforeMismatch.messages);
+  expect({
+    room: afterMismatch.room,
+    after: afterMismatch.after,
+    draft: afterMismatch.draft,
+    messages: afterMismatch.messages,
+  }).toEqual({
+    room: beforeMismatch.room,
+    after: beforeMismatch.after,
+    draft: beforeMismatch.draft,
+    messages: beforeMismatch.messages,
+  });
 
   await page.locator('[data-tab="pair"]').click();
   await expect(page.locator('#view-pair')).toBeVisible();

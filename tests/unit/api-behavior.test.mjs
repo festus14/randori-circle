@@ -1457,7 +1457,7 @@ test('data validation and access-control branches reject malformed or cross-pair
     [{ url: '/api/schedule', query: { endpoint: 'schedule' }, headers }, 400],
     [{ url: '/api/schedule', query: { endpoint: 'schedule', room_id:'week_10_pair_20' }, headers }, 403],
     [{ method: 'POST', url: '/api/messages', query: { endpoint: 'messages' }, headers, body: {} }, 400],
-    [{ method: 'POST', url: '/api/messages', query: { endpoint: 'messages' }, headers, body: { room_id: 'week_10_pair_20', message: 'no access' } }, 403],
+    [{ method: 'POST', url: '/api/messages', query: { endpoint: 'messages' }, headers, body: { room_id: 'week_10_pair_20', message: 'no access' } }, 404],
     [{ method: 'POST', url: '/api/questions', query: { endpoint: 'questions' }, headers, body: {} }, 405],
     [{ method: 'POST', url: '/api/questions', query: { endpoint: 'questions' }, headers, body: { title: 'Title' } }, 405],
     [{ method: 'DELETE', url: '/api/questions', query: { endpoint: 'questions' }, headers, body: {} }, 405],

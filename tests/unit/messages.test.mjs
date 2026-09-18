@@ -307,13 +307,15 @@ test('message reads enforce exact membership and isolate week and pair rows',asy
   const outsider=await invoke({
     query:{endpoint:'messages',room_id:'week_10_pair_20'},headers:{'x-test-auth':'outsider'},
   });
-  assert.equal(outsider.status,403);
+  assert.equal(outsider.status,404);
+  assert.deepEqual(outsider.body,{error:'pair not found'});
   const messageAccessesBeforeForbiddenPost=calls.filter(call=>call.sql.includes('pair_messages')).length;
   const forbiddenPost=await invoke({
     method:'POST',headers:{'x-test-auth':'outsider'},
     body:{room_id:'week_10_pair_20',message:'not allowed'},
   });
-  assert.equal(forbiddenPost.status,403);
+  assert.equal(forbiddenPost.status,404);
+  assert.deepEqual(forbiddenPost.body,outsider.body);
   assert.equal(
     calls.filter(call=>call.sql.includes('pair_messages')).length,
     messageAccessesBeforeForbiddenPost,
@@ -321,6 +323,12 @@ test('message reads enforce exact membership and isolate week and pair rows',asy
   );
   const absent=await invoke({query:{endpoint:'messages',room_id:'week_11_pair_20'}});
   assert.equal(absent.status,404,'the same pair id in another week does not authorize access');
+  assert.deepEqual(absent.body,outsider.body,'absent and unauthorized rooms are indistinguishable');
+  const absentPost=await invoke({
+    method:'POST',body:{room_id:'week_11_pair_20',message:'not allowed'},
+  });
+  assert.equal(absentPost.status,404);
+  assert.deepEqual(absentPost.body,outsider.body,'POST also hides whether the room exists');
   assert.equal(calls.some(call=>/\b(?:CREATE|ALTER|DROP)\b/i.test(call.sql)),false);
 
   const firstMessageRead=calls.findIndex(call=>call.sql.includes('FROM pair_messages pm'));
@@ -349,8 +357,8 @@ test('message reads re-authorize inside the storage query when membership change
 
   const response=await invoke({query:{endpoint:'messages',room_id:'week_10_pair_20'}});
   assert.equal(revoked,true);
-  assert.equal(response.status,403);
-  assert.deepEqual(response.body,{error:'not member of this pair'});
+  assert.equal(response.status,404);
+  assert.deepEqual(response.body,{error:'pair not found'});
   assert.doesNotMatch(JSON.stringify(response.body),/must stay private/);
 });
 
@@ -426,7 +434,7 @@ test('message sends enforce the durable room cap atomically',async()=>{
   assert.equal(Number(count.rows[0].count),MAX_MESSAGES_PER_ROOM);
 });
 
-test('a membership change during send keeps the existing 403 diagnostic and writes nothing',async()=>{
+test('a membership change during send returns the generic room diagnostic and writes nothing',async()=>{
   const database=await readyDatabase();
   let revoked=false;
   currentDb={
@@ -443,8 +451,8 @@ test('a membership change during send keeps the existing 403 diagnostic and writ
 
   const response=await invoke({method:'POST',body:{room_id:'week_10_pair_20',message:'must not persist'}});
   assert.equal(revoked,true);
-  assert.equal(response.status,403);
-  assert.deepEqual(response.body,{error:'not member of this pair'});
+  assert.equal(response.status,404);
+  assert.deepEqual(response.body,{error:'pair not found'});
   const count=await database.execute(`SELECT COUNT(*) AS count FROM pair_messages`);
   assert.equal(Number(count.rows[0].count),0);
 });

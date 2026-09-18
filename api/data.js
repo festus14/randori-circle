@@ -1319,8 +1319,7 @@ async function handleMessages(req,res){
   let access;
   try{ access=await getPairAccess(db,payload,input.weekId,input.pairGroupId); }
   catch{ return res.status(503).json({error:'messages unavailable'}); }
-  if(!access.exists) return res.status(404).json({error:'pair not found'});
-  if(!access.allowed) return res.status(403).json({error:'not member of this pair'});
+  if(!access.exists||!access.allowed) return res.status(404).json({error:'pair not found'});
 
   try{ await ensureMessagesReadiness(db); }
   catch{ return res.status(503).json({error:'messages unavailable'}); }
@@ -1367,8 +1366,7 @@ async function handleMessages(req,res){
         let latest;
         try{ latest=await getPairAccess(db,payload,input.weekId,input.pairGroupId); }
         catch{ return res.status(503).json({error:'messages unavailable'}); }
-        if(!latest.exists) return res.status(404).json({error:'pair not found'});
-        if(!latest.allowed) return res.status(403).json({error:'not member of this pair'});
+        if(!latest.exists||!latest.allowed) return res.status(404).json({error:'pair not found'});
         return res.status(503).json({error:'messages unavailable'});
       }
       const messages=result.rows.filter(row=>row.id!==null&&row.id!==undefined).map(projectMessage);
@@ -1418,8 +1416,9 @@ async function handleMessages(req,res){
       }
       catch{ return res.status(503).json({error:'messages unavailable'}); }
       const latest=state.rows[0];
-      if(!latest||!Number(latest.pair_exists)) return res.status(404).json({error:'pair not found'});
-      if(!Number(latest.allowed)) return res.status(403).json({error:'not member of this pair'});
+      if(!latest||!Number(latest.pair_exists)||!Number(latest.allowed)){
+        return res.status(404).json({error:'pair not found'});
+      }
       if(Number(latest.recent_count)>=MAX_MESSAGES_PER_USER_PER_MINUTE){
         res.setHeader('Retry-After',String(MESSAGE_RATE_RETRY_SECONDS));
         return res.status(429).json({error:'message rate limit exceeded'});
