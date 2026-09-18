@@ -320,12 +320,12 @@ test('Google failure offers an accessible retry and a mocked provider returns th
     is_admin: false,
     is_available: true,
   };
-  let signedIn=false;
   let starts=0;
   let callbacks=0;
   await mockApi(page,{
     '/api/auth/capabilities':privateBetaCapabilities,
-    '/api/auth/me':()=>signedIn
+    '/api/auth/me':async request=>/(?:^|;\s*)randori_session=mocked-provider-session(?:;|$)/
+      .test((await request.headerValue('cookie'))||'')
       ?{ok:true,user}
       :{_status:401,ok:false,error:'authentication required'},
   });
@@ -339,7 +339,6 @@ test('Google failure offers an accessible retry and a mocked provider returns th
   });
   await page.route('**/api/auth/google/callback**',async route=>{
     callbacks+=1;
-    signedIn=true;
     await route.fulfill({
       status:302,
       headers:{location:'/?google=success','set-cookie':'randori_session=mocked-provider-session; Path=/; HttpOnly; SameSite=Lax'},
@@ -359,7 +358,7 @@ test('Google failure offers an accessible retry and a mocked provider returns th
 
   await expect(page.getByRole('heading',{name:'Mock Google'})).toBeVisible();
   await page.getByRole('button',{name:'Continue as invited@example.test'}).click();
-  await expect(page).toHaveURL(/\/?$/);
+  await expect(page).toHaveURL('/');
   await expect(page.locator('#meLabel')).toContainText('Invited Member');
   expect(starts).toBe(1);
   expect(callbacks).toBe(1);

@@ -58,7 +58,7 @@
 
 **Membership data:** `circles`, `circle_memberships`, hashed `circle_invitations`, `circle_audit_events`, and the singleton `circle_membership_rollout` latch.
 
-Membership-schema migration is explicit through authenticated `POST /api/init`; rollout-state probes and ordinary circle, pairing, and invitation requests do not create membership schema. The temporary fresh-database auth bootstrap in step 6 is the only exception introduced by this rollout.
+Provider-identity and other migration-managed schema changes use the protected migration workflow. Membership schema creation remains an explicit authenticated `POST /api/init` operator step; rollout-state probes and ordinary auth, circle, pairing, and invitation requests do not create it. Keep `AUTH_SCHEMA_BOOTSTRAP_ENABLED=false` so unauthenticated request-time auth bootstrap remains disabled.
 
 **Scaling rule:**
 - Circle = active `circle_memberships` in the one operational primary circle. The one-time migration backfills existing non-demo authenticated accounts; legacy `users` rows are never inferred as members.
