@@ -680,7 +680,11 @@ test('execution uses only server-owned versioned cases and persists exact author
     // roughly 128 KiB, while the real runner receives this source in an HTTP
     // body and supports the bounded scale cases below that request limit.
     const execution=spawnSync(command,['-'],{input:source,encoding:'utf8',timeout:5000});
-    assert.equal(execution.error,undefined);
+    assert.equal(
+      execution.error,
+      undefined,
+      `${submission.language === 'python' ? 'Python 3 (`python3`)' : 'Node.js'} is required for the ${submission.language} execution test`,
+    );
     return new Response(JSON.stringify({run:{code:execution.status,stdout:`{"idx":0,"pass":true}\n${execution.stdout}`,stderr:execution.stderr}}),{status:200});
   };
 
