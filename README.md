@@ -71,7 +71,7 @@ Copy `.env.example` and configure at least:
 - `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`
 - `JWT_SECRET` with at least 32 random bytes and a separate `CRON_SECRET`; `RUN_ATTESTATION_SECRET` is optional and falls back to `JWT_SECRET` when blank
 - `PAIRING_TIME_ZONE=Europe/London`; each pairing cycle runs from Sunday 08:00 in that zone until the next Sunday boundary
-- `APP_URL`, `GOOGLE_CLIENT_ID`, and `GOOGLE_CLIENT_SECRET`
+- an explicit canonical HTTPS `APP_URL` plus both `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`; OAuth stays unavailable for partial, malformed, insecure, host-mismatched, or local-runtime configuration
 - `SIGNUP_ALLOWLIST` for the legacy private-beta Google flow while circle membership enforcement is off
 - `CIRCLE_MEMBERSHIP_ENABLED=true` to enforce invitation-gated primary-circle access after the staged migration below
 - `AUTH_SCHEMA_BOOTSTRAP_ENABLED=true` only during the documented first-admin bootstrap for a fresh database; otherwise keep it false
@@ -80,6 +80,8 @@ Copy `.env.example` and configure at least:
 See [GOOGLE_OAUTH.md](GOOGLE_OAUTH.md) and [TURSO.md](TURSO.md) for provider setup. Back up the database before first deploying migrations.
 
 Authentication rate limiting is migration-owned: runtime requests never create `auth_rate_limits`. A deployment with missing or stale migration state fails authentication closed with a temporary-unavailability response; complete the migration/readiness gate before serving traffic rather than enabling request-time schema writes.
+
+Google OAuth has one fail-closed configuration boundary shared by capability discovery, start, and callback. Production and hosted deployments require both provider credentials, an explicit canonical HTTPS `APP_URL`, and matching trusted proxy host/protocol headers. Invalid configuration returns only a generic unavailable response and performs no provider or database work. The isolated local runtime always disables Google credentials.
 
 To roll out circle membership without locking out operators: first complete the production backup/restore rehearsal, deploy with `CIRCLE_MEMBERSHIP_ENABLED=false`, verify an authenticated `ADMIN_EMAILS` account, call the admin-only `POST /api/init`, verify the primary circle and audited non-demo account backfill, then enable the flag. Rollout probes are read-only. Atomic registration guards ensure an account racing initialization is either included or rejected while existing accounts continue to sign in. Invitation tokens are returned only once by the create endpoint; the database stores keyed hashes, and list responses expose only an email fingerprint. Disabling the flag restores the legacy roster behavior without removing membership data, but does not reopen registration after the cutover latch is closed.
 

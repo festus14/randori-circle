@@ -78,9 +78,24 @@ function oauthCookies({ state = 'expected-state', verifier = 'verifier', returnP
   ].join('; ');
 }
 
+function enableGoogleOAuth(){
+  process.env.NODE_ENV='production';
+  process.env.APP_URL='https://randori.example.test';
+  process.env.GOOGLE_CLIENT_ID='client';
+  process.env.GOOGLE_CLIENT_SECRET='secret';
+}
+
+function oauthRequestHeaders(cookie){
+  return {
+    host:'randori.example.test',
+    'x-forwarded-proto':'https',
+    ...(cookie?{cookie}:{}),
+  };
+}
+
 afterEach(() => {
   globalThis.fetch = originalFetch;
-  for (const key of ['APP_URL', 'CIRCLE_MEMBERSHIP_ENABLED', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'NODE_ENV']) {
+  for (const key of ['APP_URL', 'CIRCLE_MEMBERSHIP_ENABLED', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'NODE_ENV', 'SIGNUP_ALLOWLIST']) {
     delete process.env[key];
   }
 });
@@ -107,14 +122,12 @@ test('canonical pair-room parser accepts only exact positive safe-integer paths'
 });
 
 test('Google OAuth start stores only a validated canonical return path', async () => {
-  process.env.NODE_ENV = 'production';
-  process.env.APP_URL = 'https://randori.example.test';
-  process.env.GOOGLE_CLIENT_ID = 'client';
+  enableGoogleOAuth();
 
   const safe = await invoke({
     url: '/api/auth/google/start?return_to=%2Fjoin%2Fweek_12_pair_34',
     query: { endpoint: 'google-start', return_to: '/join/week_12_pair_34' },
-    headers: { 'x-forwarded-proto': 'https' },
+    headers: oauthRequestHeaders(),
   });
   const returnCookie = cookiesFrom(safe).find(cookie => cookie.startsWith('randori_oauth_return='));
   assert.match(returnCookie, /^randori_oauth_return=%2Fjoin%2Fweek_12_pair_34;/);
@@ -132,6 +145,7 @@ test('Google OAuth start stores only a validated canonical return path', async (
     const rejected = await invoke({
       url: '/api/auth/google/start',
       query: { endpoint: 'google-start', return_to: returnTo },
+      headers: oauthRequestHeaders(),
     });
     const cookie = cookiesFrom(rejected).find(item => item.startsWith('randori_oauth_return='));
     assert.match(cookie, /^randori_oauth_return=%2F;/, returnTo);
@@ -139,7 +153,7 @@ test('Google OAuth start stores only a validated canonical return path', async (
 });
 
 test('OAuth callback ignores a callback return override and consumes the stored path', async () => {
-  process.env.APP_URL = 'https://randori.example.test';
+  enableGoogleOAuth();
   const result = await invoke({
     url: '/api/auth/google/callback',
     query: {
@@ -148,7 +162,7 @@ test('OAuth callback ignores a callback return override and consumes the stored 
       state: 'expected-state',
       return_to: 'https://evil.example/steal',
     },
-    headers: { cookie: oauthCookies({ returnPath: '/join/week_12_pair_34' }) },
+    headers: oauthRequestHeaders(oauthCookies({ returnPath: '/join/week_12_pair_34' })),
   });
 
   assert.equal(result.status, 302);
@@ -161,26 +175,25 @@ test('OAuth callback ignores a callback return override and consumes the stored 
 });
 
 test('OAuth callback validates state before provider errors and revalidates its return cookie', async () => {
-  process.env.APP_URL = 'https://randori.example.test';
+  enableGoogleOAuth();
   const wrongState = await invoke({
     url: '/api/auth/google/callback',
     query: { endpoint: 'callback', error: 'access_denied', state: 'wrong-state' },
-    headers: { cookie: oauthCookies({ returnPath: '/join/week_12_pair_34' }) },
+    headers: oauthRequestHeaders(oauthCookies({ returnPath: '/join/week_12_pair_34' })),
   });
   assert.equal(wrongState.headers.location, 'https://randori.example.test/join/week_12_pair_34?google_error=invalid_state');
 
   const tamperedReturn = await invoke({
     url: '/api/auth/google/callback',
     query: { endpoint: 'callback', error: 'access_denied', state: 'expected-state' },
-    headers: { cookie: oauthCookies({ returnPath: '//evil.example' }) },
+    headers: oauthRequestHeaders(oauthCookies({ returnPath: '//evil.example' })),
   });
   assert.equal(tamperedReturn.headers.location, 'https://randori.example.test/?google_error=access_denied');
 });
 
 test('successful OAuth callback returns to the stored room and never a callback override', async () => {
-  process.env.APP_URL = 'https://randori.example.test';
-  process.env.GOOGLE_CLIENT_ID = 'client';
-  process.env.GOOGLE_CLIENT_SECRET = 'secret';
+  enableGoogleOAuth();
+  process.env.SIGNUP_ALLOWLIST='pair@example.test';
   globalThis.fetch = async url => {
     if (String(url).includes('/token')) {
       return new Response(JSON.stringify({ access_token: 'google-access' }), { status: 200 });
@@ -201,7 +214,7 @@ test('successful OAuth callback returns to the stored room and never a callback 
       state: 'expected-state',
       return_to: '//evil.example',
     },
-    headers: { cookie: oauthCookies({ returnPath: '/join/week_12_pair_34' }) },
+    headers: oauthRequestHeaders(oauthCookies({ returnPath: '/join/week_12_pair_34' })),
   });
 
   assert.equal(result.status, 302);

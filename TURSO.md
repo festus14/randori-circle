@@ -69,7 +69,7 @@ Membership-schema migration is explicit through authenticated `POST /api/init`; 
 - `JWT_SECRET` — at least 32 random bytes, used for 12-hour HS256 session cookies and keyed invitation/email hashes. Rotating it signs out all sessions and invalidates every outstanding invitation; revoke/reissue invitations as part of rotation.
 - `CRON_SECRET` — separate secret protecting `/api/cron/weekly`. Send it as the `x-cron-secret` header or use Vercel Cron authentication.
 - `RESEND_API_KEY` and `RESEND_FROM` (optional as a pair) — when both are set, weekly cron emails **available** participants after shuffle and sends a separate reminder to unavailable participants. If either is absent, delivery remains disabled and pairs are visible in-app via `/api/weeks`. The sender must be verified in Resend.
-- `APP_URL` — canonical production URL, used for Google OAuth redirect URI and email links. Defaults to `https://randori-circle-self.vercel.app` if missing.
+- `APP_URL` — required canonical production HTTPS origin, used for Google OAuth redirect URI and email links. Credentials, paths, query strings, fragments, insecure public origins, request-host mismatches, and implicit fallback origins fail Google sign-in closed.
 - `GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET` — for Google SSO (`/api/auth/google/*`). Configure in Google Cloud Console → OAuth client → Web → origins + redirect: `https://randori-circle-self.vercel.app/api/auth/google/callback` plus localhost variants.
 
 **Endpoints:**

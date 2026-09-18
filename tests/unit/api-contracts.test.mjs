@@ -25,6 +25,7 @@ const originalEnvironment = {
   NODE_ENV: process.env.NODE_ENV,
   JWT_SECRET: process.env.JWT_SECRET,
   GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
+  GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
   APP_URL: process.env.APP_URL,
   ALLOW_OPEN_SIGNUP: process.env.ALLOW_OPEN_SIGNUP,
   CIRCLE_MEMBERSHIP_ENABLED: process.env.CIRCLE_MEMBERSHIP_ENABLED,
@@ -80,6 +81,7 @@ function invoke(handler, { method = 'GET', url = '/', query = {}, headers = {}, 
 const sameOriginHeaders = {
   origin: 'https://randori.example.test',
   host: 'randori.example.test',
+  'x-forwarded-proto': 'https',
 };
 
 test('production refuses to use a built-in JWT signing secret', () => {
@@ -334,11 +336,13 @@ test('video signaling rejects anonymous callers before database access', async (
 test('Google OAuth start binds state to a secure, HTTP-only cookie', async () => {
   process.env.NODE_ENV = 'production';
   process.env.GOOGLE_CLIENT_ID = 'test-client';
+  process.env.GOOGLE_CLIENT_SECRET = 'test-secret';
   process.env.APP_URL = 'https://preview.example.test';
   const result = await invoke(authHandler, {
     method: 'GET',
     url: '/api/auth/google/start',
     query: { endpoint: 'google-start' },
+    headers:{host:'preview.example.test','x-forwarded-proto':'https'},
   });
 
   assert.equal(result.status, 302);

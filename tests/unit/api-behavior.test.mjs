@@ -215,6 +215,7 @@ function runKeyIdForTest(secret=TEST_JWT_SECRET){
 const sameOriginHeaders = {
   origin: 'https://randori.example.test',
   host: 'randori.example.test',
+  'x-forwarded-proto': 'https',
 };
 
 const localOriginHeaders = {
@@ -409,8 +410,9 @@ test('auth capabilities report the exact local or private-beta contract without 
   process.env.GOOGLE_CLIENT_ID='google-client';
   process.env.GOOGLE_CLIENT_SECRET='google-secret';
   process.env.NODE_ENV='production';
+  process.env.APP_URL='https://randori.example.test';
   result=await invoke(authHandler,{
-    url:'/api/auth/capabilities',query:{endpoint:'capabilities'},headers:{host:'randori.example.test'},
+    url:'/api/auth/capabilities',query:{endpoint:'capabilities'},headers:sameOriginHeaders,
   });
   assert.deepEqual(result.body,{
     ok:true,
@@ -425,7 +427,7 @@ test('auth capabilities report the exact local or private-beta contract without 
   assert.equal(result.status,200);
   assert.deepEqual(result.body,{
     ok:true,
-    capabilities:{passwordLogin:true,passwordSignup:true,localIdentity:false,googleOAuth:true},
+    capabilities:{passwordLogin:true,passwordSignup:true,localIdentity:false,googleOAuth:false},
     registrationMode:'local_open',
   });
   assert.equal(executed.length,0);
@@ -435,6 +437,48 @@ test('auth capabilities report the exact local or private-beta contract without 
   });
   assert.equal(wrongMethod.status,405);
   assert.deepEqual(wrongMethod.body,{error:'GET only'});
+});
+
+test('invalid production OAuth configuration is not advertised and stops before provider or database access',async()=>{
+  process.env.NODE_ENV='production';
+  process.env.APP_URL='http://randori.example.test';
+  process.env.GOOGLE_CLIENT_ID='google-client';
+  process.env.GOOGLE_CLIENT_SECRET='google-secret';
+  let providerCalls=0;
+  globalThis.fetch=async()=>{ providerCalls+=1; throw new Error('provider must not be called'); };
+
+  const headers={host:'randori.example.test','x-forwarded-proto':'https'};
+  const capabilities=await invoke(authHandler,{
+    url:'/api/auth/capabilities',query:{endpoint:'capabilities'},headers,
+  });
+  assert.equal(capabilities.status,200);
+  assert.equal(capabilities.body.capabilities.googleOAuth,false);
+
+  const start=await invoke(authHandler,{
+    url:'/api/auth/google/start',query:{endpoint:'google-start'},headers,
+  });
+  assert.equal(start.status,503);
+  assert.deepEqual(start.body,{error:'Google sign-in is unavailable'});
+
+  const callback=await invoke(authHandler,{
+    url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'state'},headers,
+  });
+  assert.equal(callback.status,503);
+  assert.deepEqual(callback.body,start.body);
+  const wrongMethod=await invoke(authHandler,{
+    method:'POST',url:'/api/auth/google/callback',query:{endpoint:'callback'},headers,
+  });
+  assert.equal(wrongMethod.status,405);
+  assert.deepEqual(wrongMethod.body,{error:'GET only'});
+  assert.equal(providerCalls,0);
+  assert.equal(getClientCalls,0);
+  assert.equal(executed.length,0);
+  for(const response of [capabilities,start,callback,wrongMethod]){
+    assert.equal(response.headers['cache-control'],'no-store');
+    assert.equal(response.headers.pragma,'no-cache');
+    assert.equal(response.headers['x-content-type-options'],'nosniff');
+    assert.equal(response.headers['referrer-policy'],'no-referrer');
+  }
 });
 
 test('local password signup guard fails closed outside the isolated loopback runtime', () => {
@@ -556,7 +600,10 @@ test('Google callback validates state and establishes a cookie session without l
   const result = await invoke(authHandler, {
     url: `/api/auth/google/callback?code=ok&state=${state}`,
     query: { endpoint: 'callback', code: 'ok', state },
-    headers: { cookie: `randori_oauth_state=${state}; randori_oauth_verifier=verifier` },
+    headers: {
+      host:'preview.example.test','x-forwarded-proto':'https',
+      cookie:`randori_oauth_state=${state}; randori_oauth_verifier=verifier`,
+    },
   });
   assert.equal(result.status, 302);
   assert.equal(result.headers.location, 'https://preview.example.test/?google=success');
@@ -575,7 +622,7 @@ test('auth validation and OAuth failure paths fail closed', async () => {
     [{ method: 'POST', url: '/api/auth/login', query: { endpoint: 'login' }, body: {} }, 400],
     [{ method: 'POST', url: '/api/auth/logout', query: { endpoint: 'logout' } }, 200],
     [{ method: 'GET', url: '/api/auth/logout', query: { endpoint: 'logout' } }, 405],
-    [{ method: 'GET', url: '/api/auth/google/start', query: { endpoint: 'google-start' } }, 500],
+    [{ method: 'GET', url: '/api/auth/google/start', query: { endpoint: 'google-start' } }, 503],
     [{ url: '/api/auth/unknown', query: { endpoint: 'unknown' } }, 404],
   ];
   for (const [request, status] of cases) {
@@ -587,12 +634,20 @@ test('auth validation and OAuth failure paths fail closed', async () => {
   }
 
   process.env.APP_URL = 'https://preview.example.test';
+  process.env.GOOGLE_CLIENT_ID = 'client';
+  process.env.GOOGLE_CLIENT_SECRET = 'secret';
+  delete process.env.RANDORI_LOCAL_RUNTIME;
+  delete process.env.RANDORI_LOCAL_IDENTITY;
+  process.env.NODE_ENV='production';
   for (const query of [
     { endpoint: 'callback', error: 'denied' },
     { endpoint: 'callback' },
     { endpoint: 'callback', code: 'code', state: 'wrong' },
   ]) {
-    const result = await invoke(authHandler, { url: '/api/auth/google/callback', query });
+    const result = await invoke(authHandler, {
+      url: '/api/auth/google/callback', query,
+      headers:{host:'preview.example.test','x-forwarded-proto':'https'},
+    });
     assert.equal(result.status, 302);
     assert.match(result.headers.location, /google_error=/);
   }

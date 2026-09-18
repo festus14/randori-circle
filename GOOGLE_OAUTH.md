@@ -10,7 +10,7 @@ In Vercel Dashboard → your project → Settings → Environment Variables add:
 
 - `GOOGLE_CLIENT_ID` — from Google Cloud
 - `GOOGLE_CLIENT_SECRET` — from Google Cloud
-- `APP_URL` — optional, defaults to `https://randori-circle-self.vercel.app`. Set to same prod URL. If you also test locally add `http://localhost:3000` separately and add both redirect URIs in Google.
+- `APP_URL` — required and exact. Set the canonical production HTTPS origin only, with no credentials, path, query, or fragment. OAuth requests must arrive on that same host through HTTPS. A non-production HTTP origin is accepted only for loopback development; the isolated `npm run dev` runtime deliberately disables external providers.
 - `JWT_SECRET` — already required (e.g. `openssl rand -base64 48`)
 - `CRON_SECRET` — required separately from `JWT_SECRET`; protects the weekly cron
 - `SIGNUP_ALLOWLIST` — comma-separated private-beta Google email addresses used before circle-membership cutover
@@ -41,6 +41,8 @@ Redeploy after adding.
 - Create → copy **Client ID** → `GOOGLE_CLIENT_ID`, **Client Secret** → `GOOGLE_CLIENT_SECRET`.
 
 4. Paste both into Vercel, Redeploy. Done.
+
+5. Verify `/api/auth/capabilities` advertises `googleOAuth: true` on the canonical deployment and run the deployment readiness probe before opening traffic. Missing/partial credentials, a non-canonical or insecure origin, a mismatched request host/protocol, and the isolated local runtime all fail closed with a generic unavailable response; no provider or database call is made.
 
 No extra API needs enabling — Google Identity is on by default.
 

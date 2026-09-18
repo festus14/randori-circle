@@ -34,7 +34,10 @@ function invoke(){
     const req={
       method:'GET',url:'/api/auth/google/callback',
       query:{endpoint:'callback',code:'code',state:'expected-state'},
-      headers:{cookie:'randori_oauth_state=expected-state; randori_oauth_verifier=verifier'},
+      headers:{
+        host:'randori.example.test','x-forwarded-proto':'https',
+        cookie:'randori_oauth_state=expected-state; randori_oauth_verifier=verifier',
+      },
       socket:{remoteAddress:'127.0.0.1'},
     };
     const res={

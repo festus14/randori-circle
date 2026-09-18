@@ -17,6 +17,7 @@ import {
   validatePreparedInvitation,
 } from './_circle-membership.js';
 import { localIdentityAdapterEnabled, localRuntimeRequest } from './_local-runtime.js';
+import { googleOAuthRequestConfiguration, setAuthResponseHeaders } from './_auth-config.js';
 
 const SESSION_COOKIE = 'randori_session';
 const OAUTH_STATE_COOKIE = 'randori_oauth_state';
@@ -146,7 +147,6 @@ export function localPasswordSignupEnabled(req){
 }
 
 function handleCapabilities(req,res){
-  res.setHeader('Cache-Control','no-store');
   if(req.method!=='GET') return res.status(405).json({error:'GET only'});
   const passwordSignup=localPasswordSignupEnabled(req);
   const localIdentity=localIdentityAdapterEnabled(req);
@@ -156,8 +156,7 @@ function handleCapabilities(req,res){
       passwordLogin:true,
       passwordSignup,
       localIdentity,
-      googleOAuth:Boolean(String(process.env.GOOGLE_CLIENT_ID||'').trim()
-        &&String(process.env.GOOGLE_CLIENT_SECRET||'').trim()),
+      googleOAuth:Boolean(googleOAuthRequestConfiguration(req)),
     },
     registrationMode:localIdentity?'local_invite':(passwordSignup?'local_open':'private_beta'),
   });
@@ -412,10 +411,9 @@ function handleLogout(req,res){
 // --- google start ---
 function handleGoogleStart(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  if (!clientId) return res.status(500).json({ error:'Missing GOOGLE_CLIENT_ID env', hint:'Set GOOGLE_CLIENT_ID in Vercel Env Vars'});
-  const appUrl = (process.env.APP_URL || 'https://randori-circle-self.vercel.app').replace(/\/$/,'');
-  const redirectUri = `${appUrl}/api/auth/google/callback`;
+  const configuration=googleOAuthRequestConfiguration(req);
+  if(!configuration) return res.status(503).json({error:'Google sign-in is unavailable'});
+  const {appOrigin:appUrl,clientId,redirectUri}=configuration;
   const state = randomBytes(32).toString('base64url');
   const verifier=randomBytes(48).toString('base64url');
   const challenge=createHash('sha256').update(verifier).digest('base64url');
@@ -434,8 +432,10 @@ function handleGoogleStart(req,res){
 
 // --- google callback ---
 async function handleGoogleCallback(req,res){
-  const appUrl = (process.env.APP_URL || 'https://randori-circle-self.vercel.app').replace(/\/$/,'');
-  const redirectUri = `${appUrl}/api/auth/google/callback`;
+  if(req.method!=='GET') return res.status(405).json({error:'GET only'});
+  const configuration=googleOAuthRequestConfiguration(req);
+  if(!configuration) return res.status(503).json({error:'Google sign-in is unavailable'});
+  const {appOrigin:appUrl,clientId,clientSecret,redirectUri}=configuration;
   const { code, error, state } = req.query || {};
   const expectedState=cookieValue(req,OAUTH_STATE_COOKIE);
   const verifier=cookieValue(req,OAUTH_VERIFIER_COOKIE);
@@ -453,9 +453,6 @@ async function handleGoogleCallback(req,res){
   }
   if (error){ res.writeHead(302, { Location:redirectError(error)}); return res.end(); }
   if (!code){ res.writeHead(302, { Location:redirectError('missing_code')}); return res.end(); }
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  if (!clientId || !clientSecret){ res.writeHead(302,{Location:redirectError('oauth_not_configured')}); return res.end(); }
   let tokenJson;
   try{
     const body = new URLSearchParams({ client_id:clientId, client_secret:clientSecret, code:String(code), code_verifier:verifier, redirect_uri:redirectUri, grant_type:'authorization_code' });
@@ -584,6 +581,7 @@ async function handleGoogleCallback(req,res){
 }
 
 export default async function handler(req,res){
+  setAuthResponseHeaders(res);
   const ep = getEndpoint(req);
   if(!verifyMutationOrigin(req)) return res.status(403).json({error:'cross-origin mutation rejected'});
   if(req.method==='POST' && ['signup','login','logout'].some(name=>ep===name || ep.includes(name)) && !verifyAuthMutationOrigin(req)){
