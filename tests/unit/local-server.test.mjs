@@ -501,6 +501,21 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
   const liveness=await fetch(new URL('/api/health/live',first.url));
   assert.equal(liveness.status,200);
   assert.deepEqual(await liveness.json(),{ok:true,status:'live'});
+  const sqlBeforeAlternateHost=requestSql.length;
+  const alternateHost=new URL(first.url);
+  const alternateHostLogin=await requestRaw(first.url,{
+    path:'/api/auth/login',
+    method:'POST',
+    headers:{
+      host:`localhost:${alternateHost.port}`,
+      origin:first.url,
+      'content-type':'application/json',
+    },
+    body:JSON.stringify({email:LOCAL_OWNER_EMAIL,password:LOCAL_OWNER_PASSWORD}),
+  });
+  assert.equal(alternateHostLogin.status,403);
+  assert.deepEqual(JSON.parse(alternateHostLogin.body),{ok:false,error:'LOCAL_HOST_REFUSED'});
+  assert.equal(requestSql.length,sqlBeforeAlternateHost,'an alternate loopback Host must be rejected before SQL');
   const sqlBeforeUnauthorizedPreferences=requestSql.length;
   const unauthorizedPreferences=await fetch(new URL('/api/notifications/prefs',first.url));
   assert.equal(unauthorizedPreferences.status,401);

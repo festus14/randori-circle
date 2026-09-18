@@ -808,6 +808,16 @@ function requestIsLoopback(request){
   return (hostname==='localhost'||LOOPBACK_HOSTS.has(hostname))&&isLoopbackAddress(request.socket?.remoteAddress);
 }
 
+function requestUsesAdvertisedHost(request,advertisedUrl){
+  try{
+    const requestHost=String(request.headers.host||'').trim().toLowerCase();
+    const advertisedHost=new URL(advertisedUrl).host.toLowerCase();
+    return requestHost!==''&&requestHost===advertisedHost;
+  }catch{
+    return false;
+  }
+}
+
 function unsafeEncodedPath(pathname){
   const raw=String(pathname||'');
   if(/%25|%00|%2f|%5c/i.test(raw)) return true;
@@ -982,7 +992,7 @@ export async function createLocalDevelopmentServer({
   const sockets=new Set();
 
   const handleRequest=async(request,response)=>{
-    if(!requestIsLoopback(request)){
+    if(!requestIsLoopback(request)||!requestUsesAdvertisedHost(request,url)){
       sendJson(response,403,{ok:false,error:'LOCAL_HOST_REFUSED'});
       return;
     }

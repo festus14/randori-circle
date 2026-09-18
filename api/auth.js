@@ -238,14 +238,14 @@ async function handleSignup(req,res){
       if(err?.statusCode===429) return res.status(429).json({error:'too many signup attempts; try again later'});
       return res.status(503).json({error:'signup temporarily unavailable'});
     }
+    const color=deterministicColor(display.toLowerCase());
+    const hash=await bcrypt.hash(password,10);
     let preparedInvitation;
     try{ preparedInvitation=await validatePreparedInvitation(db,{claim:inviteClaim,email:e}); }
     catch{ return res.status(503).json({error:'signup temporarily unavailable'}); }
     if(!preparedInvitation?.ok||preparedInvitation.used_by!==null){
       return res.status(403).json({error:'invitation unavailable or does not match this email'});
     }
-    const color=deterministicColor(display.toLowerCase());
-    const hash=await bcrypt.hash(password,10);
     let registered;
     try{
       registered=await createPasswordAccountFromPreparedInvitation(db,{

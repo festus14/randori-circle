@@ -273,7 +273,7 @@ test('prepared invitation OAuth forces explicit Google account selection',async(
   assert.equal(new URL(regular.headers.location).searchParams.get('prompt'),null);
 });
 
-test('local invite signup validates the invitation before account work and never enumerates an email',async()=>{
+test('local invite signup normalizes rejection cost without looking up the submitted email',async()=>{
   Object.assign(process.env,{
     NODE_ENV:'development',RANDORI_LOCAL_RUNTIME:'true',RANDORI_LOCAL_IDENTITY:'true',
     ALLOW_OPEN_SIGNUP:'false',CIRCLE_MEMBERSHIP_ENABLED:'true',
@@ -290,20 +290,30 @@ test('local invite signup validates the invitation before account work and never
     method:'POST',url:'/api/auth/signup',query:{endpoint:'signup'},
     headers:{...localOriginHeaders,cookie:'randori_invite_claim=valid-claim'},body,
   });
-  const wrong=await request({email:'owner@example.test',password:PASSWORD,name:'Wrong Identity'});
-  assert.equal(wrong.status,403);
-  assert.deepEqual(wrong.body,{error:'invitation unavailable or does not match this email'});
-  assert.equal(executed.some(call=>accountSql(call.sql)||call.sql.includes('SELECT id FROM auth_accounts WHERE email=')),false);
-  assert.equal(passwordAccountCalls.length,0);
+  const originalHash=bcrypt.hash;
+  const hashes=[];
+  bcrypt.hash=async(password,cost)=>{ hashes.push({password,cost}); return PASSWORD_HASH; };
+  try{
+    const wrong=await request({email:'owner@example.test',password:PASSWORD,name:'Wrong Identity'});
+    assert.equal(wrong.status,403);
+    assert.deepEqual(wrong.body,{error:'invitation unavailable or does not match this email'});
+    assert.equal(hashes.length,1,'a wrong invited email must perform one password hash');
+    assert.equal(executed.some(call=>accountSql(call.sql)||call.sql.includes('SELECT id FROM auth_accounts WHERE email=')),false);
+    assert.equal(passwordAccountCalls.length,0);
 
-  validationResult={ok:true,circle_id:1,invitation_id:'invite-1',email_hash:'email-hash',used_by:null};
-  const conflict=await request({email:'owner@example.test',password:PASSWORD,name:'Existing Identity'});
-  assert.equal(conflict.status,403);
-  assert.deepEqual(conflict.body,wrong.body);
-  assert.equal(executed.some(call=>accountSql(call.sql)||call.sql.includes('SELECT id FROM auth_accounts WHERE email=')),false);
-  assert.equal(passwordAccountCalls.length,1);
-  assert.match(passwordAccountCalls[0].passwordHash,/^\$2/);
-  assert.equal(readinessCalls.length,2);
+    validationResult={ok:true,circle_id:1,invitation_id:'invite-1',email_hash:'email-hash',used_by:null};
+    const conflict=await request({email:'owner@example.test',password:PASSWORD,name:'Existing Identity'});
+    assert.equal(conflict.status,403);
+    assert.deepEqual(conflict.body,wrong.body);
+    assert.equal(hashes.length,2,'a valid invitation conflict must perform exactly one password hash');
+    assert.deepEqual(hashes,[{password:PASSWORD,cost:10},{password:PASSWORD,cost:10}]);
+    assert.equal(executed.some(call=>accountSql(call.sql)||call.sql.includes('SELECT id FROM auth_accounts WHERE email=')),false);
+    assert.equal(passwordAccountCalls.length,1);
+    assert.match(passwordAccountCalls[0].passwordHash,/^\$2/);
+    assert.equal(readinessCalls.length,2);
+  }finally{
+    bcrypt.hash=originalHash;
+  }
 });
 
 test('password byte limits reject bcrypt-truncated inputs and accept exact UTF-8 boundaries',()=>{
