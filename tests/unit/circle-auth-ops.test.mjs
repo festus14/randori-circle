@@ -108,7 +108,7 @@ const [{default:authHandler,validSignupPassword},{default:opsHandler}]=await Pro
 ]);
 
 const originalFetch=globalThis.fetch;
-const sameOriginHeaders={origin:'https://randori.example.test',host:'randori.example.test'};
+const sameOriginHeaders={origin:'https://randori.example.test',host:'randori.example.test','x-forwarded-proto':'https'};
 const localOriginHeaders={origin:'http://127.0.0.1:3000',host:'127.0.0.1:3000'};
 
 function rows(values=[],extra={}){ return {rows:values,rowsAffected:0,...extra}; }
@@ -162,6 +162,10 @@ function oauthCookies({claim=true}={}){
   ];
   if(claim) values.push('randori_invite_claim=valid-claim');
   return values.join('; ');
+}
+
+function oauthRequestHeaders(options){
+  return {...sameOriginHeaders,cookie:oauthCookies(options)};
 }
 
 beforeEach(()=>{
@@ -260,14 +264,15 @@ test('prepared invitation OAuth forces explicit Google account selection',async(
   process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
   process.env.APP_URL='https://randori.example.test';
   process.env.GOOGLE_CLIENT_ID='client';
+  process.env.GOOGLE_CLIENT_SECRET='secret';
   const prepared=await invoke(authHandler,{
-    url:'/api/auth/google/start',query:{endpoint:'google-start'},headers:{cookie:oauthCookies()},
+    url:'/api/auth/google/start',query:{endpoint:'google-start'},headers:oauthRequestHeaders(),
   });
   assert.equal(prepared.status,302);
   assert.equal(new URL(prepared.headers.location).searchParams.get('prompt'),'select_account');
 
   const regular=await invoke(authHandler,{
-    url:'/api/auth/google/start',query:{endpoint:'google-start'},headers:{cookie:oauthCookies({claim:false})},
+    url:'/api/auth/google/start',query:{endpoint:'google-start'},headers:oauthRequestHeaders({claim:false}),
   });
   assert.equal(regular.status,302);
   assert.equal(new URL(regular.headers.location).searchParams.get('prompt'),null);
@@ -444,7 +449,7 @@ test('verified Google invitation bypasses allowlist only after validation and at
   const result=await invoke(authHandler,{
     url:'/api/auth/google/callback',
     query:{endpoint:'callback',code:'valid-code',state:'expected-state'},
-    headers:{cookie:oauthCookies()},
+    headers:oauthRequestHeaders(),
   });
   assert.equal(result.status,302);
   assert.equal(result.headers.location,'https://randori.example.test/?google=success');
@@ -487,7 +492,7 @@ test('same-account invitation replay completes sign-in only while membership rem
 
   const result=await invoke(authHandler,{
     url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
-    headers:{cookie:oauthCookies()},
+    headers:oauthRequestHeaders(),
   });
   assert.equal(result.status,302);
   assert.equal(result.headers.location,'https://randori.example.test/?google=success');
@@ -519,7 +524,7 @@ test('an active member consumes a fresh prepared invitation before receiving a s
 
   const result=await invoke(authHandler,{
     url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
-    headers:{cookie:oauthCookies()},
+    headers:oauthRequestHeaders(),
   });
   assert.equal(result.status,302);
   assert.equal(result.headers.location,'https://randori.example.test/?google=success');
@@ -549,7 +554,7 @@ test('a stable Google subject cannot create a second account after its email cha
 
   const result=await invoke(authHandler,{
     url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
-    headers:{cookie:oauthCookies()},
+    headers:oauthRequestHeaders(),
   });
   assert.equal(result.status,302);
   assert.match(result.headers.location,/google_error=identity_mismatch/);
@@ -576,7 +581,7 @@ test('disabled membership flag preserves the legacy Google shadow-user write',as
 
   const result=await invoke(authHandler,{
     url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
-    headers:{cookie:oauthCookies({claim:false})},
+    headers:oauthRequestHeaders({claim:false}),
   });
   assert.equal(result.status,302);
   assert.equal(result.headers.location,'https://randori.example.test/?google=success');
@@ -588,7 +593,7 @@ test('disabled membership flag preserves the legacy Google shadow-user write',as
   cutoverStarted=true;
   const frozen=await invoke(authHandler,{
     url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
-    headers:{cookie:oauthCookies({claim:false})},
+    headers:oauthRequestHeaders({claim:false}),
   });
   assert.equal(frozen.status,302);
   assert.match(frozen.headers.location,/google_error=private_beta/);
@@ -603,7 +608,7 @@ test('disabled membership flag preserves the legacy Google shadow-user write',as
   };
   const raced=await invoke(authHandler,{
     url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
-    headers:{cookie:oauthCookies({claim:false})},
+    headers:oauthRequestHeaders({claim:false}),
   });
   assert.equal(raced.status,302);
   assert.match(raced.headers.location,/google_error=private_beta/);
@@ -631,7 +636,7 @@ test('invalid, already-used-by-other, or lost-race invite claims never issue a s
   validationResult={ok:true,circle_id:1,invitation_id:'invite-1',email_hash:'email-hash',used_by:99};
   let result=await invoke(authHandler,{
     url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
-    headers:{cookie:oauthCookies()},
+    headers:oauthRequestHeaders(),
   });
   assert.equal(result.status,302);
   assert.match(result.headers.location,/google_error=private_beta/);
@@ -643,7 +648,7 @@ test('invalid, already-used-by-other, or lost-race invite claims never issue a s
   accountAcceptanceResult={ok:false};
   result=await invoke(authHandler,{
     url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
-    headers:{cookie:oauthCookies()},
+    headers:oauthRequestHeaders(),
   });
   assert.equal(result.status,302);
   assert.match(result.headers.location,/google_error=private_beta/);
@@ -668,7 +673,7 @@ test('transient OAuth database failure retains the prepared invite claim for a s
 
   const result=await invoke(authHandler,{
     url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
-    headers:{cookie:oauthCookies()},
+    headers:oauthRequestHeaders(),
   });
   assert.equal(result.status,302);
   assert.match(result.headers.location,/google_error=db_error/);
