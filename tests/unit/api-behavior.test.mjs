@@ -676,7 +676,10 @@ test('execution uses only server-owned versioned cases and persists exact author
     const prefix=source.match(/(__RANDORI_RESULT_[a-f0-9]{32}__:)/)?.[1];
     assert.ok(prefix,'the harness must use a per-run result marker');
     const command=submission.language==='javascript'?process.execPath:'python3';
-    const execution=spawnSync(command,[submission.language==='javascript'?'-e':'-c',source],{encoding:'utf8',timeout:5000});
+    // Feed the generated harness over stdin: Linux limits each argv entry to
+    // roughly 128 KiB, while the real runner receives this source in an HTTP
+    // body and supports the bounded scale cases below that request limit.
+    const execution=spawnSync(command,['-'],{input:source,encoding:'utf8',timeout:5000});
     assert.equal(execution.error,undefined);
     return new Response(JSON.stringify({run:{code:execution.status,stdout:`{"idx":0,"pass":true}\n${execution.stdout}`,stderr:execution.stderr}}),{status:200});
   };
