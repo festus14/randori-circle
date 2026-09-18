@@ -58,6 +58,8 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_pair-access.js` | shared source-aware authorization for canonical private pair rooms |
 | `api/_circle-membership.js` | primary-circle membership, keyed invite hashes, signed short-lived claims, and audited acceptance |
 | `api/invitations.js` | owner-only invitation lifecycle and rate-limited public preparation |
+| `db/schema-manifest.js` | checksummed contract for 28 application tables and 26 named indexes |
+| `db/schema-inspector.js` | read-only SQLite drift inspection and non-executable planning |
 
 The target Next.js/Supabase architecture is intentionally phased rather than introduced as a big-bang rewrite.
 
@@ -89,12 +91,15 @@ Requires Node.js 24 or newer and Python 3 (`python3`) for the aggregate executio
 npm ci
 npm run audit:prod
 npm run validate:catalog
+npm run check:runtime-ddl
 npm run check:syntax
 npm run test:coverage
 npm run test:e2e
 ```
 
-CI tests the checked-out candidate build on localhost. It validates the catalogue, enforces at least 52% line, branch, and function coverage across every `api/*.js` module, and runs the Playwright flows on Ubuntu.
+CI tests the checked-out candidate build on localhost. It validates the catalogue, freezes the existing request-time DDL allowlist, enforces at least 52% line, branch, and function coverage across API, database-foundation, and operational-script modules, and runs the Playwright flows on Ubuntu.
+
+Operators can run `npm run --silent db:status` or `npm run --silent db:plan` with Turso credentials to receive structured JSON drift reports. Both commands are guarded to `SELECT`/`PRAGMA`; the plan is explicitly non-executable and this increment does not modify a database. See [Database schema inspection](docs/DATABASE_SCHEMA_OPERATIONS.md).
 
 ## Next increments
 

@@ -29,6 +29,8 @@ jobs:
         run: npm run audit:prod
       - name: Validate original exercise catalogue
         run: npm run validate:catalog
+      - name: Enforce runtime DDL boundary
+        run: npm run check:runtime-ddl
       - name: Check JavaScript syntax
         run: npm run check:syntax
       - name: Run API tests with enforced coverage
