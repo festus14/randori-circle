@@ -1,5 +1,12 @@
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import { afterEach, mock, test } from 'node:test';
+import {
+  GOOGLE_TEST_NONCE,
+  GOOGLE_TEST_VERIFIER,
+  googleOAuthCookieHeader,
+  googleProviderFetch,
+} from '../support/google-oidc.mjs';
 
 const database = {
   async execute(statement) {
@@ -7,8 +14,11 @@ const database = {
     if (sql.includes('SELECT registrations_closed FROM circle_membership_rollout')) {
       return { rows: [{ registrations_closed: 0 }] };
     }
-    if (sql.includes('SELECT id, is_admin, password_hash, google_sub')) return { rows: [] };
+    if (sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return { rows: [] };
     if (sql.includes('INSERT INTO auth_accounts') && sql.includes('RETURNING id')) return { rows: [{ id: 41 }] };
+    if (sql.includes('INSERT INTO auth_provider_identities') && sql.includes('RETURNING user_id')) {
+      return { rows: [{ user_id: Number(statement.args[2]) }] };
+    }
     if (sql.includes('SELECT id FROM users')) return { rows: [] };
     return { rows: [], rowsAffected: 0 };
   },
@@ -70,12 +80,8 @@ function cookiesFrom(response) {
   return Array.isArray(value) ? value : [String(value || '')];
 }
 
-function oauthCookies({ state = 'expected-state', verifier = 'verifier', returnPath = '/' } = {}) {
-  return [
-    `randori_oauth_state=${encodeURIComponent(state)}`,
-    `randori_oauth_verifier=${encodeURIComponent(verifier)}`,
-    `randori_oauth_return=${encodeURIComponent(returnPath)}`,
-  ].join('; ');
+function oauthCookies({ state = 'expected-state', verifier = GOOGLE_TEST_VERIFIER, nonce=GOOGLE_TEST_NONCE, returnPath = '/' } = {}) {
+  return googleOAuthCookieHeader({state,verifier,nonce,returnPath});
 }
 
 function enableGoogleOAuth(){
@@ -130,6 +136,15 @@ test('Google OAuth start stores only a validated canonical return path', async (
     headers: oauthRequestHeaders(),
   });
   const returnCookie = cookiesFrom(safe).find(cookie => cookie.startsWith('randori_oauth_return='));
+  const nonceCookie = cookiesFrom(safe).find(cookie => cookie.startsWith('randori_oauth_nonce='));
+  const authorizationUrl=new URL(safe.headers.location);
+  const nonce=authorizationUrl.searchParams.get('nonce');
+  const verifierCookie=cookiesFrom(safe).find(cookie => cookie.startsWith('randori_oauth_verifier='));
+  const verifier=decodeURIComponent(verifierCookie.split(';')[0].split('=')[1]);
+  assert.equal(nonce,decodeURIComponent(nonceCookie.split(';')[0].split('=')[1]));
+  assert.equal(authorizationUrl.searchParams.get('code_challenge'),createHash('sha256').update(verifier).digest('base64url'));
+  assert.equal(authorizationUrl.searchParams.get('code_challenge_method'),'S256');
+  assert.match(nonceCookie, /^randori_oauth_nonce=[A-Za-z0-9_-]+;/);
   assert.match(returnCookie, /^randori_oauth_return=%2Fjoin%2Fweek_12_pair_34;/);
   assert.match(returnCookie, /Path=\/api\/auth\/google/);
   assert.match(returnCookie, /HttpOnly/);
@@ -189,22 +204,90 @@ test('OAuth callback validates state before provider errors and revalidates its 
     headers: oauthRequestHeaders(oauthCookies({ returnPath: '//evil.example' })),
   });
   assert.equal(tamperedReturn.headers.location, 'https://randori.example.test/?google_error=access_denied');
+
+  const rawProviderError = await invoke({
+    url: '/api/auth/google/callback',
+    query: { endpoint: 'callback', error: 'secret-provider-diagnostic', state: 'expected-state' },
+    headers: oauthRequestHeaders(oauthCookies()),
+  });
+  assert.equal(rawProviderError.headers.location, 'https://randori.example.test/?google_error=provider_denied');
+  assert.doesNotMatch(rawProviderError.headers.location,/secret-provider-diagnostic/);
+});
+
+test('OAuth callback requires its nonce and a consumed browser callback cannot be replayed',async()=>{
+  enableGoogleOAuth();
+  process.env.SIGNUP_ALLOWLIST='pair@example.test';
+  let providerRequests=0;
+  const successfulProvider=googleProviderFetch({
+    claims:{email:'pair@example.test',name:'Pair User',sub:'google-pair-1'},
+    onRequest:()=>{ providerRequests+=1; },
+  });
+  let tokenExchanges=0;
+  globalThis.fetch=async(url,options)=>{
+    if(String(url).endsWith('/token')){
+      tokenExchanges+=1;
+      if(tokenExchanges>1){
+        providerRequests+=1;
+        return new Response(JSON.stringify({error:'invalid_grant'}),{status:400});
+      }
+    }
+    return successfulProvider(url,options);
+  };
+
+  const missingNonce=await invoke({
+    url:'/api/auth/google/callback',
+    query:{endpoint:'callback',code:'valid-code',state:'expected-state'},
+    headers:oauthRequestHeaders(oauthCookies({nonce:''})),
+  });
+  assert.equal(missingNonce.headers.location,'https://randori.example.test/?google_error=invalid_state');
+  assert.equal(providerRequests,0);
+
+  const first=await invoke({
+    url:'/api/auth/google/callback',
+    query:{endpoint:'callback',code:'one-time-code',state:'expected-state'},
+    headers:oauthRequestHeaders(oauthCookies()),
+  });
+  assert.equal(first.headers.location,'https://randori.example.test/?google=success');
+  assert.equal(providerRequests,2);
+  assert.match(String(first.headers['set-cookie']),/randori_oauth_nonce=;/);
+
+  const copiedCookieReplay=await invoke({
+    url:'/api/auth/google/callback',
+    query:{endpoint:'callback',code:'one-time-code',state:'expected-state'},
+    headers:oauthRequestHeaders(oauthCookies()),
+  });
+  assert.equal(copiedCookieReplay.headers.location,'https://randori.example.test/?google_error=provider_unavailable');
+  assert.doesNotMatch(String(copiedCookieReplay.headers['set-cookie']),/randori_session=[^;]/);
+  assert.equal(providerRequests,3,'Google must see the copied authorization code exactly once more and reject it');
+
+  const consumedCookieReplay=await invoke({
+    url:'/api/auth/google/callback',
+    query:{endpoint:'callback',code:'one-time-code',state:'expected-state'},
+    headers:oauthRequestHeaders(),
+  });
+  assert.equal(consumedCookieReplay.headers.location,'https://randori.example.test/?google_error=invalid_state');
+  assert.equal(providerRequests,3,'a replay without consumed transient cookies must not reach Google');
+  assert.doesNotMatch(String(consumedCookieReplay.headers['set-cookie']),/randori_session=[^;]/);
+});
+
+test('OAuth callback binds the signed ID token nonce and emits only a safe error',async()=>{
+  enableGoogleOAuth();
+  globalThis.fetch=googleProviderFetch({claims:{nonce:'attacker-nonce'}});
+  const result=await invoke({
+    url:'/api/auth/google/callback',
+    query:{endpoint:'callback',code:'valid-code',state:'expected-state'},
+    headers:oauthRequestHeaders(oauthCookies()),
+  });
+  assert.equal(result.headers.location,'https://randori.example.test/?google_error=identity_invalid');
+  assert.doesNotMatch(String(result.headers['set-cookie']),/randori_session=[^;]/);
 });
 
 test('successful OAuth callback returns to the stored room and never a callback override', async () => {
   enableGoogleOAuth();
   process.env.SIGNUP_ALLOWLIST='pair@example.test';
-  globalThis.fetch = async url => {
-    if (String(url).includes('/token')) {
-      return new Response(JSON.stringify({ access_token: 'google-access' }), { status: 200 });
-    }
-    return new Response(JSON.stringify({
-      email: 'pair@example.test',
-      name: 'Pair User',
-      sub: 'google-pair-1',
-      email_verified: true,
-    }), { status: 200 });
-  };
+  globalThis.fetch = googleProviderFetch({claims:{
+    email:'pair@example.test',name:'Pair User',sub:'google-pair-1',
+  }});
 
   const result = await invoke({
     url: '/api/auth/google/callback',

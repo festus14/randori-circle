@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, beforeEach, mock, test } from 'node:test';
 import bcrypt from 'bcryptjs';
+import {googleOAuthCookieHeader,googleProviderFetch} from '../support/google-oidc.mjs';
 
 const JWT_SECRET='circle-auth-unit-test-secret-at-least-32-characters';
 const PASSWORD='correct horse battery';
@@ -28,7 +29,11 @@ const db={
     const sql=typeof statement==='string' ? statement : String(statement?.sql||'');
     const args=typeof statement==='string' ? [] : (statement?.args||[]);
     executed.push({sql,args});
-    return await executeHandler(sql,args) || {rows:[],rowsAffected:0};
+    const result=await executeHandler(sql,args) || {rows:[],rowsAffected:0};
+    if(!(result.rows?.length)&&sql.includes('INSERT INTO auth_provider_identities')&&sql.includes('RETURNING user_id')){
+      return rows([{user_id:Number(args[2])}]);
+    }
+    return result;
   },
   async batch(statements,mode){
     const results=[];
@@ -156,12 +161,7 @@ function accountSql(sql){
 }
 
 function oauthCookies({claim=true}={}){
-  const values=[
-    'randori_oauth_state=expected-state',
-    'randori_oauth_verifier=verifier',
-  ];
-  if(claim) values.push('randori_invite_claim=valid-claim');
-  return values.join('; ');
+  return googleOAuthCookieHeader({invitationClaim:claim?'valid-claim':undefined});
 }
 
 function oauthRequestHeaders(options){
@@ -434,13 +434,11 @@ test('verified Google invitation bypasses allowlist only after validation and at
   validationResult={ok:true,circle_id:1,invitation_id:'invite-1',email_hash:'email-hash',used_by:null};
   accountAcceptanceResult={ok:true,user_id:8,is_admin:false,circle_id:1,created:true,idempotent:false};
   membershipResult=false;
-  globalThis.fetch=async url=>String(url).includes('/token')
-    ? new Response(JSON.stringify({access_token:'google-access'}),{status:200})
-    : new Response(JSON.stringify({
-        email:'invited@example.test',name:'Invited User',sub:'google-invited-1',email_verified:true,
-      }),{status:200});
+  globalThis.fetch=googleProviderFetch({claims:{
+    email:'invited@example.test',name:'Invited User',sub:'google-invited-1',
+  }});
   executeHandler=sql=>{
-    if(sql.includes('SELECT id, is_admin, password_hash, google_sub')) return rows([]);
+    if(sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return rows([]);
     if(sql.includes('INSERT INTO auth_accounts')&&sql.includes('RETURNING id')) return rows([{id:8}]);
     if(sql.includes('SELECT id FROM users')) return rows([]);
     return rows();
@@ -464,6 +462,7 @@ test('verified Google invitation bypasses allowlist only after validation and at
     email:'invited@example.test',
     passwordHash:accountAcceptanceCalls[0].passwordHash,
     displayName:'Invited User',color:'#123456',isAdmin:false,googleSub:'google-invited-1',
+    googleIssuer:'https://accounts.google.com',
   }]);
   assert.match(accountAcceptanceCalls[0].passwordHash,/^!oauth:[A-Za-z0-9_-]{32}$/);
   assert.equal(acceptanceCalls.length,0);
@@ -478,15 +477,14 @@ test('same-account invitation replay completes sign-in only while membership rem
   membershipResult=true;
   validationResult={ok:true,circle_id:1,invitation_id:'invite-1',email_hash:'email-hash',used_by:8};
   acceptanceResult={ok:true,circle_id:1,idempotent:true};
-  globalThis.fetch=async url=>String(url).includes('/token')
-    ? new Response(JSON.stringify({access_token:'google-access'}),{status:200})
-    : new Response(JSON.stringify({
-        email:'invited@example.test',name:'Invited User',sub:'google-invited-1',email_verified:true,
-      }),{status:200});
+  globalThis.fetch=googleProviderFetch({claims:{
+    email:'invited@example.test',name:'Invited User',sub:'google-invited-1',
+  }});
   executeHandler=sql=>{
-    if(sql.includes('SELECT id, is_admin, password_hash, google_sub')) return rows([{
+    if(sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return rows([{
       id:8,is_admin:0,password_hash:'!oauth:existing',google_sub:'google-invited-1',
     }]);
+    if(sql.includes('UPDATE auth_accounts SET last_login')&&sql.includes('RETURNING id')) return rows([{id:8}]);
     return rows();
   };
 
@@ -510,15 +508,14 @@ test('an active member consumes a fresh prepared invitation before receiving a s
   membershipResult=true;
   validationResult={ok:true,circle_id:1,invitation_id:'invite-1',email_hash:'email-hash',used_by:null};
   acceptanceResult={ok:true,circle_id:1,idempotent:false};
-  globalThis.fetch=async url=>String(url).includes('/token')
-    ? new Response(JSON.stringify({access_token:'google-access'}),{status:200})
-    : new Response(JSON.stringify({
-        email:'invited@example.test',name:'Invited User',sub:'google-invited-1',email_verified:true,
-      }),{status:200});
+  globalThis.fetch=googleProviderFetch({claims:{
+    email:'invited@example.test',name:'Invited User',sub:'google-invited-1',
+  }});
   executeHandler=sql=>{
-    if(sql.includes('SELECT id, is_admin, password_hash, google_sub')) return rows([{
+    if(sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return rows([{
       id:8,is_admin:0,password_hash:'!oauth:existing',google_sub:'google-invited-1',
     }]);
+    if(sql.includes('UPDATE auth_accounts SET last_login')&&sql.includes('RETURNING id')) return rows([{id:8}]);
     return rows();
   };
 
@@ -533,22 +530,21 @@ test('an active member consumes a fresh prepared invitation before receiving a s
   assert.match(String(result.headers['set-cookie']),/randori_session=/);
 });
 
-test('a stable Google subject cannot create a second account after its email changes',async()=>{
+test('a stable Google subject signs into the same account after its verified email changes',async()=>{
   process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
   process.env.APP_URL='https://randori.example.test';
   process.env.GOOGLE_CLIENT_ID='client';
   process.env.GOOGLE_CLIENT_SECRET='secret';
   validationResult={ok:true,circle_id:1,invitation_id:'invite-1',email_hash:'email-hash',used_by:null};
-  globalThis.fetch=async url=>String(url).includes('/token')
-    ? new Response(JSON.stringify({access_token:'google-access'}),{status:200})
-    : new Response(JSON.stringify({
-        email:'new-address@example.test',name:'Existing User',sub:'stable-google-sub',email_verified:true,
-      }),{status:200});
+  globalThis.fetch=googleProviderFetch({claims:{
+    email:'new-address@example.test',name:'Existing User',sub:'stable-google-sub',
+  }});
   executeHandler=sql=>{
-    if(sql.includes('SELECT id, is_admin, password_hash, google_sub')) return rows([]);
-    if(sql.includes('SELECT id,email FROM auth_accounts WHERE google_sub=')){
-      return rows([{id:8,email:'old-address@example.test'}]);
+    if(sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return rows([]);
+    if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE google_sub=')){
+      return rows([{id:8,email:'old-address@example.test',is_admin:0}]);
     }
+    if(sql.includes('UPDATE auth_accounts SET email=')&&sql.includes('RETURNING id')) return rows([{id:8}]);
     return rows();
   };
 
@@ -557,23 +553,71 @@ test('a stable Google subject cannot create a second account after its email cha
     headers:oauthRequestHeaders(),
   });
   assert.equal(result.status,302);
-  assert.match(result.headers.location,/google_error=identity_mismatch/);
+  assert.equal(result.headers.location,'https://randori.example.test/?google=success');
   assert.equal(accountAcceptanceCalls.length,0);
+  assert.match(String(result.headers['set-cookie']),/randori_session=/);
+  assert.equal(executed.filter(call=>call.sql.includes('UPDATE auth_accounts SET email=')).length,1);
+});
+
+test('a verified Google email never auto-links an existing password account',async()=>{
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  process.env.APP_URL='https://randori.example.test';
+  process.env.GOOGLE_CLIENT_ID='client';
+  process.env.GOOGLE_CLIENT_SECRET='secret';
+  validationResult={ok:true,circle_id:1,invitation_id:'invite-1',email_hash:'email-hash',used_by:null};
+  globalThis.fetch=googleProviderFetch({claims:{
+    email:'invited@example.test',name:'Invited User',sub:'new-google-subject',
+  }});
+  executeHandler=sql=>{
+    if(sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return rows([{
+      id:8,email:'invited@example.test',is_admin:0,password_hash:PASSWORD_HASH,google_sub:null,
+    }]);
+    return rows();
+  };
+
+  const result=await invoke(authHandler,{
+    url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
+    headers:oauthRequestHeaders(),
+  });
+  assert.match(result.headers.location,/google_error=account_exists_use_password/);
+  assert.equal(accountAcceptanceCalls.length,0);
+  assert.equal(executed.some(call=>call.sql.includes('UPDATE auth_accounts SET')),false);
   assert.doesNotMatch(String(result.headers['set-cookie']),/randori_session=[^;]/);
-  assert.match(String(result.headers['set-cookie']),/randori_invite_claim=;/);
+});
+
+test('a stable Google subject cannot take an email already bound to another Google identity',async()=>{
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  process.env.APP_URL='https://randori.example.test';
+  process.env.GOOGLE_CLIENT_ID='client';
+  process.env.GOOGLE_CLIENT_SECRET='secret';
+  globalThis.fetch=googleProviderFetch({claims:{
+    email:'occupied@example.test',name:'Conflicting User',sub:'stable-google-sub',
+  }});
+  executeHandler=sql=>{
+    if(sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return rows([{
+      id:9,email:'occupied@example.test',is_admin:0,password_hash:'!oauth:other',google_sub:'other-google-sub',
+    }]);
+    return rows();
+  };
+
+  const result=await invoke(authHandler,{
+    url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
+    headers:oauthRequestHeaders({claim:false}),
+  });
+  assert.match(result.headers.location,/google_error=identity_mismatch/);
+  assert.equal(executed.some(call=>call.sql.includes('UPDATE auth_accounts SET')),false);
+  assert.doesNotMatch(String(result.headers['set-cookie']),/randori_session=[^;]/);
 });
 
 test('disabled membership flag preserves the legacy Google shadow-user write',async()=>{
   process.env.APP_URL='https://randori.example.test';
   process.env.GOOGLE_CLIENT_ID='client';
   process.env.GOOGLE_CLIENT_SECRET='secret';
-  globalThis.fetch=async url=>String(url).includes('/token')
-    ? new Response(JSON.stringify({access_token:'google-access'}),{status:200})
-    : new Response(JSON.stringify({
-        email:'legacy@example.test',name:'Legacy User',sub:'google-legacy-1',email_verified:true,
-      }),{status:200});
+  globalThis.fetch=googleProviderFetch({claims:{
+    email:'legacy@example.test',name:'Legacy User',sub:'google-legacy-1',
+  }});
   executeHandler=sql=>{
-    if(sql.includes('SELECT id, is_admin, password_hash, google_sub')) return rows([]);
+    if(sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return rows([]);
     if(sql.includes('INSERT INTO auth_accounts')&&sql.includes('RETURNING id')) return rows([{id:18}]);
     if(sql.includes('SELECT id FROM users')) return rows([]);
     return rows();
@@ -602,7 +646,7 @@ test('disabled membership flag preserves the legacy Google shadow-user write',as
   executed.length=0;
   cutoverStarted=false;
   executeHandler=sql=>{
-    if(sql.includes('SELECT id, is_admin, password_hash, google_sub')) return rows([]);
+    if(sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return rows([]);
     if(sql.includes('INSERT INTO auth_accounts')&&sql.includes('circle_membership_rollout')) return rows([]);
     return rows();
   };
@@ -621,13 +665,11 @@ test('invalid, already-used-by-other, or lost-race invite claims never issue a s
   process.env.GOOGLE_CLIENT_ID='client';
   process.env.GOOGLE_CLIENT_SECRET='secret';
   membershipResult=false;
-  globalThis.fetch=async url=>String(url).includes('/token')
-    ? new Response(JSON.stringify({access_token:'google-access'}),{status:200})
-    : new Response(JSON.stringify({
-        email:'invited@example.test',name:'Invited User',sub:'google-invited-1',email_verified:true,
-      }),{status:200});
+  globalThis.fetch=googleProviderFetch({claims:{
+    email:'invited@example.test',name:'Invited User',sub:'google-invited-1',
+  }});
   executeHandler=sql=>{
-    if(sql.includes('SELECT id, is_admin, password_hash, google_sub')) return rows([]);
+    if(sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return rows([]);
     if(sql.includes('INSERT INTO auth_accounts')&&sql.includes('RETURNING id')) return rows([{id:8}]);
     if(sql.includes('SELECT id FROM users')) return rows([]);
     return rows();
@@ -661,13 +703,11 @@ test('transient OAuth database failure retains the prepared invite claim for a s
   process.env.GOOGLE_CLIENT_ID='client';
   process.env.GOOGLE_CLIENT_SECRET='secret';
   validationResult={ok:true,circle_id:1,invitation_id:'invite-1',email_hash:'email-hash',used_by:null};
-  globalThis.fetch=async url=>String(url).includes('/token')
-    ? new Response(JSON.stringify({access_token:'google-access'}),{status:200})
-    : new Response(JSON.stringify({
-        email:'invited@example.test',name:'Invited User',sub:'google-invited-1',email_verified:true,
-      }),{status:200});
+  globalThis.fetch=googleProviderFetch({claims:{
+    email:'invited@example.test',name:'Invited User',sub:'google-invited-1',
+  }});
   executeHandler=sql=>{
-    if(sql.includes('SELECT id, is_admin, password_hash, google_sub')) throw new Error('database unavailable');
+    if(sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) throw new Error('database unavailable');
     return rows();
   };
 

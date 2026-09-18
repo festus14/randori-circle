@@ -1,4 +1,4 @@
-# Google SSO — Randori Circle
+# Google OpenID Connect — Randori Circle
 
 LeetCode does **not** offer public OAuth (no client_id/secret, no consent screen) — it's internal GraphQL + cookies only. So we use Google OAuth 2.0.
 
@@ -42,22 +42,24 @@ Redeploy after adding.
 
 4. Paste both into Vercel, Redeploy. Done.
 
-5. Verify `/api/auth/capabilities` advertises `googleOAuth: true` on the canonical deployment and run the deployment readiness probe before opening traffic. Missing/partial credentials, a non-canonical or insecure origin, a mismatched request host/protocol, and the isolated local runtime all fail closed with a generic unavailable response; no provider or database call is made.
+5. Apply the versioned database migrations and verify the deployment readiness probe before opening traffic, then confirm `/api/auth/capabilities` advertises `googleOAuth: true` on the canonical deployment. Missing/partial credentials, an unmigrated identity schema, a non-canonical or insecure origin, a mismatched request host/protocol, and the isolated local runtime all fail closed.
 
 No extra API needs enabling — Google Identity is on by default.
 
 ### Flow
 
-- User clicks "Continue with Google" (`#authGoogle`) → `GET /api/auth/google/start` creates cryptographically random OAuth state and a PKCE verifier in short-lived HttpOnly cookies, then redirects to Google. Pair invites may add an exact canonical `return_to` such as `/join/week_12_pair_34`; the server stores the validated path in a separate short-lived cookie.
+- User clicks "Continue with Google" (`#authGoogle`) → `GET /api/auth/google/start` creates cryptographically random OAuth state, PKCE verifier, and OpenID Connect nonce in short-lived HttpOnly cookies, then redirects to Google. Pair invites may add an exact canonical `return_to` such as `/join/week_12_pair_34`; the server stores the validated path in a separate short-lived cookie.
 - Google → consent → redirects to `/api/auth/google/callback?code=...`
-- Callback verifies state, exchanges the code with the PKCE verifier, and loads a verified email, name, and stable subject from Google's OpenID userinfo endpoint.
-- Lookup `auth_accounts` by lowercased email case-insensitive:
+- Callback consumes the transient cookies, verifies state, exchanges the single-use code with the exact PKCE verifier, and validates the signed ID token against Google's bounded JWKS response. Issuer, audience, expiry, nonce, subject, and `email_verified` are all required; token and key responses have strict byte and time limits.
+- Resolve `auth_provider_identities` by the canonical Google issuer plus stable subject:
   - not exists → create a Google-only account associated with the verified Google subject only when the legacy allowlist is still open, or after validating an unused invitation bound to that email.
-  - existing Google account → require the same Google subject before updating `last_login`.
+  - existing Google account → use issuer plus subject as the identity, refusing any email collision with another account.
   - existing password account → do not silently link it; the user must sign in with the existing method until an explicit linking flow exists.
 - Signs a 12-hour application JWT with pinned algorithm, issuer, and audience, stores it only in the session cookie, and redirects to `/?google=success` or the validated pair invite path with `?google=success`.
 
-The callback never accepts a return destination from its query string. It consumes the destination captured at OAuth start, validates it again, and clears all transient cookies. Only `/join/week_<positive integer>_pair_<positive integer>` is accepted; absolute URLs, protocol-relative URLs, encoded or backslash separators, queries, fragments, zeroes, leading zeroes, and malformed room IDs fall back to `/`.
+The callback never accepts a return destination from its query string. It consumes the destination captured at OAuth start and clears state, PKCE, nonce, and return cookies before provider work. Combined with Google's single-use authorization code, replayed callbacks cannot establish another session. Only `/join/week_<positive integer>_pair_<positive integer>` is accepted; absolute URLs, protocol-relative URLs, encoded or backslash separators, queries, fragments, zeroes, leading zeroes, and malformed room IDs fall back to `/`.
+
+Provider errors are mapped to a small public code set; raw provider bodies, authorization codes, ID tokens, client secrets, and invitation material are never logged or stored in browser storage. The sign-in dialog presents a keyboard-focusable retry action for recoverable failures.
 
 No secrets in git. Native `fetch` used — no new deps.
 

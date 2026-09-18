@@ -141,7 +141,7 @@ test('status projection exposes the mutation fingerprint without paths or schema
     schemaStatus:{blockers:[{code:'missing_table'},{code:'missing_table'},{code:'index_drift'}]},
   }),{exists:true});
   assert.equal(blocked.ok,false);
-  assert.deepEqual(blocked.pendingVersions,[2,3]);
+  assert.deepEqual(blocked.pendingVersions,[2,3,4]);
   assert.deepEqual(blocked.capabilities,{apply:false,adopt:false});
   assert.deepEqual(blocked.blockers,['index_drift','missing_table']);
 
@@ -197,8 +197,8 @@ test('apply forwards the full migration set and reports only migration versions'
         migrationVersions:options.migrations.map(item=>item.version),
       });
       return {
-        ok:true,mode:'apply',fromVersion:1,toVersion:3,latestVersion:3,
-        applied:[{version:3,name:'private-name',checksum:'secret-checksum',executionMs:4}],
+        ok:true,mode:'apply',fromVersion:1,toVersion:4,latestVersion:4,
+        applied:[{version:4,name:'private-name',checksum:'secret-checksum',executionMs:4}],
         stateFingerprint:'b'.repeat(64),
       };
     },
@@ -206,14 +206,14 @@ test('apply forwards the full migration set and reports only migration versions'
   assert.equal(execution.exitCode,0);
   assert.deepEqual(calls,[
     'prepare',
-    {expectedStateFingerprint:FINGERPRINT,migrationVersions:[1,2,3]},
+    {expectedStateFingerprint:FINGERPRINT,migrationVersions:[1,2,3,4]},
     'close',
   ]);
   assert.equal(execution.result.result,'applied');
-  assert.equal(execution.result.throughVersion,3);
-  assert.equal(execution.result.latestVersion,3);
+  assert.equal(execution.result.throughVersion,4);
+  assert.equal(execution.result.latestVersion,4);
   assert.deepEqual(execution.result.target,{kind:'local-file',existedBefore:true});
-  assert.deepEqual(execution.result.appliedVersions,[3]);
+  assert.deepEqual(execution.result.appliedVersions,[4]);
   assert.doesNotMatch(JSON.stringify(execution.result),/private-name|secret-checksum/);
   assert.equal(stdout.read().trim(),JSON.stringify(execution.result));
 });
@@ -290,7 +290,7 @@ test('adopt refuses a missing target without creating it',async()=>{
   assert.equal(localDatabaseTarget(database).exists,false);
 });
 
-test('an exact unmanaged v2 rehearsal can adopt its prefix and then apply v3',async()=>{
+test('an exact unmanaged v2 rehearsal can adopt its prefix and then apply pending migrations',async()=>{
   const directory=mkdtempSync(join(tmpdir(),'randori-migrate-prefix-'));
   const path=join(directory,'production-copy.db');
   const database=pathToFileURL(path).href;
@@ -302,8 +302,8 @@ test('an exact unmanaged v2 rehearsal can adopt its prefix and then apply v3',as
     });
     assert.equal(latestInspection.exitCode,2);
     assert.equal(latestInspection.result.state,'unmanaged');
-    assert.equal(latestInspection.result.throughVersion,3);
-    assert.equal(latestInspection.result.latestVersion,3);
+    assert.equal(latestInspection.result.throughVersion,4);
+    assert.equal(latestInspection.result.latestVersion,4);
     assert.equal(latestInspection.result.capabilities.adopt,false);
 
     const prefixInspection=await main({
@@ -313,7 +313,7 @@ test('an exact unmanaged v2 rehearsal can adopt its prefix and then apply v3',as
     assert.equal(prefixInspection.exitCode,0);
     assert.equal(prefixInspection.result.state,'unmanaged');
     assert.equal(prefixInspection.result.throughVersion,2);
-    assert.equal(prefixInspection.result.latestVersion,3);
+    assert.equal(prefixInspection.result.latestVersion,4);
     assert.deepEqual(prefixInspection.result.ledger,{present:false,currentVersion:0,latestVersion:2});
     assert.deepEqual(prefixInspection.result.pendingVersions,[]);
     assert.deepEqual(prefixInspection.result.capabilities,{apply:false,adopt:true});
@@ -329,7 +329,7 @@ test('an exact unmanaged v2 rehearsal can adopt its prefix and then apply v3',as
     assert.equal(adoption.exitCode,0);
     assert.equal(adoption.result.result,'adopted');
     assert.equal(adoption.result.throughVersion,2);
-    assert.equal(adoption.result.latestVersion,3);
+    assert.equal(adoption.result.latestVersion,4);
     assert.equal(adoption.result.toVersion,2);
     assert.deepEqual(adoption.result.adoptedVersions,[1,2]);
 
@@ -338,8 +338,8 @@ test('an exact unmanaged v2 rehearsal can adopt its prefix and then apply v3',as
     });
     assert.equal(managedV2.exitCode,0);
     assert.equal(managedV2.result.state,'managed');
-    assert.deepEqual(managedV2.result.ledger,{present:true,currentVersion:2,latestVersion:3});
-    assert.deepEqual(managedV2.result.pendingVersions,[3]);
+    assert.deepEqual(managedV2.result.ledger,{present:true,currentVersion:2,latestVersion:4});
+    assert.deepEqual(managedV2.result.pendingVersions,[3,4]);
     assert.deepEqual(managedV2.result.capabilities,{apply:true,adopt:false});
 
     const upgraded=await main({
@@ -351,8 +351,8 @@ test('an exact unmanaged v2 rehearsal can adopt its prefix and then apply v3',as
     });
     assert.equal(upgraded.exitCode,0);
     assert.equal(upgraded.result.result,'applied');
-    assert.deepEqual(upgraded.result.appliedVersions,[3]);
-    assert.equal(upgraded.result.toVersion,3);
+    assert.deepEqual(upgraded.result.appliedVersions,[3,4]);
+    assert.equal(upgraded.result.toVersion,4);
 
     const latest=await main({
       argv:['status','--database',database],stdout:outputBuffer().stream,
@@ -364,10 +364,10 @@ test('an exact unmanaged v2 rehearsal can adopt its prefix and then apply v3',as
     assert.equal(noop.exitCode,0);
     assert.equal(noop.result.result,'noop');
     assert.deepEqual(noop.result.appliedVersions,[]);
-    assert.equal(noop.result.fromVersion,3);
-    assert.equal(noop.result.toVersion,3);
-    assert.equal(noop.result.throughVersion,3);
-    assert.equal(noop.result.latestVersion,3);
+    assert.equal(noop.result.fromVersion,4);
+    assert.equal(noop.result.toVersion,4);
+    assert.equal(noop.result.throughVersion,4);
+    assert.equal(noop.result.latestVersion,4);
   }finally{ rmSync(directory,{recursive:true,force:true}); }
 });
 
@@ -397,7 +397,7 @@ test('prefix adoption refuses mismatched fingerprints and drift without writing 
     assert.equal(stale.exitCode,2);
     assert.equal(stale.result.error,'MIGRATION_STATE_CHANGED');
     assert.equal(stale.result.throughVersion,2);
-    assert.equal(stale.result.latestVersion,3);
+    assert.equal(stale.result.latestVersion,4);
 
     const driftClient=createClient({url:database});
     try{ await driftClient.execute('DROP INDEX idx_circle_invitations_email'); }
@@ -442,13 +442,13 @@ test('CLI status fingerprint authorizes a real fresh-file apply',async()=>{
   assert.equal(apply.exitCode,0);
   assert.equal(apply.result.result,'applied');
   assert.deepEqual(apply.result.target,{kind:'local-file',existedBefore:false});
-  assert.deepEqual(apply.result.appliedVersions,[1,2,3]);
+  assert.deepEqual(apply.result.appliedVersions,[1,2,3,4]);
   assert.equal(localDatabaseTarget(database).exists,true);
   const after=await main({
     argv:['status','--database',database],stdout:outputBuffer().stream,
   });
   assert.equal(after.result.state,'managed');
-  assert.equal(after.result.ledger.currentVersion,3);
+  assert.equal(after.result.ledger.currentVersion,4);
   assert.equal(after.result.stateFingerprint,apply.result.stateFingerprint);
 });
 

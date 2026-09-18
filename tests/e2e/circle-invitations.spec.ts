@@ -96,6 +96,57 @@ test('fragment invitation is scrubbed before third-party code and prepared exact
   expect(prepareBodies).toHaveLength(1);
 });
 
+test('an invited member completes the mocked Google provider journey to an authenticated dashboard',async({page})=>{
+  const token='C'.repeat(43);
+  let signedIn=false;
+  let prepared=0;
+  let providerStarts=0;
+  let callbacks=0;
+  const invitedUser={
+    id:7,email:'invited@example.test',name:'Invited Member',display_name:'Invited Member',
+    color:'#9cc0b5',is_admin:false,is_available:true,tz:'Europe/London',interview_focus:'both',
+  };
+  await mockApi(page,{
+    '/api/invitations/prepare':()=>{
+      prepared+=1;
+      return {ok:true,expires_in_seconds:600};
+    },
+    '/api/auth/me':()=>signedIn
+      ?{ok:true,user:invitedUser}
+      :{_status:401,ok:false,error:'authentication required'},
+    '/api/circle':()=>signedIn?circleResponse('member'):{_status:401,error:'authentication required'},
+  });
+  await page.route('**/api/auth/google/start**',async route=>{
+    providerStarts+=1;
+    await route.fulfill({
+      status:200,contentType:'text/html',
+      body:`<!doctype html><html><body><h1>Mock Google</h1><button onclick="location.href='/api/auth/google/callback?code=one-time-code&state=mock-state'">Continue as invited@example.test</button></body></html>`,
+    });
+  });
+  await page.route('**/api/auth/google/callback**',async route=>{
+    callbacks+=1;
+    signedIn=true;
+    await route.fulfill({
+      status:302,
+      headers:{location:'/?google=success','set-cookie':'randori_session=mocked-provider-session; Path=/; HttpOnly; SameSite=Lax'},
+      body:'',
+    });
+  });
+  await resetClientState(page);
+
+  await page.goto(`/invite#invite=${token}`,{waitUntil:'domcontentloaded'});
+  await expect(page.getByTestId('invite-status')).toContainText('Invitation verified');
+  await page.getByTestId('invite-continue').click();
+  await expect(page.getByRole('heading',{name:'Mock Google'})).toBeVisible();
+  await page.getByRole('button',{name:'Continue as invited@example.test'}).click();
+  await expect(page).toHaveURL(/\/?$/);
+  await expect(page.locator('#meLabel')).toContainText('Invited Member');
+  await expect(page.locator('#view-dashboard')).toBeVisible();
+  expect(prepared).toBe(1);
+  expect(providerStarts).toBe(1);
+  expect(callbacks).toBe(1);
+});
+
 test('circle owner can view members, create a private copy action, and revoke invitations', async ({ page }) => {
   const rawInvite = 'B'.repeat(43);
   const firstInvitationId = '11111111-1111-4111-8111-111111111111';

@@ -305,6 +305,59 @@ test('private beta capabilities offer Google for joining and password only for e
   await expect(page.locator('#authSignup')).toBeHidden();
 });
 
+test('Google failure offers an accessible retry and a mocked provider returns the member to the app', async ({ page }) => {
+  const user = {
+    id: 9,
+    email: 'invited@example.test',
+    name: 'Invited Member',
+    is_admin: false,
+    is_available: true,
+  };
+  let signedIn=false;
+  let starts=0;
+  let callbacks=0;
+  await mockApi(page,{
+    '/api/auth/capabilities':privateBetaCapabilities,
+    '/api/auth/me':()=>signedIn
+      ?{ok:true,user}
+      :{_status:401,ok:false,error:'authentication required'},
+  });
+  await page.route('**/api/auth/google/start**',async route=>{
+    starts+=1;
+    await route.fulfill({
+      status:200,
+      contentType:'text/html',
+      body:`<!doctype html><html><body><h1>Mock Google</h1><button id="approve" onclick="location.href='/api/auth/google/callback?code=one-time-code&state=mock-state'">Continue as invited@example.test</button></body></html>`,
+    });
+  });
+  await page.route('**/api/auth/google/callback**',async route=>{
+    callbacks+=1;
+    signedIn=true;
+    await route.fulfill({
+      status:302,
+      headers:{location:'/?google=success','set-cookie':'randori_session=mocked-provider-session; Path=/; HttpOnly; SameSite=Lax'},
+      body:'',
+    });
+  });
+  await resetClientState(page);
+  await page.goto('/?google_error=provider_unavailable',{waitUntil:'domcontentloaded'});
+
+  const dialog=page.getByRole('dialog',{name:'Sign in to Randori'});
+  const retry=page.getByRole('button',{name:'Try Google sign-in again'});
+  await expect(dialog).toBeVisible();
+  await expect(page.locator('#authErr')).toHaveText('Google sign-in is temporarily unavailable. Please try again.');
+  await expect(retry).toBeVisible();
+  await expect(retry).toBeFocused();
+  await retry.click();
+
+  await expect(page.getByRole('heading',{name:'Mock Google'})).toBeVisible();
+  await page.getByRole('button',{name:'Continue as invited@example.test'}).click();
+  await expect(page).toHaveURL(/\/?$/);
+  await expect(page.locator('#meLabel')).toContainText('Invited Member');
+  expect(starts).toBe(1);
+  expect(callbacks).toBe(1);
+});
+
 test('capability failures fail closed for account creation while preserving existing-user login', async ({ page }) => {
   await mockApi(page, {
     '/api/auth/capabilities': { _status: 503, ok: false, error: 'temporarily unavailable' },

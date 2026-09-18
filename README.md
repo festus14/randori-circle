@@ -59,7 +59,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_pair-access.js` | shared source-aware authorization for canonical private pair rooms |
 | `api/_circle-membership.js` | primary-circle membership, keyed invite hashes, signed short-lived claims, and audited acceptance |
 | `api/invitations.js` | owner-only invitation lifecycle and rate-limited public preparation |
-| `db/schema-manifest.js` | checksummed contract for 30 application tables and 27 named indexes |
+| `db/schema-manifest.js` | checksummed contract for 31 application tables and 27 named indexes |
 | `db/schema-inspector.js` | read-only SQLite drift inspection and non-executable planning |
 
 The target Next.js/Supabase architecture is intentionally phased rather than introduced as a big-bang rewrite.
@@ -74,7 +74,7 @@ Copy `.env.example` and configure at least:
 - an explicit canonical HTTPS `APP_URL` plus both `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`; OAuth stays unavailable for partial, malformed, insecure, host-mismatched, or local-runtime configuration
 - `SIGNUP_ALLOWLIST` for the legacy private-beta Google flow while circle membership enforcement is off
 - `CIRCLE_MEMBERSHIP_ENABLED=true` to enforce invitation-gated primary-circle access after the staged migration below
-- `AUTH_SCHEMA_BOOTSTRAP_ENABLED=true` only during the documented first-admin bootstrap for a fresh database; otherwise keep it false
+- `AUTH_SCHEMA_BOOTSTRAP_ENABLED` is legacy-only and must remain false for the migrated OIDC flow; run the protected database migrations before enabling production authentication
 - `RESEND_API_KEY` and `RESEND_FROM` for pairing notifications
 
 See [GOOGLE_OAUTH.md](GOOGLE_OAUTH.md) and [TURSO.md](TURSO.md) for provider setup. Back up the database before first deploying migrations.

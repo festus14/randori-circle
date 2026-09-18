@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {after,test,mock} from 'node:test';
 import {createClient} from '@libsql/client';
+import {googleOAuthCookieHeader,googleProviderFetch} from '../support/google-oidc.mjs';
 
 const db=createClient({url:'file::memory:'});
 const JWT_SECRET='google-bootstrap-test-secret-at-least-thirty-two-bytes';
@@ -36,7 +37,7 @@ function invoke(){
       query:{endpoint:'callback',code:'code',state:'expected-state'},
       headers:{
         host:'randori.example.test','x-forwarded-proto':'https',
-        cookie:'randori_oauth_state=expected-state; randori_oauth_verifier=verifier',
+        cookie:googleOAuthCookieHeader(),
       },
       socket:{remoteAddress:'127.0.0.1'},
     };
@@ -65,18 +66,18 @@ after(()=>{
   db.close();
 });
 
-test('fresh production Google bootstrap is explicit, allowlisted, and disabled by default',async()=>{
+test('legacy Google bootstrap cannot bypass the provider-identity migration gate',async()=>{
   process.env.NODE_ENV='production';
   process.env.APP_URL='https://randori.example.test';
   process.env.GOOGLE_CLIENT_ID='client';
   process.env.GOOGLE_CLIENT_SECRET='secret';
   process.env.SIGNUP_ALLOWLIST='bootstrap@example.test';
   process.env.CIRCLE_MEMBERSHIP_ENABLED='false';
-  globalThis.fetch=async url=>String(url).includes('/token')
-    ? new Response(JSON.stringify({access_token:'google-access'}),{status:200})
-    : new Response(JSON.stringify({
-        email:'bootstrap@example.test',name:'Bootstrap Owner',sub:'google-bootstrap-1',email_verified:true,
-      }),{status:200});
+  let providerCalls=0;
+  globalThis.fetch=googleProviderFetch({
+    claims:{email:'bootstrap@example.test',name:'Bootstrap Owner',sub:'google-bootstrap-1'},
+    onRequest:()=>{ providerCalls+=1; },
+  });
 
   const disabled=await invoke();
   assert.equal(disabled.status,302);
@@ -87,17 +88,14 @@ test('fresh production Google bootstrap is explicit, allowlisted, and disabled b
   process.env.AUTH_SCHEMA_BOOTSTRAP_ENABLED='true';
   const enabled=await invoke();
   assert.equal(enabled.status,302);
-  assert.equal(enabled.headers.location,'https://randori.example.test/?google=success');
-  assert.match(String(enabled.headers['set-cookie']),/randori_session=/);
+  assert.equal(enabled.headers.location,'https://randori.example.test/?google_error=db_error');
+  assert.doesNotMatch(String(enabled.headers['set-cookie']),/randori_session=[^;]/);
 
-  const columns=await db.execute(`PRAGMA table_info('auth_accounts')`);
-  assert.equal(columns.rows.some(row=>row.name==='google_sub'),true);
-  const account=await db.execute(`SELECT email,display_name,is_admin,google_sub FROM auth_accounts`);
-  assert.deepEqual(account.rows.map(row=>({
-    email:String(row.email),display_name:String(row.display_name),is_admin:Number(row.is_admin),google_sub:String(row.google_sub),
-  })),[{
-    email:'bootstrap@example.test',display_name:'Bootstrap Owner',is_admin:1,google_sub:'google-bootstrap-1',
-  }]);
+  const accounts=await db.execute(`SELECT name FROM sqlite_schema WHERE type='table' AND name='auth_accounts'`);
+  assert.equal(accounts.rows.length,0,'a missing provider-identity table must fail before legacy bootstrap writes');
+  const identities=await db.execute(`SELECT name FROM sqlite_schema WHERE type='table' AND name='auth_provider_identities'`);
+  assert.equal(identities.rows.length,0,'request-time bootstrap must not create the versioned identity table');
+  assert.equal(providerCalls,0,'an unmigrated database must fail before consuming the one-time provider code');
   const rollout=await db.execute(`SELECT name FROM sqlite_schema WHERE type='table' AND name='circle_membership_rollout'`);
   assert.equal(rollout.rows.length,0,'bootstrap must not create membership schema or close its registration latch');
 });
