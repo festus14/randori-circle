@@ -3424,7 +3424,7 @@ def allow(key, limit=5):
       if(['pair','code','board','history'].includes(id)){
         try{
           const url=new URL(window.location.href);
-          if(id!=='code'&&/^\/join\/week_[1-9]\d*_pair_[1-9]\d*$/.test(url.pathname)) url.pathname='/';
+          if((id==='pair'||id==='history')&&/^\/join\/week_[1-9]\d*_pair_[1-9]\d*$/.test(url.pathname)) url.pathname='/';
           url.searchParams.delete('tab');
           url.searchParams.set('view',id);
           if(url.hash.includes('code')) url.hash='';

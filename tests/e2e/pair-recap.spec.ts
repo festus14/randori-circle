@@ -575,9 +575,8 @@ test('both members see the same safe recap, literal messages, explicit updates, 
     await Promise.all(pages.map(page => openRecap(page, roomA)));
 
     expect(sharedRecap(await recapSnapshot(pages[0]))).toEqual(sharedRecap(await recapSnapshot(pages[1])));
-    await expect(pages[0].getByTestId('pair-recap-activity')).toHaveText(
-      await pages[1].getByTestId('pair-recap-activity').innerText(),
-    );
+    expect(await pages[0].getByTestId('pair-recap-activity').locator('li').allInnerTexts())
+      .toEqual(await pages[1].getByTestId('pair-recap-activity').locator('li').allInnerTexts());
     await expect(pages[0].getByTestId('pair-recap-schedule')).toHaveText(
       await pages[1].getByTestId('pair-recap-schedule').innerText(),
     );
