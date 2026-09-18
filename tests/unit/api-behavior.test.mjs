@@ -7,6 +7,8 @@ const realFetch = globalThis.fetch;
 let executeHandler = () => ({ rows: [], rowsAffected: 0 });
 let databaseDelegate = null;
 const executed = [];
+const sentryMessageCalls = [];
+const sentryExceptionCalls = [];
 let lastPairingRun = null;
 let persistedPairGroups = [];
 
@@ -79,7 +81,10 @@ mock.module('../../api/_db.js', {
     verifyRequestAuth: authPayload,
     verifyMutationOrigin: () => true,
     initSentry: () => {},
+    isSentryConfigured: () => Boolean(process.env.SENTRY_DSN || process.env.NEXT_PUBLIC_SENTRY_DSN),
     getSentry: () => ({ Sentry: null, ready: false }),
+    captureSentryMessage: (...args) => { sentryMessageCalls.push(args); return null; },
+    captureSentryException: (...args) => { sentryExceptionCalls.push(args); return null; },
   },
 });
 
@@ -135,6 +140,8 @@ function invoke(handler, { method = 'GET', url = '/', query = {}, headers = {}, 
 
 beforeEach(() => {
   executed.length = 0;
+  sentryMessageCalls.length = 0;
+  sentryExceptionCalls.length = 0;
   databaseDelegate = null;
   lastPairingRun = null;
   persistedPairGroups = [];
@@ -143,9 +150,28 @@ beforeEach(() => {
   for (const key of [
     'ADMIN_EMAILS', 'AI_ENABLED', 'APP_URL', 'CRON_SECRET', 'GOOGLE_CLIENT_ID', 'NODE_ENV',
     'GOOGLE_CLIENT_SECRET', 'GROQ_API_KEY', 'OPENAI_API_KEY', 'RESEND_API_KEY',
+    'NEXT_PUBLIC_SENTRY_DSN', 'SENTRY_DSN',
     'ALLOW_OPEN_SIGNUP', 'SIGNUP_ALLOWLIST', 'LEETCODE_INGESTION_AUTHORIZED',
     'TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM',
   ]) delete process.env[key];
+});
+
+test('an unhandled data API failure is reported to Sentry exactly once', async () => {
+  executeHandler = () => { throw new Error('forced handler failure'); };
+  const originalError=console.error;
+  console.error=()=>{};
+  try{
+    const result=await invoke(dataHandler,{
+      url:'/api/history',
+      query:{endpoint:'history'},
+      headers:{'x-test-auth':'user'},
+    });
+    assert.equal(result.status,500);
+    assert.equal(sentryExceptionCalls.length,1);
+    assert.match(sentryExceptionCalls[0][0].message,/forced handler failure/);
+  }finally{
+    console.error=originalError;
+  }
 });
 
 after(() => {
@@ -546,6 +572,16 @@ test('execution supports only JavaScript and Python and normalizes Piston result
     assert.equal(rejected.status, 400, language);
     assert.match(rejected.body.error, /javascript and python/i);
   }
+
+  process.env.NEXT_PUBLIC_SENTRY_DSN = 'https://public@example.test/1';
+  globalThis.fetch = async () => { throw new Error('simulated Piston outage'); };
+  const failed = await invoke(dataHandler, {
+    method: 'POST', url: '/api/execute', query: { endpoint: 'execute' }, headers,
+    body: { language: 'javascript', code: 'return 1', test_cases: [{ input: 1, expect: 1 }] },
+  });
+  assert.equal(failed.status, 500);
+  assert.equal(sentryMessageCalls.length, 1);
+  assert.equal(sentryMessageCalls[0][1].tags.event, 'execute_fail');
 });
 
 test('questions require authentication and bundled seed ingestion runs only through admin init', async () => {
@@ -751,6 +787,7 @@ test('AI analysis requires trusted room membership and every human participant c
 
 test('AI provider network failures preserve Groq retries and OpenAI fallback', async () => {
   process.env.AI_ENABLED = 'true';
+  process.env.NEXT_PUBLIC_SENTRY_DSN = 'https://public@example.test/1';
   process.env.GROQ_API_KEY = 'test-groq-key';
   process.env.OPENAI_API_KEY = 'test-openai-key';
   executeHandler = sql => {
@@ -787,6 +824,14 @@ test('AI provider network failures preserve Groq retries and OpenAI fallback', a
   assert.equal(result.body.estimated_cost.tokens_out, 10);
   assert.equal(result.body.estimated_cost.cents, 1);
   assert.deepEqual(providerCalls.map(url => url.includes('api.groq.com') ? 'groq' : 'openai'), ['groq', 'groq', 'openai']);
+
+  globalThis.fetch = async () => { throw new TypeError('simulated provider outage'); };
+  const unavailable = await invoke(aiHandler, {
+    method: 'POST', url: '/api/ai/analyze', query: { endpoint: 'analyze' }, headers: { 'x-test-auth': 'user' },
+    body: { room_id: 'week_10_pair_22', transcript: 'A short solo analysis.', ai_consent: true },
+  });
+  assert.equal(unavailable.status, 502);
+  assert.equal(sentryMessageCalls.some(call => call[1].tags.event === 'ai_groq_fail'), true);
 
   delete process.env.GROQ_API_KEY;
   globalThis.fetch = async () => { throw Object.assign(new Error('simulated timeout'), { name: 'AbortError' }); };

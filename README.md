@@ -59,6 +59,7 @@ Requires Node.js 24 or newer.
 
 ```bash
 npm ci
+npm run audit:prod
 npm run check:syntax
 npm run test:coverage
 npm run test:e2e
