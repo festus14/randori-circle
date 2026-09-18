@@ -1087,6 +1087,8 @@ p{margin:0}
   const TOKEN_KEY='randori-token';
   const ME_KEY='randori-me';
   let me = null;
+  let authSessionEpoch=0;
+  let authRefreshSequence=0;
   const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,localIdentity:false,googleOAuth:false,registrationMode:'private_beta'});
   let authCapabilities=CLOSED_AUTH_CAPABILITIES;
   let authCapabilitiesLoaded=false;
@@ -1211,20 +1213,35 @@ p{margin:0}
       throw e;
     }
   }
+  function invalidateAuthRefreshes(){
+    authSessionEpoch+=1;
+    authRefreshSequence+=1;
+  }
 async function refreshMe(){
+    const requestEpoch=authSessionEpoch;
+    const requestSequence=++authRefreshSequence;
+    let nextUser=null;
+    let failure=null;
     try{
       const data = await api('/api/auth/me', {method:'GET'});
-      me = data.user;
-      localStorage.setItem(ME_KEY, JSON.stringify(me));
+      nextUser=data.user;
     }catch(err){
-      console.warn('refreshMe failed', err && err.error ? err.error : err);
+      failure=err;
+    }
+    if(requestEpoch!==authSessionEpoch||requestSequence!==authRefreshSequence) return false;
+    if(failure){
+      console.warn('refreshMe failed', failure && failure.error ? failure.error : failure);
       me=null;
       try{ localStorage.removeItem(ME_KEY); }catch{}
+    }else{
+      me=nextUser;
+      try{ localStorage.setItem(ME_KEY, JSON.stringify(me)); }catch{}
     }
     updateAuthUI();
     try{
       window.dispatchEvent(new CustomEvent('randori:auth-refreshed',{detail:{signedIn:!!me,userId:me?.id||me?.uid||null}}));
     }catch{}
+    return true;
   }
   const ADMIN_EMAIL='festusomole14@gmail.com';
   function isAdmin(){ return !!(me && (me.is_admin || me.isAdmin || (me.email && me.email.toLowerCase()===ADMIN_EMAIL))); }
@@ -1598,7 +1615,9 @@ async function refreshMe(){
         const ml=document.getElementById('meLabel'); const mm=document.getElementById('meMenu'); if(ml&&mm&&!ml._menuWired){ ml._menuWired=true; ml.addEventListener('click', (e)=>{ e.stopPropagation(); mm.style.display=mm.style.display==='none'||!mm.style.display?'block':'none'; }); document.addEventListener('click', (e)=>{ if(!mm.contains(e.target)&&e.target!==ml) mm.style.display='none'; }); }
       })();
   document.getElementById('signOutBtn').onclick=async()=>{
+    invalidateAuthRefreshes();
     try{ await fetch('/api/auth/logout',{method:'POST',credentials:'same-origin'}); }catch{}
+    invalidateAuthRefreshes();
     try{
       localStorage.removeItem(TOKEN_KEY);
       localStorage.removeItem(ME_KEY);
@@ -1797,6 +1816,7 @@ async function refreshMe(){
       if(!response.ok||!data?.user) throw data||new Error('authentication unavailable');
       authRequest=null;
       setAuthBusy(false);
+      invalidateAuthRefreshes();
       localStorage.removeItem(TOKEN_KEY);
       localStorage.setItem(ME_KEY,JSON.stringify(data.user));
       me=data.user;
