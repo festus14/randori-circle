@@ -444,6 +444,21 @@ test('run scan overflow fails closed unless 50 verified runs establish the activ
   const response=await invoke();
   assert.equal(response.status,503);
   assert.deepEqual(response.body,{error:'pair recap unavailable'});
+
+  const verified=[];
+  for(let index=0;index<MAX_RECAP_ACTIVITY;index+=1){
+    const resultsJson=JSON.stringify([{index,pass:true}]);
+    verified.push({
+      sql:`INSERT INTO session_runs (user_id,week_id,pair_group_id,question_slug,language,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      args:[2,10,20,'balanced-template-markers','javascript',signedRunSnapshot({resultsJson}),resultsJson,3,3,index,
+        `2026-09-19 06:${String(index).padStart(2,'0')}:00`],
+    });
+  }
+  await database.batch(verified,'write');
+  const bounded=await invoke();
+  assert.equal(bounded.status,200,JSON.stringify(bounded.body));
+  assert.equal(bounded.body.recap.activity.length,MAX_RECAP_ACTIVITY);
+  assert.ok(bounded.body.recap.activity.every(event=>event.kind==='run'&&event.authoritative===true));
 });
 
 test('invalid run attestations are omitted and malformed selected storage fails closed',async()=>{
