@@ -1369,7 +1369,7 @@ test('questions expose only the active original catalogue and make no LeetCode o
     url: '/api/questions', query: { endpoint: 'questions' }, headers: { 'x-test-auth': 'user' },
   });
   assert.equal(questions.status, 200);
-  assert.equal(questions.body.questions.length,5);
+  assert.equal(questions.body.questions.length,10);
   assert.equal(questions.body.questions.every(question=>question.source==='randori-original' && question.status==='active'),true);
   assert.equal(questions.body.questions.some(question=>question.slug==='archived-session-streak'),false);
   for(const question of questions.body.questions){

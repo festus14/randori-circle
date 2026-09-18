@@ -79,13 +79,13 @@ test('the bundled original catalogue passes strict validation', () => {
   assert.equal(Object.hasOwn(raw, 'evaluationSuites'), false);
   assert.doesNotMatch(JSON.stringify(raw), /"evaluationSuites"|"serverTests"|"tests":/);
   const result = validateCatalog(raw);
-  assert.deepEqual(result, { valid: true, exerciseCount: 6 });
+  assert.deepEqual(result, { valid: true, exerciseCount: 11 });
   assert.deepEqual(SUPPORTED_LANGUAGES, ['javascript', 'python']);
 });
 
 test('public listing returns full active exercises without server-owned test data', () => {
   const exercises = listPublicExercises();
-  assert.equal(exercises.length, 5);
+  assert.equal(exercises.length, 10);
   assert.deepEqual(
     exercises.map(exercise => exercise.slug),
     [
@@ -94,6 +94,11 @@ test('public listing returns full active exercises without server-owned test dat
       'review-wave-planner',
       'workshop-seat-allocation',
       'coverage-gap-finder',
+      'balanced-template-markers',
+      'capacity-upgrade-index',
+      'shortest-handoff-path',
+      'message-frequency-leaders',
+      'recovery-budget-plan',
     ],
   );
   for (const exercise of exercises) {
@@ -108,6 +113,48 @@ test('public listing returns full active exercises without server-owned test dat
     assert.equal(hasForbiddenPublicKey(exercise), false);
   }
   assert.doesNotMatch(JSON.stringify(exercises), /long-merge|whole-input-boundary|mixed-reasons/);
+});
+
+test('the original content pack exposes the intended concepts and complete public statements',()=>{
+  const expected={
+    'balanced-template-markers':['Easy','stack-string',['stack','strings']],
+    'capacity-upgrade-index':['Easy','binary-search',['arrays','binary-search']],
+    'shortest-handoff-path':['Medium','graph-traversal',['graphs','breadth-first-search']],
+    'message-frequency-leaders':['Medium','hash-map',['hash-maps','sorting']],
+    'recovery-budget-plan':['Medium','dynamic-programming',['dynamic-programming','optimization']],
+  };
+  for(const [slug,[difficulty,type,tags]] of Object.entries(expected)){
+    const exercise=getPublicExercise(slug,1);
+    assert.ok(exercise,slug);
+    assert.equal(exercise.status,'active');
+    assert.equal(exercise.difficulty,difficulty);
+    assert.equal(exercise.type,type);
+    assert.deepEqual(exercise.tags,tags);
+    assert.ok(exercise.prompt.length>150);
+    assert.ok(exercise.constraints.length>=3);
+    assert.ok(exercise.examples.length>=2);
+    assert.match(exercise.provenance,/Original exercise/);
+    assert.equal(hasForbiddenPublicKey(exercise),false);
+  }
+  assert.doesNotMatch(
+    getPublicExercise('capacity-upgrade-index',1).prompt,
+    /input must not be modified/i,
+  );
+});
+
+test('balanced marker suites always include meaningful valid and invalid marker strings',()=>{
+  for(const seed of [1,17,4_294_967_295]){
+    const tests=createEvaluationSuite(
+      'balanced-template-markers',
+      1,
+      'javascript',
+      {random:seededRandom(seed)},
+    ).tests;
+    assert.ok(tests.some(testCase=>testCase.expected===true&&/[()[\]{}]/.test(testCase.args[0])));
+    assert.ok(tests.some(testCase=>testCase.expected===false&&/[()[\]{}]/.test(testCase.args[0])));
+    assert.equal(tests[2].expected,true,'the nontrivial nested marker case is valid');
+    assert.equal(tests[3].expected,false,'the crossed closing-marker mutation is invalid');
+  }
 });
 
 test('public detail resolves the current active version or an exact supplied version', () => {
@@ -285,6 +332,93 @@ test('every generator guarantees its required boundary shapes', () => {
   );
   assert.equal(coverageCases.at(-1).args[2].length, 10_000, 'coverage includes the maximum shift count');
   assert.deepEqual(coverageCases.at(-1).expected, []);
+
+  const markerCases=suites['balanced-template-markers'].tests;
+  assert.deepEqual(markerCases.slice(0,4).map(testCase=>testCase.expected),[true,true,true,false]);
+  assert.match(markerCases[2].args[0], /[([{].*[)\]}]/);
+  assert.equal(markerCases.at(-1).args[0].length,20_000);
+  assert.equal(markerCases.at(-1).expected,false);
+
+  const capacityCases=suites['capacity-upgrade-index'].tests;
+  assert.deepEqual(capacityCases.slice(0,4).map(testCase=>testCase.expected),[-1,1,-1,1]);
+  assert.equal(capacityCases.at(-1).args[0].length,20_000);
+  assert.equal(capacityCases.at(-1).expected,10_000);
+
+  const handoffCases=suites['shortest-handoff-path'].tests;
+  assert.deepEqual(handoffCases.slice(0,4).map(testCase=>testCase.expected),[0,-1,1,2]);
+  assert.equal(handoffCases.at(-1).args[0],5_000);
+  assert.equal(handoffCases.at(-1).args[1].length,10_000);
+  assert.equal(new Set(handoffCases.at(-1).args[1].map(([left,right])=>`${Math.min(left,right)}:${Math.max(left,right)}`)).size,10_000);
+  assert.equal(handoffCases.at(-1).expected,1);
+
+  const leaderCases=suites['message-frequency-leaders'].tests;
+  assert.deepEqual(leaderCases[1].expected,[{label:'alpha',count:2},{label:'beta',count:2}]);
+  assert.deepEqual(leaderCases[3].expected,[{label:'zeta',count:3},{label:'alpha',count:2}]);
+  assert.equal(leaderCases.at(-1).args[0].length,20_000);
+  assert.equal(leaderCases.at(-1).expected.length,100);
+  assert.equal(leaderCases.at(-1).expected.every(item=>item.count===200),true);
+
+  const recoveryCases=suites['recovery-budget-plan'].tests;
+  assert.deepEqual(recoveryCases.slice(0,5).map(testCase=>testCase.expected),[0,-1,2,2,-1]);
+  assert.equal(recoveryCases.at(-1).args[0].length,50);
+  assert.equal(new Set(recoveryCases.at(-1).args[0]).size,50);
+  assert.equal(recoveryCases.at(-1).args[1],10_000);
+  assert.equal(recoveryCases.at(-1).expected,200);
+});
+
+test('new exercise cases defeat representative shortcut solutions',()=>{
+  const suites=Object.fromEntries([
+    'balanced-template-markers','capacity-upgrade-index','shortest-handoff-path',
+    'message-frequency-leaders','recovery-budget-plan',
+  ].map((slug,index)=>[slug,createEvaluationSuite(slug,1,'javascript',{random:seededRandom(900+index)})]));
+
+  const markerCase=suites['balanced-template-markers'].tests[3];
+  const countOnly=value=>['()','[]','{}'].every(pair=>
+    [...value].filter(character=>character===pair[0]).length===[...value].filter(character=>character===pair[1]).length
+  );
+  assert.notEqual(countOnly(...markerCase.args),markerCase.expected);
+  const noMarkersOrMaximum=value=>!/[()[\]{}]/.test(value)||value.length===20_000;
+  assert.ok(suites['balanced-template-markers'].tests.some(testCase=>(
+    noMarkersOrMaximum(...testCase.args)!==testCase.expected
+  )));
+
+  const capacityCase=suites['capacity-upgrade-index'].tests[3];
+  assert.notEqual(capacityCase.args[0].indexOf(capacityCase.args[1]),capacityCase.expected);
+
+  const handoffCase=suites['shortest-handoff-path'].tests[3];
+  const directOnly=(_count,links,start,target)=>links.some(([left,right])=>left===start&&right===target)?1:-1;
+  assert.notEqual(directOnly(...handoffCase.args),handoffCase.expected);
+
+  const leaderCase=suites['message-frequency-leaders'].tests[3];
+  const alphabeticalOnly=(labels,threshold)=>{
+    const counts=new Map();
+    for(const label of labels) counts.set(label,(counts.get(label)||0)+1);
+    return [...counts].filter(([,count])=>count>=threshold)
+      .map(([label,count])=>({label,count})).sort((left,right)=>left.label.localeCompare(right.label));
+  };
+  assert.notDeepEqual(alphabeticalOnly(...leaderCase.args),leaderCase.expected);
+
+  const recoveryCase=suites['recovery-budget-plan'].tests[3];
+  const greedy=(durations,target)=>{
+    let remaining=target;
+    let count=0;
+    for(const duration of [...durations].sort((left,right)=>right-left)){
+      count+=Math.floor(remaining/duration);
+      remaining%=duration;
+    }
+    return remaining===0?count:-1;
+  };
+  assert.notEqual(greedy(...recoveryCase.args),recoveryCase.expected);
+});
+
+test('new generators terminate and remain valid with a constant injected random source',()=>{
+  for(const slug of [
+    'balanced-template-markers','capacity-upgrade-index','shortest-handoff-path',
+    'message-frequency-leaders','recovery-budget-plan',
+  ]){
+    const suite=createEvaluationSuite(slug,1,'javascript',{random:()=>0.5});
+    assert.deepEqual(validateEvaluationSuite(suite),{valid:true,testCount:8});
+  }
 });
 
 test('scale cases are deterministic and fit conservative runner envelopes', () => {
@@ -332,6 +466,11 @@ test('every generator retains randomised non-boundary cases', () => {
     'review-wave-planner': 3,
     'workshop-seat-allocation': 2,
     'coverage-gap-finder': 3,
+    'balanced-template-markers': 4,
+    'capacity-upgrade-index': 4,
+    'shortest-handoff-path': 4,
+    'message-frequency-leaders': 4,
+    'recovery-budget-plan': 5,
   };
   for (const exercise of listPublicExercises()) {
     const first = createEvaluationSuite(
