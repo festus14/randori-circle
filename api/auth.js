@@ -121,6 +121,17 @@ function registrationAllowed(email){
   return process.env.NODE_ENV!=='production' && allowlist.length===0;
 }
 
+function localFirstUserAdminEnabled(){
+  if(process.env.NODE_ENV!=='development'||process.env.RANDORI_LOCAL_RUNTIME!=='true'
+    ||process.env.RANDORI_LOCAL_FIRST_USER_ADMIN!=='true'||process.env.TURSO_AUTH_TOKEN) return false;
+  try{
+    const databaseUrl=new URL(process.env.TURSO_DATABASE_URL||'');
+    return databaseUrl.protocol==='file:'&&!databaseUrl.host;
+  }catch{
+    return false;
+  }
+}
+
 async function bootstrapGoogleAuthSchema(db){
   if(process.env.AUTH_SCHEMA_BOOTSTRAP_ENABLED!=='true') return;
   await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0, google_sub TEXT)`);
@@ -195,19 +206,22 @@ async function handleSignup(req,res){
   if (existing.rows.length) return res.status(409).json({ error:'email already registered' });
   const color = deterministicColor(display.toLowerCase());
   const hash = await bcrypt.hash(password,10);
-  const isAdmin = getAdminEmails().has(e) ? 1 : 0;
+  const configuredAdmin = getAdminEmails().has(e) ? 1 : 0;
+  const localFirstUserAdmin=localFirstUserAdminEnabled()?1:0;
   const registrationGuard=registrationState==='uninitialized'
     ? `NOT EXISTS (SELECT 1 FROM sqlite_schema WHERE type='table' AND name='circle_membership_rollout')`
     : `EXISTS (SELECT 1 FROM circle_membership_rollout WHERE id=1 AND registrations_closed=0)`;
   const ins = await db.execute({
     sql:`INSERT INTO auth_accounts (email,password_hash,display_name,color,last_login,is_available,is_admin)
-      SELECT ?,?,?,?,datetime('now'),1,?
+      SELECT ?,?,?,?,datetime('now'),1,
+        CASE WHEN ?=1 OR (?=1 AND NOT EXISTS (SELECT 1 FROM auth_accounts)) THEN 1 ELSE 0 END
       WHERE ${registrationGuard}
-      RETURNING id`,
-    args:[e,hash,display,color,isAdmin],
+      RETURNING id,is_admin`,
+    args:[e,hash,display,color,configuredAdmin,localFirstUserAdmin],
   });
   if(!ins.rows?.length) return res.status(403).json({error:'private beta signup requires a Google invitation'});
   const authId = ins.rows[0].id;
+  const isAdmin=ins.rows[0].is_admin===undefined?!!configuredAdmin:!!ins.rows[0].is_admin;
   try{ await db.execute({ sql:`INSERT INTO users (name,color) VALUES (?,?)`, args:[display,color]});}catch{}
   const token = signSession({ id:authId, email:e, name:display, color, is_admin: !!isAdmin });
   appendCookies(res,[sessionCookie(req,token)]);
