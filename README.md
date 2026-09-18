@@ -47,12 +47,14 @@ The target Next.js/Supabase architecture is intentionally phased rather than int
 Copy `.env.example` and configure at least:
 
 - `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`
-- `JWT_SECRET`, a separate `CRON_SECRET`, and preferably a stable `RUN_ATTESTATION_SECRET`
+- `JWT_SECRET` and a separate `CRON_SECRET`; `RUN_ATTESTATION_SECRET` is optional and falls back to `JWT_SECRET` when blank
 - `APP_URL`, `GOOGLE_CLIENT_ID`, and `GOOGLE_CLIENT_SECRET`
 - `SIGNUP_ALLOWLIST` for private-beta Google accounts
 - `RESEND_API_KEY` and `RESEND_FROM` for pairing notifications
 
 See [GOOGLE_OAUTH.md](GOOGLE_OAUTH.md) and [TURSO.md](TURSO.md) for provider setup. Back up the database before first deploying migrations.
+
+For attestation-key rotation, move each former `RUN_ATTESTATION_SECRET` into the comma-separated `RUN_ATTESTATION_PREVIOUS_SECRETS` list. Retain it there until runs signed with that key no longer need to be verified; removing it makes those historical runs appear unverified.
 
 ## Development and tests
 
