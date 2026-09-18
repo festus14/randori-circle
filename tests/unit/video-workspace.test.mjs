@@ -52,6 +52,23 @@ function workspace(overrides={}){
   };
 }
 
+function sampleBoard(){
+  return {
+    shapes:[
+      {id:'pen_1',type:'pen',points:[{x:10,y:20},{x:12.5,y:24}],color:'#e6c07a',width:2.2},
+      {id:'rect_1',type:'rect',x:30,y:40,w:120,h:80,color:'#9cc0b5'},
+      {id:'ellipse_1',type:'ellipse',x:210,y:80,w:-60,h:45,color:'#d68a8a'},
+      {id:'arrow_1',type:'arrow',x1:0,y1:0,x2:100,y2:120,color:'#a3b5d6'},
+      {id:'text_1',type:'text',x:80,y:160,text:'Cache boundary',color:'#f4efe8',size:16},
+      {id:'sticky_1',type:'sticky',x:260,y:180,w:180,h:120,text:'Validate\nthen publish',bg:'#e6c07a'},
+    ],
+  };
+}
+
+function workspaceV3(overrides={}){
+  return workspace({schema_version:3,board:sampleBoard(),...overrides});
+}
+
 function post(payload=workspace(),overrides={}){
   return invoke({
     method:'POST',
@@ -158,6 +175,7 @@ test('workspace payload validation is strict and byte-based', async()=>{
   assert.equal(legacy.status,200);
   assert.equal(legacy.body.snapshot.schema_version,1);
   assert.equal(legacy.body.snapshot.question_version,null);
+  assert.deepEqual(legacy.body.snapshot.board,{shapes:[]});
   await db.execute(`DELETE FROM pair_room_snapshots`);
 
   const exactLimit=await post(workspace({code:'é'.repeat(10*1024)}));
@@ -170,6 +188,185 @@ test('workspace payload validation is strict and byte-based', async()=>{
 
   const overSerializedLimit=await post(workspace({code:'\0'.repeat(20*1024)}));
   assert.equal(overSerializedLimit.status,413);
+});
+
+test('workspace v3 stores code and strict board shapes in the existing text envelope', async()=>{
+  const payload=workspaceV3();
+  const created=await post(payload);
+  assert.equal(created.status,200);
+  assert.equal(created.body.snapshot.schema_version,3);
+  assert.equal(created.body.snapshot.code,payload.code);
+  assert.deepEqual(created.body.snapshot.board,payload.board);
+
+  const stored=await db.execute(`SELECT schema_version,code FROM pair_room_snapshots WHERE room_id='week_10_pair_20'`);
+  assert.equal(Number(stored.rows[0].schema_version),3);
+  assert.deepEqual(JSON.parse(stored.rows[0].code),{code:payload.code,board:payload.board});
+
+  const retry=await post(workspaceV3({code:'must not replace the accepted retry',board:{shapes:[]}}));
+  assert.equal(retry.status,200);
+  assert.equal(retry.body.idempotent,true);
+  assert.equal(retry.body.snapshot.code,payload.code);
+  assert.deepEqual(retry.body.snapshot.board,payload.board);
+
+  const restored=await get(0);
+  assert.equal(restored.status,200);
+  assert.equal(restored.body.snapshot.code,payload.code);
+  assert.deepEqual(restored.body.snapshot.board,payload.board);
+});
+
+test('workspace v3 rejects malformed and resource-exhausting boards before persistence', async()=>{
+  const withoutBoard=workspaceV3();
+  delete withoutBoard.board;
+  const extraBoardField=workspaceV3({board:{shapes:[],viewport:{x:0,y:0,scale:1}}});
+  const duplicateIds=workspaceV3({board:{shapes:[
+    {id:'same_id',type:'rect',x:0,y:0,w:10,h:10,color:'#123456'},
+    {id:'same_id',type:'ellipse',x:0,y:0,w:10,h:10,color:'#123456'},
+  ]}});
+  const malformedCases=[
+    withoutBoard,
+    workspaceV3({board:[]}),
+    extraBoardField,
+    workspaceV3({board:{shapes:[{id:'shape_1',type:'video',x:0,y:0}]}}),
+    workspaceV3({board:{shapes:[{id:'shape_1',type:'rect',x:0,y:0,w:10,h:10,color:'#123456',extra:true}]}}),
+    workspaceV3({board:{shapes:[{id:'bad id',type:'rect',x:0,y:0,w:10,h:10,color:'#123456'}]}}),
+    duplicateIds,
+    workspaceV3({board:{shapes:[{id:'shape_1',type:'rect',x:100001,y:0,w:10,h:10,color:'#123456'}]}}),
+    workspaceV3({board:{shapes:[{id:'shape_1',type:'arrow',x1:0,y1:0,x2:null,y2:10,color:'#123456'}]}}),
+    workspaceV3({board:{shapes:[{id:'shape_1',type:'text',x:0,y:0,text:'safe',color:'red',size:16}]}}),
+    workspaceV3({board:{shapes:[{id:'shape_1',type:'text',x:0,y:0,text:'safe',color:'#123456',size:7}]}}),
+    workspaceV3({board:{shapes:[{id:'shape_1',type:'sticky',x:0,y:0,w:20,h:20,text:42,bg:'#123456'}]}}),
+    workspaceV3({board:{shapes:[{id:'shape_1',type:'pen',points:[{x:0,y:0}],color:'#123456',width:2}]}}),
+  ];
+  for(const payload of malformedCases){
+    const result=await post(payload);
+    assert.equal(result.status,400,JSON.stringify(payload));
+  }
+
+  // V3 reserves room for the board while retaining the independent 20 KiB
+  // source-code ceiling. Escaped JSON bytes no longer consume the legacy
+  // protocol's entire 24 KiB envelope.
+  const escapedCodeAtLimit=await post(workspaceV3({code:'\0'.repeat(20*1024)}));
+  assert.equal(escapedCodeAtLimit.status,200);
+
+  const tooManyShapes=workspaceV3({board:{shapes:Array.from({length:501},(_,index)=>({
+    id:`shape_${index}`,type:'rect',x:0,y:0,w:1,h:1,color:'#123456',
+  }))}});
+  assert.equal((await post(tooManyShapes)).status,413);
+
+  const tooManyPenPoints=workspaceV3({board:{shapes:[{
+    id:'pen_large',type:'pen',points:Array.from({length:2001},()=>({x:0,y:0})),color:'#123456',width:2,
+  }]}});
+  assert.equal((await post(tooManyPenPoints)).status,413);
+
+  const tooManyTotalPoints=workspaceV3({board:{shapes:Array.from({length:6},(_,index)=>({
+    id:`pen_${index}`,type:'pen',points:Array.from({length:1667},()=>({x:0,y:0})),color:'#123456',width:2,
+  }))}});
+  assert.equal((await post(tooManyTotalPoints)).status,413);
+
+  const oversizedText=workspaceV3({board:{shapes:[{
+    id:'text_large',type:'text',x:0,y:0,text:'é'.repeat(101),color:'#123456',size:16,
+  }]}});
+  assert.equal((await post(oversizedText)).status,413);
+
+  const oversizedSticky=workspaceV3({board:{shapes:[{
+    id:'sticky_large',type:'sticky',x:0,y:0,w:20,h:20,text:'é'.repeat(151),bg:'#123456',
+  }]}});
+  assert.equal((await post(oversizedSticky)).status,413);
+
+  const oversizedBoard=workspaceV3({board:{shapes:Array.from({length:5},(_,index)=>({
+    id:`pen_wide_${index}`,
+    type:'pen',
+    points:Array.from({length:2000},()=>({x:100000,y:-100000})),
+    color:'#123456',
+    width:2,
+  }))}});
+  const boardResult=await post(oversizedBoard);
+  assert.equal(boardResult.status,413);
+  assert.match(boardResult.body.error,/board too large/i);
+});
+
+test('workspace v3 keeps legacy reads compatible and prevents every schema downgrade', async()=>{
+  const legacyV2=await post();
+  assert.equal(legacyV2.status,200);
+  assert.deepEqual(legacyV2.body.snapshot.board,{shapes:[]});
+
+  const upgraded=await post(workspaceV3({
+    base_revision:1,
+    client_id:'client_V3',
+    client_seq:1,
+    code:'const upgraded = true;',
+  }));
+  assert.equal(upgraded.status,200);
+  assert.equal(upgraded.body.snapshot.schema_version,3);
+
+  const v2Downgrade=await post(workspace({
+    base_revision:2,
+    client_id:'client_V2',
+    client_seq:2,
+    code:'const downgrade = true;',
+  }));
+  assert.equal(v2Downgrade.status,409);
+  assert.match(v2Downgrade.body.error,/schema version 2 cannot overwrite workspace schema version 3/i);
+  assert.deepEqual(v2Downgrade.body.current.board,sampleBoard());
+
+  const v1Downgrade=workspace({
+    schema_version:1,
+    base_revision:2,
+    client_id:'client_V1',
+    client_seq:2,
+    code:'legacy downgrade',
+  });
+  delete v1Downgrade.question_version;
+  const v1Result=await post(v1Downgrade);
+  assert.equal(v1Result.status,409);
+  assert.match(v1Result.body.error,/schema version 1 cannot overwrite workspace schema version 3/i);
+});
+
+test('workspace v3 CAS conflicts carry code and board so a rebased update preserves both', async()=>{
+  const emptyBoard={shapes:[]};
+  assert.equal((await post(workspaceV3({board:emptyBoard}))).status,200);
+
+  const boardEdit={shapes:[{id:'rect_edit',type:'rect',x:10,y:15,w:40,h:30,color:'#9cc0b5'}]};
+  const [codeResult,boardResult]=await Promise.all([
+    post(workspaceV3({base_revision:1,client_id:'client_CODE',client_seq:1,code:'const concurrent = true;',board:emptyBoard})),
+    post(workspaceV3({base_revision:1,client_id:'client_BOARD',client_seq:1,board:boardEdit})),
+  ]);
+  assert.deepEqual([codeResult.status,boardResult.status].sort(),[200,409]);
+  const conflict=codeResult.status===409 ? codeResult : boardResult;
+  assert.equal(conflict.body.current.revision,2);
+  assert.equal(typeof conflict.body.current.code,'string');
+  assert.ok(Array.isArray(conflict.body.current.board.shapes));
+
+  const rebased=await post(workspaceV3({
+    base_revision:2,
+    client_id:'client_REBASE',
+    client_seq:2,
+    code:'const concurrent = true;',
+    board:boardEdit,
+  }));
+  assert.equal(rebased.status,200);
+  assert.equal(rebased.body.snapshot.revision,3);
+  assert.equal(rebased.body.snapshot.code,'const concurrent = true;');
+  assert.deepEqual(rebased.body.snapshot.board,boardEdit);
+});
+
+test('workspace v3 snapshots remain isolated by canonical room', async()=>{
+  await db.execute({
+    sql:`INSERT INTO pairing_groups (id,week_id,user_a_id,user_b_id,user_c_id) VALUES (?,?,?,?,?)`,
+    args:[21,10,2,7,null],
+  });
+  const firstBoard={shapes:[{id:'first',type:'rect',x:1,y:2,w:3,h:4,color:'#123456'}]};
+  const secondBoard={shapes:[{id:'second',type:'ellipse',x:5,y:6,w:7,h:8,color:'#abcdef'}]};
+  assert.equal((await post(workspaceV3({board:firstBoard}))).status,200);
+  assert.equal((await post(workspaceV3({client_id:'client_ROOM2',board:secondBoard}),{room_id:'week_10_pair_21'})).status,200);
+
+  const first=await get();
+  const second=await get(0,{
+    url:'/api/video/signal?room_id=week_10_pair_21&channel=workspace&after_revision=0',
+    query:{room_id:'week_10_pair_21',channel:'workspace',after_revision:'0'},
+  });
+  assert.deepEqual(first.body.snapshot.board,firstBoard);
+  assert.deepEqual(second.body.snapshot.board,secondBoard);
 });
 
 test('workspace snapshots use monotonic CAS revisions and idempotent client sequence retries', async()=>{

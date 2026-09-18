@@ -143,15 +143,27 @@ test('an empty pair workspace starts from the versioned catalogue instead of a l
   await expect.poll(() => page.locator('#editor').inputValue()).toContain('rollUpFocusBlocks');
   await expect(page.locator('#editor')).not.toHaveValue(/twoSum/);
   await expect.poll(() => savedPayload, { timeout: 10_000 }).toMatchObject({
-    schema_version: 2,
+    schema_version: 3,
     language: 'javascript',
     question_id: 'focus-block-rollup',
     question_version: 1,
+    board: { shapes: [] },
   });
 });
 
-test('a legacy unpinned workspace remains explicit and preserves its code', async ({ page }) => {
+test('a legacy v1 workspace upgrades once without losing its unpinned code', async ({ page }) => {
   const legacyCode = 'function legacyDraft() { return "preserved"; }';
+  let revision = 1;
+  let snapshot: Record<string, unknown> = {
+    schema_version: 1,
+    revision,
+    client_id: 'legacy-client',
+    client_seq: 1,
+    code: legacyCode,
+    language: 'javascript',
+    question_id: 'focus-block-rollup',
+  };
+  let savedPayload: Record<string, unknown> | undefined;
   let writes = 0;
   await stopExternalEditors(page);
   await mockApi(page, {
@@ -161,39 +173,86 @@ test('a legacy unpinned workspace remains explicit and preserves its code', asyn
     '/api/video/signal': request => {
       const url = new URL(request.url());
       if (request.method() === 'GET' && url.searchParams.get('channel') === 'workspace') {
-        return {
-          ok: true,
-          room_id: roomId,
-          revision: 1,
-          snapshot: {
-            schema_version: 1,
-            revision: 1,
-            client_id: 'legacy-client',
-            client_seq: 1,
-            code: legacyCode,
-            language: 'javascript',
-            question_id: 'focus-block-rollup',
-          },
-        };
+        return { ok: true, room_id: roomId, revision, snapshot };
       }
+      const body = request.postDataJSON() as { payload?: Record<string, unknown> };
       writes += 1;
-      return { _status: 400, ok: false, error: 'legacy workspaces must be pinned first' };
+      savedPayload = body.payload;
+      revision += 1;
+      snapshot = { ...body.payload, schema_version: 3, revision };
+      return { ok: true, room_id: roomId, revision, snapshot };
     },
   });
   await resetClientState(page, true);
 
   await page.goto(`/join/${roomId}`, { waitUntil: 'domcontentloaded' });
   await expect(page.locator('#view-code')).toBeVisible();
-  await expect(page.locator('#questionSelect option:checked')).toContainText('Unpinned workspace exercise');
-  await expect(page.locator('#qTitle')).toHaveText('Exercise unavailable');
   await expect.poll(() => page.locator('#editor').inputValue()).toBe(legacyCode);
-  await expect(page.locator('#editor')).toBeVisible({ timeout: 12_000 });
-  await page.locator('#editor').fill(`${legacyCode}\n// local edit`);
+  await expect.poll(() => writes, { timeout: 10_000 }).toBe(1);
+  await expect.poll(() => savedPayload).toMatchObject({
+    schema_version: 3,
+    base_revision: 1,
+    code: legacyCode,
+    language: 'javascript',
+    question_id: 'focus-block-rollup',
+    question_version: 1,
+    board: { shapes: [] },
+  });
+  await expect(page.locator('#qTitle')).toHaveText('Focus Block Roll-up');
   await page.waitForTimeout(800);
-  expect(writes).toBe(0);
-  await page.locator('#questionSelect').selectOption('focus-block-rollup');
-  await expect(page.locator('#editor')).toHaveValue(/function rollUpFocusBlocks/);
-  await expect(page.locator('#editor')).not.toHaveValue(/legacyDraft/);
+  expect(writes).toBe(1);
+  await expect(page.locator('#editor')).toHaveValue(legacyCode);
+});
+
+test('a version-pinned v2 workspace upgrades once with an empty board', async ({ page }) => {
+  const legacyCode = 'function pinnedDraft() { return "preserved"; }';
+  let revision = 4;
+  let snapshot: Record<string, unknown> = {
+    schema_version: 2,
+    revision,
+    client_id: 'v2-client',
+    client_seq: 3,
+    code: legacyCode,
+    language: 'javascript',
+    question_id: 'focus-block-rollup',
+    question_version: 1,
+  };
+  let savedPayload: Record<string, unknown> | undefined;
+  let writes = 0;
+  await stopExternalEditors(page);
+  await mockApi(page, {
+    '/api/auth/me': { ok: true, user: signedInUser },
+    '/api/profile': { ok: true, user: signedInUser },
+    '/api/my-pair': pairResponse(),
+    '/api/video/signal': request => {
+      const url = new URL(request.url());
+      if (request.method() === 'GET' && url.searchParams.get('channel') === 'workspace') {
+        return { ok: true, room_id: roomId, revision, snapshot };
+      }
+      const body = request.postDataJSON() as { payload?: Record<string, unknown> };
+      writes += 1;
+      savedPayload = body.payload;
+      revision += 1;
+      snapshot = { ...body.payload, schema_version: 3, revision };
+      return { ok: true, room_id: roomId, revision, snapshot };
+    },
+  });
+  await resetClientState(page, true);
+
+  await page.goto(`/join/${roomId}`, { waitUntil: 'domcontentloaded' });
+  await expect(page.locator('#view-code')).toBeVisible();
+  await expect.poll(() => writes, { timeout: 10_000 }).toBe(1);
+  await expect.poll(() => savedPayload).toMatchObject({
+    schema_version: 3,
+    base_revision: 4,
+    code: legacyCode,
+    question_id: 'focus-block-rollup',
+    question_version: 1,
+    board: { shapes: [] },
+  });
+  await page.waitForTimeout(800);
+  expect(writes).toBe(1);
+  await expect(page.locator('#editor')).toHaveValue(legacyCode);
 });
 
 test('catalogue initialization does not override a delayed authoritative workspace snapshot', async ({ page }) => {
@@ -227,7 +286,7 @@ test('catalogue initialization does not override a delayed authoritative workspa
           room_id: roomId,
           revision: 1,
           snapshot: {
-            schema_version: 2,
+            schema_version: 3,
             revision: 1,
             client_id: 'authoritative-client',
             client_seq: 1,
@@ -235,6 +294,7 @@ test('catalogue initialization does not override a delayed authoritative workspa
             language: 'javascript',
             question_id: 'focus-block-rollup',
             question_version: 1,
+            board: { shapes: [] },
           },
         };
       }
@@ -285,7 +345,7 @@ test('Monaco does not revive a stale local draft while authoritative workspace h
           room_id: roomId,
           revision: 1,
           snapshot: {
-            schema_version: 2,
+            schema_version: 3,
             revision: 1,
             client_id: 'authoritative-client',
             client_seq: 1,
@@ -293,6 +353,7 @@ test('Monaco does not revive a stale local draft while authoritative workspace h
             language: 'javascript',
             question_id: 'focus-block-rollup',
             question_version: 1,
+            board: { shapes: [] },
           },
         };
       }
@@ -339,7 +400,7 @@ test('Monaco does not revive a stale local draft while authoritative workspace h
 test('an edit made during initial hydration is preserved and rebased onto the server snapshot', async ({ page }) => {
   let revision = 1;
   let snapshot = {
-    schema_version: 2,
+    schema_version: 3,
     revision,
     client_id: 'server-seed',
     client_seq: 1,
@@ -347,6 +408,7 @@ test('an edit made during initial hydration is preserved and rebased onto the se
     language: 'javascript',
     question_id: 'focus-block-rollup',
     question_version: 1,
+    board: { shapes: [] },
   };
   let releaseInitialPoll: (() => void) | null = null;
   let markInitialPollStarted: (() => void) | null = null;
@@ -374,7 +436,7 @@ test('an edit made during initial hydration is preserved and rebased onto the se
         return { _status: 409, ok: false, error: 'revision conflict', current: snapshot };
       }
       revision += 1;
-      snapshot = { ...body.payload, schema_version: 2, revision };
+      snapshot = { ...body.payload, schema_version: 3, revision };
       return { ok: true, snapshot };
     },
   });
@@ -400,7 +462,7 @@ test('an edit made during initial hydration is preserved and rebased onto the se
 test('two authenticated browser contexts hydrate from the server and exchange ordered workspace revisions', async ({ browser }) => {
   let revision = 1;
   let snapshot = {
-    schema_version: 2,
+    schema_version: 3,
     revision,
     client_id: 'server-seed',
     client_seq: 1,
@@ -408,6 +470,7 @@ test('two authenticated browser contexts hydrate from the server and exchange or
     language: 'javascript',
     question_id: 'focus-block-rollup',
     question_version: 1,
+    board: { shapes: [] },
   };
   let forceConflict = false;
   let conflictStarted: (() => void) | null = null;
@@ -436,7 +499,7 @@ test('two authenticated browser contexts hydrate from the server and exchange or
         await new Promise<void>(resolve => { releaseConflict = resolve; });
         revision += 1;
         snapshot = {
-          schema_version: 2,
+          schema_version: 3,
           revision,
           client_id: 'remote-conflict',
           client_seq: revision,
@@ -444,11 +507,12 @@ test('two authenticated browser contexts hydrate from the server and exchange or
           language: 'javascript',
           question_id: 'focus-block-rollup',
           question_version: 1,
+          board: snapshot.board,
         };
         return { _status: 409, ok: false, error: 'revision conflict', current: snapshot };
       }
       revision += 1;
-      snapshot = { ...body.payload, schema_version: 2, revision };
+      snapshot = { ...body.payload, schema_version: 3, revision };
       return { ok: true, room_id: roomId, revision, snapshot };
     }
     return { ok: true, signals: [], after: 0, count: 0 };

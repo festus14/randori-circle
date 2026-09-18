@@ -881,30 +881,31 @@ p{margin:0}
     <!-- BOARD -->
     <section id="view-board" class="view" style="display:none">
       <div class="board-wrap">
-        <div class="board-toolbar">
-          <button class="tool active" data-tool="select" title="Select/move">↖</button>
-          <button class="tool" data-tool="pan" title="Pan">✋</button>
-          <button class="tool" data-tool="pen" title="Pen">✎</button>
-          <button class="tool" data-tool="rect" title="Rect">▭</button>
-          <button class="tool" data-tool="ellipse" title="Ellipse">◯</button>
-          <button class="tool" data-tool="arrow" title="Arrow">↗</button>
-          <button class="tool" data-tool="text" title="Text">T</button>
-          <button class="tool" data-tool="sticky" title="Sticky">☆</button>
-          <button class="tool" data-tool="eraser" title="Eraser">⌫</button>
+        <div class="board-toolbar" role="toolbar" aria-label="Whiteboard tools">
+          <button class="tool active" data-tool="select" title="Select/move" aria-label="Select or move a shape" aria-pressed="true">↖</button>
+          <button class="tool" data-tool="pan" title="Pan" aria-label="Pan the whiteboard" aria-pressed="false">✋</button>
+          <button class="tool" data-tool="pen" title="Pen" aria-label="Draw with the pen" aria-pressed="false">✎</button>
+          <button class="tool" data-tool="rect" title="Rect" aria-label="Draw a rectangle" aria-pressed="false">▭</button>
+          <button class="tool" data-tool="ellipse" title="Ellipse" aria-label="Draw an ellipse" aria-pressed="false">◯</button>
+          <button class="tool" data-tool="arrow" title="Arrow" aria-label="Draw an arrow" aria-pressed="false">↗</button>
+          <button class="tool" data-tool="text" title="Text" aria-label="Add text" aria-pressed="false">T</button>
+          <button class="tool" data-tool="sticky" title="Sticky" aria-label="Add a sticky note" aria-pressed="false">☆</button>
+          <button class="tool" data-tool="eraser" title="Eraser" aria-label="Erase a shape" aria-pressed="false">⌫</button>
           <div style="width:1px; height:24px; background:var(--line); margin:0 4px"></div>
           <div class="row" id="colorPalette"></div>
           <div style="flex:1"></div>
-          <button class="tool" id="undoBtn" title="Undo">↩</button>
-          <button class="tool" id="redoBtn" title="Redo">↪</button>
-          <button class="tool" id="clearBtn" title="Clear">✕</button>
-          <button class="tool" id="zoomOut" title="Zoom out">−</button>
-          <span class="kbd" id="zoomLabel">100%</span>
-          <button class="tool" id="zoomIn" title="Zoom in">+</button>
-          <button class="tool" id="fitBtn" title="Fit">⊡</button>
+          <span class="kbd" id="boardSyncStatus" role="status" aria-live="polite">local only</span>
+          <button class="tool" id="undoBtn" title="Undo" aria-label="Undo whiteboard change">↩</button>
+          <button class="tool" id="redoBtn" title="Redo" aria-label="Redo whiteboard change">↪</button>
+          <button class="tool" id="clearBtn" title="Clear" aria-label="Clear whiteboard">✕</button>
+          <button class="tool" id="zoomOut" title="Zoom out" aria-label="Zoom whiteboard out">−</button>
+          <span class="kbd" id="zoomLabel" aria-label="Whiteboard zoom">100%</span>
+          <button class="tool" id="zoomIn" title="Zoom in" aria-label="Zoom whiteboard in">+</button>
+          <button class="tool" id="fitBtn" title="Fit" aria-label="Reset whiteboard viewport">⊡</button>
         </div>
-        <div class="canvas-host" id="canvasHost"><canvas id="board"></canvas></div>
+        <div class="canvas-host" id="canvasHost"><canvas id="board" tabindex="0" role="img" aria-label="Shared interview whiteboard" aria-describedby="boardSyncHint"></canvas></div>
       </div>
-      <div class="small muted" style="margin-top:8px">Draw together — zoom, pan, sticky notes. Opens in another tab in sync.</div>
+      <div class="small muted" id="boardSyncHint" style="margin-top:8px">Draw together — completed changes sync to authenticated members of this pair room and recover after refresh.</div>
     </section>
 
     <!-- HISTORY -->
@@ -1402,7 +1403,10 @@ async function refreshMe(){
       if(d.type==='people') renderPeople();
       if(d.type==='weeks'){ renderPairs(); renderHistory(); renderRoomSelect(); }
       if(d.type==='code'){ /* merge later but refresh editor if stale */ }
-      if(d.type==='board'){ if(d.shapes){ boardShapes=d.shapes; boardHistoryPush(true); renderBoard(); } }
+      if(d.type==='board'){
+        const room=activeBoardRoom();
+        if(String(d.room_id||'')===String(room||'')) applyBoardSnapshot(d.board,room,{persist:true,dirty:true,status:true});
+      }
       if(d.type==='presence'){ refreshPresence(); }
     };
   }
@@ -2043,11 +2047,15 @@ def allow(key, limit=5):
   function loadRoom(roomId){
     if(!roomId) return;
     const isPairRoom=/^week_[1-9]\d*_pair_[1-9]\d*$/.test(String(roomId));
-    if(isPairRoom&&window._randori_workspace?.requestAccess&&window._randori_authorized_room!==roomId){
+    if(isPairRoom&&window._randori_workspace?.requestAccess&&(
+      window._randori_authorized_room!==roomId ||
+      (window._randori_workspace.room&&window._randori_workspace.room!==roomId)
+    )){
       window._randori_workspace.requestAccess(roomId);
       return;
     }
     currentRoom=roomId;
+    window._randori_board?.load?.(roomId);
     document.getElementById('roomLabel').textContent=`room ${roomId.slice(0,4)}`;
     const codeMap=getCode();
     const selectedLang=document.getElementById('langSelect').value;
@@ -2330,7 +2338,9 @@ def allow(key, limit=5):
   let boardTool='select';
   let boardColor='#e6c07a';
   let boardViewport={x:0,y:0,scale:1};
-  let isDragging=false, startPt=null, currShape=null, dragOffset=null, selectedId=null;
+  let boardRoom=null;
+  let boardLocalDirty=false;
+  let isDragging=false, startPt=null, currShape=null, dragOffset=null, selectedId=null, gestureChanged=false, gestureRoom=null;
   let boardHist=[], boardHistIdx=-1;
 
   function resizeCanvas(){
@@ -2343,45 +2353,166 @@ def allow(key, limit=5):
   }
   window.addEventListener('resize', resizeCanvas);
 
-  function getBoardRoomKey(){
+  const BOARD_MAX_SHAPES=500;
+  const BOARD_MAX_POINTS=10000;
+  const BOARD_MAX_PEN_POINTS=2000;
+  const BOARD_MAX_BYTES=192*1024;
+  const BOARD_COORD_LIMIT=100000;
+  const BOARD_ID_RE=/^[A-Za-z0-9_-]{1,64}$/;
+  const BOARD_COLOR_RE=/^#[0-9a-fA-F]{6}$/;
+
+  function activeBoardRoom(){
+    try{ return window._randori_code?.currentRoom||window.currentRoom||null; }
+    catch{ return null; }
+  }
+  function canonicalBoardRoom(room){ return /^week_[1-9]\d*_pair_[1-9]\d*$/.test(String(room||'')); }
+  function getBoardRoomKey(room=activeBoardRoom()){
+    return room ? BOARD_KEY+':'+String(room).slice(0,80) : BOARD_KEY;
+  }
+  function boardSyncState(status,detail=''){
+    const el=document.getElementById('boardSyncStatus');
+    if(!el) return;
+    const labels={connecting:'connecting…',pending:'sync pending',syncing:'syncing…',retrying:'could not sync — retrying',saved:'synced',error:'sync failed',local:'local only'};
+    el.textContent=labels[status]||String(status||'local only');
+    el.title=String(detail||'');
+  }
+  function finiteBoardNumber(value,min=-BOARD_COORD_LIMIT,max=BOARD_COORD_LIMIT){
+    return typeof value==='number'&&Number.isFinite(value)&&value>=min&&value<=max;
+  }
+  function boardUtf8Bytes(value){ try{ return new TextEncoder().encode(String(value)).length; }catch{ return unescape(encodeURIComponent(String(value))).length; } }
+  function truncateBoardText(value,maxBytes){
+    let result='';
+    for(const character of String(value||'')){ if(boardUtf8Bytes(result+character)>maxBytes) break; result+=character; }
+    return result;
+  }
+  function normalizeBoardShape(shape){
+    if(!shape||typeof shape!=='object'||Array.isArray(shape)||!BOARD_ID_RE.test(String(shape.id||''))) return null;
+    const id=String(shape.id),type=String(shape.type||'');
+    if(type==='pen'){
+      if(!Array.isArray(shape.points)||shape.points.length<2||shape.points.length>BOARD_MAX_PEN_POINTS||!BOARD_COLOR_RE.test(String(shape.color||''))||!finiteBoardNumber(shape.width,.5,32)) return null;
+      const points=[];
+      for(const point of shape.points){ if(!point||!finiteBoardNumber(point.x)||!finiteBoardNumber(point.y)) return null; points.push({x:point.x,y:point.y}); }
+      return {id,type,points,color:String(shape.color),width:shape.width};
+    }
+    if(type==='rect'||type==='ellipse'){
+      if(!finiteBoardNumber(shape.x)||!finiteBoardNumber(shape.y)||!finiteBoardNumber(shape.w)||!finiteBoardNumber(shape.h)||!BOARD_COLOR_RE.test(String(shape.color||''))) return null;
+      return {id,type,x:shape.x,y:shape.y,w:shape.w,h:shape.h,color:String(shape.color)};
+    }
+    if(type==='arrow'){
+      if(!finiteBoardNumber(shape.x1)||!finiteBoardNumber(shape.y1)||!finiteBoardNumber(shape.x2)||!finiteBoardNumber(shape.y2)||!BOARD_COLOR_RE.test(String(shape.color||''))) return null;
+      return {id,type,x1:shape.x1,y1:shape.y1,x2:shape.x2,y2:shape.y2,color:String(shape.color)};
+    }
+    if(type==='text'){
+      const text=String(shape.text??'');
+      if(!finiteBoardNumber(shape.x)||!finiteBoardNumber(shape.y)||!Number.isSafeInteger(shape.size)||shape.size<8||shape.size>96||!BOARD_COLOR_RE.test(String(shape.color||''))||boardUtf8Bytes(text)>200) return null;
+      return {id,type,x:shape.x,y:shape.y,text,color:String(shape.color),size:shape.size};
+    }
+    if(type==='sticky'){
+      const text=String(shape.text??'');
+      if(!finiteBoardNumber(shape.x)||!finiteBoardNumber(shape.y)||!finiteBoardNumber(shape.w)||!finiteBoardNumber(shape.h)||!BOARD_COLOR_RE.test(String(shape.bg||''))||boardUtf8Bytes(text)>300) return null;
+      return {id,type,x:shape.x,y:shape.y,w:shape.w,h:shape.h,text,bg:String(shape.bg)};
+    }
+    return null;
+  }
+  function normalizeBoard(board){
+    if(!board||typeof board!=='object'||Array.isArray(board)||!Array.isArray(board.shapes)||board.shapes.length>BOARD_MAX_SHAPES) return null;
+    const shapes=[],ids=new Set(); let points=0;
+    for(const candidate of board.shapes){
+      const shape=normalizeBoardShape(candidate);
+      if(!shape||ids.has(shape.id)) return null;
+      ids.add(shape.id); if(shape.type==='pen') points+=shape.points.length;
+      if(points>BOARD_MAX_POINTS) return null;
+      shapes.push(shape);
+    }
+    const normalized={shapes};
+    try{ if(new TextEncoder().encode(JSON.stringify(normalized)).length>BOARD_MAX_BYTES) return null; }
+    catch{ if(JSON.stringify(normalized).length>BOARD_MAX_BYTES) return null; }
+    return normalized;
+  }
+  function boardSnapshot(){ return normalizeBoard({shapes:boardShapes}); }
+  function persistBoardLocal(room=activeBoardRoom()){
+    const board=boardSnapshot();
+    if(!board){ boardSyncState('error','The board is too large or contains an invalid shape.'); return false; }
     try{
-      const r = (window._randori_code && window._randori_code.currentRoom) || window.currentRoom || localStorage.getItem('randori-last-room') || 'global';
-      return BOARD_KEY + ':' + String(r).slice(0,80);
-    }catch{ return BOARD_KEY; }
+      localStorage.setItem(getBoardRoomKey(room),JSON.stringify({shapes:board.shapes,viewport:boardViewport,color:boardColor,dirty:boardLocalDirty,at:Date.now()}));
+      return true;
+    }catch{ boardSyncState('error','The board could not be saved on this device.'); return false; }
+  }
+  function loadBoard(room=activeBoardRoom()){
+    if(_boardSaveTimer){ clearTimeout(_boardSaveTimer); _doSaveBoard(); }
+    boardRoom=room||null;
+    boardLocalDirty=false;
+    boardShapes=[]; boardViewport={x:0,y:0,scale:1}; selectedId=null; currShape=null;
+    try{
+      // Authenticated rooms never inherit the old global board: a missing room
+      // checkpoint is an intentionally empty board.
+      const raw=localStorage.getItem(getBoardRoomKey(room));
+      const local=JSON.parse(raw||'null');
+      const board=normalizeBoard(local&&{shapes:local.shapes});
+      if(board){
+        boardShapes=board.shapes;
+        boardLocalDirty=local.dirty===true;
+        if(local.viewport&&finiteBoardNumber(local.viewport.x)&&finiteBoardNumber(local.viewport.y)&&finiteBoardNumber(local.viewport.scale,.2,4)) boardViewport={x:local.viewport.x,y:local.viewport.y,scale:local.viewport.scale};
+        if(BOARD_COLOR_RE.test(String(local.color||''))) boardColor=String(local.color);
+      }
+    }catch{}
+    boardHist=[JSON.stringify(boardShapes)]; boardHistIdx=0;
+    boardSyncState(window._randori_auth?.me&&canonicalBoardRoom(room)?(boardLocalDirty?'pending':'connecting'):'local');
+    renderBoard();
+  }
+  function applyBoardSnapshot(board,room=activeBoardRoom(),options={}){
+    if(String(room||'')!==String(activeBoardRoom()||'')) return false;
+    const normalized=normalizeBoard(board);
+    if(!normalized){ boardSyncState('error','An invalid board checkpoint was ignored.'); return false; }
+    boardRoom=room||null;
+    if(options.authoritative===true) boardLocalDirty=false;
+    else if(options.dirty===true) boardLocalDirty=true;
+    boardShapes=normalized.shapes; selectedId=null; currShape=null; isDragging=false; gestureChanged=false;
+    boardHist=[JSON.stringify(boardShapes)]; boardHistIdx=0;
+    if(options.persist!==false) persistBoardLocal(room);
+    renderBoard();
+    if(options.status!==false) boardSyncState(boardLocalDirty?'pending':'saved');
+    return true;
   }
   let _boardSaveTimer=null;
-  function loadBoard(){
-    try{
-      const roomKey=getBoardRoomKey();
-      let raw = localStorage.getItem(roomKey);
-      if(!raw) raw = localStorage.getItem(BOARD_KEY); // fallback global
-      const j=JSON.parse(raw||'null');
-      if(j && Array.isArray(j.shapes)){ boardShapes=j.shapes; boardViewport=j.viewport||boardViewport; boardColor=j.color||boardColor; return; }
-      if(j && j.shapes && Array.isArray(j.shapes)){ boardShapes=j.shapes; boardViewport=j.viewport||boardViewport; boardColor=j.color||boardColor; }
-    }catch{}
-  }
+  let _boardContentDirty=false;
   function _doSaveBoard(){
-    try{
-      const payload=JSON.stringify({shapes:boardShapes, viewport:boardViewport, color:boardColor, at:Date.now()});
-      localStorage.setItem(getBoardRoomKey(), payload);
-      localStorage.setItem(BOARD_KEY, payload); // keep global for anon/no-room
-      bc?.postMessage({type:'board', shapes:boardShapes});
-      try{ window._randori_log && window._randori_log.debug('board', 'persist', {count: boardShapes.length, room: getBoardRoomKey().slice(-24)}); }catch{}
-    }catch{}
-  }
-  function saveBoard(){
-    // debounce 700ms like Monaco
-    if(_boardSaveTimer) clearTimeout(_boardSaveTimer);
-    _boardSaveTimer=setTimeout(_doSaveBoard, 700);
-  }
-  function saveBoardImmediate(){ if(_boardSaveTimer) clearTimeout(_boardSaveTimer); _doSaveBoard(); }
-  function boardHistoryPush(skip=false){
-    if(!skip){
-      boardHist = boardHist.slice(0, boardHistIdx+1);
-      boardHist.push(JSON.stringify(boardShapes));
-      boardHistIdx++;
-      if(boardHist.length>40){ boardHist.shift(); boardHistIdx--; }
+    _boardSaveTimer=null;
+    const contentChanged=_boardContentDirty; _boardContentDirty=false;
+    const room=boardRoom;
+    if(!persistBoardLocal(room)) return;
+    if(contentChanged){
+      const board=boardSnapshot();
+      bc?.postMessage({type:'board',room_id:room||'',board});
+      window.dispatchEvent(new CustomEvent('randori:board-edit',{detail:{roomId:room,board}}));
+      if(window._randori_auth?.me&&canonicalBoardRoom(room)) boardSyncState('pending');
     }
+    try{ window._randori_log?.debug?.('board','persist',{count:boardShapes.length,room:String(room||'local').slice(-24),contentChanged}); }catch{}
+  }
+  function saveBoard(contentChanged=true){
+    _boardContentDirty=_boardContentDirty||contentChanged;
+    if(contentChanged) boardLocalDirty=true;
+    persistBoardLocal(boardRoom);
+    if(contentChanged&&window._randori_auth?.me&&canonicalBoardRoom(boardRoom)) boardSyncState('pending');
+    if(_boardSaveTimer) clearTimeout(_boardSaveTimer);
+    _boardSaveTimer=setTimeout(_doSaveBoard,700);
+  }
+  function saveBoardImmediate(contentChanged=true){
+    _boardContentDirty=_boardContentDirty||contentChanged;
+    if(contentChanged) boardLocalDirty=true;
+    if(_boardSaveTimer) clearTimeout(_boardSaveTimer);
+    _doSaveBoard();
+  }
+  function flushBoardSave(){
+    if(_boardSaveTimer){ clearTimeout(_boardSaveTimer); _doSaveBoard(); }
+    else persistBoardLocal(boardRoom);
+  }
+  function boardHistoryPush(){
+    const serialized=JSON.stringify(boardShapes);
+    if(boardHist[boardHistIdx]===serialized) return;
+    boardHist=boardHist.slice(0,boardHistIdx+1);
+    boardHist.push(serialized); boardHistIdx++;
+    if(boardHist.length>40){ boardHist.shift(); boardHistIdx--; }
   }
 
   function renderBoard(){
@@ -2443,23 +2574,43 @@ def allow(key, limit=5):
     return {x,y};
   }
   function point(e){ const t=e.touches? e.touches[0]: e; return toWorld(t); }
+  function pointToSegmentDistance(point,a,b){
+    const dx=b.x-a.x,dy=b.y-a.y,lengthSquared=dx*dx+dy*dy;
+    if(!lengthSquared) return Math.hypot(point.x-a.x,point.y-a.y);
+    const ratio=Math.max(0,Math.min(1,((point.x-a.x)*dx+(point.y-a.y)*dy)/lengthSquared));
+    return Math.hypot(point.x-(a.x+ratio*dx),point.y-(a.y+ratio*dy));
+  }
+  function boardShapeContains(shape,p,tolerance=12/boardViewport.scale){
+    if(shape.type==='pen') return shape.points.some(point=>Math.hypot(point.x-p.x,point.y-p.y)<=tolerance);
+    if(shape.type==='arrow') return pointToSegmentDistance(p,{x:shape.x1,y:shape.y1},{x:shape.x2,y:shape.y2})<=tolerance;
+    if(shape.type==='text'){
+      const width=Math.max(24,String(shape.text||'').length*(shape.size||16)*.65);
+      return p.x>=shape.x-tolerance&&p.x<=shape.x+width+tolerance&&p.y>=shape.y-(shape.size||16)-tolerance&&p.y<=shape.y+tolerance;
+    }
+    if(shape.type==='rect'||shape.type==='ellipse'||shape.type==='sticky'){
+      const left=Math.min(shape.x,shape.x+shape.w),right=Math.max(shape.x,shape.x+shape.w);
+      const top=Math.min(shape.y,shape.y+shape.h),bottom=Math.max(shape.y,shape.y+shape.h);
+      return p.x>=left-tolerance&&p.x<=right+tolerance&&p.y>=top-tolerance&&p.y<=bottom+tolerance;
+    }
+    return false;
+  }
 
   // color palette
   const pal=document.getElementById('colorPalette');
   BOARD_COLORS.forEach(c=>{
-    const b=document.createElement('button'); b.className='color-dot'; b.style.background=c; b.onclick=()=>{ boardColor=c; document.querySelectorAll('.color-dot').forEach(x=>x.style.boxShadow='0 0 0 1px var(--line)'); b.style.boxShadow=`0 0 0 2px ${c}, 0 0 0 4px var(--bg-2)`; saveBoard(); };
+    const b=document.createElement('button'); b.type='button'; b.className='color-dot'; b.style.background=c; b.setAttribute('aria-label',`Use ${c} for new shapes`); b.setAttribute('aria-pressed',String(c===boardColor)); b.onclick=()=>{ boardColor=c; document.querySelectorAll('.color-dot').forEach(x=>{ x.style.boxShadow='0 0 0 1px var(--line)'; x.setAttribute('aria-pressed','false'); }); b.style.boxShadow=`0 0 0 2px ${c}, 0 0 0 4px var(--bg-2)`; b.setAttribute('aria-pressed','true'); saveBoard(false); };
     pal.appendChild(b);
   });
 
   // tool switching
   document.querySelectorAll('.tool[data-tool]').forEach(btn=>{
-    btn.onclick=()=>{ document.querySelectorAll('.tool[data-tool]').forEach(x=>x.classList.remove('active')); btn.classList.add('active'); boardTool=btn.getAttribute('data-tool'); canvas.style.cursor=boardTool==='pan'?'grab': boardTool==='pen'?'crosshair':'default'; };
+    btn.onclick=()=>{ document.querySelectorAll('.tool[data-tool]').forEach(x=>{ x.classList.remove('active'); x.setAttribute('aria-pressed','false'); }); btn.classList.add('active'); btn.setAttribute('aria-pressed','true'); boardTool=btn.getAttribute('data-tool'); canvas.style.cursor=boardTool==='pan'?'grab': boardTool==='pen'?'crosshair':'default'; canvas.focus(); };
   });
 
   // canvas events
   canvas.addEventListener('pointerdown', e=>{
     canvas.setPointerCapture(e.pointerId);
-    const p=point(e); isDragging=true; startPt=p;
+    const p=point(e); isDragging=true; startPt=p; gestureChanged=false; gestureRoom=activeBoardRoom();
     if(boardTool==='pen'){
       currShape={id:uid(), type:'pen', points:[p], color:boardColor, width:2.2};
     } else if(boardTool==='rect' || boardTool==='ellipse'){
@@ -2467,54 +2618,56 @@ def allow(key, limit=5):
     } else if(boardTool==='arrow'){
       currShape={id:uid(), type:'arrow', x1:p.x, y1:p.y, x2:p.x, y2:p.y, color:boardColor};
     } else if(boardTool==='select'){
-      // find shape under cursor (aabb simple)
-      const hit=boardShapes.slice().reverse().find(s=>{
-        if(s.type==='pen'){ return s.points.some(pt=> Math.hypot(pt.x-p.x, pt.y-p.y)<12); }
-        if(s.type==='rect'||s.type==='ellipse'||s.type==='sticky'){ return p.x>=s.x && p.x<=s.x+s.w && p.y>=s.y && p.y<=s.y+s.h; }
-        if(s.type==='text'){ return p.x>=s.x && p.x<=s.x+200 && p.y>=s.y-16 && p.y<=s.y+8; }
-        if(s.type==='arrow'){ return Math.hypot((s.x1+s.x2)/2-p.x,(s.y1+s.y2)/2-p.y)<20; }
-        return false;
-      });
+      const hit=boardShapes.slice().reverse().find(shape=>boardShapeContains(shape,p));
       selectedId=hit? hit.id:null;
-      if(hit){ dragOffset={x:p.x-hit.x||0, y:p.y-hit.y||0, sx:hit.x, sy:hit.y}; }
+      if(hit){ dragOffset={start:p,original:JSON.parse(JSON.stringify(hit))}; }
       renderBoard();
     } else if(boardTool==='pan'){
       dragOffset={x:e.clientX-boardViewport.x, y:e.clientY-boardViewport.y};
     } else if(boardTool==='text' || boardTool==='sticky'){
       (async()=>{
-        const txt=await showPrompt(boardTool==='text'?'Add text — type it':'Add sticky note — text', '');
-        if(txt){
-          boardHistoryPush(); 
-          if(boardTool==='text') boardShapes.push({id:uid(), type:'text', x:p.x, y:p.y, text:txt.slice(0,200), color:boardColor, size:16});
-          else boardShapes.push({id:uid(), type:'sticky', x:p.x, y:p.y, w:180, h:120, text:txt.slice(0,300), bg:boardColor});
-          saveBoard(); renderBoard();
+        const editRoom=gestureRoom,editTool=boardTool;
+        const txt=await showPrompt(editTool==='text'?'Add text — type it':'Add sticky note — text', '');
+        if(txt&&String(activeBoardRoom()||'')===String(editRoom||'')){
+          if(editTool==='text') boardShapes.push({id:uid(), type:'text', x:p.x, y:p.y, text:truncateBoardText(txt,200), color:boardColor, size:16});
+          else boardShapes.push({id:uid(), type:'sticky', x:p.x, y:p.y, w:180, h:120, text:truncateBoardText(txt,300), bg:boardColor});
+          boardHistoryPush(); saveBoard(true); renderBoard();
         }
       })();
       isDragging=false;
     } else if(boardTool==='eraser'){
-      // on drag erase handled in move
+      const hit=boardShapes.slice().reverse().find(shape=>boardShapeContains(shape,p,14/boardViewport.scale));
+      if(hit){ boardShapes=boardShapes.filter(shape=>shape.id!==hit.id); gestureChanged=true; renderBoard(); }
     }
   });
 
   canvas.addEventListener('pointermove', e=>{
     if(!isDragging) return;
     const p=point(e);
-    if(boardTool==='pen' && currShape){ currShape.points.push(p); renderBoard(); }
+    if(boardTool==='pen' && currShape){ if(currShape.points.length<BOARD_MAX_PEN_POINTS) currShape.points.push(p); renderBoard(); }
     else if((boardTool==='rect'||boardTool==='ellipse') && currShape){ currShape.w=p.x-startPt.x; currShape.h=p.y-startPt.y; renderBoard(); }
     else if(boardTool==='arrow' && currShape){ currShape.x2=p.x; currShape.y2=p.y; renderBoard(); }
-    else if(boardTool==='select' && selectedId){ const s=boardShapes.find(x=>x.id===selectedId); if(s && dragOffset){ s.x = p.x - dragOffset.x; s.y = p.y - dragOffset.y; renderBoard(); } }
+    else if(boardTool==='select' && selectedId){
+      const s=boardShapes.find(x=>x.id===selectedId);
+      if(s&&dragOffset?.original){
+        const dx=p.x-dragOffset.start.x,dy=p.y-dragOffset.start.y,o=dragOffset.original;
+        if(s.type==='pen') s.points=o.points.map(point=>({x:point.x+dx,y:point.y+dy}));
+        else if(s.type==='arrow'){ s.x1=o.x1+dx; s.y1=o.y1+dy; s.x2=o.x2+dx; s.y2=o.y2+dy; }
+        else { s.x=o.x+dx; s.y=o.y+dy; }
+        gestureChanged=gestureChanged||Math.abs(dx)>.01||Math.abs(dy)>.01;
+        renderBoard();
+      }
+    }
     else if(boardTool==='pan' && dragOffset){ boardViewport.x=e.clientX-dragOffset.x; boardViewport.y=e.clientY-dragOffset.y; renderBoard(); }
     else if(boardTool==='eraser'){
-      const hit=boardShapes.find(s=>{
-        if(s.type==='pen') return s.points.some(pt=> Math.hypot(pt.x-p.x, pt.y-p.y)<14);
-        return false;
-      }) || boardShapes.slice().reverse().find(s=> s.type!=='pen' && p.x>=s.x && p.x<=s.x+s.w && p.y>=s.y && p.y<=s.y+s.h);
-      if(hit){ boardShapes=boardShapes.filter(x=>x.id!==hit.id); renderBoard(); }
+      const hit=boardShapes.slice().reverse().find(shape=>boardShapeContains(shape,p,14/boardViewport.scale));
+      if(hit){ boardShapes=boardShapes.filter(x=>x.id!==hit.id); gestureChanged=true; renderBoard(); }
     }
   });
 
   canvas.addEventListener('pointerup', e=>{
     if(!isDragging) return; isDragging=false;
+    if(String(gestureRoom||'')!==String(activeBoardRoom()||'')){ currShape=null; gestureChanged=false; renderBoard(); return; }
     if(currShape && (boardTool==='pen'||boardTool==='rect'||boardTool==='ellipse'||boardTool==='arrow')){
       if(boardTool==='pen' && currShape.points.length<2){ currShape=null; renderBoard(); return; }
       if((boardTool==='rect'||boardTool==='ellipse') && (Math.abs(currShape.w)<6 && Math.abs(currShape.h)<6)){ currShape=null; renderBoard(); return; }
@@ -2523,34 +2676,42 @@ def allow(key, limit=5):
         const nx=Math.min(currShape.x, currShape.x+currShape.w); const ny=Math.min(currShape.y, currShape.y+currShape.h);
         currShape.w=Math.abs(currShape.w); currShape.h=Math.abs(currShape.h); currShape.x=nx; currShape.y=ny;
       }
-      boardHistoryPush(); boardShapes.push(currShape); currShape=null; saveBoard(); renderBoard();
+      boardShapes.push(currShape); currShape=null; boardHistoryPush(); saveBoard(true); renderBoard();
     } else if(boardTool==='select'){
-      if(selectedId) saveBoard();
+      if(selectedId&&gestureChanged){ boardHistoryPush(); saveBoard(true); }
     } else if(boardTool==='pan'){
-      saveBoard();
+      saveBoard(false);
     } else if(boardTool==='eraser'){
-      if(boardShapes.length) { boardHistoryPush(); saveBoard(); }
+      if(gestureChanged){ boardHistoryPush(); saveBoard(true); }
     }
+    gestureChanged=false;
   });
 
   canvas.addEventListener('wheel', e=>{
-    if(e.ctrlKey || e.metaKey){ e.preventDefault(); const delta = e.deltaY>0?0.92:1.08; const rect=host.getBoundingClientRect(); const cx=e.clientX-rect.left, cy=e.clientY-rect.top; const wx=(cx-boardViewport.x)/boardViewport.scale; const wy=(cy-boardViewport.y)/boardViewport.scale; boardViewport.scale=Math.min(4, Math.max(0.2, boardViewport.scale*delta)); boardViewport.x=cx-wx*boardViewport.scale; boardViewport.y=cy-wy*boardViewport.scale; renderBoard(); saveBoard(); }
+    if(e.ctrlKey || e.metaKey){ e.preventDefault(); const delta = e.deltaY>0?0.92:1.08; const rect=host.getBoundingClientRect(); const cx=e.clientX-rect.left, cy=e.clientY-rect.top; const wx=(cx-boardViewport.x)/boardViewport.scale; const wy=(cy-boardViewport.y)/boardViewport.scale; boardViewport.scale=Math.min(4, Math.max(0.2, boardViewport.scale*delta)); boardViewport.x=cx-wx*boardViewport.scale; boardViewport.y=cy-wy*boardViewport.scale; renderBoard(); saveBoard(false); }
   }, {passive:false});
 
-  document.getElementById('undoBtn').onclick=()=>{ if(boardHistIdx>0){ boardHistIdx--; boardShapes=JSON.parse(boardHist[boardHistIdx]||'[]'); saveBoard(); renderBoard(); } };
-  document.getElementById('redoBtn').onclick=()=>{ if(boardHistIdx<boardHist.length-1){ boardHistIdx++; boardShapes=JSON.parse(boardHist[boardHistIdx]); saveBoard(); renderBoard(); } };
-  document.getElementById('clearBtn').onclick=async()=>{ if(await showConfirm('Clear board?', 'Erase all shapes? Undo still available for one step.')){ boardHistoryPush(); boardShapes=[]; saveBoard(); renderBoard(); toast('board cleared'); } };
-  document.getElementById('zoomIn').onclick=()=>{ boardViewport.scale=Math.min(4, boardViewport.scale*1.2); renderBoard(); saveBoard(); };
-  document.getElementById('zoomOut').onclick=()=>{ boardViewport.scale=Math.max(0.2, boardViewport.scale/1.2); renderBoard(); saveBoard(); };
-  document.getElementById('fitBtn').onclick=()=>{ boardViewport={x:20,y:20,scale:1}; renderBoard(); saveBoard(); };
+  canvas.addEventListener('keydown',event=>{
+    if(event.key==='Escape'){ selectedId=null; renderBoard(); return; }
+    if((event.key==='Delete'||event.key==='Backspace')&&selectedId){
+      event.preventDefault(); boardShapes=boardShapes.filter(shape=>shape.id!==selectedId); selectedId=null; boardHistoryPush(); saveBoard(true); renderBoard();
+    }
+  });
 
-  function renderBoardReset(){ boardShapes=[]; boardViewport={x:0,y:0,scale:1}; boardHist=[]; boardHistIdx=-1; saveBoardImmediate(); renderBoard(); }
+  document.getElementById('undoBtn').onclick=()=>{ if(boardHistIdx>0){ boardHistIdx--; boardShapes=JSON.parse(boardHist[boardHistIdx]||'[]'); saveBoard(true); renderBoard(); } };
+  document.getElementById('redoBtn').onclick=()=>{ if(boardHistIdx<boardHist.length-1){ boardHistIdx++; boardShapes=JSON.parse(boardHist[boardHistIdx]); saveBoard(true); renderBoard(); } };
+  document.getElementById('clearBtn').onclick=async()=>{ if(await showConfirm('Clear board?', 'Erase all shapes? Undo remains available.')){ boardShapes=[]; boardHistoryPush(); saveBoard(true); renderBoard(); toast('board cleared'); } };
+  document.getElementById('zoomIn').onclick=()=>{ boardViewport.scale=Math.min(4, boardViewport.scale*1.2); renderBoard(); saveBoard(false); };
+  document.getElementById('zoomOut').onclick=()=>{ boardViewport.scale=Math.max(0.2, boardViewport.scale/1.2); renderBoard(); saveBoard(false); };
+  document.getElementById('fitBtn').onclick=()=>{ boardViewport={x:20,y:20,scale:1}; renderBoard(); saveBoard(false); };
+
+  function renderBoardReset(){ boardShapes=[]; boardViewport={x:0,y:0,scale:1}; boardHist=[JSON.stringify(boardShapes)]; boardHistIdx=0; saveBoardImmediate(true); renderBoard(); }
 
   // init board
   loadBoard(); requestAnimationFrame(()=>{ resizeCanvas(); boardHist=[JSON.stringify(boardShapes)]; boardHistIdx=0; renderBoard(); });
 
   // expose board per-room helpers for cross-IIFE deterministic room switching
-  try{ window._randori_board={ load: loadBoard, save: saveBoard, saveImmediate: saveBoardImmediate, get shapes(){return boardShapes}, get key(){return getBoardRoomKey()}, render: renderBoard, reset: renderBoardReset }; }catch{}
+  try{ window._randori_board={ load:loadBoard,save:saveBoard,saveImmediate:saveBoardImmediate,flush:flushBoardSave,snapshot:boardSnapshot,applySnapshot:applyBoardSnapshot,setSyncState:boardSyncState,get shapes(){return boardShapes},get dirty(){return boardLocalDirty},get key(){return getBoardRoomKey()},render:renderBoard,reset:renderBoardReset }; }catch{}
 
   // ---------- live video (WebRTC + Turso signaling) ----------
   let webrtcPeerId = localStorage.getItem('randori-peer-id') || ('p_'+uid()+uid());
@@ -3736,9 +3897,13 @@ def allow(key, limit=5):
     }catch{ return null; }
   }
   let joinDecision=null;
+  let joinRequest=null;
   async function openAuthorizedJoin(room){
+    const activeRoom=window._randori_code?.currentRoom||window.currentRoom||null;
+    if(joinDecision?.room===room&&joinDecision.status==='allowed'&&activeRoom===room&&window._randori_authorized_room===room) return true;
     if(joinDecision?.room===room && joinDecision.status==='denied') return false;
-    try{
+    if(joinRequest?.room===room) return joinRequest.promise;
+    const operation=(async()=>{ try{
       const response=await fetch('/api/my-pair',{credentials:'same-origin'});
       const data=await response.json().catch(()=>({}));
       if(!response.ok) throw new Error(data.error||`pair lookup ${response.status}`);
@@ -3771,7 +3936,10 @@ def allow(key, limit=5):
     }catch{
       if(typeof toast==='function') toast('Could not validate this pairing invite.');
       return false;
-    }
+    }})();
+    joinRequest={room,promise:operation};
+    try{ return await operation; }
+    finally{ if(joinRequest?.promise===operation) joinRequest=null; }
   }
 
   // Main auth router
@@ -5451,7 +5619,7 @@ def allow(key, limit=5):
 (function(){
   const CODE_KEY='randori-code';
   const clientId=(window.crypto?.randomUUID?.()||('client-'+Math.random().toString(36).slice(2)));
-  const state={room:null,revision:0,hydrated:false,hydrationUserDirty:false,epoch:0,clientSeq:0,lastAckSeq:0,authoritative:null,pending:null,baseline:null,inFlight:null,pollInFlight:null,pollAbort:null,writeAbort:null,applying:false,retryCount:0};
+  const state={room:null,revision:0,hydrated:false,hydrationDirtyCode:false,hydrationDirtyBoard:false,forceBoardUpgrade:false,syncBlocked:false,epoch:0,clientSeq:0,lastAckSeq:0,authoritative:null,pending:null,inFlight:null,pollInFlight:null,pollAbort:null,writeAbort:null,applying:false,retryCount:0};
   let saveTimer=null;
   let retryTimer=null;
   let accessEpoch=0;
@@ -5469,22 +5637,34 @@ def allow(key, limit=5):
   }
   function draft(){
     const selection=window._randori_questions?.selectedIdentity?.()||{slug:String(document.getElementById('questionSelect')?.value||''),version:null};
+    // V1 workspaces predate pinned catalogue versions. Resolve their slug to
+    // the currently active version so the first v3 checkpoint can upgrade it.
+    const legacyVersion=state.authoritative?.schema_version===1
+      ? window._randori_questions?.custom?.find?.(question=>question.slug===selection.slug)?.version
+      : null;
+    const questionVersion=selection.version??legacyVersion;
     return {
       code:String(currentCode()),
       language:String(document.getElementById('langSelect')?.value||'javascript'),
       question_id:String(selection.slug||''),
-      question_version:Number.isInteger(selection.version)&&selection.version>0?selection.version:null,
+      question_version:Number.isInteger(questionVersion)&&questionVersion>0?questionVersion:null,
+      board:window._randori_board?.snapshot?.()||null,
     };
   }
-  function same(left,right){ return !!left&&!!right&&left.code===right.code&&left.language===right.language&&left.question_id===right.question_id&&left.question_version===right.question_version; }
+  function sameCode(left,right){ return !!left&&!!right&&left.code===right.code&&left.language===right.language&&left.question_id===right.question_id&&left.question_version===right.question_version; }
+  function sameBoard(left,right){ return !!left?.board&&!!right?.board&&JSON.stringify(left.board)===JSON.stringify(right.board); }
+  function same(left,right){ return sameCode(left,right)&&sameBoard(left,right); }
   function unpack(data){
     const envelope=data?.current||data||{};
     const candidate=envelope.snapshot||data?.snapshot||envelope;
+    const schemaVersion=Number(candidate?.schema_version??envelope?.schema_version??1);
     const snapshot=candidate&&typeof candidate.code==='string'?{
+      schema_version:Number.isSafeInteger(schemaVersion)?schemaVersion:1,
       code:String(candidate.code),
       language:String(candidate.language||'javascript'),
       question_id:String(candidate.question_id||''),
       question_version:Number.isInteger(Number(candidate.question_version))&&Number(candidate.question_version)>0?Number(candidate.question_version):null,
+      board:candidate.board&&Array.isArray(candidate.board.shapes)?{shapes:candidate.board.shapes}: {shapes:[]},
       client_id:String(candidate.client_id||''),
       client_seq:Number(candidate.client_seq||0),
     }:null;
@@ -5505,23 +5685,44 @@ def allow(key, limit=5):
       localStorage.setItem('randori-last-room',room);
     }catch{}
   }
-  function applySnapshot(snapshot,revision,room,epoch){
+  function applySnapshot(snapshot,revision,room,epoch,domains={code:true,board:true}){
     if(!snapshot||state.room!==room||state.epoch!==epoch||revision<state.revision) return;
     state.revision=revision;
     state.authoritative=snapshot;
     state.applying=true;
     try{
-      const lang=document.getElementById('langSelect'); if(lang) lang.value=snapshot.language;
-      const question=document.getElementById('questionSelect');
-      if(question){
-        window._randori_questions?.selectWorkspaceQuestion?.(snapshot.question_id,snapshot.question_version);
+      if(domains.code){
+        const lang=document.getElementById('langSelect'); if(lang) lang.value=snapshot.language;
+        const question=document.getElementById('questionSelect');
+        if(question) window._randori_questions?.selectWorkspaceQuestion?.(snapshot.question_id,snapshot.question_version);
+        if(window._randori_code?.setCode) window._randori_code.setCode(snapshot.code,snapshot.language);
+        const textarea=document.getElementById('editor'); if(textarea) textarea.value=snapshot.code;
+        persistLocal(room,snapshot);
       }
-      if(window._randori_code?.setCode) window._randori_code.setCode(snapshot.code,snapshot.language);
-      const textarea=document.getElementById('editor'); if(textarea) textarea.value=snapshot.code;
-      persistLocal(room,snapshot);
+      if(domains.board&&snapshot.schema_version>=3) window._randori_board?.applySnapshot?.(snapshot.board,room,{persist:true,authoritative:true,status:true});
     }finally{
       queueMicrotask(()=>{ state.applying=false; });
     }
+  }
+  function domainDirty(domain,local=draft(),authoritative=state.authoritative){
+    if(domain==='code') return !sameCode(local,authoritative);
+    return !!local.board&&!sameBoard(local,authoritative);
+  }
+  function refreshPending(){
+    if(!state.hydrated) return;
+    const local=draft();
+    const codeTarget=state.inFlight?.codeDirty?state.inFlight.change:state.authoritative;
+    const boardTarget=state.inFlight?.boardDirty?state.inFlight.change:state.authoritative;
+    const codeDirty=!sameCode(local,codeTarget);
+    const boardDirty=!!local.board&&(state.forceBoardUpgrade||window._randori_board?.dirty===true||!sameBoard(local,boardTarget));
+    state.pending=codeDirty||boardDirty?{codeDirty,boardDirty}:null;
+  }
+  function composeChange(flags){
+    const local=draft(),authoritative=state.authoritative;
+    if(flags.boardDirty&&!local.board) return null;
+    const codeSource=flags.codeDirty||!authoritative?local:authoritative;
+    const board=flags.boardDirty||!authoritative?(local.board||{shapes:[]}):(authoritative.board||{shapes:[]});
+    return {code:codeSource.code,language:codeSource.language,question_id:codeSource.question_id,question_version:codeSource.question_version,board};
   }
   async function validateRoom(room){
     if(window._randori_authorized_room===room) return true;
@@ -5537,7 +5738,7 @@ def allow(key, limit=5):
   async function activate(room){
     room=String(room||'');
     if(!signedIn()||!canonical(room)){ deactivate(); return; }
-    if(state.room&&state.room!==room) deactivate();
+    if(state.room&&state.room!==room){ requestAccess(room); return; }
     if(state.room===room&&(state.hydrated||state.pollInFlight===`${state.epoch}:${room}`)) return;
     const requestEpoch=++accessEpoch;
     if(!await validateRoom(room)){
@@ -5554,20 +5755,24 @@ def allow(key, limit=5):
     state.room=room;
     state.revision=0;
     state.hydrated=false;
-    state.hydrationUserDirty=false;
+    state.hydrationDirtyCode=false;
+    state.hydrationDirtyBoard=false;
+    state.forceBoardUpgrade=false;
+    state.syncBlocked=false;
     state.authoritative=null;
     state.pending=null;
-    state.baseline=draft();
+    window._randori_board?.setSyncState?.('connecting');
     if(saveTimer) clearTimeout(saveTimer);
     await poll(true,room,epoch);
   }
   function deactivate(){
     accessEpoch+=1;
-    state.epoch+=1; state.room=null; state.revision=0; state.hydrated=false; state.hydrationUserDirty=false; state.authoritative=null; state.pending=null; state.baseline=null; state.retryCount=0;
+    state.epoch+=1; state.room=null; state.revision=0; state.hydrated=false; state.hydrationDirtyCode=false; state.hydrationDirtyBoard=false; state.forceBoardUpgrade=false; state.syncBlocked=false; state.authoritative=null; state.pending=null; state.retryCount=0;
     if(saveTimer) clearTimeout(saveTimer);
     if(retryTimer){ clearTimeout(retryTimer); retryTimer=null; }
     state.pollAbort?.abort();
     state.writeAbort?.abort();
+    window._randori_board?.setSyncState?.('local');
   }
   async function poll(initial=false,room=state.room,epoch=state.epoch){
     const pollToken=`${epoch}:${room}`;
@@ -5593,26 +5798,33 @@ def allow(key, limit=5):
       const data=await response.json();
       if(state.room!==room||state.epoch!==epoch) return;
       const next=unpack(data);
-      let hydrationDirty=false;
       if(needsHydration||next.revision>state.revision){
         if(next.snapshot){
-          const ownEcho=next.snapshot.client_id===clientId&&next.snapshot.client_seq<=state.lastAckSeq;
-          const locallyDirty=(state.hydrated||state.hydrationUserDirty)&&(
-            !!state.pending ||
-            (state.inFlight?.room===room&&state.inFlight?.epoch===epoch) ||
-            !same(draft(),state.authoritative)
+          const local=draft();
+          const ownEcho=next.snapshot.client_id===clientId&&(
+            next.snapshot.client_seq<=state.lastAckSeq||next.snapshot.client_seq===state.inFlight?.clientSeq
           );
-          if(ownEcho) { state.revision=next.revision; state.authoritative=next.snapshot; persistLocal(room,next.snapshot); }
-          else if(locallyDirty){ hydrationDirty=true; state.revision=next.revision; state.authoritative=next.snapshot; }
-          else applySnapshot(next.snapshot,next.revision,room,epoch);
+          let preserveCode=state.hydrationDirtyCode||!!state.pending?.codeDirty||(!ownEcho&&!!state.inFlight?.codeDirty);
+          let preserveBoard=window._randori_board?.dirty===true||state.hydrationDirtyBoard||!!state.pending?.boardDirty||(!ownEcho&&!!state.inFlight?.boardDirty);
+          if(state.hydrated&&!needsHydration){
+            preserveCode=preserveCode||domainDirty('code',local,state.authoritative);
+            preserveBoard=preserveBoard||domainDirty('board',local,state.authoritative);
+          }
+          if(next.snapshot.schema_version<3){ preserveBoard=true; state.forceBoardUpgrade=true; }
+          applySnapshot(next.snapshot,next.revision,room,epoch,{code:!preserveCode,board:!preserveBoard});
         }else if(next.revision>state.revision) state.revision=next.revision;
       }
       if(needsHydration){
         state.hydrated=true;
-        state.hydrationUserDirty=false;
-        state.baseline=null;
-        // With no server snapshot, publish the authenticated editor state once.
-        if(!next.snapshot||hydrationDirty) scheduleSave();
+        state.hydrationDirtyCode=false;
+        state.hydrationDirtyBoard=false;
+        if(!next.snapshot){ state.forceBoardUpgrade=true; state.pending={codeDirty:true,boardDirty:true}; }
+        else refreshPending();
+        if(state.pending) scheduleSave('resume');
+        else window._randori_board?.setSyncState?.('saved');
+      }else if(next.snapshot){
+        refreshPending();
+        if(state.pending&&!state.inFlight&&!retryTimer&&!saveTimer) scheduleSave('resume');
       }
     }catch{} finally{
       clearTimeout(timeout);
@@ -5620,58 +5832,69 @@ def allow(key, limit=5):
       if(state.pollAbort===controller) state.pollAbort=null;
     }
   }
-  function scheduleSave(){
+  function scheduleSave(domain='code'){
     if(state.applying||!state.hydrated||!signedIn()||!canonical(state.room)||activeRoom()!==state.room) return;
-    const next=draft();
-    if(!next.question_id||!next.question_version) return;
-    if(same(next,state.authoritative)&&!state.inFlight){
-      state.pending=null;
+    if(domain==='code'||domain==='board') state.syncBlocked=false;
+    refreshPending();
+    if(domain==='board'&&!draft().board){ window._randori_board?.setSyncState?.('error','The board is too large or contains an invalid shape.'); return; }
+    if(!state.pending){
       if(saveTimer){ clearTimeout(saveTimer); saveTimer=null; }
       if(retryTimer){ clearTimeout(retryTimer); retryTimer=null; }
       state.retryCount=0;
+      if(domain==='board') window._randori_board?.setSyncState?.('saved');
       return;
     }
-    state.pending=next;
+    const preview=composeChange(state.pending);
+    if(!preview?.question_id||!preview.question_version) return;
     state.retryCount=0;
     if(retryTimer){ clearTimeout(retryTimer); retryTimer=null; }
     if(saveTimer) clearTimeout(saveTimer);
     saveTimer=setTimeout(drainSave,350);
+    if(state.pending.boardDirty) window._randori_board?.setSyncState?.('pending');
   }
 
-  function markHydrationEdit(){
+  function markHydrationEdit(domain='code'){
     if(state.applying||state.hydrated||!state.room) return;
     if(window._randori_programmatic_editor_updates) return;
-    state.hydrationUserDirty=true;
+    if(domain==='board') state.hydrationDirtyBoard=true;
+    else state.hydrationDirtyCode=true;
   }
-  function retrySave(change,room,epoch){
+  function retrySave(room,epoch){
     if(state.room!==room||state.epoch!==epoch) return false;
-    state.pending=state.pending||change;
     if(state.retryCount>=MAX_SAVE_RETRIES){
       state.pending=null;
+      state.syncBlocked=true;
+      window._randori_board?.setSyncState?.('error','The board remains saved on this device, but remote sync is unavailable.');
       if(typeof toast==='function') toast('Workspace is still saved on this device, but could not sync. Edit again to retry.');
       return false;
     }
+    if(state.pending?.boardDirty) window._randori_board?.setSyncState?.('retrying','The drawing remains saved on this device while sync retries.');
     const delay=Math.min(500*(2**state.retryCount),8000);
     state.retryCount+=1;
     retryTimer=setTimeout(()=>{ retryTimer=null; drainSave(); },delay);
     return true;
   }
   async function drainSave(){
+    saveTimer=null;
     if(state.inFlight||!state.pending||!state.room||!signedIn()||activeRoom()!==state.room) return;
-    if(same(state.pending,state.authoritative)){ state.pending=null; return; }
-    const room=state.room,epoch=state.epoch,change=state.pending;
+    const flags=state.pending;
+    const change=composeChange(flags);
+    if(!change||!change.question_id||!change.question_version) return;
+    const room=state.room,epoch=state.epoch;
     state.pending=null;
-    const request={room,epoch,change};
+    const clientSeq=++state.clientSeq;
+    const request={room,epoch,change,codeDirty:flags.codeDirty,boardDirty:flags.boardDirty,clientSeq};
     state.inFlight=request;
+    if(request.boardDirty) window._randori_board?.setSyncState?.('syncing');
     const controller=new AbortController();
     state.writeAbort=controller;
     const timeout=setTimeout(()=>controller.abort(),8000);
-    const clientSeq=++state.clientSeq;
     let retryLater=false;
+    let discardPending=false;
     try{
       const response=await fetch('/api/video/signal',{
         method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},signal:controller.signal,
-        body:JSON.stringify({room_id:room,type:'code-sync',payload:{schema_version:2,base_revision:state.revision,client_id:clientId,client_seq:clientSeq,code:change.code,language:change.language,question_id:change.question_id,question_version:change.question_version}}),
+        body:JSON.stringify({room_id:room,type:'code-sync',payload:{schema_version:3,base_revision:state.revision,client_id:clientId,client_seq:clientSeq,code:change.code,language:change.language,question_id:change.question_id,question_version:change.question_version,board:change.board}}),
       });
       const data=await response.json().catch(()=>({}));
       if(state.room!==room||state.epoch!==epoch) return;
@@ -5684,61 +5907,126 @@ def allow(key, limit=5):
       }
       if(response.status===409){
         if(next.snapshot&&next.revision>=state.revision){
-          state.revision=next.revision;
-          state.authoritative=next.snapshot;
+          const preserveCode=request.codeDirty||!!state.pending?.codeDirty;
+          const preserveBoard=request.boardDirty||!!state.pending?.boardDirty||next.snapshot.schema_version<3;
+          if(next.snapshot.schema_version<3) state.forceBoardUpgrade=true;
+          applySnapshot(next.snapshot,next.revision,room,epoch,{code:!preserveCode,board:!preserveBoard});
         }
-        retryLater=retrySave(change,room,epoch);
+        retryLater=true;
         return;
       }
       if(response.status===408||response.status===429||response.status>=500) throw new Error(data.error||`workspace save ${response.status}`);
       if(!response.ok){
+        discardPending=true;
+        state.syncBlocked=true;
+        if(request.boardDirty) window._randori_board?.setSyncState?.('error',data.error||'This board change could not be synced.');
         if(typeof toast==='function') toast(data.error||'This workspace change could not be synced.');
         return;
       }
       if(next.revision<state.revision) return;
       state.retryCount=0;
+      state.syncBlocked=false;
       state.lastAckSeq=Math.max(state.lastAckSeq,clientSeq);
-      state.revision=next.revision;
       if(next.snapshot){
-        state.authoritative=next.snapshot;
-        // Do not overwrite edits coalesced while this save was in flight.
-        if(!state.pending&&same(draft(),change)) applySnapshot(next.snapshot,next.revision,room,epoch);
-      }
+        const local=draft();
+        const preserveCode=!!state.pending?.codeDirty||!sameCode(local,change);
+        const preserveBoard=!!state.pending?.boardDirty||!sameBoard(local,change);
+        state.forceBoardUpgrade=false;
+        applySnapshot(next.snapshot,next.revision,room,epoch,{code:!preserveCode,board:!preserveBoard});
+      }else state.revision=next.revision;
+      if(request.boardDirty&&!state.pending?.boardDirty) window._randori_board?.setSyncState?.('saved');
     }catch{
-      retryLater=retrySave(change,room,epoch);
+      retryLater=true;
     }finally{
       clearTimeout(timeout);
       if(state.inFlight===request) state.inFlight=null;
       if(state.writeAbort===controller) state.writeAbort=null;
+      if(state.room===room&&state.epoch===epoch&&!discardPending){
+        refreshPending();
+        if(retryLater&&state.pending) retryLater=retrySave(room,epoch);
+      }
       if(state.pending&&!retryLater) queueMicrotask(drainSave);
     }
+  }
+
+  async function flushCurrentWorkspace(timeoutMs=12000){
+    const room=state.room,epoch=state.epoch;
+    if(!room) return true;
+    if(!signedIn()||!canonical(room)||activeRoom()!==room) return false;
+    // Turn the board's gesture debounce into a workspace edit while the old
+    // room is still active, then wait for its CAS write to be acknowledged.
+    window._randori_board?.flush?.();
+    const deadline=Date.now()+timeoutMs;
+    while(Date.now()<deadline){
+      if(state.room!==room||state.epoch!==epoch||!signedIn()||activeRoom()!==room) return false;
+      if(!state.hydrated){
+        if(!state.pollInFlight) await poll(true,room,epoch);
+        await new Promise(resolve=>setTimeout(resolve,25));
+        continue;
+      }
+      refreshPending();
+      if(!state.pending&&!state.inFlight&&window._randori_board?.dirty!==true) return true;
+      if(state.syncBlocked) return false;
+      if(state.pending){
+        const preview=composeChange(state.pending);
+        if(!preview?.question_id||!preview.question_version) return false;
+      }
+      if(saveTimer){ clearTimeout(saveTimer); saveTimer=null; }
+      if(!state.inFlight&&!retryTimer&&state.pending) await drainSave();
+      await new Promise(resolve=>setTimeout(resolve,25));
+    }
+    return false;
   }
 
   async function requestAccess(room){
     room=String(room||'');
     if(!signedIn()||!canonical(room)){ deactivate(); return false; }
-    if(state.room&&state.room!==room) deactivate();
+    const previousRoom=state.room;
+    const switching=!!previousRoom&&previousRoom!==room;
     const requestEpoch=++accessEpoch;
     if(!await validateRoom(room)){
       if(requestEpoch!==accessEpoch) return false;
-      deactivate();
+      if(!switching) deactivate();
       if(typeof toast==='function') toast('Pair-room access denied.');
       return false;
     }
     if(requestEpoch!==accessEpoch) return false;
+    if(switching){
+      if(!await flushCurrentWorkspace()){
+        if(requestEpoch!==accessEpoch) return false;
+        const selector=document.getElementById('roomSelect');
+        if(selector&&[...selector.options].some(option=>option.value===previousRoom)) selector.value=previousRoom;
+        window._randori_board?.setSyncState?.('error','Sync this room before switching. Your drawing remains saved on this device.');
+        if(typeof toast==='function') toast('Could not sync this room yet, so the room switch was stopped.');
+        return false;
+      }
+      if(requestEpoch!==accessEpoch) return false;
+      deactivate();
+    }
     window._randori_authorized_room=room;
     window._randori_code?.loadRoom?.(room);
     return true;
   }
 
   window.addEventListener('randori:room-change',event=>{ activate(event.detail?.roomId); });
-  window.addEventListener('randori:workspace-edit',scheduleSave);
-  document.getElementById('editor')?.addEventListener('input',()=>{ markHydrationEdit(); scheduleSave(); });
-  document.getElementById('langSelect')?.addEventListener('change',scheduleSave);
-  document.getElementById('questionSelect')?.addEventListener('change',scheduleSave);
+  window.addEventListener('randori:workspace-edit',event=>{
+    const room=event.detail?.roomId;
+    if(room&&String(room)!==String(state.room||'')) return;
+    // Generic persistence events also come from catalogue/Monaco setup. Only
+    // direct user input/change handlers below may claim a pre-hydration edit.
+    scheduleSave('code');
+  });
+  window.addEventListener('randori:board-edit',event=>{
+    const room=event.detail?.roomId;
+    if(String(room||'')!==String(state.room||'')||String(room||'')!==String(activeRoom()||'')) return;
+    markHydrationEdit('board'); scheduleSave('board');
+  });
+  document.getElementById('editor')?.addEventListener('input',()=>{ markHydrationEdit('code'); scheduleSave('code'); });
+  document.getElementById('langSelect')?.addEventListener('change',()=>{ markHydrationEdit('code'); scheduleSave('code'); });
+  document.getElementById('questionSelect')?.addEventListener('change',()=>{ markHydrationEdit('code'); scheduleSave('code'); });
   setInterval(()=>{ if(!signedIn()) deactivate(); else if(state.room) poll(false,state.room,state.epoch); },1200);
   setInterval(()=>{ const room=activeRoom(); if(signedIn()&&canonical(room)&&room!==state.room&&window._randori_authorized_room===room) activate(room); },500);
-  window._randori_workspace={activate,requestAccess,deactivate,poll,markHydrationEdit,get room(){return state.room},get revision(){return state.revision},get hydrated(){return state.hydrated},get clientId(){return clientId}};
+  window._randori_workspace={activate,requestAccess,deactivate,poll,markHydrationEdit,flush:flushCurrentWorkspace,get room(){return state.room},get revision(){return state.revision},get hydrated(){return state.hydrated},get clientId(){return clientId}};
 })();
 </script>
 
