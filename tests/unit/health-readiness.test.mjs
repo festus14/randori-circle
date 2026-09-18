@@ -1,0 +1,275 @@
+import assert from 'node:assert/strict';
+import { readdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, test } from 'node:test';
+import { createClient } from '@libsql/client';
+
+import {
+  coalescedDatabaseReadiness,
+  databaseReadinessConfiguration,
+  inspectDatabaseReadiness,
+  resolveHealthProbe,
+} from '../../api/_health.js';
+import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
+import { MIGRATION_CONTRACTS } from '../../db/migration-contract.js';
+import {
+  inspectCompletedMembershipRollout,
+  inspectMembershipAdoptionReadiness,
+} from '../../db/membership-readiness.js';
+import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import { assertReadOnlyStatement } from '../../db/schema-inspector.js';
+
+const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
+const resources=[];
+
+afterEach(async()=>{
+  while(resources.length) await resources.pop()();
+});
+
+async function databaseFixture({migrations=EXECUTABLE_MIGRATIONS,file=true}={}){
+  let directory=null;
+  if(file){
+    directory=mkdtempSync(join(tmpdir(),'randori-health-'));
+    resources.push(()=>rmSync(directory,{recursive:true,force:true}));
+  }
+  const db=createClient({url:file?`file:${join(directory,'database.sqlite')}`:'file::memory:'});
+  resources.push(()=>db.close());
+  await prepareMigrationConnection(db);
+  const initial=await inspectMigrationState(db,{migrations});
+  await applyMigrations(db,{
+    migrations,
+    expectedStateFingerprint:initial.stateFingerprint,
+    retry:NO_RETRY,
+  });
+  return {db,directory};
+}
+
+function sqlText(statement){
+  return String(typeof statement==='string'?statement:statement?.sql||'').trim();
+}
+
+async function schemaSnapshot(db){
+  const result=await db.execute(`SELECT type,name,tbl_name,sql FROM sqlite_schema
+    WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name`);
+  return (result.rows||[]).map(row=>Object.fromEntries(Object.entries(row).map(([key,value])=>[
+    key,typeof value==='bigint'?value.toString():value,
+  ])));
+}
+
+test('runtime migration contracts remain identical to executable migrations',()=>{
+  assert.deepEqual(
+    MIGRATION_CONTRACTS,
+    EXECUTABLE_MIGRATIONS.map(({version,name,checksum})=>({version,name,checksum})),
+  );
+});
+
+test('ready inspection is exact, read-only, and creates no schema objects or files',async()=>{
+  const {db,directory}=await databaseFixture({file:true});
+  const beforeSchema=await schemaSnapshot(db);
+  const beforeFiles=readdirSync(directory).sort();
+  const statements=[];
+  const spy={
+    execute(statement){
+      const sql=sqlText(statement);
+      statements.push({sql,args:statement?.args||[]});
+      assertReadOnlyStatement(statement);
+      return db.execute(statement);
+    },
+  };
+  assert.equal(await inspectDatabaseReadiness(spy),true);
+  assert.ok(statements.length>50);
+  assert.ok(statements.every(({sql})=>/^(?:SELECT|PRAGMA)\b/i.test(sql)));
+  assert.deepEqual(
+    statements.find(({sql})=>sql.includes('FROM sqlite_schema')&&sql.includes('type IN'))?.args,
+    [129],
+  );
+  assert.deepEqual(
+    statements.find(({sql})=>sql.includes('FROM schema_migrations ORDER BY version'))?.args,
+    [4],
+  );
+  assert.deepEqual(await schemaSnapshot(db),beforeSchema);
+  assert.deepEqual(readdirSync(directory).sort(),beforeFiles);
+});
+
+test('readiness fails closed for fresh, unmanaged, stale, future, and gapped ledgers',async t=>{
+  await t.test('fresh',async()=>{
+    const db=createClient({url:'file::memory:'});
+    try{
+      await prepareMigrationConnection(db);
+      assert.equal(await inspectDatabaseReadiness(db),false);
+    }finally{ db.close(); }
+  });
+  await t.test('unmanaged',async()=>{
+    const db=createClient({url:'file::memory:'});
+    try{
+      await prepareMigrationConnection(db);
+      for(const migration of EXECUTABLE_MIGRATIONS){
+        for(const operation of migration.operations) await db.execute(operation.sql);
+      }
+      assert.equal(await inspectDatabaseReadiness(db),false);
+    }finally{ db.close(); }
+  });
+  await t.test('stale',async()=>{
+    const {db}=await databaseFixture({migrations:EXECUTABLE_MIGRATIONS.slice(0,2)});
+    assert.equal(await inspectDatabaseReadiness(db),false);
+  });
+  await t.test('future',async()=>{
+    const {db}=await databaseFixture();
+    await db.execute({
+      sql:`INSERT INTO schema_migrations
+        (version,name,checksum,execution_ms,disposition) VALUES (?,?,?,?,?)`,
+      args:[4,'future-schema','f'.repeat(64),0,'applied'],
+    });
+    await assert.rejects(inspectDatabaseReadiness(db));
+  });
+  await t.test('gapped',async()=>{
+    const {db}=await databaseFixture();
+    await db.execute('DELETE FROM schema_migrations WHERE version=2');
+    await assert.rejects(inspectDatabaseReadiness(db));
+  });
+});
+
+test('readiness fails closed for connection settings, schema drift, and rollout drift',async t=>{
+  await t.test('database unavailable',async()=>{
+    await assert.rejects(
+      inspectDatabaseReadiness({execute(){ throw new Error('libsql://private.example/token=secret'); }}),
+      /private/,
+    );
+  });
+  await t.test('foreign keys disabled',async()=>{
+    const {db}=await databaseFixture();
+    await db.execute('PRAGMA foreign_keys=OFF');
+    assert.equal(await inspectDatabaseReadiness(db),false);
+  });
+  await t.test('schema drift',async()=>{
+    const {db}=await databaseFixture();
+    await db.execute('DROP INDEX idx_pair_sched_pair');
+    assert.equal(await inspectDatabaseReadiness(db),false);
+  });
+  await t.test('membership rollout drift',async()=>{
+    const {db}=await databaseFixture();
+    await db.execute(`INSERT INTO circles (public_id,slug,name,is_primary)
+      VALUES ('unexpected','unexpected','Unexpected',1)`);
+    assert.equal(await inspectDatabaseReadiness(db),false);
+  });
+});
+
+test('completed rollout readiness permits inactive members and historical actors without weakening provenance',async()=>{
+  const {db}=await databaseFixture();
+  assert.equal((await inspectCompletedMembershipRollout(db)).ok,false);
+  await db.execute(`INSERT INTO auth_accounts
+    (id,email,password_hash,display_name,color,is_admin,is_demo)
+    VALUES
+      (1,'owner@example.test','!oauth:test','Owner','#123456',1,0),
+      (2,'inactive@example.test','!oauth:test','Inactive','#654321',0,0)`);
+  await db.execute(`INSERT INTO circles
+    (id,public_id,slug,name,is_primary,created_by)
+    VALUES (1,'primary-public-id','randori-circle','Randori Circle',1,1)`);
+  await db.execute(`INSERT INTO circle_memberships
+    (circle_id,user_id,role,status,joined_at,updated_at)
+    VALUES (1,1,'owner','active',datetime('now'),datetime('now'))`);
+  await db.execute(`INSERT INTO circle_audit_events
+    (circle_id,event_type,actor_user_id,subject_user_id,dedupe_key)
+    VALUES
+      (1,'membership.backfilled',1,1,'membership-backfilled:1:1'),
+      (1,'membership.backfilled',999,2,'membership-backfilled:1:2'),
+      (1,'membership.backfill.completed',999,NULL,'primary-membership-backfill:1:v1')`);
+  await db.execute(`UPDATE circle_membership_rollout
+    SET registrations_closed=1,updated_at=datetime('now') WHERE id=1`);
+
+  const adoption=await inspectMembershipAdoptionReadiness(db);
+  assert.equal(adoption.ok,false,'one-time adoption still requires every existing account to be covered');
+  assert.ok(adoption.blockers.includes('closed_rollout_has_uncovered_accounts'));
+  assert.equal((await inspectCompletedMembershipRollout(db)).ok,true);
+  assert.equal(await inspectDatabaseReadiness(db),true);
+
+  await db.execute(`DELETE FROM circle_audit_events
+    WHERE event_type='membership.backfilled' AND subject_user_id=2`);
+  const missingProvenance=await inspectCompletedMembershipRollout(db);
+  assert.equal(missingProvenance.ok,false);
+  assert.ok(missingProvenance.blockers.includes('closed_rollout_account_audit_invalid'));
+  await db.execute(`INSERT INTO circle_audit_events
+    (circle_id,event_type,actor_user_id,subject_user_id,dedupe_key)
+    VALUES (1,'membership.backfilled',999,2,'membership-backfilled:1:2')`);
+
+  await db.execute(`UPDATE circle_audit_events SET dedupe_key='tampered'
+    WHERE event_type='membership.backfill.completed'`);
+  const tampered=await inspectCompletedMembershipRollout(db);
+  assert.equal(tampered.ok,false);
+  assert.ok(tampered.blockers.includes('closed_rollout_backfill_audit_invalid'));
+  assert.equal(await inspectDatabaseReadiness(db),false);
+});
+
+test('configuration and probe routing distinguish liveness from readiness without disclosure',()=>{
+  assert.equal(databaseReadinessConfiguration({}),null);
+  assert.equal(databaseReadinessConfiguration({TURSO_DATABASE_URL:'not a url',TURSO_AUTH_TOKEN:'secret'}),null);
+  assert.equal(databaseReadinessConfiguration({
+    NODE_ENV:'production',RANDORI_LOCAL_RUNTIME:'true',TURSO_DATABASE_URL:'file:///tmp/private.sqlite',
+  }),null);
+  assert.equal(databaseReadinessConfiguration({
+    TURSO_DATABASE_URL:'libsql://database.example.test',
+  }),null);
+  assert.equal(databaseReadinessConfiguration({
+    NODE_ENV:'production',TURSO_DATABASE_URL:'http://database.example.test',TURSO_AUTH_TOKEN:'secret',
+  }),null);
+  assert.equal(databaseReadinessConfiguration({
+    NODE_ENV:'production',TURSO_DATABASE_URL:'libsql://database.example.test?token=secret',TURSO_AUTH_TOKEN:'secret',
+  }),null);
+  const remote=databaseReadinessConfiguration({
+    TURSO_DATABASE_URL:'libsql://database.example.test',TURSO_AUTH_TOKEN:'private-token',
+  });
+  assert.match(remote.cacheKey,/^[a-f0-9]{64}$/);
+  assert.doesNotMatch(JSON.stringify(remote),/private-token|database\.example/);
+  assert.ok(databaseReadinessConfiguration({
+    NODE_ENV:'development',RANDORI_LOCAL_RUNTIME:'true',TURSO_DATABASE_URL:'file:///tmp/local.sqlite',
+  }));
+  assert.equal(resolveHealthProbe({url:'/api/health'}),'ready');
+  assert.equal(resolveHealthProbe({url:'/api/health/live'}),'live');
+  assert.equal(resolveHealthProbe({url:'/api/healthz'}),'live');
+  assert.equal(resolveHealthProbe({url:'/api/readyz'}),'ready');
+  assert.equal(resolveHealthProbe({url:'/api/health',query:{probe:'liveness'}}),'live');
+  assert.equal(resolveHealthProbe({url:'/api/health',query:{probe:'unknown'}}),'invalid');
+});
+
+test('concurrent readiness is coalesced without retaining a stale result',async()=>{
+  const key='a'.repeat(64);
+  let calls=0;
+  const {db}=await databaseFixture();
+  const delayed={
+    async execute(statement){
+      calls+=1;
+      await new Promise(resolve=>setImmediate(resolve));
+      return db.execute(statement);
+    },
+  };
+  const [first,second]=await Promise.all([
+    coalescedDatabaseReadiness(key,delayed),
+    coalescedDatabaseReadiness(key,delayed),
+  ]);
+  assert.equal(first,true);
+  assert.equal(second,true);
+  const firstProbeCalls=calls;
+  assert.ok(firstProbeCalls>50);
+  assert.equal(await coalescedDatabaseReadiness(key,delayed),true);
+  assert.ok(calls>firstProbeCalls,'a settled success must not be cached');
+});
+
+test('readiness deadlines are bounded while the in-flight query remains coalesced',async()=>{
+  const key='b'.repeat(64);
+  let release;
+  let calls=0;
+  const gate=new Promise(resolve=>{ release=resolve; });
+  const database={async execute(){ calls+=1; await gate; return {rows:[]}; }};
+  await assert.rejects(
+    coalescedDatabaseReadiness(key,database,{timeoutMs:10}),
+    /deadline exceeded/,
+  );
+  assert.equal(calls,1);
+  release();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.throws(
+    ()=>coalescedDatabaseReadiness(key,database,{timeoutMs:0}),
+    /readiness timeout/,
+  );
+});

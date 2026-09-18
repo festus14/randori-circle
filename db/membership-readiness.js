@@ -201,6 +201,27 @@ export async function inspectCompletedMembershipRollout(db){
           OR event.subject_user_id IS NOT NULL OR event.invitation_id IS NOT NULL
           OR event.dedupe_key IS NOT ?
         )) AS malformedCompletionAudits,
+      (SELECT COUNT(*) FROM auth_accounts account
+        WHERE COALESCE(account.is_demo,0)=0
+          AND NOT EXISTS (
+            SELECT 1 FROM circle_audit_events event
+            WHERE event.circle_id=? AND event.event_type='membership.backfilled'
+              AND event.actor_user_id IS NOT NULL
+              AND event.subject_user_id=account.id
+              AND event.invitation_id IS NULL
+              AND event.dedupe_key=printf('membership-backfilled:%d:%d',?,account.id)
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM circle_invitations invitation
+            JOIN circle_audit_events event ON event.invitation_id=invitation.id
+            WHERE invitation.circle_id=? AND invitation.used_by=account.id
+              AND invitation.used_at IS NOT NULL AND invitation.revoked_at IS NULL
+              AND event.circle_id=invitation.circle_id
+              AND event.event_type='invitation.accepted'
+              AND event.actor_user_id=account.id
+              AND event.subject_user_id=account.id
+              AND event.dedupe_key=('invite-accepted:'||invitation.id)
+          )) AS invalidAccountProvenance,
       (SELECT COUNT(*) FROM circle_audit_events event
         LEFT JOIN auth_accounts account ON account.id=event.subject_user_id
         WHERE event.event_type='membership.backfilled' AND (
@@ -227,6 +248,7 @@ export async function inspectCompletedMembershipRollout(db){
       primaryId,
       primaryId,`primary-membership-backfill:${primaryId}:v1`,
       primaryId,`primary-membership-backfill:${primaryId}:v1`,
+      primaryId,primaryId,primaryId,
       primaryId,primaryId,
       primaryId,primaryId,
     ],
@@ -237,6 +259,7 @@ export async function inspectCompletedMembershipRollout(db){
     completedBackfills:numericValue(row,'completedBackfills'),
     matchingBackfills:numericValue(row,'matchingBackfills'),
     malformedCompletionAudits:numericValue(row,'malformedCompletionAudits'),
+    invalidAccountProvenance:numericValue(row,'invalidAccountProvenance'),
     malformedBackfillAudits:numericValue(row,'malformedBackfillAudits'),
     malformedInvitationAudits:numericValue(row,'malformedInvitationAudits'),
     orphanMemberships:numericValue(row,'orphanMemberships'),
@@ -246,7 +269,8 @@ export async function inspectCompletedMembershipRollout(db){
     ||counts.malformedCompletionAudits){
     blockers.push('closed_rollout_backfill_audit_invalid');
   }
-  if(counts.malformedBackfillAudits||counts.malformedInvitationAudits){
+  if(counts.invalidAccountProvenance||counts.malformedBackfillAudits
+    ||counts.malformedInvitationAudits){
     blockers.push('closed_rollout_account_audit_invalid');
   }
   if(counts.orphanMemberships) blockers.push('closed_rollout_has_orphan_memberships');
