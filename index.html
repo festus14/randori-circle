@@ -241,7 +241,7 @@ p{margin:0}
 .chip.active{background:var(--ink); color:var(--bg); border-color:var(--ink)}
 .code-layout{display:grid; grid-template-columns:300px 1fr; gap:0; min-height:560px; border-radius:var(--radius); overflow:hidden; border:1px solid var(--border); background:var(--card)}
 .q-pane{background:var(--card); border-right:1px solid var(--border); display:flex; flex-direction:column; min-width:0}
-.q-head{padding:12px 14px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; background:var(--card)}
+.q-head{padding:12px 14px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; background:var(--card)}
 .q-body{padding:14px; overflow:auto; display:grid; gap:12px; font-size:13px; line-height:1.6; color:var(--ink-2)}
 .tests{display:grid; gap:8px}
 .test{border:1px solid var(--border); border-radius:10px; padding:9px 11px; background:var(--bg-3); font-size:12.5px}
@@ -805,10 +805,23 @@ p{margin:0}
         <div class="q-pane">
           <div class="q-head">
             <div class="row">
-              <select id="questionSelect" class="select" style="width:200px"></select>
+              <select id="questionSelect" class="select" aria-label="Exercise" style="width:200px"></select>
               <span id="qDiff" class="kbd"></span>
             </div>
             <div class="row small"><span id="roomLabel" class="kbd">room —</span></div>
+            <div data-testid="catalog-filters" style="width:100%; display:grid; grid-template-columns:1fr 1fr; gap:6px">
+              <label class="small muted" style="grid-column:1 / -1; display:grid; gap:3px">Search exercises
+                <input id="catalogSearch" data-testid="catalog-search" class="input" type="search" autocomplete="off" placeholder="Title, pattern, or tag" />
+              </label>
+              <label class="small muted" style="display:grid; gap:3px">Difficulty
+                <select id="catalogDifficulty" data-testid="catalog-difficulty" class="select"><option value="all">All</option><option value="Easy">Easy</option><option value="Medium">Medium</option><option value="Hard">Hard</option></select>
+              </label>
+              <label class="small muted" style="display:grid; gap:3px">Pattern
+                <select id="catalogType" data-testid="catalog-type" class="select"><option value="all">All</option></select>
+              </label>
+              <span id="catalogFilterStatus" data-testid="catalog-status" class="small muted" role="status" aria-live="polite" style="grid-column:1 / -1">Loading exercises…</span>
+              <div id="catalogFilterEmpty" data-testid="catalog-empty" class="small muted" hidden style="grid-column:1 / -1; padding:7px; border:1px dashed var(--border); border-radius:8px">No public exercises match these filters. Clear or adjust them to continue.</div>
+            </div>
           </div>
           <div class="q-body">
             <h3 id="qTitle" style="font-size:18px; color:var(--ink)"></h3>
@@ -4433,6 +4446,8 @@ def allow(key, limit=5):
   let activeQuestionSlug='';
   let activeQuestionVersion=null;
   let activeLanguage=document.getElementById('langSelect')?.value||'javascript';
+  const catalogueFilterState={search:'',difficulty:'all',type:'all',visibleSlugs:[]};
+  const CATALOGUE_FILTER_EMPTY='__randori_catalog_filter_empty__';
   const sessionDrafts=new Map();
   const MAX_CATALOGUE_AUTO_RETRIES=2;
   const CATALOGUE_RETRY_DELAYS=[500,1000];
@@ -4480,6 +4495,9 @@ def allow(key, limit=5):
 
   function selectedIdentity(){
     const sel=document.getElementById('questionSelect');
+    if(sel?.value===CATALOGUE_FILTER_EMPTY||(catalogueFetchState==='loaded'&&!catalogueFilterState.visibleSlugs.length)){
+      return {slug:activeQuestionSlug,version:activeQuestionVersion};
+    }
     const option=sel?.selectedOptions?.[0];
     const slug=String(option?.dataset?.workspaceQuestionId||sel?.value||'');
     const catalogQuestion=CUSTOM_QUESTIONS.find(question=>question.slug===slug);
@@ -4528,8 +4546,16 @@ def allow(key, limit=5):
     const tests=document.getElementById('qTests'); if(tests) tests.innerHTML='<div class="small muted">Unavailable exercises cannot be executed.</div>';
   }
 
+  function removeFilteredWorkspaceOptions(sel,except=null){
+    if(!sel) return;
+    [...sel.options].forEach(option=>{
+      if(option.dataset.workspaceFiltered==='1'&&option!==except) option.remove();
+    });
+  }
+
   function appendUnavailableOption(sel,slug,{unpinned=false,version=null}={}){
     if(!slug) return null;
+    removeFilteredWorkspaceOptions(sel);
     const value=UNAVAILABLE_VALUE_PREFIX+slug;
     let option=[...sel.options].find(item=>item.value===value);
     if(!option){ option=document.createElement('option'); option.value=value; sel.prepend(option); }
@@ -4538,6 +4564,137 @@ def allow(key, limit=5):
     option.dataset.workspaceQuestionId=slug;
     if(version) option.dataset.questionVersion=String(version); else delete option.dataset.questionVersion;
     return option;
+  }
+
+  function catalogueFiltersActive(){
+    return !!catalogueFilterState.search||catalogueFilterState.difficulty!=='all'||catalogueFilterState.type!=='all';
+  }
+
+  function hydratedWorkspaceOwnsSelection(identity){
+    const workspace=window._randori_workspace;
+    const room=activeRoom();
+    return !!room
+      && workspace?.hydrated===true
+      && workspace.room===room
+      && identity.slug===activeQuestionSlug
+      && identity.version===activeQuestionVersion;
+  }
+
+  function filteredCatalogueQuestions(){
+    const terms=catalogueFilterState.search.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    return CUSTOM_QUESTIONS.filter(question=>{
+      if(catalogueFilterState.difficulty!=='all'&&String(question.difficulty||'')!==catalogueFilterState.difficulty) return false;
+      if(catalogueFilterState.type!=='all'&&String(question.type||'')!==catalogueFilterState.type) return false;
+      const tags=Array.isArray(question.tags)?question.tags:[];
+      const searchable=[question.title,question.slug,question.type,...tags].map(value=>String(value||'').toLocaleLowerCase()).join(' ');
+      return terms.every(term=>searchable.includes(term));
+    });
+  }
+
+  function appendCatalogueOption(sel,question){
+    const option=document.createElement('option');
+    option.value=question.slug;
+    option.textContent=question.title+(question.version!=null?' · v'+question.version:'');
+    option.dataset.custom='1';
+    option.dataset.questionVersion=String(question.version);
+    sel.appendChild(option);
+    return option;
+  }
+
+  function appendFilteredWorkspaceOption(sel,question){
+    removeFilteredWorkspaceOptions(sel);
+    const option=document.createElement('option');
+    option.value=question.slug;
+    option.textContent=`${question.title}${question.version!=null?' · v'+question.version:''} · current workspace (filtered)`;
+    option.dataset.custom='1';
+    option.dataset.questionVersion=String(question.version);
+    option.dataset.workspaceFiltered='1';
+    option.dataset.testid='catalog-filtered-current';
+    sel.prepend(option);
+    return option;
+  }
+
+  function selectKnownCatalogueQuestion(question){
+    if(!qSel||!question) return null;
+    const version=positiveVersion(question.version);
+    let option=[...qSel.options].find(item=>
+      item.value===question.slug
+      && positiveVersion(item.dataset.questionVersion)===version
+      && item.dataset.workspacePlaceholder!=='1'
+    );
+    if(!option){
+      option=catalogueFiltersActive()&&!catalogueFilterState.visibleSlugs.includes(question.slug)
+        ?appendFilteredWorkspaceOption(qSel,question)
+        :appendCatalogueOption(qSel,question);
+    }
+    removeFilteredWorkspaceOptions(qSel,option.dataset.workspaceFiltered==='1'?option:null);
+    qSel.value=option.value;
+    // With zero matches the current workspace remains visible and identifiable,
+    // but there is no filter result for the user to switch to.
+    qSel.disabled=catalogueFiltersActive()&&!catalogueFilterState.visibleSlugs.length;
+    return option;
+  }
+
+  function updateCatalogueFilterControls(){
+    const typeSelect=document.getElementById('catalogType');
+    if(!typeSelect) return;
+    const previous=catalogueFilterState.type;
+    typeSelect.replaceChildren();
+    const all=document.createElement('option'); all.value='all'; all.textContent='All'; typeSelect.appendChild(all);
+    [...new Set(CUSTOM_QUESTIONS.map(question=>String(question.type||'')).filter(Boolean))]
+      .sort((left,right)=>left.localeCompare(right))
+      .forEach(type=>{
+        const option=document.createElement('option'); option.value=type;
+        option.textContent=type.replace(/[-_]+/g,' ').replace(/\b\w/g,letter=>letter.toUpperCase());
+        typeSelect.appendChild(option);
+      });
+    catalogueFilterState.type=[...typeSelect.options].some(option=>option.value===previous)?previous:'all';
+    typeSelect.value=catalogueFilterState.type;
+  }
+
+  function updateCatalogueFilterFeedback(count){
+    const total=CUSTOM_QUESTIONS.length;
+    const status=document.getElementById('catalogFilterStatus');
+    if(status) status.textContent=`${count} of ${total} exercise${total===1?'':'s'}`;
+    const empty=document.getElementById('catalogFilterEmpty');
+    if(empty){
+      empty.hidden=count!==0;
+      empty.textContent=total
+        ? 'No public exercises match these filters. Clear or adjust them to continue.'
+        : 'No public exercises are currently available.';
+    }
+  }
+
+  function applyCatalogueFilters(){
+    const sel=document.getElementById('questionSelect');
+    if(!sel||catalogueFetchState!=='loaded') return false;
+    const previous=selectedIdentity();
+    const matches=filteredCatalogueQuestions();
+    catalogueFilterState.visibleSlugs=matches.map(question=>question.slug);
+    updateCatalogueFilterFeedback(matches.length);
+    sel.replaceChildren();
+    if(!matches.length){
+      const empty=document.createElement('option'); empty.value=CATALOGUE_FILTER_EMPTY; empty.textContent='No exercises match filters';
+      sel.appendChild(empty); sel.value=CATALOGUE_FILTER_EMPTY; sel.disabled=true;
+      return true;
+    }
+    matches.forEach(question=>appendCatalogueOption(sel,question));
+    const preserved=matches.find(question=>question.slug===previous.slug&&question.version===previous.version)||null;
+    const activeQuestion=previous.version==null||!hydratedWorkspaceOwnsSelection(previous)?null:CUSTOM_QUESTIONS.find(question=>
+      question.slug===previous.slug
+      && question.version===previous.version
+    );
+    if(preserved){
+      sel.disabled=false; sel.value=preserved.slug;
+    }else if(activeQuestion){
+      const option=appendFilteredWorkspaceOption(sel,activeQuestion);
+      sel.disabled=false; sel.value=option.value;
+    }else{
+      const next=matches[0];
+      sel.disabled=false; sel.value=next.slug;
+      handleQuestionChange(next.slug);
+    }
+    return true;
   }
 
   function showCatalogueFailure(){
@@ -4551,6 +4708,8 @@ def allow(key, limit=5):
       else { const option=document.createElement('option'); option.value=''; option.textContent='Catalogue unavailable'; sel.appendChild(option); }
       sel.disabled=!previous.slug;
     }
+    const filterStatus=document.getElementById('catalogFilterStatus'); if(filterStatus) filterStatus.textContent='Catalogue unavailable';
+    const filterEmpty=document.getElementById('catalogFilterEmpty'); if(filterEmpty) filterEmpty.hidden=true;
     if(previous.slug) renderUnavailableQuestion(previous.slug,previous.version==null?'not pinned to a catalogue version':'temporarily unavailable',previous.version);
     else{
       const title=document.getElementById('qTitle'); if(title) title.textContent='Catalogue unavailable';
@@ -4570,8 +4729,8 @@ def allow(key, limit=5):
       const j=await r.json();
       if(r.ok && j.ok && Array.isArray(j.questions)){
         CUSTOM_QUESTIONS=j.questions;
-        mergeIntoSelect();
         catalogueFetchState='loaded';
+        mergeIntoSelect();
         catalogueFailureCount=0;
         if(catalogueRetryTimer){ clearTimeout(catalogueRetryTimer); catalogueRetryTimer=null; }
         document.getElementById('qCustomCount').textContent='• '+j.questions.length+' original exercise'+(j.questions.length===1?'':'s');
@@ -4597,18 +4756,13 @@ def allow(key, limit=5):
   function mergeIntoSelect(){
     const sel=document.getElementById('questionSelect');
     if(!sel) return;
+    updateCatalogueFilterControls();
+    if(catalogueFiltersActive()) return applyCatalogueFilters();
     const previous=selectedIdentity();
     let remembered='';
     try{ remembered=localStorage.getItem('randori-last-question')||''; }catch{}
     sel.innerHTML='';
-    CUSTOM_QUESTIONS.forEach(q=>{
-      const o=document.createElement('option');
-      o.value=q.slug;
-      o.textContent=q.title+(q.version!=null?' · v'+q.version:'');
-      o.dataset.custom='1';
-      o.dataset.questionVersion=String(q.version);
-      sel.appendChild(o);
-    });
+    CUSTOM_QUESTIONS.forEach(q=>appendCatalogueOption(sel,q));
     const preferred=previous.slug||remembered||'';
     const preferredVersion=previous.slug?previous.version:null;
     const selectedQuestion=CUSTOM_QUESTIONS.find(q=>q.slug===preferred&&(!preferredVersion||q.version===preferredVersion))||null;
@@ -4618,6 +4772,8 @@ def allow(key, limit=5):
       if(!preferred){ const o=document.createElement('option'); o.value=''; o.textContent='No exercises available'; sel.appendChild(o); }
       sel.value=placeholder?.value||'';
       sel.disabled=!preferred;
+      catalogueFilterState.visibleSlugs=[];
+      updateCatalogueFilterFeedback(0);
       if(preferred) renderUnavailableQuestion(preferred,preferredVersion==null?'not pinned to a catalogue version':'retired or no longer in the approved catalogue',preferredVersion);
       return;
     }
@@ -4634,6 +4790,8 @@ def allow(key, limit=5):
       activeQuestionSlug=CUSTOM_QUESTIONS[0].slug;
       renderCustomQuestion(activeQuestionSlug,'if-empty');
     }
+    catalogueFilterState.visibleSlugs=CUSTOM_QUESTIONS.map(question=>question.slug);
+    updateCatalogueFilterFeedback(CUSTOM_QUESTIONS.length);
     window.dispatchEvent(new CustomEvent('randori:workspace-edit',{detail:{roomId:activeRoom()}}));
   }
 
@@ -4727,6 +4885,8 @@ def allow(key, limit=5):
     if(catalogueFetchState!=='loaded') return false;
     window._randori_workspace?.markHydrationEdit?.();
     rememberDraft(activeQuestionSlug,activeQuestionVersion,activeLanguage);
+    const selectedOption=qSel?.selectedOptions?.[0]||null;
+    if(selectedOption?.dataset.workspaceFiltered!=='1') removeFilteredWorkspaceOptions(qSel);
     const selected=selectedIdentity();
     if(selected.version==null){ renderUnavailableQuestion(selected.slug,'not pinned to a catalogue version',null); return true; }
     const question=CUSTOM_QUESTIONS.find(item=>item.slug===selected.slug&&item.version===selected.version);
@@ -4737,6 +4897,22 @@ def allow(key, limit=5):
     setEditorCode(code,activeLanguage);
     return true;
   }
+
+  const catalogSearch=document.getElementById('catalogSearch');
+  const catalogDifficulty=document.getElementById('catalogDifficulty');
+  const catalogType=document.getElementById('catalogType');
+  catalogSearch?.addEventListener('input',()=>{
+    catalogueFilterState.search=String(catalogSearch.value||'').trim();
+    applyCatalogueFilters();
+  });
+  catalogDifficulty?.addEventListener('change',()=>{
+    catalogueFilterState.difficulty=String(catalogDifficulty.value||'all');
+    applyCatalogueFilters();
+  });
+  catalogType?.addEventListener('change',()=>{
+    catalogueFilterState.type=String(catalogType.value||'all');
+    applyCatalogueFilters();
+  });
 
   function handleLanguageChange(language){
     if(catalogueFetchState!=='loaded') return false;
@@ -4762,7 +4938,7 @@ def allow(key, limit=5):
     if(catalogueFetchState==='loaded'){
       const question=desiredVersion==null?null:CUSTOM_QUESTIONS.find(item=>item.slug===desired&&item.version===desiredVersion);
       if(question){
-        if(qSel) qSel.value=desired;
+        selectKnownCatalogueQuestion(question);
         renderCustomQuestion(desired,'never');
         setEditorCode(hasStoredCode?code:preferredDraft(question,activeLanguage),activeLanguage,{notify:false});
       }else if(desired){
@@ -4770,9 +4946,9 @@ def allow(key, limit=5):
         renderUnavailableQuestion(desired,desiredVersion==null?'not pinned to a catalogue version':'retired or no longer in the approved catalogue',desiredVersion);
         if(hasStoredCode) setEditorCode(code,activeLanguage,{notify:false});
       }else if(CUSTOM_QUESTIONS[0]){
-        const first=CUSTOM_QUESTIONS[0];
+        const first=(catalogueFiltersActive()?filteredCatalogueQuestions()[0]:null)||CUSTOM_QUESTIONS[0];
         activeQuestionSlug=first.slug;
-        if(qSel) qSel.value=first.slug;
+        selectKnownCatalogueQuestion(first);
         renderCustomQuestion(first.slug,'never');
         setEditorCode(preferredDraft(first,activeLanguage),activeLanguage,{notify:false});
       }
@@ -4789,7 +4965,7 @@ def allow(key, limit=5):
     activeQuestionVersion=version;
     const question=version==null?null:CUSTOM_QUESTIONS.find(item=>item.slug===slug&&item.version===version);
     if(question){
-      if(qSel) qSel.value=slug;
+      selectKnownCatalogueQuestion(question);
       renderCustomQuestion(slug,'never');
       return true;
     }
@@ -4841,7 +5017,7 @@ def allow(key, limit=5):
       statusEl.textContent='saved ✓ '+j.question.slug;
       CUSTOM_QUESTIONS.unshift(j.question);
       mergeIntoSelect();
-      if(qSel){ qSel.value=j.question.slug; renderCustomQuestion(j.question.slug); }
+      if(qSel){ selectKnownCatalogueQuestion(j.question); renderCustomQuestion(j.question.slug); }
       setTimeout(()=> overlay?.classList.remove('show'), 700);
       if(window.toast) window.toast('Question saved: '+j.question.title);
     }catch(e){ statusEl.textContent='save failed: '+(e.error||e.message||'err'); console.error(e); }
@@ -5247,6 +5423,16 @@ def allow(key, limit=5):
     loadRoomState,
     selectWorkspaceQuestion,
     selectedIdentity,
+  };
+  window._randori_catalog_filters={
+    get state(){
+      return Object.freeze({
+        search:catalogueFilterState.search,
+        difficulty:catalogueFilterState.difficulty,
+        type:catalogueFilterState.type,
+        visibleSlugs:Object.freeze([...catalogueFilterState.visibleSlugs]),
+      });
+    },
   };
   try{ window._randori_code = window._randori_code||{}; window._randori_code.getCustomQuestion=(slug)=> CUSTOM_QUESTIONS.find(x=>x.slug===slug||x.id===slug); window._randori_code.customQuestions=CUSTOM_QUESTIONS; }catch{}
 

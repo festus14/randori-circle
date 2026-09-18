@@ -128,6 +128,72 @@ function findCoverageGaps(dayStart, dayEnd, shifts) {
   return gaps;
 }
 
+function balancedTemplateMarkers(template) {
+  const expectedOpening = new Map([[')', '('], [']', '['], ['}', '{']]);
+  const openings = new Set(expectedOpening.values());
+  const stack = [];
+  for (const character of template) {
+    if (openings.has(character)) stack.push(character);
+    else if (expectedOpening.has(character) && stack.pop() !== expectedOpening.get(character)) return false;
+  }
+  return stack.length === 0;
+}
+
+function capacityUpgradeIndex(capacities, required) {
+  let low = 0;
+  let high = capacities.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (capacities[middle] >= required) high = middle;
+    else low = middle + 1;
+  }
+  return low < capacities.length ? low : -1;
+}
+
+function shortestHandoffPath(serviceCount, links, start, target) {
+  if (start === target) return 0;
+  const neighbours = Array.from({ length: serviceCount }, () => []);
+  for (const [left, right] of links) {
+    neighbours[left].push(right);
+    neighbours[right].push(left);
+  }
+  const distances = Array(serviceCount).fill(-1);
+  const queue = [start];
+  distances[start] = 0;
+  for (let head = 0; head < queue.length; head += 1) {
+    const current = queue[head];
+    for (const next of neighbours[current]) {
+      if (distances[next] !== -1) continue;
+      distances[next] = distances[current] + 1;
+      if (next === target) return distances[next];
+      queue.push(next);
+    }
+  }
+  return -1;
+}
+
+function messageFrequencyLeaders(labels, threshold) {
+  const counts = new Map();
+  for (const label of labels) counts.set(label, (counts.get(label) || 0) + 1);
+  return [...counts]
+    .filter(([, count]) => count >= threshold)
+    .map(([label, count]) => ({ label, count }))
+    .sort((left, right) => right.count - left.count || (left.label < right.label ? -1 : left.label > right.label ? 1 : 0));
+}
+
+function recoveryBudgetPlan(bundleDurations, target) {
+  const best = Array(target + 1).fill(Number.POSITIVE_INFINITY);
+  best[0] = 0;
+  for (let total = 1; total <= target; total += 1) {
+    for (const duration of bundleDurations) {
+      if (duration <= total && Number.isFinite(best[total - duration])) {
+        best[total] = Math.min(best[total], best[total - duration] + 1);
+      }
+    }
+  }
+  return Number.isFinite(best[target]) ? best[target] : -1;
+}
+
 const SERVER_EXERCISE_DEFINITIONS = {
   'focus-block-rollup@1': {
     generateArgs(random, caseIndex) {
@@ -261,6 +327,103 @@ const SERVER_EXERCISE_DEFINITIONS = {
       return [dayStart, dayEnd, shifts];
     },
     oracle: findCoverageGaps,
+  },
+  'balanced-template-markers@1': {
+    generateArgs(random, caseIndex) {
+      if (caseIndex === 0) return [''];
+      if (caseIndex === 1) return ['plain text without markers'];
+      if (caseIndex === 2) return ['header{section[2](ready)}footer'];
+      if (caseIndex === 3) return ['header{section[2)(ready]}footer'];
+      if (caseIndex === GENERATED_CASE_COUNT - 1) {
+        return ['('.repeat(9_999) + '[' + ')'.repeat(9_999) + ']'];
+      }
+      const pairs = [['(', ')'], ['[', ']'], ['{', '}']];
+      const selected = Array.from(
+        { length: randomInteger(random, 3, 12) },
+        () => randomItem(random, pairs),
+      );
+      const opening = selected.map(pair => pair[0]).join('');
+      const closing = [...selected].reverse().map(pair => pair[1]).join('');
+      const valid = `prefix-${opening}payload-${randomInteger(random, 0, 999)}${closing}-suffix`;
+      if (caseIndex === 5) return [valid.replace(closing, closing.slice(0, -1))];
+      return [valid];
+    },
+    oracle: balancedTemplateMarkers,
+  },
+  'capacity-upgrade-index@1': {
+    generateArgs(random, caseIndex) {
+      if (caseIndex === 0) return [[], 10];
+      if (caseIndex === 1) return [[4, 8, 8, 15], 8];
+      if (caseIndex === 2) return [[3, 6, 9], 10];
+      if (caseIndex === 3) return [[3, 6, 9], 5];
+      if (caseIndex === GENERATED_CASE_COUNT - 1) {
+        return [Array.from({ length: 20_000 }, (_, index) => index * 2), 19_999];
+      }
+      const length = randomInteger(random, 5, 30);
+      const capacities = Array.from({ length }, () => randomInteger(random, -100, 100))
+        .sort((left, right) => left - right);
+      return [capacities, randomInteger(random, -110, 110)];
+    },
+    oracle: capacityUpgradeIndex,
+  },
+  'shortest-handoff-path@1': {
+    generateArgs(random, caseIndex) {
+      if (caseIndex === 0) return [1, [], 0, 0];
+      if (caseIndex === 1) return [4, [], 0, 3];
+      if (caseIndex === 2) return [4, [[0, 3]], 0, 3];
+      if (caseIndex === 3) return [3, [[1, 0], [2, 1]], 0, 2];
+      if (caseIndex === GENERATED_CASE_COUNT - 1) {
+        const serviceCount = 5_000;
+        const links = Array.from({ length: serviceCount - 1 }, (_, index) => [index, index + 1]);
+        links.push([0, serviceCount - 1]);
+        for (let index = 0; index < serviceCount; index += 1) {
+          links.push([index, (index + 2) % serviceCount]);
+        }
+        return [serviceCount, links, 0, serviceCount - 1];
+      }
+      const serviceCount = randomInteger(random, 6, 20);
+      const count = randomInteger(random, serviceCount - 2, serviceCount * 2);
+      const candidates=[];
+      for(let left=0;left<serviceCount;left+=1){
+        for(let right=left+1;right<serviceCount;right+=1) candidates.push([left,right]);
+      }
+      const links=randomShuffle(random,candidates).slice(0,count);
+      return [serviceCount, links, randomInteger(random, 0, serviceCount - 1), randomInteger(random, 0, serviceCount - 1)];
+    },
+    oracle: shortestHandoffPath,
+  },
+  'message-frequency-leaders@1': {
+    generateArgs(random, caseIndex) {
+      if (caseIndex === 0) return [[], 1];
+      if (caseIndex === 1) return [['beta', 'alpha', 'beta', 'alpha', 'gamma'], 2];
+      if (caseIndex === 2) return [['solo', 'solo'], 3];
+      if (caseIndex === 3) return [['alpha', 'zeta', 'zeta', 'alpha', 'zeta'], 2];
+      if (caseIndex === GENERATED_CASE_COUNT - 1) {
+        return [Array.from({ length: 20_000 }, (_, index) => `label-${String(index % 100).padStart(3, '0')}`), 200];
+      }
+      const distinct = randomInteger(random, 2, 8);
+      const choices = Array.from({ length: distinct }, (_, index) => `label-${index}`);
+      const length = randomInteger(random, 8, 50);
+      return [Array.from({ length }, () => randomItem(random, choices)), randomInteger(random, 1, 8)];
+    },
+    oracle: messageFrequencyLeaders,
+  },
+  'recovery-budget-plan@1': {
+    generateArgs(random, caseIndex) {
+      if (caseIndex === 0) return [[], 0];
+      if (caseIndex === 1) return [[], 7];
+      if (caseIndex === 2) return [[5], 10];
+      if (caseIndex === 3) return [[6, 10, 15], 20];
+      if (caseIndex === 4) return [[4, 6], 7];
+      if (caseIndex === GENERATED_CASE_COUNT - 1) {
+        return [Array.from({ length: 50 }, (_, index) => index + 1), 10_000];
+      }
+      const bundleCount = randomInteger(random, 2, 8);
+      const durations=randomShuffle(random,Array.from({length:40},(_,index)=>index+1))
+        .slice(0,bundleCount).sort((left,right)=>left-right);
+      return [durations, randomInteger(random, 1, 180)];
+    },
+    oracle: recoveryBudgetPlan,
   },
 };
 

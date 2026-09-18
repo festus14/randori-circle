@@ -497,6 +497,259 @@
       }
     },
     {
+      "slug": "balanced-template-markers",
+      "version": 1,
+      "status": "active",
+      "title": "Balanced Template Markers",
+      "difficulty": "Easy",
+      "type": "stack-string",
+      "tags": [
+        "stack",
+        "strings"
+      ],
+      "prompt": "A template contains ordinary text mixed with the marker characters (), [], and {}. Ignore every non-marker character. Return true when each opening marker is closed by the matching marker in properly nested order and no marker is left open; otherwise return false.",
+      "constraints": [
+        "0 <= template.length <= 20000",
+        "template is a string",
+        "Only parentheses, square brackets, and braces affect the result"
+      ],
+      "examples": [
+        {
+          "input": ["Hello {team[0]}!"],
+          "output": true,
+          "explanation": "The brace pair contains a correctly matched square-bracket pair; letters and punctuation are ignored."
+        },
+        {
+          "input": ["draft([)]ready"],
+          "output": false,
+          "explanation": "The closing parenthesis arrives while the square bracket is still open."
+        }
+      ],
+      "languages": {
+        "javascript": {
+          "entrypoint": "balancedTemplateMarkers",
+          "signature": "function balancedTemplateMarkers(template)",
+          "starter": "function balancedTemplateMarkers(template) {\n  // Return whether all template markers are balanced.\n}\n"
+        },
+        "python": {
+          "entrypoint": "balanced_template_markers",
+          "signature": "def balanced_template_markers(template):",
+          "starter": "def balanced_template_markers(template):\n    # Return whether all template markers are balanced.\n    pass\n"
+        }
+      },
+      "governance": {
+        "rightsOwner": "Randori Circle project contributors",
+        "provenance": "Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate": "2026-09-18",
+        "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement": {"status":"active","retiredAt":null,"reason":null,"replacement":null},
+        "takedown": {"status":"none","requestedAt":null,"reference":null}
+      }
+    },
+    {
+      "slug": "capacity-upgrade-index",
+      "version": 1,
+      "status": "active",
+      "title": "Capacity Upgrade Index",
+      "difficulty": "Easy",
+      "type": "binary-search",
+      "tags": [
+        "arrays",
+        "binary-search"
+      ],
+      "prompt": "A service team keeps available capacity tiers in nondecreasing order. Given the tiers and a required capacity, return the zero-based index of the first tier whose capacity is at least the requirement. Return -1 when no tier is large enough. Repeated capacity values are allowed.",
+      "constraints": [
+        "0 <= capacities.length <= 20000",
+        "capacities is sorted in nondecreasing order",
+        "Each capacity and required are integers from -1000000 to 1000000"
+      ],
+      "examples": [
+        {
+          "input": [[4,8,8,15],8],
+          "output": 1,
+          "explanation": "Index 1 is the first tier equal to the required capacity."
+        },
+        {
+          "input": [[3,6,9],10],
+          "output": -1,
+          "explanation": "Every available tier is smaller than the requirement."
+        }
+      ],
+      "languages": {
+        "javascript": {
+          "entrypoint": "capacityUpgradeIndex",
+          "signature": "function capacityUpgradeIndex(capacities, required)",
+          "starter": "function capacityUpgradeIndex(capacities, required) {\n  // Return the first qualifying index, or -1.\n}\n"
+        },
+        "python": {
+          "entrypoint": "capacity_upgrade_index",
+          "signature": "def capacity_upgrade_index(capacities, required):",
+          "starter": "def capacity_upgrade_index(capacities, required):\n    # Return the first qualifying index, or -1.\n    pass\n"
+        }
+      },
+      "governance": {
+        "rightsOwner": "Randori Circle project contributors",
+        "provenance": "Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate": "2026-09-18",
+        "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement": {"status":"active","retiredAt":null,"reason":null,"replacement":null},
+        "takedown": {"status":"none","requestedAt":null,"reference":null}
+      }
+    },
+    {
+      "slug": "shortest-handoff-path",
+      "version": 1,
+      "status": "active",
+      "title": "Shortest Handoff Path",
+      "difficulty": "Medium",
+      "type": "graph-traversal",
+      "tags": [
+        "graphs",
+        "breadth-first-search"
+      ],
+      "prompt": "Services are numbered from 0 through serviceCount - 1. Each link [a, b] permits a handoff in both directions between two different services. Return the minimum number of links needed to travel from start to target, or -1 when target is unreachable. A service can appear in multiple links and the links may be given in any order.",
+      "constraints": [
+        "1 <= serviceCount <= 5000",
+        "0 <= links.length <= 10000",
+        "Every link contains two distinct service numbers in the valid range",
+        "start and target are valid service numbers"
+      ],
+      "examples": [
+        {
+          "input": [5,[[0,1],[1,2],[0,3],[3,4],[4,2]],0,2],
+          "output": 2,
+          "explanation": "The route 0 to 1 to 2 uses two links, which is shorter than going through 3 and 4."
+        },
+        {
+          "input": [4,[[0,1],[2,3]],0,3],
+          "output": -1,
+          "explanation": "The start and target belong to disconnected components."
+        }
+      ],
+      "languages": {
+        "javascript": {
+          "entrypoint": "shortestHandoffPath",
+          "signature": "function shortestHandoffPath(serviceCount, links, start, target)",
+          "starter": "function shortestHandoffPath(serviceCount, links, start, target) {\n  // Return the minimum number of undirected links, or -1.\n}\n"
+        },
+        "python": {
+          "entrypoint": "shortest_handoff_path",
+          "signature": "def shortest_handoff_path(service_count, links, start, target):",
+          "starter": "def shortest_handoff_path(service_count, links, start, target):\n    # Return the minimum number of undirected links, or -1.\n    pass\n"
+        }
+      },
+      "governance": {
+        "rightsOwner": "Randori Circle project contributors",
+        "provenance": "Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate": "2026-09-18",
+        "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement": {"status":"active","retiredAt":null,"reason":null,"replacement":null},
+        "takedown": {"status":"none","requestedAt":null,"reference":null}
+      }
+    },
+    {
+      "slug": "message-frequency-leaders",
+      "version": 1,
+      "status": "active",
+      "title": "Message Frequency Leaders",
+      "difficulty": "Medium",
+      "type": "hash-map",
+      "tags": [
+        "hash-maps",
+        "sorting"
+      ],
+      "prompt": "A message stream is represented by a list of case-sensitive labels. Count every label and return one object for each label whose count is at least threshold. Each object must contain label and count. Sort the result by count from largest to smallest, then by label in ascending ASCII order for equal counts. Return an empty list when nothing qualifies.",
+      "constraints": [
+        "0 <= labels.length <= 20000",
+        "Each label is a non-empty string of at most 40 lowercase ASCII letters, digits, or hyphens",
+        "1 <= threshold <= 20000",
+        "Labels are compared case-sensitively"
+      ],
+      "examples": [
+        {
+          "input": [["deploy","review","deploy","alert","review","deploy"],2],
+          "output": [{"label":"deploy","count":3},{"label":"review","count":2}],
+          "explanation": "Deploy has the largest count; alert is below the threshold."
+        },
+        {
+          "input": [["beta","alpha","beta","alpha"],2],
+          "output": [{"label":"alpha","count":2},{"label":"beta","count":2}],
+          "explanation": "Equal counts are ordered by label in ascending alphabetical order."
+        }
+      ],
+      "languages": {
+        "javascript": {
+          "entrypoint": "messageFrequencyLeaders",
+          "signature": "function messageFrequencyLeaders(labels, threshold)",
+          "starter": "function messageFrequencyLeaders(labels, threshold) {\n  // Return qualifying { label, count } objects in the required order.\n}\n"
+        },
+        "python": {
+          "entrypoint": "message_frequency_leaders",
+          "signature": "def message_frequency_leaders(labels, threshold):",
+          "starter": "def message_frequency_leaders(labels, threshold):\n    # Return qualifying {\"label\": ..., \"count\": ...} objects.\n    pass\n"
+        }
+      },
+      "governance": {
+        "rightsOwner": "Randori Circle project contributors",
+        "provenance": "Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate": "2026-09-18",
+        "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement": {"status":"active","retiredAt":null,"reason":null,"replacement":null},
+        "takedown": {"status":"none","requestedAt":null,"reference":null}
+      }
+    },
+    {
+      "slug": "recovery-budget-plan",
+      "version": 1,
+      "status": "active",
+      "title": "Recovery Budget Plan",
+      "difficulty": "Medium",
+      "type": "dynamic-programming",
+      "tags": [
+        "dynamic-programming",
+        "optimization"
+      ],
+      "prompt": "A recovery plan must total exactly target minutes. Each available bundle duration is a positive integer and any bundle may be used any number of times. Return the minimum number of bundles whose durations sum exactly to target. Return 0 when target is 0 and return -1 when no exact plan is possible.",
+      "constraints": [
+        "0 <= bundleDurations.length <= 50",
+        "Bundle durations are distinct integers from 1 to 10000",
+        "0 <= target <= 10000",
+        "Each bundle duration may be reused without limit"
+      ],
+      "examples": [
+        {
+          "input": [[6,9,20],18],
+          "output": 2,
+          "explanation": "Two 9-minute bundles reach 18, and one bundle cannot."
+        },
+        {
+          "input": [[4,6],7],
+          "output": -1,
+          "explanation": "No combination of reusable 4- and 6-minute bundles totals 7."
+        }
+      ],
+      "languages": {
+        "javascript": {
+          "entrypoint": "recoveryBudgetPlan",
+          "signature": "function recoveryBudgetPlan(bundleDurations, target)",
+          "starter": "function recoveryBudgetPlan(bundleDurations, target) {\n  // Return the minimum reusable bundle count for the exact target.\n}\n"
+        },
+        "python": {
+          "entrypoint": "recovery_budget_plan",
+          "signature": "def recovery_budget_plan(bundle_durations, target):",
+          "starter": "def recovery_budget_plan(bundle_durations, target):\n    # Return the minimum reusable bundle count for the exact target.\n    pass\n"
+        }
+      },
+      "governance": {
+        "rightsOwner": "Randori Circle project contributors",
+        "provenance": "Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate": "2026-09-18",
+        "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement": {"status":"active","retiredAt":null,"reason":null,"replacement":null},
+        "takedown": {"status":"none","requestedAt":null,"reference":null}
+      }
+    },
+    {
       "slug": "archived-session-streak",
       "version": 1,
       "status": "retired",
