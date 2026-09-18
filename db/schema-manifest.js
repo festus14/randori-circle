@@ -99,9 +99,9 @@ export const SCHEMA_OPERATION_SETS=Object.freeze([
   }),
 ]);
 
-function currentArtifacts(operation){
+export function resolveCurrentArtifacts(operationSets,operation){
   const byName=new Map();
-  SCHEMA_OPERATION_SETS.forEach(plan=>plan.operations
+  operationSets.forEach(plan=>plan.operations
     .filter(item=>item.operation===operation)
     .forEach(item=>byName.set(item.name,item)));
   return Object.freeze([...byName.values()].map(item=>{
@@ -110,8 +110,8 @@ function currentArtifacts(operation){
   }));
 }
 
-export const TABLES=currentArtifacts('ensure-table');
-export const INDEXES=currentArtifacts('ensure-index');
+export const TABLES=resolveCurrentArtifacts(SCHEMA_OPERATION_SETS,'ensure-table');
+export const INDEXES=resolveCurrentArtifacts(SCHEMA_OPERATION_SETS,'ensure-index');
 
 export const TOLERATED_LEGACY_TABLES=Object.freeze(['ai_monthly_usage']);
 

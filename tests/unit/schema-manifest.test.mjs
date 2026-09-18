@@ -7,13 +7,31 @@ import {
   TABLES,
   TOLERATED_LEGACY_TABLES,
   checksum,
+  resolveCurrentArtifacts,
 } from '../../db/schema-manifest.js';
 import { MIGRATION_PLANS, validateMigrationPlans } from '../../db/migration-plan.js';
 import { expectedColumns, parseIndexSql } from '../../db/schema-inspector.js';
 
 test('schema manifest pins all current tables and named indexes',()=>{
-  assert.equal(TABLES.length,28);
-  assert.equal(INDEXES.length,26);
+  assert.deepEqual(TABLES.map(item=>item.name),[
+    'users','auth_accounts','pairing_weeks','pairing_groups','pairing_participants',
+    'pairing_week_runs','pairing_email_outbox','questions','custom_questions','video_signals',
+    'pair_room_snapshots','pair_messages','pair_schedules','session_runs','ai_sessions','ai_feedback',
+    'ai_usage','ai_account_monthly_usage','ai_account_monthly_reservations','ai_consents','app_logs',
+    'user_notification_prefs','auth_rate_limits','circles','circle_memberships','circle_invitations',
+    'circle_audit_events','circle_membership_rollout',
+  ]);
+  assert.deepEqual(INDEXES.map(item=>item.name),[
+    'idx_video_signals_room','idx_video_signals_room_id','idx_pair_messages_pair','idx_pair_sched_pair',
+    'uq_pair_schedules_week_pair','idx_cq_slug','idx_cq_author','idx_runs_user','idx_runs_question',
+    'idx_runs_user_q','idx_runs_pair_activity','idx_messages_pair_activity',
+    'idx_pair_room_snapshots_updated_at','idx_logs_level_created','idx_logs_event_created',
+    'idx_logs_source_created','idx_logs_created','idx_pairing_email_outbox_pending',
+    'idx_pairing_weeks_week_label','uq_auth_accounts_google_sub','uq_circles_active_primary',
+    'idx_circle_memberships_user_active','idx_circle_memberships_circle_active',
+    'idx_circle_invitations_circle_created','idx_circle_invitations_email',
+    'idx_circle_audit_circle_created',
+  ]);
   assert.equal(new Set(TABLES.map(item=>item.name)).size,TABLES.length);
   assert.equal(new Set(INDEXES.map(item=>item.name)).size,INDEXES.length);
   assert.equal(SCHEMA_MANIFEST_CHECKSUM,PINNED_SCHEMA_MANIFEST_CHECKSUM);
@@ -48,18 +66,24 @@ test('baseline owns Google subjects while membership adds their uniqueness index
   assert.equal(TABLES.find(item=>item.name==='auth_accounts').sql,baseAuth.sql);
 });
 
-test('current manifest resolves every artifact from its latest plan operation',()=>{
-  for(const [operation,current] of [['ensure-table',TABLES],['ensure-index',INDEXES]]){
-    const latestByName=new Map();
-    MIGRATION_PLANS.forEach(plan=>plan.operations
-      .filter(item=>item.operation===operation)
-      .forEach(item=>latestByName.set(item.name,item)));
-    const expected=[...latestByName.values()].map(item=>{
-      const {operation:_operation,...definition}=item;
-      return definition;
-    });
-    assert.deepEqual(current,expected);
-  }
+test('current-artifact resolution preserves order and uses the latest pairing-weeks definition',()=>{
+  const original=`CREATE TABLE IF NOT EXISTS pairing_weeks (id INTEGER PRIMARY KEY AUTOINCREMENT, week_label TEXT NOT NULL, week_start TEXT NOT NULL, focus TEXT NOT NULL DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')))`;
+  const replacement=`CREATE TABLE IF NOT EXISTS pairing_weeks (id INTEGER PRIMARY KEY AUTOINCREMENT, week_label TEXT NOT NULL, week_start TEXT NOT NULL, focus TEXT NOT NULL DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')), is_demo INTEGER DEFAULT 0)`;
+  const users=`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT NOT NULL)`;
+  const resolved=resolveCurrentArtifacts([{
+    operations:[
+      {operation:'ensure-table',name:'pairing_weeks',sql:original},
+      {operation:'ensure-table',name:'users',sql:users},
+    ],
+  },{
+    operations:[{operation:'ensure-table',name:'pairing_weeks',sql:replacement}],
+  }],'ensure-table');
+  assert.deepEqual(resolved,[
+    {name:'pairing_weeks',sql:replacement},
+    {name:'users',sql:users},
+  ]);
+  assert.ok(Object.isFrozen(resolved));
+  assert.ok(resolved.every(Object.isFrozen));
 });
 
 test('migration metadata covers every artifact and supports append-only replacements',()=>{

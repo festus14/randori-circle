@@ -171,7 +171,13 @@ test('global assembly checks survive reassignment, shadowing, and conditional va
   writeFileSync(join(api,'scopes.js'),source);
   const result=checkRuntimeDdl(api,[]);
   assert.equal(result.ok,false);
-  assert.ok(result.assemblyViolations.filter(item=>item.code==='dynamic_ddl').length>=3);
+  const dynamicLines=new Set(result.assemblyViolations
+    .filter(item=>item.code==='dynamic_ddl')
+    .map(item=>item.line));
+  const lineOf=needle=>source.slice(0,source.indexOf(needle)).split('\n').length;
+  assert.ok(dynamicLines.has(lineOf("sql = 'CREATE '")),'reassigned binary DDL must be reported');
+  assert.ok(dynamicLines.has(lineOf("const statement = 'DROP'")),'shadowed concat DDL must be reported');
+  assert.ok(dynamicLines.has(lineOf('const conditional =')),'conditional DDL must be reported independently');
 });
 
 test('AST import traversal follows a statically resolved dynamic-import variable',()=>{
