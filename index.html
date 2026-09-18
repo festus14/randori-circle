@@ -5262,6 +5262,12 @@ def allow(key, limit=5):
     try{ return await operation; }
     finally{ if(automaticRouteRequest===operation) automaticRouteRequest=null; }
   }
+  window.addEventListener('popstate',()=>{
+    joinRequestEpoch+=1;
+    joinRequest=null;
+    lastAutomaticRouteKey=null;
+    requestAutomaticRoute({force:true}).catch(()=>{});
+  });
 
   // Wrap existing updateAuthUI to also reroute when authentication or route intent changes.
   const origUpdateAuthUI = typeof window.updateAuthUI === 'function' ? window.updateAuthUI : (typeof updateAuthUI==='function'? updateAuthUI : null);
