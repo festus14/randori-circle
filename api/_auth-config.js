@@ -20,6 +20,7 @@ function canonicalApplicationUrl(value,{requireHttps=false}={}){
   try{ parsed=new URL(raw); }catch{ return null; }
   if(parsed.username||parsed.password||parsed.search||parsed.hash
     ||(parsed.pathname!==''&&parsed.pathname!=='/')) return null;
+  if(raw!==parsed.origin&&raw!==`${parsed.origin}/`) return null;
   const loopback=LOOPBACK_HOSTNAMES.has(parsed.hostname.toLowerCase());
   if(requireHttps){
     if(parsed.protocol!=='https:'||loopback) return null;
