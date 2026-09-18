@@ -79,6 +79,41 @@ npm run --silent db:migrate -- \
   --expected-state <stateFingerprint>
 ```
 
+When a restored production copy has an exact historical schema but no ledger,
+inspect and adopt only that known migration prefix before applying the remaining
+migrations. For example, an exact unmanaged v2 copy can be rehearsed with:
+
+```bash
+npm run --silent db:migrate -- \
+  status --database file:///absolute/path/to/restored-randori.db \
+  --through-version 2
+
+npm run --silent db:migrate -- \
+  adopt --database file:///absolute/path/to/restored-randori.db \
+  --expected-state <v2StateFingerprint> --through-version 2
+
+# Inspect again without a prefix. The result must be managed at v2 with v3
+# pending before using its new full-set fingerprint for the upgrade.
+npm run --silent db:migrate -- \
+  status --database file:///absolute/path/to/restored-randori.db
+
+npm run --silent db:migrate -- \
+  apply --database file:///absolute/path/to/restored-randori.db \
+  --expected-state <managedV2StateFingerprint>
+```
+
+`--through-version` accepts an integer from `1` through the repository's latest
+executable migration and is valid only for `status` and `adopt`. `apply` always
+targets the complete executable migration set and rejects this option, so an
+operator cannot accidentally leave a managed database on a requested partial
+install. Every successful or controlled-refusal result includes both
+`throughVersion` (the exact set inspected or adopted) and `latestVersion` (the
+repository maximum). The selected migration set is part of the state
+fingerprint, so a full-set fingerprint cannot authorize a prefix adoption, or
+vice versa. Within a status result, `ledger.latestVersion` remains the selected
+target (`throughVersion`); use the top-level `latestVersion` to see whether the
+repository contains newer migrations.
+
 `status` is read-only, including for a missing target: it reports a fresh-state fingerprint without creating the file. `apply` accepts only fresh databases or valid managed databases and applies each pending version transactionally with its ledger row. `adopt` accepts only a fully compatible unmanaged database and writes only the ledger; it never repairs or changes application schema or data.
 
 The runner reports three states:
@@ -112,8 +147,8 @@ This is a freeze, not an endorsement. Existing statements remain temporarily for
 ## Operator sequence
 
 1. Create a local copy or restore rehearsal database. Never point the migration runner at a remote URL.
-2. Run local `db:migrate status` and retain its JSON result and fingerprint.
-3. Run `db:migrate apply` for a fresh or managed file, or `db:migrate adopt` only for an exact unmanaged file.
+2. Run local `db:migrate status` and retain its JSON result and fingerprint. For a known historical unmanaged schema, use the reviewed `--through-version` value.
+3. Run `db:migrate apply` for a fresh or managed file, or `db:migrate adopt` only for an exact unmanaged file. A prefix may be adopted, but never partially applied.
 4. Run local `db:migrate status` again, then run the existing `db:status` and `db:plan` inspections against the same rehearsal database.
 5. If exit code `1` or `2` occurs, retain the JSON, do not edit `schema_migrations` by hand, and run `status` again. A failed version is rolled back with its ledger insert; recover from the source backup if external file damage is suspected.
 6. Continue using the authenticated `/api/init` membership rollout documented in `TURSO.md` for production until remote migration is explicitly enabled.

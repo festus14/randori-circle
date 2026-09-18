@@ -11,6 +11,7 @@ import {
 import { basename, dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createClient } from '@libsql/client';
+import { EXECUTABLE_MIGRATIONS, LATEST_MIGRATION_VERSION } from '../db/executable-migrations.js';
 import {
   MigrationError,
   adoptMigrations,
@@ -29,7 +30,7 @@ const CONTROLLED_MIGRATION_ERRORS=new Set([
   'MIGRATION_LEDGER_INVALID',
   'MIGRATION_SCHEMA_INVALID',
 ]);
-const USAGE='Usage: node scripts/db-migrate.mjs <status|apply|adopt> --database <absolute-file-url> [--expected-state <sha256>]';
+const USAGE='Usage: node scripts/db-migrate.mjs <status|apply|adopt> --database <absolute-file-url> [--expected-state <sha256>] [--through-version <positive-integer> (status/adopt only)]';
 
 function cliError(code,message){
   return Object.assign(new Error(message),{code});
@@ -44,7 +45,8 @@ export function parseArguments(argv){
   for(let index=1;index<argv.length;index+=2){
     const flag=argv[index];
     const value=argv[index+1];
-    if(!['--database','--expected-state'].includes(flag)||flags.has(flag)||typeof value!=='string'||!value){
+    if(!['--database','--expected-state','--through-version'].includes(flag)
+      ||flags.has(flag)||typeof value!=='string'||!value){
       throw cliError('DB_MIGRATE_USAGE',USAGE);
     }
     flags.set(flag,value);
@@ -57,7 +59,21 @@ export function parseArguments(argv){
   if(mode!=='status'&&!EXPECTED_STATE.test(expectedStateFingerprint||'')){
     throw cliError('DB_MIGRATE_EXPECTED_STATE','A lowercase 64-character --expected-state is required for apply and adopt.');
   }
-  return {mode,database:flags.get('--database'),expectedStateFingerprint};
+  const rawThroughVersion=flags.get('--through-version');
+  if(mode==='apply'&&rawThroughVersion!==undefined){
+    throw cliError('DB_MIGRATE_USAGE','apply always targets the repository latest migration.');
+  }
+  let throughVersion=LATEST_MIGRATION_VERSION;
+  if(rawThroughVersion!==undefined){
+    if(!/^[1-9][0-9]*$/.test(rawThroughVersion)){
+      throw cliError('DB_MIGRATE_VERSION','through-version must be a positive integer.');
+    }
+    throughVersion=Number(rawThroughVersion);
+    if(!Number.isSafeInteger(throughVersion)||throughVersion>LATEST_MIGRATION_VERSION){
+      throw cliError('DB_MIGRATE_VERSION','through-version is outside the executable migration range.');
+    }
+  }
+  return {mode,database:flags.get('--database'),expectedStateFingerprint,throughVersion};
 }
 
 export function localDatabaseTarget(value){
@@ -168,7 +184,10 @@ function uniqueStrings(values){
   return [...new Set(values.filter(Boolean).map(String))].sort();
 }
 
-export function migrationStatusResult(state,target){
+export function migrationStatusResult(state,target,{
+  throughVersion=state.latestVersion,
+  latestVersion=LATEST_MIGRATION_VERSION,
+}={}){
   const schemaBlockers=(state.schemaStatus?.blockers||[]).map(blocker=>blocker.code);
   const membershipBlockers=state.adoption?.membership?.blockers||[];
   const blockers=state.classification==='fresh' ? []
@@ -184,21 +203,27 @@ export function migrationStatusResult(state,target){
     target:{kind:'local-file',exists:target.exists},
     state:state.classification,
     stateFingerprint:state.stateFingerprint,
+    throughVersion,
+    latestVersion,
     ledger:{
       present:state.ledgerPresent,
       currentVersion:state.currentVersion,
-      latestVersion:state.latestVersion,
+      latestVersion:throughVersion,
     },
     pendingVersions,
     capabilities:{
-      apply:state.classification==='fresh'||(state.classification==='managed'&&state.ready),
+      apply:throughVersion===latestVersion
+        &&(state.classification==='fresh'||(state.classification==='managed'&&state.ready)),
       adopt:state.adoption?.eligible===true,
     },
     blockers:uniqueStrings(blockers),
   };
 }
 
-function mutationResult(mode,stateBefore,result,target){
+function mutationResult(mode,stateBefore,result,target,{
+  throughVersion=result.latestVersion,
+  latestVersion=LATEST_MIGRATION_VERSION,
+}={}){
   const changed=mode==='apply'?(result.applied||[]):(result.adopted||[]);
   return {
     ok:true,
@@ -208,9 +233,10 @@ function mutationResult(mode,stateBefore,result,target){
     result:changed.length===0?'noop':mode==='apply'?'applied':'adopted',
     stateBefore:stateBefore.classification,
     state:'managed',
+    throughVersion,
+    latestVersion,
     fromVersion:result.fromVersion,
     toVersion:result.toVersion,
-    latestVersion:result.latestVersion,
     ...(mode==='apply'
       ?{appliedVersions:changed.map(item=>item.version)}
       :{adoptedVersions:changed.map(item=>item.version)}),
@@ -229,6 +255,10 @@ export function publicCliError(error){
   if(error?.code==='DB_MIGRATE_EXPECTED_STATE'){
     return {ok:false,command:'db:migrate',error:error.code,message:'A valid expected state fingerprint is required.'};
   }
+  if(error?.code==='DB_MIGRATE_VERSION'){
+    return {ok:false,command:'db:migrate',error:error.code,
+      message:`through-version must be an integer from 1 to ${LATEST_MIGRATION_VERSION}.`};
+  }
   if(error?.code==='DB_MIGRATE_TARGET'){
     return {ok:false,command:'db:migrate',error:error.code,message:'A valid persistent local database target is required.'};
   }
@@ -245,6 +275,7 @@ export async function main({
   adopt=adoptMigrations,
 }={}){
   const options=parseArguments(argv);
+  const migrations=EXECUTABLE_MIGRATIONS.slice(0,options.throughVersion);
   const target=localDatabaseTarget(options.database);
   let client=null;
   let targetGuard=null;
@@ -270,10 +301,13 @@ export async function main({
   try{
     client=target.exists?openTargetClient(false):createDatabaseClient({url:'file::memory:'});
     await prepare(client);
-    const stateBefore=await inspect(client);
+    const stateBefore=await inspect(client,{migrations});
     targetGuard?.assertIdentity();
     if(options.mode==='status'){
-      result=migrationStatusResult(stateBefore,target);
+      result=migrationStatusResult(stateBefore,target,{
+        throughVersion:options.throughVersion,
+        latestVersion:LATEST_MIGRATION_VERSION,
+      });
       exitCode=result.ok?0:2;
     }else{
       if(options.mode==='apply'&&!target.exists){
@@ -287,14 +321,25 @@ export async function main({
       }
       targetGuard?.assertIdentity();
       const operation=options.mode==='apply'?apply:adopt;
-      const operationResult=await operation(client,{expectedStateFingerprint:options.expectedStateFingerprint});
+      const operationResult=await operation(client,{
+        expectedStateFingerprint:options.expectedStateFingerprint,
+        migrations,
+      });
       targetGuard?.assertIdentity();
-      result=mutationResult(options.mode,stateBefore,operationResult,target);
+      result=mutationResult(options.mode,stateBefore,operationResult,target,{
+        throughVersion:options.throughVersion,
+        latestVersion:LATEST_MIGRATION_VERSION,
+      });
     }
   }catch(error){
     targetGuard?.assertIdentity();
     if(!controlledMigrationError(error)) throw error;
-    result={command:`db:migrate:${options.mode}`,...publicMigrationError(error)};
+    result={
+      command:`db:migrate:${options.mode}`,
+      throughVersion:options.throughVersion,
+      latestVersion:LATEST_MIGRATION_VERSION,
+      ...publicMigrationError(error),
+    };
     exitCode=2;
   }finally{
     try{ await closeClient(); }

@@ -58,7 +58,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_pair-access.js` | shared source-aware authorization for canonical private pair rooms |
 | `api/_circle-membership.js` | primary-circle membership, keyed invite hashes, signed short-lived claims, and audited acceptance |
 | `api/invitations.js` | owner-only invitation lifecycle and rate-limited public preparation |
-| `db/schema-manifest.js` | checksummed contract for 28 application tables and 26 named indexes |
+| `db/schema-manifest.js` | checksummed contract for 30 application tables and 27 named indexes |
 | `db/schema-inspector.js` | read-only SQLite drift inspection and non-executable planning |
 
 The target Next.js/Supabase architecture is intentionally phased rather than introduced as a big-bang rewrite.
