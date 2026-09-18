@@ -150,6 +150,14 @@ Cleanup re-fetches and verifies the exact restored identity immediately before d
 
 See [Turso backup/restore rehearsal](TURSO_BACKUP_RESTORE_REHEARSAL.md) for environment setup, execution, artifact interpretation, and recovery steps.
 
+## Protected Turso production migration
+
+The manual `turso-production-migration.yml` workflow consumes only a successful, signed rehearsal artifact from the exact current `main` commit. It independently retrieves and verifies the GitHub run and artifact, rechecks the exact base-database identity and protected provider state before minting a short-lived database token, and then exposes `status`, `adopt`, or `apply` through the same transactional migration engine.
+
+Status is read-only. Adopt and apply require both the protected enable variable and the exact state fingerprint returned by a preceding status. Apply refuses more than one pending version, and ambiguous commit failures are never retried. The workflow is serialized with the PITR rehearsal, writes only a redacted audit artifact, and is disabled for mutations by default.
+
+See [Protected Turso production migration](TURSO_PRODUCTION_MIGRATION.md) for environment setup, the initial v2 adoption/v3 apply sequence, failure handling, and rollback boundaries.
+
 ## Runtime DDL debt
 
 Several existing request paths still contain best-effort `CREATE` and `ALTER` statements. `npm run check:runtime-ddl` fingerprints the exact normalized statement set and occurrence counts per API module. CI fails when a statement is added, changed, assembled from string fragments, or removed without an intentional allowlist update.
@@ -164,6 +172,6 @@ This is a freeze, not an endorsement. Existing statements remain temporarily for
 4. Run local `db:migrate status` again, then run the existing `db:status` and `db:plan` inspections against the same rehearsal database.
 5. Configure the protected GitHub environment and execute the manual PITR workflow from current `main`. Retain its sanitized successful artifact in issue #38.
 6. If any rehearsal fails, do not edit `schema_migrations` or delete a database by name. Follow the exact recovery steps in the PITR runbook.
-7. Continue using the authenticated `/api/init` membership rollout documented in `TURSO.md` for production until a separate protected remote migration workflow is explicitly enabled.
+7. Configure the protected migration environment with mutation disabled. Run the exact `status → adopt (if unmanaged) → status → apply → status` sequence in the production migration runbook only after a same-commit real rehearsal succeeds.
 
-Production migration remains blocked until real Turso credentials and a successful protected PITR rehearsal are available. Mocked CI tests do not satisfy that operational gate.
+Production mutation remains blocked by `TURSO_PRODUCTION_MIGRATIONS_ENABLED=false` until real Turso credentials and a successful protected PITR rehearsal are available. Mocked CI tests do not satisfy that operational gate.

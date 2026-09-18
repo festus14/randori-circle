@@ -161,6 +161,10 @@ SELECT google_sub, COUNT(*) FROM auth_accounts
 
 Expect one primary circle, at least one active owner, the intended active member count, one completed-backfill event, `registrations_closed=1`, and no duplicate Google subjects. If verification fails, keep the feature flag off and restore the verified backup. Turning the flag off restores legacy sign-in and roster reads for existing accounts, but intentionally does not reopen registration; reopening the latch is a separate operator decision and must not be used as an automatic rollback.
 
+### Protected schema migration
+
+Do not run the local `db:migrate` command against Turso. Remote status, adoption, and apply operations are available only through the manually dispatched, protected GitHub workflow and remain mutation-disabled by default. A successful signed PITR rehearsal from the exact current `main` commit is mandatory. See [docs/TURSO_PRODUCTION_MIGRATION.md](docs/TURSO_PRODUCTION_MIGRATION.md) for setup and the required `status → adopt (if needed) → status → apply → status` sequence.
+
 ### AI / Groq Router (video-aware)
 
 **Why Groq:** fastest inference, free 14.4k req/day, OpenAI-compatible HTTP, no heavy SDK. Cheap-first routing keeps cost near zero for friends circle.
