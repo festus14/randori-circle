@@ -3811,6 +3811,16 @@ def allow(key, limit=5):
       await showProfileSetup(profile);
       return;
     }
+    // Deep links are user intent. Once authentication/profile checks finish,
+    // keep the requested workspace visible instead of routing back to the
+    // dashboard on the delayed auth refresh.
+    try{
+      const requestedView=new URLSearchParams(window.location.search).get('view');
+      if(['pair','code','board','history'].includes(requestedView)){
+        document.querySelector(`[data-tab="${requestedView}"]`)?.click();
+        return;
+      }
+    }catch{}
     // complete -> dashboard
     // if admin and wants circle? still dashboard default but tabs visible
     // Hide circle from non-admin per task
@@ -4463,7 +4473,7 @@ def allow(key, limit=5):
       const ok = r.total_count? (r.passed_count+'/'+r.total_count) : (r.passed_count+' pass');
       const dt=new Date(r.created_at||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
       const verification=r.authoritative===true?'verified':'legacy / unverified';
-      return `<div class="row" style="justify-content:space-between; padding:6px 0; border-bottom:1px dashed var(--border)"><span><span class="kbd" style="font-size:10px">${escapeHtml((r.question_slug||'custom').slice(0,16))}</span> <span class="kbd" style="font-size:10px">${escapeHtml(r.language||'js')}</span> <span class="small">${escapeHtml(ok)}</span> <span class="kbd" style="font-size:10px">${escapeHtml(verification)}</span></span><span class="small muted" style="font-size:11px">${escapeHtml(dt)}${r.duration_ms? ' • '+escapeHtml(r.duration_ms)+'ms':''}</span></div>`;
+      return `<div class="row" style="justify-content:space-between; padding:6px 0; border-bottom:1px dashed var(--border)"><span><span class="kbd" style="font-size:10px">${escapeHtml(r.question_slug||'custom')}</span> <span class="kbd" style="font-size:10px">${escapeHtml(r.language||'js')}</span> <span class="small">${escapeHtml(ok)}</span> <span class="kbd" style="font-size:10px">${escapeHtml(verification)}</span></span><span class="small muted" style="font-size:11px">${escapeHtml(dt)}${r.duration_ms? ' • '+escapeHtml(r.duration_ms)+'ms':''}</span></div>`;
     }).join('');
   }
   async function refreshRecent(){
