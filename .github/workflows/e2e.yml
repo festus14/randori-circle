@@ -27,6 +27,8 @@ jobs:
         run: npm ci
       - name: Audit production dependencies
         run: npm run audit:prod
+      - name: Validate original exercise catalogue
+        run: npm run validate:catalog
       - name: Check JavaScript syntax
         run: npm run check:syntax
       - name: Run API tests with enforced coverage

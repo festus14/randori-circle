@@ -40,13 +40,14 @@ function invoke({method='GET',url='/api/video/signal',query={},headers={},body={
 
 function workspace(overrides={}){
   return {
-    schema_version:1,
+    schema_version:2,
     base_revision:0,
     client_id:'client_A1',
     client_seq:0,
     language:'javascript',
-    question_id:'two-sum',
-    code:'function twoSum() { return []; }',
+    question_id:'focus-block-rollup',
+    question_version:1,
+    code:'function rollUpFocusBlocks() { return []; }',
     ...overrides,
   };
 }
@@ -112,12 +113,12 @@ test('workspace reads and writes require authentication and exact room membershi
     assert.equal(result.status,400,room_id);
   }
 
-  const unsupportedThirdMember=await invoke({
+  const supportedThirdMember=await invoke({
     url:'/api/video/signal?room_id=week_10_pair_20&channel=workspace',
     query:{room_id:'week_10_pair_20',channel:'workspace'},
     headers:{'x-test-user':'6'},
   });
-  assert.equal(unsupportedThirdMember.status,403);
+  assert.equal(supportedThirdMember.status,200);
 
   const objectRoom=await invoke({
     method:'POST',
@@ -129,7 +130,7 @@ test('workspace reads and writes require authentication and exact room membershi
 
 test('workspace payload validation is strict and byte-based', async()=>{
   const invalidPayloads=[
-    workspace({schema_version:2}),
+    workspace({schema_version:3}),
     workspace({base_revision:-1}),
     workspace({base_revision:Number.MAX_SAFE_INTEGER+1}),
     workspace({client_id:'short'}),
@@ -137,6 +138,8 @@ test('workspace payload validation is strict and byte-based', async()=>{
     workspace({client_seq:-1}),
     workspace({client_seq:1.5}),
     workspace({language:'typescript'}),
+    workspace({question_version:0}),
+    workspace({question_version:1.5}),
     workspace({question_id:'../two-sum'}),
     workspace({question_id:'Two-Sum'}),
     {...workspace(),unexpected:true},
@@ -148,6 +151,14 @@ test('workspace payload validation is strict and byte-based', async()=>{
 
   const malformedJson=await post('{not-json');
   assert.equal(malformedJson.status,400);
+
+  const legacyPayload=workspace({schema_version:1});
+  delete legacyPayload.question_version;
+  const legacy=await post(legacyPayload);
+  assert.equal(legacy.status,200);
+  assert.equal(legacy.body.snapshot.schema_version,1);
+  assert.equal(legacy.body.snapshot.question_version,null);
+  await db.execute(`DELETE FROM pair_room_snapshots`);
 
   const exactLimit=await post(workspace({code:'é'.repeat(10*1024)}));
   assert.equal(exactLimit.status,200);
@@ -167,32 +178,51 @@ test('workspace snapshots use monotonic CAS revisions and idempotent client sequ
   assert.equal(created.body.idempotent,false);
   assert.equal(created.body.snapshot.revision,1);
   assert.equal(created.body.snapshot.updated_by,2);
+  assert.equal(created.body.snapshot.question_version,1);
+  const stored=await db.execute(`SELECT question_id FROM pair_room_snapshots WHERE room_id='week_10_pair_20'`);
+  assert.equal(stored.rows[0].question_id,'focus-block-rollup@1');
 
   const retry=await post(workspace({code:'this changed but must not overwrite the accepted retry'}));
   assert.equal(retry.status,200);
   assert.equal(retry.body.idempotent,true);
-  assert.equal(retry.body.snapshot.code,'function twoSum() { return []; }');
+  assert.equal(retry.body.snapshot.code,'function rollUpFocusBlocks() { return []; }');
+  assert.equal(retry.body.snapshot.question_version,1);
 
   const stale=await post(workspace({client_id:'client_B2',client_seq:0,code:'stale'}));
   assert.equal(stale.status,409);
   assert.equal(stale.body.current.revision,1);
-  assert.equal(stale.body.current.code,'function twoSum() { return []; }');
+  assert.equal(stale.body.current.code,'function rollUpFocusBlocks() { return []; }');
 
   const updated=await post(workspace({
     base_revision:1,
     client_id:'client_B2',
     client_seq:1,
     language:'python',
-    code:'def two_sum():\n    return []',
+    code:'def roll_up_focus_blocks():\n    return []',
   }));
   assert.equal(updated.status,200);
   assert.equal(updated.body.snapshot.revision,2);
   assert.equal(updated.body.snapshot.language,'python');
+  assert.equal(updated.body.snapshot.question_version,1);
+
+  const downgradePayload=workspace({
+    schema_version:1,
+    base_revision:2,
+    client_id:'legacy-client',
+    client_seq:2,
+    code:'legacy overwrite',
+  });
+  delete downgradePayload.question_version;
+  const downgrade=await post(downgradePayload);
+  assert.equal(downgrade.status,409);
+  assert.match(downgrade.body.error,/cannot overwrite/i);
+  assert.equal(downgrade.body.current.revision,2);
+  assert.equal(downgrade.body.current.question_version,1);
 
   const changed=await get(1);
   assert.equal(changed.status,200);
   assert.equal(changed.body.revision,2);
-  assert.equal(changed.body.snapshot.code,'def two_sum():\n    return []');
+  assert.equal(changed.body.snapshot.code,'def roll_up_focus_blocks():\n    return []');
 
   const unchanged=await get(2);
   assert.equal(unchanged.status,200);

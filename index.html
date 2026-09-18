@@ -122,6 +122,7 @@ try{
   --ink-3:#9a9692;
 }
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{height:100%}
 html{scroll-behavior:smooth}
 body{
@@ -814,17 +815,15 @@ p{margin:0}
             <div id="qDesc"></div>
             <div id="qExamples" style="display:grid; gap:8px"></div>
             <div id="qConstraints" class="small muted"></div>
-            <div class="tests"><div class="small muted" style="margin-bottom:4px">Test cases</div><div id="qTests"></div></div>
+            <div class="tests"><div class="small muted" style="margin-bottom:4px">Evaluation</div><div id="qTests"></div></div>
           </div>
         </div>
         <div class="editor-pane">
           <div id="questionPanel" style="padding:8px 10px; border-bottom:1px solid var(--border); display:flex; gap:6px; flex-wrap:wrap; align-items:center; background:var(--card)">
-            <b style="font-size:11px; color:var(--ink-3); text-transform:uppercase; letter-spacing:.04em">Session Questions</b>
-            <button id="qUploadBtn" class="pill">＋ Upload Question</button>
-            <button id="qLeetBtn" class="pill" title="Fetch from LeetCode GraphQL">⎇ LeetCode Import</button>
-            <button id="qHackBtn" class="pill ghost" title="Paste HackerRank/manual">Hackerrank / Paste</button>
-            <span class="small muted" id="qCustomCount" style="margin-left:6px">• custom: loading…</span>
-            <span class="small muted" id="qLeetStatus" style="margin-left:6px"></span>
+            <b style="font-size:11px; color:var(--ink-3); text-transform:uppercase; letter-spacing:.04em">Original Exercise Catalogue</b>
+            <span class="small muted" id="qCustomCount" style="margin-left:6px">• loading…</span>
+            <button id="catalogRetryBtn" class="pill" type="button" hidden>Retry catalogue</button>
+            <span class="small muted" style="margin-left:auto">Examples are public; evaluation cases stay on the server.</span>
           </div>
           <div class="editor-top">
             <div class="row">
@@ -1991,7 +1990,13 @@ def allow(key, limit=5):
   window._randori_builtin_questions=QUESTIONS;
 
   const qSel=document.getElementById('questionSelect');
-  QUESTIONS.forEach(q=>{ const o=document.createElement('option'); o.value=q.id; o.textContent=q.title; qSel.appendChild(o); });
+  if(qSel){
+    const loadingOption=document.createElement('option');
+    loadingOption.value='';
+    loadingOption.textContent='Loading original exercises…';
+    qSel.appendChild(loadingOption);
+    qSel.disabled=true;
+  }
   function renderQuestion(id){
     const q=QUESTIONS.find(x=>x.id===id)||QUESTIONS[0];
     // LeetCode-like polish: colors, pills
@@ -2045,13 +2050,22 @@ def allow(key, limit=5):
     currentRoom=roomId;
     document.getElementById('roomLabel').textContent=`room ${roomId.slice(0,4)}`;
     const codeMap=getCode();
-    const lang=document.getElementById('langSelect').value;
-    const entry=codeMap[roomId]||{lang, qId:qSel.value, codes:{}, timer:25*60};
+    const selectedLang=document.getElementById('langSelect').value;
+    const selectedQuestion=window._randori_questions?.selectedIdentity?.()||{slug:qSel.value,version:null};
+    const entry=codeMap[roomId]||{lang:selectedLang, qId:selectedQuestion.slug, qVersion:selectedQuestion.version, codes:{}, timer:25*60};
+    const lang=['javascript','python'].includes(entry.lang)?entry.lang:selectedLang;
+    document.getElementById('langSelect').value=lang;
     const qId=entry.qId||qSel.value;
-    qSel.value=qId;
-    const q=renderQuestion(qId);
-    const langCode = (entry.codes&&entry.codes[lang]) || (q.starters[lang]||q.starters.javascript);
-    document.getElementById('editor').value=langCode;
+    const hasStoredCode=!!entry.codes&&Object.prototype.hasOwnProperty.call(entry.codes,lang);
+    const storedCode=hasStoredCode?entry.codes[lang]:undefined;
+    if(window._randori_questions?.loadRoomState){
+      window._randori_questions.loadRoomState({questionId:qId,questionVersion:entry.qVersion??entry.question_version,language:lang,code:storedCode,hasStoredCode});
+    }else{
+      // The versioned catalogue owns question rendering. Never seed a catalogue
+      // room from the legacy built-ins while that catalogue is loading.
+      if(qId) qSel.value=qId;
+      document.getElementById('editor').value=hasStoredCode?storedCode:'';
+    }
     timerSec=entry.timerSec ?? 25*60;
     updateTimerLabel();
     document.getElementById('runOut').innerHTML='';
@@ -2064,12 +2078,14 @@ def allow(key, limit=5):
     const map=getCode();
     const lang=document.getElementById('langSelect').value;
     const e=map[currentRoom]||{codes:{}};
-    e.lang=lang; e.qId=qSel.value; e.codes=e.codes||{}; e.codes[lang]=document.getElementById('editor').value; e.timerSec=timerSec;
+    const selectedQuestion=window._randori_questions?.selectedIdentity?.()||{slug:qSel.value,version:null};
+    e.lang=lang; e.qId=selectedQuestion.slug; e.qVersion=selectedQuestion.version; e.codes=e.codes||{}; e.codes[lang]=document.getElementById('editor').value; e.timerSec=timerSec;
     map[currentRoom]=e; saveCode(map);
     window.dispatchEvent(new CustomEvent('randori:workspace-edit',{detail:{roomId:currentRoom}}));
   }
 
   qSel.onchange=async()=>{
+    if(window._randori_questions?.handleQuestionChange?.(qSel.value)) return;
     const q=renderQuestion(qSel.value); const lang=document.getElementById('langSelect').value;
     // e2e auto-confirm: when running under Playwright fake auth, skip modal to keep Run clickable
     const isE2E = (()=>{ try{ return localStorage.getItem('e2e')==='1'; }catch{ return false; } })();
@@ -2085,6 +2101,7 @@ def allow(key, limit=5):
   };
   document.getElementById('langSelect').onchange=()=>{
     const lang=document.getElementById('langSelect').value;
+    if(window._randori_questions?.handleLanguageChange?.(lang)) return;
     const map=getCode(); const entry=map[currentRoom];
     if(entry && entry.codes && entry.codes[lang]){ document.getElementById('editor').value=entry.codes[lang]; }
     else { const q=QUESTIONS.find(x=>x.id===qSel.value); if(q) document.getElementById('editor').value=q.starters[lang]||''; }
@@ -2272,29 +2289,7 @@ def allow(key, limit=5):
           cards.push(`<div class="test"><div class="small">Case ${i+1}: in <span class="kbd">${JSON.stringify(inN).slice(0,120)}</span> → exp <span class="kbd">${JSON.stringify(exN).slice(0,120)}</span></div></div>`);
         });
         if(lang==='python' && /def\s+\w+/.test(code)){
-          cards.push(`<div class="test" style="border-color:var(--accent)"><div class="small">🐍 Python via Piston — attempting… <span id="pistonStatus" class="kbd">running</span></div><div id="pistonOut" class="small muted" style="margin-top:4px">Waiting for <code>https://emkc.org/api/v2/piston/execute</code> (rate-limited).</div></div>`);
-          setTimeout(async()=>{
-            try{
-              let first=_normalizeInput((tcs[0]&& (tcs[0].input||tcs[0].raw))||'');
-              let m=code.match(/def\s+([A-Za-z0-9_]+)\s*\(/);
-              let fnName=m?m[1]:'solve';
-              let exN=_normalizeExpect(tcs[0].expect);
-              let wrapper=`\n${code}\n\nimport json, sys\ntry:\n    inp = ${JSON.stringify(first)}\n    if isinstance(inp, dict) and 'nums' in inp:\n        res = ${fnName}(inp.get('nums'), inp.get('target') or inp.get('t'))\n    elif isinstance(inp, dict) and 'l1' in inp:\n        res = ${fnName}(inp['l1'], inp['l2'])\n    elif isinstance(inp, dict):\n        try:\n            res = ${fnName}(**inp)\n        except:\n            res = ${fnName}(inp)\n    elif isinstance(inp, (list,tuple)):\n        try:\n            res = ${fnName}(*inp)\n        except:\n            res = ${fnName}(inp)\n    else:\n        res = ${fnName}(inp)\n    print("<<RESULT>>"+json.dumps(res))\nexcept Exception as e:\n    print("<<ERROR>>"+str(e), file=sys.stderr)\n    sys.exit(1)\n`;
-              const r=await fetch('https://emkc.org/api/v2/piston/execute',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({language:'python',version:'3.10.0',files:[{name:'main.py',content:wrapper}]})});
-              const j=await r.json();
-              const outEl=document.getElementById('pistonOut');
-              const st=document.getElementById('pistonStatus');
-              if(j.run){
-                const stdout=j.run.stdout||'', stderr=j.run.stderr||'';
-                if(st) st.textContent = j.run.code===0? 'done ✓' : 'error';
-                if(outEl) outEl.innerHTML = `<div>stdout: <span class="kbd">${escapeHtml(stdout.slice(0,400))}</span></div><div>stderr: <span class="kbd">${escapeHtml(stderr.slice(0,200))}</span></div><div class="small muted">expect: ${escapeHtml(JSON.stringify(exN).slice(0,120))}</div>`;
-              } else {
-                if(outEl) outEl.textContent='Piston rate-limited or unavailable.';
-              }
-            }catch(e){
-              const outEl=document.getElementById('pistonOut'); if(outEl) outEl.textContent='Piston fetch failed: '+e.message;
-            }
-          }, 300);
+          cards.push('<div class="test"><div class="small muted">Python execution is available only through the authenticated server runner.</div></div>');
         }
       } else {
         cards.push(`<div class="test"><div class="small muted">No tests — lang ${lang}</div></div>`);
@@ -2304,7 +2299,13 @@ def allow(key, limit=5):
     if(out) out.innerHTML = cards.join('') || '<div class="small muted">no tests</div>';
     try{ window._lastRun = {title, passCount, totalCount, errorCount, lang, at:Date.now()}; }catch{}
   }
-  document.getElementById('runBtn').onclick=runCode;
+  // The catalogue script below replaces this handler with the authenticated
+  // execution gateway. Until then, fail closed instead of running client-owned
+  // cases or calling a runtime provider directly from the browser.
+  document.getElementById('runBtn').onclick=()=>{
+    const out=document.getElementById('runOut');
+    if(out) out.innerHTML='<div class="small muted">Loading the approved server catalogue…</div>';
+  };
 
 
   // timer
@@ -2875,6 +2876,23 @@ def allow(key, limit=5):
     t.onclick=()=>{
       document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active');
       const id=t.getAttribute('data-tab');
+      if(['pair','code','board','history'].includes(id)){
+        try{
+          const url=new URL(window.location.href);
+          url.searchParams.delete('tab');
+          url.searchParams.set('view',id);
+          if(url.hash.includes('code')) url.hash='';
+          window.history.replaceState({},document.title,url.pathname+url.search+url.hash);
+        }catch{}
+      }else{
+        try{
+          const url=new URL(window.location.href);
+          url.searchParams.delete('view');
+          url.searchParams.delete('tab');
+          if(url.hash.includes('code')) url.hash='';
+          window.history.replaceState({},document.title,url.pathname+url.search+url.hash);
+        }catch{}
+      }
       document.querySelectorAll('.view').forEach(v=>v.style.display='none');
       document.getElementById('view-'+id).style.display='block';
       if(id==='board'){ setTimeout(()=>{ resizeCanvas(); renderBoard(); }, 60); }
@@ -2894,8 +2912,14 @@ def allow(key, limit=5):
 
   // ---------- initial render ----------
   renderPeople(); renderPairs(); renderHistory(); renderRoomSelect();
-  // load initial question
-  renderQuestion(QUESTIONS[0].id);
+  // The server catalogue is the source of truth. Avoid presenting legacy
+  // built-ins while the public exercise projection is loading.
+  document.getElementById('qTitle').textContent='Loading original exercises…';
+  document.getElementById('qDiff').textContent='';
+  document.getElementById('qDesc').innerHTML='<div class="small muted">Fetching the approved catalogue…</div>';
+  document.getElementById('qExamples').innerHTML='';
+  document.getElementById('qConstraints').textContent='';
+  document.getElementById('qTests').innerHTML='<div class="small muted">Evaluation cases remain private on the server.</div>';
 
   // ---------- AI Recording + Groq Feedback (video-aware, evidence-enforced) ----------
   let aiRecording = false;
@@ -3282,6 +3306,16 @@ def allow(key, limit=5):
   const viewProfile=document.getElementById('view-profile-setup');
   const viewDashboard=document.getElementById('view-dashboard');
   const viewCircle=document.getElementById('view-circle');
+
+  function clearRequestedView(){
+    try{
+      const url=new URL(window.location.href);
+      url.searchParams.delete('view');
+      url.searchParams.delete('tab');
+      if(url.hash.includes('code')) url.hash='';
+      window.history.replaceState({},document.title,url.pathname+url.search+url.hash);
+    }catch{}
+  }
 
   function hideAllViews(){
     document.querySelectorAll('.view').forEach(v=>v.style.display='none');
@@ -3805,6 +3839,17 @@ def allow(key, limit=5):
       await showProfileSetup(profile);
       return;
     }
+    // Deep links are user intent. Once authentication/profile checks finish,
+    // keep the requested workspace visible instead of routing back to the
+    // dashboard on the delayed auth refresh.
+    try{
+      const params=new URLSearchParams(window.location.search);
+      const requestedView=params.get('view')||params.get('tab')||(window.location.hash.includes('code')?'code':null);
+      if(['pair','code','board','history'].includes(requestedView)){
+        document.querySelector(`[data-tab="${requestedView}"]`)?.click();
+        return;
+      }
+    }catch{}
     // complete -> dashboard
     // if admin and wants circle? still dashboard default but tabs visible
     // Hide circle from non-admin per task
@@ -3831,11 +3876,11 @@ def allow(key, limit=5):
   try{ updateAuthUI = wrappedUpdateAuthUI; }catch{ window.updateAuthUI = wrappedUpdateAuthUI; }
 
   // Initial routing after page load
-  document.getElementById('homeBtn')?.addEventListener('click', ()=>{ try{ (window._randori_journey&&window._randori_journey.routeByAuth?window._randori_journey.routeByAuth():routeByAuth()); }catch{} window.scrollTo({top:0,behavior:'smooth'}); });
-    document.querySelector('.brand')?.addEventListener('click', (e)=>{ if(e.target.closest('button')) return; try{ (window._randori_journey&&window._randori_journey.routeByAuth?window._randori_journey.routeByAuth():routeByAuth()); }catch{} window.scrollTo({top:0,behavior:'smooth'}); });
+  document.getElementById('homeBtn')?.addEventListener('click', ()=>{ clearRequestedView(); try{ (window._randori_journey&&window._randori_journey.routeByAuth?window._randori_journey.routeByAuth():routeByAuth()); }catch{} window.scrollTo({top:0,behavior:'smooth'}); });
+    document.querySelector('.brand')?.addEventListener('click', (e)=>{ if(e.target.closest('button')) return; clearRequestedView(); try{ (window._randori_journey&&window._randori_journey.routeByAuth?window._randori_journey.routeByAuth():routeByAuth()); }catch{} window.scrollTo({top:0,behavior:'smooth'}); });
     try{ document.querySelector('.brand').style.cursor='pointer'; }catch{}
     setTimeout(()=>{ routeByAuth(); }, 500);
-  document.getElementById('homeBtn')?.addEventListener('click', ()=>{ try{ if(window._randori_journey && window._randori_journey.routeByAuth) window._randori_journey.routeByAuth(); else if(typeof routeByAuth==='function') routeByAuth(); }catch{} window.scrollTo({top:0,behavior:'smooth'}); });
+  document.getElementById('homeBtn')?.addEventListener('click', ()=>{ clearRequestedView(); try{ if(window._randori_journey && window._randori_journey.routeByAuth) window._randori_journey.routeByAuth(); else if(typeof routeByAuth==='function') routeByAuth(); }catch{} window.scrollTo({top:0,behavior:'smooth'}); });
   document.addEventListener('DOMContentLoaded', ()=>{ setTimeout(routeByAuth, 300); });
 
   // Dash profile edit button
@@ -3861,7 +3906,7 @@ def allow(key, limit=5):
 </script>
 
 <script>
-// --- Question Panel: Upload + LeetCode Import + Run Upgrade + Deterministic Room Helper ---
+// --- Original catalogue + authoritative runner + deterministic room helper ---
 (function(){
   const ME_KEY='randori-me';
 
@@ -3869,68 +3914,242 @@ def allow(key, limit=5):
 
   // Custom questions store (in-memory + QUESTIONS static merge)
   let CUSTOM_QUESTIONS=[];
+  let catalogueFetchState='idle';
+  let catalogueFailureCount=0;
+  let catalogueRetryTimer=null;
+  let activeQuestionSlug='';
+  let activeQuestionVersion=null;
+  let activeLanguage=document.getElementById('langSelect')?.value||'javascript';
+  const sessionDrafts=new Map();
+  const MAX_CATALOGUE_AUTO_RETRIES=2;
+  const CATALOGUE_RETRY_DELAYS=[500,1000];
+  const UNAVAILABLE_VALUE_PREFIX='__randori_unavailable__:';
+
+  function activeRoom(){
+    return window._randori_code?.currentRoom||window.currentRoom||document.getElementById('roomSelect')?.value||'';
+  }
+
+  function draftKey(slug,version,language){
+    return `${activeRoom()||'standalone'}:${slug||'unselected'}@${version||'unversioned'}:${language||'javascript'}`;
+  }
+
+  function currentEditorCode(){
+    try{ return String(window._randori_code?.getCode?.()??document.getElementById('editor')?.value??''); }
+    catch{ return String(document.getElementById('editor')?.value||''); }
+  }
+
+  function setEditorCode(code,language,{notify=true}={}){
+    const value=String(code??'');
+    window._randori_programmatic_editor_updates=(window._randori_programmatic_editor_updates||0)+1;
+    try{
+      try{ window._randori_code?.setCode?.(value,language); }catch{}
+      const textarea=document.getElementById('editor');
+      if(textarea){
+        textarea.value=value;
+        if(notify) textarea.dispatchEvent(new Event('input',{bubbles:true}));
+      }
+    }finally{
+      window._randori_programmatic_editor_updates=Math.max(0,(window._randori_programmatic_editor_updates||1)-1);
+    }
+  }
+
+  function starterFor(question,language){
+    const starterMap=question?.starter_per_lang||{};
+    const languageSpec=question?.languages?.[language]||null;
+    const javascriptSpec=question?.languages?.javascript||null;
+    return (languageSpec&&languageSpec.starter)||starterMap[language]||(javascriptSpec&&javascriptSpec.starter)||starterMap.javascript||'';
+  }
+
+  function positiveVersion(value){
+    const parsed=Number(value);
+    return Number.isInteger(parsed)&&parsed>0?parsed:null;
+  }
+
+  function selectedIdentity(){
+    const sel=document.getElementById('questionSelect');
+    const option=sel?.selectedOptions?.[0];
+    const slug=String(option?.dataset?.workspaceQuestionId||sel?.value||'');
+    const catalogQuestion=CUSTOM_QUESTIONS.find(question=>question.slug===slug);
+    const optionVersion=positiveVersion(option?.dataset?.questionVersion);
+    return {slug,version:optionVersion??(option?.dataset?.workspacePlaceholder==='1'?null:positiveVersion(catalogQuestion?.version))};
+  }
+
+  function storedRoomDraft(question,language){
+    const room=activeRoom();
+    if(!room||!signedIn()) return undefined;
+    try{
+      const map=JSON.parse(localStorage.getItem('randori-code')||'{}');
+      const entry=map[room];
+      if(
+        entry?.qId!==question.slug
+        || positiveVersion(entry.qVersion??entry.question_version)!==positiveVersion(question.version)
+        || !entry.codes
+        || !Object.prototype.hasOwnProperty.call(entry.codes,language)
+      ) return undefined;
+      return String(entry.codes[language]??'');
+    }catch{ return undefined; }
+  }
+
+  function rememberDraft(slug,version,language){
+    if(!slug||!language) return;
+    sessionDrafts.set(draftKey(slug,version,language),currentEditorCode());
+  }
+
+  function preferredDraft(question,language){
+    const key=draftKey(question.slug,question.version,language);
+    if(sessionDrafts.has(key)) return sessionDrafts.get(key);
+    const stored=storedRoomDraft(question,language);
+    if(stored!==undefined) return stored;
+    return starterFor(question,language);
+  }
+
+  function renderUnavailableQuestion(slug,reason='retired or no longer in the approved catalogue',version=null){
+    activeQuestionSlug=String(slug||'');
+    activeQuestionVersion=positiveVersion(version);
+    activeLanguage=document.getElementById('langSelect')?.value||activeLanguage;
+    const title=document.getElementById('qTitle'); if(title) title.textContent='Exercise unavailable';
+    const diff=document.getElementById('qDiff'); if(diff){ diff.textContent='unavailable'; diff.style.display='inline-flex'; }
+    const desc=document.getElementById('qDesc'); if(desc) desc.innerHTML=`<div class="small muted">This workspace references an exercise that is ${escapeHtml(reason)}. Your code is preserved; choose an available exercise to continue.</div>`;
+    const examples=document.getElementById('qExamples'); if(examples) examples.innerHTML='';
+    const constraints=document.getElementById('qConstraints'); if(constraints) constraints.textContent='';
+    const tests=document.getElementById('qTests'); if(tests) tests.innerHTML='<div class="small muted">Unavailable exercises cannot be executed.</div>';
+  }
+
+  function appendUnavailableOption(sel,slug,{unpinned=false,version=null}={}){
+    if(!slug) return null;
+    const value=UNAVAILABLE_VALUE_PREFIX+slug;
+    let option=[...sel.options].find(item=>item.value===value);
+    if(!option){ option=document.createElement('option'); option.value=value; sel.prepend(option); }
+    option.textContent=`${unpinned?'Unpinned':'Unavailable'} workspace exercise · ${slug}${version?` · v${version}`:''}`;
+    option.dataset.workspacePlaceholder='1';
+    option.dataset.workspaceQuestionId=slug;
+    if(version) option.dataset.questionVersion=String(version); else delete option.dataset.questionVersion;
+    return option;
+  }
+
+  function showCatalogueFailure(){
+    const el=document.getElementById('qCustomCount'); if(el) el.textContent='• catalogue unavailable';
+    const retry=document.getElementById('catalogRetryBtn'); if(retry) retry.hidden=false;
+    const sel=document.getElementById('questionSelect');
+    const previous=selectedIdentity();
+    if(sel){
+      sel.innerHTML='';
+      if(previous.slug){ const option=appendUnavailableOption(sel,previous.slug,{unpinned:previous.version==null,version:previous.version}); sel.value=option.value; }
+      else { const option=document.createElement('option'); option.value=''; option.textContent='Catalogue unavailable'; sel.appendChild(option); }
+      sel.disabled=!previous.slug;
+    }
+    if(previous.slug) renderUnavailableQuestion(previous.slug,previous.version==null?'not pinned to a catalogue version':'temporarily unavailable',previous.version);
+    else{
+      const title=document.getElementById('qTitle'); if(title) title.textContent='Catalogue unavailable';
+      const desc=document.getElementById('qDesc'); if(desc) desc.innerHTML='<div class="small muted">Try again shortly or use Retry catalogue. Exercises and evaluation are served from the approved catalogue.</div>';
+    }
+  }
 
   async function fetchCustomQuestions(){
+    if(catalogueFetchState==='loading'||catalogueFetchState==='loaded') return CUSTOM_QUESTIONS;
+    catalogueFetchState='loading';
+    const retry=document.getElementById('catalogRetryBtn'); if(retry) retry.hidden=true;
+    const controller=new AbortController();
+    const timeout=setTimeout(()=>controller.abort(),8000);
     try{ const badge=document.getElementById('qCustomCount'); if(badge){ const already=badge.textContent||''; if(already.includes('loading')||already.includes('…')) badge.innerHTML='<span class="spinner spinner-sm"></span> loading…'; } }catch{}
     try{
-      const r=await fetch('/api/questions', {credentials:'same-origin'});
+      const r=await fetch('/api/questions', {credentials:'same-origin',signal:controller.signal});
       const j=await r.json();
-      if(j.ok && Array.isArray(j.questions)){
+      if(r.ok && j.ok && Array.isArray(j.questions)){
         CUSTOM_QUESTIONS=j.questions;
         mergeIntoSelect();
-        document.getElementById('qCustomCount').innerHTML='<span class="spinner spinner-sm"></span> '+j.questions.length;
-        document.getElementById('qCustomCount').textContent='• custom: '+j.questions.length;
+        catalogueFetchState='loaded';
+        catalogueFailureCount=0;
+        if(catalogueRetryTimer){ clearTimeout(catalogueRetryTimer); catalogueRetryTimer=null; }
+        document.getElementById('qCustomCount').textContent='• '+j.questions.length+' original exercise'+(j.questions.length===1?'':'s');
         return j.questions;
       }
-    }catch(e){ console.warn('custom fetch fail',e); }
-    const el=document.getElementById('qCustomCount'); if(el) el.textContent='• custom: 0 (offline)';
+      if(r.status!==408&&r.status!==429&&r.status<500) throw Object.assign(new Error(j.error||'catalogue unavailable'),{retryable:false});
+    }catch(e){
+      console.warn('custom fetch fail',e);
+      if(e?.retryable===false) catalogueFailureCount=MAX_CATALOGUE_AUTO_RETRIES;
+    }finally{
+      clearTimeout(timeout);
+    }
+    catalogueFetchState='failed';
+    showCatalogueFailure();
+    if(catalogueFailureCount<MAX_CATALOGUE_AUTO_RETRIES){
+      const delay=CATALOGUE_RETRY_DELAYS[catalogueFailureCount]||CATALOGUE_RETRY_DELAYS.at(-1);
+      catalogueFailureCount+=1;
+      catalogueRetryTimer=setTimeout(()=>{ catalogueRetryTimer=null; fetchCustomQuestions(); },delay);
+    }
     return [];
   }
 
   function mergeIntoSelect(){
     const sel=document.getElementById('questionSelect');
     if(!sel) return;
-    // keep built-ins but add custom opts if missing
-    const existingVals=new Set([...sel.options].map(o=>o.value));
+    const previous=selectedIdentity();
+    let remembered='';
+    try{ remembered=localStorage.getItem('randori-last-question')||''; }catch{}
+    sel.innerHTML='';
     CUSTOM_QUESTIONS.forEach(q=>{
-      const existing=[...sel.options].find(option=>option.value===q.slug);
-      if(!existing){
-        const o=document.createElement('option'); o.value=q.slug; o.textContent='✦ '+q.title; o.dataset.custom='1'; sel.appendChild(o);
-      }else if(existing.dataset.workspacePlaceholder==='1'){
-        existing.textContent='✦ '+q.title;
-        existing.dataset.custom='1';
-        delete existing.dataset.workspacePlaceholder;
-        if(sel.value===q.slug) renderCustomQuestion(q.slug);
-      }
+      const o=document.createElement('option');
+      o.value=q.slug;
+      o.textContent=q.title+(q.version!=null?' · v'+q.version:'');
+      o.dataset.custom='1';
+      o.dataset.questionVersion=String(q.version);
+      sel.appendChild(o);
     });
-    // also ensure QUESTIONS global gets custom entries if window-visible? We will handle in renderQuestion patch
+    const preferred=previous.slug||remembered||'';
+    const preferredVersion=previous.slug?previous.version:null;
+    const selectedQuestion=CUSTOM_QUESTIONS.find(q=>q.slug===preferred&&(!preferredVersion||q.version===preferredVersion))||null;
+    const preservePlaceholder=!!preferred&&(!selectedQuestion||preferredVersion==null&&previous.slug);
+    const placeholder=preservePlaceholder?appendUnavailableOption(sel,preferred,{unpinned:preferredVersion==null,version:preferredVersion}):null;
+    if(!CUSTOM_QUESTIONS.length){
+      if(!preferred){ const o=document.createElement('option'); o.value=''; o.textContent='No exercises available'; sel.appendChild(o); }
+      sel.value=placeholder?.value||'';
+      sel.disabled=!preferred;
+      if(preferred) renderUnavailableQuestion(preferred,preferredVersion==null?'not pinned to a catalogue version':'retired or no longer in the approved catalogue',preferredVersion);
+      return;
+    }
+    sel.disabled=false;
+    sel.value=placeholder?.value||preferred||CUSTOM_QUESTIONS[0].slug;
+    if(placeholder){
+      renderUnavailableQuestion(preferred,preferredVersion==null?'not pinned to a catalogue version':'retired or no longer in the approved catalogue',preferredVersion);
+    }else if(selectedQuestion){
+      activeQuestionSlug=selectedQuestion.slug;
+      renderCustomQuestion(selectedQuestion.slug,'if-empty');
+    }else if(preferred){
+      renderUnavailableQuestion(preferred);
+    }else{
+      activeQuestionSlug=CUSTOM_QUESTIONS[0].slug;
+      renderCustomQuestion(activeQuestionSlug,'if-empty');
+    }
+    window.dispatchEvent(new CustomEvent('randori:workspace-edit',{detail:{roomId:activeRoom()}}));
   }
 
-  // Patch QUESTIONS array getter — we don't have direct reference, but we can hook renderQuestion
-  const origRenderQuestion = typeof renderQuestion==='function' ? renderQuestion : null;
-  // We will override renderQuestion if exists (hoisted var is function decl). Since this script loads after previous, renderQuestion is in scope of previous IIFE not global. So we need to find QUESTIONS array globally or implement our own.
-
-  // We'll rely on global window state: QUESTIONS defined in previous IIFE is not global, but qSelect onchange uses renderQuestion from closure. For custom, we implement parallel renderer.
-  function renderCustomQuestion(slug){
+  // Render the server's public exercise projection. Hidden cases never enter
+  // this browser state.
+  function renderCustomQuestion(slug, starterMode='if-empty'){
     const q=CUSTOM_QUESTIONS.find(x=>x.slug===slug);
     if(!q) return null;
+    activeQuestionSlug=q.slug;
+    activeQuestionVersion=positiveVersion(q.version);
+    activeLanguage=document.getElementById('langSelect')?.value||activeLanguage;
     const titleEl=document.getElementById('qTitle'); if(titleEl) titleEl.textContent=q.title;
     const diffEl=document.getElementById('qDiff'); if(diffEl) {
       const diffColor = q.difficulty==='Easy'?'#c8f6a0': q.difficulty==='Hard'?'#e8a0b0':'#f2d07a';
       diffEl.textContent='';
       const difficulty=document.createElement('span'); difficulty.style.color=diffColor; difficulty.textContent=String(q.difficulty||'');
       diffEl.appendChild(difficulty);
-      diffEl.appendChild(document.createTextNode(' • custom '+(q.type?'• '+q.type:'')));
+      diffEl.appendChild(document.createTextNode(' • original'+(q.version!=null?' v'+q.version:'')+(q.type?' • '+q.type:'')));
       diffEl.style.display='inline-flex';
     }
     const isSystem = (q.type==='system') || (q.difficulty==='System') || (q.category==='system-design') || (q.slug||'').includes('system') || (q.slug||'').includes('design');
     const descEl=document.getElementById('qDesc'); 
     if(descEl){
       // Question content is untrusted. Render it as escaped text while preserving line breaks.
-      const safeDesc=escapeHtml(String(q.description||'').slice(0,6000)).replace(/\r?\n/g,'<br/>');
+      const safeDesc=escapeHtml(String(q.prompt||q.description||'').slice(0,6000)).replace(/\r?\n/g,'<br/>');
       let html=`<div style="color:var(--ink-2); line-height:1.7; font-size:13.5px">${safeDesc}</div>`;
       if(q.input_format) html+=`<div class="small muted" style="margin-top:10px"><b>Input:</b> ${escapeHtml(q.input_format)}</div>`;
-      if(q.constraints_text) html+=`<div class="small muted" style="margin-top:6px"><b>Constraints:</b> ${escapeHtml(q.constraints_text)}</div>`;
+      const constraintText=Array.isArray(q.constraints)?q.constraints.join('\n'):(q.constraints||q.constraints_text||'');
+      if(constraintText) html+=`<div class="small muted" style="margin-top:6px; white-space:pre-wrap"><b>Constraints:</b> ${escapeHtml(constraintText)}</div>`;
       if(q.tags||q.topicTags){
         const tags = q.tags|| (q.topicTags||[]).map((t)=>t.name||t.slug);
         if(tags && tags.length) html+=`<div class="row" style="margin-top:8px; flex-wrap:wrap; gap:6px">${tags.slice(0,6).map((tg)=>`<span class="kbd" style="font-size:11px">${escapeHtml(tg)}</span>`).join('')}</div>`;
@@ -3951,30 +4170,26 @@ def allow(key, limit=5):
         if(exs && exs.length){
           exEl.innerHTML=exs.slice(0,3).map((e,i)=>{
             if(typeof e==='string') return `<div class="test"><div class="small"><b>Example ${i+1}:</b> ${escapeHtml(e.slice(0,300))}</div></div>`;
-            if(e && e.input!==undefined) return `<div class="test"><div class="small"><b>Example ${i+1}:</b> Input: <span class="kbd">${escapeHtml(JSON.stringify(e.input).slice(0,140))}</span> → <span class="kbd">${escapeHtml(JSON.stringify(e.output||e.expect||'').slice(0,120))}</span></div>${e.explanation? `<div class="small muted">${escapeHtml(e.explanation.slice(0,200))}</div>`:''}</div>`;
+            if(e && e.input!==undefined) return `<div class="test"><div class="small"><b>Example ${i+1}:</b> Input: <span class="kbd">${escapeHtml(JSON.stringify(e.input).slice(0,140))}</span> → <span class="kbd">${escapeHtml(JSON.stringify(e.output??e.expect??'').slice(0,120))}</span></div>${e.explanation? `<div class="small muted">${escapeHtml(e.explanation.slice(0,200))}</div>`:''}</div>`;
             return `<div class="test"><div class="small"><b>Example ${i+1}:</b> ${escapeHtml(JSON.stringify(e).slice(0,200))}</div></div>`;
           }).join('');
         } else {
-          // infer from test_cases
-          const tcs=q.test_cases||[];
-          exEl.innerHTML=tcs.slice(0,2).map((t,j)=>`<div class="test"><div class="small"><b>Example ${j+1}:</b> in <span class="kbd">${escapeHtml(JSON.stringify(t.input).slice(0,120))}</span> → <span class="kbd">${escapeHtml(JSON.stringify(t.expect).slice(0,120))}</span></div></div>`).join('')||`<div class="small muted">No examples — see tests below</div>`;
+          exEl.innerHTML='<div class="small muted">No public examples for this exercise.</div>';
         }
       }
     }
-    const consEl=document.getElementById('qConstraints'); if(consEl) consEl.textContent=isSystem?'Discuss latency, throughput, consistency': (q.constraints_text||'');
+    const consEl=document.getElementById('qConstraints'); if(consEl) consEl.textContent=isSystem?'Discuss latency, throughput, consistency': (Array.isArray(q.constraints)?q.constraints.join('\n'):(q.constraints||q.constraints_text||''));
     const testsEl=document.getElementById('qTests'); if(testsEl){
       if(isSystem){
         testsEl.innerHTML=`<div class="small muted" style="padding:8px; border:1px dashed var(--border); border-radius:8px">System design — no auto tests. Use Run to save notes + whiteboard snapshot.</div>`;
       } else {
-        const tcs=q.test_cases||[];
-        testsEl.innerHTML=tcs.map((t,i)=>`<div class="test"><div class="small">Case ${i+1}: <span class="kbd">${escapeHtml(JSON.stringify(t.input).slice(0,120))}</span> → <span class="small">${escapeHtml(JSON.stringify(t.expect).slice(0,120))}</span></div></div>`).join('')||'<div class="small muted">no tests</div>';
+        testsEl.innerHTML='<div class="small muted" style="padding:8px; border:1px dashed var(--border); border-radius:8px">Fresh server-generated cases run when you submit. Only authoritative pass/fail results are shown.</div>';
       }
     }
-    // LeetCode model: load starter into editor if empty or user agrees
+    // Load the public starter without relying on server-owned evaluation data.
     try{
       const lang=document.getElementById('langSelect')?.value||'javascript';
-      const starterMap=q.starter_per_lang||{};
-      let starter=starterMap[lang]||starterMap['javascript']||'';
+      let starter=starterFor(q,lang);
       if(!starter && !isSystem){
         // generate minimal starter from slug
         const proposedFnName = String(q.slug||'solve').replace(/-./g,(x)=> x[1].toUpperCase());
@@ -3984,28 +4199,93 @@ def allow(key, limit=5):
         starter = lang==='javascript' ? `function ${fnName}(){\n  // ${safeTitle}\n}` : lang==='python' ? `def ${pyName}():\n    # ${safeTitle}\n    pass` : `// ${safeTitle}\n// starter for ${lang}`;
       }
       if(isSystem) starter = `// System Design: ${q.title}\n// Notes:\n// 1. Requirements (functional / non-functional)\n// 2. Estimation\n// 3. High-level design\n// 4. Deep dives\n// 5. Trade-offs, monitoring\n`;
-      const ed=document.getElementById('editor')|null;
-      const monEd=window.monacoEditor;
-      const curCode = monEd? monEd.getValue() : (ed? ed.value : '');
-      if(ed && (!curCode.trim() || confirm(`Load starter for ${q.title} (${lang})?`))){
-        if(monEd){ monEd.setValue(starter||`// ${q.title}\nfunction solve(){\n  // implement\n}`); } else { ed.value=starter||`// ${q.title}\nfunction solve(){\n  // implement\n}`; ed.dispatchEvent(new Event('input',{bubbles:true})); }
+      const curCode=currentEditorCode();
+      const shouldLoad=starterMode==='force'||(starterMode==='if-empty'&&!curCode.trim());
+      if(shouldLoad){
+        setEditorCode(starter||`// ${q.title}\nfunction solve(){\n  // implement\n}`,lang);
       }
     }catch{}
     return q;
   }
 
-  // Hook questionSelect change for custom handling
   const qSel=document.getElementById('questionSelect');
-  if(qSel){
-    const baseOnChange=qSel.onchange;
-    qSel.addEventListener('change', (e)=>{
-      const v=qSel.value;
-      const isCustom=CUSTOM_QUESTIONS.some(c=>c.slug===v);
-      if(isCustom){
-        e.stopImmediatePropagation?.();
-        renderCustomQuestion(v);
+
+  function handleQuestionChange(slug){
+    if(catalogueFetchState!=='loaded') return false;
+    window._randori_workspace?.markHydrationEdit?.();
+    rememberDraft(activeQuestionSlug,activeQuestionVersion,activeLanguage);
+    const selected=selectedIdentity();
+    if(selected.version==null){ renderUnavailableQuestion(selected.slug,'not pinned to a catalogue version',null); return true; }
+    const question=CUSTOM_QUESTIONS.find(item=>item.slug===selected.slug&&item.version===selected.version);
+    if(!question){ renderUnavailableQuestion(selected.slug,'retired or no longer in the approved catalogue',selected.version); return true; }
+    activeQuestionSlug=question.slug;
+    const code=preferredDraft(question,activeLanguage);
+    renderCustomQuestion(question.slug,'never');
+    setEditorCode(code,activeLanguage);
+    return true;
+  }
+
+  function handleLanguageChange(language){
+    if(catalogueFetchState!=='loaded') return false;
+    window._randori_workspace?.markHydrationEdit?.();
+    rememberDraft(activeQuestionSlug,activeQuestionVersion,activeLanguage);
+    activeLanguage=language;
+    const selected=selectedIdentity();
+    const question=selected.version==null?null:CUSTOM_QUESTIONS.find(item=>item.slug===selected.slug&&item.version===selected.version);
+    if(!question) return true;
+    const code=preferredDraft(question,language);
+    renderCustomQuestion(question.slug,'never');
+    setEditorCode(code,language);
+    return true;
+  }
+
+  function loadRoomState({questionId,questionVersion,language,code,hasStoredCode=false}={}){
+    activeLanguage=language||activeLanguage;
+    const languageSelect=document.getElementById('langSelect'); if(languageSelect) languageSelect.value=activeLanguage;
+    const desired=String(questionId||qSel?.value||'');
+    const desiredVersion=positiveVersion(questionVersion);
+    activeQuestionSlug=desired;
+    activeQuestionVersion=desiredVersion;
+    if(catalogueFetchState==='loaded'){
+      const question=desiredVersion==null?null:CUSTOM_QUESTIONS.find(item=>item.slug===desired&&item.version===desiredVersion);
+      if(question){
+        if(qSel) qSel.value=desired;
+        renderCustomQuestion(desired,'never');
+        setEditorCode(hasStoredCode?code:preferredDraft(question,activeLanguage),activeLanguage,{notify:false});
+      }else if(desired){
+        if(qSel){ const option=appendUnavailableOption(qSel,desired,{unpinned:desiredVersion==null,version:desiredVersion}); qSel.value=option.value; }
+        renderUnavailableQuestion(desired,desiredVersion==null?'not pinned to a catalogue version':'retired or no longer in the approved catalogue',desiredVersion);
+        if(hasStoredCode) setEditorCode(code,activeLanguage,{notify:false});
+      }else if(CUSTOM_QUESTIONS[0]){
+        const first=CUSTOM_QUESTIONS[0];
+        activeQuestionSlug=first.slug;
+        if(qSel) qSel.value=first.slug;
+        renderCustomQuestion(first.slug,'never');
+        setEditorCode(preferredDraft(first,activeLanguage),activeLanguage,{notify:false});
       }
-    }, true);
+    }else{
+      if(desired&&qSel){ const option=appendUnavailableOption(qSel,desired,{unpinned:desiredVersion==null,version:desiredVersion}); qSel.value=option.value; }
+      if(hasStoredCode) setEditorCode(code,activeLanguage,{notify:false});
+    }
+  }
+
+  function selectWorkspaceQuestion(questionId,questionVersion){
+    const slug=String(questionId||'');
+    const version=positiveVersion(questionVersion);
+    activeQuestionSlug=slug;
+    activeQuestionVersion=version;
+    const question=version==null?null:CUSTOM_QUESTIONS.find(item=>item.slug===slug&&item.version===version);
+    if(question){
+      if(qSel) qSel.value=slug;
+      renderCustomQuestion(slug,'never');
+      return true;
+    }
+    if(slug&&qSel){
+      const option=appendUnavailableOption(qSel,slug,{unpinned:version==null,version});
+      qSel.value=option.value;
+    }
+    renderUnavailableQuestion(slug,version==null?'not pinned to a catalogue version':'retired or no longer in the approved catalogue',version);
+    return false;
   }
 
   // Upload modal logic
@@ -4114,7 +4394,7 @@ def allow(key, limit=5):
     if(window.toast) window.toast('Paste HackerRank / manual question — Starter & tests needed');
   });
 
-  // Run tests upgrade — wrap existing runCode
+  // Server-authoritative exercise runner.
   const runBtn=document.getElementById('runBtn');
   const editor=document.getElementById('editor');
   const runOut=document.getElementById('runOut');
@@ -4126,151 +4406,23 @@ def allow(key, limit=5):
     try{ if(window._randori_code && typeof window._randori_code.getCode==='function') return window._randori_code.getCode(); }catch{}
     return editor?.value||'';
   }
-  function _u_unwrap(v){
-    let cur=v;
-    for(let i=0;i<4;i++){
-      if(typeof cur!=='string') break;
-      let tt=cur.trim();
-      if(!tt) break;
-      if((tt.startsWith('{')&&tt.endsWith('}'))||(tt.startsWith('[')&&tt.endsWith(']'))||(tt.startsWith('"')&&tt.endsWith('"'))||tt==='true'||tt==='false'||tt==='null'||(!isNaN(Number(tt))&&tt.length<32)){
-        try{ cur=JSON.parse(tt); continue; }catch{ break; }
-      } else break;
-    }
-    return cur;
-  }
-  function _u_normIn(raw){ return _u_unwrap(raw); }
-  function _u_normEx(raw){
-    let v=_u_unwrap(raw);
-    if(typeof v==='string'){
-      if(v==='true') return true;
-      if(v==='false') return false;
-      if(v==='null') return null;
-      if(!isNaN(Number(v)) && v.trim()!=='') return Number(v);
-    }
-    return v;
-  }
-  function _u_deepEq(a,b){
-    try{
-      if(a===b) return true;
-      if(typeof a!==typeof b){
-        if((a===true&&b==='true')||(a==='true'&&b===true)||(a===false&&b==='false')||(a==='false'&&b===false)) return true;
-        if(typeof a==='number'&&typeof b==='string'&&!isNaN(Number(b))&&Number(b)===a) return true;
-        if(typeof b==='number'&&typeof a==='string'&&!isNaN(Number(a))&&Number(a)===b) return true;
-      }
-      if(Array.isArray(a)&&Array.isArray(b)){
-        if(a.length!==b.length){ if(a.length===2&&b.length===2){ let sa=[...a].sort(), sb=[...b].sort(); return JSON.stringify(sa)===JSON.stringify(sb);} return false; }
-        for(let i=0;i<a.length;i++) if(!_u_deepEq(a[i],b[i])) return false;
-        return true;
-      }
-      if(Array.isArray(a)!==Array.isArray(b)) return false;
-      if(typeof a==='object'&&typeof b==='object'&&a!==null&&b!==null){
-        let ka=Object.keys(a), kb=Object.keys(b);
-        if(ka.length!==kb.length) return false;
-        for(let k of ka) if(!_u_deepEq(a[k],b[k])) return false;
-        return true;
-      }
-      return JSON.stringify(a)===JSON.stringify(b);
-    }catch{ return String(a)===String(b); }
-  }
-  function _u_extract(code){
-    if(!code) return {fn:null,name:null,all:[]};
-    let names=[], m;
-    let re=/function\s+([A-Za-z0-9_$]+)\s*\(/g; while((m=re.exec(code))!==null) names.push(m[1]);
-    let re2=/(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*(?:async\s*)?(?:\(.*?\)\s*=>|function\b|[A-Za-z0-9_$]+\s*=>|\w+\s*=>)/g;
-    while((m=re2.exec(code))!==null) if(!names.includes(m[1])) names.push(m[1]);
-    let re3=/class\s+([A-Za-z0-9_$]+)/g; while((m=re3.exec(code))!==null) if(!names.includes(m[1])) names.push(m[1]);
-    return {fn:null,name:names[0]||null,all:names};
-  }
-  function _u_buildArgs(fn,inputNorm){
-    if(inputNorm===undefined) return [];
-    const arity=fn&&typeof fn.length==='number'?fn.length:0;
-    if(Array.isArray(inputNorm)){
-      if(arity>=2 && inputNorm.length===arity) return inputNorm;
-      if(arity===1) return [inputNorm];
-      return [inputNorm];
-    }
-    if(inputNorm && typeof inputNorm==='object'){
-      if('nums' in inputNorm){ let tgt=inputNorm.target!==undefined?inputNorm.target:(inputNorm.t!==undefined?inputNorm.t:null); if(tgt!==null) return [inputNorm.nums,tgt]; let vals=Object.values(inputNorm); if(vals.length>=2) return [vals[0],vals[1]]; return [inputNorm.nums]; }
-      if('l1' in inputNorm && 'l2' in inputNorm) return [inputNorm.l1,inputNorm.l2];
-      if('s' in inputNorm && Object.keys(inputNorm).length===1) return [inputNorm.s];
-      let vals=Object.values(inputNorm);
-      if(arity && vals.length===arity) return vals;
-      if(vals.length===1) return [inputNorm];
-      return vals.length? vals : [inputNorm];
-    }
-    return [inputNorm];
-  }
-
-
   async function upgradedRun(){
-    const _upRunStart = Date.now();
     try{
-    const t0 = (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
     const selVal=document.getElementById('questionSelect')?.value||'';
-    const customQ=CUSTOM_QUESTIONS.find(q=>q.slug===selVal)
-      || ((window._randori_builtin_questions||[]).find(q=>q.id===selVal || q.slug===selVal) || null);
+    const customQ=CUSTOM_QUESTIONS.find(q=>q.slug===selVal)||null;
     const lang=document.getElementById('langSelect')?.value||'javascript';
     const code=getEditorCode();
-    let resultsForSave=[], passedCount=0, totalCount=0, durationMs=0;
+    let passedCount=0, totalCount=0;
     const runOutEl=document.getElementById('runOut');
-    const useServer = true;
     if(customQ){
-      const tcs=customQ.test_cases||customQ.tests||[];
-      totalCount = tcs.length;
-      // Helper local JS runner extracted for fallback
-      function _runLocalJSAndRender(){
-        let extracted=_u_extract(code);
-        let fn=extracted.fn, fnName=extracted.name;
-        const cards=[];
-        if(!fn){
-          cards.push('<div class="test" style="border-color:var(--accent-3)"><div class="small">No function found'+(fnName?' — tried '+escapeHtml(fnName):'')+'. Expected <code>function '+escapeHtml(String(customQ.slug||'').replace(/-./g,s=>s[1].toUpperCase()))+'</code> style. Names: <span class="kbd">'+escapeHtml((extracted.all||[]).slice(0,3).join(', ')||'none')+'</span>. Code '+escapeHtml(code.length)+' chars.</div></div>');
-        }
-        let pc=0;
-        let resSave=[];
-        tcs.forEach((tc,i)=>{
-          let entry={ idx:i+1, input:tc.input, expect:tc.expect, got:null, pass:false, error:null };
-          try{
-            let inRaw=tc.input!==undefined?tc.input:tc.raw;
-            let exRaw=tc.expect;
-            let inNorm=_u_normIn(inRaw);
-            let exNorm=_u_normEx(exRaw);
-            entry.input=inNorm; entry.expect=exNorm;
-            if(fn){
-              let args=_u_buildArgs(fn,inNorm);
-              let got=fn.apply(null,args);
-              entry.got=got;
-              let pass=_u_deepEq(got,exNorm);
-              if(tc.expect==null) pass=true;
-              entry.pass=pass;
-              if(pass) pc++;
-              cards.push('<div class="test" style="border-color:'+(pass?'var(--ok)':'var(--accent-3)')+'"><div class="small"><b>Case '+(i+1)+'</b> '+(pass?'✓ pass':'✗ fail')+' — got <span class="kbd">'+escapeHtml(JSON.stringify(got).slice(0,140))+'</span> exp <span class="kbd">'+escapeHtml(JSON.stringify(exNorm).slice(0,140))+'</span><div class="small muted">in: <span class="kbd">'+escapeHtml(JSON.stringify(inNorm).slice(0,140))+'</span> fn <span class="kbd">'+escapeHtml(fnName||'?')+'</span> • executed locally ✓ (fallback)</div></div></div>');
-            } else {
-              cards.push('<div class="test" style="border-color:var(--line)"><div class="small">Case '+(i+1)+': in <span class="kbd">'+escapeHtml(JSON.stringify(_u_normIn(tc.input)).slice(0,100))+'</span> → exp <span class="kbd">'+escapeHtml(JSON.stringify(_u_normEx(tc.expect)).slice(0,100))+'</span><div class="small muted">no function '+escapeHtml(fnName||'found')+' — static check, '+(code.length>20?'code present':'add code')+'</div></div></div>');
-              entry.pass=false; entry.error='no-function';
-            }
-          }catch(err){
-            entry.error=String(err).slice(0,300);
-            cards.push('<div class="test" style="border-color:var(--accent-3)"><div class="small">Case '+(i+1)+' error: '+escapeHtml(String(err).slice(0,180))+'<div class="small muted">in: <span class="kbd">'+escapeHtml(JSON.stringify(_u_normIn(tc.input)).slice(0,100))+'</span></div></div></div>');
-          }
-          resSave.push(entry);
-        });
-        if(totalCount) cards.unshift('<div class="test" style="border-color:'+(pc===totalCount?'var(--ok)':'var(--line)')+'; background:color-mix(in srgb, var(--bg-3) 90%, '+(pc===totalCount?'var(--ok)':'var(--warn)')+' 8%)"><div class="small"><b>Result: '+pc+'/'+totalCount+' passed</b> '+(pc===totalCount?'✓':'✗')+' • lang JS • fn <span class="kbd">'+(fnName||'?')+'</span> • actually executed against '+totalCount+' test_cases ✓ (local fallback)</div></div>');
-        if(runOutEl){ runOutEl.innerHTML=cards.join('')||'<div class="small muted">no tests</div>'; runOutEl.scrollTop=runOutEl.scrollHeight; try{ runOutEl.scrollIntoView({behavior:'smooth', block:'nearest'});}catch{} }
-        try{ durationMs = Math.round(((typeof performance!=='undefined'&&performance.now?performance.now():Date.now())-t0)); }catch{ durationMs=0; }
-        try{ saveSessionRunAsync({ customQ, lang, code, resultsForSave:resSave, passedCount:pc, totalCount, durationMs, tcs }); }catch{}
-        return {pc, resSave};
-      }
-
-      // If user unchecked server OR no network needed, JS can still run local fast
-      const isJS = (lang==='javascript' || lang==='typescript');
       // --- Server path for all languages including JS/TS for parity ---
       const cards=[];
-      if(runOutEl) runOutEl.innerHTML='<div class="small muted"><span class="spinner-sm"></span> Running '+lang+' via Piston — '+totalCount+' cases…</div>';
+      if(runOutEl) runOutEl.innerHTML='<div class="small muted"><span class="spinner-sm"></span> Running '+escapeHtml(lang)+' against server-owned tests…</div>';
       try{ if(window._randori_ui && window._randori_ui.showLoader) window._randori_ui.showLoader('Running '+lang+'…'); }catch{}
       (async()=>{
         try{
           let apiFn = window.api || null;
-          let payload = { language: lang, code, question_slug: customQ.slug||customQ.id, test_cases: tcs };
+          const payload = { language: lang, code, question_slug: customQ.slug||customQ.id, question_version:customQ.version };
           let j;
           if(apiFn){
             j = await apiFn('/api/execute', {method:'POST', body: payload});
@@ -4283,34 +4435,30 @@ def allow(key, limit=5):
           const results = j.results || [];
           const passed = j.passed_count ?? results.filter(r=>r.pass===true).length;
           passedCount = passed;
-          totalCount = j.total_count || tcs.length;
-          try{ durationMs = Math.round(((typeof performance!=='undefined'&&performance.now?performance.now():Date.now())-t0)); }catch{ durationMs=j.piston?0:0; }
+          totalCount = j.total_count ?? results.length;
           const statusColor = passedCount===totalCount ? 'var(--ok)' : (passedCount>0?'var(--warn)':'var(--accent-3)');
-          cards.unshift('<div class="test" style="border-color:'+statusColor+'; background:color-mix(in srgb, var(--bg-3) 90%, '+statusColor+' 8%)"><div class="small"><b>Result: '+escapeHtml(passedCount)+'/'+escapeHtml(totalCount)+' passed</b> '+(passedCount===totalCount?'✓':'✗')+' • lang '+escapeHtml(lang)+' • Piston '+escapeHtml(j.language||lang)+' '+escapeHtml(j.version||'')+' • executed ✓ (server)</div><div class="small muted">piston code '+escapeHtml((j.piston&&j.piston.code!=null)?j.piston.code:'?')+ (j.piston&&j.piston.stderr ? ' • stderr '+escapeHtml(String(j.piston.stderr).slice(0,120)) : '')+'</div></div>');
+          cards.unshift('<div class="test" style="border-color:'+statusColor+'; background:color-mix(in srgb, var(--bg-3) 90%, '+statusColor+' 8%)"><div class="small"><b>Result: '+escapeHtml(passedCount)+'/'+escapeHtml(totalCount)+' passed</b> '+(passedCount===totalCount?'✓':'✗')+' • '+escapeHtml(lang)+' • authoritative server result</div></div>');
           results.forEach((r,i)=>{
             const idx = (r.idx!=null? r.idx+1 : i+1);
-            const got = r.got!==undefined ? r.got : (r.raw||'');
-            const exp = r.expect!==undefined ? r.expect : (tcs[i]?.expect);
             const pass = !!r.pass;
             const err = r.error || r.stderr || '';
-            resultsForSave.push({ idx, input: tcs[i]?.input, expect: exp, got, pass, error: err||null, language: lang, piston: true });
             if(r.note){
               cards.push('<div class="test" style="border-color:var(--line)"><div class="small">Case '+escapeHtml(idx)+': '+escapeHtml(String(r.note).slice(0,300))+'</div></div>');
             }else{
-              cards.push('<div class="test" style="border-color:'+(pass?'var(--ok)':'var(--accent-3)')+'"><div class="small"><b>Case '+escapeHtml(idx)+'</b> '+(pass?'✓ pass':'✗ fail')+' — got <span class="kbd">'+escapeHtml(String(JSON.stringify(got)).slice(0,160))+'</span> exp <span class="kbd">'+escapeHtml(String(JSON.stringify(exp)).slice(0,160))+'</span>'+(err?' <div class="small muted" style="color:var(--accent-3)">'+escapeHtml(String(err).slice(0,200))+'</div>':'')+'<div class="small muted">in: <span class="kbd">'+escapeHtml(String(JSON.stringify(_u_normIn(tcs[i]?.input))).slice(0,140))+'</span> • piston '+escapeHtml(lang)+'</div></div></div>');
+              cards.push('<div class="test" style="border-color:'+(pass?'var(--ok)':'var(--accent-3)')+'"><div class="small"><b>Case '+escapeHtml(idx)+'</b> '+(pass?'✓ pass':'✗ fail')+(err?' <div class="small muted" style="color:var(--accent-3)">'+escapeHtml(String(err).slice(0,200))+'</div>':'')+'<div class="small muted">Evaluated against a fresh server-generated case.</div></div></div>');
             }
           });
           if(results.length===0){
-            cards.push('<div class="test"><div class="small">No structured output — raw: <span class="kbd">'+escapeHtml(String((j.piston&&j.piston.stdout)||'').slice(0,300))+'</span></div><div class="small muted">'+escapeHtml(String((j.piston&&j.piston.stderr)||'').slice(0,300))+'</div></div>');
+            cards.push('<div class="test"><div class="small muted">The server returned no per-case details.</div></div>');
           }
           if(runOutEl){ runOutEl.innerHTML=cards.join(''); runOutEl.scrollTop=runOutEl.scrollHeight; try{ runOutEl.scrollIntoView({behavior:'smooth', block:'nearest'});}catch{} }
-          try{ saveSessionRunAsync({ customQ, lang, code, resultsForSave, passedCount, totalCount, durationMs, tcs }); }catch{}
-          if(window.toast) window.toast('Run '+lang+' '+passedCount+'/'+totalCount+' '+(passedCount===totalCount?'✓':'')+' via Piston (server)');
+          try{ window._randori_runs && window._randori_runs.refresh && window._randori_runs.refresh(); }catch{}
+          if(window.toast) window.toast('Run '+lang+' '+passedCount+'/'+totalCount+' '+(passedCount===totalCount?'✓':'')+' verified by server');
         }catch(e){
           try{ if(window._randori_ui && window._randori_ui.hideLoader) window._randori_ui.hideLoader(); }catch{}
           const msg = (e && (e.error||e.detail||e.message))||String(e).slice(0,300);
-          if(runOutEl){ runOutEl.innerHTML='<div class="test" style="border-color:var(--accent-3)"><div class="small">Piston '+escapeHtml(lang)+' failed: '+escapeHtml(String(msg).slice(0,400))+'<div class="small muted">Check code compiles — Java needs class Main / Python def name matches slug</div></div></div>'; runOutEl.scrollTop=runOutEl.scrollHeight; }
-          if(window.toast) window.toast('Piston '+lang+' error: '+String(msg).slice(0,120));
+          if(runOutEl){ runOutEl.innerHTML='<div class="test" style="border-color:var(--accent-3)"><div class="small">Execution failed: '+escapeHtml(String(msg).slice(0,400))+'<div class="small muted">Check your code and try again.</div></div></div>'; runOutEl.scrollTop=runOutEl.scrollHeight; }
+          if(window.toast) window.toast('Execution error: '+String(msg).slice(0,120));
         }
       })();
       return;
@@ -4327,93 +4475,34 @@ def allow(key, limit=5):
     }
   }
 
-
-
-  async function saveSessionRunAsync({ customQ, lang, code, resultsForSave, passedCount, totalCount, durationMs, tcs }){
-    try{
-      if(!signedIn()){
-        // LeetCode-like: anon local-only save (so recent runs still shows something)
-        try{
-          const key='randori-runs-local';
-          const arr=JSON.parse(localStorage.getItem(key)||'[]');
-          arr.unshift({id:Date.now(), question_slug:customQ?.slug||'custom', language:lang, passed_count:passedCount, total_count:totalCount, duration_ms:durationMs, created_at:new Date().toISOString(), results:resultsForSave.slice(0,5), code:(code||'').slice(0,4000), local:true});
-          if(arr.length>20) arr.length=20;
-          localStorage.setItem(key, JSON.stringify(arr));
-          // merge into recent list UI instantly
-          try{ const el=document.getElementById('recentRunsList'); if(el) { const cur=JSON.parse(localStorage.getItem(key)||'[]'); renderRunsList(cur); } }catch{}
-        }catch{}
-        return;
-      }
-      let week_id=null, pair_group_id=null;
-      try{
-        const mp = window._randori_pair_cache || null;
-        if(mp && mp.week_id) week_id=mp.week_id;
-        if(mp && mp.pair && mp.pair.pg_id) pair_group_id=mp.pair.pg_id;
-      }catch{}
-      if(!week_id){
-        try{ const ls=JSON.parse(localStorage.getItem('randori-last-my-pair')||'null'); if(ls && ls.week_id) week_id=ls.week_id; if(ls && ls.pair) pair_group_id=ls.pair.pg_id||ls.pair_group_id; }catch{}
-      }
-      const payload = {
-        week_id,
-        pair_group_id,
-        question_id: customQ?.id||null,
-        question_slug: customQ?.slug||null,
-        language: lang,
-        code: String(code||'').slice(0,20000),
-        test_cases_snapshot: (tcs||[]).slice(0,10),
-        results: resultsForSave.slice(0,10),
-        passed_count: passedCount,
-        total_count: totalCount,
-        duration_ms: durationMs
-      };
-      let r;
-      if(window.api && typeof window.api==='function'){
-        r = await window.api('/api/runs', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-      }else{
-        const fetchResp = await fetch('/api/runs', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-        r = await fetchResp.json().catch(()=>({ok: fetchResp.ok}));
-        if(!fetchResp.ok) throw r;
-      }
-      if(r && r.ok){
-        if(window.toast) window.toast(`Run saved ✓ ${passedCount}/${totalCount}${durationMs? ' • '+durationMs+'ms':''} • verified execution`);
-        try{ window._randori_runs && window._randori_runs.refresh && window._randori_runs.refresh(); }catch{}
-      }
-    }catch(e){ console.warn('save run failed', e?.error||e?.message||e); }
-  }
-
   if(runBtn){
     runBtn.onclick = upgradedRun;
   }
 
   async function fetchMyRuns(limit=10, slugFilter=null){
+    let localRuns=[];
+    try{ const key='randori-runs-local'; localRuns=JSON.parse(localStorage.getItem(key)||'[]'); }catch{}
+    if(!signedIn()){
+      if(slugFilter) localRuns = localRuns.filter((r)=> (r.question_slug||'').includes(slugFilter));
+      return localRuns.slice(0,limit);
+    }
     try{
-      let localRuns=[];
-      try{ const key='randori-runs-local'; localRuns=JSON.parse(localStorage.getItem(key)||'[]'); }catch{}
-      if(!signedIn()){
-        // anon LeetCode-like local only
-        if(slugFilter) localRuns = localRuns.filter((r)=> (r.question_slug||'').includes(slugFilter));
-        return localRuns.slice(0,limit);
-      }
       const url = '/api/runs?limit='+limit + (slugFilter? '&question_slug='+encodeURIComponent(slugFilter):'');
       const resp=await fetch(url,{credentials:'same-origin'});
       const j=await resp.json();
       if(!resp.ok) throw j;
-      const serverRuns=j.runs||[];
-      // merge local on top for quick feedback if server empty
-      if(!serverRuns.length && localRuns.length) return localRuns.slice(0,limit);
-      return serverRuns;
-    }catch{ 
-      try{ const key='randori-runs-local'; const arr=JSON.parse(localStorage.getItem(key)||'[]'); return arr.slice(0,10); }catch{ return []; } 
-    }
+      return j.runs||[];
+    }catch{ return []; }
   }
   function renderRunsList(runs){
     const el=document.getElementById('recentRunsList');
     if(!el) return;
-    if(!runs.length){ el.innerHTML='<div class="small muted">No runs yet — hit ▶ Run (verified against test_cases)</div>'; return; }
+    if(!runs.length){ el.innerHTML='<div class="small muted">No runs yet — hit ▶ Run for server-verified results.</div>'; return; }
     el.innerHTML=runs.map(r=>{
       const ok = r.total_count? (r.passed_count+'/'+r.total_count) : (r.passed_count+' pass');
       const dt=new Date(r.created_at||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
-      return `<div class="row" style="justify-content:space-between; padding:6px 0; border-bottom:1px dashed var(--border)"><span><span class="kbd" style="font-size:10px">${escapeHtml((r.question_slug||'custom').slice(0,16))}</span> <span class="kbd" style="font-size:10px">${escapeHtml(r.language||'js')}</span> <span class="small">${escapeHtml(ok)}</span></span><span class="small muted" style="font-size:11px">${escapeHtml(dt)}${r.duration_ms? ' • '+escapeHtml(r.duration_ms)+'ms':''}</span></div>`;
+      const verification=r.authoritative===true?'verified':'legacy / unverified';
+      return `<div class="row" style="justify-content:space-between; padding:6px 0; border-bottom:1px dashed var(--border)"><span><span class="kbd" style="font-size:10px">${escapeHtml(r.question_slug||'custom')}</span> <span class="kbd" style="font-size:10px">${escapeHtml(r.language||'js')}</span> <span class="small">${escapeHtml(ok)}</span> <span class="kbd" style="font-size:10px">${escapeHtml(verification)}</span></span><span class="small muted" style="font-size:11px">${escapeHtml(dt)}${r.duration_ms? ' • '+escapeHtml(r.duration_ms)+'ms':''}</span></div>`;
     }).join('');
   }
   async function refreshRecent(){
@@ -4423,13 +4512,34 @@ def allow(key, limit=5):
   window._randori_runs={fetchMyRuns, renderRunsList, refresh:refreshRecent};
 
 
+  document.getElementById('catalogRetryBtn')?.addEventListener('click',()=>{
+    if(catalogueRetryTimer){ clearTimeout(catalogueRetryTimer); catalogueRetryTimer=null; }
+    catalogueFailureCount=0;
+    catalogueFetchState='idle';
+    fetchCustomQuestions();
+  });
+
   // initial load
-  setTimeout(fetchCustomQuestions, 600);
-  document.addEventListener('DOMContentLoaded', ()=> { setTimeout(fetchCustomQuestions, 400); setTimeout(refreshRecent, 1200); if(!window._randori_runs_timer){ window._randori_runs_timer=setInterval(refreshRecent, 30000); } });
+  const startCatalogueLoad=()=>setTimeout(fetchCustomQuestions,400);
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',startCatalogueLoad,{once:true});
+  else startCatalogueLoad();
+  document.addEventListener('DOMContentLoaded', ()=> { setTimeout(refreshRecent, 1200); if(!window._randori_runs_timer){ window._randori_runs_timer=setInterval(refreshRecent, 30000); } });
   setTimeout(refreshRecent, 1500);
 
   // Expose
-  window._randori_questions={ fetchCustomQuestions, get custom(){return CUSTOM_QUESTIONS}, mergeIntoSelect, renderCustomQuestion };
+  window._randori_questions={
+    fetchCustomQuestions,
+    get custom(){return CUSTOM_QUESTIONS},
+    get state(){return catalogueFetchState},
+    mergeIntoSelect,
+    renderCustomQuestion,
+    renderUnavailableQuestion,
+    handleQuestionChange,
+    handleLanguageChange,
+    loadRoomState,
+    selectWorkspaceQuestion,
+    selectedIdentity,
+  };
   try{ window._randori_code = window._randori_code||{}; window._randori_code.getCustomQuestion=(slug)=> CUSTOM_QUESTIONS.find(x=>x.slug===slug||x.id===slug); window._randori_code.customQuestions=CUSTOM_QUESTIONS; }catch{}
 
 })();
@@ -4774,11 +4884,12 @@ def allow(key, limit=5):
       const room = (window._randori_code && window._randori_code.currentRoom) || window.currentRoom || document.getElementById('roomSelect')?.value || localStorage.getItem('randori-last-room') || null;
       if(!room) return;
       const lang=document.getElementById('langSelect')?.value||'javascript';
-      const qId=document.getElementById('questionSelect')?.value||'two-sum';
+      const selectedQuestion=window._randori_questions?.selectedIdentity?.()||{slug:document.getElementById('questionSelect')?.value||'',version:null};
+      const qId=selectedQuestion.slug;
       const code=monacoEditor? monacoEditor.getValue() : (getTA()?.value||'');
       let map={}; try{ map=JSON.parse(localStorage.getItem(CODE_KEY)||'{}'); }catch{ map={}; }
       const e=map[room]||{codes:{}};
-      e.lang=lang; e.qId=qId; e.codes=e.codes||{}; e.codes[lang]=code;
+      e.lang=lang; e.qId=qId; e.qVersion=selectedQuestion.version; e.codes=e.codes||{}; e.codes[lang]=code;
       try{ const tsEl=document.getElementById('timerText'); if(tsEl){ const txt=tsEl.textContent||'25:00'; const parts=txt.split(':'); const sec=(parseInt(parts[0]||'25',10)*60)+(parseInt(parts[1]||'0',10)); e.timerSec=sec; } }catch{}
       map[room]=e;
       localStorage.setItem(CODE_KEY, JSON.stringify(map));
@@ -4883,10 +4994,12 @@ def allow(key, limit=5):
       try{
         const loaderEl=host.querySelector('.monaco-loader'); if(loaderEl) loaderEl.remove();
         const isLight=themeIsLight();
-        const initialValue = ta?.value || '// Randori Circle — live IDE\nfunction twoSum(nums,target){\n  // write\n}';
+        const selectedLanguage=document.getElementById('langSelect')?.value||'javascript';
+        lastLang=selectedLanguage;
+        const initialValue = ta?.value || '';
         monacoEditor = window.monaco.editor.create(host, {
           value: initialValue,
-          language: langMap[lastLang]||'javascript',
+          language: langMap[selectedLanguage]||'plaintext',
           theme: isLight ? 'vs' : 'vs-dark',
           automaticLayout: true,
           minimap: {enabled:false},
@@ -4936,6 +5049,7 @@ def allow(key, limit=5):
 
         // content change -> debounce persist + lint update
         monacoEditor.onDidChangeModelContent(()=>{
+          if(!window._randori_programmatic_editor_updates){ window._randori_workspace?.markHydrationEdit?.(); }
           if(contentDebounce) clearTimeout(contentDebounce);
           contentDebounce=setTimeout(()=>{ syncTextareaToMirror(); persistLikeOld(); updateLintFromMarkers(); }, 700);
         });
@@ -4995,7 +5109,7 @@ def allow(key, limit=5):
               // fallback custom questions cache
               if(!starter && window._randori_code?.getCustomQuestion){
                 const cq = window._randori_code.getCustomQuestion?.(qId);
-                if(cq){ const mp=cq.starter_per_lang||{}; starter=mp[lang]||mp.javascript||''; }
+                if(cq){ const mp=cq.starter_per_lang||{}; starter=cq.languages?.[lang]?.starter||mp[lang]||cq.languages?.javascript?.starter||mp.javascript||''; }
               }
               if(!starter) starter = (monacoEditor? monacoEditor.getValue() : (document.getElementById('editor')?.value||'')).slice(0,1200);
               if(starter){ navigator.clipboard.writeText(starter).then(()=>{ if(window.toast) window.toast('Starter copied ✓'); }).catch(()=>{ prompt('Copy starter', starter); }); }
@@ -5008,7 +5122,7 @@ def allow(key, limit=5):
               const qId=document.getElementById('questionSelect')?.value||null;
               let starter='';
               try{ const qs=QUESTIONS.find(x=>x.id===qId); if(qs) starter=qs.starters?.[lang]||qs.starters?.javascript||''; }catch{}
-              if(!starter && window._randori_code?.getCustomQuestion){ const cq=window._randori_code.getCustomQuestion?.(qId); if(cq){ starter=(cq.starter_per_lang||{})[lang]||''; } }
+              if(!starter && window._randori_code?.getCustomQuestion){ const cq=window._randori_code.getCustomQuestion?.(qId); if(cq){ starter=cq.languages?.[lang]?.starter||(cq.starter_per_lang||{})[lang]||''; } }
               if(!starter) starter='// '+ (qId||'reset');
               if(monacoEditor){ monacoEditor.setValue(starter); try{ if(typeof syncTextareaToMirror==='function') syncTextareaToMirror(); }catch{}; try{ if(typeof persistLikeOld==='function') persistLikeOld(); }catch{}; if(window.toast) window.toast('Reset ✓'); }
               else { const ta=document.getElementById('editor'); if(ta){ ta.value=starter; ta.dispatchEvent(new Event('input',{bubbles:true})); } }
@@ -5018,27 +5132,6 @@ def allow(key, limit=5):
 
         // initial lint
         setTimeout(updateLintFromMarkers, 800);
-
-        // initial load of room code — reuse existing logic that fills textarea (persistRoom/loadRoom) — we already did via textarea sync but ensure first room sync after 600ms
-        setTimeout(()=>{
-          try{
-            // if there is a currentRoom code in storage, load it
-            const room = window._randori_code?.currentRoom || window.currentRoom || document.getElementById('roomSelect')?.value;
-            if(room){
-              let map={}; try{ map=JSON.parse(localStorage.getItem(CODE_KEY)||'{}'); }catch{}
-              const entry=map[room];
-              const curLang=document.getElementById('langSelect')?.value||'javascript';
-              if(entry && entry.codes && entry.codes[curLang]){
-                monacoEditor.setValue(entry.codes[curLang]);
-                syncTextareaToMirror();
-              } else if(entry && entry.codes && Object.keys(entry.codes).length){
-                // fallback first available
-                const first=Object.values(entry.codes)[0];
-                if(first) monacoEditor.setValue(first);
-              }
-            }
-          }catch{}
-        }, 700);
 
         try{ if(typeof window.toast==='function') (typeof window.toast==='function' && window.toast)('Monaco IDE ready — TS lint + Prettier format'); }catch{}
 
@@ -5358,7 +5451,7 @@ def allow(key, limit=5):
 (function(){
   const CODE_KEY='randori-code';
   const clientId=(window.crypto?.randomUUID?.()||('client-'+Math.random().toString(36).slice(2)));
-  const state={room:null,revision:0,hydrated:false,epoch:0,clientSeq:0,lastAckSeq:0,authoritative:null,pending:null,baseline:null,inFlight:null,pollInFlight:null,pollAbort:null,writeAbort:null,applying:false,retryCount:0};
+  const state={room:null,revision:0,hydrated:false,hydrationUserDirty:false,epoch:0,clientSeq:0,lastAckSeq:0,authoritative:null,pending:null,baseline:null,inFlight:null,pollInFlight:null,pollAbort:null,writeAbort:null,applying:false,retryCount:0};
   let saveTimer=null;
   let retryTimer=null;
   let accessEpoch=0;
@@ -5375,20 +5468,23 @@ def allow(key, limit=5):
     catch{ return document.getElementById('editor')?.value||''; }
   }
   function draft(){
+    const selection=window._randori_questions?.selectedIdentity?.()||{slug:String(document.getElementById('questionSelect')?.value||''),version:null};
     return {
       code:String(currentCode()),
       language:String(document.getElementById('langSelect')?.value||'javascript'),
-      question_id:String(document.getElementById('questionSelect')?.value||'two-sum'),
+      question_id:String(selection.slug||''),
+      question_version:Number.isInteger(selection.version)&&selection.version>0?selection.version:null,
     };
   }
-  function same(left,right){ return !!left&&!!right&&left.code===right.code&&left.language===right.language&&left.question_id===right.question_id; }
+  function same(left,right){ return !!left&&!!right&&left.code===right.code&&left.language===right.language&&left.question_id===right.question_id&&left.question_version===right.question_version; }
   function unpack(data){
     const envelope=data?.current||data||{};
     const candidate=envelope.snapshot||data?.snapshot||envelope;
     const snapshot=candidate&&typeof candidate.code==='string'?{
       code:String(candidate.code),
       language:String(candidate.language||'javascript'),
-      question_id:String(candidate.question_id||'two-sum'),
+      question_id:String(candidate.question_id||''),
+      question_version:Number.isInteger(Number(candidate.question_version))&&Number(candidate.question_version)>0?Number(candidate.question_version):null,
       client_id:String(candidate.client_id||''),
       client_seq:Number(candidate.client_seq||0),
     }:null;
@@ -5401,6 +5497,7 @@ def allow(key, limit=5):
       const entry=map[room]||{codes:{}};
       entry.lang=snapshot.language;
       entry.qId=snapshot.question_id;
+      entry.qVersion=snapshot.question_version;
       entry.codes=entry.codes||{};
       entry.codes[snapshot.language]=snapshot.code;
       map[room]=entry;
@@ -5417,19 +5514,7 @@ def allow(key, limit=5):
       const lang=document.getElementById('langSelect'); if(lang) lang.value=snapshot.language;
       const question=document.getElementById('questionSelect');
       if(question){
-        let option=[...question.options].find(item=>item.value===snapshot.question_id);
-        const hadOption=!!option;
-        if(!option){
-          option=document.createElement('option');
-          option.value=snapshot.question_id;
-          option.textContent=snapshot.question_id;
-          option.dataset.workspacePlaceholder='1';
-          question.appendChild(option);
-        }
-        question.value=snapshot.question_id;
-        const custom=window._randori_questions?.custom?.find?.(item=>item.slug===snapshot.question_id||item.id===snapshot.question_id);
-        if(custom) window._randori_questions?.renderCustomQuestion?.(snapshot.question_id);
-        else if(hadOption) window._randori_code?.renderQuestion?.(snapshot.question_id);
+        window._randori_questions?.selectWorkspaceQuestion?.(snapshot.question_id,snapshot.question_version);
       }
       if(window._randori_code?.setCode) window._randori_code.setCode(snapshot.code,snapshot.language);
       const textarea=document.getElementById('editor'); if(textarea) textarea.value=snapshot.code;
@@ -5469,6 +5554,7 @@ def allow(key, limit=5):
     state.room=room;
     state.revision=0;
     state.hydrated=false;
+    state.hydrationUserDirty=false;
     state.authoritative=null;
     state.pending=null;
     state.baseline=draft();
@@ -5477,7 +5563,7 @@ def allow(key, limit=5):
   }
   function deactivate(){
     accessEpoch+=1;
-    state.epoch+=1; state.room=null; state.revision=0; state.hydrated=false; state.authoritative=null; state.pending=null; state.baseline=null; state.retryCount=0;
+    state.epoch+=1; state.room=null; state.revision=0; state.hydrated=false; state.hydrationUserDirty=false; state.authoritative=null; state.pending=null; state.baseline=null; state.retryCount=0;
     if(saveTimer) clearTimeout(saveTimer);
     if(retryTimer){ clearTimeout(retryTimer); retryTimer=null; }
     state.pollAbort?.abort();
@@ -5511,7 +5597,7 @@ def allow(key, limit=5):
       if(needsHydration||next.revision>state.revision){
         if(next.snapshot){
           const ownEcho=next.snapshot.client_id===clientId&&next.snapshot.client_seq<=state.lastAckSeq;
-          const locallyDirty=(state.hydrated||!same(draft(),state.baseline))&&(
+          const locallyDirty=(state.hydrated||state.hydrationUserDirty)&&(
             !!state.pending ||
             (state.inFlight?.room===room&&state.inFlight?.epoch===epoch) ||
             !same(draft(),state.authoritative)
@@ -5523,6 +5609,7 @@ def allow(key, limit=5):
       }
       if(needsHydration){
         state.hydrated=true;
+        state.hydrationUserDirty=false;
         state.baseline=null;
         // With no server snapshot, publish the authenticated editor state once.
         if(!next.snapshot||hydrationDirty) scheduleSave();
@@ -5536,6 +5623,7 @@ def allow(key, limit=5):
   function scheduleSave(){
     if(state.applying||!state.hydrated||!signedIn()||!canonical(state.room)||activeRoom()!==state.room) return;
     const next=draft();
+    if(!next.question_id||!next.question_version) return;
     if(same(next,state.authoritative)&&!state.inFlight){
       state.pending=null;
       if(saveTimer){ clearTimeout(saveTimer); saveTimer=null; }
@@ -5548,6 +5636,12 @@ def allow(key, limit=5):
     if(retryTimer){ clearTimeout(retryTimer); retryTimer=null; }
     if(saveTimer) clearTimeout(saveTimer);
     saveTimer=setTimeout(drainSave,350);
+  }
+
+  function markHydrationEdit(){
+    if(state.applying||state.hydrated||!state.room) return;
+    if(window._randori_programmatic_editor_updates) return;
+    state.hydrationUserDirty=true;
   }
   function retrySave(change,room,epoch){
     if(state.room!==room||state.epoch!==epoch) return false;
@@ -5577,7 +5671,7 @@ def allow(key, limit=5):
     try{
       const response=await fetch('/api/video/signal',{
         method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},signal:controller.signal,
-        body:JSON.stringify({room_id:room,type:'code-sync',payload:{schema_version:1,base_revision:state.revision,client_id:clientId,client_seq:clientSeq,code:change.code,language:change.language,question_id:change.question_id}}),
+        body:JSON.stringify({room_id:room,type:'code-sync',payload:{schema_version:2,base_revision:state.revision,client_id:clientId,client_seq:clientSeq,code:change.code,language:change.language,question_id:change.question_id,question_version:change.question_version}}),
       });
       const data=await response.json().catch(()=>({}));
       if(state.room!==room||state.epoch!==epoch) return;
@@ -5639,12 +5733,12 @@ def allow(key, limit=5):
 
   window.addEventListener('randori:room-change',event=>{ activate(event.detail?.roomId); });
   window.addEventListener('randori:workspace-edit',scheduleSave);
-  document.getElementById('editor')?.addEventListener('input',scheduleSave);
+  document.getElementById('editor')?.addEventListener('input',()=>{ markHydrationEdit(); scheduleSave(); });
   document.getElementById('langSelect')?.addEventListener('change',scheduleSave);
   document.getElementById('questionSelect')?.addEventListener('change',scheduleSave);
   setInterval(()=>{ if(!signedIn()) deactivate(); else if(state.room) poll(false,state.room,state.epoch); },1200);
   setInterval(()=>{ const room=activeRoom(); if(signedIn()&&canonical(room)&&room!==state.room&&window._randori_authorized_room===room) activate(room); },500);
-  window._randori_workspace={activate,requestAccess,deactivate,poll,get room(){return state.room},get revision(){return state.revision},get hydrated(){return state.hydrated},get clientId(){return clientId}};
+  window._randori_workspace={activate,requestAccess,deactivate,poll,markHydrationEdit,get room(){return state.room},get revision(){return state.revision},get hydrated(){return state.hydrated},get clientId(){return clientId}};
 })();
 </script>
 

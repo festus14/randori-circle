@@ -1,4 +1,6 @@
-import { captureSentryException, captureSentryMessage, getClient, getAdminEmails, initSentry, isSentryConfigured, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
+import { captureSentryException, captureSentryMessage, getClient, getAdminEmails, getJwtSecret, initSentry, isSentryConfigured, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
+import { createEvaluationSuite, getPublicExercise, listPublicExercises } from './_catalog.js';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 function isAdminCheck(email, flag){
   if (flag) return true;
@@ -427,10 +429,13 @@ function getAuthPayload(req){
 async function getPairAccess(db, payload, weekId, pairId){
   const userId=Number(payload?.id||payload?.uid);
   if(!Number.isInteger(userId) || !Number.isInteger(weekId) || !Number.isInteger(pairId)) return {allowed:false, exists:false};
-  const group=await db.execute({sql:`SELECT id,user_a_id,user_b_id FROM pairing_groups WHERE id=? AND week_id=? LIMIT 1`, args:[pairId,weekId]});
+  const group=await db.execute({sql:`SELECT id,user_a_id,user_b_id,user_c_id FROM pairing_groups WHERE id=? AND week_id=? LIMIT 1`, args:[pairId,weekId]});
   if(!group.rows.length) return {allowed:false, exists:false};
   const row=group.rows[0];
-  return {allowed:Number(row.user_a_id)===userId || Number(row.user_b_id)===userId, exists:true};
+  return {
+    allowed:[row.user_a_id,row.user_b_id,row.user_c_id].some(memberId=>Number(memberId)===userId),
+    exists:true,
+  };
 }
 
 async function ensureBaseTables(db){
@@ -521,6 +526,8 @@ async function ensureAppLogs(db){
 
 // In-memory rate limit map for client logs per IP
 const __logRateMap = new Map(); // ip -> [timestamps]
+const __activeExecutionsByUser = new Set();
+const EXECUTIONS_PER_MINUTE = 10;
 function isLogRateLimited(ip){
   const now=Date.now();
   const arr = __logRateMap.get(ip) || [];
@@ -572,7 +579,7 @@ async function handleHealth(req,res){
 async function logServer(level, event, message, meta, reqCtx){
   try{
     const db=getClient();
-    await ensureAppLogs(db);
+    if(!reqCtx?.skipEnsure) await ensureAppLogs(db);
     const allowed=['info','warn','error','success','debug'];
     let lvl=String(level||'info').toLowerCase();
     if(!allowed.includes(lvl)) lvl='info';
@@ -680,8 +687,15 @@ async function handleLogs(req,res){
     for(const entry of batch.slice(0,20)){ // cap 20 per request
       let lvl = String(entry.level||'info').toLowerCase();
       if(!allowedLevels.has(lvl)) lvl='info';
-      let src = String(entry.source||'client').slice(0,20);
+      const requestedSource = String(entry.source||'client').slice(0,20);
+      // The runner namespace is a server-side coordination boundary. Never let
+      // browser telemetry create rows that can be mistaken for leases or quota
+      // records, even when an authenticated client supplies those names.
+      let src = requestedSource==='runner' ? 'client' : requestedSource;
       let ev = entry.event ? String(entry.event).slice(0,80) : null;
+      if(ev && (ev==='execute_attempt' || ev.startsWith('execute_lease_'))){
+        ev=`client_${ev}`.slice(0,80);
+      }
       let msg = String(entry.message||'').slice(0,2000);
       if(!msg) continue;
       let metaStr=null;
@@ -793,8 +807,8 @@ async function handleWeeks(req,res){
     if (!weeksRs.rows.length) return res.json({ ok:true, weeks:[], filtered_demo: !includeDemo });
     const weekIds = weeksRs.rows.map(w=>w.id);
     const placeholders = weekIds.map(()=>'?').join(',');
-    const groupsRs = await db.execute({ sql:`SELECT id as pg_id, week_id, user_a_id, user_b_id, is_ai_pair, topic, topic_kind, created_at FROM pairing_groups WHERE week_id IN (${placeholders}) ORDER BY week_id DESC, id ASC`, args:weekIds });
-    const allIds = new Set(); groupsRs.rows.forEach(r=>{ allIds.add(r.user_a_id); allIds.add(r.user_b_id); });
+    const groupsRs = await db.execute({ sql:`SELECT id as pg_id, week_id, user_a_id, user_b_id, user_c_id, is_ai_pair, topic, topic_kind, created_at FROM pairing_groups WHERE week_id IN (${placeholders}) ORDER BY week_id DESC, id ASC`, args:weekIds });
+    const allIds = new Set(); groupsRs.rows.forEach(r=>{ allIds.add(r.user_a_id); allIds.add(r.user_b_id); if(r.user_c_id!=null) allIds.add(r.user_c_id); });
     let idTo={};
     if (allIds.size){
       const ids=[...allIds]; const ph=ids.map(()=>'?').join(',');
@@ -813,7 +827,13 @@ async function handleWeeks(req,res){
       const pairs = groupsRs.rows.filter(g=>g.week_id===w.id).map(g=>{
         const a = idTo[g.user_a_id]||{name:`User ${g.user_a_id}`, color:'#999'};
         const b = g.is_ai_pair ? {name:'AI partner', color:'var(--accent)'} : (idTo[g.user_b_id]||{name:`User ${g.user_b_id}`, color:'#999'});
-        return { pg_id:g.pg_id, a_id:g.user_a_id, b_id:g.user_b_id, a_name:a.name, b_name:b.name, a_color:a.color, b_color:b.color, is_ai:!!g.is_ai_pair, is_demo_week: !!w.is_demo, topic:g.topic, topic_kind:g.topic_kind, created_at:g.created_at };
+        const c = g.user_c_id==null ? null : (idTo[g.user_c_id]||{name:`User ${g.user_c_id}`, color:'#999'});
+        const members=[
+          {id:g.user_a_id,name:a.name,color:a.color},
+          {id:g.user_b_id,name:b.name,color:b.color,is_ai:!!g.is_ai_pair},
+          ...(c?[{id:g.user_c_id,name:c.name,color:c.color}]:[]),
+        ];
+        return { pg_id:g.pg_id, a_id:g.user_a_id, b_id:g.user_b_id, c_id:g.user_c_id??null, a_name:a.name, b_name:b.name, c_name:c?.name??null, a_color:a.color, b_color:b.color, c_color:c?.color??null, members, is_ai:!!g.is_ai_pair, is_demo_week: !!w.is_demo, topic:g.topic, topic_kind:g.topic_kind, created_at:g.created_at };
       });
       return { id:w.id, week_label:w.week_label, week_start:w.week_start, focus:w.focus, created_at:w.created_at, is_demo:!!w.is_demo, pairs };
     });
@@ -829,26 +849,30 @@ async function handleHistory(req,res){
   await ensureProfileMigrations(db);
   const userId = payload.id || payload.uid;
   const groups = await db.execute({ sql:`
-    SELECT pg.id as pg_id, pg.week_id, pg.user_a_id, pg.user_b_id, pg.is_ai_pair, pg.topic, pg.topic_kind,
+    SELECT pg.id as pg_id, pg.week_id, pg.user_a_id, pg.user_b_id, pg.user_c_id, pg.is_ai_pair, pg.topic, pg.topic_kind,
            pw.week_label, pw.week_start
     FROM pairing_groups pg
     JOIN pairing_weeks pw ON pw.id = pg.week_id
-    WHERE pg.user_a_id = ? OR pg.user_b_id = ?
+    WHERE pg.user_a_id = ? OR pg.user_b_id = ? OR pg.user_c_id = ?
     ORDER BY pw.week_start DESC, pg.id DESC
-  `, args:[userId,userId] });
-  const allIds = new Set(); groups.rows.forEach(r=>{ allIds.add(r.user_a_id); allIds.add(r.user_b_id); });
+  `, args:[userId,userId,userId] });
+  const allIds = new Set(); groups.rows.forEach(r=>{ allIds.add(r.user_a_id); allIds.add(r.user_b_id); if(r.user_c_id!=null) allIds.add(r.user_c_id); });
   let idToName={};
   if (allIds.size){
     const ids=[...allIds]; const placeholders=ids.map(()=>'?').join(',');
     try{ const authRows=await db.execute({ sql:`SELECT id, display_name as name FROM auth_accounts WHERE id IN (${placeholders})`, args:ids }); authRows.rows.forEach(r=>{ idToName[r.id]=r.name; }); const missing=ids.filter(i=>!idToName[i]); if(missing.length){ const ph2=missing.map(()=>'?').join(','); const uRows=await db.execute({ sql:`SELECT id, name FROM users WHERE id IN (${ph2})`, args:missing }); uRows.rows.forEach(r=>{ idToName[r.id]=r.name; }); } }catch{}
   }
   const enriched = groups.rows.map(r=>{
-    const isA = r.user_a_id===userId;
-    const partnerId = isA ? r.user_b_id : r.user_a_id;
-    const partnerName = r.is_ai_pair ? 'AI partner' : (idToName[partnerId]||`User ${partnerId}`);
-    return { pg_id:r.pg_id, week_id:r.week_id, week_label:r.week_label, week_start:r.week_start, is_ai:!!r.is_ai_pair, topic:r.topic, topic_kind:r.topic_kind, partner_id:partnerId, partner_name:partnerName, you_are_a:isA };
+    const isA = Number(r.user_a_id)===Number(userId);
+    const participantIds=[r.user_a_id,r.user_b_id,r.user_c_id]
+      .filter(id=>id!=null && Number(id)!==Number(userId));
+    const partnerIds=r.is_ai_pair ? [] : participantIds;
+    const partnerNames=r.is_ai_pair
+      ? ['AI partner']
+      : partnerIds.map(id=>idToName[id]||`User ${id}`);
+    return { pg_id:r.pg_id, week_id:r.week_id, week_label:r.week_label, week_start:r.week_start, is_ai:!!r.is_ai_pair, topic:r.topic, topic_kind:r.topic_kind, partner_id:partnerIds[0]??null, partner_name:partnerNames.join(' & '), partner_ids:partnerIds, partner_names:partnerNames, you_are_a:isA };
   });
-  const partnerCounts={}; enriched.forEach(e=>{ if(!e.is_ai) partnerCounts[e.partner_name]=(partnerCounts[e.partner_name]||0)+1; });
+  const partnerCounts={}; enriched.forEach(e=>{ if(!e.is_ai) e.partner_names.forEach(name=>{ partnerCounts[name]=(partnerCounts[name]||0)+1; }); });
   return res.json({ ok:true, user:{ id:payload.id, name:payload.name }, history:enriched, partner_counts:partnerCounts, total:enriched.length });
 }
 
@@ -1008,27 +1032,32 @@ async function handleMyPair(req,res){
   if (!weekId) return res.json({ ok:true, paired:false, reason:'no_week_yet', message:'No pairs yet — shuffles Sunday 08:00 BST' });
   let grp=null;
   try{
-    const g = await db.execute({ sql:`SELECT id as pg_id, week_id, user_a_id, user_b_id, is_ai_pair, topic, topic_kind FROM pairing_groups WHERE week_id=? AND (user_a_id=? OR user_b_id=?) LIMIT 1`, args:[weekId, userId, userId] });
+    const g = await db.execute({ sql:`SELECT id as pg_id, week_id, user_a_id, user_b_id, user_c_id, is_ai_pair, topic, topic_kind FROM pairing_groups WHERE week_id=? AND (user_a_id=? OR user_b_id=? OR user_c_id=?) LIMIT 1`, args:[weekId, userId, userId, userId] });
     if (g.rows.length) grp=g.rows[0];
   }catch{}
   if (!grp) return res.json({ ok:true, paired:false, week_id:weekId, week:weekRow||null, reason:'not_paired_this_week', message:'You were not paired in the latest shuffle — you may have been marked unavailable.' });
   const isAI = !!grp.is_ai_pair;
-  let partner=null;
+  let partner=null, partners=[];
   if (isAI){
     partner={ id:null, name:'AI partner', display_name:'AI partner', color:'#c8f6a0', is_ai:true, is_ai_partner:true };
+    partners=[partner];
   }else{
-    const partnerId = grp.user_a_id===userId ? grp.user_b_id : grp.user_a_id;
+    const partnerIds=[grp.user_a_id,grp.user_b_id,grp.user_c_id]
+      .filter(id=>id!=null && Number(id)!==Number(userId));
     try{
-      const pr = await db.execute({ sql:`SELECT id, display_name, color, bio, tz, interview_focus, leetcode_handle FROM auth_accounts WHERE id=?`, args:[partnerId] });
-      if (pr.rows.length){
-        const r=pr.rows[0];
-        partner={ id:r.id, name:r.display_name, display_name:r.display_name, color:r.color, bio:r.bio||'', tz:r.tz||'', interview_focus:r.interview_focus||'both', leetcode_handle:r.leetcode_handle||'', is_ai:false };
-      } else {
-        partner={ id:partnerId, name:`User ${partnerId}`, display_name:`User ${partnerId}`, color:'#9aa0a6', is_ai:false };
-      }
+      const placeholders=partnerIds.map(()=>'?').join(',');
+      const pr = await db.execute({ sql:`SELECT id, display_name, color, bio, tz, interview_focus, leetcode_handle FROM auth_accounts WHERE id IN (${placeholders})`, args:partnerIds });
+      const byId=new Map(pr.rows.map(r=>[Number(r.id),r]));
+      partners=partnerIds.map(id=>{
+        const r=byId.get(Number(id));
+        return r
+          ? { id:r.id, name:r.display_name, display_name:r.display_name, color:r.color, bio:r.bio||'', tz:r.tz||'', interview_focus:r.interview_focus||'both', leetcode_handle:r.leetcode_handle||'', is_ai:false }
+          : { id, name:`User ${id}`, display_name:`User ${id}`, color:'#9aa0a6', is_ai:false };
+      });
     }catch{
-      partner={ id:partnerId, name:`User ${partnerId}`, is_ai:false };
+      partners=partnerIds.map(id=>({ id, name:`User ${id}`, display_name:`User ${id}`, color:'#9aa0a6', is_ai:false }));
     }
+    partner=partners[0]||null;
   }
   let schedule=null;
   try{
@@ -1050,7 +1079,7 @@ async function handleMyPair(req,res){
   const meRow = await db.execute({ sql:`SELECT id, display_name, color, tz, interview_focus FROM auth_accounts WHERE id=?`, args:[userId] }).catch(()=>({rows:[]}));
   const me = meRow.rows && meRow.rows[0] ? { id:meRow.rows[0].id, name:meRow.rows[0].display_name, color:meRow.rows[0].color, tz:meRow.rows[0].tz, interview_focus:meRow.rows[0].interview_focus } : { id:userId };
   const roomId = `week_${weekId}_pair_${grp.pg_id}`;
-  return res.json({ ok:true, paired:true, room_id:roomId, week_id:weekId, week: weekRow ? { id:weekRow.id||weekId, week_label:weekRow.week_label, week_start:weekRow.week_start, focus:weekRow.focus } : { id:weekId }, pair: { pg_id:grp.pg_id, week_id:weekId, room_id:roomId, user_a_id:grp.user_a_id, user_b_id:grp.user_b_id, is_ai_pair:isAI, is_ai:isAI, topic:grp.topic, topic_kind:grp.topic_kind }, partner, me, schedule, messagesPreview });
+  return res.json({ ok:true, paired:true, room_id:roomId, week_id:weekId, week: weekRow ? { id:weekRow.id||weekId, week_label:weekRow.week_label, week_start:weekRow.week_start, focus:weekRow.focus } : { id:weekId }, pair: { pg_id:grp.pg_id, week_id:weekId, room_id:roomId, user_a_id:grp.user_a_id, user_b_id:grp.user_b_id, user_c_id:grp.user_c_id??null, is_ai_pair:isAI, is_ai:isAI, topic:grp.topic, topic_kind:grp.topic_kind }, partner, partners, me, schedule, messagesPreview });
 }
 
 async function handleSchedule(req,res){
@@ -1162,134 +1191,145 @@ async function handleMessages(req,res){
   return res.status(405).json({ error:'GET or POST only' });
 }
 
-function slugify(s){
-  return String(s||'').toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,48) || ('q-'+Math.random().toString(36).slice(2,6));
+async function handleQuestions(req,res){
+  if(!getAuthPayload(req)) return res.status(401).json({error:'authentication required'});
+  if(req.method!=='GET') return res.status(405).json({error:'the bundled question catalogue is read-only'});
+
+  const requestedSlug=String(req.query?.slug||req.query?.question_slug||'').trim();
+  if(requestedSlug){
+    const rawVersion=req.query?.version??req.query?.question_version;
+    const activeQuestion=rawVersion==null || rawVersion===''
+      ? listPublicExercises().find(question=>question.slug===requestedSlug)
+      : null;
+    if((rawVersion==null || rawVersion==='') && !activeQuestion){
+      return res.status(404).json({error:'question not found or unavailable'});
+    }
+    const requestedVersion=activeQuestion?.version??Number(rawVersion);
+    if(!Number.isInteger(requestedVersion) || requestedVersion<1){
+      return res.status(400).json({error:'a positive integer question version is required'});
+    }
+    const question=getPublicExercise(requestedSlug,requestedVersion);
+    if(!question) return res.status(404).json({error:'question not found or unavailable'});
+    return res.json({ok:true,question});
+  }
+
+  const questions=listPublicExercises();
+  return res.json({ok:true,questions,count:questions.length});
 }
 
-async function handleQuestions(req,res){
-  const viewer=getAuthPayload(req);
-  if(!viewer) return res.status(401).json({error:'authentication required'});
-  const db = getClient();
-  await ensureBaseTables(db);
-  await ensureProfileMigrations(db);
-  if (req.method === 'GET'){
-    try{
-      const rs = await db.execute(`SELECT id, slug, title, type, difficulty, category, description, input_format, constraints_text, examples, test_cases, starter_per_lang, author_id, source, leetcode_slug, created_at FROM custom_questions ORDER BY id DESC LIMIT 100`);
-      const questions = rs.rows.map(r=>{
-        let examples=null, tcs=null, starters=null;
-        try{ examples = r.examples ? JSON.parse(r.examples) : [] }catch{ examples=[] }
-        try{ tcs = r.test_cases ? JSON.parse(r.test_cases) : [] }catch{ tcs=[] }
-        try{ starters = r.starter_per_lang ? JSON.parse(r.starter_per_lang) : {} }catch{ starters={} }
-        return { id:r.id, slug:r.slug, title:r.title, type:r.type||'dsa', difficulty:r.difficulty||'Medium', category:r.category||'custom', description:r.description, input_format:r.input_format||'', constraints_text:r.constraints_text||'', examples, test_cases:tcs, starter_per_lang:starters, author_id:r.author_id, source:r.source||'custom', leetcode_slug:r.leetcode_slug||null, created_at:r.created_at, is_custom:true };
-      });
-      return res.json({ ok:true, questions, count:questions.length });
-    }catch(e){ return res.status(500).json({ error:'questions fetch failed', detail:String(e.message||e).slice(0,300)}); }
+function runResultsDigest(resultsJson){
+  return createHash('sha256').update(String(resultsJson||''),'utf8').digest('hex');
+}
+
+function runAttestationPayload({userId,questionSlug,questionVersion,language,passedCount,totalCount,resultsJson}){
+  return JSON.stringify([
+    2,
+    Number(userId),
+    String(questionSlug),
+    Number(questionVersion),
+    String(language),
+    Number(passedCount),
+    Number(totalCount),
+    runResultsDigest(resultsJson),
+  ]);
+}
+
+function runAttestationKeyId(secret){
+  return createHash('sha256').update(`randori-run-key\0${secret}`,'utf8').digest('hex').slice(0,16);
+}
+
+function runAttestationKeyring(){
+  const configured=String(process.env.RUN_ATTESTATION_SECRET||'').trim();
+  const current=configured||getJwtSecret();
+  if(current.length<32) throw new Error('RUN_ATTESTATION_SECRET must contain at least 32 characters');
+  const previous=String(process.env.RUN_ATTESTATION_PREVIOUS_SECRETS||'')
+    .split(',')
+    .map(value=>value.trim())
+    .filter(Boolean);
+  if(previous.some(secret=>secret.length<32)){
+    throw new Error('every RUN_ATTESTATION_PREVIOUS_SECRETS value must contain at least 32 characters');
   }
-  if (req.method === 'POST'){
-    const adminCtx=await requireAdminDT(req,res);
-    if(!adminCtx) return;
-    const userId=adminCtx.callerId;
-    const body = req.body||{};
-    const title = body.title ? String(body.title).trim().slice(0,120) : '';
-    const description = body.description ? String(body.description).trim().slice(0,8000) : '';
-    let test_cases = body.test_cases;
-    if (typeof test_cases === 'string'){ try{ test_cases = JSON.parse(test_cases); }catch{ test_cases = null; } }
-    if (!title) return res.status(400).json({ error:'title required' });
-    if (!description) return res.status(400).json({ error:'description required' });
-    if (!Array.isArray(test_cases) || test_cases.length===0) return res.status(400).json({ error:'test_cases array min 1 required', example:'[{input:{...}, expect:...}]' });
-    if (test_cases.length>20) test_cases = test_cases.slice(0,20);
-    let slug = body.slug ? slugify(body.slug) : slugify(title);
-    // ensure uniqueness with suffix
-    try{
-      const existing = await db.execute({ sql:`SELECT id FROM custom_questions WHERE slug=?`, args:[slug] });
-      if (existing.rows.length){
-        slug = slug + '-' + Math.random().toString(36).slice(2,5);
-      }
-    }catch{}
-    const type = ['dsa','system','both','system_design'].includes(String(body.type||'').toLowerCase()) ? String(body.type).toLowerCase().replace('system_design','system') : 'dsa';
-    const difficulty = String(body.difficulty||'Medium').slice(0,20);
-    const category = String(body.category||'custom').slice(0,40);
-    const input_format = body.input_format ? String(body.input_format).slice(0,2000) : null;
-    const constraints_text = body.constraints_text || body.constraints ? String(body.constraints_text||body.constraints).slice(0,2000) : null;
-    const examples = body.examples ? JSON.stringify(body.examples).slice(0,8000) : JSON.stringify([]);
-    const tcsStr = JSON.stringify(test_cases).slice(0,16000);
-    const starters = body.starter_per_lang ? JSON.stringify(body.starter_per_lang).slice(0,12000) : (body.starters ? JSON.stringify(body.starters).slice(0,12000) : JSON.stringify({}));
-    const source = String(body.source||'custom').slice(0,20);
-    const leetSlug = body.leetcode_slug ? String(body.leetcode_slug).slice(0,120) : (body.leet_slug ? String(body.leet_slug).slice(0,120) : null);
-    try{
-      const ins = await db.execute({ sql:`INSERT INTO custom_questions (slug, title, type, difficulty, category, description, input_format, constraints_text, examples, test_cases, starter_per_lang, author_id, source, leetcode_slug, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now')) RETURNING id`, args:[slug, title, type, difficulty, category, description, input_format, constraints_text, examples, tcsStr, starters, userId, source, leetSlug] });
-      const id = ins.rows[0].id;
-      const rs = await db.execute({ sql:`SELECT id, slug, title, type, difficulty, category, description, input_format, constraints_text, examples, test_cases, starter_per_lang, author_id, source, leetcode_slug, created_at FROM custom_questions WHERE id=?`, args:[id] });
-      const r = rs.rows[0];
-      return res.json({ ok:true, question:{ id:r.id, slug:r.slug, title:r.title, type:r.type, difficulty:r.difficulty, category:r.category, description:r.description, input_format:r.input_format, constraints_text:r.constraints_text, examples: JSON.parse(r.examples||'[]'), test_cases: JSON.parse(r.test_cases||'[]'), starter_per_lang: JSON.parse(r.starter_per_lang||'{}'), author_id:r.author_id, source:r.source, leetcode_slug:r.leetcode_slug, created_at:r.created_at }});
-    }catch(e){ return res.status(500).json({ error:'insert failed', detail:String(e.message||e).slice(0,400)}); }
-  }
-  if (req.method === 'DELETE'){
-    const payload = getAuthPayload(req);
-    if (!payload) return res.status(401).json({ error:'missing Bearer token' });
-    const userId = payload.id||payload.uid;
-    const id = req.query?.id ? parseInt(String(req.query.id),10) : (req.body?.id ? parseInt(String(req.body.id),10) : null);
-    if (!id) return res.status(400).json({ error:'id required' });
-    try{
-      const rs = await db.execute({ sql:`SELECT author_id FROM custom_questions WHERE id=?`, args:[id] });
-      if (!rs.rows.length) return res.status(404).json({ error:'not found' });
-      const authorId = rs.rows[0].author_id;
-      let isAdmin=false;
-      try{
-        const adm = await db.execute({ sql:`SELECT is_admin FROM auth_accounts WHERE id=?`, args:[userId] });
-        isAdmin = !!adm.rows[0]?.is_admin;
-      }catch{}
-      if (authorId!==userId && !isAdmin) return res.status(403).json({ error:'only author or admin can delete' });
-      await db.execute({ sql:`DELETE FROM custom_questions WHERE id=?`, args:[id] });
-      return res.json({ ok:true, deleted:id });
-    }catch(e){ return res.status(500).json({ error:'delete failed', detail:String(e.message||e).slice(0,300)}); }
-  }
-  return res.status(405).json({ error:'GET, POST, DELETE only' });
+  return [current,...previous]
+    .filter((secret,index,values)=>values.indexOf(secret)===index)
+    .map(secret=>({id:runAttestationKeyId(secret),secret}));
+}
+
+function signRunAttestation(fields){
+  const key=runAttestationKeyring()[0];
+  return {
+    keyId:key.id,
+    signature:createHmac('sha256',key.secret)
+      .update(`randori-run-attestation-v2\0${runAttestationPayload(fields)}`,'utf8')
+      .digest('hex'),
+  };
+}
+
+function verifyRunAttestation(signature,keyId,fields){
+  try{
+    if(typeof signature!=='string' || !/^[a-f0-9]{64}$/.test(signature)) return false;
+    if(typeof keyId!=='string' || !/^[a-f0-9]{16}$/.test(keyId)) return false;
+    const key=runAttestationKeyring().find(candidate=>candidate.id===keyId);
+    if(!key) return false;
+    const supplied=Buffer.from(signature,'hex');
+    const expected=Buffer.from(
+      createHmac('sha256',key.secret)
+        .update(`randori-run-attestation-v2\0${runAttestationPayload(fields)}`,'utf8')
+        .digest('hex'),
+      'hex',
+    );
+    return supplied.length===expected.length && timingSafeEqual(supplied,expected);
+  }catch{ return false; }
 }
 
 async function handleRuns(req,res){
-  if(req.method!=='GET' && req.method!=='POST') return res.status(405).json({ error:'GET or POST only' });
+  if(req.method!=='GET' && req.method!=='POST') return res.status(405).json({ error:'GET only' });
   const payload = getAuthPayload(req);
   if (!payload) return res.status(401).json({ error:'authentication required' });
+  if (req.method === 'POST'){
+    return res.status(405).json({error:'run records are created only by the execution service'});
+  }
   const userId = payload.id || payload.uid;
   const db = getClient();
   await ensureBaseTables(db);
   await ensureProfileMigrations(db);
   await ensureSessionRuns(db);
-  if (req.method === 'POST'){
-    const body = req.body||{};
-    const code = String(body.code||'').slice(0,20000);
-    if (!code) return res.status(400).json({ error:'code required' });
-    const question_slug = String(body.question_slug||body.slug||'').slice(0,120) || null;
-    const question_id = body.question_id ? parseInt(String(body.question_id),10) : null;
-    const language = String(body.language||'javascript').slice(0,20);
-    const week_id = body.week_id ? parseInt(String(body.week_id),10) : null;
-    const pair_group_id = body.pair_group_id || body.pg_id || body.pair_id ? parseInt(String(body.pair_group_id||body.pg_id||body.pair_id),10) : null;
-    let test_cases_snapshot = null;
-    try{ test_cases_snapshot = body.test_cases_snapshot ? JSON.stringify(body.test_cases_snapshot).slice(0,15000) : (body.test_cases ? JSON.stringify(body.test_cases).slice(0,15000) : null); }catch{ test_cases_snapshot=null; }
-    let results_json = null;
-    try{ results_json = body.results ? JSON.stringify(body.results).slice(0,15000) : (body.results_json ? JSON.stringify(body.results_json).slice(0,15000) : null); }catch{ results_json=null; }
-    const passed_count = body.passed_count!=null ? parseInt(String(body.passed_count),10) : 0;
-    const total_count = body.total_count!=null ? parseInt(String(body.total_count),10) : 0;
-    const duration_ms = body.duration_ms!=null ? parseInt(String(body.duration_ms),10) : null;
-    try{
-      const ins = await db.execute({ sql:`INSERT INTO session_runs (user_id, week_id, pair_group_id, question_id, question_slug, language, code, test_cases_snapshot, results_json, passed_count, total_count, duration_ms, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?, ?, datetime('now')) RETURNING id`, args:[userId, week_id, pair_group_id, question_id, question_slug, language, code, test_cases_snapshot, results_json, passed_count||0, total_count||0, duration_ms]});
-      const id = ins.rows[0].id;
-      const row = await db.execute({ sql:`SELECT id, user_id, week_id, pair_group_id, question_id, question_slug, language, passed_count, total_count, duration_ms, created_at FROM session_runs WHERE id=?`, args:[id]});
-      try{ await logServer('success','run_created',`run ${row.rows[0].id} ${question_slug||''} ${language} ${passed_count}/${total_count}`, {run_id:row.rows[0].id, question_slug, language, passed_count, total_count, duration_ms}, {req, payload, source:'server'}); }catch{}
-      return res.json({ ok:true, run: row.rows[0] });
-    }catch(e){ return res.status(500).json({ error:'insert failed', detail:String(e.message||e).slice(0,300)}); }
-  }
   if (req.method === 'GET'){
     const slug = req.query?.question_slug || req.query?.slug ? String(req.query.question_slug||req.query.slug).slice(0,120) : null;
     const limit = Math.min(50, Math.max(1, parseInt(String(req.query?.limit||'20'),10)||20));
     try{
-      let sql = `SELECT id, week_id, pair_group_id, question_id, question_slug, language, substr(code,1,500) as code_preview, passed_count, total_count, duration_ms, created_at FROM session_runs WHERE user_id=?`;
+      let sql = `SELECT id, week_id, pair_group_id, question_id, question_slug, language, substr(code,1,500) as code_preview, test_cases_snapshot, results_json, passed_count, total_count, duration_ms, created_at FROM session_runs WHERE user_id=?`;
       let args=[userId];
       if (slug){ sql+=` AND question_slug=?`; args.push(slug); }
       sql+=` ORDER BY id DESC LIMIT ?`; args.push(limit);
       const rs = await db.execute({ sql, args });
-      return res.json({ ok:true, runs: rs.rows, count: rs.rows.length });
+      const runs=rs.rows.map(row=>{
+        let questionVersion=null;
+        let authoritative=false;
+        try{
+          const snapshot=row.test_cases_snapshot?JSON.parse(row.test_cases_snapshot):null;
+          const version=positiveInteger(snapshot?.version);
+          if(
+            snapshot?.source==='original-catalog'
+            && snapshot?.attestation_version===2
+            && version
+            && Number(snapshot.total_count)===Number(row.total_count)
+          ){
+            authoritative=verifyRunAttestation(snapshot.attestation,snapshot.attestation_key_id,{
+              userId,
+              questionSlug:row.question_slug,
+              questionVersion:version,
+              language:row.language,
+              passedCount:row.passed_count,
+              totalCount:row.total_count,
+              resultsJson:row.results_json,
+            });
+            if(authoritative) questionVersion=version;
+          }
+        }catch{}
+        const {test_cases_snapshot:_privateSnapshot,results_json:_privateResults,...publicRun}=row;
+        return {...publicRun,question_version:questionVersion,authoritative};
+      });
+      return res.json({ ok:true, runs, count:runs.length });
     }catch(e){ return res.status(500).json({ error:'fetch failed', detail:String(e.message||e).slice(0,200)}); }
   }
 }
@@ -1324,15 +1364,15 @@ async function handleStats(req,res){
   if (payload){
     const userId = payload.id || payload.uid;
     try{
-      const my = await db.execute({ sql:`SELECT COUNT(*) as c FROM pairing_groups WHERE user_a_id=? OR user_b_id=?`, args:[userId,userId] });
+      const my = await db.execute({ sql:`SELECT COUNT(*) as c FROM pairing_groups WHERE user_a_id=? OR user_b_id=? OR user_c_id=?`, args:[userId,userId,userId] });
       out.your_sessions = my.rows[0]?.c ?? 0;
     }catch{}
     try{
-      const last = await db.execute({ sql:`SELECT pg.id as pg_id, pg.week_id, pw.week_label, pw.week_start, pg.is_ai_pair FROM pairing_groups pg JOIN pairing_weeks pw ON pw.id=pg.week_id WHERE (pg.user_a_id=? OR pg.user_b_id=?) AND COALESCE(pw.is_demo,0)=0 ORDER BY pw.id DESC LIMIT 1`, args:[userId,userId] });
+      const last = await db.execute({ sql:`SELECT pg.id as pg_id, pg.week_id, pw.week_label, pw.week_start, pg.is_ai_pair FROM pairing_groups pg JOIN pairing_weeks pw ON pw.id=pg.week_id WHERE (pg.user_a_id=? OR pg.user_b_id=? OR pg.user_c_id=?) AND COALESCE(pw.is_demo,0)=0 ORDER BY pw.id DESC LIMIT 1`, args:[userId,userId,userId] });
       if (last.rows.length) out.your_last = last.rows[0];
     }catch{}
     try{
-      const yWeeks = await db.execute({ sql:`SELECT COUNT(DISTINCT week_id) as c FROM pairing_groups WHERE user_a_id=? OR user_b_id=?`, args:[userId,userId] });
+      const yWeeks = await db.execute({ sql:`SELECT COUNT(DISTINCT week_id) as c FROM pairing_groups WHERE user_a_id=? OR user_b_id=? OR user_c_id=?`, args:[userId,userId,userId] });
       out.your_weeks = yWeeks.rows[0]?.c ?? 0;
     }catch{}
   }
@@ -1362,8 +1402,12 @@ async function handleLeetcode(req,res){
   // GET ?slug=two-sum or /api/leetcode/two-sum
   if (req.method!=='GET') return res.status(405).json({ error:'GET only for leetcode detail' });
   if(!getAuthPayload(req)) return res.status(401).json({error:'authentication required'});
-  const db = getClient();
-  await ensureBaseTables(db); await ensureProfileMigrations(db);
+  if(process.env.LEETCODE_INGESTION_AUTHORIZED!=='true'){
+    return res.status(403).json({error:'LeetCode content access is disabled pending written authorization'});
+  }
+  const adminCtx=await requireAdminDT(req,res);
+  if(!adminCtx) return;
+  const db=adminCtx.db;
   const url = new URL(req.url, 'http://localhost');
   let slug = (req.query?.slug || url.searchParams.get('slug') || '').toString().trim().toLowerCase();
   if (!slug){
@@ -1502,349 +1546,345 @@ async function pistonVersions(){
 
 async function callPistonAPI(language, version, files){
   const body = { language, version, files: files.map(f=>({name:f.name, content:f.content})) };
-  const r = await fetchWithTimeout('https://emkc.org/api/v2/piston/execute', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)}, 12000);
-  if(!r.ok){
-    const txt = await r.text().catch(()=> '');
-    throw new Error('piston '+r.status+' '+txt.slice(0,200));
+  const controller=new AbortController();
+  const timeout=setTimeout(()=>controller.abort(),12000);
+  const maxResponseBytes=256*1024;
+  try{
+    const r=await fetch('https://emkc.org/api/v2/piston/execute',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(body),
+      signal:controller.signal,
+    });
+    if(!r.ok) throw new Error(`piston request failed with status ${r.status}`);
+    const declaredLength=Number(r.headers.get('content-length'));
+    if(Number.isFinite(declaredLength) && declaredLength>maxResponseBytes){
+      controller.abort();
+      throw new Error('piston response exceeded size limit');
+    }
+    const reader=r.body?.getReader?.();
+    if(!reader){
+      const text=await r.text();
+      if(Buffer.byteLength(text,'utf8')>maxResponseBytes) throw new Error('piston response exceeded size limit');
+      return JSON.parse(text);
+    }
+    const chunks=[];
+    let received=0;
+    while(true){
+      const {done,value}=await reader.read();
+      if(done) break;
+      received+=value.byteLength;
+      if(received>maxResponseBytes){
+        await reader.cancel().catch(()=>{});
+        throw new Error('piston response exceeded size limit');
+      }
+      chunks.push(Buffer.from(value));
+    }
+    return JSON.parse(Buffer.concat(chunks,received).toString('utf8'));
+  }finally{
+    clearTimeout(timeout);
   }
-  const j = await r.json();
-  return j;
 }
 
-function buildJsHarness(userCode, testCases){
-  const tc = JSON.stringify(testCases.slice(0,6));
-  return userCode + `
-globalThis.__randori_tests__ = ${tc};
-function __deepUnwrap(s){ try{ let v=s; for(let i=0;i<4;i++){ if(typeof v==='string'){ try{ const p=JSON.parse(v); if(typeof p==='string'&&p!==v) {v=p; continue;} v=p; break; }catch{ break; } } else break; } return v; }catch{ return s; } }
-function __normExp(e){ const u=__deepUnwrap(e); return u; }
-function __normInp(inp){ return __deepUnwrap(inp); }
-function __argsFrom(inp){
-  const v=__deepUnwrap(inp);
-  if(v && typeof v==='object' && !Array.isArray(v)){
-    if('nums' in v && ('target' in v || 't' in v)) return [v.nums, v.target ?? v.t];
-    if('l1' in v && 'l2' in v) return [v.l1, v.l2];
-    if('s' in v) return [v.s];
-    if('strs' in v) return [v.strs];
-    return Object.values(v);
-  }
-  if(Array.isArray(v)) return [v];
-  return [v];
+function encodeRunnerPayload(value){
+  return Buffer.from(JSON.stringify(value),'utf8').toString('base64');
 }
-function __deepEq(a,b){
-  const da=__deepUnwrap(a), db=__deepUnwrap(b);
-  if(Array.isArray(da)&&Array.isArray(db)){
-    if(da.length!==db.length) return false;
-    // unordered for 2-len number arrays (two-sum) – compare as sets
-    if(da.length===2 && typeof da[0]==='number' && typeof da[1]==='number' && typeof db[0]==='number' && typeof db[1]==='number'){
-      const sda=[...da].sort((x,y)=>x-y); const sdb=[...db].sort((x,y)=>x-y);
-      return sda[0]===sdb[0] && sda[1]===sdb[1];
-    }
-    // general primitive set equality fallback for small arrays up to 5
-    if(da.length<=5 && db.length<=5 && da.every(x=>typeof x!=='object') && db.every(x=>typeof x!=='object')){
-      const sda=[...da].sort(); const sdb=[...db].sort();
-      if(JSON.stringify(sda)===JSON.stringify(sdb)) return true;
-    }
-    return da.every((x,i)=>__deepEq(x,db[i]));
-  }
-  return JSON.stringify(da)===JSON.stringify(db);
-}
-function __findFn(){
-  const candidates=['twoSum','two_sum','isValid','is_valid','isPalindrome','mergeTwoLists','merge_two_lists','lengthOfLongestSubstring','threeSum','lru','isAnagram'];
-  for(const n of candidates) { try{ if(typeof globalThis[n]==='function') return globalThis[n]; if(typeof eval(n)==='function') return eval(n);}catch{} }
-  return null;
-}
-(function(){
-  const fn=__findFn();
-  const out=[];
-  for(let i=0;i<__randori_tests__.length;i++){
-    const tc=__randori_tests__[i];
+
+function buildJsHarness(userCode,testSuite,resultPrefix){
+  const encodedSuite=encodeRunnerPayload({
+    entrypoint:testSuite.entrypoint,
+    tests:testSuite.tests.map(test=>({args:test.args})),
+  });
+  const encodedCode=Buffer.from(userCode,'utf8').toString('base64');
+  return `;(function(){
+  const __randori_bundle=JSON.parse(Buffer.from('${encodedSuite}','base64').toString('utf8'));
+  const __randori_source=Buffer.from('${encodedCode}','base64').toString('utf8');
+  const __randori_vm=require('node:vm');
+  const __randori_context=__randori_vm.createContext(Object.create(null),{codeGeneration:{strings:false,wasm:false}});
+  let __randori_ready=true;
+  try{ __randori_vm.runInContext(__randori_source,__randori_context,{timeout:1000}); }catch{ __randori_ready=false; }
+  for(let index=0;index<__randori_bundle.tests.length;index++){
+    const test=__randori_bundle.tests[index];
+    let got=null, ok=false, error=null;
     try{
-      const args=__argsFrom(tc.input);
-      if(!fn) throw new Error('function not found');
-      const got=fn(...args);
-      const exp=__normExp(tc.expect);
-      const pass = tc.expect==null ? true : __deepEq(got, exp);
-      console.log(JSON.stringify({idx:i, pass, got, expect:exp, input:tc.input}));
-    }catch(e){ console.log(JSON.stringify({idx:i, pass:false, error:String(e.message||e), input:tc.input})); }
+      if(!__randori_ready) throw new Error('submission did not load');
+      __randori_context.__randori_args_json__=JSON.stringify(test.args);
+      const expression='JSON.stringify('+__randori_bundle.entrypoint+'(...JSON.parse(__randori_args_json__)))';
+      const serialized=__randori_vm.runInContext(expression,__randori_context,{timeout:1000});
+      got=JSON.parse(serialized);
+      ok=true;
+    }catch{ error='runtime error'; }
+    process.stdout.write('${resultPrefix}'+JSON.stringify({idx:index,ok,got,error})+'\\n');
   }
 })();
 `;
 }
 
-function buildTsHarness(userCode, testCases){
-  return buildJsHarness(userCode, testCases);
-}
+function buildPythonHarness(userCode,testSuite,resultPrefix){
+  const encodedSuite=encodeRunnerPayload({
+    entrypoint:testSuite.entrypoint,
+    tests:testSuite.tests.map(test=>({args:test.args})),
+  });
+  const encodedCode=Buffer.from(userCode,'utf8').toString('base64');
+  return `import base64 as __randori_base64
+import json as __randori_json
 
-function buildPythonHarness(userCode, testCases){
-  const tcStr = JSON.stringify(testCases.slice(0,6)).replace(/'/g, "__SQ__");
-  return `import json, sys, traceback
-tests = json.loads('''${tcStr.replace(/__SQ__/g, "'")}'''.replace("__SQ__","'"))
-
-def deep_unwrap(s):
-    v=s
-    for _ in range(4):
-        if isinstance(v, str):
-            try:
-                p=json.loads(v)
-                v=p
-                continue
-            except:
-                break
-        else:
-            break
-    return v
-
-def deep_equal(a,b):
-    a=deep_unwrap(a); b=deep_unwrap(b)
-    if isinstance(a,(list,tuple)) and isinstance(b,(list,tuple)):
-        if len(a)!=len(b): return False
-        return all(deep_equal(x,y) for x,y in zip(a,b))
-    return a==b
-
-def args_from(inp):
-    v=deep_unwrap(inp)
-    if isinstance(v, dict):
-        if 'nums' in v and ('target' in v or 't' in v):
-            return [v.get('nums'), v.get('target', v.get('t'))]
-        if 'l1' in v and 'l2' in v:
-            return [v['l1'], v['l2']]
-        if 's' in v and len(v)==1:
-            return [v['s']]
-        if 'strs' in v:
-            return [v['strs']]
-        return list(v.values())
-    if isinstance(v, list) and v and isinstance(v[0], list):
-        return [v]
-    return [v]
-
-def find_fn():
-    candidates=['two_sum','twoSum','is_valid','isValid','is_palindrome','merge_two_lists','mergeTwoLists','length_of_longest_substring','three_sum']
-    g=globals()
-    for name in candidates:
-        if name in g and callable(g[name]):
-            return g[name]
-    for k,v in list(g.items()):
-        if callable(v) and k not in ('deep_unwrap','deep_equal','args_from','find_fn','main') and not k.startswith('_'):
-            return v
-    return None
-
-${userCode}
-
-def main():
-    fn=find_fn()
-    if not fn:
-        for i, tc in enumerate(tests):
-            print(json.dumps({"idx":i,"pass":False,"error":"function not found - define two_sum or similar","input":tc.get('input')}))
-        return
-    for i, tc in enumerate(tests):
+def __randori_run():
+    bundle=__randori_json.loads(__randori_base64.b64decode('${encodedSuite}').decode('utf-8'))
+    source=__randori_base64.b64decode('${encodedCode}').decode('utf-8')
+    safe_builtins={
+        'Exception':Exception,'IndexError':IndexError,'KeyError':KeyError,'TypeError':TypeError,
+        'ValueError':ValueError,'abs':abs,'all':all,'any':any,'bool':bool,'chr':chr,'dict':dict,'divmod':divmod,
+        'enumerate':enumerate,'filter':filter,'float':float,'int':int,'isinstance':isinstance,
+        'len':len,'list':list,'map':map,'max':max,'min':min,'next':next,'object':object,'ord':ord,
+        'pow':pow,'range':range,'reversed':reversed,'round':round,'set':set,'sorted':sorted,
+        'str':str,'sum':sum,'tuple':tuple,'zip':zip,
+    }
+    namespace={'__builtins__':safe_builtins}
+    ready=True
+    try:
+        exec(compile(source,'submission.py','exec'),namespace,namespace)
+    except Exception:
+        ready=False
+    fn=namespace.get(bundle['entrypoint'])
+    for index,test in enumerate(bundle['tests']):
+        ok=False
+        got=None
+        error=None
         try:
-            args=args_from(tc.get('input'))
-            got=fn(*args)
-            exp=deep_unwrap(tc.get('expect'))
-            passed=True if exp is None else deep_equal(got, exp)
-            print(json.dumps({"idx":i,"pass":bool(passed),"got":got,"expect":exp,"input":tc.get('input')}, default=str))
-        except Exception as e:
-            print(json.dumps({"idx":i,"pass":False,"error":str(e)[:400],"input":tc.get('input')}))
+            if not ready or not callable(fn):
+                raise RuntimeError('entrypoint not found')
+            got=fn(*test['args'])
+            __randori_json.dumps(got,separators=(',',':'))
+            ok=True
+        except Exception:
+            error='runtime error'
+        print('${resultPrefix}'+__randori_json.dumps({'idx':index,'ok':ok,'got':got,'error':error},separators=(',',':')))
 
-main()
+__randori_run()
 `;
 }
 
-function buildJavaHarness(userCode, testCases){
-  // Attempt robust harness for two-sum and valid-parentheses (LeetCode most common)
-  const hasSolution = userCode.includes('class Solution');
-  const safeCases = (testCases||[]).slice(0,6);
-  // detect two-sum by input containing nums
-  const isTwoSum = safeCases.some(tc=> {
-    try{ const inp = typeof tc.input==='string'? JSON.parse(tc.input): tc.input; const v = (typeof inp==='string'? JSON.parse(inp): inp); return v && typeof v==='object' && !Array.isArray(v) && ('nums' in v); }catch{ return String(tc.input||'').includes('nums'); }
-  }) || userCode.includes('twoSum');
-  const isValidParen = safeCases.some(tc=> {
-    try{ const inp = typeof tc.input==='string'? JSON.parse(tc.input): tc.input; const v = (typeof inp==='string'? JSON.parse(inp): inp); if(v && typeof v==='object' && 's' in v) return typeof v.s==='string'; }catch{} return false;
-  }) || userCode.includes('isValid');
-
-  if(isTwoSum){
-    // Build Java harness for twoSum
-    const casesJava = safeCases.map((tc,i)=>{
-      let nums=[2,7,11,15]; let target=9; let exp=[0,1];
-      try{
-        let inp = tc.input; if(typeof inp==='string'){ try{ inp=JSON.parse(inp);}catch{}}
-        if(typeof inp==='string'){ try{ inp=JSON.parse(inp);}catch{}}
-        if(inp && typeof inp==='object' && !Array.isArray(inp) && 'nums' in inp){ nums=inp.nums; target=inp.target ?? inp.t ?? 9; }
-        let ex = tc.expect; if(typeof ex==='string'){ try{ ex=JSON.parse(ex);}catch{}}
-        if(typeof ex==='string'){ try{ ex=JSON.parse(ex);}catch{}}
-        if(Array.isArray(ex)) exp=ex;
-      }catch{}
-      const numsLit = 'new int[]{'+(nums||[]).join(',')+'}';
-      const expLit = 'new int[]{'+(exp||[]).join(',')+'}';
-      return `{ int[] nums = ${numsLit}; int target=${target}; int[] expected=${expLit}; int[] got = sol.twoSum(nums,target); boolean pass = got!=null && expected!=null && ((got.length==2 && expected.length==2 && ((got[0]==expected[0] && got[1]==expected[1]) || (got[0]==expected[1] && got[1]==expected[0]))) || java.util.Arrays.equals(got,expected)); System.out.println("{\\\"idx\\\":"+${i}+",\\\"pass\\\":\"+pass+\",\\\"got\\\":\"+java.util.Arrays.toString(got)+",\\\"expect\\\":\"+java.util.Arrays.toString(expected)+"}".replace("\\\"","\"")); }`;
-    }).join('\n');
-    // If userCode already has Solution, compile together; Piston expects one file Main.java, cannot have two public classes – Solution non-public is fine.
-    if(hasSolution){
-      return userCode + "\nimport java.util.*;\npublic class Main{ public static void main(String[] args){ Solution sol=new Solution();\n"+casesJava.replace(/\bSol\b/g,'sol')+"\n} }";
-    } else {
-      // userCode is raw method – wrap into Solution
-      return "import java.util.*;\nclass Solution{\n"+userCode+"\n}\npublic class Main{ public static void main(String[] args){ Solution sol=new Solution();\n"+casesJava+"\n} }";
-    }
+function runnerValuesEqual(a,b){
+  if(Object.is(a,b)) return true;
+  if(Array.isArray(a) && Array.isArray(b)){
+    return a.length===b.length && a.every((value,index)=>runnerValuesEqual(value,b[index]));
   }
-  if(isValidParen){
-    const casesJava = safeCases.map((tc,i)=>{
-      let s="()"; let exp=true;
-      try{
-        let inp=tc.input; if(typeof inp==='string'){ try{ inp=JSON.parse(inp);}catch{}}
-        if(typeof inp==='string'){ try{ inp=JSON.parse(inp);}catch{}}
-        if(inp && typeof inp==='object' && 's' in inp) s=inp.s;
-        else if(typeof inp==='string') s=inp;
-        let ex=tc.expect; if(typeof ex==='string'){ try{ ex=JSON.parse(ex);}catch{} }
-        if(typeof ex==='boolean') exp=ex;
-        else if(typeof ex==='string') exp = ex==='true' || ex.toLowerCase().includes('true');
-      }catch{}
-      return `{ String s="${String(s).replace(/"/g,'\\"')}"; boolean expected=${exp}; boolean got; try{ got=sol.isValid(s);}catch(Exception e){ got=false;} boolean pass=(got==expected); System.out.println("{\\\"idx\\\":"+${i}+",\\\"pass\\\":\"+pass+",\"got\":"+got+",\"expect\":"+expected+"\"}"); }`;
-    }).join('\n');
-    if(hasSolution){
-      return userCode + "\npublic class Main{ public static void main(String[] args){ Solution sol=new Solution();\n"+casesJava+"\n} }";
-    } else {
-      return "import java.util.*;\nclass Solution{\n"+userCode+"\n}\npublic class Main{ public static void main(String[] args){ Solution sol=new Solution();\n"+casesJava+"\n} }";
-    }
+  if(a && b && typeof a==='object' && typeof b==='object'){
+    const aKeys=Object.keys(a), bKeys=Object.keys(b);
+    return aKeys.length===bKeys.length
+      && aKeys.every(key=>Object.prototype.hasOwnProperty.call(b,key) && runnerValuesEqual(a[key],b[key]));
   }
-  if(hasSolution){
-    return userCode + "\nimport java.util.*;\npublic class Main{ public static void main(String[] args){ System.out.println(\"{\\\"note\\\":\\\"java execution ready - provide isValid/twoSum\\\"}\"); } }";
-  }
-  return "import java.util.*;\npublic class Main{\n"+userCode+"\npublic static void main(String[] args){ System.out.println(\"{\\\"note\\\":\\\"java harness pending - define class Solution with twoSum/isValid\\\"}\"); } }";
+  return false;
 }
 
-function buildGoHarness(userCode, testCases){
-  const safe = (testCases||[]).slice(0,6);
-  const isTwoSum = safe.some(tc=> String(tc.input||'').includes('nums')) || userCode.includes('twoSum');
-  const isValid = safe.some(tc=> String(tc.input||'').includes('"s"') ) || userCode.includes('isValid');
-  if(isTwoSum){
-    const casesGo = safe.map((tc,i)=>{
-      let nums=[2,7,11,15]; let target=9;
-      try{ let inp=tc.input; if(typeof inp==='string'){ try{ inp=JSON.parse(inp);}catch{}} if(typeof inp==='string'){ try{ inp=JSON.parse(inp);}catch{}} if(inp && typeof inp==='object' && 'nums' in inp){ nums=inp.nums; target=inp.target??9; } }catch{}
-      return `{
-  nums := []int{${nums.join(',')}}
-  target := ${target}
-  got := twoSum(nums, target)
-  pass := len(got)==2
-  fmt.Printf("{\"idx\":${i},\"pass\":%v,\"got\":%v}\\n", pass, got)
-}`;
-    }).join('\n');
-    // wrap ensuring func twoSum exists
-    const needWrap = !userCode.includes('func twoSum');
-    const codeBlock = needWrap ? `func twoSum(nums []int, target int) []int { return []int{0,1} }
-`+userCode : userCode;
-    return `package main
-import ("fmt")
-`+codeBlock+`
-func main(){
-`+casesGo+`
-}`;
+function normalizeRunnerResults(stdout,resultPrefix,tests){
+  const byIndex=new Map();
+  for(const line of String(stdout||'').split('\n')){
+    const value=line.trim();
+    if(!value.startsWith(resultPrefix) || value.length>100000) continue;
+    try{
+      const parsed=JSON.parse(value.slice(resultPrefix.length));
+      if(!Number.isInteger(parsed.idx) || parsed.idx<0 || parsed.idx>=tests.length || typeof parsed.ok!=='boolean') continue;
+      const pass=parsed.ok && runnerValuesEqual(parsed.got,tests[parsed.idx].expected);
+      byIndex.set(parsed.idx,{idx:parsed.idx,pass,error:parsed.error ? 'runtime error' : null});
+    }catch{}
   }
-  if(isValid){
-    const casesGo = safe.map((tc,i)=>{
-      let s="()"; try{ let inp=tc.input; if(typeof inp==='string'){ try{ inp=JSON.parse(inp);}catch{}} if(typeof inp==='string'){ try{ inp=JSON.parse(inp);}catch{}} if(inp && typeof inp==='object' && 's' in inp) s=inp.s; else if(typeof inp==='string') s=inp; }catch{}
-      return `{
-  s := "${String(s).replace(/"/g,'\\"')}"
-  got := isValid(s)
-  fmt.Printf("{\"idx\":${i},\"pass\":%v,\"got\":%v}\\n", got, got)
-}`;
-    }).join('\n');
-    const codeBlock = userCode.includes('func isValid') ? userCode : `func isValid(s string) bool { return true }
-`+userCode;
-    return `package main
-import ("fmt")
-`+codeBlock+`
-func main(){
-`+casesGo+`
-}`;
-  }
-  return "package main\nimport (\"fmt\")\n"+userCode+"\nfunc main(){ fmt.Println(\"{\\\"note\\\":\\\"go harness pending - define twoSum/isValid\\\"}\") }";
+  return tests.map((_,idx)=>byIndex.get(idx)||{idx,pass:false,error:'no result'});
 }
 
-function buildCppHarness(userCode, testCases){
-  const safe = (testCases||[]).slice(0,6);
-  const isTwoSum = safe.some(tc=> String(tc.input||'').includes('nums')) || userCode.includes('twoSum');
-  const isValid = userCode.includes('isValid') || safe.some(tc=> String(tc.input||'').includes('()') );
-  if(isTwoSum){
-    // build simple C++ harness
-    const casesCpp = safe.map((tc,i)=>{
-      let nums=[2,7,11,15]; let target=9;
-      try{ let inp=tc.input; if(typeof inp==='string'){ try{ inp=JSON.parse(inp);}catch{}} if(typeof inp==='string'){ try{ inp=JSON.parse(inp);}catch{}} if(inp && typeof inp==='object' && 'nums' in inp){ nums=inp.nums; target=inp.target??9; } }catch{}
-      const numsInit = nums.join(',');
-      return `{
-  vector<int> nums = {${numsInit}};
-  int target=${target};
-  vector<int> got = sol.twoSum(nums,target);
-  bool pass = got.size()==2;
-  cout << "{\"idx\":${i},\"pass\":" << (pass?"true":"false") << ",\"got_size\":" << got.size() << "}" << endl;
-}`;
-    }).join('\n');
-    // assume user provides class Solution with method
-    const hasSol = userCode.includes('class Solution');
-    if(hasSol){
-      return "#include <bits/stdc++.h>\nusing namespace std;\n"+userCode+"\nint main(){ Solution sol;\n"+casesCpp+"\nreturn 0; }";
-    } else {
-      return "#include <bits/stdc++.h>\nusing namespace std;\nclass Solution{ public: vector<int> twoSum(vector<int>& nums, int target){ return {0,1}; } };\n"+userCode+"\nint main(){ Solution sol;\n"+casesCpp+"\nreturn 0;}";
-    }
+function positiveInteger(value){
+  const parsed=Number(value);
+  return Number.isInteger(parsed) && parsed>0 ? parsed : null;
+}
+
+async function acquireExecutionLease(db,userId,req,metadata){
+  const route=String(req.url||'').slice(0,300);
+  const userAgent=String(req.headers?.['user-agent']||'').slice(0,300);
+  const ip=String(req.headers?.['x-forwarded-for']||'').split(',')[0].trim().slice(0,80);
+  const result=await db.execute({
+    sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at)
+      SELECT 'info','runner','execute_lease_start','execution lease acquired',?,?,?,?,?, datetime('now')
+      WHERE NOT EXISTS (
+        SELECT 1 FROM app_logs lease_start
+        WHERE lease_start.user_id=?
+          AND lease_start.source='runner'
+          AND lease_start.event='execute_lease_start'
+          AND datetime(lease_start.created_at)>=datetime('now','-30 seconds')
+          AND NOT EXISTS (
+            SELECT 1 FROM app_logs lease_end
+            WHERE lease_end.user_id=lease_start.user_id
+              AND lease_end.source='runner'
+              AND lease_end.event='execute_lease_end'
+              AND lease_end.id>lease_start.id
+              AND lease_end.message=CAST(lease_start.id AS TEXT)
+          )
+      )
+      RETURNING id`,
+    args:[JSON.stringify(metadata),userId,route,userAgent,ip,userId],
+  });
+  return positiveInteger(result.rows[0]?.id);
+}
+
+async function releaseExecutionLease(db,userId,leaseId,req){
+  if(!leaseId) return;
+  try{
+    await db.execute({
+      sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at) VALUES ('info','runner','execute_lease_end',?,?,?,?,?,?, datetime('now'))`,
+      args:[String(leaseId),JSON.stringify({lease_id:leaseId}),userId,String(req.url||'').slice(0,300),String(req.headers?.['user-agent']||'').slice(0,300),String(req.headers?.['x-forwarded-for']||'').split(',')[0].trim().slice(0,80)],
+    });
+  }catch(e){
+    captureSentryException(e,{tags:{event:'execute_lease_release_fail',source:'runner'}});
   }
-  if(isValid){
-    return "#include <bits/stdc++.h>\nusing namespace std;\n"+userCode+"\nclass SolutionStub{ public: bool isValid(string s){ return true; } }; int main(){ SolutionStub sol; cout << \"{\\\"idx\\\":0,\\\"pass\\\":true}\" << endl; return 0; }";
-  }
-  return "#include <bits/stdc++.h>\nusing namespace std;\n"+userCode+"\nint main(){ cout << \"{\\\"note\\\":\\\"cpp harness ready - define Solution::twoSum\\\"}\" << endl; return 0; }";
 }
 
 async function handleExecute(req,res){
   const _execStart=Date.now();
   if(req.method!=='POST') return res.status(405).json({error:'POST only for execute'});
-  if(!getAuthPayload(req)) return res.status(401).json({error:'authentication required'});
-  try{ await ensureBaseTables(getClient()); }catch{}
-  try{ await ensureAppLogs(getClient()); }catch{}
+  const payload=getAuthPayload(req);
+  if(!payload) return res.status(401).json({error:'authentication required'});
   const body = req.body || {};
-  let language = String(body.language||body.lang||'javascript').toLowerCase();
+  const language = String(body.language||body.lang||'javascript').toLowerCase();
   const map = {js:'javascript', javascript:'javascript', py:'python', python:'python'};
   const pistonLang = map[language];
   if(!pistonLang) return res.status(400).json({error:'supported languages are javascript and python'});
-  const code = String(body.code||'').slice(0,20000);
+  const code = String(body.code||'');
   if(!code) return res.status(400).json({error:'code required'});
-  let testCases = body.test_cases || body.testCases || [];
-  if(typeof testCases==='string'){ try{ testCases=JSON.parse(testCases);}catch{ testCases=[]; } }
-  if(!Array.isArray(testCases)) testCases=[];
-  testCases=testCases.slice(0,6);
-  if(!testCases.length){ testCases=[{input:'', expect:null}]; }
-  const versionMap = {javascript:'18.15.0', typescript:'5.0.3', python:'3.10.0', java:'15.0.2', go:'1.16.2', 'c++':'10.2.0', c:'10.2.0'};
-  let version = versionMap[pistonLang] || 'latest';
-  let harness='', filename='';
-  if(pistonLang==='javascript'){ harness=buildJsHarness(code, testCases); filename='main.js'; }
-  else if(pistonLang==='typescript'){ harness=buildTsHarness(code, testCases); filename='main.ts'; }
-  else if(pistonLang==='python'){ harness=buildPythonHarness(code, testCases); filename='main.py'; }
-  else if(pistonLang==='java'){ harness=buildJavaHarness(code, testCases); filename='Main.java'; }
-  else if(pistonLang==='go'){ harness=buildGoHarness(code, testCases); filename='main.go'; }
-  else if(pistonLang==='c++'){ harness=buildCppHarness(code, testCases); filename='main.cpp'; }
-  else { harness=code; filename='main.js'; }
+  if(Buffer.byteLength(code,'utf8')>20000) return res.status(413).json({error:'code exceeds the 20000-byte limit'});
+
+  const questionSlug=String(body.question_slug||body.slug||'').trim().slice(0,120);
+  if(!questionSlug) return res.status(400).json({error:'question_slug required'});
+  const rawQuestionVersion=body.question_version??body.version;
+  const questionVersion=rawQuestionVersion==null || rawQuestionVersion===''
+    ? listPublicExercises().find(question=>question.slug===questionSlug)?.version??null
+    : positiveInteger(rawQuestionVersion);
+  if(rawQuestionVersion!=null && rawQuestionVersion!=='' && !questionVersion){
+    return res.status(400).json({error:'question_version must be a positive integer'});
+  }
+  const testSuite=createEvaluationSuite(questionSlug,questionVersion,pistonLang);
+  if(!testSuite) return res.status(404).json({error:'question not found or unavailable'});
+
+  // Schema creation is a deploy-time migration concern. Request handling stays
+  // read/write-only and fails closed if the deployment has not been prepared.
+  const db=getClient();
+
+  const weekId=body.week_id==null || body.week_id==='' ? null : positiveInteger(body.week_id);
+  const rawPairId=body.pair_group_id??body.pg_id??body.pair_id;
+  const pairId=rawPairId==null || rawPairId==='' ? null : positiveInteger(rawPairId);
+  if((weekId===null)!==(pairId===null)) return res.status(400).json({error:'week_id and pair_group_id must be provided together'});
+  if((body.week_id!=null && body.week_id!=='' && !weekId) || (rawPairId!=null && rawPairId!=='' && !pairId)){
+    return res.status(400).json({error:'week_id and pair_group_id must be positive integers'});
+  }
+  if(weekId && pairId){
+    const access=await getPairAccess(db,payload,weekId,pairId);
+    if(!access.exists) return res.status(404).json({error:'pair not found'});
+    if(!access.allowed) return res.status(403).json({error:'not member of this pair'});
+  }
+
+  // Client test cases and result/count fields are deliberately ignored. The exact
+  // versioned suite is resolved above from the private server catalogue.
+  const runtimeVersions={javascript:'18.15.0',python:'3.10.0'};
+  const runtimeVersion=runtimeVersions[pistonLang];
+  const resultPrefix=`__RANDORI_RESULT_${randomBytes(16).toString('hex')}__:`;
+  const harness=pistonLang==='javascript'
+    ? buildJsHarness(code,testSuite,resultPrefix)
+    : buildPythonHarness(code,testSuite,resultPrefix);
+  const filename=pistonLang==='javascript' ? 'main.js' : 'main.py';
+
+  const userId=positiveInteger(payload.id||payload.uid);
+  if(!userId) return res.status(401).json({error:'authentication required'});
+  const executionKey=String(userId);
+  if(__activeExecutionsByUser.has(executionKey)){
+    return res.status(429).json({error:'an execution is already in progress',retry_after_seconds:1});
+  }
+  __activeExecutionsByUser.add(executionKey);
+  let leaseId=null;
   try{
-    const pistonRes = await callPistonAPI(pistonLang, version, [{name:filename, content:harness}]);
+    leaseId=await acquireExecutionLease(db,userId,req,{question_slug:questionSlug,question_version:questionVersion,language:pistonLang});
+    if(!leaseId){
+      __activeExecutionsByUser.delete(executionKey);
+      return res.status(429).json({error:'an execution is already in progress',retry_after_seconds:30});
+    }
+    const rateResults=await db.batch([{
+      sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at) VALUES ('info','runner','execute_attempt','execution requested',?,?,?,?,?, datetime('now'))`,
+      args:[JSON.stringify({question_slug:questionSlug,question_version:questionVersion,language:pistonLang}),userId,String(req.url||'').slice(0,300),String(req.headers?.['user-agent']||'').slice(0,300),String(req.headers?.['x-forwarded-for']||'').split(',')[0].trim().slice(0,80)],
+    },{
+      sql:`SELECT COUNT(*) as c FROM app_logs WHERE user_id=? AND source='runner' AND event='execute_attempt' AND datetime(created_at)>=datetime('now','-1 minute')`,
+      args:[userId],
+    }],'write');
+    const recent=rateResults[1];
+    if(Number(recent?.rows?.[0]?.c||0)>EXECUTIONS_PER_MINUTE){
+      await releaseExecutionLease(db,userId,leaseId,req);
+      leaseId=null;
+      __activeExecutionsByUser.delete(executionKey);
+      return res.status(429).json({error:'execution rate limit exceeded',retry_after_seconds:60});
+    }
+  }catch(e){
+    await releaseExecutionLease(db,userId,leaseId,req);
+    leaseId=null;
+    __activeExecutionsByUser.delete(executionKey);
+    captureSentryException(e,{tags:{event:'execute_rate_limit_fail',source:'runner'}});
+    return res.status(503).json({error:'execution service unavailable'});
+  }
+
+  try{
+    const pistonRes = await callPistonAPI(pistonLang,runtimeVersion,[{name:filename,content:harness}]);
     const run = pistonRes.run || {};
     const stdout = String(run.stdout||'');
     const stderr = String(run.stderr||'');
-    const results=[];
-    for(const line of stdout.split('\n')){
-      const t=line.trim();
-      if(!t) continue;
-      if(t.startsWith('{') && t.endsWith('}')){
-        try{ const o=JSON.parse(t); results.push(o); }catch{ results.push({raw:t}); }
-      } else {
-        results.push({raw:t});
-      }
-    }
-    if(results.length===0){
-      results.push({raw:stdout.slice(0,2000), stderr:stderr.slice(0,1000)});
-    }
+    const results=normalizeRunnerResults(stdout,resultPrefix,testSuite.tests);
     const passed = results.filter(r=>r.pass===true).length;
     const dur = Date.now()-_execStart;
-    try{ await logServer(passed===testCases.length?'success':'info', 'execute_success', `piston ${pistonLang} ${passed}/${testCases.length} in ${dur}ms`, {language:pistonLang, version, passed, total:testCases.length, dur, hasStderr:!!stderr}, {req, source:'runner', route:req.url}); }catch{}
-    return res.json({ok:true, language:pistonLang, version, piston:{code:run.code, signal:run.signal, stderr:stderr.slice(0,2000), stdout:stdout.slice(0,5000)}, results, passed_count:passed, total_count:testCases.length, test_cases:testCases});
+    const total=testSuite.tests.length;
+    let runId=null;
+    try{
+      const storedResults=JSON.stringify(results);
+      const attestation=signRunAttestation({
+        userId,
+        questionSlug,
+        questionVersion,
+        language:pistonLang,
+        passedCount:passed,
+        totalCount:total,
+        resultsJson:storedResults,
+      });
+      const testSnapshot=JSON.stringify({source:'original-catalog',version:questionVersion,total_count:total,attestation_version:2,attestation_key_id:attestation.keyId,attestation:attestation.signature});
+      const inserted=await db.execute({
+        sql:`INSERT INTO session_runs (user_id, week_id, pair_group_id, question_id, question_slug, language, code, test_cases_snapshot, results_json, passed_count, total_count, duration_ms, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?, ?, datetime('now')) RETURNING id`,
+        args:[payload.id||payload.uid,weekId,pairId,null,questionSlug,pistonLang,code,testSnapshot,storedResults,passed,total,dur],
+      });
+      runId=inserted.rows[0]?.id??null;
+    }catch(e){
+      captureSentryException(e,{tags:{event:'run_persist_fail',source:'runner'},extra:{question_slug:questionSlug,question_version:questionVersion}});
+      return res.status(500).json({ok:false,error:'execution result could not be saved'});
+    }
+    try{ await logServer(passed===total?'success':'info','execute_success',`piston ${pistonLang} ${passed}/${total} in ${dur}ms`,{language:pistonLang,runtimeVersion,questionSlug,questionVersion,passed,total,dur,hasStderr:!!stderr,runId},{req,payload,source:'runner',route:req.url,skipEnsure:true}); }catch{}
+    await releaseExecutionLease(db,userId,leaseId,req);
+    leaseId=null;
+    __activeExecutionsByUser.delete(executionKey);
+    return res.json({
+      ok:true,
+      question_slug:questionSlug,
+      question_version:questionVersion,
+      language:pistonLang,
+      version:runtimeVersion,
+      runtime_version:runtimeVersion,
+      piston:{
+        code:Number.isInteger(run.code)?run.code:null,
+        signal:typeof run.signal==='string'?run.signal.slice(0,64):null,
+        has_stderr:!!stderr,
+      },
+      results,
+      passed_count:passed,
+      total_count:total,
+      run_id:runId,
+    });
   }catch(e){
-    try{ await logServer('error', 'execute_fail', `piston ${pistonLang} fail: ${String(e.message||e).slice(0,200)}`, {language:pistonLang, err:String(e.message||e).slice(0,500)}, {req, source:'runner', route:req.url}); }catch{}
-    return res.status(500).json({ok:false, error:'piston execute failed', detail:String(e.message||e).slice(0,500), language:pistonLang});
+    try{ await logServer('error','execute_fail',`piston ${pistonLang} request failed`,{language:pistonLang},{req,source:'runner',route:req.url,skipEnsure:true}); }catch{}
+    return res.status(500).json({ok:false,error:'piston execute failed',language:pistonLang});
+  }finally{
+    await releaseExecutionLease(db,userId,leaseId,req);
+    __activeExecutionsByUser.delete(executionKey);
   }
 }
 
@@ -1874,7 +1914,10 @@ export default async function handler(req,res){
   if (ep==='questions' || ep==='question' || path.includes('/questions')) return await handleQuestions(req,res);
   return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['health','runs','execute','logs','leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','schedule','messages','questions'] });
   }catch(e){
-    try{ await logServer('error','api_unhandled', String(e && e.message||e).slice(0,500), {stack: e && e.stack ? String(e.stack).slice(0,2000):'', url: req && req.url}, {req, source:'server', route: req && req.url, skipSentry:true}); }catch{}
+    const failedEndpoint=getEndpoint(req);
+    const failedPath=String(req?.url||'').toLowerCase();
+    const skipEnsure=failedEndpoint==='execute'||failedEndpoint==='run'||failedPath.includes('/execute');
+    try{ await logServer('error','api_unhandled', String(e && e.message||e).slice(0,500), {stack: e && e.stack ? String(e.stack).slice(0,2000):'', url: req && req.url}, {req, source:'server', route: req && req.url, skipSentry:true, skipEnsure}); }catch{}
     captureSentryException(e, {tags:{event:'api_unhandled', source:'server'}, extra:{route:req && req.url}});
     try{ console.error('[api unhandled]', e && e.stack||e); }catch{}
     return res.status(500).json({error:'internal', detail: String(e && e.message||e).slice(0,300)});
