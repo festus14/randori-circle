@@ -47,6 +47,7 @@
    ```
 4. Complete and verify the production backup/restore work tracked by issue #6 and the migration controls tracked by issue #8 before changing production data.
    Run `npm run --silent db:status` and `npm run --silent db:plan` against the restored copy and retain their JSON reports. These commands use only `SELECT`/`PRAGMA`; `db:plan` is descriptive and cannot apply changes. See [the schema inspection runbook](docs/DATABASE_SCHEMA_OPERATIONS.md).
+   The fingerprint-gated `db:migrate status`, `apply`, and `adopt` workflow may be rehearsed only against an explicit local `file:` URL. It never reads Turso credentials and rejects `libsql:`, `http:`, and `https:` targets. Remote production migration remains blocked until the backup/restore verifier is complete.
 5. Deploy with `CIRCLE_MEMBERSHIP_ENABLED=false` and `AUTH_SCHEMA_BOOTSTRAP_ENABLED=false`. The rollout-state checks are read-only; any legacy registration that races initialization is atomically included or rejected.
 6. If this is a fresh database with no account, temporarily set `AUTH_SCHEMA_BOOTSTRAP_ENABLED=true` and restrict `SIGNUP_ALLOWLIST` to the normalized `ADMIN_EMAILS` address. Sign in once with that Google account, immediately restore `AUTH_SCHEMA_BOOTSTRAP_ENABLED=false`, and redeploy. This explicit maintenance switch creates only the legacy auth baseline; it does not create membership tables.
 7. Sign in with the bootstrap account and verify `GET /api/auth/me` reports `is_admin: true`.

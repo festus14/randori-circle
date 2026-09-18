@@ -113,7 +113,7 @@ export function resolveCurrentArtifacts(operationSets,operation){
 export const TABLES=resolveCurrentArtifacts(SCHEMA_OPERATION_SETS,'ensure-table');
 export const INDEXES=resolveCurrentArtifacts(SCHEMA_OPERATION_SETS,'ensure-index');
 
-export const TOLERATED_LEGACY_TABLES=Object.freeze(['ai_monthly_usage']);
+export const TOLERATED_LEGACY_TABLES=Object.freeze(['ai_monthly_usage','schema_migrations']);
 
 export function stableJson(value){
   if(Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
@@ -136,7 +136,7 @@ export const SCHEMA_MANIFEST_CHECKSUM=checksum({
 
 // Updating the schema is intentional only when this pinned checksum is updated
 // in the same reviewed change.
-export const PINNED_SCHEMA_MANIFEST_CHECKSUM='46df08c20a198b1740750b108024c13c04c9d21575363408a76df0a44a7422c9';
+export const PINNED_SCHEMA_MANIFEST_CHECKSUM='c3d0b6f8c2d78d173f2c3b1ab56289e4aab687a466b21d57cd0197898b3f8c24';
 
 if(SCHEMA_MANIFEST_CHECKSUM!==PINNED_SCHEMA_MANIFEST_CHECKSUM){
   throw new Error(`Schema manifest checksum changed: ${SCHEMA_MANIFEST_CHECKSUM}`);
