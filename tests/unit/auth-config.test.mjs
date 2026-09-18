@@ -54,6 +54,11 @@ test('Google OAuth configuration fails closed for incomplete and unsafe values',
     {APP_URL:'https://randori.example.test?next=elsewhere'},
     {APP_URL:'https://randori.example.test#fragment'},
     {APP_URL:'https://127.0.0.1:3000'},
+    {APP_URL:'https://127.0.0.2:3000'},
+    {APP_URL:'https://127.255.255.255'},
+    {APP_URL:'https://[::1]:3000'},
+    {APP_URL:'https://[::ffff:7f00:1]:3000'},
+    {APP_URL:'https://[::ffff:127.0.0.2]:3000'},
     {RANDORI_LOCAL_RUNTIME:'true'},
     {VERCEL_ENV:'preview',APP_URL:'http://localhost:3000'},
   ];
@@ -74,16 +79,19 @@ test('OAuth requests must match the advertised host and secure proxy protocol',(
   const env=productionEnv();
   for(const request of [
     {headers:{}},
+    {headers:{'x-forwarded-host':'randori.example.test','x-forwarded-proto':'https'}},
     productionRequest({host:'preview.example.test'}),
     productionRequest({'x-forwarded-host':'preview.example.test'}),
+    productionRequest({'x-forwarded-host':'randori.example.test, evil.example.test'}),
     productionRequest({'x-forwarded-proto':'http'}),
     productionRequest({'x-forwarded-proto':''}),
+    productionRequest({'x-forwarded-proto':'https, http'}),
   ]){
     assert.equal(googleOAuthRequestConfiguration(request,env),null);
   }
-  assert.ok(googleOAuthRequestConfiguration({
-    headers:{host:'ignored.example.test','x-forwarded-host':'randori.example.test','x-forwarded-proto':'https, http'},
-  },env));
+  assert.ok(googleOAuthRequestConfiguration(productionRequest({
+    'x-forwarded-host':'randori.example.test',
+  }),env));
 });
 
 test('auth response headers prevent caching, sniffing, and callback referrer leakage',()=>{
