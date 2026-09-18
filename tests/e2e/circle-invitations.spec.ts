@@ -215,6 +215,7 @@ test('flag-off legacy circle responses keep the existing roster and admin testin
   await resetClientState(page, true);
 
   await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await expect(page.locator('#meLabel')).toContainText('Circle Owner');
   await page.locator('[data-tab="circle"]').click();
   await expect(page.getByTestId('circle-members')).toContainText('Team Mate');
   await expect(page.locator('#circleRoleLabel')).toHaveText('legacy');
