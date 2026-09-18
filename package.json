@@ -14,6 +14,8 @@
   },
   "scripts": {
     "audit:prod": "npm audit --omit=dev --audit-level=moderate",
+    "dev": "node --env-file-if-exists=.env.local scripts/local-server.mjs",
+    "dev:reset": "node --env-file-if-exists=.env.local scripts/local-reset.mjs",
     "db:migrate": "node scripts/db-migrate.mjs",
     "db:plan": "node scripts/db-inspect.mjs plan",
     "db:status": "node scripts/db-inspect.mjs status",

@@ -5,6 +5,9 @@ import { redactSentryText, sanitizeSentryContext, sanitizeSentryEvent } from './
 export const JWT_ISSUER = 'randori-circle';
 export const JWT_AUDIENCE = 'randori-web';
 
+let localDevelopmentClient=null;
+let localDevelopmentClientUrl='';
+
 // ---- Sentry server init (optional, DSN via env) ----
 import * as Sentry from '@sentry/node';
 let sentryInit = false;
@@ -72,7 +75,29 @@ export function getClient() {
   const url = process.env.TURSO_DATABASE_URL;
   const authToken = process.env.TURSO_AUTH_TOKEN;
   if (!url) throw new Error("Missing TURSO_DATABASE_URL");
+  if(process.env.RANDORI_LOCAL_RUNTIME==='true'){
+    let parsed;
+    try{ parsed=new URL(url); }catch{ throw new Error('Invalid local database URL'); }
+    if(process.env.NODE_ENV==='production'||parsed.protocol!=='file:'||parsed.host||authToken){
+      throw new Error('Local runtime requires a credential-free file database');
+    }
+    if(localDevelopmentClient&&localDevelopmentClientUrl!==url){
+      throw new Error('Local runtime database changed without shutdown');
+    }
+    if(!localDevelopmentClient){
+      localDevelopmentClient=createClient({url});
+      localDevelopmentClientUrl=url;
+    }
+    return localDevelopmentClient;
+  }
   return createClient({ url, authToken });
+}
+
+export async function closeLocalDevelopmentClient(){
+  const client=localDevelopmentClient;
+  localDevelopmentClient=null;
+  localDevelopmentClientUrl='';
+  await client?.close?.();
 }
 
 export function getJwtSecret() {

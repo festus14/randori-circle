@@ -87,8 +87,24 @@ For attestation-key rotation, move each former `RUN_ATTESTATION_SECRET` into the
 
 Requires Node.js 24 or newer and Python 3 (`python3`) for the aggregate execution tests.
 
+For the usable local MVP, install dependencies and start the real SPA plus API on loopback:
+
 ```bash
 npm ci
+npm run dev
+```
+
+Open `http://127.0.0.1:3000`. The server creates `.local/randori.db`, runs the reviewed migrations before listening, and stores its local-only session key beside the database. Both persist across restarts and are gitignored. Manual email/password signup is open only in this isolated development runtime; no Turso or provider credentials are required. The first successfully created local account is bootstrapped as the local admin so it can initialize and run pairing; later accounts remain regular members.
+
+An optional `.env.local` may set `RANDORI_LOCAL_PORT`, `RANDORI_LOCAL_HOST` (`127.0.0.1` or `::1` only), or an absolute `file:` `RANDORI_LOCAL_DATABASE_URL` directly inside this checkout's `.local` directory. The command refuses production/Vercel mode, remote database URLs, non-loopback binding, remote database credentials, unsafe permissions, symlinks, and unmanaged schema. Other ambient provider credentials are blanked before API code loads and restored on shutdown. Reset only this verified local state with an explicit confirmation:
+
+```bash
+npm run dev:reset -- --confirm
+```
+
+`npm run start:test` remains the mock-first static Playwright fixture; it intentionally does not run real API handlers or use the local MVP database.
+
+```bash
 npm run audit:prod
 npm run validate:catalog
 npm run check:runtime-ddl
