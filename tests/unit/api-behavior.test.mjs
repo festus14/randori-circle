@@ -184,8 +184,8 @@ test('an unhandled data API failure is reported to Sentry exactly once', async (
   console.error=()=>{};
   try{
     const result=await invoke(dataHandler,{
-      url:'/api/history',
-      query:{endpoint:'history'},
+      url:'/api/profile',
+      query:{endpoint:'profile'},
       headers:{'x-test-auth':'user'},
     });
     assert.equal(result.status,500);
