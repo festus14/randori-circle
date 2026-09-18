@@ -1,5 +1,6 @@
 import { createClient } from '@libsql/client';
 import jwt from 'jsonwebtoken';
+import { redactSentryText, sanitizeSentryContext, sanitizeSentryEvent } from './_sentry.js';
 
 export const JWT_ISSUER = 'randori-circle';
 export const JWT_AUDIENCE = 'randori-web';
@@ -7,6 +8,7 @@ export const JWT_AUDIENCE = 'randori-web';
 // ---- Sentry server init (optional, DSN via env) ----
 import * as Sentry from '@sentry/node';
 let sentryInit = false;
+
 export function initSentry() {
   if (sentryInit) return;
   try {
@@ -16,10 +18,10 @@ export function initSentry() {
       dsn,
       environment: process.env.VERCEL_ENV || process.env.NODE_ENV || 'production',
       tracesSampleRate: 0.1,
-      beforeSend(event) {
-        // tag common
-        return event;
-      }
+      sendDefaultPii: false,
+      beforeSend: sanitizeSentryEvent,
+      beforeSendTransaction: sanitizeSentryEvent,
+      beforeSendSpan: sanitizeSentryEvent,
     });
     sentryInit = true;
   } catch (e) {
@@ -29,6 +31,34 @@ export function initSentry() {
 initSentry();
 
 export function getSentry() { return { Sentry, ready: sentryInit }; }
+
+export function captureSentryMessage(message, context = {}) {
+  initSentry();
+  if (!sentryInit) return null;
+  try {
+    return Sentry.captureMessage(
+      redactSentryText(message),
+      sanitizeSentryContext(context),
+    );
+  } catch (error) {
+    try { console.warn('[sentry capture message fail]', error && error.message); } catch {}
+    return null;
+  }
+}
+
+export function captureSentryException(error, context = {}) {
+  initSentry();
+  if (!sentryInit) return null;
+  try {
+    return Sentry.captureException(
+      error,
+      sanitizeSentryContext(context),
+    );
+  } catch (captureError) {
+    try { console.warn('[sentry capture exception fail]', captureError && captureError.message); } catch {}
+    return null;
+  }
+}
 
 export function getClient() {
   const url = process.env.TURSO_DATABASE_URL;

@@ -3,7 +3,7 @@
     "@libsql/client": "^0.12.0",
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",
-    "@sentry/node": "^8.42.0",
+    "@sentry/node": "^10.75.0",
     "resend": "^4.0.0"
   },
   "name": "randori-circle",
@@ -13,6 +13,7 @@
     "node": ">=24"
   },
   "scripts": {
+    "audit:prod": "npm audit --omit=dev --audit-level=moderate",
     "check:syntax": "node tests/static/check-syntax.mjs",
     "test:unit": "node --experimental-test-module-mocks --test tests/unit/*.test.mjs",
     "test:coverage": "node --experimental-test-module-mocks --experimental-test-coverage --test-coverage-include='api/*.js' --test-coverage-lines=52 --test-coverage-branches=52 --test-coverage-functions=52 --test tests/unit/*.test.mjs",

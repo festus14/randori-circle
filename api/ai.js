@@ -1,5 +1,4 @@
-import { getClient, initSentry, getSentry, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
-import * as SentryLib from '@sentry/node';
+import { captureSentryException, captureSentryMessage, getClient, initSentry, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 
 initSentry();
 
@@ -118,19 +117,13 @@ async function logServer(level, event, message, meta, reqCtx){
     }catch{}
     await db.execute({sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at) VALUES (?,?,?,?,?,?,?,?,?, datetime('now'))`, args:[lvl, src, ev, msg, metaStr, user_id, route, ua, ip]});
     try{
-      if((lvl==='error' || lvl==='warn') && process.env.SENTRY_DSN){
-        try{ initSentry(); }catch{}
-        const {Sentry, ready} = (()=>{ try{ return getSentry(); }catch{ return {Sentry:null, ready:false}; } })();
-        if(ready && Sentry){
-          const tags={event: ev||'ai', level:lvl, source:src};
-          if(lvl==='error'){
-            Sentry.captureMessage(msg, {level:'error', tags, extra:{meta: metaStr?.slice(0,1500), route}});
-          }else{
-            Sentry.captureMessage(msg, {level:'warning', tags, extra:{meta: metaStr?.slice(0,1500)}});
-          }
-        }else if(SentryLib && SentryLib.captureMessage && process.env.SENTRY_DSN){
-          SentryLib.captureMessage(msg, {level:lvl==='error'?'error':'warning'});
-        }
+      if((lvl==='error' || lvl==='warn') && process.env.SENTRY_DSN && !reqCtx?.skipSentry){
+        const tags={event: ev||'ai', level:lvl, source:src};
+        captureSentryMessage(msg, {
+          level:lvl==='error'?'error':'warning',
+          tags,
+          extra:{meta: metaStr?.slice(0,1500), route},
+        });
       }
     }catch{}
   }catch{}
@@ -640,12 +633,8 @@ export default async function handler(req,res){
     if (req.method==='POST') return await handleAnalyze(req,res);
     return res.status(400).json({ error:'ai route required: analyze|feedback/:id|history', got:ep, available:['analyze','feedback','history'] });
   }catch(e){
-    try{ await logServer('error','api_unhandled', String(e && e.message||e).slice(0,500), {stack: e && e.stack ? String(e.stack).slice(0,2000):'', url: req && req.url}, {req, source:'server-ai', route:req && req.url}); }catch{}
-    try{
-      const {Sentry, ready}= (()=>{ try{ return getSentry(); }catch{ return {Sentry:null, ready:false}; } })();
-      if(ready && Sentry) Sentry.captureException(e);
-      else if(SentryLib && SentryLib.captureException) SentryLib.captureException(e);
-    }catch{}
+    try{ await logServer('error','api_unhandled', String(e && e.message||e).slice(0,500), {stack: e && e.stack ? String(e.stack).slice(0,2000):'', url: req && req.url}, {req, source:'server-ai', route:req && req.url, skipSentry:true}); }catch{}
+    captureSentryException(e, {tags:{event:'api_unhandled', source:'server-ai'}, extra:{route:req && req.url}});
     return res.status(500).json({ ok:false, error:'ai_unhandled' });
   }
 }

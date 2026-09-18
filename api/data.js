@@ -1,5 +1,4 @@
-import { getClient, getAdminEmails, initSentry, getSentry, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
-import * as SentryLib from '@sentry/node';
+import { captureSentryException, captureSentryMessage, getClient, getAdminEmails, initSentry, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 
 function isAdminCheck(email, flag){
   if (flag) return true;
@@ -607,25 +606,18 @@ async function logServer(level, event, message, meta, reqCtx){
     await db.execute({sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at) VALUES (?,?,?,?,?,?,?,?,?, datetime('now'))`, args:[lvl, src, ev, msg, metaStr, user_id, route, ua, ip]});
     // Forward to Sentry server if error/warn
     try{
-      if((lvl==='error' || lvl==='warn') && process.env.SENTRY_DSN){
-        try{ initSentry(); }catch{}
-        const {Sentry, ready} = (()=>{ try{ return getSentry(); }catch{ return {Sentry:null, ready:false}; } })();
-        if(ready && Sentry){
-          const tags={event: ev||'server', level:lvl, source:src};
-          if(lvl==='error'){
-            if(meta && meta.stack){
-              const e=new Error(msg.slice(0,500));
-              e.name=String(ev||'ServerError');
-              Sentry.captureException(e, {tags, extra: {meta: metaStr?.slice(0,2000), route, user_id}});
-            }else{
-              Sentry.captureMessage(msg, {level:'error', tags, extra:{meta: metaStr?.slice(0,2000), route}});
-            }
-          }else if(lvl==='warn'){
-            Sentry.captureMessage(msg, {level:'warning', tags, extra:{meta: metaStr?.slice(0,1500)}});
+      if((lvl==='error' || lvl==='warn') && process.env.SENTRY_DSN && !reqCtx?.skipSentry){
+        const tags={event: ev||'server', level:lvl, source:src};
+        if(lvl==='error'){
+          if(meta && meta.stack){
+            const e=new Error(msg.slice(0,500));
+            e.name=String(ev||'ServerError');
+            captureSentryException(e, {tags, extra: {meta: metaStr?.slice(0,2000), route, user_id}});
+          }else{
+            captureSentryMessage(msg, {level:'error', tags, extra:{meta: metaStr?.slice(0,2000), route}});
           }
-        } else if(SentryLib && SentryLib.captureMessage && process.env.SENTRY_DSN){
-          // fallback if init not via _db but direct
-          SentryLib.captureMessage(msg, {level:lvl==='error'?'error':'warning'});
+        }else if(lvl==='warn'){
+          captureSentryMessage(msg, {level:'warning', tags, extra:{meta: metaStr?.slice(0,1500)}});
         }
       }
     }catch(e){ try{ console.warn('[sentry server forward fail]', e && e.message);}catch{} }
@@ -1864,32 +1856,26 @@ export default async function handler(req,res){
   try{
   const ep = getEndpoint(req);
   const path = (req.url||'').toLowerCase();
-  if (ep==='runs' || ep==='session_runs' || ep==='session-runs' || path.includes('/runs')) return handleRuns(req,res);
-  if (ep==='leetcode-sync' || ep==='leetcode_sync' || path.includes('leetcode/sync') || path.includes('leetcode-sync')) return handleLeetcodeSync(req,res);
-  if (ep==='leetcode' || ep==='leetcode-detail' || ep==='leetcode_detail' || path.includes('/leetcode')) return handleLeetcode(req,res);
-  if (ep==='circle' || path.includes('/circle')) return handleCircle(req,res);
-  if (ep==='weeks' || path.includes('/weeks')) return handleWeeks(req,res);
-  if (ep==='history' || path.includes('/history')) return handleHistory(req,res);
-  if (ep==='stats' || path.includes('/stats')) return handleStats(req,res);
-  if (ep==='init' || path.includes('/init')) return handleInit(req,res);
-  if (ep==='profile' || path.includes('/profile')) return handleProfile(req,res);
-  if (ep==='my-pair' || path.includes('my-pair') || ep==='mypair' || path.includes('my_pair') || ep==='my_pair') return handleMyPair(req,res);
-  if (ep==='schedule' || path.includes('/schedule')) return handleSchedule(req,res);
-  if (ep.includes('message')) return handleMessages(req,res);
-  if (ep==='execute' || ep==='run' || path.includes('/execute')) return handleExecute(req,res);
-  if (ep==='health' || path.includes('/health') || ep==='healthz') return handleHealth(req,res);
-  if (ep==='logs' || path.includes('/logs') || ep==='applogs' || ep==='app_logs') return handleLogs(req,res);
-  if (ep==='questions' || ep==='question' || path.includes('/questions')) return handleQuestions(req,res);
+  if (ep==='runs' || ep==='session_runs' || ep==='session-runs' || path.includes('/runs')) return await handleRuns(req,res);
+  if (ep==='leetcode-sync' || ep==='leetcode_sync' || path.includes('leetcode/sync') || path.includes('leetcode-sync')) return await handleLeetcodeSync(req,res);
+  if (ep==='leetcode' || ep==='leetcode-detail' || ep==='leetcode_detail' || path.includes('/leetcode')) return await handleLeetcode(req,res);
+  if (ep==='circle' || path.includes('/circle')) return await handleCircle(req,res);
+  if (ep==='weeks' || path.includes('/weeks')) return await handleWeeks(req,res);
+  if (ep==='history' || path.includes('/history')) return await handleHistory(req,res);
+  if (ep==='stats' || path.includes('/stats')) return await handleStats(req,res);
+  if (ep==='init' || path.includes('/init')) return await handleInit(req,res);
+  if (ep==='profile' || path.includes('/profile')) return await handleProfile(req,res);
+  if (ep==='my-pair' || path.includes('my-pair') || ep==='mypair' || path.includes('my_pair') || ep==='my_pair') return await handleMyPair(req,res);
+  if (ep==='schedule' || path.includes('/schedule')) return await handleSchedule(req,res);
+  if (ep.includes('message')) return await handleMessages(req,res);
+  if (ep==='execute' || ep==='run' || path.includes('/execute')) return await handleExecute(req,res);
+  if (ep==='health' || path.includes('/health') || ep==='healthz') return await handleHealth(req,res);
+  if (ep==='logs' || path.includes('/logs') || ep==='applogs' || ep==='app_logs') return await handleLogs(req,res);
+  if (ep==='questions' || ep==='question' || path.includes('/questions')) return await handleQuestions(req,res);
   return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['health','runs','execute','logs','leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','schedule','messages','questions'] });
   }catch(e){
-    try{ await logServer('error','api_unhandled', String(e && e.message||e).slice(0,500), {stack: e && e.stack ? String(e.stack).slice(0,2000):'', url: req && req.url}, {req, source:'server', route: req && req.url}); }catch{}
-    try{
-      const {Sentry} = (()=>{ try{ return getSentry(); }catch{ return {Sentry:null}; } })();
-      if(Sentry && Sentry.captureException) Sentry.captureException(e);
-      else{
-        try{ const SL = await import('@sentry/node'); SL.captureException && SL.captureException(e); }catch{}
-      }
-    }catch{}
+    try{ await logServer('error','api_unhandled', String(e && e.message||e).slice(0,500), {stack: e && e.stack ? String(e.stack).slice(0,2000):'', url: req && req.url}, {req, source:'server', route: req && req.url, skipSentry:true}); }catch{}
+    captureSentryException(e, {tags:{event:'api_unhandled', source:'server'}, extra:{route:req && req.url}});
     try{ console.error('[api unhandled]', e && e.stack||e); }catch{}
     return res.status(500).json({error:'internal', detail: String(e && e.message||e).slice(0,300)});
   }

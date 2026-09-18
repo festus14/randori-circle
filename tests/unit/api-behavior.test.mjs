@@ -7,6 +7,7 @@ const realFetch = globalThis.fetch;
 let executeHandler = () => ({ rows: [], rowsAffected: 0 });
 let databaseDelegate = null;
 const executed = [];
+const sentryExceptionCalls = [];
 let lastPairingRun = null;
 let persistedPairGroups = [];
 
@@ -80,6 +81,8 @@ mock.module('../../api/_db.js', {
     verifyMutationOrigin: () => true,
     initSentry: () => {},
     getSentry: () => ({ Sentry: null, ready: false }),
+    captureSentryMessage: () => null,
+    captureSentryException: (...args) => { sentryExceptionCalls.push(args); return null; },
   },
 });
 
@@ -135,6 +138,7 @@ function invoke(handler, { method = 'GET', url = '/', query = {}, headers = {}, 
 
 beforeEach(() => {
   executed.length = 0;
+  sentryExceptionCalls.length = 0;
   databaseDelegate = null;
   lastPairingRun = null;
   persistedPairGroups = [];
@@ -146,6 +150,24 @@ beforeEach(() => {
     'ALLOW_OPEN_SIGNUP', 'SIGNUP_ALLOWLIST', 'LEETCODE_INGESTION_AUTHORIZED',
     'TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM',
   ]) delete process.env[key];
+});
+
+test('an unhandled data API failure is reported to Sentry exactly once', async () => {
+  executeHandler = () => { throw new Error('forced handler failure'); };
+  const originalError=console.error;
+  console.error=()=>{};
+  try{
+    const result=await invoke(dataHandler,{
+      url:'/api/history',
+      query:{endpoint:'history'},
+      headers:{'x-test-auth':'user'},
+    });
+    assert.equal(result.status,500);
+    assert.equal(sentryExceptionCalls.length,1);
+    assert.match(sentryExceptionCalls[0][0].message,/forced handler failure/);
+  }finally{
+    console.error=originalError;
+  }
 });
 
 after(() => {
