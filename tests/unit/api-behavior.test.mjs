@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { createHash, createHmac } from 'node:crypto';
 import { after, beforeEach, mock, test } from 'node:test';
 import { createClient } from '@libsql/client';
 import bcrypt from 'bcryptjs';
 
 const realFetch = globalThis.fetch;
+const TEST_JWT_SECRET = 'unit-test-secret-at-least-thirty-two-characters';
 let executeHandler = () => ({ rows: [], rowsAffected: 0 });
 let databaseDelegate = null;
 const executed = [];
@@ -32,6 +35,7 @@ const db = {
       return databaseDelegate.batch(statements, mode);
     }
     const nextGroups = [];
+    const results = [];
     for (const statement of statements) {
       if (sqlText(statement).includes('INSERT INTO pairing_week_runs')) {
         lastPairingRun = {
@@ -49,10 +53,10 @@ const db = {
           is_ai_pair: Number(statement.args[2]),
         });
       }
-      await this.execute(statement);
+      results.push(await this.execute(statement));
     }
     if (nextGroups.length) persistedPairGroups = nextGroups;
-    return statements.map(() => ({ rows: [], rowsAffected: 0 }));
+    return results;
   },
 };
 
@@ -69,7 +73,7 @@ mock.module('../../api/_db.js', {
     JWT_AUDIENCE: 'randori-web',
     JWT_ISSUER: 'randori-circle',
     getClient: () => db,
-    getJwtSecret: () => 'unit-test-secret-at-least-thirty-two-characters',
+    getJwtSecret: () => TEST_JWT_SECRET,
     getCronSecret: () => {
       if (!process.env.CRON_SECRET) throw new Error('Missing CRON_SECRET');
       return process.env.CRON_SECRET;
@@ -94,16 +98,28 @@ const [
   { default: dataHandler },
   { default: opsHandler },
   { default: videoHandler },
+  { createEvaluationSuite, listPublicExercises },
 ] = await Promise.all([
   import('../../api/ai.js'),
   import('../../api/auth.js'),
   import('../../api/data.js'),
   import('../../api/ops.js'),
   import('../../api/video.js'),
+  import('../../api/_catalog.js'),
 ]);
 
 function rows(values = [], extra = {}) {
   return { rows: values, rowsAffected: 0, ...extra };
+}
+
+function signRunForTest({userId,questionSlug,questionVersion,language,passedCount,totalCount,resultsJson}){
+  const resultsDigest=createHash('sha256').update(String(resultsJson||''),'utf8').digest('hex');
+  const payload=JSON.stringify([2,Number(userId),String(questionSlug),Number(questionVersion),String(language),Number(passedCount),Number(totalCount),resultsDigest]);
+  return createHmac('sha256',TEST_JWT_SECRET).update(`randori-run-attestation-v2\0${payload}`,'utf8').digest('hex');
+}
+
+function runKeyIdForTest(secret=TEST_JWT_SECRET){
+  return createHash('sha256').update(`randori-run-key\0${secret}`,'utf8').digest('hex').slice(0,16);
 }
 
 const sameOriginHeaders = {
@@ -152,6 +168,7 @@ beforeEach(() => {
     'GOOGLE_CLIENT_SECRET', 'GROQ_API_KEY', 'OPENAI_API_KEY', 'RESEND_API_KEY',
     'NEXT_PUBLIC_SENTRY_DSN', 'SENTRY_DSN',
     'ALLOW_OPEN_SIGNUP', 'SIGNUP_ALLOWLIST', 'LEETCODE_INGESTION_AUTHORIZED',
+    'RUN_ATTESTATION_SECRET', 'RUN_ATTESTATION_PREVIOUS_SECRETS',
     'TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM',
   ]) delete process.env[key];
 });
@@ -362,11 +379,12 @@ test('data read models map database rows into circle, weeks, history, stats, and
       { id: 10, week_label: '2026-W38', week_start: '2026-09-20', focus: 'both', is_demo: 0 },
     ]);
     if (sql.includes('FROM pairing_groups WHERE week_id IN')) return rows([
-      { pg_id: 20, week_id: 10, user_a_id: 2, user_b_id: 4, is_ai_pair: 0, topic: 'Arrays', topic_kind: 'dsa' },
+      { pg_id: 20, week_id: 10, user_a_id: 2, user_b_id: 4, user_c_id: 6, is_ai_pair: 0, topic: 'Arrays', topic_kind: 'dsa' },
     ]);
     if (sql.includes('display_name as name, color, tz')) return rows([
       { id: 2, name: 'User', color: '#123456', tz: 'UTC' },
       { id: 4, name: 'Partner', color: '#abcdef', tz: 'UTC' },
+      { id: 6, name: 'Third', color: '#fedcba', tz: 'UTC' },
     ]);
     if (sql.includes('FROM pairing_groups pg') && sql.includes('ORDER BY pw.week_start')) return rows([
       { pg_id: 20, week_id: 10, user_a_id: 2, user_b_id: 4, is_ai_pair: 0, week_label: '2026-W38', week_start: '2026-09-20' },
@@ -391,6 +409,8 @@ test('data read models map database rows into circle, weeks, history, stats, and
 
   const weeks = await invoke(dataHandler, { url: '/api/weeks', query: { endpoint: 'weeks' }, headers: auth });
   assert.equal(weeks.body.weeks[0].pairs[0].b_name, 'Partner');
+  assert.equal(weeks.body.weeks[0].pairs[0].c_name, 'Third');
+  assert.equal(weeks.body.weeks[0].pairs[0].members.length, 3);
 
   const history = await invoke(dataHandler, { url: '/api/history', query: { endpoint: 'history' }, headers: auth });
   assert.equal(history.body.history[0].partner_name, 'Partner');
@@ -400,7 +420,7 @@ test('data read models map database rows into circle, weeks, history, stats, and
   assert.equal(stats.body.your_sessions, 2);
 });
 
-test('profile, pair schedule, messages, questions, and runs enforce ownership and persist valid writes', async () => {
+test('profile, pair schedule, and messages enforce ownership while catalogue and run history are read-only', async () => {
   let scheduleState = {
     id: 30,
     week_id: 10,
@@ -416,7 +436,7 @@ test('profile, pair schedule, messages, questions, and runs enforce ownership an
   };
   executeHandler = (sql, args) => {
     if (sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')) return rows([{ id: 1, email: 'admin@example.test', is_admin: 1 }]);
-    if (sql.includes('SELECT id,user_a_id,user_b_id FROM pairing_groups')) return rows([{ id: 20, user_a_id: 2, user_b_id: 4, is_ai_pair: 0 }]);
+    if (sql.includes('SELECT id,user_a_id,user_b_id')) return rows([{ id: 20, user_a_id: 2, user_b_id: 4, is_ai_pair: 0 }]);
     if (sql.includes('SELECT id,email,display_name,color') || sql.includes('SELECT id,email,display_name,color,is_available')) return rows([profileRow]);
     if (sql.includes('INSERT INTO pair_schedules') && sql.includes('ON CONFLICT')) {
       scheduleUpserts += 1;
@@ -440,15 +460,11 @@ test('profile, pair schedule, messages, questions, and runs enforce ownership an
     if (sql.includes('FROM pair_messages pm')) return rows([{
       id: 40, sender_id: 2, sender_name: 'Updated User', sender_color: '#123456', message: 'Sunday works', created_at: 'now',
     }]);
-    if (sql.includes('SELECT id FROM custom_questions WHERE slug=')) return rows([]);
-    if (sql.includes('INSERT INTO custom_questions') && sql.includes('RETURNING id')) return rows([{ id: 50 }]);
-    if (sql.includes('FROM custom_questions WHERE id=')) return rows([{
-      id: 50, slug: 'binary-search', title: 'Binary Search', type: 'dsa', difficulty: 'Easy', category: 'array',
-      description: 'Find a value.', examples: '[]', test_cases: '[{"input":[1],"expect":0}]', starter_per_lang: '{}', author_id: 2, source: 'custom',
+    if (sql.includes('FROM session_runs WHERE user_id=')) return rows([{
+      id:60,
+      question_slug:'binary-search',
+      test_cases_snapshot:'{"source":"original-catalog","version":3,"total_count":5}',
     }]);
-    if (sql.includes('INSERT INTO session_runs') && sql.includes('RETURNING id')) return rows([{ id: 60 }]);
-    if (sql.includes('FROM session_runs WHERE id=')) return rows([{ id: 60, user_id: 2, question_slug: 'binary-search', language: 'javascript', passed_count: 1, total_count: 1 }]);
-    if (sql.includes('FROM session_runs WHERE user_id=')) return rows([{ id: 60, question_slug: 'binary-search' }]);
     return rows();
   };
   const headers = { 'x-test-auth': 'user' };
@@ -491,28 +507,90 @@ test('profile, pair schedule, messages, questions, and runs enforce ownership an
     method: 'POST', url: '/api/questions', query: { endpoint: 'questions' }, headers: { 'x-test-auth': 'admin' },
     body: { title: 'Binary Search', description: 'Find a value.', test_cases: [{ input: [1], expect: 0 }] },
   });
-  assert.equal(question.status, 200);
-  assert.equal(question.body.question.id, 50);
+  assert.equal(question.status, 405);
+  assert.match(question.body.error, /read-only/i);
 
   const run = await invoke(dataHandler, {
     method: 'POST', url: '/api/runs', query: { endpoint: 'runs' }, headers,
-    body: { code: 'return 0', question_slug: 'binary-search', passed_count: 1, total_count: 1 },
+    body: { code: 'return 0', question_slug: 'binary-search', passed_count: 999, total_count: 999 },
   });
-  assert.equal(run.body.run.id, 60);
+  assert.equal(run.status, 405);
+  assert.match(run.body.error, /execution service/i);
+  assert.equal(executed.some(call => call.sql.includes('INSERT INTO session_runs')), false);
+
+  const history = await invoke(dataHandler, {
+    url: '/api/runs', query: { endpoint: 'runs' }, headers,
+  });
+  assert.equal(history.status, 200);
+  assert.equal(history.body.runs[0].id, 60);
+  assert.equal(history.body.runs[0].question_version,null);
+  assert.equal(history.body.runs[0].authoritative,false);
+  assert.equal('test_cases_snapshot' in history.body.runs[0],false);
+});
+
+test('run history verifies signed authoritative results and rejects legacy or tampered attestations', async () => {
+  const resultsJson=JSON.stringify([{idx:0,pass:true,error:null},{idx:1,pass:false,error:null}]);
+  const fields={
+    userId:2,
+    questionSlug:'focus-block-rollup',
+    questionVersion:1,
+    language:'javascript',
+    passedCount:1,
+    totalCount:2,
+    resultsJson,
+  };
+  const attestation=signRunForTest(fields);
+  const signedSnapshot=JSON.stringify({
+    source:'original-catalog',
+    version:1,
+    total_count:2,
+    attestation_version:2,
+    attestation_key_id:runKeyIdForTest(),
+    attestation,
+  });
+  process.env.RUN_ATTESTATION_SECRET='rotated-run-attestation-secret-at-least-32-characters';
+  process.env.RUN_ATTESTATION_PREVIOUS_SECRETS=TEST_JWT_SECRET;
+  executeHandler=sql=>{
+    if(sql.includes('FROM session_runs WHERE user_id=')) return rows([
+      {id:71,question_slug:fields.questionSlug,language:fields.language,passed_count:1,total_count:2,results_json:resultsJson,test_cases_snapshot:signedSnapshot},
+      {id:72,question_slug:fields.questionSlug,language:fields.language,passed_count:2,total_count:2,results_json:resultsJson,test_cases_snapshot:signedSnapshot},
+      {id:73,question_slug:fields.questionSlug,language:fields.language,passed_count:1,total_count:2,results_json:'[]',test_cases_snapshot:signedSnapshot},
+      {id:74,question_slug:'legacy-question',language:'javascript',passed_count:999,total_count:999,results_json:'[]',test_cases_snapshot:null},
+    ]);
+    return rows();
+  };
+  const history=await invoke(dataHandler,{
+    url:'/api/runs',query:{endpoint:'runs'},headers:{'x-test-auth':'user'},
+  });
+  assert.equal(history.status,200);
+  assert.deepEqual(history.body.runs.map(run=>run.authoritative),[true,false,false,false]);
+  assert.deepEqual(history.body.runs.map(run=>run.question_version),[1,null,null,null]);
+  assert.equal(history.body.runs.every(run=>!('results_json' in run) && !('test_cases_snapshot' in run)),true);
 });
 
 test('my-pair returns only the latest week membership and a canonical room id', async () => {
   let paired = true;
+  let thirdMember = false;
   executeHandler = sql => {
     if (sql.includes('FROM pairing_weeks WHERE COALESCE(is_demo,0)=0 ORDER BY id DESC LIMIT 1')) {
       return rows([{ id: 10, week_label: '2026-W38', week_start: '2026-09-20', focus: 'both' }]);
     }
     if (sql.includes('FROM pairing_groups WHERE week_id=')) {
-      return rows(paired ? [{
+      return rows(paired ? [thirdMember ? {
+        pg_id: 20,
+        week_id: 10,
+        user_a_id: 4,
+        user_b_id: 5,
+        user_c_id: 2,
+        is_ai_pair: 0,
+        topic: 'Arrays',
+        topic_kind: 'dsa',
+      } : {
         pg_id: 20,
         week_id: 10,
         user_a_id: 2,
         user_b_id: 4,
+        user_c_id: null,
         is_ai_pair: 0,
         topic: 'Arrays',
         topic_kind: 'dsa',
@@ -535,6 +613,16 @@ test('my-pair returns only the latest week membership and a canonical room id', 
   assert.equal(current.body.pair.room_id, 'week_10_pair_20');
   assert.equal('email' in current.body.partner, false);
 
+  thirdMember = true;
+  const third = await invoke(dataHandler, {
+    url: '/api/my-pair', query: { endpoint: 'my-pair' }, headers: { 'x-test-auth': 'user' },
+  });
+  assert.equal(third.status, 200);
+  assert.equal(third.body.paired, true);
+  assert.equal(third.body.room_id, 'week_10_pair_20');
+  assert.equal(third.body.pair.user_c_id, 2);
+  assert.deepEqual(third.body.partners.map(member=>member.id),[4,5]);
+
   paired = false;
   executed.length = 0;
   const absent = await invoke(dataHandler, {
@@ -546,53 +634,355 @@ test('my-pair returns only the latest week membership and a canonical room id', 
   assert.equal(executed.some(call => call.sql.includes('JOIN pairing_weeks')), false);
 });
 
-test('execution supports only JavaScript and Python and normalizes Piston results without executing locally', async () => {
-  const submitted = [];
-  globalThis.fetch = async (url, options) => {
-    assert.match(String(url), /piston\/execute/);
-    submitted.push(JSON.parse(options.body));
-    return new Response(JSON.stringify({ run: { code: 0, stdout: '{"pass":true}\n', stderr: '' } }), { status: 200 });
-  };
-  const headers = { 'x-test-auth': 'user' };
-  for (const [language, expectedFile] of [['javascript', 'main.js'], ['python', 'main.py']]) {
-    const result = await invoke(dataHandler, {
-      method: 'POST', url: '/api/execute', query: { endpoint: 'execute' }, headers,
-      body: { language, code: 'function solve(x){ return x; }', test_cases: [{ input: 1, expect: 1 }] },
-    });
-    assert.equal(result.status, 200, language);
-    assert.equal(result.body.passed_count, 1, language);
-    assert.equal(submitted.at(-1).files[0].name, expectedFile);
-  }
-
-  for (const language of ['typescript', 'java', 'go', 'c++', 'c', 'ruby']) {
-    const rejected = await invoke(dataHandler, {
-      method: 'POST', url: '/api/execute', query: { endpoint: 'execute' }, headers,
-      body: { language, code: 'print(1)', test_cases: [{ input: 1, expect: 1 }] },
-    });
-    assert.equal(rejected.status, 400, language);
-    assert.match(rejected.body.error, /javascript and python/i);
-  }
-
-  process.env.NEXT_PUBLIC_SENTRY_DSN = 'https://public@example.test/1';
-  globalThis.fetch = async () => { throw new Error('simulated Piston outage'); };
-  const failed = await invoke(dataHandler, {
-    method: 'POST', url: '/api/execute', query: { endpoint: 'execute' }, headers,
-    body: { language: 'javascript', code: 'return 1', test_cases: [{ input: 1, expect: 1 }] },
-  });
-  assert.equal(failed.status, 500);
-  assert.equal(sentryMessageCalls.length, 1);
-  assert.equal(sentryMessageCalls[0][1].tags.event, 'execute_fail');
-});
-
-test('questions require authentication and bundled seed ingestion runs only through admin init', async () => {
-  executeHandler = sql => {
-    if (sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')) return rows([{ id: 1, email: 'admin@example.test', is_admin: 1 }]);
-    if (sql.includes('FROM custom_questions ORDER BY id DESC')) return rows([{
-      id: 51, slug: 'two-sum', title: 'Two Sum', description: 'Find indexes.',
-      examples: '[]', test_cases: '[]', starter_per_lang: '{}', source: 'leetcode',
+test('history includes every other member when the viewer is user_c', async () => {
+  executeHandler=sql=>{
+    if(sql.includes('FROM pairing_groups pg') && sql.includes('ORDER BY pw.week_start')) return rows([{
+      pg_id:20,week_id:10,user_a_id:4,user_b_id:5,user_c_id:2,is_ai_pair:0,
+      week_label:'2026-W38',week_start:'2026-09-20',topic:'Arrays',topic_kind:'dsa',
     }]);
+    if(sql.includes('display_name as name FROM auth_accounts')) return rows([
+      {id:2,name:'User'},
+      {id:4,name:'First partner'},
+      {id:5,name:'Second partner'},
+    ]);
     return rows();
   };
+  const result=await invoke(dataHandler,{
+    url:'/api/history',query:{endpoint:'history'},headers:{'x-test-auth':'user'},
+  });
+  assert.equal(result.status,200);
+  assert.deepEqual(result.body.history[0].partner_ids,[4,5]);
+  assert.deepEqual(result.body.history[0].partner_names,['First partner','Second partner']);
+  assert.equal(result.body.partner_counts['First partner'],1);
+  assert.equal(result.body.partner_counts['Second partner'],1);
+});
+
+test('execution uses only server-owned versioned cases and persists exact authoritative results', async () => {
+  const question=listPublicExercises()[0];
+  const submitted=[];
+  let nextRunId=70;
+  executeHandler = sql => {
+    if(sql.includes('SELECT id,user_a_id,user_b_id')) return rows([{id:20,user_a_id:8,user_b_id:9,user_c_id:2}]);
+    if(sql.includes("'execute_lease_start'") && sql.includes('RETURNING id')) return rows([{id:500+nextRunId}]);
+    if(sql.includes('INSERT INTO session_runs') && sql.includes('RETURNING id')) return rows([{id:nextRunId++}]);
+    return rows();
+  };
+  globalThis.fetch = async (url,options) => {
+    assert.match(String(url),/piston\/execute/);
+    assert.doesNotMatch(String(url),/leetcode/i);
+    const submission=JSON.parse(options.body);
+    submitted.push(submission);
+    const source=submission.files[0].content;
+    const prefix=source.match(/(__RANDORI_RESULT_[a-f0-9]{32}__:)/)?.[1];
+    assert.ok(prefix,'the harness must use a per-run result marker');
+    const command=submission.language==='javascript'?process.execPath:'python3';
+    const execution=spawnSync(command,[submission.language==='javascript'?'-e':'-c',source],{encoding:'utf8',timeout:5000});
+    assert.equal(execution.error,undefined);
+    return new Response(JSON.stringify({run:{code:execution.status,stdout:`{"idx":0,"pass":true}\n${execution.stdout}`,stderr:execution.stderr}}),{status:200});
+  };
+
+  const headers={'x-test-auth':'user'};
+  for(const [language,expectedFile] of [['javascript','main.js'],['python','main.py']]){
+    const suite=createEvaluationSuite(question.slug,question.version,language,{random:()=>0.5});
+    executed.length=0;
+    const code=language==='javascript'
+      ? `function ${suite.entrypoint}(blocks){
+          const result=[];
+          for(const block of blocks){
+            const previous=result[result.length-1];
+            if(previous && previous.label===block.label) previous.minutes+=block.minutes;
+            else result.push({...block});
+          }
+          return result;
+        } // PASS_ALL_SUBMISSION`
+      : `def ${suite.entrypoint}(blocks):
+          result=[]
+          for block in blocks:
+              previous=result[-1] if result else None
+              if previous and previous['label']==block['label']:
+                  previous['minutes']+=block['minutes']
+              else:
+                  result.append(dict(block))
+          return result`;
+    const result=await invoke(dataHandler,{
+      method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers,
+      body:{
+        language,
+        code,
+        question_slug:question.slug,
+        test_cases:[{input:'CLIENT_FORGED_SECRET',expect:'CLIENT_FORGED_SECRET'}],
+        results:[{pass:true}],
+        passed_count:999,
+        total_count:999,
+        ...(language==='python'?{week_id:10,pair_group_id:20}:{}),
+      },
+    });
+    assert.equal(result.status,200,language);
+    assert.equal(result.body.question_version,question.version);
+    assert.equal(result.body.passed_count,suite.tests.length);
+    assert.equal(result.body.total_count,suite.tests.length);
+    assert.equal(result.body.run_id,language==='javascript'?70:71);
+    assert.equal(submitted.at(-1).files[0].name,expectedFile);
+    assert.equal(JSON.stringify(result.body).includes('CLIENT_FORGED_SECRET'),false);
+    assert.equal('test_cases' in result.body,false);
+    assert.equal('stdout' in result.body.piston,false);
+    assert.equal('stderr' in result.body.piston,false);
+    assert.deepEqual(Object.keys(result.body.results[0]).sort(),['error','idx','pass']);
+
+    const encoded=submitted.at(-1).files[0].content.match(/(?:Buffer\.from|b64decode)\('([A-Za-z0-9+/=]+)'/)?.[1];
+    assert.ok(encoded,`hidden ${language} suite must be embedded server-side`);
+    const runnerBundle=JSON.parse(Buffer.from(encoded,'base64').toString('utf8'));
+    assert.equal(JSON.stringify(runnerBundle).includes('"expected"'),false,'answer keys must remain in the API process');
+    assert.equal(runnerBundle.entrypoint,suite.entrypoint);
+    assert.equal(runnerBundle.tests.length,suite.tests.length);
+    assert.equal(runnerBundle.tests.every(test=>Object.keys(test).length===1 && Array.isArray(test.args)),true);
+    assert.equal(submitted.at(-1).files[0].content.includes('CLIENT_FORGED_SECRET'),false);
+
+    const insert=executed.find(call=>call.sql.includes('INSERT INTO session_runs') && call.sql.includes('RETURNING id'));
+    assert.ok(insert,'execute must persist its server-computed result');
+    assert.equal(insert.args[4],question.slug);
+    assert.equal(insert.args[1],language==='python'?10:null);
+    assert.equal(insert.args[2],language==='python'?20:null);
+    assert.equal(insert.args[9],suite.tests.length);
+    assert.equal(insert.args[10],suite.tests.length);
+    const snapshot=JSON.parse(insert.args[7]);
+    assert.equal(snapshot.source,'original-catalog');
+    assert.equal(snapshot.version,question.version);
+    assert.equal(snapshot.total_count,suite.tests.length);
+    assert.equal(snapshot.attestation_version,2);
+    assert.equal(snapshot.attestation_key_id,runKeyIdForTest());
+    assert.equal(snapshot.attestation,signRunForTest({
+      userId:2,
+      questionSlug:question.slug,
+      questionVersion:question.version,
+      language,
+      passedCount:suite.tests.length,
+      totalCount:suite.tests.length,
+      resultsJson:insert.args[8],
+    }));
+    assert.deepEqual(JSON.parse(insert.args[8]),result.body.results);
+    assert.equal(executed.some(call=>/CREATE TABLE|ALTER TABLE|CREATE INDEX/i.test(call.sql)),false);
+  }
+
+  for(const language of ['javascript','python']){
+    const suite=createEvaluationSuite(question.slug,question.version,language,{random:()=>0.5});
+    const code=language==='javascript'
+      ? `function ${suite.entrypoint}(){ return null; }`
+      : `def ${suite.entrypoint}(*args):\n    return None`;
+    const broken=await invoke(dataHandler,{
+      method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers,
+      body:{language,code,question_slug:question.slug,question_version:question.version},
+    });
+    assert.equal(broken.status,200,language);
+    assert.equal(broken.body.passed_count,0,language);
+    assert.equal(broken.body.total_count,suite.tests.length,language);
+    assert.equal(broken.body.results.every(result=>result.pass===false),true,language);
+  }
+
+  for (const language of ['typescript','java','go','c++','c','ruby']) {
+    const rejected=await invoke(dataHandler,{
+      method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers,
+      body:{language,code:'print(1)',question_slug:question.slug},
+    });
+    assert.equal(rejected.status,400,language);
+    assert.match(rejected.body.error,/javascript and python/i);
+  }
+});
+
+test('execution rejects unavailable questions and enforces pair membership before calling Piston', async () => {
+  const question=listPublicExercises()[0];
+  let networkCalls=0;
+  globalThis.fetch=async()=>{ networkCalls+=1; throw new Error('network must not be reached'); };
+  executeHandler=sql=>{
+    if(sql.includes('SELECT id,user_a_id,user_b_id')) return rows([{id:20,user_a_id:8,user_b_id:9,user_c_id:null}]);
+    return rows();
+  };
+  const headers={'x-test-auth':'user'};
+  for(const [slug,version] of [['unknown-original-question',1],['archived-session-streak',1],[question.slug,999]]){
+    const result=await invoke(dataHandler,{
+      method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers,
+      body:{language:'javascript',code:'function answer(){}',question_slug:slug,question_version:version},
+    });
+    assert.equal(result.status,404,`${slug}@${version}`);
+    assert.match(result.body.error,/not found or unavailable/i);
+  }
+  const invalidVersion=await invoke(dataHandler,{
+    method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers,
+    body:{language:'javascript',code:'function answer(){}',question_slug:question.slug,question_version:'latest'},
+  });
+  assert.equal(invalidVersion.status,400);
+
+  const oversized=await invoke(dataHandler,{
+    method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers,
+    body:{language:'javascript',code:'x'.repeat(20001),question_slug:question.slug},
+  });
+  assert.equal(oversized.status,413);
+
+  const forbidden=await invoke(dataHandler,{
+    method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers,
+    body:{language:'javascript',code:'function answer(){}',question_slug:question.slug,week_id:10,pair_group_id:20},
+  });
+  assert.equal(forbidden.status,403);
+
+  executeHandler=sql=>{
+    if(sql.includes("'execute_lease_start'") && sql.includes('RETURNING id')) return rows([{id:201}]);
+    if(sql.includes("event='execute_attempt'")) return rows([{c:11}]);
+    return rows();
+  };
+  const rateLimited=await invoke(dataHandler,{
+    method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers,
+    body:{language:'javascript',code:'function answer(){}',question_slug:question.slug},
+  });
+  assert.equal(rateLimited.status,429);
+  assert.match(rateLimited.body.error,/rate limit/i);
+  assert.equal(networkCalls,0);
+  assert.equal(executed.some(call=>call.sql.includes('INSERT INTO session_runs')),false);
+});
+
+test('execution failures never run request-time schema DDL', async () => {
+  const question=listPublicExercises()[0];
+  executeHandler=sql=>{
+    if(sql.includes('SELECT id,user_a_id,user_b_id,user_c_id')) throw new Error('forced membership lookup failure');
+    return rows();
+  };
+  const originalError=console.error;
+  console.error=()=>{};
+  try{
+    const result=await invoke(dataHandler,{
+      method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers:{'x-test-auth':'user'},
+      body:{language:'javascript',code:'function answer(){}',question_slug:question.slug,week_id:10,pair_group_id:20},
+    });
+    assert.equal(result.status,500);
+    assert.equal(executed.some(call=>/CREATE TABLE|ALTER TABLE|CREATE INDEX/i.test(call.sql)),false);
+  }finally{
+    console.error=originalError;
+  }
+});
+
+test('Piston failures are reported without leaking provider output or persisting a partial run', async () => {
+  const question=listPublicExercises()[0];
+  executeHandler=sql=>sql.includes("'execute_lease_start'") && sql.includes('RETURNING id')?rows([{id:202}]):rows();
+  process.env.NEXT_PUBLIC_SENTRY_DSN='https://public@example.test/1';
+  globalThis.fetch=async url=>{
+    assert.match(String(url),/piston\/execute/);
+    return new Response('UPSTREAM_ECHOED_HIDDEN_HARNESS',{status:502});
+  };
+  const failed=await invoke(dataHandler,{
+    method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers:{'x-test-auth':'user'},
+    body:{language:'javascript',code:'function answer(){}',question_slug:question.slug},
+  });
+  assert.equal(failed.status,500);
+  assert.equal(JSON.stringify(failed.body).includes('UPSTREAM_ECHOED_HIDDEN_HARNESS'),false);
+  assert.equal(executed.some(call=>call.sql.includes('INSERT INTO session_runs')),false);
+  assert.equal(sentryMessageCalls.length,1);
+  assert.equal(sentryMessageCalls[0][1].tags.event,'execute_fail');
+});
+
+test('a concurrent execution by the same user is rejected before a second Piston call', async () => {
+  const question=listPublicExercises()[0];
+  const entrypoint=question.languages.javascript.entrypoint;
+  let releaseFirst;
+  let markStarted;
+  let networkCalls=0;
+  const firstCanFinish=new Promise(resolve=>{ releaseFirst=resolve; });
+  const firstStarted=new Promise(resolve=>{ markStarted=resolve; });
+  executeHandler=sql=>{
+    if(sql.includes("'execute_lease_start'") && sql.includes('RETURNING id')) return rows([{id:203}]);
+    if(sql.includes("event='execute_attempt'")) return rows([{c:1}]);
+    if(sql.includes('INSERT INTO session_runs') && sql.includes('RETURNING id')) return rows([{id:90}]);
+    return rows();
+  };
+  globalThis.fetch=async (_url,options)=>{
+    networkCalls+=1;
+    const submission=JSON.parse(options.body);
+    assert.match(submission.files[0].content,/__RANDORI_RESULT_[a-f0-9]{32}__:/);
+    markStarted();
+    await firstCanFinish;
+    return new Response(JSON.stringify({run:{code:0,stdout:'',stderr:''}}),{status:200});
+  };
+  const request={
+    method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers:{'x-test-auth':'user'},
+    body:{language:'javascript',code:`function ${entrypoint}(){ return []; }`,question_slug:question.slug},
+  };
+  const first=invoke(dataHandler,request);
+  await firstStarted;
+  const concurrent=await invoke(dataHandler,request);
+  assert.equal(concurrent.status,429);
+  assert.match(concurrent.body.error,/already in progress/i);
+  assert.equal(networkCalls,1);
+  releaseFirst();
+  const completed=await first;
+  assert.equal(completed.status,200);
+});
+
+test('an unmatched database lease rejects a cross-instance-style concurrent execution', async () => {
+  const question=listPublicExercises()[0];
+  let networkCalls=0;
+  executeHandler=sql=>{
+    if(sql.includes("'execute_lease_start'") && sql.includes('RETURNING id')) return rows([]);
+    return rows();
+  };
+  globalThis.fetch=async()=>{ networkCalls+=1; throw new Error('Piston must not be called without a lease'); };
+  const result=await invoke(dataHandler,{
+    method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers:{'x-test-auth':'user'},
+    body:{language:'javascript',code:'function answer(){}',question_slug:question.slug},
+  });
+  assert.equal(result.status,429);
+  assert.match(result.body.error,/already in progress/i);
+  assert.equal(networkCalls,0);
+  assert.equal(executed.some(call=>call.sql.includes("'execute_attempt'")),false);
+});
+
+test('client telemetry cannot forge runner leases or execution quota rows', async () => {
+  const result=await invoke(dataHandler,{
+    method:'POST',
+    url:'/api/logs',
+    query:{endpoint:'logs'},
+    headers:{'x-test-auth':'user'},
+    body:{level:'info',source:'runner',event:'execute_lease_end',message:'123'},
+  });
+  assert.equal(result.status,200);
+  assert.equal(result.body.inserted,1);
+  const insert=executed.find(call=>call.sql.includes('INSERT INTO app_logs') && call.args.length===9);
+  assert.ok(insert);
+  assert.equal(insert.args[1],'client');
+  assert.equal(insert.args[2],'client_execute_lease_end');
+
+  executed.length=0;
+  const quota=await invoke(dataHandler,{
+    method:'POST',
+    url:'/api/logs',
+    query:{endpoint:'logs'},
+    headers:{'x-test-auth':'user'},
+    body:{source:'client',event:'execute_attempt',message:'forged quota'},
+  });
+  assert.equal(quota.status,200);
+  const quotaInsert=executed.find(call=>call.sql.includes('INSERT INTO app_logs') && call.args.length===9);
+  assert.equal(quotaInsert.args[2],'client_execute_attempt');
+});
+
+test('declared and streamed oversized Piston responses fail closed before run persistence', async () => {
+  const question=listPublicExercises()[0];
+  executeHandler=sql=>sql.includes("'execute_lease_start'") && sql.includes('RETURNING id')?rows([{id:204}]):rows();
+  const responses=[
+    ()=>new Response('{}',{status:200,headers:{'content-length':String(300*1024)}}),
+    ()=>new Response('x'.repeat(300*1024),{status:200}),
+  ];
+  for(const response of responses){
+    globalThis.fetch=async()=>response();
+    const result=await invoke(dataHandler,{
+      method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers:{'x-test-auth':'user'},
+      body:{language:'javascript',code:'function answer(){}',question_slug:question.slug},
+    });
+    assert.equal(result.status,500);
+    await new Promise(resolve=>setImmediate(resolve));
+  }
+  assert.equal(executed.some(call=>call.sql.includes('INSERT INTO session_runs')),false);
+});
+
+test('questions expose only the active original catalogue and make no LeetCode or database request', async () => {
+  let networkCalls=0;
+  globalThis.fetch=async()=>{ networkCalls+=1; throw new Error('catalogue browsing must be offline'); };
   const anonymous = await invoke(dataHandler, { url: '/api/questions', query: { endpoint: 'questions' } });
   assert.equal(anonymous.status, 401);
 
@@ -601,13 +991,49 @@ test('questions require authentication and bundled seed ingestion runs only thro
     url: '/api/questions', query: { endpoint: 'questions' }, headers: { 'x-test-auth': 'user' },
   });
   assert.equal(questions.status, 200);
-  assert.equal(questions.body.questions[0].slug, 'two-sum');
-  assert.equal(executed.some(call => call.sql.includes('INSERT INTO custom_questions')), false);
+  assert.equal(questions.body.questions.length,5);
+  assert.equal(questions.body.questions.every(question=>question.source==='randori-original' && question.status==='active'),true);
+  assert.equal(questions.body.questions.some(question=>question.slug==='archived-session-streak'),false);
+  for(const question of questions.body.questions){
+    const serialized=JSON.stringify(question);
+    assert.doesNotMatch(serialized,/"(?:tests|test_cases|expected|evaluationSuites)"\s*:/);
+    assert.doesNotMatch(serialized,/leetcode/i);
+  }
+  assert.equal(executed.length,0);
+  assert.equal(networkCalls,0);
+
+  const first=questions.body.questions[0];
+  const detail=await invoke(dataHandler,{
+    url:`/api/questions?slug=${first.slug}`,
+    query:{endpoint:'questions',slug:first.slug},
+    headers:{'x-test-auth':'user'},
+  });
+  assert.equal(detail.status,200);
+  assert.deepEqual(detail.body.question,first);
+
+  const retired=await invoke(dataHandler,{
+    url:'/api/questions?slug=archived-session-streak&version=1',
+    query:{endpoint:'questions',slug:'archived-session-streak',version:'1'},
+    headers:{'x-test-auth':'user'},
+  });
+  assert.equal(retired.status,404);
+
+  const mutation=await invoke(dataHandler,{
+    method:'POST',url:'/api/questions',query:{endpoint:'questions'},headers:{'x-test-auth':'admin'},
+    body:{title:'Forged',test_cases:[{input:'hidden',expect:true}]},
+  });
+  assert.equal(mutation.status,405);
   assert.equal(executed.some(call => call.sql.includes('DELETE FROM pair_schedules WHERE id NOT IN')), false,
     'ordinary requests must not run the destructive legacy schedule migration');
   assert.equal(executed.some(call => call.sql.includes('CREATE UNIQUE INDEX IF NOT EXISTS uq_pair_schedules_week_pair')), false,
     'ordinary requests must not create the legacy schedule uniqueness index');
+});
 
+test('bundled legacy seed ingestion runs only through admin init', async () => {
+  executeHandler = sql => {
+    if (sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')) return rows([{ id: 1, email: 'admin@example.test', is_admin: 1 }]);
+    return rows();
+  };
   executed.length = 0;
   const initialized = await invoke(dataHandler, {
     method: 'POST', url: '/api/init', query: { endpoint: 'init' }, headers: { 'x-test-auth': 'admin' },
@@ -635,7 +1061,7 @@ test('admin init reports a visible error when the legacy schedule migration fail
 
 test('data validation and access-control branches reject malformed or cross-pair requests', async () => {
   executeHandler = sql => {
-    if (sql.includes('SELECT id,user_a_id,user_b_id FROM pairing_groups')) return rows([{ id: 20, user_a_id: 7, user_b_id: 8 }]);
+    if (sql.includes('SELECT id,user_a_id,user_b_id')) return rows([{ id: 20, user_a_id: 7, user_b_id: 8 }]);
     if (sql.includes('SELECT author_id FROM custom_questions')) return rows([{ author_id: 7 }]);
     if (sql.includes('SELECT is_admin FROM auth_accounts')) return rows([{ is_admin: 0 }]);
     return rows();
@@ -652,12 +1078,12 @@ test('data validation and access-control branches reject malformed or cross-pair
     [{ url: '/api/schedule', query: { endpoint: 'schedule', week_id: 10, pair_id: 20 }, headers }, 403],
     [{ method: 'POST', url: '/api/messages', query: { endpoint: 'messages' }, headers, body: {} }, 400],
     [{ method: 'POST', url: '/api/messages', query: { endpoint: 'messages' }, headers, body: { week_id: 10, pair_id: 20, message: 'no access' } }, 403],
-    [{ method: 'POST', url: '/api/questions', query: { endpoint: 'questions' }, headers, body: {} }, 403],
-    [{ method: 'POST', url: '/api/questions', query: { endpoint: 'questions' }, headers, body: { title: 'Title' } }, 403],
-    [{ method: 'DELETE', url: '/api/questions', query: { endpoint: 'questions' }, headers, body: {} }, 400],
-    [{ method: 'DELETE', url: '/api/questions', query: { endpoint: 'questions', id: 50 }, headers }, 403],
+    [{ method: 'POST', url: '/api/questions', query: { endpoint: 'questions' }, headers, body: {} }, 405],
+    [{ method: 'POST', url: '/api/questions', query: { endpoint: 'questions' }, headers, body: { title: 'Title' } }, 405],
+    [{ method: 'DELETE', url: '/api/questions', query: { endpoint: 'questions' }, headers, body: {} }, 405],
+    [{ method: 'DELETE', url: '/api/questions', query: { endpoint: 'questions', id: 50 }, headers }, 405],
     [{ method: 'PUT', url: '/api/runs', query: { endpoint: 'runs' }, headers }, 405],
-    [{ method: 'POST', url: '/api/runs', query: { endpoint: 'runs' }, headers, body: {} }, 400],
+    [{ method: 'POST', url: '/api/runs', query: { endpoint: 'runs' }, headers, body: {} }, 405],
     [{ method: 'POST', url: '/api/execute', query: { endpoint: 'execute' }, headers, body: {} }, 400],
     [{ method: 'POST', url: '/api/leetcode', query: { endpoint: 'leetcode' }, headers }, 405],
     [{ url: '/api/leetcode', query: { endpoint: 'leetcode' }, headers }, 400],
@@ -1235,7 +1661,7 @@ test('adjacent manual reshuffles advance the CAS generation and avoid current pa
 
 test('video signaling validates membership and supports post, filtered poll, and purge', async () => {
   executeHandler = sql => {
-    if (sql.includes('SELECT user_a_id,user_b_id FROM pairing_groups')) return rows([{ user_a_id: 2, user_b_id: 4 }]);
+    if (sql.includes('SELECT user_a_id,user_b_id')) return rows([{ user_a_id: 2, user_b_id: 4, user_c_id:null }]);
     if (sql.includes('INSERT INTO video_signals')) return rows([{ id: 80 }]);
     if (sql.includes('SELECT id, room_id, from_id')) return rows([
       { id: 80, room_id: 'week_10_pair_20', from_id: 'other', to_id: 'peer', type: 'offer', payload: '{}', created_at: 'now' },

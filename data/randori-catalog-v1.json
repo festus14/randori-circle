@@ -1,0 +1,562 @@
+{
+  "schemaVersion": 1,
+  "catalog": {
+    "id": "randori-original-v1",
+    "title": "Randori Circle Original Interview Exercises",
+    "contentPolicy": "docs/CONTENT_POLICY.md",
+    "supportedLanguages": [
+      "javascript",
+      "python"
+    ]
+  },
+  "exercises": [
+    {
+      "slug": "focus-block-rollup",
+      "version": 1,
+      "status": "active",
+      "title": "Focus Block Roll-up",
+      "difficulty": "Easy",
+      "type": "array-processing",
+      "tags": [
+        "arrays",
+        "aggregation"
+      ],
+      "prompt": "A study timer records consecutive focus blocks as objects with a label and a positive number of minutes. Adjacent blocks with the same label belong to one uninterrupted activity. Return a new list in which adjacent blocks with equal labels are combined by adding their minutes. Blocks with the same label that are separated by another label must remain separate, and the input must not be modified.",
+      "constraints": [
+        "0 <= blocks.length <= 10000",
+        "Each block has a non-empty string label and an integer minutes value from 1 to 1440",
+        "Labels are case-sensitive"
+      ],
+      "examples": [
+        {
+          "input": [
+            [
+              {
+                "label": "code",
+                "minutes": 25
+              },
+              {
+                "label": "code",
+                "minutes": 10
+              },
+              {
+                "label": "break",
+                "minutes": 5
+              },
+              {
+                "label": "code",
+                "minutes": 20
+              }
+            ]
+          ],
+          "output": [
+            {
+              "label": "code",
+              "minutes": 35
+            },
+            {
+              "label": "break",
+              "minutes": 5
+            },
+            {
+              "label": "code",
+              "minutes": 20
+            }
+          ],
+          "explanation": "Only the first two code blocks are adjacent, so the last code block starts a new group."
+        },
+        {
+          "input": [
+            []
+          ],
+          "output": [],
+          "explanation": "An empty timeline has no groups."
+        }
+      ],
+      "languages": {
+        "javascript": {
+          "entrypoint": "rollUpFocusBlocks",
+          "signature": "function rollUpFocusBlocks(blocks)",
+          "starter": "function rollUpFocusBlocks(blocks) {\n  // Return a new array of rolled-up blocks.\n}\n"
+        },
+        "python": {
+          "entrypoint": "roll_up_focus_blocks",
+          "signature": "def roll_up_focus_blocks(blocks):",
+          "starter": "def roll_up_focus_blocks(blocks):\n    # Return a new list of rolled-up blocks.\n    pass\n"
+        }
+      },
+      "governance": {
+        "rightsOwner": "Randori Circle project contributors",
+        "provenance": "Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate": "2026-09-18",
+        "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement": {
+          "status": "active",
+          "retiredAt": null,
+          "reason": null,
+          "replacement": null
+        },
+        "takedown": {
+          "status": "none",
+          "requestedAt": null,
+          "reference": null
+        }
+      }
+    },
+    {
+      "slug": "steady-sensor-windows",
+      "version": 1,
+      "status": "active",
+      "title": "Steady Sensor Windows",
+      "difficulty": "Medium",
+      "type": "sliding-window",
+      "tags": [
+        "arrays",
+        "windows"
+      ],
+      "prompt": "A lab sensor emits an integer reading every minute. A window is steady when the difference between its largest and smallest reading is no greater than maxSpread. Return the zero-based starting index of every steady window containing exactly width readings, in ascending order. Windows may overlap.",
+      "constraints": [
+        "1 <= readings.length <= 20000",
+        "1 <= width <= readings.length",
+        "0 <= maxSpread <= 1000000",
+        "Each reading is an integer between -1000000 and 1000000"
+      ],
+      "examples": [
+        {
+          "input": [
+            [
+              4,
+              5,
+              4,
+              9,
+              8,
+              9
+            ],
+            3,
+            1
+          ],
+          "output": [
+            0,
+            3
+          ],
+          "explanation": "Readings [4,5,4] and [9,8,9] each have a spread of one."
+        },
+        {
+          "input": [
+            [
+              7,
+              7,
+              7
+            ],
+            1,
+            0
+          ],
+          "output": [
+            0,
+            1,
+            2
+          ],
+          "explanation": "Every one-reading window has a spread of zero."
+        }
+      ],
+      "languages": {
+        "javascript": {
+          "entrypoint": "findSteadyWindows",
+          "signature": "function findSteadyWindows(readings, width, maxSpread)",
+          "starter": "function findSteadyWindows(readings, width, maxSpread) {\n  // Return the starting indices of all steady windows.\n}\n"
+        },
+        "python": {
+          "entrypoint": "find_steady_windows",
+          "signature": "def find_steady_windows(readings, width, max_spread):",
+          "starter": "def find_steady_windows(readings, width, max_spread):\n    # Return the starting indices of all steady windows.\n    pass\n"
+        }
+      },
+      "governance": {
+        "rightsOwner": "Randori Circle project contributors",
+        "provenance": "Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate": "2026-09-18",
+        "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement": {
+          "status": "active",
+          "retiredAt": null,
+          "reason": null,
+          "replacement": null
+        },
+        "takedown": {
+          "status": "none",
+          "requestedAt": null,
+          "reference": null
+        }
+      }
+    },
+    {
+      "slug": "review-wave-planner",
+      "version": 1,
+      "status": "active",
+      "title": "Review Wave Planner",
+      "difficulty": "Medium",
+      "type": "graph",
+      "tags": [
+        "graphs",
+        "dependency-ordering"
+      ],
+      "prompt": "A release has named review tasks and dependency pairs. Each pair [before, after] means before must finish before after can start. Plan the work as simultaneous waves: every unfinished task whose dependencies are complete belongs to the next wave. Sort task names within each wave. Return all waves, or return an empty list when the dependencies contain a cycle. Tasks without dependencies still belong to the plan.",
+      "constraints": [
+        "0 <= tasks.length <= 5000",
+        "Task names are distinct non-empty strings",
+        "Every dependency names two tasks from tasks",
+        "A dependency pair contains two different task names"
+      ],
+      "examples": [
+        {
+          "input": [
+            [
+              "api",
+              "docs",
+              "ui",
+              "release"
+            ],
+            [
+              [
+                "api",
+                "ui"
+              ],
+              [
+                "docs",
+                "release"
+              ],
+              [
+                "ui",
+                "release"
+              ]
+            ]
+          ],
+          "output": [
+            [
+              "api",
+              "docs"
+            ],
+            [
+              "ui"
+            ],
+            [
+              "release"
+            ]
+          ],
+          "explanation": "API and docs can start together; release waits for both its direct and indirect prerequisites."
+        },
+        {
+          "input": [
+            [
+              "draft",
+              "approve"
+            ],
+            [
+              [
+                "draft",
+                "approve"
+              ],
+              [
+                "approve",
+                "draft"
+              ]
+            ]
+          ],
+          "output": [],
+          "explanation": "The two tasks depend on each other, so no valid wave exists."
+        }
+      ],
+      "languages": {
+        "javascript": {
+          "entrypoint": "planReviewWaves",
+          "signature": "function planReviewWaves(tasks, dependencies)",
+          "starter": "function planReviewWaves(tasks, dependencies) {\n  // Return sorted waves, or [] when a cycle exists.\n}\n"
+        },
+        "python": {
+          "entrypoint": "plan_review_waves",
+          "signature": "def plan_review_waves(tasks, dependencies):",
+          "starter": "def plan_review_waves(tasks, dependencies):\n    # Return sorted waves, or [] when a cycle exists.\n    pass\n"
+        }
+      },
+      "governance": {
+        "rightsOwner": "Randori Circle project contributors",
+        "provenance": "Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate": "2026-09-18",
+        "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement": {
+          "status": "active",
+          "retiredAt": null,
+          "reason": null,
+          "replacement": null
+        },
+        "takedown": {
+          "status": "none",
+          "requestedAt": null,
+          "reference": null
+        }
+      }
+    },
+    {
+      "slug": "workshop-seat-allocation",
+      "version": 1,
+      "status": "active",
+      "title": "Workshop Seat Allocation",
+      "difficulty": "Easy",
+      "type": "state-machine",
+      "tags": [
+        "simulation",
+        "sets"
+      ],
+      "prompt": "Process workshop seat requests in order. Each request has a team name and a positive seat count. Accept a team's first request only when all requested seats remain, then subtract those seats. Reject every later request from a team that has already appeared, even if its first request was rejected. Other requests that do not fit are rejected for insufficient seats. Return accepted team names, rejected entries with their reason, and the seats remaining.",
+      "constraints": [
+        "0 <= capacity <= 1000000",
+        "0 <= requests.length <= 10000",
+        "Each team is a non-empty case-sensitive string",
+        "Each seats value is an integer from 1 to 1000000",
+        "Rejection reasons must be duplicate-team or insufficient-seats"
+      ],
+      "examples": [
+        {
+          "input": [
+            6,
+            [
+              {
+                "team": "Ada",
+                "seats": 4
+              },
+              {
+                "team": "Lin",
+                "seats": 3
+              },
+              {
+                "team": "Ada",
+                "seats": 1
+              },
+              {
+                "team": "Jo",
+                "seats": 2
+              }
+            ]
+          ],
+          "output": {
+            "accepted": [
+              "Ada",
+              "Jo"
+            ],
+            "rejected": [
+              {
+                "team": "Lin",
+                "reason": "insufficient-seats"
+              },
+              {
+                "team": "Ada",
+                "reason": "duplicate-team"
+              }
+            ],
+            "remaining": 0
+          },
+          "explanation": "Lin's first request is remembered even though it could not be filled; Jo can use the two remaining seats."
+        }
+      ],
+      "languages": {
+        "javascript": {
+          "entrypoint": "allocateWorkshopSeats",
+          "signature": "function allocateWorkshopSeats(capacity, requests)",
+          "starter": "function allocateWorkshopSeats(capacity, requests) {\n  // Return { accepted, rejected, remaining }.\n}\n"
+        },
+        "python": {
+          "entrypoint": "allocate_workshop_seats",
+          "signature": "def allocate_workshop_seats(capacity, requests):",
+          "starter": "def allocate_workshop_seats(capacity, requests):\n    # Return {\"accepted\": ..., \"rejected\": ..., \"remaining\": ...}.\n    pass\n"
+        }
+      },
+      "governance": {
+        "rightsOwner": "Randori Circle project contributors",
+        "provenance": "Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate": "2026-09-18",
+        "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement": {
+          "status": "active",
+          "retiredAt": null,
+          "reason": null,
+          "replacement": null
+        },
+        "takedown": {
+          "status": "none",
+          "requestedAt": null,
+          "reference": null
+        }
+      }
+    },
+    {
+      "slug": "coverage-gap-finder",
+      "version": 1,
+      "status": "active",
+      "title": "Coverage Gap Finder",
+      "difficulty": "Medium",
+      "type": "intervals",
+      "tags": [
+        "intervals",
+        "sorting"
+      ],
+      "prompt": "A support day covers the half-open interval [dayStart, dayEnd). Each staffed shift is another half-open interval [start, end). Clip shifts to the support day, combine overlapping or touching coverage, and return every uncovered half-open interval in chronological order. Ignore shifts that do not overlap the support day. Do not modify the shifts input.",
+      "constraints": [
+        "dayStart and dayEnd are integers with dayStart < dayEnd",
+        "0 <= shifts.length <= 10000",
+        "Every shift contains integer start and end values with start < end",
+        "Input shifts may be unsorted and may extend beyond the support day"
+      ],
+      "examples": [
+        {
+          "input": [
+            0,
+            20,
+            [
+              [
+                3,
+                7
+              ],
+              [
+                6,
+                10
+              ],
+              [
+                14,
+                18
+              ]
+            ]
+          ],
+          "output": [
+            [
+              0,
+              3
+            ],
+            [
+              10,
+              14
+            ],
+            [
+              18,
+              20
+            ]
+          ],
+          "explanation": "The first two shifts overlap and form one coverage interval from 3 to 10."
+        },
+        {
+          "input": [
+            10,
+            15,
+            [
+              [
+                0,
+                10
+              ],
+              [
+                15,
+                30
+              ]
+            ]
+          ],
+          "output": [
+            [
+              10,
+              15
+            ]
+          ],
+          "explanation": "Neither shift overlaps the half-open support day."
+        }
+      ],
+      "languages": {
+        "javascript": {
+          "entrypoint": "findCoverageGaps",
+          "signature": "function findCoverageGaps(dayStart, dayEnd, shifts)",
+          "starter": "function findCoverageGaps(dayStart, dayEnd, shifts) {\n  // Return the uncovered half-open intervals.\n}\n"
+        },
+        "python": {
+          "entrypoint": "find_coverage_gaps",
+          "signature": "def find_coverage_gaps(day_start, day_end, shifts):",
+          "starter": "def find_coverage_gaps(day_start, day_end, shifts):\n    # Return the uncovered half-open intervals.\n    pass\n"
+        }
+      },
+      "governance": {
+        "rightsOwner": "Randori Circle project contributors",
+        "provenance": "Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate": "2026-09-18",
+        "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement": {
+          "status": "active",
+          "retiredAt": null,
+          "reason": null,
+          "replacement": null
+        },
+        "takedown": {
+          "status": "none",
+          "requestedAt": null,
+          "reference": null
+        }
+      }
+    },
+    {
+      "slug": "archived-session-streak",
+      "version": 1,
+      "status": "retired",
+      "title": "Archived Session Streak",
+      "difficulty": "Easy",
+      "type": "sequence",
+      "tags": [
+        "arrays",
+        "dates"
+      ],
+      "prompt": "Given a sorted list of distinct day numbers on which a practice session occurred, return the length of the longest run of consecutive day numbers.",
+      "constraints": [
+        "0 <= days.length <= 10000",
+        "Day numbers are distinct integers in ascending order"
+      ],
+      "examples": [
+        {
+          "input": [
+            [
+              2,
+              3,
+              4,
+              8,
+              10,
+              11
+            ]
+          ],
+          "output": 3,
+          "explanation": "Days 2, 3, and 4 form the longest run."
+        }
+      ],
+      "languages": {
+        "javascript": {
+          "entrypoint": "longestSessionStreak",
+          "signature": "function longestSessionStreak(days)",
+          "starter": "function longestSessionStreak(days) {\n  // This exercise has been retired and cannot be executed.\n}\n"
+        },
+        "python": {
+          "entrypoint": "longest_session_streak",
+          "signature": "def longest_session_streak(days):",
+          "starter": "def longest_session_streak(days):\n    # This exercise has been retired and cannot be executed.\n    pass\n"
+        }
+      },
+      "governance": {
+        "rightsOwner": "Randori Circle project contributors",
+        "provenance": "Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate": "2026-09-18",
+        "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement": {
+          "status": "retired",
+          "retiredAt": "2026-09-18",
+          "reason": "Retired before release because the date-number model was too ambiguous for interview use.",
+          "replacement": "focus-block-rollup"
+        },
+        "takedown": {
+          "status": "none",
+          "requestedAt": null,
+          "reference": null
+        }
+      }
+    }
+  ]
+}

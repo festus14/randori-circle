@@ -1,9 +1,44 @@
 import { expect, Page, Request } from '@playwright/test';
 
 type Json = Record<string, unknown>;
+type ApiResponse = Json | ((request: Request) => Json | Promise<Json>);
 const testOrigin = `http://127.0.0.1:${Number(process.env.E2E_PORT || 4173)}`;
 
-const defaultApiResponses: Record<string, Json> = {
+function hasSessionCookie(request: Request) {
+  return /(?:^|;\s*)randori_session=/.test(request.headers().cookie || '');
+}
+
+export const originalQuestionFixture = {
+  slug: 'focus-block-rollup',
+  version: 1,
+  status: 'active',
+  source: 'randori-original',
+  title: 'Focus Block Roll-up',
+  type: 'array-processing',
+  difficulty: 'Easy',
+  tags: ['arrays', 'aggregation'],
+  prompt: 'Combine adjacent focus blocks that have the same label.',
+  constraints: ['The input must not be modified.', 'Labels are case-sensitive.'],
+  examples: [{
+    input: [[{ label: 'code', minutes: 25 }, { label: 'code', minutes: 10 }]],
+    output: [{ label: 'code', minutes: 35 }],
+    explanation: 'Adjacent code blocks are combined.',
+  }],
+  languages: {
+    javascript: {
+      entrypoint: 'rollUpFocusBlocks',
+      signature: 'function rollUpFocusBlocks(blocks)',
+      starter: 'function rollUpFocusBlocks(blocks) {\n  return [];\n}',
+    },
+    python: {
+      entrypoint: 'roll_up_focus_blocks',
+      signature: 'def roll_up_focus_blocks(blocks):',
+      starter: 'def roll_up_focus_blocks(blocks):\n    return []',
+    },
+  },
+};
+
+const defaultApiResponses: Record<string, ApiResponse> = {
   '/api/auth/me': { _status: 401, ok: false, error: 'authentication required' },
   '/api/circle': { ok: true, circle: [], count: 0 },
   '/api/weeks': { ok: true, weeks: [] },
@@ -11,7 +46,9 @@ const defaultApiResponses: Record<string, Json> = {
   '/api/stats': { ok: true, total_users: 0, total_weeks: 0, total_pairs: 0, total_sessions: 0 },
   '/api/my-pair': { ok: true, paired: false, reason: 'no_week_yet' },
   '/api/profile': { ok: true, user: null },
-  '/api/questions': { ok: true, questions: [], count: 0 },
+  '/api/questions': request => hasSessionCookie(request)
+    ? { ok: true, questions: [originalQuestionFixture], count: 1 }
+    : { _status: 401, ok: false, error: 'authentication required' },
   '/api/runs': { ok: true, runs: [], count: 0 },
   '/api/logs': { ok: true, inserted: 1 },
   '/api/ai/history': { ok: true, feedbacks: [], usage_today: null },
@@ -20,7 +57,7 @@ const defaultApiResponses: Record<string, Json> = {
 
 export async function mockApi(
   page: Page,
-  overrides: Record<string, Json | ((request: Request) => Json | Promise<Json>)> = {},
+  overrides: Record<string, ApiResponse> = {},
 ) {
   await page.route('**/api/**', async route => {
     const request = route.request();
@@ -38,7 +75,11 @@ export async function mockApi(
   });
 }
 
-export async function resetClientState(page: Page, authenticated = false) {
+export async function resetClientState(
+  page: Page,
+  authenticated = false,
+  initialLocalStorage: Record<string, string> = {},
+) {
   await page.context().clearCookies();
   if (authenticated) {
     await page.context().addCookies([{
@@ -49,13 +90,14 @@ export async function resetClientState(page: Page, authenticated = false) {
       sameSite: 'Lax',
     }]);
   }
-  await page.addInitScript(({ authenticated }) => {
+  await page.addInitScript(({ authenticated, initialLocalStorage }) => {
     localStorage.clear();
     sessionStorage.clear();
     localStorage.setItem('randori-onboarded', '1');
     localStorage.setItem('randori-banner-dismissed', '1');
     localStorage.setItem('randori-profile-done', '1');
     localStorage.setItem('randori-landing-dismissed', '1');
+    for (const [key, value] of Object.entries(initialLocalStorage)) localStorage.setItem(key, value);
     if (authenticated) {
       localStorage.setItem('randori-me', JSON.stringify({
         id: 1,
@@ -69,12 +111,12 @@ export async function resetClientState(page: Page, authenticated = false) {
         interview_focus: 'both',
       }));
     }
-  }, { authenticated });
+  }, { authenticated, initialLocalStorage });
 }
 
 export async function openCodeView(
   page: Page,
-  overrides: Record<string, Json | ((request: Request) => Json | Promise<Json>)> = {},
+  overrides: Record<string, ApiResponse> = {},
 ) {
   await mockApi(page, overrides);
   await resetClientState(page);
@@ -179,3 +221,13 @@ export const twoSumCorrect = `function twoSum(nums, target) {
 }`;
 
 export const twoSumBroken = 'function twoSum() { return []; }';
+
+export const focusBlockRollupCorrect = `function rollUpFocusBlocks(blocks) {
+  const rolledUp = [];
+  for (const block of blocks) {
+    const previous = rolledUp[rolledUp.length - 1];
+    if (previous && previous.label === block.label) previous.minutes += block.minutes;
+    else rolledUp.push({ ...block });
+  }
+  return rolledUp;
+}`;

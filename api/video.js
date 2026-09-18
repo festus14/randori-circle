@@ -1,16 +1,26 @@
 import { getClient, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
 
-const WORKSPACE_SCHEMA_VERSION = 1;
+const WORKSPACE_SCHEMA_VERSION = 2;
 const MAX_WORKSPACE_CODE_BYTES = 20 * 1024;
 const MAX_WORKSPACE_PAYLOAD_BYTES = 24 * 1024;
-const WORKSPACE_FIELDS = [
+const WORKSPACE_FIELDS_V1 = [
   'base_revision',
   'client_id',
   'client_seq',
   'code',
   'language',
   'question_id',
+  'schema_version',
+];
+const WORKSPACE_FIELDS_V2 = [
+  'base_revision',
+  'client_id',
+  'client_seq',
+  'code',
+  'language',
+  'question_id',
+  'question_version',
   'schema_version',
 ];
 let tableInitPromise=null;
@@ -78,9 +88,9 @@ async function canAccessRoom(db,payload,roomId){
   if(canonical){
     const weekId=Number(canonical[1]);
     const pairId=Number(canonical[2]);
-    const rs=await db.execute({sql:`SELECT user_a_id,user_b_id FROM pairing_groups WHERE id=? AND week_id=? LIMIT 1`,args:[pairId,weekId]}).catch(()=>({rows:[]}));
+    const rs=await db.execute({sql:`SELECT user_a_id,user_b_id,user_c_id FROM pairing_groups WHERE id=? AND week_id=? LIMIT 1`,args:[pairId,weekId]}).catch(()=>({rows:[]}));
     const row=rs.rows[0];
-    return !!row && (Number(row.user_a_id)===userId || Number(row.user_b_id)===userId);
+    return !!row && [row.user_a_id,row.user_b_id,row.user_c_id].some(id=>Number(id)===userId);
   }
 
   // Compatibility with room links emitted by existing weekly email/SMS code.
@@ -89,8 +99,8 @@ async function canAccessRoom(db,payload,roomId){
     const weekId=Number(legacy[1]);
     const firstId=Number(legacy[2]);
     const secondRaw=legacy[3];
-    let sql=`SELECT user_a_id,user_b_id FROM pairing_groups WHERE week_id=? AND (user_a_id=? OR user_b_id=?)`;
-    const args=[weekId,userId,userId];
+    let sql=`SELECT user_a_id,user_b_id,user_c_id FROM pairing_groups WHERE week_id=? AND (user_a_id=? OR user_b_id=? OR user_c_id=?)`;
+    const args=[weekId,userId,userId,userId];
     if(secondRaw && secondRaw.toLowerCase()!=='ai'){
       const secondId=Number(secondRaw);
       sql+=` AND ((user_a_id=? AND user_b_id=?) OR (user_a_id=? AND user_b_id=?))`;
@@ -99,8 +109,8 @@ async function canAccessRoom(db,payload,roomId){
       sql+=` AND user_a_id=? AND COALESCE(is_ai_pair,0)=1`;
       args.push(firstId);
     }else{
-      sql+=` AND (user_a_id=? OR user_b_id=?)`;
-      args.push(firstId,firstId);
+      sql+=` AND (user_a_id=? OR user_b_id=? OR user_c_id=?)`;
+      args.push(firstId,firstId,firstId);
     }
     sql+=` LIMIT 1`;
     const rs=await db.execute({sql,args}).catch(()=>({rows:[]}));
@@ -126,11 +136,11 @@ async function canAccessCanonicalRoom(db,payload,room){
   const userId=Number(payload?.id||payload?.uid);
   if(!Number.isSafeInteger(userId) || userId<=0 || !room) return false;
   const rs=await db.execute({
-    sql:`SELECT user_a_id,user_b_id FROM pairing_groups WHERE id=? AND week_id=? LIMIT 1`,
+    sql:`SELECT user_a_id,user_b_id,user_c_id FROM pairing_groups WHERE id=? AND week_id=? LIMIT 1`,
     args:[room.pairGroupId,room.weekId],
   }).catch(()=>({rows:[]}));
   const row=rs.rows?.[0];
-  return !!row && [row.user_a_id,row.user_b_id].some(id=>Number(id)===userId);
+  return !!row && [row.user_a_id,row.user_b_id,row.user_c_id].some(id=>Number(id)===userId);
 }
 
 function scalarString(value){
@@ -153,12 +163,14 @@ function parseWorkspacePayload(value){
   if(typeof serialized!=='string') return {status:400,error:'workspace payload must be an object'};
   if(byteLength(serialized)>MAX_WORKSPACE_PAYLOAD_BYTES) return {status:413,error:'workspace payload too large'};
 
+  const expectedFields=payload.schema_version===1 ? WORKSPACE_FIELDS_V1 : WORKSPACE_FIELDS_V2;
   const fields=Object.keys(payload).sort();
-  if(fields.length!==WORKSPACE_FIELDS.length || fields.some((field,index)=>field!==WORKSPACE_FIELDS[index])){
-    return {status:400,error:'workspace payload fields are invalid'};
-  }
-  if(payload.schema_version!==WORKSPACE_SCHEMA_VERSION){
-    return {status:400,error:`schema_version must be ${WORKSPACE_SCHEMA_VERSION}`};
+  if(
+    (payload.schema_version!==1 && payload.schema_version!==WORKSPACE_SCHEMA_VERSION)
+    || fields.length!==expectedFields.length
+    || fields.some((field,index)=>field!==expectedFields[index])
+  ){
+    return {status:400,error:`workspace payload must use schema_version 1 or ${WORKSPACE_SCHEMA_VERSION} with exact fields`};
   }
   if(!Number.isSafeInteger(payload.base_revision) || payload.base_revision<0){
     return {status:400,error:'base_revision must be a safe non-negative integer'};
@@ -175,13 +187,18 @@ function parseWorkspacePayload(value){
   if(typeof payload.question_id!=='string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(payload.question_id) || payload.question_id.length>120){
     return {status:400,error:'question_id must be a safe lowercase slug of at most 120 characters'};
   }
+  if(payload.schema_version===WORKSPACE_SCHEMA_VERSION && (!Number.isSafeInteger(payload.question_version) || payload.question_version<1)){
+    return {status:400,error:'question_version must be a positive safe integer'};
+  }
   if(typeof payload.code!=='string') return {status:400,error:'code must be a string'};
   if(byteLength(payload.code)>MAX_WORKSPACE_CODE_BYTES) return {status:413,error:'workspace code too large'};
-  return {payload};
+  return {payload:{...payload,question_version:payload.schema_version===1 ? null : payload.question_version}};
 }
 
 function snapshotFromRow(row){
   if(!row) return null;
+  const storedQuestionId=String(row.question_id);
+  const versionedQuestion=storedQuestionId.match(/^([a-z0-9]+(?:-[a-z0-9]+)*)@([1-9]\d*)$/);
   return {
     room_id:String(row.room_id),
     revision:Number(row.revision),
@@ -189,7 +206,8 @@ function snapshotFromRow(row){
     client_id:String(row.client_id),
     client_seq:Number(row.client_seq),
     language:String(row.language),
-    question_id:String(row.question_id),
+    question_id:versionedQuestion?.[1]||storedQuestionId,
+    question_version:versionedQuestion ? Number(versionedQuestion[2]) : null,
     code:String(row.code),
     updated_by:Number(row.updated_by),
     updated_at:String(row.updated_at),
@@ -212,7 +230,17 @@ async function handleWorkspacePost(req,res,db,auth,room){
   const parsedPayload=parseWorkspacePayload(req.body?.payload);
   if(parsedPayload.error) return res.status(parsedPayload.status).json({ok:false,error:parsedPayload.error});
   const workspace=parsedPayload.payload;
+  const storedQuestionId=workspace.question_version
+    ? `${workspace.question_id}@${workspace.question_version}`
+    : workspace.question_id;
   const current=await readWorkspaceSnapshot(db,room.roomId);
+  if(current?.schema_version===WORKSPACE_SCHEMA_VERSION && workspace.schema_version===1){
+    return res.status(409).json({
+      ok:false,
+      error:'schema version 1 cannot overwrite a version-pinned workspace',
+      current,
+    });
+  }
   if(current?.client_id===workspace.client_id && current.client_seq===workspace.client_seq){
     return res.json({ok:true,idempotent:true,snapshot:current});
   }
@@ -229,7 +257,7 @@ async function handleWorkspacePost(req,res,db,auth,room){
         RETURNING room_id,revision,schema_version,client_id,client_seq,language,question_id,code,updated_by,updated_at`,
       args:[
         workspace.schema_version,workspace.client_id,workspace.client_seq,workspace.language,
-        workspace.question_id,workspace.code,Number(auth.id||auth.uid),room.roomId,workspace.base_revision,
+        storedQuestionId,workspace.code,Number(auth.id||auth.uid),room.roomId,workspace.base_revision,
       ],
     });
   }else{
@@ -241,7 +269,7 @@ async function handleWorkspacePost(req,res,db,auth,room){
         RETURNING room_id,revision,schema_version,client_id,client_seq,language,question_id,code,updated_by,updated_at`,
       args:[
         room.roomId,room.weekId,room.pairGroupId,workspace.schema_version,workspace.client_id,
-        workspace.client_seq,workspace.language,workspace.question_id,workspace.code,
+        workspace.client_seq,workspace.language,storedQuestionId,workspace.code,
         Number(auth.id||auth.uid),
       ],
     });
