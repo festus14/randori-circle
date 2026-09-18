@@ -18,7 +18,7 @@ import {
   isoWeekLabel,
   shuffleArray,
   verifyMutationOrigin,
-  verifyRequestAuth,
+  verifySignedRequestAuth,
 } from '../../api/_db.js';
 
 const originalEnvironment = {
@@ -90,45 +90,52 @@ test('production refuses to use a built-in JWT signing secret', () => {
   assert.throws(() => getJwtSecret(), /JWT_SECRET/i);
 });
 
-test('request authentication accepts session cookies and Bearer tokens only with the pinned JWT contract', () => {
+test('signed request authentication accepts session cookies and Bearer tokens only with the pinned JWT contract', () => {
   process.env.JWT_SECRET = 'test-only-secret-that-is-long-enough-for-tests';
   const validToken = jwt.sign(
-    { id: 42, email: 'person@example.test' },
+    { id: 42, email: 'person@example.test', jti:'A'.repeat(43) },
     process.env.JWT_SECRET,
     { algorithm: 'HS256', issuer: JWT_ISSUER, audience: JWT_AUDIENCE, expiresIn: '5m' },
   );
 
-  assert.equal(verifyRequestAuth({ headers: { cookie: `randori_session=${validToken}` } })?.id, 42);
-  assert.equal(verifyRequestAuth({ headers: { authorization: `Bearer ${validToken}` } })?.id, 42);
+  assert.equal(verifySignedRequestAuth({ headers: { cookie: `randori_session=${validToken}` } })?.id, 42);
+  assert.equal(verifySignedRequestAuth({ headers: { authorization: `Bearer ${validToken}` } })?.id, 42);
 
   const compatibleStringId = jwt.sign(
-    { id: '42', email: 'legacy-client@example.test' },
+    { id: '42', email: 'legacy-client@example.test', jti:'B'.repeat(43) },
     process.env.JWT_SECRET,
     { algorithm: 'HS256', issuer: JWT_ISSUER, audience: JWT_AUDIENCE, expiresIn: '5m' },
   );
-  assert.equal(verifyRequestAuth({ headers: { authorization: `Bearer ${compatibleStringId}` } })?.id, 42);
+  assert.equal(verifySignedRequestAuth({ headers: { authorization: `Bearer ${compatibleStringId}` } })?.id, 42);
+
+  const legacyTokenWithoutSessionId=jwt.sign(
+    {id:42,email:'legacy@example.test'},
+    process.env.JWT_SECRET,
+    {algorithm:'HS256',issuer:JWT_ISSUER,audience:JWT_AUDIENCE,expiresIn:'5m'},
+  );
+  assert.equal(verifySignedRequestAuth({headers:{cookie:`randori_session=${legacyTokenWithoutSessionId}`}}),null);
 
   for(const invalidId of [true,[42],' 42 ','042','4.2',Number.MAX_SAFE_INTEGER+1]){
     const malformedToken=jwt.sign(
-      {id:invalidId},
+      {id:invalidId,jti:'C'.repeat(43)},
       process.env.JWT_SECRET,
       {algorithm:'HS256',issuer:JWT_ISSUER,audience:JWT_AUDIENCE,expiresIn:'5m'},
     );
-    assert.equal(verifyRequestAuth({headers:{authorization:`Bearer ${malformedToken}`}}),null);
+    assert.equal(verifySignedRequestAuth({headers:{authorization:`Bearer ${malformedToken}`}}),null);
   }
 
   const wrongIssuer = jwt.sign(
-    { id: 42 },
+    { id: 42,jti:'D'.repeat(43) },
     process.env.JWT_SECRET,
     { algorithm: 'HS256', issuer: 'another-app', audience: JWT_AUDIENCE, expiresIn: '5m' },
   );
   const wrongAudience = jwt.sign(
-    { id: 42 },
+    { id: 42,jti:'E'.repeat(43) },
     process.env.JWT_SECRET,
     { algorithm: 'HS256', issuer: JWT_ISSUER, audience: 'another-client', expiresIn: '5m' },
   );
-  assert.equal(verifyRequestAuth({ headers: { cookie: `randori_session=${wrongIssuer}` } }), null);
-  assert.equal(verifyRequestAuth({ headers: { authorization: `Bearer ${wrongAudience}` } }), null);
+  assert.equal(verifySignedRequestAuth({ headers: { cookie: `randori_session=${wrongIssuer}` } }), null);
+  assert.equal(verifySignedRequestAuth({ headers: { authorization: `Bearer ${wrongAudience}` } }), null);
 });
 
 test('cookie mutations require a same-origin request while explicit Bearer mutations remain supported', () => {

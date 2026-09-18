@@ -95,6 +95,11 @@ const PLAN_4_OPERATIONS=Object.freeze([
   table('auth_provider_identities',`CREATE TABLE IF NOT EXISTS auth_provider_identities (issuer TEXT NOT NULL CHECK(issuer='https://accounts.google.com'), subject TEXT NOT NULL CHECK(length(subject)>=1 AND length(subject)<=255 AND subject NOT GLOB '*[^A-Za-z0-9_-]*'), user_id INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), last_login TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY(issuer,subject), UNIQUE(issuer,user_id), FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE CASCADE)`),
 ]);
 
+const PLAN_5_OPERATIONS=Object.freeze([
+  table('auth_sessions',`CREATE TABLE IF NOT EXISTS auth_sessions (session_hash TEXT PRIMARY KEY NOT NULL CHECK(length(session_hash)=64 AND session_hash NOT GLOB '*[^0-9a-f]*'), user_id INTEGER NOT NULL, created_at INTEGER NOT NULL CHECK(typeof(created_at)='integer' AND created_at>0), expires_at INTEGER NOT NULL CHECK(typeof(expires_at)='integer' AND expires_at>created_at), revoked_at INTEGER CHECK(revoked_at IS NULL OR (typeof(revoked_at)='integer' AND revoked_at>=created_at)), revocation_reason TEXT CHECK(revocation_reason IS NULL OR revocation_reason IN ('current_logout','logout_all','password_change','identity_change','membership_removed','rotation')), FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE CASCADE)`),
+  index('idx_auth_sessions_user_active','auth_sessions',['user_id','revoked_at','expires_at']),
+]);
+
 export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:1,
@@ -114,6 +119,10 @@ export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:4,
     operations:PLAN_4_OPERATIONS,
+  }),
+  Object.freeze({
+    version:5,
+    operations:PLAN_5_OPERATIONS,
   }),
 ]);
 
@@ -154,7 +163,7 @@ export const SCHEMA_MANIFEST_CHECKSUM=checksum({
 
 // Updating the schema is intentional only when this pinned checksum is updated
 // in the same reviewed change.
-export const PINNED_SCHEMA_MANIFEST_CHECKSUM='32a611b8aba76e9cfc245404453d43cf6209c2d17500a88894693adcd8527637';
+export const PINNED_SCHEMA_MANIFEST_CHECKSUM='8811175d83d7fbfdf7ac2f2ad4eecb708b007bd0907361d3c4432c6ce8fb8692';
 
 if(SCHEMA_MANIFEST_CHECKSUM!==PINNED_SCHEMA_MANIFEST_CHECKSUM){
   throw new Error(`Schema manifest checksum changed: ${SCHEMA_MANIFEST_CHECKSUM}`);

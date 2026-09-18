@@ -246,7 +246,7 @@ test('database preparation migrates before serving and rejects unmanaged state',
   const ledger=await db.execute('SELECT version,disposition FROM schema_migrations ORDER BY version');
   assert.deepEqual(
     ledger.rows.map(row=>[Number(row.version),String(row.disposition)]),
-    [[1,'applied'],[2,'applied'],[3,'applied'],[4,'applied']],
+    [[1,'applied'],[2,'applied'],[3,'applied'],[4,'applied'],[5,'applied']],
   );
   await db.close();
   cleanup.pop();
@@ -722,7 +722,31 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
   });
   assert.equal(login.status,200);
   assert.equal((await login.json()).user.name,'Invited Member');
-  assert.match(cookiePair(login),/^randori_session=/);
+  const secondMemberCookie=cookiePair(login);
+  assert.match(secondMemberCookie,/^randori_session=/);
+
+  const currentLogout=await fetch(new URL('/api/auth/logout',second.url),{
+    method:'POST',headers:{origin:second.url,cookie:memberCookie},
+  });
+  assert.equal(currentLogout.status,200);
+  assert.match(currentLogout.headers.get('set-cookie')||'',/randori_session=;.*Max-Age=0/);
+  assert.equal((await fetch(new URL('/api/auth/me',second.url),{headers:{cookie:memberCookie}})).status,401);
+  assert.equal((await fetch(new URL('/api/auth/me',second.url),{headers:{cookie:secondMemberCookie}})).status,200);
+
+  const bearerToken=decodeURIComponent(secondMemberCookie.slice(secondMemberCookie.indexOf('=')+1));
+  const logoutAll=await fetch(new URL('/api/auth/logout-all',second.url),{
+    method:'POST',headers:{authorization:`Bearer ${bearerToken}`},
+  });
+  assert.equal(logoutAll.status,200,await logoutAll.clone().text());
+  assert.equal((await fetch(new URL('/api/auth/me',second.url),{headers:{cookie:secondMemberCookie}})).status,401);
+  assert.equal((await fetch(new URL('/api/auth/me',second.url),{headers:{cookie:ownerCookie}})).status,200,
+    'logout-all must remain scoped to its authenticated account');
+
+  await second.close();
+  cleanup.pop();
+  const third=registerRuntime(await startLocalDevelopmentServer({config,logger:SILENT_LOGGER,sqlObserver:observeSql}));
+  assert.equal((await fetch(new URL('/api/auth/me',third.url),{headers:{cookie:memberCookie}})).status,401);
+  assert.equal((await fetch(new URL('/api/auth/me',third.url),{headers:{cookie:secondMemberCookie}})).status,401);
   assert.deepEqual(
     requestSql.filter(sql=>/^\s*(?:CREATE|ALTER|DROP)\b/iu.test(sql)),
     [],

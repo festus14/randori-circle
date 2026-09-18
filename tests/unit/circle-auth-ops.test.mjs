@@ -23,6 +23,11 @@ const acceptanceCalls=[];
 const accountAcceptanceCalls=[];
 const passwordAccountCalls=[];
 const readinessCalls=[];
+const sessionRevocations=[];
+const identityTransactionActions=[];
+let sessionIssueError=null;
+let sessionRevokeError=null;
+let signedSessionPayload=null;
 
 const db={
   async execute(statement){
@@ -41,12 +46,17 @@ const db={
     return results;
   },
   async transaction(){
-    return {
-      execute:this.execute.bind(this),
+    const transaction={
+      execute:async statement=>{
+        identityTransactionActions.push({type:'execute',transaction});
+        return this.execute(statement);
+      },
       batch:this.batch.bind(this),
-      async commit(){},
-      async rollback(){},
+      async commit(){ identityTransactionActions.push({type:'commit',transaction}); },
+      async rollback(){ identityTransactionActions.push({type:'rollback',transaction}); },
     };
+    identityTransactionActions.push({type:'begin',transaction});
+    return transaction;
   },
 };
 
@@ -59,6 +69,24 @@ mock.module('../../api/_db.js',{
     getCronSecret:()=>process.env.CRON_SECRET||'',
     getAdminEmails:()=>new Set(['admin@example.test']),
     deterministicColor:()=>'#123456',
+    issueSession:async(_db,user)=>{
+      if(sessionIssueError) throw sessionIssueError;
+      return `test-session-${user.id||user.uid}`;
+    },
+    issueSessionInTransaction:async(_db,user)=>{
+      if(sessionIssueError) throw sessionIssueError;
+      identityTransactionActions.push({type:'issue',transaction:_db});
+      return `test-session-${user.id||user.uid}`;
+    },
+    revokeAccountSessions:async(_db,userId,reason)=>{
+      if(sessionRevokeError) throw sessionRevokeError;
+      if(reason==='identity_change') identityTransactionActions.push({type:'revoke',transaction:_db});
+      sessionRevocations.push({userId,reason}); return 1;
+    },
+    revokeRequestSession:async()=>{
+      if(sessionRevokeError) throw sessionRevokeError;
+      return {authenticated:!!signedSessionPayload,revoked:!!signedSessionPayload,userId:signedSessionPayload?.id||null};
+    },
     isoWeekLabel:()=>'2026-W38',
     verifyMutationOrigin:()=>true,
     verifyRequestAuth:req=>req.headers?.['x-test-auth']==='user'
@@ -66,6 +94,7 @@ mock.module('../../api/_db.js',{
       : (req.headers?.['x-test-auth']==='admin'
         ? {id:1,email:'admin@example.test',name:'Admin',is_admin:true}
         : null),
+    verifySignedRequestAuth:()=>signedSessionPayload,
   },
 });
 
@@ -176,6 +205,11 @@ beforeEach(()=>{
   accountAcceptanceCalls.length=0;
   passwordAccountCalls.length=0;
   readinessCalls.length=0;
+  sessionRevocations.length=0;
+  identityTransactionActions.length=0;
+  sessionIssueError=null;
+  sessionRevokeError=null;
+  signedSessionPayload=null;
   membershipResult=true;
   membershipError=null;
   validationResult={ok:false};
@@ -557,6 +591,9 @@ test('a stable Google subject signs into the same account after its verified ema
   assert.equal(accountAcceptanceCalls.length,0);
   assert.match(String(result.headers['set-cookie']),/randori_session=/);
   assert.equal(executed.filter(call=>call.sql.includes('UPDATE auth_accounts SET email=')).length,1);
+  assert.deepEqual(sessionRevocations,[{userId:8,reason:'identity_change'}]);
+  assert.deepEqual(identityTransactionActions.map(action=>action.type),['begin','execute','revoke','issue','commit']);
+  assert.ok(identityTransactionActions.every(action=>action.transaction===identityTransactionActions[0].transaction));
 });
 
 test('a verified Google email never auto-links an existing password account',async()=>{

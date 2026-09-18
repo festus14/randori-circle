@@ -1,6 +1,17 @@
-import { JWT_AUDIENCE, JWT_ISSUER, getClient, getJwtSecret, deterministicColor, getAdminEmails, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
+import {
+  getClient,
+  getJwtSecret,
+  deterministicColor,
+  getAdminEmails,
+  issueSession,
+  issueSessionInTransaction,
+  revokeAccountSessions,
+  revokeRequestSession,
+  verifyMutationOrigin,
+  verifyRequestAuth,
+  verifySignedRequestAuth,
+} from './_db.js';
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { parseCanonicalRoomPath } from './_pairing.js';
 import {
@@ -33,12 +44,6 @@ const OAUTH_RETURN_COOKIE = 'randori_oauth_return';
 const PASSWORD_MIN_BYTES = 10;
 const PASSWORD_MAX_BYTES = 72;
 const DUMMY_LOGIN_PASSWORD_HASH = '$2a$10$PBpMY4NLVseWPP6G9VtPveLltge4ovpON5/cJwqL8JU.khDEvJ9De';
-const JWT_OPTIONS = Object.freeze({
-  algorithm: 'HS256',
-  issuer: JWT_ISSUER,
-  audience: JWT_AUDIENCE,
-  expiresIn: '12h',
-});
 
 function cookieValue(req, name){
   const raw=String(req.headers?.cookie||'');
@@ -88,10 +93,6 @@ function safeOAuthReturnPath(value){
 function oauthResultLocation(appUrl, returnPath, key, value){
   const query=new URLSearchParams({[key]:String(value)});
   return `${appUrl}${safeOAuthReturnPath(returnPath)}?${query.toString()}`;
-}
-
-function signSession(user){
-  return jwt.sign(user, getJwtSecret(), JWT_OPTIONS);
 }
 
 export function validSignupPassword(value){
@@ -256,7 +257,9 @@ async function handleSignup(req,res){
     if(!registered?.ok){
       return res.status(403).json({error:'invitation unavailable or does not match this email'});
     }
-    const token=signSession({id:registered.user_id,email:e,name:display,color,is_admin:false});
+    let token;
+    try{ token=await issueSession(db,{id:registered.user_id,email:e,name:display,color,is_admin:false}); }
+    catch{ return res.status(503).json({error:'signup temporarily unavailable'}); }
     appendCookies(res,[sessionCookie(req,token),clearInviteClaimCookie({secure:false})]);
     return res.json({
       ok:true,
@@ -304,7 +307,9 @@ async function handleSignup(req,res){
   const authId = ins.rows[0].id;
   const isAdmin=ins.rows[0].is_admin===undefined?!!configuredAdmin:!!ins.rows[0].is_admin;
   try{ await db.execute({ sql:`INSERT INTO users (name,color) VALUES (?,?)`, args:[display,color]});}catch{}
-  const token = signSession({ id:authId, email:e, name:display, color, is_admin: !!isAdmin });
+  let token;
+  try{ token=await issueSession(db,{id:authId,email:e,name:display,color,is_admin:!!isAdmin}); }
+  catch{ return res.status(503).json({error:'signup temporarily unavailable'}); }
   appendCookies(res,[sessionCookie(req,token)]);
   return res.json({ ok:true, user:{ id:authId, email:e, name:display, color, is_admin: !!isAdmin, isAdmin: !!isAdmin }});
 }
@@ -352,7 +357,9 @@ async function handleLogin(req,res){
     try{ await db.execute({ sql:`UPDATE auth_accounts SET is_admin=1 WHERE id=?`, args:[row.id]}); row.is_admin=1; }catch{}
   }
   const is_admin = !!row.is_admin || envAdmins.has(e);
-  const token = signSession({ id:row.id, email:row.email, name:row.display_name, color:row.color, is_admin });
+  let token;
+  try{ token=await issueSession(db,{id:row.id,email:row.email,name:row.display_name,color:row.color,is_admin}); }
+  catch{ return res.status(503).json({error:'login temporarily unavailable'}); }
   appendCookies(res,[sessionCookie(req,token)]);
   return res.json({ ok:true, user:{ id:row.id, email:row.email, name:row.display_name, color:row.color, is_admin, isAdmin:is_admin }});
 }
@@ -360,7 +367,9 @@ async function handleLogin(req,res){
 // --- me ---
 async function handleMe(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
-  const payload=verifyRequestAuth(req);
+  let payload;
+  try{ payload=await verifyRequestAuth(req); }
+  catch{ return res.status(503).json({error:'session validation temporarily unavailable'}); }
   if (!payload) return res.status(401).json({ error:'authentication required' });
   const localIdentity=localIdentityAdapterEnabled(req);
   try{
@@ -402,8 +411,29 @@ async function handleMe(req,res){
   }
 }
 
-function handleLogout(req,res){
+async function handleLogout(req,res){
   if(req.method!=='POST') return res.status(405).json({error:'POST only'});
+  if(verifySignedRequestAuth(req)){
+    try{ await revokeRequestSession(getClient(),req); }
+    catch{ return res.status(503).json({error:'logout temporarily unavailable'}); }
+  }
+  appendCookies(res,[clearCookie(req,SESSION_COOKIE)]);
+  return res.json({ok:true});
+}
+
+async function handleLogoutAll(req,res){
+  if(req.method!=='POST') return res.status(405).json({error:'POST only'});
+  let db,payload;
+  try{
+    db=getClient();
+    payload=await verifyRequestAuth(req,db);
+  }catch{ return res.status(503).json({error:'logout temporarily unavailable'}); }
+  if(!payload){
+    appendCookies(res,[clearCookie(req,SESSION_COOKIE)]);
+    return res.status(401).json({error:'authentication required'});
+  }
+  try{ await revokeAccountSessions(db,payload.id,'logout_all'); }
+  catch{ return res.status(503).json({error:'logout temporarily unavailable'}); }
   appendCookies(res,[clearCookie(req,SESSION_COOKIE)]);
   return res.json({ok:true});
 }
@@ -512,7 +542,8 @@ async function handleGoogleCallback(req,res){
     try{ preparedInvitation=await validatePreparedInvitation(db,{claim:inviteClaim,email}); }
     catch{ res.writeHead(302,{Location:redirectError('db_error')}); return res.end(); }
   }
-  let authId, is_admin_final=false,invitationAcceptedDuringAccountCreation=false;
+  let authId,is_admin_final=false,invitationAcceptedDuringAccountCreation=false;
+  let identityEmailChange=null;
   try{
     const existing = await db.execute({ sql:"SELECT id, email, is_admin, password_hash, google_sub FROM auth_accounts WHERE email = ?", args:[email] });
     if (existing.rows.length){
@@ -547,12 +578,16 @@ async function handleGoogleCallback(req,res){
         const account=existingIdentity.rows[0];
         authId=account.id;
         is_admin_final=!!account.is_admin||getAdminEmails().has(email);
-        const changed=await db.execute({
-          sql:"UPDATE auth_accounts SET email=?,last_login=datetime('now'),display_name=COALESCE(?,display_name),is_admin=? WHERE id=? AND google_sub=? RETURNING id",
-          args:[email,finalName,is_admin_final?1:0,authId,googleSub],
-        });
-        if(changed.rows?.length!==1){
-          res.writeHead(302,{Location:redirectError('identity_mismatch')}); return res.end();
+        if(String(account.email).toLowerCase()!==email){
+          identityEmailChange={previousEmail:String(account.email).toLowerCase()};
+        }else{
+          const changed=await db.execute({
+            sql:"UPDATE auth_accounts SET last_login=datetime('now'),display_name=COALESCE(?,display_name),is_admin=? WHERE id=? AND google_sub=? AND lower(email)=? RETURNING id",
+            args:[finalName,is_admin_final?1:0,authId,googleSub,email],
+          });
+          if(changed.rows?.length!==1){
+            res.writeHead(302,{Location:redirectError('identity_mismatch')}); return res.end();
+          }
         }
       }else{
         const invitationMayRegister=membershipRequired&&preparedInvitation?.ok&&preparedInvitation.used_by===null;
@@ -622,7 +657,28 @@ async function handleGoogleCallback(req,res){
     }
   }
   let ourJwt;
-  try{ ourJwt = signSession({ uid:authId, id:authId, email, name:finalName, is_admin:is_admin_final }); }catch{ res.writeHead(302,{ Location:redirectError('jwt_error')}); return res.end(); }
+  if(identityEmailChange){
+    let transaction,committed=false;
+    try{
+      transaction=await db.transaction('write');
+      const changed=await transaction.execute({
+        sql:`UPDATE auth_accounts SET email=?,last_login=datetime('now'),display_name=COALESCE(?,display_name),is_admin=?
+          WHERE id=? AND google_sub=? AND lower(email)=? RETURNING id`,
+        args:[email,finalName,is_admin_final?1:0,authId,googleSub,identityEmailChange.previousEmail],
+      });
+      if(changed.rows?.length!==1) throw new Error('identity changed concurrently');
+      await revokeAccountSessions(transaction,authId,'identity_change');
+      ourJwt=await issueSessionInTransaction(transaction,{uid:authId,id:authId,email,name:finalName,is_admin:is_admin_final});
+      await transaction.commit();
+      committed=true;
+    }catch{
+      if(transaction&&!committed){ try{ await transaction.rollback(); }catch{} }
+      res.writeHead(302,{Location:redirectError('session_error')}); return res.end();
+    }
+  }else{
+    try{ ourJwt=await issueSession(db,{uid:authId,id:authId,email,name:finalName,is_admin:is_admin_final}); }
+    catch{ res.writeHead(302,{Location:redirectError('session_error')}); return res.end(); }
+  }
   appendCookies(res,[sessionCookie(req,ourJwt),...(inviteClaimPresent?[clearInviteClaimCookie()]:[])]);
   const dest = oauthResultLocation(appUrl,returnPath,'google','success');
   res.writeHead(302, { Location:dest });
@@ -633,7 +689,11 @@ export default async function handler(req,res){
   setAuthResponseHeaders(res);
   const ep = getEndpoint(req);
   if(!verifyMutationOrigin(req)) return res.status(403).json({error:'cross-origin mutation rejected'});
-  if(req.method==='POST' && ['signup','login','logout'].some(name=>ep===name || ep.includes(name)) && !verifyAuthMutationOrigin(req)){
+  const logoutMutation=ep==='logout'||ep==='logout-all'||ep.includes('logout');
+  if(req.method==='POST'&&logoutMutation&&!verifyMutationOrigin(req)){
+    return res.status(403).json({error:'same-origin request required'});
+  }
+  if(req.method==='POST'&&!logoutMutation&&['signup','login'].some(name=>ep===name || ep.includes(name))&&!verifyAuthMutationOrigin(req)){
     return res.status(403).json({error:'same-origin request required'});
   }
   // also detect google via path that contains google
@@ -648,6 +708,7 @@ export default async function handler(req,res){
   if (ep === 'signup' || ep.includes('signup')) return handleSignup(req,res);
   if (ep === 'login' || ep.includes('login')) return handleLogin(req,res);
   if (ep === 'me' || ep.includes('me')) return handleMe(req,res);
+  if (ep === 'logout-all' || ep.includes('logout-all')) return handleLogoutAll(req,res);
   if (ep === 'logout' || ep.includes('logout')) return handleLogout(req,res);
   // fallback try to infer from original path: /api/auth/google/start etc
   if (urlPath.includes('/google/start')) return handleGoogleStart(req,res);
@@ -655,7 +716,8 @@ export default async function handler(req,res){
   if (urlPath.includes('/capabilities')) return handleCapabilities(req,res);
   if (urlPath.includes('signup')) return handleSignup(req,res);
   if (urlPath.includes('login')) return handleLogin(req,res);
+  if (urlPath.includes('logout-all')) return handleLogoutAll(req,res);
   if (urlPath.includes('logout')) return handleLogout(req,res);
   if (urlPath.includes('/me')) return handleMe(req,res);
-  return res.status(404).json({ error:`unknown auth endpoint '${ep}'`, available:['capabilities','signup','login','logout','me','google/start','google/callback'], hint:'endpoint query param ?endpoint=signup etc' });
+  return res.status(404).json({ error:`unknown auth endpoint '${ep}'`, available:['capabilities','signup','login','logout','logout-all','me','google/start','google/callback'], hint:'endpoint query param ?endpoint=signup etc' });
 }

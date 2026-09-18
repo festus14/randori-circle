@@ -289,6 +289,33 @@ test('existing members recover from a wrong password and can sign out after logi
   expect(await page.evaluate(()=>(window as any)._randori_auth.me)).toBeNull();
 });
 
+test('an authenticated member can sign out every session from the account menu',async({page})=>{
+  const user={id:3,email:'member@example.test',name:'Existing Member',is_admin:false,is_available:true};
+  let signedIn=true;
+  let logoutAllCalls=0;
+  await mockApi(page,{
+    '/api/auth/capabilities':privateBetaCapabilities,
+    '/api/auth/me':()=>signedIn?{ok:true,user}:{_status:401,ok:false,error:'authentication required'},
+    '/api/auth/logout-all':()=>{
+      logoutAllCalls+=1;
+      signedIn=false;
+      return {ok:true};
+    },
+  });
+  await resetClientState(page,true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+
+  await expect(page.locator('#meLabel')).toContainText('Existing Member');
+  await page.locator('#meLabel').click();
+  const logoutAll=page.getByRole('button',{name:'Sign out everywhere'});
+  await expect(logoutAll).toBeVisible();
+  await logoutAll.click();
+  await expect.poll(()=>logoutAllCalls).toBe(1);
+  await expect(page.locator('#authBtn')).toBeVisible();
+  expect(await page.evaluate(()=>(window as any)._randori_auth.me)).toBeNull();
+  expect(await page.evaluate(()=>localStorage.getItem('randori-me'))).toBeNull();
+});
+
 test('private beta capabilities offer Google for joining and password only for existing members', async ({ page }) => {
   await mockApi(page, { '/api/auth/capabilities': privateBetaCapabilities });
   await resetClientState(page);

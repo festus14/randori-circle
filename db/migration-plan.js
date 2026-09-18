@@ -29,6 +29,13 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'18831c331d9bd1fdf835eae05dc1457ecc761bfabb673601f0920329f9811121',
     checksum:'9c234c1b040b0470db8a4e6edcce957adcdbc9efa5a02275a468cc6854df6bb0',
   }),
+  Object.freeze({
+    version:5,
+    name:'durable-revocable-sessions',
+    description:'Hashed, bounded browser and Bearer sessions with durable revocation state.',
+    operationsChecksum:'d5a2f7fc1beded3486c29cd419ac4941ad5d8b43ae5485764606575c7e64a918',
+    checksum:'f6dcccada588712be68f1e02ea48c688b6cc3d48d3f4ff36764d6e1259ca5e34',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){

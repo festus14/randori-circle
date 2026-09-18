@@ -17,7 +17,11 @@ mock.module('../../api/_db.js',{
   exports:{
     JWT_AUDIENCE:'randori-web',JWT_ISSUER:'randori-circle',getClient:()=>db,
     getJwtSecret:()=>JWT_SECRET,getAdminEmails:()=>new Set(),deterministicColor:()=>'#123456',
-    verifyMutationOrigin:()=>true,verifyRequestAuth:()=>null,
+    issueSession:async(_db,user)=>`test-session-${user.id||user.uid}`,
+    issueSessionInTransaction:async(_db,user)=>`test-session-${user.id||user.uid}`,
+    revokeAccountSessions:async()=>0,
+    revokeRequestSession:async()=>({authenticated:false,revoked:false,userId:null}),
+    verifyMutationOrigin:()=>true,verifyRequestAuth:()=>null,verifySignedRequestAuth:()=>null,
   },
 });
 

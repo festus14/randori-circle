@@ -120,14 +120,14 @@ async function consumePrepareRateLimit(db,req){
     : {allowed:true,retryAfter:0};
 }
 
-function authenticatedUserId(req){
-  const payload=verifyRequestAuth(req);
+async function authenticatedUserId(req){
+  const payload=await verifyRequestAuth(req);
   const value=payload?.id??payload?.uid;
   return Number.isSafeInteger(value)&&value>0?value:null;
 }
 
 async function ownerContext(req,res){
-  const userId=authenticatedUserId(req);
+  const userId=await authenticatedUserId(req);
   if(!userId){ res.status(401).json({error:'authentication required'}); return null; }
   let db;
   try{

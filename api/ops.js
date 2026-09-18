@@ -75,7 +75,7 @@ async function handleNotificationPrefs(req,res){
   if(req.method!=="GET"&&req.method!=="POST"&&req.method!=="PUT"){
     return res.status(405).json({error:"GET or POST/PUT"});
   }
-  const payload=verifyRequestAuth(req);
+  const payload=await verifyRequestAuth(req);
   if(!payload) return res.status(401).json({error:"authentication required"});
   const db=getClient();
   try{ await ensureNotifPrefs(db,req); }
@@ -168,7 +168,7 @@ function strictLocalPairingRuntime(req){
 }
 
 async function requirePairingPublisher(req,res){
-  const payload=verifyRequestAuth(req);
+  const payload=await verifyRequestAuth(req);
   if(!payload){ res.status(401).json({error:'authentication required'}); return null; }
   let db;
   try{ db=getClient(); }
@@ -449,7 +449,7 @@ async function getCallerAdmin(db, payload){
 }
 
 async function requireAdmin(req,res){
-  const payload=verifyRequestAuth(req);
+  const payload=await verifyRequestAuth(req);
   if (!payload) { res.status(401).json({ error:'authentication required' }); return null; }
   const db = getClient();
   await ensureMigrations(db);
@@ -460,7 +460,7 @@ async function requireAdmin(req,res){
 
 async function handleAvailability(req,res){
   if (req.method!=='POST') return res.status(405).json({ error:'POST only' });
-  const payload=verifyRequestAuth(req);
+  const payload=await verifyRequestAuth(req);
   if (!payload) return res.status(401).json({ error:'authentication required' });
   const { is_available, isAvailable } = req.body||{};
   const raw = (is_available!==undefined ? is_available : isAvailable);

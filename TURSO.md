@@ -76,6 +76,7 @@ Provider-identity and other migration-managed schema changes use the protected m
 - `POST /api/auth/signup` — development compatibility only; production password signup is disabled, and the rollout latch prevents late uninvited accounts.
 - `POST /api/auth/login` — existing password users only; establishes an HttpOnly session cookie.
 - `GET /api/auth/me` — authenticated session profile with availability and admin status.
+- `POST /api/auth/logout` / `POST /api/auth/logout-all` — revoke the current session or every active session for the account. The database stores only hashed session identifiers; a valid Bearer credential remains independent of a browser cookie.
 - `GET /api/auth/google/start` / `callback` — OAuth/PKCE flow. With membership enforcement on, a new verified account is created atomically with invitation consumption, membership, and audit; the JWT remains only in an HttpOnly cookie.
 - `GET /api/circle` — authenticated and membership-scoped; returns safe profile fields for active members only and never returns email addresses.
 - `POST /api/invitations` / `GET /api/invitations` / `DELETE /api/invitations/:id` — primary-circle owner invitation lifecycle.
@@ -89,7 +90,7 @@ Provider-identity and other migration-managed schema changes use the protected m
   - If either is absent, the delivery summary explains that email is disabled and pairs remain visible in-app via `/api/weeks`.
 - `POST /api/admin/reshuffle` — compatibility URL only. Pairing requests delegate to the immutable current-cycle endpoint and cannot force/remix a published cycle; `action=promote` retains its separate legacy admin operation.
 - `POST /api/settings/availability` — Bearer → `{is_available:boolean}` updates your row `is_available`, `availability_updated_at=datetime('now')`
-- `GET /api/auth/me` — session cookie or Bearer token → current user, availability, and admin status.
+- `GET /api/auth/me` — a live, unrevoked session cookie or Bearer token → current user, availability, and admin status.
 - `POST /api/init` — authenticated admin-only schema migration and one-time primary-circle backfill. It also closes the durable registration latch.
 
 **Vercel crons:**

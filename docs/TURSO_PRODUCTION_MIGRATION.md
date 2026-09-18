@@ -46,7 +46,7 @@ Store these environment variables:
 
 `GITHUB_TOKEN` is provided by Actions with only `actions: read` and `contents: read`. Credentials are scoped to the migration step; checkout, validation, setup, and dependency installation do not receive them. All external actions are pinned to immutable commits.
 
-## Current v4 migration sequence
+## Current v5 migration sequence
 
 The successful rehearsal and every migration operation must use the same current `main` commit. A code change invalidates the attestation, so run the rehearsal again after merging this workflow.
 
@@ -56,9 +56,9 @@ The successful rehearsal and every migration operation must use the same current
    - an empty state fingerprint; and
    - confirmation `INSPECT_PRODUCTION_DATABASE`.
 3. Read `migration-result.json` from the result artifact. Do not copy a fingerprint from logs, an older run, or another database.
-4. Require managed v3 with only migration v4 pending. If the database is older or unmanaged, stop and complete the separately reviewed historical-prefix rollout first; this workflow deliberately refuses multiple pending versions.
+4. Require managed v4 with only migration v5 pending. If the database is older or unmanaged, stop and complete the separately reviewed historical-prefix rollout first; this workflow deliberately refuses multiple pending versions.
 5. Temporarily enable mutations, dispatch `apply` with the inspected fingerprint and mutation confirmation, then disable mutations again.
-6. Run a final `status`. Require managed v4, no pending versions, and a new exact fingerprint before enabling Google OIDC runtime traffic.
+6. Run a final `status`. Require managed v5, no pending versions, and a new exact fingerprint before enabling application traffic. Migration v5 invalidates legacy stateless JWTs, so users must sign in again after rollout.
 
 Each mutation requires a freshly supplied 64-character lowercase fingerprint. An unmanaged database cannot be applied before adoption, and adoption cannot change application schema or data. Apply allows a current-version no-op but refuses when more than one version is pending. That limit prevents a single approval from spanning multiple commits; stop and design a version-by-version rollout instead.
 
@@ -68,7 +68,7 @@ Any nonzero result means stop. Do not rerun a mutation with the same fingerprint
 
 There are no automatic down migrations. The rollback asset is the verified PITR capability and its protected runbook, not reverse SQL. If an applied migration causes an incident, keep database administration exclusive, preserve evidence, and make a deliberate restore/cutover decision using the Turso recovery procedure.
 
-The current v4 provider-identity table is additive and may run with either protected expected `block_writes` value, provided both Turso metadata surfaces agree with it. A future destructive or long-running migration must introduce and rehearse a separate maintenance protocol; changing this variable is not by itself sufficient authorization for such work.
+The current v5 session table and index are additive and may run with either protected expected `block_writes` value, provided both Turso metadata surfaces agree with it. A future destructive or long-running migration must introduce and rehearse a separate maintenance protocol; changing this variable is not by itself sufficient authorization for such work.
 
 Turso's token and metadata endpoints are name-addressed. The workflow rechecks the immutable `DbId` around token creation and before mutation, while repository concurrency prevents its own rehearsal/migration jobs from overlapping. Operators must still prevent out-of-band database rename, delete, or recreate operations during the window because the provider does not offer an atomic ID-conditioned token request.
 

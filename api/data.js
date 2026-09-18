@@ -45,7 +45,7 @@ async function getCallerAdmin(db, payload){
   return {callerEmail, callerId, callerIsAdminFlag, callerIsAdmin};
 }
 async function requireAdminDT(req,res){
-  const payload=verifyRequestAuth(req);
+  const payload=await verifyRequestAuth(req);
   if (!payload){ res.status(401).json({ error:'authentication required' }); return null; }
   const db=getClient(); await ensureBaseTables(db,req); await ensureProfileMigrations(db,req);
   const ctx=await getCallerAdmin(db,payload);
@@ -451,7 +451,7 @@ function getEndpoint(req){
   }catch{ return (req.url||'').split('?')[0].split('/').filter(Boolean).pop()?.toLowerCase()||''; }
 }
 
-function getAuthPayload(req){
+async function getAuthPayload(req){
   return verifyRequestAuth(req);
 }
 
@@ -932,7 +932,7 @@ async function ensureScheduleReadiness(db){
 async function handleLogs(req,res){
   // POST: client logs ingest, GET: admin fetch
   if(req.method==='POST'){
-    const payload = getAuthPayload(req);
+    const payload = await getAuthPayload(req);
     if(!payload) return res.status(401).json({error:'authentication required'});
     const db = getClient();
     try{ await ensureAppLogs(db,req); }
@@ -1033,7 +1033,7 @@ async function handleLogs(req,res){
 
 async function handleCircle(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
-  const viewer=getAuthPayload(req);
+  const viewer=await getAuthPayload(req);
   if(!viewer) return res.status(401).json({error:'authentication required'});
   if(circleMembershipEnabled()){
     res.setHeader('Cache-Control','private, no-store');
@@ -1129,7 +1129,7 @@ async function handleCircle(req,res){
 async function handleWeeks(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
   res.setHeader('Cache-Control','private, no-store');
-  const payload=getAuthPayload(req);
+  const payload=await getAuthPayload(req);
   if (!payload) return res.status(401).json({ error:'authentication required' });
   const userId=authenticatedUserId(payload);
   if(!userId) return res.status(401).json({error:'authentication required'});
@@ -1174,7 +1174,7 @@ async function handleWeeks(req,res){
 async function handleHistory(req,res){
   res.setHeader('Cache-Control','private, no-store');
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
-  const payload = getAuthPayload(req);
+  const payload = await getAuthPayload(req);
   if (!payload) return res.status(401).json({ error:'missing Bearer token' });
   let db;
   let groups;
@@ -1404,7 +1404,7 @@ async function handleInit(req,res){
 // ----- NEW ENDPOINTS: profile, my-pair, schedule, messages, questions -----
 
 async function handleProfile(req,res){
-  const payload = getAuthPayload(req);
+  const payload = await getAuthPayload(req);
   if (!payload) return res.status(401).json({ error:'missing Bearer token' });
   const db = getClient();
   await ensureBaseTables(db,req);
@@ -1453,7 +1453,7 @@ async function handleProfile(req,res){
 async function handleMyPair(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
   res.setHeader('Cache-Control','private, no-store');
-  const payload = getAuthPayload(req);
+  const payload = await getAuthPayload(req);
   if (!payload) return res.status(401).json({ error:'missing Bearer token' });
   const userId=authenticatedUserId(payload);
   if(!userId) return res.status(401).json({error:'authentication required'});
@@ -1577,7 +1577,7 @@ async function fetchAuthorizedScheduleState(db,accessArgs,weekId,pairId){
 
 async function handleSchedule(req,res){
   if(req.method!=='GET' && req.method!=='POST') return res.status(405).json({error:'GET or POST only'});
-  const payload=getAuthPayload(req);
+  const payload=await getAuthPayload(req);
   if(!payload) return res.status(401).json({error:'authentication required'});
   res.setHeader('Cache-Control','private, no-store');
   const numericRoomFields=['week_id','pair_group_id','pair_id','pg_id'];
@@ -1680,7 +1680,7 @@ async function handleMessages(req,res){
     res.setHeader('Allow','GET, POST');
     return res.status(405).json({error:'GET or POST only'});
   }
-  const payload=getAuthPayload(req);
+  const payload=await getAuthPayload(req);
   if(!payload) return res.status(401).json({error:'authentication required'});
 
   let input;
@@ -1814,7 +1814,7 @@ async function handleMessages(req,res){
 
 async function handlePairRecap(req,res){
   res.setHeader('Cache-Control','private, no-store');
-  const payload=getAuthPayload(req);
+  const payload=await getAuthPayload(req);
   if(!payload) return res.status(401).json({error:'authentication required'});
   if(req.method!=='GET'){
     res.setHeader('Allow','GET');
@@ -1968,7 +1968,7 @@ async function handlePairRecap(req,res){
 }
 
 async function handleQuestions(req,res){
-  if(!getAuthPayload(req)) return res.status(401).json({error:'authentication required'});
+  if(!await getAuthPayload(req)) return res.status(401).json({error:'authentication required'});
   if(req.method!=='GET') return res.status(405).json({error:'the bundled question catalogue is read-only'});
 
   const requestedSlug=String(req.query?.slug||req.query?.question_slug||'').trim();
@@ -2110,7 +2110,7 @@ function runSummary(row,{includeRunner=false}={}){
 
 async function handleRuns(req,res){
   if(req.method!=='GET' && req.method!=='POST') return res.status(405).json({ error:'GET only' });
-  const payload = getAuthPayload(req);
+  const payload = await getAuthPayload(req);
   if (!payload) return res.status(401).json({ error:'authentication required' });
   if (req.method === 'POST'){
     return res.status(405).json({error:'run records are created only by the execution service'});
@@ -2206,7 +2206,7 @@ async function handleStats(req,res){
   const db = getClient();
   await ensureBaseTables(db,req);
   await ensureProfileMigrations(db,req);
-  const payload = getAuthPayload(req); // optional
+  const payload = await getAuthPayload(req); // optional
   let total_users=0, total_weeks=0, total_pairs=0;
   try{
     const u = await db.execute(`SELECT COUNT(*) as c FROM auth_accounts WHERE COALESCE(is_demo,0)=0`);
@@ -2265,7 +2265,7 @@ async function handleStats(req,res){
 async function handleLeetcode(req,res){
   // GET ?slug=two-sum or /api/leetcode/two-sum
   if (req.method!=='GET') return res.status(405).json({ error:'GET only for leetcode detail' });
-  if(!getAuthPayload(req)) return res.status(401).json({error:'authentication required'});
+  if(!await getAuthPayload(req)) return res.status(401).json({error:'authentication required'});
   if(process.env.LEETCODE_INGESTION_AUTHORIZED!=='true'){
     return res.status(403).json({error:'LeetCode content access is disabled pending written authorization'});
   }
@@ -2605,7 +2605,7 @@ async function releaseExecutionLease(db,userId,leaseId,req){
 async function handleExecute(req,res){
   const _execStart=Date.now();
   if(req.method!=='POST') return res.status(405).json({error:'POST only for execute'});
-  const payload=getAuthPayload(req);
+  const payload=await getAuthPayload(req);
   if(!payload) return res.status(401).json({error:'authentication required'});
   const body = req.body || {};
   const language = String(body.language||body.lang||'javascript').toLowerCase();

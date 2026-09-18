@@ -641,7 +641,7 @@ function apiRoute(pathname,query){
   }
   const authEndpoints=new Map([
     ['/api/auth/capabilities','capabilities'],['/api/auth/signup','signup'],['/api/auth/login','login'],
-    ['/api/auth/me','me'],['/api/auth/logout','logout'],
+    ['/api/auth/me','me'],['/api/auth/logout-all','logout-all'],['/api/auth/logout','logout'],
     ['/api/auth/google/start','google-start'],['/api/auth/google/callback','google-callback'],
   ]);
   if(authEndpoints.has(pathname)){
