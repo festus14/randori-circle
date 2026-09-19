@@ -120,29 +120,29 @@ test('crash-after-send retries with the same provider key and has one user-visib
   assert.equal((await row(db)).provider_message_id,'provider-message-1');
 });
 
-test('database time defeats skewed workers while expiry and heartbeat preserve exclusive ownership',async()=>{
+test('the database clock alone controls lease expiry and exclusive ownership',async()=>{
   const {db}=await fixture();
   await enqueueOutboxEvent(db,event());
-  const first=await claimOutboxEvent(db,{workerId:'worker-a',now:'2099-01-01T00:00:00.000Z',leaseDurationMs:1000});
+  const first=await claimOutboxEvent(db,{workerId:'worker-a',leaseDurationMs:1000});
   assert.equal(first.attemptCount,1);
   assert.equal(await claimOutboxEvent(db,{
-    workerId:'worker-b',now:'2099-01-01T00:00:00.000Z',leaseDurationMs:1000,
+    workerId:'worker-b',leaseDurationMs:1000,
   }),null);
   const beforeHeartbeat=(await row(db)).leased_until;
   assert.equal(await heartbeatOutboxLease(db,{
     eventId:first.id,leaseToken:first.leaseToken,workerId:'worker-a',
-    now:'1900-01-01T00:00:00.000Z',leaseDurationMs:1000,
+    leaseDurationMs:1000,
   }),true);
   assert.ok((await row(db)).leased_until>=beforeHeartbeat,'a skewed heartbeat never shortens the lease');
   await db.execute(`UPDATE outbox_events SET leased_until='2000-01-01T00:00:00.000Z' WHERE id=1`);
   const reclaimed=await claimOutboxEvent(db,{
-    workerId:'worker-b',now:'1900-01-01T00:00:00.000Z',leaseDurationMs:1000,
+    workerId:'worker-b',leaseDurationMs:1000,
   });
   assert.equal(reclaimed.attemptCount,2);
   assert.notEqual(reclaimed.leaseToken,first.leaseToken);
   assert.equal(await heartbeatOutboxLease(db,{
     eventId:first.id,leaseToken:first.leaseToken,workerId:'worker-a',
-    now:'2099-01-01T00:00:00.000Z',leaseDurationMs:1000,
+    leaseDurationMs:1000,
   }),false,'a stale worker cannot renew a replacement lease');
 });
 
