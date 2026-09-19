@@ -143,7 +143,7 @@ test('scope resolution requires one active non-demo primary membership with a st
   const production=await resolveAvailabilityScope(db,{userId:1});
   assert.deepEqual({...production},{
     kind:'circle',scopeKey:'circle:10',circleId:10,publicId:'circle_primary',name:'Primary',
-    userId:1,legacyIsAvailable:false,
+    userId:1,legacyIsAvailable:false,bridgeLegacyAvailability:true,
   });
   await assert.rejects(resolveAvailabilityScope(db,{userId:2}),expectCode('AVAILABILITY_FORBIDDEN'));
   await assert.rejects(resolveAvailabilityScope(db,{userId:3}),expectCode('AVAILABILITY_FORBIDDEN'));
@@ -168,6 +168,30 @@ test('the first scope cycle bridges legacy once; later cycles use the cycle defa
   assert.equal(later.version,0);
   assert.equal(later.source,'cycle_default');
   assert.notEqual(later.cycleKey,first.cycleKey);
+});
+
+test('a secondary circle always starts from cycle_default and rejects a pre-existing legacy bridge',async()=>{
+  const {db}=await createDatabase();
+  await db.execute(`INSERT INTO circle_memberships (circle_id,user_id,role,status) VALUES (20,1,'member','active')`);
+  const context={
+    payload:{id:1,sessionHash:'a'.repeat(64)},circleId:20,contextVersion:1,implicit:false,
+  };
+  await db.batch([
+    `CREATE TABLE auth_sessions (session_hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,revoked_at INTEGER,UNIQUE(session_hash,user_id))`,
+    `CREATE TABLE auth_session_circle_contexts (session_hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL,circle_id INTEGER NOT NULL,context_version INTEGER NOT NULL,updated_at INTEGER NOT NULL,FOREIGN KEY(session_hash,user_id) REFERENCES auth_sessions(session_hash,user_id))`,
+    {sql:`INSERT INTO auth_sessions (session_hash,user_id,created_at,expires_at) VALUES (?,?,?,?)`,
+      args:[context.payload.sessionHash,1,1,Math.floor(Date.now()/1000)+3600]},
+    {sql:`INSERT INTO auth_session_circle_contexts (session_hash,user_id,circle_id,context_version,updated_at) VALUES (?,?,?,?,?)`,
+      args:[context.payload.sessionHash,1,20,1,1]},
+  ],'write');
+  const secondary=await getAvailabilityState(db,{userId:1,now:FRIDAY,circleContext:context});
+  assert.equal(secondary.source,'cycle_default');
+  assert.equal(secondary.isAvailable,true,'account-global legacy false must not enter a secondary circle');
+
+  await db.execute(`UPDATE pairing_cycles SET default_source='legacy_bridge' WHERE scope_key='circle:20'`);
+  await assert.rejects(getAvailabilityState(db,{
+    userId:1,now:FRIDAY,circleContext:context,
+  }),expectCode('AVAILABILITY_INTEGRITY'));
 });
 
 test('an out-of-order adjacent bridge stays stable and later cycles use defaults',async()=>{

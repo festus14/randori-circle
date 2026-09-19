@@ -913,11 +913,56 @@ takedown command. Git history recovers accidental edits. A real takedown is
 restored only by a reviewed content change with fresh approval and, when
 semantics changed, a new exercise version.
 
+## ID-24: Open only dated availability at the active-circle boundary
+
+Status: implemented behind the independent, default-off
+`MULTI_CIRCLE_AVAILABILITY_ENABLED` flag; ID-23 is reserved for the separately
+sequenced circle lifecycle UI decision.
+
+**Decision.** Multi-circle accounts may read and update dated availability for
+the circle selected by their live authenticated session. The client never
+supplies a circle identifier to the availability endpoint. An explicit session
+context requires the exact context-version header, while implicit compatibility
+requires exactly one active, non-archived circle with no stored context.
+
+GET is treated as a write because it can materialize a cycle. GET and POST both
+revalidate the exact live session hash, account, active membership,
+non-archived circle, and context generation inside each write-transaction
+attempt before materialization or mutation. POST repeats that authority in its
+final SQL predicate. Context or authority failures return no availability
+state. Successful and same-context conflict responses echo the exact generation
+so the browser can fence values, pending work, notices, and rollover timers by
+account, circle, and context.
+
+The existing circle-scoped v3 cycle and decision tables are sufficient; there
+is no v13. Primary first use preserves the legacy account-value bridge. A
+secondary circle's first cycle always uses `cycle_default`, and a pre-existing
+secondary legacy bridge fails closed. All other pairing, history, schedule,
+chat, execution, workspace, video, and AI routes retain the existing
+`409 circle_feature_unavailable` boundary.
+
+**Alternatives.** Enabling the whole weekly workflow was rejected because its
+pairing, schedule, and collaboration records are not fully tenant-owned.
+Keeping availability blocked was safe but withheld the highest-value operation
+already backed by circle-scoped storage. Trusting a circle ID from the browser
+would turn routing input into authority and permit stale or forged scope
+selection. Adding v13 would create migration risk without strengthening the
+existing composite scope keys. Reusing the global legacy account flag in a
+secondary circle would leak a cross-circle default, so secondary first use is
+explicitly independent.
+
+**Rollout and recovery.** Keep the availability flag off until v12 and the
+control plane are healthy, rehearse two-circle isolation and switch/removal
+races in staging, then enable the availability flag independently. Roll back by
+disabling only that flag. Existing scoped rows remain inert and the legacy
+single-primary behavior resumes; no schema downgrade or data deletion is
+required.
+
 ## ID-25: Gate invitation delivery explicitly and authorize the event's exact circle
 
-Status: implemented as a no-migration hardening increment. IDs 23 and 24 are
-reserved for the concurrently developed accessible shell and circle-scoped
-availability decisions.
+Status: implemented as a no-migration hardening increment. ID-23 is reserved
+for the separately sequenced accessible-shell decision; ID-24 records
+active-circle availability.
 
 **Decision.** Production owner-created invitation email is disabled unless
 `INVITATION_EMAIL_DELIVERY_ENABLED` is exactly `true` and the existing

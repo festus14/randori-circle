@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
 
+import { validateActiveCircleMutationContext } from './_active-circle.js';
 import { resolvePairingCycle } from './_pairing-cycle.js';
 
 const CYCLE_KEY_PATTERN=/^[0-9a-f]{64}$/;
+const SESSION_HASH_PATTERN=/^[0-9a-f]{64}$/;
 const CYCLE_ID_PATTERN=/^\d{4}-W(?:0[1-9]|[1-4]\d|5[0-3])$/;
 const DECISION_SOURCES=new Set(['user','legacy_bridge','cycle_default']);
 const DEFAULT_SOURCES=new Set(['legacy_bridge','cycle_default']);
@@ -41,6 +43,35 @@ function positiveId(value,name='id'){
     fail('AVAILABILITY_INPUT_INVALID',`${name} must be a positive safe integer.`);
   }
   return value;
+}
+
+function availabilityCircleContext(value,userId){
+  if(value===null||value===undefined) return null;
+  if(!value||typeof value!=='object'||Array.isArray(value)
+    ||!value.payload||typeof value.payload!=='object'||Array.isArray(value.payload)
+    ||typeof value.implicit!=='boolean'){
+    fail('AVAILABILITY_INPUT_INVALID','Active circle context is invalid.');
+  }
+  const circleId=positiveId(value.circleId,'circleId');
+  const contextVersion=value.contextVersion;
+  const payloadUserId=Number(value.payload.id??value.payload.uid);
+  const sessionHash=value.payload.sessionHash;
+  if(!Number.isSafeInteger(contextVersion)||contextVersion<0||payloadUserId!==userId
+    ||typeof sessionHash!=='string'||!SESSION_HASH_PATTERN.test(sessionHash)){
+    fail('AVAILABILITY_INPUT_INVALID','Active circle context is invalid.');
+  }
+  return Object.freeze({payload:value.payload,circleId,contextVersion,implicit:value.implicit});
+}
+
+async function revalidateAvailabilityCircleContext(db,circleContext){
+  if(!circleContext) return;
+  let valid=false;
+  try{ valid=await validateActiveCircleMutationContext(db,circleContext.payload,circleContext); }
+  catch(error){
+    if(error instanceof AvailabilityError) throw error;
+    fail('AVAILABILITY_UNAVAILABLE','Availability is temporarily unavailable.',{cause:error});
+  }
+  if(!valid) fail('AVAILABILITY_CONTEXT_CHANGED','The active circle context changed.');
 }
 
 function validDatabase(db,{transaction=false}={}){
@@ -219,18 +250,30 @@ function legacyAvailability(value){
 }
 
 /** Caller must derive localRuntime from the strict loopback/file-runtime guard. */
-export async function resolveAvailabilityScope(db,{userId,localRuntime=false}={}){
+export async function resolveAvailabilityScope(db,{userId,localRuntime=false,circleContext=null}={}){
   validDatabase(db);
   const id=positiveId(userId,'userId');
   if(typeof localRuntime!=='boolean') fail('AVAILABILITY_INPUT_INVALID','localRuntime must be a boolean.');
+  const context=availabilityCircleContext(circleContext,id);
+  if(localRuntime&&context) fail('AVAILABILITY_INPUT_INVALID','Local availability cannot use a circle context.');
   let result;
   try{
     result=await db.execute(localRuntime?{
       sql:`SELECT id,is_available FROM auth_accounts
         WHERE id=? AND COALESCE(is_demo,0)=0 LIMIT 2`,args:[id],
+    }:context?{
+      sql:`SELECT account.id,account.is_available,circle.id AS circle_id,
+          circle.public_id AS circle_public_id,circle.name AS circle_name,circle.is_primary
+        FROM auth_accounts account
+        JOIN circle_memberships membership ON membership.user_id=account.id
+        JOIN circles circle ON circle.id=membership.circle_id
+        WHERE account.id=? AND COALESCE(account.is_demo,0)=0
+          AND membership.circle_id=? AND membership.status='active'
+          AND circle.archived_at IS NULL
+        LIMIT 2`,args:[id,context.circleId],
     }:{
       sql:`SELECT account.id,account.is_available,circle.id AS circle_id,
-          circle.public_id AS circle_public_id,circle.name AS circle_name
+          circle.public_id AS circle_public_id,circle.name AS circle_name,circle.is_primary
         FROM auth_accounts account
         JOIN circle_memberships membership ON membership.user_id=account.id
         JOIN circles circle ON circle.id=membership.circle_id
@@ -248,7 +291,9 @@ export async function resolveAvailabilityScope(db,{userId,localRuntime=false}={}
   const scope=localRuntime?canonicalScope({kind:'local'}):canonicalScope({
     kind:'circle',circleId:Number(row.circle_id),publicId:row.circle_public_id,name:row.circle_name,
   });
-  return Object.freeze({...scope,userId:id,legacyIsAvailable:legacyAvailability(row.is_available)});
+  return Object.freeze({...scope,userId:id,legacyIsAvailable:legacyAvailability(row.is_available),
+    bridgeLegacyAvailability:localRuntime||Number(row.is_primary)===1,
+  });
 }
 
 export async function resolveAvailabilityPublicationScope(db,{localRuntime=false}={}){
@@ -283,8 +328,11 @@ function validateCycleRow(row,scope,cycle,cycleKey){
   });
 }
 
-export async function materializeAvailabilityCycle(db,{scope,cycle}){
+export async function materializeAvailabilityCycle(db,{scope,cycle,bridgeLegacyAvailability=true}){
   validDatabase(db);
+  if(typeof bridgeLegacyAvailability!=='boolean'){
+    fail('AVAILABILITY_INPUT_INVALID','Availability default policy is invalid.');
+  }
   const safeScope=canonicalScope(scope);
   const safeCycle=canonicalCycle(cycle);
   const cycleKey=availabilityCycleKey(safeScope,safeCycle);
@@ -297,19 +345,26 @@ export async function materializeAvailabilityCycle(db,{scope,cycle}){
   try{ result=await db.execute(select); }
   catch(error){ fail('AVAILABILITY_UNAVAILABLE','Availability is temporarily unavailable.',{cause:error}); }
   if((result.rows||[]).length>1) fail('AVAILABILITY_INTEGRITY','Stored availability cycle is invalid.');
-  if(result.rows?.length===1) return validateCycleRow(result.rows[0],safeScope,safeCycle,cycleKey);
+  if(result.rows?.length===1){
+    const record=validateCycleRow(result.rows[0],safeScope,safeCycle,cycleKey);
+    if(!bridgeLegacyAvailability&&record.defaultSource==='legacy_bridge'){
+      fail('AVAILABILITY_INTEGRITY','Secondary-circle availability cannot use a legacy default.');
+    }
+    return record;
+  }
   try{
     await db.execute({
       sql:`INSERT INTO pairing_cycles
           (scope_key,circle_id,cycle_key,cycle_id,starts_at,ends_at,cutoff_at,time_zone,default_source)
         SELECT ?,?,?,?,?,?,?,?,
-          CASE WHEN EXISTS (
+          CASE WHEN ?=0 OR EXISTS (
             SELECT 1 FROM pairing_cycles WHERE scope_key=? AND starts_at<=?
           )
             THEN 'cycle_default' ELSE 'legacy_bridge' END
         ON CONFLICT(scope_key,cycle_key) DO NOTHING`,
       args:[safeScope.scopeKey,safeScope.circleId,cycleKey,safeCycle.cycleId,safeCycle.startsAt,
-        safeCycle.endsAt,safeCycle.cutoffAt,safeCycle.timeZone,safeScope.scopeKey,safeCycle.startsAt],
+        safeCycle.endsAt,safeCycle.cutoffAt,safeCycle.timeZone,bridgeLegacyAvailability?1:0,
+        safeScope.scopeKey,safeCycle.startsAt],
     });
     result=await db.execute(select);
   }catch(error){
@@ -318,7 +373,11 @@ export async function materializeAvailabilityCycle(db,{scope,cycle}){
   if((result.rows||[]).length!==1){
     fail('AVAILABILITY_INTEGRITY','Availability cycle could not be materialized.');
   }
-  return validateCycleRow(result.rows[0],safeScope,safeCycle,cycleKey);
+  const record=validateCycleRow(result.rows[0],safeScope,safeCycle,cycleKey);
+  if(!bridgeLegacyAvailability&&record.defaultSource==='legacy_bridge'){
+    fail('AVAILABILITY_INTEGRITY','Secondary-circle availability cannot use a legacy default.');
+  }
+  return record;
 }
 
 function validateDecision(row,userId){
@@ -428,37 +487,47 @@ function safeState(state){
 }
 
 async function stateForCycle(db,{scope,cycle,legacyIsAvailable,now}){
-  const cycleRecord=await materializeAvailabilityCycle(db,{scope,cycle});
+  const cycleRecord=await materializeAvailabilityCycle(db,{
+    scope,cycle,bridgeLegacyAvailability:scope.bridgeLegacyAvailability!==false,
+  });
   const decision=await readDecision(db,cycleRecord,scope.userId);
   return availabilityState({cycleRecord,decision,legacyIsAvailable,now});
 }
 
-export function availabilityResponse(state){
-  return Object.freeze({ok:true,availability:safeState(state)});
+export function availabilityResponse(state,{circleContextVersion}={}){
+  return Object.freeze({ok:true,availability:safeState(state),
+    ...(circleContextVersion===undefined?{}:{circle_context_version:circleContextVersion}),
+  });
 }
 
-export function availabilityFailure(error){
+export function availabilityFailure(error,{circleContextVersion}={}){
   const code=error instanceof AvailabilityError?error.code:'AVAILABILITY_UNAVAILABLE';
-  if(code==='AVAILABILITY_INPUT_INVALID') return {status:400,body:{ok:false,error:'availability_input_invalid'}};
-  if(code==='AVAILABILITY_FORBIDDEN') return {status:403,body:{ok:false,error:'active circle membership required'}};
+  const context=circleContextVersion===undefined?{}:{circle_context_version:circleContextVersion};
+  if(code==='AVAILABILITY_INPUT_INVALID') return {status:400,body:{ok:false,error:'availability_input_invalid',...context}};
+  if(code==='AVAILABILITY_FORBIDDEN') return {status:403,body:{ok:false,error:'active circle membership required',...context}};
+  if(code==='AVAILABILITY_CONTEXT_CHANGED') return {
+    status:409,body:{ok:false,error:'circle context changed',code:'circle_context_changed'},
+  };
   if(code==='AVAILABILITY_STALE') return {
-    status:409,body:{ok:false,error:'availability_stale',availability:safeState(error.details.state)},
+    status:409,body:{ok:false,error:'availability_stale',availability:safeState(error.details.state),...context},
   };
   if(code==='AVAILABILITY_CUTOFF_CLOSED') return {
-    status:409,body:{ok:false,error:'availability_cutoff_closed',availability:safeState(error.details.state)},
+    status:409,body:{ok:false,error:'availability_cutoff_closed',availability:safeState(error.details.state),...context},
   };
   if(code==='AVAILABILITY_CYCLE_CHANGED') return {
-    status:409,body:{ok:false,error:'availability_cycle_changed',availability:safeState(error.details.state)},
+    status:409,body:{ok:false,error:'availability_cycle_changed',availability:safeState(error.details.state),...context},
   };
-  return {status:503,body:{ok:false,error:'availability unavailable'}};
+  return {status:503,body:{ok:false,error:'availability unavailable',...context}};
 }
 
-export async function getAvailabilityState(db,{userId,localRuntime=false,now,timeZone}={}){
+export async function getAvailabilityState(db,{userId,localRuntime=false,now,timeZone,circleContext=null}={}){
   try{
     await ensureAvailabilityReadiness(db);
     return await withWriteTransaction(db,async transaction=>{
+      const context=availabilityCircleContext(circleContext,positiveId(userId,'userId'));
+      await revalidateAvailabilityCircleContext(transaction,context);
       const instant=await observedNow(transaction,now);
-      const scope=await resolveAvailabilityScope(transaction,{userId,localRuntime});
+      const scope=await resolveAvailabilityScope(transaction,{userId,localRuntime,circleContext:context});
       const cycle=resolveEditableAvailabilityCycle({now:instant,timeZone});
       return stateForCycle(transaction,{scope,cycle,legacyIsAvailable:scope.legacyIsAvailable,now:instant});
     });
@@ -468,11 +537,40 @@ export async function getAvailabilityState(db,{userId,localRuntime=false,now,tim
   }
 }
 
-function writeAuthorization(scope,userId){
+function writeAuthorization(scope,userId,circleContext){
   if(scope.kind==='local') return {
     sql:`EXISTS (SELECT 1 FROM auth_accounts account
       WHERE account.id=? AND COALESCE(account.is_demo,0)=0)`,args:[userId],
   };
+  if(circleContext){
+    const contextPredicate=circleContext.implicit
+      ?`NOT EXISTS (SELECT 1 FROM auth_session_circle_contexts context
+            WHERE context.session_hash=session.session_hash AND context.user_id=session.user_id)
+          AND NOT EXISTS (
+            SELECT 1 FROM circle_memberships other_membership
+            JOIN circles other_circle ON other_circle.id=other_membership.circle_id
+            WHERE other_membership.user_id=session.user_id
+              AND other_membership.status='active' AND other_circle.archived_at IS NULL
+              AND other_membership.circle_id<>membership.circle_id
+          )`
+      :`EXISTS (SELECT 1 FROM auth_session_circle_contexts context
+            WHERE context.session_hash=session.session_hash AND context.user_id=session.user_id
+              AND context.circle_id=membership.circle_id AND context.context_version=?)`;
+    return {
+      sql:`EXISTS (SELECT 1 FROM auth_sessions session
+        JOIN auth_accounts account ON account.id=session.user_id
+        JOIN circle_memberships membership ON membership.user_id=session.user_id
+        JOIN circles circle ON circle.id=membership.circle_id
+        WHERE session.session_hash=? AND session.user_id=? AND session.revoked_at IS NULL
+          AND session.expires_at>CAST(strftime('%s','now') AS INTEGER)
+          AND account.id=? AND COALESCE(account.is_demo,0)=0
+          AND membership.circle_id=? AND membership.status='active' AND circle.archived_at IS NULL
+          AND ${contextPredicate})`,
+      args:circleContext.implicit
+        ?[circleContext.payload.sessionHash,userId,userId,scope.circleId]
+        :[circleContext.payload.sessionHash,userId,userId,scope.circleId,circleContext.contextVersion],
+    };
+  }
   return {
     sql:`EXISTS (SELECT 1 FROM auth_accounts account
       JOIN circle_memberships membership ON membership.user_id=account.id
@@ -485,10 +583,11 @@ function writeAuthorization(scope,userId){
 }
 
 async function classifyFailedMutation(transaction,{
-  scope,userId,localRuntime,cycle,mutation,timeZone,
+  scope,userId,localRuntime,cycle,mutation,timeZone,circleContext,
 }){
+  await revalidateAvailabilityCircleContext(transaction,circleContext);
   const checkedAt=await databaseNow(transaction);
-  const checkedScope=await resolveAvailabilityScope(transaction,{userId,localRuntime});
+  const checkedScope=await resolveAvailabilityScope(transaction,{userId,localRuntime,circleContext});
   const editableCycle=resolveEditableAvailabilityCycle({now:checkedAt,timeZone});
   const editableKey=availabilityCycleKey(checkedScope,editableCycle);
   if(checkedAt.getTime()>=Date.parse(cycle.cutoffAt)||editableKey!==mutation.cycleKey
@@ -504,7 +603,10 @@ async function classifyFailedMutation(transaction,{
     fail(code,code==='AVAILABILITY_CUTOFF_CLOSED'
       ?'Availability cutoff has closed.':'The editable availability cycle changed.',{details:{state}});
   }
-  const cycleRecord=await materializeAvailabilityCycle(transaction,{scope:checkedScope,cycle});
+  const cycleRecord=await materializeAvailabilityCycle(transaction,{
+    scope:checkedScope,cycle,
+    bridgeLegacyAvailability:checkedScope.bridgeLegacyAvailability!==false,
+  });
   const latest=await readDecision(transaction,cycleRecord,userId);
   if((latest?.version||0)!==mutation.expectedVersion){
     fail('AVAILABILITY_STALE','Availability was changed by another request.',{
@@ -516,13 +618,15 @@ async function classifyFailedMutation(transaction,{
   fail('AVAILABILITY_INTEGRITY','Availability mutation did not commit.');
 }
 
-export async function updateAvailability(db,{userId,localRuntime=false,body,now,timeZone}={}){
+export async function updateAvailability(db,{userId,localRuntime=false,body,now,timeZone,circleContext=null}={}){
   const mutation=parseAvailabilityMutation(body);
   try{
     await ensureAvailabilityReadiness(db);
     return await withWriteTransaction(db,async transaction=>{
+      const context=availabilityCircleContext(circleContext,positiveId(userId,'userId'));
+      await revalidateAvailabilityCircleContext(transaction,context);
       const instant=await observedNow(transaction,now);
-      const scope=await resolveAvailabilityScope(transaction,{userId,localRuntime});
+      const scope=await resolveAvailabilityScope(transaction,{userId,localRuntime,circleContext:context});
       const cycle=resolveEditableAvailabilityCycle({now:instant,timeZone});
       const cycleKey=availabilityCycleKey(scope,cycle);
       if(mutation.cycleKey!==cycleKey){
@@ -544,7 +648,9 @@ export async function updateAvailability(db,{userId,localRuntime=false,body,now,
           details:{state},
         });
       }
-      const cycleRecord=await materializeAvailabilityCycle(transaction,{scope,cycle});
+      const cycleRecord=await materializeAvailabilityCycle(transaction,{
+        scope,cycle,bridgeLegacyAvailability:scope.bridgeLegacyAvailability!==false,
+      });
       const existing=await readDecision(transaction,cycleRecord,scope.userId);
       const actualVersion=existing?.version||0;
       if(actualVersion!==mutation.expectedVersion){
@@ -554,7 +660,7 @@ export async function updateAvailability(db,{userId,localRuntime=false,body,now,
           })},
         });
       }
-      const authorization=writeAuthorization(scope,scope.userId);
+      const authorization=writeAuthorization(scope,scope.userId,context);
       const cutoffSeconds=Math.floor(Date.parse(cycle.cutoffAt)/1000);
       let result;
       if(actualVersion===0){
@@ -583,7 +689,7 @@ export async function updateAvailability(db,{userId,localRuntime=false,body,now,
       }
       if((result.rows||[]).length!==1){
         await classifyFailedMutation(transaction,{
-          scope,userId:scope.userId,localRuntime,cycle,mutation,timeZone,
+          scope,userId:scope.userId,localRuntime,cycle,mutation,timeZone,circleContext:context,
         });
       }
       const decision=validateDecision(result.rows[0],scope.userId);

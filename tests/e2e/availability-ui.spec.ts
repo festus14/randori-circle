@@ -397,6 +397,206 @@ for (const scenario of [
   });
 }
 
+test('multi-circle availability is header-bound and rejects a mismatched response generation',async({page})=>{
+  let responseVersion=6;
+  const requestVersions:string[]=[];
+  const circles=[
+    {public_id:'circle-primary',name:'Primary',role:'owner',is_primary:true},
+    {public_id:'circle-secondary',name:'Secondary',role:'owner',is_primary:false},
+  ];
+  await mockApi(page,{
+    '/api/auth/capabilities':{
+      ok:true,capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,
+        multiCircleControlPlane:true,multiCircleAvailability:true},registrationMode:'private_beta',
+    },
+    '/api/auth/me':{ok:true,user},
+    '/api/circles':{ok:true,circles,active_circle:circles[1],context_version:7,selection_required:false},
+    '/api/circle':{...circle(),circle_context_version:7},
+    '/api/settings/availability':request=>{
+      requestVersions.push(request.headers()['x-randori-circle-context-version']||'');
+      return {ok:true,availability:availability({isAvailable:true}),circle_context_version:responseVersion};
+    },
+  });
+  await resetClientState(page,true);
+  await page.goto('/?view=pair',{waitUntil:'domcontentloaded'});
+  await expect.poll(()=>requestVersions.length).toBeGreaterThan(0);
+  await page.evaluate(async()=>{
+    await (window as typeof window&{_randori_availability?:{refresh?:()=>Promise<unknown>}})
+      ._randori_availability?.refresh?.();
+  });
+  await expect(page.locator('#availLabel')).toHaveText('UNAVAILABLE');
+  expect(requestVersions.every(version=>version==='7')).toBe(true);
+
+  responseVersion=7;
+  await page.evaluate(async()=>{
+    await (window as typeof window&{_randori_availability?:{refresh?:()=>Promise<unknown>}})
+      ._randori_availability?.refresh?.();
+  });
+  await expect(page.locator('#availToggle')).toBeChecked();
+  await expect.poll(()=>page.evaluate(()=>(window as typeof window&{
+    _randori_availability?:{contextKey?:string};
+  })._randori_availability?.contextKey)).toBe('account:1:circle:circle-secondary:context:7');
+});
+
+test('selection-required accounts do not request or expose availability',async({page})=>{
+  let availabilityRequests=0;
+  const circles=[
+    {public_id:'circle-primary',name:'Primary',role:'owner',is_primary:true},
+    {public_id:'circle-secondary',name:'Secondary',role:'owner',is_primary:false},
+  ];
+  await mockApi(page,{
+    '/api/auth/capabilities':{
+      ok:true,capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,
+        multiCircleControlPlane:true,multiCircleAvailability:true},registrationMode:'private_beta',
+    },
+    '/api/auth/me':{ok:true,user},
+    '/api/circles':{ok:true,circles,active_circle:null,context_version:0,selection_required:true},
+    '/api/circle':{_status:409,error:'select an active circle',code:'active_circle_required'},
+    '/api/settings/availability':()=>{
+      availabilityRequests+=1;
+      return {ok:true,availability:availability(),circle_context_version:0};
+    },
+  });
+  await resetClientState(page,true);
+  await page.goto('/?view=pair',{waitUntil:'domcontentloaded'});
+  await expect(page.locator('#availLabel')).toHaveText('UNAVAILABLE');
+  await expect(page.locator('#availExplan')).toContainText('Choose an active circle');
+  await page.waitForTimeout(500);
+  expect(availabilityRequests).toBe(0);
+});
+
+test('repeated context errors perform one automatic reload and then stabilize',async({page})=>{
+  let authRequests=0;
+  let circleRequests=0;
+  let availabilityRequests=0;
+  let markFirstAvailability!:()=>void;
+  let releaseFirstAvailability!:()=>void;
+  const firstAvailabilityStarted=new Promise<void>(resolve=>{ markFirstAvailability=resolve; });
+  const firstAvailabilityGate=new Promise<void>(resolve=>{ releaseFirstAvailability=resolve; });
+  const secondary={public_id:'circle-secondary',name:'Secondary',role:'owner',is_primary:false};
+  await mockApi(page,{
+    '/api/auth/capabilities':{
+      ok:true,capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,
+        multiCircleControlPlane:true,multiCircleAvailability:true},registrationMode:'private_beta',
+    },
+    '/api/auth/me':()=>{ authRequests+=1; return {ok:true,user}; },
+    '/api/circles':()=>{
+      circleRequests+=1;
+      return {ok:true,circles:[secondary],active_circle:secondary,context_version:0,selection_required:false};
+    },
+    '/api/circle':()=>({...circle(),circle_meta:{id:20,public_id:'circle-secondary',name:'Secondary'},
+      circle_context_version:0}),
+    '/api/settings/availability':async()=>{
+      availabilityRequests+=1;
+      if(availabilityRequests===1){
+        markFirstAvailability();
+        await firstAvailabilityGate;
+      }
+      return {_status:409,ok:false,error:'circle context changed',code:'circle_context_changed'};
+    },
+  });
+  try{
+    await resetClientState(page,true);
+    await page.goto('/?view=pair',{waitUntil:'domcontentloaded'});
+    await firstAvailabilityStarted;
+    releaseFirstAvailability();
+    await expect.poll(()=>availabilityRequests).toBeGreaterThanOrEqual(2);
+    await expect.poll(()=>authRequests).toBeGreaterThanOrEqual(3);
+    await expect(page.locator('#availLabel')).toHaveText('UNAVAILABLE');
+    await expect(page.locator('#availExplan')).toContainText('Circle context changed again');
+    await page.waitForTimeout(250);
+    const stable={availabilityRequests,circleRequests};
+    await page.waitForTimeout(750);
+    expect({availabilityRequests,circleRequests}).toEqual(stable);
+    expect(circleRequests).toBe(2);
+  }finally{
+    releaseFirstAvailability?.();
+  }
+});
+
+test('a delayed circle A availability read cannot replace circle B browser state',async({page})=>{
+  let active:'circle-primary'|'circle-secondary'='circle-primary';
+  let contextVersion=1;
+  let holdPrimary=false;
+  let markPrimaryStarted!:()=>void;
+  let releasePrimary!:()=>void;
+  const primaryStarted=new Promise<void>(resolve=>{ markPrimaryStarted=resolve; });
+  const primaryGate=new Promise<void>(resolve=>{ releasePrimary=resolve; });
+  const requestVersions:string[]=[];
+  const circles=[
+    {public_id:'circle-primary',name:'Primary',role:'owner',is_primary:true},
+    {public_id:'circle-secondary',name:'Secondary',role:'owner',is_primary:false},
+  ];
+  await mockApi(page,{
+    '/api/auth/capabilities':{
+      ok:true,capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,
+        multiCircleControlPlane:true,multiCircleAvailability:true},registrationMode:'private_beta',
+    },
+    '/api/auth/me':{ok:true,user},
+    '/api/circles':request=>{
+      if(request.method()==='PUT'){
+        active='circle-secondary';
+        contextVersion=2;
+        return {_status:503,error:'switch acknowledgement unavailable'};
+      }
+      return {ok:true,circles,active_circle:circles.find(circle=>circle.public_id===active),
+        context_version:contextVersion,selection_required:false};
+    },
+    '/api/circle':()=>({...circle(),circle_meta:{id:active==='circle-primary'?10:20,
+      public_id:active,name:active==='circle-primary'?'Primary':'Secondary'},
+      circle_context_version:contextVersion}),
+    '/api/settings/availability':async request=>{
+      const version=request.headers()['x-randori-circle-context-version']||'';
+      requestVersions.push(version);
+      if(version==='1'&&holdPrimary){
+        markPrimaryStarted();
+        await primaryGate;
+      }
+      return {ok:true,availability:availability({
+        cycleKey:(version==='2'?'b':'a').repeat(64),isAvailable:version==='2',version:Number(version),
+      }),circle_context_version:Number(version)};
+    },
+  });
+  try{
+    await resetClientState(page,true);
+    await page.goto('/?view=pair',{waitUntil:'domcontentloaded'});
+    await expect(page.locator('#availToggle')).not.toBeChecked();
+    holdPrimary=true;
+    await page.evaluate(()=>{
+      const target=window as typeof window&{
+        _randori_availability?:{refresh?:()=>Promise<unknown>};
+        _randori_pendingAvailabilityRefresh?:Promise<unknown>;
+      };
+      target._randori_pendingAvailabilityRefresh=target._randori_availability?.refresh?.();
+    });
+    await primaryStarted;
+
+    await page.locator('[data-tab="circle"]').click();
+    await page.getByTestId('circle-context-select').selectOption('circle-secondary');
+    await expect(page.getByTestId('circle-context-select')).toHaveValue('circle-secondary');
+    await page.locator('[data-tab="pair"]').click();
+    await page.evaluate(async()=>{
+      await (window as typeof window&{_randori_availability?:{refresh?:()=>Promise<unknown>}})
+        ._randori_availability?.refresh?.();
+    });
+    await expect(page.locator('#availToggle')).toBeChecked();
+    releasePrimary();
+    await page.evaluate(async()=>{
+      const target=window as typeof window&{_randori_pendingAvailabilityRefresh?:Promise<unknown>};
+      await target._randori_pendingAvailabilityRefresh;
+      delete target._randori_pendingAvailabilityRefresh;
+    });
+    await expect(page.locator('#availToggle')).toBeChecked();
+    await expect.poll(()=>page.evaluate(()=>(window as typeof window&{
+      _randori_availability?:{contextKey?:string};
+    })._randori_availability?.contextKey)).toBe('account:1:circle:circle-secondary:context:2');
+    expect(requestVersions).toContain('1');
+    expect(requestVersions).toContain('2');
+  }finally{
+    releasePrimary?.();
+  }
+});
+
 test('an availability conflict notice cannot cross an authentication identity change', async ({ page }) => {
   const userB = { ...user, id: 2, email: 'member@example.test', name: 'Circle Member', display_name: 'Circle Member', is_admin: false };
   const conflictAvailability = availability({

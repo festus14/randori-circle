@@ -47,7 +47,15 @@ import {
 } from './_invitation-email.js';
 import {identityEmailKeyRotationStatus} from './_identity-linking.js';
 import { localIdentityAdapterEnabled, localRuntimeRequest } from './_local-runtime.js';
-import { canUseLegacySinglePrimaryCircleFeatures, multiCircleControlPlaneEnabled, sendMultiCircleFeatureUnavailable } from './_active-circle.js';
+import { ensureCircleMembershipReadiness } from './_circle-membership.js';
+import {
+  canUseLegacySinglePrimaryCircleFeatures,
+  multiCircleAvailabilityEnabled,
+  multiCircleControlPlaneEnabled,
+  requestMatchesCircleContext,
+  resolveActiveCircleContext,
+  sendMultiCircleFeatureUnavailable,
+} from './_active-circle.js';
 
 export const OUTBOX_CRON_BUDGET_MS=45_000;
 export const OUTBOX_CRON_FINALIZATION_RESERVE_MS=5_000;
@@ -615,14 +623,33 @@ async function handleAvailability(req,res){
   let db;
   try{ db=getClient(); }
   catch{ return res.status(503).json({ok:false,error:'availability unavailable'}); }
+  const localRuntime=strictLocalPairingRuntime(req);
+  let circleContext=null;
+  let circleContextVersion;
   try{
-    const options={userId,localRuntime:strictLocalPairingRuntime(req)};
+    if(multiCircleAvailabilityEnabled()&&!localRuntime){
+      await ensureCircleMembershipReadiness(db);
+      const active=await resolveActiveCircleContext(db,payload);
+      if(!active.ok){
+        if(active.reason==='selection_required'){
+          return res.status(409).json({ok:false,error:'select an active circle',code:'active_circle_required'});
+        }
+        return res.status(403).json({ok:false,error:'active circle membership required'});
+      }
+      if(!active.implicit&&!requestMatchesCircleContext(req,active)){
+        return res.status(409).json({ok:false,error:'circle context changed',code:'circle_context_changed'});
+      }
+      const circleId=Number(active.membership?.id??active.membership?.circle_id);
+      circleContextVersion=Number(active.context_version);
+      circleContext={payload,circleId,contextVersion:circleContextVersion,implicit:active.implicit===true};
+    }
+    const options={userId,localRuntime,...(circleContext?{circleContext}:{})};
     const state=req.method==='GET'
       ?await getAvailabilityState(db,options)
       :await updateAvailability(db,{...options,body:req.body});
-    return res.json(availabilityResponse(state));
+    return res.json(availabilityResponse(state,{circleContextVersion}));
   }catch(error){
-    const failure=availabilityFailure(error);
+    const failure=availabilityFailure(error,{circleContextVersion});
     return res.status(failure.status).json(failure.body);
   }
 }
@@ -861,7 +888,8 @@ export default async function handler(req,res){
   if(!verifyMutationOrigin(req)) return res.status(403).json(availabilityRequest
     ?{ok:false,error:'cross-origin mutation rejected'}
     :{error:'cross-origin mutation rejected'});
-  const unscopedCircleFeature=availabilityRequest||ep==='pairing-run'||pathLower.includes('/pairing/run')
+  const unscopedCircleFeature=(availabilityRequest&&!multiCircleAvailabilityEnabled())
+    ||ep==='pairing-run'||pathLower.includes('/pairing/run')
     ||ep==='reshuffle'||ep==='promote'||pathLower.includes('reshuffle')||pathLower.includes('promote');
   if(multiCircleControlPlaneEnabled()&&unscopedCircleFeature){
     try{
