@@ -855,7 +855,7 @@ async function handlePairingRun(req,res){
   return runCurrentPairing(req,res,context);
 }
 
-async function handleWeekly(req,res){
+async function handleWeekly(req,res,{isDue=pairingCronIsDue}={}){
   // Vercel Cron invokes configured paths with GET; authentication below is mandatory.
   if (req.method!=='GET' && req.method!=='POST') return res.status(405).json({ error:'GET or POST'});
   if (!verifyCronAuth(req)){
@@ -872,7 +872,7 @@ async function handleWeekly(req,res){
     now=new Date(clock.rows?.[0]?.now_utc);
     if(!Number.isFinite(now.getTime())) throw new Error('invalid database time');
     cycle=resolvePairingCycle({now});
-    if(!pairingCronIsDue({now})){
+    if(!isDue({now})){
       return res.json({ok:true,skipped:true,reason:'outside_due_window',cycle,message:'Pairing publication is only due during the configured Sunday 08:00 UTC run window.'});
     }
   }catch{ return res.status(503).json({error:'pairing unavailable'}); }
@@ -995,7 +995,7 @@ async function handleDemoReset(req,res){
   return res.json({ ok:true, deleted:{ groups:deletedGroups, weeks:deletedWeeks, demo_users:deletedUsers }, note:'Demo reset complete — demo users + demo weeks + their groups deleted. Real users untouched.' });
 }
 
-export default async function handler(req,res){
+async function handleOps(req,res,{isWeeklyDue=pairingCronIsDue}={}){
   const ep = getEndpoint(req);
   const pathLower = (req.url||'').toLowerCase();
   const availabilityRequest=ep==='availability'||pathLower.includes('availability');
@@ -1025,8 +1025,17 @@ export default async function handler(req,res){
   if (ep==='outbox-replay' || pathLower.includes('/outbox/replay')) return handleOutboxReplay(req,res);
   if (ep==='outbox' || pathLower.includes('/cron/outbox')) return handleOutboxWorker(req,res);
   if (ep==='reshuffle' || ep==='promote' || pathLower.includes('reshuffle') || pathLower.includes('promote')) return handleReshuffle(req,res);
-  if (ep==='weekly' || pathLower.includes('weekly') || pathLower.includes('/cron/')) return handleWeekly(req,res);
+  if (ep==='weekly' || pathLower.includes('weekly') || pathLower.includes('/cron/')){
+    return handleWeekly(req,res,{isDue:isWeeklyDue});
+  }
   if (pathLower.includes('reshuffle')) return handleReshuffle(req,res);
-  if (pathLower.includes('weekly')) return handleWeekly(req,res);
+  if (pathLower.includes('weekly')) return handleWeekly(req,res,{isDue:isWeeklyDue});
   return res.status(404).json({ error:`unknown ops endpoint '${ep}'`, available:['availability','pairing-run','weekly','outbox','outbox-replay','promote via reshuffle?action=promote','demo-seed','demo-shuffle','demo-reset'] });
 }
+
+export function createOpsHandler({isWeeklyDue=pairingCronIsDue}={}){
+  if(typeof isWeeklyDue!=='function') throw new TypeError('isWeeklyDue must be a function');
+  return (req,res)=>handleOps(req,res,{isWeeklyDue});
+}
+
+export default createOpsHandler();

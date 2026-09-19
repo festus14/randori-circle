@@ -6,7 +6,7 @@ import {fileURLToPath,pathToFileURL} from 'node:url';
 import {createClient} from '@libsql/client';
 import {expect,test} from '@playwright/test';
 
-import {publishCirclePairing} from '../../api/_circle-pairing.js';
+import {createOpsHandler} from '../../api/ops.js';
 import {prepareMigrationConnection} from '../../db/migration-runner.js';
 import {
   LOCAL_OWNER_EMAIL,
@@ -32,7 +32,7 @@ async function json(page,path:string,method='GET',body?:object,headers:Record<st
   },{path,method,body,headers});
 }
 
-test('local capture delivers manual and cron-style secondary publications once without room links',async({page})=>{
+test('local capture delivers manual and weekly-route secondary publications once without room links',async({page})=>{
   test.setTimeout(90_000);
   const original=Object.fromEntries(environmentKeys.map(key=>[key,process.env[key]]));
   for(const key of rolloutFlags) process.env[key]='true';
@@ -47,7 +47,13 @@ test('local capture delivers manual and cron-style secondary publications once w
   let runtime:Awaited<ReturnType<typeof startLocalDevelopmentServer>>|null=null;
   let db:ReturnType<typeof createClient>|null=null;
   try{
-    runtime=await startLocalDevelopmentServer({config,logger:silentLogger});
+    runtime=await startLocalDevelopmentServer({
+      config,
+      logger:silentLogger,
+      handlers:{ops:createOpsHandler({
+        isWeeklyDue:()=>true,
+      })},
+    });
     process.env.CRON_SECRET='secondary-email-browser-secret';
     await page.goto(runtime.url,{waitUntil:'domcontentloaded'});
     const login=await json(page,'/api/auth/login','POST',{
@@ -92,23 +98,6 @@ test('local capture delivers manual and cron-style secondary publications once w
       expect(String(row.payload_json)).not.toContain('@');
     }
 
-    const firstDrain=await json(page,'/api/cron/outbox','POST',undefined,
-      {'x-cron-secret':'secondary-email-browser-secret'});
-    expect(firstDrain.status,JSON.stringify(firstDrain.body)).toBe(200);
-    const firstDelivery=(firstDrain.body as {
-      email_delivery:{captured:Array<{recipient_email:string;subject:string;links:string[]}>};
-      outbox:{types:Record<string,{claimed:number;delivered:number;suppressed:number}>};
-    }).email_delivery;
-    expect(firstDelivery.captured).toHaveLength(3);
-    for(const message of firstDelivery.captured){
-      expect(message.subject).toContain('Manual Practice');
-      expect(message.links).toEqual([runtime.url]);
-      expect(JSON.stringify(message)).not.toMatch(/\/join\/|room|workspace|week_[1-9]/i);
-    }
-    const emptyDrain=await json(page,'/api/cron/outbox','POST',undefined,
-      {'x-cron-secret':'secondary-email-browser-secret'});
-    expect((emptyDrain.body as {outbox:{claimed:number}}).outbox.claimed).toBe(0);
-
     const cronCircle=await json(page,'/api/circles','POST',{
       name:'Cron Practice',request_id:'secondary-email-cron-000001',
     });
@@ -125,23 +114,54 @@ test('local capture delivers manual and cron-style secondary publications once w
       {sql:`INSERT INTO user_notification_prefs (user_id,email_enabled) VALUES (?,0)
         ON CONFLICT(user_id) DO UPDATE SET email_enabled=0`,args:[ownerId]},
     ],'write');
-    const cron=await publishCirclePairing(db,{authority:{kind:'system',circleId:cronId}});
-    expect(cron.created).toBe(true);
-    const cronDrain=await json(page,'/api/cron/outbox','POST',undefined,
+    const cron=await json(page,'/api/cron/weekly','GET',undefined,
       {'x-cron-secret':'secondary-email-browser-secret'});
-    const cronBody=cronDrain.body as {
+    expect(cron.status,JSON.stringify(cron.body)).toBe(200);
+    expect(cron.body).toMatchObject({secondary:{attempted:2,created:1,existing:1,failed:0}});
+    const queuedAfterCron=(await db.execute(`SELECT payload_json FROM outbox_events
+      WHERE event_type='pairing.email.requested' AND event_version=2 ORDER BY id`)).rows
+      .map(row=>JSON.parse(String(row.payload_json)) as {circle_id:number});
+    expect(queuedAfterCron).toHaveLength(5);
+    expect(queuedAfterCron.filter(payload=>Number(payload.circle_id)===manualId)).toHaveLength(3);
+    expect(queuedAfterCron.filter(payload=>Number(payload.circle_id)===cronId)).toHaveLength(2);
+
+    const combinedDrain=await json(page,'/api/cron/outbox','POST',undefined,
+      {'x-cron-secret':'secondary-email-browser-secret'});
+    const combinedBody=combinedDrain.body as {
       email_delivery:{captured:Array<{recipient_email:string;subject:string;links:string[]}>};
       outbox:{types:Record<string,{claimed:number;delivered:number;suppressed:number}>};
     };
-    expect(cronBody.outbox.types['pairing.email.requested']).toMatchObject({
-      claimed:2,delivered:1,suppressed:1,
-    });
-    expect(cronBody.email_delivery.captured).toEqual([expect.objectContaining({
-      recipient_email:'cron-four@example.test',subject:expect.stringContaining('Cron Practice'),
-      links:[runtime.url],
-    })]);
-    expect(JSON.stringify(cronBody.email_delivery.captured)).not.toContain('Manual Practice');
-    expect(JSON.stringify(cronBody.email_delivery.captured)).not.toMatch(/\/join\/|room|workspace/i);
+    const pairingMetrics=combinedBody.outbox.types['pairing.email.requested'];
+    expect(pairingMetrics.claimed).toBeGreaterThanOrEqual(5);
+    expect(pairingMetrics.delivered).toBe(3);
+    expect(pairingMetrics.suppressed).toBe(pairingMetrics.claimed-3);
+    expect(combinedBody.email_delivery.captured).toHaveLength(3);
+    expect(combinedBody.email_delivery.captured).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        recipient_email:'manual-two@example.test',subject:expect.stringContaining('Manual Practice'),
+        links:[runtime.url],
+      }),
+      expect.objectContaining({
+        recipient_email:'manual-three@example.test',subject:expect.stringContaining('Manual Practice'),
+        links:[runtime.url],
+      }),
+      expect.objectContaining({
+        recipient_email:'cron-four@example.test',subject:expect.stringContaining('Cron Practice'),
+        links:[runtime.url],
+      }),
+    ]));
+    for(const message of combinedBody.email_delivery.captured){
+      if(message.recipient_email.startsWith('manual-')){
+        expect(message.subject).not.toContain('Cron Practice');
+      }else{
+        expect(message.recipient_email).toBe('cron-four@example.test');
+        expect(message.subject).not.toContain('Manual Practice');
+      }
+    }
+    expect(JSON.stringify(combinedBody.email_delivery.captured)).not.toMatch(/\/join\/|room|workspace|week_[1-9]/i);
+    const emptyDrain=await json(page,'/api/cron/outbox','POST',undefined,
+      {'x-cron-secret':'secondary-email-browser-secret'});
+    expect((emptyDrain.body as {outbox:{claimed:number}}).outbox.claimed).toBe(0);
   }finally{
     await db?.close();
     await runtime?.close();
