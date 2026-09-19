@@ -658,3 +658,42 @@ The cursor is intentionally invalidated by `JWT_SECRET` rotation. Search is
 case-folded for the application locale but is not fuzzy, ranked, or
 language-specific. Those are explicit future product choices, not hidden API
 behavior.
+
+## ID-18: Keep chat indexes in the append-only migration manifest
+
+Status: implemented as additive schema migration v10; production rollout remains
+gated on issues #38 and #43.
+
+**Decision.** Canonical chat access uses two migration-owned indexes:
+`idx_pair_messages_room_cursor` on `(week_id,pair_group_id,id)` for newest-window,
+incremental cursor, and room-cap reads, and `idx_pair_messages_sender_created` on
+`(sender_id,created_at)` for the durable sender rolling window. Representative
+real-SQLite plans must select the intended index and may not fall back to a full
+`pair_messages` scan. The 10,000-message room cap and all API contracts remain
+unchanged. Ordinary and admin request paths no longer create pair-message
+indexes; only the checksummed migration runner may install these indexes.
+
+The change is append-only and compatible with v9 application data. A managed v9
+database can continue serving the existing queries before the protected v10
+apply, albeit without the new planner guarantees. Production apply remains
+blocked until the provider restore rehearsal in #38 and protected remote
+migration workflow in #43 are operational and have produced same-commit evidence.
+
+**Alternatives.** Keeping request-time `CREATE INDEX IF NOT EXISTS` is convenient
+but hides schema mutation inside user traffic and bypasses review evidence. A
+single `(pair_group_id,created_at)` index cannot isolate colliding group IDs by
+week or efficiently advance an integer cursor. The existing expression-based
+activity index serves recap ordering but does not provide the canonical `id`
+cursor order. A wider covering index including message bodies would reduce table
+lookups at the cost of duplicating sensitive, potentially large text and
+increasing every write; it is deliberately rejected. Replacing the 10,000-row
+cap with retention or deletion is a separate product and data-lifecycle change.
+
+**Recovery.** There is no ledger down migration. During an index-specific
+incident, an operator may take database administration exclusive and drop only
+the two v10 indexes; rows and v9-compatible queries remain intact, but the schema
+is intentionally non-ready until both exact `CREATE INDEX` operations are
+reapplied. Do not edit or delete the v10 ledger row. If the incident involves
+data or broader schema integrity, stop and use the rehearsed PITR process rather
+than this index-only procedure. The exact commands, checks, and forward rollout
+are recorded in `docs/CHAT_INDEX_MIGRATION.md`.

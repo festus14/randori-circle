@@ -46,6 +46,11 @@ export const MIGRATION_CONTRACTS=Object.freeze([
     name:'explicit-provider-linking',
     checksum:'226c58e70d0f7dfeae89449dcc567f52afeed46c19c2f9987c510f78029ec560',
   }),
+  Object.freeze({
+    version:10,
+    name:'chat-cursor-and-rate-indexes',
+    checksum:'df6508898b4b697ca8d21646c9460aefcc7f85d7fc8f2f027ed10342fe98e014',
+  }),
 ]);
 
 export const LATEST_MIGRATION_VERSION=MIGRATION_CONTRACTS.at(-1)?.version||0;

@@ -129,6 +129,11 @@ const PLAN_9_OPERATIONS=Object.freeze([
   index('idx_auth_identity_audit_actor','auth_identity_audit_events',['actor_user_id','created_at DESC','id DESC']),
 ]);
 
+const PLAN_10_OPERATIONS=Object.freeze([
+  index('idx_pair_messages_room_cursor','pair_messages',['week_id','pair_group_id','id']),
+  index('idx_pair_messages_sender_created','pair_messages',['sender_id','created_at']),
+]);
+
 export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:1,
@@ -169,6 +174,10 @@ export const SCHEMA_OPERATION_SETS=Object.freeze([
     version:9,
     operations:PLAN_9_OPERATIONS,
   }),
+  Object.freeze({
+    version:10,
+    operations:PLAN_10_OPERATIONS,
+  }),
 ]);
 
 export function resolveCurrentArtifacts(operationSets,operation){
@@ -208,7 +217,7 @@ export const SCHEMA_MANIFEST_CHECKSUM=checksum({
 
 // Updating the schema is intentional only when this pinned checksum is updated
 // in the same reviewed change.
-export const PINNED_SCHEMA_MANIFEST_CHECKSUM='32bd35776f27d03edf788c9eed63c16f101dca3cb837247502a1785ccb88057f';
+export const PINNED_SCHEMA_MANIFEST_CHECKSUM='21390d6e61fe0f9a296b7a578b07426b3500d88a59d5313fe40c17ccef446221';
 
 if(SCHEMA_MANIFEST_CHECKSUM!==PINNED_SCHEMA_MANIFEST_CHECKSUM){
   throw new Error(`Schema manifest checksum changed: ${SCHEMA_MANIFEST_CHECKSUM}`);
