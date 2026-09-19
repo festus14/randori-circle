@@ -134,6 +134,7 @@ export async function resetClientState(
   page: Page,
   authenticated = false,
   initialLocalStorage: Record<string, string> = {},
+  preserveStateAcrossNavigation = false,
 ) {
   await page.context().clearCookies();
   if (authenticated) {
@@ -145,12 +146,14 @@ export async function resetClientState(
       sameSite: 'Lax',
     }]);
   }
-  await page.addInitScript(({ authenticated, initialLocalStorage }) => {
+  await page.addInitScript(({ authenticated, initialLocalStorage, preserveStateAcrossNavigation }) => {
     // page.addInitScript also runs in frames. A late same-origin iframe must
     // not clear the top-level application's shared localStorage mid-test.
     if (window.top !== window) return;
+    if (preserveStateAcrossNavigation&&sessionStorage.getItem('randori-e2e-state-ready')==='1') return;
     localStorage.clear();
     sessionStorage.clear();
+    if(preserveStateAcrossNavigation) sessionStorage.setItem('randori-e2e-state-ready','1');
     localStorage.setItem('randori-onboarded', '1');
     localStorage.setItem('randori-banner-dismissed', '1');
     localStorage.setItem('randori-profile-done', '1');
@@ -169,7 +172,7 @@ export async function resetClientState(
         interview_focus: 'both',
       }));
     }
-  }, { authenticated, initialLocalStorage });
+  }, { authenticated, initialLocalStorage, preserveStateAcrossNavigation });
 }
 
 export async function openCodeView(

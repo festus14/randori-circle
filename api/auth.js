@@ -51,6 +51,7 @@ import {
 } from './_password-reset.js';
 import { readRecentAuth, recordRecentAuth, requireRecentAuth } from './_recent-auth.js';
 import {
+  GOOGLE_ISSUER,
   addPasswordCredential,
   ensureIdentityLinkingReadiness,
   identityEmailHashConfigured,
@@ -139,7 +140,7 @@ async function enforceAuthRateLimit(db, req, action, email){
       ?[[`ip:${ip}`,20]]
       :(action==='password-reset-request'
         ?[[`ip:${ip}`,10],[`email:${email}`,5]]
-      :(action==='recent-auth-password'
+      :(['recent-auth-password','recent-auth-google'].includes(action)
         ?[[`ip:${ip}`,10],[`account:${email}`,10]]
       :(action==='identity-mutation'
         ?[[`ip:${ip}`,10],[`account:${email}`,10]]
@@ -503,7 +504,25 @@ async function handleRecentAuth(req,res){
   }catch{ return res.status(503).json({error:'recent authentication temporarily unavailable'}); }
   if(!payload) return res.status(401).json({error:'authentication required'});
   if(req.method==='GET'){
-    try{ return res.json({ok:true,recentAuth:await readRecentAuth(db,payload)}); }
+    try{
+      const methodsResult=await db.execute({
+        sql:`SELECT account.password_hash,
+            EXISTS (SELECT 1 FROM auth_provider_identities identity
+              WHERE identity.user_id=account.id AND identity.issuer=?) AS google_linked
+          FROM auth_accounts account WHERE account.id=? LIMIT 2`,
+        args:[GOOGLE_ISSUER,payload.id],
+      });
+      if(methodsResult.rows?.length!==1) return res.status(401).json({error:'authentication required'});
+      const row=methodsResult.rows[0];
+      return res.json({
+        ok:true,
+        recentAuth:await readRecentAuth(db,payload),
+        methods:{
+          password:String(row.password_hash||'').startsWith('$2'),
+          google:Boolean(row.google_linked)&&Boolean(googleOAuthRequestConfiguration(req)),
+        },
+      });
+    }
     catch{ return res.status(503).json({error:'recent authentication temporarily unavailable'}); }
   }
   const password=req.body?.password;
@@ -758,9 +777,17 @@ async function bindGoogleProviderIdentity(db,{issuer,subject,userId}){
 async function handleGoogleStart(req,res){
   const endpoint=getEndpoint(req);
   const linking=endpoint.includes('link')||String(req.url||'').includes('/google/link/');
+  const reauthenticate=!linking&&(String(req.query?.reauth||'')==='1'||endpoint.includes('reauth'));
   if(linking&&req.method!=='POST') return res.status(405).json({error:'POST only'});
-  if(!linking&&req.method!=='GET') return res.status(405).json({error:'GET only'});
-  if(identityManagementRequested(req)&&!identityManagementEnabled(req)){
+  if(reauthenticate&&req.method!=='POST') return res.status(405).json({error:'POST only'});
+  if(!linking&&!reauthenticate&&req.method!=='GET') return res.status(405).json({error:'GET only'});
+  if(reauthenticate){
+    const body=req.body??{};
+    if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length){
+      return res.status(400).json({error:'invalid request'});
+    }
+  }
+  if(!reauthenticate&&identityManagementRequested(req)&&!identityManagementEnabled(req)){
     return res.status(503).json({error:'Google sign-in is unavailable'});
   }
   if(linking&&!identityManagementEnabled(req)){
@@ -768,7 +795,7 @@ async function handleGoogleStart(req,res){
   }
   const configuration=googleOAuthRequestConfiguration(req);
   if(!configuration) return res.status(503).json({error:'Google sign-in is unavailable'});
-  if(identityManagementRequested(req)){
+  if(identityManagementRequested(req)&&!reauthenticate){
     try{ await ensureIdentityLinkingReadiness(getClient()); }
     catch{ return res.status(503).json({error:'Google sign-in is unavailable'}); }
   }
@@ -779,7 +806,6 @@ async function handleGoogleStart(req,res){
   const challenge=createHash('sha256').update(verifier).digest('base64url');
   const returnPath=safeOAuthReturnPath(req.query?.return_to);
   const params = new URLSearchParams({ client_id:clientId, redirect_uri:redirectUri, response_type:'code', scope:'openid email profile', access_type:'online', state, nonce, code_challenge:challenge, code_challenge_method:'S256' });
-  const reauthenticate=!linking&&(String(req.query?.reauth||'')==='1'||endpoint.includes('reauth'));
   let purpose='login';
   if(linking){
     try{
@@ -795,10 +821,17 @@ async function handleGoogleStart(req,res){
     params.set('prompt','select_account');
   }else if(reauthenticate){
     let current;
-    try{ current=await verifyRequestAuth(req); }
-    catch{ return res.status(503).json({error:'Google reauthentication is unavailable'}); }
+    try{
+      const db=getClient();
+      await ensurePasswordResetReadiness(db);
+      current=await verifyRequestAuth(req,db);
+      if(current) await enforceAuthRateLimit(db,req,'recent-auth-google',String(current.id));
+    }catch(error){
+      if(error?.statusCode===429) return res.status(429).json({error:'too many confirmation attempts; try again later'});
+      return res.status(503).json({error:'Google reauthentication is unavailable'});
+    }
     if(!current) return res.status(401).json({error:'authentication required'});
-    purpose=`reauth:${current.id}`;
+    purpose=`reauth:${current.id}:${current.sessionHash}`;
     params.set('max_age','0');
     params.set('prompt','select_account');
   }
@@ -811,7 +844,7 @@ async function handleGoogleStart(req,res){
     transientCookie(req,OAUTH_RETURN_COOKIE,returnPath),
     transientCookie(req,OAUTH_PURPOSE_COOKIE,purpose),
   ]);
-  if(linking) return res.json({ok:true,authorizationUrl:url});
+  if(linking||reauthenticate) return res.json({ok:true,authorizationUrl:url});
   res.writeHead(302, { Location:url });
   res.end();
 }
@@ -845,7 +878,9 @@ async function handleGoogleCallback(req,res){
   if (!code){ res.writeHead(302, { Location:redirectError('missing_code')}); return res.end(); }
   const identityRequested=identityManagementRequested(req);
   const identityEnabled=identityManagementEnabled(req);
-  if((purpose.startsWith('link:')&&!identityEnabled)||(identityRequested&&!identityEnabled)){
+  const reauthenticate=purpose.startsWith('reauth:');
+  if((purpose.startsWith('link:')&&!identityEnabled)
+    ||(identityRequested&&!identityEnabled&&!reauthenticate)){
     const location=purpose.startsWith('link:')
       ?oauthResultLocation(appUrl,returnPath,'identity_link_error','unavailable')
       :redirectError('provider_unavailable');
@@ -856,10 +891,23 @@ async function handleGoogleCallback(req,res){
     // Normal sign-in and reauthentication retain their v4 compatibility.
     // The opt-in linking flow consumes a provider code only after the complete
     // v9 identity-management contract is known ready.
-    if(identityRequested) await ensureIdentityLinkingReadiness(db);
+    if(reauthenticate) await ensurePasswordResetReadiness(db);
+    else if(identityRequested) await ensureIdentityLinkingReadiness(db);
     else await db.execute(`SELECT issuer,subject,user_id FROM auth_provider_identities WHERE 0=1`);
   }catch{
     res.writeHead(302,{Location:redirectError('db_error')}); return res.end();
+  }
+  let reauthSession=null;
+  if(reauthenticate){
+    const match=/^reauth:([1-9]\d*):([a-f0-9]{64})$/.exec(purpose);
+    const initiatingId=match?Number(match[1]):null;
+    const initiatingSessionHash=match?.[2]||'';
+    try{ reauthSession=await verifyRequestAuth(req,db); }
+    catch{ res.writeHead(302,{Location:redirectError('db_error')}); return res.end(); }
+    if(!reauthSession||reauthSession.id!==initiatingId
+      ||!constantTimeEqual(reauthSession.sessionHash,initiatingSessionHash)){
+      res.writeHead(302,{Location:redirectError('reauth_required')}); return res.end();
+    }
   }
   let identity;
   try{
@@ -909,11 +957,15 @@ async function handleGoogleCallback(req,res){
     }
   }
   if(purpose.startsWith('reauth:')){
-    const initiatingId=Number(purpose.slice('reauth:'.length));
+    const match=/^reauth:([1-9]\d*):([a-f0-9]{64})$/.exec(purpose);
+    const initiatingId=match?Number(match[1]):null;
+    const initiatingSessionHash=match?.[2]||'';
     let current;
     try{ current=await verifyRequestAuth(req,db); }
     catch{ res.writeHead(302,{Location:redirectError('db_error')}); return res.end(); }
-    if(!current||!Number.isSafeInteger(initiatingId)||initiatingId<1||current.id!==initiatingId){
+    if(!current||current.id!==initiatingId
+      ||!constantTimeEqual(current.sessionHash,initiatingSessionHash)
+      ||!constantTimeEqual(current.sessionHash,reauthSession?.sessionHash)){
       res.writeHead(302,{Location:redirectError('reauth_required')}); return res.end();
     }
     let matched;
@@ -1121,12 +1173,13 @@ export default async function handler(req,res){
     return res.status(403).json({error:'same-origin request required'});
   }
   const credentialMutation=['signup','login','activation-resend','activation-verify','password-reset-request',
-    'password-reset-consume','recent-auth','identity-password','identity-google-unlink','google-link-start']
+    'password-reset-consume','recent-auth','identity-password','identity-google-unlink','google-link-start',
+    'google-reauth-start']
     .some(name=>ep===name||ep.includes(name))
     ||urlPath.includes('/activation/resend')||urlPath.includes('/activation/verify')
     ||urlPath.includes('/password-reset/')||urlPath.includes('/recent-auth')
     ||urlPath.includes('/identities/password')||urlPath.includes('/identities/google')
-    ||urlPath.includes('/google/link/start');
+    ||urlPath.includes('/google/link/start')||urlPath.includes('/google/reauth/start');
   if(req.method==='POST'&&!logoutMutation&&credentialMutation&&!verifyAuthMutationOrigin(req)){
     return res.status(403).json({error:'same-origin request required'});
   }

@@ -2,13 +2,14 @@ import assert from 'node:assert/strict';
 import { beforeEach, mock, test } from 'node:test';
 
 let enabled=true;
-let authPayload={id:1};
+let authPayload={id:1,sessionHash:'a'.repeat(64)};
 let authError=null;
 let readinessError=null;
 let listResult={ok:true,members:[],truncated:false};
 let statusResult={ok:true,member:{id:2,role:'member',status:'inactive'},revoked_sessions:1};
 let leaveResult={ok:true,member:{id:1,role:'member',status:'inactive'},revoked_sessions:1};
 let transferResult={ok:true,previous_owner_id:1,owner_id:2};
+let transitionError=null;
 const calls=[];
 const captured=[];
 const db={};
@@ -32,9 +33,9 @@ mock.module('../../api/_circle-membership.js',{exports:{
 
 mock.module('../../api/_member-lifecycle.js',{exports:{
   listCircleMembersForOwner:async(_db,input)=>{ calls.push(['list',_db,input]); return listResult; },
-  changeCircleMemberStatus:async(_db,input)=>{ calls.push(['status',_db,input]); return statusResult; },
+  changeCircleMemberStatus:async(_db,input)=>{ calls.push(['status',_db,input]); if(transitionError) throw transitionError; return statusResult; },
   leaveCircle:async(_db,input)=>{ calls.push(['leave',_db,input]); return leaveResult; },
-  transferCircleOwnership:async(_db,input)=>{ calls.push(['transfer',_db,input]); return transferResult; },
+  transferCircleOwnership:async(_db,input)=>{ calls.push(['transfer',_db,input]); if(transitionError) throw transitionError; return transferResult; },
 }});
 
 const {default:handler}=await import('../../api/members.js');
@@ -60,13 +61,14 @@ function invoke({method='GET',query={},headers={},body={}}={}){
 
 beforeEach(()=>{
   enabled=true;
-  authPayload={id:1};
+  authPayload={id:1,sessionHash:'a'.repeat(64)};
   authError=null;
   readinessError=null;
   listResult={ok:true,members:[],truncated:false};
   statusResult={ok:true,member:{id:2,role:'member',status:'inactive'},revoked_sessions:1};
   leaveResult={ok:true,member:{id:1,role:'member',status:'inactive'},revoked_sessions:1};
   transferResult={ok:true,previous_owner_id:1,owner_id:2};
+  transitionError=null;
   calls.length=0;
   captured.length=0;
   delete process.env.NODE_ENV;
@@ -117,16 +119,16 @@ test('mutations enforce same-origin and exact action bodies before lifecycle wor
 test('deactivate, reactivate, and transfer use only the authenticated actor and exact target',async()=>{
   let response=await invoke({method:'PATCH',body:{action:'deactivate',member_id:2}});
   assert.equal(response.status,200);
-  assert.deepEqual(calls.pop(),['status',db,{actorUserId:1,targetUserId:2,action:'deactivate'}]);
+  assert.deepEqual(calls.pop(),['status',db,{actorUserId:1,targetUserId:2,action:'deactivate',session:authPayload}]);
 
   response=await invoke({method:'PATCH',body:{action:'reactivate',member_id:3}});
   assert.equal(response.status,200);
-  assert.deepEqual(calls.pop(),['status',db,{actorUserId:1,targetUserId:3,action:'reactivate'}]);
+  assert.deepEqual(calls.pop(),['status',db,{actorUserId:1,targetUserId:3,action:'reactivate',session:authPayload}]);
 
   response=await invoke({method:'PATCH',body:{action:'transfer',member_id:2}});
   assert.equal(response.status,200);
   assert.deepEqual(response.body,{ok:true,action:'transfer',member:{id:2,role:'owner',status:'active'}});
-  assert.deepEqual(calls.pop(),['transfer',db,{actorUserId:1,targetUserId:2}]);
+  assert.deepEqual(calls.pop(),['transfer',db,{actorUserId:1,targetUserId:2,session:authPayload}]);
 });
 
 test('cross-circle and missing targets share one opaque response while owner invariants stay actionable',async()=>{
@@ -142,6 +144,18 @@ test('cross-circle and missing targets share one opaque response while owner inv
   assert.deepEqual((await invoke({method:'PATCH',body:{action:'transfer',member_id:1}})).body,{error:'choose another active member'});
   statusResult={ok:false,reason:'last_owner'};
   assert.deepEqual((await invoke({method:'PATCH',body:{action:'deactivate',member_id:2}})).body,{error:'another active owner is required'});
+});
+
+test('sensitive lifecycle mutations expose only the shared recent-auth challenge',async()=>{
+  transitionError=Object.assign(new Error('recent authentication required'),{
+    code:'RECENT_AUTH_REQUIRED',statusCode:403,
+  });
+  for(const body of [{action:'deactivate',member_id:3},{action:'transfer',member_id:2}]){
+    const response=await invoke({method:'PATCH',body});
+    assert.equal(response.status,403);
+    assert.deepEqual(response.body,{error:'recent authentication required',code:'recent_auth_required'});
+  }
+  assert.equal(captured.length,0);
 });
 
 test('leave clears the cookie only after the transactional lifecycle succeeds',async()=>{
@@ -172,7 +186,7 @@ test('authentication and storage failures fail closed without internal detail',a
   assert.equal(captured.length,1);
 
   authError=null;
-  authPayload={id:1};
+  authPayload={id:1,sessionHash:'a'.repeat(64)};
   listResult=null;
   response=await invoke();
   assert.equal(response.status,503);

@@ -18,6 +18,7 @@ import { applyMigrations, inspectMigrationState, prepareMigrationConnection } fr
 
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const JWT_SECRET='member-lifecycle-test-secret-at-least-thirty-two-bytes';
+const NOW=Math.floor(Date.now()/1000);
 const originalEnvironment={
   JWT_SECRET:process.env.JWT_SECRET,
   CIRCLE_MEMBERSHIP_ENABLED:process.env.CIRCLE_MEMBERSHIP_ENABLED,
@@ -66,6 +67,13 @@ async function fixture(){
     await issueSession(db,{id:2,email:'member@example.test',name:'Member'}),
   ];
   return {db,url,directory,memberSessions};
+}
+
+async function recentSession(db,id,email,{authenticatedAt=NOW}={}){
+  const token=await issueSession(db,{id,email,name:`Member ${id}`},{
+    recentAuthMethod:'password',nowSeconds:authenticatedAt,
+  });
+  return verifyRequestAuth(request(token),db,{nowSeconds:NOW});
 }
 
 test('owner listing is private, bounded, and includes inactive members without email addresses',async()=>{
@@ -148,7 +156,8 @@ test('a member can leave, losing all sessions, while the final active owner cann
 
 test('ownership transfer atomically promotes the target, demotes the actor, and writes one audit row',async()=>{
   const {db}=await fixture();
-  const transferred=await transferCircleOwnership(db,{actorUserId:1,targetUserId:2});
+  const ownerSession=await recentSession(db,1,'owner@example.test');
+  const transferred=await transferCircleOwnership(db,{actorUserId:1,targetUserId:2,session:ownerSession,nowSeconds:NOW});
   assert.deepEqual(transferred,{ok:true,previous_owner_id:1,owner_id:2});
   const members=await db.execute(`SELECT user_id,role,status FROM circle_memberships WHERE circle_id=10 ORDER BY user_id`);
   assert.deepEqual(members.rows.map(row=>[Number(row.user_id),row.role,row.status]),[
@@ -159,7 +168,34 @@ test('ownership transfer atomically promotes the target, demotes the actor, and 
     ['ownership.transferred',1,2],
   ]);
   assert.deepEqual(await transferCircleOwnership(db,{actorUserId:2,targetUserId:2}),{ok:false,reason:'self_transfer'});
-  assert.deepEqual(await transferCircleOwnership(db,{actorUserId:2,targetUserId:4}),{ok:false,reason:'not_found'});
+  const nextOwnerSession=await recentSession(db,2,'member@example.test');
+  assert.deepEqual(await transferCircleOwnership(db,{actorUserId:2,targetUserId:4,session:nextOwnerSession,nowSeconds:NOW}),{ok:false,reason:'not_found'});
+});
+
+test('owner deactivation and ownership transfer require fresh proof before mutation',async()=>{
+  const {db}=await fixture();
+  await db.execute(`UPDATE circle_memberships SET status='active' WHERE circle_id=10 AND user_id=3`);
+  const before=async()=>({
+    memberships:(await db.execute(`SELECT user_id,role,status FROM circle_memberships WHERE circle_id=10 ORDER BY user_id`)).rows,
+    audits:Number((await db.execute(`SELECT COUNT(*) AS count FROM circle_audit_events`)).rows[0].count),
+  });
+  const initial=await before();
+  await assert.rejects(changeCircleMemberStatus(db,{actorUserId:1,targetUserId:3,action:'deactivate'}),
+    error=>error?.code==='RECENT_AUTH_REQUIRED');
+  const stale=await recentSession(db,1,'owner@example.test',{authenticatedAt:NOW-601});
+  await assert.rejects(transferCircleOwnership(db,{actorUserId:1,targetUserId:2,session:stale,nowSeconds:NOW}),
+    error=>error?.code==='RECENT_AUTH_REQUIRED');
+  const otherMember=await recentSession(db,2,'member@example.test');
+  await assert.rejects(transferCircleOwnership(db,{actorUserId:1,targetUserId:2,session:otherMember,nowSeconds:NOW}),
+    error=>error?.code==='RECENT_AUTH_REQUIRED');
+  assert.deepEqual(await before(),initial);
+
+  const fresh=await recentSession(db,1,'owner@example.test');
+  const deactivated=await changeCircleMemberStatus(db,{
+    actorUserId:1,targetUserId:3,action:'deactivate',session:fresh,nowSeconds:NOW,
+  });
+  assert.equal(deactivated.ok,true);
+  assert.equal((await db.execute(`SELECT status FROM circle_memberships WHERE circle_id=10 AND user_id=3`)).rows[0].status,'inactive');
 });
 
 test('concurrent owner removals preserve one active owner',async()=>{
@@ -168,13 +204,16 @@ test('concurrent owner removals preserve one active owner',async()=>{
   const second=createClient({url});
   resources.push(async()=>{ await second.close(); });
   await prepareMigrationConnection(second);
+  const firstSession=await recentSession(db,1,'owner@example.test');
+  const secondSession=await recentSession(second,3,'owner-two@example.test');
 
   const outcomes=await Promise.allSettled([
-    changeCircleMemberStatus(db,{actorUserId:1,targetUserId:3,action:'deactivate'}),
-    changeCircleMemberStatus(second,{actorUserId:3,targetUserId:1,action:'deactivate'}),
+    changeCircleMemberStatus(db,{actorUserId:1,targetUserId:3,action:'deactivate',session:firstSession,nowSeconds:NOW}),
+    changeCircleMemberStatus(second,{actorUserId:3,targetUserId:1,action:'deactivate',session:secondSession,nowSeconds:NOW}),
   ]);
   const successes=outcomes.filter(outcome=>outcome.status==='fulfilled'&&outcome.value.ok);
-  assert.equal(successes.length,1);
+  assert.equal(successes.length,1,JSON.stringify(outcomes.map(outcome=>outcome.status==='fulfilled'
+    ?outcome.value:{code:outcome.reason?.code,message:outcome.reason?.message})));
   const owners=await db.execute(`SELECT user_id FROM circle_memberships
     WHERE circle_id=10 AND role='owner' AND status='active' ORDER BY user_id`);
   assert.equal(owners.rows.length,1);

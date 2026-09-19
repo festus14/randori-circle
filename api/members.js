@@ -42,6 +42,12 @@ function transitionFailure(res,result){
   return res.status(404).json({error:'member not found'});
 }
 
+function recentAuthFailure(res,error){
+  if(error?.code!=='RECENT_AUTH_REQUIRED') return false;
+  res.status(403).json({error:'recent authentication required',code:'recent_auth_required'});
+  return true;
+}
+
 export default async function handler(req,res){
   res.setHeader('Cache-Control','private, no-store');
   res.setHeader('Pragma','no-cache');
@@ -50,10 +56,12 @@ export default async function handler(req,res){
   if(!hasExactQuery(req)) return res.status(400).json({error:'invalid request'});
   let db;
   let actor;
+  let authPayload;
   try{
     db=getClient();
     await ensureCircleMembershipReadiness(db);
-    actor=userId(await verifyRequestAuth(req,db));
+    authPayload=await verifyRequestAuth(req,db);
+    actor=userId(authPayload);
   }catch(error){
     captureSentryException(error,{tags:{event:'circle_membership_lifecycle_auth_fail',source:'server'}});
     return res.status(503).json({error:'membership unavailable'});
@@ -81,11 +89,12 @@ export default async function handler(req,res){
       return res.status(400).json({error:'invalid request'});
     }
     const result=req.body.action==='transfer'
-      ?await transferCircleOwnership(db,{actorUserId:actor,targetUserId:req.body.member_id})
-      :await changeCircleMemberStatus(db,{actorUserId:actor,targetUserId:req.body.member_id,action:req.body.action});
+      ?await transferCircleOwnership(db,{actorUserId:actor,targetUserId:req.body.member_id,session:authPayload})
+      :await changeCircleMemberStatus(db,{actorUserId:actor,targetUserId:req.body.member_id,action:req.body.action,session:authPayload});
     if(!result.ok) return transitionFailure(res,result);
     return res.json({ok:true,action:req.body.action,member:result.member||{id:result.owner_id,role:'owner',status:'active'}});
   }catch(error){
+    if(recentAuthFailure(res,error)) return;
     captureSentryException(error,{tags:{event:'circle_membership_lifecycle_fail',source:'server'}});
     return res.status(503).json({error:'membership unavailable'});
   }

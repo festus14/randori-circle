@@ -37,6 +37,7 @@ test('account security stays unavailable until the server capability is enabled'
 test('OAuth identity feedback waits for delayed capabilities and authenticated state',async({page})=>{
   const user={id:1,email:'member@example.test',name:'Member',is_admin:false,is_available:true};
   let releaseCapabilities:undefined|(()=>void);
+  let identityCalls=0;
   const delayedCapabilities=new Promise<void>(resolve=>{ releaseCapabilities=resolve; });
   await mockApi(page,{
     '/api/auth/capabilities':async()=>{
@@ -44,14 +45,15 @@ test('OAuth identity feedback waits for delayed capabilities and authenticated s
       return privateBetaCapabilities;
     },
     '/api/auth/me':{ok:true,user},
-    '/api/auth/identities':{
-      ok:true,
-      identity:{
+    '/api/auth/identities':async()=>{
+      identityCalls+=1;
+      expect(await page.evaluate(()=>Number((window as any)._randori_auth?.me?.id))).toBe(user.id);
+      return {ok:true,identity:{
         accountEmail:user.email,
         password:{linked:true,canAdd:false,canUnlink:true},
         google:{linked:true,canLink:false,canUnlink:true},
         recentAuth:{ok:true,method:'password',authenticatedAt:1,expiresAt:2},
-      },
+      }};
     },
   });
   await resetClientState(page,true);
@@ -63,6 +65,7 @@ test('OAuth identity feedback waits for delayed capabilities and authenticated s
   const dialog=page.getByRole('dialog',{name:'Account security'});
   await expect(dialog).toBeVisible();
   await expect(page.getByTestId('identity-status')).toContainText('already belongs to another Randori account');
+  expect(identityCalls).toBe(1);
 });
 
 const recoveryCapabilities = {
@@ -210,10 +213,19 @@ test('password reset landing scrubs the fragment and submits a matching policy-c
   await page.goto(`/reset-password#token=${token}`,{waitUntil:'domcontentloaded'});
   await expect(page).toHaveURL(/\/reset-password$/);
   await expect(page.getByTestId('password-reset-landing')).toBeVisible();
+  await page.locator('#passwordResetNew').fill('short');
+  await page.locator('#passwordResetConfirm').fill('short');
+  await page.locator('#passwordResetSubmit').click();
+  await page.evaluate(()=>(window as any)._randori_password_reset_flow.show());
+  await expect(page.getByTestId('password-reset-status')).toContainText('10–72 UTF-8 bytes');
+  await expect(page.locator('#passwordResetSubmit')).toBeEnabled();
+  expect(calls).toBe(0);
   await page.locator('#passwordResetNew').fill('replacement password');
   await page.locator('#passwordResetConfirm').fill('different password');
   await page.locator('#passwordResetSubmit').click();
+  await page.evaluate(()=>(window as any)._randori_password_reset_flow.show());
   await expect(page.getByTestId('password-reset-status')).toContainText('do not match');
+  await expect(page.locator('#passwordResetSubmit')).toBeEnabled();
   expect(calls).toBe(0);
   await page.locator('#passwordResetConfirm').fill('replacement password');
   await page.locator('#passwordResetSubmit').click();
@@ -610,6 +622,85 @@ test('account security requires recent auth and never removes the final credenti
   expect(unlinkCalls).toBe(1);
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
+});
+
+test('account security starts Google reauthentication through same-origin POST before navigation',async({page})=>{
+  const user={id:1,email:'e2e@example.test',name:'E2E Tester',is_admin:false,is_available:true};
+  let starts=0;
+  await mockApi(page,{
+    '/api/auth/capabilities':privateBetaCapabilities,
+    '/api/auth/me':{ok:true,user},
+    '/api/auth/identities':{ok:true,identity:{
+      accountEmail:user.email,
+      password:{linked:true,canAdd:false,canUnlink:true},
+      google:{linked:true,canLink:false,canUnlink:true},
+      recentAuth:{ok:false,reason:'recent_auth_required'},
+    }},
+    '/api/auth/google/reauth/start':request=>{
+      starts+=1;
+      expect(request.method()).toBe('POST');
+      expect(request.postDataJSON()).toEqual({});
+      return {ok:true,authorizationUrl:'https://accounts.google.com/o/oauth2/v2/auth?state=e2e'};
+    },
+  });
+  await page.route('https://accounts.google.com/**',route=>route.fulfill({
+    status:200,contentType:'text/html',body:'<!doctype html><title>Google confirmation</title>',
+  }));
+  await resetClientState(page,true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await expect(page.locator('#meLabel')).toContainText('E2E Tester');
+  await page.locator('#meLabel').click();
+  await page.getByRole('button',{name:'Account security'}).click();
+  await page.getByRole('button',{name:'Confirm with Google'}).click();
+  await expect(page).toHaveURL('https://accounts.google.com/o/oauth2/v2/auth?state=e2e');
+  expect(starts).toBe(1);
+});
+
+test('closing and reopening account security invalidates a delayed Google start response',async({page})=>{
+  const user={id:1,email:'e2e@example.test',name:'E2E Tester',is_admin:false,is_available:true};
+  let releaseStart!:()=>void;
+  let markStart!:()=>void;
+  const startGate=new Promise<void>(resolve=>{ releaseStart=resolve; });
+  const startBegan=new Promise<void>(resolve=>{ markStart=resolve; });
+  let starts=0;
+  // Exercise the generation guard even if a transport cannot cancel a request
+  // that has already reached the server.
+  await page.addInitScript(()=>{ AbortController.prototype.abort=function(){}; });
+  await mockApi(page,{
+    '/api/auth/capabilities':privateBetaCapabilities,
+    '/api/auth/me':{ok:true,user},
+    '/api/auth/identities':{ok:true,identity:{
+      accountEmail:user.email,
+      password:{linked:true,canAdd:false,canUnlink:true},
+      google:{linked:true,canLink:false,canUnlink:true},
+      recentAuth:{ok:false,reason:'recent_auth_required'},
+    }},
+    '/api/auth/google/reauth/start':async()=>{
+      starts+=1;
+      markStart();
+      await startGate;
+      return {ok:true,authorizationUrl:'https://accounts.google.com/o/oauth2/v2/auth?state=stale'};
+    },
+  });
+  await resetClientState(page,true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await page.locator('#meLabel').click();
+  await page.getByRole('button',{name:'Account security'}).click();
+  await page.getByRole('button',{name:'Confirm with Google'}).click();
+  await startBegan;
+  await page.locator('#identityClose').click();
+  await page.locator('#meLabel').click();
+  await page.getByRole('button',{name:'Account security'}).click();
+  const dialog=page.getByRole('dialog',{name:'Account security'});
+  await expect(dialog).toBeVisible();
+  const response=page.waitForResponse(value=>new URL(value.url()).pathname==='/api/auth/google/reauth/start');
+  releaseStart();
+  await response;
+  await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
+  await expect(page).toHaveURL('/');
+  await expect(dialog).toBeVisible();
+  await expect(page.getByTestId('identity-status')).toHaveText('Choose a sign-in method to manage.');
+  expect(starts).toBe(1);
 });
 
 test('a Google-only account can add a validated password after verified Google control',async({page})=>{
