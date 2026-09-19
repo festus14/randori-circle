@@ -12,6 +12,7 @@ import {
   EMAIL_ACTIVATION_EVENT_TYPE,
   emailActivationKeyRotationStatus,
   openEmailActivationToken,
+  sealEmailActivationToken,
 } from '../../api/_email-activation.js';
 import {createOutboxEventStatement} from '../../api/_outbox.js';
 import {
@@ -100,11 +101,15 @@ test('production signup stays generic, creates no account, and verification crea
   const {db,email,cookie}=await fixture();
   const unrelatedKey='auth-activation/v1/33333333-3333-4333-8333-333333333333/1';
   await db.execute(createOutboxEventStatement({eventType:EMAIL_ACTIVATION_EVENT_TYPE,
-    idempotencyKey:unrelatedKey,payload:{token_envelope:'malformed'},maxAttempts:1}));
+    idempotencyKey:unrelatedKey,payload:{
+      token_envelope:sealEmailActivationToken('A'.repeat(43),{idempotencyKey:unrelatedKey}),
+    },maxAttempts:1}));
   await db.execute({sql:`UPDATE outbox_events SET status='dead_letter' WHERE idempotency_key=?`,
     args:[unrelatedKey]});
-  assert.equal((await emailActivationKeyRotationStatus(db)).ready,false,
-    'operator retirement health remains red for unrelated malformed history');
+  const rotation=await emailActivationKeyRotationStatus(db);
+  assert.equal(rotation.ready,false,
+    'operator retirement health remains red for unrelated legacy dead letters');
+  assert.equal(rotation.legacy_v1,1);
   const body={email,password:'correct horse battery',name:'Invited Member'};
   const acceptedStarted=Date.now();
   const accepted=await invoke({endpoint:'signup',body,cookie});

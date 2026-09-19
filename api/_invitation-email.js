@@ -6,9 +6,9 @@ import { hashInvitationEmail, hashInvitationToken, normalizeInvitationEmail } fr
 import {
   CredentialEnvelopeError,
   assertPurposeKeyIsolation,
+  credentialRotationMetricsFromEnvelopes,
   openCredentialEnvelope,
   parseKeyRing,
-  readCredentialRotationMetrics,
   sealCredentialEnvelope,
 } from './_key-rotation.js';
 import { createOutboxEventStatement, OutboxDeliveryError, readOutboxMetrics, runOutboxWorker } from './_outbox.js';
@@ -278,13 +278,30 @@ export function createInvitationEmailHandler({db,baseUrl,send,localRuntime=false
 
 export async function invitationEmailKeyRotationStatus(db,{localRuntime=false}={}){
   if(!db||typeof db.execute!=='function') throw new TypeError('database client is required');
-  const retainedResult=await db.execute({
-    sql:`SELECT invitation.id,event.id AS event_id,event.status,
-        json_extract(event.payload_json,'$.credential_envelope') AS envelope
-      FROM circle_invitations invitation JOIN circles circle ON circle.id=invitation.circle_id
-      JOIN outbox_events event
-        ON json_extract(event.payload_json,'$.invitation_id')=invitation.id
-      WHERE event.event_type=? AND invitation.used_at IS NULL AND invitation.used_by IS NULL
+  // Actionable events and resend-retained terminal events must come from one
+  // statement snapshot. Separate reads could miss a live invitation whose
+  // latest event moves from pending to delivered between those reads.
+  const result=await db.execute({
+    sql:`WITH invitation_events AS (
+        SELECT event.id,event.status,
+          json_extract(event.payload_json,'$.invitation_id') AS invitation_id,
+          json_extract(event.payload_json,'$.credential_envelope') AS envelope
+        FROM outbox_events event WHERE event.event_type=?
+      ), invitation_summaries AS (
+        SELECT invitation_id,COUNT(*) AS event_count,MAX(id) AS latest_event_id
+        FROM invitation_events GROUP BY invitation_id
+      )
+      SELECT event.id,event.status,event.envelope,0 AS retained
+      FROM invitation_events event
+      WHERE event.status IN ('pending','processing','retry','dead_letter')
+      UNION ALL
+      SELECT latest.id,latest.status,latest.envelope,1 AS retained
+      FROM invitation_summaries summary
+      JOIN invitation_events latest ON latest.id=summary.latest_event_id
+      JOIN circle_invitations invitation ON invitation.id=summary.invitation_id
+      JOIN circles circle ON circle.id=invitation.circle_id
+      WHERE summary.event_count<? AND latest.status IN ('delivered','suppressed')
+        AND invitation.used_at IS NULL AND invitation.used_by IS NULL
         AND invitation.revoked_at IS NULL AND datetime(invitation.expires_at)>datetime('now')
         AND circle.archived_at IS NULL
         AND EXISTS (
@@ -293,27 +310,18 @@ export async function invitationEmailKeyRotationStatus(db,{localRuntime=false}={
             AND COALESCE(owner.is_demo,0)=0
           WHERE owner_membership.circle_id=invitation.circle_id
             AND owner_membership.role='owner' AND owner_membership.status='active')
-      ORDER BY invitation.id,event.id DESC LIMIT 10001`,
-    args:[INVITATION_EMAIL_EVENT_TYPE],
+      ORDER BY id LIMIT 10001`,
+    args:[INVITATION_EMAIL_EVENT_TYPE,INVITATION_EMAIL_MAX_SENDS],
   });
-  const rows=retainedResult.rows||[];
+  const rows=result.rows||[];
   if(rows.length>10000) throw new Error('invitation rotation metric limit exceeded');
-  const invitations=new Map();
-  for(const row of rows){
-    const id=String(row.id||'');
-    const summary=invitations.get(id)||{count:0,latest:row};
-    summary.count+=1;
-    invitations.set(id,summary);
-  }
+  const actionableEnvelopes=[];
   const retainedEnvelopes=[];
-  for(const summary of invitations.values()){
-    if(summary.count<INVITATION_EMAIL_MAX_SENDS
-      &&['delivered','suppressed'].includes(String(summary.latest.status||''))){
-      retainedEnvelopes.push(summary.latest.envelope);
-    }
+  for(const row of rows){
+    (Number(row.retained)===1?retainedEnvelopes:actionableEnvelopes).push(row.envelope);
   }
-  return readCredentialRotationMetrics(db,{eventType:INVITATION_EMAIL_EVENT_TYPE,
-    envelopeField:'credential_envelope',ring:invitationKeyRing({localRuntime}),retainedEnvelopes});
+  return credentialRotationMetricsFromEnvelopes({ring:invitationKeyRing({localRuntime}),
+    actionableEnvelopes,retainedEnvelopes});
 }
 
 export async function ensureInvitationEmailReadiness(db,{localRuntime=false}={}){
