@@ -3349,7 +3349,7 @@ async function refreshMe(){
       ?'Choose which circle to manage and view.'
       :(circles.length>1
         ?(authCapabilities.secondaryCircleCoordination
-          ?'Availability and weekly pairing follow this circle. Secondary-circle workspaces are read-only.'
+          ?'Availability and weekly pairing follow this circle. Secondary circles are coordination-only. Workspaces are not enabled.'
           :(authCapabilities.multiCircleAvailability
           ?'Circle-specific availability and member controls are active. Pairing is not enabled yet.'
           :'Circle-specific member and invitation controls are active. Pairing remains unavailable for this account.')
