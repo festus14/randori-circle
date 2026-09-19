@@ -333,6 +333,7 @@ test('operator workflow is manual, protected, latest-main-only, and shares datab
   assert.match(workflow,/environment: credential-key-control/);
   assert.match(workflow,/group: turso-production-database-operations/);
   assert.match(workflow,/ref: \$\{\{ github\.event\.repository\.default_branch \}\}/);
+  assert.match(workflow,/persist-credentials: false/);
   assert.match(workflow,/CREDENTIAL_KEY_CONTROL_MUTATIONS_ENABLED: \$\{\{ vars\./);
   assert.match(workflow,/TURSO_PRODUCTION_DATABASE_HOST: \$\{\{ vars\./);
   assert.doesNotMatch(workflow,/continue-on-error:\s*true/);

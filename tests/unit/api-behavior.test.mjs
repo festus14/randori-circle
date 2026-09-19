@@ -667,7 +667,7 @@ test('password signup is local-only while production and private-beta registrati
   assert.equal(executed.length, 0, 'non-local signup must be rejected before database access');
 });
 
-test('auth capabilities report static flags without database access and fail controlled features closed', async () => {
+test('auth capabilities report static flags without database access', async () => {
   let result=await invoke(authHandler,{
     url:'/api/auth/capabilities',query:{endpoint:'capabilities'},headers:{host:'randori.example.test'},
   });
@@ -713,8 +713,17 @@ test('auth capabilities report static flags without database access and fail con
     registrationMode:'private_beta',
   });
 
+  const wrongMethod=await invoke(authHandler,{
+    method:'POST',url:'/api/auth/capabilities',query:{endpoint:'capabilities'},headers:localOriginHeaders,
+  });
+  assert.equal(wrongMethod.status,405);
+  assert.deepEqual(wrongMethod.body,{error:'GET only'});
+  assert.equal(executed.length,0);
+});
+
+test('local auth capabilities probe exact identity-linking readiness and fail closed',async()=>{
   enableLocalPasswordSignup();
-  result=await invoke(authHandler,{
+  const result=await invoke(authHandler,{
     url:'/api/auth/capabilities',query:{endpoint:'capabilities'},headers:{host:'127.0.0.1:3000'},
   });
   assert.equal(result.status,200);
@@ -724,14 +733,15 @@ test('auth capabilities report static flags without database access and fail con
       localIdentity:false,googleOAuth:false,recentAuthMaxAgeSeconds:600,identityManagement:false},
     registrationMode:'local_open',
   });
-  assert.equal(executed.length,5);
-  assert.ok(executed.every(statement=>/^SELECT\b/i.test(statement.sql.trim())));
-
-  const wrongMethod=await invoke(authHandler,{
-    method:'POST',url:'/api/auth/capabilities',query:{endpoint:'capabilities'},headers:localOriginHeaders,
-  });
-  assert.equal(wrongMethod.status,405);
-  assert.deepEqual(wrongMethod.body,{error:'GET only'});
+  assert.deepEqual(executed.map(statement=>({
+    sql:statement.sql.replace(/\s+/g,' ').trim(),args:statement.args,
+  })),[
+    {sql:'SELECT issuer,subject,user_id FROM auth_provider_identities LIMIT 0',args:[]},
+    {sql:'SELECT issuer,subject,email_hash,hash_key_version,hash_key_fingerprint,observed_at,changed_at FROM auth_provider_email_state LIMIT 0',args:[]},
+    {sql:'SELECT id,user_id,actor_user_id,event_type,provider,outcome,reason_code,created_at FROM auth_identity_audit_events LIMIT 0',args:[]},
+    {sql:'SELECT session_hash,user_id,authenticated_at,method FROM auth_recent_proofs LIMIT 0',args:[]},
+    {sql:'SELECT purpose,control_version,state,highest_key_version, highest_key_fingerprint,generation,installed_by_migration,installed_at,updated_at FROM credential_key_controls WHERE purpose=? LIMIT 2',args:['identity-email-observation']},
+  ]);
 });
 
 test('invalid production OAuth configuration is not advertised and stops before provider or database access',async()=>{
