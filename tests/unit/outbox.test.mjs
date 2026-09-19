@@ -16,6 +16,7 @@ import {
   replayDeadLetter,
   runOutboxInvocation,
   runOutboxWorker,
+  settleBeforeDeadline,
 } from '../../api/_outbox.js';
 import {
   classifyPairingProviderError,
@@ -322,6 +323,142 @@ test('a slow provider is deadline-capped without starving another type or strand
     ['alpha.notification','pending',null,null,null],
     ['beta.notification','delivered',null,null,null],
   ]);
+});
+
+test('a claim that consumes the dispatch window dead-letters its exhausted event without provider work',async()=>{
+  const {db}=await fixture();
+  await enqueueOutboxEvent(db,event({eventType:'alpha.notification',maxAttempts:1}));
+  const delayedDb={
+    execute:db.execute.bind(db),
+    transaction:db.transaction.bind(db),
+    async batch(statements,mode){
+      if(String(statements?.[0]?.sql||'').includes('ROW_NUMBER() OVER')){
+        await new Promise(resolve=>setTimeout(resolve,80));
+      }
+      return db.batch(statements,mode);
+    },
+  };
+  let handlerCalls=0;
+  const startedAt=performance.now();
+  const result=await runOutboxInvocation({
+    db:delayedDb,workerId:'slow-claim-invocation',
+    handlers:{'alpha.notification':async()=>{ handlerCalls+=1; return {}; }},
+    eventTypes:['alpha.notification'],maxClaims:1,
+    deadlineAtMs:startedAt+225,finalizationReserveMs:100,minimumDispatchWindowMs:100,
+    leaseDurationMs:1000,heartbeatIntervalMs:0,baseBackoffMs:1000,maxBackoffMs:1000,
+  });
+  assert.equal(handlerCalls,0);
+  assert.equal(result.claimed,0,'the invocation stops waiting before the delayed claim completes');
+  assert.equal(result.deadLettered,0);
+  assert.equal(result.retried,0);
+  assert.equal(result.deadlineReached,true);
+  assert.ok(performance.now()-startedAt<80);
+  await new Promise(resolve=>setTimeout(resolve,100));
+  const stored=await row(db);
+  assert.equal(stored.status,'dead_letter');
+  assert.equal(stored.last_error_code,'INVOCATION_DEADLINE');
+  assert.equal(stored.lease_owner,null);
+  assert.equal(stored.lease_token,null);
+});
+
+test('one finalization failure does not strand later sent events and heartbeats continue through finalize',async()=>{
+  const {db}=await fixture();
+  await enqueueOutboxEvent(db,event({eventType:'alpha.notification'}));
+  await enqueueOutboxEvent(db,event({eventType:'beta.notification',sequence:2,
+    idempotencyKey:'test/v1/finalize-beta'}));
+  let providerCalls=0;
+  let failedFinalization=false;
+  let heartbeatCalls=0;
+  const faultDb={
+    batch:db.batch.bind(db),
+    transaction:db.transaction.bind(db),
+    async execute(statement){
+      const sql=String(statement?.sql||statement);
+      if(sql.includes('leased_until=MAX')) heartbeatCalls+=1;
+      if(providerCalls===2&&!failedFinalization&&sql.includes(' AS now_utc')){
+        failedFinalization=true;
+        await new Promise(resolve=>setTimeout(resolve,60));
+        throw new Error('forced finalization clock failure');
+      }
+      return db.execute(statement);
+    },
+  };
+  const handler=async current=>{
+    providerCalls+=1;
+    return {providerName:'capture',providerMessageId:`sent-${current.id}`};
+  };
+  const result=await runOutboxInvocation({
+    db:faultDb,workerId:'isolated-finalization',
+    handlers:{'alpha.notification':handler,'beta.notification':handler},
+    eventTypes:['alpha.notification','beta.notification'],maxClaims:2,
+    deadlineAtMs:performance.now()+2_000,finalizationReserveMs:100,minimumDispatchWindowMs:100,
+    leaseDurationMs:1000,heartbeatIntervalMs:10,
+  });
+  assert.equal(providerCalls,2);
+  assert.equal(result.claimed,2);
+  assert.equal(result.delivered,1);
+  assert.equal(result.leaseLost,1);
+  assert.ok(heartbeatCalls>0,'the failed event retains its heartbeat while finalization is in flight');
+  const stored=(await db.execute(`SELECT event_type,status,provider_message_id
+    FROM outbox_events ORDER BY id`)).rows;
+  assert.deepEqual(stored, [
+    {event_type:'alpha.notification',status:'processing',provider_message_id:null},
+    {event_type:'beta.notification',status:'delivered',provider_message_id:'sent-2'},
+  ]);
+});
+
+test('a slow finalization yields its fair deadline slice so later sent events can finalize',async()=>{
+  const {db}=await fixture();
+  await enqueueOutboxEvent(db,event({eventType:'alpha.notification'}));
+  await enqueueOutboxEvent(db,event({eventType:'beta.notification',sequence:2,
+    idempotencyKey:'test/v1/slow-finalize-beta'}));
+  let providerCalls=0;
+  let delayedFinalization=false;
+  const slowDb={
+    batch:db.batch.bind(db),
+    transaction:db.transaction.bind(db),
+    async execute(statement){
+      const sql=String(statement?.sql||statement);
+      if(providerCalls===2&&!delayedFinalization&&sql.includes(' AS now_utc')){
+        delayedFinalization=true;
+        await new Promise(resolve=>setTimeout(resolve,250));
+      }
+      return db.execute(statement);
+    },
+  };
+  const startedAt=performance.now();
+  const handler=async current=>{
+    providerCalls+=1;
+    return {providerName:'capture',providerMessageId:`slow-finalize-${current.id}`};
+  };
+  const result=await runOutboxInvocation({
+    db:slowDb,workerId:'slow-finalization',
+    handlers:{'alpha.notification':handler,'beta.notification':handler},
+    eventTypes:['alpha.notification','beta.notification'],maxClaims:2,
+    deadlineAtMs:startedAt+400,finalizationReserveMs:100,minimumDispatchWindowMs:100,
+    leaseDurationMs:1000,heartbeatIntervalMs:10,
+  });
+  assert.ok(performance.now()-startedAt<400,'one slow transition cannot consume the complete deadline');
+  assert.equal(result.claimed,2);
+  assert.equal(result.delivered,1);
+  assert.equal(result.leaseLost,1);
+  assert.equal((await db.execute("SELECT status FROM outbox_events WHERE event_type='beta.notification'"))
+    .rows[0].status,'delivered');
+  await new Promise(resolve=>setTimeout(resolve,100));
+});
+
+test('deadline helper stops awaiting slow teardown while observing its eventual settlement',async()=>{
+  let settled=false;
+  const startedAt=performance.now();
+  const result=await settleBeforeDeadline(async()=>{
+    await new Promise(resolve=>setTimeout(resolve,80));
+    settled=true;
+    return 'late';
+  },startedAt+30);
+  assert.deepEqual(result,{completed:false,value:null});
+  assert.ok(performance.now()-startedAt<70);
+  await new Promise(resolve=>setTimeout(resolve,70));
+  assert.equal(settled,true);
 });
 
 test('global invocation preserves lost leases and reports an empty queue without claiming',async()=>{

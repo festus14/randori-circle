@@ -2,7 +2,10 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const REQUIRED_ROOT_FILES = ['index.html', 'package-lock.json', 'package.json', 'vercel.json'];
+const OUTBOX_WORKFLOW_PATH='.github/workflows/outbox-dispatch.yml';
+const REQUIRED_ROOT_FILES = [
+  'index.html', 'package-lock.json', 'package.json', 'vercel.json', OUTBOX_WORKFLOW_PATH,
+];
 const REQUIRED_SECURITY_HEADERS = [
   'content-security-policy',
   'permissions-policy',
@@ -115,7 +118,41 @@ function requiredHandler(destination) {
   return match ? `api/${match[1]}.js` : null;
 }
 
-export function validateDeploymentContract({ vercel, packageJson, files }) {
+function validateOutboxWorkflow(workflow){
+  if(typeof workflow!=='string'||!workflow.trim()){
+    return ['outbox dispatch workflow must be readable'];
+  }
+  const errors=[];
+  const checks=[
+    [/^name:\s*outbox-dispatch\s*$/m,'outbox workflow must have the stable outbox-dispatch name'],
+    [/^\s{2}schedule:\s*$/m,'outbox workflow must define a scheduled trigger'],
+    [/^\s{4}- cron:\s*['"]\*\/5 \* \* \* \*['"]\s*$/m,
+      'outbox workflow must run on the five-minute MVP cadence'],
+    [/^\s{2}workflow_dispatch:\s*$/m,'outbox workflow must support manual recovery runs'],
+    [/^\s{2}contents:\s*read\s*$/m,'outbox workflow permissions must be read-only'],
+    [/^\s{4}environment:\s*production\s*$/m,
+      'outbox workflow must use the protected production environment'],
+    [/APP_URL:\s*\$\{\{\s*vars\.APP_URL\s*\}\}/,
+      'outbox workflow must read APP_URL from GitHub configuration'],
+    [/CRON_SECRET:\s*\$\{\{\s*secrets\.CRON_SECRET\s*\}\}/,
+      'outbox workflow must read CRON_SECRET from GitHub secrets'],
+    [/if \[\[ -z "\$\{APP_URL\}" \|\| -z "\$\{CRON_SECRET\}" \]\]/,
+      'outbox workflow must fail visibly when scheduler configuration is absent'],
+    [/--max-time 55\s+--retry 0\s+--request POST/,
+      'outbox workflow must bound the request without automatic duplicate retries'],
+    [/--header "x-cron-secret: \$\{CRON_SECRET\}"/,
+      'outbox workflow must authenticate with the dedicated cron secret'],
+    [/"\$\{APP_URL%\/\}\/api\/cron\/outbox"/,
+      'outbox workflow must call the production outbox route'],
+  ];
+  for(const [pattern,message] of checks){ if(!pattern.test(workflow)) errors.push(message); }
+  if(/pull_request_target|pull_request:|\becho\b[^\n]*(?:CRON_SECRET|\$\{\{\s*secrets\.)/u.test(workflow)){
+    errors.push('outbox workflow must not expose production secrets to pull-request code or logs');
+  }
+  return errors;
+}
+
+export function validateDeploymentContract({ vercel, packageJson, files, outboxWorkflow }) {
   const errors = [];
   const config = record(vercel);
   const manifest = record(packageJson);
@@ -135,6 +172,8 @@ export function validateDeploymentContract({ vercel, packageJson, files }) {
   if (manifest?.engines?.node !== SUPPORTED_NODE_RANGE) {
     errors.push(`package.json engines.node must be ${SUPPORTED_NODE_RANGE}`);
   }
+
+  errors.push(...validateOutboxWorkflow(outboxWorkflow));
 
   if (!Array.isArray(config.rewrites) || config.rewrites.length === 0) {
     errors.push('vercel.json must define rewrites');
@@ -237,6 +276,7 @@ export function inspectDeploymentContract(rootDirectory = process.cwd()) {
 
   let vercel;
   let packageJson;
+  let outboxWorkflow;
   try {
     vercel = JSON.parse(readFileSync(resolve(root, 'vercel.json'), 'utf8'));
   } catch (error) {
@@ -248,7 +288,13 @@ export function inspectDeploymentContract(rootDirectory = process.cwd()) {
     return [`package.json is not readable JSON: ${error.message}`];
   }
 
-  return validateDeploymentContract({ vercel, packageJson, files });
+  try {
+    outboxWorkflow = readFileSync(resolve(root, OUTBOX_WORKFLOW_PATH), 'utf8');
+  } catch {
+    outboxWorkflow = null;
+  }
+
+  return validateDeploymentContract({ vercel, packageJson, files, outboxWorkflow });
 }
 
 function main() {

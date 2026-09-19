@@ -108,6 +108,29 @@ function validateWorkerId(value){
   return workerId;
 }
 
+/**
+ * Stop awaiting non-cancellable storage/telemetry work at an absolute
+ * monotonic deadline. The operation remains rejection-observed if the
+ * underlying client settles later.
+ */
+export async function settleBeforeDeadline(work,deadlineAtMs){
+  if(typeof work!=='function') throw new TypeError('deadline work is required');
+  const remaining=Math.floor(Number(deadlineAtMs)-performance.now());
+  if(!Number.isFinite(remaining)||remaining<1) return Object.freeze({completed:false,value:null});
+  let timer;
+  const operation=Promise.resolve().then(work).then(
+    value=>({completed:true,value}),
+    error=>({completed:true,value:null,error}),
+  );
+  const timeout=new Promise(resolve=>{
+    timer=setTimeout(()=>resolve({completed:false,value:null}),remaining);
+  });
+  const result=await Promise.race([operation,timeout]);
+  clearTimeout(timer);
+  if(result.error) throw result.error;
+  return Object.freeze(result);
+}
+
 function eventFromRow(row){
   if(!row) return null;
   const event={
@@ -404,6 +427,13 @@ function deliveryFailure(error,event,options){
   return {deadLetter,reasonCode,delay};
 }
 
+function failedResolution(error,event,options){
+  const failure=deliveryFailure(error,event,options);
+  return {leaseLost:false,outcome:failure.deadLetter
+    ?{status:'dead_letter',reasonCode:failure.reasonCode,delayMs:0}
+    :{status:'retry',reasonCode:failure.reasonCode,delayMs:failure.delay}};
+}
+
 async function finalizeOutcome(db,{event,workerId,outcome}){
   const now=await databaseInstant(db);
   const status=outcome.status;
@@ -461,12 +491,8 @@ function startHeartbeat(db,{event,workerId,leaseDurationMs,heartbeatIntervalMs,a
   };
 }
 
-async function invokeWithTimeout(handler,event,{db,workerId,leaseDurationMs,heartbeatIntervalMs,
+async function invokeWithTimeout(handler,event,{abortController,
   deliveryTimeoutMs=event.deliveryTimeoutMs,timeoutCode='DELIVERY_TIMEOUT'}){
-  const abortController=new AbortController();
-  const heartbeat=startHeartbeat(db,{
-    event,workerId,leaseDurationMs,heartbeatIntervalMs,abortController,
-  });
   let timer;
   const timeout=new Promise((_,reject)=>{
     timer=setTimeout(()=>{
@@ -482,10 +508,6 @@ async function invokeWithTimeout(handler,event,{db,workerId,leaseDurationMs,hear
     ]);
   }finally{
     clearTimeout(timer);
-    await heartbeat.stop();
-    if(abortController.signal.reason instanceof OutboxLeaseLostError){
-      throw abortController.signal.reason;
-    }
   }
 }
 
@@ -508,23 +530,36 @@ function addWorkerResult(target,source){
 
 async function resolveClaimedOutboxEvent(db,event,{handlers,workerId,leaseDurationMs,
   heartbeatIntervalMs,baseBackoffMs,maxBackoffMs,deliveryTimeoutMs=event.deliveryTimeoutMs,
-  timeoutCode='DELIVERY_TIMEOUT'}={}){
+  timeoutCode='DELIVERY_TIMEOUT',abortController}={}){
   const handler=handlers instanceof Map?handlers.get(event.eventType):handlers[event.eventType];
   let outcome;
   try{
     if(typeof handler!=='function') throw new OutboxDeliveryError('EVENT_HANDLER_MISSING',{retryable:false});
     const delivered=await invokeWithTimeout(handler,event,{
-      db,workerId,leaseDurationMs,heartbeatIntervalMs,deliveryTimeoutMs,timeoutCode,
+      abortController,deliveryTimeoutMs,timeoutCode,
     });
     outcome=normalizeSuccess(delivered);
   }catch(error){
-    if(error instanceof OutboxLeaseLostError) return {leaseLost:true,outcome:null};
-    const failure=deliveryFailure(error,event,{baseBackoffMs,maxBackoffMs});
-    outcome=failure.deadLetter
-      ?{status:'dead_letter',reasonCode:failure.reasonCode,delayMs:0}
-      :{status:'retry',reasonCode:failure.reasonCode,delayMs:failure.delay};
+    if(error instanceof OutboxLeaseLostError
+      ||abortController.signal.reason instanceof OutboxLeaseLostError){
+      return {leaseLost:true,outcome:null};
+    }
+    return failedResolution(error,event,{baseBackoffMs,maxBackoffMs});
   }
   return {leaseLost:false,outcome};
+}
+
+function startClaimLifecycle(db,event,{workerId,leaseDurationMs,heartbeatIntervalMs}){
+  const abortController=new AbortController();
+  const heartbeat=startHeartbeat(db,{
+    event,workerId,leaseDurationMs,heartbeatIntervalMs,abortController,
+  });
+  return {abortController,heartbeat};
+}
+
+function leaseAwareResolution(lifecycle,resolution){
+  return lifecycle.abortController.signal.reason instanceof OutboxLeaseLostError
+    ?{leaseLost:true,outcome:null}:resolution;
 }
 
 async function finalizeResolvedOutboxEvent(db,event,{workerId,resolution}){
@@ -542,8 +577,17 @@ async function finalizeResolvedOutboxEvent(db,event,{workerId,resolution}){
 }
 
 async function deliverClaimedOutboxEvent(db,event,options={}){
-  const resolution=await resolveClaimedOutboxEvent(db,event,options);
-  return finalizeResolvedOutboxEvent(db,event,{workerId:options.workerId,resolution});
+  const lifecycle=startClaimLifecycle(db,event,options);
+  try{
+    const resolution=await resolveClaimedOutboxEvent(db,event,{
+      ...options,abortController:lifecycle.abortController,
+    });
+    return await finalizeResolvedOutboxEvent(db,event,{
+      workerId:options.workerId,resolution:leaseAwareResolution(lifecycle,resolution),
+    });
+  }finally{
+    await lifecycle.heartbeat.stop();
+  }
 }
 
 export async function runOutboxWorker({
@@ -629,29 +673,77 @@ export async function runOutboxInvocation({
       .slice(0,claimLimit-total.claimed);
     // A round is claimed in one statement: every active type receives one fair
     // opportunity before the deadline is checked again.
-    const round=await claimOutboxRound(db,{
+    const claimPromise=claimOutboxRound(db,{
       workerId:owner,leaseDurationMs:leaseMs,eventTypes:admittedTypes,
     });
+    const claimed=await settleBeforeDeadline(()=>claimPromise,
+      deadline-reserveMs-minimumMs);
+    if(!claimed.completed){
+      deadlineReached=true;
+      // The client cannot cancel an in-flight SQL statement. If it commits
+      // after this invocation stops waiting, resolve any resulting leases to a
+      // bounded deadline failure without invoking a provider.
+      void claimPromise.then(async lateRound=>{
+        for(const event of lateRound){
+          try{
+            await finalizeResolvedOutboxEvent(db,event,{workerId:owner,
+              resolution:failedResolution(
+                new OutboxDeliveryError('INVOCATION_DEADLINE',{retryable:true}),event,
+                {baseBackoffMs:baseMs,maxBackoffMs:maxMs},
+              )});
+          }catch{}
+        }
+      }).catch(()=>{});
+      break;
+    }
+    const round=claimed.value;
     const claimedTypes=new Set(round.map(event=>event.eventType));
     for(const type of admittedTypes){ if(!claimedTypes.has(type)) activeTypes.delete(type); }
     if(!round.length) break;
-    const resolutions=await Promise.all(round.map(async event=>{
+    const lifecycles=round.map(event=>startClaimLifecycle(db,event,{
+      workerId:owner,leaseDurationMs:leaseMs,heartbeatIntervalMs:heartbeatMs,
+    }));
+    const resolutions=await Promise.all(round.map(async(event,index)=>{
       const available=Math.floor(deadline-performance.now()-reserveMs);
       if(available<minimumMs){
-        const outcome={status:'retry',reasonCode:'INVOCATION_DEADLINE',delayMs:baseMs};
-        return {leaseLost:false,outcome};
+        return failedResolution(
+          new OutboxDeliveryError('INVOCATION_DEADLINE',{retryable:true}),event,
+          {baseBackoffMs:baseMs,maxBackoffMs:maxMs},
+        );
       }
       const timeoutMs=Math.min(event.deliveryTimeoutMs,available);
       return resolveClaimedOutboxEvent(db,event,{
         handlers,workerId:owner,leaseDurationMs:leaseMs,heartbeatIntervalMs:heartbeatMs,
         baseBackoffMs:baseMs,maxBackoffMs:maxMs,deliveryTimeoutMs:timeoutMs,
         timeoutCode:timeoutMs<event.deliveryTimeoutMs?'INVOCATION_DEADLINE':'DELIVERY_TIMEOUT',
+        abortController:lifecycles[index].abortController,
       });
     }));
+    const outcomes=[];
     for(let index=0;index<round.length;index+=1){
-      const outcome=await finalizeResolvedOutboxEvent(db,round[index],{
-        workerId:owner,resolution:resolutions[index],
-      });
+      const event=round[index];
+      const lifecycle=lifecycles[index];
+      const remainingEvents=round.length-index;
+      const available=Math.max(0,Math.floor(deadline-performance.now()));
+      const finalizationDeadline=Math.min(deadline,
+        performance.now()+Math.max(1,Math.floor(available/remainingEvents)));
+      try{
+        const finalized=await settleBeforeDeadline(()=>finalizeResolvedOutboxEvent(db,event,{
+          workerId:owner,resolution:leaseAwareResolution(lifecycle,resolutions[index]),
+        }),finalizationDeadline);
+        outcomes.push(finalized.completed?finalized.value
+          :{...emptyWorkerResult(),claimed:1,leaseLost:1});
+      }catch{
+        // An ambiguous or failed transition remains protected by the lease and
+        // provider idempotency key. Continue finalizing the rest of the round.
+        outcomes.push({...emptyWorkerResult(),claimed:1,leaseLost:1});
+      }finally{
+        const stopping=lifecycle.heartbeat.stop();
+        await settleBeforeDeadline(()=>stopping,deadline);
+      }
+    }
+    for(let index=0;index<round.length;index+=1){
+      const outcome=outcomes[index];
       addWorkerResult(perType[round[index].eventType],outcome);
       addWorkerResult(total,outcome);
     }
@@ -662,11 +754,13 @@ export async function runOutboxInvocation({
   // remains for request teardown and metrics.
   for(const type of types){
     if(!canStart()){ deadlineReached=true; break; }
-    const swept=await sweepExhausted(db,{
+    const sweepPromise=sweepExhausted(db,{
       actorRef:owner,eventType:type,limit:1,shouldContinue:canStart,
     });
-    perType[type].deadLettered+=swept;
-    total.deadLettered+=swept;
+    const swept=await settleBeforeDeadline(()=>sweepPromise,deadline);
+    if(!swept.completed){ deadlineReached=true; break; }
+    perType[type].deadLettered+=swept.value;
+    total.deadLettered+=swept.value;
   }
   return Object.freeze({...total,deadlineReached,maxClaims:claimLimit,
     perType:Object.freeze(Object.fromEntries(types.map(type=>[type,Object.freeze(perType[type])])))});
