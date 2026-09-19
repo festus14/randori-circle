@@ -317,39 +317,45 @@ test('multi-circle selection reloads into the chosen isolated roster and invitat
       circle_context_version:contextVersion,
     }),
   });
-  await resetClientState(page,true,{},true);
-  await page.goto('/',{waitUntil:'domcontentloaded'});
-  await capabilitiesStarted;
-  await profileStarted;
-  await page.locator('[data-tab="circle"]').click();
-  releaseCapabilities();
-  const selector=page.getByTestId('circle-context-select');
-  await expect(selector).toBeVisible();
-  await expect(selector).toHaveValue('');
-  await expect(page.getByTestId('circle-members')).toContainText('select one above');
-  releaseProfile();
-  await expect(page.locator('#view-circle')).toBeVisible();
-  await expect(selector).toBeVisible();
-  await page.locator('#pairsList').evaluate(element=>{ element.textContent='Primary private pairing'; });
-  await page.locator('#historyList').evaluate(element=>{ element.textContent='Primary private history'; });
+  try{
+    await resetClientState(page,true,{},true);
+    await page.goto('/',{waitUntil:'domcontentloaded'});
+    await capabilitiesStarted;
+    await profileStarted;
+    await page.locator('[data-tab="circle"]').click();
+    releaseCapabilities();
+    const selector=page.getByTestId('circle-context-select');
+    await expect(selector).toBeVisible();
+    await expect(selector).toHaveValue('');
+    await expect(page.getByTestId('circle-members')).toContainText('select one above');
+    releaseProfile();
+    await expect(page.locator('#view-circle')).toBeVisible();
+    await expect(selector).toBeVisible();
+    await page.locator('#pairsList').evaluate(element=>{ element.textContent='Primary private pairing'; });
+    await page.locator('#historyList').evaluate(element=>{ element.textContent='Primary private history'; });
 
-  const reloaded=page.waitForEvent('domcontentloaded');
-  const selecting=selector.selectOption('circle-secondary');
-  await switchStarted;
-  await expect(page.getByTestId('circle-members')).toBeEmpty();
-  await expect(page.locator('#pairsList')).toBeEmpty();
-  await expect(page.locator('#historyList')).toBeEmpty();
-  releaseSwitch();
-  await selecting;
-  await expect.poll(()=>selections).toEqual([{
-    circle_public_id:'circle-secondary',expected_context_version:0,
-  }]);
-  await reloaded;
-  await page.locator('[data-tab="circle"]').click();
-  await expect(page.getByTestId('circle-context-select')).toHaveValue('circle-secondary');
-  await expect(page.getByTestId('circle-members')).toContainText('Secondary Teammate');
-  await expect(page.getByTestId('circle-members')).not.toContainText('Primary Owner');
-  await expect(page.getByTestId('circle-invites')).toContainText('secondary123');
+    const reloaded=page.waitForEvent('domcontentloaded');
+    const selecting=selector.selectOption('circle-secondary');
+    await switchStarted;
+    await expect(page.getByTestId('circle-members')).toBeEmpty();
+    await expect(page.locator('#pairsList')).toBeEmpty();
+    await expect(page.locator('#historyList')).toBeEmpty();
+    releaseSwitch();
+    await selecting;
+    await expect.poll(()=>selections).toEqual([{
+      circle_public_id:'circle-secondary',expected_context_version:0,
+    }]);
+    await reloaded;
+    await page.locator('[data-tab="circle"]').click();
+    await expect(page.getByTestId('circle-context-select')).toHaveValue('circle-secondary');
+    await expect(page.getByTestId('circle-members')).toContainText('Secondary Teammate');
+    await expect(page.getByTestId('circle-members')).not.toContainText('Primary Owner');
+    await expect(page.getByTestId('circle-invites')).toContainText('secondary123');
+  }finally{
+    releaseCapabilities();
+    releaseProfile();
+    releaseSwitch();
+  }
 });
 
 for(const delayedAction of ['create','resend'] as const){
@@ -414,45 +420,50 @@ for(const delayedAction of ['create','resend'] as const){
       '/api/members':()=>({ok:true,members:[],count:0,has_more:false,next_cursor:null,
         scanned:0,circle_context_version:contextVersion}),
     });
-    await resetClientState(page,true,{},true);
-    await page.goto('/',{waitUntil:'domcontentloaded'});
-    await expect(page.locator('#view-dashboard')).toBeVisible();
-    await page.locator('[data-tab="circle"]').click();
-    const selector=page.getByTestId('circle-context-select');
-    await expect(selector).toHaveValue('circle-primary');
-    await expect(page.getByTestId('circle-invites')).toContainText('primary-only');
+    try{
+      await resetClientState(page,true,{},true);
+      await page.goto('/',{waitUntil:'domcontentloaded'});
+      await expect(page.locator('#view-dashboard')).toBeVisible();
+      await page.locator('[data-tab="circle"]').click();
+      const selector=page.getByTestId('circle-context-select');
+      await expect(selector).toHaveValue('circle-primary');
+      await expect(page.getByTestId('circle-invites')).toContainText('primary-only');
 
-    const actionResponse=page.waitForResponse(response=>{
-      const request=response.request();
-      const path=new URL(response.url()).pathname;
-      return request.method()==='POST'&&(delayedAction==='create'
-        ?path==='/api/invitations':path===`/api/invitations/${invitationId}`);
-    });
-    if(delayedAction==='create'){
-      await page.getByTestId('circle-invite-email').fill('delayed@example.test');
-      await page.getByTestId('circle-invite-create').click();
-    }else{
-      await page.getByTestId('circle-invite-resend').click();
+      const actionResponse=page.waitForResponse(response=>{
+        const request=response.request();
+        const path=new URL(response.url()).pathname;
+        return request.method()==='POST'&&(delayedAction==='create'
+          ?path==='/api/invitations':path===`/api/invitations/${invitationId}`);
+      });
+      if(delayedAction==='create'){
+        await page.getByTestId('circle-invite-email').fill('delayed@example.test');
+        await page.getByTestId('circle-invite-create').click();
+      }else{
+        await page.getByTestId('circle-invite-resend').click();
+      }
+      await actionStarted;
+      const selecting=selector.selectOption('circle-secondary');
+      await switchStarted;
+      await expect(page.getByTestId('circle-invite-link')).toBeHidden();
+      await expect(page.getByTestId('circle-invites')).toBeEmpty();
+      await expect(page.locator('#circleOwnerPanel')).toBeHidden();
+
+      releaseAction();
+      const completed=await actionResponse;
+      await completed.finished();
+      await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>resolve())));
+      await expect(page.getByTestId('circle-invite-link')).toBeHidden();
+      await expect(page.getByTestId('circle-invites')).toBeEmpty();
+      await expect(page.locator('#circleOwnerPanel')).toBeHidden();
+
+      const reloaded=page.waitForEvent('domcontentloaded');
+      releaseSwitch();
+      await selecting;
+      await reloaded;
+    }finally{
+      releaseAction();
+      releaseSwitch();
     }
-    await actionStarted;
-    const selecting=selector.selectOption('circle-secondary');
-    await switchStarted;
-    await expect(page.getByTestId('circle-invite-link')).toBeHidden();
-    await expect(page.getByTestId('circle-invites')).toBeEmpty();
-    await expect(page.locator('#circleOwnerPanel')).toBeHidden();
-
-    releaseAction();
-    const completed=await actionResponse;
-    await completed.finished();
-    await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>resolve())));
-    await expect(page.getByTestId('circle-invite-link')).toBeHidden();
-    await expect(page.getByTestId('circle-invites')).toBeEmpty();
-    await expect(page.locator('#circleOwnerPanel')).toBeHidden();
-
-    const reloaded=page.waitForEvent('domcontentloaded');
-    releaseSwitch();
-    await selecting;
-    await reloaded;
   });
 }
 
@@ -503,32 +514,36 @@ test('an identity refresh recovers from a pending circle switch without reviving
     '/api/members':()=>({ok:true,members:[{...currentUser,role:'owner',status:'active'}],count:1,
       has_more:false,next_cursor:null,scanned:1,circle_context_version:currentUser.id===replacement.id?0:1}),
   });
-  await resetClientState(page,true,{},true);
-  await page.goto('/',{waitUntil:'domcontentloaded'});
-  await expect(page.locator('#view-dashboard')).toBeVisible();
-  await page.locator('[data-tab="circle"]').click();
-  const selector=page.getByTestId('circle-context-select');
-  await expect(selector).toHaveValue('circle-primary');
+  try{
+    await resetClientState(page,true,{},true);
+    await page.goto('/',{waitUntil:'domcontentloaded'});
+    await expect(page.locator('#view-dashboard')).toBeVisible();
+    await page.locator('[data-tab="circle"]').click();
+    const selector=page.getByTestId('circle-context-select');
+    await expect(selector).toHaveValue('circle-primary');
 
-  const switchResponse=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/circles'
-    &&response.request().method()==='PUT');
-  const selecting=selector.selectOption('circle-secondary');
-  await switchStarted;
-  await expect(page.getByTestId('circle-members')).toBeEmpty();
+    const switchResponse=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/circles'
+      &&response.request().method()==='PUT');
+    const selecting=selector.selectOption('circle-secondary');
+    await switchStarted;
+    await expect(page.getByTestId('circle-members')).toBeEmpty();
 
-  currentUser=replacement;
-  expect(await page.evaluate(()=>(window as any)._randori_auth.refreshMe())).toBe(true);
-  await expect(page.getByTestId('circle-members')).toContainText('Replacement Owner');
-  await expect(page.getByTestId('circle-invites')).toContainText('replacement-only');
+    currentUser=replacement;
+    expect(await page.evaluate(()=>(window as any)._randori_auth.refreshMe())).toBe(true);
+    await expect(page.getByTestId('circle-members')).toContainText('Replacement Owner');
+    await expect(page.getByTestId('circle-invites')).toContainText('replacement-only');
 
-  releaseSwitch();
-  const completed=await switchResponse;
-  await completed.finished();
-  await selecting;
-  await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
-  await expect(page.getByTestId('circle-members')).toContainText('Replacement Owner');
-  await expect(page.getByTestId('circle-members')).not.toContainText('Team Mate');
-  await expect(page.getByTestId('circle-invites')).toContainText('replacement-only');
+    releaseSwitch();
+    const completed=await switchResponse;
+    await completed.finished();
+    await selecting;
+    await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
+    await expect(page.getByTestId('circle-members')).toContainText('Replacement Owner');
+    await expect(page.getByTestId('circle-members')).not.toContainText('Team Mate');
+    await expect(page.getByTestId('circle-invites')).toContainText('replacement-only');
+  }finally{
+    releaseSwitch();
+  }
 });
 
 test('a same-user refresh cannot cancel a pending circle switch commit',async({page})=>{
@@ -578,33 +593,37 @@ test('a same-user refresh cannot cancel a pending circle switch commit',async({p
       role:'owner',status:'active'}],count:1,has_more:false,next_cursor:null,scanned:1,
       circle_context_version:contextVersion}),
   });
-  await resetClientState(page,true,{},true);
-  await page.goto('/',{waitUntil:'domcontentloaded'});
-  await expect(page.locator('#view-dashboard')).toBeVisible();
-  await page.locator('[data-tab="circle"]').click();
-  const selector=page.getByTestId('circle-context-select');
-  await expect(selector).toHaveValue('circle-primary');
+  try{
+    await resetClientState(page,true,{},true);
+    await page.goto('/',{waitUntil:'domcontentloaded'});
+    await expect(page.locator('#view-dashboard')).toBeVisible();
+    await page.locator('[data-tab="circle"]').click();
+    const selector=page.getByTestId('circle-context-select');
+    await expect(selector).toHaveValue('circle-primary');
 
-  const switchResponse=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/circles'
-    &&response.request().method()==='PUT');
-  const selecting=selector.selectOption('circle-secondary');
-  await switchStarted;
-  await expect(page.getByTestId('circle-members')).toBeEmpty();
+    const switchResponse=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/circles'
+      &&response.request().method()==='PUT');
+    const selecting=selector.selectOption('circle-secondary');
+    await switchStarted;
+    await expect(page.getByTestId('circle-members')).toBeEmpty();
 
-  expect(await page.evaluate(()=>(window as any)._randori_auth.refreshMe())).toBe(true);
-  await expect(page.getByTestId('circle-members')).toBeEmpty();
+    expect(await page.evaluate(()=>(window as any)._randori_auth.refreshMe())).toBe(true);
+    await expect(page.getByTestId('circle-members')).toBeEmpty();
 
-  const reloaded=page.waitForEvent('domcontentloaded');
-  releaseSwitch();
-  const completed=await switchResponse;
-  await completed.finished();
-  await selecting;
-  await reloaded;
-  await page.locator('[data-tab="circle"]').click();
-  await expect(page.getByTestId('circle-context-select')).toHaveValue('circle-secondary');
-  await expect(page.getByTestId('circle-members')).toContainText('Team Mate');
-  expect(await page.evaluate(()=>JSON.parse(sessionStorage.getItem('randori-e2e-circle-broadcast')||'null')))
-    .toEqual({v:1,user_id:owner.id,context_version:2});
+    const reloaded=page.waitForEvent('domcontentloaded');
+    releaseSwitch();
+    const completed=await switchResponse;
+    await completed.finished();
+    await selecting;
+    await reloaded;
+    await page.locator('[data-tab="circle"]').click();
+    await expect(page.getByTestId('circle-context-select')).toHaveValue('circle-secondary');
+    await expect(page.getByTestId('circle-members')).toContainText('Team Mate');
+    expect(await page.evaluate(()=>JSON.parse(sessionStorage.getItem('randori-e2e-circle-broadcast')||'null')))
+      .toEqual({v:1,user_id:owner.id,context_version:2});
+  }finally{
+    releaseSwitch();
+  }
 });
 
 test('stale circle responses cannot render after the active context advances',async({page})=>{

@@ -1200,7 +1200,7 @@ p{margin:0}
   let currentCloudPairingLoaded=false;
   let currentCloudPairingUserId=null;
   let pairingRenderEpoch=0;
-  let userNavigationEpoch=0;
+  window._randoriUserNavigationEpoch=0;
   const AVAILABILITY_SOURCES=new Set(['user','legacy_bridge','cycle_default']);
   const AVAILABILITY_ROLLOVER_GRACE_MS=250;
   const AVAILABILITY_ROLLOVER_RETRY_MS=30000;
@@ -5824,7 +5824,7 @@ def allow(key, limit=5):
   // ---------- tabs ----------
   document.querySelectorAll('.tab').forEach(t=>{
     t.onclick=()=>{
-      userNavigationEpoch+=1;
+      window._randoriUserNavigationEpoch=(Number(window._randoriUserNavigationEpoch)||0)+1;
       document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active');
       const id=t.getAttribute('data-tab');
       if(['pair','code','board','history'].includes(id)){
@@ -7678,8 +7678,8 @@ def allow(key, limit=5):
 
   // Main auth router
   async function routeByAuth(){
-    const navigationEpoch=userNavigationEpoch;
-    const canApplyRoute=()=>navigationEpoch===userNavigationEpoch;
+    const navigationEpoch=Number(window._randoriUserNavigationEpoch)||0;
+    const canApplyRoute=()=>navigationEpoch===(Number(window._randoriUserNavigationEpoch)||0);
     if(window._randori_activation_flow?.active){
       window._randori_activation_flow.show();
       return;

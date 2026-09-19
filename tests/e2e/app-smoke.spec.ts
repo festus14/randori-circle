@@ -24,6 +24,7 @@ test('the checked-out app boots without JavaScript exceptions and its tabs navig
       _randori_auth?: { refreshMe?: () => Promise<unknown> };
     })._randori_auth?.refreshMe?.();
   });
+  expect(await page.evaluate(()=>Number.isSafeInteger((window as any)._randoriUserNavigationEpoch))).toBe(true);
   expect(authChecks).toBeGreaterThanOrEqual(1);
   await expect(page.locator('#view-landing')).toBeVisible();
 
