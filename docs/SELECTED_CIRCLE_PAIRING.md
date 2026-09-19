@@ -103,6 +103,9 @@ metrics, and five-type fair invocation budget. No schema migration is needed.
    migration authority. Its fresh backup/restore rehearsal and separately
    approved one-version applies must not be repeated from this runbook. Verify
    the v13 tables are present and pre-existing application data is unchanged.
+   Then apply and adopt v15 exactly as required by the
+   [key-rotation runbook](KEY_ROTATION.md); this notification increment itself
+   adds no migration.
 2. With that sequence complete, keep
    `SECONDARY_CIRCLE_COORDINATION_ENABLED=false` and verify the existing
    primary/local journey.
