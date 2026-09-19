@@ -42,6 +42,7 @@ const [{default:invitationsHandler},{default:dataHandler},invitationEmail]=await
   import('../../api/_invitation-email.js'),
 ]);
 const outboxOperations=MIGRATION_PLANS[5].operations.map(operation=>operation.sql);
+const activeCircleContextTable=MIGRATION_PLANS[11].operations[0].sql;
 
 function invoke(handler,{method='GET',url='/',query={},headers={},body={}}={}){
   return new Promise((resolve,reject)=>{
@@ -89,7 +90,7 @@ async function createDatabase(){
     `CREATE TABLE auth_sessions (session_hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL,
       created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,revoked_at INTEGER,revocation_reason TEXT,
       FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE CASCADE)`,
-    activeCircle.ACTIVE_CIRCLE_CONTEXT_TABLE_SQL,
+    activeCircleContextTable,
     ...outboxOperations,
     `INSERT INTO circle_membership_rollout (id,registrations_closed,updated_at)
       VALUES (1,0,datetime('now'))`,

@@ -78,6 +78,13 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'e71754400d1548d3cb5eef32182dacb6be31651fa0e880a0753ba1bb16fe7a7e',
     checksum:'e87ce50a41e2a1f2a5fd759ea6cd4e727503ee62799ec107f84ab3af6afca547',
   }),
+  Object.freeze({
+    version:12,
+    name:'session-bound-active-circle-context',
+    description:'Session-bound active-circle selection with monotonic compare-and-swap versions.',
+    operationsChecksum:'ac35df69825d0a1b87b8e0c0c9a575b3c37ec1481db1cc017dd52b88160d0833',
+    checksum:'92d0a5ee40c4127db9e253b6f55dea7d2252e5c45b9cd734446128fea587f868',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){

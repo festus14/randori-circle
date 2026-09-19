@@ -247,4 +247,9 @@ test('multi-circle requests require a selected context and pass only its interna
   response=await invoke({headers:{'x-context-valid':'0'}});
   assert.equal(response.status,409);
   assert.deepEqual(response.body,{error:'circle context changed',code:'circle_context_changed'});
+
+  activeContext={ok:true,membership:{id:10,public_id:'circle-primary',role:'owner'},
+    context_version:0,implicit:true};
+  response=await invoke({headers:{'x-context-valid':'0'}});
+  assert.equal(response.status,200,'an implicit single-circle context needs no version header');
 });

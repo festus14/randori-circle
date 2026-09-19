@@ -2,7 +2,8 @@
 
 This increment makes multi-circle membership safe for roster and invitation
 management without pretending that pairing data is tenant-scoped already. It is
-disabled unless `MULTI_CIRCLE_CONTROL_PLANE_ENABLED=true`.
+disabled unless both `CIRCLE_MEMBERSHIP_ENABLED=true` and
+`MULTI_CIRCLE_CONTROL_PLANE_ENABLED=true`.
 
 ## Contract
 
@@ -12,13 +13,13 @@ disabled unless `MULTI_CIRCLE_CONTROL_PLANE_ENABLED=true`.
 - `PUT /api/circles` accepts exactly `circle_public_id` and
   `expected_context_version`. Selection is a same-origin, compare-and-swap
   mutation. An outdated version returns `409 circle_context_changed`.
-- The selected circle is stored in `auth_session_circle_contexts`, keyed by the
+- Migration v12 owns `auth_session_circle_contexts`, keyed by the
   hashed live session. Client-provided public IDs select a candidate; active
   membership is still rechecked in the write transaction and on every use.
-- After discovery, circle/member/invitation requests carry
+- After an explicit multi-circle selection, circle/member/invitation requests carry
   `X-Randori-Circle-Context-Version`. A missing or stale version fails with
   `409 circle_context_changed`; the header is concurrency context, never an
-  authorization grant.
+  authorization grant. Implicit single-circle requests require no new header.
 - A single-circle session continues to use its only active membership without a
   selection write. Existing behavior is unchanged while the feature flag is
   off.
@@ -38,7 +39,7 @@ responses cannot render under circle B.
 
 ## Rollout
 
-1. Apply the managed active-circle migration after the protected migration and
+1. Apply managed migration v12 after the protected migration and
    restore rehearsals required by issues #38 and #43.
 2. Deploy with `MULTI_CIRCLE_CONTROL_PLANE_ENABLED=false`; verify health and
    ordinary single-circle login, roster, invitation, and pairing behavior.

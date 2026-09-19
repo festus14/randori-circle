@@ -1059,7 +1059,7 @@ async function handleCircle(req,res){
         }
         return res.status(403).json({error:'circle membership required'});
       }
-      if(activeContext&&!requestMatchesCircleContext(req,activeContext)){
+      if(activeContext&&!activeContext.implicit&&!requestMatchesCircleContext(req,activeContext)){
         return res.status(409).json({error:'circle context changed',code:'circle_context_changed'});
       }
       const selectedCircleId=Number(activeContext?.membership?.id||0);

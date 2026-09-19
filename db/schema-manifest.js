@@ -147,6 +147,11 @@ const PLAN_11_OPERATIONS=Object.freeze([
   index('idx_pair_messages_retention','pair_messages',['julianday(created_at)','id','week_id','pair_group_id']),
 ]);
 
+const PLAN_12_OPERATIONS=Object.freeze([
+  table('auth_session_circle_contexts',`CREATE TABLE IF NOT EXISTS auth_session_circle_contexts (session_hash TEXT PRIMARY KEY NOT NULL CHECK(length(session_hash)=64 AND session_hash NOT GLOB '*[^0-9a-f]*'), user_id INTEGER NOT NULL, circle_id INTEGER NOT NULL, context_version INTEGER NOT NULL CHECK(typeof(context_version)='integer' AND context_version>=1), updated_at INTEGER NOT NULL CHECK(typeof(updated_at)='integer' AND updated_at>0), FOREIGN KEY(session_hash) REFERENCES auth_sessions(session_hash) ON DELETE CASCADE, FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE CASCADE, FOREIGN KEY(circle_id,user_id) REFERENCES circle_memberships(circle_id,user_id) ON DELETE CASCADE)`),
+  index('idx_auth_session_circle_contexts_user_circle','auth_session_circle_contexts',['user_id','circle_id']),
+]);
+
 export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:1,
@@ -195,6 +200,10 @@ export const SCHEMA_OPERATION_SETS=Object.freeze([
     version:11,
     operations:PLAN_11_OPERATIONS,
   }),
+  Object.freeze({
+    version:12,
+    operations:PLAN_12_OPERATIONS,
+  }),
 ]);
 
 export function resolveCurrentArtifacts(operationSets,operation){
@@ -234,7 +243,7 @@ export const SCHEMA_MANIFEST_CHECKSUM=checksum({
 
 // Updating the schema is intentional only when this pinned checksum is updated
 // in the same reviewed change.
-export const PINNED_SCHEMA_MANIFEST_CHECKSUM='3a7f190bfe92621f059491998029c9642c4ec706d9d9d226f3028585d120c4b7';
+export const PINNED_SCHEMA_MANIFEST_CHECKSUM='a3f572a2452a661d2f9f510530c5bdefc396cf8ba6c79e5abc2d17102007ec81';
 
 if(SCHEMA_MANIFEST_CHECKSUM!==PINNED_SCHEMA_MANIFEST_CHECKSUM){
   throw new Error(`Schema manifest checksum changed: ${SCHEMA_MANIFEST_CHECKSUM}`);

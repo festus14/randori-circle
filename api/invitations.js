@@ -160,7 +160,7 @@ async function ownerContext(req,res){
       }
       return null;
     }
-    if(resolved&&!requestMatchesCircleContext(req,resolved)){
+    if(resolved&&!resolved.implicit&&!requestMatchesCircleContext(req,resolved)){
       res.status(409).json({error:'circle context changed',code:'circle_context_changed'});
       return null;
     }

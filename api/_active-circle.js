@@ -1,17 +1,5 @@
 import { randomUUID } from 'node:crypto';
 
-export const ACTIVE_CIRCLE_CONTEXT_TABLE_SQL=`CREATE TABLE IF NOT EXISTS auth_session_circle_contexts (
-  session_hash TEXT PRIMARY KEY NOT NULL CHECK(length(session_hash)=64 AND session_hash NOT GLOB '*[^0-9a-f]*'),
-  user_id INTEGER NOT NULL,
-  circle_id INTEGER NOT NULL,
-  context_version INTEGER NOT NULL CHECK(typeof(context_version)='integer' AND context_version>=1),
-  updated_at INTEGER NOT NULL CHECK(typeof(updated_at)='integer' AND updated_at>0),
-  FOREIGN KEY(session_hash) REFERENCES auth_sessions(session_hash) ON DELETE CASCADE,
-  FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE CASCADE,
-  FOREIGN KEY(circle_id,user_id) REFERENCES circle_memberships(circle_id,user_id) ON DELETE CASCADE
-)`;
-
-export const ACTIVE_CIRCLE_CONTEXT_INDEX_SQL=`CREATE INDEX IF NOT EXISTS idx_auth_session_circle_contexts_user_circle ON auth_session_circle_contexts(user_id,circle_id)`;
 export const MAX_CIRCLES_PER_ACCOUNT=100;
 
 const SESSION_HASH_PATTERN=/^[0-9a-f]{64}$/;

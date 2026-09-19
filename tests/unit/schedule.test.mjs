@@ -562,8 +562,10 @@ test('schema readiness coalesces probes and retries after missing table or uniqu
 test('concurrent schedule reads share one in-flight schema probe',async()=>{
   let releaseProbe;
   let markProbeStarted;
+  let markAccessChecksDone;
   const probeGate=new Promise(resolve=>{ releaseProbe=resolve; });
   const probeStarted=new Promise(resolve=>{ markProbeStarted=resolve; });
+  const accessChecksDone=new Promise(resolve=>{ markAccessChecksDone=resolve; });
   let tableProbes=0;
   let accessChecks=0;
   currentDb={
@@ -572,6 +574,7 @@ test('concurrent schedule reads share one in-flight schema probe',async()=>{
       if(sql.includes('FROM pairing_groups AS pg')&&sql.includes("viewer.source='auth'")
         &&!sql.includes('FROM pair_schedules')){
         accessChecks+=1;
+        if(accessChecks===2) markAccessChecksDone();
         return {rows:[{pair_group_id:20,week_id:10,user_a_id:2,user_b_id:4,user_c_id:null}]};
       }
       if(sql.startsWith("PRAGMA table_info('pair_schedules')")){
@@ -592,7 +595,7 @@ test('concurrent schedule reads share one in-flight schema probe',async()=>{
   const first=invoke(request);
   await probeStarted;
   const second=invoke(request);
-  await Promise.resolve();
+  await accessChecksDone;
   assert.equal(tableProbes,1);
   assert.equal(accessChecks,2,'membership remains per request even while readiness is shared');
   releaseProbe();

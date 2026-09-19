@@ -6,8 +6,6 @@ import { afterEach, test } from 'node:test';
 import { createClient } from '@libsql/client';
 
 import {
-  ACTIVE_CIRCLE_CONTEXT_INDEX_SQL,
-  ACTIVE_CIRCLE_CONTEXT_TABLE_SQL,
   accountHasMultipleActiveCircles,
   listSessionCircleContexts,
   selectActiveCircleContext,
@@ -44,8 +42,6 @@ async function fixture(){
   await prepareMigrationConnection(db);
   const state=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS});
   await applyMigrations(db,{migrations:EXECUTABLE_MIGRATIONS,expectedStateFingerprint:state.stateFingerprint,retry:NO_RETRY});
-  await db.execute(ACTIVE_CIRCLE_CONTEXT_TABLE_SQL);
-  await db.execute(ACTIVE_CIRCLE_CONTEXT_INDEX_SQL);
   await db.batch([
     `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_demo) VALUES
       (1,'owner@example.test','x','Owner','#111111',0),

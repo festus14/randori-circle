@@ -111,7 +111,7 @@ export default async function handler(req,res){
       }
       return res.status(403).json({error:'circle membership required'});
     }
-    if(multiCircleControlPlaneEnabled()&&!requestMatchesCircleContext(req,activeContext)){
+    if(multiCircleControlPlaneEnabled()&&!activeContext.implicit&&!requestMatchesCircleContext(req,activeContext)){
       return res.status(409).json({error:'circle context changed',code:'circle_context_changed'});
     }
     const circleId=Number(activeContext.membership?.circle_id??activeContext.membership?.id);
