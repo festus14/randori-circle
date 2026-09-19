@@ -9,6 +9,7 @@ separately default-off and requires all five:
 - `MULTI_CIRCLE_CONTROL_PLANE_ENABLED=true`
 - `MULTI_CIRCLE_AVAILABILITY_ENABLED=true`
 - `SECONDARY_CIRCLE_COORDINATION_ENABLED=true`
+- `SECONDARY_CIRCLE_SCHEDULING_ENABLED=true` (schedule only, after v16)
 - `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED=true` (email only)
 
 ## Boundary
@@ -16,9 +17,15 @@ separately default-off and requires all five:
 Selected primary circles continue through the legacy immutable publication and
 workspace path. Selected secondary circles use migration v13's separate,
 circle-owned coordination tables. They can publish and display a current-cycle
-partner card, but receive no legacy week/group identifiers, room ID, schedule,
-chat, video, execution, AI, or recap capability. Optional result email links
-only to the dashboard and is not a workspace authorization.
+partner card without receiving legacy week/group identifiers or a room ID.
+After the separate migration-v16 scheduling flag is enabled, a paired group can
+agree a time through circle-owned normalized storage; that still creates no
+chat, video, execution, AI, recap, or workspace capability. Optional result
+email links only to the dashboard and is not a workspace authorization.
+
+The schedule boundary and its separate rollout are specified in
+[Secondary-circle scheduling](SECONDARY_SCHEDULING.md). Schedule email/outbox
+delivery is not part of v16 and is tracked in issue #149.
 
 `circle_pairing_publications` owns one immutable `(scope_key, cycle_key)` claim.
 `circle_pairing_eligibility` records the complete active, non-demo membership
@@ -98,13 +105,17 @@ metrics, and five-type fair invocation budget. No schema migration is needed.
 
 ## Rollout and rollback
 
-1. Use Steps 2–4 of the central protected v13-then-v14-then-v15 sequence in
+1. Use Steps 2–5 of the central protected v13-then-v14-then-v15, credential
+   adoption, then v16 sequence in
    [Active circle context](ACTIVE_CIRCLE_CONTEXT.md#rollout) as the sole
    migration and credential-adoption authority. Its fresh rehearsal and
    separately approved one-version applies for v13, v14, and v15 must not be
-   repeated from this runbook. Verify the v13 tables, complete managed ledger
-   through v15, four accepted credential controls, and unchanged pre-existing
-   application data. This notification increment itself adds no migration.
+   repeated from this runbook. After all four credential controls are accepted,
+   that authority requires a new rehearsal, status artifact, approval, and
+   separate v16 apply. Verify the v13 coordination tables, complete managed
+   ledger through v16, four accepted credential controls, and unchanged
+   pre-existing application data. This notification increment itself adds no
+   migration; v16 belongs to secondary scheduling and current runtime readiness.
 2. With that sequence complete, keep
    `SECONDARY_CIRCLE_COORDINATION_ENABLED=false` and verify the existing
    primary/local journey.

@@ -4,7 +4,7 @@ Randori has read-only schema inspection for configured databases, a transactiona
 
 ## Contract
 
-- `db/schema-manifest.js` is the current contract: 50 application tables and 54 named indexes.
+- `db/schema-manifest.js` is the current contract: 52 application tables and 56 named indexes.
 - The manifest includes column/default/primary-key contracts, checks, foreign keys, unique constraints, AUTOINCREMENT/collation/table options, and unique, partial, descending, and expression-index semantics. SQLite-created `sqlite_autoindex_*` indexes are intentionally outside the named-index count.
 - `ai_monthly_usage` is a retired table. Its presence is reported as tolerated legacy state; it is not treated as current schema and is never changed.
 - `schema_migrations` is a runner-owned operational table. General schema inspection recognizes it without treating it as unexpected application drift; the migration runner validates its exact schema and rows separately.
@@ -30,6 +30,7 @@ Randori has read-only schema inspection for configured databases, a transactiona
 - Migration v14 adds the durable circle-creation receipt and composite
   membership/audit integrity needed for retry-safe atomic create-and-select.
 - Migration v15 adds exactly four constrained `credential_key_controls` rows, one for activation, password reset, invitation delivery, and provider-email observation. The migration seeds only explicit uninitialized state; it never reads secrets or infers acceptance from business rows. Global readiness requires all four structurally valid rows but permits uninitialized state, while each credential capability requires its own protected adoption. Missing or malformed controls fail readiness closed.
+- Migration v16 adds `circle_pair_schedules`, normalized `circle_pair_schedule_proposals`, and two named indexes. Restrictive composite foreign keys bind both storage layers to one exact immutable v13 publication and paired group. The migration seeds no schedule data and does not touch legacy workspace or outbox tables. See `SECONDARY_SCHEDULING.md`.
 
 ## Commands
 
@@ -59,7 +60,7 @@ Representative output fields:
   "manifest": {"version": 1, "checksum": "..."},
   "foreignKeysEnabled": true,
   "checkConstraintsEnabled": true,
-  "summary": {"expectedTables": 50, "expectedIndexes": 54, "blockers": 0},
+  "summary": {"expectedTables": 52, "expectedIndexes": 56, "blockers": 0},
   "drift": {
     "missingTables": [],
     "missingColumns": [],
@@ -112,7 +113,7 @@ npm run --silent db:migrate -- \
   --expected-state <v2StateFingerprint> --through-version 2
 
 # Inspect again without a prefix. The result must be managed at v2 with
-# v3 through v15 pending before using its new full-set fingerprint for the upgrade.
+# v3 through v16 pending before using its new full-set fingerprint for the upgrade.
 npm run --silent db:migrate -- \
   status --database file:///absolute/path/to/restored-randori.db
 

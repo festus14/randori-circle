@@ -1035,8 +1035,9 @@ manual invitation creation and queued encrypted events for a later safe resume.
 
 Status: implemented behind the independent, default-off
 `SECONDARY_CIRCLE_COORDINATION_ENABLED` flag; migration v13 owns its storage,
-while this release's runtime readiness requires the complete managed ledger
-through v15. Migration v15 does not add secondary-pairing storage.
+while its original release required the complete managed ledger through v15.
+Migration v15 does not add secondary-pairing storage; ID-33 advances current
+runtime readiness to v16 for normalized secondary scheduling.
 
 **Decision.** A selected secondary circle may publish and read one immutable
 current-cycle pairing, but that assignment is coordination data only. Migration
@@ -1069,11 +1070,12 @@ email; ID-32 adds that behavior behind its separate, default-off flag and full
 coordination dependency chain.
 
 Secondary reads recheck the same live context and join partner identity only
-through current active membership. Departed partners are redacted. Responses
-contain no internal legacy IDs or room/schedule fields, explicitly report
-`workspace_available:false`, and are fenced in the browser by account, opaque
-circle ID, and context version. The dedicated UI branch clears room state and
-shows no schedule, chat, join, video, execution, or AI controls.
+through current active membership. Departed partners are redacted. The base
+coordination response contains no internal legacy IDs, room, or schedule fields,
+explicitly reports `workspace_available:false`, and is fenced in the browser by
+account, opaque circle ID, and context version. The dedicated UI branch clears
+room state and shows no schedule, chat, join, video, execution, or AI controls;
+ID-33 later adds only schedule metadata and scheduling UI behind its own flag.
 
 **Alternatives.** Reusing `pairing_weeks` was rejected because its global week
 label and unowned children collide across circles and grant workspace access.
@@ -1082,11 +1084,13 @@ model, but couples the useful weekly pairing milestone to a much larger data
 migration. Dual-writing would create two authorities and ambiguous rollback.
 Manual-only publication would avoid cron work but weaken the weekly habit.
 
-**Rollout and recovery.** Follow the central rollout in
+**Rollout and recovery.** Follow Steps 2–5 of the central rollout in
 `ACTIVE_CIRCLE_CONTEXT.md`: keep the feature and credential-consumer flags
 false, apply managed v13, then v14, then v15 as separate protected migration
 steps with fresh evidence and approval, adopt all four configured credential
-purposes, and verify exact runtime readiness. Only then canary one secondary
+purposes, then use a new rehearsal, status artifact, and approval to apply v16
+separately. Verify exact runtime readiness through v16 before deploying the
+v16-aware runtime with scheduling disabled. Only then canary one secondary
 circle and verify bounded cron publication before enabling secondary
 coordination more broadly. Keep its separate email flag false until the sender
 passes a provider canary. Roll back only by disabling the flag. Preserve
@@ -1164,8 +1168,9 @@ database to catch up deliberately.
 
 Status: implemented behind the existing default-off
 `MULTI_CIRCLE_CONTROL_PLANE_ENABLED` flag. Migration v14 owns its storage; this
-release also requires exact managed readiness through v15 and the central
-credential-control adoption sequence before runtime promotion.
+release requires the central v15 credential-control adoption sequence followed
+by a separately rehearsed and approved v16 apply, and exact managed readiness
+through v16 before runtime promotion.
 
 **Decision.** An authenticated user creates a secondary circle through
 same-origin `POST /api/circles` with only an exact bounded name and an opaque
@@ -1209,12 +1214,14 @@ availability or pairing rows conflict with the existing lazy-cycle contract.
 Full secondary workspace creation remains deferred until its storage and
 authorization paths are canonically circle-owned.
 
-**Rollout and recovery.** Follow Steps 2–4 of the central rollout in
+**Rollout and recovery.** Follow Steps 2–5 of the central rollout in
 `ACTIVE_CIRCLE_CONTEXT.md`: keep feature and credential-consumer flags false,
 apply each pending v13, v14, and v15 migration separately with a fresh protected
 rehearsal and approval, and adopt all four configured credential purposes before
-runtime promotion. If an existing credential consumer cannot be disabled, hold
-production promotion until that sequence finishes. Then canary create, replay,
+continuing. If an existing credential consumer cannot be disabled, hold
+production promotion until that sequence finishes. Use a new rehearsal, status
+artifact, and approval to apply v16 separately, verify exact readiness through
+v16, and deploy with secondary scheduling disabled. Then canary create, replay,
 cap, revocation, concurrency, cross-tab, and mobile flows in staging. Rollback
 disables the flag and preserves every receipt, audit, membership, and context
 generation; no schema downgrade or tenant-data deletion is required.
@@ -1289,8 +1296,10 @@ protected re-authorization. Database-only state cannot remember a version
 created after the restored snapshot, so absolute anti-rollback across old
 backups remains an external KMS/control-plane responsibility.
 
-Rollback is forward-only to a v15-aware build and preserves every control and
-ledger row. The one accepted slot can require a short purpose-specific
+Credential-control rollback is forward-only to a build that understands v15
+and preserves every control and ledger row. Once v16 is applied, global exact
+readiness also requires a v16-aware build; v15-only application rollback is not
+permitted. The one accepted slot can require a short purpose-specific
 maintenance interval during advance; a two-slot staged activation protocol is
 the future option if zero-downtime rotation becomes necessary.
 
@@ -1338,3 +1347,62 @@ publication changes but introduce a second claim/reconciliation protocol and
 an interval where a durable publication has no durable intent. The selected
 versioned event keeps v1 compatibility, uses transaction atomicity already
 available in v13, and revalidates all mutable authority at delivery time.
+
+## ID-33: Schedule a secondary pair without creating a workspace capability
+
+Status: implemented behind default-off `SECONDARY_CIRCLE_SCHEDULING_ENABLED`;
+managed migration v16 and the complete secondary-coordination flag chain are
+required. Schedule email is excluded and tracked in issue #149.
+
+**Decision.** Migration v16 adds one `circle_pair_schedules` row per exact
+two-person v13 pairing group and normalized `circle_pair_schedule_proposals`
+rows. Both repeat the publication, scope, circle, cycle, group, member-count,
+two member IDs, and non-solo marker. Restrictive composite foreign keys bind
+those values to the immutable publication and exact group; proposals also bind
+back to the complete schedule ownership tuple. There are no cascades. Checks
+require normalized UTC instants, opaque 64-hex schedule/proposal identifiers,
+monotonic positive revisions, group-member proposers, and at most one schedule
+and proposal instant per owned group.
+
+`GET|POST /api/schedule` selects its mode from the live authenticated session.
+For a selected secondary circle the client sends no circle, publication,
+group, pair, or room identifier. The server derives the database-current
+publication and caller's paired group. Every write transaction revalidates the
+live revocable session, exact active-context generation, caller membership,
+unarchived secondary circle, immutable current group, and both current partner
+memberships before comparing the opaque content version and claiming the next
+numeric revision. Propose, remove, accept, and clear are optimistic CAS writes;
+a stale writer receives the latest safe projection. Vetted SQLite busy/lock
+failures retry at most three times only before commit begins, repeating the
+complete authority and scope read. No retry occurs once commit has started or
+its outcome is ambiguous.
+
+The public schedule ID is a stable domain-separated digest of the immutable
+publication generation and group. It is never accepted as authorization. API
+responses retain `coordination_only:true` and `workspace_available:false`, use
+`self`/`partner` proposer labels instead of internal account IDs, and contain
+no legacy room ID or workspace controls. Calendar export uses that opaque
+identity for a stable UID and links only to `/?view=dashboard`. Primary-circle
+request bodies, response fields, room links, storage, notifications, and
+calendar behavior remain on their existing path. Secondary writes create no
+legacy schedule/workspace row and no outbox event.
+
+**Alternatives.** Reusing `pair_schedules` would make an unscoped legacy group
+ID a cross-tenant capability and couple secondary coordination to room state.
+Creating a hidden legacy room solely for scheduling would silently authorize
+chat, video, execution, and AI paths. A JSON proposal array would preserve the
+old representation but weaken per-proposal ownership and foreign-key proof.
+Client-supplied circle/group IDs were rejected because active session context
+is the authority. Automatically sending schedule email was rejected because
+it needs its own versioned payload, idempotency, stale-recipient checks, provider
+rehearsal, and rollback gate; issue #149 owns that increment.
+
+**Rollout and recovery.** Apply v16 alone through the protected one-version
+workflow after v15: fresh restore rehearsal, fresh status fingerprint, explicit
+approval, apply, and unchanged-data/readiness verification. Deploy with the
+new flag false. In staging, enable the complete chain and canary proposal,
+acceptance, removal, clear, stale CAS, circle switching, partner departure,
+archive, calendar UID/link, and primary byte-compatibility. Production rollback
+disables only `SECONDARY_CIRCLE_SCHEDULING_ENABLED`. Preserve v16 rows and the
+ledger; do not downgrade or delete tenant data. Existing calendar downloads
+remain controlled by each member's calendar application.

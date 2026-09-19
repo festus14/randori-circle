@@ -1289,7 +1289,7 @@ p{margin:0}
   let me = null;
   let authSessionEpoch=0;
   let authRefreshSequence=0;
-  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,passwordReset:false,localIdentity:false,verifiedEmailActivation:false,googleOAuth:false,identityManagement:false,multiCircleControlPlane:false,multiCircleAvailability:false,secondaryCircleCoordination:false,registrationMode:'private_beta'});
+  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,passwordReset:false,localIdentity:false,verifiedEmailActivation:false,googleOAuth:false,identityManagement:false,multiCircleControlPlane:false,multiCircleAvailability:false,secondaryCircleCoordination:false,secondaryCircleScheduling:false,registrationMode:'private_beta'});
   let authCapabilities=CLOSED_AUTH_CAPABILITIES;
   let authCapabilitiesLoaded=false;
   let authCapabilitiesFailed=false;
@@ -2117,6 +2117,7 @@ async function refreshMe(){
       ||(capabilities.multiCircleControlPlane!==undefined&&typeof capabilities.multiCircleControlPlane!=='boolean')
       ||(capabilities.multiCircleAvailability!==undefined&&typeof capabilities.multiCircleAvailability!=='boolean')
       ||(capabilities.secondaryCircleCoordination!==undefined&&typeof capabilities.secondaryCircleCoordination!=='boolean')
+      ||(capabilities.secondaryCircleScheduling!==undefined&&typeof capabilities.secondaryCircleScheduling!=='boolean')
       ||typeof capabilities.googleOAuth!=='boolean'
       ||!['local_open','local_invite','verified_invite','private_beta'].includes(mode)) throw new Error('invalid auth capabilities');
     return Object.freeze({
@@ -2130,6 +2131,7 @@ async function refreshMe(){
       multiCircleControlPlane:capabilities.multiCircleControlPlane===true,
       multiCircleAvailability:capabilities.multiCircleAvailability===true,
       secondaryCircleCoordination:capabilities.secondaryCircleCoordination===true,
+      secondaryCircleScheduling:capabilities.secondaryCircleScheduling===true,
       registrationMode:mode,
     });
   }
@@ -3467,6 +3469,15 @@ async function refreshMe(){
   }
 
   window._randori_circle_control={
+    scheduleContext(){
+      const active=activeCircleContext?.active_circle;
+      const version=Number(activeCircleContext?.context_version);
+      const circlePublicId=String(active?.public_id||'');
+      if(!active||!Number.isSafeInteger(version)
+        ||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(circlePublicId)) return null;
+      return Object.freeze({circlePublicId,isPrimary:active.is_primary===true,contextVersion:version});
+    },
+    matchesScheduleResponse(result){ return pairingResponseMatchesContext(result); },
     async capturePairing(userId){
       await authCapabilitiesPromise;
       if(authCapabilities.multiCircleControlPlane&&userId&&!activeCircleContext){
@@ -6647,7 +6658,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   const viewProfile=document.getElementById('view-profile-setup');
   const viewDashboard=document.getElementById('view-dashboard');
   const viewCircle=document.getElementById('view-circle');
-  const scheduleState={room:null,epoch:0,version:'',schedule:null,draft:'',draftRoom:null,people:new Map(),abort:null,inFlight:false,status:'waiting for pair'};
+  const scheduleState={room:null,kind:null,circlePublicId:null,contextVersion:null,epoch:0,version:'',schedule:null,draft:'',draftRoom:null,people:new Map(),abort:null,inFlight:false,status:'waiting for pair'};
 
   function clearRequestedView(){
     window._randoriExplicitNavigation=null;
@@ -6982,6 +6993,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           ?`Solo pairing for ${j.current_cycle?.cycleId||'the current cycle'}`
           :`Paired for ${j.current_cycle?.cycleId||'the current cycle'}`;
         renderSecondaryPairCard(j);
+        if(j.schedule_available===true
+          &&window._randori_auth?.capabilities?.secondaryCircleScheduling===true){
+          renderSecondarySchedule(j);
+        }
         return;
       }
       const room=scheduleRoomFromPair(j);
@@ -7103,7 +7118,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const solo=data.pairing_status==='solo'||data?.pair?.solo===true;
     const name=solo?'Solo practice':String(partner.name||'Pairing partner');
     const color=safeProfileColor(partner.color||(solo?'#c8f6a0':'#9aa0a6'));
-    area.innerHTML=`<div class="partner-card" data-testid="secondary-pair-card"><div class="avatar" style="background:${color}">${escapeHtml(name.slice(0,2).toUpperCase())}</div><div style="flex:1"><b style="font-size:14px">${solo?'Solo practice assigned':`You're paired with ${escapeHtml(name)} ✨`}</b><div class="small muted" style="margin-top:6px">Workspace not enabled for this circle yet. Scheduling, chat, room links, video, execution, and AI controls remain unavailable.</div><div class="row" style="margin-top:12px"><span class="kbd">coordination only</span></div></div></div>`;
+    const detail=!solo&&data.schedule_available===true
+      &&window._randori_auth?.capabilities?.secondaryCircleScheduling===true
+      ?'Agree a time below. Chat, room links, video, execution, and AI controls remain unavailable.'
+      :'Workspace not enabled for this circle yet. Scheduling, chat, room links, video, execution, and AI controls remain unavailable.';
+    area.innerHTML=`<div class="partner-card" data-testid="secondary-pair-card"><div class="avatar" style="background:${color}">${escapeHtml(name.slice(0,2).toUpperCase())}</div><div style="flex:1"><b style="font-size:14px">${solo?'Solo practice assigned':`You're paired with ${escapeHtml(name)} ✨`}</b><div class="small muted" style="margin-top:6px">${detail}</div><div class="row" style="margin-top:12px"><span class="kbd">coordination only</span></div></div></div>`;
     document.getElementById('dashScheduleArea')?.replaceChildren();
     document.getElementById('dashChatArea')?.replaceChildren();
   }
@@ -7141,7 +7160,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         proposal_id:proposalId,
         value:String(proposal.value||proposal.instant||'').slice(0,300),
         instant,
-        proposed_by:Number.isSafeInteger(Number(proposal.proposed_by))&&Number(proposal.proposed_by)>0?Number(proposal.proposed_by):null,
+        proposed_by:['self','partner'].includes(proposal.proposed_by)
+          ?proposal.proposed_by
+          :(Number.isSafeInteger(Number(proposal.proposed_by))&&Number(proposal.proposed_by)>0?Number(proposal.proposed_by):null),
         legacy,
       };
     }).filter(Boolean);
@@ -7174,7 +7195,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     cancelScheduleRequest(true);
     if(discardDraft){ scheduleState.draft=''; scheduleState.draftRoom=null; }
     if(clear){
-      scheduleState.room=null; scheduleState.version=''; scheduleState.schedule=null; scheduleState.people=new Map();
+      scheduleState.room=null; scheduleState.kind=null; scheduleState.circlePublicId=null;
+      scheduleState.contextVersion=null; scheduleState.version=''; scheduleState.schedule=null;
+      scheduleState.people=new Map();
       const area=document.getElementById('dashScheduleArea');
       if(area) area.replaceChildren();
     }
@@ -7188,6 +7211,32 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(window._randori_authorized_room!==room) return null;
     if(!viewDashboard||viewDashboard.style.display==='none'||document.visibilityState!=='visible') return null;
     return room;
+  }
+
+  function pairedDashboardSchedule(){
+    if(scheduleState.kind==='secondary'){
+      const identity=String(scheduleState.room||'');
+      const selected=window._randori_circle_control?.scheduleContext?.();
+      if(!window._randori_auth?.me
+        ||window._randori_auth?.capabilities?.secondaryCircleScheduling!==true
+        ||!/^[a-f0-9]{64}$/.test(identity)||selected?.isPrimary!==false
+        ||String(selected?.circlePublicId||'')!==String(scheduleState.circlePublicId||'')
+        ||Number(selected?.contextVersion)!==scheduleState.contextVersion
+        ||!viewDashboard||viewDashboard.style.display==='none'||document.visibilityState!=='visible') return null;
+      return {kind:'secondary',identity};
+    }
+    const room=pairedDashboardRoom();
+    return room?{kind:'primary',identity:room}:null;
+  }
+
+  function primaryScheduleHeaders(json=false){
+    const headers=json?{'content-type':'application/json'}:{};
+    const selected=window._randori_circle_control?.scheduleContext?.();
+    if(window._randori_auth?.capabilities?.secondaryCircleScheduling===true
+      &&selected&&Number.isSafeInteger(selected.contextVersion)){
+      headers['x-randori-circle-context-version']=String(selected.contextVersion);
+    }
+    return Object.keys(headers).length?headers:undefined;
   }
 
   function localScheduleTime(instant){
@@ -7218,6 +7267,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   function scheduleProposerLabel(proposedBy){
+    if(proposedBy==='self') return 'You';
+    if(proposedBy==='partner') return 'Your partner';
     const id=Number(proposedBy);
     const meId=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid);
     if(Number.isSafeInteger(id)&&id===meId) return 'You';
@@ -7313,15 +7364,20 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       agreement.append(scheduleNode('b',{text:'Agreed: '}));
       const time=scheduleNode('time',{text:localScheduleTime(schedule.agreed_time)}); time.setAttribute('datetime',schedule.agreed_time); agreement.append(time);
       const exportedRoom=scheduleState.room;
+      const exportedKind=scheduleState.kind;
       const exportedInstant=schedule.agreed_time;
       const exportRow=scheduleNode('div',{className:'row'}); exportRow.style.cssText='margin-top:8px; gap:8px; align-items:center; flex-wrap:wrap';
       const calendar=scheduleNode('button',{className:'btn secondary',text:'Add to calendar',testId:'schedule-calendar-export'});
       calendar.type='button'; calendar.dataset.scheduleAction='calendar-export';
       calendar.setAttribute('aria-label',`Add the agreed ${localScheduleTime(exportedInstant)} session to your calendar`);
       calendar.addEventListener('click',()=>{
-        const stillCurrent=scheduleState.room===exportedRoom&&scheduleState.schedule?.agreed_time===exportedInstant;
-        const downloaded=stillCurrent&&pairedDashboardRoom()===exportedRoom&&window._randori_calendar_export?.download?.({
-          roomId:exportedRoom,
+        const activeSchedule=pairedDashboardSchedule();
+        const stillCurrent=scheduleState.room===exportedRoom&&scheduleState.kind===exportedKind
+          &&scheduleState.schedule?.agreed_time===exportedInstant;
+        const downloaded=stillCurrent&&activeSchedule?.identity===exportedRoom
+          &&activeSchedule.kind===exportedKind&&window._randori_calendar_export?.download?.({
+          ...(exportedKind==='secondary'
+            ?{scheduleId:exportedRoom,dashboardPath:'/?view=dashboard'}:{roomId:exportedRoom}),
           agreedTime:exportedInstant,
           appOrigin:location.origin,
         });
@@ -7364,6 +7420,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(scheduleState.draftRoom!==room) scheduleState.draft='';
       scheduleState.draftRoom=room; scheduleState.room=room; scheduleState.version='';
     }
+    scheduleState.kind='primary'; scheduleState.circlePublicId=null; scheduleState.contextVersion=null;
     scheduleState.people=new Map((Array.isArray(data.partners)?data.partners:[data.partner]).filter(Boolean).map(person=>[
       Number(person.id),String(person.display_name||person.name||'Pair member').slice(0,80),
     ]));
@@ -7371,28 +7428,64 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(!scheduleState.version) setTimeout(()=>{ pollSchedule(); },0);
   }
 
+  function renderSecondarySchedule(data){
+    const scheduleId=String(data?.schedule_id||'');
+    if(!/^[a-f0-9]{64}$/.test(scheduleId)
+      ||window._randori_circle_control?.matchesScheduleResponse?.(data)!==true){
+      stopSchedulePolling({clear:true}); return;
+    }
+    rememberScheduleDraft();
+    if(scheduleState.room!==scheduleId||scheduleState.kind!=='secondary'){
+      cancelScheduleRequest(true);
+      if(scheduleState.draftRoom!==scheduleId) scheduleState.draft='';
+      scheduleState.draftRoom=scheduleId; scheduleState.room=scheduleId; scheduleState.version='';
+    }
+    scheduleState.kind='secondary';
+    scheduleState.circlePublicId=String(data.circle_public_id||'');
+    scheduleState.contextVersion=Number(data.circle_context_version);
+    scheduleState.people=new Map();
+    applySchedule(scheduleId,data.schedule,{status:data.schedule?'up to date':'checking…',force:true});
+    if(!scheduleState.version) setTimeout(()=>{ pollSchedule(); },0);
+  }
+
   async function pollSchedule(){
-    const room=pairedDashboardRoom();
-    if(!room||room!==scheduleState.room||scheduleState.inFlight) return false;
-    const captured={room,epoch:scheduleState.epoch};
+    const scope=pairedDashboardSchedule();
+    if(!scope||scope.identity!==scheduleState.room||scheduleState.inFlight) return false;
+    const captured={room:scope.identity,kind:scope.kind,epoch:scheduleState.epoch};
     const controller=new AbortController(); scheduleState.abort=controller; scheduleState.inFlight=true;
     setScheduleStatus('checking…'); toggleScheduleActions(true);
     try{
-      const url=new URL('/api/schedule',location.origin); url.searchParams.set('room_id',room);
-      const response=await fetch(url,{credentials:'same-origin',cache:'no-store',signal:controller.signal});
-      const data=await response.json().catch(()=>({}));
-      if(response.status===401||response.status===403){
+      let response=null,data;
+      if(captured.kind==='secondary'){
+        data=await window._randori_auth.api('/api/schedule',{method:'GET',cache:'no-store',signal:controller.signal});
+      }else{
+        const url=new URL('/api/schedule',location.origin); url.searchParams.set('room_id',captured.room);
+        response=await fetch(url,{credentials:'same-origin',cache:'no-store',signal:controller.signal,
+          headers:primaryScheduleHeaders()});
+        data=await response.json().catch(()=>({}));
+      }
+      if(response&&(response.status===401||response.status===403)){
         if(scheduleState.room===captured.room&&scheduleState.epoch===captured.epoch) stopSchedulePolling({clear:true});
         return false;
       }
-      if(!response.ok) throw new Error(data.error||`schedule ${response.status}`);
+      if(response&&!response.ok) throw new Error(data.error||`schedule ${response.status}`);
       if(
         scheduleState.room!==captured.room||scheduleState.epoch!==captured.epoch||
-        pairedDashboardRoom()!==captured.room
+        pairedDashboardSchedule()?.identity!==captured.room
       ) return false;
-      if(String(data.room_id||'')!==captured.room) throw new Error('schedule room mismatch');
+      if(captured.kind==='secondary'){
+        if(String(data.schedule_id||'')!==captured.room
+          ||window._randori_circle_control?.matchesScheduleResponse?.(data)!==true){
+          throw new Error('schedule scope mismatch');
+        }
+      }else if(String(data.room_id||'')!==captured.room) throw new Error('schedule room mismatch');
       return applySchedule(captured.room,data.schedule);
     }catch(error){
+      if([401,403,404,409].includes(Number(error?.http_status))
+        &&scheduleState.room===captured.room&&scheduleState.epoch===captured.epoch){
+        stopSchedulePolling({clear:true});
+        return false;
+      }
       if(error?.name!=='AbortError'&&scheduleState.room===captured.room&&scheduleState.epoch===captured.epoch) setScheduleStatus('retrying…');
       return false;
     }finally{
@@ -7401,8 +7494,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   async function mutateSchedule(action,extra={}){
-    const room=pairedDashboardRoom();
-    if(!room||room!==scheduleState.room||scheduleState.inFlight) return false;
+    const scope=pairedDashboardSchedule();
+    if(!scope||scope.identity!==scheduleState.room||scheduleState.inFlight) return false;
+    const room=scope.identity;
     if(!/^[a-f0-9]{64}$/.test(scheduleState.version)){
       setScheduleStatus('checking…');
       pollSchedule();
@@ -7410,28 +7504,51 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }
     rememberScheduleDraft();
     cancelScheduleRequest(true);
-    const captured={room,epoch:scheduleState.epoch};
+    const captured={room,kind:scope.kind,epoch:scheduleState.epoch};
     const controller=new AbortController(); scheduleState.abort=controller; scheduleState.inFlight=true;
     setScheduleStatus('saving…'); toggleScheduleActions(true);
     try{
-      const response=await fetch('/api/schedule',{
-        method:'POST',credentials:'same-origin',signal:controller.signal,headers:{'content-type':'application/json'},
-        body:JSON.stringify({room_id:room,base_version:scheduleState.version,action,...extra}),
-      });
-      const data=await response.json().catch(()=>({}));
+      let response=null,data;
+      const body={base_version:scheduleState.version,action,...extra};
+      if(captured.kind==='secondary'){
+        try{
+          data=await window._randori_auth.api('/api/schedule',{method:'POST',signal:controller.signal,body});
+        }catch(error){
+          if(error?.http_status!==409||!error?.schedule
+            ||String(error?.schedule_id||'')!==captured.room) throw error;
+          data=error;
+        }
+      }else{
+        response=await fetch('/api/schedule',{
+          method:'POST',credentials:'same-origin',signal:controller.signal,headers:primaryScheduleHeaders(true),
+          body:JSON.stringify({room_id:room,...body}),
+        });
+        data=await response.json().catch(()=>({}));
+      }
       if(
         scheduleState.room!==captured.room||scheduleState.epoch!==captured.epoch||
-        pairedDashboardRoom()!==captured.room
+        pairedDashboardSchedule()?.identity!==captured.room
       ) return false;
-      if(response.status===401||response.status===403){ stopSchedulePolling({clear:true}); return false; }
-      if(response.status===409){
-        if(String(data.room_id||'')!==captured.room) throw new Error('schedule room mismatch');
+      if(response&&(response.status===401||response.status===403)){ stopSchedulePolling({clear:true}); return false; }
+      const status=response?.status||data?.http_status||200;
+      if(status===409){
+        if(captured.kind==='secondary'){
+          if(String(data.schedule_id||'')!==captured.room
+            ||window._randori_circle_control?.matchesScheduleResponse?.(data)!==true){
+            throw new Error('schedule scope mismatch');
+          }
+        }else if(String(data.room_id||'')!==captured.room) throw new Error('schedule room mismatch');
         applySchedule(captured.room,data.schedule,{status:'conflict — refreshed',force:true});
         if(typeof toast==='function') toast('Schedule changed — refreshed to your partner’s latest version.');
         return false;
       }
-      if(!response.ok) throw new Error(data.error||`schedule ${response.status}`);
-      if(String(data.room_id||'')!==captured.room) throw new Error('schedule room mismatch');
+      if(response&&!response.ok) throw new Error(data.error||`schedule ${response.status}`);
+      if(captured.kind==='secondary'){
+        if(String(data.schedule_id||'')!==captured.room
+          ||window._randori_circle_control?.matchesScheduleResponse?.(data)!==true){
+          throw new Error('schedule scope mismatch');
+        }
+      }else if(String(data.room_id||'')!==captured.room) throw new Error('schedule room mismatch');
       if(action==='propose'){
         scheduleState.draft=''; scheduleState.draftRoom=room;
         const input=document.querySelector('[data-testid="schedule-input"]'); if(input) input.value='';
@@ -7440,6 +7557,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(typeof toast==='function') toast('Schedule updated ✓');
       return true;
     }catch(error){
+      if([401,403,404,409].includes(Number(error?.http_status))
+        &&scheduleState.room===captured.room&&scheduleState.epoch===captured.epoch){
+        stopSchedulePolling({clear:true});
+        if(typeof toast==='function') toast('Schedule access changed. Refreshing your current circle…');
+        return false;
+      }
       if(error?.name!=='AbortError'&&scheduleState.room===captured.room&&scheduleState.epoch===captured.epoch){
         setScheduleStatus('retrying…');
         if(typeof toast==='function') toast('Schedule update failed: '+String(error?.message||error?.error||'try again').slice(0,120));

@@ -10,6 +10,7 @@ import {
   canUseLegacySinglePrimaryCircleFeatures,
   listSessionCircleContexts,
   resolveActiveCircleContext,
+  secondaryCircleSchedulingEnabled,
   selectActiveCircleContext,
 } from '../../api/_active-circle.js';
 import { getAvailabilityState, updateAvailability } from '../../api/_availability.js';
@@ -26,6 +27,8 @@ const originalEnvironment={
   CIRCLE_MEMBERSHIP_ENABLED:process.env.CIRCLE_MEMBERSHIP_ENABLED,
   MULTI_CIRCLE_CONTROL_PLANE_ENABLED:process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED,
   MULTI_CIRCLE_AVAILABILITY_ENABLED:process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED,
+  SECONDARY_CIRCLE_COORDINATION_ENABLED:process.env.SECONDARY_CIRCLE_COORDINATION_ENABLED,
+  SECONDARY_CIRCLE_SCHEDULING_ENABLED:process.env.SECONDARY_CIRCLE_SCHEDULING_ENABLED,
 };
 
 afterEach(async()=>{
@@ -33,6 +36,20 @@ afterEach(async()=>{
   for(const [key,value] of Object.entries(originalEnvironment)){
     if(value===undefined) delete process.env[key]; else process.env[key]=value;
   }
+});
+
+test('secondary scheduling is default-off and requires the complete coordination flag chain',()=>{
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';
+  process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED='true';
+  delete process.env.SECONDARY_CIRCLE_SCHEDULING_ENABLED;
+  assert.equal(secondaryCircleSchedulingEnabled(),false);
+  process.env.SECONDARY_CIRCLE_SCHEDULING_ENABLED='true';
+  assert.equal(secondaryCircleSchedulingEnabled(),false);
+  process.env.SECONDARY_CIRCLE_COORDINATION_ENABLED='true';
+  assert.equal(secondaryCircleSchedulingEnabled(),true);
+  delete process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED;
+  assert.equal(secondaryCircleSchedulingEnabled(),false);
 });
 
 function request(token){

@@ -100,11 +100,11 @@ test('ready inspection is exact, read-only, and creates no schema objects or fil
   assert.ok(statements.every(({sql})=>/^(?:SELECT|PRAGMA)\b/i.test(sql)));
   assert.deepEqual(
     statements.find(({sql})=>sql.includes('FROM sqlite_schema')&&sql.includes('type IN'))?.args,
-    [161],
+    [193],
   );
   assert.deepEqual(
     statements.find(({sql})=>sql.includes('FROM schema_migrations ORDER BY version'))?.args,
-    [16],
+    [17],
   );
   assert.deepEqual(await schemaSnapshot(db),beforeSchema);
   assert.deepEqual(readdirSync(directory).sort(),beforeFiles);
@@ -137,7 +137,7 @@ test('readiness fails closed for fresh, unmanaged, stale, future, and gapped led
     await db.execute({
       sql:`INSERT INTO schema_migrations
         (version,name,checksum,execution_ms,disposition) VALUES (?,?,?,?,?)`,
-      args:[16,'future-schema','f'.repeat(64),0,'applied'],
+      args:[17,'future-schema','f'.repeat(64),0,'applied'],
     });
     await assert.rejects(inspectDatabaseReadiness(db));
   });

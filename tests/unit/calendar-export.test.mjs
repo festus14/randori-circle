@@ -10,6 +10,7 @@ import {
   escapeCalendarText,
   foldCalendarLine,
   normalizedCalendarInstant,
+  secondaryCalendarUid,
 } from '../../assets/calendar-export.js';
 
 const roomId = 'week_42_pair_7';
@@ -101,6 +102,25 @@ test('keeps identity stable across reschedules while changing only the event tim
   assert.match(first.content, /DTSTART:20261006T173000Z/);
   assert.match(rescheduled.content, /DTSTART:20261008T190000Z/);
   assert.doesNotMatch(rescheduled.content, /DTSTART:20261006T173000Z/);
+});
+
+test('secondary calendar identity is opaque and links only to the dashboard', () => {
+  const scheduleId='a'.repeat(64);
+  const calendar=buildScheduleCalendar({
+    scheduleId,agreedTime,appOrigin:'https://randori.example',generatedAt,
+  });
+  assert.equal(secondaryCalendarUid(scheduleId),`secondary-${scheduleId}@calendar.randori-circle`);
+  assert.equal(calendar.uid,`secondary-${scheduleId}@calendar.randori-circle`);
+  assert.equal(calendar.roomLink,'https://randori.example/?view=dashboard');
+  assert.equal(calendar.filename,`randori-${scheduleId.slice(0,16)}.ics`);
+  assert.match(calendar.content,/URL:https:\/\/randori\.example\/\?view=dashboard/);
+  assert.doesNotMatch(calendar.content,/\/join\/|room/i);
+  assert.equal(buildScheduleCalendar({
+    roomId,scheduleId,agreedTime,appOrigin:'https://randori.example',generatedAt,
+  }),null,'a calendar event cannot mix room and secondary identities');
+  assert.equal(buildScheduleCalendar({
+    scheduleId,agreedTime,appOrigin:'https://randori.example',dashboardPath:'/join/forged',generatedAt,
+  }),null);
 });
 
 test('uses absolute UTC arithmetic through daylight-saving transitions', () => {

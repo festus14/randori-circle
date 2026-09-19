@@ -334,7 +334,7 @@ test('managed prefix rehearsal blocks writes, verifies PITR, migrates only the r
       ['source','bigint'],['restore','bigint'],
     ]);
     assert.equal((await databaseState(item.sourcePath,EXECUTABLE_MIGRATIONS.slice(0,2))).currentVersion,2);
-    assert.equal((await databaseState(item.restorePath)).currentVersion,15);
+    assert.equal((await databaseState(item.restorePath)).currentVersion,16);
 
     const serialized=JSON.stringify(result);
     for(const secret of [
@@ -695,7 +695,7 @@ test('exact unmanaged prefix is adopted and advanced only on the disposable rest
     assert.equal(result.ok,true);
     assert.equal(result.payload.migration.sourceClassification,'unmanaged');
     assert.equal(result.payload.migration.adoptedOnRestore,true);
-    assert.deepEqual(result.payload.migration.appliedVersions,[3,4,5,6,7,8,9,10,11,12,13,14,15]);
+    assert.deepEqual(result.payload.migration.appliedVersions,[3,4,5,6,7,8,9,10,11,12,13,14,15,16]);
     const source=await databaseState(item.sourcePath,EXECUTABLE_MIGRATIONS.slice(0,2));
     assert.equal(source.classification,'unmanaged');
     assert.equal(source.ledgerPresent,false);
@@ -718,7 +718,7 @@ for(const classification of ['managed','unmanaged']){
       assert.equal(result.payload.migration.sourceVersion,1);
       assert.equal(result.payload.migration.sourceClassification,classification);
       assert.equal(result.payload.migration.adoptedOnRestore,classification==='unmanaged');
-      assert.deepEqual(result.payload.migration.appliedVersions,[2,3,4,5,6,7,8,9,10,11,12,13,14,15]);
+      assert.deepEqual(result.payload.migration.appliedVersions,[2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]);
       const restored=createClient({url:`file:${item.restorePath}`,intMode:'bigint'});
       try{
         const singleton=await restored.execute('SELECT id,registrations_closed FROM circle_membership_rollout');
@@ -1006,6 +1006,8 @@ test('post-migration preservation rejects missing or modified prior tables, seed
       {name:'circle_pairing_groups',count:0,digest:'0'.repeat(64)},
       {name:'circle_creation_requests',count:0,digest:'1'.repeat(64)},
       {name:'credential_key_controls',count:4,digest:'2'.repeat(64)},
+      {name:'circle_pair_schedules',count:0,digest:'3'.repeat(64)},
+      {name:'circle_pair_schedule_proposals',count:0,digest:'4'.repeat(64)},
     ],
     storage:{...before.storage},
   };
