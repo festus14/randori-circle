@@ -4121,6 +4121,12 @@ async function refreshMe(){
 
   async function showCircleLifecycle(role,epoch,{loadRoster=true}={}){
     if(!circleLifecyclePanel||!['owner','member'].includes(role)) return;
+    // renderPeople() awaits owner invitations before reaching this function.
+    // A circle switch can invalidate that render while the invitation request
+    // is still in flight, so re-check the epoch before revealing any private
+    // lifecycle surface from the old circle.
+    if(epoch!==circleRenderEpoch||circleContextSwitching||activeCircleRole!==role
+      ||Number(me?.id||me?.uid)!==activeCircleUserId) return;
     circleLifecyclePanel.hidden=false; circleLifecyclePanel.style.display='grid';
     if(circleLifecycleHelp) circleLifecycleHelp.textContent=role==='owner'
       ?'Manage active and inactive members in bounded pages. Search uses display names only. Ownership transfer is immediate and keeps one active owner.'
