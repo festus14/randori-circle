@@ -3308,6 +3308,8 @@ async function refreshMe(){
     clearAvailability();
     circleCreateAbort?.abort();
     circleCreateAbort=null;
+    circleCreatePending=false;
+    setCircleCreateState('idle','');
     circleContextSwitching=switching;
     if(switching) setCircleContextState('switching','Switching circle…');
     else circleContextErrorLatched=false;
