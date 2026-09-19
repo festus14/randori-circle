@@ -3359,7 +3359,7 @@ async function refreshMe(){
         &&['authentication required','circle owner required'].includes(String(error?.error||''));
       if(denied){
         resetOwnerInvites({allowRosterPreservation:false});
-        if(circleLifecycleStatus) circleLifecycleStatus.textContent='Roster access changed. Rechecking your circle role…';
+        if(circleLifecycleStatus&&!hasCircleLifecycleNotice(actorId)) circleLifecycleStatus.textContent='Roster access changed. Rechecking your circle role…';
         await renderPeople({skipManagedRoster:true});
         return false;
       }
@@ -3419,7 +3419,7 @@ async function refreshMe(){
       if(circleManageMembers) circleManageMembers.hidden=true;
       if(circleMemberSearchForm) circleMemberSearchForm.hidden=true;
       if(circleMembersLoadMore) circleMembersLoadMore.hidden=true;
-      if(circleLifecycleStatus) circleLifecycleStatus.textContent='Member controls are no longer authorized. Refresh the circle to try again.';
+      if(circleLifecycleStatus&&!hasCircleLifecycleNotice()) circleLifecycleStatus.textContent='Member controls are no longer authorized. Refresh the circle to try again.';
     }else if(role==='owner'&&circleRosterState.loaded&&circleRosterOwnerId===Number(me?.id||me?.uid)){
       circleManageMembers.hidden=false;
       circleMemberSearchForm.hidden=false;
