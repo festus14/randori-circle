@@ -23,6 +23,8 @@ const acceptanceCalls=[];
 const accountAcceptanceCalls=[];
 const passwordAccountCalls=[];
 const readinessCalls=[];
+const availabilityApplications=[];
+const availabilityReads=[];
 const sessionRevocations=[];
 const identityTransactionActions=[];
 let sessionIssueError=null;
@@ -34,6 +36,9 @@ const db={
     const sql=typeof statement==='string' ? statement : String(statement?.sql||'');
     const args=typeof statement==='string' ? [] : (statement?.args||[]);
     executed.push({sql,args});
+    if(sql.includes("strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc")){
+      return {rows:[{now_utc:new Date().toISOString()}],rowsAffected:0};
+    }
     const result=await executeHandler(sql,args) || {rows:[],rowsAffected:0};
     if(!(result.rows?.length)&&sql.includes('INSERT INTO auth_provider_identities')&&sql.includes('RETURNING user_id')){
       return rows([{user_id:Number(args[2])}]);
@@ -136,6 +141,32 @@ mock.module('../../api/_circle-membership.js',{
   },
 });
 
+mock.module('../../api/_availability.js',{
+  exports:{
+    AVAILABILITY_CACHE_CONTROL:'private, no-store',
+    availabilityFailure:()=>({status:503,body:{ok:false,error:'availability unavailable'}}),
+    availabilityResponse:availability=>({ok:true,availability}),
+    getAvailabilityState:async(_db,options)=>{
+      availabilityReads.push(options);
+      return {
+        cycle:{cycleId:'2026-W39',startsAt:'2026-09-20T07:00:00.000Z',endsAt:'2026-09-27T07:00:00.000Z',cutoffAt:'2026-09-20T07:00:00.000Z',timeZone:'Europe/London',state:'upcoming'},
+        cycleKey:'a'.repeat(64),isAvailable:true,version:0,source:'legacy_bridge',editable:true,updatedAt:null,
+      };
+    },
+    updateAvailability:async()=>{ throw new Error('unexpected availability write'); },
+    resolveAvailabilityPublicationScope:async(_db,{localRuntime})=>localRuntime
+      ?{kind:'local',scopeKey:'local',circleId:null}
+      :{kind:'circle',scopeKey:'circle:1',circleId:1},
+    applyCycleAvailability:async(_db,{scope,cycle,accounts})=>{
+      availabilityApplications.push({scope,cycle,accounts});
+      return accounts.map(account=>({
+        ...account,
+        isAvailable:account.is_available===null||account.is_available===undefined||Number(account.is_available)===1,
+      }));
+    },
+  },
+});
+
 const [{default:authHandler,validSignupPassword},{default:opsHandler}]=await Promise.all([
   import('../../api/auth.js'),
   import('../../api/ops.js'),
@@ -158,7 +189,7 @@ async function withFixedNow(iso,callback){
   finally{ globalThis.Date=NativeDate; }
 }
 
-function invoke(handler,{method='GET',url='/',query={},headers={},body={}}={}){
+function invoke(handler,{method='GET',url='/',query={},headers={},body={},remoteAddress='127.0.0.1'}={}){
   return new Promise((resolve,reject)=>{
     let status=200;
     let settled=false;
@@ -180,7 +211,7 @@ function invoke(handler,{method='GET',url='/',query={},headers={},body={}}={}){
       },
       end(value){ finish(value); return this; },
     };
-    const request={method,url,query,headers,body,socket:{remoteAddress:'127.0.0.1'}};
+    const request={method,url,query,headers,body,socket:{remoteAddress}};
     Promise.resolve(handler(request,response)).then(()=>finish(undefined)).catch(reject);
   });
 }
@@ -205,6 +236,8 @@ beforeEach(()=>{
   accountAcceptanceCalls.length=0;
   passwordAccountCalls.length=0;
   readinessCalls.length=0;
+  availabilityApplications.length=0;
+  availabilityReads.length=0;
   sessionRevocations.length=0;
   identityTransactionActions.length=0;
   sessionIssueError=null;
@@ -762,7 +795,7 @@ test('manual and weekly production pairing queries are primary-circle scoped whe
   process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
   process.env.CRON_SECRET='cron-secret';
   executeHandler=sql=>{
-    if(sql.includes("cm.role='owner'")) return rows([{id:1,role:'owner'}]);
+    if(sql.includes("cm.role='owner'")) return rows([{id:1,role:'owner',circle_id:1}]);
     if(sql.includes('FROM auth_accounts')&&sql.includes("cm.status='active'")) return rows([]);
     return rows();
   };
@@ -771,21 +804,25 @@ test('manual and weekly production pairing queries are primary-circle scoped whe
     method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers:{'x-test-auth':'admin'},
   });
   assert.equal(manual.status,400);
-  let candidateQueries=executed.filter(call=>call.sql.includes('display_name as name')&&call.sql.includes('circle_memberships'));
+  let candidateQueries=executed.filter(call=>call.sql.includes('display_name AS name')&&call.sql.includes('circle_memberships'));
   assert.equal(candidateQueries.length,1);
   for(const call of candidateQueries){
     assert.match(call.sql,/cm\.status='active'/);
     assert.match(call.sql,/c\.is_primary=1/);
     assert.match(call.sql,/c\.archived_at IS NULL/);
-    assert.match(call.sql,/COALESCE\(is_demo,0\)=0/);
+    assert.match(call.sql,/COALESCE\(aa\.is_demo,0\)=0/);
+    assert.deepEqual(call.args,[1]);
   }
+  assert.equal(availabilityApplications.length,1);
+  assert.equal(availabilityApplications[0].scope.scopeKey,'circle:1');
+  assert.equal(availabilityApplications[0].cycle.state,'current');
 
   executed.length=0;
   const weekly=await withFixedNow('2026-09-20T08:15:00.000Z',()=>invoke(opsHandler,{
     method:'POST',url:'/api/cron/weekly',query:{endpoint:'weekly'},headers:{'x-cron-secret':'cron-secret'},
   }));
   assert.equal(weekly.status,400);
-  candidateQueries=executed.filter(call=>call.sql.includes('display_name as name')&&call.sql.includes('circle_memberships'));
+  candidateQueries=executed.filter(call=>call.sql.includes('display_name AS name')&&call.sql.includes('circle_memberships'));
   assert.equal(candidateQueries.length,1);
   assert.equal(executed.some(call=>call.sql.includes('FROM users ORDER BY id')),false);
 });
@@ -828,10 +865,48 @@ test('pairing publication requires a primary-circle owner in production and only
   assert.equal(localMember.status,403);
 });
 
+test('availability local scope requires every loopback and provider-isolation guard',async()=>{
+  const configureLocal=()=>{
+    process.env.NODE_ENV='development';
+    process.env.RANDORI_LOCAL_RUNTIME='true';
+    process.env.CIRCLE_MEMBERSHIP_ENABLED='false';
+    process.env.TURSO_DATABASE_URL='file:///tmp/randori-availability-local.sqlite';
+    process.env.APP_URL='http://127.0.0.1:3000';
+    delete process.env.TURSO_AUTH_TOKEN;
+    delete process.env.VERCEL;
+    delete process.env.VERCEL_ENV;
+    delete process.env.VERCEL_URL;
+  };
+  const request=overrides=>invoke(opsHandler,{
+    method:'GET',url:'/api/settings/availability',query:{endpoint:'availability'},
+    headers:{'x-test-auth':'user',host:'127.0.0.1:3000'},...overrides,
+  });
+
+  configureLocal();
+  assert.equal((await request({})).status,200);
+  assert.equal(availabilityReads.at(-1).localRuntime,true);
+
+  for(const scenario of [
+    {request:{remoteAddress:'203.0.113.4'}},
+    {request:{headers:{'x-test-auth':'user',host:'localhost:3000'}}},
+    {env:{VERCEL:'1'}},
+    {env:{TURSO_AUTH_TOKEN:'secret'}},
+    {env:{TURSO_DATABASE_URL:'libsql://remote.example.test'}},
+    {env:{CIRCLE_MEMBERSHIP_ENABLED:'true'}},
+  ]){
+    configureLocal();
+    Object.assign(process.env,scenario.env||{});
+    availabilityReads.length=0;
+    assert.equal((await request(scenario.request||{})).status,200);
+    assert.equal(availabilityReads.length,1);
+    assert.equal(availabilityReads[0].localRuntime,false);
+  }
+});
+
 test('production pairing stays primary-circle scoped when the rollout flag is disabled',async()=>{
   process.env.CRON_SECRET='cron-secret';
   executeHandler=sql=>{
-    if(sql.includes("cm.role='owner'")) return rows([{id:1,role:'owner'}]);
+    if(sql.includes("cm.role='owner'")) return rows([{id:1,role:'owner',circle_id:1}]);
     return rows();
   };
 

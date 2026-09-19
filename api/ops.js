@@ -1,5 +1,14 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { getClient, getCronSecret, getAdminEmails, isoWeekLabel, deterministicColor, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
+import {
+  AVAILABILITY_CACHE_CONTROL,
+  applyCycleAvailability,
+  availabilityFailure,
+  availabilityResponse,
+  getAvailabilityState,
+  resolveAvailabilityPublicationScope,
+  updateAvailability,
+} from './_availability.js';
 import { buildFairPairing, canonicalRoomId, escapeHtml } from './_pairing.js';
 import { pairingCronIsDue, resolvePairingCycle } from './_pairing-cycle.js';
 import { getPairingPublication, publishPairingCycle } from './_pairing-publication.js';
@@ -26,22 +35,6 @@ function isRetryablePairingConflict(error){
     current=current.cause;
   }
   return false;
-}
-
-function productionAccountQuery({availableOnly=false,includePhone=false,countOnly=false}={}){
-  const membership=`EXISTS (
-    SELECT 1
-    FROM circle_memberships cm
-    JOIN circles c ON c.id=cm.circle_id
-    WHERE cm.user_id=auth_accounts.id
-      AND cm.status='active'
-      AND c.is_primary=1
-      AND c.archived_at IS NULL
-  )`;
-  const availability=availableOnly?' AND COALESCE(is_available,1)=1':'';
-  if(countOnly) return `SELECT COUNT(*) as c FROM auth_accounts WHERE COALESCE(is_demo,0)=0${availability} AND ${membership}`;
-  const phone=includePhone?', phone':'';
-  return `SELECT id, display_name as name, email, color, is_available, is_demo${phone} FROM auth_accounts WHERE COALESCE(is_demo,0)=0${availability} AND ${membership} ORDER BY id`;
 }
 
 async function logServerOps(level, event, message, meta, req){
@@ -179,13 +172,14 @@ async function requirePairingPublisher(req,res){
     return null;
   }
   const localRuntime=strictLocalPairingRuntime(req);
+  let result;
   try{
-    const result=await db.execute(localRuntime?{
+    result=await db.execute(localRuntime?{
       sql:`SELECT id,is_admin FROM auth_accounts
         WHERE id=? AND COALESCE(is_demo,0)=0`,
       args:[callerId],
     }:{
-      sql:`SELECT aa.id,cm.role
+      sql:`SELECT aa.id,cm.role,c.id AS circle_id
         FROM auth_accounts aa
         JOIN circle_memberships cm ON cm.user_id=aa.id
         JOIN circles c ON c.id=cm.circle_id
@@ -195,15 +189,21 @@ async function requirePairingPublisher(req,res){
       args:[callerId],
     });
     const rows=result.rows||[];
+    const circleId=Number(rows[0]?.circle_id);
     const allowed=localRuntime
       ? rows.length===1&&Number(rows[0].id)===callerId&&Number(rows[0].is_admin)===1
-      : rows.length===1&&Number(rows[0].id)===callerId&&String(rows[0].role)==='owner';
+      : rows.length===1&&Number(rows[0].id)===callerId&&String(rows[0].role)==='owner'
+        &&Number.isSafeInteger(circleId)&&circleId>0;
     if(!allowed){ res.status(403).json({error:'primary circle owner required'}); return null; }
   }catch{
     res.status(503).json({error:'pairing unavailable'});
     return null;
   }
-  return {db,callerId,localRuntime};
+  const row=result.rows[0];
+  const scope=localRuntime
+    ?{kind:'local',scopeKey:'local',circleId:null}
+    :{kind:'circle',scopeKey:`circle:${Number(row.circle_id)}`,circleId:Number(row.circle_id)};
+  return {db,callerId,localRuntime,scope};
 }
 
 async function ensureMigrations(db){
@@ -459,23 +459,32 @@ async function requireAdmin(req,res){
 }
 
 async function handleAvailability(req,res){
-  if (req.method!=='POST') return res.status(405).json({ error:'POST only' });
-  const payload=await verifyRequestAuth(req);
-  if (!payload) return res.status(401).json({ error:'authentication required' });
-  const { is_available, isAvailable } = req.body||{};
-  const raw = (is_available!==undefined ? is_available : isAvailable);
-  if (raw===undefined||raw===null) return res.status(400).json({ error:'is_available boolean required' });
-  const val = raw?1:0;
-  const userId=payload.id||payload.uid;
-  const db = getClient();
-  await ensureMigrations(db);
+  res.setHeader('Cache-Control',AVAILABILITY_CACHE_CONTROL);
+  if(req.method!=='GET'&&req.method!=='POST'){
+    res.setHeader('Allow','GET, POST');
+    return res.status(405).json({ok:false,error:'GET or POST required'});
+  }
+  let payload;
+  try{ payload=await verifyRequestAuth(req); }
+  catch{ return res.status(503).json({ok:false,error:'availability unavailable'}); }
+  if(!payload) return res.status(401).json({ok:false,error:'authentication required'});
+  const userId=Number(payload.id||payload.uid);
+  if(!Number.isSafeInteger(userId)||userId<1){
+    return res.status(401).json({ok:false,error:'authentication required'});
+  }
+  let db;
+  try{ db=getClient(); }
+  catch{ return res.status(503).json({ok:false,error:'availability unavailable'}); }
   try{
-    await db.execute({ sql:`UPDATE auth_accounts SET is_available=?, availability_updated_at=datetime('now') WHERE id=?`, args:[val, userId]});
-    const rs = await db.execute({ sql:`SELECT id,email,display_name,is_available,availability_updated_at FROM auth_accounts WHERE id=?`, args:[userId]});
-    if(!rs.rows.length) return res.status(401).json({error:'account not found'});
-    const u = rs.rows[0];
-    return res.json({ ok:true, user:{ id:u.id, email:u.email, name:u.display_name, is_available: !!u.is_available, isAvailable: !!u.is_available, availability_updated_at:u.availability_updated_at }, message: val ? 'You are marked AVAILABLE — you will be included Sunday at 08:00 London time' : 'You are marked UNAVAILABLE — you will be SKIPPED Sunday at 08:00 London time until you re-enable' });
-  }catch(e){ return res.status(500).json({ ok:false, error:'update failed', detail:String(e.message||e).slice(0,200)}); }
+    const options={userId,localRuntime:strictLocalPairingRuntime(req)};
+    const state=req.method==='GET'
+      ?await getAvailabilityState(db,options)
+      :await updateAvailability(db,{...options,body:req.body});
+    return res.json(availabilityResponse(state));
+  }catch(error){
+    const failure=availabilityFailure(error);
+    return res.status(failure.status).json(failure.body);
+  }
 }
 
 async function handleReshuffle(req,res){
@@ -523,20 +532,35 @@ function safeEmailDelivery(value){
   return result;
 }
 
-async function pairingCandidates(db,{localRuntime}){
-  const result=await db.execute(localRuntime
+async function pairingAccounts(db,{scope}){
+  const result=await db.execute(scope.kind==='local'
     ? `SELECT id,display_name AS name,email,color,is_available
        FROM auth_accounts
        WHERE COALESCE(is_demo,0)=0
        ORDER BY id`
-    : productionAccountQuery());
-  const accounts=(result.rows||[]).map(row=>({
+    :{
+      sql:`SELECT aa.id,aa.display_name AS name,aa.email,aa.color,aa.is_available
+        FROM auth_accounts aa
+        JOIN circle_memberships cm ON cm.user_id=aa.id AND cm.circle_id=?
+        JOIN circles c ON c.id=cm.circle_id
+        WHERE COALESCE(aa.is_demo,0)=0 AND cm.status='active'
+          AND c.is_primary=1 AND c.archived_at IS NULL
+        ORDER BY aa.id`,
+      args:[scope.circleId],
+    });
+  return (result.rows||[]).map(row=>({
     id:Number(row.id),
     name:String(row.name||`Member ${row.id}`).slice(0,80),
     color:String(row.color||'#9aa0a6').slice(0,32),
     email:String(row.email||'').trim().slice(0,320),
-    isAvailable:row.is_available===null||row.is_available===undefined||Number(row.is_available)===1,
+    is_available:row.is_available,
   })).filter(account=>Number.isSafeInteger(account.id)&&account.id>0);
+}
+
+async function pairingCandidates(db,{scope,cycle}){
+  const accounts=await applyCycleAvailability(db,{
+    scope,cycle,accounts:await pairingAccounts(db,{scope}),
+  });
   const participants=accounts.filter(account=>account.isAvailable).map(account=>({
     id:account.id,name:account.name,color:account.color,source:'auth',
   }));
@@ -545,6 +569,14 @@ async function pairingCandidates(db,{localRuntime}){
     ...accounts.filter(account=>!account.isAvailable&&account.email).map(account=>({id:account.id,email:account.email,kind:'unavailable'})),
   ];
   return {accounts,participants,notificationRecipients};
+}
+
+async function pairingDatabaseNow(db){
+  const result=await db.execute(`SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc`);
+  const value=result.rows?.[0]?.now_utc;
+  const instant=new Date(value);
+  if(!value||!Number.isFinite(instant.getTime())) throw new Error('database time unavailable');
+  return instant;
 }
 
 function pairingPublicationPayload(result,accounts,emailDelivery){
@@ -595,9 +627,8 @@ function pairingFailure(res,error){
   return res.status(503).json({error:'pairing unavailable'});
 }
 
-async function runCurrentPairing(req,res,{db,localRuntime,callerId=null,now=new Date()}){
+async function runCurrentPairing(req,res,{db,localRuntime,callerId=null,scope:authorizedScope=null}){
   try{
-    const cycle=resolvePairingCycle({now});
     if(typeof db.transaction!=='function') throw new Error('pairing transaction unavailable');
     let completed=null;
     let lastError=null;
@@ -606,19 +637,27 @@ async function runCurrentPairing(req,res,{db,localRuntime,callerId=null,now=new 
       let commitStarted=false;
       try{
         transaction=await db.transaction('write');
+        const now=await pairingDatabaseNow(transaction);
+        const scope=await resolveAvailabilityPublicationScope(transaction,{localRuntime});
+        if(authorizedScope&&(scope.scopeKey!==authorizedScope.scopeKey
+          ||scope.circleId!==authorizedScope.circleId)){
+          const error=new Error('publisher scope changed');
+          error.code='PAIRING_PUBLISHER_REVOKED';
+          throw error;
+        }
         if(callerId){
           const publisherId=Number(callerId);
           const authorization=await transaction.execute(localRuntime?{
             sql:`SELECT id,is_admin FROM auth_accounts
               WHERE id=? AND COALESCE(is_demo,0)=0`,args:[publisherId],
           }:{
-            sql:`SELECT aa.id,cm.role
+            sql:`SELECT aa.id,cm.role,c.id AS circle_id
               FROM auth_accounts aa
               JOIN circle_memberships cm ON cm.user_id=aa.id
               JOIN circles c ON c.id=cm.circle_id
-              WHERE aa.id=? AND cm.status='active' AND cm.role='owner'
+              WHERE aa.id=? AND cm.circle_id=? AND cm.status='active' AND cm.role='owner'
                 AND COALESCE(aa.is_demo,0)=0 AND c.is_primary=1 AND c.archived_at IS NULL
-              LIMIT 2`,args:[publisherId],
+              LIMIT 2`,args:[publisherId,scope.circleId],
           });
           const rows=authorization.rows||[];
           const allowed=localRuntime
@@ -626,15 +665,21 @@ async function runCurrentPairing(req,res,{db,localRuntime,callerId=null,now=new 
             :rows.length===1&&Number(rows[0].id)===publisherId&&String(rows[0].role)==='owner';
           if(!allowed){ const error=new Error('publisher authorization was revoked'); error.code='PAIRING_PUBLISHER_REVOKED'; throw error; }
         }
+        const cycle=resolvePairingCycle({now,state:'current'});
         const existing=await getPairingPublication(transaction,{now});
-        const {accounts,participants,notificationRecipients}=await pairingCandidates(transaction,{localRuntime});
-        const result=existing
-          ?{created:false,publication:existing}
-          :await publishPairingCycle(transaction,{
-            now,participants,
+        let accounts,result;
+        if(existing){
+          accounts=await pairingAccounts(transaction,{scope});
+          result={created:false,publication:existing};
+        }else{
+          const candidates=await pairingCandidates(transaction,{scope,cycle});
+          accounts=candidates.accounts;
+          result=await publishPairingCycle(transaction,{
+            now,participants:candidates.participants,
             history:await loadPairingHistory(transaction,cycle.cycleId,{strict:true,authOnly:true,managedOnly:true}),
-            notificationRecipients,
+            notificationRecipients:candidates.notificationRecipients,
           });
+        }
         commitStarted=true;
         await transaction.commit();
         completed={accounts,result};
@@ -689,7 +734,7 @@ async function handleWeekly(req,res){
   let db;
   try{ db=getClient(); }
   catch{ return res.status(503).json({error:'pairing unavailable'}); }
-  return runCurrentPairing(req,res,{db,localRuntime:strictLocalPairingRuntime(req),now});
+  return runCurrentPairing(req,res,{db,localRuntime:strictLocalPairingRuntime(req)});
 }
 
 
@@ -774,18 +819,21 @@ async function handleDemoReset(req,res){
 }
 
 export default async function handler(req,res){
-  if(!verifyMutationOrigin(req)) return res.status(403).json({error:'cross-origin mutation rejected'});
   const ep = getEndpoint(req);
   const pathLower = (req.url||'').toLowerCase();
+  const availabilityRequest=ep==='availability'||pathLower.includes('availability');
+  if(availabilityRequest) res.setHeader('Cache-Control',AVAILABILITY_CACHE_CONTROL);
+  if(!verifyMutationOrigin(req)) return res.status(403).json(availabilityRequest
+    ?{ok:false,error:'cross-origin mutation rejected'}
+    :{error:'cross-origin mutation rejected'});
   if (ep==='notifications-prefs' || ep==='notifications' || ep==='prefs' || ep.includes('notification') || pathLower.includes('notifications') || pathLower.includes('notif') ) return handleNotificationPrefs(req,res);
-  if (ep==='availability' || pathLower.includes('availability')) return handleAvailability(req,res);
+  if (availabilityRequest) return handleAvailability(req,res);
   if (ep==='demo-seed' || ep==='demo_seed' || pathLower.includes('demo-seed')) return handleDemoSeed(req,res);
   if (ep==='demo-shuffle' || ep==='demo_shuffle' || ep==='dem0-shuffle' || pathLower.includes('demo-shuffle')) return handleDemoShuffle(req,res);
   if (ep==='demo-reset' || ep==='demo_reset' || pathLower.includes('demo-reset')) return handleDemoReset(req,res);
   if (ep==='pairing-run' || pathLower.includes('/pairing/run')) return handlePairingRun(req,res);
   if (ep==='reshuffle' || ep==='promote' || pathLower.includes('reshuffle') || pathLower.includes('promote')) return handleReshuffle(req,res);
   if (ep==='weekly' || pathLower.includes('weekly') || pathLower.includes('/cron/')) return handleWeekly(req,res);
-  if (pathLower.includes('availability')) return handleAvailability(req,res);
   if (pathLower.includes('reshuffle')) return handleReshuffle(req,res);
   if (pathLower.includes('weekly')) return handleWeekly(req,res);
   return res.status(404).json({ error:`unknown ops endpoint '${ep}'`, available:['availability','pairing-run','weekly','promote via reshuffle?action=promote','demo-seed','demo-shuffle','demo-reset'] });

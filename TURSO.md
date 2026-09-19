@@ -63,7 +63,7 @@ Provider-identity and other migration-managed schema changes use the protected m
 **Scaling rule:**
 - Circle = active `circle_memberships` in the one operational primary circle. The one-time migration backfills existing non-demo authenticated accounts; legacy `users` rows are never inferred as members.
 - Manual publication = **primary-circle owner only** in production. The isolated loopback/local-file development runtime permits its database admin. `POST /api/pairing/run` is idempotent: once the current London cycle is published, later calls return that publication without changing pairs.
-- Availability — each user can toggle `Available this week` via `/api/settings/availability`. The weekly cron and manual publication both filter `COALESCE(is_available,1)=1`. Unavailable users are skipped and can receive a reminder.
+- Availability — each user edits the explicitly dated upcoming cycle through `/api/settings/availability`. The API returns the UTC start/end/cutoff, configured IANA timezone, cycle digest, and optimistic version. Publication reads only that exact current-cycle scope; unavailable users are skipped and can receive a reminder. The timeless account flag is frozen as a bounded rollout bridge and is never updated by the dated endpoint.
 
 **Env vars added beyond section above:**
 - `JWT_SECRET` — at least 32 random bytes, used for 12-hour HS256 session cookies and keyed invitation/email hashes. Rotating it signs out all sessions and invalidates every outstanding invitation; revoke/reissue invitations as part of rotation.
@@ -75,7 +75,7 @@ Provider-identity and other migration-managed schema changes use the protected m
 **Endpoints:**
 - `POST /api/auth/signup` — development compatibility only; production password signup is disabled, and the rollout latch prevents late uninvited accounts.
 - `POST /api/auth/login` — existing password users only; establishes an HttpOnly session cookie.
-- `GET /api/auth/me` — authenticated session profile with availability and admin status.
+- `GET /api/auth/me` — authenticated live-session profile and admin status; its legacy availability field is compatibility-only, while `/api/settings/availability` is authoritative.
 - `POST /api/auth/logout` / `POST /api/auth/logout-all` — revoke the current session or every active session for the account. The database stores only hashed session identifiers; a valid Bearer credential remains independent of a browser cookie.
 - `GET /api/auth/google/start` / `callback` — OAuth/PKCE flow. With membership enforcement on, a new verified account is created atomically with invitation consumption, membership, and audit; the JWT remains only in an HttpOnly cookie.
 - `GET /api/circle` — authenticated and membership-scoped; returns safe profile fields for active members only and never returns email addresses.
@@ -89,8 +89,8 @@ Provider-identity and other migration-managed schema changes use the protected m
   - If both `RESEND_API_KEY` and `RESEND_FROM` are set, sends email to available users plus a reminder to unavailable users.
   - If either is absent, the delivery summary explains that email is disabled and pairs remain visible in-app via `/api/weeks`.
 - `POST /api/admin/reshuffle` — compatibility URL only. Pairing requests delegate to the immutable current-cycle endpoint and cannot force/remix a published cycle; `action=promote` retains its separate legacy admin operation.
-- `POST /api/settings/availability` — Bearer → `{is_available:boolean}` updates your row `is_available`, `availability_updated_at=datetime('now')`
-- `GET /api/auth/me` — a live, unrevoked session cookie or Bearer token → current user, availability, and admin status.
+- `GET /api/settings/availability` — authenticated, private/no-store read of the upcoming cycle and the caller's exact setting: `{cycle,cycleKey,isAvailable,version,source,editable,updatedAt}`.
+- `POST /api/settings/availability` — authenticated compare-and-swap update with the exact body `{cycle_key:string,expected_version:integer,is_available:boolean}`. Strings such as `"false"`, aliases, unknown fields, stale versions, changed cycles, and closed cutoffs are rejected. A `409` returns the refreshed authoritative availability state.
 - `POST /api/init` — authenticated admin-only schema migration and one-time primary-circle backfill. It also closes the durable registration latch.
 
 **Vercel crons:**
@@ -107,7 +107,7 @@ Current cron emails via Resend *only if* `RESEND_API_KEY` + `RESEND_FROM` are bo
 - Circle tab: with membership enforcement enabled, `GET /api/circle` displays only active primary-circle members and owners receive invitation controls. The legacy flag-off response remains supported during rollout.
 - Pairing tab: the primary-circle owner sees **Run current cycle**; ordinary members see the Sunday 08:00 London-time schedule. The action calls `POST /api/pairing/run` and is safe to repeat because an existing publication is returned unchanged.
 - Pair list: signed-in users see only the server-marked current publication and never a local-storage fallback. Anonymous users may still use local demo data. Current cloud topics are read-only.
-- Sync card: new `Available this week` toggle — POSTs to `/api/settings/availability`, updates UI, shows banner if you are currently unavailable + another banner if you were skipped last week (`randori-was-skipped` local flag). Also notes email fallback status. Presence still via BroadcastChannel.
+- Sync card: loads the authoritative upcoming availability, displays its start/end/cutoff in the server timezone, and sends an exact cycle-key/version CAS update. It refreshes on focus, visibility return, and cutoff rollover; stale or changed-cycle responses replace the UI with server state. Profile editing cannot bypass this control, and the circle roster no longer labels the legacy account flag as current-cycle truth. Presence still uses BroadcastChannel.
 - History tab: left offline history, right personal history via `/api/history` when signed in.
 - Auth: existing password login plus Google SSO, with the application token stored only in an HttpOnly cookie.
 
@@ -125,10 +125,14 @@ curl -s -b /tmp/randori-admin.cookies -X POST http://localhost:3000/api/init \
 
 # Authenticated circle read
 curl -s -b /tmp/randori-admin.cookies http://localhost:3000/api/circle | jq
-# availability off
+# Read the editable cycle and retain its cycleKey/version.
+curl -s -b /tmp/randori-admin.cookies \
+  http://localhost:3000/api/settings/availability | jq
+
+# Availability off (substitute the values returned by GET).
 curl -s -b /tmp/randori-admin.cookies -X POST http://localhost:3000/api/settings/availability \
   -H 'Origin: http://localhost:3000' -H 'content-type:application/json' \
-  -d '{"is_available":false}' | jq
+  -d '{"cycle_key":"<64-char-cycle-key>","expected_version":0,"is_available":false}' | jq
 curl -s -b /tmp/randori-admin.cookies http://localhost:3000/api/auth/me | jq
 # strictly validated current publication
 curl -s -b /tmp/randori-admin.cookies http://localhost:3000/api/weeks | jq

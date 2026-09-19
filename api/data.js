@@ -1419,7 +1419,13 @@ async function handleProfile(req,res){
   }
   if (req.method === 'POST'){
     const body = req.body||{};
-    const allowed = ['display_name','name','color','bio','tz','interview_focus','leetcode_handle','is_available'];
+    const allowed = ['display_name','name','color','bio','tz','interview_focus','leetcode_handle'];
+    if(Object.prototype.hasOwnProperty.call(body,'is_available')||Object.prototype.hasOwnProperty.call(body,'isAvailable')){
+      return res.status(400).json({
+        error:'weekly availability must be updated through /api/settings/availability',
+        allowed,
+      });
+    }
     const updates={};
     if (body.display_name!==undefined) updates.display_name = String(body.display_name).trim().slice(0,32);
     if (body.name!==undefined && updates.display_name===undefined) updates.display_name = String(body.name).trim().slice(0,32);
@@ -1432,10 +1438,6 @@ async function handleProfile(req,res){
       else updates.interview_focus = 'both';
     }
     if (body.leetcode_handle!==undefined) updates.leetcode_handle = String(body.leetcode_handle).trim().slice(0,64);
-    if (body.is_available!==undefined){
-      updates.is_available = body.is_available ? 1 : 0;
-      updates.availability_updated_at = new Date().toISOString();
-    }
     if (Object.keys(updates).length===0) return res.status(400).json({ error:'no fields to update', allowed });
     const cols = Object.keys(updates);
     const setSql = cols.map(c=>`${c}=?`).join(', ');

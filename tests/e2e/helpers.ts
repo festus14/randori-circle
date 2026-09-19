@@ -45,6 +45,27 @@ const defaultApiResponses: Record<string, ApiResponse> = {
     registrationMode: 'private_beta',
   },
   '/api/auth/me': { _status: 401, ok: false, error: 'authentication required' },
+  '/api/settings/availability': request => hasSessionCookie(request)
+    ? {
+        ok: true,
+        availability: {
+          cycle: {
+            cycleId: '2099-W52',
+            startsAt: '2099-12-27T08:00:00.000Z',
+            endsAt: '2100-01-03T08:00:00.000Z',
+            cutoffAt: '2099-12-27T08:00:00.000Z',
+            timeZone: 'Europe/London',
+            state: 'upcoming',
+          },
+          cycleKey: 'f'.repeat(64),
+          isAvailable: true,
+          version: 0,
+          source: 'cycle_default',
+          editable: true,
+          updatedAt: null,
+        },
+      }
+    : { _status: 401, error: 'authentication required' },
   '/api/circle': request => hasSessionCookie(request)
     ? {
         ok: true,
@@ -108,6 +129,9 @@ export async function resetClientState(
     }]);
   }
   await page.addInitScript(({ authenticated, initialLocalStorage }) => {
+    // page.addInitScript also runs in frames. A late same-origin iframe must
+    // not clear the top-level application's shared localStorage mid-test.
+    if (window.top !== window) return;
     localStorage.clear();
     sessionStorage.clear();
     localStorage.setItem('randori-onboarded', '1');

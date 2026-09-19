@@ -309,11 +309,13 @@ test('an authenticated member can sign out every session from the account menu',
   await page.locator('#meLabel').click();
   const logoutAll=page.getByRole('button',{name:'Sign out everywhere'});
   await expect(logoutAll).toBeVisible();
+  const reloaded=page.waitForEvent('load');
   await logoutAll.click();
   await expect.poll(()=>logoutAllCalls).toBe(1);
+  await reloaded;
   await expect(page.locator('#authBtn')).toBeVisible();
   expect(await page.evaluate(()=>(window as any)._randori_auth.me)).toBeNull();
-  expect(await page.evaluate(()=>localStorage.getItem('randori-me'))).toBeNull();
+  await expect.poll(()=>page.evaluate(()=>localStorage.getItem('randori-me'))).toBeNull();
 });
 
 test('private beta capabilities offer Google for joining and password only for existing members', async ({ page }) => {
