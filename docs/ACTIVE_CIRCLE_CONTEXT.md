@@ -43,11 +43,13 @@ disabled unless both `CIRCLE_MEMBERSHIP_ENABLED=true` and
   A secondary circle starts at `cycle_default` even when it has no prior cycle;
   its availability key and decision rows are independent. This uses the
   existing v3 cycle tables and requires no migration after v12.
-- Pairing, history, schedule, chat, execution, workspace, video, and AI routes
-  are still available only when the session resolves to exactly one active
-  primary circle. Multiple circles, a sole secondary circle, or a stale saved
-  selection return `409 circle_feature_unavailable`; these records do not yet
-  carry complete tenant ownership.
+- With the additional default-off `SECONDARY_CIRCLE_COORDINATION_ENABLED` flag,
+  `/api/pairing/run`, `/api/weeks`, and `/api/my-pair` use the selected circle.
+  A selected primary retains the legacy workspace path. A selected secondary
+  uses the v13 immutable coordination data plane and returns no room or other
+  workspace capability. History, schedule, chat, execution, workspace, video,
+  recap, and AI remain primary-only and return `409 circle_feature_unavailable`.
+  See `SELECTED_CIRCLE_PAIRING.md`.
 
 The browser clears private circle and workspace state before reloading after a
 switch. Starting a switch advances a client control-plane epoch, so delayed
@@ -77,6 +79,8 @@ refresh only until its actor, circle, context version, and TTL are revalidated.
 5. Repeat the control-plane and availability checks in production before admitting a real
    secondary membership. Monitor only aggregate response/error counts; circle
    names, invitation targets, and session identifiers must not enter telemetry.
+6. Apply migration v13, then canary `SECONDARY_CIRCLE_COORDINATION_ENABLED` as
+   described in `SELECTED_CIRCLE_PAIRING.md`.
 
 Rollback is application-only. Disable `MULTI_CIRCLE_AVAILABILITY_ENABLED` first
 to restore the legacy availability gate without disabling roster/invitation

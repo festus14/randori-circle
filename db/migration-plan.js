@@ -85,6 +85,13 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'53b134a1d27902d0c075cccb9ae61ee6940e8336a7f49379757b2af079a8c4cf',
     checksum:'8de796b7c33753d21bc290f0ed19e04f26692dcf7239e1762e7af3ac5e8b7506',
   }),
+  Object.freeze({
+    version:13,
+    name:'circle-owned-pairing-coordination',
+    description:'Immutable circle-owned eligibility snapshots and pairing groups without workspace capability.',
+    operationsChecksum:'b1e9e6bcba1e210642a3e441ad970ad894233e66a3355c41fdfa86783f5c4458',
+    checksum:'5fe280689f9b54ff1adf2340f60fc2264e8ceba9c8535866c0d0ae4ad54e7b3b',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){

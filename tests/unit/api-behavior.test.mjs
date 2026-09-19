@@ -10,6 +10,8 @@ import { createClient } from '@libsql/client';
 import bcrypt from 'bcryptjs';
 import { availabilityCycleKey } from '../../api/_availability.js';
 import { resolvePairingCycle } from '../../api/_pairing-cycle.js';
+import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
+import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
 import {googleOAuthCookieHeader,googleProviderFetch} from '../support/google-oidc.mjs';
 
 const realFetch = globalThis.fetch;
@@ -549,7 +551,7 @@ beforeEach(() => {
     'NEXT_PUBLIC_SENTRY_DSN', 'SENTRY_DSN',
     'ALLOW_OPEN_SIGNUP', 'SIGNUP_ALLOWLIST', 'LEETCODE_INGESTION_AUTHORIZED',
     'AUTH_SCHEMA_BOOTSTRAP_ENABLED', 'CIRCLE_MEMBERSHIP_ENABLED', 'MULTI_CIRCLE_CONTROL_PLANE_ENABLED',
-    'MULTI_CIRCLE_AVAILABILITY_ENABLED', 'RANDORI_LOCAL_RUNTIME',
+    'MULTI_CIRCLE_AVAILABILITY_ENABLED', 'SECONDARY_CIRCLE_COORDINATION_ENABLED', 'RANDORI_LOCAL_RUNTIME',
     'EMAIL_PASSWORD_ACTIVATION_ENABLED', 'EMAIL_VERIFICATION_ENCRYPTION_KEY',
     'PASSWORD_RESET_ENABLED', 'PASSWORD_RESET_ENCRYPTION_KEY',
     'IDENTITY_EMAIL_HASH_KEY', 'IDENTITY_EMAIL_HASH_KEY_VERSION', 'IDENTITY_MANAGEMENT_ENABLED',
@@ -676,6 +678,22 @@ test('auth capabilities report the exact local or private-beta contract without 
     registrationMode:'private_beta',
   });
   assert.equal(executed.length,0);
+
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';
+  process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED='true';
+  process.env.SECONDARY_CIRCLE_COORDINATION_ENABLED='true';
+  result=await invoke(authHandler,{
+    url:'/api/auth/capabilities',query:{endpoint:'capabilities'},headers:{host:'randori.example.test'},
+  });
+  assert.equal(result.body.capabilities.multiCircleControlPlane,true);
+  assert.equal(result.body.capabilities.multiCircleAvailability,true);
+  assert.equal(result.body.capabilities.secondaryCircleCoordination,true);
+  assert.equal(executed.length,0);
+  delete process.env.CIRCLE_MEMBERSHIP_ENABLED;
+  delete process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED;
+  delete process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED;
+  delete process.env.SECONDARY_CIRCLE_COORDINATION_ENABLED;
 
   process.env.GOOGLE_CLIENT_ID='google-client';
   process.env.GOOGLE_CLIENT_SECRET='google-secret';
@@ -2742,7 +2760,8 @@ test('operations cover preferences, availability, admin promotion, demo lifecycl
   }));
   assert.equal(outsideWindow.status,200);
   assert.equal(outsideWindow.body.reason,'outside_due_window');
-  assert.equal(executed.length,0,'an authenticated off-window cron must not touch storage');
+  assert.equal(executed.length,1,'an authenticated off-window cron reads only the database clock');
+  assert.match(executed[0].sql,/strftime\('\%Y-\%m-\%dT\%H:\%M:\%fZ','now'\)/);
 
   const weekly = await withFixedNow('2026-09-20T08:15:00.000Z',()=>invoke(opsHandler, { method: 'POST', url: '/api/cron/weekly', query: { endpoint:'weekly' }, headers: { 'x-cron-secret': 'cron-secret' } }));
   assert.equal(weekly.status, 200);
@@ -3335,6 +3354,7 @@ test('unscoped pairing and workspace routes require one resolved primary circle'
     [dataHandler,{url:'/api/weeks',query:{endpoint:'weeks'},headers}],
     [dataHandler,{url:'/api/messages',query:{endpoint:'messages'},headers}],
     [opsHandler,{method:'GET',url:'/api/settings/availability',query:{endpoint:'availability'},headers}],
+    [opsHandler,{method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers,body:{}}],
     [aiHandler,{method:'GET',url:'/api/ai/history',query:{endpoint:'history'},headers}],
     [videoHandler,{method:'GET',url:'/api/video/signal',query:{endpoint:'signal'},headers}],
   ]){
@@ -3345,6 +3365,8 @@ test('unscoped pairing and workspace routes require one resolved primary circle'
       code:'circle_feature_unavailable',
     });
   }
+  assert.equal(executed.some(({sql})=>sql.includes('circle_pairing_')),false,
+    'feature-off requests must not inspect or mutate v13 pairing storage');
 
   memberships=[
     {circle_id:20,public_id:'circle-secondary',name:'Secondary',is_primary:0,role:'member'},
@@ -3481,6 +3503,102 @@ test('a sole secondary circle uses implicit availability GET and POST without a 
   assert.equal(updated.body.availability.source,'user');
   assert.equal(updated.body.availability.isAvailable,false);
   assert.equal(updated.body.availability.version,1);
+});
+
+test('selected secondary owner publishes and reads coordination without legacy workspace capability',async()=>{
+  process.env.APP_URL='https://randori.example.test';
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';
+  process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED='true';
+  process.env.SECONDARY_CIRCLE_COORDINATION_ENABLED='true';
+  const directory=mkdtempSync(join(tmpdir(),'randori-secondary-api-'));
+  const client=createClient({url:pathToFileURL(join(directory,'pairing.sqlite')).href});
+  try{
+    await prepareMigrationConnection(client);
+    const before=await inspectMigrationState(client);
+    await applyMigrations(client,{
+      expectedStateFingerprint:before.stateFingerprint,migrations:EXECUTABLE_MIGRATIONS,
+      retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0},
+    });
+    await client.batch([
+      `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_demo)
+        VALUES (1,'admin@example.test','hash','Owner','#123456',0),
+               (2,'two@example.test','hash','Member Two','#654321',0),
+               (3,'three@example.test','hash','Member Three','#abcdef',0)`,
+      `INSERT INTO circles (id,public_id,slug,name,is_primary,created_by)
+        VALUES (10,'circle-primary','primary','Primary',1,1),
+               (20,'circle-secondary','secondary','Secondary',0,1)`,
+      `INSERT INTO circle_memberships (circle_id,user_id,role,status)
+        VALUES (10,1,'owner','active'),(20,1,'owner','active'),
+               (20,2,'member','active'),(20,3,'member','active')`,
+      {sql:`INSERT INTO auth_sessions (session_hash,user_id,created_at,expires_at)
+        VALUES (?,?,1,4000000000)`,args:['a'.repeat(64),1]},
+      {sql:`INSERT INTO auth_session_circle_contexts
+        (session_hash,user_id,circle_id,context_version,updated_at) VALUES (?,?,?,?,1)`,
+      args:['a'.repeat(64),1,20,7]},
+    ],'write');
+    db=client;
+    const headers={...sameOriginHeaders,'x-test-auth':'admin','x-randori-circle-context-version':'7'};
+    executed.length=0;
+    const published=await invoke(opsHandler,{
+      method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers,body:{},
+    });
+    assert.equal(published.status,200,JSON.stringify(published.body));
+    assert.equal(published.body.coordination_only,true);
+    assert.equal(published.body.workspace_available,false);
+    assert.equal(published.body.circle_public_id,'circle-secondary');
+    assert.equal(published.body.circle_context_version,7);
+    assert.equal('week_id' in published.body,false);
+    assert.equal(executed.some(({sql})=>/\b(?:CREATE|ALTER)\b/i.test(sql)),false,
+      'secondary publication must not run request-path DDL');
+    assert.equal(executed.some(({sql})=>/\b(?:pairing_weeks|pairing_groups|pairing_participants|pair_schedules|pair_messages|outbox_events|pairing_email_outbox)\b/i.test(sql)),false,
+      'secondary publication must not touch legacy pairing, workspace, or outbox tables');
+
+    executed.length=0;
+    const weeks=await invoke(dataHandler,{
+      url:'/api/weeks?circle_id=10',query:{endpoint:'weeks',circle_id:'10'},headers,
+    });
+    assert.equal(weeks.status,200,JSON.stringify(weeks.body));
+    assert.equal(weeks.body.coordination_only,true);
+    assert.equal(weeks.body.workspace_available,false);
+    assert.equal(weeks.body.weeks.length,1);
+    assert.equal(weeks.body.weeks[0].pairs.length,2);
+    const solo=weeks.body.weeks[0].pairs.find(pair=>pair.solo===true);
+    assert.equal(solo.members.length,1);
+    assert.equal('id' in weeks.body.weeks[0],false);
+    assert.equal('pg_id' in weeks.body.weeks[0].pairs[0],false);
+    assert.doesNotMatch(JSON.stringify(weeks.body),/week_[1-9]|room_id|schedule/);
+    assert.doesNotMatch(JSON.stringify(weeks.body),/is_ai/i);
+
+    const mine=await invoke(dataHandler,{
+      url:'/api/my-pair?circle_id=10',query:{endpoint:'my-pair',circle_id:'10'},headers,
+    });
+    assert.equal(mine.status,200,JSON.stringify(mine.body));
+    assert.equal(mine.body.paired,true);
+    assert.equal(mine.body.workspace_available,false);
+    assert.equal(mine.body.circle_public_id,'circle-secondary');
+    assert.equal('room_id' in mine.body,false);
+    assert.equal('schedule' in mine.body,false);
+    assert.equal('id' in mine.body.partner,false);
+    assert.equal(executed.some(({sql})=>/\b(?:CREATE|ALTER)\b/i.test(sql)),false,
+      'secondary reads must not run request-path DDL');
+    assert.equal(executed.some(({sql})=>/\b(?:pairing_weeks|pairing_groups|pairing_participants|pair_schedules|pair_messages|outbox_events|pairing_email_outbox)\b/i.test(sql)),false,
+      'secondary reads must not touch legacy pairing, workspace, or outbox tables');
+
+    const stale=await invoke(opsHandler,{
+      method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},
+      headers:{...headers,'x-randori-circle-context-version':'6'},body:{},
+    });
+    assert.equal(stale.status,409);
+    assert.equal(stale.body.code,'circle_context_changed');
+    assert.equal(Number((await client.execute(`SELECT COUNT(*) AS count FROM circle_pairing_publications`)).rows[0].count),1);
+    assert.equal(Number((await client.execute(`SELECT COUNT(*) AS count FROM pairing_weeks`)).rows[0].count),0);
+    assert.equal(Number((await client.execute(`SELECT COUNT(*) AS count FROM pair_schedules`)).rows[0].count),0);
+    assert.equal(Number((await client.execute(`SELECT COUNT(*) AS count FROM outbox_events`)).rows[0].count),0);
+  }finally{
+    client.close();
+    rmSync(directory,{recursive:true,force:true});
+  }
 });
 
 test('video signaling validates membership and supports post, filtered poll, and purge', async () => {

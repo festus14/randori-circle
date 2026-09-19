@@ -38,6 +38,9 @@
    CRON_SECRET=a-different-random-string
    ADMIN_EMAILS=owner@example.com
    CIRCLE_MEMBERSHIP_ENABLED=false
+   MULTI_CIRCLE_CONTROL_PLANE_ENABLED=false
+   MULTI_CIRCLE_AVAILABILITY_ENABLED=false
+   SECONDARY_CIRCLE_COORDINATION_ENABLED=false
    EMAIL_PASSWORD_ACTIVATION_ENABLED=false
    EMAIL_VERIFICATION_ENCRYPTION_KEY=... # openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
    PASSWORD_RESET_ENABLED=false
@@ -68,6 +71,7 @@ Provider-identity and other migration-managed schema changes use the protected m
 - Circle = active `circle_memberships` in the one operational primary circle. The one-time migration backfills existing non-demo authenticated accounts; legacy `users` rows are never inferred as members.
 - Manual publication = **primary-circle owner only** in production. The isolated loopback/local-file development runtime permits its database admin. `POST /api/pairing/run` is idempotent: once the current London cycle is published, later calls return that publication without changing pairs.
 - Availability — each user edits the explicitly dated upcoming cycle through `/api/settings/availability`. The API returns the UTC start/end/cutoff, configured IANA timezone, cycle digest, and optimistic version. Publication reads only that exact current-cycle scope; unavailable users are skipped and can receive a reminder. The timeless account flag is frozen as a bounded rollout bridge and is never updated by the dated endpoint.
+- Secondary coordination — after v13 is applied, the default-off `SECONDARY_CIRCLE_COORDINATION_ENABLED` flag lets a selected secondary owner publish a circle-owned current-cycle result and lets active members view it. Those responses never contain legacy week/group/room IDs and do not authorize schedule, chat, video, execution, recap, AI, or email delivery. See [the selected-circle pairing runbook](docs/SELECTED_CIRCLE_PAIRING.md).
 
 **Env vars added beyond section above:**
 - `JWT_SECRET` — at least 32 random bytes, used for 12-hour HS256 session cookies and domain-separated invitation, activation, and password-reset token hashes. Rotating it signs out all sessions and invalidates every outstanding invitation, activation, and password-reset link; revoke/reissue invitations and activations, and require affected users to request new reset links.
@@ -94,10 +98,10 @@ Provider-identity and other migration-managed schema changes use the protected m
 - `GET /api/circle` — authenticated and membership-scoped; returns safe profile fields for active members only and never returns email addresses.
 - `POST /api/invitations` / `GET /api/invitations` / `DELETE /api/invitations/:id` — primary-circle owner invitation lifecycle.
 - `POST /api/invitations/prepare` — same-origin, rate-limited exchange from a URL-fragment token to a 10-minute Secure/HttpOnly claim cookie.
-- `GET /api/weeks` — active primary-circle membership required (or a non-demo local account in the isolated local runtime). Returns only the strictly validated current immutable publication; it never falls back to historical, demo, or legacy-user rows.
-- `GET /api/my-pair` — returns only the authenticated member's pair from that same strictly validated current publication. Revoked members and incomplete/corrupt publications fail closed.
+- `GET /api/weeks` — returns the selected circle's strictly validated current immutable publication. A primary/local response retains its legacy workspace IDs; a secondary response is coordination-only, omits those IDs, and redacts groups whose human member has left.
+- `GET /api/my-pair` — returns only the authenticated member's current pair. A secondary response sets `workspace_available:false`, omits room/schedule state, and returns `partner_unavailable` without identity if the partner has left.
 - `GET /api/history` — Bearer → personal history where you appear, partner counts.
-- `POST /api/pairing/run` — primary-circle owner publication endpoint. Exact managed schema v6, a closed and audit-consistent membership rollout, owner authorization, the active non-demo primary-circle membership set, current-cycle availability, source-scoped history, participant provenance, algorithm metadata, pairs, and versioned outbox events are verified or written in one transaction. Vetted pre-commit database-lock conflicts retry with a bound; an ambiguous commit is never retried. Its operational response contains aggregate counts and cycle metadata, not member names, emails, account IDs, or room IDs.
+- `POST /api/pairing/run` — selected-circle owner publication endpoint when secondary coordination is enabled. Primary/local publication retains the legacy v6/outbox path. Secondary publication uses v13, exact transaction-time session context and circle ownership, a complete availability snapshot, same-circle history, and no outbox or workspace write. Vetted pre-commit database-lock conflicts retry with a bound; an ambiguous commit never does.
 - `GET|POST /api/cron/weekly` — protected by `x-cron-secret` or `Authorization: Bearer <CRON_SECRET>`. It accepts the configured Sunday 08:00 UTC run after the London cycle boundary, publishes the same immutable cycle as the owner endpoint, avoids repeat pairing where possible, and gives an odd member Solo practice.
   - If both `RESEND_API_KEY` and `RESEND_FROM` are set, sends email to available users plus a reminder to unavailable users.
   - If either is absent, the delivery summary explains that email is disabled and pairs remain visible in-app via `/api/weeks`.

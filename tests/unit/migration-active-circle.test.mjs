@@ -59,7 +59,7 @@ async function seedMembership(db,{userId=1,circleId=1,sessionByte='a'}={}){
 test('v12 installs the checksummed session context table and lookup index',async()=>{
   const fixture=temporaryDatabase();
   try{
-    const result=await apply(fixture.db);
+    const result=await apply(fixture.db,EXECUTABLE_MIGRATIONS.slice(0,12));
     assert.equal(result.toVersion,12);
     assert.deepEqual(ACTIVE_CIRCLE_MIGRATION.operations.map(operation=>operation.name),[
       'uq_auth_sessions_hash_user','auth_session_circle_contexts','idx_auth_session_circle_contexts_user_circle',
@@ -77,15 +77,17 @@ test('managed v11 upgrades exactly once and repeated v12 apply is a no-op',async
   const fixture=temporaryDatabase();
   try{
     await apply(fixture.db,THROUGH_V11);
-    const before=await inspectMigrationState(fixture.db);
+    const before=await inspectMigrationState(fixture.db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,12)});
     assert.equal(before.currentVersion,11);
     const upgraded=await applyMigrations(fixture.db,{
       expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY,
+      migrations:EXECUTABLE_MIGRATIONS.slice(0,12),
     });
     assert.deepEqual(upgraded.applied.map(entry=>entry.version),[12]);
-    const current=await inspectMigrationState(fixture.db);
+    const current=await inspectMigrationState(fixture.db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,12)});
     const repeated=await applyMigrations(fixture.db,{
       expectedStateFingerprint:current.stateFingerprint,retry:NO_RETRY,
+      migrations:EXECUTABLE_MIGRATIONS.slice(0,12),
     });
     assert.deepEqual(repeated.applied,[]);
     assert.equal(repeated.toVersion,12);

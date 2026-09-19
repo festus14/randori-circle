@@ -61,6 +61,11 @@ export const MIGRATION_CONTRACTS=Object.freeze([
     name:'session-bound-active-circle-context',
     checksum:'9443e548fb6edac275eb8af08e7bc007cbfa32e5450efaf444375b976eddf43c',
   }),
+  Object.freeze({
+    version:13,
+    name:'circle-owned-pairing-coordination',
+    checksum:'a25458811dba79d04f263b4d4d62a0cbb4e21ce774fd5be3bed87f90266deecf',
+  }),
 ]);
 
 export const LATEST_MIGRATION_VERSION=MIGRATION_CONTRACTS.at(-1)?.version||0;

@@ -28,7 +28,11 @@ import {
   readInviteClaim,
   validatePreparedInvitation,
 } from './_circle-membership.js';
-import { multiCircleAvailabilityEnabled, multiCircleControlPlaneEnabled } from './_active-circle.js';
+import {
+  multiCircleAvailabilityEnabled,
+  multiCircleControlPlaneEnabled,
+  secondaryCircleCoordinationEnabled,
+} from './_active-circle.js';
 import { localIdentityAdapterEnabled, localRuntimeRequest } from './_local-runtime.js';
 import { googleOAuthRequestConfiguration, setAuthResponseHeaders } from './_auth-config.js';
 import {
@@ -227,6 +231,7 @@ function handleCapabilities(req,res){
       ...(circleMembershipEnabled()&&process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED==='true'
         ?{multiCircleControlPlane:true}:{}),
       ...(multiCircleAvailabilityEnabled()?{multiCircleAvailability:true}:{}),
+      ...(secondaryCircleCoordinationEnabled()?{secondaryCircleCoordination:true}:{}),
     },
     registrationMode:localIdentity?'local_invite':(verifiedEmailActivation?'verified_invite':(passwordSignup?'local_open':'private_beta')),
   });

@@ -478,6 +478,33 @@ test('an ordinary member is denied and owner authorization is rechecked in the t
   assert.equal(await count(db,'pairing_week_runs'),0);
 });
 
+test('selected primary publication revalidates the exact session context in its write transaction',async()=>{
+  const {db}=await createDatabase();
+  await seedCircle(db,[{id:1,role:'owner'},{id:2,role:'member'}]);
+  const sessionHash='c'.repeat(64);
+  await db.execute({
+    sql:`INSERT INTO auth_sessions (session_hash,user_id,created_at,expires_at)
+      VALUES (?,1,1,4000000000)`,args:[sessionHash],
+  });
+  await db.execute({
+    sql:`INSERT INTO auth_session_circle_contexts
+      (session_hash,user_id,circle_id,context_version,updated_at) VALUES (?,1,1,7,1)`,
+    args:[sessionHash],
+  });
+  const circleContext={payload:{id:1,sessionHash},circleId:1,contextVersion:7,implicit:false};
+  const result=await publishPairingCycle(db,publicationOptions({circleContext}));
+  assert.equal(result.created,true);
+  await db.execute({
+    sql:`UPDATE auth_session_circle_contexts SET context_version=8 WHERE session_hash=? AND user_id=1`,
+    args:[sessionHash],
+  });
+  await assert.rejects(
+    publishPairingCycle(db,publicationOptions({circleContext})),
+    error=>error instanceof PairingPublicationError&&error.code==='PAIRING_CONTEXT_CHANGED',
+  );
+  assert.equal(await count(db,'pairing_week_runs'),1);
+});
+
 test('publication uses exact Sunday, DST, and ISO-year cycle boundaries',async()=>{
   const cases=[
     ['2026-03-29T06:59:59.999Z','2026-W13','2026-03-22T08:00:00.000Z'],

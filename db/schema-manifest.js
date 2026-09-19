@@ -153,6 +153,16 @@ const PLAN_12_OPERATIONS=Object.freeze([
   index('idx_auth_session_circle_contexts_user_circle','auth_session_circle_contexts',['user_id','circle_id']),
 ]);
 
+const PLAN_13_OPERATIONS=Object.freeze([
+  table('circle_pairing_publications',`CREATE TABLE IF NOT EXISTS circle_pairing_publications (id INTEGER PRIMARY KEY AUTOINCREMENT, scope_key TEXT NOT NULL CHECK(length(scope_key)>=8 AND length(scope_key)<=80), circle_id INTEGER NOT NULL CHECK(typeof(circle_id)='integer' AND circle_id>0), cycle_key TEXT NOT NULL CHECK(length(cycle_key)=64 AND cycle_key NOT GLOB '*[^0-9a-f]*'), cycle_id TEXT NOT NULL CHECK(length(cycle_id)=8 AND cycle_id GLOB '[0-9][0-9][0-9][0-9]-W[0-9][0-9]' AND substr(cycle_id,7,2) BETWEEN '01' AND '53'), starts_at TEXT NOT NULL CHECK(length(starts_at)=24 AND starts_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND julianday(starts_at) IS NOT NULL AND strftime('%Y-%m-%dT%H:%M:%fZ',starts_at)=starts_at), ends_at TEXT NOT NULL CHECK(length(ends_at)=24 AND ends_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND julianday(ends_at) IS NOT NULL AND strftime('%Y-%m-%dT%H:%M:%fZ',ends_at)=ends_at), cutoff_at TEXT NOT NULL CHECK(length(cutoff_at)=24 AND cutoff_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND julianday(cutoff_at) IS NOT NULL AND strftime('%Y-%m-%dT%H:%M:%fZ',cutoff_at)=cutoff_at), time_zone TEXT NOT NULL CHECK(length(time_zone)>=1 AND length(time_zone)<=100 AND time_zone=trim(time_zone)), generation_token TEXT NOT NULL CHECK(length(generation_token)=36), algorithm_version TEXT NOT NULL CHECK(length(algorithm_version)>=1 AND length(algorithm_version)<=64), algorithm_seed TEXT NOT NULL CHECK(length(algorithm_seed)>=1 AND length(algorithm_seed)<=255), participant_count INTEGER NOT NULL CHECK(typeof(participant_count)='integer' AND participant_count>=0), created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), UNIQUE(scope_key,cycle_key), UNIQUE(id,scope_key,circle_id,cycle_key), CHECK(scope_key=('circle:'||circle_id)), CHECK(cutoff_at<=starts_at AND starts_at<ends_at), FOREIGN KEY(circle_id) REFERENCES circles(id) ON DELETE RESTRICT, FOREIGN KEY(scope_key,cycle_key) REFERENCES pairing_cycles(scope_key,cycle_key) ON DELETE RESTRICT)`),
+  table('circle_pairing_eligibility',`CREATE TABLE IF NOT EXISTS circle_pairing_eligibility (publication_id INTEGER NOT NULL CHECK(typeof(publication_id)='integer' AND publication_id>0), scope_key TEXT NOT NULL, circle_id INTEGER NOT NULL CHECK(typeof(circle_id)='integer' AND circle_id>0), cycle_key TEXT NOT NULL CHECK(length(cycle_key)=64 AND cycle_key NOT GLOB '*[^0-9a-f]*'), user_id INTEGER NOT NULL CHECK(typeof(user_id)='integer' AND user_id>0), is_available INTEGER NOT NULL CHECK(typeof(is_available)='integer' AND is_available IN (0,1)), availability_version INTEGER NOT NULL CHECK(typeof(availability_version)='integer' AND availability_version>=0), availability_source TEXT NOT NULL CHECK(availability_source IN ('user','cycle_default')), position INTEGER NOT NULL CHECK(typeof(position)='integer' AND position>=0), created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), PRIMARY KEY(publication_id,user_id), UNIQUE(publication_id,position), UNIQUE(publication_id,scope_key,circle_id,cycle_key,user_id), CHECK(scope_key=('circle:'||circle_id)), FOREIGN KEY(publication_id,scope_key,circle_id,cycle_key) REFERENCES circle_pairing_publications(id,scope_key,circle_id,cycle_key) ON DELETE RESTRICT, FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE RESTRICT)`),
+  table('circle_pairing_groups',`CREATE TABLE IF NOT EXISTS circle_pairing_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, publication_id INTEGER NOT NULL CHECK(typeof(publication_id)='integer' AND publication_id>0), scope_key TEXT NOT NULL, circle_id INTEGER NOT NULL CHECK(typeof(circle_id)='integer' AND circle_id>0), cycle_key TEXT NOT NULL CHECK(length(cycle_key)=64 AND cycle_key NOT GLOB '*[^0-9a-f]*'), position INTEGER NOT NULL CHECK(typeof(position)='integer' AND position>=0), user_a_id INTEGER NOT NULL CHECK(typeof(user_a_id)='integer' AND user_a_id>0), user_b_id INTEGER, is_solo INTEGER NOT NULL CHECK(typeof(is_solo)='integer' AND is_solo IN (0,1)), created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), UNIQUE(publication_id,position), CHECK(scope_key=('circle:'||circle_id)), CHECK((is_solo=1 AND user_b_id IS NULL) OR (is_solo=0 AND typeof(user_b_id)='integer' AND user_b_id>0 AND user_b_id<>user_a_id)), FOREIGN KEY(publication_id,scope_key,circle_id,cycle_key) REFERENCES circle_pairing_publications(id,scope_key,circle_id,cycle_key) ON DELETE RESTRICT, FOREIGN KEY(publication_id,scope_key,circle_id,cycle_key,user_a_id) REFERENCES circle_pairing_eligibility(publication_id,scope_key,circle_id,cycle_key,user_id) ON DELETE RESTRICT, FOREIGN KEY(publication_id,scope_key,circle_id,cycle_key,user_b_id) REFERENCES circle_pairing_eligibility(publication_id,scope_key,circle_id,cycle_key,user_id) ON DELETE RESTRICT)`),
+  index('idx_circle_pairing_publications_circle_cycle','circle_pairing_publications',['circle_id','starts_at DESC','id DESC']),
+  index('idx_circle_pairing_eligibility_scope_user','circle_pairing_eligibility',['scope_key','user_id','publication_id DESC']),
+  index('idx_circle_pairing_groups_user_a','circle_pairing_groups',['publication_id','user_a_id']),
+  index('idx_circle_pairing_groups_user_b','circle_pairing_groups',['publication_id','user_b_id']),
+]);
+
 export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:1,
@@ -205,6 +215,10 @@ export const SCHEMA_OPERATION_SETS=Object.freeze([
     version:12,
     operations:PLAN_12_OPERATIONS,
   }),
+  Object.freeze({
+    version:13,
+    operations:PLAN_13_OPERATIONS,
+  }),
 ]);
 
 export function resolveCurrentArtifacts(operationSets,operation){
@@ -244,7 +258,7 @@ export const SCHEMA_MANIFEST_CHECKSUM=checksum({
 
 // Updating the schema is intentional only when this pinned checksum is updated
 // in the same reviewed change.
-export const PINNED_SCHEMA_MANIFEST_CHECKSUM='93a7a44545d6b66a741f62204434b11a9e0113aaa0445946baffaf9bc70a0c09';
+export const PINNED_SCHEMA_MANIFEST_CHECKSUM='519f6deaf49f614f69d620418700e789380132fc4db8c9e9c7ffd092fabe2d4e';
 
 if(SCHEMA_MANIFEST_CHECKSUM!==PINNED_SCHEMA_MANIFEST_CHECKSUM){
   throw new Error(`Schema manifest checksum changed: ${SCHEMA_MANIFEST_CHECKSUM}`);
