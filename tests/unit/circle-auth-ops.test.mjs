@@ -103,7 +103,10 @@ mock.module('../../api/_db.js',{
       : (req.headers?.['x-test-auth']==='admin'
         ? {id:1,email:'admin@example.test',name:'Admin',is_admin:true}
         : null),
-    verifySignedRequestAuth:()=>signedSessionPayload,
+    verifySignedRequestAuth:req=>signedSessionPayload||(req.headers?.['x-test-auth']==='user'
+      ?{id:2,email:'user@example.test',name:'User'}
+      :(req.headers?.['x-test-auth']==='admin'
+        ?{id:1,email:'admin@example.test',name:'Admin',is_admin:true}:null)),
   },
 });
 
@@ -533,6 +536,29 @@ test('membership lookup failures never establish or invalidate a session as a fa
   });
   assert.equal(profile.status,503);
   assert.equal(profile.headers['set-cookie'],undefined,'transient readiness failures must not clear a valid session');
+});
+
+test('invitation-backed Google callback checks membership readiness before provider exchange',async()=>{
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  process.env.APP_URL='https://randori.example.test';
+  process.env.GOOGLE_CLIENT_ID='client';
+  process.env.GOOGLE_CLIENT_SECRET='secret';
+  readinessError=new Error('membership schema unavailable');
+  let providerCalls=0;
+  globalThis.fetch=googleProviderFetch({
+    claims:{email:'invited@example.test',name:'Invited User',sub:'google-invited-1'},
+    onRequest:()=>{ providerCalls+=1; },
+  });
+
+  const result=await invoke(authHandler,{
+    url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
+    headers:oauthRequestHeaders(),
+  });
+  assert.equal(result.status,302);
+  assert.match(result.headers.location,/google_error=db_error/);
+  assert.equal(providerCalls,0);
+  assert.equal(validationCalls.length,0);
+  assert.equal(executed.some(call=>/^\s*(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(call.sql)),false);
 });
 
 test('verified Google invitation bypasses allowlist only after validation and atomic acceptance',async()=>{

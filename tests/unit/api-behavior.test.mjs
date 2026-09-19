@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { after, beforeEach, mock, test } from 'node:test';
 import { createClient } from '@libsql/client';
 import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 import { availabilityCycleKey } from '../../api/_availability.js';
 import { resolvePairingCycle } from '../../api/_pairing-cycle.js';
 import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
@@ -240,7 +241,7 @@ mock.module('../../api/_db.js', {
     isoWeekLabel: () => '2026-W38',
     shuffleArray: values => [...values],
     verifyRequestAuth: authPayload,
-    verifySignedRequestAuth: () => null,
+    verifySignedRequestAuth: authPayload,
     verifyMutationOrigin: () => true,
     initSentry: () => {},
     isSentryConfigured: () => Boolean(process.env.SENTRY_DSN || process.env.NEXT_PUBLIC_SENTRY_DSN),
@@ -547,7 +548,7 @@ beforeEach(() => {
   executeHandler = () => rows();
   globalThis.fetch = realFetch;
   for (const key of [
-    'ADMIN_EMAILS', 'AI_ENABLED', 'APP_URL', 'CRON_SECRET', 'GOOGLE_CLIENT_ID', 'NODE_ENV',
+    'ADMIN_EMAILS', 'AI_ENABLED', 'APP_URL', 'CRON_SECRET', 'GOOGLE_CLIENT_ID', 'JWT_SECRET', 'NODE_ENV',
     'GOOGLE_CLIENT_SECRET', 'GROQ_API_KEY', 'OPENAI_API_KEY', 'RESEND_API_KEY', 'RESEND_FROM',
     'NEXT_PUBLIC_SENTRY_DSN', 'SENTRY_DSN',
     'ALLOW_OPEN_SIGNUP', 'SIGNUP_ALLOWLIST', 'LEETCODE_INGESTION_AUTHORIZED',
@@ -966,6 +967,110 @@ test('login rejects missing or cross-origin requests before credential or databa
     assert.equal(result.status, 403);
     assert.equal(executed.length, 0);
   }
+});
+
+test('auth, activation, reset, and identity request paths fail closed without schema writes',async()=>{
+  enableLocalPasswordSignup();
+  process.env.JWT_SECRET=TEST_JWT_SECRET;
+  const profileToken=jwt.sign(
+    {id:2,email:'user@example.test',jti:'G'.repeat(43)},TEST_JWT_SECRET,
+    {algorithm:'HS256',issuer:'randori-circle',audience:'randori-web',expiresIn:'5m'},
+  );
+  executeHandler=sql=>{
+    if(/FROM\s+auth_accounts\s+LIMIT\s+0/iu.test(sql)) throw new Error('auth schema unavailable');
+    return rows();
+  };
+  const resetUnreadyClient=()=>{
+    db=createMockDb();
+    executed.length=0;
+  };
+  const assertReadOnlyFailure=()=>{
+    assert.equal(executed.some(({sql})=>/^\s*(?:CREATE|ALTER|DROP|VACUUM|REINDEX)\b/iu.test(sql)),false);
+    assert.equal(executed.some(({sql})=>/^\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(sql)),false,
+      'unready auth schema must fail before business writes');
+  };
+  const requests=[
+    {
+      request:{method:'POST',url:'/api/auth/signup',query:{endpoint:'signup'},headers:localOriginHeaders,
+        body:{email:'person@example.test',password:'correct horse battery',name:'Person'}},
+      status:503,error:'signup temporarily unavailable',
+    },
+    {
+      request:{method:'POST',url:'/api/auth/login',query:{endpoint:'login'},headers:localOriginHeaders,
+        body:{email:'person@example.test',password:'correct horse battery'}},
+      status:503,error:'login temporarily unavailable',
+    },
+    {
+      request:{url:'/api/auth/me',query:{endpoint:'me'},headers:{
+        'x-test-auth':'user',cookie:`randori_session=${profileToken}`,
+      }},
+      status:503,error:'session validation temporarily unavailable',
+    },
+  ];
+  for(const item of requests){
+    resetUnreadyClient();
+    const result=await invoke(authHandler,item.request);
+    assert.equal(result.status,item.status,JSON.stringify({expected:item.error,body:result.body,executed}));
+    assert.equal(result.body.error,item.error);
+    assertReadOnlyFailure();
+  }
+
+  process.env.EMAIL_PASSWORD_ACTIVATION_ENABLED='true';
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  process.env.EMAIL_VERIFICATION_ENCRYPTION_KEY=Buffer.alloc(32,7).toString('base64url');
+  resetUnreadyClient();
+  const activation=await invoke(authHandler,{
+    method:'POST',url:'/api/auth/activation-resend',query:{endpoint:'activation-resend'},
+    headers:localOriginHeaders,body:{email:'person@example.test'},
+  });
+  assert.equal(activation.status,503);
+  assert.equal(activation.body.error,'email activation temporarily unavailable');
+  assertReadOnlyFailure();
+
+  process.env.PASSWORD_RESET_ENABLED='true';
+  process.env.PASSWORD_RESET_ENCRYPTION_KEY=Buffer.alloc(32,8).toString('base64url');
+  resetUnreadyClient();
+  const reset=await invoke(authHandler,{
+    method:'POST',url:'/api/auth/password-reset-consume',query:{endpoint:'password-reset-consume'},
+    headers:localOriginHeaders,body:{token:'x'.repeat(43),password:'correct horse battery'},
+  });
+  assert.equal(reset.status,503);
+  assert.equal(reset.body.error,'password reset temporarily unavailable');
+  assertReadOnlyFailure();
+
+  process.env.IDENTITY_MANAGEMENT_ENABLED='true';
+  resetUnreadyClient();
+  const identity=await invoke(authHandler,{
+    url:'/api/auth/identities',query:{endpoint:'identities'},headers:{'x-test-auth':'user'},
+  });
+  assert.equal(identity.status,503);
+  assert.equal(identity.body.error,'identity management temporarily unavailable');
+
+  assertReadOnlyFailure();
+});
+
+test('Google callback checks auth readiness before consuming the provider code',async()=>{
+  process.env.NODE_ENV='production';
+  process.env.APP_URL='https://randori.example.test';
+  process.env.GOOGLE_CLIENT_ID='client';
+  process.env.GOOGLE_CLIENT_SECRET='secret';
+  let providerCalls=0;
+  globalThis.fetch=async()=>{ providerCalls+=1; throw new Error('provider must not be called'); };
+  executeHandler=sql=>{
+    if(sql.includes('FROM auth_accounts LIMIT 0')) throw new Error('auth schema unavailable');
+    return rows();
+  };
+  const result=await invoke(authHandler,{
+    url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
+    headers:{
+      host:'randori.example.test','x-forwarded-proto':'https',
+      cookie:googleOAuthCookieHeader(),
+    },
+  });
+  assert.equal(result.status,302);
+  assert.equal(result.headers.location,'https://randori.example.test/?google_error=db_error');
+  assert.equal(providerCalls,0);
+  assert.equal(executed.some(({sql})=>/^\s*(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(sql)),false);
 });
 
 test('data read models map database rows and expose non-mutating health probes', async () => {

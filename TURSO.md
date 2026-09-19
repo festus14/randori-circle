@@ -48,7 +48,6 @@
    EMAIL_VERIFICATION_ENCRYPTION_KEY=... # openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
    PASSWORD_RESET_ENABLED=false
    PASSWORD_RESET_ENCRYPTION_KEY=... # generate independently with the same command
-   AUTH_SCHEMA_BOOTSTRAP_ENABLED=false
    RESEND_API_KEY=re_xxx  # omit both Resend values to keep email disabled
    RESEND_FROM=Randori <noreply@your-verified-domain.com>
    APP_URL=https://randori-circle-self.vercel.app
@@ -72,8 +71,8 @@
    restore rehearsal and status inspection for target v16, approve and apply
    only v16, and verify 52 application tables, 56 named indexes, and empty
    secondary schedule tables.
-5. Deploy the v16-aware runtime with `SECONDARY_CIRCLE_SCHEDULING_ENABLED=false`, `CIRCLE_MEMBERSHIP_ENABLED=false`, and `AUTH_SCHEMA_BOOTSTRAP_ENABLED=false`. The rollout-state checks are read-only; any legacy registration that races initialization is atomically included or rejected. Canary scheduling separately with `docs/SECONDARY_SCHEDULING.md` only after the prerequisite feature chain is healthy.
-6. Keep `AUTH_SCHEMA_BOOTSTRAP_ENABLED=false`. The legacy request-time bootstrap does not create provider identities and cannot bypass the current migration/readiness gate. Create the first account only after the protected migration workflow reports the current schema ready.
+5. Deploy the v16-aware runtime with `SECONDARY_CIRCLE_SCHEDULING_ENABLED=false` and `CIRCLE_MEMBERSHIP_ENABLED=false`. Authentication readiness and rollout-state checks are read-only; any legacy registration that races initialization is atomically included or rejected. Canary scheduling separately with `docs/SECONDARY_SCHEDULING.md` only after the prerequisite feature chain is healthy.
+6. Create the first account only after the protected migration workflow reports the current schema ready. There is no request-time authentication bootstrap or repair flag.
 7. Sign in with the bootstrap account and verify `GET /api/auth/me` reports `is_admin: true`.
 8. Call the authenticated admin-only `POST https://your-app.vercel.app/api/init`. This creates the membership schema, closes new uninvited registration, and atomically backfills existing non-demo accounts.
 9. Verify the rollout queries below before setting `CIRCLE_MEMBERSHIP_ENABLED=true` and redeploying.
@@ -82,7 +81,7 @@
 
 **Membership data:** `circles`, `circle_memberships`, hashed `circle_invitations`, `circle_audit_events`, and the singleton `circle_membership_rollout` latch.
 
-Provider-identity and other migration-managed schema changes use the protected migration workflow. Membership schema creation remains an explicit authenticated `POST /api/init` operator step; rollout-state probes and ordinary auth, circle, pairing, and invitation requests do not create it. Keep `AUTH_SCHEMA_BOOTSTRAP_ENABLED=false` so unauthenticated request-time auth bootstrap remains disabled.
+Provider-identity and other migration-managed schema changes use the protected migration workflow. Membership schema creation remains an explicit authenticated `POST /api/init` operator step; rollout-state probes and ordinary auth, circle, pairing, and invitation requests do not create it. Authentication has no request-time schema bootstrap or repair path.
 
 **Scaling rule:**
 - Circle = active `circle_memberships` in the one operational primary circle. The one-time migration backfills existing non-demo authenticated accounts; legacy `users` rows are never inferred as members.
