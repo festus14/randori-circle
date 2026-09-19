@@ -7004,6 +7004,12 @@ def allow(key, limit=5):
     const title=chatNode('h2',{text:'Pair chat'}); title.id='pairChatTitle'; title.style.fontSize='13px';
     const roomLabel=chatNode('span',{className:'kbd',text:room});
     header.append(title,roomLabel);
+    const policy=chatNode('p',{
+      className:'small muted',
+      text:'Private-beta chat retention is 90 days. Legal or export holds and safety pauses may retain messages longer.',
+      testId:'pair-chat-retention-policy',
+    });
+    policy.style.margin='6px 12px';
     const list=chatNode('div',{className:'chat-list',testId:'pair-chat-list'}); list.id='chatList';
     list.setAttribute('role','log'); list.setAttribute('aria-live','off'); list.setAttribute('aria-relevant','additions');
     const controls=chatNode('div',{className:'chat-input'}); controls.style.flexWrap='wrap';
@@ -7030,7 +7036,7 @@ def allow(key, limit=5):
     input.addEventListener('keydown',event=>{
       if(event.key==='Enter'&&!event.isComposing){ event.preventDefault(); send.click(); }
     });
-    controls.append(label,input,send,status); box.append(header,list,controls); area.replaceChildren(box);
+    controls.append(label,input,send,status); box.append(header,policy,list,controls); area.replaceChildren(box);
     renderChatMessages(); setChatBusy();
   }
 

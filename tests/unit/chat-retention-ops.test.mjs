@@ -37,6 +37,13 @@ test('the protected retention workflow is manual, serialized, latest-main only, 
   assert.doesNotMatch(workflow,/echo[^\n]*(?:TURSO_|CHAT_RETENTION_(?:SCOPE|CIRCLE|WEEK|PAIR|RUN|.*DIGEST))/);
 });
 
+test('pair chat renders the visible private-beta retention policy',()=>{
+  const app=readFileSync('index.html','utf8');
+  assert.match(app,/testId:'pair-chat-retention-policy'/);
+  assert.match(app,/Private-beta chat retention is 90 days/);
+  assert.match(app,/Legal or export holds and safety pauses may retain messages longer/);
+});
+
 test('the status command emits one sanitized document without scope, content, URL, or SQL',async()=>{
   const directory=mkdtempSync(join(tmpdir(),'randori-retention-cli-'));
   const path=join(directory,'retention.sqlite');
