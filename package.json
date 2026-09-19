@@ -28,6 +28,7 @@
     "check:runtime-ddl": "node scripts/check-runtime-ddl.mjs",
     "check:syntax": "node tests/static/check-syntax.mjs",
     "validate:catalog": "node scripts/validate-catalog.mjs",
+    "catalog:takedown": "node scripts/catalog-provenance.mjs takedown",
     "test:unit": "node --experimental-test-module-mocks --test tests/unit/*.test.mjs",
     "test:migrations": "node --experimental-test-module-mocks --test tests/unit/migration-*.test.mjs tests/unit/db-migrate-cli.test.mjs",
     "test:deployability": "node --test tests/unit/deployability-contract.test.mjs",

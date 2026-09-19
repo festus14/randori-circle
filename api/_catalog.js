@@ -1,6 +1,11 @@
 import { randomInt } from 'node:crypto';
 
 import rawCatalog from '../data/randori-catalog-v1.json' with { type: 'json' };
+import rawProvenanceManifest from '../data/randori-catalog-provenance-v1.json' with { type: 'json' };
+import {
+  ProvenanceValidationError,
+  validateProvenanceManifest,
+} from './_catalog-provenance.js';
 
 export const SUPPORTED_LANGUAGES = Object.freeze(['javascript', 'python']);
 
@@ -429,7 +434,7 @@ const SERVER_EXERCISE_DEFINITIONS = {
 
 const DIFFICULTIES = new Set(['Easy', 'Medium', 'Hard']);
 const EXERCISE_STATUSES = new Set(['active', 'retired']);
-const TAKEDOWN_STATUSES = new Set(['none', 'requested', 'resolved']);
+const TAKEDOWN_STATUSES = new Set(['none', 'requested', 'revoked', 'resolved']);
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const TYPE_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const TEST_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -590,8 +595,8 @@ function validateGovernance(governance, status, path) {
     requireIsoDate(takedown.requestedAt, `${takedownPath}.requestedAt`);
     requireNonEmptyString(takedown.reference, `${takedownPath}.reference`);
   }
-  if (status === 'active' && takedown.status === 'requested') {
-    fail(takedownPath, 'an exercise with a pending takedown must be retired');
+  if (status === 'active' && takedown.status !== 'none') {
+    fail(takedownPath, 'an exercise under takedown must be retired');
   }
 }
 
@@ -671,7 +676,6 @@ function validateRuntimeDefinitions(definitions, exerciseByKey) {
     if (typeof definition.oracle !== 'function') fail(`${path}.oracle`, 'must be a function');
     const exercise = exerciseByKey.get(key);
     if (!exercise) fail(path, 'does not match an exercise slug and version');
-    if (exercise.status !== 'active') fail(path, 'cannot target a retired exercise');
   }
   for (const exercise of exerciseByKey.values()) {
     if (exercise.status !== 'active') continue;
@@ -681,7 +685,12 @@ function validateRuntimeDefinitions(definitions, exerciseByKey) {
 }
 
 /** Validate a complete catalogue or throw CatalogValidationError at the first invalid field. */
-export function validateCatalog(catalog, runtimeDefinitions = SERVER_EXERCISE_DEFINITIONS) {
+export function validateCatalog(
+  catalog,
+  runtimeDefinitions = SERVER_EXERCISE_DEFINITIONS,
+  provenanceManifest = rawProvenanceManifest,
+  options = {},
+) {
   requireExactKeys(catalog, ['schemaVersion', 'catalog', 'exercises'], 'catalog');
   if (catalog.schemaVersion !== 1) fail('catalog.schemaVersion', 'must equal 1');
   requireExactKeys(catalog.catalog, ['id', 'title', 'contentPolicy', 'supportedLanguages'], 'catalog.catalog');
@@ -726,6 +735,13 @@ export function validateCatalog(catalog, runtimeDefinitions = SERVER_EXERCISE_DE
     }
   });
 
+  try {
+    validateProvenanceManifest(provenanceManifest, catalog, options);
+  } catch (error) {
+    if (error instanceof ProvenanceValidationError) fail(error.path, error.reason);
+    throw error;
+  }
+
   validateRuntimeDefinitions(runtimeDefinitions, exerciseByKey);
 
   return Object.freeze({ valid: true, exerciseCount: catalog.exercises.length });
@@ -744,6 +760,7 @@ function clone(value) {
 }
 
 function publicProjection(exercise) {
+  const provenanceRecord = provenanceByKey.get(`${exercise.slug}@${exercise.version}`);
   return {
     slug: exercise.slug,
     version: exercise.version,
@@ -762,13 +779,27 @@ function publicProjection(exercise) {
     provenance: exercise.governance.provenance,
     reviewDate: exercise.governance.reviewDate,
     attribution: exercise.governance.attribution,
+    contentProvenance: {
+      schemaVersion: rawProvenanceManifest.schemaVersion,
+      sourceType: provenanceRecord.source.type,
+      author: provenanceRecord.author.name,
+      licenseIdentifier: provenanceRecord.license.identifier,
+      licenseName: provenanceRecord.license.name,
+      contentHash: provenanceRecord.contentHash,
+      reviewedAt: provenanceRecord.review.reviewedAt,
+      expiresAt: provenanceRecord.review.expiresAt,
+    },
   };
 }
 
 validateCatalog(rawCatalog, SERVER_EXERCISE_DEFINITIONS);
 const catalog = deepFreeze(clone(rawCatalog));
+const provenanceManifest = deepFreeze(clone(rawProvenanceManifest));
 const exerciseByKey = new Map(
   catalog.exercises.map(exercise => [`${exercise.slug}@${exercise.version}`, exercise]),
+);
+const provenanceByKey = new Map(
+  provenanceManifest.records.map(record => [record.key, record]),
 );
 const activeExerciseBySlug = new Map(
   catalog.exercises

@@ -1,0 +1,139 @@
+{
+  "$schema": "./randori-catalog-provenance.schema.json",
+  "schemaVersion": 1,
+  "catalogId": "randori-original-v1",
+  "records": [
+    {
+      "key": "focus-block-rollup@1",
+      "slug": "focus-block-rollup",
+      "version": 1,
+      "source": { "type": "original", "reference": "repository://data/randori-catalog-v1.json#focus-block-rollup@1" },
+      "author": { "name": "Randori Circle project contributors", "kind": "collective" },
+      "license": { "identifier": "LicenseRef-Randori-Original", "name": "Randori Circle original project content", "evidence": "repository://docs/CONTENT_POLICY.md" },
+      "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+      "contentHash": "sha256:d64b8f1b54b99a2c6c31c29d497f81dfd9027f35765bb9871af41d40ff11eeb2",
+      "review": { "status": "approved", "reviewedAt": "2026-09-18", "expiresAt": "2027-09-18", "reviewer": "Randori Circle maintainers" },
+      "takedown": { "status": "clear", "effectiveAt": null, "reference": null }
+    },
+    {
+      "key": "steady-sensor-windows@1",
+      "slug": "steady-sensor-windows",
+      "version": 1,
+      "source": { "type": "original", "reference": "repository://data/randori-catalog-v1.json#steady-sensor-windows@1" },
+      "author": { "name": "Randori Circle project contributors", "kind": "collective" },
+      "license": { "identifier": "LicenseRef-Randori-Original", "name": "Randori Circle original project content", "evidence": "repository://docs/CONTENT_POLICY.md" },
+      "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+      "contentHash": "sha256:b913147715b70abdcd2ff7e28da2d70727085bad1bd3a82a2448b95be88e43e5",
+      "review": { "status": "approved", "reviewedAt": "2026-09-18", "expiresAt": "2027-09-18", "reviewer": "Randori Circle maintainers" },
+      "takedown": { "status": "clear", "effectiveAt": null, "reference": null }
+    },
+    {
+      "key": "review-wave-planner@1",
+      "slug": "review-wave-planner",
+      "version": 1,
+      "source": { "type": "original", "reference": "repository://data/randori-catalog-v1.json#review-wave-planner@1" },
+      "author": { "name": "Randori Circle project contributors", "kind": "collective" },
+      "license": { "identifier": "LicenseRef-Randori-Original", "name": "Randori Circle original project content", "evidence": "repository://docs/CONTENT_POLICY.md" },
+      "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+      "contentHash": "sha256:2efed9135183fc365712b5df34a6324ead701bf6c34127fe18150f89a3ab64b6",
+      "review": { "status": "approved", "reviewedAt": "2026-09-18", "expiresAt": "2027-09-18", "reviewer": "Randori Circle maintainers" },
+      "takedown": { "status": "clear", "effectiveAt": null, "reference": null }
+    },
+    {
+      "key": "workshop-seat-allocation@1",
+      "slug": "workshop-seat-allocation",
+      "version": 1,
+      "source": { "type": "original", "reference": "repository://data/randori-catalog-v1.json#workshop-seat-allocation@1" },
+      "author": { "name": "Randori Circle project contributors", "kind": "collective" },
+      "license": { "identifier": "LicenseRef-Randori-Original", "name": "Randori Circle original project content", "evidence": "repository://docs/CONTENT_POLICY.md" },
+      "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+      "contentHash": "sha256:36db3746e8406c9a2fd620ecb05e71d8345df7b3eb108333a50db22d0a7f54fa",
+      "review": { "status": "approved", "reviewedAt": "2026-09-18", "expiresAt": "2027-09-18", "reviewer": "Randori Circle maintainers" },
+      "takedown": { "status": "clear", "effectiveAt": null, "reference": null }
+    },
+    {
+      "key": "coverage-gap-finder@1",
+      "slug": "coverage-gap-finder",
+      "version": 1,
+      "source": { "type": "original", "reference": "repository://data/randori-catalog-v1.json#coverage-gap-finder@1" },
+      "author": { "name": "Randori Circle project contributors", "kind": "collective" },
+      "license": { "identifier": "LicenseRef-Randori-Original", "name": "Randori Circle original project content", "evidence": "repository://docs/CONTENT_POLICY.md" },
+      "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+      "contentHash": "sha256:a0dcac195726e4e5125e067f2865dbaa39855e294c4399f8e6b93b414e5f641d",
+      "review": { "status": "approved", "reviewedAt": "2026-09-18", "expiresAt": "2027-09-18", "reviewer": "Randori Circle maintainers" },
+      "takedown": { "status": "clear", "effectiveAt": null, "reference": null }
+    },
+    {
+      "key": "balanced-template-markers@1",
+      "slug": "balanced-template-markers",
+      "version": 1,
+      "source": { "type": "original", "reference": "repository://data/randori-catalog-v1.json#balanced-template-markers@1" },
+      "author": { "name": "Randori Circle project contributors", "kind": "collective" },
+      "license": { "identifier": "LicenseRef-Randori-Original", "name": "Randori Circle original project content", "evidence": "repository://docs/CONTENT_POLICY.md" },
+      "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+      "contentHash": "sha256:9ce54de96be0eb3b5d48972372a8078d4e2c1ec025e35101a3db4a4ba9d9d9f9",
+      "review": { "status": "approved", "reviewedAt": "2026-09-18", "expiresAt": "2027-09-18", "reviewer": "Randori Circle maintainers" },
+      "takedown": { "status": "clear", "effectiveAt": null, "reference": null }
+    },
+    {
+      "key": "capacity-upgrade-index@1",
+      "slug": "capacity-upgrade-index",
+      "version": 1,
+      "source": { "type": "original", "reference": "repository://data/randori-catalog-v1.json#capacity-upgrade-index@1" },
+      "author": { "name": "Randori Circle project contributors", "kind": "collective" },
+      "license": { "identifier": "LicenseRef-Randori-Original", "name": "Randori Circle original project content", "evidence": "repository://docs/CONTENT_POLICY.md" },
+      "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+      "contentHash": "sha256:d6e98d102bcbccf32caed21b84e8eb5b06e171bfb29c2a934d29541ba6639698",
+      "review": { "status": "approved", "reviewedAt": "2026-09-18", "expiresAt": "2027-09-18", "reviewer": "Randori Circle maintainers" },
+      "takedown": { "status": "clear", "effectiveAt": null, "reference": null }
+    },
+    {
+      "key": "shortest-handoff-path@1",
+      "slug": "shortest-handoff-path",
+      "version": 1,
+      "source": { "type": "original", "reference": "repository://data/randori-catalog-v1.json#shortest-handoff-path@1" },
+      "author": { "name": "Randori Circle project contributors", "kind": "collective" },
+      "license": { "identifier": "LicenseRef-Randori-Original", "name": "Randori Circle original project content", "evidence": "repository://docs/CONTENT_POLICY.md" },
+      "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+      "contentHash": "sha256:f4327e58b7e2ee5d76492a203e2b34a6b8363bb2d180a94266490e87e97891a9",
+      "review": { "status": "approved", "reviewedAt": "2026-09-18", "expiresAt": "2027-09-18", "reviewer": "Randori Circle maintainers" },
+      "takedown": { "status": "clear", "effectiveAt": null, "reference": null }
+    },
+    {
+      "key": "message-frequency-leaders@1",
+      "slug": "message-frequency-leaders",
+      "version": 1,
+      "source": { "type": "original", "reference": "repository://data/randori-catalog-v1.json#message-frequency-leaders@1" },
+      "author": { "name": "Randori Circle project contributors", "kind": "collective" },
+      "license": { "identifier": "LicenseRef-Randori-Original", "name": "Randori Circle original project content", "evidence": "repository://docs/CONTENT_POLICY.md" },
+      "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+      "contentHash": "sha256:e06ed47945296f40900e8d7ea46babc56318eeb3d952dd79d97bd786a9e117ce",
+      "review": { "status": "approved", "reviewedAt": "2026-09-18", "expiresAt": "2027-09-18", "reviewer": "Randori Circle maintainers" },
+      "takedown": { "status": "clear", "effectiveAt": null, "reference": null }
+    },
+    {
+      "key": "recovery-budget-plan@1",
+      "slug": "recovery-budget-plan",
+      "version": 1,
+      "source": { "type": "original", "reference": "repository://data/randori-catalog-v1.json#recovery-budget-plan@1" },
+      "author": { "name": "Randori Circle project contributors", "kind": "collective" },
+      "license": { "identifier": "LicenseRef-Randori-Original", "name": "Randori Circle original project content", "evidence": "repository://docs/CONTENT_POLICY.md" },
+      "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+      "contentHash": "sha256:a6d60ea3519b4dd2860db47170ff89d69012b494b7d219dfd3377d2348831d38",
+      "review": { "status": "approved", "reviewedAt": "2026-09-18", "expiresAt": "2027-09-18", "reviewer": "Randori Circle maintainers" },
+      "takedown": { "status": "clear", "effectiveAt": null, "reference": null }
+    },
+    {
+      "key": "archived-session-streak@1",
+      "slug": "archived-session-streak",
+      "version": 1,
+      "source": { "type": "original", "reference": "repository://data/randori-catalog-v1.json#archived-session-streak@1" },
+      "author": { "name": "Randori Circle project contributors", "kind": "collective" },
+      "license": { "identifier": "LicenseRef-Randori-Original", "name": "Randori Circle original project content", "evidence": "repository://docs/CONTENT_POLICY.md" },
+      "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+      "contentHash": "sha256:995004209ad737303926e42faeafe0f9f72c6b928ffc5e47ffd8f7e37690871d",
+      "review": { "status": "approved", "reviewedAt": "2026-09-18", "expiresAt": "2027-09-18", "reviewer": "Randori Circle maintainers" },
+      "takedown": { "status": "clear", "effectiveAt": null, "reference": null }
+    }
+  ]
+}

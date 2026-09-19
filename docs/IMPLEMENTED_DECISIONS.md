@@ -863,3 +863,46 @@ Inferring a circle from pairing rows is unsafe because those rows are not yet
 fully tenant-owned. A database-backed session selection with optimistic version
 fencing is additive, preserves the single-circle path, and supports application
 rollback by disabling the feature flag while leaving harmless context rows.
+
+## ID-22: Make provenance a versioned fail-closed catalogue dependency
+
+Status: implemented for the bundled original catalogue; authorized source
+adapters remain deferred.
+
+**Decision.** Every shipped exercise version has exactly one record in the
+versioned provenance manifest. The record binds a constrained source type,
+author, concrete license or written-authorization evidence, attribution,
+canonical SHA-256 content hash, bounded approval period, and takedown state.
+Application startup and CI validate the catalogue and manifest together. Active
+content with missing, malformed, duplicated, changed, unapproved, expired, or
+revoked provenance cannot enter the runtime catalogue.
+
+The manifest and JSON Schema are repository-owned. Canonical hashing sorts
+object keys, preserves array order, covers all user-visible exercise content,
+and excludes lifecycle metadata. An emergency command can revoke and retire one
+exact `slug@version`; it is idempotent for the same tracked event, refuses an
+ambiguous overwrite, and writes revocation before retirement so interruption is
+fail-closed. Retired content remains auditable and unreachable. Dormant
+server-side generators may remain after an emergency data-only takedown, but
+the active-record gate prevents listing, resolution, or execution.
+
+The current source set is `original` only. Schema support for open licenses and
+written authorization does not enable an adapter or grant permission. Personal
+LeetCode access, Premium cookies, copied problem text, human-like crawling, and
+anti-bot evasion are outside the architecture and prohibited.
+
+**Alternatives.** Free-form governance strings in each exercise are readable
+but cannot prove content integrity, enforce expiry, or support a uniform rights
+audit. Putting provenance only in a database introduces deployment drift and
+makes local/CI builds unable to verify what they ship. Silently filtering bad
+records keeps the process alive but can hide accidental catalogue loss; startup
+failure gives an actionable release boundary. Deleting disputed records erases
+audit history, while an automated restore command could republish content
+without evidence review. A crawler would add legal, security, and reliability
+risk without establishing redistribution rights.
+
+**Recovery.** Do not bypass a provenance failure. Review the exact failing path
+against the tracked evidence; correct metadata and re-review, or use the bounded
+takedown command. Git history recovers accidental edits. A real takedown is
+restored only by a reviewed content change with fresh approval and, when
+semantics changed, a new exercise version.

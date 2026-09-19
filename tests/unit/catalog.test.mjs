@@ -12,11 +12,17 @@ import {
   validateCatalog,
   validateEvaluationSuite,
 } from '../../api/_catalog.js';
+import { canonicalExerciseHash } from '../../api/_catalog-provenance.js';
 
 const catalogPath = new URL('../../data/randori-catalog-v1.json', import.meta.url);
+const provenancePath = new URL('../../data/randori-catalog-provenance-v1.json', import.meta.url);
 
 function freshCatalog() {
   return JSON.parse(readFileSync(catalogPath, 'utf8'));
+}
+
+function freshProvenance() {
+  return JSON.parse(readFileSync(provenancePath, 'utf8'));
 }
 
 function seededRandom(seed = 1) {
@@ -110,6 +116,13 @@ test('public listing returns full active exercises without server-owned test dat
     assert.ok(exercise.languages.javascript.starter.includes(exercise.languages.javascript.entrypoint));
     assert.ok(exercise.languages.python.starter.includes(exercise.languages.python.entrypoint));
     assert.match(exercise.provenance, /Original exercise/);
+    assert.deepEqual(
+      Object.keys(exercise.contentProvenance).sort(),
+      ['author', 'contentHash', 'expiresAt', 'licenseIdentifier', 'licenseName', 'reviewedAt', 'schemaVersion', 'sourceType'],
+    );
+    assert.equal(exercise.contentProvenance.sourceType, 'original');
+    assert.equal(exercise.contentProvenance.licenseIdentifier, 'LicenseRef-Randori-Original');
+    assert.match(exercise.contentProvenance.contentHash, /^sha256:[a-f0-9]{64}$/);
     assert.equal(hasForbiddenPublicKey(exercise), false);
   }
   assert.doesNotMatch(JSON.stringify(exercises), /long-merge|whole-input-boundary|mixed-reasons/);
@@ -528,7 +541,14 @@ test('validation permits retired history but only one active version per slug', 
     replacement: 'focus-block-rollup',
   };
   historical.exercises.push(retired);
-  assert.equal(validateCatalog(historical).valid, true);
+  const historicalProvenance = freshProvenance();
+  const retiredProvenance = structuredClone(historicalProvenance.records[0]);
+  retiredProvenance.key = 'focus-block-rollup@2';
+  retiredProvenance.version = 2;
+  retiredProvenance.source.reference = 'repository://data/randori-catalog-v1.json#focus-block-rollup@2';
+  retiredProvenance.contentHash = canonicalExerciseHash(retired);
+  historicalProvenance.records.push(retiredProvenance);
+  assert.equal(validateCatalog(historical, undefined, historicalProvenance).valid, true);
 
   const twoActive = freshCatalog();
   const nextActive = structuredClone(twoActive.exercises[0]);
@@ -626,7 +646,7 @@ test('validation makes retirement an execution boundary', () => {
     generateArgs() { return [[]]; },
     oracle() { return 0; },
   };
-  assertCatalogError(() => validateCatalog(retiredDefinition, definitions), /cannot target a retired exercise/);
+  assert.equal(validateCatalog(retiredDefinition, definitions).valid, true);
 
   const missingReason = freshCatalog();
   missingReason.exercises.at(-1).governance.retirement.reason = null;
@@ -656,7 +676,7 @@ test('validation enforces coherent takedown metadata', () => {
     requestedAt: '2026-09-18',
     reference: 'issue-123',
   };
-  assertCatalogError(() => validateCatalog(activeRequest), /pending takedown must be retired/);
+  assertCatalogError(() => validateCatalog(activeRequest), /under takedown must be retired/);
 
   const coherentRequest = freshCatalog();
   coherentRequest.exercises.at(-1).governance.takedown = {
@@ -664,7 +684,13 @@ test('validation enforces coherent takedown metadata', () => {
     requestedAt: '2026-09-18',
     reference: 'issue-123',
   };
-  assert.equal(validateCatalog(coherentRequest).valid, true);
+  const coherentProvenance = freshProvenance();
+  coherentProvenance.records.at(-1).takedown = {
+    status: 'requested',
+    effectiveAt: '2026-09-18',
+    reference: 'issue-123',
+  };
+  assert.equal(validateCatalog(coherentRequest, undefined, coherentProvenance).valid, true);
 });
 
 test('validation requires retirement replacements to resolve to an active slug', () => {
