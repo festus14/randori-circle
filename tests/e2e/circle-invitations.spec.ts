@@ -327,7 +327,7 @@ test('multi-circle selection reloads into the chosen isolated roster and invitat
     const selector=page.getByTestId('circle-context-select');
     await expect(selector).toBeVisible();
     await expect(selector).toHaveValue('');
-    await expect(page.getByTestId('circle-members')).toContainText('select one above');
+    await expect(page.getByTestId('circle-members')).toContainText(/select one above/i);
     releaseProfile();
     await expect(page.locator('#view-circle')).toBeVisible();
     await expect(selector).toBeVisible();
@@ -559,9 +559,14 @@ test('a same-user refresh cannot cancel a pending circle switch commit',async({p
   ];
   await page.addInitScript(()=>{
     class TestBroadcastChannel {
-      constructor(_name:string){}
+      readonly name:string;
+      constructor(name:string){ this.name=name; }
       addEventListener(){}
-      postMessage(value:unknown){ sessionStorage.setItem('randori-e2e-circle-broadcast',JSON.stringify(value)); }
+      postMessage(value:unknown){
+        if(this.name==='randori-circle-context-v1'){
+          sessionStorage.setItem('randori-e2e-circle-broadcast',JSON.stringify(value));
+        }
+      }
       close(){}
     }
     Object.defineProperty(window,'BroadcastChannel',{configurable:true,value:TestBroadcastChannel});

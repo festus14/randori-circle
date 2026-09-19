@@ -1495,7 +1495,7 @@ async function refreshMe(){
     }
     const refreshedUserId=Number(me?.id||me?.uid)||null;
     if(previousUserId!==refreshedUserId){
-      resetCircleControlForIdentityChange();
+      resetCircleControlForIdentityChange({preserveLifecycleRecentAction:true});
     }
     if(availabilityState.userId!==null
       &&(!Number.isSafeInteger(refreshedUserId)||refreshedUserId<1
@@ -3029,7 +3029,7 @@ async function refreshMe(){
   let latestInviteOwnerId=null;
   const circleContextChannel=typeof BroadcastChannel==='function'?new BroadcastChannel('randori-circle-context-v1'):null;
 
-  function resetPrivateCircleControl({switching}){
+  function resetPrivateCircleControl({switching,preserveLifecycleRecentAction=false}){
     circleContextSwitching=switching;
     circleControlEpoch+=1;
     circleRenderEpoch+=1;
@@ -3046,7 +3046,7 @@ async function refreshMe(){
     circleLifecyclePending=false;
     resetOwnerInvites({allowRosterPreservation:false});
     clearLatestInvite();
-    clearLifecycleRecentAction();
+    if(!preserveLifecycleRecentAction) clearLifecycleRecentAction();
     window._randori_workspace?.deactivate?.();
     window._randori_authorized_room=null;
     window._randori_join_room=null;
@@ -3069,8 +3069,8 @@ async function refreshMe(){
     return resetPrivateCircleControl({switching:true});
   }
 
-  function resetCircleControlForIdentityChange(){
-    return resetPrivateCircleControl({switching:false});
+  function resetCircleControlForIdentityChange({preserveLifecycleRecentAction=false}={}){
+    return resetPrivateCircleControl({switching:false,preserveLifecycleRecentAction});
   }
 
   function renderCircleContextSelector(context){

@@ -45,6 +45,8 @@ context change to other tabs so delayed circle-A responses cannot render under
 circle B. A refresh that changes the signed-in identity establishes a fresh
 control-plane epoch and releases an obsolete pending-switch latch without
 accepting its callback; a routine same-user refresh cannot cancel a commit.
+During an OAuth recent-auth return, the pending lifecycle action survives that
+refresh only until its actor, circle, context version, and TTL are revalidated.
 
 ## Rollout
 
