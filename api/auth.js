@@ -815,7 +815,11 @@ async function handleGoogleStart(req,res){
   const configuration=googleOAuthRequestConfiguration(req);
   if(!configuration) return res.status(503).json({error:'Google sign-in is unavailable'});
   if(identityManagementRequested(req)&&!reauthenticate){
-    try{ await ensureIdentityLinkingReadiness(getClient()); }
+    try{
+      const db=getClient();
+      await ensureAuthReadiness(db);
+      await ensureIdentityLinkingReadiness(db);
+    }
     catch{ return res.status(503).json({error:'Google sign-in is unavailable'}); }
   }
   const {appOrigin:appUrl,clientId,redirectUri}=configuration;
