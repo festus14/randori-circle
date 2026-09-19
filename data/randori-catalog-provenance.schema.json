@@ -27,10 +27,11 @@
         "source": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["type", "reference"],
+          "required": ["type", "reference", "statement"],
           "properties": {
             "type": { "enum": ["original", "open-license", "written-authorization"] },
-            "reference": { "type": "string", "minLength": 1 }
+            "reference": { "type": "string", "minLength": 1 },
+            "statement": { "type": "string", "minLength": 1 }
           }
         },
         "author": {

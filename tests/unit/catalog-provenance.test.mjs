@@ -105,6 +105,13 @@ test('provenance fails closed on missing, duplicate, unknown, and tampered recor
     /contentHash: does not match canonical exercise content/,
   );
 
+  const provenanceDrift = fixtures();
+  provenanceDrift.catalog.exercises[0].governance.provenance = 'Unreviewed source claim.';
+  assertProvenanceError(
+    () => validateProvenanceManifest(provenanceDrift.manifest, provenanceDrift.catalog),
+    /source\.statement: must match the catalogue provenance statement/,
+  );
+
   const version = fixtures();
   version.manifest.schemaVersion = 2;
   assertProvenanceError(
@@ -123,6 +130,7 @@ test('active content fails closed when review is expired, rejected, or under tak
 
   const futureReview = fixtures();
   futureReview.manifest.records[0].review.reviewedAt = '2026-09-20';
+  futureReview.catalog.exercises[0].governance.reviewDate = '2026-09-20';
   assertProvenanceError(
     () => validateProvenanceManifest(futureReview.manifest, futureReview.catalog, { now: '2026-09-19' }),
     /review\.reviewedAt: must not be in the future/,
@@ -171,7 +179,11 @@ test('source policy rejects vague or unsupported rights claims', () => {
   );
 
   const fakeOpen = fixtures();
-  fakeOpen.manifest.records[0].source = { type: 'open-license', reference: 'http://example.test/problem' };
+  fakeOpen.manifest.records[0].source = {
+    type: 'open-license',
+    reference: 'http://example.test/problem',
+    statement: fakeOpen.catalog.exercises[0].governance.provenance,
+  };
   fakeOpen.manifest.records[0].license = {
     identifier: 'LicenseRef-Vague', name: 'unknown', evidence: 'none',
   };
@@ -182,7 +194,9 @@ test('source policy rejects vague or unsupported rights claims', () => {
 
   const vagueAuthorization = fixtures();
   vagueAuthorization.manifest.records[0].source = {
-    type: 'written-authorization', reference: 'partner-feed-v1',
+    type: 'written-authorization',
+    reference: 'partner-feed-v1',
+    statement: vagueAuthorization.catalog.exercises[0].governance.provenance,
   };
   vagueAuthorization.manifest.records[0].license = {
     identifier: 'LicenseRef-Partner', name: 'Partner permission', evidence: 'email from partner',

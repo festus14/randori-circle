@@ -102,9 +102,10 @@ export function canonicalExerciseHash(exercise) {
 }
 
 function validateSource(source, license, path) {
-  requireExactKeys(source, ['type', 'reference'], `${path}.source`);
+  requireExactKeys(source, ['type', 'reference', 'statement'], `${path}.source`);
   if (!SOURCE_TYPES.has(source.type)) fail(`${path}.source.type`, 'is unsupported');
   requireText(source.reference, `${path}.source.reference`);
+  requireText(source.statement, `${path}.source.statement`);
 
   requireExactKeys(license, ['identifier', 'name', 'evidence'], `${path}.license`);
   requireText(license.identifier, `${path}.license.identifier`);
@@ -202,6 +203,12 @@ function validateRecord(record, index, exercise, today) {
   }
   if (record.attribution !== exercise.governance.attribution) {
     fail(`${path}.attribution`, 'must match the catalogue attribution');
+  }
+  if (record.source.statement !== exercise.governance.provenance) {
+    fail(`${path}.source.statement`, 'must match the catalogue provenance statement');
+  }
+  if (record.review.reviewedAt !== exercise.governance.reviewDate) {
+    fail(`${path}.review.reviewedAt`, 'must match the catalogue review date');
   }
   if (record.review.reviewedAt > today) fail(`${path}.review.reviewedAt`, 'must not be in the future');
 
