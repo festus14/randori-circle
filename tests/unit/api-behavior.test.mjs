@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { after, beforeEach, mock, test } from 'node:test';
 import { createClient } from '@libsql/client';
 import bcrypt from 'bcryptjs';
+import { availabilityCycleKey } from '../../api/_availability.js';
 import { resolvePairingCycle } from '../../api/_pairing-cycle.js';
 import {googleOAuthCookieHeader,googleProviderFetch} from '../support/google-oidc.mjs';
 
@@ -22,9 +23,72 @@ const sentryExceptionCalls = [];
 let lastPairingRun = null;
 let persistedPairGroups = [];
 let persistedPairingParticipants = [];
+const mockAvailabilityCycles=new Map();
+const mockAvailabilityDecisions=new Map();
 
 function sqlText(statement) {
   return typeof statement === 'string' ? statement : String(statement?.sql || '');
+}
+
+function availabilityFixtureResult(sql,args=[]){
+  if(sql.includes("strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc")){
+    return rows([{now_utc:new Date().toISOString()}]);
+  }
+  if(sql.includes("PRAGMA table_info('pairing_cycles')")) return rows([
+    ['scope_key','TEXT',1,1],['circle_id','INTEGER',0,0],['cycle_key','TEXT',1,2],
+    ['cycle_id','TEXT',1,0],['starts_at','TEXT',1,0],['ends_at','TEXT',1,0],
+    ['cutoff_at','TEXT',1,0],['time_zone','TEXT',1,0],['default_source','TEXT',1,0],
+    ['created_at','TEXT',1,0],
+  ].map(([name,type,notnull,pk])=>({name,type,notnull,pk})));
+  if(sql.includes("PRAGMA table_info('pairing_cycle_availability')")) return rows([
+    ['scope_key','TEXT',1,1],['cycle_key','TEXT',1,2],['user_id','INTEGER',1,3],
+    ['is_available','INTEGER',1,0],['version','INTEGER',1,0],
+    ['decision_source','TEXT',1,0],['created_at','TEXT',1,0],['updated_at','TEXT',1,0],
+  ].map(([name,type,notnull,pk])=>({name,type,notnull,pk})));
+  if(sql.includes("PRAGMA index_list('pairing_cycle_availability')")) return rows([{
+    name:'idx_pairing_cycle_availability_candidates',unique:0,partial:0,
+  }]);
+  if(sql.includes("PRAGMA index_info('idx_pairing_cycle_availability_candidates')")){
+    return rows(['scope_key','cycle_key','is_available','user_id'].map((name,seqno)=>({name,seqno})));
+  }
+  if(sql.includes('FROM pairing_cycles WHERE scope_key=? AND cycle_key=?')){
+    const cycle=mockAvailabilityCycles.get(`${args[0]}:${args[1]}`);
+    return rows(cycle?[cycle]:[]);
+  }
+  if(sql.includes('INSERT INTO pairing_cycles')){
+    const [scope_key,circle_id,cycle_key,cycle_id,starts_at,ends_at,cutoff_at,time_zone]=args;
+    const key=`${scope_key}:${cycle_key}`;
+    if(!mockAvailabilityCycles.has(key)) mockAvailabilityCycles.set(key,{
+      scope_key,circle_id,cycle_key,cycle_id,starts_at,ends_at,cutoff_at,time_zone,
+      default_source:[...mockAvailabilityCycles.values()].some(row=>row.scope_key===scope_key)
+        ?'cycle_default':'legacy_bridge',created_at:new Date().toISOString(),
+    });
+    return rows([], {rowsAffected:1});
+  }
+  if(sql.includes('FROM pairing_cycle_availability')&&sql.includes('user_id IN')){
+    const [scopeKey,cycleKey,...userIds]=args;
+    return rows(userIds.map(id=>mockAvailabilityDecisions.get(`${scopeKey}:${cycleKey}:${id}`)).filter(Boolean));
+  }
+  if(sql.includes('FROM pairing_cycle_availability')&&sql.includes('user_id=?')){
+    const decision=mockAvailabilityDecisions.get(`${args[0]}:${args[1]}:${args[2]}`);
+    return rows(decision?[decision]:[]);
+  }
+  if(sql.includes('INSERT INTO pairing_cycle_availability')){
+    const [scopeKey,cycleKey,userId,isAvailable,createdAt,updatedAt]=args;
+    const decision={user_id:userId,is_available:isAvailable,version:1,decision_source:'user',created_at:createdAt,updated_at:updatedAt};
+    mockAvailabilityDecisions.set(`${scopeKey}:${cycleKey}:${userId}`,decision);
+    return rows([decision],{rowsAffected:1});
+  }
+  if(sql.includes('UPDATE auth_accounts SET is_available=?,availability_updated_at=?')){
+    return rows([],{rowsAffected:1});
+  }
+  if(sql.includes('SELECT account.id,account.is_available,circle.id AS circle_id')){
+    return rows([{id:Number(args[0]),is_available:1,circle_id:1,circle_public_id:'circle_test',circle_name:'Test Circle'}]);
+  }
+  if(sql.includes('SELECT id,public_id,name FROM circles')&&sql.includes('is_primary=1')){
+    return rows([{id:1,public_id:'circle_test',name:'Test Circle'}]);
+  }
+  return undefined;
 }
 
 function createMockDb(){
@@ -33,6 +97,8 @@ function createMockDb(){
       const sql = sqlText(statement);
       executed.push({ sql, args: statement?.args || [] });
       if (databaseDelegate) return databaseDelegate.execute(statement);
+      const availabilityResult=availabilityFixtureResult(sql,statement?.args||[]);
+      if(availabilityResult!==undefined) return availabilityResult;
       const result = await executeHandler(sql, statement?.args || []);
       if(!(result?.rows?.length)&&sql.includes('INSERT INTO auth_provider_identities')&&sql.includes('RETURNING user_id')){
         return rows([{user_id:Number(statement?.args?.[2])}]);
@@ -285,6 +351,8 @@ beforeEach(() => {
   lastPairingRun = null;
   persistedPairGroups = [];
   persistedPairingParticipants = [];
+  mockAvailabilityCycles.clear();
+  mockAvailabilityDecisions.clear();
   executeHandler = () => rows();
   globalThis.fetch = realFetch;
   for (const key of [
@@ -854,10 +922,17 @@ test('profile, pair schedule, and messages enforce ownership while catalogue and
   const headers = { 'x-test-auth': 'user' };
   const profile = await invoke(dataHandler, {
     method: 'POST', url: '/api/profile', query: { endpoint: 'profile' }, headers,
-    body: { name: 'Updated User', bio: 'Ready', tz: 'UTC', interview_focus: 'system_design', is_available: true },
+    body: { name: 'Updated User', bio: 'Ready', tz: 'UTC', interview_focus: 'system_design' },
   });
   assert.equal(profile.status, 200);
   assert.equal(profile.body.user.interview_focus, 'system');
+
+  const bypassedAvailability = await invoke(dataHandler, {
+    method: 'POST', url: '/api/profile', query: { endpoint: 'profile' }, headers,
+    body: { is_available: false },
+  });
+  assert.equal(bypassedAvailability.status,400);
+  assert.match(bypassedAvailability.body.error,/settings\/availability/);
 
   const initialSchedule = await invoke(dataHandler, {
     url: '/api/schedule?room_id=week_10_pair_20', query: { endpoint: 'schedule', room_id:'week_10_pair_20' }, headers,
@@ -938,7 +1013,7 @@ test('migrated local profile requests probe schema without request-time DDL',asy
   assert.equal(read.status,200);
   const write=await invoke(dataHandler,{
     method:'POST',url:'/api/profile',query:{endpoint:'profile'},headers,
-    body:{display_name:'Local User',tz:'UTC',is_available:true},
+    body:{display_name:'Local User',tz:'UTC'},
   });
   assert.equal(write.status,200);
   assert.equal(executed.some(call=>/\b(?:CREATE|ALTER|DROP)\b/i.test(call.sql)),false);
@@ -2363,6 +2438,10 @@ test('operations cover preferences, availability, admin promotion, demo lifecycl
       { id: 1, name: 'Admin', email: 'admin@example.test', color: '#1', is_available: 1, is_demo: 0 },
       { id: 2, name: 'User', email: 'user@example.test', color: '#2', is_available: 1, is_demo: 1 },
     ]);
+    if(sql.includes('SELECT aa.id,aa.display_name AS name')&&sql.includes('circle_memberships')) return rows([
+      {id:1,name:'Admin',email:'admin@example.test',color:'#1',is_available:1},
+      {id:2,name:'User',email:'user@example.test',color:'#2',is_available:1},
+    ]);
     if (sql.includes('SELECT week_id,generation_token,generation FROM pairing_week_runs')) return rows([{
       week_id: lastPairingRun?.weekId,
       generation_token: lastPairingRun?.generationToken,
@@ -2384,10 +2463,20 @@ test('operations cover preferences, availability, admin promotion, demo lifecycl
   });
   assert.equal(saved.body.prefs.sms_enabled, true);
 
-  const availability = await invoke(opsHandler, {
-    method: 'POST', url: '/api/availability', query: { endpoint: 'availability' }, headers: user, body: { is_available: true },
+  const availabilityState = await invoke(opsHandler, {
+    method: 'GET', url: '/api/settings/availability', query: { endpoint: 'availability' }, headers: user,
   });
-  assert.equal(availability.body.user.is_available, true);
+  assert.equal(availabilityState.status,200);
+  assert.equal(availabilityState.headers['cache-control'],'private, no-store');
+  const availability = await invoke(opsHandler, {
+    method: 'POST', url: '/api/settings/availability', query: { endpoint: 'availability' }, headers: user,
+    body: {
+      cycle_key:availabilityState.body.availability.cycleKey,
+      expected_version:availabilityState.body.availability.version,
+      is_available:false,
+    },
+  });
+  assert.equal(availability.body.availability.isAvailable,false);
 
   const promoted = await invoke(opsHandler, {
     method: 'POST', url: '/api/admin/reshuffle', query: { endpoint: 'reshuffle' }, headers: admin,
@@ -2471,6 +2560,8 @@ test('weekly email delivery caps stale outbox retries and exhausts the fifth fai
   assert.equal(result.body.email_delivery.failed, 1);
   assert.equal(result.body.email_delivery.exhausted, 1);
   assert.equal(result.body.email_delivery.pending, 0);
+  assert.equal(executed.some(call=>call.sql.includes('pairing_cycles')),false,
+    'an immutable existing publication must not materialize or consume an availability bridge');
 
   const candidateQuery = executed.find(call => call.sql.includes('SELECT id,week_id,user_id,kind,recipient_email,status,attempt_count'));
   assert.match(candidateQuery.sql, /attempt_count<\?/);
@@ -2535,7 +2626,7 @@ test('operation validation rejects unsupported methods and non-admin mutations',
   const admin = { 'x-test-auth': 'admin' };
   const simple = [
     [{ method: 'PATCH', url: '/api/notifications/prefs', query: { endpoint: 'notifications-prefs' }, headers: user }, 405],
-    [{ method: 'GET', url: '/api/availability', query: { endpoint: 'availability' }, headers: user }, 405],
+    [{ method: 'PATCH', url: '/api/availability', query: { endpoint: 'availability' }, headers: user }, 405],
     [{ method: 'POST', url: '/api/availability', query: { endpoint: 'availability' }, headers: user, body: {} }, 400],
     [{ method: 'GET', url: '/api/pairing/run', query: { endpoint: 'pairing-run' }, headers: admin }, 405],
     [{ method: 'PUT', url: '/api/cron/weekly', query: { endpoint: 'weekly' } }, 405],
@@ -2583,10 +2674,16 @@ test('owner publication is immutable and the legacy reshuffle URL cannot remix i
     { id: 4, name: 'Linus', email: 'linus@example.test', color: '#4', is_available: 1, is_demo: 0 },
   ];
   executeHandler = sql => {
-    if (sql.includes("cm.role='owner'")) return rows([{ id: 1, role: 'owner' }]);
-    if (sql.includes('SELECT id, display_name as name') && sql.includes('circle_memberships')) return rows(participants);
+    if (sql.includes("cm.role='owner'")) return rows([{ id: 1, role: 'owner', circle_id:1 }]);
+    if (sql.includes('SELECT aa.id,aa.display_name AS name') && sql.includes('circle_memberships')) return rows(participants);
     return rows();
   };
+  const cycle=resolvePairingCycle();
+  const cycleKey=availabilityCycleKey({kind:'circle',circleId:1},cycle);
+  mockAvailabilityDecisions.set(`circle:1:${cycleKey}:2`,{
+    user_id:2,is_available:0,version:1,decision_source:'user',
+    created_at:new Date().toISOString(),updated_at:new Date().toISOString(),
+  });
   const request = {
     method: 'POST', url: '/api/pairing/run', query: { endpoint: 'pairing-run' },
     headers: { 'x-test-auth': 'admin' }, body: {},
@@ -2600,6 +2697,13 @@ test('owner publication is immutable and the legacy reshuffle URL cannot remix i
   assert.equal(first.body.created, true);
   assert.equal(second.body.created, false);
   assert.equal(first.body.generation, 1);
+  assert.equal(first.body.total_accounts,4);
+  assert.equal(first.body.available_count,3);
+  assert.equal(first.body.unavailable_count,1);
+  assert.equal(first.body.pairs.some(pair=>pair.a_id===2||pair.b_id===2),false);
+  assert.ok(executed.some(call=>call.sql.includes('INSERT INTO pairing_email_outbox')
+    &&Number(call.args[0])===2&&call.args[1]==='unavailable'),
+  'the dated opt-out receives the unavailable notification instead of a paired outbox row');
   assert.equal(second.body.generation, 1);
   assert.deepEqual(second.body.pairs,first.body.pairs);
   assert.doesNotMatch(JSON.stringify(first.body),/@example\.test/);
@@ -2620,8 +2724,8 @@ test('current-cycle publication fails before its irreversible claim when scoped 
     {id:2,name:'Ada',email:'ada@example.test',color:'#2',is_available:1,is_demo:0},
   ];
   executeHandler=sql=>{
-    if(sql.includes("cm.role='owner'")) return rows([{id:1,role:'owner'}]);
-    if(sql.includes('SELECT id, display_name as name')&&sql.includes('circle_memberships')) return rows(participants);
+    if(sql.includes("cm.role='owner'")) return rows([{id:1,role:'owner',circle_id:1}]);
+    if(sql.includes('SELECT aa.id,aa.display_name AS name')&&sql.includes('circle_memberships')) return rows(participants);
     if(sql.includes('FROM pairing_groups pg')&&sql.includes('JOIN pairing_week_runs pwr')&&sql.includes("ppa.source='auth'")) throw new Error('history unavailable');
     return rows();
   };
@@ -2644,7 +2748,7 @@ test('manual publication revalidates owner authority inside the write transactio
   executeHandler=sql=>{
     if(sql.includes("cm.role='owner'")){
       ownerChecks+=1;
-      return rows(ownerChecks===1?[{id:1,role:'owner'}]:[]);
+      return rows(ownerChecks===1?[{id:1,role:'owner',circle_id:1}]:[]);
     }
     return rows();
   };
@@ -2666,8 +2770,8 @@ test('publication retries only vetted pre-commit lock conflicts and never an amb
     {id:2,name:'Ada',email:'ada@example.test',color:'#2',is_available:1,is_demo:0},
   ];
   executeHandler=sql=>{
-    if(sql.includes("cm.role='owner'")) return rows([{id:1,role:'owner'}]);
-    if(sql.includes('SELECT id, display_name as name')&&sql.includes('circle_memberships')) return rows(participants);
+    if(sql.includes("cm.role='owner'")) return rows([{id:1,role:'owner',circle_id:1}]);
+    if(sql.includes('SELECT aa.id,aa.display_name AS name')&&sql.includes('circle_memberships')) return rows(participants);
     return rows();
   };
   const delegate=createMockDb();
@@ -2677,8 +2781,18 @@ test('publication retries only vetted pre-commit lock conflicts and never an amb
     batch:delegate.batch.bind(delegate),
     async transaction(){
       transactionAttempts+=1;
-      if(transactionAttempts<3) throw Object.assign(new Error('database is busy'),{code:'SQLITE_BUSY'});
-      return delegate.transaction();
+      const transaction=await delegate.transaction();
+      if(transactionAttempts>=3) return transaction;
+      return {
+        ...transaction,
+        async execute(statement){
+          const sql=sqlText(statement);
+          if(sql.includes('SELECT id,public_id,name FROM circles')){
+            throw Object.assign(new Error('database is busy'),{code:'SQLITE_BUSY'});
+          }
+          return transaction.execute(statement);
+        },
+      };
     },
   };
   const request={
@@ -2688,6 +2802,8 @@ test('publication retries only vetted pre-commit lock conflicts and never an amb
   assert.equal(retried.status,200);
   assert.equal(retried.body.created,true);
   assert.equal(transactionAttempts,3);
+  assert.equal(executed.filter(call=>call.sql.includes("strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc")).length,3,
+    'database time and cycle context are re-read inside every transaction attempt');
 
   lastPairingRun=null;
   persistedPairGroups=[];
@@ -2730,6 +2846,9 @@ test('concurrent handler publications across two file-backed clients converge on
       `CREATE TABLE pairing_participants (week_id INTEGER NOT NULL,user_id INTEGER NOT NULL,position INTEGER NOT NULL,source TEXT NOT NULL,created_at TEXT DEFAULT (datetime('now')),PRIMARY KEY(week_id,user_id))`,
       `CREATE TABLE pairing_week_runs (week_label TEXT PRIMARY KEY,week_id INTEGER,generation_token TEXT NOT NULL,generation INTEGER NOT NULL,algorithm_version TEXT NOT NULL,algorithm_seed TEXT NOT NULL,participant_count INTEGER NOT NULL,participants_json TEXT NOT NULL,created_at TEXT DEFAULT (datetime('now')),updated_at TEXT DEFAULT (datetime('now')))`,
       `CREATE TABLE pairing_email_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT,week_id INTEGER NOT NULL,user_id INTEGER NOT NULL,kind TEXT NOT NULL,recipient_email TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',attempt_count INTEGER NOT NULL DEFAULT 0,claimed_at TEXT,sent_at TEXT,provider_message_id TEXT,last_error TEXT,created_at TEXT DEFAULT (datetime('now')),updated_at TEXT DEFAULT (datetime('now')),UNIQUE(week_id,user_id,kind))`,
+      `CREATE TABLE pairing_cycles (scope_key TEXT NOT NULL,circle_id INTEGER,cycle_key TEXT NOT NULL,cycle_id TEXT NOT NULL,starts_at TEXT NOT NULL,ends_at TEXT NOT NULL,cutoff_at TEXT NOT NULL,time_zone TEXT NOT NULL,default_source TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT (datetime('now')),PRIMARY KEY(scope_key,cycle_key))`,
+      `CREATE TABLE pairing_cycle_availability (scope_key TEXT NOT NULL,cycle_key TEXT NOT NULL,user_id INTEGER NOT NULL,is_available INTEGER NOT NULL,version INTEGER NOT NULL,decision_source TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(scope_key,cycle_key,user_id))`,
+      `CREATE INDEX idx_pairing_cycle_availability_candidates ON pairing_cycle_availability(scope_key,cycle_key,is_available,user_id)`,
       `INSERT INTO auth_accounts (id,email,display_name,color,is_available,is_admin,is_demo) VALUES (1,'admin@example.test','Admin','#111',1,1,0),(2,'ada@example.test','Ada','#222',1,0,0)`,
       `INSERT INTO circles (id,public_id,slug,name,is_primary) VALUES (1,'circle_test','randori-circle','Test Circle',1)`,
       `INSERT INTO circle_memberships (circle_id,user_id,role,status) VALUES (1,1,'owner','active'),(1,2,'member','active')`,

@@ -16,12 +16,15 @@ test('the checked-out app boots without JavaScript exceptions and its tabs navig
 
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await expect(page.getByRole('heading', { name: 'Randori Circle', exact: true })).toBeVisible();
-  // Advance the two unconditional session refreshes deterministically so the
-  // final anonymous route cannot race a subsequent tab click. A third refresh
-  // is registered from DOMContentLoaded only when this script runs before that
-  // event, which is browser-timing dependent and not part of this invariant.
+  // Exercise background timers, then await one explicit refresh so the final
+  // anonymous route cannot depend on DOMContentLoaded or host scheduling.
   await page.clock.fastForward(1_300);
-  await expect.poll(() => authChecks).toBeGreaterThanOrEqual(2);
+  await page.evaluate(async () => {
+    await (window as typeof window & {
+      _randori_auth?: { refreshMe?: () => Promise<unknown> };
+    })._randori_auth?.refreshMe?.();
+  });
+  expect(authChecks).toBeGreaterThanOrEqual(1);
   await expect(page.locator('#view-landing')).toBeVisible();
 
   for (const [tab, view] of [

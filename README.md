@@ -8,7 +8,7 @@ Production deploys from `main` through Vercel. Development is iterative; the arc
 
 1. A circle owner creates a single-use, email-bound invitation and sends its link privately.
 2. The recipient opens the link and signs in with the invited, verified Google account; existing active members can sign in normally.
-3. The Sunday cron creates one deterministic, repeat-aware pairing cycle from active primary-circle members.
+3. Members set availability for the explicitly dated upcoming cycle before its displayed Sunday cutoff; the cron then publishes one deterministic, repeat-aware current-cycle pairing from that frozen eligibility snapshot.
 4. Each participant receives a personalised email containing only their partner and private room link.
 5. Partners propose a time, chat, and open the session workspace, where code and completed whiteboard gestures are saved as one room-scoped checkpoint.
 6. Members choose from the original, provenance-checked catalogue; JavaScript and Python are evaluated against server-owned cases and the authoritative result is saved by the API.
@@ -53,6 +53,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_db.js` | Turso client, durable session issuance/revocation, JWT verification, CSRF helpers |
 | `api/_catalog.js` | original exercise catalogue validation, public projections, server-owned evaluation cases |
 | `api/_pairing.js` | deterministic fairness and canonical room identifiers |
+| `api/_availability.js` | tenant-scoped weekly cycle identity, strict optimistic availability updates, and publication filtering |
 | `api/_schedule.js` | strict schedule validation, legacy projection, opaque versions, and conflict-safe mutations |
 | `api/_messages.js` | strict chat input, cursor, storage projection, and schema-readiness validation |
 | `api/_health.js` | process liveness and exact, read-only database readiness probes |

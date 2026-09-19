@@ -735,7 +735,7 @@ p{margin:0}
             <div><label class="small muted">LeetCode handle (optional)</label><input id="psLeet" class="input" placeholder="leetcode username"/></div>
           </div>
           <div><label class="small muted">Interview focus</label><div id="psFocus" class="pill-choice" style="margin-top:6px"><button class="chip" data-focus="dsa">DSA</button><button class="chip" data-focus="system">System Design</button><button class="chip active" data-focus="both">Both</button></div></div>
-          <div class="row" style="justify-content:space-between; align-items:center; padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-3)"><div><b style="font-size:12.5px">Available this week</b><div class="small muted">You’ll be included Sunday at 08:00 London time</div></div><label style="position:relative; display:inline-block; width:42px; height:26px"><input type="checkbox" id="psAvail" checked style="opacity:0;width:0;height:0"><span style="position:absolute;cursor:pointer;inset:0;background:#2a2a35;border-radius:999px;transition:.2s"></span><span style="position:absolute;left:3px;top:3px;width:20px;height:20px;background:var(--accent);border-radius:999px;transition:.2s" id="psAvailKnob"></span></label></div>
+          <div class="row" style="justify-content:space-between; align-items:center; gap:12px; padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-3)"><div><b style="font-size:12.5px">Weekly availability</b><div class="small muted">Availability belongs to a specific pairing cycle and is managed from Pairing.</div></div><button id="psAvailabilityLink" class="pill" type="button">Manage availability</button></div>
           <div id="psRemindRow" class="row" style="justify-content:space-between; align-items:center; padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-3)"><div><b style="font-size:12.5px">Remind me</b><div class="small muted">Email + SMS when paired</div></div><div class="row" style="gap:8px"><label class="pill" style="cursor:pointer"><input id="psRemindEmail" type="checkbox" checked style="margin-right:4px"/> 📧</label><label class="pill" style="cursor:pointer"><input id="psRemindSms" type="checkbox" style="margin-right:4px"/> 📱</label></div></div>
           <div class="row" style="justify-content:flex-end"><button id="psSave" class="btn">Save & continue →</button></div>
         </div>
@@ -747,7 +747,7 @@ p{margin:0}
       <div class="dashboard">
         <div class="dash-top">
           <div><h2 id="dashWelcome">Welcome back</h2><div id="dashSub" class="small muted">Checking pairings…</div></div>
-          <div class="row"><span id="dashAvailBadge" class="kbd">Available</span><button id="dashProfileBtn" class="pill">Edit profile</button></div>
+          <div class="row"><span id="dashAvailBadge" class="kbd">Checking availability…</span><button id="dashProfileBtn" class="pill">Edit profile</button></div>
         </div>
         <div id="dashStatsGrid" style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:14px 0">
           <div class="card" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Your pairings</div><div id="dashStatYou" style="font-size:20px; font-weight:600; margin-top:4px">—</div><div class="small muted" id="dashStatYouSub" style="font-size:11px">across — weeks</div></div>
@@ -837,25 +837,26 @@ p{margin:0}
             </div>
           </div>
           <div class="card-b">
-            <div id="currentWeekMeta" class="small muted" style="margin-bottom:10px">Pairs arrive Sunday at 08:00 London time. You're in when you're marked Available.</div>
+            <div id="currentWeekMeta" class="small muted" style="margin-bottom:10px">Current-cycle pairs stay fixed once published. Set the next cycle’s availability in Sync before its displayed cutoff.</div>
             <div id="pairsList" class="weeks"></div>
           </div>
         </div>
         <div class="card">
           <div class="card-h"><h2>Sync</h2><span>automatic</span></div>
           <div class="card-b" style="display:grid; gap:10px">
-            <div class="small" style="color:var(--ink-2)">You stay in sync when signed in. Pairings publish <b style="color:var(--ink)">Sundays at 08:00 London time</b> — only <span class="kbd">Available</span> teammates are included.</div>
-            <div id="availabilityWrap" style="display:none; border:1px solid var(--line); border-radius:10px; padding:10px; background:var(--bg-3); display:grid; gap:8px">
-              <div class="row" style="justify-content:space-between"><b style="font-size:13px">Available this week</b><label class="pill" style="cursor:pointer"><input id="availToggle" type="checkbox" checked style="margin-right:6px"/> <span id="availLabel">ON</span></label></div>
-              <div class="small muted">Turn off if you're away — you'll be skipped this Sunday but stay in the circle for next time.</div>
-              <div id="availBanner" class="small" style="display:none; padding:8px; border-radius:8px; background:#e6c07a22; border:1px dashed #e6c07a">You were away — welcome back, you're in for next Sunday.</div>
+            <div class="small" style="color:var(--ink-2)">You stay in sync when signed in. Set availability for the upcoming cycle before the cutoff shown below.</div>
+            <div id="availabilityWrap" data-testid="availability-card" role="region" aria-labelledby="availTitle" tabindex="-1" style="display:none; border:1px solid var(--line); border-radius:10px; padding:10px; background:var(--bg-3); display:grid; gap:8px">
+              <div class="row" style="justify-content:space-between"><b id="availTitle" style="font-size:13px">Upcoming availability</b><label class="pill" style="cursor:pointer"><input id="availToggle" type="checkbox" disabled aria-labelledby="availTitle availLabel" aria-describedby="availCycle availCutoff availExplan" style="margin-right:6px"/> <span id="availLabel">LOADING…</span></label></div>
+              <div id="availCycle" data-testid="availability-cycle" class="small muted">Loading the upcoming pairing cycle…</div>
+              <div id="availCutoff" data-testid="availability-cutoff" class="small muted"></div>
+              <div id="availBanner" class="small" style="display:none; padding:8px; border-radius:8px; background:#e6c07a22; border:1px dashed #e6c07a"></div>
             </div>
             <div id="presencePanel" class="people"></div>
             <div class="row">
               <button id="copyLinkBtn" class="btn secondary">Copy invite</button>
               <span class="small muted" id="syncStatus">● synced</span>
             </div>
-            <div class="small muted" id="availExplan" style="display:none"></div>
+            <div class="row" style="align-items:center"><div class="small muted" id="availExplan" role="status" aria-live="polite" style="display:none"></div><button id="availRetry" class="pill" type="button" hidden>Retry availability</button></div>
           </div>
         </div>
       </div>
@@ -1106,6 +1107,11 @@ p{margin:0}
   let currentCloudPairingLoaded=false;
   let currentCloudPairingUserId=null;
   let pairingRenderEpoch=0;
+  const AVAILABILITY_SOURCES=new Set(['user','legacy_bridge','cycle_default']);
+  const AVAILABILITY_ROLLOVER_GRACE_MS=250;
+  const AVAILABILITY_ROLLOVER_RETRY_MS=30000;
+  const AVAILABILITY_TIMER_MAX_MS=2147483647;
+  const availabilityState={value:null,userId:null,loading:false,saving:false,pendingValue:null,error:'',notice:null,request:null,rolloverTimer:null,epoch:0};
   const AUTH_CAPABILITY_TIMEOUT_MS=8000;
   const invitePreparation=(()=>{
     try{
@@ -1240,7 +1246,13 @@ async function refreshMe(){
       me=nextUser;
       try{ localStorage.setItem(ME_KEY, JSON.stringify(me)); }catch{}
     }
+    const refreshedUserId=Number(me?.id||me?.uid);
+    if(availabilityState.userId!==null
+      &&(!Number.isSafeInteger(refreshedUserId)||refreshedUserId<1
+        ||availabilityState.userId!==refreshedUserId)) clearAvailability();
     updateAuthUI();
+    if(me) refreshAvailability().catch(()=>{});
+    else clearAvailability();
     try{
       window.dispatchEvent(new CustomEvent('randori:auth-refreshed',{detail:{signedIn:!!me,userId:me?.id||me?.uid||null}}));
     }catch{}
@@ -1270,6 +1282,214 @@ async function refreshMe(){
     if(badge) badge.textContent=allowed
       ?(activeCircleRole==='owner'?'owner • idempotent':'local admin • idempotent')
       :'cycle starts Sunday 08:00 London time';
+  }
+  function parseAvailabilityEnvelope(payload){
+    const availability=payload?.availability;
+    const cycle=availability?.cycle;
+    if(!availability||typeof availability!=='object'||Array.isArray(availability)
+      ||!cycle||typeof cycle!=='object'||Array.isArray(cycle)
+      ||typeof availability.cycleKey!=='string'||!/^[0-9a-f]{64}$/.test(availability.cycleKey)
+      ||typeof cycle.cycleId!=='string'||!/^[0-9]{4}-W(?:0[1-9]|[1-4][0-9]|5[0-3])$/.test(cycle.cycleId)
+      ||typeof availability.isAvailable!=='boolean'
+      ||!Number.isSafeInteger(availability.version)||availability.version<0
+      ||!AVAILABILITY_SOURCES.has(availability.source)||typeof availability.editable!=='boolean'
+      ||cycle.state!=='upcoming'||typeof cycle.timeZone!=='string'||!cycle.timeZone
+      ||![cycle.startsAt,cycle.endsAt,cycle.cutoffAt].every(value=>typeof value==='string'&&Number.isFinite(Date.parse(value)))){
+      throw new Error('invalid availability response');
+    }
+    return Object.freeze({
+      cycle:Object.freeze({
+        cycleId:cycle.cycleId,startsAt:cycle.startsAt,endsAt:cycle.endsAt,
+        cutoffAt:cycle.cutoffAt,timeZone:cycle.timeZone,state:cycle.state,
+      }),
+      cycleKey:availability.cycleKey,
+      isAvailable:availability.isAvailable,
+      version:availability.version,
+      source:availability.source,
+      editable:availability.editable,
+      updatedAt:typeof availability.updatedAt==='string'?availability.updatedAt:null,
+    });
+  }
+  function formatAvailabilityInstant(value,timeZone){
+    const instant=new Date(value);
+    if(!Number.isFinite(instant.getTime())) return 'Unknown time';
+    try{
+      return new Intl.DateTimeFormat(undefined,{
+        timeZone,weekday:'short',year:'numeric',month:'short',day:'numeric',
+        hour:'2-digit',minute:'2-digit',timeZoneName:'short',
+      }).format(instant);
+    }catch{ return instant.toISOString(); }
+  }
+  function clearAvailabilityRolloverTimer(){
+    if(availabilityState.rolloverTimer!==null) clearTimeout(availabilityState.rolloverTimer);
+    availabilityState.rolloverTimer=null;
+  }
+  function scheduleAvailabilityRollover(){
+    clearAvailabilityRolloverTimer();
+    const availability=availabilityState.value;
+    const userId=Number(me?.id||me?.uid);
+    if(!availability?.editable||!Number.isSafeInteger(userId)||userId<1) return;
+    const cutoff=Date.parse(availability.cycle.cutoffAt);
+    if(!Number.isFinite(cutoff)) return;
+    const epoch=availabilityState.epoch;
+    const delayUntilCutoff=cutoff-Date.now()+AVAILABILITY_ROLLOVER_GRACE_MS;
+    const delay=Math.min(
+      delayUntilCutoff>0?delayUntilCutoff:AVAILABILITY_ROLLOVER_RETRY_MS,
+      AVAILABILITY_TIMER_MAX_MS,
+    );
+    availabilityState.rolloverTimer=setTimeout(()=>{
+      availabilityState.rolloverTimer=null;
+      if(epoch!==availabilityState.epoch||availabilityState.userId!==userId
+        ||Number(me?.id||me?.uid)!==userId) return;
+      if(availabilityState.saving){ scheduleAvailabilityRollover(); return; }
+      refreshAvailability().catch(()=>{});
+    },delay);
+  }
+  function replaceAvailability(value){
+    availabilityState.value=value;
+    scheduleAvailabilityRollover();
+  }
+  function availabilityNoticeMatches(notice,userId,availability){
+    return !!notice&&notice.userId===userId
+      &&notice.cycleKey===availability?.cycleKey
+      &&notice.version===availability?.version
+      &&notice.isAvailable===availability?.isAvailable
+      &&notice.editable===availability?.editable;
+  }
+  function renderAvailability(){
+    const wrap=document.getElementById('availabilityWrap');
+    const toggle=document.getElementById('availToggle');
+    const label=document.getElementById('availLabel');
+    const title=document.getElementById('availTitle');
+    const cycleText=document.getElementById('availCycle');
+    const cutoffText=document.getElementById('availCutoff');
+    const banner=document.getElementById('availBanner');
+    const status=document.getElementById('availExplan');
+    const retry=document.getElementById('availRetry');
+    const dashboardBadge=document.getElementById('dashAvailBadge');
+    if(!wrap||!toggle||!label) return;
+    if(!me){
+      wrap.style.display='none';
+      toggle.disabled=true;
+      if(status) status.style.display='none';
+      if(retry) retry.hidden=true;
+      return;
+    }
+    wrap.style.display='grid';
+    wrap.setAttribute('aria-busy',availabilityState.loading||availabilityState.saving?'true':'false');
+    const availability=availabilityState.value;
+    const currentUserId=Number(me?.id||me?.uid);
+    const noticeMessage=availabilityState.notice?.userId===currentUserId
+      ?availabilityState.notice.message:'';
+    const statusMessage=availabilityState.error||noticeMessage;
+    if(!availability){
+      toggle.checked=false;
+      toggle.disabled=true;
+      label.textContent=availabilityState.loading?'LOADING…':'UNAVAILABLE';
+      label.style.color='var(--muted)';
+      if(title) title.textContent='Upcoming availability';
+      if(cycleText) cycleText.textContent=availabilityState.loading?'Loading the upcoming pairing cycle…':'Upcoming cycle could not be loaded.';
+      if(cutoffText) cutoffText.textContent='';
+      if(banner) banner.style.display='none';
+      if(status){
+        status.style.display=statusMessage?'block':'none';
+        status.textContent=statusMessage;
+      }
+      if(retry){
+        retry.hidden=!availabilityState.error;
+        retry.disabled=availabilityState.loading;
+      }
+      if(dashboardBadge){
+        dashboardBadge.textContent=availabilityState.loading?'Checking availability…':'Availability unavailable';
+        dashboardBadge.style.background='var(--bg-3)';
+      }
+      return;
+    }
+    const shownValue=availabilityState.saving&&typeof availabilityState.pendingValue==='boolean'
+      ?availabilityState.pendingValue:availability.isAvailable;
+    toggle.checked=shownValue;
+    toggle.disabled=availabilityState.loading||availabilityState.saving||!availability.editable;
+    label.textContent=availabilityState.saving
+      ?`SAVING ${shownValue?'ON':'OFF'}…`
+      :(!availability.editable?'CLOSED':(availability.isAvailable?'ON (included)':'OFF (skipped)'));
+    label.style.color=shownValue?'var(--ok)':'var(--warn)';
+    if(title) title.textContent=`Availability for ${availability.cycle.cycleId}`;
+    if(cycleText){
+      cycleText.textContent=`Upcoming cycle starts ${formatAvailabilityInstant(availability.cycle.startsAt,availability.cycle.timeZone)} and ends ${formatAvailabilityInstant(availability.cycle.endsAt,availability.cycle.timeZone)}.`;
+    }
+    if(cutoffText){
+      cutoffText.textContent=`Changes close ${formatAvailabilityInstant(availability.cycle.cutoffAt,availability.cycle.timeZone)} (${availability.cycle.timeZone}).`;
+    }
+    if(banner){
+      banner.style.display=availability.isAvailable?'none':'block';
+      banner.textContent=`You are set to skip ${availability.cycle.cycleId}. This does not change another cycle.`;
+    }
+    if(status){
+      status.style.display=statusMessage?'block':'none';
+      status.textContent=statusMessage;
+    }
+    if(retry) retry.hidden=true;
+    if(dashboardBadge){
+      dashboardBadge.textContent=availability.isAvailable
+        ?`Available for ${availability.cycle.cycleId}`:`Skipping ${availability.cycle.cycleId}`;
+      dashboardBadge.style.background=availability.isAvailable?'var(--accent)22':'#f2d07a22';
+    }
+  }
+  function clearAvailability(){
+    clearAvailabilityRolloverTimer();
+    availabilityState.epoch+=1;
+    availabilityState.value=null;
+    availabilityState.userId=null;
+    availabilityState.loading=false;
+    availabilityState.saving=false;
+    availabilityState.pendingValue=null;
+    availabilityState.error='';
+    availabilityState.notice=null;
+    availabilityState.request=null;
+    renderAvailability();
+  }
+  async function refreshAvailability(){
+    if(!me){ clearAvailability(); return null; }
+    const userId=Number(me.id||me.uid);
+    if(!Number.isSafeInteger(userId)||userId<1){ clearAvailability(); return null; }
+    if(availabilityState.saving&&availabilityState.userId===userId) return availabilityState.value;
+    if(availabilityState.loading&&availabilityState.userId===userId&&availabilityState.request){
+      return availabilityState.request;
+    }
+    clearAvailabilityRolloverTimer();
+    if(availabilityState.userId!==userId) availabilityState.notice=null;
+    availabilityState.value=null;
+    const epoch=++availabilityState.epoch;
+    availabilityState.userId=userId;
+    availabilityState.loading=true;
+    availabilityState.error='';
+    renderAvailability();
+    const request=(async()=>{
+      try{
+        const data=await api('/api/settings/availability',{method:'GET'});
+        const availability=parseAvailabilityEnvelope(data);
+        if(epoch!==availabilityState.epoch||Number(me?.id||me?.uid)!==userId) return null;
+        if(!availabilityNoticeMatches(availabilityState.notice,userId,availability)){
+          availabilityState.notice=null;
+        }
+        replaceAvailability(availability);
+        return availability;
+      }catch(error){
+        if(epoch===availabilityState.epoch){
+          availabilityState.value=null;
+          availabilityState.error='Weekly availability is temporarily unavailable. Try again.';
+        }
+        return null;
+      }finally{
+        if(epoch===availabilityState.epoch){
+          availabilityState.loading=false;
+          availabilityState.request=null;
+          renderAvailability();
+        }
+      }
+    })();
+    availabilityState.request=request;
+    return request;
   }
   function updateAuthUI(){
     const area=document.getElementById('authArea');
@@ -1324,60 +1544,63 @@ async function refreshMe(){
     }
 
     updatePairingRunAccess();
-    // availability UI visibility
-    const avWrap=document.getElementById('availabilityWrap');
-    const cb=document.getElementById('availToggle');
-    const lb=document.getElementById('availLabel');
-    if(avWrap){
-      if(me){
-        avWrap.style.display='grid';
-        // use me.is_available if present, else true
-        const avail = (me.is_available!==undefined ? !!me.is_available : (me.isAvailable!==undefined ? !!me.isAvailable : true));
-        if(cb){ cb.checked=avail; }
-        if(lb){ lb.textContent=avail?'ON (included)':'OFF (skipped)'; lb.style.color=avail?'var(--ok)':'var(--warn)'; }
-        const banner=document.getElementById('availBanner');
-        if(banner){
-          if(!avail){
-            banner.style.display='block';
-            banner.textContent='You\'re set to skip this week — flip back on to rejoin next Sunday.';
-          }else{
-            // check last week skip via local flag? Show if last stored skipped flag true
-            const wasSkipped = localStorage.getItem('randori-was-skipped')==='1';
-            if(wasSkipped){
-              banner.style.display='block';
-              banner.textContent='You were skipped last week because you were unavailable — but you are now ON for next week.';
-              banner.style.background='#9cc0b522';
-            }else{
-              banner.style.display='none';
-            }
-          }
-        }
-      }else{
-        avWrap.style.display='none';
-      }
-    }
+    renderAvailability();
   }
   // availability toggle handler — defined after updateAuthUI so it can be hooked later
   async function toggleAvailability(checked){
-    const lb=document.getElementById('availLabel');
-    if(lb) lb.textContent=checked?'ON...':'OFF...';
+    if(typeof checked!=='boolean'||availabilityState.loading||availabilityState.saving) return;
+    const current=availabilityState.value;
+    if(!current||!current.editable){ renderAvailability(); return; }
+    const userId=Number(me?.id||me?.uid);
+    const epoch=availabilityState.epoch;
+    if(!Number.isSafeInteger(userId)||userId<1||availabilityState.userId!==userId) return;
+    const isCurrentRequest=()=>epoch===availabilityState.epoch
+      &&availabilityState.userId===userId&&Number(me?.id||me?.uid)===userId;
+    availabilityState.saving=true;
+    availabilityState.pendingValue=checked;
+    availabilityState.error='';
+    availabilityState.notice=null;
+    renderAvailability();
     try{
-      const data=await api('/api/settings/availability',{method:'POST', body:{ is_available: !!checked }});
-      if(me){
-        me.is_available=data.user.is_available;
-        me.isAvailable=data.user.is_available;
-        me.availability_updated_at=data.user.availability_updated_at;
-        localStorage.setItem(ME_KEY, JSON.stringify(me));
+      const data=await api('/api/settings/availability',{method:'POST',body:{
+        cycle_key:current.cycleKey,
+        expected_version:current.version,
+        is_available:checked,
+      }});
+      const next=parseAvailabilityEnvelope(data);
+      if(!isCurrentRequest()) return;
+      replaceAvailability(next);
+      toast(checked?`Available for ${availabilityState.value.cycle.cycleId} ✓`:`Skipping ${availabilityState.value.cycle.cycleId}`);
+      renderPeople();
+    }catch(error){
+      if(!isCurrentRequest()) return;
+      try{
+        replaceAvailability(parseAvailabilityEnvelope(error));
+        const code=String(error?.error||'');
+        const message=code.includes('cutoff')
+          ?'That cutoff has closed. Showing the next editable cycle.'
+          :code.includes('cycle')
+            ?'The pairing cycle changed. Review the refreshed availability below.'
+            :'Availability changed elsewhere. Showing the latest setting.';
+        availabilityState.notice=Object.freeze({
+          message,userId,cycleKey:availabilityState.value.cycleKey,
+          version:availabilityState.value.version,
+          isAvailable:availabilityState.value.isAvailable,
+          editable:availabilityState.value.editable,
+        });
+        toast(message);
+      }catch{
+        availabilityState.notice=null;
+        availabilityState.error='Availability was not saved. Your previous setting is still shown.';
+        toast('Availability update failed. Try again.');
       }
-      updateAuthUI();
-      toast(data.message|| (checked?'Available ✓':'Unavailable — you’ll be skipped'));
-      if(!checked){ localStorage.setItem('randori-was-skipped','0'); } // clear skip flag when you intentionally go off, banner already explains
-      renderPeople(); // re-render circle with badge
-    }catch(e){
-      toast('availability update failed: '+(e.error||e.message||'offline'));
-      // revert toggle
-      const cb=document.getElementById('availToggle'); if(cb) cb.checked=!checked;
-      if(lb) lb.textContent=cb && cb.checked?'ON (included)':'OFF (skipped)';
+    }finally{
+      if(isCurrentRequest()){
+        availabilityState.saving=false;
+        availabilityState.pendingValue=null;
+        scheduleAvailabilityRollover();
+        renderAvailability();
+      }
     }
   }
   function parseAuthCapabilities(payload){
@@ -1645,6 +1868,7 @@ async function refreshMe(){
       localStorage.removeItem('randori-last-room');
       localStorage.removeItem('randori-code');
       me=null;
+      clearAvailability();
       // clear any in-memory video state quietly
       try{ if(typeof videoJoined!=='undefined' && videoJoined){ videoJoined=false; } }catch{}
       // force UI to landing
@@ -1683,6 +1907,7 @@ async function refreshMe(){
     if(!cb) return;
     cb.addEventListener('change', ()=>{ toggleAvailability(cb.checked); });
     cb.addEventListener('click', (e)=>{ e.stopPropagation(); });
+    document.getElementById('availRetry')?.addEventListener('click',()=>{ refreshAvailability().catch(()=>{}); });
   })();
 
   // Reminder prefs wiring — Pillar 5
@@ -1763,34 +1988,6 @@ async function refreshMe(){
     })();
   })();
 
-  async function checkSkippedBanner(){
-    // If user was unavailable last week, /api/weeks won't contain them this week. We infer skip when they were unavailable and new week exists where they are absent.
-    // Simpler: ask /api/history — if last history entry week_label != current cloud week label and is_available currently true but was false during last shuffle, we show banner.
-    // For now: when /api/cron/weekly returns unavailable_reminders includes you, set flag.
-    try{
-      // Peek latest weeks to see if you were excluded
-      if(!me) return;
-      const d = await api('/api/auth/me',{method:'GET'});
-      // if unavailable flag is OFF, banner already shown by updateAuthUI
-      if(d && d.user && !d.user.is_available && !d.user.isAvailable){
-        localStorage.setItem('randori-was-skipped','0'); return;
-      }
-      const w = await api('/api/weeks',{method:'GET'}).catch(()=>null);
-      if(!w || !w.weeks || !w.weeks.length) return;
-      const last = w.weeks[0];
-      const myId = d.user.id;
-      const inLast = last.pairs.some(p=> p.a_id===myId || p.b_id===myId);
-      if(!inLast && last.pairs.length){
-        // you were not in last shuffle but you exist — maybe skipped due to unavailable
-        const wasAvailRecently = localStorage.getItem('randori-prev-avail');
-        if(wasAvailRecently==='0'){
-          localStorage.setItem('randori-was-skipped','1');
-        }
-      }
-      localStorage.setItem('randori-prev-avail', d.user.is_available ? '1':'0');
-    }catch{}
-  }
-  setInterval(()=>{ if(me) checkSkippedBanner(); }, 15000);
   function authFailureMessage(error,mode){
     const code=String(error?.error||error?.message||'');
     if(code==='email already registered') return 'That email already has an account. Sign in instead.';
@@ -1848,6 +2045,7 @@ async function refreshMe(){
       }
       closeAuthModal();
       try{ updateAuthUI(); }catch{}
+      refreshAvailability().catch(()=>{});
       try{ renderHistory(); }catch{}
       try{ window.dispatchEvent(new CustomEvent('randori:auth-refreshed',{detail:{signedIn:true,userId:me.id||me.uid||null}})); }catch{}
       toast(mode==='signup'?`welcome, ${me.name}`:`signed in as ${me.name}`);
@@ -1915,6 +2113,16 @@ async function refreshMe(){
     get capabilities(){return {...authCapabilities}},
     api,refreshMe,openModal:openAuthModal,closeModal:closeAuthModal,
   };
+  window._randori_availability={
+    get current(){ return availabilityState.value; },
+    refresh:refreshAvailability,
+  };
+  const revalidateAvailability=()=>{
+    if(!me||document.visibilityState==='hidden') return;
+    refreshAvailability().catch(()=>{});
+  };
+  document.addEventListener('visibilitychange',revalidateAvailability);
+  window.addEventListener('focus',revalidateAvailability);
   // initial UI + me refresh
   updateAuthEntryPoints();
   renderAuthModal();
@@ -2231,15 +2439,11 @@ async function refreshMe(){
       people.forEach((person,index)=>{
         const displayName=String(person?.display_name||person?.name||'Member');
         const color=safeProfileColor(person?.color);
-        const available=person?.is_available===undefined&&person?.isAvailable===undefined
-          ? true : (person.is_available!==undefined?!!person.is_available:!!person.isAvailable);
-        const row=document.createElement('div'); row.className='person'; row.style.opacity=available?'1':'.65';
+        const row=document.createElement('div'); row.className='person';
         const identity=document.createElement('div'); identity.className='row';
         const avatar=document.createElement('div'); avatar.className='avatar'; avatar.style.background=color; avatar.textContent=displayName.slice(0,2).toUpperCase();
         const name=document.createElement('b'); name.style.fontSize='13px'; name.textContent=displayName;
-        const badge=document.createElement('span'); badge.className='kbd'; badge.textContent=available?'● available':'○ away'; badge.title=available?'Available this week':'Skipping this week';
-        badge.style.background=available?'#9cc0b522':'#e6c07a22'; badge.style.color=available?'#9cc0b5':'#e6c07a'; badge.style.borderColor=available?'#9cc0b5':'#e6c07a';
-        identity.append(avatar,name,badge); row.appendChild(identity);
+        identity.append(avatar,name); row.appendChild(identity);
         if(usingLocalLegacy&&isAdmin()){
           const actions=document.createElement('div'); actions.className='row';
           const edit=document.createElement('button'); edit.type='button'; edit.className='pill'; edit.textContent='edit';
@@ -2263,7 +2467,7 @@ async function refreshMe(){
         listEl.appendChild(row);
       });
       if(!people.length){
-        const empty=document.createElement('div'); empty.className='small muted'; empty.textContent='No active members are available in this circle.'; listEl.appendChild(empty);
+        const empty=document.createElement('div'); empty.className='small muted'; empty.textContent='No active members are in this circle.'; listEl.appendChild(empty);
       }
       listEl.setAttribute('aria-busy','false');
       if(gatedRole==='owner'&&circleOwnerPanel){
@@ -4182,7 +4386,7 @@ def allow(key, limit=5):
       document.querySelectorAll('.view').forEach(v=>v.style.display='none');
       document.getElementById('view-'+id).style.display='block';
       if(id==='circle') renderPeople();
-      if(id==='pair') renderPairs();
+      if(id==='pair'){ renderPairs(); refreshAvailability().catch(()=>{}); }
       if(id==='board'){ setTimeout(()=>{ resizeCanvas(); renderBoard(); }, 60); }
       if(id==='code' && !currentRoom){ renderRoomSelect(); const sel=document.getElementById('roomSelect'); if(sel.value) loadRoom(sel.value); }
       if(id==='history') renderHistory();
@@ -4367,8 +4571,8 @@ def allow(key, limit=5):
 
   const steps=[
     {title:'Welcome to Randori Circle', desc:'Weekly mock interviews with friends — Sunday pairing, live rooms, whiteboard. 5-min setup, then you practice DSA + System Design together.', cta:'Get started →', target:null, extra:`<div class="row" style="gap:8px"><span class="kbd">Sunday 08:00 London time</span><span class="kbd">No trios — odd gets Solo practice</span></div>`},
-    {title:'Join your Circle', desc:'Signing up includes you in the Sunday 08:00 London-time cycle. No manual add needed — teammates join the next pairing automatically.', cta:'Next → Circle', target:'#authBtn', needsAuth:false, extra:`<div class="small muted">Already signed in? Nice — you're in!</div>`},
-    {title:'Stay Available', desc:'You can skip a week without leaving the circle. Toggle Available off and you’ll be excluded Sunday, but you stay in for next time.', cta:'Next → Availability', target:'#availabilityWrap', extra:`<div class="small muted">Tip: Turn off if you're away — welcome-back banner shows when you're back on.</div>`},
+    {title:'Join your Circle', desc:'Signing up joins the circle. Then review your availability for the upcoming pairing cycle.', cta:'Next → Circle', target:'#authBtn', needsAuth:false, extra:`<div class="small muted">Already signed in? Nice — next, check the cycle cutoff.</div>`},
+    {title:'Set weekly availability', desc:'Availability applies only to the upcoming pairing cycle shown in Pairing. Turn it off before that cycle’s displayed cutoff to skip it.', cta:'Next → Availability', target:'#availabilityWrap', extra:`<div class="small muted">Each cycle has its own setting, dates, and scheduling timezone.</div>`},
     {title:'This Week pairs', desc:'Pairs appear Sunday at 08:00 London time. You choose DSA / System Design / Both yourselves, and published pairs stay fixed for the cycle. With an odd count, one member gets Solo practice.', cta:'Next → Live room', target:'#view-pair', extra:`<div class="small muted">Pairs are colour-coded, click code to jump into live room.</div>`},
     {title:'Live Room & AI', desc:'Every pair has a Code room + Whiteboard. Join video with one click, Record edits + notes, then Get AI Feedback (Groq router picks model by session, evidence-checked).', cta:'Open a room →', target:'#view-code', extra:`<div class="row" style="flex-wrap:wrap"><span class="kbd">Code ↔ Board</span><span class="kbd">📷 cam mute</span><span class="kbd">⚡ AI feedback</span></div>`},
   ];
@@ -4427,8 +4631,8 @@ def allow(key, limit=5):
         const signed=!!me;
         if(!signed) tgt=document.getElementById('authBtn');
         else {
-          document.getElementById('onbDesc').textContent='You’re in! You were auto-added to Sunday shuffle.';
-          document.getElementById('onbExtra').innerHTML='<div class="pill" style="background:var(--accent); color:#0f0f10">✓ Signed in — you’re included Sunday</div>';
+          document.getElementById('onbDesc').textContent='You’re in! Review the upcoming cycle and its cutoff next.';
+          document.getElementById('onbExtra').innerHTML='<div class="pill" style="background:var(--accent); color:#0f0f10">✓ Signed in — availability is set per cycle</div>';
         }
       }
       if(onboardStep===3){
@@ -4681,11 +4885,14 @@ def allow(key, limit=5):
     }
   });
 
-  // Availability custom toggle styling knob
-  document.getElementById('psAvail')?.addEventListener('change', e=>{
-    const knob=document.getElementById('psAvailKnob');
-    if(e.target.checked){ knob.style.transform='translateX(0)'; knob.style.background='var(--accent)'; }
-    else { knob.style.transform='translateX(16px)'; knob.style.background='#555'; }
+  document.getElementById('psAvailabilityLink')?.addEventListener('click',()=>{
+    document.querySelector('[data-tab="pair"]')?.click();
+    window._randori_availability?.refresh?.();
+    setTimeout(()=>{
+      const card=document.getElementById('availabilityWrap');
+      card?.focus({preventScroll:true});
+      card?.scrollIntoView({behavior:'smooth',block:'center'});
+    },0);
   });
 
   async function fetchProfile(){
@@ -4724,7 +4931,6 @@ def allow(key, limit=5):
     document.getElementById('psTz').value = user?.tz|| Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
     profileFocus = user?.interview_focus||'both';
     document.querySelectorAll('#psFocus .chip').forEach(c=>{ c.classList.toggle('active', c.dataset.focus===profileFocus); });
-    document.getElementById('psAvail').checked = user?.is_available!==undefined ? !!user.is_available : true;
     const col = safeProfileColor(user?.color||me?.color||PALETTE[0]);
     document.getElementById('psAvatar').style.background=col;
     document.getElementById('psAvatar').textContent=( (user?.display_name||user?.name||me?.name||'ME').slice(0,2).toUpperCase());
@@ -4740,8 +4946,7 @@ def allow(key, limit=5):
     const tz=document.getElementById('psTz').value;
     const leet=document.getElementById('psLeet').value.trim();
     const color=document.getElementById('psColors')?.dataset.selected||undefined;
-    const isAvail=document.getElementById('psAvail')?.checked;
-    const payload={ display_name:name, bio, tz, interview_focus:profileFocus, leetcode_handle:leet, color, is_available:isAvail };
+    const payload={ display_name:name, bio, tz, interview_focus:profileFocus, leetcode_handle:leet, color };
     // simple validation
     if(!name){ alert('Name required'); return; }
     try{
@@ -4775,6 +4980,7 @@ def allow(key, limit=5):
 
   async function showDashboard(){
     hideAllViews();
+    window._randori_availability?.refresh?.();
     currentPair=null; currentWeekId=null;
     const dashboardEpoch=scheduleState.epoch;
     if(viewDashboard) viewDashboard.style.display='block';
@@ -4796,9 +5002,12 @@ def allow(key, limit=5):
     document.getElementById('dashSub').textContent='Checking Sunday pairings…';
     const availBadge=document.getElementById('dashAvailBadge');
     if(availBadge){
-      const avail = m?.is_available!==undefined ? !!m.is_available : true;
-      availBadge.textContent= avail ? 'Available this week' : 'Skipping this week';
-      availBadge.style.background= avail ? 'var(--accent)22' : '#f2d07a22';
+      const availability=window._randori_availability?.current;
+      availBadge.textContent=availability
+        ?(availability.isAvailable?`Available for ${availability.cycle.cycleId}`:`Skipping ${availability.cycle.cycleId}`)
+        :'Checking availability…';
+      availBadge.style.background=availability
+        ?(availability.isAvailable?'var(--accent)22':'#f2d07a22'):'var(--bg-3)';
     }
     // fetch my pair
     try{
