@@ -1,7 +1,7 @@
 import { getClient, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 import { authPairAccessArgs, authPairAccessSql } from './_pair-access.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
-import { accountHasMultipleActiveCircles, multiCircleControlPlaneEnabled, sendMultiCircleFeatureUnavailable } from './_active-circle.js';
+import { canUseLegacySinglePrimaryCircleFeatures, multiCircleControlPlaneEnabled, sendMultiCircleFeatureUnavailable } from './_active-circle.js';
 
 const WORKSPACE_SCHEMA_VERSION = 3;
 const MAX_WORKSPACE_CODE_BYTES = 20 * 1024;
@@ -665,7 +665,8 @@ export default async function handler(req,res){
     try{
       const payload=await verifyRequestAuth(req);
       const userId=Number(payload?.id??payload?.uid);
-      if(Number.isSafeInteger(userId)&&userId>0&&await accountHasMultipleActiveCircles(getClient(),userId)){
+      if(Number.isSafeInteger(userId)&&userId>0
+        &&!(await canUseLegacySinglePrimaryCircleFeatures(getClient(),payload))){
         return sendMultiCircleFeatureUnavailable(res);
       }
     }catch{ return res.status(503).json({error:'circle context unavailable'}); }

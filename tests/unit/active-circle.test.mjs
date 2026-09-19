@@ -7,6 +7,7 @@ import { createClient } from '@libsql/client';
 
 import {
   accountHasMultipleActiveCircles,
+  canUseLegacySinglePrimaryCircleFeatures,
   listSessionCircleContexts,
   selectActiveCircleContext,
 } from '../../api/_active-circle.js';
@@ -179,6 +180,8 @@ test('single-circle accounts retain implicit selection and flag-off auth remains
   assert.equal(context.implicit,true);
   assert.equal(context.active.public_id,'circle-private');
   assert.equal(await accountHasMultipleActiveCircles(db,3),false);
+  assert.equal(await canUseLegacySinglePrimaryCircleFeatures(db,payload),false,
+    'a sole secondary membership cannot enter legacy primary-scoped features');
   assert.equal(await accountHasMultipleActiveCircles(db,1),true);
   delete process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED;
   assert.equal(await verifyRequestAuth(request(token),db),null,
@@ -186,6 +189,29 @@ test('single-circle accounts retain implicit selection and flag-off auth remains
   process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';
   const enabledToken=await issueSession(db,{id:3,email:'other@example.test',name:'Other'});
   assert.equal((await verifyRequestAuth(request(enabledToken),db))?.id,3);
+});
+
+test('legacy features require one resolved primary circle and reject a stale stored selection',async()=>{
+  const {db,memberToken}=await fixture();
+  const memberPayload=await verifyRequestAuth(request(memberToken),db);
+  assert.equal(await canUseLegacySinglePrimaryCircleFeatures(db,memberPayload),false,
+    'two memberships remain ambiguous even before selection');
+  const selected=await selectActiveCircleContext(db,memberPayload,{
+    circlePublicId:'circle-secondary',expectedContextVersion:0,
+  });
+  assert.equal(await canUseLegacySinglePrimaryCircleFeatures(db,memberPayload),false,
+    'selecting a secondary circle cannot authorize primary-keyed data');
+  await db.execute(`UPDATE circle_memberships SET status='inactive'
+    WHERE circle_id=20 AND user_id=2`);
+  assert.equal((await listSessionCircleContexts(db,memberPayload)).selection_required,true);
+  assert.equal(await canUseLegacySinglePrimaryCircleFeatures(db,memberPayload),false,
+    'a stale stored selection cannot silently fall back to the sole primary circle');
+  const primary=await selectActiveCircleContext(db,memberPayload,{
+    circlePublicId:'circle-primary',expectedContextVersion:selected.context_version,
+  });
+  assert.equal(primary.context_version,2);
+  assert.equal(await canUseLegacySinglePrimaryCircleFeatures(db,memberPayload),true,
+    'an explicitly recovered sole primary circle retains legacy compatibility');
 });
 
 test('stale context cannot mutate the old circle after another request switches sessions',async()=>{

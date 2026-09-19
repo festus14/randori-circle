@@ -289,17 +289,12 @@ test('an availability change queued during same-account revalidation uses the re
   });
   await getStarted;
   await expect(toggle).toBeChecked();
-  await expect(toggle).toBeDisabled();
+  await expect(toggle).toBeEnabled();
 
-  // This is the exact browser interleaving from the failing trace: the input
-  // change lands after revalidation has started. The intent must be serialized
-  // behind the GET rather than silently discarded.
-  await page.evaluate(() => {
-    const input = document.querySelector<HTMLInputElement>('#availToggle');
-    if (!input) throw new Error('availability toggle missing');
-    input.checked = false;
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-  });
+  // A validated control stays interactive during same-account revalidation;
+  // the click is held visibly and serialized behind the in-flight GET.
+  await toggle.uncheck();
+  await expect(page.locator('#availLabel')).toHaveText('SAVING OFF…');
   releaseGet?.();
 
   await expect.poll(() => posts.length).toBe(1);

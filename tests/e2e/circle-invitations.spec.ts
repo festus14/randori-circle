@@ -256,11 +256,20 @@ test('multi-circle selection reloads into the chosen isolated roster and invitat
   let releaseSwitch!:()=>void;
   const switchStarted=new Promise<void>(resolve=>{ markSwitchStarted=resolve; });
   const switchGate=new Promise<void>(resolve=>{ releaseSwitch=resolve; });
+  let markCapabilitiesStarted!:()=>void;
+  let releaseCapabilities!:()=>void;
+  const capabilitiesStarted=new Promise<void>(resolve=>{ markCapabilitiesStarted=resolve; });
+  const capabilitiesGate=new Promise<void>(resolve=>{ releaseCapabilities=resolve; });
+  let markProfileStarted!:()=>void;
+  let releaseProfile!:()=>void;
+  const profileStarted=new Promise<void>(resolve=>{ markProfileStarted=resolve; });
+  const profileGate=new Promise<void>(resolve=>{ releaseProfile=resolve; });
   const primaryMember={...members[0],display_name:'Primary Owner',name:'Primary Owner'};
   const secondaryMember={...members[1],id:22,display_name:'Secondary Teammate',name:'Secondary Teammate'};
   await mockApi(page,{
     '/api/auth/capabilities':async()=>{
-      await new Promise(resolve=>setTimeout(resolve,100));
+      markCapabilitiesStarted();
+      await capabilitiesGate;
       return {
         ok:true,
         capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,multiCircleControlPlane:true},
@@ -268,6 +277,11 @@ test('multi-circle selection reloads into the chosen isolated roster and invitat
       };
     },
     '/api/auth/me':{ok:true,user:owner},
+    '/api/profile':async()=>{
+      markProfileStarted();
+      await profileGate;
+      return {ok:true,user:owner};
+    },
     '/api/circles':async request=>{
       if(request.method()==='PUT'){
         const body=request.postDataJSON();
@@ -305,11 +319,17 @@ test('multi-circle selection reloads into the chosen isolated roster and invitat
   });
   await resetClientState(page,true,{},true);
   await page.goto('/',{waitUntil:'domcontentloaded'});
+  await capabilitiesStarted;
+  await profileStarted;
   await page.locator('[data-tab="circle"]').click();
+  releaseCapabilities();
   const selector=page.getByTestId('circle-context-select');
   await expect(selector).toBeVisible();
   await expect(selector).toHaveValue('');
   await expect(page.getByTestId('circle-members')).toContainText('select one above');
+  releaseProfile();
+  await expect(page.locator('#view-circle')).toBeVisible();
+  await expect(selector).toBeVisible();
   await page.locator('#pairsList').evaluate(element=>{ element.textContent='Primary private pairing'; });
   await page.locator('#historyList').evaluate(element=>{ element.textContent='Primary private history'; });
 

@@ -849,9 +849,11 @@ reloads, and notifies sibling tabs after it commits.
 
 Roster and invitation reads/writes are now scoped to the exact resolved circle.
 Pairing, availability, chat, workspace, video, execution, and AI records do not
-yet have complete tenant ownership, so multi-circle accounts receive
-`409 circle_feature_unavailable` on those paths even after selection. This is a
-deliberate safety boundary until those schemas carry canonical circle ownership.
+yet have complete tenant ownership, so only an exact single active primary
+circle may enter those legacy paths. Multiple circles, a sole secondary circle,
+and stale or ambiguous stored selections receive `409
+circle_feature_unavailable`. This is a deliberate safety boundary until those
+schemas carry canonical circle ownership.
 
 **Alternatives.** A client-only circle ID or reusable header is easier but can
 be stale or forged and cannot serialize concurrent tab changes. Storing one

@@ -264,9 +264,37 @@ export async function accountHasMultipleActiveCircles(db,userId){
   return (result.rows?.length||0)>1;
 }
 
+export async function canUseLegacySinglePrimaryCircleFeatures(db,payload){
+  const identity=sessionIdentity(payload);
+  if(!db||typeof db.execute!=='function'||!identity) return false;
+  const result=await db.execute({
+    sql:`SELECT COUNT(circle.id) AS active_circle_count,
+        COALESCE(SUM(CASE WHEN circle.is_primary=1 THEN 1 ELSE 0 END),0) AS primary_circle_count,
+        context.circle_id AS selected_circle_id,
+        COALESCE(MAX(CASE WHEN context.circle_id=circle.id THEN 1 ELSE 0 END),0) AS selected_circle_active
+      FROM auth_sessions session
+      LEFT JOIN circle_memberships membership ON membership.user_id=session.user_id
+        AND membership.status='active'
+      LEFT JOIN circles circle ON circle.id=membership.circle_id AND circle.archived_at IS NULL
+      LEFT JOIN auth_session_circle_contexts context
+        ON context.session_hash=session.session_hash AND context.user_id=session.user_id
+      WHERE session.session_hash=? AND session.user_id=? AND session.revoked_at IS NULL
+        AND session.expires_at>CAST(strftime('%s','now') AS INTEGER)
+      GROUP BY session.session_hash,context.circle_id
+      LIMIT 2`,
+    args:[identity.sessionHash,identity.userId],
+  });
+  if(result.rows?.length!==1) return false;
+  const row=result.rows[0];
+  const selectedCircleId=row.selected_circle_id==null?null:positiveInteger(Number(row.selected_circle_id));
+  return Number(row.active_circle_count)===1
+    &&Number(row.primary_circle_count)===1
+    &&(selectedCircleId===null||Number(row.selected_circle_active)===1);
+}
+
 export function sendMultiCircleFeatureUnavailable(res){
   return res.status(409).json({
-    error:'pairing and workspace features are not yet available for accounts in multiple circles',
+    error:'pairing and workspace features are not available for this circle context',
     code:'circle_feature_unavailable',
   });
 }

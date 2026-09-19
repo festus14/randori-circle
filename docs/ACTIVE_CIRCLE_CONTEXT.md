@@ -32,9 +32,10 @@ disabled unless both `CIRCLE_MEMBERSHIP_ENABLED=true` and
   revokes account sessions only when no active circle remains. The context row
   remains as a tombstone, so reactivation cannot make an old version valid.
 - Pairing, availability, history, schedule, chat, execution, workspace, video,
-  and AI routes return `409 circle_feature_unavailable` for an authenticated
-  account with more than one active circle. Selecting a circle does not bypass
-  this guard because those records do not yet carry complete tenant ownership.
+  and AI routes are available only when the session resolves to exactly one
+  active primary circle. Multiple circles, a sole secondary circle, or a stale
+  saved selection return `409 circle_feature_unavailable`; these records do not
+  yet carry complete tenant ownership.
 
 The browser clears private circle and workspace state before reloading after a
 switch. It broadcasts the context change to other tabs so delayed circle-A

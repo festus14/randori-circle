@@ -47,7 +47,7 @@ import {
 } from './_invitation-email.js';
 import {identityEmailKeyRotationStatus} from './_identity-linking.js';
 import { localIdentityAdapterEnabled, localRuntimeRequest } from './_local-runtime.js';
-import { accountHasMultipleActiveCircles, multiCircleControlPlaneEnabled, sendMultiCircleFeatureUnavailable } from './_active-circle.js';
+import { canUseLegacySinglePrimaryCircleFeatures, multiCircleControlPlaneEnabled, sendMultiCircleFeatureUnavailable } from './_active-circle.js';
 
 export const OUTBOX_CRON_BUDGET_MS=45_000;
 export const OUTBOX_CRON_FINALIZATION_RESERVE_MS=5_000;
@@ -867,7 +867,8 @@ export default async function handler(req,res){
     try{
       const payload=await verifyRequestAuth(req);
       const userId=Number(payload?.id??payload?.uid);
-      if(Number.isSafeInteger(userId)&&userId>0&&await accountHasMultipleActiveCircles(getClient(),userId)){
+      if(Number.isSafeInteger(userId)&&userId>0
+        &&!(await canUseLegacySinglePrimaryCircleFeatures(getClient(),payload))){
         return sendMultiCircleFeatureUnavailable(res);
       }
     }catch{ return res.status(503).json({error:'circle context unavailable'}); }

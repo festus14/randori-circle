@@ -1200,6 +1200,7 @@ p{margin:0}
   let currentCloudPairingLoaded=false;
   let currentCloudPairingUserId=null;
   let pairingRenderEpoch=0;
+  let userNavigationEpoch=0;
   const AVAILABILITY_SOURCES=new Set(['user','legacy_bridge','cycle_default']);
   const AVAILABILITY_ROLLOVER_GRACE_MS=250;
   const AVAILABILITY_ROLLOVER_RETRY_MS=30000;
@@ -1673,7 +1674,9 @@ async function refreshMe(){
     const shownValue=availabilityState.saving&&typeof availabilityState.pendingValue==='boolean'
       ?availabilityState.pendingValue:availability.isAvailable;
     toggle.checked=shownValue;
-    toggle.disabled=availabilityState.loading||availabilityState.saving||!availability.editable;
+    // A validated value remains interactive during same-account background
+    // refreshes. toggleAvailability serializes the intent behind that request.
+    toggle.disabled=availabilityState.saving||!availability.editable;
     label.textContent=availabilityState.saving
       ?`SAVING ${shownValue?'ON':'OFF'}…`
       :(!availability.editable?'CLOSED':(availability.isAvailable?'ON (included)':'OFF (skipped)'));
@@ -1820,22 +1823,36 @@ async function refreshMe(){
     if(typeof checked!=='boolean'||availabilityState.saving) return;
     const userId=Number(me?.id||me?.uid);
     const requestAuthEpoch=authSessionEpoch;
+    if(!Number.isSafeInteger(userId)||userId<1||availabilityState.userId!==userId) return;
     if(availabilityState.loading&&availabilityState.userId===userId&&availabilityState.request){
       // A same-account background refresh may start between pointerdown and
       // change. Serialize the user's intent behind that refresh, then write it
       // with the freshly returned cycle key/version. Identity changes still
       // invalidate the intent through the actor checks below.
       const request=availabilityState.request;
+      availabilityState.saving=true;
+      availabilityState.pendingValue=checked;
+      availabilityState.error='';
+      availabilityState.notice=null;
+      renderAvailability();
       await request;
       if(requestAuthEpoch!==authSessionEpoch||Number(me?.id||me?.uid)!==userId
         ||availabilityState.userId!==userId) return;
-      if(availabilityState.value?.isAvailable===checked){ renderAvailability(); return; }
-      return toggleAvailability(checked);
+      if(!availabilityState.value?.editable||availabilityState.value.isAvailable===checked){
+        availabilityState.saving=false;
+        availabilityState.pendingValue=null;
+        renderAvailability();
+        return;
+      }
     }
     const current=availabilityState.value;
-    if(!current||!current.editable){ renderAvailability(); return; }
+    if(!current||!current.editable){
+      availabilityState.saving=false;
+      availabilityState.pendingValue=null;
+      renderAvailability();
+      return;
+    }
     const epoch=availabilityState.epoch;
-    if(!Number.isSafeInteger(userId)||userId<1||availabilityState.userId!==userId) return;
     const isCurrentRequest=()=>epoch===availabilityState.epoch
       &&requestAuthEpoch===authSessionEpoch&&availabilityState.userId===userId
       &&Number(me?.id||me?.uid)===userId;
@@ -5715,6 +5732,7 @@ def allow(key, limit=5):
   // ---------- tabs ----------
   document.querySelectorAll('.tab').forEach(t=>{
     t.onclick=()=>{
+      userNavigationEpoch+=1;
       document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active');
       const id=t.getAttribute('data-tab');
       if(['pair','code','board','history'].includes(id)){
@@ -7568,6 +7586,8 @@ def allow(key, limit=5):
 
   // Main auth router
   async function routeByAuth(){
+    const navigationEpoch=userNavigationEpoch;
+    const canApplyRoute=()=>navigationEpoch===userNavigationEpoch;
     if(window._randori_activation_flow?.active){
       window._randori_activation_flow.show();
       return;
@@ -7626,13 +7646,15 @@ def allow(key, limit=5):
     // signed in
     if(tabsEl) tabsEl.style.display='flex';
     if(joinRoom){
-      const allowed=await openAuthorizedJoin(joinRoom);
+      const allowed=await openAuthorizedJoin(joinRoom,{canApply:canApplyRoute});
+      if(!canApplyRoute()) return;
       if(allowed) return;
       await showDashboard();
       return;
     }
     // fetch profile to see if incomplete
     const profile = await fetchProfile();
+    if(!canApplyRoute()) return;
     if(isProfileIncomplete(profile)){
       // show profile setup
       if(profile) {

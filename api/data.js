@@ -21,7 +21,7 @@ import {
 } from './_circle-membership.js';
 import { localRuntimeRequest } from './_local-runtime.js';
 import {
-  accountHasMultipleActiveCircles,
+  canUseLegacySinglePrimaryCircleFeatures,
   multiCircleControlPlaneEnabled,
   requestMatchesCircleContext,
   resolveActiveCircleContext,
@@ -2876,7 +2876,7 @@ async function requireSingleCircleDataFeature(req,res,endpoint){
     if(!userId) return true;
     const db=getClient();
     await ensureCircleMembershipReadiness(db);
-    if(await accountHasMultipleActiveCircles(db,userId)){
+    if(!await canUseLegacySinglePrimaryCircleFeatures(db,payload)){
       sendMultiCircleFeatureUnavailable(res);
       return false;
     }
