@@ -6783,6 +6783,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       renderDashboardEmpty('error');
       return;
     }
+    if(!circleOperation||dashboardUserId()!==userId
+      ||!window._randori_circle_control?.matchesPairing?.(circleOperation)){
+      renderDashboardEmpty('error');
+      return;
+    }
     const requestEpoch=dashboardPairRequest.epoch;
     const controller=new AbortController();
     dashboardPairRequest.controller=controller;

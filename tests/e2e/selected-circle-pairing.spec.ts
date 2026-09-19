@@ -126,7 +126,12 @@ test('switching circles aborts an in-flight selected pairing read and fences its
   await resetClientState(page,true,{'randori-last-room':'week_9_pair_9','randori-last-my-pair':'unsafe'});
   await page.goto('/',{waitUntil:'domcontentloaded'});
   await started;
-  await page.getByTestId('circle-context-select').selectOption('circle-primary');
+  await page.evaluate(()=>{
+    const select=document.querySelector<HTMLSelectElement>('#circleContextSelect');
+    if(!select) throw new Error('circle selector missing');
+    select.value='circle-primary';
+    select.dispatchEvent(new Event('change',{bubbles:true}));
+  });
   await expect.poll(()=>failed.length).toBeGreaterThan(0);
   await pending?.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
     ok:true,paired:true,pairing_status:'paired',coordination_only:true,workspace_available:false,
