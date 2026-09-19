@@ -168,6 +168,8 @@ test('cron-style publications isolate circles and dispatch current data to dashb
   const second=await publishCirclePairing(db,{authority:{kind:'system',circleId:30},now:NOW});
   assert.equal(first.created,true);
   assert.equal(second.created,true);
+  await db.execute(`UPDATE auth_accounts SET email='current-four@example.test' WHERE id=4`);
+  await db.execute(`UPDATE circles SET name='Renamed Algorithms' WHERE id=30`);
   const queued=await events(db);
   assert.equal(queued.length,4);
   assert.deepEqual(new Set(queued.map(row=>row.payload.circle_id)),new Set([20,30]));
@@ -185,7 +187,9 @@ test('cron-style publications isolate circles and dispatch current data to dashb
   assert.equal(delivered.delivered,4);
   assert.equal(messages.length,4);
   assert.equal(messages.some(message=>message.subject.includes('Systems <Circle>')),true);
-  assert.equal(messages.some(message=>message.subject.includes('Algorithms Circle')),true);
+  assert.equal(messages.some(message=>message.subject.includes('Renamed Algorithms')),true);
+  assert.equal(messages.some(message=>message.to==='current-four@example.test'),true);
+  assert.equal(messages.some(message=>message.to==='member-4@example.test'),false);
   for(const message of messages){
     assert.match(message.html,/href="https:\/\/randori\.example\.test"/);
     assert.doesNotMatch(message.html,/\/join\/|room|workspace|week_[1-9]/i);
