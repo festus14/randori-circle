@@ -332,7 +332,42 @@ test('operator workflow is manual, protected, latest-main-only, and shares datab
   assert.doesNotMatch(workflow,/pull_request:|\bpush:/);
   assert.match(workflow,/environment: credential-key-control/);
   assert.match(workflow,/group: turso-production-database-operations/);
-  assert.match(workflow,/ref: \$\{\{ github\.event\.repository\.default_branch \}\}/);
+  const checkoutConfiguration=source=>{
+    const matches=[...source.matchAll(/^      - name: Check out latest main[ \t]*$/gm)];
+    assert.equal(matches.length,1,'expected exactly one latest-main checkout step');
+    const start=matches[0].index;
+    const next=/\n      - /.exec(source.slice(start+matches[0][0].length));
+    const end=next===null?source.length:start+matches[0][0].length+next.index;
+    const step=source.slice(start,end);
+    const lines=step.split('\n');
+    const withIndex=lines.indexOf('        with:');
+    assert.notEqual(withIndex,-1,'latest-main checkout must have a with mapping');
+    const inputs=[];
+    for(const line of lines.slice(withIndex+1)){
+      if(!line.trim()) continue;
+      if(line.length-line.trimStart().length<=8) break;
+      const input=/^          ([a-z-]+):\s*(.*?)\s*$/.exec(line);
+      if(input) inputs.push([input[1],input[2]]);
+    }
+    return {
+      step,
+      inputs:Object.fromEntries(inputs),
+    };
+  };
+  const checkout=checkoutConfiguration(workflow);
+  assert.match(checkout.step,
+    /^        uses: actions\/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4$/m);
+  assert.deepEqual(checkout.inputs,{
+    ref:'${{ github.event.repository.default_branch }}',
+    'fetch-depth':'0',
+    'persist-credentials':'false',
+  });
+  const misleading=workflow.replace('          persist-credentials: false',
+    '          # persist-credentials: false\n        env:\n          persist-credentials: false')
+    .replace('\n      - name: Refuse a stale checkout',
+      '\n      - uses: actions/setup-node@unrelated\n        with:\n          persist-credentials: false\n\n      - name: Refuse a stale checkout');
+  assert.equal(checkoutConfiguration(misleading).inputs['persist-credentials'],undefined,
+    'comments, nested mappings, and unnamed sibling steps must not satisfy the checkout credential contract');
   assert.match(workflow,/CREDENTIAL_KEY_CONTROL_MUTATIONS_ENABLED: \$\{\{ vars\./);
   assert.match(workflow,/TURSO_PRODUCTION_DATABASE_HOST: \$\{\{ vars\./);
   assert.doesNotMatch(workflow,/continue-on-error:\s*true/);
