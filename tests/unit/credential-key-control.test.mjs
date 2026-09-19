@@ -333,18 +333,25 @@ test('operator workflow is manual, protected, latest-main-only, and shares datab
   assert.match(workflow,/environment: credential-key-control/);
   assert.match(workflow,/group: turso-production-database-operations/);
   const checkoutConfiguration=source=>{
-    const marker='      - name: Check out latest main';
-    assert.equal(source.split(marker).length-1,1,'expected exactly one latest-main checkout step');
-    const start=source.indexOf(marker);
-    const end=source.indexOf('\n      - name:',start+marker.length);
-    const step=source.slice(start,end===-1?source.length:end);
-    const withStart=step.indexOf('\n        with:');
-    assert.notEqual(withStart,-1,'latest-main checkout must have a with mapping');
+    const matches=[...source.matchAll(/^      - name: Check out latest main[ \t]*$/gm)];
+    assert.equal(matches.length,1,'expected exactly one latest-main checkout step');
+    const start=matches[0].index;
+    const next=/\n      - /.exec(source.slice(start+matches[0][0].length));
+    const end=next===null?source.length:start+matches[0][0].length+next.index;
+    const step=source.slice(start,end);
+    const lines=step.split('\n');
+    const withIndex=lines.indexOf('        with:');
+    assert.notEqual(withIndex,-1,'latest-main checkout must have a with mapping');
+    const inputs=[];
+    for(const line of lines.slice(withIndex+1)){
+      if(!line.trim()) continue;
+      if(line.length-line.trimStart().length<=8) break;
+      const input=/^          ([a-z-]+):\s*(.*?)\s*$/.exec(line);
+      if(input) inputs.push([input[1],input[2]]);
+    }
     return {
       step,
-      inputs:Object.fromEntries(step.slice(withStart).split('\n').slice(1)
-        .map(line=>/^          ([a-z-]+):\s*(.*?)\s*$/.exec(line))
-        .filter(Boolean).map(([,key,value])=>[key,value])),
+      inputs:Object.fromEntries(inputs),
     };
   };
   const checkout=checkoutConfiguration(workflow);
@@ -356,11 +363,11 @@ test('operator workflow is manual, protected, latest-main-only, and shares datab
     'persist-credentials':'false',
   });
   const misleading=workflow.replace('          persist-credentials: false',
-    '          # persist-credentials: false\n          unrelated-persist-credentials: false')
+    '          # persist-credentials: false\n        env:\n          persist-credentials: false')
     .replace('\n      - name: Refuse a stale checkout',
-      '\n      - name: Misleading unrelated step\n        with:\n          persist-credentials: false\n\n      - name: Refuse a stale checkout');
+      '\n      - uses: actions/setup-node@unrelated\n        with:\n          persist-credentials: false\n\n      - name: Refuse a stale checkout');
   assert.equal(checkoutConfiguration(misleading).inputs['persist-credentials'],undefined,
-    'comments and unrelated steps or keys must not satisfy the checkout credential contract');
+    'comments, nested mappings, and unnamed sibling steps must not satisfy the checkout credential contract');
   assert.match(workflow,/CREDENTIAL_KEY_CONTROL_MUTATIONS_ENABLED: \$\{\{ vars\./);
   assert.match(workflow,/TURSO_PRODUCTION_DATABASE_HOST: \$\{\{ vars\./);
   assert.doesNotMatch(workflow,/continue-on-error:\s*true/);
