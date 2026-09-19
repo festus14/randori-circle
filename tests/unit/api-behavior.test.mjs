@@ -24,10 +24,15 @@ let lastPairingRun = null;
 let persistedPairGroups = [];
 let persistedPairingParticipants = [];
 let pairingEmailDeliveryResult = null;
+const pairingEmailDeliveryCalls=[];
+let legacyPairingMigrationDelayMs=0;
+const legacyPairingMigrationCalls=[];
 let outboxReplayResult = true;
 const outboxReplayCalls=[];
 let activationOutboxResult=null;
 let activationOutboxMetrics=[];
+let outboxMetricsDelayMs=0;
+let outboxLogDelayMs=0;
 let scheduleEmailDeliveryResult=null;
 const scheduleEmailDeliveryCalls=[];
 let invitationEmailDeliveryResult=null;
@@ -107,6 +112,9 @@ function createMockDb(){
     async execute(statement) {
       const sql = sqlText(statement);
       executed.push({ sql, args: statement?.args || [] });
+      if(outboxLogDelayMs>0&&sql.includes('INSERT INTO app_logs')){
+        await new Promise(resolve=>setTimeout(resolve,outboxLogDelayMs));
+      }
       if (databaseDelegate) return databaseDelegate.execute(statement);
       const availabilityResult=availabilityFixtureResult(sql,statement?.args||[]);
       if(availabilityResult!==undefined) return availabilityResult;
@@ -241,14 +249,24 @@ mock.module('../../api/_pairing-readiness.js',{
 mock.module('../../api/_pairing-email.js',{
   exports:{
     PAIRING_EMAIL_EVENT_TYPE:'pairing.email.requested',
+    createPairingEmailHandler:()=>async()=>({}),
     createResendEmailSender:()=>async()=>({providerName:'resend',providerMessageId:'mock-message'}),
-    migrateLegacyPairingEmails:async()=>0,
+    migrateLegacyPairingEmails:async(_db,options)=>{
+      legacyPairingMigrationCalls.push(options);
+      if(legacyPairingMigrationDelayMs>0){
+        await new Promise(resolve=>setTimeout(resolve,legacyPairingMigrationDelayMs));
+      }
+      return 0;
+    },
     pairingEmailStatus:async()=>pairingEmailDeliveryResult?.status||{
       pending:1,processing:0,retry:0,delivered:0,suppressed:0,dead_letter:0,
     },
-    deliverPairingEmails:async()=>pairingEmailDeliveryResult||{
+    deliverPairingEmails:async options=>{
+      pairingEmailDeliveryCalls.push(options);
+      return pairingEmailDeliveryResult||{
       claimed:0,delivered:0,suppressed:0,retried:0,deadLettered:0,leaseLost:0,
       status:{pending:0,processing:0,retry:0,delivered:0,suppressed:0,dead_letter:0},
+      };
     },
   },
 });
@@ -257,6 +275,7 @@ mock.module('../../api/_schedule-email.js',{
   exports:{
     SCHEDULE_EMAIL_EVENT_TYPE:'schedule.email.requested',
     SCHEDULE_EMAIL_DRAIN_BATCH_SIZE:3,
+    createScheduleEmailHandler:()=>async()=>({}),
     scheduleNotificationEvents:()=>[],
     scheduleEmailStatus:async()=>scheduleEmailDeliveryResult?.status||{
       pending:0,processing:0,retry:0,delivered:0,suppressed:0,dead_letter:0,
@@ -277,6 +296,7 @@ mock.module('../../api/_invitation-email.js',{
     INVITATION_EMAIL_DRAIN_BATCH_SIZE:3,
     INVITATION_EMAIL_MAX_SENDS:5,
     INVITATION_EMAIL_RESEND_SECONDS:60,
+    createInvitationEmailHandler:()=>async()=>({}),
     invitationEmailConfiguration:()=>invitationEmailConfigured?{origin:'https://randori.example.test'}:null,
     createInvitationEmailEvent:()=>({sql:'INSERT INTO outbox_events VALUES (?)',args:['invitation']}),
     invitationEmailPayload:()=>null,
@@ -297,11 +317,63 @@ mock.module('../../api/_outbox.js',{
   exports:{
     OutboxDeliveryError:class OutboxDeliveryError extends Error{},
     createOutboxEventStatement:event=>({sql:'INSERT INTO outbox_events VALUES (?)',args:[event]}),
-    readOutboxMetrics:async(_db,options)=>options?.eventType==='auth.emailverification.requested'
-      ?activationOutboxMetrics:[],
+    readOutboxMetrics:async(_db,options)=>{
+      if(outboxMetricsDelayMs>0){
+        await new Promise(resolve=>setTimeout(resolve,outboxMetricsDelayMs));
+      }
+      if(options?.eventType==='auth.emailverification.requested') return activationOutboxMetrics;
+      if(options?.eventType) return [];
+      const groups=[
+        ['pairing.email.requested',pairingEmailDeliveryResult?.status],
+        ['schedule.email.requested',scheduleEmailDeliveryResult?.status],
+        ['invitation.email.requested',invitationEmailDeliveryResult?.status],
+      ];
+      const metrics=[];
+      for(const [eventType,status] of groups){
+        for(const [name,count] of Object.entries(status||{})){
+          if(Number(count)>0) metrics.push({eventType,status:name,count:Number(count),eventVersion:1});
+        }
+      }
+      for(const metric of activationOutboxMetrics){
+        metrics.push({eventType:'auth.emailverification.requested',eventVersion:1,...metric});
+      }
+      return metrics;
+    },
     runOutboxWorker:async options=>{
       outboxWorkerCalls.push(options);
       return activationOutboxResult||{claimed:0,delivered:0,suppressed:0,retried:0,deadLettered:0,leaseLost:0};
+    },
+    runOutboxInvocation:async options=>{
+      outboxWorkerCalls.push(options);
+      const sources={
+        'pairing.email.requested':pairingEmailDeliveryResult,
+        'schedule.email.requested':scheduleEmailDeliveryResult,
+        'invitation.email.requested':invitationEmailDeliveryResult,
+        'auth.emailverification.requested':activationOutboxResult,
+      };
+      const perType={};
+      const total={claimed:0,delivered:0,suppressed:0,retried:0,deadLettered:0,leaseLost:0};
+      for(const type of options.eventTypes){
+        const source=sources[type]||{};
+        perType[type]=Object.fromEntries(Object.keys(total).map(key=>[key,Number(source[key]||0)]));
+        for(const key of Object.keys(total)) total[key]+=perType[type][key];
+      }
+      return {...total,deadlineReached:false,maxClaims:options.maxClaims,perType};
+    },
+    settleBeforeDeadline:async(work,deadlineAtMs)=>{
+      const remaining=Math.floor(Number(deadlineAtMs)-performance.now());
+      if(!Number.isFinite(remaining)||remaining<1) return {completed:false,value:null};
+      let timer;
+      const operation=Promise.resolve().then(work).then(
+        value=>({completed:true,value}),error=>({completed:true,value:null,error}),
+      );
+      const timeout=new Promise(resolve=>{
+        timer=setTimeout(()=>resolve({completed:false,value:null}),remaining);
+      });
+      const result=await Promise.race([operation,timeout]);
+      clearTimeout(timer);
+      if(result.error) throw result.error;
+      return result;
     },
     replayDeadLetter:async(_db,request)=>{
       outboxReplayCalls.push(request);
@@ -314,7 +386,7 @@ const [
   { default: aiHandler },
   { default: authHandler, localPasswordSignupEnabled },
   { default: dataHandler },
-  { default: opsHandler },
+  { default: opsHandler, deliverPendingOutbox },
   { default: videoHandler },
   { createEvaluationSuite, listPublicExercises },
   { localIdentityAdapterEnabled },
@@ -441,10 +513,15 @@ beforeEach(() => {
   persistedPairGroups = [];
   persistedPairingParticipants = [];
   pairingEmailDeliveryResult = null;
+  pairingEmailDeliveryCalls.length=0;
+  legacyPairingMigrationDelayMs=0;
+  legacyPairingMigrationCalls.length=0;
   outboxReplayResult = true;
   outboxReplayCalls.length=0;
   activationOutboxResult=null;
   activationOutboxMetrics=[];
+  outboxMetricsDelayMs=0;
+  outboxLogDelayMs=0;
   scheduleEmailDeliveryResult=null;
   scheduleEmailDeliveryCalls.length=0;
   invitationEmailDeliveryResult=null;
@@ -2658,7 +2735,7 @@ test('operations cover preferences, availability, admin promotion, demo lifecycl
   assert.equal(executed.some(call => !call.sql.trim()), false, 'migration arrays must not execute undefined DDL entries');
 });
 
-test('weekly email delivery exposes bounded worker outcomes without recipient data', async () => {
+test('weekly publication only queues email and never invokes a provider drain', async () => {
   process.env.APP_URL='https://randori.example.test';
   process.env.CRON_SECRET = 'cron-secret';
   process.env.RESEND_API_KEY = 're_test';
@@ -2695,7 +2772,8 @@ test('weekly email delivery exposes bounded worker outcomes without recipient da
     method: 'POST', url: '/api/cron/weekly', query: { endpoint: 'weekly' },
     headers: { 'x-cron-secret': 'cron-secret' },
   }));
-  assert.match(disabled.body.email_delivery.summary, /email disabled.*RESEND_API_KEY \+ RESEND_FROM/);
+  assert.match(disabled.body.email_delivery.summary, /pairing email\(s\) queued for outbox delivery/);
+  assert.equal(pairingEmailDeliveryCalls.length,0);
   process.env.RESEND_FROM = 'Randori <verified@example.test>';
   pairingEmailDeliveryResult={
     claimed:1,delivered:0,suppressed:0,retried:0,deadLettered:1,leaseLost:0,
@@ -2708,9 +2786,10 @@ test('weekly email delivery exposes bounded worker outcomes without recipient da
   }));
   assert.equal(result.status, 200);
   assert.equal(result.body.skipped, true);
-  assert.equal(result.body.email_delivery.failed, 1);
+  assert.equal(result.body.email_delivery.failed, 0);
   assert.equal(result.body.email_delivery.exhausted, 1);
   assert.equal(result.body.email_delivery.pending, 0);
+  assert.equal(pairingEmailDeliveryCalls.length,0,'weekly cron must leave provider fan-out to /api/cron/outbox');
   assert.doesNotMatch(JSON.stringify(result.body),/@example\.test|secret-token/);
   assert.equal(executed.some(call=>/^\s*(?:CREATE|ALTER|DROP)\b/i.test(call.sql)),false,
     'the complete cron publication and delivery path must not issue request-time DDL');
@@ -2719,7 +2798,7 @@ test('weekly email delivery exposes bounded worker outcomes without recipient da
 
 });
 
-test('weekly response counts only committed worker outcomes', async () => {
+test('weekly response reports durable backlog without claiming or sending events', async () => {
   process.env.APP_URL='https://randori.example.test';
   process.env.CRON_SECRET = 'cron-secret';
   process.env.RESEND_API_KEY = 're_test';
@@ -2760,12 +2839,13 @@ test('weekly response counts only committed worker outcomes', async () => {
   }));
   assert.equal(result.status, 200);
   assert.equal(result.body.email_delivery.sent, 0, 'a stale successful sender must not count an uncommitted transition');
-  assert.equal(result.body.email_delivery.suppressed, 1, 'only the worker that still owns its lease may count suppression');
+  assert.equal(result.body.email_delivery.suppressed, 1);
   assert.equal(result.body.email_delivery.failed, 0);
   assert.equal(result.body.email_delivery.exhausted,2,
     'historical dead letters remain visible when no new event exhausts in this run');
   assert.match(result.body.email_delivery.summary,/exhausted 2/);
   assert.equal(result.body.email_delivery.pending,2);
+  assert.equal(pairingEmailDeliveryCalls.length,0);
 });
 
 test('outbox drain is cron-protected, non-identifying, and dead-letter replay is operator-only',async()=>{
@@ -2801,16 +2881,24 @@ test('outbox drain is cron-protected, non-identifying, and dead-letter replay is
     summary:'sent 0, failed 0, exhausted 0, suppressed 0, pending 0',
     sent:0,failed:0,exhausted:0,pending:0,suppressed:0,
   });
-  assert.equal(scheduleEmailDeliveryCalls.length,1);
-  assert.deepEqual(scheduleEmailDeliveryCalls[0].workerOptions,{batchSize:3});
-  assert.equal(invitationEmailDeliveryCalls.length,1);
-  assert.deepEqual(invitationEmailDeliveryCalls[0].workerOptions,{batchSize:3});
+  assert.equal(outboxWorkerCalls.length,1);
+  assert.deepEqual(outboxWorkerCalls[0].eventTypes,[
+    'pairing.email.requested','schedule.email.requested','invitation.email.requested',
+  ]);
+  assert.equal(outboxWorkerCalls[0].maxClaims,8);
+  assert.equal(outboxWorkerCalls[0].finalizationReserveMs,5_000);
+  assert.equal(drained.body.outbox.claimed,2);
+  assert.deepEqual(drained.body.outbox.types['pairing.email.requested'],{
+    claimed:2,delivered:1,suppressed:1,retried:0,dead_lettered:0,lease_lost:0,
+    backlog:0,dead_letter:0,
+  });
   const deliveryLog=executed.find(call=>call.sql.includes('INSERT INTO app_logs')
-    &&call.args[1]==='server'&&call.args[2]==='pairing_email_delivery');
+    &&call.args[1]==='server'&&call.args[2]==='outbox_invocation');
   assert.ok(deliveryLog);
   assert.equal(deliveryLog.args[5],null);
   assert.equal(deliveryLog.args[6],null);
   assert.equal(deliveryLog.args[7],null);
+  assert.equal(JSON.stringify(JSON.parse(deliveryLog.args[4])).includes('@example.test'),false);
 
   assert.equal((await invoke(opsHandler,{
     method:'POST',url:'/api/admin/outbox/replay',query:{endpoint:'outbox-replay'},
@@ -2859,12 +2947,70 @@ test('outbox drain dispatches configured activation events without exposing reci
   });
   assert.equal(drained.status,200);
   assert.deepEqual(drained.body.activation_delivery,{
-    summary:'sent 1, failed 1, pending 2',
+    summary:'sent 1, failed 1, exhausted 0, suppressed 1, pending 2',
     sent:1,failed:1,exhausted:0,pending:2,suppressed:1,
   });
   assert.equal(outboxWorkerCalls.length,1);
-  assert.equal(outboxWorkerCalls[0].eventType,'auth.emailverification.requested');
+  assert.ok(outboxWorkerCalls[0].eventTypes.includes('auth.emailverification.requested'));
+  assert.deepEqual(drained.body.outbox.types['auth.emailverification.requested'],{
+    claimed:3,delivered:1,suppressed:1,retried:1,dead_lettered:0,lease_lost:0,
+    backlog:2,dead_letter:0,
+  });
   assert.equal(JSON.stringify(drained.body).includes('verified@example.test'),false);
+});
+
+test('outbox preparation and metrics stop consuming the request after their absolute deadline',async()=>{
+  process.env.RESEND_API_KEY='re_test';
+  process.env.RESEND_FROM='Randori <verified@example.test>';
+  const request={headers:sameOriginHeaders,socket:{remoteAddress:'203.0.113.9'}};
+
+  legacyPairingMigrationDelayMs=80;
+  const preparationStarted=performance.now();
+  const preparationTimeout=await deliverPendingOutbox(
+    db,'https://randori.example.test',request,preparationStarted+60,
+    {maxClaims:2,finalizationReserveMs:20,minimumDispatchWindowMs:20},
+  );
+  assert.ok(performance.now()-preparationStarted<100);
+  assert.equal(preparationTimeout.metrics.deadline_reached,true);
+  assert.equal(preparationTimeout.metrics.legacy_reconciliation_complete,false);
+  assert.equal(preparationTimeout.metrics.metrics_complete,false);
+  assert.equal(outboxWorkerCalls.length,0,'a timed-out reconciliation cannot fall through to providers');
+  await new Promise(resolve=>setTimeout(resolve,90));
+
+  legacyPairingMigrationDelayMs=0;
+  outboxMetricsDelayMs=80;
+  const metricsStarted=performance.now();
+  const metricsTimeout=await deliverPendingOutbox(
+    db,'https://randori.example.test',request,metricsStarted+60,
+    {maxClaims:2,finalizationReserveMs:10,minimumDispatchWindowMs:10},
+  );
+  assert.ok(performance.now()-metricsStarted<100);
+  assert.equal(metricsTimeout.metrics.deadline_reached,true);
+  assert.equal(metricsTimeout.metrics.legacy_reconciliation_complete,true);
+  assert.equal(metricsTimeout.metrics.metrics_complete,false);
+  assert.equal(metricsTimeout.metrics.types['pairing.email.requested'].backlog,null);
+  assert.equal(outboxWorkerCalls.length,1);
+  assert.equal(legacyPairingMigrationCalls.at(-1).limit,2);
+  assert.equal(executed.some(call=>call.sql.includes('INSERT INTO app_logs')
+    &&call.args[2]==='outbox_invocation'),false,
+  'deadline-exhausted telemetry is skipped rather than delaying teardown');
+  await new Promise(resolve=>setTimeout(resolve,90));
+
+  outboxMetricsDelayMs=0;
+  outboxLogDelayMs=80;
+  const logStarted=performance.now();
+  const logTimeout=await deliverPendingOutbox(
+    db,'https://randori.example.test',request,logStarted+60,
+    {maxClaims:2,finalizationReserveMs:10,minimumDispatchWindowMs:10},
+  );
+  assert.ok(performance.now()-logStarted<100);
+  assert.equal(logTimeout.metrics.metrics_complete,true);
+  assert.equal(logTimeout.metrics.logging_complete,false);
+  assert.equal(logTimeout.metrics.deadline_reached,true);
+  assert.equal(executed.some(call=>call.sql.includes('INSERT INTO app_logs')
+    &&call.args[2]==='outbox_invocation'),true,
+  'telemetry starts while budget remains but cannot extend the response deadline');
+  await new Promise(resolve=>setTimeout(resolve,90));
 });
 
 test('operation validation rejects unsupported methods and non-admin mutations', async () => {

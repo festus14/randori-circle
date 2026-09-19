@@ -68,9 +68,9 @@ Before each provider attempt the worker requires:
 Failure of any current-state check becomes terminal `INVITATION_INACTIVE`
 suppression. Provider 429 and 5xx failures retain the same idempotency key and
 use the shared maximum of five attempts, ten-second provider timeout, bounded
-backoff, lease heartbeat, and dead-letter path. A serverless invocation claims
-at most three invitation events, bounding this typed slice to 30 seconds of
-provider wait.
+backoff, lease heartbeat, and dead-letter path. The shared dispatcher admits
+invitation work in fair one-per-type rounds under the aggregate eight-claim,
+45-second invocation budget.
 
 Owner create/resend remains same-origin and owner-authorized. The public
 preparation endpoint continues to use one generic invalid response, a durable
@@ -114,5 +114,7 @@ Before production delivery:
 - Issue #50 remains open for SMS consent/verified-number policy, quiet hours,
   regional requirements, provider/STOP handling, and any product-chosen extra
   reminder cadence.
-- Issue #94 tracks a shared deadline/claim budget (or separate schedules) for
-  the sequential pairing, schedule, invitation, activation, and reset drains.
+- The issue #94 candidate adds a shared deadline and fair claim budget for the
+  event types present in this stack. It remains open until the independently
+  developed password-reset adapter is linearized and included in mixed-queue
+  tests.
