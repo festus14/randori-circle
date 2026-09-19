@@ -28,6 +28,8 @@ let outboxReplayResult = true;
 const outboxReplayCalls=[];
 let activationOutboxResult=null;
 let activationOutboxMetrics=[];
+let scheduleEmailDeliveryResult=null;
+const scheduleEmailDeliveryCalls=[];
 const outboxWorkerCalls=[];
 const mockAvailabilityCycles=new Map();
 const mockAvailabilityDecisions=new Map();
@@ -248,6 +250,24 @@ mock.module('../../api/_pairing-email.js',{
   },
 });
 
+mock.module('../../api/_schedule-email.js',{
+  exports:{
+    SCHEDULE_EMAIL_EVENT_TYPE:'schedule.email.requested',
+    SCHEDULE_EMAIL_DRAIN_BATCH_SIZE:3,
+    scheduleNotificationEvents:()=>[],
+    scheduleEmailStatus:async()=>scheduleEmailDeliveryResult?.status||{
+      pending:0,processing:0,retry:0,delivered:0,suppressed:0,dead_letter:0,
+    },
+    deliverScheduleEmails:async options=>{
+      scheduleEmailDeliveryCalls.push(options);
+      return scheduleEmailDeliveryResult||{
+        claimed:0,delivered:0,suppressed:0,retried:0,deadLettered:0,leaseLost:0,
+        status:{pending:0,processing:0,retry:0,delivered:0,suppressed:0,dead_letter:0},
+      };
+    },
+  },
+});
+
 mock.module('../../api/_outbox.js',{
   exports:{
     OutboxDeliveryError:class OutboxDeliveryError extends Error{},
@@ -400,6 +420,8 @@ beforeEach(() => {
   outboxReplayCalls.length=0;
   activationOutboxResult=null;
   activationOutboxMetrics=[];
+  scheduleEmailDeliveryResult=null;
+  scheduleEmailDeliveryCalls.length=0;
   outboxWorkerCalls.length=0;
   mockAvailabilityCycles.clear();
   mockAvailabilityDecisions.clear();
@@ -2742,6 +2764,12 @@ test('outbox drain is cron-protected, non-identifying, and dead-letter replay is
     summary:'sent 1, failed 0, exhausted 0, suppressed 1, pending 0',
     sent:1,failed:0,exhausted:0,pending:0,suppressed:1,
   });
+  assert.deepEqual(drained.body.schedule_delivery,{
+    summary:'sent 0, failed 0, exhausted 0, suppressed 0, pending 0',
+    sent:0,failed:0,exhausted:0,pending:0,suppressed:0,
+  });
+  assert.equal(scheduleEmailDeliveryCalls.length,1);
+  assert.deepEqual(scheduleEmailDeliveryCalls[0].workerOptions,{batchSize:3});
   const deliveryLog=executed.find(call=>call.sql.includes('INSERT INTO app_logs')
     &&call.args[1]==='server'&&call.args[2]==='pairing_email_delivery');
   assert.ok(deliveryLog);

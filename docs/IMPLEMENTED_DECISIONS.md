@@ -1,6 +1,6 @@
 # Randori Circle implemented decision log
 
-Status: accepted through merged PR #89 plus candidate PRs #93 and #92
+Status: accepted through merged PR #89 plus candidate PRs #93, #92, and #96
 
 Last reviewed: 2026-09-19
 
@@ -30,6 +30,7 @@ or merged after its parent; it must not be landed ahead of that parent.
 | 6 | [PR #89](https://github.com/festus14/randori-circle/pull/89), merged to `main` | Transactional, retryable pairing notifications | v6 `durable-provider-neutral-outbox` |
 | 7 | [PR #93](https://github.com/festus14/randori-circle/pull/93), candidate | Repository-owned deployability gate independent of preview quota | No migration |
 | 8 | [PR #92](https://github.com/festus14/randori-circle/pull/92), candidate | Verified invitation-bound email/password activation | v7 `verified-email-activation` |
+| 9 | [PR #96](https://github.com/festus14/randori-circle/pull/96), candidate | Proposal, acceptance, change, and reminder delivery | Reuses v6; no migration |
 
 Migration order is append-only: v4 binds an account to an OIDC issuer and
 subject, v5 makes every application JWT depend on a live hashed session row,
@@ -228,6 +229,7 @@ but can hide untested branches and functions. Requiring every external review or
 preview service increases assurance when available but lets third-party quota or
 outages stop delivery. Manual-only testing is too difficult to reproduce and is
 rejected.
+
 ## ID-10: Verify invitation-bound password activation before account creation
 
 Status: implemented as the schema-v7 increment, stacked on the durable outbox.
@@ -273,3 +275,47 @@ Pending, resend/retry, expired, already-used, revoked, unavailable, and success 
 4. Set `EMAIL_PASSWORD_ACTIVATION_ENABLED=true` only after readiness is green.
 
 Keep the encryption key stable while pending activation events exist. Rotation requires a future multi-key decrypt window; replacing it immediately suppresses already queued mail.
+
+## ID-11: Reuse the durable outbox for schedule email
+
+**Decision.** A schedule compare-and-swap and its versioned email intents commit
+in one write transaction. `schedule.email.requested` v1 carries stable IDs,
+normalized instants, a schedule version, and template version 1; it does not
+carry recipient addresses, links, tokens, names, or rendered content. Proposal
+emails go to the other pair members. First acceptance and rescheduling notify
+all pair members and enqueue one reminder per member for 24 hours before the
+accepted instant. Clearing an agreement sends a change notice; removing a
+proposal sends none.
+
+The worker resolves the current address and content at delivery time and
+rechecks notification preference, source-tagged actor and recipient pair
+participation, both accounts' active production membership, schedule currency,
+and elapsed time. Removed proposals,
+revoked members, changed preferences, cancelled agreements, old accepted times,
+and superseded reminders are suppressed. Retries retain the same provider
+idempotency key and the existing five-attempt, ten-second delivery bounds. A
+serverless invocation claims at most three schedule events, bounding this new
+typed drain to 30 seconds of provider wait.
+
+**Why no schema change.** The v6 outbox already models delayed work, dedupe,
+leases, bounded retries, suppression, dead letters, and audit history. The
+authoritative schedule row provides stale-work invalidation. A schedule-specific
+queue would duplicate those guarantees. Migration v8 remains available for the
+password-recovery work in issue #82.
+
+**Alternatives.** Inline sending was rejected because provider failure would
+couple or lose the schedule write. Persisting addresses and pre-rendered bodies
+was rejected because it retains avoidable personal data and becomes stale.
+Mutating or deleting replaced reminders was rejected in favor of immutable,
+auditable events that suppress themselves. Managed workflow products remain an
+option if private-beta volume outgrows the database relay. See
+[schedule notifications](SCHEDULE_NOTIFICATIONS.md) for the event matrix,
+operating contract, and explicit remaining issue #50 scope.
+
+**Known gap.** The outbox endpoint still runs the pre-existing pairing,
+schedule, and activation drains sequentially without one shared deadline; the
+older typed drains retain larger default batches. A slow earlier type can starve
+a later one or reach the function limit. This slice therefore does not claim
+full issue #50 reliability. A shared invocation budget or separately scheduled
+typed drains remains follow-up work in
+[issue #94](https://github.com/festus14/randori-circle/issues/94).
