@@ -132,7 +132,7 @@ test('a proof that becomes fresh during the challenge resumes after the first re
       if(request.method()==='GET') return {ok:true,members:[
         {...owner,role:'owner',status:'active'},
         {...member,role:targetRole,status:'active'},
-      ],count:2};
+      ],count:2,has_more:false,next_cursor:null,scanned:2};
       patches+=1;
       if(patches===1) return {_status:403,error:'recent authentication required',code:'recent_auth_required'};
       targetRole='owner';
@@ -171,7 +171,7 @@ test('Google confirmation resumes exact owner deactivation once without identity
       if(request.method()==='GET') return {ok:true,members:[
         {...owner,role:'owner',status:'active'},
         {...member,role:'owner',status:targetStatus},
-      ],count:2};
+      ],count:2,has_more:false,next_cursor:null,scanned:2};
       const body=request.postDataJSON(); patches.push(body);
       if(!recent) return {_status:403,error:'recent authentication required',code:'recent_auth_required'};
       targetStatus='inactive';
@@ -247,7 +247,7 @@ for(const failure of [
           return {ok:true,members:[
             {...owner,role:'owner',status:'active'},
             {...member,role:'owner',status:'active'},
-          ],count:2};
+          ],count:2,has_more:false,next_cursor:null,scanned:2};
         })();
         patches+=1;
         return {_status:403,error:'recent authentication required',code:'recent_auth_required'};
@@ -263,7 +263,8 @@ for(const failure of [
     await expect(page.getByRole('dialog',{name:'Confirm this sensitive change'})).toBeVisible();
     if(failure.label==='401'){
       holdRoster=true;
-      await page.evaluate(()=>document.querySelector<HTMLElement>('[data-tab="circle"]')?.click());
+      await page.getByTestId('circle-member-search').fill('member');
+      await page.evaluate(()=>document.querySelector<HTMLFormElement>('#circleMemberSearchForm')?.requestSubmit());
       await rosterStarted;
     }
     await page.getByRole('button',{name:'Confirm with Google'}).click();
@@ -310,7 +311,7 @@ test('cancel, expiry, actor change, and missing methods discard the one-time con
     '/api/members':request=>{
       if(request.method()==='GET') return {ok:true,members:[
         {...owner,role:'owner',status:'active'},{...member,role:'member',status:'active'},
-      ],count:2};
+      ],count:2,has_more:false,next_cursor:null,scanned:2};
       patchCount+=1;
       return {_status:403,error:'recent authentication required',code:'recent_auth_required'};
     },
