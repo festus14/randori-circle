@@ -150,6 +150,11 @@ test('sign-out aborts an in-flight selected pairing read before clearing identit
   let pending:Route|null=null;
   let startedResolve:()=>void=()=>{};
   const started=new Promise<void>(resolve=>{ startedResolve=resolve; });
+  let logoutStartedResolve:()=>void=()=>{};
+  const logoutStarted=new Promise<void>(resolve=>{ logoutStartedResolve=resolve; });
+  let releaseLogout:()=>void=()=>{};
+  const logoutReleased=new Promise<void>(resolve=>{ releaseLogout=resolve; });
+  let signedOut=false;
   const failed:string[]=[];
   page.on('requestfailed',request=>{
     if(new URL(request.url()).pathname==='/api/my-pair') failed.push(request.failure()?.errorText||'failed');
@@ -157,8 +162,15 @@ test('sign-out aborts an in-flight selected pairing read before clearing identit
   await mockApi(page,{
     '/api/auth/capabilities':{ok:true,capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,
       multiCircleControlPlane:true,multiCircleAvailability:true,secondaryCircleCoordination:true},registrationMode:'private_beta'},
-    '/api/auth/me':{ok:true,user},
-    '/api/auth/logout':{ok:true},
+    '/api/auth/me':()=>signedOut
+      ?{_status:401,ok:false,error:'authentication required'}
+      :{ok:true,user},
+    '/api/auth/logout':async()=>{
+      logoutStartedResolve();
+      await logoutReleased;
+      signedOut=true;
+      return {ok:true};
+    },
     '/api/profile':{ok:true,user:{...user,bio:'',leetcode_handle:''}},
     '/api/circles':{ok:true,circles,active_circle:circles[1],context_version:7,selection_required:false},
     '/api/circle':{ok:true,circle_meta:{public_id:'circle-secondary',name:'Secondary'},
@@ -174,7 +186,9 @@ test('sign-out aborts an in-flight selected pairing read before clearing identit
   await page.goto('/',{waitUntil:'domcontentloaded'});
   await started;
   await page.locator('#dashSignOut').click();
+  await logoutStarted;
   await expect.poll(()=>failed.length).toBeGreaterThan(0);
+  releaseLogout();
   await pending?.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
     ok:true,paired:true,pairing_status:'paired',coordination_only:true,workspace_available:false,
     circle_public_id:'circle-secondary',circle_context_version:7,current_cycle:currentCycle,

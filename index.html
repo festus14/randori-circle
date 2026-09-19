@@ -3281,7 +3281,7 @@ async function refreshMe(){
     pairingPublicationAbort=null;
     pairingListAbort?.abort();
     pairingListAbort=null;
-    window._randori_journey?.cancelPairRequest?.();
+    window._randori_journey?.resetPairState?.();
     circleRosterRequest+=1;
     currentCloudPairingWeek=null;
     currentCloudPairingCycle=null;
@@ -3301,9 +3301,9 @@ async function refreshMe(){
     window._randori_authorized_room=null;
     window._randori_join_room=null;
     try{ stopPairRecap({clear:true}); }catch{}
-    try{ clearDashboardPairState(); }catch{}
     try{
       localStorage.removeItem('randori-last-room');
+      localStorage.removeItem('randori-last-my-pair');
       sessionStorage.removeItem('randori-room-draft');
     }catch{}
     listEl?.replaceChildren();
@@ -6688,6 +6688,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return hadPendingRequest;
   }
 
+  function resetDashboardPairState(){
+    cancelDashboardPairRequest();
+    clearDashboardPairState();
+  }
+
   function clearDashboardPairState({revokeRoom=true}={}){
     currentPair=null;
     currentWeekId=null;
@@ -8152,7 +8157,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   // Expose
   window._randori_journey={
     showDashboard,showProfileSetup,routeByAuth,openAuthorizedJoin,
-    cancelPairRequest:cancelDashboardPairRequest,
+    cancelPairRequest:cancelDashboardPairRequest,resetPairState:resetDashboardPairState,
   };
 })();
 </script>
