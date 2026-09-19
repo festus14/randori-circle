@@ -246,7 +246,7 @@ test('database preparation migrates before serving and rejects unmanaged state',
   const ledger=await db.execute('SELECT version,disposition FROM schema_migrations ORDER BY version');
   assert.deepEqual(
     ledger.rows.map(row=>[Number(row.version),String(row.disposition)]),
-    [[1,'applied'],[2,'applied'],[3,'applied'],[4,'applied'],[5,'applied'],[6,'applied'],[7,'applied']],
+    [[1,'applied'],[2,'applied'],[3,'applied'],[4,'applied'],[5,'applied'],[6,'applied'],[7,'applied'],[8,'applied']],
   );
   await db.close();
   cleanup.pop();
@@ -490,7 +490,8 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
   assert.equal(capabilities.headers.get('cache-control'),'no-store');
   assert.deepEqual(await capabilities.json(),{
     ok:true,
-    capabilities:{passwordLogin:true,passwordSignup:true,verifiedEmailActivation:false,localIdentity:true,googleOAuth:false},
+    capabilities:{passwordLogin:true,passwordSignup:true,verifiedEmailActivation:false,passwordReset:true,
+      localIdentity:true,googleOAuth:false,recentAuthMaxAgeSeconds:600},
     registrationMode:'local_invite',
   });
 

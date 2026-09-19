@@ -33,6 +33,7 @@ This private-beta sync is whole-document compare-and-swap, not a CRDT: members s
 - Sessions use 12-hour `Secure`, `HttpOnly`, `SameSite=Lax` cookies.
 - Google OAuth uses cryptographic state, PKCE, and verified OpenID userinfo.
 - Production password signup is fail-closed unless invitation-bound email activation is fully configured; no account or session exists before verification.
+- Existing password accounts can recover through a generic, rate-limited response; reset tokens are single-use, encrypted in the outbox, hashed at rest, and revoke every session when consumed.
 - Mutations enforce same-origin requests for cookie sessions; API callers may use pinned Bearer JWTs.
 - Circle, pairing, schedule, chat, feedback, execution, and signaling endpoints require scoped authorisation.
 - Weekly pairing writes are atomic and concurrency-safe. Notifications use an idempotent retryable outbox.
@@ -57,6 +58,8 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_pairing-publication.js` | managed-v6 readiness, transaction-bound owner/cron publication, immutable snapshots, and idempotency |
 | `api/_outbox.js` | provider-neutral leases, heartbeats, timeouts, retry/dead-letter transitions, replay audit, and aggregate metrics |
 | `api/_email-activation.js` | invitation-bound pending registrations, encrypted verification delivery, token rotation, and atomic activation |
+| `api/_password-reset.js` | enumeration-safe reset requests, encrypted delivery, token rotation, and atomic password/session replacement |
+| `api/_recent-auth.js` | ten-minute session-scoped password/Google step-up evidence for sensitive account operations |
 | `api/_pairing-email.js` | versioned pairing-email event validation, rendering, preferences, and provider adaptation |
 | `api/_availability.js` | tenant-scoped weekly cycle identity, strict optimistic availability updates, and publication filtering |
 | `api/_schedule.js` | strict schedule validation, legacy projection, opaque versions, and conflict-safe mutations |
@@ -65,7 +68,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_pair-access.js` | shared source-aware authorization for canonical private pair rooms |
 | `api/_circle-membership.js` | primary-circle membership, keyed invite hashes, signed short-lived claims, and audited acceptance |
 | `api/invitations.js` | owner-only invitation lifecycle and rate-limited public preparation |
-| `db/schema-manifest.js` | checksummed contract for 35 application tables and 33 named indexes |
+| `db/schema-manifest.js` | checksummed contract for 37 application tables and 36 named indexes |
 | `db/schema-inspector.js` | read-only SQLite drift inspection and non-executable planning |
 
 The target Next.js/Supabase architecture is intentionally phased rather than introduced as a big-bang rewrite.
@@ -81,6 +84,7 @@ Copy `.env.example` and configure at least:
 - `SIGNUP_ALLOWLIST` for the legacy private-beta Google flow while circle membership enforcement is off
 - `CIRCLE_MEMBERSHIP_ENABLED=true` to enforce invitation-gated primary-circle access after the staged migration below
 - `EMAIL_PASSWORD_ACTIVATION_ENABLED=true` plus a separately generated 32-byte base64url `EMAIL_VERIFICATION_ENCRYPTION_KEY` to enable production invite-bound password activation after migration v7 is ready
+- `PASSWORD_RESET_ENABLED=true` plus an independent 32-byte base64url `PASSWORD_RESET_ENCRYPTION_KEY` to enable recovery after migration v8 is ready
 - `AUTH_SCHEMA_BOOTSTRAP_ENABLED` is legacy-only and must remain false for the migrated OIDC flow; run the protected database migrations before enabling production authentication
 - `RESEND_API_KEY` and `RESEND_FROM` for pairing and verification notifications
 
@@ -96,7 +100,7 @@ To roll out circle membership without locking out operators: first complete the 
 
 Health probes are intentionally separate. `/api/health/live` (and `/api/healthz`) checks only that the process can answer; use it for frequent load-balancer liveness checks. `/api/health`, `/api/health/ready`, and `/api/readyz` are deploy/readiness gates: they return 200 only when database configuration, reachability, connection constraints, the exact application schema, the complete immutable migration ledger, and membership-rollout invariants all pass. Enabling `CIRCLE_MEMBERSHIP_ENABLED` additionally requires the rollout to be completed and closed; a pristine open rollout is ready only while that feature is disabled. Local readiness refuses a missing or unsafe database target before constructing a client. Every health response is `no-store`, readiness uses only read-only queries, and failures disclose only a generic unavailable status.
 
-Application JWTs carry a random session identifier, while `auth_sessions` stores only its domain-separated SHA-256 hash. Every private request must match a live, unexpired database row; current-session logout revokes one row and logout-all revokes every live row for that account. At most eight sessions per account remain active, and membership loss revokes them all on the next authenticated request. Legacy JWTs without a session identifier fail closed after migration v5. Rotating `JWT_SECRET` remains an emergency global sign-out and also invalidates outstanding invitation and activation links because the same secret produces their separate domain-scoped hashes. Revoke and reissue pending invitations and activations during rotation.
+Application JWTs carry a random session identifier, while `auth_sessions` stores only its domain-separated SHA-256 hash. Every private request must match a live, unexpired database row; current-session logout revokes one row and logout-all revokes every live row for that account. At most eight sessions per account remain active, and membership loss revokes them all on the next authenticated request. Legacy JWTs without a session identifier fail closed after migration v5. Rotating `JWT_SECRET` remains an emergency global sign-out and also invalidates outstanding invitation, activation, and password-reset links because the same secret produces their separate domain-scoped hashes. Revoke and reissue pending invitations and activations during rotation; users with pending password recovery must request a new reset link.
 
 For attestation-key rotation, move each former `RUN_ATTESTATION_SECRET` into the comma-separated `RUN_ATTESTATION_PREVIOUS_SECRETS` list. Retain it there until runs signed with that key no longer need to be verified; removing it makes those historical runs appear unverified.
 

@@ -13,6 +13,7 @@ const JWKS_RESPONSE_MAX_BYTES=256*1024;
 const ID_TOKEN_MAX_BYTES=16*1024;
 const MAX_TOKEN_LIFETIME_SECONDS=65*60;
 const MAX_CLOCK_SKEW_SECONDS=60;
+export const GOOGLE_REAUTH_MAX_AGE_SECONDS=2*60;
 
 export class GoogleOidcError extends Error{
   constructor(code){
@@ -125,7 +126,9 @@ function signingKey(jwks,header){
   catch{ fail('identity_invalid'); }
 }
 
-export function verifyGoogleIdToken(idToken,{clientId,nonce,jwks,nowSeconds=Math.floor(Date.now()/1000)}){
+export function verifyGoogleIdToken(idToken,{
+  clientId,nonce,jwks,nowSeconds=Math.floor(Date.now()/1000),maxAuthAgeSeconds=null,
+}){
   if(typeof idToken!=='string'||idToken.length<1||Buffer.byteLength(idToken,'utf8')>ID_TOKEN_MAX_BYTES
     ||typeof clientId!=='string'||!clientId||typeof nonce!=='string'||nonce.length<1||nonce.length>128){
     fail('identity_invalid');
@@ -144,12 +147,21 @@ export function verifyGoogleIdToken(idToken,{clientId,nonce,jwks,nowSeconds=Math
       clockTimestamp:nowSeconds,
     });
   }catch{ fail('identity_invalid'); }
+  const requireRecentAuth=maxAuthAgeSeconds!==null;
+  if(requireRecentAuth&&(!Number.isSafeInteger(maxAuthAgeSeconds)||maxAuthAgeSeconds<0||maxAuthAgeSeconds>10*60)){
+    fail('identity_invalid');
+  }
   if(!singleJsonObject(claims)||!GOOGLE_ISSUERS.includes(claims.iss)||claims.aud!==clientId
     ||(claims.azp!==undefined&&claims.azp!==clientId)
     ||!Number.isSafeInteger(claims.iat)||!Number.isSafeInteger(claims.exp)
     ||claims.iat>nowSeconds+MAX_CLOCK_SKEW_SECONDS||claims.exp<=nowSeconds
     ||claims.exp<=claims.iat||claims.exp-claims.iat>MAX_TOKEN_LIFETIME_SECONDS
     ||!safeEqual(claims.nonce,nonce)||claims.email_verified!==true){
+    fail('identity_invalid');
+  }
+  if(requireRecentAuth&&(!Number.isSafeInteger(claims.auth_time)
+    ||claims.auth_time>nowSeconds+MAX_CLOCK_SKEW_SECONDS
+    ||claims.auth_time<nowSeconds-maxAuthAgeSeconds-MAX_CLOCK_SKEW_SECONDS)){
     fail('identity_invalid');
   }
   const subject=typeof claims.sub==='string'&&/^[A-Za-z0-9_-]{1,255}$/.test(claims.sub)
@@ -159,10 +171,13 @@ export function verifyGoogleIdToken(idToken,{clientId,nonce,jwks,nowSeconds=Math
   const name=typeof claims.name==='string'&&claims.name.trim()
     ?claims.name.trim().replace(/[\u0000-\u001f\u007f]/g,'').slice(0,32)
     :null;
-  return {issuer:GOOGLE_IDENTITY_ISSUER,subject,email,name};
+  return {issuer:GOOGLE_IDENTITY_ISSUER,subject,email,name,
+    ...(requireRecentAuth?{authTime:claims.auth_time}:{})};
 }
 
-export async function exchangeGoogleAuthorizationCode({clientId,clientSecret,redirectUri,code,codeVerifier,nonce}){
+export async function exchangeGoogleAuthorizationCode({
+  clientId,clientSecret,redirectUri,code,codeVerifier,nonce,maxAuthAgeSeconds=null,
+}){
   if(typeof code!=='string'||code.length<1||code.length>4096||typeof codeVerifier!=='string'||codeVerifier.length<43||codeVerifier.length>128){
     fail('provider_response_invalid');
   }
@@ -186,7 +201,7 @@ export async function exchangeGoogleAuthorizationCode({clientId,clientSecret,red
   const jwks=await fetchBoundedJson(GOOGLE_JWKS_ENDPOINT,{
     method:'GET',headers:{accept:'application/json'},cache:'no-store',redirect:'error',
   },{maxBytes:JWKS_RESPONSE_MAX_BYTES});
-  return verifyGoogleIdToken(tokenResponse.id_token,{clientId,nonce,jwks});
+  return verifyGoogleIdToken(tokenResponse.id_token,{clientId,nonce,jwks,maxAuthAgeSeconds});
 }
 
 export function publicGoogleErrorCode(error){

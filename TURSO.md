@@ -40,6 +40,8 @@
    CIRCLE_MEMBERSHIP_ENABLED=false
    EMAIL_PASSWORD_ACTIVATION_ENABLED=false
    EMAIL_VERIFICATION_ENCRYPTION_KEY=... # openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+   PASSWORD_RESET_ENABLED=false
+   PASSWORD_RESET_ENCRYPTION_KEY=... # generate independently with the same command
    AUTH_SCHEMA_BOOTSTRAP_ENABLED=false
    RESEND_API_KEY=re_xxx  # omit both Resend values to keep email disabled
    RESEND_FROM=Randori <noreply@your-verified-domain.com>
@@ -68,11 +70,13 @@ Provider-identity and other migration-managed schema changes use the protected m
 - Availability — each user edits the explicitly dated upcoming cycle through `/api/settings/availability`. The API returns the UTC start/end/cutoff, configured IANA timezone, cycle digest, and optimistic version. Publication reads only that exact current-cycle scope; unavailable users are skipped and can receive a reminder. The timeless account flag is frozen as a bounded rollout bridge and is never updated by the dated endpoint.
 
 **Env vars added beyond section above:**
-- `JWT_SECRET` — at least 32 random bytes, used for 12-hour HS256 session cookies and domain-separated invitation, email, and activation-token hashes. Rotating it signs out all sessions and invalidates every outstanding invitation and activation; revoke/reissue them as part of rotation.
+- `JWT_SECRET` — at least 32 random bytes, used for 12-hour HS256 session cookies and domain-separated invitation, activation, and password-reset token hashes. Rotating it signs out all sessions and invalidates every outstanding invitation, activation, and password-reset link; revoke/reissue invitations and activations, and require affected users to request new reset links.
 - `CRON_SECRET` — separate secret protecting `/api/cron/weekly` and `/api/cron/outbox`. Send it as the `x-cron-secret` header or use a trusted scheduler's Bearer authorization.
 - `RESEND_API_KEY` and `RESEND_FROM` (optional as a pair) — when both are set, weekly cron emails **available** participants after shuffle and sends a separate reminder to unavailable participants. If either is absent, delivery remains disabled and pairs are visible in-app via `/api/weeks`. The sender must be verified in Resend.
 - `EMAIL_PASSWORD_ACTIVATION_ENABLED` — set to `true` only after managed migration v7 is ready, membership enforcement is enabled, the canonical application URL is valid, and email delivery is configured. Partial or unsafe production configuration fails closed.
 - `EMAIL_VERIFICATION_ENCRYPTION_KEY` — a separate 32-byte base64url key used only to encrypt verification credentials while they wait in the provider-neutral outbox. Generate it independently of `JWT_SECRET` and keep it stable while activation events are pending.
+- `PASSWORD_RESET_ENABLED` — set to `true` only after managed migration v8, canonical `APP_URL`, and email delivery are ready. Local development captures recovery delivery without a provider request.
+- `PASSWORD_RESET_ENCRYPTION_KEY` — an independent 32-byte base64url key for reset credentials in queued events. Keep it stable until all pending reset events have reached a terminal state.
 - `APP_URL` — required canonical production HTTPS origin, used for Google OAuth redirect URI and pairing email links. Credentials, paths, query strings, fragments, insecure public origins, request-host mismatches, and implicit fallback origins fail closed. The isolated local runtime accepts only its exact loopback HTTP origin.
 - `GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET` — for Google SSO (`/api/auth/google/*`). Configure in Google Cloud Console → OAuth client → Web → origins + redirect: `https://randori-circle-self.vercel.app/api/auth/google/callback` plus localhost variants.
 
@@ -80,6 +84,9 @@ Provider-identity and other migration-managed schema changes use the protected m
 - `POST /api/auth/signup` — synchronous invite signup remains local-only. In production, complete configuration returns a generic accepted response and atomically stores a pending invite-bound activation plus its outbox event; no account or session is created yet.
 - `POST /api/auth/activation/resend` — same-origin, enumeration-resistant token rotation with durable rate limits, a cooldown, and a bounded send lifetime.
 - `POST /api/auth/activation/verify` — same-origin single-use verification. Invitation consumption, account and membership creation, audit evidence, activation consumption, and revocable session issuance commit atomically.
+- `POST /api/auth/password-reset/request` — same-origin generic response for known and unknown addresses with durable IP/email limits, cooldown, and resend rotation.
+- `POST /api/auth/password-reset/consume` — validates a single-use fragment token and commits the new password, token consumption, and account-wide session revocation atomically.
+- `GET|POST /api/auth/recent-auth` — reads the current session's ten-minute step-up state or confirms the current password. `GET /api/auth/google/reauth/start` forces a fresh same-account Google OIDC proof.
 - `POST /api/auth/login` — existing password users only; establishes an HttpOnly session cookie.
 - `GET /api/auth/me` — authenticated live-session profile and admin status; its legacy availability field is compatibility-only, while `/api/settings/availability` is authoritative.
 - `POST /api/auth/logout` / `POST /api/auth/logout-all` — revoke the current session or every active session for the account. The database stores only hashed session identifiers; a valid Bearer credential remains independent of a browser cookie.
@@ -94,7 +101,7 @@ Provider-identity and other migration-managed schema changes use the protected m
 - `GET|POST /api/cron/weekly` — protected by `x-cron-secret` or `Authorization: Bearer <CRON_SECRET>`. It accepts the configured Sunday 08:00 UTC run after the London cycle boundary, publishes the same immutable cycle as the owner endpoint, avoids repeat pairing where possible, and gives an odd member Solo practice.
   - If both `RESEND_API_KEY` and `RESEND_FROM` are set, sends email to available users plus a reminder to unavailable users.
   - If either is absent, the delivery summary explains that email is disabled and pairs remain visible in-app via `/api/weeks`.
-- `GET|POST /api/cron/outbox` — independently drains due pairing and activation email events under the same cron authentication. Run it every five minutes in production. Claims use expiring token-bound leases and heartbeats; retry delays, provider timeouts, attempts, and dead letters are bounded. Activation delivery rechecks current token, invitation, and membership state before sending, and suppresses stale work.
+- `GET|POST /api/cron/outbox` — independently drains due pairing, activation, and password-reset email events under the same cron authentication. Run it every five minutes in production. Claims use expiring token-bound leases and heartbeats; retry delays, provider timeouts, attempts, and dead letters are bounded. Authentication delivery rechecks current token, account/invitation, and membership state before sending, and suppresses stale work.
 - `POST /api/admin/outbox/replay` — non-demo global-administrator-only dead-letter replay with a bounded reason code. It writes an audit record and retains the original provider idempotency key.
 - `POST /api/admin/reshuffle` — compatibility URL only. Pairing requests delegate to the immutable current-cycle endpoint and cannot force/remix a published cycle; `action=promote` retains its separate legacy admin operation.
 - `GET /api/settings/availability` — authenticated, private/no-store read of the upcoming cycle and the caller's exact setting: `{cycle,cycleKey,isAvailable,version,source,editable,updatedAt}`.

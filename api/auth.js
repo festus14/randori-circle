@@ -31,6 +31,7 @@ import { localIdentityAdapterEnabled, localRuntimeRequest } from './_local-runti
 import { googleOAuthRequestConfiguration, setAuthResponseHeaders } from './_auth-config.js';
 import {
   GOOGLE_AUTHORIZATION_ENDPOINT,
+  GOOGLE_REAUTH_MAX_AGE_SECONDS,
   exchangeGoogleAuthorizationCode,
   publicGoogleAuthorizationError,
   publicGoogleErrorCode,
@@ -42,12 +43,20 @@ import {
   resendEmailActivation,
   verifyEmailActivation,
 } from './_email-activation.js';
+import {
+  consumePasswordReset,
+  ensurePasswordResetReadiness,
+  passwordResetConfiguration,
+  requestPasswordReset,
+} from './_password-reset.js';
+import { readRecentAuth, recordRecentAuth } from './_recent-auth.js';
 
 const SESSION_COOKIE = 'randori_session';
 const OAUTH_STATE_COOKIE = 'randori_oauth_state';
 const OAUTH_VERIFIER_COOKIE = 'randori_oauth_verifier';
 const OAUTH_NONCE_COOKIE = 'randori_oauth_nonce';
 const OAUTH_RETURN_COOKIE = 'randori_oauth_return';
+const OAUTH_PURPOSE_COOKIE = 'randori_oauth_purpose';
 const PASSWORD_MIN_BYTES = 10;
 const PASSWORD_MAX_BYTES = 72;
 const ACTIVATION_RESPONSE_FLOOR_MS = 350;
@@ -116,9 +125,13 @@ async function enforceAuthRateLimit(db, req, action, email){
   const bucket=Math.floor(Date.now()/1000/windowSeconds);
   const limits=action==='signup'
     ? [[`ip:${ip}`,5],[`email:${email}`,5]]
-    :(action==='activation-verify'
+    :(['activation-verify','password-reset-consume'].includes(action)
       ?[[`ip:${ip}`,20]]
-      :[[`ip:${ip}`,20],[`email:${email}`,10]]);
+      :(action==='password-reset-request'
+        ?[[`ip:${ip}`,10],[`email:${email}`,5]]
+      :(action==='recent-auth-password'
+        ?[[`ip:${ip}`,10],[`account:${email}`,10]]
+        :[[`ip:${ip}`,20],[`email:${email}`,10]])));
   for(const [dimension,limit] of limits){
     const key=createHash('sha256').update(`${action}|${dimension}|${bucket}|${getJwtSecret()}`).digest('hex');
     const result=await db.execute({
@@ -166,6 +179,7 @@ function handleCapabilities(req,res){
   if(req.method!=='GET') return res.status(405).json({error:'GET only'});
   const localIdentity=localIdentityAdapterEnabled(req);
   const verifiedEmailActivation=!localIdentity&&Boolean(emailActivationConfiguration());
+  const passwordReset=Boolean(passwordResetConfiguration());
   const passwordSignup=localPasswordSignupEnabled(req)||verifiedEmailActivation;
   return res.json({
     ok:true,
@@ -173,8 +187,10 @@ function handleCapabilities(req,res){
       passwordLogin:true,
       passwordSignup,
       verifiedEmailActivation,
+      passwordReset,
       localIdentity,
       googleOAuth:Boolean(googleOAuthRequestConfiguration(req)),
+      recentAuthMaxAgeSeconds:10*60,
     },
     registrationMode:localIdentity?'local_invite':(verifiedEmailActivation?'verified_invite':(passwordSignup?'local_open':'private_beta')),
   });
@@ -304,7 +320,8 @@ async function handleSignup(req,res){
       return res.status(403).json({error:'invitation unavailable or does not match this email'});
     }
     let token;
-    try{ token=await issueSession(db,{id:registered.user_id,email:e,name:display,color,is_admin:false}); }
+    try{ token=await issueSession(db,{id:registered.user_id,email:e,name:display,color,is_admin:false},
+      {recentAuthMethod:'password'}); }
     catch{ return res.status(503).json({error:'signup temporarily unavailable'}); }
     appendCookies(res,[sessionCookie(req,token),clearInviteClaimCookie({secure:false})]);
     return res.json({
@@ -354,7 +371,8 @@ async function handleSignup(req,res){
   const isAdmin=ins.rows[0].is_admin===undefined?!!configuredAdmin:!!ins.rows[0].is_admin;
   try{ await db.execute({ sql:`INSERT INTO users (name,color) VALUES (?,?)`, args:[display,color]});}catch{}
   let token;
-  try{ token=await issueSession(db,{id:authId,email:e,name:display,color,is_admin:!!isAdmin}); }
+  try{ token=await issueSession(db,{id:authId,email:e,name:display,color,is_admin:!!isAdmin},
+    {recentAuthMethod:'password'}); }
   catch{ return res.status(503).json({error:'signup temporarily unavailable'}); }
   appendCookies(res,[sessionCookie(req,token)]);
   return res.json({ ok:true, user:{ id:authId, email:e, name:display, color, is_admin: !!isAdmin, isAdmin: !!isAdmin }});
@@ -403,6 +421,89 @@ async function handleActivationVerify(req,res){
   return res.json({ok:true,status:'verified',user:result.user});
 }
 
+async function handlePasswordResetRequest(req,res){
+  if(req.method!=='POST') return res.status(405).json({error:'POST only'});
+  if(!passwordResetConfiguration()) return res.status(503).json({error:'password reset is unavailable'});
+  const email=String(req.body?.email||'').trim().toLowerCase();
+  if(!email||email.length>254||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){
+    return res.status(400).json({error:'valid email required'});
+  }
+  const responseStartedAt=Date.now();
+  let failure=null;
+  try{
+    const db=getClient();
+    await ensurePasswordResetReadiness(db);
+    await enforceAuthRateLimit(db,req,'password-reset-request',email);
+    await requestPasswordReset(db,{email});
+  }catch(error){ failure=error; }
+  await completeActivationResponseFloor(responseStartedAt);
+  if(failure?.statusCode===429) return res.status(429).json({error:'too many reset requests; try again later'});
+  if(failure) return res.status(503).json({error:'password reset temporarily unavailable'});
+  return res.status(202).json({ok:true,pending:true,
+    message:'If that account can use password recovery, a reset email will arrive shortly.'});
+}
+
+async function handlePasswordResetConsume(req,res){
+  if(req.method!=='POST') return res.status(405).json({error:'POST only'});
+  if(!passwordResetConfiguration()) return res.status(503).json({error:'password reset is unavailable'});
+  const token=String(req.body?.token||'');
+  const password=req.body?.password;
+  if(!validSignupPassword(password)) return res.status(400).json({error:'password must be 10-72 UTF-8 bytes'});
+  let db;
+  try{
+    db=getClient();
+    await ensurePasswordResetReadiness(db);
+    await enforceAuthRateLimit(db,req,'password-reset-consume','');
+  }catch(error){
+    if(error?.statusCode===429) return res.status(429).json({error:'too many reset attempts; try again later'});
+    return res.status(503).json({error:'password reset temporarily unavailable'});
+  }
+  // Rate-limit before the expensive hash, but always hash before token lookup
+  // so valid-looking credentials do not expose account state through timing.
+  const passwordHash=await bcrypt.hash(password,10);
+  let result;
+  try{ result=await consumePasswordReset(db,{token,passwordHash}); }
+  catch{ return res.status(503).json({error:'password reset temporarily unavailable'}); }
+  if(result.status!=='reset') return res.status(409).json({ok:false,status:result.status});
+  appendCookies(res,[clearCookie(req,SESSION_COOKIE)]);
+  return res.json({ok:true,status:'reset'});
+}
+
+async function handleRecentAuth(req,res){
+  if(req.method!=='GET'&&req.method!=='POST') return res.status(405).json({error:'GET or POST only'});
+  let db,payload;
+  try{
+    db=getClient();
+    await ensurePasswordResetReadiness(db);
+    payload=await verifyRequestAuth(req,db);
+  }catch{ return res.status(503).json({error:'recent authentication temporarily unavailable'}); }
+  if(!payload) return res.status(401).json({error:'authentication required'});
+  if(req.method==='GET'){
+    try{ return res.json({ok:true,recentAuth:await readRecentAuth(db,payload)}); }
+    catch{ return res.status(503).json({error:'recent authentication temporarily unavailable'}); }
+  }
+  const password=req.body?.password;
+  const passwordBytes=Buffer.byteLength(String(password||''),'utf8');
+  if(passwordBytes<1||passwordBytes>PASSWORD_MAX_BYTES) return res.status(400).json({error:'password required'});
+  try{ await enforceAuthRateLimit(db,req,'recent-auth-password',String(payload.id)); }
+  catch(error){
+    if(error?.statusCode===429) return res.status(429).json({error:'too many confirmation attempts; try again later'});
+    return res.status(503).json({error:'recent authentication temporarily unavailable'});
+  }
+  let row;
+  try{
+    const result=await db.execute({sql:`SELECT password_hash FROM auth_accounts WHERE id=? LIMIT 2`,args:[payload.id]});
+    row=result.rows?.length===1?result.rows[0]:null;
+  }catch{ return res.status(503).json({error:'recent authentication temporarily unavailable'}); }
+  const stored=String(row?.password_hash||'');
+  const matches=await bcrypt.compare(String(password),stored.startsWith('$2')?stored:DUMMY_LOGIN_PASSWORD_HASH);
+  if(!row||!stored.startsWith('$2')||!matches) return res.status(401).json({error:'invalid credentials'});
+  try{
+    const recent=await recordRecentAuth(db,{sessionHash:payload.sessionHash,userId:payload.id,method:'password'});
+    return res.json({ok:true,recentAuth:{ok:true,...recent}});
+  }catch{ return res.status(503).json({error:'recent authentication temporarily unavailable'}); }
+}
+
 // --- login ---
 async function handleLogin(req,res){
   if (req.method !== 'POST') return res.status(405).json({ error:'POST only' });
@@ -447,7 +548,8 @@ async function handleLogin(req,res){
   }
   const is_admin = !!row.is_admin || envAdmins.has(e);
   let token;
-  try{ token=await issueSession(db,{id:row.id,email:row.email,name:row.display_name,color:row.color,is_admin}); }
+  try{ token=await issueSession(db,{id:row.id,email:row.email,name:row.display_name,color:row.color,is_admin},
+    {recentAuthMethod:'password'}); }
   catch{ return res.status(503).json({error:'login temporarily unavailable'}); }
   appendCookies(res,[sessionCookie(req,token)]);
   return res.json({ ok:true, user:{ id:row.id, email:row.email, name:row.display_name, color:row.color, is_admin, isAdmin:is_admin }});
@@ -545,7 +647,7 @@ async function bindGoogleProviderIdentity(db,{issuer,subject,userId}){
 }
 
 // --- google start ---
-function handleGoogleStart(req,res){
+async function handleGoogleStart(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
   const configuration=googleOAuthRequestConfiguration(req);
   if(!configuration) return res.status(503).json({error:'Google sign-in is unavailable'});
@@ -556,6 +658,17 @@ function handleGoogleStart(req,res){
   const challenge=createHash('sha256').update(verifier).digest('base64url');
   const returnPath=safeOAuthReturnPath(req.query?.return_to);
   const params = new URLSearchParams({ client_id:clientId, redirect_uri:redirectUri, response_type:'code', scope:'openid email profile', access_type:'online', state, nonce, code_challenge:challenge, code_challenge_method:'S256' });
+  const reauthenticate=String(req.query?.reauth||'')==='1'||getEndpoint(req).includes('reauth');
+  let purpose='login';
+  if(reauthenticate){
+    let current;
+    try{ current=await verifyRequestAuth(req); }
+    catch{ return res.status(503).json({error:'Google reauthentication is unavailable'}); }
+    if(!current) return res.status(401).json({error:'authentication required'});
+    purpose=`reauth:${current.id}`;
+    params.set('max_age','0');
+    params.set('prompt','select_account');
+  }
   if(circleMembershipEnabled()&&readInviteClaim(req)) params.set('prompt','select_account');
   const url = `${GOOGLE_AUTHORIZATION_ENDPOINT}?${params.toString()}`;
   appendCookies(res,[
@@ -563,6 +676,7 @@ function handleGoogleStart(req,res){
     transientCookie(req,OAUTH_VERIFIER_COOKIE,verifier),
     transientCookie(req,OAUTH_NONCE_COOKIE,nonce),
     transientCookie(req,OAUTH_RETURN_COOKIE,returnPath),
+    transientCookie(req,OAUTH_PURPOSE_COOKIE,purpose),
   ]);
   res.writeHead(302, { Location:url });
   res.end();
@@ -579,6 +693,7 @@ async function handleGoogleCallback(req,res){
   const verifier=cookieValue(req,OAUTH_VERIFIER_COOKIE);
   const nonce=cookieValue(req,OAUTH_NONCE_COOKIE);
   const returnPath=safeOAuthReturnPath(cookieValue(req,OAUTH_RETURN_COOKIE));
+  const purpose=cookieValue(req,OAUTH_PURPOSE_COOKIE)||'login';
   const inviteClaimPresent=Boolean(cookieValue(req,INVITE_CLAIM_COOKIE));
   const inviteClaim=readInviteClaim(req);
   const redirectError=errorCode=>oauthResultLocation(appUrl,returnPath,'google_error',errorCode);
@@ -587,6 +702,7 @@ async function handleGoogleCallback(req,res){
     clearCookie(req,OAUTH_VERIFIER_COOKIE,'/api/auth/google'),
     clearCookie(req,OAUTH_NONCE_COOKIE,'/api/auth/google'),
     clearCookie(req,OAUTH_RETURN_COOKIE,'/api/auth/google'),
+    clearCookie(req,OAUTH_PURPOSE_COOKIE,'/api/auth/google'),
   ]);
   if(!state || !expectedState || !verifier || !nonce || !constantTimeEqual(state,expectedState)){
     res.writeHead(302,{Location:redirectError('invalid_state')}); return res.end();
@@ -605,6 +721,7 @@ async function handleGoogleCallback(req,res){
   try{
     identity=await exchangeGoogleAuthorizationCode({
       clientId,clientSecret,redirectUri,code:String(code),codeVerifier:verifier,nonce,
+      maxAuthAgeSeconds:purpose.startsWith('reauth:')?GOOGLE_REAUTH_MAX_AGE_SECONDS:null,
     });
   }catch(providerError){
     res.writeHead(302,{Location:redirectError(publicGoogleErrorCode(providerError))}); return res.end();
@@ -616,6 +733,37 @@ async function handleGoogleCallback(req,res){
   const nameFromEmail = email.split('@')[0].slice(0,32);
   const finalName = (displayName ? String(displayName).trim().slice(0,32) : nameFromEmail) || nameFromEmail;
   const color = deterministicColor(finalName.toLowerCase());
+  if(purpose.startsWith('reauth:')){
+    const initiatingId=Number(purpose.slice('reauth:'.length));
+    let current;
+    try{ current=await verifyRequestAuth(req,db); }
+    catch{ res.writeHead(302,{Location:redirectError('db_error')}); return res.end(); }
+    if(!current||!Number.isSafeInteger(initiatingId)||initiatingId<1||current.id!==initiatingId){
+      res.writeHead(302,{Location:redirectError('reauth_required')}); return res.end();
+    }
+    let matched;
+    try{
+      matched=await db.execute({
+        sql:`SELECT account.id,account.email,account.display_name,account.color,account.is_admin
+          FROM auth_provider_identities identity JOIN auth_accounts account ON account.id=identity.user_id
+          WHERE identity.issuer=? AND identity.subject=? AND account.id=? LIMIT 2`,
+        args:[googleIssuer,googleSub,initiatingId],
+      });
+    }catch{ res.writeHead(302,{Location:redirectError('db_error')}); return res.end(); }
+    if(matched.rows?.length!==1){
+      res.writeHead(302,{Location:redirectError('identity_mismatch')}); return res.end();
+    }
+    const account=matched.rows[0];
+    let token;
+    try{
+      token=await issueSession(db,{id:initiatingId,email:String(account.email),
+        name:String(account.display_name),color:String(account.color),is_admin:!!account.is_admin},
+      {recentAuthMethod:'google'});
+    }catch{ res.writeHead(302,{Location:redirectError('session_error')}); return res.end(); }
+    appendCookies(res,[sessionCookie(req,token)]);
+    res.writeHead(302,{Location:oauthResultLocation(appUrl,returnPath,'google_reauth','success')});
+    return res.end();
+  }
   const membershipRequired=circleMembershipEnabled();
   if(!membershipRequired&&process.env.AUTH_SCHEMA_BOOTSTRAP_ENABLED==='true'){
     try{ await bootstrapGoogleAuthSchema(db); }
@@ -757,7 +905,8 @@ async function handleGoogleCallback(req,res){
       });
       if(changed.rows?.length!==1) throw new Error('identity changed concurrently');
       await revokeAccountSessions(transaction,authId,'identity_change');
-      ourJwt=await issueSessionInTransaction(transaction,{uid:authId,id:authId,email,name:finalName,is_admin:is_admin_final});
+      ourJwt=await issueSessionInTransaction(transaction,{uid:authId,id:authId,email,name:finalName,is_admin:is_admin_final},
+        {recentAuthMethod:'google'});
       await transaction.commit();
       committed=true;
     }catch{
@@ -765,7 +914,8 @@ async function handleGoogleCallback(req,res){
       res.writeHead(302,{Location:redirectError('session_error')}); return res.end();
     }
   }else{
-    try{ ourJwt=await issueSession(db,{uid:authId,id:authId,email,name:finalName,is_admin:is_admin_final}); }
+    try{ ourJwt=await issueSession(db,{uid:authId,id:authId,email,name:finalName,is_admin:is_admin_final},
+      {recentAuthMethod:'google'}); }
     catch{ res.writeHead(302,{Location:redirectError('session_error')}); return res.end(); }
   }
   appendCookies(res,[sessionCookie(req,ourJwt),...(inviteClaimPresent?[clearInviteClaimCookie()]:[])]);
@@ -783,36 +933,44 @@ export default async function handler(req,res){
   if(req.method==='POST'&&logoutMutation&&!verifyMutationOrigin(req)){
     return res.status(403).json({error:'same-origin request required'});
   }
-  const credentialMutation=['signup','login','activation-resend','activation-verify'].some(name=>ep===name||ep.includes(name))
-    ||urlPath.includes('/activation/resend')||urlPath.includes('/activation/verify');
+  const credentialMutation=['signup','login','activation-resend','activation-verify','password-reset-request',
+    'password-reset-consume','recent-auth'].some(name=>ep===name||ep.includes(name))
+    ||urlPath.includes('/activation/resend')||urlPath.includes('/activation/verify')
+    ||urlPath.includes('/password-reset/')||urlPath.includes('/recent-auth');
   if(req.method==='POST'&&!logoutMutation&&credentialMutation&&!verifyAuthMutationOrigin(req)){
     return res.status(403).json({error:'same-origin request required'});
   }
   // also detect google via path that contains google
   if (ep.includes('google')) {
     if (ep.includes('callback') || urlPath.includes('callback')) return handleGoogleCallback(req,res);
-    return handleGoogleStart(req,res);
+    return await handleGoogleStart(req,res);
   }
-  if (ep.includes('start')) return handleGoogleStart(req,res);
+  if (ep.includes('start')) return await handleGoogleStart(req,res);
   if (ep.includes('callback')) return handleGoogleCallback(req,res);
   if (ep === 'capabilities' || ep.includes('capabilities')) return handleCapabilities(req,res);
   if (ep === 'activation-resend' || ep.includes('activation-resend')) return handleActivationResend(req,res);
   if (ep === 'activation-verify' || ep.includes('activation-verify')) return handleActivationVerify(req,res);
+  if (ep === 'password-reset-request' || ep.includes('password-reset-request')) return handlePasswordResetRequest(req,res);
+  if (ep === 'password-reset-consume' || ep.includes('password-reset-consume')) return handlePasswordResetConsume(req,res);
+  if (ep === 'recent-auth' || ep.includes('recent-auth')) return handleRecentAuth(req,res);
   if (ep === 'signup' || ep.includes('signup')) return handleSignup(req,res);
   if (ep === 'login' || ep.includes('login')) return handleLogin(req,res);
   if (ep === 'me' || ep.includes('me')) return handleMe(req,res);
   if (ep === 'logout-all' || ep.includes('logout-all')) return handleLogoutAll(req,res);
   if (ep === 'logout' || ep.includes('logout')) return handleLogout(req,res);
   // fallback try to infer from original path: /api/auth/google/start etc
-  if (urlPath.includes('/google/start')) return handleGoogleStart(req,res);
+  if (urlPath.includes('/google/start')) return await handleGoogleStart(req,res);
   if (urlPath.includes('/google/callback') || urlPath.includes('google-callback')) return handleGoogleCallback(req,res);
   if (urlPath.includes('/capabilities')) return handleCapabilities(req,res);
   if (urlPath.includes('/activation/resend')) return handleActivationResend(req,res);
   if (urlPath.includes('/activation/verify')) return handleActivationVerify(req,res);
+  if (urlPath.includes('/password-reset/request')) return handlePasswordResetRequest(req,res);
+  if (urlPath.includes('/password-reset/consume')) return handlePasswordResetConsume(req,res);
+  if (urlPath.includes('/recent-auth')) return handleRecentAuth(req,res);
   if (urlPath.includes('signup')) return handleSignup(req,res);
   if (urlPath.includes('login')) return handleLogin(req,res);
   if (urlPath.includes('logout-all')) return handleLogoutAll(req,res);
   if (urlPath.includes('logout')) return handleLogout(req,res);
   if (urlPath.includes('/me')) return handleMe(req,res);
-  return res.status(404).json({ error:`unknown auth endpoint '${ep}'`, available:['capabilities','signup','activation-resend','activation-verify','login','logout','logout-all','me','google/start','google/callback'], hint:'endpoint query param ?endpoint=signup etc' });
+  return res.status(404).json({ error:`unknown auth endpoint '${ep}'`, available:['capabilities','signup','activation-resend','activation-verify','password-reset-request','password-reset-consume','recent-auth','login','logout','logout-all','me','google/start','google/callback'], hint:'endpoint query param ?endpoint=signup etc' });
 }

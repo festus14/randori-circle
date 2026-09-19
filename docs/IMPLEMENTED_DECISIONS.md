@@ -1,10 +1,10 @@
 # Randori Circle implemented decision log
 
-Status: accepted through merged PR #89 plus candidate PRs #93 and #92
+Status: accepted through merged PR #89 plus candidate PRs #93, #92, and #97
 
 Last reviewed: 2026-09-19
 
-Scope: `main` through `2402fe9bea53aa0a44d2af4c43f77e4223894695`, plus PRs #93 and #92
+Scope: `main` through `2402fe9bea53aa0a44d2af4c43f77e4223894695`, plus PRs #93, #92, and #97
 
 This log records decisions that govern the application being shipped now. The
 [production architecture plan](PRODUCTION_ARCHITECTURE_PLAN.md) describes a
@@ -30,12 +30,14 @@ or merged after its parent; it must not be landed ahead of that parent.
 | 6 | [PR #89](https://github.com/festus14/randori-circle/pull/89), merged to `main` | Transactional, retryable pairing notifications | v6 `durable-provider-neutral-outbox` |
 | 7 | [PR #93](https://github.com/festus14/randori-circle/pull/93), candidate | Repository-owned deployability gate independent of preview quota | No migration |
 | 8 | [PR #92](https://github.com/festus14/randori-circle/pull/92), candidate | Verified invitation-bound email/password activation | v7 `verified-email-activation` |
+| 9 | [PR #97](https://github.com/festus14/randori-circle/pull/97), candidate | Enumeration-safe password recovery and reusable recent-authentication policy | v8 `password-reset-and-recent-auth` |
 
 Migration order is append-only: v4 binds an account to an OIDC issuer and
 subject, v5 makes every application JWT depend on a live hashed session row,
 v6 adds the outbox and its audit history, and v7 adds pending verified-email
-activation. The protected production workflow applies no more than one pending
-version per inspected fingerprint and approval.
+activation. Version v8 adds password-reset credentials and session-scoped
+recent-authentication evidence. The protected production workflow applies no
+more than one pending version per inspected fingerprint and approval.
 
 ## ID-01: Ship the useful weekly loop before a platform rewrite
 
@@ -273,3 +275,71 @@ Pending, resend/retry, expired, already-used, revoked, unavailable, and success 
 4. Set `EMAIL_PASSWORD_ACTIVATION_ENABLED=true` only after readiness is green.
 
 Keep the encryption key stable while pending activation events exist. Rotation requires a future multi-key decrypt window; replacing it immediately suppresses already queued mail.
+
+## ID-11: Recover password accounts without turning email into implicit provider linking
+
+Status: implemented as the schema-v8 increment, stacked on verified email activation.
+
+### Decision
+
+Existing password accounts may request recovery through a generic endpoint.
+Randori always returns the same accepted response for an eligible account, an
+unknown address, an inactive member, or a Google-only identity. A 256-bit
+single-use token is delivered through the provider-neutral outbox in a URL
+fragment. Only a domain-separated HMAC is stored in
+`auth_password_resets`; the queued credential is protected by a dedicated
+AES-256-GCM `PASSWORD_RESET_ENCRYPTION_KEY`.
+
+Reset tokens expire after 30 minutes. Requests use durable IP and email
+buckets, a 60-second resend cooldown, and a five-send active-token limit. Each
+resend rotates the token, so older queued and delivered links become inert.
+The delivery worker rechecks the current account email, password identity,
+membership, token, and expiry immediately before sending. Google-only accounts
+cannot acquire a password through recovery; provider linking remains a
+separate, recent-authenticated operation.
+
+Consuming a link hashes the replacement password before token lookup, then
+changes the password, revokes every active session with `password_change`, and
+marks the token used in one write transaction. No replacement session is
+issued: the user signs in with the new password, establishing fresh proof of
+the credential. Concurrent consumers converge on one success; expiry, replay,
+and rotated tokens fail closed.
+
+### Recent-authentication boundary
+
+Recent authentication is durable evidence scoped to one live session, not an
+age check on the JWT alone. `auth_recent_proofs` stores the session hash, user,
+method, and database timestamp. Evidence is accepted for ten minutes and only
+for `password` or `google` methods. Password login and explicit password
+confirmation create password evidence. Google login creates Google evidence;
+the dedicated reauthentication start path uses OIDC `max_age=0`, explicit
+account selection, the initiating live session, and an exact provider-subject
+match before issuing fresh evidence. The callback additionally requires the
+signed ID-token `auth_time` claim to be no more than two minutes old (with a
+60-second clock-skew allowance); a missing, stale, malformed, or future claim
+fails closed. Normal Google sign-in remains compatible with providers that do
+not return `auth_time`. Reset-link possession does not count as recent
+authentication.
+
+Future provider linking, email changes, password changes, and similarly
+sensitive account mutations must call the shared `requireRecentAuth` boundary
+immediately before their transactional mutation. Recovery itself is exempt
+because it is the route back to a lost credential, but it revokes all sessions.
+
+### Alternatives considered
+
+| Option | Advantages | Costs and rejection reason |
+|---|---|---|
+| Signed stateless reset links | No reset table | Cannot reliably support one-time use, resend rotation, or immediate revocation. |
+| Store raw reset tokens | Simplest delivery worker | A database or queue read becomes an account-takeover credential. |
+| Treat any young session as recent auth | No extra table | Session creation time does not prove a recent credential challenge and cannot record the method. |
+| Let email recovery add a password to Google-only accounts | Convenient fallback | Silently links identity providers and expands account-takeover impact; linking belongs in its own reviewed flow. |
+| Issue a session immediately after reset | Faster return to the app | Treats reset-link possession as a full login and recent proof. Explicit sign-in is a clearer trust transition. |
+| Managed authentication provider | Mature recovery and step-up flows | Requires an identity migration and new authorization boundary; remains a future architecture option. |
+
+### Rollout
+
+1. Rehearse and apply migration v8 only after managed v7 is verified.
+2. Configure a new independent `PASSWORD_RESET_ENCRYPTION_KEY` and keep it stable while reset events remain queued.
+3. Confirm the outbox worker schedule and Resend sender in production.
+4. Enable `PASSWORD_RESET_ENABLED=true`, verify a real delivery and reset, then monitor aggregate outbox retry/dead-letter metrics. Roll back by disabling the flag; outstanding links stay unusable until the capability is restored.

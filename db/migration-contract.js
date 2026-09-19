@@ -36,6 +36,11 @@ export const MIGRATION_CONTRACTS=Object.freeze([
     name:'verified-email-activation',
     checksum:'2f904882cdc996c63492794b7e321560cbe3574871984e51e2d3075b897e95e1',
   }),
+  Object.freeze({
+    version:8,
+    name:'password-reset-and-recent-auth',
+    checksum:'60059dfffd4d333e5b90a8eea32f23bc2165a8019911e4b006deeb0f2b68929c',
+  }),
 ]);
 
 export const LATEST_MIGRATION_VERSION=MIGRATION_CONTRACTS.at(-1)?.version||0;

@@ -23,6 +23,11 @@ import {
   emailActivationConfiguration,
   emailActivationStatus,
 } from './_email-activation.js';
+import {
+  deliverPasswordResets,
+  passwordResetConfiguration,
+  passwordResetStatus,
+} from './_password-reset.js';
 import { localIdentityAdapterEnabled, localRuntimeRequest } from './_local-runtime.js';
 
 async function logServerOps(level, event, message, meta, req){
@@ -395,8 +400,44 @@ async function handleOutboxWorker(req,res){
           suppressed:status.suppressed};
       }
     }
+    let passwordResetDelivery={summary:'password reset delivery disabled',sent:0,failed:0,exhausted:0,pending:0,suppressed:0};
+    if(passwordResetConfiguration()){
+      const local=localIdentityAdapterEnabled(req);
+      const captured=[];
+      let send;
+      if(local){
+        send=async message=>{
+          captured.push({recipient_email:String(message.to),kind:'password-reset',subject:String(message.subject),
+            links:[...message.html.matchAll(/href="([^"]+)"/gu)].map(match=>match[1]).slice(0,4)});
+          return {providerName:'local-capture',providerMessageId:`local-${randomUUID()}`};
+        };
+      }else if(process.env.RESEND_API_KEY&&process.env.RESEND_FROM){
+        const resendMod=await import('resend').catch(()=>null);
+        if(resendMod?.Resend) send=createResendEmailSender({
+          resend:new resendMod.Resend(process.env.RESEND_API_KEY),from:process.env.RESEND_FROM,
+        });
+      }
+      if(send){
+        const reset=await deliverPasswordResets({db,baseUrl,send,workerId:`password-reset-${randomUUID()}`});
+        const status=await passwordResetStatus(db);
+        const pending=status.pending+status.retry+status.processing;
+        const failed=reset.retried+reset.deadLettered;
+        passwordResetDelivery={
+          summary:local?`captured ${captured.length} password reset email(s); no external delivery`
+            :`sent ${reset.delivered}, failed ${failed}, pending ${pending}`,
+          sent:local?0:reset.delivered,failed,exhausted:status.dead_letter,pending,
+          suppressed:reset.suppressed,...(local?{captured}:{}),
+        };
+      }else{
+        const status=await passwordResetStatus(db);
+        passwordResetDelivery={summary:'password reset email delivery unavailable',sent:0,failed:0,
+          exhausted:status.dead_letter,pending:status.pending+status.retry+status.processing,
+          suppressed:status.suppressed};
+      }
+    }
     return res.json({ok:true,email_delivery:safeEmailDelivery(delivery),
-      activation_delivery:safeEmailDelivery(activationDelivery)});
+      activation_delivery:safeEmailDelivery(activationDelivery),
+      password_reset_delivery:safeEmailDelivery(passwordResetDelivery)});
   }catch{
     return res.status(503).json({error:'outbox unavailable'});
   }
