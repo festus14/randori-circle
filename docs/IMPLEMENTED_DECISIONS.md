@@ -1290,3 +1290,40 @@ adopting on a production request or startup was rejected because it turns a
 misconfiguration into durable authorization. An external KMS policy is the
 strongest cross-restore option, but adds operational cost and does not remove
 the application's need for purpose-scoped readiness and restore procedures.
+
+## ID-32: Reuse pairing-email v2 for secondary dashboard notifications
+
+Status: implemented as a default-off notification increment with no schema
+migration and no secondary workspace capability.
+
+**Decision.** `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED` is effective only when
+membership enforcement, multi-circle control, selected-circle availability,
+and secondary coordination are all enabled. A newly claimed secondary
+publication writes one `pairing.email.requested` v2 event for every snapshotted
+paired, solo, or unavailable member inside the same transaction as the
+publication. Replays and competing manual/cron claims write none. The compact
+payload contains only publication, circle, user, and result-kind identifiers;
+current addresses, circle names, and rendered content are never queued.
+
+The v2 dispatcher resolves current recipient and circle data and revalidates
+the exact publication/scope/circle/cycle descriptor, immutable eligibility and
+group slot, active non-demo membership, archive state, active partner for a
+paired result, and current email preference. Invalid or stale work suppresses
+before provider access. Its sole link is the canonical dashboard origin, so an
+email neither exposes nor creates a legacy room/workspace capability. Primary
+v1 payload parsing and private-room delivery remain unchanged.
+
+Both versions share the existing event type, stable provider idempotency,
+leases, retry/dead-letter transitions, aggregate metrics, and the five-type
+fair invocation budget. Rollback disables the new flag; pending v2 work then
+suppresses while immutable publications and terminal outbox evidence remain.
+
+**Alternatives.** A new event type would make rendering explicit but add a
+sixth fairness lane, operational metric, and scheduler contract for the same
+delivery channel. Storing addresses or circle names would simplify dispatch
+but create stale PII and rename races. Linking to a generated room would cross
+the reviewed coordination-only boundary. A post-commit fan-out job would avoid
+publication changes but introduce a second claim/reconciliation protocol and
+an interval where a durable publication has no durable intent. The selected
+versioned event keeps v1 compatibility, uses transaction atomicity already
+available in v13, and revalidates all mutable authority at delivery time.

@@ -1,13 +1,15 @@
 # Selected-circle pairing coordination
 
 This increment makes the current weekly pairing useful in a selected secondary
-circle without treating that pairing as a workspace authorization. It is
-disabled unless all four rollout flags are true:
+circle without treating that pairing as a workspace authorization. Pairing
+coordination is disabled unless the first four rollout flags are true; email is
+separately default-off and requires all five:
 
 - `CIRCLE_MEMBERSHIP_ENABLED=true`
 - `MULTI_CIRCLE_CONTROL_PLANE_ENABLED=true`
 - `MULTI_CIRCLE_AVAILABILITY_ENABLED=true`
 - `SECONDARY_CIRCLE_COORDINATION_ENABLED=true`
+- `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED=true` (email only)
 
 ## Boundary
 
@@ -15,7 +17,8 @@ Selected primary circles continue through the legacy immutable publication and
 workspace path. Selected secondary circles use migration v13's separate,
 circle-owned coordination tables. They can publish and display a current-cycle
 partner card, but receive no legacy week/group identifiers, room ID, schedule,
-chat, video, execution, AI, recap, or notification capability.
+chat, video, execution, AI, or recap capability. Optional result email links
+only to the dashboard and is not a workspace authorization.
 
 `circle_pairing_publications` owns one immutable `(scope_key, cycle_key)` claim.
 `circle_pairing_eligibility` records the complete active, non-demo membership
@@ -70,7 +73,28 @@ publishes in its own transaction. A failed scope is counted without starving
 later scopes in the deterministic batch; after processing the batch, any
 failure produces an aggregate retryable `503`. Aggregate telemetry and
 responses contain counts only; no circle or member identifier is emitted.
-Secondary publication does not enqueue email.
+Secondary publication atomically queues v2 email intents only when the separate
+email flag and its four dependencies are enabled. Manual and cron publication
+use the same claim, so a replay, retry, or race cannot add duplicate intents.
+
+## Secondary result email
+
+Every newly claimed publication queues one `pairing.email.requested` v2 event
+for each snapshotted active, non-demo member: `paired`, `solo`, or
+`unavailable`. Its exact payload is limited to `publication_id`, `circle_id`,
+`user_id`, and `kind`; it stores no address, circle name, token, credential, or
+rendered content. The stable provider idempotency key is publication- and
+member-scoped.
+
+Dispatch resolves the current recipient address and circle name and validates
+the exact publication/scope/circle/cycle descriptor, immutable eligibility and
+group slot, active recipient membership, unarchived secondary circle, active
+human partner for paired mail, and current email preference. Stale or
+inconsistent work is suppressed before provider access. The only URL is the
+canonical dashboard origin. Existing primary v1 events retain their embedded
+recipient compatibility and private-room rendering. Both versions use the
+same event type, retry/dead-letter transitions, provider idempotency, aggregate
+metrics, and five-type fair invocation budget. No schema migration is needed.
 
 ## Rollout and rollback
 
@@ -86,9 +110,15 @@ Secondary publication does not enqueue email.
    availability values, manual publication, selection switching, removal and
    demotion races, and absence of workspace requests/storage.
 4. Exercise authenticated weekly cron twice and confirm one immutable result.
-5. Enable in the private beta and monitor only attempted/created/existing/failed
+5. Keep `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED=false` until the five-minute
+   outbox worker and sender are configured. Enable it for one staging circle;
+   verify paired, solo, unavailable, preference-off, removed-partner, archive,
+   replay, and provider-retry cases and confirm every URL is the dashboard root.
+6. Enable in the private beta and monitor only attempted/created/existing/failed
    scope counts, context rejects, integrity failures, duration, and overflow.
 
-Rollback is the feature flag. Canonical v13 rows remain intact and hidden. Do
-not delete them, disable membership enforcement, or copy secondary rows into
+Email rollback disables only `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED`; queued
+v2 work then suppresses without provider access. Coordination rollback disables
+its parent flag. Canonical v13 rows and terminal outbox evidence remain intact.
+Do not delete them, disable membership enforcement, or copy secondary rows into
 legacy pairing/workspace tables.

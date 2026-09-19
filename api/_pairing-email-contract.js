@@ -1,0 +1,3 @@
+export const PAIRING_EMAIL_EVENT_TYPE='pairing.email.requested';
+export const PRIMARY_PAIRING_EMAIL_EVENT_VERSION=1;
+export const SECONDARY_PAIRING_EMAIL_EVENT_VERSION=2;

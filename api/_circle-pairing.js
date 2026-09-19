@@ -1,8 +1,15 @@
 import { randomUUID } from 'node:crypto';
 
-import { validateActiveCircleMutationContext } from './_active-circle.js';
+import {
+  secondaryCirclePairingEmailEnabled,
+  validateActiveCircleMutationContext,
+} from './_active-circle.js';
 import { applyCycleAvailability, availabilityCycleKey } from './_availability.js';
 import { MAX_READINESS_SCHEMA_OBJECTS } from './_health.js';
+import {
+  PAIRING_EMAIL_EVENT_TYPE,
+  SECONDARY_PAIRING_EMAIL_EVENT_VERSION,
+} from './_pairing-email-contract.js';
 import { buildFairPairing, PAIRING_ALGORITHM_VERSION } from './_pairing.js';
 import { resolvePairingCycle } from './_pairing-cycle.js';
 import { LATEST_MIGRATION_VERSION, MIGRATION_CONTRACTS } from '../db/migration-contract.js';
@@ -391,7 +398,12 @@ async function readStoredPublication(db,{scope,cycle}){
   });
 }
 
-async function createPublication(db,{scope,cycle,availability}){
+function secondaryNotificationKind(item){
+  if(!item.isAvailable) return 'unavailable';
+  return item.groupSize===1?'solo':'paired';
+}
+
+async function createPublication(db,{scope,cycle,availability,notificationEnabled}){
   const cycleKey=availability[0]?.cycleKey;
   if(!cycleKey) fail('CIRCLE_PAIRING_INTEGRITY','Pairing eligibility is invalid.');
   const publicationCycle={...cycle,cycleKey};
@@ -445,6 +457,24 @@ async function createPublication(db,{scope,cycle,availability}){
           pair.isAI?null:pair.b.id,pair.isAI?null:1,pair.isAI?null:1,pair.isAI?1:0],
       });
     }
+    if(notificationEnabled){
+      for(const item of availability){
+        const kind=secondaryNotificationKind({
+          ...item,groupSize:groupAssignments.get(item.id)?.groupSize??null,
+        });
+        await db.execute({
+          sql:`INSERT INTO outbox_events
+              (event_type,event_version,idempotency_key,payload_json,status,not_before,next_attempt_at,
+               attempt_count,max_attempts,delivery_timeout_ms,created_at,updated_at)
+            VALUES (?,?,?,?,'pending',strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+              strftime('%Y-%m-%dT%H:%M:%fZ','now'),0,5,10000,
+              strftime('%Y-%m-%dT%H:%M:%fZ','now'),strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
+          args:[PAIRING_EMAIL_EVENT_TYPE,SECONDARY_PAIRING_EMAIL_EVENT_VERSION,
+            `randori/circle/${scope.circleId}/publication/${publicationId}/${kind}/${item.id}`,
+            JSON.stringify({publication_id:publicationId,circle_id:scope.circleId,user_id:item.id,kind})],
+        });
+      }
+    }
   }catch(error){ fail('CIRCLE_PAIRING_UNAVAILABLE','Pairing publication could not be written.',error); }
   return {created:true,generationToken,cycle:publicationCycle};
 }
@@ -455,6 +485,7 @@ export async function publishCirclePairing(db,{authority,now,timeZone}={}){
     fail('CIRCLE_PAIRING_INPUT_INVALID','A transactional database client is required.');
   }
   const safeAuthority=authority?.kind==='system'?normalizeSystemAuthority(authority):normalizeSessionAuthority(authority);
+  const notificationEnabled=secondaryCirclePairingEmailEnabled();
   await ensureCirclePairingReadiness(db);
   let lastError;
   for(let attempt=1;attempt<=TRANSACTION_ATTEMPTS;attempt+=1){
@@ -482,7 +513,9 @@ export async function publishCirclePairing(db,{authority,now,timeZone}={}){
         await transaction.rollback();
         return Object.freeze({created:false,publication:existing});
       }
-      const claimed=await createPublication(transaction,{scope,cycle:resolved,availability});
+      const claimed=await createPublication(transaction,{
+        scope,cycle:resolved,availability,notificationEnabled,
+      });
       const stored=await readStoredPublication(transaction,{scope,cycle});
       if(!stored) fail('CIRCLE_PAIRING_INTEGRITY','Pairing publication was not committed.');
       if(!claimed.created){

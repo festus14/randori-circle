@@ -433,7 +433,8 @@ async function outboxKeyRotationStatuses(db,{local=false}={}){
 function localCaptureSender(captured,type){
   return async message=>{
     const kind=type===PAIRING_EMAIL_EVENT_TYPE
-      ?(String(message.subject).includes('missed')?'unavailable':'paired')
+      ?(['paired','solo','unavailable'].includes(String(message.kind))
+        ?String(message.kind):(String(message.subject).includes('missed')?'unavailable':'paired'))
       :type===SCHEDULE_EMAIL_EVENT_TYPE?'schedule'
         :type===INVITATION_EMAIL_EVENT_TYPE?'invitation'
           :type===PASSWORD_RESET_EVENT_TYPE?'password-reset':'activation';
