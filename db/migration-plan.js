@@ -71,6 +71,13 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'bc2ac9d96c4580f9c6598e94b48f00a18828b1b7df6704001a90adaf85332ef8',
     checksum:'f06bf9364f8daba57bf78375d72a176490bdb3d89d2345793997c7e153d7257b',
   }),
+  Object.freeze({
+    version:11,
+    name:'bounded-chat-retention',
+    description:'Durable room-scoped retention checkpoints, legal holds, leases, and redacted audit evidence.',
+    operationsChecksum:'e71754400d1548d3cb5eef32182dacb6be31651fa0e880a0753ba1bb16fe7a7e',
+    checksum:'e87ce50a41e2a1f2a5fd759ea6cd4e727503ee62799ec107f84ab3af6afca547',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){

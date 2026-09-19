@@ -153,6 +153,10 @@ test('managed-v6 publication safely covers one, two, three, and odd participant 
     assert.equal(result.publication.pairs.filter(pair=>pair.isAI).length,size%2);
     assertPairCoverage(result.publication,Array.from({length:size},(_,index)=>index+1));
     assert.equal(await count(fixture.db,'outbox_events'),size);
+    const retentionScopes=await fixture.db.execute(`SELECT scope_key,circle_id,week_id,pair_group_id
+      FROM chat_retention_scopes ORDER BY pair_group_id`);
+    assert.equal(retentionScopes.rows.length,result.publication.pairs.length);
+    assert.ok(retentionScopes.rows.every(row=>row.scope_key==='circle:1'&&Number(row.circle_id)===1));
     assert.equal(Object.isFrozen(result),true);
     assert.doesNotMatch(JSON.stringify(result),/@private\.example|recipient_email|generationToken/i);
 
@@ -243,6 +247,7 @@ test('concurrent owner and cron clients converge on one complete publication',as
   assert.equal(await count(ownerDb,'pairing_weeks'),1);
   assert.equal(await count(ownerDb,'pairing_participants'),4);
   assert.equal(await count(ownerDb,'pairing_groups'),2);
+  assert.equal(await count(ownerDb,'chat_retention_scopes'),2);
   assert.equal(await count(ownerDb,'outbox_events'),4);
 });
 
@@ -276,7 +281,7 @@ test('a mid-write failure rolls back cycle, claim, participants, groups, and out
   );
   for(const table of [
     'pairing_cycles','pairing_week_runs','pairing_weeks','pairing_participants',
-    'pairing_groups','outbox_events',
+    'pairing_groups','chat_retention_scopes','outbox_events',
   ]) assert.equal(await count(fixture.db,table),0,table);
 });
 

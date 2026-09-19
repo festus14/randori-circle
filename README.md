@@ -20,7 +20,7 @@ Pair workspaces now persist authenticated, revisioned code and whiteboard snapsh
 
 Pair scheduling uses timezone-aware instants: each browser displays the same UTC value in its local timezone, while compare-and-swap updates prevent one partner from silently overwriting the other. The dashboard polls only while it is visible, preserves unsent input through conflicts, and keeps older free-text schedule values visible and removable during migration.
 
-Pair chat is a private, canonical-room feed rather than a local preview. It loads the newest bounded window, follows new messages with an incremental cursor only while the signed-in member is viewing their dashboard, and deduplicates server acknowledgements against later polls. Failed or ambiguous sends are never retried automatically and their per-room drafts remain available for an explicit retry. Durable limits cap each member at 20 sends per minute and each room at 10,000 messages. Migration v10 owns the room-cursor and sender-window indexes, so ordinary requests perform no chat-index DDL; see the [chat index rollout runbook](docs/CHAT_INDEX_MIGRATION.md).
+Pair chat is a private, canonical-room feed rather than a local preview. It loads the newest bounded window, follows new messages with an incremental cursor only while the signed-in member is viewing their dashboard, and deduplicates server acknowledgements against later polls. Failed or ambiguous sends are never retried automatically and their per-room drafts remain available for an explicit retry. Durable limits cap each member at 20 sends per minute and each room at 10,000 messages. Migration v10 owns the room-cursor and sender-window indexes, so ordinary requests perform no chat-index DDL. The private-beta active-database retention window is 90 days; strict database-time expiry, scope ownership, holds, export/backup gates, and the disabled-by-default bounded v11 purge are described in the [chat retention runbook](docs/CHAT_RETENTION.md).
 
 Authenticated History is a server-backed Pairings & Activity view. A member can explicitly load a private pairing recap containing the agreed schedule, a bounded timeline of messages and verified run summaries, and safe metadata for the latest workspace checkpoint. Source code, whiteboard shapes, hidden cases, provider output, transcripts, and unrelated users' activity are never included. Available checkpoints reopen through the existing authenticated workspace hydration path; pair assignments are not described as completed sessions until lifecycle and attendance tracking exist.
 
@@ -75,11 +75,12 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_availability.js` | tenant-scoped weekly cycle identity, strict optimistic availability updates, and publication filtering |
 | `api/_schedule.js` | strict schedule validation, legacy projection, opaque versions, and conflict-safe mutations |
 | `api/_messages.js` | strict chat input, cursor, storage projection, and schema-readiness validation |
+| `api/_chat-retention.js` | tenant-safe 90-day retention planning, legal holds, fenced leases, bounded deletion, and count-only metrics |
 | `api/_health.js` | process liveness and exact, read-only database readiness probes |
 | `api/_pair-access.js` | shared source-aware authorization for canonical private pair rooms |
 | `api/_circle-membership.js` | primary-circle membership, keyed invite hashes, signed short-lived claims, and audited acceptance |
 | `api/invitations.js` | owner-only invitation lifecycle and rate-limited public preparation |
-| `db/schema-manifest.js` | checksummed contract for 39 application tables and 40 named indexes |
+| `db/schema-manifest.js` | checksummed contract for 44 application tables and 45 named indexes |
 | `db/schema-inspector.js` | read-only SQLite drift inspection and non-executable planning |
 
 The target Next.js/Supabase architecture is intentionally phased rather than introduced as a big-bang rewrite.
@@ -101,6 +102,10 @@ Copy `.env.example` and configure at least:
 - `AUTH_SCHEMA_BOOTSTRAP_ENABLED` is legacy-only and must remain false for the migrated OIDC flow; run the protected database migrations before enabling production authentication
 - `RESEND_API_KEY` and `RESEND_FROM` for invitation, pairing, schedule,
   verification, and password-reset notifications
+- Keep `CHAT_RETENTION_ENABLED=false` until migration v11, legacy scope adoption,
+  export-before-backup evidence, a staging destructive rehearsal, and a reviewed
+  production dry run are complete; see the retention runbook for the protected
+  control generation and evidence settings
 
 See [GOOGLE_OAUTH.md](GOOGLE_OAUTH.md) and [TURSO.md](TURSO.md) for provider setup. Back up the database before first deploying migrations.
 Key changes use the staged, forward-only [key rotation runbook](docs/KEY_ROTATION.md); never replace a configured key in place or remove an old key while its actionable count is nonzero.
