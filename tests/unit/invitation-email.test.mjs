@@ -32,7 +32,8 @@ const databasePaths=new WeakMap();
 afterEach(async()=>{
   for(const key of ['APP_URL','CIRCLE_MEMBERSHIP_ENABLED','INVITATION_EMAIL_ENCRYPTION_KEY',
     'INVITATION_EMAIL_ENCRYPTION_KEY_VERSION','INVITATION_EMAIL_ENCRYPTION_PREVIOUS_KEYS',
-    'INVITATION_EMAIL_ENVELOPE_WRITE_VERSION','JWT_SECRET','NODE_ENV','RESEND_API_KEY','RESEND_FROM']){
+    'INVITATION_EMAIL_ENVELOPE_WRITE_VERSION','INVITATION_EMAIL_DELIVERY_ENABLED',
+    'JWT_SECRET','NODE_ENV','RESEND_API_KEY','RESEND_FROM']){
     delete process.env[key];
   }
   while(resources.length){ try{ await resources.pop()(); }catch{} }
@@ -42,6 +43,7 @@ function configureProduction(){
   process.env.NODE_ENV='production';
   process.env.APP_URL='https://randori.example.test';
   process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  process.env.INVITATION_EMAIL_DELIVERY_ENABLED='true';
   process.env.INVITATION_EMAIL_ENCRYPTION_KEY=Buffer.alloc(32,12).toString('base64url');
   process.env.RESEND_API_KEY='re_invitation_test';
   process.env.RESEND_FROM='Randori <invite@randori.example.test>';
@@ -75,12 +77,12 @@ async function fixture(){
 
 async function seed(db,{id='22222222-2222-4222-8222-222222222222',
   email='invitee@example.test',token=createInvitationToken(),expires="datetime('now','+1 day')",
-  actorUserId=1,sequence=1}={}){
+  actorUserId=1,sequence=1,circleId=10}={}){
   await db.execute({sql:`INSERT INTO circle_invitations
       (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at)
-    VALUES (?,10,?,?,1,datetime('now'),${expires})`,
-  args:[id,hashInvitationToken(token),hashInvitationEmail(email)]});
-  const statement=createInvitationEmailEvent({invitationId:id,circleId:10,actorUserId,email,token,
+    VALUES (?,?,?,?,1,datetime('now'),${expires})`,
+  args:[id,circleId,hashInvitationToken(token),hashInvitationEmail(email)]});
+  const statement=createInvitationEmailEvent({invitationId:id,circleId,actorUserId,email,token,
     sendSequence:sequence,localRuntime:false});
   await db.execute(statement);
   return {id,email,token,statement};
@@ -97,6 +99,10 @@ test('configuration and the dedicated AES-GCM envelope fail closed in production
   process.env.RESEND_API_KEY='re_test';
   process.env.RESEND_FROM='Randori <invite@randori.example.test>';
   process.env.JWT_SECRET='invitation-email-unit-secret-at-least-32-bytes';
+  assert.equal(invitationEmailConfiguration(),null,'production delivery requires an explicit gate');
+  process.env.INVITATION_EMAIL_DELIVERY_ENABLED='TRUE';
+  assert.equal(invitationEmailConfiguration(),null,'the production gate accepts only exact true');
+  process.env.INVITATION_EMAIL_DELIVERY_ENABLED='true';
   assert.equal(invitationEmailConfiguration(),null,'production requires its dedicated encryption key');
   process.env.INVITATION_EMAIL_ENCRYPTION_KEY=Buffer.alloc(32,12).toString('base64url');
   assert.deepEqual(invitationEmailConfiguration(),{origin:'https://randori.example.test',localRuntime:false});
@@ -176,6 +182,46 @@ test('delivery renders a safe fragment link once and retains provider idempotenc
   assert.deepEqual(await invitationEmailStatus(db),{
     pending:0,processing:0,retry:0,delivered:1,suppressed:0,dead_letter:0,
   });
+});
+
+test('delivery and key-retirement readiness honor an exact active secondary circle',async()=>{
+  const db=await fixture();
+  await db.batch([
+    `INSERT INTO circles (id,public_id,slug,name,is_primary,created_by,created_at)
+      VALUES (20,'33333333-3333-4333-8333-333333333333','secondary-circle','Secondary Circle',0,1,datetime('now'))`,
+    `INSERT INTO circle_memberships (circle_id,user_id,role,status,joined_at,updated_at)
+      VALUES (20,1,'owner','active',datetime('now'),datetime('now'))`,
+  ],'write');
+  process.env.INVITATION_EMAIL_ENCRYPTION_KEY_VERSION='1';
+  process.env.INVITATION_EMAIL_ENVELOPE_WRITE_VERSION='2';
+  const seeded=await seed(db,{id:'44444444-4444-4444-8444-444444444444',circleId:20,
+    email:'secondary@example.test'});
+  const messages=[];
+  const result=await deliverInvitationEmails({db,baseUrl:'https://randori.example.test',
+    workerId:'secondary-circle-delivery',send:async message=>{
+      messages.push(message);
+      return {providerName:'capture',providerMessageId:'secondary-invite'};
+    },workerOptions:workerOptions()});
+  assert.equal(result.delivered,1);
+  assert.equal(messages[0].to,seeded.email);
+  assert.match(messages[0].subject,/Secondary Circle/);
+  const rotation=await invitationEmailKeyRotationStatus(db);
+  assert.equal(rotation.retained,1);
+  const duplicate=await deliverInvitationEmails({db,baseUrl:'https://randori.example.test',
+    workerId:'secondary-circle-duplicate',send:async()=>assert.fail('delivered work must not repeat'),
+    workerOptions:workerOptions()});
+  assert.equal(duplicate.claimed,0);
+
+  const archived=await seed(db,{id:'55555555-5555-4555-8555-555555555555',circleId:20,
+    email:'archived@example.test'});
+  await db.execute(`UPDATE circles SET archived_at=datetime('now') WHERE id=20`);
+  const suppressed=await deliverInvitationEmails({db,baseUrl:'https://randori.example.test',
+    workerId:'archived-secondary-circle',send:async()=>assert.fail('archived circle must not send'),
+    workerOptions:workerOptions()});
+  assert.equal(suppressed.suppressed,1);
+  assert.equal((await db.execute({sql:`SELECT last_error_code FROM outbox_events
+    WHERE idempotency_key=?`,args:[`invitation-email/v1/${archived.id}/1`]})).rows[0].last_error_code,
+  'INVITATION_INACTIVE');
 });
 
 test('rotation readiness retains only a live invitation credential that can still be resent',async()=>{

@@ -127,7 +127,7 @@ afterEach(()=>{
   delete process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED;
   for(const key of ['APP_URL','INVITATION_EMAIL_ENCRYPTION_KEY','INVITATION_EMAIL_ENCRYPTION_KEY_VERSION',
     'INVITATION_EMAIL_ENCRYPTION_PREVIOUS_KEYS','INVITATION_EMAIL_ENVELOPE_WRITE_VERSION',
-    'NODE_ENV','RESEND_API_KEY','RESEND_FROM']){
+    'INVITATION_EMAIL_DELIVERY_ENABLED','NODE_ENV','RESEND_API_KEY','RESEND_FROM']){
     delete process.env[key];
   }
 });
@@ -476,6 +476,9 @@ test('owner invitation APIs create, safely list, prepare, clear stale claims, an
   currentDb=await createDatabase();
   process.env.NODE_ENV='production';
   process.env.APP_URL='https://randori.example.test';
+  process.env.RESEND_API_KEY='re_invitation_test';
+  process.env.RESEND_FROM='Randori <invite@randori.example.test>';
+  process.env.INVITATION_EMAIL_ENCRYPTION_KEY=Buffer.alloc(32,8).toString('base64url');
   const ownerHeaders={'x-test-auth':'owner',origin:'https://randori.example.test',host:'randori.example.test'};
   const created=await invoke(invitationsHandler,{
     method:'POST',url:'/api/invitations',query:{endpoint:'invitations'},headers:ownerHeaders,
@@ -488,8 +491,15 @@ test('owner invitation APIs create, safely list, prepare, clear stale claims, an
   assert.deepEqual(created.body.email_delivery,{queued:false});
   assert.match(created.body.invitation.invite_url,/^\/invite#invite=[A-Za-z0-9_-]{43}$/);
   assert.equal(Number((await currentDb.execute(`SELECT COUNT(*) AS count FROM outbox_events`)).rows[0].count),0,
-    'missing production mail configuration preserves manual creation without queued plaintext');
+    'a disabled production delivery gate preserves manual creation without queued plaintext');
   const rawToken=created.body.invitation.invite_url.split('=')[1];
+  const unavailableResend=await invoke(invitationsHandler,{method:'POST',
+    url:`/api/invitations/${created.body.invitation.id}`,
+    query:{endpoint:'invitations',id:created.body.invitation.id},headers:ownerHeaders,
+    body:{action:'resend'}});
+  assert.equal(unavailableResend.status,409);
+  assert.match(unavailableResend.body.error,/delivery unavailable/);
+  assert.equal(Number((await currentDb.execute(`SELECT COUNT(*) AS count FROM outbox_events`)).rows[0].count),0);
 
   const listed=await invoke(invitationsHandler,{
     url:'/api/invitations',query:{endpoint:'invitations'},headers:{'x-test-auth':'owner'},
@@ -631,6 +641,7 @@ test('owner invitation email create and bounded resend rotate links atomically',
   process.env.APP_URL='https://randori.example.test';
   process.env.RESEND_API_KEY='re_invitation_test';
   process.env.RESEND_FROM='Randori <invite@randori.example.test>';
+  process.env.INVITATION_EMAIL_DELIVERY_ENABLED='true';
   process.env.INVITATION_EMAIL_ENCRYPTION_KEY=Buffer.alloc(32,9).toString('base64url');
   process.env.INVITATION_EMAIL_ENCRYPTION_KEY_VERSION='1';
   process.env.INVITATION_EMAIL_ENVELOPE_WRITE_VERSION='2';
@@ -709,6 +720,7 @@ test('unrelated unhealthy invitation history does not block create or exact-targ
   process.env.APP_URL='https://randori.example.test';
   process.env.RESEND_API_KEY='re_invitation_test';
   process.env.RESEND_FROM='Randori <invite@randori.example.test>';
+  process.env.INVITATION_EMAIL_DELIVERY_ENABLED='true';
   process.env.INVITATION_EMAIL_ENCRYPTION_KEY=Buffer.alloc(32,9).toString('base64url');
   const unrelatedKey='invitation-email/v1/ffffffff-ffff-4fff-8fff-ffffffffffff/1';
   await currentDb.execute(createOutboxEventStatement({eventType:invitationEmail.INVITATION_EMAIL_EVENT_TYPE,
@@ -739,6 +751,7 @@ test('an outbox failure rolls back invitation creation and token rotation',async
   process.env.APP_URL='https://randori.example.test';
   process.env.RESEND_API_KEY='re_invitation_test';
   process.env.RESEND_FROM='Randori <invite@randori.example.test>';
+  process.env.INVITATION_EMAIL_DELIVERY_ENABLED='true';
   process.env.INVITATION_EMAIL_ENCRYPTION_KEY=Buffer.alloc(32,10).toString('base64url');
   const headers={'x-test-auth':'owner',origin:'https://randori.example.test',host:'randori.example.test'};
   await currentDb.execute(`CREATE TRIGGER reject_invitation_email BEFORE INSERT ON outbox_events
@@ -775,6 +788,7 @@ test('concurrent invitation resends produce one rotated token and one durable ev
   process.env.APP_URL='https://randori.example.test';
   process.env.RESEND_API_KEY='re_invitation_test';
   process.env.RESEND_FROM='Randori <invite@randori.example.test>';
+  process.env.INVITATION_EMAIL_DELIVERY_ENABLED='true';
   process.env.INVITATION_EMAIL_ENCRYPTION_KEY=Buffer.alloc(32,11).toString('base64url');
   const headers={'x-test-auth':'owner',origin:'https://randori.example.test',host:'randori.example.test'};
   const created=await invoke(invitationsHandler,{method:'POST',url:'/api/invitations',
@@ -798,6 +812,7 @@ test('a current owner can resend after ownership transfer while the former owner
   process.env.APP_URL='https://randori.example.test';
   process.env.RESEND_API_KEY='re_invitation_test';
   process.env.RESEND_FROM='Randori <invite@randori.example.test>';
+  process.env.INVITATION_EMAIL_DELIVERY_ENABLED='true';
   process.env.INVITATION_EMAIL_ENCRYPTION_KEY=Buffer.alloc(32,13).toString('base64url');
   const ownerHeaders={'x-test-auth':'owner',origin:'https://randori.example.test',host:'randori.example.test'};
   const created=await invoke(invitationsHandler,{method:'POST',url:'/api/invitations',

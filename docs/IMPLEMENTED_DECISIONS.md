@@ -912,3 +912,43 @@ against the tracked evidence; correct metadata and re-review, or use the bounded
 takedown command. Git history recovers accidental edits. A real takedown is
 restored only by a reviewed content change with fresh approval and, when
 semantics changed, a new exercise version.
+
+## ID-25: Gate invitation delivery explicitly and authorize the event's exact circle
+
+Status: implemented as a no-migration hardening increment. IDs 23 and 24 are
+reserved for the concurrently developed accessible shell and circle-scoped
+availability decisions.
+
+**Decision.** Production owner-created invitation email is disabled unless
+`INVITATION_EMAIL_DELIVERY_ENABLED` is exactly `true` and the existing
+membership, canonical origin, Resend sender, and purpose-specific encryption
+configuration are all valid. Provisioning a secret alone cannot activate a new
+outbound mail flow. When the gate is disabled or configuration is incomplete,
+invitation creation still commits and returns its single-use manual link, while
+resend remains unavailable because the recipient and bearer credential were
+not retained. The isolated development runtime keeps its provider-free local
+capture path without requiring the production gate.
+
+Dispatch and key-retirement readiness authorize the invitation's stored circle
+rather than assuming that circle is primary. The event must still bind the
+exact invitation, circle, actor, token hash, email hash, and sequence; the actor
+must currently be a real active owner of that same unarchived circle. Revoked,
+expired, consumed, rotated, archived-circle, former-owner, existing-member, and
+duplicate work remains suppressed or unclaimable. This permits a valid
+session-selected secondary-circle invitation created by the active-circle
+control plane to be delivered without weakening its transaction-time context
+fence or exposing the recipient or token.
+
+**Alternatives.** Treating secret presence as enablement has fewer settings but
+can unexpectedly start external delivery during configuration rollout. Keeping
+the primary-circle predicate avoids changing the old worker but silently drops
+legitimate secondary-circle invitations after active-circle selection was
+introduced. Encoding session context in the asynchronous event would expire
+before delivery and is unnecessary: immutable invitation/circle bindings plus
+live owner and circle checks provide the durable authorization boundary.
+
+**Operations.** Keep the gate false while provisioning and rotating secrets.
+Enable it first in staging, exercise local-capture and owned-domain Resend
+delivery/suppression, and only then enable it in production. Disabling the gate
+stops both new invitation-email enqueueing and worker dispatch while preserving
+manual invitation creation and queued encrypted events for a later safe resume.

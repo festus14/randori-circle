@@ -10,7 +10,7 @@ without contacting an external provider; no staging Resend delivery is claimed.
 
 ## User and transaction flow
 
-1. An authenticated active primary-circle owner enters an email address.
+1. An authenticated owner of the active selected circle enters an email address.
 2. Randori creates a seven-day, email-bound invitation. With complete delivery
    configuration, the invitation, audit record, and versioned email event commit
    in one write transaction. Any outbox failure rolls back all three.
@@ -45,7 +45,10 @@ invitation ID. Envelope plaintext is only the normalized
 recipient address and 256-bit invitation token required at delivery time.
 Production refuses to queue without a canonical HTTPS `APP_URL`, Resend sender
 configuration, and a separate 32-byte base64url
-`INVITATION_EMAIL_ENCRYPTION_KEY`. Logs, audit events, status responses, and
+`INVITATION_EMAIL_ENCRYPTION_KEY`. It also requires the exact production gate
+`INVITATION_EMAIL_DELIVERY_ENABLED=true`; merely provisioning secrets cannot
+start sending mail. The isolated local runtime continues to use local capture
+without that production gate. Logs, audit events, status responses, and
 dead-letter reasons never include the token, address, rendered body, provider
 response, or ciphertext plaintext.
 
@@ -60,7 +63,7 @@ Before each provider attempt the worker requires:
 - the exact event invitation ID, circle ID, token hash, and email hash still
   match the authoritative row;
 - the invitation remains unused, unrevoked, and unexpired;
-- its primary circle remains unarchived;
+- its exact circle remains unarchived, including a selected non-primary circle;
 - the owner who authorized that exact create/resend event remains a real,
   non-demo, active owner of that circle;
 - the invited address has not already acquired a membership in that circle.
@@ -87,12 +90,14 @@ Before production delivery:
 
 1. Complete the existing v6/v7 protected migration and readiness process.
 2. Configure `CIRCLE_MEMBERSHIP_ENABLED=true`, canonical HTTPS `APP_URL`,
-   `RESEND_API_KEY`, `RESEND_FROM`, and `INVITATION_EMAIL_ENCRYPTION_KEY`.
+   `RESEND_API_KEY`, `RESEND_FROM`, and `INVITATION_EMAIL_ENCRYPTION_KEY` while
+   leaving `INVITATION_EMAIL_DELIVERY_ENABLED=false`.
 3. Run the authenticated outbox drain at least every five minutes on a platform
    whose function budget supports the configured typed drains.
-4. Rehearse create, resend, revoke-before-send, expire-before-send,
+4. Set `INVITATION_EMAIL_DELIVERY_ENABLED=true` in staging and rehearse create,
+   resend, revoke-before-send, expire-before-send,
    consume-before-retry, and duplicate-worker behavior on a staging Resend
-   domain before claiming live delivery.
+   domain before enabling the same gate in production or claiming live delivery.
 
 ## Alternatives considered
 
