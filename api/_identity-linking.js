@@ -1,6 +1,7 @@
 import {createHmac,randomBytes} from 'node:crypto';
 
 import {normalizeInvitationEmail} from './_circle-membership.js';
+import {assertPurposeKeyIsolation,parseKeyRing} from './_key-rotation.js';
 import {recordRecentAuth,requireRecentAuth,readRecentAuth} from './_recent-auth.js';
 
 export const GOOGLE_ISSUER='https://accounts.google.com';
@@ -14,64 +15,128 @@ const EVENT_TYPES=new Set([
 const PROVIDERS=new Set(['google','password']);
 const OUTCOMES=new Set(['succeeded','denied','conflict','observed']);
 const REASON_PATTERN=/^[a-z][a-z0-9_]{0,63}$/;
-const EMAIL_HASH_KEY_PATTERN=/^[A-Za-z0-9_-]{43}$/;
-const EMAIL_HASH_KEY_VERSION_PATTERN=/^[1-9]\d{0,8}$/;
+const HASH_PATTERN=/^[a-f0-9]{64}$/;
+
+function identityKeyFingerprint(key){
+  return createHmac('sha256',key)
+    .update('randori-provider-email-key-fingerprint-v1','utf8').digest('hex');
+}
 
 function identityEmailHashConfiguration(env=process.env){
-  const encoded=String(env.IDENTITY_EMAIL_HASH_KEY||'').trim();
-  const versionText=String(env.IDENTITY_EMAIL_HASH_KEY_VERSION||'').trim();
-  if(!EMAIL_HASH_KEY_PATTERN.test(encoded)||!EMAIL_HASH_KEY_VERSION_PATTERN.test(versionText)) return null;
-  const key=Buffer.from(encoded,'base64url');
-  const version=Number(versionText);
-  if(key.length!==32||key.toString('base64url')!==encoded
-    ||!Number.isSafeInteger(version)||version<1||version>2147483647) return null;
-  const fingerprint=createHmac('sha256',key)
-    .update('randori-provider-email-key-fingerprint-v1','utf8').digest('hex');
-  return Object.freeze({key,version,fingerprint});
+  if(!String(env.IDENTITY_EMAIL_HASH_KEY_VERSION||'').trim()) return null;
+  try{
+    const ring=parseKeyRing({
+      env,purpose:'identity-email-observation',keyEnv:'IDENTITY_EMAIL_HASH_KEY',
+      versionEnv:'IDENTITY_EMAIL_HASH_KEY_VERSION',
+      previousKeysEnv:'IDENTITY_EMAIL_HASH_PREVIOUS_KEYS',
+      fingerprint:identityKeyFingerprint,
+    });
+    assertPurposeKeyIsolation({env,rings:[ring]});
+    return Object.freeze({...ring,key:ring.active.key,version:ring.active.version,
+      fingerprint:ring.active.fingerprint});
+  }catch{ return null; }
 }
 
 export function identityEmailHashConfigured(env=process.env){
   return Boolean(identityEmailHashConfiguration(env));
 }
 
-function providerEmailDigest(email,configuration=identityEmailHashConfiguration()){
+function providerEmailDigest(email,configuration=identityEmailHashConfiguration(),entry=configuration?.active){
   if(!configuration){
     const error=new Error('identity email hashing unavailable');
     error.code='IDENTITY_EMAIL_HASH_UNAVAILABLE';
     throw error;
   }
-  const hash=createHmac('sha256',configuration.key)
-    .update(`randori-provider-email-observation-v1\0${configuration.version}\0${email}`,'utf8')
+  const hash=createHmac('sha256',entry.key)
+    .update(`randori-provider-email-observation-v1\0${entry.version}\0${email}`,'utf8')
     .digest('hex');
-  return Object.freeze({hash,keyVersion:configuration.version});
+  return Object.freeze({hash,keyVersion:entry.version});
 }
 
-function hashVersionError(){
+function identityRotationError(code='IDENTITY_EMAIL_HASH_VERSION_ROLLBACK'){
   const error=new Error('identity email hash key version rollback');
-  error.code='IDENTITY_EMAIL_HASH_VERSION_ROLLBACK';
+  error.code=code;
   return error;
 }
 
 async function assertIdentityEmailHashVersion(db,configuration){
   const result=await db.execute({
-    sql:`SELECT MAX(hash_key_version) AS max_key_version,
-        MIN(CASE WHEN hash_key_version=? THEN hash_key_fingerprint END) AS min_fingerprint,
-        MAX(CASE WHEN hash_key_version=? THEN hash_key_fingerprint END) AS max_fingerprint
-      FROM auth_provider_email_state`,
-    args:[configuration.version,configuration.version],
+    sql:`SELECT hash_key_version,MIN(hash_key_fingerprint) AS min_fingerprint,
+        MAX(hash_key_fingerprint) AS max_fingerprint,COUNT(*) AS observation_count
+      FROM auth_provider_email_state GROUP BY hash_key_version ORDER BY hash_key_version DESC`,
+    args:[],
   });
-  const row=result.rows?.[0]||{};
-  const maximum=row.max_key_version===null||row.max_key_version===undefined
-    ?null:Number(row.max_key_version);
-  const minimumFingerprint=row.min_fingerprint===null||row.min_fingerprint===undefined
-    ?null:String(row.min_fingerprint);
-  const maximumFingerprint=row.max_fingerprint===null||row.max_fingerprint===undefined
-    ?null:String(row.max_fingerprint);
-  if((maximum!==null&&maximum>configuration.version)
-    ||(minimumFingerprint!==null&&(minimumFingerprint!==configuration.fingerprint
-      ||maximumFingerprint!==configuration.fingerprint))){
-    throw hashVersionError();
+  for(const row of result.rows||[]){
+    const storedVersion=Number(row.hash_key_version);
+    const minimumFingerprint=String(row.min_fingerprint||'');
+    const maximumFingerprint=String(row.max_fingerprint||'');
+    if(!Number.isSafeInteger(storedVersion)||storedVersion<1
+      ||!HASH_PATTERN.test(minimumFingerprint)||minimumFingerprint!==maximumFingerprint){
+      throw identityRotationError('IDENTITY_EMAIL_HASH_STATE_INVALID');
+    }
+    if(storedVersion>configuration.version) throw identityRotationError();
+    const configured=configuration.byVersion.get(storedVersion);
+    if(configured&&configured.fingerprint!==minimumFingerprint){
+      throw identityRotationError('IDENTITY_EMAIL_HASH_KEY_SUBSTITUTION');
+    }
   }
+}
+
+function compareIdentityEmail(previous,email,configuration){
+  if(!previous||previous.email_hash===null||previous.email_hash===undefined){
+    return Object.freeze({changed:false,rekeyed:false,neutralRebaseline:false});
+  }
+  const previousHash=String(previous.email_hash);
+  const previousVersion=Number(previous.hash_key_version);
+  const previousFingerprint=String(previous.hash_key_fingerprint||'');
+  if(!HASH_PATTERN.test(previousHash)||!Number.isSafeInteger(previousVersion)||previousVersion<1){
+    throw identityRotationError('IDENTITY_EMAIL_HASH_STATE_INVALID');
+  }
+  if(previousVersion>configuration.version) throw identityRotationError();
+  const configured=configuration.byVersion.get(previousVersion);
+  if(previousVersion===configuration.version){
+    if(!configured||configured.fingerprint!==previousFingerprint){
+      throw identityRotationError('IDENTITY_EMAIL_HASH_KEY_SUBSTITUTION');
+    }
+    return Object.freeze({changed:providerEmailDigest(email,configuration,configured).hash!==previousHash,
+      rekeyed:false,neutralRebaseline:false});
+  }
+  if(configured){
+    if(configured.fingerprint!==previousFingerprint){
+      throw identityRotationError('IDENTITY_EMAIL_HASH_KEY_SUBSTITUTION');
+    }
+    return Object.freeze({changed:providerEmailDigest(email,configuration,configured).hash!==previousHash,
+      rekeyed:true,neutralRebaseline:false});
+  }
+  return Object.freeze({changed:false,rekeyed:true,neutralRebaseline:true});
+}
+
+export async function identityEmailKeyRotationStatus(db){
+  if(!db||typeof db.execute!=='function') throw new TypeError('database client is required');
+  const configuration=identityEmailHashConfiguration();
+  if(!configuration) throw identityRotationError('IDENTITY_EMAIL_HASH_CONFIGURATION_INVALID');
+  const result=await db.execute(`SELECT hash_key_version,hash_key_fingerprint,COUNT(*) AS count
+    FROM auth_provider_email_state GROUP BY hash_key_version,hash_key_fingerprint
+    ORDER BY hash_key_version,hash_key_fingerprint`);
+  let substitution=0,missing=0,future=0,total=0;
+  const versions={};
+  for(const row of result.rows||[]){
+    const storedVersion=Number(row.hash_key_version);
+    const count=Number(row.count);
+    total+=count;
+    versions[storedVersion]=(versions[storedVersion]||0)+count;
+    if(storedVersion>configuration.version) future+=count;
+    else{
+      const configured=configuration.byVersion.get(storedVersion);
+      if(configured&&configured.fingerprint!==String(row.hash_key_fingerprint)) substitution+=count;
+      else if(!configured) missing+=count;
+    }
+  }
+  return Object.freeze({purpose:'identity-email-observation',ready:future===0&&substitution===0&&missing===0,
+  active_version:configuration.version,
+  previous_versions:Object.freeze(configuration.previous.map(item=>item.version)),observations:total,
+  versions:Object.freeze(versions),missing_key:missing,fingerprint_mismatch:substitution,
+  future_version:future});
 }
 
 function userId(value){
@@ -289,36 +354,26 @@ async function linkGoogleCredentialAttempt(db,payload,{
       args:[issuer,normalizedSubject],
     });
     const priorEmail=previousEmail.rows?.length===1?previousEmail.rows[0]:null;
-    if(priorEmail&&Number(priorEmail.hash_key_version)>emailObservation.keyVersion){
-      throw hashVersionError();
-    }
-    if(priorEmail&&Number(priorEmail.hash_key_version)===emailObservation.keyVersion
-      &&String(priorEmail.hash_key_fingerprint)!==emailHashConfiguration.fingerprint){
-      throw hashVersionError();
-    }
-    const providerEmailRekeyed=Boolean(priorEmail)
-      &&Number(priorEmail.hash_key_version)<emailObservation.keyVersion;
-    const providerEmailChanged=Boolean(priorEmail)&&!providerEmailRekeyed
-      &&String(priorEmail.email_hash)!==emailObservation.hash;
+    const comparison=compareIdentityEmail(priorEmail,normalizedEmail,emailHashConfiguration);
     await transaction.execute({
       sql:`INSERT INTO auth_provider_email_state
-          (issuer,subject,email_hash,hash_key_version,hash_key_fingerprint,observed_at)
-        VALUES (?,?,?,?,?,?) ON CONFLICT(issuer,subject) DO UPDATE SET
-          changed_at=CASE WHEN auth_provider_email_state.hash_key_version=excluded.hash_key_version
-              AND auth_provider_email_state.email_hash<>excluded.email_hash
-            THEN excluded.observed_at ELSE auth_provider_email_state.changed_at END,
+          (issuer,subject,email_hash,hash_key_version,hash_key_fingerprint,observed_at,changed_at)
+        VALUES (?,?,?,?,?,?,?) ON CONFLICT(issuer,subject) DO UPDATE SET
+          changed_at=CASE WHEN excluded.changed_at IS NOT NULL THEN excluded.changed_at
+            ELSE auth_provider_email_state.changed_at END,
           email_hash=excluded.email_hash,hash_key_version=excluded.hash_key_version,
           hash_key_fingerprint=excluded.hash_key_fingerprint,
           observed_at=excluded.observed_at`,
       args:[issuer,normalizedSubject,emailObservation.hash,emailObservation.keyVersion,
-        emailHashConfiguration.fingerprint,now],
+        emailHashConfiguration.fingerprint,now,comparison.changed?now:null],
     });
-    if(providerEmailRekeyed){
-      await audit(transaction,{userId:id,eventType:'provider_email_rekeyed',provider:'google',outcome:'observed',
-        reasonCode:'hash_key_rotated',nowSeconds:now});
-    }else if(providerEmailChanged){
+    if(comparison.changed){
       await audit(transaction,{userId:id,eventType:'provider_email_changed',provider:'google',outcome:'observed',
         reasonCode:'provider_email_rotated',nowSeconds:now});
+    }
+    if(comparison.rekeyed){
+      await audit(transaction,{userId:id,eventType:'provider_email_rekeyed',provider:'google',outcome:'observed',
+        reasonCode:'hash_key_rotated',nowSeconds:now});
     }
     const sameEmail=normalizeInvitationEmail(state.email)===normalizedEmail;
     await audit(transaction,{userId:id,eventType:sameEmail&&!state.google_subject?'recovery_completed':'google_linked',
@@ -501,38 +556,29 @@ export async function observeGoogleProviderEmail(db,{
     });
     if(previous.rows?.length!==1) throw new Error('provider identity unavailable');
     const previousHash=previous.rows[0].email_hash===null?null:String(previous.rows[0].email_hash);
-    const previousVersion=previous.rows[0].hash_key_version===null
-      ?null:Number(previous.rows[0].hash_key_version);
-    if(previousHash!==null&&previousVersion>emailObservation.keyVersion){
-      throw hashVersionError();
-    }
-    if(previousHash!==null&&previousVersion===emailObservation.keyVersion
-      &&String(previous.rows[0].hash_key_fingerprint)!==emailHashConfiguration.fingerprint){
-      throw hashVersionError();
-    }
-    const rekeyed=previousHash!==null&&previousVersion<emailObservation.keyVersion;
-    const changed=previousHash!==null&&!rekeyed&&previousHash!==emailObservation.hash;
+    const comparison=compareIdentityEmail(previousHash===null?null:previous.rows[0],
+      normalizedEmail,emailHashConfiguration);
     await transaction.execute({
       sql:`INSERT INTO auth_provider_email_state
           (issuer,subject,email_hash,hash_key_version,hash_key_fingerprint,observed_at,changed_at)
         VALUES (?,?,?,?,?,?,?) ON CONFLICT(issuer,subject) DO UPDATE SET
-          changed_at=CASE WHEN auth_provider_email_state.hash_key_version=excluded.hash_key_version
-              AND auth_provider_email_state.email_hash<>excluded.email_hash
-            THEN excluded.observed_at ELSE auth_provider_email_state.changed_at END,
+          changed_at=CASE WHEN excluded.changed_at IS NOT NULL THEN excluded.changed_at
+            ELSE auth_provider_email_state.changed_at END,
           email_hash=excluded.email_hash,hash_key_version=excluded.hash_key_version,
           hash_key_fingerprint=excluded.hash_key_fingerprint,
           observed_at=excluded.observed_at`,
       args:[issuer,normalizedSubject,emailObservation.hash,emailObservation.keyVersion,
-        emailHashConfiguration.fingerprint,now,changed?now:null],
+        emailHashConfiguration.fingerprint,now,comparison.changed?now:null],
     });
-    if(rekeyed){
-      await audit(transaction,{userId:id,eventType:'provider_email_rekeyed',provider:'google',outcome:'observed',
-        reasonCode:'hash_key_rotated',nowSeconds:now});
-    }else if(changed){
+    if(comparison.changed){
       await audit(transaction,{userId:id,eventType:'provider_email_changed',provider:'google',outcome:'observed',
         reasonCode:'provider_email_rotated',nowSeconds:now});
     }
+    if(comparison.rekeyed){
+      await audit(transaction,{userId:id,eventType:'provider_email_rekeyed',provider:'google',outcome:'observed',
+        reasonCode:'hash_key_rotated',nowSeconds:now});
+    }
     await transaction.commit(); committed=true;
-    return Object.freeze({changed,rekeyed});
+    return Object.freeze({changed:comparison.changed,rekeyed:comparison.rekeyed});
   }finally{ await closeTransaction(transaction,committed); }
 }

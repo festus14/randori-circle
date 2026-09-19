@@ -8,7 +8,12 @@ import { afterEach, test } from 'node:test';
 import { createClient } from '@libsql/client';
 
 import authHandler from '../../api/auth.js';
-import { openEmailActivationToken } from '../../api/_email-activation.js';
+import {
+  EMAIL_ACTIVATION_EVENT_TYPE,
+  emailActivationKeyRotationStatus,
+  openEmailActivationToken,
+} from '../../api/_email-activation.js';
+import {createOutboxEventStatement} from '../../api/_outbox.js';
 import {
   createInvitationToken,
   createInviteClaim,
@@ -93,6 +98,13 @@ async function fixture(){
 
 test('production signup stays generic, creates no account, and verification creates the session',async()=>{
   const {db,email,cookie}=await fixture();
+  const unrelatedKey='auth-activation/v1/33333333-3333-4333-8333-333333333333/1';
+  await db.execute(createOutboxEventStatement({eventType:EMAIL_ACTIVATION_EVENT_TYPE,
+    idempotencyKey:unrelatedKey,payload:{token_envelope:'malformed'},maxAttempts:1}));
+  await db.execute({sql:`UPDATE outbox_events SET status='dead_letter' WHERE idempotency_key=?`,
+    args:[unrelatedKey]});
+  assert.equal((await emailActivationKeyRotationStatus(db)).ready,false,
+    'operator retirement health remains red for unrelated malformed history');
   const body={email,password:'correct horse battery',name:'Invited Member'};
   const acceptedStarted=Date.now();
   const accepted=await invoke({endpoint:'signup',body,cookie});
@@ -106,7 +118,7 @@ test('production signup stays generic, creates no account, and verification crea
   assert.ok(wrongElapsed>=300,`ineligible response completed too quickly: ${wrongElapsed}ms`);
   assert.equal(Number((await db.execute({sql:'SELECT COUNT(*) AS count FROM auth_accounts WHERE email=?',args:[email]})).rows[0].count),0);
   const outbox=(await db.execute(`SELECT payload_json FROM outbox_events
-    WHERE event_type='auth.emailverification.requested' ORDER BY id LIMIT 1`)).rows[0];
+    WHERE event_type='auth.emailverification.requested' ORDER BY id DESC LIMIT 1`)).rows[0];
   const token=openEmailActivationToken(JSON.parse(outbox.payload_json).token_envelope);
   const verified=await invoke({endpoint:'activation-verify',body:{token}});
   assert.equal(verified.statusCode,200);

@@ -1,6 +1,4 @@
 import {
-  createCipheriv,
-  createDecipheriv,
   createHmac,
   randomBytes,
   randomUUID,
@@ -9,6 +7,14 @@ import {
 
 import { getJwtSecret, issueSessionInTransaction } from './_db.js';
 import { hashInvitationEmail, normalizeInvitationEmail } from './_circle-membership.js';
+import {
+  CredentialEnvelopeError,
+  assertPurposeKeyIsolation,
+  openCredentialEnvelope,
+  parseKeyRing,
+  readCredentialRotationMetrics,
+  sealCredentialEnvelope,
+} from './_key-rotation.js';
 import { createOutboxEventStatement, OutboxDeliveryError, readOutboxMetrics, runOutboxWorker } from './_outbox.js';
 
 export const EMAIL_ACTIVATION_EVENT_TYPE='auth.emailverification.requested';
@@ -37,18 +43,29 @@ function safeClaim(claim){
   return {invitationId,circleId,tokenHash,emailHash};
 }
 
-function encryptionKey(){
-  const encoded=String(process.env.EMAIL_VERIFICATION_ENCRYPTION_KEY||'').trim();
-  if(/^[A-Za-z0-9_-]{43}$/.test(encoded)){
-    const key=Buffer.from(encoded,'base64url');
-    if(key.length===32) return key;
+function activationKeyRing(env=process.env){
+  try{
+    const ring=parseKeyRing({
+      env,purpose:'email-activation',
+      keyEnv:'EMAIL_VERIFICATION_ENCRYPTION_KEY',
+      versionEnv:'EMAIL_VERIFICATION_ENCRYPTION_KEY_VERSION',
+      previousKeysEnv:'EMAIL_VERIFICATION_ENCRYPTION_PREVIOUS_KEYS',
+      writeVersionEnv:'EMAIL_VERIFICATION_ENVELOPE_WRITE_VERSION',
+      fallbackKey:()=>{
+        if(env.NODE_ENV==='production') return null;
+        return createHmac('sha256',getJwtSecret())
+          .update('randori-email-verification-envelope-v1','utf8').digest();
+      },
+    });
+    assertPurposeKeyIsolation({env,rings:[ring]});
+    return ring;
+  }catch(error){
+    error.message='EMAIL_VERIFICATION_ENCRYPTION_KEY ring is invalid';
+    throw error;
   }
-  if(process.env.NODE_ENV!=='production'){
-    return createHmac('sha256',getJwtSecret())
-      .update('randori-email-verification-envelope-v1','utf8').digest();
-  }
-  throw new Error('EMAIL_VERIFICATION_ENCRYPTION_KEY must be a base64url-encoded 32-byte key');
 }
+
+const activationLegacyAad=()=>Buffer.from('randori-email-activation-envelope-v1','utf8');
 
 function configuredOrigin(){
   let url;
@@ -67,8 +84,10 @@ export function emailActivationConfiguration(){
     &&(!String(process.env.RESEND_API_KEY||'').trim()||!String(process.env.RESEND_FROM||'').trim())) return null;
   const origin=configuredOrigin();
   if(!origin) return null;
-  try{ encryptionKey(); }catch{ return null; }
-  return Object.freeze({origin});
+  try{
+    activationKeyRing();
+    return Object.freeze({origin});
+  }catch{ return null; }
 }
 
 export function createEmailActivationToken(){
@@ -81,44 +100,47 @@ export function hashEmailActivationToken(token){
     .update(`randori-email-activation-token-v1\0${token}`,'utf8').digest('hex');
 }
 
-export function sealEmailActivationToken(token){
+export function sealEmailActivationToken(token,{idempotencyKey}={}){
   if(!hashEmailActivationToken(token)) throw new TypeError('invalid email activation token');
-  const iv=randomBytes(12);
-  const cipher=createCipheriv('aes-256-gcm',encryptionKey(),iv);
-  cipher.setAAD(Buffer.from('randori-email-activation-envelope-v1','utf8'));
-  const ciphertext=Buffer.concat([cipher.update(token,'utf8'),cipher.final()]);
-  const tag=cipher.getAuthTag();
-  return `${iv.toString('base64url')}.${ciphertext.toString('base64url')}.${tag.toString('base64url')}`;
+  return sealCredentialEnvelope({plaintext:token,idempotencyKey,ring:activationKeyRing(),
+    legacyAad:activationLegacyAad});
 }
 
-export function openEmailActivationToken(envelope){
-  const parts=typeof envelope==='string'?envelope.split('.'):[];
-  if(parts.length!==3) return null;
+function openEmailActivationTokenStrict(envelope,{idempotencyKey}={}){
+  const opened=openCredentialEnvelope({envelope,idempotencyKey,ring:activationKeyRing(),
+    legacyAad:activationLegacyAad,minPlaintextBytes:43,maxPlaintextBytes:43});
+  const token=opened.plaintext.toString('utf8');
+  if(!hashEmailActivationToken(token)) throw new CredentialEnvelopeError('ENVELOPE_INVALID');
+  return token;
+}
+
+export function openEmailActivationToken(envelope,{idempotencyKey}={}){
   try{
-    const [iv,ciphertext,tag]=parts.map(value=>Buffer.from(value,'base64url'));
-    if([iv,ciphertext,tag].some((value,index)=>value.toString('base64url')!==parts[index])) return null;
-    if(iv.length!==12||tag.length!==16||ciphertext.length!==43) return null;
-    const decipher=createDecipheriv('aes-256-gcm',encryptionKey(),iv);
-    decipher.setAAD(Buffer.from('randori-email-activation-envelope-v1','utf8'));
-    decipher.setAuthTag(tag);
-    const token=Buffer.concat([decipher.update(ciphertext),decipher.final()]).toString('utf8');
-    return hashEmailActivationToken(token)?token:null;
+    return openEmailActivationTokenStrict(envelope,{idempotencyKey});
   }catch{ return null; }
 }
 
 export async function ensureEmailActivationReadiness(db){
   if(!db||typeof db.execute!=='function') throw new TypeError('database client is required');
+  activationKeyRing();
   await db.execute(`SELECT id,invitation_id,circle_id,email,email_hash,password_hash,display_name,color,
     token_hash,created_at,expires_at,last_sent_at,send_count,used_at,revoked_at
     FROM auth_email_activations LIMIT 0`);
   await db.execute(`SELECT id,event_type,event_version,idempotency_key FROM outbox_events LIMIT 0`);
 }
 
-function activationEvent({activationId,email,tokenEnvelope,sendCount}){
+export async function emailActivationKeyRotationStatus(db){
+  return readCredentialRotationMetrics(db,{eventType:EMAIL_ACTIVATION_EVENT_TYPE,
+    envelopeField:'token_envelope',ring:activationKeyRing()});
+}
+
+function activationEvent({activationId,email,token,sendCount}){
+  const idempotencyKey=`auth-activation/v1/${activationId}/${sendCount}`;
   return createOutboxEventStatement({
     eventType:EMAIL_ACTIVATION_EVENT_TYPE,eventVersion:EMAIL_ACTIVATION_EVENT_VERSION,
-    idempotencyKey:`auth-activation/v1/${activationId}/${sendCount}`,
-    payload:{activation_id:activationId,recipient_email:email,token_envelope:tokenEnvelope},
+    idempotencyKey,
+    payload:{activation_id:activationId,recipient_email:email,
+      token_envelope:sealEmailActivationToken(token,{idempotencyKey})},
     maxAttempts:5,deliveryTimeoutMs:10_000,
   });
 }
@@ -153,7 +175,9 @@ export async function requestEmailActivation(db,input,{nowSeconds=null}={}){
   const activationId=randomUUID();
   const token=createEmailActivationToken();
   const tokenHash=hashEmailActivationToken(token);
-  const tokenEnvelope=sealEmailActivationToken(token);
+  // Parse the ring before opening the transaction so invalid production
+  // configuration cannot create credentials that no worker can deliver.
+  activationKeyRing();
   const transaction=await db.transaction('write');
   let finished=false;
   try{
@@ -217,7 +241,7 @@ export async function requestEmailActivation(db,input,{nowSeconds=null}={}){
       return Object.freeze({accepted:false});
     }
     await transaction.execute(activationEvent({
-      activationId:String(row.id),email,tokenEnvelope,sendCount:Number(row.send_count),
+      activationId:String(row.id),email,token,sendCount:Number(row.send_count),
     }));
     await transaction.commit(); finished=true;
     return Object.freeze({accepted:true});
@@ -235,7 +259,7 @@ export async function resendEmailActivation(db,{claim,email},{nowSeconds=null}={
   if(!parsed||!normalizedEmail||!emailHash||!safeEqual(parsed.emailHash,emailHash)) return {accepted:false};
   const token=createEmailActivationToken();
   const tokenHash=hashEmailActivationToken(token);
-  const tokenEnvelope=sealEmailActivationToken(token);
+  activationKeyRing();
   const transaction=await db.transaction('write');
   let finished=false;
   try{
@@ -260,7 +284,7 @@ export async function resendEmailActivation(db,{claim,email},{nowSeconds=null}={
     });
     const row=rotated.rows?.[0];
     if(row) await transaction.execute(activationEvent({
-      activationId:String(row.id),email:normalizedEmail,tokenEnvelope,sendCount:Number(row.send_count),
+      activationId:String(row.id),email:normalizedEmail,token,sendCount:Number(row.send_count),
     }));
     await transaction.commit(); finished=true;
     return Object.freeze({accepted:Boolean(row)});
@@ -368,17 +392,40 @@ export async function verifyEmailActivation(db,{token},{nowSeconds=null}={}){
   }
 }
 
-function activationPayload(event){
-  if(event.eventVersion!==EMAIL_ACTIVATION_EVENT_VERSION) throw new TypeError('unsupported activation event');
+function activationMetadata(event){
+  if(event.eventVersion!==EMAIL_ACTIVATION_EVENT_VERSION){
+    throw new OutboxDeliveryError('EVENT_VERSION_UNSUPPORTED',{retryable:event.eventVersion>EMAIL_ACTIVATION_EVENT_VERSION});
+  }
   const payload=event.payload;
   if(!payload||Object.keys(payload).sort().join(',')!=='activation_id,recipient_email,token_envelope'){
-    throw new TypeError('invalid activation event payload');
+    throw new OutboxDeliveryError('PAYLOAD_INVALID',{retryable:false});
   }
   const activationId=String(payload.activation_id||'').toLowerCase();
   const email=normalizeInvitationEmail(payload.recipient_email);
-  const token=openEmailActivationToken(payload.token_envelope);
-  if(!UUID_PATTERN.test(activationId)||!email||!token) throw new TypeError('invalid activation event payload');
-  return {activationId,email,token,tokenHash:hashEmailActivationToken(token)};
+  const envelope=typeof payload.token_envelope==='string'&&payload.token_envelope.length<=8192
+    ?payload.token_envelope:null;
+  if(!UUID_PATTERN.test(activationId)||!email||!envelope){
+    throw new OutboxDeliveryError('PAYLOAD_INVALID',{retryable:false});
+  }
+  const keyMatch=new RegExp(`^auth-activation/v1/${activationId}/([1-9]\\d*)$`).exec(
+    String(event.idempotencyKey||''));
+  const sendSequence=Number(keyMatch?.[1]);
+  if(!Number.isSafeInteger(sendSequence)||sendSequence<1||sendSequence>EMAIL_ACTIVATION_MAX_SENDS){
+    throw new OutboxDeliveryError('PAYLOAD_INVALID',{retryable:false});
+  }
+  return {activationId,email,envelope,sendSequence};
+}
+
+function activationCredential(metadata,event){
+  try{
+    const token=openEmailActivationTokenStrict(metadata.envelope,{idempotencyKey:event.idempotencyKey});
+    return {...metadata,token,tokenHash:hashEmailActivationToken(token)};
+  }catch(error){
+    if(error instanceof CredentialEnvelopeError){
+      throw new OutboxDeliveryError(error.code,{retryable:error.retryable});
+    }
+    throw error;
+  }
 }
 
 export function createEmailActivationHandler({db,baseUrl,send}={}){
@@ -386,22 +433,27 @@ export function createEmailActivationHandler({db,baseUrl,send}={}){
   let origin;
   try{ origin=new URL(String(baseUrl)).origin; }catch{ throw new TypeError('valid activation base URL required'); }
   return async(event,{signal}={})=>{
-    let payload;
-    try{ payload=activationPayload(event); }
-    catch{ return {status:'suppressed',reasonCode:'PAYLOAD_INVALID'}; }
+    const metadata=activationMetadata(event);
     const current=await db.execute({
-      sql:`SELECT activation.id FROM auth_email_activations activation
+      sql:`SELECT activation.id,activation.token_hash,activation.send_count FROM auth_email_activations activation
         JOIN circle_invitations invitation ON invitation.id=activation.invitation_id
         JOIN circles circle ON circle.id=activation.circle_id
-        WHERE activation.id=? AND activation.token_hash=? AND lower(activation.email)=?
+        WHERE activation.id=? AND lower(activation.email)=?
           AND activation.used_at IS NULL AND activation.revoked_at IS NULL
           AND activation.expires_at>CAST(strftime('%s','now') AS INTEGER)
           AND invitation.used_at IS NULL AND invitation.used_by IS NULL AND invitation.revoked_at IS NULL
           AND datetime(invitation.expires_at)>datetime('now')
           AND circle.is_primary=1 AND circle.archived_at IS NULL LIMIT 2`,
-      args:[payload.activationId,payload.tokenHash,payload.email],
+      args:[metadata.activationId,metadata.email],
     });
     if(current.rows?.length!==1) return {status:'suppressed',reasonCode:'ACTIVATION_INACTIVE'};
+    if(Number(current.rows[0].send_count)!==metadata.sendSequence){
+      return {status:'suppressed',reasonCode:'ACTIVATION_INACTIVE'};
+    }
+    const payload=activationCredential(metadata,event);
+    if(!safeEqual(payload.tokenHash,current.rows[0].token_hash)){
+      throw new OutboxDeliveryError('PAYLOAD_INVALID',{retryable:false});
+    }
     const verifyUrl=`${origin}/verify#token=${encodeURIComponent(payload.token)}`;
     try{
       const delivery=await send({

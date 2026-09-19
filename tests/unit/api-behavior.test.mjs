@@ -302,6 +302,7 @@ mock.module('../../api/_invitation-email.js',{
     INVITATION_EMAIL_RESEND_SECONDS:60,
     createInvitationEmailHandler:()=>async()=>({}),
     invitationEmailConfiguration:()=>invitationEmailConfigured?{origin:'https://randori.example.test'}:null,
+    invitationEmailKeyRotationStatus:async()=>({ready:true,active_version:1,actionable:0}),
     createInvitationEmailEvent:()=>({sql:'INSERT INTO outbox_events VALUES (?)',args:['invitation']}),
     invitationEmailPayload:()=>null,
     invitationEmailStatus:async()=>invitationEmailDeliveryResult?.status||{

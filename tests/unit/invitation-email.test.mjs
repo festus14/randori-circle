@@ -12,6 +12,7 @@ import {
   createInvitationEmailHandler,
   deliverInvitationEmails,
   invitationEmailConfiguration,
+  invitationEmailKeyRotationStatus,
   invitationEmailPayload,
   invitationEmailStatus,
   INVITATION_EMAIL_DRAIN_BATCH_SIZE,
@@ -26,10 +27,14 @@ import {
 import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
 
 const resources=[];
+const databasePaths=new WeakMap();
 
 afterEach(async()=>{
   for(const key of ['APP_URL','CIRCLE_MEMBERSHIP_ENABLED','INVITATION_EMAIL_ENCRYPTION_KEY',
-    'JWT_SECRET','NODE_ENV','RESEND_API_KEY','RESEND_FROM']) delete process.env[key];
+    'INVITATION_EMAIL_ENCRYPTION_KEY_VERSION','INVITATION_EMAIL_ENCRYPTION_PREVIOUS_KEYS',
+    'INVITATION_EMAIL_ENVELOPE_WRITE_VERSION','JWT_SECRET','NODE_ENV','RESEND_API_KEY','RESEND_FROM']){
+    delete process.env[key];
+  }
   while(resources.length){ try{ await resources.pop()(); }catch{} }
 });
 
@@ -46,7 +51,9 @@ function configureProduction(){
 async function fixture(){
   configureProduction();
   const directory=mkdtempSync(join(tmpdir(),'randori-invitation-email-'));
-  const db=createClient({url:`file:${join(directory,'invitation.sqlite')}`});
+  const databasePath=join(directory,'invitation.sqlite');
+  const db=createClient({url:`file:${databasePath}`});
+  databasePaths.set(db,databasePath);
   await prepareMigrationConnection(db);
   const initial=await inspectMigrationState(db);
   await applyMigrations(db,{expectedStateFingerprint:initial.stateFingerprint,
@@ -59,7 +66,10 @@ async function fixture(){
     `INSERT INTO circle_memberships (circle_id,user_id,role,status,joined_at,updated_at)
       VALUES (10,1,'owner','active',datetime('now'),datetime('now'))`,
   ],'write');
-  resources.push(async()=>{ await db.close(); rmSync(directory,{recursive:true,force:true}); });
+  resources.push(async()=>{
+    try{ await db.close(); }
+    finally{ rmSync(directory,{recursive:true,force:true}); }
+  });
   return db;
 }
 
@@ -168,6 +178,75 @@ test('delivery renders a safe fragment link once and retains provider idempotenc
   });
 });
 
+test('rotation readiness retains only a live invitation credential that can still be resent',async()=>{
+  const db=await fixture();
+  const firstKey=process.env.INVITATION_EMAIL_ENCRYPTION_KEY;
+  process.env.INVITATION_EMAIL_ENCRYPTION_KEY_VERSION='1';
+  process.env.INVITATION_EMAIL_ENVELOPE_WRITE_VERSION='2';
+  const seeded=await seed(db);
+  await deliverInvitationEmails({db,baseUrl:'https://randori.example.test',
+    workerId:'rotation-readiness',send:async()=>({providerName:'capture',providerMessageId:'sent'}),
+    workerOptions:workerOptions()});
+
+  process.env.INVITATION_EMAIL_ENCRYPTION_KEY=Buffer.alloc(32,13).toString('base64url');
+  process.env.INVITATION_EMAIL_ENCRYPTION_KEY_VERSION='2';
+  delete process.env.INVITATION_EMAIL_ENCRYPTION_PREVIOUS_KEYS;
+  const missing=await invitationEmailKeyRotationStatus(db);
+  assert.equal(missing.ready,false);
+  assert.equal(missing.actionable,0);
+  assert.equal(missing.retained,1);
+  assert.equal(missing.missing_key,1);
+
+  process.env.INVITATION_EMAIL_ENCRYPTION_PREVIOUS_KEYS=JSON.stringify([
+    {version:1,key:firstKey},
+  ]);
+  const compatible=await invitationEmailKeyRotationStatus(db);
+  assert.equal(compatible.ready,true);
+  assert.deepEqual(compatible.versions,{1:1});
+
+  await db.execute(`UPDATE outbox_events SET status='suppressed'`);
+  delete process.env.INVITATION_EMAIL_ENCRYPTION_PREVIOUS_KEYS;
+  const suppressed=await invitationEmailKeyRotationStatus(db);
+  assert.equal(suppressed.ready,false);
+  assert.equal(suppressed.retained,1);
+
+  await db.close();
+  const restarted=createClient({url:`file:${databasePaths.get(db)}`});
+  resources.push(async()=>{ await restarted.close(); });
+  process.env.INVITATION_EMAIL_ENCRYPTION_PREVIOUS_KEYS=JSON.stringify([
+    {version:1,key:firstKey},
+  ]);
+  const afterRestart=await invitationEmailKeyRotationStatus(restarted);
+  assert.equal(afterRestart.ready,true);
+  assert.equal(afterRestart.retained,1);
+
+  await restarted.execute(`UPDATE circle_memberships SET status='inactive' WHERE user_id=1`);
+  delete process.env.INVITATION_EMAIL_ENCRYPTION_PREVIOUS_KEYS;
+  const ownerless=await invitationEmailKeyRotationStatus(restarted);
+  assert.equal(ownerless.ready,true);
+  assert.equal(ownerless.retained,0);
+  await restarted.execute(`UPDATE circle_memberships SET status='active' WHERE user_id=1`);
+
+  await restarted.execute({sql:`UPDATE circle_invitations SET expires_at=datetime('now','-1 second') WHERE id=?`,
+    args:[seeded.id]});
+  const retired=await invitationEmailKeyRotationStatus(restarted);
+  assert.equal(retired.ready,true);
+  assert.equal(retired.retained,0);
+  assert.deepEqual(retired.versions,{});
+
+  const boundary=await seed(restarted,{id:'44444444-4444-4444-8444-444444444444',
+    email:'boundary@example.test'});
+  for(let sequence=2;sequence<=INVITATION_EMAIL_MAX_SENDS;sequence+=1){
+    await restarted.execute(createInvitationEmailEvent({invitationId:boundary.id,circleId:10,
+      actorUserId:1,email:boundary.email,token:boundary.token,sendSequence:sequence}));
+  }
+  await restarted.execute({sql:`UPDATE outbox_events SET status='delivered'
+    WHERE json_extract(payload_json,'$.invitation_id')=?`,args:[boundary.id]});
+  const sendLimit=await invitationEmailKeyRotationStatus(restarted);
+  assert.equal(sendLimit.ready,true);
+  assert.equal(sendLimit.retained,0,'an exact five-send invitation has no remaining resend credential');
+});
+
 test('revoked, expired, consumed, rotated, owner-revoked, and existing-member invitations suppress',async()=>{
   const scenarios=[
     ['revoked',`UPDATE circle_invitations SET revoked_at=datetime('now')`],
@@ -245,7 +324,7 @@ test('rotation suppresses old work, provider failures retry, and malformed envel
 
   const handler=createInvitationEmailHandler({db,baseUrl:'https://randori.example.test',send:async()=>({})});
   await assert.rejects(()=>handler({eventVersion:2,payload:{}}),error=>
-    error?.code==='EVENT_VERSION_UNSUPPORTED'&&error?.retryable===false);
+    error?.code==='EVENT_VERSION_UNSUPPORTED'&&error?.retryable===true);
   await assert.rejects(()=>handler({eventVersion:1,payload:{}}),error=>
     error?.code==='PAYLOAD_INVALID'&&error?.retryable===false);
 });

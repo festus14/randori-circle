@@ -38,8 +38,10 @@ invitation-email/v1/{invitation-id}/{send-sequence}
 
 The invitation table contains only the token hash and email hash. The outbox
 payload contains those hashes, stable invitation/circle IDs, sequence/template
-versions, and a bounded AES-256-GCM envelope. Its authenticated associated data
-binds the envelope to the invitation ID; its plaintext is only the normalized
+versions, and a bounded AES-256-GCM envelope. V2 authenticated associated data
+binds the purpose, envelope version, key version, and exact event idempotency
+key; legacy v1 remains readable during the staged rollout and binds the
+invitation ID. Envelope plaintext is only the normalized
 recipient address and 256-bit invitation token required at delivery time.
 Production refuses to queue without a canonical HTTPS `APP_URL`, Resend sender
 configuration, and a separate 32-byte base64url
@@ -47,10 +49,9 @@ configuration, and a separate 32-byte base64url
 dead-letter reasons never include the token, address, rendered body, provider
 response, or ciphertext plaintext.
 
-Keep this key stable while invitation events remain actionable. An immediate
-uncoordinated rotation makes existing envelopes undecryptable and they will
-dead-letter as invalid. A future rotation procedure should add a keyed envelope
-version and bounded old-key decrypt window.
+Rotate this key only through the bounded prior-key window in
+`KEY_ROTATION.md`. Unknown or temporarily absent versions retry, while malformed,
+tampered, and cross-event-replayed v2 envelopes are terminal invalid data.
 
 ## Dispatch suppression and delivery bounds
 

@@ -27,11 +27,13 @@ import {
   createEmailActivationHandler,
   EMAIL_ACTIVATION_EVENT_TYPE,
   emailActivationConfiguration,
+  emailActivationKeyRotationStatus,
 } from './_email-activation.js';
 import {
   createPasswordResetHandler,
   PASSWORD_RESET_EVENT_TYPE,
   passwordResetConfiguration,
+  passwordResetKeyRotationStatus,
 } from './_password-reset.js';
 import {
   createScheduleEmailHandler,
@@ -40,8 +42,10 @@ import {
 import {
   createInvitationEmailHandler,
   invitationEmailConfiguration,
+  invitationEmailKeyRotationStatus,
   INVITATION_EMAIL_EVENT_TYPE,
 } from './_invitation-email.js';
+import {identityEmailKeyRotationStatus} from './_identity-linking.js';
 import { localIdentityAdapterEnabled, localRuntimeRequest } from './_local-runtime.js';
 
 export const OUTBOX_CRON_BUDGET_MS=45_000;
@@ -356,6 +360,21 @@ function outboxStatuses(metrics){
   return byType;
 }
 
+async function safeKeyRotationStatus(read){
+  try{ return await read(); }
+  catch{ return Object.freeze({ready:false,unavailable:true}); }
+}
+
+async function outboxKeyRotationStatuses(db,{local=false}={}){
+  const [activation,passwordReset,invitation,identity]=await Promise.all([
+    safeKeyRotationStatus(()=>emailActivationKeyRotationStatus(db)),
+    safeKeyRotationStatus(()=>passwordResetKeyRotationStatus(db)),
+    safeKeyRotationStatus(()=>invitationEmailKeyRotationStatus(db,{localRuntime:local})),
+    safeKeyRotationStatus(()=>identityEmailKeyRotationStatus(db)),
+  ]);
+  return Object.freeze({activation,password_reset:passwordReset,invitation,identity});
+}
+
 function localCaptureSender(captured,type){
   return async message=>{
     const kind=type===PAIRING_EMAIL_EVENT_TYPE
@@ -455,9 +474,10 @@ export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
     maxClaims,deadlineAtMs,finalizationReserveMs,minimumDispatchWindowMs,
   }):emptyOutboxInvocation(eventTypes,{deadlineReached:!preparation.completed,maxClaims});
   const metricRead=preparation.completed&&!invocation.deadlineReached
-    ?await settleBeforeDeadline(()=>readOutboxMetrics(db),deadlineAtMs)
+    ?await settleBeforeDeadline(async()=>({outbox:await readOutboxMetrics(db),
+      keyRotation:await outboxKeyRotationStatuses(db,{local:plan.local})}),deadlineAtMs)
     :{completed:false,value:null};
-  const statuses=metricRead.completed?outboxStatuses(metricRead.value):null;
+  const statuses=metricRead.completed?outboxStatuses(metricRead.value.outbox):null;
   const deliveries={};
   const types={};
   for(const descriptor of OUTBOX_DELIVERY_TYPES){
@@ -477,7 +497,7 @@ export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
   const metrics={budget_ms:OUTBOX_CRON_BUDGET_MS,max_claims:maxClaims,
     deadline_reached:deadlineReached,metrics_complete:metricRead.completed,
     legacy_reconciliation_complete:preparation.completed,logging_complete:false,
-    claimed:invocation.claimed,types};
+    claimed:invocation.claimed,types,key_rotation:metricRead.completed?metricRead.value.keyRotation:null};
   if(!metrics.deadline_reached&&performance.now()<deadlineAtMs){
     const logged=await settleBeforeDeadline(()=>logServerOps(
       invocation.retried||invocation.deadLettered||invocation.leaseLost?'warn':'success',
