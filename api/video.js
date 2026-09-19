@@ -575,7 +575,7 @@ async function purgeAuthorizedSignals(db,userId,room){
 }
 
 async function handleSignal(req,res){
-  const payload=verifyRequestAuth(req);
+  const payload=await verifyRequestAuth(req);
   if(!payload) return res.status(401).json({ok:false,error:'authentication required'});
   const userId=authenticatedUserId(payload);
   if(!userId) return res.status(401).json({ok:false,error:'authentication required'});

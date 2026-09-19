@@ -39,6 +39,10 @@
       "destination": "/api/auth?endpoint=me"
     },
     {
+      "source": "/api/auth/logout-all",
+      "destination": "/api/auth?endpoint=logout-all"
+    },
+    {
       "source": "/api/auth/logout",
       "destination": "/api/auth?endpoint=logout"
     },

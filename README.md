@@ -50,7 +50,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/ops.js` | availability, fair pairing, cron, notification outbox, demo administration |
 | `api/ai.js` | disabled-by-default consent-gated feedback workflows |
 | `api/video.js` | authenticated pair-scoped WebRTC signaling and revisioned code/board checkpoints |
-| `api/_db.js` | Turso client, JWT verification, CSRF helpers |
+| `api/_db.js` | Turso client, durable session issuance/revocation, JWT verification, CSRF helpers |
 | `api/_catalog.js` | original exercise catalogue validation, public projections, server-owned evaluation cases |
 | `api/_pairing.js` | deterministic fairness and canonical room identifiers |
 | `api/_schedule.js` | strict schedule validation, legacy projection, opaque versions, and conflict-safe mutations |
@@ -59,7 +59,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_pair-access.js` | shared source-aware authorization for canonical private pair rooms |
 | `api/_circle-membership.js` | primary-circle membership, keyed invite hashes, signed short-lived claims, and audited acceptance |
 | `api/invitations.js` | owner-only invitation lifecycle and rate-limited public preparation |
-| `db/schema-manifest.js` | checksummed contract for 31 application tables and 27 named indexes |
+| `db/schema-manifest.js` | checksummed contract for 32 application tables and 28 named indexes |
 | `db/schema-inspector.js` | read-only SQLite drift inspection and non-executable planning |
 
 The target Next.js/Supabase architecture is intentionally phased rather than introduced as a big-bang rewrite.
@@ -87,7 +87,7 @@ To roll out circle membership without locking out operators: first complete the 
 
 Health probes are intentionally separate. `/api/health/live` (and `/api/healthz`) checks only that the process can answer; use it for frequent load-balancer liveness checks. `/api/health`, `/api/health/ready`, and `/api/readyz` are deploy/readiness gates: they return 200 only when database configuration, reachability, connection constraints, the exact application schema, the complete immutable migration ledger, and membership-rollout invariants all pass. Enabling `CIRCLE_MEMBERSHIP_ENABLED` additionally requires the rollout to be completed and closed; a pristine open rollout is ready only while that feature is disabled. Local readiness refuses a missing or unsafe database target before constructing a client. Every health response is `no-store`, readiness uses only read-only queries, and failures disclose only a generic unavailable status.
 
-Rotating `JWT_SECRET` signs out every session and invalidates outstanding invitation links because the same secret keys invitation/email hashes. Revoke and reissue pending invitations during rotation.
+Application JWTs carry a random session identifier, while `auth_sessions` stores only its domain-separated SHA-256 hash. Every private request must match a live, unexpired database row; current-session logout revokes one row and logout-all revokes every live row for that account. At most eight sessions per account remain active, and membership loss revokes them all on the next authenticated request. Legacy JWTs without a session identifier fail closed after migration v5. Rotating `JWT_SECRET` remains an emergency global sign-out and also invalidates outstanding invitation links because the same secret keys invitation/email hashes. Revoke and reissue pending invitations during rotation.
 
 For attestation-key rotation, move each former `RUN_ATTESTATION_SECRET` into the comma-separated `RUN_ATTESTATION_PREVIOUS_SECRETS` list. Retain it there until runs signed with that key no longer need to be verified; removing it makes those historical runs appear unverified.
 

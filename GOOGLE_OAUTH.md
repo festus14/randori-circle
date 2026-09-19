@@ -55,7 +55,7 @@ No extra API needs enabling — Google Identity is on by default.
   - not exists → create a Google-only account associated with the verified Google subject only when the legacy allowlist is still open, or after validating an unused invitation bound to that email.
   - existing Google account → use issuer plus subject as the identity, refusing any email collision with another account.
   - existing password account → do not silently link it; the user must sign in with the existing method until an explicit linking flow exists.
-- Signs a 12-hour application JWT with pinned algorithm, issuer, and audience, stores it only in the session cookie, and redirects to `/?google=success` or the validated pair invite path with `?google=success`.
+- Signs a 12-hour application JWT with pinned algorithm, issuer, audience, and a random session identifier. Only a domain-separated SHA-256 hash of that identifier is persisted in `auth_sessions`; every private request checks the live, unexpired row. The credential stays in the secure session cookie and the callback redirects to `/?google=success` or the validated pair invite path with `?google=success`.
 
 The callback never accepts a return destination from its query string. It consumes the destination captured at OAuth start and clears state, PKCE, nonce, and return cookies before provider work. Combined with Google's single-use authorization code, replayed callbacks cannot establish another session. Only `/join/week_<positive integer>_pair_<positive integer>` is accepted; absolute URLs, protocol-relative URLs, encoded or backslash separators, queries, fragments, zeroes, leading zeroes, and malformed room IDs fall back to `/`.
 
@@ -68,7 +68,8 @@ No secrets in git. Native `fetch` used — no new deps.
 - `GET /api/auth/google/start` — starts flow
 - `GET /api/auth/google/callback?code=` — finishes, issues JWT, redirects
 - `POST /api/auth/signup` is development-only until email verification exists. Existing password users may still use `POST /api/auth/login`; `GET /api/auth/me` reads the protected session.
-- `POST /api/auth/logout` clears the session cookie
+- `POST /api/auth/logout` durably revokes the presented session, then clears its cookie
+- `POST /api/auth/logout-all` durably revokes every active session for the authenticated account, then clears its cookie
 
 ### Common gotchas
 

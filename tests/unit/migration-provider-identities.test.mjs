@@ -34,10 +34,11 @@ test('v4 persists issuer-scoped subjects with provider and account uniqueness',a
         (1,'one@example.test','!oauth:one','One','#123456'),
         (2,'two@example.test','!oauth:two','Two','#654321')`,
     ],'write');
-    const before=await inspectMigrationState(item.db);
+    const providerMigrations=EXECUTABLE_MIGRATIONS.slice(0,4);
+    const before=await inspectMigrationState(item.db,{migrations:providerMigrations});
     assert.equal(before.currentVersion,3);
     const result=await applyMigrations(item.db,{
-      expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY,
+      migrations:providerMigrations,expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY,
     });
     assert.deepEqual(result.applied.map(item=>item.version),[4]);
 
@@ -67,7 +68,7 @@ test('v4 persists issuer-scoped subjects with provider and account uniqueness',a
     const reopened=createClient({url:item.url});
     try{
       await prepareMigrationConnection(reopened);
-      const state=await inspectMigrationState(reopened);
+      const state=await inspectMigrationState(reopened,{migrations:providerMigrations});
       assert.equal(state.currentVersion,4);
       assert.equal(state.ready,true);
       const identities=await reopened.execute(`SELECT issuer,subject,user_id FROM auth_provider_identities`);

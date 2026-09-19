@@ -272,7 +272,7 @@ test('managed prefix rehearsal blocks writes, verifies PITR, migrates only the r
     assert.equal(result.ok,true);
     assert.deepEqual(result.payload.migration,{
       sourceClassification:'managed',sourceVersion:2,adoptedOnRestore:false,
-      appliedVersions:[3,4],finalVersion:4,
+      appliedVersions:[3,4,5],finalVersion:5,
     });
     assert.equal(result.payload.verification.preMigrationMatch,true);
     assert.equal(result.payload.verification.postMigrationPreserved,true);
@@ -322,7 +322,7 @@ test('managed prefix rehearsal blocks writes, verifies PITR, migrates only the r
       ['source','bigint'],['restore','bigint'],
     ]);
     assert.equal((await databaseState(item.sourcePath,EXECUTABLE_MIGRATIONS.slice(0,2))).currentVersion,2);
-    assert.equal((await databaseState(item.restorePath)).currentVersion,4);
+    assert.equal((await databaseState(item.restorePath)).currentVersion,5);
 
     const serialized=JSON.stringify(result);
     for(const secret of [
@@ -667,7 +667,7 @@ test('exact unmanaged prefix is adopted and advanced only on the disposable rest
     assert.equal(result.ok,true);
     assert.equal(result.payload.migration.sourceClassification,'unmanaged');
     assert.equal(result.payload.migration.adoptedOnRestore,true);
-    assert.deepEqual(result.payload.migration.appliedVersions,[3,4]);
+    assert.deepEqual(result.payload.migration.appliedVersions,[3,4,5]);
     const source=await databaseState(item.sourcePath,EXECUTABLE_MIGRATIONS.slice(0,2));
     assert.equal(source.classification,'unmanaged');
     assert.equal(source.ledgerPresent,false);
@@ -690,7 +690,7 @@ for(const classification of ['managed','unmanaged']){
       assert.equal(result.payload.migration.sourceVersion,1);
       assert.equal(result.payload.migration.sourceClassification,classification);
       assert.equal(result.payload.migration.adoptedOnRestore,classification==='unmanaged');
-      assert.deepEqual(result.payload.migration.appliedVersions,[2,3,4]);
+      assert.deepEqual(result.payload.migration.appliedVersions,[2,3,4,5]);
       const restored=createClient({url:`file:${item.restorePath}`,intMode:'bigint'});
       try{
         const singleton=await restored.execute('SELECT id,registrations_closed FROM circle_membership_rollout');
@@ -959,6 +959,7 @@ test('post-migration preservation rejects missing or modified prior tables and s
       {name:'pairing_cycle_availability',count:0,digest:'c'.repeat(64)},
       {name:'pairing_cycles',count:0,digest:'d'.repeat(64)},
       {name:'auth_provider_identities',count:0,digest:'e'.repeat(64)},
+      {name:'auth_sessions',count:0,digest:'f'.repeat(64)},
     ],
     storage:{...before.storage},
   };
@@ -977,7 +978,7 @@ test('post-migration preservation rejects missing or modified prior tables and s
   assert.throws(
     ()=>verifyPostMigrationPreservation(before,{
       ...baseAfter,
-      tables:[...baseAfter.tables,{name:'ai_monthly_usage',count:0,digest:'f'.repeat(64)}],
+      tables:[...baseAfter.tables,{name:'ai_monthly_usage',count:0,digest:'1'.repeat(64)}],
     }),
     error=>error.code==='REHEARSAL_PRESERVATION_FAILED',
   );

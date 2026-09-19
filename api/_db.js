@@ -1,9 +1,19 @@
 import { createClient } from '@libsql/client';
 import jwt from 'jsonwebtoken';
+import { createHash, randomBytes } from 'node:crypto';
 import { redactSentryText, sanitizeSentryContext, sanitizeSentryEvent } from './_sentry.js';
 
 export const JWT_ISSUER = 'randori-circle';
 export const JWT_AUDIENCE = 'randori-web';
+export const SESSION_TTL_SECONDS = 12*60*60;
+
+const MAX_ACTIVE_SESSIONS_PER_ACCOUNT=8;
+const SESSION_RECORD_RETENTION_SECONDS=30*24*60*60;
+const SESSION_ID_PATTERN=/^[A-Za-z0-9_-]{43}$/;
+const SESSION_HASH_PATTERN=/^[a-f0-9]{64}$/;
+const SESSION_REVOCATION_REASONS=new Set([
+  'current_logout','logout_all','password_change','identity_change','membership_removed','rotation',
+]);
 
 let localDevelopmentClient=null;
 let localDevelopmentClientUrl='';
@@ -182,29 +192,182 @@ function parseCookies(header = '') {
   return cookies;
 }
 
-export function verifyRequestAuth(req) {
+function requestCredential(req){
   const auth = req?.headers?.authorization || req?.headers?.Authorization || '';
   const bearer = typeof auth === 'string' ? auth.match(/^Bearer\s+(.+)$/i)?.[1] : null;
   const cookieToken = parseCookies(req?.headers?.cookie || req?.headers?.Cookie || '').randori_session;
-  const token = bearer || cookieToken;
+  return bearer
+    ? {token:bearer,transport:'bearer'}
+    : (cookieToken?{token:cookieToken,transport:'cookie'}:null);
+}
+
+export function hashSessionIdentifier(identifier){
+  if(typeof identifier!=='string'||!SESSION_ID_PATTERN.test(identifier)) return null;
+  return createHash('sha256').update(`randori-session-v1\0${identifier}`,'utf8').digest('hex');
+}
+
+export function verifySignedRequestAuth(req,{nowSeconds=Math.floor(Date.now()/1000)}={}) {
+  const credential=requestCredential(req);
+  const token=credential?.token;
   if (!token) return null;
   try {
     const payload = jwt.verify(token, getJwtSecret(), {
       algorithms: ['HS256'],
       issuer: JWT_ISSUER,
       audience: JWT_AUDIENCE,
+      clockTimestamp:nowSeconds,
     });
     const rawUserId=payload?.id??payload?.uid;
     const userId=typeof rawUserId==='number'
       ? rawUserId
       : (typeof rawUserId==='string'&&/^[1-9]\d*$/.test(rawUserId) ? Number(rawUserId) : null);
-    if(!Number.isSafeInteger(userId)||userId<1) return null;
+    const sessionHash=hashSessionIdentifier(payload?.jti);
+    if(!Number.isSafeInteger(userId)||userId<1||!sessionHash) return null;
     // Normalize at the trust boundary so every downstream authorization path
     // sees one strict identity type, including JWTs minted by older clients.
-    return {...payload,id:userId};
+    const {jti:_sessionIdentifier,...safeClaims}=payload;
+    const normalized={...safeClaims,id:userId};
+    Object.defineProperties(normalized,{
+      sessionHash:{value:sessionHash,enumerable:false},
+      authTransport:{value:credential.transport,enumerable:false},
+    });
+    return normalized;
   } catch {
     return null;
   }
+}
+
+function safeSessionUserId(value){
+  const parsed=typeof value==='number'?value
+    :(typeof value==='string'&&/^[1-9]\d*$/.test(value)?Number(value):null);
+  return Number.isSafeInteger(parsed)&&parsed>0?parsed:null;
+}
+
+function safeSessionEmail(value){
+  if(typeof value!=='string') return null;
+  const email=value.trim().toLowerCase();
+  return email&&Buffer.byteLength(email,'utf8')<=254?email:null;
+}
+
+function safeRevocationReason(value){
+  return SESSION_REVOCATION_REASONS.has(value)?value:null;
+}
+
+export async function issueSessionInTransaction(transaction,user,{nowSeconds=Math.floor(Date.now()/1000)}={}){
+  if(!transaction||typeof transaction.execute!=='function') throw new TypeError('session transaction is required');
+  const userId=safeSessionUserId(user?.id??user?.uid);
+  const email=safeSessionEmail(user?.email);
+  if(!userId||!email||!Number.isSafeInteger(nowSeconds)||nowSeconds<1) throw new TypeError('valid session user is required');
+  const identifier=randomBytes(32).toString('base64url');
+  const sessionHash=hashSessionIdentifier(identifier);
+  const expiresAt=nowSeconds+SESSION_TTL_SECONDS;
+  const token=jwt.sign({...user,id:userId,email,jti:identifier,iat:nowSeconds,exp:expiresAt},getJwtSecret(),{
+    algorithm:'HS256',issuer:JWT_ISSUER,audience:JWT_AUDIENCE,
+  });
+  const inserted=await transaction.execute({
+    sql:`INSERT INTO auth_sessions (session_hash,user_id,created_at,expires_at)
+      SELECT ?,id,?,? FROM auth_accounts WHERE id=? AND lower(email)=? RETURNING session_hash`,
+    args:[sessionHash,nowSeconds,expiresAt,userId,email],
+  });
+  if(inserted.rows?.length!==1||String(inserted.rows[0].session_hash)!==sessionHash){
+    throw new Error('session persistence failed');
+  }
+  await transaction.execute({
+    sql:`UPDATE auth_sessions SET revoked_at=?,revocation_reason='rotation'
+      WHERE user_id=? AND session_hash<>? AND revoked_at IS NULL AND expires_at>?
+        AND session_hash NOT IN (
+          SELECT session_hash FROM auth_sessions
+          WHERE user_id=? AND session_hash<>? AND revoked_at IS NULL AND expires_at>?
+          ORDER BY created_at DESC,session_hash DESC LIMIT ?
+        )`,
+    args:[nowSeconds,userId,sessionHash,nowSeconds,userId,sessionHash,nowSeconds,MAX_ACTIVE_SESSIONS_PER_ACCOUNT-1],
+  });
+  await transaction.execute({
+    sql:`DELETE FROM auth_sessions
+      WHERE expires_at<=? OR (revoked_at IS NOT NULL AND revoked_at<=?)`,
+    args:[nowSeconds-SESSION_RECORD_RETENTION_SECONDS,nowSeconds-SESSION_RECORD_RETENTION_SECONDS],
+  });
+  return token;
+}
+
+export async function issueSession(db,user,options={}){
+  if(!db||typeof db.transaction!=='function') throw new TypeError('database client is required');
+  const transaction=await db.transaction('write');
+  let finished=false;
+  try{
+    const token=await issueSessionInTransaction(transaction,user,options);
+    await transaction.commit();
+    finished=true;
+    return token;
+  }catch(error){
+    if(!finished){ try{ await transaction.rollback(); }catch{} }
+    throw error;
+  }
+}
+
+export async function revokeAccountSessions(db,userId,reason,{nowSeconds=Math.floor(Date.now()/1000)}={}){
+  const normalizedUserId=safeSessionUserId(userId);
+  const normalizedReason=safeRevocationReason(reason);
+  if(!db||typeof db.execute!=='function'||!normalizedUserId||!normalizedReason
+    ||!Number.isSafeInteger(nowSeconds)||nowSeconds<1){
+    throw new TypeError('valid session revocation is required');
+  }
+  const result=await db.execute({
+    sql:`UPDATE auth_sessions SET revoked_at=?,revocation_reason=?
+      WHERE user_id=? AND revoked_at IS NULL AND expires_at>? RETURNING session_hash`,
+    args:[nowSeconds,normalizedReason,normalizedUserId,nowSeconds],
+  });
+  return result.rows?.length||0;
+}
+
+export async function revokeRequestSession(db,req,{reason='current_logout',nowSeconds=Math.floor(Date.now()/1000)}={}){
+  const payload=verifySignedRequestAuth(req,{nowSeconds});
+  const normalizedReason=safeRevocationReason(reason);
+  if(!payload) return {authenticated:false,revoked:false,userId:null};
+  if(!db||typeof db.execute!=='function'||!normalizedReason
+    ||!Number.isSafeInteger(nowSeconds)||nowSeconds<1){
+    throw new TypeError('valid session revocation is required');
+  }
+  const result=await db.execute({
+    sql:`UPDATE auth_sessions SET revoked_at=?,revocation_reason=?
+      WHERE session_hash=? AND user_id=? AND revoked_at IS NULL RETURNING user_id`,
+    args:[nowSeconds,normalizedReason,payload.sessionHash,payload.id],
+  });
+  return {authenticated:true,revoked:result.rows?.length===1,userId:payload.id};
+}
+
+export async function verifyRequestAuth(req,db=null,{nowSeconds=Math.floor(Date.now()/1000)}={}) {
+  const payload=verifySignedRequestAuth(req,{nowSeconds});
+  if(!payload) return null;
+  const sessionDb=db||getClient();
+  if(!sessionDb||typeof sessionDb.execute!=='function'||!Number.isSafeInteger(nowSeconds)||nowSeconds<1) return null;
+  const membershipRequired=process.env.CIRCLE_MEMBERSHIP_ENABLED==='true';
+  const membershipProjection=membershipRequired
+    ? `CASE WHEN EXISTS (
+          SELECT 1 FROM circle_memberships membership
+          JOIN circles circle ON circle.id=membership.circle_id
+          WHERE membership.user_id=session.user_id AND membership.status='active'
+            AND circle.is_primary=1 AND circle.archived_at IS NULL
+        ) THEN 1 ELSE 0 END`
+    :'0';
+  const result=await sessionDb.execute({
+    sql:`SELECT session.user_id,session.expires_at,
+        ${membershipProjection} AS active_membership
+      FROM auth_sessions session
+      JOIN auth_accounts account ON account.id=session.user_id
+      WHERE session.session_hash=? AND session.user_id=?
+        AND session.revoked_at IS NULL AND session.expires_at>?
+      LIMIT 2`,
+    args:[payload.sessionHash,payload.id,nowSeconds],
+  });
+  if(result.rows?.length!==1) return null;
+  const row=result.rows[0];
+  if(Number(row.user_id)!==payload.id||!SESSION_HASH_PATTERN.test(payload.sessionHash)) return null;
+  if(membershipRequired&&Number(row.active_membership)!==1){
+    await revokeAccountSessions(sessionDb,payload.id,'membership_removed',{nowSeconds});
+    return null;
+  }
+  return payload;
 }
 
 export function verifyMutationOrigin(req) {

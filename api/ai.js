@@ -347,8 +347,8 @@ async function callOpenAI({ modelName, prompt }){
   return parseProviderEnvelope('openai',res,text);
 }
 
-function tryAuth(req){
-  const payload=verifyRequestAuth(req);
+async function tryAuth(req){
+  const payload=await verifyRequestAuth(req);
   if(!payload) return { authed:false, userId:null, payload:null, isDemo:true };
   const uid=payload.id??payload.uid;
   const isDemo=!!payload.is_demo || String(payload.email||'').includes('randori.demo');
@@ -644,7 +644,7 @@ async function parseBody(req){
 async function handleAnalyze(req,res){
   if(req.method!=='POST') return res.status(405).json({error:'POST only'});
   if(process.env.AI_ENABLED!=='true') return res.status(503).json({error:'AI coaching is not enabled for this release'});
-  let authInfo=tryAuth(req);
+  let authInfo=await tryAuth(req);
   if(!authInfo.authed) return res.status(401).json({error:'authentication required'});
   let userId=authInfo.userId;
   let isDemo=authInfo.isDemo;
@@ -885,7 +885,7 @@ async function handleFeedback(req,res){
   if(req.method!=='GET') return res.status(405).json({error:'GET only'});
   let id=req.query?.id || req.query?.sessionId;
   if(!id){ try{ const u=new URL(req.url,'http://localhost'); id=u.searchParams.get('id')||u.searchParams.get('sessionId'); const parts=u.pathname.split('/'); const last=parts.pop(); if(last && last!=='feedback' && last!=='analyze' && last!=='history' && !isNaN(Number(last))) id=last; }catch{} }
-  const authInfo=tryAuth(req);
+  const authInfo=await tryAuth(req);
   if(!authInfo.authed) return res.status(401).json({error:'authentication required'});
   const db=getClient(); await ensureTables(db);
 
@@ -928,7 +928,7 @@ async function handleFeedback(req,res){
 
 async function handleHistory(req,res){
   if(req.method!=='GET') return res.status(405).json({ error:'GET only'});
-  const authInfo=tryAuth(req);
+  const authInfo=await tryAuth(req);
   const uid=Number(authInfo.userId);
   if(!authInfo.authed){
     return res.status(401).json({error:'authentication required'});

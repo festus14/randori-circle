@@ -37,8 +37,13 @@ mock.module('../../api/_db.js', {
     getJwtSecret: () => 'unit-test-secret-at-least-thirty-two-characters',
     deterministicColor: () => '#123456',
     getAdminEmails: () => new Set(),
+    issueSession:async(_db,user)=>`test-session-${user.id||user.uid}`,
+    issueSessionInTransaction:async(_db,user)=>`test-session-${user.id||user.uid}`,
+    revokeAccountSessions:async()=>0,
+    revokeRequestSession:async()=>({authenticated:false,revoked:false,userId:null}),
     verifyMutationOrigin: () => true,
     verifyRequestAuth: () => null,
+    verifySignedRequestAuth:()=>null,
   },
 });
 

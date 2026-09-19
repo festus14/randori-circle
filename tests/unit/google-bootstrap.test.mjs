@@ -14,8 +14,13 @@ mock.module('../../api/_db.js',{
     getJwtSecret:()=>JWT_SECRET,
     getAdminEmails:()=>new Set(['bootstrap@example.test']),
     deterministicColor:()=>'#123456',
+    issueSession:async(_db,user)=>`test-session-${user.id||user.uid}`,
+    issueSessionInTransaction:async(_db,user)=>`test-session-${user.id||user.uid}`,
+    revokeAccountSessions:async()=>0,
+    revokeRequestSession:async()=>({authenticated:false,revoked:false,userId:null}),
     verifyMutationOrigin:()=>true,
     verifyRequestAuth:()=>null,
+    verifySignedRequestAuth:()=>null,
   },
 });
 

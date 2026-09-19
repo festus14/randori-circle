@@ -21,6 +21,11 @@ export const MIGRATION_CONTRACTS=Object.freeze([
     name:'provider-scoped-identities',
     checksum:'99e63a04a8617d4dcc12d5ff71ac8590e21ba5a44bdcaba90ead405f42f5625e',
   }),
+  Object.freeze({
+    version:5,
+    name:'durable-revocable-sessions',
+    checksum:'cad0dcadb3b75ae267dd6d7ff9393507e122f0d104e648357631a1c4af0b98ad',
+  }),
 ]);
 
 export const LATEST_MIGRATION_VERSION=MIGRATION_CONTRACTS.at(-1)?.version||0;

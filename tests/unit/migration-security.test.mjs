@@ -150,7 +150,7 @@ test('ledger gaps, names, checksums, and future versions fail closed without fur
     db=>db.execute({sql:'UPDATE schema_migrations SET checksum=? WHERE version=1',args:['0'.repeat(64)]}),
     db=>db.execute({
       sql:`INSERT INTO schema_migrations
-        (version,name,checksum,execution_ms,disposition) VALUES (5,'future',?,0,'applied')`,
+        (version,name,checksum,execution_ms,disposition) VALUES (6,'future',?,0,'applied')`,
       args:['f'.repeat(64)],
     }),
   ];
@@ -227,7 +227,7 @@ test('retry handling is bounded and never retries non-conflict failures',async t
       expectedStateFingerprint:planned.stateFingerprint,
       retry:{maxAttempts:3,baseDelayMs:1,maxDelayMs:2,sleep:async delay=>delays.push(delay)},
     });
-    assert.equal(result.toVersion,4);
+    assert.equal(result.toVersion,5);
     assert.equal(attempts,EXECUTABLE_MIGRATIONS.length+2);
     assert.deepEqual(delays,[1,2]);
   }
@@ -303,10 +303,11 @@ test('concurrent runners allow one planned-state winner and converge without dup
     {version:2,count:1},
     {version:3,count:1},
     {version:4,count:1},
+    {version:5,count:1},
   ]);
   const finalState=await inspectMigrationState(first);
   assert.equal(finalState.classification,'managed');
-  assert.equal(finalState.currentVersion,4);
+  assert.equal(finalState.currentVersion,5);
   assert.equal(finalState.schemaExact,true);
 });
 
@@ -365,7 +366,7 @@ test('schema-ahead and unexpected artifacts block managed and unmanaged mutation
 test('fresh migration creates only the valid pristine-open rollout state',async t=>{
   const {db}=fixture(t);
   const result=await applyCurrent(db);
-  assert.equal(result.toVersion,4);
+  assert.equal(result.toVersion,5);
   const membership=await inspectMembershipAdoption(db);
   assert.equal(membership.ok,true);
   assert.equal(membership.registrationState,'open');
@@ -421,13 +422,14 @@ test('adoption accepts pristine-open and complete-closed states and writes only 
       expectedStateFingerprint:beforeState.stateFingerprint,
       retry:NO_RETRY,
     });
-    assert.equal(result.toVersion,4);
+    assert.equal(result.toVersion,5);
     const ledger=await db.execute('SELECT version,disposition FROM schema_migrations ORDER BY version');
     assert.deepEqual(plainRows(ledger.rows),[
       {version:1,disposition:'adopted'},
       {version:2,disposition:'adopted'},
       {version:3,disposition:'adopted'},
       {version:4,disposition:'adopted'},
+      {version:5,disposition:'adopted'},
     ]);
     assert.deepEqual(plainRows((await db.execute('SELECT * FROM users WHERE id=91')).rows),beforeUser);
     assert.deepEqual(plainRows((await db.execute(
