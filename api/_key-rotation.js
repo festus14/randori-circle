@@ -339,7 +339,13 @@ export async function readCredentialRotationMetrics(db,{
     else if(candidate.fingerprint!==header.fingerprint) counts.fingerprint_mismatch+=1;
   }
   const actionable=rows.length;
-  return Object.freeze({purpose:ring.purpose,ready:counts.malformed===0&&counts.future===0
+  // Legacy envelopes do not identify the key that sealed them. Even when one
+  // configured key can currently open a v1 envelope, the aggregate cannot
+  // prove that any other key in the ring is safe to retire. Keep delivery
+  // compatible, but make the retirement signal conservative until every
+  // actionable or explicitly retained legacy envelope is gone.
+  return Object.freeze({purpose:ring.purpose,ready:counts.legacy_v1===0
+    &&counts.malformed===0&&counts.future===0
     &&counts.missing_key===0&&counts.fingerprint_mismatch===0&&counts.key_version_ahead===0,
   active_version:ring.active.version,write_envelope_version:ring.writeEnvelopeVersion,
   previous_versions:Object.freeze(ring.previous.map(item=>item.version)),actionable,

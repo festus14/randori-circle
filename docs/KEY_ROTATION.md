@@ -55,6 +55,16 @@ then validate only the credential they actually consume. An unrelated malformed,
 dead-lettered, or unavailable-key event therefore stays visible to operations
 without taking valid user flows offline.
 
+Any actionable or explicitly retained legacy-v1 envelope makes `ready` false.
+V1 identifies neither its sealing key nor its key version, so aggregate metrics
+cannot prove that any configured key is safe to remove while such material
+exists. This conservative retirement rule does not disable v1 delivery: readers
+continue trying the bounded active/prior ring. Delivered or suppressed activation
+and reset events are terminal and are not counted. Invitation delivery is
+different because a live invitation can reuse its latest delivered credential;
+that envelope remains retained until the invitation is used, revoked, expired,
+loses its active owner, or reaches the five-send limit.
+
 ## Staged rotation
 
 1. Back up production and complete the isolated restore rehearsal for the exact
@@ -71,7 +81,9 @@ without taking valid user flows offline.
    move the former version/material to the front of its prior array. Deploy the
    active key, version, and prior array atomically. Do not rotate another purpose
    until readiness is green.
-6. Keep the old key while any actionable v1 or old-version count remains.
+6. Keep the old key while any actionable or retained v1 count remains; `ready`
+   stays false until that count is zero because v1 cannot identify one safe
+   retirement candidate. Also keep a prior key while any old-version count names it.
    Activation and reset must additionally pass their 30-minute token lifetime,
    lease/skew margin, retry window, and replayable dead letters. Invitation
    readiness also retains the latest delivered or suppressed envelope for every

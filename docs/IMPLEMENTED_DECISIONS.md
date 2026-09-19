@@ -1148,3 +1148,31 @@ guard, while manual SQL bypasses checksums, ledger ownership, transaction
 fingerprints, and redacted audit evidence. An explicit one-step target with
 fresh evidence preserves those controls while allowing an old production
 database to catch up deliberately.
+
+## ID-30: Treat legacy credential counts as a key-retirement blocker
+
+Status: implemented as a runtime and operations-signal hardening increment with
+no schema migration, secret change, or delivery-format change. ID-29 remains
+reserved for secondary-circle creation.
+
+**Decision.** Aggregate credential-rotation `ready` means every configured key
+is safe to retire from the bounded ring. Any actionable legacy-v1 envelope, or
+any v1 invitation envelope retained for a possible resend, therefore makes the
+signal false. The legacy format authenticates its payload but carries no key
+version or fingerprint, so a header-only aggregate cannot attribute it to one
+key and cannot prove that any other ring entry is unused. Delivery compatibility
+is unchanged: the worker still tries the active and ordered prior keys, while
+request paths remain independent of aggregate retirement health.
+
+Terminal activation and password-reset events do not retain credentials.
+Invitation events remain different because a delivered link can be resent;
+their latest envelope stays relevant only while the invitation is live, unused,
+unrevoked, owned by an active owner, and below the five-send limit. The existing
+bounded, PII-free projection continues to expose only counts and versions.
+
+**Alternatives.** Ignoring v1 because it lacks a key identifier creates a false
+green retirement signal precisely when attribution is impossible. Disabling v1
+delivery would strand credentials during the compatibility rollout. Decrypting
+and rewriting every queued row expands plaintext handling, transaction races,
+and rollback complexity. Conservatively waiting for v1 work to drain or cease
+being resendable preserves compatibility and requires no data mutation.
