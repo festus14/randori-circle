@@ -129,45 +129,53 @@ try{
 
 <style>
 :root{
-  --bg:#0f0f10;
-  --bg-2:#18181d;
-  --bg-3:#202028;
-  --bg-4:#272730;
-  --card:#18181d;
-  --card-2:#202028;
-  --border:#272730;
-  --line:#272730;
-  --line-strong:#32323e;
-  --ink:#e7e6e3;
-  --ink-2:#9aa0a6;
-  --ink-3:#6b7178;
+  color-scheme:dark;
+  --bg:#0d0e11;
+  --bg-2:#15171c;
+  --bg-3:#1d2027;
+  --bg-4:#252933;
+  --card:#15171c;
+  --card-2:#1d2027;
+  --border:#343943;
+  --line:#343943;
+  --line-strong:#4c5361;
+  --ink:#f5f5f2;
+  --ink-2:#c0c5ce;
+  --ink-3:#a3aab5;
   --accent:#c8f6a0;
   --accent-2:#c8f6a0;
-  --accent-3:#e8a0b0;
+  --accent-3:#ffb1c0;
   --accent-4:#a9b6ff;
   --ok:#c8f6a0;
   --warn:#f2d07a;
-  --radius:14px;
-  --radius-sm:10px;
+  --focus:#a9b6ff;
+  --radius:16px;
+  --radius-sm:12px;
   --radius-xs:8px;
-  --shadow:0 10px 30px rgba(0,0,0,.35), 0 1px 0 rgba(255,255,255,.04) inset;
-  --shadow-soft:0 4px 18px rgba(0,0,0,.25);
-  --max:1120px;
-  --gap:20px;
+  --shadow:0 22px 60px rgba(0,0,0,.34), 0 1px 0 rgba(255,255,255,.05) inset;
+  --shadow-soft:0 10px 28px rgba(0,0,0,.2);
+  --max:1180px;
+  --gap:24px;
+  --topbar-h:68px;
 }
 :root.light{
-  --bg:#f7f6f3;
+  color-scheme:light;
+  --bg:#f5f4f0;
   --bg-2:#ffffff;
-  --bg-3:#f0efed;
-  --bg-4:#e8e6e2;
+  --bg-3:#ebeae5;
+  --bg-4:#dfddd6;
   --card:#ffffff;
-  --card-2:#f0efed;
-  --border:#e6e2de;
-  --line:#e6e2de;
-  --line-strong:#d2cdc6;
-  --ink:#121012;
-  --ink-2:#6b6770;
-  --ink-3:#9a9692;
+  --card-2:#efeee9;
+  --border:#c8c5bd;
+  --line:#d1cec7;
+  --line-strong:#aaa69d;
+  --ink:#18171a;
+  --ink-2:#504d56;
+  --ink-3:#65616b;
+  --accent-3:#a12b49;
+  --focus:#324aa8;
+  --shadow:0 20px 52px rgba(60,52,42,.12), 0 1px 0 rgba(255,255,255,.8) inset;
+  --shadow-soft:0 8px 24px rgba(60,52,42,.09);
 }
 *{box-sizing:border-box}
 [hidden]{display:none!important}
@@ -480,7 +488,178 @@ p{margin:0}
 @keyframes dots{ 0%,100%{ opacity:.3; transform:translateY(0) } 50%{ opacity:1; transform:translateY(-2px) } }
 .btn .spinner{ vertical-align:middle; margin-left:6px }
 
-/* anon tabs fix */ .tabs{ display:flex; } [data-tab=circle]{ } 
+/* anon tabs fix */ .tabs{ display:flex; } [data-tab=circle]{ }
+
+/* --- UI foundation: accessible hierarchy, navigation, and responsive shells --- */
+body{
+  background:
+    radial-gradient(circle at 10% -12%, color-mix(in srgb,var(--accent-4) 11%,transparent) 0,transparent 32rem),
+    radial-gradient(circle at 92% 8%, color-mix(in srgb,var(--accent) 8%,transparent) 0,transparent 28rem),
+    var(--bg);
+}
+::selection{background:color-mix(in srgb,var(--accent-4) 42%,transparent);color:var(--ink)}
+.skip-link{
+  position:fixed; top:10px; left:12px; z-index:120; padding:10px 14px;
+  border-radius:10px; background:var(--ink); color:var(--bg); font-weight:700;
+  transform:translateY(-160%); transition:transform .16s ease;
+}
+.skip-link:focus{transform:translateY(0)}
+:where(a,button,input,textarea,select,[tabindex]):focus-visible{
+  outline:3px solid var(--focus); outline-offset:3px;
+}
+:where(.btn,.pill,.tab,.chip,.tool):focus-visible{
+  box-shadow:0 0 0 4px color-mix(in srgb,var(--focus) 26%,transparent);
+}
+.input:focus,.textarea:focus,.select:focus{
+  border-color:var(--focus); background:var(--bg-2);
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 24%,transparent);
+}
+.topbar{
+  min-height:var(--topbar-h);
+  padding:12px max(20px,calc((100vw - var(--max))/2));
+  background:color-mix(in srgb,var(--bg) 88%,transparent);
+  box-shadow:0 1px 0 color-mix(in srgb,var(--ink) 4%,transparent);
+}
+.brand{max-width:min(620px,58vw)}
+.mark{width:38px;height:38px;border-radius:12px;background:linear-gradient(145deg,var(--ink),color-mix(in srgb,var(--ink) 78%,var(--accent-4)));box-shadow:0 8px 20px rgba(0,0,0,.2)}
+.brand h1{font-size:18px}
+.brand small{color:var(--ink-3);max-width:54ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.top-actions,#authArea{min-width:0;flex-wrap:nowrap!important}
+#authArea{position:relative}
+#meLabel{max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#meMenu{
+  top:calc(100% + 9px)!important;right:0!important;min-width:190px!important;
+  padding:8px!important;border-radius:12px!important;background:var(--card)!important;
+  box-shadow:var(--shadow)!important;
+}
+#meMenu button{min-height:40px}
+#meMenu button:hover{background:var(--bg-3)!important}
+.tabs{
+  position:sticky;top:calc(var(--topbar-h) + 10px);z-index:35;
+  margin:14px auto 0;padding:5px;
+  background:color-mix(in srgb,var(--card) 92%,transparent);
+  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+}
+.tab{min-height:40px;padding:9px 15px;color:var(--ink-2)}
+.tab.active{background:var(--bg-4);border-color:var(--line-strong)}
+.main{padding-top:24px}
+.card{border-color:var(--border);box-shadow:var(--shadow-soft)}
+.card-h{min-height:54px;padding:15px 18px}
+.card-h span,.muted{color:var(--ink-3)}
+.small{line-height:1.6}
+.btn,button.pill,label.pill,.chip{min-height:40px;justify-content:center}
+.btn{padding:10px 16px;border-radius:11px}
+.btn.secondary:hover{background:var(--bg-4);border-color:var(--line-strong)}
+.pill{padding:8px 12px}
+
+/* Landing: one clear promise, one primary action, one proof column. */
+.landing{max-width:var(--max);padding:8px 0 48px;gap:32px}
+.hero{
+  position:relative;isolation:isolate;overflow:hidden;
+  grid-template-columns:minmax(0,1.12fr) minmax(300px,.88fr);
+  gap:clamp(28px,5vw,68px);padding:clamp(28px,5vw,64px);
+  border-color:var(--line-strong);
+  background:
+    linear-gradient(125deg,color-mix(in srgb,var(--accent) 13%,var(--card)) 0%,var(--card) 52%,color-mix(in srgb,var(--accent-4) 8%,var(--card)) 100%);
+}
+.hero::after{
+  content:"";position:absolute;width:300px;height:300px;right:-130px;top:-150px;z-index:-1;
+  border-radius:999px;background:color-mix(in srgb,var(--accent) 10%,transparent);filter:blur(2px);
+}
+.hero > *{min-width:0}
+.hero h1{font-size:clamp(2.35rem,4.5vw,3.8rem);line-height:1.04;letter-spacing:-.055em;max-width:13ch}
+.hero-sub{max-width:58ch;font-size:clamp(14.5px,1.6vw,17px);line-height:1.7;margin-top:16px}
+.bullets{gap:13px;margin-top:22px}
+.bullet{gap:12px;font-size:13.5px;line-height:1.55}
+.bullet .dot{margin-top:7px!important;flex:0 0 auto}
+.cta-row{gap:12px;margin-top:24px}
+.cta-row .btn{min-height:48px;padding:12px 20px;font-size:14px}
+.hero > div:last-child{gap:14px!important}
+.mock-card{padding:16px;border-style:solid;border-color:var(--border);background:color-mix(in srgb,var(--bg-2) 92%,transparent);box-shadow:0 8px 24px rgba(0,0,0,.12)}
+#landingStats{border-style:solid!important;box-shadow:none}
+#landingNext{border-color:color-mix(in srgb,var(--accent) 58%,var(--border))!important}
+#landingNextBar{height:8px!important}
+
+/* Authentication: calm, legible, and usable as a mobile sheet. */
+#authOverlay{background:rgba(5,6,8,.7)}
+#authDialog{max-height:min(720px,calc(100dvh - 32px));overflow:auto;padding:26px;border-color:var(--line-strong)}
+#authDialog h3{font-size:23px;line-height:1.2}
+#authDescription{font-size:13.5px!important;line-height:1.65!important}
+.auth-form{gap:18px}
+.auth-fields{gap:14px}
+.auth-field{gap:7px}
+.auth-field > span{color:var(--ink-2);font-size:12.5px}
+.auth-field .input{min-height:46px;font-size:16px}
+.auth-status{padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg-3)}
+.auth-error:not(:empty){min-height:auto;padding:10px 12px;border:1px solid color-mix(in srgb,var(--accent-3) 62%,var(--border));border-radius:10px;background:color-mix(in srgb,var(--accent-3) 9%,var(--card))}
+.auth-actions{padding-top:4px}
+.auth-actions-primary .btn{min-width:88px}
+
+/* Dashboard: stronger scan order and quieter supporting surfaces. */
+.dashboard{gap:20px}
+.dash-top{padding:4px 2px 2px}
+.dash-top h2{font-size:clamp(1.45rem,3vw,2rem)}
+#dashStatsGrid{gap:14px!important;margin:8px 0 4px!important}
+#dashStatsGrid .card{min-height:112px;padding:16px!important;background:color-mix(in srgb,var(--bg-2) 94%,transparent)!important;box-shadow:none}
+#dashStatsGrid .card > div:nth-child(2){font-size:25px!important;line-height:1.15;margin-top:10px!important}
+.dash-section-heading{margin:10px 0 0!important;min-height:38px}
+.dash-section-heading h3{color:var(--ink-2)!important}
+.partner-card{padding:20px;gap:16px;border-color:var(--line-strong)}
+#dashHistoryArea,#recentRunsArea{padding:14px!important;box-shadow:none}
+#dashEmpty{border-style:dashed;box-shadow:none}
+
+@media(max-width:840px){
+  .hero{grid-template-columns:1fr;padding:clamp(24px,6vw,40px)}
+  .hero h1{max-width:15ch}
+}
+@media(max-width:700px){
+  :root{--gap:16px;--topbar-h:60px}
+  .topbar{padding:9px 12px;gap:8px}
+  .brand{gap:9px;max-width:none}
+  .mark{width:34px;height:34px}
+  .brand h1{font-size:15px}
+  .brand small{display:none}
+  .top-actions{gap:5px}
+  .top-actions .pill{padding:8px 10px}
+  #meLabel{max-width:132px}
+  .tabs{
+    top:calc(var(--topbar-h) + 6px);width:auto;max-width:none;margin:10px 10px 0;
+    flex-wrap:nowrap;justify-content:flex-start;overflow-x:auto;overscroll-behavior-inline:contain;
+    scrollbar-width:none;-webkit-overflow-scrolling:touch;
+  }
+  .tabs::-webkit-scrollbar{display:none}
+  .tab{min-height:44px;padding:9px 14px}
+  .main{padding:16px 12px 72px}
+  .landing{padding:2px 0 32px}
+  .hero{border-radius:16px}
+  .card-h{align-items:flex-start;flex-wrap:wrap}
+  .partner-card{grid-template-columns:44px minmax(0,1fr);padding:16px}
+}
+@media(max-width:520px){
+  #themeLabel{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+  .hero{padding:22px 18px;gap:26px}
+  .hero h1{font-size:clamp(2.15rem,12vw,3rem)}
+  .cta-row{display:grid;grid-template-columns:1fr;width:100%}
+  .cta-row .btn{width:100%}
+  #dashStatsGrid{grid-template-columns:1fr!important}
+  #dashStatsGrid .card{min-height:92px}
+  .dash-top{align-items:flex-start}
+  .dash-top > .row{width:100%;justify-content:space-between}
+  .partner-card{grid-template-columns:1fr}
+  #authOverlay{align-items:flex-end;padding:0}
+  #authDialog{width:100%;max-width:none!important;max-height:calc(100dvh - 16px);border-radius:20px 20px 0 0;padding:24px 18px max(22px,env(safe-area-inset-bottom))}
+  .auth-actions{align-items:stretch;flex-direction:column}
+  .auth-actions-primary{width:100%;margin-left:0}
+  .auth-actions-primary .btn{flex:1}
+  #authModeSwitch{width:100%}
+}
+@media(pointer:coarse){
+  .btn,button.pill,label.pill,.chip,.tool{min-height:44px}
+}
+@media(prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
+}
 </style>
 
 <script>
@@ -641,10 +820,11 @@ p{margin:0}
 
 </head>
 <body>
+<a class="skip-link" href="#appMain">Skip to main content</a>
 <div class="shell">
-  <div class="topbar">
+  <header class="topbar">
     <div class="brand">
-      <div class="mark">R</div>
+      <div class="mark" aria-hidden="true">R</div>
       <div>
         <h1>Randori Circle</h1>
         <small>Practice DSA + System Design together — Sunday pairing, live rooms, whiteboard.</small>
@@ -652,39 +832,39 @@ p{margin:0}
     </div>
     <div class="top-actions">
       <div id="authArea" class="row" style="gap:6px">
-        <span id="meLabel" class="pill" style="display:none; cursor:pointer; position:relative"></span>
-      <div id="meMenu" style="display:none; position:absolute; top:44px; right:60px; background:var(--bg-2); border:1px solid var(--border); border-radius:10px; padding:6px; min-width:120px; z-index:50; box-shadow:0 8px 24px rgba(0,0,0,.3)">
+        <button id="meLabel" class="pill" type="button" aria-expanded="false" aria-controls="meMenu" aria-haspopup="true" style="display:none; cursor:pointer; position:relative"></button>
+      <div id="meMenu" aria-label="Account actions" style="display:none; position:absolute; top:44px; right:60px; background:var(--bg-2); border:1px solid var(--border); border-radius:10px; padding:6px; min-width:120px; z-index:50; box-shadow:0 8px 24px rgba(0,0,0,.3)">
         <button id="meSignOut" style="width:100%; text-align:left; background:none; border:none; color:var(--ink); padding:8px 10px; border-radius:8px; font-size:12.5px; cursor:pointer">Sign out</button>
         <button id="meSignOutAll" style="width:100%; text-align:left; background:none; border:none; color:var(--warn); padding:8px 10px; border-radius:8px; font-size:12.5px; cursor:pointer">Sign out everywhere</button>
       </div>
         <button id="authBtn" class="pill" title="Sign in / up">Sign in</button>
         <button id="signOutBtn" class="pill" style="display:none" title="Sign out">Sign out</button>
       </div>
-      <button id="themeToggle" class="pill" title="Toggle theme">◐ <span id="themeLabel">dark</span></button>
+      <button id="themeToggle" class="pill" title="Toggle theme" aria-label="Dark color theme; switch to light">◐ <span id="themeLabel">dark</span></button>
       <button id="exportBtn" class="pill" title="Export notes" style="display:none">↗ export</button>
     </div>
-  </div>
-  <div class="tabs" role="tablist">
-    <button class="tab active" data-tab="circle">◍ Circle <span class="kbd" id="peopleCount">0</span></button>
-    <button class="tab" data-tab="pair">⇄ Pairing</button>
-    <button class="tab" data-tab="code">〈〉 Code</button>
-    <button class="tab" data-tab="board">◫ Board</button>
-    <button class="tab" data-tab="history">↺ History</button>
-  </div>
-  <div class="main">
+  </header>
+  <nav class="tabs" aria-label="Practice areas">
+    <button class="tab active" type="button" data-tab="circle" aria-controls="view-circle">◍ Circle <span class="kbd" id="peopleCount">0</span></button>
+    <button class="tab" type="button" data-tab="pair" aria-controls="view-pair">⇄ Pairing</button>
+    <button class="tab" type="button" data-tab="code" aria-controls="view-code">〈〉 Code</button>
+    <button class="tab" type="button" data-tab="board" aria-controls="view-board">◫ Board</button>
+    <button class="tab" type="button" data-tab="history" aria-controls="view-history">↺ History</button>
+  </nav>
+  <main id="appMain" class="main" tabindex="-1">
 
     <!-- LANDING (anonymous only) -->
-    <section id="view-landing" class="view" style="display:none">
+    <section id="view-landing" class="view" aria-labelledby="landingTitle" style="display:none">
       <div class="landing">
         <div class="hero">
           <div>
             <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><span class="kbd" style="background:var(--accent);color:#0f0f10;border-color:var(--accent)">new</span><span class="small muted">Sunday pairing • DSA + System Design</span></div>
-            <h1>Randori Circle<br/>Practice <span style="background:var(--accent); color:#0f0f10; padding:0 8px; border-radius:8px">together</span></h1>
+            <h1 id="landingTitle">Randori Circle<br/>Practice <span style="background:var(--accent); color:#0f0f10; padding:0 8px; border-radius:8px">together</span></h1>
             <div class="hero-sub">A small circle of friends who mock-interview each other on a weekly cycle. No recruiters, no trios — an odd member gets a solo practice room.</div>
             <div class="bullets">
-              <div class="bullet"><span class="dot" style="margin-top:6px"></span><span><b>Join a private circle</b> — use verified Google access approved by the circle owner.</span></div>
-              <div class="bullet"><span class="dot" style="margin-top:6px;background:#a9b6ff"></span><span><b>Pick your focus</b> — DSA, System Design, or both. You decide with your partner.</span></div>
-              <div class="bullet"><span class="dot" style="margin-top:6px;background:#e8a0b0"></span><span><b>Meet + drill</b> — agree a time, chat, then jump into live code / whiteboard / video.</span></div>
+              <div class="bullet"><span class="dot" aria-hidden="true" style="margin-top:6px"></span><span><b>Join a private circle</b> — use verified Google access approved by the circle owner.</span></div>
+              <div class="bullet"><span class="dot" aria-hidden="true" style="margin-top:6px;background:#a9b6ff"></span><span><b>Pick your focus</b> — DSA, System Design, or both. You decide with your partner.</span></div>
+              <div class="bullet"><span class="dot" aria-hidden="true" style="margin-top:6px;background:#e8a0b0"></span><span><b>Meet + drill</b> — agree a time, chat, then jump into live code / whiteboard / video.</span></div>
             </div>
             <div class="cta-row">
               <button id="landingSignup" class="btn" style="padding:11px 18px; font-size:14px">Join the circle</button>
@@ -695,7 +875,7 @@ p{margin:0}
           <div style="display:grid; gap:10px">
             <div class="mock-card"><div class="row" style="justify-content:space-between"><b style="font-size:12px">Current cycle</b><span class="kbd">weekly</span></div><div class="pair" style="padding:8px"><div class="who"><span class="avatar" style="background:#c8f6a0">FC</span><b style="font-size:12px">You × Priya Shah</b></div><span class="kbd">DSA • agreed together</span></div><div class="small muted">You set the time together — no auto-scheduling nag.</div></div>
             <div id="landingStats" class="card" style="padding:12px; border:1px dashed var(--border); background:var(--bg-2)"><div class="row" style="gap:10px; flex-wrap:wrap; justify-content:space-between"><span class="small muted">Circle Pulse • live</span><span id="landingStatsUpdated" class="kbd" style="font-size:10px">loading…</span></div><div class="grid-3" style="margin-top:10px; gap:10px; display:grid; grid-template-columns:repeat(3,1fr)"><div style="text-align:center"><div id="statMembers" style="font-size:22px; font-weight:600">—</div><div class="small muted">members</div></div><div style="text-align:center"><div id="statWeeks" style="font-size:22px; font-weight:600">—</div><div class="small muted">weeks paired</div></div><div style="text-align:center"><div id="statSessions" style="font-size:22px; font-weight:600">—</div><div class="small muted">pairings made</div></div></div></div>
-      <div id="landingNext" class="card" style="border-color:#c8f6a0; background:color-mix(in srgb, var(--accent) 8%, var(--bg-2))"><div class="card-h" style="padding:10px 12px"><h2 style="font-size:13px">Next pairing run</h2><span id="landingNextCountdown" class="kbd">Loading schedule…</span></div><div class="card-b" style="padding:10px 12px"><div style="font-size:13px"><b id="landingNextLabel">Loading the next cycle…</b><div class="small muted" id="landingNextSub" style="margin-top:4px">Pairings publish once per cycle. Sign up before the displayed cutoff to be included.</div></div><div id="landingNextBar" style="margin-top:10px; height:6px; background:var(--bg-3); border-radius:999px; overflow:hidden"><div id="landingNextProg" style="height:100%; width:40%; background:var(--accent)"></div></div></div></div>
+      <div id="landingNext" class="card" style="border-color:#c8f6a0; background:color-mix(in srgb, var(--accent) 8%, var(--bg-2))"><div class="card-h" style="padding:10px 12px"><h2 style="font-size:13px">Next pairing run</h2><span id="landingNextCountdown" class="kbd">Loading schedule…</span></div><div class="card-b" style="padding:10px 12px"><div style="font-size:13px"><b id="landingNextLabel">Loading the next cycle…</b><div class="small muted" id="landingNextSub" style="margin-top:4px">Pairings publish once per cycle. Sign up before the displayed cutoff to be included.</div></div><div id="landingNextBar" role="progressbar" aria-label="Weekly cycle progress toward the next pairing run" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="Schedule unavailable" style="margin-top:10px; height:6px; background:var(--bg-3); border-radius:999px; overflow:hidden"><div id="landingNextProg" style="height:100%; width:0%; background:var(--accent)"></div></div></div></div>
       <div class="mock-card"><b style="font-size:12px">What people say</b><div class="small" style="color:var(--ink-2)">“Got me through Stripe & DeepL loops. AI feedback nailed my weak spots with exact quotes.” — Festus, London</div></div>
           </div>
         </div>
@@ -756,24 +936,24 @@ p{margin:0}
     </section>
 
     <!-- DASHBOARD -->
-    <section id="view-dashboard" class="view" style="display:none">
+    <section id="view-dashboard" class="view" aria-labelledby="dashWelcome" style="display:none">
       <div class="dashboard">
         <div class="dash-top">
           <div><h2 id="dashWelcome">Welcome back</h2><div id="dashSub" class="small muted">Checking pairings…</div></div>
           <div class="row"><span id="dashAvailBadge" class="kbd">Checking availability…</span><button id="dashProfileBtn" class="pill">Edit profile</button></div>
         </div>
-        <div id="dashStatsGrid" style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:14px 0">
-          <div class="card" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Your pairings</div><div id="dashStatYou" style="font-size:20px; font-weight:600; margin-top:4px">—</div><div class="small muted" id="dashStatYouSub" style="font-size:11px">across — weeks</div></div>
-          <div class="card" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Circle</div><div id="dashStatCircle" style="font-size:20px; font-weight:600; margin-top:4px">—</div><div class="small muted" style="font-size:11px"><span id="dashStatCircleSub">members</span> • <span id="dashStatWeeks">— weeks</span></div></div>
-          <div class="card" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Next pairing run</div><div id="dashNextLabel" style="font-size:13px; font-weight:600; margin-top:4px">Loading the next cycle…</div><div class="small muted" id="dashNextCount" style="font-size:11px; margin-top:2px">calculating…</div></div>
+        <div id="dashStatsGrid" role="list" aria-label="Practice summary" style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:14px 0">
+          <div class="card" role="listitem" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Your pairings</div><div id="dashStatYou" style="font-size:20px; font-weight:600; margin-top:4px">—</div><div class="small muted" id="dashStatYouSub" style="font-size:11px">across — weeks</div></div>
+          <div class="card" role="listitem" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Circle</div><div id="dashStatCircle" style="font-size:20px; font-weight:600; margin-top:4px">—</div><div class="small muted" style="font-size:11px"><span id="dashStatCircleSub">members</span> • <span id="dashStatWeeks">— weeks</span></div></div>
+          <div class="card" role="listitem" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Next pairing run</div><div id="dashNextLabel" style="font-size:13px; font-weight:600; margin-top:4px">Loading the next cycle…</div><div class="small muted" id="dashNextCount" style="font-size:11px; margin-top:2px">calculating…</div></div>
         </div>
-        <div style="margin:6px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Next session</h3><div style="flex:1;height:1px;background:var(--border)"></div></div>
+        <div class="dash-section-heading" style="margin:6px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Next session</h3><div style="flex:1;height:1px;background:var(--border)"></div></div>
         <div id="dashPairArea"></div>
         <div id="dashScheduleArea" data-testid="schedule-area"></div>
         <div id="dashChatArea"></div>
-        <div style="margin:14px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Recent pairings</h3><div style="flex:1;height:1px;background:var(--border)"></div><button id="dashHistAll" class="pill" style="font-size:11px">Pairings &amp; activity →</button></div>
+        <div class="dash-section-heading" style="margin:14px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Recent pairings</h3><div style="flex:1;height:1px;background:var(--border)"></div><button id="dashHistAll" class="pill" style="font-size:11px">Pairings &amp; activity →</button></div>
         <div id="dashHistoryArea" class="card" style="padding:10px"><div id="dashHistList" class="small muted">Loading recent…</div></div>
-        <div style="margin:14px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Recent runs</h3><div style="flex:1;height:1px;background:var(--border)"></div><button id="recentRunsRefresh" class="pill" style="font-size:11px">refresh</button></div>
+        <div class="dash-section-heading" style="margin:14px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Recent runs</h3><div style="flex:1;height:1px;background:var(--border)"></div><button id="recentRunsRefresh" class="pill" style="font-size:11px">refresh</button></div>
 
         <div id="recentRunsArea" class="card" style="padding:10px"><div id="recentRunsList" class="small muted">No runs yet — hit ▶ Run</div></div>
         <div id="logsArea" class="card" style="padding:10px; display:none; margin-top:12px; border-color:#2a2e38"><div style="display:flex; justify-content:space-between; align-items:center"><h3 style="font-size:12.5px; margin:0; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Logs <span class="kbd" style="font-size:10px; margin-left:6px">admin</span></h3><span class="row" style="gap:6px"><select id="logsLevelSel" class="select" style="font-size:11px; padding:4px 8px"><option value="" selected>all levels</option><option value="error">error</option><option value="warn">warn</option><option value="success">success</option><option value="info">info</option><option value="debug">debug</option></select><button id="logsRefresh" class="pill" style="font-size:11px">refresh</button><button id="logsClear" class="pill" style="font-size:11px">clear view</button></span></div><div id="logsList" class="small muted" style="margin-top:8px; max-height:320px; overflow:auto; font-family:ui-monospace, monospace; font-size:11.5px; display:grid; gap:4px">Loading…</div><div class="small muted" style="margin-top:6px">Batched client+server logs — auto every 20s, admin can filter by level/event. Backed by Sentry-ready hook (see _randori_log). For prod monitoring consider Sentry or Better Stack (see console).</div></div>
@@ -1039,7 +1219,7 @@ p{margin:0}
         </div>
       </div>
     </section>
-  </div>
+  </main>
 </div>
 <div id="confirmOverlay" class="overlay" aria-hidden="true"><div class="modal"><h3 id="confirmTitle">Confirm?</h3><p id="confirmMsg" class="small" style="color:var(--ink-2); margin:0"></p><div class="row"><button id="confirmCancel" class="btn secondary">Cancel</button><button id="confirmOk" class="btn">Confirm</button></div></div></div>
 <div id="promptOverlay" class="overlay" aria-hidden="true"><div class="modal"><h3 id="promptTitle">Enter value</h3><input id="promptInput" class="input"/><div class="row"><button id="promptCancel" class="btn secondary">Cancel</button><button id="promptOk" class="btn">Save</button></div></div></div>
@@ -1100,6 +1280,24 @@ p{margin:0}
 </div>
 
 <div id="toast" class="toast"></div>
+
+<script>
+/* Keep the visual navigation state available to assistive technology. */
+(()=>{
+  const navigation=document.querySelector('.tabs');
+  if(!navigation) return;
+  const syncCurrentPage=()=>{
+    navigation.querySelectorAll('.tab').forEach(tab=>{
+      if(tab.classList.contains('active')) tab.setAttribute('aria-current','page');
+      else tab.removeAttribute('aria-current');
+    });
+  };
+  new MutationObserver(syncCurrentPage).observe(navigation,{
+    subtree:true,attributes:true,attributeFilter:['class'],
+  });
+  syncCurrentPage();
+})();
+</script>
 
 <script>
 (() => {
@@ -1619,7 +1817,9 @@ async function refreshMe(){
       if(hint && me) hint.textContent = `pairings for ${me.name||me.display_name||me.email}` + (isAdmin()?' • admin':'');
       else if(hint && !me && effectiveSignedIn) hint.textContent='Signed in — syncing profile…';
     } else {
-      if(meLabel) meLabel.style.display='none';
+      if(meLabel){ meLabel.style.display='none'; meLabel.setAttribute('aria-expanded','false'); }
+      const accountMenu=document.getElementById('meMenu');
+      if(accountMenu) accountMenu.style.display='none';
       if(authBtn){ authBtn.style.display='inline-flex'; authBtn.hidden=false; authBtn.removeAttribute('aria-hidden'); }
       if(outBtn){ outBtn.style.display='none'; outBtn.hidden=true; outBtn.setAttribute('aria-hidden','true'); }
       if(hint) hint.textContent='Sign in to see your pairings';
@@ -1967,9 +2167,48 @@ async function refreshMe(){
       if(document.getElementById('authErr')?.textContent) setAuthError('');
     });
   }
-  (() => { const _wireOut = (id)=>{ const b=document.getElementById(id); if(!b||b._wired) return; b._wired=true; b.onclick=()=>{ const main=document.getElementById('signOutBtn'); if(main&&main.onclick) return main.onclick(); }; }; _wireOut('dashSignOut'); _wireOut('psSignOut'); _wireOut('meSignOut');
-        const ml=document.getElementById('meLabel'); const mm=document.getElementById('meMenu'); if(ml&&mm&&!ml._menuWired){ ml._menuWired=true; ml.addEventListener('click', (e)=>{ e.stopPropagation(); mm.style.display=mm.style.display==='none'||!mm.style.display?'block':'none'; }); document.addEventListener('click', (e)=>{ if(!mm.contains(e.target)&&e.target!==ml) mm.style.display='none'; }); }
-      })();
+  (() => {
+    const wireSignOut=(id)=>{
+      const button=document.getElementById(id);
+      if(!button||button._wired) return;
+      button._wired=true;
+      button.onclick=()=>{
+        const main=document.getElementById('signOutBtn');
+        if(main&&main.onclick) return main.onclick();
+      };
+    };
+    wireSignOut('dashSignOut'); wireSignOut('psSignOut'); wireSignOut('meSignOut');
+    const label=document.getElementById('meLabel');
+    const menu=document.getElementById('meMenu');
+    if(!label||!menu||label._menuWired) return;
+    label._menuWired=true;
+    const setOpen=(open,{focusFirst=false}={})=>{
+      menu.style.display=open?'block':'none';
+      label.setAttribute('aria-expanded',open?'true':'false');
+      if(open&&focusFirst) menu.querySelector('button')?.focus();
+    };
+    label.addEventListener('click',event=>{
+      event.stopPropagation();
+      setOpen(label.getAttribute('aria-expanded')!=='true');
+    });
+    label.addEventListener('keydown',event=>{
+      if(event.key==='ArrowDown'){
+        event.preventDefault();
+        setOpen(true,{focusFirst:true});
+      }else if(event.key==='Escape'){
+        setOpen(false);
+      }
+    });
+    menu.addEventListener('keydown',event=>{
+      if(event.key!=='Escape') return;
+      event.preventDefault();
+      setOpen(false);
+      label.focus();
+    });
+    document.addEventListener('click',event=>{
+      if(!menu.contains(event.target)&&event.target!==label) setOpen(false);
+    });
+  })();
   async function performSignOut({everywhere=false}={}){
     invalidateAuthRefreshes();
     let response;
@@ -2279,7 +2518,13 @@ async function refreshMe(){
   // ---------- theme ----------
   const THEME_KEY='randori-theme';
   let theme = localStorage.getItem(THEME_KEY) || 'dark';
-  function applyTheme(t){ document.documentElement.classList.toggle('light', t==='light'); localStorage.setItem(THEME_KEY,t); document.getElementById('themeLabel').textContent=t; }
+  function applyTheme(t){
+    document.documentElement.classList.toggle('light', t==='light');
+    localStorage.setItem(THEME_KEY,t);
+    document.getElementById('themeLabel').textContent=t;
+    const nextTheme=t==='light'?'dark':'light';
+    document.getElementById('themeToggle').setAttribute('aria-label',`${t[0].toUpperCase()+t.slice(1)} color theme; switch to ${nextTheme}`);
+  }
   applyTheme(theme);
   document.getElementById('themeToggle').onclick=()=>{ theme=theme==='dark'?'light':'dark'; applyTheme(theme); renderBoard(); };
 
@@ -7660,16 +7905,22 @@ def allow(key, limit=5):
     const nextSub=document.getElementById('landingNextSub');
     const cnt=document.getElementById('landingNextCountdown');
     const prog=document.getElementById('landingNextProg');
+    const progress=document.getElementById('landingNextBar');
     const next=pairingBoundaryFromStats(stats);
     if(nextLabel) nextLabel.textContent=pairingLabelFromStats(stats);
     if(nextSub) nextSub.textContent='The availability cutoff and pairing run share this boundary. '+fmtCountdown(next)+'.';
-    if(cnt) cnt.textContent=fmtCountdown(next);
-    if(prog){
+    const updateCountdown=()=>{
+      const countdown=fmtCountdown(next);
+      if(cnt) cnt.textContent=countdown;
+      if(!prog||!progress||!next) return;
       const weekMs=7*86400000;
-      const elapsed=next?weekMs-(next-new Date()):0;
-      const pct=Math.max(8, Math.min(96, 100*elapsed/weekMs));
-      prog.style.width=pct+'%';
-    }
+      const elapsed=weekMs-(next-new Date());
+      const pct=Math.max(0,Math.min(100,100*elapsed/weekMs));
+      prog.style.width=Math.max(8,Math.min(96,pct))+'%';
+      progress.setAttribute('aria-valuenow',String(Math.round(pct)));
+      progress.setAttribute('aria-valuetext',`${Math.round(pct)}% of the weekly cycle elapsed; ${countdown}`);
+    };
+    updateCountdown();
     if(landingCountdownTimer) clearInterval(landingCountdownTimer);
     if(next) landingCountdownTimer=setInterval(()=>{
       const c=document.getElementById('landingNextCountdown');
@@ -7679,7 +7930,7 @@ def allow(key, limit=5):
         fetchStats(false).then(fresh=>{ if(fresh) populateLanding(fresh); });
         return;
       }
-      c.textContent=fmtCountdown(next);
+      updateCountdown();
     },30000);
   }
 
