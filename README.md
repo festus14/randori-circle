@@ -81,7 +81,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_pair-access.js` | shared source-aware authorization for canonical private pair rooms |
 | `api/_circle-membership.js` | primary-circle membership, keyed invite hashes, signed short-lived claims, and audited acceptance |
 | `api/invitations.js` | owner-only invitation lifecycle and rate-limited public preparation |
-| `db/schema-manifest.js` | checksummed contract for 49 application tables and 54 named indexes |
+| `db/schema-manifest.js` | checksummed contract for 50 application tables and 54 named indexes |
 | `db/schema-inspector.js` | read-only SQLite drift inspection and non-executable planning |
 
 The target Next.js/Supabase architecture is intentionally phased rather than introduced as a big-bang rewrite.
@@ -101,6 +101,7 @@ Copy `.env.example` and configure at least:
 - the explicit `INVITATION_EMAIL_DELIVERY_ENABLED` gate and separate versioned `INVITATION_EMAIL_ENCRYPTION_*` key ring to queue owner-created invitation links without storing a plaintext bearer token
 - `PASSWORD_RESET_ENABLED=true` plus the independent versioned `PASSWORD_RESET_ENCRYPTION_*` key ring to enable recovery after migration v8 is ready
 - the dedicated versioned `IDENTITY_EMAIL_HASH_*` key ring before setting `IDENTITY_MANAGEMENT_ENABLED=true` after migration v9; Google linking also requires the complete Google OAuth configuration above
+- migration v15 plus protected adoption of each configured credential purpose before enabling its production capability; status/adoption/advance and restore rules are in `docs/KEY_ROTATION.md`
 - `AUTH_SCHEMA_BOOTSTRAP_ENABLED` is legacy-only and must remain false for the migrated OIDC flow; run the protected database migrations before enabling production authentication
 - `RESEND_API_KEY` and `RESEND_FROM` for invitation, pairing, schedule,
   verification, and password-reset notifications
@@ -110,7 +111,7 @@ Copy `.env.example` and configure at least:
   control generation and evidence settings
 
 See [GOOGLE_OAUTH.md](GOOGLE_OAUTH.md) and [TURSO.md](TURSO.md) for provider setup. Back up the database before first deploying migrations.
-Key changes use the staged, forward-only [key rotation runbook](docs/KEY_ROTATION.md); never replace a configured key in place or remove an old key while its actionable count is nonzero.
+Key changes use the staged, forward-only [key rotation runbook](docs/KEY_ROTATION.md); never replace a configured key in place, bypass its durable v15 control, or remove an old key while its actionable or retained count is nonzero.
 
 The protected Turso recovery workflow performs a monitored isolated restore every Monday at 03:17 UTC and remains manually dispatchable. A separate hourly, production-credential-free watchdog queries the authoritative GitHub run and artifact records; after a two-hour scheduling grace it requires a run from the current weekly slot, and an unfinished run has an absolute 06:47 UTC deadline that a delayed start cannot reset. Absent, stuck, failed, stale, expired, or corrupt drills therefore fail visibly. Retained evidence is limited to PII-free RPO/RTO timings, checksums, aggregate counts, and cleanup state. See the [backup/restore rehearsal runbook](docs/TURSO_BACKUP_RESTORE_REHEARSAL.md).
 

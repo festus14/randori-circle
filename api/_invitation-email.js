@@ -13,6 +13,11 @@ import {
 } from './_key-rotation.js';
 import { createOutboxEventStatement, OutboxDeliveryError, readOutboxMetrics, runOutboxWorker } from './_outbox.js';
 import { classifyPairingProviderError } from './_pairing-email.js';
+import {
+  assertCredentialKeyControl,
+  credentialKeyControlStatus,
+  withCredentialKeyControlStatus,
+} from './_credential-key-control.js';
 
 export const INVITATION_EMAIL_EVENT_TYPE='invitation.email.requested';
 export const INVITATION_EMAIL_EVENT_VERSION=1;
@@ -38,7 +43,7 @@ function configuredOrigin({localRuntime=false}={}){
   return url.origin;
 }
 
-function invitationKeyRing({localRuntime=false,env=process.env}={}){
+export function invitationKeyRing({localRuntime=false,env=process.env}={}){
   try{
     const ring=parseKeyRing({
       env,purpose:'invitation-email',keyEnv:'INVITATION_EMAIL_ENCRYPTION_KEY',
@@ -255,6 +260,7 @@ export function createInvitationEmailHandler({db,baseUrl,send,localRuntime=false
     if(preflight.rows?.length!==1){
       return {status:'suppressed',reasonCode:'INVITATION_INACTIVE'};
     }
+    await assertCredentialKeyControl(db,invitationKeyRing({localRuntime}));
     const payload=invitationEmailPayload(event,{localRuntime});
     const current=await db.execute({sql:activeInvitationSql(),args:[payload.actorUserId,
       payload.invitationId,payload.circleId,payload.tokenHash,payload.emailHash,payload.email]});
@@ -276,7 +282,7 @@ export function createInvitationEmailHandler({db,baseUrl,send,localRuntime=false
   };
 }
 
-export async function invitationEmailKeyRotationStatus(db,{localRuntime=false}={}){
+export async function invitationEmailEnvelopeRotationMetrics(db,{localRuntime=false,ring=null}={}){
   if(!db||typeof db.execute!=='function') throw new TypeError('database client is required');
   // Actionable events and resend-retained terminal events must come from one
   // statement snapshot. Separate reads could miss a live invitation whose
@@ -320,14 +326,21 @@ export async function invitationEmailKeyRotationStatus(db,{localRuntime=false}={
   for(const row of rows){
     (Number(row.retained)===1?retainedEnvelopes:actionableEnvelopes).push(row.envelope);
   }
-  return credentialRotationMetricsFromEnvelopes({ring:invitationKeyRing({localRuntime}),
-    actionableEnvelopes,retainedEnvelopes});
+  const configuredRing=ring||invitationKeyRing({localRuntime});
+  return credentialRotationMetricsFromEnvelopes({ring:configuredRing,actionableEnvelopes,retainedEnvelopes});
+}
+
+export async function invitationEmailKeyRotationStatus(db,{localRuntime=false}={}){
+  const ring=invitationKeyRing({localRuntime});
+  const metrics=await invitationEmailEnvelopeRotationMetrics(db,{localRuntime,ring});
+  return withCredentialKeyControlStatus(metrics,await credentialKeyControlStatus(db,ring));
 }
 
 export async function ensureInvitationEmailReadiness(db,{localRuntime=false}={}){
   if(!db||typeof db.execute!=='function') throw new TypeError('database client is required');
-  invitationKeyRing({localRuntime});
+  const ring=invitationKeyRing({localRuntime});
   await db.execute(`SELECT id,event_type,event_version,idempotency_key FROM outbox_events LIMIT 0`);
+  await assertCredentialKeyControl(db,ring);
   return true;
 }
 

@@ -10,6 +10,7 @@ import { applyMigrations, inspectMigrationState, prepareMigrationConnection } fr
 
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const THROUGH_V13=EXECUTABLE_MIGRATIONS.slice(0,13);
+const THROUGH_V14=EXECUTABLE_MIGRATIONS.slice(0,14);
 const V14=EXECUTABLE_MIGRATIONS[13];
 
 function fixture(){
@@ -27,7 +28,7 @@ async function apply(db,migrations=EXECUTABLE_MIGRATIONS){
 test('v14 adds only the durable circle creation receipt and lookup index',async()=>{
   const item=fixture();
   try{
-    const result=await apply(item.db);
+    const result=await apply(item.db,THROUGH_V14);
     assert.equal(result.toVersion,14);
     assert.deepEqual(V14.operations.map(operation=>operation.name),[
       'uq_circle_audit_events_id_circle','circle_creation_requests','idx_circle_creation_requests_circle',
@@ -47,18 +48,20 @@ test('managed v13 upgrades once and preserves a complete receipt',async()=>{
   const item=fixture();
   try{
     await apply(item.db,THROUGH_V13);
-    const before=await inspectMigrationState(item.db);
+    const before=await inspectMigrationState(item.db,{migrations:THROUGH_V14});
     assert.equal(before.currentVersion,13);
-    const upgraded=await applyMigrations(item.db,{expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY});
+    const upgraded=await applyMigrations(item.db,{
+      expectedStateFingerprint:before.stateFingerprint,migrations:THROUGH_V14,retry:NO_RETRY,
+    });
     assert.deepEqual(upgraded.applied.map(entry=>entry.version),[14]);
-    assert.equal((await inspectMigrationState(item.db)).schemaExact,true);
+    assert.equal((await inspectMigrationState(item.db,{migrations:THROUGH_V14})).schemaExact,true);
   }finally{ item.close(); }
 });
 
 test('v14 receipt keys isolate actors and enforce one result chain',async()=>{
   const item=fixture();
   try{
-    await apply(item.db);
+    await apply(item.db,THROUGH_V14);
     await item.db.execute(`INSERT INTO auth_accounts
       (id,email,password_hash,display_name,color) VALUES
       (1,'one@example.test','hash','One','#111111'),(2,'two@example.test','hash','Two','#222222')`);

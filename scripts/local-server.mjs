@@ -495,6 +495,29 @@ export async function seedLocalOnboarding(config,{
   }
 }
 
+export async function adoptLocalCredentialKeyControls(config,{createDatabaseClient=createClient}={}){
+  if(!config?.databaseUrl||!config?.databasePath||!config?.rootDir){
+    refuse('LOCAL_DATABASE_REFUSED','A resolved isolated local database is required for key adoption.');
+  }
+  const resolved=parseLocalDatabaseUrl(config.databaseUrl,config.rootDir);
+  if(resolved.databaseUrl!==config.databaseUrl||resolved.databasePath!==config.databasePath
+    ||resolved.localDirectory!==config.localDirectory){
+    refuse('LOCAL_DATABASE_REFUSED','A resolved isolated local database is required for key adoption.');
+  }
+  const client=createDatabaseClient({url:config.databaseUrl});
+  try{
+    const {runCredentialKeyControl}=await import('./credential-key-control.mjs');
+    for(const purpose of ['email-activation','password-reset','invitation-email',
+      'identity-email-observation']){
+      await runCredentialKeyControl(client,{operation:'adopt',purpose,
+        confirmation:'CHANGE_CREDENTIAL_KEY_CONTROL',mutationsEnabled:true},{localRuntime:true});
+    }
+  }catch(error){
+    if(error instanceof LocalServerError) throw error;
+    throw new LocalServerError('LOCAL_DATABASE_NOT_READY','Local credential keys could not be adopted.',{cause:error});
+  }finally{ try{ await client.close(); }catch{} }
+}
+
 function localResetFile(path,localDirectory){
   if(!isWithin(localDirectory,path)){
     refuse('LOCAL_DATABASE_REFUSED','Local reset escaped the configured project data directory.');
@@ -1086,6 +1109,7 @@ export async function createLocalDevelopmentServer({
       const displayHost=config.host==='::1'?'[::1]':config.host;
       url=`http://${displayHost}:${address.port}`;
       restoreEnvironment=installRuntimeEnvironment(config,url,secret,envTarget);
+      await adoptLocalCredentialKeyControls(config);
       onboarding=await seedLocalOnboarding(config);
       const defaultRuntime=await loadDefaultRuntime();
       closeRequestDatabase=defaultRuntime.closeDatabase;

@@ -16,6 +16,7 @@ import {
 } from '../db/migration-ledger-readiness.js';
 import { inspectSchema, readOnlyDatabase } from '../db/schema-inspector.js';
 import { READINESS_SCHEMA_MANIFEST } from '../db/schema-readiness-manifest.js';
+import { inspectCredentialKeyControlReadiness } from '../db/credential-key-control.js';
 
 export const HEALTH_RESPONSE=Object.freeze({ok:true,status:'live'});
 export const READY_RESPONSE=Object.freeze({ok:true,status:'ready'});
@@ -96,6 +97,8 @@ export async function inspectDatabaseReadiness(database,{membershipRequired=fals
   }),MIGRATION_CONTRACTS);
   if(ledger.currentVersion!==LATEST_MIGRATION_VERSION
     ||ledger.rows.length!==MIGRATION_CONTRACTS.length) return false;
+  const keyControl=await inspectCredentialKeyControlReadiness(db);
+  if(!keyControl.ok) return false;
   const membership=membershipRequired
     ?await inspectCompletedMembershipRollout(db)
     :await inspectMembershipRolloutReadiness(db);

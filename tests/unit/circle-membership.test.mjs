@@ -6,7 +6,9 @@ import {pathToFileURL} from 'node:url';
 import {afterEach,beforeEach,mock,test} from 'node:test';
 import {createClient} from '@libsql/client';
 import {MIGRATION_PLANS} from '../../db/migration-plan.js';
+import {CREDENTIAL_KEY_CONTROL_SEED_OPERATIONS} from '../../db/credential-key-control.js';
 import {createOutboxEventStatement} from '../../api/_outbox.js';
+import {adoptCredentialKeyControl} from '../support/credential-key-control.mjs';
 
 let currentDb=null;
 const temporaryDirectories=[];
@@ -43,6 +45,10 @@ const [{default:invitationsHandler},{default:dataHandler},invitationEmail]=await
 ]);
 const outboxOperations=MIGRATION_PLANS[5].operations.map(operation=>operation.sql);
 const activeCircleContextOperations=MIGRATION_PLANS[11].operations.map(operation=>operation.sql);
+const credentialKeyControlOperations=[
+  ...MIGRATION_PLANS[14].operations.map(operation=>operation.sql),
+  ...CREDENTIAL_KEY_CONTROL_SEED_OPERATIONS.map(operation=>operation.sql),
+];
 
 function invoke(handler,{method='GET',url='/',query={},headers={},body={}}={}){
   return new Promise((resolve,reject)=>{
@@ -92,6 +98,7 @@ async function createDatabase(){
       FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE CASCADE)`,
     ...activeCircleContextOperations,
     ...outboxOperations,
+    ...credentialKeyControlOperations,
     `INSERT INTO circle_membership_rollout (id,registrations_closed,updated_at)
       VALUES (1,0,datetime('now'))`,
     `INSERT INTO auth_accounts
@@ -645,6 +652,7 @@ test('owner invitation email create and bounded resend rotate links atomically',
   process.env.INVITATION_EMAIL_ENCRYPTION_KEY=Buffer.alloc(32,9).toString('base64url');
   process.env.INVITATION_EMAIL_ENCRYPTION_KEY_VERSION='1';
   process.env.INVITATION_EMAIL_ENVELOPE_WRITE_VERSION='2';
+  await adoptCredentialKeyControl(currentDb,invitationEmail.invitationKeyRing());
   const headers={'x-test-auth':'owner',origin:'https://randori.example.test',host:'randori.example.test'};
   const created=await invoke(invitationsHandler,{method:'POST',url:'/api/invitations',
     query:{endpoint:'invitations'},headers,body:{email:' Invitee@Example.Test '}});
@@ -722,6 +730,7 @@ test('unrelated unhealthy invitation history does not block create or exact-targ
   process.env.RESEND_FROM='Randori <invite@randori.example.test>';
   process.env.INVITATION_EMAIL_DELIVERY_ENABLED='true';
   process.env.INVITATION_EMAIL_ENCRYPTION_KEY=Buffer.alloc(32,9).toString('base64url');
+  await adoptCredentialKeyControl(currentDb,invitationEmail.invitationKeyRing());
   const unrelatedKey='invitation-email/v1/ffffffff-ffff-4fff-8fff-ffffffffffff/1';
   await currentDb.execute(createOutboxEventStatement({eventType:invitationEmail.INVITATION_EMAIL_EVENT_TYPE,
     idempotencyKey:unrelatedKey,payload:{credential_envelope:'malformed'},maxAttempts:1}));
@@ -753,6 +762,7 @@ test('an outbox failure rolls back invitation creation and token rotation',async
   process.env.RESEND_FROM='Randori <invite@randori.example.test>';
   process.env.INVITATION_EMAIL_DELIVERY_ENABLED='true';
   process.env.INVITATION_EMAIL_ENCRYPTION_KEY=Buffer.alloc(32,10).toString('base64url');
+  await adoptCredentialKeyControl(currentDb,invitationEmail.invitationKeyRing());
   const headers={'x-test-auth':'owner',origin:'https://randori.example.test',host:'randori.example.test'};
   await currentDb.execute(`CREATE TRIGGER reject_invitation_email BEFORE INSERT ON outbox_events
     BEGIN SELECT RAISE(ABORT,'forced invitation email failure'); END`);
@@ -790,6 +800,7 @@ test('concurrent invitation resends produce one rotated token and one durable ev
   process.env.RESEND_FROM='Randori <invite@randori.example.test>';
   process.env.INVITATION_EMAIL_DELIVERY_ENABLED='true';
   process.env.INVITATION_EMAIL_ENCRYPTION_KEY=Buffer.alloc(32,11).toString('base64url');
+  await adoptCredentialKeyControl(currentDb,invitationEmail.invitationKeyRing());
   const headers={'x-test-auth':'owner',origin:'https://randori.example.test',host:'randori.example.test'};
   const created=await invoke(invitationsHandler,{method:'POST',url:'/api/invitations',
     query:{endpoint:'invitations'},headers,body:{email:'race@example.test'}});
@@ -814,6 +825,7 @@ test('a current owner can resend after ownership transfer while the former owner
   process.env.RESEND_FROM='Randori <invite@randori.example.test>';
   process.env.INVITATION_EMAIL_DELIVERY_ENABLED='true';
   process.env.INVITATION_EMAIL_ENCRYPTION_KEY=Buffer.alloc(32,13).toString('base64url');
+  await adoptCredentialKeyControl(currentDb,invitationEmail.invitationKeyRing());
   const ownerHeaders={'x-test-auth':'owner',origin:'https://randori.example.test',host:'randori.example.test'};
   const created=await invoke(invitationsHandler,{method:'POST',url:'/api/invitations',
     query:{endpoint:'invitations'},headers:ownerHeaders,body:{email:'transfer@example.test'}});

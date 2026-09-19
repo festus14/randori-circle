@@ -26,6 +26,16 @@ material at a version already present in an envelope or identity observation.
 No production secret or key fingerprint belongs in source control, logs, issue
 comments, screenshots, or retained rehearsal artifacts.
 
+## Durable acceptance control
+
+Migration v15 creates exactly one `credential_key_controls` row for each purpose. New rows are deliberately `uninitialized`: schema readiness remains green, but that purpose's capability, producers, and active consumers remain unavailable until an operator adopts the configured active version and purpose-scoped fingerprint. Password login and unrelated features do not depend on another purpose's control.
+
+The control is independent of queues and identity observations. Draining or deleting ordinary business rows therefore cannot erase evidence that the configured active key is below the accepted version or uses different material at the same version. Public status contains only the purpose, state/reason, configured and accepted versions, CAS generation, and bounded aggregate material counts. The stored fingerprint is never returned by the operator command or emitted to logs.
+
+Production adoption and advance are available only through the manually dispatched **Credential key control** workflow on the latest `main` commit. Configure a protected environment named `credential-key-control`, restrict it to `main`, require the team's approval rule, and provide `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, all four key rings, and `JWT_SECRET` as secrets. Set `TURSO_PRODUCTION_DATABASE_HOST` to the exact hostname in the protected database URL. Keep `CREDENTIAL_KEY_CONTROL_MUTATIONS_ENABLED=false` except for one approved adoption or advance. The workflow shares the production database-operation concurrency lock with migration and restore jobs.
+
+Use `status` with confirmation `INSPECT_CREDENTIAL_KEY_CONTROL`. Use `adopt` or `advance` with confirmation `CHANGE_CREDENTIAL_KEY_CONTROL`; `advance` additionally requires the accepted version and generation returned by the immediately preceding status. Exact retries are idempotent. A competing or stale generation, downgrade, same-version substitution, missing accepted prior pair, malformed or incompatible live material, and any legacy-v1 material during advance fail closed. First adoption may retain legacy-v1 compatibility so an existing installation can establish its durable baseline without abandoning queued credentials.
+
 ## Envelope and failure contract
 
 Credential envelope v2 uses AES-256-GCM. Its clear header contains only envelope
@@ -70,20 +80,14 @@ loses its active owner, or reaches the five-send limit.
 
 ## Staged rotation
 
-1. Back up production and complete the isolated restore rehearsal for the exact
-   release commit. Keep all production mutation gates unchanged.
-2. Deploy the compatibility reader with each existing credential key explicitly
-   configured as version `1`, empty prior arrays, and all three write switches
-   set to `1`. Confirm schema migration state is unchanged.
+1. Back up production and complete the isolated restore rehearsal for the exact release commit. Apply migration v15 through the protected one-version migration workflow; never amend or replace v14.
+2. With each existing credential key explicitly configured as version `1`, empty prior arrays, and all three write switches set to `1`, inspect and adopt all four purpose controls. Keep the mutation gate false between operations. Deploy v15-aware runtime enforcement only after adoption, or accept that the affected capabilities remain unavailable until adoption completes. Local development performs this deterministic first adoption automatically against its guarded local database.
 3. Rehearse v1 delivery, v2 delivery, retry for a missing old key, tamper
    rejection, resend, restart, and isolated restore. Retained evidence may
    contain only the aggregate rotation projection.
 4. Set one credential purpose's write switch to `2`, without changing its key or
    version. Confirm new rows report v2 and existing v1 rows still deliver.
-5. For that purpose only, generate a new key, increment the active version, and
-   move the former version/material to the front of its prior array. Deploy the
-   active key, version, and prior array atomically. Do not rotate another purpose
-   until readiness is green.
+5. For that purpose only, generate a new key, increment the active version, and move the former version/material to the front of its prior array. Make the complete candidate ring available to the protected workflow, inspect the resulting `advance_required` state, and advance with the exact accepted version and generation. Deploy the same ring to the application. The one-slot control deliberately permits a short purpose-specific maintenance interval between control advance and application deployment; zero-downtime staged activation requires a future two-slot control model. Do not rotate another purpose until compatibility readiness is green.
 6. Keep the old key while any actionable or retained v1 count remains; `ready`
    stays false until that count is zero because v1 cannot identify one safe
    retirement candidate. Also keep a prior key while any old-version count names it.
@@ -106,6 +110,12 @@ loses its active owner, or reaches the five-send limit.
    (or identity observation count) to be zero, then repeat the isolated
    restore/readiness rehearsal.
 
+## Restore behavior
+
+A v15 backup preserves its four controls. A v14-or-earlier restore is migrated forward to v15, which seeds four uninitialized controls; every configured purpose then requires protected adoption before it can serve traffic. A stale v15 restore whose accepted version is below current configuration reports `advance_required`; inspect the restored business material and explicitly re-authorize the configured ring through the protected workflow.
+
+The controls cannot remember state created after the selected backup. Absolute monotonicity across restoration of an older database requires an external KMS or independently durable control plane. The v15 guarantee is narrower and explicit: a stale control never advances itself from health checks, startup, workers, or requests, and cannot become green without a protected operator transition.
+
 ## Rollback
 
 Once a higher key version or v2 envelope has been written, rollback is
@@ -118,3 +128,5 @@ do not make the former key active under a lower version. Re-add an accidentally
 removed prior key at its original version to recover retryable work. For broader
 integrity concerns, stop delivery and use the protected PITR workflow rather
 than bulk-decrypting or rewriting queued payloads.
+
+After v15 adoption, roll back only to another v15-aware build. A pre-v15 runtime would ignore the durable control and must not be used as a security rollback. Preserve the table and its migration ledger row; never reset, delete, or hand-edit a purpose control.

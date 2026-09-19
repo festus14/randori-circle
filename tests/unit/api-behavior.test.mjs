@@ -665,7 +665,7 @@ test('password signup is local-only while production and private-beta registrati
   assert.equal(executed.length, 0, 'non-local signup must be rejected before database access');
 });
 
-test('auth capabilities report the exact local or private-beta contract without database access', async () => {
+test('auth capabilities report static flags without database access and fail controlled features closed', async () => {
   let result=await invoke(authHandler,{
     url:'/api/auth/capabilities',query:{endpoint:'capabilities'},headers:{host:'randori.example.test'},
   });
@@ -717,10 +717,11 @@ test('auth capabilities report the exact local or private-beta contract without 
   assert.deepEqual(result.body,{
     ok:true,
     capabilities:{passwordLogin:true,passwordSignup:true,verifiedEmailActivation:false,passwordReset:false,
-      localIdentity:false,googleOAuth:false,recentAuthMaxAgeSeconds:600,identityManagement:true},
+      localIdentity:false,googleOAuth:false,recentAuthMaxAgeSeconds:600,identityManagement:false},
     registrationMode:'local_open',
   });
-  assert.equal(executed.length,0);
+  assert.equal(executed.length,5);
+  assert.ok(executed.every(statement=>/^SELECT\b/i.test(statement.sql.trim())));
 
   const wrongMethod=await invoke(authHandler,{
     method:'POST',url:'/api/auth/capabilities',query:{endpoint:'capabilities'},headers:localOriginHeaders,

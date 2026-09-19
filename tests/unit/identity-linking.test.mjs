@@ -11,6 +11,7 @@ import {issueSession,verifyRequestAuth} from '../../api/_db.js';
 import {
   GOOGLE_ISSUER,
   addPasswordCredential,
+  identityEmailHashConfiguration,
   linkGoogleCredential,
   identityEmailKeyRotationStatus,
   observeGoogleProviderEmail,
@@ -20,6 +21,10 @@ import {
 } from '../../api/_identity-linking.js';
 import {EXECUTABLE_MIGRATIONS} from '../../db/executable-migrations.js';
 import {applyMigrations,inspectMigrationState,prepareMigrationConnection} from '../../db/migration-runner.js';
+import {
+  adoptCredentialKeyControl,
+  advanceCredentialKeyControl,
+} from '../support/credential-key-control.mjs';
 
 const resources=[];
 const NOW=1_800_000_000;
@@ -46,6 +51,7 @@ async function fixture(){
   const state=await inspectMigrationState(db);
   await applyMigrations(db,{expectedStateFingerprint:state.stateFingerprint,
     retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
+  await adoptCredentialKeyControl(db,identityEmailHashConfiguration());
   resources.push(()=>{ db.close(); rmSync(directory,{recursive:true,force:true}); });
   return db;
 }
@@ -215,6 +221,9 @@ test('provider email rotation is hash-only, audited once per change, and never r
   process.env.IDENTITY_EMAIL_HASH_PREVIOUS_KEYS=JSON.stringify([
     {version:1,key:Buffer.alloc(32,7).toString('base64url')},
   ]);
+  await advanceCredentialKeyControl(db,identityEmailHashConfiguration(),{
+    expectedVersion:1,expectedGeneration:1,
+  });
   assert.deepEqual(await observeGoogleProviderEmail(db,{
     issuer:GOOGLE_ISSUER,subject:'stable-subject',userId:1,providerEmail:'second@example.test',nowSeconds:NOW+3,
   }),{changed:false,rekeyed:true});
@@ -229,19 +238,19 @@ test('provider email rotation is hash-only, audited once per change, and never r
   process.env.IDENTITY_EMAIL_HASH_KEY=Buffer.alloc(32,9).toString('base64url');
   await assert.rejects(observeGoogleProviderEmail(db,{
     issuer:GOOGLE_ISSUER,subject:'stable-subject',userId:1,providerEmail:'second@example.test',nowSeconds:NOW+4,
-  }),error=>error?.code==='IDENTITY_EMAIL_HASH_KEY_SUBSTITUTION');
+  }),error=>error?.code==='KEY_CONTROL_SUBSTITUTION');
   process.env.IDENTITY_EMAIL_HASH_KEY=Buffer.alloc(32,7).toString('base64url');
   process.env.IDENTITY_EMAIL_HASH_KEY_VERSION='1';
   delete process.env.IDENTITY_EMAIL_HASH_PREVIOUS_KEYS;
   await assert.rejects(observeGoogleProviderEmail(db,{
     issuer:GOOGLE_ISSUER,subject:'stable-subject',userId:1,providerEmail:'third@example.test',nowSeconds:NOW+4,
-  }),error=>error?.code==='IDENTITY_EMAIL_HASH_VERSION_ROLLBACK');
+  }),error=>error?.code==='KEY_CONTROL_DOWNGRADE');
   await addAccount(db,{id:2,email:'second-account@example.test'});
   const second=await session(db,2,'second-account@example.test','password');
   await assert.rejects(linkGoogleCredential(db,second.payload,{
     issuer:GOOGLE_ISSUER,subject:'new-subject-under-old-key',providerEmail:'second-account@example.test',
     providerAuthenticatedAt:NOW+4,nowSeconds:NOW+4,
-  }),error=>error?.code==='IDENTITY_EMAIL_HASH_VERSION_ROLLBACK');
+  }),error=>error?.code==='KEY_CONTROL_DOWNGRADE');
   assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM auth_provider_identities
     WHERE subject='new-subject-under-old-key'`)).rows[0].count),0);
   assert.equal(JSON.stringify((await db.execute(`SELECT * FROM auth_provider_email_state`)).rows),beforeDowngrade);
@@ -262,6 +271,9 @@ test('identity rotation distinguishes changed mail with a prior key from neutral
   process.env.IDENTITY_EMAIL_HASH_PREVIOUS_KEYS=JSON.stringify([
     {version:1,key:Buffer.alloc(32,7).toString('base64url')},
   ]);
+  await advanceCredentialKeyControl(db,identityEmailHashConfiguration(),{
+    expectedVersion:1,expectedGeneration:1,
+  });
   assert.deepEqual(await observeGoogleProviderEmail(db,{issuer:GOOGLE_ISSUER,
     subject:'prior-key-subject',userId:1,providerEmail:'changed@example.test',nowSeconds:NOW+1}),
   {changed:true,rekeyed:true});

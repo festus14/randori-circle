@@ -16,6 +16,11 @@ import {
   sealCredentialEnvelope,
 } from './_key-rotation.js';
 import { createOutboxEventStatement, OutboxDeliveryError, readOutboxMetrics, runOutboxWorker } from './_outbox.js';
+import {
+  assertCredentialKeyControl,
+  credentialKeyControlStatus,
+  withCredentialKeyControlStatus,
+} from './_credential-key-control.js';
 
 export const PASSWORD_RESET_EVENT_TYPE='auth.passwordreset.requested';
 export const PASSWORD_RESET_EVENT_VERSION=1;
@@ -32,7 +37,7 @@ function safeEqual(left,right){
   return a.length===b.length&&timingSafeEqual(a,b);
 }
 
-function passwordResetKeyRing(env=process.env){
+export function passwordResetKeyRing(env=process.env){
   try{
     const ring=parseKeyRing({
       env,purpose:'password-reset',keyEnv:'PASSWORD_RESET_ENCRYPTION_KEY',
@@ -112,16 +117,22 @@ export async function ensurePasswordResetReadiness(db,{
 }={}){
   if(!db||typeof db.execute!=='function') throw new TypeError('database client is required');
   if(typeof requireDeliveryKey!=='boolean') throw new TypeError('valid password reset readiness options required');
-  if(requireDeliveryKey) passwordResetKeyRing();
+  const ring=requireDeliveryKey?passwordResetKeyRing():null;
   await db.execute(`SELECT id,user_id,email_hash,token_hash,created_at,expires_at,last_sent_at,
     send_count,used_at,revoked_at FROM auth_password_resets LIMIT 0`);
   await db.execute(`SELECT session_hash,user_id,authenticated_at,method FROM auth_recent_proofs LIMIT 0`);
   await db.execute(`SELECT id,event_type,event_version,idempotency_key FROM outbox_events LIMIT 0`);
+  if(ring) await assertCredentialKeyControl(db,ring);
 }
 
 export async function passwordResetKeyRotationStatus(db){
-  return readCredentialRotationMetrics(db,{eventType:PASSWORD_RESET_EVENT_TYPE,
-    envelopeField:'token_envelope',ring:passwordResetKeyRing()});
+  const ring=passwordResetKeyRing();
+  const [metrics,control]=await Promise.all([
+    readCredentialRotationMetrics(db,{eventType:PASSWORD_RESET_EVENT_TYPE,
+      envelopeField:'token_envelope',ring}),
+    credentialKeyControlStatus(db,ring),
+  ]);
+  return withCredentialKeyControlStatus(metrics,control);
 }
 
 async function resetNow(db,override){
@@ -153,10 +164,11 @@ export async function requestPasswordReset(db,{email},{nowSeconds=null}={}){
   const resetId=randomUUID();
   const token=createPasswordResetToken();
   const tokenHash=hashPasswordResetToken(token);
-  passwordResetKeyRing();
+  const ring=passwordResetKeyRing();
   const transaction=await db.transaction('write');
   let finished=false;
   try{
+    await assertCredentialKeyControl(transaction,ring);
     nowSeconds=await resetNow(transaction,nowSeconds);
     const membershipPredicate=process.env.CIRCLE_MEMBERSHIP_ENABLED==='true'
       ?`AND EXISTS (SELECT 1 FROM circle_memberships membership JOIN circles circle ON circle.id=membership.circle_id
@@ -247,6 +259,7 @@ async function consumePasswordResetAttempt(db,{token,passwordHash},{nowSeconds=n
     if(reset.used_at!==null) return await finish({status:'used'});
     if(reset.revoked_at!==null) return await finish({status:'revoked'});
     if(Number(reset.expires_at)<=nowSeconds) return await finish({status:'expired'});
+    await assertCredentialKeyControl(transaction,passwordResetKeyRing());
     const currentEmailHash=hashInvitationEmail(String(reset.email||''));
     if(!currentEmailHash||!safeEqual(currentEmailHash,reset.email_hash)
       ||!String(reset.password_hash||'').startsWith('$2')) return await finish({status:'revoked'});
@@ -341,6 +354,7 @@ export function createPasswordResetHandler({db,baseUrl,send}={}){
       args:[metadata.resetId,metadata.email,hashInvitationEmail(metadata.email)],
     });
     if(current.rows?.length!==1) return {status:'suppressed',reasonCode:'PASSWORD_RESET_INACTIVE'};
+    await assertCredentialKeyControl(db,passwordResetKeyRing());
     const payload=resetCredential(metadata,event);
     if(!safeEqual(payload.tokenHash,current.rows[0].token_hash)){
       throw new OutboxDeliveryError('PAYLOAD_INVALID',{retryable:false});

@@ -1,4 +1,6 @@
-import { createHash } from 'node:crypto';
+import {checksum} from './stable-checksum.js';
+
+export {checksum,stableJson} from './stable-checksum.js';
 
 export const SCHEMA_MANIFEST_VERSION=1;
 
@@ -170,6 +172,10 @@ const PLAN_14_OPERATIONS=Object.freeze([
   index('idx_circle_creation_requests_circle','circle_creation_requests',['circle_id','actor_user_id']),
 ]);
 
+const PLAN_15_OPERATIONS=Object.freeze([
+  table('credential_key_controls',`CREATE TABLE IF NOT EXISTS credential_key_controls (purpose TEXT PRIMARY KEY NOT NULL CHECK(purpose IN ('email-activation','password-reset','invitation-email','identity-email-observation')), control_version INTEGER NOT NULL DEFAULT 1 CHECK(typeof(control_version)='integer' AND control_version=1), state TEXT NOT NULL DEFAULT 'uninitialized' CHECK(state IN ('uninitialized','accepted')), highest_key_version INTEGER CHECK(highest_key_version IS NULL OR (typeof(highest_key_version)='integer' AND highest_key_version>=1 AND highest_key_version<=2147483647)), highest_key_fingerprint TEXT CHECK(highest_key_fingerprint IS NULL OR (length(highest_key_fingerprint)=64 AND highest_key_fingerprint NOT GLOB '*[^0-9a-f]*')), generation INTEGER NOT NULL DEFAULT 0 CHECK(typeof(generation)='integer' AND generation>=0), installed_by_migration INTEGER NOT NULL DEFAULT 15 CHECK(typeof(installed_by_migration)='integer' AND installed_by_migration=15), installed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), CHECK((state='uninitialized' AND highest_key_version IS NULL AND highest_key_fingerprint IS NULL AND generation=0) OR (state='accepted' AND highest_key_version IS NOT NULL AND highest_key_fingerprint IS NOT NULL AND generation>=1)), CHECK(julianday(installed_at) IS NOT NULL AND julianday(updated_at) IS NOT NULL AND julianday(updated_at)>=julianday(installed_at)))`),
+]);
+
 export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:1,
@@ -230,6 +236,10 @@ export const SCHEMA_OPERATION_SETS=Object.freeze([
     version:14,
     operations:PLAN_14_OPERATIONS,
   }),
+  Object.freeze({
+    version:15,
+    operations:PLAN_15_OPERATIONS,
+  }),
 ]);
 
 export function resolveCurrentArtifacts(operationSets,operation){
@@ -248,18 +258,6 @@ export const INDEXES=resolveCurrentArtifacts(SCHEMA_OPERATION_SETS,'ensure-index
 
 export const TOLERATED_LEGACY_TABLES=Object.freeze(['ai_monthly_usage','schema_migrations']);
 
-export function stableJson(value){
-  if(Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
-  if(value&&typeof value==='object'){
-    return `{${Object.keys(value).sort().map(key=>`${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
-
-export function checksum(value){
-  return createHash('sha256').update(stableJson(value)).digest('hex');
-}
-
 export const SCHEMA_MANIFEST_CHECKSUM=checksum({
   version:SCHEMA_MANIFEST_VERSION,
   tables:TABLES,
@@ -269,7 +267,7 @@ export const SCHEMA_MANIFEST_CHECKSUM=checksum({
 
 // Updating the schema is intentional only when this pinned checksum is updated
 // in the same reviewed change.
-export const PINNED_SCHEMA_MANIFEST_CHECKSUM='6cf405a99d2f50f03d8339d00075442366a4245814440626fb8721acc9295bd5';
+export const PINNED_SCHEMA_MANIFEST_CHECKSUM='b600670e379b6b1b9720672bac31587f9e509e0dfaf9653394bc52a1984c3dbf';
 
 if(SCHEMA_MANIFEST_CHECKSUM!==PINNED_SCHEMA_MANIFEST_CHECKSUM){
   throw new Error(`Schema manifest checksum changed: ${SCHEMA_MANIFEST_CHECKSUM}`);

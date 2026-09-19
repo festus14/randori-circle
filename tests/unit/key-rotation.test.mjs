@@ -14,6 +14,7 @@ import {
   sealCredentialEnvelope,
 } from '../../api/_key-rotation.js';
 import {
+  activationKeyRing,
   createEmailActivationHandler,
   emailActivationConfiguration,
   hashEmailActivationToken,
@@ -22,6 +23,7 @@ import {
 } from '../../api/_email-activation.js';
 import {
   createPasswordResetHandler,
+  passwordResetKeyRing,
   passwordResetConfiguration,
   hashPasswordResetToken,
   openPasswordResetToken,
@@ -30,6 +32,7 @@ import {
 import {
   createInvitationEmailEvent,
   invitationEmailConfiguration,
+  invitationKeyRing,
   openInvitationEmailCredential,
   sealInvitationEmailCredential,
 } from '../../api/_invitation-email.js';
@@ -324,9 +327,21 @@ test('handlers retry missing keys, terminally reject tampering, and suppress ina
   process.env.PASSWORD_RESET_ENCRYPTION_KEY_VERSION='2';
   process.env.INVITATION_EMAIL_ENCRYPTION_KEY=KEY_6;
   process.env.INVITATION_EMAIL_ENCRYPTION_KEY_VERSION='2';
-  const activeDb={execute:async statement=>String(statement.sql).includes('auth_email_activations')
-    ?{rows:[{id:activationId,token_hash:hashEmailActivationToken(TOKEN),send_count:1}]}
-    :{rows:[{id:resetId,token_hash:hashPasswordResetToken(TOKEN)}]}};
+  const rings=new Map([activationKeyRing(),passwordResetKeyRing(),invitationKeyRing()]
+    .map(configured=>[configured.purpose,configured]));
+  const controlResult=statement=>{
+    if(!String(statement?.sql||statement).includes('credential_key_controls')) return null;
+    const configured=rings.get(String(statement.args?.[0]||''));
+    return {rows:configured?[{purpose:configured.purpose,control_version:1,state:'accepted',
+      highest_key_version:configured.active.version,
+      highest_key_fingerprint:configured.active.fingerprint,generation:1,
+      installed_by_migration:15,installed_at:'2026-01-01T00:00:00.000Z',
+      updated_at:'2026-01-01T00:00:00.000Z'}]:[]};
+  };
+  const activeDb={execute:async statement=>controlResult(statement)
+    ||(String(statement.sql).includes('auth_email_activations')
+      ?{rows:[{id:activationId,token_hash:hashEmailActivationToken(TOKEN),send_count:1}]}
+      :{rows:[{id:resetId,token_hash:hashPasswordResetToken(TOKEN)}]})};
   const activationHandler=createEmailActivationHandler({db:activeDb,baseUrl:'https://randori.example.test',
     send:async()=>assert.fail('missing key must not send')});
   const resetHandler=createPasswordResetHandler({db:activeDb,baseUrl:'https://randori.example.test',
@@ -335,7 +350,8 @@ test('handlers retry missing keys, terminally reject tampering, and suppress ina
     error.code==='KEY_VERSION_UNAVAILABLE'&&error.retryable);
   await assert.rejects(()=>resetHandler(resetEvent),error=>
     error.code==='KEY_VERSION_UNAVAILABLE'&&error.retryable);
-  const invitationDb={execute:async()=>({rows:[{id:INVITATION_ID,circle_name:'Practice'}]})};
+  const invitationDb={execute:async statement=>controlResult(statement)
+    ||({rows:[{id:INVITATION_ID,circle_name:'Practice'}]})};
   const invitationHandler=(await import('../../api/_invitation-email.js')).createInvitationEmailHandler({
     db:invitationDb,baseUrl:'https://randori.example.test',send:async()=>assert.fail('missing key must not send')});
   await assert.rejects(()=>invitationHandler(invitationEvent),error=>

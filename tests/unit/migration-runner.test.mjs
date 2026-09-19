@@ -57,12 +57,24 @@ test('fresh apply is transactional, seeds an open rollout, and repeats as a no-o
       retry:fastRetry,
     });
     assert.equal(result.fromVersion,0);
-    assert.equal(result.toVersion,14);
-    assert.deepEqual(result.applied.map(item=>item.version),[1,2,3,4,5,6,7,8,9,10,11,12,13,14]);
+    assert.equal(result.toVersion,15);
+    assert.deepEqual(result.applied.map(item=>item.version),[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]);
     const rollout=await fixture.db.execute('SELECT id,registrations_closed FROM circle_membership_rollout');
     assert.deepEqual(rollout.rows.map(row=>[Number(row.id),Number(row.registrations_closed)]),[[1,0]]);
+    const keyControls=await fixture.db.execute(`SELECT purpose,state,highest_key_version,
+      highest_key_fingerprint,generation,installed_by_migration
+      FROM credential_key_controls ORDER BY purpose`);
+    assert.deepEqual(keyControls.rows.map(row=>[
+      String(row.purpose),String(row.state),row.highest_key_version,row.highest_key_fingerprint,
+      Number(row.generation),Number(row.installed_by_migration),
+    ]),[
+      ['email-activation','uninitialized',null,null,0,15],
+      ['identity-email-observation','uninitialized',null,null,0,15],
+      ['invitation-email','uninitialized',null,null,0,15],
+      ['password-reset','uninitialized',null,null,0,15],
+    ]);
     const ledger=await fixture.db.execute('SELECT version,disposition FROM schema_migrations ORDER BY version');
-    assert.deepEqual(ledger.rows.map(row=>[Number(row.version),row.disposition]),[[1,'applied'],[2,'applied'],[3,'applied'],[4,'applied'],[5,'applied'],[6,'applied'],[7,'applied'],[8,'applied'],[9,'applied'],[10,'applied'],[11,'applied'],[12,'applied'],[13,'applied'],[14,'applied']]);
+    assert.deepEqual(ledger.rows.map(row=>[Number(row.version),row.disposition]),[[1,'applied'],[2,'applied'],[3,'applied'],[4,'applied'],[5,'applied'],[6,'applied'],[7,'applied'],[8,'applied'],[9,'applied'],[10,'applied'],[11,'applied'],[12,'applied'],[13,'applied'],[14,'applied'],[15,'applied']]);
     const generalInspection=await inspectSchema(fixture.db,{manifest:SCHEMA_MANIFEST});
     assert.equal(generalInspection.warnings.length,0);
     assert.deepEqual(generalInspection.tolerated.legacyTables,['schema_migrations']);
@@ -73,8 +85,8 @@ test('fresh apply is transactional, seeds an open rollout, and repeats as a no-o
       retry:fastRetry,
     });
     assert.deepEqual(repeat.applied,[]);
-    assert.equal(repeat.fromVersion,14);
-    assert.equal(repeat.toVersion,14);
+    assert.equal(repeat.fromVersion,15);
+    assert.equal(repeat.toVersion,15);
   }finally{ fixture.close(); }
 });
 
@@ -99,10 +111,10 @@ test('a valid managed v1 database resumes through only the pending migrations',a
       retry:fastRetry,
     });
     assert.equal(resumed.fromVersion,1);
-    assert.equal(resumed.toVersion,14);
-    assert.deepEqual(resumed.applied.map(item=>item.version),[2,3,4,5,6,7,8,9,10,11,12,13,14]);
+    assert.equal(resumed.toVersion,15);
+    assert.deepEqual(resumed.applied.map(item=>item.version),[2,3,4,5,6,7,8,9,10,11,12,13,14,15]);
     const ledger=await fixture.db.execute('SELECT version FROM schema_migrations ORDER BY version');
-    assert.deepEqual(ledger.rows.map(row=>Number(row.version)),[1,2,3,4,5,6,7,8,9,10,11,12,13,14]);
+    assert.deepEqual(ledger.rows.map(row=>Number(row.version)),[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]);
   }finally{ fixture.close(); }
 });
 
@@ -158,10 +170,10 @@ test('exact open schema can be explicitly adopted and adoption is auditable',asy
       expectedStateFingerprint:before.stateFingerprint,
       retry:fastRetry,
     });
-    assert.equal(adopted.toVersion,14);
+    assert.equal(adopted.toVersion,15);
     const rows=await fixture.db.execute('SELECT version,execution_ms,disposition FROM schema_migrations ORDER BY version');
     assert.deepEqual(rows.rows.map(row=>[Number(row.version),Number(row.execution_ms),row.disposition]),[
-      [1,0,'adopted'],[2,0,'adopted'],[3,0,'adopted'],[4,0,'adopted'],[5,0,'adopted'],[6,0,'adopted'],[7,0,'adopted'],[8,0,'adopted'],[9,0,'adopted'],[10,0,'adopted'],[11,0,'adopted'],[12,0,'adopted'],[13,0,'adopted'],[14,0,'adopted'],
+      [1,0,'adopted'],[2,0,'adopted'],[3,0,'adopted'],[4,0,'adopted'],[5,0,'adopted'],[6,0,'adopted'],[7,0,'adopted'],[8,0,'adopted'],[9,0,'adopted'],[10,0,'adopted'],[11,0,'adopted'],[12,0,'adopted'],[13,0,'adopted'],[14,0,'adopted'],[15,0,'adopted'],
     ]);
     const after=await state(fixture.db);
     assert.equal(after.classification,'managed');
@@ -252,6 +264,25 @@ test('managed v2 databases fail closed when the rollout singleton is missing',as
     await assert.rejects(
       applyMigrations(fixture.db,{expectedStateFingerprint:corrupted.stateFingerprint,retry:fastRetry}),
       error=>error instanceof MigrationError&&error.code==='MIGRATION_SCHEMA_INVALID',
+    );
+  }finally{ fixture.close(); }
+});
+
+test('managed v15 databases report and reject missing credential key controls',async()=>{
+  const fixture=temporaryDatabase();
+  try{
+    const before=await state(fixture.db);
+    await applyMigrations(fixture.db,{expectedStateFingerprint:before.stateFingerprint,retry:fastRetry});
+    await fixture.db.execute("DELETE FROM credential_key_controls WHERE purpose='password-reset'");
+    const corrupted=await state(fixture.db);
+    assert.equal(corrupted.classification,'managed');
+    assert.equal(corrupted.schemaExact,true);
+    assert.equal(corrupted.ready,false);
+    assert.deepEqual(corrupted.adoption.keyControl.blockers,['credential_key_controls_invalid']);
+    await assert.rejects(
+      applyMigrations(fixture.db,{expectedStateFingerprint:corrupted.stateFingerprint,retry:fastRetry}),
+      error=>error instanceof MigrationError&&error.code==='MIGRATION_SCHEMA_INVALID'
+        &&error.details.blockers.includes('credential_key_controls_invalid'),
     );
   }finally{ fixture.close(); }
 });
@@ -378,7 +409,7 @@ test('concurrent callers cannot silently apply from the same stale fingerprint',
     const rejected=results.find(result=>result.status==='rejected');
     assert.equal(rejected.reason.code,'MIGRATION_STATE_CHANGED');
     const final=await state(first);
-    assert.equal(final.currentVersion,14);
+    assert.equal(final.currentVersion,15);
     assert.equal(final.ready,true);
   }finally{ fixture.close(); }
 });
