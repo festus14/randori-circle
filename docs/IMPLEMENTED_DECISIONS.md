@@ -1496,3 +1496,35 @@ roll forward with the protected migration workflow; do not restore a runtime
 bootstrap flag. Rollback to the preceding build changes only request behavior
 and requires no database rollback, though it reintroduces the legacy DDL path
 and is therefore an emergency compatibility action rather than normal repair.
+
+## ID-36: Enforce the recovery-control contract in secret-free CI
+
+Status: implemented as a local static gate; it produces no provider evidence
+and changes no production resource or schedule.
+
+**Decision.** The deployability job runs `check:backup-controls` with read-only
+repository permission and no protected environment or secret. The gate reads
+only the committed restore-rehearsal, watchdog, and deployability workflows. It
+pins the reviewed trigger sets and cadences, fixed RPO/RTO, default-branch
+fences, environment and concurrency boundary, bounded fail-closed cleanup and
+alerts, immutable actions, non-persistent checkout credentials, exact sanitized
+artifact paths and retention, and the watchdog's read-only credential-free
+isolation. Output is limited to fixed control descriptions and explicit
+`providerNetworkRequired:false` and `externalMutation:false` claims.
+
+Synthetic mutation tests prove that an unsafe trigger or permission, policy
+drift, lost cleanup/alert gate, private artifact path, secret-bearing or
+provider-dispatching watchdog, unpinned action, or credential-persisting
+checkout fails closed. They do not call GitHub or Turso. A green result proves
+only that code still expresses the reviewed policy; #38 still requires a real
+isolated provider restore, and #51 remains open until current retained provider
+evidence and alert ownership are operationally confirmed.
+
+**Alternatives.** Re-running a provider restore on every pull request would
+expose production authority to untrusted code and spend provider resources.
+Relying only on review or scattered regular expressions had no single CI entry
+point and allowed the workflow policy and runbook to drift independently.
+Giving the watchdog provider credentials would couple detection to the system
+it observes. The selected static gate is intentionally narrower than a YAML
+policy engine, but it is deterministic, dependency-free, redacted, and covers
+the exact two workflows that own this recovery control.

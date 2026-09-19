@@ -75,6 +75,27 @@ An independent read-only watchdog runs hourly at minute 47 with its own concurre
 
 The watchdog uses GitHub's built-in token with read-only `actions` and `contents` permissions. Its fixed-category error annotation names `@festus14`; the owner/on-call notification subscription above is therefore part of the control. Both schedules still share GitHub Actions as a platform, so a repository-wide Actions suspension can silence them together. Move the watchdog to an external monitor that calls the same GitHub API contract when that correlated failure risk exceeds the private-beta tolerance.
 
+The secret-free `check:backup-controls` CI gate statically protects this
+operating contract on pull requests into the rolling integration branch and
+`main`, and on every other run of the repository deployability workflow. It
+requires the exact weekly and hourly cadences, fixed RPO/RTO, default-branch
+fences, read-only permissions, protected rehearsal environment, shared
+database-operation lock, unconditional cleanup, terminal alerts, immutable
+action pins, non-persistent checkout credentials, and the allowlisted sanitized
+artifact paths. It also rejects provider credentials or a rehearsal-dispatch
+path in the watchdog. The validator reads only the three committed workflow
+files, emits fixed control names, and neither uses a network nor receives an
+environment or secret in CI. Its synthetic tests are a drift alarm, not recovery
+evidence: they cannot close #38 or #51 and never authorize #43.
+
+If this gate fails, do not bypass it or enable provider operations. Compare the
+workflow change with this runbook, restore the reviewed control or deliberately
+update code, tests, decision record, and runbook together, then rerun the
+secret-free gate. Rollback is a normal code revert; it does not touch a Turso
+database, retained evidence, GitHub environment, repository secret, or schedule.
+After any intentional provider-workflow policy change, perform a fresh manual
+protected rehearsal and retain its redacted result before migration work.
+
 The owner acknowledges routine failures within four hours after the rehearsal or watchdog alert is emitted and pages the database-reliability escalation immediately for `cleanup_failure`, an unconfirmed source write-state restoration, or an unknown disposable restore. Each successfully uploaded sanitized artifact is retained for 30 days. The cleanup summary remains available when its upload succeeds; the monitor summary is available only when monitor evaluation completes and its upload succeeds; the signed attestation is available only after a healthy monitor result. The independent watchdog also retains its sanitized assessment for 30 days. Disposable databases have zero retention: deletion and provider confirmation are required in the same run. Never delete an unknown database by prefix alone.
 
 ## Evidence and failure recovery
