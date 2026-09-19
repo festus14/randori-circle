@@ -15,13 +15,28 @@ export default defineConfig({
     : [['list'], ['html', { open: 'never' }]],
   use: {
     baseURL,
-    ...devices['Desktop Chrome'],
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'off',
     actionTimeout: 12000,
     navigationTimeout: 20000,
   },
+  projects: [
+    {
+      name: 'chromium',
+      use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      name: 'firefox-workspace',
+      testMatch: /ui-workspace-polish\.spec\.ts/,
+      use: { ...devices['Desktop Firefox'] },
+    },
+    {
+      name: 'webkit-workspace',
+      testMatch: /ui-workspace-polish\.spec\.ts/,
+      use: { ...devices['Desktop Safari'] },
+    },
+  ],
   webServer: {
     command: 'npm run start:test',
     url: baseURL,

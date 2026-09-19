@@ -38,7 +38,7 @@ jobs:
       - name: Run API tests with enforced coverage
         run: npm run test:coverage
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps chromium firefox webkit
       - name: Run browser tests against checkout
         run: npm run test:e2e
       - name: Upload report

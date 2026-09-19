@@ -273,3 +273,27 @@ Pending, resend/retry, expired, already-used, revoked, unavailable, and success 
 4. Set `EMAIL_PASSWORD_ACTIVATION_ENABLED=true` only after readiness is green.
 
 Keep the encryption key stable while pending activation events exist. Rotation requires a future multi-key decrypt window; replacing it immediately suppresses already queued mail.
+
+## ID-11: Polish the weekly workspace without changing its authority boundaries
+
+**Decision.** Extend the increment-1 token system into circle, pairing,
+scheduling, chat, code/video, catalogue, board, and history surfaces using
+semantic headings, shared status chips, shared state panels, and responsive
+task layouts. Preserve every existing server contract and keep private state
+fail-closed. Remove the screen-share placeholder because the application has no
+screen-sharing capability; do not add disabled or optimistic controls for
+unimplemented features.
+
+The complete browser suite remains authoritative on Chromium. A focused
+workspace smoke also runs on Firefox and WebKit, covering the high-frequency
+paired flow, narrow layouts, truthful capability labels, and recoverable
+empty/error states without pixel-fragile screenshots. See
+[UI polish increment 2](UI_POLISH_INCREMENT_2.md).
+
+**Alternatives.** A framework rewrite would provide stronger component
+boundaries but would combine visual work with routing, authentication, and
+state migration. An always-visible collaboration canvas reduces clicks but is
+too dense on phones. Placeholder roadmap controls create false affordances.
+Full three-engine execution of every historical browser case gives broader
+coverage but substantially increases CI time; the focused cross-engine smoke
+is the measured first expansion.

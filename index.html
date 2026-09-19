@@ -608,9 +608,110 @@ body{
 #dashHistoryArea,#recentRunsArea{padding:14px!important;box-shadow:none}
 #dashEmpty{border-style:dashed;box-shadow:none}
 
+/* Workspace surfaces: shared hierarchy and state language for the signed-in journey. */
+.sr-only{
+  position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;
+  overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important;
+}
+.view{min-width:0}
+.view-head{
+  display:flex;align-items:flex-end;justify-content:space-between;gap:20px;
+  margin:0 2px 18px;padding-bottom:16px;border-bottom:1px solid var(--border);
+}
+.view-head > div{min-width:0}
+.view-head h2{font-size:clamp(1.45rem,3vw,2rem);line-height:1.15}
+.view-copy{max-width:66ch;margin-top:6px;color:var(--ink-2);font-size:13.5px;line-height:1.65}
+.eyebrow{display:block;margin-bottom:5px;color:var(--ink-3);font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase}
+.status-chip{
+  display:inline-flex;align-items:center;gap:7px;min-height:32px;padding:6px 10px;
+  border:1px solid var(--border);border-radius:999px;background:var(--bg-3);
+  color:var(--ink-2);font-size:11.5px;font-weight:600;white-space:nowrap;
+}
+.status-chip::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;opacity:.72}
+.status-chip[data-state="success"],.status-chip[data-state="ready"],.status-chip[data-state="saved"],.status-chip[data-state="live"]{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,var(--border));background:color-mix(in srgb,var(--ok) 8%,var(--bg-3))}
+.status-chip[data-state="progress"],.status-chip[data-state="loading"],.status-chip[data-state="connecting"]{color:var(--accent-4);border-color:color-mix(in srgb,var(--accent-4) 42%,var(--border));background:color-mix(in srgb,var(--accent-4) 8%,var(--bg-3))}
+.status-chip[data-state="warning"],.status-chip[data-state="retrying"],.status-chip[data-state="pending"]{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 42%,var(--border));background:color-mix(in srgb,var(--warn) 8%,var(--bg-3))}
+.status-chip[data-state="error"]{color:var(--accent-3);border-color:color-mix(in srgb,var(--accent-3) 45%,var(--border));background:color-mix(in srgb,var(--accent-3) 8%,var(--bg-3))}
+.state-panel{
+  display:grid;gap:7px;padding:16px;border:1px dashed var(--line-strong);border-radius:var(--radius-sm);
+  background:color-mix(in srgb,var(--bg-3) 78%,transparent);color:var(--ink-2);
+}
+.state-panel[data-state="error"]{border-style:solid;border-color:color-mix(in srgb,var(--accent-3) 48%,var(--border));background:color-mix(in srgb,var(--accent-3) 7%,var(--card))}
+.state-panel[data-state="warning"],.state-panel[data-state="stale"]{border-style:solid;border-color:color-mix(in srgb,var(--warn) 48%,var(--border));background:color-mix(in srgb,var(--warn) 7%,var(--card))}
+.surface-inset{padding:14px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-3)}
+.circle-layout{grid-template-columns:minmax(0,1.18fr) minmax(280px,.82fr)}
+#circleAutoNote{padding:9px 11px;border:1px solid var(--border);border-radius:9px;background:var(--bg-3)}
+#circleAutoNote[data-state="ready"]{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 42%,var(--border));background:color-mix(in srgb,var(--ok) 7%,var(--bg-3))}
+#circleAutoNote[data-state="error"]{color:var(--accent-3);border-color:color-mix(in srgb,var(--accent-3) 45%,var(--border));background:color-mix(in srgb,var(--accent-3) 7%,var(--bg-3))}
+#circleOwnerPanel{margin-top:4px;padding:16px!important;border:1px solid var(--border)!important;border-radius:var(--radius-sm);background:var(--bg-3)}
+#circleInviteForm{display:grid!important;grid-template-columns:minmax(0,1fr) auto}
+.flow-steps{counter-reset:flow;display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px!important}
+.flow-step{position:relative;min-height:112px;padding:16px!important;border-style:solid!important;background:var(--bg-3)!important;box-shadow:none}
+.flow-step b{display:block;margin-bottom:7px;font-size:13px}
+.flow-step b::before{counter-increment:flow;content:counter(flow);display:inline-grid;place-items:center;width:24px;height:24px;margin-right:8px;border-radius:8px;background:var(--accent);color:#0f0f10;font-size:11px}
+.pairing-layout{grid-template-columns:minmax(0,1.3fr) minmax(300px,.7fr)}
+#pairsList{min-height:92px}
+#pairsList .pair{background:var(--bg-3);border-color:var(--border)}
+#availabilityWrap{padding:14px!important;border-radius:var(--radius-sm)!important}
+.coordination-grid{display:grid;grid-template-columns:minmax(0,1.08fr) minmax(300px,.92fr);gap:var(--gap);align-items:start}
+.coordination-grid:empty{display:none}
+#dashScheduleArea,#dashChatArea{min-width:0}
+#dashScheduleArea > .card,.chat-box{height:100%;box-shadow:var(--shadow-soft)}
+#proposedList > [data-testid="schedule-proposal"]{padding:10px;border:1px solid var(--border);border-radius:10px;background:var(--bg-3)}
+[data-testid="schedule-actions"]{padding-top:2px}
+[data-testid="schedule-actions"] .input{min-width:220px}
+.chat-box{max-height:440px;border-radius:var(--radius)}
+.chat-list{min-height:150px;max-height:250px;padding:14px}
+.chat-list > [data-testid="pair-chat-empty"]{display:grid;place-items:center;min-height:110px;text-align:center;border:1px dashed var(--border);border-radius:10px;background:var(--bg-3)}
+.chat-input{padding:12px;align-items:end;background:var(--bg-2)}
+.chat-input .input{min-width:180px}
+.msg{max-width:min(88%,520px);padding:9px 11px}
+.msg.mine{justify-self:end}
+.workspace-heading{margin-bottom:16px}
+.workspace-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.video-bar{margin-bottom:16px;padding:16px;border-color:var(--line-strong)}
+.video-bar-head > .row:first-child{align-items:center}
+.video-controls{padding:4px;border:1px solid var(--border);border-radius:12px;background:var(--bg-3)}
+.video-tiles{display:grid;grid-template-columns:repeat(2,minmax(0,280px))}
+.video-tile{width:auto;isolation:isolate}
+.video-placeholder{position:absolute;inset:0;display:grid;place-items:center;align-content:center;gap:8px;color:var(--ink-3);font-size:12px;text-align:center}
+.video-placeholder .avatar{width:42px;height:42px;border-radius:14px;background:var(--bg-4);color:var(--ink-2)}
+.video-tile video{position:relative;z-index:1;visibility:hidden}
+.video-tile.has-media video{visibility:visible}
+.video-tile .vid-label,.video-tile .vid-mute{z-index:2}
+.code-layout{grid-template-columns:minmax(300px,340px) minmax(0,1fr);min-height:640px;border-color:var(--line-strong);box-shadow:var(--shadow-soft)}
+.catalogue-filters{width:100%;display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.catalogue-filters label{display:grid;gap:5px}
+.catalogue-filters label:first-child{grid-column:1 / -1}
+.q-head{padding:16px;align-items:flex-start}
+.q-body{padding:18px}
+.editor-top{padding:10px 12px;gap:10px}
+.editor-toolbar-primary,.editor-toolbar-secondary{gap:7px!important}
+.editor-toolbar-primary{flex:1}
+#questionPanel{padding:10px 12px!important}
+.run-out:empty::before{content:"Run an exercise to see verified results.";color:var(--ink-3);font-size:12.5px}
+.board-page .view-head{margin-bottom:14px}
+.board-wrap{border-color:var(--line-strong);box-shadow:var(--shadow-soft)}
+.toolbar-separator{width:1px;height:24px;background:var(--line);margin:0 4px;flex:0 0 auto}
+.board-toolbar{padding:10px 12px;gap:7px}
+.board-toolbar-group{display:flex;align-items:center;gap:6px;flex:0 0 auto}
+.board-toolbar .tool{width:40px;height:40px}
+.color-dot{min-width:36px;min-height:36px}
+.history-shell > .card{border-color:var(--line-strong)}
+#historyPersonal > [data-testid="pair-history-status"],#historyList > .small:first-child{padding:12px;border-radius:10px;background:var(--bg-3)}
+#historyPersonal ol{list-style:none;padding:0;margin:10px 0 0}
+#historyPersonal [data-testid="pair-history-row"]{padding:11px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg-3)}
+#pairRecapArea > .card{box-shadow:none;border-color:var(--line-strong)}
+#pairRecapArea .card-b > section{padding:11px 0;border-bottom:1px solid var(--border)}
+#pairRecapArea .card-b > section:last-child{border-bottom:0}
+
 @media(max-width:840px){
   .hero{grid-template-columns:1fr;padding:clamp(24px,6vw,40px)}
   .hero h1{max-width:15ch}
+  .circle-layout,.pairing-layout,.coordination-grid{grid-template-columns:1fr}
+  .video-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .code-layout{grid-template-columns:1fr;min-height:0}
+  .q-pane{max-height:440px;border-right:0;border-bottom:1px solid var(--border)}
 }
 @media(max-width:700px){
   :root{--gap:16px;--topbar-h:60px}
@@ -630,10 +731,16 @@ body{
   .tabs::-webkit-scrollbar{display:none}
   .tab{min-height:44px;padding:9px 14px}
   .main{padding:16px 12px 72px}
+  .view-head{align-items:flex-start;margin-bottom:14px;padding-bottom:13px}
   .landing{padding:2px 0 32px}
   .hero{border-radius:16px}
   .card-h{align-items:flex-start;flex-wrap:wrap}
   .partner-card{grid-template-columns:44px minmax(0,1fr);padding:16px}
+  .board-toolbar{flex-wrap:nowrap;overflow-x:auto;overscroll-behavior-inline:contain;scrollbar-width:none}
+  .board-toolbar .tool{width:44px;height:44px}
+  .color-dot{min-width:40px;min-height:40px}
+  .board-toolbar::-webkit-scrollbar{display:none}
+  .canvas-host{min-height:clamp(360px,68dvh,520px)}
 }
 @media(max-width:520px){
   #themeLabel{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
@@ -646,6 +753,29 @@ body{
   .dash-top{align-items:flex-start}
   .dash-top > .row{width:100%;justify-content:space-between}
   .partner-card{grid-template-columns:1fr}
+  .view-head{display:grid;gap:10px}
+  .view-head .status-chip{justify-self:start}
+  #circleInviteForm{grid-template-columns:1fr}
+  #circleInviteForm .btn{width:100%}
+  .flow-steps{grid-template-columns:1fr}
+  .flow-step{min-height:0}
+  .video-tiles{grid-template-columns:1fr}
+  .video-controls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}
+  .video-controls .btn,.video-controls .pill{width:100%}
+  .catalogue-filters{grid-template-columns:1fr}
+  .catalogue-filters label:first-child{grid-column:auto}
+  .editor-top{align-items:stretch}
+  .editor-toolbar-primary,.editor-toolbar-secondary{width:100%}
+  .editor-toolbar-primary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+  .editor-toolbar-primary .select,.editor-toolbar-primary .btn,.editor-toolbar-primary .pill{width:100%!important}
+  .editor-toolbar-primary label{grid-column:1/-1;margin-left:0!important}
+  .editor-toolbar-secondary{justify-content:space-between}
+  [data-testid="schedule-actions"]{display:grid;grid-template-columns:1fr}
+  [data-testid="schedule-actions"] .input,[data-testid="schedule-actions"] .btn{width:100%;min-width:0;min-height:44px}
+  .chat-input{display:grid;grid-template-columns:1fr auto}
+  .chat-input label,.chat-input [role="status"]{grid-column:1/-1}
+  .pair{align-items:flex-start;flex-direction:column}
+  .topic-group{width:100%;flex-wrap:wrap}
   #authOverlay{align-items:flex-end;padding:0}
   #authDialog{width:100%;max-width:none!important;max-height:calc(100dvh - 16px);border-radius:20px 20px 0 0;padding:24px 18px max(22px,env(safe-area-inset-bottom))}
   .auth-actions{align-items:stretch;flex-direction:column}
@@ -949,8 +1079,10 @@ body{
         </div>
         <div class="dash-section-heading" style="margin:6px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Next session</h3><div style="flex:1;height:1px;background:var(--border)"></div></div>
         <div id="dashPairArea"></div>
-        <div id="dashScheduleArea" data-testid="schedule-area"></div>
-        <div id="dashChatArea"></div>
+        <div class="coordination-grid" data-testid="coordination-grid">
+          <div id="dashScheduleArea" data-testid="schedule-area"></div>
+          <div id="dashChatArea"></div>
+        </div>
         <div class="dash-section-heading" style="margin:14px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Recent pairings</h3><div style="flex:1;height:1px;background:var(--border)"></div><button id="dashHistAll" class="pill" style="font-size:11px">Pairings &amp; activity →</button></div>
         <div id="dashHistoryArea" class="card" style="padding:10px"><div id="dashHistList" class="small muted">Loading recent…</div></div>
         <div class="dash-section-heading" style="margin:14px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Recent runs</h3><div style="flex:1;height:1px;background:var(--border)"></div><button id="recentRunsRefresh" class="pill" style="font-size:11px">refresh</button></div>
@@ -958,7 +1090,7 @@ body{
         <div id="recentRunsArea" class="card" style="padding:10px"><div id="recentRunsList" class="small muted">No runs yet — hit ▶ Run</div></div>
         <div id="logsArea" class="card" style="padding:10px; display:none; margin-top:12px; border-color:#2a2e38"><div style="display:flex; justify-content:space-between; align-items:center"><h3 style="font-size:12.5px; margin:0; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Logs <span class="kbd" style="font-size:10px; margin-left:6px">admin</span></h3><span class="row" style="gap:6px"><select id="logsLevelSel" class="select" style="font-size:11px; padding:4px 8px"><option value="" selected>all levels</option><option value="error">error</option><option value="warn">warn</option><option value="success">success</option><option value="info">info</option><option value="debug">debug</option></select><button id="logsRefresh" class="pill" style="font-size:11px">refresh</button><button id="logsClear" class="pill" style="font-size:11px">clear view</button></span></div><div id="logsList" class="small muted" style="margin-top:8px; max-height:320px; overflow:auto; font-family:ui-monospace, monospace; font-size:11.5px; display:grid; gap:4px">Loading…</div><div class="small muted" style="margin-top:6px">Batched client+server logs — auto every 20s, admin can filter by level/event. Backed by Sentry-ready hook (see _randori_log). For prod monitoring consider Sentry or Better Stack (see console).</div></div>
         <div id="dashSignOutWrap" style="margin-top:12px;text-align:right; display:block"><button id="dashSignOut" class="pill" style="font-size:12px;opacity:.75">Sign out</button></div>
-        <div id="dashEmpty" data-testid="dashboard-pair-state" data-state="loading" style="display:none" class="card"><div class="card-b"><b id="dashEmptyTitle">Checking your current cycle…</b><div id="dashEmptyMessage" class="small muted" style="margin-top:6px">Loading durable pairing state.</div><div class="row" style="margin-top:10px"><button class="pill" id="dashSoloCatalogue" type="button">Practice solo from catalogue</button><button class="pill" id="dashHow">How it works?</button></div></div></div>
+        <div id="dashEmpty" data-testid="dashboard-pair-state" data-state="loading" style="display:none" class="card state-panel"><div class="card-b"><b id="dashEmptyTitle">Checking your current cycle…</b><div id="dashEmptyMessage" class="small muted" style="margin-top:6px">Loading durable pairing state.</div><div class="row" style="margin-top:10px"><button class="pill" id="dashSoloCatalogue" type="button">Practice solo from catalogue</button><button class="pill" id="dashHow" type="button">How it works?</button></div></div></div>
       </div>
     </section>
 
@@ -974,8 +1106,12 @@ body{
       <div class="row" style="margin-top:4px"><button id="chkStartTour" class="pill" style="font-size:11px">↺ Restart tour</button><span class="small muted" id="chkProgress">0/5</span></div>
     </div>
     <!-- CIRCLE -->
-    <section id="view-circle" class="view">
-      <div class="grid-2">
+    <section id="view-circle" class="view" aria-labelledby="circleViewTitle">
+      <header class="view-head">
+        <div><span class="eyebrow">People</span><h2 id="circleViewTitle">Your practice circle</h2><p class="view-copy">See who can join the weekly rotation and, if you are an owner, manage private invitations.</p></div>
+        <span class="status-chip" data-state="ready">Private membership</span>
+      </header>
+      <div class="grid-2 circle-layout">
         <div class="card">
           <div class="card-h"><h2>Circle members</h2><span id="circleRoleLabel">private</span></div>
           <div class="card-b" style="display:grid; gap:10px">
@@ -983,7 +1119,7 @@ body{
               <input id="personName" class="input" placeholder="Teammate name (testing only)" maxlength="32" />
               <button id="addPerson" class="btn">Add</button>
             </div>
-            <div id="circleAutoNote" class="small muted">Loading your private circle…</div>
+            <div id="circleAutoNote" class="small muted" role="status" aria-live="polite" data-state="loading">Loading your private circle…</div>
             <div id="peopleList" data-testid="circle-members" class="people" aria-live="polite" aria-busy="true"></div>
             <div id="circleOwnerPanel" hidden style="display:none;gap:10px;border-top:1px solid var(--border);padding-top:12px">
               <div><b style="font-size:13px">Invite a member</b><div class="small muted" style="margin-top:3px">Invitations are email-bound, single-use, and expire after seven days.</div></div>
@@ -1003,10 +1139,10 @@ body{
           <div class="card-h"><h2>How Randori works</h2><span>randori = free practice</span></div>
           <div class="card-b" style="display:grid; gap:12px">
             <p class="small" style="line-height:1.6; color:var(--ink-2); margin:0">You don't pick your partner. Each Sunday the circle publishes one pairing cycle. If the count is odd, one member gets Solo practice — no trios, no one sits out. After pairing, you choose <b style="color:var(--ink)">DSA / System Design / Both</b> yourselves. Published pairs do not change during the cycle.</p>
-            <div class="grid-3">
-              <div class="card" style="border-style:dashed"><div class="card-b small"><b>1</b> Add crew<br/><span class="muted">2-12 people</span></div></div>
-              <div class="card" style="border-style:dashed"><div class="card-b small"><b>2</b> Shuffle<br/><span class="muted">AI fills odd</span></div></div>
-              <div class="card" style="border-style:dashed"><div class="card-b small"><b>3</b> Pick topic & drill<br/><span class="muted">same link</span></div></div>
+            <div class="grid-3 flow-steps" aria-label="Weekly practice flow">
+              <div class="card flow-step"><div class="card-b small"><b>Invite your crew</b><span class="muted">Private, verified membership</span></div></div>
+              <div class="card flow-step"><div class="card-b small"><b>Publish the cycle</b><span class="muted">Fair pairs; solo when odd</span></div></div>
+              <div class="card flow-step"><div class="card-b small"><b>Practise together</b><span class="muted">Schedule, code, board, recap</span></div></div>
             </div>
             <div class="row" id="legacyCircleDemoActions" style="display:none" aria-hidden="true">
               <button class="btn secondary" id="demoBtn">Load demo crew (4)</button>
@@ -1018,8 +1154,12 @@ body{
     </section>
 
     <!-- PAIRING -->
-    <section id="view-pair" class="view" style="display:none">
-      <div class="grid-2">
+    <section id="view-pair" class="view" style="display:none" aria-labelledby="pairingViewTitle">
+      <header class="view-head">
+        <div><span class="eyebrow">Weekly rotation</span><h2 id="pairingViewTitle">Pairing cycle</h2><p class="view-copy">Review the immutable current pairing and set availability for the next Sunday cycle.</p></div>
+        <span class="status-chip" data-state="ready">Server-authoritative</span>
+      </header>
+      <div class="grid-2 pairing-layout">
         <div class="card">
           <div class="card-h">
             <h2>This week</h2>
@@ -1056,31 +1196,36 @@ body{
     </section>
 
     <!-- CODE -->
-    <section id="view-code" class="view" style="display:none">
-      <div id="videoBar" class="video-bar">
+    <section id="view-code" class="view" style="display:none" aria-labelledby="workspaceViewTitle">
+      <header class="view-head workspace-heading">
+        <div><span class="eyebrow">Pair workspace</span><h2 id="workspaceViewTitle">Code together</h2><p class="view-copy">Choose an approved exercise, share one durable room, and run against server-owned evaluation cases.</p></div>
+        <div class="workspace-meta"><span class="status-chip" data-state="ready">Private room</span><span class="status-chip" data-state="ready">Server runner</span></div>
+      </header>
+      <section id="videoBar" class="video-bar" aria-labelledby="liveRoomTitle">
         <div class="video-bar-head">
-          <div class="row small"><b style="font-size:13px">Live room</b><span class="kbd" id="videoRoomLabel">room —</span><span id="videoStatus" class="kbd">off</span></div>
-          <div class="video-controls">
-            <button id="vidCamBtn" class="pill">📷 cam</button>
-            <button id="vidMicBtn" class="pill">🎤 mic</button>
-            <button id="vidJoinBtn" class="btn">Join video</button>
-            <button id="vidLeaveBtn" class="pill" style="display:none">Leave</button>
-            <button id="vidScreenBtn" class="pill" title="Screen share (placeholder)">🖥 screen</button>
+          <div class="row small"><b id="liveRoomTitle" style="font-size:13px">Optional video</b><span class="kbd" id="videoRoomLabel">room —</span><span id="videoStatus" class="status-chip" data-state="idle" role="status" aria-live="polite">off</span></div>
+          <div class="video-controls" role="group" aria-label="Video controls">
+            <button id="vidCamBtn" class="pill" type="button" aria-pressed="true">Join with camera</button>
+            <button id="vidMicBtn" class="pill" type="button" aria-pressed="true">Join with microphone</button>
+            <button id="vidJoinBtn" class="btn" type="button">Join video</button>
+            <button id="vidLeaveBtn" class="pill" type="button" style="display:none">Leave video</button>
           </div>
         </div>
         <div class="video-tiles" id="videoTiles">
           <div class="video-tile local" id="tileLocal">
+            <div class="video-placeholder"><span class="avatar">You</span><span>Camera preview</span></div>
             <video id="localVideo" autoplay muted playsinline></video>
             <div class="vid-label" id="localLabel">you</div>
             <div class="vid-mute" id="localMuteBadge" style="display:none">muted</div>
           </div>
           <div class="video-tile" id="tileRemote">
+            <div class="video-placeholder"><span class="avatar">Pair</span><span>Waiting for your partner</span></div>
             <video id="remoteVideo" autoplay playsinline></video>
             <div class="vid-label" id="remoteLabel">pair</div>
           </div>
         </div>
-        <div class="small muted">Video + code stay in sync. If your camera is blocked, you’ll still see names.</div>
-      </div>
+        <div class="small muted">Video is optional. Camera and microphone access are requested only when you join; the code and board remain usable without media.</div>
+      </section>
       <div class="code-layout">
         <div class="q-pane">
           <div class="q-head">
@@ -1089,18 +1234,18 @@ body{
               <span id="qDiff" class="kbd"></span>
             </div>
             <div class="row small"><span id="roomLabel" class="kbd">room —</span></div>
-            <div data-testid="catalog-filters" style="width:100%; display:grid; grid-template-columns:1fr 1fr; gap:6px">
-              <label class="small muted" style="grid-column:1 / -1; display:grid; gap:3px">Search exercises
+            <div data-testid="catalog-filters" class="catalogue-filters">
+              <label class="small muted">Search exercises
                 <input id="catalogSearch" data-testid="catalog-search" class="input" type="search" autocomplete="off" placeholder="Title, pattern, or tag" />
               </label>
-              <label class="small muted" style="display:grid; gap:3px">Difficulty
+              <label class="small muted">Difficulty
                 <select id="catalogDifficulty" data-testid="catalog-difficulty" class="select"><option value="all">All</option><option value="Easy">Easy</option><option value="Medium">Medium</option><option value="Hard">Hard</option></select>
               </label>
-              <label class="small muted" style="display:grid; gap:3px">Pattern
+              <label class="small muted">Pattern
                 <select id="catalogType" data-testid="catalog-type" class="select"><option value="all">All</option></select>
               </label>
               <span id="catalogFilterStatus" data-testid="catalog-status" class="small muted" role="status" aria-live="polite" style="grid-column:1 / -1">Loading exercises…</span>
-              <div id="catalogFilterEmpty" data-testid="catalog-empty" class="small muted" hidden style="grid-column:1 / -1; padding:7px; border:1px dashed var(--border); border-radius:8px">No public exercises match these filters. Clear or adjust them to continue.</div>
+              <div id="catalogFilterEmpty" data-testid="catalog-empty" class="small muted state-panel" data-state="empty" hidden style="grid-column:1 / -1">No public exercises match these filters. Clear or adjust them to continue.</div>
             </div>
           </div>
           <div class="q-body">
@@ -1119,24 +1264,24 @@ body{
             <span class="small muted" style="margin-left:auto">Examples are public; evaluation cases stay on the server.</span>
           </div>
           <div class="editor-top">
-            <div class="row">
-              <select id="langSelect" class="select" style="width:140px">
+            <div class="row editor-toolbar-primary" role="group" aria-label="Workspace controls">
+              <label class="sr-only" for="langSelect">Programming language</label><select id="langSelect" class="select" aria-label="Programming language" style="width:140px">
                 <option value="javascript">javascript</option>
                 <option value="python">python</option>
               </select>
-              <select id="roomSelect" class="select" style="width:130px"></select>
-              <button id="runBtn" class="btn">▶ Run</button>
-              <button id="codeJoinSessionBtn" class="btn" style="background:var(--accent,#c8f6a0);color:#0f0f10;font-weight:700;padding:7px 12px">▶ Join Session</button>
+              <label class="sr-only" for="roomSelect">Pair room</label><select id="roomSelect" class="select" aria-label="Pair room" style="width:130px"></select>
+              <button id="runBtn" class="btn" type="button">Run code</button>
+              <button id="codeJoinSessionBtn" class="btn" type="button" style="background:var(--accent,#c8f6a0);color:#0f0f10;font-weight:700;padding:7px 12px">Join room</button>
               <label class="small muted" style="display:inline-flex; align-items:center; gap:4px; margin-left:6px; font-size:11px"><input type="checkbox" id="useServerRunner" checked disabled style="accent-color:var(--accent)"> <span title="Code always runs through the authenticated execution gateway">secure server</span></label>
               <button id="formatBtn" class="pill" title="Format code (Shift+Alt+F) — Prettier where possible">↥ Format</button>
               <button id="copyStarterBtn" class="pill" title="Copy starter for current lang">⎘ Copy starter</button>
               <button id="editorResetBtn" class="pill" title="Reset editor to starter">↺ Reset</button>
               <span id="lintStatus" class="kbd" style="display:none; background:var(--bg-3)">lint: —</span>
             </div>
-            <div class="row" style="gap:6px">
-              <button id="roleToggle" class="pill">○ candidate</button>
-              <button id="timerBtn" class="pill">⏱ <span id="timerText">25:00</span></button>
-              <span class="pill"><span class="dot"></span><span id="presenceText">you alone</span></span>
+            <div class="row editor-toolbar-secondary" style="gap:6px" role="group" aria-label="Interview controls">
+              <button id="roleToggle" class="pill" type="button" aria-pressed="false">Candidate</button>
+              <button id="timerBtn" class="pill" type="button" aria-pressed="false">Timer <span id="timerText">25:00</span></button>
+              <span class="status-chip" data-state="ready"><span id="presenceText">you alone</span></span>
             </div>
           </div>
           <div id="monacoHost" style="flex:1; min-height:420px; position:relative; border-top:1px solid var(--border); border-bottom:1px solid var(--border); background:#101013"></div>
@@ -1179,10 +1324,14 @@ body{
     </section>
 
     <!-- BOARD -->
-    <section id="view-board" class="view" style="display:none">
+    <section id="view-board" class="view board-page" style="display:none" aria-labelledby="boardViewTitle">
+      <header class="view-head">
+        <div><span class="eyebrow">Pair workspace</span><h2 id="boardViewTitle">Shared whiteboard</h2><p class="view-copy">Sketch a solution together. Completed gestures sync to the authorised pair room; viewport and active tool stay on this device.</p></div>
+        <span class="status-chip" data-state="ready">Revisioned snapshots</span>
+      </header>
       <div class="board-wrap">
         <div class="board-toolbar" role="toolbar" aria-label="Whiteboard tools">
-          <button class="tool active" data-tool="select" title="Select/move" aria-label="Select or move a shape" aria-pressed="true">↖</button>
+          <div class="board-toolbar-group" role="group" aria-label="Drawing tools"><button class="tool active" data-tool="select" title="Select/move" aria-label="Select or move a shape" aria-pressed="true">↖</button>
           <button class="tool" data-tool="pan" title="Pan" aria-label="Pan the whiteboard" aria-pressed="false">✋</button>
           <button class="tool" data-tool="pen" title="Pen" aria-label="Draw with the pen" aria-pressed="false">✎</button>
           <button class="tool" data-tool="rect" title="Rect" aria-label="Draw a rectangle" aria-pressed="false">▭</button>
@@ -1190,18 +1339,18 @@ body{
           <button class="tool" data-tool="arrow" title="Arrow" aria-label="Draw an arrow" aria-pressed="false">↗</button>
           <button class="tool" data-tool="text" title="Text" aria-label="Add text" aria-pressed="false">T</button>
           <button class="tool" data-tool="sticky" title="Sticky" aria-label="Add a sticky note" aria-pressed="false">☆</button>
-          <button class="tool" data-tool="eraser" title="Eraser" aria-label="Erase a shape" aria-pressed="false">⌫</button>
-          <div style="width:1px; height:24px; background:var(--line); margin:0 4px"></div>
-          <div class="row" id="colorPalette"></div>
+          <button class="tool" data-tool="eraser" title="Eraser" aria-label="Erase a shape" aria-pressed="false">⌫</button></div>
+          <div class="toolbar-separator" aria-hidden="true"></div>
+          <div class="board-toolbar-group" id="colorPalette" role="group" aria-label="Drawing colour"></div>
           <div style="flex:1"></div>
-          <span class="kbd" id="boardSyncStatus" role="status" aria-live="polite">local only</span>
-          <button class="tool" id="undoBtn" title="Undo" aria-label="Undo whiteboard change">↩</button>
+          <span class="status-chip" id="boardSyncStatus" data-state="idle" role="status" aria-live="polite">local only</span>
+          <div class="board-toolbar-group" role="group" aria-label="History and zoom"><button class="tool" id="undoBtn" title="Undo" aria-label="Undo whiteboard change">↩</button>
           <button class="tool" id="redoBtn" title="Redo" aria-label="Redo whiteboard change">↪</button>
           <button class="tool" id="clearBtn" title="Clear" aria-label="Clear whiteboard">✕</button>
           <button class="tool" id="zoomOut" title="Zoom out" aria-label="Zoom whiteboard out">−</button>
           <span class="kbd" id="zoomLabel" aria-label="Whiteboard zoom">100%</span>
           <button class="tool" id="zoomIn" title="Zoom in" aria-label="Zoom whiteboard in">+</button>
-          <button class="tool" id="fitBtn" title="Fit" aria-label="Reset whiteboard viewport">⊡</button>
+          <button class="tool" id="fitBtn" title="Fit" aria-label="Reset whiteboard viewport">⊡</button></div>
         </div>
         <div class="canvas-host" id="canvasHost"><canvas id="board" tabindex="0" role="img" aria-label="Shared interview whiteboard" aria-describedby="boardSyncHint"></canvas></div>
       </div>
@@ -1209,7 +1358,11 @@ body{
     </section>
 
     <!-- PAIRINGS / ACTIVITY HISTORY -->
-    <section id="view-history" class="view" style="display:none">
+    <section id="view-history" class="view history-shell" style="display:none" aria-labelledby="historyViewTitle">
+      <header class="view-head">
+        <div><span class="eyebrow">Your record</span><h2 id="historyViewTitle">Pairings and activity</h2><p class="view-copy">Review server-backed pairings, agreed schedules, messages, verified runs, and recoverable workspace checkpoints.</p></div>
+        <span class="status-chip" data-state="ready">Private to members</span>
+      </header>
       <div class="card" data-testid="pair-history">
         <div class="card-h"><h2>Pairings &amp; activity</h2><span id="historyCount">0 pairings</span><span id="historyAuthHint" class="small muted" style="margin-left:8px">Sign in to see your pairings</span></div>
         <div class="card-b">
@@ -2709,11 +2862,12 @@ async function refreshMe(){
     resetOwnerInvites();
     setLegacyCircleControls(false);
     const note=document.getElementById('circleAutoNote');
-    if(note) note.textContent='We could not load your private circle.';
+    if(note){ note.textContent='We could not load your private circle.'; note.dataset.state='error'; }
     listEl.replaceChildren();
     listEl.setAttribute('aria-busy','false');
     const message=document.createElement('div');
-    message.className='small muted';
+    message.className='small muted state-panel';
+    message.dataset.state='error';
     message.textContent='Circle unavailable. Your member list has not been replaced with local or demo data.';
     const retry=document.createElement('button');
     retry.type='button'; retry.className='pill'; retry.textContent='Retry';
@@ -2798,8 +2952,8 @@ async function refreshMe(){
     listEl.setAttribute('aria-busy','true');
     if(!me){
       pCount.textContent='0';
-      if(note) note.textContent='Sign in to view your private circle.';
-      const prompt=document.createElement('div'); prompt.className='small muted'; prompt.textContent='Circle membership is available after sign-in.';
+      if(note){ note.textContent='Sign in to view your private circle.'; note.dataset.state='idle'; }
+      const prompt=document.createElement('div'); prompt.className='small muted state-panel'; prompt.textContent='Circle membership is available after sign-in.';
       listEl.appendChild(prompt); listEl.setAttribute('aria-busy','false');
       return;
     }
@@ -2818,9 +2972,12 @@ async function refreshMe(){
       if(gatedRole!=='owner') clearLatestInvite();
       setLegacyCircleControls(legacyEnvelope);
       pCount.textContent=String(people.length);
-      if(note) note.textContent=legacyEnvelope
-        ? (usingLocalLegacy?'Local testing circle • membership enforcement is not enabled':`Your circle • ${people.length} member${people.length===1?'':'s'}`)
-        : `${String(res.circle_meta?.name||'Your circle')} • ${people.length} active member${people.length===1?'':'s'}`;
+      if(note){
+        note.textContent=legacyEnvelope
+          ? (usingLocalLegacy?'Local testing circle • membership enforcement is not enabled':`Your circle • ${people.length} member${people.length===1?'':'s'}`)
+          : `${String(res.circle_meta?.name||'Your circle')} • ${people.length} active member${people.length===1?'':'s'}`;
+        note.dataset.state='ready';
+      }
       if(roleLabel) roleLabel.textContent=legacyEnvelope?'legacy':activeCircleRole;
       people.forEach((person,index)=>{
         const displayName=String(person?.display_name||person?.name||'Member');
@@ -2853,7 +3010,7 @@ async function refreshMe(){
         listEl.appendChild(row);
       });
       if(!people.length){
-        const empty=document.createElement('div'); empty.className='small muted'; empty.textContent='No active members are in this circle.'; listEl.appendChild(empty);
+        const empty=document.createElement('div'); empty.className='small muted state-panel'; empty.textContent='No active members are in this circle.'; listEl.appendChild(empty);
       }
       listEl.setAttribute('aria-busy','false');
       if(gatedRole==='owner'&&circleOwnerPanel){
@@ -3127,7 +3284,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         currentCloudPairingLoaded=true;
         renderSignedInRoomSelect();
         document.getElementById('currentWeekMeta').textContent='Current-cycle pairings could not be loaded.';
-        container.innerHTML='<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">Pairings are unavailable. Local or cached pairs are not shown while signed in. <button id="pairsRetryBtn" class="pill" type="button" style="margin-left:8px">Retry</button></div>';
+        container.innerHTML='<div class="small muted state-panel" data-state="error">Pairings are unavailable. Local or cached pairs are not shown while signed in. <button id="pairsRetryBtn" class="pill" type="button">Retry</button></div>';
         document.getElementById('pairsRetryBtn')?.addEventListener('click',renderPairs);
         return;
       }
@@ -3146,7 +3303,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
             ?'The returned pairing cycle has ended.'
             :'The current pairing cycle could not be verified.';
         document.getElementById('currentWeekMeta').textContent=stateCopy;
-        container.innerHTML='<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">No prior or unverified pairing room is shown. Retry after the server schedule is available.</div>';
+        container.innerHTML='<div class="small muted state-panel" data-state="warning">No prior or unverified pairing room is shown. Retry after the server schedule is available.</div>';
         return;
       }
       const cloudWeek=cloudWeeks.find(week=>week?.is_current===true&&(!currentCycleId||String(week.week_label)===currentCycleId))||null;
@@ -3163,7 +3320,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         meta.textContent=currentCycleId
           ?`${currentCycleId} • awaiting current-cycle publication${nextCutoff}`
           :'Awaiting current-cycle publication';
-        container.innerHTML='<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">No pairings have been published for the current cycle. Historical and local demo pairs are not shown here.</div>';
+        container.innerHTML='<div class="small muted state-panel">No pairings have been published for the current cycle. Historical and local demo pairs are not shown here.</div>';
         return;
       }
       renderPairsMeta(null, cloudWeek, response);
@@ -3186,7 +3343,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     currentCloudPairingUserId=null;
     const weeks=getWeeks(); const cur=weeks[0];
     renderPairsMeta(cur, null);
-    if(!cur){ container.innerHTML=`<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">No demo pairs yet. Sign in to see the authoritative current-cycle schedule. <button class="pill" onclick="window._randori_onboard && window._randori_onboard.start(4)" style="margin-left:8px">How it works?</button></div>`; return; }
+    if(!cur){ container.innerHTML=`<div class="small muted state-panel">No demo pairs yet. Sign in to see the authoritative current-cycle schedule. <button class="pill" onclick="window._randori_onboard && window._randori_onboard.start(4)">How it works?</button></div>`; return; }
     container.innerHTML = cur.pairs.map(p=>{
       const a=idToPerson(p.aId); const b=p.bId? idToPerson(p.bId):null;
       const aName=a? a.name: 'unknown'; const bName=p.isAI? 'Solo practice' : (b? b.name: '—');
@@ -3402,16 +3559,16 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }
     head.append(title,actions); card.appendChild(head);
     const body=document.createElement('div'); body.className='card-b'; body.style.display='grid'; body.style.gap='12px';
-    const status=document.createElement('div'); status.className='small muted'; status.dataset.testid='pair-recap-status'; status.setAttribute('role','status'); status.setAttribute('aria-live','polite'); status.textContent='Recap loaded'; body.appendChild(status);
+    const status=document.createElement('div'); status.className='status-chip'; status.dataset.state='success'; status.dataset.testid='pair-recap-status'; status.setAttribute('role','status'); status.setAttribute('aria-live','polite'); status.textContent='Recap loaded'; body.appendChild(status);
 
-    const summary=document.createElement('section'); summary.setAttribute('aria-label','Pairing summary');
+    const summary=document.createElement('section'); summary.className='recap-section'; summary.setAttribute('aria-label','Pairing summary');
     const names=recap.pair.members.map(member=>member.is_me?`${member.display_name} (you)`:member.display_name).join(' × ');
     const pairing=document.createElement('div'); pairing.className='small'; pairing.textContent=names;
     const week=document.createElement('div'); week.className='small muted'; week.append('Paired '); week.appendChild(recapTimeNode(recap.pair.week_start));
     if(recap.pair.topic||recap.pair.topic_kind) week.append(` · ${recap.pair.topic||recap.pair.topic_kind}`);
     summary.append(pairing,week); body.appendChild(summary);
 
-    const schedule=document.createElement('section'); schedule.dataset.testid='pair-recap-schedule'; schedule.setAttribute('aria-label','Agreed schedule');
+    const schedule=document.createElement('section'); schedule.className='recap-section'; schedule.dataset.testid='pair-recap-schedule'; schedule.setAttribute('aria-label','Agreed schedule');
     const scheduleTitle=document.createElement('b'); scheduleTitle.textContent='Schedule'; schedule.appendChild(scheduleTitle);
     const scheduleValue=document.createElement('div'); scheduleValue.className='small muted';
     if(recap.schedule?.agreed_time){ scheduleValue.append('Agreed for '); scheduleValue.appendChild(recapTimeNode(recap.schedule.agreed_time)); }
@@ -3419,7 +3576,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     else scheduleValue.textContent='No agreed time recorded.';
     schedule.appendChild(scheduleValue); body.appendChild(schedule);
 
-    const activitySection=document.createElement('section'); activitySection.setAttribute('aria-label','Pair activity');
+    const activitySection=document.createElement('section'); activitySection.className='recap-section'; activitySection.setAttribute('aria-label','Pair activity');
     const activityTitle=document.createElement('b'); activityTitle.textContent='Activity'; activitySection.appendChild(activityTitle);
     if(!recap.activity.length){
       const empty=document.createElement('div'); empty.className='small muted'; empty.dataset.testid='pair-recap-empty'; empty.textContent='No saved messages or verified runs for this pairing.'; activitySection.appendChild(empty);
@@ -3438,7 +3595,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }
     body.appendChild(activitySection);
 
-    const workspace=document.createElement('section'); workspace.dataset.testid='pair-recap-workspace'; workspace.setAttribute('aria-label','Workspace checkpoint');
+    const workspace=document.createElement('section'); workspace.className='recap-section'; workspace.dataset.testid='pair-recap-workspace'; workspace.setAttribute('aria-label','Workspace checkpoint');
     const workspaceTitle=document.createElement('b'); workspaceTitle.textContent='Workspace'; workspace.appendChild(workspaceTitle);
     const workspaceValue=document.createElement('div'); workspaceValue.className='small muted';
     if(recap.workspace.artifact_available){
@@ -3456,7 +3613,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const area=document.getElementById('pairRecapArea'); if(!area) return;
     const card=document.createElement('article'); card.className='card';
     const body=document.createElement('div'); body.className='card-b';
-    const status=document.createElement('div'); status.className='small muted'; status.dataset.testid='pair-recap-status'; status.setAttribute('role','status'); status.setAttribute('aria-live','polite'); status.textContent='Loading pairing recap…';
+    const status=document.createElement('div'); status.className='status-chip'; status.dataset.state='progress'; status.dataset.testid='pair-recap-status'; status.setAttribute('role','status'); status.setAttribute('aria-live','polite'); status.textContent='Loading pairing recap…';
     body.appendChild(status); card.appendChild(body); area.replaceChildren(card);
     pairRecapState.room=room; pairRecapState.recap=null; pairRecapState.status='loading';
   }
@@ -3485,7 +3642,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(controller.signal.aborted||pairRecapState.epoch!==epoch||pairRecapState.room!==room||currentHistoryUserId()!==userId||!historyViewVisible()) return false;
       pairRecapState.recap=null; pairRecapState.status='error';
       const area=document.getElementById('pairRecapArea'); if(area) area.replaceChildren();
-      const status=document.createElement('div'); status.className='small muted'; status.dataset.testid='pair-recap-status'; status.setAttribute('role','status'); status.textContent='Pairing recap unavailable — try again.';
+      const status=document.createElement('div'); status.className='small muted state-panel'; status.dataset.state='error'; status.dataset.testid='pair-recap-status'; status.setAttribute('role','status'); status.textContent='Pairing recap unavailable — try again.';
       const retry=document.createElement('button'); retry.type='button'; retry.className='pill'; retry.dataset.testid='pair-recap-refresh'; retry.textContent='Retry'; retry.addEventListener('click',()=>{ fetchPairRecap(room); });
       area?.append(status,retry);
       return false;
@@ -3515,7 +3672,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(!room) return null;
     const partner=historyText(item?.partner_name,240)||'Pair member';
     const week=historyText(item?.week_label,80)||`Week ${item.week_id}`;
-    const row=document.createElement('li'); row.className='row small'; row.style.justifyContent='space-between'; row.style.gap='10px'; row.dataset.testid='pair-history-row'; row.dataset.roomId=room;
+    const row=document.createElement('li'); row.className='row small history-row'; row.style.justifyContent='space-between'; row.style.gap='10px'; row.dataset.testid='pair-history-row'; row.dataset.roomId=room;
     const description=document.createElement('span');
     const label=document.createElement('span'); label.className='kbd'; label.textContent=week;
     description.append(label,` × ${partner}`);
@@ -3531,7 +3688,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(!userId){
       pairRecapState.historyUserId=null;
       cont.replaceChildren();
-      const status=document.createElement('div'); status.className='small muted'; status.style.padding='8px'; status.textContent='Sign in to see your pairings and activity.'; cont.appendChild(status);
+      const status=document.createElement('div'); status.className='small muted state-panel'; status.textContent='Sign in to see your pairings and activity.'; cont.appendChild(status);
       return false;
     }
     if(!historyViewVisible()) return false;
@@ -3540,7 +3697,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const previous=pairRecapState.historyAbort; previous?.abort();
     const controller=new AbortController(); pairRecapState.historyAbort=controller;
     cont.replaceChildren(); cont.setAttribute('aria-busy','true');
-    const loading=document.createElement('div'); loading.className='small muted'; loading.setAttribute('role','status'); loading.dataset.testid='pair-history-status'; loading.textContent='Loading pairings…'; cont.appendChild(loading);
+    const loading=document.createElement('div'); loading.className='status-chip'; loading.dataset.state='progress'; loading.setAttribute('role','status'); loading.dataset.testid='pair-history-status'; loading.textContent='Loading pairings…'; cont.appendChild(loading);
     try{
       const response=await fetch('/api/history',{credentials:'same-origin',cache:'no-store',signal:controller.signal});
       const data=await response.json().catch(()=>({}));
@@ -3548,7 +3705,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(!response.ok||data.ok!==true||Number(data.user?.id)!==userId||!Array.isArray(data.history)) throw new Error('history unavailable');
       const rows=data.history.slice(0,100).map(historyRow).filter(Boolean);
       cont.replaceChildren(); cont.setAttribute('aria-busy','false');
-      const status=document.createElement('div'); status.className='small muted'; status.setAttribute('role','status'); status.dataset.testid='pair-history-status'; status.textContent=rows.length?`${rows.length} pairing${rows.length===1?'':'s'} loaded`:'No pairings yet — your first pairing will appear after the Sunday shuffle.'; cont.appendChild(status);
+      const status=document.createElement('div'); status.className=rows.length?'status-chip':'small muted state-panel'; status.dataset.state=rows.length?'success':'idle'; status.setAttribute('role','status'); status.dataset.testid='pair-history-status'; status.textContent=rows.length?`${rows.length} pairing${rows.length===1?'':'s'} loaded`:'No pairings yet — your first pairing will appear after the Sunday shuffle.'; cont.appendChild(status);
       if(rows.length){ const list=document.createElement('ol'); list.className='weeks'; list.setAttribute('aria-label','Your pairings'); rows.forEach(row=>list.appendChild(row)); cont.appendChild(list); }
       const count=document.getElementById('historyCount'); if(count) count.textContent=`${rows.length} pairing${rows.length===1?'':'s'}`;
       const hint=document.getElementById('historyAuthHint'); if(hint) hint.textContent='Server-backed pairings and saved activity';
@@ -3556,7 +3713,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }catch(error){
       if(controller.signal.aborted||pairRecapState.historyEpoch!==epoch||currentHistoryUserId()!==userId||!historyViewVisible()) return false;
       cont.replaceChildren(); cont.setAttribute('aria-busy','false');
-      const status=document.createElement('div'); status.className='small muted'; status.setAttribute('role','status'); status.dataset.testid='pair-history-status'; status.textContent='Pairing history unavailable — retry by reopening History.'; cont.appendChild(status);
+      const status=document.createElement('div'); status.className='small muted state-panel'; status.dataset.state='error'; status.setAttribute('role','status'); status.dataset.testid='pair-history-status'; status.textContent='Pairing history unavailable.'; cont.appendChild(status);
+      const retry=document.createElement('button'); retry.type='button'; retry.className='pill'; retry.textContent='Retry history'; retry.addEventListener('click',()=>{ renderPersonalHistory(); }); cont.appendChild(retry);
       const count=document.getElementById('historyCount'); if(count) count.textContent='Pairings unavailable';
       return false;
     }finally{ if(pairRecapState.historyAbort===controller) pairRecapState.historyAbort=null; }
@@ -3578,8 +3736,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(hint) hint.textContent='Local demo only — sign in for private server history';
     if(!local) return;
     local.replaceChildren();
-    const note=document.createElement('div'); note.className='small muted'; note.textContent='Local demo pairing history — stored only in this browser.'; local.appendChild(note);
-    if(!weeks.length){ const empty=document.createElement('div'); empty.className='small muted'; empty.style.padding='10px'; empty.textContent='No local demo pairings yet.'; local.appendChild(empty); }
+    const note=document.createElement('div'); note.className='small muted state-panel'; note.textContent='Local demo pairing history — stored only in this browser.'; local.appendChild(note);
+    if(!weeks.length){ const empty=document.createElement('div'); empty.className='small muted state-panel'; empty.textContent='No local demo pairings yet.'; local.appendChild(empty); }
     else weeks.forEach((week,index)=>{
       const card=document.createElement('section'); card.className='card'; card.style.borderColor=index===0?'var(--accent)':'var(--line)';
       const head=document.createElement('div'); head.className='card-h';
@@ -4085,14 +4243,16 @@ def allow(key, limit=5):
   // timer
   function updateTimerLabel(){ const m=Math.floor(timerSec/60), s=timerSec%60; document.getElementById('timerText').textContent=`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; }
   document.getElementById('timerBtn').onclick=()=>{
-    if(timerRun){ clearInterval(timerInt); timerRun=false; document.getElementById('timerBtn').style.background=''; }
-    else { timerRun=true; timerInt=setInterval(()=>{ timerSec=Math.max(0,timerSec-1); updateTimerLabel(); persistRoom(); if(timerSec===0){ clearInterval(timerInt); timerRun=false; toast('time'); }},1000); }
+    const button=document.getElementById('timerBtn');
+    if(timerRun){ clearInterval(timerInt); timerRun=false; button.style.background=''; button.setAttribute('aria-pressed','false'); }
+    else { timerRun=true; button.setAttribute('aria-pressed','true'); timerInt=setInterval(()=>{ timerSec=Math.max(0,timerSec-1); updateTimerLabel(); persistRoom(); if(timerSec===0){ clearInterval(timerInt); timerRun=false; button.setAttribute('aria-pressed','false'); toast('time'); }},1000); }
     updateTimerLabel();
   };
 
   document.getElementById('roleToggle').onclick=(e)=>{
     role = role==='candidate'? 'interviewer':'candidate';
-    e.currentTarget.textContent = role==='candidate'? '○ candidate' : '● interviewer';
+    e.currentTarget.textContent = role==='candidate'? 'Candidate' : 'Interviewer';
+    e.currentTarget.setAttribute('aria-pressed',String(role==='interviewer'));
     toast(`you are ${role}`);
   };
 
@@ -4140,6 +4300,7 @@ def allow(key, limit=5):
     if(!el) return;
     const labels={connecting:'connecting…',pending:'sync pending',syncing:'syncing…',retrying:'could not sync — retrying',saved:'synced',error:'sync failed',local:'local only'};
     el.textContent=labels[status]||String(status||'local only');
+    el.dataset.state=status==='saved'?'success':status==='error'?'error':status==='retrying'?'retrying':(['connecting','syncing'].includes(status)?'progress':status==='pending'?'pending':'idle');
     el.title=String(detail||'');
   }
   function finiteBoardNumber(value,min=-BOARD_COORD_LIMIT,max=BOARD_COORD_LIMIT){
@@ -4498,7 +4659,14 @@ def allow(key, limit=5):
     // TURN fallback can be added via env: { urls:'turn:global.relay.metered.ca:80', username:'...', credential:'...' }
   ];
 
-  function videoUpdateStatus(txt){ const el=document.getElementById('videoStatus'); if(el) el.textContent=txt; const rl=document.getElementById('videoRoomLabel'); if(rl){ const r=getVideoRoomId(); rl.textContent=r?'room '+String(r).slice(0,6):'room —'; } }
+  function videoUpdateStatus(txt){
+    const el=document.getElementById('videoStatus');
+    if(el){
+      el.textContent=txt;
+      el.dataset.state=txt==='connected'||txt==='live'?'live':(/joining|connecting|switching/.test(txt)?'connecting':txt==='failed'||txt==='disconnected'?'error':'idle');
+    }
+    const rl=document.getElementById('videoRoomLabel'); if(rl){ const r=getVideoRoomId(); rl.textContent=r?'room '+String(r).slice(0,6):'room —'; }
+  }
 
   function getVideoRoomId(){
     const room=String(currentRoom||document.getElementById('roomSelect')?.value||'');
@@ -4545,7 +4713,16 @@ def allow(key, limit=5):
     if(micBtn) micBtn.classList.toggle('off', !videoMicEnabled);
     if(muteBadge) muteBadge.style.display = videoMicEnabled ? 'none' : 'block';
     if(tile) tile.classList.toggle('cam-off', !videoCamEnabled);
+    if(tile) tile.classList.toggle('has-media',!!localStream&&videoCamEnabled&&localStream.getVideoTracks().some(track=>track.readyState==='live'));
     if(lv) lv.style.display = videoCamEnabled ? '' : 'none';
+    if(camBtn){
+      camBtn.setAttribute('aria-pressed',String(videoCamEnabled));
+      camBtn.textContent=videoJoined?(videoCamEnabled?'Camera on':'Camera off'):(videoCamEnabled?'Join with camera':'Join without camera');
+    }
+    if(micBtn){
+      micBtn.setAttribute('aria-pressed',String(videoMicEnabled));
+      micBtn.textContent=videoJoined?(videoMicEnabled?'Microphone on':'Microphone muted'):(videoMicEnabled?'Join with microphone':'Join without microphone');
+    }
     if(localStream){
       localStream.getVideoTracks().forEach(t=>{ t.enabled = videoCamEnabled; if(!videoCamEnabled) { try{ t.stop(); }catch{} } });
       localStream.getAudioTracks().forEach(t=> t.enabled = videoMicEnabled);
@@ -4636,6 +4813,7 @@ def allow(key, limit=5):
           rv.play().catch(()=>{});
         }
       }
+      document.getElementById('tileRemote')?.classList.add('has-media');
       const lbl=document.getElementById('remoteLabel');
       if(lbl) lbl.textContent = 'pair • live';
       videoUpdateStatus('live');
@@ -4681,6 +4859,7 @@ def allow(key, limit=5):
       // still allow signaling without media for fallback
     }
     videoJoined = true;
+    updateVideoMicCamUI();
     videoLastSignalId = 0;
     document.getElementById('vidJoinBtn').style.display='none';
     document.getElementById('vidLeaveBtn').style.display='inline-flex';
@@ -4708,12 +4887,19 @@ def allow(key, limit=5):
     if(videoPollTimer){ clearInterval(videoPollTimer); videoPollTimer=null; }
     sendSignal('leave', { peer: webrtcPeerId }, '').catch(()=>{});
     if(pc){ try{ pc.close(); }catch{}; pc=null; }
+    if(localStream){
+      try{ localStream.getTracks().forEach(track=>track.stop()); }catch{}
+      localStream=null;
+    }
     videoUpdateStatus('off');
+    const lv=document.getElementById('localVideo'); if(lv){ lv.srcObject=null; }
     const rv=document.getElementById('remoteVideo'); if(rv){ rv.srcObject=null; }
+    document.getElementById('tileLocal')?.classList.remove('has-media');
+    document.getElementById('tileRemote')?.classList.remove('has-media');
     const lbl=document.getElementById('remoteLabel'); if(lbl) lbl.textContent='pair';
     document.getElementById('vidJoinBtn').style.display='inline-flex';
     document.getElementById('vidLeaveBtn').style.display='none';
-    // keep local stream for quick rejoin but pause cam/mic UI stays
+    updateVideoMicCamUI();
   }
 
   // hooks
@@ -4742,7 +4928,7 @@ def allow(key, limit=5):
   });
   document.getElementById('vidCamBtn')?.addEventListener('click', async()=>{
     videoCamEnabled = !videoCamEnabled;
-    if(videoCamEnabled){
+    if(videoJoined&&videoCamEnabled){
       // cam turned on – if we previously stopped tracks, need fresh getUserMedia
       const hasLiveVideo = localStream && localStream.getVideoTracks().some(t=> t.readyState==='live');
       if(!localStream || !hasLiveVideo){
@@ -4773,15 +4959,12 @@ def allow(key, limit=5):
       // cam turning off handled in updateVideoMicCamUI (stops tracks, hides video, removes sender)
     }
     updateVideoMicCamUI();
-    toast(videoCamEnabled?'cam on':'cam off');
+    toast(videoJoined?(videoCamEnabled?'cam on':'cam off'):(videoCamEnabled?'will join with camera':'will join without camera'));
   });
   document.getElementById('vidMicBtn')?.addEventListener('click', ()=>{
     videoMicEnabled = !videoMicEnabled;
     updateVideoMicCamUI();
-    toast(videoMicEnabled?'mic on':'mic muted');
-  });
-  document.getElementById('vidScreenBtn')?.addEventListener('click', ()=>{
-    toast('screen share placeholder — captureDisplay media in next iter');
+    toast(videoJoined?(videoMicEnabled?'mic on':'mic muted'):(videoMicEnabled?'will join with microphone':'will join without microphone'));
   });
 
   // sync video room label when room changes
@@ -5807,10 +5990,19 @@ def allow(key, limit=5):
     return node;
   }
 
+  function interactionStatusTone(message){
+    const value=String(message||'').toLowerCase();
+    if(/not sent|failed|unavailable/.test(value)) return 'error';
+    if(/retry|uncertain|rate limit|room is full|conflict/.test(value)) return 'warning';
+    if(/checking|loading|saving|sending/.test(value)) return 'progress';
+    if(/up to date|sent|loaded|agreed/.test(value)) return 'success';
+    return 'idle';
+  }
+
   function setScheduleStatus(message){
     scheduleState.status=String(message||'');
     const status=document.querySelector('[data-testid="schedule-status"]');
-    if(status) status.textContent=scheduleState.status;
+    if(status){ status.textContent=scheduleState.status; status.dataset.state=interactionStatusTone(scheduleState.status); }
   }
 
   function toggleScheduleActions(disabled){
@@ -5824,21 +6016,23 @@ def allow(key, limit=5):
     rememberScheduleDraft();
     const schedule=scheduleState.schedule;
     const timezone=(()=>{ try{return Intl.DateTimeFormat().resolvedOptions().timeZone||'local timezone';}catch{return 'local timezone';} })();
-    const card=scheduleNode('div',{className:'card'});
+    const card=scheduleNode('section',{className:'card'});
+    card.setAttribute('aria-labelledby','pairScheduleTitle');
     const header=scheduleNode('div',{className:'card-h'});
-    header.append(scheduleNode('h2',{text:'Agree a time'}));
-    const status=scheduleNode('span',{className:'small muted',text:scheduleState.status||'up to date',testId:'schedule-status'});
+    const scheduleTitle=scheduleNode('h2',{text:'Agree a time'}); scheduleTitle.id='pairScheduleTitle'; header.append(scheduleTitle);
+    const status=scheduleNode('span',{className:'status-chip',text:scheduleState.status||'up to date',testId:'schedule-status'});
     status.setAttribute('role','status'); status.setAttribute('aria-live','polite');
+    status.dataset.state=interactionStatusTone(status.textContent);
     header.append(status);
     const body=scheduleNode('div',{className:'card-b'}); body.style.cssText='display:grid; gap:10px';
     body.append(scheduleNode('div',{className:'small muted',text:`Times are shown in ${timezone}. During the repeated hour when clocks go back, your browser uses the earlier occurrence.`}));
 
     const proposals=scheduleNode('div',{testId:'schedule-proposals'}); proposals.id='proposedList'; proposals.style.cssText='display:grid; gap:6px';
     if(!schedule.proposals.length){
-      proposals.append(scheduleNode('span',{className:'small muted',text:'No proposals yet — add one below.'}));
+      proposals.append(scheduleNode('span',{className:'small muted state-panel',text:'No proposals yet — add one below.'}));
     }else{
       schedule.proposals.forEach(proposal=>{
-        const row=scheduleNode('div',{className:'row',testId:'schedule-proposal'});
+        const row=scheduleNode('div',{className:'row schedule-proposal',testId:'schedule-proposal'});
         row.style.cssText='justify-content:space-between; align-items:center; gap:8px; font-size:12.5px; flex-wrap:wrap';
         row.dataset.proposalId=proposal.proposal_id;
         const detail=document.createElement('div'); detail.style.cssText='display:grid; gap:3px';
@@ -5882,16 +6076,17 @@ def allow(key, limit=5):
     });
     inputActions.append(input,propose); body.append(inputActions);
 
-    const agreement=scheduleNode('div');
+    const agreement=scheduleNode('div',{className:'state-panel'});
     if(schedule.agreed_time){
-      agreement.style.cssText='padding:8px 10px; background:var(--accent)22; border:1px solid var(--accent); border-radius:10px; font-size:12.5px';
+      agreement.dataset.state='success';
       agreement.append(scheduleNode('b',{text:'Agreed: '}));
       const time=scheduleNode('time',{text:localScheduleTime(schedule.agreed_time)}); time.setAttribute('datetime',schedule.agreed_time); agreement.append(time);
     }else if(schedule.legacy_agreed_time){
-      agreement.style.cssText='padding:8px 10px; border:1px solid var(--warn); border-radius:10px; font-size:12.5px';
+      agreement.dataset.state='warning';
       agreement.append(scheduleNode('b',{text:'Legacy agreement: '}),document.createTextNode(schedule.legacy_agreed_time));
       agreement.append(scheduleNode('div',{className:'small muted',text:'Legacy text is not a normalized instant. Clear it and agree on a proposal.'}));
     }else{
+      agreement.dataset.state='idle';
       agreement.append(scheduleNode('div',{className:'small muted',text:'No time agreed yet.'}));
     }
     if(schedule.agreed_time||schedule.legacy_agreed_time){
@@ -6117,7 +6312,7 @@ def allow(key, limit=5):
     if(chatState.status===next) return;
     chatState.status=next;
     const status=document.querySelector('[data-testid="pair-chat-status"]');
-    if(status) status.textContent=chatState.status;
+    if(status){ status.textContent=chatState.status; status.dataset.state=interactionStatusTone(chatState.status); }
     setChatBusy();
   }
 
@@ -6251,7 +6446,7 @@ def allow(key, limit=5):
     if(!ordered.length){
       list.querySelectorAll('[data-message-id]').forEach(node=>node.remove());
       let empty=list.querySelector('[data-testid="pair-chat-empty"]');
-      if(!empty){ empty=chatNode('div',{className:'small muted',testId:'pair-chat-empty'}); empty.style.padding='8px'; list.append(empty); }
+      if(!empty){ empty=chatNode('div',{className:'small muted state-panel',testId:'pair-chat-empty'}); list.append(empty); }
       const emptyText=chatState.loaded?'No messages yet — say hello.':'Loading messages…';
       if(empty.textContent!==emptyText) empty.textContent=emptyText;
     }else{
@@ -6318,8 +6513,9 @@ def allow(key, limit=5):
     input.autocomplete='off'; input.placeholder='Write a message…'; input.style.flex='1'; input.value=chatState.drafts.get(room)||'';
     input.setAttribute('aria-describedby','pairChatStatus');
     const send=chatNode('button',{className:'btn',text:'Send',testId:'pair-chat-send'}); send.id='chatSend'; send.type='button';
-    const status=chatNode('span',{className:'small muted',text:chatState.status,testId:'pair-chat-status'}); status.id='pairChatStatus';
+    const status=chatNode('span',{className:'status-chip',text:chatState.status,testId:'pair-chat-status'}); status.id='pairChatStatus';
     status.setAttribute('role','status'); status.setAttribute('aria-live','polite'); status.style.width='100%';
+    status.dataset.state=interactionStatusTone(chatState.status);
     input.addEventListener('input',()=>{
       if(chatState.room!==room) return;
       chatState.drafts.set(room,input.value);
@@ -7071,6 +7267,7 @@ def allow(key, limit=5):
     const empty=document.getElementById('catalogFilterEmpty');
     if(empty){
       empty.hidden=count!==0;
+      empty.dataset.state='empty';
       empty.textContent=total
         ? 'No public exercises match these filters. Clear or adjust them to continue.'
         : 'No public exercises are currently available.';
@@ -7121,11 +7318,16 @@ def allow(key, limit=5):
       sel.disabled=!previous.slug;
     }
     const filterStatus=document.getElementById('catalogFilterStatus'); if(filterStatus) filterStatus.textContent='Catalogue unavailable';
-    const filterEmpty=document.getElementById('catalogFilterEmpty'); if(filterEmpty) filterEmpty.hidden=true;
+    const filterEmpty=document.getElementById('catalogFilterEmpty');
+    if(filterEmpty){
+      filterEmpty.hidden=false;
+      filterEmpty.dataset.state='error';
+      filterEmpty.textContent='The exercise catalogue is unavailable. Retry to keep your current workspace or reload the approved list.';
+    }
     if(previous.slug) renderUnavailableQuestion(previous.slug,previous.version==null?'not pinned to a catalogue version':'temporarily unavailable',previous.version);
     else{
       const title=document.getElementById('qTitle'); if(title) title.textContent='Catalogue unavailable';
-      const desc=document.getElementById('qDesc'); if(desc) desc.innerHTML='<div class="small muted">Try again shortly or use Retry catalogue. Exercises and evaluation are served from the approved catalogue.</div>';
+      const desc=document.getElementById('qDesc'); if(desc) desc.innerHTML='<div class="small muted state-panel" data-state="error">Try again shortly or use Retry catalogue. Exercises and evaluation are served from the approved catalogue.</div>';
     }
   }
 
