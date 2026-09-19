@@ -5,6 +5,7 @@ import { resolvePairingCycle } from './_pairing-cycle.js';
 import { getPairingPublication } from './_pairing-publication.js';
 import { authPairAccessArgs, authPairAccessSql, getAuthenticatedPairAccess } from './_pair-access.js';
 import { applyScheduleMutation, nextScheduleUpdatedAt, parseScheduleMutation, projectSchedule, readScheduleState, ScheduleDataError, ScheduleInputError } from './_schedule.js';
+import { scheduleNotificationEvents } from './_schedule-email.js';
 import { ensureMessagesReadiness, MAX_MESSAGES_PER_ROOM, MAX_MESSAGES_PER_USER_PER_MINUTE, MESSAGE_RATE_RETRY_SECONDS, MessageDataError, MessageInputError, parseMessageSend, parseMessagesQuery, projectMessage, validateMessagesPostQuery } from './_messages.js';
 import { ensurePairRecapReadiness, MAX_RECAP_ACTIVITY, MAX_RECAP_RUN_SCAN, newestRecapActivity, PairRecapDataError, PairRecapInputError, parsePairRecapQuery, projectRecapMessage, projectRecapPair, projectRecapRun, projectRecapSchedule, projectRecapWorkspace } from './_pair-recap.js';
 import {
@@ -1649,10 +1650,11 @@ async function handleSchedule(req,res){
 
   const db=getClient();
   const userId=Number(payload.id||payload.uid);
-  let accessArgs;
+  let accessArgs,accessRow;
   try{
     const access=await getPairAccess(db,payload,room.weekId,room.pairGroupId);
     if(!access.allowed) return res.status(404).json({error:'pair not found'});
+    accessRow=access.row;
     accessArgs=authPairAccessArgs({userId,weekId:room.weekId,pairGroupId:room.pairGroupId});
   }catch{
     return res.status(503).json({error:'schedule unavailable'});
@@ -1687,34 +1689,53 @@ async function handleSchedule(req,res){
   const nextUpdatedAt=nextScheduleUpdatedAt(current.rawUpdatedAt);
 
   try{
+    const currentSchedule=projectSchedule(current);
+    const nextState=readScheduleState({
+      proposed_times:nextValues.proposedTimes,agreed_time:nextValues.agreedTime,updated_at:nextUpdatedAt,
+    });
+    const nextSchedule=projectSchedule(nextState);
+    const notifications=scheduleNotificationEvents({
+      weekId:room.weekId,pairGroupId:room.pairGroupId,actorUserId:userId,
+      participants:[accessRow.user_a_id,accessRow.user_b_id,accessRow.user_c_id],
+      mutation,currentSchedule,nextSchedule,
+    });
+    const transaction=await db.transaction('write');
+    let finished=false;
     let written;
-    if(current.exists){
-      written=await db.execute({
-        sql:`UPDATE pair_schedules
-          SET proposed_times=?,agreed_time=?,updated_at=?
-          WHERE week_id=? AND pair_group_id=?
-            AND proposed_times IS ? AND agreed_time IS ? AND updated_at IS ?
-            AND EXISTS (${authPairAccessSql()})
-          RETURNING proposed_times,agreed_time,updated_at`,
-        args:[nextValues.proposedTimes,nextValues.agreedTime,nextUpdatedAt,
-          room.weekId,room.pairGroupId,current.rawProposedTimes,current.rawAgreedTime,current.rawUpdatedAt,...accessArgs],
-      });
-    }else{
-      written=await db.execute({
-        sql:`INSERT INTO pair_schedules (week_id,pair_group_id,proposed_times,agreed_time,created_at,updated_at)
-          SELECT ?,?,?,?,?,? WHERE EXISTS (${authPairAccessSql()})
-          ON CONFLICT(week_id,pair_group_id) DO NOTHING
-          RETURNING proposed_times,agreed_time,updated_at`,
-        args:[room.weekId,room.pairGroupId,nextValues.proposedTimes,nextValues.agreedTime,nextUpdatedAt,nextUpdatedAt,...accessArgs],
-      });
-    }
-    if(!written.rows.length){
-      const latest=await fetchAuthorizedScheduleState(db,accessArgs,room.weekId,room.pairGroupId);
-      if(!latest.authorized) return res.status(404).json({error:'pair not found'});
-      return res.status(409).json({error:'schedule changed',room_id:room.roomId,schedule:projectSchedule(latest.state)});
-    }
-    const updated=readScheduleState(written.rows[0]);
-    return res.json({ok:true,room_id:room.roomId,schedule:projectSchedule(updated)});
+    try{
+      if(current.exists){
+        written=await transaction.execute({
+          sql:`UPDATE pair_schedules
+            SET proposed_times=?,agreed_time=?,updated_at=?
+            WHERE week_id=? AND pair_group_id=?
+              AND proposed_times IS ? AND agreed_time IS ? AND updated_at IS ?
+              AND EXISTS (${authPairAccessSql()})
+            RETURNING proposed_times,agreed_time,updated_at`,
+          args:[nextValues.proposedTimes,nextValues.agreedTime,nextUpdatedAt,
+            room.weekId,room.pairGroupId,current.rawProposedTimes,current.rawAgreedTime,current.rawUpdatedAt,...accessArgs],
+        });
+      }else{
+        written=await transaction.execute({
+          sql:`INSERT INTO pair_schedules (week_id,pair_group_id,proposed_times,agreed_time,created_at,updated_at)
+            SELECT ?,?,?,?,?,? WHERE EXISTS (${authPairAccessSql()})
+            ON CONFLICT(week_id,pair_group_id) DO NOTHING
+            RETURNING proposed_times,agreed_time,updated_at`,
+          args:[room.weekId,room.pairGroupId,nextValues.proposedTimes,nextValues.agreedTime,nextUpdatedAt,nextUpdatedAt,...accessArgs],
+        });
+      }
+      if(!written.rows.length){
+        await transaction.rollback(); finished=true;
+        const latest=await fetchAuthorizedScheduleState(db,accessArgs,room.weekId,room.pairGroupId);
+        if(!latest.authorized) return res.status(404).json({error:'pair not found'});
+        return res.status(409).json({error:'schedule changed',room_id:room.roomId,schedule:projectSchedule(latest.state)});
+      }
+      for(const notification of notifications) await transaction.execute(notification);
+      await transaction.commit(); finished=true;
+      return res.json({ok:true,room_id:room.roomId,schedule:nextSchedule});
+    }catch(error){
+      if(!finished){ try{ await transaction.rollback(); }catch{} }
+      throw error;
+    }finally{ try{ await transaction.close?.(); }catch{} }
   }catch{
     return res.status(503).json({error:'schedule unavailable'});
   }

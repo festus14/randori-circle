@@ -151,6 +151,7 @@ test('an invited member completes the mocked Google provider journey to an authe
 
 test('circle owner can view members, create a private copy action, and revoke invitations', async ({ page }) => {
   const rawInvite = 'B'.repeat(43);
+  const resentInvite = 'D'.repeat(43);
   const firstInvitationId = '11111111-1111-4111-8111-111111111111';
   const secondInvitationId = '22222222-2222-4222-8222-222222222222';
   const invitationRows = [{
@@ -164,6 +165,7 @@ test('circle owner can view members, create a private copy action, and revoke in
   }];
   const creates: unknown[] = [];
   const revokedIds: string[] = [];
+  const resentIds: string[] = [];
   let copiedInvite = '';
   await page.exposeFunction('captureInviteCopy', (value: string) => { copiedInvite = value; });
   await page.addInitScript(() => {
@@ -201,6 +203,12 @@ test('circle owner can view members, create a private copy action, and revoke in
     },
     '/api/invitations/:id': request => {
       const id = new URL(request.url()).pathname.split('/').at(-1) || '';
+      if (request.method() === 'POST') {
+        resentIds.push(id);
+        return { ok: true, invitation: { id, status: 'pending',
+          expires_at: '2026-09-25T12:05:00.000Z', invite_url: `/invite#invite=${resentInvite}` },
+        email_delivery: { queued: true } };
+      }
       revokedIds.push(id);
       const invitation = invitationRows.find(row => String(row.id) === id);
       if (invitation) invitation.status = 'revoked';
@@ -227,6 +235,13 @@ test('circle owner can view members, create a private copy action, and revoke in
 
   await expect(page.getByTestId('circle-invites')).toContainText('f6e5d4c3b2a1');
   await expect(page.getByTestId('circle-invite-revoke')).toHaveCount(2);
+  await expect(page.getByTestId('circle-invite-resend')).toHaveCount(2);
+  await page.getByTestId('circle-invite-resend').last().click();
+  await expect.poll(() => resentIds).toEqual([secondInvitationId]);
+  await expect(page.getByTestId('circle-invite-link')).toBeVisible();
+  copiedInvite='';
+  await page.getByTestId('circle-invite-link').click();
+  await expect.poll(() => copiedInvite).toBe(new URL(`/invite#invite=${resentInvite}`,page.url()).href);
   await page.getByTestId('circle-invite-revoke').last().click();
   await expect.poll(() => revokedIds).toEqual([secondInvitationId]);
   await expect(page.getByTestId('circle-invite-link')).toBeHidden();

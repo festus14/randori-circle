@@ -12,11 +12,13 @@ function currentContract() {
   return {
     vercel: JSON.parse(readFileSync('vercel.json', 'utf8')),
     packageJson: JSON.parse(readFileSync('package.json', 'utf8')),
+    outboxWorkflow: readFileSync('.github/workflows/outbox-dispatch.yml', 'utf8'),
     files: new Set([
       'index.html',
       'package-lock.json',
       'package.json',
       'vercel.json',
+      '.github/workflows/outbox-dispatch.yml',
       ...readdirSync('api').filter(file => file.endsWith('.js')).map(file => `api/${file}`),
     ]),
   };
@@ -155,4 +157,49 @@ test('the GitHub gate has read-only permissions and no deployment-provider depen
     /pull_request_target|secrets\.|npx\s+vercel|\bvercel\s+(build|deploy|pull)|VERCEL_TOKEN/,
   );
   assert.doesNotMatch(workflow, /uses:\s+actions\/(?:checkout|setup-node)@v\d+/);
+});
+
+test('the outbox scheduler is five-minute, manually recoverable, secret-bound, and deadline-capped',()=>{
+  const contract=currentContract();
+  assert.deepEqual(validateDeploymentContract(contract),[]);
+  assert.match(contract.outboxWorkflow,/cron:\s*['"]\*\/5 \* \* \* \*['"]/);
+  assert.match(contract.outboxWorkflow,/workflow_dispatch:/);
+  assert.match(contract.outboxWorkflow,
+    /if:\s*github\.ref == format\('refs\/heads\/\{0\}', github\.event\.repository\.default_branch\)/);
+  assert.match(contract.outboxWorkflow,/environment:\s*production/);
+  assert.match(contract.outboxWorkflow,/vars\.APP_URL/);
+  assert.match(contract.outboxWorkflow,/secrets\.CRON_SECRET/);
+  assert.match(contract.outboxWorkflow,/--max-time 55 --retry 0 --request POST/);
+});
+
+test('deployability rejects an unsafe or incomplete outbox scheduler',()=>{
+  const missingSecret=cloneContract();
+  missingSecret.outboxWorkflow=missingSecret.outboxWorkflow.replace(
+    'CRON_SECRET: ${{ secrets.CRON_SECRET }}','CRON_SECRET: hard-coded-secret',
+  );
+  assert.ok(validateDeploymentContract(missingSecret).includes(
+    'outbox workflow must read CRON_SECRET from GitHub secrets',
+  ));
+
+  const pullRequest=cloneContract();
+  pullRequest.outboxWorkflow=pullRequest.outboxWorkflow.replace(
+    'workflow_dispatch:','workflow_dispatch:\n  pull_request:',
+  );
+  assert.ok(validateDeploymentContract(pullRequest).includes(
+    'outbox workflow must not expose production secrets to pull-request code or logs',
+  ));
+
+  const unbounded=cloneContract();
+  unbounded.outboxWorkflow=unbounded.outboxWorkflow.replace('--max-time 55 --retry 0','--retry 3');
+  assert.ok(validateDeploymentContract(unbounded).includes(
+    'outbox workflow must bound the request without automatic duplicate retries',
+  ));
+
+  const featureBranch=cloneContract();
+  featureBranch.outboxWorkflow=featureBranch.outboxWorkflow.replace(
+    "if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)\n",'',
+  );
+  assert.ok(validateDeploymentContract(featureBranch).includes(
+    'outbox workflow must restrict production dispatch to the default branch',
+  ));
 });
