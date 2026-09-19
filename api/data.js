@@ -6,6 +6,13 @@ import { getPairingPublication } from './_pairing-publication.js';
 import { circlePairingFailure, readCirclePairing } from './_circle-pairing.js';
 import { authPairAccessArgs, authPairAccessSql, getAuthenticatedPairAccess } from './_pair-access.js';
 import { applyScheduleMutation, nextScheduleUpdatedAt, parseScheduleMutation, projectSchedule, readScheduleState, ScheduleDataError, ScheduleInputError } from './_schedule.js';
+import {
+  mutateSecondarySchedule,
+  parseSecondaryScheduleMutation,
+  readSecondarySchedule,
+  secondaryScheduleFailure,
+  secondaryScheduleIdentity,
+} from './_secondary-schedule.js';
 import { scheduleNotificationEvents } from './_schedule-email.js';
 import { ensureMessagesReadiness, MAX_MESSAGES_PER_ROOM, MAX_MESSAGES_PER_USER_PER_MINUTE, MESSAGE_RATE_RETRY_SECONDS, messageInsertStatement, messageLimitStateStatement, MessageDataError, MessageInputError, messageReadStatement, parseMessageSend, parseMessagesQuery, projectMessage, validateMessagesPostQuery } from './_messages.js';
 import { ensurePairRecapReadiness, MAX_RECAP_ACTIVITY, MAX_RECAP_RUN_SCAN, newestRecapActivity, PairRecapDataError, PairRecapInputError, parsePairRecapQuery, projectRecapMessage, projectRecapPair, projectRecapRun, projectRecapSchedule, projectRecapWorkspace } from './_pair-recap.js';
@@ -27,6 +34,7 @@ import {
   requestMatchesCircleContext,
   resolveActiveCircleContext,
   secondaryCircleCoordinationEnabled,
+  secondaryCircleSchedulingEnabled,
   sendMultiCircleFeatureUnavailable,
 } from './_active-circle.js';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -328,10 +336,20 @@ function secondaryMyPairResponse(read,readerAccess,userId){
     message:'Your pairing partner is no longer available in this circle.',
   };
   const card=secondaryPairMember(partner);
+  const schedule=secondaryCircleSchedulingEnabled()?{
+    schedule_available:true,
+    schedule_id:secondaryScheduleIdentity({
+      generationToken:read.publication.generationToken,groupId:group.id,
+    }),
+    dashboard_path:'/?view=dashboard',
+  }:{};
   return {
     ...base,paired:true,pairing_status:'paired',pair:{solo:false,workspace_available:false},
     partner:card,partners:[card],
-    message:'Your current pairing is ready. Workspace tools are not enabled for this circle.',
+    message:secondaryCircleSchedulingEnabled()
+      ?'Your current pairing is ready. Agree a time below; workspace tools are not enabled for this circle.'
+      :'Your current pairing is ready. Workspace tools are not enabled for this circle.',
+    ...schedule,
   };
 }
 
@@ -1457,6 +1475,32 @@ async function handleSchedule(req,res){
   const payload=await getAuthPayload(req);
   if(!payload) return res.status(401).json({error:'authentication required'});
   res.setHeader('Cache-Control','private, no-store');
+  const userId=authenticatedUserId(payload);
+  if(!userId) return res.status(401).json({error:'authentication required'});
+  let db=null;
+
+  if(secondaryCircleSchedulingEnabled()&&!strictLocalPairingRuntime(req)){
+    try{ db=getClient(); }
+    catch{ return res.status(503).json({error:'schedule unavailable'}); }
+    const readerAccess=await requireSelectedPairingReader(req,res,db,payload,userId);
+    if(!readerAccess) return;
+    if(readerAccess.mode==='secondary'){
+      const forbiddenFields=['circle_id','circle_public_id','publication_id','group_id','pair_group_id','pair_id','pg_id','room_id'];
+      if(forbiddenFields.some(field=>requestQueryValue(req,field)!==undefined)){
+        return res.status(400).json({ok:false,error:'schedule scope is derived from the active circle'});
+      }
+      try{
+        if(req.method==='GET') return res.json(await readSecondarySchedule(db,{authority:readerAccess.authority}));
+        const mutation=parseSecondaryScheduleMutation(req.body);
+        const result=await mutateSecondarySchedule(db,{authority:readerAccess.authority,mutation});
+        return res.status(result.conflict?409:200).json(result.conflict
+          ?{...result.response,error:'schedule changed'}:result.response);
+      }catch(error){
+        const failure=secondaryScheduleFailure(error,{contextVersion:readerAccess.circleContextVersion});
+        return res.status(failure.status).json(failure.body);
+      }
+    }
+  }
   const numericRoomFields=['week_id','pair_group_id','pair_id','pg_id'];
   if(numericRoomFields.some(field=>requestQueryValue(req,field)!==undefined)){
     return res.status(400).json({error:'canonical room_id required'});
@@ -1477,9 +1521,8 @@ async function handleSchedule(req,res){
   }
   const room=parseCanonicalRoomId(rawRoomId);
   if(!room) return res.status(400).json({error:'canonical room_id required'});
+  if(!db) db=getClient();
 
-  const db=getClient();
-  const userId=Number(payload.id||payload.uid);
   let accessArgs,accessRow;
   try{
     const access=await getPairAccess(db,payload,room.weekId,room.pairGroupId);
@@ -2553,6 +2596,7 @@ const MULTI_CIRCLE_UNSCOPED_DATA_ENDPOINTS=new Set([
 async function requireSingleCircleDataFeature(req,res,endpoint){
   if(!multiCircleControlPlaneEnabled()||!MULTI_CIRCLE_UNSCOPED_DATA_ENDPOINTS.has(endpoint)) return true;
   if(secondaryCircleCoordinationEnabled()&&(endpoint==='weeks'||endpoint==='my-pair')) return true;
+  if(secondaryCircleSchedulingEnabled()&&endpoint==='schedule') return true;
   try{
     const payload=await getAuthPayload(req);
     const userId=authenticatedUserId(payload);

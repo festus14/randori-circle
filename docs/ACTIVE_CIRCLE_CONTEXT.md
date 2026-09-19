@@ -1,9 +1,10 @@
 # Active-circle control plane
 
-This increment makes multi-circle membership safe for roster and invitation
-management without pretending that pairing data is tenant-scoped already. It is
+This runbook defines the selected-circle control plane used by roster,
+invitation, availability, coordination, and scheduling increments. Its base is
 disabled unless both `CIRCLE_MEMBERSHIP_ENABLED=true` and
-`MULTI_CIRCLE_CONTROL_PLANE_ENABLED=true`.
+`MULTI_CIRCLE_CONTROL_PLANE_ENABLED=true`; dependent capabilities remain
+separately default-off.
 
 ## Contract
 
@@ -51,9 +52,12 @@ disabled unless both `CIRCLE_MEMBERSHIP_ENABLED=true` and
   `/api/pairing/run`, `/api/weeks`, and `/api/my-pair` use the selected circle.
   A selected primary retains the legacy workspace path. A selected secondary
   uses the v13 immutable coordination data plane and returns no room or other
-  workspace capability. History, schedule, chat, execution, workspace, video,
-  recap, and AI remain primary-only and return `409 circle_feature_unavailable`.
-  See `SELECTED_CIRCLE_PAIRING.md`.
+  workspace capability. After v16, the additional default-off
+  `SECONDARY_CIRCLE_SCHEDULING_ENABLED` flag adds only an opaque schedule
+  identity and dashboard scheduling; it grants no room or workspace authority.
+  History, chat, execution, workspace, video, recap, AI, and schedule email
+  remain primary-only and return `409 circle_feature_unavailable`. See
+  `SELECTED_CIRCLE_PAIRING.md` and `SECONDARY_SCHEDULING.md`.
 
 The browser clears private circle and workspace state before reloading after a
 switch. Starting a switch advances a client control-plane epoch, so delayed
@@ -73,8 +77,9 @@ refresh only until its actor, circle, context version, and TTL are revalidated.
    restore rehearsals required by issues #38 and #43.
 2. Keep `MULTI_CIRCLE_CONTROL_PLANE_ENABLED`,
    `MULTI_CIRCLE_AVAILABILITY_ENABLED`,
-   `SECONDARY_CIRCLE_COORDINATION_ENABLED`, and
-   `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED` false. Also disable the four
+   `SECONDARY_CIRCLE_COORDINATION_ENABLED`,
+   `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED`, and
+   `SECONDARY_CIRCLE_SCHEDULING_ENABLED` false. Also disable the four
    credential consumers: `EMAIL_PASSWORD_ACTIVATION_ENABLED`,
    `PASSWORD_RESET_ENABLED`, `INVITATION_EMAIL_DELIVERY_ENABLED`, and
    `IDENTITY_MANAGEMENT_ENABLED`. If an existing credential consumer cannot be
@@ -88,42 +93,53 @@ refresh only until its actor, circle, context version, and TTL are revalidated.
    uninitialized v15 control rows, unchanged pre-existing data, and the complete
    managed ledger through v15.
 4. Inspect and adopt all four configured credential purposes through the
-   protected key-control workflow before promoting the v15-aware runtime or
-   enabling any credential consumer. Toggle
+   protected key-control workflow before continuing to v16 or enabling any
+   credential consumer. Toggle
    `CREDENTIAL_KEY_CONTROL_MUTATIONS_ENABLED` only for the one approved adopt
    operation and return it to false afterward. That variable authorizes control
    mutation; it does not disable or enable a credential consumer. Verify
-   redacted accepted status for all four purposes, promote the runtime, verify
-   health and ordinary single-circle login, roster, invitation, and pairing,
-   then restore each required consumer separately.
-5. Enable the control-plane flag in staging. Create a fixture account with two active circle
+   redacted accepted status for all four purposes.
+5. From that accepted v15 state, complete a new protected backup/restore
+   rehearsal and status inspection, separately approve and apply only v16, and
+   verify the 16-row ledger, 52 tables, 56 indexes, empty schedule tables, and
+   unchanged pre-v16 data. Deploy the v16-aware runtime with
+   `SECONDARY_CIRCLE_SCHEDULING_ENABLED=false`; verify health and ordinary
+   single-circle login, roster, invitation, and pairing, then restore each
+   required credential consumer separately.
+6. Enable the control-plane flag in staging. Create a fixture account with two active circle
    memberships and verify selection, cross-tab reload, scoped roster/invitation
    operations, last-owner rules, and the explicit pairing/workspace 409.
-6. Keep `MULTI_CIRCLE_AVAILABILITY_ENABLED=false`, then enable it in staging.
+7. Keep `MULTI_CIRCLE_AVAILABILITY_ENABLED=false`, then enable it in staging.
    Verify opposite primary/secondary decisions, exact request/response context
    versions, secondary `cycle_default`, stale-switch and membership-removal
    zero-write behavior, and unchanged 409s on every other data-plane route.
-7. Repeat the control-plane and availability checks in production before admitting a real
+8. Repeat the control-plane and availability checks in production before admitting a real
    secondary membership. Monitor only aggregate response/error counts; circle
    names, invitation targets, and session identifiers must not enter telemetry.
-8. Canary `SECONDARY_CIRCLE_COORDINATION_ENABLED` as described in
-   `SELECTED_CIRCLE_PAIRING.md`; Step 3 applied its v13 schema and the complete
-   managed ledger through v15 required by runtime readiness. Keep
+9. Canary `SECONDARY_CIRCLE_COORDINATION_ENABLED` as described in
+   `SELECTED_CIRCLE_PAIRING.md`; Steps 3 and 5 applied its v13 schema and the
+   complete v16 ledger required by current runtime readiness. Keep
    `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED=false` until a separate sender and
    provider canary succeeds.
+10. Keep `SECONDARY_CIRCLE_SCHEDULING_ENABLED=false` until coordination is
+    healthy, then canary the schedule flows and dashboard-only calendar export
+    exactly as described in `SECONDARY_SCHEDULING.md`.
 
-Rollback is application-only. Disable `MULTI_CIRCLE_AVAILABILITY_ENABLED` first
-to restore the legacy availability gate without disabling roster/invitation
-selection; disable `MULTI_CIRCLE_CONTROL_PLANE_ENABLED` only if the broader
-control plane must also roll back. Context, cycle, and decision rows can remain;
-no membership or tenant data is deleted.
+Rollback is application-only. To roll back scheduling alone, disable
+`SECONDARY_CIRCLE_SCHEDULING_ENABLED`. For a broader rollback, disable
+`MULTI_CIRCLE_AVAILABILITY_ENABLED` to restore the legacy availability gate
+without disabling roster/invitation selection; disable
+`MULTI_CIRCLE_CONTROL_PLANE_ENABLED` only if the broader control plane must also
+roll back. Context, cycle, decision, and schedule rows can remain; no membership
+or tenant data is deleted.
 
 ## Deferred work
 
 Circle archive and secondary workspace ownership remain separate increments.
-Pairing weeks, participants, schedules, messages, runs, snapshots,
-video, AI, notification idempotency, and associated foreign keys must gain
-canonical `circle_id` ownership before their secondary-circle flags can be
-enabled. Postgres with row-level security remains the preferred final tenancy
-boundary; a Turso retrofit remains possible but requires table rebuilds and
-application-enforced authorization.
+Pairing weeks, participants, messages, runs, snapshots, video, AI, notification
+idempotency, and associated foreign keys must gain canonical `circle_id`
+ownership before their secondary-circle flags can be enabled. Secondary
+schedule email remains a separate increment with its own payload and delivery
+revalidation. Postgres with row-level security remains the preferred final
+tenancy boundary; a Turso retrofit remains possible but requires table rebuilds
+and application-enforced authorization.

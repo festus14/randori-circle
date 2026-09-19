@@ -3,8 +3,8 @@
 This increment makes the selected-circle control plane reachable without seed
 data. It is disabled unless both `CIRCLE_MEMBERSHIP_ENABLED=true` and
 `MULTI_CIRCLE_CONTROL_PLANE_ENABLED=true`. Migration v14 owns its storage; this
-release additionally requires exact managed readiness through v15 and the
-central credential-control adoption sequence before runtime promotion.
+release additionally requires exact managed readiness through v16 and the
+central v15 credential-control adoption sequence before runtime promotion.
 
 ## Public contract
 
@@ -66,20 +66,24 @@ broadcast as only account plus generation and followed by a canonical reload.
 
 The selected new circle immediately shows its creator-only roster, empty
 invitation list, lazy default availability, and unpublished coordination state.
-It receives no room, schedule, chat, video, execution, recap, AI, notification,
-or other legacy workspace capability.
+It initially receives no schedule because no current pairing exists. After a
+two-person pairing is published, the separate scheduling flag may expose only
+dashboard coordination. Circle creation itself creates no schedule, room,
+chat, video, execution, recap, AI, notification, or other legacy workspace
+capability.
 
 ## Rollout and rollback
 
-1. Use Steps 2–4 of the central protected v13-then-v14-then-v15 sequence in
+1. Use Steps 2–5 of the central protected v13-then-v14-then-v15, credential
+   adoption, then v16 sequence in
    [Active circle context](ACTIVE_CIRCLE_CONTEXT.md#rollout) as the sole
    migration and credential-adoption authority. It uses a fresh backup/restore
    rehearsal and one separately approved, immediately-next-version apply for
-   each migration, then protected adoption of all four configured credential
-   purposes before runtime promotion; do not reapply any version from this
-   runbook.
+   v13 through v15, protected adoption of all four configured credential
+   purposes, and a new rehearsal plus separate v16 apply before runtime
+   promotion; do not reapply any version from this runbook.
 2. With that sequence complete and `MULTI_CIRCLE_CONTROL_PLANE_ENABLED=false`,
-   verify the v14 creation artifacts, exact runtime readiness through v15, all
+   verify the v14 creation artifacts, exact runtime readiness through v16, all
    four accepted credential controls, and unchanged pre-existing application
    data.
 3. Enable the control plane in staging and test create/replay, cap, concurrent

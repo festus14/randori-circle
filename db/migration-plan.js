@@ -106,6 +106,13 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'5544165b9d642c8695d82134625cad38918a9f7b58f7b86e8b163d40ce755dd1',
     checksum:'87085afbdce62004820116903feb2c0607f7366676493cd2fa8e21605a2f2ce0',
   }),
+  Object.freeze({
+    version:16,
+    name:'circle-owned-pair-scheduling',
+    description:'Normalized circle-owned schedules and proposals bound to one immutable secondary pairing group.',
+    operationsChecksum:'15c029b4ddd845245caec54411bcc2b0461e7b5f06a070e12800b99daf33b39b',
+    checksum:'cf00a453d31ae62ef43aac2230bb6dffb46c36b9930a5b9b6a5870a49dbac87c',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){

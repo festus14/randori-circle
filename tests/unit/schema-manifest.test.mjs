@@ -27,7 +27,8 @@ test('schema manifest pins all current tables and named indexes',()=>{
     'chat_retention_control','chat_retention_scopes','chat_retention_runs',
     'chat_retention_legal_holds','chat_retention_audit_events','auth_session_circle_contexts',
     'circle_pairing_publications','circle_pairing_eligibility','circle_pairing_groups',
-    'circle_creation_requests','credential_key_controls',
+    'circle_creation_requests','credential_key_controls','circle_pair_schedules',
+    'circle_pair_schedule_proposals',
   ]);
   assert.deepEqual(INDEXES.map(item=>item.name),[
     'idx_video_signals_room','idx_video_signals_room_id','idx_pair_messages_pair','idx_pair_sched_pair',
@@ -51,6 +52,7 @@ test('schema manifest pins all current tables and named indexes',()=>{
     'idx_circle_pairing_publications_circle_cycle','idx_circle_pairing_eligibility_scope_user',
     'idx_circle_pairing_groups_user_a','idx_circle_pairing_groups_user_b',
     'uq_circle_audit_events_id_circle','idx_circle_creation_requests_circle',
+    'uq_circle_pairing_groups_schedule_owner','idx_circle_pair_schedule_proposals_schedule',
   ]);
   assert.equal(new Set(TABLES.map(item=>item.name)).size,TABLES.length);
   assert.equal(new Set(INDEXES.map(item=>item.name)).size,INDEXES.length);
@@ -63,7 +65,7 @@ test('schema manifest pins all current tables and named indexes',()=>{
 
 test('immutable migration metadata is contiguous and checksum protected',()=>{
   assert.equal(validateMigrationPlans(),true);
-  assert.deepEqual(MIGRATION_PLANS.map(plan=>plan.version),[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]);
+  assert.deepEqual(MIGRATION_PLANS.map(plan=>plan.version),[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]);
   assert.deepEqual(MIGRATION_PLANS.slice(0,2).map(plan=>({
     version:plan.version,operationsChecksum:plan.operationsChecksum,checksum:plan.checksum,
   })),[{
@@ -95,26 +97,47 @@ test('immutable migration metadata is contiguous and checksum protected',()=>{
   assert.throws(()=>validateMigrationPlans(gap),/gap at version 2/);
 });
 
-test('secondary coordination rollout requires the complete managed v15 ledger and controls',()=>{
+test('secondary rollout preserves v15 control adoption before separate v16 scheduling',()=>{
   const decisions=readFileSync(new URL('../../docs/IMPLEMENTED_DECISIONS.md',import.meta.url),'utf8');
   const section=decisions.match(/## ID-26:[\s\S]*?(?=\n## ID-27:)/)?.[0]||'';
+  const scheduling=decisions.match(/## ID-33:[\s\S]*$/)?.[0]||'';
+  const activeContext=readFileSync(new URL('../../docs/ACTIVE_CIRCLE_CONTEXT.md',import.meta.url),'utf8');
   assert.match(section,
     /apply managed v13, then v14, then v15 as separate protected migration\s+steps with fresh evidence and approval/);
   assert.match(section,
-    /adopt all four configured credential\s+purposes, and verify exact runtime readiness/);
+    /adopt all four configured credential\s+purposes, then use a new rehearsal/);
+  assert.match(section,
+    /new rehearsal, status artifact, and approval to apply v16\s+separately/);
+  assert.match(section,/exact runtime readiness through v16/);
   assert.match(section,
     /Keep its separate email flag false until the sender\s+passes a provider canary/);
+  assert.match(scheduling,/Apply v16 alone through the protected one-version\s+workflow after v15/);
+  assert.match(activeContext,/separately approve and apply only v16/);
+  assert.match(activeContext,
+    /Deploy the v16-aware runtime with\s+`SECONDARY_CIRCLE_SCHEDULING_ENABLED=false`/);
 });
 
-test('circle creation rollout cannot bypass v15 key-control adoption',()=>{
+test('circle creation rollout requires v15 control adoption and current v16 readiness',()=>{
   const decisions=readFileSync(new URL('../../docs/IMPLEMENTED_DECISIONS.md',import.meta.url),'utf8');
   const section=decisions.match(/## ID-29:[\s\S]*?(?=\n## ID-30:)/)?.[0]||'';
+  const runbook=readFileSync(new URL('../../docs/CIRCLE_CREATION.md',import.meta.url),'utf8');
+  const pairingRunbook=readFileSync(new URL('../../docs/SELECTED_CIRCLE_PAIRING.md',import.meta.url),'utf8');
   assert.match(section,
     /apply each pending v13, v14, and v15 migration separately with a fresh protected\s+rehearsal and approval/);
   assert.match(section,
-    /adopt all four configured credential purposes before\s+runtime promotion/);
+    /adopt all four configured credential purposes before\s+continuing/);
   assert.match(section,
     /If an existing credential consumer cannot be disabled, hold\s+production promotion/);
+  assert.match(section,
+    /new rehearsal, status\s+artifact, and approval to apply v16 separately/);
+  assert.match(section,/verify exact readiness through\s+v16/);
+  assert.match(runbook,/exact managed readiness through v16/);
+  assert.match(runbook,
+    /credential\s+purposes, and a new rehearsal plus separate v16 apply before runtime\s+promotion/);
+  assert.match(pairingRunbook,/Use Steps 2–5/);
+  assert.match(pairingRunbook,
+    /new rehearsal, status artifact, approval, and\s+separate v16 apply/);
+  assert.match(pairingRunbook,/complete managed\s+ledger through v16/);
 });
 
 test('provider identities add issuer-scoped subject and account uniqueness without rewriting the baseline',()=>{
@@ -226,25 +249,25 @@ test('migration metadata covers every artifact and supports append-only replacem
   assert.throws(()=>validateMigrationPlans(duplicate.map(repin)),/repeats canonical operations/);
 
   const unsupported=repin({
-    version:16,name:'unsupported-operation',description:'Invalid operation example.',
+    version:17,name:'unsupported-operation',description:'Invalid operation example.',
     operations:[{operation:'drop-table',name:'users',sql:'DROP TABLE users'}],
   });
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,unsupported]),/unsupported operation/);
 
   const mislabeled=repin({
-    version:16,name:'mislabeled-table',description:'Invalid table example.',
+    version:17,name:'mislabeled-table',description:'Invalid table example.',
     operations:[{operation:'ensure-table',name:'users',sql:'DROP TABLE users'}],
   });
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,mislabeled]),/non-canonical CREATE TABLE/);
 
   const multipleStatements=repin({
-    version:16,name:'multiple-statements',description:'Invalid SQL example.',
+    version:17,name:'multiple-statements',description:'Invalid SQL example.',
     operations:[{operation:'ensure-table',name:'users',sql:'CREATE TABLE users (id INTEGER); DROP TABLE auth_accounts'}],
   });
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,multipleStatements]),/invalid ensure-table definition/);
 
   const danglingIndex=repin({
-    version:16,name:'dangling-index',description:'Invalid index example.',
+    version:17,name:'dangling-index',description:'Invalid index example.',
     operations:[{
       operation:'ensure-index',name:'idx_video_signals_room',table:'missing_table',
       keyParts:['room_id'],unique:false,where:null,
@@ -254,7 +277,7 @@ test('migration metadata covers every artifact and supports append-only replacem
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,danglingIndex]),/references unknown table/);
 
   const replacement={...MIGRATION_PLANS[0].operations.find(operation=>operation.name==='users'),sql:'CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)'};
-  const appended=repin({version:16,name:'future-users-contract',description:'Future replacement example.',operations:[replacement]});
+  const appended=repin({version:17,name:'future-users-contract',description:'Future replacement example.',operations:[replacement]});
   assert.equal(validateMigrationPlans([...MIGRATION_PLANS,appended]),true);
 });
 

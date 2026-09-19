@@ -25,6 +25,11 @@ export function secondaryCirclePairingEmailEnabled(){
     &&process.env.SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED==='true';
 }
 
+export function secondaryCircleSchedulingEnabled(){
+  return secondaryCircleCoordinationEnabled()
+    &&process.env.SECONDARY_CIRCLE_SCHEDULING_ENABLED==='true';
+}
+
 function positiveInteger(value){
   const parsed=typeof value==='number'?value
     :(typeof value==='string'&&/^[1-9]\d*$/.test(value)?Number(value):null);
