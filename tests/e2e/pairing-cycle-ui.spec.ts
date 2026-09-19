@@ -118,12 +118,16 @@ function dashboardPair(options: {
   };
 }
 
-async function openDashboard(page: Page, pairResponse: Record<string, unknown> | (() => Record<string, unknown> | Promise<Record<string, unknown>>)) {
+async function openDashboard(
+  page: Page,
+  pairResponse: Record<string, unknown> | (() => Record<string, unknown> | Promise<Record<string, unknown>>),
+  circleResponse: Record<string, unknown> | (() => Record<string, unknown> | Promise<Record<string, unknown>>) = circle('member'),
+) {
   await page.route(/^https:\/\//, route => route.abort());
   await mockApi(page, {
     '/api/auth/me': { ok: true, user },
     '/api/profile': { ok: true, user },
-    '/api/circle': circle('member'),
+    '/api/circle': circleResponse,
     '/api/my-pair': pairResponse,
     '/api/messages': request => {
       const url = new URL(request.url());
@@ -476,7 +480,14 @@ test('refreshing the same current pair preserves its active workspace lifecycle'
 
 test('a different current pair revokes the old workspace before authorizing the new room',async({page})=>{
   let pairResponse:Record<string,unknown>=dashboardPair();
-  await openDashboard(page,()=>pairResponse);
+  let releaseCircle:()=>void=()=>{};
+  let circleResponses=0;
+  const circleGate=new Promise<void>(resolve=>{ releaseCircle=resolve; });
+  await openDashboard(page,()=>pairResponse,async()=>{
+    await circleGate;
+    circleResponses+=1;
+    return circle('member');
+  });
   await page.locator('#dashJoinSession').click();
   await expect(page.locator('#view-code')).toBeVisible();
   await expect.poll(()=>page.evaluate(()=>(window as typeof window&{_randori_workspace?:{room?:string}})._randori_workspace?.room||null)).toBe('week_20_pair_30');
@@ -494,7 +505,6 @@ test('a different current pair revokes the old workspace before authorizing the 
       leaveVideo:()=>{ joined=false; app.__testVideoLeaves=(app.__testVideoLeaves||0)+1; original?.leaveVideo?.(); },
     };
   });
-
   pairResponse=dashboardPair({weekId:21,pairId:31,partnerId:3,partnerName:'Next Partner'});
   await page.evaluate(async()=>{
     await (window as typeof window&{_randori_journey:{showDashboard:()=>Promise<void>}})._randori_journey.showDashboard();
@@ -502,6 +512,9 @@ test('a different current pair revokes the old workspace before authorizing the 
 
   await expect(page.locator('#dashPairArea')).toContainText('Next Partner');
   await expect.poll(()=>page.evaluate(()=>(window as typeof window&{_randori_schedule?:{room?:string}})._randori_schedule?.room||null)).toBe('week_21_pair_31');
+  releaseCircle();
+  await expect.poll(()=>circleResponses).toBeGreaterThanOrEqual(1);
+  await expect(page.locator('#peopleCount')).toHaveText('1');
   expect(await page.evaluate(()=>(window as typeof window&{_randori_workspace?:{room?:string|null}})._randori_workspace?.room||null)).toBeNull();
   expect(await page.evaluate(()=>(window as typeof window&{__testVideoLeaves?:number}).__testVideoLeaves)).toBe(1);
   expect(await page.evaluate(()=>(window as typeof window&{_randori_authorized_room?:string|null})._randori_authorized_room||null)).toBe('week_21_pair_31');
