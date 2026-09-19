@@ -66,9 +66,11 @@ published as before. With the secondary flag enabled, the server first performs
 a deterministic `circle.id` enumeration with a hard private-beta limit of 25.
 Overflow is detected before any secondary publication and returns the fixed,
 retryable `pairing_batch_overflow` error. Each admitted secondary scope then
-publishes in its own transaction. Aggregate telemetry and responses contain
-counts only; no circle or member identifier is emitted. Secondary publication
-does not enqueue email.
+publishes in its own transaction. A failed scope is counted without starving
+later scopes in the deterministic batch; after processing the batch, any
+failure produces an aggregate retryable `503`. Aggregate telemetry and
+responses contain counts only; no circle or member identifier is emitted.
+Secondary publication does not enqueue email.
 
 ## Rollout and rollback
 

@@ -3467,6 +3467,32 @@ test('the separately flagged availability route requires and returns the exact s
   assert.equal(pairing.body.code,'circle_feature_unavailable');
 });
 
+test('legacy pairing reads initialize base and profile schema only once per request',async()=>{
+  executeHandler=sql=>{
+    if(sql.includes('SELECT aa.id,c.id AS circle_id')&&sql.includes('JOIN circle_memberships')){
+      return rows([{id:2,circle_id:1}]);
+    }
+    return rows();
+  };
+  const headers={...sameOriginHeaders,'x-test-auth':'user'};
+  for(const route of ['weeks','my-pair']){
+    executed.length=0;
+    const response=await invoke(dataHandler,{
+      url:`/api/${route}`,query:{endpoint:route},headers,
+    });
+    assert.equal(response.status,200,JSON.stringify(response.body));
+    assert.equal(executed.filter(({sql})=>
+      sql.startsWith('CREATE TABLE IF NOT EXISTS auth_accounts')).length,1,
+    `${route} must run ensureBaseTables only once`);
+    assert.equal(executed.filter(({sql})=>
+      sql.startsWith('ALTER TABLE auth_accounts ADD COLUMN')).length,8,
+    `${route} must run the eight auth-account profile migrations only once`);
+    assert.equal(executed.filter(({sql})=>
+      sql.startsWith('ALTER TABLE pairing_weeks ADD COLUMN is_demo')).length,1,
+    `${route} must run the pairing-week profile migration only once`);
+  }
+});
+
 test('a sole secondary circle uses implicit availability GET and POST without a context header',async()=>{
   process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
   process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';

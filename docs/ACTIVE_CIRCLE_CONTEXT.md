@@ -85,7 +85,8 @@ refresh only until its actor, circle, context version, and TTL are revalidated.
    secondary membership. Monitor only aggregate response/error counts; circle
    names, invitation targets, and session identifiers must not enter telemetry.
 6. Canary `SECONDARY_CIRCLE_COORDINATION_ENABLED` as described in
-   `SELECTED_CIRCLE_PAIRING.md`; its required v13 schema was applied in Step 2.
+   `SELECTED_CIRCLE_PAIRING.md`; Step 2 applied its v13 schema and the complete
+   managed ledger through v14 required by runtime readiness.
 
 Rollback is application-only. Disable `MULTI_CIRCLE_AVAILABILITY_ENABLED` first
 to restore the legacy availability gate without disabling roster/invitation

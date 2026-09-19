@@ -1034,7 +1034,8 @@ manual invitation creation and queued encrypted events for a later safe resume.
 ## ID-26: Separate secondary-circle coordination from workspace authority
 
 Status: implemented behind the independent, default-off
-`SECONDARY_CIRCLE_COORDINATION_ENABLED` flag; migration v13 is required.
+`SECONDARY_CIRCLE_COORDINATION_ENABLED` flag; migration v13 owns its storage,
+and runtime readiness requires the complete managed ledger through v14.
 
 **Decision.** A selected secondary circle may publish and read one immutable
 current-cycle pairing, but that assignment is coordination data only. Migration
@@ -1057,10 +1058,12 @@ Manual publication derives the circle from the live session and revalidates its
 context generation, membership, owner role, archive state, database time,
 roster, availability, and same-circle fairness history within each write
 transaction attempt. Cron enumerates secondary circles deterministically under
-a hard limit and gives each scope its own transaction. Existing claims are
-immutable; pre-commit lock conflicts may retry, but ambiguous commits do not.
-Secondary cycles always use `cycle_default`, never the account-global legacy
-availability value, and do not enqueue pairing email.
+a hard limit and gives each scope its own transaction. One failed scope is
+counted while later admitted scopes continue, after which the cron returns an
+aggregate retryable failure. Existing claims are immutable; pre-commit lock
+conflicts may retry, but ambiguous commits do not. Secondary cycles always use
+`cycle_default`, never the account-global legacy availability value, and do not
+enqueue pairing email.
 
 Secondary reads recheck the same live context and join partner identity only
 through current active membership. Departed partners are redacted. Responses
@@ -1076,11 +1079,14 @@ model, but couples the useful weekly pairing milestone to a much larger data
 migration. Dual-writing would create two authorities and ambiguous rollback.
 Manual-only publication would avoid cron work but weaken the weekly habit.
 
-**Rollout and recovery.** Apply v13 through the protected migration workflow,
-deploy with the flag false, canary one secondary circle, then verify bounded
-cron publication. Roll back only by disabling the flag. Preserve canonical
-rows for audit and forward recovery; never copy them into legacy workspace
-tables or weaken membership enforcement.
+**Rollout and recovery.** Follow the central rollout in
+`ACTIVE_CIRCLE_CONTEXT.md`: deploy with the flag false, apply managed v13 and
+then v14 as separate protected migration steps, and verify exact runtime
+readiness. Only then canary one secondary circle and verify bounded cron
+publication before enabling secondary coordination more broadly. Roll back
+only by disabling the flag. Preserve canonical rows for audit and forward
+recovery; never copy them into legacy workspace tables or weaken membership
+enforcement.
 
 ## ID-27: Export one accepted session locally with a stable private identity
 

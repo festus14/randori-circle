@@ -928,11 +928,13 @@ async function handleWeeks(req,res){
   const userId=authenticatedUserId(payload);
   if(!userId) return res.status(401).json({error:'authentication required'});
   let db;
+  let legacySchemaReady=false;
   try{
     db=getClient();
     if(!secondaryCircleCoordinationEnabled()||strictLocalPairingRuntime(req)){
       await ensureBaseTables(db,req);
       await ensureProfileMigrations(db,req);
+      legacySchemaReady=true;
     }
   }catch{ return res.status(503).json({error:'pairing unavailable'}); }
   const readerAccess=await requireSelectedPairingReader(req,res,db,payload,userId);
@@ -947,8 +949,10 @@ async function handleWeeks(req,res){
     }
   }
   try{
-    await ensureBaseTables(db,req);
-    await ensureProfileMigrations(db,req);
+    if(!legacySchemaReady){
+      await ensureBaseTables(db,req);
+      await ensureProfileMigrations(db,req);
+    }
   }catch{ return res.status(503).json({error:'pairing unavailable'}); }
   try{
     const now=new Date();
@@ -1273,11 +1277,13 @@ async function handleMyPair(req,res){
   const userId=authenticatedUserId(payload);
   if(!userId) return res.status(401).json({error:'authentication required'});
   let db;
+  let legacySchemaReady=false;
   try{
     db=getClient();
     if(!secondaryCircleCoordinationEnabled()||strictLocalPairingRuntime(req)){
       await ensureBaseTables(db,req);
       await ensureProfileMigrations(db,req);
+      legacySchemaReady=true;
     }
   }catch{
     return res.status(503).json({error:'pairing unavailable'});
@@ -1294,8 +1300,10 @@ async function handleMyPair(req,res){
     }
   }
   try{
-    await ensureBaseTables(db,req);
-    await ensureProfileMigrations(db,req);
+    if(!legacySchemaReady){
+      await ensureBaseTables(db,req);
+      await ensureProfileMigrations(db,req);
+    }
   }catch{ return res.status(503).json({error:'pairing unavailable'}); }
   let weekId=null, weekRow=null, cycle=null, upcomingCycle=null;
   let publication=null;

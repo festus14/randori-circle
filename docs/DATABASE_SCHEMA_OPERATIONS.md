@@ -4,7 +4,7 @@ Randori has read-only schema inspection for configured databases, a transactiona
 
 ## Contract
 
-- `db/schema-manifest.js` is the current contract: 48 application tables and 52 named indexes.
+- `db/schema-manifest.js` is the current contract: 49 application tables and 54 named indexes.
 - The manifest includes column/default/primary-key contracts, checks, foreign keys, unique constraints, AUTOINCREMENT/collation/table options, and unique, partial, descending, and expression-index semantics. SQLite-created `sqlite_autoindex_*` indexes are intentionally outside the named-index count.
 - `ai_monthly_usage` is a retired table. Its presence is reported as tolerated legacy state; it is not treated as current schema and is never changed.
 - `schema_migrations` is a runner-owned operational table. General schema inspection recognizes it without treating it as unexpected application drift; the migration runner validates its exact schema and rows separately.
@@ -58,7 +58,7 @@ Representative output fields:
   "manifest": {"version": 1, "checksum": "..."},
   "foreignKeysEnabled": true,
   "checkConstraintsEnabled": true,
-  "summary": {"expectedTables": 48, "expectedIndexes": 52, "blockers": 0},
+  "summary": {"expectedTables": 49, "expectedIndexes": 54, "blockers": 0},
   "drift": {
     "missingTables": [],
     "missingColumns": [],
@@ -110,8 +110,8 @@ npm run --silent db:migrate -- \
   adopt --database file:///absolute/path/to/restored-randori.db \
   --expected-state <v2StateFingerprint> --through-version 2
 
-# Inspect again without a prefix. The result must be managed at v2 with v3,
-# v3 through v13 pending before using its new full-set fingerprint for the upgrade.
+# Inspect again without a prefix. The result must be managed at v2 with
+# v3 through v14 pending before using its new full-set fingerprint for the upgrade.
 npm run --silent db:migrate -- \
   status --database file:///absolute/path/to/restored-randori.db
 
