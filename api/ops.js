@@ -903,7 +903,7 @@ async function handleWeekly(req,res){
       else secondary.existing+=1;
     }catch{
       secondary.failed+=1;
-      break;
+      continue;
     }
   }
   if(secondary.failed){
