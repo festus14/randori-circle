@@ -16,7 +16,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createClient } from '@libsql/client';
@@ -645,8 +645,11 @@ function apiRoute(pathname,query){
     ['/api/auth/activation/resend','activation-resend'],['/api/auth/activation/verify','activation-verify'],
     ['/api/auth/password-reset/request','password-reset-request'],
     ['/api/auth/password-reset/consume','password-reset-consume'],['/api/auth/recent-auth','recent-auth'],
+    ['/api/auth/identities','identities'],['/api/auth/identities/password','identity-password'],
+    ['/api/auth/identities/google','identity-google-unlink'],
     ['/api/auth/me','me'],['/api/auth/logout-all','logout-all'],['/api/auth/logout','logout'],
     ['/api/auth/google/start','google-start'],['/api/auth/google/reauth/start','google-reauth-start'],
+    ['/api/auth/google/link/start','google-link-start'],
     ['/api/auth/google/callback','google-callback'],
   ]);
   if(authEndpoints.has(pathname)){
@@ -917,6 +920,8 @@ function safeLogger(logger){
 }
 
 function installRuntimeEnvironment(config,url,secret,envTarget=process.env){
+  const identityEmailHashKey=createHmac('sha256',secret)
+    .update('randori-local-identity-email-hash-key-v1','utf8').digest('base64url');
   const values={
     NODE_ENV:'development',
     TURSO_DATABASE_URL:config.databaseUrl,
@@ -930,6 +935,9 @@ function installRuntimeEnvironment(config,url,secret,envTarget=process.env){
     CIRCLE_MEMBERSHIP_ENABLED:'true',
     AUTH_SCHEMA_BOOTSTRAP_ENABLED:'false',
     PASSWORD_RESET_ENABLED:'true',
+    IDENTITY_MANAGEMENT_ENABLED:'false',
+    IDENTITY_EMAIL_HASH_KEY:identityEmailHashKey,
+    IDENTITY_EMAIL_HASH_KEY_VERSION:'1',
     RANDORI_LOCAL_RUNTIME:'true',
     RANDORI_LOCAL_IDENTITY:'true',
     RANDORI_LOCAL_FIRST_USER_ADMIN:'false',

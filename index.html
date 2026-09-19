@@ -658,6 +658,7 @@ p{margin:0}
       <div id="authArea" class="row" style="gap:6px">
         <span id="meLabel" class="pill" style="display:none; cursor:pointer; position:relative"></span>
       <div id="meMenu" style="display:none; position:absolute; top:44px; right:60px; background:var(--bg-2); border:1px solid var(--border); border-radius:10px; padding:6px; min-width:120px; z-index:50; box-shadow:0 8px 24px rgba(0,0,0,.3)">
+        <button id="meIdentity" hidden disabled style="width:100%; text-align:left; background:none; border:none; color:var(--ink); padding:8px 10px; border-radius:8px; font-size:12.5px; cursor:pointer">Account security</button>
         <button id="meSignOut" style="width:100%; text-align:left; background:none; border:none; color:var(--ink); padding:8px 10px; border-radius:8px; font-size:12.5px; cursor:pointer">Sign out</button>
         <button id="meSignOutAll" style="width:100%; text-align:left; background:none; border:none; color:var(--warn); padding:8px 10px; border-radius:8px; font-size:12.5px; cursor:pointer">Sign out everywhere</button>
       </div>
@@ -1111,6 +1112,35 @@ p{margin:0}
     </form>
   </div>
 </div>
+<div id="identityOverlay" class="overlay" aria-hidden="true" style="z-index:90">
+  <div id="identityDialog" class="modal" style="max-width:500px" role="dialog" aria-modal="true" aria-labelledby="identityTitle" aria-describedby="identityDescription" tabindex="-1">
+    <div style="display:grid;gap:14px">
+      <div><h3 id="identityTitle">Account security</h3><p id="identityDescription" class="small muted" style="margin:6px 0 0">Manage the sign-in methods attached to this exact Randori account.</p></div>
+      <p id="identityStatus" data-testid="identity-status" class="small muted" role="status" aria-live="polite">Loading sign-in methods…</p>
+      <div id="identityRecent" class="card" style="padding:12px;display:grid;gap:9px">
+        <b style="font-size:13px">Confirm it is you</b>
+        <p id="identityRecentHint" class="small muted">Sensitive changes require a recent password or Google confirmation.</p>
+        <label id="identityPasswordConfirmField" class="small muted" style="display:grid;gap:5px">Current password
+          <input id="identityPasswordConfirm" class="input" type="password" autocomplete="current-password" maxlength="72" />
+        </label>
+        <div class="row"><button id="identityConfirmPassword" class="btn secondary" type="button">Confirm password</button><button id="identityConfirmGoogle" class="btn secondary" type="button">Confirm with Google</button></div>
+      </div>
+      <div class="card" style="padding:12px;display:grid;gap:9px">
+        <div class="row" style="justify-content:space-between"><span><b>Google</b><span id="identityGoogleState" class="small muted" style="margin-left:7px">checking…</span></span><button id="identityGoogleAction" class="btn secondary" type="button" disabled>Manage</button></div>
+        <p id="identityGoogleHelp" class="small muted">Google is linked only after an explicit, fresh provider confirmation.</p>
+      </div>
+      <div class="card" style="padding:12px;display:grid;gap:9px">
+        <div class="row" style="justify-content:space-between"><span><b>Password</b><span id="identityPasswordState" class="small muted" style="margin-left:7px">checking…</span></span><button id="identityPasswordAction" class="btn secondary" type="button" disabled>Manage</button></div>
+        <div id="identityPasswordAdd" hidden style="display:grid;gap:8px">
+          <label class="small muted" style="display:grid;gap:5px">New password<input id="identityNewPassword" class="input" type="password" autocomplete="new-password" maxlength="72" /></label>
+          <label class="small muted" style="display:grid;gap:5px">Confirm new password<input id="identityNewPasswordConfirm" class="input" type="password" autocomplete="new-password" maxlength="72" /></label>
+        </div>
+        <p id="identityPasswordHelp" class="small muted">Adding a password requires verified control of the linked Google account.</p>
+      </div>
+      <div class="auth-actions"><span></span><button id="identityClose" class="btn secondary" type="button">Close</button></div>
+    </div>
+  </div>
+</div>
 <div id="welcomeBanner" class="onboard-banner" style="display:none">
   <div class="small"><b>Welcome to Randori Circle</b> — weekly mock interviews with friends. Pair Sunday, practice DSA + System Design together. <span class="kbd" style="margin-left:6px">5-min setup</span></div>
   <div class="row" style="gap:8px"><button id="welcomeStartBtn" class="btn">Start → Sign in</button><button id="welcomeHowBtn" class="btn secondary">See how it works</button><button id="welcomeDismiss" class="pill">✕</button></div>
@@ -1136,7 +1166,7 @@ p{margin:0}
   let me = null;
   let authSessionEpoch=0;
   let authRefreshSequence=0;
-  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,passwordReset:false,localIdentity:false,verifiedEmailActivation:false,googleOAuth:false,registrationMode:'private_beta'});
+  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,passwordReset:false,localIdentity:false,verifiedEmailActivation:false,googleOAuth:false,identityManagement:false,registrationMode:'private_beta'});
   let authCapabilities=CLOSED_AUTH_CAPABILITIES;
   let authCapabilitiesLoaded=false;
   let authCapabilitiesFailed=false;
@@ -1815,6 +1845,7 @@ async function refreshMe(){
       ||(capabilities.passwordReset!==undefined&&typeof capabilities.passwordReset!=='boolean')
       ||(capabilities.localIdentity!==undefined&&typeof capabilities.localIdentity!=='boolean')
       ||(capabilities.verifiedEmailActivation!==undefined&&typeof capabilities.verifiedEmailActivation!=='boolean')
+      ||(capabilities.identityManagement!==undefined&&typeof capabilities.identityManagement!=='boolean')
       ||typeof capabilities.googleOAuth!=='boolean'
       ||!['local_open','local_invite','verified_invite','private_beta'].includes(mode)) throw new Error('invalid auth capabilities');
     return Object.freeze({
@@ -1824,6 +1855,7 @@ async function refreshMe(){
       localIdentity:capabilities.localIdentity===true,
       verifiedEmailActivation:capabilities.verifiedEmailActivation===true,
       googleOAuth:capabilities.googleOAuth,
+      identityManagement:capabilities.identityManagement===true,
       registrationMode:mode,
     });
   }
@@ -1867,8 +1899,13 @@ async function refreshMe(){
     const canSignIn=authCapabilities.passwordLogin||authCapabilities.googleOAuth;
     const join=document.getElementById('landingSignup');
     const signIn=document.getElementById('landingSignin');
+    const identity=document.getElementById('meIdentity');
     if(join){ join.hidden=authCapabilitiesLoaded&&!canJoin; join.disabled=!authCapabilitiesLoaded||!canJoin; }
     if(signIn){ signIn.hidden=authCapabilitiesLoaded&&!canSignIn; signIn.disabled=!authCapabilitiesLoaded||!canSignIn; }
+    if(identity){
+      identity.hidden=!authCapabilitiesLoaded||authCapabilities.identityManagement!==true;
+      identity.disabled=!authCapabilitiesLoaded||authCapabilities.identityManagement!==true;
+    }
   }
   function focusAuthControl(){
     const overlay=document.getElementById('authOverlay');
@@ -2091,7 +2128,167 @@ async function refreshMe(){
   (() => { const _wireOut = (id)=>{ const b=document.getElementById(id); if(!b||b._wired) return; b._wired=true; b.onclick=()=>{ const main=document.getElementById('signOutBtn'); if(main&&main.onclick) return main.onclick(); }; }; _wireOut('dashSignOut'); _wireOut('psSignOut'); _wireOut('meSignOut');
         const ml=document.getElementById('meLabel'); const mm=document.getElementById('meMenu'); if(ml&&mm&&!ml._menuWired){ ml._menuWired=true; ml.addEventListener('click', (e)=>{ e.stopPropagation(); mm.style.display=mm.style.display==='none'||!mm.style.display?'block':'none'; }); document.addEventListener('click', (e)=>{ if(!mm.contains(e.target)&&e.target!==ml) mm.style.display='none'; }); }
       })();
+  const identityUi={data:null,busy:false,message:'',returnFocus:null};
+  function identityErrorMessage(error){
+    const code=String(error?.status||error?.code||error?.error||'');
+    if(code==='recent_auth_required'||code.includes('recent authentication')) return 'Confirm your password or Google account, then try again.';
+    if(code==='provider_in_use') return 'That Google identity already belongs to another Randori account. Sign in there and add another method before unlinking it.';
+    if(code==='provider_already_linked') return 'This account already has a different Google identity linked.';
+    if(code==='final_credential'||code.includes('before removing')) return 'Add another sign-in method before removing this one.';
+    if(code==='verified_control_required'||code.includes('confirm your linked Google')) return 'Confirm the linked Google account before adding a password.';
+    return 'Account security is temporarily unavailable. Please try again.';
+  }
+  function renderIdentity(){
+    const data=identityUi.data;
+    const status=document.getElementById('identityStatus');
+    if(status) status.textContent=identityUi.message||(data?'Choose a sign-in method to manage.':'Loading sign-in methods…');
+    const recent=data?.recentAuth?.ok===true;
+    const recentPanel=document.getElementById('identityRecent');
+    if(recentPanel) recentPanel.hidden=Boolean(recent);
+    const passwordLinked=data?.password?.linked===true;
+    const googleLinked=data?.google?.linked===true;
+    const passwordState=document.getElementById('identityPasswordState');
+    const googleState=document.getElementById('identityGoogleState');
+    if(passwordState) passwordState.textContent=passwordLinked?'linked':'not linked';
+    if(googleState) googleState.textContent=googleLinked?'linked':'not linked';
+    const passwordConfirmField=document.getElementById('identityPasswordConfirmField');
+    const passwordConfirm=document.getElementById('identityConfirmPassword');
+    const googleConfirm=document.getElementById('identityConfirmGoogle');
+    if(passwordConfirmField) passwordConfirmField.hidden=!passwordLinked;
+    if(passwordConfirm) passwordConfirm.hidden=!passwordLinked;
+    if(googleConfirm) googleConfirm.hidden=!googleLinked||authCapabilities.googleOAuth!==true;
+    const googleAction=document.getElementById('identityGoogleAction');
+    if(googleAction){
+      googleAction.textContent=googleLinked?'Remove Google':'Link Google';
+      googleAction.disabled=identityUi.busy||!data||!recent||(googleLinked?!data.google.canUnlink:authCapabilities.googleOAuth!==true);
+    }
+    const passwordAction=document.getElementById('identityPasswordAction');
+    if(passwordAction){
+      passwordAction.textContent=passwordLinked?'Remove password':'Add password';
+      passwordAction.disabled=identityUi.busy||!data||!recent
+        ||(passwordLinked?!data.password.canUnlink:!(data.password.canAdd&&data.recentAuth?.method==='google'));
+    }
+    const passwordAdd=document.getElementById('identityPasswordAdd');
+    const showPasswordAdd=!passwordLinked&&data?.password?.canAdd&&recent&&data?.recentAuth?.method==='google';
+    if(passwordAdd){ passwordAdd.hidden=!showPasswordAdd; passwordAdd.style.display=showPasswordAdd?'grid':'none'; }
+    const googleHelp=document.getElementById('identityGoogleHelp');
+    if(googleHelp) googleHelp.textContent=googleLinked&&!data.google.canUnlink
+      ?'Add a password before removing your final sign-in method.'
+      :'Google linking always requires an explicit, fresh provider confirmation.';
+    const passwordHelp=document.getElementById('identityPasswordHelp');
+    if(passwordHelp) passwordHelp.textContent=passwordLinked&&!data.password.canUnlink
+      ?'Link Google before removing your final sign-in method.'
+      :'Adding a password requires verified control of the linked Google account.';
+    for(const control of document.querySelectorAll('#identityOverlay input,#identityOverlay button')){
+      if(control.id!=='identityClose'&&!['identityGoogleAction','identityPasswordAction'].includes(control.id)){
+        control.disabled=identityUi.busy;
+      }
+    }
+  }
+  async function refreshIdentity(){
+    identityUi.busy=true; identityUi.message='Loading sign-in methods…'; renderIdentity();
+    try{
+      const result=await api('/api/auth/identities',{method:'GET'});
+      identityUi.data=result.identity; identityUi.message='';
+      return result.identity;
+    }catch(error){ identityUi.data=null; identityUi.message=identityErrorMessage(error); return null; }
+    finally{ identityUi.busy=false; renderIdentity(); }
+  }
+  async function openIdentity(){
+    if(!me||!authCapabilitiesLoaded||authCapabilities.identityManagement!==true) return;
+    const overlay=document.getElementById('identityOverlay');
+    identityUi.returnFocus=document.activeElement;
+    identityUi.message='';
+    overlay?.classList.add('show'); overlay?.setAttribute('aria-hidden','false');
+    document.getElementById('meMenu').style.display='none';
+    document.getElementById('identityDialog')?.focus();
+    await refreshIdentity();
+  }
+  function closeIdentity(){
+    const overlay=document.getElementById('identityOverlay');
+    overlay?.classList.remove('show'); overlay?.setAttribute('aria-hidden','true');
+    for(const id of ['identityPasswordConfirm','identityNewPassword','identityNewPasswordConfirm']){
+      const input=document.getElementById(id); if(input) input.value='';
+    }
+    const target=identityUi.returnFocus; identityUi.returnFocus=null;
+    if(target?.isConnected) target.focus();
+  }
+  async function identityAction(work,message){
+    if(identityUi.busy) return;
+    identityUi.busy=true; identityUi.message=message; renderIdentity();
+    try{
+      const result=await work();
+      identityUi.data=result.identity||identityUi.data;
+      identityUi.message=result.status==='unlinked'?'Sign-in method removed.'
+        :(result.status==='not_linked'?'That sign-in method is already removed.'
+        :(result.status==='already_linked'?'That sign-in method is already linked.'
+        :(result.status==='redirecting'?'Continue with Google to finish linking.'
+        :(result.status==='confirmed'?'Identity confirmed.':'Sign-in method linked.'))));
+    }catch(error){ identityUi.message=identityErrorMessage(error); }
+    finally{ identityUi.busy=false; renderIdentity(); }
+  }
+  document.getElementById('meIdentity')?.addEventListener('click',openIdentity);
+  document.getElementById('identityClose')?.addEventListener('click',closeIdentity);
+  document.getElementById('identityOverlay')?.addEventListener('click',event=>{ if(event.target===event.currentTarget) closeIdentity(); });
+  document.getElementById('identityConfirmPassword')?.addEventListener('click',()=>identityAction(async()=>{
+    const input=document.getElementById('identityPasswordConfirm');
+    const result=await api('/api/auth/recent-auth',{method:'POST',body:{password:input?.value||''}});
+    if(input) input.value='';
+    await refreshIdentity();
+    return {status:'confirmed',identity:identityUi.data,recentAuth:result.recentAuth};
+  },'Confirming your password…'));
+  document.getElementById('identityConfirmGoogle')?.addEventListener('click',()=>{
+    if(identityUi.busy) return;
+    window.location.href='/api/auth/google/reauth/start?return_to=%2F';
+  });
+  document.getElementById('identityGoogleAction')?.addEventListener('click',async()=>{
+    const linked=identityUi.data?.google?.linked===true;
+    if(linked){
+      if(!window.confirm('Remove Google sign-in from this account?')) return;
+      return identityAction(()=>api('/api/auth/identities/google',{method:'POST',body:{action:'unlink'}}),'Removing Google sign-in…');
+    }
+    return identityAction(async()=>{
+      const result=await api('/api/auth/google/link/start',{method:'POST',body:{}});
+      if(!result.authorizationUrl) throw new Error('link unavailable');
+      window.location.assign(result.authorizationUrl);
+      return {status:'redirecting',identity:identityUi.data};
+    },'Opening Google confirmation…');
+  });
+  document.getElementById('identityPasswordAction')?.addEventListener('click',async()=>{
+    const linked=identityUi.data?.password?.linked===true;
+    if(linked){
+      if(!window.confirm('Remove password sign-in from this account?')) return;
+      return identityAction(()=>api('/api/auth/identities/password',{method:'POST',body:{action:'unlink'}}),'Removing password sign-in…');
+    }
+    const password=document.getElementById('identityNewPassword')?.value||'';
+    const confirmation=document.getElementById('identityNewPasswordConfirm')?.value||'';
+    const bytes=new TextEncoder().encode(password).length;
+    if(bytes<10||bytes>72){ identityUi.message='Password must be 10–72 UTF-8 bytes.'; renderIdentity(); return; }
+    if(password!==confirmation){ identityUi.message='Passwords do not match.'; renderIdentity(); return; }
+    await identityAction(()=>api('/api/auth/identities/password',{method:'POST',body:{action:'add',password}}),'Adding password sign-in…');
+    document.getElementById('identityNewPassword').value='';
+    document.getElementById('identityNewPasswordConfirm').value='';
+  });
+  document.addEventListener('keydown',event=>{
+    const overlay=document.getElementById('identityOverlay');
+    if(!overlay?.classList.contains('show')) return;
+    if(event.key==='Escape'){
+      event.preventDefault(); event.stopImmediatePropagation(); closeIdentity();
+      return;
+    }
+    if(event.key!=='Tab') return;
+    const focusable=[...overlay.querySelectorAll('button:not([disabled]):not([hidden]), input:not([disabled]):not([hidden])')]
+      .filter(element=>element.getClientRects().length>0);
+    if(!focusable.length){ event.preventDefault(); document.getElementById('identityDialog')?.focus(); return; }
+    const first=focusable[0];
+    const last=focusable[focusable.length-1];
+    if(!overlay.contains(document.activeElement)){ event.preventDefault(); first.focus(); }
+    else if(event.shiftKey&&document.activeElement===first){ event.preventDefault(); last.focus(); }
+    else if(!event.shiftKey&&document.activeElement===last){ event.preventDefault(); first.focus(); }
+  },true);
+  window._randori_identity={open:openIdentity,close:closeIdentity,refresh:refreshIdentity,get state(){return identityUi.data;}};
   async function performSignOut({everywhere=false}={}){
+    if(document.getElementById('identityOverlay')?.classList.contains('show')) closeIdentity();
     invalidateAuthRefreshes();
     let response;
     try{
@@ -2366,16 +2563,36 @@ async function refreshMe(){
       const qp=new URLSearchParams(window.location.search);
       const googleSuccess=qp.get('google')==='success';
       const ge=qp.get('google_error');
-      if(ge){
-        setTimeout(()=>openAuthModal('signin',{message:googleFailureMessage(ge),googleRetry:true}),300);
-      }
-      if(googleSuccess || ge){
-        qp.delete('google'); qp.delete('google_error');
-        const cleanQuery=qp.toString();
-        window.history.replaceState({}, document.title, window.location.pathname+(cleanQuery?'?'+cleanQuery:'')+window.location.hash);
-      }
-      if(googleSuccess){
-        setTimeout(()=>{ refreshMe(); try{ toast('signed in with Google ✓'); }catch{} }, 100);
+      const googleReauth=qp.get('google_reauth')==='success';
+      const identityLinked=qp.get('identity_link');
+      const identityLinkError=qp.get('identity_link_error');
+      const identityNotice=qp.get('identity_notice');
+      if(googleSuccess||ge||googleReauth||identityLinked||identityLinkError||identityNotice){
+        setTimeout(async()=>{
+          await authCapabilitiesPromise;
+          if(ge) openAuthModal('signin',{message:googleFailureMessage(ge),googleRetry:true});
+          if(googleSuccess||googleReauth||identityLinked||identityLinkError||identityNotice){
+            await refreshMe();
+          }
+          qp.delete('google'); qp.delete('google_error'); qp.delete('google_reauth');
+          qp.delete('identity_link'); qp.delete('identity_link_error');
+          qp.delete('identity_notice');
+          const cleanQuery=qp.toString();
+          window.history.replaceState({},document.title,
+            window.location.pathname+(cleanQuery?'?'+cleanQuery:'')+window.location.hash);
+          if(googleSuccess){ try{ toast('signed in with Google ✓'); }catch{} }
+          if(!(googleReauth||identityLinked||identityLinkError||identityNotice)) return;
+          await openIdentity();
+          if(identityLinked) identityUi.message=identityLinked==='already_linked'
+            ?'That Google identity is already linked to this account.'
+            :'Google sign-in is now linked to this account.';
+          if(googleReauth) identityUi.message='Google confirmation complete.';
+          if(identityLinkError) identityUi.message=identityErrorMessage({status:identityLinkError});
+          if(identityNotice==='provider_email_changed') identityUi.message=identityUi.data?.password?.linked
+            ?`Your Google email changed. Password sign-in still uses ${identityUi.data.accountEmail}.`
+            :'Your Google email changed. Review your account email before adding a password.';
+          renderIdentity();
+        },100);
       }
     }catch{}
   })();

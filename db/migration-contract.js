@@ -41,6 +41,11 @@ export const MIGRATION_CONTRACTS=Object.freeze([
     name:'password-reset-and-recent-auth',
     checksum:'60059dfffd4d333e5b90a8eea32f23bc2165a8019911e4b006deeb0f2b68929c',
   }),
+  Object.freeze({
+    version:9,
+    name:'explicit-provider-linking',
+    checksum:'226c58e70d0f7dfeae89449dcc567f52afeed46c19c2f9987c510f78029ec560',
+  }),
 ]);
 
 export const LATEST_MIGRATION_VERSION=MIGRATION_CONTRACTS.at(-1)?.version||0;

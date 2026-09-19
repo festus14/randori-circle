@@ -56,9 +56,9 @@ The successful rehearsal and every migration operation must use the same current
    - an empty state fingerprint; and
    - confirmation `INSPECT_PRODUCTION_DATABASE`.
 3. Read `migration-result.json` from the result artifact. Do not copy a fingerprint from logs, an older run, or another database.
-4. Require the immediately preceding managed version with only one migration pending. For the password-recovery rollout, that is managed v7 with only migration v8 pending. If the database is older or unmanaged, stop and complete each separately reviewed historical-prefix rollout first; this workflow deliberately refuses multiple pending versions. Migration v6 must already provide the durable outbox used by authentication email.
+4. Require the immediately preceding managed version with only one migration pending. For the identity-management rollout, that is managed v8 with only migration v9 pending. If the database is older or unmanaged, stop and complete each separately reviewed historical-prefix rollout first; this workflow deliberately refuses multiple pending versions. Migration v6 must already provide the durable outbox used by authentication email.
 5. Temporarily enable mutations, dispatch `apply` with the inspected fingerprint and mutation confirmation, then disable mutations again.
-6. Run a final `status`. Require managed v8, no pending versions, and a new exact fingerprint before enabling password recovery. Migration v5 invalidated legacy stateless JWTs, so users had to sign in again after that earlier rollout.
+6. Run a final `status`. Require managed v9, no pending versions, and a new exact fingerprint. Configure an independent `IDENTITY_EMAIL_HASH_KEY` with version `1` before enabling `IDENTITY_MANAGEMENT_ENABLED`; a missing or malformed key/version fails the capability closed. Migration v5 invalidated legacy stateless JWTs, so users had to sign in again after that earlier rollout.
 
 Each mutation requires a freshly supplied 64-character lowercase fingerprint. An unmanaged database cannot be applied before adoption, and adoption cannot change application schema or data. Apply allows a current-version no-op but refuses when more than one version is pending. That limit prevents a single approval from spanning multiple commits; stop and design a version-by-version rollout instead.
 
@@ -68,7 +68,7 @@ Any nonzero result means stop. Do not rerun a mutation with the same fingerprint
 
 There are no automatic down migrations. The rollback asset is the verified PITR capability and its protected runbook, not reverse SQL. If an applied migration causes an incident, keep database administration exclusive, preserve evidence, and make a deliberate restore/cutover decision using the Turso recovery procedure.
 
-The v7 activation and v8 recovery/recent-auth tables and indexes are additive and build on the v6 outbox. They may run with either protected expected `block_writes` value, provided both Turso metadata surfaces agree with it. A future destructive or long-running migration must introduce and rehearse a separate maintenance protocol; changing this variable is not by itself sufficient authorization for such work.
+The v7 activation, v8 recovery/recent-auth, and v9 identity-observation/audit tables and indexes are additive and build on the v6 outbox. They may run with either protected expected `block_writes` value, provided both Turso metadata surfaces agree with it. A future destructive or long-running migration must introduce and rehearse a separate maintenance protocol; changing this variable is not by itself sufficient authorization for such work.
 
 Turso's token and metadata endpoints are name-addressed. The workflow rechecks the immutable `DbId` around token creation and before mutation, while repository concurrency prevents its own rehearsal/migration jobs from overlapping. Operators must still prevent out-of-band database rename, delete, or recreate operations during the window because the provider does not offer an atomic ID-conditioned token request.
 

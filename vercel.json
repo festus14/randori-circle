@@ -51,6 +51,18 @@
       "destination": "/api/auth?endpoint=recent-auth"
     },
     {
+      "source": "/api/auth/identities",
+      "destination": "/api/auth?endpoint=identities"
+    },
+    {
+      "source": "/api/auth/identities/password",
+      "destination": "/api/auth?endpoint=identity-password"
+    },
+    {
+      "source": "/api/auth/identities/google",
+      "destination": "/api/auth?endpoint=identity-google-unlink"
+    },
+    {
       "source": "/api/auth/login",
       "destination": "/api/auth?endpoint=login"
     },
@@ -73,6 +85,10 @@
     {
       "source": "/api/auth/google/reauth/start",
       "destination": "/api/auth?endpoint=google-reauth-start"
+    },
+    {
+      "source": "/api/auth/google/link/start",
+      "destination": "/api/auth?endpoint=google-link-start"
     },
     {
       "source": "/api/auth/google/callback",

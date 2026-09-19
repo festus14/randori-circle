@@ -57,6 +57,13 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'55e683b76ac5cf24c93d3aa6cb60fab738b4957a6d6f12cdaffa5728c5ea68e2',
     checksum:'38226e8955ff195c11c5d8a7282d4adb70d7189395615f3ae1e718e9cacaebb6',
   }),
+  Object.freeze({
+    version:9,
+    name:'explicit-provider-linking',
+    description:'Hashed provider-email observations and redacted identity lifecycle audit events.',
+    operationsChecksum:'15faf4c644ab0ed596af090142dd263d9ad28acd3a47b17377e4017019e13f7d',
+    checksum:'9f0e62a44989a1d9449327789ebf89141e659db0ff37a4a9df23552bad92d1ee',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){

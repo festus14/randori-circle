@@ -4,7 +4,7 @@ Randori has read-only schema inspection for configured databases, a transactiona
 
 ## Contract
 
-- `db/schema-manifest.js` is the current contract: 37 application tables and 36 named indexes.
+- `db/schema-manifest.js` is the current contract: 39 application tables and 38 named indexes.
 - The manifest includes column/default/primary-key contracts, checks, foreign keys, unique constraints, AUTOINCREMENT/collation/table options, and unique, partial, descending, and expression-index semantics. SQLite-created `sqlite_autoindex_*` indexes are intentionally outside the named-index count.
 - `ai_monthly_usage` is a retired table. Its presence is reported as tolerated legacy state; it is not treated as current schema and is never changed.
 - `schema_migrations` is a runner-owned operational table. General schema inspection recognizes it without treating it as unexpected application drift; the migration runner validates its exact schema and rows separately.
@@ -17,6 +17,7 @@ Randori has read-only schema inspection for configured databases, a transactiona
 - Migration v6 adds the provider-neutral `outbox_events` and `outbox_audit_events` contracts plus dispatch, lease, and audit indexes. It is additive: earlier migration definitions and checksums remain immutable. Pairing email is the first event adapter; request paths never create or alter these tables. Before each drain, an idempotent DML-only compatibility bridge copies actionable rows from the legacy pairing queue using the exact historical provider idempotency key; terminal legacy rows are not redelivered.
 - Migration v7 adds `auth_email_activations` and its token/email lookup indexes. It stores only hashed verification credentials and bounded resend state; verification email payloads use encrypted outbox envelopes. Account, invitation, membership, audit, activation, and session writes commit atomically.
 - Migration v8 adds `auth_password_resets`, `auth_recent_proofs`, and their bounded lookup indexes. Reset rows contain only token/email hashes and lifecycle state; password replacement, reset consumption, and account-wide session revocation commit atomically. Recent-auth evidence is tied to one hashed live session.
+- Migration v9 adds `auth_provider_email_state`, `auth_identity_audit_events`, and their account-scoped audit indexes. Provider email observations contain only a domain-separated HMAC, a bounded non-secret key version, and a one-way fingerprint that binds that version to one key, while lifecycle events use bounded event/provider/outcome/reason enums and never store a raw email, provider subject, OAuth credential, or session identifier. The existing v4 issuer/subject uniqueness constraints remain the credential-ownership authority. Hash-key rotation monotonically increments `IDENTITY_EMAIL_HASH_KEY_VERSION`; the next observation is recorded as a rekey rather than an email change, without retaining the former key. Readiness compares the configured version with the global stored maximum, and a lower version or a different key at the same version fails closed without changing an observation or appending a rekey event.
 
 ## Commands
 
@@ -46,7 +47,7 @@ Representative output fields:
   "manifest": {"version": 1, "checksum": "..."},
   "foreignKeysEnabled": true,
   "checkConstraintsEnabled": true,
-  "summary": {"expectedTables": 34, "expectedIndexes": 31, "blockers": 0},
+  "summary": {"expectedTables": 39, "expectedIndexes": 38, "blockers": 0},
   "drift": {
     "missingTables": [],
     "missingColumns": [],

@@ -105,6 +105,10 @@ function createMockDb(){
       if (databaseDelegate) return databaseDelegate.execute(statement);
       const availabilityResult=availabilityFixtureResult(sql,statement?.args||[]);
       if(availabilityResult!==undefined) return availabilityResult;
+      if(sql.includes("CAST(strftime('%s','now') AS INTEGER) AS now_seconds")){
+        return rows([{now_seconds:Math.floor(Date.now()/1000)}]);
+      }
+      if(sql.includes('LEFT JOIN auth_provider_email_state')) return rows([{email_hash:null}]);
       const result = await executeHandler(sql, statement?.args || []);
       if(!(result?.rows?.length)&&sql.includes('INSERT INTO auth_provider_identities')&&sql.includes('RETURNING user_id')){
         return rows([{user_id:Number(statement?.args?.[2])}]);
@@ -349,6 +353,8 @@ function enableLocalPasswordSignup(){
   process.env.CIRCLE_MEMBERSHIP_ENABLED='false';
   process.env.TURSO_DATABASE_URL='file:///tmp/randori-circle-unit-test.sqlite';
   process.env.APP_URL='http://127.0.0.1:3000';
+  process.env.IDENTITY_EMAIL_HASH_KEY=Buffer.alloc(32,6).toString('base64url');
+  process.env.IDENTITY_EMAIL_HASH_KEY_VERSION='1';
 }
 
 function enableLocalInviteSignup(){
@@ -412,6 +418,7 @@ beforeEach(() => {
     'ALLOW_OPEN_SIGNUP', 'SIGNUP_ALLOWLIST', 'LEETCODE_INGESTION_AUTHORIZED',
     'AUTH_SCHEMA_BOOTSTRAP_ENABLED', 'CIRCLE_MEMBERSHIP_ENABLED', 'RANDORI_LOCAL_RUNTIME',
     'EMAIL_PASSWORD_ACTIVATION_ENABLED', 'EMAIL_VERIFICATION_ENCRYPTION_KEY',
+    'IDENTITY_EMAIL_HASH_KEY', 'IDENTITY_EMAIL_HASH_KEY_VERSION', 'IDENTITY_MANAGEMENT_ENABLED',
     'PAIRING_TIME_ZONE', 'RANDORI_LOCAL_DATABASE_PATH', 'RANDORI_LOCAL_IDENTITY',
     'TURSO_AUTH_TOKEN', 'TURSO_DATABASE_URL', 'VERCEL', 'VERCEL_ENV', 'VERCEL_URL',
     'RUN_ATTESTATION_SECRET', 'RUN_ATTESTATION_PREVIOUS_SECRETS',
@@ -531,7 +538,7 @@ test('auth capabilities report the exact local or private-beta contract without 
   assert.deepEqual(result.body,{
     ok:true,
     capabilities:{passwordLogin:true,passwordSignup:false,verifiedEmailActivation:false,passwordReset:false,
-      localIdentity:false,googleOAuth:false,recentAuthMaxAgeSeconds:600},
+      localIdentity:false,googleOAuth:false,recentAuthMaxAgeSeconds:600,identityManagement:false},
     registrationMode:'private_beta',
   });
   assert.equal(executed.length,0);
@@ -546,7 +553,7 @@ test('auth capabilities report the exact local or private-beta contract without 
   assert.deepEqual(result.body,{
     ok:true,
     capabilities:{passwordLogin:true,passwordSignup:false,verifiedEmailActivation:false,passwordReset:false,
-      localIdentity:false,googleOAuth:true,recentAuthMaxAgeSeconds:600},
+      localIdentity:false,googleOAuth:true,recentAuthMaxAgeSeconds:600,identityManagement:false},
     registrationMode:'private_beta',
   });
 
@@ -558,7 +565,7 @@ test('auth capabilities report the exact local or private-beta contract without 
   assert.deepEqual(result.body,{
     ok:true,
     capabilities:{passwordLogin:true,passwordSignup:true,verifiedEmailActivation:false,passwordReset:false,
-      localIdentity:false,googleOAuth:false,recentAuthMaxAgeSeconds:600},
+      localIdentity:false,googleOAuth:false,recentAuthMaxAgeSeconds:600,identityManagement:true},
     registrationMode:'local_open',
   });
   assert.equal(executed.length,0);
