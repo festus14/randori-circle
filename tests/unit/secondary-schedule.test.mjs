@@ -250,7 +250,7 @@ test('successful secondary CAS writes compact v2 recipient intents and no-op or 
     });
     queued=await scheduleEvents(item.db);
     assert.deepEqual(queued.map(item=>[item.payload.kind,item.payload.recipient_user_id]),[
-      ['proposal',2],['accepted',1],['reminder',1],['accepted',2],['reminder',2],
+      ['proposal',2],['accepted',1],['accepted',2],['reminder',1],['reminder',2],
     ]);
     assert.equal(new Set(queued.map(item=>item.eventType)).size,1);
     assert.equal(queued.every(item=>item.eventVersion===2),true);
@@ -263,6 +263,7 @@ test('successful secondary CAS writes compact v2 recipient intents and no-op or 
       },
     });
     assert.equal(noOp.conflict,false);
+    assert.equal(noOp.response.schedule.version,accepted.response.schedule.version);
     assert.equal((await scheduleEvents(item.db)).length,5);
 
     const secondProposal=await mutateSecondarySchedule(item.db,{authority:authority(),mutation:{
@@ -275,14 +276,34 @@ test('successful secondary CAS writes compact v2 recipient intents and no-op or 
     const removed=await mutateSecondarySchedule(item.db,{authority:authority(),mutation:{
       action:'remove',baseVersion:changed.response.schedule.version,proposalId:secondProposalId,
     }});
+    const beforeClear=await scheduleEvents(item.db);
+    const staleReminder=beforeClear.find(item=>item.payload.kind==='reminder'
+      &&item.payload.schedule_revision===4&&item.payload.recipient_user_id===2);
+    const renewedReminder=beforeClear.find(item=>item.payload.kind==='reminder'
+      &&item.payload.schedule_revision===5&&item.payload.recipient_user_id===2);
+    let reminderSends=0;
+    const reminderHandler=createSecondaryScheduleEmailHandler({
+      db:item.db,origin:'https://randori.example.test',send:async()=>{
+        reminderSends+=1; return {providerMessageId:'renewed-reminder'};
+      },
+    });
+    assert.deepEqual(await reminderHandler(staleReminder),{
+      status:'suppressed',reasonCode:'SCHEDULE_INVALID',
+    });
+    assert.deepEqual(await reminderHandler(renewedReminder),{
+      status:'delivered',providerName:'email',providerMessageId:'renewed-reminder',
+    });
+    assert.equal(reminderSends,1);
     await mutateSecondarySchedule(item.db,{authority:authority(),mutation:{
       action:'clear',baseVersion:removed.response.schedule.version,
     }});
     queued=await scheduleEvents(item.db);
     assert.deepEqual(queued.slice(5).map(item=>[item.payload.schedule_revision,item.payload.kind,
       item.payload.recipient_user_id]),[
-      [4,'proposal',2],[5,'changed',1],[5,'reminder',1],[5,'changed',2],[5,'reminder',2],
-      [6,'removed',2],[7,'cleared',1],[7,'cleared',2],
+      [3,'proposal',2],[3,'reminder',1],[3,'reminder',2],
+      [4,'changed',1],[4,'changed',2],[4,'reminder',1],[4,'reminder',2],
+      [5,'removed',2],[5,'reminder',1],[5,'reminder',2],
+      [6,'cleared',1],[6,'cleared',2],
     ]);
     assert.equal(queued.filter(item=>['proposal','removed'].includes(item.payload.kind))
       .every(item=>item.payload.recipient_user_id!==item.payload.actor_user_id),true);

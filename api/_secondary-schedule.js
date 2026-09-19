@@ -365,6 +365,15 @@ function nextMutation(state,mutation,userId,scope){
   return {proposals,agreedTime};
 }
 
+function mutationChangesState(state,next){
+  if(state.agreedTime!==next.agreedTime||state.proposals.length!==next.proposals.length) return true;
+  return state.proposals.some((proposal,index)=>{
+    const candidate=next.proposals[index];
+    return !candidate||proposal.proposalId!==candidate.proposalId||proposal.instant!==candidate.instant
+      ||proposal.proposedBy!==candidate.proposedBy;
+  });
+}
+
 async function rollback(transaction){
   try{ await transaction.rollback(); }catch{}
 }
@@ -424,6 +433,11 @@ export async function mutateSecondarySchedule(db,{authority,mutation}={}){
         return Object.freeze({conflict:true,response:responseEnvelope(scope,projectState(state,safeAuthority.userId))});
       }
       const next=nextMutation(state,mutation,safeAuthority.userId,scope);
+      if(!mutationChangesState(state,next)){
+        commitStarted=true;
+        await transaction.commit(); finished=true;
+        return Object.freeze({conflict:false,response:responseEnvelope(scope,projectState(state,safeAuthority.userId))});
+      }
       const updatedAt=nextScheduleUpdatedAt(state.updatedAt);
       let scheduleId=state.scheduleId;
       if(state.exists){

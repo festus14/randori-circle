@@ -54,6 +54,14 @@ function event({scheduleId,proposalId,revision,kind,actorUserId,recipientUserId,
   });
 }
 
+function reminderEvents({scheduleId,revision,actorUserId,recipientUserIds,instant}){
+  if(!instant) return [];
+  return recipientUserIds.map(recipientUserId=>event({
+    scheduleId,proposalId:null,revision,kind:'reminder',actorUserId,recipientUserId,instant,
+    notBefore:new Date(Date.parse(instant)-SECONDARY_SCHEDULE_REMINDER_LEAD_MS).toISOString(),
+  }));
+}
+
 /** Build the v2 intents that must be written in the successful schedule CAS transaction. */
 export function secondaryScheduleNotificationEvents({scope,currentState,nextState,mutation,actorUserId}={}){
   const actor=positiveId(actorUserId);
@@ -70,7 +78,8 @@ export function secondaryScheduleNotificationEvents({scope,currentState,nextStat
       .some(current=>current.proposalId===item.proposalId));
     if(!proposal||proposal.proposedBy!==actor) throw new TypeError('valid proposed schedule state required');
     return [event({scheduleId,proposalId:proposal.proposalId,revision,kind:'proposal',actorUserId:actor,
-      recipientUserId:partner,instant:proposal.instant})];
+      recipientUserId:partner,instant:proposal.instant}),...reminderEvents({scheduleId,revision,
+      actorUserId:actor,recipientUserIds:users,instant:nextState.agreedTime})];
   }
   if(mutation.action==='remove'){
     const proposal=currentState.proposals.find(item=>item.proposalId===mutation.proposalId);
@@ -78,7 +87,8 @@ export function secondaryScheduleNotificationEvents({scope,currentState,nextStat
       throw new TypeError('valid removed schedule state required');
     }
     return [event({scheduleId,proposalId:proposal.proposalId,revision,kind:'removed',actorUserId:actor,
-      recipientUserId:partner})];
+      recipientUserId:partner}),...reminderEvents({scheduleId,revision,actorUserId:actor,
+      recipientUserIds:users,instant:nextState.agreedTime})];
   }
   if(mutation.action==='clear'){
     if(currentState.agreedTime===null&&nextState.agreedTime===null) return [];
@@ -99,11 +109,9 @@ export function secondaryScheduleNotificationEvents({scope,currentState,nextStat
     for(const recipientUserId of users){
       intents.push(event({scheduleId,proposalId:proposal.proposalId,revision,kind,actorUserId:actor,
         recipientUserId,instant:nextState.agreedTime}));
-      intents.push(event({scheduleId,proposalId:proposal.proposalId,revision,kind:'reminder',
-        actorUserId:actor,recipientUserId,instant:nextState.agreedTime,
-        notBefore:new Date(Date.parse(nextState.agreedTime)-SECONDARY_SCHEDULE_REMINDER_LEAD_MS).toISOString()}));
     }
-    return intents;
+    return [...intents,...reminderEvents({scheduleId,revision,actorUserId:actor,
+      recipientUserIds:users,instant:nextState.agreedTime})];
   }
   throw new TypeError('unsupported secondary schedule notification action');
 }
@@ -124,7 +132,7 @@ function parsePayload(event){
   const kind=String(payload.kind||'');
   const fingerprint=payload.instant_fingerprint===null?null:String(payload.instant_fingerprint||'');
   const templateVersion=Number(payload.template_version);
-  const needsProposal=['proposal','removed','accepted','changed','reminder'].includes(kind);
+  const needsProposal=['proposal','removed','accepted','changed'].includes(kind);
   const needsFingerprint=['proposal','accepted','changed','reminder'].includes(kind);
   if(!OPAQUE_ID_PATTERN.test(scheduleId)||!revision||!actorUserId||!recipientUserId
     ||!KINDS.has(kind)||templateVersion!==SECONDARY_SCHEDULE_EMAIL_TEMPLATE_VERSION
@@ -269,11 +277,16 @@ async function resolveDelivery(db,payload){
     }
   }else if(payload.kind==='removed'){
     if(row.proposal_key!==null) return {suppressed:'SCHEDULE_STALE'};
-  }else if(['accepted','changed','reminder'].includes(payload.kind)){
+  }else if(['accepted','changed'].includes(payload.kind)){
     instant=normalizeScheduleInstant(String(row.agreed_time||''));
     const proposalInstant=normalizeScheduleInstant(String(row.proposal_instant||''));
     if(String(row.proposal_key)!==payload.proposalId||!instant||proposalInstant!==instant
       ||secondaryScheduleInstantFingerprint(instant)!==payload.fingerprint){
+      return {suppressed:'SCHEDULE_STALE'};
+    }
+  }else if(payload.kind==='reminder'){
+    instant=normalizeScheduleInstant(String(row.agreed_time||''));
+    if(!instant||secondaryScheduleInstantFingerprint(instant)!==payload.fingerprint){
       return {suppressed:'SCHEDULE_STALE'};
     }
   }else if(payload.kind==='cleared'&&row.agreed_time!==null){

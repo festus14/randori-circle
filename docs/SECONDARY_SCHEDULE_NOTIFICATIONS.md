@@ -27,6 +27,11 @@ schedule compare-and-swap transaction enqueues the intents before commit:
 Conflicts, rollback, and ambiguous commits are never retried into a second
 write. The idempotency key is
 `secondary-schedule-email/v1/{schedule_id}/{revision}/{kind}/{recipient}`.
+An accept or clear that does not change state preserves the current revision
+and queues nothing. A real proposal/removal revision that preserves an agreed
+time renews the two reminder intents at that revision; exact-revision
+suppression can therefore retire the older reminder without losing the future
+notification.
 
 The exact payload fields are `schedule_id`, `proposal_id`,
 `schedule_revision`, `actor_user_id`, `recipient_user_id`, `kind`,

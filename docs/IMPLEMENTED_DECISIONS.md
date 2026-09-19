@@ -1416,8 +1416,11 @@ Status: implemented behind default-off
 `schedule.email.requested` v2 intents before commit. Proposal and removal notify
 the partner; acceptance, change, clear, and the delayed reminder notify both
 members. Conflicts, rollbacks, ambiguous commits, and state-preserving actions
-write none. The deterministic key contains only the stable schedule ID,
-revision, kind, and recipient. The exact minimal payload carries opaque
+write none; those state-preserving actions also retain the current revision.
+A real proposal/removal revision that preserves an agreement renews the two
+reminder intents, so stale-revision suppression cannot erase the only future
+reminder. The deterministic key contains only the stable schedule ID, revision,
+kind, and recipient. The exact minimal payload carries opaque
 schedule/proposal identities, revision, actor/recipient IDs, kind, template
 version, and a domain-separated instant fingerprint where current state must
 match a time. It contains no address, circle name, internal scope/group/room
