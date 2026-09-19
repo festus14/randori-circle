@@ -51,6 +51,11 @@ export const MIGRATION_CONTRACTS=Object.freeze([
     name:'chat-cursor-and-rate-indexes',
     checksum:'df6508898b4b697ca8d21646c9460aefcc7f85d7fc8f2f027ed10342fe98e014',
   }),
+  Object.freeze({
+    version:11,
+    name:'bounded-chat-retention',
+    checksum:'e1e41483cbdff5a10a58ccc144bfadbb818cecb900768495ad8ab64dd393332b',
+  }),
 ]);
 
 export const LATEST_MIGRATION_VERSION=MIGRATION_CONTRACTS.at(-1)?.version||0;

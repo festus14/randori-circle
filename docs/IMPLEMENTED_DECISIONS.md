@@ -772,3 +772,50 @@ restore rehearsal steps are in `docs/KEY_ROTATION.md`.
 | Bulk re-encrypt queued rows | Quickly normalizes versions | Handles plaintext in an administrative batch and races active delivery |
 | Flush and reissue every credential | Simple compromise response | Disruptive and reserved for confirmed compromise, not routine rotation |
 | External KMS envelope encryption | Strong centralized custody | Valuable later, but disproportionate to the current Vercel/Turso MVP |
+
+## ID-20: Purge chat only through mapped, fenced, evidence-gated room jobs
+
+Status: implemented as disabled-by-default migration v11 and protected tooling;
+production deletion remains blocked on operational evidence. ID-19 is reserved
+for the independently developed key-rotation decision.
+
+**Decision.** Private-beta pair chat has a 90-day active-database retention
+window. Expiry is strict and calculated from SQLite database time with
+`julianday`, preserving legacy SQLite and RFC3339-offset chronology; exact-cutoff,
+invalid, future, held, and unmapped rows remain. The 10,000-row room cap is
+unchanged.
+
+Migration v11 creates explicit room-to-tenant ownership, a generation-fenced
+database kill switch, room-scoped jobs, tenant/room holds, count-only audit, and
+a chronological planner index. New pairing publication writes ownership in the
+same transaction. Legacy rooms require a protected, ambiguity-checked adoption;
+membership or week-label inference is forbidden.
+
+Each purge claim uses a database-time token lease and fixed cutoff. Every batch
+atomically rechecks the environment/database switches, control generation,
+scope mapping, evidence, and holds; it then selects and deletes no more than 100
+exact IDs and commits counts plus a durable checkpoint. A source high-water ID
+freezes the room snapshot covered by the accepted evidence, while purge
+reselects the oldest remaining rows inside that snapshot rather than advancing
+a destructive cursor. Later writes and backfills require a new evidence-gated
+run. Dry-run uses an independent, deletion-free bounded scan. Successful batches
+do not consume failure budget; retries,
+dead-letter state, and explicit reason-coded replay remain visible without
+content or identity telemetry.
+
+Deletion requires a private export covering the cutoff to complete before a
+provider backup covering the same cutoff completes. Backup copies keep their
+provider lifecycle and are reconciled before a restore can serve traffic.
+Production remains disabled until #38, #43, the export path and notice period,
+staging destructive rehearsal, and production count-only dry run are complete.
+
+**Alternatives.** Inferring a circle from current memberships or a reusable
+week label is ambiguous and can cross tenants. A global timestamp delete is
+simple but cannot prove room ownership or legal-hold exclusion. A last-ID purge
+cursor can skip remaining old rows, so the evidence high-water is an upper
+bound, not a progress cursor; only non-destructive dry-run advances a cursor.
+Soft deletion retains content and does not satisfy the policy. Environment-only
+disabling cannot fence a claimed worker across an off/on cycle, so the database
+control generation is mandatory. Down migrations cannot restore deleted
+content; rollback is disable, drain, forward-fix, or an isolated verified PITR
+cutover.

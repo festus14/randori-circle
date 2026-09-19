@@ -42,9 +42,9 @@ async function apply(db,migrations=EXECUTABLE_MIGRATIONS){
   });
 }
 
-async function installUnmanagedSchema(db){
+async function installUnmanagedSchema(db,migrations=EXECUTABLE_MIGRATIONS){
   await prepareMigrationConnection(db);
-  for(const migration of EXECUTABLE_MIGRATIONS){
+  for(const migration of migrations){
     for(const operation of migration.operations) await db.execute(operation.sql);
   }
 }
@@ -74,7 +74,7 @@ test('v10 installs canonical chat indexes and representative reads select them',
   const fixture=temporaryDatabase();
   const {db}=fixture;
   try{
-    const result=await apply(db);
+    const result=await apply(db,EXECUTABLE_MIGRATIONS.slice(0,10));
     assert.equal(MAX_MESSAGES_PER_ROOM,10_000);
     assert.equal(result.toVersion,10);
     assert.equal(result.applied.at(-1).version,10);
@@ -129,19 +129,21 @@ test('managed v9 upgrades once and repeated v10 apply is a no-op',async()=>{
   const throughV9=EXECUTABLE_MIGRATIONS.slice(0,9);
   try{
     await apply(db,throughV9);
-    const before=await inspectMigrationState(db);
+    const before=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,10)});
     assert.equal(before.classification,'managed');
     assert.equal(before.currentVersion,9);
     assert.equal(before.ready,true);
 
     const upgraded=await applyMigrations(db,{
       expectedStateFingerprint:before.stateFingerprint,
+      migrations:EXECUTABLE_MIGRATIONS.slice(0,10),
       retry:NO_RETRY,
     });
     assert.deepEqual(upgraded.applied.map(item=>item.version),[10]);
-    const current=await inspectMigrationState(db);
+    const current=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,10)});
     const repeated=await applyMigrations(db,{
       expectedStateFingerprint:current.stateFingerprint,
+      migrations:EXECUTABLE_MIGRATIONS.slice(0,10),
       retry:NO_RETRY,
     });
     assert.deepEqual(repeated.applied,[]);
@@ -154,9 +156,9 @@ test('v10 drift fails closed and reports the missing managed index',async()=>{
   const fixture=temporaryDatabase();
   const {db}=fixture;
   try{
-    await apply(db);
+    await apply(db,EXECUTABLE_MIGRATIONS.slice(0,10));
     await db.execute(`DROP INDEX ${ROOM_CURSOR_INDEX}`);
-    const drifted=await inspectMigrationState(db);
+    const drifted=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,10)});
     assert.equal(drifted.classification,'managed');
     assert.equal(drifted.currentVersion,10);
     assert.equal(drifted.schemaExact,false);
@@ -164,7 +166,8 @@ test('v10 drift fails closed and reports the missing managed index',async()=>{
     assert.ok(drifted.schemaStatus.blockers.some(blocker=>
       blocker.code==='missing_index'&&blocker.artifact?.name===ROOM_CURSOR_INDEX));
     await assert.rejects(
-      applyMigrations(db,{expectedStateFingerprint:drifted.stateFingerprint,retry:NO_RETRY}),
+      applyMigrations(db,{expectedStateFingerprint:drifted.stateFingerprint,
+        migrations:EXECUTABLE_MIGRATIONS.slice(0,10),retry:NO_RETRY}),
       error=>error instanceof MigrationError&&error.code==='MIGRATION_SCHEMA_INVALID',
     );
   }finally{ fixture.close(); }
@@ -212,16 +215,17 @@ test('exact unmanaged v10 schema can be adopted without rewriting application da
   const fixture=temporaryDatabase();
   const {db}=fixture;
   try{
-    await installUnmanagedSchema(db);
+    await installUnmanagedSchema(db,EXECUTABLE_MIGRATIONS.slice(0,10));
     await db.execute(`INSERT INTO pair_messages
       (id,week_id,pair_group_id,sender_id,message,created_at)
       VALUES (1,10,20,2,'preserved','2026-09-19T03:17:00.000Z')`);
-    const before=await inspectMigrationState(db);
+    const before=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,10)});
     assert.equal(before.classification,'unmanaged');
     assert.equal(before.schemaExact,true);
     assert.equal(before.adoption.eligible,true);
     const adopted=await adoptMigrations(db,{
       expectedStateFingerprint:before.stateFingerprint,
+      migrations:EXECUTABLE_MIGRATIONS.slice(0,10),
       retry:NO_RETRY,
     });
     assert.equal(adopted.toVersion,10);
@@ -234,7 +238,7 @@ test('index-only emergency removal preserves data and explicit recreation restor
   const fixture=temporaryDatabase();
   const {db}=fixture;
   try{
-    await apply(db);
+    await apply(db,EXECUTABLE_MIGRATIONS.slice(0,10));
     await db.execute(`INSERT INTO pair_messages
       (week_id,pair_group_id,sender_id,message,created_at)
       VALUES (10,20,2,'preserved','2026-09-19T03:17:00.000Z')`);
@@ -243,10 +247,10 @@ test('index-only emergency removal preserves data and explicit recreation restor
     const count=await db.execute(`SELECT COUNT(*) AS count FROM pair_messages
       WHERE week_id=10 AND pair_group_id=20`);
     assert.equal(Number(count.rows[0].count),1);
-    assert.equal((await inspectMigrationState(db)).ready,false);
+    assert.equal((await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,10)})).ready,false);
 
     for(const operation of CHAT_MIGRATION.operations) await db.execute(operation.sql);
-    const recovered=await inspectMigrationState(db);
+    const recovered=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,10)});
     assert.equal(recovered.currentVersion,10);
     assert.equal(recovered.schemaExact,true);
     assert.equal(recovered.ready,true);

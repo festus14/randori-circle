@@ -7,6 +7,10 @@ import {
 import { buildFairPairing } from './_pairing.js';
 import { resolvePairingCycle } from './_pairing-cycle.js';
 import { pairingSchemaV6Ready } from './_pairing-readiness.js';
+import {
+  chatRetentionScopeRegistrationAvailable,
+  chatRetentionScopeRegistrationStatement,
+} from './_chat-retention.js';
 
 const PARTICIPANT_SOURCES=new Set(['auth','users']);
 const NOTIFICATION_KINDS=new Set(['paired','unavailable']);
@@ -289,7 +293,7 @@ async function readPublicationState(db,cycle){
   });
 }
 
-function writeStatements({cycle,participants,pairing,recipients,generationToken}){
+function writeStatements({cycle,participants,pairing,recipients,generationToken,retentionScope}){
   const snapshot=JSON.stringify(participants.map(participant=>{
     const item={user_id:participant.id,source:participant.source};
     if(participant.availabilityCycleKey!==undefined){
@@ -337,6 +341,11 @@ function writeStatements({cycle,participants,pairing,recipients,generationToken}
       args:[pair.a.id,pair.b?.id||pair.a.id,pair.isAI?1:0,cycle.cycleId,generationToken],
     });
   });
+  if(retentionScope){
+    statements.push(chatRetentionScopeRegistrationStatement({
+      scope:retentionScope,cycleId:cycle.cycleId,generationToken,
+    }));
+  }
   recipients.forEach(recipient=>{
     statements.push({
       sql:`INSERT INTO outbox_events
@@ -389,7 +398,10 @@ async function claimPairingCycle(db,options={}){
   const pairing=buildFairPairing(participants,history,{seed:`${cycle.cycleId}:weekly`});
   const generationToken=randomUUID();
   try{
-    await db.batch(writeStatements({cycle,participants,pairing,recipients,generationToken}),'write');
+    await db.batch(writeStatements({
+      cycle,participants,pairing,recipients,generationToken,
+      retentionScope:options.retentionScope||null,
+    }),'write');
   }catch(error){
     fail('PAIRING_PUBLICATION_FAILED','Pairing publication could not be committed.',error);
   }
@@ -616,10 +628,11 @@ export async function publishPairingCycle(db,options={}){
         return Object.freeze({created:false,publication:existing.publication,appUrl});
       }
       const candidates=await publicationCandidates(transaction,{scope,cycle});
+      const retentionScope=await chatRetentionScopeRegistrationAvailable(transaction)?scope:null;
       const result=await claimPairingCycle(transaction,{
         now,timeZone:options.timeZone,participants:candidates.participants,
         history:await pairingHistory(transaction,cycle.cycleId),
-        notificationRecipients:candidates.notificationRecipients,
+        notificationRecipients:candidates.notificationRecipients,retentionScope,
       });
       commitStarted=true;
       await transaction.commit();
