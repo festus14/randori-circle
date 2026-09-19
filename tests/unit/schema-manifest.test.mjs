@@ -95,12 +95,26 @@ test('immutable migration metadata is contiguous and checksum protected',()=>{
   assert.throws(()=>validateMigrationPlans(gap),/gap at version 2/);
 });
 
-test('secondary coordination rollout requires the complete managed v14 ledger',()=>{
+test('secondary coordination rollout requires the complete managed v15 ledger and controls',()=>{
   const decisions=readFileSync(new URL('../../docs/IMPLEMENTED_DECISIONS.md',import.meta.url),'utf8');
   const section=decisions.match(/## ID-26:[\s\S]*?(?=\n## ID-27:)/)?.[0]||'';
   assert.match(section,
-    /deploy with the flag false, apply managed v13 and\s+then v14 as separate protected migration steps/);
-  assert.match(section,/verify exact runtime\s+readiness\. Only then canary one secondary circle/);
+    /apply managed v13, then v14, then v15 as separate protected migration\s+steps with fresh evidence and approval/);
+  assert.match(section,
+    /adopt all four configured credential\s+purposes, and verify exact runtime readiness/);
+  assert.match(section,
+    /Keep its separate email flag false until the sender\s+passes a provider canary/);
+});
+
+test('circle creation rollout cannot bypass v15 key-control adoption',()=>{
+  const decisions=readFileSync(new URL('../../docs/IMPLEMENTED_DECISIONS.md',import.meta.url),'utf8');
+  const section=decisions.match(/## ID-29:[\s\S]*?(?=\n## ID-30:)/)?.[0]||'';
+  assert.match(section,
+    /apply each pending v13, v14, and v15 migration separately with a fresh protected\s+rehearsal and approval/);
+  assert.match(section,
+    /adopt all four configured credential purposes before\s+runtime promotion/);
+  assert.match(section,
+    /If an existing credential consumer cannot be disabled, hold\s+production promotion/);
 });
 
 test('provider identities add issuer-scoped subject and account uniqueness without rewriting the baseline',()=>{

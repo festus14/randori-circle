@@ -71,22 +71,46 @@ refresh only until its actor, circle, context version, and TTL are revalidated.
 
 1. Apply managed migration v12 after the protected migration and
    restore rehearsals required by issues #38 and #43.
-2. Deploy with `MULTI_CIRCLE_CONTROL_PLANE_ENABLED=false`; apply managed v13
-   and then v14 as separate protected migration steps, and verify health and
-   ordinary single-circle login, roster, invitation, and pairing behavior.
-3. Enable the control-plane flag in staging. Create a fixture account with two active circle
+2. Keep `MULTI_CIRCLE_CONTROL_PLANE_ENABLED`,
+   `MULTI_CIRCLE_AVAILABILITY_ENABLED`,
+   `SECONDARY_CIRCLE_COORDINATION_ENABLED`, and
+   `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED` false. Also disable the four
+   credential consumers: `EMAIL_PASSWORD_ACTIVATION_ENABLED`,
+   `PASSWORD_RESET_ENABLED`, `INVITATION_EMAIL_DELIVERY_ENABLED`, and
+   `IDENTITY_MANAGEMENT_ENABLED`. If an existing credential consumer cannot be
+   disabled, hold production promotion until Step 4 finishes.
+3. Apply each pending managed migration in order: v13, then v14, then v15, each
+   as a separate protected migration step. Before each immediately-next-version
+   apply, complete a fresh protected
+   backup/restore rehearsal, inspect status, and obtain the separate approval;
+   after each apply, start again from a fresh rehearsal. Never batch or skip a
+   version. Verify the v13 coordination tables, v14 creation artifacts, four
+   uninitialized v15 control rows, unchanged pre-existing data, and the complete
+   managed ledger through v15.
+4. Inspect and adopt all four configured credential purposes through the
+   protected key-control workflow before promoting the v15-aware runtime or
+   enabling any credential consumer. Toggle
+   `CREDENTIAL_KEY_CONTROL_MUTATIONS_ENABLED` only for the one approved adopt
+   operation and return it to false afterward. That variable authorizes control
+   mutation; it does not disable or enable a credential consumer. Verify
+   redacted accepted status for all four purposes, promote the runtime, verify
+   health and ordinary single-circle login, roster, invitation, and pairing,
+   then restore each required consumer separately.
+5. Enable the control-plane flag in staging. Create a fixture account with two active circle
    memberships and verify selection, cross-tab reload, scoped roster/invitation
    operations, last-owner rules, and the explicit pairing/workspace 409.
-4. Keep `MULTI_CIRCLE_AVAILABILITY_ENABLED=false`, then enable it in staging.
+6. Keep `MULTI_CIRCLE_AVAILABILITY_ENABLED=false`, then enable it in staging.
    Verify opposite primary/secondary decisions, exact request/response context
    versions, secondary `cycle_default`, stale-switch and membership-removal
    zero-write behavior, and unchanged 409s on every other data-plane route.
-5. Repeat the control-plane and availability checks in production before admitting a real
+7. Repeat the control-plane and availability checks in production before admitting a real
    secondary membership. Monitor only aggregate response/error counts; circle
    names, invitation targets, and session identifiers must not enter telemetry.
-6. Canary `SECONDARY_CIRCLE_COORDINATION_ENABLED` as described in
-   `SELECTED_CIRCLE_PAIRING.md`; Step 2 applied its v13 schema and the complete
-   managed ledger through v14 required by runtime readiness.
+8. Canary `SECONDARY_CIRCLE_COORDINATION_ENABLED` as described in
+   `SELECTED_CIRCLE_PAIRING.md`; Step 3 applied its v13 schema and the complete
+   managed ledger through v15 required by runtime readiness. Keep
+   `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED=false` until a separate sender and
+   provider canary succeeds.
 
 Rollback is application-only. Disable `MULTI_CIRCLE_AVAILABILITY_ENABLED` first
 to restore the legacy availability gate without disabling roster/invitation

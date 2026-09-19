@@ -2,7 +2,9 @@
 
 This increment makes the selected-circle control plane reachable without seed
 data. It is disabled unless both `CIRCLE_MEMBERSHIP_ENABLED=true` and
-`MULTI_CIRCLE_CONTROL_PLANE_ENABLED=true`, and requires managed migration v14.
+`MULTI_CIRCLE_CONTROL_PLANE_ENABLED=true`. Migration v14 owns its storage; this
+release additionally requires exact managed readiness through v15 and the
+central credential-control adoption sequence before runtime promotion.
 
 ## Public contract
 
@@ -69,14 +71,17 @@ or other legacy workspace capability.
 
 ## Rollout and rollback
 
-1. Use Step 2 of the central protected v13-then-v14 sequence in
+1. Use Steps 2–4 of the central protected v13-then-v14-then-v15 sequence in
    [Active circle context](ACTIVE_CIRCLE_CONTEXT.md#rollout) as the sole
-   migration authority. It uses a fresh backup/restore rehearsal and one
-   separately approved, immediately-next-version apply for each migration; do
-   not apply v14 again from this runbook.
+   migration and credential-adoption authority. It uses a fresh backup/restore
+   rehearsal and one separately approved, immediately-next-version apply for
+   each migration, then protected adoption of all four configured credential
+   purposes before runtime promotion; do not reapply any version from this
+   runbook.
 2. With that sequence complete and `MULTI_CIRCLE_CONTROL_PLANE_ENABLED=false`,
-   verify v14 readiness and confirm that pre-existing application data is
-   unchanged.
+   verify the v14 creation artifacts, exact runtime readiness through v15, all
+   four accepted credential controls, and unchanged pre-existing application
+   data.
 3. Enable the control plane in staging and test create/replay, cap, concurrent
    duplicate/distinct requests, revocation, cross-tab switching, and 320px UI.
 4. Confirm new circles contain exactly one owner and no legacy workspace data.
