@@ -519,3 +519,44 @@ starts have durable per-IP and per-account limits.
 
 The action matrix, continuation contract, rollout independence, and explicit
 limits are documented in `docs/LIFECYCLE_RECENT_AUTH.md`.
+
+## ID-16: Monitor a recurring isolated backup restore, not production mutation
+
+Status: implemented as an operations increment rebased after the recent-auth
+lifecycle boundary; it adds no schema migration and preserves the v8/v9 order.
+
+**Decision.** The protected backup/restore workflow runs every Monday at 03:17
+UTC and remains manually dispatchable with the explicit disposable-only phrase.
+It restores a current Turso PITR point into a uniquely named database, validates
+integrity, foreign keys, schema, HMAC-bound row evidence, RPO/RTO, and migrations
+there, then confirms deletion. It never applies a migration to production.
+
+A final monitor authenticates the signed same-run evidence and independently
+requires the cleanup artifact. A separate hourly, read-only GitHub watchdog
+queries the authoritative scheduled-run and artifact records, then validates
+the downloaded monitor projection. After a two-hour scheduling grace it requires
+a run from the current Monday 03:17 UTC slot, so last week's success cannot hide
+a drill that never started; it also detects a run that remained stuck, failed,
+or aged out without relying on the rehearsal workflow to report its own absence.
+An absolute 06:47 UTC deadline is derived from the expected slot, not run creation,
+so a delayed unfinished run still alerts on the last hourly tick before four hours.
+Its retained projection contains only timings,
+code/evidence checksums, aggregate counts, fixed run identifiers, and cleanup
+booleans. Missing, stale, malformed, failed, or unclean evidence produces a
+fixed-category GitHub Actions error and a failed workflow. Repository operations
+owns the control; database reliability is the immediate escalation for cleanup
+or write-state failures. The target is a 30-minute RPO, 15-minute RTO, weekly
+drill, immediate escalation of a missed run, and 30-day sanitized evidence
+retention; disposable restores have no retention. Scheduled evidence cannot
+authorize production migration, which still requires a fresh manual rehearsal.
+The RPO and RTO values are fixed in both rehearsal and evidence consumers;
+environment configuration cannot silently weaken either objective.
+
+**Alternatives.** A metadata-only backup check is cheaper but does not prove
+restorability. Reusing production as the restore target is unsafe. Retaining
+restores simplifies inspection but increases sensitive-data exposure and cost.
+Unsigned summaries cannot safely distinguish tampering from failure. An external
+watchdog best isolates scheduler failure but adds another service and credential;
+the separate production-credential-free GitHub watchdog is the smallest auditable increment,
+with external monitoring retained as the upgrade when correlated Actions failure
+is no longer acceptable.

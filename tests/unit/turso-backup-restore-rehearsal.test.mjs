@@ -276,6 +276,10 @@ test('managed prefix rehearsal blocks writes, verifies PITR, migrates only the r
     });
     assert.equal(result.payload.verification.preMigrationMatch,true);
     assert.equal(result.payload.verification.postMigrationPreserved,true);
+    assert.ok(Number.isSafeInteger(result.payload.verification.tableCount));
+    assert.ok(result.payload.verification.tableCount>0);
+    assert.ok(Number.isSafeInteger(result.payload.verification.totalRows));
+    assert.ok(Number.isSafeInteger(result.payload.verification.sequenceRows));
     assert.equal(result.format,REHEARSAL_ATTESTATION_FORMAT);
     assert.deepEqual(Object.keys(result).sort(),['format','kind','ok','payload','signature']);
     const verified=verifyRehearsalAttestation(result,{
@@ -377,6 +381,9 @@ test('attestation verifier rejects tampering, replay, expiry, schema drift, and 
       value.payload.verification.rpoMet=false;
     }));
     invalid.push(resignAttestation(result,value=>{
+      value.payload.verification.totalRows=-1;
+    }));
+    invalid.push(resignAttestation(result,value=>{
       value.payload.safety.restoreDeleted=false;
     }));
     invalid.push(resignAttestation(result,value=>{
@@ -453,15 +460,21 @@ test('attestation verifier rejects tampering, replay, expiry, schema drift, and 
   }finally{ item.close(); }
 });
 
-test('rehearsal signer refuses an evidence lifetime beyond its attestation TTL cap',async()=>{
+test('rehearsal signer fixes recovery objectives and caps the evidence lifetime',async()=>{
   const item=fixture();
   try{
-    await assert.rejects(
-      runBackupRestoreRehearsal(options(platformMock(item),[],{
-        maxEvidenceAgeMs:30*60*1000+1,
-      }),dependencies(item)),
-      error=>error.code==='REHEARSAL_INVALID'&&error.phase==='configuration',
-    );
+    for(const override of [
+      {maxEvidenceAgeMs:30*60*1000+1},
+      {rpoTargetMs:30*60*1000+1},
+      {rtoTargetMs:15*60*1000+1},
+      {rpoTargetMs:30*60*1000-1},
+      {rtoTargetMs:15*60*1000-1},
+    ]){
+      await assert.rejects(
+        runBackupRestoreRehearsal(options(platformMock(item),[],override),dependencies(item)),
+        error=>error.code==='REHEARSAL_INVALID'&&error.phase==='configuration',
+      );
+    }
   }finally{ item.close(); }
 });
 
@@ -1072,8 +1085,10 @@ test('CLI writes only an allowlisted public artifact beneath RUNNER_TEMP',async(
         <workflow.indexOf('Upload signed rehearsal attestation'),
       true,
     );
-    assert.equal((workflow.match(/secrets\.MIGRATION_DIGEST_HMAC_KEY/g)||[]).length,1);
+    assert.equal((workflow.match(/secrets\.MIGRATION_DIGEST_HMAC_KEY/g)||[]).length,2);
     assert.equal((workflow.match(/secrets\.TURSO_PRODUCTION_PLATFORM_TOKEN/g)||[]).length,2);
+    assert.equal((workflow.match(/REHEARSAL_RPO_TARGET_MS: '1800000'/g)||[]).length,2);
+    assert.equal((workflow.match(/REHEARSAL_RTO_TARGET_MS: '900000'/g)||[]).length,2);
   }finally{ rmSync(directory,{recursive:true,force:true}); }
 });
 

@@ -1,0 +1,99 @@
+name: Turso backup restore watchdog
+
+on:
+  schedule:
+    - cron: '47 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: turso-backup-restore-watchdog
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the latest default branch
+        timeout-minutes: 5
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Use the supported Node runtime
+        timeout-minutes: 5
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+
+      - name: Discover authoritative scheduled rehearsal evidence
+        id: discovery
+        timeout-minutes: 2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          WATCHDOG_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          WATCHDOG_MAX_RUN_AGE_MS: '691200000'
+          WATCHDOG_STUCK_AFTER_MS: '5400000'
+          WATCHDOG_SLOT_GRACE_MS: '7200000'
+          WATCHDOG_SLOT_DEADLINE_MS: '12600000'
+        run: |
+          node scripts/github-backup-restore-watchdog.mjs \
+            --mode discover \
+            --output "${RUNNER_TEMP}/backup-watchdog-summary.json"
+
+      - name: Download authoritative monitor artifact
+        id: download
+        if: steps.discovery.outputs.candidate == 'true'
+        timeout-minutes: 2
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ steps.discovery.outputs.artifact_name }}
+          path: ${{ runner.temp }}/watchdog-artifact
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.discovery.outputs.run_id }}
+
+      - name: Verify downloaded monitor evidence
+        id: verification
+        if: always() && steps.discovery.outputs.candidate == 'true'
+        timeout-minutes: 2
+        env:
+          WATCHDOG_MAX_RUN_AGE_MS: '691200000'
+        run: |
+          node scripts/github-backup-restore-watchdog.mjs \
+            --mode verify \
+            --discovery "${RUNNER_TEMP}/backup-watchdog-summary.json" \
+            --monitor-summary "${RUNNER_TEMP}/watchdog-artifact/backup-monitor-summary.json" \
+            --output "${RUNNER_TEMP}/backup-watchdog-summary.json"
+
+      - name: Upload sanitized watchdog evidence
+        id: upload
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: turso-backup-watchdog-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/backup-watchdog-summary.json
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Alert the accountable backup owner
+        if: >-
+          always() && (steps.discovery.outcome != 'success'
+          || steps.upload.outcome != 'success'
+          || steps.discovery.outputs.alert == 'true'
+          || (steps.discovery.outputs.candidate == 'true'
+          && (steps.download.outcome != 'success'
+          || steps.verification.outcome != 'success'
+          || steps.verification.outputs.alert != 'false')))
+        shell: bash
+        env:
+          ALERT_CATEGORY: ${{ steps.verification.outputs.category || steps.discovery.outputs.category || 'watchdog_failure' }}
+        run: |
+          echo "::error title=Backup restore watchdog alert for @festus14::Category ${ALERT_CATEGORY}. Follow the backup restore runbook; no production credential is available to this watchdog."
+          exit 1
