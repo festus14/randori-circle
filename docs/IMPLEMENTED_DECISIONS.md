@@ -1079,11 +1079,14 @@ model, but couples the useful weekly pairing milestone to a much larger data
 migration. Dual-writing would create two authorities and ambiguous rollback.
 Manual-only publication would avoid cron work but weaken the weekly habit.
 
-**Rollout and recovery.** Apply v13 through the protected migration workflow,
-deploy with the flag false, canary one secondary circle, then verify bounded
-cron publication. Roll back only by disabling the flag. Preserve canonical
-rows for audit and forward recovery; never copy them into legacy workspace
-tables or weaken membership enforcement.
+**Rollout and recovery.** Follow the central rollout in
+`ACTIVE_CIRCLE_CONTEXT.md`: deploy with the flag false, apply managed v13 and
+then v14 as separate protected migration steps, and verify exact runtime
+readiness. Only then canary one secondary circle and verify bounded cron
+publication before enabling secondary coordination more broadly. Roll back
+only by disabling the flag. Preserve canonical rows for audit and forward
+recovery; never copy them into legacy workspace tables or weaken membership
+enforcement.
 
 ## ID-27: Export one accepted session locally with a stable private identity
 

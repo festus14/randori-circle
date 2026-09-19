@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   INDEXES,
   PINNED_SCHEMA_MANIFEST_CHECKSUM,
@@ -92,6 +93,14 @@ test('immutable migration metadata is contiguous and checksum protected',()=>{
   const gap=MIGRATION_PLANS.map(plan=>({...plan}));
   gap[1].version=3;
   assert.throws(()=>validateMigrationPlans(gap),/gap at version 2/);
+});
+
+test('secondary coordination rollout requires the complete managed v14 ledger',()=>{
+  const decisions=readFileSync(new URL('../../docs/IMPLEMENTED_DECISIONS.md',import.meta.url),'utf8');
+  const section=decisions.match(/## ID-26:[\s\S]*?(?=\n## ID-27:)/)?.[0]||'';
+  assert.match(section,
+    /deploy with the flag false, apply managed v13 and\s+then v14 as separate protected migration steps/);
+  assert.match(section,/verify exact runtime\s+readiness\. Only then canary one secondary circle/);
 });
 
 test('provider identities add issuer-scoped subject and account uniqueness without rewriting the baseline',()=>{
