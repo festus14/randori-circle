@@ -129,6 +129,9 @@ export async function resetClientState(
     }]);
   }
   await page.addInitScript(({ authenticated, initialLocalStorage }) => {
+    // page.addInitScript also runs in frames. A late same-origin iframe must
+    // not clear the top-level application's shared localStorage mid-test.
+    if (window.top !== window) return;
     localStorage.clear();
     sessionStorage.clear();
     localStorage.setItem('randori-onboarded', '1');
