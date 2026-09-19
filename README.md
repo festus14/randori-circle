@@ -33,6 +33,7 @@ This private-beta sync is whole-document compare-and-swap, not a CRDT: members s
 - Sessions use 12-hour `Secure`, `HttpOnly`, `SameSite=Lax` cookies.
 - Google OAuth uses cryptographic state, PKCE, and verified OpenID userinfo.
 - Production password signup is fail-closed unless invitation-bound email activation is fully configured; no account or session exists before verification.
+- Existing password accounts can recover through a generic, rate-limited response; reset tokens are single-use, encrypted in the outbox, hashed at rest, and revoke every session when consumed.
 - Mutations enforce same-origin requests for cookie sessions; API callers may use pinned Bearer JWTs.
 - Circle, pairing, schedule, chat, feedback, execution, and signaling endpoints require scoped authorisation.
 - Weekly pairing writes are atomic and concurrency-safe. Notifications use an idempotent retryable outbox.
@@ -57,6 +58,8 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_pairing-publication.js` | managed-v6 readiness, transaction-bound owner/cron publication, immutable snapshots, and idempotency |
 | `api/_outbox.js` | provider-neutral leases, heartbeats, timeouts, retry/dead-letter transitions, replay audit, and aggregate metrics |
 | `api/_email-activation.js` | invitation-bound pending registrations, encrypted verification delivery, token rotation, and atomic activation |
+| `api/_password-reset.js` | enumeration-safe reset requests, encrypted delivery, token rotation, and atomic password/session replacement |
+| `api/_recent-auth.js` | ten-minute session-scoped password/Google step-up evidence for sensitive account operations |
 | `api/_pairing-email.js` | versioned pairing-email event validation, rendering, preferences, and provider adaptation |
 | `api/_availability.js` | tenant-scoped weekly cycle identity, strict optimistic availability updates, and publication filtering |
 | `api/_schedule.js` | strict schedule validation, legacy projection, opaque versions, and conflict-safe mutations |
@@ -81,6 +84,7 @@ Copy `.env.example` and configure at least:
 - `SIGNUP_ALLOWLIST` for the legacy private-beta Google flow while circle membership enforcement is off
 - `CIRCLE_MEMBERSHIP_ENABLED=true` to enforce invitation-gated primary-circle access after the staged migration below
 - `EMAIL_PASSWORD_ACTIVATION_ENABLED=true` plus a separately generated 32-byte base64url `EMAIL_VERIFICATION_ENCRYPTION_KEY` to enable production invite-bound password activation after migration v7 is ready
+- `PASSWORD_RESET_ENABLED=true` plus an independent 32-byte base64url `PASSWORD_RESET_ENCRYPTION_KEY` to enable recovery after migration v8 is ready
 - `AUTH_SCHEMA_BOOTSTRAP_ENABLED` is legacy-only and must remain false for the migrated OIDC flow; run the protected database migrations before enabling production authentication
 - `RESEND_API_KEY` and `RESEND_FROM` for pairing and verification notifications
 

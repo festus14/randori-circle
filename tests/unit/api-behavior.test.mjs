@@ -530,7 +530,8 @@ test('auth capabilities report the exact local or private-beta contract without 
   assert.equal(result.headers['cache-control'],'no-store');
   assert.deepEqual(result.body,{
     ok:true,
-    capabilities:{passwordLogin:true,passwordSignup:false,verifiedEmailActivation:false,localIdentity:false,googleOAuth:false},
+    capabilities:{passwordLogin:true,passwordSignup:false,verifiedEmailActivation:false,passwordReset:false,
+      localIdentity:false,googleOAuth:false,recentAuthMaxAgeSeconds:600},
     registrationMode:'private_beta',
   });
   assert.equal(executed.length,0);
@@ -544,7 +545,8 @@ test('auth capabilities report the exact local or private-beta contract without 
   });
   assert.deepEqual(result.body,{
     ok:true,
-    capabilities:{passwordLogin:true,passwordSignup:false,verifiedEmailActivation:false,localIdentity:false,googleOAuth:true},
+    capabilities:{passwordLogin:true,passwordSignup:false,verifiedEmailActivation:false,passwordReset:false,
+      localIdentity:false,googleOAuth:true,recentAuthMaxAgeSeconds:600},
     registrationMode:'private_beta',
   });
 
@@ -555,7 +557,8 @@ test('auth capabilities report the exact local or private-beta contract without 
   assert.equal(result.status,200);
   assert.deepEqual(result.body,{
     ok:true,
-    capabilities:{passwordLogin:true,passwordSignup:true,verifiedEmailActivation:false,localIdentity:false,googleOAuth:false},
+    capabilities:{passwordLogin:true,passwordSignup:true,verifiedEmailActivation:false,passwordReset:false,
+      localIdentity:false,googleOAuth:false,recentAuthMaxAgeSeconds:600},
     registrationMode:'local_open',
   });
   assert.equal(executed.length,0);

@@ -715,6 +715,21 @@ p{margin:0}
       </div>
     </section>
 
+    <!-- PASSWORD RESET -->
+    <section id="view-password-reset" class="view" data-testid="password-reset-landing" style="display:none">
+      <div class="landing" style="max-width:680px;margin:0 auto">
+        <div class="card">
+          <div class="card-h"><h2>Choose a new password</h2><span>account recovery</span></div>
+          <form id="passwordResetForm" class="card-b auth-form" novalidate>
+            <p id="passwordResetStatus" data-testid="password-reset-status" class="small muted" role="status" aria-live="polite">Enter a new password to finish recovering your account.</p>
+            <label class="auth-field" for="passwordResetNew"><span>New password</span><input id="passwordResetNew" class="input" type="password" autocomplete="new-password" minlength="10" maxlength="72" required/></label>
+            <label class="auth-field" for="passwordResetConfirm"><span>Confirm new password</span><input id="passwordResetConfirm" class="input" type="password" autocomplete="new-password" minlength="10" maxlength="72" required/></label>
+            <div class="auth-actions"><button id="passwordResetSignin" class="btn ghost" type="button" hidden>Return to sign in</button><button id="passwordResetSubmit" class="btn" type="submit">Reset password</button></div>
+          </form>
+        </div>
+      </div>
+    </section>
+
     <!-- INVITATION LANDING -->
     <section id="view-invite" class="view" data-testid="invite-landing" style="display:none">
       <div class="landing" style="max-width:680px;margin:0 auto">
@@ -1069,7 +1084,7 @@ p{margin:0}
       <div id="authPasswordFields" class="auth-fields" hidden>
         <label class="auth-field" for="authEmail"><span>Email</span><input id="authEmail" class="input" placeholder="email@example.com" type="email" inputmode="email" autocomplete="email" maxlength="254" aria-describedby="authErr" required/></label>
         <label id="authNameField" class="auth-field" for="authName" hidden><span>Display name</span><input id="authName" class="input" placeholder="How your pair will see you" type="text" autocomplete="name" minlength="2" maxlength="32" aria-describedby="authErr"/></label>
-        <label class="auth-field" for="authPass"><span>Password</span><input id="authPass" class="input" placeholder="10–72 UTF-8 bytes" type="password" autocomplete="current-password" maxlength="72" aria-describedby="authErr" required/></label>
+        <label id="authPasswordField" class="auth-field" for="authPass"><span>Password</span><input id="authPass" class="input" placeholder="10–72 UTF-8 bytes" type="password" autocomplete="current-password" maxlength="72" aria-describedby="authErr" required/></label>
       </div>
       <p id="authErr" class="small auth-error" role="alert" aria-live="assertive"></p>
       <div id="authActivationPending" data-testid="activation-pending" class="auth-fields" hidden>
@@ -1078,8 +1093,8 @@ p{margin:0}
       </div>
       <button id="authGoogleRetry" class="btn secondary" type="button" hidden aria-describedby="authErr" style="width:100%;justify-content:center">Try Google sign-in again</button>
       <div class="auth-actions">
-        <button id="authModeSwitch" class="btn ghost" type="button" hidden></button>
-        <span class="auth-actions-primary"><button id="authCancel" class="btn secondary" type="button">Cancel</button><button id="authSignup" class="btn" type="submit" hidden>Sign up</button><button id="authSignin" class="btn" type="submit" hidden>Sign in</button></span>
+        <span><button id="authModeSwitch" class="btn ghost" type="button" hidden></button><button id="authForgot" class="btn ghost" type="button" hidden>Forgot password?</button></span>
+        <span class="auth-actions-primary"><button id="authCancel" class="btn secondary" type="button">Cancel</button><button id="authSignup" class="btn" type="submit" hidden>Sign up</button><button id="authSignin" class="btn" type="submit" hidden>Sign in</button><button id="authResetRequest" class="btn" type="submit" hidden>Send reset email</button></span>
       </div>
     </form>
   </div>
@@ -1109,7 +1124,7 @@ p{margin:0}
   let me = null;
   let authSessionEpoch=0;
   let authRefreshSequence=0;
-  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,localIdentity:false,verifiedEmailActivation:false,googleOAuth:false,registrationMode:'private_beta'});
+  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,passwordReset:false,localIdentity:false,verifiedEmailActivation:false,googleOAuth:false,registrationMode:'private_beta'});
   let authCapabilities=CLOSED_AUTH_CAPABILITIES;
   let authCapabilitiesLoaded=false;
   let authCapabilitiesFailed=false;
@@ -1213,6 +1228,76 @@ p{margin:0}
     show:renderActivationLanding,
   };
   if(activationState.active){ renderActivationLanding(); finishEmailActivation(); }
+  const passwordResetState={active:window.location.pathname==='/reset-password',status:'ready',token:'',busy:false};
+  if(passwordResetState.active){
+    const hash=new URLSearchParams(String(window.location.hash||'').replace(/^#/,''));
+    passwordResetState.token=hash.get('token')||'';
+    try{ window.history.replaceState({},document.title,'/reset-password'); }catch{}
+    if(!passwordResetState.token) passwordResetState.status='invalid';
+  }
+  function renderPasswordResetLanding(){
+    if(!passwordResetState.active) return false;
+    document.querySelectorAll('.view').forEach(view=>{ view.style.display='none'; });
+    document.querySelectorAll('.tab').forEach(tab=>{ tab.classList.remove('active'); });
+    const tabs=document.querySelector('.tabs'); if(tabs) tabs.style.display='none';
+    const landing=document.getElementById('view-password-reset'); if(landing) landing.style.display='block';
+    const status=document.getElementById('passwordResetStatus');
+    const messages={
+      ready:'Enter a new password to finish recovering your account.',
+      submitting:'Updating your password and signing out existing sessions…',
+      reset:'Your password was changed and all existing sessions were signed out.',
+      expired:'This reset link has expired. Request a new one from the sign-in screen.',
+      used:'This reset link has already been used. Sign in with your new password.',
+      revoked:'This reset link is no longer available. Request a new one.',
+      invalid:'This reset link is invalid or unavailable.',
+      unavailable:'Password reset is temporarily unavailable. Please retry shortly.',
+    };
+    if(status) status.textContent=messages[passwordResetState.status]||messages.invalid;
+    const done=['reset','used'].includes(passwordResetState.status);
+    for(const input of [document.getElementById('passwordResetNew'),document.getElementById('passwordResetConfirm')]){
+      if(input){ input.disabled=passwordResetState.busy||done||passwordResetState.status==='invalid'; input.hidden=done; }
+    }
+    const submit=document.getElementById('passwordResetSubmit');
+    if(submit){ submit.hidden=done||passwordResetState.status==='invalid'; submit.disabled=passwordResetState.busy; }
+    const signin=document.getElementById('passwordResetSignin'); if(signin) signin.hidden=!done&&passwordResetState.status!=='invalid';
+    return true;
+  }
+  document.getElementById('passwordResetForm')?.addEventListener('submit',async event=>{
+    event.preventDefault();
+    if(passwordResetState.busy||!passwordResetState.token) return;
+    const password=document.getElementById('passwordResetNew');
+    const confirmation=document.getElementById('passwordResetConfirm');
+    const bytes=new TextEncoder().encode(password?.value||'').length;
+    if(bytes<10||bytes>72){ passwordResetState.status='invalid_password';
+      document.getElementById('passwordResetStatus').textContent='Password must be 10–72 UTF-8 bytes.'; password?.focus(); return; }
+    if(password.value!==confirmation?.value){ passwordResetState.status='password_mismatch';
+      document.getElementById('passwordResetStatus').textContent='Passwords do not match.'; confirmation?.focus(); return; }
+    passwordResetState.busy=true; passwordResetState.status='submitting'; renderPasswordResetLanding();
+    try{
+      const response=await fetch('/api/auth/password-reset/consume',{method:'POST',credentials:'same-origin',
+        headers:{'content-type':'application/json'},body:JSON.stringify({token:passwordResetState.token,password:password.value})});
+      const data=await response.json().catch(()=>({}));
+      passwordResetState.status=response.ok&&data?.status==='reset'?'reset':String(data?.status||'unavailable');
+      if(passwordResetState.status==='reset'){
+        invalidateAuthRefreshes();
+        try{ localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(ME_KEY); }catch{}
+        me=null;
+        clearAvailability();
+        try{ updateAuthUI(); }catch{}
+        try{ window.dispatchEvent(new CustomEvent('randori:auth-refreshed',{detail:{signedIn:false,userId:null}})); }catch{}
+      }
+      if(passwordResetState.status!=='unavailable') passwordResetState.token='';
+      password.value=''; if(confirmation) confirmation.value='';
+    }catch{ passwordResetState.status='unavailable'; }
+    passwordResetState.busy=false; renderPasswordResetLanding();
+  });
+  document.getElementById('passwordResetSignin')?.addEventListener('click',()=>{
+    passwordResetState.active=false;
+    window.history.replaceState({},document.title,'/');
+    window._randori_auth?.openModal?.('signin');
+  });
+  window._randori_password_reset_flow={get active(){ return passwordResetState.active; },show:renderPasswordResetLanding};
+  if(passwordResetState.active) renderPasswordResetLanding();
   function renderInviteLanding(){
     if(!inviteState.active) return false;
     document.querySelectorAll('.view').forEach(view=>{ view.style.display='none'; });
@@ -1715,6 +1800,7 @@ async function refreshMe(){
     if(payload?.ok!==true||!capabilities||typeof capabilities!=='object'
       ||typeof capabilities.passwordLogin!=='boolean'
       ||typeof capabilities.passwordSignup!=='boolean'
+      ||(capabilities.passwordReset!==undefined&&typeof capabilities.passwordReset!=='boolean')
       ||(capabilities.localIdentity!==undefined&&typeof capabilities.localIdentity!=='boolean')
       ||(capabilities.verifiedEmailActivation!==undefined&&typeof capabilities.verifiedEmailActivation!=='boolean')
       ||typeof capabilities.googleOAuth!=='boolean'
@@ -1722,6 +1808,7 @@ async function refreshMe(){
     return Object.freeze({
       passwordLogin:capabilities.passwordLogin,
       passwordSignup:capabilities.passwordSignup,
+      passwordReset:capabilities.passwordReset===true,
       localIdentity:capabilities.localIdentity===true,
       verifiedEmailActivation:capabilities.verifiedEmailActivation===true,
       googleOAuth:capabilities.googleOAuth,
@@ -1739,6 +1826,7 @@ async function refreshMe(){
   function authStatusMessage(){
     if(!authCapabilitiesLoaded) return 'Checking sign-in options…';
     if(authCapabilitiesFailed) return 'New-account options could not be verified. Existing members can still try password sign-in.';
+    if(authMode==='reset') return 'Enter your account email. The response is the same whether or not an eligible account exists.';
     if(authMode==='signup'&&authCapabilities.passwordSignup){
       if(authCapabilities.registrationMode==='local_invite'){
         return inviteState.ready
@@ -1775,7 +1863,8 @@ async function refreshMe(){
     if(!overlay?.classList.contains('show')) return;
     const active=document.activeElement;
     if(active&&overlay.contains(active)&&active.id!=='authDialog'&&!active.disabled&&active.getClientRects().length>0) return;
-    const passwordEnabled=authMode==='signup'?authCapabilities.passwordSignup:authCapabilities.passwordLogin;
+    const passwordEnabled=authMode==='signup'?authCapabilities.passwordSignup
+      :(authMode==='reset'?authCapabilities.passwordReset:authCapabilities.passwordLogin);
     const target=authBusy
       ?document.getElementById('authCancel')
       :(googleRetryPending&&authCapabilities.googleOAuth
@@ -1786,8 +1875,9 @@ async function refreshMe(){
     target?.focus();
   }
   function renderAuthModal(){
-    const passwordEnabled=authMode==='signup'?authCapabilities.passwordSignup:authCapabilities.passwordLogin;
-    const googleEnabled=authCapabilities.googleOAuth;
+    const passwordEnabled=authMode==='signup'?authCapabilities.passwordSignup
+      :(authMode==='reset'?authCapabilities.passwordReset:authCapabilities.passwordLogin);
+    const googleEnabled=authMode!=='reset'&&authCapabilities.googleOAuth;
     const title=document.getElementById('authTitle');
     const description=document.getElementById('authDescription');
     const status=document.getElementById('authCapabilityStatus');
@@ -1798,16 +1888,21 @@ async function refreshMe(){
     const nameField=document.getElementById('authNameField');
     const name=document.getElementById('authName');
     const password=document.getElementById('authPass');
+    const passwordField=document.getElementById('authPasswordField');
     const signup=document.getElementById('authSignup');
     const signin=document.getElementById('authSignin');
+    const resetRequest=document.getElementById('authResetRequest');
+    const forgot=document.getElementById('authForgot');
     const modeSwitch=document.getElementById('authModeSwitch');
     const cancel=document.getElementById('authCancel');
     const activationPending=document.getElementById('authActivationPending');
     const pending=authMode==='signup'&&!!activationPendingEmail;
-    if(title) title.textContent=authMode==='signup'?'Join Randori Circle':'Sign in to Randori';
+    if(title) title.textContent=authMode==='signup'?'Join Randori Circle'
+      :(authMode==='reset'?'Reset your password':'Sign in to Randori');
     if(description) description.textContent=authMode==='signup'
       ?'Create an account to join weekly practice pairings.'
-      :'Access your private pairing history and practice rooms.';
+      :(authMode==='reset'?'We will send a single-use recovery link if this account is eligible.'
+        :'Access your private pairing history and practice rooms.');
     if(status) status.textContent=authStatusMessage();
     if(google){ google.hidden=!authCapabilitiesLoaded||!googleEnabled||googleRetryPending; google.disabled=authBusy||!authCapabilitiesLoaded; }
     if(googleRetry){
@@ -1819,7 +1914,9 @@ async function refreshMe(){
     if(divider) divider.hidden=pending||!authCapabilitiesLoaded||!googleEnabled||!passwordEnabled;
     if(nameField) nameField.hidden=authMode!=='signup'||!passwordEnabled;
     if(name) name.required=authMode==='signup'&&passwordEnabled;
+    if(passwordField) passwordField.hidden=authMode==='reset';
     if(password){
+      password.required=authMode!=='reset';
       password.minLength=authMode==='signup'?10:0;
       password.autocomplete=authMode==='signup'?'new-password':'current-password';
       password.placeholder=authMode==='signup'?'At least 10 characters':'Your password';
@@ -1836,11 +1933,21 @@ async function refreshMe(){
       signin.disabled=authBusy||!authCapabilitiesLoaded;
       signin.textContent=authBusy&&authMode==='signin'?'Signing in…':'Sign in';
     }
-    const alternateAvailable=authMode==='signup'?authCapabilities.passwordLogin:authCapabilities.passwordSignup;
+    if(resetRequest){
+      resetRequest.hidden=!authCapabilitiesLoaded||authMode!=='reset'||!authCapabilities.passwordReset;
+      resetRequest.disabled=authBusy||!authCapabilitiesLoaded;
+      resetRequest.textContent=authBusy?'Requesting…':'Send reset email';
+    }
+    if(forgot){
+      forgot.hidden=!authCapabilitiesLoaded||authMode!=='signin'||!authCapabilities.passwordReset;
+      forgot.disabled=authBusy;
+    }
+    const alternateAvailable=authMode==='reset'||(authMode==='signup'?authCapabilities.passwordLogin:authCapabilities.passwordSignup);
     if(modeSwitch){
       modeSwitch.hidden=pending||!authCapabilitiesLoaded||!alternateAvailable;
       modeSwitch.disabled=authBusy;
-      modeSwitch.textContent=authMode==='signup'?'Already a member? Sign in':'New here? Create an account';
+      modeSwitch.textContent=authMode==='signup'?'Already a member? Sign in'
+        :(authMode==='reset'?'Back to sign in':'New here? Create an account');
     }
     for(const input of document.querySelectorAll('#authPasswordFields input')) input.disabled=authBusy||!authCapabilitiesLoaded||!passwordEnabled;
     if(cancel) cancel.disabled=false;
@@ -1859,7 +1966,7 @@ async function refreshMe(){
     }catch{
       authCapabilities=CLOSED_AUTH_CAPABILITIES;
       authCapabilitiesFailed=true;
-      if(authMode==='signup') authMode='signin';
+      if(authMode==='signup'||authMode==='reset') authMode='signin';
     }finally{
       clearTimeout(timeout);
       authCapabilitiesLoaded=true;
@@ -1871,7 +1978,8 @@ async function refreshMe(){
     return authCapabilities;
   }
   function resolvedAuthMode(mode){
-    const requested=mode==='signup'?'signup':'signin';
+    const requested=mode==='signup'?'signup':(mode==='reset'?'reset':'signin');
+    if(requested==='reset') return authCapabilitiesLoaded&&authCapabilities.passwordReset?'reset':'signin';
     if(requested==='signup'&&!authCapabilitiesLoaded) return 'signup';
     return requested==='signup'&&(authCapabilities.passwordSignup||authCapabilities.googleOAuth)
       ?'signup'
@@ -1956,7 +2064,8 @@ async function refreshMe(){
   // Centralized auth dialog entry points keep capability, focus, and dismissal state consistent.
   document.getElementById('authBtn').onclick=()=>openAuthModal('signin');
   document.getElementById('authCancel').onclick=()=>closeAuthModal();
-  document.getElementById('authModeSwitch').onclick=()=>setAuthMode(authMode==='signup'?'signin':'signup');
+  document.getElementById('authModeSwitch').onclick=()=>setAuthMode(authMode==='signup'?'signin':(authMode==='reset'?'signin':'signup'));
+  document.getElementById('authForgot').onclick=()=>setAuthMode('reset');
   document.getElementById('authOverlay').onclick=(event)=>{ if(event.target===event.currentTarget) closeAuthModal(); };
   // Capture at the document boundary: disabling the focused submit control can
   // move focus to body in Chromium, but the open modal must still own Escape/Tab.
@@ -2114,10 +2223,11 @@ async function refreshMe(){
     if(code==='invalid credentials') return 'Email or password is incorrect.';
     if(code.includes('temporarily unavailable')) return mode==='signup'
       ?'Account creation is temporarily unavailable. Try again.'
-      :'Sign in is temporarily unavailable. Try again.';
+      :(mode==='reset'?'Password recovery is temporarily unavailable. Try again.':'Sign in is temporarily unavailable. Try again.');
     if(code.includes('too many')) return 'Too many attempts. Wait a few minutes and try again.';
     if(code.includes('cross-origin')||code.includes('same-origin')) return 'This sign-in request was rejected. Refresh and try again.';
-    return code||(mode==='signup'?'Account creation failed. Try again.':'Sign in failed. Try again.');
+    return code||(mode==='signup'?'Account creation failed. Try again.'
+      :(mode==='reset'?'Password recovery failed. Try again.':'Sign in failed. Try again.'));
   }
   function validateAuthForm(mode){
     const emailInput=document.getElementById('authEmail');
@@ -2128,6 +2238,7 @@ async function refreshMe(){
     const name=nameInput.value.trim();
     const password=passwordInput.value;
     if(!email||!emailInput.validity.valid){ setAuthError('Enter a valid email address.'); emailInput.setAttribute('aria-invalid','true'); emailInput.focus(); return null; }
+    if(mode==='reset'){ setAuthError(''); return {email}; }
     if(mode==='signup'&&(name.length<2||name.length>32)){ setAuthError('Display name must be 2–32 characters.'); nameInput.setAttribute('aria-invalid','true'); nameInput.focus(); return null; }
     if(!password){ setAuthError('Enter your password.'); passwordInput.setAttribute('aria-invalid','true'); passwordInput.focus(); return null; }
     const passwordBytes=new TextEncoder().encode(password).length;
@@ -2139,7 +2250,8 @@ async function refreshMe(){
   }
   async function submitAuth(mode){
     if(authBusy||!authCapabilitiesLoaded) return;
-    const enabled=mode==='signup'?authCapabilities.passwordSignup:authCapabilities.passwordLogin;
+    const enabled=mode==='signup'?authCapabilities.passwordSignup
+      :(mode==='reset'?authCapabilities.passwordReset:authCapabilities.passwordLogin);
     if(!enabled) return;
     const body=validateAuthForm(mode);
     if(!body) return;
@@ -2147,12 +2259,19 @@ async function refreshMe(){
     authRequest=request;
     setAuthBusy(true);
     try{
-      const response=await fetch(`/api/auth/${mode==='signup'?'signup':'login'}`,{
+      const endpoint=mode==='signup'?'signup':(mode==='reset'?'password-reset/request':'login');
+      const response=await fetch(`/api/auth/${endpoint}`,{
         method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify(body),signal:request.controller.signal,
       });
       let data=null;
       try{ data=await response.json(); }catch{}
       if(authRequest!==request) return;
+      if(response.ok&&mode==='reset'&&data?.pending===true){
+        authRequest=null;
+        setAuthBusy(false);
+        setAuthError('If that account is eligible, a reset link will arrive shortly.');
+        return;
+      }
       if(response.ok&&mode==='signup'&&data?.pending===true){
         activationPendingEmail=body.email;
         authRequest=null;
@@ -6411,6 +6530,10 @@ def allow(key, limit=5):
   async function routeByAuth(){
     if(window._randori_activation_flow?.active){
       window._randori_activation_flow.show();
+      return;
+    }
+    if(window._randori_password_reset_flow?.active){
+      window._randori_password_reset_flow.show();
       return;
     }
     if(window._randori_invite_flow?.active){

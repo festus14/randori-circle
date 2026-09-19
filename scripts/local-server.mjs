@@ -642,8 +642,11 @@ function apiRoute(pathname,query){
   const authEndpoints=new Map([
     ['/api/auth/capabilities','capabilities'],['/api/auth/signup','signup'],['/api/auth/login','login'],
     ['/api/auth/activation/resend','activation-resend'],['/api/auth/activation/verify','activation-verify'],
+    ['/api/auth/password-reset/request','password-reset-request'],
+    ['/api/auth/password-reset/consume','password-reset-consume'],['/api/auth/recent-auth','recent-auth'],
     ['/api/auth/me','me'],['/api/auth/logout-all','logout-all'],['/api/auth/logout','logout'],
-    ['/api/auth/google/start','google-start'],['/api/auth/google/callback','google-callback'],
+    ['/api/auth/google/start','google-start'],['/api/auth/google/reauth/start','google-reauth-start'],
+    ['/api/auth/google/callback','google-callback'],
   ]);
   if(authEndpoints.has(pathname)){
     query.endpoint=authEndpoints.get(pathname);
@@ -829,7 +832,8 @@ function unsafeEncodedPath(pathname){
 }
 
 function navigationPath(pathname){
-  return pathname==='/'||pathname==='/invite'||/^\/join\/[^/]+$/.test(pathname);
+  return pathname==='/'||pathname==='/invite'||pathname==='/verify'||pathname==='/reset-password'
+    ||/^\/join\/[^/]+$/.test(pathname);
 }
 
 function assetPath(pathname,rootDir){
@@ -924,6 +928,7 @@ function installRuntimeEnvironment(config,url,secret,envTarget=process.env){
     ALLOW_OPEN_SIGNUP:'false',
     CIRCLE_MEMBERSHIP_ENABLED:'true',
     AUTH_SCHEMA_BOOTSTRAP_ENABLED:'false',
+    PASSWORD_RESET_ENABLED:'true',
     RANDORI_LOCAL_RUNTIME:'true',
     RANDORI_LOCAL_IDENTITY:'true',
     RANDORI_LOCAL_FIRST_USER_ADMIN:'false',

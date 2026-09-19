@@ -13,6 +13,12 @@ const privateBetaCapabilities = {
   registrationMode: 'private_beta',
 };
 
+const recoveryCapabilities = {
+  ok: true,
+  capabilities: { passwordLogin: true, passwordSignup: false, passwordReset: true, googleOAuth: false },
+  registrationMode: 'private_beta',
+};
+
 const verifiedInviteCapabilities = {
   ok: true,
   capabilities: {
@@ -110,6 +116,58 @@ test('a temporary verification failure retains the scrubbed token only in memory
   await page.getByTestId('activation-continue').click();
   await expect(page.getByTestId('activation-status')).toContainText('account is ready');
   expect(attempts).toBe(2);
+});
+
+test('sign-in offers an enumeration-safe password reset request',async({page})=>{
+  let requests=0;
+  await mockApi(page,{
+    '/api/auth/capabilities':recoveryCapabilities,
+    '/api/auth/password-reset/request':request=>{
+      requests+=1;
+      expect(request.postDataJSON()).toEqual({email:'member@example.test'});
+      return {_status:202,ok:true,pending:true,
+        message:'If that account can use password recovery, a reset email will arrive shortly.'};
+    },
+  });
+  await resetClientState(page);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await page.locator('#landingSignin').click();
+  await expect(page.locator('#authForgot')).toBeVisible();
+  await page.locator('#authForgot').click();
+  await expect(page.getByRole('dialog',{name:'Reset your password'})).toBeVisible();
+  await expect(page.locator('#authPasswordField')).toBeHidden();
+  await page.locator('#authEmail').fill('MEMBER@example.test');
+  await page.locator('#authResetRequest').click();
+  await expect(page.locator('#authErr')).toContainText('If that account is eligible');
+  expect(requests).toBe(1);
+  await page.locator('#authModeSwitch').click();
+  await expect(page.getByRole('dialog',{name:'Sign in to Randori'})).toBeVisible();
+});
+
+test('password reset landing scrubs the fragment and submits a matching policy-compliant password',async({page})=>{
+  const token='R'.repeat(43);
+  let calls=0;
+  await mockApi(page,{
+    '/api/auth/password-reset/consume':request=>{
+      calls+=1;
+      expect(request.postDataJSON()).toEqual({token,password:'replacement password'});
+      return {ok:true,status:'reset'};
+    },
+  });
+  await resetClientState(page);
+  await page.goto(`/reset-password#token=${token}`,{waitUntil:'domcontentloaded'});
+  await expect(page).toHaveURL(/\/reset-password$/);
+  await expect(page.getByTestId('password-reset-landing')).toBeVisible();
+  await page.locator('#passwordResetNew').fill('replacement password');
+  await page.locator('#passwordResetConfirm').fill('different password');
+  await page.locator('#passwordResetSubmit').click();
+  await expect(page.getByTestId('password-reset-status')).toContainText('do not match');
+  expect(calls).toBe(0);
+  await page.locator('#passwordResetConfirm').fill('replacement password');
+  await page.locator('#passwordResetSubmit').click();
+  await expect(page.getByTestId('password-reset-status')).toContainText('all existing sessions were signed out');
+  await expect(page.locator('#passwordResetSignin')).toBeVisible();
+  expect(calls).toBe(1);
 });
 
 test('local capabilities expose an accessible signup flow with validation and one in-flight submit', async ({ page }) => {

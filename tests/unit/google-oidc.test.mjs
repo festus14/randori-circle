@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {afterEach,test} from 'node:test';
 import {
   GoogleOidcError,
+  GOOGLE_REAUTH_MAX_AGE_SECONDS,
   exchangeGoogleAuthorizationCode,
   fetchBoundedJson,
   publicGoogleAuthorizationError,
@@ -56,6 +57,17 @@ test('ID token validation rejects issuer, audience, expiry, subject, verificatio
   ]){
     assert.throws(()=>verify(claims,options),error=>error instanceof GoogleOidcError&&error.code==='identity_invalid',name);
   }
+});
+
+test('reauthentication requires a current signed auth_time claim',()=>{
+  const now=Math.floor(Date.now()/1000);
+  const options={nowSeconds:now,maxAuthAgeSeconds:GOOGLE_REAUTH_MAX_AGE_SECONDS};
+  assert.throws(()=>verify({},options),error=>error instanceof GoogleOidcError&&error.code==='identity_invalid');
+  assert.throws(()=>verify({auth_time:now-GOOGLE_REAUTH_MAX_AGE_SECONDS-61},options),GoogleOidcError);
+  assert.throws(()=>verify({auth_time:now+61},options),GoogleOidcError);
+  assert.throws(()=>verify({auth_time:String(now)},options),GoogleOidcError);
+  const identity=verify({auth_time:now-GOOGLE_REAUTH_MAX_AGE_SECONDS},options);
+  assert.equal(identity.authTime,now-GOOGLE_REAUTH_MAX_AGE_SECONDS);
 });
 
 test('ID token validation rejects unknown, ambiguous, and non-signing keys',()=>{

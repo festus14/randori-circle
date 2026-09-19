@@ -29,8 +29,9 @@ test('v7 installs constrained activation state and indexes without changing v6 a
     await apply(db,EXECUTABLE_MIGRATIONS.slice(0,6));
     const before=(await db.execute(`SELECT type,name,sql FROM sqlite_schema
       WHERE name IN ('outbox_events','outbox_audit_events') ORDER BY type,name`)).rows;
-    const beforeState=await inspectMigrationState(db);
-    const result=await applyMigrations(db,{expectedStateFingerprint:beforeState.stateFingerprint,retry:NO_RETRY});
+    const beforeState=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,7)});
+    const result=await applyMigrations(db,{expectedStateFingerprint:beforeState.stateFingerprint,
+      migrations:EXECUTABLE_MIGRATIONS.slice(0,7),retry:NO_RETRY});
     assert.deepEqual(result.applied.map(item=>item.version),[7]);
     const columns=(await db.execute(`PRAGMA table_info('auth_email_activations')`)).rows.map(row=>row.name);
     assert.deepEqual(columns,[

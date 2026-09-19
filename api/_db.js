@@ -2,6 +2,7 @@ import { createClient } from '@libsql/client';
 import jwt from 'jsonwebtoken';
 import { createHash, randomBytes } from 'node:crypto';
 import { redactSentryText, sanitizeSentryContext, sanitizeSentryEvent } from './_sentry.js';
+import { recordRecentAuth } from './_recent-auth.js';
 
 export const JWT_ISSUER = 'randori-circle';
 export const JWT_AUDIENCE = 'randori-web';
@@ -253,7 +254,9 @@ function safeRevocationReason(value){
   return SESSION_REVOCATION_REASONS.has(value)?value:null;
 }
 
-export async function issueSessionInTransaction(transaction,user,{nowSeconds=Math.floor(Date.now()/1000)}={}){
+export async function issueSessionInTransaction(transaction,user,{
+  nowSeconds=Math.floor(Date.now()/1000),recentAuthMethod=null,
+}={}){
   if(!transaction||typeof transaction.execute!=='function') throw new TypeError('session transaction is required');
   const userId=safeSessionUserId(user?.id??user?.uid);
   const email=safeSessionEmail(user?.email);
@@ -271,6 +274,9 @@ export async function issueSessionInTransaction(transaction,user,{nowSeconds=Mat
   });
   if(inserted.rows?.length!==1||String(inserted.rows[0].session_hash)!==sessionHash){
     throw new Error('session persistence failed');
+  }
+  if(recentAuthMethod!==null){
+    await recordRecentAuth(transaction,{sessionHash,userId,method:recentAuthMethod,nowSeconds});
   }
   await transaction.execute({
     sql:`UPDATE auth_sessions SET revoked_at=?,revocation_reason='rotation'
