@@ -1035,7 +1035,8 @@ manual invitation creation and queued encrypted events for a later safe resume.
 
 Status: implemented behind the independent, default-off
 `SECONDARY_CIRCLE_COORDINATION_ENABLED` flag; migration v13 owns its storage,
-and runtime readiness requires the complete managed ledger through v14.
+while this release's runtime readiness requires the complete managed ledger
+through v15. Migration v15 does not add secondary-pairing storage.
 
 **Decision.** A selected secondary circle may publish and read one immutable
 current-cycle pairing, but that assignment is coordination data only. Migration
@@ -1082,13 +1083,15 @@ migration. Dual-writing would create two authorities and ambiguous rollback.
 Manual-only publication would avoid cron work but weaken the weekly habit.
 
 **Rollout and recovery.** Follow the central rollout in
-`ACTIVE_CIRCLE_CONTEXT.md`: deploy with the flag false, apply managed v13 and
-then v14 as separate protected migration steps, and verify exact runtime
-readiness. Only then canary one secondary circle and verify bounded cron
-publication before enabling secondary coordination more broadly. Roll back
-only by disabling the flag. Preserve canonical rows for audit and forward
-recovery; never copy them into legacy workspace tables or weaken membership
-enforcement.
+`ACTIVE_CIRCLE_CONTEXT.md`: keep the feature and credential-consumer flags
+false, apply managed v13, then v14, then v15 as separate protected migration
+steps with fresh evidence and approval, adopt all four configured credential
+purposes, and verify exact runtime readiness. Only then canary one secondary
+circle and verify bounded cron publication before enabling secondary
+coordination more broadly. Keep its separate email flag false until the sender
+passes a provider canary. Roll back only by disabling the flag. Preserve
+canonical rows for audit and forward recovery; never copy them into legacy
+workspace tables or weaken membership enforcement.
 
 ## ID-27: Export one accepted session locally with a stable private identity
 
@@ -1160,7 +1163,9 @@ database to catch up deliberately.
 ## ID-29: Create and select a secondary circle as one idempotent operation
 
 Status: implemented behind the existing default-off
-`MULTI_CIRCLE_CONTROL_PLANE_ENABLED` flag; migration v14 is required.
+`MULTI_CIRCLE_CONTROL_PLANE_ENABLED` flag. Migration v14 owns its storage; this
+release also requires exact managed readiness through v15 and the central
+credential-control adoption sequence before runtime promotion.
 
 **Decision.** An authenticated user creates a secondary circle through
 same-origin `POST /api/circles` with only an exact bounded name and an opaque
@@ -1204,11 +1209,15 @@ availability or pairing rows conflict with the existing lazy-cycle contract.
 Full secondary workspace creation remains deferred until its storage and
 authorization paths are canonically circle-owned.
 
-**Rollout and recovery.** Apply v14 one version at a time through the protected
-rehearsal workflow, deploy with the control-plane flag off, then canary create,
-replay, cap, revocation, concurrency, cross-tab, and mobile flows in staging.
-Rollback disables the flag and preserves every receipt, audit, membership, and
-context generation; no schema downgrade or tenant-data deletion is required.
+**Rollout and recovery.** Follow Steps 2–4 of the central rollout in
+`ACTIVE_CIRCLE_CONTEXT.md`: keep feature and credential-consumer flags false,
+apply each pending v13, v14, and v15 migration separately with a fresh protected
+rehearsal and approval, and adopt all four configured credential purposes before
+runtime promotion. If an existing credential consumer cannot be disabled, hold
+production promotion until that sequence finishes. Then canary create, replay,
+cap, revocation, concurrency, cross-tab, and mobile flows in staging. Rollback
+disables the flag and preserves every receipt, audit, membership, and context
+generation; no schema downgrade or tenant-data deletion is required.
 
 ## ID-30: Treat legacy credential counts as a key-retirement blocker
 
