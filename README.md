@@ -100,7 +100,7 @@ For attestation-key rotation, move each former `RUN_ATTESTATION_SECRET` into the
 
 ## Development and tests
 
-Requires Node.js 24 or newer and Python 3 (`python3`) for the aggregate execution tests.
+Requires Node.js 24 and Python 3 (`python3`) for the aggregate execution tests.
 
 For the usable local MVP, install dependencies and start the real SPA plus API on loopback:
 
@@ -123,6 +123,7 @@ npm run dev:reset -- --confirm
 
 ```bash
 npm run audit:prod
+npm run check:deployability
 npm run validate:catalog
 npm run check:runtime-ddl
 npm run check:syntax
@@ -131,7 +132,7 @@ npm run test:coverage
 npm run test:e2e
 ```
 
-CI tests the checked-out candidate build on localhost. It validates the catalogue, freezes the existing request-time DDL allowlist, enforces at least 52% line, branch, and function coverage across API, database-foundation, and operational-script modules, and runs the Playwright flows on Ubuntu.
+CI tests the checked-out candidate build on localhost. It validates the provider-neutral deployment contract and catalogue, freezes the existing request-time DDL allowlist, enforces at least 52% line, branch, and function coverage across API, database-foundation, and operational-script modules, and runs the Playwright flows on Ubuntu. The merge-versus-preview policy and its one required GitHub settings change are documented in [Deployment and merge gates](docs/DEPLOYMENT_GATES.md).
 
 Operators can run `npm run --silent db:status` or `npm run --silent db:plan` with Turso credentials to receive structured JSON drift reports. Both commands are guarded to `SELECT`/`PRAGMA`, and the plan is non-executable. A separate fingerprint-gated `db:migrate` command supports transactional apply or verified adoption only for explicit local `file:` URLs; it rejects every remote target and does not read production credentials. See [Database schema operations](docs/DATABASE_SCHEMA_OPERATIONS.md).
 

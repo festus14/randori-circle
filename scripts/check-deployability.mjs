@@ -1,0 +1,269 @@
+import { readFileSync, readdirSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const REQUIRED_ROOT_FILES = ['index.html', 'package-lock.json', 'package.json', 'vercel.json'];
+const REQUIRED_SECURITY_HEADERS = [
+  'content-security-policy',
+  'permissions-policy',
+  'referrer-policy',
+  'strict-transport-security',
+  'x-content-type-options',
+  'x-frame-options',
+];
+const SUPPORTED_NODE_RANGE = '24.x';
+
+function record(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function routeHeaders(headers, source) {
+  const route = headers.find(item => record(item)?.source === source);
+  if (!route || !Array.isArray(route.headers)) return null;
+
+  const values = new Map();
+  for (const header of route.headers) {
+    if (!record(header) || typeof header.key !== 'string' || typeof header.value !== 'string') continue;
+    values.set(header.key.toLowerCase(), header.value);
+  }
+  return values;
+}
+
+function contentSecurityPolicyIsSafe(value) {
+  const entries = value.split(';').map(part => {
+    const [name, ...tokens] = part.trim().split(/\s+/);
+    return [name?.toLowerCase(), tokens];
+  }).filter(([name]) => name);
+  const directives = new Map();
+  for (const [name, tokens] of entries) {
+    if (directives.has(name)) return false;
+    directives.set(name, tokens);
+  }
+  const hasOnly = (name, token) => {
+    const values = directives.get(name);
+    return values?.length === 1 && values[0].toLowerCase() === token;
+  };
+  return hasOnly('default-src', "'self'")
+    && hasOnly('object-src', "'none'")
+    && hasOnly('frame-ancestors', "'none'")
+    && ["'self'", "'none'"].includes(directives.get('base-uri')?.join(' ').toLowerCase())
+    && directives.get('form-action')?.includes("'self'");
+}
+
+function strictTransportSecurityIsSafe(value) {
+  const directives = new Map();
+  for (const item of value.split(';')) {
+    const [rawName, ...rest] = item.trim().toLowerCase().split('=');
+    if (!rawName || directives.has(rawName) || rest.length > 1) return false;
+    directives.set(rawName, rest[0] ?? null);
+  }
+  const maxAge = directives.get('max-age');
+  return /^\d+$/.test(maxAge ?? '')
+    && Number(maxAge) >= 31_536_000
+    && directives.has('includesubdomains')
+    && directives.get('includesubdomains') === null;
+}
+
+function securityHeaderIsSafe(key, value) {
+  const normalized = value.trim();
+  if (!normalized) return false;
+  switch (key) {
+    case 'content-security-policy':
+      return contentSecurityPolicyIsSafe(normalized);
+    case 'permissions-policy':
+      return /(?:^|,)\s*geolocation=\(\)\s*(?:,|$)/i.test(normalized);
+    case 'referrer-policy':
+      return normalized.toLowerCase() === 'no-referrer';
+    case 'strict-transport-security':
+      return strictTransportSecurityIsSafe(normalized);
+    case 'x-content-type-options':
+      return normalized.toLowerCase() === 'nosniff';
+    case 'x-frame-options':
+      return normalized.toUpperCase() === 'DENY';
+    default:
+      return false;
+  }
+}
+
+function cronFieldLooksValid(field, minimum, maximum) {
+  return field.split(',').every(part => {
+    const [base, step, ...extra] = part.split('/');
+    if (extra.length > 0 || (step !== undefined && (!/^\d+$/.test(step) || Number(step) < 1))) return false;
+    if (base === '*') return true;
+
+    const bounds = base.split('-');
+    if (bounds.length > 2 || bounds.some(value => !/^\d+$/.test(value))) return false;
+    const numbers = bounds.map(Number);
+    if (numbers.some(value => value < minimum || value > maximum)) return false;
+    return numbers.length === 1 || numbers[0] <= numbers[1];
+  });
+}
+
+function cronExpressionLooksValid(schedule) {
+  if (typeof schedule !== 'string') return false;
+  const fields = schedule.trim().split(/\s+/);
+  const ranges = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 7]];
+  return fields.length === 5
+    && fields.every((field, index) => cronFieldLooksValid(field, ...ranges[index]));
+}
+
+function requiredHandler(destination) {
+  if (typeof destination !== 'string') return null;
+  const match = destination.match(
+    /^\/api\/([a-zA-Z0-9_-]+)(?:\?[a-zA-Z0-9._~!$&'()*+,;=:@%/?-]+)?$/,
+  );
+  return match ? `api/${match[1]}.js` : null;
+}
+
+export function validateDeploymentContract({ vercel, packageJson, files }) {
+  const errors = [];
+  const config = record(vercel);
+  const manifest = record(packageJson);
+  const availableFiles = files instanceof Set ? files : new Set(files ?? []);
+
+  if (!config) {
+    return ['vercel.json must contain a JSON object'];
+  }
+  if (!manifest) errors.push('package.json must contain a JSON object');
+
+  for (const file of REQUIRED_ROOT_FILES) {
+    if (!availableFiles.has(file)) errors.push(`required deployment file is missing: ${file}`);
+  }
+
+  if (config.cleanUrls !== true) errors.push('vercel.json must enable cleanUrls');
+
+  if (manifest?.engines?.node !== SUPPORTED_NODE_RANGE) {
+    errors.push(`package.json engines.node must be ${SUPPORTED_NODE_RANGE}`);
+  }
+
+  if (!Array.isArray(config.rewrites) || config.rewrites.length === 0) {
+    errors.push('vercel.json must define rewrites');
+  } else {
+    const sources = new Set();
+    for (const [index, rewrite] of config.rewrites.entries()) {
+      if (!record(rewrite) || typeof rewrite.source !== 'string' || typeof rewrite.destination !== 'string') {
+        errors.push(`rewrite ${index} must define string source and destination values`);
+        continue;
+      }
+      if (sources.has(rewrite.source)) errors.push(`duplicate rewrite source: ${rewrite.source}`);
+      sources.add(rewrite.source);
+
+      const isFallback = index === config.rewrites.length - 1
+        && rewrite.source === '/(.*)'
+        && rewrite.destination === '/index.html';
+      if (!isFallback) {
+        const handler = requiredHandler(rewrite.destination);
+        if (!handler) {
+          errors.push(`rewrite ${rewrite.source} must target a local grouped API handler`);
+        } else if (!availableFiles.has(handler)) {
+          errors.push(`rewrite ${rewrite.source} targets missing handler ${handler}`);
+        }
+      }
+    }
+
+    const fallback = config.rewrites.at(-1);
+    if (fallback?.source !== '/(.*)' || fallback?.destination !== '/index.html') {
+      errors.push('the final rewrite must be the SPA fallback /(.*) -> /index.html');
+    }
+  }
+
+  if (!Array.isArray(config.headers)) {
+    errors.push('vercel.json must define response headers');
+  } else {
+    const apiHeaders = routeHeaders(config.headers, '/api/(.*)');
+    if (!apiHeaders) {
+      errors.push('API routes must define response headers');
+    } else {
+      if (apiHeaders.get('cache-control') !== 'no-store') {
+        errors.push('API routes must set Cache-Control to no-store');
+      }
+      if (apiHeaders.get('x-content-type-options')?.toLowerCase() !== 'nosniff') {
+        errors.push('API routes must set X-Content-Type-Options to nosniff');
+      }
+    }
+
+    const pageHeaders = routeHeaders(config.headers, '/(.*)');
+    for (const key of REQUIRED_SECURITY_HEADERS) {
+      if (!securityHeaderIsSafe(key, pageHeaders?.get(key) ?? '')) {
+        errors.push(`page routes must define a safe ${key}`);
+      }
+    }
+  }
+
+  if (!Array.isArray(config.crons)) {
+    errors.push('vercel.json must define crons');
+  } else {
+    const rewriteSources = new Set(
+      Array.isArray(config.rewrites)
+        ? config.rewrites.map(item => record(item)?.source).filter(Boolean)
+        : [],
+    );
+    const cronPaths = new Set();
+    for (const [index, cron] of config.crons.entries()) {
+      if (!record(cron) || typeof cron.path !== 'string') {
+        errors.push(`cron ${index} must define a path`);
+        continue;
+      }
+      if (cronPaths.has(cron.path)) errors.push(`duplicate cron path: ${cron.path}`);
+      cronPaths.add(cron.path);
+      if (!rewriteSources.has(cron.path)) errors.push(`cron path has no matching rewrite: ${cron.path}`);
+      if (!cronExpressionLooksValid(cron.schedule)) {
+        errors.push(`cron ${cron.path} must use a five-field schedule`);
+      }
+    }
+  }
+
+  return errors;
+}
+
+export function inspectDeploymentContract(rootDirectory = process.cwd()) {
+  const root = resolve(rootDirectory);
+  const files = new Set(REQUIRED_ROOT_FILES.filter(file => {
+    try {
+      readFileSync(resolve(root, file));
+      return true;
+    } catch {
+      return false;
+    }
+  }));
+
+  try {
+    for (const file of readdirSync(resolve(root, 'api'))) {
+      if (file.endsWith('.js')) files.add(`api/${file}`);
+    }
+  } catch {
+    // The missing handlers are reported from the rewrite contract below.
+  }
+
+  let vercel;
+  let packageJson;
+  try {
+    vercel = JSON.parse(readFileSync(resolve(root, 'vercel.json'), 'utf8'));
+  } catch (error) {
+    return [`vercel.json is not readable JSON: ${error.message}`];
+  }
+  try {
+    packageJson = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
+  } catch (error) {
+    return [`package.json is not readable JSON: ${error.message}`];
+  }
+
+  return validateDeploymentContract({ vercel, packageJson, files });
+}
+
+function main() {
+  const errors = inspectDeploymentContract();
+  if (errors.length > 0) {
+    console.error(JSON.stringify({ ok: false, errors }, null, 2));
+    process.exitCode = 1;
+    return;
+  }
+  console.log(JSON.stringify({
+    ok: true,
+    gate: 'repository-deployability-contract',
+    providerNetworkRequired: false,
+  }));
+}
+
+const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : null;
+if (invokedPath === import.meta.url) main();
