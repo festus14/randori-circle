@@ -6,7 +6,7 @@ import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   ProvenanceValidationError,
@@ -19,6 +19,7 @@ import { applyTakedown, executeTakedown, parseTakedownArguments } from '../../sc
 const catalogPath = new URL('../../data/randori-catalog-v1.json', import.meta.url);
 const manifestPath = new URL('../../data/randori-catalog-provenance-v1.json', import.meta.url);
 const schemaPath = new URL('../../data/randori-catalog-provenance.schema.json', import.meta.url);
+const appPath = new URL('../../index.html', import.meta.url);
 
 function fixtures() {
   return {
@@ -49,6 +50,13 @@ test('bundled provenance covers every exercise with current canonical hashes', (
     const record = manifest.records.find(candidate => candidate.key === `${exercise.slug}@${exercise.version}`);
     assert.equal(record.contentHash, canonicalExerciseHash(exercise));
   }
+});
+
+test('shipped workspace has no legacy third-party problem content or import workflow', () => {
+  const app = readFileSync(appPath, 'utf8');
+  assert.match(app, /const QUESTIONS=Object\.freeze\(\[\]\);/);
+  assert.doesNotMatch(app, /Two Sum|LRU Cache|TinyURL/);
+  assert.doesNotMatch(app, /qUpLeetSlug|leetImport|LeetCode import|copy description|\/api\/leetcode\?slug=/i);
 });
 
 test('checked-in JSON Schema declares the same closed versioned record contract', () => {
@@ -382,15 +390,19 @@ test('takedown refuses unknown targets and conflicting lifecycle events', () => 
 
 async function temporaryCatalogueFiles() {
   const directory = await mkdtemp(join(tmpdir(), 'randori-provenance-'));
-  const catalogUrl = new URL(`file://${directory}/catalog.json`);
-  const manifestUrl = new URL(`file://${directory}/provenance.json`);
-  const lockUrl = new URL(`file://${directory}/operator.lock`);
+  const dataDirectory = join(directory, 'data');
+  await mkdir(dataDirectory);
+  const repositoryRootUrl = pathToFileURL(`${directory}/`);
+  const dataRootUrl = pathToFileURL(`${dataDirectory}/`);
+  const catalogUrl = pathToFileURL(join(dataDirectory, 'catalog.json'));
+  const manifestUrl = pathToFileURL(join(dataDirectory, 'provenance.json'));
+  const lockUrl = pathToFileURL(join(dataDirectory, 'operator.lock'));
   const { catalog, manifest } = fixtures();
   await Promise.all([
     writeFile(catalogUrl, `${JSON.stringify(catalog, null, 2)}\n`),
     writeFile(manifestUrl, `${JSON.stringify(manifest, null, 2)}\n`),
   ]);
-  return { directory, catalogUrl, manifestUrl, lockUrl };
+  return { directory, repositoryRootUrl, dataRootUrl, catalogUrl, manifestUrl, lockUrl };
 }
 
 function takedownOptions(overrides = {}) {
@@ -466,11 +478,69 @@ test('file takedown recovers only a stale dead-process lock and rejects symlink 
       executeTakedown(takedownOptions({ dryRun: true }), {
         ...unsafe, lockNow: '2026-09-19T12:00:00.000Z',
       }),
-      /catalogue must be a regular non-symlink file/,
+      /catalogue path contains a symbolic link/,
     );
     assert.equal(existsSync(unsafe.lockUrl), false);
   } finally {
     await rm(unsafe.directory, { recursive: true, force: true });
+  }
+});
+
+test('file takedown rejects a symlinked data directory before touching files outside the repository', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'randori-provenance-root-'));
+  const repositoryDirectory = join(directory, 'repository');
+  const outsideDirectory = join(directory, 'outside');
+  const dataDirectory = join(repositoryDirectory, 'data');
+  await Promise.all([mkdir(repositoryDirectory), mkdir(outsideDirectory)]);
+  await symlink(outsideDirectory, dataDirectory);
+  const catalogUrl = pathToFileURL(join(dataDirectory, 'catalog.json'));
+  const manifestUrl = pathToFileURL(join(dataDirectory, 'provenance.json'));
+  const lockUrl = pathToFileURL(join(dataDirectory, 'operator.lock'));
+  const { catalog, manifest } = fixtures();
+  await Promise.all([
+    writeFile(pathToFileURL(join(outsideDirectory, 'catalog.json')), `${JSON.stringify(catalog, null, 2)}\n`),
+    writeFile(pathToFileURL(join(outsideDirectory, 'provenance.json')), `${JSON.stringify(manifest, null, 2)}\n`),
+  ]);
+  try {
+    await assert.rejects(
+      executeTakedown(takedownOptions(), {
+        catalogUrl,
+        manifestUrl,
+        lockUrl,
+        repositoryRootUrl: pathToFileURL(`${repositoryDirectory}/`),
+        dataRootUrl: pathToFileURL(`${dataDirectory}/`),
+        lockNow: '2026-09-19T12:00:00.000Z',
+      }),
+      /trusted data directory path contains a symbolic link/,
+    );
+    const untouchedCatalog = JSON.parse(await readFile(pathToFileURL(join(outsideDirectory, 'catalog.json')), 'utf8'));
+    const untouchedManifest = JSON.parse(await readFile(pathToFileURL(join(outsideDirectory, 'provenance.json')), 'utf8'));
+    assert.equal(untouchedCatalog.exercises[0].status, 'active');
+    assert.equal(untouchedManifest.records[0].takedown.status, 'clear');
+    assert.equal(existsSync(pathToFileURL(join(outsideDirectory, 'operator.lock'))), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('file takedown rejects catalogue targets outside its trusted data directory', async () => {
+  const paths = await temporaryCatalogueFiles();
+  const outsideCatalogUrl = pathToFileURL(join(paths.directory, 'outside-catalog.json'));
+  const original = await readFile(paths.catalogUrl, 'utf8');
+  await writeFile(outsideCatalogUrl, original);
+  try {
+    await assert.rejects(
+      executeTakedown(takedownOptions(), {
+        ...paths,
+        catalogUrl: outsideCatalogUrl,
+        lockNow: '2026-09-19T12:00:00.000Z',
+      }),
+      /catalogue must stay within the trusted data directory/,
+    );
+    assert.equal(await readFile(outsideCatalogUrl, 'utf8'), original);
+    assert.equal(existsSync(paths.lockUrl), false);
+  } finally {
+    await rm(paths.directory, { recursive: true, force: true });
   }
 });
 
@@ -480,6 +550,8 @@ function runTakedownWorker(paths, reference, holdLockMs) {
     fileURLToPath(paths.catalogUrl),
     fileURLToPath(paths.manifestUrl),
     fileURLToPath(paths.lockUrl),
+    fileURLToPath(paths.repositoryRootUrl),
+    fileURLToPath(paths.dataRootUrl),
     reference,
     String(holdLockMs),
   ], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -556,7 +628,7 @@ test('the operator lock itself cannot be redirected through a symlink', async ()
       executeTakedown(takedownOptions({ dryRun: true }), {
         ...paths, lockNow: '2026-09-19T12:00:00.000Z',
       }),
-      /operator lock is unsafe/,
+      /operator lock path contains a symbolic link/,
     );
     assert.equal(await readFile(victim, 'utf8'), 'do-not-touch\n');
   } finally {

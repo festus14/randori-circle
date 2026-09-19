@@ -43,7 +43,9 @@ authorization.
 The current manifest contains only project-original exercises. It contains no
 LeetCode text or source reference. The old bundled LeetCode-derived seed and
 remote fetch/sync implementation have been removed; the compatibility route can
-only return a manual external link.
+only return a manual external link. The browser has no bundled fallback
+questions, upload form, or import/paste workflow: it waits for the validated
+server catalogue and otherwise shows an unavailable state.
 
 ## Validation
 
@@ -90,9 +92,12 @@ date, reason, and replacement are preserved byte-for-byte.
 
 The command holds a mode-0600 interprocess lock, validates both complete files,
 and verifies their pre-write digests before replacement. Live locks and unsafe
-or symlinked files fail closed. A well-formed lock from a dead process can be
-recovered only after fifteen minutes. The command writes the revoked manifest
-first and the retired catalogue second.
+or symlinked files fail closed. Catalogue, manifest, lock, temporary files, and
+every controlled path component are anchored beneath the real repository
+`data/` directory; a symlinked `data/` directory cannot redirect an operation
+outside the repository. A well-formed lock from a dead process can be recovered
+only after fifteen minutes. The command writes the revoked manifest first and
+the retired catalogue second.
 If interrupted between those renames, runtime validation sees active content
 with revoked provenance and refuses to start. Rerunning the same command repairs
 that safe partial state. A successful operation:

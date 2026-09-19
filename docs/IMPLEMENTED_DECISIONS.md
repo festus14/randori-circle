@@ -197,8 +197,9 @@ documented, but the bot's availability is not a merge prerequisite.
 **Decision.** A Premium account does not grant permission to automate access or
 redistribute protected content. Randori does not sign in to, crawl, scrape,
 imitate human traffic to, or evade controls on LeetCode. The legacy seed and
-remote ingestion implementation are removed; the compatibility route returns
-only a manual external link, while sync fails closed. Slow requests,
+remote ingestion implementation, browser fallback questions, and import/paste
+form are removed; the compatibility route returns only a manual external link,
+while sync fails closed. Slow requests,
 random delays, robots compliance, or user initiation do not create permission.
 
 The safe current sources are original Randori exercises, appropriately licensed
@@ -884,7 +885,8 @@ object keys, preserves array order, covers all user-visible exercise content,
 and excludes lifecycle metadata. An emergency command can revoke and retire one
 exact `slug@version`; it preserves an existing retirement, is idempotent for the
 same tracked event, refuses an ambiguous overwrite, holds a stale-recoverable
-interprocess lock, verifies pre-write digests, and writes revocation before
+interprocess lock, anchors every controlled path beneath the real repository
+`data/` directory, verifies pre-write digests, and writes revocation before
 retirement so interruption is fail-closed. Retired content remains auditable and unreachable. Dormant
 server-side generators may remain after an emergency data-only takedown, but
 the active-record gate prevents listing, resolution, or execution.

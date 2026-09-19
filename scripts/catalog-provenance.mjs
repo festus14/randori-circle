@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, open, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { validateCatalog } from '../api/_catalog.js';
@@ -7,6 +8,8 @@ import { validateCatalog } from '../api/_catalog.js';
 const CATALOG_URL = new URL('../data/randori-catalog-v1.json', import.meta.url);
 const MANIFEST_URL = new URL('../data/randori-catalog-provenance-v1.json', import.meta.url);
 const LOCK_URL = new URL('../data/.randori-catalog-provenance.lock', import.meta.url);
+const REPOSITORY_ROOT_URL = new URL('../', import.meta.url);
+const DATA_ROOT_URL = new URL('../data/', import.meta.url);
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const REFERENCE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/#-]{0,199}$/;
 const LOCK_STALE_MS = 15 * 60 * 1000;
@@ -137,18 +140,93 @@ function digest(raw) {
   return createHash('sha256').update(raw, 'utf8').digest('hex');
 }
 
-async function assertSafeRegularFile(url, label, maximumBytes) {
-  if (!(url instanceof URL) || url.protocol !== 'file:') fail(`${label} path is invalid`);
+function localPath(url, label) {
+  if (
+    !(url instanceof URL)
+    || url.protocol !== 'file:'
+    || url.username !== ''
+    || url.password !== ''
+    || url.search !== ''
+    || url.hash !== ''
+  ) {
+    fail(`${label} path is invalid`);
+  }
+  return resolve(fileURLToPath(url));
+}
+
+function requireDescendant(rootPath, candidatePath, label, { allowRoot = false } = {}) {
+  const relation = relative(rootPath, candidatePath);
+  if (
+    (!allowRoot && relation === '')
+    || relation === '..'
+    || relation.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)
+    || isAbsolute(relation)
+  ) {
+    fail(`${label} must stay within the trusted data directory`);
+  }
+  return relation;
+}
+
+async function assertNoSymlinkComponents(rootPath, candidatePath, label, { allowMissingLeaf = false } = {}) {
+  const rootInfo = await lstat(rootPath);
+  if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
+    fail('trusted data directory must be a real directory, not a symbolic link');
+  }
+  const relation = requireDescendant(rootPath, candidatePath, label, { allowRoot: true });
+  let current = rootPath;
+  const components = relation.split(/[\\/]/).filter(Boolean);
+  for (let index = 0; index < components.length; index += 1) {
+    current = join(current, components[index]);
+    let info;
+    try {
+      info = await lstat(current);
+    } catch (error) {
+      if (allowMissingLeaf && index === components.length - 1 && error?.code === 'ENOENT') return;
+      throw error;
+    }
+    if (info.isSymbolicLink()) fail(`${label} path contains a symbolic link`);
+    if (index < components.length - 1 && !info.isDirectory()) {
+      fail(`${label} path contains a non-directory component`);
+    }
+  }
+}
+
+async function resolveTrustedDataRoot(repositoryRootUrl, dataRootUrl) {
+  const repositoryRoot = localPath(repositoryRootUrl, 'repository root');
+  const repositoryInfo = await lstat(repositoryRoot);
+  if (repositoryInfo.isSymbolicLink() || !repositoryInfo.isDirectory()) {
+    fail('trusted repository root must be a real directory, not a symbolic link');
+  }
+  const dataRoot = localPath(dataRootUrl, 'trusted data directory');
+  requireDescendant(repositoryRoot, dataRoot, 'trusted data directory');
+  await assertNoSymlinkComponents(repositoryRoot, dataRoot, 'trusted data directory');
+  const [canonicalRepositoryRoot, canonicalDataRoot] = await Promise.all([
+    realpath(repositoryRoot),
+    realpath(dataRoot),
+  ]);
+  requireDescendant(canonicalRepositoryRoot, canonicalDataRoot, 'trusted data directory');
+  return dataRoot;
+}
+
+async function assertAnchoredPath(url, label, dataRoot, { allowMissingLeaf = false } = {}) {
+  const candidate = localPath(url, label);
+  requireDescendant(dataRoot, candidate, label);
+  await assertNoSymlinkComponents(dataRoot, candidate, label, { allowMissingLeaf });
+  return candidate;
+}
+
+async function assertSafeRegularFile(url, label, maximumBytes, dataRoot) {
+  await assertAnchoredPath(url, label, dataRoot);
   const info = await lstat(url);
   if (info.isSymbolicLink() || !info.isFile()) fail(`${label} must be a regular non-symlink file`);
   if (info.size > maximumBytes) fail(`${label} exceeds its size limit`);
-  const [resolvedFile, resolvedParent] = await Promise.all([realpath(url), realpath(new URL('.', url))]);
-  if (!resolvedFile.startsWith(`${resolvedParent}/`)) fail(`${label} escapes its data directory`);
+  const resolvedFile = await realpath(url);
+  requireDescendant(await realpath(dataRoot), resolvedFile, label);
   return info.mode & 0o777;
 }
 
-async function readJsonFile(url, label, maximumBytes) {
-  const mode = await assertSafeRegularFile(url, label, maximumBytes);
+async function readJsonFile(url, label, maximumBytes, dataRoot) {
+  const mode = await assertSafeRegularFile(url, label, maximumBytes, dataRoot);
   const raw = await readFile(url, 'utf8');
   if (Buffer.byteLength(raw, 'utf8') > maximumBytes) fail(`${label} exceeds its size limit`);
   let value;
@@ -169,9 +247,8 @@ function processIsAlive(pid) {
   }
 }
 
-async function acquireLock(lockUrl, { now = new Date(), staleMs = LOCK_STALE_MS } = {}) {
-  if (!(lockUrl instanceof URL) || lockUrl.protocol !== 'file:') fail('operator lock path is invalid');
-  await realpath(new URL('.', lockUrl));
+async function acquireLock(lockUrl, dataRoot, { now = new Date(), staleMs = LOCK_STALE_MS } = {}) {
+  await assertAnchoredPath(lockUrl, 'operator lock', dataRoot, { allowMissingLeaf: true });
   const nonce = randomUUID();
   const payload = `${JSON.stringify({ version: 1, pid: process.pid, createdAt: new Date(now).toISOString(), nonce })}\n`;
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -186,6 +263,7 @@ async function acquireLock(lockUrl, { now = new Date(), staleMs = LOCK_STALE_MS 
       return nonce;
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
+      await assertAnchoredPath(lockUrl, 'operator lock', dataRoot);
       const info = await lstat(lockUrl);
       if (info.isSymbolicLink() || !info.isFile() || info.size > 1024) {
         fail('operator lock is unsafe');
@@ -210,6 +288,7 @@ async function acquireLock(lockUrl, { now = new Date(), staleMs = LOCK_STALE_MS 
       const age = new Date(now).valueOf() - createdAt;
       if (age <= staleMs || processIsAlive(existing.pid)) fail('another catalogue operation holds the lock');
       const staleUrl = pathToFileURL(`${fileURLToPath(lockUrl)}.stale-${nonce}`);
+      await assertAnchoredPath(staleUrl, 'stale operator lock', dataRoot, { allowMissingLeaf: true });
       try {
         await rename(lockUrl, staleUrl);
       } catch (renameError) {
@@ -222,8 +301,9 @@ async function acquireLock(lockUrl, { now = new Date(), staleMs = LOCK_STALE_MS 
   fail('could not acquire the catalogue operation lock');
 }
 
-async function releaseLock(lockUrl, nonce) {
+async function releaseLock(lockUrl, nonce, dataRoot) {
   try {
+    await assertAnchoredPath(lockUrl, 'operator lock', dataRoot);
     const info = await lstat(lockUrl);
     if (info.isSymbolicLink() || !info.isFile() || info.size > 1024) return;
     const current = JSON.parse(await readFile(lockUrl, 'utf8'));
@@ -241,15 +321,20 @@ async function writePairFailClosed({
   expectedManifestRaw,
   expectedCatalogRaw,
   afterManifestRename,
+  dataRoot,
 }) {
   const suffix = `.tmp-${process.pid}-${randomUUID()}`;
   const manifestTemp = pathToFileURL(`${fileURLToPath(manifestUrl)}${suffix}`);
   const catalogTemp = pathToFileURL(`${fileURLToPath(catalogUrl)}${suffix}`);
   const [manifestMode, catalogMode] = await Promise.all([
-    assertSafeRegularFile(manifestUrl, 'provenance manifest', MAX_MANIFEST_BYTES),
-    assertSafeRegularFile(catalogUrl, 'catalogue', MAX_CATALOG_BYTES),
+    assertSafeRegularFile(manifestUrl, 'provenance manifest', MAX_MANIFEST_BYTES, dataRoot),
+    assertSafeRegularFile(catalogUrl, 'catalogue', MAX_CATALOG_BYTES, dataRoot),
   ]);
   try {
+    await Promise.all([
+      assertAnchoredPath(manifestTemp, 'temporary provenance manifest', dataRoot, { allowMissingLeaf: true }),
+      assertAnchoredPath(catalogTemp, 'temporary catalogue', dataRoot, { allowMissingLeaf: true }),
+    ]);
     await Promise.all([
       writeFile(manifestTemp, `${JSON.stringify(manifest, null, 2)}\n`, {
         encoding: 'utf8', flag: 'wx', mode: manifestMode,
@@ -270,8 +355,16 @@ async function writePairFailClosed({
     }
     // Revocation lands first. An interrupted pair therefore makes runtime
     // validation fail closed rather than serving disputed content.
+    await Promise.all([
+      assertSafeRegularFile(manifestUrl, 'provenance manifest', MAX_MANIFEST_BYTES, dataRoot),
+      assertSafeRegularFile(manifestTemp, 'temporary provenance manifest', MAX_MANIFEST_BYTES, dataRoot),
+    ]);
     await rename(manifestTemp, manifestUrl);
     if (afterManifestRename) await afterManifestRename();
+    await Promise.all([
+      assertSafeRegularFile(catalogUrl, 'catalogue', MAX_CATALOG_BYTES, dataRoot),
+      assertSafeRegularFile(catalogTemp, 'temporary catalogue', MAX_CATALOG_BYTES, dataRoot),
+    ]);
     await rename(catalogTemp, catalogUrl);
   } finally {
     await Promise.all([
@@ -285,17 +378,25 @@ export async function executeTakedown(options, {
   catalogUrl = CATALOG_URL,
   manifestUrl = MANIFEST_URL,
   lockUrl = LOCK_URL,
+  repositoryRootUrl = REPOSITORY_ROOT_URL,
+  dataRootUrl = DATA_ROOT_URL,
   lockNow = new Date(),
   staleLockMs = LOCK_STALE_MS,
   holdLockMs = 0,
   afterValidation,
   afterManifestRename,
 } = {}) {
-  const lockNonce = await acquireLock(lockUrl, { now: lockNow, staleMs: staleLockMs });
+  const dataRoot = await resolveTrustedDataRoot(repositoryRootUrl, dataRootUrl);
+  await Promise.all([
+    assertAnchoredPath(catalogUrl, 'catalogue', dataRoot),
+    assertAnchoredPath(manifestUrl, 'provenance manifest', dataRoot),
+    assertAnchoredPath(lockUrl, 'operator lock', dataRoot, { allowMissingLeaf: true }),
+  ]);
+  const lockNonce = await acquireLock(lockUrl, dataRoot, { now: lockNow, staleMs: staleLockMs });
   try {
     const [catalogFile, manifestFile] = await Promise.all([
-      readJsonFile(catalogUrl, 'catalogue', MAX_CATALOG_BYTES),
-      readJsonFile(manifestUrl, 'provenance manifest', MAX_MANIFEST_BYTES),
+      readJsonFile(catalogUrl, 'catalogue', MAX_CATALOG_BYTES, dataRoot),
+      readJsonFile(manifestUrl, 'provenance manifest', MAX_MANIFEST_BYTES, dataRoot),
     ]);
     const result = applyTakedown(catalogFile.value, manifestFile.value, options);
     if (afterValidation) await afterValidation();
@@ -309,16 +410,17 @@ export async function executeTakedown(options, {
         expectedManifestRaw: manifestFile.raw,
         expectedCatalogRaw: catalogFile.raw,
         afterManifestRename,
+        dataRoot,
       });
       const [writtenCatalog, writtenManifest] = await Promise.all([
-        readJsonFile(catalogUrl, 'catalogue', MAX_CATALOG_BYTES),
-        readJsonFile(manifestUrl, 'provenance manifest', MAX_MANIFEST_BYTES),
+        readJsonFile(catalogUrl, 'catalogue', MAX_CATALOG_BYTES, dataRoot),
+        readJsonFile(manifestUrl, 'provenance manifest', MAX_MANIFEST_BYTES, dataRoot),
       ]);
       validateCatalog(writtenCatalog.value, undefined, writtenManifest.value, { now: options.now ?? new Date() });
     }
     return result;
   } finally {
-    await releaseLock(lockUrl, lockNonce);
+    await releaseLock(lockUrl, lockNonce, dataRoot);
   }
 }
 
