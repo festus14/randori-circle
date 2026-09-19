@@ -1,4 +1,5 @@
 const CANONICAL_ROOM = /^week_([1-9]\d*)_pair_([1-9]\d*)$/;
+const SECONDARY_SCHEDULE_ID = /^[a-f0-9]{64}$/;
 const NORMALIZED_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 export const CALENDAR_DURATION_MINUTES = 60;
@@ -56,6 +57,11 @@ export function calendarUid(roomId) {
   return `${roomId}@calendar.randori-circle`;
 }
 
+export function secondaryCalendarUid(scheduleId) {
+  if (typeof scheduleId !== 'string' || !SECONDARY_SCHEDULE_ID.test(scheduleId)) return null;
+  return `secondary-${scheduleId}@calendar.randori-circle`;
+}
+
 function canonicalOrigin(value) {
   if (typeof value !== 'string' || !value) return null;
   try {
@@ -68,8 +74,14 @@ function canonicalOrigin(value) {
   }
 }
 
-export function buildScheduleCalendar({ roomId, agreedTime, appOrigin, generatedAt = new Date() } = {}) {
-  const uid = calendarUid(roomId);
+export function buildScheduleCalendar({
+  roomId, scheduleId, dashboardPath = '/?view=dashboard', agreedTime, appOrigin,
+  generatedAt = new Date(),
+} = {}) {
+  const secondaryUid = secondaryCalendarUid(scheduleId);
+  const roomUid = calendarUid(roomId);
+  if ((secondaryUid && roomUid) || (!secondaryUid && !roomUid)) return null;
+  const uid = secondaryUid || roomUid;
   const start = normalizedCalendarInstant(agreedTime);
   const origin = canonicalOrigin(appOrigin);
   const stamp = calendarTimestamp(generatedAt);
@@ -79,7 +91,10 @@ export function buildScheduleCalendar({ roomId, agreedTime, appOrigin, generated
   const startTimestamp = calendarTimestamp(start);
   const endTimestamp = calendarTimestamp(end);
   if (!startTimestamp || !endTimestamp) return null;
-  const roomLink = `${origin}/join/${encodeURIComponent(roomId)}`;
+  if (secondaryUid && dashboardPath !== '/?view=dashboard') return null;
+  const roomLink = secondaryUid
+    ? `${origin}${dashboardPath}`
+    : `${origin}/join/${encodeURIComponent(roomId)}`;
   const properties = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
@@ -91,14 +106,16 @@ export function buildScheduleCalendar({ roomId, agreedTime, appOrigin, generated
     `DTSTART:${startTimestamp}`,
     `DTEND:${endTimestamp}`,
     `SUMMARY:${escapeCalendarText('Randori practice session')}`,
-    `DESCRIPTION:${escapeCalendarText('Open your private Randori room in the app. This 60-minute exported copy is managed by your calendar app.')}`,
+    `DESCRIPTION:${escapeCalendarText(secondaryUid
+      ? 'Open your Randori dashboard to coordinate. This 60-minute exported copy is managed by your calendar app.'
+      : 'Open your private Randori room in the app. This 60-minute exported copy is managed by your calendar app.')}`,
     `URL:${roomLink}`,
     'END:VEVENT',
     'END:VCALENDAR',
   ];
   return {
     content: `${properties.map(foldCalendarLine).join('\r\n')}\r\n`,
-    filename: `randori-${roomId}.ics`,
+    filename: secondaryUid?`randori-${scheduleId.slice(0,16)}.ics`:`randori-${roomId}.ics`,
     roomLink,
     uid,
   };

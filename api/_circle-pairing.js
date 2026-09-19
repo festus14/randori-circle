@@ -36,7 +36,7 @@ const CIRCLE_PAIRING_TABLES=new Set([
 const CIRCLE_PAIRING_INDEXES=new Set([
   'uq_pairing_cycles_descriptor','idx_circle_pairing_publications_circle_cycle',
   'idx_circle_pairing_eligibility_scope_user','idx_circle_pairing_groups_user_a',
-  'idx_circle_pairing_groups_user_b',
+  'idx_circle_pairing_groups_user_b','uq_circle_pairing_groups_schedule_owner',
 ]);
 const CIRCLE_PAIRING_READINESS_MANIFEST=Object.freeze({
   version:READINESS_SCHEMA_MANIFEST.version,

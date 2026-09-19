@@ -22,7 +22,9 @@ export const HEALTH_RESPONSE=Object.freeze({ok:true,status:'live'});
 export const READY_RESPONSE=Object.freeze({ok:true,status:'ready'});
 export const UNAVAILABLE_RESPONSE=Object.freeze({ok:false,status:'unavailable'});
 export const READINESS_TIMEOUT_MS=8_000;
-export const MAX_READINESS_SCHEMA_OBJECTS=160;
+// v16's normalized schedule ownership adds two tables and their automatic
+// constraint indexes; keep a bounded margin for the full managed schema.
+export const MAX_READINESS_SCHEMA_OBJECTS=192;
 
 const inFlightReadiness=new Map();
 

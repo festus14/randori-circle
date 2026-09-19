@@ -1,9 +1,11 @@
 # Private calendar export
 
-Status: implemented for canonical accepted primary-circle schedules
+Status: implemented for canonical accepted primary-circle schedules and
+flag-enabled selected-secondary schedules
 
 The dashboard shows **Add to calendar** only when the authenticated current
-pair has a canonical room and its schedule contains a normalized UTC accepted
+pair has a canonical primary room, or a selected secondary pair has a verified
+opaque schedule identity, and its schedule contains a normalized UTC accepted
 instant. The action creates an RFC 5545 `.ics` file entirely in the browser.
 There is no calendar API, server endpoint, database write, analytics event, or
 third-party request.
@@ -14,9 +16,11 @@ Each export contains one event with:
 
 - a UTC `DTSTART` matching the current accepted instant;
 - a `DTEND` exactly 60 minutes later;
-- a stable UID derived only from the canonical room, so a later export after a
-  reschedule identifies the same logical event;
-- the current app origin's authenticated room link; and
+- a stable UID derived only from the canonical room or opaque secondary
+  schedule identity, so a later export after a reschedule identifies the same
+  logical event;
+- the current app origin's authenticated room link for primary schedules or
+  dashboard-only link for secondary schedules; and
 - generic Randori summary and privacy/retention copy.
 
 The file is a plain static calendar import and deliberately omits the iTIP
@@ -36,12 +40,13 @@ but cannot remove a file or event already imported elsewhere.
 ## Reschedule and recovery
 
 A reschedule rerenders the action from the new canonical schedule version. The
-next file retains the room UID and carries the new UTC start and end. Calendar
-applications decide how duplicate imports are reconciled; Randori does not
-claim remote calendar synchronization.
+next file retains the primary room UID or opaque secondary schedule UID and
+carries the new UTC start and end. Calendar applications decide how duplicate
+imports are reconciled; Randori does not claim remote calendar synchronization.
 
-The feature has no provider configuration or rollout flag. Recovery is a
-normal application rollback. Existing downloaded files remain under the
+The export itself has no provider configuration. Secondary export visibility
+depends on `SECONDARY_CIRCLE_SCHEDULING_ENABLED`; recovery disables that flag
+without changing primary export. Existing downloaded files remain under the
 member's control and cannot be revoked by Randori.
 
 ## Alternatives

@@ -76,6 +76,11 @@ export const MIGRATION_CONTRACTS=Object.freeze([
     name:'durable-credential-key-control',
     checksum:'3b715ac6c5f4d4efa6d628bcc01fad8dccc189b855c5dd0ecf7625e1dc3b1a34',
   }),
+  Object.freeze({
+    version:16,
+    name:'circle-owned-pair-scheduling',
+    checksum:'916a3c1b5f8108d92fe9cc3a71d17441781c378b2be9662c351a85e78a13a418',
+  }),
 ]);
 
 export const LATEST_MIGRATION_VERSION=MIGRATION_CONTRACTS.at(-1)?.version||0;

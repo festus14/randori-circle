@@ -32,6 +32,7 @@ import {
   multiCircleAvailabilityEnabled,
   multiCircleControlPlaneEnabled,
   secondaryCircleCoordinationEnabled,
+  secondaryCircleSchedulingEnabled,
 } from './_active-circle.js';
 import { localIdentityAdapterEnabled, localRuntimeRequest } from './_local-runtime.js';
 import { googleOAuthRequestConfiguration, setAuthResponseHeaders } from './_auth-config.js';
@@ -244,6 +245,7 @@ async function handleCapabilities(req,res){
         ?{multiCircleControlPlane:true}:{}),
       ...(multiCircleAvailabilityEnabled()?{multiCircleAvailability:true}:{}),
       ...(secondaryCircleCoordinationEnabled()?{secondaryCircleCoordination:true}:{}),
+      ...(secondaryCircleSchedulingEnabled()?{secondaryCircleScheduling:true}:{}),
     },
     registrationMode:localIdentity?'local_invite':(verifiedEmailActivation?'verified_invite':(passwordSignup?'local_open':'private_beta')),
   });

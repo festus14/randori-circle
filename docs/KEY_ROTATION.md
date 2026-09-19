@@ -129,4 +129,4 @@ removed prior key at its original version to recover retryable work. For broader
 integrity concerns, stop delivery and use the protected PITR workflow rather
 than bulk-decrypting or rewriting queued payloads.
 
-After v15 adoption, roll back only to another v15-aware build. A pre-v15 runtime would ignore the durable control and must not be used as a security rollback. Preserve the table and its migration ledger row; never reset, delete, or hand-edit a purpose control.
+After v15 adoption, credential-control rollback requires at least a v15-aware build. A pre-v15 runtime would ignore the durable control and must not be used as a security rollback. Once migration v16 is applied, the application's exact-readiness contract also requires a v16-aware build; do not use a v15-only build as an application rollback. Preserve the tables and their migration ledger rows; never reset, delete, or hand-edit a purpose control.
