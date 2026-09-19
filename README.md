@@ -37,7 +37,9 @@ This private-beta sync is whole-document compare-and-swap, not a CRDT: members s
 - Credential linking is explicit, recent-authenticated, and opt-in after migration v9. Matching provider email never links accounts; the stable Google subject remains authoritative when its email changes, and the final usable sign-in method cannot be removed.
 - Mutations enforce same-origin requests for cookie sessions; API callers may use pinned Bearer JWTs.
 - Circle, pairing, schedule, chat, feedback, execution, and signaling endpoints require scoped authorisation.
-- Weekly pairing writes are atomic and concurrency-safe. Notifications use an idempotent retryable outbox.
+- Weekly pairing and schedule writes are atomic and concurrency-safe. Pairing,
+  proposal, acceptance, reschedule, and reminder emails use one idempotent,
+  retryable outbox.
 - Outbox workers use expiring token-bound leases, heartbeats, provider timeouts, bounded backoff, dead letters, and audited operator replay. Provider idempotency keys remain stable across crashes and replay; metrics and logs contain aggregate state only.
 - AI is disabled unless explicitly enabled and consented to.
 - Automated LeetCode retrieval is disabled without written authorisation. The app uses approved local content or outbound links.
@@ -58,6 +60,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_pairing.js` | deterministic fairness and canonical room identifiers |
 | `api/_pairing-publication.js` | managed-v6 readiness, transaction-bound owner/cron publication, immutable snapshots, and idempotency |
 | `api/_outbox.js` | provider-neutral leases, heartbeats, timeouts, retry/dead-letter transitions, replay audit, and aggregate metrics |
+| `api/_schedule-email.js` | versioned schedule email intents, 24-hour reminders, current-state suppression, and private rendering |
 | `api/_email-activation.js` | invitation-bound pending registrations, encrypted verification delivery, token rotation, and atomic activation |
 | `api/_password-reset.js` | enumeration-safe reset requests, encrypted delivery, token rotation, and atomic password/session replacement |
 | `api/_recent-auth.js` | ten-minute session-scoped password/Google step-up evidence for sensitive account operations |
@@ -97,7 +100,16 @@ The protected Turso recovery workflow performs a monitored isolated restore ever
 
 Authentication rate limiting is migration-owned: runtime requests never create `auth_rate_limits`. A deployment with missing or stale migration state fails authentication closed with a temporary-unavailability response; complete the migration/readiness gate before serving traffic rather than enabling request-time schema writes.
 
-Pairing publication and its versioned email events commit in one transaction. Provider calls begin only after that commit. `GET|POST /api/cron/outbox` uses the existing `CRON_SECRET` and drains due events independently of the weekly publication endpoint; configure a five-minute scheduler on a platform that supports that cadence. `POST /api/admin/outbox/replay` lets a non-demo global administrator replay only a dead-letter event with one of the bounded reason codes `OPERATOR_RETRY`, `PROVIDER_RECOVERED`, or `CONFIGURATION_FIXED`. Replay preserves the original provider idempotency key.
+Pairing publication and schedule mutations commit with their versioned email
+events in one transaction. Provider calls begin only after that commit.
+`GET|POST /api/cron/outbox` uses the existing `CRON_SECRET` and drains due
+events independently of the weekly publication endpoint; configure a five-
+minute scheduler on a platform that supports that cadence. `POST
+/api/admin/outbox/replay` lets a non-demo global administrator replay only a
+dead-letter event with one of the bounded reason codes `OPERATOR_RETRY`,
+`PROVIDER_RECOVERED`, or `CONFIGURATION_FIXED`. Replay preserves the original
+provider idempotency key. See [schedule notifications](docs/SCHEDULE_NOTIFICATIONS.md)
+for dispatch suppression, limits, and remaining issue #50 work.
 
 Google OAuth has one fail-closed configuration boundary shared by capability discovery, start, and callback. Production and hosted deployments require both provider credentials, an explicit canonical HTTPS `APP_URL`, and matching trusted proxy host/protocol headers. Invalid configuration returns only a generic unavailable response and performs no provider or database work. The isolated local runtime always disables Google credentials.
 
