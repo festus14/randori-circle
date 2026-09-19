@@ -34,6 +34,13 @@ import {
   SCHEDULE_EMAIL_EVENT_TYPE,
   scheduleEmailStatus,
 } from './_schedule-email.js';
+import {
+  deliverInvitationEmails,
+  invitationEmailConfiguration,
+  INVITATION_EMAIL_DRAIN_BATCH_SIZE,
+  INVITATION_EMAIL_EVENT_TYPE,
+  invitationEmailStatus,
+} from './_invitation-email.js';
 import { localIdentityAdapterEnabled, localRuntimeRequest } from './_local-runtime.js';
 
 async function logServerOps(level, event, message, meta, req){
@@ -385,6 +392,51 @@ async function deliverPendingScheduleEmails(db,baseUrl,req){
     pending,suppressed:delivery.suppressed,...(local?{captured}:{}),};
 }
 
+async function deliverPendingInvitationEmails(db,baseUrl,req){
+  const captured=[];
+  const local=localIdentityAdapterEnabled(req);
+  if(!invitationEmailConfiguration({localRuntime:local})){
+    const status=await invitationEmailStatus(db);
+    return {summary:'invitation email delivery unavailable',sent:0,failed:0,
+      exhausted:status.dead_letter,pending:status.pending+status.retry+status.processing,
+      suppressed:status.suppressed};
+  }
+  let send;
+  if(local){
+    send=async message=>{
+      captured.push({recipient_email:String(message.to),kind:'invitation',subject:String(message.subject),
+        links:[...message.html.matchAll(/href="([^"]+)"/gu)].map(match=>match[1]).slice(0,4)});
+      return {providerName:'local-capture',providerMessageId:`local-${randomUUID()}`};
+    };
+  }else{
+    const resendMod=await import('resend').catch(()=>null);
+    if(resendMod?.Resend) send=createResendEmailSender({
+      resend:new resendMod.Resend(process.env.RESEND_API_KEY),from:process.env.RESEND_FROM,
+    });
+  }
+  if(!send){
+    const status=await invitationEmailStatus(db);
+    return {summary:'invitation email delivery unavailable',sent:0,failed:0,
+      exhausted:status.dead_letter,pending:status.pending+status.retry+status.processing,
+      suppressed:status.suppressed};
+  }
+  const delivery=await deliverInvitationEmails({
+    db,baseUrl,send,workerId:`invitation-${randomUUID()}`,localRuntime:local,
+    workerOptions:{batchSize:INVITATION_EMAIL_DRAIN_BATCH_SIZE},
+  });
+  const pending=delivery.status.pending+delivery.status.retry+delivery.status.processing;
+  const failed=delivery.retried+delivery.deadLettered;
+  const summary=local
+    ?`captured ${captured.length} invitation email(s), failed ${failed}; no external delivery`
+    :`sent ${delivery.delivered}, failed ${failed}, exhausted ${delivery.status.dead_letter}, suppressed ${delivery.suppressed}, pending ${pending}`;
+  try{ await logServerOps(failed||delivery.status.dead_letter?'warn':'success','invitation_email_delivery',summary,{
+    sent:delivery.delivered,failed,exhausted:delivery.status.dead_letter,
+    suppressed:delivery.suppressed,pending,event_type:INVITATION_EMAIL_EVENT_TYPE,
+  },null); }catch{}
+  return {summary,sent:local?0:delivery.delivered,failed,exhausted:delivery.status.dead_letter,
+    pending,suppressed:delivery.suppressed,...(local?{captured}:{}),};
+}
+
 function configuredOutboxBaseUrl(){
   let url;
   try{ url=new URL(String(process.env.APP_URL||'')); }
@@ -409,6 +461,7 @@ async function handleOutboxWorker(req,res){
   try{
     const delivery=await deliverPendingPairingEmails(db,null,baseUrl,req);
     const scheduleDelivery=await deliverPendingScheduleEmails(db,baseUrl,req);
+    const invitationDelivery=await deliverPendingInvitationEmails(db,baseUrl,req);
     let activationDelivery={summary:'email activation delivery disabled',sent:0,failed:0,exhausted:0,pending:0,suppressed:0};
     if(emailActivationConfiguration()){
       const local=localIdentityAdapterEnabled(req);
@@ -483,6 +536,7 @@ async function handleOutboxWorker(req,res){
     }
     return res.json({ok:true,email_delivery:safeEmailDelivery(delivery),
       schedule_delivery:safeEmailDelivery(scheduleDelivery),
+      invitation_delivery:safeEmailDelivery(invitationDelivery),
       activation_delivery:safeEmailDelivery(activationDelivery),
       password_reset_delivery:safeEmailDelivery(passwordResetDelivery)});
   }catch{
