@@ -9,7 +9,7 @@ revoke pending invitations.
 
 | Action | Actor | Target | Result |
 |---|---|---|---|
-| List memberships | Active owner | Actor's primary circle | Up to 500 active/inactive memberships, without email addresses, plus an explicit truncation signal |
+| List memberships | Active owner | Actor's primary circle | A bounded page of active/inactive memberships, without email addresses, plus an opaque continuation cursor |
 | Deactivate | Active owner | Other active member/owner in the same circle | Membership becomes inactive; all target sessions are revoked |
 | Reactivate | Active owner | Other inactive member/owner in the same circle | Membership becomes active; no session is issued |
 | Leave | Active member/owner | Self | Membership becomes inactive; all own sessions are revoked |
@@ -46,6 +46,20 @@ must authenticate again after reactivation.
 - Production and local development use the same endpoint and domain rules. The
   membership capability remains fail-closed behind the existing readiness and
   feature checks.
+- Owner roster reads use immutable ascending membership user IDs, a first-page
+  snapshot ceiling, and an authenticated AES-GCM cursor bound to the actor,
+  circle, and normalized search. Role/status changes therefore cannot move a
+  row across page boundaries. Each request reads at most 201 indexed
+  `(circle_id, user_id)` candidates before joining/filtering accounts and
+  returns at most 100 members (50 by default). The first request obtains its
+  snapshot ceiling with a reverse primary-key seek; continuations use the
+  encrypted ceiling and do not recompute an aggregate. Search compares normalized display names only; the query never
+  reads or projects the account email field. A sparse search can return an empty page with a next
+  cursor, keeping database work bounded while allowing the owner to continue.
+- A roster 401/403 clears every retained row and control before re-resolving
+  the actor's circle role. Only transient failures preserve an already loaded
+  page. A render epoch invalidates a delayed initial load and starts a new one,
+  so authentication refreshes cannot strand the roster in a busy state.
 
 The existing role/status columns, audit table, session revocation fields, and
 invitation status model are sufficient. This increment intentionally adds no
@@ -61,6 +75,10 @@ migration; migration v9 remains available to its reserved owner.
 | Transfer through two API calls | Reuses role changes | A failure between calls can create ambiguous authority or no owner |
 | Issue a fresh session on reactivation | Immediate convenience | Reactivation is not proof that the member still controls an authentication factor |
 | Add a new schema version | Could model extra lifecycle metadata | Existing durable state already represents every transition in this slice, while v9 is reserved |
+| Offset pagination | Familiar page numbers | Inserts/deactivations can shift offsets, it becomes progressively expensive, and it cannot carry a bounded snapshot |
+| Preserve active/owner/name sort | Matches the original small-roster presentation | Status and display-name changes reorder rows between requests, causing duplicates or omissions |
+| Query the account email field as well as display name | More ways to find an account | Creates an account-enumeration surface and exceeds the roster privacy requirement |
+| Scan until a search page is full | Avoids empty sparse-search pages | A rare or absent term makes a single request unbounded; capped candidate windows give a predictable limit |
 
 ## Explicit gaps and follow-up
 
@@ -71,9 +89,9 @@ migration; migration v9 remains available to its reserved owner.
   credential-management rollout.
 - The UI is deliberately a functional extension of the current Circle card, not
   the broader visual redesign tracked separately.
-- The member list does not expose email addresses or a searchable directory.
-  It is capped at 500 entries; pagination/search is tracked by issue #103 for
-  circles that reach that size. Account recovery and identity changes remain
-  separate security workflows.
+- Search is intentionally a bounded substring scan over a circle-scoped,
+  primary-key range rather than a global directory or email lookup. It is
+  optimized for privacy and predictable work, not ranked/fuzzy matching.
+  Account recovery and identity changes remain separate security workflows.
 - There is no bulk member administration. Each destructive action has a focused
   confirmation and its own auditable transaction.

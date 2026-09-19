@@ -604,6 +604,25 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
     'Invited Member','Local Circle Owner',
   ]);
 
+  const firstRosterPage=await fetch(new URL('/api/members?limit=1&q=',first.url),{headers:{cookie:ownerCookie}});
+  const firstRosterPayload=await jsonResponse(firstRosterPage);
+  assert.equal(firstRosterPage.status,200,firstRosterPayload.text);
+  assert.equal(firstRosterPayload.body.members.length,1);
+  assert.equal(firstRosterPayload.body.has_more,true);
+  assert.match(firstRosterPayload.body.next_cursor,/^r1\.[A-Za-z0-9_-]+$/);
+  assert.equal(JSON.stringify(firstRosterPayload.body).includes('@example.test'),false);
+  const secondRosterPage=await fetch(new URL(`/api/members?limit=1&q=&cursor=${encodeURIComponent(firstRosterPayload.body.next_cursor)}`,first.url),{
+    headers:{cookie:ownerCookie},
+  });
+  const secondRosterPayload=await jsonResponse(secondRosterPage);
+  assert.equal(secondRosterPage.status,200,secondRosterPayload.text);
+  assert.deepEqual(secondRosterPayload.body.members.map(item=>item.display_name),['Invited Member']);
+  assert.equal(secondRosterPayload.body.has_more,false);
+  const privateRoster=await fetch(new URL('/api/members?q=owner',first.url),{headers:{cookie:memberCookie}});
+  assert.equal(privateRoster.status,403);
+  const malformedRoster=await fetch(new URL('/api/members?cursor=not-a-cursor',first.url),{headers:{cookie:ownerCookie}});
+  assert.equal(malformedRoster.status,400);
+
   const preferences=await fetch(new URL('/api/notifications/prefs',first.url),{
     headers:{cookie:memberCookie},
   });

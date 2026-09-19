@@ -1,6 +1,7 @@
 import {
   captureSentryException,
   getClient,
+  getJwtSecret,
   verifyMutationOrigin,
   verifyRequestAuth,
 } from './_db.js';
@@ -9,6 +10,9 @@ import {
   changeCircleMemberStatus,
   leaveCircle,
   listCircleMembersForOwner,
+  MEMBER_PAGE_DEFAULT,
+  MEMBER_PAGE_MAX,
+  MemberRosterQueryError,
   transferCircleOwnership,
 } from './_member-lifecycle.js';
 
@@ -23,9 +27,28 @@ function userId(payload){
   return Number.isSafeInteger(value)&&value>0?value:null;
 }
 
-function hasExactQuery(req){
+function hasMutationQuery(req){
   if(!req.query||!Object.keys(req.query).length) return true;
   return Object.keys(req.query).length===1&&req.query.endpoint==='members';
+}
+
+function listQuery(req){
+  const query=req.query&&typeof req.query==='object'&&!Array.isArray(req.query)?req.query:{};
+  const allowed=new Set(['endpoint','cursor','q','limit']);
+  if(Object.keys(query).some(key=>!allowed.has(key))) throw new MemberRosterQueryError('invalid_query');
+  if(query.endpoint!==undefined&&query.endpoint!=='members') throw new MemberRosterQueryError('invalid_query');
+  for(const value of Object.values(query)){
+    if(Array.isArray(value)||value!=null&&typeof value!=='string') throw new MemberRosterQueryError('invalid_query');
+  }
+  const cursor=query.cursor===undefined?null:query.cursor;
+  if(cursor!==null&&(!cursor||cursor.length>640)) throw new MemberRosterQueryError('invalid_cursor');
+  const search=query.q===undefined?'':query.q;
+  const rawLimit=query.limit;
+  const limit=rawLimit===undefined?MEMBER_PAGE_DEFAULT:Number(rawLimit);
+  if(!Number.isSafeInteger(limit)||limit<1||limit>MEMBER_PAGE_MAX||String(limit)!==rawLimit&&rawLimit!==undefined){
+    throw new MemberRosterQueryError('invalid_query');
+  }
+  return {cursor,search,limit};
 }
 
 function clearSessionCookie(req){
@@ -53,7 +76,13 @@ export default async function handler(req,res){
   res.setHeader('Pragma','no-cache');
   if(!circleMembershipEnabled()) return res.status(404).json({error:'not found'});
   if(req.method!=='GET'&&!verifyMutationOrigin(req)) return res.status(403).json({error:'cross-origin mutation rejected'});
-  if(!hasExactQuery(req)) return res.status(400).json({error:'invalid request'});
+  let rosterQuery=null;
+  try{
+    if(req.method==='GET') rosterQuery=listQuery(req);
+    else if(!hasMutationQuery(req)) throw new MemberRosterQueryError('invalid_query');
+  }catch{
+    return res.status(400).json({error:'invalid request'});
+  }
   let db;
   let actor;
   let authPayload;
@@ -69,9 +98,20 @@ export default async function handler(req,res){
   if(!actor) return res.status(401).json({error:'authentication required'});
   try{
     if(req.method==='GET'){
-      const result=await listCircleMembersForOwner(db,{actorUserId:actor});
+      const result=await listCircleMembersForOwner(db,{
+        actorUserId:actor,
+        ...rosterQuery,
+        cursorSecret:getJwtSecret(),
+      });
       if(!result.ok) return res.status(403).json({error:'circle owner required'});
-      return res.json({ok:true,members:result.members,count:result.members.length,truncated:result.truncated===true});
+      return res.json({
+        ok:true,
+        members:result.members,
+        count:result.members.length,
+        has_more:result.has_more===true,
+        next_cursor:result.next_cursor||null,
+        scanned:Number(result.scanned)||0,
+      });
     }
     if(req.method!=='PATCH'){
       res.setHeader('Allow','GET, PATCH');
@@ -95,6 +135,9 @@ export default async function handler(req,res){
     return res.json({ok:true,action:req.body.action,member:result.member||{id:result.owner_id,role:'owner',status:'active'}});
   }catch(error){
     if(recentAuthFailure(res,error)) return;
+    if(error instanceof MemberRosterQueryError){
+      return res.status(400).json({error:'invalid request'});
+    }
     captureSentryException(error,{tags:{event:'circle_membership_lifecycle_fail',source:'server'}});
     return res.status(503).json({error:'membership unavailable'});
   }
