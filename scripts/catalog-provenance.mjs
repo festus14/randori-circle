@@ -288,6 +288,7 @@ export async function executeTakedown(options, {
   lockNow = new Date(),
   staleLockMs = LOCK_STALE_MS,
   holdLockMs = 0,
+  afterValidation,
   afterManifestRename,
 } = {}) {
   const lockNonce = await acquireLock(lockUrl, { now: lockNow, staleMs: staleLockMs });
@@ -297,6 +298,7 @@ export async function executeTakedown(options, {
       readJsonFile(manifestUrl, 'provenance manifest', MAX_MANIFEST_BYTES),
     ]);
     const result = applyTakedown(catalogFile.value, manifestFile.value, options);
+    if (afterValidation) await afterValidation();
     if (holdLockMs > 0) await new Promise(resolve => setTimeout(resolve, holdLockMs));
     if (!options.dryRun && result.changed) {
       await writePairFailClosed({

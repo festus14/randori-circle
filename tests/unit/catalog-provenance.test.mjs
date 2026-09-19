@@ -227,9 +227,9 @@ test('source policy rejects vague or unsupported rights claims', () => {
   };
   approvedOpen.catalog.exercises[0].governance.provenance = 'Openly licensed source reviewed for authorized reuse.';
   approvedOpen.manifest.records[0].license = {
-    identifier: 'CC-BY-4.0',
-    name: 'Creative Commons Attribution 4.0 International',
-    evidence: 'https://creativecommons.org/licenses/by/4.0/',
+    identifier: 'MIT',
+    name: 'MIT License',
+    evidence: 'https://spdx.org/licenses/MIT.html',
   };
   assert.equal(validateProvenanceManifest(
     approvedOpen.manifest,
@@ -240,7 +240,7 @@ test('source policy rejects vague or unsupported rights claims', () => {
   const vagueAuthorization = fixtures();
   vagueAuthorization.manifest.records[0].source = {
     type: 'written-authorization',
-    reference: 'partner-feed-v1',
+    reference: 'https://partner.example.test/catalogue/v1',
     statement: vagueAuthorization.catalog.exercises[0].governance.provenance,
   };
   vagueAuthorization.manifest.records[0].license = {
@@ -248,7 +248,32 @@ test('source policy rejects vague or unsupported rights claims', () => {
   };
   assertProvenanceError(
     () => validateProvenanceManifest(vagueAuthorization.manifest, vagueAuthorization.catalog),
-    /authorization evidence must use a controlled repository reference/,
+    /normalized repository evidence reference/,
+  );
+
+  const approvedAuthorization = fixtures();
+  approvedAuthorization.manifest.records[0].source = {
+    type: 'written-authorization',
+    reference: 'https://partner.example.test/catalogue/v1',
+    statement: 'Written authorization reviewed for this exact source.',
+  };
+  approvedAuthorization.catalog.exercises[0].governance.provenance = 'Written authorization reviewed for this exact source.';
+  approvedAuthorization.manifest.records[0].license = {
+    identifier: 'LicenseRef-Partner-2026',
+    name: 'Partner content authorization',
+    evidence: 'repository://docs/source-authorizations/partner-2026.md',
+  };
+  assert.equal(validateProvenanceManifest(
+    approvedAuthorization.manifest,
+    approvedAuthorization.catalog,
+    { now: '2026-09-19' },
+  ).valid, true);
+
+  const credentialedUrl = structuredClone(approvedOpen);
+  credentialedUrl.manifest.records[0].source.reference = 'https://user:secret@example.test/problem';
+  assertProvenanceError(
+    () => validateProvenanceManifest(credentialedUrl.manifest, credentialedUrl.catalog),
+    /credential-free HTTPS URL/,
   );
 
   const identifyingAuthor = fixtures();
@@ -486,18 +511,23 @@ test('the interprocess lock prevents concurrent takedowns from losing an update'
 test('the pre-write digest check rejects a non-cooperating concurrent edit', async () => {
   const paths = await temporaryCatalogueFiles();
   try {
+    let markValidated;
+    let continueWrite;
+    const validated = new Promise(resolve => { markValidated = resolve; });
+    const release = new Promise(resolve => { continueWrite = resolve; });
     const operation = executeTakedown(takedownOptions(), {
       ...paths,
       lockNow: '2026-09-19T12:00:00.000Z',
-      holdLockMs: 250,
+      async afterValidation() {
+        markValidated();
+        await release;
+      },
     });
     const rejected = assert.rejects(operation, /catalogue files changed after validation/);
-    const deadline = Date.now() + 2_000;
-    while (!existsSync(paths.lockUrl) && Date.now() < deadline) {
-      await new Promise(resolve => setTimeout(resolve, 10));
-    }
+    await validated;
     const current = await readFile(paths.manifestUrl, 'utf8');
     await writeFile(paths.manifestUrl, `${current.trimEnd()}  \n`);
+    continueWrite();
     await rejected;
     const catalog = JSON.parse(await readFile(paths.catalogUrl, 'utf8'));
     const manifest = JSON.parse(await readFile(paths.manifestUrl, 'utf8'));

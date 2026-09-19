@@ -99,6 +99,53 @@ function requirePublicAuthor(value, path) {
   }
 }
 
+function parsePublicHttpsUrl(value, path) {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    fail(path, 'must be an absolute HTTPS URL');
+  }
+  if (
+    parsed.protocol !== 'https:'
+    || parsed.hostname === ''
+    || parsed.username !== ''
+    || parsed.password !== ''
+  ) {
+    fail(path, 'must be an absolute credential-free HTTPS URL with a hostname');
+  }
+}
+
+function requireControlledEvidence(value, path) {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    fail(path, 'must be a normalized repository evidence reference');
+  }
+  let decodedPath;
+  try {
+    decodedPath = decodeURIComponent(parsed.pathname);
+  } catch {
+    fail(path, 'must be a normalized repository evidence reference');
+  }
+  const segments = decodedPath.split('/').filter(Boolean);
+  if (
+    parsed.protocol !== 'repository:'
+    || parsed.hostname !== 'docs'
+    || parsed.username !== ''
+    || parsed.password !== ''
+    || parsed.port !== ''
+    || parsed.search !== ''
+    || segments.length < 2
+    || segments[0] !== 'source-authorizations'
+    || segments.some(segment => segment === '.' || segment === '..' || segment.includes('\\'))
+    || !/^[A-Za-z0-9][A-Za-z0-9._/-]*\.md$/.test(segments.join('/'))
+  ) {
+    fail(path, 'must be a normalized repository evidence reference under docs/source-authorizations');
+  }
+}
+
 function canonicalJson(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -146,16 +193,14 @@ function validateSource(source, license, path) {
     if (!OPEN_LICENSE_IDENTIFIERS.has(license.identifier)) {
       fail(`${path}.license.identifier`, 'is not in the approved SPDX allowlist for open content');
     }
-    if (!/^https:\/\//.test(source.reference) || !/^https:\/\//.test(license.evidence)) {
-      fail(path, 'open content must link to HTTPS source and license evidence');
-    }
+    parsePublicHttpsUrl(source.reference, `${path}.source.reference`);
+    parsePublicHttpsUrl(license.evidence, `${path}.license.evidence`);
   } else {
     if (!/^LicenseRef-[A-Za-z0-9][A-Za-z0-9.-]*$/.test(license.identifier)) {
       fail(`${path}.license.identifier`, 'written authorization must use a LicenseRef identifier');
     }
-    if (!license.evidence.startsWith('repository://')) {
-      fail(`${path}.license.evidence`, 'written authorization evidence must use a controlled repository reference');
-    }
+    parsePublicHttpsUrl(source.reference, `${path}.source.reference`);
+    requireControlledEvidence(license.evidence, `${path}.license.evidence`);
   }
 }
 

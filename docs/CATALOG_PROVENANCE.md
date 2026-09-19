@@ -113,9 +113,10 @@ The schema recognizes `open-license` and `written-authorization`, but that is
 not permission to add a source adapter. Open content needs an HTTPS source and
 license-evidence URL plus an allowlisted SPDX identifier (`Apache-2.0`,
 `BSD-2-Clause`, `BSD-3-Clause`, `CC-BY-4.0`, `CC-BY-SA-4.0`, `CC0-1.0`, or
-`MIT`). Written permission
-needs a controlled repository evidence reference and a `LicenseRef-*`
-identifier. Any adapter additionally needs terms review, explicit feature
+`MIT`). Both source and license evidence must be credential-free HTTPS URLs.
+Written permission needs a credential-free HTTPS source, a normalized
+`repository://docs/source-authorizations/*.md` evidence reference, and a
+`LicenseRef-*` identifier. Any adapter additionally needs terms review, explicit feature
 gating, request limits, and its own release review.
 
 Public author names are display-only metadata. Email addresses, markup, control
