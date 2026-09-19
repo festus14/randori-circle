@@ -1,6 +1,8 @@
 name: Turso backup restore rehearsal
 
 on:
+  schedule:
+    - cron: '17 3 * * 1'
   workflow_dispatch:
     inputs:
       confirmation:
@@ -19,10 +21,11 @@ jobs:
   rehearse:
     if: >-
       github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-      && inputs.confirmation == 'RESTORE_DISPOSABLE_ONLY'
+      && (github.event_name == 'schedule'
+      || inputs.confirmation == 'RESTORE_DISPOSABLE_ONLY')
     environment: turso-migration-rehearsal
     runs-on: ubuntu-latest
-    timeout-minutes: 80
+    timeout-minutes: 90
     steps:
       - name: Check out the latest default branch
         timeout-minutes: 5
@@ -60,7 +63,7 @@ jobs:
         id: rehearsal
         timeout-minutes: 32
         env:
-          RESTORE_REHEARSAL_CONFIRM: ${{ inputs.confirmation }}
+          RESTORE_REHEARSAL_CONFIRM: ${{ github.event_name == 'schedule' && 'RESTORE_DISPOSABLE_ONLY' || inputs.confirmation }}
           REHEARSAL_WORKFLOW_PATH: .github/workflows/turso-backup-restore-rehearsal.yml
           REHEARSAL_GITHUB_ENVIRONMENT: turso-migration-rehearsal
           TURSO_ORGANIZATION: ${{ vars.TURSO_ORGANIZATION }}
@@ -75,8 +78,8 @@ jobs:
           TURSO_DATABASE_TIMEOUT_MS: '30000'
           REHEARSAL_MAX_SNAPSHOT_AGE_MS: ${{ vars.REHEARSAL_MAX_SNAPSHOT_AGE_MS }}
           REHEARSAL_MAX_EVIDENCE_AGE_MS: ${{ vars.REHEARSAL_MAX_EVIDENCE_AGE_MS }}
-          REHEARSAL_RPO_TARGET_MS: ${{ vars.REHEARSAL_RPO_TARGET_MS }}
-          REHEARSAL_RTO_TARGET_MS: ${{ vars.REHEARSAL_RTO_TARGET_MS }}
+          REHEARSAL_RPO_TARGET_MS: '1800000'
+          REHEARSAL_RTO_TARGET_MS: '900000'
           REHEARSAL_POLL_ATTEMPTS: '60'
           REHEARSAL_POLL_INTERVAL_MS: '5000'
           REHEARSAL_POLL_DURATION_MS: '300000'
@@ -125,11 +128,44 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+      - name: Evaluate backup freshness and restore evidence
+        id: monitor
+        if: always() && steps.source.outcome == 'success' && steps.install.outcome == 'success'
+        timeout-minutes: 2
+        env:
+          REHEARSAL_WORKFLOW_PATH: .github/workflows/turso-backup-restore-rehearsal.yml
+          REHEARSAL_GITHUB_ENVIRONMENT: turso-migration-rehearsal
+          TURSO_GROUP: ${{ vars.TURSO_GROUP }}
+          TURSO_PRODUCTION_DATABASE_NAME: ${{ vars.TURSO_PRODUCTION_DATABASE_NAME }}
+          TURSO_PRODUCTION_DATABASE_ID: ${{ vars.TURSO_PRODUCTION_DATABASE_ID }}
+          MIGRATION_DIGEST_HMAC_KEY: ${{ secrets.MIGRATION_DIGEST_HMAC_KEY }}
+          REHEARSAL_MAX_EVIDENCE_AGE_MS: ${{ vars.REHEARSAL_MAX_EVIDENCE_AGE_MS }}
+          REHEARSAL_RPO_TARGET_MS: '1800000'
+          REHEARSAL_RTO_TARGET_MS: '900000'
+          BACKUP_MONITOR_MAX_SUCCESS_AGE_MS: '1800000'
+        run: |
+          node scripts/turso-backup-restore-monitor.mjs \
+            --rehearsal-summary "${RUNNER_TEMP}/public-artifacts/rehearsal-summary.json" \
+            --cleanup-summary "${RUNNER_TEMP}/public-artifacts/cleanup-summary.json" \
+            --output "${RUNNER_TEMP}/public-artifacts/backup-monitor-summary.json"
+
+      - name: Upload sanitized backup monitor summary
+        if: always() && steps.monitor.outcome == 'success'
+        timeout-minutes: 5
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: turso-backup-monitor-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/public-artifacts/backup-monitor-summary.json
+          retention-days: 30
+          if-no-files-found: error
+
       - name: Upload signed rehearsal attestation
         if: >-
           always() && steps.rehearsal.outcome == 'success'
           && steps.cleanup.outcome == 'success'
           && steps.cleanup_upload.outcome == 'success'
+          && steps.monitor.outcome == 'success'
+          && steps.monitor.outputs.alert == 'false'
         timeout-minutes: 5
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -137,3 +173,14 @@ jobs:
           path: ${{ runner.temp }}/public-artifacts/rehearsal-summary.json
           retention-days: 30
           if-no-files-found: error
+
+      - name: Alert on missing, stale, corrupt, failed, or unclean evidence
+        if: >-
+          always() && (steps.monitor.outcome != 'success'
+          || steps.monitor.outputs.alert != 'false')
+        shell: bash
+        env:
+          ALERT_CATEGORY: ${{ steps.monitor.outputs.category || 'monitor_failure' }}
+        run: |
+          echo "::error title=Backup restore monitor alert::Category ${ALERT_CATEGORY}. Follow the backup restore runbook and inspect only sanitized artifacts."
+          exit 1

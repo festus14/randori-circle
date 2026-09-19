@@ -27,6 +27,8 @@ import {
 export const REHEARSAL_FORMAT='randori.turso-backup-restore-rehearsal.v1';
 export const REHEARSAL_JOURNAL_FORMAT='randori.turso-backup-restore-journal.v1';
 export const REHEARSAL_ATTESTATION_FORMAT='randori.turso-rehearsal-attestation.v1';
+export const REHEARSAL_RPO_TARGET_MS=30*60*1000;
+export const REHEARSAL_RTO_TARGET_MS=15*60*1000;
 
 const REHEARSAL_WORKFLOW_PATH='.github/workflows/turso-backup-restore-rehearsal.yml';
 const REHEARSAL_ENVIRONMENT='turso-migration-rehearsal';
@@ -80,6 +82,12 @@ function integer(value,name,{minimum=1,maximum=Number.MAX_SAFE_INTEGER}={}){
     fail('REHEARSAL_INVALID',`${name} is invalid`,'configuration');
   }
   return number;
+}
+
+function fixedObjective(value,name,expected){
+  const parsed=integer(value,name,{maximum:90*24*60*60*1000});
+  if(parsed!==expected) fail('REHEARSAL_INVALID',`${name} must match the fixed recovery objective`,'configuration');
+  return parsed;
 }
 
 function name(value,label){
@@ -363,6 +371,7 @@ function validateAttestationPayload(payload,expectedContext,now,maxAgeMs){
   if(!exactObjectKeys(verification,[
     'preMigrationMatch','postMigrationPreserved','rpoMet','rtoMet','rpoTargetMs',
     'rtoTargetMs','sourceSnapshotAgeMs','restoredSnapshotAgeMs','restoreDurationMs',
+    'tableCount','totalRows','sequenceRows',
   ])||verification.preMigrationMatch!==true||verification.postMigrationPreserved!==true
     ||verification.rpoMet!==true||verification.rtoMet!==true
     ||!Number.isSafeInteger(verification.rpoTargetMs)||verification.rpoTargetMs<1
@@ -372,6 +381,9 @@ function validateAttestationPayload(payload,expectedContext,now,maxAgeMs){
     ||!Number.isSafeInteger(verification.restoredSnapshotAgeMs)
     ||verification.restoredSnapshotAgeMs<0
     ||!Number.isSafeInteger(verification.restoreDurationMs)||verification.restoreDurationMs<0
+    ||!Number.isSafeInteger(verification.tableCount)||verification.tableCount<1
+    ||!Number.isSafeInteger(verification.totalRows)||verification.totalRows<0
+    ||!Number.isSafeInteger(verification.sequenceRows)||verification.sequenceRows<0
     ||verification.sourceSnapshotAgeMs>verification.rpoTargetMs
     ||verification.restoredSnapshotAgeMs>verification.rpoTargetMs
     ||verification.restoreDurationMs>verification.rtoTargetMs) attestationFailure();
@@ -410,12 +422,12 @@ export function verifyRehearsalAttestation(value,options={}){
     const maxAgeMs=integer(options.maxAgeMs,'attestation maximum age',{
       maximum:MAX_ATTESTATION_AGE_MS,
     });
-    const expectedRpoTargetMs=integer(options.rpoTargetMs,'attestation RPO target',{
-      maximum:90*24*60*60*1000,
-    });
-    const expectedRtoTargetMs=integer(options.rtoTargetMs,'attestation RTO target',{
-      maximum:90*24*60*60*1000,
-    });
+    const expectedRpoTargetMs=fixedObjective(
+      options.rpoTargetMs,'attestation RPO target',REHEARSAL_RPO_TARGET_MS,
+    );
+    const expectedRtoTargetMs=fixedObjective(
+      options.rtoTargetMs,'attestation RTO target',REHEARSAL_RTO_TARGET_MS,
+    );
     if(options.runConclusion!=='success') attestationFailure();
     const clock=typeof options.clock==='function'?options.clock:Date.now;
     validateAttestationPayload(value.payload,expectedContext,milliseconds(clock),maxAgeMs);
@@ -792,8 +804,8 @@ function normalizedOptions(value){
   const policy=Object.freeze({
     maxSnapshotAgeMs:integer(value.maxSnapshotAgeMs,'maximum snapshot age',{maximum:90*24*60*60*1000}),
     maxEvidenceAgeMs:integer(value.maxEvidenceAgeMs,'maximum evidence age',{maximum:90*24*60*60*1000}),
-    rpoTargetMs:integer(value.rpoTargetMs,'RPO target',{maximum:90*24*60*60*1000}),
-    rtoTargetMs:integer(value.rtoTargetMs,'RTO target',{maximum:90*24*60*60*1000}),
+    rpoTargetMs:fixedObjective(value.rpoTargetMs,'RPO target',REHEARSAL_RPO_TARGET_MS),
+    rtoTargetMs:fixedObjective(value.rtoTargetMs,'RTO target',REHEARSAL_RTO_TARGET_MS),
   });
   if(policy.maxEvidenceAgeMs>MAX_ATTESTATION_AGE_MS){
     fail('REHEARSAL_INVALID','evidence age exceeds the attestation TTL cap','configuration');
@@ -931,6 +943,9 @@ function createRehearsalAttestation(candidate,safety,key,issuedAt){
       sourceSnapshotAgeMs:candidate.comparison.sourceSnapshotAgeMs,
       restoredSnapshotAgeMs:candidate.comparison.restoredSnapshotAgeMs,
       restoreDurationMs:candidate.comparison.restoreDurationMs,
+      tableCount:candidate.comparison.tableCount,
+      totalRows:candidate.comparison.totalRows,
+      sequenceRows:candidate.comparison.sequenceRows,
     },
     safety:{...observedSafety},
   };

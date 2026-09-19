@@ -40,8 +40,8 @@ Store these environment variables:
 | `TURSO_PRODUCTION_DATABASE_ID` | Immutable production `DbId` |
 | `TURSO_PRODUCTION_EXPECTED_BLOCK_WRITES` | Exact protected provider state: `true` or `false` |
 | `MIGRATION_REHEARSAL_MAX_AGE_MS` | Maximum accepted attestation age, no more than `1800000` |
-| `REHEARSAL_RPO_TARGET_MS` | Must exactly match the rehearsal environment's RPO target |
-| `REHEARSAL_RTO_TARGET_MS` | Must exactly match the rehearsal environment's RTO target |
+| `REHEARSAL_RPO_TARGET_MS` | Must be the fixed rehearsal RPO target `1800000` (30 minutes) |
+| `REHEARSAL_RTO_TARGET_MS` | Must be the fixed rehearsal RTO target `900000` (15 minutes) |
 | `TURSO_PRODUCTION_MIGRATIONS_ENABLED` | Keep `false`; set to `true` only for an approved mutation window |
 
 `GITHUB_TOKEN` is provided by Actions with only `actions: read` and `contents: read`. Credentials are scoped to the migration step; checkout, validation, setup, and dependency installation do not receive them. All external actions are pinned to immutable commits.

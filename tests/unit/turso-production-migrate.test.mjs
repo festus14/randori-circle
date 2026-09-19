@@ -502,6 +502,8 @@ test('configuration validation rejects operation, confirmation, identity, and st
       options({sourceDatabaseName:'Production'}),
       options({expectedSourceBlockWrites:'yes'}),
       options({repoCommit:'main'}),
+      options({rpoTargetMs:30*60*1000+1}),
+      options({rtoTargetMs:15*60*1000+1}),
     ];
     for(const value of cases){
       await assert.rejects(
