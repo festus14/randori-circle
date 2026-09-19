@@ -381,7 +381,9 @@ separately scheduled workers before enabling external delivery.
 The MVP uses the checked-in `outbox-dispatch` GitHub Actions workflow on a
 five-minute cadence, with `APP_URL` and `CRON_SECRET` supplied by the protected
 production environment. Missing configuration fails visibly, the HTTP call is
-capped at 55 seconds, and automatic transport retries are disabled. The
+capped at 55 seconds, and automatic transport retries are disabled. A job-level
+guard restricts scheduled and manual dispatch to the repository default branch;
+the production environment should enforce the same deployment-branch rule. The
 five-minute delivery latency is an operating target because GitHub scheduling
 can be delayed; a managed queue/cron is the preferred upgrade for a strict SLO.
 

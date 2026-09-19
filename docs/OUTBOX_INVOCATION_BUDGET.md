@@ -71,7 +71,11 @@ canonical HTTPS origin from the protected production environment variable
 `APP_URL` and the authentication credential from the environment secret
 `CRON_SECRET`; missing or unsafe configuration fails the job visibly. The HTTP
 request has a 55-second timeout and automatic retry is disabled because event
-retries belong to the durable outbox.
+retries belong to the durable outbox. The job-level default-branch guard also
+applies to manual runs, so a feature-branch workflow cannot read the production
+secret or invoke the production endpoint. Keep the production environment's
+deployment-branch restriction pinned to the repository default branch as a
+second control.
 
 The MVP delivery target is within five minutes under normal GitHub Actions
 scheduling. GitHub scheduled workflows can be delayed, so this is an operating

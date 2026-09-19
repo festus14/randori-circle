@@ -130,6 +130,8 @@ function validateOutboxWorkflow(workflow){
       'outbox workflow must run on the five-minute MVP cadence'],
     [/^\s{2}workflow_dispatch:\s*$/m,'outbox workflow must support manual recovery runs'],
     [/^\s{2}contents:\s*read\s*$/m,'outbox workflow permissions must be read-only'],
+    [/^\s{4}if:\s*github\.ref == format\('refs\/heads\/\{0\}', github\.event\.repository\.default_branch\)\s*$/m,
+      'outbox workflow must restrict production dispatch to the default branch'],
     [/^\s{4}environment:\s*production\s*$/m,
       'outbox workflow must use the protected production environment'],
     [/APP_URL:\s*\$\{\{\s*vars\.APP_URL\s*\}\}/,

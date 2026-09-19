@@ -164,6 +164,8 @@ test('the outbox scheduler is five-minute, manually recoverable, secret-bound, a
   assert.deepEqual(validateDeploymentContract(contract),[]);
   assert.match(contract.outboxWorkflow,/cron:\s*['"]\*\/5 \* \* \* \*['"]/);
   assert.match(contract.outboxWorkflow,/workflow_dispatch:/);
+  assert.match(contract.outboxWorkflow,
+    /if:\s*github\.ref == format\('refs\/heads\/\{0\}', github\.event\.repository\.default_branch\)/);
   assert.match(contract.outboxWorkflow,/environment:\s*production/);
   assert.match(contract.outboxWorkflow,/vars\.APP_URL/);
   assert.match(contract.outboxWorkflow,/secrets\.CRON_SECRET/);
@@ -191,5 +193,13 @@ test('deployability rejects an unsafe or incomplete outbox scheduler',()=>{
   unbounded.outboxWorkflow=unbounded.outboxWorkflow.replace('--max-time 55 --retry 0','--retry 3');
   assert.ok(validateDeploymentContract(unbounded).includes(
     'outbox workflow must bound the request without automatic duplicate retries',
+  ));
+
+  const featureBranch=cloneContract();
+  featureBranch.outboxWorkflow=featureBranch.outboxWorkflow.replace(
+    "if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)\n",'',
+  );
+  assert.ok(validateDeploymentContract(featureBranch).includes(
+    'outbox workflow must restrict production dispatch to the default branch',
   ));
 });
