@@ -16,6 +16,11 @@ import {
   sealCredentialEnvelope,
 } from './_key-rotation.js';
 import { createOutboxEventStatement, OutboxDeliveryError, readOutboxMetrics, runOutboxWorker } from './_outbox.js';
+import {
+  assertCredentialKeyControl,
+  credentialKeyControlStatus,
+  withCredentialKeyControlStatus,
+} from './_credential-key-control.js';
 
 export const EMAIL_ACTIVATION_EVENT_TYPE='auth.emailverification.requested';
 export const EMAIL_ACTIVATION_EVENT_VERSION=1;
@@ -43,7 +48,7 @@ function safeClaim(claim){
   return {invitationId,circleId,tokenHash,emailHash};
 }
 
-function activationKeyRing(env=process.env){
+export function activationKeyRing(env=process.env){
   try{
     const ring=parseKeyRing({
       env,purpose:'email-activation',
@@ -122,16 +127,22 @@ export function openEmailActivationToken(envelope,{idempotencyKey}={}){
 
 export async function ensureEmailActivationReadiness(db){
   if(!db||typeof db.execute!=='function') throw new TypeError('database client is required');
-  activationKeyRing();
+  const ring=activationKeyRing();
   await db.execute(`SELECT id,invitation_id,circle_id,email,email_hash,password_hash,display_name,color,
     token_hash,created_at,expires_at,last_sent_at,send_count,used_at,revoked_at
     FROM auth_email_activations LIMIT 0`);
   await db.execute(`SELECT id,event_type,event_version,idempotency_key FROM outbox_events LIMIT 0`);
+  await assertCredentialKeyControl(db,ring);
 }
 
 export async function emailActivationKeyRotationStatus(db){
-  return readCredentialRotationMetrics(db,{eventType:EMAIL_ACTIVATION_EVENT_TYPE,
-    envelopeField:'token_envelope',ring:activationKeyRing()});
+  const ring=activationKeyRing();
+  const [metrics,control]=await Promise.all([
+    readCredentialRotationMetrics(db,{eventType:EMAIL_ACTIVATION_EVENT_TYPE,
+      envelopeField:'token_envelope',ring}),
+    credentialKeyControlStatus(db,ring),
+  ]);
+  return withCredentialKeyControlStatus(metrics,control);
 }
 
 function activationEvent({activationId,email,token,sendCount}){
@@ -177,10 +188,11 @@ export async function requestEmailActivation(db,input,{nowSeconds=null}={}){
   const tokenHash=hashEmailActivationToken(token);
   // Parse the ring before opening the transaction so invalid production
   // configuration cannot create credentials that no worker can deliver.
-  activationKeyRing();
+  const ring=activationKeyRing();
   const transaction=await db.transaction('write');
   let finished=false;
   try{
+    await assertCredentialKeyControl(transaction,ring);
     nowSeconds=await activationNow(transaction,nowSeconds);
     if(!registration){
       // Match the eligible path's bounded crypto/transaction/statement shape
@@ -259,10 +271,11 @@ export async function resendEmailActivation(db,{claim,email},{nowSeconds=null}={
   if(!parsed||!normalizedEmail||!emailHash||!safeEqual(parsed.emailHash,emailHash)) return {accepted:false};
   const token=createEmailActivationToken();
   const tokenHash=hashEmailActivationToken(token);
-  activationKeyRing();
+  const ring=activationKeyRing();
   const transaction=await db.transaction('write');
   let finished=false;
   try{
+    await assertCredentialKeyControl(transaction,ring);
     nowSeconds=await activationNow(transaction,nowSeconds);
     const rotated=await transaction.execute({
       sql:`UPDATE auth_email_activations SET token_hash=?,expires_at=?,last_sent_at=?,send_count=send_count+1
@@ -325,6 +338,7 @@ export async function verifyEmailActivation(db,{token},{nowSeconds=null}={}){
       ||Date.parse(String(activation.invitation_expires_at))<=nowSeconds*1000){
       return await finish({status:'expired'});
     }
+    await assertCredentialKeyControl(transaction,activationKeyRing());
     const expectedEmailHash=hashInvitationEmail(String(activation.email));
     if(!expectedEmailHash||!safeEqual(expectedEmailHash,activation.email_hash)) return await finish({status:'invalid'});
     const created=await transaction.execute({
@@ -450,6 +464,7 @@ export function createEmailActivationHandler({db,baseUrl,send}={}){
     if(Number(current.rows[0].send_count)!==metadata.sendSequence){
       return {status:'suppressed',reasonCode:'ACTIVATION_INACTIVE'};
     }
+    await assertCredentialKeyControl(db,activationKeyRing());
     const payload=activationCredential(metadata,event);
     if(!safeEqual(payload.tokenHash,current.rows[0].token_hash)){
       throw new OutboxDeliveryError('PAYLOAD_INVALID',{retryable:false});

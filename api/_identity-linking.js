@@ -3,6 +3,11 @@ import {createHmac,randomBytes} from 'node:crypto';
 import {normalizeInvitationEmail} from './_circle-membership.js';
 import {assertPurposeKeyIsolation,parseKeyRing} from './_key-rotation.js';
 import {recordRecentAuth,requireRecentAuth,readRecentAuth} from './_recent-auth.js';
+import {
+  assertCredentialKeyControl,
+  credentialKeyControlStatus,
+  withCredentialKeyControlStatus,
+} from './_credential-key-control.js';
 
 export const GOOGLE_ISSUER='https://accounts.google.com';
 
@@ -22,7 +27,7 @@ function identityKeyFingerprint(key){
     .update('randori-provider-email-key-fingerprint-v1','utf8').digest('hex');
 }
 
-function identityEmailHashConfiguration(env=process.env){
+export function identityEmailHashConfiguration(env=process.env){
   if(!String(env.IDENTITY_EMAIL_HASH_KEY_VERSION||'').trim()) return null;
   try{
     const ring=parseKeyRing({
@@ -60,6 +65,7 @@ function identityRotationError(code='IDENTITY_EMAIL_HASH_VERSION_ROLLBACK'){
 }
 
 async function assertIdentityEmailHashVersion(db,configuration){
+  await assertCredentialKeyControl(db,configuration);
   const result=await db.execute({
     sql:`SELECT hash_key_version,MIN(hash_key_fingerprint) AS min_fingerprint,
         MAX(hash_key_fingerprint) AS max_fingerprint,COUNT(*) AS observation_count
@@ -111,13 +117,13 @@ function compareIdentityEmail(previous,email,configuration){
   return Object.freeze({changed:false,rekeyed:true,neutralRebaseline:true});
 }
 
-export async function identityEmailKeyRotationStatus(db){
+export async function identityEmailKeyMaterialStatus(db,{configuration=identityEmailHashConfiguration()}={}){
   if(!db||typeof db.execute!=='function') throw new TypeError('database client is required');
-  const configuration=identityEmailHashConfiguration();
   if(!configuration) throw identityRotationError('IDENTITY_EMAIL_HASH_CONFIGURATION_INVALID');
   const result=await db.execute(`SELECT hash_key_version,hash_key_fingerprint,COUNT(*) AS count
     FROM auth_provider_email_state GROUP BY hash_key_version,hash_key_fingerprint
-    ORDER BY hash_key_version,hash_key_fingerprint`);
+    ORDER BY hash_key_version,hash_key_fingerprint LIMIT 10001`);
+  if((result.rows||[]).length>10000) throw identityRotationError('IDENTITY_EMAIL_HASH_STATE_INVALID');
   let substitution=0,missing=0,future=0,total=0;
   const versions={};
   for(const row of result.rows||[]){
@@ -137,6 +143,13 @@ export async function identityEmailKeyRotationStatus(db){
   previous_versions:Object.freeze(configuration.previous.map(item=>item.version)),observations:total,
   versions:Object.freeze(versions),missing_key:missing,fingerprint_mismatch:substitution,
   future_version:future});
+}
+
+export async function identityEmailKeyRotationStatus(db){
+  const configuration=identityEmailHashConfiguration();
+  const metrics=await identityEmailKeyMaterialStatus(db,{configuration});
+  return withCredentialKeyControlStatus(metrics,
+    await credentialKeyControlStatus(db,configuration));
 }
 
 function userId(value){

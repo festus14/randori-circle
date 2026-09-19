@@ -4,7 +4,7 @@ Randori has read-only schema inspection for configured databases, a transactiona
 
 ## Contract
 
-- `db/schema-manifest.js` is the current contract: 49 application tables and 54 named indexes.
+- `db/schema-manifest.js` is the current contract: 50 application tables and 54 named indexes.
 - The manifest includes column/default/primary-key contracts, checks, foreign keys, unique constraints, AUTOINCREMENT/collation/table options, and unique, partial, descending, and expression-index semantics. SQLite-created `sqlite_autoindex_*` indexes are intentionally outside the named-index count.
 - `ai_monthly_usage` is a retired table. Its presence is reported as tolerated legacy state; it is not treated as current schema and is never changed.
 - `schema_migrations` is a runner-owned operational table. General schema inspection recognizes it without treating it as unexpected application drift; the migration runner validates its exact schema and rows separately.
@@ -29,6 +29,7 @@ Randori has read-only schema inspection for configured databases, a transactiona
   group slot. These rows never authorize a legacy room.
 - Migration v14 adds the durable circle-creation receipt and composite
   membership/audit integrity needed for retry-safe atomic create-and-select.
+- Migration v15 adds exactly four constrained `credential_key_controls` rows, one for activation, password reset, invitation delivery, and provider-email observation. The migration seeds only explicit uninitialized state; it never reads secrets or infers acceptance from business rows. Global readiness requires all four structurally valid rows but permits uninitialized state, while each credential capability requires its own protected adoption. Missing or malformed controls fail readiness closed.
 
 ## Commands
 
@@ -58,7 +59,7 @@ Representative output fields:
   "manifest": {"version": 1, "checksum": "..."},
   "foreignKeysEnabled": true,
   "checkConstraintsEnabled": true,
-  "summary": {"expectedTables": 49, "expectedIndexes": 54, "blockers": 0},
+  "summary": {"expectedTables": 50, "expectedIndexes": 54, "blockers": 0},
   "drift": {
     "missingTables": [],
     "missingColumns": [],
@@ -111,7 +112,7 @@ npm run --silent db:migrate -- \
   --expected-state <v2StateFingerprint> --through-version 2
 
 # Inspect again without a prefix. The result must be managed at v2 with
-# v3 through v14 pending before using its new full-set fingerprint for the upgrade.
+# v3 through v15 pending before using its new full-set fingerprint for the upgrade.
 npm run --silent db:migrate -- \
   status --database file:///absolute/path/to/restored-randori.db
 
@@ -142,7 +143,7 @@ The runner reports three states:
 | `managed` | A ledger exists and its contiguous history matches the executable migrations. | `apply`, including a latest-version no-op, only while its recorded schema is exact |
 | `unmanaged` | Application objects exist without a valid ledger history. | `adopt` only when the complete schema and membership invariants are exact |
 
-The fingerprint binds the inspected schema, ledger, and membership rollout evidence. Both mutation modes recompute it inside their write transaction before making changes. A stale fingerprint is refused without a write; run `status` again and investigate the change rather than copying a new value blindly.
+The fingerprint binds the inspected schema, ledger, membership rollout evidence, and an opaque digest of the complete credential-control state. Both mutation modes recompute it inside their write transaction before making changes. A stale fingerprint is refused without a write; run `status` again and investigate the change rather than copying a new value blindly. The control digest is never projected separately and cannot reveal a stored key fingerprint.
 
 For an unmanaged database, adoption requires the exact current schema. The membership rollout must contain exactly the singleton row with ID `1`. An open latch may not contain circles, memberships, invitations, or audit state. A closed latch must have exactly one active primary circle, an active owner, exact owner-authored backfill completion evidence, canonical backfill or accepted-invitation provenance for every non-demo account, no uncovered accounts, and no orphan active memberships. The runner preserves the latch; it never reopens registration.
 

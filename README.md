@@ -81,7 +81,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_pair-access.js` | shared source-aware authorization for canonical private pair rooms |
 | `api/_circle-membership.js` | primary-circle membership, keyed invite hashes, signed short-lived claims, and audited acceptance |
 | `api/invitations.js` | owner-only invitation lifecycle and rate-limited public preparation |
-| `db/schema-manifest.js` | checksummed contract for 49 application tables and 54 named indexes |
+| `db/schema-manifest.js` | checksummed contract for 50 application tables and 54 named indexes |
 | `db/schema-inspector.js` | read-only SQLite drift inspection and non-executable planning |
 
 The target Next.js/Supabase architecture is intentionally phased rather than introduced as a big-bang rewrite.
@@ -96,11 +96,12 @@ Copy `.env.example` and configure at least:
 - an explicit canonical HTTPS `APP_URL` plus both `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`; OAuth stays unavailable for partial, malformed, insecure, host-mismatched, or local-runtime configuration
 - `SIGNUP_ALLOWLIST` for the legacy private-beta Google flow while circle membership enforcement is off
 - `CIRCLE_MEMBERSHIP_ENABLED=true` to enforce invitation-gated primary-circle access after the staged migration below
-- `MULTI_CIRCLE_CONTROL_PLANE_ENABLED=true` enables session-bound circle creation/selection and circle-scoped roster/invitation management after migration v14. Keep `MULTI_CIRCLE_AVAILABILITY_ENABLED=false` until selected-circle availability is rehearsed, then keep `SECONDARY_CIRCLE_COORDINATION_ENABLED=false` until the complete managed ledger through v14 is ready. The final flag opens only immutable pairing publication/read views for a selected secondary circle; schedule, chat, rooms, video, execution, recap, and AI remain unavailable there. See `docs/ACTIVE_CIRCLE_CONTEXT.md`, `docs/CIRCLE_CREATION.md`, and `docs/SELECTED_CIRCLE_PAIRING.md`.
+- `MULTI_CIRCLE_CONTROL_PLANE_ENABLED=true` enables session-bound circle creation/selection and circle-scoped roster/invitation management whose final schema addition is migration v14. Exact runtime readiness for this release requires the complete managed ledger through v15. Keep `MULTI_CIRCLE_AVAILABILITY_ENABLED=false` until selected-circle availability is rehearsed, then keep `SECONDARY_CIRCLE_COORDINATION_ENABLED=false` until that complete ledger is ready. After coordination and the shared sender are rehearsed, `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED=true` queues dashboard-only result mail for newly published secondary circles. It is ineffective unless every preceding flag is enabled. Schedule, chat, rooms, video, execution, recap, and AI remain unavailable there. See `docs/ACTIVE_CIRCLE_CONTEXT.md`, `docs/CIRCLE_CREATION.md`, and `docs/SELECTED_CIRCLE_PAIRING.md`.
 - `EMAIL_PASSWORD_ACTIVATION_ENABLED=true` plus the versioned, purpose-specific `EMAIL_VERIFICATION_ENCRYPTION_*` key-ring settings to enable production invite-bound password activation after migration v7 is ready
 - the explicit `INVITATION_EMAIL_DELIVERY_ENABLED` gate and separate versioned `INVITATION_EMAIL_ENCRYPTION_*` key ring to queue owner-created invitation links without storing a plaintext bearer token
 - `PASSWORD_RESET_ENABLED=true` plus the independent versioned `PASSWORD_RESET_ENCRYPTION_*` key ring to enable recovery after migration v8 is ready
 - the dedicated versioned `IDENTITY_EMAIL_HASH_*` key ring before setting `IDENTITY_MANAGEMENT_ENABLED=true` after migration v9; Google linking also requires the complete Google OAuth configuration above
+- separate protected steps for each pending migration in v13, v14, then v15 order, each with fresh rehearsal and approval, followed by protected adoption of all four configured credential purposes before deploying or enabling their production consumers; `CREDENTIAL_KEY_CONTROL_MUTATIONS_ENABLED` authorizes only one operator control transition and does not disable `EMAIL_PASSWORD_ACTIVATION_ENABLED`, `PASSWORD_RESET_ENABLED`, `INVITATION_EMAIL_DELIVERY_ENABLED`, or `IDENTITY_MANAGEMENT_ENABLED`. Disable those consumer flags during the transition, or hold production promotion if they cannot be disabled. Status/adoption/advance and restore rules are in `docs/KEY_ROTATION.md`
 - `AUTH_SCHEMA_BOOTSTRAP_ENABLED` is legacy-only and must remain false for the migrated OIDC flow; run the protected database migrations before enabling production authentication
 - `RESEND_API_KEY` and `RESEND_FROM` for invitation, pairing, schedule,
   verification, and password-reset notifications
@@ -110,7 +111,7 @@ Copy `.env.example` and configure at least:
   control generation and evidence settings
 
 See [GOOGLE_OAUTH.md](GOOGLE_OAUTH.md) and [TURSO.md](TURSO.md) for provider setup. Back up the database before first deploying migrations.
-Key changes use the staged, forward-only [key rotation runbook](docs/KEY_ROTATION.md); never replace a configured key in place or remove an old key while its actionable count is nonzero.
+Key changes use the staged, forward-only [key rotation runbook](docs/KEY_ROTATION.md); never replace a configured key in place, bypass its durable v15 control, or remove an old key while its actionable or retained count is nonzero.
 
 The protected Turso recovery workflow performs a monitored isolated restore every Monday at 03:17 UTC and remains manually dispatchable. A separate hourly, production-credential-free watchdog queries the authoritative GitHub run and artifact records; after a two-hour scheduling grace it requires a run from the current weekly slot, and an unfinished run has an absolute 06:47 UTC deadline that a delayed start cannot reset. Absent, stuck, failed, stale, expired, or corrupt drills therefore fail visibly. Retained evidence is limited to PII-free RPO/RTO timings, checksums, aggregate counts, and cleanup state. See the [backup/restore rehearsal runbook](docs/TURSO_BACKUP_RESTORE_REHEARSAL.md).
 
@@ -119,6 +120,11 @@ Authentication rate limiting is migration-owned: runtime requests never create `
 Invitation creation/resend, pairing publication, and schedule mutations commit
 with their versioned email events in one transaction. Provider calls begin only
 after that commit.
+Secondary publication reuses `pairing.email.requested` with a compact v2
+internal-ID payload, so it remains one of the same five fairly scheduled event
+types. Dispatch resolves current recipient/circle data, rechecks the immutable
+publication and current memberships/preferences, and links only to the
+dashboard; v1 primary room-email delivery remains compatible.
 `GET|POST /api/cron/outbox` uses the existing `CRON_SECRET` and drains due
 pairing, schedule, invitation, activation, and password-reset events through
 one fair eight-claim/45-second invocation budget, independently of the weekly

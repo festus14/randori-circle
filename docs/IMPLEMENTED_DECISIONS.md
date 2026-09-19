@@ -1035,7 +1035,8 @@ manual invitation creation and queued encrypted events for a later safe resume.
 
 Status: implemented behind the independent, default-off
 `SECONDARY_CIRCLE_COORDINATION_ENABLED` flag; migration v13 owns its storage,
-and runtime readiness requires the complete managed ledger through v14.
+while this release's runtime readiness requires the complete managed ledger
+through v15. Migration v15 does not add secondary-pairing storage.
 
 **Decision.** A selected secondary circle may publish and read one immutable
 current-cycle pairing, but that assignment is coordination data only. Migration
@@ -1062,8 +1063,10 @@ a hard limit and gives each scope its own transaction. One failed scope is
 counted while later admitted scopes continue, after which the cron returns an
 aggregate retryable failure. Existing claims are immutable; pre-commit lock
 conflicts may retry, but ambiguous commits do not. Secondary cycles always use
-`cycle_default`, never the account-global legacy availability value, and do not
-enqueue pairing email.
+`cycle_default`, never the account-global legacy availability value. In the
+original ID-26 rollout they did not enqueue pairing
+email; ID-32 adds that behavior behind its separate, default-off flag and full
+coordination dependency chain.
 
 Secondary reads recheck the same live context and join partner identity only
 through current active membership. Departed partners are redacted. Responses
@@ -1080,13 +1083,15 @@ migration. Dual-writing would create two authorities and ambiguous rollback.
 Manual-only publication would avoid cron work but weaken the weekly habit.
 
 **Rollout and recovery.** Follow the central rollout in
-`ACTIVE_CIRCLE_CONTEXT.md`: deploy with the flag false, apply managed v13 and
-then v14 as separate protected migration steps, and verify exact runtime
-readiness. Only then canary one secondary circle and verify bounded cron
-publication before enabling secondary coordination more broadly. Roll back
-only by disabling the flag. Preserve canonical rows for audit and forward
-recovery; never copy them into legacy workspace tables or weaken membership
-enforcement.
+`ACTIVE_CIRCLE_CONTEXT.md`: keep the feature and credential-consumer flags
+false, apply managed v13, then v14, then v15 as separate protected migration
+steps with fresh evidence and approval, adopt all four configured credential
+purposes, and verify exact runtime readiness. Only then canary one secondary
+circle and verify bounded cron publication before enabling secondary
+coordination more broadly. Keep its separate email flag false until the sender
+passes a provider canary. Roll back only by disabling the flag. Preserve
+canonical rows for audit and forward recovery; never copy them into legacy
+workspace tables or weaken membership enforcement.
 
 ## ID-27: Export one accepted session locally with a stable private identity
 
@@ -1158,7 +1163,9 @@ database to catch up deliberately.
 ## ID-29: Create and select a secondary circle as one idempotent operation
 
 Status: implemented behind the existing default-off
-`MULTI_CIRCLE_CONTROL_PLANE_ENABLED` flag; migration v14 is required.
+`MULTI_CIRCLE_CONTROL_PLANE_ENABLED` flag. Migration v14 owns its storage; this
+release also requires exact managed readiness through v15 and the central
+credential-control adoption sequence before runtime promotion.
 
 **Decision.** An authenticated user creates a secondary circle through
 same-origin `POST /api/circles` with only an exact bounded name and an opaque
@@ -1202,11 +1209,15 @@ availability or pairing rows conflict with the existing lazy-cycle contract.
 Full secondary workspace creation remains deferred until its storage and
 authorization paths are canonically circle-owned.
 
-**Rollout and recovery.** Apply v14 one version at a time through the protected
-rehearsal workflow, deploy with the control-plane flag off, then canary create,
-replay, cap, revocation, concurrency, cross-tab, and mobile flows in staging.
-Rollback disables the flag and preserves every receipt, audit, membership, and
-context generation; no schema downgrade or tenant-data deletion is required.
+**Rollout and recovery.** Follow Steps 2–4 of the central rollout in
+`ACTIVE_CIRCLE_CONTEXT.md`: keep feature and credential-consumer flags false,
+apply each pending v13, v14, and v15 migration separately with a fresh protected
+rehearsal and approval, and adopt all four configured credential purposes before
+runtime promotion. If an existing credential consumer cannot be disabled, hold
+production promotion until that sequence finishes. Then canary create, replay,
+cap, revocation, concurrency, cross-tab, and mobile flows in staging. Rollback
+disables the flag and preserves every receipt, audit, membership, and context
+generation; no schema downgrade or tenant-data deletion is required.
 
 ## ID-30: Treat legacy credential counts as a key-retirement blocker
 
@@ -1239,3 +1250,91 @@ delivery would strand credentials during the compatibility rollout. Decrypting
 and rewriting every queued row expands plaintext handling, transaction races,
 and rollback complexity. Conservatively waiting for v1 work to drain or cease
 being resendable preserves compatibility and requires no data mutation.
+
+## ID-31: Persist monotonic acceptance independently for each credential purpose
+
+Status: implemented as additive migration v15 plus protected operator control.
+ID-30 remains the aggregate compatibility and retirement rule immediately above.
+
+**Decision.** Migration v15 seeds exactly four constrained, initially
+uninitialized `credential_key_controls` rows: email activation, password reset,
+invitation email, and identity-email observation. Each accepted row binds the
+highest authorized key version to its purpose-scoped one-way fingerprint and a
+monotonic compare-and-swap generation. Keys, plaintext credentials, provider
+subjects, recipient addresses, and tokens remain outside the table and all
+public status.
+
+Adoption and advance are explicit operations in a protected, manual,
+latest-`main` workflow. Health checks, production startup, requests, and workers
+never mutate the controls. Exact retries are idempotent; stale concurrent
+writers, lower versions, same-version replacement, or an advance ring that no
+longer contains the accepted pair fail closed. The business-material scan and
+control update share one write transaction. Adoption permits existing v1
+compatibility, while normal advance requires aggregate compatibility readiness,
+including zero actionable or retained legacy-v1 envelopes.
+
+Global database readiness requires the exact four-row structural state but does
+not require adoption. Only a configured purpose's capability, producer, or
+active consumer requires that purpose's accepted version and fingerprint.
+Inactive work is still suppressed from authoritative state before the control
+or ciphertext is examined, and unrelated password login and product features
+remain available. Queue drains and normal row deletion cannot erase the
+independent accepted pair.
+
+The local loopback runtime adopts its deterministic local keys after migration
+and before serving requests. Production uses no automatic adoption. A v14
+restore advances to four uninitialized controls; a stale v15 restore that is
+behind current configuration reports `advance_required`. Both require explicit
+protected re-authorization. Database-only state cannot remember a version
+created after the restored snapshot, so absolute anti-rollback across old
+backups remains an external KMS/control-plane responsibility.
+
+Rollback is forward-only to a v15-aware build and preserves every control and
+ledger row. The one accepted slot can require a short purpose-specific
+maintenance interval during advance; a two-slot staged activation protocol is
+the future option if zero-downtime rotation becomes necessary.
+
+**Alternatives.** Inferring the highest version from business rows was rejected
+because queues drain and observations are deleted. Environment-only floors were
+rejected as weaker under restore and configuration rollback. Automatically
+adopting on a production request or startup was rejected because it turns a
+misconfiguration into durable authorization. An external KMS policy is the
+strongest cross-restore option, but adds operational cost and does not remove
+the application's need for purpose-scoped readiness and restore procedures.
+
+## ID-32: Reuse pairing-email v2 for secondary dashboard notifications
+
+Status: implemented as a default-off notification increment with no schema
+migration and no secondary workspace capability.
+
+**Decision.** `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED` is effective only when
+membership enforcement, multi-circle control, selected-circle availability,
+and secondary coordination are all enabled. A newly claimed secondary
+publication writes one `pairing.email.requested` v2 event for every snapshotted
+paired, solo, or unavailable member inside the same transaction as the
+publication. Replays and competing manual/cron claims write none. The compact
+payload contains only publication, circle, user, and result-kind identifiers;
+current addresses, circle names, and rendered content are never queued.
+
+The v2 dispatcher resolves current recipient and circle data and revalidates
+the exact publication/scope/circle/cycle descriptor, immutable eligibility and
+group slot, active non-demo membership, archive state, active partner for a
+paired result, and current email preference. Invalid or stale work suppresses
+before provider access. Its sole link is the canonical dashboard origin, so an
+email neither exposes nor creates a legacy room/workspace capability. Primary
+v1 payload parsing and private-room delivery remain unchanged.
+
+Both versions share the existing event type, stable provider idempotency,
+leases, retry/dead-letter transitions, aggregate metrics, and the five-type
+fair invocation budget. Rollback disables the new flag; pending v2 work then
+suppresses while immutable publications and terminal outbox evidence remain.
+
+**Alternatives.** A new event type would make rendering explicit but add a
+sixth fairness lane, operational metric, and scheduler contract for the same
+delivery channel. Storing addresses or circle names would simplify dispatch
+but create stale PII and rename races. Linking to a generated room would cross
+the reviewed coordination-only boundary. A post-commit fan-out job would avoid
+publication changes but introduce a second claim/reconciliation protocol and
+an interval where a durable publication has no durable intent. The selected
+versioned event keeps v1 compatibility, uses transaction atomicity already
+available in v13, and revalidates all mutable authority at delivery time.

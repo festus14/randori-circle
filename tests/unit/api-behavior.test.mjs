@@ -259,6 +259,7 @@ mock.module('../../api/_pairing-readiness.js',{
 mock.module('../../api/_pairing-email.js',{
   exports:{
     PAIRING_EMAIL_EVENT_TYPE:'pairing.email.requested',
+    SECONDARY_PAIRING_EMAIL_EVENT_VERSION:2,
     createPairingEmailHandler:()=>async()=>({}),
     createResendEmailSender:()=>async()=>({providerName:'resend',providerMessageId:'mock-message'}),
     migrateLegacyPairingEmails:async(_db,options)=>{
@@ -397,7 +398,7 @@ const [
   { default: aiHandler },
   { default: authHandler, localPasswordSignupEnabled },
   { default: dataHandler },
-  { default: opsHandler, deliverPendingOutbox },
+  { default: opsHandler, createOpsHandler, deliverPendingOutbox },
   { default: videoHandler },
   { createEvaluationSuite, listPublicExercises },
   { localIdentityAdapterEnabled },
@@ -551,7 +552,8 @@ beforeEach(() => {
     'NEXT_PUBLIC_SENTRY_DSN', 'SENTRY_DSN',
     'ALLOW_OPEN_SIGNUP', 'SIGNUP_ALLOWLIST', 'LEETCODE_INGESTION_AUTHORIZED',
     'AUTH_SCHEMA_BOOTSTRAP_ENABLED', 'CIRCLE_MEMBERSHIP_ENABLED', 'MULTI_CIRCLE_CONTROL_PLANE_ENABLED',
-    'MULTI_CIRCLE_AVAILABILITY_ENABLED', 'SECONDARY_CIRCLE_COORDINATION_ENABLED', 'RANDORI_LOCAL_RUNTIME',
+    'MULTI_CIRCLE_AVAILABILITY_ENABLED', 'SECONDARY_CIRCLE_COORDINATION_ENABLED',
+    'SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED', 'RANDORI_LOCAL_RUNTIME',
     'EMAIL_PASSWORD_ACTIVATION_ENABLED', 'EMAIL_VERIFICATION_ENCRYPTION_KEY',
     'PASSWORD_RESET_ENABLED', 'PASSWORD_RESET_ENCRYPTION_KEY',
     'IDENTITY_EMAIL_HASH_KEY', 'IDENTITY_EMAIL_HASH_KEY_VERSION', 'IDENTITY_MANAGEMENT_ENABLED',
@@ -665,7 +667,7 @@ test('password signup is local-only while production and private-beta registrati
   assert.equal(executed.length, 0, 'non-local signup must be rejected before database access');
 });
 
-test('auth capabilities report the exact local or private-beta contract without database access', async () => {
+test('auth capabilities report static flags without database access', async () => {
   let result=await invoke(authHandler,{
     url:'/api/auth/capabilities',query:{endpoint:'capabilities'},headers:{host:'randori.example.test'},
   });
@@ -683,6 +685,7 @@ test('auth capabilities report the exact local or private-beta contract without 
   process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';
   process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED='true';
   process.env.SECONDARY_CIRCLE_COORDINATION_ENABLED='true';
+  process.env.SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED='true';
   result=await invoke(authHandler,{
     url:'/api/auth/capabilities',query:{endpoint:'capabilities'},headers:{host:'randori.example.test'},
   });
@@ -694,6 +697,7 @@ test('auth capabilities report the exact local or private-beta contract without 
   delete process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED;
   delete process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED;
   delete process.env.SECONDARY_CIRCLE_COORDINATION_ENABLED;
+  delete process.env.SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED;
 
   process.env.GOOGLE_CLIENT_ID='google-client';
   process.env.GOOGLE_CLIENT_SECRET='google-secret';
@@ -709,24 +713,35 @@ test('auth capabilities report the exact local or private-beta contract without 
     registrationMode:'private_beta',
   });
 
+  const wrongMethod=await invoke(authHandler,{
+    method:'POST',url:'/api/auth/capabilities',query:{endpoint:'capabilities'},headers:localOriginHeaders,
+  });
+  assert.equal(wrongMethod.status,405);
+  assert.deepEqual(wrongMethod.body,{error:'GET only'});
+  assert.equal(executed.length,0);
+});
+
+test('local auth capabilities probe exact identity-linking readiness and fail closed',async()=>{
   enableLocalPasswordSignup();
-  result=await invoke(authHandler,{
+  const result=await invoke(authHandler,{
     url:'/api/auth/capabilities',query:{endpoint:'capabilities'},headers:{host:'127.0.0.1:3000'},
   });
   assert.equal(result.status,200);
   assert.deepEqual(result.body,{
     ok:true,
     capabilities:{passwordLogin:true,passwordSignup:true,verifiedEmailActivation:false,passwordReset:false,
-      localIdentity:false,googleOAuth:false,recentAuthMaxAgeSeconds:600,identityManagement:true},
+      localIdentity:false,googleOAuth:false,recentAuthMaxAgeSeconds:600,identityManagement:false},
     registrationMode:'local_open',
   });
-  assert.equal(executed.length,0);
-
-  const wrongMethod=await invoke(authHandler,{
-    method:'POST',url:'/api/auth/capabilities',query:{endpoint:'capabilities'},headers:localOriginHeaders,
-  });
-  assert.equal(wrongMethod.status,405);
-  assert.deepEqual(wrongMethod.body,{error:'GET only'});
+  assert.deepEqual(executed.map(statement=>({
+    sql:statement.sql.replace(/\s+/g,' ').trim(),args:statement.args,
+  })),[
+    {sql:'SELECT issuer,subject,user_id FROM auth_provider_identities LIMIT 0',args:[]},
+    {sql:'SELECT issuer,subject,email_hash,hash_key_version,hash_key_fingerprint,observed_at,changed_at FROM auth_provider_email_state LIMIT 0',args:[]},
+    {sql:'SELECT id,user_id,actor_user_id,event_type,provider,outcome,reason_code,created_at FROM auth_identity_audit_events LIMIT 0',args:[]},
+    {sql:'SELECT session_hash,user_id,authenticated_at,method FROM auth_recent_proofs LIMIT 0',args:[]},
+    {sql:'SELECT purpose,control_version,state,highest_key_version, highest_key_fingerprint,generation,installed_by_migration,installed_at,updated_at FROM credential_key_controls WHERE purpose=? LIMIT 2',args:['identity-email-observation']},
+  ]);
 });
 
 test('invalid production OAuth configuration is not advertised and stops before provider or database access',async()=>{
@@ -3537,6 +3552,7 @@ test('selected secondary owner publishes and reads coordination without legacy w
   process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';
   process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED='true';
   process.env.SECONDARY_CIRCLE_COORDINATION_ENABLED='true';
+  process.env.SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED='true';
   const directory=mkdtempSync(join(tmpdir(),'randori-secondary-api-'));
   const client=createClient({url:pathToFileURL(join(directory,'pairing.sqlite')).href});
   try{
@@ -3577,8 +3593,17 @@ test('selected secondary owner publishes and reads coordination without legacy w
     assert.equal('week_id' in published.body,false);
     assert.equal(executed.some(({sql})=>/\b(?:CREATE|ALTER)\b/i.test(sql)),false,
       'secondary publication must not run request-path DDL');
-    assert.equal(executed.some(({sql})=>/\b(?:pairing_weeks|pairing_groups|pairing_participants|pair_schedules|pair_messages|outbox_events|pairing_email_outbox)\b/i.test(sql)),false,
-      'secondary publication must not touch legacy pairing, workspace, or outbox tables');
+    assert.equal(executed.some(({sql})=>/\b(?:pairing_weeks|pairing_groups|pairing_participants|pair_schedules|pair_messages|pairing_email_outbox)\b/i.test(sql)),false,
+      'secondary publication must not touch legacy pairing or workspace tables');
+    const notifications=await client.execute(`SELECT event_version,payload_json
+      FROM outbox_events WHERE event_type='pairing.email.requested' ORDER BY id`);
+    assert.equal(notifications.rows.length,3);
+    assert.equal(notifications.rows.every(row=>Number(row.event_version)===2),true);
+    assert.equal(notifications.rows.every(row=>{
+      const payload=JSON.parse(String(row.payload_json));
+      return Object.keys(payload).sort().join(',')==='circle_id,kind,publication_id,user_id'
+        &&payload.circle_id===20&&!String(row.payload_json).includes('@');
+    }),true);
 
     executed.length=0;
     const weeks=await invoke(dataHandler,{
@@ -3608,7 +3633,7 @@ test('selected secondary owner publishes and reads coordination without legacy w
     assert.equal('id' in mine.body.partner,false);
     assert.equal(executed.some(({sql})=>/\b(?:CREATE|ALTER)\b/i.test(sql)),false,
       'secondary reads must not run request-path DDL');
-    assert.equal(executed.some(({sql})=>/\b(?:pairing_weeks|pairing_groups|pairing_participants|pair_schedules|pair_messages|outbox_events|pairing_email_outbox)\b/i.test(sql)),false,
+    assert.equal(executed.some(({sql})=>/\b(?:pairing_weeks|pairing_groups|pairing_participants|pair_schedules|pair_messages|pairing_email_outbox)\b/i.test(sql)),false,
       'secondary reads must not touch legacy pairing, workspace, or outbox tables');
 
     const stale=await invoke(opsHandler,{
@@ -3620,7 +3645,29 @@ test('selected secondary owner publishes and reads coordination without legacy w
     assert.equal(Number((await client.execute(`SELECT COUNT(*) AS count FROM circle_pairing_publications`)).rows[0].count),1);
     assert.equal(Number((await client.execute(`SELECT COUNT(*) AS count FROM pairing_weeks`)).rows[0].count),0);
     assert.equal(Number((await client.execute(`SELECT COUNT(*) AS count FROM pair_schedules`)).rows[0].count),0);
-    assert.equal(Number((await client.execute(`SELECT COUNT(*) AS count FROM outbox_events`)).rows[0].count),0);
+    assert.equal(Number((await client.execute(`SELECT COUNT(*) AS count FROM outbox_events`)).rows[0].count),3);
+
+    process.env.NODE_ENV='development';
+    process.env.RANDORI_LOCAL_RUNTIME='true';
+    process.env.RANDORI_LOCAL_IDENTITY='true';
+    process.env.TURSO_DATABASE_URL=pathToFileURL(join(directory,'pairing.sqlite')).href;
+    process.env.TURSO_AUTH_TOKEN='';
+    process.env.APP_URL='http://127.0.0.1:3000';
+    process.env.CRON_SECRET='cron-secret';
+    const databaseClock=await client.execute(`SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc`);
+    const databaseCycle=resolvePairingCycle({now:String(databaseClock.rows[0].now_utc)}).cycleId;
+    const localWeekly=createOpsHandler({isWeeklyDue:()=>true});
+    const weekly=await withFixedNow('2099-01-04T08:15:00.000Z',()=>invoke(localWeekly,{
+      method:'GET',url:'/api/cron/weekly',query:{endpoint:'weekly'},
+      headers:{host:'127.0.0.1:3000','x-cron-secret':'cron-secret'},
+    }));
+    assert.equal(weekly.status,200,JSON.stringify(weekly.body));
+    assert.deepEqual(weekly.body.secondary,{attempted:1,created:0,existing:1,failed:0});
+    const primaryWeeks=await client.execute(`SELECT week_label FROM pairing_weeks ORDER BY id`);
+    assert.equal(primaryWeeks.rows.length,1,
+      'verified local transport must allow the production-scoped primary publication');
+    assert.equal(primaryWeeks.rows[0].week_label,databaseCycle,
+      'production-scoped local weekly publication must retain the database clock');
   }finally{
     client.close();
     rmSync(directory,{recursive:true,force:true});

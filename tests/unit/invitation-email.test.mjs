@@ -13,6 +13,7 @@ import {
   deliverInvitationEmails,
   invitationEmailConfiguration,
   invitationEmailKeyRotationStatus,
+  invitationKeyRing,
   invitationEmailPayload,
   invitationEmailStatus,
   INVITATION_EMAIL_DRAIN_BATCH_SIZE,
@@ -25,6 +26,10 @@ import {
   sealInvitationEmailCredential,
 } from '../../api/_invitation-email.js';
 import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import {
+  adoptCredentialKeyControl,
+  advanceCredentialKeyControl,
+} from '../support/credential-key-control.mjs';
 
 const resources=[];
 const databasePaths=new WeakMap();
@@ -60,6 +65,7 @@ async function fixture(){
   const initial=await inspectMigrationState(db);
   await applyMigrations(db,{expectedStateFingerprint:initial.stateFingerprint,
     retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
+  await adoptCredentialKeyControl(db,invitationKeyRing());
   await db.batch([
     `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_admin,is_demo)
       VALUES (1,'owner@example.test','!owner','Owner <Lead>','#111111',1,0)`,
@@ -246,6 +252,9 @@ test('rotation readiness retains only a live invitation credential that can stil
   process.env.INVITATION_EMAIL_ENCRYPTION_PREVIOUS_KEYS=JSON.stringify([
     {version:1,key:firstKey},
   ]);
+  await advanceCredentialKeyControl(db,invitationKeyRing(),{
+    expectedVersion:1,expectedGeneration:1,
+  });
   const compatible=await invitationEmailKeyRotationStatus(db);
   assert.equal(compatible.ready,true);
   assert.deepEqual(compatible.versions,{1:1});
@@ -337,12 +346,13 @@ test('legacy invitation resend material blocks retirement only while it remains 
 test('rotation readiness cannot omit a live v1 invite during pending-to-delivered transition',async()=>{
   const db=await fixture();
   const invitation=await seed(db,{email:'snapshot-race@example.test'});
-  let reads=0;
+  let reads=0,materialReads=0;
   const racingDb={
     async execute(statement){
       reads+=1;
       const snapshot=await db.execute(statement);
-      if(reads===1){
+      if(String(statement?.sql||statement).includes('WITH invitation_events')){
+        materialReads+=1;
         await db.execute({sql:`UPDATE outbox_events SET status='delivered'
           WHERE json_extract(payload_json,'$.invitation_id')=?`,args:[invitation.id]});
       }
@@ -351,7 +361,8 @@ test('rotation readiness cannot omit a live v1 invite during pending-to-delivere
   };
 
   const duringTransition=await invitationEmailKeyRotationStatus(racingDb);
-  assert.equal(reads,1,'one statement must own both actionable and retained projections');
+  assert.equal(materialReads,1,'one statement must own both actionable and retained projections');
+  assert.equal(reads,2,'rotation status also reads the independent durable control');
   assert.equal(duringTransition.actionable,1);
   assert.equal(duringTransition.retained,0);
   assert.equal(duringTransition.legacy_v1,1);

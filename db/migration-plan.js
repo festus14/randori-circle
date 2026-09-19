@@ -99,6 +99,13 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'b9425687e2e8f20279cc6f6b1237c08ae53fff1ae9ed082c3e836556825ad92e',
     checksum:'68ab99ce04359e5ff3e30443e71ca6c92fd70491fd7ac7718a9e529c42f044c0',
   }),
+  Object.freeze({
+    version:15,
+    name:'durable-credential-key-control',
+    description:'Pre-seeded per-purpose controls for explicit monotonic credential-key adoption and advance.',
+    operationsChecksum:'5544165b9d642c8695d82134625cad38918a9f7b58f7b86e8b163d40ce755dd1',
+    checksum:'87085afbdce62004820116903feb2c0607f7366676493cd2fa8e21605a2f2ce0',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){

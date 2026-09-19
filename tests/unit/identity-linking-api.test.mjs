@@ -10,10 +10,15 @@ import bcrypt from 'bcryptjs';
 
 import authHandler from '../../api/auth.js';
 import {issueSession,verifyRequestAuth} from '../../api/_db.js';
-import {GOOGLE_ISSUER,observeGoogleProviderEmail} from '../../api/_identity-linking.js';
+import {
+  GOOGLE_ISSUER,
+  identityEmailHashConfiguration,
+  observeGoogleProviderEmail,
+} from '../../api/_identity-linking.js';
 import {EXECUTABLE_MIGRATIONS} from '../../db/executable-migrations.js';
 import {applyMigrations,inspectMigrationState,prepareMigrationConnection} from '../../db/migration-runner.js';
 import {googleProviderFetch} from '../support/google-oidc.mjs';
+import {adoptCredentialKeyControl} from '../support/credential-key-control.mjs';
 
 const originalFetch=globalThis.fetch;
 const resources=[];
@@ -54,7 +59,7 @@ function cookiesFrom(headers){
 
 function cookieFor(token){ return `randori_session=${encodeURIComponent(token)}`; }
 
-async function fixture({throughVersion=9,identityManagement=true}={}){
+async function fixture({throughVersion=15,identityManagement=true}={}){
   const directory=mkdtempSync(join(tmpdir(),'randori-identity-linking-api-'));
   const url=pathToFileURL(join(directory,'database.sqlite')).href;
   process.env.NODE_ENV='production';
@@ -74,6 +79,7 @@ async function fixture({throughVersion=9,identityManagement=true}={}){
   await applyMigrations(db,{expectedStateFingerprint:state.stateFingerprint,
     migrations,
     retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
+  if(throughVersion>=15) await adoptCredentialKeyControl(db,identityEmailHashConfiguration());
   resources.push(()=>{ db.close(); rmSync(directory,{recursive:true,force:true}); });
   return db;
 }
