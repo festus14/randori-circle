@@ -24,6 +24,10 @@ on:
         description: Empty for status; exact lowercase fingerprint returned by the immediately preceding status for mutations
         required: false
         type: string
+      target_version:
+        description: Empty for status/adopt; exact next migration version for apply
+        required: false
+        type: string
       confirmation:
         description: Type INSPECT_PRODUCTION_DATABASE for status or MIGRATE_PRODUCTION_DATABASE for adopt/apply
         required: true
@@ -52,6 +56,7 @@ jobs:
           OPERATION: ${{ inputs.operation }}
           CONFIRMATION: ${{ inputs.confirmation }}
           EXPECTED_STATE: ${{ inputs.expected_state_fingerprint }}
+          TARGET_VERSION: ${{ inputs.target_version }}
           REHEARSAL_RUN_ID: ${{ inputs.rehearsal_run_id }}
           REHEARSAL_RUN_ATTEMPT: ${{ inputs.rehearsal_run_attempt }}
         run: |
@@ -62,9 +67,15 @@ jobs:
           if [[ "${OPERATION}" = 'status' ]]; then
             test "${CONFIRMATION}" = 'INSPECT_PRODUCTION_DATABASE'
             test -z "${EXPECTED_STATE}"
+            test -z "${TARGET_VERSION}"
           else
             test "${CONFIRMATION}" = 'MIGRATE_PRODUCTION_DATABASE'
             [[ "${EXPECTED_STATE}" =~ ^[a-f0-9]{64}$ ]]
+            if [[ "${OPERATION}" = 'apply' ]]; then
+              [[ "${TARGET_VERSION}" =~ ^[1-9][0-9]*$ ]]
+            else
+              test -z "${TARGET_VERSION}"
+            fi
           fi
 
       - name: Check out the latest default branch
@@ -107,6 +118,7 @@ jobs:
           MIGRATION_REHEARSAL_RUN_ID: ${{ inputs.rehearsal_run_id }}
           MIGRATION_REHEARSAL_RUN_ATTEMPT: ${{ inputs.rehearsal_run_attempt }}
           MIGRATION_EXPECTED_STATE: ${{ inputs.expected_state_fingerprint }}
+          MIGRATION_TARGET_VERSION: ${{ inputs.target_version }}
           MIGRATION_GITHUB_ENVIRONMENT: turso-production-migration
           TURSO_PRODUCTION_MIGRATIONS_ENABLED: ${{ vars.TURSO_PRODUCTION_MIGRATIONS_ENABLED }}
           TURSO_ORGANIZATION: ${{ vars.TURSO_ORGANIZATION }}
@@ -130,6 +142,7 @@ jobs:
             --rehearsal-run-id "${MIGRATION_REHEARSAL_RUN_ID}" \
             --rehearsal-run-attempt "${MIGRATION_REHEARSAL_RUN_ATTEMPT}" \
             --expected-state "${MIGRATION_EXPECTED_STATE}" \
+            --target-version "${MIGRATION_TARGET_VERSION}" \
             --artifact-dir "${RUNNER_TEMP}/public-artifacts"
 
       - name: Upload sanitized migration result

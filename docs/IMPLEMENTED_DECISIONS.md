@@ -1,11 +1,10 @@
 # Randori Circle implemented decision log
 
-Status: accepted through release head `b88dcbf`, plus candidate PR #96
+Status: accepted through the current rolling release
 
 Last reviewed: 2026-09-19
 
-Scope: release branch through `b88dcbf3a97454f121f8c6149760a9ac87c27a41`,
-plus the consolidated notification candidate PR #96
+Scope: current rolling release and independently reviewed candidate increments
 
 This log records decisions that govern the application being shipped now. The
 [production architecture plan](PRODUCTION_ARCHITECTURE_PLAN.md) describes a
@@ -41,7 +40,8 @@ v6 adds the outbox and its audit history, and v7 adds pending verified-email
 activation. Version v8 adds password-reset credentials and session-scoped
 recent-authentication evidence. Version v9 adds hashed provider-email
 observations and a redacted identity lifecycle audit. The protected production workflow applies no
-more than one pending version per inspected fingerprint and approval.
+more than one pending version per fresh rehearsal, inspected fingerprint, and
+approval.
 
 ## ID-01: Ship the useful weekly loop before a platform rewrite
 
@@ -1117,3 +1117,34 @@ credentials are configured.
 **Recovery.** There is no schema, server route, provider secret, or external
 request to reverse. Roll back the client assets normally. Already downloaded
 copies remain under each member's calendar retention and sharing controls.
+
+## ID-28: Advance production schema by one explicitly approved version
+
+Status: implemented in issue #134 as a protected migration-control hardening
+increment; no application schema migration.
+
+**Decision.** A production apply names exactly one `target_version`, and that
+target must be the immediate successor of both the signed rehearsal's source
+version and the live managed database version. Status may report the complete
+ordered backlog, but only its `nextVersion` is actionable. The apply runner
+receives only the immutable executable-migration prefix ending at that target,
+so later migrations present in the same repository commit cannot execute under
+the approval.
+
+The rehearsal attestation now binds the exact source migration-state
+fingerprint in addition to source classification and version. Status and apply
+recompute that source state against the protected database. After adoption or
+apply changes the source, the old attestation fails closed; the next step needs
+a fresh restore rehearsal, fresh status artifact, fresh expected fingerprint,
+and separate protected approval. Unmanaged databases still require exact-prefix
+adoption before any apply.
+
+**Alternatives.** Applying every pending migration under one approval restores
+service faster but lets a single authorization span independently reviewed
+changes and widens rollback ambiguity. Reusing one rehearsal across sequential
+applies proves only the original source, not the state created by the previous
+mutation. Running historical workflow commits conflicts with the latest-main
+guard, while manual SQL bypasses checksums, ledger ownership, transaction
+fingerprints, and redacted audit evidence. An explicit one-step target with
+fresh evidence preserves those controls while allowing an old production
+database to catch up deliberately.

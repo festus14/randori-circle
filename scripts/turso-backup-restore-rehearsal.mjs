@@ -26,14 +26,14 @@ import {
 
 export const REHEARSAL_FORMAT='randori.turso-backup-restore-rehearsal.v1';
 export const REHEARSAL_JOURNAL_FORMAT='randori.turso-backup-restore-journal.v1';
-export const REHEARSAL_ATTESTATION_FORMAT='randori.turso-rehearsal-attestation.v1';
+export const REHEARSAL_ATTESTATION_FORMAT='randori.turso-rehearsal-attestation.v2';
 export const REHEARSAL_RPO_TARGET_MS=30*60*1000;
 export const REHEARSAL_RTO_TARGET_MS=15*60*1000;
 
 const REHEARSAL_WORKFLOW_PATH='.github/workflows/turso-backup-restore-rehearsal.yml';
 const REHEARSAL_ENVIRONMENT='turso-migration-rehearsal';
-const ATTESTATION_KEY_DOMAIN='randori:turso-rehearsal-attestation:v1:key';
-const ATTESTATION_SIGNATURE_DOMAIN='randori:turso-rehearsal-attestation:v1:payload';
+const ATTESTATION_KEY_DOMAIN='randori:turso-rehearsal-attestation:v2:key';
+const ATTESTATION_SIGNATURE_DOMAIN='randori:turso-rehearsal-attestation:v2:payload';
 const MAX_ATTESTATION_AGE_MS=30*60*1000;
 
 const PUBLIC_MESSAGES=Object.freeze({
@@ -332,11 +332,13 @@ function validateAttestationPayload(payload,expectedContext,now,maxAgeMs){
     ||payload.schema.latestMigrationVersion!==LATEST_MIGRATION_VERSION) attestationFailure();
 
   if(!exactObjectKeys(payload.migration,[
-    'sourceClassification','sourceVersion','finalVersion','adoptedOnRestore','appliedVersions',
+    'sourceClassification','sourceVersion','sourceStateFingerprint','finalVersion',
+    'adoptedOnRestore','appliedVersions',
   ])||!['managed','unmanaged'].includes(payload.migration.sourceClassification)
     ||!Number.isSafeInteger(payload.migration.sourceVersion)
     ||payload.migration.sourceVersion<1
     ||payload.migration.sourceVersion>LATEST_MIGRATION_VERSION
+    ||!digest(payload.migration.sourceStateFingerprint)
     ||payload.migration.finalVersion!==LATEST_MIGRATION_VERSION
     ||payload.migration.adoptedOnRestore
       !==(payload.migration.sourceClassification==='unmanaged')
@@ -917,6 +919,7 @@ function createRehearsalAttestation(candidate,safety,key,issuedAt){
     migration:{
       sourceClassification:candidate.contract.classification,
       sourceVersion:candidate.contract.version,
+      sourceStateFingerprint:candidate.contract.stateFingerprint,
       finalVersion:candidate.migration.toVersion,
       adoptedOnRestore:candidate.migration.adopted,
       appliedVersions:[...candidate.migration.appliedVersions],

@@ -46,29 +46,67 @@ Store these environment variables:
 
 `GITHUB_TOKEN` is provided by Actions with only `actions: read` and `contents: read`. Credentials are scoped to the migration step; checkout, validation, setup, and dependency installation do not receive them. All external actions are pinned to immutable commits.
 
-## Current v7 migration sequence
+## Version-agnostic stepwise migration sequence
 
-The successful rehearsal and every migration operation must use the same current `main` commit. A code change invalidates the attestation, so run the rehearsal again after merging this workflow.
+The successful rehearsal and every migration operation must use the same current
+`main` commit. A code change invalidates the attestation. A production mutation
+also invalidates it: each adopted prefix or applied version changes the source
+state, so the next step requires a new rehearsal and a new status result.
 
-1. Run **Turso backup restore rehearsal** on `main` with `RESTORE_DISPOSABLE_ONLY`. Wait for the entire workflow, including cleanup and signed-artifact upload, to succeed.
-2. Copy its numeric run ID and run attempt. Within the configured attestation lifetime, dispatch **Turso production migration** with:
+1. Run **Turso backup restore rehearsal** on current `main` with
+   `RESTORE_DISPOSABLE_ONLY`. Wait for cleanup and the signed-artifact upload.
+2. Copy its numeric run ID and attempt. Within the attestation lifetime,
+   dispatch **Turso production migration** with:
    - operation `status`;
+   - an empty target version;
    - an empty state fingerprint; and
    - confirmation `INSPECT_PRODUCTION_DATABASE`.
-3. Read `migration-result.json` from the result artifact. Do not copy a fingerprint from logs, an older run, or another database.
-4. Require the immediately preceding managed version with only one migration pending. For the identity-management rollout, that is managed v8 with only migration v9 pending. If the database is older or unmanaged, stop and complete each separately reviewed historical-prefix rollout first; this workflow deliberately refuses multiple pending versions. Migration v6 must already provide the durable outbox used by authentication email.
-5. Temporarily enable mutations, dispatch `apply` with the inspected fingerprint and mutation confirmation, then disable mutations again.
-6. Run a final `status`. Require managed v9, no pending versions, and a new exact fingerprint. Configure an independent `IDENTITY_EMAIL_HASH_KEY` with version `1` before enabling `IDENTITY_MANAGEMENT_ENABLED`; a missing or malformed key/version fails the capability closed. Migration v5 invalidated legacy stateless JWTs, so users had to sign in again after that earlier rollout.
+3. Read `migration-result.json` from the result artifact. Do not copy a
+   fingerprint from logs, an older run, or another database. The ordered
+   `pendingVersions` is informational; only `nextVersion` is actionable.
+4. If the state is unmanaged, temporarily enable mutations and dispatch
+   `adopt` with the status fingerprint, an empty target version, and confirmation
+   `MIGRATE_PRODUCTION_DATABASE`. Disable mutations immediately. Adoption writes
+   only the exact historical ledger prefix. Return to step 1 before applying.
+5. If the state is managed and `nextVersion` is an integer, review that one
+   migration. Temporarily enable mutations and dispatch `apply` with the exact
+   status fingerprint, `target_version` equal to `nextVersion`, the same fresh
+   rehearsal run/attempt, and confirmation `MIGRATE_PRODUCTION_DATABASE`.
+   Disable mutations immediately after the run.
+6. Return to step 1 after every successful mutation. Never use the prior
+   rehearsal or fingerprint for the next version. Finish only when a fresh
+   rehearsal plus `status` reports the repository latest version,
+   `pendingVersions: []`, `nextVersion: null`, and `capabilities.apply: false`.
 
-Each mutation requires a freshly supplied 64-character lowercase fingerprint. An unmanaged database cannot be applied before adoption, and adoption cannot change application schema or data. Apply allows a current-version no-op but refuses when more than one version is pending. That limit prevents a single approval from spanning multiple commits; stop and design a version-by-version rollout instead.
+Each mutation requires a freshly supplied 64-character lowercase fingerprint.
+An unmanaged database cannot be applied before adoption, and adoption cannot
+change application schema or data. Apply has no no-op or catch-up mode: the
+explicit target must equal both the attested source version plus one and the
+live managed version plus one. The runner passes only the migration prefix
+through that target to the transactional engine, so later checked-in migrations
+cannot execute under the same approval.
+
+The redacted status and mutation artifact uses
+`randori.turso-production-migration.v2`; version 1 artifacts do not carry an
+explicit target and are not authorization inputs for this workflow.
 
 ## Failure and recovery
 
-Any nonzero result means stop. Do not rerun a mutation with the same fingerprint, because a commit failure can have an unknown outcome. Run `status` with a still-valid same-commit rehearsal or perform a new rehearsal, establish the authoritative current state, and review the result.
+Any nonzero result means stop. Do not rerun a mutation with the same fingerprint,
+because a commit failure can have an unknown outcome. Perform a new rehearsal,
+run a new status, establish the authoritative current state, and review the
+result. A previous attestation is intentionally rejected after any source-state
+change, including a successful apply or adoption.
 
 There are no automatic down migrations. The rollback asset is the verified PITR capability and its protected runbook, not reverse SQL. If an applied migration causes an incident, keep database administration exclusive, preserve evidence, and make a deliberate restore/cutover decision using the Turso recovery procedure.
 
-The v7 activation, v8 recovery/recent-auth, and v9 identity-observation/audit tables and indexes are additive and build on the v6 outbox. They may run with either protected expected `block_writes` value, provided both Turso metadata surfaces agree with it. A future destructive or long-running migration must introduce and rehearse a separate maintenance protocol; changing this variable is not by itself sufficient authorization for such work.
+The current migrations are ordered and independently reviewed. Their presence in
+one repository commit does not authorize batching them. They may run with either
+protected expected `block_writes` value only when the selected migration's own
+reviewed contract permits it and both Turso metadata surfaces agree. A future
+destructive or long-running migration must introduce and rehearse a separate
+maintenance protocol; changing this variable is not by itself sufficient
+authorization for such work.
 
 Turso's token and metadata endpoints are name-addressed. The workflow rechecks the immutable `DbId` around token creation and before mutation, while repository concurrency prevents its own rehearsal/migration jobs from overlapping. Operators must still prevent out-of-band database rename, delete, or recreate operations during the window because the provider does not offer an atomic ID-conditioned token request.
 

@@ -187,7 +187,13 @@ Expect one primary circle, at least one active owner, the intended active member
 
 ### Protected schema migration
 
-Do not run the local `db:migrate` command against Turso. Remote status, adoption, and apply operations are available only through the manually dispatched, protected GitHub workflow and remain mutation-disabled by default. A successful signed PITR rehearsal from the exact current `main` commit is mandatory. See [docs/TURSO_PRODUCTION_MIGRATION.md](docs/TURSO_PRODUCTION_MIGRATION.md) for setup and the required `status → adopt (if needed) → status → apply → status` sequence.
+Do not run the local `db:migrate` command against Turso. Remote status, adoption,
+and apply operations are available only through the manually dispatched,
+protected GitHub workflow and remain mutation-disabled by default. Each
+adoption or one-version apply requires its own successful signed PITR rehearsal
+from the exact current `main` commit, a fresh status fingerprint, and an explicit
+next-version target for apply. See
+[docs/TURSO_PRODUCTION_MIGRATION.md](docs/TURSO_PRODUCTION_MIGRATION.md).
 
 ### AI / Groq Router (video-aware)
 

@@ -79,7 +79,19 @@ The owner acknowledges routine failures within four hours after the rehearsal or
 
 ## Evidence and failure recovery
 
-The success artifact `rehearsal-summary.json` is itself a canonical `randori.turso-rehearsal-attestation.v1` envelope, rather than an unsigned projection plus a nested signature. Its domain-separated HMAC payload binds the repository ID/name, workflow path/ref/SHA, protected environment, run ID/attempt, checked-out commit, issue/expiry times, local schema manifest and executable-migration checksums, source/final migration state, requested and provider-authoritative PITR instant, source/restore/backup-reference digests, every evidence/comparison digest, aggregate table/row/sequence counts, exact RPO/RTO policy and observations, preservation results, and all safety results. The signing lifetime is capped at 30 minutes and `validUntil` is the earliest source, pre-migration restore, or post-migration evidence expiry.
+The success artifact `rehearsal-summary.json` is itself a canonical
+`randori.turso-rehearsal-attestation.v2` envelope, rather than an unsigned
+projection plus a nested signature. Its domain-separated HMAC payload binds the
+repository ID/name, workflow path/ref/SHA, protected environment, run
+ID/attempt, checked-out commit, issue/expiry times, local schema manifest and
+executable-migration checksums, exact source classification/version/state
+fingerprint, final migration state, requested and provider-authoritative PITR
+instant, source/restore/backup-reference digests, every evidence/comparison
+digest, aggregate table/row/sequence counts, exact RPO/RTO policy and
+observations, preservation results, and all safety results. The signing lifetime
+is capped at 30 minutes and `validUntil` is the earliest source, pre-migration
+restore, or post-migration evidence expiry. Version 1 evidence cannot authorize
+the stepwise production migrator.
 
 The workflow uploads that signed success artifact only when both the forward rehearsal and the separate cleanup step succeed. `cleanup-summary.json` is uploaded separately for diagnosis. Both are allowlisted and sanitized; they never contain credentials, raw database names/IDs, URLs, tokens, SQL, row values, raw errors, or the private journal.
 
