@@ -776,8 +776,8 @@ restore rehearsal steps are in `docs/KEY_ROTATION.md`.
 ## ID-20: Purge chat only through mapped, fenced, evidence-gated room jobs
 
 Status: implemented as disabled-by-default migration v11 and protected tooling;
-production deletion remains blocked on operational evidence. ID-19 is reserved
-for the independently developed key-rotation decision.
+production deletion remains blocked on operational evidence. ID-19 records the
+independently delivered key-rotation decision above.
 
 **Decision.** Private-beta pair chat has a 90-day active-database retention
 window. Expiry is strict and calculated from SQLite database time with

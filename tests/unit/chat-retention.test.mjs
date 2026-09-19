@@ -9,7 +9,7 @@ import {
   adoptChatRetentionScope,
   CHAT_RETENTION_POLICY,
   ChatRetentionError,
-  chatRetentionEvidenceScopeDigest,
+  chatRetentionEvidenceBindingDigest,
   claimChatRetentionRun,
   enqueueNextChatRetentionRun,
   heartbeatChatRetentionLease,
@@ -95,11 +95,16 @@ async function retentionRequest(db,dbClock,requestedScope=DEFAULT_SCOPE){
   });
   const sourceMaxMessageId=Number(result.rows?.[0]?.source_max_message_id||0);
   assert.ok(sourceMaxMessageId>0,'evidence fixture requires a non-empty exact room');
-  const scopeBindingDigest=chatRetentionEvidenceScopeDigest(requestedScope,sourceMaxMessageId);
+  const backup={...dbClock.backup,sourceMaxMessageId};
+  const exported={...dbClock.exported,sourceMaxMessageId};
   return {
     scope:requestedScope,
-    backup:{...dbClock.backup,sourceMaxMessageId,scopeBindingDigest},
-    exported:{...dbClock.exported,sourceMaxMessageId,scopeBindingDigest},
+    backup:{...backup,scopeBindingDigest:chatRetentionEvidenceBindingDigest({
+      kind:'backup',scope:requestedScope,...backup,
+    })},
+    exported:{...exported,scopeBindingDigest:chatRetentionEvidenceBindingDigest({
+      kind:'export',scope:requestedScope,...exported,
+    })},
   };
 }
 
@@ -302,13 +307,29 @@ test('backup and export evidence must cover the cutoff and complete export befor
       mode:'purge',...request,
       backup:{...request.backup,sourceMaxMessageId:2},
     }),error=>error instanceof ChatRetentionError&&error.code==='RETENTION_EVIDENCE_SOURCE_MISMATCH');
-    const missingBinding=chatRetentionEvidenceScopeDigest(DEFAULT_SCOPE,999);
+    const missingBackup={...request.backup,sourceMaxMessageId:999};
+    const missingExport={...request.exported,sourceMaxMessageId:999};
     await assert.rejects(()=>enqueueNextChatRetentionRun(item.db,{
       mode:'purge',...request,
-      backup:{...request.backup,sourceMaxMessageId:999,scopeBindingDigest:missingBinding},
-      exported:{...request.exported,sourceMaxMessageId:999,scopeBindingDigest:missingBinding},
+      backup:{...missingBackup,scopeBindingDigest:chatRetentionEvidenceBindingDigest({
+        kind:'backup',scope:DEFAULT_SCOPE,...missingBackup,
+      })},
+      exported:{...missingExport,scopeBindingDigest:chatRetentionEvidenceBindingDigest({
+        kind:'export',scope:DEFAULT_SCOPE,...missingExport,
+      })},
     }),error=>error instanceof ChatRetentionError&&error.code==='RETENTION_EVIDENCE_SOURCE_MISMATCH');
-    assert.equal(Number((await item.db.execute(`SELECT COUNT(*) AS count FROM chat_retention_runs`)).rows[0].count),0);
+    const first=await enqueueNextChatRetentionRun(item.db,{mode:'purge',...request});
+    assert.equal(first.created,true);
+    const repeated=await enqueueNextChatRetentionRun(item.db,{mode:'purge',...request});
+    assert.deepEqual(repeated,{created:false,runId:first.runId,cutoffAt:first.cutoffAt});
+    const changedBackup={...request.backup,digest:'c'.repeat(64)};
+    changedBackup.scopeBindingDigest=chatRetentionEvidenceBindingDigest({
+      kind:'backup',scope:request.scope,...changedBackup,
+    });
+    await assert.rejects(()=>enqueueNextChatRetentionRun(item.db,{
+      mode:'purge',...request,backup:changedBackup,
+    }),error=>error instanceof ChatRetentionError&&error.code==='RETENTION_EVIDENCE_CONFLICT');
+    assert.equal(Number((await item.db.execute(`SELECT COUNT(*) AS count FROM chat_retention_runs`)).rows[0].count),1);
   }finally{ item.close(); }
 });
 

@@ -89,9 +89,12 @@ For every cutoff, the protected operator must complete these steps in order:
 6. enqueue the dry run or purge only after export completion and then backup
    completion.
 
-The worker rejects future evidence, mismatched or missing room anchors, evidence
-that does not cover the cutoff, and backup completion earlier than export
-completion. GitHub artifacts contain
+Each artifact binding covers its kind, artifact digest, exact normalized room,
+source high-water, through time, and completion time. Both bindings are folded
+into the durable run key and re-derived from stored run evidence before every
+batch. The worker rejects future evidence, mismatched or missing room anchors,
+evidence that does not cover the cutoff, and backup completion earlier than
+export completion. GitHub artifacts contain
 only aggregate counts, timings, booleans, modes, statuses, and reason codes.
 Chat content, content hashes, user/circle/week/pair/job identifiers, database
 URLs, SQL, raw errors, IP addresses, and user agents are forbidden.

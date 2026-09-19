@@ -74,14 +74,23 @@ function evidence(value,label){
   });
 }
 
-export function chatRetentionEvidenceScopeDigest(scopeValue,sourceMaxMessageId){
+export function chatRetentionEvidenceBindingDigest({kind,scope:scopeValue,sourceMaxMessageId,
+  digest,throughAt,completedAt}={}){
+  const evidenceKind=String(kind||'');
+  if(evidenceKind!=='backup'&&evidenceKind!=='export'){
+    throw new TypeError('invalid retention evidence kind');
+  }
   const normalized=scope(scopeValue);
   const maximum=integer(sourceMaxMessageId,1,Number.MAX_SAFE_INTEGER,
     'retention source maximum message');
+  const artifactDigest=String(digest||'').trim();
+  if(!DIGEST_PATTERN.test(artifactDigest)) throw new TypeError('invalid retention evidence digest');
   return createHash('sha256').update([
     'randori-chat-retention-evidence:v1',CHAT_RETENTION_POLICY.version,
-    normalized.scopeKey,normalized.circleId??'local',normalized.weekId,
-    normalized.pairGroupId,maximum,
+    evidenceKind,normalized.scopeKey,normalized.circleId??'local',normalized.weekId,
+    normalized.pairGroupId,maximum,artifactDigest,
+    canonicalInstant(throughAt,'retention evidence through time'),
+    canonicalInstant(completedAt,'retention evidence completion time'),
   ].join('|')).digest('hex');
 }
 
@@ -165,15 +174,14 @@ function validateGate({backup,exported},clock,requestedScope){
   const exportEvidence=evidence(exported,'export');
   const values=[backupEvidence.throughAt,backupEvidence.completedAt,
     exportEvidence.throughAt,exportEvidence.completedAt];
-  const expectedScopeBinding=chatRetentionEvidenceScopeDigest(
-    requestedScope,backupEvidence.sourceMaxMessageId,
-  );
+  const expectedBackupBinding=chatRetentionEvidenceBindingDigest({
+    kind:'backup',scope:requestedScope,...backupEvidence,
+  });
+  const expectedExportBinding=chatRetentionEvidenceBindingDigest({
+    kind:'export',scope:requestedScope,...exportEvidence,
+  });
   if(backupEvidence.sourceMaxMessageId!==exportEvidence.sourceMaxMessageId){
     throw new ChatRetentionError('RETENTION_EVIDENCE_SOURCE_MISMATCH');
-  }
-  if(backupEvidence.scopeBindingDigest!==expectedScopeBinding
-    ||exportEvidence.scopeBindingDigest!==expectedScopeBinding){
-    throw new ChatRetentionError('RETENTION_EVIDENCE_SCOPE_MISMATCH');
   }
   if(values.some(value=>value>clock.now)
     ||backupEvidence.throughAt<clock.cutoff||exportEvidence.throughAt<clock.cutoff
@@ -182,10 +190,23 @@ function validateGate({backup,exported},clock,requestedScope){
     ||exportEvidence.completedAt>backupEvidence.completedAt){
     throw new ChatRetentionError('RETENTION_EVIDENCE_ORDER_INVALID');
   }
+  if(backupEvidence.scopeBindingDigest!==expectedBackupBinding
+    ||exportEvidence.scopeBindingDigest!==expectedExportBinding){
+    throw new ChatRetentionError('RETENTION_EVIDENCE_SCOPE_MISMATCH');
+  }
   return Object.freeze({
     backup:backupEvidence,exported:exportEvidence,
     sourceMaxMessageId:backupEvidence.sourceMaxMessageId,
   });
+}
+
+function retentionRunKey({mode:runMode,scope:normalized,cutoffAt,sourceMaxMessageId,
+  backupBindingDigest,exportBindingDigest}){
+  return createHash('sha256').update([
+    CHAT_RETENTION_POLICY.version,runMode,normalized.scopeKey,
+    normalized.weekId,normalized.pairGroupId,cutoffAt,sourceMaxMessageId,
+    backupBindingDigest,exportBindingDigest,
+  ].join('|')).digest('hex');
 }
 
 function auditStatement({runId,action,fromStatus,toStatus,itemCount=0,durationMs=0,reasonCode=null}){
@@ -425,6 +446,32 @@ export async function enqueueNextChatRetentionRun(db,{mode:modeValue,scope:scope
       args:[CHAT_RETENTION_POLICY.version,CHAT_RETENTION_POLICY.retentionDays],
     })).rows?.[0];
     if(Number(control?.enabled)!==1) throw new ChatRetentionError('RETENTION_DISABLED');
+    const sourceMaxMessageId=gate.sourceMaxMessageId;
+    const runKey=retentionRunKey({
+      mode:runMode,scope:requestedScope,cutoffAt:clock.cutoff,sourceMaxMessageId,
+      backupBindingDigest:gate.backup.scopeBindingDigest,
+      exportBindingDigest:gate.exported.scopeBindingDigest,
+    });
+    const existing=(await transaction.execute({
+      sql:`SELECT id,run_key,source_max_message_id,backup_evidence_digest,
+        backup_through_at,backup_completed_at,export_evidence_digest,
+        export_through_at,export_completed_at FROM chat_retention_runs
+        WHERE scope_key=? AND week_id=? AND pair_group_id=? AND cutoff_at=? AND mode=?`,
+      args:[requestedScope.scopeKey,requestedScope.weekId,requestedScope.pairGroupId,
+        clock.cutoff,runMode],
+    })).rows?.[0];
+    if(existing){
+      const exact=String(existing.run_key)===runKey
+        &&Number(existing.source_max_message_id)===sourceMaxMessageId
+        &&String(existing.backup_evidence_digest)===gate.backup.digest
+        &&String(existing.backup_through_at)===gate.backup.throughAt
+        &&String(existing.backup_completed_at)===gate.backup.completedAt
+        &&String(existing.export_evidence_digest)===gate.exported.digest
+        &&String(existing.export_through_at)===gate.exported.throughAt
+        &&String(existing.export_completed_at)===gate.exported.completedAt;
+      if(!exact) throw new ChatRetentionError('RETENTION_EVIDENCE_CONFLICT');
+      return Object.freeze({created:false,runId:Number(existing.id),cutoffAt:clock.cutoff});
+    }
     const anchor=await transaction.execute({
       sql:`SELECT COUNT(*) AS count FROM pair_messages
         WHERE id=? AND week_id=? AND pair_group_id=?`,
@@ -459,11 +506,6 @@ export async function enqueueNextChatRetentionRun(db,{mode:modeValue,scope:scope
       scopeKey:String(candidate.scope_key),circleId:candidate.circle_id,
       weekId:Number(candidate.week_id),pairGroupId:Number(candidate.pair_group_id),
     });
-    const sourceMaxMessageId=gate.sourceMaxMessageId;
-    const runKey=createHash('sha256').update([
-      CHAT_RETENTION_POLICY.version,runMode,candidateScope.scopeKey,
-      candidateScope.weekId,candidateScope.pairGroupId,clock.cutoff,sourceMaxMessageId,
-    ].join('|')).digest('hex');
     const inserted=await transaction.execute({
       sql:`INSERT INTO chat_retention_runs
         (run_key,mode,scope_key,circle_id,week_id,pair_group_id,cutoff_at,source_max_message_id,status,
@@ -471,19 +513,22 @@ export async function enqueueNextChatRetentionRun(db,{mode:modeValue,scope:scope
          backup_evidence_digest,backup_through_at,backup_completed_at,
          export_evidence_digest,export_through_at,export_completed_at,created_at,updated_at)
         VALUES (?,?,?,?,?,?,?,?,'pending',0,0,0,0,?, ?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(run_key) DO NOTHING`,
+        ON CONFLICT(scope_key,week_id,pair_group_id,cutoff_at,mode) DO NOTHING`,
       args:[runKey,runMode,candidateScope.scopeKey,candidateScope.circleId,
         candidateScope.weekId,candidateScope.pairGroupId,clock.cutoff,sourceMaxMessageId,failures,clock.now,
         gate.backup.digest,gate.backup.throughAt,gate.backup.completedAt,
         gate.exported.digest,gate.exported.throughAt,gate.exported.completedAt,clock.now,clock.now],
     });
     const run=(await transaction.execute({
-      sql:`SELECT id,source_max_message_id,backup_evidence_digest,backup_through_at,backup_completed_at,
+      sql:`SELECT id,run_key,source_max_message_id,backup_evidence_digest,backup_through_at,backup_completed_at,
         export_evidence_digest,export_through_at,export_completed_at
-        FROM chat_retention_runs WHERE run_key=?`,args:[runKey],
+        FROM chat_retention_runs WHERE scope_key=? AND week_id=? AND pair_group_id=?
+          AND cutoff_at=? AND mode=?`,args:[candidateScope.scopeKey,candidateScope.weekId,
+        candidateScope.pairGroupId,clock.cutoff,runMode],
     })).rows?.[0];
     if(!run) throw new ChatRetentionError('RETENTION_RUN_INTEGRITY');
-    const exact=Number(run.source_max_message_id)===sourceMaxMessageId
+    const exact=String(run.run_key)===runKey
+      &&Number(run.source_max_message_id)===sourceMaxMessageId
       &&String(run.backup_evidence_digest)===gate.backup.digest
       &&String(run.backup_through_at)===gate.backup.throughAt
       &&String(run.backup_completed_at)===gate.backup.completedAt
@@ -648,18 +693,34 @@ export async function processChatRetentionBatch(db,runValue,{workerId:worker,
     }
     if(!owned.live_scope_key) throw new ChatRetentionError('RETENTION_SCOPE_CHANGED');
     const clock=await databaseClock(transaction);
-    validateGate({
+    const gate=validateGate({
       backup:{
         digest:String(owned.backup_evidence_digest),throughAt:String(owned.backup_through_at),
         completedAt:String(owned.backup_completed_at),sourceMaxMessageId:run.sourceMaxMessageId,
-        scopeBindingDigest:chatRetentionEvidenceScopeDigest(run,run.sourceMaxMessageId),
+        scopeBindingDigest:chatRetentionEvidenceBindingDigest({
+          kind:'backup',scope:run,sourceMaxMessageId:run.sourceMaxMessageId,
+          digest:String(owned.backup_evidence_digest),throughAt:String(owned.backup_through_at),
+          completedAt:String(owned.backup_completed_at),
+        }),
       },
       exported:{
         digest:String(owned.export_evidence_digest),throughAt:String(owned.export_through_at),
         completedAt:String(owned.export_completed_at),sourceMaxMessageId:run.sourceMaxMessageId,
-        scopeBindingDigest:chatRetentionEvidenceScopeDigest(run,run.sourceMaxMessageId),
+        scopeBindingDigest:chatRetentionEvidenceBindingDigest({
+          kind:'export',scope:run,sourceMaxMessageId:run.sourceMaxMessageId,
+          digest:String(owned.export_evidence_digest),throughAt:String(owned.export_through_at),
+          completedAt:String(owned.export_completed_at),
+        }),
       },
     },{now:clock.now,cutoff:String(owned.cutoff_at)},run);
+    const expectedRunKey=retentionRunKey({
+      mode:run.mode,scope:run,cutoffAt:run.cutoffAt,sourceMaxMessageId:run.sourceMaxMessageId,
+      backupBindingDigest:gate.backup.scopeBindingDigest,
+      exportBindingDigest:gate.exported.scopeBindingDigest,
+    });
+    if(String(owned.run_key)!==expectedRunKey){
+      throw new ChatRetentionError('RETENTION_EVIDENCE_CONFLICT');
+    }
     const held=(await transaction.execute({
       sql:`SELECT ${activeHoldSql('run')} AS held FROM chat_retention_runs run WHERE run.id=?`,
       args:[run.id],
