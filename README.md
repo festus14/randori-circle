@@ -140,7 +140,12 @@ first 500 rows. Continuation cursors are encrypted, actor/circle/search bound,
 and every request rechecks active ownership. Pages use the existing membership
 primary-key index, scan at most 201 circle-scoped candidates, return at most 100
 members, and project display names without querying or returning the account
-email field.
+email field. A failed append keeps the already loaded page available for retry;
+a failed replacement search clears those rows so results from an earlier query
+cannot be mistaken for current matches. Any roster 401/403 clears retained
+owner data based on status alone before the app rechecks the current role,
+including when that denial arrives after a newer same-account response. A
+denial from a previous signed-in identity cannot clear the new account's view.
 
 Health probes are intentionally separate. `/api/health/live` (and `/api/healthz`) checks only that the process can answer; use it for frequent load-balancer liveness checks. `/api/health`, `/api/health/ready`, and `/api/readyz` are deploy/readiness gates: they return 200 only when database configuration, reachability, connection constraints, the exact application schema, the complete immutable migration ledger, and membership-rollout invariants all pass. Enabling `CIRCLE_MEMBERSHIP_ENABLED` additionally requires the rollout to be completed and closed; a pristine open rollout is ready only while that feature is disabled. Local readiness refuses a missing or unsafe database target before constructing a client. Every health response is `no-store`, readiness uses only read-only queries, and failures disclose only a generic unavailable status.
 

@@ -56,10 +56,16 @@ must authenticate again after reactivation.
   encrypted ceiling and do not recompute an aggregate. Search compares normalized display names only; the query never
   reads or projects the account email field. A sparse search can return an empty page with a next
   cursor, keeping database work bounded while allowing the owner to continue.
-- A roster 401/403 clears every retained row and control before re-resolving
-  the actor's circle role. Only transient failures preserve an already loaded
-  page. A render epoch invalidates a delayed initial load and starts a new one,
-  so authentication refreshes cannot strand the roster in a busy state.
+- A roster 401/403 clears every retained row and control based on HTTP status,
+  independent of response wording, before re-resolving the actor's circle
+  role. This denial takes precedence over a newer successful roster response
+  for the same initiating authentication identity; a delayed denial from a
+  previous identity is ignored. A transient append failure preserves the
+  already loaded rows and makes that continuation retryable. A failed
+  replacement load or search leaves an empty error/retry state, rather than
+  showing rows that belong to the previous query. A render epoch invalidates a
+  delayed initial load and starts a new one, so authentication refreshes cannot
+  strand the roster in a busy state.
 
 The existing role/status columns, audit table, session revocation fields, and
 invitation status model are sufficient. This increment intentionally adds no

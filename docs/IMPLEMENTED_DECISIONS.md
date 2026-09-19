@@ -630,9 +630,16 @@ sparse search may yield zero matches and a continuation cursor; the accessible
 UI explains that more results may remain and preserves earlier rows when a
 later page fails. A per-request sequence and circle render epoch prevent an old
 response from replacing a newer search or a changed identity.
-Authorization failures are different from transient failures: a roster 401/403
-immediately discards all retained rows and controls, then resolves current
-circle membership again. A delayed request from an older render epoch is
+Authorization failures are different from transient failures: any roster
+401/403 immediately discards all retained rows and controls based on HTTP
+status alone, without depending on potentially opaque response wording, then
+resolves current circle membership again. That fail-closed signal takes
+precedence over a newer successful roster response for the same initiating
+authentication identity, while an old identity's delayed denial cannot clear a
+new account's roster. A transient append failure preserves the loaded rows and
+continuation for retry. A failed replacement load or search leaves an empty
+error/retry state, preventing rows for an earlier query from appearing under
+the requested one. Other delayed requests from an older render epoch are
 invalidated and the new epoch may start its own load, preventing a stuck busy
 state.
 

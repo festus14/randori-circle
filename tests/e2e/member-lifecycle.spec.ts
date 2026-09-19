@@ -502,8 +502,51 @@ test('an owner loads additional bounded roster pages with accessible progress',a
   await expect(loadMore).toBeHidden();
 });
 
+test('transient append failures preserve rows while failed replacement searches clear them',async({page})=>{
+  await mockApi(page,{
+    '/api/auth/me':{ok:true,user:owner},
+    '/api/profile':{ok:true,user:owner},
+    '/api/circle':{
+      ok:true,circle_meta:{id:10,public_id:'circle_e2e',name:'E2E Circle'},
+      membership:{role:'owner'},circle:[owner],count:1,
+    },
+    '/api/invitations':{ok:true,invitations:[],count:0},
+    '/api/members':request=>{
+      const url=new URL(request.url());
+      if(url.searchParams.has('cursor')) return {_status:503,error:'temporarily unavailable'};
+      if(url.searchParams.get('q')==='replacement') return {_status:503,error:'temporarily unavailable'};
+      return {
+        ok:true,members:[{...owner,role:'owner',status:'active'}],count:1,
+        has_more:true,next_cursor:'next-page',scanned:1,
+      };
+    },
+  });
+  await resetClientState(page,true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await expect(page.locator('#view-dashboard')).toBeVisible();
+  await page.locator('[data-tab="circle"]').click();
+  const rows=page.locator('[data-testid="circle-member-row"]');
+  await expect(rows).toHaveCount(1);
+
+  await page.getByTestId('circle-members-load-more').click();
+  await expect(page.locator('#circleMemberSearchStatus')).toHaveText('More members could not be loaded. Existing results are unchanged.');
+  await expect(rows).toHaveCount(1);
+  await expect(page.getByText('Circle Owner',{exact:true}).last()).toBeVisible();
+  await expect(page.getByTestId('circle-members-load-more')).toHaveText('Retry more members');
+
+  const search=page.getByTestId('circle-member-search');
+  await search.fill('replacement');
+  await search.press('Enter');
+  await expect(page.locator('#circleMemberSearchStatus')).toHaveText('Member search is unavailable. Try again.');
+  await expect(rows).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'Retry members'})).toBeVisible();
+});
+
 test('display-name search ignores stale responses and exposes screen-reader status',async({page})=>{
-  let firstSearchResolve:undefined|(()=>void);
+  let markSlowSearchStarted!:()=>void;
+  let releaseSlowSearch!:()=>void;
+  const slowSearchStarted=new Promise<void>(resolve=>{ markSlowSearchStarted=resolve; });
+  const slowSearchRelease=new Promise<void>(resolve=>{ releaseSlowSearch=resolve; });
   await mockApi(page,{
     '/api/auth/me':{ok:true,user:owner},
     '/api/profile':{ok:true,user:owner},
@@ -514,7 +557,10 @@ test('display-name search ignores stale responses and exposes screen-reader stat
     '/api/invitations':{ok:true,invitations:[],count:0},
     '/api/members':async request=>{
       const q=new URL(request.url()).searchParams.get('q')||'';
-      if(q==='slow') await new Promise<void>(resolve=>{ firstSearchResolve=resolve; });
+      if(q==='slow'){
+        markSlowSearchStarted();
+        await slowSearchRelease;
+      }
       const result=q==='fast'?[{...member,id:42,display_name:'Fast Result',role:'member',status:'active'}]
         :q==='slow'?[{...member,id:41,display_name:'Slow Result',role:'member',status:'active'}]
         :[{...owner,role:'owner',status:'active'}];
@@ -530,13 +576,17 @@ test('display-name search ignores stale responses and exposes screen-reader stat
   await expect(page.locator('#circleMemberSearchStatus')).toHaveText('1 membership shown. All members loaded.');
   await input.fill('slow');
   await input.press('Enter');
-  await expect.poll(()=>Boolean(firstSearchResolve)).toBe(true);
+  await slowSearchStarted;
   await input.fill('fast');
   await page.locator('#circleMemberSearchSubmit').click();
   await expect(page.locator('#circleMemberSearchStatus')).toHaveText('1 matching member shown. Search complete.');
   await expect(page.getByText('Fast Result',{exact:true})).toBeVisible();
-  firstSearchResolve?.();
-  await page.waitForTimeout(50);
+  const staleResponse=page.waitForResponse(response=>{
+    const url=new URL(response.url());
+    return url.pathname==='/api/members'&&url.searchParams.get('q')==='slow';
+  });
+  releaseSlowSearch();
+  await staleResponse;
   await expect(page.getByText('Fast Result',{exact:true})).toBeVisible();
   await expect(page.getByText('Slow Result',{exact:true})).toHaveCount(0);
   await expect(page.locator('#circleMemberSearchStatus')).toHaveAttribute('aria-live','polite');
@@ -544,7 +594,110 @@ test('display-name search ignores stale responses and exposes screen-reader stat
   await expect(input).toBeFocused();
 });
 
-test('a revoked owner loses retained roster controls when append is denied',async({page})=>{
+for(const deniedStatus of [401,403]){
+  test(`a delayed same-actor ${deniedStatus} clears a newer successful roster`,async({page})=>{
+    let markDeniedRequestStarted!:()=>void;
+    let releaseDeniedRequest!:()=>void;
+    const deniedRequestStarted=new Promise<void>(resolve=>{ markDeniedRequestStarted=resolve; });
+    const deniedRequestRelease=new Promise<void>(resolve=>{ releaseDeniedRequest=resolve; });
+    await mockApi(page,{
+      '/api/auth/me':{ok:true,user:owner},
+      '/api/profile':{ok:true,user:owner},
+      '/api/circle':{
+        ok:true,circle_meta:{id:10,public_id:'circle_e2e',name:'E2E Circle'},
+        membership:{role:'owner'},circle:[owner],count:1,
+      },
+      '/api/invitations':{ok:true,invitations:[],count:0},
+      '/api/members':async request=>{
+        const q=new URL(request.url()).searchParams.get('q')||'';
+        if(q==='slow-denied'){
+          markDeniedRequestStarted();
+          await deniedRequestRelease;
+          return {_status:deniedStatus,error:'opaque access failure'};
+        }
+        const result=q==='newer-success'
+          ?[{...member,id:42,display_name:'Newer Result',role:'member',status:'active'}]
+          :[{...owner,role:'owner',status:'active'}];
+        return {ok:true,members:result,count:result.length,has_more:false,next_cursor:null,scanned:result.length};
+      },
+    });
+    await resetClientState(page,true);
+    await page.goto('/',{waitUntil:'domcontentloaded'});
+    await expect(page.locator('#view-dashboard')).toBeVisible();
+    await page.locator('[data-tab="circle"]').click();
+    const input=page.getByTestId('circle-member-search');
+    await expect(input).toBeVisible();
+    await input.fill('slow-denied');
+    await input.press('Enter');
+    await deniedRequestStarted;
+    await input.fill('newer-success');
+    await input.press('Enter');
+    await expect(page.getByText('Newer Result',{exact:true})).toBeVisible();
+
+    const deniedResponse=page.waitForResponse(response=>{
+      const url=new URL(response.url());
+      return url.pathname==='/api/members'&&url.searchParams.get('q')==='slow-denied';
+    });
+    releaseDeniedRequest();
+    await deniedResponse;
+    await expect(page.locator('[data-testid="circle-member-row"]')).toHaveCount(0);
+    await expect(page.getByTestId('circle-member-search-form')).toBeHidden();
+    await expect(page.getByText('Newer Result',{exact:true})).toHaveCount(0);
+  });
+}
+
+test('a delayed denial from a different actor cannot clear the current owner roster',async({page})=>{
+  const nextOwner={...owner,id:9,email:'next-owner@example.test',display_name:'Next Owner',name:'Next Owner'};
+  let currentUser=owner;
+  let markDeniedRequestStarted!:()=>void;
+  let releaseDeniedRequest!:()=>void;
+  const deniedRequestStarted=new Promise<void>(resolve=>{ markDeniedRequestStarted=resolve; });
+  const deniedRequestRelease=new Promise<void>(resolve=>{ releaseDeniedRequest=resolve; });
+  await mockApi(page,{
+    '/api/auth/me':()=>({ok:true,user:currentUser}),
+    '/api/profile':()=>({ok:true,user:currentUser}),
+    '/api/circle':()=>({
+      ok:true,circle_meta:{id:10,public_id:'circle_e2e',name:'E2E Circle'},
+      membership:{role:'owner'},circle:[currentUser],count:1,
+    }),
+    '/api/invitations':{ok:true,invitations:[],count:0},
+    '/api/members':async request=>{
+      const q=new URL(request.url()).searchParams.get('q')||'';
+      if(q==='slow-denied'){
+        markDeniedRequestStarted();
+        await deniedRequestRelease;
+        return {_status:403,error:'opaque access failure'};
+      }
+      const result=[{...currentUser,role:'owner',status:'active'}];
+      return {ok:true,members:result,count:1,has_more:false,next_cursor:null,scanned:1};
+    },
+  });
+  await resetClientState(page,true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await expect(page.locator('#view-dashboard')).toBeVisible();
+  await page.locator('[data-tab="circle"]').click();
+  const input=page.getByTestId('circle-member-search');
+  await expect(input).toBeVisible();
+  await input.fill('slow-denied');
+  await input.press('Enter');
+  await deniedRequestStarted;
+
+  currentUser=nextOwner;
+  await page.evaluate(async()=>{ await (window as any)._randori_auth.refreshMe(); });
+  await page.locator('[data-tab="circle"]').click();
+  await expect(page.getByText('Next Owner',{exact:true}).last()).toBeVisible();
+  const deniedResponse=page.waitForResponse(response=>{
+    const url=new URL(response.url());
+    return url.pathname==='/api/members'&&url.searchParams.get('q')==='slow-denied';
+  });
+  releaseDeniedRequest();
+  await deniedResponse;
+  await expect(page.getByText('Next Owner',{exact:true}).last()).toBeVisible();
+  await expect(page.locator('[data-testid="circle-member-row"]')).toHaveCount(1);
+  await expect(page.getByTestId('circle-member-search-form')).toBeVisible();
+});
+
+test('a revoked owner loses retained roster controls on an opaque 403 response',async({page})=>{
   let revoked=false;
   await mockApi(page,{
     '/api/auth/me':{ok:true,user:owner},
@@ -557,7 +710,7 @@ test('a revoked owner loses retained roster controls when append is denied',asyn
     '/api/members':request=>{
       if(new URL(request.url()).searchParams.has('cursor')){
         revoked=true;
-        return {_status:403,error:'circle owner required'};
+        return {_status:403,error:'access state changed'};
       }
       return {ok:true,members:[{...owner,role:'owner',status:'active'}],count:1,has_more:true,next_cursor:'next-page',scanned:2};
     },
@@ -574,7 +727,7 @@ test('a revoked owner loses retained roster controls when append is denied',asyn
   await expect(page.getByTestId('circle-member-search-form')).toBeHidden();
 });
 
-test('an expired session clears retained search results when search is denied',async({page})=>{
+test('an expired session clears retained search results on an opaque 401 response',async({page})=>{
   let expired=false;
   await mockApi(page,{
     '/api/auth/me':{ok:true,user:owner},
@@ -586,7 +739,7 @@ test('an expired session clears retained search results when search is denied',a
     '/api/invitations':{ok:true,invitations:[],count:0},
     '/api/members':request=>{
       const q=new URL(request.url()).searchParams.get('q')||'';
-      if(q){ expired=true; return {_status:401,error:'authentication required'}; }
+      if(q){ expired=true; return {_status:401,error:'session no longer valid'}; }
       return {ok:true,members:[{...owner,role:'owner',status:'active'}],count:1,has_more:false,next_cursor:null,scanned:1};
     },
   });
@@ -605,7 +758,12 @@ test('an expired session clears retained search results when search is denied',a
 
 test('an auth refresh restarts a delayed initial roster without a stuck loader',async({page})=>{
   let calls=0;
-  let releaseFirst:undefined|(()=>void);
+  let markFirstRequestStarted!:()=>void;
+  let markSecondRequestStarted!:()=>void;
+  let releaseFirstRequest!:()=>void;
+  const firstRequestStarted=new Promise<void>(resolve=>{ markFirstRequestStarted=resolve; });
+  const secondRequestStarted=new Promise<void>(resolve=>{ markSecondRequestStarted=resolve; });
+  const firstRequestRelease=new Promise<void>(resolve=>{ releaseFirstRequest=resolve; });
   await mockApi(page,{
     '/api/auth/me':{ok:true,user:owner},
     '/api/profile':{ok:true,user:owner},
@@ -617,22 +775,26 @@ test('an auth refresh restarts a delayed initial roster without a stuck loader',
     '/api/members':async()=>{
       calls+=1;
       if(calls===1){
-        await new Promise<void>(resolve=>{ releaseFirst=resolve; });
+        markFirstRequestStarted();
+        await firstRequestRelease;
         return {ok:true,members:[{...owner,display_name:'Stale Initial',role:'owner',status:'active'}],count:1,has_more:false,next_cursor:null,scanned:1};
       }
+      markSecondRequestStarted();
       return {ok:true,members:[{...owner,display_name:'Fresh Restart',role:'owner',status:'active'}],count:1,has_more:false,next_cursor:null,scanned:1};
     },
   });
   await resetClientState(page,true);
   await page.goto('/',{waitUntil:'domcontentloaded'});
-  await expect.poll(()=>Boolean(releaseFirst)).toBe(true);
+  await firstRequestStarted;
   await page.evaluate(()=>window.dispatchEvent(new Event('randori:auth-refreshed')));
-  await expect.poll(()=>calls).toBeGreaterThanOrEqual(2);
+  await secondRequestStarted;
+  expect(calls).toBeGreaterThanOrEqual(2);
   await page.locator('[data-tab="circle"]').click();
   await expect(page.getByText('Fresh Restart',{exact:true})).toBeVisible();
   await expect(page.getByTestId('circle-manage-members')).toHaveAttribute('aria-busy','false');
-  releaseFirst?.();
-  await page.waitForTimeout(50);
+  const staleResponse=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/members');
+  releaseFirstRequest();
+  await staleResponse;
   await expect(page.getByText('Fresh Restart',{exact:true})).toBeVisible();
   await expect(page.getByText('Stale Initial',{exact:true})).toHaveCount(0);
 });
