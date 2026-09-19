@@ -480,8 +480,11 @@ validated provider URL, so authentication, rate-limit, or readiness failures
 remain in the SPA and clear any pending lifecycle continuation. Lifecycle
 dialog close/open transitions abort that request and advance a generation;
 delayed responses can affect only the exact still-visible dialog mode that
-started them. Explicit failure notices similarly supersede older roster loads,
-so background success cannot conceal the no-change outcome. Lifecycle
+started them. Lifecycle failure and no-change notices are sticky for the exact
+signed-in actor and supersede both older and newly started same-account roster
+loads; they clear on an account change. Routine roster success therefore cannot
+conceal a security outcome, while successful ownership transfer still renders
+the actor's new member state. Lifecycle
 confirmation is intentionally independent of the
 v9 identity-management feature flag, so credential management may remain dark
 while an already-linked password or Google method is used for step-up. Missing
