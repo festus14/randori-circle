@@ -41,6 +41,26 @@ export const MIGRATION_CONTRACTS=Object.freeze([
     name:'password-reset-and-recent-auth',
     checksum:'60059dfffd4d333e5b90a8eea32f23bc2165a8019911e4b006deeb0f2b68929c',
   }),
+  Object.freeze({
+    version:9,
+    name:'explicit-provider-linking',
+    checksum:'226c58e70d0f7dfeae89449dcc567f52afeed46c19c2f9987c510f78029ec560',
+  }),
+  Object.freeze({
+    version:10,
+    name:'chat-cursor-and-rate-indexes',
+    checksum:'df6508898b4b697ca8d21646c9460aefcc7f85d7fc8f2f027ed10342fe98e014',
+  }),
+  Object.freeze({
+    version:11,
+    name:'bounded-chat-retention',
+    checksum:'e1e41483cbdff5a10a58ccc144bfadbb818cecb900768495ad8ab64dd393332b',
+  }),
+  Object.freeze({
+    version:12,
+    name:'session-bound-active-circle-context',
+    checksum:'9443e548fb6edac275eb8af08e7bc007cbfa32e5450efaf444375b976eddf43c',
+  }),
 ]);
 
 export const LATEST_MIGRATION_VERSION=MIGRATION_CONTRACTS.at(-1)?.version||0;

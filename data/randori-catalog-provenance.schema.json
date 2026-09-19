@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://randori-circle.invalid/schema/catalog-provenance-v1.json",
+  "title": "Randori Circle catalogue provenance manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "catalogId", "records"],
+  "properties": {
+    "$schema": { "const": "./randori-catalog-provenance.schema.json" },
+    "schemaVersion": { "const": 1 },
+    "catalogId": { "type": "string", "minLength": 1 },
+    "records": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/record" }
+    }
+  },
+  "$defs": {
+    "date": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+    "record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "slug", "version", "source", "author", "license", "attribution", "contentHash", "review", "takedown"],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "source": { "properties": { "type": { "const": "original" } } } }
+          },
+          "then": {
+            "properties": { "license": { "properties": { "identifier": { "const": "LicenseRef-Randori-Original" } } } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "source": { "properties": { "type": { "const": "open-license" } } } }
+          },
+          "then": {
+            "properties": {
+              "license": {
+                "properties": {
+                  "identifier": {
+                    "enum": ["Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "CC-BY-4.0", "CC-BY-SA-4.0", "CC0-1.0", "MIT"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "source": { "properties": { "type": { "const": "written-authorization" } } } }
+          },
+          "then": {
+            "properties": {
+              "license": {
+                "properties": {
+                  "identifier": { "pattern": "^LicenseRef-[A-Za-z0-9][A-Za-z0-9.-]*$" }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "key": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*@[1-9][0-9]*$" },
+        "slug": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+        "version": { "type": "integer", "minimum": 1 },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "reference", "statement"],
+          "properties": {
+            "type": { "enum": ["original", "open-license", "written-authorization"] },
+            "reference": { "type": "string", "minLength": 1 },
+            "statement": { "type": "string", "minLength": 1 }
+          }
+        },
+        "author": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "kind"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120,
+              "pattern": "^[^@<>\\u0000-\\u001f\\u007f]+$"
+            },
+            "kind": { "enum": ["person", "organization", "collective"] }
+          }
+        },
+        "license": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["identifier", "name", "evidence"],
+          "properties": {
+            "identifier": { "type": "string", "minLength": 1 },
+            "name": { "type": "string", "minLength": 1 },
+            "evidence": { "type": "string", "minLength": 1 }
+          }
+        },
+        "attribution": { "type": "string", "minLength": 1 },
+        "contentHash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "review": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "reviewedAt", "expiresAt", "reviewer"],
+          "properties": {
+            "status": { "enum": ["approved", "rejected"] },
+            "reviewedAt": { "$ref": "#/$defs/date" },
+            "expiresAt": { "$ref": "#/$defs/date" },
+            "reviewer": { "type": "string", "minLength": 1 }
+          }
+        },
+        "takedown": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "effectiveAt", "reference"],
+          "properties": {
+            "status": { "enum": ["clear", "requested", "revoked", "resolved"] },
+            "effectiveAt": { "oneOf": [{ "$ref": "#/$defs/date" }, { "type": "null" }] },
+            "reference": { "type": ["string", "null"] }
+          }
+        }
+      }
+    }
+  }
+}

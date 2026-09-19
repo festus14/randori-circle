@@ -5,7 +5,8 @@ import { resolvePairingCycle } from './_pairing-cycle.js';
 import { getPairingPublication } from './_pairing-publication.js';
 import { authPairAccessArgs, authPairAccessSql, getAuthenticatedPairAccess } from './_pair-access.js';
 import { applyScheduleMutation, nextScheduleUpdatedAt, parseScheduleMutation, projectSchedule, readScheduleState, ScheduleDataError, ScheduleInputError } from './_schedule.js';
-import { ensureMessagesReadiness, MAX_MESSAGES_PER_ROOM, MAX_MESSAGES_PER_USER_PER_MINUTE, MESSAGE_RATE_RETRY_SECONDS, MessageDataError, MessageInputError, parseMessageSend, parseMessagesQuery, projectMessage, validateMessagesPostQuery } from './_messages.js';
+import { scheduleNotificationEvents } from './_schedule-email.js';
+import { ensureMessagesReadiness, MAX_MESSAGES_PER_ROOM, MAX_MESSAGES_PER_USER_PER_MINUTE, MESSAGE_RATE_RETRY_SECONDS, messageInsertStatement, messageLimitStateStatement, MessageDataError, MessageInputError, messageReadStatement, parseMessageSend, parseMessagesQuery, projectMessage, validateMessagesPostQuery } from './_messages.js';
 import { ensurePairRecapReadiness, MAX_RECAP_ACTIVITY, MAX_RECAP_RUN_SCAN, newestRecapActivity, PairRecapDataError, PairRecapInputError, parsePairRecapQuery, projectRecapMessage, projectRecapPair, projectRecapRun, projectRecapSchedule, projectRecapWorkspace } from './_pair-recap.js';
 import {
   AUTH_RATE_LIMITS_TABLE_SQL,
@@ -19,6 +20,13 @@ import {
   initializePrimaryCircle,
 } from './_circle-membership.js';
 import { localRuntimeRequest } from './_local-runtime.js';
+import {
+  canUseLegacySinglePrimaryCircleFeatures,
+  multiCircleControlPlaneEnabled,
+  requestMatchesCircleContext,
+  resolveActiveCircleContext,
+  sendMultiCircleFeatureUnavailable,
+} from './_active-circle.js';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import {
   HEALTH_RESPONSE,
@@ -53,282 +61,6 @@ async function requireAdminDT(req,res){
   return {db, payload, ...ctx};
 }
 
-// ----- LeetCode proxy + DB cache helpers -----
-function htmlToText(html){
-  if(!html) return '';
-  let t = String(html);
-  t = t.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi,'\n\n').replace(/<\/li>/gi,'\n').replace(/<\/div>/gi,'\n');
-  t = t.replace(/<[^>]*>/g,' ').replace(/&nbsp;/g,' ').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'");
-  t = t.replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').replace(/ {2,}/g,' ');
-  return t.trim().slice(0,12000);
-}
-function parseLeetConstraints(contentHtml){
-  const text = htmlToText(contentHtml);
-  // naive: look for lines like "Constraints:" or bullet list
-  const m = text.match(/Constraints:\s*([\s\S]{0,800})/i);
-  if (m) return m[1].trim().split('\n').slice(0,8).join(' | ').slice(0,1000);
-  // fallback: look for <code> with exponents
-  return '';
-}
-// Known problem metadata for smart chunking + enrichment
-const KNOWN_LEET = {
-  'two-sum': { params:['nums','target'], examples:3, category:'array' },
-  'valid-parentheses': { params:['s'], examples:3, category:'stack' },
-  'merge-two-sorted-lists': { params:['l1','l2'], examples:2, category:'linked-list' },
-  'lru-cache': { params:['operations'], examples:1, category:'design' },
-  'design-twitter': { params:['scenario'], examples:1, category:'system-design' },
-};
-function cleanLeetLine(line){
-  let l=String(line||'').trim();
-  if(!l) return '';
-  // Leet strips "nums = [2,7,11,15]" -> "[2,7,11,15]"
-  const eq = l.indexOf('=');
-  if(eq>0 && eq<30){
-    const rhs = l.slice(eq+1).trim();
-    // avoid capturing comparator (==) quickly
-    if(rhs) return rhs;
-  }
-  return l;
-}
-function tryParseJsonish(s){
-  try{ return JSON.parse(s); }catch{
-    // leet sometimes uses '[1,2,4]' which is JSON, but '"()"' is JSON string too
-    // fallback: if looks like Python list
-    try{ if(s.startsWith('[') && s.endsWith(']')) return JSON.parse(s.replace(/'/g,'"')); }catch{}
-    return null;
-  }
-}
-function parsePreExamples(contentHtml){
-  const out=[];
-  if(!contentHtml) return out;
-  const preMatches = [...String(contentHtml).matchAll(/<pre[^>]*>([\s\S]*?)<\/pre>/gi)];
-  for(const pm of preMatches.slice(0,6)){
-    const raw = pm[1];
-    const text = htmlToText(raw);
-    // Normalize: look for Input:/Output: pairs, possibly multi-line
-    // Common format: Input: X\nOutput: Y\nExplanation: Z
-    // Split using regex with lookahead
-    const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
-    let curInput=null, curOutput=null, bufInput=[];
-    for(let i=0;i<lines.length;i++){
-      const l=lines[i];
-      const low=l.toLowerCase();
-      if(low.startsWith('input:')){
-        if(curInput && curOutput!=null){
-          out.push({inputRaw: bufInput.join(' ').slice(6).trim() || curInput, outputRaw:curOutput});
-        }
-        bufInput=[l];
-        curInput=l.slice(6).trim();
-        curOutput=null;
-      } else if(low.startsWith('output:')){
-        curOutput=l.slice(7).trim();
-        // collect following lines if output seems incomplete '[' missing ']'
-        if(curOutput && curOutput.startsWith('[') && !curOutput.endsWith(']')){
-          // try next line join
-          if(i+1<lines.length && !lines[i+1].toLowerCase().startsWith('explanation')) curOutput+=lines[++i];
-        }
-        if(curInput) {
-          out.push({inputRaw: (bufInput.length? bufInput.join(' ').slice(6).trim(): curInput), outputRaw:curOutput});
-          curInput=null; bufInput=[]; curOutput=null;
-        } else if(bufInput.length){
-          out.push({inputRaw: bufInput.join(' ').slice(6).trim(), outputRaw:curOutput});
-          bufInput=[]; curOutput=null;
-        }
-      } else if(low.startsWith('explanation:')){
-        // end of example, already pushed
-        curInput=null; bufInput=[]; curOutput=null;
-      } else {
-        // continuation of Input: if we are still in Input collection and no Output yet
-        if(bufInput.length && curOutput===null){
-          bufInput.push(l);
-          curInput = bufInput.join(' ').slice(6).trim();
-        }
-      }
-    }
-    if(curInput && curOutput){
-      out.push({inputRaw:curInput, outputRaw:curOutput});
-    }
-    if(out.length>=8) break;
-  }
-  return out;
-}
-function inputRawToObj(inputRaw, paramNames){
-  // inputRaw like "nums = [2,7,11,15], target = 9" or "[2,7,11,15], 9" or "s = \"()\""
-  if(!inputRaw) return {};
-  const s = String(inputRaw).trim();
-  const obj={};
-  // Try split by comma but not inside brackets
-  // First attempt: detect "a = b, c = d" pattern
-  if(s.includes('=') ){
-    // split by ',' then extract each k=v
-    const parts=[];
-    let depth=0, cur='';
-    for(let ch of s){
-      if(ch==='['||ch==='{'||ch==='(') depth++;
-      if(ch===']'||ch==='}'||ch===')') depth--;
-      if(ch===',' && depth===0){ parts.push(cur); cur=''; continue; }
-      cur+=ch;
-    }
-    if(cur) parts.push(cur);
-    for(const p of parts){
-      const trimmed=p.trim();
-      if(!trimmed) continue;
-      const eq=trimmed.indexOf('=');
-      if(eq>0){
-        const k=trimmed.slice(0,eq).trim();
-        const v=trimmed.slice(eq+1).trim();
-        const pv = tryParseJsonish(v);
-        obj[k]= pv!==null ? pv : v.replace(/^"|"$/g,'').replace(/^'|'$/g,'');
-      } else {
-        // positional without name – map sequentially
-        const pv=tryParseJsonish(trimmed);
-        const name = paramNames && paramNames[Object.keys(obj).length] ? paramNames[Object.keys(obj).length] : `arg${Object.keys(obj).length}`;
-        obj[name]= pv!==null? pv: trimmed;
-      }
-    }
-    if(Object.keys(obj).length) return obj;
-  }
-  // No '=', try single value positional
-  const p = tryParseJsonish(s);
-  if(p!==null && paramNames && paramNames[0]){
-    if(Array.isArray(p) && paramNames.length===1) return {[paramNames[0]]: p};
-    if(typeof p!=='object' || Array.isArray(p)) {
-      const single={}; single[paramNames[0]]=p; return single;
-    }
-    return p;
-  }
-  // multi values without '=' but separated? ExampleTwoSum exampleTestcases per line grouping uses separate lines. This helper expects single block - fallback raw string
-  return {raw:s};
-}
-function buildTestCasesFromExampleTestcases(exampleTestcases, content){
-  const out=[];
-  const known = content ? null : null;
-  if(content){
-    const preEx = parsePreExamples(content);
-    for(const pe of preEx.slice(0,6)){
-      const slugLower = ''; // caller will map
-      // Try to convert inputRaw directly; param names extracted later by caller
-      out.push({ __preInput: pe.inputRaw, __preOutput: pe.outputRaw, raw: `${pe.inputRaw} => ${pe.outputRaw}`, __isPre:true });
-      if(out.length>=10) break;
-    }
-  }
-  if (!exampleTestcases){
-    // only pre examples
-    return out.filter(o=>o.__isPre).map(o=>({input:o.__preInput, expect:o.__preOutput, raw:o.raw}));
-  }
-  const lines = String(exampleTestcases).split('\n').map(s=>s.trim()).filter(Boolean);
-  for (let i=0;i<lines.length;i++){
-    const raw = lines[i];
-    out.push({ input: raw, expect:null, raw });
-    if (out.length>=12) break;
-  }
-  return out;
-}
-function smartChunkExampleTestcases(slug, exampleTestcases, content){
-  // Unified smart chunker returning {input: JSONstring, expect: JSONstring|null, raw}
-  const known = KNOWN_LEET[slug] || null;
-  const paramNames = known?.params || null;
-  const preCases = parsePreExamples(content); // [{inputRaw, outputRaw}]
-  const enriched=[];
-
-  // Use pre cases first as gold – they have both input & output
-  for(const pc of preCases){
-    const inObj = inputRawToObj(pc.inputRaw, paramNames);
-    let inStr;
-    try{ inStr = JSON.stringify(inObj); }catch{ inStr = JSON.stringify({raw:pc.inputRaw}); }
-    const outVal = tryParseJsonish(pc.outputRaw) ?? pc.outputRaw;
-    let outStr;
-    try{ outStr = JSON.stringify(outVal); }catch{ outStr = String(pc.outputRaw); }
-    enriched.push({input:inStr, expect:outStr, raw:`${pc.inputRaw} -> ${pc.outputRaw}`, __source:'pre'});
-  }
-
-  if(exampleTestcases){
-    const rawLines = String(exampleTestcases).split('\n').map(s=>cleanLeetLine(s.trim())).filter(Boolean);
-    const paramCount = paramNames ? paramNames.length : (rawLines.length%2===0 && rawLines.length>=2 ? 2 : 1);
-    // If paramCount inferred 2 but lines groups maybe includes expected third line for some APIs (rare)
-    let idx=0;
-    let loopGuard=0;
-    while(idx < rawLines.length && loopGuard<12){
-      loopGuard++;
-      const group = rawLines.slice(idx, idx+paramCount);
-      if(group.length < paramCount) break;
-      const inObj={};
-      let ok=true;
-      for(let pi=0; pi<paramCount; pi++){
-        const line = group[pi];
-        const pv = tryParseJsonish(line);
-        const key = paramNames ? paramNames[pi] : `arg${pi}`;
-        if(pv!==null) inObj[key]=pv;
-        else {
-          // if can't parse but looks like JSON-ish array missing quotes, keep as string
-          inObj[key]=line;
-        }
-      }
-      // Try to align with pre enriched case if same inputs already covered — skip duplicate else add without expect (or try to find expect in next line if 3-group)
-      let expectVal=null, advance=paramCount;
-      if(rawLines.length >= idx+paramCount+1){
-        const possibleExpect = rawLines[idx+paramCount];
-        // heuristic: if we have 2 params, third line often is expected answer like "[0,1]" or "true" — check if it looks like an expected boolean/array
-        const pvExp = tryParseJsonish(possibleExpect);
-        // If next group would start with '[' for nums again, not expected. Heuristic: for two-sum, expected is array of 2 numbers, while next nums is array length >2 usually. Ambiguous.
-        // We'll treat as expected if lines length mod (paramCount+1)==0 or paramCount==1 && possible pattern differs.
-        if(paramNames && paramNames.length===2 && (slug==='two-sum' || slug.includes('two'))){
-          // for two-sum, third line is expected [0,1] length2 small — likely
-          if(possibleExpect.startsWith('[') && possibleExpect.length<12) { expectVal=possibleExpect; advance=paramCount+1; }
-        } else if(paramNames && paramNames.length===1){
-          // for valid-parentheses, exampleTestcases has no expected separate – skip
-        } else {
-          // If we have 3 lines left pattern and we haven't yet covered with pre
-          if(enriched.length===0 && paramCount===2 && rawLines.length%3===0){
-            const expTry = possibleExpect;
-            expectVal=expTry; advance=3;
-          }
-        }
-      }
-      let inputStr;
-      try{ inputStr = JSON.stringify(inObj); }catch{ inputStr = JSON.stringify({raw:group.join('|')}); }
-      let expectStr=null;
-      if(expectVal!==null){
-        const ev = tryParseJsonish(expectVal);
-        expectStr = JSON.stringify(ev!==null? ev: expectVal);
-      }
-      // dedup vs enriched
-      const dup = enriched.some(e=> e.input===inputStr);
-      if(!dup){
-        enriched.push({input:inputStr, expect:expectStr, raw: group.join(' | ') + (expectVal? ` => ${expectVal}`:'' ), __source:'exampleTestcases'});
-      }
-      idx+=advance;
-    }
-  }
-
-  // Fallback if still empty
-  if(!enriched.length){
-    const raw = String(exampleTestcases||'').trim().slice(0,200);
-    enriched.push({input: JSON.stringify({raw}), expect:null, raw: raw || 'see description'});
-  }
-
-  // Normalize to final shape required by custom_questions (input JSON string, expect JSON string|null, raw)
-  return enriched.slice(0,12).map(c=>({input:c.input, expect:c.expect, raw:c.raw}));
-}
-function enrichmentEdges(slug){
-  const edges=[];
-  if(slug==='two-sum'){
-    edges.push({input:JSON.stringify({nums:[-1,-2,-3,-4,-5], target:-8}), expect:JSON.stringify([2,4]), raw:"nums=[-1,-2,-3,-4,-5] target=-8 => [2,4]"});
-    edges.push({input:JSON.stringify({nums:[0,4,3,0], target:0}), expect:JSON.stringify([0,3]), raw:"nums=[0,4,3,0] target=0 => [0,3]"});
-    edges.push({input:JSON.stringify({nums:[1000000,2,3,999999], target:1000002}), expect:JSON.stringify([0,1]), raw:"large nums => [0,1]"});
-  } else if(slug==='valid-parentheses'){
-    edges.push({input:JSON.stringify({s:""}), expect:JSON.stringify(true), raw:"s=\"\" => true (empty valid)"});
-    edges.push({input:JSON.stringify({s:"((((((("}), expect:JSON.stringify(false), raw:"s=\"((((((( \" => false"});
-    edges.push({input:JSON.stringify({s:"{{{}}}"}), expect:JSON.stringify(false), raw:"s=\"{{{}}}\" => false (mismatch)"});
-  } else if(slug==='merge-two-sorted-lists'){
-    edges.push({input:JSON.stringify({l1:[1], l2:[]}), expect:JSON.stringify([1]), raw:"l1=[1] l2=[] => [1]"});
-    edges.push({input:JSON.stringify({l1:[], l2:[]}), expect:JSON.stringify([]), raw:"both empty => []"});
-    edges.push({input:JSON.stringify({l1:[5], l2:[1,2,3]}), expect:JSON.stringify([1,2,3,5]), raw:"l1=[5] l2=[1,2,3] => [1,2,3,5]"});
-  } else if(slug==='lru-cache'){
-    edges.push({input:JSON.stringify({operations:["LRUCache","put","get"], capacity:1, data:[[1],[1,1],[1]]}), expect:JSON.stringify([null,null,1]), raw:"LRU 1 ops put-get"});
-  }
-  return edges;
-}
 async function fetchWithTimeout(url, opts={}, timeoutMs=6000){
   const ctrl = new AbortController();
   const id = setTimeout(()=>ctrl.abort(), timeoutMs);
@@ -339,106 +71,6 @@ async function fetchWithTimeout(url, opts={}, timeoutMs=6000){
   }catch(e){ clearTimeout(id); throw e; }
   finally{ clearTimeout(id); }
 }
-function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
-async function fetchWithRetry(url, opts={}, retries=2, backoff=400){
-  let lastErr;
-  for(let i=0;i<=retries;i++){
-    try{
-      const r=await fetchWithTimeout(url, opts, opts.timeoutMs||6000);
-      // if 429, respect Retry-After
-      if(r.status===429){
-        const ra = parseInt(r.headers.get('retry-after')||'2',10);
-        if(i<retries) { await sleep((isNaN(ra)?2:ra)*1000 + Math.random()*300); continue; }
-      }
-      return r;
-    }catch(e){
-      lastErr=e;
-      if(i<retries) await sleep(backoff*(i+1)+Math.random()*200);
-    }
-  }
-  throw lastErr||new Error('fetch failed after retries');
-}
-async function leetGraphQLQuestion(slug){
-  const query = `
-  query questionData($titleSlug:String!){
-    question(titleSlug:$titleSlug){
-      questionId
-      questionFrontendId
-      title
-      titleSlug
-      content
-      difficulty
-      exampleTestcases
-      topicTags{ name slug }
-      stats
-    }
-  }`;
-  const r = await fetchWithRetry('https://leetcode.com/graphql', {
-    method:'POST',
-    headers:{
-      'Content-Type':'application/json',
-      'User-Agent':'Randori-Circle/1.0 (+https://randori.circle) LeetCode-proxy',
-      'Referer':'https://leetcode.com/',
-      'Origin':'https://leetcode.com'
-    },
-    body: JSON.stringify({ query, variables:{ titleSlug: slug } })
-  }, 2, 600);
-  if (!r.ok) throw new Error(`leetcode gql ${r.status}`);
-  const j = await r.json();
-  if (j.errors) throw new Error(`gql error ${JSON.stringify(j.errors).slice(0,200)}`);
-  const q = j.data?.question;
-  if (!q) throw new Error('question not found');
-  return q;
-}
-async function leetEnrichAlfa(slug){
-  try{
-    const r = await fetchWithRetry(`https://alfa-leetcode-api.onrender.com/select?titleSlug=${encodeURIComponent(slug)}`, {
-      headers:{ 'User-Agent':'Randori-Circle/1.0' }
-    }, 1, 400);
-    if (!r.ok) return null;
-    const j = await r.json();
-    // structure: { questionId, exampleTestcases, ... } varying
-    return j;
-  }catch{ return null; }
-}
-async function leetListSlugs(limit=100, skip=0){
-  // try GraphQL list
-  try{
-    const query = `
-    query problemsetQuestionList($categorySlug: String, $skip: Int, $limit: Int, $filters: {}) {
-      problemsetQuestionList: questionList(categorySlug: $categorySlug, skip: $skip, limit: $limit, filters: $filters) {
-        total: totalNum
-        questions: data {
-          titleSlug
-        }
-      }
-    }`;
-    const r = await fetchWithRetry('https://leetcode.com/graphql', {
-      method:'POST',
-      headers:{ 'Content-Type':'application/json', 'User-Agent':'Randori-Circle/1.0' },
-      body: JSON.stringify({ query, variables:{ categorySlug:"", skip, limit, filters:{} } })
-    }, 2, 500);
-    if (r && r.ok){
-      const j = await r.json();
-      const total = j.data?.problemsetQuestionList?.total ?? null;
-      const qs = j.data?.problemsetQuestionList?.questions?.map(q=>q.titleSlug).filter(Boolean) ?? [];
-      if (qs.length) return { slugs: qs, total };
-    }
-  }catch{}
-  // fallback static problems/all (large ~2800) – need to slice
-  try{
-    const r = await fetchWithRetry('https://leetcode.com/api/problems/all/', { headers:{ 'User-Agent':'Randori-Circle/1.0' } }, 2, 500);
-    if (r.ok){
-      const j = await r.json();
-      const pairs = j.stat_status_pairs||[];
-      const slugs = pairs.map(p=>p.stat?.question__title__slug).filter(Boolean);
-      const sliced = slugs.slice(skip, skip+limit);
-      return { slugs: sliced, total: slugs.length };
-    }
-  }catch{}
-  return { slugs: [], total: 0 };
-}
-
 function getEndpoint(req){
   const q = req.query?.endpoint;
   if (q) return String(q).toLowerCase();
@@ -449,6 +81,34 @@ function getEndpoint(req){
     const path = u.pathname.split('/').filter(Boolean).pop();
     return (path||'').toLowerCase();
   }catch{ return (req.url||'').split('?')[0].split('/').filter(Boolean).pop()?.toLowerCase()||''; }
+}
+
+function getPathname(req){
+  try{ return new URL(req?.url||'/','http://localhost').pathname.toLowerCase(); }
+  catch{ return String(req?.url||'').split('?')[0].toLowerCase(); }
+}
+
+function resolveDataRoute(req,endpoint){
+  const path=getPathname(req);
+  if(endpoint==='runs'||endpoint==='session_runs'||endpoint==='session-runs'||path.includes('/runs')) return 'runs';
+  if(endpoint==='leetcode-sync'||endpoint==='leetcode_sync'||path.includes('leetcode/sync')||path.includes('leetcode-sync')) return 'leetcode-sync';
+  if(endpoint==='leetcode'||endpoint==='leetcode-detail'||endpoint==='leetcode_detail'||path.includes('/leetcode')) return 'leetcode';
+  if(endpoint==='circle'||path.includes('/circle')) return 'circle';
+  if(endpoint==='weeks'||path.includes('/weeks')) return 'weeks';
+  if(endpoint==='history'||path.includes('/history')) return 'history';
+  if(endpoint==='stats'||path.includes('/stats')) return 'stats';
+  if(endpoint==='init'||path.includes('/init')) return 'init';
+  if(endpoint==='profile'||path.includes('/profile')) return 'profile';
+  if(endpoint==='my-pair'||endpoint==='mypair'||endpoint==='my_pair'
+    ||path.includes('my-pair')||path.includes('my_pair')) return 'my-pair';
+  if(endpoint==='pair-recap'||path.includes('/pair-recap')) return 'pair-recap';
+  if(endpoint==='schedule'||path.includes('/schedule')) return 'schedule';
+  if(endpoint.includes('message')) return 'messages';
+  if(endpoint==='execute'||endpoint==='run'||path.includes('/execute')) return 'execute';
+  if(endpoint==='health'||endpoint==='healthz'||path.includes('/health')) return 'health';
+  if(endpoint==='logs'||endpoint==='applogs'||endpoint==='app_logs'||path.includes('/logs')) return 'logs';
+  if(endpoint==='questions'||endpoint==='question'||path.includes('/questions')) return 'questions';
+  return null;
 }
 
 async function getAuthPayload(req){
@@ -826,7 +486,6 @@ async function ensureProfileMigrations(db,req){
   try{
     await db.execute(`CREATE TABLE IF NOT EXISTS pair_schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL, proposed_times TEXT, agreed_time TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')), UNIQUE(week_id,pair_group_id))`);
   }catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_messages_pair ON pair_messages(pair_group_id, created_at)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_sched_pair ON pair_schedules(pair_group_id)`);}catch{}
   await ensureCustomQuestions(db);
   await ensureSessionRuns(db);
@@ -1043,14 +702,27 @@ async function handleCircle(req,res){
     try{
       db=getClient();
       await ensureCircleMembershipReadiness(db);
+      const activeContext=multiCircleControlPlaneEnabled()
+        ?await resolveActiveCircleContext(db,viewer)
+        :null;
+      if(activeContext&&!activeContext.ok){
+        if(activeContext.reason==='selection_required'){
+          return res.status(409).json({error:'select an active circle',code:'active_circle_required'});
+        }
+        return res.status(403).json({error:'circle membership required'});
+      }
+      if(activeContext&&!activeContext.implicit&&!requestMatchesCircleContext(req,activeContext)){
+        return res.status(409).json({error:'circle context changed',code:'circle_context_changed'});
+      }
+      const selectedCircleId=Number(activeContext?.membership?.id||0);
       const result=await db.execute({
 	        sql:`WITH viewer_membership AS (
 	            SELECT c.id AS circle_id,c.public_id,c.name,cm.role
 	            FROM circle_memberships cm
 	            JOIN auth_accounts viewer_account ON viewer_account.id=cm.user_id
-	            JOIN circles c ON c.id=cm.circle_id
+            JOIN circles c ON c.id=cm.circle_id
             WHERE cm.user_id=? AND cm.status='active'
-              AND c.is_primary=1 AND c.archived_at IS NULL
+              AND ${activeContext?'c.id=? AND ':'c.is_primary=1 AND '}c.archived_at IS NULL
             LIMIT 1
           )
           SELECT viewer.circle_id,viewer.public_id,viewer.name AS circle_name,viewer.role,
@@ -1062,7 +734,7 @@ async function handleCircle(req,res){
           JOIN auth_accounts account ON account.id=member.user_id
           WHERE COALESCE(account.is_demo,0)=0
           ORDER BY account.id`,
-        args:[viewerId],
+        args:activeContext?[viewerId,selectedCircleId]:[viewerId],
       });
       const rows=result.rows||[];
       if(!rows.length) return res.status(403).json({error:'circle membership required'});
@@ -1088,6 +760,7 @@ async function handleCircle(req,res){
         ok:true,
         circle_meta:{id:Number(first.circle_id),public_id:String(first.public_id),name:String(first.circle_name)},
         membership:{role:first.role==='owner'?'owner':'member'},
+        ...(activeContext?{circle_context_version:activeContext.context_version||0}:{}),
         circle,
         count:circle.length,
       });
@@ -1343,7 +1016,6 @@ async function handleInit(req,res){
   for(const sql of migrations){ try{ await db.execute(sql);}catch(_){} }
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_video_signals_room ON video_signals(room_id, created_at)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_video_signals_room_id ON video_signals(room_id, id)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_messages_pair ON pair_messages(pair_group_id, created_at)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_sched_pair ON pair_schedules(pair_group_id)`);}catch{}
   try{
     // This one-time cleanup is intentionally admin-triggered: it can delete legacy
@@ -1362,7 +1034,6 @@ async function handleInit(req,res){
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_user ON session_runs(user_id, created_at DESC)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_question ON session_runs(question_slug)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_pair_activity ON session_runs(week_id,pair_group_id,julianday(created_at) DESC,id DESC)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_messages_pair_activity ON pair_messages(week_id,pair_group_id,julianday(created_at) DESC,id DESC)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_room_snapshots_updated_at ON pair_room_snapshots(updated_at)`);}catch{}
   try{
     await db.execute(`CREATE UNIQUE INDEX IF NOT EXISTS uq_auth_accounts_google_sub
@@ -1404,7 +1075,6 @@ async function handleInit(req,res){
       detail:String(error?.message||error).slice(0,300),
     });
   }
-  await maybeSeedFromStatic(db);
   return res.json({ ok:true, message:"Tables ready (incl custom_questions + profile + pair_messages + pair_schedules + session_runs)" });
 }
 
@@ -1649,10 +1319,11 @@ async function handleSchedule(req,res){
 
   const db=getClient();
   const userId=Number(payload.id||payload.uid);
-  let accessArgs;
+  let accessArgs,accessRow;
   try{
     const access=await getPairAccess(db,payload,room.weekId,room.pairGroupId);
     if(!access.allowed) return res.status(404).json({error:'pair not found'});
+    accessRow=access.row;
     accessArgs=authPairAccessArgs({userId,weekId:room.weekId,pairGroupId:room.pairGroupId});
   }catch{
     return res.status(503).json({error:'schedule unavailable'});
@@ -1687,34 +1358,53 @@ async function handleSchedule(req,res){
   const nextUpdatedAt=nextScheduleUpdatedAt(current.rawUpdatedAt);
 
   try{
+    const currentSchedule=projectSchedule(current);
+    const nextState=readScheduleState({
+      proposed_times:nextValues.proposedTimes,agreed_time:nextValues.agreedTime,updated_at:nextUpdatedAt,
+    });
+    const nextSchedule=projectSchedule(nextState);
+    const notifications=scheduleNotificationEvents({
+      weekId:room.weekId,pairGroupId:room.pairGroupId,actorUserId:userId,
+      participants:[accessRow.user_a_id,accessRow.user_b_id,accessRow.user_c_id],
+      mutation,currentSchedule,nextSchedule,
+    });
+    const transaction=await db.transaction('write');
+    let finished=false;
     let written;
-    if(current.exists){
-      written=await db.execute({
-        sql:`UPDATE pair_schedules
-          SET proposed_times=?,agreed_time=?,updated_at=?
-          WHERE week_id=? AND pair_group_id=?
-            AND proposed_times IS ? AND agreed_time IS ? AND updated_at IS ?
-            AND EXISTS (${authPairAccessSql()})
-          RETURNING proposed_times,agreed_time,updated_at`,
-        args:[nextValues.proposedTimes,nextValues.agreedTime,nextUpdatedAt,
-          room.weekId,room.pairGroupId,current.rawProposedTimes,current.rawAgreedTime,current.rawUpdatedAt,...accessArgs],
-      });
-    }else{
-      written=await db.execute({
-        sql:`INSERT INTO pair_schedules (week_id,pair_group_id,proposed_times,agreed_time,created_at,updated_at)
-          SELECT ?,?,?,?,?,? WHERE EXISTS (${authPairAccessSql()})
-          ON CONFLICT(week_id,pair_group_id) DO NOTHING
-          RETURNING proposed_times,agreed_time,updated_at`,
-        args:[room.weekId,room.pairGroupId,nextValues.proposedTimes,nextValues.agreedTime,nextUpdatedAt,nextUpdatedAt,...accessArgs],
-      });
-    }
-    if(!written.rows.length){
-      const latest=await fetchAuthorizedScheduleState(db,accessArgs,room.weekId,room.pairGroupId);
-      if(!latest.authorized) return res.status(404).json({error:'pair not found'});
-      return res.status(409).json({error:'schedule changed',room_id:room.roomId,schedule:projectSchedule(latest.state)});
-    }
-    const updated=readScheduleState(written.rows[0]);
-    return res.json({ok:true,room_id:room.roomId,schedule:projectSchedule(updated)});
+    try{
+      if(current.exists){
+        written=await transaction.execute({
+          sql:`UPDATE pair_schedules
+            SET proposed_times=?,agreed_time=?,updated_at=?
+            WHERE week_id=? AND pair_group_id=?
+              AND proposed_times IS ? AND agreed_time IS ? AND updated_at IS ?
+              AND EXISTS (${authPairAccessSql()})
+            RETURNING proposed_times,agreed_time,updated_at`,
+          args:[nextValues.proposedTimes,nextValues.agreedTime,nextUpdatedAt,
+            room.weekId,room.pairGroupId,current.rawProposedTimes,current.rawAgreedTime,current.rawUpdatedAt,...accessArgs],
+        });
+      }else{
+        written=await transaction.execute({
+          sql:`INSERT INTO pair_schedules (week_id,pair_group_id,proposed_times,agreed_time,created_at,updated_at)
+            SELECT ?,?,?,?,?,? WHERE EXISTS (${authPairAccessSql()})
+            ON CONFLICT(week_id,pair_group_id) DO NOTHING
+            RETURNING proposed_times,agreed_time,updated_at`,
+          args:[room.weekId,room.pairGroupId,nextValues.proposedTimes,nextValues.agreedTime,nextUpdatedAt,nextUpdatedAt,...accessArgs],
+        });
+      }
+      if(!written.rows.length){
+        await transaction.rollback(); finished=true;
+        const latest=await fetchAuthorizedScheduleState(db,accessArgs,room.weekId,room.pairGroupId);
+        if(!latest.authorized) return res.status(404).json({error:'pair not found'});
+        return res.status(409).json({error:'schedule changed',room_id:room.roomId,schedule:projectSchedule(latest.state)});
+      }
+      for(const notification of notifications) await transaction.execute(notification);
+      await transaction.commit(); finished=true;
+      return res.json({ok:true,room_id:room.roomId,schedule:nextSchedule});
+    }catch(error){
+      if(!finished){ try{ await transaction.rollback(); }catch{} }
+      throw error;
+    }finally{ try{ await transaction.close?.(); }catch{} }
   }catch{
     return res.status(503).json({error:'schedule unavailable'});
   }
@@ -1752,44 +1442,12 @@ async function handleMessages(req,res){
 
   if(req.method==='GET'){
     try{
-      const projection=`pm.id,pm.sender_id,pm.message,pm.created_at,aa.display_name AS sender_name`;
-      let sql,args;
-      if(input.afterId===0){
-        sql=`WITH access AS (${authPairAccessSql()}), selected AS (
-          SELECT ${projection}
-          FROM pair_messages pm
-          JOIN pairing_participants sender
-            ON sender.week_id=pm.week_id AND sender.user_id=pm.sender_id AND sender.source='auth'
-          LEFT JOIN auth_accounts aa ON aa.id=pm.sender_id
-          WHERE pm.week_id=? AND pm.pair_group_id=?
-            AND EXISTS (SELECT 1 FROM access
-              WHERE pm.sender_id=user_a_id OR pm.sender_id=user_b_id OR pm.sender_id=user_c_id)
-          ORDER BY pm.id DESC LIMIT ?
-        )
-        SELECT id,sender_id,message,created_at,sender_name FROM selected
-        UNION ALL SELECT NULL,NULL,NULL,NULL,NULL
-          WHERE EXISTS (SELECT 1 FROM access) AND NOT EXISTS (SELECT 1 FROM selected)
-        ORDER BY id ASC`;
-        args=[...accessArgs,input.weekId,input.pairGroupId,input.limit];
-      }else{
-        sql=`WITH access AS (${authPairAccessSql()}), selected AS (
-          SELECT ${projection}
-          FROM pair_messages pm
-          JOIN pairing_participants sender
-            ON sender.week_id=pm.week_id AND sender.user_id=pm.sender_id AND sender.source='auth'
-          LEFT JOIN auth_accounts aa ON aa.id=pm.sender_id
-          WHERE pm.week_id=? AND pm.pair_group_id=? AND pm.id>?
-            AND EXISTS (SELECT 1 FROM access
-              WHERE pm.sender_id=user_a_id OR pm.sender_id=user_b_id OR pm.sender_id=user_c_id)
-          ORDER BY pm.id ASC LIMIT ?
-        )
-        SELECT id,sender_id,message,created_at,sender_name FROM selected
-        UNION ALL SELECT NULL,NULL,NULL,NULL,NULL
-          WHERE EXISTS (SELECT 1 FROM access) AND NOT EXISTS (SELECT 1 FROM selected)
-        ORDER BY id ASC`;
-        args=[...accessArgs,input.weekId,input.pairGroupId,input.afterId,input.limit];
-      }
-      const result=await db.execute({sql,args});
+      const statement=messageReadStatement({
+        accessSql:authPairAccessSql(),accessArgs,
+        weekId:input.weekId,pairGroupId:input.pairGroupId,
+        afterId:input.afterId,limit:input.limit,
+      });
+      const result=await db.execute(statement);
       if(!result.rows.length){
         let latest;
         try{ latest=await getPairAccess(db,payload,input.weekId,input.pairGroupId); }
@@ -1811,30 +1469,17 @@ async function handleMessages(req,res){
       args:[userId],
     });
     if(!senderResult.rows.length) return res.status(503).json({error:'messages unavailable'});
-    const inserted=await db.execute({
-      sql:`WITH access AS (${authPairAccessSql()})
-        INSERT INTO pair_messages (week_id,pair_group_id,sender_id,message,created_at)
-        SELECT ?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now')
-        WHERE EXISTS (SELECT 1 FROM access)
-          AND (SELECT COUNT(*) FROM pair_messages
-            WHERE sender_id=? AND datetime(created_at)>=datetime('now','-1 minute'))<?
-          AND (SELECT COUNT(*) FROM pair_messages
-            WHERE week_id=? AND pair_group_id=?)<?
-        RETURNING id,sender_id,message,created_at`,
-      args:[...accessArgs,input.weekId,input.pairGroupId,userId,input.message,
-        userId,MAX_MESSAGES_PER_USER_PER_MINUTE,input.weekId,input.pairGroupId,MAX_MESSAGES_PER_ROOM],
-    });
+    const inserted=await db.execute(messageInsertStatement({
+      accessSql:authPairAccessSql(),accessArgs,
+      weekId:input.weekId,pairGroupId:input.pairGroupId,userId,message:input.message,
+    }));
     if(!inserted.rows.length){
       let state;
       try{
-        state=await db.execute({
-          sql:`SELECT
-            EXISTS(${authPairAccessSql()}) AS allowed,
-            (SELECT COUNT(*) FROM pair_messages
-              WHERE sender_id=? AND datetime(created_at)>=datetime('now','-1 minute')) AS recent_count,
-            (SELECT COUNT(*) FROM pair_messages WHERE week_id=? AND pair_group_id=?) AS room_count`,
-          args:[...accessArgs,userId,input.weekId,input.pairGroupId],
-        });
+        state=await db.execute(messageLimitStateStatement({
+          accessSql:authPairAccessSql(),accessArgs,
+          weekId:input.weekId,pairGroupId:input.pairGroupId,userId,
+        }));
       }
       catch{ return res.status(503).json({error:'messages unavailable'}); }
       const latest=state.rows[0];
@@ -2313,143 +1958,41 @@ async function handleStats(req,res){
   return res.json(out);
 }
 
-// ----- LeetCode proxy endpoints -----
+// ----- Manual external problem link; remote ingestion is intentionally absent -----
 async function handleLeetcode(req,res){
-  // GET ?slug=two-sum or /api/leetcode/two-sum
-  if (req.method!=='GET') return res.status(405).json({ error:'GET only for leetcode detail' });
+  if (req.method!=='GET') return res.status(405).json({ error:'GET only for external problem links' });
   if(!await getAuthPayload(req)) return res.status(401).json({error:'authentication required'});
-  if(process.env.LEETCODE_INGESTION_AUTHORIZED!=='true'){
-    return res.status(403).json({error:'LeetCode content access is disabled pending written authorization'});
-  }
-  const adminCtx=await requireAdminDT(req,res);
-  if(!adminCtx) return;
-  const db=adminCtx.db;
-  const url = new URL(req.url, 'http://localhost');
-  let slug = (req.query?.slug || url.searchParams.get('slug') || '').toString().trim().toLowerCase();
-  if (!slug){
-    // try to parse from pathname /api/leetcode/two-sum
-    const parts = url.pathname.split('/').filter(Boolean);
-    const idx = parts.findIndex(p=>p.toLowerCase().includes('leet'));
-    if (idx>=0 && parts[idx+1]) slug = parts[idx+1].toLowerCase();
-  }
-  if (!slug) return res.status(400).json({ error:'slug required, e.g. ?slug=two-sum' });
-
-  // Check cache first (DB)
-  try{
-    const cached = await db.execute({ sql:`SELECT id, slug, title, difficulty, category, description, test_cases, examples, leetcode_slug, source FROM custom_questions WHERE leetcode_slug=? OR slug=? LIMIT 1`, args:[slug, slug] });
-    if (cached.rows.length){
-      const r=cached.rows[0];
-      let tcs=[]; try{ tcs=JSON.parse(r.test_cases||'[]')}catch{}
-      let ex=[]; try{ ex=JSON.parse(r.examples||'[]')}catch{}
-      return res.json({ ok:true, cached:true, question:{ id:r.id, slug:r.slug, title:r.title, difficulty:r.difficulty, category:r.category, description:r.description, test_cases:tcs, examples:ex, leetcode_slug:r.leetcode_slug, source:r.source, slug }});
+  const externalRequestUrl = new URL(req.url, 'http://localhost');
+  let externalSlug = String(
+    req.query?.slug || externalRequestUrl.searchParams.get('slug') || '',
+  ).trim().toLowerCase();
+  if (!externalSlug) {
+    const parts = externalRequestUrl.pathname.split('/').filter(Boolean);
+    const index = parts.findIndex(part => part.toLowerCase() === 'leetcode');
+    if (index >= 0 && parts[index + 1] && parts[index + 1].toLowerCase() !== 'sync') {
+      externalSlug = parts[index + 1].toLowerCase();
     }
-  }catch{}
-
-  return res.status(404).json({
-    ok:false,
-    error:'problem is not in the approved local catalog',
-    slug,
-    external_url:`https://leetcode.com/problems/${encodeURIComponent(slug)}/`,
+  }
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(externalSlug) || externalSlug.length > 120) {
+    return res.status(400).json({error:'a lowercase kebab-case slug is required'});
+  }
+  return res.json({
+    ok:true,
+    content_available:false,
+    source:'external-link',
+    slug:externalSlug,
+    external_url:`https://leetcode.com/problems/${encodeURIComponent(externalSlug)}/`,
     automated_fetch:false,
   });
 }
 
 async function handleLeetcodeSync(req,res){
   if (req.method!=='POST') return res.status(405).json({ error:'POST only for leetcode-sync' });
-  const adminCtx = await requireAdminDT(req,res);
-  if (!adminCtx) return;
-  if(process.env.LEETCODE_INGESTION_AUTHORIZED!=='true'){
-    return res.status(403).json({error:'automated LeetCode ingestion is disabled pending written authorization'});
-  }
-  const db = adminCtx.db;
-  await ensureBaseTables(db,req); await ensureProfileMigrations(db,req);
-  const url = new URL(req.url,'http://localhost');
-  const limit = Math.min(50, Math.max(1, parseInt(String(req.query?.limit||url.searchParams.get('limit')||'20'),10)||20));
-  const skip = Math.max(0, parseInt(String(req.query?.skip||url.searchParams.get('skip')||'0'),10)||0);
-  const singleSlug = (req.query?.slug||url.searchParams.get('slug')||req.body?.slug||'').toString().trim().toLowerCase();
-  let slugsInfo;
-  let slugs=[];
-  if (singleSlug){
-    slugs=[singleSlug];
-    slugsInfo={ total:1, slugs };
-  }else{
-    try{ slugsInfo = await leetListSlugs(limit, skip); slugs = slugsInfo.slugs||[]; }
-    catch(e){ return res.status(500).json({ error:'failed to list slugs', detail:String(e.message||e).slice(0,200)}); }
-  }
-  // If list empty, try to fallback to provided body.slugs array
-  if (!slugs.length && Array.isArray(req.body?.slugs)) slugs = req.body.slugs.map(s=>String(s).toLowerCase().trim()).filter(Boolean).slice(0,limit);
-  if (!slugs.length) return res.status(400).json({ error:'no slugs to sync', hint:'pass ?slug=two-sum or ensure LeetCode list fetch works' });
-
-  const synced=[]; const errors=[];
-  for (let i=0;i<slugs.length;i++){
-    const slug = slugs[i];
-    try{
-      if (i>0 && i%3===0) await sleep(800); // rate limit to avoid 429
-      const q = await leetGraphQLQuestion(slug);
-      const descHtml = q.content||'';
-      const descText = htmlToText(descHtml)||q.title;
-      const difficulty = q.difficulty||'Medium';
-      const tags = (q.topicTags||[]).map(t=>t.slug||t.name).slice(0,3);
-      const category = tags[0]||'dsa';
-      let testCases = smartChunkExampleTestcases(slug, q.exampleTestcases||'', descHtml);
-      // enrichment attempt (best-effort) – merge alfa
-      try{
-        const alfa = await leetEnrichAlfa(slug);
-        if (alfa && alfa.exampleTestcases){
-          const alfaCases = smartChunkExampleTestcases(slug, alfa.exampleTestcases, alfa.content||descHtml);
-          const seen = new Set(testCases.map(t=>t.input));
-          for(const ac of alfaCases){ if(!seen.has(ac.input)){ testCases.push(ac); seen.add(ac.input); } }
-        }
-      }catch{}
-      // edges
-      try{
-        const edges = enrichmentEdges(slug);
-        const seen = new Set(testCases.map(t=>t.input));
-        for(const e of edges){ if(!seen.has(e.input)){ testCases.push(e); seen.add(e.input); } }
-      }catch{}
-      if (!testCases.length) testCases=[{ input:JSON.stringify({raw:`example from ${slug}`}), expect:null, raw:`see description` }];
-      const constraints = parseLeetConstraints(descHtml);
-      const examplesStr = JSON.stringify(testCases.slice(0,5).map(tc=>({ input: tc.input, output: tc.expect||'', raw: tc.raw }))).slice(0,4000);
-      const tcsStr = JSON.stringify(testCases).slice(0,15000);
-      // upsert
-      await db.execute({ sql:`INSERT INTO custom_questions (slug, title, type, difficulty, category, description, input_format, constraints_text, examples, test_cases, starter_per_lang, author_id, source, leetcode_slug, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))
-        ON CONFLICT(slug) DO UPDATE SET
-          title=excluded.title,
-          difficulty=excluded.difficulty,
-          category=excluded.category,
-          description=excluded.description,
-          constraints_text=excluded.constraints_text,
-          examples=excluded.examples,
-          test_cases=excluded.test_cases,
-          source=excluded.source,
-          leetcode_slug=excluded.leetcode_slug
-      `, args:[
-        slug,
-        q.title||slug,
-        'dsa',
-        difficulty,
-        category,
-        descText,
-        null,
-        constraints||null,
-        examplesStr,
-        tcsStr,
-        JSON.stringify({}),
-        adminCtx.payload.id||adminCtx.callerId||null,
-        'leetcode',
-        q.titleSlug||slug
-      ]});
-      try{ await logServer('info','leetcode_sync_progress', `synced ${slug} ${i+1}/${slugs.length} tc=${testCases.length}`, {skip, slug, idx:i, tc:testCases.length}, {req, source:'server', route:req.url}); }catch{}
-      synced.push({ slug, title:q.title, difficulty, category, test_cases_count:testCases.length });
-    }catch(e){
-      try{ await logServer('warn','leetcode_sync_error', `fail ${slug} ${String(e.message||e).slice(0,120)}`, {slug, err:String(e.message||e).slice(0,300)}, {req, source:'server'}); }catch{}
-      errors.push({ slug, error:String(e.message||e).slice(0,200) });
-    }
-    // Vercel Hobby 10s budget guard: if we exceed 9s we break – caller paginates with skip
-    if (i>=14 && (Date.now()%1000===0)) { /*noop*/ }
-  }
-  return res.json({ ok:true, synced_count:synced.length, total_requested: slugs.length, skip, limit, total_available: slugsInfo?.total||null, synced, errors, note:`Enriched: merged GraphQL exampleTestcases + alfa-leetcode-api + hand-crafted edges. Pagination via ?skip=&limit=. Each call 800ms throttled to avoid 429. Auto-seed /api/questions when <10 uses same enrichment.` });
+  if(!await getAuthPayload(req)) return res.status(401).json({error:'authentication required'});
+  return res.status(410).json({
+    error:'automated LeetCode ingestion is unavailable; use the external-link workflow',
+    automated_fetch:false,
+  });
 }
 
 
@@ -2841,31 +2384,56 @@ async function handleExecute(req,res){
   }
 }
 
+const MULTI_CIRCLE_UNSCOPED_DATA_ENDPOINTS=new Set([
+  'runs','session_runs','session-runs','weeks','history','stats','my-pair','mypair','my_pair',
+  'pair-recap','schedule','messages','message','execute','run',
+]);
+
+async function requireSingleCircleDataFeature(req,res,endpoint){
+  if(!multiCircleControlPlaneEnabled()||!MULTI_CIRCLE_UNSCOPED_DATA_ENDPOINTS.has(endpoint)) return true;
+  try{
+    const payload=await getAuthPayload(req);
+    const userId=authenticatedUserId(payload);
+    if(!userId) return true;
+    const db=getClient();
+    await ensureCircleMembershipReadiness(db);
+    if(!await canUseLegacySinglePrimaryCircleFeatures(db,payload)){
+      sendMultiCircleFeatureUnavailable(res);
+      return false;
+    }
+    return true;
+  }catch{
+    res.status(503).json({error:'circle context unavailable'});
+    return false;
+  }
+}
+
 export default async function handler(req,res){
   if(!verifyMutationOrigin(req)) return res.status(403).json({error:'cross-origin mutation rejected'});
   try{ 
     try{ initSentry(); }catch{}
   }catch{}
   try{
-  const ep = getEndpoint(req);
-  const path = (req.url||'').toLowerCase();
-  if (ep==='runs' || ep==='session_runs' || ep==='session-runs' || path.includes('/runs')) return await handleRuns(req,res);
-  if (ep==='leetcode-sync' || ep==='leetcode_sync' || path.includes('leetcode/sync') || path.includes('leetcode-sync')) return await handleLeetcodeSync(req,res);
-  if (ep==='leetcode' || ep==='leetcode-detail' || ep==='leetcode_detail' || path.includes('/leetcode')) return await handleLeetcode(req,res);
-  if (ep==='circle' || path.includes('/circle')) return await handleCircle(req,res);
-  if (ep==='weeks' || path.includes('/weeks')) return await handleWeeks(req,res);
-  if (ep==='history' || path.includes('/history')) return await handleHistory(req,res);
-  if (ep==='stats' || path.includes('/stats')) return await handleStats(req,res);
-  if (ep==='init' || path.includes('/init')) return await handleInit(req,res);
-  if (ep==='profile' || path.includes('/profile')) return await handleProfile(req,res);
-  if (ep==='my-pair' || path.includes('my-pair') || ep==='mypair' || path.includes('my_pair') || ep==='my_pair') return await handleMyPair(req,res);
-  if (ep==='pair-recap' || path.includes('/pair-recap')) return await handlePairRecap(req,res);
-  if (ep==='schedule' || path.includes('/schedule')) return await handleSchedule(req,res);
-  if (ep.includes('message')) return await handleMessages(req,res);
-  if (ep==='execute' || ep==='run' || path.includes('/execute')) return await handleExecute(req,res);
-  if (ep==='health' || path.includes('/health') || ep==='healthz') return await handleHealth(req,res);
-  if (ep==='logs' || path.includes('/logs') || ep==='applogs' || ep==='app_logs') return await handleLogs(req,res);
-  if (ep==='questions' || ep==='question' || path.includes('/questions')) return await handleQuestions(req,res);
+  const ep=getEndpoint(req);
+  const route=resolveDataRoute(req,ep);
+  if(!await requireSingleCircleDataFeature(req,res,route)) return;
+  if(route==='runs') return await handleRuns(req,res);
+  if(route==='leetcode-sync') return await handleLeetcodeSync(req,res);
+  if(route==='leetcode') return await handleLeetcode(req,res);
+  if(route==='circle') return await handleCircle(req,res);
+  if(route==='weeks') return await handleWeeks(req,res);
+  if(route==='history') return await handleHistory(req,res);
+  if(route==='stats') return await handleStats(req,res);
+  if(route==='init') return await handleInit(req,res);
+  if(route==='profile') return await handleProfile(req,res);
+  if(route==='my-pair') return await handleMyPair(req,res);
+  if(route==='pair-recap') return await handlePairRecap(req,res);
+  if(route==='schedule') return await handleSchedule(req,res);
+  if(route==='messages') return await handleMessages(req,res);
+  if(route==='execute') return await handleExecute(req,res);
+  if(route==='health') return await handleHealth(req,res);
+  if(route==='logs') return await handleLogs(req,res);
+  if(route==='questions') return await handleQuestions(req,res);
   return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['health','runs','execute','logs','leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','pair-recap','schedule','messages','questions'] });
   }catch(e){
     const failedEndpoint=getEndpoint(req);
@@ -2876,55 +2444,4 @@ export default async function handler(req,res){
     try{ console.error('[api unhandled]', e && e.stack||e); }catch{}
     return res.status(500).json({error:'internal', detail: String(e && e.message||e).slice(0,300)});
   }
-}
-// auto-seed from bundled file on first questions request
-async function maybeSeedFromStatic(db){
-  try{
-    let seed=null;
-    const tryPaths = ['/vercel/path0/data/leetcode-seed.json', './data/leetcode-seed.json', 'data/leetcode-seed.json', '../data/leetcode-seed.json'];
-    for(const cand of tryPaths){
-      try{
-        const fs=await import('fs');
-        const pathMod=await import('path');
-        const abs=cand.startsWith('/')?cand:pathMod.resolve(cand);
-        if(fs.existsSync(abs) || fs.existsSync(cand)){
-          const file = fs.existsSync(cand) ? cand : abs;
-          seed=JSON.parse(fs.readFileSync(file,'utf8'));
-          if(seed) break;
-        }
-      }catch{}
-    }
-    if(!seed){
-      try{
-        const fs2=await import('fs');
-        const p2=new URL('../data/leetcode-seed.json', import.meta.url);
-        if(fs2.existsSync(p2)) seed=JSON.parse(fs2.readFileSync(p2,'utf8'));
-      }catch{}
-    }
-    if(!seed||!seed.length) return;
-    // Upsert enriched seed (ON CONFLICT) — always upsert to migrate old 3-case seeds to enriched 6-case
-    for(const q of seed){
-      try{
-        const enrichedTC = q.test_cases || [];
-        const slug = q.slug;
-        let mergedTC = enrichedTC;
-        try{
-          const edges = enrichmentEdges(slug);
-          const seen = new Set((enrichedTC||[]).map(t=>t.input));
-          for(const e of edges){ if(!seen.has(e.input)){ mergedTC.push(e); seen.add(e.input); } }
-        }catch{}
-        await db.execute({ sql:`INSERT INTO custom_questions (slug,title,type,difficulty,category,description,test_cases,examples,source,leetcode_slug) VALUES (?,?,?,?,?,?,?,?,?,?)
-          ON CONFLICT(slug) DO UPDATE SET
-            title=excluded.title,
-            difficulty=excluded.difficulty,
-            category=excluded.category,
-            description=excluded.description,
-            test_cases=excluded.test_cases,
-            examples=excluded.examples,
-            source=excluded.source,
-            leetcode_slug=excluded.leetcode_slug
-        `, args:[q.slug,q.title, q.type||'dsa', q.difficulty||'Medium', q.category||'custom', q.description, JSON.stringify(mergedTC||[]), JSON.stringify(q.examples||[]), q.source||'leetcode', q.leetcode_slug||q.slug]});
-      }catch{}
-    }
-  }catch{}
 }

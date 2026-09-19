@@ -122,6 +122,37 @@ const PLAN_8_OPERATIONS=Object.freeze([
   index('idx_auth_recent_proofs_user','auth_recent_proofs',['user_id','authenticated_at DESC']),
 ]);
 
+const PLAN_9_OPERATIONS=Object.freeze([
+  table('auth_provider_email_state',`CREATE TABLE IF NOT EXISTS auth_provider_email_state (issuer TEXT NOT NULL CHECK(issuer='https://accounts.google.com'), subject TEXT NOT NULL CHECK(length(subject)>=1 AND length(subject)<=255 AND subject NOT GLOB '*[^A-Za-z0-9_-]*'), email_hash TEXT NOT NULL CHECK(length(email_hash)=64 AND email_hash NOT GLOB '*[^0-9a-f]*'), hash_key_version INTEGER NOT NULL CHECK(typeof(hash_key_version)='integer' AND hash_key_version>=1 AND hash_key_version<=2147483647), hash_key_fingerprint TEXT NOT NULL CHECK(length(hash_key_fingerprint)=64 AND hash_key_fingerprint NOT GLOB '*[^0-9a-f]*'), observed_at INTEGER NOT NULL CHECK(typeof(observed_at)='integer' AND observed_at>0), changed_at INTEGER CHECK(changed_at IS NULL OR (typeof(changed_at)='integer' AND changed_at<=observed_at)), PRIMARY KEY(issuer,subject), FOREIGN KEY(issuer,subject) REFERENCES auth_provider_identities(issuer,subject) ON DELETE CASCADE)`),
+  table('auth_identity_audit_events',`CREATE TABLE IF NOT EXISTS auth_identity_audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, actor_user_id INTEGER NOT NULL, event_type TEXT NOT NULL CHECK(event_type IN ('google_linked','google_unlinked','password_added','password_unlinked','link_conflict','unlink_denied','provider_email_changed','provider_email_rekeyed','recovery_completed')), provider TEXT NOT NULL CHECK(provider IN ('google','password')), outcome TEXT NOT NULL CHECK(outcome IN ('succeeded','denied','conflict','observed')), reason_code TEXT NOT NULL CHECK(length(reason_code)>=1 AND length(reason_code)<=64 AND reason_code NOT GLOB '*[^a-z0-9_]*'), created_at INTEGER NOT NULL CHECK(typeof(created_at)='integer' AND created_at>0), FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE RESTRICT, FOREIGN KEY(actor_user_id) REFERENCES auth_accounts(id) ON DELETE RESTRICT)`),
+  index('idx_auth_identity_audit_user','auth_identity_audit_events',['user_id','created_at DESC','id DESC']),
+  index('idx_auth_identity_audit_actor','auth_identity_audit_events',['actor_user_id','created_at DESC','id DESC']),
+]);
+
+const PLAN_10_OPERATIONS=Object.freeze([
+  index('idx_pair_messages_room_cursor','pair_messages',['week_id','pair_group_id','id']),
+  index('idx_pair_messages_sender_created','pair_messages',['sender_id','created_at']),
+]);
+
+const PLAN_11_OPERATIONS=Object.freeze([
+  table('chat_retention_control',`CREATE TABLE IF NOT EXISTS chat_retention_control (id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)), generation INTEGER NOT NULL CHECK(typeof(generation)='integer' AND generation>=1), policy_version TEXT NOT NULL CHECK(policy_version='private-beta-v1'), retention_days INTEGER NOT NULL CHECK(retention_days=90), updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))`),
+  table('chat_retention_scopes',`CREATE TABLE IF NOT EXISTS chat_retention_scopes (week_id INTEGER NOT NULL CHECK(typeof(week_id)='integer' AND week_id>0), pair_group_id INTEGER NOT NULL CHECK(typeof(pair_group_id)='integer' AND pair_group_id>0), scope_key TEXT NOT NULL CHECK(length(scope_key)>=5 AND length(scope_key)<=80), circle_id INTEGER, registered_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), PRIMARY KEY(week_id,pair_group_id), UNIQUE(pair_group_id), CHECK((scope_key='local' AND circle_id IS NULL) OR (typeof(circle_id)='integer' AND circle_id>0 AND scope_key=('circle:'||circle_id))))`),
+  table('chat_retention_runs',`CREATE TABLE IF NOT EXISTS chat_retention_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, run_key TEXT NOT NULL UNIQUE CHECK(length(run_key)=64 AND run_key NOT GLOB '*[^0-9a-f]*'), mode TEXT NOT NULL CHECK(mode IN ('dry_run','purge')), scope_key TEXT NOT NULL CHECK(length(scope_key)>=5 AND length(scope_key)<=80), circle_id INTEGER, week_id INTEGER NOT NULL CHECK(typeof(week_id)='integer' AND week_id>0), pair_group_id INTEGER NOT NULL CHECK(typeof(pair_group_id)='integer' AND pair_group_id>0), cutoff_at TEXT NOT NULL CHECK(length(cutoff_at)=24 AND cutoff_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND julianday(cutoff_at) IS NOT NULL AND strftime('%Y-%m-%dT%H:%M:%fZ',cutoff_at)=cutoff_at), source_max_message_id INTEGER NOT NULL CHECK(typeof(source_max_message_id)='integer' AND source_max_message_id>0), status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','retry','held','completed','dead_letter')), checkpoint INTEGER NOT NULL DEFAULT 0 CHECK(typeof(checkpoint)='integer' AND checkpoint>=0), scan_cursor_id INTEGER NOT NULL DEFAULT 0 CHECK(typeof(scan_cursor_id)='integer' AND scan_cursor_id>=0), claim_count INTEGER NOT NULL DEFAULT 0 CHECK(typeof(claim_count)='integer' AND claim_count>=0), failure_count INTEGER NOT NULL DEFAULT 0 CHECK(typeof(failure_count)='integer' AND failure_count>=0), max_failures INTEGER NOT NULL DEFAULT 5 CHECK(typeof(max_failures)='integer' AND max_failures BETWEEN 1 AND 20), control_generation INTEGER CHECK(control_generation IS NULL OR (typeof(control_generation)='integer' AND control_generation>=1)), next_attempt_at TEXT NOT NULL, lease_owner TEXT, lease_token TEXT, leased_until TEXT, backup_evidence_digest TEXT NOT NULL CHECK(length(backup_evidence_digest)=64 AND backup_evidence_digest NOT GLOB '*[^0-9a-f]*'), backup_through_at TEXT NOT NULL, backup_completed_at TEXT NOT NULL, export_evidence_digest TEXT NOT NULL CHECK(length(export_evidence_digest)=64 AND export_evidence_digest NOT GLOB '*[^0-9a-f]*'), export_through_at TEXT NOT NULL, export_completed_at TEXT NOT NULL, eligible_count INTEGER NOT NULL DEFAULT 0 CHECK(typeof(eligible_count)='integer' AND eligible_count>=0), deleted_count INTEGER NOT NULL DEFAULT 0 CHECK(typeof(deleted_count)='integer' AND deleted_count>=0), replay_count INTEGER NOT NULL DEFAULT 0 CHECK(typeof(replay_count)='integer' AND replay_count>=0), last_error_code TEXT CHECK(last_error_code IS NULL OR (length(last_error_code)>=1 AND length(last_error_code)<=64 AND last_error_code NOT GLOB '*[^A-Z0-9_]*')), completed_at TEXT, dead_lettered_at TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), UNIQUE(scope_key,week_id,pair_group_id,cutoff_at,mode), CHECK((scope_key='local' AND circle_id IS NULL) OR (typeof(circle_id)='integer' AND circle_id>0 AND scope_key=('circle:'||circle_id))), CHECK(deleted_count<=eligible_count), CHECK(mode='purge' OR deleted_count=0), CHECK((status='processing' AND lease_owner IS NOT NULL AND lease_token IS NOT NULL AND leased_until IS NOT NULL AND control_generation IS NOT NULL) OR (status<>'processing' AND lease_owner IS NULL AND lease_token IS NULL AND leased_until IS NULL)), FOREIGN KEY(week_id,pair_group_id) REFERENCES chat_retention_scopes(week_id,pair_group_id) ON DELETE RESTRICT)`),
+  table('chat_retention_legal_holds',`CREATE TABLE IF NOT EXISTS chat_retention_legal_holds (scope_key TEXT NOT NULL CHECK(length(scope_key)>=5 AND length(scope_key)<=80), circle_id INTEGER, week_id INTEGER NOT NULL CHECK(typeof(week_id)='integer' AND week_id>=0), pair_group_id INTEGER NOT NULL CHECK(typeof(pair_group_id)='integer' AND pair_group_id>=0), hold_level TEXT NOT NULL CHECK(hold_level IN ('tenant','room')), status TEXT NOT NULL CHECK(status IN ('active','released')), reason_code TEXT NOT NULL CHECK(length(reason_code)>=1 AND length(reason_code)<=64 AND reason_code NOT GLOB '*[^A-Z0-9_]*'), created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), released_at TEXT, PRIMARY KEY(scope_key,week_id,pair_group_id), CHECK((scope_key='local' AND circle_id IS NULL) OR (typeof(circle_id)='integer' AND circle_id>0 AND scope_key=('circle:'||circle_id))), CHECK((hold_level='tenant' AND week_id=0 AND pair_group_id=0) OR (hold_level='room' AND week_id>0 AND pair_group_id>0)), CHECK((status='active' AND released_at IS NULL) OR (status='released' AND released_at IS NOT NULL)))`),
+  table('chat_retention_audit_events',`CREATE TABLE IF NOT EXISTS chat_retention_audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, retention_run_id INTEGER NOT NULL, action TEXT NOT NULL CHECK(action IN ('enqueued','claimed','batch_scanned','batch_deleted','yielded','held','completed','retry_scheduled','dead_lettered','replayed')), from_status TEXT, to_status TEXT NOT NULL, item_count INTEGER NOT NULL DEFAULT 0 CHECK(typeof(item_count)='integer' AND item_count>=0), duration_ms INTEGER NOT NULL DEFAULT 0 CHECK(typeof(duration_ms)='integer' AND duration_ms>=0), reason_code TEXT CHECK(reason_code IS NULL OR (length(reason_code)>=1 AND length(reason_code)<=64 AND reason_code NOT GLOB '*[^A-Z0-9_]*')), created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), FOREIGN KEY(retention_run_id) REFERENCES chat_retention_runs(id) ON DELETE RESTRICT)`),
+  index('idx_chat_retention_runs_dispatch','chat_retention_runs',['mode','status','next_attempt_at','leased_until','id']),
+  index('idx_chat_retention_scopes_tenant','chat_retention_scopes',['scope_key','week_id','pair_group_id']),
+  index('idx_chat_retention_runs_scope','chat_retention_runs',['scope_key','week_id','pair_group_id','cutoff_at','mode']),
+  index('idx_chat_retention_audit_run','chat_retention_audit_events',['retention_run_id','id']),
+  index('idx_pair_messages_retention','pair_messages',['julianday(created_at)','id','week_id','pair_group_id']),
+]);
+
+const PLAN_12_OPERATIONS=Object.freeze([
+  index('uq_auth_sessions_hash_user','auth_sessions',['session_hash','user_id'],{unique:true}),
+  table('auth_session_circle_contexts',`CREATE TABLE IF NOT EXISTS auth_session_circle_contexts (session_hash TEXT PRIMARY KEY NOT NULL CHECK(length(session_hash)=64 AND session_hash NOT GLOB '*[^0-9a-f]*'), user_id INTEGER NOT NULL, circle_id INTEGER NOT NULL, context_version INTEGER NOT NULL CHECK(typeof(context_version)='integer' AND context_version>=1), updated_at INTEGER NOT NULL CHECK(typeof(updated_at)='integer' AND updated_at>0), FOREIGN KEY(session_hash,user_id) REFERENCES auth_sessions(session_hash,user_id) ON DELETE CASCADE, FOREIGN KEY(circle_id) REFERENCES circles(id) ON DELETE RESTRICT)`),
+  index('idx_auth_session_circle_contexts_user_circle','auth_session_circle_contexts',['user_id','circle_id']),
+]);
+
 export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:1,
@@ -157,6 +188,22 @@ export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:8,
     operations:PLAN_8_OPERATIONS,
+  }),
+  Object.freeze({
+    version:9,
+    operations:PLAN_9_OPERATIONS,
+  }),
+  Object.freeze({
+    version:10,
+    operations:PLAN_10_OPERATIONS,
+  }),
+  Object.freeze({
+    version:11,
+    operations:PLAN_11_OPERATIONS,
+  }),
+  Object.freeze({
+    version:12,
+    operations:PLAN_12_OPERATIONS,
   }),
 ]);
 
@@ -197,7 +244,7 @@ export const SCHEMA_MANIFEST_CHECKSUM=checksum({
 
 // Updating the schema is intentional only when this pinned checksum is updated
 // in the same reviewed change.
-export const PINNED_SCHEMA_MANIFEST_CHECKSUM='243c5457df865fa27b8808226e17dc30e0d85ce4ff039defb7358928e4c136e1';
+export const PINNED_SCHEMA_MANIFEST_CHECKSUM='93a7a44545d6b66a741f62204434b11a9e0113aaa0445946baffaf9bc70a0c09';
 
 if(SCHEMA_MANIFEST_CHECKSUM!==PINNED_SCHEMA_MANIFEST_CHECKSUM){
   throw new Error(`Schema manifest checksum changed: ${SCHEMA_MANIFEST_CHECKSUM}`);

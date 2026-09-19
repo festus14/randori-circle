@@ -6,7 +6,11 @@ import { afterEach, test } from 'node:test';
 import { createClient } from '@libsql/client';
 
 import {
-  MEMBER_LIST_LIMIT,
+  MEMBER_PAGE_MAX,
+  MemberRosterQueryError,
+  OWNER_ROSTER_MAX_SQL,
+  OWNER_ROSTER_PAGE_SQL,
+  OWNER_ROSTER_SCOPE_SQL,
   changeCircleMemberStatus,
   leaveCircle,
   listCircleMembersForOwner,
@@ -18,6 +22,7 @@ import { applyMigrations, inspectMigrationState, prepareMigrationConnection } fr
 
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const JWT_SECRET='member-lifecycle-test-secret-at-least-thirty-two-bytes';
+const NOW=Math.floor(Date.now()/1000);
 const originalEnvironment={
   JWT_SECRET:process.env.JWT_SECRET,
   CIRCLE_MEMBERSHIP_ENABLED:process.env.CIRCLE_MEMBERSHIP_ENABLED,
@@ -68,20 +73,46 @@ async function fixture(){
   return {db,url,directory,memberSessions};
 }
 
+async function recentSession(db,id,email,{authenticatedAt=NOW}={}){
+  const token=await issueSession(db,{id,email,name:`Member ${id}`},{
+    recentAuthMethod:'password',nowSeconds:authenticatedAt,
+  });
+  return verifyRequestAuth(request(token),db,{nowSeconds:NOW});
+}
+
 test('owner listing is private, bounded, and includes inactive members without email addresses',async()=>{
   const {db}=await fixture();
-  const result=await listCircleMembersForOwner(db,{actorUserId:1});
+  const result=await listCircleMembersForOwner(db,{actorUserId:1,circleId:10,cursorSecret:JWT_SECRET});
   assert.equal(result.ok,true);
   assert.deepEqual(result.members.map(member=>[member.id,member.role,member.status]),[
     [1,'owner','active'],[2,'member','active'],[3,'owner','inactive'],
   ]);
-  assert.equal(result.truncated,false);
+  assert.equal(result.has_more,false);
+  assert.equal(result.next_cursor,null);
+  assert.equal(result.scanned,3);
   assert.equal(JSON.stringify(result).includes('@example.test'),false);
-  assert.deepEqual(await listCircleMembersForOwner(db,{actorUserId:2}),{ok:false,reason:'owner_required'});
-  assert.deepEqual(await listCircleMembersForOwner(db,{actorUserId:4}),{ok:false,reason:'owner_required'});
+  assert.deepEqual(await listCircleMembersForOwner(db,{actorUserId:2,circleId:10,cursorSecret:JWT_SECRET}),{ok:false,reason:'owner_required'});
+  assert.deepEqual(await listCircleMembersForOwner(db,{actorUserId:4,circleId:10,cursorSecret:JWT_SECRET}),{ok:false,reason:'owner_required'});
 });
 
-test('owner listing has a hard cap and explicitly reports truncation',async()=>{
+test('each exact roster statement is bounded and served by membership indexes',async()=>{
+  const {db}=await fixture();
+  const [scope,max,page]=await Promise.all([
+    db.execute({sql:`EXPLAIN QUERY PLAN ${OWNER_ROSTER_SCOPE_SQL}`,args:[1,10]}),
+    db.execute({sql:`EXPLAIN QUERY PLAN ${OWNER_ROSTER_MAX_SQL}`,args:[10]}),
+    db.execute({sql:`EXPLAIN QUERY PLAN ${OWNER_ROSTER_PAGE_SQL}`,args:[1,10,10,0,999999,201]}),
+  ]);
+  const scopeDetails=scope.rows.map(row=>String(row.detail||'')).join('\n');
+  const maxDetails=max.rows.map(row=>String(row.detail||'')).join('\n');
+  const pageDetails=page.rows.map(row=>String(row.detail||'')).join('\n');
+  assert.match(scopeDetails,/SEARCH membership USING INDEX idx_circle_memberships_(?:user_active|circle_active)/i);
+  assert.match(maxDetails,/SEARCH membership USING COVERING INDEX .*circle_memberships.*\(circle_id=\?\)/i);
+  assert.match(pageDetails,/MATERIALIZE candidates/i);
+  assert.match(pageDetails,/SEARCH membership USING INDEX .*circle_memberships.*\(circle_id=\? AND user_id>\? AND user_id<\?\)/i);
+  assert.doesNotMatch(`${scopeDetails}\n${maxDetails}\n${pageDetails}`,/SCAN membership/i);
+});
+
+test('an owner pages through more than 500 members without gaps when status changes between pages',async()=>{
   const {db}=await fixture();
   await db.execute(`WITH RECURSIVE sequence(id) AS (
       VALUES(1000) UNION ALL SELECT id+1 FROM sequence WHERE id<1500
@@ -91,17 +122,116 @@ test('owner listing has a hard cap and explicitly reports truncation',async()=>{
       VALUES(1000) UNION ALL SELECT id+1 FROM sequence WHERE id<1500
     ) INSERT INTO circle_memberships (circle_id,user_id,role,status)
       SELECT 10,id,'member','active' FROM sequence`);
-  const result=await listCircleMembersForOwner(db,{actorUserId:1});
-  assert.equal(result.ok,true);
-  assert.equal(result.members.length,MEMBER_LIST_LIMIT);
-  assert.equal(result.truncated,true);
+  const seen=[];
+  let cursor=null;
+  let pages=0;
+  do{
+    const result=await listCircleMembersForOwner(db,{actorUserId:1,circleId:10,cursor,cursorSecret:JWT_SECRET,limit:MEMBER_PAGE_MAX});
+    assert.equal(result.ok,true);
+    assert.ok(result.members.length<=MEMBER_PAGE_MAX);
+    seen.push(...result.members.map(member=>member.id));
+    cursor=result.next_cursor;
+    pages+=1;
+    if(pages===1){
+      await db.execute(`UPDATE circle_memberships SET status='inactive',updated_at=CURRENT_TIMESTAMP
+        WHERE circle_id=10 AND user_id=1200`);
+    }
+    assert.equal(result.has_more,Boolean(cursor));
+  }while(cursor);
+  assert.ok(pages>5);
+  assert.equal(seen.length,504);
+  assert.equal(new Set(seen).size,seen.length);
+  assert.deepEqual(seen,[...seen].sort((a,b)=>a-b));
+  const changedIndex=seen.indexOf(1200);
+  assert.ok(changedIndex>MEMBER_PAGE_MAX);
+});
+
+test('display-name search is bounded, private, cursor-bound, and reaches late matches',async()=>{
+  const {db}=await fixture();
+  await db.execute(`WITH RECURSIVE sequence(id) AS (
+      VALUES(1000) UNION ALL SELECT id+1 FROM sequence WHERE id<1500
+    ) INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_demo)
+      SELECT id,'private-'||id||'@example.test','x',CASE WHEN id=1499 THEN 'Ada Search Target' ELSE 'Member '||id END,'#123456',0 FROM sequence`);
+  await db.execute(`WITH RECURSIVE sequence(id) AS (
+      VALUES(1000) UNION ALL SELECT id+1 FROM sequence WHERE id<1500
+    ) INSERT INTO circle_memberships (circle_id,user_id,role,status)
+      SELECT 10,id,'member','active' FROM sequence`);
+  let cursor=null;
+  let pages=0;
+  const found=[];
+  do{
+    const result=await listCircleMembersForOwner(db,{actorUserId:1,circleId:10,cursor,search:'  ADA   search ',cursorSecret:JWT_SECRET,limit:10});
+    assert.ok(result.scanned<=200);
+    assert.equal(JSON.stringify(result).includes('@example.test'),false);
+    found.push(...result.members);
+    cursor=result.next_cursor;
+    pages+=1;
+  }while(cursor);
+  assert.ok(pages>=3);
+  assert.deepEqual(found.map(member=>[member.id,member.display_name]),[[1499,'Ada Search Target']]);
+});
+
+test('demo-account filtering cannot make one page scan beyond the raw candidate cap',async()=>{
+  const {db}=await fixture();
+  await db.execute(`WITH RECURSIVE sequence(id) AS (
+      VALUES(1000) UNION ALL SELECT id+1 FROM sequence WHERE id<1249
+    ) INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_demo)
+      SELECT id,'demo-'||id||'@example.test','x','Demo '||id,'#123456',1 FROM sequence`);
+  await db.execute(`WITH RECURSIVE sequence(id) AS (
+      VALUES(1000) UNION ALL SELECT id+1 FROM sequence WHERE id<1249
+    ) INSERT INTO circle_memberships (circle_id,user_id,role,status)
+      SELECT 10,id,'member','active' FROM sequence`);
+  await db.execute(`INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_demo)
+    VALUES (1300,'target@example.test','x','Bounded Target','#123456',0)`);
+  await db.execute(`INSERT INTO circle_memberships (circle_id,user_id,role,status)
+    VALUES (10,1300,'member','active')`);
+
+  const first=await listCircleMembersForOwner(db,{
+    actorUserId:1,circleId:10,search:'bounded target',cursorSecret:JWT_SECRET,limit:10,
+  });
+  assert.equal(first.scanned,200);
+  assert.deepEqual(first.members,[]);
+  assert.equal(first.has_more,true);
+  const second=await listCircleMembersForOwner(db,{
+    actorUserId:1,circleId:10,search:'bounded target',cursor:first.next_cursor,cursorSecret:JWT_SECRET,limit:10,
+  });
+  assert.ok(second.scanned<=200);
+  assert.deepEqual(second.members.map(member=>member.id),[1300]);
+  assert.equal(second.has_more,false);
+});
+
+test('malformed, tampered, reused, and cross-actor cursors fail opaquely',async()=>{
+  const {db}=await fixture();
+  await db.execute(`UPDATE circle_memberships SET status='active' WHERE circle_id=10 AND user_id=3`);
+  const first=await listCircleMembersForOwner(db,{actorUserId:1,circleId:10,cursorSecret:JWT_SECRET,limit:1});
+  assert.equal(first.has_more,true);
+  const cursor=first.next_cursor;
+  const replacement=cursor.endsWith('A')?'B':'A';
+  for(const input of [
+    {actorUserId:1,circleId:10,cursor:'not-a-cursor',search:'',cursorSecret:JWT_SECRET},
+    {actorUserId:1,circleId:10,cursor:`${cursor.slice(0,-1)}${replacement}`,search:'',cursorSecret:JWT_SECRET},
+    {actorUserId:1,circleId:10,cursor,search:'different',cursorSecret:JWT_SECRET},
+    {actorUserId:3,circleId:10,cursor,search:'',cursorSecret:JWT_SECRET},
+  ]){
+    await assert.rejects(listCircleMembersForOwner(db,input),error=>error instanceof MemberRosterQueryError&&error.code==='invalid_cursor');
+  }
+});
+
+test('a continuation rechecks ownership and fails closed after the actor is demoted',async()=>{
+  const {db}=await fixture();
+  const first=await listCircleMembersForOwner(db,{actorUserId:1,circleId:10,cursorSecret:JWT_SECRET,limit:1});
+  assert.equal(first.has_more,true);
+  await db.execute(`UPDATE circle_memberships SET role='member' WHERE circle_id=10 AND user_id=1`);
+  assert.deepEqual(await listCircleMembersForOwner(db,{
+    actorUserId:1,circleId:10,cursor:first.next_cursor,search:'',cursorSecret:JWT_SECRET,limit:1,
+  }),{ok:false,reason:'owner_required'});
 });
 
 test('deactivation and reactivation are scoped, audited, and revoke every affected session atomically',async()=>{
   const {db,memberSessions}=await fixture();
   assert.equal((await verifyRequestAuth(request(memberSessions[0]),db))?.id,2);
   assert.equal((await verifyRequestAuth(request(memberSessions[1]),db))?.id,2);
-  const deactivated=await changeCircleMemberStatus(db,{actorUserId:1,targetUserId:2,action:'deactivate'});
+  const deactivated=await changeCircleMemberStatus(db,{actorUserId:1,targetUserId:2,circleId:10,action:'deactivate'});
   assert.equal(deactivated.ok,true);
   assert.equal(deactivated.revoked_sessions,2);
   assert.deepEqual(deactivated.member,{id:2,role:'member',status:'inactive'});
@@ -113,7 +243,7 @@ test('deactivation and reactivation are scoped, audited, and revoke every affect
   assert.equal(await verifyRequestAuth(request(memberSessions[0]),db),null);
   assert.equal(await verifyRequestAuth(request(memberSessions[1]),db),null);
 
-  const reactivated=await changeCircleMemberStatus(db,{actorUserId:1,targetUserId:2,action:'reactivate'});
+  const reactivated=await changeCircleMemberStatus(db,{actorUserId:1,targetUserId:2,circleId:10,action:'reactivate'});
   assert.deepEqual(reactivated.member,{id:2,role:'member',status:'active'});
   membership=await db.execute(`SELECT role,status FROM circle_memberships WHERE circle_id=10 AND user_id=2`);
   assert.equal(membership.rows[0].status,'active');
@@ -122,21 +252,22 @@ test('deactivation and reactivation are scoped, audited, and revoke every affect
     ['membership.deactivated',1,2],['membership.reactivated',1,2],
   ]);
 
-  assert.deepEqual(await changeCircleMemberStatus(db,{actorUserId:1,targetUserId:4,action:'deactivate'}),{ok:false,reason:'not_found'});
-  assert.deepEqual(await changeCircleMemberStatus(db,{actorUserId:1,targetUserId:999,action:'deactivate'}),{ok:false,reason:'not_found'});
-  assert.deepEqual(await changeCircleMemberStatus(db,{actorUserId:1,targetUserId:1,action:'deactivate'}),{ok:false,reason:'self_transition'});
+  assert.deepEqual(await changeCircleMemberStatus(db,{actorUserId:1,targetUserId:4,circleId:10,action:'deactivate'}),{ok:false,reason:'not_found'});
+  assert.deepEqual(await changeCircleMemberStatus(db,{actorUserId:1,targetUserId:999,circleId:10,action:'deactivate'}),{ok:false,reason:'not_found'});
+  assert.deepEqual(await changeCircleMemberStatus(db,{actorUserId:1,targetUserId:1,circleId:10,action:'deactivate'}),{ok:false,reason:'self_transition'});
 });
 
 test('a member can leave, losing all sessions, while the final active owner cannot leave',async()=>{
   const {db,memberSessions}=await fixture();
-  const left=await leaveCircle(db,{actorUserId:2});
+  const left=await leaveCircle(db,{actorUserId:2,circleId:10});
   assert.equal(left.ok,true);
+  assert.equal(left.signed_out,true);
   assert.equal(left.revoked_sessions,2);
   assert.equal(await verifyRequestAuth(request(memberSessions[0]),db),null);
   assert.equal(await verifyRequestAuth(request(memberSessions[1]),db),null);
-  assert.deepEqual(await leaveCircle(db,{actorUserId:2}),{ok:false,reason:'not_found'});
+  assert.deepEqual(await leaveCircle(db,{actorUserId:2,circleId:10}),{ok:false,reason:'not_found'});
 
-  const refused=await leaveCircle(db,{actorUserId:1});
+  const refused=await leaveCircle(db,{actorUserId:1,circleId:10});
   assert.deepEqual(refused,{ok:false,reason:'last_owner'});
   const owner=await db.execute(`SELECT status FROM circle_memberships WHERE circle_id=10 AND user_id=1`);
   assert.equal(owner.rows[0].status,'active');
@@ -148,7 +279,8 @@ test('a member can leave, losing all sessions, while the final active owner cann
 
 test('ownership transfer atomically promotes the target, demotes the actor, and writes one audit row',async()=>{
   const {db}=await fixture();
-  const transferred=await transferCircleOwnership(db,{actorUserId:1,targetUserId:2});
+  const ownerSession=await recentSession(db,1,'owner@example.test');
+  const transferred=await transferCircleOwnership(db,{actorUserId:1,targetUserId:2,circleId:10,session:ownerSession,nowSeconds:NOW});
   assert.deepEqual(transferred,{ok:true,previous_owner_id:1,owner_id:2});
   const members=await db.execute(`SELECT user_id,role,status FROM circle_memberships WHERE circle_id=10 ORDER BY user_id`);
   assert.deepEqual(members.rows.map(row=>[Number(row.user_id),row.role,row.status]),[
@@ -158,8 +290,35 @@ test('ownership transfer atomically promotes the target, demotes the actor, and 
   assert.deepEqual(audit.rows.map(row=>[row.event_type,Number(row.actor_user_id),Number(row.subject_user_id)]),[
     ['ownership.transferred',1,2],
   ]);
-  assert.deepEqual(await transferCircleOwnership(db,{actorUserId:2,targetUserId:2}),{ok:false,reason:'self_transfer'});
-  assert.deepEqual(await transferCircleOwnership(db,{actorUserId:2,targetUserId:4}),{ok:false,reason:'not_found'});
+  assert.deepEqual(await transferCircleOwnership(db,{actorUserId:2,targetUserId:2,circleId:10}),{ok:false,reason:'self_transfer'});
+  const nextOwnerSession=await recentSession(db,2,'member@example.test');
+  assert.deepEqual(await transferCircleOwnership(db,{actorUserId:2,targetUserId:4,circleId:10,session:nextOwnerSession,nowSeconds:NOW}),{ok:false,reason:'not_found'});
+});
+
+test('owner deactivation and ownership transfer require fresh proof before mutation',async()=>{
+  const {db}=await fixture();
+  await db.execute(`UPDATE circle_memberships SET status='active' WHERE circle_id=10 AND user_id=3`);
+  const before=async()=>({
+    memberships:(await db.execute(`SELECT user_id,role,status FROM circle_memberships WHERE circle_id=10 ORDER BY user_id`)).rows,
+    audits:Number((await db.execute(`SELECT COUNT(*) AS count FROM circle_audit_events`)).rows[0].count),
+  });
+  const initial=await before();
+  await assert.rejects(changeCircleMemberStatus(db,{actorUserId:1,targetUserId:3,circleId:10,action:'deactivate'}),
+    error=>error?.code==='RECENT_AUTH_REQUIRED');
+  const stale=await recentSession(db,1,'owner@example.test',{authenticatedAt:NOW-601});
+  await assert.rejects(transferCircleOwnership(db,{actorUserId:1,targetUserId:2,circleId:10,session:stale,nowSeconds:NOW}),
+    error=>error?.code==='RECENT_AUTH_REQUIRED');
+  const otherMember=await recentSession(db,2,'member@example.test');
+  await assert.rejects(transferCircleOwnership(db,{actorUserId:1,targetUserId:2,circleId:10,session:otherMember,nowSeconds:NOW}),
+    error=>error?.code==='RECENT_AUTH_REQUIRED');
+  assert.deepEqual(await before(),initial);
+
+  const fresh=await recentSession(db,1,'owner@example.test');
+  const deactivated=await changeCircleMemberStatus(db,{
+    actorUserId:1,targetUserId:3,circleId:10,action:'deactivate',session:fresh,nowSeconds:NOW,
+  });
+  assert.equal(deactivated.ok,true);
+  assert.equal((await db.execute(`SELECT status FROM circle_memberships WHERE circle_id=10 AND user_id=3`)).rows[0].status,'inactive');
 });
 
 test('concurrent owner removals preserve one active owner',async()=>{
@@ -168,13 +327,16 @@ test('concurrent owner removals preserve one active owner',async()=>{
   const second=createClient({url});
   resources.push(async()=>{ await second.close(); });
   await prepareMigrationConnection(second);
+  const firstSession=await recentSession(db,1,'owner@example.test');
+  const secondSession=await recentSession(second,3,'owner-two@example.test');
 
   const outcomes=await Promise.allSettled([
-    changeCircleMemberStatus(db,{actorUserId:1,targetUserId:3,action:'deactivate'}),
-    changeCircleMemberStatus(second,{actorUserId:3,targetUserId:1,action:'deactivate'}),
+    changeCircleMemberStatus(db,{actorUserId:1,targetUserId:3,circleId:10,action:'deactivate',session:firstSession,nowSeconds:NOW}),
+    changeCircleMemberStatus(second,{actorUserId:3,targetUserId:1,circleId:10,action:'deactivate',session:secondSession,nowSeconds:NOW}),
   ]);
   const successes=outcomes.filter(outcome=>outcome.status==='fulfilled'&&outcome.value.ok);
-  assert.equal(successes.length,1);
+  assert.equal(successes.length,1,JSON.stringify(outcomes.map(outcome=>outcome.status==='fulfilled'
+    ?outcome.value:{code:outcome.reason?.code,message:outcome.reason?.message})));
   const owners=await db.execute(`SELECT user_id FROM circle_memberships
     WHERE circle_id=10 AND role='owner' AND status='active' ORDER BY user_id`);
   assert.equal(owners.rows.length,1);
@@ -186,7 +348,7 @@ test('an audit failure rolls membership and session changes back together',async
   const {db}=await fixture();
   await db.execute(`DROP TABLE circle_audit_events`);
   await assert.rejects(
-    changeCircleMemberStatus(db,{actorUserId:1,targetUserId:2,action:'deactivate'}),
+    changeCircleMemberStatus(db,{actorUserId:1,targetUserId:2,circleId:10,action:'deactivate'}),
   );
   const membership=await db.execute(`SELECT status FROM circle_memberships WHERE circle_id=10 AND user_id=2`);
   assert.equal(membership.rows[0].status,'active');

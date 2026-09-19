@@ -246,7 +246,7 @@ test('database preparation migrates before serving and rejects unmanaged state',
   const ledger=await db.execute('SELECT version,disposition FROM schema_migrations ORDER BY version');
   assert.deepEqual(
     ledger.rows.map(row=>[Number(row.version),String(row.disposition)]),
-    [[1,'applied'],[2,'applied'],[3,'applied'],[4,'applied'],[5,'applied'],[6,'applied'],[7,'applied'],[8,'applied']],
+    [[1,'applied'],[2,'applied'],[3,'applied'],[4,'applied'],[5,'applied'],[6,'applied'],[7,'applied'],[8,'applied'],[9,'applied'],[10,'applied'],[11,'applied'],[12,'applied']],
   );
   await db.close();
   cleanup.pop();
@@ -491,7 +491,7 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
   assert.deepEqual(await capabilities.json(),{
     ok:true,
     capabilities:{passwordLogin:true,passwordSignup:true,verifiedEmailActivation:false,passwordReset:true,
-      localIdentity:true,googleOAuth:false,recentAuthMaxAgeSeconds:600},
+      localIdentity:true,googleOAuth:false,recentAuthMaxAgeSeconds:600,identityManagement:true},
     registrationMode:'local_invite',
   });
 
@@ -604,6 +604,25 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
     'Invited Member','Local Circle Owner',
   ]);
 
+  const firstRosterPage=await fetch(new URL('/api/members?limit=1&q=',first.url),{headers:{cookie:ownerCookie}});
+  const firstRosterPayload=await jsonResponse(firstRosterPage);
+  assert.equal(firstRosterPage.status,200,firstRosterPayload.text);
+  assert.equal(firstRosterPayload.body.members.length,1);
+  assert.equal(firstRosterPayload.body.has_more,true);
+  assert.match(firstRosterPayload.body.next_cursor,/^r1\.[A-Za-z0-9_-]+$/);
+  assert.equal(JSON.stringify(firstRosterPayload.body).includes('@example.test'),false);
+  const secondRosterPage=await fetch(new URL(`/api/members?limit=1&q=&cursor=${encodeURIComponent(firstRosterPayload.body.next_cursor)}`,first.url),{
+    headers:{cookie:ownerCookie},
+  });
+  const secondRosterPayload=await jsonResponse(secondRosterPage);
+  assert.equal(secondRosterPage.status,200,secondRosterPayload.text);
+  assert.deepEqual(secondRosterPayload.body.members.map(item=>item.display_name),['Invited Member']);
+  assert.equal(secondRosterPayload.body.has_more,false);
+  const privateRoster=await fetch(new URL('/api/members?q=owner',first.url),{headers:{cookie:memberCookie}});
+  assert.equal(privateRoster.status,403);
+  const malformedRoster=await fetch(new URL('/api/members?cursor=not-a-cursor',first.url),{headers:{cookie:ownerCookie}});
+  assert.equal(malformedRoster.status,400);
+
   const preferences=await fetch(new URL('/api/notifications/prefs',first.url),{
     headers:{cookie:memberCookie},
   });
@@ -641,12 +660,14 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
   assert.equal(pairingPayloads.filter(item=>item.body.created===false).length,1);
   assert.equal(pairingPayloads[0].body.week_id,pairingPayloads[1].body.week_id);
   assert.equal(pairingPayloads[0].body.pair_count,pairingPayloads[1].body.pair_count);
-  const capture=pairingPayloads.find(item=>item.body.email_delivery?.captured?.length)?.body.email_delivery;
-  assert.equal(capture.captured.length,2);
-  assert.match(capture.summary,/no external delivery/);
-  assert.equal(capture.captured.some(item=>item.recipient_email==='member@example.test'),true);
-  assert.equal(capture.captured.flatMap(item=>item.links).some(link=>
-    new RegExp(`^${first.url}/join/week_${pairingPayloads[0].body.week_id}_pair_[1-9]\\d*$`).test(link)),true);
+  for(const {body} of pairingPayloads){
+    assert.equal(body.email_delivery.pending,2);
+    assert.equal(body.email_delivery.sent,0);
+    assert.equal(body.email_delivery.failed,0);
+    assert.equal('captured' in body.email_delivery,false,
+      'publication must leave provider delivery to the globally budgeted outbox route');
+    assert.match(body.email_delivery.summary,/queued for outbox delivery/);
+  }
   await firstSharedClient.execute({
     sql:`INSERT INTO outbox_events
       (event_type,event_version,idempotency_key,payload_json,status,not_before,next_attempt_at,
@@ -662,10 +683,11 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
   const degradedCapturePayload=await jsonResponse(degradedCaptureResponse);
   assert.equal(degradedCaptureResponse.status,200,degradedCapturePayload.text);
   assert.equal(degradedCapturePayload.body.email_delivery.failed,0);
-  assert.equal(degradedCapturePayload.body.email_delivery.suppressed,1,
-    'a removed recipient is terminally suppressed before local provider access');
-  assert.equal(degradedCapturePayload.body.email_delivery.captured.length,0,
-    'already delivered events are not replayed by a later request');
+  assert.equal(degradedCapturePayload.body.email_delivery.pending,3);
+  assert.equal(degradedCapturePayload.body.email_delivery.suppressed,0,
+    'publication does not claim or resolve unrelated outbox work inline');
+  assert.equal('captured' in degradedCapturePayload.body.email_delivery,false,
+    'a later publication request must not become an unbounded provider drain');
   const reshufflePayload=pairingPayloads[0];
 
   const weeks=await fetch(new URL('/api/weeks',first.url),{headers:{cookie:memberCookie}});
@@ -931,7 +953,6 @@ test('runtime environment disables ambient providers and restores the caller env
           resendKey:envTarget.RESEND_API_KEY,
           sentryDsn:envTarget.SENTRY_DSN,
           aiEnabled:envTarget.AI_ENABLED,
-          ingestionAuthorized:envTarget.LEETCODE_INGESTION_AUTHORIZED,
           runAttestationSecret:envTarget.RUN_ATTESTATION_SECRET,
           previousAttestationSecrets:envTarget.RUN_ATTESTATION_PREVIOUS_SECRETS,
           membershipEnabled:envTarget.CIRCLE_MEMBERSHIP_ENABLED,
@@ -953,7 +974,6 @@ test('runtime environment disables ambient providers and restores the caller env
     resendKey:'',
     sentryDsn:'',
     aiEnabled:'false',
-    ingestionAuthorized:'false',
     runAttestationSecret:'',
     previousAttestationSecrets:'',
     membershipEnabled:'true',

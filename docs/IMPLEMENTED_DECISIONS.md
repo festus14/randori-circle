@@ -1,10 +1,11 @@
 # Randori Circle implemented decision log
 
-Status: accepted through merged PR #89 plus candidate PRs #93, #92, and #97
+Status: accepted through release head `b88dcbf`, plus candidate PR #96
 
 Last reviewed: 2026-09-19
 
-Scope: `main` through `2402fe9bea53aa0a44d2af4c43f77e4223894695`, plus PRs #93, #92, and #97
+Scope: release branch through `b88dcbf3a97454f121f8c6149760a9ac87c27a41`,
+plus the consolidated notification candidate PR #96
 
 This log records decisions that govern the application being shipped now. The
 [production architecture plan](PRODUCTION_ARCHITECTURE_PLAN.md) describes a
@@ -31,12 +32,15 @@ or merged after its parent; it must not be landed ahead of that parent.
 | 7 | [PR #93](https://github.com/festus14/randori-circle/pull/93), candidate | Repository-owned deployability gate independent of preview quota | No migration |
 | 8 | [PR #92](https://github.com/festus14/randori-circle/pull/92), candidate | Verified invitation-bound email/password activation | v7 `verified-email-activation` |
 | 9 | [PR #97](https://github.com/festus14/randori-circle/pull/97), candidate | Enumeration-safe password recovery and reusable recent-authentication policy | v8 `password-reset-and-recent-auth` |
+| 10 | [Issue #83](https://github.com/festus14/randori-circle/issues/83), candidate | Explicit Google/password linking and identity-conflict recovery | v9 `explicit-provider-linking` |
+| 11 | [PR #96](https://github.com/festus14/randori-circle/pull/96), candidate | Durable invitation and schedule email with one fair five-type dispatcher | Reuses v6; preserves v8/v9 |
 
 Migration order is append-only: v4 binds an account to an OIDC issuer and
 subject, v5 makes every application JWT depend on a live hashed session row,
 v6 adds the outbox and its audit history, and v7 adds pending verified-email
 activation. Version v8 adds password-reset credentials and session-scoped
-recent-authentication evidence. The protected production workflow applies no
+recent-authentication evidence. Version v9 adds hashed provider-email
+observations and a redacted identity lifecycle audit. The protected production workflow applies no
 more than one pending version per inspected fingerprint and approval.
 
 ## ID-01: Ship the useful weekly loop before a platform rewrite
@@ -192,9 +196,10 @@ documented, but the bot's availability is not a merge prerequisite.
 
 **Decision.** A Premium account does not grant permission to automate access or
 redistribute protected content. Randori does not sign in to, crawl, scrape,
-imitate human traffic to, or evade controls on LeetCode. The legacy seed is
-excluded from the active catalogue, and runtime ingestion is disabled unless
-written authorization and a reviewed source adapter exist. Slow requests,
+imitate human traffic to, or evade controls on LeetCode. The legacy seed and
+remote ingestion implementation, browser fallback questions, and import/paste
+form are removed; the compatibility route returns only a manual external link,
+while sync fails closed. Slow requests,
 random delays, robots compliance, or user initiation do not create permission.
 
 The safe current sources are original Randori exercises, appropriately licensed
@@ -340,7 +345,7 @@ because it is the route back to a lost credential, but it revokes all sessions.
 ### Rollout
 
 1. Rehearse and apply migration v8 only after managed v7 is verified.
-2. Configure a new independent `PASSWORD_RESET_ENCRYPTION_KEY` and keep it stable while reset events remain queued.
+2. Configure a new independent `PASSWORD_RESET_ENCRYPTION_KEY`; subsequent changes follow the forward-only bounded ring in `docs/KEY_ROTATION.md`.
 3. Confirm the outbox worker schedule and Resend sender in production.
 4. Enable `PASSWORD_RESET_ENABLED=true`, verify a real delivery and reset, then monitor aggregate outbox retry/dead-letter metrics. Roll back by disabling the flag; outstanding links stay unusable until the capability is restored.
 
@@ -367,9 +372,10 @@ The existing role/status membership model, audit events, invitation status,
 and session revocation columns cover this slice. Adding a migration would not
 strengthen an invariant here and would conflict with the reserved v9 owner.
 Existing invitation revocation is reused; invitation resend and delivery remain
-with issue #95. This increment requires a valid active owner session but does
-not add recent-auth enforcement to ownership transfer or owner deactivation;
-issue #99 owns that deliberate follow-up using the existing recent-auth proof.
+with issue #95. The original lifecycle increment required a valid active owner
+session and deliberately deferred step-up. ID-14 now supplies recent-auth
+enforcement for ownership transfer and owner deactivation using the existing
+recent-auth proof without changing this transaction model.
 
 ### Alternatives considered
 
@@ -384,3 +390,525 @@ issue #99 owns that deliberate follow-up using the existing recent-auth proof.
 
 The complete action matrix, race behavior, and intentionally deferred work are
 documented in `docs/MEMBER_LIFECYCLE.md`.
+
+## ID-13: Make provider linking explicit and account-preserving
+
+Status: implemented as the schema-v9 increment, stacked on password recovery and recent authentication.
+
+### Decision
+
+An authenticated member manages sign-in methods from **Account security** only
+after `IDENTITY_MANAGEMENT_ENABLED=true`. Production keeps the entry point and
+mutation routes unavailable until v9 readiness is verified; the isolated local
+runtime may show its provider-free account state without making an external
+request.
+
+Google linking starts with a same-origin POST and requires current recent-auth
+evidence. The OAuth request has a dedicated link purpose, random state, PKCE,
+nonce, `max_age=0`, and explicit account selection. Its callback requires a
+signed, bounded `auth_time` and binds the result to the exact initiating user,
+hashed live session, issuer, and provider subject. Email equality is never link
+authority: a password account that has the same verified Google email still
+receives a normal-login conflict until its signed-in owner explicitly links it.
+
+Issuer plus subject remains the durable provider key. A subject already owned
+by another account fails closed under both database uniqueness and a serialized
+write decision. A known subject continues to reach its existing account if the
+provider email changes; Randori neither creates another account nor rewrites
+the account's canonical password-login email. Migration v9 stores only a
+domain-separated HMAC of the observed provider email under the independent
+`IDENTITY_EMAIL_HASH_KEY`, plus a bounded key version and one-way key
+fingerprint, so a change can be shown
+and audited without retaining another raw address. Key rotation increments the
+version monotonically and deliberately re-baselines each identity with a distinct redacted
+rekey event; the former key is not retained and the first observation after a
+rotation is not misreported as an email change. Readiness compares against the
+global maximum stored version. A stale instance with a lower version, or a
+different key at the same version, fails closed without rewriting or auditing
+newer state for either the current subject or a new one.
+
+A Google-only member may add a password only after recent verified Google
+control. Removing Google or password requires a live session plus recent auth,
+and the transaction refuses to remove the final usable method. A successful
+removal preserves the initiating session and revokes every other live session,
+reducing the lifetime of stale authentication assumptions. Link, unlink,
+conflict, denial, recovery, and provider-email-change events use bounded enums
+and contain no provider subject, email, token, or session identifier.
+
+### Alternatives considered
+
+| Option | Advantages | Costs and rejection reason |
+|---|---|---|
+| Auto-link matching verified emails | Minimal user interaction | Email is mutable and is not the provider's stable identifier; silently merging accounts creates takeover and history-transfer risk. |
+| Create a second account on every new subject | Simple provider callback | Splits membership and pairing history and gives no safe recovery path. |
+| Replace the canonical email after a provider change | Keeps one displayed address | Breaks password-login expectations and lets a provider-side profile change silently rewrite an application credential identifier. |
+| Allow recovery email to add a password to Google-only accounts | Convenient fallback | Turns mailbox access into implicit cross-provider linking; explicit recent Google control is the narrower boundary. |
+| Allow removing the last method with a warning | Fewer server rules | Creates immediate lockout and leaves the UI responsible for a security invariant. |
+| Store raw provider email in an audit table | Easier support investigation | Duplicates personal data indefinitely; keyed observations plus reason-coded events provide the required operational signal. |
+| Move now to Clerk, Auth0, or Supabase Auth | Mature linking and recovery flows | Requires an account/session migration and a new authorization boundary; still viable when the private beta outgrows the current store. |
+
+### Rollout and recovery
+
+1. Leave `IDENTITY_MANAGEMENT_ENABLED=false`; ordinary Google login and reauthentication retain their v4 compatibility.
+2. Rehearse and apply migration v9 only after managed v8 is verified, then require managed v9 with no pending migration or drift.
+3. Configure a new independent 32-byte base64url `IDENTITY_EMAIL_HASH_KEY` with `IDENTITY_EMAIL_HASH_KEY_VERSION=1`; never reuse `JWT_SECRET` or invitation/recovery keys.
+4. Deploy the candidate, confirm the capability remains hidden, and exercise ordinary password and Google login.
+5. Enable `IDENTITY_MANAGEMENT_ENABLED=true`, verify same-email explicit recovery and both final-credential denials, then monitor only aggregate error/rate and redacted audit outcomes.
+6. Roll back exposure by disabling the flag. The additive v9 tables may remain; existing credential mappings, accounts, memberships, sessions, and history are not moved by the feature. For a later hash-key rotation, change the key and monotonically increment its version together; a missing, malformed, or lower-than-stored version fails closed. Restore the current key/version before re-enabling after an application rollback.
+
+There is no automatic down migration. If a uniqueness or integrity incident is
+suspected, disable the capability, preserve audit evidence, inspect the exact
+managed database, and use the rehearsed PITR procedure rather than attempting
+an unreviewed reverse migration.
+
+## ID-14: Step up only the ownership-changing lifecycle boundary
+
+Status: implemented without a schema migration, stacked on provider linking
+and member lifecycle.
+
+### Decision
+
+Ownership transfer and deactivation of another owner require the shared v8
+recent-auth proof inside the same write transaction as the lifecycle mutation.
+The proof is scoped to the initiating live session and expires after ten
+minutes. Ordinary member deactivation/reactivation and self-leave do not add a
+credential challenge because they do not transfer or remove administrative
+authority.
+
+Password confirmation reuses the same-origin, durably rate-limited endpoint.
+Google confirmation forces account selection and a fresh signed `auth_time`;
+the OAuth flow is additionally bound to the exact initiating session hash and
+provider subject. Its start is a same-origin POST that returns a narrowly
+validated provider URL, so authentication, rate-limit, or readiness failures
+remain in the SPA and clear any pending lifecycle continuation. Lifecycle
+dialog close/open transitions abort that request and advance a generation;
+delayed responses can affect only the exact still-visible dialog mode that
+started them. Lifecycle failure and no-change notices are sticky for the exact
+signed-in actor and supersede both older and newly started same-account roster
+loads; they clear on an account change. Routine roster success therefore cannot
+conceal a security outcome, while successful ownership transfer still renders
+the actor's new member state. Lifecycle
+confirmation is intentionally independent of the
+v9 identity-management feature flag, so credential management may remain dark
+while an already-linked password or Google method is used for step-up. Missing
+v8 readiness or an unavailable linked method fails closed.
+
+The browser keeps only one redacted continuation in `sessionStorage`: action,
+target member ID, actor ID, version, and creation time. It validates the actor
+and ten-minute lifetime, consumes the object before retry, and never retries a
+second time. Cancellation, provider error, expiry, account change, missing
+capability, or malformed state clears the continuation without mutation. The
+API remains authoritative, so editing storage or forging the OAuth success
+query cannot create a recent proof. OAuth result handling uses a bounded retry
+to wait for one authoritative authentication refresh to commit before showing
+credential feedback or resuming a lifecycle action.
+
+Successful changes retain the existing transactional, PII-free lifecycle audit
+events. Credential material, provider subjects, OAuth values, and session
+identifiers are never added to them. Both password and Google confirmation
+starts have durable per-IP and per-account limits.
+
+### Alternatives considered
+
+| Option | Advantage | Cost and rejection reason |
+| --- | --- | --- |
+| Confirm every lifecycle action | One client rule | Adds needless friction to routine member administration |
+| Treat a young JWT as fresh | No shared proof lookup | Does not establish that a credential was challenged recently |
+| Persist pending actions server-side | Survives tabs and devices | Adds a new state machine and migration for a single same-tab OAuth continuation |
+| Bind Google reauth only to user ID | Simpler purpose cookie | A second live session for the same account could replace the initiating session during callback |
+| Navigate directly to a GET start route | Minimal client logic | A 401, 429, or 503 response can replace the application with raw JSON and strand the continuation |
+| Couple confirmation to `IDENTITY_MANAGEMENT_ENABLED` | One rollout flag | Would make lifecycle controls unusable when v9 credential management is intentionally dark |
+| Add per-action recent proofs | Strongest replay isolation | Current ten-minute session-scoped step-up is proportionate for private beta; the lifecycle transaction still rechecks target and role |
+
+The action matrix, continuation contract, rollout independence, and explicit
+limits are documented in `docs/LIFECYCLE_RECENT_AUTH.md`.
+
+## ID-15: Use one fair delivery budget for every production email type
+
+Status: implemented in candidate PR #96 without a schema migration.
+
+### Decision
+
+Pairing, schedule, invitation, verified-email activation, and password-reset
+events share one ordered handler registry and one request-wide worker budget:
+eight claims, a 45-second application deadline, and a five-second finalization
+reserve. Each configured type receives one claim opportunity per fair round
+before a saturated type can consume another slot. Password reset is registered
+directly with its v8 handler; the cron route never invokes its older standalone
+typed drain. The v8 and v9 migrations and the recent-authentication/provider-
+linking behavior remain unchanged.
+
+Schedule proposal delivery is also state-aware across event kinds. A newer
+accepted or changed event for the exact proposed instant supersedes an
+undelivered proposal to the same recipient. The immutable event remains in the
+audit trail as `suppressed`; it is not deleted or rewritten. This covers both
+propose-then-accept-before-drain and a newly proposed reschedule accepted before
+the worker runs.
+
+The checked-in scheduler may call only the repository default branch and reads
+`APP_URL` plus `CRON_SECRET` from the protected `Production` environment.
+Production activation still requires those settings, a default-branch
+environment restriction, and a staging Resend rehearsal. SMS is not part of
+issue #50 and is not required to ship this email path.
+### Alternatives considered
+
+| Option | Advantage | Cost and rejection reason |
+| --- | --- | --- |
+| Keep password reset as a sequential drain | Minimal integration work | Reintroduces an independent batch/timeout after the global budget and can overrun the request |
+| Give each type a private scheduled route | Strong isolation | Multiplies schedules, secrets, monitoring, and concurrent functions at private-beta scale |
+| Deliver a proposal even after its exact acceptance | Preserves every historical notification | Sends obsolete action-oriented mail after the recipient no longer needs to act |
+| Delete superseded events | Keeps the queue visually smaller | Discards immutable operational history; terminal suppression preserves the audit contract |
+| Add SMS to issue #50 | More channels at launch | Adds consent, verified-number, regional, quiet-hours, and STOP obligations outside the accepted email scope |
+
+## ID-16: Monitor a recurring isolated backup restore, not production mutation
+
+Status: implemented as an operations increment rebased after the recent-auth
+lifecycle boundary; it adds no schema migration and preserves the v8/v9 order.
+
+**Decision.** The protected backup/restore workflow runs every Monday at 03:17
+UTC and remains manually dispatchable with the explicit disposable-only phrase.
+It restores a current Turso PITR point into a uniquely named database, validates
+integrity, foreign keys, schema, HMAC-bound row evidence, RPO/RTO, and migrations
+there, then confirms deletion. It never applies a migration to production.
+
+A final monitor authenticates the signed same-run evidence and independently
+requires the cleanup artifact. A separate hourly, read-only GitHub watchdog
+queries the authoritative scheduled-run and artifact records, then validates
+the downloaded monitor projection. After a two-hour scheduling grace it requires
+a run from the current Monday 03:17 UTC slot, so last week's success cannot hide
+a drill that never started; it also detects a run that remained stuck, failed,
+or aged out without relying on the rehearsal workflow to report its own absence.
+An absolute 06:47 UTC deadline is derived from the expected slot, not run creation,
+so a delayed unfinished run still alerts on the last hourly tick before four hours.
+Its retained projection contains only timings,
+code/evidence checksums, aggregate counts, fixed run identifiers, and cleanup
+booleans. Missing, stale, malformed, failed, or unclean evidence produces a
+fixed-category GitHub Actions error and a failed workflow. Repository operations
+owns the control; database reliability is the immediate escalation for cleanup
+or write-state failures. The target is a 30-minute RPO, 15-minute RTO, weekly
+drill, immediate escalation of a missed run, and 30-day sanitized evidence
+retention; disposable restores have no retention. Scheduled evidence cannot
+authorize production migration, which still requires a fresh manual rehearsal.
+The RPO and RTO values are fixed in both rehearsal and evidence consumers;
+environment configuration cannot silently weaken either objective.
+
+**Alternatives.** A metadata-only backup check is cheaper but does not prove
+restorability. Reusing production as the restore target is unsafe. Retaining
+restores simplifies inspection but increases sensitive-data exposure and cost.
+Unsigned summaries cannot safely distinguish tampering from failure. An external
+watchdog best isolates scheduler failure but adds another service and credential;
+the separate production-credential-free GitHub watchdog is the smallest auditable increment,
+with external monitoring retained as the upgrade when correlated Actions failure
+is no longer acceptable.
+
+## ID-17: Page owner rosters by an immutable, encrypted cursor
+
+Status: implemented without a schema migration and integrated after the
+provider-linking, recent-auth lifecycle, notification delivery, and backup
+monitoring decisions.
+
+### Decision
+
+The owner-only member endpoint returns 50 members by default and accepts a
+bounded maximum of 100. A request scans no more than 201 candidates through the
+existing `circle_memberships(circle_id, user_id)` primary-key index before any
+account join/filter. The first page fixes a maximum member ID through a reverse
+index seek; subsequent pages use the encrypted maximum and advance by member ID
+inside that snapshot without an aggregate scan. Mutable status, role, and display name are deliberately removed
+from the ordering tuple, so lifecycle changes between page requests cannot
+shift already traversed rows.
+
+Continuation state is an AES-256-GCM envelope derived from `JWT_SECRET` with a
+roster-specific domain. Its exact versioned payload binds the actor, circle,
+snapshot, last member ID, and normalized search. Invalid, altered, cross-actor,
+cross-circle, and search-reused cursors share a generic request error. Every
+page rechecks current active ownership and the primary-circle boundary.
+
+Display-name substring search runs only over each bounded, tenant-indexed
+candidate window. It never queries or projects the account email field (a
+user-controlled display name may itself contain email-like text). This means a
+sparse search may yield zero matches and a continuation cursor; the accessible
+UI explains that more results may remain and preserves earlier rows when a
+later page fails. A per-request sequence and circle render epoch prevent an old
+response from replacing a newer search or a changed identity.
+Authorization failures are different from transient failures: any roster
+401/403 immediately discards all retained rows and controls based on HTTP
+status alone, without depending on potentially opaque response wording, then
+resolves current circle membership again. That fail-closed signal takes
+precedence over a newer successful roster response for the same initiating
+authentication identity, while an old identity's delayed denial cannot clear a
+new account's roster. A transient append failure preserves the loaded rows and
+continuation for retry. A failed replacement load or search leaves an empty
+error/retry state, preventing rows for an earlier query from appearing under
+the requested one. Other delayed requests from an older render epoch are
+invalidated and the new epoch may start its own load, preventing a stuck busy
+state.
+
+Integration retains ID-14's identity-bound lifecycle notice state and PR110's
+narrow sticky-failure/no-change behavior. Pagination and search responses may
+update roster-only state after their request, epoch, and owner checks; successful
+summaries and roster failures cannot overwrite a newer recent-auth,
+mutation-failure, or no-change notice for that same actor. The notification and
+backup implementations remain unchanged by the integration.
+
+### Alternatives considered
+
+| Option | Advantage | Cost and rejection reason |
+|---|---|---|
+| Offset pagination | Simple URL contract | Mutable rows shift offsets and deep pages become increasingly expensive |
+| Active/owner/name cursor | Preserves the former visual ordering | Every lifecycle or profile change can move a row across page boundaries |
+| Signed plaintext cursor | Stateless and tamper evident | Internal tenant/member IDs and the search value remain trivially decodable |
+| Search the global account table first | Fast name-prefix index | Risks cross-circle existence signals and weakens tenant-first authorization |
+| Scan until enough matches exist | Always fills a page when possible | Missing or rare terms create unbounded request work |
+| Add a search table or FTS migration | Better fuzzy/ranked discovery | Unnecessary for the MVP substring search and adds synchronization/schema cost |
+
+The cursor is intentionally invalidated by `JWT_SECRET` rotation. Search is
+case-folded for the application locale but is not fuzzy, ranked, or
+language-specific. Those are explicit future product choices, not hidden API
+behavior.
+
+## ID-18: Keep chat indexes in the append-only migration manifest
+
+Status: implemented as additive schema migration v10; production rollout remains
+gated on issues #38 and #43.
+
+**Decision.** Canonical chat access uses two migration-owned indexes:
+`idx_pair_messages_room_cursor` on `(week_id,pair_group_id,id)` for newest-window,
+incremental cursor, and room-cap reads, and `idx_pair_messages_sender_created` on
+`(sender_id,created_at)` for the durable sender rolling window. Representative
+real-SQLite plans must select the intended index and may not fall back to a full
+`pair_messages` scan. The 10,000-message room cap and all API contracts remain
+unchanged. Ordinary and admin request paths no longer create pair-message
+indexes; only the checksummed migration runner may install these indexes.
+
+The change is append-only and compatible with v9 application data. A managed v9
+database can continue serving the existing queries before the protected v10
+apply, albeit without the new planner guarantees. Production apply remains
+blocked until the provider restore rehearsal in #38 and protected remote
+migration workflow in #43 are operational and have produced same-commit evidence.
+
+**Alternatives.** Keeping request-time `CREATE INDEX IF NOT EXISTS` is convenient
+but hides schema mutation inside user traffic and bypasses review evidence. A
+single `(pair_group_id,created_at)` index cannot isolate colliding group IDs by
+week or efficiently advance an integer cursor. The existing expression-based
+activity index serves recap ordering but does not provide the canonical `id`
+cursor order. A wider covering index including message bodies would reduce table
+lookups at the cost of duplicating sensitive, potentially large text and
+increasing every write; it is deliberately rejected. Replacing the 10,000-row
+cap with retention or deletion is a separate product and data-lifecycle change.
+
+**Recovery.** There is no ledger down migration. During an index-specific
+incident, an operator may take database administration exclusive and drop only
+the two v10 indexes; rows and v9-compatible queries remain intact, but the schema
+is intentionally non-ready until both exact `CREATE INDEX` operations are
+reapplied. Do not edit or delete the v10 ledger row. If the incident involves
+data or broader schema integrity, stop and use the rehearsed PITR process rather
+than this index-only procedure. The exact commands, checks, and forward rollout
+are recorded in `docs/CHAT_INDEX_MIGRATION.md`.
+## ID-19: Rotate each credential purpose through a bounded versioned key ring
+
+Status: implemented as a compatibility-first runtime increment with no schema
+migration. ID-18 remains reserved for the chat-index migration.
+
+### Decision
+
+Email activation, password reset, invitation email, and provider-email
+observations use four independent key rings. Each ring has one monotonically
+versioned active key and at most three strictly descending prior keys; duplicate
+versions, duplicate material, malformed keys, ambiguous ordering, downgrade,
+and same-version substitution fail closed. Stateless central validation also
+rejects material shared across any active or prior entries in different
+purposes, including AES/HMAC reuse, while version sequences remain independent.
+Existing production keys become
+version 1. Credential readers accept legacy envelope v1 and envelope v2 while
+the initial deployment continues writing v1 until its purpose-specific switch
+is explicitly changed to 2.
+
+Envelope v2 remains inside the existing `outbox_events.payload_json` contract,
+so no schema migration or bulk rewrite is required. AES-256-GCM associated data
+binds the credential purpose, envelope version, key version, and exact event
+idempotency key. The clear envelope header contains only the version and a
+one-way purpose-scoped key fingerprint. Active keys encrypt; bounded prior keys
+decrypt. Unknown/retired keys, fingerprint mismatches, and future versions are
+retryable so a safe configuration repair or compatible redeploy can recover the
+event. A header fingerprint disagreement is also retryable because it can
+represent configuration substitution; malformed structure and authenticated
+ciphertext/tag/idempotency replay failures are terminal invalid data. A
+well-formed v1 authentication failure remains
+retryable because v1 cannot distinguish tampering from a temporarily missing
+old key.
+
+Handlers suppress authoritative inactive, expired, consumed, revoked, and
+superseded work before decryption wherever stored hashes and send sequence make
+that possible. Rotation metrics expose only aggregate version/status/readiness
+counts. Keys, fingerprints, ciphertext, event identifiers, provider subjects,
+tokens, and recipient addresses are excluded.
+
+Aggregate rotation readiness is reserved for operator key-retirement decisions.
+Request-path readiness validates schema plus complete, cross-purpose-isolated
+configuration but never requires unrelated historical queue rows to be healthy;
+the exact target envelope is still classified retryable or terminal when that
+request actually consumes it.
+
+Identity observations always use the active HMAC version. When the matching
+prior key is present, the old digest distinguishes an unchanged-email rekey from
+a genuine provider-email change; a genuine change remains audited even while
+the row advances to the new key version. Without the prior key, the observation
+uses a neutral rebaseline and emits only `provider_email_rekeyed`, never a false
+change event. Stored versions above the active version and configured material
+that disagrees with a stored fingerprint fail before any row or audit change.
+
+The deployment and rollback contract is forward-only after v2 or a higher key
+version is written. Operators may return one purpose's write switch to v1 while
+retaining the same active/prior ring, but never lower the active version or
+replace material at an existing version. Exact retirement gates and isolated
+restore rehearsal steps are in `docs/KEY_ROTATION.md`.
+
+### Alternatives considered
+
+| Option | Advantage | Cost and rejection reason |
+| --- | --- | --- |
+| One shared key | Fewer settings | Couples four trust domains and expands compromise and rotation blast radius |
+| Drain every queue before rotation | No reader key ring | Fails during urgent rotation, scheduler outage, or replayable dead letters |
+| Bulk re-encrypt queued rows | Quickly normalizes versions | Handles plaintext in an administrative batch and races active delivery |
+| Flush and reissue every credential | Simple compromise response | Disruptive and reserved for confirmed compromise, not routine rotation |
+| External KMS envelope encryption | Strong centralized custody | Valuable later, but disproportionate to the current Vercel/Turso MVP |
+
+## ID-20: Purge chat only through mapped, fenced, evidence-gated room jobs
+
+Status: implemented as disabled-by-default migration v11 and protected tooling;
+production deletion remains blocked on operational evidence. ID-19 records the
+independently delivered key-rotation decision above.
+
+**Decision.** Private-beta pair chat has a 90-day active-database retention
+window. Expiry is strict and calculated from SQLite database time with
+`julianday`, preserving legacy SQLite and RFC3339-offset chronology; exact-cutoff,
+invalid, future, held, and unmapped rows remain. The 10,000-row room cap is
+unchanged.
+
+Migration v11 creates explicit room-to-tenant ownership, a generation-fenced
+database kill switch, room-scoped jobs, tenant/room holds, count-only audit, and
+a chronological planner index. New pairing publication writes ownership in the
+same transaction. Legacy rooms require a protected, ambiguity-checked adoption;
+membership or week-label inference is forbidden.
+
+Each purge claim uses a database-time token lease and fixed cutoff. Every batch
+atomically rechecks the environment/database switches, control generation,
+scope mapping, evidence, and holds; it then selects and deletes no more than 100
+exact IDs and commits counts plus a durable checkpoint. A source high-water ID
+freezes the room snapshot covered by the accepted evidence, while purge
+reselects the oldest remaining rows inside that snapshot rather than advancing
+a destructive cursor. The requested room and high-water are bound before export
+and must match both export and backup evidence; later writes and backfills
+require a new evidence-gated run. Dry-run uses an independent, deletion-free
+bounded scan. Successful batches
+do not consume failure budget; retries,
+dead-letter state, and explicit reason-coded replay remain visible without
+content or identity telemetry.
+
+Deletion requires a private export covering the cutoff to complete before a
+provider backup covering the same cutoff completes. Backup copies keep their
+provider lifecycle and are reconciled before a restore can serve traffic.
+Production remains disabled until #38, #43, the export path and notice period,
+staging destructive rehearsal, and production count-only dry run are complete.
+
+**Alternatives.** Inferring a circle from current memberships or a reusable
+week label is ambiguous and can cross tenants. A global timestamp delete is
+simple but cannot prove room ownership or legal-hold exclusion. A last-ID purge
+cursor can skip remaining old rows, so the evidence high-water is an upper
+bound, not a progress cursor; only non-destructive dry-run advances a cursor.
+Soft deletion retains content and does not satisfy the policy. Environment-only
+disabling cannot fence a claimed worker across an off/on cycle, so the database
+control generation is mandatory. Down migrations cannot restore deleted
+content; rollback is disable, drain, forward-fix, or an isolated verified PITR
+cutover.
+
+## ID-21: Bind active-circle authority to the live session and fail closed elsewhere
+
+Status: implemented behind `CIRCLE_MEMBERSHIP_ENABLED` and
+`MULTI_CIRCLE_CONTROL_PLANE_ENABLED`; migration v12 is required before enablement.
+
+**Decision.** An account may hold multiple active circle memberships, but every
+multi-circle browser session must explicitly select one active circle before it
+can read a roster or list/create/resend/revoke invitations. The authoritative
+selection is stored by hashed live-session identifier in
+`auth_session_circle_contexts`, not trusted from a client header. Selection is a
+same-origin, versioned compare-and-swap write that rechecks the live session,
+membership, role, and non-archived circle in one database transaction. Every
+dependent request carries the selected version only as a stale-response fence;
+the server resolves authorization from durable state again.
+
+Single-circle accounts with no stored context retain their implicit context and
+existing behavior. Removing one membership bumps any affected selected-session
+generation; a preserved invalid selection requires explicit reselection even if
+one circle remains, and all account sessions are revoked only when no active
+membership remains. Migration v12 binds the context to the exact
+`(session_hash,user_id)` pair, preserves the context tombstone across membership
+removal, and restricts physical circle deletion while a tombstone exists,
+preventing stale-version ABA. The browser clears private state before a switch,
+reloads, and notifies sibling tabs after it commits.
+
+Roster and invitation reads/writes are now scoped to the exact resolved circle.
+Pairing, availability, chat, workspace, video, execution, and AI records do not
+yet have complete tenant ownership, so only an exact single active primary
+circle may enter those legacy paths. Multiple circles, a sole secondary circle,
+and stale or ambiguous stored selections receive `409
+circle_feature_unavailable`. This is a deliberate safety boundary until those
+schemas carry canonical circle ownership.
+
+**Alternatives.** A client-only circle ID or reusable header is easier but can
+be stale or forged and cannot serialize concurrent tab changes. Storing one
+account-wide selection makes independent sessions interfere. Continuing to use
+the primary circle silently mixes data after secondary membership is admitted.
+Inferring a circle from pairing rows is unsafe because those rows are not yet
+fully tenant-owned. A database-backed session selection with optimistic version
+fencing is additive, preserves the single-circle path, and supports application
+rollback by disabling the feature flag while leaving harmless context rows.
+
+## ID-22: Make provenance a versioned fail-closed catalogue dependency
+
+Status: implemented for the bundled original catalogue; authorized source
+adapters remain deferred.
+
+**Decision.** Every shipped exercise version has exactly one record in the
+versioned provenance manifest. The record binds a constrained source type,
+author, concrete license or written-authorization evidence, attribution,
+canonical SHA-256 content hash, bounded approval period, and takedown state.
+CI validates the catalogue and manifest together. Every bounded runtime list,
+detail, trusted lookup, and execution operation revalidates against current UTC
+time, so a warm process cannot outlive the provenance approval window. Active
+content with missing, malformed, duplicated, changed, unapproved, expired, or
+revoked provenance cannot enter the runtime catalogue.
+
+The manifest and JSON Schema are repository-owned. Canonical hashing sorts
+object keys, preserves array order, covers all user-visible exercise content,
+and excludes lifecycle metadata. An emergency command can revoke and retire one
+exact `slug@version`; it preserves an existing retirement, is idempotent for the
+same tracked event, refuses an ambiguous overwrite, holds a stale-recoverable
+interprocess lock, anchors every controlled path beneath the real repository
+`data/` directory, verifies pre-write digests, and writes revocation before
+retirement so interruption is fail-closed. Retired content remains auditable and unreachable. Dormant
+server-side generators may remain after an emergency data-only takedown, but
+the active-record gate prevents listing, resolution, or execution.
+
+The current source set is `original` only. Open sources are restricted to a
+small reviewed SPDX allowlist; written authorization uses a controlled evidence
+reference. Neither schema path enables an adapter or grants permission. Personal
+LeetCode access, Premium cookies, copied problem text, human-like crawling, and
+anti-bot evasion are outside the architecture and prohibited.
+
+**Alternatives.** Free-form governance strings in each exercise are readable
+but cannot prove content integrity, enforce expiry, or support a uniform rights
+audit. Putting provenance only in a database introduces deployment drift and
+makes local/CI builds unable to verify what they ship. Silently filtering bad
+records keeps the process alive but can hide accidental catalogue loss; startup
+failure gives an actionable release boundary. Deleting disputed records erases
+audit history, while an automated restore command could republish content
+without evidence review. A crawler would add legal, security, and reliability
+risk without establishing redistribution rights.
+
+**Recovery.** Do not bypass a provenance failure. Review the exact failing path
+against the tracked evidence; correct metadata and re-review, or use the bounded
+takedown command. Git history recovers accidental edits. A real takedown is
+restored only by a reviewed content change with fresh approval and, when
+semantics changed, a new exercise version.

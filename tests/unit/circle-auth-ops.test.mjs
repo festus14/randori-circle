@@ -39,6 +39,10 @@ const db={
     if(sql.includes("strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc")){
       return {rows:[{now_utc:new Date().toISOString()}],rowsAffected:0};
     }
+    if(sql.includes("CAST(strftime('%s','now') AS INTEGER) AS now_seconds")){
+      return rows([{now_seconds:Math.floor(Date.now()/1000)}]);
+    }
+    if(sql.includes('LEFT JOIN auth_provider_email_state')) return rows([{email_hash:null}]);
     const result=await executeHandler(sql,args) || {rows:[],rowsAffected:0};
     if(!(result.rows?.length)&&sql.includes('INSERT INTO auth_provider_identities')&&sql.includes('RETURNING user_id')){
       return rows([{user_id:Number(args[2])}]);
@@ -115,8 +119,13 @@ mock.module('../../api/_circle-membership.js',{
     readInviteClaim:req=>String(req.headers?.cookie||'').includes('randori_invite_claim=valid-claim')
       ? {invitation_id:'invite-1',circle_id:1,token_hash:'token-hash',email_hash:'email-hash',exp:9999999999}
       : null,
+    hasActiveCircleMembership:async(_db,userId)=>{
+      membershipCalls.push({kind:'any',userId});
+      if(membershipError) throw membershipError;
+      return membershipResult;
+    },
     hasActivePrimaryCircleMembership:async(_db,userId)=>{
-      membershipCalls.push(userId);
+      membershipCalls.push({kind:'primary',userId});
       if(membershipError) throw membershipError;
       return membershipResult;
     },
@@ -140,6 +149,20 @@ mock.module('../../api/_circle-membership.js',{
       readinessCalls.push(dbValue);
       if(readinessError) throw readinessError;
     },
+  },
+});
+
+mock.module('../../api/_invitation-email.js',{
+  exports:{
+    INVITATION_EMAIL_DRAIN_BATCH_SIZE:3,
+    INVITATION_EMAIL_EVENT_TYPE:'invitation.email.requested',
+    createInvitationEmailHandler:()=>async()=>({}),
+    invitationEmailConfiguration:()=>null,
+    invitationEmailKeyRotationStatus:async()=>({ready:false,unavailable:true}),
+    invitationEmailStatus:async()=>({
+      pending:0,processing:0,retry:0,delivered:0,suppressed:0,dead_letter:0,
+    }),
+    deliverInvitationEmails:async()=>{ throw new Error('invitation email delivery must remain disabled'); },
   },
 });
 
@@ -264,7 +287,7 @@ beforeEach(()=>{
   globalThis.fetch=originalFetch;
   for(const key of [
     'ALLOW_OPEN_SIGNUP','APP_URL','CIRCLE_MEMBERSHIP_ENABLED','CRON_SECRET',
-    'GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','NODE_ENV','SIGNUP_ALLOWLIST',
+    'GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','NODE_ENV','SIGNUP_ALLOWLIST','MULTI_CIRCLE_CONTROL_PLANE_ENABLED',
     'EMAIL_PASSWORD_ACTIVATION_ENABLED','EMAIL_VERIFICATION_ENCRYPTION_KEY',
     'RANDORI_LOCAL_RUNTIME','RANDORI_LOCAL_IDENTITY','TURSO_AUTH_TOKEN','TURSO_DATABASE_URL','VERCEL','VERCEL_ENV','VERCEL_URL',
   ]) delete process.env[key];
@@ -471,6 +494,16 @@ test('password login and profile require active primary-circle membership when e
   });
   assert.equal(allowedLogin.status,200);
   assert.match(String(allowedLogin.headers['set-cookie']),/randori_session=/);
+  assert.equal(membershipCalls.every(call=>call.kind==='primary'),true);
+
+  membershipCalls.length=0;
+  process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';
+  const multiCircleLogin=await invoke(authHandler,{
+    method:'POST',url:'/api/auth/login',query:{endpoint:'login'},headers:sameOriginHeaders,
+    body:{email:'user@example.test',password:PASSWORD},
+  });
+  assert.equal(multiCircleLogin.status,200);
+  assert.deepEqual(membershipCalls,[{kind:'any',userId:2}]);
 });
 
 test('membership lookup failures never establish or invalidate a session as a false nonmember',async()=>{
@@ -557,6 +590,9 @@ test('same-account invitation replay completes sign-in only while membership rem
     email:'invited@example.test',name:'Invited User',sub:'google-invited-1',
   }});
   executeHandler=sql=>{
+    if(sql.includes('FROM auth_provider_identities identity JOIN auth_accounts account')) return rows([{
+      id:8,email:'invited@example.test',is_admin:0,password_hash:'!oauth:existing',google_sub:'google-invited-1',
+    }]);
     if(sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return rows([{
       id:8,is_admin:0,password_hash:'!oauth:existing',google_sub:'google-invited-1',
     }]);
@@ -588,6 +624,9 @@ test('an active member consumes a fresh prepared invitation before receiving a s
     email:'invited@example.test',name:'Invited User',sub:'google-invited-1',
   }});
   executeHandler=sql=>{
+    if(sql.includes('FROM auth_provider_identities identity JOIN auth_accounts account')) return rows([{
+      id:8,email:'invited@example.test',is_admin:0,password_hash:'!oauth:existing',google_sub:'google-invited-1',
+    }]);
     if(sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return rows([{
       id:8,is_admin:0,password_hash:'!oauth:existing',google_sub:'google-invited-1',
     }]);
@@ -616,11 +655,11 @@ test('a stable Google subject signs into the same account after its verified ema
     email:'new-address@example.test',name:'Existing User',sub:'stable-google-sub',
   }});
   executeHandler=sql=>{
-    if(sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return rows([]);
-    if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE google_sub=')){
-      return rows([{id:8,email:'old-address@example.test',is_admin:0}]);
+    if(sql.includes('FROM auth_provider_identities identity JOIN auth_accounts account')){
+      return rows([{id:8,email:'old-address@example.test',is_admin:0,
+        password_hash:'!oauth:existing',google_sub:'stable-google-sub'}]);
     }
-    if(sql.includes('UPDATE auth_accounts SET email=')&&sql.includes('RETURNING id')) return rows([{id:8}]);
+    if(sql.includes("UPDATE auth_accounts SET last_login=datetime('now')")&&sql.includes('RETURNING id')) return rows([{id:8}]);
     return rows();
   };
 
@@ -632,10 +671,10 @@ test('a stable Google subject signs into the same account after its verified ema
   assert.equal(result.headers.location,'https://randori.example.test/?google=success');
   assert.equal(accountAcceptanceCalls.length,0);
   assert.match(String(result.headers['set-cookie']),/randori_session=/);
-  assert.equal(executed.filter(call=>call.sql.includes('UPDATE auth_accounts SET email=')).length,1);
-  assert.deepEqual(sessionRevocations,[{userId:8,reason:'identity_change'}]);
-  assert.deepEqual(identityTransactionActions.map(action=>action.type),['begin','execute','revoke','issue','commit']);
-  assert.ok(identityTransactionActions.every(action=>action.transaction===identityTransactionActions[0].transaction));
+  assert.equal(executed.filter(call=>call.sql.includes('UPDATE auth_accounts SET email=')).length,0);
+  assert.deepEqual(sessionRevocations,[]);
+  assert.equal(executed.some(call=>call.sql.includes('auth_provider_email_state')),false);
+  assert.equal(membershipCalls.at(-1)?.kind,'primary');
 });
 
 test('a verified Google email never auto-links an existing password account',async()=>{

@@ -108,6 +108,29 @@ function validateWorkerId(value){
   return workerId;
 }
 
+/**
+ * Stop awaiting non-cancellable storage/telemetry work at an absolute
+ * monotonic deadline. The operation remains rejection-observed if the
+ * underlying client settles later.
+ */
+export async function settleBeforeDeadline(work,deadlineAtMs){
+  if(typeof work!=='function') throw new TypeError('deadline work is required');
+  const remaining=Math.floor(Number(deadlineAtMs)-performance.now());
+  if(!Number.isFinite(remaining)||remaining<1) return Object.freeze({completed:false,value:null});
+  let timer;
+  const operation=Promise.resolve().then(work).then(
+    value=>({completed:true,value}),
+    error=>({completed:true,value:null,error}),
+  );
+  const timeout=new Promise(resolve=>{
+    timer=setTimeout(()=>resolve({completed:false,value:null}),remaining);
+  });
+  const result=await Promise.race([operation,timeout]);
+  clearTimeout(timer);
+  if(result.error) throw result.error;
+  return Object.freeze(result);
+}
+
 function eventFromRow(row){
   if(!row) return null;
   const event={
@@ -205,8 +228,10 @@ async function commitTransition(db,{update,audit}){
   return false;
 }
 
-async function sweepExhausted(db,{actorRef,eventType}){
+async function sweepExhausted(db,{actorRef,eventType,limit=100,shouldContinue=()=>true}){
   const now=await databaseInstant(db);
+  const sweepLimit=boundedInteger(limit,1,100,null);
+  if(sweepLimit===null||typeof shouldContinue!=='function') throw new TypeError('invalid outbox sweep policy');
   const typePredicate=eventType===null?'':'AND event_type=?';
   const expiredArgs=[now];
   if(eventType!==null) expiredArgs.push(eventType);
@@ -214,11 +239,12 @@ async function sweepExhausted(db,{actorRef,eventType}){
     sql:`SELECT id,status,attempt_count FROM outbox_events
       WHERE attempt_count>=max_attempts AND (
         status IN ('pending','retry') OR (status='processing' AND leased_until<=?)
-      ) ${typePredicate} ORDER BY id LIMIT 100`,
-    args:expiredArgs,
+      ) ${typePredicate} ORDER BY id LIMIT ?`,
+    args:[...expiredArgs,sweepLimit],
   });
   let count=0;
   for(const row of expired.rows||[]){
+    if(!shouldContinue()) break;
     const previous=String(row.status);
     const transitioned=await commitTransition(db,{
       update:{
@@ -301,6 +327,70 @@ export async function claimOutboxEvent(db,{
   return null;
 }
 
+async function claimOutboxRound(db,{workerId,leaseDurationMs,eventTypes}){
+  const owner=validateWorkerId(workerId);
+  const leaseMs=boundedInteger(leaseDurationMs,1_000,300_000,null);
+  const types=[...new Set((eventTypes||[]).map(validateEventType))];
+  if(leaseMs===null||!types.length||types.length!==eventTypes.length){
+    throw new TypeError('invalid outbox round claim');
+  }
+  const placeholders=types.map(()=>'?').join(',');
+  const modifier=`+${(leaseMs/1000).toFixed(3)} seconds`;
+  for(let attempt=1;attempt<=4;attempt+=1){
+    try{
+      const leaseToken=randomUUID();
+      const statements=[{
+        sql:`WITH ranked AS (
+            SELECT id,ROW_NUMBER() OVER (
+              PARTITION BY event_type ORDER BY next_attempt_at,id
+            ) AS type_rank
+            FROM outbox_events
+            WHERE attempt_count<max_attempts
+              AND not_before<=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+              AND next_attempt_at<=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+              AND (status IN ('pending','retry') OR
+                (status='processing' AND leased_until<=strftime('%Y-%m-%dT%H:%M:%fZ','now')))
+              AND event_type IN (${placeholders})
+          )
+          UPDATE outbox_events SET claim_from_status=status,status='processing',
+            attempt_count=attempt_count+1,lease_owner=?,lease_token=?,
+            leased_until=strftime('%Y-%m-%dT%H:%M:%fZ','now',?),last_error_code=NULL,
+            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE id IN (SELECT id FROM ranked WHERE type_rank=1)
+            AND attempt_count<max_attempts
+            AND (status IN ('pending','retry') OR
+              (status='processing' AND leased_until<=strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
+        args:[...types,owner,leaseToken,modifier],
+      },{
+        sql:`INSERT INTO outbox_audit_events
+          (outbox_event_id,action,actor_type,actor_ref,from_status,to_status,reason_code,attempt_number)
+          SELECT id,'claimed','worker',?,claim_from_status,'processing',NULL,attempt_count
+          FROM outbox_events WHERE lease_owner=? AND lease_token=? AND status='processing'`,
+        args:[owner,owner,leaseToken],
+      }];
+      const results=await db.batch(statements,'write');
+      const claimedCount=Number(results?.[0]?.rowsAffected||0);
+      if(claimedCount===0) return [];
+      if(Number(results?.[1]?.rowsAffected||0)!==claimedCount){
+        throw new Error('claimed outbox event audits were not committed');
+      }
+      const rows=(await db.execute({
+        sql:`SELECT id,event_type,event_version,idempotency_key,payload_json,attempt_count,max_attempts,
+          delivery_timeout_ms,lease_token,leased_until FROM outbox_events
+          WHERE lease_owner=? AND lease_token=? AND status='processing'`,
+        args:[owner,leaseToken],
+      })).rows||[];
+      if(rows.length!==claimedCount) throw new Error('claimed outbox events could not be read');
+      const order=new Map(types.map((type,index)=>[type,index]));
+      return rows.map(eventFromRow).sort((left,right)=>order.get(left.eventType)-order.get(right.eventType));
+    }catch(error){
+      if(!retryableConflict(error)||attempt===4) throw error;
+      await retryDelay(attempt);
+    }
+  }
+  return [];
+}
+
 export async function heartbeatOutboxLease(db,{eventId,leaseToken,workerId,leaseDurationMs=OUTBOX_DEFAULTS.leaseDurationMs}={}){
   validateDb(db);
   const id=boundedInteger(eventId,1,Number.MAX_SAFE_INTEGER,null);
@@ -335,6 +425,13 @@ function deliveryFailure(error,event,options){
     ...options,retryAfterMs:known?error.retryAfterMs:null,
   });
   return {deadLetter,reasonCode,delay};
+}
+
+function failedResolution(error,event,options){
+  const failure=deliveryFailure(error,event,options);
+  return {leaseLost:false,outcome:failure.deadLetter
+    ?{status:'dead_letter',reasonCode:failure.reasonCode,delayMs:0}
+    :{status:'retry',reasonCode:failure.reasonCode,delayMs:failure.delay}};
 }
 
 async function finalizeOutcome(db,{event,workerId,outcome}){
@@ -394,18 +491,15 @@ function startHeartbeat(db,{event,workerId,leaseDurationMs,heartbeatIntervalMs,a
   };
 }
 
-async function invokeWithTimeout(handler,event,{db,workerId,leaseDurationMs,heartbeatIntervalMs}){
-  const abortController=new AbortController();
-  const heartbeat=startHeartbeat(db,{
-    event,workerId,leaseDurationMs,heartbeatIntervalMs,abortController,
-  });
+async function invokeWithTimeout(handler,event,{abortController,
+  deliveryTimeoutMs=event.deliveryTimeoutMs,timeoutCode='DELIVERY_TIMEOUT'}){
   let timer;
   const timeout=new Promise((_,reject)=>{
     timer=setTimeout(()=>{
-      const error=new OutboxDeliveryError('DELIVERY_TIMEOUT',{retryable:true});
+      const error=new OutboxDeliveryError(timeoutCode,{retryable:true});
       abortController.abort(error);
       reject(error);
-    },event.deliveryTimeoutMs);
+    },deliveryTimeoutMs);
   });
   try{
     return await Promise.race([
@@ -414,10 +508,6 @@ async function invokeWithTimeout(handler,event,{db,workerId,leaseDurationMs,hear
     ]);
   }finally{
     clearTimeout(timer);
-    await heartbeat.stop();
-    if(abortController.signal.reason instanceof OutboxLeaseLostError){
-      throw abortController.signal.reason;
-    }
   }
 }
 
@@ -428,6 +518,76 @@ function normalizeSuccess(value){
   const providerMessageId=String(result.providerMessageId||'').trim().slice(0,255)||null;
   const reasonCode=status==='suppressed'?normalizeErrorCode(result.reasonCode,'DELIVERY_SUPPRESSED'):null;
   return {status,providerName,providerMessageId,reasonCode,delayMs:0};
+}
+
+function emptyWorkerResult(){
+  return {claimed:0,delivered:0,suppressed:0,retried:0,deadLettered:0,leaseLost:0};
+}
+
+function addWorkerResult(target,source){
+  for(const key of Object.keys(emptyWorkerResult())) target[key]+=Number(source[key]||0);
+}
+
+async function resolveClaimedOutboxEvent(db,event,{handlers,workerId,leaseDurationMs,
+  heartbeatIntervalMs,baseBackoffMs,maxBackoffMs,deliveryTimeoutMs=event.deliveryTimeoutMs,
+  timeoutCode='DELIVERY_TIMEOUT',abortController}={}){
+  const handler=handlers instanceof Map?handlers.get(event.eventType):handlers[event.eventType];
+  let outcome;
+  try{
+    if(typeof handler!=='function') throw new OutboxDeliveryError('EVENT_HANDLER_MISSING',{retryable:false});
+    const delivered=await invokeWithTimeout(handler,event,{
+      abortController,deliveryTimeoutMs,timeoutCode,
+    });
+    outcome=normalizeSuccess(delivered);
+  }catch(error){
+    if(error instanceof OutboxLeaseLostError
+      ||abortController.signal.reason instanceof OutboxLeaseLostError){
+      return {leaseLost:true,outcome:null};
+    }
+    return failedResolution(error,event,{baseBackoffMs,maxBackoffMs});
+  }
+  return {leaseLost:false,outcome};
+}
+
+function startClaimLifecycle(db,event,{workerId,leaseDurationMs,heartbeatIntervalMs}){
+  const abortController=new AbortController();
+  const heartbeat=startHeartbeat(db,{
+    event,workerId,leaseDurationMs,heartbeatIntervalMs,abortController,
+  });
+  return {abortController,heartbeat};
+}
+
+function leaseAwareResolution(lifecycle,resolution){
+  return lifecycle.abortController.signal.reason instanceof OutboxLeaseLostError
+    ?{leaseLost:true,outcome:null}:resolution;
+}
+
+async function finalizeResolvedOutboxEvent(db,event,{workerId,resolution}){
+  const result=emptyWorkerResult();
+  result.claimed=1;
+  if(resolution.leaseLost){ result.leaseLost=1; return result; }
+  const {outcome}=resolution;
+  const owned=await finalizeOutcome(db,{event,workerId,outcome});
+  if(!owned){ result.leaseLost=1; return result; }
+  if(outcome.status==='delivered') result.delivered=1;
+  else if(outcome.status==='suppressed') result.suppressed=1;
+  else if(outcome.status==='retry') result.retried=1;
+  else result.deadLettered=1;
+  return result;
+}
+
+async function deliverClaimedOutboxEvent(db,event,options={}){
+  const lifecycle=startClaimLifecycle(db,event,options);
+  try{
+    const resolution=await resolveClaimedOutboxEvent(db,event,{
+      ...options,abortController:lifecycle.abortController,
+    });
+    return await finalizeResolvedOutboxEvent(db,event,{
+      workerId:options.workerId,resolution:leaseAwareResolution(lifecycle,resolution),
+    });
+  }finally{
+    await lifecycle.heartbeat.stop();
+  }
 }
 
 export async function runOutboxWorker({
@@ -450,39 +610,160 @@ export async function runOutboxWorker({
   if(limit===null||leaseMs===null||heartbeatMs===null||baseMs===null||maxMs===null){
     throw new TypeError('invalid outbox worker policy');
   }
-  const result={claimed:0,delivered:0,suppressed:0,retried:0,deadLettered:0,leaseLost:0};
+  const result=emptyWorkerResult();
   result.deadLettered+=await sweepExhausted(db,{actorRef:owner,eventType:normalizedType});
   for(let index=0;index<limit;index+=1){
     const event=await claimOutboxEvent(db,{
       workerId:owner,leaseDurationMs:leaseMs,eventType:normalizedType,
     });
     if(!event) break;
-    result.claimed+=1;
-    const handler=handlers instanceof Map?handlers.get(event.eventType):handlers[event.eventType];
-    let outcome;
-    try{
-      if(typeof handler!=='function') throw new OutboxDeliveryError('EVENT_HANDLER_MISSING',{retryable:false});
-      const delivered=await invokeWithTimeout(handler,event,{
-        db,workerId:owner,leaseDurationMs:leaseMs,heartbeatIntervalMs:heartbeatMs,
-      });
-      outcome=normalizeSuccess(delivered);
-    }catch(error){
-      if(error instanceof OutboxLeaseLostError){ result.leaseLost+=1; continue; }
-      const failure=deliveryFailure(error,event,{baseBackoffMs:baseMs,maxBackoffMs:maxMs});
-      outcome=failure.deadLetter
-        ?{status:'dead_letter',reasonCode:failure.reasonCode,delayMs:0}
-        :{status:'retry',reasonCode:failure.reasonCode,delayMs:failure.delay};
-    }
-    const owned=await finalizeOutcome(db,{
-      event,workerId:owner,outcome,
-    });
-    if(!owned){ result.leaseLost+=1; continue; }
-    if(outcome.status==='delivered') result.delivered+=1;
-    else if(outcome.status==='suppressed') result.suppressed+=1;
-    else if(outcome.status==='retry') result.retried+=1;
-    else result.deadLettered+=1;
+    addWorkerResult(result,await deliverClaimedOutboxEvent(db,event,{
+      handlers,workerId:owner,leaseDurationMs:leaseMs,heartbeatIntervalMs:heartbeatMs,
+      baseBackoffMs:baseMs,maxBackoffMs:maxMs,
+    }));
   }
   return Object.freeze(result);
+}
+
+/**
+ * Drain multiple event types in fair parallel rounds under one request budget.
+ * One event per non-empty type is claimed before any type receives a second
+ * claim. Provider waits are capped by the shared deadline, with time reserved
+ * to finalize every lease already claimed in that round.
+ */
+export async function runOutboxInvocation({
+  db,workerId=`invocation-${randomUUID()}`,handlers,eventTypes,maxClaims=8,
+  deadlineAtMs=performance.now()+45_000,finalizationReserveMs=5_000,
+  minimumDispatchWindowMs=100,leaseDurationMs=OUTBOX_DEFAULTS.leaseDurationMs,
+  heartbeatIntervalMs=OUTBOX_DEFAULTS.heartbeatIntervalMs,
+  baseBackoffMs=OUTBOX_DEFAULTS.baseBackoffMs,maxBackoffMs=OUTBOX_DEFAULTS.maxBackoffMs,
+}={}){
+  validateDb(db);
+  const owner=validateWorkerId(workerId);
+  if(!(handlers instanceof Map)&&(!handlers||typeof handlers!=='object'||Array.isArray(handlers))){
+    throw new TypeError('outbox handlers are required');
+  }
+  if(!Array.isArray(eventTypes)||eventTypes.length<1) throw new TypeError('outbox event types are required');
+  const types=[...new Set(eventTypes.map(validateEventType))];
+  if(types.length!==eventTypes.length
+    ||types.some(type=>typeof (handlers instanceof Map?handlers.get(type):handlers[type])!=='function')){
+    throw new TypeError('each outbox event type requires one handler');
+  }
+  const claimLimit=boundedInteger(maxClaims,types.length,OUTBOX_DEFAULTS.maxBatchSize,null);
+  const leaseMs=boundedInteger(leaseDurationMs,1_000,300_000,null);
+  const heartbeatMs=boundedInteger(heartbeatIntervalMs,0,leaseMs-1,null);
+  const baseMs=boundedInteger(baseBackoffMs,1,OUTBOX_DEFAULTS.maxBackoffMs,null);
+  const maxMs=boundedInteger(maxBackoffMs,baseMs||1,24*60*60*1000,null);
+  const deadline=Number(deadlineAtMs);
+  const reserveMs=boundedInteger(finalizationReserveMs,100,60_000,null);
+  const minimumMs=boundedInteger(minimumDispatchWindowMs,100,10_000,null);
+  if(claimLimit===null||leaseMs===null||heartbeatMs===null||baseMs===null||maxMs===null
+    ||!Number.isFinite(deadline)||reserveMs===null||minimumMs===null){
+    throw new TypeError('invalid outbox invocation policy');
+  }
+  const perType=Object.fromEntries(types.map(type=>[type,emptyWorkerResult()]));
+  const total=emptyWorkerResult();
+  let deadlineReached=false;
+  const canStart=()=>performance.now()+reserveMs+minimumMs<deadline;
+
+  const activeTypes=new Set(types);
+  while(total.claimed<claimLimit&&activeTypes.size){
+    if(!canStart()){ deadlineReached=true; break; }
+    const admittedTypes=types.filter(type=>activeTypes.has(type))
+      .slice(0,claimLimit-total.claimed);
+    // A round is claimed in one statement: every active type receives one fair
+    // opportunity before the deadline is checked again.
+    const claimPromise=claimOutboxRound(db,{
+      workerId:owner,leaseDurationMs:leaseMs,eventTypes:admittedTypes,
+    });
+    const claimed=await settleBeforeDeadline(()=>claimPromise,
+      deadline-reserveMs-minimumMs);
+    if(!claimed.completed){
+      deadlineReached=true;
+      // The client cannot cancel an in-flight SQL statement. If it commits
+      // after this invocation stops waiting, resolve any resulting leases to a
+      // bounded deadline failure without invoking a provider.
+      void claimPromise.then(async lateRound=>{
+        for(const event of lateRound){
+          try{
+            await finalizeResolvedOutboxEvent(db,event,{workerId:owner,
+              resolution:failedResolution(
+                new OutboxDeliveryError('INVOCATION_DEADLINE',{retryable:true}),event,
+                {baseBackoffMs:baseMs,maxBackoffMs:maxMs},
+              )});
+          }catch{}
+        }
+      }).catch(()=>{});
+      break;
+    }
+    const round=claimed.value;
+    const claimedTypes=new Set(round.map(event=>event.eventType));
+    for(const type of admittedTypes){ if(!claimedTypes.has(type)) activeTypes.delete(type); }
+    if(!round.length) break;
+    const lifecycles=round.map(event=>startClaimLifecycle(db,event,{
+      workerId:owner,leaseDurationMs:leaseMs,heartbeatIntervalMs:heartbeatMs,
+    }));
+    const resolutions=await Promise.all(round.map(async(event,index)=>{
+      const available=Math.floor(deadline-performance.now()-reserveMs);
+      if(available<minimumMs){
+        return failedResolution(
+          new OutboxDeliveryError('INVOCATION_DEADLINE',{retryable:true}),event,
+          {baseBackoffMs:baseMs,maxBackoffMs:maxMs},
+        );
+      }
+      const timeoutMs=Math.min(event.deliveryTimeoutMs,available);
+      return resolveClaimedOutboxEvent(db,event,{
+        handlers,workerId:owner,leaseDurationMs:leaseMs,heartbeatIntervalMs:heartbeatMs,
+        baseBackoffMs:baseMs,maxBackoffMs:maxMs,deliveryTimeoutMs:timeoutMs,
+        timeoutCode:timeoutMs<event.deliveryTimeoutMs?'INVOCATION_DEADLINE':'DELIVERY_TIMEOUT',
+        abortController:lifecycles[index].abortController,
+      });
+    }));
+    const outcomes=[];
+    for(let index=0;index<round.length;index+=1){
+      const event=round[index];
+      const lifecycle=lifecycles[index];
+      const remainingEvents=round.length-index;
+      const available=Math.max(0,Math.floor(deadline-performance.now()));
+      const finalizationDeadline=Math.min(deadline,
+        performance.now()+Math.max(1,Math.floor(available/remainingEvents)));
+      try{
+        const finalized=await settleBeforeDeadline(()=>finalizeResolvedOutboxEvent(db,event,{
+          workerId:owner,resolution:leaseAwareResolution(lifecycle,resolutions[index]),
+        }),finalizationDeadline);
+        outcomes.push(finalized.completed?finalized.value
+          :{...emptyWorkerResult(),claimed:1,leaseLost:1});
+      }catch{
+        // An ambiguous or failed transition remains protected by the lease and
+        // provider idempotency key. Continue finalizing the rest of the round.
+        outcomes.push({...emptyWorkerResult(),claimed:1,leaseLost:1});
+      }finally{
+        const stopping=lifecycle.heartbeat.stop();
+        await settleBeforeDeadline(()=>stopping,deadline);
+      }
+    }
+    for(let index=0;index<round.length;index+=1){
+      const outcome=outcomes[index];
+      addWorkerResult(perType[round[index].eventType],outcome);
+      addWorkerResult(total,outcome);
+    }
+    if(!canStart()) deadlineReached=true;
+  }
+  // Exhausted-lease cleanup is useful but cannot delay a first fair delivery
+  // round. Admit one bounded cleanup transition per type only while headroom
+  // remains for request teardown and metrics.
+  for(const type of types){
+    if(!canStart()){ deadlineReached=true; break; }
+    const sweepPromise=sweepExhausted(db,{
+      actorRef:owner,eventType:type,limit:1,shouldContinue:canStart,
+    });
+    const swept=await settleBeforeDeadline(()=>sweepPromise,deadline);
+    if(!swept.completed){ deadlineReached=true; break; }
+    perType[type].deadLettered+=swept.value;
+    total.deadLettered+=swept.value;
+  }
+  return Object.freeze({...total,deadlineReached,maxClaims:claimLimit,
+    perType:Object.freeze(Object.fromEntries(types.map(type=>[type,Object.freeze(perType[type])])))});
 }
 
 export async function replayDeadLetter(db,{

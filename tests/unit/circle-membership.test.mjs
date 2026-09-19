@@ -5,15 +5,18 @@ import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {afterEach,beforeEach,mock,test} from 'node:test';
 import {createClient} from '@libsql/client';
+import {MIGRATION_PLANS} from '../../db/migration-plan.js';
+import {createOutboxEventStatement} from '../../api/_outbox.js';
 
 let currentDb=null;
 const temporaryDirectories=[];
 
 function authPayload(req){
   const identity=req?.headers?.['x-test-auth'];
-  if(identity==='owner') return {id:1,email:'owner@example.test',name:'Owner'};
-  if(identity==='member') return {id:2,email:'member@example.test',name:'Member'};
-  if(identity==='outsider') return {id:3,email:'outsider@example.test',name:'Outsider'};
+  if(identity==='owner') return {id:1,email:'owner@example.test',name:'Owner',sessionHash:'a'.repeat(64)};
+  if(identity==='member') return {id:2,email:'member@example.test',name:'Member',sessionHash:'b'.repeat(64)};
+  if(identity==='outsider') return {id:3,email:'outsider@example.test',name:'Outsider',sessionHash:'c'.repeat(64)};
+  if(identity==='co-owner') return {id:4,email:'configured-owner@example.test',name:'Configured owner',sessionHash:'d'.repeat(64)};
   return null;
 }
 
@@ -32,10 +35,14 @@ mock.module('../../api/_db.js',{
 });
 
 const membership=await import('../../api/_circle-membership.js');
-const [{default:invitationsHandler},{default:dataHandler}]=await Promise.all([
+const activeCircle=await import('../../api/_active-circle.js');
+const [{default:invitationsHandler},{default:dataHandler},invitationEmail]=await Promise.all([
   import('../../api/invitations.js'),
   import('../../api/data.js'),
+  import('../../api/_invitation-email.js'),
 ]);
+const outboxOperations=MIGRATION_PLANS[5].operations.map(operation=>operation.sql);
+const activeCircleContextOperations=MIGRATION_PLANS[11].operations.map(operation=>operation.sql);
 
 function invoke(handler,{method='GET',url='/',query={},headers={},body={}}={}){
   return new Promise((resolve,reject)=>{
@@ -80,6 +87,11 @@ async function createDatabase(){
     membership.CIRCLE_AUDIT_EVENTS_TABLE_SQL,
     membership.AUTH_RATE_LIMITS_TABLE_SQL,
     membership.CIRCLE_MEMBERSHIP_ROLLOUT_TABLE_SQL,
+    `CREATE TABLE auth_sessions (session_hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,revoked_at INTEGER,revocation_reason TEXT,
+      FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE CASCADE)`,
+    ...activeCircleContextOperations,
+    ...outboxOperations,
     `INSERT INTO circle_membership_rollout (id,registrations_closed,updated_at)
       VALUES (1,0,datetime('now'))`,
     `INSERT INTO auth_accounts
@@ -95,6 +107,9 @@ async function createDatabase(){
     `INSERT INTO circle_memberships (circle_id,user_id,role,status,joined_at,updated_at)
       VALUES (10,1,'owner','active',datetime('now'),datetime('now')),
              (10,2,'member','active',datetime('now'),datetime('now'))`,
+    `INSERT INTO auth_sessions (session_hash,user_id,created_at,expires_at) VALUES
+      ('${'a'.repeat(64)}',1,1,4102444800),('${'b'.repeat(64)}',2,1,4102444800),
+      ('${'c'.repeat(64)}',3,1,4102444800),('${'d'.repeat(64)}',4,1,4102444800)`,
   ],'write');
   return db;
 }
@@ -109,6 +124,12 @@ afterEach(()=>{
   currentDb=null;
   while(temporaryDirectories.length) rmSync(temporaryDirectories.pop(),{recursive:true,force:true});
   delete process.env.CIRCLE_MEMBERSHIP_ENABLED;
+  delete process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED;
+  for(const key of ['APP_URL','INVITATION_EMAIL_ENCRYPTION_KEY','INVITATION_EMAIL_ENCRYPTION_KEY_VERSION',
+    'INVITATION_EMAIL_ENCRYPTION_PREVIOUS_KEYS','INVITATION_EMAIL_ENVELOPE_WRITE_VERSION',
+    'NODE_ENV','RESEND_API_KEY','RESEND_FROM']){
+    delete process.env[key];
+  }
 });
 
 test('claims are signed, short lived, email bound, and never store the raw invitation token',async()=>{
@@ -453,6 +474,8 @@ test('registration-state probes do not create rollout schema before explicit ini
 
 test('owner invitation APIs create, safely list, prepare, clear stale claims, and revoke',async()=>{
   currentDb=await createDatabase();
+  process.env.NODE_ENV='production';
+  process.env.APP_URL='https://randori.example.test';
   const ownerHeaders={'x-test-auth':'owner',origin:'https://randori.example.test',host:'randori.example.test'};
   const created=await invoke(invitationsHandler,{
     method:'POST',url:'/api/invitations',query:{endpoint:'invitations'},headers:ownerHeaders,
@@ -462,7 +485,10 @@ test('owner invitation APIs create, safely list, prepare, clear stale claims, an
   assert.equal(created.headers['cache-control'],'private, no-store');
   assert.equal(created.headers.pragma,'no-cache');
   assert.equal(created.body.invitation.email,'new.member@example.test');
+  assert.deepEqual(created.body.email_delivery,{queued:false});
   assert.match(created.body.invitation.invite_url,/^\/invite#invite=[A-Za-z0-9_-]{43}$/);
+  assert.equal(Number((await currentDb.execute(`SELECT COUNT(*) AS count FROM outbox_events`)).rows[0].count),0,
+    'missing production mail configuration preserves manual creation without queued plaintext');
   const rawToken=created.body.invitation.invite_url.split('=')[1];
 
   const listed=await invoke(invitationsHandler,{
@@ -510,6 +536,301 @@ test('owner invitation APIs create, safely list, prepare, clear stale claims, an
     headers:{...ownerHeaders,'x-test-auth':'member'},body:{email:'someone@example.test'},
   });
   assert.equal(denied.status,403);
+});
+
+test('selected secondary-circle invitation reads and writes cannot cross the active context',async()=>{
+  currentDb=await createDatabase();
+  process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';
+  process.env.NODE_ENV='production';
+  process.env.APP_URL='https://randori.example.test';
+  await currentDb.batch([
+    `INSERT INTO circles (id,public_id,slug,name,is_primary,created_by,created_at)
+      VALUES (20,'circle-secondary','secondary-circle','Secondary Circle',0,1,datetime('now'))`,
+    `INSERT INTO circle_memberships (circle_id,user_id,role,status,joined_at,updated_at)
+      VALUES (20,1,'owner','active',datetime('now'),datetime('now'))`,
+  ],'write');
+  const ownerPayload=authPayload({headers:{'x-test-auth':'owner'}});
+  const selected=await activeCircle.selectActiveCircleContext(currentDb,ownerPayload,{
+    circlePublicId:'circle-secondary',expectedContextVersion:0,
+  });
+  assert.equal(selected.ok,true);
+
+  const stale=await invoke(invitationsHandler,{
+    method:'POST',url:'/api/invitations',query:{endpoint:'invitations'},
+    headers:{'x-test-auth':'owner',origin:'https://randori.example.test',host:'randori.example.test'},
+    body:{email:'stale@example.test'},
+  });
+  assert.equal(stale.status,409);
+  assert.deepEqual(stale.body,{error:'circle context changed',code:'circle_context_changed'});
+
+  const primaryInvitationId='11111111-1111-4111-8111-111111111111';
+  await currentDb.execute({
+    sql:`INSERT INTO circle_invitations
+      (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at)
+      VALUES (?,?,?,?,?,datetime('now'),datetime('now','+7 days'))`,
+    args:[primaryInvitationId,10,membership.hashInvitationToken(membership.createInvitationToken()),
+      membership.hashInvitationEmail('primary-only@example.test'),1],
+  });
+  const headers={'x-test-auth':'owner','x-randori-circle-context-version':'1',
+    origin:'https://randori.example.test',host:'randori.example.test'};
+  const created=await invoke(invitationsHandler,{
+    method:'POST',url:'/api/invitations',query:{endpoint:'invitations'},headers,
+    body:{email:'secondary@example.test'},
+  });
+  assert.equal(created.status,201);
+  assert.equal(created.body.circle_context_version,1);
+  const stored=await currentDb.execute({
+    sql:`SELECT circle_id FROM circle_invitations WHERE id=?`,args:[created.body.invitation.id],
+  });
+  assert.equal(Number(stored.rows[0].circle_id),20);
+
+  const listed=await invoke(invitationsHandler,{
+    url:'/api/invitations',query:{endpoint:'invitations'},headers,
+  });
+  assert.equal(listed.status,200);
+  assert.deepEqual(listed.body.invitations.map(item=>item.id),[created.body.invitation.id]);
+  assert.equal(JSON.stringify(listed.body).includes(primaryInvitationId),false);
+
+  const denied=await invoke(invitationsHandler,{
+    method:'DELETE',url:`/api/invitations/${primaryInvitationId}`,
+    query:{endpoint:'invitations',id:primaryInvitationId},headers,
+  });
+  assert.equal(denied.status,404);
+  assert.equal((await currentDb.execute({sql:`SELECT revoked_at FROM circle_invitations WHERE id=?`,args:[primaryInvitationId]})).rows[0].revoked_at,null);
+
+  const baseDb=currentDb;
+  const beforeCount=Number((await baseDb.execute(`SELECT COUNT(*) AS count FROM circle_invitations`)).rows[0].count);
+  let switched=false;
+  currentDb={
+    execute:statement=>baseDb.execute(statement),
+    batch:(statements,mode)=>baseDb.batch(statements,mode),
+    async transaction(mode){
+      if(!switched){
+        switched=true;
+        const next=await activeCircle.selectActiveCircleContext(baseDb,ownerPayload,{
+          circlePublicId:'3c20c4da-1906-4ca4-b4fd-5971f1dd066d',expectedContextVersion:1,
+        });
+        assert.equal(next.context_version,2);
+      }
+      return baseDb.transaction(mode);
+    },
+    close:()=>baseDb.close(),
+  };
+  const raced=await invoke(invitationsHandler,{
+    method:'POST',url:'/api/invitations',query:{endpoint:'invitations'},headers,
+    body:{email:'must-not-cross@example.test'},
+  });
+  assert.equal(raced.status,409);
+  assert.deepEqual(raced.body,{error:'circle context changed',code:'circle_context_changed'});
+  assert.equal(Number((await baseDb.execute(`SELECT COUNT(*) AS count FROM circle_invitations`)).rows[0].count),beforeCount);
+});
+
+test('owner invitation email create and bounded resend rotate links atomically',async()=>{
+  currentDb=await createDatabase();
+  process.env.NODE_ENV='production';
+  process.env.APP_URL='https://randori.example.test';
+  process.env.RESEND_API_KEY='re_invitation_test';
+  process.env.RESEND_FROM='Randori <invite@randori.example.test>';
+  process.env.INVITATION_EMAIL_ENCRYPTION_KEY=Buffer.alloc(32,9).toString('base64url');
+  process.env.INVITATION_EMAIL_ENCRYPTION_KEY_VERSION='1';
+  process.env.INVITATION_EMAIL_ENVELOPE_WRITE_VERSION='2';
+  const headers={'x-test-auth':'owner',origin:'https://randori.example.test',host:'randori.example.test'};
+  const created=await invoke(invitationsHandler,{method:'POST',url:'/api/invitations',
+    query:{endpoint:'invitations'},headers,body:{email:' Invitee@Example.Test '}});
+  assert.equal(created.status,201);
+  assert.deepEqual(created.body.email_delivery,{queued:true});
+  const id=created.body.invitation.id;
+  const firstToken=created.body.invitation.invite_url.split('=')[1];
+  const firstHash=membership.hashInvitationToken(firstToken);
+  const firstEvent=(await currentDb.execute({sql:`SELECT idempotency_key,payload_json,max_attempts,
+      delivery_timeout_ms FROM outbox_events WHERE event_type='invitation.email.requested'`,args:[]})).rows[0];
+  assert.match(firstEvent.idempotency_key,new RegExp(`^invitation-email/v1/${id}/1$`));
+  assert.equal(Number(firstEvent.max_attempts),5);
+  assert.equal(Number(firstEvent.delivery_timeout_ms),10_000);
+  assert.equal(String(firstEvent.payload_json).includes(firstToken),false);
+  assert.equal(String(firstEvent.payload_json).includes('invitee@example.test'),false);
+  assert.match(JSON.parse(firstEvent.payload_json).credential_envelope,/^v2\.1\.[a-f0-9]{64}\./);
+
+  const immediate=await invoke(invitationsHandler,{method:'POST',
+    url:`/api/invitations/${id}`,query:{endpoint:'invitations',id},headers,body:{action:'resend'}});
+  assert.equal(immediate.status,429);
+  assert.match(String(immediate.headers['retry-after']),/^\d+$/);
+  assert.equal((await currentDb.execute({sql:`SELECT token_hash FROM circle_invitations WHERE id=?`,args:[id]})).rows[0].token_hash,firstHash);
+
+  const crossOrigin=await invoke(invitationsHandler,{method:'POST',url:`/api/invitations/${id}`,
+    query:{endpoint:'invitations',id},headers:{...headers,'x-test-cross':'1'},body:{action:'resend'}});
+  assert.equal(crossOrigin.status,403);
+  const member=await invoke(invitationsHandler,{method:'POST',url:`/api/invitations/${id}`,
+    query:{endpoint:'invitations',id},headers:{...headers,'x-test-auth':'member'},body:{action:'resend'}});
+  assert.equal(member.status,403);
+
+  await currentDb.execute({sql:`UPDATE outbox_events SET created_at='not-a-time'
+    WHERE id=(SELECT MAX(id) FROM outbox_events WHERE event_type='invitation.email.requested')`,args:[]});
+  const invalidTimestamp=await invoke(invitationsHandler,{method:'POST',url:`/api/invitations/${id}`,
+    query:{endpoint:'invitations',id},headers,body:{action:'resend'}});
+  assert.equal(invalidTimestamp.status,409);
+  assert.equal((await currentDb.execute({sql:`SELECT token_hash FROM circle_invitations WHERE id=?`,args:[id]})).rows[0].token_hash,firstHash);
+  assert.equal(Number((await currentDb.execute(`SELECT COUNT(*) AS count FROM outbox_events`)).rows[0].count),1);
+
+  await currentDb.execute(`UPDATE outbox_events SET created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-61 seconds')`);
+  const resent=await invoke(invitationsHandler,{method:'POST',url:`/api/invitations/${id}`,
+    query:{endpoint:'invitations',id},headers,body:{action:'resend'}});
+  assert.equal(resent.status,200);
+  assert.deepEqual(resent.body.email_delivery,{queued:true});
+  const secondToken=resent.body.invitation.invite_url.split('=')[1];
+  assert.notEqual(secondToken,firstToken);
+  assert.notEqual(membership.hashInvitationToken(secondToken),firstHash);
+  assert.deepEqual(await membership.prepareInvitationClaim(currentDb,{token:firstToken}),{ok:false});
+  assert.equal((await membership.prepareInvitationClaim(currentDb,{token:secondToken})).ok,true);
+
+  for(let sequence=3;sequence<=5;sequence+=1){
+    await currentDb.execute({sql:`UPDATE outbox_events
+      SET created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-61 seconds')
+      WHERE id=(SELECT MAX(id) FROM outbox_events WHERE event_type='invitation.email.requested')`,args:[]});
+    const next=await invoke(invitationsHandler,{method:'POST',url:`/api/invitations/${id}`,
+      query:{endpoint:'invitations',id},headers,body:{action:'resend'}});
+    assert.equal(next.status,200,`send sequence ${sequence}`);
+  }
+  await currentDb.execute({sql:`UPDATE outbox_events
+    SET created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-61 seconds')
+    WHERE id=(SELECT MAX(id) FROM outbox_events WHERE event_type='invitation.email.requested')`,args:[]});
+  const exhausted=await invoke(invitationsHandler,{method:'POST',url:`/api/invitations/${id}`,
+    query:{endpoint:'invitations',id},headers,body:{action:'resend'}});
+  assert.equal(exhausted.status,409);
+  assert.equal(Number((await currentDb.execute(`SELECT COUNT(*) AS count FROM outbox_events
+    WHERE event_type='invitation.email.requested'`)).rows[0].count),5);
+  assert.equal(Number((await currentDb.execute({sql:`SELECT COUNT(*) AS count FROM circle_audit_events
+    WHERE invitation_id=? AND event_type='invitation.resent'`,args:[id]})).rows[0].count),4);
+});
+
+test('unrelated unhealthy invitation history does not block create or exact-target resend',async()=>{
+  currentDb=await createDatabase();
+  process.env.NODE_ENV='production';
+  process.env.APP_URL='https://randori.example.test';
+  process.env.RESEND_API_KEY='re_invitation_test';
+  process.env.RESEND_FROM='Randori <invite@randori.example.test>';
+  process.env.INVITATION_EMAIL_ENCRYPTION_KEY=Buffer.alloc(32,9).toString('base64url');
+  const unrelatedKey='invitation-email/v1/ffffffff-ffff-4fff-8fff-ffffffffffff/1';
+  await currentDb.execute(createOutboxEventStatement({eventType:invitationEmail.INVITATION_EMAIL_EVENT_TYPE,
+    idempotencyKey:unrelatedKey,payload:{credential_envelope:'malformed'},maxAttempts:1}));
+  await currentDb.execute({sql:`UPDATE outbox_events SET status='dead_letter' WHERE idempotency_key=?`,
+    args:[unrelatedKey]});
+  assert.equal((await invitationEmail.invitationEmailKeyRotationStatus(currentDb)).ready,false);
+
+  const headers={'x-test-auth':'owner',origin:'https://randori.example.test',host:'randori.example.test'};
+  const created=await invoke(invitationsHandler,{method:'POST',url:'/api/invitations',
+    query:{endpoint:'invitations'},headers,body:{email:'independent@example.test'}});
+  assert.equal(created.status,201);
+  assert.deepEqual(created.body.email_delivery,{queued:true});
+  const id=created.body.invitation.id;
+  await currentDb.execute({sql:`UPDATE outbox_events
+    SET created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-61 seconds')
+    WHERE json_extract(payload_json,'$.invitation_id')=?`,args:[id]});
+  const resent=await invoke(invitationsHandler,{method:'POST',url:`/api/invitations/${id}`,
+    query:{endpoint:'invitations',id},headers,body:{action:'resend'}});
+  assert.equal(resent.status,200);
+  assert.equal((await invitationEmail.invitationEmailKeyRotationStatus(currentDb)).ready,false,
+    'operator retirement health remains red after the valid target succeeds');
+});
+
+test('an outbox failure rolls back invitation creation and token rotation',async()=>{
+  currentDb=await createDatabase();
+  process.env.NODE_ENV='production';
+  process.env.APP_URL='https://randori.example.test';
+  process.env.RESEND_API_KEY='re_invitation_test';
+  process.env.RESEND_FROM='Randori <invite@randori.example.test>';
+  process.env.INVITATION_EMAIL_ENCRYPTION_KEY=Buffer.alloc(32,10).toString('base64url');
+  const headers={'x-test-auth':'owner',origin:'https://randori.example.test',host:'randori.example.test'};
+  await currentDb.execute(`CREATE TRIGGER reject_invitation_email BEFORE INSERT ON outbox_events
+    BEGIN SELECT RAISE(ABORT,'forced invitation email failure'); END`);
+  const failedCreate=await invoke(invitationsHandler,{method:'POST',url:'/api/invitations',
+    query:{endpoint:'invitations'},headers,body:{email:'rollback@example.test'}});
+  assert.equal(failedCreate.status,503);
+  const missing=await currentDb.execute({sql:`SELECT COUNT(*) AS count FROM circle_invitations
+    WHERE email_hash=?`,args:[membership.hashInvitationEmail('rollback@example.test')]});
+  assert.equal(Number(missing.rows[0].count),0);
+  await currentDb.execute('DROP TRIGGER reject_invitation_email');
+
+  const created=await invoke(invitationsHandler,{method:'POST',url:'/api/invitations',
+    query:{endpoint:'invitations'},headers,body:{email:'rotation@example.test'}});
+  assert.equal(created.status,201);
+  const id=created.body.invitation.id;
+  const before=(await currentDb.execute({sql:`SELECT token_hash FROM circle_invitations WHERE id=?`,args:[id]})).rows[0].token_hash;
+  await currentDb.execute(`UPDATE outbox_events SET created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-61 seconds')`);
+  await currentDb.execute(`CREATE TRIGGER reject_invitation_email BEFORE INSERT ON outbox_events
+    BEGIN SELECT RAISE(ABORT,'forced invitation email failure'); END`);
+  const failedResend=await invoke(invitationsHandler,{method:'POST',url:`/api/invitations/${id}`,
+    query:{endpoint:'invitations',id},headers,body:{action:'resend'}});
+  assert.equal(failedResend.status,503);
+  const after=(await currentDb.execute({sql:`SELECT token_hash FROM circle_invitations WHERE id=?`,args:[id]})).rows[0].token_hash;
+  assert.equal(after,before);
+  assert.equal(Number((await currentDb.execute(`SELECT COUNT(*) AS count FROM outbox_events`)).rows[0].count),1);
+  assert.equal(Number((await currentDb.execute({sql:`SELECT COUNT(*) AS count FROM circle_audit_events
+    WHERE invitation_id=? AND event_type='invitation.resent'`,args:[id]})).rows[0].count),0);
+});
+
+test('concurrent invitation resends produce one rotated token and one durable event',async()=>{
+  currentDb=await createDatabase();
+  process.env.NODE_ENV='production';
+  process.env.APP_URL='https://randori.example.test';
+  process.env.RESEND_API_KEY='re_invitation_test';
+  process.env.RESEND_FROM='Randori <invite@randori.example.test>';
+  process.env.INVITATION_EMAIL_ENCRYPTION_KEY=Buffer.alloc(32,11).toString('base64url');
+  const headers={'x-test-auth':'owner',origin:'https://randori.example.test',host:'randori.example.test'};
+  const created=await invoke(invitationsHandler,{method:'POST',url:'/api/invitations',
+    query:{endpoint:'invitations'},headers,body:{email:'race@example.test'}});
+  const id=created.body.invitation.id;
+  await currentDb.execute(`UPDATE outbox_events SET created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-61 seconds')`);
+  const outcomes=await Promise.all([1,2].map(()=>invoke(invitationsHandler,{method:'POST',
+    url:`/api/invitations/${id}`,query:{endpoint:'invitations',id},headers,body:{action:'resend'}})));
+  assert.equal(outcomes.filter(result=>result.status===200).length,1);
+  assert.ok(outcomes.every(result=>[200,429,503].includes(result.status)));
+  assert.equal(Number((await currentDb.execute(`SELECT COUNT(*) AS count FROM outbox_events
+    WHERE event_type='invitation.email.requested'`)).rows[0].count),2);
+  const winner=outcomes.find(result=>result.status===200);
+  const stored=(await currentDb.execute({sql:`SELECT token_hash FROM circle_invitations WHERE id=?`,args:[id]})).rows[0];
+  assert.equal(stored.token_hash,membership.hashInvitationToken(winner.body.invitation.invite_url.split('=')[1]));
+});
+
+test('a current owner can resend after ownership transfer while the former owner event suppresses',async()=>{
+  currentDb=await createDatabase();
+  process.env.NODE_ENV='production';
+  process.env.APP_URL='https://randori.example.test';
+  process.env.RESEND_API_KEY='re_invitation_test';
+  process.env.RESEND_FROM='Randori <invite@randori.example.test>';
+  process.env.INVITATION_EMAIL_ENCRYPTION_KEY=Buffer.alloc(32,13).toString('base64url');
+  const ownerHeaders={'x-test-auth':'owner',origin:'https://randori.example.test',host:'randori.example.test'};
+  const created=await invoke(invitationsHandler,{method:'POST',url:'/api/invitations',
+    query:{endpoint:'invitations'},headers:ownerHeaders,body:{email:'transfer@example.test'}});
+  assert.equal(created.status,201);
+  const id=created.body.invitation.id;
+  await currentDb.batch([
+    `INSERT INTO circle_memberships (circle_id,user_id,role,status,joined_at,updated_at)
+      VALUES (10,4,'owner','active',datetime('now'),datetime('now'))`,
+    `UPDATE circle_memberships SET role='member',updated_at=datetime('now')
+      WHERE circle_id=10 AND user_id=1`,
+    `UPDATE outbox_events SET created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-61 seconds')
+      WHERE event_type='invitation.email.requested'`,
+  ],'write');
+  const resent=await invoke(invitationsHandler,{method:'POST',url:`/api/invitations/${id}`,
+    query:{endpoint:'invitations',id},headers:{...ownerHeaders,'x-test-auth':'co-owner'},
+    body:{action:'resend'}});
+  assert.equal(resent.status,200);
+  const stored=await currentDb.execute({sql:`SELECT payload_json FROM outbox_events
+    WHERE event_type=? ORDER BY id`,args:['invitation.email.requested']});
+  assert.deepEqual(stored.rows.map(row=>Number(JSON.parse(row.payload_json).actor_user_id)),[1,4]);
+  const messages=[];
+  const delivery=await invitationEmail.deliverInvitationEmails({db:currentDb,
+    baseUrl:'https://randori.example.test',workerId:'ownership-transfer',
+    send:async message=>{
+      messages.push(message);
+      return {providerName:'capture',providerMessageId:'transfer-current-owner'};
+    },workerOptions:{heartbeatIntervalMs:0,leaseDurationMs:1000}});
+  assert.equal(delivery.suppressed,1);
+  assert.equal(delivery.delivered,1);
+  assert.equal(messages.length,1);
+  assert.ok(messages[0].html.includes(resent.body.invitation.invite_url));
+  assert.equal(messages[0].html.includes(created.body.invitation.invite_url.split('=')[1]),false);
 });
 
 test('owner invitation history is bounded to the newest 200 rows',async()=>{

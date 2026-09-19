@@ -658,6 +658,7 @@ p{margin:0}
       <div id="authArea" class="row" style="gap:6px">
         <span id="meLabel" class="pill" style="display:none; cursor:pointer; position:relative"></span>
       <div id="meMenu" style="display:none; position:absolute; top:44px; right:60px; background:var(--bg-2); border:1px solid var(--border); border-radius:10px; padding:6px; min-width:120px; z-index:50; box-shadow:0 8px 24px rgba(0,0,0,.3)">
+        <button id="meIdentity" hidden disabled style="width:100%; text-align:left; background:none; border:none; color:var(--ink); padding:8px 10px; border-radius:8px; font-size:12.5px; cursor:pointer">Account security</button>
         <button id="meSignOut" style="width:100%; text-align:left; background:none; border:none; color:var(--ink); padding:8px 10px; border-radius:8px; font-size:12.5px; cursor:pointer">Sign out</button>
         <button id="meSignOutAll" style="width:100%; text-align:left; background:none; border:none; color:var(--warn); padding:8px 10px; border-radius:8px; font-size:12.5px; cursor:pointer">Sign out everywhere</button>
       </div>
@@ -822,6 +823,11 @@ p{margin:0}
               <input id="personName" class="input" placeholder="Teammate name (testing only)" maxlength="32" />
               <button id="addPerson" class="btn">Add</button>
             </div>
+            <div id="circleContextPanel" hidden style="display:none;gap:5px">
+              <label class="small muted" for="circleContextSelect">Active circle</label>
+              <select id="circleContextSelect" data-testid="circle-context-select" class="select" aria-describedby="circleContextStatus"></select>
+              <div id="circleContextStatus" class="small muted" role="status" aria-live="polite"></div>
+            </div>
             <div id="circleAutoNote" class="small muted">Loading your private circle…</div>
             <div id="peopleList" data-testid="circle-members" class="people" aria-live="polite" aria-busy="true"></div>
             <div id="circleOwnerPanel" hidden style="display:none;gap:10px;border-top:1px solid var(--border);padding-top:12px">
@@ -842,7 +848,16 @@ p{margin:0}
                 <button id="circleLeave" data-testid="circle-leave" class="pill membership-danger" type="button">Leave circle</button>
               </div>
               <div id="circleLifecycleStatus" class="small muted" role="status" aria-live="polite"></div>
-              <div id="circleManageMembers" data-testid="circle-manage-members" class="people" hidden></div>
+              <form id="circleMemberSearchForm" data-testid="circle-member-search-form" role="search" class="row" hidden style="align-items:flex-end">
+                <label class="small muted" for="circleMemberSearch" style="display:grid;gap:5px;flex:1">Search member display names
+                  <input id="circleMemberSearch" data-testid="circle-member-search" class="input" type="search" maxlength="80" autocomplete="off" placeholder="e.g. Ada" />
+                </label>
+                <button id="circleMemberSearchSubmit" class="pill" type="submit">Search</button>
+                <button id="circleMemberSearchClear" class="pill" type="button" hidden>Clear</button>
+              </form>
+              <div id="circleMemberSearchStatus" class="small muted" role="status" aria-live="polite"></div>
+              <div id="circleManageMembers" data-testid="circle-manage-members" class="people" hidden aria-busy="false" aria-label="Manage circle members"></div>
+              <button id="circleMembersLoadMore" data-testid="circle-members-load-more" class="pill" type="button" aria-controls="circleManageMembers" hidden>Load more members</button>
             </section>
           </div>
         </div>
@@ -1014,7 +1029,7 @@ p{margin:0}
               </div>
               <div>
                 <div class="small muted" style="margin-bottom:4px">Interviewer questions (for interviewer coaching)</div>
-                <textarea id="aiInterviewerQs" class="textarea" placeholder="e.g. Q1: Two Sum follow-up – duplicate handling\nQ2: What if we need to return all pairs?" style="min-height:90px; font-size:12.5px"></textarea>
+                <textarea id="aiInterviewerQs" class="textarea" placeholder="e.g. Q1: Which edge case would you test next?\nQ2: How would you explain the complexity trade-off?" style="min-height:90px; font-size:12.5px"></textarea>
               </div>
             </div>
             <div id="aiStatus" class="small muted" style="min-height:16px">Ready. Hit Record before you start, it auto-captures code diffs. Works offline, calls Groq when signed-in.</div>
@@ -1070,19 +1085,6 @@ p{margin:0}
 </div>
 <div id="confirmOverlay" class="overlay" aria-hidden="true"><div class="modal"><h3 id="confirmTitle">Confirm?</h3><p id="confirmMsg" class="small" style="color:var(--ink-2); margin:0"></p><div class="row"><button id="confirmCancel" class="btn secondary">Cancel</button><button id="confirmOk" class="btn">Confirm</button></div></div></div>
 <div id="promptOverlay" class="overlay" aria-hidden="true"><div class="modal"><h3 id="promptTitle">Enter value</h3><input id="promptInput" class="input"/><div class="row"><button id="promptCancel" class="btn secondary">Cancel</button><button id="promptOk" class="btn">Save</button></div></div></div>
-<div id="qUploadOverlay" class="overlay" aria-hidden="true"><div class="modal" style="max-width:560px; width:94vw; max-height:92vh; overflow:auto"><h3 id="qUpTitle">Upload Question</h3>
-<p class="small muted">Custom questions are shared to the pair via test runner. LeetCode import auto-fills below; HackerRank paste works too.</p>
-<div style="display:grid; gap:10px; margin-top:8px">
-  <div class="row" style="gap:8px"><input id="qUpSlug" class="input" placeholder="slug auto (optional)" style="flex:1"/><select id="qUpDiff" class="select" style="width:140px"><option>Easy</option><option selected>Medium</option><option>Hard</option><option>System</option></select><select id="qUpType" class="select" style="width:120px"><option value="dsa" selected>DSA</option><option value="system">System</option><option value="both">Both</option></select></div>
-  <input id="qUpTitleIn" class="input" placeholder="Title e.g. Two Sum Variation"/>
-  <textarea id="qUpDesc" class="textarea" placeholder="Description (markdown-ish) — problem statement, function signature expected" style="min-height:110px"></textarea>
-  <div class="grid-2" style="grid-template-columns:1fr 1fr; gap:8px"><input id="qUpInputFmt" class="input" placeholder="Input format (optional)"/><input id="qUpConstraints" class="input" placeholder="Constraints (e.g. 2 ≤ n ≤ 1e5)"/></div>
-  <div><label class="small muted">Test cases (JSON array of {input, expect} — min 1, max 8). Examples: [{"input":{"nums":[2,7],"t":9},"expect":[0,1]}] or [{"input":[2,7,11,15,9],"expect":[0,1]}]</label><textarea id="qUpTests" class="textarea" placeholder='[{"input":{"nums":[2,7,11,15],"t":9},"expect":[0,1]},{"input":{"nums":[3,2,4],"t":6},"expect":[1,2]},{"input":{"nums":[3,3],"t":6},"expect":[0,1]}]' style="min-height:110px; font-family:ui-monospace; font-size:12.5px"></textarea></div>
-  <div><label class="small muted">Starter per lang (JSON map, optional) e.g. {"javascript":"function twoSum...","python":"def two_sum..."}</label><textarea id="qUpStarters" class="textarea" placeholder='{"javascript":"function twoSum(nums,target){}","python":"def two_sum(nums,target):"}' style="min-height:80px; font-family:ui-monospace; font-size:12px"></textarea></div>
-  <div class="row" style="gap:8px"><input id="qUpLeetSlug" class="input" placeholder="LeetCode slug if imported (optional)" style="flex:1"/><span class="kbd" id="qUpStatus"></span></div>
-</div>
-<div class="row" style="justify-content:space-between; margin-top:12px"><span class="small muted">Saved to /api/questions — appears in your Question dropdown for the session.</span><span class="row"><button id="qUpCancel" class="btn secondary">Cancel</button><button id="qUpSave" class="btn">Save Question</button></span></div>
-</div></div>
 <div id="authOverlay" class="overlay" aria-hidden="true">
   <div id="authDialog" class="modal" style="max-width:420px" role="dialog" aria-modal="true" aria-labelledby="authTitle" aria-describedby="authDescription" tabindex="-1">
     <form id="authForm" class="auth-form" novalidate>
@@ -1111,6 +1113,35 @@ p{margin:0}
     </form>
   </div>
 </div>
+<div id="identityOverlay" class="overlay" aria-hidden="true" style="z-index:90">
+  <div id="identityDialog" class="modal" style="max-width:500px" role="dialog" aria-modal="true" aria-labelledby="identityTitle" aria-describedby="identityDescription" tabindex="-1">
+    <div style="display:grid;gap:14px">
+      <div><h3 id="identityTitle">Account security</h3><p id="identityDescription" class="small muted" style="margin:6px 0 0">Manage the sign-in methods attached to this exact Randori account.</p></div>
+      <p id="identityStatus" data-testid="identity-status" class="small muted" role="status" aria-live="polite">Loading sign-in methods…</p>
+      <div id="identityRecent" class="card" style="padding:12px;display:grid;gap:9px">
+        <b style="font-size:13px">Confirm it is you</b>
+        <p id="identityRecentHint" class="small muted">Sensitive changes require a recent password or Google confirmation.</p>
+        <label id="identityPasswordConfirmField" class="small muted" style="display:grid;gap:5px">Current password
+          <input id="identityPasswordConfirm" class="input" type="password" autocomplete="current-password" maxlength="72" />
+        </label>
+        <div class="row"><button id="identityConfirmPassword" class="btn secondary" type="button">Confirm password</button><button id="identityConfirmGoogle" class="btn secondary" type="button">Confirm with Google</button></div>
+      </div>
+      <div id="identityGoogleCard" class="card" style="padding:12px;display:grid;gap:9px">
+        <div class="row" style="justify-content:space-between"><span><b>Google</b><span id="identityGoogleState" class="small muted" style="margin-left:7px">checking…</span></span><button id="identityGoogleAction" class="btn secondary" type="button" disabled>Manage</button></div>
+        <p id="identityGoogleHelp" class="small muted">Google is linked only after an explicit, fresh provider confirmation.</p>
+      </div>
+      <div id="identityPasswordCard" class="card" style="padding:12px;display:grid;gap:9px">
+        <div class="row" style="justify-content:space-between"><span><b>Password</b><span id="identityPasswordState" class="small muted" style="margin-left:7px">checking…</span></span><button id="identityPasswordAction" class="btn secondary" type="button" disabled>Manage</button></div>
+        <div id="identityPasswordAdd" hidden style="display:grid;gap:8px">
+          <label class="small muted" style="display:grid;gap:5px">New password<input id="identityNewPassword" class="input" type="password" autocomplete="new-password" maxlength="72" /></label>
+          <label class="small muted" style="display:grid;gap:5px">Confirm new password<input id="identityNewPasswordConfirm" class="input" type="password" autocomplete="new-password" maxlength="72" /></label>
+        </div>
+        <p id="identityPasswordHelp" class="small muted">Adding a password requires verified control of the linked Google account.</p>
+      </div>
+      <div class="auth-actions"><span></span><button id="identityClose" class="btn secondary" type="button">Close</button></div>
+    </div>
+  </div>
+</div>
 <div id="welcomeBanner" class="onboard-banner" style="display:none">
   <div class="small"><b>Welcome to Randori Circle</b> — weekly mock interviews with friends. Pair Sunday, practice DSA + System Design together. <span class="kbd" style="margin-left:6px">5-min setup</span></div>
   <div class="row" style="gap:8px"><button id="welcomeStartBtn" class="btn">Start → Sign in</button><button id="welcomeHowBtn" class="btn secondary">See how it works</button><button id="welcomeDismiss" class="pill">✕</button></div>
@@ -1136,7 +1167,7 @@ p{margin:0}
   let me = null;
   let authSessionEpoch=0;
   let authRefreshSequence=0;
-  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,passwordReset:false,localIdentity:false,verifiedEmailActivation:false,googleOAuth:false,registrationMode:'private_beta'});
+  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,passwordReset:false,localIdentity:false,verifiedEmailActivation:false,googleOAuth:false,identityManagement:false,multiCircleControlPlane:false,registrationMode:'private_beta'});
   let authCapabilities=CLOSED_AUTH_CAPABILITIES;
   let authCapabilitiesLoaded=false;
   let authCapabilitiesFailed=false;
@@ -1148,11 +1179,15 @@ p{margin:0}
   let googleRetryPending=false;
   let activationPendingEmail='';
   let activeCircleRole=null;
+  let activeCircleContext=null;
+  let activeCircleContextUserId=null;
+  let circleContextRequest=0;
   let currentCloudPairingWeek=null;
   let currentCloudPairingCycle=null;
   let currentCloudPairingLoaded=false;
   let currentCloudPairingUserId=null;
   let pairingRenderEpoch=0;
+  window._randoriUserNavigationEpoch=0;
   const AVAILABILITY_SOURCES=new Set(['user','legacy_bridge','cycle_default']);
   const AVAILABILITY_ROLLOVER_GRACE_MS=250;
   const AVAILABILITY_ROLLOVER_RETRY_MS=30000;
@@ -1220,6 +1255,7 @@ p{margin:0}
       activationState.status=response.ok&&data?.status==='verified'?'verified':String(data?.status||'unavailable');
       if(response.ok&&data?.user){
         me=data.user;
+        resetCircleControlForIdentityChange();
         try{ localStorage.setItem(ME_KEY,JSON.stringify(data.user)); }catch{}
       }
     }catch{ activationState.status='unavailable'; }
@@ -1262,6 +1298,8 @@ p{margin:0}
       used:'This reset link has already been used. Sign in with your new password.',
       revoked:'This reset link is no longer available. Request a new one.',
       invalid:'This reset link is invalid or unavailable.',
+      invalid_password:'Password must be 10–72 UTF-8 bytes.',
+      password_mismatch:'Passwords do not match.',
       unavailable:'Password reset is temporarily unavailable. Please retry shortly.',
     };
     if(status) status.textContent=messages[passwordResetState.status]||messages.invalid;
@@ -1294,6 +1332,7 @@ p{margin:0}
         invalidateAuthRefreshes();
         try{ localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(ME_KEY); }catch{}
         me=null;
+        resetCircleControlForIdentityChange();
         clearAvailability();
         try{ updateAuthUI(); }catch{}
         try{ window.dispatchEvent(new CustomEvent('randori:auth-refreshed',{detail:{signedIn:false,userId:null}})); }catch{}
@@ -1387,13 +1426,19 @@ p{margin:0}
     try{
       const headers = opts.headers||{};
       headers['content-type']='application/json';
+      if(authCapabilities.multiCircleControlPlane&&activeCircleContext?.active_circle
+        &&Number.isSafeInteger(activeCircleContext.context_version)){
+        headers['x-randori-circle-context-version']=String(activeCircleContext.context_version);
+      }
       const r=await fetch(path,{...opts,credentials:'same-origin',headers,body: opts.body? JSON.stringify(opts.body):undefined});
       const text = await r.text();
       let j; try{ j=JSON.parse(text)}catch{ j={raw:text,status:r.status} }
       if(!r.ok){
         try{ window._randori_log && window._randori_log.warn('api_fail', path+' -> '+r.status, {status:r.status, body: (j && (j.error||j.message||'')).toString().slice(0,400), path}); }catch{}
         try{ if(window.Sentry) Sentry.captureMessage('api_fail '+path, {level:'warning', tags:{event:'api_fail', path, status:r.status}}); }catch{}
-        throw j;
+        const problem=j&&typeof j==='object'?j:{error:'request failed'};
+        problem.http_status=r.status;
+        throw problem;
       }
       try{
         const dur = Math.round(((typeof performance!=='undefined'&&performance.now?performance.now():Date.now())-_apiStart));
@@ -1401,6 +1446,7 @@ p{margin:0}
       }catch{}
       return j;
     }catch(e){
+      if(e?.name==='AbortError') throw e;
       try{
         const msg = (e && (e.error||e.message||e.detail)) ? String(e.error||e.message||e.detail) : String(e);
         window._randori_log && window._randori_log.error('api_fail', 'api '+path+' failed: '+msg.slice(0,300), {path, err: msg.slice(0,800), stack: e && e.stack ? String(e.stack).slice(0,1500):''});
@@ -1414,6 +1460,7 @@ p{margin:0}
     authRefreshSequence+=1;
   }
 async function refreshMe(){
+    const previousUserId=Number(me?.id||me?.uid)||null;
     const requestEpoch=authSessionEpoch;
     const requestSequence=++authRefreshSequence;
     let nextUser=null;
@@ -1433,7 +1480,10 @@ async function refreshMe(){
       me=nextUser;
       try{ localStorage.setItem(ME_KEY, JSON.stringify(me)); }catch{}
     }
-    const refreshedUserId=Number(me?.id||me?.uid);
+    const refreshedUserId=Number(me?.id||me?.uid)||null;
+    if(previousUserId!==refreshedUserId){
+      resetCircleControlForIdentityChange({preserveLifecycleRecentAction:true});
+    }
     if(availabilityState.userId!==null
       &&(!Number.isSafeInteger(refreshedUserId)||refreshedUserId<1
         ||availabilityState.userId!==refreshedUserId)) clearAvailability();
@@ -1611,7 +1661,9 @@ async function refreshMe(){
     const shownValue=availabilityState.saving&&typeof availabilityState.pendingValue==='boolean'
       ?availabilityState.pendingValue:availability.isAvailable;
     toggle.checked=shownValue;
-    toggle.disabled=availabilityState.loading||availabilityState.saving||!availability.editable;
+    // A validated value remains interactive during same-account background
+    // refreshes. toggleAvailability serializes the intent behind that request.
+    toggle.disabled=availabilityState.saving||!availability.editable;
     label.textContent=availabilityState.saving
       ?`SAVING ${shownValue?'ON':'OFF'}…`
       :(!availability.editable?'CLOSED':(availability.isAvailable?'ON (included)':'OFF (skipped)'));
@@ -1661,7 +1713,11 @@ async function refreshMe(){
     }
     clearAvailabilityRolloverTimer();
     if(availabilityState.userId!==userId) availabilityState.notice=null;
-    availabilityState.value=null;
+    // Keep a validated value visible while the same account revalidates it.
+    // Clearing it creates a transient unchecked state; a pointer gesture that
+    // began just before revalidation can then appear to succeed without ever
+    // reaching the versioned write below.
+    if(availabilityState.userId!==userId) availabilityState.value=null;
     const epoch=++availabilityState.epoch;
     availabilityState.userId=userId;
     availabilityState.loading=true;
@@ -1751,14 +1807,42 @@ async function refreshMe(){
   }
   // availability toggle handler — defined after updateAuthUI so it can be hooked later
   async function toggleAvailability(checked){
-    if(typeof checked!=='boolean'||availabilityState.loading||availabilityState.saving) return;
-    const current=availabilityState.value;
-    if(!current||!current.editable){ renderAvailability(); return; }
+    if(typeof checked!=='boolean'||availabilityState.saving) return;
     const userId=Number(me?.id||me?.uid);
-    const epoch=availabilityState.epoch;
+    const requestAuthEpoch=authSessionEpoch;
     if(!Number.isSafeInteger(userId)||userId<1||availabilityState.userId!==userId) return;
+    if(availabilityState.loading&&availabilityState.userId===userId&&availabilityState.request){
+      // A same-account background refresh may start between pointerdown and
+      // change. Serialize the user's intent behind that refresh, then write it
+      // with the freshly returned cycle key/version. Identity changes still
+      // invalidate the intent through the actor checks below.
+      const request=availabilityState.request;
+      availabilityState.saving=true;
+      availabilityState.pendingValue=checked;
+      availabilityState.error='';
+      availabilityState.notice=null;
+      renderAvailability();
+      await request;
+      if(requestAuthEpoch!==authSessionEpoch||Number(me?.id||me?.uid)!==userId
+        ||availabilityState.userId!==userId) return;
+      if(!availabilityState.value?.editable||availabilityState.value.isAvailable===checked){
+        availabilityState.saving=false;
+        availabilityState.pendingValue=null;
+        renderAvailability();
+        return;
+      }
+    }
+    const current=availabilityState.value;
+    if(!current||!current.editable){
+      availabilityState.saving=false;
+      availabilityState.pendingValue=null;
+      renderAvailability();
+      return;
+    }
+    const epoch=availabilityState.epoch;
     const isCurrentRequest=()=>epoch===availabilityState.epoch
-      &&availabilityState.userId===userId&&Number(me?.id||me?.uid)===userId;
+      &&requestAuthEpoch===authSessionEpoch&&availabilityState.userId===userId
+      &&Number(me?.id||me?.uid)===userId;
     availabilityState.saving=true;
     availabilityState.pendingValue=checked;
     availabilityState.error='';
@@ -1815,6 +1899,8 @@ async function refreshMe(){
       ||(capabilities.passwordReset!==undefined&&typeof capabilities.passwordReset!=='boolean')
       ||(capabilities.localIdentity!==undefined&&typeof capabilities.localIdentity!=='boolean')
       ||(capabilities.verifiedEmailActivation!==undefined&&typeof capabilities.verifiedEmailActivation!=='boolean')
+      ||(capabilities.identityManagement!==undefined&&typeof capabilities.identityManagement!=='boolean')
+      ||(capabilities.multiCircleControlPlane!==undefined&&typeof capabilities.multiCircleControlPlane!=='boolean')
       ||typeof capabilities.googleOAuth!=='boolean'
       ||!['local_open','local_invite','verified_invite','private_beta'].includes(mode)) throw new Error('invalid auth capabilities');
     return Object.freeze({
@@ -1824,6 +1910,8 @@ async function refreshMe(){
       localIdentity:capabilities.localIdentity===true,
       verifiedEmailActivation:capabilities.verifiedEmailActivation===true,
       googleOAuth:capabilities.googleOAuth,
+      identityManagement:capabilities.identityManagement===true,
+      multiCircleControlPlane:capabilities.multiCircleControlPlane===true,
       registrationMode:mode,
     });
   }
@@ -1867,8 +1955,13 @@ async function refreshMe(){
     const canSignIn=authCapabilities.passwordLogin||authCapabilities.googleOAuth;
     const join=document.getElementById('landingSignup');
     const signIn=document.getElementById('landingSignin');
+    const identity=document.getElementById('meIdentity');
     if(join){ join.hidden=authCapabilitiesLoaded&&!canJoin; join.disabled=!authCapabilitiesLoaded||!canJoin; }
     if(signIn){ signIn.hidden=authCapabilitiesLoaded&&!canSignIn; signIn.disabled=!authCapabilitiesLoaded||!canSignIn; }
+    if(identity){
+      identity.hidden=!authCapabilitiesLoaded||authCapabilities.identityManagement!==true;
+      identity.disabled=!authCapabilitiesLoaded||authCapabilities.identityManagement!==true;
+    }
   }
   function focusAuthControl(){
     const overlay=document.getElementById('authOverlay');
@@ -1986,6 +2079,7 @@ async function refreshMe(){
       renderAuthModal();
       renderInviteLanding();
       focusAuthControl();
+      if(me) void renderPeople();
     }
     return authCapabilities;
   }
@@ -2091,7 +2185,299 @@ async function refreshMe(){
   (() => { const _wireOut = (id)=>{ const b=document.getElementById(id); if(!b||b._wired) return; b._wired=true; b.onclick=()=>{ const main=document.getElementById('signOutBtn'); if(main&&main.onclick) return main.onclick(); }; }; _wireOut('dashSignOut'); _wireOut('psSignOut'); _wireOut('meSignOut');
         const ml=document.getElementById('meLabel'); const mm=document.getElementById('meMenu'); if(ml&&mm&&!ml._menuWired){ ml._menuWired=true; ml.addEventListener('click', (e)=>{ e.stopPropagation(); mm.style.display=mm.style.display==='none'||!mm.style.display?'block':'none'; }); document.addEventListener('click', (e)=>{ if(!mm.contains(e.target)&&e.target!==ml) mm.style.display='none'; }); }
       })();
+  const LIFECYCLE_RECENT_ACTION_KEY='randori-lifecycle-recent-action-v1';
+  const identityUi={
+    data:null,methods:null,busy:false,message:'',returnFocus:null,mode:'manage',
+    requestGeneration:0,googleStartController:null,
+  };
+  function invalidateIdentityRequests(){
+    identityUi.requestGeneration+=1;
+    identityUi.googleStartController?.abort();
+    identityUi.googleStartController=null;
+    identityUi.busy=false;
+    return identityUi.requestGeneration;
+  }
+  function isCurrentIdentityRequest(generation,mode){
+    return identityUi.requestGeneration===generation&&identityUi.mode===mode
+      &&document.getElementById('identityOverlay')?.classList.contains('show');
+  }
+  function identityErrorMessage(error){
+    const code=String(error?.status||error?.code||error?.error||'');
+    if(code==='recent_auth_required'||code.includes('recent authentication')) return 'Confirm your password or Google account, then try again.';
+    if(code==='provider_in_use') return 'That Google identity already belongs to another Randori account. Sign in there and add another method before unlinking it.';
+    if(code==='provider_already_linked') return 'This account already has a different Google identity linked.';
+    if(code==='final_credential'||code.includes('before removing')) return 'Add another sign-in method before removing this one.';
+    if(code==='verified_control_required'||code.includes('confirm your linked Google')) return 'Confirm the linked Google account before adding a password.';
+    return 'Account security is temporarily unavailable. Please try again.';
+  }
+  function googleConfirmationStartFailure(error,{lifecycle=false}={}){
+    const detail=String(error?.error||error?.message||'');
+    const result=detail.includes('too many')
+      ?{reason:'google_rate_limited',message:'Too many Google confirmation attempts. Try again later.'}
+      :(detail.includes('authentication required')
+        ?{reason:'session_changed',message:'Your session changed. Sign in again before retrying.'}
+        :{reason:'google_unavailable',message:'Google confirmation is temporarily unavailable. Try again.'});
+    return lifecycle?{...result,message:`${result.message} No circle change was made.`}:result;
+  }
+  function renderIdentity(){
+    const data=identityUi.data;
+    const confirmation=identityUi.mode==='confirm';
+    const title=document.getElementById('identityTitle');
+    const description=document.getElementById('identityDescription');
+    if(title) title.textContent=confirmation?'Confirm this sensitive change':'Account security';
+    if(description) description.textContent=confirmation
+      ?'Confirm your identity to continue the exact pending circle action.'
+      :'Manage the sign-in methods attached to this exact Randori account.';
+    const status=document.getElementById('identityStatus');
+    if(status) status.textContent=identityUi.message||(data
+      ?(confirmation?'Choose an available confirmation method.':'Choose a sign-in method to manage.')
+      :'Loading sign-in methods…');
+    const recent=data?.recentAuth?.ok===true;
+    const recentPanel=document.getElementById('identityRecent');
+    if(recentPanel) recentPanel.hidden=confirmation?false:Boolean(recent);
+    const passwordLinked=confirmation?identityUi.methods?.password===true:data?.password?.linked===true;
+    const googleLinked=confirmation?identityUi.methods?.google===true:data?.google?.linked===true;
+    const googleCard=document.getElementById('identityGoogleCard');
+    const passwordCard=document.getElementById('identityPasswordCard');
+    if(googleCard) googleCard.hidden=confirmation;
+    if(passwordCard) passwordCard.hidden=confirmation;
+    const passwordState=document.getElementById('identityPasswordState');
+    const googleState=document.getElementById('identityGoogleState');
+    if(passwordState) passwordState.textContent=passwordLinked?'linked':'not linked';
+    if(googleState) googleState.textContent=googleLinked?'linked':'not linked';
+    const passwordConfirmField=document.getElementById('identityPasswordConfirmField');
+    const passwordConfirm=document.getElementById('identityConfirmPassword');
+    const googleConfirm=document.getElementById('identityConfirmGoogle');
+    if(passwordConfirmField) passwordConfirmField.hidden=!passwordLinked;
+    if(passwordConfirm) passwordConfirm.hidden=!passwordLinked;
+    if(googleConfirm) googleConfirm.hidden=!googleLinked||(!confirmation&&authCapabilities.googleOAuth!==true);
+    const googleAction=document.getElementById('identityGoogleAction');
+    if(googleAction){
+      googleAction.textContent=googleLinked?'Remove Google':'Link Google';
+      googleAction.disabled=identityUi.busy||!data||!recent||(googleLinked?!data.google.canUnlink:authCapabilities.googleOAuth!==true);
+    }
+    const passwordAction=document.getElementById('identityPasswordAction');
+    if(passwordAction){
+      passwordAction.textContent=passwordLinked?'Remove password':'Add password';
+      passwordAction.disabled=identityUi.busy||!data||!recent
+        ||(passwordLinked?!data.password.canUnlink:!(data.password.canAdd&&data.recentAuth?.method==='google'));
+    }
+    const passwordAdd=document.getElementById('identityPasswordAdd');
+    const showPasswordAdd=!passwordLinked&&data?.password?.canAdd&&recent&&data?.recentAuth?.method==='google';
+    if(passwordAdd){ passwordAdd.hidden=!showPasswordAdd; passwordAdd.style.display=showPasswordAdd?'grid':'none'; }
+    const googleHelp=document.getElementById('identityGoogleHelp');
+    if(googleHelp) googleHelp.textContent=confirmation
+      ?''
+      :(googleLinked&&!data?.google?.canUnlink
+        ?'Add a password before removing your final sign-in method.'
+        :'Google linking always requires an explicit, fresh provider confirmation.');
+    const passwordHelp=document.getElementById('identityPasswordHelp');
+    if(passwordHelp) passwordHelp.textContent=confirmation
+      ?''
+      :(passwordLinked&&!data?.password?.canUnlink
+        ?'Link Google before removing your final sign-in method.'
+        :'Adding a password requires verified control of the linked Google account.');
+    for(const control of document.querySelectorAll('#identityOverlay input,#identityOverlay button')){
+      if(control.id!=='identityClose'&&!['identityGoogleAction','identityPasswordAction'].includes(control.id)){
+        control.disabled=identityUi.busy;
+      }
+    }
+  }
+  async function refreshIdentity(){
+    identityUi.busy=true; identityUi.message='Loading sign-in methods…'; renderIdentity();
+    try{
+      const result=await api('/api/auth/identities',{method:'GET'});
+      identityUi.data=result.identity; identityUi.message='';
+      return result.identity;
+    }catch(error){ identityUi.data=null; identityUi.message=identityErrorMessage(error); return null; }
+    finally{ identityUi.busy=false; renderIdentity(); }
+  }
+  function recentConfirmationCancelled(reason='cancelled'){
+    try{ sessionStorage.removeItem(LIFECYCLE_RECENT_ACTION_KEY); }catch{}
+    window.dispatchEvent(new CustomEvent('randori:recent-auth-cancelled',{detail:{reason}}));
+  }
+  async function requestRecentConfirmation(message='Confirm your identity to continue.'){
+    if(!me) return false;
+    const actorId=Number(me.id||me.uid);
+    invalidateIdentityRequests();
+    identityUi.mode='confirm'; identityUi.data=null; identityUi.methods=null;
+    identityUi.returnFocus=document.activeElement;
+    identityUi.message=message;
+    const overlay=document.getElementById('identityOverlay');
+    overlay?.classList.add('show'); overlay?.setAttribute('aria-hidden','false');
+    document.getElementById('meMenu').style.display='none';
+    document.getElementById('identityDialog')?.focus();
+    identityUi.busy=true; renderIdentity();
+    try{
+      const result=await api('/api/auth/recent-auth',{method:'GET'});
+      if(!me||Number(me.id||me.uid)!==actorId) throw Object.assign(new Error('session changed'),{code:'session_changed'});
+      if(result?.ok!==true||!result.methods||typeof result.methods.password!=='boolean'||typeof result.methods.google!=='boolean'){
+        throw new Error('confirmation methods unavailable');
+      }
+      identityUi.methods={password:result.methods.password,google:result.methods.google};
+      identityUi.data={recentAuth:result.recentAuth};
+      if(result.recentAuth?.ok===true){
+        closeIdentity({confirmed:true});
+        setTimeout(()=>window.dispatchEvent(new CustomEvent('randori:recent-auth-confirmed',{
+          detail:{method:result.recentAuth.method||null},
+        })),0);
+        return true;
+      }
+      if(!identityUi.methods.password&&!identityUi.methods.google){
+        identityUi.message='No confirmation method is available. No circle change was made.';
+        recentConfirmationCancelled('method_unavailable');
+        return false;
+      }
+      identityUi.message=message;
+      return true;
+    }catch{
+      identityUi.methods={password:false,google:false};
+      identityUi.data={recentAuth:{ok:false,reason:'unavailable'}};
+      identityUi.message='Confirmation is temporarily unavailable. No circle change was made.';
+      recentConfirmationCancelled('unavailable');
+      return false;
+    }finally{ identityUi.busy=false; renderIdentity(); }
+  }
+  async function openIdentity(){
+    if(!me||!authCapabilitiesLoaded||authCapabilities.identityManagement!==true) return;
+    invalidateIdentityRequests();
+    identityUi.mode='manage'; identityUi.methods=null;
+    const overlay=document.getElementById('identityOverlay');
+    identityUi.returnFocus=document.activeElement;
+    identityUi.message='';
+    overlay?.classList.add('show'); overlay?.setAttribute('aria-hidden','false');
+    document.getElementById('meMenu').style.display='none';
+    document.getElementById('identityDialog')?.focus();
+    await refreshIdentity();
+  }
+  function closeIdentity({confirmed=false}={}){
+    const cancelled=identityUi.mode==='confirm'&&!confirmed;
+    invalidateIdentityRequests();
+    const overlay=document.getElementById('identityOverlay');
+    overlay?.classList.remove('show'); overlay?.setAttribute('aria-hidden','true');
+    for(const id of ['identityPasswordConfirm','identityNewPassword','identityNewPasswordConfirm']){
+      const input=document.getElementById(id); if(input) input.value='';
+    }
+    identityUi.mode='manage'; identityUi.methods=null;
+    const target=identityUi.returnFocus; identityUi.returnFocus=null;
+    if(target?.isConnected) target.focus();
+    if(cancelled) recentConfirmationCancelled('cancelled');
+  }
+  async function identityAction(work,message){
+    if(identityUi.busy) return;
+    identityUi.busy=true; identityUi.message=message; renderIdentity();
+    try{
+      const result=await work();
+      identityUi.data=result.identity||identityUi.data;
+      identityUi.message=result.status==='unlinked'?'Sign-in method removed.'
+        :(result.status==='not_linked'?'That sign-in method is already removed.'
+        :(result.status==='already_linked'?'That sign-in method is already linked.'
+        :(result.status==='redirecting'?'Continue with Google to finish linking.'
+        :(result.status==='confirmed'?'Identity confirmed.':'Sign-in method linked.'))));
+    }catch(error){ identityUi.message=identityErrorMessage(error); }
+    finally{ identityUi.busy=false; renderIdentity(); }
+  }
+  document.getElementById('meIdentity')?.addEventListener('click',openIdentity);
+  document.getElementById('identityClose')?.addEventListener('click',closeIdentity);
+  document.getElementById('identityOverlay')?.addEventListener('click',event=>{ if(event.target===event.currentTarget) closeIdentity(); });
+  document.getElementById('identityConfirmPassword')?.addEventListener('click',()=>identityAction(async()=>{
+    const input=document.getElementById('identityPasswordConfirm');
+    const result=await api('/api/auth/recent-auth',{method:'POST',body:{password:input?.value||''}});
+    if(input) input.value='';
+    if(identityUi.mode==='confirm'){
+      identityUi.data={recentAuth:result.recentAuth};
+      closeIdentity({confirmed:true});
+      window.dispatchEvent(new CustomEvent('randori:recent-auth-confirmed',{detail:{method:'password'}}));
+      return {status:'confirmed',identity:identityUi.data,recentAuth:result.recentAuth};
+    }
+    await refreshIdentity();
+    return {status:'confirmed',identity:identityUi.data,recentAuth:result.recentAuth};
+  },'Confirming your password…'));
+  async function beginGoogleReauthentication(){
+    if(identityUi.busy) return;
+    const mode=identityUi.mode;
+    const lifecycle=mode==='confirm';
+    const generation=identityUi.requestGeneration;
+    const controller=new AbortController();
+    identityUi.googleStartController=controller;
+    identityUi.busy=true;
+    identityUi.message='Opening Google confirmation…';
+    renderIdentity();
+    try{
+      const result=await api('/api/auth/google/reauth/start',{method:'POST',body:{},signal:controller.signal});
+      if(!isCurrentIdentityRequest(generation,mode)||identityUi.googleStartController!==controller) return;
+      const authorization=new URL(String(result?.authorizationUrl||''));
+      if(authorization.origin!=='https://accounts.google.com'
+        ||authorization.pathname!=='/o/oauth2/v2/auth'||authorization.username||authorization.password){
+        throw new Error('Google confirmation unavailable');
+      }
+      window.location.assign(authorization.href);
+    }catch(error){
+      if(!isCurrentIdentityRequest(generation,mode)||identityUi.googleStartController!==controller) return;
+      const failure=googleConfirmationStartFailure(error,{lifecycle});
+      if(lifecycle){
+        closeIdentity({confirmed:true});
+        recentConfirmationCancelled(failure.reason);
+        try{ toast(failure.message); }catch{}
+      }else{
+        identityUi.message=failure.message;
+      }
+    }finally{
+      if(!isCurrentIdentityRequest(generation,mode)||identityUi.googleStartController!==controller) return;
+      identityUi.googleStartController=null;
+      identityUi.busy=false;
+      renderIdentity();
+    }
+  }
+  document.getElementById('identityConfirmGoogle')?.addEventListener('click',()=>{ void beginGoogleReauthentication(); });
+  document.getElementById('identityGoogleAction')?.addEventListener('click',async()=>{
+    const linked=identityUi.data?.google?.linked===true;
+    if(linked){
+      if(!window.confirm('Remove Google sign-in from this account?')) return;
+      return identityAction(()=>api('/api/auth/identities/google',{method:'POST',body:{action:'unlink'}}),'Removing Google sign-in…');
+    }
+    return identityAction(async()=>{
+      const result=await api('/api/auth/google/link/start',{method:'POST',body:{}});
+      if(!result.authorizationUrl) throw new Error('link unavailable');
+      window.location.assign(result.authorizationUrl);
+      return {status:'redirecting',identity:identityUi.data};
+    },'Opening Google confirmation…');
+  });
+  document.getElementById('identityPasswordAction')?.addEventListener('click',async()=>{
+    const linked=identityUi.data?.password?.linked===true;
+    if(linked){
+      if(!window.confirm('Remove password sign-in from this account?')) return;
+      return identityAction(()=>api('/api/auth/identities/password',{method:'POST',body:{action:'unlink'}}),'Removing password sign-in…');
+    }
+    const password=document.getElementById('identityNewPassword')?.value||'';
+    const confirmation=document.getElementById('identityNewPasswordConfirm')?.value||'';
+    const bytes=new TextEncoder().encode(password).length;
+    if(bytes<10||bytes>72){ identityUi.message='Password must be 10–72 UTF-8 bytes.'; renderIdentity(); return; }
+    if(password!==confirmation){ identityUi.message='Passwords do not match.'; renderIdentity(); return; }
+    await identityAction(()=>api('/api/auth/identities/password',{method:'POST',body:{action:'add',password}}),'Adding password sign-in…');
+    document.getElementById('identityNewPassword').value='';
+    document.getElementById('identityNewPasswordConfirm').value='';
+  });
+  document.addEventListener('keydown',event=>{
+    const overlay=document.getElementById('identityOverlay');
+    if(!overlay?.classList.contains('show')) return;
+    if(event.key==='Escape'){
+      event.preventDefault(); event.stopImmediatePropagation(); closeIdentity();
+      return;
+    }
+    if(event.key!=='Tab') return;
+    const focusable=[...overlay.querySelectorAll('button:not([disabled]):not([hidden]), input:not([disabled]):not([hidden])')]
+      .filter(element=>element.getClientRects().length>0);
+    if(!focusable.length){ event.preventDefault(); document.getElementById('identityDialog')?.focus(); return; }
+    const first=focusable[0];
+    const last=focusable[focusable.length-1];
+    if(!overlay.contains(document.activeElement)){ event.preventDefault(); first.focus(); }
+    else if(event.shiftKey&&document.activeElement===first){ event.preventDefault(); last.focus(); }
+    else if(!event.shiftKey&&document.activeElement===last){ event.preventDefault(); first.focus(); }
+  },true);
+  window._randori_identity={open:openIdentity,confirm:requestRecentConfirmation,close:closeIdentity,refresh:refreshIdentity,get state(){return identityUi.data;}};
   async function performSignOut({everywhere=false}={}){
+    if(document.getElementById('identityOverlay')?.classList.contains('show')) closeIdentity();
     invalidateAuthRefreshes();
     let response;
     try{
@@ -2109,6 +2495,7 @@ async function refreshMe(){
       localStorage.removeItem('randori-last-room');
       localStorage.removeItem('randori-code');
       me=null;
+      resetCircleControlForIdentityChange();
       clearAvailability();
       // clear any in-memory video state quietly
       try{ if(typeof videoJoined!=='undefined' && videoJoined){ videoJoined=false; } }catch{}
@@ -2299,6 +2686,7 @@ async function refreshMe(){
       localStorage.removeItem(TOKEN_KEY);
       localStorage.setItem(ME_KEY,JSON.stringify(data.user));
       me=data.user;
+      resetCircleControlForIdentityChange();
       if(mode==='signup'&&authCapabilities.registrationMode==='local_invite'){
         window._randori_invite_flow?.complete?.();
       }
@@ -2360,22 +2748,63 @@ async function refreshMe(){
       default: return 'Google sign-in did not complete. Please try again.';
     }
   }
+  async function refreshAuthForOAuthResult(maxAttempts=3){
+    for(let attempt=0;attempt<maxAttempts;attempt+=1){
+      if(await refreshMe()) return true;
+      if(attempt+1<maxAttempts) await new Promise(resolve=>setTimeout(resolve,0));
+    }
+    return false;
+  }
   // Google OAuth now establishes an HttpOnly session and returns ?google=success.
   (function(){
     try{
       const qp=new URLSearchParams(window.location.search);
       const googleSuccess=qp.get('google')==='success';
       const ge=qp.get('google_error');
-      if(ge){
-        setTimeout(()=>openAuthModal('signin',{message:googleFailureMessage(ge),googleRetry:true}),300);
-      }
-      if(googleSuccess || ge){
-        qp.delete('google'); qp.delete('google_error');
-        const cleanQuery=qp.toString();
-        window.history.replaceState({}, document.title, window.location.pathname+(cleanQuery?'?'+cleanQuery:'')+window.location.hash);
-      }
-      if(googleSuccess){
-        setTimeout(()=>{ refreshMe(); try{ toast('signed in with Google ✓'); }catch{} }, 100);
+      const googleReauth=qp.get('google_reauth')==='success';
+      const identityLinked=qp.get('identity_link');
+      const identityLinkError=qp.get('identity_link_error');
+      const identityNotice=qp.get('identity_notice');
+      let lifecycleContinuation=false;
+      try{ lifecycleContinuation=Boolean(sessionStorage.getItem(LIFECYCLE_RECENT_ACTION_KEY)); }catch{}
+      if(googleSuccess||ge||googleReauth||identityLinked||identityLinkError||identityNotice){
+        setTimeout(async()=>{
+          await authCapabilitiesPromise;
+          if(ge&&lifecycleContinuation){
+            recentConfirmationCancelled('google_error');
+            try{ toast(googleFailureMessage(ge)); }catch{}
+          }else if(ge) openAuthModal('signin',{message:googleFailureMessage(ge),googleRetry:true});
+          let authRefreshCommitted=true;
+          if(googleSuccess||googleReauth||identityLinked||identityLinkError||identityNotice){
+            authRefreshCommitted=await refreshAuthForOAuthResult();
+          }
+          qp.delete('google'); qp.delete('google_error'); qp.delete('google_reauth');
+          qp.delete('identity_link'); qp.delete('identity_link_error');
+          qp.delete('identity_notice');
+          const cleanQuery=qp.toString();
+          window.history.replaceState({},document.title,
+            window.location.pathname+(cleanQuery?'?'+cleanQuery:'')+window.location.hash);
+          if(googleSuccess){ try{ toast('signed in with Google ✓'); }catch{} }
+          if(lifecycleContinuation){
+            if(googleReauth&&authRefreshCommitted&&me){
+              window.dispatchEvent(new CustomEvent('randori:recent-auth-confirmed',{detail:{method:'google'}}));
+            }else if(!ge){
+              recentConfirmationCancelled('google_result_mismatch');
+            }
+            return;
+          }
+          if(!(googleReauth||identityLinked||identityLinkError||identityNotice)||!authRefreshCommitted) return;
+          await openIdentity();
+          if(identityLinked) identityUi.message=identityLinked==='already_linked'
+            ?'That Google identity is already linked to this account.'
+            :'Google sign-in is now linked to this account.';
+          if(googleReauth) identityUi.message='Google confirmation complete.';
+          if(identityLinkError) identityUi.message=identityErrorMessage({status:identityLinkError});
+          if(identityNotice==='provider_email_changed') identityUi.message=identityUi.data?.password?.linked
+            ?`Your Google email changed. Password sign-in still uses ${identityUi.data.accountEmail}.`
+            :'Your Google email changed. Review your account email before adding a password.';
+          renderIdentity();
+        },100);
       }
     }catch{}
   })();
@@ -2557,15 +2986,198 @@ async function refreshMe(){
   const circleLifecycleHelp=document.getElementById('circleLifecycleHelp');
   const circleLifecycleStatus=document.getElementById('circleLifecycleStatus');
   const circleManageMembers=document.getElementById('circleManageMembers');
+  const circleMemberSearchForm=document.getElementById('circleMemberSearchForm');
+  const circleMemberSearch=document.getElementById('circleMemberSearch');
+  const circleMemberSearchClear=document.getElementById('circleMemberSearchClear');
+  const circleMemberSearchStatus=document.getElementById('circleMemberSearchStatus');
+  const circleMembersLoadMore=document.getElementById('circleMembersLoadMore');
   const circleLeave=document.getElementById('circleLeave');
+  const circleContextPanel=document.getElementById('circleContextPanel');
+  const circleContextSelect=document.getElementById('circleContextSelect');
+  const circleContextStatus=document.getElementById('circleContextStatus');
   const legacyCircleAddActions=document.getElementById('legacyCircleAddActions');
   const legacyCircleDemoActions=document.getElementById('legacyCircleDemoActions');
   let circleRenderEpoch=0;
+  let circleControlEpoch=0;
+  let circleContextSwitching=false;
+  let circleLifecycleNoticeGeneration=0;
+  let circleLifecycleNoticeActorId=null;
+  let circleLifecycleNoticeActive=false;
   let circleInviteCreatePending=false;
   let circleLifecyclePending=false;
+  let circleRosterRequest=0;
+  let circleRosterOwnerId=null;
+  let circleRosterLoading=false;
+  let circleRosterLoadEpoch=0;
+  let circleRosterState={query:'',members:[],nextCursor:null,hasMore:false,loaded:false};
+  let activeCircleUserId=null;
   let latestInviteUrl=null;
   let latestInviteId=null;
   let latestInviteOwnerId=null;
+  const circleContextChannel=typeof BroadcastChannel==='function'?new BroadcastChannel('randori-circle-context-v1'):null;
+
+  function resetPrivateCircleControl({switching,preserveLifecycleRecentAction=false}){
+    circleContextSwitching=switching;
+    circleControlEpoch+=1;
+    circleRenderEpoch+=1;
+    pairingRenderEpoch+=1;
+    circleRosterRequest+=1;
+    currentCloudPairingWeek=null;
+    currentCloudPairingCycle=null;
+    currentCloudPairingLoaded=false;
+    currentCloudPairingUserId=null;
+    activeCircleRole=null;
+    activeCircleContext=null;
+    activeCircleContextUserId=null;
+    circleInviteCreatePending=false;
+    circleLifecyclePending=false;
+    resetOwnerInvites({allowRosterPreservation:false});
+    clearLatestInvite();
+    if(!preserveLifecycleRecentAction) clearLifecycleRecentAction();
+    window._randori_workspace?.deactivate?.();
+    window._randori_authorized_room=null;
+    window._randori_join_room=null;
+    try{ stopPairRecap({clear:true}); }catch{}
+    try{ clearDashboardPairState(); }catch{}
+    try{
+      localStorage.removeItem('randori-last-room');
+      sessionStorage.removeItem('randori-room-draft');
+    }catch{}
+    listEl?.replaceChildren();
+    circleInvites?.replaceChildren();
+    circleManageMembers?.replaceChildren();
+    for(const id of ['pairsList','historyList','historyPersonal','dashPairArea','dashHistList','recentRunsList','pairRunsList']){
+      document.getElementById(id)?.replaceChildren();
+    }
+    return circleControlEpoch;
+  }
+
+  function clearPrivateCircleViewForSwitch(){
+    return resetPrivateCircleControl({switching:true});
+  }
+
+  function resetCircleControlForIdentityChange({preserveLifecycleRecentAction=false}={}){
+    return resetPrivateCircleControl({switching:false,preserveLifecycleRecentAction});
+  }
+
+  function renderCircleContextSelector(context){
+    if(!circleContextPanel||!circleContextSelect||!circleContextStatus) return;
+    const circles=Array.isArray(context?.circles)?context.circles:[];
+    circleContextSelect.replaceChildren();
+    if(context?.selection_required){
+      const placeholder=document.createElement('option');
+      placeholder.value=''; placeholder.textContent='Choose a circle'; placeholder.selected=true;
+      circleContextSelect.appendChild(placeholder);
+    }
+    for(const circle of circles){
+      const publicId=String(circle?.public_id||'');
+      if(!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(publicId)) continue;
+      const option=document.createElement('option');
+      option.value=publicId;
+      option.textContent=`${String(circle?.name||'Circle').slice(0,120)} (${circle?.role==='owner'?'owner':'member'})`;
+      option.selected=publicId===context?.active_circle?.public_id;
+      circleContextSelect.appendChild(option);
+    }
+    const visible=circles.length>1||context?.selection_required===true;
+    circleContextPanel.hidden=!visible;
+    circleContextPanel.style.display=visible?'grid':'none';
+    circleContextSelect.disabled=false;
+    circleContextStatus.textContent=context?.selection_required
+      ?'Choose which circle to manage. Pairing remains unavailable while this account belongs to multiple circles.'
+      :(circles.length>1?'Circle-specific member and invitation controls are active. Pairing remains unavailable for this account.':'');
+  }
+
+  function circleResponseMatchesContext(result){
+    if(!authCapabilities.multiCircleControlPlane) return true;
+    return Number.isSafeInteger(result?.circle_context_version)
+      &&result.circle_context_version===activeCircleContext?.context_version;
+  }
+
+  function captureCircleControlOperation(){
+    return Object.freeze({
+      epoch:circleControlEpoch,
+      userId:Number(me?.id||me?.uid),
+      contextVersion:authCapabilities.multiCircleControlPlane
+        ?Number(activeCircleContext?.context_version):null,
+      circlePublicId:authCapabilities.multiCircleControlPlane
+        ?String(activeCircleContext?.active_circle?.public_id||''):null,
+    });
+  }
+
+  function circleControlOperationMatches(operation,response){
+    if(!operation||circleContextSwitching||operation.epoch!==circleControlEpoch
+      ||operation.userId!==Number(me?.id||me?.uid)) return false;
+    if(!authCapabilities.multiCircleControlPlane) return true;
+    if(activeCircleContextUserId!==operation.userId
+      ||operation.contextVersion!==Number(activeCircleContext?.context_version)
+      ||operation.circlePublicId!==String(activeCircleContext?.active_circle?.public_id||'')) return false;
+    return response===undefined||circleResponseMatchesContext(response);
+  }
+
+  async function loadCircleContext(epoch,userId){
+    const controlEpoch=circleControlEpoch;
+    if(!authCapabilities.multiCircleControlPlane){
+      activeCircleContext=null;
+      activeCircleContextUserId=null;
+      if(circleContextPanel){ circleContextPanel.hidden=true; circleContextPanel.style.display='none'; }
+      return true;
+    }
+    const request=++circleContextRequest;
+    const context=await api('/api/circles',{method:'GET'});
+    if(circleContextSwitching||controlEpoch!==circleControlEpoch
+      ||request!==circleContextRequest||epoch!==circleRenderEpoch||Number(me?.id||me?.uid)!==userId) return false;
+    if(context?.ok!==true||!Array.isArray(context.circles)
+      ||!Number.isSafeInteger(context.context_version)||context.context_version<0){
+      throw new Error('invalid circle context response');
+    }
+    activeCircleContext=context;
+    activeCircleContextUserId=userId;
+    renderCircleContextSelector(context);
+    return !!context.active_circle;
+  }
+
+  circleContextSelect?.addEventListener('change',async()=>{
+    if(!me||!activeCircleContext||circleContextSelect.disabled) return;
+    const publicId=String(circleContextSelect.value||'');
+    if(!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(publicId)) return;
+    const userId=Number(me.id||me.uid);
+    const expectedContextVersion=Number(activeCircleContext.context_version);
+    circleContextSelect.disabled=true;
+    if(circleContextStatus) circleContextStatus.textContent='Switching circle…';
+    const switchEpoch=clearPrivateCircleViewForSwitch();
+    try{
+      const next=await api('/api/circles',{
+        method:'PUT',
+        body:{circle_public_id:publicId,expected_context_version:expectedContextVersion},
+      });
+      if(switchEpoch!==circleControlEpoch||!circleContextSwitching
+        ||!me||Number(me.id||me.uid)!==userId) return;
+      if(next?.ok!==true||next?.active_circle?.public_id!==publicId
+        ||!Number.isSafeInteger(next.context_version)
+        ||next.context_version<=expectedContextVersion){
+        throw new Error('invalid circle switch response');
+      }
+      circleContextChannel?.postMessage({v:1,user_id:userId,context_version:next.context_version});
+      window.location.reload();
+    }catch(error){
+      if(switchEpoch!==circleControlEpoch||!me||Number(me.id||me.uid)!==userId) return;
+      circleContextSwitching=false;
+      circleContextSelect.disabled=false;
+      if(circleContextStatus) circleContextStatus.textContent=error?.code==='circle_context_changed'
+        ?'Circle changed in another tab. Refreshing…':'Could not switch circle. Try again.';
+      if(error?.code==='circle_context_changed') window.location.reload();
+      else void renderPeople();
+    }
+  });
+
+  circleContextChannel?.addEventListener('message',event=>{
+    const value=event?.data;
+    const userId=Number(me?.id||me?.uid);
+    if(!value||value.v!==1||Number(value.user_id)!==userId||!Number.isSafeInteger(value.context_version)) return;
+    if(value.force!==true&&value.context_version<=Number(activeCircleContext?.context_version||0)) return;
+    clearPrivateCircleViewForSwitch();
+    window.location.reload();
+  });
 
   function clearLatestInvite(){
     latestInviteUrl=null;
@@ -2574,18 +3186,39 @@ async function refreshMe(){
     if(circleInviteLink) circleInviteLink.hidden=true;
   }
 
-  function resetOwnerInvites(){
-    activeCircleRole=null;
-    updatePairingRunAccess();
+  function resetOwnerInvites({allowRosterPreservation=true}={}){
     const currentUserId=Number(me?.id||me?.uid);
+    const preserveOwnerView=allowRosterPreservation&&activeCircleRole==='owner'
+      &&Number.isSafeInteger(currentUserId)&&currentUserId===activeCircleUserId;
+    if(preserveOwnerView) return;
+    activeCircleRole=null;
+    activeCircleUserId=null;
+    updatePairingRunAccess();
+    const preserveLifecycleNotice=circleLifecycleNoticeActive
+      &&Number.isSafeInteger(currentUserId)
+      &&currentUserId===circleLifecycleNoticeActorId;
+    circleRosterRequest+=1;
+    circleRosterOwnerId=null;
+    circleRosterLoading=false;
+    circleRosterLoadEpoch=0;
+    circleRosterState={query:'',members:[],nextCursor:null,hasMore:false,loaded:false};
     if(!Number.isSafeInteger(currentUserId)||currentUserId!==latestInviteOwnerId) clearLatestInvite();
     if(circleOwnerPanel){ circleOwnerPanel.hidden=true; circleOwnerPanel.style.display='none'; }
     if(circleInvites) circleInvites.replaceChildren();
     if(circleInviteStatus) circleInviteStatus.textContent='';
     if(circleInviteLink) circleInviteLink.hidden=true;
     if(circleLifecyclePanel){ circleLifecyclePanel.hidden=true; circleLifecyclePanel.style.display='none'; }
-    if(circleManageMembers){ circleManageMembers.hidden=true; circleManageMembers.replaceChildren(); }
-    if(circleLifecycleStatus) circleLifecycleStatus.textContent='';
+    if(circleManageMembers){
+      circleManageMembers.hidden=true;
+      circleManageMembers.setAttribute('aria-busy','false');
+      circleManageMembers.replaceChildren();
+    }
+    if(circleMemberSearchForm) circleMemberSearchForm.hidden=true;
+    if(circleMemberSearch) circleMemberSearch.value='';
+    if(circleMemberSearchClear) circleMemberSearchClear.hidden=true;
+    if(circleMemberSearchStatus) circleMemberSearchStatus.textContent='';
+    if(circleMembersLoadMore){ circleMembersLoadMore.hidden=true; circleMembersLoadMore.disabled=false; }
+    if(!preserveLifecycleNotice) clearCircleLifecycleNotice();
     if(circleLeave) circleLeave.disabled=false;
   }
 
@@ -2602,7 +3235,7 @@ async function refreshMe(){
 
   function renderCircleFailure(){
     pCount.textContent='—';
-    resetOwnerInvites();
+    resetOwnerInvites({allowRosterPreservation:false});
     setLegacyCircleControls(false);
     const note=document.getElementById('circleAutoNote');
     if(note) note.textContent='We could not load your private circle.';
@@ -2638,24 +3271,60 @@ async function refreshMe(){
       details.append(fingerprint,meta);
       row.appendChild(details);
       if(status==='pending'){
+        const actions=document.createElement('div'); actions.className='row'; actions.style.gap='6px';
+        const resend=document.createElement('button');
+        resend.type='button'; resend.className='pill'; resend.dataset.testid='circle-invite-resend';
+        resend.textContent='Resend email'; resend.setAttribute('aria-label','Resend invitation email');
+        resend.addEventListener('click',async()=>{
+          if(activeCircleRole!=='owner'||!me) return;
+          const operation=captureCircleControlOperation();
+          if(!circleControlOperationMatches(operation)) return;
+          const userId=Number(me.id||me.uid);
+          resend.disabled=true;
+          if(circleInviteStatus) circleInviteStatus.textContent='Queueing a fresh invitation email…';
+          try{
+            const result=await api(`/api/invitations/${encodeURIComponent(id)}`,{
+              method:'POST',body:{action:'resend'},
+            });
+            if(!me||Number(me.id||me.uid)!==userId
+              ||!circleControlOperationMatches(operation,result)) return;
+            const inviteUrl=String(result?.invitation?.invite_url||'');
+            if(result?.ok!==true||!/^\/invite#invite=[A-Za-z0-9_-]{43}$/.test(inviteUrl)){
+              throw new Error('invalid invitation response');
+            }
+            latestInviteUrl=new URL(inviteUrl,window.location.origin).href;
+            latestInviteId=id; latestInviteOwnerId=userId;
+            if(circleInviteLink) circleInviteLink.hidden=false;
+            if(circleInviteStatus) circleInviteStatus.textContent='Fresh invitation email queued. Copy the new link as a fallback.';
+            await loadOwnerInvitations(circleRenderEpoch);
+          }catch{
+            if(!circleControlOperationMatches(operation)) return;
+            resend.disabled=false;
+            if(circleInviteStatus) circleInviteStatus.textContent='Could not resend yet. Use your saved link or create a new invitation.';
+          }
+        });
         const revoke=document.createElement('button');
         revoke.type='button'; revoke.className='pill'; revoke.dataset.testid='circle-invite-revoke';
         revoke.textContent='Revoke'; revoke.setAttribute('aria-label','Revoke invitation');
         revoke.addEventListener('click',async()=>{
           if(activeCircleRole!=='owner') return;
+          const operation=captureCircleControlOperation();
+          if(!circleControlOperationMatches(operation)) return;
           revoke.disabled=true;
           if(circleInviteStatus) circleInviteStatus.textContent='Revoking invitation…';
           try{
-            await api(`/api/invitations/${encodeURIComponent(String(id))}`,{method:'DELETE'});
+            const result=await api(`/api/invitations/${encodeURIComponent(String(id))}`,{method:'DELETE'});
+            if(!circleControlOperationMatches(operation,result)) return;
             if(latestInviteId===id) clearLatestInvite();
             if(circleInviteStatus) circleInviteStatus.textContent='Invitation revoked.';
             await loadOwnerInvitations(circleRenderEpoch);
           }catch{
+            if(!circleControlOperationMatches(operation)) return;
             revoke.disabled=false;
             if(circleInviteStatus) circleInviteStatus.textContent='Could not revoke invitation. Try again.';
           }
         });
-        row.appendChild(revoke);
+        actions.append(resend,revoke); row.appendChild(actions);
       }
       circleInvites.appendChild(row);
     });
@@ -2663,16 +3332,20 @@ async function refreshMe(){
 
   async function loadOwnerInvitations(epoch=circleRenderEpoch){
     if(activeCircleRole!=='owner'||!me) return;
+    const operation=captureCircleControlOperation();
+    if(!circleControlOperationMatches(operation)) return;
     const userId=Number(me.id||me.uid);
     if(circleInviteStatus) circleInviteStatus.textContent='Loading invitations…';
     try{
       const result=await api('/api/invitations',{method:'GET'});
-      if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==userId) return;
+      if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==userId
+        ||!circleControlOperationMatches(operation,result)) return;
       const invitations=Array.isArray(result?.invitations)?result.invitations:[];
       renderInvitationRows(invitations);
       if(circleInviteStatus) circleInviteStatus.textContent=`${invitations.length} invitation${invitations.length===1?'':'s'}.`;
     }catch{
-      if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==userId) return;
+      if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==userId
+        ||!circleControlOperationMatches(operation)) return;
       if(circleInvites){
         circleInvites.replaceChildren();
         const retry=document.createElement('button'); retry.type='button'; retry.className='pill'; retry.textContent='Retry invitations';
@@ -2685,6 +3358,7 @@ async function refreshMe(){
 
   function lifecycleErrorMessage(error){
     const code=String(error?.error||'');
+    if(error?.code==='recent_auth_required'||code==='recent authentication required') return 'Confirm your identity to continue this sensitive change.';
     if(code==='another active owner is required') return 'Transfer ownership before removing the last active owner.';
     if(code==='membership state changed') return 'Membership changed elsewhere. Refreshing the current list.';
     if(code==='member not found') return 'That member is no longer available in this circle.';
@@ -2693,8 +3367,103 @@ async function refreshMe(){
     return 'Membership could not be changed. Try again.';
   }
 
-  async function applyMemberAction(action,member){
-    if(circleLifecyclePending||activeCircleRole!=='owner'||!me) return;
+  function publishCircleLifecycleNotice(message){
+    circleLifecycleNoticeGeneration+=1;
+    const actorId=Number(me?.id||me?.uid);
+    circleLifecycleNoticeActorId=Number.isSafeInteger(actorId)?actorId:null;
+    circleLifecycleNoticeActive=true;
+    if(circleLifecycleStatus) circleLifecycleStatus.textContent=message;
+  }
+
+  function clearCircleLifecycleNotice(){
+    circleLifecycleNoticeGeneration+=1;
+    circleLifecycleNoticeActorId=null;
+    circleLifecycleNoticeActive=false;
+    if(circleLifecycleStatus) circleLifecycleStatus.textContent='';
+  }
+
+  function hasCircleLifecycleNotice(actorId=Number(me?.id||me?.uid)){
+    return circleLifecycleNoticeActive
+      &&Number.isSafeInteger(actorId)
+      &&actorId===circleLifecycleNoticeActorId;
+  }
+
+  const LIFECYCLE_RECENT_ACTION_TTL_MS=10*60*1000;
+  function clearLifecycleRecentAction(){
+    try{ sessionStorage.removeItem(LIFECYCLE_RECENT_ACTION_KEY); }catch{}
+  }
+  function readLifecycleRecentAction({consume=false}={}){
+    let pending=null;
+    try{ pending=JSON.parse(sessionStorage.getItem(LIFECYCLE_RECENT_ACTION_KEY)||'null'); }catch{}
+    const actorId=Number(me?.id||me?.uid);
+    const createdAt=Number(pending?.created_at);
+    const currentCircleId=String(activeCircleContext?.active_circle?.public_id||'');
+    const currentContextVersion=Number(activeCircleContext?.context_version||0);
+    const valid=pending?.v===1&&['deactivate','transfer'].includes(pending?.action)
+      &&Number.isSafeInteger(pending?.member_id)&&pending.member_id>0
+      &&Number.isSafeInteger(pending?.actor_id)&&pending.actor_id===actorId
+      &&Number.isFinite(createdAt)&&createdAt<=Date.now()+30_000
+      &&Date.now()-createdAt<=LIFECYCLE_RECENT_ACTION_TTL_MS
+      &&(!authCapabilities.multiCircleControlPlane
+        ||pending.circle_public_id===currentCircleId&&pending.context_version===currentContextVersion);
+    if(consume||!valid) clearLifecycleRecentAction();
+    return valid?pending:null;
+  }
+  async function requestLifecycleRecentAuth(action,memberId){
+    const actorId=Number(me?.id||me?.uid);
+    if(!Number.isSafeInteger(actorId)||actorId<1||!['deactivate','transfer'].includes(action)
+      ||!Number.isSafeInteger(memberId)||memberId<1) return false;
+    try{
+      sessionStorage.setItem(LIFECYCLE_RECENT_ACTION_KEY,JSON.stringify({
+        v:1,action,member_id:memberId,actor_id:actorId,created_at:Date.now(),
+        ...(authCapabilities.multiCircleControlPlane?{
+          circle_public_id:String(activeCircleContext?.active_circle?.public_id||''),
+          context_version:Number(activeCircleContext?.context_version||0),
+        }:{}),
+      }));
+    }catch{ return false; }
+    if(typeof window._randori_identity?.confirm!=='function'){
+      clearLifecycleRecentAction();
+      return false;
+    }
+    return window._randori_identity.confirm(action==='transfer'
+      ?'Confirm your identity before transferring circle ownership.'
+      :'Confirm your identity before deactivating an owner.');
+  }
+  async function resumeLifecycleRecentAction(){
+    await authCapabilitiesPromise;
+    const actorId=Number(me?.id||me?.uid);
+    if(authCapabilities.multiCircleControlPlane
+      &&Number.isSafeInteger(actorId)&&actorId>0
+      &&(!activeCircleContext?.active_circle||activeCircleContextUserId!==actorId)){
+      try{ await renderPeople(); }catch{ return false; }
+      if(!activeCircleContext?.active_circle||activeCircleContextUserId!==actorId) return false;
+    }
+    const pending=readLifecycleRecentAction({consume:true});
+    if(!pending){
+      publishCircleLifecycleNotice('Confirmation expired or the signed-in account changed. No circle change was made.');
+      return false;
+    }
+    return applyMemberAction(pending.action,{id:pending.member_id},{skipPrompt:true,allowRecentAuth:false});
+  }
+  window.addEventListener('randori:recent-auth-confirmed',()=>{ void resumeLifecycleRecentAction(); });
+  window.addEventListener('randori:recent-auth-cancelled',event=>{
+    clearLifecycleRecentAction();
+    if(circleLifecycleStatus){
+      const messages={
+        google_rate_limited:'Too many Google confirmation attempts. Try again later. No circle change was made.',
+        session_changed:'Your session changed. Sign in again before retrying. No circle change was made.',
+        google_unavailable:'Google confirmation is temporarily unavailable. Try again. No circle change was made.',
+      };
+      publishCircleLifecycleNotice(messages[event?.detail?.reason]
+        ||'Confirmation cancelled. No circle change was made.');
+    }
+  });
+
+  async function applyMemberAction(action,member,{skipPrompt=false,allowRecentAuth=true}={}){
+    if(circleLifecyclePending||!me||(!skipPrompt&&activeCircleRole!=='owner')) return false;
+    const operation=captureCircleControlOperation();
+    if(!circleControlOperationMatches(operation)) return false;
     const label=String(member?.display_name||'this member');
     const prompts={
       deactivate:[`Deactivate ${label}?`,'They will be signed out immediately and lose access to private pair rooms. You can reactivate them later.'],
@@ -2702,23 +3471,45 @@ async function refreshMe(){
       transfer:[`Transfer ownership to ${label}?`,'They become the owner and you become a member. This change takes effect immediately.'],
     };
     const prompt=prompts[action];
-    if(!prompt||!await showConfirm(prompt[0],prompt[1])) return;
+    if(!prompt||(!skipPrompt&&!await showConfirm(prompt[0],prompt[1]))) return false;
+    if(!circleControlOperationMatches(operation)) return false;
     const actorId=Number(me.id||me.uid);
     circleLifecyclePending=true;
+    clearCircleLifecycleNotice();
     if(circleLifecycleStatus) circleLifecycleStatus.textContent=`${action==='transfer'?'Transferring ownership':action==='reactivate'?'Reactivating member':'Deactivating member'}…`;
     circleLifecyclePanel?.querySelectorAll('button').forEach(button=>{ button.disabled=true; });
     try{
-      await api('/api/members',{method:'PATCH',body:{action,member_id:Number(member.id)}});
-      if(!me||Number(me.id||me.uid)!==actorId) return;
+      const result=await api('/api/members',{method:'PATCH',body:{action,member_id:Number(member.id)}});
+      if(!me||Number(me.id||me.uid)!==actorId
+        ||!circleControlOperationMatches(operation,result)) return false;
       if(circleLifecycleStatus) circleLifecycleStatus.textContent=action==='transfer'?'Ownership transferred.':action==='reactivate'?'Member reactivated.':'Member deactivated and signed out.';
+      circleRosterState.loaded=false;
+      circleRosterLoading=false;
+      circleRosterLoadEpoch=0;
       await renderPeople();
+      if(!circleControlOperationMatches(operation)) return false;
       await renderPairs();
+      if(!circleControlOperationMatches(operation)) return false;
+      return true;
     }catch(error){
+      if(!circleControlOperationMatches(operation)) return false;
+      if(allowRecentAuth&&(error?.code==='recent_auth_required'||error?.error==='recent authentication required')){
+        if(circleLifecycleStatus) circleLifecycleStatus.textContent='Confirm your identity to continue. No change has been made yet.';
+        if(!await requestLifecycleRecentAuth(action,Number(member.id))){
+          if(!circleControlOperationMatches(operation)) return false;
+          publishCircleLifecycleNotice('Confirmation is unavailable. No circle change was made.');
+        }
+        return false;
+      }
       await loadManagedMembers(circleRenderEpoch);
-      if(circleLifecycleStatus) circleLifecycleStatus.textContent=lifecycleErrorMessage(error);
+      if(!circleControlOperationMatches(operation)) return false;
+      publishCircleLifecycleNotice(lifecycleErrorMessage(error));
+      return false;
     }finally{
-      circleLifecyclePending=false;
-      circleLifecyclePanel?.querySelectorAll('button').forEach(button=>{ button.disabled=false; });
+      if(circleControlOperationMatches(operation)){
+        circleLifecyclePending=false;
+        circleLifecyclePanel?.querySelectorAll('button').forEach(button=>{ button.disabled=false; });
+      }
     }
   }
 
@@ -2754,58 +3545,184 @@ async function refreshMe(){
       circleManageMembers.appendChild(row);
     });
     if(!circleManageMembers.children.length){
-      const empty=document.createElement('div'); empty.className='small muted'; empty.textContent='No manageable members found.'; circleManageMembers.appendChild(empty);
+      const empty=document.createElement('div'); empty.className='small muted'; empty.textContent=circleRosterState.query?'No matching members in this page.':'No manageable members found.'; circleManageMembers.appendChild(empty);
     }
   }
 
-  async function loadManagedMembers(epoch=circleRenderEpoch){
+  function validRosterResponse(result){
+    return result?.ok===true&&Array.isArray(result.members)
+      &&typeof result.has_more==='boolean'
+      &&(result.next_cursor===null||typeof result.next_cursor==='string'&&result.next_cursor.length<=640)
+      &&result.has_more===(typeof result.next_cursor==='string');
+  }
+
+  async function loadManagedMembers(epoch=circleRenderEpoch,{append=false,query=circleRosterState.query}={}){
     if(activeCircleRole!=='owner'||!me||!circleManageMembers) return false;
+    const operation=captureCircleControlOperation();
+    if(!circleControlOperationMatches(operation)) return false;
     const actorId=Number(me.id||me.uid);
+    const requestAuthEpoch=authSessionEpoch;
+    const noticeGeneration=circleLifecycleNoticeGeneration;
+    const normalizedQuery=String(query||'').normalize('NFKC').trim().replace(/\s+/gu,' ').slice(0,80);
+    const cursor=append?circleRosterState.nextCursor:null;
+    if(append&&!cursor) return false;
+    const hadLoadedRoster=circleRosterOwnerId===actorId&&circleRosterState.loaded;
+    const requestId=++circleRosterRequest;
+    circleRosterOwnerId=actorId;
+    circleRosterLoading=true;
+    circleRosterLoadEpoch=epoch;
     circleManageMembers.hidden=false;
-    circleManageMembers.replaceChildren();
-    const loading=document.createElement('div'); loading.className='small muted'; loading.textContent='Loading member controls…'; circleManageMembers.appendChild(loading);
-    try{
-      const result=await api('/api/members',{method:'GET'});
-      if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==actorId) return false;
-      if(result?.ok!==true||!Array.isArray(result.members)) throw new Error('invalid member response');
-      renderManagedMemberRows(result.members);
-      if(circleLifecycleStatus) circleLifecycleStatus.textContent=result.truncated===true
-        ?`Showing the first ${result.members.length} memberships. Additional members are not shown.`
-        :`${result.members.length} membership${result.members.length===1?'':'s'} available to manage.`;
-      return true;
-    }catch{
-      if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==actorId) return false;
+    circleManageMembers.setAttribute('aria-busy','true');
+    if(circleMemberSearchForm) circleMemberSearchForm.hidden=false;
+    if(circleMembersLoadMore){ circleMembersLoadMore.disabled=true; circleMembersLoadMore.textContent=append?'Loading more…':'Load more members'; }
+    if(!append){
+      circleRosterState={query:normalizedQuery,members:[],nextCursor:null,hasMore:false,loaded:hadLoadedRoster};
       circleManageMembers.replaceChildren();
-      const error=document.createElement('div'); error.className='small muted'; error.textContent='Member controls are temporarily unavailable.';
-      const retry=document.createElement('button'); retry.type='button'; retry.className='pill'; retry.textContent='Retry members'; retry.addEventListener('click',()=>{ loadManagedMembers(circleRenderEpoch); });
-      circleManageMembers.append(error,retry);
-      if(circleLifecycleStatus) circleLifecycleStatus.textContent='Your circle remains unchanged.';
+      const loading=document.createElement('div'); loading.className='small muted'; loading.textContent=normalizedQuery?'Searching members…':'Loading member controls…'; circleManageMembers.appendChild(loading);
+    }
+    if(circleMemberSearchStatus) circleMemberSearchStatus.textContent=append?'Loading more members…':normalizedQuery?'Searching member display names…':'Loading members…';
+    try{
+      const params=new URLSearchParams({limit:'50',q:normalizedQuery});
+      if(cursor) params.set('cursor',cursor);
+      const result=await api(`/api/members?${params.toString()}`,{method:'GET'});
+      if(requestId!==circleRosterRequest||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==actorId
+        ||!circleControlOperationMatches(operation,result)) return false;
+      if(!validRosterResponse(result)) throw new Error('invalid member response');
+      const combined=append?[...circleRosterState.members,...result.members]:result.members;
+      const unique=[]; const seen=new Set();
+      combined.forEach(member=>{ const id=Number(member?.id); if(Number.isSafeInteger(id)&&id>0&&!seen.has(id)){ seen.add(id); unique.push(member); } });
+      circleRosterOwnerId=actorId;
+      circleRosterLoading=false;
+      circleRosterLoadEpoch=0;
+      circleRosterState={query:normalizedQuery,members:unique,nextCursor:result.next_cursor,hasMore:result.has_more,loaded:true};
+      renderManagedMemberRows(unique);
+      circleManageMembers.setAttribute('aria-busy','false');
+      if(circleMemberSearchClear) circleMemberSearchClear.hidden=!normalizedQuery;
+      if(circleMembersLoadMore){
+        circleMembersLoadMore.hidden=!result.has_more;
+        circleMembersLoadMore.disabled=false;
+        circleMembersLoadMore.textContent=normalizedQuery?'Load more matches':'Load more members';
+      }
+      if(circleMemberSearchStatus) circleMemberSearchStatus.textContent=normalizedQuery
+        ?`${unique.length} matching member${unique.length===1?'':'s'} shown${result.has_more?'. More results may be available.':'. Search complete.'}`
+        :`${unique.length} membership${unique.length===1?'':'s'} shown${result.has_more?'. More members are available.':'. All members loaded.'}`;
+      if(circleLifecycleStatus&&noticeGeneration===circleLifecycleNoticeGeneration&&!hasCircleLifecycleNotice(actorId)){
+        circleLifecycleStatus.textContent='Owner controls are ready.';
+      }
+      return true;
+    }catch(error){
+      if(!circleControlOperationMatches(operation)) return false;
+      // This request began while the client held an authenticated owner view.
+      // Treat the endpoint's status as authoritative: gateways and future
+      // server versions may intentionally replace the response copy, but a
+      // 401/403 must never leave privileged roster data on screen.
+      const denied=[401,403].includes(Number(error?.http_status));
+      const currentActorId=Number(me?.id||me?.uid);
+      if(denied&&requestAuthEpoch===authSessionEpoch&&currentActorId===actorId){
+        resetOwnerInvites({allowRosterPreservation:false});
+        if(circleLifecycleStatus&&!hasCircleLifecycleNotice(actorId)) circleLifecycleStatus.textContent='Roster access changed. Rechecking your circle role…';
+        await renderPeople({skipManagedRoster:true});
+        return false;
+      }
+      if(requestId!==circleRosterRequest||activeCircleRole!=='owner'||currentActorId!==actorId) return false;
+      circleRosterLoading=false;
+      circleRosterLoadEpoch=0;
+      circleManageMembers.setAttribute('aria-busy','false');
+      if(!append){
+        circleManageMembers.replaceChildren();
+        const error=document.createElement('div'); error.className='small muted'; error.textContent='Member controls are temporarily unavailable.';
+        const retry=document.createElement('button'); retry.type='button'; retry.className='pill'; retry.textContent='Retry members'; retry.addEventListener('click',()=>{ loadManagedMembers(circleRenderEpoch,{query:normalizedQuery}); });
+        circleManageMembers.append(error,retry);
+      }
+      if(circleMembersLoadMore){ circleMembersLoadMore.hidden=!append; circleMembersLoadMore.disabled=false; circleMembersLoadMore.textContent=normalizedQuery?'Retry more matches':'Retry more members'; }
+      if(circleMemberSearchStatus) circleMemberSearchStatus.textContent=append?'More members could not be loaded. Existing results are unchanged.':'Member search is unavailable. Try again.';
+      if(circleLifecycleStatus&&noticeGeneration===circleLifecycleNoticeGeneration&&!hasCircleLifecycleNotice(actorId)){
+        circleLifecycleStatus.textContent='Your circle remains unchanged.';
+      }
       return false;
     }
   }
 
-  async function showCircleLifecycle(role,epoch){
+  circleMemberSearchForm?.addEventListener('submit',event=>{
+    event.preventDefault();
+    if(circleLifecyclePending||activeCircleRole!=='owner') return;
+    loadManagedMembers(circleRenderEpoch,{query:circleMemberSearch?.value||''});
+  });
+  circleMemberSearchClear?.addEventListener('click',()=>{
+    if(circleMemberSearch) circleMemberSearch.value='';
+    loadManagedMembers(circleRenderEpoch,{query:''});
+    circleMemberSearch?.focus();
+  });
+  circleMembersLoadMore?.addEventListener('click',()=>{
+    if(circleLifecyclePending||activeCircleRole!=='owner') return;
+    loadManagedMembers(circleRenderEpoch,{append:true});
+  });
+
+  async function showCircleLifecycle(role,epoch,{loadRoster=true}={}){
     if(!circleLifecyclePanel||!['owner','member'].includes(role)) return;
     circleLifecyclePanel.hidden=false; circleLifecyclePanel.style.display='grid';
     if(circleLifecycleHelp) circleLifecycleHelp.textContent=role==='owner'
-      ?'Manage active and inactive members. Ownership transfer is immediate and keeps one active owner.'
+      ?'Manage active and inactive members in bounded pages. Search uses display names only. Ownership transfer is immediate and keeps one active owner.'
       :'Leaving signs you out and removes access to private rooms immediately.';
     if(circleManageMembers) circleManageMembers.hidden=role!=='owner';
+    if(circleMemberSearchForm) circleMemberSearchForm.hidden=role!=='owner';
+    if(role!=='owner'){
+      circleRosterRequest+=1;
+      circleRosterOwnerId=null;
+      circleRosterLoading=false;
+      circleRosterLoadEpoch=0;
+      circleRosterState={query:'',members:[],nextCursor:null,hasMore:false,loaded:false};
+      if(circleManageMembers) circleManageMembers.replaceChildren();
+      if(circleMemberSearch) circleMemberSearch.value='';
+      if(circleMemberSearchStatus) circleMemberSearchStatus.textContent='';
+      if(circleMemberSearchClear) circleMemberSearchClear.hidden=true;
+      if(circleMembersLoadMore) circleMembersLoadMore.hidden=true;
+    }
     if(circleLeave){ circleLeave.disabled=false; circleLeave.textContent='Leave circle'; }
-    if(role==='owner') await loadManagedMembers(epoch);
-    else if(circleLifecycleStatus) circleLifecycleStatus.textContent='You are an active circle member.';
+    if(role==='owner'&&!loadRoster){
+      if(circleManageMembers) circleManageMembers.hidden=true;
+      if(circleMemberSearchForm) circleMemberSearchForm.hidden=true;
+      if(circleMembersLoadMore) circleMembersLoadMore.hidden=true;
+      if(circleLifecycleStatus&&!hasCircleLifecycleNotice()) circleLifecycleStatus.textContent='Member controls are no longer authorized. Refresh the circle to try again.';
+    }else if(role==='owner'&&circleRosterState.loaded&&circleRosterOwnerId===Number(me?.id||me?.uid)){
+      circleManageMembers.hidden=false;
+      circleMemberSearchForm.hidden=false;
+      circleMembersLoadMore.hidden=!circleRosterState.hasMore;
+    }else if(role==='owner'&&!(circleRosterLoading&&circleRosterLoadEpoch===epoch)) await loadManagedMembers(epoch);
+    else if(circleLifecycleStatus&&!hasCircleLifecycleNotice()) circleLifecycleStatus.textContent='You are an active circle member.';
   }
 
   circleLeave?.addEventListener('click',async()=>{
     if(circleLifecyclePending||!me||!['owner','member'].includes(activeCircleRole)) return;
+    const operation=captureCircleControlOperation();
+    if(!circleControlOperationMatches(operation)) return;
     const warning=activeCircleRole==='owner'
       ?'You will be signed out. If you are the last active owner, transfer ownership first.'
       :'You will be signed out and immediately lose access to the circle and its private pair rooms.';
     if(!await showConfirm('Leave this circle?',warning)) return;
+    if(!circleControlOperationMatches(operation)) return;
     circleLifecyclePending=true; circleLeave.disabled=true;
+    clearCircleLifecycleNotice();
     if(circleLifecycleStatus) circleLifecycleStatus.textContent='Leaving circle…';
     try{
-      await api('/api/members',{method:'PATCH',body:{action:'leave'}});
+      const result=await api('/api/members',{method:'PATCH',body:{action:'leave'}});
+      if(!circleControlOperationMatches(operation)) return;
+      if(authCapabilities.multiCircleControlPlane){
+        const previousVersion=Number(activeCircleContext?.context_version);
+        const expectedMinimum=activeCircleContext?.implicit?previousVersion:previousVersion+1;
+        if(!Number.isSafeInteger(result?.circle_context_version)
+          ||result.circle_context_version<expectedMinimum){
+          throw new Error('stale circle response');
+        }
+      }
+      if(result?.signed_out!==true){
+        if(circleLifecycleStatus) circleLifecycleStatus.textContent='Membership ended. Reloading your remaining circles…';
+        const userId=Number(me.id||me.uid);
+        clearPrivateCircleViewForSwitch();
+        circleContextChannel?.postMessage({v:1,user_id:userId,context_version:Number(result.circle_context_version),force:true});
+        window.location.reload();
+        return;
+      }
       if(circleLifecycleStatus) circleLifecycleStatus.textContent='Membership ended. Signing out…';
       try{
         localStorage.removeItem('randori-last-room');
@@ -2818,6 +3735,7 @@ async function refreshMe(){
       // because the follow-up identity refresh failed.
       invalidateAuthRefreshes();
       me=null;
+      resetCircleControlForIdentityChange();
       try{ localStorage.removeItem(ME_KEY); }catch{}
       clearAvailability();
       updateAuthUI();
@@ -2833,14 +3751,17 @@ async function refreshMe(){
       if(landing) landing.style.display='block';
       document.querySelectorAll('[data-tab]').forEach(tab=>tab.classList.remove('active'));
     }catch(error){
-      if(circleLifecycleStatus) circleLifecycleStatus.textContent=lifecycleErrorMessage(error);
+      if(!circleControlOperationMatches(operation)) return;
+      publishCircleLifecycleNotice(lifecycleErrorMessage(error));
     }finally{
-      circleLifecyclePending=false;
-      if(circleLeave) circleLeave.disabled=false;
+      if(circleControlOperationMatches(operation)){
+        circleLifecyclePending=false;
+        if(circleLeave) circleLeave.disabled=false;
+      }
     }
   });
 
-  async function renderPeople(){
+  async function renderPeople({skipManagedRoster=false}={}){
     const epoch=++circleRenderEpoch;
     resetOwnerInvites();
     setLegacyCircleControls(false);
@@ -2849,6 +3770,10 @@ async function refreshMe(){
     if(roleLabel) roleLabel.textContent='private';
     listEl.replaceChildren();
     listEl.setAttribute('aria-busy','true');
+    if(circleContextSwitching){
+      listEl.setAttribute('aria-busy','false');
+      return;
+    }
     if(!me){
       pCount.textContent='0';
       if(note) note.textContent='Sign in to view your private circle.';
@@ -2858,15 +3783,28 @@ async function refreshMe(){
     }
     const userId=Number(me.id||me.uid);
     try{
+      if(!await loadCircleContext(epoch,userId)){
+        if(epoch!==circleRenderEpoch||Number(me?.id||me?.uid)!==userId) return;
+        pCount.textContent='—';
+        if(note) note.textContent='Choose an active circle to view its members and invitations.';
+        listEl.replaceChildren();
+        const prompt=document.createElement('div'); prompt.className='small muted';
+        prompt.textContent='Your circles are isolated. Select one above to continue.';
+        listEl.appendChild(prompt); listEl.setAttribute('aria-busy','false');
+        return;
+      }
       const res = await api('/api/circle', { method:'GET' });
       if(epoch!==circleRenderEpoch||Number(me?.id||me?.uid)!==userId) return;
+      if(!circleResponseMatchesContext(res)) throw new Error('stale circle response');
       const gatedRole=['owner','member'].includes(res?.membership?.role)?res.membership.role:null;
       const legacyEnvelope=res?.ok===true&&Array.isArray(res.circle)
         &&!res.membership&&['auth_accounts','users'].includes(res.source);
       if(res?.ok!==true||!Array.isArray(res.circle)||(!gatedRole&&!legacyEnvelope)) throw new Error('invalid circle response');
       const usingLocalLegacy=legacyEnvelope&&res.circle.length===0;
       const people=usingLocalLegacy?getPeople():res.circle;
+      if(gatedRole!=='owner') resetOwnerInvites({allowRosterPreservation:false});
       activeCircleRole=gatedRole||'legacy';
+      activeCircleUserId=userId;
       updatePairingRunAccess();
       if(gatedRole!=='owner') clearLatestInvite();
       setLegacyCircleControls(legacyEnvelope);
@@ -2916,7 +3854,7 @@ async function refreshMe(){
         if(circleInviteLink) circleInviteLink.hidden=!latestInviteUrl;
         await loadOwnerInvitations(epoch);
       }
-      await showCircleLifecycle(gatedRole,epoch);
+      await showCircleLifecycle(gatedRole,epoch,{loadRoster:!skipManagedRoster});
     }catch{
       if(epoch!==circleRenderEpoch||Number(me?.id||me?.uid)!==userId) return;
       renderCircleFailure();
@@ -2933,6 +3871,8 @@ async function refreshMe(){
     const email=String(input?.value||'').trim();
     const userId=Number(me.id||me.uid);
     if(!email) return;
+    const operation=captureCircleControlOperation();
+    if(!circleControlOperationMatches(operation)) return;
     circleInviteCreatePending=true;
     if(button) button.disabled=true;
     if(circleInviteStatus) circleInviteStatus.textContent='Creating invitation…';
@@ -2941,7 +3881,8 @@ async function refreshMe(){
       // A same-account roster refresh may advance the render epoch while this
       // one-time secret is in flight. Retain it for the initiating owner; only
       // discard it after an actual identity change.
-      if(!me||Number(me.id||me.uid)!==userId) return;
+      if(!me||Number(me.id||me.uid)!==userId
+        ||!circleControlOperationMatches(operation,result)) return;
       const inviteUrl=String(result?.invitation?.invite_url||'');
       const invitationId=String(result?.invitation?.id||'').toLowerCase();
       if(result?.ok!==true||!/^\/invite#invite=[A-Za-z0-9_-]{43}$/.test(inviteUrl)
@@ -2953,21 +3894,31 @@ async function refreshMe(){
       latestInviteOwnerId=userId;
       if(input) input.value='';
       if(circleInviteLink) circleInviteLink.hidden=false;
-      if(circleInviteStatus) circleInviteStatus.textContent='Invitation created. Copy the link and send it privately.';
+      if(circleInviteStatus) circleInviteStatus.textContent=result?.email_delivery?.queued===true
+        ?'Invitation email queued. Copy the link as a fallback.'
+        :'Invitation created. Copy the link and send it privately.';
       if(activeCircleRole==='owner') await loadOwnerInvitations(circleRenderEpoch);
     }catch{
+      if(!circleControlOperationMatches(operation)) return;
       if(circleInviteStatus) circleInviteStatus.textContent='Could not create invitation. Check the email and try again.';
     }finally{
-      circleInviteCreatePending=false;
-      if(button) button.disabled=activeCircleRole!=='owner';
+      if(circleControlOperationMatches(operation)){
+        circleInviteCreatePending=false;
+        if(button) button.disabled=activeCircleRole!=='owner';
+      }
     }
   });
   circleInviteLink?.addEventListener('click',async()=>{
     if(activeCircleRole!=='owner'||!latestInviteUrl) return;
+    const operation=captureCircleControlOperation();
+    if(!circleControlOperationMatches(operation)) return;
+    const inviteUrl=latestInviteUrl;
     try{
-      await navigator.clipboard.writeText(latestInviteUrl);
+      await navigator.clipboard.writeText(inviteUrl);
+      if(!circleControlOperationMatches(operation)||latestInviteUrl!==inviteUrl) return;
       if(circleInviteStatus) circleInviteStatus.textContent='Invitation link copied.';
     }catch{
+      if(!circleControlOperationMatches(operation)||latestInviteUrl!==inviteUrl) return;
       if(circleInviteStatus) circleInviteStatus.textContent='Copy failed. Create a new invitation and try again.';
     }
   });
@@ -3680,125 +4631,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   window._randori_pair_recap={open:fetchPairRecap,refresh:()=>pairRecapState.room?fetchPairRecap(pairRecapState.room):Promise.resolve(false),stop:stopPairRecap,roomFor:canonicalHistoryRoom,get room(){return pairRecapState.room},get status(){return pairRecapState.status},get recap(){return pairRecapState.recap}};
 
   // ---------- questions ----------
-  const QUESTIONS=[
-    {
-      id:'two-sum', title:'Two Sum', diff:'Easy', difficulty:'Easy',
-      desc:`Given an array <code>nums</code> and target <code>t</code>, return indices of two numbers that add to <code>t</code>. One solution, return in any order.`,
-      examples:[
-        {input:'nums=[2,7,11,15], t=9', output:'[0,1]', expl:'nums[0]+nums[1]=9'},
-        {input:'nums=[3,2,4], t=6', output:'[1,2]', expl:''}
-      ],
-      constraints:'2 ≤ nums.length ≤ 10⁴, -10⁹ ≤ nums[i]',
-      tests:[
-        {input:{nums:[2,7,11,15], t:9}, expect:[0,1]},
-        {input:{nums:[3,2,4], t:6}, expect:[1,2]},
-        {input:{nums:[3,3], t:6}, expect:[0,1]}
-      ],
-      starters:{
-        javascript:`function twoSum(nums, target){
-  // hashmap approach
-  const m = new Map();
-  for(let i=0;i<nums.length;i++){
-    let need = target - nums[i];
-    if(m.has(need)) return [m.get(need), i];
-    m.set(nums[i], i);
-  }
-  return [];
-}`,
-        typescript:`function twoSum(nums: number[], target: number): number[]{
-  const m = new Map<number, number>();
-  for(let i=0;i<nums.length;i++){
-    const need = target - nums[i];
-    if(m.has(need)) return [m.get(need)!, i];
-    m.set(nums[i], i);
-  }
-  return [];
-}`,
-        python:`def two_sum(nums, target):
-    seen = {}
-    for i, n in enumerate(nums):
-        need = target - n
-        if need in seen:
-            return [seen[need], i]
-        seen[n]=i
-    return []`,
-        java:`class Solution{
-  public int[] twoSum(int[] nums, int target){
-    Map<Integer,Integer> m=new HashMap<>();
-    for(int i=0;i<nums.length;i++){
-      int need=target-nums[i];
-      if(m.containsKey(need)) return new int[]{m.get(need), i};
-      m.put(nums[i], i);
-    }
-    return new int[]{};
-  }
-}`,
-        go:`func twoSum(nums []int, target int) []int{
-  m:=make(map[int]int)
-  for i,n:=range nums{
-    if j,ok:=m[target-n]; ok{ return []int{j,i} }
-    m[n]=i
-  }
-  return nil
-}`,
-        cpp:`vector<int> twoSum(vector<int>& nums, int target){
-  unordered_map<int,int> m;
-  for(int i=0;i<nums.size();++i){
-    int need=target-nums[i];
-    if(m.count(need)) return {m[need], i};
-    m[nums[i]]=i;
-  }
-  return {};
-}`
-      }
-    },
-    {
-      id:'url-short', title:'Design URL Shortener', diff:'System', difficulty:'System',
-      desc:`Design a URL shortener like TinyURL. Consider API, hash vs base62, collision, DB, cache, analytics. Whiteboard this one — code is driver for rate-limiter sketch.`,
-      examples:[
-        {input:'POST /shorten {url}', output:'{short: "aZ3k9"}', expl:'302 redirect'},
-        {input:'GET /aZ3k9', output:'301 → original', expl:'cache + analytics'}
-      ],
-      constraints:'100M URLs, low latency read',
-      tests:[
-        {input:{op:'shorten'}, expect:'ok'},
-        {input:{op:'expand'}, expect:'ok'}
-      ],
-      starters:{
-        javascript:`// rate limiter token bucket
-function allow(key, limit=5){
-  // interviewer expects Map + timestamps
-  return true;
-}`,
-        python:`# rate limiter sketch
-def allow(key, limit=5):
-    return True`,
-        typescript:`function allow(key:string, limit=5){ return true as boolean; }`,
-        java:`boolean allow(String key,int limit){ return true; }`,
-        go:`func allow(key string, limit int) bool { return true }`,
-        cpp:`bool allow(string k,int limit){ return true; }`
-      }
-    },
-    {
-      id:'lru', title:'LRU Cache', diff:'Medium', difficulty:'Medium',
-      desc:`Design LRU Cache with <code>get</code> and <code>put</code> in O(1).`,
-      examples:[
-        {input:'cache=[2], get(1)', output:'-1 then 1', expl:'eviction order'},
-      ],
-      constraints:'1 ≤ capacity ≤ 3000',
-      tests:[
-        {input:{ops:['put','put','get','put','get']}, expect:'LRU works'},
-      ],
-      starters:{
-        javascript:`class LRU{ constructor(cap){this.cap=cap; this.m=new Map()} get(k){ if(!this.m.has(k)) return -1; let v=this.m.get(k); this.m.delete(k); this.m.set(k,v); return v} put(k,v){ if(this.m.has(k)) this.m.delete(k); else if(this.m.size>=this.cap) this.m.delete(this.m.keys().next().value); this.m.set(k,v)} }`,
-        python:`class LRU:\n    def __init__(self, cap):\n        self.cap=cap; self.m={}\n    def get(self,k):\n        return -1\n    def put(self,k,v):\n        pass`,
-        typescript:`class LRU{ constructor(private cap:number){} get(k:number){return -1} put(k:number,v:number){} }`,
-        java:`class LRU{int cap; LRU(int c){cap=c;} int get(int k){return -1;} void put(int k,int v){} }`,
-        go:`type LRU struct{cap int}\n func (l *LRU) Get(k int) int {return -1}\n func (l *LRU) Put(k,v int){}`,
-        cpp:`class LRU{ int cap; public: LRU(int c):cap(c){} int get(int k){return -1;} void put(int k,int v){} };`
-      }
-    }
-  ];
+  // Exercises are loaded exclusively from the validated, server-authoritative
+  // catalogue. Keep the legacy fallback empty so no unreviewed problem text can
+  // be displayed or executed while that catalogue is loading or unavailable.
+  const QUESTIONS=Object.freeze([]);
   window._randori_builtin_questions=QUESTIONS;
 
   const qSel=document.getElementById('questionSelect');
@@ -3810,24 +4646,8 @@ def allow(key, limit=5):
     qSel.disabled=true;
   }
   function renderQuestion(id){
-    const q=QUESTIONS.find(x=>x.id===id)||QUESTIONS[0];
-    // LeetCode-like polish: colors, pills
-    const d=q.diff||'Easy';
-    const col = /easy/i.test(d) ? '#c8f6a0' : /medium/i.test(d) ? '#f2d07a' : /hard/i.test(d) ? '#e8a0b0' : '#9aa0a6';
-    const titleEl=document.getElementById('qTitle'); if(titleEl){ titleEl.textContent=q.title; titleEl.setAttribute('data-diff', d); }
-    const diffEl=document.getElementById('qDiff'); if(diffEl){ diffEl.textContent=d; diffEl.style.background=col+'22'; diffEl.style.border='1px solid '+col+'55'; diffEl.style.color=col; diffEl.style.padding='2px 8px'; diffEl.style.borderRadius='999px'; diffEl.style.fontSize='11px'; }
-    document.getElementById('qDesc').innerHTML=`<div style="color:var(--ink-2); line-height:1.6">${q.desc}</div>`;
-    // expandable examples
-    const exEl=document.getElementById('qExamples');
-    if(exEl){
-      exEl.innerHTML='<div class="small muted" style="margin-bottom:4px; text-transform:uppercase; font-size:10.5px">Examples — click to copy</div>'+q.examples.map((e,i)=>`<div class="test" style="cursor:pointer" title="click to copy"><div class="small"><b>Example ${i+1}:</b> In <span class="kbd">${String(e.input).slice(0,140)}</span> → <span class="kbd">${String(e.output).slice(0,140)}</span></div>${e.expl?`<div class="small muted">${e.expl}</div>`:''}</div>`).join('');
-      exEl.querySelectorAll('.test').forEach(el=>el.addEventListener('click',()=>{ try{ navigator.clipboard.writeText(el.textContent); window.toast&&window.toast('Copied example'); }catch{} }));
-    }
-    document.getElementById('qConstraints').textContent=q.constraints;
-    document.getElementById('qConstraints').style.fontFamily='ui-monospace, monospace';
-    document.getElementById('qConstraints').style.whiteSpace='pre-wrap';
-    document.getElementById('qTests').innerHTML=q.tests.map((t,i)=>`<div class="test"><div class="small">Case ${i+1}: <span class="kbd">${JSON.stringify(t.input).slice(0,80)}</span> → <span class="small">${JSON.stringify(t.expect)}</span></div></div>`).join('');
-    return q;
+    void id;
+    return null;
   }
 
   // ---------- code room ----------
@@ -3914,6 +4734,7 @@ def allow(key, limit=5):
   qSel.onchange=async()=>{
     if(window._randori_questions?.handleQuestionChange?.(qSel.value)) return;
     const q=renderQuestion(qSel.value); const lang=document.getElementById('langSelect').value;
+    if(!q){ persistRoom(); return; }
     // e2e auto-confirm: when running under Playwright fake auth, skip modal to keep Run clickable
     const isE2E = (()=>{ try{ return localStorage.getItem('e2e')==='1'; }catch{ return false; } })();
     const editorEmpty = !document.getElementById('editor').value.trim();
@@ -4088,7 +4909,7 @@ def allow(key, limit=5):
               if(/^[A-Z]/.test(fnName||'')){
                 try{
                   got = null;
-                  let inst = new fn(inputNorm.operations? (inputNorm.operations[0]==='LRUCache'? (inputNorm.capacity||2) : undefined) : undefined);
+                  let inst = new fn(inputNorm&&inputNorm.operations ? inputNorm.capacity : undefined);
                   got = inst;
                 }catch(e2){ throw e; }
               } else throw e;
@@ -4860,6 +5681,7 @@ def allow(key, limit=5):
   // ---------- tabs ----------
   document.querySelectorAll('.tab').forEach(t=>{
     t.onclick=()=>{
+      window._randoriUserNavigationEpoch=(Number(window._randoriUserNavigationEpoch)||0)+1;
       document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active');
       const id=t.getAttribute('data-tab');
       if(['pair','code','board','history'].includes(id)){
@@ -6363,6 +7185,12 @@ def allow(key, limit=5):
     const title=chatNode('h2',{text:'Pair chat'}); title.id='pairChatTitle'; title.style.fontSize='13px';
     const roomLabel=chatNode('span',{className:'kbd',text:room});
     header.append(title,roomLabel);
+    const policy=chatNode('p',{
+      className:'small muted',
+      text:'Private-beta chat retention is 90 days. Legal or export holds and safety pauses may retain messages longer.',
+      testId:'pair-chat-retention-policy',
+    });
+    policy.style.margin='6px 12px';
     const list=chatNode('div',{className:'chat-list',testId:'pair-chat-list'}); list.id='chatList';
     list.setAttribute('role','log'); list.setAttribute('aria-live','off'); list.setAttribute('aria-relevant','additions');
     const controls=chatNode('div',{className:'chat-input'}); controls.style.flexWrap='wrap';
@@ -6389,7 +7217,7 @@ def allow(key, limit=5):
     input.addEventListener('keydown',event=>{
       if(event.key==='Enter'&&!event.isComposing){ event.preventDefault(); send.click(); }
     });
-    controls.append(label,input,send,status); box.append(header,list,controls); area.replaceChildren(box);
+    controls.append(label,input,send,status); box.append(header,policy,list,controls); area.replaceChildren(box);
     renderChatMessages(); setChatBusy();
   }
 
@@ -6707,6 +7535,8 @@ def allow(key, limit=5):
 
   // Main auth router
   async function routeByAuth(){
+    const navigationEpoch=Number(window._randoriUserNavigationEpoch)||0;
+    const canApplyRoute=()=>navigationEpoch===(Number(window._randoriUserNavigationEpoch)||0);
     if(window._randori_activation_flow?.active){
       window._randori_activation_flow.show();
       return;
@@ -6745,7 +7575,7 @@ def allow(key, limit=5):
           if(!_onbDone && !_banDismiss){ _wb.style.display='flex'; } else { _wb.style.display='none'; }
         }
       }catch{}
-      // LeetCode-like: if URL wants code view or last tab was code, show code instead
+      // If the URL requests the workspace, show it without bypassing catalogue loading.
       try{
         const urlParams=new URLSearchParams(window.location.search);
         const viewParam=urlParams.get('view')||urlParams.get('tab');
@@ -6765,13 +7595,15 @@ def allow(key, limit=5):
     // signed in
     if(tabsEl) tabsEl.style.display='flex';
     if(joinRoom){
-      const allowed=await openAuthorizedJoin(joinRoom);
+      const allowed=await openAuthorizedJoin(joinRoom,{canApply:canApplyRoute});
+      if(!canApplyRoute()) return;
       if(allowed) return;
       await showDashboard();
       return;
     }
     // fetch profile to see if incomplete
     const profile = await fetchProfile();
+    if(!canApplyRoute()) return;
     if(isProfileIncomplete(profile)){
       // show profile setup
       if(profile) {
@@ -7445,112 +8277,6 @@ def allow(key, limit=5):
     renderUnavailableQuestion(slug,version==null?'not pinned to a catalogue version':'retired or no longer in the approved catalogue',version);
     return false;
   }
-
-  // Upload modal logic
-  const overlay=document.getElementById('qUploadOverlay');
-  document.getElementById('qUploadBtn')?.addEventListener('click', ()=>{
-    if(!signedIn()){ alert('Sign in to upload questions — needed for author tracking'); return; }
-    document.getElementById('qUpStatus').textContent='';
-    overlay?.classList.add('show');
-  });
-  document.getElementById('qUpCancel')?.addEventListener('click', ()=> overlay?.classList.remove('show'));
-  overlay?.addEventListener('click', (e)=>{ if(e.target===overlay) overlay.classList.remove('show'); });
-
-  document.getElementById('qUpSave')?.addEventListener('click', async()=>{
-    const title=document.getElementById('qUpTitleIn').value.trim();
-    const desc=document.getElementById('qUpDesc').value.trim();
-    const slug=document.getElementById('qUpSlug').value.trim();
-    const diff=document.getElementById('qUpDiff').value;
-    const type=document.getElementById('qUpType').value;
-    const inputFmt=document.getElementById('qUpInputFmt').value.trim();
-    const cons=document.getElementById('qUpConstraints').value.trim();
-    const testsRaw=document.getElementById('qUpTests').value.trim();
-    const startersRaw=document.getElementById('qUpStarters').value.trim();
-    const leetSlug=document.getElementById('qUpLeetSlug').value.trim();
-    const statusEl=document.getElementById('qUpStatus');
-    if(!title||!desc){ statusEl.textContent='title + description required'; return; }
-    let tests;
-    try{ tests=JSON.parse(testsRaw); if(!Array.isArray(tests)) throw new Error('tests array needed'); }catch(err){ statusEl.textContent='tests JSON parse error: '+err.message; return; }
-    let starters={};
-    if(startersRaw){
-      try{ starters=JSON.parse(startersRaw); }catch{ statusEl.textContent='starters JSON parse error'; return; }
-    }
-    let examples=[];
-    // try to infer examples from first 2 tests
-    examples=tests.slice(0,2).map(t=>({input:t.input, output:t.expect}));
-    try{
-      statusEl.textContent='saving…';
-      const r=await fetch('/api/questions',{ method:'POST', credentials:'same-origin', headers:{'content-type':'application/json'}, body: JSON.stringify({ title, description:desc, slug: slug||undefined, difficulty:diff, type, input_format:inputFmt, constraints:inputFmt? cons : cons, constraints_text:cons, examples, test_cases:tests, starter_per_lang:starters, source: leetSlug? 'leetcode':'custom', leetcode_slug: leetSlug||null })});
-      const j=await r.json();
-      if(!r.ok) throw j;
-      statusEl.textContent='saved ✓ '+j.question.slug;
-      CUSTOM_QUESTIONS.unshift(j.question);
-      mergeIntoSelect();
-      if(qSel){ selectKnownCatalogueQuestion(j.question); renderCustomQuestion(j.question.slug); }
-      setTimeout(()=> overlay?.classList.remove('show'), 700);
-      if(window.toast) window.toast('Question saved: '+j.question.title);
-    }catch(e){ statusEl.textContent='save failed: '+(e.error||e.message||'err'); console.error(e); }
-  });
-
-  // LeetCode import — via server proxy /api/leetcode?slug= (no CORS, DB cache, enriched)
-  const leetStatus=document.getElementById('qLeetStatus');
-  async function leetImport(){
-    const slug=prompt('LeetCode slug e.g. two-sum, lru-cache, design-url-shortener — as in URL https://leetcode.com/problems/<slug>/');
-    if(!slug) return;
-    const clean=slug.trim().toLowerCase().replace(/.*problems\//,'').replace(/\/.*/,'');
-    if(leetStatus) leetStatus.textContent='fetching '+clean+' via proxy… ⏳';
-    try{
-      // proxy avoids CORS
-      const r = await fetch('/api/leetcode?slug='+encodeURIComponent(clean), {credentials:'same-origin'});
-      const j = await r.json();
-      if(!r.ok) throw j;
-      const q = j.question||j.data||j;
-      // normalize shape: either our proxy ret {question:{title, content,...}} or cached DB shape
-      const title = q.title || q.titleSlug || clean;
-      const contentHtml = q.content || q.description_html || q.description || '';
-      const descriptionText = q.description || (contentHtml ? contentHtml.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim().slice(0,4000) : title);
-      const difficulty = q.difficulty || 'Medium';
-      const category = q.category || (q.topicTags&&q.topicTags[0]&&q.topicTags[0].slug) || 'dsa';
-      const exampleTestcases = q.exampleTestcases || (q.test_cases&&Array.isArray(q.test_cases)? q.test_cases.map(t=>typeof t.input==='string'? t.input : JSON.stringify(t.input)).join('\n') : '') || '';
-      let tests = q.test_cases || q.testCases || [];
-      if (!Array.isArray(tests) || !tests.length){
-        // build from exampleTestcases
-        const lines = String(exampleTestcases).split('\n').filter(l=>l.trim());
-        tests = lines.slice(0,6).map(l=>({ input:l, expect:null, raw:l }));
-      }
-      if (!tests.length) tests=[{input:{example:'see description'}, expect:'output per description'}];
-      // open upload modal prefilled
-      overlay?.classList.add('show');
-      document.getElementById('qUpTitleIn').value=title||clean;
-      document.getElementById('qUpSlug').value=clean;
-      document.getElementById('qUpDesc').value=descriptionText.slice(0,6000)+'\n\n[source: LeetCode '+title+' — '+clean+']'+'\nDifficulty: '+difficulty+' • Category: '+category;
-      document.getElementById('qUpDiff').value=difficulty||'Medium';
-      document.getElementById('qUpType').value='dsa';
-      document.getElementById('qUpInputFmt').value='see description';
-      document.getElementById('qUpConstraints').value=q.constraints||q.constraints_text||'LeetCode constraints in description';
-      document.getElementById('qUpTests').value=JSON.stringify(tests.slice(0,8), null, 2);
-      document.getElementById('qUpLeetSlug').value=clean;
-      document.getElementById('qUpStarters').value=JSON.stringify({ javascript:`function ${clean.replace(/-./g, x=> x[1].toUpperCase())}(){\n  // LeetCode import: ${title}\n}`, python:`def ${clean.replace(/-/g,'_')}():\n    # ${title}\n    pass` }, null,2);
-      if(leetStatus) leetStatus.textContent='imported '+title+' • cached? '+(j.cached?'yes':'no')+' — review tests then Save';
-      if(window.toast) window.toast('LeetCode via proxy: '+title+' ✓');
-    }catch(e){
-      console.warn('leet proxy fail',e);
-      if(leetStatus) leetStatus.textContent='Proxy fetch failed: '+(e.error||e.detail||e.message||'err');
-      const fallback=confirm('Proxy fetch failed (maybe slug wrong). Open upload modal and paste manually?\\n\\nTip: open https://leetcode.com/problems/'+clean+'/ in new tab, copy description + examples, then Save.');
-      if(fallback){
-        overlay?.classList.add('show');
-        document.getElementById('qUpTitleIn').value=clean;
-        document.getElementById('qUpSlug').value=clean;
-        document.getElementById('qUpLeetSlug').value=clean;
-      }
-    }
-  }
-  document.getElementById('qLeetBtn')?.addEventListener('click', leetImport);
-  document.getElementById('qHackBtn')?.addEventListener('click', ()=>{
-    overlay?.classList.add('show');
-    document.getElementById('qUpTitleIn').placeholder='HackerRank — e.g. Frequency Queries';
-    if(window.toast) window.toast('Paste HackerRank / manual question — Starter & tests needed');
-  });
 
   // Server-authoritative exercise runner.
   const runBtn=document.getElementById('runBtn');
@@ -8840,7 +9566,7 @@ def allow(key, limit=5):
     }
   }catch{}
 
-  // Ensure additional card below whiteboard if videoBar present — add secondary feedback glance card (LeetCode model custom needs)
+  // Ensure an additional feedback card appears below the whiteboard when space allows.
   try{
     if(!document.getElementById('aiFeedbackCardBelowBoard')){
       const videoBar=document.getElementById('videoBar');

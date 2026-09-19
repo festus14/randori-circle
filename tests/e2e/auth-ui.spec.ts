@@ -9,9 +9,64 @@ const localCapabilities = {
 
 const privateBetaCapabilities = {
   ok: true,
-  capabilities: { passwordLogin: true, passwordSignup: false, googleOAuth: true },
+  capabilities: { passwordLogin: true, passwordSignup: false, googleOAuth: true, identityManagement: true },
   registrationMode: 'private_beta',
 };
+
+test('account security stays unavailable until the server capability is enabled',async({page})=>{
+  const user={id:1,email:'member@example.test',name:'Member',is_admin:false,is_available:true};
+  let identityCalls=0;
+  await mockApi(page,{
+    '/api/auth/capabilities':{
+      ...privateBetaCapabilities,
+      capabilities:{...privateBetaCapabilities.capabilities,identityManagement:false},
+    },
+    '/api/auth/me':{ok:true,user},
+    '/api/auth/identities':()=>{ identityCalls+=1; return {_status:503,error:'unavailable'}; },
+  });
+  await resetClientState(page,true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await expect(page.locator('#meLabel')).toContainText('Member');
+  await page.locator('#meLabel').click();
+  await expect(page.getByRole('button',{name:'Account security'})).toBeHidden();
+  await page.evaluate(()=>(window as any)._randori_identity.open());
+  await expect(page.getByRole('dialog',{name:'Account security'})).toBeHidden();
+  expect(identityCalls).toBe(0);
+});
+
+test('OAuth identity feedback waits for delayed capabilities and authenticated state',async({page})=>{
+  const user={id:1,email:'member@example.test',name:'Member',is_admin:false,is_available:true};
+  let releaseCapabilities:undefined|(()=>void);
+  let identityCalls=0;
+  const delayedCapabilities=new Promise<void>(resolve=>{ releaseCapabilities=resolve; });
+  await mockApi(page,{
+    '/api/auth/capabilities':async()=>{
+      await delayedCapabilities;
+      return privateBetaCapabilities;
+    },
+    '/api/auth/me':{ok:true,user},
+    '/api/auth/identities':async()=>{
+      identityCalls+=1;
+      expect(await page.evaluate(()=>Number((window as any)._randori_auth?.me?.id))).toBe(user.id);
+      return {ok:true,identity:{
+        accountEmail:user.email,
+        password:{linked:true,canAdd:false,canUnlink:true},
+        google:{linked:true,canLink:false,canUnlink:true},
+        recentAuth:{ok:true,method:'password',authenticatedAt:1,expiresAt:2},
+      }};
+    },
+  });
+  await resetClientState(page,true);
+  await page.goto('/?identity_link_error=provider_in_use',{waitUntil:'domcontentloaded'});
+  await expect(page).toHaveURL(/identity_link_error=provider_in_use/);
+  await expect(page.getByRole('dialog',{name:'Account security'})).toBeHidden();
+  releaseCapabilities?.();
+  await expect(page).toHaveURL('/');
+  const dialog=page.getByRole('dialog',{name:'Account security'});
+  await expect(dialog).toBeVisible();
+  await expect(page.getByTestId('identity-status')).toContainText('already belongs to another Randori account');
+  expect(identityCalls).toBe(1);
+});
 
 const recoveryCapabilities = {
   ok: true,
@@ -158,10 +213,19 @@ test('password reset landing scrubs the fragment and submits a matching policy-c
   await page.goto(`/reset-password#token=${token}`,{waitUntil:'domcontentloaded'});
   await expect(page).toHaveURL(/\/reset-password$/);
   await expect(page.getByTestId('password-reset-landing')).toBeVisible();
+  await page.locator('#passwordResetNew').fill('short');
+  await page.locator('#passwordResetConfirm').fill('short');
+  await page.locator('#passwordResetSubmit').click();
+  await page.evaluate(()=>(window as any)._randori_password_reset_flow.show());
+  await expect(page.getByTestId('password-reset-status')).toContainText('10–72 UTF-8 bytes');
+  await expect(page.locator('#passwordResetSubmit')).toBeEnabled();
+  expect(calls).toBe(0);
   await page.locator('#passwordResetNew').fill('replacement password');
   await page.locator('#passwordResetConfirm').fill('different password');
   await page.locator('#passwordResetSubmit').click();
+  await page.evaluate(()=>(window as any)._randori_password_reset_flow.show());
   await expect(page.getByTestId('password-reset-status')).toContainText('do not match');
+  await expect(page.locator('#passwordResetSubmit')).toBeEnabled();
   expect(calls).toBe(0);
   await page.locator('#passwordResetConfirm').fill('replacement password');
   await page.locator('#passwordResetSubmit').click();
@@ -499,6 +563,182 @@ test('an authenticated member can sign out every session from the account menu',
   await expect(page.locator('#authBtn')).toBeVisible();
   expect(await page.evaluate(()=>(window as any)._randori_auth.me)).toBeNull();
   await expect.poll(()=>page.evaluate(()=>localStorage.getItem('randori-me'))).toBeNull();
+});
+
+test('account security requires recent auth and never removes the final credential',async({page})=>{
+  const user={id:1,email:'e2e@example.test',name:'E2E Tester',is_admin:false,is_available:true};
+  let recent=false;
+  let googleLinked=true;
+  let confirmationCalls=0;
+  let unlinkCalls=0;
+  const identity=()=>({
+    ok:true,
+    identity:{
+      accountEmail:user.email,
+      password:{linked:true,canAdd:false,canUnlink:googleLinked},
+      google:{linked:googleLinked,canLink:!googleLinked,canUnlink:googleLinked},
+      recentAuth:recent?{ok:true,method:'password',authenticatedAt:1,expiresAt:2}:{ok:false,reason:'recent_auth_required'},
+    },
+  });
+  await mockApi(page,{
+    '/api/auth/capabilities':privateBetaCapabilities,
+    '/api/auth/me':{ok:true,user},
+    '/api/auth/identities':()=>identity(),
+    '/api/auth/recent-auth':request=>{
+      confirmationCalls+=1;
+      expect(request.postDataJSON()).toEqual({password:'correct password'});
+      recent=true;
+      return {ok:true,recentAuth:{ok:true,method:'password'}};
+    },
+    '/api/auth/identities/google':request=>{
+      unlinkCalls+=1;
+      expect(request.postDataJSON()).toEqual({action:'unlink'});
+      googleLinked=false;
+      return {...identity(),status:'unlinked'};
+    },
+  });
+  await resetClientState(page,true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await page.locator('#meLabel').click();
+  await page.getByRole('button',{name:'Account security'}).click();
+  const dialog=page.getByRole('dialog',{name:'Account security'});
+  await expect(dialog).toBeVisible();
+  await page.locator('#identityClose').focus();
+  await page.keyboard.press('Tab');
+  await expect(page.locator('#identityPasswordConfirm')).toBeFocused();
+  await expect(page.getByTestId('identity-status')).toContainText('Choose a sign-in method');
+  await expect(page.locator('#identityRecent')).toBeVisible();
+  await expect(page.locator('#identityGoogleAction')).toBeDisabled();
+  await page.locator('#identityPasswordConfirm').fill('correct password');
+  await page.locator('#identityConfirmPassword').click();
+  await expect(page.locator('#identityRecent')).toBeHidden();
+  await expect(page.locator('#identityGoogleAction')).toBeEnabled();
+  page.once('dialog',nativeDialog=>nativeDialog.accept());
+  await page.locator('#identityGoogleAction').click();
+  await expect(page.locator('#identityGoogleState')).toHaveText('not linked');
+  await expect(page.locator('#identityPasswordAction')).toBeDisabled();
+  await expect(page.locator('#identityPasswordHelp')).toContainText('final sign-in method');
+  expect(confirmationCalls).toBe(1);
+  expect(unlinkCalls).toBe(1);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+});
+
+test('account security starts Google reauthentication through same-origin POST before navigation',async({page})=>{
+  const user={id:1,email:'e2e@example.test',name:'E2E Tester',is_admin:false,is_available:true};
+  let starts=0;
+  await mockApi(page,{
+    '/api/auth/capabilities':privateBetaCapabilities,
+    '/api/auth/me':{ok:true,user},
+    '/api/auth/identities':{ok:true,identity:{
+      accountEmail:user.email,
+      password:{linked:true,canAdd:false,canUnlink:true},
+      google:{linked:true,canLink:false,canUnlink:true},
+      recentAuth:{ok:false,reason:'recent_auth_required'},
+    }},
+    '/api/auth/google/reauth/start':request=>{
+      starts+=1;
+      expect(request.method()).toBe('POST');
+      expect(request.postDataJSON()).toEqual({});
+      return {ok:true,authorizationUrl:'https://accounts.google.com/o/oauth2/v2/auth?state=e2e'};
+    },
+  });
+  await page.route('https://accounts.google.com/**',route=>route.fulfill({
+    status:200,contentType:'text/html',body:'<!doctype html><title>Google confirmation</title>',
+  }));
+  await resetClientState(page,true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await expect(page.locator('#meLabel')).toContainText('E2E Tester');
+  await page.locator('#meLabel').click();
+  await page.getByRole('button',{name:'Account security'}).click();
+  await page.getByRole('button',{name:'Confirm with Google'}).click();
+  await expect(page).toHaveURL('https://accounts.google.com/o/oauth2/v2/auth?state=e2e');
+  expect(starts).toBe(1);
+});
+
+test('closing and reopening account security invalidates a delayed Google start response',async({page})=>{
+  const user={id:1,email:'e2e@example.test',name:'E2E Tester',is_admin:false,is_available:true};
+  let releaseStart!:()=>void;
+  let markStart!:()=>void;
+  const startGate=new Promise<void>(resolve=>{ releaseStart=resolve; });
+  const startBegan=new Promise<void>(resolve=>{ markStart=resolve; });
+  let starts=0;
+  // Exercise the generation guard even if a transport cannot cancel a request
+  // that has already reached the server.
+  await page.addInitScript(()=>{ AbortController.prototype.abort=function(){}; });
+  await mockApi(page,{
+    '/api/auth/capabilities':privateBetaCapabilities,
+    '/api/auth/me':{ok:true,user},
+    '/api/auth/identities':{ok:true,identity:{
+      accountEmail:user.email,
+      password:{linked:true,canAdd:false,canUnlink:true},
+      google:{linked:true,canLink:false,canUnlink:true},
+      recentAuth:{ok:false,reason:'recent_auth_required'},
+    }},
+    '/api/auth/google/reauth/start':async()=>{
+      starts+=1;
+      markStart();
+      await startGate;
+      return {ok:true,authorizationUrl:'https://accounts.google.com/o/oauth2/v2/auth?state=stale'};
+    },
+  });
+  await resetClientState(page,true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await page.locator('#meLabel').click();
+  await page.getByRole('button',{name:'Account security'}).click();
+  await page.getByRole('button',{name:'Confirm with Google'}).click();
+  await startBegan;
+  await page.locator('#identityClose').click();
+  await page.locator('#meLabel').click();
+  await page.getByRole('button',{name:'Account security'}).click();
+  const dialog=page.getByRole('dialog',{name:'Account security'});
+  await expect(dialog).toBeVisible();
+  const response=page.waitForResponse(value=>new URL(value.url()).pathname==='/api/auth/google/reauth/start');
+  releaseStart();
+  await response;
+  await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
+  await expect(page).toHaveURL('/');
+  await expect(dialog).toBeVisible();
+  await expect(page.getByTestId('identity-status')).toHaveText('Choose a sign-in method to manage.');
+  expect(starts).toBe(1);
+});
+
+test('a Google-only account can add a validated password after verified Google control',async({page})=>{
+  const user={id:1,email:'e2e@example.test',name:'E2E Tester',is_admin:false,is_available:true};
+  let passwordLinked=false;
+  let addCalls=0;
+  const identity=()=>({
+    accountEmail:user.email,
+    password:{linked:passwordLinked,canAdd:!passwordLinked,canUnlink:passwordLinked},
+    google:{linked:true,canLink:false,canUnlink:passwordLinked},
+    recentAuth:{ok:true,method:'google',authenticatedAt:1,expiresAt:2},
+  });
+  await mockApi(page,{
+    '/api/auth/capabilities':privateBetaCapabilities,
+    '/api/auth/me':{ok:true,user},
+    '/api/auth/identities':()=>({ok:true,identity:identity()}),
+    '/api/auth/identities/password':request=>{
+      addCalls+=1;
+      expect(request.postDataJSON()).toEqual({action:'add',password:'new linked password'});
+      passwordLinked=true;
+      return {ok:true,status:'linked',identity:identity()};
+    },
+  });
+  await resetClientState(page,true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await page.locator('#meLabel').click();
+  await page.getByRole('button',{name:'Account security'}).click();
+  await expect(page.locator('#identityPasswordAdd')).toBeVisible();
+  await page.locator('#identityNewPassword').fill('new linked password');
+  await page.locator('#identityNewPasswordConfirm').fill('different password');
+  await page.locator('#identityPasswordAction').click();
+  await expect(page.getByTestId('identity-status')).toContainText('Passwords do not match');
+  expect(addCalls).toBe(0);
+  await page.locator('#identityNewPasswordConfirm').fill('new linked password');
+  await page.locator('#identityPasswordAction').click();
+  await expect(page.locator('#identityPasswordState')).toHaveText('linked');
+  await expect(page.locator('#identityGoogleAction')).toBeEnabled();
+  expect(addCalls).toBe(1);
 });
 
 test('private beta capabilities offer Google for joining and password only for existing members', async ({ page }) => {

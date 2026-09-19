@@ -21,6 +21,8 @@ import { checksum } from '../db/schema-manifest.js';
 import { TursoPlatformError, createTursoPlatformClient } from '../db/turso-platform.js';
 import {
   RehearsalError,
+  REHEARSAL_RPO_TARGET_MS,
+  REHEARSAL_RTO_TARGET_MS,
   verifyRehearsalAttestation,
 } from './turso-backup-restore-rehearsal.mjs';
 
@@ -66,6 +68,12 @@ function integer(value,label,{minimum=1,maximum=Number.MAX_SAFE_INTEGER}={}){
     fail('REMOTE_MIGRATION_INVALID',`${label} is invalid`);
   }
   return number;
+}
+
+function fixedObjective(value,label,expected){
+  const parsed=integer(value,label,{maximum:90*24*60*60*1000});
+  if(parsed!==expected) fail('REMOTE_MIGRATION_INVALID',`${label} must match the fixed recovery objective`);
+  return parsed;
 }
 
 function opaque(value,label,{maximum=512,pattern}={}){
@@ -138,8 +146,8 @@ function normalizeOptions(value){
     maxAttestationAgeMs:integer(value.maxAttestationAgeMs,'attestation maximum age',{
       maximum:30*60*1000,
     }),
-    rpoTargetMs:integer(value.rpoTargetMs,'RPO target',{maximum:90*24*60*60*1000}),
-    rtoTargetMs:integer(value.rtoTargetMs,'RTO target',{maximum:90*24*60*60*1000}),
+    rpoTargetMs:fixedObjective(value.rpoTargetMs,'RPO target',REHEARSAL_RPO_TARGET_MS),
+    rtoTargetMs:fixedObjective(value.rtoTargetMs,'RTO target',REHEARSAL_RTO_TARGET_MS),
     databaseTimeoutMs:integer(value.databaseTimeoutMs??30_000,'database timeout',{
       maximum:120_000,
     }),

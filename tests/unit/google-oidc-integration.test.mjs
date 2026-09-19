@@ -94,6 +94,9 @@ test('migrated OAuth persists issuer plus subject, follows stable identity, and 
     ['https://accounts.google.com','stable-google-subject',1],
   ]);
 
+  await db.execute(`INSERT INTO auth_accounts
+    (email,password_hash,display_name,color) VALUES
+    ('renamed@example.test','$2a$10$PBpMY4NLVseWPP6G9VtPveLltge4ovpON5/cJwqL8JU.khDEvJ9De','Email Collision','#654321')`);
   globalThis.fetch=googleProviderFetch({claims:{
     email:'renamed@example.test',name:'Renamed Identity',sub:'stable-google-subject',
   }});
@@ -101,7 +104,8 @@ test('migrated OAuth persists issuer plus subject, follows stable identity, and 
   assert.equal(renamed.headers.location,'https://randori.example.test/?google=success');
   accounts=await db.execute(`SELECT id,email,google_sub FROM auth_accounts ORDER BY id`);
   assert.deepEqual(accounts.rows.map(row=>[Number(row.id),String(row.email),String(row.google_sub)]),[
-    [1,'renamed@example.test','stable-google-subject'],
+    [1,'first@example.test','stable-google-subject'],
+    [2,'renamed@example.test','null'],
   ]);
 
   await db.execute(`INSERT INTO auth_accounts

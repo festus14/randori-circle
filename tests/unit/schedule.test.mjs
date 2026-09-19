@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, mock, test } from 'node:test';
 import { createClient } from '@libsql/client';
 import {
@@ -63,8 +66,8 @@ function invoke({method='GET',url='/api/schedule',query={endpoint:'schedule'},he
   });
 }
 
-async function readyDatabase({withUnique=true}={}){
-  const db=createClient({url:'file::memory:'});
+async function readyDatabase({withUnique=true,url='file::memory:'}={}){
+  const db=createClient({url});
   await db.execute(`CREATE TABLE pairing_groups (
     id INTEGER PRIMARY KEY, week_id INTEGER NOT NULL, user_a_id INTEGER NOT NULL,
     user_b_id INTEGER NOT NULL, user_c_id INTEGER
@@ -82,6 +85,13 @@ async function readyDatabase({withUnique=true}={}){
     proposed_times TEXT, agreed_time TEXT, created_at TEXT, updated_at TEXT
     ${withUnique?', UNIQUE(week_id,pair_group_id)':''}
   )`);
+  await db.execute(`CREATE TABLE outbox_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,event_type TEXT NOT NULL,event_version INTEGER NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,payload_json TEXT NOT NULL,status TEXT NOT NULL,
+    not_before TEXT NOT NULL,next_attempt_at TEXT NOT NULL,attempt_count INTEGER NOT NULL,
+    max_attempts INTEGER NOT NULL,delivery_timeout_ms INTEGER NOT NULL,created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`);
   return db;
 }
 
@@ -94,6 +104,16 @@ function tracedClient(delegate,calls){
     async batch(statements,mode){
       for(const statement of statements) calls.push({sql:sqlText(statement),args:statement?.args||[]});
       return delegate.batch(statements,mode);
+    },
+    async transaction(mode){
+      const transaction=await delegate.transaction(mode);
+      return {
+        async execute(statement){
+          calls.push({sql:sqlText(statement),args:statement?.args||[]});
+          return transaction.execute(statement);
+        },
+        commit:()=>transaction.commit(),rollback:()=>transaction.rollback(),close:()=>transaction.close?.(),
+      };
     },
   };
 }
@@ -365,6 +385,9 @@ test('missing-row CAS permits one concurrent insert and returns the winning sche
       }
       return result;
     },
+    async transaction(){
+      return {execute:statement=>currentDb.execute(statement),async commit(){},async rollback(){},async close(){}};
+    },
     close(){ delegate.close(); },
   };
   const initial=await invoke({
@@ -436,6 +459,9 @@ test('existing-row raw CAS rejects a concurrent stale writer without losing lega
       }
       return result;
     },
+    async transaction(){
+      return {execute:statement=>currentDb.execute(statement),async commit(){},async rollback(){},async close(){}};
+    },
     close(){ delegate.close(); },
   };
   const initial=await invoke({
@@ -460,6 +486,40 @@ test('existing-row raw CAS rejects a concurrent stale writer without losing lega
     url:'/api/schedule?room_id=week_10_pair_20',query:{endpoint:'schedule',room_id:'week_10_pair_20'},
   });
   assert.deepEqual(final.body.schedule,[first,second].find(response=>response.status===200).body.schedule);
+});
+
+test('schedule mutation and notification intent commit or roll back together',async()=>{
+  const directory=mkdtempSync(join(tmpdir(),'randori-schedule-atomic-'));
+  const db=await readyDatabase({url:`file:${join(directory,'schedule.sqlite')}`});
+  currentDb=db;
+  const initial=await invoke({
+    url:'/api/schedule?room_id=week_10_pair_20',query:{endpoint:'schedule',room_id:'week_10_pair_20'},
+  });
+  await db.execute(`CREATE TRIGGER reject_schedule_notification BEFORE INSERT ON outbox_events
+    BEGIN SELECT RAISE(ABORT,'forced notification failure'); END`);
+  const failed=await invoke({method:'POST',body:{
+    room_id:'week_10_pair_20',action:'propose',base_version:initial.body.schedule.version,
+    instant:'2035-09-20T08:00:00Z',
+  }});
+  assert.equal(failed.status,503);
+  assert.equal(Number((await db.execute('SELECT COUNT(*) AS count FROM pair_schedules')).rows[0].count),0);
+  assert.equal(Number((await db.execute('SELECT COUNT(*) AS count FROM outbox_events')).rows[0].count),0);
+
+  await db.execute('DROP TRIGGER reject_schedule_notification');
+  const proposed=await invoke({method:'POST',body:{
+    room_id:'week_10_pair_20',action:'propose',base_version:initial.body.schedule.version,
+    instant:'2035-09-20T08:00:00Z',
+  }});
+  assert.equal(proposed.status,200);
+  const queued=(await db.execute(`SELECT event_type,event_version,idempotency_key,payload_json
+    FROM outbox_events ORDER BY id`)).rows;
+  assert.equal(queued.length,1);
+  assert.equal(queued[0].event_type,'schedule.email.requested');
+  assert.equal(Number(queued[0].event_version),1);
+  assert.match(queued[0].idempotency_key,/^schedule-email\/v1\/10\/20\/proposal\//);
+  assert.equal(JSON.stringify(queued).includes('@'),false);
+  db.close(); currentDb=null;
+  rmSync(directory,{recursive:true,force:true});
 });
 
 test('schema readiness coalesces probes and retries after missing table or unique constraint',async()=>{
@@ -502,8 +562,10 @@ test('schema readiness coalesces probes and retries after missing table or uniqu
 test('concurrent schedule reads share one in-flight schema probe',async()=>{
   let releaseProbe;
   let markProbeStarted;
+  let markAccessChecksDone;
   const probeGate=new Promise(resolve=>{ releaseProbe=resolve; });
   const probeStarted=new Promise(resolve=>{ markProbeStarted=resolve; });
+  const accessChecksDone=new Promise(resolve=>{ markAccessChecksDone=resolve; });
   let tableProbes=0;
   let accessChecks=0;
   currentDb={
@@ -512,6 +574,7 @@ test('concurrent schedule reads share one in-flight schema probe',async()=>{
       if(sql.includes('FROM pairing_groups AS pg')&&sql.includes("viewer.source='auth'")
         &&!sql.includes('FROM pair_schedules')){
         accessChecks+=1;
+        if(accessChecks===2) markAccessChecksDone();
         return {rows:[{pair_group_id:20,week_id:10,user_a_id:2,user_b_id:4,user_c_id:null}]};
       }
       if(sql.startsWith("PRAGMA table_info('pair_schedules')")){
@@ -532,7 +595,7 @@ test('concurrent schedule reads share one in-flight schema probe',async()=>{
   const first=invoke(request);
   await probeStarted;
   const second=invoke(request);
-  await Promise.resolve();
+  await accessChecksDone;
   assert.equal(tableProbes,1);
   assert.equal(accessChecks,2,'membership remains per request even while readiness is shared');
   releaseProbe();

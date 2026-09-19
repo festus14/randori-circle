@@ -1,0 +1,40 @@
+name: outbox-dispatch
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-outbox-dispatch
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 2
+    steps:
+      - name: Validate scheduler configuration and drain outbox
+        shell: bash
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${APP_URL}" || -z "${CRON_SECRET}" ]]; then
+            echo '{"ok":false,"error":"outbox scheduler configuration missing"}' >&2
+            exit 1
+          fi
+          if [[ ! "${APP_URL}" =~ ^https://[^/?#]+/?$ ]]; then
+            echo '{"ok":false,"error":"outbox scheduler APP_URL must be an HTTPS origin"}' >&2
+            exit 1
+          fi
+          curl --fail-with-body --show-error --silent \
+            --max-time 55 --retry 0 --request POST \
+            --header "x-cron-secret: ${CRON_SECRET}" \
+            "${APP_URL%/}/api/cron/outbox"

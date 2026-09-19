@@ -24,10 +24,20 @@ let lastPairingRun = null;
 let persistedPairGroups = [];
 let persistedPairingParticipants = [];
 let pairingEmailDeliveryResult = null;
+const pairingEmailDeliveryCalls=[];
+let legacyPairingMigrationDelayMs=0;
+const legacyPairingMigrationCalls=[];
 let outboxReplayResult = true;
 const outboxReplayCalls=[];
 let activationOutboxResult=null;
 let activationOutboxMetrics=[];
+let outboxMetricsDelayMs=0;
+let outboxLogDelayMs=0;
+let scheduleEmailDeliveryResult=null;
+const scheduleEmailDeliveryCalls=[];
+let invitationEmailDeliveryResult=null;
+const invitationEmailDeliveryCalls=[];
+let invitationEmailConfigured=false;
 const outboxWorkerCalls=[];
 const mockAvailabilityCycles=new Map();
 const mockAvailabilityDecisions=new Map();
@@ -102,9 +112,16 @@ function createMockDb(){
     async execute(statement) {
       const sql = sqlText(statement);
       executed.push({ sql, args: statement?.args || [] });
+      if(outboxLogDelayMs>0&&sql.includes('INSERT INTO app_logs')){
+        await new Promise(resolve=>setTimeout(resolve,outboxLogDelayMs));
+      }
       if (databaseDelegate) return databaseDelegate.execute(statement);
       const availabilityResult=availabilityFixtureResult(sql,statement?.args||[]);
       if(availabilityResult!==undefined) return availabilityResult;
+      if(sql.includes("CAST(strftime('%s','now') AS INTEGER) AS now_seconds")){
+        return rows([{now_seconds:Math.floor(Date.now()/1000)}]);
+      }
+      if(sql.includes('LEFT JOIN auth_provider_email_state')) return rows([{email_hash:null}]);
       const result = await executeHandler(sql, statement?.args || []);
       if(!(result?.rows?.length)&&sql.includes('INSERT INTO auth_provider_identities')&&sql.includes('RETURNING user_id')){
         return rows([{user_id:Number(statement?.args?.[2])}]);
@@ -192,9 +209,10 @@ let db=createMockDb();
 
 function authPayload(req) {
   const identity = req?.headers?.['x-test-auth'];
-  if (identity === 'admin') return { id: 1, email: 'admin@example.test', name: 'Admin', is_admin: true };
-  if (identity === 'demo') return { id: 3, email: 'demo@randori.demo', name: 'Demo', is_demo: true };
-  if (identity === 'user') return { id: 2, email: 'user@example.test', name: 'User' };
+  const sessionHash='a'.repeat(64);
+  if (identity === 'admin') return { id: 1, email: 'admin@example.test', name: 'Admin', is_admin: true, sessionHash };
+  if (identity === 'demo') return { id: 3, email: 'demo@randori.demo', name: 'Demo', is_demo: true, sessionHash };
+  if (identity === 'user') return { id: 2, email: 'user@example.test', name: 'User', sessionHash };
   return null;
 }
 
@@ -236,14 +254,67 @@ mock.module('../../api/_pairing-readiness.js',{
 mock.module('../../api/_pairing-email.js',{
   exports:{
     PAIRING_EMAIL_EVENT_TYPE:'pairing.email.requested',
+    createPairingEmailHandler:()=>async()=>({}),
     createResendEmailSender:()=>async()=>({providerName:'resend',providerMessageId:'mock-message'}),
-    migrateLegacyPairingEmails:async()=>0,
+    migrateLegacyPairingEmails:async(_db,options)=>{
+      legacyPairingMigrationCalls.push(options);
+      if(legacyPairingMigrationDelayMs>0){
+        await new Promise(resolve=>setTimeout(resolve,legacyPairingMigrationDelayMs));
+      }
+      return 0;
+    },
     pairingEmailStatus:async()=>pairingEmailDeliveryResult?.status||{
       pending:1,processing:0,retry:0,delivered:0,suppressed:0,dead_letter:0,
     },
-    deliverPairingEmails:async()=>pairingEmailDeliveryResult||{
+    deliverPairingEmails:async options=>{
+      pairingEmailDeliveryCalls.push(options);
+      return pairingEmailDeliveryResult||{
       claimed:0,delivered:0,suppressed:0,retried:0,deadLettered:0,leaseLost:0,
       status:{pending:0,processing:0,retry:0,delivered:0,suppressed:0,dead_letter:0},
+      };
+    },
+  },
+});
+
+mock.module('../../api/_schedule-email.js',{
+  exports:{
+    SCHEDULE_EMAIL_EVENT_TYPE:'schedule.email.requested',
+    SCHEDULE_EMAIL_DRAIN_BATCH_SIZE:3,
+    createScheduleEmailHandler:()=>async()=>({}),
+    scheduleNotificationEvents:()=>[],
+    scheduleEmailStatus:async()=>scheduleEmailDeliveryResult?.status||{
+      pending:0,processing:0,retry:0,delivered:0,suppressed:0,dead_letter:0,
+    },
+    deliverScheduleEmails:async options=>{
+      scheduleEmailDeliveryCalls.push(options);
+      return scheduleEmailDeliveryResult||{
+        claimed:0,delivered:0,suppressed:0,retried:0,deadLettered:0,leaseLost:0,
+        status:{pending:0,processing:0,retry:0,delivered:0,suppressed:0,dead_letter:0},
+      };
+    },
+  },
+});
+
+mock.module('../../api/_invitation-email.js',{
+  exports:{
+    INVITATION_EMAIL_EVENT_TYPE:'invitation.email.requested',
+    INVITATION_EMAIL_DRAIN_BATCH_SIZE:3,
+    INVITATION_EMAIL_MAX_SENDS:5,
+    INVITATION_EMAIL_RESEND_SECONDS:60,
+    createInvitationEmailHandler:()=>async()=>({}),
+    invitationEmailConfiguration:()=>invitationEmailConfigured?{origin:'https://randori.example.test'}:null,
+    invitationEmailKeyRotationStatus:async()=>({ready:true,active_version:1,actionable:0}),
+    createInvitationEmailEvent:()=>({sql:'INSERT INTO outbox_events VALUES (?)',args:['invitation']}),
+    invitationEmailPayload:()=>null,
+    invitationEmailStatus:async()=>invitationEmailDeliveryResult?.status||{
+      pending:0,processing:0,retry:0,delivered:0,suppressed:0,dead_letter:0,
+    },
+    deliverInvitationEmails:async options=>{
+      invitationEmailDeliveryCalls.push(options);
+      return invitationEmailDeliveryResult||{
+        claimed:0,delivered:0,suppressed:0,retried:0,deadLettered:0,leaseLost:0,
+        status:{pending:0,processing:0,retry:0,delivered:0,suppressed:0,dead_letter:0},
+      };
     },
   },
 });
@@ -252,11 +323,63 @@ mock.module('../../api/_outbox.js',{
   exports:{
     OutboxDeliveryError:class OutboxDeliveryError extends Error{},
     createOutboxEventStatement:event=>({sql:'INSERT INTO outbox_events VALUES (?)',args:[event]}),
-    readOutboxMetrics:async(_db,options)=>options?.eventType==='auth.emailverification.requested'
-      ?activationOutboxMetrics:[],
+    readOutboxMetrics:async(_db,options)=>{
+      if(outboxMetricsDelayMs>0){
+        await new Promise(resolve=>setTimeout(resolve,outboxMetricsDelayMs));
+      }
+      if(options?.eventType==='auth.emailverification.requested') return activationOutboxMetrics;
+      if(options?.eventType) return [];
+      const groups=[
+        ['pairing.email.requested',pairingEmailDeliveryResult?.status],
+        ['schedule.email.requested',scheduleEmailDeliveryResult?.status],
+        ['invitation.email.requested',invitationEmailDeliveryResult?.status],
+      ];
+      const metrics=[];
+      for(const [eventType,status] of groups){
+        for(const [name,count] of Object.entries(status||{})){
+          if(Number(count)>0) metrics.push({eventType,status:name,count:Number(count),eventVersion:1});
+        }
+      }
+      for(const metric of activationOutboxMetrics){
+        metrics.push({eventType:'auth.emailverification.requested',eventVersion:1,...metric});
+      }
+      return metrics;
+    },
     runOutboxWorker:async options=>{
       outboxWorkerCalls.push(options);
       return activationOutboxResult||{claimed:0,delivered:0,suppressed:0,retried:0,deadLettered:0,leaseLost:0};
+    },
+    runOutboxInvocation:async options=>{
+      outboxWorkerCalls.push(options);
+      const sources={
+        'pairing.email.requested':pairingEmailDeliveryResult,
+        'schedule.email.requested':scheduleEmailDeliveryResult,
+        'invitation.email.requested':invitationEmailDeliveryResult,
+        'auth.emailverification.requested':activationOutboxResult,
+      };
+      const perType={};
+      const total={claimed:0,delivered:0,suppressed:0,retried:0,deadLettered:0,leaseLost:0};
+      for(const type of options.eventTypes){
+        const source=sources[type]||{};
+        perType[type]=Object.fromEntries(Object.keys(total).map(key=>[key,Number(source[key]||0)]));
+        for(const key of Object.keys(total)) total[key]+=perType[type][key];
+      }
+      return {...total,deadlineReached:false,maxClaims:options.maxClaims,perType};
+    },
+    settleBeforeDeadline:async(work,deadlineAtMs)=>{
+      const remaining=Math.floor(Number(deadlineAtMs)-performance.now());
+      if(!Number.isFinite(remaining)||remaining<1) return {completed:false,value:null};
+      let timer;
+      const operation=Promise.resolve().then(work).then(
+        value=>({completed:true,value}),error=>({completed:true,value:null,error}),
+      );
+      const timeout=new Promise(resolve=>{
+        timer=setTimeout(()=>resolve({completed:false,value:null}),remaining);
+      });
+      const result=await Promise.race([operation,timeout]);
+      clearTimeout(timer);
+      if(result.error) throw result.error;
+      return result;
     },
     replayDeadLetter:async(_db,request)=>{
       outboxReplayCalls.push(request);
@@ -269,7 +392,7 @@ const [
   { default: aiHandler },
   { default: authHandler, localPasswordSignupEnabled },
   { default: dataHandler },
-  { default: opsHandler },
+  { default: opsHandler, deliverPendingOutbox },
   { default: videoHandler },
   { createEvaluationSuite, listPublicExercises },
   { localIdentityAdapterEnabled },
@@ -349,6 +472,8 @@ function enableLocalPasswordSignup(){
   process.env.CIRCLE_MEMBERSHIP_ENABLED='false';
   process.env.TURSO_DATABASE_URL='file:///tmp/randori-circle-unit-test.sqlite';
   process.env.APP_URL='http://127.0.0.1:3000';
+  process.env.IDENTITY_EMAIL_HASH_KEY=Buffer.alloc(32,6).toString('base64url');
+  process.env.IDENTITY_EMAIL_HASH_KEY_VERSION='1';
 }
 
 function enableLocalInviteSignup(){
@@ -396,10 +521,20 @@ beforeEach(() => {
   persistedPairGroups = [];
   persistedPairingParticipants = [];
   pairingEmailDeliveryResult = null;
+  pairingEmailDeliveryCalls.length=0;
+  legacyPairingMigrationDelayMs=0;
+  legacyPairingMigrationCalls.length=0;
   outboxReplayResult = true;
   outboxReplayCalls.length=0;
   activationOutboxResult=null;
   activationOutboxMetrics=[];
+  outboxMetricsDelayMs=0;
+  outboxLogDelayMs=0;
+  scheduleEmailDeliveryResult=null;
+  scheduleEmailDeliveryCalls.length=0;
+  invitationEmailDeliveryResult=null;
+  invitationEmailDeliveryCalls.length=0;
+  invitationEmailConfigured=false;
   outboxWorkerCalls.length=0;
   mockAvailabilityCycles.clear();
   mockAvailabilityDecisions.clear();
@@ -410,8 +545,10 @@ beforeEach(() => {
     'GOOGLE_CLIENT_SECRET', 'GROQ_API_KEY', 'OPENAI_API_KEY', 'RESEND_API_KEY', 'RESEND_FROM',
     'NEXT_PUBLIC_SENTRY_DSN', 'SENTRY_DSN',
     'ALLOW_OPEN_SIGNUP', 'SIGNUP_ALLOWLIST', 'LEETCODE_INGESTION_AUTHORIZED',
-    'AUTH_SCHEMA_BOOTSTRAP_ENABLED', 'CIRCLE_MEMBERSHIP_ENABLED', 'RANDORI_LOCAL_RUNTIME',
+    'AUTH_SCHEMA_BOOTSTRAP_ENABLED', 'CIRCLE_MEMBERSHIP_ENABLED', 'MULTI_CIRCLE_CONTROL_PLANE_ENABLED', 'RANDORI_LOCAL_RUNTIME',
     'EMAIL_PASSWORD_ACTIVATION_ENABLED', 'EMAIL_VERIFICATION_ENCRYPTION_KEY',
+    'PASSWORD_RESET_ENABLED', 'PASSWORD_RESET_ENCRYPTION_KEY',
+    'IDENTITY_EMAIL_HASH_KEY', 'IDENTITY_EMAIL_HASH_KEY_VERSION', 'IDENTITY_MANAGEMENT_ENABLED',
     'PAIRING_TIME_ZONE', 'RANDORI_LOCAL_DATABASE_PATH', 'RANDORI_LOCAL_IDENTITY',
     'TURSO_AUTH_TOKEN', 'TURSO_DATABASE_URL', 'VERCEL', 'VERCEL_ENV', 'VERCEL_URL',
     'RUN_ATTESTATION_SECRET', 'RUN_ATTESTATION_PREVIOUS_SECRETS',
@@ -531,7 +668,7 @@ test('auth capabilities report the exact local or private-beta contract without 
   assert.deepEqual(result.body,{
     ok:true,
     capabilities:{passwordLogin:true,passwordSignup:false,verifiedEmailActivation:false,passwordReset:false,
-      localIdentity:false,googleOAuth:false,recentAuthMaxAgeSeconds:600},
+      localIdentity:false,googleOAuth:false,recentAuthMaxAgeSeconds:600,identityManagement:false},
     registrationMode:'private_beta',
   });
   assert.equal(executed.length,0);
@@ -546,7 +683,7 @@ test('auth capabilities report the exact local or private-beta contract without 
   assert.deepEqual(result.body,{
     ok:true,
     capabilities:{passwordLogin:true,passwordSignup:false,verifiedEmailActivation:false,passwordReset:false,
-      localIdentity:false,googleOAuth:true,recentAuthMaxAgeSeconds:600},
+      localIdentity:false,googleOAuth:true,recentAuthMaxAgeSeconds:600,identityManagement:false},
     registrationMode:'private_beta',
   });
 
@@ -558,7 +695,7 @@ test('auth capabilities report the exact local or private-beta contract without 
   assert.deepEqual(result.body,{
     ok:true,
     capabilities:{passwordLogin:true,passwordSignup:true,verifiedEmailActivation:false,passwordReset:false,
-      localIdentity:false,googleOAuth:false,recentAuthMaxAgeSeconds:600},
+      localIdentity:false,googleOAuth:false,recentAuthMaxAgeSeconds:600,identityManagement:true},
     registrationMode:'local_open',
   });
   assert.equal(executed.length,0);
@@ -2085,7 +2222,7 @@ test('questions expose only the active original catalogue and make no LeetCode o
     'ordinary requests must not create the legacy schedule uniqueness index');
 });
 
-test('bundled legacy seed ingestion runs only through admin init', async () => {
+test('admin init never imports a bundled third-party question seed', async () => {
   executeHandler = sql => {
     if (sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')) return rows([{ id: 1, email: 'admin@example.test', is_admin: 1 }]);
     if (sql.includes('SELECT id FROM circles WHERE is_primary=1')) return rows([{ id: 1 }]);
@@ -2096,7 +2233,7 @@ test('bundled legacy seed ingestion runs only through admin init', async () => {
     method: 'POST', url: '/api/init', query: { endpoint: 'init' }, headers: { 'x-test-auth': 'admin' },
   });
   assert.equal(initialized.status, 200);
-  assert.equal(executed.some(call => call.sql.includes('INSERT INTO custom_questions')), true);
+  assert.equal(executed.some(call => call.sql.includes('INSERT INTO custom_questions')), false);
   const dedupe = executed.findIndex(call => call.sql.includes('DELETE FROM pair_schedules WHERE id NOT IN'));
   const uniqueIndex = executed.findIndex(call => call.sql.includes('CREATE UNIQUE INDEX IF NOT EXISTS uq_pair_schedules_week_pair'));
   assert.ok(dedupe >= 0 && uniqueIndex > dedupe, 'legacy schedules must be deterministically deduped before the unique index');
@@ -2143,7 +2280,7 @@ test('data validation and access-control branches reject malformed or cross-pair
     [{ method: 'POST', url: '/api/runs', query: { endpoint: 'runs' }, headers, body: {} }, 405],
     [{ method: 'POST', url: '/api/execute', query: { endpoint: 'execute' }, headers, body: {} }, 400],
     [{ method: 'POST', url: '/api/leetcode', query: { endpoint: 'leetcode' }, headers }, 405],
-    [{ url: '/api/leetcode', query: { endpoint: 'leetcode' }, headers }, 403],
+    [{ url: '/api/leetcode', query: { endpoint: 'leetcode' }, headers }, 400],
     [{ method: 'PUT', url: '/api/logs', query: { endpoint: 'logs' }, headers }, 405],
     [{ url: '/api/not-real', query: { endpoint: 'not-real' }, headers }, 404],
   ];
@@ -2153,8 +2290,10 @@ test('data validation and access-control branches reject malformed or cross-pair
   }
 });
 
-test('LeetCode detail cannot publish cached content while authorization is disabled', async () => {
+test('LeetCode detail provides only a manual external link without cache or network access', async () => {
   let queriedCache = false;
+  let networkCalls = 0;
+  globalThis.fetch = async () => { networkCalls += 1; throw new Error('network must remain disabled'); };
   executeHandler = sql => {
     if (sql.includes('FROM custom_questions WHERE leetcode_slug=')) queriedCache = true;
     return rows();
@@ -2164,18 +2303,25 @@ test('LeetCode detail cannot publish cached content while authorization is disab
     query: { endpoint: 'leetcode', slug: 'two-sum' },
     headers: { 'x-test-auth': 'admin' },
   });
-  assert.equal(result.status, 403);
-  assert.match(result.body.error, /written authorization/i);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, {
+    ok:true,
+    content_available:false,
+    source:'external-link',
+    slug:'two-sum',
+    external_url:'https://leetcode.com/problems/two-sum/',
+    automated_fetch:false,
+  });
   assert.equal(queriedCache, false);
+  assert.equal(networkCalls, 0);
 });
 
-test('authorized LeetCode detail remains admin-only', async () => {
+test('an obsolete authorization flag cannot enable cached or remote LeetCode content', async () => {
   process.env.LEETCODE_INGESTION_AUTHORIZED = 'true';
   let queriedCache = false;
+  let networkCalls = 0;
+  globalThis.fetch = async () => { networkCalls += 1; throw new Error('network must remain disabled'); };
   executeHandler = sql => {
-    if (sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')) {
-      return rows([{ id: 2, email: 'user@example.test', is_admin: 0 }]);
-    }
     if (sql.includes('FROM custom_questions WHERE leetcode_slug=')) queriedCache = true;
     return rows();
   };
@@ -2184,38 +2330,28 @@ test('authorized LeetCode detail remains admin-only', async () => {
     query: { endpoint: 'leetcode', slug: 'two-sum' },
     headers: { 'x-test-auth': 'user' },
   });
-  assert.equal(result.status, 403);
-  assert.match(result.body.error, /admin only/i);
+  assert.equal(result.status, 200);
+  assert.equal(result.body.content_available, false);
+  assert.equal(result.body.automated_fetch, false);
   assert.equal(queriedCache, false);
+  assert.equal(networkCalls, 0);
 });
 
-test('authorized LeetCode ingestion parses approved remote metadata through mocked HTTP only', async () => {
+test('LeetCode synchronization is permanently unavailable without a reviewed adapter', async () => {
   process.env.LEETCODE_INGESTION_AUTHORIZED = 'true';
-  globalThis.fetch = async url => {
-    if (String(url).includes('leetcode.com/graphql')) {
-      return new Response(JSON.stringify({ data: { question: {
-        title: 'Two Sum', titleSlug: 'two-sum', difficulty: 'Easy',
-        content: '<p>Example 1:</p><pre>Input: nums = [2,7,11,15], target = 9\nOutput: [0,1]</pre><p>Constraints: 2 <= nums.length <= 100</p>',
-        exampleTestcases: '[2,7,11,15]\n9', topicTags: [{ slug: 'array' }],
-      } } }), { status: 200 });
-    }
-    if (String(url).includes('alfa-leetcode-api')) {
-      return new Response(JSON.stringify({ exampleTestcases: '[3,2,4]\n6', content: '' }), { status: 200 });
-    }
-    throw new Error(`unexpected network target: ${url}`);
-  };
-  executeHandler = sql => {
-    if (sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')) return rows([{ id: 1, email: 'admin@example.test', is_admin: 1 }]);
-    return rows();
-  };
+  let networkCalls = 0;
+  let writes = 0;
+  globalThis.fetch = async () => { networkCalls += 1; throw new Error('network must remain disabled'); };
+  executeHandler = sql => { if (/\b(?:INSERT|UPDATE)\b/i.test(sql)) writes += 1; return rows(); };
   const result = await invoke(dataHandler, {
     method: 'POST', url: '/api/leetcode/sync', query: { endpoint: 'leetcode-sync', slug: 'two-sum' },
     headers: { 'x-test-auth': 'admin' }, body: {},
   });
-  assert.equal(result.status, 200);
-  assert.equal(result.body.synced_count, 1);
-  assert.equal(result.body.synced[0].slug, 'two-sum');
-  assert.ok(result.body.synced[0].test_cases_count >= 2);
+  assert.equal(result.status, 410);
+  assert.match(result.body.error, /unavailable.*external-link workflow/i);
+  assert.equal(result.body.automated_fetch, false);
+  assert.equal(networkCalls, 0);
+  assert.equal(writes, 0);
 });
 
 test('AI consent path stores a template analysis and exposes owned feedback history', async () => {
@@ -2611,7 +2747,7 @@ test('operations cover preferences, availability, admin promotion, demo lifecycl
   assert.equal(executed.some(call => !call.sql.trim()), false, 'migration arrays must not execute undefined DDL entries');
 });
 
-test('weekly email delivery exposes bounded worker outcomes without recipient data', async () => {
+test('weekly publication only queues email and never invokes a provider drain', async () => {
   process.env.APP_URL='https://randori.example.test';
   process.env.CRON_SECRET = 'cron-secret';
   process.env.RESEND_API_KEY = 're_test';
@@ -2648,7 +2784,8 @@ test('weekly email delivery exposes bounded worker outcomes without recipient da
     method: 'POST', url: '/api/cron/weekly', query: { endpoint: 'weekly' },
     headers: { 'x-cron-secret': 'cron-secret' },
   }));
-  assert.match(disabled.body.email_delivery.summary, /email disabled.*RESEND_API_KEY \+ RESEND_FROM/);
+  assert.match(disabled.body.email_delivery.summary, /pairing email\(s\) queued for outbox delivery/);
+  assert.equal(pairingEmailDeliveryCalls.length,0);
   process.env.RESEND_FROM = 'Randori <verified@example.test>';
   pairingEmailDeliveryResult={
     claimed:1,delivered:0,suppressed:0,retried:0,deadLettered:1,leaseLost:0,
@@ -2661,9 +2798,10 @@ test('weekly email delivery exposes bounded worker outcomes without recipient da
   }));
   assert.equal(result.status, 200);
   assert.equal(result.body.skipped, true);
-  assert.equal(result.body.email_delivery.failed, 1);
+  assert.equal(result.body.email_delivery.failed, 0);
   assert.equal(result.body.email_delivery.exhausted, 1);
   assert.equal(result.body.email_delivery.pending, 0);
+  assert.equal(pairingEmailDeliveryCalls.length,0,'weekly cron must leave provider fan-out to /api/cron/outbox');
   assert.doesNotMatch(JSON.stringify(result.body),/@example\.test|secret-token/);
   assert.equal(executed.some(call=>/^\s*(?:CREATE|ALTER|DROP)\b/i.test(call.sql)),false,
     'the complete cron publication and delivery path must not issue request-time DDL');
@@ -2672,7 +2810,7 @@ test('weekly email delivery exposes bounded worker outcomes without recipient da
 
 });
 
-test('weekly response counts only committed worker outcomes', async () => {
+test('weekly response reports durable backlog without claiming or sending events', async () => {
   process.env.APP_URL='https://randori.example.test';
   process.env.CRON_SECRET = 'cron-secret';
   process.env.RESEND_API_KEY = 're_test';
@@ -2713,12 +2851,13 @@ test('weekly response counts only committed worker outcomes', async () => {
   }));
   assert.equal(result.status, 200);
   assert.equal(result.body.email_delivery.sent, 0, 'a stale successful sender must not count an uncommitted transition');
-  assert.equal(result.body.email_delivery.suppressed, 1, 'only the worker that still owns its lease may count suppression');
+  assert.equal(result.body.email_delivery.suppressed, 1);
   assert.equal(result.body.email_delivery.failed, 0);
   assert.equal(result.body.email_delivery.exhausted,2,
     'historical dead letters remain visible when no new event exhausts in this run');
   assert.match(result.body.email_delivery.summary,/exhausted 2/);
   assert.equal(result.body.email_delivery.pending,2);
+  assert.equal(pairingEmailDeliveryCalls.length,0);
 });
 
 test('outbox drain is cron-protected, non-identifying, and dead-letter replay is operator-only',async()=>{
@@ -2736,6 +2875,7 @@ test('outbox drain is cron-protected, non-identifying, and dead-letter replay is
     claimed:2,delivered:1,suppressed:1,retried:0,deadLettered:0,leaseLost:0,
     status:{pending:0,processing:0,retry:0,delivered:1,suppressed:1,dead_letter:0},
   };
+  invitationEmailConfigured=true;
   const drained=await invoke(opsHandler,{
     method:'POST',url:'/api/cron/outbox',query:{endpoint:'outbox'},
     headers:{'x-cron-secret':'cron-secret','user-agent':'private-agent','x-forwarded-for':'203.0.113.9'},
@@ -2745,12 +2885,32 @@ test('outbox drain is cron-protected, non-identifying, and dead-letter replay is
     summary:'sent 1, failed 0, exhausted 0, suppressed 1, pending 0',
     sent:1,failed:0,exhausted:0,pending:0,suppressed:1,
   });
+  assert.deepEqual(drained.body.schedule_delivery,{
+    summary:'sent 0, failed 0, exhausted 0, suppressed 0, pending 0',
+    sent:0,failed:0,exhausted:0,pending:0,suppressed:0,
+  });
+  assert.deepEqual(drained.body.invitation_delivery,{
+    summary:'sent 0, failed 0, exhausted 0, suppressed 0, pending 0',
+    sent:0,failed:0,exhausted:0,pending:0,suppressed:0,
+  });
+  assert.equal(outboxWorkerCalls.length,1);
+  assert.deepEqual(outboxWorkerCalls[0].eventTypes,[
+    'pairing.email.requested','schedule.email.requested','invitation.email.requested',
+  ]);
+  assert.equal(outboxWorkerCalls[0].maxClaims,8);
+  assert.equal(outboxWorkerCalls[0].finalizationReserveMs,5_000);
+  assert.equal(drained.body.outbox.claimed,2);
+  assert.deepEqual(drained.body.outbox.types['pairing.email.requested'],{
+    claimed:2,delivered:1,suppressed:1,retried:0,dead_lettered:0,lease_lost:0,
+    backlog:0,dead_letter:0,
+  });
   const deliveryLog=executed.find(call=>call.sql.includes('INSERT INTO app_logs')
-    &&call.args[1]==='server'&&call.args[2]==='pairing_email_delivery');
+    &&call.args[1]==='server'&&call.args[2]==='outbox_invocation');
   assert.ok(deliveryLog);
   assert.equal(deliveryLog.args[5],null);
   assert.equal(deliveryLog.args[6],null);
   assert.equal(deliveryLog.args[7],null);
+  assert.equal(JSON.stringify(JSON.parse(deliveryLog.args[4])).includes('@example.test'),false);
 
   assert.equal((await invoke(opsHandler,{
     method:'POST',url:'/api/admin/outbox/replay',query:{endpoint:'outbox-replay'},
@@ -2777,13 +2937,15 @@ test('outbox drain is cron-protected, non-identifying, and dead-letter replay is
   })).status,409);
 });
 
-test('outbox drain dispatches configured activation events without exposing recipients',async()=>{
+test('outbox drain dispatches configured activation and password-reset events without exposing recipients',async()=>{
   process.env.NODE_ENV='production';
   process.env.APP_URL='https://randori.example.test';
   process.env.CRON_SECRET='cron-secret';
   process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
   process.env.EMAIL_PASSWORD_ACTIVATION_ENABLED='true';
   process.env.EMAIL_VERIFICATION_ENCRYPTION_KEY=Buffer.alloc(32,7).toString('base64url');
+  process.env.PASSWORD_RESET_ENABLED='true';
+  process.env.PASSWORD_RESET_ENCRYPTION_KEY=Buffer.alloc(32,8).toString('base64url');
   process.env.RESEND_API_KEY='re_test';
   process.env.RESEND_FROM='Randori <verified@example.test>';
   activationOutboxResult={
@@ -2799,12 +2961,79 @@ test('outbox drain dispatches configured activation events without exposing reci
   });
   assert.equal(drained.status,200);
   assert.deepEqual(drained.body.activation_delivery,{
-    summary:'sent 1, failed 1, pending 2',
+    summary:'sent 1, failed 1, exhausted 0, suppressed 1, pending 2',
     sent:1,failed:1,exhausted:0,pending:2,suppressed:1,
   });
   assert.equal(outboxWorkerCalls.length,1);
-  assert.equal(outboxWorkerCalls[0].eventType,'auth.emailverification.requested');
+  assert.ok(outboxWorkerCalls[0].eventTypes.includes('auth.emailverification.requested'));
+  assert.ok(outboxWorkerCalls[0].eventTypes.includes('auth.passwordreset.requested'));
+  assert.deepEqual(drained.body.outbox.types['auth.emailverification.requested'],{
+    claimed:3,delivered:1,suppressed:1,retried:1,dead_lettered:0,lease_lost:0,
+    backlog:2,dead_letter:0,
+  });
+  assert.deepEqual(drained.body.password_reset_delivery,{
+    summary:'sent 0, failed 0, exhausted 0, suppressed 0, pending 0',
+    sent:0,failed:0,exhausted:0,pending:0,suppressed:0,
+  });
+  assert.deepEqual(drained.body.outbox.types['auth.passwordreset.requested'],{
+    claimed:0,delivered:0,suppressed:0,retried:0,dead_lettered:0,lease_lost:0,
+    backlog:0,dead_letter:0,
+  });
   assert.equal(JSON.stringify(drained.body).includes('verified@example.test'),false);
+});
+
+test('outbox preparation and metrics stop consuming the request after their absolute deadline',async()=>{
+  process.env.RESEND_API_KEY='re_test';
+  process.env.RESEND_FROM='Randori <verified@example.test>';
+  const request={headers:sameOriginHeaders,socket:{remoteAddress:'203.0.113.9'}};
+
+  legacyPairingMigrationDelayMs=80;
+  const preparationStarted=performance.now();
+  const preparationTimeout=await deliverPendingOutbox(
+    db,'https://randori.example.test',request,preparationStarted+60,
+    {maxClaims:2,finalizationReserveMs:20,minimumDispatchWindowMs:20},
+  );
+  assert.ok(performance.now()-preparationStarted<100);
+  assert.equal(preparationTimeout.metrics.deadline_reached,true);
+  assert.equal(preparationTimeout.metrics.legacy_reconciliation_complete,false);
+  assert.equal(preparationTimeout.metrics.metrics_complete,false);
+  assert.equal(outboxWorkerCalls.length,0,'a timed-out reconciliation cannot fall through to providers');
+  await new Promise(resolve=>setTimeout(resolve,90));
+
+  legacyPairingMigrationDelayMs=0;
+  outboxMetricsDelayMs=80;
+  const metricsStarted=performance.now();
+  const metricsTimeout=await deliverPendingOutbox(
+    db,'https://randori.example.test',request,metricsStarted+60,
+    {maxClaims:2,finalizationReserveMs:10,minimumDispatchWindowMs:10},
+  );
+  assert.ok(performance.now()-metricsStarted<100);
+  assert.equal(metricsTimeout.metrics.deadline_reached,true);
+  assert.equal(metricsTimeout.metrics.legacy_reconciliation_complete,true);
+  assert.equal(metricsTimeout.metrics.metrics_complete,false);
+  assert.equal(metricsTimeout.metrics.types['pairing.email.requested'].backlog,null);
+  assert.equal(outboxWorkerCalls.length,1);
+  assert.equal(legacyPairingMigrationCalls.at(-1).limit,2);
+  assert.equal(executed.some(call=>call.sql.includes('INSERT INTO app_logs')
+    &&call.args[2]==='outbox_invocation'),false,
+  'deadline-exhausted telemetry is skipped rather than delaying teardown');
+  await new Promise(resolve=>setTimeout(resolve,90));
+
+  outboxMetricsDelayMs=0;
+  outboxLogDelayMs=80;
+  const logStarted=performance.now();
+  const logTimeout=await deliverPendingOutbox(
+    db,'https://randori.example.test',request,logStarted+60,
+    {maxClaims:2,finalizationReserveMs:10,minimumDispatchWindowMs:10},
+  );
+  assert.ok(performance.now()-logStarted<100);
+  assert.equal(logTimeout.metrics.metrics_complete,true);
+  assert.equal(logTimeout.metrics.logging_complete,false);
+  assert.equal(logTimeout.metrics.deadline_reached,true);
+  assert.equal(executed.some(call=>call.sql.includes('INSERT INTO app_logs')
+    &&call.args[2]==='outbox_invocation'),true,
+  'telemetry starts while budget remains but cannot extend the response deadline');
+  await new Promise(resolve=>setTimeout(resolve,90));
 });
 
 test('operation validation rejects unsupported methods and non-admin mutations', async () => {
@@ -3074,6 +3303,88 @@ test('concurrent handler publications across two file-backed clients converge on
     for(const client of clients){ try{ client.close(); }catch{} }
     rmSync(directory,{recursive:true,force:true});
   }
+});
+
+test('unscoped pairing and workspace routes require one resolved primary circle',async()=>{
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';
+  let memberships=[
+    {circle_id:10,public_id:'circle-primary',name:'Primary',is_primary:1,role:'member'},
+    {circle_id:20,public_id:'circle-secondary',name:'Secondary',is_primary:0,role:'member'},
+  ];
+  let selectedContexts=[];
+  executeHandler=sql=>{
+    if(sql.includes('AS active_circle_count')){
+      const selectedCircleId=selectedContexts[0]?.circle_id??null;
+      return rows([{
+        active_circle_count:memberships.length,
+        primary_circle_count:memberships.filter(circle=>Number(circle.is_primary)===1).length,
+        selected_circle_id:selectedCircleId,
+        selected_circle_active:selectedCircleId!==null
+          &&memberships.some(circle=>Number(circle.circle_id)===Number(selectedCircleId))?1:0,
+      }]);
+    }
+    return rows();
+  };
+  const headers={...sameOriginHeaders,'x-test-auth':'user'};
+  for(const [handler,request] of [
+    [dataHandler,{url:'/api/weeks',query:{endpoint:'weeks'},headers}],
+    [dataHandler,{url:'/api/messages',query:{endpoint:'messages'},headers}],
+    [opsHandler,{method:'GET',url:'/api/settings/availability',query:{endpoint:'availability'},headers}],
+    [aiHandler,{method:'GET',url:'/api/ai/history',query:{endpoint:'history'},headers}],
+    [videoHandler,{method:'GET',url:'/api/video/signal',query:{endpoint:'signal'},headers}],
+  ]){
+    const response=await invoke(handler,request);
+    assert.equal(response.status,409);
+    assert.deepEqual(response.body,{
+      error:'pairing and workspace features are not available for this circle context',
+      code:'circle_feature_unavailable',
+    });
+  }
+
+  memberships=[
+    {circle_id:20,public_id:'circle-secondary',name:'Secondary',is_primary:0,role:'member'},
+  ];
+  for(const [handler,request] of [
+    [dataHandler,{url:'/api/history',query:{endpoint:'history'},headers}],
+    [opsHandler,{method:'GET',url:'/api/settings/availability',query:{endpoint:'availability'},headers}],
+    [aiHandler,{method:'GET',url:'/api/ai/history',query:{endpoint:'history'},headers}],
+    [videoHandler,{method:'GET',url:'/api/video/signal',query:{endpoint:'signal'},headers}],
+  ]){
+    const response=await invoke(handler,request);
+    assert.equal(response.status,409,'a sole secondary membership must not enter a primary-keyed surface');
+    assert.equal(response.body.code,'circle_feature_unavailable');
+  }
+
+  memberships=[
+    {circle_id:10,public_id:'circle-primary',name:'Primary',is_primary:1,role:'member'},
+  ];
+  selectedContexts=[{circle_id:20,context_version:7}];
+  const staleContext=await invoke(dataHandler,{
+    url:'/api/history',query:{endpoint:'history'},headers,
+  });
+  assert.equal(staleContext.status,409,'a stale stored selection cannot fall through to primary history');
+  assert.equal(staleContext.body.code,'circle_feature_unavailable');
+
+  memberships=[
+    {circle_id:10,public_id:'circle-primary',name:'Primary',is_primary:1,role:'member'},
+  ];
+  selectedContexts=[];
+
+  executed.length=0;
+  const profile=await invoke(dataHandler,{
+    url:'/api/data?endpoint=profile&probe=/history',query:{endpoint:'profile',probe:'/history'},headers,
+  });
+  assert.equal(profile.status,404);
+  assert.equal(executed.some(call=>call.sql.includes('FROM session_runs')),false,
+    'query-string path fragments cannot redirect dispatch into an unscoped route');
+
+  memberships.push({circle_id:20,public_id:'circle-secondary',name:'Secondary',is_primary:0,role:'member'});
+  const pathConflict=await invoke(dataHandler,{
+    url:'/api/history?endpoint=profile',query:{endpoint:'profile'},headers,
+  });
+  assert.equal(pathConflict.status,409,
+    'the same canonical route decision must drive both the guard and dispatch');
 });
 
 test('video signaling validates membership and supports post, filtered poll, and purge', async () => {

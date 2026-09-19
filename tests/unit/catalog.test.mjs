@@ -12,11 +12,17 @@ import {
   validateCatalog,
   validateEvaluationSuite,
 } from '../../api/_catalog.js';
+import { canonicalExerciseHash } from '../../api/_catalog-provenance.js';
 
 const catalogPath = new URL('../../data/randori-catalog-v1.json', import.meta.url);
+const provenancePath = new URL('../../data/randori-catalog-provenance-v1.json', import.meta.url);
 
 function freshCatalog() {
   return JSON.parse(readFileSync(catalogPath, 'utf8'));
+}
+
+function freshProvenance() {
+  return JSON.parse(readFileSync(provenancePath, 'utf8'));
 }
 
 function seededRandom(seed = 1) {
@@ -83,6 +89,40 @@ test('the bundled original catalogue passes strict validation', () => {
   assert.deepEqual(SUPPORTED_LANGUAGES, ['javascript', 'python']);
 });
 
+test('a warm runtime rechecks review expiry on every catalogue operation', () => {
+  const suite = createEvaluationSuite(
+    'focus-block-rollup',
+    1,
+    'javascript',
+    { random: seededRandom(7) },
+  );
+  const RealDate = globalThis.Date;
+  const expiredNow = RealDate.parse('2027-09-19T00:00:00.000Z');
+  globalThis.Date = class ExpiredCatalogueDate extends RealDate {
+    constructor(...args) {
+      super(...(args.length ? args : [expiredNow]));
+    }
+
+    static now() {
+      return expiredNow;
+    }
+  };
+  try {
+    for (const operation of [
+      () => listPublicExercises(),
+      () => getPublicExercise('focus-block-rollup', 1),
+      () => getActiveExercise('focus-block-rollup', 1),
+      () => createEvaluationSuite('focus-block-rollup', 1, 'javascript'),
+      () => validateEvaluationSuite(suite),
+    ]) {
+      assertCatalogError(operation, /review\.expiresAt: expired before 2027-09-19/);
+    }
+  } finally {
+    globalThis.Date = RealDate;
+  }
+  assert.equal(listPublicExercises().length, 10);
+});
+
 test('public listing returns full active exercises without server-owned test data', () => {
   const exercises = listPublicExercises();
   assert.equal(exercises.length, 10);
@@ -110,6 +150,13 @@ test('public listing returns full active exercises without server-owned test dat
     assert.ok(exercise.languages.javascript.starter.includes(exercise.languages.javascript.entrypoint));
     assert.ok(exercise.languages.python.starter.includes(exercise.languages.python.entrypoint));
     assert.match(exercise.provenance, /Original exercise/);
+    assert.deepEqual(
+      Object.keys(exercise.contentProvenance).sort(),
+      ['author', 'contentHash', 'expiresAt', 'licenseIdentifier', 'licenseName', 'reviewedAt', 'schemaVersion', 'sourceType'],
+    );
+    assert.equal(exercise.contentProvenance.sourceType, 'original');
+    assert.equal(exercise.contentProvenance.licenseIdentifier, 'LicenseRef-Randori-Original');
+    assert.match(exercise.contentProvenance.contentHash, /^sha256:[a-f0-9]{64}$/);
     assert.equal(hasForbiddenPublicKey(exercise), false);
   }
   assert.doesNotMatch(JSON.stringify(exercises), /long-merge|whole-input-boundary|mixed-reasons/);
@@ -528,7 +575,14 @@ test('validation permits retired history but only one active version per slug', 
     replacement: 'focus-block-rollup',
   };
   historical.exercises.push(retired);
-  assert.equal(validateCatalog(historical).valid, true);
+  const historicalProvenance = freshProvenance();
+  const retiredProvenance = structuredClone(historicalProvenance.records[0]);
+  retiredProvenance.key = 'focus-block-rollup@2';
+  retiredProvenance.version = 2;
+  retiredProvenance.source.reference = 'repository://data/randori-catalog-v1.json#focus-block-rollup@2';
+  retiredProvenance.contentHash = canonicalExerciseHash(retired);
+  historicalProvenance.records.push(retiredProvenance);
+  assert.equal(validateCatalog(historical, undefined, historicalProvenance).valid, true);
 
   const twoActive = freshCatalog();
   const nextActive = structuredClone(twoActive.exercises[0]);
@@ -626,7 +680,7 @@ test('validation makes retirement an execution boundary', () => {
     generateArgs() { return [[]]; },
     oracle() { return 0; },
   };
-  assertCatalogError(() => validateCatalog(retiredDefinition, definitions), /cannot target a retired exercise/);
+  assert.equal(validateCatalog(retiredDefinition, definitions).valid, true);
 
   const missingReason = freshCatalog();
   missingReason.exercises.at(-1).governance.retirement.reason = null;
@@ -656,7 +710,7 @@ test('validation enforces coherent takedown metadata', () => {
     requestedAt: '2026-09-18',
     reference: 'issue-123',
   };
-  assertCatalogError(() => validateCatalog(activeRequest), /pending takedown must be retired/);
+  assertCatalogError(() => validateCatalog(activeRequest), /under takedown must be retired/);
 
   const coherentRequest = freshCatalog();
   coherentRequest.exercises.at(-1).governance.takedown = {
@@ -664,17 +718,43 @@ test('validation enforces coherent takedown metadata', () => {
     requestedAt: '2026-09-18',
     reference: 'issue-123',
   };
-  assert.equal(validateCatalog(coherentRequest).valid, true);
+  const coherentProvenance = freshProvenance();
+  coherentProvenance.records.at(-1).takedown = {
+    status: 'requested',
+    effectiveAt: '2026-09-18',
+    reference: 'issue-123',
+  };
+  assert.equal(validateCatalog(coherentRequest, undefined, coherentProvenance).valid, true);
+
+  const futureRetirement = freshCatalog();
+  futureRetirement.exercises.at(-1).governance.retirement.retiredAt = '2026-09-20';
+  assertCatalogError(
+    () => validateCatalog(futureRetirement, undefined, freshProvenance(), { now: '2026-09-19' }),
+    /retiredAt: must not be in the future/,
+  );
+
+  const futureTakedown = freshCatalog();
+  futureTakedown.exercises.at(-1).governance.takedown = {
+    status: 'revoked', requestedAt: '2026-09-20', reference: 'issue-123',
+  };
+  const futureTakedownProvenance = freshProvenance();
+  futureTakedownProvenance.records.at(-1).takedown = {
+    status: 'revoked', effectiveAt: '2026-09-20', reference: 'issue-123',
+  };
+  assertCatalogError(
+    () => validateCatalog(futureTakedown, undefined, futureTakedownProvenance, { now: '2026-09-19' }),
+    /requestedAt: must not be in the future/,
+  );
 });
 
-test('validation requires retirement replacements to resolve to an active slug', () => {
+test('validation requires retirement replacements to resolve to a known historical slug', () => {
   const unknown = freshCatalog();
   unknown.exercises.at(-1).governance.retirement.replacement = 'missing-exercise';
-  assertCatalogError(() => validateCatalog(unknown), /must reference an active catalogue slug/);
+  assertCatalogError(() => validateCatalog(unknown), /must reference a known catalogue slug/);
 
   const retiredOnly = freshCatalog();
   retiredOnly.exercises.at(-1).governance.retirement.replacement = 'archived-session-streak';
-  assertCatalogError(() => validateCatalog(retiredOnly), /must reference an active catalogue slug/);
+  assert.equal(validateCatalog(retiredOnly).valid, true);
 });
 
 test('validation rejects private or unknown fields in public exercise records', () => {

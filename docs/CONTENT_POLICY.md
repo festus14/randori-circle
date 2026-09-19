@@ -10,7 +10,16 @@ Last reviewed: 2026-09-18
 
 Randori Circle ships interview exercises that the project is entitled to use. The default catalogue contains original material authored for this project. Content provenance is part of the product data, not an informal note.
 
-The legacy `data/leetcode-seed.json` file is excluded from the default catalogue. Its presence does not authorise publication, execution, syncing, or remote ingestion. No production catalogue flow may sign in to, crawl, scrape, imitate human traffic to, or evade controls on a third-party platform. A future third-party adapter requires documented permission, terms review, explicit feature gating, rate limits, and a separate release review.
+The legacy `data/leetcode-seed.json` payload and runtime remote-ingestion code
+have been removed. The compatibility endpoint returns only an authenticated,
+manually opened external problem link; its sync endpoint is permanently
+unavailable. The workspace contains no fallback third-party exercises or
+import/paste form and renders only the validated original catalogue. No
+production catalogue flow may sign in to, crawl, scrape,
+imitate human traffic to, or evade controls on a third-party platform. A future
+third-party adapter requires documented permission, terms review, explicit
+feature gating, rate limits, provenance integration, and a separate release
+review.
 
 ## Required record
 
@@ -21,9 +30,15 @@ Every exercise must have:
 - an original public prompt, constraints, examples, and JavaScript and Python starters;
 - a server-side case generator and reference oracle while active;
 - a rights owner, a concrete provenance statement, a review date, and visible attribution;
+- a one-to-one versioned manifest record containing constrained source type,
+  author, license or authorization evidence, canonical content hash, reviewer,
+  and a review expiry no more than 366 days after review;
 - explicit retirement and takedown metadata, including null values when neither applies.
 
-The catalogue validator is authoritative for the machine-readable schema. New or changed content must pass it and unit tests before merge.
+The catalogue validator is authoritative for the machine-readable schema. The
+separate versioned provenance manifest and its operator procedure are documented
+in [Catalogue provenance and takedown](CATALOG_PROVENANCE.md). New or changed
+content must pass both cross-file validation and unit tests before merge.
 
 ## Originality and rights
 
@@ -66,7 +81,8 @@ Retirement is fail-closed:
 
 - change the exercise and retirement metadata to `retired`;
 - record the date, reason, and replacement slug when one exists;
-- remove its server-side generator and reference oracle;
+- make its server-side generator unreachable immediately; an emergency
+  data-only takedown may leave dormant code until a follow-up cleanup;
 - exclude it from browsing, public detail, and execution immediately;
 - retain only the minimum metadata needed to explain historical run references.
 
@@ -84,6 +100,13 @@ Maintainers will:
 4. consult the contributor or rights owner without sharing reporter data unnecessarily;
 5. remove, replace, or restore the content based on the review;
 6. record the resolution and add regression coverage if a product control failed.
+
+The bounded `npm run catalog:takedown -- ...` command is the emergency removal
+path. It retires one exact `slug@version`, records the same non-sensitive
+reference in catalogue and manifest, and is idempotent for that event. The
+manifest is written first so an interrupted operation makes the runtime fail
+closed. Restoration always requires a reviewed content change; there is no
+one-command republish operation.
 
 An exercise with a pending takedown may not be newly activated. Removal from public and execution APIs takes priority over preserving catalogue availability.
 

@@ -171,26 +171,37 @@ export async function pairingEmailStatus(db){
  * v6. The legacy provider used this same key, so a send racing deployment or
  * recovered after a crash remains deduplicated by the provider contract.
  */
-export async function migrateLegacyPairingEmails(db){
+export async function migrateLegacyPairingEmails(db,{limit=100}={}){
   if(!db||typeof db.execute!=='function') throw new TypeError('database client required');
-  const result=await db.execute(`INSERT INTO outbox_events
+  const boundedLimit=Number(limit);
+  if(!Number.isSafeInteger(boundedLimit)||boundedLimit<1||boundedLimit>100){
+    throw new TypeError('invalid legacy pairing email migration limit');
+  }
+  const result=await db.execute({sql:`INSERT INTO outbox_events
       (event_type,event_version,idempotency_key,payload_json,status,not_before,next_attempt_at,
        attempt_count,max_attempts,delivery_timeout_ms,last_error_code,dead_lettered_at,created_at,updated_at)
     SELECT 'pairing.email.requested',1,
-      'randori/'||week_id||'/'||kind||'/'||user_id,
-      json_object('week_id',week_id,'user_id',user_id,'kind',kind,'recipient_email',recipient_email),
-      CASE WHEN status='exhausted' OR attempt_count>=5 THEN 'dead_letter' ELSE 'pending' END,
-      COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ',created_at),strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-      strftime('%Y-%m-%dT%H:%M:%fZ','now'),MAX(0,MIN(attempt_count,5)),5,10000,
-      CASE WHEN status='exhausted' OR attempt_count>=5 THEN 'LEGACY_ATTEMPTS_EXHAUSTED' ELSE NULL END,
-      CASE WHEN status='exhausted' OR attempt_count>=5 THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE NULL END,
-      COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ',created_at),strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      'randori/'||legacy.week_id||'/'||legacy.kind||'/'||legacy.user_id,
+      json_object('week_id',legacy.week_id,'user_id',legacy.user_id,'kind',legacy.kind,
+        'recipient_email',legacy.recipient_email),
+      CASE WHEN legacy.status='exhausted' OR legacy.attempt_count>=5 THEN 'dead_letter' ELSE 'pending' END,
+      COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ',legacy.created_at),strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      strftime('%Y-%m-%dT%H:%M:%fZ','now'),MAX(0,MIN(legacy.attempt_count,5)),5,10000,
+      CASE WHEN legacy.status='exhausted' OR legacy.attempt_count>=5 THEN 'LEGACY_ATTEMPTS_EXHAUSTED' ELSE NULL END,
+      CASE WHEN legacy.status='exhausted' OR legacy.attempt_count>=5 THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE NULL END,
+      COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ',legacy.created_at),strftime('%Y-%m-%dT%H:%M:%fZ','now')),
       strftime('%Y-%m-%dT%H:%M:%fZ','now')
-    FROM pairing_email_outbox
-    WHERE status IN ('pending','failed','sending','exhausted')
-      AND typeof(week_id)='integer' AND week_id>0 AND typeof(user_id)='integer' AND user_id>0
-      AND kind IN ('paired','unavailable') AND length(recipient_email) BETWEEN 1 AND 320
-    ON CONFLICT(idempotency_key) DO NOTHING`);
+    FROM pairing_email_outbox legacy
+    WHERE legacy.status IN ('pending','failed','sending','exhausted')
+      AND typeof(legacy.week_id)='integer' AND legacy.week_id>0
+      AND typeof(legacy.user_id)='integer' AND legacy.user_id>0
+      AND legacy.kind IN ('paired','unavailable') AND length(legacy.recipient_email) BETWEEN 1 AND 320
+      AND NOT EXISTS (
+        SELECT 1 FROM outbox_events current
+        WHERE current.idempotency_key='randori/'||legacy.week_id||'/'||legacy.kind||'/'||legacy.user_id
+      )
+    ORDER BY legacy.id LIMIT ?
+    ON CONFLICT(idempotency_key) DO NOTHING`,args:[boundedLimit]});
   return Number(result.rowsAffected||0);
 }
 

@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { createClient } from '@libsql/client';
 import { expect, Page, test } from '@playwright/test';
+import { deliverScheduleEmails } from '../../api/_schedule-email.js';
 
 import {
   LOCAL_OWNER_EMAIL,
@@ -340,6 +341,8 @@ test('real invited members opt in, publish that cycle, share a room, and agree a
 
     const faultClient = createClient({ url: fixture.databaseUrl });
     try {
+      const outboxBeforePublication = await countRows(fixture.databaseUrl, 'outbox_events');
+      expect(outboxBeforePublication).toBe(1, 'the consumed invitation email remains durable until its worker runs');
       await faultClient.execute(`CREATE TRIGGER reject_pairing_outbox
         BEFORE INSERT ON outbox_events BEGIN
           SELECT RAISE(ABORT,'injected publication failure');
@@ -350,9 +353,10 @@ test('real invited members opt in, publish that cycle, share a room, and agree a
       const failed = await failedResponse;
       expect(failed.status()).toBe(503);
       expect(await failed.json()).toEqual({ error: 'pairing unavailable' });
-      for (const table of ['pairing_week_runs', 'pairing_groups', 'pairing_participants', 'outbox_events']) {
+      for (const table of ['pairing_week_runs', 'pairing_groups', 'pairing_participants']) {
         expect(await countRows(fixture.databaseUrl, table), table).toBe(0);
       }
+      expect(await countRows(fixture.databaseUrl, 'outbox_events')).toBe(outboxBeforePublication);
       await faultClient.execute('DROP TRIGGER reject_pairing_outbox');
     } finally {
       await faultClient.close();
@@ -371,11 +375,31 @@ test('real invited members opt in, publish that cycle, share a room, and agree a
       participant_count: 2,
       pair_count: 1,
       solo_count: 0,
-      email_delivery: { sent: 0, failed: 0, exhausted: 0, pending: 0, suppressed: 0 },
+      email_delivery: { sent: 0, failed: 0, exhausted: 0, pending: 2, suppressed: 0 },
     });
-    expect(publication.email_delivery.captured).toHaveLength(2);
-    expect(await countRows(fixture.databaseUrl, 'outbox_events')).toBe(2);
+    expect(publication.email_delivery.captured).toBeUndefined();
+    const publicationOutbox = createClient({ url: fixture.databaseUrl });
+    expect(Number((await publicationOutbox.execute(`SELECT COUNT(*) AS count FROM outbox_events
+      WHERE event_type='pairing.email.requested'`)).rows[0].count)).toBe(2);
+    await publicationOutbox.close();
     expect(await countRows(fixture.databaseUrl, 'pairing_email_outbox')).toBe(0);
+    const cronSecret='pairing-runtime-outbox-secret';
+    process.env.CRON_SECRET=cronSecret;
+    const delivery=await pages[0].evaluate(async secret=>{
+      const response=await fetch('/api/cron/outbox',{
+        method:'POST',headers:{'x-cron-secret':secret},credentials:'same-origin',
+      });
+      return {status:response.status,body:await response.json()};
+    },cronSecret);
+    expect(delivery.status).toBe(200);
+    expect(delivery.body.outbox).toMatchObject({claimed:3,deadline_reached:false,max_claims:8});
+    expect(delivery.body.email_delivery.captured).toHaveLength(2);
+    expect(delivery.body.outbox.types['pairing.email.requested']).toMatchObject({
+      claimed:2,delivered:2,backlog:0,
+    });
+    expect(delivery.body.outbox.types['invitation.email.requested']).toMatchObject({
+      claimed:1,suppressed:1,backlog:0,
+    });
 
     await Promise.all(pages.slice(0, 2).map(page => page.clock.setFixedTime(publicationInstant)));
     await Promise.all([openDashboard(pages[0]), openDashboard(pages[1])]);
@@ -402,9 +426,57 @@ test('real invited members opt in, publish that cycle, share a room, and agree a
     await openDashboard(pages[0]);
     await expect.poll(async () => (await roomSnapshot(pages[0])).schedule?.agreed_time).toBe(agreedTime);
 
+    const scheduleOutbox = createClient({ url: fixture.databaseUrl });
+    const capturedScheduleEmails: Array<{ to: string; subject: string; html: string; idempotencyKey: string }> = [];
+    try {
+      const immediate = await deliverScheduleEmails({
+        db: scheduleOutbox,
+        baseUrl: runtime.url,
+        localRuntime: true,
+        workerId: 'browser-schedule-immediate',
+        send: async message => {
+          capturedScheduleEmails.push(message);
+          return { providerName: 'local-capture', providerMessageId: `schedule-${capturedScheduleEmails.length}` };
+        },
+        workerOptions: { heartbeatIntervalMs: 0, leaseDurationMs: 1_000 },
+      });
+      expect(immediate.delivered).toBe(2);
+      expect(immediate.suppressed).toBe(1);
+      expect(capturedScheduleEmails.map(message => message.to).sort()).toEqual([
+        LOCAL_OWNER_EMAIL, invitedEmail,
+      ].sort());
+      expect(capturedScheduleEmails.some(message => message.subject.includes('proposed'))).toBe(false);
+      expect(capturedScheduleEmails.filter(message => message.subject.includes('scheduled'))).toHaveLength(2);
+      expect(capturedScheduleEmails.every(message => message.html.includes(`/join/${ownerRoom}`))).toBe(true);
+      expect(capturedScheduleEmails.every(message => !message.idempotencyKey.includes('@'))).toBe(true);
+
+      await scheduleOutbox.execute(`UPDATE outbox_events
+        SET not_before=strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+          next_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE event_type='schedule.email.requested' AND json_extract(payload_json,'$.kind')='reminder'`);
+      const reminder = await deliverScheduleEmails({
+        db: scheduleOutbox,
+        baseUrl: runtime.url,
+        localRuntime: true,
+        workerId: 'browser-schedule-reminder',
+        send: async message => {
+          capturedScheduleEmails.push(message);
+          return { providerName: 'local-capture', providerMessageId: `schedule-${capturedScheduleEmails.length}` };
+        },
+        workerOptions: { heartbeatIntervalMs: 0, leaseDurationMs: 1_000 },
+      });
+      expect(reminder.delivered).toBe(2);
+      expect(capturedScheduleEmails.filter(message => message.subject.includes('Reminder'))).toHaveLength(2);
+    } finally {
+      await scheduleOutbox.close();
+    }
+
     const repeat = await browserJson(pages[0], '/api/pairing/run', 'POST', {});
     expect(repeat).toMatchObject({ status: 200, body: { ok: true, created: false, skipped: true } });
-    expect(await countRows(fixture.databaseUrl, 'outbox_events')).toBe(2);
+    const cycleOutbox = createClient({ url: fixture.databaseUrl });
+    expect(Number((await cycleOutbox.execute(`SELECT COUNT(*) AS count FROM outbox_events
+      WHERE event_type IN ('pairing.email.requested','schedule.email.requested')`)).rows[0].count)).toBe(7);
+    await cycleOutbox.close();
 
     const laterEmail = 'later.member@example.test';
     const laterInvitation = await createInvitation(pages[0], runtime.url, laterEmail);
@@ -451,13 +523,20 @@ test('real invited members opt in, publish that cycle, share a room, and agree a
     expect((await roomSnapshot(pages[2])).room).toBeNull();
 
     const outbox = createClient({ url: fixture.databaseUrl });
-    const reminders = await outbox.execute(`SELECT status,attempt_count,provider_message_id
-      FROM outbox_events ORDER BY id`);
+    const reminders = await outbox.execute(`SELECT event_type,status,attempt_count,provider_message_id
+      FROM outbox_events
+      WHERE event_type IN ('pairing.email.requested','schedule.email.requested') ORDER BY id`);
     await outbox.close();
-    expect(reminders.rows).toHaveLength(2);
-    expect(reminders.rows.every(row => row.status === 'delivered'
-      && Number(row.attempt_count) === 1
-      && /^local-[0-9a-f-]{36}$/.test(String(row.provider_message_id)))).toBe(true);
+    expect(reminders.rows).toHaveLength(7);
+    expect(reminders.rows.filter(row => row.status === 'delivered')).toHaveLength(6);
+    expect(reminders.rows.filter(row => row.status === 'suppressed')).toHaveLength(1);
+    expect(reminders.rows.every(row => Number(row.attempt_count) === 1)).toBe(true);
+    expect(reminders.rows.filter(row => row.event_type === 'pairing.email.requested')
+      .every(row => /^local-[0-9a-f-]{36}$/.test(String(row.provider_message_id)))).toBe(true);
+    expect(reminders.rows.filter(row => row.event_type === 'schedule.email.requested')
+      .filter(row => row.status === 'delivered')
+      .every(row => /^schedule-[1-4]$/.test(String(row.provider_message_id)))).toBe(true);
+    expect(reminders.rows.find(row => row.status === 'suppressed')?.provider_message_id).toBeNull();
     expect(requestSql.filter(sql => /^\s*(?:CREATE|ALTER|DROP)\b/iu.test(sql))).toEqual([]);
     expect(externalRequests).toEqual([]);
   } finally {
