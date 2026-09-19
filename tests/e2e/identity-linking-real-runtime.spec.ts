@@ -42,7 +42,7 @@ test('real local account security stays isolated and refuses removal of the fina
     await expect(page.locator('#meLabel')).toContainText('Local Circle Owner');
 
     await page.locator('#meLabel').click();
-    await page.getByRole('button',{name:'Account security'}).click();
+    await page.getByRole('menuitem',{name:'Account security'}).click();
     await expect(page.getByRole('dialog',{name:'Account security'})).toBeVisible();
     await expect(page.locator('#identityPasswordState')).toHaveText('linked');
     await expect(page.locator('#identityGoogleState')).toHaveText('not linked');

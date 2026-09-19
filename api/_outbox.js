@@ -4,6 +4,13 @@ const EVENT_TYPE_PATTERN=/^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*)+$/;
 const ERROR_CODE_PATTERN=/^[A-Z][A-Z0-9_]{0,63}$/;
 const REPLAY_REASON_CODES=new Set(['OPERATOR_RETRY','PROVIDER_RECOVERED','CONFIGURATION_FIXED']);
 const TERMINAL_STATUSES=new Set(['delivered','suppressed','dead_letter']);
+// Application callers use this process-monotonic scheduler. Tests may inject
+// an equivalent clock so deadline behavior does not depend on host load.
+const SYSTEM_MONOTONIC_CLOCK=Object.freeze({
+  now:()=>performance.now(),
+  setTimeout:(callback,delayMs)=>setTimeout(callback,delayMs),
+  clearTimeout:handle=>clearTimeout(handle),
+});
 
 export const OUTBOX_DEFAULTS=Object.freeze({
   maxAttempts:5,
@@ -82,6 +89,18 @@ function validateDb(db){
   return db;
 }
 
+function validateMonotonicClock(clock){
+  if(!clock||typeof clock.now!=='function'||typeof clock.setTimeout!=='function'
+    ||typeof clock.clearTimeout!=='function'){
+    throw new TypeError('invalid outbox monotonic clock');
+  }
+  const reading=clock.now();
+  if(typeof reading!=='number'||!Number.isFinite(reading)){
+    throw new TypeError('invalid outbox monotonic clock');
+  }
+  return clock;
+}
+
 function retryableConflict(error){
   let current=error;
   for(let depth=0;current&&depth<6;depth+=1){
@@ -113,9 +132,10 @@ function validateWorkerId(value){
  * monotonic deadline. The operation remains rejection-observed if the
  * underlying client settles later.
  */
-export async function settleBeforeDeadline(work,deadlineAtMs){
+export async function settleBeforeDeadline(work,deadlineAtMs,{clock=SYSTEM_MONOTONIC_CLOCK}={}){
   if(typeof work!=='function') throw new TypeError('deadline work is required');
-  const remaining=Math.floor(Number(deadlineAtMs)-performance.now());
+  const monotonicClock=validateMonotonicClock(clock);
+  const remaining=Math.floor(Number(deadlineAtMs)-monotonicClock.now());
   if(!Number.isFinite(remaining)||remaining<1) return Object.freeze({completed:false,value:null});
   let timer;
   const operation=Promise.resolve().then(work).then(
@@ -123,10 +143,10 @@ export async function settleBeforeDeadline(work,deadlineAtMs){
     error=>({completed:true,value:null,error}),
   );
   const timeout=new Promise(resolve=>{
-    timer=setTimeout(()=>resolve({completed:false,value:null}),remaining);
+    timer=monotonicClock.setTimeout(()=>resolve({completed:false,value:null}),remaining);
   });
   const result=await Promise.race([operation,timeout]);
-  clearTimeout(timer);
+  monotonicClock.clearTimeout(timer);
   if(result.error) throw result.error;
   return Object.freeze(result);
 }
@@ -461,14 +481,16 @@ async function finalizeOutcome(db,{event,workerId,outcome}){
   });
 }
 
-function startHeartbeat(db,{event,workerId,leaseDurationMs,heartbeatIntervalMs,abortController}){
+function startHeartbeat(db,{event,workerId,leaseDurationMs,heartbeatIntervalMs,abortController,
+  clock=SYSTEM_MONOTONIC_CLOCK}){
   if(heartbeatIntervalMs===0) return {async stop(){}};
+  const monotonicClock=validateMonotonicClock(clock);
   let stopped=false;
   let timer=null;
   let inFlight=Promise.resolve();
   const schedule=()=>{
     if(stopped) return;
-    timer=setTimeout(()=>{
+    timer=monotonicClock.setTimeout(()=>{
       inFlight=(async()=>{
         try{
           const owned=await heartbeatOutboxLease(db,{
@@ -485,17 +507,19 @@ function startHeartbeat(db,{event,workerId,leaseDurationMs,heartbeatIntervalMs,a
   return {
     async stop(){
       stopped=true;
-      if(timer) clearTimeout(timer);
+      if(timer) monotonicClock.clearTimeout(timer);
       await inFlight.catch(()=>{});
     },
   };
 }
 
 async function invokeWithTimeout(handler,event,{abortController,
-  deliveryTimeoutMs=event.deliveryTimeoutMs,timeoutCode='DELIVERY_TIMEOUT'}){
+  deliveryTimeoutMs=event.deliveryTimeoutMs,timeoutCode='DELIVERY_TIMEOUT',
+  clock=SYSTEM_MONOTONIC_CLOCK}){
+  const monotonicClock=validateMonotonicClock(clock);
   let timer;
   const timeout=new Promise((_,reject)=>{
-    timer=setTimeout(()=>{
+    timer=monotonicClock.setTimeout(()=>{
       const error=new OutboxDeliveryError(timeoutCode,{retryable:true});
       abortController.abort(error);
       reject(error);
@@ -507,7 +531,7 @@ async function invokeWithTimeout(handler,event,{abortController,
       timeout,
     ]);
   }finally{
-    clearTimeout(timer);
+    monotonicClock.clearTimeout(timer);
   }
 }
 
@@ -530,13 +554,13 @@ function addWorkerResult(target,source){
 
 async function resolveClaimedOutboxEvent(db,event,{handlers,workerId,leaseDurationMs,
   heartbeatIntervalMs,baseBackoffMs,maxBackoffMs,deliveryTimeoutMs=event.deliveryTimeoutMs,
-  timeoutCode='DELIVERY_TIMEOUT',abortController}={}){
+  timeoutCode='DELIVERY_TIMEOUT',abortController,clock=SYSTEM_MONOTONIC_CLOCK}={}){
   const handler=handlers instanceof Map?handlers.get(event.eventType):handlers[event.eventType];
   let outcome;
   try{
     if(typeof handler!=='function') throw new OutboxDeliveryError('EVENT_HANDLER_MISSING',{retryable:false});
     const delivered=await invokeWithTimeout(handler,event,{
-      abortController,deliveryTimeoutMs,timeoutCode,
+      abortController,deliveryTimeoutMs,timeoutCode,clock,
     });
     outcome=normalizeSuccess(delivered);
   }catch(error){
@@ -549,10 +573,11 @@ async function resolveClaimedOutboxEvent(db,event,{handlers,workerId,leaseDurati
   return {leaseLost:false,outcome};
 }
 
-function startClaimLifecycle(db,event,{workerId,leaseDurationMs,heartbeatIntervalMs}){
+function startClaimLifecycle(db,event,{workerId,leaseDurationMs,heartbeatIntervalMs,
+  clock=SYSTEM_MONOTONIC_CLOCK}){
   const abortController=new AbortController();
   const heartbeat=startHeartbeat(db,{
-    event,workerId,leaseDurationMs,heartbeatIntervalMs,abortController,
+    event,workerId,leaseDurationMs,heartbeatIntervalMs,abortController,clock,
   });
   return {abortController,heartbeat};
 }
@@ -633,10 +658,11 @@ export async function runOutboxWorker({
  */
 export async function runOutboxInvocation({
   db,workerId=`invocation-${randomUUID()}`,handlers,eventTypes,maxClaims=8,
-  deadlineAtMs=performance.now()+45_000,finalizationReserveMs=5_000,
+  deadlineAtMs,finalizationReserveMs=5_000,
   minimumDispatchWindowMs=100,leaseDurationMs=OUTBOX_DEFAULTS.leaseDurationMs,
   heartbeatIntervalMs=OUTBOX_DEFAULTS.heartbeatIntervalMs,
   baseBackoffMs=OUTBOX_DEFAULTS.baseBackoffMs,maxBackoffMs=OUTBOX_DEFAULTS.maxBackoffMs,
+  clock=SYSTEM_MONOTONIC_CLOCK,
 }={}){
   validateDb(db);
   const owner=validateWorkerId(workerId);
@@ -654,7 +680,8 @@ export async function runOutboxInvocation({
   const heartbeatMs=boundedInteger(heartbeatIntervalMs,0,leaseMs-1,null);
   const baseMs=boundedInteger(baseBackoffMs,1,OUTBOX_DEFAULTS.maxBackoffMs,null);
   const maxMs=boundedInteger(maxBackoffMs,baseMs||1,24*60*60*1000,null);
-  const deadline=Number(deadlineAtMs);
+  const monotonicClock=validateMonotonicClock(clock);
+  const deadline=deadlineAtMs===undefined?monotonicClock.now()+45_000:Number(deadlineAtMs);
   const reserveMs=boundedInteger(finalizationReserveMs,100,60_000,null);
   const minimumMs=boundedInteger(minimumDispatchWindowMs,100,10_000,null);
   if(claimLimit===null||leaseMs===null||heartbeatMs===null||baseMs===null||maxMs===null
@@ -664,7 +691,7 @@ export async function runOutboxInvocation({
   const perType=Object.fromEntries(types.map(type=>[type,emptyWorkerResult()]));
   const total=emptyWorkerResult();
   let deadlineReached=false;
-  const canStart=()=>performance.now()+reserveMs+minimumMs<deadline;
+  const canStart=()=>monotonicClock.now()+reserveMs+minimumMs<deadline;
 
   const activeTypes=new Set(types);
   while(total.claimed<claimLimit&&activeTypes.size){
@@ -677,7 +704,7 @@ export async function runOutboxInvocation({
       workerId:owner,leaseDurationMs:leaseMs,eventTypes:admittedTypes,
     });
     const claimed=await settleBeforeDeadline(()=>claimPromise,
-      deadline-reserveMs-minimumMs);
+      deadline-reserveMs-minimumMs,{clock:monotonicClock});
     if(!claimed.completed){
       deadlineReached=true;
       // The client cannot cancel an in-flight SQL statement. If it commits
@@ -701,10 +728,10 @@ export async function runOutboxInvocation({
     for(const type of admittedTypes){ if(!claimedTypes.has(type)) activeTypes.delete(type); }
     if(!round.length) break;
     const lifecycles=round.map(event=>startClaimLifecycle(db,event,{
-      workerId:owner,leaseDurationMs:leaseMs,heartbeatIntervalMs:heartbeatMs,
+      workerId:owner,leaseDurationMs:leaseMs,heartbeatIntervalMs:heartbeatMs,clock:monotonicClock,
     }));
     const resolutions=await Promise.all(round.map(async(event,index)=>{
-      const available=Math.floor(deadline-performance.now()-reserveMs);
+      const available=Math.floor(deadline-monotonicClock.now()-reserveMs);
       if(available<minimumMs){
         return failedResolution(
           new OutboxDeliveryError('INVOCATION_DEADLINE',{retryable:true}),event,
@@ -716,7 +743,7 @@ export async function runOutboxInvocation({
         handlers,workerId:owner,leaseDurationMs:leaseMs,heartbeatIntervalMs:heartbeatMs,
         baseBackoffMs:baseMs,maxBackoffMs:maxMs,deliveryTimeoutMs:timeoutMs,
         timeoutCode:timeoutMs<event.deliveryTimeoutMs?'INVOCATION_DEADLINE':'DELIVERY_TIMEOUT',
-        abortController:lifecycles[index].abortController,
+        abortController:lifecycles[index].abortController,clock:monotonicClock,
       });
     }));
     const outcomes=[];
@@ -724,13 +751,13 @@ export async function runOutboxInvocation({
       const event=round[index];
       const lifecycle=lifecycles[index];
       const remainingEvents=round.length-index;
-      const available=Math.max(0,Math.floor(deadline-performance.now()));
+      const available=Math.max(0,Math.floor(deadline-monotonicClock.now()));
       const finalizationDeadline=Math.min(deadline,
-        performance.now()+Math.max(1,Math.floor(available/remainingEvents)));
+        monotonicClock.now()+Math.max(1,Math.floor(available/remainingEvents)));
       try{
         const finalized=await settleBeforeDeadline(()=>finalizeResolvedOutboxEvent(db,event,{
           workerId:owner,resolution:leaseAwareResolution(lifecycle,resolutions[index]),
-        }),finalizationDeadline);
+        }),finalizationDeadline,{clock:monotonicClock});
         outcomes.push(finalized.completed?finalized.value
           :{...emptyWorkerResult(),claimed:1,leaseLost:1});
       }catch{
@@ -739,7 +766,7 @@ export async function runOutboxInvocation({
         outcomes.push({...emptyWorkerResult(),claimed:1,leaseLost:1});
       }finally{
         const stopping=lifecycle.heartbeat.stop();
-        await settleBeforeDeadline(()=>stopping,deadline);
+        await settleBeforeDeadline(()=>stopping,deadline,{clock:monotonicClock});
       }
     }
     for(let index=0;index<round.length;index+=1){
@@ -757,7 +784,7 @@ export async function runOutboxInvocation({
     const sweepPromise=sweepExhausted(db,{
       actorRef:owner,eventType:type,limit:1,shouldContinue:canStart,
     });
-    const swept=await settleBeforeDeadline(()=>sweepPromise,deadline);
+    const swept=await settleBeforeDeadline(()=>sweepPromise,deadline,{clock:monotonicClock});
     if(!swept.completed){ deadlineReached=true; break; }
     perType[type].deadLettered+=swept.value;
     total.deadLettered+=swept.value;

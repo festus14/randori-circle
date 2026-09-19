@@ -912,3 +912,121 @@ against the tracked evidence; correct metadata and re-review, or use the bounded
 takedown command. Git history recovers accidental edits. A real takedown is
 restored only by a reviewed content change with fresh approval and, when
 semantics changed, a new exercise version.
+
+## ID-23: Evolve the current shell without replacing product behavior
+
+Status: implemented as the first accessible UI slice.
+
+**Decision.** The current single-page shell remains the delivery surface while
+its semantics, responsive layout, and truthful product language improve around
+the existing authorization and lifecycle boundaries. Light and dark themes use
+explicit semantic success, warning, danger, information, focus, and
+control-boundary tokens with WCAG AA text contrast and 3:1 unfocused
+form-control boundaries. The shell exposes a skip link and native header,
+navigation, and main landmarks; view navigation and the account menu have
+deterministic keyboard state; motion respects the operating-system preference;
+and the account menu retains Account security as its first focus target
+whenever the server capability makes it available.
+
+The 320 px and 390 px layouts keep navigation horizontally operable and present
+authentication as a bounded mobile sheet. The active-circle selector renders
+required, ready, switching, and error states without changing the session-bound
+selection protocol or its stale-response fences. Pairing progress exposes the
+same server-derived boundary as a named progressbar. Visible copy describes
+only current behavior: invitations are distinct from session links, reminders
+are email-only, catalogue counts describe approved exercises currently
+available, and external exercise or AI content remains authorization-gated.
+Placeholder screen sharing and the static deployment-copy action are removed.
+
+**Alternatives.** Merging the old UI branches would also restore obsolete auth
+and pairing assumptions, including a menu that hides Account security and
+controls that imply unsupported behavior. A framework rewrite could improve
+component isolation but would widen this release far beyond the shell and put
+the current auth, roster, retention, catalogue, and active-circle race handling
+at risk. Static readiness badges were rejected because readiness is a runtime
+property. Copy-only pseudo-status was rejected in favor of accessible state on
+the real controls. A later component migration remains possible behind focused
+tests once product behavior is stable.
+
+## ID-24: Open only dated availability at the active-circle boundary
+
+Status: implemented behind the independent, default-off
+`MULTI_CIRCLE_AVAILABILITY_ENABLED` flag; ID-23 records the accessible shell.
+
+**Decision.** Multi-circle accounts may read and update dated availability for
+the circle selected by their live authenticated session. The client never
+supplies a circle identifier to the availability endpoint. An explicit session
+context requires the exact context-version header, while implicit compatibility
+requires exactly one active, non-archived circle with no stored context.
+
+GET is treated as a write because it can materialize a cycle. GET and POST both
+revalidate the exact live session hash, account, active membership,
+non-archived circle, and context generation inside each write-transaction
+attempt before materialization or mutation. POST repeats that authority in its
+final SQL predicate. Context or authority failures return no availability
+state. Successful and same-context conflict responses echo the exact generation
+so the browser can fence values, pending work, notices, and rollover timers by
+account, circle, and context.
+
+The existing circle-scoped v3 cycle and decision tables are sufficient; there
+is no v13. Primary first use preserves the legacy account-value bridge. A
+secondary circle's first cycle always uses `cycle_default`, and a pre-existing
+secondary legacy bridge fails closed. All other pairing, history, schedule,
+chat, execution, workspace, video, and AI routes retain the existing
+`409 circle_feature_unavailable` boundary.
+
+**Alternatives.** Enabling the whole weekly workflow was rejected because its
+pairing, schedule, and collaboration records are not fully tenant-owned.
+Keeping availability blocked was safe but withheld the highest-value operation
+already backed by circle-scoped storage. Trusting a circle ID from the browser
+would turn routing input into authority and permit stale or forged scope
+selection. Adding v13 would create migration risk without strengthening the
+existing composite scope keys. Reusing the global legacy account flag in a
+secondary circle would leak a cross-circle default, so secondary first use is
+explicitly independent.
+
+**Rollout and recovery.** Keep the availability flag off until v12 and the
+control plane are healthy, rehearse two-circle isolation and switch/removal
+races in staging, then enable the availability flag independently. Roll back by
+disabling only that flag. Existing scoped rows remain inert and the legacy
+single-primary behavior resumes; no schema downgrade or data deletion is
+required.
+
+## ID-25: Gate invitation delivery explicitly and authorize the event's exact circle
+
+Status: implemented as a no-migration hardening increment. ID-23 records the
+accessible shell; ID-24 records active-circle availability.
+
+**Decision.** Production owner-created invitation email is disabled unless
+`INVITATION_EMAIL_DELIVERY_ENABLED` is exactly `true` and the existing
+membership, canonical origin, Resend sender, and purpose-specific encryption
+configuration are all valid. Provisioning a secret alone cannot activate a new
+outbound mail flow. When the gate is disabled or configuration is incomplete,
+invitation creation still commits and returns its single-use manual link, while
+resend remains unavailable because the recipient and bearer credential were
+not retained. The isolated development runtime keeps its provider-free local
+capture path without requiring the production gate.
+
+Dispatch and key-retirement readiness authorize the invitation's stored circle
+rather than assuming that circle is primary. The event must still bind the
+exact invitation, circle, actor, token hash, email hash, and sequence; the actor
+must currently be a real active owner of that same unarchived circle. Revoked,
+expired, consumed, rotated, archived-circle, former-owner, existing-member, and
+duplicate work remains suppressed or unclaimable. This permits a valid
+session-selected secondary-circle invitation created by the active-circle
+control plane to be delivered without weakening its transaction-time context
+fence or exposing the recipient or token.
+
+**Alternatives.** Treating secret presence as enablement has fewer settings but
+can unexpectedly start external delivery during configuration rollout. Keeping
+the primary-circle predicate avoids changing the old worker but silently drops
+legitimate secondary-circle invitations after active-circle selection was
+introduced. Encoding session context in the asynchronous event would expire
+before delivery and is unnecessary: immutable invitation/circle bindings plus
+live owner and circle checks provide the durable authorization boundary.
+
+**Operations.** Keep the gate false while provisioning and rotating secrets.
+Enable it first in staging, exercise local-capture and owned-domain Resend
+delivery/suppression, and only then enable it in production. Disabling the gate
+stops both new invitation-email enqueueing and worker dispatch while preserving
+manual invitation creation and queued encrypted events for a later safe resume.

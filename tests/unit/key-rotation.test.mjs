@@ -39,6 +39,7 @@ import {identityEmailHashConfigured} from '../../api/_identity-linking.js';
 const ENV_KEYS=[
   'NODE_ENV','JWT_SECRET','APP_URL','CIRCLE_MEMBERSHIP_ENABLED','EMAIL_PASSWORD_ACTIVATION_ENABLED',
   'PASSWORD_RESET_ENABLED','RESEND_API_KEY','RESEND_FROM',
+  'INVITATION_EMAIL_DELIVERY_ENABLED',
   'EMAIL_VERIFICATION_ENCRYPTION_KEY','EMAIL_VERIFICATION_ENCRYPTION_KEY_VERSION',
   'EMAIL_VERIFICATION_ENCRYPTION_PREVIOUS_KEYS','EMAIL_VERIFICATION_ENVELOPE_WRITE_VERSION',
   'PASSWORD_RESET_ENCRYPTION_KEY','PASSWORD_RESET_ENCRYPTION_KEY_VERSION',
@@ -175,6 +176,7 @@ test('purpose isolation rejects active-active, active-prior, and prior-prior mat
 test('every production key-ring entry point fails closed on cross-purpose reuse',()=>{
   Object.assign(process.env,{
     NODE_ENV:'production',APP_URL:'https://randori.example.test',CIRCLE_MEMBERSHIP_ENABLED:'true',
+    INVITATION_EMAIL_DELIVERY_ENABLED:'true',
     JWT_SECRET:'key-isolation-test-secret-at-least-32-bytes',
     RESEND_API_KEY:'re_rotation_test',RESEND_FROM:'Randori <mail@randori.example.test>',
     EMAIL_VERIFICATION_ENCRYPTION_KEY:KEY_1,EMAIL_VERIFICATION_ENCRYPTION_KEY_VERSION:'1',

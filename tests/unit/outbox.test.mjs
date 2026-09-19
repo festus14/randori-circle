@@ -77,6 +77,33 @@ function worker(db,handlers,overrides={}){
   });
 }
 
+function controlledMonotonicClock(startMs=0){
+  let nowMs=startMs;
+  let nextId=1;
+  const timers=new Map();
+  const clock=Object.freeze({
+    now:()=>nowMs,
+    setTimeout(callback,delayMs){
+      const handle={id:nextId,unref(){}};
+      nextId+=1;
+      timers.set(handle,{handle,callback,at:nowMs+Math.max(0,Number(delayMs)||0)});
+      return handle;
+    },
+    clearTimeout(handle){ timers.delete(handle); },
+  });
+  return {
+    clock,
+    runNext(){
+      const next=[...timers.values()].sort((left,right)=>left.at-right.at||left.handle.id-right.handle.id)[0];
+      if(!next) throw new Error('controlled clock has no pending timer');
+      nowMs=next.at;
+      timers.delete(next.handle);
+      next.callback();
+    },
+    get pendingTimers(){ return timers.size; },
+  };
+}
+
 async function row(db,id=1){
   return (await db.execute({sql:'SELECT * FROM outbox_events WHERE id=?',args:[id]})).rows[0];
 }
@@ -329,7 +356,9 @@ test('a real database gives all five application event types a fair first claim 
     WHERE event_type=? AND status='pending'`,args:[eventTypes[0]]})).rows[0].count),2);
 });
 
-test('a slow provider is deadline-capped without starving another type or stranding its lease',async()=>{
+test('a slow provider is deadline-capped without starving another type or stranding its lease',{
+  timeout:5_000,
+},async()=>{
   const {db}=await fixture();
   await enqueueOutboxEvent(db,event({eventType:'alpha.notification',deliveryTimeoutMs:1000}));
   await enqueueOutboxEvent(db,event({eventType:'alpha.notification',sequence:3,
@@ -338,16 +367,39 @@ test('a slow provider is deadline-capped without starving another type or strand
     idempotencyKey:'test/v1/deadline-alpha-3',deliveryTimeoutMs:1000}));
   await enqueueOutboxEvent(db,event({eventType:'beta.notification',sequence:2,
     idempotencyKey:'test/v1/deadline-beta',deliveryTimeoutMs:1000}));
-  const startedAt=performance.now();
-  const result=await runOutboxInvocation({
+  const scheduler=controlledMonotonicClock();
+  const started=[];
+  let alphaSignal=null;
+  let releaseHandlersStarted;
+  const handlersStarted=new Promise(resolve=>{ releaseHandlersStarted=resolve; });
+  const markStarted=type=>{
+    started.push(type);
+    if(started.length===2) releaseHandlersStarted();
+  };
+  const invocation=runOutboxInvocation({
     db,workerId:'deadline-invocation',handlers:{
-      'alpha.notification':()=>new Promise(()=>{}),
-      'beta.notification':async()=>({providerName:'capture',providerMessageId:'beta-delivered'}),
+      'alpha.notification':(_current,{signal})=>{
+        alphaSignal=signal;
+        markStarted('alpha.notification');
+        return new Promise(()=>{});
+      },
+      'beta.notification':async()=>{
+        markStarted('beta.notification');
+        return {providerName:'capture',providerMessageId:'beta-delivered'};
+      },
     },eventTypes:['alpha.notification','beta.notification'],maxClaims:2,
-    deadlineAtMs:startedAt+350,finalizationReserveMs:100,minimumDispatchWindowMs:100,
+    deadlineAtMs:350,finalizationReserveMs:100,minimumDispatchWindowMs:100,
     leaseDurationMs:1000,heartbeatIntervalMs:0,baseBackoffMs:1000,maxBackoffMs:1000,
+    clock:scheduler.clock,
   });
-  assert.ok(performance.now()-startedAt<700,'the worker must not wait for the event-level one-second timeout');
+  await handlersStarted;
+  assert.deepEqual(started,['alpha.notification','beta.notification']);
+  scheduler.runNext();
+  const result=await invocation;
+  assert.equal(scheduler.clock.now(),250,'the shared deadline caps the one-second provider timeout');
+  assert.equal(scheduler.pendingTimers,0);
+  assert.equal(alphaSignal?.aborted,true);
+  assert.equal(alphaSignal?.reason?.code,'INVOCATION_DEADLINE');
   assert.equal(result.deadlineReached,true);
   assert.equal(result.perType['alpha.notification'].retried,1);
   assert.equal(result.perType['beta.notification'].delivered,1);
@@ -362,35 +414,62 @@ test('a slow provider is deadline-capped without starving another type or strand
   ]);
 });
 
-test('a claim that consumes the dispatch window dead-letters its exhausted event without provider work',async()=>{
+test('a claim that consumes the dispatch window dead-letters its exhausted event without provider work',{
+  timeout:5_000,
+},async()=>{
   const {db}=await fixture();
   await enqueueOutboxEvent(db,event({eventType:'alpha.notification',maxAttempts:1}));
+  const scheduler=controlledMonotonicClock();
+  let markClaimStarted;
+  const claimStarted=new Promise(resolve=>{ markClaimStarted=resolve; });
+  let releaseClaim;
+  const claimGate=new Promise(resolve=>{ releaseClaim=resolve; });
+  let markLateFinalized;
+  const lateFinalized=new Promise(resolve=>{ markLateFinalized=resolve; });
   const delayedDb={
     execute:db.execute.bind(db),
-    transaction:db.transaction.bind(db),
+    async transaction(mode){
+      const transaction=await db.transaction(mode);
+      return {
+        execute:transaction.execute.bind(transaction),
+        rollback:transaction.rollback.bind(transaction),
+        close:transaction.close?.bind(transaction),
+        async commit(){
+          const committed=await transaction.commit();
+          markLateFinalized();
+          return committed;
+        },
+      };
+    },
     async batch(statements,mode){
       if(String(statements?.[0]?.sql||'').includes('ROW_NUMBER() OVER')){
-        await new Promise(resolve=>setTimeout(resolve,80));
+        markClaimStarted();
+        await claimGate;
       }
       return db.batch(statements,mode);
     },
   };
   let handlerCalls=0;
-  const startedAt=performance.now();
-  const result=await runOutboxInvocation({
+  const invocation=runOutboxInvocation({
     db:delayedDb,workerId:'slow-claim-invocation',
     handlers:{'alpha.notification':async()=>{ handlerCalls+=1; return {}; }},
     eventTypes:['alpha.notification'],maxClaims:1,
-    deadlineAtMs:startedAt+225,finalizationReserveMs:100,minimumDispatchWindowMs:100,
+    deadlineAtMs:225,finalizationReserveMs:100,minimumDispatchWindowMs:100,
     leaseDurationMs:1000,heartbeatIntervalMs:0,baseBackoffMs:1000,maxBackoffMs:1000,
+    clock:scheduler.clock,
   });
+  await claimStarted;
+  scheduler.runNext();
+  const result=await invocation;
   assert.equal(handlerCalls,0);
   assert.equal(result.claimed,0,'the invocation stops waiting before the delayed claim completes');
   assert.equal(result.deadLettered,0);
   assert.equal(result.retried,0);
   assert.equal(result.deadlineReached,true);
-  assert.ok(performance.now()-startedAt<80);
-  await new Promise(resolve=>setTimeout(resolve,100));
+  assert.equal(scheduler.clock.now(),25);
+  assert.equal(scheduler.pendingTimers,0);
+  releaseClaim();
+  await lateFinalized;
   const stored=await row(db);
   assert.equal(stored.status,'dead_letter');
   assert.equal(stored.last_error_code,'INVOCATION_DEADLINE');
@@ -509,6 +588,27 @@ test('global invocation preserves lost leases and reports an empty queue without
   assert.deepEqual(empty.perType['alpha.notification'],{
     claimed:0,delivered:0,suppressed:0,retried:0,deadLettered:0,leaseLost:0,
   });
+  const customDefaultDeadline=controlledMonotonicClock(1_000_000);
+  const emptyWithDefault=await runOutboxInvocation({db,workerId:'default-clock-invocation',
+    handlers:{'alpha.notification':async()=>({})},eventTypes:['alpha.notification'],maxClaims:1,
+    finalizationReserveMs:100,minimumDispatchWindowMs:100,
+    leaseDurationMs:1000,heartbeatIntervalMs:0,clock:customDefaultDeadline.clock,
+  });
+  assert.equal(emptyWithDefault.claimed,0);
+  assert.equal(emptyWithDefault.deadlineReached,false);
+  assert.equal(customDefaultDeadline.pendingTimers,0);
+  await assert.rejects(()=>runOutboxInvocation({db,workerId:'invalid-clock-invocation',
+    handlers:{'alpha.notification':async()=>({})},eventTypes:['alpha.notification'],maxClaims:1,
+    deadlineAtMs:1000,finalizationReserveMs:100,minimumDispatchWindowMs:100,
+    leaseDurationMs:1000,heartbeatIntervalMs:0,
+    clock:{now:()=>Number.NaN,setTimeout(){},clearTimeout(){}},
+  }),/monotonic clock/);
+  await assert.rejects(()=>runOutboxInvocation({db,workerId:'string-clock-invocation',
+    handlers:{'alpha.notification':async()=>({})},eventTypes:['alpha.notification'],maxClaims:1,
+    finalizationReserveMs:100,minimumDispatchWindowMs:100,
+    leaseDurationMs:1000,heartbeatIntervalMs:0,
+    clock:{now:()=>'1000',setTimeout(){},clearTimeout(){}},
+  }),/monotonic clock/);
 
   await enqueueOutboxEvent(db,event({eventType:'alpha.notification'}));
   const lost=await runOutboxInvocation({db,workerId:'lease-loss-invocation',

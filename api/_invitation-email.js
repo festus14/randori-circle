@@ -61,6 +61,7 @@ function invitationKeyRing({localRuntime=false,env=process.env}={}){
 
 export function invitationEmailConfiguration({localRuntime=false}={}){
   if(process.env.CIRCLE_MEMBERSHIP_ENABLED!=='true') return null;
+  if(!localRuntime&&process.env.INVITATION_EMAIL_DELIVERY_ENABLED!=='true') return null;
   if(!localRuntime&&(!String(process.env.RESEND_API_KEY||'').trim()
     ||!String(process.env.RESEND_FROM||'').trim())) return null;
   const origin=configuredOrigin({localRuntime});
@@ -203,7 +204,7 @@ function activeInvitationSql(){
       AND invitation.token_hash=? AND invitation.email_hash=?
       AND invitation.used_at IS NULL AND invitation.used_by IS NULL
       AND invitation.revoked_at IS NULL AND datetime(invitation.expires_at)>datetime('now')
-      AND circle.is_primary=1 AND circle.archived_at IS NULL
+      AND circle.archived_at IS NULL
       AND NOT EXISTS (
         SELECT 1 FROM auth_accounts recipient
         JOIN circle_memberships recipient_membership
@@ -227,7 +228,7 @@ function invitationPreflightSql(){
       AND invitation.token_hash=? AND invitation.email_hash=?
       AND invitation.used_at IS NULL AND invitation.used_by IS NULL
       AND invitation.revoked_at IS NULL AND datetime(invitation.expires_at)>datetime('now')
-      AND circle.is_primary=1 AND circle.archived_at IS NULL LIMIT 2`;
+      AND circle.archived_at IS NULL LIMIT 2`;
 }
 
 export function createInvitationEmailHandler({db,baseUrl,send,localRuntime=false}={}){
@@ -285,7 +286,7 @@ export async function invitationEmailKeyRotationStatus(db,{localRuntime=false}={
         ON json_extract(event.payload_json,'$.invitation_id')=invitation.id
       WHERE event.event_type=? AND invitation.used_at IS NULL AND invitation.used_by IS NULL
         AND invitation.revoked_at IS NULL AND datetime(invitation.expires_at)>datetime('now')
-        AND circle.is_primary=1 AND circle.archived_at IS NULL
+        AND circle.archived_at IS NULL
         AND EXISTS (
           SELECT 1 FROM circle_memberships owner_membership
           JOIN auth_accounts owner ON owner.id=owner_membership.user_id
