@@ -630,6 +630,7 @@ function apiRoute(pathname,query){
     '/api/auth':['auth',null],
     '/api/data':['data',null],
     '/api/invitations':['invitations','invitations'],
+    '/api/members':['members',null],
     '/api/ops':['ops',null],
     '/api/ai':['ai',null],
     '/api/video':['video',null],
@@ -703,13 +704,13 @@ function apiRoute(pathname,query){
 }
 
 async function loadDefaultRuntime(){
-  const [auth,data,invitations,ops,ai,video,database]=await Promise.all([
-    import('../api/auth.js'),import('../api/data.js'),import('../api/invitations.js'),
+  const [auth,data,invitations,members,ops,ai,video,database]=await Promise.all([
+    import('../api/auth.js'),import('../api/data.js'),import('../api/invitations.js'),import('../api/members.js'),
     import('../api/ops.js'),import('../api/ai.js'),import('../api/video.js'),import('../api/_db.js'),
   ]);
   return Object.freeze({
     handlers:Object.freeze({
-      auth:auth.default,data:data.default,invitations:invitations.default,
+      auth:auth.default,data:data.default,invitations:invitations.default,members:members.default,
       ops:ops.default,ai:ai.default,video:video.default,
     }),
     closeDatabase:database.closeLocalDevelopmentClient,

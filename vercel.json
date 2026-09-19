@@ -91,6 +91,10 @@
       "destination": "/api/invitations?endpoint=invitations&id=:id"
     },
     {
+      "source": "/api/members",
+      "destination": "/api/members?endpoint=members"
+    },
+    {
       "source": "/api/weeks",
       "destination": "/api/data?endpoint=weeks"
     },
