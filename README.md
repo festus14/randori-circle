@@ -47,7 +47,7 @@ This private-beta sync is whole-document compare-and-swap, not a CRDT: members s
   claim cap, and a 45-second request budget with five seconds reserved for
   lease finalization and aggregate metrics.
 - AI is disabled unless explicitly enabled and consented to.
-- Automated LeetCode retrieval is disabled without written authorisation. The app uses approved local content or outbound links.
+- Automated LeetCode retrieval and bundled third-party seed content have been removed. The app uses provenance-approved local content or authenticated outbound links only; a future adapter requires written authorisation and review.
 
 ## Architecture
 

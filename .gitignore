@@ -7,3 +7,5 @@ test-results/
 .env.*
 !.env.example
 .local/
+data/.randori-catalog-provenance.lock
+data/.randori-catalog-provenance.lock.stale-*

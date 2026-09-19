@@ -292,20 +292,17 @@ test('LeetCode detail and sync routes reject anonymous callers without network a
   assert.equal(sync.status, 401);
 });
 
-test('LeetCode synchronization keeps its explicit ingestion authorization gate', () => {
+test('LeetCode synchronization has no runtime ingestion implementation', () => {
   const source = readFileSync(new URL('../../api/data.js', import.meta.url), 'utf8');
   const start = source.indexOf('async function handleLeetcodeSync');
   const end = source.indexOf('async function pistonVersions', start);
   assert.ok(start >= 0 && end > start, 'could not locate the LeetCode sync handler');
 
   const handlerSource = source.slice(start, end);
-  const gate = handlerSource.search(
-    /process\.env\.LEETCODE_INGESTION_AUTHORIZED\s*!==\s*['"]true['"]/,
-  );
-  const ingestion = handlerSource.indexOf('leetListSlugs(');
-  assert.ok(gate >= 0, 'LeetCode sync must require LEETCODE_INGESTION_AUTHORIZED=true');
-  assert.ok(ingestion >= 0 && gate < ingestion, 'the ingestion gate must run before external fetching');
-  assert.match(handlerSource.slice(gate, ingestion), /status\(403\)/);
+  assert.match(handlerSource, /status\(410\)/);
+  assert.match(handlerSource, /automated_fetch:false/);
+  assert.doesNotMatch(handlerSource, /fetch\s*\(|custom_questions|LEETCODE_INGESTION_AUTHORIZED/);
+  assert.doesNotMatch(source, /leetcode\.com\/graphql|alfa-leetcode-api|leetcode-seed\.json/);
 });
 
 test('admin operations reject anonymous callers before database access', async () => {

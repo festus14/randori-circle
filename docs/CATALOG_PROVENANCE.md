@@ -29,9 +29,11 @@ constraints, examples, and language definitions. Object keys are sorted and
 array order is retained. Lifecycle and governance fields are excluded so an
 emergency takedown does not require rewriting the content digest.
 
-An active exercise is rejected at module startup and in CI when its provenance
-is absent, malformed, duplicated, tampered, unapproved, expired, or under
-takedown. Unknown manifest records also fail. Retired records remain in the
+An active exercise is rejected in CI and revalidated against the current UTC
+date on every bounded list, detail, trusted lookup, and evaluation operation.
+This prevents a warm serverless process from serving a review after it expires.
+Missing, malformed, duplicated, tampered, unapproved, expired, or revoked
+provenance fails closed. Unknown manifest records also fail. Retired records remain in the
 manifest for audit history; expired or revoked retired content is never listed,
 resolved, or executed. A dormant server-side generator may remain after an
 emergency retirement, but runtime lookup is still gated by the active catalogue
@@ -39,8 +41,9 @@ record. This makes a data-only takedown possible without weakening execution
 authorization.
 
 The current manifest contains only project-original exercises. It contains no
-LeetCode text or source reference. `data/leetcode-seed.json` remains legacy,
-non-authoritative data and is not read by this catalogue path.
+LeetCode text or source reference. The old bundled LeetCode-derived seed and
+remote fetch/sync implementation have been removed; the compatibility route can
+only return a manual external link.
 
 ## Validation
 
@@ -51,7 +54,7 @@ npm run validate:catalog
 ```
 
 The command validates the manifest, hashes, catalogue schema, review expiry,
-runtime generator coverage, and the import-time runtime build. It is included
+runtime generator coverage, and the runtime access gate. It is included
 in the required Linux `e2e` workflow. A content change without a corresponding
 review and hash update fails closed.
 
@@ -81,16 +84,21 @@ npm run catalog:takedown -- \
 Then rerun without `--dry-run`, inspect the two-file diff, run the full test
 suite, and ship through the normal PR path. The command accepts only one exact
 slug and version, bounded single-line metadata, and a real calendar date. It is
-idempotent for the same event and refuses to overwrite a different retirement
-or takedown event.
+idempotent for the same event and refuses to overwrite a different takedown
+event. If the exercise was already retired editorially, its original retirement
+date, reason, and replacement are preserved byte-for-byte.
 
-The command writes the revoked manifest first and the retired catalogue second.
+The command holds a mode-0600 interprocess lock, validates both complete files,
+and verifies their pre-write digests before replacement. Live locks and unsafe
+or symlinked files fail closed. A well-formed lock from a dead process can be
+recovered only after fifteen minutes. The command writes the revoked manifest
+first and the retired catalogue second.
 If interrupted between those renames, runtime validation sees active content
 with revoked provenance and refuses to start. Rerunning the same command repairs
 that safe partial state. A successful operation:
 
-1. marks catalogue status and retirement status `retired`;
-2. records date, reason, and no implicit replacement;
+1. marks active catalogue content `retired`, or preserves an existing retirement exactly;
+2. records the new retirement date and reason only for formerly active content;
 3. marks catalogue and manifest takedown state `revoked`;
 4. keeps the canonical content and rights evidence for audit history.
 
@@ -103,10 +111,16 @@ disputed content.
 
 The schema recognizes `open-license` and `written-authorization`, but that is
 not permission to add a source adapter. Open content needs an HTTPS source and
-license-evidence URL plus a concrete SPDX-style identifier. Written permission
+license-evidence URL plus an allowlisted SPDX identifier (`Apache-2.0`,
+`BSD-2-Clause`, `BSD-3-Clause`, `CC-BY-4.0`, `CC-BY-SA-4.0`, `CC0-1.0`, or
+`MIT`). Written permission
 needs a controlled repository evidence reference and a `LicenseRef-*`
 identifier. Any adapter additionally needs terms review, explicit feature
 gating, request limits, and its own release review.
+
+Public author names are display-only metadata. Email addresses, markup, control
+characters, and overlong values are rejected; private evidence stays outside
+the public API projection.
 
 Never authenticate to or automate a personal LeetCode account, reuse Premium
 cookies, copy LeetCode problem text, simulate human traffic, evade anti-bot

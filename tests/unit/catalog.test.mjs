@@ -89,6 +89,40 @@ test('the bundled original catalogue passes strict validation', () => {
   assert.deepEqual(SUPPORTED_LANGUAGES, ['javascript', 'python']);
 });
 
+test('a warm runtime rechecks review expiry on every catalogue operation', () => {
+  const suite = createEvaluationSuite(
+    'focus-block-rollup',
+    1,
+    'javascript',
+    { random: seededRandom(7) },
+  );
+  const RealDate = globalThis.Date;
+  const expiredNow = RealDate.parse('2027-09-19T00:00:00.000Z');
+  globalThis.Date = class ExpiredCatalogueDate extends RealDate {
+    constructor(...args) {
+      super(...(args.length ? args : [expiredNow]));
+    }
+
+    static now() {
+      return expiredNow;
+    }
+  };
+  try {
+    for (const operation of [
+      () => listPublicExercises(),
+      () => getPublicExercise('focus-block-rollup', 1),
+      () => getActiveExercise('focus-block-rollup', 1),
+      () => createEvaluationSuite('focus-block-rollup', 1, 'javascript'),
+      () => validateEvaluationSuite(suite),
+    ]) {
+      assertCatalogError(operation, /review\.expiresAt: expired before 2027-09-19/);
+    }
+  } finally {
+    globalThis.Date = RealDate;
+  }
+  assert.equal(listPublicExercises().length, 10);
+});
+
 test('public listing returns full active exercises without server-owned test data', () => {
   const exercises = listPublicExercises();
   assert.equal(exercises.length, 10);
@@ -691,16 +725,36 @@ test('validation enforces coherent takedown metadata', () => {
     reference: 'issue-123',
   };
   assert.equal(validateCatalog(coherentRequest, undefined, coherentProvenance).valid, true);
+
+  const futureRetirement = freshCatalog();
+  futureRetirement.exercises.at(-1).governance.retirement.retiredAt = '2026-09-20';
+  assertCatalogError(
+    () => validateCatalog(futureRetirement, undefined, freshProvenance(), { now: '2026-09-19' }),
+    /retiredAt: must not be in the future/,
+  );
+
+  const futureTakedown = freshCatalog();
+  futureTakedown.exercises.at(-1).governance.takedown = {
+    status: 'revoked', requestedAt: '2026-09-20', reference: 'issue-123',
+  };
+  const futureTakedownProvenance = freshProvenance();
+  futureTakedownProvenance.records.at(-1).takedown = {
+    status: 'revoked', effectiveAt: '2026-09-20', reference: 'issue-123',
+  };
+  assertCatalogError(
+    () => validateCatalog(futureTakedown, undefined, futureTakedownProvenance, { now: '2026-09-19' }),
+    /requestedAt: must not be in the future/,
+  );
 });
 
-test('validation requires retirement replacements to resolve to an active slug', () => {
+test('validation requires retirement replacements to resolve to a known historical slug', () => {
   const unknown = freshCatalog();
   unknown.exercises.at(-1).governance.retirement.replacement = 'missing-exercise';
-  assertCatalogError(() => validateCatalog(unknown), /must reference an active catalogue slug/);
+  assertCatalogError(() => validateCatalog(unknown), /must reference a known catalogue slug/);
 
   const retiredOnly = freshCatalog();
   retiredOnly.exercises.at(-1).governance.retirement.replacement = 'archived-session-streak';
-  assertCatalogError(() => validateCatalog(retiredOnly), /must reference an active catalogue slug/);
+  assert.equal(validateCatalog(retiredOnly).valid, true);
 });
 
 test('validation rejects private or unknown fields in public exercise records', () => {

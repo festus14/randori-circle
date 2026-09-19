@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { existsSync, readFileSync } from 'node:fs';
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   ProvenanceValidationError,
@@ -8,7 +14,7 @@ import {
   canonicalExerciseHash,
   validateProvenanceManifest,
 } from '../../api/_catalog-provenance.js';
-import { applyTakedown, parseTakedownArguments } from '../../scripts/catalog-provenance.mjs';
+import { applyTakedown, executeTakedown, parseTakedownArguments } from '../../scripts/catalog-provenance.mjs';
 
 const catalogPath = new URL('../../data/randori-catalog-v1.json', import.meta.url);
 const manifestPath = new URL('../../data/randori-catalog-provenance-v1.json', import.meta.url);
@@ -59,6 +65,11 @@ test('checked-in JSON Schema declares the same closed versioned record contract'
     schema.$defs.record.properties.takedown.properties.status.enum,
     ['clear', 'requested', 'revoked', 'resolved'],
   );
+  assert.deepEqual(
+    schema.$defs.record.allOf[1].then.properties.license.properties.identifier.enum,
+    ['Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'CC-BY-4.0', 'CC-BY-SA-4.0', 'CC0-1.0', 'MIT'],
+  );
+  assert.equal(schema.$defs.record.properties.author.properties.name.maxLength, 120);
 });
 
 test('canonical hashes ignore object insertion order but bind every public content field', () => {
@@ -161,6 +172,22 @@ test('active content fails closed when review is expired, rejected, or under tak
     () => validateProvenanceManifest(revoked.manifest, revoked.catalog, { now: '2026-09-19' }),
     /active content must not be under takedown/,
   );
+
+  const futureRevocation = fixtures();
+  futureRevocation.catalog.exercises.at(-1).governance.takedown = {
+    status: 'revoked', requestedAt: '2026-09-20', reference: 'issue-117',
+  };
+  futureRevocation.manifest.records.at(-1).takedown = {
+    status: 'revoked', effectiveAt: '2026-09-20', reference: 'issue-117',
+  };
+  assertProvenanceError(
+    () => validateProvenanceManifest(
+      futureRevocation.manifest,
+      futureRevocation.catalog,
+      { now: '2026-09-19' },
+    ),
+    /effectiveAt: must not be in the future/,
+  );
 });
 
 test('source policy rejects vague or unsupported rights claims', () => {
@@ -185,12 +212,30 @@ test('source policy rejects vague or unsupported rights claims', () => {
     statement: fakeOpen.catalog.exercises[0].governance.provenance,
   };
   fakeOpen.manifest.records[0].license = {
-    identifier: 'LicenseRef-Vague', name: 'unknown', evidence: 'none',
+    identifier: 'FAKE-1.0', name: 'unknown', evidence: 'https://example.test/license',
   };
   assertProvenanceError(
     () => validateProvenanceManifest(fakeOpen.manifest, fakeOpen.catalog),
-    /open content must use a concrete SPDX-style identifier/,
+    /not in the approved SPDX allowlist/,
   );
+
+  const approvedOpen = fixtures();
+  approvedOpen.manifest.records[0].source = {
+    type: 'open-license',
+    reference: 'https://example.test/original-source',
+    statement: 'Openly licensed source reviewed for authorized reuse.',
+  };
+  approvedOpen.catalog.exercises[0].governance.provenance = 'Openly licensed source reviewed for authorized reuse.';
+  approvedOpen.manifest.records[0].license = {
+    identifier: 'CC-BY-4.0',
+    name: 'Creative Commons Attribution 4.0 International',
+    evidence: 'https://creativecommons.org/licenses/by/4.0/',
+  };
+  assert.equal(validateProvenanceManifest(
+    approvedOpen.manifest,
+    approvedOpen.catalog,
+    { now: '2026-09-19' },
+  ).valid, true);
 
   const vagueAuthorization = fixtures();
   vagueAuthorization.manifest.records[0].source = {
@@ -204,6 +249,14 @@ test('source policy rejects vague or unsupported rights claims', () => {
   assertProvenanceError(
     () => validateProvenanceManifest(vagueAuthorization.manifest, vagueAuthorization.catalog),
     /authorization evidence must use a controlled repository reference/,
+  );
+
+  const identifyingAuthor = fixtures();
+  identifyingAuthor.manifest.records[0].author.name = 'maintainer@example.test';
+  identifyingAuthor.catalog.exercises[0].governance.rightsOwner = 'maintainer@example.test';
+  assertProvenanceError(
+    () => validateProvenanceManifest(identifyingAuthor.manifest, identifyingAuthor.catalog),
+    /author\.name: must not contain email, markup, or control data/,
   );
 });
 
@@ -250,6 +303,26 @@ test('takedown retires one exact record, validates, and is idempotent', () => {
   assert.equal(catalog.exercises[0].status, 'active', 'input remains unchanged');
 });
 
+test('an identical takedown preserves a pre-existing retirement exactly', () => {
+  const { catalog, manifest } = fixtures();
+  const exercise = catalog.exercises.at(-1);
+  const originalRetirement = structuredClone(exercise.governance.retirement);
+  const options = {
+    slug: exercise.slug,
+    version: exercise.version,
+    reference: 'issue-117',
+    date: '2026-09-19',
+    reason: 'This must not replace the prior editorial retirement.',
+    now: '2026-09-19',
+  };
+  const first = applyTakedown(catalog, manifest, options);
+  assert.equal(first.changed, true);
+  assert.deepEqual(first.catalog.exercises.at(-1).governance.retirement, originalRetirement);
+  const second = applyTakedown(first.catalog, first.manifest, options);
+  assert.equal(second.changed, false);
+  assert.deepEqual(second.catalog.exercises.at(-1).governance.retirement, originalRetirement);
+});
+
 test('takedown refuses unknown targets and conflicting lifecycle events', () => {
   const unknown = fixtures();
   assert.throws(() => applyTakedown(unknown.catalog, unknown.manifest, {
@@ -266,4 +339,190 @@ test('takedown refuses unknown targets and conflicting lifecycle events', () => 
     slug: 'focus-block-rollup', version: 1, reference: 'issue-118', date: '2026-09-20', reason: 'Review.',
     now: '2026-09-20',
   }), /different takedown event/);
+
+  const invalidOtherRecord = fixtures();
+  invalidOtherRecord.catalog.exercises[1].title = '';
+  assert.throws(() => applyTakedown(invalidOtherRecord.catalog, invalidOtherRecord.manifest, {
+    slug: 'focus-block-rollup', version: 1, reference: 'issue-117', date: '2026-09-19', reason: 'Review.',
+    now: '2026-09-19',
+  }), /catalog\.exercises\[1\]\.title/);
+});
+
+async function temporaryCatalogueFiles() {
+  const directory = await mkdtemp(join(tmpdir(), 'randori-provenance-'));
+  const catalogUrl = new URL(`file://${directory}/catalog.json`);
+  const manifestUrl = new URL(`file://${directory}/provenance.json`);
+  const lockUrl = new URL(`file://${directory}/operator.lock`);
+  const { catalog, manifest } = fixtures();
+  await Promise.all([
+    writeFile(catalogUrl, `${JSON.stringify(catalog, null, 2)}\n`),
+    writeFile(manifestUrl, `${JSON.stringify(manifest, null, 2)}\n`),
+  ]);
+  return { directory, catalogUrl, manifestUrl, lockUrl };
+}
+
+function takedownOptions(overrides = {}) {
+  return {
+    slug: 'focus-block-rollup',
+    version: 1,
+    reference: 'issue-117',
+    date: '2026-09-19',
+    reason: 'Emergency rights review.',
+    now: '2026-09-19',
+    dryRun: false,
+    ...overrides,
+  };
+}
+
+test('file takedown writes a validated pair and recovers an interrupted manifest-first write', async () => {
+  const paths = await temporaryCatalogueFiles();
+  try {
+    await assert.rejects(
+      executeTakedown(takedownOptions(), {
+        ...paths,
+        lockNow: '2026-09-19T12:00:00.000Z',
+        afterManifestRename() { throw new Error('simulated interruption'); },
+      }),
+      /simulated interruption/,
+    );
+    const partialCatalog = JSON.parse(await readFile(paths.catalogUrl, 'utf8'));
+    const partialManifest = JSON.parse(await readFile(paths.manifestUrl, 'utf8'));
+    assert.equal(partialCatalog.exercises[0].status, 'active');
+    assert.equal(partialManifest.records[0].takedown.status, 'revoked');
+    assert.equal(existsSync(paths.lockUrl), false);
+
+    const recovered = await executeTakedown(takedownOptions(), {
+      ...paths, lockNow: '2026-09-19T12:01:00.000Z',
+    });
+    assert.equal(recovered.changed, true);
+    const finalCatalog = JSON.parse(await readFile(paths.catalogUrl, 'utf8'));
+    const finalManifest = JSON.parse(await readFile(paths.manifestUrl, 'utf8'));
+    assert.equal(finalCatalog.exercises[0].status, 'retired');
+    assert.equal(finalManifest.records[0].takedown.status, 'revoked');
+  } finally {
+    await rm(paths.directory, { recursive: true, force: true });
+  }
+});
+
+test('file takedown recovers only a stale dead-process lock and rejects symlink targets', async () => {
+  const stale = await temporaryCatalogueFiles();
+  try {
+    await writeFile(stale.lockUrl, `${JSON.stringify({
+      version: 1,
+      pid: 2_147_483_647,
+      createdAt: '2026-09-19T11:00:00.000Z',
+      nonce: '00000000-0000-4000-8000-000000000000',
+    })}\n`);
+    const result = await executeTakedown(takedownOptions({ dryRun: true }), {
+      ...stale,
+      lockNow: '2026-09-19T12:00:00.000Z',
+      staleLockMs: 1_000,
+    });
+    assert.equal(result.changed, true);
+    assert.equal(existsSync(stale.lockUrl), false);
+  } finally {
+    await rm(stale.directory, { recursive: true, force: true });
+  }
+
+  const unsafe = await temporaryCatalogueFiles();
+  try {
+    const realCatalog = new URL(`file://${unsafe.directory}/real-catalog.json`);
+    await writeFile(realCatalog, await readFile(unsafe.catalogUrl));
+    await rm(unsafe.catalogUrl);
+    await symlink(realCatalog, unsafe.catalogUrl);
+    await assert.rejects(
+      executeTakedown(takedownOptions({ dryRun: true }), {
+        ...unsafe, lockNow: '2026-09-19T12:00:00.000Z',
+      }),
+      /catalogue must be a regular non-symlink file/,
+    );
+    assert.equal(existsSync(unsafe.lockUrl), false);
+  } finally {
+    await rm(unsafe.directory, { recursive: true, force: true });
+  }
+});
+
+function runTakedownWorker(paths, reference, holdLockMs) {
+  const child = spawn(process.execPath, [
+    fileURLToPath(new URL('../support/catalog-takedown-worker.mjs', import.meta.url)),
+    fileURLToPath(paths.catalogUrl),
+    fileURLToPath(paths.manifestUrl),
+    fileURLToPath(paths.lockUrl),
+    reference,
+    String(holdLockMs),
+  ], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  return { child, result: once(child, 'close').then(([code]) => ({ code, stdout, stderr })) };
+}
+
+test('the interprocess lock prevents concurrent takedowns from losing an update', async () => {
+  const paths = await temporaryCatalogueFiles();
+  try {
+    const first = runTakedownWorker(paths, 'issue-117', 500);
+    const deadline = Date.now() + 2_000;
+    while (!existsSync(paths.lockUrl) && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(existsSync(paths.lockUrl), true, 'first worker did not acquire the lock');
+    const second = runTakedownWorker(paths, 'issue-118', 0);
+    const [firstResult, secondResult] = await Promise.all([first.result, second.result]);
+    assert.equal(firstResult.code, 0, firstResult.stderr);
+    assert.equal(secondResult.code, 1);
+    assert.match(secondResult.stderr, /another catalogue operation holds the lock/);
+
+    const catalog = JSON.parse(await readFile(paths.catalogUrl, 'utf8'));
+    const manifest = JSON.parse(await readFile(paths.manifestUrl, 'utf8'));
+    assert.equal(catalog.exercises[0].governance.takedown.reference, 'issue-117');
+    assert.equal(manifest.records[0].takedown.reference, 'issue-117');
+    assert.equal(existsSync(paths.lockUrl), false);
+  } finally {
+    await rm(paths.directory, { recursive: true, force: true });
+  }
+});
+
+test('the pre-write digest check rejects a non-cooperating concurrent edit', async () => {
+  const paths = await temporaryCatalogueFiles();
+  try {
+    const operation = executeTakedown(takedownOptions(), {
+      ...paths,
+      lockNow: '2026-09-19T12:00:00.000Z',
+      holdLockMs: 250,
+    });
+    const rejected = assert.rejects(operation, /catalogue files changed after validation/);
+    const deadline = Date.now() + 2_000;
+    while (!existsSync(paths.lockUrl) && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    const current = await readFile(paths.manifestUrl, 'utf8');
+    await writeFile(paths.manifestUrl, `${current.trimEnd()}  \n`);
+    await rejected;
+    const catalog = JSON.parse(await readFile(paths.catalogUrl, 'utf8'));
+    const manifest = JSON.parse(await readFile(paths.manifestUrl, 'utf8'));
+    assert.equal(catalog.exercises[0].status, 'active');
+    assert.equal(manifest.records[0].takedown.status, 'clear');
+    assert.equal(existsSync(paths.lockUrl), false);
+  } finally {
+    await rm(paths.directory, { recursive: true, force: true });
+  }
+});
+
+test('the operator lock itself cannot be redirected through a symlink', async () => {
+  const paths = await temporaryCatalogueFiles();
+  try {
+    const victim = new URL(`file://${paths.directory}/victim.lock`);
+    await writeFile(victim, 'do-not-touch\n');
+    await symlink(victim, paths.lockUrl);
+    await assert.rejects(
+      executeTakedown(takedownOptions({ dryRun: true }), {
+        ...paths, lockNow: '2026-09-19T12:00:00.000Z',
+      }),
+      /operator lock is unsafe/,
+    );
+    assert.equal(await readFile(victim, 'utf8'), 'do-not-touch\n');
+  } finally {
+    await rm(paths.directory, { recursive: true, force: true });
+  }
 });

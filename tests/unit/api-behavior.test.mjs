@@ -2222,7 +2222,7 @@ test('questions expose only the active original catalogue and make no LeetCode o
     'ordinary requests must not create the legacy schedule uniqueness index');
 });
 
-test('bundled legacy seed ingestion runs only through admin init', async () => {
+test('admin init never imports a bundled third-party question seed', async () => {
   executeHandler = sql => {
     if (sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')) return rows([{ id: 1, email: 'admin@example.test', is_admin: 1 }]);
     if (sql.includes('SELECT id FROM circles WHERE is_primary=1')) return rows([{ id: 1 }]);
@@ -2233,7 +2233,7 @@ test('bundled legacy seed ingestion runs only through admin init', async () => {
     method: 'POST', url: '/api/init', query: { endpoint: 'init' }, headers: { 'x-test-auth': 'admin' },
   });
   assert.equal(initialized.status, 200);
-  assert.equal(executed.some(call => call.sql.includes('INSERT INTO custom_questions')), true);
+  assert.equal(executed.some(call => call.sql.includes('INSERT INTO custom_questions')), false);
   const dedupe = executed.findIndex(call => call.sql.includes('DELETE FROM pair_schedules WHERE id NOT IN'));
   const uniqueIndex = executed.findIndex(call => call.sql.includes('CREATE UNIQUE INDEX IF NOT EXISTS uq_pair_schedules_week_pair'));
   assert.ok(dedupe >= 0 && uniqueIndex > dedupe, 'legacy schedules must be deterministically deduped before the unique index');
@@ -2280,7 +2280,7 @@ test('data validation and access-control branches reject malformed or cross-pair
     [{ method: 'POST', url: '/api/runs', query: { endpoint: 'runs' }, headers, body: {} }, 405],
     [{ method: 'POST', url: '/api/execute', query: { endpoint: 'execute' }, headers, body: {} }, 400],
     [{ method: 'POST', url: '/api/leetcode', query: { endpoint: 'leetcode' }, headers }, 405],
-    [{ url: '/api/leetcode', query: { endpoint: 'leetcode' }, headers }, 403],
+    [{ url: '/api/leetcode', query: { endpoint: 'leetcode' }, headers }, 400],
     [{ method: 'PUT', url: '/api/logs', query: { endpoint: 'logs' }, headers }, 405],
     [{ url: '/api/not-real', query: { endpoint: 'not-real' }, headers }, 404],
   ];
@@ -2290,8 +2290,10 @@ test('data validation and access-control branches reject malformed or cross-pair
   }
 });
 
-test('LeetCode detail cannot publish cached content while authorization is disabled', async () => {
+test('LeetCode detail provides only a manual external link without cache or network access', async () => {
   let queriedCache = false;
+  let networkCalls = 0;
+  globalThis.fetch = async () => { networkCalls += 1; throw new Error('network must remain disabled'); };
   executeHandler = sql => {
     if (sql.includes('FROM custom_questions WHERE leetcode_slug=')) queriedCache = true;
     return rows();
@@ -2301,18 +2303,25 @@ test('LeetCode detail cannot publish cached content while authorization is disab
     query: { endpoint: 'leetcode', slug: 'two-sum' },
     headers: { 'x-test-auth': 'admin' },
   });
-  assert.equal(result.status, 403);
-  assert.match(result.body.error, /written authorization/i);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, {
+    ok:true,
+    content_available:false,
+    source:'external-link',
+    slug:'two-sum',
+    external_url:'https://leetcode.com/problems/two-sum/',
+    automated_fetch:false,
+  });
   assert.equal(queriedCache, false);
+  assert.equal(networkCalls, 0);
 });
 
-test('authorized LeetCode detail remains admin-only', async () => {
+test('an obsolete authorization flag cannot enable cached or remote LeetCode content', async () => {
   process.env.LEETCODE_INGESTION_AUTHORIZED = 'true';
   let queriedCache = false;
+  let networkCalls = 0;
+  globalThis.fetch = async () => { networkCalls += 1; throw new Error('network must remain disabled'); };
   executeHandler = sql => {
-    if (sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')) {
-      return rows([{ id: 2, email: 'user@example.test', is_admin: 0 }]);
-    }
     if (sql.includes('FROM custom_questions WHERE leetcode_slug=')) queriedCache = true;
     return rows();
   };
@@ -2321,38 +2330,28 @@ test('authorized LeetCode detail remains admin-only', async () => {
     query: { endpoint: 'leetcode', slug: 'two-sum' },
     headers: { 'x-test-auth': 'user' },
   });
-  assert.equal(result.status, 403);
-  assert.match(result.body.error, /admin only/i);
+  assert.equal(result.status, 200);
+  assert.equal(result.body.content_available, false);
+  assert.equal(result.body.automated_fetch, false);
   assert.equal(queriedCache, false);
+  assert.equal(networkCalls, 0);
 });
 
-test('authorized LeetCode ingestion parses approved remote metadata through mocked HTTP only', async () => {
+test('LeetCode synchronization is permanently unavailable without a reviewed adapter', async () => {
   process.env.LEETCODE_INGESTION_AUTHORIZED = 'true';
-  globalThis.fetch = async url => {
-    if (String(url).includes('leetcode.com/graphql')) {
-      return new Response(JSON.stringify({ data: { question: {
-        title: 'Two Sum', titleSlug: 'two-sum', difficulty: 'Easy',
-        content: '<p>Example 1:</p><pre>Input: nums = [2,7,11,15], target = 9\nOutput: [0,1]</pre><p>Constraints: 2 <= nums.length <= 100</p>',
-        exampleTestcases: '[2,7,11,15]\n9', topicTags: [{ slug: 'array' }],
-      } } }), { status: 200 });
-    }
-    if (String(url).includes('alfa-leetcode-api')) {
-      return new Response(JSON.stringify({ exampleTestcases: '[3,2,4]\n6', content: '' }), { status: 200 });
-    }
-    throw new Error(`unexpected network target: ${url}`);
-  };
-  executeHandler = sql => {
-    if (sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')) return rows([{ id: 1, email: 'admin@example.test', is_admin: 1 }]);
-    return rows();
-  };
+  let networkCalls = 0;
+  let writes = 0;
+  globalThis.fetch = async () => { networkCalls += 1; throw new Error('network must remain disabled'); };
+  executeHandler = sql => { if (/\b(?:INSERT|UPDATE)\b/i.test(sql)) writes += 1; return rows(); };
   const result = await invoke(dataHandler, {
     method: 'POST', url: '/api/leetcode/sync', query: { endpoint: 'leetcode-sync', slug: 'two-sum' },
     headers: { 'x-test-auth': 'admin' }, body: {},
   });
-  assert.equal(result.status, 200);
-  assert.equal(result.body.synced_count, 1);
-  assert.equal(result.body.synced[0].slug, 'two-sum');
-  assert.ok(result.body.synced[0].test_cases_count >= 2);
+  assert.equal(result.status, 410);
+  assert.match(result.body.error, /unavailable.*external-link workflow/i);
+  assert.equal(result.body.automated_fetch, false);
+  assert.equal(networkCalls, 0);
+  assert.equal(writes, 0);
 });
 
 test('AI consent path stores a template analysis and exposes owned feedback history', async () => {

@@ -20,6 +20,46 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["key", "slug", "version", "source", "author", "license", "attribution", "contentHash", "review", "takedown"],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "source": { "properties": { "type": { "const": "original" } } } }
+          },
+          "then": {
+            "properties": { "license": { "properties": { "identifier": { "const": "LicenseRef-Randori-Original" } } } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "source": { "properties": { "type": { "const": "open-license" } } } }
+          },
+          "then": {
+            "properties": {
+              "license": {
+                "properties": {
+                  "identifier": {
+                    "enum": ["Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "CC-BY-4.0", "CC-BY-SA-4.0", "CC0-1.0", "MIT"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "source": { "properties": { "type": { "const": "written-authorization" } } } }
+          },
+          "then": {
+            "properties": {
+              "license": {
+                "properties": {
+                  "identifier": { "pattern": "^LicenseRef-[A-Za-z0-9][A-Za-z0-9.-]*$" }
+                }
+              }
+            }
+          }
+        }
+      ],
       "properties": {
         "key": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*@[1-9][0-9]*$" },
         "slug": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
@@ -39,7 +79,12 @@
           "additionalProperties": false,
           "required": ["name", "kind"],
           "properties": {
-            "name": { "type": "string", "minLength": 1 },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120,
+              "pattern": "^[^@<>\\u0000-\\u001f\\u007f]+$"
+            },
             "kind": { "enum": ["person", "organization", "collective"] }
           }
         },

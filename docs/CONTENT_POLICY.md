@@ -10,7 +10,14 @@ Last reviewed: 2026-09-18
 
 Randori Circle ships interview exercises that the project is entitled to use. The default catalogue contains original material authored for this project. Content provenance is part of the product data, not an informal note.
 
-The legacy `data/leetcode-seed.json` file is excluded from the default catalogue. Its presence does not authorise publication, execution, syncing, or remote ingestion. No production catalogue flow may sign in to, crawl, scrape, imitate human traffic to, or evade controls on a third-party platform. A future third-party adapter requires documented permission, terms review, explicit feature gating, rate limits, and a separate release review.
+The legacy `data/leetcode-seed.json` payload and runtime remote-ingestion code
+have been removed. The compatibility endpoint returns only an authenticated,
+manually opened external problem link; its sync endpoint is permanently
+unavailable. No production catalogue flow may sign in to, crawl, scrape,
+imitate human traffic to, or evade controls on a third-party platform. A future
+third-party adapter requires documented permission, terms review, explicit
+feature gating, rate limits, provenance integration, and a separate release
+review.
 
 ## Required record
 

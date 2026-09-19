@@ -4,6 +4,7 @@ import rawCatalog from '../data/randori-catalog-v1.json' with { type: 'json' };
 import rawProvenanceManifest from '../data/randori-catalog-provenance-v1.json' with { type: 'json' };
 import {
   ProvenanceValidationError,
+  validationDate,
   validateProvenanceManifest,
 } from './_catalog-provenance.js';
 
@@ -555,7 +556,7 @@ function validateLanguageMap(languages, path) {
   }
 }
 
-function validateGovernance(governance, status, path) {
+function validateGovernance(governance, status, path, today) {
   requireExactKeys(
     governance,
     ['rightsOwner', 'provenance', 'reviewDate', 'attribution', 'retirement', 'takedown'],
@@ -580,6 +581,7 @@ function validateGovernance(governance, status, path) {
     }
   } else {
     requireIsoDate(retirement.retiredAt, `${retirementPath}.retiredAt`);
+    if (retirement.retiredAt > today) fail(`${retirementPath}.retiredAt`, 'must not be in the future');
     requireNonEmptyString(retirement.reason, `${retirementPath}.reason`);
   }
 
@@ -593,6 +595,7 @@ function validateGovernance(governance, status, path) {
     }
   } else {
     requireIsoDate(takedown.requestedAt, `${takedownPath}.requestedAt`);
+    if (takedown.requestedAt > today) fail(`${takedownPath}.requestedAt`, 'must not be in the future');
     requireNonEmptyString(takedown.reference, `${takedownPath}.reference`);
   }
   if (status === 'active' && takedown.status !== 'none') {
@@ -600,7 +603,7 @@ function validateGovernance(governance, status, path) {
   }
 }
 
-function validateExercise(exercise, index) {
+function validateExercise(exercise, index, today) {
   const path = `catalog.exercises[${index}]`;
   requireExactKeys(
     exercise,
@@ -633,7 +636,7 @@ function validateExercise(exercise, index) {
     requireNonEmptyString(example.explanation, `${examplePath}.explanation`);
   });
   validateLanguageMap(exercise.languages, `${path}.languages`);
-  validateGovernance(exercise.governance, exercise.status, `${path}.governance`);
+  validateGovernance(exercise.governance, exercise.status, `${path}.governance`, today);
 }
 
 function validateSuite(suite, exerciseByKey, path = 'evaluationSuite') {
@@ -691,6 +694,7 @@ export function validateCatalog(
   provenanceManifest = rawProvenanceManifest,
   options = {},
 ) {
+  const today = validationDate(options.now ?? new Date());
   requireExactKeys(catalog, ['schemaVersion', 'catalog', 'exercises'], 'catalog');
   if (catalog.schemaVersion !== 1) fail('catalog.schemaVersion', 'must equal 1');
   requireExactKeys(catalog.catalog, ['id', 'title', 'contentPolicy', 'supportedLanguages'], 'catalog.catalog');
@@ -711,7 +715,7 @@ export function validateCatalog(
   const activeSlugs = new Set();
   const exerciseByKey = new Map();
   catalog.exercises.forEach((exercise, index) => {
-    validateExercise(exercise, index);
+    validateExercise(exercise, index, today);
     const key = `${exercise.slug}@${exercise.version}`;
     if (exerciseKeys.has(key)) {
       fail(`catalog.exercises[${index}]`, 'duplicates another exercise slug and version');
@@ -725,12 +729,13 @@ export function validateCatalog(
     }
     exerciseByKey.set(key, exercise);
   });
+  const catalogueSlugs = new Set(catalog.exercises.map(exercise => exercise.slug));
   catalog.exercises.forEach((exercise, index) => {
     const replacement = exercise.governance.retirement.replacement;
-    if (replacement !== null && !activeSlugs.has(replacement)) {
+    if (replacement !== null && !catalogueSlugs.has(replacement)) {
       fail(
         `catalog.exercises[${index}].governance.retirement.replacement`,
-        'must reference an active catalogue slug',
+        'must reference a known catalogue slug',
       );
     }
   });
@@ -792,7 +797,6 @@ function publicProjection(exercise) {
   };
 }
 
-validateCatalog(rawCatalog, SERVER_EXERCISE_DEFINITIONS);
 const catalog = deepFreeze(clone(rawCatalog));
 const provenanceManifest = deepFreeze(clone(rawProvenanceManifest));
 const exerciseByKey = new Map(
@@ -807,7 +811,15 @@ const activeExerciseBySlug = new Map(
     .map(exercise => [exercise.slug, exercise]),
 );
 
+function assertRuntimeCatalogueCurrent() {
+  // This is deliberately evaluated on every bounded catalogue operation. A
+  // warm serverless process must stop serving content when its review expires;
+  // module-import validation alone would leave that process stale indefinitely.
+  validateCatalog(catalog, SERVER_EXERCISE_DEFINITIONS, provenanceManifest, { now: new Date() });
+}
+
 function activeExercise(slug, version) {
+  assertRuntimeCatalogueCurrent();
   if (typeof slug !== 'string') return null;
   if (version === undefined) return activeExerciseBySlug.get(slug) || null;
   if (!Number.isSafeInteger(version) || version < 1) return null;
@@ -817,6 +829,7 @@ function activeExercise(slug, version) {
 
 /** Return complete public records for all active exercises. */
 export function listPublicExercises() {
+  assertRuntimeCatalogueCurrent();
   return catalog.exercises
     .filter(exercise => exercise.status === 'active')
     .map(publicProjection);
@@ -836,6 +849,7 @@ export function getActiveExercise(slug, version) {
 
 /** Validate one generated server-side suite without exposing it through a public API. */
 export function validateEvaluationSuite(suite) {
+  assertRuntimeCatalogueCurrent();
   validateSuite(suite, exerciseByKey);
   return Object.freeze({ valid: true, testCount: suite.tests.length });
 }

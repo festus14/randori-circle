@@ -7,6 +7,15 @@ const TAKEDOWN_STATUSES = new Set(['clear', 'requested', 'revoked', 'resolved'])
 const HASH_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const RECORD_KEY_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*@[1-9]\d*$/;
 const ORIGINAL_STATEMENT = 'Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.';
+const OPEN_LICENSE_IDENTIFIERS = new Set([
+  'Apache-2.0',
+  'BSD-2-Clause',
+  'BSD-3-Clause',
+  'CC-BY-4.0',
+  'CC-BY-SA-4.0',
+  'CC0-1.0',
+  'MIT',
+]);
 
 const CONTENT_FIELDS = Object.freeze([
   'slug',
@@ -74,10 +83,20 @@ function parseIsoDate(value, path) {
   return value;
 }
 
-function validationDate(now) {
+export function validationDate(now = new Date()) {
   const parsed = now instanceof Date ? new Date(now.valueOf()) : new Date(now);
   if (Number.isNaN(parsed.valueOf())) fail('validation.now', 'must be a valid date');
   return parsed.toISOString().slice(0, 10);
+}
+
+function requirePublicAuthor(value, path) {
+  requireText(value, path);
+  if ([...value].length > 120 || Buffer.byteLength(value, 'utf8') > 480) {
+    fail(path, 'must be at most 120 characters and 480 UTF-8 bytes');
+  }
+  if (/@|mailto:|[<>]|[\p{Cc}\p{Cf}]/iu.test(value)) {
+    fail(path, 'must not contain email, markup, or control data');
+  }
 }
 
 function canonicalJson(value) {
@@ -124,14 +143,14 @@ function validateSource(source, license, path) {
       fail(`${path}.source.statement`, 'must use the reviewed original-content attestation');
     }
   } else if (source.type === 'open-license') {
-    if (!/^[A-Za-z0-9][A-Za-z0-9.+-]*$/.test(license.identifier) || license.identifier.startsWith('LicenseRef-')) {
-      fail(`${path}.license.identifier`, 'open content must use a concrete SPDX-style identifier');
+    if (!OPEN_LICENSE_IDENTIFIERS.has(license.identifier)) {
+      fail(`${path}.license.identifier`, 'is not in the approved SPDX allowlist for open content');
     }
     if (!/^https:\/\//.test(source.reference) || !/^https:\/\//.test(license.evidence)) {
       fail(path, 'open content must link to HTTPS source and license evidence');
     }
   } else {
-    if (!license.identifier.startsWith('LicenseRef-')) {
+    if (!/^LicenseRef-[A-Za-z0-9][A-Za-z0-9.-]*$/.test(license.identifier)) {
       fail(`${path}.license.identifier`, 'written authorization must use a LicenseRef identifier');
     }
     if (!license.evidence.startsWith('repository://')) {
@@ -153,7 +172,7 @@ function validateReview(review, path) {
   requireText(review.reviewer, `${path}.reviewer`);
 }
 
-function validateTakedown(takedown, path) {
+function validateTakedown(takedown, path, today) {
   requireExactKeys(takedown, ['status', 'effectiveAt', 'reference'], path);
   if (!TAKEDOWN_STATUSES.has(takedown.status)) fail(`${path}.status`, 'is unsupported');
   if (takedown.status === 'clear') {
@@ -162,7 +181,8 @@ function validateTakedown(takedown, path) {
     }
     return;
   }
-  parseIsoDate(takedown.effectiveAt, `${path}.effectiveAt`);
+  const effectiveAt = parseIsoDate(takedown.effectiveAt, `${path}.effectiveAt`);
+  if (effectiveAt > today) fail(`${path}.effectiveAt`, 'must not be in the future');
   requireText(takedown.reference, `${path}.reference`);
 }
 
@@ -182,7 +202,7 @@ function validateRecord(record, index, exercise, today) {
   if (record.key !== `${record.slug}@${record.version}`) fail(`${path}.key`, 'must match slug and version');
 
   requireExactKeys(record.author, ['name', 'kind'], `${path}.author`);
-  requireText(record.author.name, `${path}.author.name`);
+  requirePublicAuthor(record.author.name, `${path}.author.name`);
   if (!AUTHOR_KINDS.has(record.author.kind)) fail(`${path}.author.kind`, 'is unsupported');
   validateSource(record.source, record.license, path);
   if (record.source.type === 'original') {
@@ -196,7 +216,7 @@ function validateRecord(record, index, exercise, today) {
   requireText(record.attribution, `${path}.attribution`);
   if (!HASH_PATTERN.test(record.contentHash)) fail(`${path}.contentHash`, 'must be sha256:<64 lowercase hex characters>');
   validateReview(record.review, `${path}.review`);
-  validateTakedown(record.takedown, `${path}.takedown`);
+  validateTakedown(record.takedown, `${path}.takedown`, today);
 
   if (!exercise) fail(path, 'does not match a catalogue exercise');
   if (record.contentHash !== canonicalExerciseHash(exercise)) {

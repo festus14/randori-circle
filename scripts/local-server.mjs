@@ -943,7 +943,6 @@ function installRuntimeEnvironment(config,url,secret,envTarget=process.env){
     RANDORI_LOCAL_RUNTIME:'true',
     RANDORI_LOCAL_IDENTITY:'true',
     RANDORI_LOCAL_FIRST_USER_ADMIN:'false',
-    LEETCODE_INGESTION_AUTHORIZED:'false',
     GOOGLE_CLIENT_ID:'',
     GOOGLE_CLIENT_SECRET:'',
     RESEND_API_KEY:'',
