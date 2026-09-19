@@ -401,6 +401,11 @@ test('a delayed member mutation cannot restore an old-circle roster during a swi
   let releaseSwitch!:()=>void;
   const switchStarted=new Promise<void>(resolve=>{ markSwitchStarted=resolve; });
   const switchGate=new Promise<void>(resolve=>{ releaseSwitch=resolve; });
+  let holdOldCircleInvitations=false;
+  let markOldCircleRenderBlocked!:()=>void;
+  let releaseOldCircleRender!:()=>void;
+  const oldCircleRenderBlocked=new Promise<void>(resolve=>{ markOldCircleRenderBlocked=resolve; });
+  const oldCircleRenderGate=new Promise<void>(resolve=>{ releaseOldCircleRender=resolve; });
   const circles=[
     {id:10,public_id:'circle-primary',name:'Primary',role:'owner',is_primary:true},
     {id:20,public_id:'circle-secondary',name:'Secondary',role:'owner',is_primary:false},
@@ -430,7 +435,14 @@ test('a delayed member mutation cannot restore an old-circle roster during a swi
       membership:{role:'owner'},circle:active==='circle-primary'?[owner,member]:[owner],
       count:active==='circle-primary'?2:1,circle_context_version:contextVersion,
     }),
-    '/api/invitations':()=>({ok:true,invitations:[],count:0,circle_context_version:contextVersion}),
+    '/api/invitations':async()=>{
+      if(holdOldCircleInvitations){
+        holdOldCircleInvitations=false;
+        markOldCircleRenderBlocked();
+        await oldCircleRenderGate;
+      }
+      return {ok:true,invitations:[],count:0,circle_context_version:contextVersion};
+    },
     '/api/members':async request=>{
       if(request.method()==='GET') return {ok:true,members:active==='circle-primary'?[
         {...owner,role:'owner',status:'active'},
@@ -461,9 +473,22 @@ test('a delayed member mutation cannot restore an old-circle roster during a swi
     await confirmAction(page,/Deactivate Circle Member/);
     await patchStarted;
 
+    // Hold an independent old-circle render after it has authorized the owner
+    // but before it reaches the lifecycle panel. This reproduces the Linux CI
+    // interleaving deterministically instead of relying on startup timing.
+    holdOldCircleInvitations=true;
+    const oldCircleInvitationResponse=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/invitations'
+      &&response.request().method()==='GET');
+    await page.locator('[data-tab="circle"]').click();
+    await oldCircleRenderBlocked;
+
     const selecting=selector.selectOption('circle-secondary');
     await switchStarted;
     const readsAtSwitch=circleReads;
+    releaseOldCircleRender();
+    const staleRenderResponse=await oldCircleInvitationResponse;
+    await staleRenderResponse.finished();
+    await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
     await expect(page.locator('[data-testid="circle-member-row"]')).toHaveCount(0);
     await expect(page.getByTestId('circle-lifecycle')).toBeHidden();
     await expect(page.locator('#circleOwnerPanel')).toBeHidden();
@@ -484,6 +509,7 @@ test('a delayed member mutation cannot restore an old-circle roster during a swi
   }finally{
     releasePatch();
     releaseSwitch();
+    releaseOldCircleRender();
   }
 });
 
