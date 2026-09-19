@@ -129,24 +129,33 @@ try{
 
 <style>
 :root{
-  --bg:#0f0f10;
-  --bg-2:#18181d;
-  --bg-3:#202028;
-  --bg-4:#272730;
-  --card:#18181d;
-  --card-2:#202028;
-  --border:#272730;
-  --line:#272730;
-  --line-strong:#32323e;
-  --ink:#e7e6e3;
-  --ink-2:#9aa0a6;
-  --ink-3:#6b7178;
+  color-scheme:dark;
+  --bg:#0d0e11;
+  --bg-2:#15171c;
+  --bg-3:#1d2027;
+  --bg-4:#252933;
+  --card:#15171c;
+  --card-2:#1d2027;
+  --border:#343943;
+  --control-border:#707988;
+  --line:#343943;
+  --line-strong:#4c5361;
+  --ink:#f5f5f2;
+  --ink-2:#c0c5ce;
+  --ink-3:#a3aab5;
   --accent:#c8f6a0;
   --accent-2:#c8f6a0;
-  --accent-3:#e8a0b0;
+  --accent-3:#ffb1c0;
   --accent-4:#a9b6ff;
   --ok:#c8f6a0;
   --warn:#f2d07a;
+  --bad:#ffb1c0;
+  --info:#a9b6ff;
+  --focus:#a9b6ff;
+  --ok-surface:#233523;
+  --warn-surface:#342e1c;
+  --bad-surface:#351f27;
+  --info-surface:#20263b;
   --radius:14px;
   --radius-sm:10px;
   --radius-xs:8px;
@@ -156,18 +165,31 @@ try{
   --gap:20px;
 }
 :root.light{
-  --bg:#f7f6f3;
+  color-scheme:light;
+  --bg:#f5f4f0;
   --bg-2:#ffffff;
-  --bg-3:#f0efed;
-  --bg-4:#e8e6e2;
+  --bg-3:#ebeae5;
+  --bg-4:#dfddd6;
   --card:#ffffff;
-  --card-2:#f0efed;
-  --border:#e6e2de;
-  --line:#e6e2de;
-  --line-strong:#d2cdc6;
-  --ink:#121012;
-  --ink-2:#6b6770;
-  --ink-3:#9a9692;
+  --card-2:#ebeae5;
+  --border:#c8c5bd;
+  --control-border:#77736c;
+  --line:#d1cec7;
+  --line-strong:#aaa69d;
+  --ink:#18171a;
+  --ink-2:#504d56;
+  --ink-3:#65616b;
+  --accent-3:#9e2746;
+  --accent-4:#324aa8;
+  --ok:#35651e;
+  --warn:#725500;
+  --bad:#9e2746;
+  --info:#324aa8;
+  --focus:#324aa8;
+  --ok-surface:#e5f1df;
+  --warn-surface:#f5ebcd;
+  --bad-surface:#f7e2e7;
+  --info-surface:#e4e8f7;
 }
 *{box-sizing:border-box}
 [hidden]{display:none!important}
@@ -215,7 +237,7 @@ p{margin:0}
 .brand small{display:block; font-size:11px; color:var(--ink-3); margin-top:2px; letter-spacing:.04em; text-transform:uppercase; font-weight:500}
 .top-actions{display:flex; align-items:center; gap:8px}
 .pill{
-  border:1px solid var(--border); background:var(--card);
+  border:1px solid var(--control-border); background:var(--card);
   border-radius:999px; padding:6px 12px;
   display:inline-flex; align-items:center; gap:7px;
   font-size:12.5px; font-weight:500; color:var(--ink-2); cursor:pointer;
@@ -255,7 +277,7 @@ p{margin:0}
 .small{font-size:12.5px; line-height:1.55}
 .row{display:flex; gap:8px; align-items:center; flex-wrap:wrap}
 .input,.textarea,.select{
-  width:100%; background:var(--bg-3); border:1px solid var(--border); color:var(--ink);
+  width:100%; background:var(--bg-3); border:1px solid var(--control-border); color:var(--ink);
   border-radius:10px; padding:10px 12px; outline:none; transition:.15s; font-size:13px;
 }
 .input::placeholder,.textarea::placeholder{color:var(--ink-3)}
@@ -269,8 +291,8 @@ p{margin:0}
 .btn:hover{filter:brightness(1.05); transform:translateY(-1px)}
 .btn:active{transform:translateY(0)}
 .btn:disabled{opacity:.5; pointer-events:none}
-.btn.secondary{background:var(--card-2); color:var(--ink); border-color:var(--border)}
-.btn.secondary:hover{background:#2a2a35; border-color:#353545}
+.btn.secondary{background:var(--card-2); color:var(--ink); border-color:var(--control-border)}
+.btn.secondary:hover{background:var(--bg-4); border-color:var(--line-strong)}
 .btn.ghost{background:transparent; color:var(--ink-2); border-color:transparent}
 .btn.ghost:hover{background:var(--bg-3); color:var(--ink)}
 .people{display:grid; gap:8px}
@@ -289,7 +311,7 @@ p{margin:0}
 }
 .pair .who{display:flex; align-items:center; gap:9px; flex-wrap:wrap}
 .topic-group{display:flex; gap:6px; flex-shrink:0}
-.chip{border:1px solid var(--border); background:var(--card-2); color:var(--ink-2); padding:6px 10px; border-radius:999px; font-size:11.5px; font-weight:500; cursor:pointer; transition:.14s}
+.chip{border:1px solid var(--control-border); background:var(--card-2); color:var(--ink-2); padding:6px 10px; border-radius:999px; font-size:11.5px; font-weight:500; cursor:pointer; transition:.14s}
 .chip.active{background:var(--ink); color:var(--bg); border-color:var(--ink)}
 .code-layout{display:grid; grid-template-columns:300px 1fr; gap:0; min-height:560px; border-radius:var(--radius); overflow:hidden; border:1px solid var(--border); background:var(--card)}
 .q-pane{background:var(--card); border-right:1px solid var(--border); display:flex; flex-direction:column; min-width:0}
@@ -318,7 +340,7 @@ p{margin:0}
 .run-out{border-top:1px solid var(--border); background:var(--card); max-height:200px; overflow:auto; padding:10px 12px; display:grid; gap:8px}
 .board-wrap{border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; background:var(--card); display:flex; flex-direction:column}
 .board-toolbar{display:flex; gap:6px; align-items:center; flex-wrap:wrap; padding:9px 10px; border-bottom:1px solid var(--border); background:var(--card)}
-.tool{width:36px; height:36px; border-radius:9px; border:1px solid var(--border); background:var(--bg-3); display:grid; place-items:center; cursor:pointer; color:var(--ink-2); transition:.14s}
+.tool{width:36px; height:36px; border-radius:9px; border:1px solid var(--control-border); background:var(--bg-3); display:grid; place-items:center; cursor:pointer; color:var(--ink-2); transition:.14s}
 .tool.active{background:var(--ink); color:var(--bg); border-color:var(--ink)}
 .color-dot{width:20px; height:20px; border-radius:999px; border:2px solid var(--card); cursor:pointer; box-shadow:0 0 0 1px var(--border)}
 .canvas-host{position:relative; flex:1; min-height:520px; overflow:hidden; background:
@@ -412,7 +434,7 @@ p{margin:0}
 .check-item{display:flex; align-items:center; gap:8px; font-size:12.8px; color:var(--ink-2)}
 .check-item.done{color:var(--ink); opacity:.85}
 .check-item.done .check-box{background:var(--accent); border-color:var(--accent); color:#0f0f10}
-.check-box{width:18px; height:18px; border-radius:6px; border:1.5px solid var(--border); display:grid; place-items:center; font-size:11px; font-weight:700; background:var(--bg-3)}
+.check-box{width:18px; height:18px; border-radius:6px; border:1.5px solid var(--control-border); display:grid; place-items:center; font-size:11px; font-weight:700; background:var(--bg-3)}
 
 /* --- New onboarding landing + profile + dashboard --- */
 .landing{
@@ -484,7 +506,87 @@ p{margin:0}
 @keyframes dots{ 0%,100%{ opacity:.3; transform:translateY(0) } 50%{ opacity:1; transform:translateY(-2px) } }
 .btn .spinner{ vertical-align:middle; margin-left:6px }
 
-/* anon tabs fix */ .tabs{ display:flex; } [data-tab=circle]{ } 
+/* anon tabs fix */ .tabs{ display:flex; } [data-tab=circle]{ }
+
+/* Accessible shell: strong focus, explicit state, and compact mobile layout. */
+.skip-link{
+  position:fixed; left:12px; top:8px; z-index:120; transform:translateY(-160%);
+  padding:9px 12px; border-radius:8px; background:var(--ink); color:var(--bg);
+  font-weight:600; text-decoration:none;
+}
+.skip-link:focus{transform:translateY(0)}
+.motion-probe{
+  position:fixed; width:1px; height:1px; overflow:hidden; clip-path:inset(50%);
+  animation:spin 1s linear infinite;
+}
+:where(a,button,input,select,textarea,[tabindex]):focus-visible{
+  outline:3px solid var(--focus); outline-offset:3px;
+}
+.input:focus,.textarea:focus,.select:focus{
+  border-color:var(--focus); background:var(--bg-3);
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 22%,transparent);
+}
+#authArea{position:relative}
+#meLabel{max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+#meMenu button:focus-visible{background:var(--bg-3)}
+.status-chip{background:var(--info-surface); border-color:var(--info); color:var(--info)}
+.status-chip.status-success{background:var(--ok-surface); border-color:var(--ok); color:var(--ok)}
+.status-chip.status-warning{background:var(--warn-surface); border-color:var(--warn); color:var(--warn)}
+.status-chip.status-danger{background:var(--bad-surface); border-color:var(--bad); color:var(--bad)}
+.log-badge{display:inline-block; min-width:44px; padding:2px 6px; border-radius:999px; font-size:10px; text-transform:uppercase}
+#circleContextPanel{
+  padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-3);
+}
+#circleContextPanel[data-state="required"]{border-color:var(--warn)}
+#circleContextPanel[data-state="switching"]{border-color:var(--info)}
+#circleContextPanel[data-state="error"]{border-color:var(--bad)}
+#circleContextPanel[data-state="required"] #circleContextStatus{color:var(--warn)}
+#circleContextPanel[data-state="switching"] #circleContextStatus{color:var(--info)}
+#circleContextPanel[data-state="error"] #circleContextStatus{color:var(--bad)}
+
+@media(max-width:520px){
+  .topbar{padding:10px; display:grid; grid-template-columns:minmax(0,1fr); gap:8px}
+  .brand{gap:8px; min-width:0}
+  .mark{width:32px; height:32px; flex:0 0 auto}
+  .brand small{display:none}
+  .top-actions{width:100%; gap:6px; min-width:0; justify-content:space-between}
+  #authArea{min-width:0; flex:1}
+  #meLabel{max-width:min(210px,65vw); min-height:42px}
+  #meMenu{top:48px!important; right:0!important; min-width:190px!important}
+  #themeToggle{min-height:42px; padding-inline:10px}
+  .tabs{
+    width:calc(100% - 20px); margin:10px 10px 0; border-radius:12px;
+    flex-wrap:nowrap; justify-content:flex-start; overflow-x:auto; overscroll-behavior-inline:contain;
+    scrollbar-width:thin;
+  }
+  .tab{min-height:44px; padding:9px 12px}
+  .main{padding:12px 10px 76px}
+  .landing{padding:8px 0 40px; gap:16px}
+  .hero{padding:16px; gap:18px; border-radius:14px}
+  .hero h1{font-size:24px}
+  .cta-row .btn{width:100%; justify-content:center; min-height:44px}
+  .profile-setup{padding:0}
+  #dashStatsGrid{grid-template-columns:1fr!important}
+  .overlay{padding:0; align-items:flex-end}
+  #authDialog,#identityDialog{
+    max-width:none; max-height:min(92dvh,760px); overflow:auto;
+    border-radius:18px 18px 0 0; padding:18px 16px calc(18px + env(safe-area-inset-bottom));
+  }
+  .auth-actions-primary{width:100%; margin-left:0}
+  .auth-actions-primary .btn{flex:1; justify-content:center; min-height:44px}
+}
+
+@media(prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{
+    animation-duration:.01ms!important; animation-iteration-count:1!important;
+    transition-duration:.01ms!important; scroll-behavior:auto!important;
+  }
+}
+
+@media(forced-colors:active){
+  :where(a,button,input,select,textarea,[tabindex]):focus-visible{outline:3px solid Highlight}
+}
 </style>
 
 <script>
@@ -645,10 +747,12 @@ p{margin:0}
 
 </head>
 <body>
+<a class="skip-link" href="#appMain">Skip to main content</a>
+<span class="motion-probe" aria-hidden="true"></span>
 <div class="shell">
-  <div class="topbar">
+  <header class="topbar">
     <div class="brand">
-      <div class="mark">R</div>
+      <div class="mark" aria-hidden="true">R</div>
       <div>
         <h1>Randori Circle</h1>
         <small>Practice DSA + System Design together — Sunday pairing, live rooms, whiteboard.</small>
@@ -656,52 +760,53 @@ p{margin:0}
     </div>
     <div class="top-actions">
       <div id="authArea" class="row" style="gap:6px">
-        <span id="meLabel" class="pill" style="display:none; cursor:pointer; position:relative"></span>
-      <div id="meMenu" style="display:none; position:absolute; top:44px; right:60px; background:var(--bg-2); border:1px solid var(--border); border-radius:10px; padding:6px; min-width:120px; z-index:50; box-shadow:0 8px 24px rgba(0,0,0,.3)">
-        <button id="meIdentity" hidden disabled style="width:100%; text-align:left; background:none; border:none; color:var(--ink); padding:8px 10px; border-radius:8px; font-size:12.5px; cursor:pointer">Account security</button>
-        <button id="meSignOut" style="width:100%; text-align:left; background:none; border:none; color:var(--ink); padding:8px 10px; border-radius:8px; font-size:12.5px; cursor:pointer">Sign out</button>
-        <button id="meSignOutAll" style="width:100%; text-align:left; background:none; border:none; color:var(--warn); padding:8px 10px; border-radius:8px; font-size:12.5px; cursor:pointer">Sign out everywhere</button>
+        <button id="meLabel" class="pill" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="meMenu" style="display:none"></button>
+      <div id="meMenu" role="menu" aria-label="Account" style="display:none; position:absolute; top:44px; right:0; background:var(--bg-2); border:1px solid var(--border); border-radius:10px; padding:6px; min-width:170px; z-index:50; box-shadow:0 8px 24px rgba(0,0,0,.3)">
+        <button id="meIdentity" role="menuitem" tabindex="-1" hidden disabled style="width:100%; text-align:left; background:none; border:none; color:var(--ink); padding:8px 10px; border-radius:8px; font-size:12.5px; cursor:pointer">Account security</button>
+        <button id="meSignOut" role="menuitem" tabindex="-1" style="width:100%; text-align:left; background:none; border:none; color:var(--ink); padding:8px 10px; border-radius:8px; font-size:12.5px; cursor:pointer">Sign out</button>
+        <button id="meSignOutAll" role="menuitem" tabindex="-1" style="width:100%; text-align:left; background:none; border:none; color:var(--warn); padding:8px 10px; border-radius:8px; font-size:12.5px; cursor:pointer">Sign out everywhere</button>
       </div>
         <button id="authBtn" class="pill" title="Sign in / up">Sign in</button>
         <button id="signOutBtn" class="pill" style="display:none" title="Sign out">Sign out</button>
       </div>
-      <button id="themeToggle" class="pill" title="Toggle theme">◐ <span id="themeLabel">dark</span></button>
-      <button id="exportBtn" class="pill" title="Export notes" style="display:none">↗ export</button>
+      <button id="themeToggle" class="pill" type="button" title="Toggle theme" aria-label="Switch to light theme">◐ <span id="themeLabel">dark</span></button>
     </div>
+  </header>
+  <nav aria-label="Primary navigation">
+  <div class="tabs" role="group" aria-label="Application views">
+    <button id="tab-circle" class="tab active" type="button" aria-current="page" data-tab="circle">◍ Circle <span class="kbd" id="peopleCount">0</span></button>
+    <button id="tab-pair" class="tab" type="button" data-tab="pair">⇄ Pairing</button>
+    <button id="tab-code" class="tab" type="button" data-tab="code">〈〉 Code</button>
+    <button id="tab-board" class="tab" type="button" data-tab="board">◫ Board</button>
+    <button id="tab-history" class="tab" type="button" data-tab="history">↺ History</button>
   </div>
-  <div class="tabs" role="tablist">
-    <button class="tab active" data-tab="circle">◍ Circle <span class="kbd" id="peopleCount">0</span></button>
-    <button class="tab" data-tab="pair">⇄ Pairing</button>
-    <button class="tab" data-tab="code">〈〉 Code</button>
-    <button class="tab" data-tab="board">◫ Board</button>
-    <button class="tab" data-tab="history">↺ History</button>
-  </div>
-  <div class="main">
+  </nav>
+  <main id="appMain" class="main" tabindex="-1">
 
     <!-- LANDING (anonymous only) -->
-    <section id="view-landing" class="view" style="display:none">
+    <section id="view-landing" class="view" aria-labelledby="landingTitle" style="display:none">
       <div class="landing">
         <div class="hero">
           <div>
             <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><span class="kbd" style="background:var(--accent);color:#0f0f10;border-color:var(--accent)">new</span><span class="small muted">Sunday pairing • DSA + System Design</span></div>
-            <h1>Randori Circle<br/>Practice <span style="background:var(--accent); color:#0f0f10; padding:0 8px; border-radius:8px">together</span></h1>
+            <h1 id="landingTitle">Randori Circle<br/>Practice <span style="background:var(--accent); color:#0f0f10; padding:0 8px; border-radius:8px">together</span></h1>
             <div class="hero-sub">A small circle of friends who mock-interview each other on a weekly cycle. No recruiters, no trios — an odd member gets a solo practice room.</div>
             <div class="bullets">
-              <div class="bullet"><span class="dot" style="margin-top:6px"></span><span><b>Join a private circle</b> — use verified Google access approved by the circle owner.</span></div>
+              <div class="bullet"><span class="dot" style="margin-top:6px"></span><span><b>Join a private circle</b> — use an invitation with the sign-in options enabled by its owner.</span></div>
               <div class="bullet"><span class="dot" style="margin-top:6px;background:#a9b6ff"></span><span><b>Pick your focus</b> — DSA, System Design, or both. You decide with your partner.</span></div>
               <div class="bullet"><span class="dot" style="margin-top:6px;background:#e8a0b0"></span><span><b>Meet + drill</b> — agree a time, chat, then jump into live code / whiteboard / video.</span></div>
             </div>
             <div class="cta-row">
-              <button id="landingSignup" class="btn" style="padding:11px 18px; font-size:14px">Join the circle</button>
+              <button id="landingSignup" class="btn" style="padding:11px 18px; font-size:14px">Use an invitation</button>
               <button id="landingSignin" class="btn secondary" style="padding:11px 18px;">Sign in</button>
             </div>
-            <div class="small muted" style="margin-top:10px">Join 50+ mock interviewers • Free • Dark-first</div>
+            <div class="small muted" style="margin-top:10px">Invite-only private beta • Weekly practice with your circle</div>
           </div>
           <div style="display:grid; gap:10px">
-            <div class="mock-card"><div class="row" style="justify-content:space-between"><b style="font-size:12px">Current cycle</b><span class="kbd">weekly</span></div><div class="pair" style="padding:8px"><div class="who"><span class="avatar" style="background:#c8f6a0">FC</span><b style="font-size:12px">You × Priya Shah</b></div><span class="kbd">DSA • agreed together</span></div><div class="small muted">You set the time together — no auto-scheduling nag.</div></div>
+            <div class="mock-card"><div class="row" style="justify-content:space-between"><b style="font-size:12px">Example weekly cycle</b><span class="kbd">illustration</span></div><div class="pair" style="padding:8px"><div class="who"><span class="avatar" style="background:#c8f6a0">FC</span><b style="font-size:12px">You × a circle member</b></div><span class="kbd">DSA • agreed together</span></div><div class="small muted">Published pairings stay fixed for the cycle; you agree the session time together.</div></div>
             <div id="landingStats" class="card" style="padding:12px; border:1px dashed var(--border); background:var(--bg-2)"><div class="row" style="gap:10px; flex-wrap:wrap; justify-content:space-between"><span class="small muted">Circle Pulse • live</span><span id="landingStatsUpdated" class="kbd" style="font-size:10px">loading…</span></div><div class="grid-3" style="margin-top:10px; gap:10px; display:grid; grid-template-columns:repeat(3,1fr)"><div style="text-align:center"><div id="statMembers" style="font-size:22px; font-weight:600">—</div><div class="small muted">members</div></div><div style="text-align:center"><div id="statWeeks" style="font-size:22px; font-weight:600">—</div><div class="small muted">weeks paired</div></div><div style="text-align:center"><div id="statSessions" style="font-size:22px; font-weight:600">—</div><div class="small muted">pairings made</div></div></div></div>
-      <div id="landingNext" class="card" style="border-color:#c8f6a0; background:color-mix(in srgb, var(--accent) 8%, var(--bg-2))"><div class="card-h" style="padding:10px 12px"><h2 style="font-size:13px">Next pairing run</h2><span id="landingNextCountdown" class="kbd">Loading schedule…</span></div><div class="card-b" style="padding:10px 12px"><div style="font-size:13px"><b id="landingNextLabel">Loading the next cycle…</b><div class="small muted" id="landingNextSub" style="margin-top:4px">Pairings publish once per cycle. Sign up before the displayed cutoff to be included.</div></div><div id="landingNextBar" style="margin-top:10px; height:6px; background:var(--bg-3); border-radius:999px; overflow:hidden"><div id="landingNextProg" style="height:100%; width:40%; background:var(--accent)"></div></div></div></div>
-      <div class="mock-card"><b style="font-size:12px">What people say</b><div class="small" style="color:var(--ink-2)">“Got me through Stripe & DeepL loops. AI feedback nailed my weak spots with exact quotes.” — Festus, London</div></div>
+      <div id="landingNext" class="card" style="border-color:var(--ok); background:color-mix(in srgb, var(--accent) 8%, var(--bg-2))"><div class="card-h" style="padding:10px 12px"><h2 style="font-size:13px">Next pairing run</h2><span id="landingNextCountdown" class="kbd">Loading schedule…</span></div><div class="card-b" style="padding:10px 12px"><div style="font-size:13px"><b id="landingNextLabel">Loading the next cycle…</b><div class="small muted" id="landingNextSub" style="margin-top:4px">Pairings publish once per cycle. Sign up before the displayed cutoff to be included.</div></div><div id="landingNextBar" role="progressbar" aria-label="Time elapsed in the weekly pairing cycle" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="Loading the weekly pairing schedule" style="margin-top:10px; height:6px; background:var(--bg-3); border-radius:999px; overflow:hidden"><div id="landingNextProg" style="height:100%; width:0; background:var(--accent)"></div></div></div></div>
+      <div class="mock-card"><b style="font-size:12px">Private by default</b><div class="small" style="color:var(--ink-2)">Circle membership, pair rooms, and account access are authorization-gated. Exercise evaluation cases remain on the server.</div></div>
           </div>
         </div>
       </div>
@@ -741,9 +846,9 @@ p{margin:0}
         <div class="card">
           <div class="card-h"><h2>You’re invited to Randori</h2><span>private circle</span></div>
           <div class="card-b" style="display:grid;gap:14px">
-            <p id="inviteInstructions" class="small muted" style="line-height:1.6;margin:0">Confirm the Google account that received this invitation. The invitation is single-use and expires automatically.</p>
+            <p id="inviteInstructions" class="small muted" style="line-height:1.6;margin:0">Checking which sign-in options are available for this single-use invitation.</p>
             <div id="inviteStatus" data-testid="invite-status" class="small muted" role="status" aria-live="polite">Checking invitation…</div>
-            <div><button id="inviteContinue" data-testid="invite-continue" class="btn" type="button" disabled>Continue with Google</button></div>
+            <div><button id="inviteContinue" data-testid="invite-continue" class="btn" type="button" disabled>Continue</button></div>
           </div>
         </div>
       </div>
@@ -769,7 +874,7 @@ p{margin:0}
           </div>
           <div><label class="small muted">Interview focus</label><div id="psFocus" class="pill-choice" style="margin-top:6px"><button class="chip" data-focus="dsa">DSA</button><button class="chip" data-focus="system">System Design</button><button class="chip active" data-focus="both">Both</button></div></div>
           <div class="row" style="justify-content:space-between; align-items:center; gap:12px; padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-3)"><div><b style="font-size:12.5px">Weekly availability</b><div class="small muted">Availability belongs to a specific pairing cycle and is managed from Pairing.</div></div><button id="psAvailabilityLink" class="pill" type="button">Manage availability</button></div>
-          <div id="psRemindRow" class="row" style="justify-content:space-between; align-items:center; padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-3)"><div><b style="font-size:12.5px">Remind me</b><div class="small muted">Email + SMS when paired</div></div><div class="row" style="gap:8px"><label class="pill" style="cursor:pointer"><input id="psRemindEmail" type="checkbox" checked style="margin-right:4px"/> 📧</label><label class="pill" style="cursor:pointer"><input id="psRemindSms" type="checkbox" style="margin-right:4px"/> 📱</label></div></div>
+          <div id="psRemindRow" class="row" style="justify-content:space-between; align-items:center; padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-3)"><div><b style="font-size:12.5px">Email reminders</b><div class="small muted">Receive an email when paired</div></div><label class="pill" style="cursor:pointer"><input id="psRemindEmail" type="checkbox" checked style="margin-right:4px"/> Email</label></div>
           <div class="row" style="justify-content:flex-end"><button id="psSave" class="btn">Save & continue →</button></div>
         </div>
       </div>
@@ -782,10 +887,10 @@ p{margin:0}
           <div><h2 id="dashWelcome">Welcome back</h2><div id="dashSub" class="small muted">Checking pairings…</div></div>
           <div class="row"><span id="dashAvailBadge" class="kbd">Checking availability…</span><button id="dashProfileBtn" class="pill">Edit profile</button></div>
         </div>
-        <div id="dashStatsGrid" style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:14px 0">
-          <div class="card" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Your pairings</div><div id="dashStatYou" style="font-size:20px; font-weight:600; margin-top:4px">—</div><div class="small muted" id="dashStatYouSub" style="font-size:11px">across — weeks</div></div>
-          <div class="card" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Circle</div><div id="dashStatCircle" style="font-size:20px; font-weight:600; margin-top:4px">—</div><div class="small muted" style="font-size:11px"><span id="dashStatCircleSub">members</span> • <span id="dashStatWeeks">— weeks</span></div></div>
-          <div class="card" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Next pairing run</div><div id="dashNextLabel" style="font-size:13px; font-weight:600; margin-top:4px">Loading the next cycle…</div><div class="small muted" id="dashNextCount" style="font-size:11px; margin-top:2px">calculating…</div></div>
+        <div id="dashStatsGrid" role="list" aria-label="Circle summary" style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:14px 0">
+          <div class="card" role="listitem" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Your pairings</div><div id="dashStatYou" style="font-size:20px; font-weight:600; margin-top:4px">—</div><div class="small muted" id="dashStatYouSub" style="font-size:11px">across — weeks</div></div>
+          <div class="card" role="listitem" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Circle</div><div id="dashStatCircle" style="font-size:20px; font-weight:600; margin-top:4px">—</div><div class="small muted" style="font-size:11px"><span id="dashStatCircleSub">members</span> • <span id="dashStatWeeks">— weeks</span></div></div>
+          <div class="card" role="listitem" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Next pairing run</div><div id="dashNextLabel" style="font-size:13px; font-weight:600; margin-top:4px">Loading the next cycle…</div><div class="small muted" id="dashNextCount" style="font-size:11px; margin-top:2px">calculating…</div></div>
         </div>
         <div style="margin:6px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Next session</h3><div style="flex:1;height:1px;background:var(--border)"></div></div>
         <div id="dashPairArea"></div>
@@ -796,7 +901,7 @@ p{margin:0}
         <div style="margin:14px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Recent runs</h3><div style="flex:1;height:1px;background:var(--border)"></div><button id="recentRunsRefresh" class="pill" style="font-size:11px">refresh</button></div>
 
         <div id="recentRunsArea" class="card" style="padding:10px"><div id="recentRunsList" class="small muted">No runs yet — hit ▶ Run</div></div>
-        <div id="logsArea" class="card" style="padding:10px; display:none; margin-top:12px; border-color:#2a2e38"><div style="display:flex; justify-content:space-between; align-items:center"><h3 style="font-size:12.5px; margin:0; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Logs <span class="kbd" style="font-size:10px; margin-left:6px">admin</span></h3><span class="row" style="gap:6px"><select id="logsLevelSel" class="select" style="font-size:11px; padding:4px 8px"><option value="" selected>all levels</option><option value="error">error</option><option value="warn">warn</option><option value="success">success</option><option value="info">info</option><option value="debug">debug</option></select><button id="logsRefresh" class="pill" style="font-size:11px">refresh</button><button id="logsClear" class="pill" style="font-size:11px">clear view</button></span></div><div id="logsList" class="small muted" style="margin-top:8px; max-height:320px; overflow:auto; font-family:ui-monospace, monospace; font-size:11.5px; display:grid; gap:4px">Loading…</div><div class="small muted" style="margin-top:6px">Batched client+server logs — auto every 20s, admin can filter by level/event. Backed by Sentry-ready hook (see _randori_log). For prod monitoring consider Sentry or Better Stack (see console).</div></div>
+        <div id="logsArea" class="card" style="padding:10px; display:none; margin-top:12px; border-color:var(--border)"><div style="display:flex; justify-content:space-between; align-items:center"><h3 style="font-size:12.5px; margin:0; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Logs <span class="kbd" style="font-size:10px; margin-left:6px">admin</span></h3><span class="row" style="gap:6px"><select id="logsLevelSel" class="select" style="font-size:11px; padding:4px 8px"><option value="" selected>all levels</option><option value="error">error</option><option value="warn">warn</option><option value="success">success</option><option value="info">info</option><option value="debug">debug</option></select><button id="logsRefresh" class="pill" style="font-size:11px">refresh</button><button id="logsClear" class="pill" style="font-size:11px">clear view</button></span></div><div id="logsList" class="small muted" style="margin-top:8px; max-height:320px; overflow:auto; font-family:ui-monospace, monospace; font-size:11.5px; display:grid; gap:4px">Loading…</div><div class="small muted" style="margin-top:6px">Batched client+server logs — auto every 20s, admin can filter by level/event. Backed by Sentry-ready hook (see _randori_log). For prod monitoring consider Sentry or Better Stack (see console).</div></div>
         <div id="dashSignOutWrap" style="margin-top:12px;text-align:right; display:block"><button id="dashSignOut" class="pill" style="font-size:12px;opacity:.75">Sign out</button></div>
         <div id="dashEmpty" data-testid="dashboard-pair-state" data-state="loading" style="display:none" class="card"><div class="card-b"><b id="dashEmptyTitle">Checking your current cycle…</b><div id="dashEmptyMessage" class="small muted" style="margin-top:6px">Loading durable pairing state.</div><div class="row" style="margin-top:10px"><button class="pill" id="dashSoloCatalogue" type="button">Practice solo from catalogue</button><button class="pill" id="dashHow">How it works?</button></div></div></div>
       </div>
@@ -814,7 +919,7 @@ p{margin:0}
       <div class="row" style="margin-top:4px"><button id="chkStartTour" class="pill" style="font-size:11px">↺ Restart tour</button><span class="small muted" id="chkProgress">0/5</span></div>
     </div>
     <!-- CIRCLE -->
-    <section id="view-circle" class="view">
+    <section id="view-circle" class="view" tabindex="0">
       <div class="grid-2">
         <div class="card">
           <div class="card-h"><h2>Circle members</h2><span id="circleRoleLabel">private</span></div>
@@ -823,17 +928,18 @@ p{margin:0}
               <input id="personName" class="input" placeholder="Teammate name (testing only)" maxlength="32" />
               <button id="addPerson" class="btn">Add</button>
             </div>
-            <div id="circleContextPanel" hidden style="display:none;gap:5px">
+            <div id="circleContextPanel" data-state="hidden" hidden style="display:none;gap:5px">
               <label class="small muted" for="circleContextSelect">Active circle</label>
               <select id="circleContextSelect" data-testid="circle-context-select" class="select" aria-describedby="circleContextStatus"></select>
               <div id="circleContextStatus" class="small muted" role="status" aria-live="polite"></div>
+              <button id="circleContextRetry" class="pill" type="button" hidden>Retry circle selection</button>
             </div>
             <div id="circleAutoNote" class="small muted">Loading your private circle…</div>
             <div id="peopleList" data-testid="circle-members" class="people" aria-live="polite" aria-busy="true"></div>
             <div id="circleOwnerPanel" hidden style="display:none;gap:10px;border-top:1px solid var(--border);padding-top:12px">
               <div><b style="font-size:13px">Invite a member</b><div class="small muted" style="margin-top:3px">Invitations are email-bound, single-use, and expire after seven days.</div></div>
               <form id="circleInviteForm" class="row" style="align-items:flex-end">
-                <label class="small muted" style="display:grid;gap:5px;flex:1">Google account email
+                <label class="small muted" style="display:grid;gap:5px;flex:1">Invited member email
                   <input id="circleInviteEmail" data-testid="circle-invite-email" class="input" type="email" autocomplete="email" required placeholder="teammate@example.com" />
                 </label>
                 <button id="circleInviteCreate" data-testid="circle-invite-create" class="btn" type="submit">Create invite</button>
@@ -867,7 +973,7 @@ p{margin:0}
             <p class="small" style="line-height:1.6; color:var(--ink-2); margin:0">You don't pick your partner. Each Sunday the circle publishes one pairing cycle. If the count is odd, one member gets Solo practice — no trios, no one sits out. After pairing, you choose <b style="color:var(--ink)">DSA / System Design / Both</b> yourselves. Published pairs do not change during the cycle.</p>
             <div class="grid-3">
               <div class="card" style="border-style:dashed"><div class="card-b small"><b>1</b> Add crew<br/><span class="muted">2-12 people</span></div></div>
-              <div class="card" style="border-style:dashed"><div class="card-b small"><b>2</b> Shuffle<br/><span class="muted">AI fills odd</span></div></div>
+              <div class="card" style="border-style:dashed"><div class="card-b small"><b>2</b> Publish pairs<br/><span class="muted">Solo practice if odd</span></div></div>
               <div class="card" style="border-style:dashed"><div class="card-b small"><b>3</b> Pick topic & drill<br/><span class="muted">same link</span></div></div>
             </div>
             <div class="row" id="legacyCircleDemoActions" style="display:none" aria-hidden="true">
@@ -880,7 +986,7 @@ p{margin:0}
     </section>
 
     <!-- PAIRING -->
-    <section id="view-pair" class="view" style="display:none">
+    <section id="view-pair" class="view" tabindex="0" style="display:none">
       <div class="grid-2">
         <div class="card">
           <div class="card-h">
@@ -904,11 +1010,10 @@ p{margin:0}
               <div class="row" style="justify-content:space-between"><b id="availTitle" style="font-size:13px">Upcoming availability</b><label class="pill" style="cursor:pointer"><input id="availToggle" type="checkbox" disabled aria-labelledby="availTitle availLabel" aria-describedby="availCycle availCutoff availExplan" style="margin-right:6px"/> <span id="availLabel">LOADING…</span></label></div>
               <div id="availCycle" data-testid="availability-cycle" class="small muted">Loading the upcoming pairing cycle…</div>
               <div id="availCutoff" data-testid="availability-cutoff" class="small muted"></div>
-              <div id="availBanner" class="small" style="display:none; padding:8px; border-radius:8px; background:#e6c07a22; border:1px dashed #e6c07a"></div>
+              <div id="availBanner" class="small status-chip status-warning" style="display:none; padding:8px; border-radius:8px; border-style:dashed"></div>
             </div>
             <div id="presencePanel" class="people"></div>
             <div class="row">
-              <button id="copyLinkBtn" class="btn secondary">Copy invite</button>
               <span class="small muted" id="syncStatus">● synced</span>
             </div>
             <div class="row" style="align-items:center"><div class="small muted" id="availExplan" role="status" aria-live="polite" style="display:none"></div><button id="availRetry" class="pill" type="button" hidden>Retry availability</button></div>
@@ -918,7 +1023,7 @@ p{margin:0}
     </section>
 
     <!-- CODE -->
-    <section id="view-code" class="view" style="display:none">
+    <section id="view-code" class="view" tabindex="0" style="display:none">
       <div id="videoBar" class="video-bar">
         <div class="video-bar-head">
           <div class="row small"><b style="font-size:13px">Live room</b><span class="kbd" id="videoRoomLabel">room —</span><span id="videoStatus" class="kbd">off</span></div>
@@ -927,7 +1032,6 @@ p{margin:0}
             <button id="vidMicBtn" class="pill">🎤 mic</button>
             <button id="vidJoinBtn" class="btn">Join video</button>
             <button id="vidLeaveBtn" class="pill" style="display:none">Leave</button>
-            <button id="vidScreenBtn" class="pill" title="Screen share (placeholder)">🖥 screen</button>
           </div>
         </div>
         <div class="video-tiles" id="videoTiles">
@@ -975,7 +1079,7 @@ p{margin:0}
         </div>
         <div class="editor-pane">
           <div id="questionPanel" style="padding:8px 10px; border-bottom:1px solid var(--border); display:flex; gap:6px; flex-wrap:wrap; align-items:center; background:var(--card)">
-            <b style="font-size:11px; color:var(--ink-3); text-transform:uppercase; letter-spacing:.04em">Original Exercise Catalogue</b>
+            <b style="font-size:11px; color:var(--ink-3); text-transform:uppercase; letter-spacing:.04em">Approved original exercise catalogue</b>
             <span class="small muted" id="qCustomCount" style="margin-left:6px">• loading…</span>
             <button id="catalogRetryBtn" class="pill" type="button" hidden>Retry catalogue</button>
             <span class="small muted" style="margin-left:auto">Examples are public; evaluation cases stay on the server.</span>
@@ -1015,7 +1119,7 @@ p{margin:0}
           <!-- AI Recording & Feedback (Groq router) -->
           <div id="aiPanel" style="border-top:1px solid var(--line); background:var(--bg-2); padding:10px; display:grid; gap:10px">
             <div class="row" style="justify-content:space-between; flex-wrap:wrap">
-              <b style="font-size:12.5px">AI Recording & Feedback <span class="kbd" style="background:#e6c07a22">Groq</span></b>
+              <b style="font-size:12.5px">AI Recording & Feedback <span class="kbd status-chip status-warning">Groq</span></b>
               <div class="row" style="gap:6px">
                 <button id="aiRecordBtn" class="pill" title="Record code edits + transcript notes">● Record</button>
                 <button id="aiAnalyzeBtn" class="btn" style="font-size:11.5px">⚡ Get AI Feedback</button>
@@ -1032,7 +1136,7 @@ p{margin:0}
                 <textarea id="aiInterviewerQs" class="textarea" placeholder="e.g. Q1: Which edge case would you test next?\nQ2: How would you explain the complexity trade-off?" style="min-height:90px; font-size:12.5px"></textarea>
               </div>
             </div>
-            <div id="aiStatus" class="small muted" style="min-height:16px">Ready. Hit Record before you start, it auto-captures code diffs. Works offline, calls Groq when signed-in.</div>
+            <div id="aiStatus" class="small muted" style="min-height:16px">Recording stays in this browser until you choose Analyze. Analysis requires signed-in access and configured server AI.</div>
             <div id="aiRouterDebug" class="small" style="display:none; padding:8px; border:1px dashed var(--line); border-radius:8px; background:var(--bg-3); font-size:11px; line-height:1.5"></div>
             <div id="aiFeedback" style="display:grid; gap:10px"></div>
           </div>
@@ -1041,7 +1145,7 @@ p{margin:0}
     </section>
 
     <!-- BOARD -->
-    <section id="view-board" class="view" style="display:none">
+    <section id="view-board" class="view" tabindex="0" style="display:none">
       <div class="board-wrap">
         <div class="board-toolbar" role="toolbar" aria-label="Whiteboard tools">
           <button class="tool active" data-tool="select" title="Select/move" aria-label="Select or move a shape" aria-pressed="true">↖</button>
@@ -1071,7 +1175,7 @@ p{margin:0}
     </section>
 
     <!-- PAIRINGS / ACTIVITY HISTORY -->
-    <section id="view-history" class="view" style="display:none">
+    <section id="view-history" class="view" tabindex="0" style="display:none">
       <div class="card" data-testid="pair-history">
         <div class="card-h"><h2>Pairings &amp; activity</h2><span id="historyCount">0 pairings</span><span id="historyAuthHint" class="small muted" style="margin-left:8px">Sign in to see your pairings</span></div>
         <div class="card-b">
@@ -1081,7 +1185,7 @@ p{margin:0}
         </div>
       </div>
     </section>
-  </div>
+  </main>
 </div>
 <div id="confirmOverlay" class="overlay" aria-hidden="true"><div class="modal"><h3 id="confirmTitle">Confirm?</h3><p id="confirmMsg" class="small" style="color:var(--ink-2); margin:0"></p><div class="row"><button id="confirmCancel" class="btn secondary">Cancel</button><button id="confirmOk" class="btn">Confirm</button></div></div></div>
 <div id="promptOverlay" class="overlay" aria-hidden="true"><div class="modal"><h3 id="promptTitle">Enter value</h3><input id="promptInput" class="input"/><div class="row"><button id="promptCancel" class="btn secondary">Cancel</button><button id="promptOk" class="btn">Save</button></div></div></div>
@@ -1190,6 +1294,7 @@ p{margin:0}
   let currentCloudPairingUserId=null;
   let pairingRenderEpoch=0;
   window._randoriUserNavigationEpoch=0;
+  window._randoriExplicitNavigation=null;
   const AVAILABILITY_SOURCES=new Set(['user','legacy_bridge','cycle_default']);
   const AVAILABILITY_ROLLOVER_GRACE_MS=250;
   const AVAILABILITY_ROLLOVER_RETRY_MS=30000;
@@ -1365,11 +1470,16 @@ p{margin:0}
       &&authCapabilities.registrationMode==='local_invite';
     const verifiedInvite=authCapabilitiesLoaded&&authCapabilities.verifiedEmailActivation
       &&authCapabilities.registrationMode==='verified_invite';
-    if(instructions) instructions.textContent=localInvite
-      ?'Create a local account with the email that received this invitation. The development identity adapter treats that email as verified and never contacts an external provider.'
-      :(verifiedInvite
-        ?'Create an account with the invited email. We will send a single-use verification link before activating it.'
-        :'Confirm the Google account that received this invitation. The invitation is single-use and expires automatically.');
+    const googleInvite=authCapabilitiesLoaded&&authCapabilities.googleOAuth;
+    if(instructions) instructions.textContent=!authCapabilitiesLoaded
+      ?'Checking which sign-in options are available for this single-use invitation.'
+      :(localInvite
+        ?'Create a local account with the email that received this invitation. The development identity adapter treats that email as verified and never contacts an external provider.'
+        :(verifiedInvite
+          ?'Create an account with the invited email. We will send a single-use verification link before activating it.'
+          :(googleInvite
+            ?'Confirm the Google account that received this invitation. The invitation is single-use and expires automatically.'
+            :'This deployment has no compatible invitation sign-in method enabled.')));
     if(status){
       status.textContent=inviteState.rateLimited
         ? `Too many attempts. Try again${inviteState.retryAfter?` in ${inviteState.retryAfter} seconds`: ' later'}.`
@@ -1381,8 +1491,9 @@ p{margin:0}
             :'Checking invitation…'));
     }
     if(button){
-      button.disabled=!inviteState.ready;
-      button.textContent=localInvite?'Create local account':(verifiedInvite?'Create account':'Continue with Google');
+      button.disabled=!inviteState.ready||!authCapabilitiesLoaded||(!localInvite&&!verifiedInvite&&!googleInvite);
+      button.textContent=!authCapabilitiesLoaded?'Continue'
+        :(localInvite?'Create local account':(verifiedInvite?'Create account':(googleInvite?'Continue with Google':'Unavailable')));
     }
     return true;
   }
@@ -1694,7 +1805,9 @@ async function refreshMe(){
     if(dashboardBadge){
       dashboardBadge.textContent=availability.isAvailable
         ?`Available for ${availability.cycle.cycleId}`:`Skipping ${availability.cycle.cycleId}`;
-      dashboardBadge.style.background=availability.isAvailable?'var(--accent)22':'#f2d07a22';
+      dashboardBadge.style.background=availability.isAvailable?'var(--ok-surface)':'var(--warn-surface)';
+      dashboardBadge.style.color=availability.isAvailable?'var(--ok)':'var(--warn)';
+      dashboardBadge.style.borderColor=availability.isAvailable?'var(--ok)':'var(--warn)';
     }
   }
   function clearAvailability(){
@@ -1828,16 +1941,22 @@ async function refreshMe(){
       try{
         meLabel.style.display='inline-flex';
         const nm = (me && (me.name||me.display_name||me.email)) || 'you';
-        try{ if(meLabel) meLabel.title='Click for sign out'; }catch{}
+        try{
+          if(meLabel){
+            meLabel.title='Open account menu';
+            meLabel.setAttribute('aria-label',`Account menu for ${nm}`);
+          }
+        }catch{}
         meLabel.textContent = '● '+ nm + (isAdmin()?' (admin)':'');
-        if(me && me.color){ const color=safeProfileColor(me.color); meLabel.style.background = color+'22'; meLabel.style.borderColor=color+'66'; }
+        if(me && me.color){ const color=safeProfileColor(me.color); meLabel.style.background = color+'22'; meLabel.style.borderColor='var(--control-border)'; }
       }catch{}
       if(authBtn){ authBtn.style.display='none'; authBtn.hidden=true; authBtn.setAttribute('hidden',''); authBtn.setAttribute('aria-hidden','true'); }
       if(outBtn){ outBtn.style.display='none'; outBtn.hidden=true; outBtn.setAttribute('hidden',''); outBtn.setAttribute('aria-hidden','true'); }
       if(hint && me) hint.textContent = `pairings for ${me.name||me.display_name||me.email}` + (isAdmin()?' • admin':'');
       else if(hint && !me && effectiveSignedIn) hint.textContent='Signed in — syncing profile…';
     } else {
-      if(meLabel) meLabel.style.display='none';
+      if(meLabel){ meLabel.style.display='none'; meLabel.setAttribute('aria-expanded','false'); }
+      const meMenu=document.getElementById('meMenu'); if(meMenu) meMenu.style.display='none';
       if(authBtn){ authBtn.style.display='inline-flex'; authBtn.hidden=false; authBtn.removeAttribute('aria-hidden'); }
       if(outBtn){ outBtn.style.display='none'; outBtn.hidden=true; outBtn.setAttribute('aria-hidden','true'); }
       if(hint) hint.textContent='Sign in to see your pairings';
@@ -2030,7 +2149,12 @@ async function refreshMe(){
     const join=document.getElementById('landingSignup');
     const signIn=document.getElementById('landingSignin');
     const identity=document.getElementById('meIdentity');
-    if(join){ join.hidden=authCapabilitiesLoaded&&!canJoin; join.disabled=!authCapabilitiesLoaded||!canJoin; }
+    if(join){
+      join.hidden=authCapabilitiesLoaded&&!canJoin;
+      join.disabled=!authCapabilitiesLoaded||!canJoin;
+      join.textContent=authCapabilitiesLoaded&&authCapabilities.registrationMode==='local_open'
+        ?'Create an account':'Use an invitation';
+    }
     if(signIn){ signIn.hidden=authCapabilitiesLoaded&&!canSignIn; signIn.disabled=!authCapabilitiesLoaded||!canSignIn; }
     if(identity){
       identity.hidden=!authCapabilitiesLoaded||authCapabilities.identityManagement!==true;
@@ -2256,9 +2380,61 @@ async function refreshMe(){
       if(document.getElementById('authErr')?.textContent) setAuthError('');
     });
   }
-  (() => { const _wireOut = (id)=>{ const b=document.getElementById(id); if(!b||b._wired) return; b._wired=true; b.onclick=()=>{ const main=document.getElementById('signOutBtn'); if(main&&main.onclick) return main.onclick(); }; }; _wireOut('dashSignOut'); _wireOut('psSignOut'); _wireOut('meSignOut');
-        const ml=document.getElementById('meLabel'); const mm=document.getElementById('meMenu'); if(ml&&mm&&!ml._menuWired){ ml._menuWired=true; ml.addEventListener('click', (e)=>{ e.stopPropagation(); mm.style.display=mm.style.display==='none'||!mm.style.display?'block':'none'; }); document.addEventListener('click', (e)=>{ if(!mm.contains(e.target)&&e.target!==ml) mm.style.display='none'; }); }
-      })();
+  (()=>{
+    const wireSignOut=(id)=>{
+      const button=document.getElementById(id);
+      if(!button||button._wired) return;
+      button._wired=true;
+      button.onclick=()=>document.getElementById('signOutBtn')?.onclick?.();
+    };
+    wireSignOut('dashSignOut'); wireSignOut('psSignOut'); wireSignOut('meSignOut');
+    const trigger=document.getElementById('meLabel');
+    const menu=document.getElementById('meMenu');
+    if(!trigger||!menu||trigger._menuWired) return;
+    trigger._menuWired=true;
+    const items=()=>[...menu.querySelectorAll('[role="menuitem"]')]
+      .filter(item=>!item.hidden&&!item.disabled&&item.getClientRects().length>0);
+    const setOpen=(open,focusAt=null)=>{
+      menu.style.display=open?'block':'none';
+      trigger.setAttribute('aria-expanded',open?'true':'false');
+      if(open&&focusAt!==null){
+        const available=items();
+        available[focusAt==='last'?available.length-1:0]?.focus();
+      }
+    };
+    trigger.addEventListener('click',event=>{
+      event.stopPropagation();
+      const opening=menu.style.display==='none'||!menu.style.display;
+      setOpen(opening,opening&&event.detail===0?'first':null);
+    });
+    trigger.addEventListener('keydown',event=>{
+      if(event.key!=='ArrowDown'&&event.key!=='ArrowUp') return;
+      event.preventDefault();
+      setOpen(true,event.key==='ArrowUp'?'last':'first');
+    });
+    menu.addEventListener('keydown',event=>{
+      const available=items();
+      if(!available.length) return;
+      const current=Math.max(0,available.indexOf(document.activeElement));
+      let next=null;
+      if(event.key==='ArrowDown') next=(current+1)%available.length;
+      else if(event.key==='ArrowUp') next=(current-1+available.length)%available.length;
+      else if(event.key==='Home') next=0;
+      else if(event.key==='End') next=available.length-1;
+      else if(event.key==='Escape'){
+        event.preventDefault(); setOpen(false); trigger.focus(); return;
+      }else if(event.key==='Tab'){
+        setOpen(false); return;
+      }
+      if(next!==null){ event.preventDefault(); available[next].focus(); }
+    });
+    menu.addEventListener('click',event=>{
+      if(event.target.closest('[role="menuitem"]')) setOpen(false);
+    });
+    document.addEventListener('click',event=>{
+      if(!menu.contains(event.target)&&event.target!==trigger) setOpen(false);
+    });
+  })();
   const LIFECYCLE_RECENT_ACTION_KEY='randori-lifecycle-recent-action-v1';
   const identityUi={
     data:null,methods:null,busy:false,message:'',returnFocus:null,mode:'manage',
@@ -2370,6 +2546,11 @@ async function refreshMe(){
     try{ sessionStorage.removeItem(LIFECYCLE_RECENT_ACTION_KEY); }catch{}
     window.dispatchEvent(new CustomEvent('randori:recent-auth-cancelled',{detail:{reason}}));
   }
+  function collapseAccountMenu(){
+    const menu=document.getElementById('meMenu');
+    if(menu) menu.style.display='none';
+    document.getElementById('meLabel')?.setAttribute('aria-expanded','false');
+  }
   async function requestRecentConfirmation(message='Confirm your identity to continue.'){
     if(!me) return false;
     const actorId=Number(me.id||me.uid);
@@ -2379,7 +2560,7 @@ async function refreshMe(){
     identityUi.message=message;
     const overlay=document.getElementById('identityOverlay');
     overlay?.classList.add('show'); overlay?.setAttribute('aria-hidden','false');
-    document.getElementById('meMenu').style.display='none';
+    collapseAccountMenu();
     document.getElementById('identityDialog')?.focus();
     identityUi.busy=true; renderIdentity();
     try{
@@ -2417,10 +2598,13 @@ async function refreshMe(){
     invalidateIdentityRequests();
     identityUi.mode='manage'; identityUi.methods=null;
     const overlay=document.getElementById('identityOverlay');
-    identityUi.returnFocus=document.activeElement;
+    const active=document.activeElement;
+    const accountMenu=document.getElementById('meMenu');
+    identityUi.returnFocus=accountMenu?.contains(active)
+      ?document.getElementById('meLabel'):active;
     identityUi.message='';
     overlay?.classList.add('show'); overlay?.setAttribute('aria-hidden','false');
-    document.getElementById('meMenu').style.display='none';
+    collapseAccountMenu();
     document.getElementById('identityDialog')?.focus();
     await refreshIdentity();
   }
@@ -2433,8 +2617,12 @@ async function refreshMe(){
       const input=document.getElementById(id); if(input) input.value='';
     }
     identityUi.mode='manage'; identityUi.methods=null;
-    const target=identityUi.returnFocus; identityUi.returnFocus=null;
-    if(target?.isConnected) target.focus();
+    const requestedTarget=identityUi.returnFocus; identityUi.returnFocus=null;
+    const accountTrigger=document.getElementById('meLabel');
+    const target=requestedTarget?.isConnected&&requestedTarget.getClientRects().length>0&&!requestedTarget.disabled
+      ?requestedTarget
+      :(accountTrigger?.isConnected&&accountTrigger.getClientRects().length>0&&!accountTrigger.disabled?accountTrigger:null);
+    target?.focus();
     if(cancelled) recentConfirmationCancelled('cancelled');
   }
   async function identityAction(work,message){
@@ -2617,58 +2805,31 @@ async function refreshMe(){
 
   // Reminder prefs wiring — Pillar 5
   (function bindReminders(){
-    const emailT=document.getElementById('remindEmailToggle');
-    const smsT=document.getElementById('remindSmsToggle');
-    const phoneIn=document.getElementById('remindPhone');
-    const emailIn=document.getElementById('remindEmailField');
     const psEmail=document.getElementById('psRemindEmail');
-    const psSms=document.getElementById('psRemindSms');
-    // load localStorage
     try{
       const eLocal=localStorage.getItem('randori-reminder-email');
-      const sLocal=localStorage.getItem('randori-reminder-sms');
-      const pLocal=localStorage.getItem('randori-reminder-phone');
-      if(eLocal!=null && emailT) emailT.checked = eLocal==='1';
-      if(sLocal!=null && smsT) smsT.checked = sLocal==='1';
-      if(pLocal && phoneIn) phoneIn.value=pLocal;
       if(eLocal!=null && psEmail) psEmail.checked = eLocal==='1';
-      if(sLocal!=null && psSms) psSms.checked = sLocal==='1';
-      // labels
-      const el=document.getElementById('remindEmailLabel'); if(el && emailT) el.textContent=emailT.checked?'ON':'OFF';
-      const sl=document.getElementById('remindSmsLabel'); if(sl && smsT) sl.textContent=smsT.checked?'ON':'OFF';
+      localStorage.removeItem('randori-reminder-sms');
+      localStorage.removeItem('randori-reminder-phone');
     }catch{}
 
     async function postPrefs(){
-      const email_enabled = (emailT && emailT.checked) ?? (psEmail && psEmail.checked) ?? true;
-      const sms_enabled = (smsT && smsT.checked) ?? (psSms && psSms.checked) ?? false;
-      const phone = phoneIn ? phoneIn.value.trim() : (localStorage.getItem('randori-reminder-phone')||'');
-      const email = emailIn ? emailIn.value.trim() : '';
+      const email_enabled=psEmail?.checked??true;
       try{
         localStorage.setItem('randori-reminder-email', email_enabled?'1':'0');
-        localStorage.setItem('randori-reminder-sms', sms_enabled?'1':'0');
-        if(phone) localStorage.setItem('randori-reminder-phone', phone);
-        if(email) localStorage.setItem('randori-reminder-email-addr', email);
       }catch{}
       // server sync if authed
       try{
         if(me){
-          const body={email_enabled, sms_enabled};
-          if(phone) body.phone=phone;
-          if(email) body.email=email;
-          await fetch('/api/notifications/prefs', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)}).catch(()=>{});
+          await fetch('/api/notifications/prefs', {
+            method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({email_enabled}),
+          }).catch(()=>{});
         }
-      }catch{}
-      // update labels
-      try{
-        const el=document.getElementById('remindEmailLabel'); if(el && emailT) el.textContent=emailT.checked?'ON':'OFF';
-        const sl=document.getElementById('remindSmsLabel'); if(sl && smsT) sl.textContent=smsT.checked?'ON':'OFF';
       }catch{}
     }
     function wire(el){ if(!el) return; el.addEventListener('change', postPrefs); el.addEventListener('click', (e)=>{ e.stopPropagation(); }); }
-    wire(emailT); wire(smsT); wire(phoneIn); wire(emailIn); wire(psEmail); wire(psSms);
-    // save on typing phone
-    if(phoneIn) phoneIn.addEventListener('blur', postPrefs);
-    if(emailIn) emailIn.addEventListener('blur', postPrefs);
+    wire(psEmail);
 
     // hydrate from server when signed in
     (async()=>{
@@ -2677,17 +2838,10 @@ async function refreshMe(){
         if(!r || !r.ok) return;
         const j=await r.json();
         if(j && j.prefs){
-          if(emailT) emailT.checked = !!j.prefs.email_enabled;
-          if(smsT) smsT.checked = !!j.prefs.sms_enabled;
-          if(phoneIn && j.prefs.phone) phoneIn.value=j.prefs.phone;
-          if(emailIn && j.prefs.email) emailIn.value=j.prefs.email;
+          if(psEmail) psEmail.checked = !!j.prefs.email_enabled;
           try{
             localStorage.setItem('randori-reminder-email', j.prefs.email_enabled?'1':'0');
-            localStorage.setItem('randori-reminder-sms', j.prefs.sms_enabled?'1':'0');
-            if(j.prefs.phone) localStorage.setItem('randori-reminder-phone', j.prefs.phone);
           }catch{}
-          const el=document.getElementById('remindEmailLabel'); if(el && emailT) el.textContent=emailT.checked?'ON':'OFF';
-          const sl=document.getElementById('remindSmsLabel'); if(sl && smsT) sl.textContent=smsT.checked?'ON':'OFF';
         }
       }catch{}
     })();
@@ -2917,7 +3071,12 @@ async function refreshMe(){
   // ---------- theme ----------
   const THEME_KEY='randori-theme';
   let theme = localStorage.getItem(THEME_KEY) || 'dark';
-  function applyTheme(t){ document.documentElement.classList.toggle('light', t==='light'); localStorage.setItem(THEME_KEY,t); document.getElementById('themeLabel').textContent=t; }
+  function applyTheme(t){
+    document.documentElement.classList.toggle('light',t==='light');
+    localStorage.setItem(THEME_KEY,t);
+    document.getElementById('themeLabel').textContent=t;
+    document.getElementById('themeToggle')?.setAttribute('aria-label',`Switch to ${t==='light'?'dark':'light'} theme`);
+  }
   applyTheme(theme);
   document.getElementById('themeToggle').onclick=()=>{ theme=theme==='dark'?'light':'dark'; applyTheme(theme); renderBoard(); };
 
@@ -3073,11 +3232,13 @@ async function refreshMe(){
   const circleContextPanel=document.getElementById('circleContextPanel');
   const circleContextSelect=document.getElementById('circleContextSelect');
   const circleContextStatus=document.getElementById('circleContextStatus');
+  const circleContextRetry=document.getElementById('circleContextRetry');
   const legacyCircleAddActions=document.getElementById('legacyCircleAddActions');
   const legacyCircleDemoActions=document.getElementById('legacyCircleDemoActions');
   let circleRenderEpoch=0;
   let circleControlEpoch=0;
   let circleContextSwitching=false;
+  let circleContextErrorLatched=false;
   let circleLifecycleNoticeGeneration=0;
   let circleLifecycleNoticeActorId=null;
   let circleLifecycleNoticeActive=false;
@@ -3094,9 +3255,18 @@ async function refreshMe(){
   let latestInviteOwnerId=null;
   const circleContextChannel=typeof BroadcastChannel==='function'?new BroadcastChannel('randori-circle-context-v1'):null;
 
+  function setCircleContextState(state,message){
+    circleContextErrorLatched=state==='error';
+    if(circleContextPanel) circleContextPanel.dataset.state=state;
+    if(circleContextStatus&&message!==undefined) circleContextStatus.textContent=message;
+    if(circleContextRetry) circleContextRetry.hidden=state!=='error';
+  }
+
   function resetPrivateCircleControl({switching,preserveLifecycleRecentAction=false}){
     clearAvailability();
     circleContextSwitching=switching;
+    if(switching) setCircleContextState('switching','Switching circle…');
+    else circleContextErrorLatched=false;
     circleControlEpoch+=1;
     circleRenderEpoch+=1;
     pairingRenderEpoch+=1;
@@ -3163,13 +3333,13 @@ async function refreshMe(){
     circleContextPanel.hidden=!visible;
     circleContextPanel.style.display=visible?'grid':'none';
     circleContextSelect.disabled=false;
-    circleContextStatus.textContent=context?.selection_required
+    setCircleContextState(!visible?'hidden':(context?.selection_required?'required':'ready'),context?.selection_required
       ?'Choose which circle to manage. Pairing remains unavailable while this account belongs to multiple circles.'
       :(circles.length>1
         ?(authCapabilities.multiCircleAvailability
           ?'Circle-specific availability and member controls are active. Pairing remains unavailable for this account.'
           :'Circle-specific member and invitation controls are active. Pairing remains unavailable for this account.')
-        :'');
+        :''));
   }
 
   function circleResponseMatchesContext(result){
@@ -3204,6 +3374,7 @@ async function refreshMe(){
       activeCircleContext=null;
       activeCircleContextUserId=null;
       if(circleContextPanel){ circleContextPanel.hidden=true; circleContextPanel.style.display='none'; }
+      setCircleContextState('hidden','');
       return null;
     }
     if(activeCircleContextUserId===userId&&activeCircleContext) return activeCircleContext;
@@ -3246,7 +3417,7 @@ async function refreshMe(){
     const userId=Number(me.id||me.uid);
     const expectedContextVersion=Number(activeCircleContext.context_version);
     circleContextSelect.disabled=true;
-    if(circleContextStatus) circleContextStatus.textContent='Switching circle…';
+    setCircleContextState('switching','Switching circle…');
     const switchEpoch=clearPrivateCircleViewForSwitch();
     try{
       const next=await api('/api/circles',{
@@ -3266,11 +3437,15 @@ async function refreshMe(){
       if(switchEpoch!==circleControlEpoch||!me||Number(me.id||me.uid)!==userId) return;
       circleContextSwitching=false;
       circleContextSelect.disabled=false;
-      if(circleContextStatus) circleContextStatus.textContent=error?.code==='circle_context_changed'
-        ?'Circle changed in another tab. Refreshing…':'Could not switch circle. Try again.';
+      setCircleContextState('error',error?.code==='circle_context_changed'
+        ?'Circle changed in another tab. Refreshing…':'Could not switch circle. Try again.');
       if(error?.code==='circle_context_changed') window.location.reload();
-      else void renderPeople();
     }
+  });
+
+  circleContextRetry?.addEventListener('click',()=>{
+    if(circleContextSwitching) return;
+    retryCircleContext();
   });
 
   circleContextChannel?.addEventListener('message',event=>{
@@ -3336,12 +3511,18 @@ async function refreshMe(){
     }
   }
 
+  function retryCircleContext(){
+    setCircleContextState('loading','Checking your circles…');
+    void renderPeople();
+  }
+
   function renderCircleFailure(){
     pCount.textContent='—';
     resetOwnerInvites({allowRosterPreservation:false});
     setLegacyCircleControls(false);
     const note=document.getElementById('circleAutoNote');
     if(note) note.textContent='We could not load your private circle.';
+    if(!circleContextPanel?.hidden) setCircleContextState('error','Could not load the active circle. Try again.');
     listEl.replaceChildren();
     listEl.setAttribute('aria-busy','false');
     const message=document.createElement('div');
@@ -3349,7 +3530,7 @@ async function refreshMe(){
     message.textContent='Circle unavailable. Your member list has not been replaced with local or demo data.';
     const retry=document.createElement('button');
     retry.type='button'; retry.className='pill'; retry.textContent='Retry';
-    retry.addEventListener('click',()=>{ renderPeople(); });
+    retry.addEventListener('click',retryCircleContext);
     listEl.append(message,retry);
   }
 
@@ -3866,6 +4047,7 @@ async function refreshMe(){
 
   async function renderPeople({skipManagedRoster=false}={}){
     const epoch=++circleRenderEpoch;
+    if(circleContextErrorLatched&&me) return;
     resetOwnerInvites();
     setLegacyCircleControls(false);
     const note=document.getElementById('circleAutoNote');
@@ -3879,6 +4061,8 @@ async function refreshMe(){
     }
     if(!me){
       pCount.textContent='0';
+      if(circleContextPanel){ circleContextPanel.hidden=true; circleContextPanel.style.display='none'; }
+      setCircleContextState('hidden','');
       if(note) note.textContent='Sign in to view your private circle.';
       const prompt=document.createElement('div'); prompt.className='small muted'; prompt.textContent='Circle membership is available after sign-in.';
       listEl.appendChild(prompt); listEl.setAttribute('aria-busy','false');
@@ -5757,10 +5941,6 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     updateVideoMicCamUI();
     toast(videoMicEnabled?'mic on':'mic muted');
   });
-  document.getElementById('vidScreenBtn')?.addEventListener('click', ()=>{
-    toast('screen share placeholder — captureDisplay media in next iter');
-  });
-
   // sync video room label when room changes
   const origLoadRoom = typeof loadRoom !== 'undefined' ? loadRoom : null; // will be hoisted below, so use event instead
   // We'll hook into roomSelect change & loadRoom override via interval check
@@ -5782,11 +5962,35 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   window._randori_video = { get peerId(){return webrtcPeerId}, get joined(){return videoJoined}, joinVideo, leaveVideo, get pc(){return pc}, sendSignal };
 
   // ---------- tabs ----------
+  const primaryTabs=[...document.querySelectorAll('.tabs .tab')];
+  function syncPrimaryNavigation(){
+    primaryTabs.forEach(tab=>{
+      if(tab.classList.contains('active')) tab.setAttribute('aria-current','page');
+      else tab.removeAttribute('aria-current');
+      tab.removeAttribute('tabindex');
+    });
+  }
+  document.querySelector('.tabs')?.addEventListener('keydown',event=>{
+    if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
+    const available=primaryTabs.filter(tab=>!tab.hidden&&tab.style.display!=='none'&&!tab.disabled&&tab.getClientRects().length>0);
+    if(!available.length) return;
+    const current=Math.max(0,available.indexOf(document.activeElement));
+    const next=event.key==='Home'?0:event.key==='End'?available.length-1
+      :event.key==='ArrowRight'?(current+1)%available.length:(current-1+available.length)%available.length;
+    event.preventDefault();
+    available[next].focus();
+    window._randoriExplicitNavigation=available[next].getAttribute('data-tab');
+    available[next].click();
+  });
+  const primaryTabObserver=new MutationObserver(syncPrimaryNavigation);
+  primaryTabs.forEach(tab=>primaryTabObserver.observe(tab,{attributes:true,attributeFilter:['class','style','hidden']}));
+  syncPrimaryNavigation();
   document.querySelectorAll('.tab').forEach(t=>{
-    t.onclick=()=>{
+    t.onclick=event=>{
       window._randoriUserNavigationEpoch=(Number(window._randoriUserNavigationEpoch)||0)+1;
-      document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active');
       const id=t.getAttribute('data-tab');
+      if(event?.isTrusted) window._randoriExplicitNavigation=id;
+      document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active');
       if(['pair','code','board','history'].includes(id)){
         try{
           const url=new URL(window.location.href);
@@ -5815,15 +6019,6 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(id==='history') renderHistory();
     };
   });
-
-  // ---------- export / vercel helper ----------
-  document.getElementById('exportBtn').onclick=()=>{
-    toast('Deploy: static folder = this file. Put on Vercel as single-file static, or Cloudflare Pages. No build needed. For vite, run: vite build (out = client/dist).');
-  };
-  document.getElementById('copyLinkBtn').onclick=()=>{
-    const info=`Static: deploy client/dist (this HTML) to Vercel — no env vars. BroadcastChannel sync works cross-tab.\nBuild: npm run build → client/dist`;
-    navigator.clipboard.writeText(info).then(()=>toast('copied deploy info')); 
-  };
 
   // ---------- initial render ----------
   renderPeople(); renderPairs(); renderHistory(); renderRoomSelect();
@@ -5931,16 +6126,16 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       const iv = fb.interviewer||{strengths:[],improvements:[]};
 
       function chipForEvidence(ev){
-        if (!ev || ev==='no direct quote' || ev.includes('no direct')) return `<span class="kbd" style="background:#e6c07a22;border-color:#e6c07a">no direct quote</span>`;
+        if (!ev || ev==='no direct quote' || ev.includes('no direct')) return `<span class="kbd status-chip status-warning">no direct quote</span>`;
         const safe=escapeHtml(ev);
-        return `<span class="kbd" style="background:#9cc0b522;border-color:#9cc0b5;color:#9cc0b5" title="${safe}">“${safe.slice(0,80)}${safe.length>80?'…':''}”</span>`;
+        return `<span class="kbd status-chip status-success" title="${safe}">“${safe.slice(0,80)}${safe.length>80?'…':''}”</span>`;
       }
 
       const html = `
         <div class="card" style="border-color:var(--ok)"><div class="card-h"><h3 style="font-size:13px">Candidate ${fb.overall_score? `<span class="kbd">${escapeHtml(fb.overall_score)}/10</span>` : ''}</h3><span class="kbd" title="session ${escapeHtml(j.session_id)}">#${escapeHtml(String(j.session_id).slice(-4))}</span></div>
           <div class="card-b" style="display:grid;gap:8px">
             <div><b class="small">Strengths</b><div style="display:grid;gap:6px;margin-top:4px">${(c.strengths||[]).map(s=>`<div class="test" style="border-color:var(--ok)"><div class="small"><b>${escapeHtml(s.point)}</b> ${chipForEvidence(s.evidence)} ${s.confidence? `<span class="kbd">${escapeHtml(Math.round((s.confidence||0.8)*100))}%</span>`:''}</div></div>`).join('')||'<span class="small muted">none listed</span>'}</div></div>
-            <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(c.improvements||[]).map(s=>`<div class="test" style="border-color:var(--accent-3)"><div class="small"><b>${escapeHtml(s.point)}</b> ${chipForEvidence(s.evidence)}<div class="small muted" style="margin-top:3px">↳ ${escapeHtml(s.suggestion||'')}</div></div></div>`).join('')||'<span class="small muted">none listed</span>'}</div></div>
+            <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(c.improvements||[]).map(s=>`<div class="test" style="border-color:var(--bad)"><div class="small"><b>${escapeHtml(s.point)}</b> ${chipForEvidence(s.evidence)}<div class="small muted" style="margin-top:3px">↳ ${escapeHtml(s.suggestion||'')}</div></div></div>`).join('')||'<span class="small muted">none listed</span>'}</div></div>
           </div>
         </div>
         <div class="card" style="border-color:var(--accent-2)"><div class="card-h"><h3 style="font-size:13px">Interviewer</h3><span class="kbd">${escapeHtml(model)}</span></div>
@@ -6248,6 +6443,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   const scheduleState={room:null,epoch:0,version:'',schedule:null,draft:'',draftRoom:null,people:new Map(),abort:null,inFlight:false,status:'waiting for pair'};
 
   function clearRequestedView(){
+    window._randoriExplicitNavigation=null;
     try{
       const url=new URL(window.location.href);
       url.searchParams.delete('view');
@@ -6538,7 +6734,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         ?(availability.isAvailable?`Available for ${availability.cycle.cycleId}`:`Skipping ${availability.cycle.cycleId}`)
         :'Checking availability…';
       availBadge.style.background=availability
-        ?(availability.isAvailable?'var(--accent)22':'#f2d07a22'):'var(--bg-3)';
+        ?(availability.isAvailable?'var(--ok-surface)':'var(--warn-surface)'):'var(--bg-3)';
+      availBadge.style.color=availability
+        ?(availability.isAvailable?'var(--ok)':'var(--warn)'):'var(--ink-2)';
+      availBadge.style.borderColor=availability
+        ?(availability.isAvailable?'var(--ok)':'var(--warn)'):'var(--border)';
     }
     // fetch my pair
     try{
@@ -6612,7 +6812,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       const base = location.origin || 'https://randori-circle-self.vercel.app';
       const invite = base + '/join/' + encodeURIComponent(room);
       if(copyOnly){
-        try{ navigator.clipboard.writeText(invite); if(typeof toast==='function') toast('Invite link copied: '+invite.slice(0,40)+'…'); }catch{ prompt('Copy invite link', invite); }
+        try{ navigator.clipboard.writeText(invite); if(typeof toast==='function') toast('Session link copied: '+invite.slice(0,40)+'…'); }catch{ prompt('Copy session link', invite); }
         window._randori_last_invite = invite;
         return invite;
       }
@@ -6643,7 +6843,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const roomHint=scheduleRoomFromPair(data);
     if(!roomHint){ renderDashboardEmpty('error',data); return; }
     const inviteUrl = (location.origin||'https://randori-circle-self.vercel.app') + '/join/' + encodeURIComponent(roomHint);
-    const copyAndEmailBtns = `<button class="pill copy-invite" style="font-size:11px" data-room="${escapeHtml(roomHint)}">⎘ Copy invite</button><button class="pill email-invite" style="font-size:11px" data-room="${escapeHtml(roomHint)}">✉ Email / SMS reminder</button>`;
+    const copyAndEmailBtns = `<button class="pill copy-invite" style="font-size:11px" data-room="${escapeHtml(roomHint)}">⎘ Copy session link</button><button class="pill email-invite" style="font-size:11px" data-room="${escapeHtml(roomHint)}">✉ Email reminder</button>`;
     if(isSolo){
       area.innerHTML=`<div class="partner-card" data-testid="solo-practice-card" style="border-color:#c8f6a0"><div class="avatar" style="background:#c8f6a0">SP</div><div style="flex:1"><b style="font-size:14px">Solo practice</b><div class="small muted" style="margin-top:4px">The odd-member assignment is a private solo workspace. Choose an exercise from the catalogue and practise with code and the board.</div><div class="row" style="margin-top:12px; gap:8px; flex-wrap:wrap"><button id="dashJoinSession" class="btn" style="background:var(--accent); color:#0f0f10; padding:11px 18px; font-size:14px; font-weight:700">Open Solo Catalogue + Code</button><span class="kbd">current-cycle solo</span></div></div></div>`;
       document.getElementById('dashJoinSession')?.addEventListener('click', ()=>joinSessionDeterministic(false));
@@ -6653,9 +6853,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const focus = partner?.interview_focus || data.partner?.interview_focus || 'both';
     const partnerName=String(partner?.name||'partner');
     const partnerColor=safeProfileColor(partner?.color);
-    area.innerHTML=`<div class="partner-card"><div class="avatar" style="background:${partnerColor}">${escapeHtml(partnerName.slice(0,2).toUpperCase())}</div><div style="flex:1"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px"><b style="font-size:14px">You're paired with ${escapeHtml(partnerName)} ✨</b><span class="kbd">${escapeHtml(focus)}</span></div><div class="small muted" style="margin-top:4px">${escapeHtml(partner?.bio||'No bio yet — ask them what they’re prepping for.')} • ${escapeHtml(partner?.tz||'TZ unknown')} • LeetCode: ${escapeHtml(partner?.leetcode_handle||'—')}</div><div class="small muted" data-testid="pair-focus-copy" style="margin-top:10px">Choose DSA, System Design, or both together in the session. A focus is not shared until you agree it with your partner.</div><div class="row" style="margin-top:12px; flex-wrap:wrap; gap:8px"><button id="dashJoinSession" class="btn" style="background:var(--accent); color:#0f0f10; padding:11px 18px; font-size:14px; font-weight:700">▶ Join Session — Code + Video + Board</button><span class="pill" style="font-size:11px">room ${escapeHtml(roomHint.slice(-6))}</span>${copyAndEmailBtns}<span class="small muted">agree time first, then jump in</span></div><div class="small muted" id="dashInviteHint" style="margin-top:6px">Invite link: <span class="kbd" style="font-size:10.5px">${escapeHtml(inviteUrl)}</span></div></div></div>`;
+    area.innerHTML=`<div class="partner-card"><div class="avatar" style="background:${partnerColor}">${escapeHtml(partnerName.slice(0,2).toUpperCase())}</div><div style="flex:1"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px"><b style="font-size:14px">You're paired with ${escapeHtml(partnerName)} ✨</b><span class="kbd">${escapeHtml(focus)}</span></div><div class="small muted" style="margin-top:4px">${escapeHtml(partner?.bio||'No bio yet — ask them what they’re prepping for.')} • ${escapeHtml(partner?.tz||'TZ unknown')} • LeetCode: ${escapeHtml(partner?.leetcode_handle||'—')}</div><div class="small muted" data-testid="pair-focus-copy" style="margin-top:10px">Choose DSA, System Design, or both together in the session. A focus is not shared until you agree it with your partner.</div><div class="row" style="margin-top:12px; flex-wrap:wrap; gap:8px"><button id="dashJoinSession" class="btn" style="background:var(--accent); color:#0f0f10; padding:11px 18px; font-size:14px; font-weight:700">▶ Join Session — Code + Video + Board</button><span class="pill" style="font-size:11px">room ${escapeHtml(roomHint.slice(-6))}</span>${copyAndEmailBtns}<span class="small muted">agree time first, then jump in</span></div><div class="small muted" id="dashInviteHint" style="margin-top:6px">Session link: <span class="kbd" style="font-size:10.5px">${escapeHtml(inviteUrl)}</span></div></div></div>`;
     document.getElementById('dashJoinSession')?.addEventListener('click', ()=>joinSessionDeterministic(false));
-    area.querySelectorAll('.copy-invite').forEach(b=>b.addEventListener('click',()=>{ const r=b.dataset.room; localStorage.setItem('randori-last-room', r); const inv=(location.origin||'')+'/join/'+encodeURIComponent(r); try{ navigator.clipboard.writeText(inv); toast('Invite copied ✓'); }catch{ prompt('Copy invite', inv); } }));
+    area.querySelectorAll('.copy-invite').forEach(b=>b.addEventListener('click',()=>{ const r=b.dataset.room; localStorage.setItem('randori-last-room', r); const inv=(location.origin||'')+'/join/'+encodeURIComponent(r); try{ navigator.clipboard.writeText(inv); toast('Session link copied ✓'); }catch{ prompt('Copy session link', inv); } }));
     area.querySelectorAll('.email-invite').forEach(b=>b.addEventListener('click',()=>{
       const room=b.dataset.room; const inv=(location.origin||'')+'/join/'+encodeURIComponent(room);
       const sub='Randori mock interview — join '+room; const body='Hi '+ (partner?.name||'there') +'!\\n\\nLets jump into our mock session.\\nRoom: '+room+'\\nLink: '+inv+'\\nTime: see agreed slot in dashboard\\n\\n— Randori Circle';
@@ -7543,6 +7743,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   let joinRequest=null;
   let joinRequestEpoch=0;
   let joinAuthUserId=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null;
+  let joinAuthIdentityHydrated=false;
   document.querySelector('.tabs')?.addEventListener('click',()=>{
     joinRequestEpoch+=1;
     joinRequest=null;
@@ -7716,6 +7917,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       await showProfileSetup(profile);
       return;
     }
+    const explicitView=String(window._randoriExplicitNavigation||'');
+    if(['circle','pair','code','board','history'].includes(explicitView)){
+      document.querySelector(`[data-tab="${explicitView}"]`)?.click();
+      return;
+    }
     // Deep links are user intent. Once authentication/profile checks finish,
     // keep the requested workspace visible instead of routing back to the
     // dashboard on the delayed auth refresh.
@@ -7784,7 +7990,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   try{ updateAuthUI = wrappedUpdateAuthUI; }catch{ window.updateAuthUI = wrappedUpdateAuthUI; }
   window.addEventListener('randori:auth-refreshed',()=>{
     const nextId=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null;
-    if(nextId!==joinAuthUserId){ joinRequestEpoch+=1; joinRequest=null; joinDecision=null; joinAuthUserId=nextId; }
+    if(nextId!==joinAuthUserId){
+      joinRequestEpoch+=1; joinRequest=null; joinDecision=null; joinAuthUserId=nextId;
+      if(joinAuthIdentityHydrated) window._randoriExplicitNavigation=null;
+    }
+    joinAuthIdentityHydrated=true;
     requestAutomaticRoute().catch(()=>{});
   });
 
@@ -8137,7 +8347,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         mergeIntoSelect();
         catalogueFailureCount=0;
         if(catalogueRetryTimer){ clearTimeout(catalogueRetryTimer); catalogueRetryTimer=null; }
-        document.getElementById('qCustomCount').textContent='• '+j.questions.length+' original exercise'+(j.questions.length===1?'':'s');
+        document.getElementById('qCustomCount').textContent='• '+j.questions.length+' available';
         return j.questions;
       }
       if(r.status!==408&&r.status!==429&&r.status<500) throw Object.assign(new Error(j.error||'catalogue unavailable'),{retryable:false});
@@ -8209,7 +8419,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     activeLanguage=document.getElementById('langSelect')?.value||activeLanguage;
     const titleEl=document.getElementById('qTitle'); if(titleEl) titleEl.textContent=q.title;
     const diffEl=document.getElementById('qDiff'); if(diffEl) {
-      const diffColor = q.difficulty==='Easy'?'#c8f6a0': q.difficulty==='Hard'?'#e8a0b0':'#f2d07a';
+      const diffColor=q.difficulty==='Easy'?'var(--ok)':q.difficulty==='Hard'?'var(--bad)':'var(--warn)';
       diffEl.textContent='';
       const difficulty=document.createElement('span'); difficulty.style.color=diffColor; difficulty.textContent=String(q.difficulty||'');
       diffEl.appendChild(difficulty);
@@ -8791,16 +9001,23 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const nextSub=document.getElementById('landingNextSub');
     const cnt=document.getElementById('landingNextCountdown');
     const prog=document.getElementById('landingNextProg');
+    const progressbar=document.getElementById('landingNextBar');
     const next=pairingBoundaryFromStats(stats);
     if(nextLabel) nextLabel.textContent=pairingLabelFromStats(stats);
     if(nextSub) nextSub.textContent='The availability cutoff and pairing run share this boundary. '+fmtCountdown(next)+'.';
-    if(cnt) cnt.textContent=fmtCountdown(next);
-    if(prog){
+    const updateCountdown=()=>{
+      const countdown=fmtCountdown(next);
+      if(cnt) cnt.textContent=countdown;
       const weekMs=7*86400000;
-      const elapsed=next?weekMs-(next-new Date()):0;
-      const pct=Math.max(8, Math.min(96, 100*elapsed/weekMs));
-      prog.style.width=pct+'%';
-    }
+      const elapsed=next?weekMs-(next.getTime()-Date.now()):0;
+      const pct=Math.max(0,Math.min(100,100*elapsed/weekMs));
+      if(prog) prog.style.width=pct+'%';
+      if(progressbar){
+        progressbar.setAttribute('aria-valuenow',String(Math.round(pct)));
+        progressbar.setAttribute('aria-valuetext',next?`${countdown}; ${Math.round(pct)}% of the weekly cycle elapsed`:'Pairing schedule unavailable');
+      }
+    };
+    updateCountdown();
     if(landingCountdownTimer) clearInterval(landingCountdownTimer);
     if(next) landingCountdownTimer=setInterval(()=>{
       const c=document.getElementById('landingNextCountdown');
@@ -8810,7 +9027,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         fetchStats(false).then(fresh=>{ if(fresh) populateLanding(fresh); });
         return;
       }
-      c.textContent=fmtCountdown(next);
+      updateCountdown();
     },30000);
   }
 
@@ -8964,8 +9181,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(!logs.length){ listEl.innerHTML='<span class="small muted">No logs yet</span>'; return; }
       listEl.innerHTML=logs.map(l=>{
         const lvl=l.level||'info';
-        const color = lvl==='error' ? '#e87a8a' : lvl==='warn' ? '#f2d07a' : lvl==='success' ? '#c8f6a0' : '#9aa0a6';
-        const badge=`<span style="display:inline-block; min-width:44px; padding:2px 6px; border-radius:999px; border:1px solid ${color}; color:${color}; font-size:10px; text-transform:uppercase">${escapeHtml(lvl)}</span>`;
+        const tone=lvl==='error'?'status-danger':lvl==='warn'?'status-warning':lvl==='success'?'status-success':'';
+        const badge=`<span class="kbd status-chip log-badge ${tone}">${escapeHtml(lvl)}</span>`;
         const src=l.source||'server';
         const ev=l.event? ` <span class="kbd" style="font-size:10px">${escapeHtml((l.event||'').slice(0,28))}</span>`:'';
         const when=new Date(l.created_at).toLocaleTimeString();
@@ -9156,7 +9373,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       else{
         el.style.display='inline-flex';
         el.textContent = `lint: ${errs.length? errs.length+' err':''}${errs.length&&warns.length?' ':''}${warns.length? warns.length+' warn':''}${!errs.length&&!warns.length? markers.length+'':''}`.trim() || 'lint: ok';
-        el.style.borderColor = errs.length? 'var(--accent-3)' : (warns.length? '#e6c07a':'var(--line)');
+        el.style.borderColor=errs.length?'var(--bad)':(warns.length?'var(--warn)':'var(--line)');
         el.title = markers.slice(0,3).map(m=> (m.severity===8?'✗ ':'⚠ ')+ m.message.slice(0,120)).join(' | ');
       }
     }catch{ el.style.display='none'; }
@@ -9543,9 +9760,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       }
 
       function chip(evTxt){
-        if(!evTxt || evTxt==='no direct quote' || String(evTxt).includes('no direct')) return `<span class="kbd" style="background:#e6c07a22;border-color:#e6c07a">no direct quote</span>`;
+        if(!evTxt || evTxt==='no direct quote' || String(evTxt).includes('no direct')) return `<span class="kbd status-chip status-warning">no direct quote</span>`;
         const safe=escapeHtml(evTxt);
-        return `<span class="kbd" style="background:#9cc0b522;border-color:#9cc0b5;color:#9cc0b5" title="${safe}">“${safe.slice(0,80)}${safe.length>80?'…':''}”</span>`;
+        return `<span class="kbd status-chip status-success" title="${safe}">“${safe.slice(0,80)}${safe.length>80?'…':''}”</span>`;
       }
 
       const candidate=fb?.candidate||{strengths:[], improvements:[]};
@@ -9554,7 +9771,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         <div class="card" style="border-color:var(--ok)"><div class="card-h"><h3 style="font-size:13px">Candidate ${fb?.overall_score? `<span class="kbd">${escapeHtml(fb.overall_score)}/10</span>`:''}</h3><span class="kbd" title="session ${escapeHtml(j.session_id)}">#${escapeHtml(String(j.session_id).slice(-4))}</span></div>
           <div class="card-b" style="display:grid;gap:8px">
             <div><b class="small">Strengths</b><div style="display:grid;gap:6px;margin-top:4px">${(candidate.strengths||[]).map(s=>`<div class="test" style="border-color:var(--ok)"><div class="small"><b>${escapeHtml(s.point)}</b> ${chip(s.evidence)} ${s.confidence? `<span class="kbd">${escapeHtml(Math.round((s.confidence||0.8)*100))}%</span>`:''}</div></div>`).join('')||'<span class="small muted">none listed</span>'}</div></div>
-            <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(candidate.improvements||[]).map(s=>`<div class="test" style="border-color:#e87a8a"><div class="small"><b>${escapeHtml(s.point)}</b> ${chip(s.evidence)}<div class="small muted" style="margin-top:3px">↳ ${escapeHtml(s.suggestion||'')}</div></div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
+            <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(candidate.improvements||[]).map(s=>`<div class="test" style="border-color:var(--bad)"><div class="small"><b>${escapeHtml(s.point)}</b> ${chip(s.evidence)}<div class="small muted" style="margin-top:3px">↳ ${escapeHtml(s.suggestion||'')}</div></div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
           </div>
         </div>
         <div class="card" style="border-color:var(--accent-2)"><div class="card-h"><h3 style="font-size:13px">Interviewer</h3><span class="kbd">${escapeHtml(String(model||'model').slice(0,22))}</span></div>
