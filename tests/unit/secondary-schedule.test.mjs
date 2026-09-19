@@ -16,6 +16,11 @@ import {
   secondaryScheduleIdentity,
 } from '../../api/_secondary-schedule.js';
 import { ScheduleInputError } from '../../api/_schedule.js';
+import {
+  createSecondaryScheduleEmailHandler,
+  SECONDARY_SCHEDULE_EMAIL_EVENT_VERSION,
+  secondaryScheduleInstantFingerprint,
+} from '../../api/_secondary-schedule-email.js';
 
 const SESSION_HASH='f'.repeat(64);
 const PARTNER_SESSION_HASH='e'.repeat(64);
@@ -26,7 +31,8 @@ const GENERATION_B='22222222-2222-4222-8222-222222222222';
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const ENV_KEYS=['CIRCLE_MEMBERSHIP_ENABLED','MULTI_CIRCLE_CONTROL_PLANE_ENABLED',
   'MULTI_CIRCLE_AVAILABILITY_ENABLED','SECONDARY_CIRCLE_COORDINATION_ENABLED',
-  'SECONDARY_CIRCLE_SCHEDULING_ENABLED','RANDORI_LOCAL_RUNTIME','TURSO_DATABASE_URL','NODE_ENV'];
+  'SECONDARY_CIRCLE_SCHEDULING_ENABLED','SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED',
+  'RANDORI_LOCAL_RUNTIME','TURSO_DATABASE_URL','NODE_ENV'];
 let currentDb=null;
 
 mock.module('../../api/_db.js',{exports:{
@@ -102,6 +108,22 @@ async function seed(db){
 
 function authority(circleId=20,contextVersion=7,userId=1,sessionHash=SESSION_HASH){
   return {kind:'session',payload:{id:userId,sessionHash},userId,circleId,contextVersion,implicit:false};
+}
+
+function enableSecondaryScheduleEmail(){
+  for(const key of ENV_KEYS.slice(0,6)) process.env[key]='true';
+}
+
+async function scheduleEvents(db){
+  return (await db.execute(`SELECT id,event_type,event_version,idempotency_key,payload_json,
+      attempt_count,max_attempts,delivery_timeout_ms FROM outbox_events
+    WHERE event_type='schedule.email.requested' ORDER BY id`)).rows.map(row=>({
+      id:Number(row.id),eventType:String(row.event_type),eventVersion:Number(row.event_version),
+      idempotencyKey:String(row.idempotency_key),payload:JSON.parse(String(row.payload_json)),
+      attemptCount:Number(row.attempt_count)+1,maxAttempts:Number(row.max_attempts),
+      deliveryTimeoutMs:Number(row.delivery_timeout_ms),leaseToken:'test-lease',
+      leasedUntil:'2099-01-01T00:00:00.000Z',
+    }));
 }
 
 function invoke({method='GET',url='/api/schedule',query={endpoint:'schedule'},body={},
@@ -189,6 +211,164 @@ test('secondary schedule proposes, accepts, removes, and clears through normaliz
     await item.db.execute(`UPDATE circle_pair_schedules SET schedule_key='e'||substr(schedule_key,2)`);
     await assert.rejects(()=>readSecondarySchedule(item.db,{authority:authority()}),error=>
       error instanceof SecondaryScheduleError&&error.code==='SECONDARY_SCHEDULE_INTEGRITY');
+  }finally{ item.close(); currentDb=null; }
+});
+
+test('successful secondary CAS writes compact v2 recipient intents and no-op or stale writes queue nothing',async()=>{
+  const item=fixture(); currentDb=item.db;
+  try{
+    await apply(item.db); await seed(item.db); enableSecondaryScheduleEmail();
+    const initial=await readSecondarySchedule(item.db,{authority:authority()});
+    const instant='2098-09-20T09:00:00.000Z';
+    const proposed=await mutateSecondarySchedule(item.db,{authority:authority(),mutation:{
+      action:'propose',baseVersion:initial.schedule.version,instant,
+    }});
+    const proposalId=proposed.response.schedule.proposals[0].proposal_id;
+    let queued=await scheduleEvents(item.db);
+    assert.equal(queued.length,1);
+    assert.equal(queued[0].eventVersion,SECONDARY_SCHEDULE_EMAIL_EVENT_VERSION);
+    assert.equal(queued[0].idempotencyKey,
+      `secondary-schedule-email/v1/${proposed.response.schedule_id}/1/proposal/2`);
+    assert.deepEqual(queued[0].payload,{
+      schedule_id:proposed.response.schedule_id,proposal_id:proposalId,schedule_revision:1,
+      actor_user_id:1,recipient_user_id:2,kind:'proposal',
+      instant_fingerprint:secondaryScheduleInstantFingerprint(instant),template_version:1,
+    });
+    assert.equal(JSON.stringify(queued[0].payload).includes(instant),false);
+    assert.doesNotMatch(JSON.stringify(queued[0].payload),/@|Twenty|circle_id|group_id|publication_id|room/i);
+
+    const stale=await mutateSecondarySchedule(item.db,{authority:authority(),mutation:{
+      action:'clear',baseVersion:initial.schedule.version,
+    }});
+    assert.equal(stale.conflict,true);
+    assert.equal((await scheduleEvents(item.db)).length,1);
+
+    const accepted=await mutateSecondarySchedule(item.db,{
+      authority:authority(20,7,2,PARTNER_SESSION_HASH),mutation:{
+        action:'accept',baseVersion:proposed.response.schedule.version,proposalId,
+      },
+    });
+    queued=await scheduleEvents(item.db);
+    assert.deepEqual(queued.map(item=>[item.payload.kind,item.payload.recipient_user_id]),[
+      ['proposal',2],['accepted',1],['accepted',2],['reminder',1],['reminder',2],
+    ]);
+    assert.equal(new Set(queued.map(item=>item.eventType)).size,1);
+    assert.equal(queued.every(item=>item.eventVersion===2),true);
+    assert.equal(queued.filter(item=>item.payload.kind==='reminder')
+      .every(item=>item.payload.schedule_revision===2),true);
+
+    const noOp=await mutateSecondarySchedule(item.db,{
+      authority:authority(20,7,2,PARTNER_SESSION_HASH),mutation:{
+        action:'accept',baseVersion:accepted.response.schedule.version,proposalId,
+      },
+    });
+    assert.equal(noOp.conflict,false);
+    assert.equal(noOp.response.schedule.version,accepted.response.schedule.version);
+    assert.equal((await scheduleEvents(item.db)).length,5);
+
+    const secondProposal=await mutateSecondarySchedule(item.db,{authority:authority(),mutation:{
+      action:'propose',baseVersion:noOp.response.schedule.version,instant:'2098-09-20T10:00:00.000Z',
+    }});
+    const secondProposalId=secondProposal.response.schedule.proposals.at(-1).proposal_id;
+    const changed=await mutateSecondarySchedule(item.db,{authority:authority(),mutation:{
+      action:'accept',baseVersion:secondProposal.response.schedule.version,proposalId:secondProposalId,
+    }});
+    const removed=await mutateSecondarySchedule(item.db,{authority:authority(),mutation:{
+      action:'remove',baseVersion:changed.response.schedule.version,proposalId:secondProposalId,
+    }});
+    const beforeClear=await scheduleEvents(item.db);
+    const staleReminder=beforeClear.find(item=>item.payload.kind==='reminder'
+      &&item.payload.schedule_revision===4&&item.payload.recipient_user_id===2);
+    const renewedReminder=beforeClear.find(item=>item.payload.kind==='reminder'
+      &&item.payload.schedule_revision===5&&item.payload.recipient_user_id===2);
+    let reminderSends=0;
+    const reminderHandler=createSecondaryScheduleEmailHandler({
+      db:item.db,origin:'https://randori.example.test',send:async()=>{
+        reminderSends+=1; return {providerMessageId:'renewed-reminder'};
+      },
+    });
+    assert.deepEqual(await reminderHandler(staleReminder),{
+      status:'suppressed',reasonCode:'SCHEDULE_INVALID',
+    });
+    assert.deepEqual(await reminderHandler(renewedReminder),{
+      status:'delivered',providerName:'email',providerMessageId:'renewed-reminder',
+    });
+    assert.equal(reminderSends,1);
+    await mutateSecondarySchedule(item.db,{authority:authority(),mutation:{
+      action:'clear',baseVersion:removed.response.schedule.version,
+    }});
+    queued=await scheduleEvents(item.db);
+    assert.deepEqual(queued.slice(5).map(item=>[item.payload.schedule_revision,item.payload.kind,
+      item.payload.recipient_user_id]),[
+      [3,'proposal',2],[3,'reminder',1],[3,'reminder',2],
+      [4,'changed',1],[4,'changed',2],[4,'reminder',1],[4,'reminder',2],
+      [5,'removed',2],[5,'reminder',1],[5,'reminder',2],
+      [6,'cleared',1],[6,'cleared',2],
+    ]);
+    assert.equal(queued.filter(item=>['proposal','removed'].includes(item.payload.kind))
+      .every(item=>item.payload.recipient_user_id!==item.payload.actor_user_id),true);
+    assert.equal(queued.filter(item=>['accepted','changed','cleared','reminder'].includes(item.payload.kind))
+      .some(item=>item.payload.recipient_user_id===item.payload.actor_user_id),true);
+  }finally{ item.close(); currentDb=null; }
+});
+
+test('secondary notification failure rolls the schedule CAS back atomically',async()=>{
+  const item=fixture(); currentDb=item.db;
+  try{
+    await apply(item.db); await seed(item.db); enableSecondaryScheduleEmail();
+    const initial=await readSecondarySchedule(item.db,{authority:authority()});
+    await item.db.execute(`CREATE TRIGGER reject_secondary_schedule_email BEFORE INSERT ON outbox_events
+      WHEN NEW.event_version=2 BEGIN SELECT RAISE(ABORT,'forced notification failure'); END`);
+    await assert.rejects(()=>mutateSecondarySchedule(item.db,{authority:authority(),mutation:{
+      action:'propose',baseVersion:initial.schedule.version,instant:'2098-09-20T09:00:00.000Z',
+    }}),error=>error instanceof SecondaryScheduleError&&error.code==='SECONDARY_SCHEDULE_UNAVAILABLE');
+    assert.equal(Number((await item.db.execute(`SELECT COUNT(*) AS count FROM circle_pair_schedules`)).rows[0].count),0);
+    assert.equal((await scheduleEvents(item.db)).length,0);
+  }finally{ item.close(); currentDb=null; }
+});
+
+test('v2 dispatch resolves current data, links only to the dashboard, and suppresses stale authority',async()=>{
+  const item=fixture(); currentDb=item.db;
+  try{
+    await apply(item.db); await seed(item.db); enableSecondaryScheduleEmail();
+    const initial=await readSecondarySchedule(item.db,{authority:authority()});
+    const proposed=await mutateSecondarySchedule(item.db,{authority:authority(),mutation:{
+      action:'propose',baseVersion:initial.schedule.version,instant:'2098-09-20T09:00:00.000Z',
+    }});
+    const queued=await scheduleEvents(item.db);
+    const messages=[];
+    const handler=createSecondaryScheduleEmailHandler({
+      db:item.db,origin:'https://randori.example.test',send:async message=>{
+        messages.push(message); return {providerName:'capture',providerMessageId:'message-1'};
+      },
+    });
+    await item.db.execute({sql:`DELETE FROM auth_sessions WHERE session_hash=?`,args:[PARTNER_SESSION_HASH]});
+    const delivered=await handler(queued[0]);
+    assert.deepEqual(delivered,{status:'delivered',providerName:'capture',providerMessageId:'message-1'});
+    assert.equal(messages[0].to,'two@example.test');
+    assert.match(messages[0].subject,/Twenty.*One proposed/);
+    assert.match(messages[0].html,/href="https:\/\/randori\.example\.test\/\?view=dashboard"/);
+    assert.doesNotMatch(messages[0].html,/\/join\/|room|workspace|video|chat/i);
+
+    await item.db.execute(`UPDATE auth_accounts SET email='current-two@example.test' WHERE id=2`);
+    await item.db.execute(`UPDATE circle_pair_schedules SET revision=revision+1`);
+    assert.deepEqual(await handler(queued[0]),{status:'suppressed',reasonCode:'SCHEDULE_INVALID'});
+    await item.db.execute(`UPDATE circle_pair_schedules SET revision=revision-1`);
+    await item.db.execute(`UPDATE circle_memberships SET status='inactive' WHERE circle_id=20 AND user_id=2`);
+    assert.deepEqual(await handler(queued[0]),{status:'suppressed',reasonCode:'PARTICIPANT_REVOKED'});
+    await item.db.execute(`UPDATE circle_memberships SET status='active' WHERE circle_id=20 AND user_id=2`);
+    await item.db.execute(`INSERT INTO user_notification_prefs (user_id,email_enabled) VALUES (2,0)`);
+    assert.deepEqual(await handler(queued[0]),{status:'suppressed',reasonCode:'EMAIL_DISABLED'});
+    await item.db.execute(`UPDATE user_notification_prefs SET email_enabled=1 WHERE user_id=2`);
+    await item.db.execute(`UPDATE circles SET archived_at='2098-01-01T00:00:00.000Z' WHERE id=20`);
+    assert.deepEqual(await handler(queued[0]),{status:'suppressed',reasonCode:'SCHEDULE_INVALID'});
+    await item.db.execute(`UPDATE circles SET archived_at=NULL WHERE id=20`);
+    delete process.env.SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED;
+    assert.deepEqual(await handler(queued[0]),{
+      status:'suppressed',reasonCode:'SECONDARY_SCHEDULE_EMAIL_DISABLED',
+    });
+    assert.equal(messages.length,1);
+    assert.equal(proposed.response.schedule.proposals.length,1);
   }finally{ item.close(); currentDb=null; }
 });
 
@@ -326,6 +506,7 @@ test('concurrent secondary writers produce one winner and one latest-state confl
   const second=createClient({url:item.url});
   try{
     await apply(item.db); await seed(item.db); await prepareMigrationConnection(second);
+    enableSecondaryScheduleEmail();
     const initial=await readSecondarySchedule(item.db,{authority:authority()});
     const writes=[item.db,second].map((db,index)=>mutateSecondarySchedule(db,{authority:authority(),mutation:{
       action:'propose',baseVersion:initial.schedule.version,
@@ -337,13 +518,14 @@ test('concurrent secondary writers produce one winner and one latest-state confl
     const loser=results.find(result=>result.conflict).response;
     assert.deepEqual(loser.schedule,winner.schedule);
     assert.equal(winner.schedule.proposals.length,1);
+    assert.equal((await scheduleEvents(item.db)).length,1);
   }finally{ second.close(); item.close(); currentDb=null; }
 });
 
 test('an applied-but-throwing commit is not replayed',async()=>{
   const item=fixture(); currentDb=item.db;
   try{
-    await apply(item.db); await seed(item.db);
+    await apply(item.db); await seed(item.db); enableSecondaryScheduleEmail();
     const initial=await readSecondarySchedule(item.db,{authority:authority()});
     let transactionCount=0;
     const ambiguous={
@@ -367,6 +549,7 @@ test('an applied-but-throwing commit is not replayed',async()=>{
     const stored=await readSecondarySchedule(item.db,{authority:authority()});
     assert.equal(stored.schedule.proposals.length,1);
     assert.equal(Number((await item.db.execute(`SELECT revision FROM circle_pair_schedules`)).rows[0].revision),1);
+    assert.equal((await scheduleEvents(item.db)).length,1);
   }finally{ item.close(); currentDb=null; }
 });
 

@@ -2,6 +2,10 @@ import { canonicalRoomId, escapeHtml } from './_pairing.js';
 import { createOutboxEventStatement, OutboxDeliveryError, readOutboxMetrics, runOutboxWorker } from './_outbox.js';
 import { classifyPairingProviderError } from './_pairing-email.js';
 import { normalizeScheduleInstant, projectSchedule, readScheduleState } from './_schedule.js';
+import {
+  createSecondaryScheduleEmailHandler,
+  SECONDARY_SCHEDULE_EMAIL_EVENT_VERSION,
+} from './_secondary-schedule-email.js';
 
 export const SCHEDULE_EMAIL_EVENT_TYPE='schedule.email.requested';
 export const SCHEDULE_EMAIL_EVENT_VERSION=1;
@@ -230,7 +234,11 @@ export function createScheduleEmailHandler({db,baseUrl,send,localRuntime=false}=
   let origin;
   try{ origin=new URL(String(baseUrl)).origin; }
   catch{ throw new TypeError('valid schedule email base URL required'); }
+  const secondaryHandler=createSecondaryScheduleEmailHandler({db,origin,send});
   return async(event,{signal}={})=>{
+    if(event?.eventVersion===SECONDARY_SCHEDULE_EMAIL_EVENT_VERSION){
+      return secondaryHandler(event,{signal});
+    }
     let payload;
     try{ payload=scheduleEmailPayload(event); }
     catch(error){

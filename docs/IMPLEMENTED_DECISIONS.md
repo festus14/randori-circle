@@ -1352,7 +1352,7 @@ available in v13, and revalidates all mutable authority at delivery time.
 
 Status: implemented behind default-off `SECONDARY_CIRCLE_SCHEDULING_ENABLED`;
 managed migration v16 and the complete secondary-coordination flag chain are
-required. Schedule email is excluded and tracked in issue #149.
+required. Schedule email is a separately gated increment in ID-34.
 
 **Decision.** Migration v16 adds one `circle_pair_schedules` row per exact
 two-person v13 pairing group and normalized `circle_pair_schedule_proposals`
@@ -1385,7 +1385,8 @@ no legacy room ID or workspace controls. Calendar export uses that opaque
 identity for a stable UID and links only to `/?view=dashboard`. Primary-circle
 request bodies, response fields, room links, storage, notifications, and
 calendar behavior remain on their existing path. Secondary writes create no
-legacy schedule/workspace row and no outbox event.
+legacy schedule/workspace row. ID-34 may atomically enqueue a versioned
+dashboard-only notification when its separate flag is enabled.
 
 **Alternatives.** Reusing `pair_schedules` would make an unscoped legacy group
 ID a cross-tenant capability and couple secondary coordination to room state.
@@ -1393,9 +1394,8 @@ Creating a hidden legacy room solely for scheduling would silently authorize
 chat, video, execution, and AI paths. A JSON proposal array would preserve the
 old representation but weaken per-proposal ownership and foreign-key proof.
 Client-supplied circle/group IDs were rejected because active session context
-is the authority. Automatically sending schedule email was rejected because
-it needs its own versioned payload, idempotency, stale-recipient checks, provider
-rehearsal, and rollback gate; issue #149 owns that increment.
+is the authority. Schedule email uses its own versioned payload, idempotency,
+stale-recipient checks, provider rehearsal, and rollback gate in ID-34.
 
 **Rollout and recovery.** Apply v16 alone through the protected one-version
 workflow after v15: fresh restore rehearsal, fresh status fingerprint, explicit
@@ -1406,3 +1406,45 @@ archive, calendar UID/link, and primary byte-compatibility. Production rollback
 disables only `SECONDARY_CIRCLE_SCHEDULING_ENABLED`. Preserve v16 rows and the
 ledger; do not downgrade or delete tenant data. Existing calendar downloads
 remain controlled by each member's calendar application.
+
+## ID-34: Reuse schedule-email v2 for secondary dashboard notifications
+
+Status: implemented behind default-off
+`SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED`; no migration after v16.
+
+**Decision.** The successful secondary schedule CAS transaction writes
+`schedule.email.requested` v2 intents before commit. Proposal and removal notify
+the partner; acceptance, change, clear, and the delayed reminder notify both
+members. Conflicts, rollbacks, ambiguous commits, and state-preserving actions
+write none; those state-preserving actions also retain the current revision.
+A real proposal/removal revision that preserves an agreement renews the two
+reminder intents, so stale-revision suppression cannot erase the only future
+reminder. The deterministic key contains only the stable schedule ID, revision,
+kind, and recipient. The exact minimal payload carries opaque
+schedule/proposal identities, revision, actor/recipient IDs, kind, template
+version, and a domain-separated instant fingerprint where current state must
+match a time. It contains no address, circle name, internal scope/group/room
+identifier, raw instant, or rendered content.
+
+Dispatch revalidates the exact v16 ownership tuple, uniquely current
+publication, secondary unarchived circle, exact pair, both active non-demo
+memberships, current revision and kind-specific state, preference/current
+address, and non-elapsed instant. Recipient membership is independent of that
+user's selected-circle session. Exact revision matching suppresses stale
+A→B→A agreement/reminder work. Rendering uses current data and links only to
+`/?view=dashboard`.
+
+Primary schedule email remains byte-compatible v1. Both versions share the
+same event type, leases, stable provider idempotency, retry/dead-letter policy,
+retention, audit trail, aggregate metric, and existing five-type fair lane.
+Rollback disables only the new flag: scheduling stays active, new v2 intents
+stop, and pending v2 work suppresses before provider access. See
+`SECONDARY_SCHEDULE_NOTIFICATIONS.md` for the recipient matrix and canary plan.
+
+**Alternatives.** A sixth event type would duplicate a delivery channel and
+weaken the existing fairness budget. Storing raw delivery data would preserve
+stale PII. Synchronous send would couple the CAS to provider availability, and
+post-commit fan-out would create an untracked durability gap. Mutable reminder
+cancellation would add races and discard audit history. Reusing the immutable
+v6 event with dispatch-time suppression keeps the increment migration-free and
+operationally bounded.
