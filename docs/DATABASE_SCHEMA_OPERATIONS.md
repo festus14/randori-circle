@@ -50,7 +50,7 @@ Representative output fields:
   "manifest": {"version": 1, "checksum": "..."},
   "foreignKeysEnabled": true,
   "checkConstraintsEnabled": true,
-  "summary": {"expectedTables": 44, "expectedIndexes": 45, "blockers": 0},
+  "summary": {"expectedTables": 45, "expectedIndexes": 47, "blockers": 0},
   "drift": {
     "missingTables": [],
     "missingColumns": [],
