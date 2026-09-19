@@ -702,7 +702,7 @@ export async function updateAvailability(db,{userId,localRuntime=false,body,now,
 }
 
 /** Apply exact per-cycle decisions to an already tenant-filtered account set. */
-export async function applyCycleAvailability(db,{scope,cycle,accounts}={}){
+export async function applyCycleAvailability(db,{scope,cycle,accounts,bridgeLegacyAvailability=true}={}){
   validDatabase(db);
   await ensureAvailabilityReadiness(db);
   const safeScope=canonicalScope(scope);
@@ -718,7 +718,12 @@ export async function applyCycleAvailability(db,{scope,cycle,accounts}={}){
     seen.add(id);
     return {...account,id};
   });
-  const cycleRecord=await materializeAvailabilityCycle(db,{scope:safeScope,cycle:safeCycle});
+  if(typeof bridgeLegacyAvailability!=='boolean'){
+    fail('AVAILABILITY_INPUT_INVALID','bridgeLegacyAvailability must be a boolean.');
+  }
+  const cycleRecord=await materializeAvailabilityCycle(db,{
+    scope:safeScope,cycle:safeCycle,bridgeLegacyAvailability,
+  });
   if(!normalized.length) return Object.freeze([]);
   const placeholders=normalized.map(()=>'?').join(',');
   let result;

@@ -1271,7 +1271,7 @@ p{margin:0}
   let me = null;
   let authSessionEpoch=0;
   let authRefreshSequence=0;
-  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,passwordReset:false,localIdentity:false,verifiedEmailActivation:false,googleOAuth:false,identityManagement:false,multiCircleControlPlane:false,multiCircleAvailability:false,registrationMode:'private_beta'});
+  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,passwordReset:false,localIdentity:false,verifiedEmailActivation:false,googleOAuth:false,identityManagement:false,multiCircleControlPlane:false,multiCircleAvailability:false,secondaryCircleCoordination:false,registrationMode:'private_beta'});
   let authCapabilities=CLOSED_AUTH_CAPABILITIES;
   let authCapabilitiesLoaded=false;
   let authCapabilitiesFailed=false;
@@ -1292,6 +1292,8 @@ p{margin:0}
   let currentCloudPairingCycle=null;
   let currentCloudPairingLoaded=false;
   let currentCloudPairingUserId=null;
+  let pairingPublicationAbort=null;
+  let pairingListAbort=null;
   let pairingRenderEpoch=0;
   window._randoriUserNavigationEpoch=0;
   window._randoriExplicitNavigation=null;
@@ -1612,7 +1614,10 @@ async function refreshMe(){
   const ADMIN_EMAIL='festusomole14@gmail.com';
   function isAdmin(){ return !!(me && (me.is_admin || me.isAdmin || (me.email && me.email.toLowerCase()===ADMIN_EMAIL))); }
   function canRunCurrentPairing(){
-    return !!me&&(activeCircleRole==='owner'
+    const selectedCircleMayPublish=!authCapabilities.multiCircleControlPlane
+      ||activeCircleContext?.active_circle?.is_primary===true
+      ||authCapabilities.secondaryCircleCoordination===true;
+    return !!me&&((activeCircleRole==='owner'&&selectedCircleMayPublish)
       ||(activeCircleRole==='legacy'&&authCapabilitiesLoaded&&!authCapabilitiesFailed
         &&authCapabilities.registrationMode==='local_open'&&isAdmin()));
   }
@@ -2093,6 +2098,7 @@ async function refreshMe(){
       ||(capabilities.identityManagement!==undefined&&typeof capabilities.identityManagement!=='boolean')
       ||(capabilities.multiCircleControlPlane!==undefined&&typeof capabilities.multiCircleControlPlane!=='boolean')
       ||(capabilities.multiCircleAvailability!==undefined&&typeof capabilities.multiCircleAvailability!=='boolean')
+      ||(capabilities.secondaryCircleCoordination!==undefined&&typeof capabilities.secondaryCircleCoordination!=='boolean')
       ||typeof capabilities.googleOAuth!=='boolean'
       ||!['local_open','local_invite','verified_invite','private_beta'].includes(mode)) throw new Error('invalid auth capabilities');
     return Object.freeze({
@@ -2105,6 +2111,7 @@ async function refreshMe(){
       identityManagement:capabilities.identityManagement===true,
       multiCircleControlPlane:capabilities.multiCircleControlPlane===true,
       multiCircleAvailability:capabilities.multiCircleAvailability===true,
+      secondaryCircleCoordination:capabilities.secondaryCircleCoordination===true,
       registrationMode:mode,
     });
   }
@@ -3270,6 +3277,11 @@ async function refreshMe(){
     circleControlEpoch+=1;
     circleRenderEpoch+=1;
     pairingRenderEpoch+=1;
+    pairingPublicationAbort?.abort();
+    pairingPublicationAbort=null;
+    pairingListAbort?.abort();
+    pairingListAbort=null;
+    window._randori_journey?.resetPairState?.();
     circleRosterRequest+=1;
     currentCloudPairingWeek=null;
     currentCloudPairingCycle=null;
@@ -3289,9 +3301,9 @@ async function refreshMe(){
     window._randori_authorized_room=null;
     window._randori_join_room=null;
     try{ stopPairRecap({clear:true}); }catch{}
-    try{ clearDashboardPairState(); }catch{}
     try{
       localStorage.removeItem('randori-last-room');
+      localStorage.removeItem('randori-last-my-pair');
       sessionStorage.removeItem('randori-room-draft');
     }catch{}
     listEl?.replaceChildren();
@@ -3334,11 +3346,14 @@ async function refreshMe(){
     circleContextPanel.style.display=visible?'grid':'none';
     circleContextSelect.disabled=false;
     setCircleContextState(!visible?'hidden':(context?.selection_required?'required':'ready'),context?.selection_required
-      ?'Choose which circle to manage. Pairing remains unavailable while this account belongs to multiple circles.'
+      ?'Choose which circle to manage and view.'
       :(circles.length>1
-        ?(authCapabilities.multiCircleAvailability
-          ?'Circle-specific availability and member controls are active. Pairing remains unavailable for this account.'
+        ?(authCapabilities.secondaryCircleCoordination
+          ?'Availability and weekly pairing follow this circle. Secondary circles are coordination-only. Workspaces are not enabled.'
+          :(authCapabilities.multiCircleAvailability
+          ?'Circle-specific availability and member controls are active. Pairing is not enabled yet.'
           :'Circle-specific member and invitation controls are active. Pairing remains unavailable for this account.')
+        )
         :''));
   }
 
@@ -3346,6 +3361,12 @@ async function refreshMe(){
     if(!authCapabilities.multiCircleControlPlane) return true;
     return Number.isSafeInteger(result?.circle_context_version)
       &&result.circle_context_version===activeCircleContext?.context_version;
+  }
+
+  function pairingResponseMatchesContext(result){
+    if(!authCapabilities.secondaryCircleCoordination) return true;
+    return circleResponseMatchesContext(result)
+      &&String(result?.circle_public_id||'')===String(activeCircleContext?.active_circle?.public_id||'');
   }
 
   function captureCircleControlOperation(){
@@ -3402,6 +3423,20 @@ async function refreshMe(){
       if(circleContextLoadPromise===pending){ circleContextLoadPromise=null; circleContextLoadKey=''; }
     }
   }
+
+  window._randori_circle_control={
+    async capturePairing(userId){
+      await authCapabilitiesPromise;
+      if(authCapabilities.multiCircleControlPlane&&userId&&!activeCircleContext){
+        await ensureActiveCircleContext(userId);
+      }
+      return captureCircleControlOperation();
+    },
+    matchesPairing(operation,response){
+      return circleControlOperationMatches(operation)
+        &&(response===undefined||pairingResponseMatchesContext(response));
+    },
+  };
 
   async function loadCircleContext(epoch,userId){
     const context=await ensureActiveCircleContext(userId);
@@ -4245,12 +4280,20 @@ async function refreshMe(){
   // ---------- pairing (one immutable publication per current server cycle) ----------
   async function publishCurrentCycle(){
     if(!canRunCurrentPairing()){ toast('Only the circle owner can run the current cycle'); return; }
+    const userId=Number(me?.id||me?.uid);
+    const circleOperation=captureCircleControlOperation();
+    pairingPublicationAbort?.abort();
+    const controller=new AbortController();
+    pairingPublicationAbort=controller;
     const nb=document.getElementById('newWeekBtn');
     if(nb){ nb.disabled=true; nb.textContent='Running current cycle…'; }
     const pairsList=document.getElementById('pairsList'); let overlay=null;
     if(pairsList){ overlay=document.createElement('div'); overlay.className='loader-overlay'; overlay.innerHTML='<span class="spinner spinner-lg"></span><span class="small muted" style="margin-left:8px">Publishing current cycle…</span>'; overlay.style.display='flex'; overlay.style.gap='10px'; pairsList.style.position='relative'; pairsList.appendChild(overlay); }
     try{
-      const data=await api('/api/pairing/run',{method:'POST',body:{}});
+      const data=await api('/api/pairing/run',{method:'POST',body:{},signal:controller.signal});
+      if(controller.signal.aborted||Number(me?.id||me?.uid)!==userId
+        ||!circleControlOperationMatches(circleOperation)
+        ||!pairingResponseMatchesContext(data)) return;
       toast(data.created
         ?`Current cycle ready — ${data.count} participant${data.count===1?'':'s'}`
         :'Current cycle was already published');
@@ -4258,12 +4301,14 @@ async function refreshMe(){
       await renderPeople();
       await renderHistory();
     }catch(e){
+      if(e?.name==='AbortError'||controller.signal.aborted) return;
       const msg=e.error||e.message||'could not publish the current cycle';
       toast(msg);
       if(e.available_count!==undefined){
         await showConfirm('No available members', 'At least one available member is required. A single member gets Solo practice.');
       }
     }finally{
+      if(pairingPublicationAbort===controller) pairingPublicationAbort=null;
       if(nb){ nb.disabled=false; nb.textContent='Run current cycle'; }
       try{ document.querySelectorAll('.loader-overlay').forEach(o=>o.remove()); }catch{}
     }
@@ -4402,6 +4447,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const container=document.getElementById('pairsList');
     if(me){
       const userId=Number(me.id||me.uid);
+      if(authCapabilities.multiCircleControlPlane&&!activeCircleContext){
+        try{ await ensureActiveCircleContext(userId); }catch{}
+      }
+      const circleOperation=captureCircleControlOperation();
       if(currentCloudPairingUserId!==userId){
         currentCloudPairingWeek=null;
         currentCloudPairingCycle=null;
@@ -4409,10 +4458,15 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         currentCloudPairingUserId=userId;
       }
       let response;
+      pairingListAbort?.abort();
+      const controller=new AbortController();
+      pairingListAbort=controller;
       try{
-        response=await api('/api/weeks',{method:'GET'});
+        response=await api('/api/weeks',{method:'GET',signal:controller.signal});
       }catch{
-        if(renderEpoch!==pairingRenderEpoch||Number(me?.id||me?.uid)!==userId) return;
+        if(controller.signal.aborted) return;
+        if(renderEpoch!==pairingRenderEpoch||Number(me?.id||me?.uid)!==userId
+          ||!circleControlOperationMatches(circleOperation)) return;
         currentCloudPairingWeek=null;
         currentCloudPairingCycle=null;
         currentCloudPairingLoaded=true;
@@ -4421,8 +4475,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         container.innerHTML='<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">Pairings are unavailable. Local or cached pairs are not shown while signed in. <button id="pairsRetryBtn" class="pill" type="button" style="margin-left:8px">Retry</button></div>';
         document.getElementById('pairsRetryBtn')?.addEventListener('click',renderPairs);
         return;
+      }finally{
+        if(pairingListAbort===controller) pairingListAbort=null;
       }
-      if(renderEpoch!==pairingRenderEpoch||Number(me?.id||me?.uid)!==userId) return;
+      if(renderEpoch!==pairingRenderEpoch||Number(me?.id||me?.uid)!==userId
+        ||!pairingResponseMatchesContext(response)
+        ||!circleControlOperationMatches(circleOperation)) return;
       const cloudWeeks=Array.isArray(response?.weeks)?response.weeks:[];
       const currentCycleId=String(response?.current_cycle?.cycleId||'');
       const cycleState=window._randori_cycle_ui?.classify?.(response?.current_cycle)||'invalid';
@@ -4455,6 +4513,24 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           ?`${currentCycleId} • awaiting current-cycle publication${nextCutoff}`
           :'Awaiting current-cycle publication';
         container.innerHTML='<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">No pairings have been published for the current cycle. Historical and local demo pairs are not shown here.</div>';
+        return;
+      }
+      if(response.coordination_only===true&&response.workspace_available===false){
+        renderPairsMeta(null,cloudWeek,response);
+        currentCloudPairingWeek=null;
+        renderSignedInRoomSelect();
+        container.innerHTML=cloudWeek.pairs.map(pair=>{
+          const members=Array.isArray(pair?.members)?pair.members:[];
+          const solo=pair?.solo===true;
+          if((solo&&members.length!==1)||(!solo&&members.length!==2)) return '';
+          const first=members[0]||{};
+          const firstName=String(first.name||'Member');
+          const firstColor=safeProfileColor(first.color||PALETTE[0]);
+          const partner=solo
+            ?'<span class="kbd" style="color:var(--accent)">solo practice</span>'
+            :(()=>{ const second=members[1]||{}; const secondName=String(second.name||'Member'); const secondColor=safeProfileColor(second.color||PALETTE[1]); return `<span class="muted small">×</span><span class="avatar" style="background:${secondColor}">${escapeHtml(secondName.slice(0,2).toUpperCase())}</span><b style="font-size:12.5px">${escapeHtml(secondName)}</b>`; })();
+          return `<div class="pair" data-testid="secondary-pair-row"><div class="who"><span class="avatar" style="background:${firstColor}">${escapeHtml(firstName.slice(0,2).toUpperCase())}</span><b style="font-size:12.5px">${escapeHtml(firstName)}</b>${partner}</div><div class="topic-group"><span class="small muted">Coordination only • workspace not enabled</span></div></div>`;
+        }).join('')+'<div class="row" style="margin-top:10px"><span class="small muted">Current-circle coordination only. No room or workspace capability was created.</span></div>';
         return;
       }
       renderPairsMeta(null, cloudWeek, response);
@@ -6612,6 +6688,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return hadPendingRequest;
   }
 
+  function resetDashboardPairState(){
+    cancelDashboardPairRequest();
+    clearDashboardPairState();
+  }
+
   function clearDashboardPairState({revokeRoom=true}={}){
     currentPair=null;
     currentWeekId=null;
@@ -6651,7 +6732,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(cycleState!=='current') return cycleState==='invalid'?'error':cycleState;
     if(data?.paired) return data?.pairing_status==='solo'||data?.pair?.solo_practice===true?'solo':'paired';
     const status=String(data?.pairing_status||'');
-    if(['unpublished','unavailable','missed'].includes(status)) return status;
+    if(['unpublished','unavailable','missed','partner_unavailable'].includes(status)) return status;
     if(data?.reason==='no_pairing_for_current_cycle'||data?.reason==='no_week_yet') return 'unpublished';
     return 'missed';
   }
@@ -6673,6 +6754,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       unpublished:{title:'Current pairing is not published yet',message:`${currentId?`${currentId} has`:'The current cycle has'} no durable publication yet.${nextCutoff?` Next cutoff: ${nextCutoff}.`:''}`},
       unavailable:{title:'Unavailable for this cycle',message:`The published eligibility snapshot records you as unavailable${currentId?` for ${currentId}`:''}.${nextCutoff?` Next cutoff: ${nextCutoff}.`:''}`},
       missed:{title:'Not in this cycle\'s snapshot',message:`The current cycle was published without your account in its eligibility snapshot.${nextCutoff?` Set availability before ${nextCutoff} for the upcoming cycle.`:''}`},
+      partner_unavailable:{title:'Partner unavailable',message:'Your pairing partner is no longer an active member of this circle. No identity or workspace access is shown.'},
       error:{title:'Pairing is temporarily unavailable',message:'The current-cycle state could not be verified. No cached or previous room has been opened.'},
     }[state]||{title:'No current pairing',message:'No verified current-cycle assignment is available.'};
     document.getElementById('dashPairArea')?.replaceChildren();
@@ -6695,9 +6777,22 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const previousRoom=String(window._randori_authorized_room||window._randori_workspace?.room||'');
     cancelDashboardPairRequest();
     hideAllViews();
+    if(viewDashboard) viewDashboard.style.display='block';
     window._randori_availability?.refresh?.();
     clearDashboardPairState({revokeRoom:false});
     const userId=dashboardUserId();
+    let circleOperation;
+    try{
+      circleOperation=await window._randori_circle_control?.capturePairing?.(userId);
+    }catch{
+      renderDashboardEmpty('error');
+      return;
+    }
+    if(!circleOperation||dashboardUserId()!==userId
+      ||!window._randori_circle_control?.matchesPairing?.(circleOperation)){
+      renderDashboardEmpty('error');
+      return;
+    }
     const requestEpoch=dashboardPairRequest.epoch;
     const controller=new AbortController();
     dashboardPairRequest.controller=controller;
@@ -6706,9 +6801,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       &&dashboardPairRequest.controller===controller
       &&!controller.signal.aborted
       &&dashboardUserId()===userId
+      &&window._randori_circle_control?.matchesPairing?.(circleOperation)
       &&document.visibilityState!=='hidden'
       &&viewDashboard?.style.display!=='none';
-    if(viewDashboard) viewDashboard.style.display='block';
     const empty=document.getElementById('dashEmpty');
     if(empty){ empty.style.display='none'; empty.dataset.state='loading'; }
     try{
@@ -6742,13 +6837,20 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }
     // fetch my pair
     try{
-      const r=await fetch('/api/my-pair',{credentials:'same-origin',cache:'no-store',signal:controller.signal});
-      const j=await r.json().catch(()=>({}));
-      if(!r.ok) throw j;
-      if(!canApply()) return;
+      const j=await window._randori_auth.api('/api/my-pair',{method:'GET',cache:'no-store',signal:controller.signal});
+      if(!canApply()||!window._randori_circle_control?.matchesPairing?.(circleOperation,j)) return;
       const state=dashboardCycleState(j);
       if(!j.paired||!['paired','solo'].includes(state)){
         renderDashboardEmpty(state,j);
+        return;
+      }
+      if(j.coordination_only===true&&j.workspace_available===false){
+        clearDashboardPairState();
+        document.getElementById('dashEmpty').style.display='none';
+        document.getElementById('dashSub').textContent=state==='solo'
+          ?`Solo pairing for ${j.current_cycle?.cycleId||'the current cycle'}`
+          :`Paired for ${j.current_cycle?.cycleId||'the current cycle'}`;
+        renderSecondaryPairCard(j);
         return;
       }
       const room=scheduleRoomFromPair(j);
@@ -6861,6 +6963,18 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       const sub='Randori mock interview — join '+room; const body='Hi '+ (partner?.name||'there') +'!\\n\\nLets jump into our mock session.\\nRoom: '+room+'\\nLink: '+inv+'\\nTime: see agreed slot in dashboard\\n\\n— Randori Circle';
       window.open('mailto:?subject='+encodeURIComponent(sub)+'&body='+encodeURIComponent(body));
     }));
+  }
+
+  function renderSecondaryPairCard(data){
+    const area=document.getElementById('dashPairArea');
+    if(!area) return;
+    const partner=data.partner||{};
+    const solo=data.pairing_status==='solo'||data?.pair?.solo===true;
+    const name=solo?'Solo practice':String(partner.name||'Pairing partner');
+    const color=safeProfileColor(partner.color||(solo?'#c8f6a0':'#9aa0a6'));
+    area.innerHTML=`<div class="partner-card" data-testid="secondary-pair-card"><div class="avatar" style="background:${color}">${escapeHtml(name.slice(0,2).toUpperCase())}</div><div style="flex:1"><b style="font-size:14px">${solo?'Solo practice assigned':`You're paired with ${escapeHtml(name)} ✨`}</b><div class="small muted" style="margin-top:6px">Workspace not enabled for this circle yet. Scheduling, chat, room links, video, execution, and AI controls remain unavailable.</div><div class="row" style="margin-top:12px"><span class="kbd">coordination only</span></div></div></div>`;
+    document.getElementById('dashScheduleArea')?.replaceChildren();
+    document.getElementById('dashChatArea')?.replaceChildren();
   }
 
   function canonicalScheduleRoom(value){
@@ -8041,7 +8155,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   renderColorPicker(); populateTz();
 
   // Expose
-  window._randori_journey={ showDashboard, showProfileSetup, routeByAuth, openAuthorizedJoin };
+  window._randori_journey={
+    showDashboard,showProfileSetup,routeByAuth,openAuthorizedJoin,
+    cancelPairRequest:cancelDashboardPairRequest,resetPairState:resetDashboardPairState,
+  };
 })();
 </script>
 

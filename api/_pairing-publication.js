@@ -11,6 +11,7 @@ import {
   chatRetentionScopeRegistrationAvailable,
   chatRetentionScopeRegistrationStatement,
 } from './_chat-retention.js';
+import { validateActiveCircleMutationContext } from './_active-circle.js';
 
 const PARTICIPANT_SOURCES=new Set(['auth','users']);
 const NOTIFICATION_KINDS=new Set(['paired','unavailable']);
@@ -487,9 +488,15 @@ function assertScopeMatches(actual,expected){
   }
 }
 
-async function assertPublisher(db,{scope,localRuntime,callerId}){
+async function assertPublisher(db,{scope,localRuntime,callerId,circleContext}){
   if(callerId===null||callerId===undefined) return;
   const publisherId=positiveId(callerId);
+  if(circleContext){
+    let valid=false;
+    try{ valid=await validateActiveCircleMutationContext(db,circleContext.payload,circleContext); }
+    catch(error){ fail('PAIRING_PUBLICATION_FAILED','Pairing publisher could not be verified.',error); }
+    if(!valid) fail('PAIRING_CONTEXT_CHANGED','Pairing publisher context changed.');
+  }
   let result;
   try{
     result=await db.execute(localRuntime?{
@@ -618,6 +625,7 @@ export async function publishPairingCycle(db,options={}){
       assertScopeMatches(scope,options.authorizedScope);
       await assertPublisher(transaction,{
         scope,localRuntime:options.localRuntime,callerId:options.callerId,
+        circleContext:options.circleContext||null,
       });
       const cycle=cycleFromOptions({now,timeZone:options.timeZone,state:'current'});
       const existing=await readPublicationState(transaction,cycle);

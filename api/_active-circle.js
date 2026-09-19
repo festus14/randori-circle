@@ -15,6 +15,11 @@ export function multiCircleAvailabilityEnabled(){
     &&process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED==='true';
 }
 
+export function secondaryCircleCoordinationEnabled(){
+  return multiCircleAvailabilityEnabled()
+    &&process.env.SECONDARY_CIRCLE_COORDINATION_ENABLED==='true';
+}
+
 function positiveInteger(value){
   const parsed=typeof value==='number'?value
     :(typeof value==='string'&&/^[1-9]\d*$/.test(value)?Number(value):null);

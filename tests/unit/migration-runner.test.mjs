@@ -57,12 +57,12 @@ test('fresh apply is transactional, seeds an open rollout, and repeats as a no-o
       retry:fastRetry,
     });
     assert.equal(result.fromVersion,0);
-    assert.equal(result.toVersion,12);
-    assert.deepEqual(result.applied.map(item=>item.version),[1,2,3,4,5,6,7,8,9,10,11,12]);
+    assert.equal(result.toVersion,13);
+    assert.deepEqual(result.applied.map(item=>item.version),[1,2,3,4,5,6,7,8,9,10,11,12,13]);
     const rollout=await fixture.db.execute('SELECT id,registrations_closed FROM circle_membership_rollout');
     assert.deepEqual(rollout.rows.map(row=>[Number(row.id),Number(row.registrations_closed)]),[[1,0]]);
     const ledger=await fixture.db.execute('SELECT version,disposition FROM schema_migrations ORDER BY version');
-    assert.deepEqual(ledger.rows.map(row=>[Number(row.version),row.disposition]),[[1,'applied'],[2,'applied'],[3,'applied'],[4,'applied'],[5,'applied'],[6,'applied'],[7,'applied'],[8,'applied'],[9,'applied'],[10,'applied'],[11,'applied'],[12,'applied']]);
+    assert.deepEqual(ledger.rows.map(row=>[Number(row.version),row.disposition]),[[1,'applied'],[2,'applied'],[3,'applied'],[4,'applied'],[5,'applied'],[6,'applied'],[7,'applied'],[8,'applied'],[9,'applied'],[10,'applied'],[11,'applied'],[12,'applied'],[13,'applied']]);
     const generalInspection=await inspectSchema(fixture.db,{manifest:SCHEMA_MANIFEST});
     assert.equal(generalInspection.warnings.length,0);
     assert.deepEqual(generalInspection.tolerated.legacyTables,['schema_migrations']);
@@ -73,8 +73,8 @@ test('fresh apply is transactional, seeds an open rollout, and repeats as a no-o
       retry:fastRetry,
     });
     assert.deepEqual(repeat.applied,[]);
-    assert.equal(repeat.fromVersion,12);
-    assert.equal(repeat.toVersion,12);
+    assert.equal(repeat.fromVersion,13);
+    assert.equal(repeat.toVersion,13);
   }finally{ fixture.close(); }
 });
 
@@ -99,10 +99,10 @@ test('a valid managed v1 database resumes through only the pending migrations',a
       retry:fastRetry,
     });
     assert.equal(resumed.fromVersion,1);
-    assert.equal(resumed.toVersion,12);
-    assert.deepEqual(resumed.applied.map(item=>item.version),[2,3,4,5,6,7,8,9,10,11,12]);
+    assert.equal(resumed.toVersion,13);
+    assert.deepEqual(resumed.applied.map(item=>item.version),[2,3,4,5,6,7,8,9,10,11,12,13]);
     const ledger=await fixture.db.execute('SELECT version FROM schema_migrations ORDER BY version');
-    assert.deepEqual(ledger.rows.map(row=>Number(row.version)),[1,2,3,4,5,6,7,8,9,10,11,12]);
+    assert.deepEqual(ledger.rows.map(row=>Number(row.version)),[1,2,3,4,5,6,7,8,9,10,11,12,13]);
   }finally{ fixture.close(); }
 });
 
@@ -158,10 +158,10 @@ test('exact open schema can be explicitly adopted and adoption is auditable',asy
       expectedStateFingerprint:before.stateFingerprint,
       retry:fastRetry,
     });
-    assert.equal(adopted.toVersion,12);
+    assert.equal(adopted.toVersion,13);
     const rows=await fixture.db.execute('SELECT version,execution_ms,disposition FROM schema_migrations ORDER BY version');
     assert.deepEqual(rows.rows.map(row=>[Number(row.version),Number(row.execution_ms),row.disposition]),[
-      [1,0,'adopted'],[2,0,'adopted'],[3,0,'adopted'],[4,0,'adopted'],[5,0,'adopted'],[6,0,'adopted'],[7,0,'adopted'],[8,0,'adopted'],[9,0,'adopted'],[10,0,'adopted'],[11,0,'adopted'],[12,0,'adopted'],
+      [1,0,'adopted'],[2,0,'adopted'],[3,0,'adopted'],[4,0,'adopted'],[5,0,'adopted'],[6,0,'adopted'],[7,0,'adopted'],[8,0,'adopted'],[9,0,'adopted'],[10,0,'adopted'],[11,0,'adopted'],[12,0,'adopted'],[13,0,'adopted'],
     ]);
     const after=await state(fixture.db);
     assert.equal(after.classification,'managed');
@@ -378,7 +378,7 @@ test('concurrent callers cannot silently apply from the same stale fingerprint',
     const rejected=results.find(result=>result.status==='rejected');
     assert.equal(rejected.reason.code,'MIGRATION_STATE_CHANGED');
     const final=await state(first);
-    assert.equal(final.currentVersion,12);
+    assert.equal(final.currentVersion,13);
     assert.equal(final.ready,true);
   }finally{ fixture.close(); }
 });

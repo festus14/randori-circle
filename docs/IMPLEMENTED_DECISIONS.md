@@ -1030,3 +1030,54 @@ Enable it first in staging, exercise local-capture and owned-domain Resend
 delivery/suppression, and only then enable it in production. Disabling the gate
 stops both new invitation-email enqueueing and worker dispatch while preserving
 manual invitation creation and queued encrypted events for a later safe resume.
+
+## ID-26: Separate secondary-circle coordination from workspace authority
+
+Status: implemented behind the independent, default-off
+`SECONDARY_CIRCLE_COORDINATION_ENABLED` flag; migration v13 is required.
+
+**Decision.** A selected secondary circle may publish and read one immutable
+current-cycle pairing, but that assignment is coordination data only. Migration
+v13 introduces a separate canonical publication, complete eligibility snapshot,
+and group data plane keyed by exact circle scope and availability cycle. Every
+child proves its publication, scope, circle, cycle, and eligible account through
+restrictive composite foreign keys. The publication also proves its full cycle
+descriptor, while each available eligibility row owns exactly one group/member
+slot so unavailable or duplicate participant claims fail at the storage
+boundary. The primary circle continues through the
+legacy publication tables because those IDs authorize schedules, rooms, chat,
+video, execution, and AI today.
+
+Canonical groups call an unmatched odd member `is_solo`, require the second
+member to be absent exactly for that state, and expose `solo:true` without a
+fabricated partner. The legacy algorithm's internal `isAI` result is translated
+only when writing the new boundary; the v13 model does not claim an AI partner.
+
+Manual publication derives the circle from the live session and revalidates its
+context generation, membership, owner role, archive state, database time,
+roster, availability, and same-circle fairness history within each write
+transaction attempt. Cron enumerates secondary circles deterministically under
+a hard limit and gives each scope its own transaction. Existing claims are
+immutable; pre-commit lock conflicts may retry, but ambiguous commits do not.
+Secondary cycles always use `cycle_default`, never the account-global legacy
+availability value, and do not enqueue pairing email.
+
+Secondary reads recheck the same live context and join partner identity only
+through current active membership. Departed partners are redacted. Responses
+contain no internal legacy IDs or room/schedule fields, explicitly report
+`workspace_available:false`, and are fenced in the browser by account, opaque
+circle ID, and context version. The dedicated UI branch clears room state and
+shows no schedule, chat, join, video, execution, or AI controls.
+
+**Alternatives.** Reusing `pairing_weeks` was rejected because its global week
+label and unowned children collide across circles and grant workspace access.
+Rebuilding every legacy workspace table now would produce a cleaner final
+model, but couples the useful weekly pairing milestone to a much larger data
+migration. Dual-writing would create two authorities and ambiguous rollback.
+Manual-only publication would avoid cron work but weaken the weekly habit.
+
+**Rollout and recovery.** Apply v13 through the protected migration workflow,
+deploy with the flag false, canary one secondary circle, then verify bounded
+cron publication. Roll back only by disabling the flag. Preserve canonical
+rows for audit and forward recovery; never copy them into legacy workspace
+tables or weaken membership enforcement.

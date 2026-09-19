@@ -177,6 +177,7 @@ mock.module('../../api/_availability.js',{
     AVAILABILITY_CACHE_CONTROL:'private, no-store',
     availabilityFailure:()=>({status:503,body:{ok:false,error:'availability unavailable'}}),
     availabilityResponse:availability=>({ok:true,availability}),
+    availabilityCycleKey:()=> 'a'.repeat(64),
     getAvailabilityState:async(_db,options)=>{
       availabilityReads.push(options);
       return {

@@ -4,7 +4,7 @@ Randori has read-only schema inspection for configured databases, a transactiona
 
 ## Contract
 
-- `db/schema-manifest.js` is the current contract: 45 application tables and 47 named indexes.
+- `db/schema-manifest.js` is the current contract: 48 application tables and 52 named indexes.
 - The manifest includes column/default/primary-key contracts, checks, foreign keys, unique constraints, AUTOINCREMENT/collation/table options, and unique, partial, descending, and expression-index semantics. SQLite-created `sqlite_autoindex_*` indexes are intentionally outside the named-index count.
 - `ai_monthly_usage` is a retired table. Its presence is reported as tolerated legacy state; it is not treated as current schema and is never changed.
 - `schema_migrations` is a runner-owned operational table. General schema inspection recognizes it without treating it as unexpected application drift; the migration runner validates its exact schema and rows separately.
@@ -21,6 +21,12 @@ Randori has read-only schema inspection for configured databases, a transactiona
 - Migration v10 adds migration-owned room-cursor and sender-window chat indexes without changing message rows or API limits.
 - Migration v11 adds disabled-by-default chat-retention control, explicit room ownership, durable bounded runs, legal holds, count-only audit, and a chronological expiry index. It does not seed an enabled control row or delete chat. See `CHAT_RETENTION.md` before any protected operation.
 - Migration v12 adds session-bound active-circle context with a monotonically increasing compare-and-swap version and account/circle lookup indexes. Its composite session foreign key prevents binding one account to another account's session. Membership removal preserves the versioned context tombstone so reactivation cannot resurrect a stale generation; session removal cascades the context away. Request paths never create this table.
+- Migration v13 adds immutable, circle-owned pairing publications, complete
+  availability eligibility snapshots, and exact-scope groups for secondary
+  coordination. Restrictive composite foreign keys keep every child on the
+  publication's circle and cycle, bind the full publication descriptor to its
+  availability cycle, and admit only available members assigned to one exact
+  group slot. These rows never authorize a legacy room.
 
 ## Commands
 
@@ -50,7 +56,7 @@ Representative output fields:
   "manifest": {"version": 1, "checksum": "..."},
   "foreignKeysEnabled": true,
   "checkConstraintsEnabled": true,
-  "summary": {"expectedTables": 45, "expectedIndexes": 47, "blockers": 0},
+  "summary": {"expectedTables": 48, "expectedIndexes": 52, "blockers": 0},
   "drift": {
     "missingTables": [],
     "missingColumns": [],
@@ -103,7 +109,7 @@ npm run --silent db:migrate -- \
   --expected-state <v2StateFingerprint> --through-version 2
 
 # Inspect again without a prefix. The result must be managed at v2 with v3,
-# v3 through v12 pending before using its new full-set fingerprint for the upgrade.
+# v3 through v13 pending before using its new full-set fingerprint for the upgrade.
 npm run --silent db:migrate -- \
   status --database file:///absolute/path/to/restored-randori.db
 
