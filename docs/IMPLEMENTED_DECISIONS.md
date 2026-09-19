@@ -913,11 +913,45 @@ takedown command. Git history recovers accidental edits. A real takedown is
 restored only by a reviewed content change with fresh approval and, when
 semantics changed, a new exercise version.
 
+## ID-23: Evolve the current shell without replacing product behavior
+
+Status: implemented as the first accessible UI slice.
+
+**Decision.** The current single-page shell remains the delivery surface while
+its semantics, responsive layout, and truthful product language improve around
+the existing authorization and lifecycle boundaries. Light and dark themes use
+explicit semantic success, warning, danger, information, focus, and
+control-boundary tokens with WCAG AA text contrast and 3:1 unfocused
+form-control boundaries. The shell exposes a skip link and native header,
+navigation, and main landmarks; view navigation and the account menu have
+deterministic keyboard state; motion respects the operating-system preference;
+and the account menu retains Account security as its first focus target
+whenever the server capability makes it available.
+
+The 320 px and 390 px layouts keep navigation horizontally operable and present
+authentication as a bounded mobile sheet. The active-circle selector renders
+required, ready, switching, and error states without changing the session-bound
+selection protocol or its stale-response fences. Pairing progress exposes the
+same server-derived boundary as a named progressbar. Visible copy describes
+only current behavior: invitations are distinct from session links, reminders
+are email-only, catalogue counts describe approved exercises currently
+available, and external exercise or AI content remains authorization-gated.
+Placeholder screen sharing and the static deployment-copy action are removed.
+
+**Alternatives.** Merging the old UI branches would also restore obsolete auth
+and pairing assumptions, including a menu that hides Account security and
+controls that imply unsupported behavior. A framework rewrite could improve
+component isolation but would widen this release far beyond the shell and put
+the current auth, roster, retention, catalogue, and active-circle race handling
+at risk. Static readiness badges were rejected because readiness is a runtime
+property. Copy-only pseudo-status was rejected in favor of accessible state on
+the real controls. A later component migration remains possible behind focused
+tests once product behavior is stable.
+
 ## ID-24: Open only dated availability at the active-circle boundary
 
 Status: implemented behind the independent, default-off
-`MULTI_CIRCLE_AVAILABILITY_ENABLED` flag; ID-23 is reserved for the separately
-sequenced circle lifecycle UI decision.
+`MULTI_CIRCLE_AVAILABILITY_ENABLED` flag; ID-23 records the accessible shell.
 
 **Decision.** Multi-circle accounts may read and update dated availability for
 the circle selected by their live authenticated session. The client never
@@ -960,9 +994,8 @@ required.
 
 ## ID-25: Gate invitation delivery explicitly and authorize the event's exact circle
 
-Status: implemented as a no-migration hardening increment. ID-23 is reserved
-for the separately sequenced accessible-shell decision; ID-24 records
-active-circle availability.
+Status: implemented as a no-migration hardening increment. ID-23 records the
+accessible shell; ID-24 records active-circle availability.
 
 **Decision.** Production owner-created invitation email is disabled unless
 `INVITATION_EMAIL_DELIVERY_ENABLED` is exactly `true` and the existing

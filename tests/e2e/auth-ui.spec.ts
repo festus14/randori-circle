@@ -28,7 +28,7 @@ test('account security stays unavailable until the server capability is enabled'
   await page.goto('/',{waitUntil:'domcontentloaded'});
   await expect(page.locator('#meLabel')).toContainText('Member');
   await page.locator('#meLabel').click();
-  await expect(page.getByRole('button',{name:'Account security'})).toBeHidden();
+  await expect(page.getByRole('menuitem',{name:'Account security'})).toBeHidden();
   await page.evaluate(()=>(window as any)._randori_identity.open());
   await expect(page.getByRole('dialog',{name:'Account security'})).toBeHidden();
   expect(identityCalls).toBe(0);
@@ -554,7 +554,7 @@ test('an authenticated member can sign out every session from the account menu',
 
   await expect(page.locator('#meLabel')).toContainText('Existing Member');
   await page.locator('#meLabel').click();
-  const logoutAll=page.getByRole('button',{name:'Sign out everywhere'});
+  const logoutAll=page.getByRole('menuitem',{name:'Sign out everywhere'});
   await expect(logoutAll).toBeVisible();
   const reloaded=page.waitForEvent('load');
   await logoutAll.click();
@@ -600,7 +600,7 @@ test('account security requires recent auth and never removes the final credenti
   await resetClientState(page,true);
   await page.goto('/',{waitUntil:'domcontentloaded'});
   await page.locator('#meLabel').click();
-  await page.getByRole('button',{name:'Account security'}).click();
+  await page.getByRole('menuitem',{name:'Account security'}).click();
   const dialog=page.getByRole('dialog',{name:'Account security'});
   await expect(dialog).toBeVisible();
   await page.locator('#identityClose').focus();
@@ -650,7 +650,7 @@ test('account security starts Google reauthentication through same-origin POST b
   await page.goto('/',{waitUntil:'domcontentloaded'});
   await expect(page.locator('#meLabel')).toContainText('E2E Tester');
   await page.locator('#meLabel').click();
-  await page.getByRole('button',{name:'Account security'}).click();
+  await page.getByRole('menuitem',{name:'Account security'}).click();
   await page.getByRole('button',{name:'Confirm with Google'}).click();
   await expect(page).toHaveURL('https://accounts.google.com/o/oauth2/v2/auth?state=e2e');
   expect(starts).toBe(1);
@@ -685,12 +685,12 @@ test('closing and reopening account security invalidates a delayed Google start 
   await resetClientState(page,true);
   await page.goto('/',{waitUntil:'domcontentloaded'});
   await page.locator('#meLabel').click();
-  await page.getByRole('button',{name:'Account security'}).click();
+  await page.getByRole('menuitem',{name:'Account security'}).click();
   await page.getByRole('button',{name:'Confirm with Google'}).click();
   await startBegan;
   await page.locator('#identityClose').click();
   await page.locator('#meLabel').click();
-  await page.getByRole('button',{name:'Account security'}).click();
+  await page.getByRole('menuitem',{name:'Account security'}).click();
   const dialog=page.getByRole('dialog',{name:'Account security'});
   await expect(dialog).toBeVisible();
   const response=page.waitForResponse(value=>new URL(value.url()).pathname==='/api/auth/google/reauth/start');
@@ -727,7 +727,7 @@ test('a Google-only account can add a validated password after verified Google c
   await resetClientState(page,true);
   await page.goto('/',{waitUntil:'domcontentloaded'});
   await page.locator('#meLabel').click();
-  await page.getByRole('button',{name:'Account security'}).click();
+  await page.getByRole('menuitem',{name:'Account security'}).click();
   await expect(page.locator('#identityPasswordAdd')).toBeVisible();
   await page.locator('#identityNewPassword').fill('new linked password');
   await page.locator('#identityNewPasswordConfirm').fill('different password');
