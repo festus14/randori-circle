@@ -305,29 +305,20 @@ export function assertCredentialEnvelopeKey({envelope,ring}){
   return header;
 }
 
-export async function readCredentialRotationMetrics(db,{
-  eventType,envelopeField,ring,retainedEnvelopes=[],
+export function credentialRotationMetricsFromEnvelopes({
+  ring,actionableEnvelopes=[],retainedEnvelopes=[],
 }={}){
-  if(!db||typeof db.execute!=='function'||typeof eventType!=='string'
-    ||!/^[_a-z][_a-z0-9]*$/.test(String(envelopeField||''))||!ring?.active
-    ||!Array.isArray(retainedEnvelopes)){
-    throw new TypeError('valid credential rotation metric query required');
+  if(!ring?.active||!Array.isArray(actionableEnvelopes)||!Array.isArray(retainedEnvelopes)){
+    throw new TypeError('valid credential rotation metric input required');
   }
-  const result=await db.execute({
-    sql:`SELECT status,event_version,json_extract(payload_json,?) AS envelope
-      FROM outbox_events WHERE event_type=?
-        AND status IN ('pending','processing','retry','dead_letter') ORDER BY id LIMIT 10001`,
-    args:[`$.${envelopeField}`,eventType],
-  });
-  const rows=result.rows||[];
-  if(rows.length>10000||retainedEnvelopes.length>10000
-    ||rows.length+retainedEnvelopes.length>10000){
+  if(actionableEnvelopes.length>10000||retainedEnvelopes.length>10000
+    ||actionableEnvelopes.length+retainedEnvelopes.length>10000){
     throw new Error('credential rotation metric limit exceeded');
   }
   const counts={legacy_v1:0,malformed:0,future:0,missing_key:0,
     fingerprint_mismatch:0,key_version_ahead:0};
   const versions=new Map();
-  for(const envelope of [...rows.map(row=>row.envelope),...retainedEnvelopes]){
+  for(const envelope of [...actionableEnvelopes,...retainedEnvelopes]){
     const header=credentialEnvelopeHeader(envelope);
     if(header.kind==='legacy'){ counts.legacy_v1+=1; continue; }
     if(header.kind==='malformed'){ counts.malformed+=1; continue; }
@@ -338,7 +329,7 @@ export async function readCredentialRotationMetrics(db,{
     if(!candidate) counts.missing_key+=1;
     else if(candidate.fingerprint!==header.fingerprint) counts.fingerprint_mismatch+=1;
   }
-  const actionable=rows.length;
+  const actionable=actionableEnvelopes.length;
   // Legacy envelopes do not identify the key that sealed them. Even when one
   // configured key can currently open a v1 envelope, the aggregate cannot
   // prove that any other key in the ring is safe to retire. Keep delivery
@@ -353,4 +344,22 @@ export async function readCredentialRotationMetrics(db,{
   legacy_v1:counts.legacy_v1,versions:Object.freeze(Object.fromEntries([...versions].sort((a,b)=>a[0]-b[0]))),
   malformed:counts.malformed,future:counts.future,missing_key:counts.missing_key,
   fingerprint_mismatch:counts.fingerprint_mismatch,key_version_ahead:counts.key_version_ahead});
+}
+
+export async function readCredentialRotationMetrics(db,{
+  eventType,envelopeField,ring,retainedEnvelopes=[],
+}={}){
+  if(!db||typeof db.execute!=='function'||typeof eventType!=='string'
+    ||!/^[_a-z][_a-z0-9]*$/.test(String(envelopeField||''))||!ring?.active
+    ||!Array.isArray(retainedEnvelopes)){
+    throw new TypeError('valid credential rotation metric query required');
+  }
+  const result=await db.execute({
+    sql:`SELECT json_extract(payload_json,?) AS envelope
+      FROM outbox_events WHERE event_type=?
+        AND status IN ('pending','processing','retry','dead_letter') ORDER BY id LIMIT 10001`,
+    args:[`$.${envelopeField}`,eventType],
+  });
+  return credentialRotationMetricsFromEnvelopes({ring,
+    actionableEnvelopes:(result.rows||[]).map(row=>row.envelope),retainedEnvelopes});
 }

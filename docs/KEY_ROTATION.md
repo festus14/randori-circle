@@ -48,12 +48,15 @@ conservatively retryable.
 Rotation metrics contain only aggregate statuses, envelope/key versions, active
 and prior version numbers, and readiness counts. They never return keys,
 fingerprints, ciphertext, tokens, provider subjects, recipient addresses, or
-event identifiers. Aggregate `ready` is an operator retirement gate, not a
-global user-request gate: ordinary create, verify, consume, recent-auth, and
-resend paths validate their schema and complete cross-purpose-safe configuration,
-then validate only the credential they actually consume. An unrelated malformed,
-dead-lettered, or unavailable-key event therefore stays visible to operations
-without taking valid user flows offline.
+event identifiers. Aggregate `ready` is a necessary compatibility gate for key
+retirement, not proof that every named prior key is unused and not a global
+user-request gate. Before removing one versioned prior key, operators must also
+confirm its count in `versions` is zero; identity keys use the equivalent
+per-version observation count. Ordinary create, verify, consume, recent-auth,
+and resend paths validate their schema and complete cross-purpose-safe
+configuration, then validate only the credential they actually consume. An
+unrelated malformed, dead-lettered, or unavailable-key event therefore stays
+visible to operations without taking valid user flows offline.
 
 Any actionable or explicitly retained legacy-v1 envelope makes `ready` false.
 V1 identifies neither its sealing key nor its key version, so aggregate metrics
@@ -98,8 +101,10 @@ loses its active owner, or reaches the five-send limit.
    chooses a neutral rebaseline: the next observation emits only
    `provider_email_rekeyed`, never a false change event. Record that emergency
    acceptance before removal.
-8. Remove only a prior entry whose aggregate actionable/observation count is
-   zero, then repeat the isolated restore/readiness rehearsal.
+8. Treat aggregate `ready` as necessary but not sufficient for removing one
+   versioned prior key. Also require that exact key version's `versions` count
+   (or identity observation count) to be zero, then repeat the isolated
+   restore/readiness rehearsal.
 
 ## Rollback
 

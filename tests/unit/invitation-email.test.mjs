@@ -334,6 +334,37 @@ test('legacy invitation resend material blocks retirement only while it remains 
     'expired, used, revoked, and send-exhausted invitations need no retained key');
 });
 
+test('rotation readiness cannot omit a live v1 invite during pending-to-delivered transition',async()=>{
+  const db=await fixture();
+  const invitation=await seed(db,{email:'snapshot-race@example.test'});
+  let reads=0;
+  const racingDb={
+    async execute(statement){
+      reads+=1;
+      const snapshot=await db.execute(statement);
+      if(reads===1){
+        await db.execute({sql:`UPDATE outbox_events SET status='delivered'
+          WHERE json_extract(payload_json,'$.invitation_id')=?`,args:[invitation.id]});
+      }
+      return snapshot;
+    },
+  };
+
+  const duringTransition=await invitationEmailKeyRotationStatus(racingDb);
+  assert.equal(reads,1,'one statement must own both actionable and retained projections');
+  assert.equal(duringTransition.actionable,1);
+  assert.equal(duringTransition.retained,0);
+  assert.equal(duringTransition.legacy_v1,1);
+  assert.equal(duringTransition.ready,false);
+
+  const afterTransition=await invitationEmailKeyRotationStatus(db);
+  assert.equal(afterTransition.actionable,0);
+  assert.equal(afterTransition.retained,1);
+  assert.equal(afterTransition.legacy_v1,1);
+  assert.equal(afterTransition.ready,false,
+    'the same live credential moves between categories without disappearing');
+});
+
 test('revoked, expired, consumed, rotated, owner-revoked, and existing-member invitations suppress',async()=>{
   const scenarios=[
     ['revoked',`UPDATE circle_invitations SET revoked_at=datetime('now')`],
