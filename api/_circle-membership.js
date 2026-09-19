@@ -230,7 +230,6 @@ export async function getActivePrimaryCircleMembership(db,userId){
 }
 
 export async function hasActivePrimaryCircleMembership(db,userId){
-  if(multiCircleControlPlaneEnabled()) return hasActiveCircleMembership(db,userId);
   return !!await getActivePrimaryCircleMembership(db,userId);
 }
 

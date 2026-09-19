@@ -147,7 +147,7 @@ test('leaving one circle keeps the session while leaving the final circle revoke
   assert.equal(await verifyRequestAuth(request(memberToken),db),null);
 });
 
-test('single-circle accounts retain implicit selection and multi-circle detection is bounded',async()=>{
+test('single-circle accounts retain implicit selection and flag-off auth remains primary-only',async()=>{
   const {db}=await fixture();
   const token=await issueSession(db,{id:3,email:'other@example.test',name:'Other'});
   const payload=await verifyRequestAuth(request(token),db);
@@ -158,6 +158,62 @@ test('single-circle accounts retain implicit selection and multi-circle detectio
   assert.equal(await accountHasMultipleActiveCircles(db,3),false);
   assert.equal(await accountHasMultipleActiveCircles(db,1),true);
   delete process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED;
-  assert.equal((await verifyRequestAuth(request(token),db))?.id,3,
-    'control-plane rollback does not revoke a valid secondary-only account session');
+  assert.equal(await verifyRequestAuth(request(token),db),null,
+    'legacy auth must not admit a secondary-only account while the control plane is off');
+  process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';
+  const enabledToken=await issueSession(db,{id:3,email:'other@example.test',name:'Other'});
+  assert.equal((await verifyRequestAuth(request(enabledToken),db))?.id,3);
+});
+
+test('stale context cannot mutate the old circle after another request switches sessions',async()=>{
+  const {db,ownerPayload}=await fixture();
+  const selectedA=await selectActiveCircleContext(db,ownerPayload,{
+    circlePublicId:'circle-primary',expectedContextVersion:0,
+  });
+  assert.equal(selectedA.context_version,1);
+  const selectedB=await selectActiveCircleContext(db,ownerPayload,{
+    circlePublicId:'circle-secondary',expectedContextVersion:1,
+  });
+  assert.equal(selectedB.context_version,2);
+  const stale=await changeCircleMemberStatus(db,{
+    actorUserId:1,targetUserId:2,circleId:10,action:'deactivate',
+    circleContext:{payload:ownerPayload,contextVersion:1,implicit:false},
+  });
+  assert.deepEqual(stale,{ok:false,reason:'context_changed'});
+  const membership=await db.execute(`SELECT status FROM circle_memberships WHERE circle_id=10 AND user_id=2`);
+  assert.equal(membership.rows[0].status,'active');
+});
+
+test('deactivation bumps the selected-session generation and prevents context ABA',async()=>{
+  const {db,ownerPayload}=await fixture();
+  const ownerSelected=await selectActiveCircleContext(db,ownerPayload,{
+    circlePublicId:'circle-primary',expectedContextVersion:0,
+  });
+  const memberToken=await issueSession(db,{id:2,email:'member@example.test',name:'Member'});
+  const memberPayload=await verifyRequestAuth(request(memberToken),db);
+  const memberSelected=await selectActiveCircleContext(db,memberPayload,{
+    circlePublicId:'circle-primary',expectedContextVersion:0,
+  });
+  assert.equal(memberSelected.context_version,1);
+
+  const deactivated=await changeCircleMemberStatus(db,{
+    actorUserId:1,targetUserId:2,circleId:10,action:'deactivate',
+    circleContext:{payload:ownerPayload,contextVersion:ownerSelected.context_version,implicit:false},
+  });
+  assert.equal(deactivated.ok,true);
+  const inactive=await listSessionCircleContexts(db,memberPayload);
+  assert.equal(inactive.context_version,2);
+  assert.equal(inactive.active.public_id,'circle-secondary');
+  assert.equal(inactive.implicit,true);
+
+  const reactivated=await changeCircleMemberStatus(db,{
+    actorUserId:1,targetUserId:2,circleId:10,action:'reactivate',
+    circleContext:{payload:ownerPayload,contextVersion:ownerSelected.context_version,implicit:false},
+  });
+  assert.equal(reactivated.ok,true);
+  const after=await listSessionCircleContexts(db,memberPayload);
+  assert.equal(after.active.public_id,'circle-primary');
+  assert.equal(after.context_version,2);
+  assert.equal(after.context_version===memberSelected.context_version,false,
+    'reactivation cannot resurrect the stale v1 generation');
 });

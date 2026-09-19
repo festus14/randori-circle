@@ -3326,6 +3326,20 @@ test('unscoped pairing and workspace routes fail closed for multi-circle account
       code:'circle_feature_unavailable',
     });
   }
+
+  executed.length=0;
+  const profile=await invoke(dataHandler,{
+    url:'/api/data?endpoint=profile&probe=/history',query:{endpoint:'profile',probe:'/history'},headers,
+  });
+  assert.equal(profile.status,404);
+  assert.equal(executed.some(call=>call.sql.includes('FROM session_runs')),false,
+    'query-string path fragments cannot redirect dispatch into an unscoped route');
+
+  const pathConflict=await invoke(dataHandler,{
+    url:'/api/history?endpoint=profile',query:{endpoint:'profile'},headers,
+  });
+  assert.equal(pathConflict.status,409,
+    'the same canonical route decision must drive both the guard and dispatch');
 });
 
 test('video signaling validates membership and supports post, filtered poll, and purge', async () => {

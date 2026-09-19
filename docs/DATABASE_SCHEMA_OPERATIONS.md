@@ -4,7 +4,7 @@ Randori has read-only schema inspection for configured databases, a transactiona
 
 ## Contract
 
-- `db/schema-manifest.js` is the current contract: 45 application tables and 46 named indexes.
+- `db/schema-manifest.js` is the current contract: 45 application tables and 47 named indexes.
 - The manifest includes column/default/primary-key contracts, checks, foreign keys, unique constraints, AUTOINCREMENT/collation/table options, and unique, partial, descending, and expression-index semantics. SQLite-created `sqlite_autoindex_*` indexes are intentionally outside the named-index count.
 - `ai_monthly_usage` is a retired table. Its presence is reported as tolerated legacy state; it is not treated as current schema and is never changed.
 - `schema_migrations` is a runner-owned operational table. General schema inspection recognizes it without treating it as unexpected application drift; the migration runner validates its exact schema and rows separately.
@@ -20,7 +20,7 @@ Randori has read-only schema inspection for configured databases, a transactiona
 - Migration v9 adds `auth_provider_email_state`, `auth_identity_audit_events`, and their account-scoped audit indexes. Provider email observations contain only a domain-separated HMAC, a bounded non-secret key version, and a one-way fingerprint that binds that version to one key, while lifecycle events use bounded event/provider/outcome/reason enums and never store a raw email, provider subject, OAuth credential, or session identifier. The existing v4 issuer/subject uniqueness constraints remain the credential-ownership authority. Hash-key rotation monotonically increments `IDENTITY_EMAIL_HASH_KEY_VERSION` and retains up to three ordered prior keys long enough to distinguish a same-email rekey from a genuine provider change. If a prior key is unavailable, the next observation is a neutral rebaseline and emits only `provider_email_rekeyed`. Readiness rejects version downgrade and same-version key substitution before changing an observation or appending an event.
 - Migration v10 adds migration-owned room-cursor and sender-window chat indexes without changing message rows or API limits.
 - Migration v11 adds disabled-by-default chat-retention control, explicit room ownership, durable bounded runs, legal holds, count-only audit, and a chronological expiry index. It does not seed an enabled control row or delete chat. See `CHAT_RETENTION.md` before any protected operation.
-- Migration v12 adds session-bound active-circle context with a monotonically increasing compare-and-swap version and an account/circle lookup index. Its composite membership foreign key prevents a session from selecting a circle the account does not belong to, and session or membership removal cascades the selection away. Request paths never create this table.
+- Migration v12 adds session-bound active-circle context with a monotonically increasing compare-and-swap version and account/circle lookup indexes. Its composite session foreign key prevents binding one account to another account's session. Membership removal preserves the versioned context tombstone so reactivation cannot resurrect a stale generation; session removal cascades the context away. Request paths never create this table.
 
 ## Commands
 

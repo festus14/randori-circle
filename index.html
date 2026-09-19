@@ -1193,6 +1193,7 @@ p{margin:0}
   let activationPendingEmail='';
   let activeCircleRole=null;
   let activeCircleContext=null;
+  let activeCircleContextUserId=null;
   let circleContextRequest=0;
   let currentCloudPairingWeek=null;
   let currentCloudPairingCycle=null;
@@ -1492,6 +1493,7 @@ async function refreshMe(){
     const refreshedUserId=Number(me?.id||me?.uid);
     if(previousUserId!==refreshedUserId){
       activeCircleContext=null;
+      activeCircleContextUserId=null;
       circleContextRequest+=1;
     }
     if(availabilityState.userId!==null
@@ -2073,6 +2075,7 @@ async function refreshMe(){
       renderAuthModal();
       renderInviteLanding();
       focusAuthControl();
+      if(me) void renderPeople();
     }
     return authCapabilities;
   }
@@ -3054,9 +3057,16 @@ async function refreshMe(){
       :(circles.length>1?'Circle-specific member and invitation controls are active. Pairing remains unavailable for this account.':'');
   }
 
+  function circleResponseMatchesContext(result){
+    if(!authCapabilities.multiCircleControlPlane) return true;
+    return Number.isSafeInteger(result?.circle_context_version)
+      &&result.circle_context_version===activeCircleContext?.context_version;
+  }
+
   async function loadCircleContext(epoch,userId){
     if(!authCapabilities.multiCircleControlPlane){
       activeCircleContext=null;
+      activeCircleContextUserId=null;
       if(circleContextPanel){ circleContextPanel.hidden=true; circleContextPanel.style.display='none'; }
       return true;
     }
@@ -3068,6 +3078,7 @@ async function refreshMe(){
       throw new Error('invalid circle context response');
     }
     activeCircleContext=context;
+    activeCircleContextUserId=userId;
     renderCircleContextSelector(context);
     return !!context.active_circle;
   }
@@ -3079,13 +3090,13 @@ async function refreshMe(){
     const userId=Number(me.id||me.uid);
     circleContextSelect.disabled=true;
     if(circleContextStatus) circleContextStatus.textContent='Switching circle…';
+    clearPrivateCircleViewForSwitch();
     try{
       const next=await api('/api/circles',{
         method:'PUT',
         body:{circle_public_id:publicId,expected_context_version:activeCircleContext.context_version},
       });
       if(!me||Number(me.id||me.uid)!==userId) return;
-      clearPrivateCircleViewForSwitch();
       circleContextChannel?.postMessage({v:1,user_id:userId,context_version:next.context_version});
       window.location.reload();
     }catch(error){
@@ -3093,6 +3104,7 @@ async function refreshMe(){
       if(circleContextStatus) circleContextStatus.textContent=error?.code==='circle_context_changed'
         ?'Circle changed in another tab. Refreshing…':'Could not switch circle. Try again.';
       if(error?.code==='circle_context_changed') window.location.reload();
+      else void renderPeople();
     }
   });
 
@@ -3211,6 +3223,7 @@ async function refreshMe(){
               method:'POST',body:{action:'resend'},
             });
             if(!me||Number(me.id||me.uid)!==userId) return;
+            if(!circleResponseMatchesContext(result)) throw new Error('stale circle response');
             const inviteUrl=String(result?.invitation?.invite_url||'');
             if(result?.ok!==true||!/^\/invite#invite=[A-Za-z0-9_-]{43}$/.test(inviteUrl)){
               throw new Error('invalid invitation response');
@@ -3233,7 +3246,8 @@ async function refreshMe(){
           revoke.disabled=true;
           if(circleInviteStatus) circleInviteStatus.textContent='Revoking invitation…';
           try{
-            await api(`/api/invitations/${encodeURIComponent(String(id))}`,{method:'DELETE'});
+            const result=await api(`/api/invitations/${encodeURIComponent(String(id))}`,{method:'DELETE'});
+            if(!circleResponseMatchesContext(result)) throw new Error('stale circle response');
             if(latestInviteId===id) clearLatestInvite();
             if(circleInviteStatus) circleInviteStatus.textContent='Invitation revoked.';
             await loadOwnerInvitations(circleRenderEpoch);
@@ -3255,6 +3269,7 @@ async function refreshMe(){
     try{
       const result=await api('/api/invitations',{method:'GET'});
       if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==userId) return;
+      if(!circleResponseMatchesContext(result)) throw new Error('stale circle response');
       const invitations=Array.isArray(result?.invitations)?result.invitations:[];
       renderInvitationRows(invitations);
       if(circleInviteStatus) circleInviteStatus.textContent=`${invitations.length} invitation${invitations.length===1?'':'s'}.`;
@@ -3345,6 +3360,14 @@ async function refreshMe(){
       :'Confirm your identity before deactivating an owner.');
   }
   async function resumeLifecycleRecentAction(){
+    await authCapabilitiesPromise;
+    const actorId=Number(me?.id||me?.uid);
+    if(authCapabilities.multiCircleControlPlane
+      &&Number.isSafeInteger(actorId)&&actorId>0
+      &&(!activeCircleContext?.active_circle||activeCircleContextUserId!==actorId)){
+      try{ await renderPeople(); }catch{ return false; }
+      if(!activeCircleContext?.active_circle||activeCircleContextUserId!==actorId) return false;
+    }
     const pending=readLifecycleRecentAction({consume:true});
     if(!pending){
       publishCircleLifecycleNotice('Confirmation expired or the signed-in account changed. No circle change was made.');
@@ -3479,6 +3502,7 @@ async function refreshMe(){
       if(cursor) params.set('cursor',cursor);
       const result=await api(`/api/members?${params.toString()}`,{method:'GET'});
       if(requestId!==circleRosterRequest||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==actorId) return false;
+      if(!circleResponseMatchesContext(result)) throw new Error('stale circle response');
       if(!validRosterResponse(result)) throw new Error('invalid member response');
       const combined=append?[...circleRosterState.members,...result.members]:result.members;
       const unique=[]; const seen=new Set();
@@ -3666,6 +3690,7 @@ async function refreshMe(){
       }
       const res = await api('/api/circle', { method:'GET' });
       if(epoch!==circleRenderEpoch||Number(me?.id||me?.uid)!==userId) return;
+      if(!circleResponseMatchesContext(res)) throw new Error('stale circle response');
       const gatedRole=['owner','member'].includes(res?.membership?.role)?res.membership.role:null;
       const legacyEnvelope=res?.ok===true&&Array.isArray(res.circle)
         &&!res.membership&&['auth_accounts','users'].includes(res.source);
@@ -3750,6 +3775,7 @@ async function refreshMe(){
       // one-time secret is in flight. Retain it for the initiating owner; only
       // discard it after an actual identity change.
       if(!me||Number(me.id||me.uid)!==userId) return;
+      if(!circleResponseMatchesContext(result)) throw new Error('stale circle response');
       const inviteUrl=String(result?.invitation?.invite_url||'');
       const invitationId=String(result?.invitation?.id||'').toLowerCase();
       if(result?.ok!==true||!/^\/invite#invite=[A-Za-z0-9_-]{43}$/.test(inviteUrl)

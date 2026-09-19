@@ -63,6 +63,7 @@ function clearSessionCookie(req){
 }
 
 function transitionFailure(res,result){
+  if(result.reason==='context_changed') return res.status(409).json({error:'circle context changed',code:'circle_context_changed'});
   if(result.reason==='last_owner') return res.status(409).json({error:'another active owner is required'});
   if(result.reason==='self_transition') return res.status(409).json({error:'use leave circle for your own membership'});
   if(result.reason==='self_transfer') return res.status(409).json({error:'choose another active member'});
@@ -116,6 +117,9 @@ export default async function handler(req,res){
     }
     const circleId=Number(activeContext.membership?.circle_id??activeContext.membership?.id);
     const circleContextVersion=Number(activeContext.context_version)||0;
+    const circleContext=multiCircleControlPlaneEnabled()?{
+      payload:authPayload,contextVersion:circleContextVersion,implicit:activeContext.implicit===true,
+    }:null;
     if(!Number.isSafeInteger(circleId)||circleId<1) return res.status(403).json({error:'circle membership required'});
     if(req.method==='GET'){
       const result=await listCircleMembersForOwner(db,{
@@ -139,7 +143,7 @@ export default async function handler(req,res){
       return res.status(405).json({error:'GET or PATCH only'});
     }
     if(exactObject(req.body,['action'])&&req.body.action==='leave'){
-      const result=await leaveCircle(db,{actorUserId:actor,circleId});
+      const result=await leaveCircle(db,{actorUserId:actor,circleId,...(circleContext?{circleContext}:{})});
       if(!result.ok) return transitionFailure(res,result);
       if(!multiCircleControlPlaneEnabled()||result.signed_out) res.setHeader('Set-Cookie',clearSessionCookie(req));
       return res.json({ok:true,action:'leave',
@@ -152,8 +156,8 @@ export default async function handler(req,res){
       return res.status(400).json({error:'invalid request'});
     }
     const result=req.body.action==='transfer'
-      ?await transferCircleOwnership(db,{actorUserId:actor,targetUserId:req.body.member_id,circleId,session:authPayload})
-      :await changeCircleMemberStatus(db,{actorUserId:actor,targetUserId:req.body.member_id,circleId,action:req.body.action,session:authPayload});
+      ?await transferCircleOwnership(db,{actorUserId:actor,targetUserId:req.body.member_id,circleId,session:authPayload,...(circleContext?{circleContext}:{})})
+      :await changeCircleMemberStatus(db,{actorUserId:actor,targetUserId:req.body.member_id,circleId,action:req.body.action,session:authPayload,...(circleContext?{circleContext}:{})});
     if(!result.ok) return transitionFailure(res,result);
     return res.json({ok:true,action:req.body.action,member:result.member||{id:result.owner_id,role:'owner',status:'active'},
       ...(multiCircleControlPlaneEnabled()?{circle_context_version:circleContextVersion}:{}),

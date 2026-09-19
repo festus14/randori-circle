@@ -26,8 +26,9 @@ disabled unless both `CIRCLE_MEMBERSHIP_ENABLED=true` and
 - `/api/circle`, `/api/members`, and `/api/invitations` resolve the selected
   context server-side. Owner writes recheck the exact circle, role, target, and
   archive state. Roster cursors remain encrypted and circle-bound.
-- Leaving or removing one membership revokes account sessions only when no
-  active circle remains. The removed context immediately becomes unusable.
+- Leaving or removing one membership bumps affected context generations and
+  revokes account sessions only when no active circle remains. The context row
+  remains as a tombstone, so reactivation cannot make an old version valid.
 - Pairing, availability, history, schedule, chat, execution, workspace, video,
   and AI routes return `409 circle_feature_unavailable` for an authenticated
   account with more than one active circle. Selecting a circle does not bypass

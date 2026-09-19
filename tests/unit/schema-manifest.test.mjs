@@ -43,7 +43,7 @@ test('schema manifest pins all current tables and named indexes',()=>{
     'idx_pair_messages_room_cursor','idx_pair_messages_sender_created',
     'idx_chat_retention_runs_dispatch','idx_chat_retention_scopes_tenant',
     'idx_chat_retention_runs_scope','idx_chat_retention_audit_run','idx_pair_messages_retention',
-    'idx_auth_session_circle_contexts_user_circle',
+    'uq_auth_sessions_hash_user','idx_auth_session_circle_contexts_user_circle',
   ]);
   assert.equal(new Set(TABLES.map(item=>item.name)).size,TABLES.length);
   assert.equal(new Set(INDEXES.map(item=>item.name)).size,INDEXES.length);

@@ -42,7 +42,7 @@ const [{default:invitationsHandler},{default:dataHandler},invitationEmail]=await
   import('../../api/_invitation-email.js'),
 ]);
 const outboxOperations=MIGRATION_PLANS[5].operations.map(operation=>operation.sql);
-const activeCircleContextTable=MIGRATION_PLANS[11].operations[0].sql;
+const activeCircleContextOperations=MIGRATION_PLANS[11].operations.map(operation=>operation.sql);
 
 function invoke(handler,{method='GET',url='/',query={},headers={},body={}}={}){
   return new Promise((resolve,reject)=>{
@@ -90,7 +90,7 @@ async function createDatabase(){
     `CREATE TABLE auth_sessions (session_hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL,
       created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,revoked_at INTEGER,revocation_reason TEXT,
       FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE CASCADE)`,
-    activeCircleContextTable,
+    ...activeCircleContextOperations,
     ...outboxOperations,
     `INSERT INTO circle_membership_rollout (id,registrations_closed,updated_at)
       VALUES (1,0,datetime('now'))`,
@@ -597,6 +597,32 @@ test('selected secondary-circle invitation reads and writes cannot cross the act
   });
   assert.equal(denied.status,404);
   assert.equal((await currentDb.execute({sql:`SELECT revoked_at FROM circle_invitations WHERE id=?`,args:[primaryInvitationId]})).rows[0].revoked_at,null);
+
+  const baseDb=currentDb;
+  const beforeCount=Number((await baseDb.execute(`SELECT COUNT(*) AS count FROM circle_invitations`)).rows[0].count);
+  let switched=false;
+  currentDb={
+    execute:statement=>baseDb.execute(statement),
+    batch:(statements,mode)=>baseDb.batch(statements,mode),
+    async transaction(mode){
+      if(!switched){
+        switched=true;
+        const next=await activeCircle.selectActiveCircleContext(baseDb,ownerPayload,{
+          circlePublicId:'3c20c4da-1906-4ca4-b4fd-5971f1dd066d',expectedContextVersion:1,
+        });
+        assert.equal(next.context_version,2);
+      }
+      return baseDb.transaction(mode);
+    },
+    close:()=>baseDb.close(),
+  };
+  const raced=await invoke(invitationsHandler,{
+    method:'POST',url:'/api/invitations',query:{endpoint:'invitations'},headers,
+    body:{email:'must-not-cross@example.test'},
+  });
+  assert.equal(raced.status,409);
+  assert.deepEqual(raced.body,{error:'circle context changed',code:'circle_context_changed'});
+  assert.equal(Number((await baseDb.execute(`SELECT COUNT(*) AS count FROM circle_invitations`)).rows[0].count),beforeCount);
 });
 
 test('owner invitation email create and bounded resend rotate links atomically',async()=>{

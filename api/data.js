@@ -459,6 +459,35 @@ function getEndpoint(req){
   }catch{ return (req.url||'').split('?')[0].split('/').filter(Boolean).pop()?.toLowerCase()||''; }
 }
 
+function getPathname(req){
+  try{ return new URL(req?.url||'/','http://localhost').pathname.toLowerCase(); }
+  catch{ return String(req?.url||'').split('?')[0].toLowerCase(); }
+}
+
+function resolveDataRoute(req){
+  const endpoint=getEndpoint(req);
+  const path=getPathname(req);
+  if(endpoint==='runs'||endpoint==='session_runs'||endpoint==='session-runs'||path.includes('/runs')) return 'runs';
+  if(endpoint==='leetcode-sync'||endpoint==='leetcode_sync'||path.includes('leetcode/sync')||path.includes('leetcode-sync')) return 'leetcode-sync';
+  if(endpoint==='leetcode'||endpoint==='leetcode-detail'||endpoint==='leetcode_detail'||path.includes('/leetcode')) return 'leetcode';
+  if(endpoint==='circle'||path.includes('/circle')) return 'circle';
+  if(endpoint==='weeks'||path.includes('/weeks')) return 'weeks';
+  if(endpoint==='history'||path.includes('/history')) return 'history';
+  if(endpoint==='stats'||path.includes('/stats')) return 'stats';
+  if(endpoint==='init'||path.includes('/init')) return 'init';
+  if(endpoint==='profile'||path.includes('/profile')) return 'profile';
+  if(endpoint==='my-pair'||endpoint==='mypair'||endpoint==='my_pair'
+    ||path.includes('my-pair')||path.includes('my_pair')) return 'my-pair';
+  if(endpoint==='pair-recap'||path.includes('/pair-recap')) return 'pair-recap';
+  if(endpoint==='schedule'||path.includes('/schedule')) return 'schedule';
+  if(endpoint.includes('message')) return 'messages';
+  if(endpoint==='execute'||endpoint==='run'||path.includes('/execute')) return 'execute';
+  if(endpoint==='health'||endpoint==='healthz'||path.includes('/health')) return 'health';
+  if(endpoint==='logs'||endpoint==='applogs'||endpoint==='app_logs'||path.includes('/logs')) return 'logs';
+  if(endpoint==='questions'||endpoint==='question'||path.includes('/questions')) return 'questions';
+  return null;
+}
+
 async function getAuthPayload(req){
   return verifyRequestAuth(req);
 }
@@ -2865,26 +2894,26 @@ export default async function handler(req,res){
     try{ initSentry(); }catch{}
   }catch{}
   try{
-  const ep = getEndpoint(req);
-  const path = (req.url||'').toLowerCase();
-  if(!await requireSingleCircleDataFeature(req,res,ep)) return;
-  if (ep==='runs' || ep==='session_runs' || ep==='session-runs' || path.includes('/runs')) return await handleRuns(req,res);
-  if (ep==='leetcode-sync' || ep==='leetcode_sync' || path.includes('leetcode/sync') || path.includes('leetcode-sync')) return await handleLeetcodeSync(req,res);
-  if (ep==='leetcode' || ep==='leetcode-detail' || ep==='leetcode_detail' || path.includes('/leetcode')) return await handleLeetcode(req,res);
-  if (ep==='circle' || path.includes('/circle')) return await handleCircle(req,res);
-  if (ep==='weeks' || path.includes('/weeks')) return await handleWeeks(req,res);
-  if (ep==='history' || path.includes('/history')) return await handleHistory(req,res);
-  if (ep==='stats' || path.includes('/stats')) return await handleStats(req,res);
-  if (ep==='init' || path.includes('/init')) return await handleInit(req,res);
-  if (ep==='profile' || path.includes('/profile')) return await handleProfile(req,res);
-  if (ep==='my-pair' || path.includes('my-pair') || ep==='mypair' || path.includes('my_pair') || ep==='my_pair') return await handleMyPair(req,res);
-  if (ep==='pair-recap' || path.includes('/pair-recap')) return await handlePairRecap(req,res);
-  if (ep==='schedule' || path.includes('/schedule')) return await handleSchedule(req,res);
-  if (ep.includes('message')) return await handleMessages(req,res);
-  if (ep==='execute' || ep==='run' || path.includes('/execute')) return await handleExecute(req,res);
-  if (ep==='health' || path.includes('/health') || ep==='healthz') return await handleHealth(req,res);
-  if (ep==='logs' || path.includes('/logs') || ep==='applogs' || ep==='app_logs') return await handleLogs(req,res);
-  if (ep==='questions' || ep==='question' || path.includes('/questions')) return await handleQuestions(req,res);
+  const ep=getEndpoint(req);
+  const route=resolveDataRoute(req);
+  if(!await requireSingleCircleDataFeature(req,res,route)) return;
+  if(route==='runs') return await handleRuns(req,res);
+  if(route==='leetcode-sync') return await handleLeetcodeSync(req,res);
+  if(route==='leetcode') return await handleLeetcode(req,res);
+  if(route==='circle') return await handleCircle(req,res);
+  if(route==='weeks') return await handleWeeks(req,res);
+  if(route==='history') return await handleHistory(req,res);
+  if(route==='stats') return await handleStats(req,res);
+  if(route==='init') return await handleInit(req,res);
+  if(route==='profile') return await handleProfile(req,res);
+  if(route==='my-pair') return await handleMyPair(req,res);
+  if(route==='pair-recap') return await handlePairRecap(req,res);
+  if(route==='schedule') return await handleSchedule(req,res);
+  if(route==='messages') return await handleMessages(req,res);
+  if(route==='execute') return await handleExecute(req,res);
+  if(route==='health') return await handleHealth(req,res);
+  if(route==='logs') return await handleLogs(req,res);
+  if(route==='questions') return await handleQuestions(req,res);
   return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['health','runs','execute','logs','leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','pair-recap','schedule','messages','questions'] });
   }catch(e){
     const failedEndpoint=getEndpoint(req);

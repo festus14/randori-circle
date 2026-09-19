@@ -1,5 +1,6 @@
 import { createCipheriv,createDecipheriv,createHash,randomBytes,randomUUID } from 'node:crypto';
 import { revokeAccountSessions } from './_db.js';
+import { validateActiveCircleMutationContext } from './_active-circle.js';
 import { requireRecentAuth } from './_recent-auth.js';
 
 export const MEMBER_PAGE_DEFAULT=50;
@@ -131,6 +132,25 @@ async function rollback(transaction){
   try{ await transaction.rollback(); }catch{}
 }
 
+async function activeMutationContextValid(transaction,circleContext,circleId){
+  if(!circleContext) return true;
+  return validateActiveCircleMutationContext(transaction,circleContext.payload,{
+    circleId,
+    contextVersion:circleContext.contextVersion,
+    implicit:circleContext.implicit===true,
+  });
+}
+
+async function bumpSelectedCircleContexts(transaction,userId,circleId){
+  await transaction.execute({
+    sql:`UPDATE auth_session_circle_contexts
+      SET context_version=context_version+1,
+        updated_at=CAST(strftime('%s','now') AS INTEGER)
+      WHERE user_id=? AND circle_id=?`,
+    args:[userId,circleId],
+  });
+}
+
 async function inspectScopedTarget(transaction,{actorUserId,targetUserId,circleId}){
   const result=await transaction.execute({
     sql:`SELECT target.user_id,target.role,target.status,
@@ -217,7 +237,7 @@ export async function listCircleMembersForOwner(db,{actorUserId,circleId,cursor=
   });
 }
 
-export async function changeCircleMemberStatus(db,{actorUserId,targetUserId,circleId,action,session,nowSeconds}={}){
+export async function changeCircleMemberStatus(db,{actorUserId,targetUserId,circleId,action,session,nowSeconds,circleContext}={}){
   const actor=positiveInteger(actorUserId);
   const target=positiveInteger(targetUserId);
   const selectedCircle=positiveInteger(circleId);
@@ -233,6 +253,10 @@ export async function changeCircleMemberStatus(db,{actorUserId,targetUserId,circ
   const transaction=await db.transaction('write');
   let finished=false;
   try{
+    if(!await activeMutationContextValid(transaction,circleContext,selectedCircle)){
+      await rollback(transaction); finished=true;
+      return Object.freeze({ok:false,reason:'context_changed'});
+    }
     if(operation==='deactivate'){
       await acquireOwnerWrite(transaction,actor,selectedCircle);
       const targetState=await inspectScopedTarget(transaction,{actorUserId:actor,targetUserId:target,circleId:selectedCircle});
@@ -284,6 +308,7 @@ export async function changeCircleMemberStatus(db,{actorUserId,targetUserId,circ
     if(audit.rows?.length!==1) throw new Error('membership audit unavailable');
     let revokedSessions=0;
     if(operation==='deactivate'){
+      await bumpSelectedCircleContexts(transaction,target,selectedCircle);
       const remaining=await transaction.execute({
         sql:`SELECT membership.circle_id FROM circle_memberships membership
           JOIN circles circle ON circle.id=membership.circle_id
@@ -301,7 +326,7 @@ export async function changeCircleMemberStatus(db,{actorUserId,targetUserId,circ
   }
 }
 
-export async function leaveCircle(db,{actorUserId,circleId}={}){
+export async function leaveCircle(db,{actorUserId,circleId,circleContext}={}){
   const actor=positiveInteger(actorUserId);
   const selectedCircle=positiveInteger(circleId);
   if(!db||typeof db.transaction!=='function'||!actor||!selectedCircle) throw new TypeError('valid membership leave required');
@@ -309,6 +334,10 @@ export async function leaveCircle(db,{actorUserId,circleId}={}){
   const transaction=await db.transaction('write');
   let finished=false;
   try{
+    if(!await activeMutationContextValid(transaction,circleContext,selectedCircle)){
+      await rollback(transaction); finished=true;
+      return Object.freeze({ok:false,reason:'context_changed'});
+    }
     const changed=await transaction.execute({
       sql:`UPDATE circle_memberships AS membership
         SET status='inactive',updated_at=?
@@ -355,6 +384,7 @@ export async function leaveCircle(db,{actorUserId,circleId}={}){
       args:[Number(row.circle_id),eventType,actor,actor,`${eventType}:${randomUUID()}`,occurredAt],
     });
     if(audit.rows?.length!==1) throw new Error('membership audit unavailable');
+    await bumpSelectedCircleContexts(transaction,actor,selectedCircle);
     const remaining=await transaction.execute({
       sql:`SELECT membership.circle_id FROM circle_memberships membership
         JOIN circles circle ON circle.id=membership.circle_id
@@ -372,7 +402,7 @@ export async function leaveCircle(db,{actorUserId,circleId}={}){
   }
 }
 
-export async function transferCircleOwnership(db,{actorUserId,targetUserId,circleId,session,nowSeconds}={}){
+export async function transferCircleOwnership(db,{actorUserId,targetUserId,circleId,session,nowSeconds,circleContext}={}){
   const actor=positiveInteger(actorUserId);
   const target=positiveInteger(targetUserId);
   const selectedCircle=positiveInteger(circleId);
@@ -382,6 +412,10 @@ export async function transferCircleOwnership(db,{actorUserId,targetUserId,circl
   const transaction=await db.transaction('write');
   let finished=false;
   try{
+    if(!await activeMutationContextValid(transaction,circleContext,selectedCircle)){
+      await rollback(transaction); finished=true;
+      return Object.freeze({ok:false,reason:'context_changed'});
+    }
     await acquireOwnerWrite(transaction,actor,selectedCircle);
     await requireActorRecentAuth(transaction,actor,session,nowSeconds);
     const promoted=await transaction.execute({

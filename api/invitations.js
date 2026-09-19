@@ -20,7 +20,12 @@ import {
   normalizeInvitationEmail,
   prepareInvitationClaim,
 } from './_circle-membership.js';
-import { multiCircleControlPlaneEnabled, requestMatchesCircleContext, resolveActiveCircleContext } from './_active-circle.js';
+import {
+  multiCircleControlPlaneEnabled,
+  requestMatchesCircleContext,
+  resolveActiveCircleContext,
+  validateActiveCircleMutationContext,
+} from './_active-circle.js';
 import { localIdentityAdapterEnabled } from './_local-runtime.js';
 import {
   createInvitationEmailEvent,
@@ -169,12 +174,25 @@ async function ownerContext(req,res){
       res.status(403).json({error:'circle owner required'});
       return null;
     }
-    return {db,userId,membership,contextVersion:Number(resolved?.context_version)||0};
+    return {db,userId,membership,contextVersion:Number(resolved?.context_version)||0,
+      circleContext:resolved?{
+        payload,contextVersion:Number(resolved.context_version)||0,implicit:resolved.implicit===true,
+      }:null,
+    };
   }catch(error){
     captureSentryException(error,{tags:{event:'circle_invitation_owner_check_fail',source:'server'}});
     res.status(503).json({error:'invitations unavailable'});
     return null;
   }
+}
+
+async function mutationContextValid(transaction,context){
+  if(!context.circleContext) return true;
+  return validateActiveCircleMutationContext(transaction,context.circleContext.payload,{
+    circleId:Number(context.membership.circle_id??context.membership.id),
+    contextVersion:context.circleContext.contextVersion,
+    implicit:context.circleContext.implicit,
+  });
 }
 
 function invitationStatus(row,nowMs=Date.now()){
@@ -240,6 +258,10 @@ async function handleCreate(req,res){
     const transaction=await context.db.transaction('write');
     let finished=false;
     try{
+      if(!await mutationContextValid(transaction,context)){
+        await transaction.rollback(); finished=true;
+        return res.status(409).json({error:'circle context changed',code:'circle_context_changed'});
+      }
       const created=await transaction.execute({
         sql:`INSERT INTO circle_invitations
           (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at)
@@ -319,6 +341,10 @@ async function handleResend(req,res){
   try{
     await ensureInvitationEmailReadiness(context.db,{localRuntime});
     transaction=await context.db.transaction('write');
+    if(!await mutationContextValid(transaction,context)){
+      await transaction.rollback(); finished=true;
+      return res.status(409).json({error:'circle context changed',code:'circle_context_changed'});
+    }
     const selected=await transaction.execute({sql:`SELECT invitation.id,invitation.circle_id,
         invitation.token_hash,invitation.email_hash,invitation.expires_at,
         invitation.used_at,invitation.used_by,invitation.revoked_at,
@@ -476,8 +502,15 @@ async function handleRevoke(req,res){
   const context=await ownerContext(req,res);
   if(!context) return;
   const revokedAt=new Date().toISOString();
+  let transaction;
+  let finished=false;
   try{
-    const [revoked,audited]=await context.db.batch([{
+    transaction=await context.db.transaction('write');
+    if(!await mutationContextValid(transaction,context)){
+      await transaction.rollback(); finished=true;
+      return res.status(409).json({error:'circle context changed',code:'circle_context_changed'});
+    }
+    const revoked=await transaction.execute({
       sql:`UPDATE circle_invitations SET revoked_at=?
         WHERE id=? AND used_at IS NULL AND used_by IS NULL AND revoked_at IS NULL
           AND EXISTS (
@@ -488,7 +521,8 @@ async function handleRevoke(req,res){
           )
         RETURNING id,circle_id`,
       args:[revokedAt,id,context.userId,Number(context.membership.circle_id??context.membership.id)],
-    },{
+    });
+    const audited=await transaction.execute({
       sql:`INSERT INTO circle_audit_events
           (circle_id,event_type,actor_user_id,subject_user_id,invitation_id,dedupe_key,created_at)
         SELECT invitation.circle_id,'invitation.revoked',?,NULL,invitation.id,?,?
@@ -503,16 +537,21 @@ async function handleRevoke(req,res){
       args:[context.userId,`invitation-revoked:${id}`,revokedAt,context.userId,
         Number(context.membership.circle_id??context.membership.id),id,
         Number(context.membership.circle_id??context.membership.id),revokedAt],
-    }], 'write');
-    if(!revoked?.rows?.length) return res.status(404).json({error:'invitation not found'});
+    });
+    if(!revoked?.rows?.length){
+      await transaction.rollback(); finished=true;
+      return res.status(404).json({error:'invitation not found'});
+    }
     if(!audited?.rows?.length) throw new Error('invitation revocation audit missing');
+    await transaction.commit(); finished=true;
     return res.json({ok:true,id,status:'revoked',
       ...(multiCircleControlPlaneEnabled()?{circle_context_version:context.contextVersion}:{}),
     });
   }catch(error){
+    if(transaction&&!finished){ try{ await transaction.rollback(); }catch{} }
     captureSentryException(error,{tags:{event:'circle_invitation_revoke_fail',source:'server'}});
     return res.status(503).json({error:'invitations unavailable'});
-  }
+  }finally{ try{ await transaction?.close?.(); }catch{} }
 }
 
 export default async function handler(req,res){

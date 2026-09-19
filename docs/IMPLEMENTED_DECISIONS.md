@@ -838,10 +838,12 @@ dependent request carries the selected version only as a stale-response fence;
 the server resolves authorization from durable state again.
 
 Single-circle accounts retain their implicit context and existing behavior.
-Removing one membership deletes its selected context and revokes all account
-sessions only when no active membership remains. Migration v12 enforces session
-and membership cascade boundaries. The browser clears private state, reloads,
-and notifies sibling tabs after a switch.
+Removing one membership bumps any affected selected-session generation and
+revokes all account sessions only when no active membership remains. Migration
+v12 binds the context to the exact `(session_hash,user_id)` pair and preserves
+the context tombstone across membership removal, preventing stale-version ABA.
+The browser clears private state, reloads, and notifies sibling tabs after a
+switch.
 
 Roster and invitation reads/writes are now scoped to the exact resolved circle.
 Pairing, availability, chat, workspace, video, execution, and AI records do not

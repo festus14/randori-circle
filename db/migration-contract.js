@@ -59,7 +59,7 @@ export const MIGRATION_CONTRACTS=Object.freeze([
   Object.freeze({
     version:12,
     name:'session-bound-active-circle-context',
-    checksum:'b720613aae574daeeeaee1aa97d8ce44a6476871c6bbdd8f1ce5f8c4f78ed182',
+    checksum:'03de48b96f1b09394a9b8f6b30e21b2934d9eec127241bbba7e535967aea497c',
   }),
 ]);
 

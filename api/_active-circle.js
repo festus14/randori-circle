@@ -46,6 +46,45 @@ export function requestMatchesCircleContext(req,context){
   return expected!==null&&expected===contextVersion(context?.context_version);
 }
 
+export async function validateActiveCircleMutationContext(db,payload,{circleId,contextVersion:version,implicit=false}={}){
+  const identity=sessionIdentity(payload);
+  const selectedCircleId=positiveInteger(circleId);
+  const expectedVersion=contextVersion(version);
+  if(!db||typeof db.execute!=='function'||!identity||!selectedCircleId||expectedVersion===null){
+    throw new TypeError('valid active circle mutation context is required');
+  }
+  const contextPredicate=implicit
+    ?`NOT EXISTS (SELECT 1 FROM auth_session_circle_contexts context
+          WHERE context.session_hash=session.session_hash AND context.user_id=session.user_id)
+        AND NOT EXISTS (
+          SELECT 1 FROM circle_memberships other_membership
+          JOIN circles other_circle ON other_circle.id=other_membership.circle_id
+          WHERE other_membership.user_id=session.user_id
+            AND other_membership.status='active' AND other_circle.archived_at IS NULL
+            AND other_membership.circle_id<>membership.circle_id
+        )`
+    :`EXISTS (
+          SELECT 1 FROM auth_session_circle_contexts context
+          WHERE context.session_hash=session.session_hash AND context.user_id=session.user_id
+            AND context.circle_id=membership.circle_id AND context.context_version=?
+        )`;
+  const result=await db.execute({
+    sql:`SELECT membership.circle_id
+      FROM auth_sessions session
+      JOIN circle_memberships membership ON membership.user_id=session.user_id
+      JOIN circles circle ON circle.id=membership.circle_id
+      WHERE session.session_hash=? AND session.user_id=? AND session.revoked_at IS NULL
+        AND session.expires_at>CAST(strftime('%s','now') AS INTEGER)
+        AND membership.circle_id=? AND membership.status='active' AND circle.archived_at IS NULL
+        AND ${contextPredicate}
+      LIMIT 2`,
+    args:implicit
+      ?[identity.sessionHash,identity.userId,selectedCircleId]
+      :[identity.sessionHash,identity.userId,selectedCircleId,expectedVersion],
+  });
+  return result.rows?.length===1;
+}
+
 function publicMembership(row){
   const circleId=positiveInteger(Number(row?.circle_id));
   const publicId=normalizeCirclePublicId(row?.public_id);

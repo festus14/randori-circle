@@ -24,9 +24,11 @@ import {
   createPasswordAccountFromPreparedInvitation,
   ensureCircleMembershipReadiness,
   hasActiveCircleMembership,
+  hasActivePrimaryCircleMembership,
   readInviteClaim,
   validatePreparedInvitation,
 } from './_circle-membership.js';
+import { multiCircleControlPlaneEnabled } from './_active-circle.js';
 import { localIdentityAdapterEnabled, localRuntimeRequest } from './_local-runtime.js';
 import { googleOAuthRequestConfiguration, setAuthResponseHeaders } from './_auth-config.js';
 import {
@@ -61,6 +63,12 @@ import {
   unlinkGoogleCredential,
   unlinkPasswordCredential,
 } from './_identity-linking.js';
+
+function hasEligibleCircleMembership(db,userId){
+  return multiCircleControlPlaneEnabled()
+    ?hasActiveCircleMembership(db,userId)
+    :hasActivePrimaryCircleMembership(db,userId);
+}
 
 const SESSION_COOKIE = 'randori_session';
 const OAUTH_STATE_COOKIE = 'randori_oauth_state';
@@ -665,7 +673,7 @@ async function handleLogin(req,res){
   }
   if(circleMembershipEnabled()){
     try{
-      if(!await hasActiveCircleMembership(db,row.id)) return res.status(403).json({error:'active circle membership required'});
+      if(!await hasEligibleCircleMembership(db,row.id)) return res.status(403).json({error:'active circle membership required'});
     }catch{
       return res.status(503).json({error:'login temporarily unavailable'});
     }
@@ -710,7 +718,7 @@ async function handleMe(req,res){
     const u = rs.rows[0];
     if(circleMembershipEnabled()){
       let hasMembership;
-      try{ hasMembership=await hasActiveCircleMembership(db,u.id); }
+      try{ hasMembership=await hasEligibleCircleMembership(db,u.id); }
       catch{ return res.status(503).json({error:'session validation temporarily unavailable'}); }
       if(!hasMembership){
         appendCookies(res,[clearCookie(req,SESSION_COOKIE)]);
@@ -1139,7 +1147,7 @@ async function handleGoogleCallback(req,res){
   if(membershipRequired){
     let hasMembership=invitationAcceptedDuringAccountCreation;
     if(!hasMembership){
-      try{ hasMembership=await hasActiveCircleMembership(db,authId); }
+      try{ hasMembership=await hasEligibleCircleMembership(db,authId); }
       catch{ res.writeHead(302,{Location:redirectError('db_error')}); return res.end(); }
     }
     if(preparedInvitation?.ok&&!invitationAcceptedDuringAccountCreation){

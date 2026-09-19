@@ -43,7 +43,7 @@ test('executable migrations are contiguous and fingerprint every executable oper
   assert.equal(EXECUTABLE_MIGRATIONS[8].checksum,'226c58e70d0f7dfeae89449dcc567f52afeed46c19c2f9987c510f78029ec560');
   assert.equal(EXECUTABLE_MIGRATIONS[9].checksum,'df6508898b4b697ca8d21646c9460aefcc7f85d7fc8f2f027ed10342fe98e014');
   assert.equal(EXECUTABLE_MIGRATIONS[10].checksum,'e1e41483cbdff5a10a58ccc144bfadbb818cecb900768495ad8ab64dd393332b');
-  assert.equal(EXECUTABLE_MIGRATIONS[11].checksum,'b720613aae574daeeeaee1aa97d8ce44a6476871c6bbdd8f1ce5f8c4f78ed182');
+  assert.equal(EXECUTABLE_MIGRATIONS[11].checksum,'03de48b96f1b09394a9b8f6b30e21b2934d9eec127241bbba7e535967aea497c');
   assert.match(MIGRATION_LEDGER_CHECKSUM,/^[a-f0-9]{64}$/);
   for(const migration of EXECUTABLE_MIGRATIONS){
     assert.equal(checksumExecutableMigration(migration),migration.checksum);

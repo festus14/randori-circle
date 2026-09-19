@@ -16,7 +16,7 @@ import {
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const ACTIVE_CIRCLE_MIGRATION=EXECUTABLE_MIGRATIONS[11];
 const THROUGH_V11=EXECUTABLE_MIGRATIONS.slice(0,11);
-const ACTIVE_CIRCLE_CONTEXT_TABLE_SQL=`CREATE TABLE IF NOT EXISTS auth_session_circle_contexts (session_hash TEXT PRIMARY KEY NOT NULL CHECK(length(session_hash)=64 AND session_hash NOT GLOB '*[^0-9a-f]*'), user_id INTEGER NOT NULL, circle_id INTEGER NOT NULL, context_version INTEGER NOT NULL CHECK(typeof(context_version)='integer' AND context_version>=1), updated_at INTEGER NOT NULL CHECK(typeof(updated_at)='integer' AND updated_at>0), FOREIGN KEY(session_hash) REFERENCES auth_sessions(session_hash) ON DELETE CASCADE, FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE CASCADE, FOREIGN KEY(circle_id,user_id) REFERENCES circle_memberships(circle_id,user_id) ON DELETE CASCADE)`;
+const ACTIVE_CIRCLE_CONTEXT_TABLE_SQL=`CREATE TABLE IF NOT EXISTS auth_session_circle_contexts (session_hash TEXT PRIMARY KEY NOT NULL CHECK(length(session_hash)=64 AND session_hash NOT GLOB '*[^0-9a-f]*'), user_id INTEGER NOT NULL, circle_id INTEGER NOT NULL, context_version INTEGER NOT NULL CHECK(typeof(context_version)='integer' AND context_version>=1), updated_at INTEGER NOT NULL CHECK(typeof(updated_at)='integer' AND updated_at>0), FOREIGN KEY(session_hash,user_id) REFERENCES auth_sessions(session_hash,user_id) ON DELETE CASCADE, FOREIGN KEY(circle_id) REFERENCES circles(id) ON DELETE CASCADE)`;
 const ACTIVE_CIRCLE_CONTEXT_INDEX_SQL=`CREATE INDEX IF NOT EXISTS idx_auth_session_circle_contexts_user_circle ON auth_session_circle_contexts(user_id,circle_id)`;
 
 function temporaryDatabase(){
@@ -62,10 +62,12 @@ test('v12 installs the checksummed session context table and lookup index',async
     const result=await apply(fixture.db);
     assert.equal(result.toVersion,12);
     assert.deepEqual(ACTIVE_CIRCLE_MIGRATION.operations.map(operation=>operation.name),[
-      'auth_session_circle_contexts','idx_auth_session_circle_contexts_user_circle',
+      'uq_auth_sessions_hash_user','auth_session_circle_contexts','idx_auth_session_circle_contexts_user_circle',
     ]);
-    assert.equal(ACTIVE_CIRCLE_MIGRATION.operations[0].sql,ACTIVE_CIRCLE_CONTEXT_TABLE_SQL);
-    assert.equal(ACTIVE_CIRCLE_MIGRATION.operations[1].sql,ACTIVE_CIRCLE_CONTEXT_INDEX_SQL);
+    assert.equal(ACTIVE_CIRCLE_MIGRATION.operations[1].sql,ACTIVE_CIRCLE_CONTEXT_TABLE_SQL);
+    assert.equal(ACTIVE_CIRCLE_MIGRATION.operations[2].sql,ACTIVE_CIRCLE_CONTEXT_INDEX_SQL);
+    const sessionIndex=await fixture.db.execute(`PRAGMA index_info("uq_auth_sessions_hash_user")`);
+    assert.deepEqual(sessionIndex.rows.map(row=>row.name),['session_hash','user_id']);
     const index=await fixture.db.execute(`PRAGMA index_info("idx_auth_session_circle_contexts_user_circle")`);
     assert.deepEqual(index.rows.map(row=>row.name),['user_id','circle_id']);
   }finally{ fixture.close(); }
@@ -90,7 +92,7 @@ test('managed v11 upgrades exactly once and repeated v12 apply is a no-op',async
   }finally{ fixture.close(); }
 });
 
-test('v12 enforces membership ownership, versions, and both cascade boundaries',async()=>{
+test('v12 binds session ownership, enforces versions, and preserves generation tombstones',async()=>{
   const fixture=temporaryDatabase();
   try{
     await apply(fixture.db);
@@ -113,7 +115,7 @@ test('v12 enforces membership ownership, versions, and both cascade boundaries',
       fixture.db.execute({
         sql:`INSERT INTO auth_session_circle_contexts
           (session_hash,user_id,circle_id,context_version,updated_at) VALUES (?,?,?,1,100)`,
-        args:['c'.repeat(64),2,1],
+        args:['c'.repeat(64),1,1],
       }),
       /foreign key constraint/i,
     );
@@ -121,15 +123,10 @@ test('v12 enforces membership ownership, versions, and both cascade boundaries',
     await fixture.db.execute(`DELETE FROM circle_memberships WHERE circle_id=1 AND user_id=1`);
     assert.equal(Number((await fixture.db.execute(
       `SELECT COUNT(*) AS count FROM auth_session_circle_contexts WHERE session_hash='${firstSession}'`,
-    )).rows[0].count),0);
+    )).rows[0].count),1,'membership deletion preserves the monotonic context tombstone');
 
     await fixture.db.execute(`INSERT INTO circle_memberships (circle_id,user_id,role,status)
       VALUES (1,1,'owner','active')`);
-    await fixture.db.execute({
-      sql:`INSERT INTO auth_session_circle_contexts
-        (session_hash,user_id,circle_id,context_version,updated_at) VALUES (?,?,?,2,101)`,
-      args:[firstSession,1,1],
-    });
     await fixture.db.execute({sql:`DELETE FROM auth_sessions WHERE session_hash=?`,args:[firstSession]});
     assert.equal(Number((await fixture.db.execute(
       `SELECT COUNT(*) AS count FROM auth_session_circle_contexts WHERE session_hash='${firstSession}'`,

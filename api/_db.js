@@ -348,12 +348,13 @@ export async function verifyRequestAuth(req,db=null,{nowSeconds=Math.floor(Date.
   const sessionDb=db||getClient();
   if(!sessionDb||typeof sessionDb.execute!=='function'||!Number.isSafeInteger(nowSeconds)||nowSeconds<1) return null;
   const membershipRequired=process.env.CIRCLE_MEMBERSHIP_ENABLED==='true';
+  const allowAnyCircle=process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED==='true';
   const membershipProjection=membershipRequired
     ? `CASE WHEN EXISTS (
           SELECT 1 FROM circle_memberships membership
           JOIN circles circle ON circle.id=membership.circle_id
           WHERE membership.user_id=session.user_id AND membership.status='active'
-            AND circle.archived_at IS NULL
+            AND ${allowAnyCircle?'':'circle.is_primary=1 AND '}circle.archived_at IS NULL
         ) THEN 1 ELSE 0 END`
     :'0';
   const result=await sessionDb.execute({
