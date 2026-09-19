@@ -336,11 +336,41 @@ test('operator workflow is manual, protected, latest-main-only, and shares datab
   assert.match(workflow,/CREDENTIAL_KEY_CONTROL_MUTATIONS_ENABLED: \$\{\{ vars\./);
   assert.match(workflow,/TURSO_PRODUCTION_DATABASE_HOST: \$\{\{ vars\./);
   assert.doesNotMatch(workflow,/continue-on-error:\s*true/);
+  assert.doesNotMatch(workflow,/JWT_SECRET:/);
+  const purposeSteps=[
+    ['email activation','email-activation','EMAIL_VERIFICATION_ENCRYPTION'],
+    ['password reset','password-reset','PASSWORD_RESET_ENCRYPTION'],
+    ['invitation email','invitation-email','INVITATION_EMAIL_ENCRYPTION'],
+    ['identity email observation','identity-email-observation','IDENTITY_EMAIL_HASH'],
+  ];
+  for(const [label,purpose,prefix] of purposeSteps){
+    const start=workflow.indexOf(`      - name: Run ${label} key-control operation`);
+    assert.notEqual(start,-1,`missing ${purpose} protected operation`);
+    const next=workflow.indexOf('\n      - name:',start+1);
+    const step=workflow.slice(start,next===-1?workflow.length:next);
+    assert.match(step,new RegExp(`if: inputs\\.purpose == '${purpose}'`));
+    assert.match(step,new RegExp(`KEY_CONTROL_PURPOSE: ${purpose}`));
+    assert.match(step,new RegExp(`${prefix}_[A-Z_]+: \\$\\{\\{ secrets\\.`));
+    for(const [,otherPurpose,otherPrefix] of purposeSteps){
+      if(otherPurpose!==purpose) assert.doesNotMatch(step,new RegExp(`${otherPrefix}_[A-Z_]+:`),
+        `${purpose} must not receive the ${otherPurpose} key ring`);
+    }
+  }
   const lines=workflow.split('\n');
   let runIndent=null;
   for(const line of lines){
     const indentation=line.length-line.trimStart().length;
-    if(/^\s*run:\s*[>|]-?\s*$/.test(line)){ runIndent=indentation; continue; }
+    const declaration=/^\s*run:\s*(.*)$/.exec(line);
+    if(declaration){
+      const value=declaration[1].trim();
+      if(/^[>|](?:[1-9][+-]?|[+-][1-9]?)?$/.test(value)) runIndent=indentation;
+      else{
+        runIndent=null;
+        assert.doesNotMatch(value,/\$\{\{\s*inputs\./,
+          'dispatch values must reach shell only through quoted environment variables');
+      }
+      continue;
+    }
     if(runIndent!==null&&line.trim()&&indentation<=runIndent) runIndent=null;
     if(runIndent!==null) assert.doesNotMatch(line,/\$\{\{\s*inputs\./,
       'dispatch values must reach shell only through quoted environment variables');
