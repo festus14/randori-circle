@@ -1029,7 +1029,7 @@ p{margin:0}
               </div>
               <div>
                 <div class="small muted" style="margin-bottom:4px">Interviewer questions (for interviewer coaching)</div>
-                <textarea id="aiInterviewerQs" class="textarea" placeholder="e.g. Q1: Two Sum follow-up – duplicate handling\nQ2: What if we need to return all pairs?" style="min-height:90px; font-size:12.5px"></textarea>
+                <textarea id="aiInterviewerQs" class="textarea" placeholder="e.g. Q1: Which edge case would you test next?\nQ2: How would you explain the complexity trade-off?" style="min-height:90px; font-size:12.5px"></textarea>
               </div>
             </div>
             <div id="aiStatus" class="small muted" style="min-height:16px">Ready. Hit Record before you start, it auto-captures code diffs. Works offline, calls Groq when signed-in.</div>
@@ -1085,19 +1085,6 @@ p{margin:0}
 </div>
 <div id="confirmOverlay" class="overlay" aria-hidden="true"><div class="modal"><h3 id="confirmTitle">Confirm?</h3><p id="confirmMsg" class="small" style="color:var(--ink-2); margin:0"></p><div class="row"><button id="confirmCancel" class="btn secondary">Cancel</button><button id="confirmOk" class="btn">Confirm</button></div></div></div>
 <div id="promptOverlay" class="overlay" aria-hidden="true"><div class="modal"><h3 id="promptTitle">Enter value</h3><input id="promptInput" class="input"/><div class="row"><button id="promptCancel" class="btn secondary">Cancel</button><button id="promptOk" class="btn">Save</button></div></div></div>
-<div id="qUploadOverlay" class="overlay" aria-hidden="true"><div class="modal" style="max-width:560px; width:94vw; max-height:92vh; overflow:auto"><h3 id="qUpTitle">Upload Question</h3>
-<p class="small muted">Custom questions are shared to the pair via test runner. LeetCode import auto-fills below; HackerRank paste works too.</p>
-<div style="display:grid; gap:10px; margin-top:8px">
-  <div class="row" style="gap:8px"><input id="qUpSlug" class="input" placeholder="slug auto (optional)" style="flex:1"/><select id="qUpDiff" class="select" style="width:140px"><option>Easy</option><option selected>Medium</option><option>Hard</option><option>System</option></select><select id="qUpType" class="select" style="width:120px"><option value="dsa" selected>DSA</option><option value="system">System</option><option value="both">Both</option></select></div>
-  <input id="qUpTitleIn" class="input" placeholder="Title e.g. Two Sum Variation"/>
-  <textarea id="qUpDesc" class="textarea" placeholder="Description (markdown-ish) — problem statement, function signature expected" style="min-height:110px"></textarea>
-  <div class="grid-2" style="grid-template-columns:1fr 1fr; gap:8px"><input id="qUpInputFmt" class="input" placeholder="Input format (optional)"/><input id="qUpConstraints" class="input" placeholder="Constraints (e.g. 2 ≤ n ≤ 1e5)"/></div>
-  <div><label class="small muted">Test cases (JSON array of {input, expect} — min 1, max 8). Examples: [{"input":{"nums":[2,7],"t":9},"expect":[0,1]}] or [{"input":[2,7,11,15,9],"expect":[0,1]}]</label><textarea id="qUpTests" class="textarea" placeholder='[{"input":{"nums":[2,7,11,15],"t":9},"expect":[0,1]},{"input":{"nums":[3,2,4],"t":6},"expect":[1,2]},{"input":{"nums":[3,3],"t":6},"expect":[0,1]}]' style="min-height:110px; font-family:ui-monospace; font-size:12.5px"></textarea></div>
-  <div><label class="small muted">Starter per lang (JSON map, optional) e.g. {"javascript":"function twoSum...","python":"def two_sum..."}</label><textarea id="qUpStarters" class="textarea" placeholder='{"javascript":"function twoSum(nums,target){}","python":"def two_sum(nums,target):"}' style="min-height:80px; font-family:ui-monospace; font-size:12px"></textarea></div>
-  <div class="row" style="gap:8px"><input id="qUpLeetSlug" class="input" placeholder="LeetCode slug if imported (optional)" style="flex:1"/><span class="kbd" id="qUpStatus"></span></div>
-</div>
-<div class="row" style="justify-content:space-between; margin-top:12px"><span class="small muted">Saved to /api/questions — appears in your Question dropdown for the session.</span><span class="row"><button id="qUpCancel" class="btn secondary">Cancel</button><button id="qUpSave" class="btn">Save Question</button></span></div>
-</div></div>
 <div id="authOverlay" class="overlay" aria-hidden="true">
   <div id="authDialog" class="modal" style="max-width:420px" role="dialog" aria-modal="true" aria-labelledby="authTitle" aria-describedby="authDescription" tabindex="-1">
     <form id="authForm" class="auth-form" novalidate>
@@ -4644,125 +4631,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   window._randori_pair_recap={open:fetchPairRecap,refresh:()=>pairRecapState.room?fetchPairRecap(pairRecapState.room):Promise.resolve(false),stop:stopPairRecap,roomFor:canonicalHistoryRoom,get room(){return pairRecapState.room},get status(){return pairRecapState.status},get recap(){return pairRecapState.recap}};
 
   // ---------- questions ----------
-  const QUESTIONS=[
-    {
-      id:'two-sum', title:'Two Sum', diff:'Easy', difficulty:'Easy',
-      desc:`Given an array <code>nums</code> and target <code>t</code>, return indices of two numbers that add to <code>t</code>. One solution, return in any order.`,
-      examples:[
-        {input:'nums=[2,7,11,15], t=9', output:'[0,1]', expl:'nums[0]+nums[1]=9'},
-        {input:'nums=[3,2,4], t=6', output:'[1,2]', expl:''}
-      ],
-      constraints:'2 ≤ nums.length ≤ 10⁴, -10⁹ ≤ nums[i]',
-      tests:[
-        {input:{nums:[2,7,11,15], t:9}, expect:[0,1]},
-        {input:{nums:[3,2,4], t:6}, expect:[1,2]},
-        {input:{nums:[3,3], t:6}, expect:[0,1]}
-      ],
-      starters:{
-        javascript:`function twoSum(nums, target){
-  // hashmap approach
-  const m = new Map();
-  for(let i=0;i<nums.length;i++){
-    let need = target - nums[i];
-    if(m.has(need)) return [m.get(need), i];
-    m.set(nums[i], i);
-  }
-  return [];
-}`,
-        typescript:`function twoSum(nums: number[], target: number): number[]{
-  const m = new Map<number, number>();
-  for(let i=0;i<nums.length;i++){
-    const need = target - nums[i];
-    if(m.has(need)) return [m.get(need)!, i];
-    m.set(nums[i], i);
-  }
-  return [];
-}`,
-        python:`def two_sum(nums, target):
-    seen = {}
-    for i, n in enumerate(nums):
-        need = target - n
-        if need in seen:
-            return [seen[need], i]
-        seen[n]=i
-    return []`,
-        java:`class Solution{
-  public int[] twoSum(int[] nums, int target){
-    Map<Integer,Integer> m=new HashMap<>();
-    for(int i=0;i<nums.length;i++){
-      int need=target-nums[i];
-      if(m.containsKey(need)) return new int[]{m.get(need), i};
-      m.put(nums[i], i);
-    }
-    return new int[]{};
-  }
-}`,
-        go:`func twoSum(nums []int, target int) []int{
-  m:=make(map[int]int)
-  for i,n:=range nums{
-    if j,ok:=m[target-n]; ok{ return []int{j,i} }
-    m[n]=i
-  }
-  return nil
-}`,
-        cpp:`vector<int> twoSum(vector<int>& nums, int target){
-  unordered_map<int,int> m;
-  for(int i=0;i<nums.size();++i){
-    int need=target-nums[i];
-    if(m.count(need)) return {m[need], i};
-    m[nums[i]]=i;
-  }
-  return {};
-}`
-      }
-    },
-    {
-      id:'url-short', title:'Design URL Shortener', diff:'System', difficulty:'System',
-      desc:`Design a URL shortener like TinyURL. Consider API, hash vs base62, collision, DB, cache, analytics. Whiteboard this one — code is driver for rate-limiter sketch.`,
-      examples:[
-        {input:'POST /shorten {url}', output:'{short: "aZ3k9"}', expl:'302 redirect'},
-        {input:'GET /aZ3k9', output:'301 → original', expl:'cache + analytics'}
-      ],
-      constraints:'100M URLs, low latency read',
-      tests:[
-        {input:{op:'shorten'}, expect:'ok'},
-        {input:{op:'expand'}, expect:'ok'}
-      ],
-      starters:{
-        javascript:`// rate limiter token bucket
-function allow(key, limit=5){
-  // interviewer expects Map + timestamps
-  return true;
-}`,
-        python:`# rate limiter sketch
-def allow(key, limit=5):
-    return True`,
-        typescript:`function allow(key:string, limit=5){ return true as boolean; }`,
-        java:`boolean allow(String key,int limit){ return true; }`,
-        go:`func allow(key string, limit int) bool { return true }`,
-        cpp:`bool allow(string k,int limit){ return true; }`
-      }
-    },
-    {
-      id:'lru', title:'LRU Cache', diff:'Medium', difficulty:'Medium',
-      desc:`Design LRU Cache with <code>get</code> and <code>put</code> in O(1).`,
-      examples:[
-        {input:'cache=[2], get(1)', output:'-1 then 1', expl:'eviction order'},
-      ],
-      constraints:'1 ≤ capacity ≤ 3000',
-      tests:[
-        {input:{ops:['put','put','get','put','get']}, expect:'LRU works'},
-      ],
-      starters:{
-        javascript:`class LRU{ constructor(cap){this.cap=cap; this.m=new Map()} get(k){ if(!this.m.has(k)) return -1; let v=this.m.get(k); this.m.delete(k); this.m.set(k,v); return v} put(k,v){ if(this.m.has(k)) this.m.delete(k); else if(this.m.size>=this.cap) this.m.delete(this.m.keys().next().value); this.m.set(k,v)} }`,
-        python:`class LRU:\n    def __init__(self, cap):\n        self.cap=cap; self.m={}\n    def get(self,k):\n        return -1\n    def put(self,k,v):\n        pass`,
-        typescript:`class LRU{ constructor(private cap:number){} get(k:number){return -1} put(k:number,v:number){} }`,
-        java:`class LRU{int cap; LRU(int c){cap=c;} int get(int k){return -1;} void put(int k,int v){} }`,
-        go:`type LRU struct{cap int}\n func (l *LRU) Get(k int) int {return -1}\n func (l *LRU) Put(k,v int){}`,
-        cpp:`class LRU{ int cap; public: LRU(int c):cap(c){} int get(int k){return -1;} void put(int k,int v){} };`
-      }
-    }
-  ];
+  // Exercises are loaded exclusively from the validated, server-authoritative
+  // catalogue. Keep the legacy fallback empty so no unreviewed problem text can
+  // be displayed or executed while that catalogue is loading or unavailable.
+  const QUESTIONS=Object.freeze([]);
   window._randori_builtin_questions=QUESTIONS;
 
   const qSel=document.getElementById('questionSelect');
@@ -4774,24 +4646,8 @@ def allow(key, limit=5):
     qSel.disabled=true;
   }
   function renderQuestion(id){
-    const q=QUESTIONS.find(x=>x.id===id)||QUESTIONS[0];
-    // LeetCode-like polish: colors, pills
-    const d=q.diff||'Easy';
-    const col = /easy/i.test(d) ? '#c8f6a0' : /medium/i.test(d) ? '#f2d07a' : /hard/i.test(d) ? '#e8a0b0' : '#9aa0a6';
-    const titleEl=document.getElementById('qTitle'); if(titleEl){ titleEl.textContent=q.title; titleEl.setAttribute('data-diff', d); }
-    const diffEl=document.getElementById('qDiff'); if(diffEl){ diffEl.textContent=d; diffEl.style.background=col+'22'; diffEl.style.border='1px solid '+col+'55'; diffEl.style.color=col; diffEl.style.padding='2px 8px'; diffEl.style.borderRadius='999px'; diffEl.style.fontSize='11px'; }
-    document.getElementById('qDesc').innerHTML=`<div style="color:var(--ink-2); line-height:1.6">${q.desc}</div>`;
-    // expandable examples
-    const exEl=document.getElementById('qExamples');
-    if(exEl){
-      exEl.innerHTML='<div class="small muted" style="margin-bottom:4px; text-transform:uppercase; font-size:10.5px">Examples — click to copy</div>'+q.examples.map((e,i)=>`<div class="test" style="cursor:pointer" title="click to copy"><div class="small"><b>Example ${i+1}:</b> In <span class="kbd">${String(e.input).slice(0,140)}</span> → <span class="kbd">${String(e.output).slice(0,140)}</span></div>${e.expl?`<div class="small muted">${e.expl}</div>`:''}</div>`).join('');
-      exEl.querySelectorAll('.test').forEach(el=>el.addEventListener('click',()=>{ try{ navigator.clipboard.writeText(el.textContent); window.toast&&window.toast('Copied example'); }catch{} }));
-    }
-    document.getElementById('qConstraints').textContent=q.constraints;
-    document.getElementById('qConstraints').style.fontFamily='ui-monospace, monospace';
-    document.getElementById('qConstraints').style.whiteSpace='pre-wrap';
-    document.getElementById('qTests').innerHTML=q.tests.map((t,i)=>`<div class="test"><div class="small">Case ${i+1}: <span class="kbd">${JSON.stringify(t.input).slice(0,80)}</span> → <span class="small">${JSON.stringify(t.expect)}</span></div></div>`).join('');
-    return q;
+    void id;
+    return null;
   }
 
   // ---------- code room ----------
@@ -4878,6 +4734,7 @@ def allow(key, limit=5):
   qSel.onchange=async()=>{
     if(window._randori_questions?.handleQuestionChange?.(qSel.value)) return;
     const q=renderQuestion(qSel.value); const lang=document.getElementById('langSelect').value;
+    if(!q){ persistRoom(); return; }
     // e2e auto-confirm: when running under Playwright fake auth, skip modal to keep Run clickable
     const isE2E = (()=>{ try{ return localStorage.getItem('e2e')==='1'; }catch{ return false; } })();
     const editorEmpty = !document.getElementById('editor').value.trim();
@@ -5052,7 +4909,7 @@ def allow(key, limit=5):
               if(/^[A-Z]/.test(fnName||'')){
                 try{
                   got = null;
-                  let inst = new fn(inputNorm.operations? (inputNorm.operations[0]==='LRUCache'? (inputNorm.capacity||2) : undefined) : undefined);
+                  let inst = new fn(inputNorm&&inputNorm.operations ? inputNorm.capacity : undefined);
                   got = inst;
                 }catch(e2){ throw e; }
               } else throw e;
@@ -7718,7 +7575,7 @@ def allow(key, limit=5):
           if(!_onbDone && !_banDismiss){ _wb.style.display='flex'; } else { _wb.style.display='none'; }
         }
       }catch{}
-      // LeetCode-like: if URL wants code view or last tab was code, show code instead
+      // If the URL requests the workspace, show it without bypassing catalogue loading.
       try{
         const urlParams=new URLSearchParams(window.location.search);
         const viewParam=urlParams.get('view')||urlParams.get('tab');
@@ -8420,112 +8277,6 @@ def allow(key, limit=5):
     renderUnavailableQuestion(slug,version==null?'not pinned to a catalogue version':'retired or no longer in the approved catalogue',version);
     return false;
   }
-
-  // Upload modal logic
-  const overlay=document.getElementById('qUploadOverlay');
-  document.getElementById('qUploadBtn')?.addEventListener('click', ()=>{
-    if(!signedIn()){ alert('Sign in to upload questions — needed for author tracking'); return; }
-    document.getElementById('qUpStatus').textContent='';
-    overlay?.classList.add('show');
-  });
-  document.getElementById('qUpCancel')?.addEventListener('click', ()=> overlay?.classList.remove('show'));
-  overlay?.addEventListener('click', (e)=>{ if(e.target===overlay) overlay.classList.remove('show'); });
-
-  document.getElementById('qUpSave')?.addEventListener('click', async()=>{
-    const title=document.getElementById('qUpTitleIn').value.trim();
-    const desc=document.getElementById('qUpDesc').value.trim();
-    const slug=document.getElementById('qUpSlug').value.trim();
-    const diff=document.getElementById('qUpDiff').value;
-    const type=document.getElementById('qUpType').value;
-    const inputFmt=document.getElementById('qUpInputFmt').value.trim();
-    const cons=document.getElementById('qUpConstraints').value.trim();
-    const testsRaw=document.getElementById('qUpTests').value.trim();
-    const startersRaw=document.getElementById('qUpStarters').value.trim();
-    const leetSlug=document.getElementById('qUpLeetSlug').value.trim();
-    const statusEl=document.getElementById('qUpStatus');
-    if(!title||!desc){ statusEl.textContent='title + description required'; return; }
-    let tests;
-    try{ tests=JSON.parse(testsRaw); if(!Array.isArray(tests)) throw new Error('tests array needed'); }catch(err){ statusEl.textContent='tests JSON parse error: '+err.message; return; }
-    let starters={};
-    if(startersRaw){
-      try{ starters=JSON.parse(startersRaw); }catch{ statusEl.textContent='starters JSON parse error'; return; }
-    }
-    let examples=[];
-    // try to infer examples from first 2 tests
-    examples=tests.slice(0,2).map(t=>({input:t.input, output:t.expect}));
-    try{
-      statusEl.textContent='saving…';
-      const r=await fetch('/api/questions',{ method:'POST', credentials:'same-origin', headers:{'content-type':'application/json'}, body: JSON.stringify({ title, description:desc, slug: slug||undefined, difficulty:diff, type, input_format:inputFmt, constraints:inputFmt? cons : cons, constraints_text:cons, examples, test_cases:tests, starter_per_lang:starters, source: leetSlug? 'leetcode':'custom', leetcode_slug: leetSlug||null })});
-      const j=await r.json();
-      if(!r.ok) throw j;
-      statusEl.textContent='saved ✓ '+j.question.slug;
-      CUSTOM_QUESTIONS.unshift(j.question);
-      mergeIntoSelect();
-      if(qSel){ selectKnownCatalogueQuestion(j.question); renderCustomQuestion(j.question.slug); }
-      setTimeout(()=> overlay?.classList.remove('show'), 700);
-      if(window.toast) window.toast('Question saved: '+j.question.title);
-    }catch(e){ statusEl.textContent='save failed: '+(e.error||e.message||'err'); console.error(e); }
-  });
-
-  // LeetCode import — via server proxy /api/leetcode?slug= (no CORS, DB cache, enriched)
-  const leetStatus=document.getElementById('qLeetStatus');
-  async function leetImport(){
-    const slug=prompt('LeetCode slug e.g. two-sum, lru-cache, design-url-shortener — as in URL https://leetcode.com/problems/<slug>/');
-    if(!slug) return;
-    const clean=slug.trim().toLowerCase().replace(/.*problems\//,'').replace(/\/.*/,'');
-    if(leetStatus) leetStatus.textContent='fetching '+clean+' via proxy… ⏳';
-    try{
-      // proxy avoids CORS
-      const r = await fetch('/api/leetcode?slug='+encodeURIComponent(clean), {credentials:'same-origin'});
-      const j = await r.json();
-      if(!r.ok) throw j;
-      const q = j.question||j.data||j;
-      // normalize shape: either our proxy ret {question:{title, content,...}} or cached DB shape
-      const title = q.title || q.titleSlug || clean;
-      const contentHtml = q.content || q.description_html || q.description || '';
-      const descriptionText = q.description || (contentHtml ? contentHtml.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim().slice(0,4000) : title);
-      const difficulty = q.difficulty || 'Medium';
-      const category = q.category || (q.topicTags&&q.topicTags[0]&&q.topicTags[0].slug) || 'dsa';
-      const exampleTestcases = q.exampleTestcases || (q.test_cases&&Array.isArray(q.test_cases)? q.test_cases.map(t=>typeof t.input==='string'? t.input : JSON.stringify(t.input)).join('\n') : '') || '';
-      let tests = q.test_cases || q.testCases || [];
-      if (!Array.isArray(tests) || !tests.length){
-        // build from exampleTestcases
-        const lines = String(exampleTestcases).split('\n').filter(l=>l.trim());
-        tests = lines.slice(0,6).map(l=>({ input:l, expect:null, raw:l }));
-      }
-      if (!tests.length) tests=[{input:{example:'see description'}, expect:'output per description'}];
-      // open upload modal prefilled
-      overlay?.classList.add('show');
-      document.getElementById('qUpTitleIn').value=title||clean;
-      document.getElementById('qUpSlug').value=clean;
-      document.getElementById('qUpDesc').value=descriptionText.slice(0,6000)+'\n\n[source: LeetCode '+title+' — '+clean+']'+'\nDifficulty: '+difficulty+' • Category: '+category;
-      document.getElementById('qUpDiff').value=difficulty||'Medium';
-      document.getElementById('qUpType').value='dsa';
-      document.getElementById('qUpInputFmt').value='see description';
-      document.getElementById('qUpConstraints').value=q.constraints||q.constraints_text||'LeetCode constraints in description';
-      document.getElementById('qUpTests').value=JSON.stringify(tests.slice(0,8), null, 2);
-      document.getElementById('qUpLeetSlug').value=clean;
-      document.getElementById('qUpStarters').value=JSON.stringify({ javascript:`function ${clean.replace(/-./g, x=> x[1].toUpperCase())}(){\n  // LeetCode import: ${title}\n}`, python:`def ${clean.replace(/-/g,'_')}():\n    # ${title}\n    pass` }, null,2);
-      if(leetStatus) leetStatus.textContent='imported '+title+' • cached? '+(j.cached?'yes':'no')+' — review tests then Save';
-      if(window.toast) window.toast('LeetCode via proxy: '+title+' ✓');
-    }catch(e){
-      console.warn('leet proxy fail',e);
-      if(leetStatus) leetStatus.textContent='Proxy fetch failed: '+(e.error||e.detail||e.message||'err');
-      const fallback=confirm('Proxy fetch failed (maybe slug wrong). Open upload modal and paste manually?\\n\\nTip: open https://leetcode.com/problems/'+clean+'/ in new tab, copy description + examples, then Save.');
-      if(fallback){
-        overlay?.classList.add('show');
-        document.getElementById('qUpTitleIn').value=clean;
-        document.getElementById('qUpSlug').value=clean;
-        document.getElementById('qUpLeetSlug').value=clean;
-      }
-    }
-  }
-  document.getElementById('qLeetBtn')?.addEventListener('click', leetImport);
-  document.getElementById('qHackBtn')?.addEventListener('click', ()=>{
-    overlay?.classList.add('show');
-    document.getElementById('qUpTitleIn').placeholder='HackerRank — e.g. Frequency Queries';
-    if(window.toast) window.toast('Paste HackerRank / manual question — Starter & tests needed');
-  });
 
   // Server-authoritative exercise runner.
   const runBtn=document.getElementById('runBtn');
@@ -9815,7 +9566,7 @@ def allow(key, limit=5):
     }
   }catch{}
 
-  // Ensure additional card below whiteboard if videoBar present — add secondary feedback glance card (LeetCode model custom needs)
+  // Ensure an additional feedback card appears below the whiteboard when space allows.
   try{
     if(!document.getElementById('aiFeedbackCardBelowBoard')){
       const videoBar=document.getElementById('videoBar');

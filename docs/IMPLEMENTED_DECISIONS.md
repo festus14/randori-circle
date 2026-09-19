@@ -196,9 +196,10 @@ documented, but the bot's availability is not a merge prerequisite.
 
 **Decision.** A Premium account does not grant permission to automate access or
 redistribute protected content. Randori does not sign in to, crawl, scrape,
-imitate human traffic to, or evade controls on LeetCode. The legacy seed is
-excluded from the active catalogue, and runtime ingestion is disabled unless
-written authorization and a reviewed source adapter exist. Slow requests,
+imitate human traffic to, or evade controls on LeetCode. The legacy seed and
+remote ingestion implementation, browser fallback questions, and import/paste
+form are removed; the compatibility route returns only a manual external link,
+while sync fails closed. Slow requests,
 random delays, robots compliance, or user initiation do not create permission.
 
 The safe current sources are original Randori exercises, appropriately licensed
@@ -863,3 +864,51 @@ Inferring a circle from pairing rows is unsafe because those rows are not yet
 fully tenant-owned. A database-backed session selection with optimistic version
 fencing is additive, preserves the single-circle path, and supports application
 rollback by disabling the feature flag while leaving harmless context rows.
+
+## ID-22: Make provenance a versioned fail-closed catalogue dependency
+
+Status: implemented for the bundled original catalogue; authorized source
+adapters remain deferred.
+
+**Decision.** Every shipped exercise version has exactly one record in the
+versioned provenance manifest. The record binds a constrained source type,
+author, concrete license or written-authorization evidence, attribution,
+canonical SHA-256 content hash, bounded approval period, and takedown state.
+CI validates the catalogue and manifest together. Every bounded runtime list,
+detail, trusted lookup, and execution operation revalidates against current UTC
+time, so a warm process cannot outlive the provenance approval window. Active
+content with missing, malformed, duplicated, changed, unapproved, expired, or
+revoked provenance cannot enter the runtime catalogue.
+
+The manifest and JSON Schema are repository-owned. Canonical hashing sorts
+object keys, preserves array order, covers all user-visible exercise content,
+and excludes lifecycle metadata. An emergency command can revoke and retire one
+exact `slug@version`; it preserves an existing retirement, is idempotent for the
+same tracked event, refuses an ambiguous overwrite, holds a stale-recoverable
+interprocess lock, anchors every controlled path beneath the real repository
+`data/` directory, verifies pre-write digests, and writes revocation before
+retirement so interruption is fail-closed. Retired content remains auditable and unreachable. Dormant
+server-side generators may remain after an emergency data-only takedown, but
+the active-record gate prevents listing, resolution, or execution.
+
+The current source set is `original` only. Open sources are restricted to a
+small reviewed SPDX allowlist; written authorization uses a controlled evidence
+reference. Neither schema path enables an adapter or grants permission. Personal
+LeetCode access, Premium cookies, copied problem text, human-like crawling, and
+anti-bot evasion are outside the architecture and prohibited.
+
+**Alternatives.** Free-form governance strings in each exercise are readable
+but cannot prove content integrity, enforce expiry, or support a uniform rights
+audit. Putting provenance only in a database introduces deployment drift and
+makes local/CI builds unable to verify what they ship. Silently filtering bad
+records keeps the process alive but can hide accidental catalogue loss; startup
+failure gives an actionable release boundary. Deleting disputed records erases
+audit history, while an automated restore command could republish content
+without evidence review. A crawler would add legal, security, and reliability
+risk without establishing redistribution rights.
+
+**Recovery.** Do not bypass a provenance failure. Review the exact failing path
+against the tracked evidence; correct metadata and re-review, or use the bounded
+takedown command. Git history recovers accidental edits. A real takedown is
+restored only by a reviewed content change with fresh approval and, when
+semantics changed, a new exercise version.

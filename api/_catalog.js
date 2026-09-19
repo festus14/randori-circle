@@ -1,6 +1,12 @@
 import { randomInt } from 'node:crypto';
 
 import rawCatalog from '../data/randori-catalog-v1.json' with { type: 'json' };
+import rawProvenanceManifest from '../data/randori-catalog-provenance-v1.json' with { type: 'json' };
+import {
+  ProvenanceValidationError,
+  validationDate,
+  validateProvenanceManifest,
+} from './_catalog-provenance.js';
 
 export const SUPPORTED_LANGUAGES = Object.freeze(['javascript', 'python']);
 
@@ -429,7 +435,7 @@ const SERVER_EXERCISE_DEFINITIONS = {
 
 const DIFFICULTIES = new Set(['Easy', 'Medium', 'Hard']);
 const EXERCISE_STATUSES = new Set(['active', 'retired']);
-const TAKEDOWN_STATUSES = new Set(['none', 'requested', 'resolved']);
+const TAKEDOWN_STATUSES = new Set(['none', 'requested', 'revoked', 'resolved']);
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const TYPE_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const TEST_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -550,7 +556,7 @@ function validateLanguageMap(languages, path) {
   }
 }
 
-function validateGovernance(governance, status, path) {
+function validateGovernance(governance, status, path, today) {
   requireExactKeys(
     governance,
     ['rightsOwner', 'provenance', 'reviewDate', 'attribution', 'retirement', 'takedown'],
@@ -575,6 +581,7 @@ function validateGovernance(governance, status, path) {
     }
   } else {
     requireIsoDate(retirement.retiredAt, `${retirementPath}.retiredAt`);
+    if (retirement.retiredAt > today) fail(`${retirementPath}.retiredAt`, 'must not be in the future');
     requireNonEmptyString(retirement.reason, `${retirementPath}.reason`);
   }
 
@@ -588,14 +595,15 @@ function validateGovernance(governance, status, path) {
     }
   } else {
     requireIsoDate(takedown.requestedAt, `${takedownPath}.requestedAt`);
+    if (takedown.requestedAt > today) fail(`${takedownPath}.requestedAt`, 'must not be in the future');
     requireNonEmptyString(takedown.reference, `${takedownPath}.reference`);
   }
-  if (status === 'active' && takedown.status === 'requested') {
-    fail(takedownPath, 'an exercise with a pending takedown must be retired');
+  if (status === 'active' && takedown.status !== 'none') {
+    fail(takedownPath, 'an exercise under takedown must be retired');
   }
 }
 
-function validateExercise(exercise, index) {
+function validateExercise(exercise, index, today) {
   const path = `catalog.exercises[${index}]`;
   requireExactKeys(
     exercise,
@@ -628,7 +636,7 @@ function validateExercise(exercise, index) {
     requireNonEmptyString(example.explanation, `${examplePath}.explanation`);
   });
   validateLanguageMap(exercise.languages, `${path}.languages`);
-  validateGovernance(exercise.governance, exercise.status, `${path}.governance`);
+  validateGovernance(exercise.governance, exercise.status, `${path}.governance`, today);
 }
 
 function validateSuite(suite, exerciseByKey, path = 'evaluationSuite') {
@@ -671,7 +679,6 @@ function validateRuntimeDefinitions(definitions, exerciseByKey) {
     if (typeof definition.oracle !== 'function') fail(`${path}.oracle`, 'must be a function');
     const exercise = exerciseByKey.get(key);
     if (!exercise) fail(path, 'does not match an exercise slug and version');
-    if (exercise.status !== 'active') fail(path, 'cannot target a retired exercise');
   }
   for (const exercise of exerciseByKey.values()) {
     if (exercise.status !== 'active') continue;
@@ -681,7 +688,13 @@ function validateRuntimeDefinitions(definitions, exerciseByKey) {
 }
 
 /** Validate a complete catalogue or throw CatalogValidationError at the first invalid field. */
-export function validateCatalog(catalog, runtimeDefinitions = SERVER_EXERCISE_DEFINITIONS) {
+export function validateCatalog(
+  catalog,
+  runtimeDefinitions = SERVER_EXERCISE_DEFINITIONS,
+  provenanceManifest = rawProvenanceManifest,
+  options = {},
+) {
+  const today = validationDate(options.now ?? new Date());
   requireExactKeys(catalog, ['schemaVersion', 'catalog', 'exercises'], 'catalog');
   if (catalog.schemaVersion !== 1) fail('catalog.schemaVersion', 'must equal 1');
   requireExactKeys(catalog.catalog, ['id', 'title', 'contentPolicy', 'supportedLanguages'], 'catalog.catalog');
@@ -702,7 +715,7 @@ export function validateCatalog(catalog, runtimeDefinitions = SERVER_EXERCISE_DE
   const activeSlugs = new Set();
   const exerciseByKey = new Map();
   catalog.exercises.forEach((exercise, index) => {
-    validateExercise(exercise, index);
+    validateExercise(exercise, index, today);
     const key = `${exercise.slug}@${exercise.version}`;
     if (exerciseKeys.has(key)) {
       fail(`catalog.exercises[${index}]`, 'duplicates another exercise slug and version');
@@ -716,15 +729,23 @@ export function validateCatalog(catalog, runtimeDefinitions = SERVER_EXERCISE_DE
     }
     exerciseByKey.set(key, exercise);
   });
+  const catalogueSlugs = new Set(catalog.exercises.map(exercise => exercise.slug));
   catalog.exercises.forEach((exercise, index) => {
     const replacement = exercise.governance.retirement.replacement;
-    if (replacement !== null && !activeSlugs.has(replacement)) {
+    if (replacement !== null && !catalogueSlugs.has(replacement)) {
       fail(
         `catalog.exercises[${index}].governance.retirement.replacement`,
-        'must reference an active catalogue slug',
+        'must reference a known catalogue slug',
       );
     }
   });
+
+  try {
+    validateProvenanceManifest(provenanceManifest, catalog, options);
+  } catch (error) {
+    if (error instanceof ProvenanceValidationError) fail(error.path, error.reason);
+    throw error;
+  }
 
   validateRuntimeDefinitions(runtimeDefinitions, exerciseByKey);
 
@@ -744,6 +765,7 @@ function clone(value) {
 }
 
 function publicProjection(exercise) {
+  const provenanceRecord = provenanceByKey.get(`${exercise.slug}@${exercise.version}`);
   return {
     slug: exercise.slug,
     version: exercise.version,
@@ -762,13 +784,26 @@ function publicProjection(exercise) {
     provenance: exercise.governance.provenance,
     reviewDate: exercise.governance.reviewDate,
     attribution: exercise.governance.attribution,
+    contentProvenance: {
+      schemaVersion: rawProvenanceManifest.schemaVersion,
+      sourceType: provenanceRecord.source.type,
+      author: provenanceRecord.author.name,
+      licenseIdentifier: provenanceRecord.license.identifier,
+      licenseName: provenanceRecord.license.name,
+      contentHash: provenanceRecord.contentHash,
+      reviewedAt: provenanceRecord.review.reviewedAt,
+      expiresAt: provenanceRecord.review.expiresAt,
+    },
   };
 }
 
-validateCatalog(rawCatalog, SERVER_EXERCISE_DEFINITIONS);
 const catalog = deepFreeze(clone(rawCatalog));
+const provenanceManifest = deepFreeze(clone(rawProvenanceManifest));
 const exerciseByKey = new Map(
   catalog.exercises.map(exercise => [`${exercise.slug}@${exercise.version}`, exercise]),
+);
+const provenanceByKey = new Map(
+  provenanceManifest.records.map(record => [record.key, record]),
 );
 const activeExerciseBySlug = new Map(
   catalog.exercises
@@ -776,7 +811,15 @@ const activeExerciseBySlug = new Map(
     .map(exercise => [exercise.slug, exercise]),
 );
 
+function assertRuntimeCatalogueCurrent() {
+  // This is deliberately evaluated on every bounded catalogue operation. A
+  // warm serverless process must stop serving content when its review expires;
+  // module-import validation alone would leave that process stale indefinitely.
+  validateCatalog(catalog, SERVER_EXERCISE_DEFINITIONS, provenanceManifest, { now: new Date() });
+}
+
 function activeExercise(slug, version) {
+  assertRuntimeCatalogueCurrent();
   if (typeof slug !== 'string') return null;
   if (version === undefined) return activeExerciseBySlug.get(slug) || null;
   if (!Number.isSafeInteger(version) || version < 1) return null;
@@ -786,6 +829,7 @@ function activeExercise(slug, version) {
 
 /** Return complete public records for all active exercises. */
 export function listPublicExercises() {
+  assertRuntimeCatalogueCurrent();
   return catalog.exercises
     .filter(exercise => exercise.status === 'active')
     .map(publicProjection);
@@ -805,6 +849,7 @@ export function getActiveExercise(slug, version) {
 
 /** Validate one generated server-side suite without exposing it through a public API. */
 export function validateEvaluationSuite(suite) {
+  assertRuntimeCatalogueCurrent();
   validateSuite(suite, exerciseByKey);
   return Object.freeze({ valid: true, testCount: suite.tests.length });
 }

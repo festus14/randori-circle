@@ -61,282 +61,6 @@ async function requireAdminDT(req,res){
   return {db, payload, ...ctx};
 }
 
-// ----- LeetCode proxy + DB cache helpers -----
-function htmlToText(html){
-  if(!html) return '';
-  let t = String(html);
-  t = t.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi,'\n\n').replace(/<\/li>/gi,'\n').replace(/<\/div>/gi,'\n');
-  t = t.replace(/<[^>]*>/g,' ').replace(/&nbsp;/g,' ').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'");
-  t = t.replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').replace(/ {2,}/g,' ');
-  return t.trim().slice(0,12000);
-}
-function parseLeetConstraints(contentHtml){
-  const text = htmlToText(contentHtml);
-  // naive: look for lines like "Constraints:" or bullet list
-  const m = text.match(/Constraints:\s*([\s\S]{0,800})/i);
-  if (m) return m[1].trim().split('\n').slice(0,8).join(' | ').slice(0,1000);
-  // fallback: look for <code> with exponents
-  return '';
-}
-// Known problem metadata for smart chunking + enrichment
-const KNOWN_LEET = {
-  'two-sum': { params:['nums','target'], examples:3, category:'array' },
-  'valid-parentheses': { params:['s'], examples:3, category:'stack' },
-  'merge-two-sorted-lists': { params:['l1','l2'], examples:2, category:'linked-list' },
-  'lru-cache': { params:['operations'], examples:1, category:'design' },
-  'design-twitter': { params:['scenario'], examples:1, category:'system-design' },
-};
-function cleanLeetLine(line){
-  let l=String(line||'').trim();
-  if(!l) return '';
-  // Leet strips "nums = [2,7,11,15]" -> "[2,7,11,15]"
-  const eq = l.indexOf('=');
-  if(eq>0 && eq<30){
-    const rhs = l.slice(eq+1).trim();
-    // avoid capturing comparator (==) quickly
-    if(rhs) return rhs;
-  }
-  return l;
-}
-function tryParseJsonish(s){
-  try{ return JSON.parse(s); }catch{
-    // leet sometimes uses '[1,2,4]' which is JSON, but '"()"' is JSON string too
-    // fallback: if looks like Python list
-    try{ if(s.startsWith('[') && s.endsWith(']')) return JSON.parse(s.replace(/'/g,'"')); }catch{}
-    return null;
-  }
-}
-function parsePreExamples(contentHtml){
-  const out=[];
-  if(!contentHtml) return out;
-  const preMatches = [...String(contentHtml).matchAll(/<pre[^>]*>([\s\S]*?)<\/pre>/gi)];
-  for(const pm of preMatches.slice(0,6)){
-    const raw = pm[1];
-    const text = htmlToText(raw);
-    // Normalize: look for Input:/Output: pairs, possibly multi-line
-    // Common format: Input: X\nOutput: Y\nExplanation: Z
-    // Split using regex with lookahead
-    const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
-    let curInput=null, curOutput=null, bufInput=[];
-    for(let i=0;i<lines.length;i++){
-      const l=lines[i];
-      const low=l.toLowerCase();
-      if(low.startsWith('input:')){
-        if(curInput && curOutput!=null){
-          out.push({inputRaw: bufInput.join(' ').slice(6).trim() || curInput, outputRaw:curOutput});
-        }
-        bufInput=[l];
-        curInput=l.slice(6).trim();
-        curOutput=null;
-      } else if(low.startsWith('output:')){
-        curOutput=l.slice(7).trim();
-        // collect following lines if output seems incomplete '[' missing ']'
-        if(curOutput && curOutput.startsWith('[') && !curOutput.endsWith(']')){
-          // try next line join
-          if(i+1<lines.length && !lines[i+1].toLowerCase().startsWith('explanation')) curOutput+=lines[++i];
-        }
-        if(curInput) {
-          out.push({inputRaw: (bufInput.length? bufInput.join(' ').slice(6).trim(): curInput), outputRaw:curOutput});
-          curInput=null; bufInput=[]; curOutput=null;
-        } else if(bufInput.length){
-          out.push({inputRaw: bufInput.join(' ').slice(6).trim(), outputRaw:curOutput});
-          bufInput=[]; curOutput=null;
-        }
-      } else if(low.startsWith('explanation:')){
-        // end of example, already pushed
-        curInput=null; bufInput=[]; curOutput=null;
-      } else {
-        // continuation of Input: if we are still in Input collection and no Output yet
-        if(bufInput.length && curOutput===null){
-          bufInput.push(l);
-          curInput = bufInput.join(' ').slice(6).trim();
-        }
-      }
-    }
-    if(curInput && curOutput){
-      out.push({inputRaw:curInput, outputRaw:curOutput});
-    }
-    if(out.length>=8) break;
-  }
-  return out;
-}
-function inputRawToObj(inputRaw, paramNames){
-  // inputRaw like "nums = [2,7,11,15], target = 9" or "[2,7,11,15], 9" or "s = \"()\""
-  if(!inputRaw) return {};
-  const s = String(inputRaw).trim();
-  const obj={};
-  // Try split by comma but not inside brackets
-  // First attempt: detect "a = b, c = d" pattern
-  if(s.includes('=') ){
-    // split by ',' then extract each k=v
-    const parts=[];
-    let depth=0, cur='';
-    for(let ch of s){
-      if(ch==='['||ch==='{'||ch==='(') depth++;
-      if(ch===']'||ch==='}'||ch===')') depth--;
-      if(ch===',' && depth===0){ parts.push(cur); cur=''; continue; }
-      cur+=ch;
-    }
-    if(cur) parts.push(cur);
-    for(const p of parts){
-      const trimmed=p.trim();
-      if(!trimmed) continue;
-      const eq=trimmed.indexOf('=');
-      if(eq>0){
-        const k=trimmed.slice(0,eq).trim();
-        const v=trimmed.slice(eq+1).trim();
-        const pv = tryParseJsonish(v);
-        obj[k]= pv!==null ? pv : v.replace(/^"|"$/g,'').replace(/^'|'$/g,'');
-      } else {
-        // positional without name – map sequentially
-        const pv=tryParseJsonish(trimmed);
-        const name = paramNames && paramNames[Object.keys(obj).length] ? paramNames[Object.keys(obj).length] : `arg${Object.keys(obj).length}`;
-        obj[name]= pv!==null? pv: trimmed;
-      }
-    }
-    if(Object.keys(obj).length) return obj;
-  }
-  // No '=', try single value positional
-  const p = tryParseJsonish(s);
-  if(p!==null && paramNames && paramNames[0]){
-    if(Array.isArray(p) && paramNames.length===1) return {[paramNames[0]]: p};
-    if(typeof p!=='object' || Array.isArray(p)) {
-      const single={}; single[paramNames[0]]=p; return single;
-    }
-    return p;
-  }
-  // multi values without '=' but separated? ExampleTwoSum exampleTestcases per line grouping uses separate lines. This helper expects single block - fallback raw string
-  return {raw:s};
-}
-function buildTestCasesFromExampleTestcases(exampleTestcases, content){
-  const out=[];
-  const known = content ? null : null;
-  if(content){
-    const preEx = parsePreExamples(content);
-    for(const pe of preEx.slice(0,6)){
-      const slugLower = ''; // caller will map
-      // Try to convert inputRaw directly; param names extracted later by caller
-      out.push({ __preInput: pe.inputRaw, __preOutput: pe.outputRaw, raw: `${pe.inputRaw} => ${pe.outputRaw}`, __isPre:true });
-      if(out.length>=10) break;
-    }
-  }
-  if (!exampleTestcases){
-    // only pre examples
-    return out.filter(o=>o.__isPre).map(o=>({input:o.__preInput, expect:o.__preOutput, raw:o.raw}));
-  }
-  const lines = String(exampleTestcases).split('\n').map(s=>s.trim()).filter(Boolean);
-  for (let i=0;i<lines.length;i++){
-    const raw = lines[i];
-    out.push({ input: raw, expect:null, raw });
-    if (out.length>=12) break;
-  }
-  return out;
-}
-function smartChunkExampleTestcases(slug, exampleTestcases, content){
-  // Unified smart chunker returning {input: JSONstring, expect: JSONstring|null, raw}
-  const known = KNOWN_LEET[slug] || null;
-  const paramNames = known?.params || null;
-  const preCases = parsePreExamples(content); // [{inputRaw, outputRaw}]
-  const enriched=[];
-
-  // Use pre cases first as gold – they have both input & output
-  for(const pc of preCases){
-    const inObj = inputRawToObj(pc.inputRaw, paramNames);
-    let inStr;
-    try{ inStr = JSON.stringify(inObj); }catch{ inStr = JSON.stringify({raw:pc.inputRaw}); }
-    const outVal = tryParseJsonish(pc.outputRaw) ?? pc.outputRaw;
-    let outStr;
-    try{ outStr = JSON.stringify(outVal); }catch{ outStr = String(pc.outputRaw); }
-    enriched.push({input:inStr, expect:outStr, raw:`${pc.inputRaw} -> ${pc.outputRaw}`, __source:'pre'});
-  }
-
-  if(exampleTestcases){
-    const rawLines = String(exampleTestcases).split('\n').map(s=>cleanLeetLine(s.trim())).filter(Boolean);
-    const paramCount = paramNames ? paramNames.length : (rawLines.length%2===0 && rawLines.length>=2 ? 2 : 1);
-    // If paramCount inferred 2 but lines groups maybe includes expected third line for some APIs (rare)
-    let idx=0;
-    let loopGuard=0;
-    while(idx < rawLines.length && loopGuard<12){
-      loopGuard++;
-      const group = rawLines.slice(idx, idx+paramCount);
-      if(group.length < paramCount) break;
-      const inObj={};
-      let ok=true;
-      for(let pi=0; pi<paramCount; pi++){
-        const line = group[pi];
-        const pv = tryParseJsonish(line);
-        const key = paramNames ? paramNames[pi] : `arg${pi}`;
-        if(pv!==null) inObj[key]=pv;
-        else {
-          // if can't parse but looks like JSON-ish array missing quotes, keep as string
-          inObj[key]=line;
-        }
-      }
-      // Try to align with pre enriched case if same inputs already covered — skip duplicate else add without expect (or try to find expect in next line if 3-group)
-      let expectVal=null, advance=paramCount;
-      if(rawLines.length >= idx+paramCount+1){
-        const possibleExpect = rawLines[idx+paramCount];
-        // heuristic: if we have 2 params, third line often is expected answer like "[0,1]" or "true" — check if it looks like an expected boolean/array
-        const pvExp = tryParseJsonish(possibleExpect);
-        // If next group would start with '[' for nums again, not expected. Heuristic: for two-sum, expected is array of 2 numbers, while next nums is array length >2 usually. Ambiguous.
-        // We'll treat as expected if lines length mod (paramCount+1)==0 or paramCount==1 && possible pattern differs.
-        if(paramNames && paramNames.length===2 && (slug==='two-sum' || slug.includes('two'))){
-          // for two-sum, third line is expected [0,1] length2 small — likely
-          if(possibleExpect.startsWith('[') && possibleExpect.length<12) { expectVal=possibleExpect; advance=paramCount+1; }
-        } else if(paramNames && paramNames.length===1){
-          // for valid-parentheses, exampleTestcases has no expected separate – skip
-        } else {
-          // If we have 3 lines left pattern and we haven't yet covered with pre
-          if(enriched.length===0 && paramCount===2 && rawLines.length%3===0){
-            const expTry = possibleExpect;
-            expectVal=expTry; advance=3;
-          }
-        }
-      }
-      let inputStr;
-      try{ inputStr = JSON.stringify(inObj); }catch{ inputStr = JSON.stringify({raw:group.join('|')}); }
-      let expectStr=null;
-      if(expectVal!==null){
-        const ev = tryParseJsonish(expectVal);
-        expectStr = JSON.stringify(ev!==null? ev: expectVal);
-      }
-      // dedup vs enriched
-      const dup = enriched.some(e=> e.input===inputStr);
-      if(!dup){
-        enriched.push({input:inputStr, expect:expectStr, raw: group.join(' | ') + (expectVal? ` => ${expectVal}`:'' ), __source:'exampleTestcases'});
-      }
-      idx+=advance;
-    }
-  }
-
-  // Fallback if still empty
-  if(!enriched.length){
-    const raw = String(exampleTestcases||'').trim().slice(0,200);
-    enriched.push({input: JSON.stringify({raw}), expect:null, raw: raw || 'see description'});
-  }
-
-  // Normalize to final shape required by custom_questions (input JSON string, expect JSON string|null, raw)
-  return enriched.slice(0,12).map(c=>({input:c.input, expect:c.expect, raw:c.raw}));
-}
-function enrichmentEdges(slug){
-  const edges=[];
-  if(slug==='two-sum'){
-    edges.push({input:JSON.stringify({nums:[-1,-2,-3,-4,-5], target:-8}), expect:JSON.stringify([2,4]), raw:"nums=[-1,-2,-3,-4,-5] target=-8 => [2,4]"});
-    edges.push({input:JSON.stringify({nums:[0,4,3,0], target:0}), expect:JSON.stringify([0,3]), raw:"nums=[0,4,3,0] target=0 => [0,3]"});
-    edges.push({input:JSON.stringify({nums:[1000000,2,3,999999], target:1000002}), expect:JSON.stringify([0,1]), raw:"large nums => [0,1]"});
-  } else if(slug==='valid-parentheses'){
-    edges.push({input:JSON.stringify({s:""}), expect:JSON.stringify(true), raw:"s=\"\" => true (empty valid)"});
-    edges.push({input:JSON.stringify({s:"((((((("}), expect:JSON.stringify(false), raw:"s=\"((((((( \" => false"});
-    edges.push({input:JSON.stringify({s:"{{{}}}"}), expect:JSON.stringify(false), raw:"s=\"{{{}}}\" => false (mismatch)"});
-  } else if(slug==='merge-two-sorted-lists'){
-    edges.push({input:JSON.stringify({l1:[1], l2:[]}), expect:JSON.stringify([1]), raw:"l1=[1] l2=[] => [1]"});
-    edges.push({input:JSON.stringify({l1:[], l2:[]}), expect:JSON.stringify([]), raw:"both empty => []"});
-    edges.push({input:JSON.stringify({l1:[5], l2:[1,2,3]}), expect:JSON.stringify([1,2,3,5]), raw:"l1=[5] l2=[1,2,3] => [1,2,3,5]"});
-  } else if(slug==='lru-cache'){
-    edges.push({input:JSON.stringify({operations:["LRUCache","put","get"], capacity:1, data:[[1],[1,1],[1]]}), expect:JSON.stringify([null,null,1]), raw:"LRU 1 ops put-get"});
-  }
-  return edges;
-}
 async function fetchWithTimeout(url, opts={}, timeoutMs=6000){
   const ctrl = new AbortController();
   const id = setTimeout(()=>ctrl.abort(), timeoutMs);
@@ -347,106 +71,6 @@ async function fetchWithTimeout(url, opts={}, timeoutMs=6000){
   }catch(e){ clearTimeout(id); throw e; }
   finally{ clearTimeout(id); }
 }
-function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
-async function fetchWithRetry(url, opts={}, retries=2, backoff=400){
-  let lastErr;
-  for(let i=0;i<=retries;i++){
-    try{
-      const r=await fetchWithTimeout(url, opts, opts.timeoutMs||6000);
-      // if 429, respect Retry-After
-      if(r.status===429){
-        const ra = parseInt(r.headers.get('retry-after')||'2',10);
-        if(i<retries) { await sleep((isNaN(ra)?2:ra)*1000 + Math.random()*300); continue; }
-      }
-      return r;
-    }catch(e){
-      lastErr=e;
-      if(i<retries) await sleep(backoff*(i+1)+Math.random()*200);
-    }
-  }
-  throw lastErr||new Error('fetch failed after retries');
-}
-async function leetGraphQLQuestion(slug){
-  const query = `
-  query questionData($titleSlug:String!){
-    question(titleSlug:$titleSlug){
-      questionId
-      questionFrontendId
-      title
-      titleSlug
-      content
-      difficulty
-      exampleTestcases
-      topicTags{ name slug }
-      stats
-    }
-  }`;
-  const r = await fetchWithRetry('https://leetcode.com/graphql', {
-    method:'POST',
-    headers:{
-      'Content-Type':'application/json',
-      'User-Agent':'Randori-Circle/1.0 (+https://randori.circle) LeetCode-proxy',
-      'Referer':'https://leetcode.com/',
-      'Origin':'https://leetcode.com'
-    },
-    body: JSON.stringify({ query, variables:{ titleSlug: slug } })
-  }, 2, 600);
-  if (!r.ok) throw new Error(`leetcode gql ${r.status}`);
-  const j = await r.json();
-  if (j.errors) throw new Error(`gql error ${JSON.stringify(j.errors).slice(0,200)}`);
-  const q = j.data?.question;
-  if (!q) throw new Error('question not found');
-  return q;
-}
-async function leetEnrichAlfa(slug){
-  try{
-    const r = await fetchWithRetry(`https://alfa-leetcode-api.onrender.com/select?titleSlug=${encodeURIComponent(slug)}`, {
-      headers:{ 'User-Agent':'Randori-Circle/1.0' }
-    }, 1, 400);
-    if (!r.ok) return null;
-    const j = await r.json();
-    // structure: { questionId, exampleTestcases, ... } varying
-    return j;
-  }catch{ return null; }
-}
-async function leetListSlugs(limit=100, skip=0){
-  // try GraphQL list
-  try{
-    const query = `
-    query problemsetQuestionList($categorySlug: String, $skip: Int, $limit: Int, $filters: {}) {
-      problemsetQuestionList: questionList(categorySlug: $categorySlug, skip: $skip, limit: $limit, filters: $filters) {
-        total: totalNum
-        questions: data {
-          titleSlug
-        }
-      }
-    }`;
-    const r = await fetchWithRetry('https://leetcode.com/graphql', {
-      method:'POST',
-      headers:{ 'Content-Type':'application/json', 'User-Agent':'Randori-Circle/1.0' },
-      body: JSON.stringify({ query, variables:{ categorySlug:"", skip, limit, filters:{} } })
-    }, 2, 500);
-    if (r && r.ok){
-      const j = await r.json();
-      const total = j.data?.problemsetQuestionList?.total ?? null;
-      const qs = j.data?.problemsetQuestionList?.questions?.map(q=>q.titleSlug).filter(Boolean) ?? [];
-      if (qs.length) return { slugs: qs, total };
-    }
-  }catch{}
-  // fallback static problems/all (large ~2800) – need to slice
-  try{
-    const r = await fetchWithRetry('https://leetcode.com/api/problems/all/', { headers:{ 'User-Agent':'Randori-Circle/1.0' } }, 2, 500);
-    if (r.ok){
-      const j = await r.json();
-      const pairs = j.stat_status_pairs||[];
-      const slugs = pairs.map(p=>p.stat?.question__title__slug).filter(Boolean);
-      const sliced = slugs.slice(skip, skip+limit);
-      return { slugs: sliced, total: slugs.length };
-    }
-  }catch{}
-  return { slugs: [], total: 0 };
-}
-
 function getEndpoint(req){
   const q = req.query?.endpoint;
   if (q) return String(q).toLowerCase();
@@ -1451,7 +1075,6 @@ async function handleInit(req,res){
       detail:String(error?.message||error).slice(0,300),
     });
   }
-  await maybeSeedFromStatic(db);
   return res.json({ ok:true, message:"Tables ready (incl custom_questions + profile + pair_messages + pair_schedules + session_runs)" });
 }
 
@@ -2335,143 +1958,41 @@ async function handleStats(req,res){
   return res.json(out);
 }
 
-// ----- LeetCode proxy endpoints -----
+// ----- Manual external problem link; remote ingestion is intentionally absent -----
 async function handleLeetcode(req,res){
-  // GET ?slug=two-sum or /api/leetcode/two-sum
-  if (req.method!=='GET') return res.status(405).json({ error:'GET only for leetcode detail' });
+  if (req.method!=='GET') return res.status(405).json({ error:'GET only for external problem links' });
   if(!await getAuthPayload(req)) return res.status(401).json({error:'authentication required'});
-  if(process.env.LEETCODE_INGESTION_AUTHORIZED!=='true'){
-    return res.status(403).json({error:'LeetCode content access is disabled pending written authorization'});
-  }
-  const adminCtx=await requireAdminDT(req,res);
-  if(!adminCtx) return;
-  const db=adminCtx.db;
-  const url = new URL(req.url, 'http://localhost');
-  let slug = (req.query?.slug || url.searchParams.get('slug') || '').toString().trim().toLowerCase();
-  if (!slug){
-    // try to parse from pathname /api/leetcode/two-sum
-    const parts = url.pathname.split('/').filter(Boolean);
-    const idx = parts.findIndex(p=>p.toLowerCase().includes('leet'));
-    if (idx>=0 && parts[idx+1]) slug = parts[idx+1].toLowerCase();
-  }
-  if (!slug) return res.status(400).json({ error:'slug required, e.g. ?slug=two-sum' });
-
-  // Check cache first (DB)
-  try{
-    const cached = await db.execute({ sql:`SELECT id, slug, title, difficulty, category, description, test_cases, examples, leetcode_slug, source FROM custom_questions WHERE leetcode_slug=? OR slug=? LIMIT 1`, args:[slug, slug] });
-    if (cached.rows.length){
-      const r=cached.rows[0];
-      let tcs=[]; try{ tcs=JSON.parse(r.test_cases||'[]')}catch{}
-      let ex=[]; try{ ex=JSON.parse(r.examples||'[]')}catch{}
-      return res.json({ ok:true, cached:true, question:{ id:r.id, slug:r.slug, title:r.title, difficulty:r.difficulty, category:r.category, description:r.description, test_cases:tcs, examples:ex, leetcode_slug:r.leetcode_slug, source:r.source, slug }});
+  const externalRequestUrl = new URL(req.url, 'http://localhost');
+  let externalSlug = String(
+    req.query?.slug || externalRequestUrl.searchParams.get('slug') || '',
+  ).trim().toLowerCase();
+  if (!externalSlug) {
+    const parts = externalRequestUrl.pathname.split('/').filter(Boolean);
+    const index = parts.findIndex(part => part.toLowerCase() === 'leetcode');
+    if (index >= 0 && parts[index + 1] && parts[index + 1].toLowerCase() !== 'sync') {
+      externalSlug = parts[index + 1].toLowerCase();
     }
-  }catch{}
-
-  return res.status(404).json({
-    ok:false,
-    error:'problem is not in the approved local catalog',
-    slug,
-    external_url:`https://leetcode.com/problems/${encodeURIComponent(slug)}/`,
+  }
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(externalSlug) || externalSlug.length > 120) {
+    return res.status(400).json({error:'a lowercase kebab-case slug is required'});
+  }
+  return res.json({
+    ok:true,
+    content_available:false,
+    source:'external-link',
+    slug:externalSlug,
+    external_url:`https://leetcode.com/problems/${encodeURIComponent(externalSlug)}/`,
     automated_fetch:false,
   });
 }
 
 async function handleLeetcodeSync(req,res){
   if (req.method!=='POST') return res.status(405).json({ error:'POST only for leetcode-sync' });
-  const adminCtx = await requireAdminDT(req,res);
-  if (!adminCtx) return;
-  if(process.env.LEETCODE_INGESTION_AUTHORIZED!=='true'){
-    return res.status(403).json({error:'automated LeetCode ingestion is disabled pending written authorization'});
-  }
-  const db = adminCtx.db;
-  await ensureBaseTables(db,req); await ensureProfileMigrations(db,req);
-  const url = new URL(req.url,'http://localhost');
-  const limit = Math.min(50, Math.max(1, parseInt(String(req.query?.limit||url.searchParams.get('limit')||'20'),10)||20));
-  const skip = Math.max(0, parseInt(String(req.query?.skip||url.searchParams.get('skip')||'0'),10)||0);
-  const singleSlug = (req.query?.slug||url.searchParams.get('slug')||req.body?.slug||'').toString().trim().toLowerCase();
-  let slugsInfo;
-  let slugs=[];
-  if (singleSlug){
-    slugs=[singleSlug];
-    slugsInfo={ total:1, slugs };
-  }else{
-    try{ slugsInfo = await leetListSlugs(limit, skip); slugs = slugsInfo.slugs||[]; }
-    catch(e){ return res.status(500).json({ error:'failed to list slugs', detail:String(e.message||e).slice(0,200)}); }
-  }
-  // If list empty, try to fallback to provided body.slugs array
-  if (!slugs.length && Array.isArray(req.body?.slugs)) slugs = req.body.slugs.map(s=>String(s).toLowerCase().trim()).filter(Boolean).slice(0,limit);
-  if (!slugs.length) return res.status(400).json({ error:'no slugs to sync', hint:'pass ?slug=two-sum or ensure LeetCode list fetch works' });
-
-  const synced=[]; const errors=[];
-  for (let i=0;i<slugs.length;i++){
-    const slug = slugs[i];
-    try{
-      if (i>0 && i%3===0) await sleep(800); // rate limit to avoid 429
-      const q = await leetGraphQLQuestion(slug);
-      const descHtml = q.content||'';
-      const descText = htmlToText(descHtml)||q.title;
-      const difficulty = q.difficulty||'Medium';
-      const tags = (q.topicTags||[]).map(t=>t.slug||t.name).slice(0,3);
-      const category = tags[0]||'dsa';
-      let testCases = smartChunkExampleTestcases(slug, q.exampleTestcases||'', descHtml);
-      // enrichment attempt (best-effort) – merge alfa
-      try{
-        const alfa = await leetEnrichAlfa(slug);
-        if (alfa && alfa.exampleTestcases){
-          const alfaCases = smartChunkExampleTestcases(slug, alfa.exampleTestcases, alfa.content||descHtml);
-          const seen = new Set(testCases.map(t=>t.input));
-          for(const ac of alfaCases){ if(!seen.has(ac.input)){ testCases.push(ac); seen.add(ac.input); } }
-        }
-      }catch{}
-      // edges
-      try{
-        const edges = enrichmentEdges(slug);
-        const seen = new Set(testCases.map(t=>t.input));
-        for(const e of edges){ if(!seen.has(e.input)){ testCases.push(e); seen.add(e.input); } }
-      }catch{}
-      if (!testCases.length) testCases=[{ input:JSON.stringify({raw:`example from ${slug}`}), expect:null, raw:`see description` }];
-      const constraints = parseLeetConstraints(descHtml);
-      const examplesStr = JSON.stringify(testCases.slice(0,5).map(tc=>({ input: tc.input, output: tc.expect||'', raw: tc.raw }))).slice(0,4000);
-      const tcsStr = JSON.stringify(testCases).slice(0,15000);
-      // upsert
-      await db.execute({ sql:`INSERT INTO custom_questions (slug, title, type, difficulty, category, description, input_format, constraints_text, examples, test_cases, starter_per_lang, author_id, source, leetcode_slug, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))
-        ON CONFLICT(slug) DO UPDATE SET
-          title=excluded.title,
-          difficulty=excluded.difficulty,
-          category=excluded.category,
-          description=excluded.description,
-          constraints_text=excluded.constraints_text,
-          examples=excluded.examples,
-          test_cases=excluded.test_cases,
-          source=excluded.source,
-          leetcode_slug=excluded.leetcode_slug
-      `, args:[
-        slug,
-        q.title||slug,
-        'dsa',
-        difficulty,
-        category,
-        descText,
-        null,
-        constraints||null,
-        examplesStr,
-        tcsStr,
-        JSON.stringify({}),
-        adminCtx.payload.id||adminCtx.callerId||null,
-        'leetcode',
-        q.titleSlug||slug
-      ]});
-      try{ await logServer('info','leetcode_sync_progress', `synced ${slug} ${i+1}/${slugs.length} tc=${testCases.length}`, {skip, slug, idx:i, tc:testCases.length}, {req, source:'server', route:req.url}); }catch{}
-      synced.push({ slug, title:q.title, difficulty, category, test_cases_count:testCases.length });
-    }catch(e){
-      try{ await logServer('warn','leetcode_sync_error', `fail ${slug} ${String(e.message||e).slice(0,120)}`, {slug, err:String(e.message||e).slice(0,300)}, {req, source:'server'}); }catch{}
-      errors.push({ slug, error:String(e.message||e).slice(0,200) });
-    }
-    // Vercel Hobby 10s budget guard: if we exceed 9s we break – caller paginates with skip
-    if (i>=14 && (Date.now()%1000===0)) { /*noop*/ }
-  }
-  return res.json({ ok:true, synced_count:synced.length, total_requested: slugs.length, skip, limit, total_available: slugsInfo?.total||null, synced, errors, note:`Enriched: merged GraphQL exampleTestcases + alfa-leetcode-api + hand-crafted edges. Pagination via ?skip=&limit=. Each call 800ms throttled to avoid 429. Auto-seed /api/questions when <10 uses same enrichment.` });
+  if(!await getAuthPayload(req)) return res.status(401).json({error:'authentication required'});
+  return res.status(410).json({
+    error:'automated LeetCode ingestion is unavailable; use the external-link workflow',
+    automated_fetch:false,
+  });
 }
 
 
@@ -2923,55 +2444,4 @@ export default async function handler(req,res){
     try{ console.error('[api unhandled]', e && e.stack||e); }catch{}
     return res.status(500).json({error:'internal', detail: String(e && e.message||e).slice(0,300)});
   }
-}
-// auto-seed from bundled file on first questions request
-async function maybeSeedFromStatic(db){
-  try{
-    let seed=null;
-    const tryPaths = ['/vercel/path0/data/leetcode-seed.json', './data/leetcode-seed.json', 'data/leetcode-seed.json', '../data/leetcode-seed.json'];
-    for(const cand of tryPaths){
-      try{
-        const fs=await import('fs');
-        const pathMod=await import('path');
-        const abs=cand.startsWith('/')?cand:pathMod.resolve(cand);
-        if(fs.existsSync(abs) || fs.existsSync(cand)){
-          const file = fs.existsSync(cand) ? cand : abs;
-          seed=JSON.parse(fs.readFileSync(file,'utf8'));
-          if(seed) break;
-        }
-      }catch{}
-    }
-    if(!seed){
-      try{
-        const fs2=await import('fs');
-        const p2=new URL('../data/leetcode-seed.json', import.meta.url);
-        if(fs2.existsSync(p2)) seed=JSON.parse(fs2.readFileSync(p2,'utf8'));
-      }catch{}
-    }
-    if(!seed||!seed.length) return;
-    // Upsert enriched seed (ON CONFLICT) — always upsert to migrate old 3-case seeds to enriched 6-case
-    for(const q of seed){
-      try{
-        const enrichedTC = q.test_cases || [];
-        const slug = q.slug;
-        let mergedTC = enrichedTC;
-        try{
-          const edges = enrichmentEdges(slug);
-          const seen = new Set((enrichedTC||[]).map(t=>t.input));
-          for(const e of edges){ if(!seen.has(e.input)){ mergedTC.push(e); seen.add(e.input); } }
-        }catch{}
-        await db.execute({ sql:`INSERT INTO custom_questions (slug,title,type,difficulty,category,description,test_cases,examples,source,leetcode_slug) VALUES (?,?,?,?,?,?,?,?,?,?)
-          ON CONFLICT(slug) DO UPDATE SET
-            title=excluded.title,
-            difficulty=excluded.difficulty,
-            category=excluded.category,
-            description=excluded.description,
-            test_cases=excluded.test_cases,
-            examples=excluded.examples,
-            source=excluded.source,
-            leetcode_slug=excluded.leetcode_slug
-        `, args:[q.slug,q.title, q.type||'dsa', q.difficulty||'Medium', q.category||'custom', q.description, JSON.stringify(mergedTC||[]), JSON.stringify(q.examples||[]), q.source||'leetcode', q.leetcode_slug||q.slug]});
-      }catch{}
-    }
-  }catch{}
 }

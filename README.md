@@ -47,7 +47,7 @@ This private-beta sync is whole-document compare-and-swap, not a CRDT: members s
   claim cap, and a 45-second request budget with five seconds reserved for
   lease finalization and aggregate metrics.
 - AI is disabled unless explicitly enabled and consented to.
-- Automated LeetCode retrieval is disabled without written authorisation. The app uses approved local content or outbound links.
+- Automated LeetCode retrieval and bundled third-party seed content have been removed. The app uses provenance-approved local content or authenticated outbound links only; a future adapter requires written authorisation and review.
 
 ## Architecture
 
@@ -62,6 +62,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/video.js` | authenticated pair-scoped WebRTC signaling and revisioned code/board checkpoints |
 | `api/_db.js` | Turso client, durable session issuance/revocation, JWT verification, CSRF helpers |
 | `api/_catalog.js` | original exercise catalogue validation, public projections, server-owned evaluation cases |
+| `api/_catalog-provenance.js` | versioned rights-manifest validation and canonical content hashing |
 | `api/_pairing.js` | deterministic fairness and canonical room identifiers |
 | `api/_pairing-publication.js` | managed-v6 readiness, transaction-bound owner/cron publication, immutable snapshots, and idempotency |
 | `api/_outbox.js` | provider-neutral leases, heartbeats, timeouts, retry/dead-letter transitions, replay audit, and aggregate metrics |
@@ -193,6 +194,10 @@ npm run test:migrations
 npm run test:coverage
 npm run test:e2e
 ```
+
+Catalogue validation also checks the versioned provenance manifest, review
+expiry, takedown state, and canonical content hashes. The bounded emergency
+procedure is documented in [Catalogue provenance and takedown](docs/CATALOG_PROVENANCE.md).
 
 CI tests the checked-out candidate build on localhost. It validates the provider-neutral deployment contract and catalogue, freezes the existing request-time DDL allowlist, enforces at least 52% line, branch, and function coverage across API, database-foundation, and operational-script modules, and runs the Playwright flows on Ubuntu. The merge-versus-preview policy and its one required GitHub settings change are documented in [Deployment and merge gates](docs/DEPLOYMENT_GATES.md).
 
