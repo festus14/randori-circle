@@ -1,6 +1,7 @@
 # Outbox invocation budget
 
-Status: issue #94 bounded candidate, stacked on invitation-email PR #100
+Status: [PR #104](https://github.com/festus14/randori-circle/pull/104)
+bounded candidate, stacked on invitation-email PR #100
 
 ## Runtime contract
 

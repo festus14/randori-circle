@@ -33,7 +33,7 @@ or merged after its parent; it must not be landed ahead of that parent.
 | 8 | [PR #92](https://github.com/festus14/randori-circle/pull/92), candidate | Verified invitation-bound email/password activation | v7 `verified-email-activation` |
 | 9 | [PR #96](https://github.com/festus14/randori-circle/pull/96), candidate | Proposal, acceptance, change, and reminder delivery | Reuses v6; no migration |
 | 10 | [PR #100](https://github.com/festus14/randori-circle/pull/100), candidate | Owner-created invitation email and bounded resend | Reuses v6; no migration |
-| 11 | `codex/increment-36-outbox-budget`, candidate | Fair, globally bounded outbox invocation | Reuses v6; no migration |
+| 11 | [PR #104](https://github.com/festus14/randori-circle/pull/104), candidate | Fair, globally bounded outbox invocation | Reuses v6; no migration |
 
 Migration order is append-only: v4 binds an account to an OIDC issuer and
 subject, v5 makes every application JWT depend on a live hashed session row,
