@@ -1149,11 +1149,64 @@ fingerprints, and redacted audit evidence. An explicit one-step target with
 fresh evidence preserves those controls while allowing an old production
 database to catch up deliberately.
 
+## ID-29: Create and select a secondary circle as one idempotent operation
+
+Status: implemented behind the existing default-off
+`MULTI_CIRCLE_CONTROL_PLANE_ENABLED` flag; migration v14 is required.
+
+**Decision.** An authenticated user creates a secondary circle through
+same-origin `POST /api/circles` with only an exact bounded name and an opaque
+client-generated request ID. The server generates both public identity and a
+non-name-derived private slug. One write transaction revalidates the exact live
+session and account, checks the 10-active-owned-circle cap and the existing
+100-active-membership read ceiling, creates the circle plus active owner
+membership, records one `circle.created` audit, stores one durable creation
+receipt, and advances that initiating session's selected-circle generation.
+
+The receipt is keyed by account plus a domain-separated request digest and
+binds the exact name fingerprint, initiating session hash, circle, audit, and
+returned generation. Composite restrictive foreign keys bind it to the
+creator's membership and the audit's circle. The session hash intentionally
+has no foreign key because idempotency evidence must outlive normal session
+pruning. A matching replay is checked before either cap and returns the same
+result without reselecting, incrementing the context, or adding an audit. A
+changed name or session, changed selection, inactive ownership, or archived
+circle fails closed.
+
+There is no mandatory per-circle settings singleton in the current schema.
+Therefore the complete post-create row set is exactly circle identity, owner
+membership, audit, receipt, and selected session context. Availability retains
+its reviewed lazy `cycle_default` materialization. Creation is forbidden from
+writing global rollout state, pairing/availability rows, notifications, or any
+legacy workspace table, which preserves the coordination-only boundary.
+
+The browser exposes creation even for a sole-primary owner. It retains one
+request ID across retryable or ambiguous failures, clears private state before
+the request, aborts superseded work, and fences the response by account,
+authentication epoch, control-plane epoch, and baseline generation. A valid
+result broadcasts only account plus generation and reloads canonical context.
+Pre-commit lock conflicts retry with bounded backoff and full revalidation;
+once commit starts, an error is ambiguous and is never retried internally.
+
+**Alternatives.** Admin or SQL seeding does not make the product usable.
+Client-supplied IDs or slugs weaken ownership and collision boundaries. Audit
+dedupe alone cannot bind the exact name, session, and returned generation.
+Creating without selecting adds an avoidable stale-context race. Eager default
+availability or pairing rows conflict with the existing lazy-cycle contract.
+Full secondary workspace creation remains deferred until its storage and
+authorization paths are canonically circle-owned.
+
+**Rollout and recovery.** Apply v14 one version at a time through the protected
+rehearsal workflow, deploy with the control-plane flag off, then canary create,
+replay, cap, revocation, concurrency, cross-tab, and mobile flows in staging.
+Rollback disables the flag and preserves every receipt, audit, membership, and
+context generation; no schema downgrade or tenant-data deletion is required.
+
 ## ID-30: Treat legacy credential counts as a key-retirement blocker
 
 Status: implemented as a runtime and operations-signal hardening increment with
-no schema migration, secret change, or delivery-format change. ID-29 remains
-reserved for secondary-circle creation.
+no schema migration, secret change, or delivery-format change. ID-29 is the
+secondary-circle creation decision immediately above.
 
 **Decision.** Aggregate credential-rotation `ready` means no relevant material
 is malformed, unavailable, ahead of configuration, or unattributable. It is a
