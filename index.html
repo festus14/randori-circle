@@ -543,6 +543,10 @@ p{margin:0}
 #circleContextPanel[data-state="required"] #circleContextStatus{color:var(--warn)}
 #circleContextPanel[data-state="switching"] #circleContextStatus{color:var(--info)}
 #circleContextPanel[data-state="error"] #circleContextStatus{color:var(--bad)}
+#circleCreateForm{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px;align-items:end;margin-top:5px}
+#circleCreateForm label{display:grid;gap:5px;min-width:0}
+#circleCreateStatus[data-state="error"]{color:var(--bad)}
+#circleCreateStatus[data-state="success"]{color:var(--ok)}
 
 @media(max-width:520px){
   .topbar{padding:10px; display:grid; grid-template-columns:minmax(0,1fr); gap:8px}
@@ -561,6 +565,8 @@ p{margin:0}
   }
   .tab{min-height:44px; padding:9px 12px}
   .main{padding:12px 10px 76px}
+  #circleCreateForm{grid-template-columns:minmax(0,1fr)}
+  #circleCreateSubmit{width:100%;min-height:44px}
   .landing{padding:8px 0 40px; gap:16px}
   .hero{padding:16px; gap:18px; border-radius:14px}
   .hero h1{font-size:24px}
@@ -937,6 +943,14 @@ p{margin:0}
               <select id="circleContextSelect" data-testid="circle-context-select" class="select" aria-describedby="circleContextStatus"></select>
               <div id="circleContextStatus" class="small muted" role="status" aria-live="polite"></div>
               <button id="circleContextRetry" class="pill" type="button" hidden>Retry circle selection</button>
+              <form id="circleCreateForm" data-testid="circle-create-form" aria-describedby="circleCreateHelp circleCreateStatus" novalidate>
+                <label class="small muted" for="circleCreateName">Create another private circle
+                  <input id="circleCreateName" data-testid="circle-create-name" class="input" name="circle-name" autocomplete="off" maxlength="80" required placeholder="e.g. Saturday practice" />
+                </label>
+                <button id="circleCreateSubmit" data-testid="circle-create-submit" class="btn secondary" type="submit">Create &amp; select</button>
+              </form>
+              <div id="circleCreateHelp" class="small muted">Up to 10 active circles you own. New circles start with only you and no workspace history.</div>
+              <div id="circleCreateStatus" data-testid="circle-create-status" class="small muted" role="status" aria-live="polite"></div>
             </div>
             <div id="circleAutoNote" class="small muted">Loading your private circle…</div>
             <div id="peopleList" data-testid="circle-members" class="people" aria-live="polite" aria-busy="true"></div>
@@ -3244,12 +3258,19 @@ async function refreshMe(){
   const circleContextSelect=document.getElementById('circleContextSelect');
   const circleContextStatus=document.getElementById('circleContextStatus');
   const circleContextRetry=document.getElementById('circleContextRetry');
+  const circleCreateForm=document.getElementById('circleCreateForm');
+  const circleCreateName=document.getElementById('circleCreateName');
+  const circleCreateSubmit=document.getElementById('circleCreateSubmit');
+  const circleCreateStatus=document.getElementById('circleCreateStatus');
   const legacyCircleAddActions=document.getElementById('legacyCircleAddActions');
   const legacyCircleDemoActions=document.getElementById('legacyCircleDemoActions');
   let circleRenderEpoch=0;
   let circleControlEpoch=0;
   let circleContextSwitching=false;
   let circleContextErrorLatched=false;
+  let circleCreatePending=false;
+  let circleCreateAttempt=null;
+  let circleCreateAbort=null;
   let circleLifecycleNoticeGeneration=0;
   let circleLifecycleNoticeActorId=null;
   let circleLifecycleNoticeActive=false;
@@ -3273,8 +3294,20 @@ async function refreshMe(){
     if(circleContextRetry) circleContextRetry.hidden=state!=='error';
   }
 
+  function setCircleCreateState(state,message=''){
+    if(circleCreateForm) circleCreateForm.setAttribute('aria-busy',state==='busy'?'true':'false');
+    if(circleCreateStatus){ circleCreateStatus.dataset.state=state; circleCreateStatus.textContent=message; }
+    if(circleCreateName) circleCreateName.disabled=state==='busy';
+    if(circleCreateSubmit){
+      circleCreateSubmit.disabled=state==='busy';
+      circleCreateSubmit.textContent=state==='busy'?'Creating...':'Create and select';
+    }
+  }
+
   function resetPrivateCircleControl({switching,preserveLifecycleRecentAction=false}){
     clearAvailability();
+    circleCreateAbort?.abort();
+    circleCreateAbort=null;
     circleContextSwitching=switching;
     if(switching) setCircleContextState('switching','Switching circle…');
     else circleContextErrorLatched=false;
@@ -3324,6 +3357,9 @@ async function refreshMe(){
   }
 
   function resetCircleControlForIdentityChange({preserveLifecycleRecentAction=false}={}){
+    circleCreatePending=false;
+    circleCreateAttempt=null;
+    setCircleCreateState('idle','');
     return resetPrivateCircleControl({switching:false,preserveLifecycleRecentAction});
   }
 
@@ -3345,10 +3381,10 @@ async function refreshMe(){
       option.selected=publicId===context?.active_circle?.public_id;
       circleContextSelect.appendChild(option);
     }
-    const visible=circles.length>1||context?.selection_required===true;
+    const visible=circles.length>0||context?.selection_required===true;
     circleContextPanel.hidden=!visible;
     circleContextPanel.style.display=visible?'grid':'none';
-    circleContextSelect.disabled=false;
+    circleContextSelect.disabled=circleCreatePending;
     setCircleContextState(!visible?'hidden':(context?.selection_required?'required':'ready'),context?.selection_required
       ?'Choose which circle to manage and view.'
       :(circles.length>1
@@ -3358,7 +3394,7 @@ async function refreshMe(){
           ?'Circle-specific availability and member controls are active. Pairing is not enabled yet.'
           :'Circle-specific member and invitation controls are active. Pairing remains unavailable for this account.')
         )
-        :''));
+        :'Create another circle here, or keep using this one.'));
   }
 
   function circleResponseMatchesContext(result){
@@ -3479,6 +3515,95 @@ async function refreshMe(){
       setCircleContextState('error',error?.code==='circle_context_changed'
         ?'Circle changed in another tab. Refreshing…':'Could not switch circle. Try again.');
       if(error?.code==='circle_context_changed') window.location.reload();
+    }
+  });
+
+  function validCircleCreateName(value){
+    return typeof value==='string'&&value.length>0&&value===value.trim()
+      &&value===value.normalize('NFC')&&[...value].length<=80
+      &&new TextEncoder().encode(value).length<=240
+      &&!/[\u0000-\u001f\u007f-\u009f]/u.test(value);
+  }
+
+  function circleCreateRequestId(){
+    if(typeof crypto.randomUUID==='function') return crypto.randomUUID();
+    const bytes=crypto.getRandomValues(new Uint8Array(24));
+    return Array.from(bytes,value=>value.toString(16).padStart(2,'0')).join('');
+  }
+
+  circleCreateName?.addEventListener('input',()=>{
+    circleCreateName.removeAttribute('aria-invalid');
+    if(!circleCreatePending&&circleCreateAttempt?.name!==circleCreateName.value) circleCreateAttempt=null;
+    if(!circleCreatePending) setCircleCreateState('idle','');
+  });
+
+  circleCreateForm?.addEventListener('submit',async event=>{
+    event.preventDefault();
+    if(circleCreatePending||circleContextSwitching||!me||!activeCircleContext) return;
+    const name=String(circleCreateName?.value||'');
+    if(!validCircleCreateName(name)){
+      circleCreateName?.setAttribute('aria-invalid','true');
+      setCircleCreateState('error','Use 1-80 characters with no leading, trailing, or control characters.');
+      circleCreateName?.focus();
+      return;
+    }
+    circleCreateName?.removeAttribute('aria-invalid');
+    if(!circleCreateAttempt||circleCreateAttempt.name!==name){
+      circleCreateAttempt=Object.freeze({name,requestId:circleCreateRequestId()});
+    }
+    const attempt=circleCreateAttempt;
+    const userId=Number(me.id||me.uid);
+    const requestAuthEpoch=authSessionEpoch;
+    const baselineVersion=Number(activeCircleContext.context_version);
+    const baselinePublicId=String(activeCircleContext.active_circle?.public_id||'');
+    const createEpoch=clearPrivateCircleViewForSwitch();
+    circleCreatePending=true;
+    const createAbort=new AbortController();
+    circleCreateAbort=createAbort;
+    if(circleContextSelect) circleContextSelect.disabled=true;
+    setCircleContextState('switching','Creating and selecting your circle...');
+    setCircleCreateState('busy','Creating your circle...');
+    try{
+      const result=await api('/api/circles',{
+        method:'POST',body:{name:attempt.name,request_id:attempt.requestId},signal:createAbort.signal,
+      });
+      if(!circleCreatePending||createEpoch!==circleControlEpoch
+        ||requestAuthEpoch!==authSessionEpoch||Number(me?.id||me?.uid)!==userId
+        ||circleCreateAttempt!==attempt) return;
+      const circle=result?.circle;
+      if(result?.ok!==true||!circle||circle.name!==attempt.name||circle.role!=='owner'
+        ||circle.is_primary!==false
+        ||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(String(circle.public_id||''))
+        ||!Number.isSafeInteger(result.context_version)
+        ||result.context_version<baselineVersion
+        ||(result.context_version===baselineVersion&&String(circle.public_id)!==baselinePublicId)){
+        throw new Error('invalid circle creation response');
+      }
+      setCircleCreateState('success',`${attempt.name} was created. Loading its empty circle...`);
+      circleContextChannel?.postMessage({v:1,user_id:userId,context_version:result.context_version});
+      circleCreateAttempt=null;
+      circleCreateAbort=null;
+      setTimeout(()=>window.location.reload(),80);
+    }catch(error){
+      if(error?.name==='AbortError') return;
+      if(!circleCreatePending||createEpoch!==circleControlEpoch
+        ||requestAuthEpoch!==authSessionEpoch||Number(me?.id||me?.uid)!==userId
+        ||circleCreateAttempt!==attempt) return;
+      circleCreatePending=false;
+      circleCreateAbort=null;
+      circleContextSwitching=false;
+      const message=error?.code==='circle_ownership_limit'
+        ?'You already own the maximum of 10 active circles.'
+        :error?.code==='circle_membership_limit'
+        ?'This account already belongs to the maximum number of circles.'
+        :error?.code==='circle_creation_request_conflict'
+        ?'This creation attempt belongs to another session or name. Edit the name and try again.'
+        :error?.code==='circle_context_changed'
+        ?'Your active circle changed. Refreshing the switcher...'
+        :'Could not confirm creation. Retry to safely reuse the same request.';
+      setCircleCreateState('error',message);
+      setCircleContextState('loading','Refreshing your circles...');
+      void renderPeople();
     }
   });
 

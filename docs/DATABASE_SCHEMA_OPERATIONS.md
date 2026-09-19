@@ -27,6 +27,8 @@ Randori has read-only schema inspection for configured databases, a transactiona
   publication's circle and cycle, bind the full publication descriptor to its
   availability cycle, and admit only available members assigned to one exact
   group slot. These rows never authorize a legacy room.
+- Migration v14 adds the durable circle-creation receipt and composite
+  membership/audit integrity needed for retry-safe atomic create-and-select.
 
 ## Commands
 

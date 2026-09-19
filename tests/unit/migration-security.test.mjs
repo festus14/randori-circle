@@ -150,7 +150,7 @@ test('ledger gaps, names, checksums, and future versions fail closed without fur
     db=>db.execute({sql:'UPDATE schema_migrations SET checksum=? WHERE version=1',args:['0'.repeat(64)]}),
     db=>db.execute({
       sql:`INSERT INTO schema_migrations
-        (version,name,checksum,execution_ms,disposition) VALUES (14,'future',?,0,'applied')`,
+        (version,name,checksum,execution_ms,disposition) VALUES (15,'future',?,0,'applied')`,
       args:['f'.repeat(64)],
     }),
   ];
@@ -227,7 +227,7 @@ test('retry handling is bounded and never retries non-conflict failures',async t
       expectedStateFingerprint:planned.stateFingerprint,
       retry:{maxAttempts:3,baseDelayMs:1,maxDelayMs:2,sleep:async delay=>delays.push(delay)},
     });
-    assert.equal(result.toVersion,13);
+    assert.equal(result.toVersion,14);
     assert.equal(attempts,EXECUTABLE_MIGRATIONS.length+2);
     assert.deepEqual(delays,[1,2]);
   }
@@ -306,11 +306,11 @@ test('concurrent runners allow one planned-state winner and converge without dup
     {version:5,count:1},
     {version:6,count:1},
     {version:7,count:1},{version:8,count:1},{version:9,count:1},{version:10,count:1},
-    {version:11,count:1},{version:12,count:1},{version:13,count:1},
+    {version:11,count:1},{version:12,count:1},{version:13,count:1},{version:14,count:1},
   ]);
   const finalState=await inspectMigrationState(first);
   assert.equal(finalState.classification,'managed');
-  assert.equal(finalState.currentVersion,13);
+  assert.equal(finalState.currentVersion,14);
   assert.equal(finalState.schemaExact,true);
 });
 
@@ -369,7 +369,7 @@ test('schema-ahead and unexpected artifacts block managed and unmanaged mutation
 test('fresh migration creates only the valid pristine-open rollout state',async t=>{
   const {db}=fixture(t);
   const result=await applyCurrent(db);
-  assert.equal(result.toVersion,13);
+  assert.equal(result.toVersion,14);
   const membership=await inspectMembershipAdoption(db);
   assert.equal(membership.ok,true);
   assert.equal(membership.registrationState,'open');
@@ -425,7 +425,7 @@ test('adoption accepts pristine-open and complete-closed states and writes only 
       expectedStateFingerprint:beforeState.stateFingerprint,
       retry:NO_RETRY,
     });
-    assert.equal(result.toVersion,13);
+    assert.equal(result.toVersion,14);
     const ledger=await db.execute('SELECT version,disposition FROM schema_migrations ORDER BY version');
     assert.deepEqual(plainRows(ledger.rows),[
       {version:1,disposition:'adopted'},
@@ -436,7 +436,8 @@ test('adoption accepts pristine-open and complete-closed states and writes only 
       {version:6,disposition:'adopted'},
       {version:7,disposition:'adopted'},{version:8,disposition:'adopted'},
       {version:9,disposition:'adopted'},{version:10,disposition:'adopted'},
-      {version:11,disposition:'adopted'},{version:12,disposition:'adopted'},{version:13,disposition:'adopted'},
+      {version:11,disposition:'adopted'},{version:12,disposition:'adopted'},
+      {version:13,disposition:'adopted'},{version:14,disposition:'adopted'},
     ]);
     assert.deepEqual(plainRows((await db.execute('SELECT * FROM users WHERE id=91')).rows),beforeUser);
     assert.deepEqual(plainRows((await db.execute(

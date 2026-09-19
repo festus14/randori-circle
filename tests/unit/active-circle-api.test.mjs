@@ -14,6 +14,8 @@ let listed={
 };
 let selected={ok:true,membership:listed.circles[1],context_version:1,changed:true};
 let readinessError=null;
+let creationReadinessError=null;
+let creationResult={ok:true,circle:{public_id:'circle-created',name:'Created',role:'owner',is_primary:false},context_version:2,created:true};
 const calls=[];
 const db={};
 
@@ -29,6 +31,8 @@ beforeEach(()=>{
   };
   selected={ok:true,membership:listed.circles[1],context_version:1,changed:true};
   readinessError=null;
+  creationReadinessError=null;
+  creationResult={ok:true,circle:{public_id:'circle-created',name:'Created',role:'owner',is_primary:false},context_version:2,created:true};
   calls.length=0;
 });
 
@@ -48,6 +52,25 @@ mock.module('../../api/_active-circle.js',{exports:{
   multiCircleControlPlaneEnabled:()=>enabled,
   listSessionCircleContexts:async(_db,payload)=>{ calls.push(['list',_db,payload]); return listed; },
   selectActiveCircleContext:async(_db,payload,input)=>{ calls.push(['select',_db,payload,input]); return selected; },
+}});
+
+class MockCircleCreationError extends Error{
+  constructor(code){ super(code); this.code=code; }
+}
+mock.module('../../api/_circle-creation.js',{exports:{
+  CircleCreationError:MockCircleCreationError,
+  ensureCircleCreationReadiness:async()=>{ calls.push(['creation-readiness']); if(creationReadinessError) throw creationReadinessError; },
+  parseCircleCreation:body=>{
+    if(!body||typeof body!=='object'||Array.isArray(body)
+      ||Object.keys(body).sort().join(',')!=='name,request_id'
+      ||typeof body.name!=='string'||!body.name||typeof body.request_id!=='string'){
+      throw new MockCircleCreationError('CIRCLE_CREATE_INPUT_INVALID');
+    }
+    return {name:body.name,requestId:body.request_id};
+  },
+  createCircleAndSelect:async(_db,payload,input)=>{
+    calls.push(['create',_db,payload,input]); return creationResult;
+  },
 }});
 
 const {default:handler}=await import('../../api/circles.js');
@@ -115,6 +138,35 @@ test('circle selection is same-origin, exact, and compare-and-swap protected',as
   response=await invoke({method:'PUT',body:{circle_public_id:'circle-primary',expected_context_version:1}});
   assert.equal(response.status,409);
   assert.deepEqual(response.body,{error:'circle context changed',code:'circle_context_changed'});
+});
+
+test('circle creation validates before storage, requires same origin, and projects only public result',async()=>{
+  calls.length=0;
+  let response=await invoke({method:'POST',headers:{origin:'https://cross-origin.example'},body:{
+    name:'Created',request_id:'opaque_request_123456',
+  }});
+  assert.equal(response.status,403);
+  assert.equal(calls.length,0);
+  for(const body of [{},{name:'Created'},{name:'Created',request_id:'opaque_request_123456',role:'owner'}]){
+    response=await invoke({method:'POST',body});
+    assert.equal(response.status,400);
+    assert.equal(calls.length,0);
+  }
+  response=await invoke({method:'POST',body:{name:'Created',request_id:'opaque_request_123456'}});
+  assert.equal(response.status,201);
+  assert.deepEqual(response.body,{
+    ok:true,circle:{public_id:'circle-created',name:'Created',role:'owner',is_primary:false},context_version:2,
+  });
+  assert.equal(Object.hasOwn(response.body,'created'),false);
+  assert.deepEqual(calls.at(-1),['create',db,authPayload,{name:'Created',requestId:'opaque_request_123456'}]);
+
+  creationResult={...creationResult,created:false};
+  response=await invoke({method:'POST',body:{name:'Created',request_id:'opaque_request_123456'}});
+  assert.equal(response.status,200);
+  creationResult={ok:false,reason:'ownership_limit'};
+  response=await invoke({method:'POST',body:{name:'Created',request_id:'opaque_request_123456'}});
+  assert.equal(response.status,409);
+  assert.equal(response.body.code,'circle_ownership_limit');
 });
 
 test('disabled, unauthenticated, and unavailable context paths fail closed',async()=>{

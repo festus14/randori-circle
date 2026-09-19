@@ -164,6 +164,12 @@ const PLAN_13_OPERATIONS=Object.freeze([
   index('idx_circle_pairing_groups_user_b','circle_pairing_groups',['publication_id','user_b_id']),
 ]);
 
+const PLAN_14_OPERATIONS=Object.freeze([
+  index('uq_circle_audit_events_id_circle','circle_audit_events',['id','circle_id'],{unique:true}),
+  table('circle_creation_requests',`CREATE TABLE IF NOT EXISTS circle_creation_requests (actor_user_id INTEGER NOT NULL CHECK(typeof(actor_user_id)='integer' AND actor_user_id>0), request_hash TEXT NOT NULL CHECK(length(request_hash)=64 AND request_hash NOT GLOB '*[^0-9a-f]*'), request_fingerprint TEXT NOT NULL CHECK(length(request_fingerprint)=64 AND request_fingerprint NOT GLOB '*[^0-9a-f]*'), initiating_session_hash TEXT NOT NULL CHECK(length(initiating_session_hash)=64 AND initiating_session_hash NOT GLOB '*[^0-9a-f]*'), circle_id INTEGER NOT NULL UNIQUE CHECK(typeof(circle_id)='integer' AND circle_id>0), audit_event_id INTEGER NOT NULL UNIQUE CHECK(typeof(audit_event_id)='integer' AND audit_event_id>0), context_version INTEGER NOT NULL CHECK(typeof(context_version)='integer' AND context_version>=1), created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), PRIMARY KEY(actor_user_id,request_hash), FOREIGN KEY(actor_user_id) REFERENCES auth_accounts(id) ON DELETE RESTRICT, FOREIGN KEY(circle_id) REFERENCES circles(id) ON DELETE RESTRICT, FOREIGN KEY(circle_id,actor_user_id) REFERENCES circle_memberships(circle_id,user_id) ON DELETE RESTRICT, FOREIGN KEY(audit_event_id,circle_id) REFERENCES circle_audit_events(id,circle_id) ON DELETE RESTRICT)`),
+  index('idx_circle_creation_requests_circle','circle_creation_requests',['circle_id','actor_user_id']),
+]);
+
 export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:1,
@@ -220,6 +226,10 @@ export const SCHEMA_OPERATION_SETS=Object.freeze([
     version:13,
     operations:PLAN_13_OPERATIONS,
   }),
+  Object.freeze({
+    version:14,
+    operations:PLAN_14_OPERATIONS,
+  }),
 ]);
 
 export function resolveCurrentArtifacts(operationSets,operation){
@@ -259,7 +269,7 @@ export const SCHEMA_MANIFEST_CHECKSUM=checksum({
 
 // Updating the schema is intentional only when this pinned checksum is updated
 // in the same reviewed change.
-export const PINNED_SCHEMA_MANIFEST_CHECKSUM='1c77edc8ec1e0ab2d5aae6dce42246f272cab1eea9cd2b5549fcfaf1a1800d18';
+export const PINNED_SCHEMA_MANIFEST_CHECKSUM='6cf405a99d2f50f03d8339d00075442366a4245814440626fb8721acc9295bd5';
 
 if(SCHEMA_MANIFEST_CHECKSUM!==PINNED_SCHEMA_MANIFEST_CHECKSUM){
   throw new Error(`Schema manifest checksum changed: ${SCHEMA_MANIFEST_CHECKSUM}`);
