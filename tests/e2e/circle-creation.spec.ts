@@ -133,10 +133,31 @@ test('retry keeps one opaque request id and terminal validation never sends',asy
   expect(requestIds[0]).toBe(requestIds[1]);
 });
 
-test('a cross-tab context change aborts and fences an in-flight creation response',async({page})=>{
+test('private teardown resets creation controls and a cross-tab change fences the stale response',async({page})=>{
+  type ResetSnapshot={
+    sawBusyMutation:boolean;
+    busy:string|null;
+    inputDisabled:boolean;
+    submitDisabled:boolean;
+    submitText:string;
+    status:string;
+    contextStatus:string;
+  };
+  type SettledSnapshot={status:string;forbiddenSuccessObserved:boolean};
   let pending:Route|null=null;
-  let notify:()=>void=()=>{};
-  const started=new Promise<void>(resolve=>{ notify=resolve; });
+  let posts=0;
+  let notifyFirst:()=>void=()=>{};
+  let notifyRetry:()=>void=()=>{};
+  let captureReset:(snapshot:ResetSnapshot)=>void=()=>{};
+  let captureSettled:(snapshot:SettledSnapshot)=>void=()=>{};
+  const firstStarted=new Promise<void>(resolve=>{ notifyFirst=resolve; });
+  const retryStarted=new Promise<void>(resolve=>{ notifyRetry=resolve; });
+  const resetObserved=new Promise<ResetSnapshot>(resolve=>{ captureReset=resolve; });
+  const requestSettled=new Promise<SettledSnapshot>(resolve=>{ captureSettled=resolve; });
+  const forbiddenStatuses:string[]=[];
+  await page.exposeFunction('__captureCircleCreationReset',(snapshot:ResetSnapshot)=>captureReset(snapshot));
+  await page.exposeFunction('__captureCircleCreationSettled',(snapshot:SettledSnapshot)=>captureSettled(snapshot));
+  await page.exposeFunction('__reportForbiddenCircleCreationStatus',(status:string)=>{ forbiddenStatuses.push(status); });
   await mockApi(page,{
     '/api/auth/capabilities':capabilities(),
     '/api/auth/me':{ok:true,user},
@@ -151,21 +172,122 @@ test('a cross-tab context change aborts and fences an in-flight creation respons
   });
   await page.route('**/api/circles',async route=>{
     if(route.request().method()!=='POST') return route.fallback();
-    pending=route; notify();
+    posts+=1;
+    if(posts===1){ pending=route; notifyFirst(); return; }
+    notifyRetry();
+    await route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:'temporary'})});
   });
   await resetClientState(page,true,{},true);
   await page.goto('/?view=circle',{waitUntil:'domcontentloaded'});
   await page.locator('[data-tab="circle"]').click();
+  await page.evaluate(()=>{
+    const form=document.getElementById('circleCreateForm');
+    const input=document.getElementById('circleCreateName') as HTMLInputElement|null;
+    const submit=document.getElementById('circleCreateSubmit') as HTMLButtonElement|null;
+    const status=document.getElementById('circleCreateStatus');
+    const contextStatus=document.getElementById('circleContextStatus');
+    if(!form||!input||!submit||!status||!contextStatus) throw new Error('missing circle creation controls');
+    const bindings=(window as unknown as {
+      __captureCircleCreationReset(snapshot:ResetSnapshot):Promise<void>;
+      __captureCircleCreationSettled(snapshot:SettledSnapshot):Promise<void>;
+      __reportForbiddenCircleCreationStatus(status:string):Promise<void>;
+    });
+    let forbiddenSuccessObserved=false;
+    const forbiddenObserver=new MutationObserver(()=>{
+      const value=status.textContent||'';
+      if(!value.includes('was created')) return;
+      forbiddenSuccessObserved=true;
+      void bindings.__reportForbiddenCircleCreationStatus(value);
+    });
+    forbiddenObserver.observe(status,{childList:true,subtree:true,characterData:true});
+    const resetObserver=new MutationObserver(records=>{
+      if(contextStatus.textContent!=='Switching circle…') return;
+      resetObserver.disconnect();
+      void bindings.__captureCircleCreationReset({
+        sawBusyMutation:records.some(record=>record.target===form&&record.attributeName==='aria-busy'),
+        busy:form.getAttribute('aria-busy'),
+        inputDisabled:input.disabled,
+        submitDisabled:submit.disabled,
+        submitText:submit.textContent||'',
+        status:status.textContent||'',
+        contextStatus:contextStatus.textContent||'',
+      });
+    });
+    resetObserver.observe(form,{attributes:true,attributeFilter:['aria-busy']});
+    resetObserver.observe(contextStatus,{childList:true,subtree:true,characterData:true});
+    const originalFetch=window.fetch.bind(window);
+    window.fetch=(request:RequestInfo|URL,options?:RequestInit)=>{
+      const response=originalFetch(request,options);
+      const method=String(options?.method||(request instanceof window.Request?request.method:'GET')).toUpperCase();
+      const rawUrl=typeof request==='string'?request:request instanceof URL?request.href:request.url;
+      if(method==='POST'&&new URL(rawUrl,window.location.href).pathname==='/api/circles'){
+        void response.then(()=>undefined,()=>undefined).then(()=>{
+          setTimeout(()=>{
+            void bindings.__captureCircleCreationSettled({
+              status:status.textContent||'',
+              forbiddenSuccessObserved,
+            });
+          },0);
+        });
+      }
+      return response;
+    };
+  });
+  let releaseReload:()=>void=()=>{};
+  let notifyReload:()=>void=()=>{};
+  const reloadRelease=new Promise<void>(resolve=>{ releaseReload=resolve; });
+  const reloadRequested=new Promise<void>(resolve=>{ notifyReload=resolve; });
+  let holdNextNavigation=true;
+  await page.route('**/*',async route=>{
+    const request=route.request();
+    if(holdNextNavigation&&request.isNavigationRequest()&&request.frame()===page.mainFrame()){
+      holdNextNavigation=false;
+      notifyReload();
+      await reloadRelease;
+      await route.continue();
+      return;
+    }
+    await route.fallback();
+  });
   await page.getByTestId('circle-create-name').fill(secondary.name);
   await page.getByTestId('circle-create-submit').click();
-  await started;
-  await page.evaluate(()=>{
-    const channel=new BroadcastChannel('randori-circle-context-v1');
-    channel.postMessage({v:1,user_id:1,context_version:9});
-    channel.close();
-  });
-  await pending?.fulfill({status:201,contentType:'application/json',body:JSON.stringify({
-    ok:true,circle:secondary,context_version:8,
-  })}).catch(()=>{});
+  await firstStarted;
+  await expect(page.getByTestId('circle-create-form')).toHaveAttribute('aria-busy','true');
+  await expect(page.getByTestId('circle-create-name')).toBeDisabled();
+  await expect(page.getByTestId('circle-create-submit')).toBeDisabled();
+  const reloaded=page.waitForEvent('framenavigated',frame=>frame===page.mainFrame());
+  try{
+    await page.evaluate(()=>{
+      const channel=new BroadcastChannel('randori-circle-context-v1');
+      channel.postMessage({v:1,user_id:1,context_version:9});
+      channel.close();
+    });
+    const [snapshot]=await Promise.all([resetObserved,reloadRequested]);
+    expect(snapshot).toEqual({
+      sawBusyMutation:true,
+      busy:'false',
+      inputDisabled:false,
+      submitDisabled:false,
+      submitText:'Create and select',
+      status:'',
+      contextStatus:'Switching circle…',
+    });
+    await pending?.fulfill({status:201,contentType:'application/json',body:JSON.stringify({
+      ok:true,circle:secondary,context_version:8,
+    })}).catch(()=>{});
+    expect(await requestSettled).toEqual({status:'',forbiddenSuccessObserved:false});
+    expect(forbiddenStatuses).toEqual([]);
+  }finally{
+    releaseReload();
+  }
+  await reloaded;
+  await page.locator('[data-tab="circle"]').click();
+  await expect(page.getByTestId('circle-create-form')).toBeVisible();
+  await expect(page.getByTestId('circle-create-form')).toHaveAttribute('aria-busy','false');
   await expect(page.getByTestId('circle-create-status')).not.toContainText('was created');
+  await page.getByTestId('circle-create-name').fill(secondary.name);
+  await page.getByTestId('circle-create-submit').click();
+  await retryStarted;
+  expect(posts).toBe(2);
+  await expect(page.getByTestId('circle-create-status')).toContainText('Retry to safely reuse');
 });

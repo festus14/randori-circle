@@ -71,7 +71,8 @@ refresh only until its actor, circle, context version, and TTL are revalidated.
 
 1. Apply managed migration v12 after the protected migration and
    restore rehearsals required by issues #38 and #43.
-2. Deploy with `MULTI_CIRCLE_CONTROL_PLANE_ENABLED=false`; verify health and
+2. Deploy with `MULTI_CIRCLE_CONTROL_PLANE_ENABLED=false`; apply managed v13
+   and then v14 as separate protected migration steps, and verify health and
    ordinary single-circle login, roster, invitation, and pairing behavior.
 3. Enable the control-plane flag in staging. Create a fixture account with two active circle
    memberships and verify selection, cross-tab reload, scoped roster/invitation
@@ -83,8 +84,8 @@ refresh only until its actor, circle, context version, and TTL are revalidated.
 5. Repeat the control-plane and availability checks in production before admitting a real
    secondary membership. Monitor only aggregate response/error counts; circle
    names, invitation targets, and session identifiers must not enter telemetry.
-6. Apply migration v13, then canary `SECONDARY_CIRCLE_COORDINATION_ENABLED` as
-   described in `SELECTED_CIRCLE_PAIRING.md`.
+6. Canary `SECONDARY_CIRCLE_COORDINATION_ENABLED` as described in
+   `SELECTED_CIRCLE_PAIRING.md`; its required v13 schema was applied in Step 2.
 
 Rollback is application-only. Disable `MULTI_CIRCLE_AVAILABILITY_ENABLED` first
 to restore the legacy availability gate without disabling roster/invitation
