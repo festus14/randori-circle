@@ -310,6 +310,11 @@ export async function executeTakedown(options, {
         expectedCatalogRaw: catalogFile.raw,
         afterManifestRename,
       });
+      const [writtenCatalog, writtenManifest] = await Promise.all([
+        readJsonFile(catalogUrl, 'catalogue', MAX_CATALOG_BYTES),
+        readJsonFile(manifestUrl, 'provenance manifest', MAX_MANIFEST_BYTES),
+      ]);
+      validateCatalog(writtenCatalog.value, undefined, writtenManifest.value, { now: options.now ?? new Date() });
     }
     return result;
   } finally {

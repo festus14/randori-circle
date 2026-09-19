@@ -269,6 +269,13 @@ test('source policy rejects vague or unsupported rights claims', () => {
     { now: '2026-09-19' },
   ).valid, true);
 
+  const traversalEvidence = structuredClone(approvedAuthorization);
+  traversalEvidence.manifest.records[0].license.evidence = 'repository://docs/source-authorizations/%2e%2e/private.md';
+  assertProvenanceError(
+    () => validateProvenanceManifest(traversalEvidence.manifest, traversalEvidence.catalog),
+    /normalized repository evidence reference/,
+  );
+
   const credentialedUrl = structuredClone(approvedOpen);
   credentialedUrl.manifest.records[0].source.reference = 'https://user:secret@example.test/problem';
   assertProvenanceError(

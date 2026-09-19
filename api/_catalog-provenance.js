@@ -130,6 +130,7 @@ function requireControlledEvidence(value, path) {
     fail(path, 'must be a normalized repository evidence reference');
   }
   const segments = decodedPath.split('/').filter(Boolean);
+  const normalizedPath = `/${segments.join('/')}`;
   if (
     parsed.protocol !== 'repository:'
     || parsed.hostname !== 'docs'
@@ -137,6 +138,9 @@ function requireControlledEvidence(value, path) {
     || parsed.password !== ''
     || parsed.port !== ''
     || parsed.search !== ''
+    || parsed.hash !== ''
+    || parsed.pathname !== decodedPath
+    || decodedPath !== normalizedPath
     || segments.length < 2
     || segments[0] !== 'source-authorizations'
     || segments.some(segment => segment === '.' || segment === '..' || segment.includes('\\'))
