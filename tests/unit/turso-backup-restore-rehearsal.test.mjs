@@ -626,15 +626,19 @@ test('write-state retries share one total poll deadline',async()=>{
         ),10));
       },
     });
-    const started=Date.now();
     await assert.rejects(
       runBackupRestoreRehearsal(options(platform,recovery,{
         poll:{maxAttempts:20,intervalMs:1,maxDurationMs:25},
         cleanupPoll:{maxAttempts:2,intervalMs:1,maxDurationMs:25},
       }),dependencies(item)),
     );
-    const elapsed=Date.now()-started;
-    assert.ok(elapsed<120,`shared deadline took ${elapsed}ms`);
+    const recoveryStart=platform.state.calls.findIndex(
+      call=>call[0]==='block'&&call[2]===false,
+    );
+    const primaryConfigurationReads=platform.state.calls.slice(0,recoveryStart)
+      .filter(call=>call[0]==='config').length;
+    assert.ok(primaryConfigurationReads>=2&&primaryConfigurationReads<=4,
+      `shared deadline performed ${primaryConfigurationReads} primary configuration reads`);
     assert.equal(platform.state.calls.filter(call=>call[0]==='block'&&call[2]===true).length,1);
   }finally{ item.close(); }
 });
