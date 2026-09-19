@@ -1,7 +1,8 @@
 # Invitation email delivery
 
-Status: bounded issue #95 slice on `codex/increment-35-invitation-email`, stacked
-on the schedule-notification candidate PR #96
+Status: bounded issue #95 slice in
+[PR #100](https://github.com/festus14/randori-circle/pull/100), stacked on the
+schedule-notification candidate PR #96
 
 This slice makes an owner-created invitation useful without requiring the owner
 to move the link into another mail client. It intentionally retains the visible

@@ -1,7 +1,7 @@
 # Randori Circle implemented decision log
 
 Status: accepted through merged PR #89 plus candidate PRs #93, #92, #96, and
-the invitation-email candidate branch
+#100
 
 Last reviewed: 2026-09-19
 
@@ -32,7 +32,7 @@ or merged after its parent; it must not be landed ahead of that parent.
 | 7 | [PR #93](https://github.com/festus14/randori-circle/pull/93), candidate | Repository-owned deployability gate independent of preview quota | No migration |
 | 8 | [PR #92](https://github.com/festus14/randori-circle/pull/92), candidate | Verified invitation-bound email/password activation | v7 `verified-email-activation` |
 | 9 | [PR #96](https://github.com/festus14/randori-circle/pull/96), candidate | Proposal, acceptance, change, and reminder delivery | Reuses v6; no migration |
-| 10 | `codex/increment-35-invitation-email`, candidate | Owner-created invitation email and bounded resend | Reuses v6; no migration |
+| 10 | [PR #100](https://github.com/festus14/randori-circle/pull/100), candidate | Owner-created invitation email and bounded resend | Reuses v6; no migration |
 
 Migration order is append-only: v4 binds an account to an OIDC issuer and
 subject, v5 makes every application JWT depend on a live hashed session row,
