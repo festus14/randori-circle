@@ -196,10 +196,10 @@ function resignAttestation(value,mutate){
   const attestation=structuredClone(value);
   mutate(attestation);
   const signingKey=createHmac('sha256',HMAC_KEY)
-    .update('randori:turso-rehearsal-attestation:v1:key','utf8').digest();
+      .update('randori:turso-rehearsal-attestation:v2:key','utf8').digest();
   try{
     attestation.signature=createHmac('sha256',signingKey)
-      .update('randori:turso-rehearsal-attestation:v1:payload','utf8').update('\0','utf8')
+      .update('randori:turso-rehearsal-attestation:v2:payload','utf8').update('\0','utf8')
       .update(stableJson({format:REHEARSAL_ATTESTATION_FORMAT,payload:attestation.payload}),'utf8')
       .digest('hex');
   }finally{ signingKey.fill(0); }
@@ -271,9 +271,17 @@ test('managed prefix rehearsal blocks writes, verifies PITR, migrates only the r
 
     assert.equal(result.ok,true);
     assert.deepEqual(result.payload.migration,{
-      sourceClassification:'managed',sourceVersion:2,adoptedOnRestore:false,
-      appliedVersions:[3,4,5,6,7,8,9,10,11,12,13],finalVersion:13,
+      sourceClassification:'managed',sourceVersion:2,
+      sourceStateFingerprint:result.payload.migration.sourceStateFingerprint,
+      adoptedOnRestore:false,
+      appliedVersions:EXECUTABLE_MIGRATIONS.slice(2).map(migration=>migration.version),
+      finalVersion:LATEST_MIGRATION_VERSION,
     });
+    assert.match(result.payload.migration.sourceStateFingerprint,/^[a-f0-9]{64}$/);
+    assert.equal(
+      result.payload.migration.sourceStateFingerprint,
+      (await databaseState(item.sourcePath,EXECUTABLE_MIGRATIONS.slice(0,2))).stateFingerprint,
+    );
     assert.equal(result.payload.verification.preMigrationMatch,true);
     assert.equal(result.payload.verification.postMigrationPreserved,true);
     assert.ok(Number.isSafeInteger(result.payload.verification.tableCount));
@@ -367,6 +375,9 @@ test('attestation verifier rejects tampering, replay, expiry, schema drift, and 
     }));
     invalid.push(resignAttestation(result,value=>{
       value.payload.migration.finalVersion=LATEST_MIGRATION_VERSION-1;
+    }));
+    invalid.push(resignAttestation(result,value=>{
+      value.payload.migration.sourceStateFingerprint='0'.repeat(63);
     }));
     invalid.push(resignAttestation(result,value=>{
       value.payload.identities.restoreIdentityDigest=value.payload.identities.sourceIdentityDigest;
