@@ -4,8 +4,11 @@ Status: implemented in consolidated
 [PR #96](https://github.com/festus14/randori-circle/pull/96) on the current
 release stack
 
-This slice sends durable email notifications for schedule proposals, accepted
-times, changed or cleared agreements, and accepted-session reminders. Owner
+This document describes the primary-room `schedule.email.requested` v1
+contract. Secondary-circle scheduling reuses the same event type as v2 under a
+separate flag; see `SECONDARY_SCHEDULE_NOTIFICATIONS.md`. This slice sends
+durable email notifications for schedule proposals, accepted times, changed or
+cleared agreements, and accepted-session reminders. Owner
 invitation-link delivery is consolidated into the same candidate. A live
 staging-provider rehearsal remains outstanding, so this work does not yet close
 issue #50. SMS is explicitly outside issue #50 and is separate future work.
@@ -18,7 +21,7 @@ event are committed in one libSQL write transaction. If any event insert fails,
 the schedule write rolls back. A stale compare-and-swap commits neither the
 schedule nor notification work.
 
-The event uses template version 1 and an idempotency key with this shape:
+The primary event uses template version 1 and an idempotency key with this shape:
 
 ```text
 schedule-email/v1/{week}/{pair}/{kind}/{schedule-version}/{recipient-user}
@@ -31,6 +34,7 @@ or display name. The worker resolves those values at dispatch time. The shared
 outbox limits each event to five attempts and a ten-second provider timeout.
 The shared serverless drain admits schedule work in one-per-type fair rounds;
 all types together are capped at eight claims and one 45-second deadline.
+Both schedule event versions occupy this one schedule lane.
 
 | Mutation | Immediate email | Delayed email | Recipients |
 | --- | --- | --- | --- |
