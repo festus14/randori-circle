@@ -354,8 +354,12 @@ async function handleResend(req,res){
       return res.status(409).json({error:'invitation email cannot be resent; create a new invitation'});
     }
     const lastSentAt=Date.parse(String(invitation.last_sent_at||''));
+    if(!Number.isFinite(lastSentAt)){
+      await transaction.rollback(); finished=true;
+      return res.status(409).json({error:'invitation email cannot be resent; create a new invitation'});
+    }
     const remainingMs=lastSentAt+INVITATION_EMAIL_RESEND_SECONDS*1000-nowSeconds*1000;
-    if(Number.isFinite(lastSentAt)&&remainingMs>0){
+    if(remainingMs>0){
       const retryAfter=Math.max(1,Math.ceil(remainingMs/1000));
       await transaction.rollback(); finished=true;
       res.setHeader('Retry-After',String(Math.min(INVITATION_EMAIL_RESEND_SECONDS,retryAfter)));

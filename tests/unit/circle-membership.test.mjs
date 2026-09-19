@@ -561,6 +561,14 @@ test('owner invitation email create and bounded resend rotate links atomically',
     query:{endpoint:'invitations',id},headers:{...headers,'x-test-auth':'member'},body:{action:'resend'}});
   assert.equal(member.status,403);
 
+  await currentDb.execute({sql:`UPDATE outbox_events SET created_at='not-a-time'
+    WHERE id=(SELECT MAX(id) FROM outbox_events WHERE event_type='invitation.email.requested')`,args:[]});
+  const invalidTimestamp=await invoke(invitationsHandler,{method:'POST',url:`/api/invitations/${id}`,
+    query:{endpoint:'invitations',id},headers,body:{action:'resend'}});
+  assert.equal(invalidTimestamp.status,409);
+  assert.equal((await currentDb.execute({sql:`SELECT token_hash FROM circle_invitations WHERE id=?`,args:[id]})).rows[0].token_hash,firstHash);
+  assert.equal(Number((await currentDb.execute(`SELECT COUNT(*) AS count FROM outbox_events`)).rows[0].count),1);
+
   await currentDb.execute(`UPDATE outbox_events SET created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-61 seconds')`);
   const resent=await invoke(invitationsHandler,{method:'POST',url:`/api/invitations/${id}`,
     query:{endpoint:'invitations',id},headers,body:{action:'resend'}});

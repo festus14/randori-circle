@@ -98,7 +98,10 @@ test('configuration and the dedicated AES-GCM envelope fail closed in production
   assert.deepEqual(openInvitationEmailCredential({invitationId,envelope}),{
     email:'invitee@example.test',token,
   });
-  const tampered=`${envelope.slice(0,-1)}${envelope.endsWith('A')?'B':'A'}`;
+  const [encodedIv,encodedCiphertext,encodedTag]=envelope.split('.');
+  const tamperedCiphertext=Buffer.from(encodedCiphertext,'base64url');
+  tamperedCiphertext[0]^=1;
+  const tampered=`${encodedIv}.${tamperedCiphertext.toString('base64url')}.${encodedTag}`;
   assert.equal(openInvitationEmailCredential({invitationId,envelope:tampered}),null);
   assert.equal(openInvitationEmailCredential({invitationId:'33333333-3333-4333-8333-333333333333',envelope}),null);
   assert.throws(()=>createInvitationEmailHandler({db:{execute(){}},baseUrl:'http://randori.example.test',
