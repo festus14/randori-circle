@@ -31,6 +31,14 @@
       "destination": "/api/auth?endpoint=signup"
     },
     {
+      "source": "/api/auth/activation/resend",
+      "destination": "/api/auth?endpoint=activation-resend"
+    },
+    {
+      "source": "/api/auth/activation/verify",
+      "destination": "/api/auth?endpoint=activation-verify"
+    },
+    {
       "source": "/api/auth/login",
       "destination": "/api/auth?endpoint=login"
     },

@@ -18,6 +18,11 @@ import {
   pairingEmailStatus,
 } from './_pairing-email.js';
 import { replayDeadLetter } from './_outbox.js';
+import {
+  deliverEmailActivations,
+  emailActivationConfiguration,
+  emailActivationStatus,
+} from './_email-activation.js';
 import { localIdentityAdapterEnabled, localRuntimeRequest } from './_local-runtime.js';
 
 async function logServerOps(level, event, message, meta, req){
@@ -353,7 +358,45 @@ async function handleOutboxWorker(req,res){
   catch{ return res.status(503).json({error:'outbox unavailable'}); }
   try{
     const delivery=await deliverPendingPairingEmails(db,null,baseUrl,req);
-    return res.json({ok:true,email_delivery:safeEmailDelivery(delivery)});
+    let activationDelivery={summary:'email activation delivery disabled',sent:0,failed:0,exhausted:0,pending:0,suppressed:0};
+    if(emailActivationConfiguration()){
+      const local=localIdentityAdapterEnabled(req);
+      const captured=[];
+      let send;
+      if(local){
+        send=async message=>{
+          captured.push({recipient_email:String(message.to),kind:'activation',subject:String(message.subject),
+            links:[...message.html.matchAll(/href="([^"]+)"/gu)].map(match=>match[1]).slice(0,4)});
+          return {providerName:'local-capture',providerMessageId:`local-${randomUUID()}`};
+        };
+      }else if(process.env.RESEND_API_KEY&&process.env.RESEND_FROM){
+        const resendMod=await import('resend').catch(()=>null);
+        if(resendMod?.Resend) send=createResendEmailSender({
+          resend:new resendMod.Resend(process.env.RESEND_API_KEY),from:process.env.RESEND_FROM,
+        });
+      }
+      if(send){
+        const activation=await deliverEmailActivations({
+          db,baseUrl,send,workerId:`activation-${randomUUID()}`,
+        });
+        const status=await emailActivationStatus(db);
+        const pending=status.pending+status.retry+status.processing;
+        const failed=activation.retried+activation.deadLettered;
+        activationDelivery={
+          summary:local?`captured ${captured.length} activation email(s); no external delivery`
+            :`sent ${activation.delivered}, failed ${failed}, pending ${pending}`,
+          sent:local?0:activation.delivered,failed,exhausted:status.dead_letter,pending,
+          suppressed:activation.suppressed,...(local?{captured}:{}),
+        };
+      }else{
+        const status=await emailActivationStatus(db);
+        activationDelivery={summary:'activation email delivery unavailable',sent:0,failed:0,
+          exhausted:status.dead_letter,pending:status.pending+status.retry+status.processing,
+          suppressed:status.suppressed};
+      }
+    }
+    return res.json({ok:true,email_delivery:safeEmailDelivery(delivery),
+      activation_delivery:safeEmailDelivery(activationDelivery)});
   }catch{
     return res.status(503).json({error:'outbox unavailable'});
   }

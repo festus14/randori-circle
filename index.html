@@ -702,6 +702,19 @@ p{margin:0}
       </div>
     </section>
 
+    <!-- VERIFIED EMAIL ACTIVATION -->
+    <section id="view-activation" class="view" data-testid="activation-landing" style="display:none">
+      <div class="landing" style="max-width:680px;margin:0 auto">
+        <div class="card">
+          <div class="card-h"><h2>Activate your Randori account</h2><span>email verification</span></div>
+          <div class="card-b" style="display:grid;gap:14px">
+            <p id="activationStatus" data-testid="activation-status" class="small muted" role="status" aria-live="polite">Checking your verification link…</p>
+            <div><button id="activationContinue" data-testid="activation-continue" class="btn" type="button" hidden>Continue to Randori</button></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- INVITATION LANDING -->
     <section id="view-invite" class="view" data-testid="invite-landing" style="display:none">
       <div class="landing" style="max-width:680px;margin:0 auto">
@@ -1059,6 +1072,10 @@ p{margin:0}
         <label class="auth-field" for="authPass"><span>Password</span><input id="authPass" class="input" placeholder="10–72 UTF-8 bytes" type="password" autocomplete="current-password" maxlength="72" aria-describedby="authErr" required/></label>
       </div>
       <p id="authErr" class="small auth-error" role="alert" aria-live="assertive"></p>
+      <div id="authActivationPending" data-testid="activation-pending" class="auth-fields" hidden>
+        <p class="small muted">Check your inbox. The verification link is single-use and expires in 30 minutes.</p>
+        <button id="authActivationResend" class="btn secondary" type="button">Send a new link</button>
+      </div>
       <button id="authGoogleRetry" class="btn secondary" type="button" hidden aria-describedby="authErr" style="width:100%;justify-content:center">Try Google sign-in again</button>
       <div class="auth-actions">
         <button id="authModeSwitch" class="btn ghost" type="button" hidden></button>
@@ -1092,7 +1109,7 @@ p{margin:0}
   let me = null;
   let authSessionEpoch=0;
   let authRefreshSequence=0;
-  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,localIdentity:false,googleOAuth:false,registrationMode:'private_beta'});
+  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,localIdentity:false,verifiedEmailActivation:false,googleOAuth:false,registrationMode:'private_beta'});
   let authCapabilities=CLOSED_AUTH_CAPABILITIES;
   let authCapabilitiesLoaded=false;
   let authCapabilitiesFailed=false;
@@ -1102,6 +1119,7 @@ p{margin:0}
   let authRequest=null;
   let authReturnFocus=null;
   let googleRetryPending=false;
+  let activationPendingEmail='';
   let activeCircleRole=null;
   let currentCloudPairingWeek=null;
   let currentCloudPairingCycle=null;
@@ -1130,6 +1148,71 @@ p{margin:0}
     rateLimited:false,
     retryAfter:null,
   };
+  const activationState={active:window.location.pathname==='/verify',status:'checking',token:'',verifying:false};
+  function renderActivationLanding(){
+    if(!activationState.active) return false;
+    document.querySelectorAll('.view').forEach(view=>{ view.style.display='none'; });
+    document.querySelectorAll('.tab').forEach(tab=>{ tab.classList.remove('active'); });
+    const tabs=document.querySelector('.tabs'); if(tabs) tabs.style.display='none';
+    const landing=document.getElementById('view-activation'); if(landing) landing.style.display='block';
+    const status=document.getElementById('activationStatus');
+    const messages={
+      checking:'Checking your verification link…',
+      verified:'Your email is verified and your account is ready.',
+      expired:'This verification link expired. Return to your invitation and request a new link.',
+      used:'This verification link has already been used. Sign in with your email and password.',
+      revoked:'This activation is no longer available. Ask the circle owner for a new invitation.',
+      invalid:'This verification link is invalid or unavailable.',
+      unavailable:'Verification is temporarily unavailable. Please retry shortly.',
+    };
+    if(status) status.textContent=messages[activationState.status]||messages.invalid;
+    const button=document.getElementById('activationContinue');
+    if(button){
+      button.hidden=!['verified','used','unavailable'].includes(activationState.status);
+      button.disabled=activationState.verifying;
+      button.textContent=activationState.status==='verified'?'Continue to Randori'
+        :(activationState.status==='used'?'Sign in':'Retry verification');
+    }
+    return true;
+  }
+  async function finishEmailActivation(){
+    if(!activationState.active||activationState.verifying) return;
+    const hash=new URLSearchParams(String(window.location.hash||'').replace(/^#/,''));
+    activationState.token=hash.get('token')||activationState.token;
+    try{ window.history.replaceState({},document.title,'/verify'); }catch{}
+    if(!activationState.token){ activationState.status='invalid'; renderActivationLanding(); return; }
+    activationState.verifying=true;
+    activationState.status='checking';
+    renderActivationLanding();
+    try{
+      const response=await fetch('/api/auth/activation/verify',{
+        method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},
+        body:JSON.stringify({token:activationState.token}),
+      });
+      const data=await response.json().catch(()=>({}));
+      activationState.status=response.ok&&data?.status==='verified'?'verified':String(data?.status||'unavailable');
+      if(response.ok&&data?.user){
+        me=data.user;
+        try{ localStorage.setItem(ME_KEY,JSON.stringify(data.user)); }catch{}
+      }
+    }catch{ activationState.status='unavailable'; }
+    activationState.verifying=false;
+    if(activationState.status!=='unavailable') activationState.token='';
+    renderActivationLanding();
+  }
+  document.getElementById('activationContinue')?.addEventListener('click',()=>{
+    if(activationState.status==='unavailable') finishEmailActivation();
+    else if(activationState.status==='verified'){
+      activationState.active=false;
+      window.history.replaceState({},document.title,'/');
+      window._randori_journey?.routeByAuth?.();
+    }else window._randori_auth?.openModal?.('signin');
+  });
+  window._randori_activation_flow={
+    get active(){ return activationState.active; },
+    show:renderActivationLanding,
+  };
+  if(activationState.active){ renderActivationLanding(); finishEmailActivation(); }
   function renderInviteLanding(){
     if(!inviteState.active) return false;
     document.querySelectorAll('.view').forEach(view=>{ view.style.display='none'; });
@@ -1141,21 +1224,26 @@ p{margin:0}
     const instructions=document.getElementById('inviteInstructions');
     const localInvite=authCapabilitiesLoaded&&authCapabilities.localIdentity
       &&authCapabilities.registrationMode==='local_invite';
+    const verifiedInvite=authCapabilitiesLoaded&&authCapabilities.verifiedEmailActivation
+      &&authCapabilities.registrationMode==='verified_invite';
     if(instructions) instructions.textContent=localInvite
       ?'Create a local account with the email that received this invitation. The development identity adapter treats that email as verified and never contacts an external provider.'
-      :'Confirm the Google account that received this invitation. The invitation is single-use and expires automatically.';
+      :(verifiedInvite
+        ?'Create an account with the invited email. We will send a single-use verification link before activating it.'
+        :'Confirm the Google account that received this invitation. The invitation is single-use and expires automatically.');
     if(status){
       status.textContent=inviteState.rateLimited
         ? `Too many attempts. Try again${inviteState.retryAfter?` in ${inviteState.retryAfter} seconds`: ' later'}.`
         : (inviteState.failed
           ? 'This invitation is unavailable or has expired.'
           : (inviteState.ready
-            ?(localInvite?'Invitation verified. Create the invited local account.':'Invitation verified. Continue with the invited Google account.')
+            ?(localInvite?'Invitation verified. Create the invited local account.'
+              :(verifiedInvite?'Invitation verified. Continue to create your account.':'Invitation verified. Continue with the invited Google account.'))
             :'Checking invitation…'));
     }
     if(button){
       button.disabled=!inviteState.ready;
-      button.textContent=localInvite?'Create local account':'Continue with Google';
+      button.textContent=localInvite?'Create local account':(verifiedInvite?'Create account':'Continue with Google');
     }
     return true;
   }
@@ -1177,7 +1265,8 @@ p{margin:0}
   document.getElementById('inviteContinue')?.addEventListener('click',async()=>{
     if(!inviteState.ready) return;
     await authCapabilitiesPromise;
-    if(authCapabilities.localIdentity&&authCapabilities.registrationMode==='local_invite'){
+    if((authCapabilities.localIdentity&&authCapabilities.registrationMode==='local_invite')
+      ||authCapabilities.registrationMode==='verified_invite'){
       openAuthModal('signup');
       return;
     }
@@ -1627,12 +1716,14 @@ async function refreshMe(){
       ||typeof capabilities.passwordLogin!=='boolean'
       ||typeof capabilities.passwordSignup!=='boolean'
       ||(capabilities.localIdentity!==undefined&&typeof capabilities.localIdentity!=='boolean')
+      ||(capabilities.verifiedEmailActivation!==undefined&&typeof capabilities.verifiedEmailActivation!=='boolean')
       ||typeof capabilities.googleOAuth!=='boolean'
-      ||!['local_open','local_invite','private_beta'].includes(mode)) throw new Error('invalid auth capabilities');
+      ||!['local_open','local_invite','verified_invite','private_beta'].includes(mode)) throw new Error('invalid auth capabilities');
     return Object.freeze({
       passwordLogin:capabilities.passwordLogin,
       passwordSignup:capabilities.passwordSignup,
       localIdentity:capabilities.localIdentity===true,
+      verifiedEmailActivation:capabilities.verifiedEmailActivation===true,
       googleOAuth:capabilities.googleOAuth,
       registrationMode:mode,
     });
@@ -1653,6 +1744,11 @@ async function refreshMe(){
         return inviteState.ready
           ?'This local account will use the verified invitation and join the private circle.'
           :'A valid local invitation is required before creating an account.';
+      }
+      if(authCapabilities.registrationMode==='verified_invite'){
+        return inviteState.ready
+          ?'Use the invited email. Your account activates only after you open the verification link.'
+          :'A valid invitation is required before requesting email verification.';
       }
       return authCapabilities.registrationMode==='local_open'
         ? 'Create a local account. The first account can manage weekly pairing.'
@@ -1706,6 +1802,8 @@ async function refreshMe(){
     const signin=document.getElementById('authSignin');
     const modeSwitch=document.getElementById('authModeSwitch');
     const cancel=document.getElementById('authCancel');
+    const activationPending=document.getElementById('authActivationPending');
+    const pending=authMode==='signup'&&!!activationPendingEmail;
     if(title) title.textContent=authMode==='signup'?'Join Randori Circle':'Sign in to Randori';
     if(description) description.textContent=authMode==='signup'
       ?'Create an account to join weekly practice pairings.'
@@ -1716,8 +1814,9 @@ async function refreshMe(){
       googleRetry.hidden=!googleRetryPending||!authCapabilitiesLoaded||!googleEnabled;
       googleRetry.disabled=authBusy||!authCapabilitiesLoaded;
     }
-    if(fields) fields.hidden=!authCapabilitiesLoaded||!passwordEnabled;
-    if(divider) divider.hidden=!authCapabilitiesLoaded||!googleEnabled||!passwordEnabled;
+    if(fields) fields.hidden=pending||!authCapabilitiesLoaded||!passwordEnabled;
+    if(activationPending) activationPending.hidden=!pending;
+    if(divider) divider.hidden=pending||!authCapabilitiesLoaded||!googleEnabled||!passwordEnabled;
     if(nameField) nameField.hidden=authMode!=='signup'||!passwordEnabled;
     if(name) name.required=authMode==='signup'&&passwordEnabled;
     if(password){
@@ -1726,9 +1825,11 @@ async function refreshMe(){
       password.placeholder=authMode==='signup'?'At least 10 characters':'Your password';
     }
     if(signup){
-      signup.hidden=!authCapabilitiesLoaded||authMode!=='signup'||!authCapabilities.passwordSignup;
+      signup.hidden=pending||!authCapabilitiesLoaded||authMode!=='signup'||!authCapabilities.passwordSignup;
       signup.disabled=authBusy||!authCapabilitiesLoaded;
-      signup.textContent=authBusy&&authMode==='signup'?'Creating account…':'Create account';
+      signup.textContent=authBusy&&authMode==='signup'
+        ?(authCapabilities.registrationMode==='verified_invite'?'Submitting…':'Creating account…')
+        :(authCapabilities.registrationMode==='verified_invite'?'Send verification email':'Create account');
     }
     if(signin){
       signin.hidden=!authCapabilitiesLoaded||authMode!=='signin'||!authCapabilities.passwordLogin;
@@ -1737,7 +1838,7 @@ async function refreshMe(){
     }
     const alternateAvailable=authMode==='signup'?authCapabilities.passwordLogin:authCapabilities.passwordSignup;
     if(modeSwitch){
-      modeSwitch.hidden=!authCapabilitiesLoaded||!alternateAvailable;
+      modeSwitch.hidden=pending||!authCapabilitiesLoaded||!alternateAvailable;
       modeSwitch.disabled=authBusy;
       modeSwitch.textContent=authMode==='signup'?'Already a member? Sign in':'New here? Create an account';
     }
@@ -1778,6 +1879,7 @@ async function refreshMe(){
   }
   function setAuthMode(mode){
     authMode=resolvedAuthMode(mode);
+    activationPendingEmail='';
     googleRetryPending=false;
     clearAuthValidation();
     renderAuthModal();
@@ -1816,6 +1918,7 @@ async function refreshMe(){
     overlay.setAttribute('aria-hidden','true');
     clearAuthValidation();
     googleRetryPending=false;
+    activationPendingEmail='';
     const password=document.getElementById('authPass');
     if(password) password.value='';
     const returnFocus=authReturnFocus;
@@ -2050,6 +2153,14 @@ async function refreshMe(){
       let data=null;
       try{ data=await response.json(); }catch{}
       if(authRequest!==request) return;
+      if(response.ok&&mode==='signup'&&data?.pending===true){
+        activationPendingEmail=body.email;
+        authRequest=null;
+        setAuthBusy(false);
+        setAuthError('');
+        renderAuthModal();
+        return;
+      }
       if(!response.ok||!data?.user) throw data||new Error('authentication unavailable');
       authRequest=null;
       setAuthBusy(false);
@@ -2080,6 +2191,19 @@ async function refreshMe(){
   document.getElementById('authForm').addEventListener('submit',event=>{
     event.preventDefault();
     submitAuth(authMode);
+  });
+  document.getElementById('authActivationResend')?.addEventListener('click',async()=>{
+    if(authBusy||!activationPendingEmail) return;
+    setAuthBusy(true);
+    try{
+      const response=await fetch('/api/auth/activation/resend',{
+        method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},
+        body:JSON.stringify({email:activationPendingEmail}),
+      });
+      const data=await response.json().catch(()=>({}));
+      setAuthError(response.ok?'A new link was requested. Check your inbox.':authFailureMessage(data,'signup'));
+    }catch{ setAuthError('Verification email is temporarily unavailable. Try again.'); }
+    finally{ setAuthBusy(false); }
   });
   function beginGoogleSignIn(){
     if(authBusy||!authCapabilitiesLoaded||!authCapabilities.googleOAuth) return;
@@ -6285,6 +6409,10 @@ def allow(key, limit=5):
 
   // Main auth router
   async function routeByAuth(){
+    if(window._randori_activation_flow?.active){
+      window._randori_activation_flow.show();
+      return;
+    }
     if(window._randori_invite_flow?.active){
       window._randori_invite_flow.show();
       return;
