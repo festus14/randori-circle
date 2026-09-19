@@ -6,6 +6,7 @@ const REVIEW_STATUSES = new Set(['approved', 'rejected']);
 const TAKEDOWN_STATUSES = new Set(['clear', 'requested', 'revoked', 'resolved']);
 const HASH_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const RECORD_KEY_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*@[1-9]\d*$/;
+const ORIGINAL_STATEMENT = 'Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.';
 
 const CONTENT_FIELDS = Object.freeze([
   'slug',
@@ -118,6 +119,9 @@ function validateSource(source, license, path) {
     }
     if (license.identifier !== 'LicenseRef-Randori-Original') {
       fail(`${path}.license.identifier`, 'original content must use LicenseRef-Randori-Original');
+    }
+    if (source.statement !== ORIGINAL_STATEMENT) {
+      fail(`${path}.source.statement`, 'must use the reviewed original-content attestation');
     }
   } else if (source.type === 'open-license') {
     if (!/^[A-Za-z0-9][A-Za-z0-9.+-]*$/.test(license.identifier) || license.identifier.startsWith('LicenseRef-')) {
