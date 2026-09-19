@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { after, beforeEach, mock, test } from 'node:test';
 import { createClient } from '@libsql/client';
 import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 import { availabilityCycleKey } from '../../api/_availability.js';
 import { resolvePairingCycle } from '../../api/_pairing-cycle.js';
 import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
@@ -240,7 +241,7 @@ mock.module('../../api/_db.js', {
     isoWeekLabel: () => '2026-W38',
     shuffleArray: values => [...values],
     verifyRequestAuth: authPayload,
-    verifySignedRequestAuth: () => null,
+    verifySignedRequestAuth: authPayload,
     verifyMutationOrigin: () => true,
     initSentry: () => {},
     isSentryConfigured: () => Boolean(process.env.SENTRY_DSN || process.env.NEXT_PUBLIC_SENTRY_DSN),
@@ -547,7 +548,7 @@ beforeEach(() => {
   executeHandler = () => rows();
   globalThis.fetch = realFetch;
   for (const key of [
-    'ADMIN_EMAILS', 'AI_ENABLED', 'APP_URL', 'CRON_SECRET', 'GOOGLE_CLIENT_ID', 'NODE_ENV',
+    'ADMIN_EMAILS', 'AI_ENABLED', 'APP_URL', 'CRON_SECRET', 'GOOGLE_CLIENT_ID', 'JWT_SECRET', 'NODE_ENV',
     'GOOGLE_CLIENT_SECRET', 'GROQ_API_KEY', 'OPENAI_API_KEY', 'RESEND_API_KEY', 'RESEND_FROM',
     'NEXT_PUBLIC_SENTRY_DSN', 'SENTRY_DSN',
     'ALLOW_OPEN_SIGNUP', 'SIGNUP_ALLOWLIST', 'LEETCODE_INGESTION_AUTHORIZED',
@@ -970,8 +971,13 @@ test('login rejects missing or cross-origin requests before credential or databa
 
 test('auth, activation, reset, and identity request paths fail closed without schema writes',async()=>{
   enableLocalPasswordSignup();
+  process.env.JWT_SECRET=TEST_JWT_SECRET;
+  const profileToken=jwt.sign(
+    {id:2,email:'user@example.test',jti:'G'.repeat(43)},TEST_JWT_SECRET,
+    {algorithm:'HS256',issuer:'randori-circle',audience:'randori-web',expiresIn:'5m'},
+  );
   executeHandler=sql=>{
-    if(sql.includes('FROM auth_accounts LIMIT 0')) throw new Error('auth schema unavailable');
+    if(/FROM\s+auth_accounts\s+LIMIT\s+0/iu.test(sql)) throw new Error('auth schema unavailable');
     return rows();
   };
   const resetUnreadyClient=()=>{
@@ -994,11 +1000,17 @@ test('auth, activation, reset, and identity request paths fail closed without sc
         body:{email:'person@example.test',password:'correct horse battery'}},
       status:503,error:'login temporarily unavailable',
     },
+    {
+      request:{url:'/api/auth/me',query:{endpoint:'me'},headers:{
+        'x-test-auth':'user',cookie:`randori_session=${profileToken}`,
+      }},
+      status:503,error:'session validation temporarily unavailable',
+    },
   ];
   for(const item of requests){
     resetUnreadyClient();
     const result=await invoke(authHandler,item.request);
-    assert.equal(result.status,item.status,item.error);
+    assert.equal(result.status,item.status,JSON.stringify({expected:item.error,body:result.body,executed}));
     assert.equal(result.body.error,item.error);
     assertReadOnlyFailure();
   }

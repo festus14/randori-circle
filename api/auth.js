@@ -703,14 +703,19 @@ async function handleLogin(req,res){
 // --- me ---
 async function handleMe(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
-  let payload;
-  try{ payload=await verifyRequestAuth(req); }
+  let signedPayload;
+  try{ signedPayload=verifySignedRequestAuth(req); }
   catch{ return res.status(503).json({error:'session validation temporarily unavailable'}); }
-  if (!payload) return res.status(401).json({ error:'authentication required' });
+  if (!signedPayload) return res.status(401).json({ error:'authentication required' });
   const localIdentity=localIdentityAdapterEnabled(req);
+  let db,payload;
   try{
-    const db=getClient();
+    db=getClient();
     await ensureAuthReadiness(db);
+    payload=await verifyRequestAuth(req,db);
+  }catch{ return res.status(503).json({error:'session validation temporarily unavailable'}); }
+  if(!payload) return res.status(401).json({error:'authentication required'});
+  try{
     if(localIdentity){
       try{ await ensureCircleMembershipReadiness(db); }
       catch{ return res.status(503).json({error:'session validation temporarily unavailable'}); }
@@ -914,6 +919,7 @@ async function handleGoogleCallback(req,res){
   const db=getClient();
   try{
     await ensureAuthReadiness(db);
+    if(circleMembershipEnabled()) await ensureCircleMembershipReadiness(db);
     // Normal sign-in and reauthentication retain their v4 compatibility.
     // The opt-in linking flow consumes a provider code only after the complete
     // v9 identity-management contract is known ready.
