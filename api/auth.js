@@ -208,13 +208,25 @@ function identityManagementEnabled(req){
   return identityManagementRequested(req)&&identityEmailHashConfigured();
 }
 
-function handleCapabilities(req,res){
+async function handleCapabilities(req,res){
   if(req.method!=='GET') return res.status(405).json({error:'GET only'});
   const localIdentity=localIdentityAdapterEnabled(req);
-  const verifiedEmailActivation=!localIdentity&&Boolean(emailActivationConfiguration());
-  const passwordReset=Boolean(passwordResetConfiguration());
+  const activationConfigured=!localIdentity&&Boolean(emailActivationConfiguration());
+  const resetConfigured=Boolean(passwordResetConfiguration());
+  const identityConfigured=identityManagementEnabled(req);
+  let verifiedEmailActivation=false,passwordReset=false,identityManagement=false;
+  if(activationConfigured||resetConfigured||identityConfigured){
+    let db;
+    try{
+      db=getClient();
+      [verifiedEmailActivation,passwordReset,identityManagement]=await Promise.all([
+        activationConfigured?ensureEmailActivationReadiness(db).then(()=>true,()=>false):false,
+        resetConfigured?ensurePasswordResetReadiness(db).then(()=>true,()=>false):false,
+        identityConfigured?ensureIdentityLinkingReadiness(db).then(()=>true,()=>false):false,
+      ]);
+    }catch{}
+  }
   const passwordSignup=localPasswordSignupEnabled(req)||verifiedEmailActivation;
-  const identityManagement=identityManagementEnabled(req);
   const googleOAuth=Boolean(googleOAuthRequestConfiguration(req))
     &&(!identityManagementRequested(req)||identityManagement);
   return res.json({
@@ -515,7 +527,7 @@ async function handleRecentAuth(req,res){
   let db,payload;
   try{
     db=getClient();
-    await ensurePasswordResetReadiness(db);
+    await ensurePasswordResetReadiness(db,{requireDeliveryKey:false});
     payload=await verifyRequestAuth(req,db);
   }catch{ return res.status(503).json({error:'recent authentication temporarily unavailable'}); }
   if(!payload) return res.status(401).json({error:'authentication required'});

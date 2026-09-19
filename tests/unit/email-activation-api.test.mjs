@@ -10,6 +10,7 @@ import { createClient } from '@libsql/client';
 import authHandler from '../../api/auth.js';
 import {
   EMAIL_ACTIVATION_EVENT_TYPE,
+  activationKeyRing,
   emailActivationKeyRotationStatus,
   openEmailActivationToken,
   sealEmailActivationToken,
@@ -24,6 +25,7 @@ import {
 } from '../../api/_circle-membership.js';
 import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
 import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import {adoptCredentialKeyControl} from '../support/credential-key-control.mjs';
 
 const resources=[];
 
@@ -76,6 +78,7 @@ async function fixture(){
   const initial=await inspectMigrationState(db);
   await applyMigrations(db,{expectedStateFingerprint:initial.stateFingerprint,
     retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
+  await adoptCredentialKeyControl(db,activationKeyRing());
   await db.batch([
     `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_admin)
       VALUES (1,'owner@example.test','!owner','Owner','#111111',1)`,

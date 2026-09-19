@@ -1239,3 +1239,54 @@ delivery would strand credentials during the compatibility rollout. Decrypting
 and rewriting every queued row expands plaintext handling, transaction races,
 and rollback complexity. Conservatively waiting for v1 work to drain or cease
 being resendable preserves compatibility and requires no data mutation.
+
+## ID-31: Persist monotonic acceptance independently for each credential purpose
+
+Status: implemented as additive migration v15 plus protected operator control.
+ID-30 remains the aggregate compatibility and retirement rule immediately above.
+
+**Decision.** Migration v15 seeds exactly four constrained, initially
+uninitialized `credential_key_controls` rows: email activation, password reset,
+invitation email, and identity-email observation. Each accepted row binds the
+highest authorized key version to its purpose-scoped one-way fingerprint and a
+monotonic compare-and-swap generation. Keys, plaintext credentials, provider
+subjects, recipient addresses, and tokens remain outside the table and all
+public status.
+
+Adoption and advance are explicit operations in a protected, manual,
+latest-`main` workflow. Health checks, production startup, requests, and workers
+never mutate the controls. Exact retries are idempotent; stale concurrent
+writers, lower versions, same-version replacement, or an advance ring that no
+longer contains the accepted pair fail closed. The business-material scan and
+control update share one write transaction. Adoption permits existing v1
+compatibility, while normal advance requires aggregate compatibility readiness,
+including zero actionable or retained legacy-v1 envelopes.
+
+Global database readiness requires the exact four-row structural state but does
+not require adoption. Only a configured purpose's capability, producer, or
+active consumer requires that purpose's accepted version and fingerprint.
+Inactive work is still suppressed from authoritative state before the control
+or ciphertext is examined, and unrelated password login and product features
+remain available. Queue drains and normal row deletion cannot erase the
+independent accepted pair.
+
+The local loopback runtime adopts its deterministic local keys after migration
+and before serving requests. Production uses no automatic adoption. A v14
+restore advances to four uninitialized controls; a stale v15 restore that is
+behind current configuration reports `advance_required`. Both require explicit
+protected re-authorization. Database-only state cannot remember a version
+created after the restored snapshot, so absolute anti-rollback across old
+backups remains an external KMS/control-plane responsibility.
+
+Rollback is forward-only to a v15-aware build and preserves every control and
+ledger row. The one accepted slot can require a short purpose-specific
+maintenance interval during advance; a two-slot staged activation protocol is
+the future option if zero-downtime rotation becomes necessary.
+
+**Alternatives.** Inferring the highest version from business rows was rejected
+because queues drain and observations are deleted. Environment-only floors were
+rejected as weaker under restore and configuration rollback. Automatically
+adopting on a production request or startup was rejected because it turns a
+misconfiguration into durable authorization. An external KMS policy is the
+strongest cross-restore option, but adds operational cost and does not remove
+the application's need for purpose-scoped readiness and restore procedures.

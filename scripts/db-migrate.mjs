@@ -190,8 +190,10 @@ export function migrationStatusResult(state,target,{
 }={}){
   const schemaBlockers=(state.schemaStatus?.blockers||[]).map(blocker=>blocker.code);
   const membershipBlockers=state.adoption?.membership?.blockers||[];
+  const keyControlBlockers=state.adoption?.keyControl?.blockers||[];
   const blockers=state.classification==='fresh' ? []
-    : state.classification==='managed' ? (state.ready?[]:[...schemaBlockers,...membershipBlockers])
+    : state.classification==='managed'
+      ? (state.ready?[]:[...schemaBlockers,...membershipBlockers,...keyControlBlockers])
       : state.adoption?.eligible ? [] : (state.adoption?.blockers||['schema_not_exact']);
   const ok=blockers.length===0;
   const pendingVersions=state.classification==='unmanaged'?[]:

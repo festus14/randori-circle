@@ -22,6 +22,7 @@
     "db:rehearse-restore": "node scripts/turso-backup-restore-rehearsal.mjs",
     "db:monitor-backup": "node scripts/turso-backup-restore-monitor.mjs",
     "db:watch-backup": "node scripts/github-backup-restore-watchdog.mjs",
+    "keys:control": "node scripts/credential-key-control.mjs",
     "chat:retention": "node scripts/chat-retention.mjs",
     "db:status": "node scripts/db-inspect.mjs status",
     "check:deployability": "node scripts/check-deployability.mjs",

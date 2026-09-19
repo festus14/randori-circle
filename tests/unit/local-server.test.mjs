@@ -19,6 +19,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, test } from 'node:test';
 import { createClient } from '@libsql/client';
 
+import {createOutboxEventStatement} from '../../api/_outbox.js';
 import { LATEST_MIGRATION_VERSION } from '../../db/executable-migrations.js';
 import {
   inspectMigrationState,
@@ -26,6 +27,7 @@ import {
 } from '../../db/migration-runner.js';
 import {
   createLocalDevelopmentServer,
+  adoptLocalCredentialKeyControls,
   LOCAL_OWNER_EMAIL,
   LOCAL_OWNER_PASSWORD,
   prepareLocalDatabase,
@@ -246,7 +248,7 @@ test('database preparation migrates before serving and rejects unmanaged state',
   const ledger=await db.execute('SELECT version,disposition FROM schema_migrations ORDER BY version');
   assert.deepEqual(
     ledger.rows.map(row=>[Number(row.version),String(row.disposition)]),
-    [[1,'applied'],[2,'applied'],[3,'applied'],[4,'applied'],[5,'applied'],[6,'applied'],[7,'applied'],[8,'applied'],[9,'applied'],[10,'applied'],[11,'applied'],[12,'applied'],[13,'applied'],[14,'applied']],
+    [[1,'applied'],[2,'applied'],[3,'applied'],[4,'applied'],[5,'applied'],[6,'applied'],[7,'applied'],[8,'applied'],[9,'applied'],[10,'applied'],[11,'applied'],[12,'applied'],[13,'applied'],[14,'applied'],[15,'applied']],
   );
   await db.close();
   cleanup.pop();
@@ -292,6 +294,45 @@ test('database preparation migrates before serving and rejects unmanaged state',
     startLocalDevelopmentServer({config,logger:SILENT_LOGGER}),
     error=>error?.code==='LOCAL_DATABASE_REFUSED',
   );
+});
+
+test('local adoption rejects incompatible persisted credential material',async()=>{
+  const directory=temporaryDirectory();
+  const {config,databaseUrl}=localConfig(directory);
+  await prepareLocalDatabase(config);
+  const db=createClient({url:databaseUrl});
+  cleanup.push(()=>db.close());
+  const idempotencyKey='auth-activation/v1/11111111-1111-4111-8111-111111111111/1';
+  await db.execute(createOutboxEventStatement({eventType:'auth.emailverification.requested',
+    idempotencyKey,payload:{token_envelope:`v2.1.${'f'.repeat(64)}.AA.AA.AA`},maxAttempts:1}));
+  const keys=['NODE_ENV','JWT_SECRET','IDENTITY_EMAIL_HASH_KEY','IDENTITY_EMAIL_HASH_KEY_VERSION',
+    'IDENTITY_EMAIL_HASH_PREVIOUS_KEYS','EMAIL_VERIFICATION_ENCRYPTION_KEY',
+    'EMAIL_VERIFICATION_ENCRYPTION_KEY_VERSION','EMAIL_VERIFICATION_ENCRYPTION_PREVIOUS_KEYS',
+    'EMAIL_VERIFICATION_ENVELOPE_WRITE_VERSION','PASSWORD_RESET_ENCRYPTION_KEY',
+    'PASSWORD_RESET_ENCRYPTION_KEY_VERSION','PASSWORD_RESET_ENCRYPTION_PREVIOUS_KEYS',
+    'PASSWORD_RESET_ENVELOPE_WRITE_VERSION','INVITATION_EMAIL_ENCRYPTION_KEY',
+    'INVITATION_EMAIL_ENCRYPTION_KEY_VERSION','INVITATION_EMAIL_ENCRYPTION_PREVIOUS_KEYS',
+    'INVITATION_EMAIL_ENVELOPE_WRITE_VERSION'];
+  const previous=new Map(keys.map(name=>[name,process.env[name]]));
+  cleanup.push(()=>{
+    for(const [name,value] of previous){
+      if(value===undefined) delete process.env[name];
+      else process.env[name]=value;
+    }
+  });
+  process.env.NODE_ENV='development';
+  process.env.JWT_SECRET='local-control-test-secret-at-least-32-bytes';
+  process.env.IDENTITY_EMAIL_HASH_KEY=Buffer.alloc(32,31).toString('base64url');
+  process.env.IDENTITY_EMAIL_HASH_KEY_VERSION='1';
+  for(const name of keys){
+    if(!['NODE_ENV','JWT_SECRET','IDENTITY_EMAIL_HASH_KEY','IDENTITY_EMAIL_HASH_KEY_VERSION'].includes(name)){
+      delete process.env[name];
+    }
+  }
+  await assert.rejects(adoptLocalCredentialKeyControls(config),
+    error=>error?.code==='LOCAL_DATABASE_NOT_READY');
+  const controls=await db.execute(`SELECT state FROM credential_key_controls`);
+  assert.ok(controls.rows.every(row=>row.state==='uninitialized'));
 });
 
 test('database path guards reject dangling links, nested link escapes, and permissive local directories',async()=>{
@@ -494,6 +535,16 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
       localIdentity:true,googleOAuth:false,recentAuthMaxAgeSeconds:600,identityManagement:true},
     registrationMode:'local_invite',
   });
+  const controlDb=createClient({url:databaseUrl});
+  const controls=await controlDb.execute(`SELECT purpose,state,generation
+    FROM credential_key_controls ORDER BY purpose`);
+  await controlDb.close();
+  assert.deepEqual(controls.rows.map(row=>[String(row.purpose),String(row.state),Number(row.generation)]),[
+    ['email-activation','accepted',1],
+    ['identity-email-observation','accepted',1],
+    ['invitation-email','accepted',1],
+    ['password-reset','accepted',1],
+  ]);
 
   const health=await fetch(new URL('/api/health',first.url));
   assert.equal(health.status,200);

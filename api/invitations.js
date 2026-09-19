@@ -36,6 +36,7 @@ import {
   INVITATION_EMAIL_MAX_SENDS,
   INVITATION_EMAIL_RESEND_SECONDS,
 } from './_invitation-email.js';
+import { CredentialKeyControlError } from './_credential-key-control.js';
 
 const PREPARE_RATE_LIMIT=12;
 const PREPARE_RATE_WINDOW_SECONDS=10*60;
@@ -250,14 +251,19 @@ async function handleCreate(req,res){
   const createdAt=new Date().toISOString();
   const expiresAt=new Date(Date.now()+INVITATION_TTL_SECONDS*1000).toISOString();
   const localRuntime=localIdentityAdapterEnabled(req);
-  const emailConfiguration=invitationEmailConfiguration({localRuntime});
+  let emailConfiguration=invitationEmailConfiguration({localRuntime});
   try{
     if(emailConfiguration){
-      await ensureInvitationEmailReadiness(context.db,{localRuntime});
+      try{ await ensureInvitationEmailReadiness(context.db,{localRuntime}); }
+      catch(error){
+        if(!(error instanceof CredentialKeyControlError)) throw error;
+        emailConfiguration=null;
+      }
     }
     const transaction=await context.db.transaction('write');
     let finished=false;
     try{
+      if(emailConfiguration) await ensureInvitationEmailReadiness(transaction,{localRuntime});
       if(!await mutationContextValid(transaction,context)){
         await transaction.rollback(); finished=true;
         return res.status(409).json({error:'circle context changed',code:'circle_context_changed'});
@@ -341,6 +347,7 @@ async function handleResend(req,res){
   try{
     await ensureInvitationEmailReadiness(context.db,{localRuntime});
     transaction=await context.db.transaction('write');
+    await ensureInvitationEmailReadiness(transaction,{localRuntime});
     if(!await mutationContextValid(transaction,context)){
       await transaction.rollback(); finished=true;
       return res.status(409).json({error:'circle context changed',code:'circle_context_changed'});

@@ -15,6 +15,7 @@ import {
   hashPasswordResetToken,
   openPasswordResetToken,
   PASSWORD_RESET_RESEND_SECONDS,
+  passwordResetKeyRing,
   requestPasswordReset,
   sealPasswordResetToken,
 } from '../../api/_password-reset.js';
@@ -22,6 +23,7 @@ import {issueSession,verifyRequestAuth} from '../../api/_db.js';
 import {readRecentAuth,recordRecentAuth,requireRecentAuth} from '../../api/_recent-auth.js';
 import {EXECUTABLE_MIGRATIONS} from '../../db/executable-migrations.js';
 import {applyMigrations,inspectMigrationState,prepareMigrationConnection} from '../../db/migration-runner.js';
+import {adoptCredentialKeyControl} from '../support/credential-key-control.mjs';
 
 const JWT_SECRET='password-reset-test-secret-at-least-thirty-two-bytes';
 const ENCRYPTION_KEY=Buffer.alloc(32,11).toString('base64url');
@@ -47,6 +49,7 @@ async function fixture({clients=1}={}){
   const initial=await inspectMigrationState(databases[0]);
   await applyMigrations(databases[0],{expectedStateFingerprint:initial.stateFingerprint,
     retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
+  await adoptCredentialKeyControl(databases[0],passwordResetKeyRing());
   const passwordHash=await bcrypt.hash('old correct horse',4);
   await databases[0].execute({sql:`INSERT INTO auth_accounts
     (id,email,password_hash,display_name,color,is_admin) VALUES (1,?,?,?,?,0)`,
@@ -117,7 +120,7 @@ test('unknown and ineligible emails are equivalent and OAuth-only identities get
     {email:'unknown@example.test'},{nowSeconds:NOW}),{accepted:false});
   assert.deepEqual(await requestPasswordReset(countTransactionStatements(db,oauthCounter),
     {email:'oauth@example.test'},{nowSeconds:NOW}),{accepted:false});
-  assert.deepEqual([knownCounter.count,unknownCounter.count,oauthCounter.count],[2,2,2]);
+  assert.deepEqual([knownCounter.count,unknownCounter.count,oauthCounter.count],[3,3,3]);
   assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM auth_password_resets`)).rows[0].count),1);
 });
 

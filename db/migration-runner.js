@@ -11,6 +11,7 @@ import {
 } from './migration-ledger.js';
 import { MIGRATION_PLANS } from './migration-plan.js';
 import { inspectMembershipAdoptionReadiness } from './membership-readiness.js';
+import { inspectCredentialKeyControlReadiness } from './credential-key-control.js';
 import { inspectSchema } from './schema-inspector.js';
 import { SCHEMA_MANIFEST, checksum } from './schema-manifest.js';
 
@@ -168,8 +169,14 @@ export async function inspectMigrationState(db,{migrations=EXECUTABLE_MIGRATIONS
     ||(classification==='managed'&&ledger.currentVersion>=2))){
     membership=await inspectMembershipAdoption(db);
   }
+  let keyControl=null;
+  if(exactSchema(schemaStatus)&&(classification==='unmanaged'&&latestVersion>=15
+    ||(classification==='managed'&&ledger.currentVersion>=15))){
+    keyControl=await inspectCredentialKeyControlReadiness(db);
+  }
   const adoptionEligible=classification==='unmanaged'&&!ledgerPresent
-    &&exactSchema(schemaStatus)&&(latestVersion<2||membership?.ok===true);
+    &&exactSchema(schemaStatus)&&(latestVersion<2||membership?.ok===true)
+    &&(latestVersion<15||keyControl?.ok===true);
   const stateFingerprint=checksum({
     classification,
     latestVersion,
@@ -182,6 +189,7 @@ export async function inspectMigrationState(db,{migrations=EXECUTABLE_MIGRATIONS
     })=>({version,name,checksum:rowChecksum,appliedAt,executionMs,disposition})),
     schema:{blockers:structuralBlockers(schemaStatus),warnings:schemaStatus.warnings},
     membership,
+    keyControl,
   });
   return {
     classification,
@@ -191,7 +199,8 @@ export async function inspectMigrationState(db,{migrations=EXECUTABLE_MIGRATIONS
     ledgerPresent,
     schemaExact:exactSchema(schemaStatus),
     ready:exactSchema(schemaStatus)
-      &&(classification!=='managed'||ledger.currentVersion<2||membership?.ok===true),
+      &&(classification!=='managed'||ledger.currentVersion<2||membership?.ok===true)
+      &&(classification!=='managed'||ledger.currentVersion<15||keyControl?.ok===true),
     schemaStatus,
     adoption:{
       eligible:adoptionEligible,
@@ -199,8 +208,10 @@ export async function inspectMigrationState(db,{migrations=EXECUTABLE_MIGRATIONS
         ...(ledgerPresent?['ledger_already_present']:[]),
         ...(!exactSchema(schemaStatus)?['schema_not_exact']:[]),
         ...(membership?.blockers||[]),
+        ...(keyControl?.blockers||[]),
       ],
       membership,
+      keyControl,
     },
   };
 }
@@ -220,6 +231,7 @@ function assertManagedSchema(state){
           ...state.schemaStatus.blockers.map(blocker=>blocker.code),
           ...state.schemaStatus.warnings.map(warning=>warning.code),
           ...(state.adoption.membership?.blockers||[]),
+          ...(state.adoption.keyControl?.blockers||[]),
         ],
       },
     });

@@ -8,6 +8,7 @@ import { createClient } from '@libsql/client';
 import bcrypt from 'bcryptjs';
 
 import {
+  activationKeyRing,
   createEmailActivationHandler,
   deliverEmailActivations,
   EMAIL_ACTIVATION_RESEND_SECONDS,
@@ -21,6 +22,7 @@ import {
 import { createInvitationToken, hashInvitationEmail, hashInvitationToken } from '../../api/_circle-membership.js';
 import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
 import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import {adoptCredentialKeyControl} from '../support/credential-key-control.mjs';
 
 const JWT_SECRET='email-activation-test-secret-at-least-thirty-two-bytes';
 const ENCRYPTION_KEY=Buffer.alloc(32,7).toString('base64url');
@@ -46,6 +48,7 @@ async function fixture({clients=1}={}){
     expectedStateFingerprint:initial.stateFingerprint,
     retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0},
   });
+  await adoptCredentialKeyControl(databases[0],activationKeyRing());
   await databases[0].batch([
     `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_admin)
       VALUES (1,'owner@example.test','!owner','Owner','#111111',1)`,
@@ -166,7 +169,7 @@ test('eligible, wrong-email, and existing-account requests use the same bounded 
   const existingCounter={count:0};
   assert.deepEqual(await request(countTransactionStatements(db,existingCounter),ownerClaim,'owner@example.test'),
     {accepted:false});
-  assert.deepEqual([wrongCounter.count,eligibleCounter.count,existingCounter.count],[2,2,2]);
+  assert.deepEqual([wrongCounter.count,eligibleCounter.count,existingCounter.count],[3,3,3]);
 });
 
 test('resends are cooldown and lifetime bounded while stale queued messages suppress',async()=>{

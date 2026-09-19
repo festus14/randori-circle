@@ -29,7 +29,7 @@ function temporaryDatabase(){
 
 test('executable migrations are contiguous and fingerprint every executable operation',()=>{
   assert.equal(validateExecutableMigrations(),true);
-  assert.equal(LATEST_MIGRATION_VERSION,14);
+  assert.equal(LATEST_MIGRATION_VERSION,15);
   assert.deepEqual(EXECUTABLE_MIGRATIONS.slice(0,2).map(migration=>migration.checksum),[
     '27944847696265114fbbb0e70ffa961a7f766a8f85cc4fe251ef00a779aac0df',
     'ceca22b30cc4f546359dc8d5731e1ab157e82b748b468e6eed510a8a4379444d',
@@ -45,6 +45,7 @@ test('executable migrations are contiguous and fingerprint every executable oper
   assert.equal(EXECUTABLE_MIGRATIONS[10].checksum,'e1e41483cbdff5a10a58ccc144bfadbb818cecb900768495ad8ab64dd393332b');
   assert.equal(EXECUTABLE_MIGRATIONS[11].checksum,'9443e548fb6edac275eb8af08e7bc007cbfa32e5450efaf444375b976eddf43c');
   assert.equal(EXECUTABLE_MIGRATIONS[12].checksum,'54b73ffd4cbc009af58c40110b6387d15c2ec52f7f9c082ef69b1258c691d122');
+  assert.equal(EXECUTABLE_MIGRATIONS[14].checksum,'3b715ac6c5f4d4efa6d628bcc01fad8dccc189b855c5dd0ecf7625e1dc3b1a34');
   assert.match(MIGRATION_LEDGER_CHECKSUM,/^[a-f0-9]{64}$/);
   for(const migration of EXECUTABLE_MIGRATIONS){
     assert.equal(checksumExecutableMigration(migration),migration.checksum);
@@ -105,7 +106,7 @@ test('ledger rejects gaps, future versions, checksum drift, and owned schema add
       ...overrides,
     });
     assert.throws(()=>validateMigrationLedger([row(2)],EXECUTABLE_MIGRATIONS),/gap/i);
-    assert.throws(()=>validateMigrationLedger([row(1),row(2),row(3),row(4),row(5),row(6),row(7),row(8),row(9),row(10),row(11),row(12),row(13),row(14),row(15)],EXECUTABLE_MIGRATIONS),/newer/i);
+    assert.throws(()=>validateMigrationLedger([row(1),row(2),row(3),row(4),row(5),row(6),row(7),row(8),row(9),row(10),row(11),row(12),row(13),row(14),row(15),row(16)],EXECUTABLE_MIGRATIONS),/newer/i);
     assert.throws(()=>validateMigrationLedger([row(1,{checksum:'0'.repeat(64)})],EXECUTABLE_MIGRATIONS),/immutable/i);
     assert.throws(()=>validateMigrationLedger([
       row(1),row(2,{disposition:'adopted'}),

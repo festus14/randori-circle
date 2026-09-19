@@ -1,6 +1,7 @@
 import { MIGRATION_PLANS, validateMigrationPlans } from './migration-plan.js';
 import { LATEST_MIGRATION_VERSION, MIGRATION_CONTRACTS } from './migration-contract.js';
 import { checksum } from './schema-manifest.js';
+import { CREDENTIAL_KEY_CONTROL_SEED_OPERATIONS } from './credential-key-control.js';
 
 export const ROLLOUT_SINGLETON_OPERATION=Object.freeze({
   operation:'ensure-row',
@@ -10,10 +11,20 @@ export const ROLLOUT_SINGLETON_OPERATION=Object.freeze({
     VALUES (1,0,datetime('now')) ON CONFLICT(id) DO NOTHING`,
 });
 
+const STATE_OPERATIONS_BY_VERSION=new Map([
+  [2,Object.freeze([ROLLOUT_SINGLETON_OPERATION])],
+  [15,CREDENTIAL_KEY_CONTROL_SEED_OPERATIONS],
+]);
+
+const ALLOWED_STATE_OPERATIONS=new Map(
+  [...STATE_OPERATIONS_BY_VERSION.values()].flat()
+    .map(operation=>[operation.name,operation]),
+);
+
 function executableOperations(plan){
   return Object.freeze([
     ...plan.operations,
-    ...(plan.version===2?[ROLLOUT_SINGLETON_OPERATION]:[]),
+    ...(STATE_OPERATIONS_BY_VERSION.get(plan.version)||[]),
   ]);
 }
 
@@ -68,11 +79,12 @@ export function validateExecutableMigrations(migrations=EXECUTABLE_MIGRATIONS,pl
       if(typeof operation.sql!=='string'||!operation.sql.trim()||operation.sql.includes(';')){
         throw new Error(`executable migration ${expectedVersion} contains invalid SQL`);
       }
-      if(operation.operation==='ensure-row'
-        &&(operation.name!==ROLLOUT_SINGLETON_OPERATION.name
-          ||operation.table!==ROLLOUT_SINGLETON_OPERATION.table
-          ||operation.sql!==ROLLOUT_SINGLETON_OPERATION.sql)){
-        throw new Error(`executable migration ${expectedVersion} contains an unsupported state operation`);
+      if(operation.operation==='ensure-row'){
+        const expected=ALLOWED_STATE_OPERATIONS.get(operation.name);
+        if(!expected||operation.table!==expected.table||operation.sql!==expected.sql
+          ||!(STATE_OPERATIONS_BY_VERSION.get(expectedVersion)||[]).includes(expected)){
+          throw new Error(`executable migration ${expectedVersion} contains an unsupported state operation`);
+        }
       }
     });
     const planOperations=migration.operations.slice(0,plan.operations.length);

@@ -13,12 +13,14 @@ import {issueSession,verifyRequestAuth} from '../../api/_db.js';
 import {
   PASSWORD_RESET_EVENT_TYPE,
   openPasswordResetToken,
+  passwordResetKeyRing,
   passwordResetKeyRotationStatus,
   sealPasswordResetToken,
 } from '../../api/_password-reset.js';
 import {createOutboxEventStatement} from '../../api/_outbox.js';
 import {EXECUTABLE_MIGRATIONS} from '../../db/executable-migrations.js';
 import {applyMigrations,inspectMigrationState,prepareMigrationConnection} from '../../db/migration-runner.js';
+import {adoptCredentialKeyControl} from '../support/credential-key-control.mjs';
 
 const resources=[];
 
@@ -73,6 +75,7 @@ async function fixture(){
   const initial=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS});
   await applyMigrations(db,{migrations:EXECUTABLE_MIGRATIONS,
     expectedStateFingerprint:initial.stateFingerprint,retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
+  await adoptCredentialKeyControl(db,passwordResetKeyRing());
   const passwordHash=await bcrypt.hash('old correct horse',4);
   await db.execute({sql:`INSERT INTO auth_accounts
     (id,email,password_hash,display_name,color,is_admin) VALUES (1,?,?,?,?,0)`,
