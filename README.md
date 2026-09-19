@@ -96,7 +96,7 @@ Copy `.env.example` and configure at least:
 - an explicit canonical HTTPS `APP_URL` plus both `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`; OAuth stays unavailable for partial, malformed, insecure, host-mismatched, or local-runtime configuration
 - `SIGNUP_ALLOWLIST` for the legacy private-beta Google flow while circle membership enforcement is off
 - `CIRCLE_MEMBERSHIP_ENABLED=true` to enforce invitation-gated primary-circle access after the staged migration below
-- `MULTI_CIRCLE_CONTROL_PLANE_ENABLED=true` enables session-bound circle creation/selection and circle-scoped roster/invitation management after migration v14. Keep `MULTI_CIRCLE_AVAILABILITY_ENABLED=false` until selected-circle availability is rehearsed, then keep `SECONDARY_CIRCLE_COORDINATION_ENABLED=false` until the complete managed ledger through v14 is ready. The final flag opens only immutable pairing publication/read views for a selected secondary circle; schedule, chat, rooms, video, execution, recap, and AI remain unavailable there. See `docs/ACTIVE_CIRCLE_CONTEXT.md`, `docs/CIRCLE_CREATION.md`, and `docs/SELECTED_CIRCLE_PAIRING.md`.
+- `MULTI_CIRCLE_CONTROL_PLANE_ENABLED=true` enables session-bound circle creation/selection and circle-scoped roster/invitation management after migration v14. Keep `MULTI_CIRCLE_AVAILABILITY_ENABLED=false` until selected-circle availability is rehearsed, then keep `SECONDARY_CIRCLE_COORDINATION_ENABLED=false` until the complete managed ledger through v14 is ready. After coordination and the shared sender are rehearsed, `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED=true` queues dashboard-only result mail for newly published secondary circles. It is ineffective unless every preceding flag is enabled. Schedule, chat, rooms, video, execution, recap, and AI remain unavailable there. See `docs/ACTIVE_CIRCLE_CONTEXT.md`, `docs/CIRCLE_CREATION.md`, and `docs/SELECTED_CIRCLE_PAIRING.md`.
 - `EMAIL_PASSWORD_ACTIVATION_ENABLED=true` plus the versioned, purpose-specific `EMAIL_VERIFICATION_ENCRYPTION_*` key-ring settings to enable production invite-bound password activation after migration v7 is ready
 - the explicit `INVITATION_EMAIL_DELIVERY_ENABLED` gate and separate versioned `INVITATION_EMAIL_ENCRYPTION_*` key ring to queue owner-created invitation links without storing a plaintext bearer token
 - `PASSWORD_RESET_ENABLED=true` plus the independent versioned `PASSWORD_RESET_ENCRYPTION_*` key ring to enable recovery after migration v8 is ready
@@ -120,6 +120,11 @@ Authentication rate limiting is migration-owned: runtime requests never create `
 Invitation creation/resend, pairing publication, and schedule mutations commit
 with their versioned email events in one transaction. Provider calls begin only
 after that commit.
+Secondary publication reuses `pairing.email.requested` with a compact v2
+internal-ID payload, so it remains one of the same five fairly scheduled event
+types. Dispatch resolves current recipient/circle data, rechecks the immutable
+publication and current memberships/preferences, and links only to the
+dashboard; v1 primary room-email delivery remains compatible.
 `GET|POST /api/cron/outbox` uses the existing `CRON_SECRET` and drains due
 pairing, schedule, invitation, activation, and password-reset events through
 one fair eight-claim/45-second invocation budget, independently of the weekly

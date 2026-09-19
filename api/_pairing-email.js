@@ -1,8 +1,17 @@
 import { canonicalRoomId, escapeHtml } from './_pairing.js';
+import { secondaryCirclePairingEmailEnabled } from './_active-circle.js';
 import { OutboxDeliveryError, readOutboxMetrics, runOutboxWorker } from './_outbox.js';
+import {
+  PAIRING_EMAIL_EVENT_TYPE,
+  PRIMARY_PAIRING_EMAIL_EVENT_VERSION,
+  SECONDARY_PAIRING_EMAIL_EVENT_VERSION,
+} from './_pairing-email-contract.js';
 
-export const PAIRING_EMAIL_EVENT_TYPE='pairing.email.requested';
-export const PAIRING_EMAIL_EVENT_VERSION=1;
+export {
+  PAIRING_EMAIL_EVENT_TYPE,
+  SECONDARY_PAIRING_EMAIL_EVENT_VERSION,
+};
+export const PAIRING_EMAIL_EVENT_VERSION=PRIMARY_PAIRING_EMAIL_EVENT_VERSION;
 
 function positiveId(value){
   const id=Number(value);
@@ -10,6 +19,21 @@ function positiveId(value){
 }
 
 function pairingEmailPayload(event){
+  if(event.eventVersion===SECONDARY_PAIRING_EMAIL_EVENT_VERSION){
+    const payload=event.payload;
+    const expected=['circle_id','kind','publication_id','user_id'];
+    if(Object.keys(payload).sort().join(',')!==expected.join(',')){
+      throw new OutboxDeliveryError('PAYLOAD_INVALID',{retryable:false});
+    }
+    const publicationId=positiveId(payload.publication_id);
+    const circleId=positiveId(payload.circle_id);
+    const userId=positiveId(payload.user_id);
+    const kind=String(payload.kind||'');
+    if(!publicationId||!circleId||!userId||!['paired','solo','unavailable'].includes(kind)){
+      throw new OutboxDeliveryError('PAYLOAD_INVALID',{retryable:false});
+    }
+    return Object.freeze({version:2,publicationId,circleId,userId,kind});
+  }
   if(event.eventVersion!==PAIRING_EMAIL_EVENT_VERSION){
     throw new OutboxDeliveryError('EVENT_VERSION_UNSUPPORTED',{retryable:false});
   }
@@ -26,7 +50,7 @@ function pairingEmailPayload(event){
     ||recipientEmail.length>320||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipientEmail)){
     throw new OutboxDeliveryError('PAYLOAD_INVALID',{retryable:false});
   }
-  return Object.freeze({weekId,userId,kind,recipientEmail});
+  return Object.freeze({version:1,weekId,userId,kind,recipientEmail});
 }
 
 async function lookupDisplayName(db,userId){
@@ -73,6 +97,199 @@ async function renderPairingEmail(db,payload,baseUrl){
   });
 }
 
+function secondaryPairingRowIsValid(row,payload){
+  if(!row||Number(row.publication_id)!==payload.publicationId
+    ||Number(row.publication_circle_id)!==payload.circleId
+    ||String(row.publication_scope_key)!==`circle:${payload.circleId}`
+    ||String(row.eligibility_scope_key)!==String(row.publication_scope_key)
+    ||Number(row.eligibility_circle_id)!==payload.circleId
+    ||String(row.eligibility_cycle_key)!==String(row.publication_cycle_key)
+    ||String(row.cycle_scope_key)!==String(row.publication_scope_key)
+    ||Number(row.cycle_circle_id)!==payload.circleId
+    ||String(row.cycle_cycle_key)!==String(row.publication_cycle_key)
+    ||String(row.cycle_cycle_id)!==String(row.publication_cycle_id)
+    ||String(row.cycle_starts_at)!==String(row.publication_starts_at)
+    ||String(row.cycle_ends_at)!==String(row.publication_ends_at)
+    ||String(row.cycle_cutoff_at)!==String(row.publication_cutoff_at)
+    ||String(row.cycle_time_zone)!==String(row.publication_time_zone)
+    ||Number(row.user_id)!==payload.userId
+    ||!/^[0-9a-f]{64}$/.test(String(row.publication_cycle_key))){
+    return false;
+  }
+  const available=Number(row.is_available)===1;
+  const groupPosition=row.group_position==null?null:Number(row.group_position);
+  const groupSize=row.group_size==null?null:Number(row.group_size);
+  const memberPosition=row.member_position==null?null:Number(row.member_position);
+  if(payload.kind==='unavailable'){
+    return !available&&groupPosition===null&&groupSize===null&&memberPosition===null
+      &&row.group_id==null;
+  }
+  if(!available||!Number.isSafeInteger(groupPosition)||!Number.isSafeInteger(memberPosition)
+    ||row.group_id==null||Number(row.group_position_stored)!==groupPosition){
+    return false;
+  }
+  const userAId=positiveId(row.user_a_id);
+  const userBId=row.user_b_id==null?null:positiveId(row.user_b_id);
+  if(payload.kind==='solo'){
+    return groupSize===1&&memberPosition===0&&Number(row.member_count)===1
+      &&Number(row.is_solo)===1&&userAId===payload.userId&&userBId===null;
+  }
+  return groupSize===2&&[0,1].includes(memberPosition)&&Number(row.member_count)===2
+    &&Number(row.is_solo)===0&&userAId!==null&&userBId!==null&&userAId!==userBId
+    &&(memberPosition===0?userAId===payload.userId:userBId===payload.userId)
+    &&positiveId(row.partner_eligibility_user_id)===(memberPosition===0?userBId:userAId)
+    &&Number(row.partner_eligibility_available)===1
+    &&Number(row.partner_eligibility_group_position)===groupPosition
+    &&Number(row.partner_eligibility_group_size)===2
+    &&Number(row.partner_eligibility_member_position)===(memberPosition===0?1:0);
+}
+
+async function resolveSecondaryPairingEmail(db,payload){
+  const result=await db.execute({
+    sql:`SELECT publication.id AS publication_id,publication.scope_key AS publication_scope_key,
+        publication.circle_id AS publication_circle_id,publication.cycle_key AS publication_cycle_key,
+        publication.cycle_id AS publication_cycle_id,publication.starts_at AS publication_starts_at,
+        publication.ends_at AS publication_ends_at,publication.cutoff_at AS publication_cutoff_at,
+        publication.time_zone AS publication_time_zone,publication.generation_token,
+        publication.algorithm_version,publication.algorithm_seed,publication.participant_count,
+        cycle.scope_key AS cycle_scope_key,cycle.circle_id AS cycle_circle_id,
+        cycle.cycle_key AS cycle_cycle_key,cycle.cycle_id AS cycle_cycle_id,
+        cycle.starts_at AS cycle_starts_at,cycle.ends_at AS cycle_ends_at,
+        cycle.cutoff_at AS cycle_cutoff_at,cycle.time_zone AS cycle_time_zone,
+        eligibility.scope_key AS eligibility_scope_key,eligibility.circle_id AS eligibility_circle_id,
+        eligibility.cycle_key AS eligibility_cycle_key,eligibility.user_id,
+        eligibility.is_available,eligibility.group_position,eligibility.group_size,
+        eligibility.member_position,group_row.id AS group_id,
+        group_row.position AS group_position_stored,group_row.member_count,
+        group_row.user_a_id,group_row.user_b_id,group_row.is_solo,
+        partner_eligibility.user_id AS partner_eligibility_user_id,
+        partner_eligibility.is_available AS partner_eligibility_available,
+        partner_eligibility.group_position AS partner_eligibility_group_position,
+        partner_eligibility.group_size AS partner_eligibility_group_size,
+        partner_eligibility.member_position AS partner_eligibility_member_position,
+        circle.name AS circle_name,circle.is_primary,circle.archived_at,
+        account.email,account.display_name,account.is_demo,
+        membership.status AS membership_status,
+        preference.email_enabled,
+        partner.id AS partner_id,partner.display_name AS partner_name,partner.is_demo AS partner_is_demo,
+        partner_membership.status AS partner_membership_status,
+        (SELECT COUNT(*) FROM circle_pairing_eligibility all_eligibility
+          WHERE all_eligibility.publication_id=publication.id
+            AND all_eligibility.scope_key=publication.scope_key
+            AND all_eligibility.circle_id=publication.circle_id
+            AND all_eligibility.cycle_key=publication.cycle_key) AS eligibility_count,
+        (SELECT COUNT(*) FROM circle_pairing_eligibility available_eligibility
+          WHERE available_eligibility.publication_id=publication.id
+            AND available_eligibility.scope_key=publication.scope_key
+            AND available_eligibility.circle_id=publication.circle_id
+            AND available_eligibility.cycle_key=publication.cycle_key
+            AND available_eligibility.is_available=1) AS available_count,
+        (SELECT COUNT(*) FROM circle_pairing_groups all_groups
+          WHERE all_groups.publication_id=publication.id
+            AND all_groups.scope_key=publication.scope_key
+            AND all_groups.circle_id=publication.circle_id
+            AND all_groups.cycle_key=publication.cycle_key) AS group_count
+      FROM circle_pairing_publications publication
+      LEFT JOIN pairing_cycles cycle
+        ON cycle.scope_key=publication.scope_key AND cycle.circle_id=publication.circle_id
+          AND cycle.cycle_key=publication.cycle_key AND cycle.cycle_id=publication.cycle_id
+          AND cycle.starts_at=publication.starts_at AND cycle.ends_at=publication.ends_at
+          AND cycle.cutoff_at=publication.cutoff_at AND cycle.time_zone=publication.time_zone
+      LEFT JOIN circle_pairing_eligibility eligibility
+        ON eligibility.publication_id=publication.id AND eligibility.scope_key=publication.scope_key
+          AND eligibility.circle_id=publication.circle_id AND eligibility.cycle_key=publication.cycle_key
+          AND eligibility.user_id=?
+      LEFT JOIN circle_pairing_groups group_row
+        ON group_row.publication_id=publication.id AND group_row.scope_key=publication.scope_key
+          AND group_row.circle_id=publication.circle_id AND group_row.cycle_key=publication.cycle_key
+          AND (group_row.user_a_id=? OR group_row.user_b_id=?)
+      LEFT JOIN circle_pairing_eligibility partner_eligibility
+        ON partner_eligibility.publication_id=publication.id
+          AND partner_eligibility.scope_key=publication.scope_key
+          AND partner_eligibility.circle_id=publication.circle_id
+          AND partner_eligibility.cycle_key=publication.cycle_key
+          AND partner_eligibility.user_id=CASE
+            WHEN group_row.user_a_id=? THEN group_row.user_b_id ELSE group_row.user_a_id END
+      LEFT JOIN circles circle ON circle.id=publication.circle_id
+      LEFT JOIN auth_accounts account ON account.id=?
+      LEFT JOIN circle_memberships membership
+        ON membership.circle_id=publication.circle_id AND membership.user_id=?
+      LEFT JOIN user_notification_prefs preference ON preference.user_id=?
+      LEFT JOIN auth_accounts partner ON partner.id=CASE
+        WHEN group_row.user_a_id=? THEN group_row.user_b_id ELSE group_row.user_a_id END
+      LEFT JOIN circle_memberships partner_membership
+        ON partner_membership.circle_id=publication.circle_id AND partner_membership.user_id=partner.id
+      WHERE publication.id=? LIMIT 3`,
+    args:[payload.userId,payload.userId,payload.userId,payload.userId,payload.userId,
+      payload.userId,payload.userId,payload.userId,payload.publicationId],
+  });
+  const rows=result.rows||[];
+  if(rows.length!==1||!secondaryPairingRowIsValid(rows[0],payload)){
+    return {suppressed:'PUBLICATION_INVALID'};
+  }
+  const row=rows[0];
+  const participantCount=Number(row.participant_count);
+  const eligibilityCount=Number(row.eligibility_count);
+  const availableCount=Number(row.available_count);
+  const groupCount=Number(row.group_count);
+  if(!Number.isSafeInteger(participantCount)||participantCount<1
+    ||eligibilityCount!==participantCount||!Number.isSafeInteger(availableCount)||availableCount<0
+    ||availableCount>participantCount||groupCount!==Math.ceil(availableCount/2)
+    ||!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(String(row.generation_token))
+    ||!String(row.algorithm_version||'').length
+    ||String(row.algorithm_seed)!==`${row.publication_scope_key}:${row.publication_cycle_key}:weekly`){
+    return {suppressed:'PUBLICATION_INVALID'};
+  }
+  if(Number(row.publication_circle_id)!==payload.circleId||Number(row.is_primary)!==0
+    ||row.archived_at!==null){
+    return {suppressed:'CIRCLE_UNAVAILABLE'};
+  }
+  if(String(row.membership_status)!=='active'||Number(row.is_demo)===1){
+    return {suppressed:'MEMBERSHIP_REVOKED'};
+  }
+  if(row.email_enabled!==null&&Number(row.email_enabled)===0){
+    return {suppressed:'EMAIL_DISABLED'};
+  }
+  const recipientEmail=String(row.email||'').trim().toLowerCase();
+  const rawCircleName=String(row.circle_name||'');
+  const circleName=rawCircleName.trim();
+  if(!recipientEmail||recipientEmail.length>320||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipientEmail)
+    ||!circleName||circleName!==rawCircleName||circleName!==circleName.normalize('NFC')
+    ||[...circleName].length>80||Buffer.byteLength(circleName,'utf8')>240
+    ||/[\u0000-\u001f\u007f-\u009f]/u.test(circleName)){
+    return {suppressed:'RECIPIENT_INVALID'};
+  }
+  if(payload.kind==='paired'){
+    if(!positiveId(row.partner_id)||String(row.partner_membership_status)!=='active'
+      ||Number(row.partner_is_demo)===1){
+      return {suppressed:'PARTNER_REVOKED'};
+    }
+  }
+  return {row,payload:Object.freeze({...payload,recipientEmail,circleName})};
+}
+
+function renderSecondaryPairingEmail(payload,row,baseUrl){
+  const safeCircleName=escapeHtml(payload.circleName);
+  const safeBaseUrl=escapeHtml(baseUrl);
+  if(payload.kind==='unavailable'){
+    return Object.freeze({
+      subject:`${payload.circleName} — update your Randori availability`,
+      html:`<h2>${safeCircleName} — weekly pairing</h2><p>You were unavailable for this cycle.</p><p><a href="${safeBaseUrl}">Open the Randori dashboard</a> to update your availability for next week.</p>`,
+    });
+  }
+  if(payload.kind==='solo'){
+    return Object.freeze({
+      subject:`${payload.circleName} — your Randori pairing is ready`,
+      html:`<h2>${safeCircleName} — weekly pairing</h2><p>You have a solo practice session this cycle.</p><p><a href="${safeBaseUrl}">Open the Randori dashboard</a> to view your pairing.</p>`,
+    });
+  }
+  const partnerName=escapeHtml(String(row.partner_name||'your partner').slice(0,80));
+  return Object.freeze({
+    subject:`${payload.circleName} — your Randori pairing is ready`,
+    html:`<h2>${safeCircleName} — weekly pairing</h2><p>You're paired with <b>${partnerName}</b>.</p><p><a href="${safeBaseUrl}">Open the Randori dashboard</a> to view your pairing.</p>`,
+  });
+}
+
 function providerError(error){
   const status=Number(error?.statusCode||error?.status||error?.response?.status||error?.error?.statusCode);
   if(status===429){
@@ -101,6 +318,25 @@ export function createPairingEmailHandler({db,baseUrl,send,localRuntime=false}={
   catch{ throw new TypeError('valid pairing email base URL required'); }
   return async function pairingEmailHandler(event,{signal}={}){
     const payload=pairingEmailPayload(event);
+    if(payload.version===2){
+      if(!secondaryCirclePairingEmailEnabled()){
+        return {status:'suppressed',reasonCode:'SECONDARY_PAIRING_EMAIL_DISABLED'};
+      }
+      const resolved=await resolveSecondaryPairingEmail(db,payload);
+      if(resolved.suppressed) return {status:'suppressed',reasonCode:resolved.suppressed};
+      const content=renderSecondaryPairingEmail(resolved.payload,resolved.row,origin);
+      try{
+        const delivery=await send({
+          to:resolved.payload.recipientEmail,subject:content.subject,html:content.html,
+          kind:payload.kind,idempotencyKey:event.idempotencyKey,signal,
+        });
+        if(delivery?.error) throw delivery.error;
+        return {
+          status:'delivered',providerName:String(delivery?.providerName||'email').slice(0,100),
+          providerMessageId:delivery?.providerMessageId||delivery?.data?.id||null,
+        };
+      }catch(error){ throw providerError(error); }
+    }
     const account=await db.execute(localRuntime?{
       sql:`SELECT email,is_demo FROM auth_accounts WHERE id=? LIMIT 2`,args:[payload.userId],
     }:{
@@ -132,7 +368,7 @@ export function createPairingEmailHandler({db,baseUrl,send,localRuntime=false}={
     try{
       const delivery=await send({
         to:payload.recipientEmail,subject:content.subject,html:content.html,
-        idempotencyKey:event.idempotencyKey,signal,
+        kind:payload.kind,idempotencyKey:event.idempotencyKey,signal,
       });
       if(delivery?.error) throw delivery.error;
       return {
