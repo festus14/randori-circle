@@ -72,11 +72,11 @@ function availabilityFixtureResult(sql,args=[]){
     return rows(cycle?[cycle]:[]);
   }
   if(sql.includes('INSERT INTO pairing_cycles')){
-    const [scope_key,circle_id,cycle_key,cycle_id,starts_at,ends_at,cutoff_at,time_zone]=args;
+    const [scope_key,circle_id,cycle_key,cycle_id,starts_at,ends_at,cutoff_at,time_zone,bridgeLegacyAvailability]=args;
     const key=`${scope_key}:${cycle_key}`;
     if(!mockAvailabilityCycles.has(key)) mockAvailabilityCycles.set(key,{
       scope_key,circle_id,cycle_key,cycle_id,starts_at,ends_at,cutoff_at,time_zone,
-      default_source:[...mockAvailabilityCycles.values()].some(row=>row.scope_key===scope_key)
+      default_source:bridgeLegacyAvailability===0||[...mockAvailabilityCycles.values()].some(row=>row.scope_key===scope_key)
         ?'cycle_default':'legacy_bridge',created_at:new Date().toISOString(),
     });
     return rows([], {rowsAffected:1});
@@ -99,7 +99,10 @@ function availabilityFixtureResult(sql,args=[]){
     return rows([],{rowsAffected:1});
   }
   if(sql.includes('SELECT account.id,account.is_available,circle.id AS circle_id')){
-    return rows([{id:Number(args[0]),is_available:1,circle_id:1,circle_public_id:'circle_test',circle_name:'Test Circle'}]);
+    const circleId=Number(args[1]??1);
+    return rows([{id:Number(args[0]),is_available:1,circle_id:circleId,
+      circle_public_id:circleId===20?'circle-secondary':'circle-primary',
+      circle_name:circleId===20?'Secondary':'Primary',is_primary:circleId===20?0:1}]);
   }
   if(sql.includes('SELECT id,public_id,name FROM circles')&&sql.includes('is_primary=1')){
     return rows([{id:1,public_id:'circle_test',name:'Test Circle'}]);
@@ -545,7 +548,8 @@ beforeEach(() => {
     'GOOGLE_CLIENT_SECRET', 'GROQ_API_KEY', 'OPENAI_API_KEY', 'RESEND_API_KEY', 'RESEND_FROM',
     'NEXT_PUBLIC_SENTRY_DSN', 'SENTRY_DSN',
     'ALLOW_OPEN_SIGNUP', 'SIGNUP_ALLOWLIST', 'LEETCODE_INGESTION_AUTHORIZED',
-    'AUTH_SCHEMA_BOOTSTRAP_ENABLED', 'CIRCLE_MEMBERSHIP_ENABLED', 'MULTI_CIRCLE_CONTROL_PLANE_ENABLED', 'RANDORI_LOCAL_RUNTIME',
+    'AUTH_SCHEMA_BOOTSTRAP_ENABLED', 'CIRCLE_MEMBERSHIP_ENABLED', 'MULTI_CIRCLE_CONTROL_PLANE_ENABLED',
+    'MULTI_CIRCLE_AVAILABILITY_ENABLED', 'RANDORI_LOCAL_RUNTIME',
     'EMAIL_PASSWORD_ACTIVATION_ENABLED', 'EMAIL_VERIFICATION_ENCRYPTION_KEY',
     'PASSWORD_RESET_ENABLED', 'PASSWORD_RESET_ENCRYPTION_KEY',
     'IDENTITY_EMAIL_HASH_KEY', 'IDENTITY_EMAIL_HASH_KEY_VERSION', 'IDENTITY_MANAGEMENT_ENABLED',
@@ -3385,6 +3389,98 @@ test('unscoped pairing and workspace routes require one resolved primary circle'
   });
   assert.equal(pathConflict.status,409,
     'the same canonical route decision must drive both the guard and dispatch');
+});
+
+test('the separately flagged availability route requires and returns the exact session circle generation',async()=>{
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';
+  process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED='true';
+  const capabilities=await invoke(authHandler,{
+    url:'/api/auth/capabilities',query:{endpoint:'capabilities'},headers:sameOriginHeaders,
+  });
+  assert.equal(capabilities.body.capabilities.multiCircleControlPlane,true);
+  assert.equal(capabilities.body.capabilities.multiCircleAvailability,true);
+  executeHandler=(sql,args)=>{
+    if(sql.includes('ORDER BY circle.is_primary DESC,circle.id')) return rows([
+      {circle_id:10,public_id:'circle-primary',name:'Primary',is_primary:1,role:'member'},
+      {circle_id:20,public_id:'circle-secondary',name:'Secondary',is_primary:0,role:'member'},
+    ]);
+    if(sql.includes('SELECT context.circle_id,context.context_version')){
+      return rows([{circle_id:20,context_version:7}]);
+    }
+    if(sql.includes('SELECT membership.circle_id')&&sql.includes('FROM auth_sessions session')){
+      return rows([{circle_id:Number(args[2])}]);
+    }
+    if(sql.includes('AS active_circle_count')) return rows([{
+      active_circle_count:2,primary_circle_count:1,selected_circle_id:20,selected_circle_active:1,
+    }]);
+    return rows();
+  };
+  const headers={...sameOriginHeaders,'x-test-auth':'user'};
+  for(const version of [undefined,'nope','6','8']){
+    mockAvailabilityCycles.clear();
+    const response=await invoke(opsHandler,{
+      method:'GET',url:'/api/settings/availability',query:{endpoint:'availability'},
+      headers:{...headers,...(version===undefined?{}:{'x-randori-circle-context-version':version})},
+    });
+    assert.equal(response.status,409);
+    assert.equal(response.body.code,'circle_context_changed');
+    assert.equal(response.body.availability,undefined);
+    assert.equal(mockAvailabilityCycles.size,0);
+  }
+
+  const accepted=await invoke(opsHandler,{
+    method:'GET',url:'/api/settings/availability',query:{endpoint:'availability'},
+    headers:{...headers,'x-randori-circle-context-version':'7'},
+  });
+  assert.equal(accepted.status,200);
+  assert.equal(accepted.body.circle_context_version,7);
+  assert.equal(accepted.body.availability.source,'cycle_default');
+  assert.equal(accepted.body.availability.isAvailable,true);
+
+  const pairing=await invoke(opsHandler,{
+    method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers,body:{},
+  });
+  assert.equal(pairing.status,409);
+  assert.equal(pairing.body.code,'circle_feature_unavailable');
+});
+
+test('a sole secondary circle uses implicit availability GET and POST without a context header',async()=>{
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';
+  process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED='true';
+  executeHandler=(sql,args)=>{
+    if(sql.includes('ORDER BY circle.is_primary DESC,circle.id')) return rows([
+      {circle_id:20,public_id:'circle-secondary',name:'Secondary',is_primary:0,role:'member'},
+    ]);
+    if(sql.includes('SELECT context.circle_id,context.context_version')) return rows();
+    if(sql.includes('SELECT membership.circle_id')&&sql.includes('FROM auth_sessions session')){
+      return rows([{circle_id:Number(args[2])}]);
+    }
+    return rows();
+  };
+  const request={
+    url:'/api/settings/availability',query:{endpoint:'availability'},
+    headers:{...sameOriginHeaders,'x-test-auth':'user'},
+  };
+  const initial=await invoke(opsHandler,request);
+  assert.equal(initial.status,200);
+  assert.equal(initial.body.circle_context_version,0);
+  assert.equal(initial.body.availability.source,'cycle_default');
+  assert.equal(initial.body.availability.isAvailable,true);
+
+  const updated=await invoke(opsHandler,{
+    ...request,method:'POST',body:{
+      cycle_key:initial.body.availability.cycleKey,
+      expected_version:0,
+      is_available:false,
+    },
+  });
+  assert.equal(updated.status,200);
+  assert.equal(updated.body.circle_context_version,0);
+  assert.equal(updated.body.availability.source,'user');
+  assert.equal(updated.body.availability.isAvailable,false);
+  assert.equal(updated.body.availability.version,1);
 });
 
 test('video signaling validates membership and supports post, filtered poll, and purge', async () => {

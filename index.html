@@ -1167,7 +1167,7 @@ p{margin:0}
   let me = null;
   let authSessionEpoch=0;
   let authRefreshSequence=0;
-  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,passwordReset:false,localIdentity:false,verifiedEmailActivation:false,googleOAuth:false,identityManagement:false,multiCircleControlPlane:false,registrationMode:'private_beta'});
+  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,passwordReset:false,localIdentity:false,verifiedEmailActivation:false,googleOAuth:false,identityManagement:false,multiCircleControlPlane:false,multiCircleAvailability:false,registrationMode:'private_beta'});
   let authCapabilities=CLOSED_AUTH_CAPABILITIES;
   let authCapabilitiesLoaded=false;
   let authCapabilitiesFailed=false;
@@ -1182,6 +1182,8 @@ p{margin:0}
   let activeCircleContext=null;
   let activeCircleContextUserId=null;
   let circleContextRequest=0;
+  let circleContextLoadPromise=null;
+  let circleContextLoadKey='';
   let currentCloudPairingWeek=null;
   let currentCloudPairingCycle=null;
   let currentCloudPairingLoaded=false;
@@ -1192,7 +1194,8 @@ p{margin:0}
   const AVAILABILITY_ROLLOVER_GRACE_MS=250;
   const AVAILABILITY_ROLLOVER_RETRY_MS=30000;
   const AVAILABILITY_TIMER_MAX_MS=2147483647;
-  const availabilityState={value:null,userId:null,loading:false,saving:false,pendingValue:null,error:'',notice:null,request:null,rolloverTimer:null,epoch:0};
+  const availabilityState={value:null,userId:null,contextKey:null,loading:false,saving:false,pendingValue:null,error:'',notice:null,request:null,rolloverTimer:null,epoch:0};
+  const availabilityContextRecovery={userId:null,authEpoch:null,attempts:0};
   const AUTH_CAPABILITY_TIMEOUT_MS=8000;
   const invitePreparation=(()=>{
     try{
@@ -1523,7 +1526,7 @@ async function refreshMe(){
         :(upcoming?`next cutoff ${formatAvailabilityInstant(upcoming.cutoffAt,upcoming.timeZone)}`:'weekly schedule loading…');
     }
   }
-  function parseAvailabilityEnvelope(payload){
+  function parseAvailabilityEnvelope(payload,{contextVersion}={}){
     const availability=payload?.availability;
     const cycle=availability?.cycle;
     if(!availability||typeof availability!=='object'||Array.isArray(availability)
@@ -1534,7 +1537,8 @@ async function refreshMe(){
       ||!Number.isSafeInteger(availability.version)||availability.version<0
       ||!AVAILABILITY_SOURCES.has(availability.source)||typeof availability.editable!=='boolean'
       ||cycle.state!=='upcoming'||typeof cycle.timeZone!=='string'||!cycle.timeZone
-      ||![cycle.startsAt,cycle.endsAt,cycle.cutoffAt].every(value=>typeof value==='string'&&Number.isFinite(Date.parse(value)))){
+      ||![cycle.startsAt,cycle.endsAt,cycle.cutoffAt].every(value=>typeof value==='string'&&Number.isFinite(Date.parse(value)))
+      ||(contextVersion!==undefined&&payload?.circle_context_version!==contextVersion)){
       throw new Error('invalid availability response');
     }
     return Object.freeze({
@@ -1585,6 +1589,7 @@ async function refreshMe(){
     const cutoff=Date.parse(availability.cycle.cutoffAt);
     if(!Number.isFinite(cutoff)) return;
     const epoch=availabilityState.epoch;
+    const contextKey=availabilityState.contextKey;
     const delayUntilCutoff=cutoff-Date.now()+AVAILABILITY_ROLLOVER_GRACE_MS;
     const delay=Math.min(
       delayUntilCutoff>0?delayUntilCutoff:AVAILABILITY_ROLLOVER_RETRY_MS,
@@ -1593,6 +1598,7 @@ async function refreshMe(){
     availabilityState.rolloverTimer=setTimeout(()=>{
       availabilityState.rolloverTimer=null;
       if(epoch!==availabilityState.epoch||availabilityState.userId!==userId
+        ||availabilityState.contextKey!==contextKey
         ||Number(me?.id||me?.uid)!==userId) return;
       if(availabilityState.saving){ scheduleAvailabilityRollover(); return; }
       refreshAvailability().catch(()=>{});
@@ -1604,6 +1610,7 @@ async function refreshMe(){
   }
   function availabilityNoticeMatches(notice,userId,availability){
     return !!notice&&notice.userId===userId
+      &&notice.contextKey===availabilityState.contextKey
       &&notice.cycleKey===availability?.cycleKey
       &&notice.version===availability?.version
       &&notice.isAvailable===availability?.isAvailable
@@ -1695,6 +1702,7 @@ async function refreshMe(){
     availabilityState.epoch+=1;
     availabilityState.value=null;
     availabilityState.userId=null;
+    availabilityState.contextKey=null;
     availabilityState.loading=false;
     availabilityState.saving=false;
     availabilityState.pendingValue=null;
@@ -1703,44 +1711,101 @@ async function refreshMe(){
     availabilityState.request=null;
     renderAvailability();
   }
+  function availabilityContextFence(userId){
+    if(!authCapabilities.multiCircleAvailability){
+      return Object.freeze({key:`account:${userId}:legacy-primary`,contextVersion:undefined});
+    }
+    const context=activeCircleContext;
+    const publicId=String(context?.active_circle?.public_id||'');
+    const version=Number(context?.context_version);
+    if(activeCircleContextUserId!==userId||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(publicId)
+      ||!Number.isSafeInteger(version)||version<0) return null;
+    return Object.freeze({key:`account:${userId}:circle:${publicId}:context:${version}`,contextVersion:version});
+  }
+  function resetAvailabilityContextRecovery(){
+    availabilityContextRecovery.userId=null;
+    availabilityContextRecovery.authEpoch=null;
+    availabilityContextRecovery.attempts=0;
+  }
+  function recoverAvailabilityCircleContext(error,userId,fence){
+    if(!authCapabilities.multiCircleAvailability
+      ||!['circle_context_changed','active_circle_required'].includes(String(error?.code||''))
+      ||Number(me?.id||me?.uid)!==userId||availabilityState.contextKey!==fence?.key) return false;
+    if(availabilityContextRecovery.userId!==userId
+      ||availabilityContextRecovery.authEpoch!==authSessionEpoch){
+      availabilityContextRecovery.userId=userId;
+      availabilityContextRecovery.authEpoch=authSessionEpoch;
+      availabilityContextRecovery.attempts=0;
+    }
+    if(availabilityContextRecovery.attempts>=1){
+      clearAvailability();
+      availabilityState.userId=userId;
+      availabilityState.error='Circle context changed again. Retry when your circle selection is stable.';
+      renderAvailability();
+      return true;
+    }
+    availabilityContextRecovery.attempts+=1;
+    resetPrivateCircleControl({switching:false,preserveLifecycleRecentAction:true});
+    void renderPeople().then(()=>refreshAvailability()).catch(()=>{});
+    return true;
+  }
   async function refreshAvailability(){
     if(!me){ clearAvailability(); return null; }
     const userId=Number(me.id||me.uid);
     if(!Number.isSafeInteger(userId)||userId<1){ clearAvailability(); return null; }
-    if(availabilityState.saving&&availabilityState.userId===userId) return availabilityState.value;
-    if(availabilityState.loading&&availabilityState.userId===userId&&availabilityState.request){
+    await authCapabilitiesPromise;
+    if(authCapabilities.multiCircleAvailability&&!availabilityContextFence(userId)){
+      try{ await ensureActiveCircleContext(userId); }catch{}
+    }
+    const fence=availabilityContextFence(userId);
+    if(!fence){
+      clearAvailability();
+      availabilityState.userId=userId;
+      availabilityState.error='Choose an active circle before setting availability.';
+      renderAvailability();
+      return null;
+    }
+    if(availabilityState.saving&&availabilityState.userId===userId
+      &&availabilityState.contextKey===fence.key) return availabilityState.value;
+    if(availabilityState.loading&&availabilityState.userId===userId
+      &&availabilityState.contextKey===fence.key&&availabilityState.request){
       return availabilityState.request;
     }
     clearAvailabilityRolloverTimer();
-    if(availabilityState.userId!==userId) availabilityState.notice=null;
+    if(availabilityState.userId!==userId||availabilityState.contextKey!==fence.key) availabilityState.notice=null;
     // Keep a validated value visible while the same account revalidates it.
     // Clearing it creates a transient unchecked state; a pointer gesture that
     // began just before revalidation can then appear to succeed without ever
     // reaching the versioned write below.
-    if(availabilityState.userId!==userId) availabilityState.value=null;
+    if(availabilityState.userId!==userId||availabilityState.contextKey!==fence.key) availabilityState.value=null;
     const epoch=++availabilityState.epoch;
     availabilityState.userId=userId;
+    availabilityState.contextKey=fence.key;
     availabilityState.loading=true;
     availabilityState.error='';
     renderAvailability();
     const request=(async()=>{
       try{
         const data=await api('/api/settings/availability',{method:'GET'});
-        const availability=parseAvailabilityEnvelope(data);
-        if(epoch!==availabilityState.epoch||Number(me?.id||me?.uid)!==userId) return null;
+        const availability=parseAvailabilityEnvelope(data,{contextVersion:fence.contextVersion});
+        if(epoch!==availabilityState.epoch||Number(me?.id||me?.uid)!==userId
+          ||availabilityState.contextKey!==fence.key
+          ||availabilityContextFence(userId)?.key!==fence.key) return null;
         if(!availabilityNoticeMatches(availabilityState.notice,userId,availability)){
           availabilityState.notice=null;
         }
+        resetAvailabilityContextRecovery();
         replaceAvailability(availability);
         return availability;
       }catch(error){
-        if(epoch===availabilityState.epoch){
+        if(recoverAvailabilityCircleContext(error,userId,fence)) return null;
+        if(epoch===availabilityState.epoch&&availabilityState.contextKey===fence.key){
           availabilityState.value=null;
           availabilityState.error='Weekly availability is temporarily unavailable. Try again.';
         }
         return null;
       }finally{
-        if(epoch===availabilityState.epoch){
+        if(epoch===availabilityState.epoch&&availabilityState.contextKey===fence.key){
           availabilityState.loading=false;
           availabilityState.request=null;
           renderAvailability();
@@ -1810,8 +1875,11 @@ async function refreshMe(){
     if(typeof checked!=='boolean'||availabilityState.saving) return;
     const userId=Number(me?.id||me?.uid);
     const requestAuthEpoch=authSessionEpoch;
-    if(!Number.isSafeInteger(userId)||userId<1||availabilityState.userId!==userId) return;
-    if(availabilityState.loading&&availabilityState.userId===userId&&availabilityState.request){
+    const fence=availabilityContextFence(userId);
+    if(!Number.isSafeInteger(userId)||userId<1||!fence||availabilityState.userId!==userId
+      ||availabilityState.contextKey!==fence.key) return;
+    if(availabilityState.loading&&availabilityState.userId===userId
+      &&availabilityState.contextKey===fence.key&&availabilityState.request){
       // A same-account background refresh may start between pointerdown and
       // change. Serialize the user's intent behind that refresh, then write it
       // with the freshly returned cycle key/version. Identity changes still
@@ -1824,7 +1892,8 @@ async function refreshMe(){
       renderAvailability();
       await request;
       if(requestAuthEpoch!==authSessionEpoch||Number(me?.id||me?.uid)!==userId
-        ||availabilityState.userId!==userId) return;
+        ||availabilityState.userId!==userId||availabilityState.contextKey!==fence.key
+        ||availabilityContextFence(userId)?.key!==fence.key) return;
       if(!availabilityState.value?.editable||availabilityState.value.isAvailable===checked){
         availabilityState.saving=false;
         availabilityState.pendingValue=null;
@@ -1842,6 +1911,7 @@ async function refreshMe(){
     const epoch=availabilityState.epoch;
     const isCurrentRequest=()=>epoch===availabilityState.epoch
       &&requestAuthEpoch===authSessionEpoch&&availabilityState.userId===userId
+      &&availabilityState.contextKey===fence.key&&availabilityContextFence(userId)?.key===fence.key
       &&Number(me?.id||me?.uid)===userId;
     availabilityState.saving=true;
     availabilityState.pendingValue=checked;
@@ -1854,15 +1924,17 @@ async function refreshMe(){
         expected_version:current.version,
         is_available:checked,
       }});
-      const next=parseAvailabilityEnvelope(data);
+      const next=parseAvailabilityEnvelope(data,{contextVersion:fence.contextVersion});
       if(!isCurrentRequest()) return;
+      resetAvailabilityContextRecovery();
       replaceAvailability(next);
       toast(checked?`Available for ${availabilityState.value.cycle.cycleId} ✓`:`Skipping ${availabilityState.value.cycle.cycleId}`);
       renderPeople();
     }catch(error){
       if(!isCurrentRequest()) return;
+      if(recoverAvailabilityCircleContext(error,userId,fence)) return;
       try{
-        replaceAvailability(parseAvailabilityEnvelope(error));
+        replaceAvailability(parseAvailabilityEnvelope(error,{contextVersion:fence.contextVersion}));
         const code=String(error?.error||'');
         const message=code.includes('cutoff')
           ?'That cutoff has closed. Showing the next editable cycle.'
@@ -1870,7 +1942,7 @@ async function refreshMe(){
             ?'The pairing cycle changed. Review the refreshed availability below.'
             :'Availability changed elsewhere. Showing the latest setting.';
         availabilityState.notice=Object.freeze({
-          message,userId,cycleKey:availabilityState.value.cycleKey,
+          message,userId,contextKey:fence.key,cycleKey:availabilityState.value.cycleKey,
           version:availabilityState.value.version,
           isAvailable:availabilityState.value.isAvailable,
           editable:availabilityState.value.editable,
@@ -1901,6 +1973,7 @@ async function refreshMe(){
       ||(capabilities.verifiedEmailActivation!==undefined&&typeof capabilities.verifiedEmailActivation!=='boolean')
       ||(capabilities.identityManagement!==undefined&&typeof capabilities.identityManagement!=='boolean')
       ||(capabilities.multiCircleControlPlane!==undefined&&typeof capabilities.multiCircleControlPlane!=='boolean')
+      ||(capabilities.multiCircleAvailability!==undefined&&typeof capabilities.multiCircleAvailability!=='boolean')
       ||typeof capabilities.googleOAuth!=='boolean'
       ||!['local_open','local_invite','verified_invite','private_beta'].includes(mode)) throw new Error('invalid auth capabilities');
     return Object.freeze({
@@ -1912,6 +1985,7 @@ async function refreshMe(){
       googleOAuth:capabilities.googleOAuth,
       identityManagement:capabilities.identityManagement===true,
       multiCircleControlPlane:capabilities.multiCircleControlPlane===true,
+      multiCircleAvailability:capabilities.multiCircleAvailability===true,
       registrationMode:mode,
     });
   }
@@ -2535,7 +2609,10 @@ async function refreshMe(){
     if(!cb) return;
     cb.addEventListener('change', ()=>{ toggleAvailability(cb.checked); });
     cb.addEventListener('click', (e)=>{ e.stopPropagation(); });
-    document.getElementById('availRetry')?.addEventListener('click',()=>{ refreshAvailability().catch(()=>{}); });
+    document.getElementById('availRetry')?.addEventListener('click',()=>{
+      resetAvailabilityContextRecovery();
+      refreshAvailability().catch(()=>{});
+    });
   })();
 
   // Reminder prefs wiring — Pillar 5
@@ -2816,6 +2893,7 @@ async function refreshMe(){
   };
   window._randori_availability={
     get current(){ return availabilityState.value; },
+    get contextKey(){ return availabilityState.contextKey; },
     refresh:refreshAvailability,
   };
   const revalidateAvailability=()=>{
@@ -3017,6 +3095,7 @@ async function refreshMe(){
   const circleContextChannel=typeof BroadcastChannel==='function'?new BroadcastChannel('randori-circle-context-v1'):null;
 
   function resetPrivateCircleControl({switching,preserveLifecycleRecentAction=false}){
+    clearAvailability();
     circleContextSwitching=switching;
     circleControlEpoch+=1;
     circleRenderEpoch+=1;
@@ -3029,6 +3108,8 @@ async function refreshMe(){
     activeCircleRole=null;
     activeCircleContext=null;
     activeCircleContextUserId=null;
+    circleContextLoadPromise=null;
+    circleContextLoadKey='';
     circleInviteCreatePending=false;
     circleLifecyclePending=false;
     resetOwnerInvites({allowRosterPreservation:false});
@@ -3084,7 +3165,11 @@ async function refreshMe(){
     circleContextSelect.disabled=false;
     circleContextStatus.textContent=context?.selection_required
       ?'Choose which circle to manage. Pairing remains unavailable while this account belongs to multiple circles.'
-      :(circles.length>1?'Circle-specific member and invitation controls are active. Pairing remains unavailable for this account.':'');
+      :(circles.length>1
+        ?(authCapabilities.multiCircleAvailability
+          ?'Circle-specific availability and member controls are active. Pairing remains unavailable for this account.'
+          :'Circle-specific member and invitation controls are active. Pairing remains unavailable for this account.')
+        :'');
   }
 
   function circleResponseMatchesContext(result){
@@ -3114,26 +3199,44 @@ async function refreshMe(){
     return response===undefined||circleResponseMatchesContext(response);
   }
 
-  async function loadCircleContext(epoch,userId){
-    const controlEpoch=circleControlEpoch;
+  async function ensureActiveCircleContext(userId){
     if(!authCapabilities.multiCircleControlPlane){
       activeCircleContext=null;
       activeCircleContextUserId=null;
       if(circleContextPanel){ circleContextPanel.hidden=true; circleContextPanel.style.display='none'; }
-      return true;
+      return null;
     }
+    if(activeCircleContextUserId===userId&&activeCircleContext) return activeCircleContext;
+    const controlEpoch=circleControlEpoch;
+    const loadKey=`${authSessionEpoch}:${controlEpoch}:${userId}`;
+    if(circleContextLoadPromise&&circleContextLoadKey===loadKey) return circleContextLoadPromise;
     const request=++circleContextRequest;
-    const context=await api('/api/circles',{method:'GET'});
-    if(circleContextSwitching||controlEpoch!==circleControlEpoch
-      ||request!==circleContextRequest||epoch!==circleRenderEpoch||Number(me?.id||me?.uid)!==userId) return false;
-    if(context?.ok!==true||!Array.isArray(context.circles)
-      ||!Number.isSafeInteger(context.context_version)||context.context_version<0){
-      throw new Error('invalid circle context response');
+    circleContextLoadKey=loadKey;
+    const pending=(async()=>{
+      const context=await api('/api/circles',{method:'GET'});
+      if(circleContextSwitching||controlEpoch!==circleControlEpoch
+        ||request!==circleContextRequest||Number(me?.id||me?.uid)!==userId) return null;
+      if(context?.ok!==true||!Array.isArray(context.circles)
+        ||!Number.isSafeInteger(context.context_version)||context.context_version<0){
+        throw new Error('invalid circle context response');
+      }
+      activeCircleContext=context;
+      activeCircleContextUserId=userId;
+      renderCircleContextSelector(context);
+      return context;
+    })();
+    circleContextLoadPromise=pending;
+    try{ return await pending; }
+    finally{
+      if(circleContextLoadPromise===pending){ circleContextLoadPromise=null; circleContextLoadKey=''; }
     }
-    activeCircleContext=context;
-    activeCircleContextUserId=userId;
-    renderCircleContextSelector(context);
-    return !!context.active_circle;
+  }
+
+  async function loadCircleContext(epoch,userId){
+    const context=await ensureActiveCircleContext(userId);
+    if(epoch!==circleRenderEpoch||Number(me?.id||me?.uid)!==userId) return false;
+    if(!authCapabilities.multiCircleControlPlane) return true;
+    return !!context?.active_circle;
   }
 
   circleContextSelect?.addEventListener('change',async()=>{

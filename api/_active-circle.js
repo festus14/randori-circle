@@ -10,6 +10,11 @@ export function multiCircleControlPlaneEnabled(){
     &&process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED==='true';
 }
 
+export function multiCircleAvailabilityEnabled(){
+  return multiCircleControlPlaneEnabled()
+    &&process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED==='true';
+}
+
 function positiveInteger(value){
   const parsed=typeof value==='number'?value
     :(typeof value==='string'&&/^[1-9]\d*$/.test(value)?Number(value):null);

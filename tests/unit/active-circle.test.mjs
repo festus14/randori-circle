@@ -9,8 +9,10 @@ import {
   accountHasMultipleActiveCircles,
   canUseLegacySinglePrimaryCircleFeatures,
   listSessionCircleContexts,
+  resolveActiveCircleContext,
   selectActiveCircleContext,
 } from '../../api/_active-circle.js';
+import { getAvailabilityState, updateAvailability } from '../../api/_availability.js';
 import { changeCircleMemberStatus, leaveCircle, listCircleMembersForOwner } from '../../api/_member-lifecycle.js';
 import { issueSession, verifyRequestAuth } from '../../api/_db.js';
 import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
@@ -23,6 +25,7 @@ const originalEnvironment={
   JWT_SECRET:process.env.JWT_SECRET,
   CIRCLE_MEMBERSHIP_ENABLED:process.env.CIRCLE_MEMBERSHIP_ENABLED,
   MULTI_CIRCLE_CONTROL_PLANE_ENABLED:process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED,
+  MULTI_CIRCLE_AVAILABILITY_ENABLED:process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED,
 };
 
 afterEach(async()=>{
@@ -60,12 +63,20 @@ async function fixture(){
   process.env.JWT_SECRET=JWT_SECRET;
   process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
   process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';
+  process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED='true';
   const ownerToken=await issueSession(db,{id:1,email:'owner@example.test',name:'Owner'});
   const ownerPayload=await verifyRequestAuth(request(ownerToken),db);
   const secondToken=await issueSession(db,{id:1,email:'owner@example.test',name:'Owner'});
   const secondPayload=await verifyRequestAuth(request(secondToken),db);
   const memberToken=await issueSession(db,{id:2,email:'member@example.test',name:'Member'});
   return {db,ownerPayload,secondPayload,memberToken};
+}
+
+function availabilityContext(payload,resolved){
+  return {
+    payload,circleId:resolved.membership.id,contextVersion:resolved.context_version,
+    implicit:resolved.implicit,
+  };
 }
 
 test('a multi-circle account must select a session-bound active circle with monotonic CAS',async()=>{
@@ -103,6 +114,176 @@ test('a multi-circle account must select a session-bound active circle with mono
   assert.equal(unchanged.context_version,1);
   assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM circle_audit_events
     WHERE event_type='circle.context.selected'`)).rows[0].count),1);
+});
+
+test('active-circle availability is independently scoped across switches on the same session',async()=>{
+  const {db,ownerPayload}=await fixture();
+  await db.execute(`UPDATE auth_accounts SET is_available=0 WHERE id=1`);
+  const primarySelection=await selectActiveCircleContext(db,ownerPayload,{
+    circlePublicId:'circle-primary',expectedContextVersion:0,
+  });
+  let active=await resolveActiveCircleContext(db,ownerPayload);
+  const primaryContext=availabilityContext(ownerPayload,active);
+  const primary=await getAvailabilityState(db,{userId:1,now:'2026-09-18T12:00:00.000Z',circleContext:primaryContext});
+  assert.equal(primary.source,'legacy_bridge');
+  assert.equal(primary.isAvailable,false);
+
+  const secondarySelection=await selectActiveCircleContext(db,ownerPayload,{
+    circlePublicId:'circle-secondary',expectedContextVersion:primarySelection.context_version,
+  });
+  active=await resolveActiveCircleContext(db,ownerPayload);
+  const secondaryContext=availabilityContext(ownerPayload,active);
+  const secondary=await getAvailabilityState(db,{userId:1,now:'2026-09-18T12:00:00.000Z',circleContext:secondaryContext});
+  assert.equal(secondary.source,'cycle_default');
+  assert.equal(secondary.isAvailable,true);
+  const secondaryUpdated=await updateAvailability(db,{
+    userId:1,now:'2026-09-18T12:00:00.000Z',circleContext:secondaryContext,
+    body:{cycle_key:secondary.cycleKey,expected_version:0,is_available:false},
+  });
+  assert.equal(secondaryUpdated.isAvailable,false);
+
+  await selectActiveCircleContext(db,ownerPayload,{
+    circlePublicId:'circle-primary',expectedContextVersion:secondarySelection.context_version,
+  });
+  active=await resolveActiveCircleContext(db,ownerPayload);
+  const primaryAgain=await getAvailabilityState(db,{
+    userId:1,now:'2026-09-18T12:00:00.000Z',circleContext:availabilityContext(ownerPayload,active),
+  });
+  assert.equal(primaryAgain.cycleKey,primary.cycleKey);
+  assert.equal(primaryAgain.isAvailable,false);
+  assert.notEqual(primaryAgain.cycleKey,secondary.cycleKey);
+  const rows=await db.execute(`SELECT scope_key,is_available,version FROM pairing_cycle_availability ORDER BY scope_key`);
+  assert.deepEqual(rows.rows.map(row=>[row.scope_key,Number(row.is_available),Number(row.version)]),[
+    ['circle:20',0,1],
+  ]);
+});
+
+test('stale and removed contexts fail before availability materialization',async()=>{
+  const {db,ownerPayload}=await fixture();
+  const selected=await selectActiveCircleContext(db,ownerPayload,{
+    circlePublicId:'circle-primary',expectedContextVersion:0,
+  });
+  const staleContext={payload:ownerPayload,circleId:10,contextVersion:selected.context_version,implicit:false};
+  await selectActiveCircleContext(db,ownerPayload,{
+    circlePublicId:'circle-secondary',expectedContextVersion:selected.context_version,
+  });
+  await assert.rejects(getAvailabilityState(db,{
+    userId:1,now:'2026-09-18T12:00:00.000Z',circleContext:staleContext,
+  }),error=>error?.code==='AVAILABILITY_CONTEXT_CHANGED');
+  assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM pairing_cycles`)).rows[0].count),0);
+
+  const live=await resolveActiveCircleContext(db,ownerPayload);
+  await db.execute(`UPDATE circle_memberships SET status='inactive' WHERE circle_id=20 AND user_id=1`);
+  await assert.rejects(updateAvailability(db,{
+    userId:1,now:'2026-09-18T12:00:00.000Z',circleContext:availabilityContext(ownerPayload,live),
+    body:{cycle_key:'a'.repeat(64),expected_version:0,is_available:false},
+  }),error=>error?.code==='AVAILABILITY_CONTEXT_CHANGED');
+  assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM pairing_cycle_availability`)).rows[0].count),0);
+});
+
+test('an implicit sole-secondary context supports independent GET and POST with cycle_default',async()=>{
+  const {db}=await fixture();
+  await db.execute(`UPDATE auth_accounts SET is_available=0 WHERE id=3`);
+  const otherToken=await issueSession(db,{id:3,email:'other@example.test',name:'Other'});
+  const otherPayload=await verifyRequestAuth(request(otherToken),db);
+  const implicitSecondary=await resolveActiveCircleContext(db,otherPayload);
+  assert.equal(implicitSecondary.implicit,true);
+  assert.equal(implicitSecondary.membership.is_primary,false);
+  const context=availabilityContext(otherPayload,implicitSecondary);
+  const initial=await getAvailabilityState(db,{
+    userId:3,now:'2026-09-18T12:00:00.000Z',circleContext:context,
+  });
+  assert.equal(initial.source,'cycle_default');
+  assert.equal(initial.isAvailable,true,'a secondary circle must not inherit the account-global false value');
+  assert.equal(initial.version,0);
+  const updated=await updateAvailability(db,{
+    userId:3,now:'2026-09-18T12:00:00.000Z',circleContext:availabilityContext(otherPayload,implicitSecondary),
+    body:{cycle_key:initial.cycleKey,expected_version:0,is_available:false},
+  });
+  assert.equal(updated.isAvailable,false);
+  assert.equal(updated.source,'user');
+  assert.equal(updated.version,1);
+  assert.equal(Number((await db.execute({sql:`SELECT COUNT(*) AS count FROM auth_session_circle_contexts
+    WHERE session_hash=?`,args:[otherPayload.sessionHash]})).rows[0].count),0,
+  'implicit availability must not create a session context row');
+  const stored=await db.execute(`SELECT scope_key,user_id,is_available,version
+    FROM pairing_cycle_availability WHERE user_id=3`);
+  assert.deepEqual(stored.rows.map(row=>[
+    row.scope_key,Number(row.user_id),Number(row.is_available),Number(row.version),
+  ]),[['circle:30',3,0,1]]);
+});
+
+test('implicit sole-primary availability retains the legacy bridge without a stored context',async()=>{
+  const {db,ownerPayload}=await fixture();
+  await db.execute(`DELETE FROM circle_memberships WHERE circle_id=20 AND user_id=1`);
+  await db.execute(`UPDATE auth_accounts SET is_available=0 WHERE id=1`);
+  const active=await resolveActiveCircleContext(db,ownerPayload);
+  assert.equal(active.implicit,true);
+  const state=await getAvailabilityState(db,{
+    userId:1,now:'2026-09-18T12:00:00.000Z',circleContext:availabilityContext(ownerPayload,active),
+  });
+  assert.equal(state.source,'legacy_bridge');
+  assert.equal(state.isAvailable,false);
+});
+
+test('availability rejects archived circles and revoked sessions without creating a cycle',async()=>{
+  const {db,ownerPayload,secondPayload}=await fixture();
+  const first=await selectActiveCircleContext(db,ownerPayload,{
+    circlePublicId:'circle-secondary',expectedContextVersion:0,
+  });
+  await db.execute(`UPDATE circles SET archived_at='2026-09-19T00:00:00.000Z' WHERE id=20`);
+  await assert.rejects(getAvailabilityState(db,{
+    userId:1,now:'2026-09-18T12:00:00.000Z',
+    circleContext:{payload:ownerPayload,circleId:20,contextVersion:first.context_version,implicit:false},
+  }),error=>error?.code==='AVAILABILITY_CONTEXT_CHANGED');
+  await db.execute(`UPDATE circles SET archived_at=NULL WHERE id=20`);
+
+  const second=await selectActiveCircleContext(db,secondPayload,{
+    circlePublicId:'circle-secondary',expectedContextVersion:0,
+  });
+  await db.execute({sql:`UPDATE auth_sessions SET revoked_at=?,revocation_reason='current_logout' WHERE session_hash=?`,
+    args:[Math.floor(Date.now()/1000),secondPayload.sessionHash]});
+  await assert.rejects(getAvailabilityState(db,{
+    userId:1,now:'2026-09-18T12:00:00.000Z',
+    circleContext:{payload:secondPayload,circleId:20,contextVersion:second.context_version,implicit:false},
+  }),error=>error?.code==='AVAILABILITY_CONTEXT_CHANGED');
+  assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM pairing_cycles`)).rows[0].count),0);
+});
+
+test('availability revalidates the exact context on every transaction retry',async()=>{
+  const {db,ownerPayload}=await fixture();
+  const selected=await selectActiveCircleContext(db,ownerPayload,{
+    circlePublicId:'circle-secondary',expectedContextVersion:0,
+  });
+  let validations=0;
+  let transactions=0;
+  const wrapper={
+    execute:value=>db.execute(value),
+    batch:(values,mode)=>db.batch(values,mode),
+    async transaction(mode){
+      transactions+=1;
+      const transaction=await db.transaction(mode);
+      return {
+        async execute(value){
+          const sql=typeof value==='string'?value:String(value?.sql||'');
+          if(sql.includes('SELECT membership.circle_id')&&sql.includes('FROM auth_sessions session')){
+            validations+=1;
+            if(validations===1) throw Object.assign(new Error('database is busy'),{code:'SQLITE_BUSY'});
+          }
+          return transaction.execute(value);
+        },
+        batch:(values,batchMode)=>transaction.batch(values,batchMode),
+        commit:()=>transaction.commit(),rollback:()=>transaction.rollback(),close:()=>transaction.close?.(),
+      };
+    },
+  };
+  const state=await getAvailabilityState(wrapper,{
+    userId:1,now:'2026-09-18T12:00:00.000Z',
+    circleContext:{payload:ownerPayload,circleId:20,contextVersion:selected.context_version,implicit:false},
+  });
+  assert.equal(state.source,'cycle_default');
+  assert.equal(transactions,2);
+  assert.equal(validations,2);
 });
 
 test('selection and control-plane reads never reveal or mutate another account circle',async()=>{
