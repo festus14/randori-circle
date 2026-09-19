@@ -133,6 +133,7 @@ test('password login and explicit confirmation create session-scoped recent-auth
   assert.equal(recent.statusCode,200);
   assert.equal(recent.body.recentAuth.ok,true);
   assert.equal(recent.body.recentAuth.method,'password');
+  assert.deepEqual(recent.body.methods,{password:true,google:false});
 
   const token=await issueSession(db,{id:1,email:'member@example.test',name:'Member'});
   const staleCookie=`randori_session=${encodeURIComponent(token)}`;

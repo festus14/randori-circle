@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { revokeAccountSessions } from './_db.js';
+import { requireRecentAuth } from './_recent-auth.js';
 
 export const MEMBER_LIST_LIMIT=500;
 
@@ -47,6 +48,24 @@ async function inspectScopedTarget(transaction,{actorUserId,targetUserId}){
   return result.rows?.length===1?result.rows[0]:null;
 }
 
+async function acquireOwnerWrite(transaction,actorUserId){
+  await transaction.execute({
+    sql:`UPDATE circle_memberships AS actor
+      SET updated_at=updated_at
+      WHERE actor.user_id=? AND actor.role='owner' AND actor.status='active'
+        AND EXISTS (SELECT 1 FROM circles circle WHERE circle.id=actor.circle_id
+          AND circle.is_primary=1 AND circle.archived_at IS NULL)`,
+    args:[actorUserId],
+  });
+}
+
+async function requireActorRecentAuth(transaction,actorUserId,session,nowSeconds){
+  const sessionUserId=positiveInteger(Number(session?.id??session?.uid));
+  return requireRecentAuth(transaction,sessionUserId===actorUserId?session:null,{
+    ...(nowSeconds?{nowSeconds}:{}),
+  });
+}
+
 export async function listCircleMembersForOwner(db,{actorUserId}={}){
   const actor=positiveInteger(actorUserId);
   if(!db||typeof db.execute!=='function'||!actor) throw new TypeError('valid owner membership query required');
@@ -77,7 +96,7 @@ export async function listCircleMembersForOwner(db,{actorUserId}={}){
     :Object.freeze({ok:false,reason:'owner_required'});
 }
 
-export async function changeCircleMemberStatus(db,{actorUserId,targetUserId,action}={}){
+export async function changeCircleMemberStatus(db,{actorUserId,targetUserId,action,session,nowSeconds}={}){
   const actor=positiveInteger(actorUserId);
   const target=positiveInteger(targetUserId);
   const operation=normalizedAction(action);
@@ -92,6 +111,17 @@ export async function changeCircleMemberStatus(db,{actorUserId,targetUserId,acti
   const transaction=await db.transaction('write');
   let finished=false;
   try{
+    if(operation==='deactivate'){
+      await acquireOwnerWrite(transaction,actor);
+      const targetState=await inspectScopedTarget(transaction,{actorUserId:actor,targetUserId:target});
+      if(!targetState){
+        await rollback(transaction); finished=true;
+        return Object.freeze({ok:false,reason:'not_found'});
+      }
+      if(targetState.role==='owner'){
+        await requireActorRecentAuth(transaction,actor,session,nowSeconds);
+      }
+    }
     const changed=await transaction.execute({
       sql:`UPDATE circle_memberships AS target
         SET status=?,updated_at=?
@@ -204,7 +234,7 @@ export async function leaveCircle(db,{actorUserId}={}){
   }
 }
 
-export async function transferCircleOwnership(db,{actorUserId,targetUserId}={}){
+export async function transferCircleOwnership(db,{actorUserId,targetUserId,session,nowSeconds}={}){
   const actor=positiveInteger(actorUserId);
   const target=positiveInteger(targetUserId);
   if(!db||typeof db.transaction!=='function'||!actor||!target) throw new TypeError('valid ownership transfer required');
@@ -213,6 +243,8 @@ export async function transferCircleOwnership(db,{actorUserId,targetUserId}={}){
   const transaction=await db.transaction('write');
   let finished=false;
   try{
+    await acquireOwnerWrite(transaction,actor);
+    await requireActorRecentAuth(transaction,actor,session,nowSeconds);
     const promoted=await transaction.execute({
       sql:`UPDATE circle_memberships AS target
         SET role='owner',updated_at=?

@@ -369,9 +369,10 @@ The existing role/status membership model, audit events, invitation status,
 and session revocation columns cover this slice. Adding a migration would not
 strengthen an invariant here and would conflict with the reserved v9 owner.
 Existing invitation revocation is reused; invitation resend and delivery remain
-with issue #95. This increment requires a valid active owner session but does
-not add recent-auth enforcement to ownership transfer or owner deactivation;
-issue #99 owns that deliberate follow-up using the existing recent-auth proof.
+with issue #95. The original lifecycle increment required a valid active owner
+session and deliberately deferred step-up. ID-14 now supplies recent-auth
+enforcement for ownership transfer and owner deactivation using the existing
+recent-auth proof without changing this transaction model.
 
 ### Alternatives considered
 
@@ -456,3 +457,62 @@ There is no automatic down migration. If a uniqueness or integrity incident is
 suspected, disable the capability, preserve audit evidence, inspect the exact
 managed database, and use the rehearsed PITR procedure rather than attempting
 an unreviewed reverse migration.
+
+## ID-14: Step up only the ownership-changing lifecycle boundary
+
+Status: implemented without a schema migration, stacked on provider linking
+and member lifecycle.
+
+### Decision
+
+Ownership transfer and deactivation of another owner require the shared v8
+recent-auth proof inside the same write transaction as the lifecycle mutation.
+The proof is scoped to the initiating live session and expires after ten
+minutes. Ordinary member deactivation/reactivation and self-leave do not add a
+credential challenge because they do not transfer or remove administrative
+authority.
+
+Password confirmation reuses the same-origin, durably rate-limited endpoint.
+Google confirmation forces account selection and a fresh signed `auth_time`;
+the OAuth flow is additionally bound to the exact initiating session hash and
+provider subject. Its start is a same-origin POST that returns a narrowly
+validated provider URL, so authentication, rate-limit, or readiness failures
+remain in the SPA and clear any pending lifecycle continuation. Lifecycle
+dialog close/open transitions abort that request and advance a generation;
+delayed responses can affect only the exact still-visible dialog mode that
+started them. Explicit failure notices similarly supersede older roster loads,
+so background success cannot conceal the no-change outcome. Lifecycle
+confirmation is intentionally independent of the
+v9 identity-management feature flag, so credential management may remain dark
+while an already-linked password or Google method is used for step-up. Missing
+v8 readiness or an unavailable linked method fails closed.
+
+The browser keeps only one redacted continuation in `sessionStorage`: action,
+target member ID, actor ID, version, and creation time. It validates the actor
+and ten-minute lifetime, consumes the object before retry, and never retries a
+second time. Cancellation, provider error, expiry, account change, missing
+capability, or malformed state clears the continuation without mutation. The
+API remains authoritative, so editing storage or forging the OAuth success
+query cannot create a recent proof. OAuth result handling uses a bounded retry
+to wait for one authoritative authentication refresh to commit before showing
+credential feedback or resuming a lifecycle action.
+
+Successful changes retain the existing transactional, PII-free lifecycle audit
+events. Credential material, provider subjects, OAuth values, and session
+identifiers are never added to them. Both password and Google confirmation
+starts have durable per-IP and per-account limits.
+
+### Alternatives considered
+
+| Option | Advantage | Cost and rejection reason |
+| --- | --- | --- |
+| Confirm every lifecycle action | One client rule | Adds needless friction to routine member administration |
+| Treat a young JWT as fresh | No shared proof lookup | Does not establish that a credential was challenged recently |
+| Persist pending actions server-side | Survives tabs and devices | Adds a new state machine and migration for a single same-tab OAuth continuation |
+| Bind Google reauth only to user ID | Simpler purpose cookie | A second live session for the same account could replace the initiating session during callback |
+| Navigate directly to a GET start route | Minimal client logic | A 401, 429, or 503 response can replace the application with raw JSON and strand the continuation |
+| Couple confirmation to `IDENTITY_MANAGEMENT_ENABLED` | One rollout flag | Would make lifecycle controls unusable when v9 credential management is intentionally dark |
+| Add per-action recent proofs | Strongest replay isolation | Current ten-minute session-scoped step-up is proportionate for private beta; the lifecycle transaction still rechecks target and role |
+
+The action matrix, continuation contract, rollout independence, and explicit
+limits are documented in `docs/LIFECYCLE_RECENT_AUTH.md`.

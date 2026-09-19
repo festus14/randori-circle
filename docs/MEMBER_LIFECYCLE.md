@@ -38,6 +38,11 @@ must authenticate again after reactivation.
 - Role is read from the membership table on every privileged operation; it is
   not trusted from a session claim. Ownership transfer therefore needs no
   session rotation.
+- Ownership transfer and deactivation of another owner require a fresh,
+  session-scoped password or Google proof inside the lifecycle transaction.
+  Routine non-owner membership changes and self-leave remain explicit but do
+  not add credential friction. See [recent authentication for sensitive circle
+  changes](LIFECYCLE_RECENT_AUTH.md).
 - Production and local development use the same endpoint and domain rules. The
   membership capability remains fail-closed behind the existing readiness and
   feature checks.
@@ -61,9 +66,9 @@ migration; migration v9 remains available to its reserved owner.
 
 - Invitation email resend/delivery is intentionally excluded because issue #95
   owns that provider/outbox work. Existing invitation revocation is reused here.
-- Owner deactivation and ownership transfer currently require an active owner
-  session but not a fresh credential challenge. Issue #99 tracks applying the
-  existing recent-auth boundary without expanding this lifecycle increment.
+- ID-14 supplies the issue #99 recent-auth enforcement for ownership transfer
+  and owner deactivation without changing the schema or broadening
+  credential-management rollout.
 - The UI is deliberately a functional extension of the current Circle card, not
   the broader visual redesign tracked separately.
 - The member list does not expose email addresses or a searchable directory.
