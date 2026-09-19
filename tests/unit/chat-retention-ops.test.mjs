@@ -30,6 +30,8 @@ test('the protected retention workflow is manual, serialized, latest-main only, 
   assert.match(workflow,/PURGE_EXPIRED_CHAT/);
   assert.match(workflow,/CHAT_RETENTION_ENABLED: \$\{\{ vars\.CHAT_RETENTION_ENABLED \}\}/);
   assert.match(workflow,/CHAT_RETENTION_SCOPE_KEY: \$\{\{ secrets\.CHAT_RETENTION_SCOPE_KEY \}\}/);
+  assert.match(workflow,/CHAT_RETENTION_BACKUP_SOURCE_MAX_MESSAGE_ID: \$\{\{ secrets\./);
+  assert.match(workflow,/CHAT_RETENTION_EXPORT_SOURCE_MAX_MESSAGE_ID: \$\{\{ secrets\./);
   assert.match(workflow,/timeout --signal=TERM --kill-after=30s 10m/);
   assert.match(workflow,/retention-days: 30/);
   assert.doesNotMatch(workflow,/echo[^\n]*(?:TURSO_|CHAT_RETENTION_(?:SCOPE|CIRCLE|WEEK|PAIR|RUN|.*DIGEST))/);

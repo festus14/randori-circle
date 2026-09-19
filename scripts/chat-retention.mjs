@@ -50,11 +50,19 @@ function gateFromEnvironment(env){
   return {
     backup:{
       digest:required(env.CHAT_RETENTION_BACKUP_EVIDENCE_DIGEST,'backup evidence digest'),
+      scopeBindingDigest:required(env.CHAT_RETENTION_BACKUP_SCOPE_BINDING_DIGEST,
+        'backup scope binding digest'),
+      sourceMaxMessageId:positiveInteger(env.CHAT_RETENTION_BACKUP_SOURCE_MAX_MESSAGE_ID,
+        'backup source maximum message'),
       throughAt:required(env.CHAT_RETENTION_BACKUP_THROUGH_AT,'backup through time'),
       completedAt:required(env.CHAT_RETENTION_BACKUP_COMPLETED_AT,'backup completion time'),
     },
     exported:{
       digest:required(env.CHAT_RETENTION_EXPORT_EVIDENCE_DIGEST,'export evidence digest'),
+      scopeBindingDigest:required(env.CHAT_RETENTION_EXPORT_SCOPE_BINDING_DIGEST,
+        'export scope binding digest'),
+      sourceMaxMessageId:positiveInteger(env.CHAT_RETENTION_EXPORT_SOURCE_MAX_MESSAGE_ID,
+        'export source maximum message'),
       throughAt:required(env.CHAT_RETENTION_EXPORT_THROUGH_AT,'export through time'),
       completedAt:required(env.CHAT_RETENTION_EXPORT_COMPLETED_AT,'export completion time'),
     },
@@ -127,7 +135,9 @@ export async function runChatRetentionCli({env=process.env,createDatabase=create
       });
     }
     const gate=gateFromEnvironment(env);
-    const enqueued=await enqueueNextChatRetentionRun(db,{mode:config.mode,...gate});
+    const enqueued=await enqueueNextChatRetentionRun(db,{
+      mode:config.mode,scope:scopeFromEnvironment(env),...gate,
+    });
     const worker=await runChatRetentionWorker({
       db,workerId:'retention-worker',enabled:config.enabled,mode:config.mode,
     });

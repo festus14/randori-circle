@@ -797,8 +797,10 @@ scope mapping, evidence, and holds; it then selects and deletes no more than 100
 exact IDs and commits counts plus a durable checkpoint. A source high-water ID
 freezes the room snapshot covered by the accepted evidence, while purge
 reselects the oldest remaining rows inside that snapshot rather than advancing
-a destructive cursor. Later writes and backfills require a new evidence-gated
-run. Dry-run uses an independent, deletion-free bounded scan. Successful batches
+a destructive cursor. The requested room and high-water are bound before export
+and must match both export and backup evidence; later writes and backfills
+require a new evidence-gated run. Dry-run uses an independent, deletion-free
+bounded scan. Successful batches
 do not consume failure budget; retries,
 dead-letter state, and explicit reason-coded replay remain visible without
 content or identity telemetry.

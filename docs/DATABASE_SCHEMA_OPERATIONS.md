@@ -102,7 +102,7 @@ npm run --silent db:migrate -- \
   --expected-state <v2StateFingerprint> --through-version 2
 
 # Inspect again without a prefix. The result must be managed at v2 with v3,
-# v4 through v11 pending before using its new full-set fingerprint for the upgrade.
+# v3 through v11 pending before using its new full-set fingerprint for the upgrade.
 npm run --silent db:migrate -- \
   status --database file:///absolute/path/to/restored-randori.db
 

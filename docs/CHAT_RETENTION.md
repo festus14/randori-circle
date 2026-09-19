@@ -51,13 +51,16 @@ increments the generation, so a stale lease cannot survive an off/on cycle.
 Disabling can wait for one already-open SQLite write transaction; that one
 bounded batch may finish, but no later batch can begin.
 
-Each job owns exactly one mapped `(scope, week, pair group)` room and one fixed
-database-time cutoff. Claims use token-bound database-time leases. Purge batches
+Each job owns the exact operator-requested mapped `(scope, week, pair group)`
+room and one fixed database-time cutoff; the planner never chooses a different
+tenant implicitly. Claims use token-bound database-time leases. Purge batches
 reselect at most 100 oldest eligible rows and delete the exact IDs inside the
 same write transaction that rechecks the scope, generation, and holds. Each run
-also freezes the room's highest message ID when its backup/export evidence is
-accepted; later backfills and writes remain untouched until a new evidence-gated
-run. Counts,
+also accepts only matching export and backup evidence for a room high-water ID
+captured before export begins and proves that exact anchor still belongs to the
+room. The run never deletes above that evidence-bound ID, so writes between
+evidence completion and enqueue—and all later writes—remain untouched until a
+new evidence-gated run. Counts,
 checkpoint number, and audit event commit with the deletion. A crash before
 commit changes neither rows nor counts; after commit a replacement lease
 reselects remaining in-snapshot rows, so it cannot skip or double-count them.
@@ -75,15 +78,20 @@ conditions, scans at most 100 rows per batch, and records count-only progress.
 For every cutoff, the protected operator must complete these steps in order:
 
 1. place any legal or user-export hold before reading chat;
-2. finish the private encrypted export through at least the fixed cutoff;
-3. capture and finish a provider recovery point through at least that cutoff;
-4. record both opaque SHA-256 evidence digests and canonical through/completion
-   times; and
-5. enqueue the dry run or purge only after export completion and then backup
+2. record the exact normalized room scope and current maximum message ID, and
+   include their documented `randori-chat-retention-evidence:v1` SHA-256 binding
+   in the immutable export evidence envelope before reading content;
+3. finish the private encrypted export through at least the fixed cutoff;
+4. capture and finish a provider recovery point through at least that cutoff,
+   binding the same exact room high-water to its evidence envelope;
+5. record both opaque SHA-256 evidence digests, both matching scope-binding
+   digests and high-water IDs, and canonical through/completion times; and
+6. enqueue the dry run or purge only after export completion and then backup
    completion.
 
-The worker rejects future evidence, evidence that does not cover the cutoff,
-and backup completion earlier than export completion. GitHub artifacts contain
+The worker rejects future evidence, mismatched or missing room anchors, evidence
+that does not cover the cutoff, and backup completion earlier than export
+completion. GitHub artifacts contain
 only aggregate counts, timings, booleans, modes, statuses, and reason codes.
 Chat content, content hashes, user/circle/week/pair/job identifiers, database
 URLs, SQL, raw errors, IP addresses, and user agents are forbidden.
@@ -145,9 +153,10 @@ are reconciled.
 Retention has no data down-migration.
 
 1. Set the deployment switch false and disable the database switch with the
-   exact current generation.
-2. Wait longer than the 30-second lease duration and verify no job is
-   `processing`. Inspect only aggregate state and fixed error codes.
+   exact current generation. Database disable atomically releases processing
+   leases to `pending` after any already-open bounded write batch commits.
+2. Verify no job is `processing`. Inspect only aggregate state and fixed error
+   codes.
 3. Leave additive v11 tables/indexes and the migration ledger intact while a
    forward fix is prepared. Do not edit a v11 ledger row or delete audit state.
 4. If eligible content was deleted incorrectly, block writes, restore the

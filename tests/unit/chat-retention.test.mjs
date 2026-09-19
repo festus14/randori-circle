@@ -9,6 +9,7 @@ import {
   adoptChatRetentionScope,
   CHAT_RETENTION_POLICY,
   ChatRetentionError,
+  chatRetentionEvidenceScopeDigest,
   claimChatRetentionRun,
   enqueueNextChatRetentionRun,
   heartbeatChatRetentionLease,
@@ -31,6 +32,7 @@ import { MAX_MESSAGES_PER_ROOM } from '../../api/_messages.js';
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const DIGEST_A='a'.repeat(64);
 const DIGEST_B='b'.repeat(64);
+const DEFAULT_SCOPE=Object.freeze({scopeKey:'circle:1',circleId:1,weekId:10,pairGroupId:20});
 
 async function fixture(){
   const directory=mkdtempSync(join(tmpdir(),'randori-chat-retention-'));
@@ -85,6 +87,22 @@ async function enable(db){
   return setChatRetentionControl(db,{enabled:true,expectedGeneration:0});
 }
 
+async function retentionRequest(db,dbClock,requestedScope=DEFAULT_SCOPE){
+  const result=await db.execute({
+    sql:`SELECT MAX(id) AS source_max_message_id FROM pair_messages
+      WHERE week_id=? AND pair_group_id=?`,
+    args:[requestedScope.weekId,requestedScope.pairGroupId],
+  });
+  const sourceMaxMessageId=Number(result.rows?.[0]?.source_max_message_id||0);
+  assert.ok(sourceMaxMessageId>0,'evidence fixture requires a non-empty exact room');
+  const scopeBindingDigest=chatRetentionEvidenceScopeDigest(requestedScope,sourceMaxMessageId);
+  return {
+    scope:requestedScope,
+    backup:{...dbClock.backup,sourceMaxMessageId,scopeBindingDigest},
+    exported:{...dbClock.exported,sourceMaxMessageId,scopeBindingDigest},
+  };
+}
+
 test('the 90-day database cutoff is strict across canonical, legacy, and offset timestamps',async()=>{
   const item=await fixture();
   try{
@@ -97,7 +115,9 @@ test('the 90-day database cutoff is strict across canonical, legacy, and offset 
     await message(item.db,{id:4,createdAt:offsetInstant(cutoffMs-2000),text:'offset-before'});
     await message(item.db,{id:5,createdAt:offsetInstant(cutoffMs),text:'offset-exact'});
     await enable(item.db);
-    const queued=await enqueueNextChatRetentionRun(item.db,{mode:'purge',...dbClock});
+    const queued=await enqueueNextChatRetentionRun(item.db,{
+      mode:'purge',...await retentionRequest(item.db,dbClock),
+    });
     assert.equal(queued.cutoffAt,dbClock.cutoff);
     const result=await runChatRetentionWorker({
       db:item.db,workerId:'boundary-worker',enabled:true,mode:'purge',batchSize:100,maxBatches:2,
@@ -122,7 +142,9 @@ test('bounded batches checkpoint and resume after an expired lease without skips
       await message(item.db,{id,createdAt:new Date(Date.parse(dbClock.cutoff)-id*1000).toISOString()});
     }
     await enable(item.db);
-    await enqueueNextChatRetentionRun(item.db,{mode:'purge',...dbClock});
+    await enqueueNextChatRetentionRun(item.db,{
+      mode:'purge',...await retentionRequest(item.db,dbClock),
+    });
     const first=await claimChatRetentionRun(item.db,{workerId:'worker-a',mode:'purge',leaseDurationMs:1000});
     const firstBatch=await processChatRetentionBatch(item.db,first,{
       workerId:'worker-a',batchSize:2,leaseDurationMs:1000,
@@ -165,10 +187,11 @@ test('an evidence-gated run never deletes old-dated messages written after its s
     await mapRoom(item.db);
     await message(item.db,{id:1,createdAt:new Date(Date.parse(dbClock.cutoff)-2000).toISOString(),
       text:'covered-by-evidence'});
+    const evidenceBoundRequest=await retentionRequest(item.db,dbClock);
     await enable(item.db);
-    await enqueueNextChatRetentionRun(item.db,{mode:'purge',...dbClock});
     await message(item.db,{id:2,createdAt:new Date(Date.parse(dbClock.cutoff)-1000).toISOString(),
       text:'requires-new-evidence'});
+    await enqueueNextChatRetentionRun(item.db,{mode:'purge',...evidenceBoundRequest});
 
     const result=await runChatRetentionWorker({
       db:item.db,workerId:'snapshot-worker',enabled:true,mode:'purge',batchSize:100,maxBatches:2,
@@ -194,7 +217,9 @@ test('concurrent workers have exclusive leases and generation fencing defeats di
     await mapRoom(item.db);
     await message(item.db,{id:1,createdAt:new Date(Date.parse(dbClock.cutoff)-1000).toISOString()});
     await enable(item.db);
-    await enqueueNextChatRetentionRun(item.db,{mode:'purge',...dbClock});
+    await enqueueNextChatRetentionRun(item.db,{
+      mode:'purge',...await retentionRequest(item.db,dbClock),
+    });
     const [left,right]=await Promise.all([
       claimChatRetentionRun(item.db,{workerId:'worker-a',mode:'purge'}),
       claimChatRetentionRun(second,{workerId:'worker-b',mode:'purge'}),
@@ -204,9 +229,12 @@ test('concurrent workers have exclusive leases and generation fencing defeats di
     const claimedOwner=left?'worker-a':'worker-b';
     const disabled=await setChatRetentionControl(item.db,{enabled:false,expectedGeneration:1});
     assert.equal(disabled.generation,2);
+    const released=(await item.db.execute(`SELECT status,lease_owner,control_generation
+      FROM chat_retention_runs`)).rows[0];
+    assert.deepEqual(released,{status:'pending',lease_owner:null,control_generation:null});
     await setChatRetentionControl(item.db,{enabled:true,expectedGeneration:2});
     const stale=await processChatRetentionBatch(item.db,claimed,{workerId:claimedOwner,batchSize:1});
-    assert.equal(stale.status,'fenced');
+    assert.equal(stale.status,'lease_lost');
     assert.equal(Number((await item.db.execute(`SELECT COUNT(*) AS count FROM pair_messages`)).rows[0].count),1);
     const replacement=await claimChatRetentionRun(item.db,{workerId:'worker-c',mode:'purge'});
     assert.ok(replacement);
@@ -227,14 +255,19 @@ test('tenant and room holds preserve content and release requeues held work',asy
     await placeChatRetentionHold(item.db,{
       hold:{scopeKey:'circle:1',circleId:1,holdLevel:'tenant'},reason:'LEGAL_REQUEST',
     });
-    await enqueueNextChatRetentionRun(item.db,{mode:'purge',...dbClock});
+    const otherScope={scopeKey:'circle:2',circleId:2,weekId:11,pairGroupId:21};
+    await enqueueNextChatRetentionRun(item.db,{
+      mode:'purge',...await retentionRequest(item.db,dbClock,otherScope),
+    });
     await runChatRetentionWorker({db:item.db,workerId:'isolation-worker',enabled:true,mode:'purge'});
     assert.deepEqual((await item.db.execute(`SELECT id FROM pair_messages ORDER BY id`)).rows.map(row=>Number(row.id)),[1]);
 
     await releaseChatRetentionHold(item.db,{
       hold:{scopeKey:'circle:1',circleId:1,holdLevel:'tenant'},
     });
-    await enqueueNextChatRetentionRun(item.db,{mode:'purge',...dbClock});
+    await enqueueNextChatRetentionRun(item.db,{
+      mode:'purge',...await retentionRequest(item.db,dbClock),
+    });
     const claimed=await claimChatRetentionRun(item.db,{workerId:'hold-race',mode:'purge'});
     await placeChatRetentionHold(item.db,{
       hold:{scopeKey:'circle:1',circleId:1,holdLevel:'room',weekId:10,pairGroupId:20},
@@ -256,15 +289,53 @@ test('backup and export evidence must cover the cutoff and complete export befor
     await mapRoom(item.db);
     await message(item.db,{id:1,createdAt:new Date(Date.parse(dbClock.cutoff)-1000).toISOString()});
     await enable(item.db);
+    const request=await retentionRequest(item.db,dbClock);
     await assert.rejects(()=>enqueueNextChatRetentionRun(item.db,{
-      mode:'purge',backup:dbClock.backup,
-      exported:{...dbClock.exported,completedAt:dbClock.now},
+      mode:'purge',...request,
+      exported:{...request.exported,completedAt:dbClock.now},
     }),error=>error instanceof ChatRetentionError&&error.code==='RETENTION_EVIDENCE_ORDER_INVALID');
     await assert.rejects(()=>enqueueNextChatRetentionRun(item.db,{
-      mode:'purge',backup:{...dbClock.backup,throughAt:new Date(Date.parse(dbClock.cutoff)-1).toISOString()},
-      exported:dbClock.exported,
+      mode:'purge',...request,
+      backup:{...request.backup,throughAt:new Date(Date.parse(dbClock.cutoff)-1).toISOString()},
     }),error=>error instanceof ChatRetentionError&&error.code==='RETENTION_EVIDENCE_ORDER_INVALID');
+    await assert.rejects(()=>enqueueNextChatRetentionRun(item.db,{
+      mode:'purge',...request,
+      backup:{...request.backup,sourceMaxMessageId:2},
+    }),error=>error instanceof ChatRetentionError&&error.code==='RETENTION_EVIDENCE_SOURCE_MISMATCH');
+    const missingBinding=chatRetentionEvidenceScopeDigest(DEFAULT_SCOPE,999);
+    await assert.rejects(()=>enqueueNextChatRetentionRun(item.db,{
+      mode:'purge',...request,
+      backup:{...request.backup,sourceMaxMessageId:999,scopeBindingDigest:missingBinding},
+      exported:{...request.exported,sourceMaxMessageId:999,scopeBindingDigest:missingBinding},
+    }),error=>error instanceof ChatRetentionError&&error.code==='RETENTION_EVIDENCE_SOURCE_MISMATCH');
     assert.equal(Number((await item.db.execute(`SELECT COUNT(*) AS count FROM chat_retention_runs`)).rows[0].count),0);
+  }finally{ item.close(); }
+});
+
+test('room-bound evidence cannot authorize a different tenant with eligible content',async()=>{
+  const item=await fixture();
+  try{
+    const dbClock=await clock(item.db);
+    const firstScope={scopeKey:'circle:1',circleId:1,weekId:10,pairGroupId:20};
+    const secondScope={scopeKey:'circle:2',circleId:2,weekId:11,pairGroupId:21};
+    await mapRoom(item.db,firstScope);
+    await mapRoom(item.db,secondScope);
+    await message(item.db,{id:1,weekId:10,pairGroupId:20,
+      createdAt:new Date(Date.parse(dbClock.cutoff)-2000).toISOString()});
+    await message(item.db,{id:2,weekId:11,pairGroupId:21,
+      createdAt:new Date(Date.parse(dbClock.cutoff)-1000).toISOString()});
+    const firstEvidence=await retentionRequest(item.db,dbClock,firstScope);
+    await enable(item.db);
+
+    await assert.rejects(()=>enqueueNextChatRetentionRun(item.db,{
+      mode:'purge',scope:secondScope,
+      backup:firstEvidence.backup,exported:firstEvidence.exported,
+    }),error=>error instanceof ChatRetentionError
+      &&error.code==='RETENTION_EVIDENCE_SCOPE_MISMATCH');
+    assert.equal(Number((await item.db.execute(`SELECT COUNT(*) AS count
+      FROM chat_retention_runs`)).rows[0].count),0);
+    assert.equal(Number((await item.db.execute(`SELECT COUNT(*) AS count
+      FROM pair_messages`)).rows[0].count),2);
   }finally{ item.close(); }
 });
 
@@ -278,7 +349,9 @@ test('dry runs are bounded and leave message rows byte-for-byte unchanged',async
     }
     const before=(await item.db.execute(`SELECT * FROM pair_messages ORDER BY id`)).rows;
     await enable(item.db);
-    await enqueueNextChatRetentionRun(item.db,{mode:'dry_run',...dbClock});
+    await enqueueNextChatRetentionRun(item.db,{
+      mode:'dry_run',...await retentionRequest(item.db,dbClock),
+    });
     const first=await runChatRetentionWorker({
       db:item.db,workerId:'dry-worker',enabled:true,mode:'dry_run',batchSize:2,maxBatches:1,
     });
@@ -304,7 +377,9 @@ test('invalid and future timestamps are preserved with fixed-code dead-letter vi
     await message(item.db,{id:1,createdAt:new Date(Date.parse(dbClock.cutoff)-1000).toISOString(),text:'eligible'});
     await message(item.db,{id:2,createdAt:'not-a-time',text:'invalid'});
     await enable(item.db);
-    await enqueueNextChatRetentionRun(item.db,{mode:'purge',...dbClock});
+    await enqueueNextChatRetentionRun(item.db,{
+      mode:'purge',...await retentionRequest(item.db,dbClock),
+    });
     const result=await runChatRetentionWorker({db:item.db,workerId:'invalid-worker',enabled:true,mode:'purge'});
     assert.equal(result.status,'dead_letter');
     let run=(await item.db.execute(`SELECT id,last_error_code FROM chat_retention_runs`)).rows[0];
@@ -332,7 +407,9 @@ test('transient failures retry, exhaust to dead letter, and can be replayed',asy
     await mapRoom(item.db);
     await message(item.db,{id:1,createdAt:new Date(Date.parse(dbClock.cutoff)-1000).toISOString()});
     await enable(item.db);
-    await enqueueNextChatRetentionRun(item.db,{mode:'purge',maxFailures:2,...dbClock});
+    await enqueueNextChatRetentionRun(item.db,{
+      mode:'purge',maxFailures:2,...await retentionRequest(item.db,dbClock),
+    });
     let failures=0;
     const faultDb={
       execute:item.db.execute.bind(item.db),batch:item.db.batch.bind(item.db),
@@ -371,7 +448,9 @@ test('unmapped rooms fail closed and metrics expose only capped counts, timings,
     const dbClock=await clock(item.db);
     await message(item.db,{id:1,createdAt:new Date(Date.parse(dbClock.cutoff)-1000).toISOString(),text:'never-log-this'});
     await enable(item.db);
-    const queued=await enqueueNextChatRetentionRun(item.db,{mode:'purge',...dbClock});
+    const queued=await enqueueNextChatRetentionRun(item.db,{
+      mode:'purge',...await retentionRequest(item.db,dbClock),
+    });
     assert.deepEqual(queued,{created:false,runId:null,cutoffAt:dbClock.cutoff});
     const metrics=await readChatRetentionMetrics(item.db);
     assert.equal(metrics.anomalies.unmappedCount,1);
