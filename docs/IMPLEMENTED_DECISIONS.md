@@ -1081,3 +1081,39 @@ deploy with the flag false, canary one secondary circle, then verify bounded
 cron publication. Roll back only by disabling the flag. Preserve canonical
 rows for audit and forward recovery; never copy them into legacy workspace
 tables or weaken membership enforcement.
+
+## ID-27: Export one accepted session locally with a stable private identity
+
+Status: implemented as a client-only, no-migration increment.
+
+**Decision.** The signed-in current-pair dashboard exposes **Add to calendar**
+only for a canonical room whose current schedule contains a normalized accepted
+UTC instant. A small pure module generates one RFC 5545 event in the browser and
+downloads it through a temporary Blob URL. It uses UTC `DTSTART`, a fixed
+60-minute `DTEND`, the current app room link, RFC text escaping and 75-octet line
+folding. As a static import it omits iTIP `METHOD` and organizer semantics. The
+event UID derives only from the canonical room and remains stable
+when the accepted time changes, allowing a reschedule export to identify the
+same logical session.
+
+The formatter receives no account or partner object. The file contains no
+name, email, invitation credential, authentication token, code, chat,
+transcript, or workspace payload. Proposals, legacy free-text agreements,
+cleared schedules, malformed timestamps, noncanonical rooms, and stale
+rendered actions fail closed. The action states that the duration is 60 minutes
+and that the calendar application controls the downloaded copy. Randori cannot
+revoke, update, expire, or delete a file after it crosses that retention
+boundary.
+
+**Alternatives.** Direct Google or Outlook links are convenient but
+vendor-specific and disclose the event to a third party. Server-generated
+calendar files create an unnecessary authenticated endpoint for deterministic
+formatting. Provider OAuth and two-way calendar sync require broad permissions,
+stored refresh tokens, provider-specific conflict resolution, and a larger
+privacy review. Email reminders remain the durable provider-backed notification
+path; this export makes accepted scheduling useful before production delivery
+credentials are configured.
+
+**Recovery.** There is no schema, server route, provider secret, or external
+request to reverse. Roll back the client assets normally. Already downloaded
+copies remain under each member's calendar retention and sharing controls.

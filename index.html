@@ -567,6 +567,10 @@ p{margin:0}
   .cta-row .btn{width:100%; justify-content:center; min-height:44px}
   .profile-setup{padding:0}
   #dashStatsGrid{grid-template-columns:1fr!important}
+  .dashboard,.dashboard .card,.dashboard .card-b,.partner-card>div{min-width:0}
+  .partner-card{grid-template-columns:1fr; padding:14px}
+  .partner-card .btn{max-width:100%; white-space:normal; text-align:left}
+  #dashInviteHint .kbd{display:inline; overflow-wrap:anywhere; word-break:break-word}
   .overlay{padding:0; align-items:flex-end}
   #authDialog,#identityDialog{
     max-width:none; max-height:min(92dvh,760px); overflow:auto;
@@ -7014,8 +7018,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         legacy,
       };
     }).filter(Boolean);
-    const agreedDate=new Date(String(source.agreed_time||''));
-    const agreedTime=Number.isNaN(agreedDate.getTime())?null:agreedDate.toISOString();
+    const agreedRaw=typeof source.agreed_time==='string'?source.agreed_time:'';
+    const agreedDate=new Date(agreedRaw);
+    const agreedTime=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(agreedRaw)
+      &&!Number.isNaN(agreedDate.getTime())&&agreedDate.toISOString()===agreedRaw?agreedRaw:null;
     return {
       version,
       proposals,
@@ -7179,6 +7185,23 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       agreement.style.cssText='padding:8px 10px; background:var(--accent)22; border:1px solid var(--accent); border-radius:10px; font-size:12.5px';
       agreement.append(scheduleNode('b',{text:'Agreed: '}));
       const time=scheduleNode('time',{text:localScheduleTime(schedule.agreed_time)}); time.setAttribute('datetime',schedule.agreed_time); agreement.append(time);
+      const exportedRoom=scheduleState.room;
+      const exportedInstant=schedule.agreed_time;
+      const exportRow=scheduleNode('div',{className:'row'}); exportRow.style.cssText='margin-top:8px; gap:8px; align-items:center; flex-wrap:wrap';
+      const calendar=scheduleNode('button',{className:'btn secondary',text:'Add to calendar',testId:'schedule-calendar-export'});
+      calendar.type='button'; calendar.dataset.scheduleAction='calendar-export';
+      calendar.setAttribute('aria-label',`Add the agreed ${localScheduleTime(exportedInstant)} session to your calendar`);
+      calendar.addEventListener('click',()=>{
+        const stillCurrent=scheduleState.room===exportedRoom&&scheduleState.schedule?.agreed_time===exportedInstant;
+        const downloaded=stillCurrent&&pairedDashboardRoom()===exportedRoom&&window._randori_calendar_export?.download?.({
+          roomId:exportedRoom,
+          agreedTime:exportedInstant,
+          appOrigin:location.origin,
+        });
+        if(typeof toast==='function') toast(downloaded?'Private calendar file downloaded ✓':'Calendar export is unavailable. Refresh and try again.');
+      });
+      exportRow.append(calendar,scheduleNode('span',{className:'small muted',text:'60 minutes · your calendar app controls the downloaded copy'}));
+      agreement.append(exportRow);
     }else if(schedule.legacy_agreed_time){
       agreement.style.cssText='padding:8px 10px; border:1px solid var(--warn); border-radius:10px; font-size:12.5px';
       agreement.append(scheduleNode('b',{text:'Legacy agreement: '}),document.createTextNode(schedule.legacy_agreed_time));
@@ -9755,6 +9778,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 </script>
 
 
+<script type="module" src="/assets/calendar-export.js"></script>
 <script type="module">
 // --- Pillar 3 Fix: rewired AI frontend (Groq router + anon demo + quota + loader/toast) ---
 (function(){
