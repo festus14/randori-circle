@@ -182,6 +182,16 @@ test('malformed, tampered, reused, and cross-actor cursors fail opaquely',async(
   }
 });
 
+test('a continuation rechecks ownership and fails closed after the actor is demoted',async()=>{
+  const {db}=await fixture();
+  const first=await listCircleMembersForOwner(db,{actorUserId:1,cursorSecret:JWT_SECRET,limit:1});
+  assert.equal(first.has_more,true);
+  await db.execute(`UPDATE circle_memberships SET role='member' WHERE circle_id=10 AND user_id=1`);
+  assert.deepEqual(await listCircleMembersForOwner(db,{
+    actorUserId:1,cursor:first.next_cursor,search:'',cursorSecret:JWT_SECRET,limit:1,
+  }),{ok:false,reason:'owner_required'});
+});
+
 test('deactivation and reactivation are scoped, audited, and revoke every affected session atomically',async()=>{
   const {db,memberSessions}=await fixture();
   assert.equal((await verifyRequestAuth(request(memberSessions[0]),db))?.id,2);

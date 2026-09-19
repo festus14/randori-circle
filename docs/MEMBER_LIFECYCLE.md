@@ -51,8 +51,8 @@ must authenticate again after reactivation.
   circle, and normalized search. Role/status changes therefore cannot move a
   row across page boundaries. Each request reads at most 201 indexed
   `(circle_id, user_id)` candidates and returns at most 100 members (50 by
-  default). Search compares normalized display names only; it never returns or
-  accepts email addresses. A sparse search can return an empty page with a next
+  default). Search compares normalized display names only; the query never
+  reads or projects the account email field. A sparse search can return an empty page with a next
   cursor, keeping database work bounded while allowing the owner to continue.
 
 The existing role/status columns, audit table, session revocation fields, and
@@ -71,7 +71,7 @@ migration; migration v9 remains available to its reserved owner.
 | Add a new schema version | Could model extra lifecycle metadata | Existing durable state already represents every transition in this slice, while v9 is reserved |
 | Offset pagination | Familiar page numbers | Inserts/deactivations can shift offsets, it becomes progressively expensive, and it cannot carry a bounded snapshot |
 | Preserve active/owner/name sort | Matches the original small-roster presentation | Status and display-name changes reorder rows between requests, causing duplicates or omissions |
-| Query email as well as display name | More ways to find an account | Creates an account-enumeration surface and exceeds the roster privacy requirement |
+| Query the account email field as well as display name | More ways to find an account | Creates an account-enumeration surface and exceeds the roster privacy requirement |
 | Scan until a search page is full | Avoids empty sparse-search pages | A rare or absent term makes a single request unbounded; capped candidate windows give a predictable limit |
 
 ## Explicit gaps and follow-up

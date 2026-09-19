@@ -623,7 +623,8 @@ cross-circle, and search-reused cursors share a generic request error. Every
 page rechecks current active ownership and the primary-circle boundary.
 
 Display-name substring search runs only over each bounded, tenant-indexed
-candidate window. It does not accept or expose email addresses. This means a
+candidate window. It never queries or projects the account email field (a
+user-controlled display name may itself contain email-like text). This means a
 sparse search may yield zero matches and a continuation cursor; the accessible
 UI explains that more results may remain and preserves earlier rows when a
 later page fails. A per-request sequence and circle render epoch prevent an old
