@@ -170,6 +170,32 @@ test('password reset landing scrubs the fragment and submits a matching policy-c
   expect(calls).toBe(1);
 });
 
+test('expired and revoked password reset links expose a terminal recovery path',async({page})=>{
+  const token='T'.repeat(43);
+  let terminalStatus='expired';
+  await mockApi(page,{
+    '/api/auth/password-reset/consume':()=>({
+      _status:409,ok:false,status:terminalStatus,
+    }),
+  });
+  await resetClientState(page);
+
+  for(const status of ['expired','revoked']){
+    terminalStatus=status;
+    await page.goto(`/reset-password?state=${status}#token=${token}`,{waitUntil:'domcontentloaded'});
+    await page.locator('#passwordResetNew').fill('replacement password');
+    await page.locator('#passwordResetConfirm').fill('replacement password');
+    await page.locator('#passwordResetSubmit').click();
+    await expect(page.getByTestId('password-reset-status')).toContainText(
+      status==='expired'?'expired':'no longer available',
+    );
+    await expect(page.locator('#passwordResetNew')).toBeHidden();
+    await expect(page.locator('#passwordResetConfirm')).toBeHidden();
+    await expect(page.locator('#passwordResetSubmit')).toBeHidden();
+    await expect(page.locator('#passwordResetSignin')).toBeVisible();
+  }
+});
+
 test('local capabilities expose an accessible signup flow with validation and one in-flight submit', async ({ page }) => {
   const user = {
     id: 1,

@@ -1253,7 +1253,7 @@ p{margin:0}
       unavailable:'Password reset is temporarily unavailable. Please retry shortly.',
     };
     if(status) status.textContent=messages[passwordResetState.status]||messages.invalid;
-    const done=['reset','used'].includes(passwordResetState.status);
+    const done=['reset','used','expired','revoked'].includes(passwordResetState.status);
     for(const input of [document.getElementById('passwordResetNew'),document.getElementById('passwordResetConfirm')]){
       if(input){ input.disabled=passwordResetState.busy||done||passwordResetState.status==='invalid'; input.hidden=done; }
     }
