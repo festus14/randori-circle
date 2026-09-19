@@ -45,6 +45,7 @@ test('schema manifest pins all current tables and named indexes',()=>{
     'idx_chat_retention_runs_dispatch','idx_chat_retention_scopes_tenant',
     'idx_chat_retention_runs_scope','idx_chat_retention_audit_run','idx_pair_messages_retention',
     'uq_auth_sessions_hash_user','idx_auth_session_circle_contexts_user_circle',
+    'uq_pairing_cycles_descriptor',
     'idx_circle_pairing_publications_circle_cycle','idx_circle_pairing_eligibility_scope_user',
     'idx_circle_pairing_groups_user_a','idx_circle_pairing_groups_user_b',
   ]);

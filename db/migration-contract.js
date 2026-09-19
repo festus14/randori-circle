@@ -64,7 +64,7 @@ export const MIGRATION_CONTRACTS=Object.freeze([
   Object.freeze({
     version:13,
     name:'circle-owned-pairing-coordination',
-    checksum:'a25458811dba79d04f263b4d4d62a0cbb4e21ce774fd5be3bed87f90266deecf',
+    checksum:'54b73ffd4cbc009af58c40110b6387d15c2ec52f7f9c082ef69b1258c691d122',
   }),
 ]);
 

@@ -89,8 +89,8 @@ const PLAN_METADATA=Object.freeze([
     version:13,
     name:'circle-owned-pairing-coordination',
     description:'Immutable circle-owned eligibility snapshots and pairing groups without workspace capability.',
-    operationsChecksum:'b1e9e6bcba1e210642a3e441ad970ad894233e66a3355c41fdfa86783f5c4458',
-    checksum:'5fe280689f9b54ff1adf2340f60fc2264e8ceba9c8535866c0d0ae4ad54e7b3b',
+    operationsChecksum:'64ba01a336472aa53a02ecf92bef7061db3b235012a456328380c1afe8a78d2f',
+    checksum:'2a0d9734614016b981ba88e97f7dcb379a475b37a295fb423edfd8b9f43091c9',
   }),
 ]);
 

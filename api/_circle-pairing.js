@@ -2,47 +2,43 @@ import { randomUUID } from 'node:crypto';
 
 import { validateActiveCircleMutationContext } from './_active-circle.js';
 import { applyCycleAvailability, availabilityCycleKey } from './_availability.js';
+import { MAX_READINESS_SCHEMA_OBJECTS } from './_health.js';
 import { buildFairPairing, PAIRING_ALGORITHM_VERSION } from './_pairing.js';
 import { resolvePairingCycle } from './_pairing-cycle.js';
+import { LATEST_MIGRATION_VERSION, MIGRATION_CONTRACTS } from '../db/migration-contract.js';
+import {
+  assertMigrationLedgerContract,
+  migrationLedgerExists,
+  readMigrationLedger,
+  validateMigrationLedger,
+} from '../db/migration-ledger-readiness.js';
+import { inspectSchema, readOnlyDatabase } from '../db/schema-inspector.js';
+import { READINESS_SCHEMA_MANIFEST } from '../db/schema-readiness-manifest.js';
 
 const TRANSACTION_ATTEMPTS=4;
 const CYCLE_KEY_PATTERN=/^[0-9a-f]{64}$/;
 const UUID_PATTERN=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ISO_INSTANT_PATTERN=/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-const readinessByClient=new WeakMap();
-
-const TABLE_COLUMNS=Object.freeze({
-  circle_pairing_publications:Object.freeze([
-    ['id','INTEGER',0,1],['scope_key','TEXT',1,0],['circle_id','INTEGER',1,0],
-    ['cycle_key','TEXT',1,0],['cycle_id','TEXT',1,0],['starts_at','TEXT',1,0],
-    ['ends_at','TEXT',1,0],['cutoff_at','TEXT',1,0],['time_zone','TEXT',1,0],
-    ['generation_token','TEXT',1,0],['algorithm_version','TEXT',1,0],
-    ['algorithm_seed','TEXT',1,0],['participant_count','INTEGER',1,0],
-    ['created_at','TEXT',1,0],
-  ]),
-  circle_pairing_eligibility:Object.freeze([
-    ['publication_id','INTEGER',1,1],['scope_key','TEXT',1,0],['circle_id','INTEGER',1,0],
-    ['cycle_key','TEXT',1,0],['user_id','INTEGER',1,2],['is_available','INTEGER',1,0],
-    ['availability_version','INTEGER',1,0],['availability_source','TEXT',1,0],
-    ['position','INTEGER',1,0],['created_at','TEXT',1,0],
-  ]),
-  circle_pairing_groups:Object.freeze([
-    ['id','INTEGER',0,1],['publication_id','INTEGER',1,0],['scope_key','TEXT',1,0],
-    ['circle_id','INTEGER',1,0],['cycle_key','TEXT',1,0],['position','INTEGER',1,0],
-    ['user_a_id','INTEGER',1,0],['user_b_id','INTEGER',0,0],['is_solo','INTEGER',1,0],
-    ['created_at','TEXT',1,0],
-  ]),
-});
-
-const INDEX_COLUMNS=Object.freeze({
-  idx_circle_pairing_publications_circle_cycle:Object.freeze(['circle_id','starts_at','id']),
-  idx_circle_pairing_eligibility_scope_user:Object.freeze(['scope_key','user_id','publication_id']),
-  idx_circle_pairing_groups_user_a:Object.freeze(['publication_id','user_a_id']),
-  idx_circle_pairing_groups_user_b:Object.freeze(['publication_id','user_b_id']),
-});
 
 export const SECONDARY_PAIRING_CACHE_CONTROL='private, no-store';
 export const SECONDARY_PAIRING_CRON_LIMIT=25;
+
+const CIRCLE_PAIRING_TABLES=new Set([
+  'pairing_cycles','circle_pairing_publications','circle_pairing_eligibility','circle_pairing_groups',
+]);
+const CIRCLE_PAIRING_INDEXES=new Set([
+  'uq_pairing_cycles_descriptor','idx_circle_pairing_publications_circle_cycle',
+  'idx_circle_pairing_eligibility_scope_user','idx_circle_pairing_groups_user_a',
+  'idx_circle_pairing_groups_user_b',
+]);
+const CIRCLE_PAIRING_READINESS_MANIFEST=Object.freeze({
+  version:READINESS_SCHEMA_MANIFEST.version,
+  checksum:READINESS_SCHEMA_MANIFEST.checksum,
+  artifactScope:'owned',
+  tables:READINESS_SCHEMA_MANIFEST.tables.filter(item=>CIRCLE_PAIRING_TABLES.has(item.name)),
+  indexes:READINESS_SCHEMA_MANIFEST.indexes.filter(item=>CIRCLE_PAIRING_INDEXES.has(item.name)),
+  toleratedLegacyTables:[],
+});
 
 export class CirclePairingError extends Error{
   constructor(code,message,{cause}={}){
@@ -67,42 +63,31 @@ function scopeForCircle(circleId){
   return Object.freeze({kind:'circle',scopeKey:`circle:${id}`,circleId:id});
 }
 
-function columnsMatch(rows,expected){
-  return rows.length===expected.length&&expected.every((item,index)=>{
-    const row=rows[index];
-    return String(row?.name)===item[0]&&String(row?.type).toUpperCase()===item[1]
-      &&Number(row?.notnull)===item[2]&&Number(row?.pk)===item[3];
-  });
-}
-
 /** Read-only request-path readiness. Migration v13 is never created here. */
 export async function ensureCirclePairingReadiness(db){
   if(!db||typeof db.execute!=='function') fail('CIRCLE_PAIRING_INPUT_INVALID','A database client is required.');
-  const cached=readinessByClient.get(db);
-  if(cached) return cached;
-  const pending=(async()=>{
-    try{
-      for(const [table,expected] of Object.entries(TABLE_COLUMNS)){
-        await db.execute(`SELECT * FROM ${table} LIMIT 0`);
-        const info=await db.execute(`PRAGMA table_info('${table}')`);
-        if(!columnsMatch(info.rows||[],expected)) fail('CIRCLE_PAIRING_SCHEMA_UNAVAILABLE','Pairing schema is unavailable.');
-      }
-      for(const [name,expected] of Object.entries(INDEX_COLUMNS)){
-        const info=await db.execute(`PRAGMA index_info('${name}')`);
-        const columns=[...(info.rows||[])].sort((a,b)=>Number(a.seqno)-Number(b.seqno)).map(row=>String(row.name));
-        if(JSON.stringify(columns)!==JSON.stringify(expected)){
-          fail('CIRCLE_PAIRING_SCHEMA_UNAVAILABLE','Pairing schema is unavailable.');
-        }
-      }
-      return true;
-    }catch(error){
-      if(error instanceof CirclePairingError) throw error;
-      fail('CIRCLE_PAIRING_SCHEMA_UNAVAILABLE','Pairing schema is unavailable.',error);
+  try{
+    const readOnly=readOnlyDatabase(db);
+    const schema=await inspectSchema(readOnly,{
+      manifest:CIRCLE_PAIRING_READINESS_MANIFEST,
+      maxSchemaObjects:MAX_READINESS_SCHEMA_OBJECTS,
+    });
+    if(!schema.ok||schema.warnings.length!==0||!await migrationLedgerExists(readOnly)){
+      fail('CIRCLE_PAIRING_SCHEMA_UNAVAILABLE','Pairing schema is unavailable.');
     }
-  })();
-  readinessByClient.set(db,pending);
-  try{ return await pending; }
-  catch(error){ readinessByClient.delete(db); throw error; }
+    await assertMigrationLedgerContract(readOnly);
+    const ledger=validateMigrationLedger(await readMigrationLedger(readOnly,{
+      limit:MIGRATION_CONTRACTS.length+1,
+    }),MIGRATION_CONTRACTS);
+    if(ledger.currentVersion!==LATEST_MIGRATION_VERSION
+      ||ledger.rows.length!==MIGRATION_CONTRACTS.length){
+      fail('CIRCLE_PAIRING_SCHEMA_UNAVAILABLE','Pairing schema is unavailable.');
+    }
+    return true;
+  }catch(error){
+    if(error instanceof CirclePairingError) throw error;
+    fail('CIRCLE_PAIRING_SCHEMA_UNAVAILABLE','Pairing schema is unavailable.',error);
+  }
 }
 
 async function databaseNow(db,provided){
@@ -243,7 +228,7 @@ async function circleAccounts(db,circleId){
   return Object.freeze(accounts);
 }
 
-async function circleHistory(db,{scopeKey,cycleKey}){
+async function circleHistory(db,{scopeKey,cycleKey,startsAt}){
   try{
     const result=await db.execute({
       sql:`SELECT group_row.user_a_id,COALESCE(group_row.user_b_id,group_row.user_a_id) AS user_b_id,
@@ -260,10 +245,10 @@ async function circleHistory(db,{scopeKey,cycleKey}){
           ON eligible_b.publication_id=group_row.publication_id AND eligible_b.scope_key=group_row.scope_key
             AND eligible_b.circle_id=group_row.circle_id AND eligible_b.cycle_key=group_row.cycle_key
             AND eligible_b.user_id=group_row.user_b_id AND eligible_b.is_available=1
-        WHERE publication.scope_key=? AND publication.cycle_key<>?
+        WHERE publication.scope_key=? AND publication.cycle_key<>? AND publication.starts_at<?
           AND (group_row.user_b_id IS NULL OR eligible_b.user_id IS NOT NULL)
         ORDER BY publication.starts_at DESC,publication.id DESC,group_row.position ASC LIMIT 1000`,
-      args:[scopeKey,cycleKey],
+      args:[scopeKey,cycleKey,startsAt],
     });
     return (result.rows||[]).map(row=>({...row,is_ai_pair:Number(row.is_solo)===1?1:0}));
   }catch(error){ fail('CIRCLE_PAIRING_UNAVAILABLE','Pairing history is unavailable.',error); }
@@ -280,7 +265,8 @@ async function readStoredPublication(db,{scope,cycle}){
     },{
       sql:`SELECT eligibility.publication_id,eligibility.scope_key,eligibility.circle_id,
           eligibility.cycle_key,eligibility.user_id,eligibility.is_available,
-          eligibility.availability_version,eligibility.availability_source,eligibility.position
+          eligibility.availability_version,eligibility.availability_source,eligibility.position,
+          eligibility.group_position,eligibility.group_size,eligibility.member_position
         FROM circle_pairing_eligibility eligibility
         JOIN circle_pairing_publications publication
           ON publication.id=eligibility.publication_id AND publication.scope_key=eligibility.scope_key
@@ -290,7 +276,8 @@ async function readStoredPublication(db,{scope,cycle}){
       args:[scope.scopeKey,cycle.cycleKey],
     },{
       sql:`SELECT group_row.id,group_row.publication_id,group_row.scope_key,group_row.circle_id,
-          group_row.cycle_key,group_row.position,group_row.user_a_id,group_row.user_b_id,group_row.is_solo
+          group_row.cycle_key,group_row.position,group_row.member_count,
+          group_row.user_a_id,group_row.user_b_id,group_row.is_solo
         FROM circle_pairing_groups group_row
         JOIN circle_pairing_publications publication
           ON publication.id=group_row.publication_id AND publication.scope_key=group_row.scope_key
@@ -336,22 +323,29 @@ async function readStoredPublication(db,{scope,cycle}){
     fail('CIRCLE_PAIRING_INTEGRITY','Stored pairing publication is incomplete.');
   }
   const eligibleIds=new Set();
-  const availableIds=new Set();
+  const availableAssignments=new Map();
   const positions=new Set();
   for(const item of eligibility){
     const userId=positiveId(item.user_id);
     const position=Number(item.position);
     const available=Number(item.is_available);
     const version=Number(item.availability_version);
+    const groupPosition=item.group_position==null?null:Number(item.group_position);
+    const groupSize=item.group_size==null?null:Number(item.group_size);
+    const memberPosition=item.member_position==null?null:Number(item.member_position);
     if(Number(item.publication_id)!==publicationId||String(item.scope_key)!==scope.scopeKey
       ||Number(item.circle_id)!==scope.circleId||String(item.cycle_key)!==cycle.cycleKey
       ||eligibleIds.has(userId)||!Number.isSafeInteger(position)||position<0||position>=participantCount||positions.has(position)
       ||![0,1].includes(available)||!Number.isSafeInteger(version)||version<0
-      ||!['user','cycle_default'].includes(String(item.availability_source))){
+      ||!['user','cycle_default'].includes(String(item.availability_source))
+      ||(available===0&&(groupPosition!==null||groupSize!==null||memberPosition!==null))
+      ||(available===1&&(!Number.isSafeInteger(groupPosition)||groupPosition<0
+        ||![1,2].includes(groupSize)||!Number.isSafeInteger(memberPosition)
+        ||memberPosition<0||memberPosition>=groupSize))){
       fail('CIRCLE_PAIRING_INTEGRITY','Stored pairing publication is incomplete.');
     }
     eligibleIds.add(userId); positions.add(position);
-    if(available===1) availableIds.add(userId);
+    if(available===1) availableAssignments.set(userId,{groupPosition,groupSize,memberPosition});
   }
   const groupedIds=new Set();
   const groupPositions=new Set();
@@ -360,19 +354,27 @@ async function readStoredPublication(db,{scope,cycle}){
     const bId=item.user_b_id==null?null:positiveId(item.user_b_id);
     const soloValue=Number(item.is_solo);
     const solo=soloValue===1;
+    const memberCount=Number(item.member_count);
     const position=Number(item.position);
     if(Number(item.publication_id)!==publicationId||String(item.scope_key)!==scope.scopeKey
       ||Number(item.circle_id)!==scope.circleId||String(item.cycle_key)!==cycle.cycleKey
       ||!Number.isSafeInteger(position)||position<0||position>=groups.length||groupPositions.has(position)
       ||![0,1].includes(soloValue)
-      ||!availableIds.has(aId)||groupedIds.has(aId)
-      ||(solo&&bId!==null)||(!solo&&(!bId||bId===aId||!availableIds.has(bId)||groupedIds.has(bId)))){
+      ||memberCount!==(solo?1:2)
+      ||!availableAssignments.has(aId)||groupedIds.has(aId)
+      ||availableAssignments.get(aId).groupPosition!==position
+      ||availableAssignments.get(aId).groupSize!==(solo?1:2)
+      ||availableAssignments.get(aId).memberPosition!==0
+      ||(solo&&bId!==null)||(!solo&&(!bId||bId===aId||!availableAssignments.has(bId)||groupedIds.has(bId)
+        ||availableAssignments.get(bId).groupPosition!==position
+        ||availableAssignments.get(bId).groupSize!==2
+        ||availableAssignments.get(bId).memberPosition!==1))){
       fail('CIRCLE_PAIRING_INTEGRITY','Stored pairing publication is incomplete.');
     }
     groupPositions.add(position);
     groupedIds.add(aId); if(bId) groupedIds.add(bId);
   }
-  if(groupedIds.size!==availableIds.size) fail('CIRCLE_PAIRING_INTEGRITY','Stored pairing publication is incomplete.');
+  if(groupedIds.size!==availableAssignments.size) fail('CIRCLE_PAIRING_INTEGRITY','Stored pairing publication is incomplete.');
   return Object.freeze({
     id:publicationId,scopeKey:scope.scopeKey,circleId:scope.circleId,cycle:Object.freeze({...cycle}),
     participantCount,eligibility:Object.freeze(eligibility.map(item=>Object.freeze({
@@ -394,10 +396,18 @@ async function createPublication(db,{scope,cycle,availability}){
   if(!cycleKey) fail('CIRCLE_PAIRING_INTEGRITY','Pairing eligibility is invalid.');
   const publicationCycle={...cycle,cycleKey};
   const participants=availability.filter(item=>item.isAvailable).map(item=>({id:item.id,source:'auth'}));
-  const pairing=buildFairPairing(participants,await circleHistory(db,{scopeKey:scope.scopeKey,cycleKey}),{
+  const pairing=buildFairPairing(participants,await circleHistory(db,{
+    scopeKey:scope.scopeKey,cycleKey,startsAt:cycle.startsAt,
+  }),{
     seed:`${scope.scopeKey}:${cycleKey}:weekly`,
   });
   const generationToken=randomUUID();
+  const groupAssignments=new Map();
+  pairing.pairs.forEach((pair,groupPosition)=>{
+    const groupSize=pair.isAI?1:2;
+    groupAssignments.set(pair.a.id,{groupPosition,groupSize,memberPosition:0});
+    if(!pair.isAI) groupAssignments.set(pair.b.id,{groupPosition,groupSize,memberPosition:1});
+  });
   let claim;
   try{
     claim=await db.execute({
@@ -414,22 +424,25 @@ async function createPublication(db,{scope,cycle,availability}){
   const publicationId=positiveId(claim.rows[0].id);
   try{
     for(const [position,item] of availability.entries()){
+      const assignment=groupAssignments.get(item.id)||null;
       await db.execute({
         sql:`INSERT INTO circle_pairing_eligibility
             (publication_id,scope_key,circle_id,cycle_key,user_id,is_available,
-             availability_version,availability_source,position)
-          VALUES (?,?,?,?,?,?,?,?,?)`,
+             availability_version,availability_source,position,group_position,group_size,member_position)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
         args:[publicationId,scope.scopeKey,scope.circleId,cycleKey,item.id,item.isAvailable?1:0,
-          item.availabilityVersion,item.availabilitySource,position],
+          item.availabilityVersion,item.availabilitySource,position,assignment?.groupPosition??null,
+          assignment?.groupSize??null,assignment?.memberPosition??null],
       });
     }
     for(const [position,pair] of pairing.pairs.entries()){
       await db.execute({
         sql:`INSERT INTO circle_pairing_groups
-            (publication_id,scope_key,circle_id,cycle_key,position,user_a_id,user_b_id,is_solo)
-          VALUES (?,?,?,?,?,?,?,?)`,
-        args:[publicationId,scope.scopeKey,scope.circleId,cycleKey,position,pair.a.id,
-          pair.isAI?null:pair.b.id,pair.isAI?1:0],
+            (publication_id,scope_key,circle_id,cycle_key,position,member_count,user_a_id,
+             user_b_id,user_b_available,user_b_member_position,is_solo)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+        args:[publicationId,scope.scopeKey,scope.circleId,cycleKey,position,pair.isAI?1:2,pair.a.id,
+          pair.isAI?null:pair.b.id,pair.isAI?null:1,pair.isAI?null:1,pair.isAI?1:0],
       });
     }
   }catch(error){ fail('CIRCLE_PAIRING_UNAVAILABLE','Pairing publication could not be written.',error); }

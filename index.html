@@ -3281,6 +3281,7 @@ async function refreshMe(){
     pairingPublicationAbort=null;
     pairingListAbort?.abort();
     pairingListAbort=null;
+    window._randori_journey?.cancelPairRequest?.();
     circleRosterRequest+=1;
     currentCloudPairingWeek=null;
     currentCloudPairingCycle=null;
@@ -3422,6 +3423,20 @@ async function refreshMe(){
       if(circleContextLoadPromise===pending){ circleContextLoadPromise=null; circleContextLoadKey=''; }
     }
   }
+
+  window._randori_circle_control={
+    async capturePairing(userId){
+      await authCapabilitiesPromise;
+      if(authCapabilities.multiCircleControlPlane&&userId&&!activeCircleContext){
+        await ensureActiveCircleContext(userId);
+      }
+      return captureCircleControlOperation();
+    },
+    matchesPairing(operation,response){
+      return circleControlOperationMatches(operation)
+        &&(response===undefined||pairingResponseMatchesContext(response));
+    },
+  };
 
   async function loadCircleContext(epoch,userId){
     const context=await ensureActiveCircleContext(userId);
@@ -6757,13 +6772,17 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const previousRoom=String(window._randori_authorized_room||window._randori_workspace?.room||'');
     cancelDashboardPairRequest();
     hideAllViews();
+    if(viewDashboard) viewDashboard.style.display='block';
     window._randori_availability?.refresh?.();
     clearDashboardPairState({revokeRoom:false});
     const userId=dashboardUserId();
-    if(authCapabilities.multiCircleControlPlane&&userId&&!activeCircleContext){
-      try{ await ensureActiveCircleContext(userId); }catch{}
+    let circleOperation;
+    try{
+      circleOperation=await window._randori_circle_control?.capturePairing?.(userId);
+    }catch{
+      renderDashboardEmpty('error');
+      return;
     }
-    const circleOperation=captureCircleControlOperation();
     const requestEpoch=dashboardPairRequest.epoch;
     const controller=new AbortController();
     dashboardPairRequest.controller=controller;
@@ -6772,10 +6791,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       &&dashboardPairRequest.controller===controller
       &&!controller.signal.aborted
       &&dashboardUserId()===userId
-      &&circleControlOperationMatches(circleOperation)
+      &&window._randori_circle_control?.matchesPairing?.(circleOperation)
       &&document.visibilityState!=='hidden'
       &&viewDashboard?.style.display!=='none';
-    if(viewDashboard) viewDashboard.style.display='block';
     const empty=document.getElementById('dashEmpty');
     if(empty){ empty.style.display='none'; empty.dataset.state='loading'; }
     try{
@@ -6809,8 +6827,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }
     // fetch my pair
     try{
-      const j=await api('/api/my-pair',{method:'GET',cache:'no-store',signal:controller.signal});
-      if(!canApply()||!pairingResponseMatchesContext(j)) return;
+      const j=await window._randori_auth.api('/api/my-pair',{method:'GET',cache:'no-store',signal:controller.signal});
+      if(!canApply()||!window._randori_circle_control?.matchesPairing?.(circleOperation,j)) return;
       const state=dashboardCycleState(j);
       if(!j.paired||!['paired','solo'].includes(state)){
         renderDashboardEmpty(state,j);
@@ -8127,7 +8145,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   renderColorPicker(); populateTz();
 
   // Expose
-  window._randori_journey={ showDashboard, showProfileSetup, routeByAuth, openAuthorizedJoin };
+  window._randori_journey={
+    showDashboard,showProfileSetup,routeByAuth,openAuthorizedJoin,
+    cancelPairRequest:cancelDashboardPairRequest,
+  };
 })();
 </script>
 

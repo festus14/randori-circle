@@ -7,12 +7,14 @@ import { createClient } from '@libsql/client';
 
 import {
   CirclePairingError,
+  ensureCirclePairingReadiness,
   listSecondaryPairingScopes,
   publishCirclePairing,
   readCirclePairing,
   SECONDARY_PAIRING_CRON_LIMIT,
 } from '../../api/_circle-pairing.js';
 import { availabilityCycleKey } from '../../api/_availability.js';
+import { buildFairPairing, pairKey } from '../../api/_pairing.js';
 import { resolvePairingCycle } from '../../api/_pairing-cycle.js';
 import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
 import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
@@ -23,8 +25,13 @@ const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 
 function fixture(){
   const directory=mkdtempSync(join(tmpdir(),'randori-circle-pairing-'));
-  const db=createClient({url:`file:${join(directory,'test.sqlite')}`});
-  return {db,close(){ db.close(); rmSync(directory,{recursive:true,force:true}); }};
+  const url=`file:${join(directory,'test.sqlite')}`;
+  let db=createClient({url});
+  return {
+    get db(){ return db; },
+    reopen(){ db.close(); db=createClient({url}); return db; },
+    close(){ db.close(); rmSync(directory,{recursive:true,force:true}); },
+  };
 }
 
 async function prepare(db){
@@ -114,6 +121,79 @@ test('secondary publication snapshots all members, ignores the legacy flag, and 
   }finally{ item.close(); }
 });
 
+test('secondary readiness rechecks connection, ledger, and exact v13 structure without caching',async t=>{
+  async function readyFixture(){
+    const item=fixture();
+    await prepare(item.db);
+    assert.equal(await ensureCirclePairingReadiness(item.db),true);
+    return item;
+  }
+  const unavailable=error=>error instanceof CirclePairingError
+    &&error.code==='CIRCLE_PAIRING_SCHEMA_UNAVAILABLE';
+  await t.test('foreign keys disabled',async()=>{
+    const item=await readyFixture();
+    try{
+      await item.db.execute('PRAGMA foreign_keys=OFF');
+      await assert.rejects(ensureCirclePairingReadiness(item.db),unavailable);
+    }finally{ item.close(); }
+  });
+  await t.test('check constraints disabled',async()=>{
+    const item=await readyFixture();
+    try{
+      await item.db.execute('PRAGMA ignore_check_constraints=ON');
+      await assert.rejects(ensureCirclePairingReadiness(item.db),unavailable);
+    }finally{ item.close(); }
+  });
+  await t.test('v13 ledger checksum changed',async()=>{
+    const item=await readyFixture();
+    try{
+      await item.db.execute({
+        sql:`UPDATE schema_migrations SET checksum=? WHERE version=13`,args:['f'.repeat(64)],
+      });
+      await assert.rejects(ensureCirclePairingReadiness(item.db),unavailable);
+    }finally{ item.close(); }
+  });
+  await t.test('descriptor unique index removed',async()=>{
+    const item=await readyFixture();
+    try{
+      await item.db.execute('DROP INDEX uq_pairing_cycles_descriptor');
+      await assert.rejects(ensureCirclePairingReadiness(item.db),unavailable);
+    }finally{ item.close(); }
+  });
+  await t.test('v13 check changed',async()=>{
+    const item=await readyFixture();
+    try{
+      const result=await item.db.execute(`SELECT sql FROM sqlite_schema
+        WHERE type='table' AND name='circle_pairing_eligibility'`);
+      const sql=String(result.rows[0].sql);
+      const weakened=sql.replace("CHECK(scope_key=('circle:'||circle_id))","CHECK(length(scope_key)>0)");
+      assert.notEqual(weakened,sql);
+      await item.db.execute('PRAGMA writable_schema=ON');
+      await item.db.execute({sql:`UPDATE sqlite_schema SET sql=? WHERE type='table' AND name='circle_pairing_eligibility'`,args:[weakened]});
+      await item.db.execute('PRAGMA writable_schema=OFF');
+      await assert.rejects(ensureCirclePairingReadiness(item.db),unavailable);
+    }finally{ item.close(); }
+  });
+  await t.test('v13 descriptor foreign key changed',async()=>{
+    const item=await readyFixture();
+    try{
+      const result=await item.db.execute(`SELECT sql FROM sqlite_schema
+        WHERE type='table' AND name='circle_pairing_publications'`);
+      const sql=String(result.rows[0].sql);
+      const exact="FOREIGN KEY(scope_key,circle_id,cycle_key,cycle_id,starts_at,ends_at,cutoff_at,time_zone) REFERENCES pairing_cycles(scope_key,circle_id,cycle_key,cycle_id,starts_at,ends_at,cutoff_at,time_zone) ON DELETE RESTRICT";
+      const weakened="FOREIGN KEY(scope_key,cycle_key) REFERENCES pairing_cycles(scope_key,cycle_key) ON DELETE RESTRICT";
+      const changed=sql.replace(exact,weakened);
+      assert.notEqual(changed,sql);
+      await item.db.execute('PRAGMA writable_schema=ON');
+      await item.db.execute({sql:`UPDATE sqlite_schema SET sql=? WHERE type='table' AND name='circle_pairing_publications'`,args:[changed]});
+      await item.db.execute('PRAGMA writable_schema=OFF');
+      const reopened=item.reopen();
+      await prepareMigrationConnection(reopened);
+      await assert.rejects(ensureCirclePairingReadiness(reopened),unavailable);
+    }finally{ item.close(); }
+  });
+});
+
 test('an all-unavailable circle publishes a complete zero-group snapshot',async()=>{
   const item=fixture();
   try{
@@ -183,6 +263,26 @@ test('different circles publish the same ISO cycle independently and history rem
     assert.deepEqual(rows.rows.map(row=>[String(row.scope_key),Number(row.count)]),[
       ['circle:20',1],['circle:30',1],
     ]);
+  }finally{ item.close(); }
+});
+
+test('future canonical publications cannot influence an earlier cycle fairness history',async()=>{
+  const item=fixture();
+  try{
+    await prepare(item.db);
+    const authority=await seedCircle(item.db,{userIds:[1,2,3,4,5,6]});
+    const futureNow=new Date('2026-10-18T08:15:00.000Z');
+    const future=await publishCirclePairing(item.db,{authority,now:futureNow});
+    assert.equal(future.publication.cycle.cycleId,'2026-W43');
+    const earlier=await publishCirclePairing(item.db,{authority,now:NOW});
+    const scope={kind:'circle',scopeKey:'circle:20',circleId:20};
+    const cycle=resolvePairingCycle({now:NOW,state:'current'});
+    const cycleKey=availabilityCycleKey(scope,cycle);
+    const expected=buildFairPairing([1,2,3,4,5,6].map(id=>({id,source:'auth'})),[],{
+      seed:`circle:20:${cycleKey}:weekly`,
+    }).pairs.map(pair=>pairKey(pair.a.id,pair.b.id)).sort();
+    assert.deepEqual(earlier.publication.groups
+      .map(group=>pairKey(group.userAId,group.userBId)).sort(),expected);
   }finally{ item.close(); }
 });
 

@@ -20,9 +20,14 @@ chat, video, execution, AI, recap, or notification capability.
 `circle_pairing_publications` owns one immutable `(scope_key, cycle_key)` claim.
 `circle_pairing_eligibility` records the complete active, non-demo membership
 snapshot, including unavailable members and the exact version/source of each
-availability decision. `circle_pairing_groups` records only available members.
-Every child repeats the scope, circle, and cycle and proves that chain through
-restrictive composite foreign keys. No v13 foreign key cascades.
+availability decision. Available eligibility rows own one deterministic group
+and member slot; unavailable rows own none. `circle_pairing_groups` can
+therefore reference only available members assigned to that exact group and
+role, preventing duplicate participation at the storage boundary. A composite
+descriptor foreign key also binds every publication timestamp and time zone to
+its exact availability cycle. Every child repeats the scope, circle, and cycle
+and proves that chain through restrictive composite foreign keys. No v13
+foreign key cascades.
 
 An odd member is recorded as `is_solo=1` with no second member. This is solo
 practice, not an AI partner: canonical storage and secondary API responses use

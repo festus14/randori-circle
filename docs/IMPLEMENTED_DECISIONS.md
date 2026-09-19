@@ -1041,7 +1041,10 @@ current-cycle pairing, but that assignment is coordination data only. Migration
 v13 introduces a separate canonical publication, complete eligibility snapshot,
 and group data plane keyed by exact circle scope and availability cycle. Every
 child proves its publication, scope, circle, cycle, and eligible account through
-restrictive composite foreign keys. The primary circle continues through the
+restrictive composite foreign keys. The publication also proves its full cycle
+descriptor, while each available eligibility row owns exactly one group/member
+slot so unavailable or duplicate participant claims fail at the storage
+boundary. The primary circle continues through the
 legacy publication tables because those IDs authorize schedules, rooms, chat,
 video, execution, and AI today.
 

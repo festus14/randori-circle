@@ -39,7 +39,8 @@ async function seedParents(db){
   await db.execute(`INSERT INTO auth_accounts
     (id,email,password_hash,display_name,color,is_demo)
     VALUES (1,'owner@example.test','hash','Owner','#123456',0),
-           (2,'member@example.test','hash','Member','#654321',0)`);
+           (2,'member@example.test','hash','Member','#654321',0),
+           (3,'unavailable@example.test','hash','Unavailable','#999999',0)`);
   await db.execute(`INSERT INTO circles
     (id,public_id,slug,name,is_primary,created_by) VALUES (20,'circle-secondary','secondary','Secondary',0,1)`);
   await db.execute(`INSERT INTO pairing_cycles
@@ -67,6 +68,7 @@ test('v13 installs only canonical circle pairing tables and read indexes',async(
     const result=await apply(item.db);
     assert.equal(result.toVersion,13);
     assert.deepEqual(V13.operations.map(operation=>operation.name),[
+      'uq_pairing_cycles_descriptor',
       'circle_pairing_publications','circle_pairing_eligibility','circle_pairing_groups',
       'idx_circle_pairing_publications_circle_cycle','idx_circle_pairing_eligibility_scope_user',
       'idx_circle_pairing_groups_user_a','idx_circle_pairing_groups_user_b',
@@ -93,14 +95,16 @@ test('managed v12 upgrades once to v13 and canonical rows survive restart',async
     const publicationId=await seedPublication(item.db);
     await item.db.execute({
       sql:`INSERT INTO circle_pairing_eligibility
-        (publication_id,scope_key,circle_id,cycle_key,user_id,is_available,availability_version,availability_source,position)
-        VALUES (?,?,?,?,?,1,0,'cycle_default',0),(?,?,?,?,?,1,2,'user',1)`,
+        (publication_id,scope_key,circle_id,cycle_key,user_id,is_available,availability_version,
+         availability_source,position,group_position,group_size,member_position)
+        VALUES (?,?,?,?,?,1,0,'cycle_default',0,0,2,0),(?,?,?,?,?,1,2,'user',1,0,2,1)`,
       args:[publicationId,'circle:20',20,CYCLE_KEY,1,publicationId,'circle:20',20,CYCLE_KEY,2],
     });
     await item.db.execute({
       sql:`INSERT INTO circle_pairing_groups
-        (publication_id,scope_key,circle_id,cycle_key,position,user_a_id,user_b_id,is_solo)
-        VALUES (?,?,?,?,0,1,2,0)`,args:[publicationId,'circle:20',20,CYCLE_KEY],
+        (publication_id,scope_key,circle_id,cycle_key,position,member_count,user_a_id,
+         user_b_id,user_b_available,user_b_member_position,is_solo)
+        VALUES (?,?,?,?,0,2,1,2,1,1,0)`,args:[publicationId,'circle:20',20,CYCLE_KEY],
     });
     const reopened=item.reopen();
     await prepareMigrationConnection(reopened);
@@ -119,22 +123,70 @@ test('v13 rejects cross-scope children, unproven members, invalid solo rows, and
     const publicationId=await seedPublication(item.db);
     await item.db.execute({
       sql:`INSERT INTO circle_pairing_eligibility
-        (publication_id,scope_key,circle_id,cycle_key,user_id,is_available,availability_version,availability_source,position)
-        VALUES (?,?,?,?,?,1,0,'cycle_default',0)`,args:[publicationId,'circle:20',20,CYCLE_KEY,1],
+        (publication_id,scope_key,circle_id,cycle_key,user_id,is_available,availability_version,
+         availability_source,position,group_position,group_size,member_position)
+        VALUES (?,?,?,?,?,1,0,'cycle_default',0,0,1,0)`,args:[publicationId,'circle:20',20,CYCLE_KEY,1],
     });
     for(const operation of [
       ()=>item.db.execute({sql:`INSERT INTO circle_pairing_eligibility
-        (publication_id,scope_key,circle_id,cycle_key,user_id,is_available,availability_version,availability_source,position)
-        VALUES (?,?,?,?,?,1,0,'cycle_default',1)`,args:[publicationId,'circle:21',21,CYCLE_KEY,2]}),
+        (publication_id,scope_key,circle_id,cycle_key,user_id,is_available,availability_version,
+         availability_source,position,group_position,group_size,member_position)
+        VALUES (?,?,?,?,?,1,0,'cycle_default',1,1,1,0)`,args:[publicationId,'circle:21',21,CYCLE_KEY,2]}),
       ()=>item.db.execute({sql:`INSERT INTO circle_pairing_groups
-        (publication_id,scope_key,circle_id,cycle_key,position,user_a_id,user_b_id,is_solo)
-        VALUES (?,?,?,?,0,1,2,0)`,args:[publicationId,'circle:20',20,CYCLE_KEY]}),
+        (publication_id,scope_key,circle_id,cycle_key,position,member_count,user_a_id,
+         user_b_id,user_b_available,user_b_member_position,is_solo)
+        VALUES (?,?,?,?,0,2,1,2,1,1,0)`,args:[publicationId,'circle:20',20,CYCLE_KEY]}),
       ()=>item.db.execute({sql:`INSERT INTO circle_pairing_groups
-        (publication_id,scope_key,circle_id,cycle_key,position,user_a_id,user_b_id,is_solo)
-        VALUES (?,?,?,?,0,1,1,1)`,args:[publicationId,'circle:20',20,CYCLE_KEY]}),
+        (publication_id,scope_key,circle_id,cycle_key,position,member_count,user_a_id,user_b_id,is_solo)
+        VALUES (?,?,?,?,0,1,1,1,1)`,args:[publicationId,'circle:20',20,CYCLE_KEY]}),
       ()=>item.db.execute({sql:`DELETE FROM circle_pairing_publications WHERE id=?`,args:[publicationId]}),
       ()=>item.db.execute(`DELETE FROM circles WHERE id=20`),
     ]) await assert.rejects(operation,error=>String(error?.code||'').startsWith('SQLITE_CONSTRAINT'));
+  }finally{ item.close(); }
+});
+
+test('v13 binds cycle descriptors and participant ownership before an immutable claim can be poisoned',async()=>{
+  const item=fixture();
+  try{
+    await apply(item.db);
+    await seedParents(item.db);
+    await assert.rejects(()=>item.db.execute({
+      sql:`INSERT INTO circle_pairing_publications
+        (scope_key,circle_id,cycle_key,cycle_id,starts_at,ends_at,cutoff_at,time_zone,
+         generation_token,algorithm_version,algorithm_seed,participant_count)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      args:['circle:20',20,CYCLE_KEY,'2026-W39','2026-09-20T07:00:00.000Z',
+        '2026-09-27T07:00:00.000Z','2026-09-20T07:00:00.000Z','UTC',
+        '22222222-2222-4222-8222-222222222222','fair-seeded-v1',`circle:20:${CYCLE_KEY}:weekly`,3],
+    }),error=>String(error?.code||'').startsWith('SQLITE_CONSTRAINT'));
+    const publicationId=await seedPublication(item.db);
+    await item.db.execute({
+      sql:`INSERT INTO circle_pairing_eligibility
+        (publication_id,scope_key,circle_id,cycle_key,user_id,is_available,availability_version,
+         availability_source,position,group_position,group_size,member_position)
+        VALUES (?,?,?,?,?,1,0,'cycle_default',0,0,2,0),
+               (?,?,?,?,?,1,0,'cycle_default',1,0,2,1),
+               (?,?,?,?,?,0,0,'cycle_default',2,NULL,NULL,NULL)`,
+      args:[publicationId,'circle:20',20,CYCLE_KEY,1,
+        publicationId,'circle:20',20,CYCLE_KEY,2,
+        publicationId,'circle:20',20,CYCLE_KEY,3],
+    });
+    await item.db.execute({
+      sql:`INSERT INTO circle_pairing_groups
+        (publication_id,scope_key,circle_id,cycle_key,position,member_count,user_a_id,
+         user_b_id,user_b_available,user_b_member_position,is_solo)
+        VALUES (?,?,?,?,0,2,1,2,1,1,0)`,args:[publicationId,'circle:20',20,CYCLE_KEY],
+    });
+    for(const operation of [
+      ()=>item.db.execute({sql:`INSERT INTO circle_pairing_groups
+        (publication_id,scope_key,circle_id,cycle_key,position,member_count,user_a_id,user_b_id,is_solo)
+        VALUES (?,?,?,?,1,1,3,NULL,1)`,args:[publicationId,'circle:20',20,CYCLE_KEY]}),
+      ()=>item.db.execute({sql:`INSERT INTO circle_pairing_groups
+        (publication_id,scope_key,circle_id,cycle_key,position,member_count,user_a_id,
+         user_b_id,user_b_available,user_b_member_position,is_solo)
+        VALUES (?,?,?,?,1,2,1,2,1,1,0)`,args:[publicationId,'circle:20',20,CYCLE_KEY]}),
+    ]) await assert.rejects(operation,error=>String(error?.code||'').startsWith('SQLITE_CONSTRAINT'));
+    assert.equal(Number((await item.db.execute(`SELECT COUNT(*) AS count FROM circle_pairing_groups`)).rows[0].count),1);
   }finally{ item.close(); }
 });
 

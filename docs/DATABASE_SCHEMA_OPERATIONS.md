@@ -4,7 +4,7 @@ Randori has read-only schema inspection for configured databases, a transactiona
 
 ## Contract
 
-- `db/schema-manifest.js` is the current contract: 48 application tables and 51 named indexes.
+- `db/schema-manifest.js` is the current contract: 48 application tables and 52 named indexes.
 - The manifest includes column/default/primary-key contracts, checks, foreign keys, unique constraints, AUTOINCREMENT/collation/table options, and unique, partial, descending, and expression-index semantics. SQLite-created `sqlite_autoindex_*` indexes are intentionally outside the named-index count.
 - `ai_monthly_usage` is a retired table. Its presence is reported as tolerated legacy state; it is not treated as current schema and is never changed.
 - `schema_migrations` is a runner-owned operational table. General schema inspection recognizes it without treating it as unexpected application drift; the migration runner validates its exact schema and rows separately.
@@ -24,7 +24,9 @@ Randori has read-only schema inspection for configured databases, a transactiona
 - Migration v13 adds immutable, circle-owned pairing publications, complete
   availability eligibility snapshots, and exact-scope groups for secondary
   coordination. Restrictive composite foreign keys keep every child on the
-  publication's circle and cycle. These rows never authorize a legacy room.
+  publication's circle and cycle, bind the full publication descriptor to its
+  availability cycle, and admit only available members assigned to one exact
+  group slot. These rows never authorize a legacy room.
 
 ## Commands
 
@@ -54,7 +56,7 @@ Representative output fields:
   "manifest": {"version": 1, "checksum": "..."},
   "foreignKeysEnabled": true,
   "checkConstraintsEnabled": true,
-  "summary": {"expectedTables": 48, "expectedIndexes": 51, "blockers": 0},
+  "summary": {"expectedTables": 48, "expectedIndexes": 52, "blockers": 0},
   "drift": {
     "missingTables": [],
     "missingColumns": [],

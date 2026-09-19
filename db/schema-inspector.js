@@ -507,10 +507,13 @@ export async function inspectSchema(database,{manifest,maxSchemaObjects}={}){
   const rows=schemaObjectLimitExceeded?allRows.slice(0,maxSchemaObjects):allRows;
   const tableRows=new Map(rows.filter(row=>row.type==='table').map(row=>[String(row.name),row]));
   const indexRows=new Map(rows.filter(row=>row.type==='index'&&!String(row.name).startsWith('sqlite_')).map(row=>[String(row.name),row]));
-  const unexpectedViews=rows.filter(row=>row.type==='view').map(row=>String(row.name)).sort();
-  const unexpectedTriggers=rows.filter(row=>row.type==='trigger').map(row=>String(row.name)).sort();
   const expectedTableNames=new Set(manifest.tables.map(item=>item.name));
   const expectedIndexNames=new Set(manifest.indexes.map(item=>item.name));
+  const ownedScope=manifest.artifactScope==='owned';
+  const unexpectedViews=rows.filter(row=>row.type==='view'&&(!ownedScope||expectedTableNames.has(String(row.tbl_name))))
+    .map(row=>String(row.name)).sort();
+  const unexpectedTriggers=rows.filter(row=>row.type==='trigger'&&(!ownedScope||expectedTableNames.has(String(row.tbl_name))))
+    .map(row=>String(row.name)).sort();
   const toleratedLegacyTables=manifest.toleratedLegacyTables.filter(name=>tableRows.has(name));
   const missingTables=[];
   const missingColumns=[];
@@ -638,10 +641,12 @@ export async function inspectSchema(database,{manifest,maxSchemaObjects}={}){
     if(differences.length) indexDrift.push({index:definition.name,differences});
   }
 
-  const unexpectedTables=[...tableRows.keys()]
+  const unexpectedTables=(ownedScope?[]:[...tableRows.keys()])
     .filter(name=>!name.startsWith('sqlite_')&&!expectedTableNames.has(name)&&!manifest.toleratedLegacyTables.includes(name))
     .sort();
-  const unexpectedIndexes=[...indexRows.keys()].filter(name=>!expectedIndexNames.has(name)).sort();
+  const unexpectedIndexes=[...indexRows.entries()]
+    .filter(([name,row])=>!expectedIndexNames.has(name)&&(!ownedScope||expectedTableNames.has(String(row.tbl_name))))
+    .map(([name])=>name).sort();
   const unexpectedUniqueIndexes=unexpectedIndexes.filter(name=>parseIndexSql(indexRows.get(name)?.sql)?.unique);
   const foreignKeyResult=await db.execute('PRAGMA foreign_keys');
   const foreignKeysEnabled=asNumber(foreignKeyResult.rows?.[0]?.foreign_keys)===1;
