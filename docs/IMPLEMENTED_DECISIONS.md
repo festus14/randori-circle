@@ -1448,3 +1448,51 @@ post-commit fan-out would create an untracked durability gap. Mutable reminder
 cancellation would add races and discard audit history. Reusing the immutable
 v6 event with dispatch-time suppression keeps the increment migration-free and
 operationally bounded.
+
+## ID-35: Retire request-path authentication schema bootstrap
+
+Status: implemented as a DDL-removal increment with no schema migration. ID-34
+is reserved for the independently developed secondary-schedule notification
+increment.
+
+**Decision.** Authentication schema is created and changed only by the reviewed
+migration workflow. A shared, read-only `ensureAuthReadiness` probe projects
+every column used by ordinary authentication from `auth_accounts`, `users`,
+`auth_rate_limits`, and `auth_sessions`. The probe is coalesced per concrete
+database client, caches only a successful result, and evicts a rejected promise
+so transient failures can recover. It executes no DDL or DML.
+
+Signup, login, profile lookup, activation, password reset, recent-auth,
+identity management, signed logout, and Google link/reauth/callback paths run
+the core probe before business writes. Feature-specific readiness remains in
+place for membership, provider identity, activation, reset, and identity
+tables. The Google callback probes before exchanging its one-time provider
+code. Missing or incompatible required columns therefore return the existing
+generic temporary-unavailability response (or safe OAuth `db_error`) without a
+schema repair, account write, session write, or provider call. Invitation APIs
+retain their existing read-only membership and delivery probes; invitation-
+backed account creation is covered by the authentication core probe.
+
+All 18 `CREATE` and `ALTER` occurrences in `api/auth.js`, including the
+`AUTH_SCHEMA_BOOTSTRAP_ENABLED` branch, are removed. The runtime-DDL allowlist
+no longer contains `api/auth.js`; the remaining 104 occurrences are separate
+AI, data, operations, and membership-initialization debt owned by issue #44.
+
+**Alternatives.** Keeping a permanently false bootstrap flag retains an
+unaudited emergency write path and makes a configuration mistake destructive.
+Silently attempting DML and mapping missing-column errors to availability is
+cheaper initially but can partially create an account before a later session
+table failure. Running the complete 52-table schema inspector on every auth
+request gives stronger global drift evidence but couples login availability to
+unrelated product tables and adds unnecessary request latency. The scoped core
+projection plus existing feature probes gives the smallest independently
+shippable boundary while the deployment gate remains authoritative for exact
+whole-database readiness.
+
+**Rollout and recovery.** Do not promote this increment until issue #43 has
+retained evidence that production is on the reviewed latest schema. Deploying
+the code performs no data or schema mutation. If an auth contract is missing,
+roll forward with the protected migration workflow; do not restore a runtime
+bootstrap flag. Rollback to the preceding build changes only request behavior
+and requires no database rollback, though it reintroduces the legacy DDL path
+and is therefore an emergency compatibility action rather than normal repair.

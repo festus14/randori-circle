@@ -479,6 +479,29 @@ test('registration-state probes do not create rollout schema before explicit ini
   assert.equal(schema.rows.length,0);
 });
 
+test('invitation preparation fails closed on an unready schema without DDL or data writes',async()=>{
+  const database=createClient({url:'file::memory:'});
+  const statements=[];
+  currentDb={
+    execute(statement){
+      statements.push(typeof statement==='string'?statement:String(statement?.sql||''));
+      return database.execute(statement);
+    },
+    close(){ database.close(); },
+  };
+  const result=await invoke(invitationsHandler,{
+    method:'POST',url:'/api/invitations/prepare',query:{endpoint:'prepare'},
+    headers:{origin:'https://randori.example.test',host:'randori.example.test'},
+    body:{token:'x'.repeat(43)},
+  });
+  assert.equal(result.status,503);
+  assert.deepEqual(result.body,{error:'invitations unavailable'});
+  assert.equal(statements.some(sql=>/^\s*(?:CREATE|ALTER|DROP|VACUUM|REINDEX)\b/iu.test(sql)),false);
+  assert.equal(statements.some(sql=>/^\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(sql)),false);
+  const schema=await database.execute(`SELECT name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'`);
+  assert.deepEqual(schema.rows,[]);
+});
+
 test('owner invitation APIs create, safely list, prepare, clear stale claims, and revoke',async()=>{
   currentDb=await createDatabase();
   process.env.NODE_ENV='production';

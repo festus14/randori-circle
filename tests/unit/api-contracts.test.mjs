@@ -209,6 +209,19 @@ test('auth endpoints reject malformed or unauthenticated requests before databas
     headers: { cookie: 'randori_session=not-a-valid-jwt' },
   });
   assert.equal(invalidCookie.status, 401);
+
+  process.env.TURSO_DATABASE_URL='file::memory:';
+  const signedButUnreadyToken=jwt.sign(
+    {id:42,email:'person@example.test',jti:'F'.repeat(43)},
+    process.env.JWT_SECRET,
+    {algorithm:'HS256',issuer:JWT_ISSUER,audience:JWT_AUDIENCE,expiresIn:'5m'},
+  );
+  const signedButUnready=await invoke(authHandler,{
+    method:'GET',url:'/api/auth/me',query:{endpoint:'me'},
+    headers:{cookie:`randori_session=${signedButUnreadyToken}`},
+  });
+  assert.equal(signedButUnready.status,503);
+  assert.deepEqual(signedButUnready.body,{error:'session validation temporarily unavailable'});
 });
 
 test('logout clears the HttpOnly session cookie', async () => {

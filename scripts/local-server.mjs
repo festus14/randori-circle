@@ -958,7 +958,6 @@ function installRuntimeEnvironment(config,url,secret,envTarget=process.env){
     APP_URL:url,
     ALLOW_OPEN_SIGNUP:'false',
     CIRCLE_MEMBERSHIP_ENABLED:'true',
-    AUTH_SCHEMA_BOOTSTRAP_ENABLED:'false',
     PASSWORD_RESET_ENABLED:'true',
     IDENTITY_MANAGEMENT_ENABLED:'false',
     IDENTITY_EMAIL_HASH_KEY:identityEmailHashKey,

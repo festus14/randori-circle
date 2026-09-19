@@ -968,6 +968,99 @@ test('login rejects missing or cross-origin requests before credential or databa
   }
 });
 
+test('auth, activation, reset, and identity request paths fail closed without schema writes',async()=>{
+  enableLocalPasswordSignup();
+  executeHandler=sql=>{
+    if(sql.includes('FROM auth_accounts LIMIT 0')) throw new Error('auth schema unavailable');
+    return rows();
+  };
+  const resetUnreadyClient=()=>{
+    db=createMockDb();
+    executed.length=0;
+  };
+  const assertReadOnlyFailure=()=>{
+    assert.equal(executed.some(({sql})=>/^\s*(?:CREATE|ALTER|DROP|VACUUM|REINDEX)\b/iu.test(sql)),false);
+    assert.equal(executed.some(({sql})=>/^\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(sql)),false,
+      'unready auth schema must fail before business writes');
+  };
+  const requests=[
+    {
+      request:{method:'POST',url:'/api/auth/signup',query:{endpoint:'signup'},headers:localOriginHeaders,
+        body:{email:'person@example.test',password:'correct horse battery',name:'Person'}},
+      status:503,error:'signup temporarily unavailable',
+    },
+    {
+      request:{method:'POST',url:'/api/auth/login',query:{endpoint:'login'},headers:localOriginHeaders,
+        body:{email:'person@example.test',password:'correct horse battery'}},
+      status:503,error:'login temporarily unavailable',
+    },
+  ];
+  for(const item of requests){
+    resetUnreadyClient();
+    const result=await invoke(authHandler,item.request);
+    assert.equal(result.status,item.status,item.error);
+    assert.equal(result.body.error,item.error);
+    assertReadOnlyFailure();
+  }
+
+  process.env.EMAIL_PASSWORD_ACTIVATION_ENABLED='true';
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  process.env.EMAIL_VERIFICATION_ENCRYPTION_KEY=Buffer.alloc(32,7).toString('base64url');
+  resetUnreadyClient();
+  const activation=await invoke(authHandler,{
+    method:'POST',url:'/api/auth/activation-resend',query:{endpoint:'activation-resend'},
+    headers:localOriginHeaders,body:{email:'person@example.test'},
+  });
+  assert.equal(activation.status,503);
+  assert.equal(activation.body.error,'email activation temporarily unavailable');
+  assertReadOnlyFailure();
+
+  process.env.PASSWORD_RESET_ENABLED='true';
+  process.env.PASSWORD_RESET_ENCRYPTION_KEY=Buffer.alloc(32,8).toString('base64url');
+  resetUnreadyClient();
+  const reset=await invoke(authHandler,{
+    method:'POST',url:'/api/auth/password-reset-consume',query:{endpoint:'password-reset-consume'},
+    headers:localOriginHeaders,body:{token:'x'.repeat(43),password:'correct horse battery'},
+  });
+  assert.equal(reset.status,503);
+  assert.equal(reset.body.error,'password reset temporarily unavailable');
+  assertReadOnlyFailure();
+
+  process.env.IDENTITY_MANAGEMENT_ENABLED='true';
+  resetUnreadyClient();
+  const identity=await invoke(authHandler,{
+    url:'/api/auth/identities',query:{endpoint:'identities'},headers:{'x-test-auth':'user'},
+  });
+  assert.equal(identity.status,503);
+  assert.equal(identity.body.error,'identity management temporarily unavailable');
+
+  assertReadOnlyFailure();
+});
+
+test('Google callback checks auth readiness before consuming the provider code',async()=>{
+  process.env.NODE_ENV='production';
+  process.env.APP_URL='https://randori.example.test';
+  process.env.GOOGLE_CLIENT_ID='client';
+  process.env.GOOGLE_CLIENT_SECRET='secret';
+  let providerCalls=0;
+  globalThis.fetch=async()=>{ providerCalls+=1; throw new Error('provider must not be called'); };
+  executeHandler=sql=>{
+    if(sql.includes('FROM auth_accounts LIMIT 0')) throw new Error('auth schema unavailable');
+    return rows();
+  };
+  const result=await invoke(authHandler,{
+    url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
+    headers:{
+      host:'randori.example.test','x-forwarded-proto':'https',
+      cookie:googleOAuthCookieHeader(),
+    },
+  });
+  assert.equal(result.status,302);
+  assert.equal(result.headers.location,'https://randori.example.test/?google_error=db_error');
+  assert.equal(providerCalls,0);
+  assert.equal(executed.some(({sql})=>/^\s*(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(sql)),false);
+});
+
 test('data read models map database rows and expose non-mutating health probes', async () => {
   const currentCycleId=resolvePairingCycle().cycleId;
   executeHandler = sql => {

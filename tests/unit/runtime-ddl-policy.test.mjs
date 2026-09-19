@@ -9,7 +9,8 @@ test('runtime DDL debt matches its deterministic reviewed allowlist',()=>{
   const result=checkRuntimeDdl('api');
   assert.equal(result.ok,true);
   assert.equal(result.snapshots.length,RUNTIME_DDL_ALLOWLIST.length);
-  assert.ok(result.entries.length>80);
+  assert.equal(result.snapshots.reduce((total,item)=>total+item.statementCount,0),104);
+  assert.equal(result.snapshots.some(item=>item.file==='api/auth.js'),false);
 });
 
 test('runtime DDL policy detects new and assembled schema writes',()=>{

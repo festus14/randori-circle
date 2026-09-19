@@ -102,7 +102,9 @@ Copy `.env.example` and configure at least:
 - `PASSWORD_RESET_ENABLED=true` plus the independent versioned `PASSWORD_RESET_ENCRYPTION_*` key ring to enable recovery after migration v8 is ready
 - the dedicated versioned `IDENTITY_EMAIL_HASH_*` key ring before setting `IDENTITY_MANAGEMENT_ENABLED=true` after migration v9; Google linking also requires the complete Google OAuth configuration above
 - separate protected steps for the v13, v14, then v15 prerequisites, each with fresh rehearsal and approval, followed by protected adoption of all four configured credential purposes; then use a new rehearsal, status artifact, and approval to apply v16 separately before deploying the current runtime with secondary scheduling still disabled. `CREDENTIAL_KEY_CONTROL_MUTATIONS_ENABLED` authorizes only one operator control transition and does not disable `EMAIL_PASSWORD_ACTIVATION_ENABLED`, `PASSWORD_RESET_ENABLED`, `INVITATION_EMAIL_DELIVERY_ENABLED`, or `IDENTITY_MANAGEMENT_ENABLED`. Disable those consumer flags during the v15 transition, or hold production promotion if they cannot be disabled. Status/adoption/advance and restore rules are in `docs/KEY_ROTATION.md` and `docs/SECONDARY_SCHEDULING.md`
-- `AUTH_SCHEMA_BOOTSTRAP_ENABLED` is legacy-only and must remain false for the migrated OIDC flow; run the protected database migrations before enabling production authentication
+- authentication schema is migration-owned: signup, login, profile, activation,
+  reset, identity, and Google callback paths probe it read-only and fail closed;
+  run the protected migrations before enabling production authentication
 - `RESEND_API_KEY` and `RESEND_FROM` for invitation, pairing, schedule,
   verification, and password-reset notifications
 - Keep `CHAT_RETENTION_ENABLED=false` until migration v11, legacy scope adoption,
