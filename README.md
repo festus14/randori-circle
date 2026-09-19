@@ -2,7 +2,7 @@
 
 Randori Circle is a private peer mock-interview app. Members publish availability, receive a fair weekly pairing, schedule a session, chat, and practise JavaScript or Python questions together.
 
-Production deploys from `main` through Vercel. Development is iterative; the architecture and rollout decisions are documented in [the production plan](docs/PRODUCTION_ARCHITECTURE_PLAN.md).
+Production deploys from `main` through Vercel. Development is iterative; see the [implemented decision log](docs/IMPLEMENTED_DECISIONS.md) for the current private-beta architecture and the [production plan](docs/PRODUCTION_ARCHITECTURE_PLAN.md) for the longer-term target.
 
 ## Current private-beta workflow
 
