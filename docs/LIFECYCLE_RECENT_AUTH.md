@@ -25,8 +25,11 @@ returned Google authorization URL. A 401, rate limit, or readiness failure
 therefore stays in the application and cancels the pending lifecycle action.
 Closing or reopening the dialog aborts the request and advances a generation,
 so a delayed response cannot navigate or mutate a newer dialog.
-Lifecycle failure notices advance their own generation as well, preventing an
-older background roster response from replacing the explicit no-change result.
+Lifecycle failure and no-change notices are sticky for the exact signed-in
+actor. They advance their own generation, survive both older and newly started
+same-account roster refreshes, and are cleared on an account change. This keeps
+routine roster counts from replacing an explicit security outcome while a
+successful ownership transfer can still render the actor's new member state.
 
 The confirmation surface is available even while
 `IDENTITY_MANAGEMENT_ENABLED=false`. Credential linking may remain dark while

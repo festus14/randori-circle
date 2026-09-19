@@ -2935,6 +2935,8 @@ async function refreshMe(){
   const legacyCircleDemoActions=document.getElementById('legacyCircleDemoActions');
   let circleRenderEpoch=0;
   let circleLifecycleNoticeGeneration=0;
+  let circleLifecycleNoticeActorId=null;
+  let circleLifecycleNoticeActive=false;
   let circleInviteCreatePending=false;
   let circleLifecyclePending=false;
   let latestInviteUrl=null;
@@ -2952,6 +2954,9 @@ async function refreshMe(){
     activeCircleRole=null;
     updatePairingRunAccess();
     const currentUserId=Number(me?.id||me?.uid);
+    const preserveLifecycleNotice=circleLifecycleNoticeActive
+      &&Number.isSafeInteger(currentUserId)
+      &&currentUserId===circleLifecycleNoticeActorId;
     if(!Number.isSafeInteger(currentUserId)||currentUserId!==latestInviteOwnerId) clearLatestInvite();
     if(circleOwnerPanel){ circleOwnerPanel.hidden=true; circleOwnerPanel.style.display='none'; }
     if(circleInvites) circleInvites.replaceChildren();
@@ -2959,7 +2964,7 @@ async function refreshMe(){
     if(circleInviteLink) circleInviteLink.hidden=true;
     if(circleLifecyclePanel){ circleLifecyclePanel.hidden=true; circleLifecyclePanel.style.display='none'; }
     if(circleManageMembers){ circleManageMembers.hidden=true; circleManageMembers.replaceChildren(); }
-    if(circleLifecycleStatus) circleLifecycleStatus.textContent='';
+    if(!preserveLifecycleNotice) clearCircleLifecycleNotice();
     if(circleLeave) circleLeave.disabled=false;
   }
 
@@ -3070,7 +3075,23 @@ async function refreshMe(){
 
   function publishCircleLifecycleNotice(message){
     circleLifecycleNoticeGeneration+=1;
+    const actorId=Number(me?.id||me?.uid);
+    circleLifecycleNoticeActorId=Number.isSafeInteger(actorId)?actorId:null;
+    circleLifecycleNoticeActive=true;
     if(circleLifecycleStatus) circleLifecycleStatus.textContent=message;
+  }
+
+  function clearCircleLifecycleNotice(){
+    circleLifecycleNoticeGeneration+=1;
+    circleLifecycleNoticeActorId=null;
+    circleLifecycleNoticeActive=false;
+    if(circleLifecycleStatus) circleLifecycleStatus.textContent='';
+  }
+
+  function hasCircleLifecycleNotice(actorId=Number(me?.id||me?.uid)){
+    return circleLifecycleNoticeActive
+      &&Number.isSafeInteger(actorId)
+      &&actorId===circleLifecycleNoticeActorId;
   }
 
   const LIFECYCLE_RECENT_ACTION_TTL_MS=10*60*1000;
@@ -3141,6 +3162,7 @@ async function refreshMe(){
     if(!prompt||(!skipPrompt&&!await showConfirm(prompt[0],prompt[1]))) return false;
     const actorId=Number(me.id||me.uid);
     circleLifecyclePending=true;
+    clearCircleLifecycleNotice();
     if(circleLifecycleStatus) circleLifecycleStatus.textContent=`${action==='transfer'?'Transferring ownership':action==='reactivate'?'Reactivating member':'Deactivating member'}…`;
     circleLifecyclePanel?.querySelectorAll('button').forEach(button=>{ button.disabled=true; });
     try{
@@ -3153,13 +3175,13 @@ async function refreshMe(){
     }catch(error){
       if(allowRecentAuth&&(error?.code==='recent_auth_required'||error?.error==='recent authentication required')){
         if(circleLifecycleStatus) circleLifecycleStatus.textContent='Confirm your identity to continue. No change has been made yet.';
-        if(!await requestLifecycleRecentAuth(action,Number(member.id))&&circleLifecycleStatus){
-          circleLifecycleStatus.textContent='Confirmation is unavailable. No circle change was made.';
+        if(!await requestLifecycleRecentAuth(action,Number(member.id))){
+          publishCircleLifecycleNotice('Confirmation is unavailable. No circle change was made.');
         }
         return false;
       }
       await loadManagedMembers(circleRenderEpoch);
-      if(circleLifecycleStatus) circleLifecycleStatus.textContent=lifecycleErrorMessage(error);
+      publishCircleLifecycleNotice(lifecycleErrorMessage(error));
       return false;
     }finally{
       circleLifecyclePending=false;
@@ -3215,7 +3237,7 @@ async function refreshMe(){
       if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==actorId) return false;
       if(result?.ok!==true||!Array.isArray(result.members)) throw new Error('invalid member response');
       renderManagedMemberRows(result.members);
-      if(circleLifecycleStatus&&noticeGeneration===circleLifecycleNoticeGeneration){
+      if(circleLifecycleStatus&&noticeGeneration===circleLifecycleNoticeGeneration&&!hasCircleLifecycleNotice(actorId)){
         circleLifecycleStatus.textContent=result.truncated===true
           ?`Showing the first ${result.members.length} memberships. Additional members are not shown.`
           :`${result.members.length} membership${result.members.length===1?'':'s'} available to manage.`;
@@ -3227,7 +3249,7 @@ async function refreshMe(){
       const error=document.createElement('div'); error.className='small muted'; error.textContent='Member controls are temporarily unavailable.';
       const retry=document.createElement('button'); retry.type='button'; retry.className='pill'; retry.textContent='Retry members'; retry.addEventListener('click',()=>{ loadManagedMembers(circleRenderEpoch); });
       circleManageMembers.append(error,retry);
-      if(circleLifecycleStatus&&noticeGeneration===circleLifecycleNoticeGeneration){
+      if(circleLifecycleStatus&&noticeGeneration===circleLifecycleNoticeGeneration&&!hasCircleLifecycleNotice(actorId)){
         circleLifecycleStatus.textContent='Your circle remains unchanged.';
       }
       return false;
@@ -3243,7 +3265,7 @@ async function refreshMe(){
     if(circleManageMembers) circleManageMembers.hidden=role!=='owner';
     if(circleLeave){ circleLeave.disabled=false; circleLeave.textContent='Leave circle'; }
     if(role==='owner') await loadManagedMembers(epoch);
-    else if(circleLifecycleStatus) circleLifecycleStatus.textContent='You are an active circle member.';
+    else if(circleLifecycleStatus&&!hasCircleLifecycleNotice()) circleLifecycleStatus.textContent='You are an active circle member.';
   }
 
   circleLeave?.addEventListener('click',async()=>{
@@ -3253,6 +3275,7 @@ async function refreshMe(){
       :'You will be signed out and immediately lose access to the circle and its private pair rooms.';
     if(!await showConfirm('Leave this circle?',warning)) return;
     circleLifecyclePending=true; circleLeave.disabled=true;
+    clearCircleLifecycleNotice();
     if(circleLifecycleStatus) circleLifecycleStatus.textContent='Leaving circle…';
     try{
       await api('/api/members',{method:'PATCH',body:{action:'leave'}});
@@ -3283,7 +3306,7 @@ async function refreshMe(){
       if(landing) landing.style.display='block';
       document.querySelectorAll('[data-tab]').forEach(tab=>tab.classList.remove('active'));
     }catch(error){
-      if(circleLifecycleStatus) circleLifecycleStatus.textContent=lifecycleErrorMessage(error);
+      publishCircleLifecycleNotice(lifecycleErrorMessage(error));
     }finally{
       circleLifecyclePending=false;
       if(circleLeave) circleLeave.disabled=false;
