@@ -17,7 +17,12 @@ import {
   PAIRING_EMAIL_EVENT_TYPE,
   pairingEmailStatus,
 } from './_pairing-email.js';
-import { readOutboxMetrics, replayDeadLetter, runOutboxInvocation } from './_outbox.js';
+import {
+  readOutboxMetrics,
+  replayDeadLetter,
+  runOutboxInvocation,
+  settleBeforeDeadline,
+} from './_outbox.js';
 import {
   createEmailActivationHandler,
   EMAIL_ACTIVATION_EVENT_TYPE,
@@ -37,6 +42,7 @@ import { localIdentityAdapterEnabled, localRuntimeRequest } from './_local-runti
 export const OUTBOX_CRON_BUDGET_MS=45_000;
 export const OUTBOX_CRON_FINALIZATION_RESERVE_MS=5_000;
 export const OUTBOX_CRON_MAX_CLAIMS=8;
+const OUTBOX_CRON_MIN_DISPATCH_WINDOW_MS=100;
 
 const OUTBOX_DELIVERY_TYPES=Object.freeze([
   Object.freeze({type:PAIRING_EMAIL_EVENT_TYPE,key:'email_delivery',label:'email reminder'}),
@@ -323,6 +329,13 @@ function emptyOutboxResult(){
   return {claimed:0,delivered:0,suppressed:0,retried:0,deadLettered:0,leaseLost:0};
 }
 
+function emptyOutboxInvocation(eventTypes,{deadlineReached=false,maxClaims=OUTBOX_CRON_MAX_CLAIMS}={}){
+  return Object.freeze({...emptyOutboxResult(),deadlineReached,
+    maxClaims,perType:Object.freeze(Object.fromEntries(
+      eventTypes.map(type=>[type,Object.freeze(emptyOutboxResult())]),
+    ))});
+}
+
 function outboxStatuses(metrics){
   const byType=new Map(OUTBOX_DELIVERY_TYPES.map(({type})=>[type,{
     pending:0,processing:0,retry:0,delivered:0,suppressed:0,dead_letter:0,
@@ -395,8 +408,13 @@ function unavailableDeliverySummary(type,status){
 }
 
 function projectOutboxDelivery({descriptor,result,status,configured,local,captured}){
-  const pending=status.pending+status.retry+status.processing;
   const failed=result.retried+result.deadLettered;
+  if(!status){
+    return {summary:'outbox backlog was not read before the invocation deadline',
+      sent:local?0:result.delivered,failed,exhausted:0,pending:0,suppressed:result.suppressed,
+      ...(local&&configured?{captured}:{}),};
+  }
+  const pending=status.pending+status.retry+status.processing;
   const summary=!configured?unavailableDeliverySummary(descriptor.type,status)
     :local?`captured ${captured.length} ${descriptor.label}(s), failed ${failed}; no external delivery`
       :`sent ${result.delivered}, failed ${failed}, exhausted ${status.dead_letter}, suppressed ${result.suppressed}, pending ${pending}`;
@@ -404,34 +422,56 @@ function projectOutboxDelivery({descriptor,result,status,configured,local,captur
     suppressed:result.suppressed,...(local&&configured?{captured}:{}),};
 }
 
-async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs){
-  await migrateLegacyPairingEmails(db);
-  const plan=await outboxDeliveryPlan(db,baseUrl,req);
+export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
+  maxClaims=OUTBOX_CRON_MAX_CLAIMS,
+  finalizationReserveMs=OUTBOX_CRON_FINALIZATION_RESERVE_MS,
+  minimumDispatchWindowMs=OUTBOX_CRON_MIN_DISPATCH_WINDOW_MS,
+}={}){
+  const preparationDeadline=deadlineAtMs-finalizationReserveMs-minimumDispatchWindowMs;
+  const preparation=await settleBeforeDeadline(async()=>{
+    await migrateLegacyPairingEmails(db,{limit:maxClaims});
+    return outboxDeliveryPlan(db,baseUrl,req);
+  },preparationDeadline);
+  const plan=preparation.completed?preparation.value:{
+    local:false,captured:new Map(OUTBOX_DELIVERY_TYPES.map(({type})=>[type,[]])),handlers:new Map(),
+  };
   const eventTypes=OUTBOX_DELIVERY_TYPES.map(({type})=>type).filter(type=>plan.handlers.has(type));
-  const invocation=eventTypes.length?await runOutboxInvocation({
+  const invocation=preparation.completed&&eventTypes.length?await runOutboxInvocation({
     db,workerId:`outbox-${randomUUID()}`,handlers:plan.handlers,eventTypes,
-    maxClaims:OUTBOX_CRON_MAX_CLAIMS,deadlineAtMs,
-    finalizationReserveMs:OUTBOX_CRON_FINALIZATION_RESERVE_MS,
-  }):Object.freeze({...emptyOutboxResult(),deadlineReached:false,
-    maxClaims:OUTBOX_CRON_MAX_CLAIMS,perType:Object.freeze({})});
-  const statuses=outboxStatuses(await readOutboxMetrics(db));
+    maxClaims,deadlineAtMs,finalizationReserveMs,minimumDispatchWindowMs,
+  }):emptyOutboxInvocation(eventTypes,{deadlineReached:!preparation.completed,maxClaims});
+  const metricRead=preparation.completed&&!invocation.deadlineReached
+    ?await settleBeforeDeadline(()=>readOutboxMetrics(db),deadlineAtMs)
+    :{completed:false,value:null};
+  const statuses=metricRead.completed?outboxStatuses(metricRead.value):null;
   const deliveries={};
   const types={};
   for(const descriptor of OUTBOX_DELIVERY_TYPES){
     const result=invocation.perType[descriptor.type]||emptyOutboxResult();
-    const status=statuses.get(descriptor.type);
+    const status=statuses?.get(descriptor.type)||null;
     const configured=plan.handlers.has(descriptor.type);
     deliveries[descriptor.key]=projectOutboxDelivery({descriptor,result,status,configured,
       local:plan.local,captured:plan.captured.get(descriptor.type)});
     types[descriptor.type]={claimed:result.claimed,delivered:result.delivered,
       suppressed:result.suppressed,retried:result.retried,dead_lettered:result.deadLettered,
-      lease_lost:result.leaseLost,backlog:status.pending+status.retry+status.processing,
-      dead_letter:status.dead_letter};
+      lease_lost:result.leaseLost,
+      backlog:status?status.pending+status.retry+status.processing:null,
+      dead_letter:status?status.dead_letter:null};
   }
-  const metrics={budget_ms:OUTBOX_CRON_BUDGET_MS,max_claims:OUTBOX_CRON_MAX_CLAIMS,
-    deadline_reached:invocation.deadlineReached,claimed:invocation.claimed,types};
-  try{ await logServerOps(invocation.retried||invocation.deadLettered||invocation.leaseLost?'warn':'success',
-    'outbox_invocation','outbox invocation completed',metrics,null); }catch{}
+  const deadlineReached=invocation.deadlineReached||!preparation.completed||!metricRead.completed
+    ||performance.now()>=deadlineAtMs;
+  const metrics={budget_ms:OUTBOX_CRON_BUDGET_MS,max_claims:maxClaims,
+    deadline_reached:deadlineReached,metrics_complete:metricRead.completed,
+    legacy_reconciliation_complete:preparation.completed,logging_complete:false,
+    claimed:invocation.claimed,types};
+  if(!metrics.deadline_reached&&performance.now()<deadlineAtMs){
+    const logged=await settleBeforeDeadline(()=>logServerOps(
+      invocation.retried||invocation.deadLettered||invocation.leaseLost?'warn':'success',
+      'outbox_invocation','outbox invocation completed',metrics,null,
+    ),deadlineAtMs);
+    metrics.logging_complete=logged.completed;
+    if(!logged.completed) metrics.deadline_reached=true;
+  }
   return {deliveries,metrics};
 }
 

@@ -104,8 +104,11 @@ Invitation creation/resend, pairing publication, and schedule mutations commit
 with their versioned email events in one transaction. Provider calls begin only
 after that commit.
 `GET|POST /api/cron/outbox` uses the existing `CRON_SECRET` and drains due
-events independently of the weekly publication endpoint; configure a five-
-minute scheduler on a platform that supports that cadence. `POST
+events independently of the weekly publication endpoint. The checked-in
+`outbox-dispatch` GitHub Actions workflow provides the five-minute MVP cadence
+using protected-production `APP_URL` and `CRON_SECRET` configuration; scheduled
+runs are best effort, so use a managed queue/cron when a strict latency SLO is
+required. `POST
 /api/admin/outbox/replay` lets a non-demo global administrator replay only a
 dead-letter event with one of the bounded reason codes `OPERATOR_RETRY`,
 `PROVIDER_RECOVERED`, or `CONFIGURATION_FIXED`. Replay preserves the original

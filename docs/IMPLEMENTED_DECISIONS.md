@@ -378,6 +378,13 @@ event retains its stricter ten-second provider timeout. A deployment offering
 less than 60 seconds must lower the constants with matching timing tests or use
 separately scheduled workers before enabling external delivery.
 
+The MVP uses the checked-in `outbox-dispatch` GitHub Actions workflow on a
+five-minute cadence, with `APP_URL` and `CRON_SECRET` supplied by the protected
+production environment. Missing configuration fails visibly, the HTTP call is
+capped at 55 seconds, and automatic transport retries are disabled. The
+five-minute delivery latency is an operating target because GitHub scheduling
+can be delayed; a managed queue/cron is the preferred upgrade for a strict SLO.
+
 The response and application log expose only per-event-type counts: claimed,
 delivered, suppressed, retried, newly dead-lettered, lease-lost, current dead
 letters, and actionable backlog. They contain no payload, idempotency key,
@@ -393,9 +400,20 @@ the authenticated outbox route is the only scheduled provider fan-out path.
 window and finalization reserve remain. If setup consumes that window after a
 claim, the event is safely returned to retry with `INVOCATION_DEADLINE`. A
 provider wait is capped to the lesser of its event timeout and the remaining
-shared budget. Lease loss never records a stale delivery result. Bounded
-exhausted-lease cleanup runs after delivery so maintenance cannot starve the
-first fair round.
+shared budget; a last attempt dead-letters instead of becoming an unclaimable
+retry. Finalizations keep their heartbeats and receive fair slices of the
+remaining reserve, so one failed or slow database transition does not block
+the remainder of a sent round. Bounded exhausted-lease cleanup runs after
+delivery so maintenance cannot starve the first fair round.
+
+Legacy reconciliation is capped to eight new rows before dispatch. The metrics
+read and persistent aggregate log are timeboxed, and logging is skipped after an earlier deadline;
+an incomplete read is explicit rather than reported as zero. libSQL statements
+cannot be cancelled after admission, so the 45 seconds is the cooperative work
+deadline and the 60-second function setting is the outer bound for a slow
+storage tail. A claim that settles after the runner stops awaiting it invokes
+no provider and is resolved asynchronously to the same bounded deadline
+failure; lease expiry remains the crash fallback.
 
 **Alternatives.** Sequential per-type drains were rejected because their
 independent batch/timeout limits add together and privilege the first type. A
