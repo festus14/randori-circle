@@ -848,6 +848,10 @@ test('the adapter preserves route query, dynamic ids, redirects, cookies, status
       res.writeHead(302,{Location:'/invite/accepted'});
       return res.end();
     },
+    members(req,res){
+      seen.push({kind:'members',method:req.method,query:req.query});
+      return res.json({ok:true});
+    },
   };
   const runtime=registerRuntime(await startLocalDevelopmentServer({config,handlers,logger:SILENT_LOGGER}));
 
@@ -874,6 +878,9 @@ test('the adapter preserves route query, dynamic ids, redirects, cookies, status
   });
   assert.equal(invitation.status,302);
   assert.equal(invitation.headers.get('location'),'/invite/accepted');
+  const members=await fetch(new URL('/api/members',runtime.url));
+  assert.equal(members.status,200);
+  assert.deepEqual(await members.json(),{ok:true});
   assert.deepEqual(seen,[
     {
       kind:'auth',method:'POST',url:'/api/auth/signup?tag=one&tag=two&plain=value',
@@ -882,6 +889,7 @@ test('the adapter preserves route query, dynamic ids, redirects, cookies, status
     },
     {kind:'auth',method:'GET',url:'/api/auth/capabilities',query:{endpoint:'capabilities'},body:{}},
     {kind:'invitations',query:{view:'compact',endpoint:'invitations',id:'invite-123'}},
+    {kind:'members',method:'GET',query:{}},
   ]);
 });
 

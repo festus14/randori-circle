@@ -343,3 +343,44 @@ because it is the route back to a lost credential, but it revokes all sessions.
 2. Configure a new independent `PASSWORD_RESET_ENCRYPTION_KEY` and keep it stable while reset events remain queued.
 3. Confirm the outbox worker schedule and Resend sender in production.
 4. Enable `PASSWORD_RESET_ENABLED=true`, verify a real delivery and reset, then monitor aggregate outbox retry/dead-letter metrics. Roll back by disabling the flag; outstanding links stay unusable until the capability is restored.
+
+## ID-12: Keep member lifecycle authority in transactional membership state
+
+Status: implemented without a schema migration.
+
+### Decision
+
+Active membership and ownership are database state, not session claims. Owners
+may list memberships in their own primary circle and change another scoped
+membership between active and inactive. Members may leave their own circle.
+Ownership transfer promotes one active member and demotes the acting owner in a
+single write transaction.
+
+The same transaction records audit evidence and, for deactivation or leave,
+revokes all affected sessions with `membership_removed`. Conditional SQL
+enforces the acting role, target identity and state, primary-circle boundary,
+and existence of another active owner. This makes the last-owner guarantee hold
+when concurrent writers race rather than relying on a preceding application
+check. Cross-circle and absent targets share an opaque not-found response.
+
+The existing role/status membership model, audit events, invitation status,
+and session revocation columns cover this slice. Adding a migration would not
+strengthen an invariant here and would conflict with the reserved v9 owner.
+Existing invitation revocation is reused; invitation resend and delivery remain
+with issue #95. This increment requires a valid active owner session but does
+not add recent-auth enforcement to ownership transfer or owner deactivation;
+issue #99 owns that deliberate follow-up using the existing recent-auth proof.
+
+### Alternatives considered
+
+| Option | Advantage | Cost and rejection reason |
+|---|---|---|
+| Delete memberships on removal | Smaller active dataset | Erases lifecycle state and prevents explicit reactivation |
+| Put roles in JWTs | Avoids authorization reads | Leaves transferred or removed privileges valid until token expiry |
+| Read owner count, then update | Simpler SQL | Exposes a time-of-check/time-of-use race between concurrent removals |
+| Promote and demote in separate requests | Smaller mutations | Partial failure can leave ambiguous ownership |
+| Give reactivated users a session | Faster return | Owner action is not fresh proof of the member's credential |
+| Add a lifecycle migration | More custom fields | Existing durable schema represents the required states and audit trail |
+
+The complete action matrix, race behavior, and intentionally deferred work are
+documented in `docs/MEMBER_LIFECYCLE.md`.
