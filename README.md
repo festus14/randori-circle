@@ -34,6 +34,7 @@ This private-beta sync is whole-document compare-and-swap, not a CRDT: members s
 - Google OAuth uses cryptographic state, PKCE, and verified OpenID userinfo.
 - Production password signup is fail-closed unless invitation-bound email activation is fully configured; no account or session exists before verification.
 - Existing password accounts can recover through a generic, rate-limited response; reset tokens are single-use, encrypted in the outbox, hashed at rest, and revoke every session when consumed.
+- Credential linking is explicit, recent-authenticated, and opt-in after migration v9. Matching provider email never links accounts; the stable Google subject remains authoritative when its email changes, and the final usable sign-in method cannot be removed.
 - Mutations enforce same-origin requests for cookie sessions; API callers may use pinned Bearer JWTs.
 - Circle, pairing, schedule, chat, feedback, execution, and signaling endpoints require scoped authorisation.
 - Weekly pairing writes are atomic and concurrency-safe. Notifications use an idempotent retryable outbox.
@@ -47,7 +48,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 
 | Module | Responsibility |
 |---|---|
-| `api/auth.js` | signup/login compatibility, logout, session lookup, Google OAuth |
+| `api/auth.js` | signup/login compatibility, logout, session lookup, Google OAuth, and credential-management endpoints |
 | `api/data.js` | profiles, circle, weeks, schedules, messages, questions, private pair run summaries, execution |
 | `api/ops.js` | availability, fair pairing, cron, notification outbox, demo administration |
 | `api/ai.js` | disabled-by-default consent-gated feedback workflows |
@@ -60,6 +61,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_email-activation.js` | invitation-bound pending registrations, encrypted verification delivery, token rotation, and atomic activation |
 | `api/_password-reset.js` | enumeration-safe reset requests, encrypted delivery, token rotation, and atomic password/session replacement |
 | `api/_recent-auth.js` | ten-minute session-scoped password/Google step-up evidence for sensitive account operations |
+| `api/_identity-linking.js` | explicit Google/password linking, final-credential protection, hashed provider-email observations, and redacted audit events |
 | `api/_pairing-email.js` | versioned pairing-email event validation, rendering, preferences, and provider adaptation |
 | `api/_availability.js` | tenant-scoped weekly cycle identity, strict optimistic availability updates, and publication filtering |
 | `api/_schedule.js` | strict schedule validation, legacy projection, opaque versions, and conflict-safe mutations |
@@ -68,7 +70,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_pair-access.js` | shared source-aware authorization for canonical private pair rooms |
 | `api/_circle-membership.js` | primary-circle membership, keyed invite hashes, signed short-lived claims, and audited acceptance |
 | `api/invitations.js` | owner-only invitation lifecycle and rate-limited public preparation |
-| `db/schema-manifest.js` | checksummed contract for 37 application tables and 36 named indexes |
+| `db/schema-manifest.js` | checksummed contract for 39 application tables and 38 named indexes |
 | `db/schema-inspector.js` | read-only SQLite drift inspection and non-executable planning |
 
 The target Next.js/Supabase architecture is intentionally phased rather than introduced as a big-bang rewrite.
@@ -85,6 +87,7 @@ Copy `.env.example` and configure at least:
 - `CIRCLE_MEMBERSHIP_ENABLED=true` to enforce invitation-gated primary-circle access after the staged migration below
 - `EMAIL_PASSWORD_ACTIVATION_ENABLED=true` plus a separately generated 32-byte base64url `EMAIL_VERIFICATION_ENCRYPTION_KEY` to enable production invite-bound password activation after migration v7 is ready
 - `PASSWORD_RESET_ENABLED=true` plus an independent 32-byte base64url `PASSWORD_RESET_ENCRYPTION_KEY` to enable recovery after migration v8 is ready
+- a dedicated 32-byte base64url `IDENTITY_EMAIL_HASH_KEY` and positive `IDENTITY_EMAIL_HASH_KEY_VERSION` before setting `IDENTITY_MANAGEMENT_ENABLED=true` after migration v9; Google linking also requires the complete Google OAuth configuration above
 - `AUTH_SCHEMA_BOOTSTRAP_ENABLED` is legacy-only and must remain false for the migrated OIDC flow; run the protected database migrations before enabling production authentication
 - `RESEND_API_KEY` and `RESEND_FROM` for pairing and verification notifications
 
@@ -95,6 +98,8 @@ Authentication rate limiting is migration-owned: runtime requests never create `
 Pairing publication and its versioned email events commit in one transaction. Provider calls begin only after that commit. `GET|POST /api/cron/outbox` uses the existing `CRON_SECRET` and drains due events independently of the weekly publication endpoint; configure a five-minute scheduler on a platform that supports that cadence. `POST /api/admin/outbox/replay` lets a non-demo global administrator replay only a dead-letter event with one of the bounded reason codes `OPERATOR_RETRY`, `PROVIDER_RECOVERED`, or `CONFIGURATION_FIXED`. Replay preserves the original provider idempotency key.
 
 Google OAuth has one fail-closed configuration boundary shared by capability discovery, start, and callback. Production and hosted deployments require both provider credentials, an explicit canonical HTTPS `APP_URL`, and matching trusted proxy host/protocol headers. Invalid configuration returns only a generic unavailable response and performs no provider or database work. The isolated local runtime always disables Google credentials.
+
+Identity management is a separate dark-launched capability. With `IDENTITY_MANAGEMENT_ENABLED=false`, production neither advertises nor enters credential-management routes, while ordinary Google sign-in and reauthentication retain their v4 compatibility. Enabling the flag without the dedicated email-hash key/version makes Google and identity-management entry points fail closed. Once v9 is ready, an authenticated member can open **Account security**, confirm a current password or Google account, explicitly link or remove a method, and is prevented from removing the final usable credential. Link initiation is same-origin POST-only and its OAuth callback is bound to the exact live session, PKCE verifier, state, nonce, stable provider subject, and fresh signed `auth_time`. Provider email is stored only as a dedicated-key HMAC plus its key version and never silently replaces the canonical account email.
 
 To roll out circle membership without locking out operators: first complete the production backup/restore rehearsal, deploy with `CIRCLE_MEMBERSHIP_ENABLED=false`, verify an authenticated `ADMIN_EMAILS` account, call the admin-only `POST /api/init`, verify the primary circle and audited non-demo account backfill, then enable the flag. Rollout probes are read-only. Atomic registration guards ensure an account racing initialization is either included or rejected while existing accounts continue to sign in. Invitation tokens are returned only once by the create endpoint; the database stores keyed hashes, and list responses expose only an email fingerprint. Disabling the flag restores the legacy roster behavior without removing membership data, but does not reopen registration after the cutover latch is closed.
 

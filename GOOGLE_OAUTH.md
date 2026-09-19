@@ -15,6 +15,9 @@ In Vercel Dashboard → your project → Settings → Environment Variables add:
 - `CRON_SECRET` — required separately from `JWT_SECRET`; protects the weekly cron
 - `SIGNUP_ALLOWLIST` — comma-separated private-beta Google email addresses used before circle-membership cutover
 - `CIRCLE_MEMBERSHIP_ENABLED` — leave `false` while running and verifying `/api/init`, then set `true` to require active primary-circle membership or an email-bound invitation
+- `IDENTITY_MANAGEMENT_ENABLED` — leave `false` through migration v9, then set `true` to expose explicit Google/password linking and removal
+- `IDENTITY_EMAIL_HASH_KEY` — an independent 32-byte base64url HMAC key; never reuse `JWT_SECRET` or invitation/recovery encryption material
+- `IDENTITY_EMAIL_HASH_KEY_VERSION` — start at `1` and increment whenever the identity-email HMAC key changes
 - Keep existing `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN`
 
 Redeploy after adding.
@@ -54,7 +57,8 @@ No extra API needs enabling — Google Identity is on by default.
 - Resolve `auth_provider_identities` by the canonical Google issuer plus stable subject:
   - not exists → create a Google-only account associated with the verified Google subject only when the legacy allowlist is still open, or after validating an unused invitation bound to that email.
   - existing Google account → use issuer plus subject as the identity, refusing any email collision with another account.
-  - existing password account → do not silently link it; the user must sign in with the existing method until an explicit linking flow exists.
+  - existing password account → do not silently link it; the user signs in with the existing method and explicitly links Google from Account security after recent authentication.
+- A provider email change does not rewrite the canonical account email. With identity management enabled, Randori records only a domain-separated email HMAC, its non-secret key version, and a redacted change event, then explains which address password sign-in continues to use. Key rotation re-baselines the observation and records a distinct redacted rekey event rather than falsely claiming the email changed.
 - Signs a 12-hour application JWT with pinned algorithm, issuer, audience, and a random session identifier. Only a domain-separated SHA-256 hash of that identifier is persisted in `auth_sessions`; every private request checks the live, unexpired row. The credential stays in the secure session cookie and the callback redirects to `/?google=success` or the validated pair invite path with `?google=success`.
 
 The callback never accepts a return destination from its query string. It consumes the destination captured at OAuth start and clears state, PKCE, nonce, and return cookies before provider work. Combined with Google's single-use authorization code, replayed callbacks cannot establish another session. Only `/join/week_<positive integer>_pair_<positive integer>` is accepted; absolute URLs, protocol-relative URLs, encoded or backslash separators, queries, fragments, zeroes, leading zeroes, and malformed room IDs fall back to `/`.
@@ -66,7 +70,11 @@ No secrets in git. Native `fetch` used — no new deps.
 ### Endpoints
 
 - `GET /api/auth/google/start` — starts flow
+- `POST /api/auth/google/link/start` — starts explicit linking for the exact recent-authenticated live session
 - `GET /api/auth/google/callback?code=` — finishes, issues JWT, redirects
+- `GET /api/auth/identities` — returns safe linked-method and recent-auth state
+- `POST /api/auth/identities/google` — removes Google only when another usable method remains
+- `POST /api/auth/identities/password` — adds or removes a password after verified control while preserving a usable method
 - `POST /api/auth/signup` is development-only until email verification exists. Existing password users may still use `POST /api/auth/login`; `GET /api/auth/me` reads the protected session.
 - `POST /api/auth/logout` durably revokes the presented session, then clears its cookie
 - `POST /api/auth/logout-all` durably revokes every active session for the authenticated account, then clears its cookie
@@ -78,4 +86,4 @@ No secrets in git. Native `fetch` used — no new deps.
 - `Missing GOOGLE_CLIENT_ID` JSON → you didn't set env var / didn't redeploy after set.
 - Test users: while app in Testing mode, only test emails can sign in — add your circle friends emails to Test users list.
 
-Password email verification and an explicit Google/password account-linking flow remain follow-up work before a broad public launch. Before membership cutover, production enrollment requires verified Google sign-in plus `SIGNUP_ALLOWLIST`; after cutover, it requires a prepared owner-issued invitation and active primary-circle membership.
+Before membership cutover, production enrollment requires verified Google sign-in plus `SIGNUP_ALLOWLIST`; after cutover, it requires a prepared owner-issued invitation and active primary-circle membership. Credential management remains hidden until v9 and the dedicated key/version are verified and `IDENTITY_MANAGEMENT_ENABLED=true`. Rotate the hash key and monotonically increment its version in the same deployment; the first later observation per identity is audited as a rekey, not an email change, and no prior key is retained. Readiness checks the global maximum stored version and a one-way key fingerprint. A stale instance with a lower version, or a different key at the same version, fails closed and cannot write any subject under stale key state.

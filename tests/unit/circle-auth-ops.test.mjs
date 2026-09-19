@@ -39,6 +39,10 @@ const db={
     if(sql.includes("strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc")){
       return {rows:[{now_utc:new Date().toISOString()}],rowsAffected:0};
     }
+    if(sql.includes("CAST(strftime('%s','now') AS INTEGER) AS now_seconds")){
+      return rows([{now_seconds:Math.floor(Date.now()/1000)}]);
+    }
+    if(sql.includes('LEFT JOIN auth_provider_email_state')) return rows([{email_hash:null}]);
     const result=await executeHandler(sql,args) || {rows:[],rowsAffected:0};
     if(!(result.rows?.length)&&sql.includes('INSERT INTO auth_provider_identities')&&sql.includes('RETURNING user_id')){
       return rows([{user_id:Number(args[2])}]);
@@ -557,6 +561,9 @@ test('same-account invitation replay completes sign-in only while membership rem
     email:'invited@example.test',name:'Invited User',sub:'google-invited-1',
   }});
   executeHandler=sql=>{
+    if(sql.includes('FROM auth_provider_identities identity JOIN auth_accounts account')) return rows([{
+      id:8,email:'invited@example.test',is_admin:0,password_hash:'!oauth:existing',google_sub:'google-invited-1',
+    }]);
     if(sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return rows([{
       id:8,is_admin:0,password_hash:'!oauth:existing',google_sub:'google-invited-1',
     }]);
@@ -588,6 +595,9 @@ test('an active member consumes a fresh prepared invitation before receiving a s
     email:'invited@example.test',name:'Invited User',sub:'google-invited-1',
   }});
   executeHandler=sql=>{
+    if(sql.includes('FROM auth_provider_identities identity JOIN auth_accounts account')) return rows([{
+      id:8,email:'invited@example.test',is_admin:0,password_hash:'!oauth:existing',google_sub:'google-invited-1',
+    }]);
     if(sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return rows([{
       id:8,is_admin:0,password_hash:'!oauth:existing',google_sub:'google-invited-1',
     }]);
@@ -616,11 +626,11 @@ test('a stable Google subject signs into the same account after its verified ema
     email:'new-address@example.test',name:'Existing User',sub:'stable-google-sub',
   }});
   executeHandler=sql=>{
-    if(sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return rows([]);
-    if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE google_sub=')){
-      return rows([{id:8,email:'old-address@example.test',is_admin:0}]);
+    if(sql.includes('FROM auth_provider_identities identity JOIN auth_accounts account')){
+      return rows([{id:8,email:'old-address@example.test',is_admin:0,
+        password_hash:'!oauth:existing',google_sub:'stable-google-sub'}]);
     }
-    if(sql.includes('UPDATE auth_accounts SET email=')&&sql.includes('RETURNING id')) return rows([{id:8}]);
+    if(sql.includes("UPDATE auth_accounts SET last_login=datetime('now')")&&sql.includes('RETURNING id')) return rows([{id:8}]);
     return rows();
   };
 
@@ -632,10 +642,9 @@ test('a stable Google subject signs into the same account after its verified ema
   assert.equal(result.headers.location,'https://randori.example.test/?google=success');
   assert.equal(accountAcceptanceCalls.length,0);
   assert.match(String(result.headers['set-cookie']),/randori_session=/);
-  assert.equal(executed.filter(call=>call.sql.includes('UPDATE auth_accounts SET email=')).length,1);
-  assert.deepEqual(sessionRevocations,[{userId:8,reason:'identity_change'}]);
-  assert.deepEqual(identityTransactionActions.map(action=>action.type),['begin','execute','revoke','issue','commit']);
-  assert.ok(identityTransactionActions.every(action=>action.transaction===identityTransactionActions[0].transaction));
+  assert.equal(executed.filter(call=>call.sql.includes('UPDATE auth_accounts SET email=')).length,0);
+  assert.deepEqual(sessionRevocations,[]);
+  assert.equal(executed.some(call=>call.sql.includes('auth_provider_email_state')),false);
 });
 
 test('a verified Google email never auto-links an existing password account',async()=>{

@@ -1,10 +1,10 @@
 # Randori Circle implemented decision log
 
-Status: accepted through merged PR #89 plus candidate PRs #93, #92, and #97
+Status: accepted through merged PR #89 plus candidate PRs #93, #92, #97, and issue #83
 
 Last reviewed: 2026-09-19
 
-Scope: `main` through `2402fe9bea53aa0a44d2af4c43f77e4223894695`, plus PRs #93, #92, and #97
+Scope: `main` through `2402fe9bea53aa0a44d2af4c43f77e4223894695`, plus PRs #93, #92, #97, and the issue #83 candidate
 
 This log records decisions that govern the application being shipped now. The
 [production architecture plan](PRODUCTION_ARCHITECTURE_PLAN.md) describes a
@@ -31,12 +31,14 @@ or merged after its parent; it must not be landed ahead of that parent.
 | 7 | [PR #93](https://github.com/festus14/randori-circle/pull/93), candidate | Repository-owned deployability gate independent of preview quota | No migration |
 | 8 | [PR #92](https://github.com/festus14/randori-circle/pull/92), candidate | Verified invitation-bound email/password activation | v7 `verified-email-activation` |
 | 9 | [PR #97](https://github.com/festus14/randori-circle/pull/97), candidate | Enumeration-safe password recovery and reusable recent-authentication policy | v8 `password-reset-and-recent-auth` |
+| 10 | [Issue #83](https://github.com/festus14/randori-circle/issues/83), candidate | Explicit Google/password linking and identity-conflict recovery | v9 `explicit-provider-linking` |
 
 Migration order is append-only: v4 binds an account to an OIDC issuer and
 subject, v5 makes every application JWT depend on a live hashed session row,
 v6 adds the outbox and its audit history, and v7 adds pending verified-email
 activation. Version v8 adds password-reset credentials and session-scoped
-recent-authentication evidence. The protected production workflow applies no
+recent-authentication evidence. Version v9 adds hashed provider-email
+observations and a redacted identity lifecycle audit. The protected production workflow applies no
 more than one pending version per inspected fingerprint and approval.
 
 ## ID-01: Ship the useful weekly loop before a platform rewrite
@@ -384,3 +386,73 @@ issue #99 owns that deliberate follow-up using the existing recent-auth proof.
 
 The complete action matrix, race behavior, and intentionally deferred work are
 documented in `docs/MEMBER_LIFECYCLE.md`.
+
+## ID-13: Make provider linking explicit and account-preserving
+
+Status: implemented as the schema-v9 increment, stacked on password recovery and recent authentication.
+
+### Decision
+
+An authenticated member manages sign-in methods from **Account security** only
+after `IDENTITY_MANAGEMENT_ENABLED=true`. Production keeps the entry point and
+mutation routes unavailable until v9 readiness is verified; the isolated local
+runtime may show its provider-free account state without making an external
+request.
+
+Google linking starts with a same-origin POST and requires current recent-auth
+evidence. The OAuth request has a dedicated link purpose, random state, PKCE,
+nonce, `max_age=0`, and explicit account selection. Its callback requires a
+signed, bounded `auth_time` and binds the result to the exact initiating user,
+hashed live session, issuer, and provider subject. Email equality is never link
+authority: a password account that has the same verified Google email still
+receives a normal-login conflict until its signed-in owner explicitly links it.
+
+Issuer plus subject remains the durable provider key. A subject already owned
+by another account fails closed under both database uniqueness and a serialized
+write decision. A known subject continues to reach its existing account if the
+provider email changes; Randori neither creates another account nor rewrites
+the account's canonical password-login email. Migration v9 stores only a
+domain-separated HMAC of the observed provider email under the independent
+`IDENTITY_EMAIL_HASH_KEY`, plus a bounded key version and one-way key
+fingerprint, so a change can be shown
+and audited without retaining another raw address. Key rotation increments the
+version monotonically and deliberately re-baselines each identity with a distinct redacted
+rekey event; the former key is not retained and the first observation after a
+rotation is not misreported as an email change. Readiness compares against the
+global maximum stored version. A stale instance with a lower version, or a
+different key at the same version, fails closed without rewriting or auditing
+newer state for either the current subject or a new one.
+
+A Google-only member may add a password only after recent verified Google
+control. Removing Google or password requires a live session plus recent auth,
+and the transaction refuses to remove the final usable method. A successful
+removal preserves the initiating session and revokes every other live session,
+reducing the lifetime of stale authentication assumptions. Link, unlink,
+conflict, denial, recovery, and provider-email-change events use bounded enums
+and contain no provider subject, email, token, or session identifier.
+
+### Alternatives considered
+
+| Option | Advantages | Costs and rejection reason |
+|---|---|---|
+| Auto-link matching verified emails | Minimal user interaction | Email is mutable and is not the provider's stable identifier; silently merging accounts creates takeover and history-transfer risk. |
+| Create a second account on every new subject | Simple provider callback | Splits membership and pairing history and gives no safe recovery path. |
+| Replace the canonical email after a provider change | Keeps one displayed address | Breaks password-login expectations and lets a provider-side profile change silently rewrite an application credential identifier. |
+| Allow recovery email to add a password to Google-only accounts | Convenient fallback | Turns mailbox access into implicit cross-provider linking; explicit recent Google control is the narrower boundary. |
+| Allow removing the last method with a warning | Fewer server rules | Creates immediate lockout and leaves the UI responsible for a security invariant. |
+| Store raw provider email in an audit table | Easier support investigation | Duplicates personal data indefinitely; keyed observations plus reason-coded events provide the required operational signal. |
+| Move now to Clerk, Auth0, or Supabase Auth | Mature linking and recovery flows | Requires an account/session migration and a new authorization boundary; still viable when the private beta outgrows the current store. |
+
+### Rollout and recovery
+
+1. Leave `IDENTITY_MANAGEMENT_ENABLED=false`; ordinary Google login and reauthentication retain their v4 compatibility.
+2. Rehearse and apply migration v9 only after managed v8 is verified, then require managed v9 with no pending migration or drift.
+3. Configure a new independent 32-byte base64url `IDENTITY_EMAIL_HASH_KEY` with `IDENTITY_EMAIL_HASH_KEY_VERSION=1`; never reuse `JWT_SECRET` or invitation/recovery keys.
+4. Deploy the candidate, confirm the capability remains hidden, and exercise ordinary password and Google login.
+5. Enable `IDENTITY_MANAGEMENT_ENABLED=true`, verify same-email explicit recovery and both final-credential denials, then monitor only aggregate error/rate and redacted audit outcomes.
+6. Roll back exposure by disabling the flag. The additive v9 tables may remain; existing credential mappings, accounts, memberships, sessions, and history are not moved by the feature. For a later hash-key rotation, change the key and monotonically increment its version together; a missing, malformed, or lower-than-stored version fails closed. Restore the current key/version before re-enabling after an application rollback.
+
+There is no automatic down migration. If a uniqueness or integrity incident is
+suspected, disable the capability, preserve audit evidence, inspect the exact
+managed database, and use the rehearsed PITR procedure rather than attempting
+an unreviewed reverse migration.

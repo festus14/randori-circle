@@ -122,6 +122,13 @@ const PLAN_8_OPERATIONS=Object.freeze([
   index('idx_auth_recent_proofs_user','auth_recent_proofs',['user_id','authenticated_at DESC']),
 ]);
 
+const PLAN_9_OPERATIONS=Object.freeze([
+  table('auth_provider_email_state',`CREATE TABLE IF NOT EXISTS auth_provider_email_state (issuer TEXT NOT NULL CHECK(issuer='https://accounts.google.com'), subject TEXT NOT NULL CHECK(length(subject)>=1 AND length(subject)<=255 AND subject NOT GLOB '*[^A-Za-z0-9_-]*'), email_hash TEXT NOT NULL CHECK(length(email_hash)=64 AND email_hash NOT GLOB '*[^0-9a-f]*'), hash_key_version INTEGER NOT NULL CHECK(typeof(hash_key_version)='integer' AND hash_key_version>=1 AND hash_key_version<=2147483647), hash_key_fingerprint TEXT NOT NULL CHECK(length(hash_key_fingerprint)=64 AND hash_key_fingerprint NOT GLOB '*[^0-9a-f]*'), observed_at INTEGER NOT NULL CHECK(typeof(observed_at)='integer' AND observed_at>0), changed_at INTEGER CHECK(changed_at IS NULL OR (typeof(changed_at)='integer' AND changed_at<=observed_at)), PRIMARY KEY(issuer,subject), FOREIGN KEY(issuer,subject) REFERENCES auth_provider_identities(issuer,subject) ON DELETE CASCADE)`),
+  table('auth_identity_audit_events',`CREATE TABLE IF NOT EXISTS auth_identity_audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, actor_user_id INTEGER NOT NULL, event_type TEXT NOT NULL CHECK(event_type IN ('google_linked','google_unlinked','password_added','password_unlinked','link_conflict','unlink_denied','provider_email_changed','provider_email_rekeyed','recovery_completed')), provider TEXT NOT NULL CHECK(provider IN ('google','password')), outcome TEXT NOT NULL CHECK(outcome IN ('succeeded','denied','conflict','observed')), reason_code TEXT NOT NULL CHECK(length(reason_code)>=1 AND length(reason_code)<=64 AND reason_code NOT GLOB '*[^a-z0-9_]*'), created_at INTEGER NOT NULL CHECK(typeof(created_at)='integer' AND created_at>0), FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE RESTRICT, FOREIGN KEY(actor_user_id) REFERENCES auth_accounts(id) ON DELETE RESTRICT)`),
+  index('idx_auth_identity_audit_user','auth_identity_audit_events',['user_id','created_at DESC','id DESC']),
+  index('idx_auth_identity_audit_actor','auth_identity_audit_events',['actor_user_id','created_at DESC','id DESC']),
+]);
+
 export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:1,
@@ -157,6 +164,10 @@ export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:8,
     operations:PLAN_8_OPERATIONS,
+  }),
+  Object.freeze({
+    version:9,
+    operations:PLAN_9_OPERATIONS,
   }),
 ]);
 
@@ -197,7 +208,7 @@ export const SCHEMA_MANIFEST_CHECKSUM=checksum({
 
 // Updating the schema is intentional only when this pinned checksum is updated
 // in the same reviewed change.
-export const PINNED_SCHEMA_MANIFEST_CHECKSUM='243c5457df865fa27b8808226e17dc30e0d85ce4ff039defb7358928e4c136e1';
+export const PINNED_SCHEMA_MANIFEST_CHECKSUM='32bd35776f27d03edf788c9eed63c16f101dca3cb837247502a1785ccb88057f';
 
 if(SCHEMA_MANIFEST_CHECKSUM!==PINNED_SCHEMA_MANIFEST_CHECKSUM){
   throw new Error(`Schema manifest checksum changed: ${SCHEMA_MANIFEST_CHECKSUM}`);

@@ -28,8 +28,10 @@ test('v8 installs password reset and recent-auth state without changing v7 artif
     await apply(db,EXECUTABLE_MIGRATIONS.slice(0,7));
     const before=(await db.execute(`SELECT type,name,sql FROM sqlite_schema
       WHERE name='auth_email_activations' ORDER BY type,name`)).rows;
-    const beforeState=await inspectMigrationState(db);
-    const result=await applyMigrations(db,{expectedStateFingerprint:beforeState.stateFingerprint,retry:NO_RETRY});
+    const migrations=EXECUTABLE_MIGRATIONS.slice(0,8);
+    const beforeState=await inspectMigrationState(db,{migrations});
+    const result=await applyMigrations(db,{expectedStateFingerprint:beforeState.stateFingerprint,
+      migrations,retry:NO_RETRY});
     assert.deepEqual(result.applied.map(item=>item.version),[8]);
     assert.deepEqual((await db.execute(`PRAGMA table_info('auth_password_resets')`)).rows.map(row=>row.name),[
       'id','user_id','email_hash','token_hash','created_at','expires_at','last_sent_at','send_count','used_at','revoked_at',
