@@ -29,8 +29,8 @@ and previous instants, schedule version, and template version. It deliberately
 does not contain an email address, bearer token, invitation link, message body,
 or display name. The worker resolves those values at dispatch time. The shared
 outbox limits each event to five attempts and a ten-second provider timeout.
-The serverless drain claims at most three schedule emails per invocation, which
-bounds this newly added slice to at most 30 seconds of provider wait.
+The shared serverless drain admits schedule work in one-per-type fair rounds;
+all types together are capped at eight claims and one 45-second deadline.
 
 | Mutation | Immediate email | Delayed email | Recipients |
 | --- | --- | --- | --- |
@@ -71,13 +71,11 @@ The local runtime and tests use an in-memory capture adapter. Production keeps
 the existing Resend adapter behind `RESEND_API_KEY` and `RESEND_FROM`; missing
 configuration leaves work pending and exposes only aggregate status.
 
-This does not yet impose one deadline across every typed worker in
-`/api/cron/outbox`: pairing, schedule, invitation, and activation drains still
-run sequentially, and the older drains retain their larger default batches. A
-slow earlier drain can therefore starve later types or approach a
-serverless invocation limit. [Issue #94](https://github.com/festus14/randori-circle/issues/94)
-tracks one shared deadline/claim budget (or separate authenticated schedules)
-before the queue is considered high-volume production ready.
+The next stacked candidate gives `/api/cron/outbox` one 45-second deadline,
+eight-claim cap, and fair parallel claim rounds across pairing, schedule,
+invitation, and activation email. Issue #94 remains open until the independently
+developed password-recovery event type is linearized into that same registry
+and tested as part of the mixed queue.
 
 ## Why there is no migration
 

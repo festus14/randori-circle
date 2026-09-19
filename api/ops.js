@@ -11,37 +11,45 @@ import { buildFairPairing, canonicalRoomId } from './_pairing.js';
 import { pairingCronIsDue, resolvePairingCycle } from './_pairing-cycle.js';
 import { publishPairingCycle } from './_pairing-publication.js';
 import {
+  createPairingEmailHandler,
   createResendEmailSender,
-  deliverPairingEmails,
   migrateLegacyPairingEmails,
   PAIRING_EMAIL_EVENT_TYPE,
   pairingEmailStatus,
 } from './_pairing-email.js';
-import { replayDeadLetter } from './_outbox.js';
+import { readOutboxMetrics, replayDeadLetter, runOutboxInvocation } from './_outbox.js';
 import {
-  deliverEmailActivations,
+  createEmailActivationHandler,
+  EMAIL_ACTIVATION_EVENT_TYPE,
   emailActivationConfiguration,
-  emailActivationStatus,
 } from './_email-activation.js';
 import {
-  deliverPasswordResets,
+  createPasswordResetHandler,
+  PASSWORD_RESET_EVENT_TYPE,
   passwordResetConfiguration,
-  passwordResetStatus,
 } from './_password-reset.js';
 import {
-  deliverScheduleEmails,
-  SCHEDULE_EMAIL_DRAIN_BATCH_SIZE,
+  createScheduleEmailHandler,
   SCHEDULE_EMAIL_EVENT_TYPE,
-  scheduleEmailStatus,
 } from './_schedule-email.js';
 import {
-  deliverInvitationEmails,
+  createInvitationEmailHandler,
   invitationEmailConfiguration,
-  INVITATION_EMAIL_DRAIN_BATCH_SIZE,
   INVITATION_EMAIL_EVENT_TYPE,
-  invitationEmailStatus,
 } from './_invitation-email.js';
 import { localIdentityAdapterEnabled, localRuntimeRequest } from './_local-runtime.js';
+
+export const OUTBOX_CRON_BUDGET_MS=45_000;
+export const OUTBOX_CRON_FINALIZATION_RESERVE_MS=5_000;
+export const OUTBOX_CRON_MAX_CLAIMS=8;
+
+const OUTBOX_DELIVERY_TYPES=Object.freeze([
+  Object.freeze({type:PAIRING_EMAIL_EVENT_TYPE,key:'email_delivery',label:'email reminder'}),
+  Object.freeze({type:SCHEDULE_EMAIL_EVENT_TYPE,key:'schedule_delivery',label:'schedule email'}),
+  Object.freeze({type:INVITATION_EMAIL_EVENT_TYPE,key:'invitation_delivery',label:'invitation email'}),
+  Object.freeze({type:EMAIL_ACTIVATION_EVENT_TYPE,key:'activation_delivery',label:'activation email'}),
+  Object.freeze({type:PASSWORD_RESET_EVENT_TYPE,key:'password_reset_delivery',label:'password reset email'}),
+]);
 
 async function logServerOps(level, event, message, meta, req){
   try{
@@ -304,139 +312,6 @@ async function persistPairingWeek(db, {weekLabel, weekStart, participants, pairi
   return {created:true,weekId:run.week_id,generation:Number(run.generation),pairs};
 }
 
-async function deliverPendingPairingEmails(db,weekId,baseUrl,req){
-  await migrateLegacyPairingEmails(db);
-  const captured=[];
-  const local=localIdentityAdapterEnabled(req);
-  let send;
-  if(local){
-    send=async message=>{
-      const links=[...message.html.matchAll(/href="([^"]+)"/gu)].map(match=>match[1]).slice(0,4);
-      captured.push({
-        recipient_email:String(message.to),kind:message.subject.includes('missed')?'unavailable':'paired',
-        subject:String(message.subject),links,
-      });
-      return {providerName:'local-capture',providerMessageId:`local-${randomUUID()}`};
-    };
-  }else{
-    if(!process.env.RESEND_API_KEY||!process.env.RESEND_FROM){
-      const status=await pairingEmailStatus(db);
-      const pending=status.pending+status.retry+status.processing;
-      return {summary:`${pending} email reminder(s) pending — email disabled until RESEND_API_KEY + RESEND_FROM are set`,sent:0,failed:0,exhausted:status.dead_letter,pending,suppressed:status.suppressed};
-    }
-    const resendMod=await import('resend').catch(()=>null);
-    if(!resendMod?.Resend){
-      const status=await pairingEmailStatus(db);
-      const pending=status.pending+status.retry+status.processing;
-      return {summary:`${pending} email reminder(s) pending — resend package unavailable`,sent:0,failed:0,exhausted:status.dead_letter,pending,suppressed:status.suppressed};
-    }
-    send=createResendEmailSender({
-      resend:new resendMod.Resend(process.env.RESEND_API_KEY),from:process.env.RESEND_FROM,
-    });
-  }
-  const delivery=await deliverPairingEmails({
-    db,baseUrl,send,workerId:`pairing-${randomUUID()}`,localRuntime:local,
-  });
-  const pending=delivery.status.pending+delivery.status.retry+delivery.status.processing;
-  const failed=delivery.retried+delivery.deadLettered;
-  const exhausted=delivery.status.dead_letter;
-  const summary=local
-    ?`captured ${captured.length} local email reminder(s), failed ${failed}, exhausted ${exhausted}; no external delivery`
-    :`sent ${delivery.delivered}, failed ${failed}, exhausted ${exhausted}, suppressed ${delivery.suppressed}, pending ${pending}`;
-  try{ await logServerOps(failed||exhausted?'warn':'success','pairing_email_delivery',summary,{
-    week_id:weekId,sent:delivery.delivered,failed,exhausted,
-    suppressed:delivery.suppressed,pending,event_type:PAIRING_EMAIL_EVENT_TYPE,
-  },null); }catch{}
-  return {
-    summary,sent:local?0:delivery.delivered,failed,exhausted,
-    pending,suppressed:delivery.suppressed,...(local?{captured}:{}),
-  };
-}
-
-async function deliverPendingScheduleEmails(db,baseUrl,req){
-  const captured=[];
-  const local=localIdentityAdapterEnabled(req);
-  let send;
-  if(local){
-    send=async message=>{
-      captured.push({recipient_email:String(message.to),kind:'schedule',subject:String(message.subject),
-        links:[...message.html.matchAll(/href="([^"]+)"/gu)].map(match=>match[1]).slice(0,4)});
-      return {providerName:'local-capture',providerMessageId:`local-${randomUUID()}`};
-    };
-  }else if(process.env.RESEND_API_KEY&&process.env.RESEND_FROM){
-    const resendMod=await import('resend').catch(()=>null);
-    if(resendMod?.Resend) send=createResendEmailSender({
-      resend:new resendMod.Resend(process.env.RESEND_API_KEY),from:process.env.RESEND_FROM,
-    });
-  }
-  if(!send){
-    const status=await scheduleEmailStatus(db);
-    return {summary:'schedule email delivery unavailable',sent:0,failed:0,
-      exhausted:status.dead_letter,pending:status.pending+status.retry+status.processing,
-      suppressed:status.suppressed};
-  }
-  const delivery=await deliverScheduleEmails({
-    db,baseUrl,send,workerId:`schedule-${randomUUID()}`,localRuntime:local,
-    workerOptions:{batchSize:SCHEDULE_EMAIL_DRAIN_BATCH_SIZE},
-  });
-  const pending=delivery.status.pending+delivery.status.retry+delivery.status.processing;
-  const failed=delivery.retried+delivery.deadLettered;
-  const summary=local
-    ?`captured ${captured.length} schedule email(s), failed ${failed}; no external delivery`
-    :`sent ${delivery.delivered}, failed ${failed}, exhausted ${delivery.status.dead_letter}, suppressed ${delivery.suppressed}, pending ${pending}`;
-  try{ await logServerOps(failed||delivery.status.dead_letter?'warn':'success','schedule_email_delivery',summary,{
-    sent:delivery.delivered,failed,exhausted:delivery.status.dead_letter,
-    suppressed:delivery.suppressed,pending,event_type:SCHEDULE_EMAIL_EVENT_TYPE,
-  },null); }catch{}
-  return {summary,sent:local?0:delivery.delivered,failed,exhausted:delivery.status.dead_letter,
-    pending,suppressed:delivery.suppressed,...(local?{captured}:{}),};
-}
-
-async function deliverPendingInvitationEmails(db,baseUrl,req){
-  const captured=[];
-  const local=localIdentityAdapterEnabled(req);
-  if(!invitationEmailConfiguration({localRuntime:local})){
-    const status=await invitationEmailStatus(db);
-    return {summary:'invitation email delivery unavailable',sent:0,failed:0,
-      exhausted:status.dead_letter,pending:status.pending+status.retry+status.processing,
-      suppressed:status.suppressed};
-  }
-  let send;
-  if(local){
-    send=async message=>{
-      captured.push({recipient_email:String(message.to),kind:'invitation',subject:String(message.subject),
-        links:[...message.html.matchAll(/href="([^"]+)"/gu)].map(match=>match[1]).slice(0,4)});
-      return {providerName:'local-capture',providerMessageId:`local-${randomUUID()}`};
-    };
-  }else{
-    const resendMod=await import('resend').catch(()=>null);
-    if(resendMod?.Resend) send=createResendEmailSender({
-      resend:new resendMod.Resend(process.env.RESEND_API_KEY),from:process.env.RESEND_FROM,
-    });
-  }
-  if(!send){
-    const status=await invitationEmailStatus(db);
-    return {summary:'invitation email delivery unavailable',sent:0,failed:0,
-      exhausted:status.dead_letter,pending:status.pending+status.retry+status.processing,
-      suppressed:status.suppressed};
-  }
-  const delivery=await deliverInvitationEmails({
-    db,baseUrl,send,workerId:`invitation-${randomUUID()}`,localRuntime:local,
-    workerOptions:{batchSize:INVITATION_EMAIL_DRAIN_BATCH_SIZE},
-  });
-  const pending=delivery.status.pending+delivery.status.retry+delivery.status.processing;
-  const failed=delivery.retried+delivery.deadLettered;
-  const summary=local
-    ?`captured ${captured.length} invitation email(s), failed ${failed}; no external delivery`
-    :`sent ${delivery.delivered}, failed ${failed}, exhausted ${delivery.status.dead_letter}, suppressed ${delivery.suppressed}, pending ${pending}`;
-  try{ await logServerOps(failed||delivery.status.dead_letter?'warn':'success','invitation_email_delivery',summary,{
-    sent:delivery.delivered,failed,exhausted:delivery.status.dead_letter,
-    suppressed:delivery.suppressed,pending,event_type:INVITATION_EMAIL_EVENT_TYPE,
-  },null); }catch{}
-  return {summary,sent:local?0:delivery.delivered,failed,exhausted:delivery.status.dead_letter,
-    pending,suppressed:delivery.suppressed,...(local?{captured}:{}),};
-}
-
 function configuredOutboxBaseUrl(){
   let url;
   try{ url=new URL(String(process.env.APP_URL||'')); }
@@ -450,7 +325,132 @@ function configuredOutboxBaseUrl(){
   return url.origin;
 }
 
+function emptyOutboxResult(){
+  return {claimed:0,delivered:0,suppressed:0,retried:0,deadLettered:0,leaseLost:0};
+}
+
+function outboxStatuses(metrics){
+  const byType=new Map(OUTBOX_DELIVERY_TYPES.map(({type})=>[type,{
+    pending:0,processing:0,retry:0,delivered:0,suppressed:0,dead_letter:0,
+  }]));
+  for(const metric of metrics||[]){
+    const target=byType.get(String(metric.eventType||''));
+    const status=String(metric.status||'');
+    if(target&&Object.prototype.hasOwnProperty.call(target,status)){
+      target[status]+=Number(metric.count||0);
+    }
+  }
+  return byType;
+}
+
+function localCaptureSender(captured,type){
+  return async message=>{
+    const kind=type===PAIRING_EMAIL_EVENT_TYPE
+      ?(String(message.subject).includes('missed')?'unavailable':'paired')
+      :type===SCHEDULE_EMAIL_EVENT_TYPE?'schedule'
+        :type===INVITATION_EMAIL_EVENT_TYPE?'invitation'
+          :type===PASSWORD_RESET_EVENT_TYPE?'password-reset':'activation';
+    captured.get(type).push({recipient_email:String(message.to),kind,subject:String(message.subject),
+      links:[...message.html.matchAll(/href="([^"]+)"/gu)].map(match=>match[1]).slice(0,4)});
+    return {providerName:'local-capture',providerMessageId:`local-${randomUUID()}`};
+  };
+}
+
+async function outboxDeliveryPlan(db,baseUrl,req){
+  const local=localIdentityAdapterEnabled(req);
+  const captured=new Map(OUTBOX_DELIVERY_TYPES.map(({type})=>[type,[]]));
+  let sharedSend=null;
+  if(!local&&process.env.RESEND_API_KEY&&process.env.RESEND_FROM){
+    const resendMod=await import('resend').catch(()=>null);
+    if(resendMod?.Resend){
+      sharedSend=createResendEmailSender({
+        resend:new resendMod.Resend(process.env.RESEND_API_KEY),from:process.env.RESEND_FROM,
+      });
+    }
+  }
+  const sender=type=>local?localCaptureSender(captured,type):sharedSend;
+  const handlers=new Map();
+  const pairingSend=sender(PAIRING_EMAIL_EVENT_TYPE);
+  const scheduleSend=sender(SCHEDULE_EMAIL_EVENT_TYPE);
+  const invitationSend=sender(INVITATION_EMAIL_EVENT_TYPE);
+  const activationSend=sender(EMAIL_ACTIVATION_EVENT_TYPE);
+  const passwordResetSend=sender(PASSWORD_RESET_EVENT_TYPE);
+  if(pairingSend) handlers.set(PAIRING_EMAIL_EVENT_TYPE,
+    createPairingEmailHandler({db,baseUrl,send:pairingSend,localRuntime:local}));
+  if(scheduleSend) handlers.set(SCHEDULE_EMAIL_EVENT_TYPE,
+    createScheduleEmailHandler({db,baseUrl,send:scheduleSend,localRuntime:local}));
+  if(invitationEmailConfiguration({localRuntime:local})&&invitationSend){
+    handlers.set(INVITATION_EMAIL_EVENT_TYPE,createInvitationEmailHandler({
+      db,baseUrl,send:invitationSend,localRuntime:local,
+    }));
+  }
+  if(emailActivationConfiguration()&&activationSend){
+    handlers.set(EMAIL_ACTIVATION_EVENT_TYPE,createEmailActivationHandler({
+      db,baseUrl,send:activationSend,
+    }));
+  }
+  if(passwordResetConfiguration()&&passwordResetSend){
+    handlers.set(PASSWORD_RESET_EVENT_TYPE,createPasswordResetHandler({
+      db,baseUrl,send:passwordResetSend,
+    }));
+  }
+  return {local,captured,handlers};
+}
+
+function unavailableDeliverySummary(type,status){
+  const pending=status.pending+status.retry+status.processing;
+  if(type===PAIRING_EMAIL_EVENT_TYPE){
+    return `${pending} email reminder(s) pending — email delivery unavailable`;
+  }
+  if(type===SCHEDULE_EMAIL_EVENT_TYPE) return 'schedule email delivery unavailable';
+  if(type===INVITATION_EMAIL_EVENT_TYPE) return 'invitation email delivery unavailable';
+  if(type===PASSWORD_RESET_EVENT_TYPE) return 'password reset email delivery unavailable';
+  return 'activation email delivery unavailable';
+}
+
+function projectOutboxDelivery({descriptor,result,status,configured,local,captured}){
+  const pending=status.pending+status.retry+status.processing;
+  const failed=result.retried+result.deadLettered;
+  const summary=!configured?unavailableDeliverySummary(descriptor.type,status)
+    :local?`captured ${captured.length} ${descriptor.label}(s), failed ${failed}; no external delivery`
+      :`sent ${result.delivered}, failed ${failed}, exhausted ${status.dead_letter}, suppressed ${result.suppressed}, pending ${pending}`;
+  return {summary,sent:local?0:result.delivered,failed,exhausted:status.dead_letter,pending,
+    suppressed:result.suppressed,...(local&&configured?{captured}:{}),};
+}
+
+async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs){
+  await migrateLegacyPairingEmails(db);
+  const plan=await outboxDeliveryPlan(db,baseUrl,req);
+  const eventTypes=OUTBOX_DELIVERY_TYPES.map(({type})=>type).filter(type=>plan.handlers.has(type));
+  const invocation=eventTypes.length?await runOutboxInvocation({
+    db,workerId:`outbox-${randomUUID()}`,handlers:plan.handlers,eventTypes,
+    maxClaims:OUTBOX_CRON_MAX_CLAIMS,deadlineAtMs,
+    finalizationReserveMs:OUTBOX_CRON_FINALIZATION_RESERVE_MS,
+  }):Object.freeze({...emptyOutboxResult(),deadlineReached:false,
+    maxClaims:OUTBOX_CRON_MAX_CLAIMS,perType:Object.freeze({})});
+  const statuses=outboxStatuses(await readOutboxMetrics(db));
+  const deliveries={};
+  const types={};
+  for(const descriptor of OUTBOX_DELIVERY_TYPES){
+    const result=invocation.perType[descriptor.type]||emptyOutboxResult();
+    const status=statuses.get(descriptor.type);
+    const configured=plan.handlers.has(descriptor.type);
+    deliveries[descriptor.key]=projectOutboxDelivery({descriptor,result,status,configured,
+      local:plan.local,captured:plan.captured.get(descriptor.type)});
+    types[descriptor.type]={claimed:result.claimed,delivered:result.delivered,
+      suppressed:result.suppressed,retried:result.retried,dead_lettered:result.deadLettered,
+      lease_lost:result.leaseLost,backlog:status.pending+status.retry+status.processing,
+      dead_letter:status.dead_letter};
+  }
+  const metrics={budget_ms:OUTBOX_CRON_BUDGET_MS,max_claims:OUTBOX_CRON_MAX_CLAIMS,
+    deadline_reached:invocation.deadlineReached,claimed:invocation.claimed,types};
+  try{ await logServerOps(invocation.retried||invocation.deadLettered||invocation.leaseLost?'warn':'success',
+    'outbox_invocation','outbox invocation completed',metrics,null); }catch{}
+  return {deliveries,metrics};
+}
+
 async function handleOutboxWorker(req,res){
+  const deadlineAtMs=performance.now()+OUTBOX_CRON_BUDGET_MS;
   if(req.method!=='GET'&&req.method!=='POST') return res.status(405).json({error:'GET or POST'});
   if(!verifyCronAuth(req)) return res.status(401).json({error:'unauthorized cron'});
   const baseUrl=configuredOutboxBaseUrl();
@@ -459,86 +459,9 @@ async function handleOutboxWorker(req,res){
   try{ db=getClient(); }
   catch{ return res.status(503).json({error:'outbox unavailable'}); }
   try{
-    const delivery=await deliverPendingPairingEmails(db,null,baseUrl,req);
-    const scheduleDelivery=await deliverPendingScheduleEmails(db,baseUrl,req);
-    const invitationDelivery=await deliverPendingInvitationEmails(db,baseUrl,req);
-    let activationDelivery={summary:'email activation delivery disabled',sent:0,failed:0,exhausted:0,pending:0,suppressed:0};
-    if(emailActivationConfiguration()){
-      const local=localIdentityAdapterEnabled(req);
-      const captured=[];
-      let send;
-      if(local){
-        send=async message=>{
-          captured.push({recipient_email:String(message.to),kind:'activation',subject:String(message.subject),
-            links:[...message.html.matchAll(/href="([^"]+)"/gu)].map(match=>match[1]).slice(0,4)});
-          return {providerName:'local-capture',providerMessageId:`local-${randomUUID()}`};
-        };
-      }else if(process.env.RESEND_API_KEY&&process.env.RESEND_FROM){
-        const resendMod=await import('resend').catch(()=>null);
-        if(resendMod?.Resend) send=createResendEmailSender({
-          resend:new resendMod.Resend(process.env.RESEND_API_KEY),from:process.env.RESEND_FROM,
-        });
-      }
-      if(send){
-        const activation=await deliverEmailActivations({
-          db,baseUrl,send,workerId:`activation-${randomUUID()}`,
-        });
-        const status=await emailActivationStatus(db);
-        const pending=status.pending+status.retry+status.processing;
-        const failed=activation.retried+activation.deadLettered;
-        activationDelivery={
-          summary:local?`captured ${captured.length} activation email(s); no external delivery`
-            :`sent ${activation.delivered}, failed ${failed}, pending ${pending}`,
-          sent:local?0:activation.delivered,failed,exhausted:status.dead_letter,pending,
-          suppressed:activation.suppressed,...(local?{captured}:{}),
-        };
-      }else{
-        const status=await emailActivationStatus(db);
-        activationDelivery={summary:'activation email delivery unavailable',sent:0,failed:0,
-          exhausted:status.dead_letter,pending:status.pending+status.retry+status.processing,
-          suppressed:status.suppressed};
-      }
-    }
-    let passwordResetDelivery={summary:'password reset delivery disabled',sent:0,failed:0,exhausted:0,pending:0,suppressed:0};
-    if(passwordResetConfiguration()){
-      const local=localIdentityAdapterEnabled(req);
-      const captured=[];
-      let send;
-      if(local){
-        send=async message=>{
-          captured.push({recipient_email:String(message.to),kind:'password-reset',subject:String(message.subject),
-            links:[...message.html.matchAll(/href="([^"]+)"/gu)].map(match=>match[1]).slice(0,4)});
-          return {providerName:'local-capture',providerMessageId:`local-${randomUUID()}`};
-        };
-      }else if(process.env.RESEND_API_KEY&&process.env.RESEND_FROM){
-        const resendMod=await import('resend').catch(()=>null);
-        if(resendMod?.Resend) send=createResendEmailSender({
-          resend:new resendMod.Resend(process.env.RESEND_API_KEY),from:process.env.RESEND_FROM,
-        });
-      }
-      if(send){
-        const reset=await deliverPasswordResets({db,baseUrl,send,workerId:`password-reset-${randomUUID()}`});
-        const status=await passwordResetStatus(db);
-        const pending=status.pending+status.retry+status.processing;
-        const failed=reset.retried+reset.deadLettered;
-        passwordResetDelivery={
-          summary:local?`captured ${captured.length} password reset email(s); no external delivery`
-            :`sent ${reset.delivered}, failed ${failed}, pending ${pending}`,
-          sent:local?0:reset.delivered,failed,exhausted:status.dead_letter,pending,
-          suppressed:reset.suppressed,...(local?{captured}:{}),
-        };
-      }else{
-        const status=await passwordResetStatus(db);
-        passwordResetDelivery={summary:'password reset email delivery unavailable',sent:0,failed:0,
-          exhausted:status.dead_letter,pending:status.pending+status.retry+status.processing,
-          suppressed:status.suppressed};
-      }
-    }
-    return res.json({ok:true,email_delivery:safeEmailDelivery(delivery),
-      schedule_delivery:safeEmailDelivery(scheduleDelivery),
-      invitation_delivery:safeEmailDelivery(invitationDelivery),
-      activation_delivery:safeEmailDelivery(activationDelivery),
-      password_reset_delivery:safeEmailDelivery(passwordResetDelivery)});
+    const outbox=await deliverPendingOutbox(db,baseUrl,req,deadlineAtMs);
+    return res.json({ok:true,...Object.fromEntries(Object.entries(outbox.deliveries)
+      .map(([key,value])=>[key,safeEmailDelivery(value)])),outbox:outbox.metrics});
   }catch{
     return res.status(503).json({error:'outbox unavailable'});
   }
@@ -739,9 +662,13 @@ async function runCurrentPairing(req,res,{
       // models; production remains pinned to the database-owned timestamp.
       ...(localRequest?{now:new Date()}:{}),
     });
-    let emailDelivery;
-    try{ emailDelivery=await deliverPendingPairingEmails(db,result.publication.weekId,result.appUrl,req); }
-    catch{ emailDelivery={summary:'email delivery unavailable'}; }
+    let emailDelivery={summary:'pairing emails queued for outbox delivery'};
+    try{
+      const status=await pairingEmailStatus(db);
+      emailDelivery={summary:`${status.pending+status.retry+status.processing} pairing email(s) queued for outbox delivery; exhausted ${status.dead_letter}, suppressed ${status.suppressed}`,
+        sent:0,failed:0,exhausted:status.dead_letter,
+        pending:status.pending+status.retry+status.processing,suppressed:status.suppressed};
+    }catch{}
     return res.json(pairingPublicationPayload(result,emailDelivery));
   }catch(error){
     return pairingFailure(res,error);

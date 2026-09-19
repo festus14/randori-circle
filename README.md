@@ -43,6 +43,9 @@ This private-beta sync is whole-document compare-and-swap, not a CRDT: members s
   concurrency-safe. Invitation, pairing, proposal, acceptance, reschedule, and
   reminder emails use one idempotent, retryable outbox.
 - Outbox workers use expiring token-bound leases, heartbeats, provider timeouts, bounded backoff, dead letters, and audited operator replay. Provider idempotency keys remain stable across crashes and replay; metrics and logs contain aggregate state only.
+- The cron outbox uses fair one-per-type claim rounds, an eight-event global
+  claim cap, and a 45-second request budget with five seconds reserved for
+  lease finalization and aggregate metrics.
 - AI is disabled unless explicitly enabled and consented to.
 - Automated LeetCode retrieval is disabled without written authorisation. The app uses approved local content or outbound links.
 
@@ -114,9 +117,10 @@ minute scheduler on a platform that supports that cadence. `POST
 /api/admin/outbox/replay` lets a non-demo global administrator replay only a
 dead-letter event with one of the bounded reason codes `OPERATOR_RETRY`,
 `PROVIDER_RECOVERED`, or `CONFIGURATION_FIXED`. Replay preserves the original
-provider idempotency key. See [invitation email delivery](docs/INVITATION_EMAIL_DELIVERY.md)
-and [schedule notifications](docs/SCHEDULE_NOTIFICATIONS.md) for dispatch
-suppression, limits, and remaining issue #50 work.
+provider idempotency key. See [outbox invocation budget](docs/OUTBOX_INVOCATION_BUDGET.md),
+[invitation email delivery](docs/INVITATION_EMAIL_DELIVERY.md), and
+[schedule notifications](docs/SCHEDULE_NOTIFICATIONS.md) for dispatch
+fairness, suppression, limits, and remaining issue #50 work.
 
 Google OAuth has one fail-closed configuration boundary shared by capability discovery, start, and callback. Production and hosted deployments require both provider credentials, an explicit canonical HTTPS `APP_URL`, and matching trusted proxy host/protocol headers. Invalid configuration returns only a generic unavailable response and performs no provider or database work. The isolated local runtime always disables Google credentials.
 
