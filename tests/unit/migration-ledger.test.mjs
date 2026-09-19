@@ -29,7 +29,7 @@ function temporaryDatabase(){
 
 test('executable migrations are contiguous and fingerprint every executable operation',()=>{
   assert.equal(validateExecutableMigrations(),true);
-  assert.equal(LATEST_MIGRATION_VERSION,9);
+  assert.equal(LATEST_MIGRATION_VERSION,10);
   assert.deepEqual(EXECUTABLE_MIGRATIONS.slice(0,2).map(migration=>migration.checksum),[
     '27944847696265114fbbb0e70ffa961a7f766a8f85cc4fe251ef00a779aac0df',
     'ceca22b30cc4f546359dc8d5731e1ab157e82b748b468e6eed510a8a4379444d',
@@ -41,6 +41,7 @@ test('executable migrations are contiguous and fingerprint every executable oper
   assert.equal(EXECUTABLE_MIGRATIONS[6].checksum,'2f904882cdc996c63492794b7e321560cbe3574871984e51e2d3075b897e95e1');
   assert.equal(EXECUTABLE_MIGRATIONS[7].checksum,'60059dfffd4d333e5b90a8eea32f23bc2165a8019911e4b006deeb0f2b68929c');
   assert.equal(EXECUTABLE_MIGRATIONS[8].checksum,'226c58e70d0f7dfeae89449dcc567f52afeed46c19c2f9987c510f78029ec560');
+  assert.equal(EXECUTABLE_MIGRATIONS[9].checksum,'df6508898b4b697ca8d21646c9460aefcc7f85d7fc8f2f027ed10342fe98e014');
   assert.match(MIGRATION_LEDGER_CHECKSUM,/^[a-f0-9]{64}$/);
   for(const migration of EXECUTABLE_MIGRATIONS){
     assert.equal(checksumExecutableMigration(migration),migration.checksum);
@@ -101,7 +102,7 @@ test('ledger rejects gaps, future versions, checksum drift, and owned schema add
       ...overrides,
     });
     assert.throws(()=>validateMigrationLedger([row(2)],EXECUTABLE_MIGRATIONS),/gap/i);
-    assert.throws(()=>validateMigrationLedger([row(1),row(2),row(3),row(4),row(5),row(6),row(7),row(8),row(9),row(10)],EXECUTABLE_MIGRATIONS),/newer/i);
+    assert.throws(()=>validateMigrationLedger([row(1),row(2),row(3),row(4),row(5),row(6),row(7),row(8),row(9),row(10),row(11)],EXECUTABLE_MIGRATIONS),/newer/i);
     assert.throws(()=>validateMigrationLedger([row(1,{checksum:'0'.repeat(64)})],EXECUTABLE_MIGRATIONS),/immutable/i);
     assert.throws(()=>validateMigrationLedger([
       row(1),row(2,{disposition:'adopted'}),

@@ -55,7 +55,7 @@ test('v6 installs the generic schema and the compatibility bridge preserves lega
     const upgraded=await applyMigrations(db,{
       expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY,
     });
-    assert.deepEqual(upgraded.applied.map(item=>item.version),[6,7,8,9]);
+    assert.deepEqual(upgraded.applied.map(item=>item.version),[6,7,8,9,10]);
     assert.equal(await migrateLegacyPairingEmails(db,{limit:2}),2);
     assert.equal(await migrateLegacyPairingEmails(db),1,'later bounded passes advance past migrated rows');
     assert.equal(await migrateLegacyPairingEmails(db),0,'the bridge is idempotent');

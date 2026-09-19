@@ -20,7 +20,7 @@ Pair workspaces now persist authenticated, revisioned code and whiteboard snapsh
 
 Pair scheduling uses timezone-aware instants: each browser displays the same UTC value in its local timezone, while compare-and-swap updates prevent one partner from silently overwriting the other. The dashboard polls only while it is visible, preserves unsent input through conflicts, and keeps older free-text schedule values visible and removable during migration.
 
-Pair chat is a private, canonical-room feed rather than a local preview. It loads the newest bounded window, follows new messages with an incremental cursor only while the signed-in member is viewing their dashboard, and deduplicates server acknowledgements against later polls. Failed or ambiguous sends are never retried automatically and their per-room drafts remain available for an explicit retry. Durable limits cap each member at 20 sends per minute and each room at 10,000 messages; the production index and retention migration is tracked in issue #27.
+Pair chat is a private, canonical-room feed rather than a local preview. It loads the newest bounded window, follows new messages with an incremental cursor only while the signed-in member is viewing their dashboard, and deduplicates server acknowledgements against later polls. Failed or ambiguous sends are never retried automatically and their per-room drafts remain available for an explicit retry. Durable limits cap each member at 20 sends per minute and each room at 10,000 messages. Migration v10 owns the room-cursor and sender-window indexes, so ordinary requests perform no chat-index DDL; see the [chat index rollout runbook](docs/CHAT_INDEX_MIGRATION.md).
 
 Authenticated History is a server-backed Pairings & Activity view. A member can explicitly load a private pairing recap containing the agreed schedule, a bounded timeline of messages and verified run summaries, and safe metadata for the latest workspace checkpoint. Source code, whiteboard shapes, hidden cases, provider output, transcripts, and unrelated users' activity are never included. Available checkpoints reopen through the existing authenticated workspace hydration path; pair assignments are not described as completed sessions until lifecycle and attendance tracking exist.
 
@@ -79,7 +79,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_pair-access.js` | shared source-aware authorization for canonical private pair rooms |
 | `api/_circle-membership.js` | primary-circle membership, keyed invite hashes, signed short-lived claims, and audited acceptance |
 | `api/invitations.js` | owner-only invitation lifecycle and rate-limited public preparation |
-| `db/schema-manifest.js` | checksummed contract for 39 application tables and 38 named indexes |
+| `db/schema-manifest.js` | checksummed contract for 39 application tables and 40 named indexes |
 | `db/schema-inspector.js` | read-only SQLite drift inspection and non-executable planning |
 
 The target Next.js/Supabase architecture is intentionally phased rather than introduced as a big-bang rewrite.

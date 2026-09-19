@@ -187,3 +187,76 @@ export async function ensureMessagesReadiness(db){
     throw error;
   }
 }
+
+export function messageReadStatement({
+  accessSql,accessArgs,weekId,pairGroupId,afterId,limit,
+}){
+  const projection=`pm.id,pm.sender_id,pm.message,pm.created_at,aa.display_name AS sender_name`;
+  if(afterId===0){
+    return {
+      sql:`WITH access AS (${accessSql}), selected AS (
+        SELECT ${projection}
+        FROM pair_messages pm
+        JOIN pairing_participants sender
+          ON sender.week_id=pm.week_id AND sender.user_id=pm.sender_id AND sender.source='auth'
+        LEFT JOIN auth_accounts aa ON aa.id=pm.sender_id
+        WHERE pm.week_id=? AND pm.pair_group_id=?
+          AND EXISTS (SELECT 1 FROM access
+            WHERE pm.sender_id=user_a_id OR pm.sender_id=user_b_id OR pm.sender_id=user_c_id)
+        ORDER BY pm.id DESC LIMIT ?
+      )
+      SELECT id,sender_id,message,created_at,sender_name FROM selected
+      UNION ALL SELECT NULL,NULL,NULL,NULL,NULL
+        WHERE EXISTS (SELECT 1 FROM access) AND NOT EXISTS (SELECT 1 FROM selected)
+      ORDER BY id ASC`,
+      args:[...accessArgs,weekId,pairGroupId,limit],
+    };
+  }
+  return {
+    sql:`WITH access AS (${accessSql}), selected AS (
+      SELECT ${projection}
+      FROM pair_messages pm
+      JOIN pairing_participants sender
+        ON sender.week_id=pm.week_id AND sender.user_id=pm.sender_id AND sender.source='auth'
+      LEFT JOIN auth_accounts aa ON aa.id=pm.sender_id
+      WHERE pm.week_id=? AND pm.pair_group_id=? AND pm.id>?
+        AND EXISTS (SELECT 1 FROM access
+          WHERE pm.sender_id=user_a_id OR pm.sender_id=user_b_id OR pm.sender_id=user_c_id)
+      ORDER BY pm.id ASC LIMIT ?
+    )
+    SELECT id,sender_id,message,created_at,sender_name FROM selected
+    UNION ALL SELECT NULL,NULL,NULL,NULL,NULL
+      WHERE EXISTS (SELECT 1 FROM access) AND NOT EXISTS (SELECT 1 FROM selected)
+    ORDER BY id ASC`,
+    args:[...accessArgs,weekId,pairGroupId,afterId,limit],
+  };
+}
+
+export function messageInsertStatement({
+  accessSql,accessArgs,weekId,pairGroupId,userId,message,
+}){
+  return {
+    sql:`WITH access AS (${accessSql})
+      INSERT INTO pair_messages (week_id,pair_group_id,sender_id,message,created_at)
+      SELECT ?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now')
+      WHERE EXISTS (SELECT 1 FROM access)
+        AND (SELECT COUNT(*) FROM pair_messages
+          WHERE sender_id=? AND datetime(created_at)>=datetime('now','-1 minute'))<?
+        AND (SELECT COUNT(*) FROM pair_messages
+          WHERE week_id=? AND pair_group_id=?)<?
+      RETURNING id,sender_id,message,created_at`,
+    args:[...accessArgs,weekId,pairGroupId,userId,message,
+      userId,MAX_MESSAGES_PER_USER_PER_MINUTE,weekId,pairGroupId,MAX_MESSAGES_PER_ROOM],
+  };
+}
+
+export function messageLimitStateStatement({accessSql,accessArgs,weekId,pairGroupId,userId}){
+  return {
+    sql:`SELECT
+      EXISTS(${accessSql}) AS allowed,
+      (SELECT COUNT(*) FROM pair_messages
+        WHERE sender_id=? AND datetime(created_at)>=datetime('now','-1 minute')) AS recent_count,
+      (SELECT COUNT(*) FROM pair_messages WHERE week_id=? AND pair_group_id=?) AS room_count`,
+    args:[...accessArgs,userId,weekId,pairGroupId],
+  };
+}

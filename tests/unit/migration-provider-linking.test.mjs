@@ -28,8 +28,13 @@ test('v9 installs hashed provider-email state and redacted identity audit withou
     await apply(db,EXECUTABLE_MIGRATIONS.slice(0,8));
     const before=(await db.execute(`SELECT type,name,sql FROM sqlite_schema
       WHERE name IN ('auth_password_resets','auth_recent_proofs') ORDER BY type,name`)).rows;
-    const beforeState=await inspectMigrationState(db);
-    const result=await applyMigrations(db,{expectedStateFingerprint:beforeState.stateFingerprint,retry:NO_RETRY});
+    const throughV9=EXECUTABLE_MIGRATIONS.slice(0,9);
+    const beforeState=await inspectMigrationState(db,{migrations:throughV9});
+    const result=await applyMigrations(db,{
+      expectedStateFingerprint:beforeState.stateFingerprint,
+      migrations:throughV9,
+      retry:NO_RETRY,
+    });
     assert.deepEqual(result.applied.map(item=>item.version),[9]);
     assert.deepEqual((await db.execute(`PRAGMA table_info('auth_provider_email_state')`)).rows.map(row=>row.name),[
       'issuer','subject','email_hash','hash_key_version','hash_key_fingerprint','observed_at','changed_at',

@@ -6,7 +6,7 @@ import { getPairingPublication } from './_pairing-publication.js';
 import { authPairAccessArgs, authPairAccessSql, getAuthenticatedPairAccess } from './_pair-access.js';
 import { applyScheduleMutation, nextScheduleUpdatedAt, parseScheduleMutation, projectSchedule, readScheduleState, ScheduleDataError, ScheduleInputError } from './_schedule.js';
 import { scheduleNotificationEvents } from './_schedule-email.js';
-import { ensureMessagesReadiness, MAX_MESSAGES_PER_ROOM, MAX_MESSAGES_PER_USER_PER_MINUTE, MESSAGE_RATE_RETRY_SECONDS, MessageDataError, MessageInputError, parseMessageSend, parseMessagesQuery, projectMessage, validateMessagesPostQuery } from './_messages.js';
+import { ensureMessagesReadiness, MAX_MESSAGES_PER_ROOM, MAX_MESSAGES_PER_USER_PER_MINUTE, MESSAGE_RATE_RETRY_SECONDS, messageInsertStatement, messageLimitStateStatement, MessageDataError, MessageInputError, messageReadStatement, parseMessageSend, parseMessagesQuery, projectMessage, validateMessagesPostQuery } from './_messages.js';
 import { ensurePairRecapReadiness, MAX_RECAP_ACTIVITY, MAX_RECAP_RUN_SCAN, newestRecapActivity, PairRecapDataError, PairRecapInputError, parsePairRecapQuery, projectRecapMessage, projectRecapPair, projectRecapRun, projectRecapSchedule, projectRecapWorkspace } from './_pair-recap.js';
 import {
   AUTH_RATE_LIMITS_TABLE_SQL,
@@ -827,7 +827,6 @@ async function ensureProfileMigrations(db,req){
   try{
     await db.execute(`CREATE TABLE IF NOT EXISTS pair_schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL, proposed_times TEXT, agreed_time TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')), UNIQUE(week_id,pair_group_id))`);
   }catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_messages_pair ON pair_messages(pair_group_id, created_at)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_sched_pair ON pair_schedules(pair_group_id)`);}catch{}
   await ensureCustomQuestions(db);
   await ensureSessionRuns(db);
@@ -1344,7 +1343,6 @@ async function handleInit(req,res){
   for(const sql of migrations){ try{ await db.execute(sql);}catch(_){} }
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_video_signals_room ON video_signals(room_id, created_at)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_video_signals_room_id ON video_signals(room_id, id)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_messages_pair ON pair_messages(pair_group_id, created_at)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_sched_pair ON pair_schedules(pair_group_id)`);}catch{}
   try{
     // This one-time cleanup is intentionally admin-triggered: it can delete legacy
@@ -1363,7 +1361,6 @@ async function handleInit(req,res){
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_user ON session_runs(user_id, created_at DESC)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_question ON session_runs(question_slug)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_pair_activity ON session_runs(week_id,pair_group_id,julianday(created_at) DESC,id DESC)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_messages_pair_activity ON pair_messages(week_id,pair_group_id,julianday(created_at) DESC,id DESC)`);}catch{}
   try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_room_snapshots_updated_at ON pair_room_snapshots(updated_at)`);}catch{}
   try{
     await db.execute(`CREATE UNIQUE INDEX IF NOT EXISTS uq_auth_accounts_google_sub
@@ -1773,44 +1770,12 @@ async function handleMessages(req,res){
 
   if(req.method==='GET'){
     try{
-      const projection=`pm.id,pm.sender_id,pm.message,pm.created_at,aa.display_name AS sender_name`;
-      let sql,args;
-      if(input.afterId===0){
-        sql=`WITH access AS (${authPairAccessSql()}), selected AS (
-          SELECT ${projection}
-          FROM pair_messages pm
-          JOIN pairing_participants sender
-            ON sender.week_id=pm.week_id AND sender.user_id=pm.sender_id AND sender.source='auth'
-          LEFT JOIN auth_accounts aa ON aa.id=pm.sender_id
-          WHERE pm.week_id=? AND pm.pair_group_id=?
-            AND EXISTS (SELECT 1 FROM access
-              WHERE pm.sender_id=user_a_id OR pm.sender_id=user_b_id OR pm.sender_id=user_c_id)
-          ORDER BY pm.id DESC LIMIT ?
-        )
-        SELECT id,sender_id,message,created_at,sender_name FROM selected
-        UNION ALL SELECT NULL,NULL,NULL,NULL,NULL
-          WHERE EXISTS (SELECT 1 FROM access) AND NOT EXISTS (SELECT 1 FROM selected)
-        ORDER BY id ASC`;
-        args=[...accessArgs,input.weekId,input.pairGroupId,input.limit];
-      }else{
-        sql=`WITH access AS (${authPairAccessSql()}), selected AS (
-          SELECT ${projection}
-          FROM pair_messages pm
-          JOIN pairing_participants sender
-            ON sender.week_id=pm.week_id AND sender.user_id=pm.sender_id AND sender.source='auth'
-          LEFT JOIN auth_accounts aa ON aa.id=pm.sender_id
-          WHERE pm.week_id=? AND pm.pair_group_id=? AND pm.id>?
-            AND EXISTS (SELECT 1 FROM access
-              WHERE pm.sender_id=user_a_id OR pm.sender_id=user_b_id OR pm.sender_id=user_c_id)
-          ORDER BY pm.id ASC LIMIT ?
-        )
-        SELECT id,sender_id,message,created_at,sender_name FROM selected
-        UNION ALL SELECT NULL,NULL,NULL,NULL,NULL
-          WHERE EXISTS (SELECT 1 FROM access) AND NOT EXISTS (SELECT 1 FROM selected)
-        ORDER BY id ASC`;
-        args=[...accessArgs,input.weekId,input.pairGroupId,input.afterId,input.limit];
-      }
-      const result=await db.execute({sql,args});
+      const statement=messageReadStatement({
+        accessSql:authPairAccessSql(),accessArgs,
+        weekId:input.weekId,pairGroupId:input.pairGroupId,
+        afterId:input.afterId,limit:input.limit,
+      });
+      const result=await db.execute(statement);
       if(!result.rows.length){
         let latest;
         try{ latest=await getPairAccess(db,payload,input.weekId,input.pairGroupId); }
@@ -1832,30 +1797,17 @@ async function handleMessages(req,res){
       args:[userId],
     });
     if(!senderResult.rows.length) return res.status(503).json({error:'messages unavailable'});
-    const inserted=await db.execute({
-      sql:`WITH access AS (${authPairAccessSql()})
-        INSERT INTO pair_messages (week_id,pair_group_id,sender_id,message,created_at)
-        SELECT ?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now')
-        WHERE EXISTS (SELECT 1 FROM access)
-          AND (SELECT COUNT(*) FROM pair_messages
-            WHERE sender_id=? AND datetime(created_at)>=datetime('now','-1 minute'))<?
-          AND (SELECT COUNT(*) FROM pair_messages
-            WHERE week_id=? AND pair_group_id=?)<?
-        RETURNING id,sender_id,message,created_at`,
-      args:[...accessArgs,input.weekId,input.pairGroupId,userId,input.message,
-        userId,MAX_MESSAGES_PER_USER_PER_MINUTE,input.weekId,input.pairGroupId,MAX_MESSAGES_PER_ROOM],
-    });
+    const inserted=await db.execute(messageInsertStatement({
+      accessSql:authPairAccessSql(),accessArgs,
+      weekId:input.weekId,pairGroupId:input.pairGroupId,userId,message:input.message,
+    }));
     if(!inserted.rows.length){
       let state;
       try{
-        state=await db.execute({
-          sql:`SELECT
-            EXISTS(${authPairAccessSql()}) AS allowed,
-            (SELECT COUNT(*) FROM pair_messages
-              WHERE sender_id=? AND datetime(created_at)>=datetime('now','-1 minute')) AS recent_count,
-            (SELECT COUNT(*) FROM pair_messages WHERE week_id=? AND pair_group_id=?) AS room_count`,
-          args:[...accessArgs,userId,input.weekId,input.pairGroupId],
-        });
+        state=await db.execute(messageLimitStateStatement({
+          accessSql:authPairAccessSql(),accessArgs,
+          weekId:input.weekId,pairGroupId:input.pairGroupId,userId,
+        }));
       }
       catch{ return res.status(503).json({error:'messages unavailable'}); }
       const latest=state.rows[0];

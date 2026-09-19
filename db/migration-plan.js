@@ -64,6 +64,13 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'15faf4c644ab0ed596af090142dd263d9ad28acd3a47b17377e4017019e13f7d',
     checksum:'9f0e62a44989a1d9449327789ebf89141e659db0ff37a4a9df23552bad92d1ee',
   }),
+  Object.freeze({
+    version:10,
+    name:'chat-cursor-and-rate-indexes',
+    description:'Migration-owned room cursor and sender rolling-window indexes for bounded chat access.',
+    operationsChecksum:'bc2ac9d96c4580f9c6598e94b48f00a18828b1b7df6704001a90adaf85332ef8',
+    checksum:'f06bf9364f8daba57bf78375d72a176490bdb3d89d2345793997c7e153d7257b',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){
