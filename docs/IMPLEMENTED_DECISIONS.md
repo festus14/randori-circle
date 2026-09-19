@@ -1,10 +1,10 @@
 # Randori Circle implemented decision log
 
-Status: accepted through merged PR #89 plus candidate PR #93
+Status: accepted through merged PR #89 plus candidate PRs #93 and #92
 
 Last reviewed: 2026-09-19
 
-Scope: `main` through `2402fe9bea53aa0a44d2af4c43f77e4223894695`, plus PR #93
+Scope: `main` through `2402fe9bea53aa0a44d2af4c43f77e4223894695`, plus PRs #93 and #92
 
 This log records decisions that govern the application being shipped now. The
 [production architecture plan](PRODUCTION_ARCHITECTURE_PLAN.md) describes a
@@ -29,11 +29,13 @@ or merged after its parent; it must not be landed ahead of that parent.
 | 5 | [PR #85](https://github.com/festus14/randori-circle/pull/85), merged to `main` | Real-runtime coverage of signup, availability, publication, and revoked access | No migration |
 | 6 | [PR #89](https://github.com/festus14/randori-circle/pull/89), merged to `main` | Transactional, retryable pairing notifications | v6 `durable-provider-neutral-outbox` |
 | 7 | [PR #93](https://github.com/festus14/randori-circle/pull/93), candidate | Repository-owned deployability gate independent of preview quota | No migration |
+| 8 | [PR #92](https://github.com/festus14/randori-circle/pull/92), candidate | Verified invitation-bound email/password activation | v7 `verified-email-activation` |
 
 Migration order is append-only: v4 binds an account to an OIDC issuer and
 subject, v5 makes every application JWT depend on a live hashed session row,
-and v6 adds the outbox and its audit history. The protected production workflow
-applies no more than one pending version per inspected fingerprint and approval.
+v6 adds the outbox and its audit history, and v7 adds pending verified-email
+activation. The protected production workflow applies no more than one pending
+version per inspected fingerprint and approval.
 
 ## ID-01: Ship the useful weekly loop before a platform rewrite
 
@@ -226,3 +228,48 @@ but can hide untested branches and functions. Requiring every external review or
 preview service increases assurance when available but lets third-party quota or
 outages stop delivery. Manual-only testing is too difficult to reproduce and is
 rejected.
+## ID-10: Verify invitation-bound password activation before account creation
+
+Status: implemented as the schema-v7 increment, stacked on the durable outbox.
+
+### User flow
+
+1. A circle owner creates an invitation and shares its single-use link.
+2. The invitee prepares that invitation in the browser and chooses email/password signup.
+3. Randori hashes the password, creates or rotates a pending activation, and atomically enqueues a verification email. It does not create an account or session yet.
+4. The email opens `/verify#token=…`. The browser removes the fragment before posting the token to the verification endpoint, keeping it out of HTTP request URLs and referrers.
+5. Verification atomically consumes the activation and invitation, creates the account and membership, appends audit evidence, persists a revocable session, and only then returns its HttpOnly cookie.
+
+Pending, resend/retry, expired, already-used, revoked, unavailable, and success states are explicit in the UI. Signup and resend return the same generic accepted response whether the email, account, or invitation is eligible. Structurally invalid input and caller-wide rate limits remain visible errors because neither reveals account existence.
+
+### Security decisions
+
+- Verification tokens are 256-bit random values. Only a domain-separated HMAC is stored in `auth_email_activations`.
+- The outbox contains an AES-256-GCM envelope rather than the bearer token. Production requires a separate 32-byte base64url `EMAIL_VERIFICATION_ENCRYPTION_KEY`; missing or unsafe configuration disables the capability.
+- Production also requires membership enforcement, a canonical HTTPS `APP_URL`, and both Resend settings before the capability is advertised or entered; partial configuration fails closed without creating pending work.
+- Tokens are single-use and expire after 30 minutes. A resend rotates the token, invalidating queued or delivered older links.
+- Resends have a 60-second cooldown, a five-send lifetime cap per invitation, and the existing durable IP/email rate-limit buckets.
+- Verification attempts have their own durable 20-attempt-per-15-minute IP bucket before any untrusted valid-looking token can open an activation transaction.
+- The delivery worker rechecks activation, invitation, and primary-circle state immediately before sending. Revoked, consumed, expired, or rotated work is suppressed.
+- Password hashing happens before eligibility is evaluated. Eligible, unknown, reused, and wrong-email requests receive the same `202` response shape, bounded crypto/transaction statement shape, and minimum response floor.
+- Account creation, invitation consumption, membership creation, audit evidence, activation consumption, and session persistence share one database transaction. Any failure rolls back the complete activation.
+- The local invitation adapter remains synchronous and isolated. Production can never use local or open signup paths.
+
+### Alternatives considered
+
+| Option | Advantages | Rejected tradeoffs |
+|---|---|---|
+| Create a disabled account before verification | Familiar account model | Leaves partially usable identities, complicates every login query, and violates the no-account-before-verification requirement. |
+| Store the raw token in the outbox | Simplest worker | A database read exposes a live bearer credential. The encrypted envelope plus hashed lookup materially reduces that risk. |
+| Send mail synchronously from signup | Immediate provider feedback | Couples account initiation to provider latency/failure and loses durable retry/idempotency. |
+| Stateless signed verification link | No pending-token table | Cannot provide reliable single-use, revocation, resend rotation, or transaction-bound invitation consumption. |
+| Reuse the short-lived invite claim as verification | Fewer credentials | It proves possession of the invitation link, not control of the invited mailbox. |
+
+### Deployment order
+
+1. Rehearse and apply migration v7 after the v6 outbox migration.
+2. Configure `APP_URL`, `RESEND_API_KEY`, `RESEND_FROM`, and a new `EMAIL_VERIFICATION_ENCRYPTION_KEY`.
+3. Ensure the authenticated outbox drain runs at least every five minutes.
+4. Set `EMAIL_PASSWORD_ACTIVATION_ENABLED=true` only after readiness is green.
+
+Keep the encryption key stable while pending activation events exist. Rotation requires a future multi-key decrypt window; replacing it immediately suppresses already queued mail.

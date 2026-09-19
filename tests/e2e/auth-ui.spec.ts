@@ -13,6 +13,105 @@ const privateBetaCapabilities = {
   registrationMode: 'private_beta',
 };
 
+const verifiedInviteCapabilities = {
+  ok: true,
+  capabilities: {
+    passwordLogin: true,
+    passwordSignup: true,
+    verifiedEmailActivation: true,
+    localIdentity: false,
+    googleOAuth: false,
+  },
+  registrationMode: 'verified_invite',
+};
+
+test('production invite signup waits for email verification and offers a bounded resend action',async({page})=>{
+  const token='A'.repeat(43);
+  let signupCalls=0;
+  let resendCalls=0;
+  await mockApi(page,{
+    '/api/auth/capabilities':verifiedInviteCapabilities,
+    '/api/invitations/prepare':{ok:true},
+    '/api/auth/signup':request=>{
+      signupCalls+=1;
+      expect(request.postDataJSON()).toEqual({
+        email:'invited@example.test',name:'Invited Member',password:'correct horse battery',
+      });
+      return {_status:202,ok:true,pending:true,message:'If this invitation can be activated, a verification email will arrive shortly.'};
+    },
+    '/api/auth/activation/resend':request=>{
+      resendCalls+=1;
+      expect(request.postDataJSON()).toEqual({email:'invited@example.test'});
+      return {_status:202,ok:true,pending:true};
+    },
+  });
+  await resetClientState(page);
+  await page.goto(`/invite#invite=${token}`,{waitUntil:'domcontentloaded'});
+  await expect(page.getByTestId('invite-status')).toContainText('Invitation verified');
+  await expect(page.getByTestId('invite-continue')).toHaveText('Create account');
+  await page.getByTestId('invite-continue').click();
+  await expect(page.getByRole('dialog',{name:'Join Randori Circle'})).toBeVisible();
+  await expect(page.locator('#authCapabilityStatus')).toContainText('activates only after');
+  await page.locator('#authEmail').fill('invited@example.test');
+  await page.locator('#authName').fill('Invited Member');
+  await page.locator('#authPass').fill('correct horse battery');
+  await page.locator('#authSignup').click();
+  await expect(page.getByTestId('activation-pending')).toBeVisible();
+  await expect(page.locator('#meLabel')).toBeHidden();
+  expect(signupCalls).toBe(1);
+  await page.locator('#authActivationResend').click();
+  await expect(page.locator('#authErr')).toContainText('new link was requested');
+  expect(resendCalls).toBe(1);
+});
+
+test('verification landing renders success and terminal link states without exposing the token',async({page})=>{
+  const token='B'.repeat(43);
+  let verificationStatus='verified';
+  await mockApi(page,{
+    '/api/auth/activation/verify':request=>{
+      expect(request.postDataJSON()).toEqual({token});
+      return verificationStatus==='verified'
+        ?{ok:true,status:'verified',user:{id:8,email:'verified@example.test',name:'Verified Member',color:'#123456'}}
+        :{_status:409,ok:false,status:verificationStatus};
+    },
+  });
+  await resetClientState(page);
+  await page.goto(`/verify#token=${token}`,{waitUntil:'domcontentloaded'});
+  await expect(page).toHaveURL(/\/verify$/);
+  await expect(page.getByTestId('activation-status')).toContainText('account is ready');
+  await expect(page.getByTestId('activation-continue')).toBeVisible();
+
+  for(const status of ['expired','used','revoked']){
+    verificationStatus=status;
+    await page.goto(`/verify?state=${status}#token=${token}`,{waitUntil:'domcontentloaded'});
+    await expect(page.getByTestId('activation-status')).toContainText(
+      status==='expired'?'expired':status==='used'?'already been used':'no longer available',
+    );
+  }
+});
+
+test('a temporary verification failure retains the scrubbed token only in memory for explicit retry',async({page})=>{
+  const token='C'.repeat(43);
+  let attempts=0;
+  await mockApi(page,{
+    '/api/auth/activation/verify':request=>{
+      attempts+=1;
+      expect(request.postDataJSON()).toEqual({token});
+      return attempts===1
+        ?{_status:503,error:'email activation temporarily unavailable'}
+        :{ok:true,status:'verified',user:{id:9,email:'retry@example.test',name:'Retry Member',color:'#654321'}};
+    },
+  });
+  await resetClientState(page);
+  await page.goto(`/verify#token=${token}`,{waitUntil:'domcontentloaded'});
+  await expect(page).toHaveURL(/\/verify$/);
+  await expect(page.getByTestId('activation-status')).toContainText('temporarily unavailable');
+  await expect(page.getByTestId('activation-continue')).toHaveText('Retry verification');
+  await page.getByTestId('activation-continue').click();
+  await expect(page.getByTestId('activation-status')).toContainText('account is ready');
+  expect(attempts).toBe(2);
+});
+
 test('local capabilities expose an accessible signup flow with validation and one in-flight submit', async ({ page }) => {
   const user = {
     id: 1,

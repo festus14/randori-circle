@@ -43,6 +43,13 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'8cb0d17a3c0fb53519d3b02843e534b90447b48b00c3fb0f1da0af75b38ee17b',
     checksum:'f64e694d6f493128347f3544a6a03af62b77d4e4a8f00592ed85055ae2a5d68b',
   }),
+  Object.freeze({
+    version:7,
+    name:'verified-email-activation',
+    description:'Invitation-bound password activation with hashed single-use verification credentials.',
+    operationsChecksum:'a2be692ef8f352abc3038ad315117fd00c6a235d07a678f9742ba156e51e8bc7',
+    checksum:'5379a4f70f7da440b6669bb4880320da240710fb7b56f61f28ad44e7817e5f48',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){

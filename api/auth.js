@@ -35,6 +35,13 @@ import {
   publicGoogleAuthorizationError,
   publicGoogleErrorCode,
 } from './_google-oidc.js';
+import {
+  emailActivationConfiguration,
+  ensureEmailActivationReadiness,
+  requestEmailActivation,
+  resendEmailActivation,
+  verifyEmailActivation,
+} from './_email-activation.js';
 
 const SESSION_COOKIE = 'randori_session';
 const OAUTH_STATE_COOKIE = 'randori_oauth_state';
@@ -43,6 +50,7 @@ const OAUTH_NONCE_COOKIE = 'randori_oauth_nonce';
 const OAUTH_RETURN_COOKIE = 'randori_oauth_return';
 const PASSWORD_MIN_BYTES = 10;
 const PASSWORD_MAX_BYTES = 72;
+const ACTIVATION_RESPONSE_FLOOR_MS = 350;
 const DUMMY_LOGIN_PASSWORD_HASH = '$2a$10$PBpMY4NLVseWPP6G9VtPveLltge4ovpON5/cJwqL8JU.khDEvJ9De';
 
 function cookieValue(req, name){
@@ -108,7 +116,9 @@ async function enforceAuthRateLimit(db, req, action, email){
   const bucket=Math.floor(Date.now()/1000/windowSeconds);
   const limits=action==='signup'
     ? [[`ip:${ip}`,5],[`email:${email}`,5]]
-    : [[`ip:${ip}`,20],[`email:${email}`,10]];
+    :(action==='activation-verify'
+      ?[[`ip:${ip}`,20]]
+      :[[`ip:${ip}`,20],[`email:${email}`,10]]);
   for(const [dimension,limit] of limits){
     const key=createHash('sha256').update(`${action}|${dimension}|${bucket}|${getJwtSecret()}`).digest('hex');
     const result=await db.execute({
@@ -125,6 +135,11 @@ async function enforceAuthRateLimit(db, req, action, email){
   if(Math.random()<0.02){
     db.execute({sql:`DELETE FROM auth_rate_limits WHERE expires_at < ?`,args:[Math.floor(Date.now()/1000)]}).catch(()=>{});
   }
+}
+
+async function completeActivationResponseFloor(startedAt){
+  const remaining=ACTIVATION_RESPONSE_FLOOR_MS-(Date.now()-startedAt);
+  if(remaining>0) await new Promise(resolve=>setTimeout(resolve,remaining));
 }
 
 function registrationAllowed(email){
@@ -149,17 +164,19 @@ export function localPasswordSignupEnabled(req){
 
 function handleCapabilities(req,res){
   if(req.method!=='GET') return res.status(405).json({error:'GET only'});
-  const passwordSignup=localPasswordSignupEnabled(req);
   const localIdentity=localIdentityAdapterEnabled(req);
+  const verifiedEmailActivation=!localIdentity&&Boolean(emailActivationConfiguration());
+  const passwordSignup=localPasswordSignupEnabled(req)||verifiedEmailActivation;
   return res.json({
     ok:true,
     capabilities:{
       passwordLogin:true,
       passwordSignup,
+      verifiedEmailActivation,
       localIdentity,
       googleOAuth:Boolean(googleOAuthRequestConfiguration(req)),
     },
-    registrationMode:localIdentity?'local_invite':(passwordSignup?'local_open':'private_beta'),
+    registrationMode:localIdentity?'local_invite':(verifiedEmailActivation?'verified_invite':(passwordSignup?'local_open':'private_beta')),
   });
 }
 
@@ -213,7 +230,9 @@ function getEndpoint(req){
 // --- signup ---
 async function handleSignup(req,res){
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' });
-  if(!localPasswordSignupEnabled(req)){
+  const localPasswordSignup=localPasswordSignupEnabled(req);
+  const verifiedEmailActivation=!localIdentityAdapterEnabled(req)&&Boolean(emailActivationConfiguration());
+  if(!localPasswordSignup&&!verifiedEmailActivation){
     return res.status(503).json({error:'password signup is disabled during the private beta; use Google sign-in'});
   }
   const { email, password, name } = req.body || {};
@@ -224,6 +243,33 @@ async function handleSignup(req,res){
   const display = String(name).trim().slice(0,32);
   if(display.length<2) return res.status(400).json({ error:'display name must be 2-32 chars' });
   const membershipRequired=circleMembershipEnabled();
+  if(verifiedEmailActivation){
+    const inviteClaim=readInviteClaim(req);
+    const db=getClient();
+    try{
+      await ensureCircleMembershipReadiness(db);
+      await ensureEmailActivationReadiness(db);
+      await enforceAuthRateLimit(db,req,'signup',e);
+    }catch(err){
+      if(err?.statusCode===429) return res.status(429).json({error:'too many activation requests; try again later'});
+      return res.status(503).json({error:'signup temporarily unavailable'});
+    }
+    // Always perform the password work before evaluating invitation/account
+    // state so a request cannot use response timing to enumerate identities.
+    const responseStartedAt=Date.now();
+    const color=deterministicColor(display.toLowerCase());
+    const hash=await bcrypt.hash(password,10);
+    let activationFailed=false;
+    try{
+      await requestEmailActivation(db,{claim:inviteClaim,email:e,passwordHash:hash,displayName:display,color});
+    }catch{ activationFailed=true; }
+    await completeActivationResponseFloor(responseStartedAt);
+    if(activationFailed) return res.status(503).json({error:'signup temporarily unavailable'});
+    return res.status(202).json({
+      ok:true,pending:true,
+      message:'If this invitation can be activated, a verification email will arrive shortly.',
+    });
+  }
   if(membershipRequired){
     if(!localIdentityAdapterEnabled(req)){
       return res.status(403).json({error:'private beta signup requires a Google invitation'});
@@ -312,6 +358,49 @@ async function handleSignup(req,res){
   catch{ return res.status(503).json({error:'signup temporarily unavailable'}); }
   appendCookies(res,[sessionCookie(req,token)]);
   return res.json({ ok:true, user:{ id:authId, email:e, name:display, color, is_admin: !!isAdmin, isAdmin: !!isAdmin }});
+}
+
+async function handleActivationResend(req,res){
+  if(req.method!=='POST') return res.status(405).json({error:'POST only'});
+  if(!emailActivationConfiguration()) return res.status(503).json({error:'email activation is unavailable'});
+  const email=String(req.body?.email||'').trim().toLowerCase();
+  if(!email||email.length>254||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){
+    return res.status(400).json({error:'valid email required'});
+  }
+  const db=getClient();
+  const responseStartedAt=Date.now();
+  let activationFailed=null;
+  try{
+    await ensureEmailActivationReadiness(db);
+    await enforceAuthRateLimit(db,req,'signup',email);
+    await resendEmailActivation(db,{claim:readInviteClaim(req),email});
+  }catch(error){ activationFailed=error; }
+  await completeActivationResponseFloor(responseStartedAt);
+  if(activationFailed?.statusCode===429) return res.status(429).json({error:'too many activation requests; try again later'});
+  if(activationFailed) return res.status(503).json({error:'email activation temporarily unavailable'});
+  return res.status(202).json({
+    ok:true,pending:true,
+    message:'If a pending activation exists, a new verification email will arrive shortly.',
+  });
+}
+
+async function handleActivationVerify(req,res){
+  if(req.method!=='POST') return res.status(405).json({error:'POST only'});
+  if(!emailActivationConfiguration()) return res.status(503).json({error:'email activation is unavailable'});
+  const token=String(req.body?.token||'');
+  let result;
+  try{
+    const db=getClient();
+    await ensureEmailActivationReadiness(db);
+    await enforceAuthRateLimit(db,req,'activation-verify','');
+    result=await verifyEmailActivation(db,{token});
+  }catch(error){
+    if(error?.statusCode===429) return res.status(429).json({error:'too many verification attempts; try again later'});
+    return res.status(503).json({error:'email activation temporarily unavailable'});
+  }
+  if(result.status!=='verified') return res.status(409).json({ok:false,status:result.status});
+  appendCookies(res,[sessionCookie(req,result.sessionToken),clearInviteClaimCookie()]);
+  return res.json({ok:true,status:'verified',user:result.user});
 }
 
 // --- login ---
@@ -688,16 +777,18 @@ async function handleGoogleCallback(req,res){
 export default async function handler(req,res){
   setAuthResponseHeaders(res);
   const ep = getEndpoint(req);
+  const urlPath = (req.url||'').toLowerCase();
   if(!verifyMutationOrigin(req)) return res.status(403).json({error:'cross-origin mutation rejected'});
   const logoutMutation=ep==='logout'||ep==='logout-all'||ep.includes('logout');
   if(req.method==='POST'&&logoutMutation&&!verifyMutationOrigin(req)){
     return res.status(403).json({error:'same-origin request required'});
   }
-  if(req.method==='POST'&&!logoutMutation&&['signup','login'].some(name=>ep===name || ep.includes(name))&&!verifyAuthMutationOrigin(req)){
+  const credentialMutation=['signup','login','activation-resend','activation-verify'].some(name=>ep===name||ep.includes(name))
+    ||urlPath.includes('/activation/resend')||urlPath.includes('/activation/verify');
+  if(req.method==='POST'&&!logoutMutation&&credentialMutation&&!verifyAuthMutationOrigin(req)){
     return res.status(403).json({error:'same-origin request required'});
   }
   // also detect google via path that contains google
-  const urlPath = (req.url||'').toLowerCase();
   if (ep.includes('google')) {
     if (ep.includes('callback') || urlPath.includes('callback')) return handleGoogleCallback(req,res);
     return handleGoogleStart(req,res);
@@ -705,6 +796,8 @@ export default async function handler(req,res){
   if (ep.includes('start')) return handleGoogleStart(req,res);
   if (ep.includes('callback')) return handleGoogleCallback(req,res);
   if (ep === 'capabilities' || ep.includes('capabilities')) return handleCapabilities(req,res);
+  if (ep === 'activation-resend' || ep.includes('activation-resend')) return handleActivationResend(req,res);
+  if (ep === 'activation-verify' || ep.includes('activation-verify')) return handleActivationVerify(req,res);
   if (ep === 'signup' || ep.includes('signup')) return handleSignup(req,res);
   if (ep === 'login' || ep.includes('login')) return handleLogin(req,res);
   if (ep === 'me' || ep.includes('me')) return handleMe(req,res);
@@ -714,10 +807,12 @@ export default async function handler(req,res){
   if (urlPath.includes('/google/start')) return handleGoogleStart(req,res);
   if (urlPath.includes('/google/callback') || urlPath.includes('google-callback')) return handleGoogleCallback(req,res);
   if (urlPath.includes('/capabilities')) return handleCapabilities(req,res);
+  if (urlPath.includes('/activation/resend')) return handleActivationResend(req,res);
+  if (urlPath.includes('/activation/verify')) return handleActivationVerify(req,res);
   if (urlPath.includes('signup')) return handleSignup(req,res);
   if (urlPath.includes('login')) return handleLogin(req,res);
   if (urlPath.includes('logout-all')) return handleLogoutAll(req,res);
   if (urlPath.includes('logout')) return handleLogout(req,res);
   if (urlPath.includes('/me')) return handleMe(req,res);
-  return res.status(404).json({ error:`unknown auth endpoint '${ep}'`, available:['capabilities','signup','login','logout','logout-all','me','google/start','google/callback'], hint:'endpoint query param ?endpoint=signup etc' });
+  return res.status(404).json({ error:`unknown auth endpoint '${ep}'`, available:['capabilities','signup','activation-resend','activation-verify','login','logout','logout-all','me','google/start','google/callback'], hint:'endpoint query param ?endpoint=signup etc' });
 }
