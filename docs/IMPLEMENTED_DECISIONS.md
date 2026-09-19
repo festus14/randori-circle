@@ -1,10 +1,10 @@
 # Randori Circle implemented decision log
 
-Status: accepted for the private-beta implementation through PR #89
+Status: accepted for the private-beta implementation through merged PR #89
 
 Last reviewed: 2026-09-19
 
-Scope: candidate commit `da531ce7c468c66cd08cb59f7411bb1d65460607`
+Scope: `main` through `2402fe9bea53aa0a44d2af4c43f77e4223894695`
 
 This log records decisions that govern the application being shipped now. The
 [production architecture plan](PRODUCTION_ARCHITECTURE_PLAN.md) describes a
@@ -22,12 +22,12 @@ or merged after its parent; it must not be landed ahead of that parent.
 | Order | Change | User or operational outcome | Schema dependency |
 | --- | --- | --- | --- |
 | 0 | [PR #86](https://github.com/festus14/randori-circle/pull/86), merged to `main` | Invitation-bound Google OIDC with stable provider identity | v4 `provider-scoped-identities` |
-| 1 | [PR #88](https://github.com/festus14/randori-circle/pull/88) | Durable, revocable application sessions | v5 `durable-revocable-sessions` |
-| 2 | [PR #70](https://github.com/festus14/randori-circle/pull/70) | Members can edit the explicitly dated upcoming cycle | Uses existing v3 cycle schema |
-| 3 | [PR #75](https://github.com/festus14/randori-circle/pull/75) | Owner or cron publishes one immutable weekly pairing | Requires known v1-v5 ledger prefix |
-| 4 | [PR #77](https://github.com/festus14/randori-circle/pull/77) | Dashboard renders only authoritative current-cycle state | No migration |
-| 5 | [PR #85](https://github.com/festus14/randori-circle/pull/85) | Real-runtime coverage of signup, availability, publication, and revoked access | No migration |
-| 6 | [PR #89](https://github.com/festus14/randori-circle/pull/89) | Transactional, retryable pairing notifications | v6 `durable-provider-neutral-outbox` |
+| 1 | [PR #88](https://github.com/festus14/randori-circle/pull/88), merged to `main` | Durable, revocable application sessions | v5 `durable-revocable-sessions` |
+| 2 | [PR #70](https://github.com/festus14/randori-circle/pull/70), merged to `main` | Members can edit the explicitly dated upcoming cycle | Uses existing v3 cycle schema |
+| 3 | [PR #75](https://github.com/festus14/randori-circle/pull/75), merged to `main` | Owner or cron publishes one immutable weekly pairing | Requires known v1-v5 ledger prefix |
+| 4 | [PR #77](https://github.com/festus14/randori-circle/pull/77), merged to `main` | Dashboard renders only authoritative current-cycle state | No migration |
+| 5 | [PR #85](https://github.com/festus14/randori-circle/pull/85), merged to `main` | Real-runtime coverage of signup, availability, publication, and revoked access | No migration |
+| 6 | [PR #89](https://github.com/festus14/randori-circle/pull/89), merged to `main` | Transactional, retryable pairing notifications | v6 `durable-provider-neutral-outbox` |
 
 Migration order is append-only: v4 binds an account to an OIDC issuer and
 subject, v5 makes every application JWT depend on a live hashed session row,
