@@ -6,7 +6,8 @@ import { afterEach, test } from 'node:test';
 import { createClient } from '@libsql/client';
 
 import {
-  MEMBER_LIST_LIMIT,
+  MEMBER_PAGE_MAX,
+  MemberRosterQueryError,
   changeCircleMemberStatus,
   leaveCircle,
   listCircleMembersForOwner,
@@ -78,18 +79,34 @@ async function recentSession(db,id,email,{authenticatedAt=NOW}={}){
 
 test('owner listing is private, bounded, and includes inactive members without email addresses',async()=>{
   const {db}=await fixture();
-  const result=await listCircleMembersForOwner(db,{actorUserId:1});
+  const result=await listCircleMembersForOwner(db,{actorUserId:1,cursorSecret:JWT_SECRET});
   assert.equal(result.ok,true);
   assert.deepEqual(result.members.map(member=>[member.id,member.role,member.status]),[
     [1,'owner','active'],[2,'member','active'],[3,'owner','inactive'],
   ]);
-  assert.equal(result.truncated,false);
+  assert.equal(result.has_more,false);
+  assert.equal(result.next_cursor,null);
+  assert.equal(result.scanned,3);
   assert.equal(JSON.stringify(result).includes('@example.test'),false);
-  assert.deepEqual(await listCircleMembersForOwner(db,{actorUserId:2}),{ok:false,reason:'owner_required'});
-  assert.deepEqual(await listCircleMembersForOwner(db,{actorUserId:4}),{ok:false,reason:'owner_required'});
+  assert.deepEqual(await listCircleMembersForOwner(db,{actorUserId:2,cursorSecret:JWT_SECRET}),{ok:false,reason:'owner_required'});
+  assert.deepEqual(await listCircleMembersForOwner(db,{actorUserId:4,cursorSecret:JWT_SECRET}),{ok:false,reason:'owner_required'});
 });
 
-test('owner listing has a hard cap and explicitly reports truncation',async()=>{
+test('the roster range is served by the circle and user membership index',async()=>{
+  const {db}=await fixture();
+  const plan=await db.execute(`EXPLAIN QUERY PLAN
+    SELECT membership.user_id,account.display_name
+    FROM circle_memberships membership
+    JOIN auth_accounts account ON account.id=membership.user_id
+    WHERE membership.circle_id=10 AND membership.user_id>0 AND membership.user_id<=999999
+      AND COALESCE(account.is_demo,0)=0
+    ORDER BY membership.user_id LIMIT 201`);
+  const details=plan.rows.map(row=>String(row.detail||'')).join('\n');
+  assert.match(details,/SEARCH membership USING (?:COVERING )?INDEX .*circle_memberships.*\(circle_id=\? AND user_id>\? AND user_id<\?\)/i);
+  assert.doesNotMatch(details,/SCAN membership/i);
+});
+
+test('an owner pages through more than 500 members without gaps when status changes between pages',async()=>{
   const {db}=await fixture();
   await db.execute(`WITH RECURSIVE sequence(id) AS (
       VALUES(1000) UNION ALL SELECT id+1 FROM sequence WHERE id<1500
@@ -99,10 +116,70 @@ test('owner listing has a hard cap and explicitly reports truncation',async()=>{
       VALUES(1000) UNION ALL SELECT id+1 FROM sequence WHERE id<1500
     ) INSERT INTO circle_memberships (circle_id,user_id,role,status)
       SELECT 10,id,'member','active' FROM sequence`);
-  const result=await listCircleMembersForOwner(db,{actorUserId:1});
-  assert.equal(result.ok,true);
-  assert.equal(result.members.length,MEMBER_LIST_LIMIT);
-  assert.equal(result.truncated,true);
+  const seen=[];
+  let cursor=null;
+  let pages=0;
+  do{
+    const result=await listCircleMembersForOwner(db,{actorUserId:1,cursor,cursorSecret:JWT_SECRET,limit:MEMBER_PAGE_MAX});
+    assert.equal(result.ok,true);
+    assert.ok(result.members.length<=MEMBER_PAGE_MAX);
+    seen.push(...result.members.map(member=>member.id));
+    cursor=result.next_cursor;
+    pages+=1;
+    if(pages===1){
+      await db.execute(`UPDATE circle_memberships SET status='inactive',updated_at=CURRENT_TIMESTAMP
+        WHERE circle_id=10 AND user_id=1200`);
+    }
+    assert.equal(result.has_more,Boolean(cursor));
+  }while(cursor);
+  assert.ok(pages>5);
+  assert.equal(seen.length,504);
+  assert.equal(new Set(seen).size,seen.length);
+  assert.deepEqual(seen,[...seen].sort((a,b)=>a-b));
+  const changedIndex=seen.indexOf(1200);
+  assert.ok(changedIndex>MEMBER_PAGE_MAX);
+});
+
+test('display-name search is bounded, private, cursor-bound, and reaches late matches',async()=>{
+  const {db}=await fixture();
+  await db.execute(`WITH RECURSIVE sequence(id) AS (
+      VALUES(1000) UNION ALL SELECT id+1 FROM sequence WHERE id<1500
+    ) INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_demo)
+      SELECT id,'private-'||id||'@example.test','x',CASE WHEN id=1499 THEN 'Ada Search Target' ELSE 'Member '||id END,'#123456',0 FROM sequence`);
+  await db.execute(`WITH RECURSIVE sequence(id) AS (
+      VALUES(1000) UNION ALL SELECT id+1 FROM sequence WHERE id<1500
+    ) INSERT INTO circle_memberships (circle_id,user_id,role,status)
+      SELECT 10,id,'member','active' FROM sequence`);
+  let cursor=null;
+  let pages=0;
+  const found=[];
+  do{
+    const result=await listCircleMembersForOwner(db,{actorUserId:1,cursor,search:'  ADA   search ',cursorSecret:JWT_SECRET,limit:10});
+    assert.ok(result.scanned<=200);
+    assert.equal(JSON.stringify(result).includes('@example.test'),false);
+    found.push(...result.members);
+    cursor=result.next_cursor;
+    pages+=1;
+  }while(cursor);
+  assert.ok(pages>=3);
+  assert.deepEqual(found.map(member=>[member.id,member.display_name]),[[1499,'Ada Search Target']]);
+});
+
+test('malformed, tampered, reused, and cross-actor cursors fail opaquely',async()=>{
+  const {db}=await fixture();
+  await db.execute(`UPDATE circle_memberships SET status='active' WHERE circle_id=10 AND user_id=3`);
+  const first=await listCircleMembersForOwner(db,{actorUserId:1,cursorSecret:JWT_SECRET,limit:1});
+  assert.equal(first.has_more,true);
+  const cursor=first.next_cursor;
+  const replacement=cursor.endsWith('A')?'B':'A';
+  for(const input of [
+    {actorUserId:1,cursor:'not-a-cursor',search:'',cursorSecret:JWT_SECRET},
+    {actorUserId:1,cursor:`${cursor.slice(0,-1)}${replacement}`,search:'',cursorSecret:JWT_SECRET},
+    {actorUserId:1,cursor,search:'different',cursorSecret:JWT_SECRET},
+    {actorUserId:3,cursor,search:'',cursorSecret:JWT_SECRET},
+  ]){
+    await assert.rejects(listCircleMembersForOwner(db,input),error=>error instanceof MemberRosterQueryError&&error.code==='invalid_cursor');
+  }
 });
 
 test('deactivation and reactivation are scoped, audited, and revoke every affected session atomically',async()=>{

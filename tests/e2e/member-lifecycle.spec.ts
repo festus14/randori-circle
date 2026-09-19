@@ -63,6 +63,8 @@ test('an owner deactivates, reactivates, and safely transfers ownership',async({
           {...member,role:memberRole,status:memberStatus,joined_at:'2026-09-02T00:00:00.000Z',updated_at:'2026-09-19T00:00:00.000Z'},
         ],
         count:2,
+        has_more:false,
+        next_cursor:null,
       };
       expect(request.method()).toBe('PATCH');
       const body=request.postDataJSON() as {action:string;member_id?:number};
@@ -84,7 +86,7 @@ test('an owner deactivates, reactivates, and safely transfers ownership',async({
 
   const panel=page.getByTestId('circle-lifecycle');
   await expect(panel).toBeVisible();
-  await expect(panel.getByText('2 memberships available to manage.')).toBeVisible();
+  await expect(panel.getByText('2 memberships shown. All members loaded.')).toBeVisible();
   const memberRow=panel.locator('[data-testid="circle-member-row"][data-member-id="2"]');
   await expect(memberRow).toContainText('member • active');
 
@@ -429,7 +431,7 @@ test('the last-owner refusal is actionable and preserves the owner controls',asy
     },
     '/api/invitations':{ok:true,invitations:[],count:0},
     '/api/members':request=>{
-      if(request.method()==='GET') return {ok:true,members:[{...owner,role:'owner',status:'active'}],count:1};
+      if(request.method()==='GET') return {ok:true,members:[{...owner,role:'owner',status:'active'}],count:1,has_more:false,next_cursor:null};
       expect(request.method()).toBe('PATCH');
       expect(request.postDataJSON()).toEqual({action:'leave'});
       return {_status:409,error:'another active owner is required'};
@@ -452,8 +454,8 @@ test('the last-owner refusal is actionable and preserves the owner controls',asy
   await expect(page.locator('#circleRoleLabel')).toHaveText('owner');
 });
 
-test('a capped owner roster tells the owner that additional memberships are not shown',async({page})=>{
-  const members=Array.from({length:500},(_,index)=>({
+test('an owner loads additional bounded roster pages with accessible progress',async({page})=>{
+  const members=Array.from({length:120},(_,index)=>({
     ...member,
     id:index+2,
     display_name:`Member ${index+2}`,
@@ -461,7 +463,6 @@ test('a capped owner roster tells the owner that additional memberships are not 
     status:'active',
   }));
   members.unshift({...owner,role:'owner',status:'active'});
-  members.length=500;
   await mockApi(page,{
     '/api/auth/me':{ok:true,user:owner},
     '/api/profile':{ok:true,user:owner},
@@ -473,13 +474,71 @@ test('a capped owner roster tells the owner that additional memberships are not 
       count:1,
     },
     '/api/invitations':{ok:true,invitations:[],count:0},
-    '/api/members':{ok:true,members,count:500,truncated:true},
+    '/api/members':request=>{
+      const cursor=new URL(request.url()).searchParams.get('cursor');
+      const start=cursor==='page-2'?50:cursor==='page-3'?100:0;
+      const pageMembers=members.slice(start,start+50);
+      const next=start+50<members.length?(start===0?'page-2':'page-3'):null;
+      return {ok:true,members:pageMembers,count:pageMembers.length,has_more:Boolean(next),next_cursor:next,scanned:pageMembers.length};
+    },
   });
   await resetClientState(page,true);
   await page.goto('/',{waitUntil:'domcontentloaded'});
   await expect(page.locator('#view-dashboard')).toBeVisible();
   await page.locator('[data-tab="circle"]').click();
-  await expect(page.locator('#circleLifecycleStatus'))
-    .toHaveText('Showing the first 500 memberships. Additional members are not shown.');
-  await expect(page.locator('[data-testid="circle-member-row"]')).toHaveCount(500);
+  const status=page.locator('#circleMemberSearchStatus');
+  await expect(status).toHaveText('50 memberships shown. More members are available.');
+  const loadMore=page.getByTestId('circle-members-load-more');
+  await expect(loadMore).toHaveAttribute('aria-controls','circleManageMembers');
+  await expect(loadMore).toBeEnabled();
+  await loadMore.focus();
+  await expect(loadMore).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(status).toHaveText('100 memberships shown. More members are available.');
+  await loadMore.evaluate((button:HTMLButtonElement)=>button.click());
+  await expect(status).toHaveText('121 memberships shown. All members loaded.');
+  await expect(page.locator('[data-testid="circle-member-row"]')).toHaveCount(121);
+  await expect(loadMore).toBeHidden();
+});
+
+test('display-name search ignores stale responses and exposes screen-reader status',async({page})=>{
+  let firstSearchResolve:undefined|(()=>void);
+  await mockApi(page,{
+    '/api/auth/me':{ok:true,user:owner},
+    '/api/profile':{ok:true,user:owner},
+    '/api/circle':{
+      ok:true,circle_meta:{id:10,public_id:'circle_e2e',name:'E2E Circle'},
+      membership:{role:'owner'},circle:[owner],count:1,
+    },
+    '/api/invitations':{ok:true,invitations:[],count:0},
+    '/api/members':async request=>{
+      const q=new URL(request.url()).searchParams.get('q')||'';
+      if(q==='slow') await new Promise<void>(resolve=>{ firstSearchResolve=resolve; });
+      const result=q==='fast'?[{...member,id:42,display_name:'Fast Result',role:'member',status:'active'}]
+        :q==='slow'?[{...member,id:41,display_name:'Slow Result',role:'member',status:'active'}]
+        :[{...owner,role:'owner',status:'active'}];
+      return {ok:true,members:result,count:result.length,has_more:false,next_cursor:null,scanned:result.length};
+    },
+  });
+  await resetClientState(page,true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await expect(page.locator('#view-dashboard')).toBeVisible();
+  await page.locator('[data-tab="circle"]').click();
+  const input=page.getByTestId('circle-member-search');
+  await expect(input).toBeVisible();
+  await expect(page.locator('#circleMemberSearchStatus')).toHaveText('1 membership shown. All members loaded.');
+  await input.fill('slow');
+  await input.press('Enter');
+  await expect.poll(()=>Boolean(firstSearchResolve)).toBe(true);
+  await input.fill('fast');
+  await page.locator('#circleMemberSearchSubmit').click();
+  await expect(page.locator('#circleMemberSearchStatus')).toHaveText('1 matching member shown. Search complete.');
+  await expect(page.getByText('Fast Result',{exact:true})).toBeVisible();
+  firstSearchResolve?.();
+  await page.waitForTimeout(50);
+  await expect(page.getByText('Fast Result',{exact:true})).toBeVisible();
+  await expect(page.getByText('Slow Result',{exact:true})).toHaveCount(0);
+  await expect(page.locator('#circleMemberSearchStatus')).toHaveAttribute('aria-live','polite');
+  await page.getByRole('button',{name:'Clear'}).click();
+  await expect(input).toBeFocused();
 });

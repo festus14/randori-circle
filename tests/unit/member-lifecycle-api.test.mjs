@@ -5,7 +5,7 @@ let enabled=true;
 let authPayload={id:1,sessionHash:'a'.repeat(64)};
 let authError=null;
 let readinessError=null;
-let listResult={ok:true,members:[],truncated:false};
+let listResult={ok:true,members:[],has_more:false,next_cursor:null,scanned:0};
 let statusResult={ok:true,member:{id:2,role:'member',status:'inactive'},revoked_sessions:1};
 let leaveResult={ok:true,member:{id:1,role:'member',status:'inactive'},revoked_sessions:1};
 let transferResult={ok:true,previous_owner_id:1,owner_id:2};
@@ -17,6 +17,7 @@ const db={};
 mock.module('../../api/_db.js',{exports:{
   captureSentryException:(error,context)=>captured.push({error,context}),
   getClient:()=>db,
+  getJwtSecret:()=> 'member-lifecycle-api-secret-at-least-thirty-two-bytes',
   verifyMutationOrigin:req=>req.headers?.origin!=='https://cross-origin.example',
   verifyRequestAuth:async()=>{
     if(authError) throw authError;
@@ -32,6 +33,9 @@ mock.module('../../api/_circle-membership.js',{exports:{
 }});
 
 mock.module('../../api/_member-lifecycle.js',{exports:{
+  MEMBER_PAGE_DEFAULT:50,
+  MEMBER_PAGE_MAX:100,
+  MemberRosterQueryError:class MemberRosterQueryError extends Error{},
   listCircleMembersForOwner:async(_db,input)=>{ calls.push(['list',_db,input]); return listResult; },
   changeCircleMemberStatus:async(_db,input)=>{ calls.push(['status',_db,input]); if(transitionError) throw transitionError; return statusResult; },
   leaveCircle:async(_db,input)=>{ calls.push(['leave',_db,input]); return leaveResult; },
@@ -64,7 +68,7 @@ beforeEach(()=>{
   authPayload={id:1,sessionHash:'a'.repeat(64)};
   authError=null;
   readinessError=null;
-  listResult={ok:true,members:[],truncated:false};
+  listResult={ok:true,members:[],has_more:false,next_cursor:null,scanned:0};
   statusResult={ok:true,member:{id:2,role:'member',status:'inactive'},revoked_sessions:1};
   leaveResult={ok:true,member:{id:1,role:'member',status:'inactive'},revoked_sessions:1};
   transferResult={ok:true,previous_owner_id:1,owner_id:2};
@@ -77,14 +81,17 @@ beforeEach(()=>{
 test('member listing requires the enabled lifecycle and an active owner',async()=>{
   let response=await invoke();
   assert.equal(response.status,200);
-  assert.deepEqual(response.body,{ok:true,members:[],count:0,truncated:false});
-  assert.deepEqual(calls,[['list',db,{actorUserId:1}]]);
+  assert.deepEqual(response.body,{ok:true,members:[],count:0,has_more:false,next_cursor:null,scanned:0});
+  assert.deepEqual(calls,[['list',db,{
+    actorUserId:1,cursor:null,search:'',limit:50,
+    cursorSecret:'member-lifecycle-api-secret-at-least-thirty-two-bytes',
+  }]]);
   assert.equal(response.headers['cache-control'],'private, no-store');
 
   calls.length=0;
-  listResult={ok:true,members:[{id:1}],truncated:true};
+  listResult={ok:true,members:[{id:1}],has_more:true,next_cursor:'r1.opaque',scanned:51};
   response=await invoke();
-  assert.deepEqual(response.body,{ok:true,members:[{id:1}],count:1,truncated:true});
+  assert.deepEqual(response.body,{ok:true,members:[{id:1}],count:1,has_more:true,next_cursor:'r1.opaque',scanned:51});
 
   calls.length=0;
   listResult={ok:false,reason:'owner_required'};
@@ -195,8 +202,17 @@ test('authentication and storage failures fail closed without internal detail',a
 
 test('unsupported methods and query parameters are rejected',async()=>{
   assert.equal((await invoke({query:{endpoint:'members'}})).status,200);
+  calls.length=0;
+  assert.equal((await invoke({query:{endpoint:'members',q:'Ada',limit:'25',cursor:'r1.cursor'}})).status,200);
+  assert.deepEqual(calls[0][2],{
+    actorUserId:1,cursor:'r1.cursor',search:'Ada',limit:25,
+    cursorSecret:'member-lifecycle-api-secret-at-least-thirty-two-bytes',
+  });
   assert.equal((await invoke({query:{id:'1'}})).status,400);
   assert.equal((await invoke({query:{endpoint:['members','members']}})).status,400);
+  for(const query of [{limit:'0'},{limit:'101'},{limit:'1.5'},{limit:'01'},{cursor:''},{q:['a','b']}]){
+    assert.equal((await invoke({query})).status,400);
+  }
   const response=await invoke({method:'DELETE'});
   assert.equal(response.status,405);
   assert.equal(response.headers.allow,'GET, PATCH');

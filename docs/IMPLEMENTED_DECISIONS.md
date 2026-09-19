@@ -549,7 +549,6 @@ The checked-in scheduler may call only the repository default branch and reads
 Production activation still requires those settings, a default-branch
 environment restriction, and a staging Resend rehearsal. SMS is not part of
 issue #50 and is not required to ship this email path.
-
 ### Alternatives considered
 
 | Option | Advantage | Cost and rejection reason |
@@ -600,3 +599,55 @@ watchdog best isolates scheduler failure but adds another service and credential
 the separate production-credential-free GitHub watchdog is the smallest auditable increment,
 with external monitoring retained as the upgrade when correlated Actions failure
 is no longer acceptable.
+
+## ID-17: Page owner rosters by an immutable, encrypted cursor
+
+Status: implemented without a schema migration and integrated after the
+provider-linking, recent-auth lifecycle, notification delivery, and backup
+monitoring decisions.
+
+### Decision
+
+The owner-only member endpoint returns 50 members by default and accepts a
+bounded maximum of 100. A request scans no more than 201 candidates through the
+existing `circle_memberships(circle_id, user_id)` primary-key index. The first
+page fixes a maximum member ID; subsequent pages advance by member ID inside
+that snapshot. Mutable status, role, and display name are deliberately removed
+from the ordering tuple, so lifecycle changes between page requests cannot
+shift already traversed rows.
+
+Continuation state is an AES-256-GCM envelope derived from `JWT_SECRET` with a
+roster-specific domain. Its exact versioned payload binds the actor, circle,
+snapshot, last member ID, and normalized search. Invalid, altered, cross-actor,
+cross-circle, and search-reused cursors share a generic request error. Every
+page rechecks current active ownership and the primary-circle boundary.
+
+Display-name substring search runs only over each bounded, tenant-indexed
+candidate window. It does not accept or expose email addresses. This means a
+sparse search may yield zero matches and a continuation cursor; the accessible
+UI explains that more results may remain and preserves earlier rows when a
+later page fails. A per-request sequence and circle render epoch prevent an old
+response from replacing a newer search or a changed identity.
+
+Integration retains ID-14's identity-bound lifecycle notice state and PR110's
+narrow sticky-failure/no-change behavior. Pagination and search responses may
+update roster-only state after their request, epoch, and owner checks; successful
+summaries and roster failures cannot overwrite a newer recent-auth,
+mutation-failure, or no-change notice for that same actor. The notification and
+backup implementations remain unchanged by the integration.
+
+### Alternatives considered
+
+| Option | Advantage | Cost and rejection reason |
+|---|---|---|
+| Offset pagination | Simple URL contract | Mutable rows shift offsets and deep pages become increasingly expensive |
+| Active/owner/name cursor | Preserves the former visual ordering | Every lifecycle or profile change can move a row across page boundaries |
+| Signed plaintext cursor | Stateless and tamper evident | Internal tenant/member IDs and the search value remain trivially decodable |
+| Search the global account table first | Fast name-prefix index | Risks cross-circle existence signals and weakens tenant-first authorization |
+| Scan until enough matches exist | Always fills a page when possible | Missing or rare terms create unbounded request work |
+| Add a search table or FTS migration | Better fuzzy/ranked discovery | Unnecessary for the MVP substring search and adds synchronization/schema cost |
+
+The cursor is intentionally invalidated by `JWT_SECRET` rotation. Search is
+case-folded for the application locale but is not fuzzy, ranked, or
+language-specific. Those are explicit future product choices, not hidden API
+behavior.

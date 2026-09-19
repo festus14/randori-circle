@@ -843,7 +843,16 @@ p{margin:0}
                 <button id="circleLeave" data-testid="circle-leave" class="pill membership-danger" type="button">Leave circle</button>
               </div>
               <div id="circleLifecycleStatus" class="small muted" role="status" aria-live="polite"></div>
-              <div id="circleManageMembers" data-testid="circle-manage-members" class="people" hidden></div>
+              <form id="circleMemberSearchForm" data-testid="circle-member-search-form" role="search" class="row" hidden style="align-items:flex-end">
+                <label class="small muted" for="circleMemberSearch" style="display:grid;gap:5px;flex:1">Search member display names
+                  <input id="circleMemberSearch" data-testid="circle-member-search" class="input" type="search" maxlength="80" autocomplete="off" placeholder="e.g. Ada" />
+                </label>
+                <button id="circleMemberSearchSubmit" class="pill" type="submit">Search</button>
+                <button id="circleMemberSearchClear" class="pill" type="button" hidden>Clear</button>
+              </form>
+              <div id="circleMemberSearchStatus" class="small muted" role="status" aria-live="polite"></div>
+              <div id="circleManageMembers" data-testid="circle-manage-members" class="people" hidden aria-busy="false" aria-label="Manage circle members"></div>
+              <button id="circleMembersLoadMore" data-testid="circle-members-load-more" class="pill" type="button" aria-controls="circleManageMembers" hidden>Load more members</button>
             </section>
           </div>
         </div>
@@ -2930,6 +2939,11 @@ async function refreshMe(){
   const circleLifecycleHelp=document.getElementById('circleLifecycleHelp');
   const circleLifecycleStatus=document.getElementById('circleLifecycleStatus');
   const circleManageMembers=document.getElementById('circleManageMembers');
+  const circleMemberSearchForm=document.getElementById('circleMemberSearchForm');
+  const circleMemberSearch=document.getElementById('circleMemberSearch');
+  const circleMemberSearchClear=document.getElementById('circleMemberSearchClear');
+  const circleMemberSearchStatus=document.getElementById('circleMemberSearchStatus');
+  const circleMembersLoadMore=document.getElementById('circleMembersLoadMore');
   const circleLeave=document.getElementById('circleLeave');
   const legacyCircleAddActions=document.getElementById('legacyCircleAddActions');
   const legacyCircleDemoActions=document.getElementById('legacyCircleDemoActions');
@@ -2939,6 +2953,10 @@ async function refreshMe(){
   let circleLifecycleNoticeActive=false;
   let circleInviteCreatePending=false;
   let circleLifecyclePending=false;
+  let circleRosterRequest=0;
+  let circleRosterOwnerId=null;
+  let circleRosterLoading=false;
+  let circleRosterState={query:'',members:[],nextCursor:null,hasMore:false,loaded:false};
   let latestInviteUrl=null;
   let latestInviteId=null;
   let latestInviteOwnerId=null;
@@ -2950,20 +2968,36 @@ async function refreshMe(){
     if(circleInviteLink) circleInviteLink.hidden=true;
   }
 
-  function resetOwnerInvites(){
+  function resetOwnerInvites({allowRosterPreservation=true}={}){
+    const currentUserId=Number(me?.id||me?.uid);
+    const preserveRoster=allowRosterPreservation&&Number.isSafeInteger(currentUserId)&&currentUserId===circleRosterOwnerId
+      &&(circleRosterState.loaded||circleRosterLoading);
+    if(preserveRoster) return;
     activeCircleRole=null;
     updatePairingRunAccess();
-    const currentUserId=Number(me?.id||me?.uid);
     const preserveLifecycleNotice=circleLifecycleNoticeActive
       &&Number.isSafeInteger(currentUserId)
       &&currentUserId===circleLifecycleNoticeActorId;
+    circleRosterRequest+=1;
+    circleRosterOwnerId=null;
+    circleRosterLoading=false;
+    circleRosterState={query:'',members:[],nextCursor:null,hasMore:false,loaded:false};
     if(!Number.isSafeInteger(currentUserId)||currentUserId!==latestInviteOwnerId) clearLatestInvite();
     if(circleOwnerPanel){ circleOwnerPanel.hidden=true; circleOwnerPanel.style.display='none'; }
     if(circleInvites) circleInvites.replaceChildren();
     if(circleInviteStatus) circleInviteStatus.textContent='';
     if(circleInviteLink) circleInviteLink.hidden=true;
     if(circleLifecyclePanel){ circleLifecyclePanel.hidden=true; circleLifecyclePanel.style.display='none'; }
-    if(circleManageMembers){ circleManageMembers.hidden=true; circleManageMembers.replaceChildren(); }
+    if(circleManageMembers){
+      circleManageMembers.hidden=true;
+      circleManageMembers.setAttribute('aria-busy','false');
+      circleManageMembers.replaceChildren();
+    }
+    if(circleMemberSearchForm) circleMemberSearchForm.hidden=true;
+    if(circleMemberSearch) circleMemberSearch.value='';
+    if(circleMemberSearchClear) circleMemberSearchClear.hidden=true;
+    if(circleMemberSearchStatus) circleMemberSearchStatus.textContent='';
+    if(circleMembersLoadMore){ circleMembersLoadMore.hidden=true; circleMembersLoadMore.disabled=false; }
     if(!preserveLifecycleNotice) clearCircleLifecycleNotice();
     if(circleLeave) circleLeave.disabled=false;
   }
@@ -2981,7 +3015,7 @@ async function refreshMe(){
 
   function renderCircleFailure(){
     pCount.textContent='—';
-    resetOwnerInvites();
+    resetOwnerInvites({allowRosterPreservation:false});
     setLegacyCircleControls(false);
     const note=document.getElementById('circleAutoNote');
     if(note) note.textContent='We could not load your private circle.';
@@ -3197,6 +3231,8 @@ async function refreshMe(){
       await api('/api/members',{method:'PATCH',body:{action,member_id:Number(member.id)}});
       if(!me||Number(me.id||me.uid)!==actorId) return;
       if(circleLifecycleStatus) circleLifecycleStatus.textContent=action==='transfer'?'Ownership transferred.':action==='reactivate'?'Member reactivated.':'Member deactivated and signed out.';
+      circleRosterState.loaded=false;
+      circleRosterLoading=false;
       await renderPeople();
       await renderPairs();
       return true;
@@ -3249,34 +3285,76 @@ async function refreshMe(){
       circleManageMembers.appendChild(row);
     });
     if(!circleManageMembers.children.length){
-      const empty=document.createElement('div'); empty.className='small muted'; empty.textContent='No manageable members found.'; circleManageMembers.appendChild(empty);
+      const empty=document.createElement('div'); empty.className='small muted'; empty.textContent=circleRosterState.query?'No matching members in this page.':'No manageable members found.'; circleManageMembers.appendChild(empty);
     }
   }
 
-  async function loadManagedMembers(epoch=circleRenderEpoch){
+  function validRosterResponse(result){
+    return result?.ok===true&&Array.isArray(result.members)
+      &&typeof result.has_more==='boolean'
+      &&(result.next_cursor===null||typeof result.next_cursor==='string'&&result.next_cursor.length<=640)
+      &&result.has_more===(typeof result.next_cursor==='string');
+  }
+
+  async function loadManagedMembers(epoch=circleRenderEpoch,{append=false,query=circleRosterState.query}={}){
     if(activeCircleRole!=='owner'||!me||!circleManageMembers) return false;
     const actorId=Number(me.id||me.uid);
     const noticeGeneration=circleLifecycleNoticeGeneration;
+    const normalizedQuery=String(query||'').normalize('NFKC').trim().replace(/\s+/gu,' ').slice(0,80);
+    const cursor=append?circleRosterState.nextCursor:null;
+    if(append&&!cursor) return false;
+    const requestId=++circleRosterRequest;
+    circleRosterOwnerId=actorId;
+    circleRosterLoading=true;
     circleManageMembers.hidden=false;
-    circleManageMembers.replaceChildren();
-    const loading=document.createElement('div'); loading.className='small muted'; loading.textContent='Loading member controls…'; circleManageMembers.appendChild(loading);
+    circleManageMembers.setAttribute('aria-busy','true');
+    if(circleMemberSearchForm) circleMemberSearchForm.hidden=false;
+    if(circleMembersLoadMore){ circleMembersLoadMore.disabled=true; circleMembersLoadMore.textContent=append?'Loading more…':'Load more members'; }
+    if(!append){
+      circleRosterState={query:normalizedQuery,members:[],nextCursor:null,hasMore:false,loaded:false};
+      circleManageMembers.replaceChildren();
+      const loading=document.createElement('div'); loading.className='small muted'; loading.textContent=normalizedQuery?'Searching members…':'Loading member controls…'; circleManageMembers.appendChild(loading);
+    }
+    if(circleMemberSearchStatus) circleMemberSearchStatus.textContent=append?'Loading more members…':normalizedQuery?'Searching member display names…':'Loading members…';
     try{
-      const result=await api('/api/members',{method:'GET'});
-      if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==actorId) return false;
-      if(result?.ok!==true||!Array.isArray(result.members)) throw new Error('invalid member response');
-      renderManagedMemberRows(result.members);
+      const params=new URLSearchParams({limit:'50',q:normalizedQuery});
+      if(cursor) params.set('cursor',cursor);
+      const result=await api(`/api/members?${params.toString()}`,{method:'GET'});
+      if(requestId!==circleRosterRequest||epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==actorId) return false;
+      if(!validRosterResponse(result)) throw new Error('invalid member response');
+      const combined=append?[...circleRosterState.members,...result.members]:result.members;
+      const unique=[]; const seen=new Set();
+      combined.forEach(member=>{ const id=Number(member?.id); if(Number.isSafeInteger(id)&&id>0&&!seen.has(id)){ seen.add(id); unique.push(member); } });
+      circleRosterOwnerId=actorId;
+      circleRosterLoading=false;
+      circleRosterState={query:normalizedQuery,members:unique,nextCursor:result.next_cursor,hasMore:result.has_more,loaded:true};
+      renderManagedMemberRows(unique);
+      circleManageMembers.setAttribute('aria-busy','false');
+      if(circleMemberSearchClear) circleMemberSearchClear.hidden=!normalizedQuery;
+      if(circleMembersLoadMore){
+        circleMembersLoadMore.hidden=!result.has_more;
+        circleMembersLoadMore.disabled=false;
+        circleMembersLoadMore.textContent=normalizedQuery?'Load more matches':'Load more members';
+      }
+      if(circleMemberSearchStatus) circleMemberSearchStatus.textContent=normalizedQuery
+        ?`${unique.length} matching member${unique.length===1?'':'s'} shown${result.has_more?'. More results may be available.':'. Search complete.'}`
+        :`${unique.length} membership${unique.length===1?'':'s'} shown${result.has_more?'. More members are available.':'. All members loaded.'}`;
       if(circleLifecycleStatus&&noticeGeneration===circleLifecycleNoticeGeneration&&!hasCircleLifecycleNotice(actorId)){
-        circleLifecycleStatus.textContent=result.truncated===true
-          ?`Showing the first ${result.members.length} memberships. Additional members are not shown.`
-          :`${result.members.length} membership${result.members.length===1?'':'s'} available to manage.`;
+        circleLifecycleStatus.textContent='Owner controls are ready.';
       }
       return true;
     }catch{
-      if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==actorId) return false;
-      circleManageMembers.replaceChildren();
-      const error=document.createElement('div'); error.className='small muted'; error.textContent='Member controls are temporarily unavailable.';
-      const retry=document.createElement('button'); retry.type='button'; retry.className='pill'; retry.textContent='Retry members'; retry.addEventListener('click',()=>{ loadManagedMembers(circleRenderEpoch); });
-      circleManageMembers.append(error,retry);
+      if(requestId!==circleRosterRequest||epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==actorId) return false;
+      circleRosterLoading=false;
+      circleManageMembers.setAttribute('aria-busy','false');
+      if(!append){
+        circleManageMembers.replaceChildren();
+        const error=document.createElement('div'); error.className='small muted'; error.textContent='Member controls are temporarily unavailable.';
+        const retry=document.createElement('button'); retry.type='button'; retry.className='pill'; retry.textContent='Retry members'; retry.addEventListener('click',()=>{ loadManagedMembers(circleRenderEpoch,{query:normalizedQuery}); });
+        circleManageMembers.append(error,retry);
+      }
+      if(circleMembersLoadMore){ circleMembersLoadMore.hidden=!append; circleMembersLoadMore.disabled=false; circleMembersLoadMore.textContent=normalizedQuery?'Retry more matches':'Retry more members'; }
+      if(circleMemberSearchStatus) circleMemberSearchStatus.textContent=append?'More members could not be loaded. Existing results are unchanged.':'Member search is unavailable. Try again.';
       if(circleLifecycleStatus&&noticeGeneration===circleLifecycleNoticeGeneration&&!hasCircleLifecycleNotice(actorId)){
         circleLifecycleStatus.textContent='Your circle remains unchanged.';
       }
@@ -3284,15 +3362,46 @@ async function refreshMe(){
     }
   }
 
+  circleMemberSearchForm?.addEventListener('submit',event=>{
+    event.preventDefault();
+    if(circleLifecyclePending||activeCircleRole!=='owner') return;
+    loadManagedMembers(circleRenderEpoch,{query:circleMemberSearch?.value||''});
+  });
+  circleMemberSearchClear?.addEventListener('click',()=>{
+    if(circleMemberSearch) circleMemberSearch.value='';
+    loadManagedMembers(circleRenderEpoch,{query:''});
+    circleMemberSearch?.focus();
+  });
+  circleMembersLoadMore?.addEventListener('click',()=>{
+    if(circleLifecyclePending||activeCircleRole!=='owner') return;
+    loadManagedMembers(circleRenderEpoch,{append:true});
+  });
+
   async function showCircleLifecycle(role,epoch){
     if(!circleLifecyclePanel||!['owner','member'].includes(role)) return;
     circleLifecyclePanel.hidden=false; circleLifecyclePanel.style.display='grid';
     if(circleLifecycleHelp) circleLifecycleHelp.textContent=role==='owner'
-      ?'Manage active and inactive members. Ownership transfer is immediate and keeps one active owner.'
+      ?'Manage active and inactive members in bounded pages. Search uses display names only. Ownership transfer is immediate and keeps one active owner.'
       :'Leaving signs you out and removes access to private rooms immediately.';
     if(circleManageMembers) circleManageMembers.hidden=role!=='owner';
+    if(circleMemberSearchForm) circleMemberSearchForm.hidden=role!=='owner';
+    if(role!=='owner'){
+      circleRosterRequest+=1;
+      circleRosterOwnerId=null;
+      circleRosterLoading=false;
+      circleRosterState={query:'',members:[],nextCursor:null,hasMore:false,loaded:false};
+      if(circleManageMembers) circleManageMembers.replaceChildren();
+      if(circleMemberSearch) circleMemberSearch.value='';
+      if(circleMemberSearchStatus) circleMemberSearchStatus.textContent='';
+      if(circleMemberSearchClear) circleMemberSearchClear.hidden=true;
+      if(circleMembersLoadMore) circleMembersLoadMore.hidden=true;
+    }
     if(circleLeave){ circleLeave.disabled=false; circleLeave.textContent='Leave circle'; }
-    if(role==='owner') await loadManagedMembers(epoch);
+    if(role==='owner'&&circleRosterState.loaded&&circleRosterOwnerId===Number(me?.id||me?.uid)){
+      circleManageMembers.hidden=false;
+      circleMemberSearchForm.hidden=false;
+      circleMembersLoadMore.hidden=!circleRosterState.hasMore;
+    }else if(role==='owner'&&!circleRosterLoading) await loadManagedMembers(epoch);
     else if(circleLifecycleStatus&&!hasCircleLifecycleNotice()) circleLifecycleStatus.textContent='You are an active circle member.';
   }
 
@@ -3367,6 +3476,7 @@ async function refreshMe(){
       if(res?.ok!==true||!Array.isArray(res.circle)||(!gatedRole&&!legacyEnvelope)) throw new Error('invalid circle response');
       const usingLocalLegacy=legacyEnvelope&&res.circle.length===0;
       const people=usingLocalLegacy?getPeople():res.circle;
+      if(gatedRole!=='owner'&&circleRosterState.loaded) resetOwnerInvites({allowRosterPreservation:false});
       activeCircleRole=gatedRole||'legacy';
       updatePairingRunAccess();
       if(gatedRole!=='owner') clearLatestInvite();
