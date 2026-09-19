@@ -55,9 +55,11 @@ separately default-off.
   workspace capability. After v16, the additional default-off
   `SECONDARY_CIRCLE_SCHEDULING_ENABLED` flag adds only an opaque schedule
   identity and dashboard scheduling; it grants no room or workspace authority.
-  History, chat, execution, workspace, video, recap, AI, and schedule email
-  remain primary-only and return `409 circle_feature_unavailable`. See
-  `SELECTED_CIRCLE_PAIRING.md` and `SECONDARY_SCHEDULING.md`.
+  `SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED` may then add dashboard-only v2
+  delivery. History, chat, execution, workspace, video, recap, and AI remain
+  primary-only and return `409 circle_feature_unavailable`. See
+  `SELECTED_CIRCLE_PAIRING.md`, `SECONDARY_SCHEDULING.md`, and
+  `SECONDARY_SCHEDULE_NOTIFICATIONS.md`.
 
 The browser clears private circle and workspace state before reloading after a
 switch. Starting a switch advances a client control-plane epoch, so delayed
@@ -78,8 +80,9 @@ refresh only until its actor, circle, context version, and TTL are revalidated.
 2. Keep `MULTI_CIRCLE_CONTROL_PLANE_ENABLED`,
    `MULTI_CIRCLE_AVAILABILITY_ENABLED`,
    `SECONDARY_CIRCLE_COORDINATION_ENABLED`,
+   `SECONDARY_CIRCLE_SCHEDULING_ENABLED`,
    `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED`, and
-   `SECONDARY_CIRCLE_SCHEDULING_ENABLED` false. Also disable the four
+   `SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED` false. Also disable the four
    credential consumers: `EMAIL_PASSWORD_ACTIVATION_ENABLED`,
    `PASSWORD_RESET_ENABLED`, `INVITATION_EMAIL_DELIVERY_ENABLED`, and
    `IDENTITY_MANAGEMENT_ENABLED`. If an existing credential consumer cannot be
@@ -123,10 +126,14 @@ refresh only until its actor, circle, context version, and TTL are revalidated.
    provider canary succeeds.
 10. Keep `SECONDARY_CIRCLE_SCHEDULING_ENABLED=false` until coordination is
     healthy, then canary the schedule flows and dashboard-only calendar export
-    exactly as described in `SECONDARY_SCHEDULING.md`.
+    exactly as described in `SECONDARY_SCHEDULING.md`. Keep
+    `SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED=false` until that schedule canary
+    and the sender/suppression rehearsal in
+    `SECONDARY_SCHEDULE_NOTIFICATIONS.md` both succeed.
 
-Rollback is application-only. To roll back scheduling alone, disable
-`SECONDARY_CIRCLE_SCHEDULING_ENABLED`. For a broader rollback, disable
+Rollback is application-only. To roll back only schedule delivery, disable
+`SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED`; scheduling remains available. To
+roll back scheduling too, disable `SECONDARY_CIRCLE_SCHEDULING_ENABLED`. For a broader rollback, disable
 `MULTI_CIRCLE_AVAILABILITY_ENABLED` to restore the legacy availability gate
 without disabling roster/invitation selection; disable
 `MULTI_CIRCLE_CONTROL_PLANE_ENABLED` only if the broader control plane must also
@@ -136,10 +143,8 @@ or tenant data is deleted.
 ## Deferred work
 
 Circle archive and secondary workspace ownership remain separate increments.
-Pairing weeks, participants, messages, runs, snapshots, video, AI, notification
-idempotency, and associated foreign keys must gain canonical `circle_id`
-ownership before their secondary-circle flags can be enabled. Secondary
-schedule email remains a separate increment with its own payload and delivery
-revalidation. Postgres with row-level security remains the preferred final
-tenancy boundary; a Turso retrofit remains possible but requires table rebuilds
-and application-enforced authorization.
+Messages, runs, snapshots, video, and AI must gain canonical `circle_id`
+ownership before their secondary-circle flags can be enabled. Postgres with
+row-level security remains the preferred final tenancy boundary; a Turso
+retrofit remains possible but requires table rebuilds and application-enforced
+authorization.

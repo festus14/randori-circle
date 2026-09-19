@@ -316,8 +316,10 @@ test('an A-to-B-to-A reschedule delivers only the newest confirmation and remind
 test('handler rejects unsupported versions and malformed payloads as permanent failures',async()=>{
   const db=await fixture();
   const handler=createScheduleEmailHandler({db,baseUrl:'https://randori.example.test',send:async()=>({})});
-  await assert.rejects(()=>handler({eventVersion:2,payload:{}}),error=>
+  await assert.rejects(()=>handler({eventVersion:3,payload:{}}),error=>
     error?.code==='EVENT_VERSION_UNSUPPORTED'&&error?.retryable===false);
+  await assert.rejects(()=>handler({eventVersion:2,payload:{recipient_email:'leak@example.test'}}),error=>
+    error?.code==='PAYLOAD_INVALID'&&error?.retryable===false);
   await assert.rejects(()=>handler({eventVersion:1,payload:{kind:'proposal'}}),error=>
     error?.code==='PAYLOAD_INVALID'&&error?.retryable===false);
   assert.throws(()=>createScheduleEmailHandler({db,baseUrl:'not a URL',send:async()=>({})}),/base URL/);

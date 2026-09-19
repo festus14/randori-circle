@@ -10,6 +10,7 @@ import {
   canUseLegacySinglePrimaryCircleFeatures,
   listSessionCircleContexts,
   resolveActiveCircleContext,
+  secondaryCircleScheduleEmailEnabled,
   secondaryCircleSchedulingEnabled,
   selectActiveCircleContext,
 } from '../../api/_active-circle.js';
@@ -29,6 +30,7 @@ const originalEnvironment={
   MULTI_CIRCLE_AVAILABILITY_ENABLED:process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED,
   SECONDARY_CIRCLE_COORDINATION_ENABLED:process.env.SECONDARY_CIRCLE_COORDINATION_ENABLED,
   SECONDARY_CIRCLE_SCHEDULING_ENABLED:process.env.SECONDARY_CIRCLE_SCHEDULING_ENABLED,
+  SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED:process.env.SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED,
 };
 
 afterEach(async()=>{
@@ -50,6 +52,20 @@ test('secondary scheduling is default-off and requires the complete coordination
   assert.equal(secondaryCircleSchedulingEnabled(),true);
   delete process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED;
   assert.equal(secondaryCircleSchedulingEnabled(),false);
+});
+
+test('secondary schedule email is independently default-off and requires scheduling',()=>{
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';
+  process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED='true';
+  process.env.SECONDARY_CIRCLE_COORDINATION_ENABLED='true';
+  process.env.SECONDARY_CIRCLE_SCHEDULING_ENABLED='true';
+  delete process.env.SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED;
+  assert.equal(secondaryCircleScheduleEmailEnabled(),false);
+  process.env.SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED='true';
+  assert.equal(secondaryCircleScheduleEmailEnabled(),true);
+  delete process.env.SECONDARY_CIRCLE_SCHEDULING_ENABLED;
+  assert.equal(secondaryCircleScheduleEmailEnabled(),false);
 });
 
 function request(token){
