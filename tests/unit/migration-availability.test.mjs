@@ -144,8 +144,8 @@ test('a managed v2 database upgrades through the current schema and persists ava
       expectedStateFingerprint:before.stateFingerprint,
       retry:NO_RETRY,
     });
-    assert.deepEqual(upgraded.applied.map(item=>item.version),[3,4,5,6,7,8,9,10,11,12,13]);
-    assert.equal(upgraded.toVersion,13);
+    assert.deepEqual(upgraded.applied.map(item=>item.version),[3,4,5,6,7,8,9,10,11,12,13,14]);
+    assert.equal(upgraded.toVersion,14);
     await insertCycle(database.db);
     await database.db.execute({
       sql:`INSERT INTO pairing_cycle_availability
@@ -157,7 +157,7 @@ test('a managed v2 database upgrades through the current schema and persists ava
     const reopened=database.reopen();
     await prepareMigrationConnection(reopened);
     const state=await inspectMigrationState(reopened);
-    assert.equal(state.currentVersion,13);
+    assert.equal(state.currentVersion,14);
     assert.equal(state.ready,true);
     const rows=await reopened.execute(`SELECT scope_key,cycle_key,user_id,is_available,version,decision_source
       FROM pairing_cycle_availability`);
@@ -216,7 +216,7 @@ test('v3 index drift makes a managed database non-ready and blocks migration no-
     await database.db.execute(`CREATE INDEX idx_pairing_cycle_availability_candidates
       ON pairing_cycle_availability(user_id,is_available)`);
     const drifted=await inspectMigrationState(database.db);
-    assert.equal(drifted.currentVersion,13);
+    assert.equal(drifted.currentVersion,14);
     assert.equal(drifted.schemaExact,false);
     assert.equal(drifted.ready,false);
     await assert.rejects(

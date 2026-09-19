@@ -92,6 +92,13 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'64ba01a336472aa53a02ecf92bef7061db3b235012a456328380c1afe8a78d2f',
     checksum:'2a0d9734614016b981ba88e97f7dcb379a475b37a295fb423edfd8b9f43091c9',
   }),
+  Object.freeze({
+    version:14,
+    name:'transactional-circle-creation',
+    description:'Durable idempotency receipts and audit-chain integrity for atomic secondary-circle creation and selection.',
+    operationsChecksum:'b9425687e2e8f20279cc6f6b1237c08ae53fff1ae9ed082c3e836556825ad92e',
+    checksum:'68ab99ce04359e5ff3e30443e71ca6c92fd70491fd7ac7718a9e529c42f044c0',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){

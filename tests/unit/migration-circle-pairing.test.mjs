@@ -65,7 +65,7 @@ async function seedPublication(db){
 test('v13 installs only canonical circle pairing tables and read indexes',async()=>{
   const item=fixture();
   try{
-    const result=await apply(item.db);
+    const result=await apply(item.db,EXECUTABLE_MIGRATIONS.slice(0,13));
     assert.equal(result.toVersion,13);
     assert.deepEqual(V13.operations.map(operation=>operation.name),[
       'uq_pairing_cycles_descriptor',
@@ -87,9 +87,10 @@ test('managed v12 upgrades once to v13 and canonical rows survive restart',async
   const item=fixture();
   try{
     await apply(item.db,THROUGH_V12);
-    const before=await inspectMigrationState(item.db);
+    const before=await inspectMigrationState(item.db,{migrations:EXECUTABLE_MIGRATIONS.slice(0,13)});
     assert.equal(before.currentVersion,12);
-    const upgraded=await applyMigrations(item.db,{expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY});
+    const upgraded=await applyMigrations(item.db,{expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY,
+      migrations:EXECUTABLE_MIGRATIONS.slice(0,13)});
     assert.deepEqual(upgraded.applied.map(entry=>entry.version),[13]);
     await seedParents(item.db);
     const publicationId=await seedPublication(item.db);
@@ -108,7 +109,7 @@ test('managed v12 upgrades once to v13 and canonical rows survive restart',async
     });
     const reopened=item.reopen();
     await prepareMigrationConnection(reopened);
-    const state=await inspectMigrationState(reopened);
+    const state=await inspectMigrationState(reopened,{migrations:EXECUTABLE_MIGRATIONS.slice(0,13)});
     assert.equal(state.currentVersion,13);
     assert.equal(state.schemaExact,true);
     assert.equal(Number((await reopened.execute(`SELECT COUNT(*) AS count FROM circle_pairing_groups`)).rows[0].count),1);

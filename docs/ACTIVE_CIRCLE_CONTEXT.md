@@ -13,6 +13,10 @@ disabled unless both `CIRCLE_MEMBERSHIP_ENABLED=true` and
 - `PUT /api/circles` accepts exactly `circle_public_id` and
   `expected_context_version`. Selection is a same-origin, compare-and-swap
   mutation. An outdated version returns `409 circle_context_changed`.
+- `POST /api/circles` accepts only an exact bounded name and opaque request ID.
+  Migration v14 binds one durable receipt to the exact account, session, name,
+  circle, audit, and returned generation. Creation and selection commit in one
+  transaction; see `CIRCLE_CREATION.md`.
 - Migration v12 owns `auth_session_circle_contexts`, keyed by the
   hashed live session. Client-provided public IDs select a candidate; active
   membership is still rechecked in the write transaction and on every use.
@@ -90,8 +94,8 @@ no membership or tenant data is deleted.
 
 ## Deferred work
 
-Circle creation/archive and secondary-circle coordination remain separate
-increments. Pairing weeks, participants, schedules, messages, runs, snapshots,
+Circle archive and secondary workspace ownership remain separate increments.
+Pairing weeks, participants, schedules, messages, runs, snapshots,
 video, AI, notification idempotency, and associated foreign keys must gain
 canonical `circle_id` ownership before their secondary-circle flags can be
 enabled. Postgres with row-level security remains the preferred final tenancy

@@ -10,6 +10,12 @@ import {
   multiCircleControlPlaneEnabled,
   selectActiveCircleContext,
 } from './_active-circle.js';
+import {
+  CircleCreationError,
+  createCircleAndSelect,
+  ensureCircleCreationReadiness,
+  parseCircleCreation,
+} from './_circle-creation.js';
 
 function exactObject(value,keys){
   return !!value&&typeof value==='object'&&!Array.isArray(value)
@@ -40,18 +46,29 @@ export default async function handler(req,res){
   res.setHeader('Cache-Control','private, no-store');
   res.setHeader('Pragma','no-cache');
   if(!multiCircleControlPlaneEnabled()) return res.status(404).json({error:'not found'});
-  if(req.method!=='GET'&&req.method!=='PUT'){
-    res.setHeader('Allow','GET, PUT');
-    return res.status(405).json({error:'GET or PUT only'});
+  if(req.method!=='GET'&&req.method!=='PUT'&&req.method!=='POST'){
+    res.setHeader('Allow','GET, POST, PUT');
+    return res.status(405).json({error:'GET, POST, or PUT only'});
   }
   if(hasQuery(req)) return res.status(400).json({error:'invalid request'});
-  if(req.method==='PUT'&&!verifyMutationOrigin(req)){
+  if(req.method!=='GET'&&!verifyMutationOrigin(req)){
     return res.status(403).json({error:'cross-origin mutation rejected'});
+  }
+  let creationInput=null;
+  if(req.method==='POST'){
+    try{ creationInput=parseCircleCreation(req.body); }
+    catch(error){
+      if(error instanceof CircleCreationError&&error.code==='CIRCLE_CREATE_INPUT_INVALID'){
+        return res.status(400).json({error:'invalid circle creation'});
+      }
+      throw error;
+    }
   }
   let db,payload;
   try{
     db=getClient();
     await ensureCircleMembershipReadiness(db);
+    if(req.method==='POST') await ensureCircleCreationReadiness(db);
     payload=await verifyRequestAuth(req,db);
   }catch(error){
     captureSentryException(error,{tags:{event:'active_circle_auth_fail',source:'server'}});
@@ -60,6 +77,28 @@ export default async function handler(req,res){
   if(!payload) return res.status(401).json({error:'authentication required'});
   try{
     if(req.method==='GET') return res.json(responsePayload(await listSessionCircleContexts(db,payload)));
+    if(req.method==='POST'){
+      const created=await createCircleAndSelect(db,payload,creationInput);
+      if(!created.ok){
+        if(created.reason==='session_changed') return res.status(401).json({error:'authentication required'});
+        if(created.reason==='ownership_limit'){
+          return res.status(409).json({error:'circle ownership limit reached',code:'circle_ownership_limit'});
+        }
+        if(created.reason==='membership_limit'){
+          return res.status(409).json({error:'circle membership limit reached',code:'circle_membership_limit'});
+        }
+        if(created.reason==='request_conflict'){
+          return res.status(409).json({error:'circle creation request changed',code:'circle_creation_request_conflict'});
+        }
+        if(created.reason==='context_changed'){
+          return res.status(409).json({error:'circle context changed',code:'circle_context_changed'});
+        }
+        throw new Error('invalid circle creation result');
+      }
+      return res.status(created.created?201:200).json({
+        ok:true,circle:created.circle,context_version:created.context_version,
+      });
+    }
     if(!exactObject(req.body,['circle_public_id','expected_context_version'])
       ||typeof req.body.circle_public_id!=='string'
       ||!Number.isSafeInteger(req.body.expected_context_version)||req.body.expected_context_version<0){
@@ -79,6 +118,12 @@ export default async function handler(req,res){
     return res.json(responsePayload(listed));
   }catch(error){
     captureSentryException(error,{tags:{event:'active_circle_context_fail',source:'server'}});
-    return res.status(503).json({error:'circles unavailable'});
+    return res.status(503).json({
+      error:error instanceof CircleCreationError&&error.code==='CIRCLE_CREATE_COMMIT_UNKNOWN'
+        ?'circle creation status unknown; retry with the same request_id'
+        :'circles unavailable',
+      ...(error instanceof CircleCreationError&&error.code==='CIRCLE_CREATE_COMMIT_UNKNOWN'
+        ?{code:'circle_creation_status_unknown'}:{}),
+    });
   }
 }
