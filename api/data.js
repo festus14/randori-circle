@@ -464,8 +464,7 @@ function getPathname(req){
   catch{ return String(req?.url||'').split('?')[0].toLowerCase(); }
 }
 
-function resolveDataRoute(req){
-  const endpoint=getEndpoint(req);
+function resolveDataRoute(req,endpoint){
   const path=getPathname(req);
   if(endpoint==='runs'||endpoint==='session_runs'||endpoint==='session-runs'||path.includes('/runs')) return 'runs';
   if(endpoint==='leetcode-sync'||endpoint==='leetcode_sync'||path.includes('leetcode/sync')||path.includes('leetcode-sync')) return 'leetcode-sync';
@@ -2895,7 +2894,7 @@ export default async function handler(req,res){
   }catch{}
   try{
   const ep=getEndpoint(req);
-  const route=resolveDataRoute(req);
+  const route=resolveDataRoute(req,ep);
   if(!await requireSingleCircleDataFeature(req,res,route)) return;
   if(route==='runs') return await handleRuns(req,res);
   if(route==='leetcode-sync') return await handleLeetcodeSync(req,res);

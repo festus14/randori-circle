@@ -146,8 +146,9 @@ export default async function handler(req,res){
       const result=await leaveCircle(db,{actorUserId:actor,circleId,...(circleContext?{circleContext}:{})});
       if(!result.ok) return transitionFailure(res,result);
       if(!multiCircleControlPlaneEnabled()||result.signed_out) res.setHeader('Set-Cookie',clearSessionCookie(req));
+      const responseContextVersion=Number(result.context_version??circleContextVersion);
       return res.json({ok:true,action:'leave',
-        ...(multiCircleControlPlaneEnabled()?{signed_out:result.signed_out===true,circle_context_version:circleContextVersion}:{}),
+        ...(multiCircleControlPlaneEnabled()?{signed_out:result.signed_out===true,circle_context_version:responseContextVersion}:{}),
       });
     }
     if(!exactObject(req.body,['action','member_id'])

@@ -16,7 +16,7 @@ import {
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const ACTIVE_CIRCLE_MIGRATION=EXECUTABLE_MIGRATIONS[11];
 const THROUGH_V11=EXECUTABLE_MIGRATIONS.slice(0,11);
-const ACTIVE_CIRCLE_CONTEXT_TABLE_SQL=`CREATE TABLE IF NOT EXISTS auth_session_circle_contexts (session_hash TEXT PRIMARY KEY NOT NULL CHECK(length(session_hash)=64 AND session_hash NOT GLOB '*[^0-9a-f]*'), user_id INTEGER NOT NULL, circle_id INTEGER NOT NULL, context_version INTEGER NOT NULL CHECK(typeof(context_version)='integer' AND context_version>=1), updated_at INTEGER NOT NULL CHECK(typeof(updated_at)='integer' AND updated_at>0), FOREIGN KEY(session_hash,user_id) REFERENCES auth_sessions(session_hash,user_id) ON DELETE CASCADE, FOREIGN KEY(circle_id) REFERENCES circles(id) ON DELETE CASCADE)`;
+const ACTIVE_CIRCLE_CONTEXT_TABLE_SQL=`CREATE TABLE IF NOT EXISTS auth_session_circle_contexts (session_hash TEXT PRIMARY KEY NOT NULL CHECK(length(session_hash)=64 AND session_hash NOT GLOB '*[^0-9a-f]*'), user_id INTEGER NOT NULL, circle_id INTEGER NOT NULL, context_version INTEGER NOT NULL CHECK(typeof(context_version)='integer' AND context_version>=1), updated_at INTEGER NOT NULL CHECK(typeof(updated_at)='integer' AND updated_at>0), FOREIGN KEY(session_hash,user_id) REFERENCES auth_sessions(session_hash,user_id) ON DELETE CASCADE, FOREIGN KEY(circle_id) REFERENCES circles(id) ON DELETE RESTRICT)`;
 const ACTIVE_CIRCLE_CONTEXT_INDEX_SQL=`CREATE INDEX IF NOT EXISTS idx_auth_session_circle_contexts_user_circle ON auth_session_circle_contexts(user_id,circle_id)`;
 
 function temporaryDatabase(){
@@ -124,13 +124,18 @@ test('v12 binds session ownership, enforces versions, and preserves generation t
     assert.equal(Number((await fixture.db.execute(
       `SELECT COUNT(*) AS count FROM auth_session_circle_contexts WHERE session_hash='${firstSession}'`,
     )).rows[0].count),1,'membership deletion preserves the monotonic context tombstone');
+    await fixture.db.execute(`UPDATE circles SET archived_at=datetime('now') WHERE id=1`);
+    await assert.rejects(
+      fixture.db.execute(`DELETE FROM circles WHERE id=1`),
+      /foreign key constraint/i,
+      'an archived circle cannot be physically deleted while its context generation is retained',
+    );
 
-    await fixture.db.execute(`INSERT INTO circle_memberships (circle_id,user_id,role,status)
-      VALUES (1,1,'owner','active')`);
     await fixture.db.execute({sql:`DELETE FROM auth_sessions WHERE session_hash=?`,args:[firstSession]});
     assert.equal(Number((await fixture.db.execute(
       `SELECT COUNT(*) AS count FROM auth_session_circle_contexts WHERE session_hash='${firstSession}'`,
     )).rows[0].count),0);
+    await fixture.db.execute(`DELETE FROM circles WHERE id=1`);
   }finally{ fixture.close(); }
 });
 

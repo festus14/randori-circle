@@ -21,8 +21,10 @@ disabled unless both `CIRCLE_MEMBERSHIP_ENABLED=true` and
   `409 circle_context_changed`; the header is concurrency context, never an
   authorization grant. Implicit single-circle requests require no new header.
 - A single-circle session continues to use its only active membership without a
-  selection write. Existing behavior is unchanged while the feature flag is
-  off.
+  selection write when it has no stored context. If a formerly selected circle
+  becomes inactive, the preserved generation requires explicit reselection even
+  when only one circle remains. Existing behavior is unchanged while the
+  feature flag is off.
 - `/api/circle`, `/api/members`, and `/api/invitations` resolve the selected
   context server-side. Owner writes recheck the exact circle, role, target, and
   archive state. Roster cursors remain encrypted and circle-bound.

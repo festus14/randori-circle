@@ -135,13 +135,14 @@ export async function listSessionCircleContexts(db,payload){
   if(storedVersion===null) throw new Error('invalid active circle context');
   const storedCircleId=contextRows.length?positiveInteger(Number(contextRows[0].circle_id)):null;
   const selected=storedCircleId?circles.find(circle=>circle.id===storedCircleId)||null:null;
-  const active=selected||(circles.length===1?circles[0]:null);
+  const implicit=contextRows.length===0&&circles.length===1;
+  const active=selected||(implicit?circles[0]:null);
   return Object.freeze({
     circles,
     active,
     context_version:storedVersion,
-    selection_required:circles.length>1&&!selected,
-    implicit:!!active&&!selected,
+    selection_required:circles.length>0&&!active,
+    implicit,
   });
 }
 

@@ -151,31 +151,43 @@ test('a proof that becomes fresh during the challenge resumes after the first re
 
 test('Google confirmation resumes exact owner deactivation once without identity management',async({page})=>{
   let recent=false;
+  let capabilityCalls=0;
   let targetStatus:'active'|'inactive'='active';
   const patches:unknown[]=[];
   await mockApi(page,{
-    '/api/auth/capabilities':{
-      ok:true,
-      capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,identityManagement:false},
-      registrationMode:'private_beta',
+    '/api/auth/capabilities':async()=>{
+      capabilityCalls+=1;
+      if(capabilityCalls>1) await new Promise(resolve=>setTimeout(resolve,100));
+      return {
+        ok:true,
+        capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,identityManagement:false,multiCircleControlPlane:true},
+        registrationMode:'private_beta',
+      };
     },
     '/api/auth/me':{ok:true,user:owner},
+    '/api/circles':{
+      ok:true,circles:[
+        {public_id:'circle_e2e',name:'E2E Circle',role:'owner',is_primary:true},
+        {public_id:'circle_other',name:'Other Circle',role:'member',is_primary:false},
+      ],active_circle:{public_id:'circle_e2e',name:'E2E Circle',role:'owner',is_primary:true},
+      context_version:1,selection_required:false,
+    },
     '/api/profile':{ok:true,user:owner},
     '/api/circle':{
       ok:true,circle_meta:{id:10,public_id:'circle_e2e',name:'E2E Circle'},
-      membership:{role:'owner'},circle:[owner,member],count:2,
+      membership:{role:'owner'},circle:[owner,member],count:2,circle_context_version:1,
     },
-    '/api/invitations':{ok:true,invitations:[],count:0},
+    '/api/invitations':{ok:true,invitations:[],count:0,circle_context_version:1},
     '/api/auth/recent-auth':{ok:true,recentAuth:{ok:false},methods:{password:false,google:true}},
     '/api/members':request=>{
       if(request.method()==='GET') return {ok:true,members:[
         {...owner,role:'owner',status:'active'},
         {...member,role:'owner',status:targetStatus},
-      ],count:2,has_more:false,next_cursor:null,scanned:2};
+      ],count:2,has_more:false,next_cursor:null,scanned:2,circle_context_version:1};
       const body=request.postDataJSON(); patches.push(body);
       if(!recent) return {_status:403,error:'recent authentication required',code:'recent_auth_required'};
       targetStatus='inactive';
-      return {ok:true,action:'deactivate',member:{id:member.id,role:'owner',status:'inactive'}};
+      return {ok:true,action:'deactivate',member:{id:member.id,role:'owner',status:'inactive'},circle_context_version:1};
     },
   });
   await resetClientState(page,true,{},true);

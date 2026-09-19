@@ -141,14 +141,19 @@ async function activeMutationContextValid(transaction,circleContext,circleId){
   });
 }
 
-async function bumpSelectedCircleContexts(transaction,userId,circleId){
-  await transaction.execute({
+async function bumpSelectedCircleContexts(transaction,userId,circleId,sessionHash=null){
+  const bumped=await transaction.execute({
     sql:`UPDATE auth_session_circle_contexts
       SET context_version=context_version+1,
         updated_at=CAST(strftime('%s','now') AS INTEGER)
-      WHERE user_id=? AND circle_id=?`,
+      WHERE user_id=? AND circle_id=?
+      RETURNING session_hash,context_version`,
     args:[userId,circleId],
   });
+  if(typeof sessionHash!=='string') return null;
+  const selected=(bumped.rows||[]).find(row=>String(row.session_hash)===sessionHash);
+  const version=Number(selected?.context_version);
+  return Number.isSafeInteger(version)&&version>0?version:null;
 }
 
 async function inspectScopedTarget(transaction,{actorUserId,targetUserId,circleId}){
@@ -384,7 +389,9 @@ export async function leaveCircle(db,{actorUserId,circleId,circleContext}={}){
       args:[Number(row.circle_id),eventType,actor,actor,`${eventType}:${randomUUID()}`,occurredAt],
     });
     if(audit.rows?.length!==1) throw new Error('membership audit unavailable');
-    await bumpSelectedCircleContexts(transaction,actor,selectedCircle);
+    const bumpedContextVersion=await bumpSelectedCircleContexts(
+      transaction,actor,selectedCircle,circleContext?.payload?.sessionHash,
+    );
     const remaining=await transaction.execute({
       sql:`SELECT membership.circle_id FROM circle_memberships membership
         JOIN circles circle ON circle.id=membership.circle_id
@@ -395,7 +402,10 @@ export async function leaveCircle(db,{actorUserId,circleId,circleContext}={}){
     const signedOut=!remaining.rows?.length;
     const revokedSessions=signedOut?await revokeAccountSessions(transaction,actor,'membership_removed'):0;
     await transaction.commit(); finished=true;
-    return Object.freeze({ok:true,member:Object.freeze({id:actor,role:String(row.role),status:'inactive'}),revoked_sessions:revokedSessions,signed_out:signedOut});
+    return Object.freeze({ok:true,member:Object.freeze({id:actor,role:String(row.role),status:'inactive'}),
+      revoked_sessions:revokedSessions,signed_out:signedOut,
+      ...(bumpedContextVersion?{context_version:bumpedContextVersion}:{}),
+    });
   }catch(error){
     if(!finished) await rollback(transaction);
     throw error;

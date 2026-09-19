@@ -3022,6 +3022,8 @@ async function refreshMe(){
     window._randori_workspace?.deactivate?.();
     window._randori_authorized_room=null;
     window._randori_join_room=null;
+    try{ stopPairRecap({clear:true}); }catch{}
+    try{ clearDashboardPairState(); }catch{}
     try{
       localStorage.removeItem('randori-last-room');
       sessionStorage.removeItem('randori-room-draft');
@@ -3029,6 +3031,9 @@ async function refreshMe(){
     listEl?.replaceChildren();
     circleInvites?.replaceChildren();
     circleManageMembers?.replaceChildren();
+    for(const id of ['pairsList','historyList','historyPersonal','dashPairArea','dashHistList','recentRunsList','pairRunsList']){
+      document.getElementById(id)?.replaceChildren();
+    }
   }
 
   function renderCircleContextSelector(context){
@@ -3049,8 +3054,9 @@ async function refreshMe(){
       option.selected=publicId===context?.active_circle?.public_id;
       circleContextSelect.appendChild(option);
     }
-    circleContextPanel.hidden=circles.length<2;
-    circleContextPanel.style.display=circles.length<2?'none':'grid';
+    const visible=circles.length>1||context?.selection_required===true;
+    circleContextPanel.hidden=!visible;
+    circleContextPanel.style.display=visible?'grid':'none';
     circleContextSelect.disabled=false;
     circleContextStatus.textContent=context?.selection_required
       ?'Choose which circle to manage. Pairing remains unavailable while this account belongs to multiple circles.'
@@ -3097,6 +3103,11 @@ async function refreshMe(){
         body:{circle_public_id:publicId,expected_context_version:activeCircleContext.context_version},
       });
       if(!me||Number(me.id||me.uid)!==userId) return;
+      if(next?.ok!==true||next?.active_circle?.public_id!==publicId
+        ||!Number.isSafeInteger(next.context_version)
+        ||next.context_version<=activeCircleContext.context_version){
+        throw new Error('invalid circle switch response');
+      }
       circleContextChannel?.postMessage({v:1,user_id:userId,context_version:next.context_version});
       window.location.reload();
     }catch(error){
@@ -3618,11 +3629,19 @@ async function refreshMe(){
     if(circleLifecycleStatus) circleLifecycleStatus.textContent='Leaving circle…';
     try{
       const result=await api('/api/members',{method:'PATCH',body:{action:'leave'}});
+      if(authCapabilities.multiCircleControlPlane){
+        const previousVersion=Number(activeCircleContext?.context_version);
+        const expectedMinimum=activeCircleContext?.implicit?previousVersion:previousVersion+1;
+        if(!Number.isSafeInteger(result?.circle_context_version)
+          ||result.circle_context_version<expectedMinimum){
+          throw new Error('stale circle response');
+        }
+      }
       if(result?.signed_out!==true){
         if(circleLifecycleStatus) circleLifecycleStatus.textContent='Membership ended. Reloading your remaining circles…';
         const userId=Number(me.id||me.uid);
         clearPrivateCircleViewForSwitch();
-        circleContextChannel?.postMessage({v:1,user_id:userId,context_version:Number(activeCircleContext?.context_version||0),force:true});
+        circleContextChannel?.postMessage({v:1,user_id:userId,context_version:Number(result.circle_context_version),force:true});
         window.location.reload();
         return;
       }

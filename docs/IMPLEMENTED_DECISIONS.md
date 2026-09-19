@@ -837,13 +837,15 @@ membership, role, and non-archived circle in one database transaction. Every
 dependent request carries the selected version only as a stale-response fence;
 the server resolves authorization from durable state again.
 
-Single-circle accounts retain their implicit context and existing behavior.
-Removing one membership bumps any affected selected-session generation and
-revokes all account sessions only when no active membership remains. Migration
-v12 binds the context to the exact `(session_hash,user_id)` pair and preserves
-the context tombstone across membership removal, preventing stale-version ABA.
-The browser clears private state, reloads, and notifies sibling tabs after a
-switch.
+Single-circle accounts with no stored context retain their implicit context and
+existing behavior. Removing one membership bumps any affected selected-session
+generation; a preserved invalid selection requires explicit reselection even if
+one circle remains, and all account sessions are revoked only when no active
+membership remains. Migration v12 binds the context to the exact
+`(session_hash,user_id)` pair, preserves the context tombstone across membership
+removal, and restricts physical circle deletion while a tombstone exists,
+preventing stale-version ABA. The browser clears private state before a switch,
+reloads, and notifies sibling tabs after it commits.
 
 Roster and invitation reads/writes are now scoped to the exact resolved circle.
 Pairing, availability, chat, workspace, video, execution, and AI records do not

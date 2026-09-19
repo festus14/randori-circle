@@ -135,15 +135,38 @@ test('roster and lifecycle writes stay inside the selected circle',async()=>{
 
 test('leaving one circle keeps the session while leaving the final circle revokes it',async()=>{
   const {db,memberToken}=await fixture();
-  const first=await leaveCircle(db,{actorUserId:2,circleId:20});
+  const memberPayload=await verifyRequestAuth(request(memberToken),db);
+  const selected=await selectActiveCircleContext(db,memberPayload,{
+    circlePublicId:'circle-secondary',expectedContextVersion:0,
+  });
+  const first=await leaveCircle(db,{
+    actorUserId:2,circleId:20,
+    circleContext:{payload:memberPayload,contextVersion:selected.context_version,implicit:false},
+  });
   assert.equal(first.ok,true);
   assert.equal(first.signed_out,false);
   assert.equal(first.revoked_sessions,0);
+  assert.equal(first.context_version,2);
   assert.equal((await verifyRequestAuth(request(memberToken),db))?.id,2);
-  const final=await leaveCircle(db,{actorUserId:2,circleId:10});
+  const unselected=await listSessionCircleContexts(db,memberPayload);
+  assert.equal(unselected.active,null);
+  assert.equal(unselected.selection_required,true);
+  assert.equal(unselected.context_version,2);
+  assert.deepEqual(await selectActiveCircleContext(db,memberPayload,{
+    circlePublicId:'circle-primary',expectedContextVersion:selected.context_version,
+  }),{ok:false,reason:'context_changed',context_version:2});
+  const recovered=await selectActiveCircleContext(db,memberPayload,{
+    circlePublicId:'circle-primary',expectedContextVersion:unselected.context_version,
+  });
+  assert.equal(recovered.context_version,3);
+  const final=await leaveCircle(db,{
+    actorUserId:2,circleId:10,
+    circleContext:{payload:memberPayload,contextVersion:recovered.context_version,implicit:false},
+  });
   assert.equal(final.ok,true);
   assert.equal(final.signed_out,true);
   assert.equal(final.revoked_sessions,1);
+  assert.equal(final.context_version,4);
   assert.equal(await verifyRequestAuth(request(memberToken),db),null);
 });
 
@@ -203,8 +226,19 @@ test('deactivation bumps the selected-session generation and prevents context AB
   assert.equal(deactivated.ok,true);
   const inactive=await listSessionCircleContexts(db,memberPayload);
   assert.equal(inactive.context_version,2);
-  assert.equal(inactive.active.public_id,'circle-secondary');
-  assert.equal(inactive.implicit,true);
+  assert.equal(inactive.active,null);
+  assert.equal(inactive.selection_required,true);
+  assert.equal(inactive.implicit,false);
+
+  const staleRecovery=await selectActiveCircleContext(db,memberPayload,{
+    circlePublicId:'circle-secondary',expectedContextVersion:memberSelected.context_version,
+  });
+  assert.deepEqual(staleRecovery,{ok:false,reason:'context_changed',context_version:2});
+  const recovered=await selectActiveCircleContext(db,memberPayload,{
+    circlePublicId:'circle-secondary',expectedContextVersion:inactive.context_version,
+  });
+  assert.equal(recovered.ok,true);
+  assert.equal(recovered.context_version,3);
 
   const reactivated=await changeCircleMemberStatus(db,{
     actorUserId:1,targetUserId:2,circleId:10,action:'reactivate',
@@ -212,8 +246,8 @@ test('deactivation bumps the selected-session generation and prevents context AB
   });
   assert.equal(reactivated.ok,true);
   const after=await listSessionCircleContexts(db,memberPayload);
-  assert.equal(after.active.public_id,'circle-primary');
-  assert.equal(after.context_version,2);
+  assert.equal(after.active.public_id,'circle-secondary');
+  assert.equal(after.context_version,3);
   assert.equal(after.context_version===memberSelected.context_version,false,
     'reactivation cannot resurrect the stale v1 generation');
 });

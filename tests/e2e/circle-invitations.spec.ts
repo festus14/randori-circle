@@ -252,19 +252,28 @@ test('multi-circle selection reloads into the chosen isolated roster and invitat
   let active:'circle-primary'|'circle-secondary'|null=null;
   let contextVersion=0;
   const selections:unknown[]=[];
+  let markSwitchStarted!:()=>void;
+  let releaseSwitch!:()=>void;
+  const switchStarted=new Promise<void>(resolve=>{ markSwitchStarted=resolve; });
+  const switchGate=new Promise<void>(resolve=>{ releaseSwitch=resolve; });
   const primaryMember={...members[0],display_name:'Primary Owner',name:'Primary Owner'};
   const secondaryMember={...members[1],id:22,display_name:'Secondary Teammate',name:'Secondary Teammate'};
   await mockApi(page,{
-    '/api/auth/capabilities':{
-      ok:true,
-      capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,multiCircleControlPlane:true},
-      registrationMode:'private_beta',
+    '/api/auth/capabilities':async()=>{
+      await new Promise(resolve=>setTimeout(resolve,100));
+      return {
+        ok:true,
+        capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,multiCircleControlPlane:true},
+        registrationMode:'private_beta',
+      };
     },
     '/api/auth/me':{ok:true,user:owner},
     '/api/circles':async request=>{
       if(request.method()==='PUT'){
         const body=request.postDataJSON();
         selections.push(body);
+        markSwitchStarted();
+        await switchGate;
         if(body.circle_public_id==='circle-secondary'&&body.expected_context_version===contextVersion){
           active='circle-secondary'; contextVersion+=1;
         }
@@ -301,9 +310,17 @@ test('multi-circle selection reloads into the chosen isolated roster and invitat
   await expect(selector).toBeVisible();
   await expect(selector).toHaveValue('');
   await expect(page.getByTestId('circle-members')).toContainText('select one above');
+  await page.locator('#pairsList').evaluate(element=>{ element.textContent='Primary private pairing'; });
+  await page.locator('#historyList').evaluate(element=>{ element.textContent='Primary private history'; });
 
   const reloaded=page.waitForEvent('domcontentloaded');
-  await selector.selectOption('circle-secondary');
+  const selecting=selector.selectOption('circle-secondary');
+  await switchStarted;
+  await expect(page.getByTestId('circle-members')).toBeEmpty();
+  await expect(page.locator('#pairsList')).toBeEmpty();
+  await expect(page.locator('#historyList')).toBeEmpty();
+  releaseSwitch();
+  await selecting;
   await expect.poll(()=>selections).toEqual([{
     circle_public_id:'circle-secondary',expected_context_version:0,
   }]);
@@ -313,6 +330,36 @@ test('multi-circle selection reloads into the chosen isolated roster and invitat
   await expect(page.getByTestId('circle-members')).toContainText('Secondary Teammate');
   await expect(page.getByTestId('circle-members')).not.toContainText('Primary Owner');
   await expect(page.getByTestId('circle-invites')).toContainText('secondary123');
+});
+
+test('stale circle responses cannot render after the active context advances',async({page})=>{
+  const staleMember={...members[1],id:99,display_name:'Wrong Circle Member',name:'Wrong Circle Member'};
+  await mockApi(page,{
+    '/api/auth/capabilities':{
+      ok:true,
+      capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,multiCircleControlPlane:true},
+      registrationMode:'private_beta',
+    },
+    '/api/auth/me':{ok:true,user:owner},
+    '/api/circles':{
+      ok:true,
+      circles:[
+        {public_id:'circle-primary',name:'Primary',role:'owner',is_primary:true},
+        {public_id:'circle-secondary',name:'Secondary',role:'owner',is_primary:false},
+      ],
+      active_circle:{public_id:'circle-secondary',name:'Secondary',role:'owner',is_primary:false},
+      context_version:2,selection_required:false,
+    },
+    '/api/circle':{
+      ok:true,circle_meta:{id:10,public_id:'circle-primary',name:'Primary'},
+      membership:{role:'owner'},circle:[staleMember],count:1,circle_context_version:1,
+    },
+  });
+  await resetClientState(page,true,{},true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await page.locator('[data-tab="circle"]').click();
+  await expect(page.getByTestId('circle-members')).not.toContainText('Wrong Circle Member');
+  await expect(page.getByTestId('circle-members')).toContainText('Circle unavailable');
 });
 
 test('ordinary members see the server roster but never owner invitation controls', async ({ page }) => {

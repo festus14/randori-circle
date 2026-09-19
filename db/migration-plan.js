@@ -82,8 +82,8 @@ const PLAN_METADATA=Object.freeze([
     version:12,
     name:'session-bound-active-circle-context',
     description:'Session-bound active-circle selection with monotonic compare-and-swap versions.',
-    operationsChecksum:'06fc79a37e087131368654458442fa5249ebf50fea71640b54508e80133a79a4',
-    checksum:'f10abdc494b2e9aaa690ccecdc2690345df9726c442318b3330a2ca805d26195',
+    operationsChecksum:'53b134a1d27902d0c075cccb9ae61ee6940e8336a7f49379757b2af079a8c4cf',
+    checksum:'8de796b7c33753d21bc290f0ed19e04f26692dcf7239e1762e7af3ac5e8b7506',
   }),
 ]);
 
