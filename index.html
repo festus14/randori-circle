@@ -1705,7 +1705,11 @@ async function refreshMe(){
     }
     clearAvailabilityRolloverTimer();
     if(availabilityState.userId!==userId) availabilityState.notice=null;
-    availabilityState.value=null;
+    // Keep a validated value visible while the same account revalidates it.
+    // Clearing it creates a transient unchecked state; a pointer gesture that
+    // began just before revalidation can then appear to succeed without ever
+    // reaching the versioned write below.
+    if(availabilityState.userId!==userId) availabilityState.value=null;
     const epoch=++availabilityState.epoch;
     availabilityState.userId=userId;
     availabilityState.loading=true;
@@ -1795,14 +1799,28 @@ async function refreshMe(){
   }
   // availability toggle handler — defined after updateAuthUI so it can be hooked later
   async function toggleAvailability(checked){
-    if(typeof checked!=='boolean'||availabilityState.loading||availabilityState.saving) return;
+    if(typeof checked!=='boolean'||availabilityState.saving) return;
+    const userId=Number(me?.id||me?.uid);
+    const requestAuthEpoch=authSessionEpoch;
+    if(availabilityState.loading&&availabilityState.userId===userId&&availabilityState.request){
+      // A same-account background refresh may start between pointerdown and
+      // change. Serialize the user's intent behind that refresh, then write it
+      // with the freshly returned cycle key/version. Identity changes still
+      // invalidate the intent through the actor checks below.
+      const request=availabilityState.request;
+      await request;
+      if(requestAuthEpoch!==authSessionEpoch||Number(me?.id||me?.uid)!==userId
+        ||availabilityState.userId!==userId) return;
+      if(availabilityState.value?.isAvailable===checked){ renderAvailability(); return; }
+      return toggleAvailability(checked);
+    }
     const current=availabilityState.value;
     if(!current||!current.editable){ renderAvailability(); return; }
-    const userId=Number(me?.id||me?.uid);
     const epoch=availabilityState.epoch;
     if(!Number.isSafeInteger(userId)||userId<1||availabilityState.userId!==userId) return;
     const isCurrentRequest=()=>epoch===availabilityState.epoch
-      &&availabilityState.userId===userId&&Number(me?.id||me?.uid)===userId;
+      &&requestAuthEpoch===authSessionEpoch&&availabilityState.userId===userId
+      &&Number(me?.id||me?.uid)===userId;
     availabilityState.saving=true;
     availabilityState.pendingValue=checked;
     availabilityState.error='';
@@ -2960,6 +2978,7 @@ async function refreshMe(){
   let circleRosterLoading=false;
   let circleRosterLoadEpoch=0;
   let circleRosterState={query:'',members:[],nextCursor:null,hasMore:false,loaded:false};
+  let activeCircleUserId=null;
   let latestInviteUrl=null;
   let latestInviteId=null;
   let latestInviteOwnerId=null;
@@ -2973,10 +2992,11 @@ async function refreshMe(){
 
   function resetOwnerInvites({allowRosterPreservation=true}={}){
     const currentUserId=Number(me?.id||me?.uid);
-    const preserveRoster=allowRosterPreservation&&Number.isSafeInteger(currentUserId)&&currentUserId===circleRosterOwnerId
-      &&(circleRosterState.loaded||(circleRosterLoading&&circleRosterLoadEpoch===circleRenderEpoch));
-    if(preserveRoster) return;
+    const preserveOwnerView=allowRosterPreservation&&activeCircleRole==='owner'
+      &&Number.isSafeInteger(currentUserId)&&currentUserId===activeCircleUserId;
+    if(preserveOwnerView) return;
     activeCircleRole=null;
+    activeCircleUserId=null;
     updatePairingRunAccess();
     const preserveLifecycleNotice=circleLifecycleNoticeActive
       &&Number.isSafeInteger(currentUserId)
@@ -3504,8 +3524,9 @@ async function refreshMe(){
       if(res?.ok!==true||!Array.isArray(res.circle)||(!gatedRole&&!legacyEnvelope)) throw new Error('invalid circle response');
       const usingLocalLegacy=legacyEnvelope&&res.circle.length===0;
       const people=usingLocalLegacy?getPeople():res.circle;
-      if(gatedRole!=='owner'&&circleRosterState.loaded) resetOwnerInvites({allowRosterPreservation:false});
+      if(gatedRole!=='owner') resetOwnerInvites({allowRosterPreservation:false});
       activeCircleRole=gatedRole||'legacy';
+      activeCircleUserId=userId;
       updatePairingRunAccess();
       if(gatedRole!=='owner') clearLatestInvite();
       setLegacyCircleControls(legacyEnvelope);

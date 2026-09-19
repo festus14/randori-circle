@@ -294,10 +294,19 @@ test('flag-off legacy circle responses keep the existing roster and admin testin
 
 test('a successful one-time invitation remains copyable when the list refresh fails', async ({ page }) => {
   const rawInvite = 'C'.repeat(43);
+  let authMeCalls = 0;
+  let circleRequestsInFlight = 0;
+  let circleRole: 'owner' | 'member' = 'owner';
   let invitationCreated = false;
   let createAttempts = 0;
-  let delayNextCircle = false;
+  let holdNextCircle = false;
   let copiedInvite = '';
+  let notifyCircle: (() => void) | null = null;
+  let releaseCircle: (() => void) | null = null;
+  let notifyCreate: (() => void) | null = null;
+  const circleStarted = new Promise<void>(resolve => { notifyCircle = resolve; });
+  const circleGate = new Promise<void>(resolve => { releaseCircle = resolve; });
+  const createCompleted = new Promise<void>(resolve => { notifyCreate = resolve; });
   await page.exposeFunction('captureInviteCopy', (value: string) => { copiedInvite = value; });
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'clipboard', {
@@ -310,20 +319,29 @@ test('a successful one-time invitation remains copyable when the list refresh fa
     });
   });
   await mockApi(page, {
-    '/api/auth/me': { ok: true, user: owner },
+    '/api/auth/me': () => {
+      authMeCalls += 1;
+      return { ok: true, user: owner };
+    },
     '/api/circle': async () => {
-      if (delayNextCircle) {
-        delayNextCircle = false;
-        await new Promise(resolve => setTimeout(resolve, 250));
+      circleRequestsInFlight += 1;
+      try {
+        if (holdNextCircle) {
+          holdNextCircle = false;
+          notifyCircle?.();
+          await circleGate;
+        }
+        return circleResponse(circleRole);
+      } finally {
+        circleRequestsInFlight -= 1;
       }
-      return circleResponse('owner');
     },
     '/api/invitations': async request => {
       if (request.method() === 'POST') {
         createAttempts += 1;
         if (createAttempts > 1) return { _status: 503, error: 'invitations unavailable' };
-        await new Promise(resolve => setTimeout(resolve, 100));
         invitationCreated = true;
+        notifyCreate?.();
         return {
           _status: 201,
           ok: true,
@@ -346,13 +364,30 @@ test('a successful one-time invitation remains copyable when the list refresh fa
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await expect(page.locator('#meLabel')).toContainText('Circle Owner');
   await page.locator('[data-tab="circle"]').click();
+  // Let the fixed bootstrap identity schedule settle. The race below is then
+  // driven entirely by explicit request gates rather than wall-clock sleeps.
+  await expect.poll(() => authMeCalls).toBeGreaterThanOrEqual(3);
+  await page.evaluate(async () => {
+    await (window as typeof window & {
+      _randori_auth?: { refreshMe?: () => Promise<unknown> };
+    })._randori_auth?.refreshMe?.();
+  });
+  await expect.poll(() => circleRequestsInFlight).toBe(0);
+  await expect(page.getByTestId('circle-invite-create')).toBeEnabled();
+
+  holdNextCircle = true;
+  await page.evaluate(() => window.dispatchEvent(new Event('randori:auth-refreshed')));
+  await circleStarted;
   await page.getByTestId('circle-invite-email').fill('member@example.test');
   await page.getByTestId('circle-invite-create').click();
-  delayNextCircle = true;
-  await page.evaluate(() => window.dispatchEvent(new Event('randori:auth-refreshed')));
+  await createCompleted;
+  // A same-owner revalidation must not tear down usable owner controls or the
+  // one-time secret. A changed role/error still clears them when it commits.
   await expect(page.getByTestId('circle-invite-link')).toBeVisible();
   await page.getByTestId('circle-invite-link').click();
   await expect.poll(() => copiedInvite).toBe(new URL(`/invite#invite=${rawInvite}`, page.url()).href);
+  releaseCircle?.();
+  await expect(page.locator('#circleRoleLabel')).toHaveText('owner');
 
   copiedInvite = '';
   await page.getByTestId('circle-invite-email').fill('another@example.test');
@@ -361,6 +396,11 @@ test('a successful one-time invitation remains copyable when the list refresh fa
   await expect(page.getByTestId('circle-invite-link')).toBeVisible();
   await page.getByTestId('circle-invite-link').click();
   await expect.poll(() => copiedInvite).toBe(new URL(`/invite#invite=${rawInvite}`, page.url()).href);
+
+  circleRole = 'member';
+  await page.evaluate(() => window.dispatchEvent(new Event('randori:auth-refreshed')));
+  await expect(page.getByTestId('circle-invite-email')).toBeHidden();
+  await expect(page.getByTestId('circle-invite-link')).toBeHidden();
 });
 
 test('authenticated circle failures show retry and never expose local or demo roster data', async ({ page }) => {

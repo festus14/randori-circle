@@ -233,18 +233,101 @@ test('invalid availability envelopes fail closed and expose a working retry', as
   await expect(page.locator('#availRetry')).toBeHidden();
 });
 
+test('an availability change queued during same-account revalidation uses the refreshed version', async ({ page }) => {
+  let authMeCalls = 0;
+  let holdNextGet = false;
+  let notifyGet: (() => void) | null = null;
+  let releaseGet: (() => void) | null = null;
+  const getStarted = new Promise<void>(resolve => { notifyGet = resolve; });
+  const getGate = new Promise<void>(resolve => { releaseGet = resolve; });
+  const posts: Record<string, unknown>[] = [];
+  let serverAvailability = availability({ isAvailable: true, version: 4 });
+  await mockApi(page, {
+    '/api/auth/me': () => {
+      authMeCalls += 1;
+      return { ok: true, user };
+    },
+    '/api/circle': circle(),
+    '/api/settings/availability': async (request: Request) => {
+      if (request.method() === 'POST') {
+        posts.push(request.postDataJSON());
+        serverAvailability = availability({ isAvailable: false, version: 6 });
+        return { ok: true, availability: serverAvailability };
+      }
+      if (holdNextGet) {
+        holdNextGet = false;
+        notifyGet?.();
+        await getGate;
+      }
+      return { ok: true, availability: serverAvailability };
+    },
+  });
+  await resetClientState(page, true);
+  await page.goto('/?view=pair', { waitUntil: 'domcontentloaded' });
+
+  const toggle = page.locator('#availToggle');
+  await expect(toggle).toBeChecked();
+  // Wait for all three scheduled bootstrap identity refreshes so this test
+  // controls the only revalidation that can overlap the user intent.
+  await expect.poll(() => authMeCalls).toBeGreaterThanOrEqual(3);
+  await page.evaluate(async () => {
+    const app = window as typeof window & {
+      _randori_auth?: { refreshMe?: () => Promise<unknown> };
+      _randori_availability?: { refresh?: () => Promise<unknown> };
+    };
+    await app._randori_auth?.refreshMe?.();
+    await app._randori_availability?.refresh?.();
+  });
+  await expect(toggle).toBeEnabled();
+
+  holdNextGet = true;
+  serverAvailability = availability({ isAvailable: true, version: 5 });
+  await page.evaluate(() => {
+    void (window as typeof window & {
+      _randori_availability?: { refresh?: () => Promise<unknown> };
+    })._randori_availability?.refresh?.();
+  });
+  await getStarted;
+  await expect(toggle).toBeChecked();
+  await expect(toggle).toBeDisabled();
+
+  // This is the exact browser interleaving from the failing trace: the input
+  // change lands after revalidation has started. The intent must be serialized
+  // behind the GET rather than silently discarded.
+  await page.evaluate(() => {
+    const input = document.querySelector<HTMLInputElement>('#availToggle');
+    if (!input) throw new Error('availability toggle missing');
+    input.checked = false;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  releaseGet?.();
+
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0]).toEqual({
+    cycle_key: 'a'.repeat(64),
+    expected_version: 5,
+    is_available: false,
+  });
+  await expect(toggle).not.toBeChecked();
+  await expect(page.locator('#availLabel')).toHaveText('OFF (skipped)');
+});
+
 for (const scenario of [
   { error: 'availability_stale', cycleId: '2026-W39', editable: true, message: 'changed elsewhere' },
   { error: 'availability_cycle_changed', cycleId: '2026-W40', editable: true, message: 'pairing cycle changed' },
   { error: 'availability_cutoff_closed', cycleId: '2026-W40', editable: false, message: 'cutoff has closed' },
 ] as const) {
   test(`a 409 ${scenario.error} response replaces stale UI with the returned availability`, async ({ page }) => {
+    let authMeCalls = 0;
     let releasePost: (() => void) | null = null;
     let notifyPost: (() => void) | null = null;
     const postStarted = new Promise<void>(resolve => { notifyPost = resolve; });
     let serverAvailability = availability({ isAvailable: true });
     await mockApi(page, {
-      '/api/auth/me': { ok: true, user },
+      '/api/auth/me': () => {
+        authMeCalls += 1;
+        return { ok: true, user };
+      },
       '/api/circle': circle(),
       '/api/settings/availability': async (request: Request) => {
         if (request.method() !== 'POST') return { ok: true, availability: serverAvailability };
@@ -269,6 +352,18 @@ for (const scenario of [
 
     const toggle = page.locator('#availToggle');
     await expect(toggle).toBeChecked();
+    // Remove bootstrap identity refreshes from this conflict-contract test;
+    // overlap behavior is covered explicitly above.
+    await expect.poll(() => authMeCalls).toBeGreaterThanOrEqual(3);
+    await page.evaluate(async () => {
+      const app = window as typeof window & {
+        _randori_auth?: { refreshMe?: () => Promise<unknown> };
+        _randori_availability?: { refresh?: () => Promise<unknown> };
+      };
+      await app._randori_auth?.refreshMe?.();
+      await app._randori_availability?.refresh?.();
+    });
+    await expect(toggle).toBeEnabled();
     await toggle.uncheck();
     await postStarted;
     await expect(toggle).toBeDisabled();
