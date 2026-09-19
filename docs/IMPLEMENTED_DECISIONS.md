@@ -1,10 +1,10 @@
 # Randori Circle implemented decision log
 
-Status: accepted for the private-beta implementation through merged PR #89
+Status: accepted through merged PR #89 plus candidate PR #93
 
 Last reviewed: 2026-09-19
 
-Scope: `main` through `2402fe9bea53aa0a44d2af4c43f77e4223894695`
+Scope: `main` through `2402fe9bea53aa0a44d2af4c43f77e4223894695`, plus PR #93
 
 This log records decisions that govern the application being shipped now. The
 [production architecture plan](PRODUCTION_ARCHITECTURE_PLAN.md) describes a
@@ -28,6 +28,7 @@ or merged after its parent; it must not be landed ahead of that parent.
 | 4 | [PR #77](https://github.com/festus14/randori-circle/pull/77), merged to `main` | Dashboard renders only authoritative current-cycle state | No migration |
 | 5 | [PR #85](https://github.com/festus14/randori-circle/pull/85), merged to `main` | Real-runtime coverage of signup, availability, publication, and revoked access | No migration |
 | 6 | [PR #89](https://github.com/festus14/randori-circle/pull/89), merged to `main` | Transactional, retryable pairing notifications | v6 `durable-provider-neutral-outbox` |
+| 7 | [PR #93](https://github.com/festus14/randori-circle/pull/93), candidate | Repository-owned deployability gate independent of preview quota | No migration |
 
 Migration order is append-only: v4 binds an account to an OIDC issuer and
 subject, v5 makes every application JWT depend on a live hashed session row,
@@ -164,12 +165,13 @@ it blocks normal and administrator merges even when repository CI and security
 checks pass. [Issue #87](https://github.com/festus14/randori-circle/issues/87)
 tracks the durable correction.
 
-**Decision.** Never forge or overwrite the provider status. Treat preview
-deployment as advisory while quota is unreliable; continue to require the
-repository-owned `e2e` workflow and `GitGuardian Security Checks`. Protect and
-observe the separate production deployment. The preferred durable replacement
-is a required repository-owned build/deployment-configuration validation check,
-with the live preview reported separately.
+**Decision.** Never forge or overwrite the provider status. PR #93 implements a
+repository-owned `deployability` check that fails closed on runtime, routing,
+security-header, cron, and release-file drift without calling a deployment
+provider. After it lands, a repository administrator must replace required
+`Vercel` with required `deployability`, while retaining required `e2e` and
+`GitGuardian Security Checks`. Preview deployment then remains visible but
+advisory; the protected production deployment remains separate and observed.
 
 | Option | Advantages | Costs and risks |
 | --- | --- | --- |
