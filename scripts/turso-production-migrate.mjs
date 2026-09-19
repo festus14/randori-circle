@@ -26,7 +26,7 @@ import {
   verifyRehearsalAttestation,
 } from './turso-backup-restore-rehearsal.mjs';
 
-export const REMOTE_MIGRATION_FORMAT='randori.turso-production-migration.v1';
+export const REMOTE_MIGRATION_FORMAT='randori.turso-production-migration.v2';
 
 const REHEARSAL_WORKFLOW_PATH='.github/workflows/turso-backup-restore-rehearsal.yml';
 const REHEARSAL_ENVIRONMENT='turso-migration-rehearsal';
@@ -46,7 +46,7 @@ const PUBLIC_MESSAGES=Object.freeze({
   REMOTE_MIGRATION_EVIDENCE_INVALID:'The protected rehearsal evidence is invalid.',
   REMOTE_MIGRATION_TARGET_IDENTITY_MISMATCH:'The production database identity or provider state did not match protected configuration.',
   REMOTE_MIGRATION_TARGET_STATE_MISMATCH:'The production migration state did not match the rehearsal contract.',
-  REMOTE_MIGRATION_TOO_MANY_PENDING:'More than one migration is pending; this workflow refuses a multi-version apply.',
+  REMOTE_MIGRATION_TARGET_VERSION_MISMATCH:'The requested migration is not the single next version.',
   REMOTE_MIGRATION_DATABASE_TIMEOUT:'A production database operation timed out.',
   REMOTE_MIGRATION_PLATFORM_FAILED:'A protected provider operation failed.',
   REMOTE_MIGRATION_FAILED:'The protected remote migration failed.',
@@ -112,9 +112,11 @@ function normalizeOptions(value){
     fail('REMOTE_MIGRATION_INVALID','manual confirmation is invalid');
   }
   const expectedStateFingerprint=value.expectedStateFingerprint??'';
+  const rawTargetVersion=value.targetVersion??'';
+  let targetVersion=null;
   if(operation==='status'){
-    if(expectedStateFingerprint!==''){
-      fail('REMOTE_MIGRATION_INVALID','status must not include an expected state fingerprint');
+    if(expectedStateFingerprint!==''||rawTargetVersion!==''){
+      fail('REMOTE_MIGRATION_INVALID','status must not include mutation inputs');
     }
   }else{
     if(!FINGERPRINT.test(expectedStateFingerprint)){
@@ -122,6 +124,11 @@ function normalizeOptions(value){
     }
     if(value.mutationsEnabled!=='true'&&value.mutationsEnabled!==true){
       fail('REMOTE_MIGRATION_DISABLED','production mutation is disabled');
+    }
+    if(operation==='apply'){
+      targetVersion=integer(rawTargetVersion,'target version',{maximum:LATEST_MIGRATION_VERSION});
+    }else if(rawTargetVersion!==''){
+      fail('REMOTE_MIGRATION_INVALID','adopt must not include a target version');
     }
   }
   const repository=opaque(value.repository,'repository',{
@@ -137,6 +144,7 @@ function normalizeOptions(value){
   return Object.freeze({
     operation,
     expectedStateFingerprint,
+    targetVersion,
     source,
     repository,
     repositoryId:integer(value.repositoryId,'repository ID'),
@@ -289,37 +297,56 @@ async function closeQuietly(client){
 
 async function inspectBoundState(db,attestation){
   const sourceVersion=attestation.migration.sourceVersion;
+  const sourceClassification=attestation.migration.sourceClassification;
+  const sourceStateFingerprint=attestation.migration.sourceStateFingerprint;
+  const sourceMigrations=EXECUTABLE_MIGRATIONS.slice(0,sourceVersion);
   const full=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS});
   if(full.classification==='managed'){
-    if(!full.ready||full.currentVersion<sourceVersion
-      ||full.currentVersion>LATEST_MIGRATION_VERSION){
+    if(sourceClassification!=='managed'||!full.ready||full.currentVersion!==sourceVersion){
       fail('REMOTE_MIGRATION_TARGET_STATE_MISMATCH','managed target state is invalid');
     }
+    const sourceState=sourceVersion===LATEST_MIGRATION_VERSION
+      ?full:await inspectMigrationState(db,{migrations:sourceMigrations});
+    if(sourceState.classification!=='managed'||!sourceState.ready
+      ||sourceState.currentVersion!==sourceVersion
+      ||sourceState.stateFingerprint!==sourceStateFingerprint){
+      fail('REMOTE_MIGRATION_TARGET_STATE_MISMATCH','managed target state does not match rehearsal');
+    }
     return Object.freeze({
-      classification:'managed',version:full.currentVersion,state:full,
+      classification:'managed',version:full.currentVersion,state:full,sourceState,
       migrations:EXECUTABLE_MIGRATIONS,
     });
   }
   if(full.classification!=='unmanaged'
-    ||attestation.migration.sourceClassification!=='unmanaged'){
+    ||sourceClassification!=='unmanaged'){
     fail('REMOTE_MIGRATION_TARGET_STATE_MISMATCH','target classification is invalid');
   }
-  const migrations=EXECUTABLE_MIGRATIONS.slice(0,sourceVersion);
-  const historical=await inspectMigrationState(db,{migrations});
+  const historical=await inspectMigrationState(db,{migrations:sourceMigrations});
   if(historical.classification!=='unmanaged'||historical.ledgerPresent
-    ||!historical.schemaExact||historical.adoption?.eligible!==true){
+    ||!historical.schemaExact||historical.adoption?.eligible!==true
+    ||historical.stateFingerprint!==sourceStateFingerprint){
     fail('REMOTE_MIGRATION_TARGET_STATE_MISMATCH','unmanaged target state is invalid');
   }
   return Object.freeze({
-    classification:'unmanaged',version:sourceVersion,state:historical,migrations,
+    classification:'unmanaged',version:sourceVersion,state:historical,sourceState:historical,
+    migrations:sourceMigrations,
   });
 }
 
-function statusResult(bound,options,attestation,attestationDigest){
+async function statusResult(db,bound,options,attestation,attestationDigest){
   const pendingVersions=Array.from(
     {length:Math.max(0,LATEST_MIGRATION_VERSION-bound.version)},
     (_value,index)=>bound.version+index+1,
   );
+  const nextVersion=bound.classification==='managed'?(pendingVersions[0]??null):null;
+  const authorizationState=nextVersion===null?bound.sourceState:await inspectMigrationState(db,{
+    migrations:EXECUTABLE_MIGRATIONS.slice(0,nextVersion),
+  });
+  if(bound.classification==='managed'
+    &&(authorizationState.classification!=='managed'
+      ||authorizationState.currentVersion!==bound.version||!authorizationState.ready)){
+    fail('REMOTE_MIGRATION_TARGET_STATE_MISMATCH','next migration state is invalid');
+  }
   return freeze({
     ok:true,
     kind:'turso-production-migration',
@@ -338,11 +365,12 @@ function statusResult(bound,options,attestation,attestationDigest){
     state:bound.classification,
     currentVersion:bound.version,
     latestVersion:LATEST_MIGRATION_VERSION,
-    stateFingerprint:bound.state.stateFingerprint,
+    stateFingerprint:authorizationState.stateFingerprint,
     pendingVersions,
+    nextVersion,
     capabilities:{
       adopt:bound.classification==='unmanaged',
-      apply:bound.classification==='managed'&&pendingVersions.length<=1,
+      apply:nextVersion!==null,
     },
   });
 }
@@ -371,6 +399,7 @@ function mutationResult(operation,before,result,options,attestation,attestationD
     fromVersion:before.version,
     toVersion:result.toVersion,
     latestVersion:LATEST_MIGRATION_VERSION,
+    ...(operation==='apply'?{targetVersion:options.targetVersion}:{}),
     ...(operation==='adopt'?{adoptedVersions:versions}:{appliedVersions:versions}),
     stateFingerprint:result.stateFingerprint,
   });
@@ -440,6 +469,13 @@ export async function runRemoteMigration(rawOptions={},dependencies={}){
   }catch(error){ throw normalizeError(error); }
   const attestationDigest=checksum(envelope);
 
+  if(options.operation==='apply'){
+    if(attestation.migration.sourceClassification!=='managed'
+      ||options.targetVersion!==attestation.migration.sourceVersion+1){
+      fail('REMOTE_MIGRATION_TARGET_VERSION_MISMATCH','target is not next after rehearsal source');
+    }
+  }
+
   // The authoritative base-database identity and protected write-state value are
   // checked before any database-scoped credential is requested.
   await exactTarget(platform,options.source);
@@ -462,16 +498,16 @@ export async function runRemoteMigration(rawOptions={},dependencies={}){
     db=options.operation==='status'?readonlyClient(timed):timed;
     const before=await inspectBoundState(db,attestation);
     if(options.operation==='status'){
-      return statusResult(before,options,attestation,attestationDigest);
-    }
-    if(before.state.stateFingerprint!==options.expectedStateFingerprint){
-      throw new MigrationError('MIGRATION_STATE_CHANGED','Migration state fingerprint mismatch');
+      return await statusResult(db,before,options,attestation,attestationDigest);
     }
     await exactTarget(platform,options.source);
     let result;
     if(options.operation==='adopt'){
       if(before.classification!=='unmanaged'){
         fail('REMOTE_MIGRATION_TARGET_STATE_MISMATCH','only unmanaged state can be adopted');
+      }
+      if(before.state.stateFingerprint!==options.expectedStateFingerprint){
+        throw new MigrationError('MIGRATION_STATE_CHANGED','Migration state fingerprint mismatch');
       }
       result=await adoptMigrations(db,{
         expectedStateFingerprint:options.expectedStateFingerprint,
@@ -482,13 +518,19 @@ export async function runRemoteMigration(rawOptions={},dependencies={}){
       if(before.classification!=='managed'){
         fail('REMOTE_MIGRATION_TARGET_STATE_MISMATCH','unmanaged state must be adopted first');
       }
-      const pending=LATEST_MIGRATION_VERSION-before.version;
-      if(pending>1){
-        fail('REMOTE_MIGRATION_TOO_MANY_PENDING','multiple migrations are pending');
+      if(options.targetVersion!==before.version+1){
+        fail('REMOTE_MIGRATION_TARGET_VERSION_MISMATCH','target is not the next managed version');
+      }
+      const migrations=EXECUTABLE_MIGRATIONS.slice(0,options.targetVersion);
+      const authorizationState=await inspectMigrationState(db,{migrations});
+      if(authorizationState.classification!=='managed'
+        ||authorizationState.currentVersion!==before.version||!authorizationState.ready
+        ||authorizationState.stateFingerprint!==options.expectedStateFingerprint){
+        throw new MigrationError('MIGRATION_STATE_CHANGED','Migration state fingerprint mismatch');
       }
       result=await applyMigrations(db,{
         expectedStateFingerprint:options.expectedStateFingerprint,
-        migrations:EXECUTABLE_MIGRATIONS,
+        migrations,
         retry:{maxAttempts:3,baseDelayMs:40,maxDelayMs:200},
       });
     }
@@ -501,7 +543,7 @@ export async function runRemoteMigration(rawOptions={},dependencies={}){
 }
 
 function parseArguments(argv){
-  if(!Array.isArray(argv)||argv.length!==10){
+  if(!Array.isArray(argv)||argv.length!==12){
     fail('REMOTE_MIGRATION_INVALID','usage is invalid');
   }
   const flags=new Map();
@@ -509,7 +551,7 @@ function parseArguments(argv){
     const flag=argv[index];
     if(![
       '--operation','--rehearsal-run-id','--rehearsal-run-attempt',
-      '--expected-state','--artifact-dir',
+      '--expected-state','--target-version','--artifact-dir',
     ].includes(flag)||flags.has(flag)||typeof argv[index+1]!=='string'){
       fail('REMOTE_MIGRATION_INVALID','usage is invalid');
     }
@@ -524,6 +566,7 @@ function parseArguments(argv){
     runId:flags.get('--rehearsal-run-id'),
     runAttempt:flags.get('--rehearsal-run-attempt'),
     expectedStateFingerprint:flags.get('--expected-state'),
+    targetVersion:flags.get('--target-version'),
     artifactDirectory:flags.get('--artifact-dir'),
   });
 }
@@ -659,7 +702,7 @@ export async function main({
     ||[
       'REMOTE_MIGRATION_DISABLED','REMOTE_MIGRATION_EVIDENCE_INVALID',
       'REMOTE_MIGRATION_TARGET_IDENTITY_MISMATCH','REMOTE_MIGRATION_TARGET_STATE_MISMATCH',
-      'REMOTE_MIGRATION_TOO_MANY_PENDING',
+      'REMOTE_MIGRATION_TARGET_VERSION_MISMATCH',
     ].includes(result.error)
   );
   return {result,exitCode:result.ok?0:refusal?2:1};

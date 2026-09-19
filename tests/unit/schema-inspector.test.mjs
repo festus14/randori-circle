@@ -22,7 +22,7 @@ test('current schema passes read-only inspection and tolerates the retired AI ta
   }},{manifest:SCHEMA_MANIFEST});
   assert.equal(status.ok,true);
   assert.deepEqual(status.summary,{
-    expectedTables:45,presentTables:45,expectedIndexes:47,presentIndexes:47,blockers:0,warnings:0,
+    expectedTables:49,presentTables:49,expectedIndexes:54,presentIndexes:54,blockers:0,warnings:0,
   });
   assert.deepEqual(status.tolerated.legacyTables,['ai_monthly_usage']);
   assert.ok(statements.length>50);
@@ -71,10 +71,10 @@ test('empty database produces a non-executable, checksum-bearing plan',async()=>
   const db=createClient({url:'file::memory:'});
   const status=await inspectSchema(db,{manifest:SCHEMA_MANIFEST});
   const plan=buildReadOnlyPlan(status,{manifest:SCHEMA_MANIFEST,plans:MIGRATION_PLANS});
-  assert.equal(status.blockers.length,92);
+  assert.equal(status.blockers.length,103);
   assert.equal(plan.readOnly,true);
   assert.equal(plan.executable,false);
-  assert.equal(plan.actions.length,92);
+  assert.equal(plan.actions.length,103);
   assert.ok(plan.actions.some(action=>action.artifact.name==='circles'&&action.kind==='create_table'));
   assert.ok(plan.actions.some(action=>action.artifact.name==='uq_circles_active_primary'&&action.kind==='create_index'));
   assert.ok(plan.plans.every(item=>/^[a-f0-9]{64}$/.test(item.checksum)));
@@ -410,5 +410,24 @@ test('unknown CHECK-enforcement state fails closed',async()=>{
   }},{manifest:SCHEMA_MANIFEST});
   assert.equal(status.checkConstraintsEnabled,false);
   assert.ok(status.blockers.some(item=>item.code==='check_constraints_disabled'));
+  db.close();
+});
+
+test('owned artifact inspection ignores unrelated tables but rejects hooks on owned tables',async()=>{
+  const db=createClient({url:'file::memory:'});
+  await db.execute('PRAGMA foreign_keys=ON');
+  await db.execute('PRAGMA ignore_check_constraints=OFF');
+  await db.execute(`CREATE TABLE owned_rows (id INTEGER PRIMARY KEY, value TEXT NOT NULL)`);
+  await db.execute(`CREATE TABLE unrelated_rows (id INTEGER PRIMARY KEY)`);
+  await db.execute(`CREATE UNIQUE INDEX unrelated_unique ON unrelated_rows(id)`);
+  const manifest={
+    version:1,checksum:'owned',artifactScope:'owned',toleratedLegacyTables:[],indexes:[],
+    tables:[{name:'owned_rows',sql:`CREATE TABLE owned_rows (id INTEGER PRIMARY KEY, value TEXT NOT NULL)`}],
+  };
+  assert.equal((await inspectSchema(db,{manifest})).ready,true);
+  await db.execute(`CREATE TRIGGER owned_rows_insert AFTER INSERT ON owned_rows BEGIN SELECT 1; END`);
+  const drift=await inspectSchema(db,{manifest});
+  assert.equal(drift.ready,false);
+  assert.deepEqual(drift.drift.unexpectedTriggers,['owned_rows_insert']);
   db.close();
 });

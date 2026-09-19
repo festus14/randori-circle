@@ -389,16 +389,23 @@ test('rotation metrics aggregate only key versions and readiness signals',async(
     const legacy=sealCredentialEnvelope({plaintext:'legacy-token',ring:ring({ACTIVE:KEY_1,VERSION:'1'}),
       legacyAad:()=>Buffer.from('legacy-aad')});
     for(const [id,status,envelope,email] of [[1,'pending',v2,'person@example.test'],
-      [2,'dead_letter',legacy,'other@example.test'],[3,'delivered','malformed','done@example.test']]){
+      [2,'pending',legacy,'pending@example.test'],
+      [3,'processing',legacy,'processing@example.test'],
+      [4,'retry',legacy,'retry@example.test'],
+      [5,'dead_letter',legacy,'dead-letter@example.test'],
+      [6,'delivered',legacy,'delivered@example.test'],
+      [7,'suppressed',legacy,'suppressed@example.test'],
+      [8,'delivered','malformed','done@example.test']]){
       await db.execute({sql:`INSERT INTO outbox_events VALUES (?,?,?,?,?,?)`,args:[id,'credential.test',1,
         `credential/v1/${id}/1`,JSON.stringify({credential_envelope:envelope,recipient_email:email}),status]});
     }
     const metrics=await readCredentialRotationMetrics(db,{eventType:'credential.test',
       envelopeField:'credential_envelope',ring:active});
     assert.deepEqual(metrics.versions,{2:1});
-    assert.equal(metrics.legacy_v1,1);
-    assert.equal(metrics.actionable,2);
-    assert.equal(metrics.ready,true);
+    assert.equal(metrics.legacy_v1,4);
+    assert.equal(metrics.actionable,5);
+    assert.equal(metrics.ready,false,
+      'every actionable legacy status blocks the key-retirement signal');
     const substituted=await readCredentialRotationMetrics(db,{eventType:'credential.test',
       envelopeField:'credential_envelope',ring:ring({ACTIVE:KEY_3,VERSION:'2',WRITE:'2',
         PREVIOUS:JSON.stringify([{version:1,key:KEY_1}])})});
@@ -408,8 +415,17 @@ test('rotation metrics aggregate only key versions and readiness signals',async(
       envelopeField:'credential_envelope',ring:ring({ACTIVE:KEY_1,VERSION:'1',WRITE:'2'})});
     assert.equal(downgraded.ready,false);
     assert.equal(downgraded.key_version_ahead,1);
+    await db.execute(`UPDATE outbox_events SET status='delivered' WHERE id BETWEEN 2 AND 5`);
+    const versionedOnly=await readCredentialRotationMetrics(db,{eventType:'credential.test',
+      envelopeField:'credential_envelope',ring:active});
+    assert.equal(versionedOnly.ready,true,
+      'terminal legacy rows are ignored while an active versioned envelope remains ready');
+    assert.equal(versionedOnly.legacy_v1,0);
+    assert.equal(versionedOnly.actionable,1);
+    assert.deepEqual(versionedOnly.versions,{2:1});
     const serialized=JSON.stringify(metrics);
-    assert.doesNotMatch(serialized,/person@|other@|hidden-token|legacy-token|[A-Za-z0-9_-]{43}/);
+    assert.doesNotMatch(serialized,
+      /person@|pending@|processing@|retry@|dead-letter@|delivered@|suppressed@|hidden-token|legacy-token|[A-Za-z0-9_-]{43}/);
   }finally{ db.close(); }
 });
 

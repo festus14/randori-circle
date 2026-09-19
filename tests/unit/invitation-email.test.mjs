@@ -293,6 +293,78 @@ test('rotation readiness retains only a live invitation credential that can stil
   assert.equal(sendLimit.retained,0,'an exact five-send invitation has no remaining resend credential');
 });
 
+test('legacy invitation resend material blocks retirement only while it remains usable',async()=>{
+  const db=await fixture();
+  const invitations=[];
+  for(const [id,email] of [
+    ['22222222-2222-4222-8222-222222222221','expires@example.test'],
+    ['22222222-2222-4222-8222-222222222222','used@example.test'],
+    ['22222222-2222-4222-8222-222222222223','revoked@example.test'],
+    ['22222222-2222-4222-8222-222222222224','exhausted@example.test'],
+  ]) invitations.push(await seed(db,{id,email}));
+  await db.execute(`UPDATE outbox_events SET status='delivered'`);
+
+  const retained=await invitationEmailKeyRotationStatus(db);
+  assert.equal(retained.actionable,0);
+  assert.equal(retained.retained,4);
+  assert.equal(retained.legacy_v1,4);
+  assert.equal(retained.ready,false,
+    'live resendable v1 credentials must prevent retirement even after delivery');
+
+  await db.batch([
+    {sql:`UPDATE circle_invitations SET expires_at=datetime('now','-1 second') WHERE id=?`,
+      args:[invitations[0].id]},
+    {sql:`UPDATE circle_invitations SET used_at=datetime('now') WHERE id=?`,
+      args:[invitations[1].id]},
+    {sql:`UPDATE circle_invitations SET revoked_at=datetime('now') WHERE id=?`,
+      args:[invitations[2].id]},
+  ],'write');
+  for(let sequence=2;sequence<=INVITATION_EMAIL_MAX_SENDS;sequence+=1){
+    await db.execute(createInvitationEmailEvent({invitationId:invitations[3].id,circleId:10,
+      actorUserId:1,email:invitations[3].email,token:invitations[3].token,sendSequence:sequence}));
+  }
+  await db.execute({sql:`UPDATE outbox_events SET status='delivered'
+    WHERE json_extract(payload_json,'$.invitation_id')=?`,args:[invitations[3].id]});
+
+  const retired=await invitationEmailKeyRotationStatus(db);
+  assert.equal(retired.actionable,0);
+  assert.equal(retired.retained,0);
+  assert.equal(retired.legacy_v1,0);
+  assert.equal(retired.ready,true,
+    'expired, used, revoked, and send-exhausted invitations need no retained key');
+});
+
+test('rotation readiness cannot omit a live v1 invite during pending-to-delivered transition',async()=>{
+  const db=await fixture();
+  const invitation=await seed(db,{email:'snapshot-race@example.test'});
+  let reads=0;
+  const racingDb={
+    async execute(statement){
+      reads+=1;
+      const snapshot=await db.execute(statement);
+      if(reads===1){
+        await db.execute({sql:`UPDATE outbox_events SET status='delivered'
+          WHERE json_extract(payload_json,'$.invitation_id')=?`,args:[invitation.id]});
+      }
+      return snapshot;
+    },
+  };
+
+  const duringTransition=await invitationEmailKeyRotationStatus(racingDb);
+  assert.equal(reads,1,'one statement must own both actionable and retained projections');
+  assert.equal(duringTransition.actionable,1);
+  assert.equal(duringTransition.retained,0);
+  assert.equal(duringTransition.legacy_v1,1);
+  assert.equal(duringTransition.ready,false);
+
+  const afterTransition=await invitationEmailKeyRotationStatus(db);
+  assert.equal(afterTransition.actionable,0);
+  assert.equal(afterTransition.retained,1);
+  assert.equal(afterTransition.legacy_v1,1);
+  assert.equal(afterTransition.ready,false,
+    'the same live credential moves between categories without disappearing');
+});
+
 test('revoked, expired, consumed, rotated, owner-revoked, and existing-member invitations suppress',async()=>{
   const scenarios=[
     ['revoked',`UPDATE circle_invitations SET revoked_at=datetime('now')`],

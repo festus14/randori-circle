@@ -1,11 +1,10 @@
 # Randori Circle implemented decision log
 
-Status: accepted through release head `b88dcbf`, plus candidate PR #96
+Status: accepted through the current rolling release
 
 Last reviewed: 2026-09-19
 
-Scope: release branch through `b88dcbf3a97454f121f8c6149760a9ac87c27a41`,
-plus the consolidated notification candidate PR #96
+Scope: current rolling release and independently reviewed candidate increments
 
 This log records decisions that govern the application being shipped now. The
 [production architecture plan](PRODUCTION_ARCHITECTURE_PLAN.md) describes a
@@ -41,7 +40,8 @@ v6 adds the outbox and its audit history, and v7 adds pending verified-email
 activation. Version v8 adds password-reset credentials and session-scoped
 recent-authentication evidence. Version v9 adds hashed provider-email
 observations and a redacted identity lifecycle audit. The protected production workflow applies no
-more than one pending version per inspected fingerprint and approval.
+more than one pending version per fresh rehearsal, inspected fingerprint, and
+approval.
 
 ## ID-01: Ship the useful weekly loop before a platform rewrite
 
@@ -1030,3 +1030,212 @@ Enable it first in staging, exercise local-capture and owned-domain Resend
 delivery/suppression, and only then enable it in production. Disabling the gate
 stops both new invitation-email enqueueing and worker dispatch while preserving
 manual invitation creation and queued encrypted events for a later safe resume.
+
+## ID-26: Separate secondary-circle coordination from workspace authority
+
+Status: implemented behind the independent, default-off
+`SECONDARY_CIRCLE_COORDINATION_ENABLED` flag; migration v13 owns its storage,
+and runtime readiness requires the complete managed ledger through v14.
+
+**Decision.** A selected secondary circle may publish and read one immutable
+current-cycle pairing, but that assignment is coordination data only. Migration
+v13 introduces a separate canonical publication, complete eligibility snapshot,
+and group data plane keyed by exact circle scope and availability cycle. Every
+child proves its publication, scope, circle, cycle, and eligible account through
+restrictive composite foreign keys. The publication also proves its full cycle
+descriptor, while each available eligibility row owns exactly one group/member
+slot so unavailable or duplicate participant claims fail at the storage
+boundary. The primary circle continues through the
+legacy publication tables because those IDs authorize schedules, rooms, chat,
+video, execution, and AI today.
+
+Canonical groups call an unmatched odd member `is_solo`, require the second
+member to be absent exactly for that state, and expose `solo:true` without a
+fabricated partner. The legacy algorithm's internal `isAI` result is translated
+only when writing the new boundary; the v13 model does not claim an AI partner.
+
+Manual publication derives the circle from the live session and revalidates its
+context generation, membership, owner role, archive state, database time,
+roster, availability, and same-circle fairness history within each write
+transaction attempt. Cron enumerates secondary circles deterministically under
+a hard limit and gives each scope its own transaction. One failed scope is
+counted while later admitted scopes continue, after which the cron returns an
+aggregate retryable failure. Existing claims are immutable; pre-commit lock
+conflicts may retry, but ambiguous commits do not. Secondary cycles always use
+`cycle_default`, never the account-global legacy availability value, and do not
+enqueue pairing email.
+
+Secondary reads recheck the same live context and join partner identity only
+through current active membership. Departed partners are redacted. Responses
+contain no internal legacy IDs or room/schedule fields, explicitly report
+`workspace_available:false`, and are fenced in the browser by account, opaque
+circle ID, and context version. The dedicated UI branch clears room state and
+shows no schedule, chat, join, video, execution, or AI controls.
+
+**Alternatives.** Reusing `pairing_weeks` was rejected because its global week
+label and unowned children collide across circles and grant workspace access.
+Rebuilding every legacy workspace table now would produce a cleaner final
+model, but couples the useful weekly pairing milestone to a much larger data
+migration. Dual-writing would create two authorities and ambiguous rollback.
+Manual-only publication would avoid cron work but weaken the weekly habit.
+
+**Rollout and recovery.** Follow the central rollout in
+`ACTIVE_CIRCLE_CONTEXT.md`: deploy with the flag false, apply managed v13 and
+then v14 as separate protected migration steps, and verify exact runtime
+readiness. Only then canary one secondary circle and verify bounded cron
+publication before enabling secondary coordination more broadly. Roll back
+only by disabling the flag. Preserve canonical rows for audit and forward
+recovery; never copy them into legacy workspace tables or weaken membership
+enforcement.
+
+## ID-27: Export one accepted session locally with a stable private identity
+
+Status: implemented as a client-only, no-migration increment.
+
+**Decision.** The signed-in current-pair dashboard exposes **Add to calendar**
+only for a canonical room whose current schedule contains a normalized accepted
+UTC instant. A small pure module generates one RFC 5545 event in the browser and
+downloads it through a temporary Blob URL. It uses UTC `DTSTART`, a fixed
+60-minute `DTEND`, the current app room link, RFC text escaping and 75-octet line
+folding. As a static import it omits iTIP `METHOD` and organizer semantics. The
+event UID derives only from the canonical room and remains stable
+when the accepted time changes, allowing a reschedule export to identify the
+same logical session.
+
+The formatter receives no account or partner object. The file contains no
+name, email, invitation credential, authentication token, code, chat,
+transcript, or workspace payload. Proposals, legacy free-text agreements,
+cleared schedules, malformed timestamps, noncanonical rooms, and stale
+rendered actions fail closed. The action states that the duration is 60 minutes
+and that the calendar application controls the downloaded copy. Randori cannot
+revoke, update, expire, or delete a file after it crosses that retention
+boundary.
+
+**Alternatives.** Direct Google or Outlook links are convenient but
+vendor-specific and disclose the event to a third party. Server-generated
+calendar files create an unnecessary authenticated endpoint for deterministic
+formatting. Provider OAuth and two-way calendar sync require broad permissions,
+stored refresh tokens, provider-specific conflict resolution, and a larger
+privacy review. Email reminders remain the durable provider-backed notification
+path; this export makes accepted scheduling useful before production delivery
+credentials are configured.
+
+**Recovery.** There is no schema, server route, provider secret, or external
+request to reverse. Roll back the client assets normally. Already downloaded
+copies remain under each member's calendar retention and sharing controls.
+
+## ID-28: Advance production schema by one explicitly approved version
+
+Status: implemented in issue #134 as a protected migration-control hardening
+increment; no application schema migration.
+
+**Decision.** A production apply names exactly one `target_version`, and that
+target must be the immediate successor of both the signed rehearsal's source
+version and the live managed database version. Status may report the complete
+ordered backlog, but only its `nextVersion` is actionable. The apply runner
+receives only the immutable executable-migration prefix ending at that target,
+so later migrations present in the same repository commit cannot execute under
+the approval.
+
+The rehearsal attestation now binds the exact source migration-state
+fingerprint in addition to source classification and version. Status and apply
+recompute that source state against the protected database. After adoption or
+apply changes the source, the old attestation fails closed; the next step needs
+a fresh restore rehearsal, fresh status artifact, fresh expected fingerprint,
+and separate protected approval. Unmanaged databases still require exact-prefix
+adoption before any apply.
+
+**Alternatives.** Applying every pending migration under one approval restores
+service faster but lets a single authorization span independently reviewed
+changes and widens rollback ambiguity. Reusing one rehearsal across sequential
+applies proves only the original source, not the state created by the previous
+mutation. Running historical workflow commits conflicts with the latest-main
+guard, while manual SQL bypasses checksums, ledger ownership, transaction
+fingerprints, and redacted audit evidence. An explicit one-step target with
+fresh evidence preserves those controls while allowing an old production
+database to catch up deliberately.
+
+## ID-29: Create and select a secondary circle as one idempotent operation
+
+Status: implemented behind the existing default-off
+`MULTI_CIRCLE_CONTROL_PLANE_ENABLED` flag; migration v14 is required.
+
+**Decision.** An authenticated user creates a secondary circle through
+same-origin `POST /api/circles` with only an exact bounded name and an opaque
+client-generated request ID. The server generates both public identity and a
+non-name-derived private slug. One write transaction revalidates the exact live
+session and account, checks the 10-active-owned-circle cap and the existing
+100-active-membership read ceiling, creates the circle plus active owner
+membership, records one `circle.created` audit, stores one durable creation
+receipt, and advances that initiating session's selected-circle generation.
+
+The receipt is keyed by account plus a domain-separated request digest and
+binds the exact name fingerprint, initiating session hash, circle, audit, and
+returned generation. Composite restrictive foreign keys bind it to the
+creator's membership and the audit's circle. The session hash intentionally
+has no foreign key because idempotency evidence must outlive normal session
+pruning. A matching replay is checked before either cap and returns the same
+result without reselecting, incrementing the context, or adding an audit. A
+changed name or session, changed selection, inactive ownership, or archived
+circle fails closed.
+
+There is no mandatory per-circle settings singleton in the current schema.
+Therefore the complete post-create row set is exactly circle identity, owner
+membership, audit, receipt, and selected session context. Availability retains
+its reviewed lazy `cycle_default` materialization. Creation is forbidden from
+writing global rollout state, pairing/availability rows, notifications, or any
+legacy workspace table, which preserves the coordination-only boundary.
+
+The browser exposes creation even for a sole-primary owner. It retains one
+request ID across retryable or ambiguous failures, clears private state before
+the request, aborts superseded work, and fences the response by account,
+authentication epoch, control-plane epoch, and baseline generation. A valid
+result broadcasts only account plus generation and reloads canonical context.
+Pre-commit lock conflicts retry with bounded backoff and full revalidation;
+once commit starts, an error is ambiguous and is never retried internally.
+
+**Alternatives.** Admin or SQL seeding does not make the product usable.
+Client-supplied IDs or slugs weaken ownership and collision boundaries. Audit
+dedupe alone cannot bind the exact name, session, and returned generation.
+Creating without selecting adds an avoidable stale-context race. Eager default
+availability or pairing rows conflict with the existing lazy-cycle contract.
+Full secondary workspace creation remains deferred until its storage and
+authorization paths are canonically circle-owned.
+
+**Rollout and recovery.** Apply v14 one version at a time through the protected
+rehearsal workflow, deploy with the control-plane flag off, then canary create,
+replay, cap, revocation, concurrency, cross-tab, and mobile flows in staging.
+Rollback disables the flag and preserves every receipt, audit, membership, and
+context generation; no schema downgrade or tenant-data deletion is required.
+
+## ID-30: Treat legacy credential counts as a key-retirement blocker
+
+Status: implemented as a runtime and operations-signal hardening increment with
+no schema migration, secret change, or delivery-format change. ID-29 is the
+secondary-circle creation decision immediately above.
+
+**Decision.** Aggregate credential-rotation `ready` means no relevant material
+is malformed, unavailable, ahead of configuration, or unattributable. It is a
+necessary compatibility gate, not proof that every configured prior key is
+unused: retiring one v2 key additionally requires that exact version's count to
+be zero. Any actionable legacy-v1 envelope, or any v1 invitation envelope
+retained for a possible resend, makes the aggregate signal false. The legacy
+format authenticates its payload but carries no key version or fingerprint, so
+a header-only aggregate cannot attribute it to one key. Delivery compatibility
+is unchanged: the worker still tries the active and ordered prior keys, while
+request paths remain independent of aggregate retirement health.
+
+Terminal activation and password-reset events do not retain credentials.
+Invitation events remain different because a delivered link can be resent;
+their latest envelope stays relevant only while the invitation is live, unused,
+unrevoked, owned by an active owner, and below the five-send limit. The existing
+bounded, PII-free projection continues to expose only counts and versions.
+Actionable and resend-retained invitation envelopes are selected by one database
+statement so a pending-to-delivered transition cannot fall between snapshots.
+
+**Alternatives.** Ignoring v1 because it lacks a key identifier creates a false
+green retirement signal precisely when attribution is impossible. Disabling v1
+delivery would strand credentials during the compatibility rollout. Decrypting
+and rewriting every queued row expands plaintext handling, transaction races,
+and rollback complexity. Conservatively waiting for v1 work to drain or cease
+being resendable preserves compatibility and requires no data mutation.

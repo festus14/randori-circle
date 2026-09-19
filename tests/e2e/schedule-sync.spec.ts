@@ -1,4 +1,4 @@
-import { expect, Page, Request, Route, test } from '@playwright/test';
+import { Download, expect, Page, Request, Route, test } from '@playwright/test';
 import { mockApi } from './helpers';
 
 const roomA = 'week_42_pair_7';
@@ -406,6 +406,14 @@ async function localDisplay(page: Page, instant: string): Promise<string> {
   }).format(new Date(value)), instant);
 }
 
+async function downloadText(download: Download): Promise<string> {
+  const stream = await download.createReadStream();
+  if (!stream) throw new Error('calendar download stream was unavailable');
+  const chunks: string[] = [];
+  for await (const chunk of stream) chunks.push(chunk.toString());
+  return chunks.join('');
+}
+
 test('pair members converge on a normalized proposal and acceptance in their own timezones', async ({ browser }) => {
   const store = new ScheduleStore([roomA]);
   const contexts = await Promise.all([
@@ -470,6 +478,110 @@ test('pair members converge on a normalized proposal and acceptance in their own
   } finally {
     await Promise.all(contexts.map(context => context.close()));
   }
+});
+
+test('accepted schedule exports privately at 320px, reschedules in place, and disappears when cleared', async ({ page }) => {
+  const store = new ScheduleStore([roomA]);
+  store.seed(roomA, { agreed_time: londonInstant, legacy_agreed_time: null });
+  await page.setViewportSize({ width: 320, height: 720 });
+  await openDashboard(page, userA, store, () => roomA);
+  await page.waitForFunction(() => Boolean((window as typeof window & {
+    _randori_calendar_export?: { download?: unknown };
+  })._randori_calendar_export?.download));
+
+  const action = page.getByTestId('schedule-calendar-export');
+  await expect(action).toBeVisible();
+  await expect(action).toHaveAccessibleName(/add the agreed .* session to your calendar/i);
+  await expect(page.getByTestId('schedule-area')).toContainText(/60 minutes.*calendar app controls/i);
+  const mobileGeometry = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+    overflowers: [...document.querySelectorAll<HTMLElement>('body *')].flatMap(element => {
+      const style = getComputedStyle(element);
+      const bounds = element.getBoundingClientRect();
+      if (style.display === 'none' || style.visibility === 'hidden'
+        || (bounds.left >= -0.5 && bounds.right <= window.innerWidth + 0.5)) return [];
+      return [{
+        tag: element.tagName,
+        id: element.id,
+        testId: element.dataset.testid || '',
+        className: String(element.className || '').slice(0, 100),
+        left: Math.round(bounds.left * 10) / 10,
+        right: Math.round(bounds.right * 10) / 10,
+        width: Math.round(bounds.width * 10) / 10,
+      }];
+    }).slice(0, 12),
+  }));
+  expect(mobileGeometry.clientWidth).toBe(320);
+  expect(mobileGeometry.scrollWidth, JSON.stringify(mobileGeometry))
+    .toBeLessThanOrEqual(mobileGeometry.clientWidth);
+
+  await action.focus();
+  const firstDownloadPromise = page.waitForEvent('download');
+  await action.press('Enter');
+  const firstDownload = await firstDownloadPromise;
+  const firstContent = await downloadText(firstDownload);
+  expect(firstDownload.suggestedFilename()).toBe(`randori-${roomA}.ics`);
+  expect(firstContent).toContain(`UID:${roomA}@calendar.randori-circle`);
+  expect(firstContent).toContain('DTSTART:20261006T173000Z');
+  expect(firstContent).toContain('DTEND:20261006T183000Z');
+  expect(firstContent).toContain(`URL:${testOrigin}/join/${roomA}`);
+  expect(firstContent).not.toMatch(/candidate|example\.test|token|source code|private chat/i);
+
+  const rescheduledInstant = '2026-10-08T19:00:00.000Z';
+  store.seed(roomA, { agreed_time: rescheduledInstant, legacy_agreed_time: null });
+  await refreshSchedule(page);
+  await expect(page.getByTestId('schedule-area').locator(`time[datetime="${rescheduledInstant}"]`)).toHaveCount(1);
+
+  const secondDownloadPromise = page.waitForEvent('download');
+  await page.getByTestId('schedule-calendar-export').click();
+  const secondContent = await downloadText(await secondDownloadPromise);
+  expect(secondContent).toContain(`UID:${roomA}@calendar.randori-circle`);
+  expect(secondContent).toContain('DTSTART:20261008T190000Z');
+  expect(secondContent).toContain('DTEND:20261008T200000Z');
+  expect(secondContent).not.toContain('DTSTART:20261006T173000Z');
+
+  await page.getByTestId('schedule-clear').click();
+  await expect.poll(() => store.snapshot(roomA).agreed_time).toBeNull();
+  await expect(page.getByTestId('schedule-calendar-export')).toHaveCount(0);
+});
+
+test('calendar export stays hidden for proposals, legacy text, cleared schedules, and invalid accepted values', async ({ page }) => {
+  const store = new ScheduleStore([roomA]);
+  store.seed(roomA, {
+    proposals: [{
+      proposal_id: opaqueId(9_001),
+      value: londonInstant,
+      instant: londonInstant,
+      proposed_by: userA.id,
+      legacy: false,
+    }],
+    agreed_time: null,
+    legacy_agreed_time: null,
+  });
+  await openDashboard(page, userA, store, () => roomA);
+  await expect(page.getByTestId('schedule-calendar-export')).toHaveCount(0);
+
+  store.seed(roomA, {
+    proposals: [],
+    agreed_time: '2026-10-06',
+    legacy_agreed_time: null,
+  });
+  expect(await refreshSchedule(page)).toBe(true);
+  await expect(page.getByTestId('schedule-calendar-export')).toHaveCount(0);
+
+  store.seed(roomA, {
+    proposals: [],
+    agreed_time: null,
+    legacy_agreed_time: 'Tuesday after work',
+  });
+  await refreshSchedule(page);
+  await expect(page.getByTestId('schedule-calendar-export')).toHaveCount(0);
+  await expect(page.getByTestId('schedule-area')).toContainText('Legacy agreement:');
+
+  await page.getByTestId('schedule-clear').click();
+  await expect.poll(() => store.snapshot(roomA).legacy_agreed_time).toBeNull();
+  await expect(page.getByTestId('schedule-calendar-export')).toHaveCount(0);
 });
 
 test('a nonexistent daylight-saving wall time is rejected without a schedule mutation', async ({ browser }) => {

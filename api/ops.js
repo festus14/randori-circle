@@ -11,6 +11,12 @@ import { buildFairPairing, canonicalRoomId } from './_pairing.js';
 import { pairingCronIsDue, resolvePairingCycle } from './_pairing-cycle.js';
 import { publishPairingCycle } from './_pairing-publication.js';
 import {
+  circlePairingFailure,
+  listSecondaryPairingScopes,
+  publishCirclePairing,
+  SECONDARY_PAIRING_CACHE_CONTROL,
+} from './_circle-pairing.js';
+import {
   createPairingEmailHandler,
   createResendEmailSender,
   migrateLegacyPairingEmails,
@@ -54,6 +60,7 @@ import {
   multiCircleControlPlaneEnabled,
   requestMatchesCircleContext,
   resolveActiveCircleContext,
+  secondaryCircleCoordinationEnabled,
   sendMultiCircleFeatureUnavailable,
 } from './_active-circle.js';
 
@@ -200,6 +207,45 @@ async function requirePairingPublisher(req,res){
     return null;
   }
   const localRuntime=strictLocalPairingRuntime(req);
+  if(secondaryCircleCoordinationEnabled()&&!localRuntime){
+    try{
+      await ensureCircleMembershipReadiness(db);
+      const active=await resolveActiveCircleContext(db,payload);
+      if(!active.ok){
+        if(active.reason==='selection_required'){
+          res.status(409).json({ok:false,error:'select an active circle',code:'active_circle_required'});
+        }else res.status(403).json({ok:false,error:'active circle membership required'});
+        return null;
+      }
+      if(!active.implicit&&!requestMatchesCircleContext(req,active)){
+        res.status(409).json({ok:false,error:'circle context changed',code:'circle_context_changed'});
+        return null;
+      }
+      if(active.membership.role!=='owner'){
+        res.status(403).json({ok:false,error:'circle owner required',circle_context_version:active.context_version});
+        return null;
+      }
+      const circleId=Number(active.membership.id);
+      const circleContext={
+        payload,circleId,contextVersion:Number(active.context_version),implicit:active.implicit===true,
+      };
+      if(!active.membership.is_primary){
+        return {
+          db,callerId,localRuntime:false,localRequest:false,mode:'secondary',
+          circlePublicId:String(active.membership.public_id),circleContextVersion:Number(active.context_version),
+          authority:{kind:'session',...circleContext,userId:callerId,requireOwner:true},
+        };
+      }
+      return {
+        db,callerId,localRuntime:false,localRequest:false,mode:'primary',
+        circlePublicId:String(active.membership.public_id),circleContextVersion:Number(active.context_version),
+        circleContext,scope:{kind:'circle',scopeKey:`circle:${circleId}`,circleId},
+      };
+    }catch{
+      res.status(503).json({ok:false,error:'pairing unavailable'});
+      return null;
+    }
+  }
   let result;
   try{
     result=await db.execute(localRuntime?{
@@ -231,7 +277,7 @@ async function requirePairingPublisher(req,res){
   const scope=localRuntime
     ?{kind:'local',scopeKey:'local',circleId:null}
     :{kind:'circle',scopeKey:`circle:${Number(row.circle_id)}`,circleId:Number(row.circle_id)};
-  return {db,callerId,localRuntime,localRequest:localRuntimeRequest(req),scope};
+  return {db,callerId,localRuntime,localRequest:localRuntimeRequest(req),scope,mode:'primary'};
 }
 
 async function ensureMigrations(db){
@@ -724,6 +770,9 @@ function pairingPublicationPayload(result,emailDelivery){
 }
 
 function pairingFailure(res,error){
+  if(error?.code==='PAIRING_CONTEXT_CHANGED'){
+    return res.status(409).json({ok:false,error:'circle context changed',code:'circle_context_changed'});
+  }
   if(error?.code==='PAIRING_PUBLISHER_REVOKED'){
     return res.status(403).json({error:'primary circle owner required'});
   }
@@ -736,40 +785,71 @@ function pairingFailure(res,error){
   return res.status(503).json({error:'pairing unavailable'});
 }
 
-async function runCurrentPairing(req,res,{
+async function currentPairingResult(req,{
   db,localRuntime,localRequest=false,callerId=null,scope:authorizedScope=null,
+  circleContext=null,circlePublicId=null,circleContextVersion,
 }){
+  const result=await publishPairingCycle(db,{
+    localRuntime,callerId,authorizedScope,
+    circleContext,
+    appUrl:process.env.APP_URL,
+    // Loopback transport is independent from publication scope. Invite-bound
+    // local identity still uses audited circle membership and v3 readiness.
+    allowLocalAppUrl:localRequest,
+    // The isolated local runtime shares the application clock with its read
+    // models; production remains pinned to the database-owned timestamp.
+    ...(localRequest?{now:new Date()}:{}),
+  });
+  let emailDelivery={summary:'pairing emails queued for outbox delivery'};
   try{
-    const result=await publishPairingCycle(db,{
-      localRuntime,callerId,authorizedScope,
-      appUrl:process.env.APP_URL,
-      // Loopback transport is independent from publication scope. Invite-bound
-      // local identity still uses audited circle membership and v3 readiness.
-      allowLocalAppUrl:localRequest,
-      // The isolated local runtime shares the application clock with its read
-      // models; production remains pinned to the database-owned timestamp.
-      ...(localRequest?{now:new Date()}:{}),
-    });
-    let emailDelivery={summary:'pairing emails queued for outbox delivery'};
-    try{
-      const status=await pairingEmailStatus(db);
-      emailDelivery={summary:`${status.pending+status.retry+status.processing} pairing email(s) queued for outbox delivery; exhausted ${status.dead_letter}, suppressed ${status.suppressed}`,
-        sent:0,failed:0,exhausted:status.dead_letter,
-        pending:status.pending+status.retry+status.processing,suppressed:status.suppressed};
-    }catch{}
-    return res.json(pairingPublicationPayload(result,emailDelivery));
-  }catch(error){
-    return pairingFailure(res,error);
-  }
+    const status=await pairingEmailStatus(db);
+    emailDelivery={summary:`${status.pending+status.retry+status.processing} pairing email(s) queued for outbox delivery; exhausted ${status.dead_letter}, suppressed ${status.suppressed}`,
+      sent:0,failed:0,exhausted:status.dead_letter,
+      pending:status.pending+status.retry+status.processing,suppressed:status.suppressed};
+  }catch{}
+  return {
+    ...pairingPublicationPayload(result,emailDelivery),
+    ...(circlePublicId?{circle_public_id:circlePublicId}:{}),
+    ...(circleContextVersion===undefined?{}:{circle_context_version:circleContextVersion}),
+  };
+}
+
+async function runCurrentPairing(req,res,context){
+  try{ return res.json(await currentPairingResult(req,context)); }
+  catch(error){ return pairingFailure(res,error); }
 }
 
 async function handlePairingRun(req,res){
   if(req.method!=='POST') return res.status(405).json({error:'POST only'});
   const context=await requirePairingPublisher(req,res);
   if(!context) return;
+  if(context.circlePublicId) res.setHeader('Cache-Control',SECONDARY_PAIRING_CACHE_CONTROL);
   const body=req.body===undefined?{}:req.body;
   if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length){
     return res.status(400).json({error:'request body must be empty; published cycles cannot be remixed'});
+  }
+  if(context.mode==='secondary'){
+    try{
+      const result=await publishCirclePairing(context.db,{authority:context.authority});
+      const publication=result.publication;
+      return res.json({
+        ok:true,created:result.created,skipped:!result.created,coordination_only:true,
+        workspace_available:false,circle_public_id:context.circlePublicId,
+        circle_context_version:context.circleContextVersion,cycle:publication.cycle,
+        week_label:publication.cycle.cycleId,count:publication.participantCount,
+        participant_count:publication.participantCount,
+        available_count:publication.eligibility.filter(item=>item.isAvailable).length,
+        pair_count:publication.groups.length,
+        solo_count:publication.groups.filter(group=>group.isSolo).length,
+        algorithm_version:publication.algorithm.version,
+        message:result.created
+          ?'Current-cycle pairing published. Workspace tools are not enabled for this circle.'
+          :'Current-cycle pairing was already published; no pairs were changed.',
+      });
+    }catch(error){
+      const failure=circlePairingFailure(error,{contextVersion:context.circleContextVersion});
+      return res.status(failure.status).json(failure.body);
+    }
   }
   return runCurrentPairing(req,res,context);
 }
@@ -781,22 +861,56 @@ async function handleWeekly(req,res){
     if(process.env.TURSO_DATABASE_URL){ try{ await logServerOps('warn','cron_auth_fail','weekly unauthorized', {headers:Object.keys(req.headers||{})}, req); }catch{} }
     return res.status(401).json({ error:'unauthorized cron', hint:'send x-cron-secret: <CRON_SECRET> or Authorization: Bearer <CRON_SECRET>'});
   }
-  const now=new Date();
+  let db;
+  try{ db=getClient(); }
+  catch{ return res.status(503).json({error:'pairing unavailable'}); }
+  let now;
   let cycle;
   try{
+    const clock=await db.execute(`SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc`);
+    now=new Date(clock.rows?.[0]?.now_utc);
+    if(!Number.isFinite(now.getTime())) throw new Error('invalid database time');
     cycle=resolvePairingCycle({now});
     if(!pairingCronIsDue({now})){
       return res.json({ok:true,skipped:true,reason:'outside_due_window',cycle,message:'Pairing publication is only due during the configured Sunday 08:00 UTC run window.'});
     }
   }catch{ return res.status(503).json({error:'pairing unavailable'}); }
-  let db;
-  try{ db=getClient(); }
-  catch{ return res.status(503).json({error:'pairing unavailable'}); }
-  return runCurrentPairing(req,res,{
-    db,
-    localRuntime:strictLocalPairingRuntime(req),
-    localRequest:localRuntimeRequest(req),
-  });
+  const localRuntime=strictLocalPairingRuntime(req);
+  if(!secondaryCircleCoordinationEnabled()||localRuntime){
+    return runCurrentPairing(req,res,{db,localRuntime,localRequest:localRuntimeRequest(req)});
+  }
+  let secondaryScopes=null,secondaryOverflow=null;
+  try{ secondaryScopes=await listSecondaryPairingScopes(db); }
+  catch(error){
+    if(error?.code==='CIRCLE_PAIRING_BATCH_OVERFLOW') secondaryOverflow=error;
+    else{
+      const failure=circlePairingFailure(error);
+      return res.status(failure.status).json(failure.body);
+    }
+  }
+  let primary;
+  try{ primary=await currentPairingResult(req,{db,localRuntime:false,localRequest:false}); }
+  catch(error){ return pairingFailure(res,error); }
+  if(secondaryOverflow){
+    const failure=circlePairingFailure(secondaryOverflow);
+    return res.status(failure.status).json(failure.body);
+  }
+  const secondary={attempted:secondaryScopes.length,created:0,existing:0,failed:0};
+  for(const circleId of secondaryScopes){
+    try{
+      const result=await publishCirclePairing(db,{authority:{kind:'system',circleId}});
+      if(result.created) secondary.created+=1;
+      else secondary.existing+=1;
+    }catch{
+      secondary.failed+=1;
+      continue;
+    }
+  }
+  if(secondary.failed){
+    try{ await logServerOps('error','secondary_pairing_failed','secondary pairing scope failed',secondary,req); }catch{}
+    return res.status(503).json({ok:false,error:'pairing unavailable',retryable:true,secondary});
+  }
+  return res.json({...primary,secondary});
 }
 
 
@@ -889,7 +1003,7 @@ export default async function handler(req,res){
     ?{ok:false,error:'cross-origin mutation rejected'}
     :{error:'cross-origin mutation rejected'});
   const unscopedCircleFeature=(availabilityRequest&&!multiCircleAvailabilityEnabled())
-    ||ep==='pairing-run'||pathLower.includes('/pairing/run')
+    ||((ep==='pairing-run'||pathLower.includes('/pairing/run'))&&!secondaryCircleCoordinationEnabled())
     ||ep==='reshuffle'||ep==='promote'||pathLower.includes('reshuffle')||pathLower.includes('promote');
   if(multiCircleControlPlaneEnabled()&&unscopedCircleFeature){
     try{

@@ -246,7 +246,7 @@ test('database preparation migrates before serving and rejects unmanaged state',
   const ledger=await db.execute('SELECT version,disposition FROM schema_migrations ORDER BY version');
   assert.deepEqual(
     ledger.rows.map(row=>[Number(row.version),String(row.disposition)]),
-    [[1,'applied'],[2,'applied'],[3,'applied'],[4,'applied'],[5,'applied'],[6,'applied'],[7,'applied'],[8,'applied'],[9,'applied'],[10,'applied'],[11,'applied'],[12,'applied']],
+    [[1,'applied'],[2,'applied'],[3,'applied'],[4,'applied'],[5,'applied'],[6,'applied'],[7,'applied'],[8,'applied'],[9,'applied'],[10,'applied'],[11,'applied'],[12,'applied'],[13,'applied'],[14,'applied']],
   );
   await db.close();
   cleanup.pop();
@@ -1062,6 +1062,11 @@ test('request parsing rejects wrong methods, malformed JSON, oversized bodies, a
 
 test('static serving supports SPA navigation without exposing repository files or traversal targets',async()=>{
   const directory=temporaryDirectory();
+  mkdirSync(join(directory,'assets'));
+  writeFileSync(
+    join(directory,'assets','calendar-export.js'),
+    readFileSync(join(REPOSITORY_ROOT,'assets','calendar-export.js')),
+  );
   const {config}=localConfig(directory);
   const runtime=registerRuntime(await startLocalDevelopmentServer({config,logger:SILENT_LOGGER}));
 
@@ -1072,6 +1077,14 @@ test('static serving supports SPA navigation without exposing repository files o
     assert.equal(response.headers.get('x-frame-options'),'DENY');
     assert.match(await response.text(),/<title>Randori Circle<\/title>/);
   }
+
+  const calendarModule=await fetch(new URL('/assets/calendar-export.js',runtime.url));
+  assert.equal(calendarModule.status,200);
+  assert.match(calendarModule.headers.get('content-type')||'',/^text\/javascript/);
+  assert.match(await calendarModule.text(),/export function buildScheduleCalendar/);
+
+  const disallowedRootModule=await fetch(new URL('/calendar-export.js',runtime.url));
+  assert.equal(disallowedRootModule.status,404);
 
   for(const route of [
     '/package.json',

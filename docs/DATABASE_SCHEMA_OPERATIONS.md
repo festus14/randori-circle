@@ -4,7 +4,7 @@ Randori has read-only schema inspection for configured databases, a transactiona
 
 ## Contract
 
-- `db/schema-manifest.js` is the current contract: 45 application tables and 47 named indexes.
+- `db/schema-manifest.js` is the current contract: 49 application tables and 54 named indexes.
 - The manifest includes column/default/primary-key contracts, checks, foreign keys, unique constraints, AUTOINCREMENT/collation/table options, and unique, partial, descending, and expression-index semantics. SQLite-created `sqlite_autoindex_*` indexes are intentionally outside the named-index count.
 - `ai_monthly_usage` is a retired table. Its presence is reported as tolerated legacy state; it is not treated as current schema and is never changed.
 - `schema_migrations` is a runner-owned operational table. General schema inspection recognizes it without treating it as unexpected application drift; the migration runner validates its exact schema and rows separately.
@@ -21,6 +21,14 @@ Randori has read-only schema inspection for configured databases, a transactiona
 - Migration v10 adds migration-owned room-cursor and sender-window chat indexes without changing message rows or API limits.
 - Migration v11 adds disabled-by-default chat-retention control, explicit room ownership, durable bounded runs, legal holds, count-only audit, and a chronological expiry index. It does not seed an enabled control row or delete chat. See `CHAT_RETENTION.md` before any protected operation.
 - Migration v12 adds session-bound active-circle context with a monotonically increasing compare-and-swap version and account/circle lookup indexes. Its composite session foreign key prevents binding one account to another account's session. Membership removal preserves the versioned context tombstone so reactivation cannot resurrect a stale generation; session removal cascades the context away. Request paths never create this table.
+- Migration v13 adds immutable, circle-owned pairing publications, complete
+  availability eligibility snapshots, and exact-scope groups for secondary
+  coordination. Restrictive composite foreign keys keep every child on the
+  publication's circle and cycle, bind the full publication descriptor to its
+  availability cycle, and admit only available members assigned to one exact
+  group slot. These rows never authorize a legacy room.
+- Migration v14 adds the durable circle-creation receipt and composite
+  membership/audit integrity needed for retry-safe atomic create-and-select.
 
 ## Commands
 
@@ -50,7 +58,7 @@ Representative output fields:
   "manifest": {"version": 1, "checksum": "..."},
   "foreignKeysEnabled": true,
   "checkConstraintsEnabled": true,
-  "summary": {"expectedTables": 45, "expectedIndexes": 47, "blockers": 0},
+  "summary": {"expectedTables": 49, "expectedIndexes": 54, "blockers": 0},
   "drift": {
     "missingTables": [],
     "missingColumns": [],
@@ -102,8 +110,8 @@ npm run --silent db:migrate -- \
   adopt --database file:///absolute/path/to/restored-randori.db \
   --expected-state <v2StateFingerprint> --through-version 2
 
-# Inspect again without a prefix. The result must be managed at v2 with v3,
-# v3 through v12 pending before using its new full-set fingerprint for the upgrade.
+# Inspect again without a prefix. The result must be managed at v2 with
+# v3 through v14 pending before using its new full-set fingerprint for the upgrade.
 npm run --silent db:migrate -- \
   status --database file:///absolute/path/to/restored-randori.db
 
@@ -164,7 +172,17 @@ See [Turso backup/restore rehearsal](TURSO_BACKUP_RESTORE_REHEARSAL.md) for envi
 
 The manual `turso-production-migration.yml` workflow consumes only a successful, signed rehearsal artifact from the exact current `main` commit. It independently retrieves and verifies the GitHub run and artifact, rechecks the exact base-database identity and protected provider state before minting a short-lived database token, and then exposes `status`, `adopt`, or `apply` through the same transactional migration engine.
 
-Status is read-only. Adopt and apply require both the protected enable variable and the exact state fingerprint returned by a preceding status. Apply refuses more than one pending version, and ambiguous commit failures are never retried. The workflow is serialized with the PITR rehearsal, writes only a redacted audit artifact, and is disabled for mutations by default.
+Status is read-only. Adopt and apply require both the protected enable variable
+and the exact state fingerprint returned by a preceding status. Status reports
+the full ordered backlog but authorizes only `nextVersion`. Apply requires that
+explicit target and passes only the executable prefix through that version to
+the transactional runner. The signed rehearsal must describe the exact live
+source classification, version, and state fingerprint; after any successful
+mutation a fresh rehearsal and status are mandatory. Skips, no-op apply,
+multi-version apply, stale evidence, and stale fingerprints are refused.
+Ambiguous commit failures are never retried. The workflow is serialized with
+the PITR rehearsal, writes only a redacted audit artifact, and is disabled for
+mutations by default.
 
 See [Protected Turso production migration](TURSO_PRODUCTION_MIGRATION.md) for environment setup, the historical-prefix adoption/current-version apply sequence, failure handling, and rollback boundaries.
 
@@ -182,6 +200,9 @@ This is a freeze, not an endorsement. Existing statements remain temporarily for
 4. Run local `db:migrate status` again, then run the existing `db:status` and `db:plan` inspections against the same rehearsal database.
 5. Configure the protected GitHub environment and execute the manual PITR workflow from current `main`. Retain its sanitized successful artifact in issue #38.
 6. If any rehearsal fails, do not edit `schema_migrations` or delete a database by name. Follow the exact recovery steps in the PITR runbook.
-7. Configure the protected migration environment with mutation disabled. Run the exact `status → adopt (if unmanaged) → status → apply → status` sequence in the production migration runbook only after a same-commit real rehearsal succeeds.
+7. Configure the protected migration environment with mutation disabled. For
+   each state change, run the exact `fresh rehearsal → status → adopt/apply one
+   explicit next version` sequence in the production migration runbook. Start
+   again with a fresh rehearsal after every adoption or apply.
 
 Production mutation remains blocked by `TURSO_PRODUCTION_MIGRATIONS_ENABLED=false` until real Turso credentials and a successful protected PITR rehearsal are available. Mocked CI tests do not satisfy that operational gate.

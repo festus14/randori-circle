@@ -14,6 +14,7 @@ import {
   PASSWORD_RESET_EVENT_TYPE,
   openPasswordResetToken,
   passwordResetKeyRotationStatus,
+  sealPasswordResetToken,
 } from '../../api/_password-reset.js';
 import {createOutboxEventStatement} from '../../api/_outbox.js';
 import {EXECUTABLE_MIGRATIONS} from '../../db/executable-migrations.js';
@@ -90,11 +91,15 @@ test('request response is enumeration-safe and reset revokes every existing sess
   const {db}=await fixture();
   const unrelatedKey='password-reset/v1/33333333-3333-4333-8333-333333333333/1';
   await db.execute(createOutboxEventStatement({eventType:PASSWORD_RESET_EVENT_TYPE,
-    idempotencyKey:unrelatedKey,payload:{token_envelope:'malformed'},maxAttempts:1}));
+    idempotencyKey:unrelatedKey,payload:{
+      token_envelope:sealPasswordResetToken('B'.repeat(43),{idempotencyKey:unrelatedKey}),
+    },maxAttempts:1}));
   await db.execute({sql:`UPDATE outbox_events SET status='dead_letter' WHERE idempotency_key=?`,
     args:[unrelatedKey]});
-  assert.equal((await passwordResetKeyRotationStatus(db)).ready,false,
-    'operator retirement health remains red for unrelated malformed history');
+  const rotation=await passwordResetKeyRotationStatus(db);
+  assert.equal(rotation.ready,false,
+    'operator retirement health remains red for unrelated legacy dead letters');
+  assert.equal(rotation.legacy_v1,1);
   const first=await issueSession(db,{id:1,email:'member@example.test',name:'Member'});
   const second=await issueSession(db,{id:1,email:'member@example.test',name:'Member'});
   const known=await invoke({endpoint:'password-reset-request',body:{email:'member@example.test'},ip:'203.0.113.21'});

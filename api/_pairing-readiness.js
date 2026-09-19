@@ -15,7 +15,7 @@ const REQUIRED_MIGRATIONS=Object.freeze([
 // Generated from the canonical managed object SQL and the structural projection
 // below. The public name remains stable for existing callers, while the value
 // advances when a migration changes a projected core table or unique index.
-export const PAIRING_SCHEMA_V6_FINGERPRINT='6897c72f138e4d52f83f650e84b6b8fa59269a34423e8652a4ccaba3a7a96e05';
+export const PAIRING_SCHEMA_V6_FINGERPRINT='39e2e889b10de0a03cd87fb44c968a57ceb59d83c639720f26c0d93d0e61bce1';
 
 const TOLERATED_TABLES=new Set(['ai_monthly_usage']);
 const REQUIRED_TABLES=new Set([

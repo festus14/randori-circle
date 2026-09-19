@@ -25,6 +25,7 @@ const ATTEMPT=2;
 const REPOSITORY='festus14/randori-circle';
 const NOW=Date.parse('2026-09-18T12:00:00.000Z');
 const FAST_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
+const LATEST_VERSION=EXECUTABLE_MIGRATIONS.at(-1).version;
 
 function fixture(){
   const directory=mkdtempSync(join(tmpdir(),'randori-remote-migrate-'));
@@ -40,15 +41,18 @@ async function installManaged(path,version){
     await applyMigrations(db,{
       expectedStateFingerprint:state.stateFingerprint,migrations,retry:FAST_RETRY,
     });
+    return await inspectMigrationState(db,{migrations});
   }finally{ db.close(); }
 }
 
 async function installUnmanaged(path,version){
   const db=createClient({url:`file:${path}`,intMode:'bigint'});
+  const migrations=EXECUTABLE_MIGRATIONS.slice(0,version);
   try{
-    for(const migration of EXECUTABLE_MIGRATIONS.slice(0,version)){
+    for(const migration of migrations){
       for(const operation of migration.operations) await db.execute(operation.sql);
     }
+    return await inspectMigrationState(db,{migrations});
   }finally{ db.close(); }
 }
 
@@ -65,6 +69,7 @@ function options(overrides={}){
     confirmation:operation==='status'?'INSPECT_PRODUCTION_DATABASE':'MIGRATE_PRODUCTION_DATABASE',
     mutationsEnabled:'true',
     expectedStateFingerprint:operation==='status'?'':overrides.expectedStateFingerprint,
+    targetVersion:operation==='apply'?(overrides.targetVersion??4):'',
     sourceDatabaseId:SOURCE_ID,
     sourceDatabaseName:'production',
     sourceGroup:'default',
@@ -84,11 +89,12 @@ function options(overrides={}){
   };
 }
 
-function attestation(classification='managed',sourceVersion=3){
+function attestation(classification='managed',sourceVersion=3,sourceStateFingerprint='a'.repeat(64)){
   return Object.freeze({
     issuedAt:'2026-09-18T11:55:00.000Z',
     validUntil:'2026-09-18T12:25:00.000Z',
-    migration:{sourceClassification:classification,sourceVersion,finalVersion:4},
+    migration:{sourceClassification:classification,sourceVersion,sourceStateFingerprint,
+      finalVersion:LATEST_VERSION},
     identities:{
       sourceIdentityDigest:'a'.repeat(64),restoreIdentityDigest:'b'.repeat(64),
     },
@@ -121,7 +127,8 @@ function platformMock(overrides={}){
   };
 }
 
-function dependencies(path,{classification='managed',sourceVersion=3,platform,connectDatabase}={}){
+function dependencies(path,{classification='managed',sourceVersion=3,
+  sourceStateFingerprint='a'.repeat(64),platform,connectDatabase}={}){
   const calls=[];
   const github={
     async downloadSuccessfulWorkflowArtifact(value){
@@ -144,7 +151,7 @@ function dependencies(path,{classification='managed',sourceVersion=3,platform,co
       },
       verifyAttestation(envelope,value){
         verifyCalls.push({envelope,value});
-        return attestation(classification,sourceVersion);
+        return attestation(classification,sourceVersion,sourceStateFingerprint);
       },
       connectDatabase:connectDatabase??(configuration=>{
         calls.push(['connect',{...configuration,authToken:'[redacted]'}]);
@@ -157,16 +164,19 @@ function dependencies(path,{classification='managed',sourceVersion=3,platform,co
 test('status uses a read-only token and returns one actionable pending migration',async()=>{
   const item=fixture();
   try{
-    await installManaged(item.path,11);
+    const sourceVersion=LATEST_VERSION-1;
+    const source=await installManaged(item.path,sourceVersion);
     const platform=platformMock();
-    const deps=dependencies(item.path,{platform});
+    const deps=dependencies(item.path,{platform,sourceVersion,
+      sourceStateFingerprint:source.stateFingerprint});
     const result=await runRemoteMigration(options(),deps.value);
     assert.equal(result.ok,true);
     assert.equal(result.operation,'status');
     assert.equal(result.readOnly,true);
     assert.equal(result.state,'managed');
-    assert.equal(result.currentVersion,11);
-    assert.deepEqual(result.pendingVersions,[12]);
+    assert.equal(result.currentVersion,sourceVersion);
+    assert.deepEqual(result.pendingVersions,[LATEST_VERSION]);
+    assert.equal(result.nextVersion,LATEST_VERSION);
     assert.deepEqual(result.capabilities,{adopt:false,apply:true});
     assert.match(result.stateFingerprint,/^[a-f0-9]{64}$/);
     assert.deepEqual(platform.calls.filter(call=>call[0]==='token'),[
@@ -196,43 +206,143 @@ test('status uses a read-only token and returns one actionable pending migration
   }finally{ item.close(); }
 });
 
-test('apply advances one managed version per run and a fully migrated run is an explicit no-op',async()=>{
+test('status exposes every pending version but authorizes only the immediate next step',async()=>{
   const item=fixture();
   try{
-    await installManaged(item.path,11);
+    const source=await installManaged(item.path,5);
+    const result=await runRemoteMigration(options(),dependencies(item.path,{
+      sourceVersion:5,sourceStateFingerprint:source.stateFingerprint,
+    }).value);
+    assert.equal(result.currentVersion,5);
+    assert.equal(result.nextVersion,6);
+    assert.deepEqual(result.pendingVersions,Array.from(
+      {length:LATEST_VERSION-5},(_value,index)=>index+6,
+    ));
+    assert.deepEqual(result.capabilities,{adopt:false,apply:true});
+    assert.equal(result.stateFingerprint,(await state(
+      item.path,EXECUTABLE_MIGRATIONS.slice(0,6),
+    )).stateFingerprint);
+  }finally{ item.close(); }
+});
+
+test('a skipped target is rejected from signed evidence before Turso credentials',async()=>{
+  const item=fixture();
+  try{
+    const source=await installManaged(item.path,5);
+    const platform=platformMock();
+    await assert.rejects(
+      runRemoteMigration(options({
+        operation:'apply',targetVersion:7,expectedStateFingerprint:'a'.repeat(64),
+      }),dependencies(item.path,{platform,sourceVersion:5,
+        sourceStateFingerprint:source.stateFingerprint}).value),
+      error=>error.code==='REMOTE_MIGRATION_TARGET_VERSION_MISMATCH',
+    );
+    assert.deepEqual(platform.calls,[]);
+    assert.equal((await state(item.path)).currentVersion,5);
+  }finally{ item.close(); }
+});
+
+test('same-version rehearsal state mismatch is rejected without a write',async()=>{
+  const item=fixture();
+  try{
+    await installManaged(item.path,5);
+    await assert.rejects(
+      runRemoteMigration(options(),dependencies(item.path,{sourceVersion:5,
+        sourceStateFingerprint:'f'.repeat(64)}).value),
+      error=>error.code==='REMOTE_MIGRATION_TARGET_STATE_MISMATCH',
+    );
+    assert.equal((await state(item.path)).currentVersion,5);
+  }finally{ item.close(); }
+});
+
+test('apply advances only the explicit next managed version and refuses replay at latest',async()=>{
+  const item=fixture();
+  try{
+    const sourceVersion=LATEST_VERSION-1;
+    const source=await installManaged(item.path,sourceVersion);
     const fingerprint=(await state(item.path)).stateFingerprint;
     const platform=platformMock();
     const first=await runRemoteMigration(options({
-      operation:'apply',expectedStateFingerprint:fingerprint,
-    }),dependencies(item.path,{platform}).value);
+      operation:'apply',targetVersion:LATEST_VERSION,expectedStateFingerprint:fingerprint,
+    }),dependencies(item.path,{platform,sourceVersion,
+      sourceStateFingerprint:source.stateFingerprint}).value);
     assert.equal(first.result,'applied');
-    assert.deepEqual(first.appliedVersions,[12]);
-    assert.equal(first.fromVersion,11);
-    assert.equal(first.toVersion,12);
-    assert.equal((await state(item.path)).currentVersion,12);
+    assert.deepEqual(first.appliedVersions,[LATEST_VERSION]);
+    assert.equal(first.fromVersion,sourceVersion);
+    assert.equal(first.toVersion,LATEST_VERSION);
+    assert.equal(first.targetVersion,LATEST_VERSION);
+    assert.equal((await state(item.path)).currentVersion,LATEST_VERSION);
     assert.deepEqual(platform.calls.filter(call=>call[0]==='token'),[
       ['token','production',{expiration:'10m',authorization:'full-access'}],
     ]);
 
-    const second=await runRemoteMigration(options({
-      operation:'apply',expectedStateFingerprint:first.stateFingerprint,
-    }),dependencies(item.path).value);
-    assert.equal(second.result,'noop');
-    assert.deepEqual(second.appliedVersions,[]);
-    assert.equal(second.fromVersion,12);
-    assert.equal(second.toVersion,12);
+    const sourceLatest=await state(item.path);
+    const completed=await runRemoteMigration(options(),dependencies(item.path,{
+      sourceVersion:LATEST_VERSION,sourceStateFingerprint:sourceLatest.stateFingerprint,
+    }).value);
+    assert.deepEqual(completed.pendingVersions,[]);
+    assert.equal(completed.nextVersion,null);
+    assert.deepEqual(completed.capabilities,{adopt:false,apply:false});
+
+    const replayPlatform=platformMock();
+    await assert.rejects(
+      runRemoteMigration(options({
+        operation:'apply',targetVersion:LATEST_VERSION,expectedStateFingerprint:first.stateFingerprint,
+      }),dependencies(item.path,{platform:replayPlatform,sourceVersion,
+        sourceStateFingerprint:source.stateFingerprint}).value),
+      error=>error.code==='REMOTE_MIGRATION_TARGET_STATE_MISMATCH',
+    );
+    assert.equal(replayPlatform.calls.filter(call=>call[0]==='token').length,1);
+  }finally{ item.close(); }
+});
+
+test('sequential progression requires a fresh rehearsal and status for every version',async()=>{
+  const item=fixture();
+  try{
+    const firstSourceVersion=LATEST_VERSION-2;
+    const secondSourceVersion=LATEST_VERSION-1;
+    const firstSource=await installManaged(item.path,firstSourceVersion);
+    const firstEvidence={sourceVersion:firstSourceVersion,
+      sourceStateFingerprint:firstSource.stateFingerprint};
+    const firstStatus=await runRemoteMigration(options(),dependencies(item.path,firstEvidence).value);
+    assert.equal(firstStatus.nextVersion,secondSourceVersion);
+    const firstApply=await runRemoteMigration(options({
+      operation:'apply',targetVersion:secondSourceVersion,
+      expectedStateFingerprint:firstStatus.stateFingerprint,
+    }),dependencies(item.path,firstEvidence).value);
+    assert.deepEqual(firstApply.appliedVersions,[secondSourceVersion]);
+
+    await assert.rejects(
+      runRemoteMigration(options(),dependencies(item.path,firstEvidence).value),
+      error=>error.code==='REMOTE_MIGRATION_TARGET_STATE_MISMATCH',
+    );
+
+    const secondSource=await state(
+      item.path,EXECUTABLE_MIGRATIONS.slice(0,secondSourceVersion),
+    );
+    const secondEvidence={sourceVersion:secondSourceVersion,
+      sourceStateFingerprint:secondSource.stateFingerprint};
+    const secondStatus=await runRemoteMigration(options(),dependencies(item.path,secondEvidence).value);
+    assert.equal(secondStatus.nextVersion,LATEST_VERSION);
+    const secondApply=await runRemoteMigration(options({
+      operation:'apply',targetVersion:LATEST_VERSION,
+      expectedStateFingerprint:secondStatus.stateFingerprint,
+    }),dependencies(item.path,secondEvidence).value);
+    assert.deepEqual(secondApply.appliedVersions,[LATEST_VERSION]);
+    assert.equal((await state(item.path)).currentVersion,LATEST_VERSION);
   }finally{ item.close(); }
 });
 
 test('an exact rehearsed unmanaged prefix can be adopted without applying the next version',async()=>{
   const item=fixture();
   try{
-    await installUnmanaged(item.path,2);
+    const source=await installUnmanaged(item.path,2);
     const prefix=EXECUTABLE_MIGRATIONS.slice(0,2);
     const fingerprint=(await state(item.path,prefix)).stateFingerprint;
     const result=await runRemoteMigration(options({
       operation:'adopt',expectedStateFingerprint:fingerprint,
-    }),dependencies(item.path,{classification:'unmanaged',sourceVersion:2}).value);
+    }),dependencies(item.path,{classification:'unmanaged',sourceVersion:2,
+      sourceStateFingerprint:source.stateFingerprint}).value);
     assert.equal(result.result,'adopted');
     assert.deepEqual(result.adoptedVersions,[1,2]);
     assert.equal(result.toVersion,2);
@@ -334,43 +444,46 @@ test('a provider identity change after token mint is refused before database con
   }finally{ item.close(); }
 });
 
-test('stale state, unadopted state, and more than one pending migration never write',async()=>{
+test('stale state and unadopted state never write, while a multi-pending database advances once',async()=>{
   const stale=fixture();
   const unmanaged=fixture();
   const old=fixture();
   try{
-    await installManaged(stale.path,3);
+    const staleSource=await installManaged(stale.path,3);
     await assert.rejects(
       runRemoteMigration(options({
-        operation:'apply',expectedStateFingerprint:'f'.repeat(64),
-      }),dependencies(stale.path).value),
+        operation:'apply',targetVersion:4,expectedStateFingerprint:'f'.repeat(64),
+      }),dependencies(stale.path,{sourceVersion:3,
+        sourceStateFingerprint:staleSource.stateFingerprint}).value),
       error=>error instanceof Error&&error.code==='MIGRATION_STATE_CHANGED',
     );
     assert.equal((await state(stale.path)).currentVersion,3);
 
-    await installUnmanaged(unmanaged.path,2);
+    const unmanagedSource=await installUnmanaged(unmanaged.path,2);
     const unmanagedFingerprint=(await state(
       unmanaged.path,EXECUTABLE_MIGRATIONS.slice(0,2),
     )).stateFingerprint;
     await assert.rejects(
       runRemoteMigration(options({
-        operation:'apply',expectedStateFingerprint:unmanagedFingerprint,
-      }),dependencies(unmanaged.path,{classification:'unmanaged',sourceVersion:2}).value),
-      error=>error.code==='REMOTE_MIGRATION_TARGET_STATE_MISMATCH',
+        operation:'apply',targetVersion:3,expectedStateFingerprint:unmanagedFingerprint,
+      }),dependencies(unmanaged.path,{classification:'unmanaged',sourceVersion:2,
+        sourceStateFingerprint:unmanagedSource.stateFingerprint}).value),
+      error=>error.code==='REMOTE_MIGRATION_TARGET_VERSION_MISMATCH',
     );
     assert.equal((await state(
       unmanaged.path,EXECUTABLE_MIGRATIONS.slice(0,2),
     )).ledgerPresent,false);
 
-    await installManaged(old.path,1);
-    const oldFingerprint=(await state(old.path)).stateFingerprint;
-    await assert.rejects(
-      runRemoteMigration(options({
-        operation:'apply',expectedStateFingerprint:oldFingerprint,
-      }),dependencies(old.path,{sourceVersion:1}).value),
-      error=>error.code==='REMOTE_MIGRATION_TOO_MANY_PENDING',
-    );
-    assert.equal((await state(old.path)).currentVersion,1);
+    const oldSource=await installManaged(old.path,1);
+    const nextFingerprint=(await state(old.path,EXECUTABLE_MIGRATIONS.slice(0,2))).stateFingerprint;
+    const oneStep=await runRemoteMigration(options({
+      operation:'apply',targetVersion:2,expectedStateFingerprint:nextFingerprint,
+    }),dependencies(old.path,{sourceVersion:1,
+      sourceStateFingerprint:oldSource.stateFingerprint}).value);
+    assert.deepEqual(oneStep.appliedVersions,[2]);
+    assert.equal(oneStep.fromVersion,1);
+    assert.equal(oneStep.toVersion,2);
+    assert.equal((await state(old.path)).currentVersion,2);
   }finally{
     stale.close();
     unmanaged.close();
@@ -381,7 +494,8 @@ test('stale state, unadopted state, and more than one pending migration never wr
 test('an ambiguous commit failure is not retried and the transaction rolls back',async()=>{
   const item=fixture();
   try{
-    await installManaged(item.path,11);
+    const sourceVersion=LATEST_VERSION-1;
+    const source=await installManaged(item.path,sourceVersion);
     const fingerprint=(await state(item.path)).stateFingerprint;
     let transactions=0;
     const connectDatabase=()=>{
@@ -407,12 +521,13 @@ test('an ambiguous commit failure is not retried and the transaction rolls back'
     };
     await assert.rejects(
       runRemoteMigration(options({
-        operation:'apply',expectedStateFingerprint:fingerprint,
-      }),dependencies(item.path,{connectDatabase}).value),
+        operation:'apply',targetVersion:LATEST_VERSION,expectedStateFingerprint:fingerprint,
+      }),dependencies(item.path,{connectDatabase,sourceVersion,
+        sourceStateFingerprint:source.stateFingerprint}).value),
       error=>error.code==='MIGRATION_FAILED',
     );
     assert.equal(transactions,1);
-    assert.equal((await state(item.path)).currentVersion,11);
+    assert.equal((await state(item.path)).currentVersion,sourceVersion);
   }finally{ item.close(); }
 });
 
@@ -426,7 +541,7 @@ test('provider and unexpected failures produce constant redacted public results'
   assert.equal(JSON.stringify(result).includes('database-token-that-must-never-leak'),false);
   const unexpected=publicRemoteMigrationError(new Error(`SQL ${SOURCE_ID}`),{operation:'status'});
   assert.deepEqual(unexpected,{
-    ok:false,kind:'turso-production-migration',format:'randori.turso-production-migration.v1',
+    ok:false,kind:'turso-production-migration',format:'randori.turso-production-migration.v2',
     operation:'status',error:'REMOTE_MIGRATION_FAILED',
     message:'The protected remote migration failed.',
   });
@@ -440,6 +555,7 @@ test('CLI writes one sanitized artifact and mutations remain disabled by an abse
       argv:[
         '--operation','apply','--rehearsal-run-id',String(RUN_ID),
         '--rehearsal-run-attempt',String(ATTEMPT),'--expected-state','a'.repeat(64),
+        '--target-version',String(LATEST_VERSION),
         '--artifact-dir',join(item.directory,'public-artifacts'),
       ],
       environment:{
@@ -482,6 +598,8 @@ test('workflow is manual, protected, serialized, pinned, and keeps credentials s
   assert.match(workflow,/actions: read/);
   assert.match(workflow,/TURSO_PRODUCTION_MIGRATIONS_ENABLED/);
   assert.match(workflow,/MIGRATE_PRODUCTION_DATABASE/);
+  assert.match(workflow,/target_version:/);
+  assert.match(workflow,/--target-version/);
   assert.match(workflow,/\^\[a-f0-9\]\{64\}\$/);
   assert.doesNotMatch(workflow,/uses: actions\/(?:checkout|setup-node|upload-artifact)@v\d/);
   const beforeMigration=workflow.slice(0,workflow.indexOf('- name: Run protected remote migration operation'));
@@ -504,6 +622,12 @@ test('configuration validation rejects operation, confirmation, identity, and st
       options({repoCommit:'main'}),
       options({rpoTargetMs:30*60*1000+1}),
       options({rtoTargetMs:15*60*1000+1}),
+      options({operation:'status',targetVersion:1}),
+      options({operation:'adopt',expectedStateFingerprint:'a'.repeat(64),targetVersion:1}),
+      options({operation:'apply',targetVersion:0,expectedStateFingerprint:'a'.repeat(64)}),
+      options({operation:'apply',targetVersion:LATEST_VERSION+1,
+        expectedStateFingerprint:'a'.repeat(64)}),
+      options({operation:'apply',targetVersion:'',expectedStateFingerprint:'a'.repeat(64)}),
     ];
     for(const value of cases){
       await assert.rejects(
