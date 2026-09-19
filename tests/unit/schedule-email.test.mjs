@@ -225,6 +225,58 @@ test('stale, rescheduled, removed, cancelled, and elapsed events suppress before
   assert.equal(Number(elapsed.rows[0].count),4);
 });
 
+test('accepted proposal emails are suppressed before drain, including a reschedule',async()=>{
+  const db=await fixture();
+  const state=contexts();
+  await db.execute(scheduleNotificationEvents({weekId:10,pairGroupId:20,actorUserId:1,
+    participants:[1,2],mutation:{action:'propose',instant:state.instant},
+    currentSchedule:state.empty,nextSchedule:state.proposed})[0]);
+  await db.batch(scheduleNotificationEvents({weekId:10,pairGroupId:20,actorUserId:2,
+    participants:[1,2],mutation:{action:'accept'},currentSchedule:state.proposed,
+    nextSchedule:state.accepted}),'write');
+  await storeSchedule(db,{proposals:[state.entry],agreedTime:state.instant,
+    updatedAt:'2035-09-18T10:00:02.000Z'});
+  const messages=[];
+  let result=await deliverScheduleEmails({db,baseUrl:'https://randori.example.test',
+    send:async message=>{ messages.push(message); return {providerMessageId:`accepted-${messages.length}`}; },
+    workerId:'accept-before-drain',localRuntime:true,
+    workerOptions:{heartbeatIntervalMs:0,leaseDurationMs:1000}});
+  assert.equal(result.delivered,2);
+  assert.equal(result.suppressed,1);
+  assert.deepEqual(messages.map(message=>message.subject),[
+    'Your Randori session is scheduled','Your Randori session is scheduled',
+  ]);
+  assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM outbox_events
+    WHERE status='suppressed' AND last_error_code='SCHEDULE_SUPERSEDED'`)).rows[0].count),1);
+
+  const instantB='2035-09-21T19:00:00.000Z';
+  const entryB={instant:instantB,proposed_by:2};
+  const proposedB=schedule({proposals:[state.entry,entryB],agreedTime:state.instant,
+    updatedAt:'2035-09-18T10:00:03.000Z'});
+  const acceptedB=schedule({proposals:[state.entry,entryB],agreedTime:instantB,
+    updatedAt:'2035-09-18T10:00:04.000Z'});
+  await db.execute(scheduleNotificationEvents({weekId:10,pairGroupId:20,actorUserId:2,
+    participants:[1,2],mutation:{action:'propose',instant:instantB},
+    currentSchedule:state.accepted,nextSchedule:proposedB})[0]);
+  await db.batch(scheduleNotificationEvents({weekId:10,pairGroupId:20,actorUserId:1,
+    participants:[1,2],mutation:{action:'accept'},currentSchedule:proposedB,
+    nextSchedule:acceptedB}),'write');
+  await storeSchedule(db,{proposals:[state.entry,entryB],agreedTime:instantB,
+    updatedAt:'2035-09-18T10:00:04.000Z'});
+  const rescheduled=[];
+  result=await deliverScheduleEmails({db,baseUrl:'https://randori.example.test',
+    send:async message=>{ rescheduled.push(message); return {providerMessageId:`changed-${rescheduled.length}`}; },
+    workerId:'reschedule-before-drain',localRuntime:true,
+    workerOptions:{heartbeatIntervalMs:0,leaseDurationMs:1000}});
+  assert.equal(result.delivered,2);
+  assert.equal(result.suppressed,1);
+  assert.deepEqual(rescheduled.map(message=>message.subject),[
+    'Your Randori session time changed','Your Randori session time changed',
+  ]);
+  assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM outbox_events
+    WHERE status='suppressed' AND last_error_code='SCHEDULE_SUPERSEDED'`)).rows[0].count),2);
+});
+
 test('an A-to-B-to-A reschedule delivers only the newest confirmation and reminder',async()=>{
   const db=await fixture();
   const instantA='2035-09-20T18:30:00.000Z';

@@ -1,8 +1,7 @@
 # Invitation email delivery
 
-Status: bounded issue #95 slice in
-[PR #100](https://github.com/festus14/randori-circle/pull/100), stacked on the
-schedule-notification candidate PR #96
+Status: bounded issue #95 slice consolidated into
+[PR #96](https://github.com/festus14/randori-circle/pull/96)
 
 This slice makes an owner-created invitation useful without requiring the owner
 to move the link into another mail client. It intentionally retains the visible
@@ -111,10 +110,9 @@ Before production delivery:
 - Issue #95 remains open until the templates and all suppression paths are
   validated through a real staging Resend domain with owned credentials and
   sender configuration.
-- Issue #50 remains open for SMS consent/verified-number policy, quiet hours,
-  regional requirements, provider/STOP handling, and any product-chosen extra
-  reminder cadence.
-- The issue #94 candidate adds a shared deadline and fair claim budget for the
-  event types present in this stack. It remains open until the independently
-  developed password-reset adapter is linearized and included in mixed-queue
-  tests.
+- Issue #50 still requires the staging Resend journey and any product-chosen
+  extra reminder cadence. SMS is explicitly outside that issue and remains
+  separate future work.
+- Issue #94's shared deadline and fair claim budget now includes password reset
+  in the single five-type registry and is covered by a mixed real-database
+  saturation regression.

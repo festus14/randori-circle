@@ -1,10 +1,11 @@
 # Randori Circle implemented decision log
 
-Status: accepted through merged PR #89 plus candidate PRs #93, #92, #97, and issue #83
+Status: accepted through release head `b88dcbf`, plus candidate PR #96
 
 Last reviewed: 2026-09-19
 
-Scope: `main` through `2402fe9bea53aa0a44d2af4c43f77e4223894695`, plus PRs #93, #92, #97, and the issue #83 candidate
+Scope: release branch through `b88dcbf3a97454f121f8c6149760a9ac87c27a41`,
+plus the consolidated notification candidate PR #96
 
 This log records decisions that govern the application being shipped now. The
 [production architecture plan](PRODUCTION_ARCHITECTURE_PLAN.md) describes a
@@ -32,6 +33,7 @@ or merged after its parent; it must not be landed ahead of that parent.
 | 8 | [PR #92](https://github.com/festus14/randori-circle/pull/92), candidate | Verified invitation-bound email/password activation | v7 `verified-email-activation` |
 | 9 | [PR #97](https://github.com/festus14/randori-circle/pull/97), candidate | Enumeration-safe password recovery and reusable recent-authentication policy | v8 `password-reset-and-recent-auth` |
 | 10 | [Issue #83](https://github.com/festus14/randori-circle/issues/83), candidate | Explicit Google/password linking and identity-conflict recovery | v9 `explicit-provider-linking` |
+| 11 | [PR #96](https://github.com/festus14/randori-circle/pull/96), candidate | Durable invitation and schedule email with one fair five-type dispatcher | Reuses v6; preserves v8/v9 |
 
 Migration order is append-only: v4 binds an account to an OIDC issuer and
 subject, v5 makes every application JWT depend on a live hashed session row,
@@ -519,6 +521,44 @@ starts have durable per-IP and per-account limits.
 
 The action matrix, continuation contract, rollout independence, and explicit
 limits are documented in `docs/LIFECYCLE_RECENT_AUTH.md`.
+
+## ID-15: Use one fair delivery budget for every production email type
+
+Status: implemented in candidate PR #96 without a schema migration.
+
+### Decision
+
+Pairing, schedule, invitation, verified-email activation, and password-reset
+events share one ordered handler registry and one request-wide worker budget:
+eight claims, a 45-second application deadline, and a five-second finalization
+reserve. Each configured type receives one claim opportunity per fair round
+before a saturated type can consume another slot. Password reset is registered
+directly with its v8 handler; the cron route never invokes its older standalone
+typed drain. The v8 and v9 migrations and the recent-authentication/provider-
+linking behavior remain unchanged.
+
+Schedule proposal delivery is also state-aware across event kinds. A newer
+accepted or changed event for the exact proposed instant supersedes an
+undelivered proposal to the same recipient. The immutable event remains in the
+audit trail as `suppressed`; it is not deleted or rewritten. This covers both
+propose-then-accept-before-drain and a newly proposed reschedule accepted before
+the worker runs.
+
+The checked-in scheduler may call only the repository default branch and reads
+`APP_URL` plus `CRON_SECRET` from the protected `Production` environment.
+Production activation still requires those settings, a default-branch
+environment restriction, and a staging Resend rehearsal. SMS is not part of
+issue #50 and is not required to ship this email path.
+
+### Alternatives considered
+
+| Option | Advantage | Cost and rejection reason |
+| --- | --- | --- |
+| Keep password reset as a sequential drain | Minimal integration work | Reintroduces an independent batch/timeout after the global budget and can overrun the request |
+| Give each type a private scheduled route | Strong isolation | Multiplies schedules, secrets, monitoring, and concurrent functions at private-beta scale |
+| Deliver a proposal even after its exact acceptance | Preserves every historical notification | Sends obsolete action-oriented mail after the recipient no longer needs to act |
+| Delete superseded events | Keeps the queue visually smaller | Discards immutable operational history; terminal suppression preserves the audit contract |
+| Add SMS to issue #50 | More channels at launch | Adds consent, verified-number, regional, quiet-hours, and STOP obligations outside the accepted email scope |
 
 ## ID-16: Monitor a recurring isolated backup restore, not production mutation
 

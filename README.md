@@ -112,7 +112,9 @@ Invitation creation/resend, pairing publication, and schedule mutations commit
 with their versioned email events in one transaction. Provider calls begin only
 after that commit.
 `GET|POST /api/cron/outbox` uses the existing `CRON_SECRET` and drains due
-events independently of the weekly publication endpoint. The checked-in
+pairing, schedule, invitation, activation, and password-reset events through
+one fair eight-claim/45-second invocation budget, independently of the weekly
+publication endpoint. The checked-in
 `outbox-dispatch` GitHub Actions workflow provides the five-minute MVP cadence
 using protected-production `APP_URL` and `CRON_SECRET` configuration; scheduled
 runs are best effort, so use a managed queue/cron when a strict latency SLO is

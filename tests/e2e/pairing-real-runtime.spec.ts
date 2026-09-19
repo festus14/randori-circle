@@ -440,11 +440,12 @@ test('real invited members opt in, publish that cycle, share a room, and agree a
         },
         workerOptions: { heartbeatIntervalMs: 0, leaseDurationMs: 1_000 },
       });
-      expect(immediate.delivered).toBe(3);
+      expect(immediate.delivered).toBe(2);
+      expect(immediate.suppressed).toBe(1);
       expect(capturedScheduleEmails.map(message => message.to).sort()).toEqual([
-        LOCAL_OWNER_EMAIL, invitedEmail, invitedEmail,
+        LOCAL_OWNER_EMAIL, invitedEmail,
       ].sort());
-      expect(capturedScheduleEmails.some(message => message.subject.includes('proposed'))).toBe(true);
+      expect(capturedScheduleEmails.some(message => message.subject.includes('proposed'))).toBe(false);
       expect(capturedScheduleEmails.filter(message => message.subject.includes('scheduled'))).toHaveLength(2);
       expect(capturedScheduleEmails.every(message => message.html.includes(`/join/${ownerRoom}`))).toBe(true);
       expect(capturedScheduleEmails.every(message => !message.idempotencyKey.includes('@'))).toBe(true);
@@ -527,11 +528,15 @@ test('real invited members opt in, publish that cycle, share a room, and agree a
       WHERE event_type IN ('pairing.email.requested','schedule.email.requested') ORDER BY id`);
     await outbox.close();
     expect(reminders.rows).toHaveLength(7);
-    expect(reminders.rows.every(row => row.status === 'delivered' && Number(row.attempt_count) === 1)).toBe(true);
+    expect(reminders.rows.filter(row => row.status === 'delivered')).toHaveLength(6);
+    expect(reminders.rows.filter(row => row.status === 'suppressed')).toHaveLength(1);
+    expect(reminders.rows.every(row => Number(row.attempt_count) === 1)).toBe(true);
     expect(reminders.rows.filter(row => row.event_type === 'pairing.email.requested')
       .every(row => /^local-[0-9a-f-]{36}$/.test(String(row.provider_message_id)))).toBe(true);
     expect(reminders.rows.filter(row => row.event_type === 'schedule.email.requested')
-      .every(row => /^schedule-[1-5]$/.test(String(row.provider_message_id)))).toBe(true);
+      .filter(row => row.status === 'delivered')
+      .every(row => /^schedule-[1-4]$/.test(String(row.provider_message_id)))).toBe(true);
+    expect(reminders.rows.find(row => row.status === 'suppressed')?.provider_message_id).toBeNull();
     expect(requestSql.filter(sql => /^\s*(?:CREATE|ALTER|DROP)\b/iu.test(sql))).toEqual([]);
     expect(externalRequests).toEqual([]);
   } finally {

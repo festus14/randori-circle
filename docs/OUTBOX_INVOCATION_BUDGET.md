@@ -1,7 +1,8 @@
 # Outbox invocation budget
 
-Status: [PR #104](https://github.com/festus14/randori-circle/pull/104)
-bounded candidate, stacked on invitation-email PR #100
+Status: implemented in consolidated
+[PR #96](https://github.com/festus14/randori-circle/pull/96), including the
+former PR #100 and PR #104 candidates
 
 ## Runtime contract
 
@@ -20,7 +21,8 @@ independent budget for each notification type:
 One SQL claim round selects at most one due event for every configured type.
 Only after every type receives that opportunity may another round begin. The
 round's handlers run concurrently, so a slow saturated pairing queue does not
-prevent a sparse schedule, invitation, or activation event from progressing.
+prevent a sparse schedule, invitation, activation, or password-reset event
+from progressing.
 No new round starts after the admission window closes. Each already-started
 finalization receives a fair slice of the remaining reserve; one failed or slow
 transition cannot prevent a later sent event from attempting its own finalize.
@@ -124,9 +126,13 @@ No migration is required; this is scheduling around the schema-v6 outbox.
 | Managed queue/cron | Stronger latency and retry guarantees | Added operating cost and infrastructure; preferred upgrade when strict delivery SLOs are needed |
 | Parallel fair rounds | Later types start even when an earlier provider is slow | Adds controlled concurrency; chosen with a global cap and shared deadline |
 
-## Remaining issue #94 scope
+## Issue #94 completion boundary
 
-This branch contains pairing, schedule, invitation, and activation adapters.
-Password recovery is being built independently and is not in the base commit.
-Issue #94 remains open until the stacks are linearized, recovery is registered
-in the same fair dispatcher, and a mixed five-type saturation test passes.
+The single registry contains pairing, schedule, invitation, activation, and
+password-reset adapters. Password reset no longer runs as a separate sequential
+drain. A real SQLite saturation regression proves that every one of the five
+types receives a first-round claim before the busy type consumes the remaining
+global allowance. Production release still requires the protected scheduler
+environment to define `APP_URL` and `CRON_SECRET` and restrict deployment to the
+default branch; that configuration is an operational gate, not a second worker
+implementation.

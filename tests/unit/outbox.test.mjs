@@ -292,6 +292,43 @@ test('a global invocation drains saturated event types in fair rounds within one
     WHERE event_type='alpha.notification' AND status='pending'`)).rows[0].count),4);
 });
 
+test('a real database gives all five application event types a fair first claim under saturation',async()=>{
+  const {db}=await fixture();
+  const eventTypes=[
+    'pairing.email.requested',
+    'schedule.email.requested',
+    'invitation.email.requested',
+    'auth.emailverification.requested',
+    'auth.passwordreset.requested',
+  ];
+  for(let sequence=1;sequence<=6;sequence+=1){
+    await enqueueOutboxEvent(db,event({eventType:eventTypes[0],sequence,
+      idempotencyKey:`five-type/pairing/${sequence}`}));
+  }
+  for(let index=1;index<eventTypes.length;index+=1){
+    await enqueueOutboxEvent(db,event({eventType:eventTypes[index],sequence:20+index,
+      idempotencyKey:`five-type/${index}`}));
+  }
+  const started=[];
+  const handler=async current=>{
+    started.push(current.eventType);
+    return {providerName:'capture',providerMessageId:`five-type-${current.id}`};
+  };
+  const result=await runOutboxInvocation({
+    db,workerId:'five-type-fair-invocation',
+    handlers:Object.fromEntries(eventTypes.map(type=>[type,handler])),eventTypes,maxClaims:8,
+    deadlineAtMs:performance.now()+2_000,finalizationReserveMs:100,minimumDispatchWindowMs:100,
+    leaseDurationMs:1000,heartbeatIntervalMs:0,
+  });
+  assert.deepEqual([...new Set(started.slice(0,5))].sort(),[...eventTypes].sort());
+  assert.equal(result.claimed,8);
+  assert.equal(result.delivered,8);
+  assert.equal(result.perType[eventTypes[0]].claimed,4);
+  for(const type of eventTypes.slice(1)) assert.equal(result.perType[type].claimed,1);
+  assert.equal(Number((await db.execute({sql:`SELECT COUNT(*) AS count FROM outbox_events
+    WHERE event_type=? AND status='pending'`,args:[eventTypes[0]]})).rows[0].count),2);
+});
+
 test('a slow provider is deadline-capped without starving another type or stranding its lease',async()=>{
   const {db}=await fixture();
   await enqueueOutboxEvent(db,event({eventType:'alpha.notification',deliveryTimeoutMs:1000}));

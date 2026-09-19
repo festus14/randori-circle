@@ -545,6 +545,7 @@ beforeEach(() => {
     'ALLOW_OPEN_SIGNUP', 'SIGNUP_ALLOWLIST', 'LEETCODE_INGESTION_AUTHORIZED',
     'AUTH_SCHEMA_BOOTSTRAP_ENABLED', 'CIRCLE_MEMBERSHIP_ENABLED', 'RANDORI_LOCAL_RUNTIME',
     'EMAIL_PASSWORD_ACTIVATION_ENABLED', 'EMAIL_VERIFICATION_ENCRYPTION_KEY',
+    'PASSWORD_RESET_ENABLED', 'PASSWORD_RESET_ENCRYPTION_KEY',
     'IDENTITY_EMAIL_HASH_KEY', 'IDENTITY_EMAIL_HASH_KEY_VERSION', 'IDENTITY_MANAGEMENT_ENABLED',
     'PAIRING_TIME_ZONE', 'RANDORI_LOCAL_DATABASE_PATH', 'RANDORI_LOCAL_IDENTITY',
     'TURSO_AUTH_TOKEN', 'TURSO_DATABASE_URL', 'VERCEL', 'VERCEL_ENV', 'VERCEL_URL',
@@ -2935,13 +2936,15 @@ test('outbox drain is cron-protected, non-identifying, and dead-letter replay is
   })).status,409);
 });
 
-test('outbox drain dispatches configured activation events without exposing recipients',async()=>{
+test('outbox drain dispatches configured activation and password-reset events without exposing recipients',async()=>{
   process.env.NODE_ENV='production';
   process.env.APP_URL='https://randori.example.test';
   process.env.CRON_SECRET='cron-secret';
   process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
   process.env.EMAIL_PASSWORD_ACTIVATION_ENABLED='true';
   process.env.EMAIL_VERIFICATION_ENCRYPTION_KEY=Buffer.alloc(32,7).toString('base64url');
+  process.env.PASSWORD_RESET_ENABLED='true';
+  process.env.PASSWORD_RESET_ENCRYPTION_KEY=Buffer.alloc(32,8).toString('base64url');
   process.env.RESEND_API_KEY='re_test';
   process.env.RESEND_FROM='Randori <verified@example.test>';
   activationOutboxResult={
@@ -2962,9 +2965,18 @@ test('outbox drain dispatches configured activation events without exposing reci
   });
   assert.equal(outboxWorkerCalls.length,1);
   assert.ok(outboxWorkerCalls[0].eventTypes.includes('auth.emailverification.requested'));
+  assert.ok(outboxWorkerCalls[0].eventTypes.includes('auth.passwordreset.requested'));
   assert.deepEqual(drained.body.outbox.types['auth.emailverification.requested'],{
     claimed:3,delivered:1,suppressed:1,retried:1,dead_lettered:0,lease_lost:0,
     backlog:2,dead_letter:0,
+  });
+  assert.deepEqual(drained.body.password_reset_delivery,{
+    summary:'sent 0, failed 0, exhausted 0, suppressed 0, pending 0',
+    sent:0,failed:0,exhausted:0,pending:0,suppressed:0,
+  });
+  assert.deepEqual(drained.body.outbox.types['auth.passwordreset.requested'],{
+    claimed:0,delivered:0,suppressed:0,retried:0,dead_lettered:0,lease_lost:0,
+    backlog:0,dead_letter:0,
   });
   assert.equal(JSON.stringify(drained.body).includes('verified@example.test'),false);
 });

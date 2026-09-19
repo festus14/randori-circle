@@ -161,14 +161,16 @@ function currentEvent(row,payload){
 
 async function supersededEvent(db,event,payload){
   const kindPredicate=payload.kind==='proposal'
-    ?`json_extract(payload_json,'$.kind')='proposal'
-      AND json_extract(payload_json,'$.actor_user_id')=?
-      AND json_extract(payload_json,'$.instant')=?`
+    ?`((json_extract(payload_json,'$.kind')='proposal'
+        AND json_extract(payload_json,'$.actor_user_id')=?
+        AND json_extract(payload_json,'$.instant')=?)
+      OR (json_extract(payload_json,'$.kind') IN ('accepted','changed')
+        AND json_extract(payload_json,'$.instant')=?))`
     :payload.kind==='reminder'
       ?`json_extract(payload_json,'$.kind')='reminder'`
       :`json_extract(payload_json,'$.kind') IN ('accepted','changed')`;
   const args=[event.id,SCHEDULE_EMAIL_EVENT_TYPE,payload.weekId,payload.pairGroupId,payload.recipientUserId];
-  if(payload.kind==='proposal') args.push(payload.actorUserId,payload.instant);
+  if(payload.kind==='proposal') args.push(payload.actorUserId,payload.instant,payload.instant);
   const result=await db.execute({sql:`SELECT 1 AS newer FROM outbox_events
       WHERE id>? AND event_type=?
         AND json_extract(payload_json,'$.week_id')=?

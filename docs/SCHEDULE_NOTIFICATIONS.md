@@ -1,14 +1,14 @@
 # Schedule email notifications
 
-Status: first issue #50 slice implemented in
-[PR #96](https://github.com/festus14/randori-circle/pull/96) on the
-verified-email-activation stack
+Status: implemented in consolidated
+[PR #96](https://github.com/festus14/randori-circle/pull/96) on the current
+release stack
 
 This slice sends durable email notifications for schedule proposals, accepted
 times, changed or cleared agreements, and accepted-session reminders. Owner
-invitation-link delivery is implemented by the next stacked candidate; SMS and
-a live staging-provider rehearsal remain outside this slice, so this work
-references but does not close issue #50.
+invitation-link delivery is consolidated into the same candidate. A live
+staging-provider rehearsal remains outstanding, so this work does not yet close
+issue #50. SMS is explicitly outside issue #50 and is separate future work.
 
 ## Event and transaction contract
 
@@ -56,8 +56,9 @@ following against current database state:
 - email notifications are not disabled in `user_notification_prefs`;
 - a proposal still exists, an agreement still has the queued instant, or the
   agreement remains cleared;
-- no newer event supersedes the same proposal, agreement notice, or reminder
-  (including an A-to-B-to-A reschedule);
+- no newer event supersedes the same proposal, agreement notice, or reminder:
+  accepting or changing to the exact proposed instant suppresses an undelivered
+  proposal, including a reschedule and an A-to-B-to-A cycle;
 - the scheduled instant has not elapsed.
 
 This makes removed proposals, revoked members, changed preferences, cleared
@@ -71,11 +72,10 @@ The local runtime and tests use an in-memory capture adapter. Production keeps
 the existing Resend adapter behind `RESEND_API_KEY` and `RESEND_FROM`; missing
 configuration leaves work pending and exposes only aggregate status.
 
-The next stacked candidate gives `/api/cron/outbox` one 45-second deadline,
-eight-claim cap, and fair parallel claim rounds across pairing, schedule,
-invitation, and activation email. Issue #94 remains open until the independently
-developed password-recovery event type is linearized into that same registry
-and tested as part of the mixed queue.
+`/api/cron/outbox` has one 45-second deadline, eight-claim cap, and fair
+parallel claim rounds across pairing, schedule, invitation, activation, and
+password-reset email. A real SQLite regression saturates the five-type queue
+and verifies that every type gets a first-round claim.
 
 ## Why there is no migration
 
@@ -106,6 +106,6 @@ production migration procedure.
   domain; automated tests intentionally never call an external provider.
 - Define product timing for additional reminders (for example one hour before)
   from usage data before adding more events.
-- Design SMS consent, verified phone ownership, quiet hours, regional rules,
-  provider choice, and STOP handling. No SMS credential or send path is added
-  by this slice.
+
+SMS remains a possible future channel, but it is deliberately outside issue
+#50 and is not a closure criterion for this email-notification slice.
