@@ -1493,8 +1493,8 @@ async function refreshMe(){
       me=nextUser;
       try{ localStorage.setItem(ME_KEY, JSON.stringify(me)); }catch{}
     }
-    const refreshedUserId=Number(me?.id||me?.uid);
-    if(previousUserId!==refreshedUserId||circleContextSwitching){
+    const refreshedUserId=Number(me?.id||me?.uid)||null;
+    if(previousUserId!==refreshedUserId){
       resetCircleControlForIdentityChange();
     }
     if(availabilityState.userId!==null

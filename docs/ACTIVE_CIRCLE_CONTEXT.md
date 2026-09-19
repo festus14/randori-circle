@@ -42,8 +42,9 @@ switch. Starting a switch advances a client control-plane epoch, so delayed
 roster, invitation, and member-mutation completions cannot restore circle-A
 state while the switch is pending. The browser also broadcasts the committed
 context change to other tabs so delayed circle-A responses cannot render under
-circle B. A completed identity refresh establishes a fresh control-plane epoch
-and releases an obsolete pending-switch latch without accepting its callback.
+circle B. A refresh that changes the signed-in identity establishes a fresh
+control-plane epoch and releases an obsolete pending-switch latch without
+accepting its callback; a routine same-user refresh cannot cancel a commit.
 
 ## Rollout
 

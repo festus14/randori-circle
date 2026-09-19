@@ -531,6 +531,82 @@ test('an identity refresh recovers from a pending circle switch without reviving
   await expect(page.getByTestId('circle-invites')).toContainText('replacement-only');
 });
 
+test('a same-user refresh cannot cancel a pending circle switch commit',async({page})=>{
+  let active:'circle-primary'|'circle-secondary'='circle-primary';
+  let contextVersion=1;
+  let markSwitchStarted!:()=>void;
+  let releaseSwitch!:()=>void;
+  const switchStarted=new Promise<void>(resolve=>{ markSwitchStarted=resolve; });
+  const switchGate=new Promise<void>(resolve=>{ releaseSwitch=resolve; });
+  const circles=[
+    {id:10,public_id:'circle-primary',name:'Primary',role:'owner',is_primary:true},
+    {id:20,public_id:'circle-secondary',name:'Secondary',role:'owner',is_primary:false},
+  ];
+  await page.addInitScript(()=>{
+    class TestBroadcastChannel {
+      constructor(_name:string){}
+      addEventListener(){}
+      postMessage(value:unknown){ sessionStorage.setItem('randori-e2e-circle-broadcast',JSON.stringify(value)); }
+      close(){}
+    }
+    Object.defineProperty(window,'BroadcastChannel',{configurable:true,value:TestBroadcastChannel});
+  });
+  await mockApi(page,{
+    '/api/auth/capabilities':{
+      ok:true,capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,multiCircleControlPlane:true},
+      registrationMode:'private_beta',
+    },
+    '/api/auth/me':{ok:true,user:owner},
+    '/api/profile':{ok:true,user:owner},
+    '/api/circles':async request=>{
+      if(request.method()==='PUT'){
+        markSwitchStarted();
+        await switchGate;
+        active='circle-secondary';
+        contextVersion=2;
+      }
+      return {ok:true,circles,active_circle:circles.find(circle=>circle.public_id===active),
+        context_version:contextVersion,selection_required:false};
+    },
+    '/api/circle':()=>({
+      ok:true,circle_meta:{id:active==='circle-primary'?10:20,public_id:active,name:active},
+      membership:{role:'owner'},circle:active==='circle-primary'?[members[0]]:[members[1]],count:1,
+      circle_context_version:contextVersion,
+    }),
+    '/api/invitations':()=>({ok:true,invitations:[],count:0,circle_context_version:contextVersion}),
+    '/api/members':()=>({ok:true,members:[{...(active==='circle-primary'?members[0]:members[1]),
+      role:'owner',status:'active'}],count:1,has_more:false,next_cursor:null,scanned:1,
+      circle_context_version:contextVersion}),
+  });
+  await resetClientState(page,true,{},true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await expect(page.locator('#view-dashboard')).toBeVisible();
+  await page.locator('[data-tab="circle"]').click();
+  const selector=page.getByTestId('circle-context-select');
+  await expect(selector).toHaveValue('circle-primary');
+
+  const switchResponse=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/circles'
+    &&response.request().method()==='PUT');
+  const selecting=selector.selectOption('circle-secondary');
+  await switchStarted;
+  await expect(page.getByTestId('circle-members')).toBeEmpty();
+
+  expect(await page.evaluate(()=>(window as any)._randori_auth.refreshMe())).toBe(true);
+  await expect(page.getByTestId('circle-members')).toBeEmpty();
+
+  const reloaded=page.waitForEvent('domcontentloaded');
+  releaseSwitch();
+  const completed=await switchResponse;
+  await completed.finished();
+  await selecting;
+  await reloaded;
+  await page.locator('[data-tab="circle"]').click();
+  await expect(page.getByTestId('circle-context-select')).toHaveValue('circle-secondary');
+  await expect(page.getByTestId('circle-members')).toContainText('Team Mate');
+  expect(await page.evaluate(()=>JSON.parse(sessionStorage.getItem('randori-e2e-circle-broadcast')||'null')))
+    .toEqual({v:1,user_id:owner.id,context_version:2});
+});
+
 test('stale circle responses cannot render after the active context advances',async({page})=>{
   const staleMember={...members[1],id:99,display_name:'Wrong Circle Member',name:'Wrong Circle Member'};
   await mockApi(page,{
