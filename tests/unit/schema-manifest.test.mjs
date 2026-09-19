@@ -24,7 +24,7 @@ test('schema manifest pins all current tables and named indexes',()=>{
     'outbox_events','outbox_audit_events','auth_email_activations','auth_password_resets',
     'auth_recent_proofs','auth_provider_email_state','auth_identity_audit_events',
     'chat_retention_control','chat_retention_scopes','chat_retention_runs',
-    'chat_retention_legal_holds','chat_retention_audit_events',
+    'chat_retention_legal_holds','chat_retention_audit_events','auth_session_circle_contexts',
   ]);
   assert.deepEqual(INDEXES.map(item=>item.name),[
     'idx_video_signals_room','idx_video_signals_room_id','idx_pair_messages_pair','idx_pair_sched_pair',
@@ -43,6 +43,7 @@ test('schema manifest pins all current tables and named indexes',()=>{
     'idx_pair_messages_room_cursor','idx_pair_messages_sender_created',
     'idx_chat_retention_runs_dispatch','idx_chat_retention_scopes_tenant',
     'idx_chat_retention_runs_scope','idx_chat_retention_audit_run','idx_pair_messages_retention',
+    'uq_auth_sessions_hash_user','idx_auth_session_circle_contexts_user_circle',
   ]);
   assert.equal(new Set(TABLES.map(item=>item.name)).size,TABLES.length);
   assert.equal(new Set(INDEXES.map(item=>item.name)).size,INDEXES.length);
@@ -55,7 +56,7 @@ test('schema manifest pins all current tables and named indexes',()=>{
 
 test('immutable migration metadata is contiguous and checksum protected',()=>{
   assert.equal(validateMigrationPlans(),true);
-  assert.deepEqual(MIGRATION_PLANS.map(plan=>plan.version),[1,2,3,4,5,6,7,8,9,10,11]);
+  assert.deepEqual(MIGRATION_PLANS.map(plan=>plan.version),[1,2,3,4,5,6,7,8,9,10,11,12]);
   assert.deepEqual(MIGRATION_PLANS.slice(0,2).map(plan=>({
     version:plan.version,operationsChecksum:plan.operationsChecksum,checksum:plan.checksum,
   })),[{
@@ -184,25 +185,25 @@ test('migration metadata covers every artifact and supports append-only replacem
   assert.throws(()=>validateMigrationPlans(duplicate.map(repin)),/repeats canonical operations/);
 
   const unsupported=repin({
-    version:12,name:'unsupported-operation',description:'Invalid operation example.',
+    version:13,name:'unsupported-operation',description:'Invalid operation example.',
     operations:[{operation:'drop-table',name:'users',sql:'DROP TABLE users'}],
   });
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,unsupported]),/unsupported operation/);
 
   const mislabeled=repin({
-    version:12,name:'mislabeled-table',description:'Invalid table example.',
+    version:13,name:'mislabeled-table',description:'Invalid table example.',
     operations:[{operation:'ensure-table',name:'users',sql:'DROP TABLE users'}],
   });
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,mislabeled]),/non-canonical CREATE TABLE/);
 
   const multipleStatements=repin({
-    version:12,name:'multiple-statements',description:'Invalid SQL example.',
+    version:13,name:'multiple-statements',description:'Invalid SQL example.',
     operations:[{operation:'ensure-table',name:'users',sql:'CREATE TABLE users (id INTEGER); DROP TABLE auth_accounts'}],
   });
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,multipleStatements]),/invalid ensure-table definition/);
 
   const danglingIndex=repin({
-    version:12,name:'dangling-index',description:'Invalid index example.',
+    version:13,name:'dangling-index',description:'Invalid index example.',
     operations:[{
       operation:'ensure-index',name:'idx_video_signals_room',table:'missing_table',
       keyParts:['room_id'],unique:false,where:null,
@@ -212,7 +213,7 @@ test('migration metadata covers every artifact and supports append-only replacem
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,danglingIndex]),/references unknown table/);
 
   const replacement={...MIGRATION_PLANS[0].operations.find(operation=>operation.name==='users'),sql:'CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)'};
-  const appended=repin({version:12,name:'future-users-contract',description:'Future replacement example.',operations:[replacement]});
+  const appended=repin({version:13,name:'future-users-contract',description:'Future replacement example.',operations:[replacement]});
   assert.equal(validateMigrationPlans([...MIGRATION_PLANS,appended]),true);
 });
 

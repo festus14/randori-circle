@@ -20,6 +20,13 @@ import {
   initializePrimaryCircle,
 } from './_circle-membership.js';
 import { localRuntimeRequest } from './_local-runtime.js';
+import {
+  canUseLegacySinglePrimaryCircleFeatures,
+  multiCircleControlPlaneEnabled,
+  requestMatchesCircleContext,
+  resolveActiveCircleContext,
+  sendMultiCircleFeatureUnavailable,
+} from './_active-circle.js';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import {
   HEALTH_RESPONSE,
@@ -450,6 +457,34 @@ function getEndpoint(req){
     const path = u.pathname.split('/').filter(Boolean).pop();
     return (path||'').toLowerCase();
   }catch{ return (req.url||'').split('?')[0].split('/').filter(Boolean).pop()?.toLowerCase()||''; }
+}
+
+function getPathname(req){
+  try{ return new URL(req?.url||'/','http://localhost').pathname.toLowerCase(); }
+  catch{ return String(req?.url||'').split('?')[0].toLowerCase(); }
+}
+
+function resolveDataRoute(req,endpoint){
+  const path=getPathname(req);
+  if(endpoint==='runs'||endpoint==='session_runs'||endpoint==='session-runs'||path.includes('/runs')) return 'runs';
+  if(endpoint==='leetcode-sync'||endpoint==='leetcode_sync'||path.includes('leetcode/sync')||path.includes('leetcode-sync')) return 'leetcode-sync';
+  if(endpoint==='leetcode'||endpoint==='leetcode-detail'||endpoint==='leetcode_detail'||path.includes('/leetcode')) return 'leetcode';
+  if(endpoint==='circle'||path.includes('/circle')) return 'circle';
+  if(endpoint==='weeks'||path.includes('/weeks')) return 'weeks';
+  if(endpoint==='history'||path.includes('/history')) return 'history';
+  if(endpoint==='stats'||path.includes('/stats')) return 'stats';
+  if(endpoint==='init'||path.includes('/init')) return 'init';
+  if(endpoint==='profile'||path.includes('/profile')) return 'profile';
+  if(endpoint==='my-pair'||endpoint==='mypair'||endpoint==='my_pair'
+    ||path.includes('my-pair')||path.includes('my_pair')) return 'my-pair';
+  if(endpoint==='pair-recap'||path.includes('/pair-recap')) return 'pair-recap';
+  if(endpoint==='schedule'||path.includes('/schedule')) return 'schedule';
+  if(endpoint.includes('message')) return 'messages';
+  if(endpoint==='execute'||endpoint==='run'||path.includes('/execute')) return 'execute';
+  if(endpoint==='health'||endpoint==='healthz'||path.includes('/health')) return 'health';
+  if(endpoint==='logs'||endpoint==='applogs'||endpoint==='app_logs'||path.includes('/logs')) return 'logs';
+  if(endpoint==='questions'||endpoint==='question'||path.includes('/questions')) return 'questions';
+  return null;
 }
 
 async function getAuthPayload(req){
@@ -1043,14 +1078,27 @@ async function handleCircle(req,res){
     try{
       db=getClient();
       await ensureCircleMembershipReadiness(db);
+      const activeContext=multiCircleControlPlaneEnabled()
+        ?await resolveActiveCircleContext(db,viewer)
+        :null;
+      if(activeContext&&!activeContext.ok){
+        if(activeContext.reason==='selection_required'){
+          return res.status(409).json({error:'select an active circle',code:'active_circle_required'});
+        }
+        return res.status(403).json({error:'circle membership required'});
+      }
+      if(activeContext&&!activeContext.implicit&&!requestMatchesCircleContext(req,activeContext)){
+        return res.status(409).json({error:'circle context changed',code:'circle_context_changed'});
+      }
+      const selectedCircleId=Number(activeContext?.membership?.id||0);
       const result=await db.execute({
 	        sql:`WITH viewer_membership AS (
 	            SELECT c.id AS circle_id,c.public_id,c.name,cm.role
 	            FROM circle_memberships cm
 	            JOIN auth_accounts viewer_account ON viewer_account.id=cm.user_id
-	            JOIN circles c ON c.id=cm.circle_id
+            JOIN circles c ON c.id=cm.circle_id
             WHERE cm.user_id=? AND cm.status='active'
-              AND c.is_primary=1 AND c.archived_at IS NULL
+              AND ${activeContext?'c.id=? AND ':'c.is_primary=1 AND '}c.archived_at IS NULL
             LIMIT 1
           )
           SELECT viewer.circle_id,viewer.public_id,viewer.name AS circle_name,viewer.role,
@@ -1062,7 +1110,7 @@ async function handleCircle(req,res){
           JOIN auth_accounts account ON account.id=member.user_id
           WHERE COALESCE(account.is_demo,0)=0
           ORDER BY account.id`,
-        args:[viewerId],
+        args:activeContext?[viewerId,selectedCircleId]:[viewerId],
       });
       const rows=result.rows||[];
       if(!rows.length) return res.status(403).json({error:'circle membership required'});
@@ -1088,6 +1136,7 @@ async function handleCircle(req,res){
         ok:true,
         circle_meta:{id:Number(first.circle_id),public_id:String(first.public_id),name:String(first.circle_name)},
         membership:{role:first.role==='owner'?'owner':'member'},
+        ...(activeContext?{circle_context_version:activeContext.context_version||0}:{}),
         circle,
         count:circle.length,
       });
@@ -2814,31 +2863,56 @@ async function handleExecute(req,res){
   }
 }
 
+const MULTI_CIRCLE_UNSCOPED_DATA_ENDPOINTS=new Set([
+  'runs','session_runs','session-runs','weeks','history','stats','my-pair','mypair','my_pair',
+  'pair-recap','schedule','messages','message','execute','run',
+]);
+
+async function requireSingleCircleDataFeature(req,res,endpoint){
+  if(!multiCircleControlPlaneEnabled()||!MULTI_CIRCLE_UNSCOPED_DATA_ENDPOINTS.has(endpoint)) return true;
+  try{
+    const payload=await getAuthPayload(req);
+    const userId=authenticatedUserId(payload);
+    if(!userId) return true;
+    const db=getClient();
+    await ensureCircleMembershipReadiness(db);
+    if(!await canUseLegacySinglePrimaryCircleFeatures(db,payload)){
+      sendMultiCircleFeatureUnavailable(res);
+      return false;
+    }
+    return true;
+  }catch{
+    res.status(503).json({error:'circle context unavailable'});
+    return false;
+  }
+}
+
 export default async function handler(req,res){
   if(!verifyMutationOrigin(req)) return res.status(403).json({error:'cross-origin mutation rejected'});
   try{ 
     try{ initSentry(); }catch{}
   }catch{}
   try{
-  const ep = getEndpoint(req);
-  const path = (req.url||'').toLowerCase();
-  if (ep==='runs' || ep==='session_runs' || ep==='session-runs' || path.includes('/runs')) return await handleRuns(req,res);
-  if (ep==='leetcode-sync' || ep==='leetcode_sync' || path.includes('leetcode/sync') || path.includes('leetcode-sync')) return await handleLeetcodeSync(req,res);
-  if (ep==='leetcode' || ep==='leetcode-detail' || ep==='leetcode_detail' || path.includes('/leetcode')) return await handleLeetcode(req,res);
-  if (ep==='circle' || path.includes('/circle')) return await handleCircle(req,res);
-  if (ep==='weeks' || path.includes('/weeks')) return await handleWeeks(req,res);
-  if (ep==='history' || path.includes('/history')) return await handleHistory(req,res);
-  if (ep==='stats' || path.includes('/stats')) return await handleStats(req,res);
-  if (ep==='init' || path.includes('/init')) return await handleInit(req,res);
-  if (ep==='profile' || path.includes('/profile')) return await handleProfile(req,res);
-  if (ep==='my-pair' || path.includes('my-pair') || ep==='mypair' || path.includes('my_pair') || ep==='my_pair') return await handleMyPair(req,res);
-  if (ep==='pair-recap' || path.includes('/pair-recap')) return await handlePairRecap(req,res);
-  if (ep==='schedule' || path.includes('/schedule')) return await handleSchedule(req,res);
-  if (ep.includes('message')) return await handleMessages(req,res);
-  if (ep==='execute' || ep==='run' || path.includes('/execute')) return await handleExecute(req,res);
-  if (ep==='health' || path.includes('/health') || ep==='healthz') return await handleHealth(req,res);
-  if (ep==='logs' || path.includes('/logs') || ep==='applogs' || ep==='app_logs') return await handleLogs(req,res);
-  if (ep==='questions' || ep==='question' || path.includes('/questions')) return await handleQuestions(req,res);
+  const ep=getEndpoint(req);
+  const route=resolveDataRoute(req,ep);
+  if(!await requireSingleCircleDataFeature(req,res,route)) return;
+  if(route==='runs') return await handleRuns(req,res);
+  if(route==='leetcode-sync') return await handleLeetcodeSync(req,res);
+  if(route==='leetcode') return await handleLeetcode(req,res);
+  if(route==='circle') return await handleCircle(req,res);
+  if(route==='weeks') return await handleWeeks(req,res);
+  if(route==='history') return await handleHistory(req,res);
+  if(route==='stats') return await handleStats(req,res);
+  if(route==='init') return await handleInit(req,res);
+  if(route==='profile') return await handleProfile(req,res);
+  if(route==='my-pair') return await handleMyPair(req,res);
+  if(route==='pair-recap') return await handlePairRecap(req,res);
+  if(route==='schedule') return await handleSchedule(req,res);
+  if(route==='messages') return await handleMessages(req,res);
+  if(route==='execute') return await handleExecute(req,res);
+  if(route==='health') return await handleHealth(req,res);
+  if(route==='logs') return await handleLogs(req,res);
+  if(route==='questions') return await handleQuestions(req,res);
   return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['health','runs','execute','logs','leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','pair-recap','schedule','messages','questions'] });
   }catch(e){
     const failedEndpoint=getEndpoint(req);

@@ -59,7 +59,7 @@ test('db:status fails closed on drift while db:plan remains inspectable',async()
     assert.equal(payload.readOnly,true);
     if(mode==='plan'){
       assert.equal(payload.executable,false);
-      assert.equal(payload.summary.actions,89);
+      assert.equal(payload.summary.actions,92);
     }
   }
 });

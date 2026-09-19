@@ -821,3 +821,45 @@ disabling cannot fence a claimed worker across an off/on cycle, so the database
 control generation is mandatory. Down migrations cannot restore deleted
 content; rollback is disable, drain, forward-fix, or an isolated verified PITR
 cutover.
+
+## ID-21: Bind active-circle authority to the live session and fail closed elsewhere
+
+Status: implemented behind `CIRCLE_MEMBERSHIP_ENABLED` and
+`MULTI_CIRCLE_CONTROL_PLANE_ENABLED`; migration v12 is required before enablement.
+
+**Decision.** An account may hold multiple active circle memberships, but every
+multi-circle browser session must explicitly select one active circle before it
+can read a roster or list/create/resend/revoke invitations. The authoritative
+selection is stored by hashed live-session identifier in
+`auth_session_circle_contexts`, not trusted from a client header. Selection is a
+same-origin, versioned compare-and-swap write that rechecks the live session,
+membership, role, and non-archived circle in one database transaction. Every
+dependent request carries the selected version only as a stale-response fence;
+the server resolves authorization from durable state again.
+
+Single-circle accounts with no stored context retain their implicit context and
+existing behavior. Removing one membership bumps any affected selected-session
+generation; a preserved invalid selection requires explicit reselection even if
+one circle remains, and all account sessions are revoked only when no active
+membership remains. Migration v12 binds the context to the exact
+`(session_hash,user_id)` pair, preserves the context tombstone across membership
+removal, and restricts physical circle deletion while a tombstone exists,
+preventing stale-version ABA. The browser clears private state before a switch,
+reloads, and notifies sibling tabs after it commits.
+
+Roster and invitation reads/writes are now scoped to the exact resolved circle.
+Pairing, availability, chat, workspace, video, execution, and AI records do not
+yet have complete tenant ownership, so only an exact single active primary
+circle may enter those legacy paths. Multiple circles, a sole secondary circle,
+and stale or ambiguous stored selections receive `409
+circle_feature_unavailable`. This is a deliberate safety boundary until those
+schemas carry canonical circle ownership.
+
+**Alternatives.** A client-only circle ID or reusable header is easier but can
+be stale or forged and cannot serialize concurrent tab changes. Storing one
+account-wide selection makes independent sessions interfere. Continuing to use
+the primary circle silently mixes data after secondary membership is admitted.
+Inferring a circle from pairing rows is unsafe because those rows are not yet
+fully tenant-owned. A database-backed session selection with optimistic version
+fencing is additive, preserves the single-circle path, and supports application
+rollback by disabling the feature flag while leaving harmless context rows.

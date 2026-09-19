@@ -209,9 +209,10 @@ let db=createMockDb();
 
 function authPayload(req) {
   const identity = req?.headers?.['x-test-auth'];
-  if (identity === 'admin') return { id: 1, email: 'admin@example.test', name: 'Admin', is_admin: true };
-  if (identity === 'demo') return { id: 3, email: 'demo@randori.demo', name: 'Demo', is_demo: true };
-  if (identity === 'user') return { id: 2, email: 'user@example.test', name: 'User' };
+  const sessionHash='a'.repeat(64);
+  if (identity === 'admin') return { id: 1, email: 'admin@example.test', name: 'Admin', is_admin: true, sessionHash };
+  if (identity === 'demo') return { id: 3, email: 'demo@randori.demo', name: 'Demo', is_demo: true, sessionHash };
+  if (identity === 'user') return { id: 2, email: 'user@example.test', name: 'User', sessionHash };
   return null;
 }
 
@@ -544,7 +545,7 @@ beforeEach(() => {
     'GOOGLE_CLIENT_SECRET', 'GROQ_API_KEY', 'OPENAI_API_KEY', 'RESEND_API_KEY', 'RESEND_FROM',
     'NEXT_PUBLIC_SENTRY_DSN', 'SENTRY_DSN',
     'ALLOW_OPEN_SIGNUP', 'SIGNUP_ALLOWLIST', 'LEETCODE_INGESTION_AUTHORIZED',
-    'AUTH_SCHEMA_BOOTSTRAP_ENABLED', 'CIRCLE_MEMBERSHIP_ENABLED', 'RANDORI_LOCAL_RUNTIME',
+    'AUTH_SCHEMA_BOOTSTRAP_ENABLED', 'CIRCLE_MEMBERSHIP_ENABLED', 'MULTI_CIRCLE_CONTROL_PLANE_ENABLED', 'RANDORI_LOCAL_RUNTIME',
     'EMAIL_PASSWORD_ACTIVATION_ENABLED', 'EMAIL_VERIFICATION_ENCRYPTION_KEY',
     'PASSWORD_RESET_ENABLED', 'PASSWORD_RESET_ENCRYPTION_KEY',
     'IDENTITY_EMAIL_HASH_KEY', 'IDENTITY_EMAIL_HASH_KEY_VERSION', 'IDENTITY_MANAGEMENT_ENABLED',
@@ -3303,6 +3304,88 @@ test('concurrent handler publications across two file-backed clients converge on
     for(const client of clients){ try{ client.close(); }catch{} }
     rmSync(directory,{recursive:true,force:true});
   }
+});
+
+test('unscoped pairing and workspace routes require one resolved primary circle',async()=>{
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';
+  let memberships=[
+    {circle_id:10,public_id:'circle-primary',name:'Primary',is_primary:1,role:'member'},
+    {circle_id:20,public_id:'circle-secondary',name:'Secondary',is_primary:0,role:'member'},
+  ];
+  let selectedContexts=[];
+  executeHandler=sql=>{
+    if(sql.includes('AS active_circle_count')){
+      const selectedCircleId=selectedContexts[0]?.circle_id??null;
+      return rows([{
+        active_circle_count:memberships.length,
+        primary_circle_count:memberships.filter(circle=>Number(circle.is_primary)===1).length,
+        selected_circle_id:selectedCircleId,
+        selected_circle_active:selectedCircleId!==null
+          &&memberships.some(circle=>Number(circle.circle_id)===Number(selectedCircleId))?1:0,
+      }]);
+    }
+    return rows();
+  };
+  const headers={...sameOriginHeaders,'x-test-auth':'user'};
+  for(const [handler,request] of [
+    [dataHandler,{url:'/api/weeks',query:{endpoint:'weeks'},headers}],
+    [dataHandler,{url:'/api/messages',query:{endpoint:'messages'},headers}],
+    [opsHandler,{method:'GET',url:'/api/settings/availability',query:{endpoint:'availability'},headers}],
+    [aiHandler,{method:'GET',url:'/api/ai/history',query:{endpoint:'history'},headers}],
+    [videoHandler,{method:'GET',url:'/api/video/signal',query:{endpoint:'signal'},headers}],
+  ]){
+    const response=await invoke(handler,request);
+    assert.equal(response.status,409);
+    assert.deepEqual(response.body,{
+      error:'pairing and workspace features are not available for this circle context',
+      code:'circle_feature_unavailable',
+    });
+  }
+
+  memberships=[
+    {circle_id:20,public_id:'circle-secondary',name:'Secondary',is_primary:0,role:'member'},
+  ];
+  for(const [handler,request] of [
+    [dataHandler,{url:'/api/history',query:{endpoint:'history'},headers}],
+    [opsHandler,{method:'GET',url:'/api/settings/availability',query:{endpoint:'availability'},headers}],
+    [aiHandler,{method:'GET',url:'/api/ai/history',query:{endpoint:'history'},headers}],
+    [videoHandler,{method:'GET',url:'/api/video/signal',query:{endpoint:'signal'},headers}],
+  ]){
+    const response=await invoke(handler,request);
+    assert.equal(response.status,409,'a sole secondary membership must not enter a primary-keyed surface');
+    assert.equal(response.body.code,'circle_feature_unavailable');
+  }
+
+  memberships=[
+    {circle_id:10,public_id:'circle-primary',name:'Primary',is_primary:1,role:'member'},
+  ];
+  selectedContexts=[{circle_id:20,context_version:7}];
+  const staleContext=await invoke(dataHandler,{
+    url:'/api/history',query:{endpoint:'history'},headers,
+  });
+  assert.equal(staleContext.status,409,'a stale stored selection cannot fall through to primary history');
+  assert.equal(staleContext.body.code,'circle_feature_unavailable');
+
+  memberships=[
+    {circle_id:10,public_id:'circle-primary',name:'Primary',is_primary:1,role:'member'},
+  ];
+  selectedContexts=[];
+
+  executed.length=0;
+  const profile=await invoke(dataHandler,{
+    url:'/api/data?endpoint=profile&probe=/history',query:{endpoint:'profile',probe:'/history'},headers,
+  });
+  assert.equal(profile.status,404);
+  assert.equal(executed.some(call=>call.sql.includes('FROM session_runs')),false,
+    'query-string path fragments cannot redirect dispatch into an unscoped route');
+
+  memberships.push({circle_id:20,public_id:'circle-secondary',name:'Secondary',is_primary:0,role:'member'});
+  const pathConflict=await invoke(dataHandler,{
+    url:'/api/history?endpoint=profile',query:{endpoint:'profile'},headers,
+  });
+  assert.equal(pathConflict.status,409,
+    'the same canonical route decision must drive both the guard and dispatch');
 });
 
 test('video signaling validates membership and supports post, filtered poll, and purge', async () => {

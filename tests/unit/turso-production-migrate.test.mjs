@@ -157,7 +157,7 @@ function dependencies(path,{classification='managed',sourceVersion=3,platform,co
 test('status uses a read-only token and returns one actionable pending migration',async()=>{
   const item=fixture();
   try{
-    await installManaged(item.path,10);
+    await installManaged(item.path,11);
     const platform=platformMock();
     const deps=dependencies(item.path,{platform});
     const result=await runRemoteMigration(options(),deps.value);
@@ -165,8 +165,8 @@ test('status uses a read-only token and returns one actionable pending migration
     assert.equal(result.operation,'status');
     assert.equal(result.readOnly,true);
     assert.equal(result.state,'managed');
-    assert.equal(result.currentVersion,10);
-    assert.deepEqual(result.pendingVersions,[11]);
+    assert.equal(result.currentVersion,11);
+    assert.deepEqual(result.pendingVersions,[12]);
     assert.deepEqual(result.capabilities,{adopt:false,apply:true});
     assert.match(result.stateFingerprint,/^[a-f0-9]{64}$/);
     assert.deepEqual(platform.calls.filter(call=>call[0]==='token'),[
@@ -199,17 +199,17 @@ test('status uses a read-only token and returns one actionable pending migration
 test('apply advances one managed version per run and a fully migrated run is an explicit no-op',async()=>{
   const item=fixture();
   try{
-    await installManaged(item.path,10);
+    await installManaged(item.path,11);
     const fingerprint=(await state(item.path)).stateFingerprint;
     const platform=platformMock();
     const first=await runRemoteMigration(options({
       operation:'apply',expectedStateFingerprint:fingerprint,
     }),dependencies(item.path,{platform}).value);
     assert.equal(first.result,'applied');
-    assert.deepEqual(first.appliedVersions,[11]);
-    assert.equal(first.fromVersion,10);
-    assert.equal(first.toVersion,11);
-    assert.equal((await state(item.path)).currentVersion,11);
+    assert.deepEqual(first.appliedVersions,[12]);
+    assert.equal(first.fromVersion,11);
+    assert.equal(first.toVersion,12);
+    assert.equal((await state(item.path)).currentVersion,12);
     assert.deepEqual(platform.calls.filter(call=>call[0]==='token'),[
       ['token','production',{expiration:'10m',authorization:'full-access'}],
     ]);
@@ -219,8 +219,8 @@ test('apply advances one managed version per run and a fully migrated run is an 
     }),dependencies(item.path).value);
     assert.equal(second.result,'noop');
     assert.deepEqual(second.appliedVersions,[]);
-    assert.equal(second.fromVersion,11);
-    assert.equal(second.toVersion,11);
+    assert.equal(second.fromVersion,12);
+    assert.equal(second.toVersion,12);
   }finally{ item.close(); }
 });
 
@@ -381,7 +381,7 @@ test('stale state, unadopted state, and more than one pending migration never wr
 test('an ambiguous commit failure is not retried and the transaction rolls back',async()=>{
   const item=fixture();
   try{
-    await installManaged(item.path,10);
+    await installManaged(item.path,11);
     const fingerprint=(await state(item.path)).stateFingerprint;
     let transactions=0;
     const connectDatabase=()=>{
@@ -412,7 +412,7 @@ test('an ambiguous commit failure is not retried and the transaction rolls back'
       error=>error.code==='MIGRATION_FAILED',
     );
     assert.equal(transactions,1);
-    assert.equal((await state(item.path)).currentVersion,10);
+    assert.equal((await state(item.path)).currentVersion,11);
   }finally{ item.close(); }
 });
 

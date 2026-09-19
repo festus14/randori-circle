@@ -119,8 +119,13 @@ mock.module('../../api/_circle-membership.js',{
     readInviteClaim:req=>String(req.headers?.cookie||'').includes('randori_invite_claim=valid-claim')
       ? {invitation_id:'invite-1',circle_id:1,token_hash:'token-hash',email_hash:'email-hash',exp:9999999999}
       : null,
+    hasActiveCircleMembership:async(_db,userId)=>{
+      membershipCalls.push({kind:'any',userId});
+      if(membershipError) throw membershipError;
+      return membershipResult;
+    },
     hasActivePrimaryCircleMembership:async(_db,userId)=>{
-      membershipCalls.push(userId);
+      membershipCalls.push({kind:'primary',userId});
       if(membershipError) throw membershipError;
       return membershipResult;
     },
@@ -282,7 +287,7 @@ beforeEach(()=>{
   globalThis.fetch=originalFetch;
   for(const key of [
     'ALLOW_OPEN_SIGNUP','APP_URL','CIRCLE_MEMBERSHIP_ENABLED','CRON_SECRET',
-    'GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','NODE_ENV','SIGNUP_ALLOWLIST',
+    'GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','NODE_ENV','SIGNUP_ALLOWLIST','MULTI_CIRCLE_CONTROL_PLANE_ENABLED',
     'EMAIL_PASSWORD_ACTIVATION_ENABLED','EMAIL_VERIFICATION_ENCRYPTION_KEY',
     'RANDORI_LOCAL_RUNTIME','RANDORI_LOCAL_IDENTITY','TURSO_AUTH_TOKEN','TURSO_DATABASE_URL','VERCEL','VERCEL_ENV','VERCEL_URL',
   ]) delete process.env[key];
@@ -489,6 +494,16 @@ test('password login and profile require active primary-circle membership when e
   });
   assert.equal(allowedLogin.status,200);
   assert.match(String(allowedLogin.headers['set-cookie']),/randori_session=/);
+  assert.equal(membershipCalls.every(call=>call.kind==='primary'),true);
+
+  membershipCalls.length=0;
+  process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';
+  const multiCircleLogin=await invoke(authHandler,{
+    method:'POST',url:'/api/auth/login',query:{endpoint:'login'},headers:sameOriginHeaders,
+    body:{email:'user@example.test',password:PASSWORD},
+  });
+  assert.equal(multiCircleLogin.status,200);
+  assert.deepEqual(membershipCalls,[{kind:'any',userId:2}]);
 });
 
 test('membership lookup failures never establish or invalidate a session as a false nonmember',async()=>{
@@ -659,6 +674,7 @@ test('a stable Google subject signs into the same account after its verified ema
   assert.equal(executed.filter(call=>call.sql.includes('UPDATE auth_accounts SET email=')).length,0);
   assert.deepEqual(sessionRevocations,[]);
   assert.equal(executed.some(call=>call.sql.includes('auth_provider_email_state')),false);
+  assert.equal(membershipCalls.at(-1)?.kind,'primary');
 });
 
 test('a verified Google email never auto-links an existing password account',async()=>{

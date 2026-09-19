@@ -823,6 +823,11 @@ p{margin:0}
               <input id="personName" class="input" placeholder="Teammate name (testing only)" maxlength="32" />
               <button id="addPerson" class="btn">Add</button>
             </div>
+            <div id="circleContextPanel" hidden style="display:none;gap:5px">
+              <label class="small muted" for="circleContextSelect">Active circle</label>
+              <select id="circleContextSelect" data-testid="circle-context-select" class="select" aria-describedby="circleContextStatus"></select>
+              <div id="circleContextStatus" class="small muted" role="status" aria-live="polite"></div>
+            </div>
             <div id="circleAutoNote" class="small muted">Loading your private circle…</div>
             <div id="peopleList" data-testid="circle-members" class="people" aria-live="polite" aria-busy="true"></div>
             <div id="circleOwnerPanel" hidden style="display:none;gap:10px;border-top:1px solid var(--border);padding-top:12px">
@@ -1175,7 +1180,7 @@ p{margin:0}
   let me = null;
   let authSessionEpoch=0;
   let authRefreshSequence=0;
-  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,passwordReset:false,localIdentity:false,verifiedEmailActivation:false,googleOAuth:false,identityManagement:false,registrationMode:'private_beta'});
+  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,passwordReset:false,localIdentity:false,verifiedEmailActivation:false,googleOAuth:false,identityManagement:false,multiCircleControlPlane:false,registrationMode:'private_beta'});
   let authCapabilities=CLOSED_AUTH_CAPABILITIES;
   let authCapabilitiesLoaded=false;
   let authCapabilitiesFailed=false;
@@ -1187,11 +1192,15 @@ p{margin:0}
   let googleRetryPending=false;
   let activationPendingEmail='';
   let activeCircleRole=null;
+  let activeCircleContext=null;
+  let activeCircleContextUserId=null;
+  let circleContextRequest=0;
   let currentCloudPairingWeek=null;
   let currentCloudPairingCycle=null;
   let currentCloudPairingLoaded=false;
   let currentCloudPairingUserId=null;
   let pairingRenderEpoch=0;
+  window._randoriUserNavigationEpoch=0;
   const AVAILABILITY_SOURCES=new Set(['user','legacy_bridge','cycle_default']);
   const AVAILABILITY_ROLLOVER_GRACE_MS=250;
   const AVAILABILITY_ROLLOVER_RETRY_MS=30000;
@@ -1259,6 +1268,7 @@ p{margin:0}
       activationState.status=response.ok&&data?.status==='verified'?'verified':String(data?.status||'unavailable');
       if(response.ok&&data?.user){
         me=data.user;
+        resetCircleControlForIdentityChange();
         try{ localStorage.setItem(ME_KEY,JSON.stringify(data.user)); }catch{}
       }
     }catch{ activationState.status='unavailable'; }
@@ -1335,6 +1345,7 @@ p{margin:0}
         invalidateAuthRefreshes();
         try{ localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(ME_KEY); }catch{}
         me=null;
+        resetCircleControlForIdentityChange();
         clearAvailability();
         try{ updateAuthUI(); }catch{}
         try{ window.dispatchEvent(new CustomEvent('randori:auth-refreshed',{detail:{signedIn:false,userId:null}})); }catch{}
@@ -1428,6 +1439,10 @@ p{margin:0}
     try{
       const headers = opts.headers||{};
       headers['content-type']='application/json';
+      if(authCapabilities.multiCircleControlPlane&&activeCircleContext?.active_circle
+        &&Number.isSafeInteger(activeCircleContext.context_version)){
+        headers['x-randori-circle-context-version']=String(activeCircleContext.context_version);
+      }
       const r=await fetch(path,{...opts,credentials:'same-origin',headers,body: opts.body? JSON.stringify(opts.body):undefined});
       const text = await r.text();
       let j; try{ j=JSON.parse(text)}catch{ j={raw:text,status:r.status} }
@@ -1458,6 +1473,7 @@ p{margin:0}
     authRefreshSequence+=1;
   }
 async function refreshMe(){
+    const previousUserId=Number(me?.id||me?.uid)||null;
     const requestEpoch=authSessionEpoch;
     const requestSequence=++authRefreshSequence;
     let nextUser=null;
@@ -1477,7 +1493,10 @@ async function refreshMe(){
       me=nextUser;
       try{ localStorage.setItem(ME_KEY, JSON.stringify(me)); }catch{}
     }
-    const refreshedUserId=Number(me?.id||me?.uid);
+    const refreshedUserId=Number(me?.id||me?.uid)||null;
+    if(previousUserId!==refreshedUserId){
+      resetCircleControlForIdentityChange({preserveLifecycleRecentAction:true});
+    }
     if(availabilityState.userId!==null
       &&(!Number.isSafeInteger(refreshedUserId)||refreshedUserId<1
         ||availabilityState.userId!==refreshedUserId)) clearAvailability();
@@ -1655,7 +1674,9 @@ async function refreshMe(){
     const shownValue=availabilityState.saving&&typeof availabilityState.pendingValue==='boolean'
       ?availabilityState.pendingValue:availability.isAvailable;
     toggle.checked=shownValue;
-    toggle.disabled=availabilityState.loading||availabilityState.saving||!availability.editable;
+    // A validated value remains interactive during same-account background
+    // refreshes. toggleAvailability serializes the intent behind that request.
+    toggle.disabled=availabilityState.saving||!availability.editable;
     label.textContent=availabilityState.saving
       ?`SAVING ${shownValue?'ON':'OFF'}…`
       :(!availability.editable?'CLOSED':(availability.isAvailable?'ON (included)':'OFF (skipped)'));
@@ -1802,22 +1823,36 @@ async function refreshMe(){
     if(typeof checked!=='boolean'||availabilityState.saving) return;
     const userId=Number(me?.id||me?.uid);
     const requestAuthEpoch=authSessionEpoch;
+    if(!Number.isSafeInteger(userId)||userId<1||availabilityState.userId!==userId) return;
     if(availabilityState.loading&&availabilityState.userId===userId&&availabilityState.request){
       // A same-account background refresh may start between pointerdown and
       // change. Serialize the user's intent behind that refresh, then write it
       // with the freshly returned cycle key/version. Identity changes still
       // invalidate the intent through the actor checks below.
       const request=availabilityState.request;
+      availabilityState.saving=true;
+      availabilityState.pendingValue=checked;
+      availabilityState.error='';
+      availabilityState.notice=null;
+      renderAvailability();
       await request;
       if(requestAuthEpoch!==authSessionEpoch||Number(me?.id||me?.uid)!==userId
         ||availabilityState.userId!==userId) return;
-      if(availabilityState.value?.isAvailable===checked){ renderAvailability(); return; }
-      return toggleAvailability(checked);
+      if(!availabilityState.value?.editable||availabilityState.value.isAvailable===checked){
+        availabilityState.saving=false;
+        availabilityState.pendingValue=null;
+        renderAvailability();
+        return;
+      }
     }
     const current=availabilityState.value;
-    if(!current||!current.editable){ renderAvailability(); return; }
+    if(!current||!current.editable){
+      availabilityState.saving=false;
+      availabilityState.pendingValue=null;
+      renderAvailability();
+      return;
+    }
     const epoch=availabilityState.epoch;
-    if(!Number.isSafeInteger(userId)||userId<1||availabilityState.userId!==userId) return;
     const isCurrentRequest=()=>epoch===availabilityState.epoch
       &&requestAuthEpoch===authSessionEpoch&&availabilityState.userId===userId
       &&Number(me?.id||me?.uid)===userId;
@@ -1878,6 +1913,7 @@ async function refreshMe(){
       ||(capabilities.localIdentity!==undefined&&typeof capabilities.localIdentity!=='boolean')
       ||(capabilities.verifiedEmailActivation!==undefined&&typeof capabilities.verifiedEmailActivation!=='boolean')
       ||(capabilities.identityManagement!==undefined&&typeof capabilities.identityManagement!=='boolean')
+      ||(capabilities.multiCircleControlPlane!==undefined&&typeof capabilities.multiCircleControlPlane!=='boolean')
       ||typeof capabilities.googleOAuth!=='boolean'
       ||!['local_open','local_invite','verified_invite','private_beta'].includes(mode)) throw new Error('invalid auth capabilities');
     return Object.freeze({
@@ -1888,6 +1924,7 @@ async function refreshMe(){
       verifiedEmailActivation:capabilities.verifiedEmailActivation===true,
       googleOAuth:capabilities.googleOAuth,
       identityManagement:capabilities.identityManagement===true,
+      multiCircleControlPlane:capabilities.multiCircleControlPlane===true,
       registrationMode:mode,
     });
   }
@@ -2055,6 +2092,7 @@ async function refreshMe(){
       renderAuthModal();
       renderInviteLanding();
       focusAuthControl();
+      if(me) void renderPeople();
     }
     return authCapabilities;
   }
@@ -2470,6 +2508,7 @@ async function refreshMe(){
       localStorage.removeItem('randori-last-room');
       localStorage.removeItem('randori-code');
       me=null;
+      resetCircleControlForIdentityChange();
       clearAvailability();
       // clear any in-memory video state quietly
       try{ if(typeof videoJoined!=='undefined' && videoJoined){ videoJoined=false; } }catch{}
@@ -2660,6 +2699,7 @@ async function refreshMe(){
       localStorage.removeItem(TOKEN_KEY);
       localStorage.setItem(ME_KEY,JSON.stringify(data.user));
       me=data.user;
+      resetCircleControlForIdentityChange();
       if(mode==='signup'&&authCapabilities.registrationMode==='local_invite'){
         window._randori_invite_flow?.complete?.();
       }
@@ -2965,9 +3005,14 @@ async function refreshMe(){
   const circleMemberSearchStatus=document.getElementById('circleMemberSearchStatus');
   const circleMembersLoadMore=document.getElementById('circleMembersLoadMore');
   const circleLeave=document.getElementById('circleLeave');
+  const circleContextPanel=document.getElementById('circleContextPanel');
+  const circleContextSelect=document.getElementById('circleContextSelect');
+  const circleContextStatus=document.getElementById('circleContextStatus');
   const legacyCircleAddActions=document.getElementById('legacyCircleAddActions');
   const legacyCircleDemoActions=document.getElementById('legacyCircleDemoActions');
   let circleRenderEpoch=0;
+  let circleControlEpoch=0;
+  let circleContextSwitching=false;
   let circleLifecycleNoticeGeneration=0;
   let circleLifecycleNoticeActorId=null;
   let circleLifecycleNoticeActive=false;
@@ -2982,6 +3027,170 @@ async function refreshMe(){
   let latestInviteUrl=null;
   let latestInviteId=null;
   let latestInviteOwnerId=null;
+  const circleContextChannel=typeof BroadcastChannel==='function'?new BroadcastChannel('randori-circle-context-v1'):null;
+
+  function resetPrivateCircleControl({switching,preserveLifecycleRecentAction=false}){
+    circleContextSwitching=switching;
+    circleControlEpoch+=1;
+    circleRenderEpoch+=1;
+    pairingRenderEpoch+=1;
+    circleRosterRequest+=1;
+    currentCloudPairingWeek=null;
+    currentCloudPairingCycle=null;
+    currentCloudPairingLoaded=false;
+    currentCloudPairingUserId=null;
+    activeCircleRole=null;
+    activeCircleContext=null;
+    activeCircleContextUserId=null;
+    circleInviteCreatePending=false;
+    circleLifecyclePending=false;
+    resetOwnerInvites({allowRosterPreservation:false});
+    clearLatestInvite();
+    if(!preserveLifecycleRecentAction) clearLifecycleRecentAction();
+    window._randori_workspace?.deactivate?.();
+    window._randori_authorized_room=null;
+    window._randori_join_room=null;
+    try{ stopPairRecap({clear:true}); }catch{}
+    try{ clearDashboardPairState(); }catch{}
+    try{
+      localStorage.removeItem('randori-last-room');
+      sessionStorage.removeItem('randori-room-draft');
+    }catch{}
+    listEl?.replaceChildren();
+    circleInvites?.replaceChildren();
+    circleManageMembers?.replaceChildren();
+    for(const id of ['pairsList','historyList','historyPersonal','dashPairArea','dashHistList','recentRunsList','pairRunsList']){
+      document.getElementById(id)?.replaceChildren();
+    }
+    return circleControlEpoch;
+  }
+
+  function clearPrivateCircleViewForSwitch(){
+    return resetPrivateCircleControl({switching:true});
+  }
+
+  function resetCircleControlForIdentityChange({preserveLifecycleRecentAction=false}={}){
+    return resetPrivateCircleControl({switching:false,preserveLifecycleRecentAction});
+  }
+
+  function renderCircleContextSelector(context){
+    if(!circleContextPanel||!circleContextSelect||!circleContextStatus) return;
+    const circles=Array.isArray(context?.circles)?context.circles:[];
+    circleContextSelect.replaceChildren();
+    if(context?.selection_required){
+      const placeholder=document.createElement('option');
+      placeholder.value=''; placeholder.textContent='Choose a circle'; placeholder.selected=true;
+      circleContextSelect.appendChild(placeholder);
+    }
+    for(const circle of circles){
+      const publicId=String(circle?.public_id||'');
+      if(!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(publicId)) continue;
+      const option=document.createElement('option');
+      option.value=publicId;
+      option.textContent=`${String(circle?.name||'Circle').slice(0,120)} (${circle?.role==='owner'?'owner':'member'})`;
+      option.selected=publicId===context?.active_circle?.public_id;
+      circleContextSelect.appendChild(option);
+    }
+    const visible=circles.length>1||context?.selection_required===true;
+    circleContextPanel.hidden=!visible;
+    circleContextPanel.style.display=visible?'grid':'none';
+    circleContextSelect.disabled=false;
+    circleContextStatus.textContent=context?.selection_required
+      ?'Choose which circle to manage. Pairing remains unavailable while this account belongs to multiple circles.'
+      :(circles.length>1?'Circle-specific member and invitation controls are active. Pairing remains unavailable for this account.':'');
+  }
+
+  function circleResponseMatchesContext(result){
+    if(!authCapabilities.multiCircleControlPlane) return true;
+    return Number.isSafeInteger(result?.circle_context_version)
+      &&result.circle_context_version===activeCircleContext?.context_version;
+  }
+
+  function captureCircleControlOperation(){
+    return Object.freeze({
+      epoch:circleControlEpoch,
+      userId:Number(me?.id||me?.uid),
+      contextVersion:authCapabilities.multiCircleControlPlane
+        ?Number(activeCircleContext?.context_version):null,
+      circlePublicId:authCapabilities.multiCircleControlPlane
+        ?String(activeCircleContext?.active_circle?.public_id||''):null,
+    });
+  }
+
+  function circleControlOperationMatches(operation,response){
+    if(!operation||circleContextSwitching||operation.epoch!==circleControlEpoch
+      ||operation.userId!==Number(me?.id||me?.uid)) return false;
+    if(!authCapabilities.multiCircleControlPlane) return true;
+    if(activeCircleContextUserId!==operation.userId
+      ||operation.contextVersion!==Number(activeCircleContext?.context_version)
+      ||operation.circlePublicId!==String(activeCircleContext?.active_circle?.public_id||'')) return false;
+    return response===undefined||circleResponseMatchesContext(response);
+  }
+
+  async function loadCircleContext(epoch,userId){
+    const controlEpoch=circleControlEpoch;
+    if(!authCapabilities.multiCircleControlPlane){
+      activeCircleContext=null;
+      activeCircleContextUserId=null;
+      if(circleContextPanel){ circleContextPanel.hidden=true; circleContextPanel.style.display='none'; }
+      return true;
+    }
+    const request=++circleContextRequest;
+    const context=await api('/api/circles',{method:'GET'});
+    if(circleContextSwitching||controlEpoch!==circleControlEpoch
+      ||request!==circleContextRequest||epoch!==circleRenderEpoch||Number(me?.id||me?.uid)!==userId) return false;
+    if(context?.ok!==true||!Array.isArray(context.circles)
+      ||!Number.isSafeInteger(context.context_version)||context.context_version<0){
+      throw new Error('invalid circle context response');
+    }
+    activeCircleContext=context;
+    activeCircleContextUserId=userId;
+    renderCircleContextSelector(context);
+    return !!context.active_circle;
+  }
+
+  circleContextSelect?.addEventListener('change',async()=>{
+    if(!me||!activeCircleContext||circleContextSelect.disabled) return;
+    const publicId=String(circleContextSelect.value||'');
+    if(!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(publicId)) return;
+    const userId=Number(me.id||me.uid);
+    const expectedContextVersion=Number(activeCircleContext.context_version);
+    circleContextSelect.disabled=true;
+    if(circleContextStatus) circleContextStatus.textContent='Switching circle…';
+    const switchEpoch=clearPrivateCircleViewForSwitch();
+    try{
+      const next=await api('/api/circles',{
+        method:'PUT',
+        body:{circle_public_id:publicId,expected_context_version:expectedContextVersion},
+      });
+      if(switchEpoch!==circleControlEpoch||!circleContextSwitching
+        ||!me||Number(me.id||me.uid)!==userId) return;
+      if(next?.ok!==true||next?.active_circle?.public_id!==publicId
+        ||!Number.isSafeInteger(next.context_version)
+        ||next.context_version<=expectedContextVersion){
+        throw new Error('invalid circle switch response');
+      }
+      circleContextChannel?.postMessage({v:1,user_id:userId,context_version:next.context_version});
+      window.location.reload();
+    }catch(error){
+      if(switchEpoch!==circleControlEpoch||!me||Number(me.id||me.uid)!==userId) return;
+      circleContextSwitching=false;
+      circleContextSelect.disabled=false;
+      if(circleContextStatus) circleContextStatus.textContent=error?.code==='circle_context_changed'
+        ?'Circle changed in another tab. Refreshing…':'Could not switch circle. Try again.';
+      if(error?.code==='circle_context_changed') window.location.reload();
+      else void renderPeople();
+    }
+  });
+
+  circleContextChannel?.addEventListener('message',event=>{
+    const value=event?.data;
+    const userId=Number(me?.id||me?.uid);
+    if(!value||value.v!==1||Number(value.user_id)!==userId||!Number.isSafeInteger(value.context_version)) return;
+    if(value.force!==true&&value.context_version<=Number(activeCircleContext?.context_version||0)) return;
+    clearPrivateCircleViewForSwitch();
+    window.location.reload();
+  });
 
   function clearLatestInvite(){
     latestInviteUrl=null;
@@ -3081,6 +3290,8 @@ async function refreshMe(){
         resend.textContent='Resend email'; resend.setAttribute('aria-label','Resend invitation email');
         resend.addEventListener('click',async()=>{
           if(activeCircleRole!=='owner'||!me) return;
+          const operation=captureCircleControlOperation();
+          if(!circleControlOperationMatches(operation)) return;
           const userId=Number(me.id||me.uid);
           resend.disabled=true;
           if(circleInviteStatus) circleInviteStatus.textContent='Queueing a fresh invitation email…';
@@ -3088,7 +3299,8 @@ async function refreshMe(){
             const result=await api(`/api/invitations/${encodeURIComponent(id)}`,{
               method:'POST',body:{action:'resend'},
             });
-            if(!me||Number(me.id||me.uid)!==userId) return;
+            if(!me||Number(me.id||me.uid)!==userId
+              ||!circleControlOperationMatches(operation,result)) return;
             const inviteUrl=String(result?.invitation?.invite_url||'');
             if(result?.ok!==true||!/^\/invite#invite=[A-Za-z0-9_-]{43}$/.test(inviteUrl)){
               throw new Error('invalid invitation response');
@@ -3099,6 +3311,7 @@ async function refreshMe(){
             if(circleInviteStatus) circleInviteStatus.textContent='Fresh invitation email queued. Copy the new link as a fallback.';
             await loadOwnerInvitations(circleRenderEpoch);
           }catch{
+            if(!circleControlOperationMatches(operation)) return;
             resend.disabled=false;
             if(circleInviteStatus) circleInviteStatus.textContent='Could not resend yet. Use your saved link or create a new invitation.';
           }
@@ -3108,14 +3321,18 @@ async function refreshMe(){
         revoke.textContent='Revoke'; revoke.setAttribute('aria-label','Revoke invitation');
         revoke.addEventListener('click',async()=>{
           if(activeCircleRole!=='owner') return;
+          const operation=captureCircleControlOperation();
+          if(!circleControlOperationMatches(operation)) return;
           revoke.disabled=true;
           if(circleInviteStatus) circleInviteStatus.textContent='Revoking invitation…';
           try{
-            await api(`/api/invitations/${encodeURIComponent(String(id))}`,{method:'DELETE'});
+            const result=await api(`/api/invitations/${encodeURIComponent(String(id))}`,{method:'DELETE'});
+            if(!circleControlOperationMatches(operation,result)) return;
             if(latestInviteId===id) clearLatestInvite();
             if(circleInviteStatus) circleInviteStatus.textContent='Invitation revoked.';
             await loadOwnerInvitations(circleRenderEpoch);
           }catch{
+            if(!circleControlOperationMatches(operation)) return;
             revoke.disabled=false;
             if(circleInviteStatus) circleInviteStatus.textContent='Could not revoke invitation. Try again.';
           }
@@ -3128,16 +3345,20 @@ async function refreshMe(){
 
   async function loadOwnerInvitations(epoch=circleRenderEpoch){
     if(activeCircleRole!=='owner'||!me) return;
+    const operation=captureCircleControlOperation();
+    if(!circleControlOperationMatches(operation)) return;
     const userId=Number(me.id||me.uid);
     if(circleInviteStatus) circleInviteStatus.textContent='Loading invitations…';
     try{
       const result=await api('/api/invitations',{method:'GET'});
-      if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==userId) return;
+      if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==userId
+        ||!circleControlOperationMatches(operation,result)) return;
       const invitations=Array.isArray(result?.invitations)?result.invitations:[];
       renderInvitationRows(invitations);
       if(circleInviteStatus) circleInviteStatus.textContent=`${invitations.length} invitation${invitations.length===1?'':'s'}.`;
     }catch{
-      if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==userId) return;
+      if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==userId
+        ||!circleControlOperationMatches(operation)) return;
       if(circleInvites){
         circleInvites.replaceChildren();
         const retry=document.createElement('button'); retry.type='button'; retry.className='pill'; retry.textContent='Retry invitations';
@@ -3189,11 +3410,15 @@ async function refreshMe(){
     try{ pending=JSON.parse(sessionStorage.getItem(LIFECYCLE_RECENT_ACTION_KEY)||'null'); }catch{}
     const actorId=Number(me?.id||me?.uid);
     const createdAt=Number(pending?.created_at);
+    const currentCircleId=String(activeCircleContext?.active_circle?.public_id||'');
+    const currentContextVersion=Number(activeCircleContext?.context_version||0);
     const valid=pending?.v===1&&['deactivate','transfer'].includes(pending?.action)
       &&Number.isSafeInteger(pending?.member_id)&&pending.member_id>0
       &&Number.isSafeInteger(pending?.actor_id)&&pending.actor_id===actorId
       &&Number.isFinite(createdAt)&&createdAt<=Date.now()+30_000
-      &&Date.now()-createdAt<=LIFECYCLE_RECENT_ACTION_TTL_MS;
+      &&Date.now()-createdAt<=LIFECYCLE_RECENT_ACTION_TTL_MS
+      &&(!authCapabilities.multiCircleControlPlane
+        ||pending.circle_public_id===currentCircleId&&pending.context_version===currentContextVersion);
     if(consume||!valid) clearLifecycleRecentAction();
     return valid?pending:null;
   }
@@ -3204,6 +3429,10 @@ async function refreshMe(){
     try{
       sessionStorage.setItem(LIFECYCLE_RECENT_ACTION_KEY,JSON.stringify({
         v:1,action,member_id:memberId,actor_id:actorId,created_at:Date.now(),
+        ...(authCapabilities.multiCircleControlPlane?{
+          circle_public_id:String(activeCircleContext?.active_circle?.public_id||''),
+          context_version:Number(activeCircleContext?.context_version||0),
+        }:{}),
       }));
     }catch{ return false; }
     if(typeof window._randori_identity?.confirm!=='function'){
@@ -3215,6 +3444,14 @@ async function refreshMe(){
       :'Confirm your identity before deactivating an owner.');
   }
   async function resumeLifecycleRecentAction(){
+    await authCapabilitiesPromise;
+    const actorId=Number(me?.id||me?.uid);
+    if(authCapabilities.multiCircleControlPlane
+      &&Number.isSafeInteger(actorId)&&actorId>0
+      &&(!activeCircleContext?.active_circle||activeCircleContextUserId!==actorId)){
+      try{ await renderPeople(); }catch{ return false; }
+      if(!activeCircleContext?.active_circle||activeCircleContextUserId!==actorId) return false;
+    }
     const pending=readLifecycleRecentAction({consume:true});
     if(!pending){
       publishCircleLifecycleNotice('Confirmation expired or the signed-in account changed. No circle change was made.');
@@ -3238,6 +3475,8 @@ async function refreshMe(){
 
   async function applyMemberAction(action,member,{skipPrompt=false,allowRecentAuth=true}={}){
     if(circleLifecyclePending||!me||(!skipPrompt&&activeCircleRole!=='owner')) return false;
+    const operation=captureCircleControlOperation();
+    if(!circleControlOperationMatches(operation)) return false;
     const label=String(member?.display_name||'this member');
     const prompts={
       deactivate:[`Deactivate ${label}?`,'They will be signed out immediately and lose access to private pair rooms. You can reactivate them later.'],
@@ -3246,35 +3485,44 @@ async function refreshMe(){
     };
     const prompt=prompts[action];
     if(!prompt||(!skipPrompt&&!await showConfirm(prompt[0],prompt[1]))) return false;
+    if(!circleControlOperationMatches(operation)) return false;
     const actorId=Number(me.id||me.uid);
     circleLifecyclePending=true;
     clearCircleLifecycleNotice();
     if(circleLifecycleStatus) circleLifecycleStatus.textContent=`${action==='transfer'?'Transferring ownership':action==='reactivate'?'Reactivating member':'Deactivating member'}…`;
     circleLifecyclePanel?.querySelectorAll('button').forEach(button=>{ button.disabled=true; });
     try{
-      await api('/api/members',{method:'PATCH',body:{action,member_id:Number(member.id)}});
-      if(!me||Number(me.id||me.uid)!==actorId) return;
+      const result=await api('/api/members',{method:'PATCH',body:{action,member_id:Number(member.id)}});
+      if(!me||Number(me.id||me.uid)!==actorId
+        ||!circleControlOperationMatches(operation,result)) return false;
       if(circleLifecycleStatus) circleLifecycleStatus.textContent=action==='transfer'?'Ownership transferred.':action==='reactivate'?'Member reactivated.':'Member deactivated and signed out.';
       circleRosterState.loaded=false;
       circleRosterLoading=false;
       circleRosterLoadEpoch=0;
       await renderPeople();
+      if(!circleControlOperationMatches(operation)) return false;
       await renderPairs();
+      if(!circleControlOperationMatches(operation)) return false;
       return true;
     }catch(error){
+      if(!circleControlOperationMatches(operation)) return false;
       if(allowRecentAuth&&(error?.code==='recent_auth_required'||error?.error==='recent authentication required')){
         if(circleLifecycleStatus) circleLifecycleStatus.textContent='Confirm your identity to continue. No change has been made yet.';
         if(!await requestLifecycleRecentAuth(action,Number(member.id))){
+          if(!circleControlOperationMatches(operation)) return false;
           publishCircleLifecycleNotice('Confirmation is unavailable. No circle change was made.');
         }
         return false;
       }
       await loadManagedMembers(circleRenderEpoch);
+      if(!circleControlOperationMatches(operation)) return false;
       publishCircleLifecycleNotice(lifecycleErrorMessage(error));
       return false;
     }finally{
-      circleLifecyclePending=false;
-      circleLifecyclePanel?.querySelectorAll('button').forEach(button=>{ button.disabled=false; });
+      if(circleControlOperationMatches(operation)){
+        circleLifecyclePending=false;
+        circleLifecyclePanel?.querySelectorAll('button').forEach(button=>{ button.disabled=false; });
+      }
     }
   }
 
@@ -3323,6 +3571,8 @@ async function refreshMe(){
 
   async function loadManagedMembers(epoch=circleRenderEpoch,{append=false,query=circleRosterState.query}={}){
     if(activeCircleRole!=='owner'||!me||!circleManageMembers) return false;
+    const operation=captureCircleControlOperation();
+    if(!circleControlOperationMatches(operation)) return false;
     const actorId=Number(me.id||me.uid);
     const requestAuthEpoch=authSessionEpoch;
     const noticeGeneration=circleLifecycleNoticeGeneration;
@@ -3348,7 +3598,8 @@ async function refreshMe(){
       const params=new URLSearchParams({limit:'50',q:normalizedQuery});
       if(cursor) params.set('cursor',cursor);
       const result=await api(`/api/members?${params.toString()}`,{method:'GET'});
-      if(requestId!==circleRosterRequest||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==actorId) return false;
+      if(requestId!==circleRosterRequest||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==actorId
+        ||!circleControlOperationMatches(operation,result)) return false;
       if(!validRosterResponse(result)) throw new Error('invalid member response');
       const combined=append?[...circleRosterState.members,...result.members]:result.members;
       const unique=[]; const seen=new Set();
@@ -3373,6 +3624,7 @@ async function refreshMe(){
       }
       return true;
     }catch(error){
+      if(!circleControlOperationMatches(operation)) return false;
       // This request began while the client held an authenticated owner view.
       // Treat the endpoint's status as authoritative: gateways and future
       // server versions may intentionally replace the response copy, but a
@@ -3455,15 +3707,35 @@ async function refreshMe(){
 
   circleLeave?.addEventListener('click',async()=>{
     if(circleLifecyclePending||!me||!['owner','member'].includes(activeCircleRole)) return;
+    const operation=captureCircleControlOperation();
+    if(!circleControlOperationMatches(operation)) return;
     const warning=activeCircleRole==='owner'
       ?'You will be signed out. If you are the last active owner, transfer ownership first.'
       :'You will be signed out and immediately lose access to the circle and its private pair rooms.';
     if(!await showConfirm('Leave this circle?',warning)) return;
+    if(!circleControlOperationMatches(operation)) return;
     circleLifecyclePending=true; circleLeave.disabled=true;
     clearCircleLifecycleNotice();
     if(circleLifecycleStatus) circleLifecycleStatus.textContent='Leaving circle…';
     try{
-      await api('/api/members',{method:'PATCH',body:{action:'leave'}});
+      const result=await api('/api/members',{method:'PATCH',body:{action:'leave'}});
+      if(!circleControlOperationMatches(operation)) return;
+      if(authCapabilities.multiCircleControlPlane){
+        const previousVersion=Number(activeCircleContext?.context_version);
+        const expectedMinimum=activeCircleContext?.implicit?previousVersion:previousVersion+1;
+        if(!Number.isSafeInteger(result?.circle_context_version)
+          ||result.circle_context_version<expectedMinimum){
+          throw new Error('stale circle response');
+        }
+      }
+      if(result?.signed_out!==true){
+        if(circleLifecycleStatus) circleLifecycleStatus.textContent='Membership ended. Reloading your remaining circles…';
+        const userId=Number(me.id||me.uid);
+        clearPrivateCircleViewForSwitch();
+        circleContextChannel?.postMessage({v:1,user_id:userId,context_version:Number(result.circle_context_version),force:true});
+        window.location.reload();
+        return;
+      }
       if(circleLifecycleStatus) circleLifecycleStatus.textContent='Membership ended. Signing out…';
       try{
         localStorage.removeItem('randori-last-room');
@@ -3476,6 +3748,7 @@ async function refreshMe(){
       // because the follow-up identity refresh failed.
       invalidateAuthRefreshes();
       me=null;
+      resetCircleControlForIdentityChange();
       try{ localStorage.removeItem(ME_KEY); }catch{}
       clearAvailability();
       updateAuthUI();
@@ -3491,10 +3764,13 @@ async function refreshMe(){
       if(landing) landing.style.display='block';
       document.querySelectorAll('[data-tab]').forEach(tab=>tab.classList.remove('active'));
     }catch(error){
+      if(!circleControlOperationMatches(operation)) return;
       publishCircleLifecycleNotice(lifecycleErrorMessage(error));
     }finally{
-      circleLifecyclePending=false;
-      if(circleLeave) circleLeave.disabled=false;
+      if(circleControlOperationMatches(operation)){
+        circleLifecyclePending=false;
+        if(circleLeave) circleLeave.disabled=false;
+      }
     }
   });
 
@@ -3507,6 +3783,10 @@ async function refreshMe(){
     if(roleLabel) roleLabel.textContent='private';
     listEl.replaceChildren();
     listEl.setAttribute('aria-busy','true');
+    if(circleContextSwitching){
+      listEl.setAttribute('aria-busy','false');
+      return;
+    }
     if(!me){
       pCount.textContent='0';
       if(note) note.textContent='Sign in to view your private circle.';
@@ -3516,8 +3796,19 @@ async function refreshMe(){
     }
     const userId=Number(me.id||me.uid);
     try{
+      if(!await loadCircleContext(epoch,userId)){
+        if(epoch!==circleRenderEpoch||Number(me?.id||me?.uid)!==userId) return;
+        pCount.textContent='—';
+        if(note) note.textContent='Choose an active circle to view its members and invitations.';
+        listEl.replaceChildren();
+        const prompt=document.createElement('div'); prompt.className='small muted';
+        prompt.textContent='Your circles are isolated. Select one above to continue.';
+        listEl.appendChild(prompt); listEl.setAttribute('aria-busy','false');
+        return;
+      }
       const res = await api('/api/circle', { method:'GET' });
       if(epoch!==circleRenderEpoch||Number(me?.id||me?.uid)!==userId) return;
+      if(!circleResponseMatchesContext(res)) throw new Error('stale circle response');
       const gatedRole=['owner','member'].includes(res?.membership?.role)?res.membership.role:null;
       const legacyEnvelope=res?.ok===true&&Array.isArray(res.circle)
         &&!res.membership&&['auth_accounts','users'].includes(res.source);
@@ -3593,6 +3884,8 @@ async function refreshMe(){
     const email=String(input?.value||'').trim();
     const userId=Number(me.id||me.uid);
     if(!email) return;
+    const operation=captureCircleControlOperation();
+    if(!circleControlOperationMatches(operation)) return;
     circleInviteCreatePending=true;
     if(button) button.disabled=true;
     if(circleInviteStatus) circleInviteStatus.textContent='Creating invitation…';
@@ -3601,7 +3894,8 @@ async function refreshMe(){
       // A same-account roster refresh may advance the render epoch while this
       // one-time secret is in flight. Retain it for the initiating owner; only
       // discard it after an actual identity change.
-      if(!me||Number(me.id||me.uid)!==userId) return;
+      if(!me||Number(me.id||me.uid)!==userId
+        ||!circleControlOperationMatches(operation,result)) return;
       const inviteUrl=String(result?.invitation?.invite_url||'');
       const invitationId=String(result?.invitation?.id||'').toLowerCase();
       if(result?.ok!==true||!/^\/invite#invite=[A-Za-z0-9_-]{43}$/.test(inviteUrl)
@@ -3618,18 +3912,26 @@ async function refreshMe(){
         :'Invitation created. Copy the link and send it privately.';
       if(activeCircleRole==='owner') await loadOwnerInvitations(circleRenderEpoch);
     }catch{
+      if(!circleControlOperationMatches(operation)) return;
       if(circleInviteStatus) circleInviteStatus.textContent='Could not create invitation. Check the email and try again.';
     }finally{
-      circleInviteCreatePending=false;
-      if(button) button.disabled=activeCircleRole!=='owner';
+      if(circleControlOperationMatches(operation)){
+        circleInviteCreatePending=false;
+        if(button) button.disabled=activeCircleRole!=='owner';
+      }
     }
   });
   circleInviteLink?.addEventListener('click',async()=>{
     if(activeCircleRole!=='owner'||!latestInviteUrl) return;
+    const operation=captureCircleControlOperation();
+    if(!circleControlOperationMatches(operation)) return;
+    const inviteUrl=latestInviteUrl;
     try{
-      await navigator.clipboard.writeText(latestInviteUrl);
+      await navigator.clipboard.writeText(inviteUrl);
+      if(!circleControlOperationMatches(operation)||latestInviteUrl!==inviteUrl) return;
       if(circleInviteStatus) circleInviteStatus.textContent='Invitation link copied.';
     }catch{
+      if(!circleControlOperationMatches(operation)||latestInviteUrl!==inviteUrl) return;
       if(circleInviteStatus) circleInviteStatus.textContent='Copy failed. Create a new invitation and try again.';
     }
   });
@@ -5522,6 +5824,7 @@ def allow(key, limit=5):
   // ---------- tabs ----------
   document.querySelectorAll('.tab').forEach(t=>{
     t.onclick=()=>{
+      window._randoriUserNavigationEpoch=(Number(window._randoriUserNavigationEpoch)||0)+1;
       document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active');
       const id=t.getAttribute('data-tab');
       if(['pair','code','board','history'].includes(id)){
@@ -7375,6 +7678,8 @@ def allow(key, limit=5):
 
   // Main auth router
   async function routeByAuth(){
+    const navigationEpoch=Number(window._randoriUserNavigationEpoch)||0;
+    const canApplyRoute=()=>navigationEpoch===(Number(window._randoriUserNavigationEpoch)||0);
     if(window._randori_activation_flow?.active){
       window._randori_activation_flow.show();
       return;
@@ -7433,13 +7738,15 @@ def allow(key, limit=5):
     // signed in
     if(tabsEl) tabsEl.style.display='flex';
     if(joinRoom){
-      const allowed=await openAuthorizedJoin(joinRoom);
+      const allowed=await openAuthorizedJoin(joinRoom,{canApply:canApplyRoute});
+      if(!canApplyRoute()) return;
       if(allowed) return;
       await showDashboard();
       return;
     }
     // fetch profile to see if incomplete
     const profile = await fetchProfile();
+    if(!canApplyRoute()) return;
     if(isProfileIncomplete(profile)){
       // show profile setup
       if(profile) {

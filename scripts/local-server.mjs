@@ -631,6 +631,7 @@ function apiRoute(pathname,query){
     '/api/data':['data',null],
     '/api/invitations':['invitations','invitations'],
     '/api/members':['members',null],
+    '/api/circles':['circles',null],
     '/api/ops':['ops',null],
     '/api/ai':['ai',null],
     '/api/video':['video',null],
@@ -708,14 +709,14 @@ function apiRoute(pathname,query){
 }
 
 async function loadDefaultRuntime(){
-  const [auth,data,invitations,members,ops,ai,video,database]=await Promise.all([
+  const [auth,data,invitations,members,circles,ops,ai,video,database]=await Promise.all([
     import('../api/auth.js'),import('../api/data.js'),import('../api/invitations.js'),import('../api/members.js'),
-    import('../api/ops.js'),import('../api/ai.js'),import('../api/video.js'),import('../api/_db.js'),
+    import('../api/circles.js'),import('../api/ops.js'),import('../api/ai.js'),import('../api/video.js'),import('../api/_db.js'),
   ]);
   return Object.freeze({
     handlers:Object.freeze({
       auth:auth.default,data:data.default,invitations:invitations.default,members:members.default,
-      ops:ops.default,ai:ai.default,video:video.default,
+      circles:circles.default,ops:ops.default,ai:ai.default,video:video.default,
     }),
     closeDatabase:database.closeLocalDevelopmentClient,
     installSqlObserver:database.installLocalDevelopmentSqlObserver,

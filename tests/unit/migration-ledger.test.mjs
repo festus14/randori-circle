@@ -29,7 +29,7 @@ function temporaryDatabase(){
 
 test('executable migrations are contiguous and fingerprint every executable operation',()=>{
   assert.equal(validateExecutableMigrations(),true);
-  assert.equal(LATEST_MIGRATION_VERSION,11);
+  assert.equal(LATEST_MIGRATION_VERSION,12);
   assert.deepEqual(EXECUTABLE_MIGRATIONS.slice(0,2).map(migration=>migration.checksum),[
     '27944847696265114fbbb0e70ffa961a7f766a8f85cc4fe251ef00a779aac0df',
     'ceca22b30cc4f546359dc8d5731e1ab157e82b748b468e6eed510a8a4379444d',
@@ -43,6 +43,7 @@ test('executable migrations are contiguous and fingerprint every executable oper
   assert.equal(EXECUTABLE_MIGRATIONS[8].checksum,'226c58e70d0f7dfeae89449dcc567f52afeed46c19c2f9987c510f78029ec560');
   assert.equal(EXECUTABLE_MIGRATIONS[9].checksum,'df6508898b4b697ca8d21646c9460aefcc7f85d7fc8f2f027ed10342fe98e014');
   assert.equal(EXECUTABLE_MIGRATIONS[10].checksum,'e1e41483cbdff5a10a58ccc144bfadbb818cecb900768495ad8ab64dd393332b');
+  assert.equal(EXECUTABLE_MIGRATIONS[11].checksum,'9443e548fb6edac275eb8af08e7bc007cbfa32e5450efaf444375b976eddf43c');
   assert.match(MIGRATION_LEDGER_CHECKSUM,/^[a-f0-9]{64}$/);
   for(const migration of EXECUTABLE_MIGRATIONS){
     assert.equal(checksumExecutableMigration(migration),migration.checksum);
@@ -103,7 +104,7 @@ test('ledger rejects gaps, future versions, checksum drift, and owned schema add
       ...overrides,
     });
     assert.throws(()=>validateMigrationLedger([row(2)],EXECUTABLE_MIGRATIONS),/gap/i);
-    assert.throws(()=>validateMigrationLedger([row(1),row(2),row(3),row(4),row(5),row(6),row(7),row(8),row(9),row(10),row(11),row(12)],EXECUTABLE_MIGRATIONS),/newer/i);
+    assert.throws(()=>validateMigrationLedger([row(1),row(2),row(3),row(4),row(5),row(6),row(7),row(8),row(9),row(10),row(11),row(12),row(13)],EXECUTABLE_MIGRATIONS),/newer/i);
     assert.throws(()=>validateMigrationLedger([row(1,{checksum:'0'.repeat(64)})],EXECUTABLE_MIGRATIONS),/immutable/i);
     assert.throws(()=>validateMigrationLedger([
       row(1),row(2,{disposition:'adopted'}),

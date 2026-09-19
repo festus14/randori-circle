@@ -16,6 +16,7 @@ import {
 
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const RETENTION_MIGRATION=EXECUTABLE_MIGRATIONS[10];
+const RETENTION_PREFIX=EXECUTABLE_MIGRATIONS.slice(0,11);
 
 function temporaryDatabase(){
   const directory=mkdtempSync(join(tmpdir(),'randori-retention-migration-'));
@@ -29,9 +30,9 @@ async function apply(db,migrations=EXECUTABLE_MIGRATIONS){
   return applyMigrations(db,{expectedStateFingerprint:before.stateFingerprint,migrations,retry:NO_RETRY});
 }
 
-async function installUnmanagedSchema(db){
+async function installUnmanagedSchema(db,migrations=EXECUTABLE_MIGRATIONS){
   await prepareMigrationConnection(db);
-  for(const migration of EXECUTABLE_MIGRATIONS){
+  for(const migration of migrations){
     for(const operation of migration.operations) await db.execute(operation.sql);
   }
 }
@@ -39,7 +40,7 @@ async function installUnmanagedSchema(db){
 test('v11 installs only the checksummed retention state, scope, hold, audit, and planner artifacts',async()=>{
   const item=temporaryDatabase();
   try{
-    const result=await apply(item.db);
+    const result=await apply(item.db,RETENTION_PREFIX);
     assert.equal(result.toVersion,11);
     assert.deepEqual(RETENTION_MIGRATION.operations.map(operation=>operation.name),[
       'chat_retention_control','chat_retention_scopes','chat_retention_runs',
@@ -58,15 +59,15 @@ test('managed v10 upgrades once and repeated v11 apply is a no-op',async()=>{
   const item=temporaryDatabase();
   try{
     await apply(item.db,EXECUTABLE_MIGRATIONS.slice(0,10));
-    const before=await inspectMigrationState(item.db);
+    const before=await inspectMigrationState(item.db,{migrations:RETENTION_PREFIX});
     assert.equal(before.currentVersion,10);
     const upgraded=await applyMigrations(item.db,{
-      expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY,
+      expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY,migrations:RETENTION_PREFIX,
     });
     assert.deepEqual(upgraded.applied.map(entry=>entry.version),[11]);
-    const current=await inspectMigrationState(item.db);
+    const current=await inspectMigrationState(item.db,{migrations:RETENTION_PREFIX});
     const repeated=await applyMigrations(item.db,{
-      expectedStateFingerprint:current.stateFingerprint,retry:NO_RETRY,
+      expectedStateFingerprint:current.stateFingerprint,retry:NO_RETRY,migrations:RETENTION_PREFIX,
     });
     assert.deepEqual(repeated.applied,[]);
     assert.equal(repeated.toVersion,11);
@@ -77,19 +78,19 @@ test('v11 drift fails closed and a failed migration rolls back all retention art
   const drift=temporaryDatabase();
   const failure=temporaryDatabase();
   try{
-    await apply(drift.db);
+    await apply(drift.db,RETENTION_PREFIX);
     await drift.db.execute(`DROP TABLE chat_retention_audit_events`);
-    const state=await inspectMigrationState(drift.db);
+    const state=await inspectMigrationState(drift.db,{migrations:RETENTION_PREFIX});
     assert.equal(state.ready,false);
     assert.ok(state.schemaStatus.blockers.some(blocker=>
       blocker.code==='missing_table'&&blocker.artifact?.name==='chat_retention_audit_events'));
     await assert.rejects(
-      applyMigrations(drift.db,{expectedStateFingerprint:state.stateFingerprint,retry:NO_RETRY}),
+      applyMigrations(drift.db,{expectedStateFingerprint:state.stateFingerprint,retry:NO_RETRY,migrations:RETENTION_PREFIX}),
       error=>error instanceof MigrationError&&error.code==='MIGRATION_SCHEMA_INVALID',
     );
 
     await apply(failure.db,EXECUTABLE_MIGRATIONS.slice(0,10));
-    const before=await inspectMigrationState(failure.db);
+    const before=await inspectMigrationState(failure.db,{migrations:RETENTION_PREFIX});
     const wrapped={
       execute:statement=>failure.db.execute(statement),
       async transaction(mode){
@@ -107,7 +108,7 @@ test('v11 drift fails closed and a failed migration rolls back all retention art
       },
     };
     await assert.rejects(
-      applyMigrations(wrapped,{expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY}),
+      applyMigrations(wrapped,{expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY,migrations:RETENTION_PREFIX}),
       error=>error instanceof MigrationError&&error.code==='MIGRATION_FAILED',
     );
     const artifacts=await failure.db.execute(`SELECT name FROM sqlite_schema
@@ -121,20 +122,20 @@ test('v11 drift fails closed and a failed migration rolls back all retention art
 test('exact unmanaged v11 can be adopted and managed rows survive repeat inspection',async()=>{
   const item=temporaryDatabase();
   try{
-    await installUnmanagedSchema(item.db);
+    await installUnmanagedSchema(item.db,RETENTION_PREFIX);
     await item.db.execute(`INSERT INTO pair_messages
       (id,week_id,pair_group_id,sender_id,message,created_at)
       VALUES (1,10,20,2,'preserved','2026-01-01T00:00:00.000Z')`);
-    const before=await inspectMigrationState(item.db);
+    const before=await inspectMigrationState(item.db,{migrations:RETENTION_PREFIX});
     assert.equal(before.classification,'unmanaged');
     assert.equal(before.adoption.eligible,true);
     const result=await adoptMigrations(item.db,{
-      expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY,
+      expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY,migrations:RETENTION_PREFIX,
     });
     assert.equal(result.toVersion,11);
     assert.deepEqual((await item.db.execute(`SELECT id,message FROM pair_messages`)).rows,
       [{id:1,message:'preserved'}]);
-    const current=await inspectMigrationState(item.db);
+    const current=await inspectMigrationState(item.db,{migrations:RETENTION_PREFIX});
     assert.equal(current.ready,true);
     assert.equal(current.currentVersion,11);
   }finally{ item.close(); }

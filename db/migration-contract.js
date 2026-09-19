@@ -56,6 +56,11 @@ export const MIGRATION_CONTRACTS=Object.freeze([
     name:'bounded-chat-retention',
     checksum:'e1e41483cbdff5a10a58ccc144bfadbb818cecb900768495ad8ab64dd393332b',
   }),
+  Object.freeze({
+    version:12,
+    name:'session-bound-active-circle-context',
+    checksum:'9443e548fb6edac275eb8af08e7bc007cbfa32e5450efaf444375b976eddf43c',
+  }),
 ]);
 
 export const LATEST_MIGRATION_VERSION=MIGRATION_CONTRACTS.at(-1)?.version||0;

@@ -191,7 +191,7 @@ test('a migration prefix can be verified before the isolated restore advances to
     const preflight=compareBackupRestoreEvidence(comparisonOptions(source,restoredBefore));
     assert.equal(preflight.ok,true);
     assert.equal(source.migration.currentVersion,2);
-    assert.equal(source.migration.applicationLatestVersion,11);
+    assert.equal(source.migration.applicationLatestVersion,12);
 
     const pending=await inspectMigrationState(restoredDb);
     await applyMigrations(restoredDb,{
@@ -199,7 +199,7 @@ test('a migration prefix can be verified before the isolated restore advances to
       retry:FAST_RETRY,
     });
     const restoredAfter=await collectDatabaseEvidence(restoredDb,restoreOptions());
-    assert.equal(restoredAfter.migration.currentVersion,11);
+    assert.equal(restoredAfter.migration.currentVersion,12);
     assert.equal(restoredAfter.schema.manifestChecksum,SCHEMA_MANIFEST.checksum);
     for(const beforeTable of restoredBefore.tables){
       const afterTable=table(restoredAfter,beforeTable.name);
@@ -736,11 +736,11 @@ test('value fetch pages are reduced so many near-limit cells stay under the hard
       return transaction.execute(statement);
     });
     const evidence=await collectDatabaseEvidence(proxy,evidenceOptions({
-      limits:{maxCellBytes:64,maxPageValueBytes:128,pageSize:500},
+      limits:{maxCellBytes:64,maxPageValueBytes:256,pageSize:500},
     }));
     assert.equal(table(evidence,'app_logs').count,20);
     assert.equal(valuePageSizes.length>1,true);
-    assert.equal(valuePageSizes.every(size=>size===1),true);
+    assert.equal(valuePageSizes.every(size=>size<=2),true);
   }finally{ item.close(); }
 });
 

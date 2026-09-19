@@ -13,10 +13,10 @@ const temporaryDirectories=[];
 
 function authPayload(req){
   const identity=req?.headers?.['x-test-auth'];
-  if(identity==='owner') return {id:1,email:'owner@example.test',name:'Owner'};
-  if(identity==='member') return {id:2,email:'member@example.test',name:'Member'};
-  if(identity==='outsider') return {id:3,email:'outsider@example.test',name:'Outsider'};
-  if(identity==='co-owner') return {id:4,email:'configured-owner@example.test',name:'Configured owner'};
+  if(identity==='owner') return {id:1,email:'owner@example.test',name:'Owner',sessionHash:'a'.repeat(64)};
+  if(identity==='member') return {id:2,email:'member@example.test',name:'Member',sessionHash:'b'.repeat(64)};
+  if(identity==='outsider') return {id:3,email:'outsider@example.test',name:'Outsider',sessionHash:'c'.repeat(64)};
+  if(identity==='co-owner') return {id:4,email:'configured-owner@example.test',name:'Configured owner',sessionHash:'d'.repeat(64)};
   return null;
 }
 
@@ -35,12 +35,14 @@ mock.module('../../api/_db.js',{
 });
 
 const membership=await import('../../api/_circle-membership.js');
+const activeCircle=await import('../../api/_active-circle.js');
 const [{default:invitationsHandler},{default:dataHandler},invitationEmail]=await Promise.all([
   import('../../api/invitations.js'),
   import('../../api/data.js'),
   import('../../api/_invitation-email.js'),
 ]);
 const outboxOperations=MIGRATION_PLANS[5].operations.map(operation=>operation.sql);
+const activeCircleContextOperations=MIGRATION_PLANS[11].operations.map(operation=>operation.sql);
 
 function invoke(handler,{method='GET',url='/',query={},headers={},body={}}={}){
   return new Promise((resolve,reject)=>{
@@ -85,6 +87,10 @@ async function createDatabase(){
     membership.CIRCLE_AUDIT_EVENTS_TABLE_SQL,
     membership.AUTH_RATE_LIMITS_TABLE_SQL,
     membership.CIRCLE_MEMBERSHIP_ROLLOUT_TABLE_SQL,
+    `CREATE TABLE auth_sessions (session_hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,revoked_at INTEGER,revocation_reason TEXT,
+      FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE CASCADE)`,
+    ...activeCircleContextOperations,
     ...outboxOperations,
     `INSERT INTO circle_membership_rollout (id,registrations_closed,updated_at)
       VALUES (1,0,datetime('now'))`,
@@ -101,6 +107,9 @@ async function createDatabase(){
     `INSERT INTO circle_memberships (circle_id,user_id,role,status,joined_at,updated_at)
       VALUES (10,1,'owner','active',datetime('now'),datetime('now')),
              (10,2,'member','active',datetime('now'),datetime('now'))`,
+    `INSERT INTO auth_sessions (session_hash,user_id,created_at,expires_at) VALUES
+      ('${'a'.repeat(64)}',1,1,4102444800),('${'b'.repeat(64)}',2,1,4102444800),
+      ('${'c'.repeat(64)}',3,1,4102444800),('${'d'.repeat(64)}',4,1,4102444800)`,
   ],'write');
   return db;
 }
@@ -115,6 +124,7 @@ afterEach(()=>{
   currentDb=null;
   while(temporaryDirectories.length) rmSync(temporaryDirectories.pop(),{recursive:true,force:true});
   delete process.env.CIRCLE_MEMBERSHIP_ENABLED;
+  delete process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED;
   for(const key of ['APP_URL','INVITATION_EMAIL_ENCRYPTION_KEY','INVITATION_EMAIL_ENCRYPTION_KEY_VERSION',
     'INVITATION_EMAIL_ENCRYPTION_PREVIOUS_KEYS','INVITATION_EMAIL_ENVELOPE_WRITE_VERSION',
     'NODE_ENV','RESEND_API_KEY','RESEND_FROM']){
@@ -526,6 +536,93 @@ test('owner invitation APIs create, safely list, prepare, clear stale claims, an
     headers:{...ownerHeaders,'x-test-auth':'member'},body:{email:'someone@example.test'},
   });
   assert.equal(denied.status,403);
+});
+
+test('selected secondary-circle invitation reads and writes cannot cross the active context',async()=>{
+  currentDb=await createDatabase();
+  process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';
+  process.env.NODE_ENV='production';
+  process.env.APP_URL='https://randori.example.test';
+  await currentDb.batch([
+    `INSERT INTO circles (id,public_id,slug,name,is_primary,created_by,created_at)
+      VALUES (20,'circle-secondary','secondary-circle','Secondary Circle',0,1,datetime('now'))`,
+    `INSERT INTO circle_memberships (circle_id,user_id,role,status,joined_at,updated_at)
+      VALUES (20,1,'owner','active',datetime('now'),datetime('now'))`,
+  ],'write');
+  const ownerPayload=authPayload({headers:{'x-test-auth':'owner'}});
+  const selected=await activeCircle.selectActiveCircleContext(currentDb,ownerPayload,{
+    circlePublicId:'circle-secondary',expectedContextVersion:0,
+  });
+  assert.equal(selected.ok,true);
+
+  const stale=await invoke(invitationsHandler,{
+    method:'POST',url:'/api/invitations',query:{endpoint:'invitations'},
+    headers:{'x-test-auth':'owner',origin:'https://randori.example.test',host:'randori.example.test'},
+    body:{email:'stale@example.test'},
+  });
+  assert.equal(stale.status,409);
+  assert.deepEqual(stale.body,{error:'circle context changed',code:'circle_context_changed'});
+
+  const primaryInvitationId='11111111-1111-4111-8111-111111111111';
+  await currentDb.execute({
+    sql:`INSERT INTO circle_invitations
+      (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at)
+      VALUES (?,?,?,?,?,datetime('now'),datetime('now','+7 days'))`,
+    args:[primaryInvitationId,10,membership.hashInvitationToken(membership.createInvitationToken()),
+      membership.hashInvitationEmail('primary-only@example.test'),1],
+  });
+  const headers={'x-test-auth':'owner','x-randori-circle-context-version':'1',
+    origin:'https://randori.example.test',host:'randori.example.test'};
+  const created=await invoke(invitationsHandler,{
+    method:'POST',url:'/api/invitations',query:{endpoint:'invitations'},headers,
+    body:{email:'secondary@example.test'},
+  });
+  assert.equal(created.status,201);
+  assert.equal(created.body.circle_context_version,1);
+  const stored=await currentDb.execute({
+    sql:`SELECT circle_id FROM circle_invitations WHERE id=?`,args:[created.body.invitation.id],
+  });
+  assert.equal(Number(stored.rows[0].circle_id),20);
+
+  const listed=await invoke(invitationsHandler,{
+    url:'/api/invitations',query:{endpoint:'invitations'},headers,
+  });
+  assert.equal(listed.status,200);
+  assert.deepEqual(listed.body.invitations.map(item=>item.id),[created.body.invitation.id]);
+  assert.equal(JSON.stringify(listed.body).includes(primaryInvitationId),false);
+
+  const denied=await invoke(invitationsHandler,{
+    method:'DELETE',url:`/api/invitations/${primaryInvitationId}`,
+    query:{endpoint:'invitations',id:primaryInvitationId},headers,
+  });
+  assert.equal(denied.status,404);
+  assert.equal((await currentDb.execute({sql:`SELECT revoked_at FROM circle_invitations WHERE id=?`,args:[primaryInvitationId]})).rows[0].revoked_at,null);
+
+  const baseDb=currentDb;
+  const beforeCount=Number((await baseDb.execute(`SELECT COUNT(*) AS count FROM circle_invitations`)).rows[0].count);
+  let switched=false;
+  currentDb={
+    execute:statement=>baseDb.execute(statement),
+    batch:(statements,mode)=>baseDb.batch(statements,mode),
+    async transaction(mode){
+      if(!switched){
+        switched=true;
+        const next=await activeCircle.selectActiveCircleContext(baseDb,ownerPayload,{
+          circlePublicId:'3c20c4da-1906-4ca4-b4fd-5971f1dd066d',expectedContextVersion:1,
+        });
+        assert.equal(next.context_version,2);
+      }
+      return baseDb.transaction(mode);
+    },
+    close:()=>baseDb.close(),
+  };
+  const raced=await invoke(invitationsHandler,{
+    method:'POST',url:'/api/invitations',query:{endpoint:'invitations'},headers,
+    body:{email:'must-not-cross@example.test'},
+  });
+  assert.equal(raced.status,409);
+  assert.deepEqual(raced.body,{error:'circle context changed',code:'circle_context_changed'});
+  assert.equal(Number((await baseDb.execute(`SELECT COUNT(*) AS count FROM circle_invitations`)).rows[0].count),beforeCount);
 });
 
 test('owner invitation email create and bounded resend rotate links atomically',async()=>{

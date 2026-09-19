@@ -272,7 +272,7 @@ test('managed prefix rehearsal blocks writes, verifies PITR, migrates only the r
     assert.equal(result.ok,true);
     assert.deepEqual(result.payload.migration,{
       sourceClassification:'managed',sourceVersion:2,adoptedOnRestore:false,
-      appliedVersions:[3,4,5,6,7,8,9,10,11],finalVersion:11,
+      appliedVersions:[3,4,5,6,7,8,9,10,11,12],finalVersion:12,
     });
     assert.equal(result.payload.verification.preMigrationMatch,true);
     assert.equal(result.payload.verification.postMigrationPreserved,true);
@@ -326,7 +326,7 @@ test('managed prefix rehearsal blocks writes, verifies PITR, migrates only the r
       ['source','bigint'],['restore','bigint'],
     ]);
     assert.equal((await databaseState(item.sourcePath,EXECUTABLE_MIGRATIONS.slice(0,2))).currentVersion,2);
-    assert.equal((await databaseState(item.restorePath)).currentVersion,11);
+    assert.equal((await databaseState(item.restorePath)).currentVersion,12);
 
     const serialized=JSON.stringify(result);
     for(const secret of [
@@ -684,7 +684,7 @@ test('exact unmanaged prefix is adopted and advanced only on the disposable rest
     assert.equal(result.ok,true);
     assert.equal(result.payload.migration.sourceClassification,'unmanaged');
     assert.equal(result.payload.migration.adoptedOnRestore,true);
-    assert.deepEqual(result.payload.migration.appliedVersions,[3,4,5,6,7,8,9,10,11]);
+    assert.deepEqual(result.payload.migration.appliedVersions,[3,4,5,6,7,8,9,10,11,12]);
     const source=await databaseState(item.sourcePath,EXECUTABLE_MIGRATIONS.slice(0,2));
     assert.equal(source.classification,'unmanaged');
     assert.equal(source.ledgerPresent,false);
@@ -707,7 +707,7 @@ for(const classification of ['managed','unmanaged']){
       assert.equal(result.payload.migration.sourceVersion,1);
       assert.equal(result.payload.migration.sourceClassification,classification);
       assert.equal(result.payload.migration.adoptedOnRestore,classification==='unmanaged');
-      assert.deepEqual(result.payload.migration.appliedVersions,[2,3,4,5,6,7,8,9,10,11]);
+      assert.deepEqual(result.payload.migration.appliedVersions,[2,3,4,5,6,7,8,9,10,11,12]);
       const restored=createClient({url:`file:${item.restorePath}`,intMode:'bigint'});
       try{
         const singleton=await restored.execute('SELECT id,registrations_closed FROM circle_membership_rollout');
@@ -989,6 +989,7 @@ test('post-migration preservation rejects missing or modified prior tables and s
       {name:'chat_retention_runs',count:0,digest:'a'.repeat(64)},
       {name:'chat_retention_legal_holds',count:0,digest:'b'.repeat(64)},
       {name:'chat_retention_audit_events',count:0,digest:'c'.repeat(64)},
+      {name:'auth_session_circle_contexts',count:0,digest:'d'.repeat(64)},
     ],
     storage:{...before.storage},
   };
