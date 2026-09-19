@@ -823,7 +823,7 @@ async function handleGoogleStart(req,res){
     let current;
     try{
       const db=getClient();
-      await ensurePasswordResetReadiness(db);
+      await ensurePasswordResetReadiness(db,{requireDeliveryKey:false});
       current=await verifyRequestAuth(req,db);
       if(current) await enforceAuthRateLimit(db,req,'recent-auth-google',String(current.id));
     }catch(error){
@@ -891,7 +891,7 @@ async function handleGoogleCallback(req,res){
     // Normal sign-in and reauthentication retain their v4 compatibility.
     // The opt-in linking flow consumes a provider code only after the complete
     // v9 identity-management contract is known ready.
-    if(reauthenticate) await ensurePasswordResetReadiness(db);
+    if(reauthenticate) await ensurePasswordResetReadiness(db,{requireDeliveryKey:false});
     else if(identityRequested) await ensureIdentityLinkingReadiness(db);
     else await db.execute(`SELECT issuer,subject,user_id FROM auth_provider_identities WHERE 0=1`);
   }catch{

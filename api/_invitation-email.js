@@ -1,8 +1,16 @@
-import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 
 import { getJwtSecret } from './_db.js';
 import { escapeHtml } from './_pairing.js';
 import { hashInvitationEmail, hashInvitationToken, normalizeInvitationEmail } from './_circle-membership.js';
+import {
+  CredentialEnvelopeError,
+  assertPurposeKeyIsolation,
+  openCredentialEnvelope,
+  parseKeyRing,
+  readCredentialRotationMetrics,
+  sealCredentialEnvelope,
+} from './_key-rotation.js';
 import { createOutboxEventStatement, OutboxDeliveryError, readOutboxMetrics, runOutboxWorker } from './_outbox.js';
 import { classifyPairingProviderError } from './_pairing-email.js';
 
@@ -30,17 +38,25 @@ function configuredOrigin({localRuntime=false}={}){
   return url.origin;
 }
 
-function encryptionKey({localRuntime=false}={}){
-  const encoded=String(process.env.INVITATION_EMAIL_ENCRYPTION_KEY||'').trim();
-  if(/^[A-Za-z0-9_-]{43}$/.test(encoded)){
-    const key=Buffer.from(encoded,'base64url');
-    if(key.length===32) return key;
+function invitationKeyRing({localRuntime=false,env=process.env}={}){
+  try{
+    const ring=parseKeyRing({
+      env,purpose:'invitation-email',keyEnv:'INVITATION_EMAIL_ENCRYPTION_KEY',
+      versionEnv:'INVITATION_EMAIL_ENCRYPTION_KEY_VERSION',
+      previousKeysEnv:'INVITATION_EMAIL_ENCRYPTION_PREVIOUS_KEYS',
+      writeVersionEnv:'INVITATION_EMAIL_ENVELOPE_WRITE_VERSION',
+      fallbackKey:()=>{
+        if(!localRuntime||env.NODE_ENV!=='development') return null;
+        return createHmac('sha256',getJwtSecret())
+          .update('randori-invitation-email-envelope-v1','utf8').digest();
+      },
+    });
+    assertPurposeKeyIsolation({env,rings:[ring]});
+    return ring;
+  }catch(error){
+    error.message='INVITATION_EMAIL_ENCRYPTION_KEY ring is invalid';
+    throw error;
   }
-  if(localRuntime&&process.env.NODE_ENV==='development'){
-    return createHmac('sha256',getJwtSecret())
-      .update('randori-invitation-email-envelope-v1','utf8').digest();
-  }
-  throw new Error('INVITATION_EMAIL_ENCRYPTION_KEY must be a base64url-encoded 32-byte key');
 }
 
 export function invitationEmailConfiguration({localRuntime=false}={}){
@@ -49,8 +65,10 @@ export function invitationEmailConfiguration({localRuntime=false}={}){
     ||!String(process.env.RESEND_FROM||'').trim())) return null;
   const origin=configuredOrigin({localRuntime});
   if(!origin) return null;
-  try{ encryptionKey({localRuntime}); }catch{ return null; }
-  return Object.freeze({origin,localRuntime});
+  try{
+    invitationKeyRing({localRuntime});
+    return Object.freeze({origin,localRuntime});
+  }catch{ return null; }
 }
 
 function envelopeAad(invitationId){
@@ -59,39 +77,41 @@ function envelopeAad(invitationId){
   return Buffer.from(`randori-invitation-email-envelope-v1\0${id}`,'utf8');
 }
 
-export function sealInvitationEmailCredential({invitationId,email,token,localRuntime=false}={}){
+export function sealInvitationEmailCredential({invitationId,email,token,idempotencyKey,localRuntime=false}={}){
   const id=String(invitationId||'').toLowerCase();
   const recipient=normalizeInvitationEmail(email);
   if(!UUID_PATTERN.test(id)||!recipient||!hashInvitationToken(token)){
     throw new TypeError('valid invitation email credential required');
   }
-  const iv=randomBytes(12);
-  const cipher=createCipheriv('aes-256-gcm',encryptionKey({localRuntime}),iv);
-  cipher.setAAD(envelopeAad(id));
   const plaintext=Buffer.from(JSON.stringify({v:1,email:recipient,token}),'utf8');
-  const ciphertext=Buffer.concat([cipher.update(plaintext),cipher.final()]);
-  const tag=cipher.getAuthTag();
-  return `${iv.toString('base64url')}.${ciphertext.toString('base64url')}.${tag.toString('base64url')}`;
+  return sealCredentialEnvelope({plaintext,idempotencyKey,ring:invitationKeyRing({localRuntime}),
+    legacyAad:()=>envelopeAad(id)});
 }
 
-export function openInvitationEmailCredential({invitationId,envelope,localRuntime=false}={}){
+function openInvitationEmailCredentialStrict({invitationId,envelope,idempotencyKey,localRuntime=false}={}){
   const id=String(invitationId||'').toLowerCase();
-  const parts=typeof envelope==='string'?envelope.split('.'):[];
-  if(!UUID_PATTERN.test(id)||parts.length!==3) return null;
+  if(!UUID_PATTERN.test(id)) throw new CredentialEnvelopeError('ENVELOPE_INVALID');
+  const opened=openCredentialEnvelope({envelope,idempotencyKey,ring:invitationKeyRing({localRuntime}),
+    legacyAad:()=>envelopeAad(id),minPlaintextBytes:1,maxPlaintextBytes:1024});
   try{
-    const [iv,ciphertext,tag]=parts.map(value=>Buffer.from(value,'base64url'));
-    if([iv,ciphertext,tag].some((value,index)=>value.toString('base64url')!==parts[index])
-      ||iv.length!==12||tag.length!==16||ciphertext.length<1||ciphertext.length>1024) return null;
-    const decipher=createDecipheriv('aes-256-gcm',encryptionKey({localRuntime}),iv);
-    decipher.setAAD(envelopeAad(id));
-    decipher.setAuthTag(tag);
-    const value=JSON.parse(Buffer.concat([decipher.update(ciphertext),decipher.final()]).toString('utf8'));
+    const value=JSON.parse(opened.plaintext.toString('utf8'));
     if(!value||typeof value!=='object'||Array.isArray(value)
-      ||Object.keys(value).sort().join(',')!=='email,token,v'||value.v!==1) return null;
+      ||Object.keys(value).sort().join(',')!=='email,token,v'||value.v!==1){
+      throw new CredentialEnvelopeError('ENVELOPE_INVALID');
+    }
     const email=normalizeInvitationEmail(value.email);
     const token=typeof value.token==='string'&&TOKEN_PATTERN.test(value.token)?value.token:null;
-    return email&&token?Object.freeze({email,token}):null;
-  }catch{ return null; }
+    if(!email||!token) throw new CredentialEnvelopeError('ENVELOPE_INVALID');
+    return Object.freeze({email,token});
+  }catch(error){
+    if(error instanceof CredentialEnvelopeError) throw error;
+    throw new CredentialEnvelopeError('ENVELOPE_INVALID');
+  }
+}
+
+export function openInvitationEmailCredential(input={}){
+  try{ return openInvitationEmailCredentialStrict(input); }
+  catch{ return null; }
 }
 
 export function createInvitationEmailEvent({invitationId,circleId,actorUserId,email,token,sendSequence,
@@ -108,19 +128,22 @@ export function createInvitationEmailEvent({invitationId,circleId,actorUserId,em
     ||!emailHash||!Number.isSafeInteger(sequence)||sequence<1||sequence>INVITATION_EMAIL_MAX_SENDS){
     throw new TypeError('valid invitation email event required');
   }
+  const idempotencyKey=`invitation-email/v1/${id}/${sequence}`;
   return createOutboxEventStatement({
     eventType:INVITATION_EMAIL_EVENT_TYPE,eventVersion:INVITATION_EMAIL_EVENT_VERSION,
-    idempotencyKey:`invitation-email/v1/${id}/${sequence}`,
+    idempotencyKey,
     payload:{invitation_id:id,circle_id:circle,actor_user_id:actor,token_hash:tokenHash,email_hash:emailHash,
       send_sequence:sequence,template_version:INVITATION_EMAIL_TEMPLATE_VERSION,
-      credential_envelope:sealInvitationEmailCredential({invitationId:id,email:recipient,token,localRuntime})},
+      credential_envelope:sealInvitationEmailCredential({invitationId:id,email:recipient,token,
+        idempotencyKey,localRuntime})},
     maxAttempts:5,deliveryTimeoutMs:10_000,
   });
 }
 
-export function invitationEmailPayload(event,{localRuntime=false}={}){
+function invitationEmailMetadata(event){
   if(event.eventVersion!==INVITATION_EMAIL_EVENT_VERSION){
-    throw new OutboxDeliveryError('EVENT_VERSION_UNSUPPORTED',{retryable:false});
+    throw new OutboxDeliveryError('EVENT_VERSION_UNSUPPORTED',{
+      retryable:event.eventVersion>INVITATION_EMAIL_EVENT_VERSION});
   }
   const payload=event.payload;
   const expected=['actor_user_id','circle_id','credential_envelope','email_hash','invitation_id','send_sequence',
@@ -136,20 +159,35 @@ export function invitationEmailPayload(event,{localRuntime=false}={}){
   const emailHash=String(payload.email_hash||'');
   const sendSequence=Number(payload.send_sequence);
   const templateVersion=Number(payload.template_version);
-  const credential=openInvitationEmailCredential({
-    invitationId,envelope:payload.credential_envelope,localRuntime,
-  });
+  const envelope=typeof payload.credential_envelope==='string'&&payload.credential_envelope.length<=8192
+    ?payload.credential_envelope:null;
   if(!UUID_PATTERN.test(invitationId)||!Number.isSafeInteger(circleId)||circleId<1
     ||!Number.isSafeInteger(actorUserId)||actorUserId<1
     ||!HASH_PATTERN.test(tokenHash)||!HASH_PATTERN.test(emailHash)
     ||!Number.isSafeInteger(sendSequence)||sendSequence<1||sendSequence>INVITATION_EMAIL_MAX_SENDS
-    ||templateVersion!==INVITATION_EMAIL_TEMPLATE_VERSION||!credential
-    ||hashInvitationToken(credential.token)!==tokenHash
-    ||hashInvitationEmail(credential.email)!==emailHash){
+    ||templateVersion!==INVITATION_EMAIL_TEMPLATE_VERSION||!envelope){
     throw new OutboxDeliveryError('PAYLOAD_INVALID',{retryable:false});
   }
-  return Object.freeze({invitationId,circleId,actorUserId,tokenHash,emailHash,sendSequence,
-    email:credential.email,token:credential.token});
+  return Object.freeze({invitationId,circleId,actorUserId,tokenHash,emailHash,sendSequence,envelope});
+}
+
+export function invitationEmailPayload(event,{localRuntime=false}={}){
+  const metadata=invitationEmailMetadata(event);
+  let credential;
+  try{
+    credential=openInvitationEmailCredentialStrict({invitationId:metadata.invitationId,
+      envelope:metadata.envelope,idempotencyKey:event.idempotencyKey,localRuntime});
+  }catch(error){
+    if(error instanceof CredentialEnvelopeError){
+      throw new OutboxDeliveryError(error.code,{retryable:error.retryable});
+    }
+    throw error;
+  }
+  if(hashInvitationToken(credential.token)!==metadata.tokenHash
+    ||hashInvitationEmail(credential.email)!==metadata.emailHash){
+    throw new OutboxDeliveryError('PAYLOAD_INVALID',{retryable:false});
+  }
+  return Object.freeze({...metadata,email:credential.email,token:credential.token});
 }
 
 function activeInvitationSql(){
@@ -176,6 +214,22 @@ function activeInvitationSql(){
     LIMIT 2`;
 }
 
+function invitationPreflightSql(){
+  return `SELECT invitation.id,circle.name AS circle_name
+    FROM circle_invitations invitation
+    JOIN circles circle ON circle.id=invitation.circle_id
+    JOIN auth_accounts owner ON owner.id=? AND COALESCE(owner.is_demo,0)=0
+    JOIN circle_memberships owner_membership
+      ON owner_membership.circle_id=invitation.circle_id
+      AND owner_membership.user_id=owner.id
+      AND owner_membership.role='owner' AND owner_membership.status='active'
+    WHERE invitation.id=? AND invitation.circle_id=?
+      AND invitation.token_hash=? AND invitation.email_hash=?
+      AND invitation.used_at IS NULL AND invitation.used_by IS NULL
+      AND invitation.revoked_at IS NULL AND datetime(invitation.expires_at)>datetime('now')
+      AND circle.is_primary=1 AND circle.archived_at IS NULL LIMIT 2`;
+}
+
 export function createInvitationEmailHandler({db,baseUrl,send,localRuntime=false}={}){
   if(!db||typeof db.execute!=='function'||typeof send!=='function'){
     throw new TypeError('invitation email database and provider are required');
@@ -194,13 +248,16 @@ export function createInvitationEmailHandler({db,baseUrl,send,localRuntime=false
   }
   const origin=parsedBaseUrl.origin;
   return async(event,{signal}={})=>{
-    const payload=invitationEmailPayload(event,{localRuntime});
-    const current=await db.execute({sql:activeInvitationSql(),args:[payload.actorUserId,
-      payload.invitationId,payload.circleId,
-      payload.tokenHash,payload.emailHash,payload.email]});
-    if(current.rows?.length!==1){
+    const metadata=invitationEmailMetadata(event);
+    const preflight=await db.execute({sql:invitationPreflightSql(),args:[metadata.actorUserId,
+      metadata.invitationId,metadata.circleId,metadata.tokenHash,metadata.emailHash]});
+    if(preflight.rows?.length!==1){
       return {status:'suppressed',reasonCode:'INVITATION_INACTIVE'};
     }
+    const payload=invitationEmailPayload(event,{localRuntime});
+    const current=await db.execute({sql:activeInvitationSql(),args:[payload.actorUserId,
+      payload.invitationId,payload.circleId,payload.tokenHash,payload.emailHash,payload.email]});
+    if(current.rows?.length!==1) return {status:'suppressed',reasonCode:'INVITATION_INACTIVE'};
     const subjectCircle=String(current.rows[0].circle_name||'Randori Circle')
       .replace(/[\u0000-\u001f\u007f]+/gu,' ').trim().slice(0,100)||'Randori Circle';
     const circleName=escapeHtml(subjectCircle);
@@ -216,6 +273,53 @@ export function createInvitationEmailHandler({db,baseUrl,send,localRuntime=false
         providerMessageId:delivery?.providerMessageId||delivery?.data?.id||null};
     }catch(error){ throw classifyPairingProviderError(error); }
   };
+}
+
+export async function invitationEmailKeyRotationStatus(db,{localRuntime=false}={}){
+  if(!db||typeof db.execute!=='function') throw new TypeError('database client is required');
+  const retainedResult=await db.execute({
+    sql:`SELECT invitation.id,event.id AS event_id,event.status,
+        json_extract(event.payload_json,'$.credential_envelope') AS envelope
+      FROM circle_invitations invitation JOIN circles circle ON circle.id=invitation.circle_id
+      JOIN outbox_events event
+        ON json_extract(event.payload_json,'$.invitation_id')=invitation.id
+      WHERE event.event_type=? AND invitation.used_at IS NULL AND invitation.used_by IS NULL
+        AND invitation.revoked_at IS NULL AND datetime(invitation.expires_at)>datetime('now')
+        AND circle.is_primary=1 AND circle.archived_at IS NULL
+        AND EXISTS (
+          SELECT 1 FROM circle_memberships owner_membership
+          JOIN auth_accounts owner ON owner.id=owner_membership.user_id
+            AND COALESCE(owner.is_demo,0)=0
+          WHERE owner_membership.circle_id=invitation.circle_id
+            AND owner_membership.role='owner' AND owner_membership.status='active')
+      ORDER BY invitation.id,event.id DESC LIMIT 10001`,
+    args:[INVITATION_EMAIL_EVENT_TYPE],
+  });
+  const rows=retainedResult.rows||[];
+  if(rows.length>10000) throw new Error('invitation rotation metric limit exceeded');
+  const invitations=new Map();
+  for(const row of rows){
+    const id=String(row.id||'');
+    const summary=invitations.get(id)||{count:0,latest:row};
+    summary.count+=1;
+    invitations.set(id,summary);
+  }
+  const retainedEnvelopes=[];
+  for(const summary of invitations.values()){
+    if(summary.count<INVITATION_EMAIL_MAX_SENDS
+      &&['delivered','suppressed'].includes(String(summary.latest.status||''))){
+      retainedEnvelopes.push(summary.latest.envelope);
+    }
+  }
+  return readCredentialRotationMetrics(db,{eventType:INVITATION_EMAIL_EVENT_TYPE,
+    envelopeField:'credential_envelope',ring:invitationKeyRing({localRuntime}),retainedEnvelopes});
+}
+
+export async function ensureInvitationEmailReadiness(db,{localRuntime=false}={}){
+  if(!db||typeof db.execute!=='function') throw new TypeError('database client is required');
+  invitationKeyRing({localRuntime});
+  await db.execute(`SELECT id,event_type,event_version,idempotency_key FROM outbox_events LIMIT 0`);
+  return true;
 }
 
 function countStatuses(metrics){

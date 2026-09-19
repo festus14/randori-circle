@@ -6,6 +6,7 @@ import {pathToFileURL} from 'node:url';
 import {afterEach,beforeEach,mock,test} from 'node:test';
 import {createClient} from '@libsql/client';
 import {MIGRATION_PLANS} from '../../db/migration-plan.js';
+import {createOutboxEventStatement} from '../../api/_outbox.js';
 
 let currentDb=null;
 const temporaryDirectories=[];
@@ -114,7 +115,9 @@ afterEach(()=>{
   currentDb=null;
   while(temporaryDirectories.length) rmSync(temporaryDirectories.pop(),{recursive:true,force:true});
   delete process.env.CIRCLE_MEMBERSHIP_ENABLED;
-  for(const key of ['APP_URL','INVITATION_EMAIL_ENCRYPTION_KEY','NODE_ENV','RESEND_API_KEY','RESEND_FROM']){
+  for(const key of ['APP_URL','INVITATION_EMAIL_ENCRYPTION_KEY','INVITATION_EMAIL_ENCRYPTION_KEY_VERSION',
+    'INVITATION_EMAIL_ENCRYPTION_PREVIOUS_KEYS','INVITATION_EMAIL_ENVELOPE_WRITE_VERSION',
+    'NODE_ENV','RESEND_API_KEY','RESEND_FROM']){
     delete process.env[key];
   }
 });
@@ -532,6 +535,8 @@ test('owner invitation email create and bounded resend rotate links atomically',
   process.env.RESEND_API_KEY='re_invitation_test';
   process.env.RESEND_FROM='Randori <invite@randori.example.test>';
   process.env.INVITATION_EMAIL_ENCRYPTION_KEY=Buffer.alloc(32,9).toString('base64url');
+  process.env.INVITATION_EMAIL_ENCRYPTION_KEY_VERSION='1';
+  process.env.INVITATION_EMAIL_ENVELOPE_WRITE_VERSION='2';
   const headers={'x-test-auth':'owner',origin:'https://randori.example.test',host:'randori.example.test'};
   const created=await invoke(invitationsHandler,{method:'POST',url:'/api/invitations',
     query:{endpoint:'invitations'},headers,body:{email:' Invitee@Example.Test '}});
@@ -547,6 +552,7 @@ test('owner invitation email create and bounded resend rotate links atomically',
   assert.equal(Number(firstEvent.delivery_timeout_ms),10_000);
   assert.equal(String(firstEvent.payload_json).includes(firstToken),false);
   assert.equal(String(firstEvent.payload_json).includes('invitee@example.test'),false);
+  assert.match(JSON.parse(firstEvent.payload_json).credential_envelope,/^v2\.1\.[a-f0-9]{64}\./);
 
   const immediate=await invoke(invitationsHandler,{method:'POST',
     url:`/api/invitations/${id}`,query:{endpoint:'invitations',id},headers,body:{action:'resend'}});
@@ -598,6 +604,36 @@ test('owner invitation email create and bounded resend rotate links atomically',
     WHERE event_type='invitation.email.requested'`)).rows[0].count),5);
   assert.equal(Number((await currentDb.execute({sql:`SELECT COUNT(*) AS count FROM circle_audit_events
     WHERE invitation_id=? AND event_type='invitation.resent'`,args:[id]})).rows[0].count),4);
+});
+
+test('unrelated unhealthy invitation history does not block create or exact-target resend',async()=>{
+  currentDb=await createDatabase();
+  process.env.NODE_ENV='production';
+  process.env.APP_URL='https://randori.example.test';
+  process.env.RESEND_API_KEY='re_invitation_test';
+  process.env.RESEND_FROM='Randori <invite@randori.example.test>';
+  process.env.INVITATION_EMAIL_ENCRYPTION_KEY=Buffer.alloc(32,9).toString('base64url');
+  const unrelatedKey='invitation-email/v1/ffffffff-ffff-4fff-8fff-ffffffffffff/1';
+  await currentDb.execute(createOutboxEventStatement({eventType:invitationEmail.INVITATION_EMAIL_EVENT_TYPE,
+    idempotencyKey:unrelatedKey,payload:{credential_envelope:'malformed'},maxAttempts:1}));
+  await currentDb.execute({sql:`UPDATE outbox_events SET status='dead_letter' WHERE idempotency_key=?`,
+    args:[unrelatedKey]});
+  assert.equal((await invitationEmail.invitationEmailKeyRotationStatus(currentDb)).ready,false);
+
+  const headers={'x-test-auth':'owner',origin:'https://randori.example.test',host:'randori.example.test'};
+  const created=await invoke(invitationsHandler,{method:'POST',url:'/api/invitations',
+    query:{endpoint:'invitations'},headers,body:{email:'independent@example.test'}});
+  assert.equal(created.status,201);
+  assert.deepEqual(created.body.email_delivery,{queued:true});
+  const id=created.body.invitation.id;
+  await currentDb.execute({sql:`UPDATE outbox_events
+    SET created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-61 seconds')
+    WHERE json_extract(payload_json,'$.invitation_id')=?`,args:[id]});
+  const resent=await invoke(invitationsHandler,{method:'POST',url:`/api/invitations/${id}`,
+    query:{endpoint:'invitations',id},headers,body:{action:'resend'}});
+  assert.equal(resent.status,200);
+  assert.equal((await invitationEmail.invitationEmailKeyRotationStatus(currentDb)).ready,false,
+    'operator retirement health remains red after the valid target succeeds');
 });
 
 test('an outbox failure rolls back invitation creation and token rotation',async()=>{

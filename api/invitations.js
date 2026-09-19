@@ -23,6 +23,7 @@ import {
 import { localIdentityAdapterEnabled } from './_local-runtime.js';
 import {
   createInvitationEmailEvent,
+  ensureInvitationEmailReadiness,
   invitationEmailConfiguration,
   invitationEmailPayload,
   INVITATION_EMAIL_EVENT_TYPE,
@@ -217,6 +218,9 @@ async function handleCreate(req,res){
   const localRuntime=localIdentityAdapterEnabled(req);
   const emailConfiguration=invitationEmailConfiguration({localRuntime});
   try{
+    if(emailConfiguration){
+      await ensureInvitationEmailReadiness(context.db,{localRuntime});
+    }
     const transaction=await context.db.transaction('write');
     let finished=false;
     try{
@@ -295,6 +299,7 @@ async function handleResend(req,res){
   let transaction;
   let finished=false;
   try{
+    await ensureInvitationEmailReadiness(context.db,{localRuntime});
     transaction=await context.db.transaction('write');
     const selected=await transaction.execute({sql:`SELECT invitation.id,invitation.circle_id,
         invitation.token_hash,invitation.email_hash,invitation.expires_at,
@@ -311,6 +316,10 @@ async function handleResend(req,res){
           WHERE event.event_type=?
             AND json_extract(event.payload_json,'$.invitation_id')=invitation.id
           ORDER BY event.id DESC LIMIT 1) AS latest_payload_json,
+        (SELECT event.idempotency_key FROM outbox_events event
+          WHERE event.event_type=?
+            AND json_extract(event.payload_json,'$.invitation_id')=invitation.id
+          ORDER BY event.id DESC LIMIT 1) AS latest_idempotency_key,
         (SELECT event.created_at FROM outbox_events event
           WHERE event.event_type=?
             AND json_extract(event.payload_json,'$.invitation_id')=invitation.id
@@ -321,7 +330,8 @@ async function handleResend(req,res){
         AND membership.user_id=? AND membership.role='owner' AND membership.status='active'
       WHERE invitation.id=? AND circle.is_primary=1 AND circle.archived_at IS NULL
       LIMIT 2`,args:[INVITATION_EMAIL_EVENT_TYPE,INVITATION_EMAIL_EVENT_TYPE,
-      INVITATION_EMAIL_EVENT_TYPE,INVITATION_EMAIL_EVENT_TYPE,context.userId,id]});
+      INVITATION_EMAIL_EVENT_TYPE,INVITATION_EMAIL_EVENT_TYPE,INVITATION_EMAIL_EVENT_TYPE,
+      context.userId,id]});
     if(selected.rows?.length!==1){
       await transaction.rollback(); finished=true;
       return res.status(404).json({error:'invitation not found'});
@@ -345,7 +355,8 @@ async function handleResend(req,res){
     try{ latestPayload=JSON.parse(invitation.latest_payload_json); }catch{}
     let prior;
     try{
-      prior=invitationEmailPayload({eventVersion:Number(invitation.latest_event_version),payload:latestPayload},
+      prior=invitationEmailPayload({eventVersion:Number(invitation.latest_event_version),
+        idempotencyKey:String(invitation.latest_idempotency_key||''),payload:latestPayload},
         {localRuntime});
     }catch{}
     if(!prior||prior.invitationId!==id||prior.circleId!==Number(invitation.circle_id)

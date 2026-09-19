@@ -12,6 +12,7 @@ import {
   GOOGLE_ISSUER,
   addPasswordCredential,
   linkGoogleCredential,
+  identityEmailKeyRotationStatus,
   observeGoogleProviderEmail,
   readIdentityState,
   unlinkGoogleCredential,
@@ -27,6 +28,7 @@ afterEach(()=>{
   delete process.env.CIRCLE_MEMBERSHIP_ENABLED;
   delete process.env.IDENTITY_EMAIL_HASH_KEY;
   delete process.env.IDENTITY_EMAIL_HASH_KEY_VERSION;
+  delete process.env.IDENTITY_EMAIL_HASH_PREVIOUS_KEYS;
   delete process.env.JWT_SECRET;
   while(resources.length){ try{ resources.pop()(); }catch{} }
 });
@@ -210,6 +212,9 @@ test('provider email rotation is hash-only, audited once per change, and never r
 
   process.env.IDENTITY_EMAIL_HASH_KEY=Buffer.alloc(32,8).toString('base64url');
   process.env.IDENTITY_EMAIL_HASH_KEY_VERSION='2';
+  process.env.IDENTITY_EMAIL_HASH_PREVIOUS_KEYS=JSON.stringify([
+    {version:1,key:Buffer.alloc(32,7).toString('base64url')},
+  ]);
   assert.deepEqual(await observeGoogleProviderEmail(db,{
     issuer:GOOGLE_ISSUER,subject:'stable-subject',userId:1,providerEmail:'second@example.test',nowSeconds:NOW+3,
   }),{changed:false,rekeyed:true});
@@ -224,9 +229,10 @@ test('provider email rotation is hash-only, audited once per change, and never r
   process.env.IDENTITY_EMAIL_HASH_KEY=Buffer.alloc(32,9).toString('base64url');
   await assert.rejects(observeGoogleProviderEmail(db,{
     issuer:GOOGLE_ISSUER,subject:'stable-subject',userId:1,providerEmail:'second@example.test',nowSeconds:NOW+4,
-  }),error=>error?.code==='IDENTITY_EMAIL_HASH_VERSION_ROLLBACK');
+  }),error=>error?.code==='IDENTITY_EMAIL_HASH_KEY_SUBSTITUTION');
   process.env.IDENTITY_EMAIL_HASH_KEY=Buffer.alloc(32,7).toString('base64url');
   process.env.IDENTITY_EMAIL_HASH_KEY_VERSION='1';
+  delete process.env.IDENTITY_EMAIL_HASH_PREVIOUS_KEYS;
   await assert.rejects(observeGoogleProviderEmail(db,{
     issuer:GOOGLE_ISSUER,subject:'stable-subject',userId:1,providerEmail:'third@example.test',nowSeconds:NOW+4,
   }),error=>error?.code==='IDENTITY_EMAIL_HASH_VERSION_ROLLBACK');
@@ -240,4 +246,41 @@ test('provider email rotation is hash-only, audited once per change, and never r
     WHERE subject='new-subject-under-old-key'`)).rows[0].count),0);
   assert.equal(JSON.stringify((await db.execute(`SELECT * FROM auth_provider_email_state`)).rows),beforeDowngrade);
   assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM auth_identity_audit_events`)).rows[0].count),auditBefore);
+});
+
+test('identity rotation distinguishes changed mail with a prior key from neutral rebaseline without it',async()=>{
+  const db=await fixture();
+  await addAccount(db,{id:1,email:'canonical@example.test',password:true,googleSubject:'prior-key-subject'});
+  await addAccount(db,{id:2,email:'second@example.test',password:true,googleSubject:'neutral-subject'});
+  await observeGoogleProviderEmail(db,{issuer:GOOGLE_ISSUER,subject:'prior-key-subject',userId:1,
+    providerEmail:'first@example.test',nowSeconds:NOW});
+  await observeGoogleProviderEmail(db,{issuer:GOOGLE_ISSUER,subject:'neutral-subject',userId:2,
+    providerEmail:'unchanged@example.test',nowSeconds:NOW});
+
+  process.env.IDENTITY_EMAIL_HASH_KEY=Buffer.alloc(32,8).toString('base64url');
+  process.env.IDENTITY_EMAIL_HASH_KEY_VERSION='2';
+  process.env.IDENTITY_EMAIL_HASH_PREVIOUS_KEYS=JSON.stringify([
+    {version:1,key:Buffer.alloc(32,7).toString('base64url')},
+  ]);
+  assert.deepEqual(await observeGoogleProviderEmail(db,{issuer:GOOGLE_ISSUER,
+    subject:'prior-key-subject',userId:1,providerEmail:'changed@example.test',nowSeconds:NOW+1}),
+  {changed:true,rekeyed:true});
+  const changedEvents=(await db.execute(`SELECT event_type FROM auth_identity_audit_events
+    WHERE user_id=1 ORDER BY id`)).rows.map(row=>row.event_type);
+  assert.deepEqual(changedEvents,['provider_email_changed','provider_email_rekeyed']);
+
+  delete process.env.IDENTITY_EMAIL_HASH_PREVIOUS_KEYS;
+  const missingPrior=await identityEmailKeyRotationStatus(db);
+  assert.equal(missingPrior.ready,false);
+  assert.equal(missingPrior.missing_key,1);
+  assert.deepEqual(await observeGoogleProviderEmail(db,{issuer:GOOGLE_ISSUER,
+    subject:'neutral-subject',userId:2,providerEmail:'genuinely-different@example.test',nowSeconds:NOW+2}),
+  {changed:false,rekeyed:true});
+  const neutralEvents=(await db.execute(`SELECT event_type FROM auth_identity_audit_events
+    WHERE user_id=2 ORDER BY id`)).rows.map(row=>row.event_type);
+  assert.deepEqual(neutralEvents,['provider_email_rekeyed']);
+  const metrics=await identityEmailKeyRotationStatus(db);
+  assert.equal(metrics.ready,true);
+  assert.deepEqual(metrics.versions,{2:2});
+  assert.doesNotMatch(JSON.stringify(metrics),/@example|first|changed|unchanged/);
 });

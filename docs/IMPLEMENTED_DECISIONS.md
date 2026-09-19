@@ -344,7 +344,7 @@ because it is the route back to a lost credential, but it revokes all sessions.
 ### Rollout
 
 1. Rehearse and apply migration v8 only after managed v7 is verified.
-2. Configure a new independent `PASSWORD_RESET_ENCRYPTION_KEY` and keep it stable while reset events remain queued.
+2. Configure a new independent `PASSWORD_RESET_ENCRYPTION_KEY`; subsequent changes follow the forward-only bounded ring in `docs/KEY_ROTATION.md`.
 3. Confirm the outbox worker schedule and Resend sender in production.
 4. Enable `PASSWORD_RESET_ENABLED=true`, verify a real delivery and reset, then monitor aggregate outbox retry/dead-letter metrics. Roll back by disabling the flag; outstanding links stay unusable until the capability is restored.
 
@@ -704,3 +704,71 @@ reapplied. Do not edit or delete the v10 ledger row. If the incident involves
 data or broader schema integrity, stop and use the rehearsed PITR process rather
 than this index-only procedure. The exact commands, checks, and forward rollout
 are recorded in `docs/CHAT_INDEX_MIGRATION.md`.
+## ID-19: Rotate each credential purpose through a bounded versioned key ring
+
+Status: implemented as a compatibility-first runtime increment with no schema
+migration. ID-18 remains reserved for the chat-index migration.
+
+### Decision
+
+Email activation, password reset, invitation email, and provider-email
+observations use four independent key rings. Each ring has one monotonically
+versioned active key and at most three strictly descending prior keys; duplicate
+versions, duplicate material, malformed keys, ambiguous ordering, downgrade,
+and same-version substitution fail closed. Stateless central validation also
+rejects material shared across any active or prior entries in different
+purposes, including AES/HMAC reuse, while version sequences remain independent.
+Existing production keys become
+version 1. Credential readers accept legacy envelope v1 and envelope v2 while
+the initial deployment continues writing v1 until its purpose-specific switch
+is explicitly changed to 2.
+
+Envelope v2 remains inside the existing `outbox_events.payload_json` contract,
+so no schema migration or bulk rewrite is required. AES-256-GCM associated data
+binds the credential purpose, envelope version, key version, and exact event
+idempotency key. The clear envelope header contains only the version and a
+one-way purpose-scoped key fingerprint. Active keys encrypt; bounded prior keys
+decrypt. Unknown/retired keys, fingerprint mismatches, and future versions are
+retryable so a safe configuration repair or compatible redeploy can recover the
+event. A header fingerprint disagreement is also retryable because it can
+represent configuration substitution; malformed structure and authenticated
+ciphertext/tag/idempotency replay failures are terminal invalid data. A
+well-formed v1 authentication failure remains
+retryable because v1 cannot distinguish tampering from a temporarily missing
+old key.
+
+Handlers suppress authoritative inactive, expired, consumed, revoked, and
+superseded work before decryption wherever stored hashes and send sequence make
+that possible. Rotation metrics expose only aggregate version/status/readiness
+counts. Keys, fingerprints, ciphertext, event identifiers, provider subjects,
+tokens, and recipient addresses are excluded.
+
+Aggregate rotation readiness is reserved for operator key-retirement decisions.
+Request-path readiness validates schema plus complete, cross-purpose-isolated
+configuration but never requires unrelated historical queue rows to be healthy;
+the exact target envelope is still classified retryable or terminal when that
+request actually consumes it.
+
+Identity observations always use the active HMAC version. When the matching
+prior key is present, the old digest distinguishes an unchanged-email rekey from
+a genuine provider-email change; a genuine change remains audited even while
+the row advances to the new key version. Without the prior key, the observation
+uses a neutral rebaseline and emits only `provider_email_rekeyed`, never a false
+change event. Stored versions above the active version and configured material
+that disagrees with a stored fingerprint fail before any row or audit change.
+
+The deployment and rollback contract is forward-only after v2 or a higher key
+version is written. Operators may return one purpose's write switch to v1 while
+retaining the same active/prior ring, but never lower the active version or
+replace material at an existing version. Exact retirement gates and isolated
+restore rehearsal steps are in `docs/KEY_ROTATION.md`.
+
+### Alternatives considered
+
+| Option | Advantage | Cost and rejection reason |
+| --- | --- | --- |
+| One shared key | Fewer settings | Couples four trust domains and expands compromise and rotation blast radius |
+| Drain every queue before rotation | No reader key ring | Fails during urgent rotation, scheduler outage, or replayable dead letters |
+| Bulk re-encrypt queued rows | Quickly normalizes versions | Handles plaintext in an administrative batch and races active delivery |
+| Flush and reissue every credential | Simple compromise response | Disruptive and reserved for confirmed compromise, not routine rotation |
+| External KMS envelope encryption | Strong centralized custody | Valuable later, but disproportionate to the current Vercel/Turso MVP |

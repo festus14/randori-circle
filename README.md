@@ -94,15 +94,16 @@ Copy `.env.example` and configure at least:
 - an explicit canonical HTTPS `APP_URL` plus both `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`; OAuth stays unavailable for partial, malformed, insecure, host-mismatched, or local-runtime configuration
 - `SIGNUP_ALLOWLIST` for the legacy private-beta Google flow while circle membership enforcement is off
 - `CIRCLE_MEMBERSHIP_ENABLED=true` to enforce invitation-gated primary-circle access after the staged migration below
-- `EMAIL_PASSWORD_ACTIVATION_ENABLED=true` plus a separately generated 32-byte base64url `EMAIL_VERIFICATION_ENCRYPTION_KEY` to enable production invite-bound password activation after migration v7 is ready
-- a separate 32-byte base64url `INVITATION_EMAIL_ENCRYPTION_KEY` to queue owner-created invitation links without storing a plaintext bearer token
-- `PASSWORD_RESET_ENABLED=true` plus an independent 32-byte base64url `PASSWORD_RESET_ENCRYPTION_KEY` to enable recovery after migration v8 is ready
-- a dedicated 32-byte base64url `IDENTITY_EMAIL_HASH_KEY` and positive `IDENTITY_EMAIL_HASH_KEY_VERSION` before setting `IDENTITY_MANAGEMENT_ENABLED=true` after migration v9; Google linking also requires the complete Google OAuth configuration above
+- `EMAIL_PASSWORD_ACTIVATION_ENABLED=true` plus the versioned, purpose-specific `EMAIL_VERIFICATION_ENCRYPTION_*` key-ring settings to enable production invite-bound password activation after migration v7 is ready
+- the separate versioned `INVITATION_EMAIL_ENCRYPTION_*` key ring to queue owner-created invitation links without storing a plaintext bearer token
+- `PASSWORD_RESET_ENABLED=true` plus the independent versioned `PASSWORD_RESET_ENCRYPTION_*` key ring to enable recovery after migration v8 is ready
+- the dedicated versioned `IDENTITY_EMAIL_HASH_*` key ring before setting `IDENTITY_MANAGEMENT_ENABLED=true` after migration v9; Google linking also requires the complete Google OAuth configuration above
 - `AUTH_SCHEMA_BOOTSTRAP_ENABLED` is legacy-only and must remain false for the migrated OIDC flow; run the protected database migrations before enabling production authentication
 - `RESEND_API_KEY` and `RESEND_FROM` for invitation, pairing, schedule,
   verification, and password-reset notifications
 
 See [GOOGLE_OAUTH.md](GOOGLE_OAUTH.md) and [TURSO.md](TURSO.md) for provider setup. Back up the database before first deploying migrations.
+Key changes use the staged, forward-only [key rotation runbook](docs/KEY_ROTATION.md); never replace a configured key in place or remove an old key while its actionable count is nonzero.
 
 The protected Turso recovery workflow performs a monitored isolated restore every Monday at 03:17 UTC and remains manually dispatchable. A separate hourly, production-credential-free watchdog queries the authoritative GitHub run and artifact records; after a two-hour scheduling grace it requires a run from the current weekly slot, and an unfinished run has an absolute 06:47 UTC deadline that a delayed start cannot reset. Absent, stuck, failed, stale, expired, or corrupt drills therefore fail visibly. Retained evidence is limited to PII-free RPO/RTO timings, checksums, aggregate counts, and cleanup state. See the [backup/restore rehearsal runbook](docs/TURSO_BACKUP_RESTORE_REHEARSAL.md).
 

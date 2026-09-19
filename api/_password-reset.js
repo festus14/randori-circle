@@ -1,6 +1,4 @@
 import {
-  createCipheriv,
-  createDecipheriv,
   createHmac,
   randomBytes,
   randomUUID,
@@ -9,6 +7,14 @@ import {
 
 import { getJwtSecret, revokeAccountSessions } from './_db.js';
 import { hashInvitationEmail, normalizeInvitationEmail } from './_circle-membership.js';
+import {
+  CredentialEnvelopeError,
+  assertPurposeKeyIsolation,
+  openCredentialEnvelope,
+  parseKeyRing,
+  readCredentialRotationMetrics,
+  sealCredentialEnvelope,
+} from './_key-rotation.js';
 import { createOutboxEventStatement, OutboxDeliveryError, readOutboxMetrics, runOutboxWorker } from './_outbox.js';
 
 export const PASSWORD_RESET_EVENT_TYPE='auth.passwordreset.requested';
@@ -26,18 +32,28 @@ function safeEqual(left,right){
   return a.length===b.length&&timingSafeEqual(a,b);
 }
 
-function encryptionKey(){
-  const encoded=String(process.env.PASSWORD_RESET_ENCRYPTION_KEY||'').trim();
-  if(/^[A-Za-z0-9_-]{43}$/.test(encoded)){
-    const key=Buffer.from(encoded,'base64url');
-    if(key.length===32) return key;
+function passwordResetKeyRing(env=process.env){
+  try{
+    const ring=parseKeyRing({
+      env,purpose:'password-reset',keyEnv:'PASSWORD_RESET_ENCRYPTION_KEY',
+      versionEnv:'PASSWORD_RESET_ENCRYPTION_KEY_VERSION',
+      previousKeysEnv:'PASSWORD_RESET_ENCRYPTION_PREVIOUS_KEYS',
+      writeVersionEnv:'PASSWORD_RESET_ENVELOPE_WRITE_VERSION',
+      fallbackKey:()=>{
+        if(env.NODE_ENV==='production') return null;
+        return createHmac('sha256',getJwtSecret())
+          .update('randori-password-reset-envelope-v1','utf8').digest();
+      },
+    });
+    assertPurposeKeyIsolation({env,rings:[ring]});
+    return ring;
+  }catch(error){
+    error.message='PASSWORD_RESET_ENCRYPTION_KEY ring is invalid';
+    throw error;
   }
-  if(process.env.NODE_ENV!=='production'){
-    return createHmac('sha256',getJwtSecret())
-      .update('randori-password-reset-envelope-v1','utf8').digest();
-  }
-  throw new Error('PASSWORD_RESET_ENCRYPTION_KEY must be a base64url-encoded 32-byte key');
 }
+
+const passwordResetLegacyAad=()=>Buffer.from('randori-password-reset-envelope-v1','utf8');
 
 function configuredOrigin(){
   let url;
@@ -55,8 +71,10 @@ export function passwordResetConfiguration(){
     &&(!String(process.env.RESEND_API_KEY||'').trim()||!String(process.env.RESEND_FROM||'').trim())) return null;
   const origin=configuredOrigin();
   if(!origin) return null;
-  try{ encryptionKey(); }catch{ return null; }
-  return Object.freeze({origin});
+  try{
+    passwordResetKeyRing();
+    return Object.freeze({origin});
+  }catch{ return null; }
 }
 
 export function createPasswordResetToken(){
@@ -69,37 +87,41 @@ export function hashPasswordResetToken(token){
     .update(`randori-password-reset-token-v1\0${token}`,'utf8').digest('hex');
 }
 
-export function sealPasswordResetToken(token){
+export function sealPasswordResetToken(token,{idempotencyKey}={}){
   if(!hashPasswordResetToken(token)) throw new TypeError('invalid password reset token');
-  const iv=randomBytes(12);
-  const cipher=createCipheriv('aes-256-gcm',encryptionKey(),iv);
-  cipher.setAAD(Buffer.from('randori-password-reset-envelope-v1','utf8'));
-  const ciphertext=Buffer.concat([cipher.update(token,'utf8'),cipher.final()]);
-  const tag=cipher.getAuthTag();
-  return `${iv.toString('base64url')}.${ciphertext.toString('base64url')}.${tag.toString('base64url')}`;
+  return sealCredentialEnvelope({plaintext:token,idempotencyKey,ring:passwordResetKeyRing(),
+    legacyAad:passwordResetLegacyAad});
 }
 
-export function openPasswordResetToken(envelope){
-  const parts=typeof envelope==='string'?envelope.split('.'):[];
-  if(parts.length!==3) return null;
+function openPasswordResetTokenStrict(envelope,{idempotencyKey}={}){
+  const opened=openCredentialEnvelope({envelope,idempotencyKey,ring:passwordResetKeyRing(),
+    legacyAad:passwordResetLegacyAad,minPlaintextBytes:43,maxPlaintextBytes:43});
+  const token=opened.plaintext.toString('utf8');
+  if(!hashPasswordResetToken(token)) throw new CredentialEnvelopeError('ENVELOPE_INVALID');
+  return token;
+}
+
+export function openPasswordResetToken(envelope,{idempotencyKey}={}){
   try{
-    const [iv,ciphertext,tag]=parts.map(value=>Buffer.from(value,'base64url'));
-    if([iv,ciphertext,tag].some((value,index)=>value.toString('base64url')!==parts[index])) return null;
-    if(iv.length!==12||tag.length!==16||ciphertext.length!==43) return null;
-    const decipher=createDecipheriv('aes-256-gcm',encryptionKey(),iv);
-    decipher.setAAD(Buffer.from('randori-password-reset-envelope-v1','utf8'));
-    decipher.setAuthTag(tag);
-    const token=Buffer.concat([decipher.update(ciphertext),decipher.final()]).toString('utf8');
-    return hashPasswordResetToken(token)?token:null;
+    return openPasswordResetTokenStrict(envelope,{idempotencyKey});
   }catch{ return null; }
 }
 
-export async function ensurePasswordResetReadiness(db){
+export async function ensurePasswordResetReadiness(db,{
+  requireDeliveryKey=process.env.PASSWORD_RESET_ENABLED==='true',
+}={}){
   if(!db||typeof db.execute!=='function') throw new TypeError('database client is required');
+  if(typeof requireDeliveryKey!=='boolean') throw new TypeError('valid password reset readiness options required');
+  if(requireDeliveryKey) passwordResetKeyRing();
   await db.execute(`SELECT id,user_id,email_hash,token_hash,created_at,expires_at,last_sent_at,
     send_count,used_at,revoked_at FROM auth_password_resets LIMIT 0`);
   await db.execute(`SELECT session_hash,user_id,authenticated_at,method FROM auth_recent_proofs LIMIT 0`);
   await db.execute(`SELECT id,event_type,event_version,idempotency_key FROM outbox_events LIMIT 0`);
+}
+
+export async function passwordResetKeyRotationStatus(db){
+  return readCredentialRotationMetrics(db,{eventType:PASSWORD_RESET_EVENT_TYPE,
+    envelopeField:'token_envelope',ring:passwordResetKeyRing()});
 }
 
 async function resetNow(db,override){
@@ -113,11 +135,13 @@ async function resetNow(db,override){
   return now;
 }
 
-function resetEvent({resetId,email,tokenEnvelope,sendCount}){
+function resetEvent({resetId,email,token,sendCount}){
+  const idempotencyKey=`password-reset/v1/${resetId}/${sendCount}`;
   return createOutboxEventStatement({
     eventType:PASSWORD_RESET_EVENT_TYPE,eventVersion:PASSWORD_RESET_EVENT_VERSION,
-    idempotencyKey:`password-reset/v1/${resetId}/${sendCount}`,
-    payload:{reset_id:resetId,recipient_email:email,token_envelope:tokenEnvelope},
+    idempotencyKey,
+    payload:{reset_id:resetId,recipient_email:email,
+      token_envelope:sealPasswordResetToken(token,{idempotencyKey})},
     maxAttempts:5,deliveryTimeoutMs:10_000,
   });
 }
@@ -129,7 +153,7 @@ export async function requestPasswordReset(db,{email},{nowSeconds=null}={}){
   const resetId=randomUUID();
   const token=createPasswordResetToken();
   const tokenHash=hashPasswordResetToken(token);
-  const tokenEnvelope=sealPasswordResetToken(token);
+  passwordResetKeyRing();
   const transaction=await db.transaction('write');
   let finished=false;
   try{
@@ -170,7 +194,7 @@ export async function requestPasswordReset(db,{email},{nowSeconds=null}={}){
     }
     if(row){
       await transaction.execute(resetEvent({resetId:String(row.id),email:normalizedEmail,
-        tokenEnvelope,sendCount:Number(row.send_count)}));
+        token,sendCount:Number(row.send_count)}));
     }else{
       await transaction.execute({sql:`SELECT id FROM outbox_events WHERE idempotency_key=? LIMIT 1`,
         args:[`password-reset/v1/${resetId}/1`]});
@@ -265,17 +289,34 @@ export async function consumePasswordReset(db,input,options={}){
   return Object.freeze({status:'invalid'});
 }
 
-function resetPayload(event){
-  if(event.eventVersion!==PASSWORD_RESET_EVENT_VERSION) throw new TypeError('unsupported password reset event');
+function resetMetadata(event){
+  if(event.eventVersion!==PASSWORD_RESET_EVENT_VERSION){
+    throw new OutboxDeliveryError('EVENT_VERSION_UNSUPPORTED',{retryable:event.eventVersion>PASSWORD_RESET_EVENT_VERSION});
+  }
   const payload=event.payload;
   if(!payload||Object.keys(payload).sort().join(',')!=='recipient_email,reset_id,token_envelope'){
-    throw new TypeError('invalid password reset event payload');
+    throw new OutboxDeliveryError('PAYLOAD_INVALID',{retryable:false});
   }
   const resetId=String(payload.reset_id||'').toLowerCase();
   const email=normalizeInvitationEmail(payload.recipient_email);
-  const token=openPasswordResetToken(payload.token_envelope);
-  if(!UUID_PATTERN.test(resetId)||!email||!token) throw new TypeError('invalid password reset event payload');
-  return {resetId,email,token,tokenHash:hashPasswordResetToken(token)};
+  const envelope=typeof payload.token_envelope==='string'&&payload.token_envelope.length<=8192
+    ?payload.token_envelope:null;
+  if(!UUID_PATTERN.test(resetId)||!email||!envelope){
+    throw new OutboxDeliveryError('PAYLOAD_INVALID',{retryable:false});
+  }
+  return {resetId,email,envelope};
+}
+
+function resetCredential(metadata,event){
+  try{
+    const token=openPasswordResetTokenStrict(metadata.envelope,{idempotencyKey:event.idempotencyKey});
+    return {...metadata,token,tokenHash:hashPasswordResetToken(token)};
+  }catch(error){
+    if(error instanceof CredentialEnvelopeError){
+      throw new OutboxDeliveryError(error.code,{retryable:error.retryable});
+    }
+    throw error;
+  }
 }
 
 export function createPasswordResetHandler({db,baseUrl,send}={}){
@@ -283,25 +324,27 @@ export function createPasswordResetHandler({db,baseUrl,send}={}){
   let origin;
   try{ origin=new URL(String(baseUrl)).origin; }catch{ throw new TypeError('valid password reset base URL required'); }
   return async(event,{signal}={})=>{
-    let payload;
-    try{ payload=resetPayload(event); }
-    catch{ return {status:'suppressed',reasonCode:'PAYLOAD_INVALID'}; }
+    const metadata=resetMetadata(event);
     const membershipPredicate=process.env.CIRCLE_MEMBERSHIP_ENABLED==='true'
       ?`AND EXISTS (SELECT 1 FROM circle_memberships membership JOIN circles circle ON circle.id=membership.circle_id
           WHERE membership.user_id=account.id AND membership.status='active'
             AND circle.is_primary=1 AND circle.archived_at IS NULL)`
       :'';
     const current=await db.execute({
-      sql:`SELECT reset.id FROM auth_password_resets reset
+      sql:`SELECT reset.id,reset.token_hash FROM auth_password_resets reset
         JOIN auth_accounts account ON account.id=reset.user_id
-        WHERE reset.id=? AND reset.token_hash=? AND lower(account.email)=?
+        WHERE reset.id=? AND lower(account.email)=?
           AND reset.email_hash=? AND account.password_hash LIKE '$2%'
           AND reset.used_at IS NULL AND reset.revoked_at IS NULL
           AND reset.expires_at>CAST(strftime('%s','now') AS INTEGER) ${membershipPredicate}
         LIMIT 2`,
-      args:[payload.resetId,payload.tokenHash,payload.email,hashInvitationEmail(payload.email)],
+      args:[metadata.resetId,metadata.email,hashInvitationEmail(metadata.email)],
     });
     if(current.rows?.length!==1) return {status:'suppressed',reasonCode:'PASSWORD_RESET_INACTIVE'};
+    const payload=resetCredential(metadata,event);
+    if(!safeEqual(payload.tokenHash,current.rows[0].token_hash)){
+      throw new OutboxDeliveryError('PAYLOAD_INVALID',{retryable:false});
+    }
     const resetUrl=`${origin}/reset-password#token=${encodeURIComponent(payload.token)}`;
     try{
       const delivery=await send({

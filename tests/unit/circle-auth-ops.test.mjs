@@ -153,6 +153,7 @@ mock.module('../../api/_invitation-email.js',{
     INVITATION_EMAIL_EVENT_TYPE:'invitation.email.requested',
     createInvitationEmailHandler:()=>async()=>({}),
     invitationEmailConfiguration:()=>null,
+    invitationEmailKeyRotationStatus:async()=>({ready:false,unavailable:true}),
     invitationEmailStatus:async()=>({
       pending:0,processing:0,retry:0,delivered:0,suppressed:0,dead_letter:0,
     }),

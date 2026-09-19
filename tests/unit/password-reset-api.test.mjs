@@ -10,7 +10,12 @@ import bcrypt from 'bcryptjs';
 
 import authHandler from '../../api/auth.js';
 import {issueSession,verifyRequestAuth} from '../../api/_db.js';
-import {openPasswordResetToken} from '../../api/_password-reset.js';
+import {
+  PASSWORD_RESET_EVENT_TYPE,
+  openPasswordResetToken,
+  passwordResetKeyRotationStatus,
+} from '../../api/_password-reset.js';
+import {createOutboxEventStatement} from '../../api/_outbox.js';
 import {EXECUTABLE_MIGRATIONS} from '../../db/executable-migrations.js';
 import {applyMigrations,inspectMigrationState,prepareMigrationConnection} from '../../db/migration-runner.js';
 
@@ -83,6 +88,13 @@ async function resetToken(db){
 
 test('request response is enumeration-safe and reset revokes every existing session',async()=>{
   const {db}=await fixture();
+  const unrelatedKey='password-reset/v1/33333333-3333-4333-8333-333333333333/1';
+  await db.execute(createOutboxEventStatement({eventType:PASSWORD_RESET_EVENT_TYPE,
+    idempotencyKey:unrelatedKey,payload:{token_envelope:'malformed'},maxAttempts:1}));
+  await db.execute({sql:`UPDATE outbox_events SET status='dead_letter' WHERE idempotency_key=?`,
+    args:[unrelatedKey]});
+  assert.equal((await passwordResetKeyRotationStatus(db)).ready,false,
+    'operator retirement health remains red for unrelated malformed history');
   const first=await issueSession(db,{id:1,email:'member@example.test',name:'Member'});
   const second=await issueSession(db,{id:1,email:'member@example.test',name:'Member'});
   const known=await invoke({endpoint:'password-reset-request',body:{email:'member@example.test'},ip:'203.0.113.21'});
