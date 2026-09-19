@@ -108,6 +108,20 @@ const PLAN_6_OPERATIONS=Object.freeze([
   index('idx_outbox_audit_event','outbox_audit_events',['outbox_event_id','id']),
 ]);
 
+const PLAN_7_OPERATIONS=Object.freeze([
+  table('auth_email_activations',`CREATE TABLE IF NOT EXISTS auth_email_activations (id TEXT PRIMARY KEY NOT NULL CHECK(length(id)=36), invitation_id TEXT NOT NULL UNIQUE, circle_id INTEGER NOT NULL, email TEXT NOT NULL CHECK(length(email)>=3 AND length(email)<=254 AND email=lower(trim(email))), email_hash TEXT NOT NULL CHECK(length(email_hash)=64 AND email_hash NOT GLOB '*[^0-9a-f]*'), password_hash TEXT NOT NULL CHECK(length(password_hash)>=20 AND length(password_hash)<=128), display_name TEXT NOT NULL CHECK(length(display_name)>=2 AND length(display_name)<=32), color TEXT NOT NULL CHECK(length(color)>=1 AND length(color)<=32), token_hash TEXT NOT NULL UNIQUE CHECK(length(token_hash)=64 AND token_hash NOT GLOB '*[^0-9a-f]*'), created_at INTEGER NOT NULL CHECK(typeof(created_at)='integer' AND created_at>0), expires_at INTEGER NOT NULL CHECK(typeof(expires_at)='integer' AND expires_at>created_at), last_sent_at INTEGER NOT NULL CHECK(typeof(last_sent_at)='integer' AND last_sent_at>=created_at), send_count INTEGER NOT NULL DEFAULT 1 CHECK(typeof(send_count)='integer' AND send_count BETWEEN 1 AND 5), used_at INTEGER CHECK(used_at IS NULL OR (typeof(used_at)='integer' AND used_at>=created_at)), revoked_at INTEGER CHECK(revoked_at IS NULL OR (typeof(revoked_at)='integer' AND revoked_at>=created_at)), CHECK(used_at IS NULL OR revoked_at IS NULL), FOREIGN KEY(invitation_id) REFERENCES circle_invitations(id) ON DELETE RESTRICT, FOREIGN KEY(circle_id) REFERENCES circles(id) ON DELETE RESTRICT)`),
+  index('idx_auth_email_activations_token','auth_email_activations',['token_hash','expires_at']),
+  index('idx_auth_email_activations_email','auth_email_activations',['email_hash','created_at DESC']),
+]);
+
+const PLAN_8_OPERATIONS=Object.freeze([
+  table('auth_password_resets',`CREATE TABLE IF NOT EXISTS auth_password_resets (id TEXT PRIMARY KEY NOT NULL CHECK(length(id)=36), user_id INTEGER NOT NULL UNIQUE, email_hash TEXT NOT NULL CHECK(length(email_hash)=64 AND email_hash NOT GLOB '*[^0-9a-f]*'), token_hash TEXT NOT NULL UNIQUE CHECK(length(token_hash)=64 AND token_hash NOT GLOB '*[^0-9a-f]*'), created_at INTEGER NOT NULL CHECK(typeof(created_at)='integer' AND created_at>0), expires_at INTEGER NOT NULL CHECK(typeof(expires_at)='integer' AND expires_at>created_at), last_sent_at INTEGER NOT NULL CHECK(typeof(last_sent_at)='integer' AND last_sent_at>=created_at), send_count INTEGER NOT NULL DEFAULT 1 CHECK(typeof(send_count)='integer' AND send_count BETWEEN 1 AND 5), used_at INTEGER CHECK(used_at IS NULL OR (typeof(used_at)='integer' AND used_at>=created_at)), revoked_at INTEGER CHECK(revoked_at IS NULL OR (typeof(revoked_at)='integer' AND revoked_at>=created_at)), CHECK(used_at IS NULL OR revoked_at IS NULL), FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE CASCADE)`),
+  table('auth_recent_proofs',`CREATE TABLE IF NOT EXISTS auth_recent_proofs (session_hash TEXT PRIMARY KEY NOT NULL CHECK(length(session_hash)=64 AND session_hash NOT GLOB '*[^0-9a-f]*'), user_id INTEGER NOT NULL, authenticated_at INTEGER NOT NULL CHECK(typeof(authenticated_at)='integer' AND authenticated_at>0), method TEXT NOT NULL CHECK(method IN ('password','google')), FOREIGN KEY(session_hash) REFERENCES auth_sessions(session_hash) ON DELETE CASCADE, FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE CASCADE)`),
+  index('idx_auth_password_resets_token','auth_password_resets',['token_hash','expires_at']),
+  index('idx_auth_password_resets_email','auth_password_resets',['email_hash','created_at DESC']),
+  index('idx_auth_recent_proofs_user','auth_recent_proofs',['user_id','authenticated_at DESC']),
+]);
+
 export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:1,
@@ -135,6 +149,14 @@ export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:6,
     operations:PLAN_6_OPERATIONS,
+  }),
+  Object.freeze({
+    version:7,
+    operations:PLAN_7_OPERATIONS,
+  }),
+  Object.freeze({
+    version:8,
+    operations:PLAN_8_OPERATIONS,
   }),
 ]);
 
@@ -175,7 +197,7 @@ export const SCHEMA_MANIFEST_CHECKSUM=checksum({
 
 // Updating the schema is intentional only when this pinned checksum is updated
 // in the same reviewed change.
-export const PINNED_SCHEMA_MANIFEST_CHECKSUM='8bfdd7481bf89d3613ffaaa7fba38da4d7af7603d32269b444e44b47632c820f';
+export const PINNED_SCHEMA_MANIFEST_CHECKSUM='243c5457df865fa27b8808226e17dc30e0d85ce4ff039defb7358928e4c136e1';
 
 if(SCHEMA_MANIFEST_CHECKSUM!==PINNED_SCHEMA_MANIFEST_CHECKSUM){
   throw new Error(`Schema manifest checksum changed: ${SCHEMA_MANIFEST_CHECKSUM}`);

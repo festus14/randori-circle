@@ -43,6 +43,20 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'8cb0d17a3c0fb53519d3b02843e534b90447b48b00c3fb0f1da0af75b38ee17b',
     checksum:'f64e694d6f493128347f3544a6a03af62b77d4e4a8f00592ed85055ae2a5d68b',
   }),
+  Object.freeze({
+    version:7,
+    name:'verified-email-activation',
+    description:'Invitation-bound password activation with hashed single-use verification credentials.',
+    operationsChecksum:'a2be692ef8f352abc3038ad315117fd00c6a235d07a678f9742ba156e51e8bc7',
+    checksum:'5379a4f70f7da440b6669bb4880320da240710fb7b56f61f28ad44e7817e5f48',
+  }),
+  Object.freeze({
+    version:8,
+    name:'password-reset-and-recent-auth',
+    description:'Hashed one-time password recovery credentials and session-scoped recent-authentication evidence.',
+    operationsChecksum:'55e683b76ac5cf24c93d3aa6cb60fab738b4957a6d6f12cdaffa5728c5ea68e2',
+    checksum:'38226e8955ff195c11c5d8a7282d4adb70d7189395615f3ae1e718e9cacaebb6',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){

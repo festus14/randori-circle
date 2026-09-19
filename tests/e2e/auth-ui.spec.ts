@@ -13,6 +13,189 @@ const privateBetaCapabilities = {
   registrationMode: 'private_beta',
 };
 
+const recoveryCapabilities = {
+  ok: true,
+  capabilities: { passwordLogin: true, passwordSignup: false, passwordReset: true, googleOAuth: false },
+  registrationMode: 'private_beta',
+};
+
+const verifiedInviteCapabilities = {
+  ok: true,
+  capabilities: {
+    passwordLogin: true,
+    passwordSignup: true,
+    verifiedEmailActivation: true,
+    localIdentity: false,
+    googleOAuth: false,
+  },
+  registrationMode: 'verified_invite',
+};
+
+test('production invite signup waits for email verification and offers a bounded resend action',async({page})=>{
+  const token='A'.repeat(43);
+  let signupCalls=0;
+  let resendCalls=0;
+  await mockApi(page,{
+    '/api/auth/capabilities':verifiedInviteCapabilities,
+    '/api/invitations/prepare':{ok:true},
+    '/api/auth/signup':request=>{
+      signupCalls+=1;
+      expect(request.postDataJSON()).toEqual({
+        email:'invited@example.test',name:'Invited Member',password:'correct horse battery',
+      });
+      return {_status:202,ok:true,pending:true,message:'If this invitation can be activated, a verification email will arrive shortly.'};
+    },
+    '/api/auth/activation/resend':request=>{
+      resendCalls+=1;
+      expect(request.postDataJSON()).toEqual({email:'invited@example.test'});
+      return {_status:202,ok:true,pending:true};
+    },
+  });
+  await resetClientState(page);
+  await page.goto(`/invite#invite=${token}`,{waitUntil:'domcontentloaded'});
+  await expect(page.getByTestId('invite-status')).toContainText('Invitation verified');
+  await expect(page.getByTestId('invite-continue')).toHaveText('Create account');
+  await page.getByTestId('invite-continue').click();
+  await expect(page.getByRole('dialog',{name:'Join Randori Circle'})).toBeVisible();
+  await expect(page.locator('#authCapabilityStatus')).toContainText('activates only after');
+  await page.locator('#authEmail').fill('invited@example.test');
+  await page.locator('#authName').fill('Invited Member');
+  await page.locator('#authPass').fill('correct horse battery');
+  await page.locator('#authSignup').click();
+  await expect(page.getByTestId('activation-pending')).toBeVisible();
+  await expect(page.locator('#meLabel')).toBeHidden();
+  expect(signupCalls).toBe(1);
+  await page.locator('#authActivationResend').click();
+  await expect(page.locator('#authErr')).toContainText('new link was requested');
+  expect(resendCalls).toBe(1);
+});
+
+test('verification landing renders success and terminal link states without exposing the token',async({page})=>{
+  const token='B'.repeat(43);
+  let verificationStatus='verified';
+  await mockApi(page,{
+    '/api/auth/activation/verify':request=>{
+      expect(request.postDataJSON()).toEqual({token});
+      return verificationStatus==='verified'
+        ?{ok:true,status:'verified',user:{id:8,email:'verified@example.test',name:'Verified Member',color:'#123456'}}
+        :{_status:409,ok:false,status:verificationStatus};
+    },
+  });
+  await resetClientState(page);
+  await page.goto(`/verify#token=${token}`,{waitUntil:'domcontentloaded'});
+  await expect(page).toHaveURL(/\/verify$/);
+  await expect(page.getByTestId('activation-status')).toContainText('account is ready');
+  await expect(page.getByTestId('activation-continue')).toBeVisible();
+
+  for(const status of ['expired','used','revoked']){
+    verificationStatus=status;
+    await page.goto(`/verify?state=${status}#token=${token}`,{waitUntil:'domcontentloaded'});
+    await expect(page.getByTestId('activation-status')).toContainText(
+      status==='expired'?'expired':status==='used'?'already been used':'no longer available',
+    );
+  }
+});
+
+test('a temporary verification failure retains the scrubbed token only in memory for explicit retry',async({page})=>{
+  const token='C'.repeat(43);
+  let attempts=0;
+  await mockApi(page,{
+    '/api/auth/activation/verify':request=>{
+      attempts+=1;
+      expect(request.postDataJSON()).toEqual({token});
+      return attempts===1
+        ?{_status:503,error:'email activation temporarily unavailable'}
+        :{ok:true,status:'verified',user:{id:9,email:'retry@example.test',name:'Retry Member',color:'#654321'}};
+    },
+  });
+  await resetClientState(page);
+  await page.goto(`/verify#token=${token}`,{waitUntil:'domcontentloaded'});
+  await expect(page).toHaveURL(/\/verify$/);
+  await expect(page.getByTestId('activation-status')).toContainText('temporarily unavailable');
+  await expect(page.getByTestId('activation-continue')).toHaveText('Retry verification');
+  await page.getByTestId('activation-continue').click();
+  await expect(page.getByTestId('activation-status')).toContainText('account is ready');
+  expect(attempts).toBe(2);
+});
+
+test('sign-in offers an enumeration-safe password reset request',async({page})=>{
+  let requests=0;
+  await mockApi(page,{
+    '/api/auth/capabilities':recoveryCapabilities,
+    '/api/auth/password-reset/request':request=>{
+      requests+=1;
+      expect(request.postDataJSON()).toEqual({email:'member@example.test'});
+      return {_status:202,ok:true,pending:true,
+        message:'If that account can use password recovery, a reset email will arrive shortly.'};
+    },
+  });
+  await resetClientState(page);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await page.locator('#landingSignin').click();
+  await expect(page.locator('#authForgot')).toBeVisible();
+  await page.locator('#authForgot').click();
+  await expect(page.getByRole('dialog',{name:'Reset your password'})).toBeVisible();
+  await expect(page.locator('#authPasswordField')).toBeHidden();
+  await page.locator('#authEmail').fill('MEMBER@example.test');
+  await page.locator('#authResetRequest').click();
+  await expect(page.locator('#authErr')).toContainText('If that account is eligible');
+  expect(requests).toBe(1);
+  await page.locator('#authModeSwitch').click();
+  await expect(page.getByRole('dialog',{name:'Sign in to Randori'})).toBeVisible();
+});
+
+test('password reset landing scrubs the fragment and submits a matching policy-compliant password',async({page})=>{
+  const token='R'.repeat(43);
+  let calls=0;
+  await mockApi(page,{
+    '/api/auth/password-reset/consume':request=>{
+      calls+=1;
+      expect(request.postDataJSON()).toEqual({token,password:'replacement password'});
+      return {ok:true,status:'reset'};
+    },
+  });
+  await resetClientState(page);
+  await page.goto(`/reset-password#token=${token}`,{waitUntil:'domcontentloaded'});
+  await expect(page).toHaveURL(/\/reset-password$/);
+  await expect(page.getByTestId('password-reset-landing')).toBeVisible();
+  await page.locator('#passwordResetNew').fill('replacement password');
+  await page.locator('#passwordResetConfirm').fill('different password');
+  await page.locator('#passwordResetSubmit').click();
+  await expect(page.getByTestId('password-reset-status')).toContainText('do not match');
+  expect(calls).toBe(0);
+  await page.locator('#passwordResetConfirm').fill('replacement password');
+  await page.locator('#passwordResetSubmit').click();
+  await expect(page.getByTestId('password-reset-status')).toContainText('all existing sessions were signed out');
+  await expect(page.locator('#passwordResetSignin')).toBeVisible();
+  expect(calls).toBe(1);
+});
+
+test('expired and revoked password reset links expose a terminal recovery path',async({page})=>{
+  const token='T'.repeat(43);
+  let terminalStatus='expired';
+  await mockApi(page,{
+    '/api/auth/password-reset/consume':()=>({
+      _status:409,ok:false,status:terminalStatus,
+    }),
+  });
+  await resetClientState(page);
+
+  for(const status of ['expired','revoked']){
+    terminalStatus=status;
+    await page.goto(`/reset-password?state=${status}#token=${token}`,{waitUntil:'domcontentloaded'});
+    await page.locator('#passwordResetNew').fill('replacement password');
+    await page.locator('#passwordResetConfirm').fill('replacement password');
+    await page.locator('#passwordResetSubmit').click();
+    await expect(page.getByTestId('password-reset-status')).toContainText(
+      status==='expired'?'expired':'no longer available',
+    );
+    await expect(page.locator('#passwordResetNew')).toBeHidden();
+    await expect(page.locator('#passwordResetConfirm')).toBeHidden();
+    await expect(page.locator('#passwordResetSubmit')).toBeHidden();
+    await expect(page.locator('#passwordResetSignin')).toBeVisible();
+  }
+});
+
 test('local capabilities expose an accessible signup flow with validation and one in-flight submit', async ({ page }) => {
   const user = {
     id: 1,

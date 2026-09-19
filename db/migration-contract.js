@@ -31,6 +31,16 @@ export const MIGRATION_CONTRACTS=Object.freeze([
     name:'durable-provider-neutral-outbox',
     checksum:'e62bdb26e9055eeae387e80bbd3dba08130228bf9a42673b2fceecddd9fc2f6b',
   }),
+  Object.freeze({
+    version:7,
+    name:'verified-email-activation',
+    checksum:'2f904882cdc996c63492794b7e321560cbe3574871984e51e2d3075b897e95e1',
+  }),
+  Object.freeze({
+    version:8,
+    name:'password-reset-and-recent-auth',
+    checksum:'60059dfffd4d333e5b90a8eea32f23bc2165a8019911e4b006deeb0f2b68929c',
+  }),
 ]);
 
 export const LATEST_MIGRATION_VERSION=MIGRATION_CONTRACTS.at(-1)?.version||0;

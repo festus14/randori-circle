@@ -278,6 +278,10 @@ p{margin:0}
   display:flex; align-items:center; justify-content:space-between; gap:10px;
   padding:10px 12px; border:1px solid var(--border); border-radius:12px; background:var(--bg-3);
 }
+.membership-actions{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.membership-actions > div:first-child{min-width:0}
+.membership-controls{display:flex;gap:6px;flex-wrap:wrap}
+.membership-danger{border-color:color-mix(in srgb,var(--bad) 55%,var(--border));color:var(--bad)}
 .avatar{width:30px; height:30px; border-radius:9px; display:grid; place-items:center; color:#0f0f10; font-weight:600; font-size:11.5px; flex:0 0 auto; letter-spacing:-0.02em}
 .weeks{display:grid; gap:10px}
 .pair{
@@ -702,6 +706,34 @@ p{margin:0}
       </div>
     </section>
 
+    <!-- VERIFIED EMAIL ACTIVATION -->
+    <section id="view-activation" class="view" data-testid="activation-landing" style="display:none">
+      <div class="landing" style="max-width:680px;margin:0 auto">
+        <div class="card">
+          <div class="card-h"><h2>Activate your Randori account</h2><span>email verification</span></div>
+          <div class="card-b" style="display:grid;gap:14px">
+            <p id="activationStatus" data-testid="activation-status" class="small muted" role="status" aria-live="polite">Checking your verification link…</p>
+            <div><button id="activationContinue" data-testid="activation-continue" class="btn" type="button" hidden>Continue to Randori</button></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PASSWORD RESET -->
+    <section id="view-password-reset" class="view" data-testid="password-reset-landing" style="display:none">
+      <div class="landing" style="max-width:680px;margin:0 auto">
+        <div class="card">
+          <div class="card-h"><h2>Choose a new password</h2><span>account recovery</span></div>
+          <form id="passwordResetForm" class="card-b auth-form" novalidate>
+            <p id="passwordResetStatus" data-testid="password-reset-status" class="small muted" role="status" aria-live="polite">Enter a new password to finish recovering your account.</p>
+            <label class="auth-field" for="passwordResetNew"><span>New password</span><input id="passwordResetNew" class="input" type="password" autocomplete="new-password" minlength="10" maxlength="72" required/></label>
+            <label class="auth-field" for="passwordResetConfirm"><span>Confirm new password</span><input id="passwordResetConfirm" class="input" type="password" autocomplete="new-password" minlength="10" maxlength="72" required/></label>
+            <div class="auth-actions"><button id="passwordResetSignin" class="btn ghost" type="button" hidden>Return to sign in</button><button id="passwordResetSubmit" class="btn" type="submit">Reset password</button></div>
+          </form>
+        </div>
+      </div>
+    </section>
+
     <!-- INVITATION LANDING -->
     <section id="view-invite" class="view" data-testid="invite-landing" style="display:none">
       <div class="landing" style="max-width:680px;margin:0 auto">
@@ -804,6 +836,14 @@ p{margin:0}
               <button id="circleInviteLink" data-testid="circle-invite-link" class="pill" type="button" hidden>Copy invitation link</button>
               <div id="circleInvites" data-testid="circle-invites" class="people"></div>
             </div>
+            <section id="circleLifecyclePanel" data-testid="circle-lifecycle" hidden aria-labelledby="circleLifecycleTitle" style="display:none;gap:10px;border-top:1px solid var(--border);padding-top:12px">
+              <div class="membership-actions">
+                <div><b id="circleLifecycleTitle" style="font-size:13px">Membership settings</b><div id="circleLifecycleHelp" class="small muted" style="margin-top:3px"></div></div>
+                <button id="circleLeave" data-testid="circle-leave" class="pill membership-danger" type="button">Leave circle</button>
+              </div>
+              <div id="circleLifecycleStatus" class="small muted" role="status" aria-live="polite"></div>
+              <div id="circleManageMembers" data-testid="circle-manage-members" class="people" hidden></div>
+            </section>
           </div>
         </div>
         <div class="card">
@@ -1056,13 +1096,17 @@ p{margin:0}
       <div id="authPasswordFields" class="auth-fields" hidden>
         <label class="auth-field" for="authEmail"><span>Email</span><input id="authEmail" class="input" placeholder="email@example.com" type="email" inputmode="email" autocomplete="email" maxlength="254" aria-describedby="authErr" required/></label>
         <label id="authNameField" class="auth-field" for="authName" hidden><span>Display name</span><input id="authName" class="input" placeholder="How your pair will see you" type="text" autocomplete="name" minlength="2" maxlength="32" aria-describedby="authErr"/></label>
-        <label class="auth-field" for="authPass"><span>Password</span><input id="authPass" class="input" placeholder="10–72 UTF-8 bytes" type="password" autocomplete="current-password" maxlength="72" aria-describedby="authErr" required/></label>
+        <label id="authPasswordField" class="auth-field" for="authPass"><span>Password</span><input id="authPass" class="input" placeholder="10–72 UTF-8 bytes" type="password" autocomplete="current-password" maxlength="72" aria-describedby="authErr" required/></label>
       </div>
       <p id="authErr" class="small auth-error" role="alert" aria-live="assertive"></p>
+      <div id="authActivationPending" data-testid="activation-pending" class="auth-fields" hidden>
+        <p class="small muted">Check your inbox. The verification link is single-use and expires in 30 minutes.</p>
+        <button id="authActivationResend" class="btn secondary" type="button">Send a new link</button>
+      </div>
       <button id="authGoogleRetry" class="btn secondary" type="button" hidden aria-describedby="authErr" style="width:100%;justify-content:center">Try Google sign-in again</button>
       <div class="auth-actions">
-        <button id="authModeSwitch" class="btn ghost" type="button" hidden></button>
-        <span class="auth-actions-primary"><button id="authCancel" class="btn secondary" type="button">Cancel</button><button id="authSignup" class="btn" type="submit" hidden>Sign up</button><button id="authSignin" class="btn" type="submit" hidden>Sign in</button></span>
+        <span><button id="authModeSwitch" class="btn ghost" type="button" hidden></button><button id="authForgot" class="btn ghost" type="button" hidden>Forgot password?</button></span>
+        <span class="auth-actions-primary"><button id="authCancel" class="btn secondary" type="button">Cancel</button><button id="authSignup" class="btn" type="submit" hidden>Sign up</button><button id="authSignin" class="btn" type="submit" hidden>Sign in</button><button id="authResetRequest" class="btn" type="submit" hidden>Send reset email</button></span>
       </div>
     </form>
   </div>
@@ -1092,7 +1136,7 @@ p{margin:0}
   let me = null;
   let authSessionEpoch=0;
   let authRefreshSequence=0;
-  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,localIdentity:false,googleOAuth:false,registrationMode:'private_beta'});
+  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,passwordReset:false,localIdentity:false,verifiedEmailActivation:false,googleOAuth:false,registrationMode:'private_beta'});
   let authCapabilities=CLOSED_AUTH_CAPABILITIES;
   let authCapabilitiesLoaded=false;
   let authCapabilitiesFailed=false;
@@ -1102,6 +1146,7 @@ p{margin:0}
   let authRequest=null;
   let authReturnFocus=null;
   let googleRetryPending=false;
+  let activationPendingEmail='';
   let activeCircleRole=null;
   let currentCloudPairingWeek=null;
   let currentCloudPairingCycle=null;
@@ -1130,6 +1175,141 @@ p{margin:0}
     rateLimited:false,
     retryAfter:null,
   };
+  const activationState={active:window.location.pathname==='/verify',status:'checking',token:'',verifying:false};
+  function renderActivationLanding(){
+    if(!activationState.active) return false;
+    document.querySelectorAll('.view').forEach(view=>{ view.style.display='none'; });
+    document.querySelectorAll('.tab').forEach(tab=>{ tab.classList.remove('active'); });
+    const tabs=document.querySelector('.tabs'); if(tabs) tabs.style.display='none';
+    const landing=document.getElementById('view-activation'); if(landing) landing.style.display='block';
+    const status=document.getElementById('activationStatus');
+    const messages={
+      checking:'Checking your verification link…',
+      verified:'Your email is verified and your account is ready.',
+      expired:'This verification link expired. Return to your invitation and request a new link.',
+      used:'This verification link has already been used. Sign in with your email and password.',
+      revoked:'This activation is no longer available. Ask the circle owner for a new invitation.',
+      invalid:'This verification link is invalid or unavailable.',
+      unavailable:'Verification is temporarily unavailable. Please retry shortly.',
+    };
+    if(status) status.textContent=messages[activationState.status]||messages.invalid;
+    const button=document.getElementById('activationContinue');
+    if(button){
+      button.hidden=!['verified','used','unavailable'].includes(activationState.status);
+      button.disabled=activationState.verifying;
+      button.textContent=activationState.status==='verified'?'Continue to Randori'
+        :(activationState.status==='used'?'Sign in':'Retry verification');
+    }
+    return true;
+  }
+  async function finishEmailActivation(){
+    if(!activationState.active||activationState.verifying) return;
+    const hash=new URLSearchParams(String(window.location.hash||'').replace(/^#/,''));
+    activationState.token=hash.get('token')||activationState.token;
+    try{ window.history.replaceState({},document.title,'/verify'); }catch{}
+    if(!activationState.token){ activationState.status='invalid'; renderActivationLanding(); return; }
+    activationState.verifying=true;
+    activationState.status='checking';
+    renderActivationLanding();
+    try{
+      const response=await fetch('/api/auth/activation/verify',{
+        method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},
+        body:JSON.stringify({token:activationState.token}),
+      });
+      const data=await response.json().catch(()=>({}));
+      activationState.status=response.ok&&data?.status==='verified'?'verified':String(data?.status||'unavailable');
+      if(response.ok&&data?.user){
+        me=data.user;
+        try{ localStorage.setItem(ME_KEY,JSON.stringify(data.user)); }catch{}
+      }
+    }catch{ activationState.status='unavailable'; }
+    activationState.verifying=false;
+    if(activationState.status!=='unavailable') activationState.token='';
+    renderActivationLanding();
+  }
+  document.getElementById('activationContinue')?.addEventListener('click',()=>{
+    if(activationState.status==='unavailable') finishEmailActivation();
+    else if(activationState.status==='verified'){
+      activationState.active=false;
+      window.history.replaceState({},document.title,'/');
+      window._randori_journey?.routeByAuth?.();
+    }else window._randori_auth?.openModal?.('signin');
+  });
+  window._randori_activation_flow={
+    get active(){ return activationState.active; },
+    show:renderActivationLanding,
+  };
+  if(activationState.active){ renderActivationLanding(); finishEmailActivation(); }
+  const passwordResetState={active:window.location.pathname==='/reset-password',status:'ready',token:'',busy:false};
+  if(passwordResetState.active){
+    const hash=new URLSearchParams(String(window.location.hash||'').replace(/^#/,''));
+    passwordResetState.token=hash.get('token')||'';
+    try{ window.history.replaceState({},document.title,'/reset-password'); }catch{}
+    if(!passwordResetState.token) passwordResetState.status='invalid';
+  }
+  function renderPasswordResetLanding(){
+    if(!passwordResetState.active) return false;
+    document.querySelectorAll('.view').forEach(view=>{ view.style.display='none'; });
+    document.querySelectorAll('.tab').forEach(tab=>{ tab.classList.remove('active'); });
+    const tabs=document.querySelector('.tabs'); if(tabs) tabs.style.display='none';
+    const landing=document.getElementById('view-password-reset'); if(landing) landing.style.display='block';
+    const status=document.getElementById('passwordResetStatus');
+    const messages={
+      ready:'Enter a new password to finish recovering your account.',
+      submitting:'Updating your password and signing out existing sessions…',
+      reset:'Your password was changed and all existing sessions were signed out.',
+      expired:'This reset link has expired. Request a new one from the sign-in screen.',
+      used:'This reset link has already been used. Sign in with your new password.',
+      revoked:'This reset link is no longer available. Request a new one.',
+      invalid:'This reset link is invalid or unavailable.',
+      unavailable:'Password reset is temporarily unavailable. Please retry shortly.',
+    };
+    if(status) status.textContent=messages[passwordResetState.status]||messages.invalid;
+    const done=['reset','used','expired','revoked'].includes(passwordResetState.status);
+    for(const input of [document.getElementById('passwordResetNew'),document.getElementById('passwordResetConfirm')]){
+      if(input){ input.disabled=passwordResetState.busy||done||passwordResetState.status==='invalid'; input.hidden=done; }
+    }
+    const submit=document.getElementById('passwordResetSubmit');
+    if(submit){ submit.hidden=done||passwordResetState.status==='invalid'; submit.disabled=passwordResetState.busy; }
+    const signin=document.getElementById('passwordResetSignin'); if(signin) signin.hidden=!done&&passwordResetState.status!=='invalid';
+    return true;
+  }
+  document.getElementById('passwordResetForm')?.addEventListener('submit',async event=>{
+    event.preventDefault();
+    if(passwordResetState.busy||!passwordResetState.token) return;
+    const password=document.getElementById('passwordResetNew');
+    const confirmation=document.getElementById('passwordResetConfirm');
+    const bytes=new TextEncoder().encode(password?.value||'').length;
+    if(bytes<10||bytes>72){ passwordResetState.status='invalid_password';
+      document.getElementById('passwordResetStatus').textContent='Password must be 10–72 UTF-8 bytes.'; password?.focus(); return; }
+    if(password.value!==confirmation?.value){ passwordResetState.status='password_mismatch';
+      document.getElementById('passwordResetStatus').textContent='Passwords do not match.'; confirmation?.focus(); return; }
+    passwordResetState.busy=true; passwordResetState.status='submitting'; renderPasswordResetLanding();
+    try{
+      const response=await fetch('/api/auth/password-reset/consume',{method:'POST',credentials:'same-origin',
+        headers:{'content-type':'application/json'},body:JSON.stringify({token:passwordResetState.token,password:password.value})});
+      const data=await response.json().catch(()=>({}));
+      passwordResetState.status=response.ok&&data?.status==='reset'?'reset':String(data?.status||'unavailable');
+      if(passwordResetState.status==='reset'){
+        invalidateAuthRefreshes();
+        try{ localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(ME_KEY); }catch{}
+        me=null;
+        clearAvailability();
+        try{ updateAuthUI(); }catch{}
+        try{ window.dispatchEvent(new CustomEvent('randori:auth-refreshed',{detail:{signedIn:false,userId:null}})); }catch{}
+      }
+      if(passwordResetState.status!=='unavailable') passwordResetState.token='';
+      password.value=''; if(confirmation) confirmation.value='';
+    }catch{ passwordResetState.status='unavailable'; }
+    passwordResetState.busy=false; renderPasswordResetLanding();
+  });
+  document.getElementById('passwordResetSignin')?.addEventListener('click',()=>{
+    passwordResetState.active=false;
+    window.history.replaceState({},document.title,'/');
+    window._randori_auth?.openModal?.('signin');
+  });
+  window._randori_password_reset_flow={get active(){ return passwordResetState.active; },show:renderPasswordResetLanding};
+  if(passwordResetState.active) renderPasswordResetLanding();
   function renderInviteLanding(){
     if(!inviteState.active) return false;
     document.querySelectorAll('.view').forEach(view=>{ view.style.display='none'; });
@@ -1141,21 +1321,26 @@ p{margin:0}
     const instructions=document.getElementById('inviteInstructions');
     const localInvite=authCapabilitiesLoaded&&authCapabilities.localIdentity
       &&authCapabilities.registrationMode==='local_invite';
+    const verifiedInvite=authCapabilitiesLoaded&&authCapabilities.verifiedEmailActivation
+      &&authCapabilities.registrationMode==='verified_invite';
     if(instructions) instructions.textContent=localInvite
       ?'Create a local account with the email that received this invitation. The development identity adapter treats that email as verified and never contacts an external provider.'
-      :'Confirm the Google account that received this invitation. The invitation is single-use and expires automatically.';
+      :(verifiedInvite
+        ?'Create an account with the invited email. We will send a single-use verification link before activating it.'
+        :'Confirm the Google account that received this invitation. The invitation is single-use and expires automatically.');
     if(status){
       status.textContent=inviteState.rateLimited
         ? `Too many attempts. Try again${inviteState.retryAfter?` in ${inviteState.retryAfter} seconds`: ' later'}.`
         : (inviteState.failed
           ? 'This invitation is unavailable or has expired.'
           : (inviteState.ready
-            ?(localInvite?'Invitation verified. Create the invited local account.':'Invitation verified. Continue with the invited Google account.')
+            ?(localInvite?'Invitation verified. Create the invited local account.'
+              :(verifiedInvite?'Invitation verified. Continue to create your account.':'Invitation verified. Continue with the invited Google account.'))
             :'Checking invitation…'));
     }
     if(button){
       button.disabled=!inviteState.ready;
-      button.textContent=localInvite?'Create local account':'Continue with Google';
+      button.textContent=localInvite?'Create local account':(verifiedInvite?'Create account':'Continue with Google');
     }
     return true;
   }
@@ -1177,7 +1362,8 @@ p{margin:0}
   document.getElementById('inviteContinue')?.addEventListener('click',async()=>{
     if(!inviteState.ready) return;
     await authCapabilitiesPromise;
-    if(authCapabilities.localIdentity&&authCapabilities.registrationMode==='local_invite'){
+    if((authCapabilities.localIdentity&&authCapabilities.registrationMode==='local_invite')
+      ||authCapabilities.registrationMode==='verified_invite'){
       openAuthModal('signup');
       return;
     }
@@ -1626,13 +1812,17 @@ async function refreshMe(){
     if(payload?.ok!==true||!capabilities||typeof capabilities!=='object'
       ||typeof capabilities.passwordLogin!=='boolean'
       ||typeof capabilities.passwordSignup!=='boolean'
+      ||(capabilities.passwordReset!==undefined&&typeof capabilities.passwordReset!=='boolean')
       ||(capabilities.localIdentity!==undefined&&typeof capabilities.localIdentity!=='boolean')
+      ||(capabilities.verifiedEmailActivation!==undefined&&typeof capabilities.verifiedEmailActivation!=='boolean')
       ||typeof capabilities.googleOAuth!=='boolean'
-      ||!['local_open','local_invite','private_beta'].includes(mode)) throw new Error('invalid auth capabilities');
+      ||!['local_open','local_invite','verified_invite','private_beta'].includes(mode)) throw new Error('invalid auth capabilities');
     return Object.freeze({
       passwordLogin:capabilities.passwordLogin,
       passwordSignup:capabilities.passwordSignup,
+      passwordReset:capabilities.passwordReset===true,
       localIdentity:capabilities.localIdentity===true,
+      verifiedEmailActivation:capabilities.verifiedEmailActivation===true,
       googleOAuth:capabilities.googleOAuth,
       registrationMode:mode,
     });
@@ -1648,11 +1838,17 @@ async function refreshMe(){
   function authStatusMessage(){
     if(!authCapabilitiesLoaded) return 'Checking sign-in options…';
     if(authCapabilitiesFailed) return 'New-account options could not be verified. Existing members can still try password sign-in.';
+    if(authMode==='reset') return 'Enter your account email. The response is the same whether or not an eligible account exists.';
     if(authMode==='signup'&&authCapabilities.passwordSignup){
       if(authCapabilities.registrationMode==='local_invite'){
         return inviteState.ready
           ?'This local account will use the verified invitation and join the private circle.'
           :'A valid local invitation is required before creating an account.';
+      }
+      if(authCapabilities.registrationMode==='verified_invite'){
+        return inviteState.ready
+          ?'Use the invited email. Your account activates only after you open the verification link.'
+          :'A valid invitation is required before requesting email verification.';
       }
       return authCapabilities.registrationMode==='local_open'
         ? 'Create a local account. The first account can manage weekly pairing.'
@@ -1679,7 +1875,8 @@ async function refreshMe(){
     if(!overlay?.classList.contains('show')) return;
     const active=document.activeElement;
     if(active&&overlay.contains(active)&&active.id!=='authDialog'&&!active.disabled&&active.getClientRects().length>0) return;
-    const passwordEnabled=authMode==='signup'?authCapabilities.passwordSignup:authCapabilities.passwordLogin;
+    const passwordEnabled=authMode==='signup'?authCapabilities.passwordSignup
+      :(authMode==='reset'?authCapabilities.passwordReset:authCapabilities.passwordLogin);
     const target=authBusy
       ?document.getElementById('authCancel')
       :(googleRetryPending&&authCapabilities.googleOAuth
@@ -1690,8 +1887,9 @@ async function refreshMe(){
     target?.focus();
   }
   function renderAuthModal(){
-    const passwordEnabled=authMode==='signup'?authCapabilities.passwordSignup:authCapabilities.passwordLogin;
-    const googleEnabled=authCapabilities.googleOAuth;
+    const passwordEnabled=authMode==='signup'?authCapabilities.passwordSignup
+      :(authMode==='reset'?authCapabilities.passwordReset:authCapabilities.passwordLogin);
+    const googleEnabled=authMode!=='reset'&&authCapabilities.googleOAuth;
     const title=document.getElementById('authTitle');
     const description=document.getElementById('authDescription');
     const status=document.getElementById('authCapabilityStatus');
@@ -1702,44 +1900,66 @@ async function refreshMe(){
     const nameField=document.getElementById('authNameField');
     const name=document.getElementById('authName');
     const password=document.getElementById('authPass');
+    const passwordField=document.getElementById('authPasswordField');
     const signup=document.getElementById('authSignup');
     const signin=document.getElementById('authSignin');
+    const resetRequest=document.getElementById('authResetRequest');
+    const forgot=document.getElementById('authForgot');
     const modeSwitch=document.getElementById('authModeSwitch');
     const cancel=document.getElementById('authCancel');
-    if(title) title.textContent=authMode==='signup'?'Join Randori Circle':'Sign in to Randori';
+    const activationPending=document.getElementById('authActivationPending');
+    const pending=authMode==='signup'&&!!activationPendingEmail;
+    if(title) title.textContent=authMode==='signup'?'Join Randori Circle'
+      :(authMode==='reset'?'Reset your password':'Sign in to Randori');
     if(description) description.textContent=authMode==='signup'
       ?'Create an account to join weekly practice pairings.'
-      :'Access your private pairing history and practice rooms.';
+      :(authMode==='reset'?'We will send a single-use recovery link if this account is eligible.'
+        :'Access your private pairing history and practice rooms.');
     if(status) status.textContent=authStatusMessage();
     if(google){ google.hidden=!authCapabilitiesLoaded||!googleEnabled||googleRetryPending; google.disabled=authBusy||!authCapabilitiesLoaded; }
     if(googleRetry){
       googleRetry.hidden=!googleRetryPending||!authCapabilitiesLoaded||!googleEnabled;
       googleRetry.disabled=authBusy||!authCapabilitiesLoaded;
     }
-    if(fields) fields.hidden=!authCapabilitiesLoaded||!passwordEnabled;
-    if(divider) divider.hidden=!authCapabilitiesLoaded||!googleEnabled||!passwordEnabled;
+    if(fields) fields.hidden=pending||!authCapabilitiesLoaded||!passwordEnabled;
+    if(activationPending) activationPending.hidden=!pending;
+    if(divider) divider.hidden=pending||!authCapabilitiesLoaded||!googleEnabled||!passwordEnabled;
     if(nameField) nameField.hidden=authMode!=='signup'||!passwordEnabled;
     if(name) name.required=authMode==='signup'&&passwordEnabled;
+    if(passwordField) passwordField.hidden=authMode==='reset';
     if(password){
+      password.required=authMode!=='reset';
       password.minLength=authMode==='signup'?10:0;
       password.autocomplete=authMode==='signup'?'new-password':'current-password';
       password.placeholder=authMode==='signup'?'At least 10 characters':'Your password';
     }
     if(signup){
-      signup.hidden=!authCapabilitiesLoaded||authMode!=='signup'||!authCapabilities.passwordSignup;
+      signup.hidden=pending||!authCapabilitiesLoaded||authMode!=='signup'||!authCapabilities.passwordSignup;
       signup.disabled=authBusy||!authCapabilitiesLoaded;
-      signup.textContent=authBusy&&authMode==='signup'?'Creating account…':'Create account';
+      signup.textContent=authBusy&&authMode==='signup'
+        ?(authCapabilities.registrationMode==='verified_invite'?'Submitting…':'Creating account…')
+        :(authCapabilities.registrationMode==='verified_invite'?'Send verification email':'Create account');
     }
     if(signin){
       signin.hidden=!authCapabilitiesLoaded||authMode!=='signin'||!authCapabilities.passwordLogin;
       signin.disabled=authBusy||!authCapabilitiesLoaded;
       signin.textContent=authBusy&&authMode==='signin'?'Signing in…':'Sign in';
     }
-    const alternateAvailable=authMode==='signup'?authCapabilities.passwordLogin:authCapabilities.passwordSignup;
+    if(resetRequest){
+      resetRequest.hidden=!authCapabilitiesLoaded||authMode!=='reset'||!authCapabilities.passwordReset;
+      resetRequest.disabled=authBusy||!authCapabilitiesLoaded;
+      resetRequest.textContent=authBusy?'Requesting…':'Send reset email';
+    }
+    if(forgot){
+      forgot.hidden=!authCapabilitiesLoaded||authMode!=='signin'||!authCapabilities.passwordReset;
+      forgot.disabled=authBusy;
+    }
+    const alternateAvailable=authMode==='reset'||(authMode==='signup'?authCapabilities.passwordLogin:authCapabilities.passwordSignup);
     if(modeSwitch){
-      modeSwitch.hidden=!authCapabilitiesLoaded||!alternateAvailable;
+      modeSwitch.hidden=pending||!authCapabilitiesLoaded||!alternateAvailable;
       modeSwitch.disabled=authBusy;
-      modeSwitch.textContent=authMode==='signup'?'Already a member? Sign in':'New here? Create an account';
+      modeSwitch.textContent=authMode==='signup'?'Already a member? Sign in'
+        :(authMode==='reset'?'Back to sign in':'New here? Create an account');
     }
     for(const input of document.querySelectorAll('#authPasswordFields input')) input.disabled=authBusy||!authCapabilitiesLoaded||!passwordEnabled;
     if(cancel) cancel.disabled=false;
@@ -1758,7 +1978,7 @@ async function refreshMe(){
     }catch{
       authCapabilities=CLOSED_AUTH_CAPABILITIES;
       authCapabilitiesFailed=true;
-      if(authMode==='signup') authMode='signin';
+      if(authMode==='signup'||authMode==='reset') authMode='signin';
     }finally{
       clearTimeout(timeout);
       authCapabilitiesLoaded=true;
@@ -1770,7 +1990,8 @@ async function refreshMe(){
     return authCapabilities;
   }
   function resolvedAuthMode(mode){
-    const requested=mode==='signup'?'signup':'signin';
+    const requested=mode==='signup'?'signup':(mode==='reset'?'reset':'signin');
+    if(requested==='reset') return authCapabilitiesLoaded&&authCapabilities.passwordReset?'reset':'signin';
     if(requested==='signup'&&!authCapabilitiesLoaded) return 'signup';
     return requested==='signup'&&(authCapabilities.passwordSignup||authCapabilities.googleOAuth)
       ?'signup'
@@ -1778,6 +1999,7 @@ async function refreshMe(){
   }
   function setAuthMode(mode){
     authMode=resolvedAuthMode(mode);
+    activationPendingEmail='';
     googleRetryPending=false;
     clearAuthValidation();
     renderAuthModal();
@@ -1816,6 +2038,7 @@ async function refreshMe(){
     overlay.setAttribute('aria-hidden','true');
     clearAuthValidation();
     googleRetryPending=false;
+    activationPendingEmail='';
     const password=document.getElementById('authPass');
     if(password) password.value='';
     const returnFocus=authReturnFocus;
@@ -1853,7 +2076,8 @@ async function refreshMe(){
   // Centralized auth dialog entry points keep capability, focus, and dismissal state consistent.
   document.getElementById('authBtn').onclick=()=>openAuthModal('signin');
   document.getElementById('authCancel').onclick=()=>closeAuthModal();
-  document.getElementById('authModeSwitch').onclick=()=>setAuthMode(authMode==='signup'?'signin':'signup');
+  document.getElementById('authModeSwitch').onclick=()=>setAuthMode(authMode==='signup'?'signin':(authMode==='reset'?'signin':'signup'));
+  document.getElementById('authForgot').onclick=()=>setAuthMode('reset');
   document.getElementById('authOverlay').onclick=(event)=>{ if(event.target===event.currentTarget) closeAuthModal(); };
   // Capture at the document boundary: disabling the focused submit control can
   // move focus to body in Chromium, but the open modal must still own Escape/Tab.
@@ -2011,10 +2235,11 @@ async function refreshMe(){
     if(code==='invalid credentials') return 'Email or password is incorrect.';
     if(code.includes('temporarily unavailable')) return mode==='signup'
       ?'Account creation is temporarily unavailable. Try again.'
-      :'Sign in is temporarily unavailable. Try again.';
+      :(mode==='reset'?'Password recovery is temporarily unavailable. Try again.':'Sign in is temporarily unavailable. Try again.');
     if(code.includes('too many')) return 'Too many attempts. Wait a few minutes and try again.';
     if(code.includes('cross-origin')||code.includes('same-origin')) return 'This sign-in request was rejected. Refresh and try again.';
-    return code||(mode==='signup'?'Account creation failed. Try again.':'Sign in failed. Try again.');
+    return code||(mode==='signup'?'Account creation failed. Try again.'
+      :(mode==='reset'?'Password recovery failed. Try again.':'Sign in failed. Try again.'));
   }
   function validateAuthForm(mode){
     const emailInput=document.getElementById('authEmail');
@@ -2025,6 +2250,7 @@ async function refreshMe(){
     const name=nameInput.value.trim();
     const password=passwordInput.value;
     if(!email||!emailInput.validity.valid){ setAuthError('Enter a valid email address.'); emailInput.setAttribute('aria-invalid','true'); emailInput.focus(); return null; }
+    if(mode==='reset'){ setAuthError(''); return {email}; }
     if(mode==='signup'&&(name.length<2||name.length>32)){ setAuthError('Display name must be 2–32 characters.'); nameInput.setAttribute('aria-invalid','true'); nameInput.focus(); return null; }
     if(!password){ setAuthError('Enter your password.'); passwordInput.setAttribute('aria-invalid','true'); passwordInput.focus(); return null; }
     const passwordBytes=new TextEncoder().encode(password).length;
@@ -2036,7 +2262,8 @@ async function refreshMe(){
   }
   async function submitAuth(mode){
     if(authBusy||!authCapabilitiesLoaded) return;
-    const enabled=mode==='signup'?authCapabilities.passwordSignup:authCapabilities.passwordLogin;
+    const enabled=mode==='signup'?authCapabilities.passwordSignup
+      :(mode==='reset'?authCapabilities.passwordReset:authCapabilities.passwordLogin);
     if(!enabled) return;
     const body=validateAuthForm(mode);
     if(!body) return;
@@ -2044,12 +2271,27 @@ async function refreshMe(){
     authRequest=request;
     setAuthBusy(true);
     try{
-      const response=await fetch(`/api/auth/${mode==='signup'?'signup':'login'}`,{
+      const endpoint=mode==='signup'?'signup':(mode==='reset'?'password-reset/request':'login');
+      const response=await fetch(`/api/auth/${endpoint}`,{
         method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify(body),signal:request.controller.signal,
       });
       let data=null;
       try{ data=await response.json(); }catch{}
       if(authRequest!==request) return;
+      if(response.ok&&mode==='reset'&&data?.pending===true){
+        authRequest=null;
+        setAuthBusy(false);
+        setAuthError('If that account is eligible, a reset link will arrive shortly.');
+        return;
+      }
+      if(response.ok&&mode==='signup'&&data?.pending===true){
+        activationPendingEmail=body.email;
+        authRequest=null;
+        setAuthBusy(false);
+        setAuthError('');
+        renderAuthModal();
+        return;
+      }
       if(!response.ok||!data?.user) throw data||new Error('authentication unavailable');
       authRequest=null;
       setAuthBusy(false);
@@ -2080,6 +2322,19 @@ async function refreshMe(){
   document.getElementById('authForm').addEventListener('submit',event=>{
     event.preventDefault();
     submitAuth(authMode);
+  });
+  document.getElementById('authActivationResend')?.addEventListener('click',async()=>{
+    if(authBusy||!activationPendingEmail) return;
+    setAuthBusy(true);
+    try{
+      const response=await fetch('/api/auth/activation/resend',{
+        method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},
+        body:JSON.stringify({email:activationPendingEmail}),
+      });
+      const data=await response.json().catch(()=>({}));
+      setAuthError(response.ok?'A new link was requested. Check your inbox.':authFailureMessage(data,'signup'));
+    }catch{ setAuthError('Verification email is temporarily unavailable. Try again.'); }
+    finally{ setAuthBusy(false); }
   });
   function beginGoogleSignIn(){
     if(authBusy||!authCapabilitiesLoaded||!authCapabilities.googleOAuth) return;
@@ -2298,10 +2553,16 @@ async function refreshMe(){
   const circleInvites=document.getElementById('circleInvites');
   const circleInviteStatus=document.getElementById('circleInviteStatus');
   const circleInviteLink=document.getElementById('circleInviteLink');
+  const circleLifecyclePanel=document.getElementById('circleLifecyclePanel');
+  const circleLifecycleHelp=document.getElementById('circleLifecycleHelp');
+  const circleLifecycleStatus=document.getElementById('circleLifecycleStatus');
+  const circleManageMembers=document.getElementById('circleManageMembers');
+  const circleLeave=document.getElementById('circleLeave');
   const legacyCircleAddActions=document.getElementById('legacyCircleAddActions');
   const legacyCircleDemoActions=document.getElementById('legacyCircleDemoActions');
   let circleRenderEpoch=0;
   let circleInviteCreatePending=false;
+  let circleLifecyclePending=false;
   let latestInviteUrl=null;
   let latestInviteId=null;
   let latestInviteOwnerId=null;
@@ -2322,6 +2583,10 @@ async function refreshMe(){
     if(circleInvites) circleInvites.replaceChildren();
     if(circleInviteStatus) circleInviteStatus.textContent='';
     if(circleInviteLink) circleInviteLink.hidden=true;
+    if(circleLifecyclePanel){ circleLifecyclePanel.hidden=true; circleLifecyclePanel.style.display='none'; }
+    if(circleManageMembers){ circleManageMembers.hidden=true; circleManageMembers.replaceChildren(); }
+    if(circleLifecycleStatus) circleLifecycleStatus.textContent='';
+    if(circleLeave) circleLeave.disabled=false;
   }
 
   function setLegacyCircleControls(enabled){
@@ -2418,6 +2683,163 @@ async function refreshMe(){
     }
   }
 
+  function lifecycleErrorMessage(error){
+    const code=String(error?.error||'');
+    if(code==='another active owner is required') return 'Transfer ownership before removing the last active owner.';
+    if(code==='membership state changed') return 'Membership changed elsewhere. Refreshing the current list.';
+    if(code==='member not found') return 'That member is no longer available in this circle.';
+    if(code==='choose another active member') return 'Choose another active member for ownership.';
+    if(code==='use leave circle for your own membership') return 'Use Leave circle to remove your own membership.';
+    return 'Membership could not be changed. Try again.';
+  }
+
+  async function applyMemberAction(action,member){
+    if(circleLifecyclePending||activeCircleRole!=='owner'||!me) return;
+    const label=String(member?.display_name||'this member');
+    const prompts={
+      deactivate:[`Deactivate ${label}?`,'They will be signed out immediately and lose access to private pair rooms. You can reactivate them later.'],
+      reactivate:[`Reactivate ${label}?`,'They can sign in again and rejoin future pairing cycles.'],
+      transfer:[`Transfer ownership to ${label}?`,'They become the owner and you become a member. This change takes effect immediately.'],
+    };
+    const prompt=prompts[action];
+    if(!prompt||!await showConfirm(prompt[0],prompt[1])) return;
+    const actorId=Number(me.id||me.uid);
+    circleLifecyclePending=true;
+    if(circleLifecycleStatus) circleLifecycleStatus.textContent=`${action==='transfer'?'Transferring ownership':action==='reactivate'?'Reactivating member':'Deactivating member'}…`;
+    circleLifecyclePanel?.querySelectorAll('button').forEach(button=>{ button.disabled=true; });
+    try{
+      await api('/api/members',{method:'PATCH',body:{action,member_id:Number(member.id)}});
+      if(!me||Number(me.id||me.uid)!==actorId) return;
+      if(circleLifecycleStatus) circleLifecycleStatus.textContent=action==='transfer'?'Ownership transferred.':action==='reactivate'?'Member reactivated.':'Member deactivated and signed out.';
+      await renderPeople();
+      await renderPairs();
+    }catch(error){
+      await loadManagedMembers(circleRenderEpoch);
+      if(circleLifecycleStatus) circleLifecycleStatus.textContent=lifecycleErrorMessage(error);
+    }finally{
+      circleLifecyclePending=false;
+      circleLifecyclePanel?.querySelectorAll('button').forEach(button=>{ button.disabled=false; });
+    }
+  }
+
+  function renderManagedMemberRows(members){
+    if(!circleManageMembers) return;
+    circleManageMembers.replaceChildren();
+    const actorId=Number(me?.id||me?.uid);
+    members.forEach(member=>{
+      const id=Number(member?.id);
+      const role=['owner','member'].includes(member?.role)?member.role:null;
+      const status=['active','inactive'].includes(member?.status)?member.status:null;
+      if(!Number.isSafeInteger(id)||id<1||!role||!status) return;
+      const row=document.createElement('div'); row.className='person membership-actions'; row.dataset.testid='circle-member-row'; row.dataset.memberId=String(id);
+      const identity=document.createElement('div');
+      const name=document.createElement('b'); name.style.fontSize='13px'; name.textContent=String(member.display_name||'Member').slice(0,80);
+      const meta=document.createElement('div'); meta.className='small muted'; meta.textContent=`${role} • ${status}${id===actorId?' • you':''}`;
+      identity.append(name,meta); row.appendChild(identity);
+      if(id!==actorId){
+        const controls=document.createElement('div'); controls.className='membership-controls';
+        if(status==='inactive'){
+          const reactivate=document.createElement('button'); reactivate.type='button'; reactivate.className='pill'; reactivate.dataset.testid='circle-member-reactivate'; reactivate.textContent='Reactivate'; reactivate.setAttribute('aria-label',`Reactivate ${name.textContent}`);
+          reactivate.addEventListener('click',()=>{ applyMemberAction('reactivate',member); }); controls.appendChild(reactivate);
+        }else{
+          if(role==='member'){
+            const transfer=document.createElement('button'); transfer.type='button'; transfer.className='pill'; transfer.dataset.testid='circle-member-transfer'; transfer.textContent='Make owner'; transfer.setAttribute('aria-label',`Transfer ownership to ${name.textContent}`);
+            transfer.addEventListener('click',()=>{ applyMemberAction('transfer',member); }); controls.appendChild(transfer);
+          }
+          const deactivate=document.createElement('button'); deactivate.type='button'; deactivate.className='pill membership-danger'; deactivate.dataset.testid='circle-member-deactivate'; deactivate.textContent='Deactivate'; deactivate.setAttribute('aria-label',`Deactivate ${name.textContent}`);
+          deactivate.addEventListener('click',()=>{ applyMemberAction('deactivate',member); }); controls.appendChild(deactivate);
+        }
+        row.appendChild(controls);
+      }
+      circleManageMembers.appendChild(row);
+    });
+    if(!circleManageMembers.children.length){
+      const empty=document.createElement('div'); empty.className='small muted'; empty.textContent='No manageable members found.'; circleManageMembers.appendChild(empty);
+    }
+  }
+
+  async function loadManagedMembers(epoch=circleRenderEpoch){
+    if(activeCircleRole!=='owner'||!me||!circleManageMembers) return false;
+    const actorId=Number(me.id||me.uid);
+    circleManageMembers.hidden=false;
+    circleManageMembers.replaceChildren();
+    const loading=document.createElement('div'); loading.className='small muted'; loading.textContent='Loading member controls…'; circleManageMembers.appendChild(loading);
+    try{
+      const result=await api('/api/members',{method:'GET'});
+      if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==actorId) return false;
+      if(result?.ok!==true||!Array.isArray(result.members)) throw new Error('invalid member response');
+      renderManagedMemberRows(result.members);
+      if(circleLifecycleStatus) circleLifecycleStatus.textContent=result.truncated===true
+        ?`Showing the first ${result.members.length} memberships. Additional members are not shown.`
+        :`${result.members.length} membership${result.members.length===1?'':'s'} available to manage.`;
+      return true;
+    }catch{
+      if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==actorId) return false;
+      circleManageMembers.replaceChildren();
+      const error=document.createElement('div'); error.className='small muted'; error.textContent='Member controls are temporarily unavailable.';
+      const retry=document.createElement('button'); retry.type='button'; retry.className='pill'; retry.textContent='Retry members'; retry.addEventListener('click',()=>{ loadManagedMembers(circleRenderEpoch); });
+      circleManageMembers.append(error,retry);
+      if(circleLifecycleStatus) circleLifecycleStatus.textContent='Your circle remains unchanged.';
+      return false;
+    }
+  }
+
+  async function showCircleLifecycle(role,epoch){
+    if(!circleLifecyclePanel||!['owner','member'].includes(role)) return;
+    circleLifecyclePanel.hidden=false; circleLifecyclePanel.style.display='grid';
+    if(circleLifecycleHelp) circleLifecycleHelp.textContent=role==='owner'
+      ?'Manage active and inactive members. Ownership transfer is immediate and keeps one active owner.'
+      :'Leaving signs you out and removes access to private rooms immediately.';
+    if(circleManageMembers) circleManageMembers.hidden=role!=='owner';
+    if(circleLeave){ circleLeave.disabled=false; circleLeave.textContent='Leave circle'; }
+    if(role==='owner') await loadManagedMembers(epoch);
+    else if(circleLifecycleStatus) circleLifecycleStatus.textContent='You are an active circle member.';
+  }
+
+  circleLeave?.addEventListener('click',async()=>{
+    if(circleLifecyclePending||!me||!['owner','member'].includes(activeCircleRole)) return;
+    const warning=activeCircleRole==='owner'
+      ?'You will be signed out. If you are the last active owner, transfer ownership first.'
+      :'You will be signed out and immediately lose access to the circle and its private pair rooms.';
+    if(!await showConfirm('Leave this circle?',warning)) return;
+    circleLifecyclePending=true; circleLeave.disabled=true;
+    if(circleLifecycleStatus) circleLifecycleStatus.textContent='Leaving circle…';
+    try{
+      await api('/api/members',{method:'PATCH',body:{action:'leave'}});
+      if(circleLifecycleStatus) circleLifecycleStatus.textContent='Membership ended. Signing out…';
+      try{
+        localStorage.removeItem('randori-last-room');
+        localStorage.removeItem('randori-last-tab');
+        localStorage.removeItem('randori-last-view');
+      }catch{}
+      try{ await window._randori_auth?.refreshMe?.(); }catch{}
+      // The successful server transition and Set-Cookie response are
+      // authoritative. Never leave stale authenticated state visible merely
+      // because the follow-up identity refresh failed.
+      invalidateAuthRefreshes();
+      me=null;
+      try{ localStorage.removeItem(ME_KEY); }catch{}
+      clearAvailability();
+      updateAuthUI();
+      try{ await window._randori_journey?.routeByAuth?.(); }catch{}
+      // Treat a successful leave like logout even if another startup router is
+      // still settling. Private workspace state must not remain visible after
+      // the server has revoked the membership and its sessions.
+      window._randori_workspace?.deactivate?.();
+      window._randori_authorized_room=null;
+      window._randori_join_room=null;
+      window._randori_nav?.hideAllViews?.();
+      const landing=document.getElementById('view-landing');
+      if(landing) landing.style.display='block';
+      document.querySelectorAll('[data-tab]').forEach(tab=>tab.classList.remove('active'));
+    }catch(error){
+      if(circleLifecycleStatus) circleLifecycleStatus.textContent=lifecycleErrorMessage(error);
+    }finally{
+      circleLifecyclePending=false;
+      if(circleLeave) circleLeave.disabled=false;
+    }
+  });
+
   async function renderPeople(){
     const epoch=++circleRenderEpoch;
     resetOwnerInvites();
@@ -2494,12 +2916,12 @@ async function refreshMe(){
         if(circleInviteLink) circleInviteLink.hidden=!latestInviteUrl;
         await loadOwnerInvitations(epoch);
       }
+      await showCircleLifecycle(gatedRole,epoch);
     }catch{
       if(epoch!==circleRenderEpoch||Number(me?.id||me?.uid)!==userId) return;
       renderCircleFailure();
       return;
     }
-    renderRoomSelect();
     refreshPresence();
   }
 
@@ -6285,6 +6707,14 @@ def allow(key, limit=5):
 
   // Main auth router
   async function routeByAuth(){
+    if(window._randori_activation_flow?.active){
+      window._randori_activation_flow.show();
+      return;
+    }
+    if(window._randori_password_reset_flow?.active){
+      window._randori_password_reset_flow.show();
+      return;
+    }
     if(window._randori_invite_flow?.active){
       window._randori_invite_flow.show();
       return;

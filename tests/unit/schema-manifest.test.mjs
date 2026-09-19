@@ -21,7 +21,8 @@ test('schema manifest pins all current tables and named indexes',()=>{
     'user_notification_prefs','auth_rate_limits','circles','circle_memberships','circle_invitations',
     'circle_audit_events','circle_membership_rollout','pairing_cycles',
     'pairing_cycle_availability','auth_provider_identities','auth_sessions',
-    'outbox_events','outbox_audit_events',
+    'outbox_events','outbox_audit_events','auth_email_activations','auth_password_resets',
+    'auth_recent_proofs',
   ]);
   assert.deepEqual(INDEXES.map(item=>item.name),[
     'idx_video_signals_room','idx_video_signals_room_id','idx_pair_messages_pair','idx_pair_sched_pair',
@@ -34,7 +35,8 @@ test('schema manifest pins all current tables and named indexes',()=>{
     'idx_circle_invitations_circle_created','idx_circle_invitations_email',
     'idx_circle_audit_circle_created','idx_pairing_cycle_availability_candidates',
     'idx_auth_sessions_user_active','idx_outbox_events_dispatch','idx_outbox_events_lease',
-    'idx_outbox_audit_event',
+    'idx_outbox_audit_event','idx_auth_email_activations_token','idx_auth_email_activations_email',
+    'idx_auth_password_resets_token','idx_auth_password_resets_email','idx_auth_recent_proofs_user',
   ]);
   assert.equal(new Set(TABLES.map(item=>item.name)).size,TABLES.length);
   assert.equal(new Set(INDEXES.map(item=>item.name)).size,INDEXES.length);
@@ -47,7 +49,7 @@ test('schema manifest pins all current tables and named indexes',()=>{
 
 test('immutable migration metadata is contiguous and checksum protected',()=>{
   assert.equal(validateMigrationPlans(),true);
-  assert.deepEqual(MIGRATION_PLANS.map(plan=>plan.version),[1,2,3,4,5,6]);
+  assert.deepEqual(MIGRATION_PLANS.map(plan=>plan.version),[1,2,3,4,5,6,7,8]);
   assert.deepEqual(MIGRATION_PLANS.slice(0,2).map(plan=>({
     version:plan.version,operationsChecksum:plan.operationsChecksum,checksum:plan.checksum,
   })),[{
@@ -116,6 +118,30 @@ test('durable outbox pins versioned events, leases, replay audit, and dispatch i
   ]);
 });
 
+test('verified activation pins hashed one-time credentials and bounded resend state',()=>{
+  const activation=MIGRATION_PLANS[6].operations.find(item=>item.name==='auth_email_activations');
+  assert.match(activation.sql,/token_hash TEXT NOT NULL UNIQUE/);
+  assert.match(activation.sql,/send_count BETWEEN 1 AND 5/);
+  assert.match(activation.sql,/FOREIGN KEY\(invitation_id\) REFERENCES circle_invitations\(id\) ON DELETE RESTRICT/);
+  assert.deepEqual(MIGRATION_PLANS[6].indexes,[
+    'idx_auth_email_activations_token','idx_auth_email_activations_email',
+  ]);
+});
+
+test('password recovery and recent authentication are durable and session scoped',()=>{
+  const reset=MIGRATION_PLANS[7].operations.find(item=>item.name==='auth_password_resets');
+  const recent=MIGRATION_PLANS[7].operations.find(item=>item.name==='auth_recent_proofs');
+  assert.match(reset.sql,/token_hash TEXT NOT NULL UNIQUE/);
+  assert.match(reset.sql,/user_id INTEGER NOT NULL UNIQUE/);
+  assert.match(reset.sql,/send_count BETWEEN 1 AND 5/);
+  assert.match(recent.sql,/session_hash TEXT PRIMARY KEY NOT NULL/);
+  assert.match(recent.sql,/method IN \('password','google'\)/);
+  assert.match(recent.sql,/REFERENCES auth_sessions\(session_hash\) ON DELETE CASCADE/);
+  assert.deepEqual(MIGRATION_PLANS[7].indexes,[
+    'idx_auth_password_resets_token','idx_auth_password_resets_email','idx_auth_recent_proofs_user',
+  ]);
+});
+
 test('current-artifact resolution preserves order and uses the latest pairing-weeks definition',()=>{
   const original=`CREATE TABLE IF NOT EXISTS pairing_weeks (id INTEGER PRIMARY KEY AUTOINCREMENT, week_label TEXT NOT NULL, week_start TEXT NOT NULL, focus TEXT NOT NULL DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')))`;
   const replacement=`CREATE TABLE IF NOT EXISTS pairing_weeks (id INTEGER PRIMARY KEY AUTOINCREMENT, week_label TEXT NOT NULL, week_start TEXT NOT NULL, focus TEXT NOT NULL DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')), is_demo INTEGER DEFAULT 0)`;
@@ -152,25 +178,25 @@ test('migration metadata covers every artifact and supports append-only replacem
   assert.throws(()=>validateMigrationPlans(duplicate.map(repin)),/repeats canonical operations/);
 
   const unsupported=repin({
-    version:7,name:'unsupported-operation',description:'Invalid operation example.',
+    version:9,name:'unsupported-operation',description:'Invalid operation example.',
     operations:[{operation:'drop-table',name:'users',sql:'DROP TABLE users'}],
   });
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,unsupported]),/unsupported operation/);
 
   const mislabeled=repin({
-    version:7,name:'mislabeled-table',description:'Invalid table example.',
+    version:9,name:'mislabeled-table',description:'Invalid table example.',
     operations:[{operation:'ensure-table',name:'users',sql:'DROP TABLE users'}],
   });
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,mislabeled]),/non-canonical CREATE TABLE/);
 
   const multipleStatements=repin({
-    version:7,name:'multiple-statements',description:'Invalid SQL example.',
+    version:9,name:'multiple-statements',description:'Invalid SQL example.',
     operations:[{operation:'ensure-table',name:'users',sql:'CREATE TABLE users (id INTEGER); DROP TABLE auth_accounts'}],
   });
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,multipleStatements]),/invalid ensure-table definition/);
 
   const danglingIndex=repin({
-    version:7,name:'dangling-index',description:'Invalid index example.',
+    version:9,name:'dangling-index',description:'Invalid index example.',
     operations:[{
       operation:'ensure-index',name:'idx_video_signals_room',table:'missing_table',
       keyParts:['room_id'],unique:false,where:null,
@@ -180,7 +206,7 @@ test('migration metadata covers every artifact and supports append-only replacem
   assert.throws(()=>validateMigrationPlans([...MIGRATION_PLANS,danglingIndex]),/references unknown table/);
 
   const replacement={...MIGRATION_PLANS[0].operations.find(operation=>operation.name==='users'),sql:'CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)'};
-  const appended=repin({version:7,name:'future-users-contract',description:'Future replacement example.',operations:[replacement]});
+  const appended=repin({version:9,name:'future-users-contract',description:'Future replacement example.',operations:[replacement]});
   assert.equal(validateMigrationPlans([...MIGRATION_PLANS,appended]),true);
 });
 

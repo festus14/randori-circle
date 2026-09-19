@@ -26,6 +26,9 @@ let persistedPairingParticipants = [];
 let pairingEmailDeliveryResult = null;
 let outboxReplayResult = true;
 const outboxReplayCalls=[];
+let activationOutboxResult=null;
+let activationOutboxMetrics=[];
+const outboxWorkerCalls=[];
 const mockAvailabilityCycles=new Map();
 const mockAvailabilityDecisions=new Map();
 
@@ -247,6 +250,14 @@ mock.module('../../api/_pairing-email.js',{
 
 mock.module('../../api/_outbox.js',{
   exports:{
+    OutboxDeliveryError:class OutboxDeliveryError extends Error{},
+    createOutboxEventStatement:event=>({sql:'INSERT INTO outbox_events VALUES (?)',args:[event]}),
+    readOutboxMetrics:async(_db,options)=>options?.eventType==='auth.emailverification.requested'
+      ?activationOutboxMetrics:[],
+    runOutboxWorker:async options=>{
+      outboxWorkerCalls.push(options);
+      return activationOutboxResult||{claimed:0,delivered:0,suppressed:0,retried:0,deadLettered:0,leaseLost:0};
+    },
     replayDeadLetter:async(_db,request)=>{
       outboxReplayCalls.push(request);
       return outboxReplayResult;
@@ -387,6 +398,9 @@ beforeEach(() => {
   pairingEmailDeliveryResult = null;
   outboxReplayResult = true;
   outboxReplayCalls.length=0;
+  activationOutboxResult=null;
+  activationOutboxMetrics=[];
+  outboxWorkerCalls.length=0;
   mockAvailabilityCycles.clear();
   mockAvailabilityDecisions.clear();
   executeHandler = () => rows();
@@ -397,6 +411,7 @@ beforeEach(() => {
     'NEXT_PUBLIC_SENTRY_DSN', 'SENTRY_DSN',
     'ALLOW_OPEN_SIGNUP', 'SIGNUP_ALLOWLIST', 'LEETCODE_INGESTION_AUTHORIZED',
     'AUTH_SCHEMA_BOOTSTRAP_ENABLED', 'CIRCLE_MEMBERSHIP_ENABLED', 'RANDORI_LOCAL_RUNTIME',
+    'EMAIL_PASSWORD_ACTIVATION_ENABLED', 'EMAIL_VERIFICATION_ENCRYPTION_KEY',
     'PAIRING_TIME_ZONE', 'RANDORI_LOCAL_DATABASE_PATH', 'RANDORI_LOCAL_IDENTITY',
     'TURSO_AUTH_TOKEN', 'TURSO_DATABASE_URL', 'VERCEL', 'VERCEL_ENV', 'VERCEL_URL',
     'RUN_ATTESTATION_SECRET', 'RUN_ATTESTATION_PREVIOUS_SECRETS',
@@ -515,7 +530,8 @@ test('auth capabilities report the exact local or private-beta contract without 
   assert.equal(result.headers['cache-control'],'no-store');
   assert.deepEqual(result.body,{
     ok:true,
-    capabilities:{passwordLogin:true,passwordSignup:false,localIdentity:false,googleOAuth:false},
+    capabilities:{passwordLogin:true,passwordSignup:false,verifiedEmailActivation:false,passwordReset:false,
+      localIdentity:false,googleOAuth:false,recentAuthMaxAgeSeconds:600},
     registrationMode:'private_beta',
   });
   assert.equal(executed.length,0);
@@ -529,7 +545,8 @@ test('auth capabilities report the exact local or private-beta contract without 
   });
   assert.deepEqual(result.body,{
     ok:true,
-    capabilities:{passwordLogin:true,passwordSignup:false,localIdentity:false,googleOAuth:true},
+    capabilities:{passwordLogin:true,passwordSignup:false,verifiedEmailActivation:false,passwordReset:false,
+      localIdentity:false,googleOAuth:true,recentAuthMaxAgeSeconds:600},
     registrationMode:'private_beta',
   });
 
@@ -540,7 +557,8 @@ test('auth capabilities report the exact local or private-beta contract without 
   assert.equal(result.status,200);
   assert.deepEqual(result.body,{
     ok:true,
-    capabilities:{passwordLogin:true,passwordSignup:true,localIdentity:false,googleOAuth:false},
+    capabilities:{passwordLogin:true,passwordSignup:true,verifiedEmailActivation:false,passwordReset:false,
+      localIdentity:false,googleOAuth:false,recentAuthMaxAgeSeconds:600},
     registrationMode:'local_open',
   });
   assert.equal(executed.length,0);
@@ -2757,6 +2775,36 @@ test('outbox drain is cron-protected, non-identifying, and dead-letter replay is
     method:'POST',url:'/api/admin/outbox/replay',query:{endpoint:'outbox-replay'},
     headers:{'x-test-auth':'admin'},body:{event_id:7,reason_code:'OPERATOR_RETRY'},
   })).status,409);
+});
+
+test('outbox drain dispatches configured activation events without exposing recipients',async()=>{
+  process.env.NODE_ENV='production';
+  process.env.APP_URL='https://randori.example.test';
+  process.env.CRON_SECRET='cron-secret';
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  process.env.EMAIL_PASSWORD_ACTIVATION_ENABLED='true';
+  process.env.EMAIL_VERIFICATION_ENCRYPTION_KEY=Buffer.alloc(32,7).toString('base64url');
+  process.env.RESEND_API_KEY='re_test';
+  process.env.RESEND_FROM='Randori <verified@example.test>';
+  activationOutboxResult={
+    claimed:3,delivered:1,suppressed:1,retried:1,deadLettered:0,leaseLost:0,
+  };
+  activationOutboxMetrics=[
+    {status:'pending',count:1},{status:'retry',count:1},{status:'delivered',count:1},
+    {status:'suppressed',count:1},
+  ];
+  const drained=await invoke(opsHandler,{
+    method:'POST',url:'/api/cron/outbox',query:{endpoint:'outbox'},
+    headers:{'x-cron-secret':'cron-secret',host:'randori.example.test','x-forwarded-proto':'https'},
+  });
+  assert.equal(drained.status,200);
+  assert.deepEqual(drained.body.activation_delivery,{
+    summary:'sent 1, failed 1, pending 2',
+    sent:1,failed:1,exhausted:0,pending:2,suppressed:1,
+  });
+  assert.equal(outboxWorkerCalls.length,1);
+  assert.equal(outboxWorkerCalls[0].eventType,'auth.emailverification.requested');
+  assert.equal(JSON.stringify(drained.body).includes('verified@example.test'),false);
 });
 
 test('operation validation rejects unsupported methods and non-admin mutations', async () => {

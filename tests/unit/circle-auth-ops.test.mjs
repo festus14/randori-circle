@@ -106,6 +106,8 @@ mock.module('../../api/_db.js',{
 mock.module('../../api/_circle-membership.js',{
   exports:{
     INVITE_CLAIM_COOKIE:'randori_invite_claim',
+    normalizeInvitationEmail:value=>typeof value==='string'?value.trim().toLowerCase():null,
+    hashInvitationEmail:value=>typeof value==='string'?'a'.repeat(64):null,
     circleMembershipEnabled:()=>process.env.CIRCLE_MEMBERSHIP_ENABLED==='true',
     circleMembershipCutoverStarted:async()=>cutoverStarted,
     circleMembershipRegistrationState:async()=>cutoverStarted?'closed':registrationState,
@@ -263,6 +265,7 @@ beforeEach(()=>{
   for(const key of [
     'ALLOW_OPEN_SIGNUP','APP_URL','CIRCLE_MEMBERSHIP_ENABLED','CRON_SECRET',
     'GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','NODE_ENV','SIGNUP_ALLOWLIST',
+    'EMAIL_PASSWORD_ACTIVATION_ENABLED','EMAIL_VERIFICATION_ENCRYPTION_KEY',
     'RANDORI_LOCAL_RUNTIME','RANDORI_LOCAL_IDENTITY','TURSO_AUTH_TOKEN','TURSO_DATABASE_URL','VERCEL','VERCEL_ENV','VERCEL_URL',
   ]) delete process.env[key];
 });

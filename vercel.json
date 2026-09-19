@@ -31,6 +31,26 @@
       "destination": "/api/auth?endpoint=signup"
     },
     {
+      "source": "/api/auth/activation/resend",
+      "destination": "/api/auth?endpoint=activation-resend"
+    },
+    {
+      "source": "/api/auth/activation/verify",
+      "destination": "/api/auth?endpoint=activation-verify"
+    },
+    {
+      "source": "/api/auth/password-reset/request",
+      "destination": "/api/auth?endpoint=password-reset-request"
+    },
+    {
+      "source": "/api/auth/password-reset/consume",
+      "destination": "/api/auth?endpoint=password-reset-consume"
+    },
+    {
+      "source": "/api/auth/recent-auth",
+      "destination": "/api/auth?endpoint=recent-auth"
+    },
+    {
       "source": "/api/auth/login",
       "destination": "/api/auth?endpoint=login"
     },
@@ -51,6 +71,10 @@
       "destination": "/api/auth?endpoint=google-start"
     },
     {
+      "source": "/api/auth/google/reauth/start",
+      "destination": "/api/auth?endpoint=google-reauth-start"
+    },
+    {
       "source": "/api/auth/google/callback",
       "destination": "/api/auth?endpoint=google-callback"
     },
@@ -65,6 +89,10 @@
     {
       "source": "/api/invitations/:id",
       "destination": "/api/invitations?endpoint=invitations&id=:id"
+    },
+    {
+      "source": "/api/members",
+      "destination": "/api/members?endpoint=members"
     },
     {
       "source": "/api/weeks",

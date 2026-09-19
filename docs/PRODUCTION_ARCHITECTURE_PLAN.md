@@ -1,14 +1,27 @@
 # Randori Circle: Production Architecture and Delivery Plan
 
-Status: proposed  
+Status: proposed target; not the current runtime
+
 Audience: product, engineering, security, and operations  
-Last updated: 2026-09-17
+Last updated: 2026-09-19
+
+Implementation note: the private-beta work through PR #89 follows a
+product-first hardening path on the existing Vercel/Turso application. Its
+accepted choices and exact delivery order are recorded in the
+[implemented decision log](IMPLEMENTED_DECISIONS.md). This document remains the
+candidate architecture for a later scale-driven rebuild and must not be read as
+a description of the deployed stack.
 
 ## Executive decision
 
 Randori Circle should become a secure, multi-circle platform for recurring peer mock interviews. Members join a circle, publish availability, receive a fair weekly pairing, agree a time, and enter one authenticated room containing collaborative code, a shared whiteboard, video, chat, questions, sandboxed execution, and optional AI coaching.
 
-The current repository is a useful prototype, but it should not be extended in its present single-file form. The recommended path is a staged rebuild that preserves the product behavior and data where useful while replacing the fragile frontend, ad hoc schema management, unsafe trust boundaries, and browser-local collaboration model.
+The current repository began as a useful prototype. The immediate private-beta
+decision is to harden it in independently deployable vertical slices until the
+weekly coordination loop is useful. The recommended longer-term path remains a
+staged rebuild that preserves validated product behavior and data while
+replacing the single-file frontend, custom identity boundary, and snapshot-only
+collaboration model when their cost or scaling limits justify the migration.
 
 Recommended managed-service baseline:
 
@@ -54,14 +67,19 @@ The rebuild uses a strangler approach: keep the current prototype available only
 
 ### Smallest useful release
 
-The first useful product does not need an integrated IDE, video, AI, SMS, or automated content ingestion. It needs to reliably create the weekly habit:
+The first useful product does not need integrated video, AI, SMS, or automated
+content ingestion. It needs to reliably create the weekly habit:
 
 ```text
 Create circle -> Invite members -> Set availability -> Get paired
               -> Propose/accept a time -> Chat -> Open external meeting/problem link
 ```
 
-This release uses only Next.js/Vercel, Supabase Auth/PostgreSQL, and Resend. It gives users immediate value while the technically harder shared-room features are built behind feature flags.
+The implemented bridge uses the existing SPA and Vercel functions, Turso,
+invitation-bound Google OIDC, the isolated local password adapter, and optional
+Resend delivery. It gives users immediate value while preserving the option to
+move validated behavior to Next.js/Supabase and add technically harder room
+features behind flags.
 
 ### Vertical slices
 
