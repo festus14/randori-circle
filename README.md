@@ -6,7 +6,9 @@ Production deploys from `main` through Vercel. Development is iterative; see the
 
 ## Current private-beta workflow
 
-1. A circle owner creates a single-use, email-bound invitation and sends its link privately.
+1. A circle owner creates a single-use, email-bound invitation. Randori queues
+   its email when delivery is configured and always keeps a private copy-link
+   fallback.
 2. The recipient opens the link and signs in with the invited, verified Google account; existing active members can sign in normally.
 3. Members set availability for the explicitly dated upcoming cycle before its displayed Sunday cutoff; the cron then publishes one deterministic, repeat-aware current-cycle pairing from that frozen eligibility snapshot.
 4. Each participant receives a personalised email containing only their partner and private room link.
@@ -35,9 +37,9 @@ This private-beta sync is whole-document compare-and-swap, not a CRDT: members s
 - Production password signup is fail-closed unless invitation-bound email activation is fully configured; no account or session exists before verification.
 - Mutations enforce same-origin requests for cookie sessions; API callers may use pinned Bearer JWTs.
 - Circle, pairing, schedule, chat, feedback, execution, and signaling endpoints require scoped authorisation.
-- Weekly pairing and schedule writes are atomic and concurrency-safe. Pairing,
-  proposal, acceptance, reschedule, and reminder emails use one idempotent,
-  retryable outbox.
+- Weekly pairing, schedule, and owner-invitation writes are atomic and
+  concurrency-safe. Invitation, pairing, proposal, acceptance, reschedule, and
+  reminder emails use one idempotent, retryable outbox.
 - Outbox workers use expiring token-bound leases, heartbeats, provider timeouts, bounded backoff, dead letters, and audited operator replay. Provider idempotency keys remain stable across crashes and replay; metrics and logs contain aggregate state only.
 - AI is disabled unless explicitly enabled and consented to.
 - Automated LeetCode retrieval is disabled without written authorisation. The app uses approved local content or outbound links.
@@ -58,6 +60,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_pairing.js` | deterministic fairness and canonical room identifiers |
 | `api/_pairing-publication.js` | managed-v6 readiness, transaction-bound owner/cron publication, immutable snapshots, and idempotency |
 | `api/_outbox.js` | provider-neutral leases, heartbeats, timeouts, retry/dead-letter transitions, replay audit, and aggregate metrics |
+| `api/_invitation-email.js` | encrypted invitation credentials, versioned delivery, resend bounds, and current-state suppression |
 | `api/_schedule-email.js` | versioned schedule email intents, 24-hour reminders, current-state suppression, and private rendering |
 | `api/_email-activation.js` | invitation-bound pending registrations, encrypted verification delivery, token rotation, and atomic activation |
 | `api/_pairing-email.js` | versioned pairing-email event validation, rendering, preferences, and provider adaptation |
@@ -84,23 +87,28 @@ Copy `.env.example` and configure at least:
 - `SIGNUP_ALLOWLIST` for the legacy private-beta Google flow while circle membership enforcement is off
 - `CIRCLE_MEMBERSHIP_ENABLED=true` to enforce invitation-gated primary-circle access after the staged migration below
 - `EMAIL_PASSWORD_ACTIVATION_ENABLED=true` plus a separately generated 32-byte base64url `EMAIL_VERIFICATION_ENCRYPTION_KEY` to enable production invite-bound password activation after migration v7 is ready
+- a separate 32-byte base64url `INVITATION_EMAIL_ENCRYPTION_KEY` to queue
+  owner-created invitation links without storing a plaintext bearer token
 - `AUTH_SCHEMA_BOOTSTRAP_ENABLED` is legacy-only and must remain false for the migrated OIDC flow; run the protected database migrations before enabling production authentication
-- `RESEND_API_KEY` and `RESEND_FROM` for pairing and verification notifications
+- `RESEND_API_KEY` and `RESEND_FROM` for invitation, pairing, schedule, and
+  verification notifications
 
 See [GOOGLE_OAUTH.md](GOOGLE_OAUTH.md) and [TURSO.md](TURSO.md) for provider setup. Back up the database before first deploying migrations.
 
 Authentication rate limiting is migration-owned: runtime requests never create `auth_rate_limits`. A deployment with missing or stale migration state fails authentication closed with a temporary-unavailability response; complete the migration/readiness gate before serving traffic rather than enabling request-time schema writes.
 
-Pairing publication and schedule mutations commit with their versioned email
-events in one transaction. Provider calls begin only after that commit.
+Invitation creation/resend, pairing publication, and schedule mutations commit
+with their versioned email events in one transaction. Provider calls begin only
+after that commit.
 `GET|POST /api/cron/outbox` uses the existing `CRON_SECRET` and drains due
 events independently of the weekly publication endpoint; configure a five-
 minute scheduler on a platform that supports that cadence. `POST
 /api/admin/outbox/replay` lets a non-demo global administrator replay only a
 dead-letter event with one of the bounded reason codes `OPERATOR_RETRY`,
 `PROVIDER_RECOVERED`, or `CONFIGURATION_FIXED`. Replay preserves the original
-provider idempotency key. See [schedule notifications](docs/SCHEDULE_NOTIFICATIONS.md)
-for dispatch suppression, limits, and remaining issue #50 work.
+provider idempotency key. See [invitation email delivery](docs/INVITATION_EMAIL_DELIVERY.md)
+and [schedule notifications](docs/SCHEDULE_NOTIFICATIONS.md) for dispatch
+suppression, limits, and remaining issue #50 work.
 
 Google OAuth has one fail-closed configuration boundary shared by capability discovery, start, and callback. Production and hosted deployments require both provider credentials, an explicit canonical HTTPS `APP_URL`, and matching trusted proxy host/protocol headers. Invalid configuration returns only a generic unavailable response and performs no provider or database work. The isolated local runtime always disables Google credentials.
 
@@ -125,7 +133,7 @@ npm run dev
 
 Open `http://127.0.0.1:3000`. The server creates `.local/randori.db`, runs the reviewed migrations before listening, seeds one deterministic private-circle owner, and stores its local-only session key beside the database. All state persists across restarts and is gitignored. No Turso, Google, Resend, or other provider credentials are required.
 
-Sign in as the seeded owner with `owner@randori.test` / `randori-local-owner`, open **Circle**, and create an email-bound invitation. Open the one-time invitation link in a private browser window and create that invited account with any 10–72 byte UTF-8 local password. This development-only verified-identity adapter follows the same signed invitation claim, atomic membership acceptance, cookie session, CSRF, circle authorization, and pairing APIs as production Google signup; it cannot activate in production, Vercel preview, against a remote database, or over a non-loopback request. The invitation link returned to the owner and pairing-room links returned by local publication are the local mail capture—no message is sent externally. Local pages use only same-origin assets and deliberately fall back to the bundled plain editor, so starting the app never contacts telemetry, font, formatting, or editor CDNs.
+Sign in as the seeded owner with `owner@randori.test` / `randori-local-owner`, open **Circle**, and create an email-bound invitation. The owner receives a copy-link fallback while the local-only invitation event remains available to the in-memory test capture; no message is sent externally. Open the one-time invitation link in a private browser window and create that invited account with any 10–72 byte UTF-8 local password. This development-only verified-identity adapter follows the same signed invitation claim, atomic membership acceptance, cookie session, CSRF, circle authorization, and pairing APIs as production Google signup; it cannot activate in production, Vercel preview, against a remote database, or over a non-loopback request. Local pages use only same-origin assets and deliberately fall back to the bundled plain editor, so starting the app never contacts telemetry, font, formatting, or editor CDNs.
 
 An optional `.env.local` may set `RANDORI_LOCAL_PORT`, `RANDORI_LOCAL_HOST` (`127.0.0.1` or `::1` only), or an absolute `file:` `RANDORI_LOCAL_DATABASE_URL` directly inside this checkout's `.local` directory. Local identity and membership flags are owned by the runtime rather than `.env.local`. The command refuses production/Vercel mode, remote database URLs, non-loopback binding, remote database credentials, unsafe permissions, symlinks, and unmanaged schema. Other ambient provider credentials are blanked before API code loads and restored on shutdown. Reset only this verified local state with an explicit confirmation:
 

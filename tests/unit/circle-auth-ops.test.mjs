@@ -143,6 +143,18 @@ mock.module('../../api/_circle-membership.js',{
   },
 });
 
+mock.module('../../api/_invitation-email.js',{
+  exports:{
+    INVITATION_EMAIL_DRAIN_BATCH_SIZE:3,
+    INVITATION_EMAIL_EVENT_TYPE:'invitation.email.requested',
+    invitationEmailConfiguration:()=>null,
+    invitationEmailStatus:async()=>({
+      pending:0,processing:0,retry:0,delivered:0,suppressed:0,dead_letter:0,
+    }),
+    deliverInvitationEmails:async()=>{ throw new Error('invitation email delivery must remain disabled'); },
+  },
+});
+
 mock.module('../../api/_pairing-readiness.js',{
   exports:{
     pairingSchemaV6Ready:async()=>true,

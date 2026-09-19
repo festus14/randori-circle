@@ -21,6 +21,14 @@ import {
   prepareInvitationClaim,
 } from './_circle-membership.js';
 import { localIdentityAdapterEnabled } from './_local-runtime.js';
+import {
+  createInvitationEmailEvent,
+  invitationEmailConfiguration,
+  invitationEmailPayload,
+  INVITATION_EMAIL_EVENT_TYPE,
+  INVITATION_EMAIL_MAX_SENDS,
+  INVITATION_EMAIL_RESEND_SECONDS,
+} from './_invitation-email.js';
 
 const PREPARE_RATE_LIMIT=12;
 const PREPARE_RATE_WINDOW_SECONDS=10*60;
@@ -49,6 +57,12 @@ function invitationId(req){
   const path=String(req?.url||'').split('?')[0].replace(/\/+$/,'');
   const raw=direct===undefined?path.split('/').pop():direct;
   return typeof raw==='string'&&INVITATION_ID_PATTERN.test(raw)?raw.toLowerCase():null;
+}
+
+function invitationTargetRequested(req){
+  if(queryValue(req,'id')!==undefined) return true;
+  const path=String(req?.url||'').split('?')[0].replace(/\/+$/,'');
+  return path.startsWith('/api/invitations/')&&!path.endsWith('/prepare');
 }
 
 function exactObject(value,keys){
@@ -200,18 +214,28 @@ async function handleCreate(req,res){
   const id=randomUUID();
   const createdAt=new Date().toISOString();
   const expiresAt=new Date(Date.now()+INVITATION_TTL_SECONDS*1000).toISOString();
+  const localRuntime=localIdentityAdapterEnabled(req);
+  const emailConfiguration=invitationEmailConfiguration({localRuntime});
   try{
-    const [created,audited]=await context.db.batch([{
-      sql:`INSERT INTO circle_invitations
+    const transaction=await context.db.transaction('write');
+    let finished=false;
+    try{
+      const created=await transaction.execute({
+        sql:`INSERT INTO circle_invitations
           (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at)
         SELECT ?,membership.circle_id,?,?,?,?,?
         FROM circle_memberships membership JOIN circles circle ON circle.id=membership.circle_id
         WHERE membership.user_id=? AND membership.role='owner' AND membership.status='active'
           AND circle.is_primary=1 AND circle.archived_at IS NULL
-        RETURNING id`,
-      args:[id,tokenHash,emailHash,context.userId,createdAt,expiresAt,context.userId],
-    },{
-      sql:`INSERT INTO circle_audit_events
+        RETURNING id,circle_id`,
+        args:[id,tokenHash,emailHash,context.userId,createdAt,expiresAt,context.userId],
+      });
+      if(!created?.rows?.length){
+        await transaction.rollback(); finished=true;
+        return res.status(403).json({error:'circle owner required'});
+      }
+      const audited=await transaction.execute({
+        sql:`INSERT INTO circle_audit_events
           (circle_id,event_type,actor_user_id,subject_user_id,invitation_id,dedupe_key,created_at)
         SELECT invitation.circle_id,'invitation.created',?,NULL,invitation.id,?,?
         FROM circle_invitations invitation
@@ -221,23 +245,157 @@ async function handleCreate(req,res){
           AND circle.is_primary=1 AND circle.archived_at IS NULL
         WHERE invitation.id=?
         RETURNING id`,
-      args:[context.userId,`invitation-created:${id}`,createdAt,context.userId,id],
-    }], 'write');
-    if(!created?.rows?.length||!audited?.rows?.length) return res.status(403).json({error:'circle owner required'});
-    return res.status(201).json({
-      ok:true,
-      invitation:{
-        id,
-        email,
-        expires_at:expiresAt,
-        status:'pending',
-        invite_url:`/invite#invite=${token}`,
-      },
-    });
+        args:[context.userId,`invitation-created:${id}`,createdAt,context.userId,id],
+      });
+      if(!audited?.rows?.length) throw new Error('invitation creation audit missing');
+      let emailQueued=false;
+      if(emailConfiguration){
+        const queued=await transaction.execute(createInvitationEmailEvent({
+          invitationId:id,circleId:Number(created.rows[0].circle_id),actorUserId:context.userId,
+          email,token,sendSequence:1,localRuntime,
+        }));
+        if(Number(queued.rowsAffected||0)!==1) throw new Error('invitation email intent missing');
+        emailQueued=true;
+      }
+      await transaction.commit(); finished=true;
+      return res.status(201).json({
+        ok:true,
+        invitation:{
+          id,
+          email,
+          expires_at:expiresAt,
+          status:'pending',
+          invite_url:`/invite#invite=${token}`,
+        },
+        email_delivery:{queued:emailQueued},
+      });
+    }catch(error){
+      if(!finished){ try{ await transaction.rollback(); }catch{} }
+      throw error;
+    }finally{ try{ await transaction.close?.(); }catch{} }
   }catch(error){
     captureSentryException(error,{tags:{event:'circle_invitation_create_fail',source:'server'}});
     return res.status(503).json({error:'invitations unavailable'});
   }
+}
+
+async function handleResend(req,res){
+  if(!exactObject(req.body,['action'])||req.body.action!=='resend'){
+    return res.status(400).json({error:'resend action required'});
+  }
+  const context=await ownerContext(req,res);
+  if(!context) return;
+  const id=invitationId(req);
+  if(!id) return res.status(404).json({error:'invitation not found'});
+  const localRuntime=localIdentityAdapterEnabled(req);
+  const emailConfiguration=invitationEmailConfiguration({localRuntime});
+  if(!emailConfiguration){
+    return res.status(409).json({error:'invitation email delivery unavailable; create and copy a new invitation'});
+  }
+  let transaction;
+  let finished=false;
+  try{
+    transaction=await context.db.transaction('write');
+    const selected=await transaction.execute({sql:`SELECT invitation.id,invitation.circle_id,
+        invitation.token_hash,invitation.email_hash,invitation.expires_at,
+        invitation.used_at,invitation.used_by,invitation.revoked_at,
+        CAST(strftime('%s','now') AS INTEGER) AS now_seconds,
+        (SELECT COUNT(*) FROM outbox_events event
+          WHERE event.event_type=?
+            AND json_extract(event.payload_json,'$.invitation_id')=invitation.id) AS send_count,
+        (SELECT event.event_version FROM outbox_events event
+          WHERE event.event_type=?
+            AND json_extract(event.payload_json,'$.invitation_id')=invitation.id
+          ORDER BY event.id DESC LIMIT 1) AS latest_event_version,
+        (SELECT event.payload_json FROM outbox_events event
+          WHERE event.event_type=?
+            AND json_extract(event.payload_json,'$.invitation_id')=invitation.id
+          ORDER BY event.id DESC LIMIT 1) AS latest_payload_json,
+        (SELECT event.created_at FROM outbox_events event
+          WHERE event.event_type=?
+            AND json_extract(event.payload_json,'$.invitation_id')=invitation.id
+          ORDER BY event.id DESC LIMIT 1) AS last_sent_at
+      FROM circle_invitations invitation
+      JOIN circles circle ON circle.id=invitation.circle_id
+      JOIN circle_memberships membership ON membership.circle_id=invitation.circle_id
+        AND membership.user_id=? AND membership.role='owner' AND membership.status='active'
+      WHERE invitation.id=? AND circle.is_primary=1 AND circle.archived_at IS NULL
+      LIMIT 2`,args:[INVITATION_EMAIL_EVENT_TYPE,INVITATION_EMAIL_EVENT_TYPE,
+      INVITATION_EMAIL_EVENT_TYPE,INVITATION_EMAIL_EVENT_TYPE,context.userId,id]});
+    if(selected.rows?.length!==1){
+      await transaction.rollback(); finished=true;
+      return res.status(404).json({error:'invitation not found'});
+    }
+    const invitation=selected.rows[0];
+    const nowSeconds=Number(invitation.now_seconds);
+    const sendCount=Number(invitation.send_count);
+    const expiresAt=Date.parse(String(invitation.expires_at||''));
+    if(invitation.used_at!==null||invitation.used_by!==null||invitation.revoked_at!==null
+      ||!Number.isSafeInteger(nowSeconds)||!Number.isSafeInteger(sendCount)
+      ||!Number.isFinite(expiresAt)||expiresAt<=nowSeconds*1000){
+      await transaction.rollback(); finished=true;
+      return res.status(409).json({error:'invitation is no longer pending'});
+    }
+    if(sendCount<1||sendCount>=INVITATION_EMAIL_MAX_SENDS
+      ||typeof invitation.latest_payload_json!=='string'){
+      await transaction.rollback(); finished=true;
+      return res.status(409).json({error:'invitation email cannot be resent; create a new invitation'});
+    }
+    let latestPayload;
+    try{ latestPayload=JSON.parse(invitation.latest_payload_json); }catch{}
+    let prior;
+    try{
+      prior=invitationEmailPayload({eventVersion:Number(invitation.latest_event_version),payload:latestPayload},
+        {localRuntime});
+    }catch{}
+    if(!prior||prior.invitationId!==id||prior.circleId!==Number(invitation.circle_id)
+      ||prior.tokenHash!==String(invitation.token_hash)||prior.emailHash!==String(invitation.email_hash)){
+      await transaction.rollback(); finished=true;
+      return res.status(409).json({error:'invitation email cannot be resent; create a new invitation'});
+    }
+    const lastSentAt=Date.parse(String(invitation.last_sent_at||''));
+    const remainingMs=lastSentAt+INVITATION_EMAIL_RESEND_SECONDS*1000-nowSeconds*1000;
+    if(Number.isFinite(lastSentAt)&&remainingMs>0){
+      const retryAfter=Math.max(1,Math.ceil(remainingMs/1000));
+      await transaction.rollback(); finished=true;
+      res.setHeader('Retry-After',String(Math.min(INVITATION_EMAIL_RESEND_SECONDS,retryAfter)));
+      return res.status(429).json({error:'invitation email resend is temporarily limited',
+        retry_after_seconds:Math.min(INVITATION_EMAIL_RESEND_SECONDS,retryAfter)});
+    }
+    const token=createInvitationToken();
+    const tokenHash=hashInvitationToken(token);
+    const sendSequence=sendCount+1;
+    const rotated=await transaction.execute({sql:`UPDATE circle_invitations SET token_hash=?
+        WHERE id=? AND circle_id=? AND token_hash=? AND email_hash=?
+          AND used_at IS NULL AND used_by IS NULL AND revoked_at IS NULL
+          AND datetime(expires_at)>datetime('now')
+          AND EXISTS (
+            SELECT 1 FROM circle_memberships membership JOIN circles circle ON circle.id=membership.circle_id
+            WHERE membership.circle_id=circle_invitations.circle_id AND membership.user_id=?
+              AND membership.role='owner' AND membership.status='active'
+              AND circle.is_primary=1 AND circle.archived_at IS NULL
+          ) RETURNING id,circle_id`,args:[tokenHash,id,invitation.circle_id,invitation.token_hash,
+      invitation.email_hash,context.userId]});
+    if(rotated.rows?.length!==1) throw new Error('invitation resend lost authorization');
+    const queued=await transaction.execute(createInvitationEmailEvent({
+      invitationId:id,circleId:Number(invitation.circle_id),actorUserId:context.userId,
+      email:prior.email,token,sendSequence,localRuntime,
+    }));
+    if(Number(queued.rowsAffected||0)!==1) throw new Error('invitation resend intent missing');
+    const audited=await transaction.execute({sql:`INSERT INTO circle_audit_events
+        (circle_id,event_type,actor_user_id,subject_user_id,invitation_id,dedupe_key,created_at)
+      VALUES (?,'invitation.resent',?,NULL,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      ON CONFLICT(dedupe_key) DO NOTHING RETURNING id`,
+    args:[invitation.circle_id,context.userId,id,`invitation-resent:${id}:${sendSequence}`]});
+    if(audited.rows?.length!==1) throw new Error('invitation resend audit missing');
+    await transaction.commit(); finished=true;
+    return res.json({ok:true,invitation:{id,expires_at:String(invitation.expires_at),status:'pending',
+      invite_url:`/invite#invite=${token}`},email_delivery:{queued:true}});
+  }catch(error){
+    if(transaction&&!finished){ try{ await transaction.rollback(); }catch{} }
+    captureSentryException(error,{tags:{event:'circle_invitation_resend_fail',source:'server'}});
+    return res.status(503).json({error:'invitations unavailable'});
+  }finally{ try{ await transaction?.close?.(); }catch{} }
 }
 
 async function handleList(req,res){
@@ -334,7 +492,11 @@ export default async function handler(req,res){
     return handleList(req,res);
   }
   if(req.method==='POST'){
-    if(!hasOnlyQueryKeys(req,new Set(['endpoint']))) return res.status(400).json({error:'invalid request'});
+    const targetRequested=invitationTargetRequested(req);
+    if(!hasOnlyQueryKeys(req,new Set(targetRequested?['endpoint','id']:['endpoint']))){
+      return res.status(400).json({error:'invalid request'});
+    }
+    if(targetRequested) return handleResend(req,res);
     return handleCreate(req,res);
   }
   if(req.method==='DELETE'){

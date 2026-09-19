@@ -1,6 +1,7 @@
 # Randori Circle implemented decision log
 
-Status: accepted through merged PR #89 plus candidate PRs #93, #92, and #96
+Status: accepted through merged PR #89 plus candidate PRs #93, #92, #96, and
+the invitation-email candidate branch
 
 Last reviewed: 2026-09-19
 
@@ -31,6 +32,7 @@ or merged after its parent; it must not be landed ahead of that parent.
 | 7 | [PR #93](https://github.com/festus14/randori-circle/pull/93), candidate | Repository-owned deployability gate independent of preview quota | No migration |
 | 8 | [PR #92](https://github.com/festus14/randori-circle/pull/92), candidate | Verified invitation-bound email/password activation | v7 `verified-email-activation` |
 | 9 | [PR #96](https://github.com/festus14/randori-circle/pull/96), candidate | Proposal, acceptance, change, and reminder delivery | Reuses v6; no migration |
+| 10 | `codex/increment-35-invitation-email`, candidate | Owner-created invitation email and bounded resend | Reuses v6; no migration |
 
 Migration order is append-only: v4 binds an account to an OIDC issuer and
 subject, v5 makes every application JWT depend on a live hashed session row,
@@ -313,9 +315,50 @@ option if private-beta volume outgrows the database relay. See
 operating contract, and explicit remaining issue #50 scope.
 
 **Known gap.** The outbox endpoint still runs the pre-existing pairing,
-schedule, and activation drains sequentially without one shared deadline; the
+schedule, invitation, and activation drains sequentially without one shared deadline; the
 older typed drains retain larger default batches. A slow earlier type can starve
 a later one or reach the function limit. This slice therefore does not claim
 full issue #50 reliability. A shared invocation budget or separately scheduled
 typed drains remains follow-up work in
 [issue #94](https://github.com/festus14/randori-circle/issues/94).
+
+## ID-12: Encrypt invitation credentials in the shared outbox
+
+**Decision.** An owner-created invitation remains usable immediately through
+its one-time manual copy link. When production mail and a dedicated encryption
+key are fully configured, creation also commits an
+`invitation.email.requested` v1 event in the same write transaction. An
+explicit resend rotates the invitation token and commits its new event and
+audit row atomically. Resend has a durable 60-second cooldown and five-send
+lifetime cap; each version has a stable provider idempotency key.
+
+The invitation row continues to store only domain-separated token and email
+hashes. Because the provider eventually needs both plaintext values, the event
+holds an AES-256-GCM envelope bound to the invitation ID, using the production-
+required `INVITATION_EMAIL_ENCRYPTION_KEY`. The key is distinct from session
+and email-verification keys. Missing or partial production configuration leaves
+email unqueued while preserving the manual link, and resend instructs the owner
+to create and copy a new invitation.
+
+Immediately before delivery, the worker authenticates the envelope and
+rechecks the exact invitation, circle, token hash, email hash, expiry,
+revocation, consumption, current event-authorizer ownership, non-demo identity, and
+absence of an existing recipient membership. Token rotation therefore
+suppresses every older queued or retried event. Outbox payloads and persistent
+logs contain neither the plaintext email nor bearer token; automated delivery
+uses local capture or mocked providers only.
+
+**Why no schema change.** Schema v6 already provides immutable events, unique
+idempotency, leases, retries, suppression, dead letters, and audit history. The
+existing invitation row supplies authoritative revocation, expiry, consumption,
+and rotation state. Adding invitation send columns would duplicate outbox state.
+Migration v9 remains reserved for issue #83.
+
+**Alternatives.** Plaintext outbox credentials were rejected because a database
+read would expose a live bearer link. Synchronous mail was rejected because a
+provider timeout would couple owner interaction to delivery and could lose
+post-commit work. A separate invitation queue was rejected because it would
+duplicate the v6 worker contract. Retaining one token across resends was
+rejected because already delivered or queued links could not be superseded.
+See [invitation email delivery](INVITATION_EMAIL_DELIVERY.md) for the operational
+contract and remaining issue #95/#50 work.

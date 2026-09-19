@@ -5,9 +5,10 @@ Status: first issue #50 slice implemented in
 verified-email-activation stack
 
 This slice sends durable email notifications for schedule proposals, accepted
-times, changed or cleared agreements, and accepted-session reminders. SMS,
-owner invitation-link delivery, and a live staging-provider rehearsal remain
-outside this slice, so this work references but does not close issue #50.
+times, changed or cleared agreements, and accepted-session reminders. Owner
+invitation-link delivery is implemented by the next stacked candidate; SMS and
+a live staging-provider rehearsal remain outside this slice, so this work
+references but does not close issue #50.
 
 ## Event and transaction contract
 
@@ -71,9 +72,9 @@ the existing Resend adapter behind `RESEND_API_KEY` and `RESEND_FROM`; missing
 configuration leaves work pending and exposes only aggregate status.
 
 This does not yet impose one deadline across every typed worker in
-`/api/cron/outbox`: the older pairing drain, schedule drain, and activation
-drain still run sequentially, and the older drains retain their larger default
-batches. A slow earlier drain can therefore starve later types or approach a
+`/api/cron/outbox`: pairing, schedule, invitation, and activation drains still
+run sequentially, and the older drains retain their larger default batches. A
+slow earlier drain can therefore starve later types or approach a
 serverless invocation limit. [Issue #94](https://github.com/festus14/randori-circle/issues/94)
 tracks one shared deadline/claim budget (or separate authenticated schedules)
 before the queue is considered high-volume production ready.
@@ -103,8 +104,6 @@ production migration procedure.
 
 ## Remaining issue #50 work
 
-- Deliver owner-created invitation links without manual copying, using a
-  short-lived safe-link contract and revocation checks.
 - Rehearse these templates and suppression paths through a staging Resend
   domain; automated tests intentionally never call an external provider.
 - Define product timing for additional reminders (for example one hour before)

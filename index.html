@@ -2497,6 +2497,34 @@ async function refreshMe(){
       details.append(fingerprint,meta);
       row.appendChild(details);
       if(status==='pending'){
+        const actions=document.createElement('div'); actions.className='row'; actions.style.gap='6px';
+        const resend=document.createElement('button');
+        resend.type='button'; resend.className='pill'; resend.dataset.testid='circle-invite-resend';
+        resend.textContent='Resend email'; resend.setAttribute('aria-label','Resend invitation email');
+        resend.addEventListener('click',async()=>{
+          if(activeCircleRole!=='owner'||!me) return;
+          const userId=Number(me.id||me.uid);
+          resend.disabled=true;
+          if(circleInviteStatus) circleInviteStatus.textContent='Queueing a fresh invitation email…';
+          try{
+            const result=await api(`/api/invitations/${encodeURIComponent(id)}`,{
+              method:'POST',body:{action:'resend'},
+            });
+            if(!me||Number(me.id||me.uid)!==userId) return;
+            const inviteUrl=String(result?.invitation?.invite_url||'');
+            if(result?.ok!==true||!/^\/invite#invite=[A-Za-z0-9_-]{43}$/.test(inviteUrl)){
+              throw new Error('invalid invitation response');
+            }
+            latestInviteUrl=new URL(inviteUrl,window.location.origin).href;
+            latestInviteId=id; latestInviteOwnerId=userId;
+            if(circleInviteLink) circleInviteLink.hidden=false;
+            if(circleInviteStatus) circleInviteStatus.textContent='Fresh invitation email queued. Copy the new link as a fallback.';
+            await loadOwnerInvitations(circleRenderEpoch);
+          }catch{
+            resend.disabled=false;
+            if(circleInviteStatus) circleInviteStatus.textContent='Could not resend yet. Use your saved link or create a new invitation.';
+          }
+        });
         const revoke=document.createElement('button');
         revoke.type='button'; revoke.className='pill'; revoke.dataset.testid='circle-invite-revoke';
         revoke.textContent='Revoke'; revoke.setAttribute('aria-label','Revoke invitation');
@@ -2514,7 +2542,7 @@ async function refreshMe(){
             if(circleInviteStatus) circleInviteStatus.textContent='Could not revoke invitation. Try again.';
           }
         });
-        row.appendChild(revoke);
+        actions.append(resend,revoke); row.appendChild(actions);
       }
       circleInvites.appendChild(row);
     });
@@ -2655,7 +2683,9 @@ async function refreshMe(){
       latestInviteOwnerId=userId;
       if(input) input.value='';
       if(circleInviteLink) circleInviteLink.hidden=false;
-      if(circleInviteStatus) circleInviteStatus.textContent='Invitation created. Copy the link and send it privately.';
+      if(circleInviteStatus) circleInviteStatus.textContent=result?.email_delivery?.queued===true
+        ?'Invitation email queued. Copy the link as a fallback.'
+        :'Invitation created. Copy the link and send it privately.';
       if(activeCircleRole==='owner') await loadOwnerInvitations(circleRenderEpoch);
     }catch{
       if(circleInviteStatus) circleInviteStatus.textContent='Could not create invitation. Check the email and try again.';

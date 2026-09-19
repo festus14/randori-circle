@@ -30,6 +30,9 @@ let activationOutboxResult=null;
 let activationOutboxMetrics=[];
 let scheduleEmailDeliveryResult=null;
 const scheduleEmailDeliveryCalls=[];
+let invitationEmailDeliveryResult=null;
+const invitationEmailDeliveryCalls=[];
+let invitationEmailConfigured=false;
 const outboxWorkerCalls=[];
 const mockAvailabilityCycles=new Map();
 const mockAvailabilityDecisions=new Map();
@@ -268,6 +271,28 @@ mock.module('../../api/_schedule-email.js',{
   },
 });
 
+mock.module('../../api/_invitation-email.js',{
+  exports:{
+    INVITATION_EMAIL_EVENT_TYPE:'invitation.email.requested',
+    INVITATION_EMAIL_DRAIN_BATCH_SIZE:3,
+    INVITATION_EMAIL_MAX_SENDS:5,
+    INVITATION_EMAIL_RESEND_SECONDS:60,
+    invitationEmailConfiguration:()=>invitationEmailConfigured?{origin:'https://randori.example.test'}:null,
+    createInvitationEmailEvent:()=>({sql:'INSERT INTO outbox_events VALUES (?)',args:['invitation']}),
+    invitationEmailPayload:()=>null,
+    invitationEmailStatus:async()=>invitationEmailDeliveryResult?.status||{
+      pending:0,processing:0,retry:0,delivered:0,suppressed:0,dead_letter:0,
+    },
+    deliverInvitationEmails:async options=>{
+      invitationEmailDeliveryCalls.push(options);
+      return invitationEmailDeliveryResult||{
+        claimed:0,delivered:0,suppressed:0,retried:0,deadLettered:0,leaseLost:0,
+        status:{pending:0,processing:0,retry:0,delivered:0,suppressed:0,dead_letter:0},
+      };
+    },
+  },
+});
+
 mock.module('../../api/_outbox.js',{
   exports:{
     OutboxDeliveryError:class OutboxDeliveryError extends Error{},
@@ -422,6 +447,9 @@ beforeEach(() => {
   activationOutboxMetrics=[];
   scheduleEmailDeliveryResult=null;
   scheduleEmailDeliveryCalls.length=0;
+  invitationEmailDeliveryResult=null;
+  invitationEmailDeliveryCalls.length=0;
+  invitationEmailConfigured=false;
   outboxWorkerCalls.length=0;
   mockAvailabilityCycles.clear();
   mockAvailabilityDecisions.clear();
@@ -2755,6 +2783,7 @@ test('outbox drain is cron-protected, non-identifying, and dead-letter replay is
     claimed:2,delivered:1,suppressed:1,retried:0,deadLettered:0,leaseLost:0,
     status:{pending:0,processing:0,retry:0,delivered:1,suppressed:1,dead_letter:0},
   };
+  invitationEmailConfigured=true;
   const drained=await invoke(opsHandler,{
     method:'POST',url:'/api/cron/outbox',query:{endpoint:'outbox'},
     headers:{'x-cron-secret':'cron-secret','user-agent':'private-agent','x-forwarded-for':'203.0.113.9'},
@@ -2768,8 +2797,14 @@ test('outbox drain is cron-protected, non-identifying, and dead-letter replay is
     summary:'sent 0, failed 0, exhausted 0, suppressed 0, pending 0',
     sent:0,failed:0,exhausted:0,pending:0,suppressed:0,
   });
+  assert.deepEqual(drained.body.invitation_delivery,{
+    summary:'sent 0, failed 0, exhausted 0, suppressed 0, pending 0',
+    sent:0,failed:0,exhausted:0,pending:0,suppressed:0,
+  });
   assert.equal(scheduleEmailDeliveryCalls.length,1);
   assert.deepEqual(scheduleEmailDeliveryCalls[0].workerOptions,{batchSize:3});
+  assert.equal(invitationEmailDeliveryCalls.length,1);
+  assert.deepEqual(invitationEmailDeliveryCalls[0].workerOptions,{batchSize:3});
   const deliveryLog=executed.find(call=>call.sql.includes('INSERT INTO app_logs')
     &&call.args[1]==='server'&&call.args[2]==='pairing_email_delivery');
   assert.ok(deliveryLog);
