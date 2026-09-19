@@ -610,9 +610,10 @@ monitoring decisions.
 
 The owner-only member endpoint returns 50 members by default and accepts a
 bounded maximum of 100. A request scans no more than 201 candidates through the
-existing `circle_memberships(circle_id, user_id)` primary-key index. The first
-page fixes a maximum member ID; subsequent pages advance by member ID inside
-that snapshot. Mutable status, role, and display name are deliberately removed
+existing `circle_memberships(circle_id, user_id)` primary-key index before any
+account join/filter. The first page fixes a maximum member ID through a reverse
+index seek; subsequent pages use the encrypted maximum and advance by member ID
+inside that snapshot without an aggregate scan. Mutable status, role, and display name are deliberately removed
 from the ordering tuple, so lifecycle changes between page requests cannot
 shift already traversed rows.
 
@@ -629,6 +630,11 @@ sparse search may yield zero matches and a continuation cursor; the accessible
 UI explains that more results may remain and preserves earlier rows when a
 later page fails. A per-request sequence and circle render epoch prevent an old
 response from replacing a newer search or a changed identity.
+Authorization failures are different from transient failures: a roster 401/403
+immediately discards all retained rows and controls, then resolves current
+circle membership again. A delayed request from an older render epoch is
+invalidated and the new epoch may start its own load, preventing a stuck busy
+state.
 
 Integration retains ID-14's identity-bound lifecycle notice state and PR110's
 narrow sticky-failure/no-change behavior. Pagination and search responses may

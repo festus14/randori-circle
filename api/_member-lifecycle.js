@@ -9,6 +9,41 @@ export const MEMBER_SEARCH_MAX=80;
 const ROSTER_CURSOR_PREFIX='r1';
 const ROSTER_CURSOR_AAD=Buffer.from('randori-owner-roster-cursor-v1','utf8');
 
+export const OWNER_ROSTER_SCOPE_SQL=`SELECT membership.circle_id
+  FROM circle_memberships membership
+  JOIN circles circle ON circle.id=membership.circle_id
+  WHERE membership.user_id=? AND membership.role='owner' AND membership.status='active'
+    AND circle.is_primary=1 AND circle.archived_at IS NULL
+  LIMIT 1`;
+export const OWNER_ROSTER_MAX_SQL=`SELECT membership.user_id
+  FROM circle_memberships membership
+  WHERE membership.circle_id=?
+  ORDER BY membership.user_id DESC
+  LIMIT 1`;
+export const OWNER_ROSTER_PAGE_SQL=`WITH owner AS (
+    SELECT membership.circle_id
+    FROM circle_memberships membership
+    JOIN circles circle ON circle.id=membership.circle_id
+    WHERE membership.user_id=? AND membership.role='owner' AND membership.status='active'
+      AND circle.is_primary=1 AND circle.archived_at IS NULL
+    LIMIT 1
+  ), candidates AS MATERIALIZED (
+    SELECT membership.user_id,membership.role,membership.status,
+      membership.joined_at,membership.updated_at
+    FROM owner
+    JOIN circle_memberships membership ON membership.circle_id=owner.circle_id
+    WHERE owner.circle_id=? AND membership.user_id>? AND membership.user_id<=?
+    ORDER BY membership.user_id
+    LIMIT ?
+  )
+  SELECT owner.circle_id AS authorized_circle_id,candidates.user_id,
+    account.id AS account_id,account.display_name,account.color,account.is_demo,candidates.role,candidates.status,
+    candidates.joined_at,candidates.updated_at
+  FROM owner
+  LEFT JOIN candidates ON 1=1
+  LEFT JOIN auth_accounts account ON account.id=candidates.user_id
+  ORDER BY candidates.user_id`;
+
 export class MemberRosterQueryError extends Error{
   constructor(code){ super(code); this.name='MemberRosterQueryError'; this.code=code; }
 }
@@ -139,70 +174,35 @@ export async function listCircleMembersForOwner(db,{actorUserId,cursor=null,sear
     throw new MemberRosterQueryError('invalid_cursor');
   }
   const effectiveSearch=decoded?.q??normalizedSearch;
-  const scope=await db.execute({
-    sql:`WITH owner AS (
-        SELECT membership.circle_id
-        FROM circle_memberships membership
-        JOIN circles circle ON circle.id=membership.circle_id
-        WHERE membership.user_id=? AND membership.role='owner' AND membership.status='active'
-          AND circle.is_primary=1 AND circle.archived_at IS NULL
-        LIMIT 1
-      )
-      SELECT owner.circle_id,COALESCE(MAX(membership.user_id),0) AS snapshot_max
-      FROM owner
-      LEFT JOIN circle_memberships membership ON membership.circle_id=owner.circle_id
-      GROUP BY owner.circle_id`,
-    args:[actor],
-  });
+  const scope=await db.execute({sql:OWNER_ROSTER_SCOPE_SQL,args:[actor]});
   if(scope.rows?.length!==1) return Object.freeze({ok:false,reason:'owner_required'});
   const circleId=positiveInteger(Number(scope.rows[0].circle_id));
-  const currentMax=Number(scope.rows[0].snapshot_max);
-  if(!circleId||!Number.isSafeInteger(currentMax)||currentMax<0) throw new Error('invalid owner roster scope');
+  if(!circleId) throw new Error('invalid owner roster scope');
   if(decoded&&decoded.c!==circleId) throw new MemberRosterQueryError('invalid_cursor');
-  const snapshotMax=decoded?.m??currentMax;
+  let snapshotMax=decoded?.m;
+  if(snapshotMax===undefined){
+    const maximum=await db.execute({sql:OWNER_ROSTER_MAX_SQL,args:[circleId]});
+    snapshotMax=maximum.rows?.length?Number(maximum.rows[0].user_id):0;
+  }
+  if(!Number.isSafeInteger(snapshotMax)||snapshotMax<0) throw new Error('invalid owner roster scope');
   const afterId=decoded?.n??0;
   const result=await db.execute({
-    sql:`WITH owner AS (
-        SELECT membership.circle_id
-        FROM circle_memberships membership
-        JOIN circles circle ON circle.id=membership.circle_id
-        WHERE membership.user_id=? AND membership.role='owner' AND membership.status='active'
-          AND circle.is_primary=1 AND circle.archived_at IS NULL
-        LIMIT 1
-      )
-      SELECT membership.user_id,account.display_name,account.color,membership.role,membership.status,
-        membership.joined_at,membership.updated_at
-      FROM owner
-      JOIN circle_memberships membership ON membership.circle_id=owner.circle_id
-      JOIN auth_accounts account ON account.id=membership.user_id
-      WHERE owner.circle_id=? AND membership.user_id>? AND membership.user_id<=?
-        AND COALESCE(account.is_demo,0)=0
-      ORDER BY membership.user_id
-      LIMIT ?`,
+    sql:OWNER_ROSTER_PAGE_SQL,
     args:[actor,circleId,afterId,snapshotMax,MEMBER_SCAN_LIMIT+1],
   });
-  // A revoked owner and an exhausted page both produce no member rows. Recheck
-  // the owner in the same scoped statement when empty so revocation cannot be
-  // mistaken for a successful empty page.
-  if(!result.rows?.length){
-    const access=await db.execute({
-      sql:`SELECT 1 AS allowed FROM circle_memberships membership
-        JOIN circles circle ON circle.id=membership.circle_id
-        WHERE membership.user_id=? AND membership.circle_id=? AND membership.role='owner'
-          AND membership.status='active' AND circle.is_primary=1 AND circle.archived_at IS NULL
-        LIMIT 1`,
-      args:[actor,circleId],
-    });
-    if(access.rows?.length!==1) return Object.freeze({ok:false,reason:'owner_required'});
-  }
-  const candidates=(result.rows||[]).slice(0,MEMBER_SCAN_LIMIT).map(publicMember).filter(Boolean);
+  if(!result.rows?.length) return Object.freeze({ok:false,reason:'owner_required'});
+  const rawCandidates=result.rows.filter(row=>positiveInteger(Number(row?.user_id)));
+  const candidateRows=rawCandidates.slice(0,MEMBER_SCAN_LIMIT);
+  const candidates=candidateRows
+    .filter(row=>positiveInteger(Number(row?.account_id))&&Number(row?.is_demo)===0)
+    .map(publicMember).filter(Boolean);
   const matching=effectiveSearch
     ?candidates.filter(member=>normalizeMemberSearch(member.display_name).includes(effectiveSearch))
     :candidates;
   const members=matching.slice(0,limit);
   let nextAfter=0;
   if(matching.length>limit) nextAfter=members.at(-1)?.id||0;
-  else if((result.rows||[]).length>MEMBER_SCAN_LIMIT) nextAfter=candidates.at(-1)?.id||0;
+  else if(rawCandidates.length>MEMBER_SCAN_LIMIT) nextAfter=positiveInteger(Number(candidateRows.at(-1)?.user_id))||0;
   const hasMore=positiveInteger(nextAfter)!==null&&nextAfter<snapshotMax;
   const nextCursor=hasMore?encodeRosterCursor({v:1,a:actor,c:circleId,m:snapshotMax,n:nextAfter,q:effectiveSearch},cursorSecret):null;
   return Object.freeze({
@@ -210,7 +210,7 @@ export async function listCircleMembersForOwner(db,{actorUserId,cursor=null,sear
     members:Object.freeze(members),
     has_more:hasMore,
     next_cursor:nextCursor,
-    scanned:candidates.length,
+    scanned:candidateRows.length,
   });
 }
 

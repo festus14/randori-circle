@@ -8,6 +8,9 @@ import { createClient } from '@libsql/client';
 import {
   MEMBER_PAGE_MAX,
   MemberRosterQueryError,
+  OWNER_ROSTER_MAX_SQL,
+  OWNER_ROSTER_PAGE_SQL,
+  OWNER_ROSTER_SCOPE_SQL,
   changeCircleMemberStatus,
   leaveCircle,
   listCircleMembersForOwner,
@@ -92,18 +95,21 @@ test('owner listing is private, bounded, and includes inactive members without e
   assert.deepEqual(await listCircleMembersForOwner(db,{actorUserId:4,cursorSecret:JWT_SECRET}),{ok:false,reason:'owner_required'});
 });
 
-test('the roster range is served by the circle and user membership index',async()=>{
+test('each exact roster statement is bounded and served by membership indexes',async()=>{
   const {db}=await fixture();
-  const plan=await db.execute(`EXPLAIN QUERY PLAN
-    SELECT membership.user_id,account.display_name
-    FROM circle_memberships membership
-    JOIN auth_accounts account ON account.id=membership.user_id
-    WHERE membership.circle_id=10 AND membership.user_id>0 AND membership.user_id<=999999
-      AND COALESCE(account.is_demo,0)=0
-    ORDER BY membership.user_id LIMIT 201`);
-  const details=plan.rows.map(row=>String(row.detail||'')).join('\n');
-  assert.match(details,/SEARCH membership USING (?:COVERING )?INDEX .*circle_memberships.*\(circle_id=\? AND user_id>\? AND user_id<\?\)/i);
-  assert.doesNotMatch(details,/SCAN membership/i);
+  const [scope,max,page]=await Promise.all([
+    db.execute({sql:`EXPLAIN QUERY PLAN ${OWNER_ROSTER_SCOPE_SQL}`,args:[1]}),
+    db.execute({sql:`EXPLAIN QUERY PLAN ${OWNER_ROSTER_MAX_SQL}`,args:[10]}),
+    db.execute({sql:`EXPLAIN QUERY PLAN ${OWNER_ROSTER_PAGE_SQL}`,args:[1,10,0,999999,201]}),
+  ]);
+  const scopeDetails=scope.rows.map(row=>String(row.detail||'')).join('\n');
+  const maxDetails=max.rows.map(row=>String(row.detail||'')).join('\n');
+  const pageDetails=page.rows.map(row=>String(row.detail||'')).join('\n');
+  assert.match(scopeDetails,/SEARCH membership USING INDEX idx_circle_memberships_(?:user_active|circle_active)/i);
+  assert.match(maxDetails,/SEARCH membership USING COVERING INDEX .*circle_memberships.*\(circle_id=\?\)/i);
+  assert.match(pageDetails,/MATERIALIZE candidates/i);
+  assert.match(pageDetails,/SEARCH membership USING INDEX .*circle_memberships.*\(circle_id=\? AND user_id>\? AND user_id<\?\)/i);
+  assert.doesNotMatch(`${scopeDetails}\n${maxDetails}\n${pageDetails}`,/SCAN membership/i);
 });
 
 test('an owner pages through more than 500 members without gaps when status changes between pages',async()=>{
@@ -163,6 +169,35 @@ test('display-name search is bounded, private, cursor-bound, and reaches late ma
   }while(cursor);
   assert.ok(pages>=3);
   assert.deepEqual(found.map(member=>[member.id,member.display_name]),[[1499,'Ada Search Target']]);
+});
+
+test('demo-account filtering cannot make one page scan beyond the raw candidate cap',async()=>{
+  const {db}=await fixture();
+  await db.execute(`WITH RECURSIVE sequence(id) AS (
+      VALUES(1000) UNION ALL SELECT id+1 FROM sequence WHERE id<1249
+    ) INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_demo)
+      SELECT id,'demo-'||id||'@example.test','x','Demo '||id,'#123456',1 FROM sequence`);
+  await db.execute(`WITH RECURSIVE sequence(id) AS (
+      VALUES(1000) UNION ALL SELECT id+1 FROM sequence WHERE id<1249
+    ) INSERT INTO circle_memberships (circle_id,user_id,role,status)
+      SELECT 10,id,'member','active' FROM sequence`);
+  await db.execute(`INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_demo)
+    VALUES (1300,'target@example.test','x','Bounded Target','#123456',0)`);
+  await db.execute(`INSERT INTO circle_memberships (circle_id,user_id,role,status)
+    VALUES (10,1300,'member','active')`);
+
+  const first=await listCircleMembersForOwner(db,{
+    actorUserId:1,search:'bounded target',cursorSecret:JWT_SECRET,limit:10,
+  });
+  assert.equal(first.scanned,200);
+  assert.deepEqual(first.members,[]);
+  assert.equal(first.has_more,true);
+  const second=await listCircleMembersForOwner(db,{
+    actorUserId:1,search:'bounded target',cursor:first.next_cursor,cursorSecret:JWT_SECRET,limit:10,
+  });
+  assert.ok(second.scanned<=200);
+  assert.deepEqual(second.members.map(member=>member.id),[1300]);
+  assert.equal(second.has_more,false);
 });
 
 test('malformed, tampered, reused, and cross-actor cursors fail opaquely',async()=>{

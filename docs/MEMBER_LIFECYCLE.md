@@ -50,10 +50,16 @@ must authenticate again after reactivation.
   snapshot ceiling, and an authenticated AES-GCM cursor bound to the actor,
   circle, and normalized search. Role/status changes therefore cannot move a
   row across page boundaries. Each request reads at most 201 indexed
-  `(circle_id, user_id)` candidates and returns at most 100 members (50 by
-  default). Search compares normalized display names only; the query never
+  `(circle_id, user_id)` candidates before joining/filtering accounts and
+  returns at most 100 members (50 by default). The first request obtains its
+  snapshot ceiling with a reverse primary-key seek; continuations use the
+  encrypted ceiling and do not recompute an aggregate. Search compares normalized display names only; the query never
   reads or projects the account email field. A sparse search can return an empty page with a next
   cursor, keeping database work bounded while allowing the owner to continue.
+- A roster 401/403 clears every retained row and control before re-resolving
+  the actor's circle role. Only transient failures preserve an already loaded
+  page. A render epoch invalidates a delayed initial load and starts a new one,
+  so authentication refreshes cannot strand the roster in a busy state.
 
 The existing role/status columns, audit table, session revocation fields, and
 invitation status model are sufficient. This increment intentionally adds no

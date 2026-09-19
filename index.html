@@ -1434,7 +1434,9 @@ p{margin:0}
       if(!r.ok){
         try{ window._randori_log && window._randori_log.warn('api_fail', path+' -> '+r.status, {status:r.status, body: (j && (j.error||j.message||'')).toString().slice(0,400), path}); }catch{}
         try{ if(window.Sentry) Sentry.captureMessage('api_fail '+path, {level:'warning', tags:{event:'api_fail', path, status:r.status}}); }catch{}
-        throw j;
+        const problem=j&&typeof j==='object'?j:{error:'request failed'};
+        problem.http_status=r.status;
+        throw problem;
       }
       try{
         const dur = Math.round(((typeof performance!=='undefined'&&performance.now?performance.now():Date.now())-_apiStart));
@@ -2956,6 +2958,7 @@ async function refreshMe(){
   let circleRosterRequest=0;
   let circleRosterOwnerId=null;
   let circleRosterLoading=false;
+  let circleRosterLoadEpoch=0;
   let circleRosterState={query:'',members:[],nextCursor:null,hasMore:false,loaded:false};
   let latestInviteUrl=null;
   let latestInviteId=null;
@@ -2971,7 +2974,7 @@ async function refreshMe(){
   function resetOwnerInvites({allowRosterPreservation=true}={}){
     const currentUserId=Number(me?.id||me?.uid);
     const preserveRoster=allowRosterPreservation&&Number.isSafeInteger(currentUserId)&&currentUserId===circleRosterOwnerId
-      &&(circleRosterState.loaded||circleRosterLoading);
+      &&(circleRosterState.loaded||(circleRosterLoading&&circleRosterLoadEpoch===circleRenderEpoch));
     if(preserveRoster) return;
     activeCircleRole=null;
     updatePairingRunAccess();
@@ -2981,6 +2984,7 @@ async function refreshMe(){
     circleRosterRequest+=1;
     circleRosterOwnerId=null;
     circleRosterLoading=false;
+    circleRosterLoadEpoch=0;
     circleRosterState={query:'',members:[],nextCursor:null,hasMore:false,loaded:false};
     if(!Number.isSafeInteger(currentUserId)||currentUserId!==latestInviteOwnerId) clearLatestInvite();
     if(circleOwnerPanel){ circleOwnerPanel.hidden=true; circleOwnerPanel.style.display='none'; }
@@ -3233,6 +3237,7 @@ async function refreshMe(){
       if(circleLifecycleStatus) circleLifecycleStatus.textContent=action==='transfer'?'Ownership transferred.':action==='reactivate'?'Member reactivated.':'Member deactivated and signed out.';
       circleRosterState.loaded=false;
       circleRosterLoading=false;
+      circleRosterLoadEpoch=0;
       await renderPeople();
       await renderPairs();
       return true;
@@ -3303,15 +3308,17 @@ async function refreshMe(){
     const normalizedQuery=String(query||'').normalize('NFKC').trim().replace(/\s+/gu,' ').slice(0,80);
     const cursor=append?circleRosterState.nextCursor:null;
     if(append&&!cursor) return false;
+    const hadLoadedRoster=circleRosterOwnerId===actorId&&circleRosterState.loaded;
     const requestId=++circleRosterRequest;
     circleRosterOwnerId=actorId;
     circleRosterLoading=true;
+    circleRosterLoadEpoch=epoch;
     circleManageMembers.hidden=false;
     circleManageMembers.setAttribute('aria-busy','true');
     if(circleMemberSearchForm) circleMemberSearchForm.hidden=false;
     if(circleMembersLoadMore){ circleMembersLoadMore.disabled=true; circleMembersLoadMore.textContent=append?'Loading more…':'Load more members'; }
     if(!append){
-      circleRosterState={query:normalizedQuery,members:[],nextCursor:null,hasMore:false,loaded:false};
+      circleRosterState={query:normalizedQuery,members:[],nextCursor:null,hasMore:false,loaded:hadLoadedRoster};
       circleManageMembers.replaceChildren();
       const loading=document.createElement('div'); loading.className='small muted'; loading.textContent=normalizedQuery?'Searching members…':'Loading member controls…'; circleManageMembers.appendChild(loading);
     }
@@ -3320,13 +3327,14 @@ async function refreshMe(){
       const params=new URLSearchParams({limit:'50',q:normalizedQuery});
       if(cursor) params.set('cursor',cursor);
       const result=await api(`/api/members?${params.toString()}`,{method:'GET'});
-      if(requestId!==circleRosterRequest||epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==actorId) return false;
+      if(requestId!==circleRosterRequest||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==actorId) return false;
       if(!validRosterResponse(result)) throw new Error('invalid member response');
       const combined=append?[...circleRosterState.members,...result.members]:result.members;
       const unique=[]; const seen=new Set();
       combined.forEach(member=>{ const id=Number(member?.id); if(Number.isSafeInteger(id)&&id>0&&!seen.has(id)){ seen.add(id); unique.push(member); } });
       circleRosterOwnerId=actorId;
       circleRosterLoading=false;
+      circleRosterLoadEpoch=0;
       circleRosterState={query:normalizedQuery,members:unique,nextCursor:result.next_cursor,hasMore:result.has_more,loaded:true};
       renderManagedMemberRows(unique);
       circleManageMembers.setAttribute('aria-busy','false');
@@ -3343,9 +3351,18 @@ async function refreshMe(){
         circleLifecycleStatus.textContent='Owner controls are ready.';
       }
       return true;
-    }catch{
-      if(requestId!==circleRosterRequest||epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==actorId) return false;
+    }catch(error){
+      if(requestId!==circleRosterRequest||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==actorId) return false;
       circleRosterLoading=false;
+      circleRosterLoadEpoch=0;
+      const denied=[401,403].includes(Number(error?.http_status))
+        &&['authentication required','circle owner required'].includes(String(error?.error||''));
+      if(denied){
+        resetOwnerInvites({allowRosterPreservation:false});
+        if(circleLifecycleStatus) circleLifecycleStatus.textContent='Roster access changed. Rechecking your circle role…';
+        await renderPeople({skipManagedRoster:true});
+        return false;
+      }
       circleManageMembers.setAttribute('aria-busy','false');
       if(!append){
         circleManageMembers.replaceChildren();
@@ -3377,7 +3394,7 @@ async function refreshMe(){
     loadManagedMembers(circleRenderEpoch,{append:true});
   });
 
-  async function showCircleLifecycle(role,epoch){
+  async function showCircleLifecycle(role,epoch,{loadRoster=true}={}){
     if(!circleLifecyclePanel||!['owner','member'].includes(role)) return;
     circleLifecyclePanel.hidden=false; circleLifecyclePanel.style.display='grid';
     if(circleLifecycleHelp) circleLifecycleHelp.textContent=role==='owner'
@@ -3389,6 +3406,7 @@ async function refreshMe(){
       circleRosterRequest+=1;
       circleRosterOwnerId=null;
       circleRosterLoading=false;
+      circleRosterLoadEpoch=0;
       circleRosterState={query:'',members:[],nextCursor:null,hasMore:false,loaded:false};
       if(circleManageMembers) circleManageMembers.replaceChildren();
       if(circleMemberSearch) circleMemberSearch.value='';
@@ -3397,11 +3415,16 @@ async function refreshMe(){
       if(circleMembersLoadMore) circleMembersLoadMore.hidden=true;
     }
     if(circleLeave){ circleLeave.disabled=false; circleLeave.textContent='Leave circle'; }
-    if(role==='owner'&&circleRosterState.loaded&&circleRosterOwnerId===Number(me?.id||me?.uid)){
+    if(role==='owner'&&!loadRoster){
+      if(circleManageMembers) circleManageMembers.hidden=true;
+      if(circleMemberSearchForm) circleMemberSearchForm.hidden=true;
+      if(circleMembersLoadMore) circleMembersLoadMore.hidden=true;
+      if(circleLifecycleStatus) circleLifecycleStatus.textContent='Member controls are no longer authorized. Refresh the circle to try again.';
+    }else if(role==='owner'&&circleRosterState.loaded&&circleRosterOwnerId===Number(me?.id||me?.uid)){
       circleManageMembers.hidden=false;
       circleMemberSearchForm.hidden=false;
       circleMembersLoadMore.hidden=!circleRosterState.hasMore;
-    }else if(role==='owner'&&!circleRosterLoading) await loadManagedMembers(epoch);
+    }else if(role==='owner'&&!(circleRosterLoading&&circleRosterLoadEpoch===epoch)) await loadManagedMembers(epoch);
     else if(circleLifecycleStatus&&!hasCircleLifecycleNotice()) circleLifecycleStatus.textContent='You are an active circle member.';
   }
 
@@ -3450,7 +3473,7 @@ async function refreshMe(){
     }
   });
 
-  async function renderPeople(){
+  async function renderPeople({skipManagedRoster=false}={}){
     const epoch=++circleRenderEpoch;
     resetOwnerInvites();
     setLegacyCircleControls(false);
@@ -3527,7 +3550,7 @@ async function refreshMe(){
         if(circleInviteLink) circleInviteLink.hidden=!latestInviteUrl;
         await loadOwnerInvitations(epoch);
       }
-      await showCircleLifecycle(gatedRole,epoch);
+      await showCircleLifecycle(gatedRole,epoch,{loadRoster:!skipManagedRoster});
     }catch{
       if(epoch!==circleRenderEpoch||Number(me?.id||me?.uid)!==userId) return;
       renderCircleFailure();

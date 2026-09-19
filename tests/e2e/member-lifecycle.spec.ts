@@ -542,3 +542,96 @@ test('display-name search ignores stale responses and exposes screen-reader stat
   await page.getByRole('button',{name:'Clear'}).click();
   await expect(input).toBeFocused();
 });
+
+test('a revoked owner loses retained roster controls when append is denied',async({page})=>{
+  let revoked=false;
+  await mockApi(page,{
+    '/api/auth/me':{ok:true,user:owner},
+    '/api/profile':{ok:true,user:owner},
+    '/api/circle':()=>({
+      ok:true,circle_meta:{id:10,public_id:'circle_e2e',name:'E2E Circle'},
+      membership:{role:revoked?'member':'owner'},circle:[owner,member],count:2,
+    }),
+    '/api/invitations':{ok:true,invitations:[],count:0},
+    '/api/members':request=>{
+      if(new URL(request.url()).searchParams.has('cursor')){
+        revoked=true;
+        return {_status:403,error:'circle owner required'};
+      }
+      return {ok:true,members:[{...owner,role:'owner',status:'active'}],count:1,has_more:true,next_cursor:'next-page',scanned:2};
+    },
+  });
+  await resetClientState(page,true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await expect(page.locator('#view-dashboard')).toBeVisible();
+  await page.locator('[data-tab="circle"]').click();
+  await expect(page.getByTestId('circle-members-load-more')).toBeEnabled();
+  await page.getByTestId('circle-members-load-more').click();
+  await expect(page.locator('#circleRoleLabel')).toHaveText('member');
+  await expect(page.getByTestId('circle-manage-members')).toBeHidden();
+  await expect(page.locator('[data-testid="circle-member-row"]')).toHaveCount(0);
+  await expect(page.getByTestId('circle-member-search-form')).toBeHidden();
+});
+
+test('an expired session clears retained search results when search is denied',async({page})=>{
+  let expired=false;
+  await mockApi(page,{
+    '/api/auth/me':{ok:true,user:owner},
+    '/api/profile':{ok:true,user:owner},
+    '/api/circle':()=>expired?{_status:401,error:'authentication required'}:{
+      ok:true,circle_meta:{id:10,public_id:'circle_e2e',name:'E2E Circle'},
+      membership:{role:'owner'},circle:[owner],count:1,
+    },
+    '/api/invitations':{ok:true,invitations:[],count:0},
+    '/api/members':request=>{
+      const q=new URL(request.url()).searchParams.get('q')||'';
+      if(q){ expired=true; return {_status:401,error:'authentication required'}; }
+      return {ok:true,members:[{...owner,role:'owner',status:'active'}],count:1,has_more:false,next_cursor:null,scanned:1};
+    },
+  });
+  await resetClientState(page,true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await expect(page.locator('#view-dashboard')).toBeVisible();
+  await page.locator('[data-tab="circle"]').click();
+  const search=page.getByTestId('circle-member-search');
+  await expect(search).toBeVisible();
+  await search.fill('owner');
+  await search.press('Enter');
+  await expect(page.getByTestId('circle-lifecycle')).toBeHidden();
+  await expect(page.locator('[data-testid="circle-member-row"]')).toHaveCount(0);
+  await expect(page.getByTestId('circle-member-search-form')).toBeHidden();
+});
+
+test('an auth refresh restarts a delayed initial roster without a stuck loader',async({page})=>{
+  let calls=0;
+  let releaseFirst:undefined|(()=>void);
+  await mockApi(page,{
+    '/api/auth/me':{ok:true,user:owner},
+    '/api/profile':{ok:true,user:owner},
+    '/api/circle':{
+      ok:true,circle_meta:{id:10,public_id:'circle_e2e',name:'E2E Circle'},
+      membership:{role:'owner'},circle:[owner],count:1,
+    },
+    '/api/invitations':{ok:true,invitations:[],count:0},
+    '/api/members':async()=>{
+      calls+=1;
+      if(calls===1){
+        await new Promise<void>(resolve=>{ releaseFirst=resolve; });
+        return {ok:true,members:[{...owner,display_name:'Stale Initial',role:'owner',status:'active'}],count:1,has_more:false,next_cursor:null,scanned:1};
+      }
+      return {ok:true,members:[{...owner,display_name:'Fresh Restart',role:'owner',status:'active'}],count:1,has_more:false,next_cursor:null,scanned:1};
+    },
+  });
+  await resetClientState(page,true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await expect.poll(()=>Boolean(releaseFirst)).toBe(true);
+  await page.evaluate(()=>window.dispatchEvent(new Event('randori:auth-refreshed')));
+  await expect.poll(()=>calls).toBeGreaterThanOrEqual(2);
+  await page.locator('[data-tab="circle"]').click();
+  await expect(page.getByText('Fresh Restart',{exact:true})).toBeVisible();
+  await expect(page.getByTestId('circle-manage-members')).toHaveAttribute('aria-busy','false');
+  releaseFirst?.();
+  await page.waitForTimeout(50);
+  await expect(page.getByText('Fresh Restart',{exact:true})).toBeVisible();
+  await expect(page.getByText('Stale Initial',{exact:true})).toHaveCount(0);
+});
