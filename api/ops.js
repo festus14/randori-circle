@@ -799,7 +799,7 @@ async function currentPairingResult(req,{
     allowLocalAppUrl:localRequest,
     // The isolated local runtime shares the application clock with its read
     // models; production remains pinned to the database-owned timestamp.
-    ...(localRequest?{now:new Date()}:{}),
+    ...(localRuntime&&localRequest?{now:new Date()}:{}),
   });
   let emailDelivery={summary:'pairing emails queued for outbox delivery'};
   try{
@@ -890,7 +890,13 @@ async function handleWeekly(req,res,{isDue=pairingCronIsDue}={}){
     }
   }
   let primary;
-  try{ primary=await currentPairingResult(req,{db,localRuntime:false,localRequest:false}); }
+  try{
+    // Keep production membership scope while allowing the verified loopback
+    // development transport to use its canonical HTTP origin.
+    primary=await currentPairingResult(req,{
+      db,localRuntime:false,localRequest:localRuntimeRequest(req),
+    });
+  }
   catch(error){ return pairingFailure(res,error); }
   if(secondaryOverflow){
     const failure=circlePairingFailure(secondaryOverflow);
