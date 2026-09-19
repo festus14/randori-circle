@@ -1268,6 +1268,7 @@ p{margin:0}
       activationState.status=response.ok&&data?.status==='verified'?'verified':String(data?.status||'unavailable');
       if(response.ok&&data?.user){
         me=data.user;
+        resetCircleControlForIdentityChange();
         try{ localStorage.setItem(ME_KEY,JSON.stringify(data.user)); }catch{}
       }
     }catch{ activationState.status='unavailable'; }
@@ -1344,6 +1345,7 @@ p{margin:0}
         invalidateAuthRefreshes();
         try{ localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(ME_KEY); }catch{}
         me=null;
+        resetCircleControlForIdentityChange();
         clearAvailability();
         try{ updateAuthUI(); }catch{}
         try{ window.dispatchEvent(new CustomEvent('randori:auth-refreshed',{detail:{signedIn:false,userId:null}})); }catch{}
@@ -1492,10 +1494,8 @@ async function refreshMe(){
       try{ localStorage.setItem(ME_KEY, JSON.stringify(me)); }catch{}
     }
     const refreshedUserId=Number(me?.id||me?.uid);
-    if(previousUserId!==refreshedUserId){
-      activeCircleContext=null;
-      activeCircleContextUserId=null;
-      circleContextRequest+=1;
+    if(previousUserId!==refreshedUserId||circleContextSwitching){
+      resetCircleControlForIdentityChange();
     }
     if(availabilityState.userId!==null
       &&(!Number.isSafeInteger(refreshedUserId)||refreshedUserId<1
@@ -2508,6 +2508,7 @@ async function refreshMe(){
       localStorage.removeItem('randori-last-room');
       localStorage.removeItem('randori-code');
       me=null;
+      resetCircleControlForIdentityChange();
       clearAvailability();
       // clear any in-memory video state quietly
       try{ if(typeof videoJoined!=='undefined' && videoJoined){ videoJoined=false; } }catch{}
@@ -2698,6 +2699,7 @@ async function refreshMe(){
       localStorage.removeItem(TOKEN_KEY);
       localStorage.setItem(ME_KEY,JSON.stringify(data.user));
       me=data.user;
+      resetCircleControlForIdentityChange();
       if(mode==='signup'&&authCapabilities.registrationMode==='local_invite'){
         window._randori_invite_flow?.complete?.();
       }
@@ -3027,8 +3029,8 @@ async function refreshMe(){
   let latestInviteOwnerId=null;
   const circleContextChannel=typeof BroadcastChannel==='function'?new BroadcastChannel('randori-circle-context-v1'):null;
 
-  function clearPrivateCircleViewForSwitch(){
-    circleContextSwitching=true;
+  function resetPrivateCircleControl({switching}){
+    circleContextSwitching=switching;
     circleControlEpoch+=1;
     circleRenderEpoch+=1;
     pairingRenderEpoch+=1;
@@ -3061,6 +3063,14 @@ async function refreshMe(){
       document.getElementById(id)?.replaceChildren();
     }
     return circleControlEpoch;
+  }
+
+  function clearPrivateCircleViewForSwitch(){
+    return resetPrivateCircleControl({switching:true});
+  }
+
+  function resetCircleControlForIdentityChange(){
+    return resetPrivateCircleControl({switching:false});
   }
 
   function renderCircleContextSelector(context){
@@ -3738,6 +3748,7 @@ async function refreshMe(){
       // because the follow-up identity refresh failed.
       invalidateAuthRefreshes();
       me=null;
+      resetCircleControlForIdentityChange();
       try{ localStorage.removeItem(ME_KEY); }catch{}
       clearAvailability();
       updateAuthUI();
