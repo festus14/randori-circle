@@ -352,6 +352,110 @@ test('multi-circle selection reloads into the chosen isolated roster and invitat
   await expect(page.getByTestId('circle-invites')).toContainText('secondary123');
 });
 
+for(const delayedAction of ['create','resend'] as const){
+  test(`a delayed invitation ${delayedAction} cannot restore old-circle secrets during a switch`,async({page})=>{
+    const invitationId='11111111-1111-4111-8111-111111111111';
+    let active:'circle-primary'|'circle-secondary'='circle-primary';
+    let contextVersion=1;
+    let markActionStarted!:()=>void;
+    let releaseAction!:()=>void;
+    const actionStarted=new Promise<void>(resolve=>{ markActionStarted=resolve; });
+    const actionGate=new Promise<void>(resolve=>{ releaseAction=resolve; });
+    let markSwitchStarted!:()=>void;
+    let releaseSwitch!:()=>void;
+    const switchStarted=new Promise<void>(resolve=>{ markSwitchStarted=resolve; });
+    const switchGate=new Promise<void>(resolve=>{ releaseSwitch=resolve; });
+    const circles=[
+      {id:10,public_id:'circle-primary',name:'Primary',role:'owner',is_primary:true},
+      {id:20,public_id:'circle-secondary',name:'Secondary',role:'owner',is_primary:false},
+    ];
+    await mockApi(page,{
+      '/api/auth/capabilities':{
+        ok:true,capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,multiCircleControlPlane:true},
+        registrationMode:'private_beta',
+      },
+      '/api/auth/me':{ok:true,user:owner},
+      '/api/profile':{ok:true,user:owner},
+      '/api/circles':async request=>{
+        if(request.method()==='PUT'){
+          markSwitchStarted();
+          await switchGate;
+          active='circle-secondary'; contextVersion=2;
+        }
+        return {ok:true,circles,active_circle:circles.find(circle=>circle.public_id===active),
+          context_version:contextVersion,selection_required:false};
+      },
+      '/api/circle':()=>({
+        ok:true,circle_meta:{id:active==='circle-primary'?10:20,public_id:active,name:active},
+        membership:{role:'owner'},circle:active==='circle-primary'?members:[members[0]],
+        count:active==='circle-primary'?2:1,circle_context_version:contextVersion,
+      }),
+      '/api/invitations':async request=>{
+        if(request.method()==='POST'&&delayedAction==='create'){
+          markActionStarted();
+          await actionGate;
+          return {_status:201,ok:true,invitation:{id:invitationId,status:'pending',
+            invite_url:`/invite#invite=${'I'.repeat(43)}`},circle_context_version:1};
+        }
+        return {ok:true,invitations:active==='circle-primary'?[{
+          id:invitationId,email_fingerprint:'primary-only',status:'pending',
+          expires_at:'2026-09-25T12:00:00.000Z',created_at:'2026-09-18T12:00:00.000Z',
+        }]:[],count:active==='circle-primary'?1:0,circle_context_version:contextVersion};
+      },
+      '/api/invitations/:id':async request=>{
+        if(request.method()==='POST'&&delayedAction==='resend'){
+          markActionStarted();
+          await actionGate;
+          return {ok:true,invitation:{id:invitationId,status:'pending',
+            invite_url:`/invite#invite=${'R'.repeat(43)}`},circle_context_version:1};
+        }
+        return {_status:404,error:'invitation not found'};
+      },
+      '/api/members':()=>({ok:true,members:[],count:0,has_more:false,next_cursor:null,
+        scanned:0,circle_context_version:contextVersion}),
+    });
+    await resetClientState(page,true,{},true);
+    await page.goto('/',{waitUntil:'domcontentloaded'});
+    await expect(page.locator('#view-dashboard')).toBeVisible();
+    await page.locator('[data-tab="circle"]').click();
+    const selector=page.getByTestId('circle-context-select');
+    await expect(selector).toHaveValue('circle-primary');
+    await expect(page.getByTestId('circle-invites')).toContainText('primary-only');
+
+    const actionResponse=page.waitForResponse(response=>{
+      const request=response.request();
+      const path=new URL(response.url()).pathname;
+      return request.method()==='POST'&&(delayedAction==='create'
+        ?path==='/api/invitations':path===`/api/invitations/${invitationId}`);
+    });
+    if(delayedAction==='create'){
+      await page.getByTestId('circle-invite-email').fill('delayed@example.test');
+      await page.getByTestId('circle-invite-create').click();
+    }else{
+      await page.getByTestId('circle-invite-resend').click();
+    }
+    await actionStarted;
+    const selecting=selector.selectOption('circle-secondary');
+    await switchStarted;
+    await expect(page.getByTestId('circle-invite-link')).toBeHidden();
+    await expect(page.getByTestId('circle-invites')).toBeEmpty();
+    await expect(page.locator('#circleOwnerPanel')).toBeHidden();
+
+    releaseAction();
+    const completed=await actionResponse;
+    await completed.finished();
+    await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>resolve())));
+    await expect(page.getByTestId('circle-invite-link')).toBeHidden();
+    await expect(page.getByTestId('circle-invites')).toBeEmpty();
+    await expect(page.locator('#circleOwnerPanel')).toBeHidden();
+
+    const reloaded=page.waitForEvent('domcontentloaded');
+    releaseSwitch();
+    await selecting;
+    await reloaded;
+  });
+}
+
 test('stale circle responses cannot render after the active context advances',async({page})=>{
   const staleMember={...members[1],id:99,display_name:'Wrong Circle Member',name:'Wrong Circle Member'};
   await mockApi(page,{

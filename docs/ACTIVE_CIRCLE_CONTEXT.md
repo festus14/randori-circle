@@ -38,8 +38,11 @@ disabled unless both `CIRCLE_MEMBERSHIP_ENABLED=true` and
   yet carry complete tenant ownership.
 
 The browser clears private circle and workspace state before reloading after a
-switch. It broadcasts the context change to other tabs so delayed circle-A
-responses cannot render under circle B.
+switch. Starting a switch advances a client control-plane epoch, so delayed
+roster, invitation, and member-mutation completions cannot restore circle-A
+state while the switch is pending. The browser also broadcasts the committed
+context change to other tabs so delayed circle-A responses cannot render under
+circle B.
 
 ## Rollout
 

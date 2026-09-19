@@ -389,6 +389,99 @@ test('cancel, expiry, actor change, and missing methods discard the one-time con
   expect(patchCount).toBe(6);
 });
 
+test('a delayed member mutation cannot restore an old-circle roster during a switch',async({page})=>{
+  let active:'circle-primary'|'circle-secondary'='circle-primary';
+  let contextVersion=1;
+  let circleReads=0;
+  let markPatchStarted!:()=>void;
+  let releasePatch!:()=>void;
+  const patchStarted=new Promise<void>(resolve=>{ markPatchStarted=resolve; });
+  const patchGate=new Promise<void>(resolve=>{ releasePatch=resolve; });
+  let markSwitchStarted!:()=>void;
+  let releaseSwitch!:()=>void;
+  const switchStarted=new Promise<void>(resolve=>{ markSwitchStarted=resolve; });
+  const switchGate=new Promise<void>(resolve=>{ releaseSwitch=resolve; });
+  const circles=[
+    {id:10,public_id:'circle-primary',name:'Primary',role:'owner',is_primary:true},
+    {id:20,public_id:'circle-secondary',name:'Secondary',role:'owner',is_primary:false},
+  ];
+  await mockApi(page,{
+    '/api/auth/capabilities':{
+      ok:true,
+      capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,multiCircleControlPlane:true},
+      registrationMode:'private_beta',
+    },
+    '/api/auth/me':{ok:true,user:owner},
+    '/api/profile':{ok:true,user:owner},
+    '/api/circles':async request=>{
+      if(request.method()==='PUT'){
+        markSwitchStarted();
+        await switchGate;
+        active='circle-secondary';
+        contextVersion=2;
+      }else{
+        circleReads+=1;
+      }
+      return {ok:true,circles,active_circle:circles.find(circle=>circle.public_id===active),
+        context_version:contextVersion,selection_required:false};
+    },
+    '/api/circle':()=>({
+      ok:true,circle_meta:{id:active==='circle-primary'?10:20,public_id:active,name:active},
+      membership:{role:'owner'},circle:active==='circle-primary'?[owner,member]:[owner],
+      count:active==='circle-primary'?2:1,circle_context_version:contextVersion,
+    }),
+    '/api/invitations':()=>({ok:true,invitations:[],count:0,circle_context_version:contextVersion}),
+    '/api/members':async request=>{
+      if(request.method()==='GET') return {ok:true,members:active==='circle-primary'?[
+        {...owner,role:'owner',status:'active'},
+        {...member,role:'member',status:'active'},
+      ]:[{...owner,role:'owner',status:'active'}],count:active==='circle-primary'?2:1,
+      has_more:false,next_cursor:null,scanned:active==='circle-primary'?2:1,
+      circle_context_version:contextVersion};
+      expect(request.method()).toBe('PATCH');
+      markPatchStarted();
+      await patchGate;
+      return {ok:true,action:'deactivate',member:{id:member.id,role:'member',status:'inactive'},
+        circle_context_version:1};
+    },
+  });
+  await resetClientState(page,true,{},true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await expect(page.locator('#view-dashboard')).toBeVisible();
+  await page.locator('[data-tab="circle"]').click();
+  const selector=page.getByTestId('circle-context-select');
+  await expect(selector).toHaveValue('circle-primary');
+  const target=page.locator('[data-testid="circle-member-row"][data-member-id="2"]');
+  await expect(target).toContainText('member • active');
+
+  const mutationResponse=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/members'
+    &&response.request().method()==='PATCH');
+  await target.getByRole('button',{name:'Deactivate Circle Member'}).click();
+  await confirmAction(page,/Deactivate Circle Member/);
+  await patchStarted;
+
+  const selecting=selector.selectOption('circle-secondary');
+  await switchStarted;
+  const readsAtSwitch=circleReads;
+  await expect(page.locator('[data-testid="circle-member-row"]')).toHaveCount(0);
+  await expect(page.getByTestId('circle-lifecycle')).toBeHidden();
+  await expect(page.locator('#circleOwnerPanel')).toBeHidden();
+
+  releasePatch();
+  const completed=await mutationResponse;
+  await completed.finished();
+  await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
+  expect(circleReads).toBe(readsAtSwitch);
+  await expect(page.locator('[data-testid="circle-member-row"]')).toHaveCount(0);
+  await expect(page.getByTestId('circle-lifecycle')).toBeHidden();
+  await expect(page.locator('#circleOwnerPanel')).toBeHidden();
+
+  const reloaded=page.waitForEvent('domcontentloaded');
+  releaseSwitch();
+  await selecting;
+  await reloaded;
+});
+
 test('a member can leave and is returned to signed-out state immediately',async({page})=>{
   let signedIn=true;
   const actions:string[]=[];
