@@ -72,11 +72,14 @@ does not enqueue email.
 
 ## Rollout and rollback
 
-1. Apply migration v13 with the protected migration workflow only after a fresh
-   backup/restore rehearsal proves the new tables are present and old data is
-   unchanged.
-2. Deploy with `SECONDARY_CIRCLE_COORDINATION_ENABLED=false` and verify the
-   existing primary/local journey.
+1. Use Step 2 of the central protected v13-then-v14 sequence in
+   [Active circle context](ACTIVE_CIRCLE_CONTEXT.md#rollout) as the sole
+   migration authority. Its fresh backup/restore rehearsal and separately
+   approved one-version applies must not be repeated from this runbook. Verify
+   the v13 tables are present and pre-existing application data is unchanged.
+2. With that sequence complete, keep
+   `SECONDARY_CIRCLE_COORDINATION_ENABLED=false` and verify the existing
+   primary/local journey.
 3. Enable the flag in staging for one secondary canary. Test opposite
    availability values, manual publication, selection switching, removal and
    demotion races, and absence of workspace requests/storage.
