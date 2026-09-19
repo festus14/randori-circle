@@ -336,7 +336,7 @@ test('operator workflow is manual, protected, latest-main-only, and shares datab
   assert.match(workflow,/CREDENTIAL_KEY_CONTROL_MUTATIONS_ENABLED: \$\{\{ vars\./);
   assert.match(workflow,/TURSO_PRODUCTION_DATABASE_HOST: \$\{\{ vars\./);
   assert.doesNotMatch(workflow,/continue-on-error:\s*true/);
-  assert.doesNotMatch(workflow,/JWT_SECRET:/);
+  assert.doesNotMatch(workflow,/JWT_SECRET/);
   const purposeSteps=[
     ['email activation','email-activation','EMAIL_VERIFICATION_ENCRYPTION'],
     ['password reset','password-reset','PASSWORD_RESET_ENCRYPTION'],
@@ -348,9 +348,13 @@ test('operator workflow is manual, protected, latest-main-only, and shares datab
     assert.notEqual(start,-1,`missing ${purpose} protected operation`);
     const next=workflow.indexOf('\n      - name:',start+1);
     const step=workflow.slice(start,next===-1?workflow.length:next);
+    const secretNames=[...step.matchAll(/\$\{\{\s*secrets\.([A-Z0-9_]+)\s*\}\}/g)]
+      .map(match=>match[1]).sort();
     assert.match(step,new RegExp(`if: inputs\\.purpose == '${purpose}'`));
     assert.match(step,new RegExp(`KEY_CONTROL_PURPOSE: ${purpose}`));
-    assert.match(step,new RegExp(`${prefix}_[A-Z_]+: \\$\\{\\{ secrets\\.`));
+    assert.deepEqual(secretNames,[`${prefix}_KEY`,`${prefix}_PREVIOUS_KEYS`,
+      'TURSO_AUTH_TOKEN','TURSO_DATABASE_URL'].sort(),
+    `${purpose} must receive only its own ring and database credentials`);
     for(const [,otherPurpose,otherPrefix] of purposeSteps){
       if(otherPurpose!==purpose) assert.doesNotMatch(step,new RegExp(`${otherPrefix}_[A-Z_]+:`),
         `${purpose} must not receive the ${otherPurpose} key ring`);
