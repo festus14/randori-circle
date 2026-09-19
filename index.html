@@ -3304,6 +3304,7 @@ async function refreshMe(){
   async function loadManagedMembers(epoch=circleRenderEpoch,{append=false,query=circleRosterState.query}={}){
     if(activeCircleRole!=='owner'||!me||!circleManageMembers) return false;
     const actorId=Number(me.id||me.uid);
+    const requestAuthEpoch=authSessionEpoch;
     const noticeGeneration=circleLifecycleNoticeGeneration;
     const normalizedQuery=String(query||'').normalize('NFKC').trim().replace(/\s+/gu,' ').slice(0,80);
     const cursor=append?circleRosterState.nextCursor:null;
@@ -3352,17 +3353,21 @@ async function refreshMe(){
       }
       return true;
     }catch(error){
-      if(requestId!==circleRosterRequest||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==actorId) return false;
-      circleRosterLoading=false;
-      circleRosterLoadEpoch=0;
-      const denied=[401,403].includes(Number(error?.http_status))
-        &&['authentication required','circle owner required'].includes(String(error?.error||''));
-      if(denied){
+      // This request began while the client held an authenticated owner view.
+      // Treat the endpoint's status as authoritative: gateways and future
+      // server versions may intentionally replace the response copy, but a
+      // 401/403 must never leave privileged roster data on screen.
+      const denied=[401,403].includes(Number(error?.http_status));
+      const currentActorId=Number(me?.id||me?.uid);
+      if(denied&&requestAuthEpoch===authSessionEpoch&&currentActorId===actorId){
         resetOwnerInvites({allowRosterPreservation:false});
         if(circleLifecycleStatus&&!hasCircleLifecycleNotice(actorId)) circleLifecycleStatus.textContent='Roster access changed. Rechecking your circle role…';
         await renderPeople({skipManagedRoster:true});
         return false;
       }
+      if(requestId!==circleRosterRequest||activeCircleRole!=='owner'||currentActorId!==actorId) return false;
+      circleRosterLoading=false;
+      circleRosterLoadEpoch=0;
       circleManageMembers.setAttribute('aria-busy','false');
       if(!append){
         circleManageMembers.replaceChildren();
