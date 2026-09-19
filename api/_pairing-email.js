@@ -136,7 +136,12 @@ function secondaryPairingRowIsValid(row,payload){
   }
   return groupSize===2&&[0,1].includes(memberPosition)&&Number(row.member_count)===2
     &&Number(row.is_solo)===0&&userAId!==null&&userBId!==null&&userAId!==userBId
-    &&(memberPosition===0?userAId===payload.userId:userBId===payload.userId);
+    &&(memberPosition===0?userAId===payload.userId:userBId===payload.userId)
+    &&positiveId(row.partner_eligibility_user_id)===(memberPosition===0?userBId:userAId)
+    &&Number(row.partner_eligibility_available)===1
+    &&Number(row.partner_eligibility_group_position)===groupPosition
+    &&Number(row.partner_eligibility_group_size)===2
+    &&Number(row.partner_eligibility_member_position)===(memberPosition===0?1:0);
 }
 
 async function resolveSecondaryPairingEmail(db,payload){
@@ -157,6 +162,11 @@ async function resolveSecondaryPairingEmail(db,payload){
         eligibility.member_position,group_row.id AS group_id,
         group_row.position AS group_position_stored,group_row.member_count,
         group_row.user_a_id,group_row.user_b_id,group_row.is_solo,
+        partner_eligibility.user_id AS partner_eligibility_user_id,
+        partner_eligibility.is_available AS partner_eligibility_available,
+        partner_eligibility.group_position AS partner_eligibility_group_position,
+        partner_eligibility.group_size AS partner_eligibility_group_size,
+        partner_eligibility.member_position AS partner_eligibility_member_position,
         circle.name AS circle_name,circle.is_primary,circle.archived_at,
         account.email,account.display_name,account.is_demo,
         membership.status AS membership_status,
@@ -193,6 +203,13 @@ async function resolveSecondaryPairingEmail(db,payload){
         ON group_row.publication_id=publication.id AND group_row.scope_key=publication.scope_key
           AND group_row.circle_id=publication.circle_id AND group_row.cycle_key=publication.cycle_key
           AND (group_row.user_a_id=? OR group_row.user_b_id=?)
+      LEFT JOIN circle_pairing_eligibility partner_eligibility
+        ON partner_eligibility.publication_id=publication.id
+          AND partner_eligibility.scope_key=publication.scope_key
+          AND partner_eligibility.circle_id=publication.circle_id
+          AND partner_eligibility.cycle_key=publication.cycle_key
+          AND partner_eligibility.user_id=CASE
+            WHEN group_row.user_a_id=? THEN group_row.user_b_id ELSE group_row.user_a_id END
       LEFT JOIN circles circle ON circle.id=publication.circle_id
       LEFT JOIN auth_accounts account ON account.id=?
       LEFT JOIN circle_memberships membership
@@ -204,7 +221,7 @@ async function resolveSecondaryPairingEmail(db,payload){
         ON partner_membership.circle_id=publication.circle_id AND partner_membership.user_id=partner.id
       WHERE publication.id=? LIMIT 3`,
     args:[payload.userId,payload.userId,payload.userId,payload.userId,payload.userId,
-      payload.userId,payload.userId,payload.publicationId],
+      payload.userId,payload.userId,payload.userId,payload.publicationId],
   });
   const rows=result.rows||[];
   if(rows.length!==1||!secondaryPairingRowIsValid(rows[0],payload)){
