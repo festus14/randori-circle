@@ -57,6 +57,12 @@ skipped when an earlier stage already reports a deadline. An incomplete metrics 
 `metrics_complete: false` and `null` backlog/dead-letter values rather than a
 false zero. `logging_complete` makes best-effort telemetry equally explicit.
 
+Primary room mail (v1) and secondary dashboard-only pairing mail (v2) share
+the `pairing.email.requested` type. Adding secondary delivery therefore does
+not add a sixth scheduler lane or weaken the one-per-type first round. The v2
+payload contains only publication, circle, user, and result-kind identifiers;
+dispatch resolves and revalidates current delivery data before provider access.
+
 libSQL does not expose per-statement cancellation. A statement admitted before
 the cutoff can therefore settle after the application deadline; the worker
 does not intentionally start or await further work after its allotted window.

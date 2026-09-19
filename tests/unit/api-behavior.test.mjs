@@ -259,6 +259,7 @@ mock.module('../../api/_pairing-readiness.js',{
 mock.module('../../api/_pairing-email.js',{
   exports:{
     PAIRING_EMAIL_EVENT_TYPE:'pairing.email.requested',
+    SECONDARY_PAIRING_EMAIL_EVENT_VERSION:2,
     createPairingEmailHandler:()=>async()=>({}),
     createResendEmailSender:()=>async()=>({providerName:'resend',providerMessageId:'mock-message'}),
     migrateLegacyPairingEmails:async(_db,options)=>{
@@ -397,7 +398,7 @@ const [
   { default: aiHandler },
   { default: authHandler, localPasswordSignupEnabled },
   { default: dataHandler },
-  { default: opsHandler, deliverPendingOutbox },
+  { default: opsHandler, createOpsHandler, deliverPendingOutbox },
   { default: videoHandler },
   { createEvaluationSuite, listPublicExercises },
   { localIdentityAdapterEnabled },
@@ -551,7 +552,8 @@ beforeEach(() => {
     'NEXT_PUBLIC_SENTRY_DSN', 'SENTRY_DSN',
     'ALLOW_OPEN_SIGNUP', 'SIGNUP_ALLOWLIST', 'LEETCODE_INGESTION_AUTHORIZED',
     'AUTH_SCHEMA_BOOTSTRAP_ENABLED', 'CIRCLE_MEMBERSHIP_ENABLED', 'MULTI_CIRCLE_CONTROL_PLANE_ENABLED',
-    'MULTI_CIRCLE_AVAILABILITY_ENABLED', 'SECONDARY_CIRCLE_COORDINATION_ENABLED', 'RANDORI_LOCAL_RUNTIME',
+    'MULTI_CIRCLE_AVAILABILITY_ENABLED', 'SECONDARY_CIRCLE_COORDINATION_ENABLED',
+    'SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED', 'RANDORI_LOCAL_RUNTIME',
     'EMAIL_PASSWORD_ACTIVATION_ENABLED', 'EMAIL_VERIFICATION_ENCRYPTION_KEY',
     'PASSWORD_RESET_ENABLED', 'PASSWORD_RESET_ENCRYPTION_KEY',
     'IDENTITY_EMAIL_HASH_KEY', 'IDENTITY_EMAIL_HASH_KEY_VERSION', 'IDENTITY_MANAGEMENT_ENABLED',
@@ -683,6 +685,7 @@ test('auth capabilities report static flags without database access and fail con
   process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';
   process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED='true';
   process.env.SECONDARY_CIRCLE_COORDINATION_ENABLED='true';
+  process.env.SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED='true';
   result=await invoke(authHandler,{
     url:'/api/auth/capabilities',query:{endpoint:'capabilities'},headers:{host:'randori.example.test'},
   });
@@ -694,6 +697,7 @@ test('auth capabilities report static flags without database access and fail con
   delete process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED;
   delete process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED;
   delete process.env.SECONDARY_CIRCLE_COORDINATION_ENABLED;
+  delete process.env.SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED;
 
   process.env.GOOGLE_CLIENT_ID='google-client';
   process.env.GOOGLE_CLIENT_SECRET='google-secret';
@@ -3538,6 +3542,7 @@ test('selected secondary owner publishes and reads coordination without legacy w
   process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';
   process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED='true';
   process.env.SECONDARY_CIRCLE_COORDINATION_ENABLED='true';
+  process.env.SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED='true';
   const directory=mkdtempSync(join(tmpdir(),'randori-secondary-api-'));
   const client=createClient({url:pathToFileURL(join(directory,'pairing.sqlite')).href});
   try{
@@ -3578,8 +3583,17 @@ test('selected secondary owner publishes and reads coordination without legacy w
     assert.equal('week_id' in published.body,false);
     assert.equal(executed.some(({sql})=>/\b(?:CREATE|ALTER)\b/i.test(sql)),false,
       'secondary publication must not run request-path DDL');
-    assert.equal(executed.some(({sql})=>/\b(?:pairing_weeks|pairing_groups|pairing_participants|pair_schedules|pair_messages|outbox_events|pairing_email_outbox)\b/i.test(sql)),false,
-      'secondary publication must not touch legacy pairing, workspace, or outbox tables');
+    assert.equal(executed.some(({sql})=>/\b(?:pairing_weeks|pairing_groups|pairing_participants|pair_schedules|pair_messages|pairing_email_outbox)\b/i.test(sql)),false,
+      'secondary publication must not touch legacy pairing or workspace tables');
+    const notifications=await client.execute(`SELECT event_version,payload_json
+      FROM outbox_events WHERE event_type='pairing.email.requested' ORDER BY id`);
+    assert.equal(notifications.rows.length,3);
+    assert.equal(notifications.rows.every(row=>Number(row.event_version)===2),true);
+    assert.equal(notifications.rows.every(row=>{
+      const payload=JSON.parse(String(row.payload_json));
+      return Object.keys(payload).sort().join(',')==='circle_id,kind,publication_id,user_id'
+        &&payload.circle_id===20&&!String(row.payload_json).includes('@');
+    }),true);
 
     executed.length=0;
     const weeks=await invoke(dataHandler,{
@@ -3609,7 +3623,7 @@ test('selected secondary owner publishes and reads coordination without legacy w
     assert.equal('id' in mine.body.partner,false);
     assert.equal(executed.some(({sql})=>/\b(?:CREATE|ALTER)\b/i.test(sql)),false,
       'secondary reads must not run request-path DDL');
-    assert.equal(executed.some(({sql})=>/\b(?:pairing_weeks|pairing_groups|pairing_participants|pair_schedules|pair_messages|outbox_events|pairing_email_outbox)\b/i.test(sql)),false,
+    assert.equal(executed.some(({sql})=>/\b(?:pairing_weeks|pairing_groups|pairing_participants|pair_schedules|pair_messages|pairing_email_outbox)\b/i.test(sql)),false,
       'secondary reads must not touch legacy pairing, workspace, or outbox tables');
 
     const stale=await invoke(opsHandler,{
@@ -3621,7 +3635,29 @@ test('selected secondary owner publishes and reads coordination without legacy w
     assert.equal(Number((await client.execute(`SELECT COUNT(*) AS count FROM circle_pairing_publications`)).rows[0].count),1);
     assert.equal(Number((await client.execute(`SELECT COUNT(*) AS count FROM pairing_weeks`)).rows[0].count),0);
     assert.equal(Number((await client.execute(`SELECT COUNT(*) AS count FROM pair_schedules`)).rows[0].count),0);
-    assert.equal(Number((await client.execute(`SELECT COUNT(*) AS count FROM outbox_events`)).rows[0].count),0);
+    assert.equal(Number((await client.execute(`SELECT COUNT(*) AS count FROM outbox_events`)).rows[0].count),3);
+
+    process.env.NODE_ENV='development';
+    process.env.RANDORI_LOCAL_RUNTIME='true';
+    process.env.RANDORI_LOCAL_IDENTITY='true';
+    process.env.TURSO_DATABASE_URL=pathToFileURL(join(directory,'pairing.sqlite')).href;
+    process.env.TURSO_AUTH_TOKEN='';
+    process.env.APP_URL='http://127.0.0.1:3000';
+    process.env.CRON_SECRET='cron-secret';
+    const databaseClock=await client.execute(`SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc`);
+    const databaseCycle=resolvePairingCycle({now:String(databaseClock.rows[0].now_utc)}).cycleId;
+    const localWeekly=createOpsHandler({isWeeklyDue:()=>true});
+    const weekly=await withFixedNow('2099-01-04T08:15:00.000Z',()=>invoke(localWeekly,{
+      method:'GET',url:'/api/cron/weekly',query:{endpoint:'weekly'},
+      headers:{host:'127.0.0.1:3000','x-cron-secret':'cron-secret'},
+    }));
+    assert.equal(weekly.status,200,JSON.stringify(weekly.body));
+    assert.deepEqual(weekly.body.secondary,{attempted:1,created:0,existing:1,failed:0});
+    const primaryWeeks=await client.execute(`SELECT week_label FROM pairing_weeks ORDER BY id`);
+    assert.equal(primaryWeeks.rows.length,1,
+      'verified local transport must allow the production-scoped primary publication');
+    assert.equal(primaryWeeks.rows[0].week_label,databaseCycle,
+      'production-scoped local weekly publication must retain the database clock');
   }finally{
     client.close();
     rmSync(directory,{recursive:true,force:true});
