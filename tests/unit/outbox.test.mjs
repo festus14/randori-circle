@@ -14,6 +14,7 @@ import {
   OutboxDeliveryError,
   readOutboxMetrics,
   replayDeadLetter,
+  runOutboxInvocation,
   runOutboxWorker,
 } from '../../api/_outbox.js';
 import {
@@ -253,6 +254,100 @@ test('timeout and poison events become bounded retry and dead-letter outcomes',a
   assert.deepEqual(rows.map(item=>[item.status,item.last_error_code]),[
     ['retry','DELIVERY_TIMEOUT'],['dead_letter','EVENT_HANDLER_MISSING'],
   ]);
+});
+
+test('a global invocation drains saturated event types in fair rounds within one claim cap',async()=>{
+  const {db}=await fixture();
+  for(let sequence=1;sequence<=6;sequence+=1){
+    await enqueueOutboxEvent(db,event({eventType:'alpha.notification',sequence}));
+  }
+  await enqueueOutboxEvent(db,event({eventType:'beta.notification',sequence:20,
+    idempotencyKey:'test/v1/beta'}));
+  await enqueueOutboxEvent(db,event({eventType:'gamma.notification',sequence:30,
+    idempotencyKey:'test/v1/gamma'}));
+  const started=[];
+  const handler=async current=>{
+    started.push(current.eventType);
+    return {providerName:'capture',providerMessageId:`message-${current.id}`};
+  };
+  const result=await runOutboxInvocation({
+    db,workerId:'fair-invocation',
+    handlers:{'alpha.notification':handler,'beta.notification':handler,'gamma.notification':handler},
+    eventTypes:['alpha.notification','beta.notification','gamma.notification'],maxClaims:4,
+    deadlineAtMs:performance.now()+2_000,finalizationReserveMs:100,minimumDispatchWindowMs:100,
+    leaseDurationMs:1000,heartbeatIntervalMs:0,
+  });
+  assert.deepEqual(started.slice(0,3).sort(),[
+    'alpha.notification','beta.notification','gamma.notification',
+  ]);
+  assert.equal(result.claimed,4);
+  assert.equal(result.delivered,4);
+  assert.equal(result.perType['alpha.notification'].claimed,2);
+  assert.equal(result.perType['beta.notification'].claimed,1);
+  assert.equal(result.perType['gamma.notification'].claimed,1);
+  assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM outbox_audit_events
+    WHERE action='claimed'`)).rows[0].count),4);
+  assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM outbox_events
+    WHERE event_type='alpha.notification' AND status='pending'`)).rows[0].count),4);
+});
+
+test('a slow provider is deadline-capped without starving another type or stranding its lease',async()=>{
+  const {db}=await fixture();
+  await enqueueOutboxEvent(db,event({eventType:'alpha.notification',deliveryTimeoutMs:1000}));
+  await enqueueOutboxEvent(db,event({eventType:'alpha.notification',sequence:3,
+    idempotencyKey:'test/v1/deadline-alpha-2',deliveryTimeoutMs:1000}));
+  await enqueueOutboxEvent(db,event({eventType:'alpha.notification',sequence:4,
+    idempotencyKey:'test/v1/deadline-alpha-3',deliveryTimeoutMs:1000}));
+  await enqueueOutboxEvent(db,event({eventType:'beta.notification',sequence:2,
+    idempotencyKey:'test/v1/deadline-beta',deliveryTimeoutMs:1000}));
+  const startedAt=performance.now();
+  const result=await runOutboxInvocation({
+    db,workerId:'deadline-invocation',handlers:{
+      'alpha.notification':()=>new Promise(()=>{}),
+      'beta.notification':async()=>({providerName:'capture',providerMessageId:'beta-delivered'}),
+    },eventTypes:['alpha.notification','beta.notification'],maxClaims:2,
+    deadlineAtMs:startedAt+350,finalizationReserveMs:100,minimumDispatchWindowMs:100,
+    leaseDurationMs:1000,heartbeatIntervalMs:0,baseBackoffMs:1000,maxBackoffMs:1000,
+  });
+  assert.ok(performance.now()-startedAt<700,'the worker must not wait for the event-level one-second timeout');
+  assert.equal(result.deadlineReached,true);
+  assert.equal(result.perType['alpha.notification'].retried,1);
+  assert.equal(result.perType['beta.notification'].delivered,1);
+  const stored=(await db.execute(`SELECT event_type,status,last_error_code,lease_owner,lease_token
+    FROM outbox_events ORDER BY id`)).rows;
+  assert.deepEqual(stored.map(item=>[item.event_type,item.status,item.last_error_code,
+    item.lease_owner,item.lease_token]),[
+    ['alpha.notification','retry','INVOCATION_DEADLINE',null,null],
+    ['alpha.notification','pending',null,null,null],
+    ['alpha.notification','pending',null,null,null],
+    ['beta.notification','delivered',null,null,null],
+  ]);
+});
+
+test('global invocation preserves lost leases and reports an empty queue without claiming',async()=>{
+  const {db}=await fixture();
+  const empty=await runOutboxInvocation({db,workerId:'empty-invocation',
+    handlers:{'alpha.notification':async()=>({})},eventTypes:['alpha.notification'],maxClaims:1,
+    deadlineAtMs:performance.now()+1_000,finalizationReserveMs:100,minimumDispatchWindowMs:100,
+    leaseDurationMs:1000,heartbeatIntervalMs:0});
+  assert.equal(empty.claimed,0);
+  assert.equal(empty.deadlineReached,false);
+  assert.deepEqual(empty.perType['alpha.notification'],{
+    claimed:0,delivered:0,suppressed:0,retried:0,deadLettered:0,leaseLost:0,
+  });
+
+  await enqueueOutboxEvent(db,event({eventType:'alpha.notification'}));
+  const lost=await runOutboxInvocation({db,workerId:'lease-loss-invocation',
+    handlers:{'alpha.notification':async current=>{
+      await db.execute({sql:`UPDATE outbox_events SET leased_until='2000-01-01T00:00:00.000Z'
+        WHERE id=?`,args:[current.id]});
+      return {providerName:'capture',providerMessageId:'must-not-commit'};
+    }},eventTypes:['alpha.notification'],maxClaims:1,
+    deadlineAtMs:performance.now()+1_000,finalizationReserveMs:100,minimumDispatchWindowMs:100,
+    leaseDurationMs:1000,heartbeatIntervalMs:0});
+  assert.equal(lost.leaseLost,1);
+  assert.equal((await row(db)).status,'processing');
+  assert.equal((await row(db)).provider_message_id,null);
 });
 
 test('provider 429 and 5xx errors retry without persisting provider or recipient details',async()=>{

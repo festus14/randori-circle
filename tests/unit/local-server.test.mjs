@@ -640,12 +640,14 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
   assert.equal(pairingPayloads.filter(item=>item.body.created===false).length,1);
   assert.equal(pairingPayloads[0].body.week_id,pairingPayloads[1].body.week_id);
   assert.equal(pairingPayloads[0].body.pair_count,pairingPayloads[1].body.pair_count);
-  const capture=pairingPayloads.find(item=>item.body.email_delivery?.captured?.length)?.body.email_delivery;
-  assert.equal(capture.captured.length,2);
-  assert.match(capture.summary,/no external delivery/);
-  assert.equal(capture.captured.some(item=>item.recipient_email==='member@example.test'),true);
-  assert.equal(capture.captured.flatMap(item=>item.links).some(link=>
-    new RegExp(`^${first.url}/join/week_${pairingPayloads[0].body.week_id}_pair_[1-9]\\d*$`).test(link)),true);
+  for(const {body} of pairingPayloads){
+    assert.equal(body.email_delivery.pending,2);
+    assert.equal(body.email_delivery.sent,0);
+    assert.equal(body.email_delivery.failed,0);
+    assert.equal('captured' in body.email_delivery,false,
+      'publication must leave provider delivery to the globally budgeted outbox route');
+    assert.match(body.email_delivery.summary,/queued for outbox delivery/);
+  }
   await firstSharedClient.execute({
     sql:`INSERT INTO outbox_events
       (event_type,event_version,idempotency_key,payload_json,status,not_before,next_attempt_at,
@@ -661,10 +663,11 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
   const degradedCapturePayload=await jsonResponse(degradedCaptureResponse);
   assert.equal(degradedCaptureResponse.status,200,degradedCapturePayload.text);
   assert.equal(degradedCapturePayload.body.email_delivery.failed,0);
-  assert.equal(degradedCapturePayload.body.email_delivery.suppressed,1,
-    'a removed recipient is terminally suppressed before local provider access');
-  assert.equal(degradedCapturePayload.body.email_delivery.captured.length,0,
-    'already delivered events are not replayed by a later request');
+  assert.equal(degradedCapturePayload.body.email_delivery.pending,3);
+  assert.equal(degradedCapturePayload.body.email_delivery.suppressed,0,
+    'publication does not claim or resolve unrelated outbox work inline');
+  assert.equal('captured' in degradedCapturePayload.body.email_delivery,false,
+    'a later publication request must not become an unbounded provider drain');
   const reshufflePayload=pairingPayloads[0];
 
   const weeks=await fetch(new URL('/api/weeks',first.url),{headers:{cookie:memberCookie}});

@@ -375,14 +375,31 @@ test('real invited members opt in, publish that cycle, share a room, and agree a
       participant_count: 2,
       pair_count: 1,
       solo_count: 0,
-      email_delivery: { sent: 0, failed: 0, exhausted: 0, pending: 0, suppressed: 0 },
+      email_delivery: { sent: 0, failed: 0, exhausted: 0, pending: 2, suppressed: 0 },
     });
-    expect(publication.email_delivery.captured).toHaveLength(2);
+    expect(publication.email_delivery.captured).toBeUndefined();
     const publicationOutbox = createClient({ url: fixture.databaseUrl });
     expect(Number((await publicationOutbox.execute(`SELECT COUNT(*) AS count FROM outbox_events
       WHERE event_type='pairing.email.requested'`)).rows[0].count)).toBe(2);
     await publicationOutbox.close();
     expect(await countRows(fixture.databaseUrl, 'pairing_email_outbox')).toBe(0);
+    const cronSecret='pairing-runtime-outbox-secret';
+    process.env.CRON_SECRET=cronSecret;
+    const delivery=await pages[0].evaluate(async secret=>{
+      const response=await fetch('/api/cron/outbox',{
+        method:'POST',headers:{'x-cron-secret':secret},credentials:'same-origin',
+      });
+      return {status:response.status,body:await response.json()};
+    },cronSecret);
+    expect(delivery.status).toBe(200);
+    expect(delivery.body.outbox).toMatchObject({claimed:3,deadline_reached:false,max_claims:8});
+    expect(delivery.body.email_delivery.captured).toHaveLength(2);
+    expect(delivery.body.outbox.types['pairing.email.requested']).toMatchObject({
+      claimed:2,delivered:2,backlog:0,
+    });
+    expect(delivery.body.outbox.types['invitation.email.requested']).toMatchObject({
+      claimed:1,suppressed:1,backlog:0,
+    });
 
     await Promise.all(pages.slice(0, 2).map(page => page.clock.setFixedTime(publicationInstant)));
     await Promise.all([openDashboard(pages[0]), openDashboard(pages[1])]);

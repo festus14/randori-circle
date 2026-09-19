@@ -33,6 +33,7 @@ or merged after its parent; it must not be landed ahead of that parent.
 | 8 | [PR #92](https://github.com/festus14/randori-circle/pull/92), candidate | Verified invitation-bound email/password activation | v7 `verified-email-activation` |
 | 9 | [PR #96](https://github.com/festus14/randori-circle/pull/96), candidate | Proposal, acceptance, change, and reminder delivery | Reuses v6; no migration |
 | 10 | [PR #100](https://github.com/festus14/randori-circle/pull/100), candidate | Owner-created invitation email and bounded resend | Reuses v6; no migration |
+| 11 | `codex/increment-36-outbox-budget`, candidate | Fair, globally bounded outbox invocation | Reuses v6; no migration |
 
 Migration order is append-only: v4 binds an account to an OIDC issuer and
 subject, v5 makes every application JWT depend on a live hashed session row,
@@ -295,9 +296,8 @@ participation, both accounts' active production membership, schedule currency,
 and elapsed time. Removed proposals,
 revoked members, changed preferences, cancelled agreements, old accepted times,
 and superseded reminders are suppressed. Retries retain the same provider
-idempotency key and the existing five-attempt, ten-second delivery bounds. A
-serverless invocation claims at most three schedule events, bounding this new
-typed drain to 30 seconds of provider wait.
+idempotency key and the existing five-attempt, ten-second event bound. The
+shared dispatcher in ID-13 applies the aggregate claim/deadline budget.
 
 **Why no schema change.** The v6 outbox already models delayed work, dedupe,
 leases, bounded retries, suppression, dead letters, and audit history. The
@@ -314,13 +314,10 @@ option if private-beta volume outgrows the database relay. See
 [schedule notifications](SCHEDULE_NOTIFICATIONS.md) for the event matrix,
 operating contract, and explicit remaining issue #50 scope.
 
-**Known gap.** The outbox endpoint still runs the pre-existing pairing,
-schedule, invitation, and activation drains sequentially without one shared deadline; the
-older typed drains retain larger default batches. A slow earlier type can starve
-a later one or reach the function limit. This slice therefore does not claim
-full issue #50 reliability. A shared invocation budget or separately scheduled
-typed drains remains follow-up work in
-[issue #94](https://github.com/festus14/randori-circle/issues/94).
+**Follow-up.** ID-13 replaces the sequential typed cron drains with a shared
+deadline and fair claim budget. Full issue #94 remains pending only because the
+password-recovery adapter is being developed on a sibling stack and must be
+registered after linearization.
 
 ## ID-12: Encrypt invitation credentials in the shared outbox
 
@@ -362,3 +359,53 @@ duplicate the v6 worker contract. Retaining one token across resends was
 rejected because already delivered or queued links could not be superseded.
 See [invitation email delivery](INVITATION_EMAIL_DELIVERY.md) for the operational
 contract and remaining issue #95/#50 work.
+
+## ID-13: Admit outbox work in fair, deadline-bounded rounds
+
+**Decision.** The cron endpoint uses one provider-neutral invocation runner for
+all delivery types available in this stack. One atomic claim statement selects
+at most one due event per configured type before any type receives a second
+claim. Each round dispatches those independent handlers concurrently and
+finalizes each token-bound lease. The complete invocation admits at most eight
+events under a 45-second wall-clock budget; provider work stops five seconds
+early to reserve time for lease finalization, backlog reads, aggregate logging,
+and the HTTP response.
+
+The production operating target is a scheduler invoking `/api/cron/outbox` at
+least every five minutes with a function duration of at least 60 seconds. The
+45-second application budget leaves 15 seconds of platform margin and each
+event retains its stricter ten-second provider timeout. A deployment offering
+less than 60 seconds must lower the constants with matching timing tests or use
+separately scheduled workers before enabling external delivery.
+
+The response and application log expose only per-event-type counts: claimed,
+delivered, suppressed, retried, newly dead-lettered, lease-lost, current dead
+letters, and actionable backlog. They contain no payload, idempotency key,
+recipient, link, or provider response. Existing typed handlers continue to own
+payload validation, stale-state suppression, provider adaptation, and stable
+idempotency keys.
+
+Weekly and manual pairing publication now stop after committing their outbox
+intents and report the queued backlog. They do not invoke a second typed worker;
+the authenticated outbox route is the only scheduled provider fan-out path.
+
+**Lease and deadline behavior.** A round is admitted only while a minimum send
+window and finalization reserve remain. If setup consumes that window after a
+claim, the event is safely returned to retry with `INVOCATION_DEADLINE`. A
+provider wait is capped to the lesser of its event timeout and the remaining
+shared budget. Lease loss never records a stale delivery result. Bounded
+exhausted-lease cleanup runs after delivery so maintenance cannot starve the
+first fair round.
+
+**Alternatives.** Sequential per-type drains were rejected because their
+independent batch/timeout limits add together and privilege the first type. A
+single oldest-first queue was rejected because a saturated type can still
+starve sparse later types. Separate functions per type offer stronger isolation
+but multiply schedules, secrets, concurrency, and monitoring. Fair parallel
+rounds retain one authenticated endpoint and the existing v6 outbox contract.
+
+**Remaining issue #94 scope.** The password-reset work is being developed on a
+sibling stack and its event adapter is not present at this base commit. Issue
+#94 must remain open until stack linearization registers that handler and adds
+it to the saturated mixed-type runtime test. This candidate makes the registry
+extensible but does not claim recovery coverage.
