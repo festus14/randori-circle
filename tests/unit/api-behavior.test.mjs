@@ -398,7 +398,7 @@ const [
   { default: aiHandler },
   { default: authHandler, localPasswordSignupEnabled },
   { default: dataHandler },
-  { default: opsHandler, deliverPendingOutbox },
+  { default: opsHandler, createOpsHandler, deliverPendingOutbox },
   { default: videoHandler },
   { createEvaluationSuite, listPublicExercises },
   { localIdentityAdapterEnabled },
@@ -3636,6 +3636,28 @@ test('selected secondary owner publishes and reads coordination without legacy w
     assert.equal(Number((await client.execute(`SELECT COUNT(*) AS count FROM pairing_weeks`)).rows[0].count),0);
     assert.equal(Number((await client.execute(`SELECT COUNT(*) AS count FROM pair_schedules`)).rows[0].count),0);
     assert.equal(Number((await client.execute(`SELECT COUNT(*) AS count FROM outbox_events`)).rows[0].count),3);
+
+    process.env.NODE_ENV='development';
+    process.env.RANDORI_LOCAL_RUNTIME='true';
+    process.env.RANDORI_LOCAL_IDENTITY='true';
+    process.env.TURSO_DATABASE_URL=pathToFileURL(join(directory,'pairing.sqlite')).href;
+    process.env.TURSO_AUTH_TOKEN='';
+    process.env.APP_URL='http://127.0.0.1:3000';
+    process.env.CRON_SECRET='cron-secret';
+    const databaseClock=await client.execute(`SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc`);
+    const databaseCycle=resolvePairingCycle({now:String(databaseClock.rows[0].now_utc)}).cycleId;
+    const localWeekly=createOpsHandler({isWeeklyDue:()=>true});
+    const weekly=await withFixedNow('2099-01-04T08:15:00.000Z',()=>invoke(localWeekly,{
+      method:'GET',url:'/api/cron/weekly',query:{endpoint:'weekly'},
+      headers:{host:'127.0.0.1:3000','x-cron-secret':'cron-secret'},
+    }));
+    assert.equal(weekly.status,200,JSON.stringify(weekly.body));
+    assert.deepEqual(weekly.body.secondary,{attempted:1,created:0,existing:1,failed:0});
+    const primaryWeeks=await client.execute(`SELECT week_label FROM pairing_weeks ORDER BY id`);
+    assert.equal(primaryWeeks.rows.length,1,
+      'verified local transport must allow the production-scoped primary publication');
+    assert.equal(primaryWeeks.rows[0].week_label,databaseCycle,
+      'production-scoped local weekly publication must retain the database clock');
   }finally{
     client.close();
     rmSync(directory,{recursive:true,force:true});

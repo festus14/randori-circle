@@ -7,6 +7,7 @@ import {createClient} from '@libsql/client';
 import {expect,test} from '@playwright/test';
 
 import {createOpsHandler} from '../../api/ops.js';
+import {pairingSchemaV6Ready} from '../../api/_pairing-readiness.js';
 import {prepareMigrationConnection} from '../../db/migration-runner.js';
 import {
   LOCAL_OWNER_EMAIL,
@@ -72,12 +73,20 @@ test('local capture delivers manual and weekly-route secondary publications once
     const manualId=Number((await db.execute({
       sql:`SELECT id FROM circles WHERE public_id=?`,args:[manualPublicId],
     })).rows[0].id);
+    const primaryId=Number((await db.execute(`SELECT id FROM circles
+      WHERE is_primary=1 AND archived_at IS NULL`)).rows[0].id);
     await db.batch([
       `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_demo,is_available)
         VALUES (2,'manual-two@example.test','hash','Manual Two','#222222',0,0),
                (3,'manual-three@example.test','hash','Manual Three','#333333',0,0)`,
       {sql:`INSERT INTO circle_memberships (circle_id,user_id,role,status)
         VALUES (?,2,'member','active'),(?,3,'member','active')`,args:[manualId,manualId]},
+      {sql:`INSERT INTO circle_audit_events
+        (circle_id,event_type,actor_user_id,subject_user_id,dedupe_key)
+        VALUES (?,'membership.backfilled',?,2,?),
+               (?,'membership.backfilled',?,3,?)`,
+      args:[primaryId,ownerId,`membership-backfilled:${primaryId}:2`,
+        primaryId,ownerId,`membership-backfilled:${primaryId}:3`]},
     ],'write');
 
     const manual=await json(page,'/api/pairing/run','POST',{},
@@ -111,9 +120,14 @@ test('local capture delivers manual and weekly-route secondary publications once
         VALUES (4,'cron-four@example.test','hash','Cron Four','#444444',0,0)`,
       {sql:`INSERT INTO circle_memberships (circle_id,user_id,role,status)
         VALUES (? ,4,'member','active')`,args:[cronId]},
+      {sql:`INSERT INTO circle_audit_events
+        (circle_id,event_type,actor_user_id,subject_user_id,dedupe_key)
+        VALUES (?,'membership.backfilled',?,4,?)`,
+      args:[primaryId,ownerId,`membership-backfilled:${primaryId}:4`]},
       {sql:`INSERT INTO user_notification_prefs (user_id,email_enabled) VALUES (?,0)
         ON CONFLICT(user_id) DO UPDATE SET email_enabled=0`,args:[ownerId]},
     ],'write');
+    expect(await pairingSchemaV6Ready(db,{requireClosedMembership:true})).toBe(true);
     const cron=await json(page,'/api/cron/weekly','GET',undefined,
       {'x-cron-secret':'secondary-email-browser-secret'});
     expect(cron.status,JSON.stringify(cron.body)).toBe(200);
