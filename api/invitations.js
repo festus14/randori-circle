@@ -20,6 +20,7 @@ import {
   normalizeInvitationEmail,
   prepareInvitationClaim,
 } from './_circle-membership.js';
+import { multiCircleControlPlaneEnabled, requestMatchesCircleContext, resolveActiveCircleContext } from './_active-circle.js';
 import { localIdentityAdapterEnabled } from './_local-runtime.js';
 import {
   createInvitationEmailEvent,
@@ -135,25 +136,40 @@ async function consumePrepareRateLimit(db,req){
     : {allowed:true,retryAfter:0};
 }
 
-async function authenticatedUserId(req){
-  const payload=await verifyRequestAuth(req);
+function authenticatedUserId(payload){
   const value=payload?.id??payload?.uid;
   return Number.isSafeInteger(value)&&value>0?value:null;
 }
 
 async function ownerContext(req,res){
-  const userId=await authenticatedUserId(req);
+  const payload=await verifyRequestAuth(req);
+  const userId=authenticatedUserId(payload);
   if(!userId){ res.status(401).json({error:'authentication required'}); return null; }
   let db;
   try{
     db=getClient();
     await ensureCircleMembershipReadiness(db);
-    const membership=await getActivePrimaryCircleMembership(db,userId);
+    const resolved=multiCircleControlPlaneEnabled()
+      ?await resolveActiveCircleContext(db,payload,{requiredRole:'owner'})
+      :null;
+    if(resolved&&!resolved.ok){
+      if(resolved.reason==='selection_required'){
+        res.status(409).json({error:'select an active circle',code:'active_circle_required'});
+      }else{
+        res.status(403).json({error:'circle owner required'});
+      }
+      return null;
+    }
+    if(resolved&&!requestMatchesCircleContext(req,resolved)){
+      res.status(409).json({error:'circle context changed',code:'circle_context_changed'});
+      return null;
+    }
+    const membership=resolved?.membership||await getActivePrimaryCircleMembership(db,userId);
     if(!membership||membership.role!=='owner'){
       res.status(403).json({error:'circle owner required'});
       return null;
     }
-    return {db,userId,membership};
+    return {db,userId,membership,contextVersion:Number(resolved?.context_version)||0};
   }catch(error){
     captureSentryException(error,{tags:{event:'circle_invitation_owner_check_fail',source:'server'}});
     res.status(503).json({error:'invitations unavailable'});
@@ -230,9 +246,9 @@ async function handleCreate(req,res){
         SELECT ?,membership.circle_id,?,?,?,?,?
         FROM circle_memberships membership JOIN circles circle ON circle.id=membership.circle_id
         WHERE membership.user_id=? AND membership.role='owner' AND membership.status='active'
-          AND circle.is_primary=1 AND circle.archived_at IS NULL
+          AND membership.circle_id=? AND circle.archived_at IS NULL
         RETURNING id,circle_id`,
-        args:[id,tokenHash,emailHash,context.userId,createdAt,expiresAt,context.userId],
+        args:[id,tokenHash,emailHash,context.userId,createdAt,expiresAt,context.userId,Number(context.membership.circle_id??context.membership.id)],
       });
       if(!created?.rows?.length){
         await transaction.rollback(); finished=true;
@@ -246,10 +262,11 @@ async function handleCreate(req,res){
         JOIN circle_memberships membership ON membership.circle_id=invitation.circle_id
           AND membership.user_id=? AND membership.role='owner' AND membership.status='active'
         JOIN circles circle ON circle.id=invitation.circle_id
-          AND circle.is_primary=1 AND circle.archived_at IS NULL
+          AND circle.id=? AND circle.archived_at IS NULL
         WHERE invitation.id=?
         RETURNING id`,
-        args:[context.userId,`invitation-created:${id}`,createdAt,context.userId,id],
+        args:[context.userId,`invitation-created:${id}`,createdAt,context.userId,
+          Number(context.membership.circle_id??context.membership.id),id],
       });
       if(!audited?.rows?.length) throw new Error('invitation creation audit missing');
       let emailQueued=false;
@@ -272,6 +289,7 @@ async function handleCreate(req,res){
           invite_url:`/invite#invite=${token}`,
         },
         email_delivery:{queued:emailQueued},
+        ...(multiCircleControlPlaneEnabled()?{circle_context_version:context.contextVersion}:{}),
       });
     }catch(error){
       if(!finished){ try{ await transaction.rollback(); }catch{} }
@@ -328,10 +346,10 @@ async function handleResend(req,res){
       JOIN circles circle ON circle.id=invitation.circle_id
       JOIN circle_memberships membership ON membership.circle_id=invitation.circle_id
         AND membership.user_id=? AND membership.role='owner' AND membership.status='active'
-      WHERE invitation.id=? AND circle.is_primary=1 AND circle.archived_at IS NULL
+      WHERE invitation.id=? AND invitation.circle_id=? AND circle.archived_at IS NULL
       LIMIT 2`,args:[INVITATION_EMAIL_EVENT_TYPE,INVITATION_EMAIL_EVENT_TYPE,
       INVITATION_EMAIL_EVENT_TYPE,INVITATION_EMAIL_EVENT_TYPE,INVITATION_EMAIL_EVENT_TYPE,
-      context.userId,id]});
+      context.userId,id,Number(context.membership.circle_id??context.membership.id)]});
     if(selected.rows?.length!==1){
       await transaction.rollback(); finished=true;
       return res.status(404).json({error:'invitation not found'});
@@ -388,9 +406,9 @@ async function handleResend(req,res){
             SELECT 1 FROM circle_memberships membership JOIN circles circle ON circle.id=membership.circle_id
             WHERE membership.circle_id=circle_invitations.circle_id AND membership.user_id=?
               AND membership.role='owner' AND membership.status='active'
-              AND circle.is_primary=1 AND circle.archived_at IS NULL
+              AND membership.circle_id=? AND circle.archived_at IS NULL
           ) RETURNING id,circle_id`,args:[tokenHash,id,invitation.circle_id,invitation.token_hash,
-      invitation.email_hash,context.userId]});
+      invitation.email_hash,context.userId,Number(context.membership.circle_id??context.membership.id)]});
     if(rotated.rows?.length!==1) throw new Error('invitation resend lost authorization');
     const queued=await transaction.execute(createInvitationEmailEvent({
       invitationId:id,circleId:Number(invitation.circle_id),actorUserId:context.userId,
@@ -405,7 +423,9 @@ async function handleResend(req,res){
     if(audited.rows?.length!==1) throw new Error('invitation resend audit missing');
     await transaction.commit(); finished=true;
     return res.json({ok:true,invitation:{id,expires_at:String(invitation.expires_at),status:'pending',
-      invite_url:`/invite#invite=${token}`},email_delivery:{queued:true}});
+      invite_url:`/invite#invite=${token}`},email_delivery:{queued:true},
+      ...(multiCircleControlPlaneEnabled()?{circle_context_version:context.contextVersion}:{}),
+    });
   }catch(error){
     if(transaction&&!finished){ try{ await transaction.rollback(); }catch{} }
     captureSentryException(error,{tags:{event:'circle_invitation_resend_fail',source:'server'}});
@@ -421,8 +441,9 @@ async function handleList(req,res){
       sql:`WITH owner AS (
           SELECT membership.circle_id
           FROM circle_memberships membership JOIN circles circle ON circle.id=membership.circle_id
-          WHERE membership.user_id=? AND membership.role='owner' AND membership.status='active'
-            AND circle.is_primary=1 AND circle.archived_at IS NULL
+          WHERE membership.user_id=? AND membership.circle_id=?
+            AND membership.role='owner' AND membership.status='active'
+            AND circle.archived_at IS NULL
           LIMIT 1
         )
 	        SELECT invitation.id,invitation.email_hash,invitation.created_at,invitation.expires_at,
@@ -430,7 +451,7 @@ async function handleList(req,res){
 	        FROM owner LEFT JOIN circle_invitations invitation ON invitation.circle_id=owner.circle_id
 	        ORDER BY invitation.created_at DESC,invitation.id DESC
 	        LIMIT 200`,
-      args:[context.userId],
+      args:[context.userId,Number(context.membership.circle_id??context.membership.id)],
     });
     if(!result.rows?.length) return res.status(403).json({error:'circle owner required'});
     const invitations=result.rows.filter(row=>row.id!=null).map(row=>({
@@ -440,7 +461,9 @@ async function handleList(req,res){
       expires_at:String(row.expires_at),
       status:invitationStatus(row),
     }));
-    return res.json({ok:true,invitations,count:invitations.length});
+    return res.json({ok:true,invitations,count:invitations.length,
+      ...(multiCircleControlPlaneEnabled()?{circle_context_version:context.contextVersion}:{}),
+    });
   }catch(error){
     captureSentryException(error,{tags:{event:'circle_invitation_list_fail',source:'server'}});
     return res.status(503).json({error:'invitations unavailable'});
@@ -461,10 +484,10 @@ async function handleRevoke(req,res){
             SELECT 1 FROM circle_memberships membership JOIN circles circle ON circle.id=membership.circle_id
             WHERE membership.circle_id=circle_invitations.circle_id AND membership.user_id=?
               AND membership.role='owner' AND membership.status='active'
-              AND circle.is_primary=1 AND circle.archived_at IS NULL
+              AND membership.circle_id=? AND circle.archived_at IS NULL
           )
         RETURNING id,circle_id`,
-      args:[revokedAt,id,context.userId],
+      args:[revokedAt,id,context.userId,Number(context.membership.circle_id??context.membership.id)],
     },{
       sql:`INSERT INTO circle_audit_events
           (circle_id,event_type,actor_user_id,subject_user_id,invitation_id,dedupe_key,created_at)
@@ -473,15 +496,19 @@ async function handleRevoke(req,res){
         JOIN circle_memberships membership ON membership.circle_id=invitation.circle_id
           AND membership.user_id=? AND membership.role='owner' AND membership.status='active'
         JOIN circles circle ON circle.id=invitation.circle_id
-          AND circle.is_primary=1 AND circle.archived_at IS NULL
-        WHERE invitation.id=? AND invitation.revoked_at=?
+          AND circle.id=? AND circle.archived_at IS NULL
+        WHERE invitation.id=? AND invitation.circle_id=? AND invitation.revoked_at=?
         ON CONFLICT(dedupe_key) DO NOTHING
         RETURNING id`,
-      args:[context.userId,`invitation-revoked:${id}`,revokedAt,context.userId,id,revokedAt],
+      args:[context.userId,`invitation-revoked:${id}`,revokedAt,context.userId,
+        Number(context.membership.circle_id??context.membership.id),id,
+        Number(context.membership.circle_id??context.membership.id),revokedAt],
     }], 'write');
     if(!revoked?.rows?.length) return res.status(404).json({error:'invitation not found'});
     if(!audited?.rows?.length) throw new Error('invitation revocation audit missing');
-    return res.json({ok:true,id,status:'revoked'});
+    return res.json({ok:true,id,status:'revoked',
+      ...(multiCircleControlPlaneEnabled()?{circle_context_version:context.contextVersion}:{}),
+    });
   }catch(error){
     captureSentryException(error,{tags:{event:'circle_invitation_revoke_fail',source:'server'}});
     return res.status(503).json({error:'invitations unavailable'});

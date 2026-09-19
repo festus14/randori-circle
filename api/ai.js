@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { captureSentryException, captureSentryMessage, getClient, initSentry, isSentryConfigured, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 import { authPairAccessArgs, authPairAccessSql } from './_pair-access.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
+import { accountHasMultipleActiveCircles, multiCircleControlPlaneEnabled, sendMultiCircleFeatureUnavailable } from './_active-circle.js';
 
 initSentry();
 
@@ -954,6 +955,15 @@ export default async function handler(req,res){
   try{
     if(!verifyMutationOrigin(req)) return res.status(403).json({error:'cross-origin mutation rejected'});
     initSentry();
+    if(multiCircleControlPlaneEnabled()){
+      try{
+        const payload=await verifyRequestAuth(req);
+        const userId=Number(payload?.id??payload?.uid);
+        if(Number.isSafeInteger(userId)&&userId>0&&await accountHasMultipleActiveCircles(getClient(),userId)){
+          return sendMultiCircleFeatureUnavailable(res);
+        }
+      }catch{ return res.status(503).json({error:'circle context unavailable'}); }
+    }
     const epRaw=getEndpoint(req);
     const ep=epRaw.replace('feedback/','feedback ').split(' ')[0];
     const path=(req.url||'').toLowerCase();

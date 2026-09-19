@@ -23,7 +23,7 @@ import {
   createGoogleAccountFromPreparedInvitation,
   createPasswordAccountFromPreparedInvitation,
   ensureCircleMembershipReadiness,
-  hasActivePrimaryCircleMembership,
+  hasActiveCircleMembership,
   readInviteClaim,
   validatePreparedInvitation,
 } from './_circle-membership.js';
@@ -216,6 +216,8 @@ function handleCapabilities(req,res){
       googleOAuth,
       recentAuthMaxAgeSeconds:10*60,
       identityManagement,
+      ...(circleMembershipEnabled()&&process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED==='true'
+        ?{multiCircleControlPlane:true}:{}),
     },
     registrationMode:localIdentity?'local_invite':(verifiedEmailActivation?'verified_invite':(passwordSignup?'local_open':'private_beta')),
   });
@@ -663,7 +665,7 @@ async function handleLogin(req,res){
   }
   if(circleMembershipEnabled()){
     try{
-      if(!await hasActivePrimaryCircleMembership(db,row.id)) return res.status(403).json({error:'active circle membership required'});
+      if(!await hasActiveCircleMembership(db,row.id)) return res.status(403).json({error:'active circle membership required'});
     }catch{
       return res.status(503).json({error:'login temporarily unavailable'});
     }
@@ -708,7 +710,7 @@ async function handleMe(req,res){
     const u = rs.rows[0];
     if(circleMembershipEnabled()){
       let hasMembership;
-      try{ hasMembership=await hasActivePrimaryCircleMembership(db,u.id); }
+      try{ hasMembership=await hasActiveCircleMembership(db,u.id); }
       catch{ return res.status(503).json({error:'session validation temporarily unavailable'}); }
       if(!hasMembership){
         appendCookies(res,[clearCookie(req,SESSION_COOKIE)]);
@@ -1137,7 +1139,7 @@ async function handleGoogleCallback(req,res){
   if(membershipRequired){
     let hasMembership=invitationAcceptedDuringAccountCreation;
     if(!hasMembership){
-      try{ hasMembership=await hasActivePrimaryCircleMembership(db,authId); }
+      try{ hasMembership=await hasActiveCircleMembership(db,authId); }
       catch{ res.writeHead(302,{Location:redirectError('db_error')}); return res.end(); }
     }
     if(preparedInvitation?.ok&&!invitationAcceptedDuringAccountCreation){

@@ -5,7 +5,12 @@ import {
   verifyMutationOrigin,
   verifyRequestAuth,
 } from './_db.js';
-import { circleMembershipEnabled, ensureCircleMembershipReadiness } from './_circle-membership.js';
+import {
+  circleMembershipEnabled,
+  ensureCircleMembershipReadiness,
+  getActivePrimaryCircleMembership,
+} from './_circle-membership.js';
+import { multiCircleControlPlaneEnabled, requestMatchesCircleContext, resolveActiveCircleContext } from './_active-circle.js';
 import {
   changeCircleMemberStatus,
   leaveCircle,
@@ -97,9 +102,24 @@ export default async function handler(req,res){
   }
   if(!actor) return res.status(401).json({error:'authentication required'});
   try{
+    const activeContext=multiCircleControlPlaneEnabled()
+      ?await resolveActiveCircleContext(db,authPayload)
+      :{ok:true,membership:await getActivePrimaryCircleMembership(db,actor)};
+    if(!activeContext.ok){
+      if(activeContext.reason==='selection_required'){
+        return res.status(409).json({error:'select an active circle',code:'active_circle_required'});
+      }
+      return res.status(403).json({error:'circle membership required'});
+    }
+    if(multiCircleControlPlaneEnabled()&&!requestMatchesCircleContext(req,activeContext)){
+      return res.status(409).json({error:'circle context changed',code:'circle_context_changed'});
+    }
+    const circleId=Number(activeContext.membership?.circle_id??activeContext.membership?.id);
+    const circleContextVersion=Number(activeContext.context_version)||0;
+    if(!Number.isSafeInteger(circleId)||circleId<1) return res.status(403).json({error:'circle membership required'});
     if(req.method==='GET'){
       const result=await listCircleMembersForOwner(db,{
-        actorUserId:actor,
+        actorUserId:actor,circleId,
         ...rosterQuery,
         cursorSecret:getJwtSecret(),
       });
@@ -111,6 +131,7 @@ export default async function handler(req,res){
         has_more:result.has_more===true,
         next_cursor:result.next_cursor||null,
         scanned:Number(result.scanned)||0,
+        ...(multiCircleControlPlaneEnabled()?{circle_context_version:circleContextVersion}:{}),
       });
     }
     if(req.method!=='PATCH'){
@@ -118,10 +139,12 @@ export default async function handler(req,res){
       return res.status(405).json({error:'GET or PATCH only'});
     }
     if(exactObject(req.body,['action'])&&req.body.action==='leave'){
-      const result=await leaveCircle(db,{actorUserId:actor});
+      const result=await leaveCircle(db,{actorUserId:actor,circleId});
       if(!result.ok) return transitionFailure(res,result);
-      res.setHeader('Set-Cookie',clearSessionCookie(req));
-      return res.json({ok:true,action:'leave'});
+      if(!multiCircleControlPlaneEnabled()||result.signed_out) res.setHeader('Set-Cookie',clearSessionCookie(req));
+      return res.json({ok:true,action:'leave',
+        ...(multiCircleControlPlaneEnabled()?{signed_out:result.signed_out===true,circle_context_version:circleContextVersion}:{}),
+      });
     }
     if(!exactObject(req.body,['action','member_id'])
       ||!['deactivate','reactivate','transfer'].includes(req.body.action)
@@ -129,10 +152,12 @@ export default async function handler(req,res){
       return res.status(400).json({error:'invalid request'});
     }
     const result=req.body.action==='transfer'
-      ?await transferCircleOwnership(db,{actorUserId:actor,targetUserId:req.body.member_id,session:authPayload})
-      :await changeCircleMemberStatus(db,{actorUserId:actor,targetUserId:req.body.member_id,action:req.body.action,session:authPayload});
+      ?await transferCircleOwnership(db,{actorUserId:actor,targetUserId:req.body.member_id,circleId,session:authPayload})
+      :await changeCircleMemberStatus(db,{actorUserId:actor,targetUserId:req.body.member_id,circleId,action:req.body.action,session:authPayload});
     if(!result.ok) return transitionFailure(res,result);
-    return res.json({ok:true,action:req.body.action,member:result.member||{id:result.owner_id,role:'owner',status:'active'}});
+    return res.json({ok:true,action:req.body.action,member:result.member||{id:result.owner_id,role:'owner',status:'active'},
+      ...(multiCircleControlPlaneEnabled()?{circle_context_version:circleContextVersion}:{}),
+    });
   }catch(error){
     if(recentAuthFailure(res,error)) return;
     if(error instanceof MemberRosterQueryError){

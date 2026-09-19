@@ -248,6 +248,73 @@ test('circle owner can view members, create a private copy action, and revoke in
   await expect(page.getByTestId('circle-invites')).toContainText('revoked');
 });
 
+test('multi-circle selection reloads into the chosen isolated roster and invitations',async({page})=>{
+  let active:'circle-primary'|'circle-secondary'|null=null;
+  let contextVersion=0;
+  const selections:unknown[]=[];
+  const primaryMember={...members[0],display_name:'Primary Owner',name:'Primary Owner'};
+  const secondaryMember={...members[1],id:22,display_name:'Secondary Teammate',name:'Secondary Teammate'};
+  await mockApi(page,{
+    '/api/auth/capabilities':{
+      ok:true,
+      capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,multiCircleControlPlane:true},
+      registrationMode:'private_beta',
+    },
+    '/api/auth/me':{ok:true,user:owner},
+    '/api/circles':async request=>{
+      if(request.method()==='PUT'){
+        const body=request.postDataJSON();
+        selections.push(body);
+        if(body.circle_public_id==='circle-secondary'&&body.expected_context_version===contextVersion){
+          active='circle-secondary'; contextVersion+=1;
+        }
+      }
+      const circles=[
+        {id:10,public_id:'circle-primary',name:'Primary',role:'owner',is_primary:true},
+        {id:20,public_id:'circle-secondary',name:'Secondary',role:'owner',is_primary:false},
+      ];
+      return {
+        ok:true,circles,
+        active_circle:active?circles.find(circle=>circle.public_id===active):null,
+        context_version:contextVersion,selection_required:active===null,
+      };
+    },
+    '/api/circle':()=>active==='circle-secondary'?{
+      ok:true,circle_meta:{id:20,public_id:'circle-secondary',name:'Secondary'},
+      membership:{role:'owner'},circle:[secondaryMember],count:1,circle_context_version:contextVersion,
+    }:{_status:409,error:'select an active circle',code:'active_circle_required'},
+    '/api/invitations':()=>({
+      ok:true,invitations:active==='circle-secondary'?[{
+        id:'22222222-2222-4222-8222-222222222222',email_fingerprint:'secondary123',
+        status:'pending',expires_at:'2026-09-25T12:00:00.000Z',created_at:'2026-09-18T12:00:00.000Z',
+      }]:[],count:active==='circle-secondary'?1:0,circle_context_version:contextVersion,
+    }),
+    '/api/members':()=>({
+      ok:true,members:[secondaryMember],count:1,has_more:false,next_cursor:null,scanned:1,
+      circle_context_version:contextVersion,
+    }),
+  });
+  await resetClientState(page,true,{},true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await page.locator('[data-tab="circle"]').click();
+  const selector=page.getByTestId('circle-context-select');
+  await expect(selector).toBeVisible();
+  await expect(selector).toHaveValue('');
+  await expect(page.getByTestId('circle-members')).toContainText('select one above');
+
+  const reloaded=page.waitForEvent('domcontentloaded');
+  await selector.selectOption('circle-secondary');
+  await expect.poll(()=>selections).toEqual([{
+    circle_public_id:'circle-secondary',expected_context_version:0,
+  }]);
+  await reloaded;
+  await page.locator('[data-tab="circle"]').click();
+  await expect(page.getByTestId('circle-context-select')).toHaveValue('circle-secondary');
+  await expect(page.getByTestId('circle-members')).toContainText('Secondary Teammate');
+  await expect(page.getByTestId('circle-members')).not.toContainText('Primary Owner');
+  await expect(page.getByTestId('circle-invites')).toContainText('secondary123');
+});
+
 test('ordinary members see the server roster but never owner invitation controls', async ({ page }) => {
   let invitationRequests = 0;
   await mockApi(page, {

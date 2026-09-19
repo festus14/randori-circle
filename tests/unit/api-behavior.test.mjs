@@ -544,7 +544,7 @@ beforeEach(() => {
     'GOOGLE_CLIENT_SECRET', 'GROQ_API_KEY', 'OPENAI_API_KEY', 'RESEND_API_KEY', 'RESEND_FROM',
     'NEXT_PUBLIC_SENTRY_DSN', 'SENTRY_DSN',
     'ALLOW_OPEN_SIGNUP', 'SIGNUP_ALLOWLIST', 'LEETCODE_INGESTION_AUTHORIZED',
-    'AUTH_SCHEMA_BOOTSTRAP_ENABLED', 'CIRCLE_MEMBERSHIP_ENABLED', 'RANDORI_LOCAL_RUNTIME',
+    'AUTH_SCHEMA_BOOTSTRAP_ENABLED', 'CIRCLE_MEMBERSHIP_ENABLED', 'MULTI_CIRCLE_CONTROL_PLANE_ENABLED', 'RANDORI_LOCAL_RUNTIME',
     'EMAIL_PASSWORD_ACTIVATION_ENABLED', 'EMAIL_VERIFICATION_ENCRYPTION_KEY',
     'PASSWORD_RESET_ENABLED', 'PASSWORD_RESET_ENCRYPTION_KEY',
     'IDENTITY_EMAIL_HASH_KEY', 'IDENTITY_EMAIL_HASH_KEY_VERSION', 'IDENTITY_MANAGEMENT_ENABLED',
@@ -3302,6 +3302,29 @@ test('concurrent handler publications across two file-backed clients converge on
     try{ await setup.close(); }catch{}
     for(const client of clients){ try{ client.close(); }catch{} }
     rmSync(directory,{recursive:true,force:true});
+  }
+});
+
+test('unscoped pairing and workspace routes fail closed for multi-circle accounts',async()=>{
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';
+  executeHandler=(sql)=>sql.includes('FROM circle_memberships membership')&&sql.includes('LIMIT 2')
+    ?rows([{circle_id:10},{circle_id:20}])
+    :rows();
+  const headers={...sameOriginHeaders,'x-test-auth':'user'};
+  for(const [handler,request] of [
+    [dataHandler,{url:'/api/weeks',query:{endpoint:'weeks'},headers}],
+    [dataHandler,{url:'/api/messages',query:{endpoint:'messages'},headers}],
+    [opsHandler,{method:'GET',url:'/api/settings/availability',query:{endpoint:'availability'},headers}],
+    [aiHandler,{method:'GET',url:'/api/ai/history',query:{endpoint:'history'},headers}],
+    [videoHandler,{method:'GET',url:'/api/video/signal',query:{endpoint:'signal'},headers}],
+  ]){
+    const response=await invoke(handler,request);
+    assert.equal(response.status,409);
+    assert.deepEqual(response.body,{
+      error:'pairing and workspace features are not yet available for accounts in multiple circles',
+      code:'circle_feature_unavailable',
+    });
   }
 });
 

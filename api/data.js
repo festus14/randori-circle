@@ -20,6 +20,13 @@ import {
   initializePrimaryCircle,
 } from './_circle-membership.js';
 import { localRuntimeRequest } from './_local-runtime.js';
+import {
+  accountHasMultipleActiveCircles,
+  multiCircleControlPlaneEnabled,
+  requestMatchesCircleContext,
+  resolveActiveCircleContext,
+  sendMultiCircleFeatureUnavailable,
+} from './_active-circle.js';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import {
   HEALTH_RESPONSE,
@@ -1043,14 +1050,27 @@ async function handleCircle(req,res){
     try{
       db=getClient();
       await ensureCircleMembershipReadiness(db);
+      const activeContext=multiCircleControlPlaneEnabled()
+        ?await resolveActiveCircleContext(db,viewer)
+        :null;
+      if(activeContext&&!activeContext.ok){
+        if(activeContext.reason==='selection_required'){
+          return res.status(409).json({error:'select an active circle',code:'active_circle_required'});
+        }
+        return res.status(403).json({error:'circle membership required'});
+      }
+      if(activeContext&&!requestMatchesCircleContext(req,activeContext)){
+        return res.status(409).json({error:'circle context changed',code:'circle_context_changed'});
+      }
+      const selectedCircleId=Number(activeContext?.membership?.id||0);
       const result=await db.execute({
 	        sql:`WITH viewer_membership AS (
 	            SELECT c.id AS circle_id,c.public_id,c.name,cm.role
 	            FROM circle_memberships cm
 	            JOIN auth_accounts viewer_account ON viewer_account.id=cm.user_id
-	            JOIN circles c ON c.id=cm.circle_id
+            JOIN circles c ON c.id=cm.circle_id
             WHERE cm.user_id=? AND cm.status='active'
-              AND c.is_primary=1 AND c.archived_at IS NULL
+              AND ${activeContext?'c.id=? AND ':'c.is_primary=1 AND '}c.archived_at IS NULL
             LIMIT 1
           )
           SELECT viewer.circle_id,viewer.public_id,viewer.name AS circle_name,viewer.role,
@@ -1062,7 +1082,7 @@ async function handleCircle(req,res){
           JOIN auth_accounts account ON account.id=member.user_id
           WHERE COALESCE(account.is_demo,0)=0
           ORDER BY account.id`,
-        args:[viewerId],
+        args:activeContext?[viewerId,selectedCircleId]:[viewerId],
       });
       const rows=result.rows||[];
       if(!rows.length) return res.status(403).json({error:'circle membership required'});
@@ -1088,6 +1108,7 @@ async function handleCircle(req,res){
         ok:true,
         circle_meta:{id:Number(first.circle_id),public_id:String(first.public_id),name:String(first.circle_name)},
         membership:{role:first.role==='owner'?'owner':'member'},
+        ...(activeContext?{circle_context_version:activeContext.context_version||0}:{}),
         circle,
         count:circle.length,
       });
@@ -2814,6 +2835,30 @@ async function handleExecute(req,res){
   }
 }
 
+const MULTI_CIRCLE_UNSCOPED_DATA_ENDPOINTS=new Set([
+  'runs','session_runs','session-runs','weeks','history','stats','my-pair','mypair','my_pair',
+  'pair-recap','schedule','messages','message','execute','run',
+]);
+
+async function requireSingleCircleDataFeature(req,res,endpoint){
+  if(!multiCircleControlPlaneEnabled()||!MULTI_CIRCLE_UNSCOPED_DATA_ENDPOINTS.has(endpoint)) return true;
+  try{
+    const payload=await getAuthPayload(req);
+    const userId=authenticatedUserId(payload);
+    if(!userId) return true;
+    const db=getClient();
+    await ensureCircleMembershipReadiness(db);
+    if(await accountHasMultipleActiveCircles(db,userId)){
+      sendMultiCircleFeatureUnavailable(res);
+      return false;
+    }
+    return true;
+  }catch{
+    res.status(503).json({error:'circle context unavailable'});
+    return false;
+  }
+}
+
 export default async function handler(req,res){
   if(!verifyMutationOrigin(req)) return res.status(403).json({error:'cross-origin mutation rejected'});
   try{ 
@@ -2822,6 +2867,7 @@ export default async function handler(req,res){
   try{
   const ep = getEndpoint(req);
   const path = (req.url||'').toLowerCase();
+  if(!await requireSingleCircleDataFeature(req,res,ep)) return;
   if (ep==='runs' || ep==='session_runs' || ep==='session-runs' || path.includes('/runs')) return await handleRuns(req,res);
   if (ep==='leetcode-sync' || ep==='leetcode_sync' || path.includes('leetcode/sync') || path.includes('leetcode-sync')) return await handleLeetcodeSync(req,res);
   if (ep==='leetcode' || ep==='leetcode-detail' || ep==='leetcode_detail' || path.includes('/leetcode')) return await handleLeetcode(req,res);

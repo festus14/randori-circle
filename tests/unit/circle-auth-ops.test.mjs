@@ -119,7 +119,7 @@ mock.module('../../api/_circle-membership.js',{
     readInviteClaim:req=>String(req.headers?.cookie||'').includes('randori_invite_claim=valid-claim')
       ? {invitation_id:'invite-1',circle_id:1,token_hash:'token-hash',email_hash:'email-hash',exp:9999999999}
       : null,
-    hasActivePrimaryCircleMembership:async(_db,userId)=>{
+    hasActiveCircleMembership:async(_db,userId)=>{
       membershipCalls.push(userId);
       if(membershipError) throw membershipError;
       return membershipResult;

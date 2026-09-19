@@ -353,7 +353,7 @@ export async function verifyRequestAuth(req,db=null,{nowSeconds=Math.floor(Date.
           SELECT 1 FROM circle_memberships membership
           JOIN circles circle ON circle.id=membership.circle_id
           WHERE membership.user_id=session.user_id AND membership.status='active'
-            AND circle.is_primary=1 AND circle.archived_at IS NULL
+            AND circle.archived_at IS NULL
         ) THEN 1 ELSE 0 END`
     :'0';
   const result=await sessionDb.execute({

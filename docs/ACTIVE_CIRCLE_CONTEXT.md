@@ -1,0 +1,64 @@
+# Active-circle control plane
+
+This increment makes multi-circle membership safe for roster and invitation
+management without pretending that pairing data is tenant-scoped already. It is
+disabled unless `MULTI_CIRCLE_CONTROL_PLANE_ENABLED=true`.
+
+## Contract
+
+- `GET /api/circles` lists only the caller's active, non-archived memberships.
+  It returns the selected circle, the current context version, and
+  `selection_required` when a multi-circle session has not selected one.
+- `PUT /api/circles` accepts exactly `circle_public_id` and
+  `expected_context_version`. Selection is a same-origin, compare-and-swap
+  mutation. An outdated version returns `409 circle_context_changed`.
+- The selected circle is stored in `auth_session_circle_contexts`, keyed by the
+  hashed live session. Client-provided public IDs select a candidate; active
+  membership is still rechecked in the write transaction and on every use.
+- After discovery, circle/member/invitation requests carry
+  `X-Randori-Circle-Context-Version`. A missing or stale version fails with
+  `409 circle_context_changed`; the header is concurrency context, never an
+  authorization grant.
+- A single-circle session continues to use its only active membership without a
+  selection write. Existing behavior is unchanged while the feature flag is
+  off.
+- `/api/circle`, `/api/members`, and `/api/invitations` resolve the selected
+  context server-side. Owner writes recheck the exact circle, role, target, and
+  archive state. Roster cursors remain encrypted and circle-bound.
+- Leaving or removing one membership revokes account sessions only when no
+  active circle remains. The removed context immediately becomes unusable.
+- Pairing, availability, history, schedule, chat, execution, workspace, video,
+  and AI routes return `409 circle_feature_unavailable` for an authenticated
+  account with more than one active circle. Selecting a circle does not bypass
+  this guard because those records do not yet carry complete tenant ownership.
+
+The browser clears private circle and workspace state before reloading after a
+switch. It broadcasts the context change to other tabs so delayed circle-A
+responses cannot render under circle B.
+
+## Rollout
+
+1. Apply the managed active-circle migration after the protected migration and
+   restore rehearsals required by issues #38 and #43.
+2. Deploy with `MULTI_CIRCLE_CONTROL_PLANE_ENABLED=false`; verify health and
+   ordinary single-circle login, roster, invitation, and pairing behavior.
+3. Enable the flag in staging. Create a fixture account with two active circle
+   memberships and verify selection, cross-tab reload, scoped roster/invitation
+   operations, last-owner rules, and the explicit pairing/workspace 409.
+4. Repeat the control-plane checks in production before admitting a real
+   secondary membership. Monitor only aggregate response/error counts; circle
+   names, invitation targets, and session identifiers must not enter telemetry.
+
+Rollback is application-only: disable the flag. The additive context rows can
+remain. Existing single-primary behavior resumes, and no membership or tenant
+data is deleted.
+
+## Deferred work
+
+Circle creation/archive and secondary-circle coordination remain separate
+increments. Pairing weeks, participants, schedules, messages, runs, snapshots,
+video, AI, notification idempotency, and associated foreign keys must gain
+canonical `circle_id` ownership before their secondary-circle flags can be
+enabled. Postgres with row-level security remains the preferred final tenancy
+boundary; a Turso retrofit remains possible but requires table rebuilds and
+application-enforced authorization.

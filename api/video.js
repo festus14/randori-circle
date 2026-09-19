@@ -1,6 +1,7 @@
 import { getClient, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 import { authPairAccessArgs, authPairAccessSql } from './_pair-access.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
+import { accountHasMultipleActiveCircles, multiCircleControlPlaneEnabled, sendMultiCircleFeatureUnavailable } from './_active-circle.js';
 
 const WORKSPACE_SCHEMA_VERSION = 3;
 const MAX_WORKSPACE_CODE_BYTES = 20 * 1024;
@@ -660,6 +661,15 @@ async function handleSignal(req,res){
 
 export default async function handler(req,res){
   if(!verifyMutationOrigin(req)) return res.status(403).json({error:'cross-origin mutation rejected'});
+  if(multiCircleControlPlaneEnabled()){
+    try{
+      const payload=await verifyRequestAuth(req);
+      const userId=Number(payload?.id??payload?.uid);
+      if(Number.isSafeInteger(userId)&&userId>0&&await accountHasMultipleActiveCircles(getClient(),userId)){
+        return sendMultiCircleFeatureUnavailable(res);
+      }
+    }catch{ return res.status(503).json({error:'circle context unavailable'}); }
+  }
   const ep=getEndpoint(req); const low=(req.url||'').toLowerCase();
   if(!ep || ep==='signal' || ep==='poll' || ep==='signals' || low.includes('/signal') || low.includes('/video') || ep==='ice' || ep==='join' || ep==='leave') return handleSignal(req,res);
   return res.status(404).json({ok:false,error:`unknown video route ${ep}`,available:['signal','ice','join','leave']});

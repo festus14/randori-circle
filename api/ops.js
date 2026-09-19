@@ -47,6 +47,7 @@ import {
 } from './_invitation-email.js';
 import {identityEmailKeyRotationStatus} from './_identity-linking.js';
 import { localIdentityAdapterEnabled, localRuntimeRequest } from './_local-runtime.js';
+import { accountHasMultipleActiveCircles, multiCircleControlPlaneEnabled, sendMultiCircleFeatureUnavailable } from './_active-circle.js';
 
 export const OUTBOX_CRON_BUDGET_MS=45_000;
 export const OUTBOX_CRON_FINALIZATION_RESERVE_MS=5_000;
@@ -860,6 +861,17 @@ export default async function handler(req,res){
   if(!verifyMutationOrigin(req)) return res.status(403).json(availabilityRequest
     ?{ok:false,error:'cross-origin mutation rejected'}
     :{error:'cross-origin mutation rejected'});
+  const unscopedCircleFeature=availabilityRequest||ep==='pairing-run'||pathLower.includes('/pairing/run')
+    ||ep==='reshuffle'||ep==='promote'||pathLower.includes('reshuffle')||pathLower.includes('promote');
+  if(multiCircleControlPlaneEnabled()&&unscopedCircleFeature){
+    try{
+      const payload=await verifyRequestAuth(req);
+      const userId=Number(payload?.id??payload?.uid);
+      if(Number.isSafeInteger(userId)&&userId>0&&await accountHasMultipleActiveCircles(getClient(),userId)){
+        return sendMultiCircleFeatureUnavailable(res);
+      }
+    }catch{ return res.status(503).json({error:'circle context unavailable'}); }
+  }
   if (ep==='notifications-prefs' || ep==='notifications' || ep==='prefs' || ep.includes('notification') || pathLower.includes('notifications') || pathLower.includes('notif') ) return handleNotificationPrefs(req,res);
   if (availabilityRequest) return handleAvailability(req,res);
   if (ep==='demo-seed' || ep==='demo_seed' || pathLower.includes('demo-seed')) return handleDemoSeed(req,res);

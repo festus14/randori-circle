@@ -1,5 +1,6 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { getJwtSecret } from './_db.js';
+import { multiCircleControlPlaneEnabled } from './_active-circle.js';
 
 export const INVITE_CLAIM_COOKIE='randori_invite_claim';
 export const INVITE_CLAIM_TTL_SECONDS=10*60;
@@ -125,6 +126,10 @@ function safeEqual(left,right){
   return a.length===b.length&&timingSafeEqual(a,b);
 }
 
+function invitationCirclePredicate(alias){
+  return `${multiCircleControlPlaneEnabled()?'':`${alias}.is_primary=1 AND `}${alias}.archived_at IS NULL`;
+}
+
 function claimSignature(payload){
   return createHmac('sha256',getJwtSecret())
     .update(`randori-circle-invite-claim-v1\0${payload}`,'utf8')
@@ -199,6 +204,9 @@ export async function ensureCircleMembershipReadiness(db){
     await db.execute(`SELECT id,circle_id,event_type,actor_user_id,subject_user_id,invitation_id,dedupe_key,created_at FROM circle_audit_events LIMIT 0`);
     await db.execute(`SELECT key,attempts,expires_at FROM auth_rate_limits LIMIT 0`);
     await db.execute(`SELECT id,registrations_closed,updated_at FROM circle_membership_rollout LIMIT 0`);
+    if(multiCircleControlPlaneEnabled()){
+      await db.execute(`SELECT session_hash,user_id,circle_id,context_version,updated_at FROM auth_session_circle_contexts LIMIT 0`);
+    }
   })();
   cache.set(key,pending);
   try{ return await pending; }
@@ -222,7 +230,22 @@ export async function getActivePrimaryCircleMembership(db,userId){
 }
 
 export async function hasActivePrimaryCircleMembership(db,userId){
+  if(multiCircleControlPlaneEnabled()) return hasActiveCircleMembership(db,userId);
   return !!await getActivePrimaryCircleMembership(db,userId);
+}
+
+export async function hasActiveCircleMembership(db,userId){
+  const normalizedUserId=safePositiveInteger(userId);
+  if(!normalizedUserId) return false;
+  const result=await db.execute({
+    sql:`SELECT 1 AS active
+      FROM circle_memberships membership
+      JOIN circles circle ON circle.id=membership.circle_id
+      WHERE membership.user_id=? AND membership.status='active' AND circle.archived_at IS NULL
+      LIMIT 1`,
+    args:[normalizedUserId],
+  });
+  return result.rows?.length===1;
 }
 
 async function ensureCircleMembershipRolloutControl(db){
@@ -281,7 +304,7 @@ export async function prepareInvitationClaim(db,{token}){
       FROM circle_invitations ci JOIN circles c ON c.id=ci.circle_id
       WHERE ci.token_hash=? AND ci.used_at IS NULL AND ci.used_by IS NULL
         AND ci.revoked_at IS NULL AND datetime(ci.expires_at)>datetime('now')
-        AND c.is_primary=1 AND c.archived_at IS NULL
+        AND ${invitationCirclePredicate('c')}
       LIMIT 1`,
     args:[tokenHash],
   });
@@ -311,7 +334,7 @@ export async function validatePreparedInvitation(db,{claim,email}){
         AND ci.revoked_at IS NULL
         AND ((ci.used_at IS NULL AND ci.used_by IS NULL AND datetime(ci.expires_at)>datetime('now'))
           OR (ci.used_at IS NOT NULL AND ci.used_by IS NOT NULL))
-        AND c.is_primary=1 AND c.archived_at IS NULL
+        AND ${invitationCirclePredicate('c')}
       LIMIT 1`,
     args:[parsed.invitation_id,parsed.circle_id,parsed.token_hash,emailHash],
   });
@@ -334,7 +357,7 @@ export async function acceptPreparedInvitation(db,{claim,email,userId}){
         SET used_at=COALESCE(used_at,?),used_by=COALESCE(used_by,?)
         WHERE id=? AND circle_id=? AND token_hash=? AND email_hash=? AND revoked_at IS NULL
           AND ((used_at IS NULL AND used_by IS NULL AND datetime(expires_at)>datetime('now')) OR used_by=?)
-          AND EXISTS (SELECT 1 FROM circles WHERE id=circle_id AND is_primary=1 AND archived_at IS NULL)
+          AND EXISTS (SELECT 1 FROM circles c WHERE c.id=circle_id AND ${invitationCirclePredicate('c')})
           AND NOT EXISTS (
             SELECT 1 FROM circle_memberships existing_membership
             WHERE existing_membership.circle_id=circle_invitations.circle_id
@@ -348,7 +371,7 @@ export async function acceptPreparedInvitation(db,{claim,email,userId}){
         FROM circle_invitations ci JOIN circles c ON c.id=ci.circle_id
         WHERE ci.id=? AND ci.circle_id=? AND ci.token_hash=? AND ci.email_hash=?
           AND ci.used_by=? AND ci.revoked_at IS NULL
-          AND c.is_primary=1 AND c.archived_at IS NULL
+          AND ${invitationCirclePredicate('c')}
         ON CONFLICT(circle_id,user_id) DO UPDATE SET
           updated_at=excluded.updated_at
         WHERE circle_memberships.status='active'
@@ -361,7 +384,7 @@ export async function acceptPreparedInvitation(db,{claim,email,userId}){
         FROM circle_invitations ci JOIN circles c ON c.id=ci.circle_id
         WHERE ci.id=? AND ci.circle_id=? AND ci.token_hash=? AND ci.email_hash=?
           AND ci.used_by=? AND ci.revoked_at IS NULL
-          AND c.is_primary=1 AND c.archived_at IS NULL
+          AND ${invitationCirclePredicate('c')}
         ON CONFLICT(dedupe_key) DO NOTHING
         RETURNING id`,
       args:[normalizedUserId,normalizedUserId,auditKey,acceptedAt,
@@ -402,7 +425,7 @@ export async function createGoogleAccountFromPreparedInvitation(db,{
           WHERE ci.id=? AND ci.circle_id=? AND ci.token_hash=? AND ci.email_hash=?
             AND ci.used_at IS NULL AND ci.used_by IS NULL AND ci.revoked_at IS NULL
             AND datetime(ci.expires_at)>datetime('now')
-            AND c.is_primary=1 AND c.archived_at IS NULL
+            AND ${invitationCirclePredicate('c')}
         )
         AND NOT EXISTS (SELECT 1 FROM auth_accounts WHERE google_sub=?)
         ON CONFLICT(email) DO NOTHING
@@ -425,7 +448,7 @@ export async function createGoogleAccountFromPreparedInvitation(db,{
         WHERE id=? AND circle_id=? AND token_hash=? AND email_hash=?
           AND used_at IS NULL AND used_by IS NULL AND revoked_at IS NULL
           AND datetime(expires_at)>datetime('now')
-          AND EXISTS (SELECT 1 FROM circles WHERE id=circle_id AND is_primary=1 AND archived_at IS NULL)
+          AND EXISTS (SELECT 1 FROM circles c WHERE c.id=circle_id AND ${invitationCirclePredicate('c')})
           AND EXISTS (SELECT 1 FROM auth_accounts WHERE id=? AND email=? AND google_sub=?)
         RETURNING circle_id,used_by`,
       args:[acceptedAt,userId,parsed.invitation_id,parsed.circle_id,parsed.token_hash,emailHash,
@@ -440,7 +463,7 @@ export async function createGoogleAccountFromPreparedInvitation(db,{
         FROM circle_invitations ci JOIN circles c ON c.id=ci.circle_id
         WHERE ci.id=? AND ci.circle_id=? AND ci.token_hash=? AND ci.email_hash=?
           AND ci.used_at=? AND ci.used_by=? AND ci.revoked_at IS NULL
-          AND c.is_primary=1 AND c.archived_at IS NULL
+          AND ${invitationCirclePredicate('c')}
         ON CONFLICT(circle_id,user_id) DO NOTHING
         RETURNING circle_id,user_id,role,status`,
       args:[userId,acceptedAt,acceptedAt,parsed.invitation_id,parsed.circle_id,parsed.token_hash,emailHash,
@@ -496,7 +519,7 @@ export async function createPasswordAccountFromPreparedInvitation(db,{
           WHERE ci.id=? AND ci.circle_id=? AND ci.token_hash=? AND ci.email_hash=?
             AND ci.used_at IS NULL AND ci.used_by IS NULL AND ci.revoked_at IS NULL
             AND datetime(ci.expires_at)>datetime('now')
-            AND c.is_primary=1 AND c.archived_at IS NULL
+            AND ${invitationCirclePredicate('c')}
         )
         ON CONFLICT(email) DO NOTHING
         RETURNING id,is_admin`,
@@ -512,7 +535,7 @@ export async function createPasswordAccountFromPreparedInvitation(db,{
         WHERE id=? AND circle_id=? AND token_hash=? AND email_hash=?
           AND used_at IS NULL AND used_by IS NULL AND revoked_at IS NULL
           AND datetime(expires_at)>datetime('now')
-          AND EXISTS (SELECT 1 FROM circles WHERE id=circle_id AND is_primary=1 AND archived_at IS NULL)
+          AND EXISTS (SELECT 1 FROM circles c WHERE c.id=circle_id AND ${invitationCirclePredicate('c')})
           AND EXISTS (SELECT 1 FROM auth_accounts
             WHERE id=? AND email=? AND password_hash=? AND google_sub IS NULL)
         RETURNING circle_id,used_by`,
@@ -528,7 +551,7 @@ export async function createPasswordAccountFromPreparedInvitation(db,{
         FROM circle_invitations ci JOIN circles c ON c.id=ci.circle_id
         WHERE ci.id=? AND ci.circle_id=? AND ci.token_hash=? AND ci.email_hash=?
           AND ci.used_at=? AND ci.used_by=? AND ci.revoked_at IS NULL
-          AND c.is_primary=1 AND c.archived_at IS NULL
+          AND ${invitationCirclePredicate('c')}
         ON CONFLICT(circle_id,user_id) DO NOTHING
         RETURNING circle_id,user_id,role,status`,
       args:[userId,acceptedAt,acceptedAt,parsed.invitation_id,parsed.circle_id,parsed.token_hash,emailHash,
