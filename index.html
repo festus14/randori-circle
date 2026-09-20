@@ -524,6 +524,9 @@ p{margin:0}
 .check-item{display:flex; align-items:center; gap:8px; font-size:12.8px; color:var(--ink-2)}
 .check-item.done{color:var(--ink); opacity:.85}
 .check-item.done .check-box{background:var(--accent); border-color:var(--accent); color:#0f0f10}
+.check-item[data-state="error"]{color:var(--bad)}
+.check-item[data-state="error"] .check-box{border-color:var(--bad);color:var(--bad);background:var(--bad-surface)}
+.check-item[data-state="loading"] .check-box{border-color:var(--info);color:var(--info)}
 .check-box{width:18px; height:18px; border-radius:6px; border:1.5px solid var(--control-border); display:grid; place-items:center; font-size:11px; font-weight:700; background:var(--bg-3)}
 
 /* --- New onboarding landing + profile + dashboard --- */
@@ -1011,7 +1014,8 @@ p{margin:0}
           <div><label class="small muted">Interview focus</label><div id="psFocus" class="pill-choice" style="margin-top:6px"><button class="chip" data-focus="dsa">DSA</button><button class="chip" data-focus="system">System Design</button><button class="chip active" data-focus="both">Both</button></div></div>
           <div class="row" style="justify-content:space-between; align-items:center; gap:12px; padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-3)"><div><b style="font-size:12.5px">Weekly availability</b><div class="small muted">Availability belongs to a specific pairing cycle and is managed from Pairing.</div></div><button id="psAvailabilityLink" class="pill" type="button">Manage availability</button></div>
           <div id="psRemindRow" class="row" data-state="loading" aria-busy="true" style="justify-content:space-between; align-items:center; padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-3)"><div><b style="font-size:12.5px">Email reminders</b><div class="small muted">Request an email when paired. Delivery depends on email-service readiness.</div><div id="psRemindStatus" class="small request-status" data-state="loading" role="status" aria-live="polite">Checking your reminder preference…</div></div><label class="pill" style="cursor:pointer"><input id="psRemindEmail" type="checkbox" checked aria-describedby="psRemindStatus" style="margin-right:4px"/> Email</label></div>
-          <div class="row" style="justify-content:flex-end"><button id="psSave" class="btn">Save & continue →</button></div>
+          <div id="psSaveStatus" data-state="idle" class="small request-status" role="status" aria-live="polite"></div>
+          <div class="row" style="justify-content:flex-end"><button id="psRetry" class="pill" type="button" hidden>Retry profile</button><button id="psSave" class="btn" type="button" aria-describedby="psSaveStatus">Save &amp; continue →</button></div>
         </div>
       </div>
     </section>
@@ -1040,20 +1044,19 @@ p{margin:0}
         <div id="logsArea" class="card" style="padding:10px; display:none; margin-top:12px; border-color:var(--border)"><div style="display:flex; justify-content:space-between; align-items:center"><h3 style="font-size:12.5px; margin:0; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Logs <span class="kbd" style="font-size:10px; margin-left:6px">admin</span></h3><span class="row" style="gap:6px"><select id="logsLevelSel" class="select" style="font-size:11px; padding:4px 8px"><option value="" selected>all levels</option><option value="error">error</option><option value="warn">warn</option><option value="success">success</option><option value="info">info</option><option value="debug">debug</option></select><button id="logsRefresh" class="pill" style="font-size:11px">refresh</button><button id="logsClear" class="pill" style="font-size:11px">clear view</button></span></div><div id="logsList" class="small muted" style="margin-top:8px; max-height:320px; overflow:auto; font-family:ui-monospace, monospace; font-size:11.5px; display:grid; gap:4px">Loading…</div><div class="small muted" style="margin-top:6px">Batched client+server logs — auto every 20s, admin can filter by level/event. Backed by Sentry-ready hook (see _randori_log). For prod monitoring consider Sentry or Better Stack (see console).</div></div>
         <div id="dashSignOutWrap" style="margin-top:12px;text-align:right; display:block"><button id="dashSignOut" class="pill" style="font-size:12px;opacity:.75">Sign out</button></div>
         <div id="dashEmpty" data-testid="dashboard-pair-state" data-state="loading" style="display:none" class="card"><div class="card-b"><b id="dashEmptyTitle">Checking your current cycle…</b><div id="dashEmptyMessage" class="small muted" style="margin-top:6px">Loading durable pairing state.</div><div class="row" style="margin-top:10px"><button class="btn" id="dashPublishNow" data-testid="dashboard-publish-now" type="button" hidden>Publish now</button><button class="pill" id="dashSoloCatalogue" type="button">Practice solo from catalogue</button><button class="pill" id="dashHow">How it works?</button></div></div></div>
+        <!-- Onboarding Checklist -->
+        <div id="onboardChecklist" class="checklist" data-state="idle" role="region" aria-labelledby="onboardChecklistTitle" aria-busy="false" style="display:none">
+          <div class="row" style="justify-content:space-between"><h4 id="onboardChecklistTitle">Getting started</h4><button id="checklistToggle" class="pill" type="button" style="font-size:11px" aria-expanded="true">hide</button></div>
+          <div class="check-item" id="chkSignIn" data-state="pending"><div class="check-box" aria-hidden="true">·</div><span>Sign in to your private circle</span></div>
+          <div class="check-item" id="chkProfile" data-state="loading"><div class="check-box" aria-hidden="true">·</div><span>Checking saved profile…</span></div>
+          <div class="check-item" id="chkAvail" data-state="loading"><div class="check-box" aria-hidden="true">·</div><span>Checking cycle availability…</span></div>
+          <div class="check-item" id="chkPair" data-state="loading"><div class="check-box" aria-hidden="true">·</div><span>Checking current pairing…</span></div>
+          <div class="check-item" id="chkRoom" data-state="pending" hidden><div class="check-box" aria-hidden="true">·</div><span>Open your current workspace</span></div>
+          <div id="onboardChecklistStatus" class="small muted" role="status" aria-live="polite">Sign in to load your saved setup.</div>
+          <div class="row" style="margin-top:4px"><button id="chkStartTour" class="pill" type="button" style="font-size:11px">↺ Restart tour</button><button id="chkRetry" class="pill" type="button" hidden>Retry setup checks</button><span class="small muted" id="chkProgress">0/4</span></div>
+        </div>
       </div>
     </section>
-
-
-    <!-- Onboarding Checklist -->
-    <div id="onboardChecklist" class="checklist" style="display:none">
-      <div class="row" style="justify-content:space-between"><h4>Getting started</h4><button id="checklistToggle" class="pill" style="font-size:11px">hide</button></div>
-      <div class="check-item" id="chkSignIn"><div class="check-box">✓</div><span>Sign in to your private circle</span></div>
-      <div class="check-item" id="chkAvail"><div class="check-box">✓</div><span>Mark Available for Sunday</span></div>
-      <div class="check-item" id="chkPair"><div class="check-box">✓</div><span>See your pair</span></div>
-      <div class="check-item" id="chkRoom"><div class="check-box">✓</div><span>Join a live room</span></div>
-      <div class="check-item" id="chkDemo"><div class="check-box">✓</div><span>Try demo (admin)</span></div>
-      <div class="row" style="margin-top:4px"><button id="chkStartTour" class="pill" style="font-size:11px">↺ Restart tour</button><span class="small muted" id="chkProgress">0/5</span></div>
-    </div>
     <!-- CIRCLE -->
     <section id="view-circle" class="view" tabindex="0" aria-labelledby="tab-circle">
       <div class="grid-2">
@@ -1902,6 +1905,7 @@ p{margin:0}
   function invalidateAuthRefreshes(){
     authSessionEpoch+=1;
     authRefreshSequence+=1;
+    window._randori_onboarding_authority?.invalidate?.('identity');
     if(inviteState.active||inviteState.ready) invalidatePreparedInvite('auth_changed');
   }
 async function refreshMe(){
@@ -2079,6 +2083,7 @@ async function refreshMe(){
   function replaceAvailability(value){
     availabilityState.value=value;
     scheduleAvailabilityRollover();
+    window._randori_onboarding_authority?.observeAvailability?.(value);
   }
   function availabilityNoticeMatches(notice,userId,availability){
     return !!notice&&notice.userId===userId
@@ -2184,6 +2189,7 @@ async function refreshMe(){
     availabilityState.notice=null;
     availabilityState.request=null;
     renderAvailability();
+    window._randori_onboarding_authority?.observeAvailabilityUnavailable?.();
   }
   function availabilityContextFence(userId){
     if(!authCapabilities.multiCircleAvailability){
@@ -2276,6 +2282,7 @@ async function refreshMe(){
         if(epoch===availabilityState.epoch&&availabilityState.contextKey===fence.key){
           availabilityState.value=null;
           availabilityState.error='Weekly availability is temporarily unavailable. Try again.';
+          window._randori_onboarding_authority?.observeAvailabilityUnavailable?.();
         }
         return null;
       }finally{
@@ -3865,6 +3872,7 @@ async function refreshMe(){
   }
 
   function resetPrivateCircleControl({switching,preserveLifecycleRecentAction=false}){
+    window._randori_onboarding_authority?.invalidate?.('circle');
     clearAvailability();
     circleCreateAbort?.abort();
     circleCreateAbort=null;
@@ -7199,6 +7207,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(id==='board'){ setTimeout(()=>{ resizeCanvas(); renderBoard(); }, 60); }
       if(id==='code' && !currentRoom){ renderRoomSelect(); const sel=document.getElementById('roomSelect'); if(sel.value) loadRoom(sel.value); }
       if(id==='history') renderHistory();
+      window._randori_onboarding_authority?.render?.();
     };
   });
 
@@ -7371,10 +7380,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   const steps=[
     {title:'Welcome to Randori Circle', desc:'Weekly mock interviews with friends — cycle-based pairing, live rooms, whiteboard. 5-min setup, then you practice DSA + System Design together.', cta:'Get started →', target:null, extra:`<div class="row" style="gap:8px"><span class="kbd">Schedule shown from the server</span><span class="kbd">No trios — odd gets solo practice</span></div>`},
-    {title:'Join your Circle', desc:'Signing up joins the circle. Then review your availability for the upcoming pairing cycle.', cta:'Next → Circle', target:'#authBtn', needsAuth:false, extra:`<div class="small muted">Already signed in? Nice — next, check the cycle cutoff.</div>`},
-    {title:'Set weekly availability', desc:'Availability applies only to the upcoming pairing cycle shown in Pairing. Turn it off before that cycle’s displayed cutoff to skip it.', cta:'Next → Availability', target:'#availabilityWrap', extra:`<div class="small muted">Each cycle has its own setting, dates, and scheduling timezone.</div>`},
-    {title:'Current-cycle pairs', desc:'The dashboard shows the server’s exact run and cutoff. You choose DSA / System Design / Both together, and published pairs stay fixed for the cycle. With an odd count, one member gets solo practice.', cta:'Next → Live room', target:'#view-pair', extra:`<div class="small muted">Pairs are colour-coded; use code to enter your authorized room.</div>`},
-    {title:'Live Room & AI', desc:'Every pair has a Code room + Whiteboard. Join video with one click, Record edits + notes, then Get AI Feedback (Groq router picks model by session, evidence-checked).', cta:'Open a room →', target:'#view-code', extra:`<div class="row" style="flex-wrap:wrap"><span class="kbd">Code ↔ Board</span><span class="kbd">📷 cam mute</span><span class="kbd">⚡ AI feedback</span></div>`},
+    {title:'Join your Circle', desc:'Sign in to load your private circle and saved setup from the server.', cta:'Next → Profile', target:'#authBtn', needsAuth:false, extra:`<div class="small muted">This browser never treats cached identity as proof of progress.</div>`},
+    {title:'Complete your profile', desc:'Your saved display name and timezone make scheduling clear for your partner.', cta:'Next → Availability', target:'#dashProfileBtn', extra:`<div class="small muted">Profile progress comes from your authenticated server record.</div>`},
+    {title:'Save cycle availability', desc:'Availability applies only to the upcoming pairing cycle shown in Pairing. Save either Available or Skip before that cycle’s displayed cutoff.', cta:'Next → Pairing', target:'#availabilityWrap', extra:`<div class="small muted">A default toggle is not counted until this exact cycle is saved.</div>`},
+    {title:'Current pair & workspace', desc:'A workspace appears only after the server publishes your assignment for the active circle and current cycle.', cta:'View current pairing →', target:'#view-pair', extra:`<div class="small muted">Old room links and browser storage never complete this step.</div>`},
   ];
 
   function updateOnboardProgress(){
@@ -7435,7 +7444,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           document.getElementById('onbExtra').innerHTML='<div class="pill" style="background:var(--accent); color:#0f0f10">✓ Signed in — availability is set per cycle</div>';
         }
       }
-      if(onboardStep===3){
+      if(onboardStep===4){
         const av=document.getElementById('availabilityWrap');
         if(av && me) av.style.display='grid';
         tgt=av && av.style.display!=='none' ? av : document.querySelector('[data-tab="pair"]');
@@ -7518,35 +7527,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   // Checklist logic
   function updateChecklist(){
-    if(localStorage.getItem(ONB_KEY)==='1'){ try{ document.getElementById('onboardChecklist').style.display='none'; }catch{} return; }
-    const signedIn=!!me;
-    const av=document.getElementById('availToggle');
-    const availChecked=av? av.checked: false;
-    const weeksLen = (()=>{
-      try{ const w=JSON.parse(localStorage.getItem(WEEKS_KEY)||'[]'); return w.length; }catch{return 0;}
-    })();
-    const roomJoined = !!currentRoom || !!localStorage.getItem('randori-last-room');
-    const demoActive = localStorage.getItem('randori-demo-active')==='1';
-    const isAdminNow = typeof isAdmin==='function' ? isAdmin() : false;
-
-    document.getElementById('chkSignIn')?.classList.toggle('done', signedIn);
-    document.getElementById('chkAvail')?.classList.toggle('done', !!me);
-    // availability marked counts as avail step done even if off? require me exists
-    document.getElementById('chkPair')?.classList.toggle('done', weeksLen>0 || document.getElementById('pairsList')?.children.length>0);
-    document.getElementById('chkRoom')?.classList.toggle('done', roomJoined);
-    const demoItem=document.getElementById('chkDemo');
-    if(demoItem){
-      demoItem.style.display = isAdminNow ? 'flex' : 'none';
-      demoItem.classList.toggle('done', demoActive);
-    }
-    const doneCount=[signedIn, !!me, weeksLen>0, roomJoined, isAdminNow? demoActive : false].filter(Boolean).length;
-    const total=isAdminNow?5:4;
-    document.getElementById('chkProgress').textContent=`${doneCount}/${total}`;
-    const cl=document.getElementById('onboardChecklist');
-    if(cl){
-      if(onboardCompleted && doneCount===total) cl.style.display='none';
-      else cl.style.display='grid';
-    }
+    const authority=window._randori_onboarding_authority;
+    if(authority?.render) return authority.render();
+    const checklist=document.getElementById('onboardChecklist');
+    if(checklist) checklist.style.display=me?'grid':'none';
   }
 
   document.getElementById('checklistToggle')?.addEventListener('click', ()=>{
@@ -7555,7 +7539,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const hidden=cl.dataset.collapsed==='1';
     items.forEach(el=>{ if(el) el.style.display= hidden? '': 'none'; });
     cl.dataset.collapsed= hidden? '0':'1';
-    document.getElementById('checklistToggle').textContent = hidden? 'hide':'show';
+    const toggle=document.getElementById('checklistToggle');
+    toggle.textContent = hidden? 'hide':'show';
+    toggle.setAttribute('aria-expanded',hidden?'true':'false');
   });
   document.getElementById('chkStartTour')?.addEventListener('click', ()=> startOnboarding(1));
 
@@ -7573,7 +7559,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   setTimeout(()=>{
     // re-read in case token changed after load
     try{ onboardCompleted = localStorage.getItem(ONB_KEY)==='1'; }catch{}
-    if(onboardCompleted){ document.getElementById('welcomeBanner').style.display='none'; setOnboardingModalVisible(false); document.getElementById('onboardChecklist').style.display='none'; return; }
+    if(onboardCompleted){ document.getElementById('welcomeBanner').style.display='none'; setOnboardingModalVisible(false); }
     maybeShowWelcome();
     updateChecklist();
     if(!onboardCompleted && onboardStep===0 && !me){
@@ -7594,7 +7580,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }, 400);
 
   // Expose for debug + empty-state buttons
-  window._randori_onboard={ start:startOnboarding, next:nextOnboard, skip:skipOnboarding, get step(){return onboardStep}, get done(){return onboardCompleted} };
+  window._randori_onboard={ start:startOnboarding, next:nextOnboard, skip:skipOnboarding, renderChecklist:updateChecklist, get step(){return onboardStep}, get done(){return onboardCompleted} };
   window._randori_pairing_recovery={
     accept:acceptPairingPublicationState,
     publish:publishCurrentCycle,
@@ -7684,6 +7670,41 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     try{ const intl=Intl.DateTimeFormat().resolvedOptions().timeZone; if(intl && !tzs.includes(intl)) sel.innerHTML+=`<option value="${intl}">${intl} (detected)</option>`; sel.value=intl||'UTC'; }catch{ sel.value='UTC'; }
   }
   let profileFocus='both';
+  let profileEditorEpoch=0;
+  let profileSaveController=null;
+  let profileEditorActorId=null;
+  let profileSaveAttempt=0;
+  let profileSaveSettledAttempt=0;
+  const profileSaveWaiters=new Set();
+  let resolveOnboardingAuthorityReady;
+  const onboardingAuthorityReady=new Promise(resolve=>{ resolveOnboardingAuthorityReady=resolve; });
+
+  function acceptOnboardingAuthority(){
+    const authority=window._randori_onboarding_authority;
+    if(!authority) return;
+    window.removeEventListener('randori:onboarding-authority-ready',acceptOnboardingAuthority);
+    resolveOnboardingAuthorityReady(authority);
+  }
+  window.addEventListener('randori:onboarding-authority-ready',acceptOnboardingAuthority);
+  acceptOnboardingAuthority();
+
+  function settleProfileSaveAttempt(attempt){
+    profileSaveSettledAttempt=Math.max(profileSaveSettledAttempt,attempt);
+    for(const waiter of profileSaveWaiters){
+      if(waiter.attempt>profileSaveSettledAttempt) continue;
+      profileSaveWaiters.delete(waiter);
+      waiter.resolve(Object.freeze({attempt:waiter.attempt}));
+    }
+  }
+
+  function waitForProfileSaveAttempt(attempt){
+    const target=Number(attempt);
+    if(!Number.isSafeInteger(target)||target<1||target>profileSaveAttempt){
+      return Promise.reject(new Error('unknown profile save attempt'));
+    }
+    if(target<=profileSaveSettledAttempt) return Promise.resolve(Object.freeze({attempt:target}));
+    return new Promise(resolve=>profileSaveWaiters.add({attempt:target,resolve}));
+  }
   document.getElementById('psFocus')?.addEventListener('click', e=>{
     if(e.target.classList.contains('chip')){
       document.querySelectorAll('#psFocus .chip').forEach(c=>c.classList.remove('active'));
@@ -7703,25 +7724,18 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   });
 
   async function fetchProfile(){
-    try{
-      const r=await fetch('/api/profile', {credentials:'same-origin'});
-      if(!r.ok) throw new Error('fail');
-      const j=await r.json();
-      const user=j.user||null;
-      if(user && user.tz){ try{ localStorage.setItem('randori-profile-done','1'); }catch{} }
-      return user;
-    }catch{ return null; }
+    // Authentication may resolve while the document is still parsing, before
+    // the authority script below has installed its API. Join its explicit
+    // readiness signal instead of misclassifying a complete profile.
+    const authority=window._randori_onboarding_authority||await onboardingAuthorityReady;
+    if(!authority?.refreshProfile) throw new Error('onboarding authority unavailable');
+    const snapshot=await authority.refreshProfile({reason:'profile'});
+    return snapshot?.profile?.status==='ready'?snapshot.profile.user:null;
   }
 
   function isProfileIncomplete(u){
-    if(!u) return false; // don't block on fetch error — treat as complete
-    const done = localStorage.getItem('randori-profile-done');
-    if(done) return false;
-    // only tz required for first setup; bio optional (user complaint: second sign-in shouldn't re-ask)
-    if(!u.tz) return true;
-    // if they already have tz, mark done to prevent future prompts
-    try{ localStorage.setItem('randori-profile-done','1'); }catch{}
-    return false;
+    if(!u) return false;
+    return !window._randori_onboarding_authority?.profileComplete?.(u);
   }
 
   function currentProfileUserId(){
@@ -7729,8 +7743,21 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return Number.isSafeInteger(value)&&value>0?value:null;
   }
 
-  async function showProfileSetup(prefill){
-    const user = prefill || await fetchProfile();
+  function setProfileSaveState(status,message=''){
+    const save=document.getElementById('psSave');
+    const retry=document.getElementById('psRetry');
+    const statusEl=document.getElementById('psSaveStatus');
+    const busy=status==='loading'||status==='saving';
+    if(viewProfile) viewProfile.setAttribute('aria-busy',busy?'true':'false');
+    if(save){ save.disabled=busy||status==='loading_error'; save.textContent=status==='saving'?'Saving…':'Save & continue →'; }
+    if(retry){ retry.hidden=!['loading_error','save_error'].includes(status); retry.disabled=busy; }
+    if(statusEl){ statusEl.dataset.state=status; statusEl.textContent=message; }
+    for(const input of document.querySelectorAll('#view-profile-setup input,#view-profile-setup textarea,#view-profile-setup select,#view-profile-setup .chip')){
+      input.disabled=status==='loading'||status==='loading_error'||status==='saving';
+    }
+  }
+
+  function fillProfileForm(user){
     const me= (()=>{ try{ return JSON.parse(localStorage.getItem(ME_KEY)||'null')}catch{return null} })();
     document.getElementById('psName').value = user?.display_name||user?.name||me?.name||'';
     document.getElementById('psBio').value = user?.bio||'';
@@ -7741,35 +7768,98 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const col = safeProfileColor(user?.color||me?.color||PALETTE[0]);
     document.getElementById('psAvatar').style.background=col;
     document.getElementById('psAvatar').textContent=( (user?.display_name||user?.name||me?.name||'ME').slice(0,2).toUpperCase());
+  }
+
+  async function showProfileSetup(prefill){
+    const epoch=++profileEditorEpoch;
+    profileEditorActorId=currentProfileUserId();
+    profileSaveController?.abort();
+    profileSaveController=null;
     hideAllViews();
     viewProfile.style.display='block';
+    if(prefill){
+      fillProfileForm(prefill);
+      setProfileSaveState('idle','Profile loaded from your account.');
+      return;
+    }
+    setProfileSaveState('loading','Loading your saved profile…');
+    let user;
+    try{ user=await fetchProfile(); }
+    catch{
+      if(epoch!==profileEditorEpoch||!currentProfileUserId()) return;
+      setProfileSaveState('loading_error','Profile status is unknown. Reload the app, then retry.');
+      return;
+    }
+    if(epoch!==profileEditorEpoch||!currentProfileUserId()) return;
+    if(!user){
+      setProfileSaveState('loading_error','Profile status is unknown. Retry before editing or saving.');
+      return;
+    }
+    fillProfileForm(user);
+    setProfileSaveState('idle','Profile loaded from your account.');
   }
 
   document.getElementById('psSave')?.addEventListener('click', async()=>{
     const userId=currentProfileUserId();
-    if(!userId){ alert('Sign in again before saving your profile.'); return; }
+    if(!userId){ setProfileSaveState('save_error','Sign in again before saving your profile.'); return; }
     const name=document.getElementById('psName').value.trim();
     const bio=document.getElementById('psBio').value.trim();
     const tz=document.getElementById('psTz').value;
     const leet=document.getElementById('psLeet').value.trim();
     const color=document.getElementById('psColors')?.dataset.selected||undefined;
     const payload={ display_name:name, bio, tz, interview_focus:profileFocus, leetcode_handle:leet, color };
-    // simple validation
-    if(!name){ alert('Name required'); return; }
+    if(!name){
+      setProfileSaveState('save_error','Enter a display name, then retry.');
+      document.getElementById('psName').setAttribute('aria-invalid','true');
+      document.getElementById('psName').focus();
+      return;
+    }
+    document.getElementById('psName').removeAttribute('aria-invalid');
+    const editorEpoch=++profileEditorEpoch;
+    profileSaveController?.abort();
+    const controller=new AbortController();
+    profileSaveController=controller;
+    let scope=null;
+    const authority=window._randori_onboarding_authority;
+    try{ scope=await authority?.captureProfileScope?.(); }catch{}
+    if(authority&&!scope){
+      if(profileSaveController===controller) profileSaveController=null;
+      setProfileSaveState('save_error','Your account or active circle changed. Reload the profile and retry.');
+      return;
+    }
+    const canApply=()=>profileSaveController===controller&&!controller.signal.aborted
+      &&editorEpoch===profileEditorEpoch&&currentProfileUserId()===userId
+      &&(!scope||authority?.matchesProfileScope?.(scope)===true);
+    if(!canApply()) return;
+    setProfileSaveState('saving','Saving your profile…');
+    const saveAttempt=++profileSaveAttempt;
     try{
-      const r=await fetch('/api/profile',{ method:'POST', credentials:'same-origin', headers:{'content-type':'application/json'}, body: JSON.stringify(payload) });
+      const r=await fetch('/api/profile',{ method:'POST', credentials:'same-origin', headers:{'content-type':'application/json'}, body: JSON.stringify(payload),signal:controller.signal });
       const j=await r.json();
+      if(!canApply()) return;
       if(!r.ok) throw j;
       if(Number(j.user?.id)!==userId) throw new Error('profile response did not match signed-in account');
-      if(currentProfileUserId()!==userId) return;
-      try{ localStorage.setItem('randori-profile-done','1'); }catch{}
+      if(!canApply()) return;
       localStorage.setItem(ME_KEY, JSON.stringify(j.user));
+      window._randori_onboarding_authority?.observeProfile?.(j.user,scope);
       try{ await window._randori_auth?.refreshMe?.(); }catch{}
-      if(currentProfileUserId()!==userId) return;
-      // go dashboard
+      if(!canApply()) return;
+      setProfileSaveState('saved','Profile saved.');
+      await window._randori_onboarding_authority?.refreshProfile?.({reason:'profile_saved'});
+      if(!canApply()) return;
       await showDashboard();
       if(typeof window.toast==='function') window.toast('Profile saved ✓');
-    }catch(e){ alert('Save failed: '+(e.error||e.message||'unknown')); }
+    }catch(e){
+      if(e?.name==='AbortError'||!canApply()) return;
+      setProfileSaveState('save_error',`Profile was not saved. ${String(e.error||e.message||'Try again.').slice(0,180)}`);
+    }finally{
+      if(profileSaveController===controller) profileSaveController=null;
+      settleProfileSaveAttempt(saveAttempt);
+    }
+  });
+  document.getElementById('psRetry')?.addEventListener('click',()=>{
+    if(document.getElementById('psSaveStatus')?.dataset.state==='save_error') document.getElementById('psSave')?.click();
+    else showProfileSetup().catch(()=>{});
   });
 
   // Dashboard
@@ -7908,6 +7998,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     cancelDashboardPairRequest();
     hideAllViews();
     if(viewDashboard) viewDashboard.style.display='block';
+    window._randori_onboarding_authority?.render?.();
     window._randori_availability?.refresh?.();
     clearDashboardPairState({revokeRoom:false});
     const userId=dashboardUserId();
@@ -7915,11 +8006,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     try{
       circleOperation=await window._randori_circle_control?.capturePairing?.(userId);
     }catch{
+      window._randori_onboarding_authority?.observePairingError?.();
       renderDashboardEmpty('error');
       return;
     }
     if(!circleOperation||dashboardUserId()!==userId
       ||!window._randori_circle_control?.matchesPairing?.(circleOperation)){
+      window._randori_onboarding_authority?.observePairingError?.(circleOperation);
       renderDashboardEmpty('error');
       return;
     }
@@ -7969,8 +8062,14 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     try{
       const j=await window._randori_auth.api('/api/my-pair',{method:'GET',cache:'no-store',signal:controller.signal});
       if(!canApply()||!window._randori_circle_control?.matchesPairing?.(circleOperation,j)) return;
-      try{ window._randori_pairing_recovery?.accept?.(j,circleOperation); }
-      catch{ renderDashboardEmpty('error'); return; }
+      let publicationState;
+      try{ publicationState=window._randori_pairing_recovery?.accept?.(j,circleOperation); }
+      catch{
+        window._randori_onboarding_authority?.observePairingError?.(circleOperation);
+        renderDashboardEmpty('error');
+        return;
+      }
+      window._randori_onboarding_authority?.observePairing?.(j,circleOperation,publicationState);
       const state=dashboardCycleState(j);
       if(!j.paired||!['paired','solo'].includes(state)){
         renderDashboardEmpty(state,j);
@@ -8011,6 +8110,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }catch(e){
       if(e?.name==='AbortError'||!canApply()) return;
       console.error('dashboard fetch failed',e);
+      window._randori_onboarding_authority?.observePairingError?.(circleOperation);
       renderDashboardEmpty('error');
     }finally{
       if(dashboardPairRequest.controller===controller) dashboardPairRequest.controller=null;
@@ -9223,7 +9323,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   // Main auth router
   async function routeByAuth(){
     const navigationEpoch=Number(window._randoriUserNavigationEpoch)||0;
-    const canApplyRoute=()=>navigationEpoch===(Number(window._randoriUserNavigationEpoch)||0);
+    const routeActorId=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null;
+    const canApplyRoute=()=>navigationEpoch===(Number(window._randoriUserNavigationEpoch)||0)
+      &&routeActorId===(Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null);
     if(window._randori_activation_flow?.active){
       window._randori_activation_flow.show();
       return;
@@ -9288,9 +9390,42 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       await showDashboard();
       return;
     }
+    const explicitView=String(window._randoriExplicitNavigation||'');
+    if(['circle','pair','code','board','history'].includes(explicitView)){
+      document.querySelector(`[data-tab="${explicitView}"]`)?.click();
+      return;
+    }
+    // Deep links are user intent. Resolve them before a delayed profile read so
+    // an unavailable profile endpoint cannot tear down the selected view.
+    try{
+      const params=new URLSearchParams(window.location.search);
+      const requestedView=params.get('view')||params.get('tab')||(window.location.hash.includes('code')?'code':null);
+      if(['pair','code','board','history'].includes(requestedView)){
+        document.querySelector(`[data-tab="${requestedView}"]`)?.click();
+        return;
+      }
+    }catch{}
     // fetch profile to see if incomplete
-    const profile = await fetchProfile();
+    let profile;
+    try{ profile=await fetchProfile(); }
+    catch{
+      if(!canApplyRoute()) return;
+      renderColorPicker(); populateTz();
+      await showProfileSetup();
+      return;
+    }
     if(!canApplyRoute()) return;
+    const profileStatus=window._randori_onboarding_authority?.snapshot?.profile?.status;
+    if(!profile&&profileStatus==='error'){
+      await showDashboard();
+      window._randori_onboarding_authority?.render?.();
+      return;
+    }
+    if(!profile&&profileStatus!=='ready'){
+      renderColorPicker(); populateTz();
+      await showProfileSetup();
+      return;
+    }
     if(isProfileIncomplete(profile)){
       // show profile setup
       if(profile) {
@@ -9300,22 +9435,6 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       await showProfileSetup(profile);
       return;
     }
-    const explicitView=String(window._randoriExplicitNavigation||'');
-    if(['circle','pair','code','board','history'].includes(explicitView)){
-      document.querySelector(`[data-tab="${explicitView}"]`)?.click();
-      return;
-    }
-    // Deep links are user intent. Once authentication/profile checks finish,
-    // keep the requested workspace visible instead of routing back to the
-    // dashboard on the delayed auth refresh.
-    try{
-      const params=new URLSearchParams(window.location.search);
-      const requestedView=params.get('view')||params.get('tab')||(window.location.hash.includes('code')?'code':null);
-      if(['pair','code','board','history'].includes(requestedView)){
-        document.querySelector(`[data-tab="${requestedView}"]`)?.click();
-        return;
-      }
-    }catch{}
     // complete -> dashboard
     // if admin and wants circle? still dashboard default but tabs visible
     // Hide circle from non-admin per task
@@ -9372,13 +9491,20 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   // Also expose for direct calls
   try{ updateAuthUI = wrappedUpdateAuthUI; }catch{ window.updateAuthUI = wrappedUpdateAuthUI; }
   window.addEventListener('randori:auth-refreshed',()=>{
+    const nextActorId=currentProfileUserId();
+    if(profileEditorActorId!==null&&nextActorId!==profileEditorActorId){
+      profileEditorEpoch+=1;
+      profileSaveController?.abort();
+      profileSaveController=null;
+    }
+    profileEditorActorId=nextActorId;
     const nextId=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null;
     if(nextId!==joinAuthUserId){
       joinRequestEpoch+=1; joinRequest=null; joinDecision=null; joinAuthUserId=nextId;
       if(joinAuthIdentityHydrated) window._randoriExplicitNavigation=null;
     }
     joinAuthIdentityHydrated=true;
-    requestAutomaticRoute().catch(()=>{});
+    queueMicrotask(()=>requestAutomaticRoute().catch(()=>{}));
   });
 
   // Initial routing after page load
@@ -9429,7 +9555,14 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   // Expose
   window._randori_journey={
     showDashboard,showProfileSetup,routeByAuth,openAuthorizedJoin,
-    cancelPairRequest:cancelDashboardPairRequest,resetPairState:resetDashboardPairState,
+    waitForProfileSaveAttempt,
+    get profileSaveAttempt(){ return profileSaveAttempt; },
+    cancelPairRequest:cancelDashboardPairRequest,resetPairState(){
+      profileEditorEpoch+=1;
+      profileSaveController?.abort();
+      profileSaveController=null;
+      resetDashboardPairState();
+    },
   };
 })();
 </script>
@@ -11505,6 +11638,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     state.pollAbort?.abort();
     state.writeAbort?.abort();
     window._randori_board?.setSyncState?.('local');
+    window.dispatchEvent(new CustomEvent('randori:workspace-deactivated'));
   }
   async function poll(initial=false,room=state.room,epoch=state.epoch){
     const pollToken=`${epoch}:${room}`;
@@ -11554,6 +11688,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         else refreshPending();
         if(state.pending) scheduleSave('resume');
         else window._randori_board?.setSyncState?.('saved');
+        window.dispatchEvent(new CustomEvent('randori:workspace-hydrated',{detail:{roomId:room,revision:state.revision}}));
       }else if(next.snapshot){
         refreshPending();
         if(state.pending&&!state.inFlight&&!retryTimer&&!saveTimer) scheduleSave('resume');
@@ -11764,6 +11899,466 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   setInterval(()=>{ if(!signedIn()) deactivate(); else if(state.room) poll(false,state.room,state.epoch); },1200);
   setInterval(()=>{ const room=activeRoom(); if(signedIn()&&canonical(room)&&room!==state.room&&window._randori_authorized_room===room) activate(room); },500);
   window._randori_workspace={activate,requestAccess,deactivate,poll,markHydrationEdit,flush:flushCurrentWorkspace,get room(){return state.room},get revision(){return state.revision},get hydrated(){return state.hydrated},get clientId(){return clientId}};
+})();
+</script>
+
+<script>
+// Server-authoritative first-run progress. Browser storage may dismiss the tour,
+// but it never proves profile, cycle availability, pairing, or room completion.
+(function(){
+  const state={
+    epoch:0,controller:null,promise:null,profileEpoch:0,profileController:null,profilePromise:null,
+    actorId:null,scope:null,phase:'idle',
+    profile:{status:'idle',user:null},availability:{status:'idle',value:null},
+    pairing:{status:'idle',value:null},reason:'',
+  };
+
+  function actorId(){
+    const value=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0);
+    return Number.isSafeInteger(value)&&value>0?value:null;
+  }
+
+  function profileComplete(user){
+    if(!user||typeof user!=='object'||Array.isArray(user)) return false;
+    const id=Number(user.id);
+    const name=String(user.display_name||user.name||'').trim();
+    const timeZone=String(user.tz||'').trim();
+    if(!Number.isSafeInteger(id)||id<1||!name||!timeZone) return false;
+    try{ new Intl.DateTimeFormat('en',{timeZone}).format(new Date(0)); }
+    catch{ return false; }
+    return true;
+  }
+
+  function validCycle(cycle,expectedState,now=Date.now()){
+    if(!cycle||typeof cycle!=='object'||Array.isArray(cycle)
+      ||typeof cycle.cycleId!=='string'||!/^[0-9]{4}-W(?:0[1-9]|[1-4][0-9]|5[0-3])$/.test(cycle.cycleId)
+      ||cycle.state!==expectedState
+      ||![cycle.startsAt,cycle.endsAt,cycle.cutoffAt].every(value=>typeof value==='string'&&Number.isFinite(Date.parse(value)))
+      ||Date.parse(cycle.startsAt)>=Date.parse(cycle.endsAt)) return false;
+    const startsAt=Date.parse(cycle.startsAt);
+    const endsAt=Date.parse(cycle.endsAt);
+    // The versioned availability endpoint owns the upcoming classification;
+    // do not let a skewed browser clock override that server decision. A live
+    // room is more sensitive, so current assignments still fail closed once
+    // their published interval is outside the browser's present boundary.
+    return expectedState==='current' ? now>=startsAt&&now<endsAt : true;
+  }
+
+  function validAvailabilityValue(value){
+    if(!value||typeof value!=='object'||Array.isArray(value)
+      ||!validCycle(value.cycle,'upcoming')||!/^[0-9a-f]{64}$/.test(String(value.cycleKey||''))
+      ||typeof value.isAvailable!=='boolean'||!Number.isSafeInteger(value.version)||value.version<0
+      ||!['user','legacy_bridge','cycle_default'].includes(value.source)||typeof value.editable!=='boolean') return null;
+    return value;
+  }
+
+  function canonicalPairing(payload,publicationState){
+    const cycle=payload?.current_cycle||payload?.cycle;
+    const observedAt=Date.parse(publicationState?.observed_at);
+    if(payload?.ok!==true||!Number.isFinite(observedAt)
+      ||!validCycle(cycle,'current',observedAt)
+      ||publicationState?.cycle_starts_at!==cycle.startsAt
+      ||publicationState?.cycle_ends_at!==cycle.endsAt) return null;
+    const paired=payload.paired===true;
+    if(paired&&publicationState.state!=='published') return null;
+    if(!paired) return {cycle,paired:false,workspaceAvailable:false,roomId:null,pairId:null};
+    const pairId=Number(payload?.pair?.pg_id||payload?.pair?.id);
+    const weekId=Number(payload?.week_id||payload?.week?.id);
+    if(!Number.isSafeInteger(pairId)||pairId<1) return null;
+    const supplied=String(payload.room_id||'');
+    const derived=`week_${weekId}_pair_${pairId}`;
+    const roomId=/^week_[1-9]\d*_pair_[1-9]\d*$/.test(supplied)?supplied:
+      (/^week_[1-9]\d*_pair_[1-9]\d*$/.test(derived)?derived:null);
+    const workspaceAvailable=payload.workspace_available!==false&&payload.coordination_only!==true&&roomId!==null;
+    return {cycle,paired:true,workspaceAvailable,roomId,pairId};
+  }
+
+  function snapshot(){
+    return {
+      actorId:state.actorId,phase:state.phase,reason:state.reason,
+      scope:state.scope?{
+        circlePublicId:state.scope.circlePublicId,contextVersion:state.scope.contextVersion,
+        targetCycleKey:state.scope.targetCycleKey,
+      }:null,
+      profile:{...state.profile},availability:{...state.availability},pairing:{...state.pairing},
+    };
+  }
+
+  function availabilityContextKey(scope){
+    return window._randori_auth?.capabilities?.multiCircleAvailability===true
+      ?`account:${scope.userId}:circle:${scope.circlePublicId}:context:${scope.contextVersion}`
+      :`account:${scope.userId}:legacy-primary`;
+  }
+
+  function availabilityMatchesCircle(scope,value=window._randori_availability?.current){
+    return !!validAvailabilityValue(value)&&actorId()===scope?.userId
+      &&window._randori_availability?.contextKey===availabilityContextKey(scope)
+      &&window._randori_circle_control?.matchesPairing?.(scope.operation)===true;
+  }
+
+  function withTargetCycle(scope,value){
+    return Object.freeze({...scope,
+      targetCycleKey:String(value.cycleKey),
+      targetCycleStartsAt:String(value.cycle.startsAt),
+    });
+  }
+
+  async function captureCircleScope(){
+    const userId=actorId();
+    if(!userId) return null;
+    const operation=await window._randori_circle_control?.capturePairing?.(userId);
+    if(!operation||actorId()!==userId
+      ||window._randori_circle_control?.matchesPairing?.(operation)!==true) return null;
+    if(window._randori_auth?.capabilities?.multiCircleControlPlane===true
+      &&!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(String(operation.circlePublicId||''))) return null;
+    return Object.freeze({
+      userId,operation,
+      circlePublicId:String(operation.circlePublicId||'legacy-primary'),
+      contextVersion:Number.isSafeInteger(operation.contextVersion)?operation.contextVersion:null,
+      targetCycleKey:null,targetCycleStartsAt:null,
+    });
+  }
+
+  async function captureScope(){
+    const scope=await captureCircleScope();
+    if(!scope) return null;
+    let availability=window._randori_availability?.current;
+    if(!availabilityMatchesCircle(scope,availability)){
+      try{ availability=await window._randori_availability?.refresh?.(); }
+      catch{ availability=null; }
+    }
+    if(!availabilityMatchesCircle(scope,availability)) return null;
+    return withTargetCycle(scope,availability);
+  }
+
+  async function captureProfileScope(){
+    return captureCircleScope();
+  }
+
+  function matchesCircleScope(scope,response){
+    if(!scope||actorId()!==scope.userId) return false;
+    return window._randori_circle_control?.matchesPairing?.(scope.operation,response)===true;
+  }
+
+  function matchesScope(scope,response){
+    if(!matchesCircleScope(scope,response)||!scope.targetCycleKey) return false;
+    const availability=window._randori_availability?.current;
+    return availabilityMatchesCircle(scope,availability)
+      &&availability.cycleKey===scope.targetCycleKey
+      &&String(availability.cycle.startsAt)===scope.targetCycleStartsAt;
+  }
+
+  function matchesMutationScope(scope){
+    return matchesScope(scope)
+      &&String(state.scope?.targetCycleKey||'')===scope.targetCycleKey
+      &&String(state.scope?.targetCycleStartsAt||'')===scope.targetCycleStartsAt;
+  }
+
+  function matchesProfileScope(scope){
+    return matchesCircleScope(scope)
+      &&state.actorId===scope.userId
+      &&state.scope?.circlePublicId===scope.circlePublicId
+      &&state.scope?.contextVersion===scope.contextVersion;
+  }
+
+  function workspaceComplete(){
+    const pair=state.pairing.value;
+    if(state.pairing.status!=='ready'||!pair?.workspaceAvailable||!matchesScope(state.scope)) return false;
+    const workspace=window._randori_workspace;
+    return workspace?.hydrated===true&&workspace.room===pair.roomId
+      &&window._randori_authorized_room===pair.roomId;
+  }
+
+  function setItem(id,status,label,visible=true){
+    const item=document.getElementById(id);
+    if(!item) return;
+    item.hidden=!visible;
+    if(!visible){ item.style.display='none'; return; }
+    if(document.getElementById('onboardChecklist')?.dataset.collapsed!=='1') item.style.display='flex';
+    item.dataset.state=status;
+    item.classList.toggle('done',status==='done');
+    const box=item.querySelector('.check-box');
+    if(box) box.textContent=status==='done'?'✓':(status==='error'?'!':'·');
+    const text=item.querySelector('span');
+    if(text) text.textContent=label;
+  }
+
+  function render(){
+    const checklist=document.getElementById('onboardChecklist');
+    if(!checklist) return;
+    const userId=actorId();
+    if(!userId){ checklist.style.display='none'; return; }
+    const accountScoped=state.actorId===userId;
+    const cycleScoped=accountScoped&&state.scope&&matchesCircleScope(state.scope);
+    const profile=accountScoped?state.profile:{status:'loading',user:null};
+    const availability=cycleScoped?state.availability:{status:'loading',value:null};
+    const pairing=cycleScoped?state.pairing:{status:'loading',value:null};
+    const profileDone=profile.status==='ready'&&profileComplete(profile.user);
+    const availabilityDone=availability.status==='ready'&&availability.value?.source==='user';
+    const pairingDone=pairing.status==='ready'&&pairing.value?.paired===true;
+    const roomVisible=pairingDone&&pairing.value?.workspaceAvailable===true;
+    const roomDone=roomVisible&&workspaceComplete();
+    setItem('chkSignIn','done','Signed in to your private circle');
+    setItem('chkProfile',profileDone?'done':profile.status,
+      profile.status==='loading'?'Checking saved profile…':profile.status==='error'?'Profile status unknown — retry':profileDone?'Profile saved':'Complete your profile');
+    const cycleId=availability.value?.cycle?.cycleId;
+    setItem('chkAvail',availabilityDone?'done':availability.status,
+      availability.status==='loading'?'Checking cycle availability…':availability.status==='error'?'Availability status unknown — retry':availabilityDone?`Availability saved for ${cycleId}`:`Save availability for ${cycleId||'the upcoming cycle'}`);
+    const pairingCycle=pairing.value?.cycle?.cycleId;
+    setItem('chkPair',pairingDone?'done':pairing.status,
+      pairing.status==='loading'?'Checking current pairing…':pairing.status==='error'?'Pairing status unknown — retry':pairingDone?`Current assignment published for ${pairingCycle}`:`Wait for ${pairingCycle||'the current cycle'} publication`);
+    setItem('chkRoom',roomDone?'done':'pending',roomDone?'Current workspace opened':'Open your current workspace',roomVisible);
+    const statuses=[profile.status,availability.status,pairing.status];
+    const failed=statuses.includes('error');
+    const loading=statuses.includes('loading')||state.phase==='loading';
+    const completed=[true,profileDone,availabilityDone,pairingDone,...(roomVisible?[roomDone]:[])];
+    const doneCount=completed.filter(Boolean).length;
+    const total=completed.length;
+    const progress=document.getElementById('chkProgress');
+    if(progress) progress.textContent=`${doneCount}/${total}`;
+    const status=document.getElementById('onboardChecklistStatus');
+    if(status) status.textContent=failed
+      ?'Some saved setup could not be verified. Retry to load the next honest action.'
+      :(loading?'Checking your saved setup…':(doneCount===total?'Setup complete for the active circle and cycles.':'Your next unfinished action is shown above.'));
+    const retry=document.getElementById('chkRetry');
+    if(retry){ retry.hidden=!failed; retry.disabled=loading; }
+    checklist.dataset.state=failed?'error':(loading?'loading':(doneCount===total?'complete':'ready'));
+    checklist.setAttribute('aria-busy',loading?'true':'false');
+    checklist.style.display=doneCount===total?'none':'grid';
+  }
+
+  function reset(reason='changed'){
+    state.epoch+=1;
+    state.controller?.abort();
+    state.profileEpoch+=1;
+    state.profileController?.abort();
+    state.controller=null;
+    state.promise=null;
+    state.profileController=null;
+    state.profilePromise=null;
+    state.actorId=actorId();
+    state.scope=null;
+    state.phase=state.actorId?'loading':'idle';
+    state.profile={status:state.actorId?'loading':'idle',user:null};
+    state.availability={status:state.actorId?'loading':'idle',value:null};
+    state.pairing={status:state.actorId?'loading':'idle',value:null};
+    state.reason=reason;
+    render();
+  }
+
+  function invalidate(reason='changed'){
+    reset(reason);
+  }
+
+  async function refreshProfile({reason='profile'}={}){
+    const userId=actorId();
+    if(!userId){ reset('signed_out'); return snapshot(); }
+    if(state.profilePromise&&state.actorId===userId) return state.profilePromise;
+    const requestEpoch=++state.profileEpoch;
+    state.profileController?.abort();
+    const controller=new AbortController();
+    state.profileController=controller;
+    state.actorId=userId;
+    state.profile={status:'loading',user:null};
+    state.reason=reason;
+    render();
+    const operation=(async()=>{
+      const api=window._randori_auth?.api;
+      const responsePromise=Promise.allSettled([typeof api==='function'
+        ?api('/api/profile',{method:'GET',cache:'no-store',signal:controller.signal})
+        :Promise.reject(new Error('profile API unavailable'))]).then(results=>results[0]);
+      let scope;
+      try{ scope=await captureCircleScope(); }
+      catch{ scope=null; }
+      const result=await responsePromise;
+      if(requestEpoch!==state.profileEpoch||controller.signal.aborted||!scope
+        ||actorId()!==userId||!matchesCircleScope(scope)) return snapshot();
+      if(!state.scope||!matchesCircleScope(state.scope)
+        ||state.scope.circlePublicId!==scope.circlePublicId
+        ||state.scope.contextVersion!==scope.contextVersion) state.scope=scope;
+      const payload=result.status==='fulfilled'?result.value:null;
+      const user=payload?.ok===true&&Number(payload?.user?.id)===userId?payload.user:null;
+      state.profile=user?{status:'ready',user}:{status:'error',user:null};
+      state.phase=[state.profile.status,state.availability.status,state.pairing.status].includes('error')?'error':'ready';
+      render();
+      return snapshot();
+    })();
+    state.profilePromise=operation;
+    try{ return await operation; }
+    finally{
+      if(state.profilePromise===operation) state.profilePromise=null;
+      if(state.profileController===controller) state.profileController=null;
+    }
+  }
+
+  async function refresh({reason='refresh',revalidateAvailability=true}={}){
+    const userId=actorId();
+    if(!userId){ reset('signed_out'); return snapshot(); }
+    if(state.promise&&state.actorId===userId) return state.promise;
+    const requestEpoch=++state.epoch;
+    state.controller?.abort();
+    const controller=new AbortController();
+    state.controller=controller;
+    state.actorId=userId;
+    state.phase='loading';
+    state.reason=reason;
+    const previousScope=state.scope;
+    const previousPairing=state.pairing;
+    state.profile={status:'loading',user:null};
+    state.availability={status:'loading',value:null};
+    state.pairing={status:'loading',value:null};
+    render();
+    const operation=(async()=>{
+      // Profile owns a separate request generation. Start it alongside the
+      // cycle read, but never make cycle/pair recovery wait for it to settle.
+      void refreshProfile({reason});
+      let circleScope;
+      try{ circleScope=await captureCircleScope(); }
+      catch{ circleScope=null; }
+      if(requestEpoch!==state.epoch||controller.signal.aborted||actorId()!==userId) return snapshot();
+      if(circleScope&&matchesCircleScope(circleScope)){
+        state.scope=circleScope;
+        let availability=window._randori_availability?.current;
+        if(revalidateAvailability||!availabilityMatchesCircle(circleScope,availability)){
+          try{ availability=await window._randori_availability?.refresh?.(); }
+          catch{ availability=null; }
+        }
+        if(requestEpoch!==state.epoch||controller.signal.aborted||!matchesCircleScope(circleScope)) return snapshot();
+        availability=availabilityMatchesCircle(circleScope,availability)?availability:null;
+        if(availability){
+          const scope=withTargetCycle(circleScope,availability);
+          state.scope=scope;
+          state.availability={status:'ready',value:availability};
+          if(previousPairing.status==='ready'&&previousScope
+            &&previousScope.userId===scope.userId
+            &&previousScope.circlePublicId===scope.circlePublicId
+            &&previousScope.contextVersion===scope.contextVersion
+            &&previousScope.targetCycleKey===scope.targetCycleKey
+            &&Date.parse(previousPairing.value?.cycle?.endsAt)===Date.parse(scope.targetCycleStartsAt)){
+            state.pairing=previousPairing;
+          }
+        }else{
+          state.availability={status:'error',value:null};
+          state.pairing={status:'error',value:null};
+        }
+      }else{
+        state.scope=null;
+        state.availability={status:'error',value:null};
+        state.pairing={status:'error',value:null};
+      }
+      render();
+      if(requestEpoch!==state.epoch||controller.signal.aborted||!circleScope
+        ||!matchesCircleScope(circleScope)||actorId()!==userId) return snapshot();
+      state.phase=[state.profile.status,state.availability.status,state.pairing.status].includes('error')?'error':'ready';
+      render();
+      return snapshot();
+    })();
+    state.promise=operation;
+    try{ return await operation; }
+    finally{
+      if(state.promise===operation) state.promise=null;
+      if(state.controller===controller) state.controller=null;
+    }
+  }
+
+  function observeProfile(user,scope){
+    if(!matchesProfileScope(scope||state.scope)||Number(user?.id)!==actorId()) return false;
+    state.profile={status:'ready',user};
+    state.phase=[state.availability.status,state.pairing.status].includes('error')?'error':'ready';
+    render();
+    return true;
+  }
+
+  function observeAvailability(value){
+    if(!state.scope||!matchesCircleScope(state.scope)||!availabilityMatchesCircle(state.scope,value)) return false;
+    if(state.scope.targetCycleKey&&state.scope.targetCycleKey!==value.cycleKey){
+      const rolloverScope=withTargetCycle(state.scope,value);
+      // An already-running dashboard read belongs to the old current cycle.
+      // Abort it immediately; the normal dashboard loader will capture a new
+      // account/circle operation after the new availability scope is ready.
+      window._randori_journey?.cancelPairRequest?.();
+      reset('cycle');
+      queueMicrotask(async()=>{
+        try{ await refresh({reason:'cycle',revalidateAvailability:false}); }
+        catch{ return; }
+        if(!matchesScope(rolloverScope)
+          ||state.scope?.targetCycleKey!==rolloverScope.targetCycleKey
+          ||state.scope?.targetCycleStartsAt!==rolloverScope.targetCycleStartsAt
+          ||document.visibilityState==='hidden'
+          ||document.getElementById('view-dashboard')?.style.display==='none') return;
+        await window._randori_journey?.showDashboard?.();
+      });
+      return false;
+    }
+    state.scope=withTargetCycle(state.scope,value);
+    state.availability={status:'ready',value};
+    render();
+    return true;
+  }
+
+  function observeAvailabilityUnavailable(){
+    if(!state.scope||!matchesCircleScope(state.scope)) return false;
+    state.availability={status:'error',value:null};
+    state.pairing={status:'error',value:null};
+    state.phase='error'; render();
+    return true;
+  }
+
+  function pairingOperationMatchesScope(operation,response){
+    const scope=state.scope;
+    return !!scope&&matchesScope(scope)
+      &&operation?.userId===scope.userId
+      &&String(operation?.circlePublicId||'legacy-primary')===scope.circlePublicId
+      &&(Number.isSafeInteger(operation?.contextVersion)?operation.contextVersion:null)===scope.contextVersion
+      &&window._randori_circle_control?.matchesPairing?.(operation,response)===true;
+  }
+
+  function observePairing(payload,operation,publicationState){
+    if(!pairingOperationMatchesScope(operation,payload)) return false;
+    const pairing=canonicalPairing(payload,publicationState);
+    if(!pairing||Date.parse(pairing.cycle.endsAt)!==Date.parse(state.scope.targetCycleStartsAt)){
+      state.pairing={status:'error',value:null};
+      state.phase='error'; render(); return false;
+    }
+    state.pairing={status:'ready',value:pairing};
+    state.phase=[state.profile.status,state.availability.status].includes('error')?'error':'ready';
+    render();
+    return true;
+  }
+
+  function observePairingError(operation){
+    if(!operation||!pairingOperationMatchesScope(operation)) return false;
+    state.pairing={status:'error',value:null};
+    state.phase='error'; render();
+    return true;
+  }
+
+  window._randori_onboarding_authority={
+    refresh,refreshProfile,invalidate,render,captureScope,captureProfileScope,matchesScope,matchesMutationScope,matchesProfileScope,profileComplete,
+    observeProfile,observeAvailability,observeAvailabilityUnavailable,observePairing,observePairingError,
+    get snapshot(){ return snapshot(); },
+  };
+  window.dispatchEvent(new CustomEvent('randori:onboarding-authority-ready'));
+  document.getElementById('chkRetry')?.addEventListener('click',async()=>{
+    await refresh({reason:'retry'}).catch(()=>{});
+    if(document.getElementById('view-dashboard')?.style.display!=='none'){
+      await window._randori_journey?.showDashboard?.();
+    }
+  });
+  window.addEventListener('randori:auth-refreshed',event=>{
+    const nextId=Number(event.detail?.userId||0)||null;
+    if(nextId!==state.actorId) reset('identity');
+    if(nextId) refresh({reason:'auth'}).catch(()=>{});
+    else render();
+  });
+  window.addEventListener('randori:workspace-hydrated',render);
+  window.addEventListener('randori:workspace-deactivated',render);
+  document.addEventListener('visibilitychange',()=>{
+    if(document.visibilityState==='visible'&&actorId()) refresh({reason:'visible'}).catch(()=>{});
+  });
+  const start=()=>{ render(); if(actorId()) refresh({reason:'startup'}).catch(()=>{}); };
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',start,{once:true});
+  else start();
 })();
 </script>
 

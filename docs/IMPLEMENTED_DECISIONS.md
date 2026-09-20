@@ -2216,3 +2216,30 @@ and keyed manual admission but must retain every already committed publication
 and outbox event. No schema, secret, provider, or deployment migration is
 required. The full contract is in
 [`PAIRING_PUBLICATION_RECOVERY.md`](PAIRING_PUBLICATION_RECOVERY.md).
+
+## ID-52: Derive first-run progress from authenticated product state
+
+Status: candidate client-only onboarding integrity increment; no migration.
+
+**Decision.** The setup checklist derives profile, active-circle availability,
+current pairing, and optional workspace progress from their existing
+authenticated authorities. Browser flags may dismiss the explanatory tour but
+cannot complete or suppress the checklist. Profile reads and writes remain
+independent of availability failures while carrying request, account, circle,
+and context fences. Cycle-scoped state additionally binds the upcoming cycle;
+pairing reuses the recovery parser and database `publication_state.observed_at`
+instead of browser time. Errors remain unknown and expose inline retry states.
+AI and video are omitted until a truthful readiness contract exists.
+
+**Alternatives.** Local-storage or DOM heuristics cross accounts and cycles. A
+new aggregate endpoint duplicates mature authorization paths and expands the
+protocol. Persisted onboarding flags add schema and drift from product state.
+Broad AI/video capability booleans would overstate provider, consent, quota,
+media, and room readiness. These options are rejected for this increment.
+
+**Rollout and recovery.** Ship after weekly publication recovery; canary fresh
+and returning accounts, profile and availability failures, cycle rollover,
+circle switches, published and unpublished assignments, and exact workspace
+hydration. Rollback is code-only and does not alter user, cycle, pairing, or
+workspace data. The full decision and verification plan is in
+[`SERVER_AUTHORITATIVE_ONBOARDING.md`](SERVER_AUTHORITATIVE_ONBOARDING.md).
