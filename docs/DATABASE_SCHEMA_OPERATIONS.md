@@ -4,7 +4,7 @@ Randori has read-only schema inspection for configured databases, a transactiona
 
 ## Contract
 
-- `db/schema-manifest.js` is the current contract: 52 application tables and 56 named indexes.
+- `db/schema-manifest.js` is the current contract: 55 application tables and 63 named indexes.
 - The manifest includes column/default/primary-key contracts, checks, foreign keys, unique constraints, AUTOINCREMENT/collation/table options, and unique, partial, descending, and expression-index semantics. SQLite-created `sqlite_autoindex_*` indexes are intentionally outside the named-index count.
 - `ai_monthly_usage` is a retired table. Its presence is reported as tolerated legacy state; it is not treated as current schema and is never changed.
 - `schema_migrations` is a runner-owned operational table. General schema inspection recognizes it without treating it as unexpected application drift; the migration runner validates its exact schema and rows separately.
@@ -31,6 +31,12 @@ Randori has read-only schema inspection for configured databases, a transactiona
   membership/audit integrity needed for retry-safe atomic create-and-select.
 - Migration v15 adds exactly four constrained `credential_key_controls` rows, one for activation, password reset, invitation delivery, and provider-email observation. The migration seeds only explicit uninitialized state; it never reads secrets or infers acceptance from business rows. Global readiness requires all four structurally valid rows but permits uninitialized state, while each credential capability requires its own protected adoption. Missing or malformed controls fail readiness closed.
 - Migration v16 adds `circle_pair_schedules`, normalized `circle_pair_schedule_proposals`, and two named indexes. Restrictive composite foreign keys bind both storage layers to one exact immutable v13 publication and paired group. The migration seeds no schedule data and does not touch legacy workspace or outbox tables. See `SECONDARY_SCHEDULING.md`.
+- Migration v17 adds source-bound participant completion receipts and immutable
+  exact-pair guards. Migration v18 adds private HTTPS meeting links bound to the
+  accepted primary schedule, with migration-owned reschedule invalidation.
+- Migration v19 adds the exact-pair `pair_session_controls` aggregate for shared
+  roles and an anchor-derived focus timer. It seeds no state and performs no
+  import from browser storage. See `SESSION_CONTROLS.md`.
 
 ## Commands
 

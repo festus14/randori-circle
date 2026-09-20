@@ -18,7 +18,7 @@ function fixture(){
   return {db,close(){ db.close(); rmSync(directory,{recursive:true,force:true}); }};
 }
 
-async function apply(db,migrations=EXECUTABLE_MIGRATIONS){
+async function apply(db,migrations=THROUGH_V17.concat(V18)){
   await prepareMigrationConnection(db);
   const before=await inspectMigrationState(db,{migrations});
   return applyMigrations(db,{expectedStateFingerprint:before.stateFingerprint,migrations,retry:NO_RETRY});
@@ -67,10 +67,10 @@ test('managed v17 upgrades once without synthesizing or copying private links',a
   try{
     await apply(item.db,THROUGH_V17);
     await seedAcceptedPair(item.db);
-    const before=await inspectMigrationState(item.db);
+    const before=await inspectMigrationState(item.db,{migrations:THROUGH_V17.concat(V18)});
     assert.equal(before.currentVersion,17);
     const upgraded=await applyMigrations(item.db,{
-      expectedStateFingerprint:before.stateFingerprint,migrations:EXECUTABLE_MIGRATIONS,retry:NO_RETRY,
+      expectedStateFingerprint:before.stateFingerprint,migrations:THROUGH_V17.concat(V18),retry:NO_RETRY,
     });
     assert.deepEqual(upgraded.applied.map(entry=>entry.version),[18]);
     assert.equal((await item.db.execute(`SELECT COUNT(*) AS c FROM pair_meeting_links`)).rows[0].c,0);

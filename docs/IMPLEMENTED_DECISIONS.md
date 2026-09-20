@@ -2409,3 +2409,33 @@ completion hiding, malformed URLs, and authorization isolation. Rollback keeps
 the v18 schema and private rows, disables the handler/UI if needed, and rolls
 forward. Full details are in
 [`PRIVATE_MEETING_LINKS.md`](PRIVATE_MEETING_LINKS.md).
+
+## ID-58: Persist pair roles and focus time as one database-clock aggregate
+
+Status: candidate migration-backed primary-session increment.
+
+**Decision.** Migration 19 owns one `pair_session_controls` row per exact
+two-human primary pair. It binds both members, sources, the candidate, timer
+state, remaining milliseconds at transition, database-time anchor, authenticated
+actor, and monotonic revision. Migration-owned triggers invalidate the aggregate
+if an older runtime changes pair membership or participant provenance. Reads derive remaining time from database UTC;
+the browser animates locally and polls, so no countdown tick is persisted.
+Start, pause, reset, and candidate assignment use an opaque HMAC compare-and-set
+token which excludes derived display time. Idempotent repeats are no-write
+successes and different concurrent commands return authoritative 409 state.
+AI, triad, mixed-source, secondary, absent, and unauthorized rooms are the same
+generic 404. Unanimous completion freezes the effective timer at its completion
+instant and makes roles and timer read-only; expiry never implies completion.
+
+**Alternatives.** Workspace v4 couples small controls to large code/board CAS.
+Browser storage and BroadcastChannel are not durable or cross-device. A live
+WebSocket/WebRTC/LiveKit connection may later notify clients but must not own
+truth. Redis adds a provider and weaker recovery. Event history expands privacy
+surface, while per-second persistence adds writes and races. These options are
+rejected for this increment.
+
+**Rollout and recovery.** Apply additive v19 after v18, then canary two-browser
+convergence, simultaneous actions, expiry, completion, account/room/circle
+fences, and process restart. Rollback retains the v19 table and ledger, disables
+the route/UI, and rolls forward; it never imports old browser-local values or
+drops data. Full details are in [`SESSION_CONTROLS.md`](SESSION_CONTROLS.md).

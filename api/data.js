@@ -51,7 +51,17 @@ import {
   MeetingLinkInputError,
   validateMeetingLinkPostQuery,
 } from './_meeting-link.js';
-import { ensureDataAdminReadiness, ensureDataCircleReadiness, ensureDataHistoryReadiness, ensureDataLogReadiness, ensureDataMeetingLinkReadiness, ensureDataProfileReadiness, ensureDataRunsReadiness, ensureDataSessionCompletionReadiness, ensureDataStatsReadiness, ensureDataWeeksReadiness, ensureMyPairDataReadiness } from './_data-readiness.js';
+import {
+  mutateAuthorizedSessionControls,
+  parseSessionControlsMutation,
+  parseSessionControlsQuery,
+  readAuthorizedSessionControls,
+  SessionControlsConflictError,
+  SessionControlsDataError,
+  SessionControlsInputError,
+  validateSessionControlsPostQuery,
+} from './_session-controls.js';
+import { ensureDataAdminReadiness, ensureDataCircleReadiness, ensureDataHistoryReadiness, ensureDataLogReadiness, ensureDataMeetingLinkReadiness, ensureDataProfileReadiness, ensureDataRunsReadiness, ensureDataSessionCompletionReadiness, ensureDataSessionControlsReadiness, ensureDataStatsReadiness, ensureDataWeeksReadiness, ensureMyPairDataReadiness } from './_data-readiness.js';
 import { circleMembershipEnabled, ensureCircleMembershipReadiness } from './_circle-membership.js';
 import { initializePrimaryCircleData } from './_admin-init.js';
 import { localRuntimeRequest } from './_local-runtime.js';
@@ -148,6 +158,7 @@ function resolveDataRoute(req,endpoint){
     ||path.includes('my-pair')||path.includes('my_pair')) return 'my-pair';
   if(endpoint==='pair-recap'||path.includes('/pair-recap')) return 'pair-recap';
   if(endpoint==='session-completion'||path.includes('/session-completion')) return 'session-completion';
+  if(endpoint==='session-controls'||path.includes('/session-controls')) return 'session-controls';
   if(endpoint==='meeting-link'||path.includes('/meeting-link')) return 'meeting-link';
   if(endpoint==='schedule'||path.includes('/schedule')) return 'schedule';
   if(endpoint.includes('message')) return 'messages';
@@ -1196,6 +1207,68 @@ async function handleMeetingLink(req,res){
     }
     if(error instanceof MeetingLinkDataError) return res.status(503).json({error:'meeting link unavailable'});
     return res.status(503).json({error:'meeting link unavailable'});
+  }
+}
+
+async function handleSessionControls(req,res){
+  res.setHeader('Cache-Control','private, no-store');
+  const payload=await getAuthPayload(req);
+  if(!payload) return res.status(401).json({error:'authentication required'});
+  if(req.method!=='GET'&&req.method!=='POST'){
+    res.setHeader('Allow','GET, POST');
+    return res.status(405).json({error:'GET or POST only'});
+  }
+  const userId=authenticatedUserId(payload);
+  if(!userId) return res.status(401).json({error:'authentication required'});
+  let input;
+  try{
+    if(req.method==='GET') input=parseSessionControlsQuery(req);
+    else{ validateSessionControlsPostQuery(req); input=parseSessionControlsMutation(req.body); }
+  }catch(error){
+    if(error instanceof SessionControlsInputError) return res.status(400).json({error:error.message});
+    throw error;
+  }
+  let db,versionKey;
+  try{
+    db=getClient(); await ensureDataSessionControlsReadiness(db); versionKey=getJwtSecret();
+  }catch{ return res.status(503).json({error:'session controls unavailable'}); }
+  if(multiCircleControlPlaneEnabled()&&!strictLocalPairingRuntime(req)){
+    const selectionResponse={statusCode:200,body:null,status(code){ this.statusCode=code; return this; },json(body){ this.body=body; return this; }};
+    const selected=await requireSelectedPairingReader(req,selectionResponse,db,payload,userId);
+    if(!selected){
+      if(selectionResponse.statusCode===503) return res.status(503).json({error:'session controls unavailable'});
+      return res.status(404).json({error:'pair not found'});
+    }
+    if(selected.mode==='secondary') return res.status(404).json({error:'pair not found'});
+  }
+  try{
+    if(req.method==='GET'){
+      const transaction=await db.transaction('read');
+      let finished=false;
+      try{
+        const read=await readAuthorizedSessionControls(transaction,{
+          viewerId:userId,weekId:input.weekId,pairGroupId:input.pairGroupId,versionKey,
+        });
+        if(!read){ await transaction.rollback(); finished=true; return res.status(404).json({error:'pair not found'}); }
+        await transaction.commit(); finished=true;
+        return res.json({ok:true,room_id:input.roomId,session_controls:read.state});
+      }catch(error){
+        if(!finished){ try{ await transaction.rollback(); }catch{} }
+        throw error;
+      }finally{ try{ await transaction.close?.(); }catch{} }
+    }
+    const result=await mutateAuthorizedSessionControls(db,{viewerId:userId,mutation:input,versionKey});
+    if(result.notFound) return res.status(404).json({error:'pair not found'});
+    return res.json({ok:true,room_id:input.roomId,session_controls:result.state});
+  }catch(error){
+    if(error instanceof SessionControlsInputError) return res.status(400).json({error:error.message});
+    if(error instanceof SessionControlsConflictError){
+      return res.status(409).json({
+        error:error.message,code:error.code,room_id:input.roomId,session_controls:error.state,
+      });
+    }
+    if(error instanceof SessionControlsDataError) return res.status(503).json({error:'session controls unavailable'});
+    return res.status(503).json({error:'session controls unavailable'});
   }
 }
 
@@ -2664,12 +2737,12 @@ async function handleExecute(req,res){
 
 const MULTI_CIRCLE_UNSCOPED_DATA_ENDPOINTS=new Set([
   'runs','session_runs','session-runs','weeks','history','stats','my-pair','mypair','my_pair',
-  'pair-recap','session-completion','meeting-link','schedule','messages','message','execute','run',
+  'pair-recap','session-completion','session-controls','meeting-link','schedule','messages','message','execute','run',
 ]);
 
 async function requireSingleCircleDataFeature(req,res,endpoint){
   if(!multiCircleControlPlaneEnabled()||!MULTI_CIRCLE_UNSCOPED_DATA_ENDPOINTS.has(endpoint)) return true;
-  if(endpoint==='meeting-link') return true;
+  if(endpoint==='meeting-link'||endpoint==='session-controls') return true;
   if(secondaryCircleCoordinationEnabled()&&(endpoint==='weeks'||endpoint==='my-pair')) return true;
   if(secondaryCircleSchedulingEnabled()&&endpoint==='schedule') return true;
   try{
@@ -2710,6 +2783,7 @@ export default async function handler(req,res){
   if(route==='my-pair') return await handleMyPair(req,res);
   if(route==='pair-recap') return await handlePairRecap(req,res);
   if(route==='session-completion') return await handleSessionCompletion(req,res);
+  if(route==='session-controls') return await handleSessionControls(req,res);
   if(route==='meeting-link') return await handleMeetingLink(req,res);
   if(route==='schedule') return await handleSchedule(req,res);
   if(route==='messages') return await handleMessages(req,res);
@@ -2717,7 +2791,7 @@ export default async function handler(req,res){
   if(route==='health') return await handleHealth(req,res);
   if(route==='logs') return await handleLogs(req,res);
   if(route==='questions') return await handleQuestions(req,res);
-  return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['health','runs','execute','logs','leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','pair-recap','session-completion','meeting-link','schedule','messages','questions'] });
+  return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['health','runs','execute','logs','leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','pair-recap','session-completion','session-controls','meeting-link','schedule','messages','questions'] });
   }catch(e){
     const failedEndpoint=getEndpoint(req);
     const failedPath=String(req?.url||'').toLowerCase();

@@ -23,8 +23,8 @@ test('current schema passes read-only inspection and tolerates the retired AI ta
   }},{manifest:SCHEMA_MANIFEST});
   assert.equal(status.ok,true);
   assert.deepEqual(status.summary,{
-    expectedTables:54,presentTables:54,expectedIndexes:62,presentIndexes:62,
-    expectedTriggers:12,presentTriggers:12,blockers:0,warnings:0,
+    expectedTables:55,presentTables:55,expectedIndexes:63,presentIndexes:63,
+    expectedTriggers:17,presentTriggers:17,blockers:0,warnings:0,
   });
   assert.deepEqual(status.tolerated.legacyTables,['ai_monthly_usage']);
   assert.ok(statements.length>50);
@@ -91,10 +91,10 @@ test('empty database produces a non-executable, checksum-bearing plan',async()=>
   const db=createClient({url:'file::memory:'});
   const status=await inspectSchema(db,{manifest:SCHEMA_MANIFEST});
   const plan=buildReadOnlyPlan(status,{manifest:SCHEMA_MANIFEST,plans:MIGRATION_PLANS});
-  assert.equal(status.blockers.length,128);
+  assert.equal(status.blockers.length,135);
   assert.equal(plan.readOnly,true);
   assert.equal(plan.executable,false);
-  assert.equal(plan.actions.length,128);
+  assert.equal(plan.actions.length,135);
   assert.ok(plan.actions.some(action=>action.artifact.name==='circles'&&action.kind==='create_table'));
   assert.ok(plan.actions.some(action=>action.artifact.name==='credential_key_controls'&&action.kind==='create_table'));
   assert.ok(plan.actions.some(action=>action.artifact.name==='uq_circles_active_primary'&&action.kind==='create_index'));

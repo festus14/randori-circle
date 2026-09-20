@@ -1051,6 +1051,46 @@ test('two invited members complete the durable local session journey', async ({ 
     await expect(pages[1].locator('#questionSelect')).toHaveValue('focus-block-rollup');
     await expect(pages[1].locator('#pairRunsList')).toContainText('8/8');
 
+    // Roles and focus time are a separate durable aggregate: one participant
+    // assigns the candidate, the other starts the timer, and both reconcile to
+    // the same opaque version without writing once per displayed second.
+    const controlsPath = `/api/session-controls?room_id=${encodeURIComponent(String(ownerRoom))}`;
+    await expect(pages[0].getByTestId('session-controls')).toBeVisible();
+    await expect(pages[1].getByTestId('session-controls')).toBeVisible();
+    const roleResponse = pages[0].waitForResponse(response =>
+      response.url().endsWith('/api/session-controls') && response.request().method() === 'POST');
+    await pages[0].getByTestId('session-controls-candidate').selectOption(String(member.id));
+    expect((await roleResponse).status()).toBe(200);
+    await pages[1].evaluate(async () => {
+      await (window as typeof window & {
+        _randori_session_controls?: {load?: () => Promise<unknown>};
+      })._randori_session_controls?.load?.();
+    });
+    await expect(pages[1].getByTestId('session-controls-roles'))
+      .toContainText('You are candidate.');
+    const startResponse = pages[1].waitForResponse(response =>
+      response.url().endsWith('/api/session-controls') && response.request().method() === 'POST');
+    await pages[1].getByTestId('session-controls-start-pause').click();
+    expect((await startResponse).status()).toBe(200);
+    await pages[0].evaluate(async () => {
+      await (window as typeof window & {
+        _randori_session_controls?: {load?: () => Promise<unknown>};
+      })._randori_session_controls?.load?.();
+    });
+    await expect(pages[0].getByTestId('session-controls-start-pause')).toHaveText('Pause');
+    const controlsBeforeRestart = await browserJson(pages[0], controlsPath);
+    expect(controlsBeforeRestart).toMatchObject({
+      status:200,
+      body:{ok:true,room_id:ownerRoom,session_controls:{
+        timer_state:'running',candidate_user_id:member.id,viewer_role:'interviewer',
+        partner_role:'candidate',terminal:false,version:expect.stringMatching(/^[a-f0-9]{64}$/),
+      }},
+    });
+    const remainingBeforeRestart=Number((controlsBeforeRestart.body as {
+      session_controls?:{remaining_ms?:number};
+    }).session_controls?.remaining_ms);
+    expect(remainingBeforeRestart).toBeGreaterThan(0);
+
     const scheduleOutbox = createClient({ url: fixture.databaseUrl });
     const capturedScheduleEmails: Array<{ to: string; subject: string; html: string; idempotencyKey: string }> = [];
     try {
@@ -1129,6 +1169,20 @@ test('two invited members complete the durable local session journey', async ({ 
       window as typeof window & {_randori_board?: {shapes?: unknown[]}}
     )._randori_board?.shapes || [])))).toEqual(finalBoard.shapes);
     await expect(pages[0].locator('#pairRunsList')).toContainText('8/8');
+    await expect(pages[0].getByTestId('session-controls')).toBeVisible();
+    await expect(pages[0].getByTestId('session-controls-start-pause')).toHaveText('Pause');
+    await expect(pages[0].getByTestId('session-controls-roles')).toContainText('You are interviewer.');
+
+    const recoveredControls = await browserJson(pages[0], controlsPath);
+    expect(recoveredControls).toMatchObject({
+      status:200,
+      body:{ok:true,room_id:ownerRoom,session_controls:{
+        timer_state:'running',candidate_user_id:member.id,viewer_role:'interviewer',
+        partner_role:'candidate',terminal:false,version:expect.stringMatching(/^[a-f0-9]{64}$/),
+      }},
+    });
+    expect(Number((recoveredControls.body as {session_controls?:{remaining_ms?:number}})
+      .session_controls?.remaining_ms)).toBeLessThanOrEqual(remainingBeforeRestart);
 
     const recoveredPair = await browserJson(pages[0], '/api/my-pair');
     expect(recoveredPair).toMatchObject({

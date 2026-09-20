@@ -3059,8 +3059,9 @@ test('operations cover preferences, availability, admin promotion, demo lifecycl
   const resetDeletes=executed.slice(resetStart).map(call=>call.sql.trim())
     .filter(sql=>sql.startsWith('DELETE FROM'));
   assert.match(resetDeletes[0],/^DELETE FROM pair_meeting_links\b/);
-  assert.match(resetDeletes[1],/^DELETE FROM session_completion_receipts\b/);
-  assert.match(resetDeletes[2],/^DELETE FROM pairing_participants\b/);
+  assert.match(resetDeletes[1],/^DELETE FROM pair_session_controls\b/);
+  assert.match(resetDeletes[2],/^DELETE FROM session_completion_receipts\b/);
+  assert.match(resetDeletes[3],/^DELETE FROM pairing_participants\b/);
 
   const cronDenied = await invoke(opsHandler, { method: 'POST', url: '/api/cron/weekly', query: { endpoint: 'weekly' }, headers: { 'x-cron-secret': 'wrong' } });
   assert.equal(cronDenied.status, 401);
