@@ -1738,3 +1738,40 @@ HTTP request. Reverting the application build needs no database rollback but
 reintroduces the retired DDL and is only an emergency compatibility action.
 The exact contract and verification commands are recorded in
 `NOTIFICATION_PREFERENCES_RUNTIME_DDL_RETIREMENT.md`.
+
+## ID-41: Make AI readiness read-only and route-scoped
+
+Status: implemented as a DDL-removal increment with no schema migration.
+
+**Decision.** Ordinary analyze, feedback, history, and AI diagnostic-log paths
+no longer create or repair schema. Migration v1 remains the sole owner of the
+six AI tables, two app-log objects, and their constraints. A shared
+`_ai-readiness.js` module now uses exact `SELECT ... LIMIT 0` projections for
+analyze, feedback, history, and logging. Probes coalesce per concrete database
+client and contract, cache only success, and evict rejected promises for retry.
+
+Method, authentication, consent/input, and canonical-room validation run
+before analyze readiness where no database contract is needed. Analyze proves
+every record, consent, quota, usage, and reservation column before consent or
+quota mutation, session persistence, or provider traffic. Feedback and history
+fail closed before their data access. Diagnostic logging has its own read-only
+probe, remains best effort, and cannot hide a valid primary result. The two
+legacy reduced-column insert retries are removed so stale schema cannot accept
+an ambiguous session or feedback shape. Existing authorization, consent,
+quota, no-refund-after-provider, timeout/fallback, and response semantics are
+preserved.
+
+**Alternatives.** A global schema fingerprint on every request would couple AI
+availability to unrelated tables and repeat deployment-gate work. Keeping
+request-time repair would let ordinary traffic hide missed migrations. Making
+app-log readiness part of analyze would turn an observability outage into a
+product outage. Retaining reduced-column insert fallbacks would silently drop
+evidence and timing data and make mixed-schema behavior non-deterministic.
+
+**Rollout and recovery.** Production must be on the reviewed migration before
+promotion; this increment performs no database or provider mutation. A primary
+readiness failure returns a generic 503 and must be repaired with the protected
+migration workflow. A logging-readiness failure affects diagnostics only. An
+application rollback requires no database rollback, but reintroduces the eight
+retired DDL statements and is reserved for emergency compatibility. Exact
+contracts and verification are recorded in `AI_RUNTIME_DDL_RETIREMENT.md`.

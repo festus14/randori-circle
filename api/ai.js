@@ -3,6 +3,7 @@ import { captureSentryException, captureSentryMessage, getClient, initSentry, is
 import { authPairAccessArgs, authPairAccessSql } from './_pair-access.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
 import { canUseLegacySinglePrimaryCircleFeatures, multiCircleControlPlaneEnabled, sendMultiCircleFeatureUnavailable } from './_active-circle.js';
+import { ensureAiAnalyzeReadiness, ensureAiFeedbackReadiness, ensureAiHistoryReadiness, ensureAiLogReadiness } from './_ai-readiness.js';
 
 initSentry();
 
@@ -25,94 +26,10 @@ function getEndpoint(req){
 function todayISO(){ const d=new Date(); return d.toISOString().slice(0,10); }
 function currentMonthISO(){ return todayISO().slice(0,7); }
 
-const AI_ACCOUNT_MONTHLY_USAGE_TABLE_SQL=`CREATE TABLE IF NOT EXISTS ai_account_monthly_usage (
-  month TEXT NOT NULL CHECK(length(month)=7 AND month GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]'),
-  user_id INTEGER NOT NULL CHECK(user_id>0),
-  calls INTEGER NOT NULL DEFAULT 0 CHECK(calls>=0),
-  tokens_in INTEGER NOT NULL DEFAULT 0 CHECK(tokens_in>=0),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY(month,user_id)
-)`;
-const AI_ACCOUNT_MONTHLY_RESERVATIONS_TABLE_SQL=`CREATE TABLE IF NOT EXISTS ai_account_monthly_reservations (
-  reservation_id TEXT PRIMARY KEY,
-  month TEXT NOT NULL,
-  user_id INTEGER NOT NULL CHECK(user_id>0),
-  tokens_in INTEGER NOT NULL DEFAULT 0 CHECK(tokens_in>=0),
-  session_id INTEGER UNIQUE,
-  refunded_at TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-)`;
-
-async function ensureTables(db){
-  await db.execute(`CREATE TABLE IF NOT EXISTS ai_sessions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    room_id TEXT,
-    pair_label TEXT,
-    transcript TEXT,
-    code_snapshots TEXT,
-    interviewer_questions TEXT,
-    started_at TEXT DEFAULT (datetime('now')),
-    ended_at TEXT,
-    duration_sec INTEGER,
-    cost_cents INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now')),
-    created_by INTEGER
-  )`);
-  await db.execute(`CREATE TABLE IF NOT EXISTS ai_feedback (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id INTEGER NOT NULL REFERENCES ai_sessions(id) ON DELETE CASCADE,
-    role TEXT DEFAULT 'both',
-    feedback_json TEXT NOT NULL,
-    evidence TEXT,
-    model_used TEXT,
-    reason_for_pick TEXT,
-    estimated_cost_cents INTEGER,
-    confidence REAL DEFAULT 0.85,
-    created_at TEXT DEFAULT (datetime('now'))
-  )`);
-  await db.execute(`CREATE TABLE IF NOT EXISTS ai_usage (
-    date TEXT PRIMARY KEY,
-    calls INTEGER DEFAULT 0,
-    tokens_in INTEGER DEFAULT 0,
-    tokens_out INTEGER DEFAULT 0,
-    updated_at TEXT DEFAULT (datetime('now'))
-  )`);
-  // The legacy ai_monthly_usage table used month as its sole primary key, so it
-  // cannot safely represent more than one account and its numeric ids have no
-  // provenance. Keep it untouched and use this additive auth-account ledger.
-  await db.execute(AI_ACCOUNT_MONTHLY_USAGE_TABLE_SQL);
-  await db.execute(AI_ACCOUNT_MONTHLY_RESERVATIONS_TABLE_SQL);
-  await db.execute(`CREATE TABLE IF NOT EXISTS ai_consents (
-    user_id INTEGER PRIMARY KEY,
-    consented_at TEXT NOT NULL DEFAULT (datetime('now')),
-    revoked_at TEXT,
-    policy_version TEXT NOT NULL
-  )`);
-}
-
-async function ensureAppLogs(db){
-  try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS app_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      level TEXT,
-      source TEXT,
-      event TEXT,
-      message TEXT,
-      meta_json TEXT,
-      user_id INTEGER,
-      route TEXT,
-      ua TEXT,
-      ip TEXT,
-      created_at TEXT DEFAULT (datetime('now'))
-    )`);
-  }catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_logs_level_created ON app_logs(level, created_at DESC)`) }catch{}
-}
-
 async function logServer(level, event, message, meta, reqCtx){
   try{
     const db=getClient();
-    await ensureAppLogs(db);
+    await ensureAiLogReadiness(db);
     const allowed=['info','warn','error','success','debug'];
     let lvl=String(level||'info').toLowerCase();
     if(!allowed.includes(lvl)) lvl='info';
@@ -421,10 +338,6 @@ async function recordAndVerifyRoomConsent(db, userId, room, participantIds){
   return participantIds.filter(id=>!consented.has(Number(id)));
 }
 
-function isLegacyAiSessionSchemaError(error){
-  return /(?:has no column named|no such column)[^\n]*(?:started_at|ended_at)/i.test(String(error?.message||error||''));
-}
-
 async function createAuthorizedSession(db,{room,userId,pairLabel,transcript,code,questions,durationSec,reservationId}){
   const accessArgs=pairAccessArgs(userId,room);
   const attachReservation={
@@ -435,9 +348,7 @@ async function createAuthorizedSession(db,{room,userId,pairLabel,transcript,code
       RETURNING session_id`,
     args:[reservationId,userId],
   };
-  let results;
-  try{
-    results=await db.batch([{
+  const results=await db.batch([{
         sql:`INSERT INTO ai_sessions (
             room_id,pair_label,transcript,code_snapshots,interviewer_questions,
             started_at,ended_at,duration_sec,created_by
@@ -447,18 +358,6 @@ async function createAuthorizedSession(db,{room,userId,pairLabel,transcript,code
           RETURNING id`,
         args:[room.roomId,pairLabel||'mock',transcript.slice(0,28000),code.slice(0,28000),questions.slice(0,8000),Number(durationSec)||0,userId,...accessArgs],
       },attachReservation], 'write');
-  }catch(error){
-    if(!isLegacyAiSessionSchemaError(error)) throw error;
-    results=await db.batch([{
-        sql:`INSERT INTO ai_sessions (
-            room_id,pair_label,transcript,code_snapshots,interviewer_questions,duration_sec,created_by
-          )
-          SELECT ?,?,?,?,?,?,?
-          WHERE EXISTS (${authOnlyPairAccessSql()})
-          RETURNING id`,
-        args:[room.roomId,pairLabel||'mock',transcript.slice(0,8000),code.slice(0,8000),questions.slice(0,3000),Number(durationSec)||0,userId,...accessArgs],
-      },attachReservation], 'write');
-  }
   const [inserted,attached]=results;
   const sessionId=Number(inserted.rows?.[0]?.id);
   if(!Number.isSafeInteger(sessionId)||sessionId<1) throw new AiPairAccessError();
@@ -474,9 +373,7 @@ async function createAuthorizedFeedback(db,{room,userId,sessionId,role,feedback,
     SELECT 1 FROM ai_sessions guarded_session
     WHERE guarded_session.id=? AND guarded_session.room_id=? AND guarded_session.created_by=?
   )`;
-  let inserted;
-  try{
-    inserted=await db.execute({
+  const inserted=await db.execute({
       sql:`INSERT INTO ai_feedback (
           session_id,role,feedback_json,evidence,model_used,reason_for_pick,
           estimated_cost_cents,confidence
@@ -487,16 +384,6 @@ async function createAuthorizedFeedback(db,{room,userId,sessionId,role,feedback,
       args:[sessionId,role||'both',JSON.stringify(feedback||{}),JSON.stringify({validation:verification,combined_len:combinedLength}),modelUsed,reason,costCents,verification.score,
         ...accessArgs,sessionId,room.roomId,userId],
     });
-  }catch{
-    inserted=await db.execute({
-      sql:`INSERT INTO ai_feedback (session_id,role,feedback_json,model_used)
-        SELECT ?,?,?,?
-        WHERE EXISTS (${authOnlyPairAccessSql()}) AND ${sessionGuard}
-        RETURNING id`,
-      args:[sessionId,role||'both',JSON.stringify(feedback||{}),modelUsed,
-        ...accessArgs,sessionId,room.roomId,userId],
-    });
-  }
   const feedbackId=Number(inserted.rows?.[0]?.id);
   if(!Number.isSafeInteger(feedbackId)||feedbackId<1) throw new AiPairAccessError();
   return feedbackId;
@@ -672,15 +559,20 @@ async function handleAnalyze(req,res){
     return res.status(400).json({ error:'transcript or code required', hint:'send {transcript, code} or FormData transcript+code' });
   }
 
-  let db;
-  try{ db=getClient(); }catch(e){
-    return res.status(503).json({ error:'AI service temporarily unavailable' });
-  }
-  try{ await ensureTables(db); await ensureAppLogs(db); }catch{}
-
   const numericUserId=Number(userId);
   if(!Number.isSafeInteger(numericUserId)||numericUserId<1){
     return res.status(401).json({error:'authentication required'});
+  }
+  if(!canonicalAnalysisRoom(requestedRoomId)){
+    return res.status(403).json({error:'trusted room membership required'});
+  }
+
+  let db;
+  try{
+    db=getClient();
+    await ensureAiAnalyzeReadiness(db);
+  }catch(e){
+    return res.status(503).json({ error:'AI service temporarily unavailable' });
   }
   let trustedRoom;
   try{ trustedRoom=await resolveAnalysisRoom(db,requestedRoomId,numericUserId); }
@@ -888,13 +780,20 @@ async function handleFeedback(req,res){
   if(!id){ try{ const u=new URL(req.url,'http://localhost'); id=u.searchParams.get('id')||u.searchParams.get('sessionId'); const parts=u.pathname.split('/'); const last=parts.pop(); if(last && last!=='feedback' && last!=='analyze' && last!=='history' && !isNaN(Number(last))) id=last; }catch{} }
   const authInfo=await tryAuth(req);
   if(!authInfo.authed) return res.status(401).json({error:'authentication required'});
-  const db=getClient(); await ensureTables(db);
-
   const uid=Number(authInfo.userId);
   if(!Number.isSafeInteger(uid)||uid<1) return res.status(401).json({error:'authentication required'});
+  let db;
+  try{
+    db=getClient();
+    await ensureAiFeedbackReadiness(db);
+  }catch{
+    return res.status(503).json({error:'AI service temporarily unavailable'});
+  }
   if(id){
     const rs=await db.execute({
-      sql:`SELECT af.*,ase.room_id,ase.pair_label,ase.created_by
+      sql:`SELECT af.id,af.session_id,af.feedback_json,af.evidence,af.model_used,
+          af.reason_for_pick,af.confidence,af.created_at,
+          ase.room_id,ase.pair_label,ase.created_by
         FROM ai_feedback af JOIN ai_sessions ase ON ase.id=af.session_id
         ${AUTH_SESSION_OWNERSHIP_JOINS}
         WHERE (af.session_id=? OR af.id=?) AND ${AUTH_SESSION_OWNERSHIP_WHERE}
@@ -935,7 +834,13 @@ async function handleHistory(req,res){
     return res.status(401).json({error:'authentication required'});
   }
   if(!Number.isSafeInteger(uid)||uid<1) return res.status(401).json({error:'authentication required'});
-  const db=getClient(); await ensureTables(db);
+  let db;
+  try{
+    db=getClient();
+    await ensureAiHistoryReadiness(db);
+  }catch{
+    return res.status(503).json({error:'AI service temporarily unavailable'});
+  }
   const rs=await db.execute({
     sql:`SELECT af.id,af.session_id,af.role,af.model_used,af.estimated_cost_cents,
         af.confidence,af.created_at,ase.room_id,ase.pair_label,ase.duration_sec
@@ -945,7 +850,7 @@ async function handleHistory(req,res){
       ORDER BY af.created_at DESC LIMIT 20`,
     args:authSessionOwnershipArgs(uid),
   });
-  const today=todayISO(); let usage=null; try{ const u=await db.execute({ sql:`SELECT * FROM ai_usage WHERE date=?`, args:[today]}); usage=u.rows[0]||null; }catch{}
+  const today=todayISO(); let usage=null; try{ const u=await db.execute({ sql:`SELECT date,calls,tokens_in,tokens_out,updated_at FROM ai_usage WHERE date=?`, args:[today]}); usage=u.rows[0]||null; }catch{}
   // monthly quota info
   let monthly=null; try{ const q=await checkMonthlyQuota(db, uid, authInfo.isDemo); monthly={count:q.count, limit:q.limit, demo:authInfo.isDemo}; }catch{}
   return res.json({ ok:true, usage_today:usage, monthly, feedbacks:rs.rows });

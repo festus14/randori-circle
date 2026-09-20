@@ -2678,6 +2678,35 @@ test('AI rejects malformed provider feedback with the generic provider error', a
         source TEXT NOT NULL,
         PRIMARY KEY (week_id,user_id)
       )`,
+      `CREATE TABLE ai_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT,pair_label TEXT,transcript TEXT,
+        code_snapshots TEXT,interviewer_questions TEXT,started_at TEXT,ended_at TEXT,
+        duration_sec INTEGER,cost_cents INTEGER DEFAULT 0,created_at TEXT DEFAULT (datetime('now')),
+        created_by INTEGER
+      )`,
+      `CREATE TABLE ai_feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,session_id INTEGER NOT NULL,role TEXT,
+        feedback_json TEXT NOT NULL,evidence TEXT,model_used TEXT,reason_for_pick TEXT,
+        estimated_cost_cents INTEGER,confidence REAL,created_at TEXT DEFAULT (datetime('now'))
+      )`,
+      `CREATE TABLE ai_usage (
+        date TEXT PRIMARY KEY,calls INTEGER DEFAULT 0,tokens_in INTEGER DEFAULT 0,
+        tokens_out INTEGER DEFAULT 0,updated_at TEXT
+      )`,
+      `CREATE TABLE ai_account_monthly_usage (
+        month TEXT NOT NULL,user_id INTEGER NOT NULL,calls INTEGER NOT NULL DEFAULT 0,
+        tokens_in INTEGER NOT NULL DEFAULT 0,updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY(month,user_id)
+      )`,
+      `CREATE TABLE ai_account_monthly_reservations (
+        reservation_id TEXT PRIMARY KEY,month TEXT NOT NULL,user_id INTEGER NOT NULL,
+        tokens_in INTEGER NOT NULL DEFAULT 0,session_id INTEGER UNIQUE,refunded_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`,
+      `CREATE TABLE ai_consents (
+        user_id INTEGER PRIMARY KEY,consented_at TEXT NOT NULL DEFAULT (datetime('now')),
+        revoked_at TEXT,policy_version TEXT NOT NULL
+      )`,
       `INSERT INTO auth_accounts (id,email,is_demo) VALUES (2,'user@example.test',0)`,
       `INSERT INTO pairing_weeks (id,week_label) VALUES (10,'2026-W38')`,
       `INSERT INTO pairing_groups (id,week_id,user_a_id,user_b_id,user_c_id,is_ai_pair) VALUES (23,10,2,2,NULL,1)`,
