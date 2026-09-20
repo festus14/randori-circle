@@ -4188,6 +4188,7 @@ async function refreshMe(){
       'Every active member will immediately lose access to this circle. Pairing and schedule history is retained but will no longer be available in the app.')) return false;
     if(!circleControlOperationMatches(operation)) return false;
     const actorId=Number(me.id||me.uid);
+    const requestAuthEpoch=authSessionEpoch;
     circleLifecyclePending=true;
     clearCircleLifecycleNotice();
     circleLifecyclePanel?.querySelectorAll('button').forEach(button=>{ button.disabled=true; });
@@ -4214,6 +4215,7 @@ async function refreshMe(){
       return true;
     }catch(error){
       if(Number(error?.http_status)===401){
+        if(requestAuthEpoch!==authSessionEpoch) return false;
         const currentUserId=Number(me?.id||me?.uid);
         if(!Number.isSafeInteger(currentUserId)||currentUserId===actorId){
           await applyAuthoritativeSignedOutState();

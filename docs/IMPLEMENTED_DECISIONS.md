@@ -1623,7 +1623,8 @@ returns a target-bound refresh-required result, so the browser performs the
 same invalidation and reload instead of continuing to display the archived
 workspace. Session loss invalidates pending auth refreshes, clears identity and
 private state, and follows the normal signed-out route without another network
-decision. Owner/target loss, context conflict, ambiguous commit,
+decision; an older request epoch cannot clear a newer same-account login.
+Owner/target loss, context conflict, ambiguous commit,
 and transport loss clear private state before an authoritative context reload,
 without presenting an uncertain archive as successful. There is no
 public unarchive path; recovery is a separately reviewed

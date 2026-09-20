@@ -218,6 +218,65 @@ test('archive session loss immediately clears private state and returns to signe
     .toEqual({signedIn:false,room:null,refreshCalls:0,retained:[]});
 });
 
+test('a delayed old-session archive denial cannot clear a newer same-account login',async({page})=>{
+  const freshOwner={...owner,name:'Fresh Owner',display_name:'Fresh Owner'};
+  let freshSession=false;
+  let releaseDelete!:()=>void;
+  let markDeleteStarted!:()=>void;
+  const deleteGate=new Promise<void>(resolve=>{ releaseDelete=resolve; });
+  const deleteStarted=new Promise<void>(resolve=>{ markDeleteStarted=resolve; });
+  await mockApi(page,{
+    '/api/auth/capabilities':{
+      ok:true,capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,
+        multiCircleControlPlane:true,multiCircleAvailability:true},registrationMode:'private_beta',
+    },
+    '/api/auth/me':()=>({ok:true,user:freshSession?freshOwner:owner}),
+    '/api/auth/login':()=>{ freshSession=true; return {ok:true,user:freshOwner}; },
+    '/api/profile':{ok:true,user:freshOwner},
+    '/api/circles':async request=>{
+      if(request.method()==='DELETE'){
+        markDeleteStarted();
+        await deleteGate;
+        return {_status:401,error:'authentication required'};
+      }
+      return {ok:true,circles:[primary,secondary],active_circle:secondary,
+        context_version:4,selection_required:false};
+    },
+    '/api/circle':{ok:true,circle_meta:{public_id:secondary.public_id,name:secondary.name},
+      membership:{role:'owner'},circle:[freshOwner],count:1,circle_context_version:4},
+    '/api/invitations':{ok:true,invitations:[],count:0,circle_context_version:4},
+    '/api/members':{ok:true,members:[{...freshOwner,role:'owner',status:'active'}],count:1,
+      has_more:false,next_cursor:null,scanned:1,circle_context_version:4},
+  });
+  await resetClientState(page,true);
+  await page.goto('/?view=circle',{waitUntil:'domcontentloaded'});
+  await page.locator('[data-tab="circle"]').click();
+  await expect(page.getByTestId('circle-archive')).toBeVisible();
+  await page.getByTestId('circle-archive').click();
+  await confirmAction(page,/Archive Secondary/);
+  await deleteStarted;
+  await page.evaluate(()=>{ (window as any)._randori_auth.openModal('signin'); });
+  await page.locator('#authEmail').fill('owner@example.test');
+  await page.locator('#authPass').fill('fresh password');
+  await page.locator('#authSignin').click();
+  await expect(page.getByRole('dialog',{name:'Sign in to Randori'})).toBeHidden();
+  await expect(page.locator('#meLabel')).toContainText('Fresh Owner');
+  await page.evaluate(()=>{
+    (window as any)._randori_authorized_room='week_99_pair_99';
+    localStorage.setItem('randori-code','fresh private draft');
+  });
+  const denied=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/circles'
+    &&response.request().method()==='DELETE');
+  releaseDelete();
+  await denied;
+  await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
+  expect(await page.evaluate(()=>({signedIn:(window as any)._randori_auth.signedIn,
+    name:(window as any)._randori_auth.me?.name,
+    room:(window as any)._randori_authorized_room,
+    code:localStorage.getItem('randori-code')})))
+    .toEqual({signedIn:true,name:'Fresh Owner',room:'week_99_pair_99',code:'fresh private draft'});
+});
+
 test('archive owner loss reloads and re-resolves the selected membership role',async({page})=>{
   let ownerAccess=true;
   await mockApi(page,{

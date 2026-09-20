@@ -47,7 +47,8 @@ committed, clears private state, broadcasts the generation, and reloads to
 recover the fallback instead of leaving the retired workspace open.
 An authoritative session-loss response invalidates pending auth refreshes,
 clears identity and private state, and runs the normal signed-out router without
-a second network decision. Owner/target loss,
+a second network decision. A response from an older auth epoch cannot clear a
+newer same-account login. Owner/target loss,
 context conflict, an ambiguous commit response, or transport loss also clears
 owner and workspace state before reloading the authoritative circle context;
 the ambiguous paths never claim that archive succeeded.
