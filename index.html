@@ -7,58 +7,96 @@
 <meta name="referrer" content="no-referrer"/>
 <link rel="icon" href="data:,"/>
 <title>Randori Circle</title>
+<script src="/assets/invite-gate.js"></script>
 <script>
 /* Consume invitation capabilities before any telemetry or third-party script can observe the URL. */
 (()=>{
+  const INVITE_BINDING_KEY='randori-invite-binding-v1';
+  const readStoredBinding=()=>{ try{ return sessionStorage.getItem(INVITE_BINDING_KEY); }catch{ return null; } };
+  const storeBinding=value=>{ try{ sessionStorage.setItem(INVITE_BINDING_KEY,value); }catch{} };
+  const clearBinding=()=>{ try{ sessionStorage.removeItem(INVITE_BINDING_KEY); }catch{} };
   let present=false;
+  let fragmentPresent=false;
   let token=null;
+  let binding=null;
   let preparation;
+  const gate=window._randori_invite_gate?.create?.()||null;
+  let generation=null;
   try{
     const hash=String(window.location.hash||'');
     const canonical=hash.match(/^#invite=([A-Za-z0-9_-]{43})$/);
+    const invitePath=window.location.pathname==='/invite';
     if(hash.startsWith('#')){
       const fragment=new URLSearchParams(hash.slice(1));
       if(fragment.has('invite')){
         present=true;
+        fragmentPresent=true;
         if(canonical) token=canonical[1];
         window.history.replaceState(window.history.state,document.title,window.location.pathname+window.location.search);
       }
     }
-    if(present&&token){
-      const body=JSON.stringify({token});
+    if(fragmentPresent&&!token) clearBinding();
+    if(invitePath&&!present){
+      present=true;
+      const stored=readStoredBinding();
+      if(/^[A-Za-z0-9_-]{43}$/.test(String(stored||''))) binding=stored;
+      else clearBinding();
+    }else if(!invitePath){
+      clearBinding();
+    }
+    if(present&&token) clearBinding();
+    if(present&&(token||binding)&&gate){
+      generation=gate.beginPreparation();
+      const requestedBinding=binding;
+      const body=JSON.stringify(token?{token}:{binding});
       token=null;
+      binding=null;
       preparation=fetch('/api/invitations/prepare',{
         method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body,
       }).then(async response=>{
         let result=null;
         try{ result=await response.json(); }catch{}
-        const binding=typeof result?.binding==='string'&&/^[A-Za-z0-9_-]{43}$/.test(result.binding)
-          ?result.binding:null;
+        const returnedBinding=typeof result?.binding==='string'
+          &&/^[A-Za-z0-9_-]{43}$/.test(result.binding)?result.binding:null;
         const expiresInSeconds=Number.isSafeInteger(result?.expires_in_seconds)
-          &&result.expires_in_seconds>0&&result.expires_in_seconds<=600
+          &&result.expires_in_seconds>=1&&result.expires_in_seconds<=600
           ?result.expires_in_seconds:null;
+        const ok=response.ok&&result?.ok===true&&returnedBinding!==null
+          &&expiresInSeconds!==null&&(!requestedBinding||returnedBinding===requestedBinding);
+        if(ok) storeBinding(returnedBinding);
+        else clearBinding();
         return {
           present:true,
-          ok:response.ok&&result?.ok===true&&!!binding&&!!expiresInSeconds,
-          binding,
-          expiresInSeconds,
+          ok,
           rateLimited:response.status===429,
           retryAfter:Number(result?.retry_after_seconds)||null,
+          expiresInSeconds,
+          binding:returnedBinding,
+          generation,
         };
-      }).catch(()=>({present:true,ok:false,rateLimited:false,retryAfter:null}));
+      }).catch(()=>({present:true,ok:false,rateLimited:false,retryAfter:null,
+        expiresInSeconds:null,binding:null,generation}));
     }else{
       token=null;
-      preparation=Promise.resolve({present,ok:false,rateLimited:false,retryAfter:null});
+      binding=null;
+      preparation=Promise.resolve({present,ok:false,rateLimited:false,retryAfter:null,
+        expiresInSeconds:null,binding:null,generation});
     }
   }catch{
     token=null;
+    binding=null;
+    clearBinding();
     try{
       if(String(window.location.hash||'').includes('invite=')){
         window.history.replaceState(window.history.state,document.title,window.location.pathname+window.location.search);
       }
     }catch{}
-    preparation=Promise.resolve({present,ok:false,rateLimited:false,retryAfter:null});
+    preparation=Promise.resolve({present,ok:false,rateLimited:false,retryAfter:null,
+      expiresInSeconds:null,binding:null,generation});
   }
+  Object.defineProperty(window,'__randoriInviteGate',{
+    configurable:true,value:gate,
+  });
   Object.defineProperty(window,'__randoriInvitePreparation',{
     configurable:true,value:preparation,
   });
@@ -817,6 +855,7 @@ p{margin:0}
               <button id="landingSignup" class="btn" style="padding:11px 18px; font-size:14px">Use an invitation</button>
               <button id="landingSignin" class="btn secondary" style="padding:11px 18px;">Sign in</button>
             </div>
+            <div id="landingInviteHelp" class="small muted" role="status" hidden style="margin-top:10px">Open the invitation link you received, or ask a circle owner for a new invitation.</div>
             <div class="small muted" style="margin-top:10px">Invite-only private beta • Weekly practice with your circle</div>
           </div>
           <div style="display:grid; gap:10px">
@@ -1234,8 +1273,8 @@ p{margin:0}
       </div>
       <p id="authErr" class="small auth-error" role="alert" aria-live="assertive"></p>
       <div id="authActivationPending" data-testid="activation-pending" class="auth-fields" hidden>
-        <p class="small muted">Check your inbox. The verification link is single-use and expires in 30 minutes.</p>
-        <button id="authActivationResend" class="btn secondary" type="button">Send a new link</button>
+        <p class="small muted">If this invitation can be activated, a single-use verification link will arrive shortly and expire in 30 minutes.</p>
+        <button id="authActivationResend" class="btn secondary" type="button">Request another link</button>
       </div>
       <button id="authGoogleRetry" class="btn secondary" type="button" hidden aria-describedby="authErr" style="width:100%;justify-content:center">Try Google sign-in again</button>
       <div class="auth-actions">
@@ -1299,6 +1338,8 @@ p{margin:0}
   let me = null;
   let authSessionEpoch=0;
   let authRefreshSequence=0;
+  let authIdentityHydrated=false;
+  let authIdentityHydrationUnavailable=false;
   const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,passwordReset:false,localIdentity:false,verifiedEmailActivation:false,googleOAuth:false,identityManagement:false,multiCircleControlPlane:false,multiCircleAvailability:false,secondaryCircleCoordination:false,secondaryCircleScheduling:false,registrationMode:'private_beta'});
   let authCapabilities=CLOSED_AUTH_CAPABILITIES;
   let authCapabilitiesLoaded=false;
@@ -1308,8 +1349,11 @@ p{margin:0}
   let authBusy=false;
   let authRequest=null;
   let authReturnFocus=null;
+  let authModalGeneration=0;
   let googleRetryPending=false;
+  let googleInviteStartRequest=null;
   let activationPendingEmail='';
+  let activationResendRequest=null;
   let activeCircleRole=null;
   let activeCircleContext=null;
   let activeCircleContextUserId=null;
@@ -1332,6 +1376,14 @@ p{margin:0}
   const availabilityState={value:null,userId:null,contextKey:null,loading:false,saving:false,pendingValue:null,error:'',notice:null,request:null,rolloverTimer:null,epoch:0};
   const availabilityContextRecovery={userId:null,authEpoch:null,attempts:0};
   const AUTH_CAPABILITY_TIMEOUT_MS=8000;
+  const inviteGate=(()=>{
+    try{
+      const gate=window.__randoriInviteGate;
+      delete window.__randoriInviteGate;
+      return gate&&typeof gate.liveSnapshot==='function'&&typeof gate.matches==='function'
+        ?gate:null;
+    }catch{ return null; }
+  })();
   const invitePreparation=(()=>{
     try{
       const pending=window.__randoriInvitePreparation;
@@ -1345,10 +1397,131 @@ p{margin:0}
     active:window.location.pathname==='/invite',
     ready:false,
     failed:false,
+    expired:false,
     rateLimited:false,
     retryAfter:null,
-    binding:null,
+    generation:null,
   };
+  let inviteExpiryTimer=null;
+
+  function clearInviteExpiryTimer(){
+    if(inviteExpiryTimer!==null){ clearTimeout(inviteExpiryTimer); inviteExpiryTimer=null; }
+  }
+
+  function clearStoredInviteBinding(){
+    try{ sessionStorage.removeItem('randori-invite-binding-v1'); }catch{}
+  }
+
+  function preparedInviteSnapshot(){
+    if(!inviteState.active||!inviteState.ready||!inviteGate) return null;
+    return inviteGate.liveSnapshot();
+  }
+
+  function signupRequiresPreparedInvite(){
+    return authCapabilities.registrationMode!=='local_open';
+  }
+
+  function canStartSignup(){
+    if(!authCapabilitiesLoaded||authCapabilitiesFailed) return false;
+    if(!signupRequiresPreparedInvite()) return authCapabilities.passwordSignup===true;
+    return authIdentityHydrated&&(authCapabilities.passwordSignup||authCapabilities.googleOAuth)
+      &&preparedInviteSnapshot()!==null;
+  }
+
+  function currentAuthActorId(){
+    const value=Number(me?.id||me?.uid||0);
+    return Number.isSafeInteger(value)&&value>0?value:null;
+  }
+
+  function captureAuthInteraction({requireInvite=false}={}){
+    const invite=requireInvite?preparedInviteSnapshot():null;
+    if(requireInvite&&(!authIdentityHydrated||!invite)) return null;
+    return Object.freeze({
+      modalGeneration:authModalGeneration,
+      authEpoch:authSessionEpoch,
+      actorId:currentAuthActorId(),
+      invite,
+    });
+  }
+
+  function authInteractionMatches(operation){
+    if(!operation||operation.modalGeneration!==authModalGeneration
+      ||operation.authEpoch!==authSessionEpoch||operation.actorId!==currentAuthActorId()) return false;
+    return !operation.invite||inviteGate?.matches?.(operation.invite)===true;
+  }
+
+  function abortActivationResend(){
+    const request=activationResendRequest;
+    activationResendRequest=null;
+    request?.controller?.abort();
+  }
+
+  function abortGoogleInviteStart(){
+    const request=googleInviteStartRequest;
+    googleInviteStartRequest=null;
+    request?.controller?.abort();
+  }
+
+  function abortInviteBoundAuthWork(){
+    let changed=false;
+    if(authRequest?.inviteBound){
+      const request=authRequest;
+      authRequest=null;
+      request.controller.abort();
+      changed=true;
+    }
+    if(activationResendRequest){ abortActivationResend(); changed=true; }
+    if(googleInviteStartRequest){ abortGoogleInviteStart(); changed=true; }
+    if(changed) authBusy=false;
+  }
+
+  function renderInviteGateState(){
+    renderInviteLanding();
+    renderAuthModal();
+    updateAuthEntryPoints();
+  }
+
+  function expirePreparedInvite(snapshot){
+    if(!inviteGate?.expire?.(snapshot)){
+      if(inviteGate?.matches?.(snapshot)) schedulePreparedInviteExpiry(snapshot);
+      return false;
+    }
+    clearInviteExpiryTimer();
+    inviteState.ready=false;
+    inviteState.failed=false;
+    inviteState.expired=true;
+    inviteState.rateLimited=false;
+    inviteState.retryAfter=null;
+    clearStoredInviteBinding();
+    activationPendingEmail='';
+    abortInviteBoundAuthWork();
+    renderInviteGateState();
+    return true;
+  }
+
+  function schedulePreparedInviteExpiry(snapshot){
+    clearInviteExpiryTimer();
+    const remaining=inviteGate?.remainingMilliseconds?.(snapshot)||0;
+    if(remaining<=0){ expirePreparedInvite(snapshot); return; }
+    inviteExpiryTimer=setTimeout(()=>{
+      inviteExpiryTimer=null;
+      expirePreparedInvite(snapshot);
+    },Math.ceil(remaining)+1);
+  }
+
+  function invalidatePreparedInvite(reason='invalidated'){
+    clearInviteExpiryTimer();
+    inviteGate?.invalidate?.(reason);
+    inviteState.ready=false;
+    inviteState.failed=reason==='unavailable';
+    inviteState.expired=reason==='expired'||reason==='auth_changed';
+    inviteState.rateLimited=false;
+    inviteState.retryAfter=null;
+    inviteState.generation=null;
+    clearStoredInviteBinding();
+    activationPendingEmail='';
+    abortInviteBoundAuthWork();
+  }
   const activationState={active:window.location.pathname==='/verify',status:'checking',token:'',verifying:false};
   function renderActivationLanding(){
     if(!activationState.active) return false;
@@ -1502,6 +1675,7 @@ p{margin:0}
     const verifiedInvite=authCapabilitiesLoaded&&authCapabilities.verifiedEmailActivation
       &&authCapabilities.registrationMode==='verified_invite';
     const googleInvite=authCapabilitiesLoaded&&authCapabilities.googleOAuth;
+    const liveInvite=preparedInviteSnapshot()!==null;
     if(instructions) instructions.textContent=!authCapabilitiesLoaded
       ?'Checking which sign-in options are available for this single-use invitation.'
       :(localInvite
@@ -1512,79 +1686,98 @@ p{margin:0}
             ?'Confirm the Google account that received this invitation. The invitation is single-use and expires automatically.'
             :'This deployment has no compatible invitation sign-in method enabled.')));
     if(status){
-      status.textContent=inviteState.rateLimited
+      status.textContent=googleInviteStartRequest
+        ?'Opening Google sign-in…'
+        :liveInvite&&!authIdentityHydrated
+        ?(authIdentityHydrationUnavailable
+          ?'Invitation verified, but your account session could not be verified. Retry or sign in explicitly.'
+          :'Invitation verified. Checking your account session…')
+        :inviteState.rateLimited
         ? `Too many attempts. Try again${inviteState.retryAfter?` in ${inviteState.retryAfter} seconds`: ' later'}.`
+        : (inviteState.expired||(inviteState.ready&&!liveInvite)
+          ?'This prepared invitation expired. Reopen the original invitation link or ask the circle owner for a new one.'
         : (inviteState.failed
           ? 'This invitation is unavailable or has expired.'
-          : (inviteState.ready
+          : (liveInvite
             ?(localInvite?'Invitation verified. Create the invited local account.'
               :(verifiedInvite?'Invitation verified. Continue to create your account.':'Invitation verified. Continue with the invited Google account.'))
-            :'Checking invitation…'));
+            :'Checking invitation…')));
     }
     if(button){
-      button.disabled=!inviteState.ready||!authCapabilitiesLoaded||(!localInvite&&!verifiedInvite&&!googleInvite);
+      button.disabled=!!googleInviteStartRequest||!liveInvite||!authCapabilitiesLoaded||!authIdentityHydrated
+        ||(!localInvite&&!verifiedInvite&&!googleInvite);
       button.textContent=!authCapabilitiesLoaded?'Continue'
         :(localInvite?'Create local account':(verifiedInvite?'Create account':(googleInvite?'Continue with Google':'Unavailable')));
     }
     return true;
   }
   async function finishInvitePreparation(){
+    const requestAuthEpoch=authSessionEpoch;
+    const requestActorId=currentAuthActorId();
+    const requestIdentityHydrated=authIdentityHydrated;
     try{
       const result=await invitePreparation;
       if(result?.present===true) inviteState.active=true;
       if(!inviteState.active) return;
-      inviteState.ready=result?.ok===true;
-      inviteState.binding=inviteState.ready?result.binding:null;
+      if(requestAuthEpoch!==authSessionEpoch
+        ||(requestIdentityHydrated&&requestActorId!==currentAuthActorId())){
+        invalidatePreparedInvite('auth_changed');
+        inviteState.failed=true;
+        renderInviteGateState();
+        return;
+      }
+      inviteState.generation=Number.isSafeInteger(result?.generation)?result.generation:null;
+      inviteState.ready=inviteGate?.completePreparation?.(inviteState.generation,{
+        ok:result?.ok===true,
+        expiresInSeconds:result?.expiresInSeconds,
+        inviteBinding:result?.binding,
+      })===true;
+      inviteState.expired=!inviteState.ready&&inviteGate?.phase==='expired';
       inviteState.rateLimited=result?.rateLimited===true;
       inviteState.retryAfter=Number.isSafeInteger(result?.retryAfter)&&result.retryAfter>0?result.retryAfter:null;
-      inviteState.failed=!inviteState.ready&&!inviteState.rateLimited;
+      inviteState.failed=!inviteState.ready&&!inviteState.rateLimited&&!inviteState.expired;
+      if(!inviteState.ready) clearStoredInviteBinding();
+      const snapshot=preparedInviteSnapshot();
+      if(snapshot) schedulePreparedInviteExpiry(snapshot);
     }catch{
       if(!inviteState.active) return;
+      invalidatePreparedInvite('unavailable');
       inviteState.failed=true;
     }
-    renderInviteLanding();
+    renderInviteGateState();
   }
   document.getElementById('inviteContinue')?.addEventListener('click',async()=>{
-    if(!inviteState.ready||!inviteState.binding) return;
+    if(!authIdentityHydrated) return;
+    const inviteOperation=preparedInviteSnapshot();
+    if(!inviteOperation){
+      if(inviteState.ready) invalidatePreparedInvite('expired');
+      renderInviteGateState();
+      return;
+    }
+    const requestAuthEpoch=authSessionEpoch;
+    const requestActorId=currentAuthActorId();
     await authCapabilitiesPromise;
+    if(requestAuthEpoch!==authSessionEpoch||requestActorId!==currentAuthActorId()
+      ||inviteGate?.matches?.(inviteOperation)!==true) return;
     if((authCapabilities.localIdentity&&authCapabilities.registrationMode==='local_invite')
       ||authCapabilities.registrationMode==='verified_invite'){
       openAuthModal('signup');
       return;
     }
-    try{
-      const response=await fetch('/api/auth/google/start',{
-        method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},
-        body:JSON.stringify({purpose:'invite',invite_binding:inviteState.binding}),
-      });
-      const result=await response.json().catch(()=>({}));
-      if(!response.ok) throw result;
-      const authorization=new URL(String(result?.authorizationUrl||''));
-      if(authorization.origin!=='https://accounts.google.com'
-        ||authorization.pathname!=='/o/oauth2/v2/auth'||authorization.username||authorization.password){
-        throw new Error('invalid Google authorization URL');
-      }
-      window.location.assign(authorization.href);
-    }catch{
-      inviteState.ready=false;
-      inviteState.binding=null;
-      inviteState.failed=true;
-      renderInviteLanding();
-    }
+    await beginGoogleInviteSignIn(inviteOperation);
   });
   window._randori_invite_flow={
     get active(){ return inviteState.active; },
-    get ready(){ return inviteState.ready; },
+    get ready(){ return preparedInviteSnapshot()!==null; },
     show:renderInviteLanding,
     complete(){
+      invalidatePreparedInvite('completed');
       inviteState.active=false;
-      inviteState.ready=false;
-      inviteState.binding=null;
       try{ window.history.replaceState({},document.title,'/'); }catch{}
     },
   };
   if(inviteState.active) renderInviteLanding();
-  finishInvitePreparation();
+  const invitePreparationFinished=finishInvitePreparation();
   // Authentication now uses an HttpOnly session cookie. Remove legacy bearer material.
   try{ localStorage.removeItem(TOKEN_KEY); }catch{}
   async function api(path, opts={}){
@@ -1624,6 +1817,7 @@ p{margin:0}
   function invalidateAuthRefreshes(){
     authSessionEpoch+=1;
     authRefreshSequence+=1;
+    if(inviteState.active||inviteState.ready) invalidatePreparedInvite('auth_changed');
   }
 async function refreshMe(){
     const previousUserId=Number(me?.id||me?.uid)||null;
@@ -1647,13 +1841,27 @@ async function refreshMe(){
       try{ localStorage.setItem(ME_KEY, JSON.stringify(me)); }catch{}
     }
     const refreshedUserId=Number(me?.id||me?.uid)||null;
+    const identityWasHydrated=authIdentityHydrated;
+    const hydrationWasUnavailable=authIdentityHydrationUnavailable;
+    if(!failure||Number(failure?.http_status)===401){
+      authIdentityHydrated=true;
+      authIdentityHydrationUnavailable=false;
+    }else if(!authIdentityHydrated){
+      authIdentityHydrationUnavailable=true;
+    }
     if(previousUserId!==refreshedUserId){
+      if(identityWasHydrated&&(inviteState.active||inviteState.ready)){
+        invalidatePreparedInvite('auth_changed');
+        renderInviteGateState();
+      }
       resetCircleControlForIdentityChange({preserveLifecycleRecentAction:true});
     }
     if(availabilityState.userId!==null
       &&(!Number.isSafeInteger(refreshedUserId)||refreshedUserId<1
         ||availabilityState.userId!==refreshedUserId)) clearAvailability();
     updateAuthUI();
+    if((!identityWasHydrated&&authIdentityHydrated)
+      ||hydrationWasUnavailable!==authIdentityHydrationUnavailable) renderInviteGateState();
     if(me) refreshAvailability().catch(()=>{});
     else clearAvailability();
     try{
@@ -2179,6 +2387,9 @@ async function refreshMe(){
     if(!authCapabilitiesLoaded) return 'Checking sign-in options…';
     if(authCapabilitiesFailed) return 'New-account options could not be verified. Existing members can still try password sign-in.';
     if(authMode==='reset') return 'Enter your account email. The response is the same whether or not an eligible account exists.';
+    if(authMode==='signup'&&signupRequiresPreparedInvite()&&!preparedInviteSnapshot()){
+      return 'Open the invitation link you received, or ask a circle owner for a new invitation. Existing members can sign in below.';
+    }
     if(authMode==='signup'&&authCapabilities.passwordSignup){
       if(authCapabilities.registrationMode==='local_invite'){
         return inviteState.ready
@@ -2203,18 +2414,31 @@ async function refreshMe(){
     return 'No sign-in method is currently available.';
   }
   function updateAuthEntryPoints(){
-    const canJoin=authCapabilities.passwordSignup||authCapabilities.googleOAuth;
+    const joinConfigured=authCapabilities.registrationMode==='local_open'
+      ?authCapabilities.passwordSignup
+      :(authCapabilities.passwordSignup||authCapabilities.googleOAuth);
+    const canJoin=joinConfigured&&canStartSignup();
     const canSignIn=authCapabilities.passwordLogin||authCapabilities.googleOAuth;
     const join=document.getElementById('landingSignup');
+    const inviteHelp=document.getElementById('landingInviteHelp');
     const signIn=document.getElementById('landingSignin');
+    const welcomeStart=document.getElementById('welcomeStartBtn');
     const identity=document.getElementById('meIdentity');
     if(join){
-      join.hidden=authCapabilitiesLoaded&&!canJoin;
+      join.hidden=authCapabilitiesLoaded&&!joinConfigured;
       join.disabled=!authCapabilitiesLoaded||!canJoin;
       join.textContent=authCapabilitiesLoaded&&authCapabilities.registrationMode==='local_open'
         ?'Create an account':'Use an invitation';
     }
+    if(inviteHelp){
+      inviteHelp.hidden=!authCapabilitiesLoaded||!joinConfigured||canJoin
+        ||authCapabilities.registrationMode==='local_open';
+    }
     if(signIn){ signIn.hidden=authCapabilitiesLoaded&&!canSignIn; signIn.disabled=!authCapabilitiesLoaded||!canSignIn; }
+    if(welcomeStart){
+      welcomeStart.disabled=!authCapabilitiesLoaded||(!canJoin&&!canSignIn);
+      welcomeStart.textContent=canJoin?'Start → Create account':'Start → Sign in';
+    }
     if(identity){
       identity.hidden=!authCapabilitiesLoaded||authCapabilities.identityManagement!==true;
       identity.disabled=!authCapabilitiesLoaded||authCapabilities.identityManagement!==true;
@@ -2225,21 +2449,24 @@ async function refreshMe(){
     if(!overlay?.classList.contains('show')) return;
     const active=document.activeElement;
     if(active&&overlay.contains(active)&&active.id!=='authDialog'&&!active.disabled&&active.getClientRects().length>0) return;
-    const passwordEnabled=authMode==='signup'?authCapabilities.passwordSignup
+    const signupAllowed=authMode!=='signup'||canStartSignup();
+    const passwordEnabled=authMode==='signup'?authCapabilities.passwordSignup&&signupAllowed
       :(authMode==='reset'?authCapabilities.passwordReset:authCapabilities.passwordLogin);
     const target=authBusy
       ?document.getElementById('authCancel')
-      :(googleRetryPending&&authCapabilities.googleOAuth
+      :(googleRetryPending&&authCapabilities.googleOAuth&&signupAllowed
       ?document.getElementById('authGoogleRetry')
       :passwordEnabled
       ?document.getElementById('authEmail')
-      :(authCapabilities.googleOAuth?document.getElementById('authGoogle'):document.getElementById('authCancel')));
+      :(authCapabilities.googleOAuth&&signupAllowed?document.getElementById('authGoogle'):document.getElementById('authCancel')));
     target?.focus();
   }
   function renderAuthModal(){
-    const passwordEnabled=authMode==='signup'?authCapabilities.passwordSignup
+    const signupAllowed=authMode!=='signup'||canStartSignup();
+    const passwordEnabled=authMode==='signup'?authCapabilities.passwordSignup&&signupAllowed
       :(authMode==='reset'?authCapabilities.passwordReset:authCapabilities.passwordLogin);
-    const googleEnabled=authMode!=='reset'&&authCapabilities.googleOAuth;
+    const googleEnabled=authMode!=='reset'&&authCapabilities.googleOAuth&&signupAllowed
+      &&(authMode!=='signup'||signupRequiresPreparedInvite());
     const title=document.getElementById('authTitle');
     const description=document.getElementById('authDescription');
     const status=document.getElementById('authCapabilityStatus');
@@ -2284,8 +2511,9 @@ async function refreshMe(){
       password.placeholder=authMode==='signup'?'At least 10 characters':'Your password';
     }
     if(signup){
-      signup.hidden=pending||!authCapabilitiesLoaded||authMode!=='signup'||!authCapabilities.passwordSignup;
-      signup.disabled=authBusy||!authCapabilitiesLoaded;
+      signup.hidden=pending||!authCapabilitiesLoaded||authMode!=='signup'
+        ||!authCapabilities.passwordSignup||!signupAllowed;
+      signup.disabled=authBusy||!authCapabilitiesLoaded||!signupAllowed;
       signup.textContent=authBusy&&authMode==='signup'
         ?(authCapabilities.registrationMode==='verified_invite'?'Submitting…':'Creating account…')
         :(authCapabilities.registrationMode==='verified_invite'?'Send verification email':'Create account');
@@ -2304,7 +2532,10 @@ async function refreshMe(){
       forgot.hidden=!authCapabilitiesLoaded||authMode!=='signin'||!authCapabilities.passwordReset;
       forgot.disabled=authBusy;
     }
-    const alternateAvailable=authMode==='reset'||(authMode==='signup'?authCapabilities.passwordLogin:authCapabilities.passwordSignup);
+    const alternateAvailable=authMode==='reset'
+      ||(authMode==='signup'
+        ?(authCapabilities.passwordLogin||authCapabilities.googleOAuth)
+        :canStartSignup());
     if(modeSwitch){
       modeSwitch.hidden=pending||!authCapabilitiesLoaded||!alternateAvailable;
       modeSwitch.disabled=authBusy;
@@ -2344,11 +2575,15 @@ async function refreshMe(){
     const requested=mode==='signup'?'signup':(mode==='reset'?'reset':'signin');
     if(requested==='reset') return authCapabilitiesLoaded&&authCapabilities.passwordReset?'reset':'signin';
     if(requested==='signup'&&!authCapabilitiesLoaded) return 'signup';
-    return requested==='signup'&&(authCapabilities.passwordSignup||authCapabilities.googleOAuth)
+    return requested==='signup'&&canStartSignup()
       ?'signup'
       :'signin';
   }
   function setAuthMode(mode){
+    authModalGeneration+=1;
+    abortAuthRequest();
+    abortActivationResend();
+    abortGoogleInviteStart();
     authMode=resolvedAuthMode(mode);
     activationPendingEmail='';
     googleRetryPending=false;
@@ -2359,6 +2594,10 @@ async function refreshMe(){
   function openAuthModal(mode='signin',{message='',googleRetry=false}={}){
     const overlay=document.getElementById('authOverlay');
     if(!overlay) return;
+    authModalGeneration+=1;
+    abortAuthRequest();
+    abortActivationResend();
+    abortGoogleInviteStart();
     const active=document.activeElement;
     if(active&&active!==document.body&&!overlay.contains(active)) authReturnFocus=active;
     authMode=resolvedAuthMode(mode);
@@ -2384,12 +2623,15 @@ async function refreshMe(){
   function closeAuthModal(){
     const overlay=document.getElementById('authOverlay');
     if(!overlay) return;
+    authModalGeneration+=1;
     abortAuthRequest();
+    abortActivationResend();
+    abortGoogleInviteStart();
     overlay.classList.remove('show');
     overlay.setAttribute('aria-hidden','true');
     clearAuthValidation();
     googleRetryPending=false;
-    activationPendingEmail='';
+    if(!preparedInviteSnapshot()) activationPendingEmail='';
     const password=document.getElementById('authPass');
     if(password) password.value='';
     const returnFocus=authReturnFocus;
@@ -2873,6 +3115,10 @@ async function refreshMe(){
 
   function authFailureMessage(error,mode){
     const code=String(error?.error||error?.message||'');
+    if(code==='invitation context changed'||code==='invitation unavailable'
+      ||code.includes('valid local invitation')){
+      return 'This prepared invitation changed or expired. Reopen the original invitation link.';
+    }
     if(code==='email already registered') return 'That email already has an account. Sign in instead.';
     if(code==='invalid credentials') return 'Email or password is incorrect.';
     if(code.includes('temporarily unavailable')) return mode==='signup'
@@ -2904,13 +3150,22 @@ async function refreshMe(){
   }
   async function submitAuth(mode){
     if(authBusy||!authCapabilitiesLoaded) return;
-    const enabled=mode==='signup'?authCapabilities.passwordSignup
+    const inviteRequired=mode==='signup'&&signupRequiresPreparedInvite();
+    const operation=captureAuthInteraction({requireInvite:inviteRequired});
+    if(inviteRequired&&!operation){
+      setAuthError('Open the invitation link you received, or ask a circle owner for a new invitation.');
+      renderAuthModal();
+      return;
+    }
+    const enabled=mode==='signup'?authCapabilities.passwordSignup&&canStartSignup()
       :(mode==='reset'?authCapabilities.passwordReset:authCapabilities.passwordLogin);
     if(!enabled) return;
     const body=validateAuthForm(mode);
     if(!body) return;
-    if(mode==='signup'&&inviteState.binding) body.invite_binding=inviteState.binding;
+    if(operation?.invite) body.invite_binding=operation.invite.binding;
     const request={controller:new AbortController()};
+    request.operation=operation;
+    request.inviteBound=inviteRequired;
     authRequest=request;
     setAuthBusy(true);
     try{
@@ -2920,7 +3175,7 @@ async function refreshMe(){
       });
       let data=null;
       try{ data=await response.json(); }catch{}
-      if(authRequest!==request) return;
+      if(authRequest!==request||!authInteractionMatches(operation)) return;
       if(response.ok&&mode==='reset'&&data?.pending===true){
         authRequest=null;
         setAuthBusy(false);
@@ -2954,7 +3209,7 @@ async function refreshMe(){
       toast(mode==='signup'?`welcome, ${me.name}`:`signed in as ${me.name}`);
       setTimeout(()=>{ try{ window._randori_journey?.routeByAuth?.(); }catch{} },0);
     }catch(error){
-      if(authRequest!==request||request.controller.signal.aborted) return;
+      if(authRequest!==request||request.controller.signal.aborted||!authInteractionMatches(operation)) return;
       setAuthError(authFailureMessage(error,mode));
     }finally{
       if(authRequest===request){
@@ -2969,22 +3224,86 @@ async function refreshMe(){
   });
   document.getElementById('authActivationResend')?.addEventListener('click',async()=>{
     if(authBusy||!activationPendingEmail) return;
+    const operation=captureAuthInteraction({requireInvite:true});
+    if(!operation){
+      activationPendingEmail='';
+      setAuthError('This prepared invitation expired. Reopen the original invitation link.');
+      renderAuthModal();
+      return;
+    }
+    const request={controller:new AbortController(),operation};
+    activationResendRequest=request;
     setAuthBusy(true);
     try{
       const response=await fetch('/api/auth/activation/resend',{
         method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},
-        body:JSON.stringify({email:activationPendingEmail,invite_binding:inviteState.binding}),
+        body:JSON.stringify({email:activationPendingEmail,
+          invite_binding:operation.invite.binding}),signal:request.controller.signal,
       });
       const data=await response.json().catch(()=>({}));
-      setAuthError(response.ok?'A new link was requested. Check your inbox.':authFailureMessage(data,'signup'));
-    }catch{ setAuthError('Verification email is temporarily unavailable. Try again.'); }
-    finally{ setAuthBusy(false); }
+      if(activationResendRequest!==request||!authInteractionMatches(operation)) return;
+      setAuthError(response.ok
+        ?'If this invitation remains eligible, another verification link will arrive shortly.'
+        :authFailureMessage(data,'signup'));
+    }catch(error){
+      if(activationResendRequest!==request||request.controller.signal.aborted
+        ||!authInteractionMatches(operation)) return;
+      setAuthError('Verification email is temporarily unavailable. Try again.');
+    }finally{
+      if(activationResendRequest===request){
+        activationResendRequest=null;
+        setAuthBusy(false);
+      }
+    }
   });
+  async function beginGoogleInviteSignIn(inviteSnapshot=preparedInviteSnapshot()){
+    if(googleInviteStartRequest||!inviteSnapshot||inviteGate?.matches?.(inviteSnapshot)!==true) return false;
+    const operation=captureAuthInteraction({requireInvite:true});
+    if(!operation||operation.invite.generation!==inviteSnapshot.generation
+      ||operation.invite.deadline!==inviteSnapshot.deadline
+      ||operation.invite.binding!==inviteSnapshot.binding) return false;
+    const request={controller:new AbortController(),operation};
+    googleInviteStartRequest=request;
+    authBusy=true;
+    renderInviteGateState();
+    try{
+      const response=await fetch('/api/auth/google/start?return_to=%2Finvite',{
+        method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},
+        body:JSON.stringify({purpose:'invite',invite_binding:inviteSnapshot.binding}),
+        signal:request.controller.signal,
+      });
+      const data=await response.json().catch(()=>({}));
+      if(googleInviteStartRequest!==request||!authInteractionMatches(operation)) return false;
+      if(!response.ok) throw data;
+      const authorizationUrl=new URL(String(data.authorizationUrl||''));
+      if(authorizationUrl.origin!=='https://accounts.google.com'
+        ||authorizationUrl.pathname!=='/o/oauth2/v2/auth') throw new Error('Google sign-in unavailable');
+      window.location.assign(authorizationUrl.href);
+      return true;
+    }catch(error){
+      if(googleInviteStartRequest!==request||request.controller.signal.aborted
+        ||!authInteractionMatches(operation)) return false;
+      setAuthError(authFailureMessage(error,'signup'));
+      openAuthModal('signup',{message:authFailureMessage(error,'signup'),googleRetry:true});
+      return false;
+    }finally{
+      if(googleInviteStartRequest===request){
+        googleInviteStartRequest=null;
+        authBusy=false;
+        renderInviteGateState();
+      }
+    }
+  }
   function beginGoogleSignIn(){
     if(authBusy||!authCapabilitiesLoaded||!authCapabilities.googleOAuth) return;
+    if(authMode==='signup'&&signupRequiresPreparedInvite()){
+      void beginGoogleInviteSignIn();
+      return;
+    }
     const match=(window.location.pathname||'').match(/^\/join\/(week_[1-9]\d*_pair_[1-9]\d*)$/);
     const ids=match?.[1]?.match(/^week_(\d+)_pair_(\d+)$/);
     const returnTo=ids&&Number.isSafeInteger(Number(ids[1]))&&Number.isSafeInteger(Number(ids[2]))?`/join/${match[1]}`:'';
+    if(inviteState.active) invalidatePreparedInvite('login');
     const params=new URLSearchParams({purpose:'login'});
     if(returnTo) params.set('return_to',returnTo);
     window.location.href=`/api/auth/google/start?${params.toString()}`;
@@ -3031,7 +3350,20 @@ async function refreshMe(){
           if(ge&&lifecycleContinuation){
             recentConfirmationCancelled('google_error');
             try{ toast(googleFailureMessage(ge)); }catch{}
-          }else if(ge) openAuthModal('signin',{message:googleFailureMessage(ge),googleRetry:true});
+          }else if(ge){
+            await invitePreparationFinished;
+            if(!authIdentityHydrated) await refreshAuthForOAuthResult();
+            const inviteRetry=authIdentityHydrated&&inviteState.active
+              &&preparedInviteSnapshot()!==null;
+            if(inviteRetry){
+              openAuthModal('signup',{message:googleFailureMessage(ge),googleRetry:true});
+            }else if(inviteState.active){
+              try{ toast(googleFailureMessage(ge)); }catch{}
+              renderInviteGateState();
+            }else{
+              openAuthModal('signin',{message:googleFailureMessage(ge),googleRetry:true});
+            }
+          }
           let authRefreshCommitted=true;
           if(googleSuccess||googleReauth||identityLinked||identityLinkError||identityNotice){
             authRefreshCommitted=await refreshAuthForOAuthResult();
@@ -3070,6 +3402,7 @@ async function refreshMe(){
   window._randori_auth={
     get token(){return ''}, get me(){return me}, get signedIn(){return !!me},
     get capabilities(){return {...authCapabilities}},
+    canStartSignup,
     api,refreshMe,openModal:openAuthModal,closeModal:closeAuthModal,
   };
   window._randori_availability={
@@ -6798,7 +7131,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   document.getElementById('welcomeStartBtn')?.addEventListener('click', ()=>{
-    openAuthModal('signup');
+    openAuthModal(window._randori_auth?.canStartSignup?.()?'signup':'signin');
     localStorage.setItem(ONB_DISMISSED_BANNER,'1');
     document.getElementById('welcomeBanner').style.display='none';
     if(onboardStep===0) startOnboarding(2);
