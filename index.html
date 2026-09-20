@@ -4150,6 +4150,9 @@ async function refreshMe(){
   async function applyAuthoritativeSignedOutState(){
     invalidateAuthRefreshes();
     me=null;
+    // Dispose media before circle reset: reset may render an empty room and
+    // invoke ordinary leaveVideo(), which intentionally emits a leave signal.
+    try{ disposeVideoForAuthoritativeSignOut(); }catch{}
     resetCircleControlForIdentityChange();
     try{
       localStorage.removeItem(TOKEN_KEY);
@@ -4161,11 +4164,6 @@ async function refreshMe(){
       localStorage.removeItem('randori-code');
     }catch{}
     clearAvailability();
-    // A server-authoritative logout must release capture devices even when the
-    // user had previously left the call while keeping the stream for rejoin.
-    // This is deliberately local-only: the expired session cannot authorize a
-    // final signaling write.
-    try{ disposeVideoForAuthoritativeSignOut(); }catch{}
     try{ await updateAuthUI(); }catch{}
     try{ await window._randori_journey?.routeByAuth?.(); }catch{}
     try{ renderHistory(); }catch{}
@@ -5961,6 +5959,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   let videoPollTimer = null;
   let videoInitiateTimer = null;
   let videoRoomSwitchTimer = null;
+  let videoPollsInFlight = 0;
   let videoSessionEpoch = 0;
   let videoLastSignalId = 0;
   let videoJoined = false;
@@ -6012,6 +6011,15 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return localStream;
   }
 
+  function releaseLocalMediaStream(stream=localStream){
+    if(!stream) return;
+    const wasCurrent=localStream===stream;
+    if(wasCurrent) localStream=null;
+    try{ stream.getTracks?.().forEach(track=>track.stop()); }catch{}
+    const lv=document.getElementById('localVideo');
+    if(lv&&(wasCurrent||lv.srcObject===stream)) lv.srcObject=null;
+  }
+
   function updateVideoMicCamUI(){
     const camBtn=document.getElementById('vidCamBtn');
     const micBtn=document.getElementById('vidMicBtn');
@@ -6045,67 +6053,101 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }catch{}
   }
 
+  function videoSessionMatches(expectedEpoch){
+    return videoJoined&&expectedEpoch===videoSessionEpoch;
+  }
+
+  function videoEpochMatches(expectedEpoch){
+    return expectedEpoch===videoSessionEpoch;
+  }
+
+  function closeVideoPeer(peer=pc){
+    if(!peer) return;
+    if(pc===peer) pc=null;
+    try{ peer.ontrack=null; peer.onicecandidate=null; peer.onconnectionstatechange=null; }catch{}
+    try{ peer.close(); }catch{}
+  }
+
   async function pollSignals(){
     if(!videoJoined) return;
+    const pollEpoch=videoSessionEpoch;
     const room_id = getVideoRoomId();
     if(!room_id) return;
+    videoPollsInFlight+=1;
     try{
       const u = new URL('/api/video/signal', location.origin);
       u.searchParams.set('room_id', room_id);
       u.searchParams.set('peer_id', webrtcPeerId);
       u.searchParams.set('after', String(videoLastSignalId));
       const r = await fetch(u.toString());
+      if(!videoSessionMatches(pollEpoch)) return;
       if(!r.ok) return;
       const data = await r.json();
+      if(!videoSessionMatches(pollEpoch)) return;
       if(!data.ok) return;
       if(data.after) videoLastSignalId = data.after;
       for(const s of data.signals||[]){
-        await handleRemoteSignal(s);
+        if(!videoSessionMatches(pollEpoch)) return;
+        await handleRemoteSignal(s,pollEpoch);
       }
-    }catch{}
+    }catch{}finally{
+      videoPollsInFlight=Math.max(0,videoPollsInFlight-1);
+    }
   }
 
-  async function handleRemoteSignal(sig){
+  async function handleRemoteSignal(sig,expectedEpoch){
     try{
+      if(!videoSessionMatches(expectedEpoch)) return;
       const type = sig.type;
       const payloadStr = sig.payload;
       let payload;
       try{ payload = JSON.parse(payloadStr); }catch{ payload = payloadStr; }
       if(type==='offer'){
-        if(!pc) await createPeer(false);
-        if(pc.signalingState!=='stable'){
+        if(!pc) await createPeer(false,expectedEpoch);
+        const peer=pc;
+        if(!videoSessionMatches(expectedEpoch)||!peer) return;
+        if(peer.signalingState!=='stable'){
           // polite handling: rollback if needed
-          try{ await pc.setLocalDescription({type:'rollback'});}catch{}
+          try{ await peer.setLocalDescription({type:'rollback'});}catch{}
         }
-        await pc.setRemoteDescription(new RTCSessionDescription(payload));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        await sendSignal('answer', pc.localDescription, sig.from_id);
+        if(!videoSessionMatches(expectedEpoch)||pc!==peer) return;
+        await peer.setRemoteDescription(new RTCSessionDescription(payload));
+        if(!videoSessionMatches(expectedEpoch)||pc!==peer) return;
+        const answer = await peer.createAnswer();
+        if(!videoSessionMatches(expectedEpoch)||pc!==peer) return;
+        await peer.setLocalDescription(answer);
+        if(!videoSessionMatches(expectedEpoch)||pc!==peer) return;
+        await sendSignal('answer', peer.localDescription, sig.from_id);
       } else if(type==='answer'){
-        if(pc) await pc.setRemoteDescription(new RTCSessionDescription(payload));
+        const peer=pc;
+        if(peer&&videoSessionMatches(expectedEpoch)) await peer.setRemoteDescription(new RTCSessionDescription(payload));
       } else if(type==='ice' || type==='candidate'){
-        if(pc && payload) {
-          try{ await pc.addIceCandidate(new RTCIceCandidate(payload)); }catch{}
+        const peer=pc;
+        if(peer&&payload&&videoSessionMatches(expectedEpoch)) {
+          try{ await peer.addIceCandidate(new RTCIceCandidate(payload)); }catch{}
         }
       } else if(type==='join'){
         // someone joined: if we already in room and are lexicographically larger, initiate offer to them
-        if(videoJoined && webrtcPeerId > sig.from_id){
-          if(!pc) await createPeer(true);
+        if(videoSessionMatches(expectedEpoch) && webrtcPeerId > sig.from_id){
+          if(!pc) await createPeer(true,expectedEpoch);
           // createOffer will happen in createPeer if initiator
         }
       }
     }catch(e){ /* ignore */ }
   }
 
-  async function createPeer(isInitiator){
-    if(pc) { try{ pc.close(); }catch{}; pc=null; }
-    pc = new RTCPeerConnection({ iceServers });
+  async function createPeer(isInitiator,expectedEpoch=videoSessionEpoch){
+    if(!videoSessionMatches(expectedEpoch)) return null;
+    if(pc) closeVideoPeer(pc);
+    const peer = new RTCPeerConnection({ iceServers });
+    pc=peer;
     videoUpdateStatus('connecting');
 
     if(localStream){
-      localStream.getTracks().forEach(track=> pc.addTrack(track, localStream));
+      localStream.getTracks().forEach(track=> peer.addTrack(track, localStream));
     }
-    pc.ontrack = (e)=>{
+    peer.ontrack = (e)=>{
+      if(!videoSessionMatches(expectedEpoch)||pc!==peer) return;
       const rv=document.getElementById('remoteVideo');
       if(rv){
         if(rv.srcObject !== e.streams[0]){
@@ -6117,13 +6159,14 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(lbl) lbl.textContent = 'pair • live';
       videoUpdateStatus('live');
     };
-    pc.onicecandidate = (e)=>{
-      if(e.candidate){
+    peer.onicecandidate = (e)=>{
+      if(e.candidate&&videoSessionMatches(expectedEpoch)&&pc===peer){
         sendSignal('ice', e.candidate, '');
       }
     };
-    pc.onconnectionstatechange = ()=>{
-      const st = pc.connectionState;
+    peer.onconnectionstatechange = ()=>{
+      if(!videoSessionMatches(expectedEpoch)||pc!==peer) return;
+      const st = peer.connectionState;
       videoUpdateStatus(st);
       if(st==='connected') toast('video connected ✓');
       if(st==='failed' || st==='disconnected'){
@@ -6133,11 +6176,14 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     };
 
     if(isInitiator){
-      const offer = await pc.createOffer({ offerToReceiveAudio:true, offerToReceiveVideo:true });
-      await pc.setLocalDescription(offer);
-      await sendSignal('offer', pc.localDescription, '');
+      const offer = await peer.createOffer({ offerToReceiveAudio:true, offerToReceiveVideo:true });
+      if(!videoSessionMatches(expectedEpoch)||pc!==peer){ closeVideoPeer(peer); return null; }
+      await peer.setLocalDescription(offer);
+      if(!videoSessionMatches(expectedEpoch)||pc!==peer){ closeVideoPeer(peer); return null; }
+      await sendSignal('offer', peer.localDescription, '');
     }
-    return pc;
+    if(!videoSessionMatches(expectedEpoch)||pc!==peer){ closeVideoPeer(peer); return null; }
+    return peer;
   }
 
   async function joinVideo(){
@@ -6158,9 +6204,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(joinEpoch!==videoSessionEpoch){
       // A sign-out may have completed while browser permission was pending.
       // Do not let that older permission result retain live capture tracks.
-      try{ stream?.getTracks?.().forEach(track=>track.stop()); }catch{}
-      if(localStream===stream) localStream=null;
-      const lv=document.getElementById('localVideo'); if(lv) lv.srcObject=null;
+      releaseLocalMediaStream(stream);
       return;
     }
     if(!stream && !videoCamEnabled && !videoMicEnabled){
@@ -6186,7 +6230,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(!pc){
         const needInitiate = true; // for 2-person rooms, second joiner should initiate; lexicographic tie-breaking in handleRemoteSignal covers glare
         if(needInitiate){
-          await createPeer(true);
+          await createPeer(true,joinEpoch);
         }
       }
     }, 1200);
@@ -6199,14 +6243,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(videoPollTimer){ clearInterval(videoPollTimer); videoPollTimer=null; }
     if(videoInitiateTimer){ clearTimeout(videoInitiateTimer); videoInitiateTimer=null; }
     if(videoRoomSwitchTimer){ clearTimeout(videoRoomSwitchTimer); videoRoomSwitchTimer=null; }
-    if(pc){ try{ pc.close(); }catch{}; pc=null; }
+    if(pc) closeVideoPeer(pc);
     if(releaseMedia){
       const stream=localStream;
-      localStream=null;
-      try{ stream?.getTracks?.().forEach(track=>track.stop()); }catch{}
+      releaseLocalMediaStream(stream);
       videoMicEnabled=true;
       videoCamEnabled=true;
-      const lv=document.getElementById('localVideo'); if(lv) lv.srcObject=null;
     }
     videoUpdateStatus('off');
     const rv=document.getElementById('remoteVideo'); if(rv){ rv.srcObject=null; }
@@ -6253,6 +6295,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }catch(e){ console.warn('codeJoinSession fail',e); }
   });
   document.getElementById('vidCamBtn')?.addEventListener('click', async()=>{
+    const camEpoch=videoSessionEpoch;
     videoCamEnabled = !videoCamEnabled;
     if(videoCamEnabled){
       // cam turned on – if we previously stopped tracks, need fresh getUserMedia
@@ -6260,23 +6303,32 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(!localStream || !hasLiveVideo){
         // clear stopped stream ref so ensureLocalStream grabs fresh
         if(localStream){ try{ localStream.getTracks().forEach(t=>{ if(t.kind==='video') { try{t.stop();}catch{} } }); }catch{}; localStream=null; }
-        await ensureLocalStream(true);
+        const stream=await ensureLocalStream(true);
+        if(!videoEpochMatches(camEpoch)){
+          releaseLocalMediaStream(stream);
+          return;
+        }
         const lv=document.getElementById('localVideo');
         if(lv && localStream){ lv.srcObject=localStream; try{ lv.play(); }catch{} }
       }
       // re-add / replace sender
       if(pc && localStream){
+        const peer=pc;
         const videoTrack = localStream.getVideoTracks().find(t=> t.readyState==='live');
         if(videoTrack){
-          const sender = pc.getSenders().find(s=> s.track && s.track.kind==='video');
+          const sender = peer.getSenders().find(s=> s.track && s.track.kind==='video');
           if(sender){ try{ await sender.replaceTrack(videoTrack); }catch{} }
-          else { try{ pc.addTrack(videoTrack, localStream); }catch{} }
+          else { try{ peer.addTrack(videoTrack, localStream); }catch{} }
+          if(!videoSessionMatches(camEpoch)||pc!==peer) return;
           // trigger renegotiation for new track
           try{
-            if(pc.signalingState==='stable'){
-              const offer=await pc.createOffer({ offerToReceiveAudio:true, offerToReceiveVideo:true });
-              await pc.setLocalDescription(offer);
+            if(peer.signalingState==='stable'){
+              const offer=await peer.createOffer({ offerToReceiveAudio:true, offerToReceiveVideo:true });
+              if(!videoSessionMatches(camEpoch)||pc!==peer) return;
+              await peer.setLocalDescription(offer);
+              if(!videoSessionMatches(camEpoch)||pc!==peer) return;
               await sendSignal('offer', offer);
+              if(!videoSessionMatches(camEpoch)||pc!==peer) return;
             }
           }catch{}
         }
@@ -6284,6 +6336,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     } else {
       // cam turning off handled in updateVideoMicCamUI (stops tracks, hides video, removes sender)
     }
+    if(!videoEpochMatches(camEpoch)) return;
     updateVideoMicCamUI();
     toast(videoCamEnabled?'cam on':'cam off');
   });
@@ -6302,7 +6355,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(videoJoined){
       // reset polling to new room
       videoLastSignalId=0;
-      if(pc){ try{ pc.close(); }catch{}; pc=null; }
+      videoSessionEpoch+=1;
+      if(videoInitiateTimer){ clearTimeout(videoInitiateTimer); videoInitiateTimer=null; }
+      if(pc) closeVideoPeer(pc);
       // send join for new room
       if(videoRoomSwitchTimer) clearTimeout(videoRoomSwitchTimer);
       const switchEpoch=videoSessionEpoch;
@@ -6310,7 +6365,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         videoRoomSwitchTimer=null;
         if(!videoJoined||switchEpoch!==videoSessionEpoch) return;
         sendSignal('join',{peer:webrtcPeerId},'');
-        if(!pc) createPeer(true).catch(()=>{});
+        if(!pc) createPeer(true,switchEpoch).catch(()=>{});
       }, 600);
     }
     videoUpdateStatus(videoJoined? 'switching' : 'off');
@@ -6323,6 +6378,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     get stream(){return localStream},
     get pc(){return pc},
     get polling(){return videoPollTimer!==null},
+    get pollsInFlight(){return videoPollsInFlight},
     get initiatePending(){return videoInitiateTimer!==null},
     get roomSwitchPending(){return videoRoomSwitchTimer!==null},
     joinVideo,
