@@ -2275,3 +2275,34 @@ required. Canary equality, one-millisecond-future, boundary-crossing acceptance,
 and elapsed-state recovery in both scopes. Rollback is code-only; existing rows
 remain intact and dispatch-time elapsed suppression remains defense in depth.
 The complete contract is in [`SCHEDULE_EXPIRY.md`](SCHEDULE_EXPIRY.md).
+
+## ID-54: Activate the backup watchdog at a reviewed rehearsal slot
+
+Status: candidate operations-control hardening; no provider or secret change.
+
+**Decision.** The independent backup watchdog uses the immutable, schedule-aligned
+activation epoch `2026-09-21T03:17:00.000Z`. Before that instant it emits a
+sanitized, non-alerting but explicitly non-ready `setup_pending` artifact, with
+the activation time and stable operator action but no invented `expectedAt` or
+run identity. Both scheduled and manual watchdog runs use the same committed
+constant.
+
+At activation, earlier runs cannot count and missing evidence immediately
+retains `run_missing`. Every later candidate and healthy result carries an
+expected slot no earlier than activation; download verification rechecks the
+activation/expected/run ordering. Existing stuck, failed, stale, missing,
+expired, corrupt, and API alerts remain fail closed. Only a real scheduled run
+with its exact independently validated healthy monitor artifact proves
+readiness.
+
+**Alternatives.** A fixed grace derived from first observation or deployment
+slides on reruns. A repository variable can silently postpone an active control
+outside code review. Inferring workflow history depends on retention,
+pagination, and API availability. Calling bootstrap healthy overstates recovery
+readiness. These options are rejected.
+
+**Rollout and recovery.** This change mutates no schema, secret, environment, or
+provider. Canary a pre-activation manual dispatch, then prove fail-closed
+missing evidence and a real scheduled success at activation. After activation,
+roll forward without moving the epoch. The complete contract and alternatives
+are in [`BACKUP_WATCHDOG_ACTIVATION.md`](BACKUP_WATCHDOG_ACTIVATION.md).

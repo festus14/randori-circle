@@ -4,12 +4,13 @@ import { appendFile, lstat, mkdir, open, realpath, rename } from 'node:fs/promis
 import { basename, dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const BACKUP_WATCHDOG_FORMAT='randori.backup-restore-watchdog.v1';
+export const BACKUP_WATCHDOG_FORMAT='randori.backup-restore-watchdog.v2';
 
 const SOURCE_WORKFLOW='turso-backup-restore-rehearsal.yml';
 const MONITOR_FORMAT='randori.turso-backup-monitor.v1';
 const OWNER='@festus14';
 const CADENCE='hourly';
+const SETUP_ACTION='configure_protected_rehearsal_and_wait_for_activation';
 const WEEK_MS=7*24*60*60*1000;
 const EXPECTED_WEEKDAY_UTC=1;
 const EXPECTED_HOUR_UTC=3;
@@ -58,6 +59,18 @@ function timestamp(value){
     ?{milliseconds,value:new Date(milliseconds).toISOString()}:null;
 }
 
+function activationEpoch(value){
+  const parsed=timestamp(value);
+  if(!parsed) throw new TypeError('control activation epoch is invalid');
+  const instant=new Date(parsed.milliseconds);
+  if(instant.getUTCDay()!==EXPECTED_WEEKDAY_UTC||instant.getUTCHours()!==EXPECTED_HOUR_UTC
+    ||instant.getUTCMinutes()!==EXPECTED_MINUTE_UTC||instant.getUTCSeconds()!==0
+    ||instant.getUTCMilliseconds()!==0){
+    throw new TypeError('control activation epoch is not a rehearsal slot');
+  }
+  return parsed;
+}
+
 function safeRun(value,defaultBranch){
   const run=record(value);
   const created=timestamp(run?.created_at);
@@ -91,33 +104,48 @@ function expectedWeeklySlot(nowMilliseconds,graceMs){
 
 function publicAlert(category,checkedAt,run={}){
   const expectedAt=timestamp(run.expectedAt);
+  const activationAt=timestamp(run.activationAt);
+  const safeExpectedAt=expectedAt
+    &&(!activationAt||expectedAt.milliseconds>=activationAt.milliseconds)?expectedAt:null;
   return freeze({
     ok:false,kind:'backup-restore-watchdog',format:BACKUP_WATCHDOG_FORMAT,status:'alert',alert:true,
     category:ALERT_CATEGORIES.has(category)?category:'api_failure',checkedAt,owner:OWNER,cadence:CADENCE,
-    ...(expectedAt?{expectedAt:expectedAt.value}:{}),
+    ...(activationAt?{activationAt:activationAt.value}:{}),
+    ...(safeExpectedAt?{expectedAt:safeExpectedAt.value}:{}),
     ...(Number.isSafeInteger(run.runId)&&run.runId>0?{runId:run.runId}:{}),
     ...(Number.isSafeInteger(run.runAttempt)&&run.runAttempt>0?{runAttempt:run.runAttempt}:{}),
+  });
+}
+
+function setupPendingResult(checkedAt,activationAt){
+  return freeze({
+    ok:false,kind:'backup-restore-watchdog',format:BACKUP_WATCHDOG_FORMAT,
+    status:'setup_pending',alert:false,category:'setup_pending',checkedAt,owner:OWNER,cadence:CADENCE,
+    activationAt,requiredAction:SETUP_ACTION,
   });
 }
 
 function pendingResult(checkedAt,run){
   return freeze({ok:true,kind:'backup-restore-watchdog',format:BACKUP_WATCHDOG_FORMAT,
     status:'observing',alert:false,category:null,checkedAt,owner:OWNER,cadence:CADENCE,
-    expectedAt:run.expectedAt,runId:run.runId,runAttempt:run.runAttempt,runStatus:run.status});
+    activationAt:run.activationAt,expectedAt:run.expectedAt,runId:run.runId,
+    runAttempt:run.runAttempt,runStatus:run.status});
 }
 
 function candidateResult(checkedAt,run,artifact){
   return freeze({ok:true,kind:'backup-restore-watchdog',format:BACKUP_WATCHDOG_FORMAT,
     status:'candidate',alert:false,category:null,checkedAt,owner:OWNER,cadence:CADENCE,
-    expectedAt:run.expectedAt,runId:run.runId,runAttempt:run.runAttempt,repoCommit:run.repoCommit,
+    activationAt:run.activationAt,expectedAt:run.expectedAt,runId:run.runId,
+    runAttempt:run.runAttempt,repoCommit:run.repoCommit,
     runCreatedAt:run.createdAt,
     artifactId:artifact.artifactId,artifactName:artifact.artifactName,
     artifactCreatedAt:artifact.artifactCreatedAt});
 }
 
 export function assessScheduledRuns(runs,{defaultBranch,maxRunAgeMs,stuckAfterMs,slotGraceMs,
-  slotDeadlineMs,clock=Date.now}={}){
+  slotDeadlineMs,activationAt,clock=Date.now}={}){
   const now=canonicalNow(clock);
+  const activation=activationEpoch(activationAt);
   const maximumAge=positiveInteger(maxRunAgeMs,'maximum run age',{maximum:90*24*60*60*1000});
   const stuckAge=positiveInteger(stuckAfterMs,'stuck-run age',{maximum:24*60*60*1000});
   const grace=positiveInteger(slotGraceMs,'schedule grace',{maximum:24*60*60*1000});
@@ -125,17 +153,22 @@ export function assessScheduledRuns(runs,{defaultBranch,maxRunAgeMs,stuckAfterMs
     {maximum:4*60*60*1000});
   if(slotDeadline<=grace) throw new TypeError('schedule deadline is invalid');
   if(typeof defaultBranch!=='string'||!/^[A-Za-z0-9._/-]{1,255}$/.test(defaultBranch)){
-    return publicAlert('api_failure',now.timestamp);
+    return publicAlert('api_failure',now.timestamp,{activationAt:activation.value});
+  }
+  if(now.milliseconds<activation.milliseconds){
+    return setupPendingResult(now.timestamp,activation.value);
   }
   const safeRuns=(Array.isArray(runs)?runs:[]).map(value=>safeRun(value,defaultBranch)).filter(Boolean)
     .sort((left,right)=>Date.parse(right.createdAt)-Date.parse(left.createdAt));
-  const expectedAt=expectedWeeklySlot(now.milliseconds,grace);
+  const expectedAt=Math.max(expectedWeeklySlot(now.milliseconds,grace),activation.milliseconds);
   const scheduledAt=mostRecentWeeklySlot(now.milliseconds);
   const currentRuns=safeRuns.filter(run=>Date.parse(run.createdAt)>=expectedAt);
   if(currentRuns.length===0){
-    return publicAlert('run_missing',now.timestamp,{expectedAt:new Date(expectedAt).toISOString()});
+    return publicAlert('run_missing',now.timestamp,{activationAt:activation.value,
+      expectedAt:new Date(expectedAt).toISOString()});
   }
-  const latest={...currentRuns[0],expectedAt:new Date(expectedAt).toISOString()};
+  const latest={...currentRuns[0],activationAt:activation.value,
+    expectedAt:new Date(expectedAt).toISOString()};
   if(ACTIVE_STATUSES.has(latest.status)){
     if(now.milliseconds-scheduledAt>=slotDeadline
       ||now.milliseconds-Date.parse(latest.createdAt)>stuckAge){
@@ -144,9 +177,11 @@ export function assessScheduledRuns(runs,{defaultBranch,maxRunAgeMs,stuckAfterMs
     const previousSuccess=currentRuns.find(run=>run.status==='completed'&&run.conclusion==='success');
     if(!previousSuccess) return pendingResult(now.timestamp,latest);
     if(now.milliseconds-Date.parse(previousSuccess.createdAt)>maximumAge){
-      return publicAlert('run_stale',now.timestamp,{...previousSuccess,expectedAt:latest.expectedAt});
+      return publicAlert('run_stale',now.timestamp,{...previousSuccess,
+        activationAt:latest.activationAt,expectedAt:latest.expectedAt});
     }
-    return freeze({...previousSuccess,expectedAt:latest.expectedAt,checkedAt:now.timestamp,candidate:true});
+    return freeze({...previousSuccess,activationAt:latest.activationAt,
+      expectedAt:latest.expectedAt,checkedAt:now.timestamp,candidate:true});
   }
   if(latest.status!=='completed'||latest.conclusion!=='success'){
     return publicAlert('run_failed',now.timestamp,latest);
@@ -187,15 +222,23 @@ function nonnegativeInteger(value){
   return Number.isSafeInteger(value)&&value>=0;
 }
 
-export function verifyDownloadedMonitor(summary,discovery,{maxRunAgeMs,clock=Date.now}={}){
+export function verifyDownloadedMonitor(summary,discovery,{maxRunAgeMs,activationAt,clock=Date.now}={}){
   const now=canonicalNow(clock);
   const maximumAge=positiveInteger(maxRunAgeMs,'maximum monitor age',{maximum:90*24*60*60*1000});
+  const configuredActivation=activationEpoch(activationAt);
   const checkedAt=timestamp(summary?.checkedAt);
   const objectives=summary?.objectives;
   const counts=summary?.counts;
   const checksums=summary?.checksums;
   const cleanup=summary?.cleanup;
+  const discoveredActivation=timestamp(discovery?.activationAt);
+  const expectedAt=timestamp(discovery?.expectedAt);
+  const runCreatedAt=timestamp(discovery?.runCreatedAt);
   const healthy=discovery?.status==='candidate'&&discovery?.alert===false
+    &&discoveredActivation&&expectedAt&&runCreatedAt
+    &&discoveredActivation.value===configuredActivation.value
+    &&expectedAt.milliseconds>=discoveredActivation.milliseconds
+    &&runCreatedAt.milliseconds>=discoveredActivation.milliseconds
     &&exactKeys(summary,[
       'ok','kind','format','status','alert','category','checkedAt','owner','cadence','runId',
       'runAttempt','repoCommit','objectives','counts','checksums','cleanup',
@@ -225,11 +268,13 @@ export function verifyDownloadedMonitor(summary,discovery,{maxRunAgeMs,clock=Dat
     ])&&Object.values(checksums||{}).every(value=>DIGEST.test(value))
     &&exactKeys(cleanup,['sourceWriteStateRestored','restoreDeleted'])
     &&cleanup?.sourceWriteStateRestored===true&&cleanup?.restoreDeleted===true;
-  if(!healthy) return publicAlert('artifact_corrupt',now.timestamp,discovery||{});
+  if(!healthy) return publicAlert('artifact_corrupt',now.timestamp,
+    {...(record(discovery)||{}),activationAt:configuredActivation.value});
   return freeze({
     ok:true,kind:'backup-restore-watchdog',format:BACKUP_WATCHDOG_FORMAT,status:'healthy',
     alert:false,category:null,checkedAt:now.timestamp,owner:OWNER,cadence:CADENCE,
-    expectedAt:discovery.expectedAt,runId:discovery.runId,runAttempt:discovery.runAttempt,
+    activationAt:discoveredActivation.value,expectedAt:expectedAt.value,
+    runId:discovery.runId,runAttempt:discovery.runAttempt,
     runCreatedAt:discovery.runCreatedAt,artifactCreatedAt:discovery.artifactCreatedAt,
     monitorCheckedAt:checkedAt.value,repoCommit:summary.repoCommit,
     objectives:{...objectives},counts:{...counts},checksums:{...checksums},cleanup:{...cleanup},
@@ -254,17 +299,22 @@ export async function discoverAuthoritativeEvidence(environment,{fetchImpl=fetch
   const stuckAfter=positiveInteger(environment.WATCHDOG_STUCK_AFTER_MS,'stuck-run age');
   const slotGrace=positiveInteger(environment.WATCHDOG_SLOT_GRACE_MS,'schedule grace');
   const slotDeadline=positiveInteger(environment.WATCHDOG_SLOT_DEADLINE_MS,'schedule deadline');
+  const activationAt=activationEpoch(environment.WATCHDOG_CONTROL_ACTIVATION_AT).value;
+  const observedAt=canonicalNow(clock).milliseconds;
+  const assessmentOptions={defaultBranch,maxRunAgeMs:maximumAge,stuckAfterMs:stuckAfter,
+    slotGraceMs:slotGrace,slotDeadlineMs:slotDeadline,activationAt,clock:()=>observedAt};
+  const bootstrap=assessScheduledRuns([],assessmentOptions);
+  if(bootstrap.status==='setup_pending') return bootstrap;
   const root=apiUrl.replace(/\/$/u,'');
   const query=new URLSearchParams({branch:defaultBranch,event:'schedule',per_page:'10'});
   const runResponse=await fetchJson(fetchImpl,
     `${root}/repos/${repository}/actions/workflows/${SOURCE_WORKFLOW}/runs?${query}`,token);
-  const run=assessScheduledRuns(runResponse?.workflow_runs,{defaultBranch,
-    maxRunAgeMs:maximumAge,stuckAfterMs:stuckAfter,slotGraceMs:slotGrace,
-    slotDeadlineMs:slotDeadline,clock});
+  const run=assessScheduledRuns(runResponse?.workflow_runs,assessmentOptions);
   if(run.alert||!run.candidate) return run;
   const artifactResponse=await fetchJson(fetchImpl,
     `${root}/repos/${repository}/actions/runs/${run.runId}/artifacts?per_page=100`,token);
-  return assessMonitorArtifacts(artifactResponse?.artifacts,run,{maxRunAgeMs:maximumAge,clock});
+  return assessMonitorArtifacts(artifactResponse?.artifacts,run,{maxRunAgeMs:maximumAge,
+    clock:()=>observedAt});
 }
 
 function parseArguments(argv){
@@ -350,12 +400,16 @@ export async function main({argv=process.argv.slice(2),environment=process.env,s
       const summary=await readJson(flags['--monitor-summary'],environment.RUNNER_TEMP,
         'backup-monitor-summary.json');
       result=verifyDownloadedMonitor(summary,discovery,{
-        maxRunAgeMs:environment.WATCHDOG_MAX_RUN_AGE_MS,clock,
+        maxRunAgeMs:environment.WATCHDOG_MAX_RUN_AGE_MS,
+        activationAt:environment.WATCHDOG_CONTROL_ACTIVATION_AT,clock,
       });
     }
   }catch{
     const checked=canonicalNow(clock).timestamp;
-    result=publicAlert(argv.includes('verify')?'artifact_corrupt':'api_failure',checked);
+    let activation={};
+    try{ activation={activationAt:activationEpoch(environment.WATCHDOG_CONTROL_ACTIVATION_AT).value}; }
+    catch{}
+    result=publicAlert(argv.includes('verify')?'artifact_corrupt':'api_failure',checked,activation);
   }
   try{
     await writeJson(outputPath,result,environment.RUNNER_TEMP);
