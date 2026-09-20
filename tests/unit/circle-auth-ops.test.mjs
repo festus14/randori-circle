@@ -392,6 +392,7 @@ test('prepared invitation OAuth forces explicit Google account selection',async(
   const preparedTransaction=decodeGoogleOAuthTransactionCookie(
     String(prepared.headers['set-cookie']),preparedState);
   assert.equal(preparedTransaction.purpose,`invite:${INVITE_BINDING_HASH}`);
+  assert.equal(preparedTransaction.return_path,'/invite');
   assert.doesNotMatch(preparedTransaction.purpose,new RegExp(INVITE_BINDING));
   assert.doesNotMatch(String(prepared.headers['set-cookie']),new RegExp(INVITE_BINDING));
   assert.doesNotMatch(prepared.body.authorizationUrl,new RegExp(INVITE_BINDING));
@@ -415,6 +416,18 @@ test('prepared invitation OAuth forces explicit Google account selection',async(
   assert.equal(mismatched.status,403);
   assert.deepEqual(mismatched.body,{error:'invitation unavailable'});
   assert.equal(mismatched.headers['set-cookie'],undefined);
+
+  let providerCalls=0;
+  globalThis.fetch=async()=>{ providerCalls+=1; throw new Error('provider must not be called'); };
+  const transactionCookie=String(prepared.headers['set-cookie']).split(';')[0];
+  const cancelled=await invoke(authHandler,{
+    url:'/api/auth/google/callback',
+    query:{endpoint:'callback',error:'access_denied',state:preparedState},
+    headers:{...sameOriginHeaders,cookie:`randori_invite_claim=valid-claim; ${transactionCookie}`},
+  });
+  assert.equal(cancelled.status,302);
+  assert.equal(cancelled.headers.location,'https://randori.example.test/invite?google_error=access_denied');
+  assert.equal(providerCalls,0);
 });
 
 test('local invite signup normalizes rejection cost without looking up the submitted email',async()=>{

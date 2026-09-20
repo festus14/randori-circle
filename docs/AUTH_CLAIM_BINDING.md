@@ -77,6 +77,11 @@ binding. Other allowed intents
 are `login`, `link:<user>:<session-hash>`, and
 `reauth:<user>:<session-hash>`; there is no `register` intent.
 
+Invite transactions use the exact purpose-scoped return path `/invite`, while
+ordinary login continues to allow only `/` or a canonical pair-room path. A
+provider cancellation or safe callback error therefore returns to invitation
+recovery without downgrading the transaction to login intent.
+
 Each OAuth start creates one signed ten-minute transaction containing exact
 state, PKCE verifier, nonce, canonical return path, purpose, and timestamps.
 Its cookie name is derived from the state and its path is the callback route.

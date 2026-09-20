@@ -1892,7 +1892,8 @@ claims an account. Link and reauthentication retain their explicit
 session-bound purposes. Each start stores state, PKCE verifier, nonce, safe
 return path, purpose, and expiry in one signed state-derived callback cookie.
 A callback validates then clears only its own transaction; an unknown or stale
-callback clears nothing.
+callback clears nothing. Invite cancellation returns to the purpose-scoped
+`/invite` recovery path; ordinary login cannot select that return path.
 
 The current v2 invitation cookie is not cleared on mismatch or success because HTTP
 responses can arrive out of order. Its short expiry and the durable consumed

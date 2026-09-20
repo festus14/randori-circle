@@ -169,7 +169,7 @@ test('Google OAuth start stores only a validated canonical return path', async (
   for (const returnTo of [
     'https://evil.example', '//evil.example', '%2Fjoin%2Fweek_12_pair_34',
     '/join/week_12_pair_34?next=https://evil.example', '/join\\week_12_pair_34',
-    '/join/week_0_pair_34', '/join/week_12_pair_034',
+    '/join/week_0_pair_34', '/join/week_12_pair_034', '/invite',
   ]) {
     const rejected = await invoke({
       url: '/api/auth/google/start?purpose=login',

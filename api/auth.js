@@ -147,7 +147,7 @@ function createOAuthTransaction({state,verifier,nonce,returnPath,purpose}){
   }
   const issuedAt=Math.floor(Date.now()/1000);
   const payload=Buffer.from(JSON.stringify({v:OAUTH_TRANSACTION_VERSION,state,verifier,nonce,
-    return_path:safeOAuthReturnPath(returnPath),purpose,iat:issuedAt,
+    return_path:safeOAuthReturnPath(returnPath,{allowInvite:purpose.startsWith('invite:')}),purpose,iat:issuedAt,
     exp:issuedAt+OAUTH_TRANSACTION_TTL_SECONDS}),'utf8').toString('base64url');
   return `${payload}.${oauthTransactionSignature(payload)}`;
 }
@@ -168,7 +168,8 @@ function readOAuthTransaction(req,state){
     ||value.v!==OAUTH_TRANSACTION_VERSION||!constantTimeEqual(value.state,state)
     ||typeof value.verifier!=='string'||!/^[A-Za-z0-9_-]{43,128}$/.test(value.verifier)
     ||typeof value.nonce!=='string'||!/^[A-Za-z0-9_-]{8,128}$/.test(value.nonce)
-    ||safeOAuthReturnPath(value.return_path)!==value.return_path||!validOAuthPurpose(value.purpose)
+    ||safeOAuthReturnPath(value.return_path,{allowInvite:value.purpose.startsWith('invite:')})!==value.return_path
+    ||!validOAuthPurpose(value.purpose)
     ||!Number.isSafeInteger(value.iat)||!Number.isSafeInteger(value.exp)
     ||value.iat>now+30||value.exp<=now||value.exp-value.iat!==OAUTH_TRANSACTION_TTL_SECONDS){
     return null;
@@ -202,13 +203,14 @@ function boundInviteClaim(req,binding=requestInviteBinding(req)){
   return binding?readBoundInviteClaim(req,binding):null;
 }
 
-function safeOAuthReturnPath(value){
+function safeOAuthReturnPath(value,{allowInvite=false}={}){
+  if(allowInvite&&value==='/invite') return '/invite';
   return parseCanonicalRoomPath(value)?.path || '/';
 }
 
-function oauthResultLocation(appUrl, returnPath, key, value){
+function oauthResultLocation(appUrl,returnPath,key,value,{allowInvite=false}={}){
   const query=new URLSearchParams({[key]:String(value)});
-  return `${appUrl}${safeOAuthReturnPath(returnPath)}?${query.toString()}`;
+  return `${appUrl}${safeOAuthReturnPath(returnPath,{allowInvite})}?${query.toString()}`;
 }
 
 export function validSignupPassword(value){
@@ -935,7 +937,7 @@ async function handleGoogleStart(req,res){
   const verifier=randomBytes(48).toString('base64url');
   const nonce=randomBytes(32).toString('base64url');
   const challenge=createHash('sha256').update(verifier).digest('base64url');
-  const returnPath=safeOAuthReturnPath(req.query?.return_to);
+  const returnPath=inviteStart?'/invite':safeOAuthReturnPath(req.query?.return_to);
   const params = new URLSearchParams({ client_id:clientId, redirect_uri:redirectUri, response_type:'code', scope:'openid email profile', access_type:'online', state, nonce, code_challenge:challenge, code_challenge_method:'S256' });
   let purpose=inviteStart?`invite:${inviteClaim.binding_hash}`:'login';
   if(linking){
@@ -993,7 +995,9 @@ async function handleGoogleCallback(req,res){
   const invitePurpose=/^invite:([a-f0-9]{64})$/.exec(purpose);
   const loginPurpose=purpose==='login';
   const inviteClaim=invitePurpose?readInviteClaimForBindingHash(req,invitePurpose[1]):null;
-  const redirectError=errorCode=>oauthResultLocation(appUrl,returnPath,'google_error',errorCode);
+  const inviteReturnOptions={allowInvite:Boolean(invitePurpose)};
+  const redirectError=errorCode=>oauthResultLocation(
+    appUrl,returnPath,'google_error',errorCode,inviteReturnOptions);
   if(!state || !expectedState || !verifier || !nonce || !constantTimeEqual(state,expectedState)
     ||(!loginPurpose&&!invitePurpose&&!purpose.startsWith('link:')&&!purpose.startsWith('reauth:'))){
     res.writeHead(302,{Location:redirectError('invalid_state')}); return res.end();
@@ -1264,7 +1268,8 @@ async function handleGoogleCallback(req,res){
     {recentAuthMethod:'google'}); }
   catch{ res.writeHead(302,{Location:redirectError('session_error')}); return res.end(); }
   appendCookies(res,[sessionCookie(req,ourJwt)]);
-  const destination=new URL(oauthResultLocation(appUrl,returnPath,'google','success'));
+  const destination=new URL(oauthResultLocation(
+    appUrl,returnPath,'google','success',inviteReturnOptions));
   if(providerEmailChanged) destination.searchParams.set('identity_notice','provider_email_changed');
   const dest=destination.toString();
   res.writeHead(302, { Location:dest });
