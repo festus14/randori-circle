@@ -82,7 +82,7 @@ function executeLocalHarness(source: string) {
   });
 }
 
-function installDeterministicLocalExecutionTransport() {
+function installDeterministicLocalExecutionTransport(getRuntimeOrigin: () => string | null) {
   const nativeFetch = globalThis.fetch;
   const requests: Array<{ language: string; version: string; files: string[] }> = [];
   const unexpectedExternalRequests: string[] = [];
@@ -95,7 +95,7 @@ function installDeterministicLocalExecutionTransport() {
         ? input.href
         : input.url;
     const parsedUrl = new URL(url);
-    if (parsedUrl.protocol === 'http:' && parsedUrl.hostname === '127.0.0.1') {
+    if (parsedUrl.origin === getRuntimeOrigin()) {
       return nativeFetch(input, init);
     }
     if (url !== endpoint) {
@@ -165,14 +165,18 @@ function createRuntimeFixture() {
   return { rootDir, databaseUrl, config };
 }
 
-async function preparePage(page: Page, externalRequests: string[]) {
+async function preparePage(
+  page: Page,
+  externalRequests: string[],
+  getRuntimeOrigin: () => string | null,
+) {
   page.on('request', request => {
     const target = new URL(request.url());
-    if (target.protocol !== 'http:' || target.hostname !== '127.0.0.1') externalRequests.push(request.url());
+    if (target.origin !== getRuntimeOrigin()) externalRequests.push(request.url());
   });
   await page.route(/^https?:\/\//, route => {
     const target = new URL(route.request().url());
-    if (target.protocol === 'http:' && target.hostname === '127.0.0.1') return route.continue();
+    if (target.origin === getRuntimeOrigin()) return route.continue();
     return route.abort('blockedbyclient');
   });
   await page.addInitScript(() => {
@@ -403,7 +407,8 @@ test('two invited members complete the durable local session journey', async ({ 
   const fixture = createRuntimeFixture();
   const requestSql: string[] = [];
   const externalRequests: string[] = [];
-  const executionTransport = installDeterministicLocalExecutionTransport();
+  let runtimeOrigin: string | null = null;
+  const executionTransport = installDeterministicLocalExecutionTransport(() => runtimeOrigin);
   let runtime: Runtime | null = null;
   let restoreServerTime = () => {};
   const contexts = await Promise.all([
@@ -412,7 +417,7 @@ test('two invited members complete the durable local session journey', async ({ 
     browser.newContext({ timezoneId: 'Europe/London' }),
   ]);
   const pages = await Promise.all(contexts.map(context => context.newPage()));
-  await Promise.all(pages.map(page => preparePage(page, externalRequests)));
+  await Promise.all(pages.map(page => preparePage(page, externalRequests, () => runtimeOrigin)));
 
   try {
     runtime = await startLocalDevelopmentServer({
@@ -420,6 +425,7 @@ test('two invited members complete the durable local session journey', async ({ 
       logger: silentLogger,
       sqlObserver: (sql: string) => requestSql.push(sql),
     });
+    runtimeOrigin = new URL(runtime.url).origin;
     const owner = await signInOwner(pages[0], runtime.url);
     expect(owner).toMatchObject({ email: LOCAL_OWNER_EMAIL, is_admin: true });
 
@@ -871,12 +877,17 @@ test('two invited members complete the durable local session journey', async ({ 
       WHERE event_type IN ('pairing.email.requested','schedule.email.requested')`)).rows[0].count)).toBe(7);
     await cycleOutbox.close();
 
+    // Stop every browser poll before the ephemeral server is replaced. This
+    // keeps the network assertion bound to one exact runtime origin at a time
+    // while the browser contexts (and their real session cookies) survive.
+    await Promise.all(pages.map(page => page.goto('about:blank')));
     await runtime.close();
     runtime = await startLocalDevelopmentServer({
       config: fixture.config,
       logger: silentLogger,
       sqlObserver: (sql: string) => requestSql.push(sql),
     });
+    runtimeOrigin = new URL(runtime.url).origin;
     await pages[0].goto(`${runtime.url}/join/${ownerRoom}`, {waitUntil: 'domcontentloaded'});
     await expect(pages[0].locator('#view-code')).toBeVisible();
     await expect.poll(() => pages[0].evaluate(() => (
