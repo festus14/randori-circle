@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { performance } from 'node:perf_hooks';
 
 import {
   assessOutboxDispatchRuns,
@@ -300,23 +301,32 @@ test('a backward wall-clock adjustment cannot extend the monotonic API budget',a
   assert.equal(result.pagesScanned,1);
 });
 
-test('the CLI path preserves its monotonic budget across a backward wall-clock adjustment',async()=>{
-  const wallTicks=[NOW,NOW-60*60*1000];
+test('the CLI default preserves its monotonic budget across a backward wall-clock adjustment',async()=>{
   const monotonicTicks=[100,100,6100,6100,10100];
+  const wallTicks=[100000,100000,100001,0,1];
   const delays=[];
   let calls=0;
   let output='';
-  const execution=await main({argv:[],environment:environment({
-    WATCHDOG_API_TIMEOUT_MS:'10000',WATCHDOG_MAX_PAGES:'2',WATCHDOG_PER_PAGE:'1',
-  }),
-  fetchImpl:async()=>{
-    calls+=1;
-    return response({total_count:3,workflow_runs:[run({id:300+calls})]});
-  },
-  clock:()=>wallTicks.shift()??NOW-60*60*1000,
-  monotonicClock:()=>monotonicTicks.shift()??10100,
-  setTimer:(_callback,delay)=>{ delays.push(delay); return delay; },
-  clearTimer:()=>{},stdout:{write(value){ output+=value; }}});
+  const originalDateNow=Date.now;
+  Object.defineProperty(performance,'now',{configurable:true,
+    value:()=>monotonicTicks.shift()??10100});
+  Date.now=()=>wallTicks.shift()??1;
+  let execution;
+  try{
+    execution=await main({argv:[],environment:environment({
+      WATCHDOG_API_TIMEOUT_MS:'10000',WATCHDOG_MAX_PAGES:'2',WATCHDOG_PER_PAGE:'1',
+    }),
+    fetchImpl:async()=>{
+      calls+=1;
+      return response({total_count:3,workflow_runs:[run({id:300+calls})]});
+    },
+    clock:()=>NOW,
+    setTimer:(_callback,delay)=>{ delays.push(delay); return delay; },
+    clearTimer:()=>{},stdout:{write(value){ output+=value; }}});
+  }finally{
+    Date.now=originalDateNow;
+    delete performance.now;
+  }
   assert.equal(calls,2);
   assert.deepEqual(delays,[10000,4000]);
   assert.equal(execution.exitCode,1);
