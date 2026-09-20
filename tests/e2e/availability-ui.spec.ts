@@ -214,10 +214,11 @@ test('invalid availability envelopes fail closed and expose a working retry', as
 
   await expect(page.locator('#availLabel')).toHaveText('UNAVAILABLE');
   await expect(page.locator('#availRetry')).toBeVisible();
-  // Once every scheduled auth attempt has started, make one explicit attempt
-  // newest and await the availability request it starts (or coalesces with).
-  // No bootstrap refresh can then consume the valid retry response below.
-  await expect.poll(() => authMeCalls).toBeGreaterThanOrEqual(3);
+  // Once identity has resolved, make one explicit refresh newest and await the
+  // availability request it starts (or coalesces with). Successful hydration
+  // now suppresses the remaining bootstrap retries, so none can consume the
+  // valid retry response below.
+  await expect.poll(() => authMeCalls).toBeGreaterThanOrEqual(1);
   await page.evaluate(async () => {
     const app = window as typeof window & {
       _randori_auth?: { refreshMe?: () => Promise<unknown> };
