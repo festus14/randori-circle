@@ -528,52 +528,103 @@ test('a slow finalization yields its fair deadline slice so later sent events ca
   await enqueueOutboxEvent(db,event({eventType:'alpha.notification'}));
   await enqueueOutboxEvent(db,event({eventType:'beta.notification',sequence:2,
     idempotencyKey:'test/v1/slow-finalize-beta'}));
+  const scheduler=controlledMonotonicClock();
   let providerCalls=0;
   let delayedFinalization=false;
+  let markDelayedFinalizationStarted;
+  const delayedFinalizationStarted=new Promise(resolve=>{ markDelayedFinalizationStarted=resolve; });
+  let releaseDelayedFinalization;
+  const delayedFinalizationGate=new Promise(resolve=>{ releaseDelayedFinalization=resolve; });
+  let markDelayedFinalizationCommitted;
+  const delayedFinalizationCommitted=new Promise(resolve=>{ markDelayedFinalizationCommitted=resolve; });
   const slowDb={
     batch:db.batch.bind(db),
-    transaction:db.transaction.bind(db),
+    async transaction(mode){
+      const transaction=await db.transaction(mode);
+      let finalizesDelayedEvent=false;
+      return {
+        async execute(statement){
+          if(String(statement?.sql||statement).includes('UPDATE outbox_events SET status=?')
+            &&statement?.args?.[3]==='slow-finalize-1') finalizesDelayedEvent=true;
+          return transaction.execute(statement);
+        },
+        rollback:transaction.rollback.bind(transaction),
+        close:transaction.close?.bind(transaction),
+        async commit(){
+          const result=await transaction.commit();
+          if(finalizesDelayedEvent) markDelayedFinalizationCommitted();
+          return result;
+        },
+      };
+    },
     async execute(statement){
       const sql=String(statement?.sql||statement);
       if(providerCalls===2&&!delayedFinalization&&sql.includes(' AS now_utc')){
         delayedFinalization=true;
-        await new Promise(resolve=>setTimeout(resolve,250));
+        markDelayedFinalizationStarted();
+        await delayedFinalizationGate;
       }
       return db.execute(statement);
     },
   };
-  const startedAt=performance.now();
   const handler=async current=>{
     providerCalls+=1;
     return {providerName:'capture',providerMessageId:`slow-finalize-${current.id}`};
   };
-  const result=await runOutboxInvocation({
+  const invocation=runOutboxInvocation({
     db:slowDb,workerId:'slow-finalization',
     handlers:{'alpha.notification':handler,'beta.notification':handler},
     eventTypes:['alpha.notification','beta.notification'],maxClaims:2,
-    deadlineAtMs:startedAt+400,finalizationReserveMs:100,minimumDispatchWindowMs:100,
-    leaseDurationMs:1000,heartbeatIntervalMs:10,
+    deadlineAtMs:400,finalizationReserveMs:100,minimumDispatchWindowMs:100,
+    leaseDurationMs:1000,heartbeatIntervalMs:0,clock:scheduler.clock,
   });
-  assert.ok(performance.now()-startedAt<400,'one slow transition cannot consume the complete deadline');
-  assert.equal(result.claimed,2);
-  assert.equal(result.delivered,1);
-  assert.equal(result.leaseLost,1);
-  assert.equal((await db.execute("SELECT status FROM outbox_events WHERE event_type='beta.notification'"))
-    .rows[0].status,'delivered');
-  await new Promise(resolve=>setTimeout(resolve,100));
+  await delayedFinalizationStarted;
+  try{
+    assert.equal(scheduler.pendingTimers,1);
+    scheduler.runNext();
+    const result=await invocation;
+    assert.equal(scheduler.clock.now(),200,'the first of two finalizations receives half the deadline');
+    assert.equal(scheduler.pendingTimers,0);
+    assert.equal(result.claimed,2);
+    assert.equal(result.delivered,1);
+    assert.equal(result.leaseLost,1);
+    assert.deepEqual((await db.execute(`SELECT event_type,status,provider_message_id
+      FROM outbox_events ORDER BY id`)).rows,[
+      {event_type:'alpha.notification',status:'processing',provider_message_id:null},
+      {event_type:'beta.notification',status:'delivered',provider_message_id:'slow-finalize-2'},
+    ]);
+  }finally{
+    releaseDelayedFinalization();
+    await Promise.allSettled([delayedFinalizationCommitted,invocation]);
+  }
+  assert.equal((await db.execute("SELECT status FROM outbox_events WHERE event_type='alpha.notification'"))
+    .rows[0].status,'delivered','the non-cancellable late transition remains settlement-observed');
 });
 
 test('deadline helper stops awaiting slow teardown while observing its eventual settlement',async()=>{
+  const scheduler=controlledMonotonicClock();
   let settled=false;
-  const startedAt=performance.now();
-  const result=await settleBeforeDeadline(async()=>{
-    await new Promise(resolve=>setTimeout(resolve,80));
+  let releaseWork;
+  const workGate=new Promise(resolve=>{ releaseWork=resolve; });
+  let markWorkSettled;
+  const workSettled=new Promise(resolve=>{ markWorkSettled=resolve; });
+  const pending=settleBeforeDeadline(async()=>{
+    await workGate;
     settled=true;
+    markWorkSettled();
     return 'late';
-  },startedAt+30);
-  assert.deepEqual(result,{completed:false,value:null});
-  assert.ok(performance.now()-startedAt<70);
-  await new Promise(resolve=>setTimeout(resolve,70));
+  },30,{clock:scheduler.clock});
+  try{
+    assert.equal(scheduler.pendingTimers,1);
+    scheduler.runNext();
+    assert.deepEqual(await pending,{completed:false,value:null});
+    assert.equal(scheduler.clock.now(),30);
+    assert.equal(scheduler.pendingTimers,0);
+    assert.equal(settled,false);
+  }finally{
+    releaseWork();
+    await Promise.allSettled([workSettled,pending]);
+  }
   assert.equal(settled,true);
 });
 
