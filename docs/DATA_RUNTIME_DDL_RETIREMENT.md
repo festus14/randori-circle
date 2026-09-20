@@ -12,7 +12,7 @@ they need. They never create a table, add a column, or create an index.
 
 | Contract | Used by | Required migration-owned data |
 | --- | --- | --- |
-| Admin identity | `/api/init`, admin log reads | `auth_accounts.id`, `email`, `is_admin` |
+| Admin identity | admin log reads | `auth_accounts.id`, `email`, `is_admin` |
 | Profile | profile reads and writes | Complete account/profile projection |
 | Circle | circle | Account/profile and legacy-user projections |
 | Weeks | weeks | Account names, legacy users, weeks, groups, and participant provenance |
@@ -36,13 +36,13 @@ and secondary-circle flows retain their narrower existing readiness guards.
 - Diagnostic logging is best effort. If `app_logs` is unavailable, it falls
   back to process/Sentry reporting and does not attempt schema repair.
 
-## Scope left for the parent
+## Subsequent admin-init boundary
 
-`/api/init` still owns all 45 `api/data.js` DDL occurrences, including its
-legacy duplicate-schedule cleanup. It is deliberately unchanged here so its
-future conversion can make initialization data-only and atomic in one focused
-review. The other remaining allowlisted families are `api/ai.js`,
-`api/ops.js`, and `api/_circle-membership.js`.
+Issue #171 removed the remaining 45 `api/data.js` DDL occurrences and the six
+membership definitions reachable from its initializer. `/api/init` now requires
+the exact current migration state and performs only the atomic primary-circle
+data cutover described in [Admin data initialization](ADMIN_DATA_INITIALIZATION.md).
+The remaining allowlisted families are `api/ai.js` and `api/ops.js`.
 
 ## Verification and rollout
 

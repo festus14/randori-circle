@@ -17,9 +17,7 @@ const SOURCE_EXTENSION=/\.[cm]?js$/i;
 // migration foundation was introduced. New DDL must be added to a versioned
 // migration in a later slice, not silently introduced on an API request path.
 export const RUNTIME_DDL_ALLOWLIST=Object.freeze([
-  Object.freeze({file:'api/_circle-membership.js',statementCount:6,digest:'5177c04805431cf5514ea3f9f6083e843e68f7220851ed58efcde85e6abc1dad'}),
   Object.freeze({file:'api/ai.js',statementCount:8,digest:'0433ffdc8aadad44f242d739a544df62f0d6584538c37eee323942085b3d0082'}),
-  Object.freeze({file:'api/data.js',statementCount:45,digest:'182941ce793ce39b616f605504146d73f2ad813580126dfb652d20226782c5ad'}),
   Object.freeze({file:'api/ops.js',statementCount:17,digest:'24595f9bbbdafc29cbe41d8fa874eb1680a5ce877eb143933cbde75a87a4c159'}),
 ]);
 

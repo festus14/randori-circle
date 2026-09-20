@@ -2388,35 +2388,15 @@ test('questions expose only the active original catalogue and make no LeetCode o
     'ordinary requests must not create the legacy schedule uniqueness index');
 });
 
-test('admin init never imports a bundled third-party question seed', async () => {
-  executeHandler = sql => {
-    if (sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')) return rows([{ id: 1, email: 'admin@example.test', is_admin: 1 }]);
-    if (sql.includes('SELECT id FROM circles WHERE is_primary=1')) return rows([{ id: 1 }]);
-    return rows();
-  };
+test('admin init never repairs schema, deduplicates schedules, or imports a question seed', async () => {
   executed.length = 0;
   const initialized = await invoke(dataHandler, {
     method: 'POST', url: '/api/init', query: { endpoint: 'init' }, headers: { 'x-test-auth': 'admin' },
   });
-  assert.equal(initialized.status, 200);
+  assert.equal(initialized.status, 503);
+  assert.deepEqual(initialized.body,{error:'data unavailable'});
   assert.equal(executed.some(call => call.sql.includes('INSERT INTO custom_questions')), false);
-  const dedupe = executed.findIndex(call => call.sql.includes('DELETE FROM pair_schedules WHERE id NOT IN'));
-  const uniqueIndex = executed.findIndex(call => call.sql.includes('CREATE UNIQUE INDEX IF NOT EXISTS uq_pair_schedules_week_pair'));
-  assert.ok(dedupe >= 0 && uniqueIndex > dedupe, 'legacy schedules must be deterministically deduped before the unique index');
-});
-
-test('admin init reports a visible error when the legacy schedule migration fails', async () => {
-  executeHandler = sql => {
-    if (sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')) return rows([{ id: 1, email: 'admin@example.test', is_admin: 1 }]);
-    if (sql.includes('DELETE FROM pair_schedules WHERE id NOT IN')) throw new Error('database is read only');
-    return rows();
-  };
-  const result = await invoke(dataHandler, {
-    method: 'POST', url: '/api/init', query: { endpoint: 'init' }, headers: { 'x-test-auth': 'admin' },
-  });
-  assert.equal(result.status, 500);
-  assert.match(result.body.error, /schedule uniqueness migration failed/i);
-  assert.match(result.body.detail, /read only/i);
+  assert.equal(executed.some(call => /\b(?:CREATE|ALTER|DROP|DELETE|INSERT|UPDATE|REPLACE)\b/i.test(call.sql)),false);
 });
 
 test('data validation and access-control branches reject malformed or cross-pair requests', async () => {

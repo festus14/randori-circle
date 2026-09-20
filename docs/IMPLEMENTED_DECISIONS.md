@@ -1650,3 +1650,47 @@ false, then canary owner/non-owner, recent-auth, primary/last-circle guards,
 concurrency, fallback, stale-tab fencing, and retained historical rows in
 staging. Rollback disables the control-plane flag and preserves every marker and
 row; never clear `archived_at`, delete tenant history, or downgrade the schema.
+
+## ID-39: Make admin initialization data-only and atomic
+
+Status: implemented as a DDL-removal increment with no schema migration. It
+follows the secondary-circle archive increment in ID-38.
+
+**Decision.** `POST /api/init` no longer creates, alters, indexes, deduplicates,
+or otherwise repairs schema. Migration v1 already owns the legacy tables,
+columns, schedule uniqueness, and indexes previously repeated by the handler;
+migration v2 owns the circle schema, circle indexes, Google-subject uniqueness,
+and the rollout singleton. An exact current-schema and ledger inspection now
+runs read-only inside the same write transaction as the data cutover.
+
+After readiness succeeds, the transaction revalidates the live durable session
+and current non-demo global-administrator authority. A pristine open rollout
+creates one primary circle, backfills active membership for every current
+non-demo account, writes deterministic per-account and completion audits, and
+closes registration last. A valid completed rollout rolls the read-only
+transaction back and returns the existing circle unchanged. Every failure
+before commit rolls all four data-table changes back; an ambiguous commit is
+not automatically replayed and is safe to inspect and retry.
+
+The legacy `DELETE` that retained only `MAX(id)` from duplicate schedules is
+removed. A managed current database already has both the inline and named v1
+uniqueness contracts, so such duplicates are impossible without drift. An
+unmanaged duplicate-bearing database must be remediated explicitly on a
+verified restore before adoption. Adding a no-op v17 or silently discarding
+schedule data would add risk without creating a valid upgrade path.
+
+**Alternatives.** Keeping an admin-only schema repair endpoint would still let
+HTTP traffic mutate production structure and would preserve a path that could
+erase scheduling data. A route-scoped readiness probe would miss unrelated
+ledger or schema drift during this one-time whole-application cutover. A series
+of independent writes would allow a primary circle or closed latch to survive a
+failed audit backfill. Full exact readiness and one explicit transaction are
+acceptable here because initialization is rare and operationally controlled.
+
+**Rollout and recovery.** Production must be migrated and rehearsed before this
+code is promoted; the endpoint cannot advance or adopt schema. Keep membership
+enforcement off, call the data-only endpoint as the authenticated bootstrap
+administrator, verify the completed rollout, then enable enforcement. A generic
+unavailable response requires inspection through the protected migration tools,
+not repeated repair attempts. Detailed behavior is recorded in
+`ADMIN_DATA_INITIALIZATION.md`.

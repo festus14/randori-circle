@@ -5,7 +5,9 @@ import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {afterEach,beforeEach,mock,test} from 'node:test';
 import {createClient} from '@libsql/client';
+import {EXECUTABLE_MIGRATIONS} from '../../db/executable-migrations.js';
 import {MIGRATION_PLANS} from '../../db/migration-plan.js';
+import {applyMigrations,inspectMigrationState,prepareMigrationConnection} from '../../db/migration-runner.js';
 import {CREDENTIAL_KEY_CONTROL_SEED_OPERATIONS} from '../../db/credential-key-control.js';
 import {createOutboxEventStatement} from '../../api/_outbox.js';
 import {adoptCredentialKeyControl} from '../support/credential-key-control.mjs';
@@ -33,6 +35,7 @@ mock.module('../../api/_db.js',{
     isSentryConfigured:()=>false,
     verifyMutationOrigin:req=>req?.headers?.['x-test-cross']!=='1',
     verifyRequestAuth:authPayload,
+    verifySignedRequestAuth:authPayload,
   },
 });
 
@@ -49,6 +52,8 @@ const credentialKeyControlOperations=[
   ...MIGRATION_PLANS[14].operations.map(operation=>operation.sql),
   ...CREDENTIAL_KEY_CONTROL_SEED_OPERATIONS.map(operation=>operation.sql),
 ];
+const schemaSql=name=>MIGRATION_PLANS.flatMap(plan=>plan.operations)
+  .find(operation=>operation.operation==='ensure-table'&&operation.name===name)?.sql;
 
 function invoke(handler,{method='GET',url='/',query={},headers={},body={}}={}){
   return new Promise((resolve,reject)=>{
@@ -87,12 +92,12 @@ async function createDatabase(){
       last_login TEXT NOT NULL,PRIMARY KEY(issuer,subject),UNIQUE(issuer,user_id),
       FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE CASCADE
     )`,
-    membership.CIRCLES_TABLE_SQL,
-    membership.CIRCLE_MEMBERSHIPS_TABLE_SQL,
-    membership.CIRCLE_INVITATIONS_TABLE_SQL,
-    membership.CIRCLE_AUDIT_EVENTS_TABLE_SQL,
-    membership.AUTH_RATE_LIMITS_TABLE_SQL,
-    membership.CIRCLE_MEMBERSHIP_ROLLOUT_TABLE_SQL,
+    schemaSql('circles'),
+    schemaSql('circle_memberships'),
+    schemaSql('circle_invitations'),
+    schemaSql('circle_audit_events'),
+    schemaSql('auth_rate_limits'),
+    schemaSql('circle_membership_rollout'),
     `CREATE TABLE auth_sessions (session_hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL,
       created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,revoked_at INTEGER,revocation_reason TEXT,
       FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE CASCADE)`,
@@ -118,6 +123,19 @@ async function createDatabase(){
       ('${'a'.repeat(64)}',1,1,4102444800),('${'b'.repeat(64)}',2,1,4102444800),
       ('${'c'.repeat(64)}',3,1,4102444800),('${'d'.repeat(64)}',4,1,4102444800)`,
   ],'write');
+  return db;
+}
+
+async function createCurrentDatabase(){
+  const directory=mkdtempSync(join(tmpdir(),'randori-circle-current-'));
+  temporaryDirectories.push(directory);
+  const db=createClient({url:pathToFileURL(join(directory,'current.sqlite')).href});
+  await prepareMigrationConnection(db);
+  const state=await inspectMigrationState(db);
+  await applyMigrations(db,{
+    expectedStateFingerprint:state.stateFingerprint,
+    retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0},
+  });
   return db;
 }
 
@@ -440,32 +458,6 @@ test('password invitation account creation rolls back on expiry and a later acce
     });
     assert.equal(audit.rows.length,0);
   }
-});
-
-test('controlled initialization backfills only non-demo auth accounts and audits once',async()=>{
-  currentDb=await createDatabase();
-  assert.equal(await membership.circleMembershipCutoverStarted(currentDb),false);
-  await currentDb.execute(`DELETE FROM circle_audit_events`);
-  await currentDb.execute(`DELETE FROM circle_memberships`);
-  const result=await membership.initializePrimaryCircle(currentDb,{ownerUserId:1,ownerEmails:['configured-owner@example.test']});
-  assert.equal(result.circleId,10);
-  await currentDb.execute(`INSERT INTO auth_accounts
-    (id,email,password_hash,display_name,color,is_available,is_admin,is_demo)
-    VALUES (6,'late@example.test','x','Late account','#abcdef',1,0,0)`);
-  await currentDb.execute(`UPDATE circle_memberships SET status='inactive' WHERE circle_id=10 AND user_id=3`);
-  await membership.initializePrimaryCircle(currentDb,{ownerUserId:1,ownerEmails:['configured-owner@example.test']});
-
-  const rows=await currentDb.execute(`SELECT user_id,role,status FROM circle_memberships ORDER BY user_id`);
-  assert.deepEqual(rows.rows.map(row=>[Number(row.user_id),String(row.role),String(row.status)]),[
-    [1,'owner','active'],[2,'member','active'],[3,'member','inactive'],[4,'owner','active'],
-  ]);
-  const audit=await currentDb.execute(`SELECT subject_user_id FROM circle_audit_events
-    WHERE event_type='membership.backfilled' ORDER BY subject_user_id`);
-  assert.deepEqual(audit.rows.map(row=>Number(row.subject_user_id)),[1,2,3,4]);
-  const completed=await currentDb.execute(`SELECT COUNT(*) AS count FROM circle_audit_events
-    WHERE event_type='membership.backfill.completed'`);
-  assert.equal(Number(completed.rows[0].count),1);
-  assert.equal(await membership.circleMembershipCutoverStarted(currentDb),true);
 });
 
 test('registration-state probes do not create rollout schema before explicit initialization',async()=>{
@@ -1052,7 +1044,7 @@ test('a stale owner session cannot manage invitations after its account is delet
   assert.deepEqual(circle.body,{error:'circle membership required'});
 });
 
-test('admin init upgrades a legacy auth schema before enforcing Google subject uniqueness',async()=>{
+test('admin init refuses to repair an unmanaged legacy auth schema',async()=>{
   currentDb=createClient({url:'file::memory:'});
   await currentDb.execute(`CREATE TABLE auth_accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,
@@ -1067,38 +1059,48 @@ test('admin init upgrades a legacy auth schema before enforcing Google subject u
   const result=await invoke(dataHandler,{
     method:'POST',url:'/api/init',query:{endpoint:'init'},headers:{'x-test-auth':'owner'},
   });
-  assert.equal(result.status,200);
+  assert.equal(result.status,503);
+  assert.deepEqual(result.body,{error:'data unavailable'});
   const columns=await currentDb.execute(`PRAGMA table_info('auth_accounts')`);
-  assert.equal(columns.rows.some(row=>row.name==='google_sub'),true);
+  assert.equal(columns.rows.some(row=>row.name==='google_sub'),false);
   const indexes=await currentDb.execute(`PRAGMA index_list('auth_accounts')`);
-  assert.equal(indexes.rows.some(row=>row.name==='uq_auth_accounts_google_sub'&&Number(row.unique)===1),true);
+  assert.equal(indexes.rows.some(row=>row.name==='uq_auth_accounts_google_sub'&&Number(row.unique)===1),false);
 });
 
-test('admin init installs membership indexes and runs the audited backfill',async()=>{
-  currentDb=await createDatabase();
-  await currentDb.execute(`DELETE FROM circle_audit_events`);
-  await currentDb.execute(`DELETE FROM circle_memberships`);
+test('admin init runs the audited data cutover on an exactly migrated database',async()=>{
+  currentDb=await createCurrentDatabase();
+  await currentDb.execute(`INSERT INTO auth_accounts
+    (id,email,password_hash,display_name,color,is_available,is_admin,is_demo)
+    VALUES
+      (1,'owner@example.test','x','Owner','#112233',1,1,0),
+      (2,'member@example.test','x','Member','#445566',1,0,0),
+      (3,'demo@example.test','x','Demo','#778899',1,1,1),
+      (4,'configured-owner@example.test','x','Configured owner','#aabbcc',1,0,0)`);
+  await currentDb.execute({
+    sql:`INSERT INTO auth_sessions
+      (session_hash,user_id,created_at,expires_at) VALUES (?,1,1,4102444800)`,
+    args:['a'.repeat(64)],
+  });
   delete process.env.CIRCLE_MEMBERSHIP_ENABLED;
   const result=await invoke(dataHandler,{
     method:'POST',url:'/api/init',query:{endpoint:'init'},headers:{'x-test-auth':'owner'},
   });
   assert.equal(result.status,200);
-
-  const indexes=await currentDb.execute(`SELECT name FROM sqlite_master
-    WHERE type='index' AND name IN (
-      'uq_circles_active_primary','idx_circle_memberships_user_active',
-      'idx_circle_invitations_circle_created','idx_circle_audit_circle_created',
-      'uq_auth_accounts_google_sub'
-    ) ORDER BY name`);
-  assert.deepEqual(indexes.rows.map(row=>String(row.name)),[
-    'idx_circle_audit_circle_created','idx_circle_invitations_circle_created',
-    'idx_circle_memberships_user_active','uq_auth_accounts_google_sub','uq_circles_active_primary',
-  ]);
+  assert.equal(result.body.ok,true);
+  assert.equal(result.body.changed,true);
+  assert.equal(result.body.message,'Primary circle data ready');
   const members=await currentDb.execute(`SELECT user_id,role FROM circle_memberships ORDER BY user_id`);
   assert.deepEqual(members.rows.map(row=>[Number(row.user_id),String(row.role)]),[
-    [1,'owner'],[2,'member'],[3,'member'],[4,'owner'],
+    [1,'owner'],[2,'member'],[4,'owner'],
   ]);
   const completed=await currentDb.execute(`SELECT COUNT(*) AS count FROM circle_audit_events
     WHERE event_type='membership.backfill.completed'`);
   assert.equal(Number(completed.rows[0].count),1);
+
+  const repeated=await invoke(dataHandler,{
+    method:'POST',url:'/api/init',query:{endpoint:'init'},headers:{'x-test-auth':'owner'},
+  });
+  assert.equal(repeated.status,200);
+  assert.equal(repeated.body.circle_id,result.body.circle_id);
+  assert.equal(repeated.body.changed,false);
 });

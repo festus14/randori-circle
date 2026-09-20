@@ -466,8 +466,10 @@ export async function seedLocalOnboarding(config,{
     if(!Number.isSafeInteger(ownerId)||ownerId<1){
       refuse('LOCAL_DATABASE_NOT_READY','The deterministic local owner could not be prepared.');
     }
-    const {initializePrimaryCircle}=await import('../api/_circle-membership.js');
-    const {circleId}=await initializePrimaryCircle(client,{ownerUserId:ownerId,ownerEmails:[LOCAL_OWNER_EMAIL]});
+    const {initializeLocalPrimaryCircleData}=await import('../api/_admin-init.js');
+    const {circleId}=await initializeLocalPrimaryCircleData(client,{
+      ownerUserId:ownerId,ownerEmails:[LOCAL_OWNER_EMAIL],
+    });
     const verified=await client.execute({
       sql:`SELECT account.id,membership.role,membership.status,rollout.registrations_closed
         FROM auth_accounts account

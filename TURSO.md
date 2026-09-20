@@ -74,14 +74,14 @@
 5. Deploy the v16-aware runtime with `SECONDARY_CIRCLE_SCHEDULING_ENABLED=false` and `CIRCLE_MEMBERSHIP_ENABLED=false`. Authentication readiness and rollout-state checks are read-only; any legacy registration that races initialization is atomically included or rejected. Canary scheduling separately with `docs/SECONDARY_SCHEDULING.md` only after the prerequisite feature chain is healthy.
 6. Create the first account only after the protected migration workflow reports the current schema ready. There is no request-time authentication bootstrap or repair flag.
 7. Sign in with the bootstrap account and verify `GET /api/auth/me` reports `is_admin: true`.
-8. Call the authenticated admin-only `POST https://your-app.vercel.app/api/init`. This creates the membership schema, closes new uninvited registration, and atomically backfills existing non-demo accounts.
+8. Call the authenticated admin-only `POST https://your-app.vercel.app/api/init`. The endpoint requires the exact current migration state, atomically creates the primary-circle data and audited non-demo account memberships, and closes new uninvited registration. It never creates or repairs schema.
 9. Verify the rollout queries below before setting `CIRCLE_MEMBERSHIP_ENABLED=true` and redeploying.
 
 ### Personalization + Scaling layer (primary circle + immutable weekly publication)
 
 **Membership data:** `circles`, `circle_memberships`, hashed `circle_invitations`, `circle_audit_events`, and the singleton `circle_membership_rollout` latch.
 
-Provider-identity and other migration-managed schema changes use the protected migration workflow. Membership schema creation remains an explicit authenticated `POST /api/init` operator step; rollout-state probes and ordinary auth, circle, pairing, and invitation requests do not create it. Authentication has no request-time schema bootstrap or repair path.
+Provider-identity, membership, and all other schema changes use the protected migration workflow. The explicit authenticated `POST /api/init` step changes only primary-circle, membership, audit, and rollout data after exact readiness succeeds. Authentication and initialization have no request-time schema bootstrap or repair path.
 
 **Scaling rule:**
 - Circle = active `circle_memberships` in the one operational primary circle. The one-time migration backfills existing non-demo authenticated accounts; legacy `users` rows are never inferred as members.
@@ -129,7 +129,7 @@ Provider-identity and other migration-managed schema changes use the protected m
 - `POST /api/admin/reshuffle` — compatibility URL only. Pairing requests delegate to the immutable current-cycle endpoint and cannot force/remix a published cycle; `action=promote` retains its separate legacy admin operation.
 - `GET /api/settings/availability` — authenticated, private/no-store read of the upcoming cycle and the caller's exact setting: `{cycle,cycleKey,isAvailable,version,source,editable,updatedAt}`.
 - `POST /api/settings/availability` — authenticated compare-and-swap update with the exact body `{cycle_key:string,expected_version:integer,is_available:boolean}`. Strings such as `"false"`, aliases, unknown fields, stale versions, changed cycles, and closed cutoffs are rejected. A `409` returns the refreshed authoritative availability state.
-- `POST /api/init` — authenticated admin-only schema migration and one-time primary-circle backfill. It also closes the durable registration latch.
+- `POST /api/init` — authenticated admin-only, data-only primary-circle backfill on the exact current schema. It atomically closes the durable registration latch and is a read-only no-op after successful initialization.
 
 **Scheduler:**
 ```json

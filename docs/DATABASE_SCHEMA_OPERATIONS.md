@@ -190,9 +190,9 @@ See [Protected Turso production migration](TURSO_PRODUCTION_MIGRATION.md) for en
 
 ## Runtime DDL debt
 
-Several existing request paths still contain best-effort `CREATE` and `ALTER` statements. `npm run check:runtime-ddl` fingerprints the exact normalized statement set and occurrence counts per API module. CI fails when a statement is added, changed, assembled from string fragments, or removed without an intentional allowlist update.
+The remaining AI and operations request paths still contain 25 best-effort `CREATE` and `ALTER` statements. `npm run check:runtime-ddl` fingerprints the exact normalized statement set and occurrence counts per API module. CI fails when a statement is added, changed, assembled from string fragments, or removed without an intentional allowlist update. Authentication, data, and membership initialization contain no runtime DDL.
 
-This is a freeze, not an endorsement. Existing statements remain temporarily for compatibility. New schema work belongs in appended, checksummed executable migrations; the allowlist should shrink as request-path DDL is removed.
+This is a freeze, not an endorsement. Existing statements remain temporarily for compatibility. New schema work belongs in appended, checksummed executable migrations; the allowlist should shrink as request-path DDL is removed. `/api/init` requires an exact current ledger and performs only the transaction described in [Admin data initialization](ADMIN_DATA_INITIALIZATION.md).
 
 ## Operator sequence
 
