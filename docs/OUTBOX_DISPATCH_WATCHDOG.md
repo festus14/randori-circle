@@ -37,7 +37,7 @@ The newest authoritative run determines the result:
 | `healthy` | no | The newest scheduled run succeeded in the current slot. |
 | `schedule_grace` | no | A prior scheduled run remains inside the accepted grace, or the newest run is still queued/running within its limit. |
 | `run_missing` | yes | No authoritative scheduled attempt was found. |
-| `run_stale` | yes | The newest success or queued attempt predates the freshness floor. |
+| `run_stale` | yes | The newest success or active attempt predates the freshness floor. |
 | `run_failed` | yes | The newest attempt failed, timed out, or ended in another unsuccessful conclusion. |
 | `run_cancelled` | yes | The newest attempt was cancelled. |
 | `run_skipped` | yes | The newest attempt was skipped. |
@@ -62,7 +62,9 @@ Output is one versioned JSON object containing only fixed outcome values,
 bounded page/run counts, run ID and attempt, fixed status/conclusion values,
 and UTC/elapsed timing metadata. It excludes workflow/provider response bodies,
 web URLs, commit content, actors, recipients, notification payloads, and every
-credential. Exceptions are converted to a fixed category.
+credential. One monotonic deadline covers every page and body read, so a wall
+clock adjustment cannot extend the budget. Exceptions are converted to a fixed
+category.
 
 The workflow has only `actions: read` and `contents: read`; checkout does not
 persist credentials and every action is commit-pinned. The deployability gate

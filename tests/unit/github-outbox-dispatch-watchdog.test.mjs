@@ -135,6 +135,11 @@ test('in-progress execution becomes stuck only after the dispatcher two-minute d
   const result=assessOutboxDispatchRuns([stuck],options());
   assert.equal(result.category,'run_stuck');
   assert.equal(result.workerDeadlineMs,120000);
+
+  const staleButRecentlyStarted=run({status:'in_progress',conclusion:null,
+    created_at:'2026-09-20T10:00:00Z',run_started_at:'2026-09-20T11:59:30Z',
+    updated_at:'2026-09-20T11:59:45Z'});
+  assert.equal(assessOutboxDispatchRuns([staleButRecentlyStarted],options()).category,'run_stale');
 });
 
 test('discovery filters in the API and paginates within hard bounds',async()=>{
@@ -263,6 +268,29 @@ test('pagination shares one absolute API budget rather than resetting per page',
     },
     clock:()=>NOW,
     monotonicClock:()=>ticks.shift()??10000,
+    setTimer:(_callback,delay)=>{ delays.push(delay); return delay; },
+    clearTimer:()=>{},
+  });
+  assert.equal(calls,2);
+  assert.deepEqual(delays,[10000,4000]);
+  assert.equal(result.category,'api_failure');
+  assert.equal(result.pagesScanned,1);
+});
+
+test('a backward wall-clock adjustment cannot extend the monotonic API budget',async()=>{
+  const wallTicks=[NOW,NOW-60*60*1000];
+  const monotonicTicks=[100,100,6100,6100,10100];
+  const delays=[];
+  let calls=0;
+  const result=await discoverOutboxDispatchStatus(environment({
+    WATCHDOG_API_TIMEOUT_MS:'10000',WATCHDOG_MAX_PAGES:'2',WATCHDOG_PER_PAGE:'1',
+  }),{
+    fetchImpl:async()=>{
+      calls+=1;
+      return response({total_count:3,workflow_runs:[run({id:200+calls})]});
+    },
+    clock:()=>wallTicks.shift()??NOW-60*60*1000,
+    monotonicClock:()=>monotonicTicks.shift()??10100,
     setTimer:(_callback,delay)=>{ delays.push(delay); return delay; },
     clearTimer:()=>{},
   });

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import { performance } from 'node:perf_hooks';
 
 export const OUTBOX_WATCHDOG_FORMAT='randori.outbox-dispatch-watchdog.v1';
 
@@ -158,6 +159,7 @@ export function assessOutboxDispatchRuns(runs,{defaultBranch,scheduleGraceMs,wor
   if(latest.runAttempt!==1) return alertResult('manual_rerun',metadata);
   if(latest.status==='in_progress'){
     if(now.milliseconds-latest.startedMilliseconds>=deadline) return alertResult('run_stuck',metadata);
+    if(latest.createdMilliseconds<window.freshnessFloor) return alertResult('run_stale',metadata);
     return freeze({...baseResult({...metadata,ok:true,status:'observing',
       category:latest.createdMilliseconds<window.currentSlot?'schedule_grace':null}),
       ...publicRun(latest,now.milliseconds)});
@@ -242,7 +244,7 @@ function discoveryAlert(category,{clock,scheduleGraceMs,workerDeadlineMs,scan}){
 }
 
 export async function discoverOutboxDispatchStatus(environment,{fetchImpl=fetch,clock=Date.now,
-  setTimer=setTimeout,clearTimer=clearTimeout,monotonicClock=Date.now}={}){
+  setTimer=setTimeout,clearTimer=clearTimeout,monotonicClock=()=>performance.now()}={}){
   const repository=String(environment.GITHUB_REPOSITORY||'');
   const defaultBranch=String(environment.WATCHDOG_DEFAULT_BRANCH||'');
   const apiUrl=String(environment.GITHUB_API_URL||'');

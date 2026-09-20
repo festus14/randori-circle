@@ -1845,7 +1845,7 @@ failure states.
 
 Discovery constructs only the reviewed GitHub workflow-runs URL, validates the
 same event and branch locally, scans at most two 100-run pages, caps response
-size, and shares one ten-second API deadline. Its JSON projection contains only
+size, and shares one monotonic ten-second API deadline. Its JSON projection contains only
 fixed status values, bounded counts, run identifiers, and timing metadata. The
 workflow has `actions: read` and `contents: read`, no production environment or
 secret, and no application, workflow-dispatch, database, or provider mutation.
