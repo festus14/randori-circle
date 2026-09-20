@@ -68,8 +68,9 @@ async function probeHistorySchema(db){
 
 async function probeStatsSchema(db){
   await db.execute(`SELECT id,is_demo FROM auth_accounts LIMIT 0`);
-  await db.execute(`SELECT id,is_demo FROM pairing_weeks LIMIT 0`);
-  await db.execute(`SELECT id,week_id,user_a_id,user_b_id,user_c_id FROM pairing_groups LIMIT 0`);
+  await db.execute(`SELECT id,week_label,week_start,is_demo FROM pairing_weeks LIMIT 0`);
+  await db.execute(`SELECT id,week_id,user_a_id,user_b_id,user_c_id,is_ai_pair
+    FROM pairing_groups LIMIT 0`);
   await db.execute(`SELECT week_id,user_id,source FROM pairing_participants LIMIT 0`);
   return true;
 }

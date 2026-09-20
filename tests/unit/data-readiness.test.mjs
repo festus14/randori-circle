@@ -74,6 +74,16 @@ test('weeks and my-pair readiness pin their exact publication and schedule proje
   assert.equal(myPair.some(sql=>sql==='SELECT id,week_label,week_start,focus,is_demo FROM pairing_weeks LIMIT 0'),true);
 });
 
+test('stats readiness includes columns used only by authenticated summaries',async()=>{
+  const statements=await capturedStatements(ensureDataStatsReadiness);
+  assert.deepEqual(statements,[
+    'SELECT id,is_demo FROM auth_accounts LIMIT 0',
+    'SELECT id,week_label,week_start,is_demo FROM pairing_weeks LIMIT 0',
+    'SELECT id,week_id,user_a_id,user_b_id,user_c_id,is_ai_pair FROM pairing_groups LIMIT 0',
+    'SELECT week_id,user_id,source FROM pairing_participants LIMIT 0',
+  ]);
+});
+
 test('data readiness coalesces by client and contract',async()=>{
   const statements=[];
   let release;
