@@ -12782,10 +12782,17 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
   async function load(room=window._randori_workspace?.room){
     if(!adoptRoom(room)){ reset(); return false; }
+    // A write already owns the request generation. Reconciliation must never
+    // cancel a user action, while a later user action may supersede a read.
+    if(state.busy&&state.controls) return false;
     const priorControls=state.controls;
+    const background=priorControls!==null;
     state.requestEpoch+=1; state.controller?.abort();
     const controller=new AbortController(); state.controller=controller;
-    state.busy=true; state.message=''; const scope=identityScope(); render();
+    clearPoll();
+    if(!background){ state.busy=true; state.message=''; }
+    const scope=identityScope();
+    if(!background) render();
     try{
       const url=new URL('/api/session-controls',location.origin); url.searchParams.set('room_id',scope.room);
       const headers=scope.contextVersion===null?undefined:{'x-randori-circle-context-version':String(scope.contextVersion)};
@@ -12802,8 +12809,16 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       render(); return true;
     }catch(error){
       if(error?.name!=='AbortError'&&matchesIdentity(scope)){
-        state.controls=null; state.receivedAt=0; state.busy=false;
-        state.message='Shared controls unavailable — retry.'; render();
+        state.busy=false;
+        if(background){
+          // Keep the last authoritative snapshot interactive and retry on the
+          // bounded poll cadence. A transient read cannot erase state or a
+          // successful mutation announcement.
+          schedulePoll();
+        }else{
+          state.controls=null; state.receivedAt=0;
+          state.message='Shared controls unavailable — retry.'; render();
+        }
       }
       return false;
     }finally{ if(state.controller===controller) state.controller=null; }
@@ -12867,7 +12882,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const completionVersion=VERSION.test(String(event.detail.completionVersion||''))?String(event.detail.completionVersion):null;
     if(completionVersion&&completionVersion!==state.completionVersion){
       state.epoch+=1; state.requestEpoch+=1; state.controller?.abort(); state.controller=null;
-      clearPoll(); clearTick(); state.completionVersion=completionVersion;
+      clearPoll(); clearTick(); state.busy=false; state.completionVersion=completionVersion;
       if(event.detail.state==='completed'&&state.controls){
         state.controls={...state.controls,terminal:true,completionVersion};
         state.receivedAt=Date.now(); state.busy=false; state.message=''; render();

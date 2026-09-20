@@ -2439,3 +2439,28 @@ convergence, simultaneous actions, expiry, completion, account/room/circle
 fences, and process restart. Rollback retains the v19 table and ledger, disables
 the route/UI, and rolls forward; it never imports old browser-local values or
 drops data. Full details are in [`SESSION_CONTROLS.md`](SESSION_CONTROLS.md).
+
+## ID-59: Keep session-control reconciliation non-blocking after hydration
+
+Status: candidate client hotfix; no migration.
+
+**Decision.** Initial session-control loading and user mutations remain blocking,
+but a refresh of an already authoritative aggregate does not disable participant
+roles or timer actions. A user mutation takes ownership of the request generation,
+aborts any in-flight refresh, and submits the last confirmed opaque CAS version.
+The existing identity, room, circle, cycle, completion, and request-generation
+fences prevent a late or aborted read from replacing the mutation result. A
+transient background-read failure retains the last confirmed aggregate and
+retries on the bounded polling cadence.
+
+**Alternatives.** Increasing browser-test timeouts or retrying CI hides the input
+loss. Disabling polling loses cross-device convergence. Serializing user actions
+behind a routine read makes focused controls inert during network latency. These
+options are rejected in favour of responsive controls with the existing server
+CAS as the concurrency authority.
+
+**Rollout and recovery.** Canary keyboard and pointer activation while a poll is
+delayed, then verify one write, stale-read fencing, two-browser convergence,
+room/account fences, and terminal behavior. Rollback is code-only and restores
+the prior blocking refresh; migration 19 and all durable aggregate rows remain
+unchanged.
