@@ -103,6 +103,7 @@ test('an invited member completes the mocked Google provider journey to an authe
   let prepared=0;
   let providerStarts=0;
   let callbacks=0;
+  let appOrigin='';
   const invitedUser={
     id:7,email:'invited@example.test',name:'Invited Member',display_name:'Invited Member',
     color:'#9cc0b5',is_admin:false,is_available:true,tz:'Europe/London',interview_focus:'both',
@@ -132,7 +133,7 @@ test('an invited member completes the mocked Google provider journey to an authe
   });
   await page.route('https://accounts.google.com/**',route=>route.fulfill({
     status:200,contentType:'text/html',
-    body:`<!doctype html><html><body><h1>Mock Google</h1><button onclick="location.href='/api/auth/google/callback?code=one-time-code&state=mock-state'">Continue as invited@example.test</button></body></html>`,
+    body:`<!doctype html><html><body><h1>Mock Google</h1><button onclick="location.href='${appOrigin}/api/auth/google/callback?code=one-time-code&state=mock-state'">Continue as invited@example.test</button></body></html>`,
   }));
   await page.route('**/api/auth/google/callback**',async route=>{
     callbacks+=1;
@@ -145,6 +146,7 @@ test('an invited member completes the mocked Google provider journey to an authe
   await resetClientState(page);
 
   await page.goto(`/invite#invite=${token}`,{waitUntil:'domcontentloaded'});
+  appOrigin=new URL(page.url()).origin;
   await expect(page.getByTestId('invite-status')).toContainText('Invitation verified');
   await page.getByTestId('invite-continue').click();
   await expect(page.getByRole('heading',{name:'Mock Google'})).toBeVisible();

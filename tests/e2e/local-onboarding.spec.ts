@@ -145,7 +145,7 @@ test.describe('unmocked local onboarding',()=>{
       expect(Number((await savedProfile.json()).user?.id)).toBeGreaterThan(0);
       await expect(member.locator('#view-dashboard')).toBeVisible();
       await expect(member.locator('#dashWelcome')).toContainText('Invited Member');
-      const memberCookies=await memberContext.cookies(runtime.url);
+      const memberCookies=await memberContext.cookies(new URL('/api/auth/signup',runtime.url).href);
       expect(memberCookies.some(cookie=>cookie.name==='randori_session'&&cookie.httpOnly)).toBe(true);
       const inertInviteClaim=memberCookies.find(cookie=>cookie.name==='randori_invite_claim');
       expect(inertInviteClaim).toEqual(expect.objectContaining({httpOnly:true,path:'/api'}));

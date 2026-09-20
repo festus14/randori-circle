@@ -93,7 +93,9 @@ test('canonical invite preserves its URL and requires authentication before stor
   expect(await page.evaluate(() => localStorage.getItem('randori-last-room'))).toBeNull();
 
   await page.locator('#authGoogle').click();
-  await expect(page).toHaveURL(/\/api\/auth\/google\/start\?return_to=%2Fjoin%2Fweek_42_pair_7$/);
+  await expect(page).toHaveURL(
+    /\/api\/auth\/google\/start\?purpose=login&return_to=%2Fjoin%2Fweek_42_pair_7$/,
+  );
 });
 
 test('an authenticated invite is denied unless it exactly matches /api/my-pair room_id', async ({ page }) => {
