@@ -14,6 +14,7 @@ import {
 } from '../../scripts/github-backup-restore-watchdog.mjs';
 
 const NOW=Date.parse('2026-09-22T06:00:00.000Z');
+const ACTIVATION='2026-09-21T03:17:00.000Z';
 const MAX_AGE=8*24*60*60*1000;
 const STUCK_AFTER=90*60*1000;
 const COMMIT='a'.repeat(40);
@@ -35,7 +36,8 @@ function run(overrides={}){
 
 function runOptions(overrides={}){
   return {defaultBranch:'main',maxRunAgeMs:MAX_AGE,stuckAfterMs:STUCK_AFTER,
-    slotGraceMs:2*60*60*1000,slotDeadlineMs:3.5*60*60*1000,clock:()=>NOW,...overrides};
+    slotGraceMs:2*60*60*1000,slotDeadlineMs:3.5*60*60*1000,
+    activationAt:ACTIVATION,clock:()=>NOW,...overrides};
 }
 
 function discovery(){
@@ -73,19 +75,92 @@ test('scheduled-run assessment alerts on absence, failure, staleness, and a stuc
   })],runOptions()).category,'run_stuck');
 });
 
+test('bootstrap is explicit before activation and invents no expected rehearsal timestamp',()=>{
+  const result=assessScheduledRuns([run({
+    id:100,created_at:'2026-09-14T03:17:00Z',updated_at:'2026-09-14T03:40:00Z',
+  })],runOptions({clock:()=>Date.parse('2026-09-21T03:16:59.999Z')}));
+  assert.deepEqual(result,{
+    ok:false,kind:'backup-restore-watchdog',format:BACKUP_WATCHDOG_FORMAT,
+    status:'setup_pending',alert:false,category:'setup_pending',
+    checkedAt:'2026-09-21T03:16:59.999Z',owner:'@festus14',cadence:'hourly',
+    activationAt:ACTIVATION,
+    requiredAction:'configure_protected_rehearsal_and_wait_for_activation',
+  });
+  assert.equal('expectedAt' in result,false);
+  assert.equal('runId' in result,false);
+});
+
+test('activation is schedule-aligned and fails closed without post-activation evidence',()=>{
+  const historical=run({
+    id:100,created_at:'2026-09-14T03:17:00Z',updated_at:'2026-09-14T03:40:00Z',
+  });
+  const active=assessScheduledRuns([historical],runOptions({clock:()=>Date.parse(ACTIVATION)}));
+  assert.equal(active.status,'alert');
+  assert.equal(active.category,'run_missing');
+  assert.equal(active.activationAt,ACTIVATION);
+  assert.equal(active.expectedAt,ACTIVATION);
+
+  for(const activationAt of [
+    'invalid','2026-09-21T03:18:00.000Z','2026-09-22T03:17:00.000Z',
+  ]){
+    assert.throws(()=>assessScheduledRuns([],runOptions({activationAt})),
+      /control activation epoch/);
+  }
+});
+
 test('the current Monday slot is required immediately after its bounded grace',()=>{
-  const previous=run({created_at:'2026-09-14T03:17:00Z',updated_at:'2026-09-14T03:40:00Z'});
+  const previous=run();
   const beforeGrace=assessScheduledRuns([previous],runOptions({
-    clock:()=>Date.parse('2026-09-21T04:30:00.000Z'),
+    clock:()=>Date.parse('2026-09-28T04:30:00.000Z'),
   }));
   assert.equal(beforeGrace.candidate,true);
-  assert.equal(beforeGrace.expectedAt,'2026-09-14T03:17:00.000Z');
+  assert.equal(beforeGrace.expectedAt,'2026-09-21T03:17:00.000Z');
 
   const missed=assessScheduledRuns([previous],runOptions({
-    clock:()=>Date.parse('2026-09-21T05:47:00.000Z'),
+    clock:()=>Date.parse('2026-09-28T05:47:00.000Z'),
   }));
   assert.equal(missed.category,'run_missing');
-  assert.equal(missed.expectedAt,'2026-09-21T03:17:00.000Z');
+  assert.equal(missed.expectedAt,'2026-09-28T03:17:00.000Z');
+});
+
+test('a prior post-activation success stays verifiable through a later slot grace',()=>{
+  const graceNow=Date.parse('2026-09-28T04:30:00.000Z');
+  const priorSuccess=run();
+  const currentRun=run({
+    id:124,run_attempt:1,status:'in_progress',conclusion:null,
+    created_at:'2026-09-28T03:17:00Z',updated_at:'2026-09-28T03:17:00Z',
+  });
+  const selected=assessScheduledRuns([currentRun,priorSuccess],runOptions({clock:()=>graceNow}));
+  assert.equal(selected.candidate,true);
+  assert.equal(selected.runId,123);
+  assert.equal(selected.activationAt,ACTIVATION);
+  assert.equal(selected.expectedAt,'2026-09-21T03:17:00.000Z');
+
+  const candidate=assessMonitorArtifacts([{
+    id:456,name:'turso-backup-monitor-123-2',expired:false,
+    created_at:'2026-09-21T03:40:00Z',
+  }],selected,{maxRunAgeMs:MAX_AGE,clock:()=>graceNow});
+  assert.equal(candidate.status,'candidate');
+  assert.equal(candidate.activationAt,ACTIVATION);
+
+  const verified=verifyDownloadedMonitor(monitorSummary(),candidate,{
+    maxRunAgeMs:MAX_AGE,activationAt:ACTIVATION,clock:()=>graceNow,
+  });
+  assert.equal(verified.status,'healthy');
+  assert.equal(verified.activationAt,ACTIVATION);
+  assert.equal(verified.expectedAt,'2026-09-21T03:17:00.000Z');
+});
+
+test('a stale prior-success alert retains the reviewed activation epoch',()=>{
+  const result=assessScheduledRuns([
+    run({created_at:'2026-09-21T03:17:00Z',updated_at:'2026-09-21T03:40:00Z'}),
+    run({id:124,run_attempt:1,status:'in_progress',conclusion:null,
+      created_at:'2026-09-28T03:17:00Z',updated_at:'2026-09-28T03:17:00Z'}),
+  ],runOptions({maxRunAgeMs:6*24*60*60*1000,
+    clock:()=>Date.parse('2026-09-28T04:30:00.000Z')}));
+  assert.equal(result.category,'run_stale');
+  assert.equal(result.activationAt,ACTIVATION);
+  assert.equal(result.expectedAt,'2026-09-21T03:17:00.000Z');
 });
 
 test('a grace-edge run cannot reset the absolute current-slot deadline',()=>{
@@ -126,7 +201,8 @@ test('artifact assessment requires one exact, fresh, unexpired monitor artifact'
   assert.deepEqual(discovery(),{
     ok:true,kind:'backup-restore-watchdog',format:BACKUP_WATCHDOG_FORMAT,status:'candidate',
     alert:false,category:null,checkedAt:'2026-09-22T06:00:00.000Z',owner:'@festus14',
-    cadence:'hourly',expectedAt:'2026-09-21T03:17:00.000Z',runId:123,runAttempt:2,
+    cadence:'hourly',activationAt:ACTIVATION,
+    expectedAt:'2026-09-21T03:17:00.000Z',runId:123,runAttempt:2,
     repoCommit:COMMIT,
     runCreatedAt:'2026-09-21T03:17:00.000Z',
     artifactId:456,artifactName:'turso-backup-monitor-123-2',
@@ -136,9 +212,10 @@ test('artifact assessment requires one exact, fresh, unexpired monitor artifact'
 
 test('download verification accepts only an exact healthy PII-free monitor projection',()=>{
   const healthy=verifyDownloadedMonitor(monitorSummary(),discovery(),{
-    maxRunAgeMs:MAX_AGE,clock:()=>NOW,
+    maxRunAgeMs:MAX_AGE,activationAt:ACTIVATION,clock:()=>NOW,
   });
   assert.equal(healthy.status,'healthy');
+  assert.equal(healthy.activationAt,ACTIVATION);
   assert.equal(healthy.cleanup.restoreDeleted,true);
 
   for(const altered of [
@@ -150,10 +227,24 @@ test('download verification accepts only an exact healthy PII-free monitor proje
     monitorSummary({checkedAt:'2026-09-01T03:39:00.000Z'}),
   ]){
     const result=verifyDownloadedMonitor(altered,discovery(),{
-      maxRunAgeMs:MAX_AGE,clock:()=>NOW,
+      maxRunAgeMs:MAX_AGE,activationAt:ACTIVATION,clock:()=>NOW,
     });
     assert.equal(result.category,'artifact_corrupt');
     assert.doesNotMatch(JSON.stringify(result),/person@example\.test/);
+  }
+
+  for(const alteredDiscovery of [
+    {...discovery(),activationAt:'2026-09-28T03:17:00.000Z'},
+    {...discovery(),activationAt:'2026-09-14T03:17:00.000Z'},
+    {...discovery(),activationAt:'2026-09-21T03:18:00.000Z'},
+    Object.fromEntries(Object.entries(discovery()).filter(([key])=>key!=='activationAt')),
+  ]){
+    const result=verifyDownloadedMonitor(monitorSummary(),alteredDiscovery,{
+      maxRunAgeMs:MAX_AGE,activationAt:ACTIVATION,clock:()=>NOW,
+    });
+    assert.equal(result.category,'artifact_corrupt');
+    assert.equal(result.activationAt,ACTIVATION);
+    assert.equal(!result.expectedAt||Date.parse(result.expectedAt)>=Date.parse(ACTIVATION),true);
   }
 });
 
@@ -170,6 +261,7 @@ test('discovery queries only scheduled default-branch runs and binds the exact a
   const result=await discoverAuthoritativeEvidence({
     GITHUB_REPOSITORY:'festus14/randori-circle',WATCHDOG_DEFAULT_BRANCH:'main',
     GITHUB_API_URL:'https://api.github.com',GITHUB_TOKEN:'private-watchdog-token',
+    WATCHDOG_CONTROL_ACTIVATION_AT:ACTIVATION,
     WATCHDOG_MAX_RUN_AGE_MS:String(MAX_AGE),WATCHDOG_STUCK_AFTER_MS:String(STUCK_AFTER),
     WATCHDOG_SLOT_GRACE_MS:String(2*60*60*1000),
     WATCHDOG_SLOT_DEADLINE_MS:String(3.5*60*60*1000),
@@ -185,6 +277,53 @@ test('discovery queries only scheduled default-branch runs and binds the exact a
   assert.doesNotMatch(JSON.stringify(result),/private-watchdog-token/);
 });
 
+test('pre-activation discovery reports setup without querying GitHub',async()=>{
+  let requests=0;
+  const result=await discoverAuthoritativeEvidence({
+    GITHUB_REPOSITORY:'festus14/randori-circle',WATCHDOG_DEFAULT_BRANCH:'main',
+    GITHUB_API_URL:'https://api.github.com',GITHUB_TOKEN:'private-watchdog-token',
+    WATCHDOG_CONTROL_ACTIVATION_AT:ACTIVATION,
+    WATCHDOG_MAX_RUN_AGE_MS:String(MAX_AGE),WATCHDOG_STUCK_AFTER_MS:String(STUCK_AFTER),
+    WATCHDOG_SLOT_GRACE_MS:String(2*60*60*1000),
+    WATCHDOG_SLOT_DEADLINE_MS:String(3.5*60*60*1000),
+  },{fetchImpl:async()=>{ requests+=1; throw new Error('must not fetch'); },
+    clock:()=>Date.parse('2026-09-20T17:00:00.000Z')});
+  assert.equal(result.status,'setup_pending');
+  assert.equal(result.ok,false);
+  assert.equal(result.alert,false);
+  assert.equal(requests,0);
+});
+
+test('pre-activation CLI persists a non-ready setup artifact without alerting',async()=>{
+  const directory=mkdtempSync(join(tmpdir(),'randori-backup-watchdog-setup-'));
+  resources.push(directory);
+  const output=join(directory,'backup-watchdog-summary.json');
+  const githubOutput=join(directory,'github-output');
+  writeFileSync(githubOutput,'',{mode:0o600});
+  const execution=await main({
+    argv:['--mode','discover','--output',output],
+    environment:{
+      RUNNER_TEMP:directory,GITHUB_OUTPUT:githubOutput,
+      GITHUB_REPOSITORY:'festus14/randori-circle',WATCHDOG_DEFAULT_BRANCH:'main',
+      GITHUB_API_URL:'https://api.github.com',GITHUB_TOKEN:'private-watchdog-token',
+      WATCHDOG_CONTROL_ACTIVATION_AT:ACTIVATION,
+      WATCHDOG_MAX_RUN_AGE_MS:String(MAX_AGE),WATCHDOG_STUCK_AFTER_MS:String(STUCK_AFTER),
+      WATCHDOG_SLOT_GRACE_MS:String(2*60*60*1000),
+      WATCHDOG_SLOT_DEADLINE_MS:String(3.5*60*60*1000),
+    },
+    fetchImpl:async()=>{ throw new Error('must not fetch'); },stdout:{write(){}},
+    clock:()=>Date.parse('2026-09-20T17:00:00.000Z'),
+  });
+  assert.equal(execution.exitCode,0);
+  assert.equal(execution.result.status,'setup_pending');
+  assert.equal(execution.result.ok,false);
+  assert.equal(execution.result.alert,false);
+  assert.equal('expectedAt' in execution.result,false);
+  assert.deepEqual(JSON.parse(readFileSync(output,'utf8')),execution.result);
+  assert.equal(readFileSync(githubOutput,'utf8'),
+    'alert=false\ncategory=setup_pending\ncandidate=false\n');
+});
+
 test('discovery API failures become fixed alerts without leaking credentials or provider text',async()=>{
   const privateError='private-watchdog-token person@example.test';
   const directory=mkdtempSync(join(tmpdir(),'randori-backup-watchdog-api-'));
@@ -194,7 +333,8 @@ test('discovery API failures become fixed alerts without leaking credentials or 
     environment:{
       RUNNER_TEMP:directory,GITHUB_REPOSITORY:'festus14/randori-circle',
       WATCHDOG_DEFAULT_BRANCH:'main',GITHUB_API_URL:'https://api.github.com',
-      GITHUB_TOKEN:'private-watchdog-token',WATCHDOG_MAX_RUN_AGE_MS:String(MAX_AGE),
+      GITHUB_TOKEN:'private-watchdog-token',WATCHDOG_CONTROL_ACTIVATION_AT:ACTIVATION,
+      WATCHDOG_MAX_RUN_AGE_MS:String(MAX_AGE),
       WATCHDOG_STUCK_AFTER_MS:String(STUCK_AFTER),WATCHDOG_SLOT_GRACE_MS:String(2*60*60*1000),
       WATCHDOG_SLOT_DEADLINE_MS:String(3.5*60*60*1000),
     },
@@ -217,7 +357,7 @@ test('CLI converts a missing downloaded artifact into sanitized evidence and out
     argv:['--mode','verify','--discovery',output,'--monitor-summary',
       join(directory,'backup-monitor-summary.json'),'--output',output],
     environment:{RUNNER_TEMP:directory,GITHUB_OUTPUT:githubOutput,
-      WATCHDOG_MAX_RUN_AGE_MS:String(MAX_AGE)},
+      WATCHDOG_CONTROL_ACTIVATION_AT:ACTIVATION,WATCHDOG_MAX_RUN_AGE_MS:String(MAX_AGE)},
     stdout:{write(value){ stdout+=value; }},clock:()=>NOW,
   });
   assert.equal(execution.exitCode,0);
@@ -237,6 +377,8 @@ test('watchdog workflow is independent, read-only, hourly, and production-secret
   assert.equal((rehearsal.match(/REHEARSAL_RTO_TARGET_MS: '900000'/g)||[]).length,2);
   assert.match(workflow,/WATCHDOG_SLOT_GRACE_MS: '7200000'/);
   assert.match(workflow,/WATCHDOG_SLOT_DEADLINE_MS: '12600000'/);
+  assert.equal((workflow.match(
+    /WATCHDOG_CONTROL_ACTIVATION_AT: '2026-09-21T03:17:00\.000Z'/g)||[]).length,2);
   assert.match(workflow,/group: turso-backup-restore-watchdog/);
   assert.match(workflow,/actions: read/);
   assert.match(workflow,/contents: read/);

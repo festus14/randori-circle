@@ -119,6 +119,10 @@ test('watchdog permissions, isolation, schedule, and terminal alert fail closed'
     'watchdog permissions must be actions: read and contents: read only'));
   assert.ok(changed('watchdog',"cron: '47 * * * *'","cron: '17 * * * *'").includes(
     'watchdog cadence must remain hourly at minute 47'));
+  assert.ok(changed('watchdog',
+    "WATCHDOG_CONTROL_ACTIVATION_AT: '2026-09-21T03:17:00.000Z'",
+    "WATCHDOG_CONTROL_ACTIVATION_AT: '2026-09-28T03:17:00.000Z'").includes(
+    'watchdog activation must remain the reviewed first Monday rehearsal slot'));
   assert.ok(changed('watchdog','    runs-on: ubuntu-latest',
     '    environment: turso-migration-rehearsal\n    runs-on: ubuntu-latest').includes(
     'watchdog must not receive a protected environment or provider/application secrets'));
