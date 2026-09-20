@@ -379,6 +379,116 @@ async function roomSnapshot(page: Page) {
   });
 }
 
+async function quiesceWorkspace(page: Page, expectedRoom: string) {
+  await page.evaluate(async () => {
+    const questions = (window as typeof window & {
+      _randori_questions?: { state?: string; fetchCustomQuestions?: () => Promise<unknown> };
+    })._randori_questions;
+    if (!questions?.fetchCustomQuestions) throw new Error('catalogue readiness unavailable');
+    if (questions.state !== 'loaded') await questions.fetchCustomQuestions();
+  });
+  const readState = () => page.evaluate(room => {
+    const app = window as typeof window & {
+      currentRoom?: string | null;
+      _randori_code?: { currentRoom?: string | null };
+      _randori_questions?: {
+        state?: string;
+        selectedIdentity?: () => { slug?: string; version?: number | null };
+      };
+      _randori_workspace?: { room?: string | null; revision?: number; hydrated?: boolean };
+    };
+    const selection = app._randori_questions?.selectedIdentity?.();
+    const activeRoom = app._randori_code?.currentRoom
+      || app.currentRoom
+      || (document.getElementById('roomSelect') as HTMLSelectElement | null)?.value
+      || null;
+    const inactive = app._randori_workspace?.room == null
+      && activeRoom == null
+      && app._randori_workspace?.hydrated !== true;
+    const active = app._randori_workspace?.room === room
+      && activeRoom === room
+      && app._randori_workspace?.hydrated === true;
+    const catalogueReady = app._randori_questions?.state === 'loaded'
+      && Boolean(selection?.slug)
+      && Number.isSafeInteger(selection?.version)
+      && Number(selection?.version) > 0;
+    return {
+      ready: catalogueReady && (inactive || active),
+      mode: inactive ? 'inactive' : active ? 'active' : 'transitioning',
+      room: app._randori_workspace?.room || null,
+      activeRoom,
+      catalogue: app._randori_questions?.state || 'unavailable',
+      hydrated: app._randori_workspace?.hydrated === true,
+      revision: Number(app._randori_workspace?.revision || 0),
+      question: {slug: String(selection?.slug || ''), version: Number(selection?.version || 0)},
+    };
+  }, expectedRoom);
+  await expect.poll(async () => (await readState()).ready).toBe(true);
+  const readyState = await readState();
+  expect(readyState.catalogue).toBe('loaded');
+  expect(readyState.question.slug).not.toBe('');
+  expect(readyState.question.version).toBeGreaterThan(0);
+  if (readyState.mode === 'inactive') {
+    expect(readyState).toMatchObject({
+      room: null,
+      activeRoom: null,
+      hydrated: false,
+      revision: 0,
+    });
+    return {
+      outcome: 'already-clean' as const,
+      room: null,
+      hydrated: false,
+      beforeRevision: 0,
+      afterRevision: 0,
+      question: readyState.question,
+    };
+  }
+  expect(readyState).toMatchObject({
+    mode: 'active',
+    room: expectedRoom,
+    activeRoom: expectedRoom,
+    hydrated: true,
+  });
+  const result = await page.evaluate(async () => {
+    const app = window as typeof window & {
+      _randori_workspace?: {
+        room?: string | null;
+        revision?: number;
+        hydrated?: boolean;
+        flush?: () => Promise<boolean>;
+      };
+      _randori_questions?: {
+        selectedIdentity?: () => { slug?: string; version?: number | null };
+      };
+    };
+    const workspace = app._randori_workspace;
+    if (!workspace?.flush) throw new Error('workspace flush unavailable');
+    const beforeRevision = Number(workspace.revision || 0);
+    const flushed = await workspace.flush();
+    const afterRevision = Number(workspace.revision || 0);
+    const selection = app._randori_questions?.selectedIdentity?.() || {};
+    return {
+      outcome: !flushed ? 'failed' : afterRevision === beforeRevision ? 'already-clean' : 'persisted',
+      room: workspace.room || null,
+      hydrated: workspace.hydrated === true,
+      beforeRevision,
+      afterRevision,
+      question: {slug: String(selection.slug || ''), version: Number(selection.version || 0)},
+    };
+  });
+  expect(result).toMatchObject({
+    room: expectedRoom,
+    hydrated: true,
+    beforeRevision: expect.any(Number),
+    afterRevision: expect.any(Number),
+    question: readyState.question,
+  });
+  expect(['already-clean', 'persisted']).toContain(result.outcome);
+  expect(result.afterRevision).toBeGreaterThanOrEqual(result.beforeRevision);
+  return result;
+}
+
 async function countRows(databaseUrl: string, table: string) {
   if (!/^[a-z_]+$/.test(table)) throw new Error('unsafe table name');
   const db = createClient({ url: databaseUrl });
@@ -389,6 +499,95 @@ async function countRows(databaseUrl: string, table: string) {
     await db.close();
   }
 }
+
+function containsRuntimeDdl(sql: string) {
+  let executableSql = '';
+  let state: 'normal' | 'single' | 'double' | 'backtick' | 'bracket' | 'line-comment' | 'block-comment'
+    = 'normal';
+  const source = String(sql);
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    const next = source[index + 1];
+    if (state === 'normal') {
+      if (character === '-' && next === '-') {
+        executableSql += '  ';
+        state = 'line-comment';
+        index += 1;
+      } else if (character === '/' && next === '*') {
+        executableSql += '  ';
+        state = 'block-comment';
+        index += 1;
+      } else if (character === "'") {
+        executableSql += ' ';
+        state = 'single';
+      } else if (character === '"') {
+        executableSql += ' ';
+        state = 'double';
+      } else if (character === '`') {
+        executableSql += ' ';
+        state = 'backtick';
+      } else if (character === '[') {
+        executableSql += ' ';
+        state = 'bracket';
+      } else {
+        executableSql += character;
+      }
+      continue;
+    }
+    if (state === 'line-comment') {
+      if (character === '\r' || character === '\n') {
+        executableSql += character;
+        state = 'normal';
+      } else {
+        executableSql += ' ';
+      }
+      continue;
+    }
+    if (state === 'block-comment') {
+      executableSql += ' ';
+      if (character === '*' && next === '/') {
+        executableSql += ' ';
+        state = 'normal';
+        index += 1;
+      }
+      continue;
+    }
+    const delimiter = state === 'single' ? "'" : state === 'double' ? '"' : state === 'backtick' ? '`' : ']';
+    executableSql += ' ';
+    if (character !== delimiter) continue;
+    if (next === delimiter) {
+      executableSql += ' ';
+      index += 1;
+    } else {
+      state = 'normal';
+    }
+  }
+  return /(?:^|;)\s*(?:CREATE\s+(?:(?:UNIQUE|TEMP(?:ORARY)?|VIRTUAL|OR\s+REPLACE)\s+)*(?:TABLE|INDEX|VIEW|TRIGGER)|ALTER\s+TABLE|DROP\s+(?:TABLE|INDEX|VIEW|TRIGGER))\b/iu
+    .test(executableSql);
+}
+
+test('runtime DDL observation distinguishes executable statements from SQL trivia', () => {
+  const reads = [
+    `SELECT 'CREATE TABLE quoted (id INTEGER)'`,
+    'SELECT "DROP TABLE identifier", `[ALTER TABLE bracket]`',
+    `-- CREATE TABLE commented (id INTEGER)\nSELECT 1`,
+    `/* DROP INDEX commented */ SELECT 1`,
+    `-- '\nSELECT 'ok'`,
+    `/* ' */ SELECT 'ok'`,
+    `SELECT '-- CREATE TABLE string'; SELECT '/* DROP VIEW string */'`,
+  ];
+  const writes = [
+    'CREATE TABLE direct (id INTEGER)',
+    '-- \'\nCREATE TABLE after_line_comment (id INTEGER); SELECT \'ok\'',
+    '/* \' */ CREATE UNIQUE INDEX after_block_comment ON direct(id); SELECT \'ok\'',
+    'SELECT 1; /* comment */ ALTER TABLE direct ADD COLUMN name TEXT',
+    `SELECT 'DROP TRIGGER string'; DROP TRIGGER executable`,
+    'CREATE /* comment */ TEMPORARY TABLE split_keywords (id INTEGER)',
+    'CREATE OR /* comment */ REPLACE VIEW split_view AS SELECT 1',
+  ];
+  for (const sql of reads) expect(containsRuntimeDdl(sql), sql).toBe(false);
+  for (const sql of writes) expect(containsRuntimeDdl(sql), sql).toBe(true);
+});
 
 function fixServerTime(iso: string) {
   const NativeDate = globalThis.Date;
@@ -584,14 +783,21 @@ test('two invited members complete the durable local session journey', async ({ 
     const ownerRoom = (await roomSnapshot(pages[0])).room;
     expect((await roomSnapshot(pages[1])).room).toBe(ownerRoom);
 
-    await pages[0].getByTestId('schedule-input').fill('2030-10-06T18:30');
+    const scheduleInput = await pages[0].evaluate(() => {
+      const scheduled = new Date(Date.now() + 36 * 60 * 60_000);
+      const pad = (value: number) => String(value).padStart(2, '0');
+      return `${scheduled.getFullYear()}-${pad(scheduled.getMonth() + 1)}-${pad(scheduled.getDate())}`
+        + `T${pad(scheduled.getHours())}:${pad(scheduled.getMinutes())}`;
+    });
+    const scheduledInstant = await pages[0].evaluate(value => new Date(value).toISOString(), scheduleInput);
+    await pages[0].getByTestId('schedule-input').fill(scheduleInput);
     await pages[0].getByTestId('schedule-propose').click();
     await expect.poll(async () => (await roomSnapshot(pages[0])).schedule?.proposals?.length).toBe(1);
     await openDashboard(pages[1]);
     await expect.poll(async () => (await roomSnapshot(pages[1])).schedule?.proposals?.length).toBe(1);
     await pages[1].getByTestId('schedule-accept').click();
     await expect.poll(async () => (await roomSnapshot(pages[1])).schedule?.agreed_time)
-      .toMatch(/^2030-10-06T/);
+      .toBe(scheduledInstant);
     const agreedTime = (await roomSnapshot(pages[1])).schedule?.agreed_time;
     await openDashboard(pages[0]);
     await expect.poll(async () => (await roomSnapshot(pages[0])).schedule?.agreed_time).toBe(agreedTime);
@@ -632,9 +838,39 @@ test('two invited members complete the durable local session journey', async ({ 
       await expect(page.getByTestId('pair-chat-list')).toContainText('I will navigate and review edge cases.');
     }
 
+    // Dashboard hydration may legitimately persist the default v3 workspace.
+    // First wait for the application's authenticated catalogue, room and
+    // workspace readiness, then use its flush contract to distinguish an
+    // already-clean no-op from a completed persistence write. A false result
+    // remains a failure. The durable response after both clients settle owns
+    // the shared CAS baseline.
+    const quiescedWorkspaces = [];
+    for (const page of pages.slice(0, 2)) {
+      quiescedWorkspaces.push(await quiesceWorkspace(page, String(ownerRoom)));
+    }
     const workspacePath = `/api/video/signal?channel=workspace&room_id=${encodeURIComponent(String(ownerRoom))}&after_revision=0`;
     const initialWorkspace = await browserJson(pages[0], workspacePath);
-    expect(initialWorkspace).toEqual({status: 200, body: {ok: true, snapshot: null, revision: 0}});
+    expect(initialWorkspace).toMatchObject({status: 200, body: {ok: true, revision: expect.any(Number)}});
+    const baselineRevision = Number((initialWorkspace.body as {revision?: number}).revision);
+    expect(Number.isSafeInteger(baselineRevision)).toBe(true);
+    expect(baselineRevision).toBeGreaterThanOrEqual(0);
+    expect(baselineRevision).toBe(Math.max(...quiescedWorkspaces.map(item => item.afterRevision)));
+    if (baselineRevision === 0) {
+      expect(initialWorkspace).toEqual({status: 200, body: {ok: true, snapshot: null, revision: 0}});
+    } else {
+      const baselineQuestion = quiescedWorkspaces.find(item => item.afterRevision === baselineRevision)!.question;
+      expect(initialWorkspace).toMatchObject({
+        body: {
+          snapshot: {
+            revision: baselineRevision,
+            schema_version: 3,
+            room_id: ownerRoom,
+            question_id: baselineQuestion.slug,
+            question_version: baselineQuestion.version,
+          },
+        },
+      });
+    }
     const correctCode = `function rollUpFocusBlocks(blocks) {
   const result = [];
   for (const block of blocks) {
@@ -672,11 +908,15 @@ test('two invited members complete the durable local session journey', async ({ 
       pages[0],
       '/api/video/signal',
       'POST',
-      workspaceWrite(0, 'owner-e2e', 1, `${correctCode}\n`, firstBoard),
+      workspaceWrite(baselineRevision, 'owner-e2e', 1, `${correctCode}\n`, firstBoard),
     );
     expect(firstWorkspaceWrite).toMatchObject({
       status: 200,
-      body: {ok: true, idempotent: false, snapshot: {revision: 1, client_id: 'owner-e2e'}},
+      body: {
+        ok: true,
+        idempotent: false,
+        snapshot: {revision: baselineRevision + 1, client_id: 'owner-e2e'},
+      },
     });
 
     // The member races with a snapshot captured before the owner's write. The
@@ -686,11 +926,15 @@ test('two invited members complete the durable local session journey', async ({ 
       pages[1],
       '/api/video/signal',
       'POST',
-      workspaceWrite(0, 'member-e2e', 1, correctCode, finalBoard),
+      workspaceWrite(baselineRevision, 'member-e2e', 1, correctCode, finalBoard),
     );
     expect(staleWorkspaceWrite).toMatchObject({
       status: 409,
-      body: {ok: false, error: 'revision conflict', current: {revision: 1, client_id: 'owner-e2e'}},
+      body: {
+        ok: false,
+        error: 'revision conflict',
+        current: {revision: baselineRevision + 1, client_id: 'owner-e2e'},
+      },
     });
     const recoveredWorkspaceWrite = await browserJson(
       pages[1],
@@ -710,7 +954,7 @@ test('two invited members complete the durable local session journey', async ({ 
         ok: true,
         idempotent: false,
         snapshot: {
-          revision: 2,
+          revision: baselineRevision + 2,
           client_id: 'member-e2e',
           code: correctCode,
           board: finalBoard,
@@ -790,7 +1034,7 @@ test('two invited members complete the durable local session journey', async ({ 
             schedule: {agreed_time: agreedTime},
             workspace: {
               artifact_available: true,
-              revision: 2,
+              revision: baselineRevision + 2,
               schema_version: 3,
               language: 'javascript',
               question_slug: 'focus-block-rollup',
@@ -920,8 +1164,13 @@ test('two invited members complete the durable local session journey', async ({ 
       status: 200,
       body: {
         ok: true,
-        revision: expect.any(Number),
-        snapshot: {code: correctCode, board: finalBoard},
+        revision: baselineRevision + 2,
+        snapshot: {
+          revision: baselineRevision + 2,
+          client_id: 'member-e2e',
+          code: correctCode,
+          board: finalBoard,
+        },
       },
     });
     const recoveredMessages = await browserJson(
@@ -1063,7 +1312,7 @@ test('two invited members complete the durable local session journey', async ({ 
 
     expect(executionTransport.requests).toHaveLength(1);
     expect(executionTransport.unexpectedExternalRequests).toEqual([]);
-    expect(requestSql.filter(sql => /^\s*(?:CREATE|ALTER|DROP)\b/iu.test(sql))).toEqual([]);
+    expect(requestSql.filter(containsRuntimeDdl)).toEqual([]);
     expect(externalRequests).toEqual([]);
   } finally {
     restoreServerTime();
