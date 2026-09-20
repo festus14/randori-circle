@@ -198,7 +198,7 @@ An optional `.env.local` may set `RANDORI_LOCAL_PORT`, `RANDORI_LOCAL_HOST` (`12
 npm run dev:reset -- --confirm
 ```
 
-`npm run start:test` remains the mock-first static Playwright fixture; it intentionally does not run real API handlers or use the local MVP database.
+`npm run start:test` remains the mock-first static Playwright fixture; it intentionally does not run real API handlers or use the local MVP database. The complete isolated local-runtime journey and its failure-triage guide are documented in [two-user local session E2E](docs/TWO_USER_LOCAL_SESSION_E2E.md).
 
 ```bash
 npm run audit:prod
