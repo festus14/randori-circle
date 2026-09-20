@@ -3619,7 +3619,6 @@ test('legacy pairing reads use only migration-owned schema without request DDL',
     return rows();
   };
   const headers={...sameOriginHeaders,'x-test-auth':'user'};
-  let observedReadinessProbe=false;
   for(const route of ['weeks','my-pair']){
     executed.length=0;
     const response=await invoke(dataHandler,{
@@ -3628,10 +3627,11 @@ test('legacy pairing reads use only migration-owned schema without request DDL',
     assert.equal(response.status,200,JSON.stringify(response.body));
     assert.equal(executed.some(({sql})=>/\b(?:CREATE|ALTER|DROP)\b/iu.test(sql)),false,
       `${route} must never repair schema on a request path`);
-    observedReadinessProbe ||= executed.some(({sql})=>sql.includes('FROM auth_accounts LIMIT 0'));
+    assert.equal(executed.some(({sql})=>sql.includes('FROM auth_accounts LIMIT 0')),true,
+      `${route} must independently prove its migrated account contract`);
+    assert.equal(executed.some(({sql})=>sql.includes('FROM pairing_week_runs LIMIT 0')),true,
+      `${route} must independently prove its publication contract`);
   }
-  assert.equal(observedReadinessProbe,true,
-    'the shared legacy-pairing readiness guard must prove its account contract');
 });
 
 test('a sole secondary circle uses implicit availability GET and POST without a context header',async()=>{

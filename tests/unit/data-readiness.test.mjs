@@ -18,6 +18,16 @@ const DML=/^\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b/iu;
 
 function database(execute){ return {execute}; }
 
+async function capturedStatements(guard){
+  const statements=[];
+  const db=database(async statement=>{
+    statements.push(String(statement).replace(/\s+/gu,' ').trim());
+    return {rows:[],rowsAffected:0};
+  });
+  assert.equal(await guard(db),true);
+  return statements;
+}
+
 test('data readiness profiles use bounded read-only projections',async()=>{
   const statements=[];
   const db=database(async statement=>{
@@ -38,8 +48,30 @@ test('data readiness profiles use bounded read-only projections',async()=>{
   assert.equal(statements.some(sql=>DDL.test(sql)||DML.test(sql)),false);
   assert.deepEqual(new Set(statements.map(sql=>sql.match(/FROM\s+(\w+)\s+LIMIT\s+0/iu)?.[1])),new Set([
     'auth_accounts','users','pairing_weeks','pairing_groups','pairing_participants',
-    'pairing_email_outbox','session_runs','app_logs',
+    'pairing_week_runs','pairing_email_outbox','pair_schedules','session_runs','app_logs',
   ]));
+  const normalized=statements.map(sql=>sql.replace(/\s+/gu,' ').trim());
+  assert.ok(normalized.includes(
+    'SELECT week_label,week_id,generation_token,generation,algorithm_version, algorithm_seed,participant_count,participants_json,created_at FROM pairing_week_runs LIMIT 0'
+  ));
+  assert.ok(normalized.includes(
+    'SELECT id,week_id,pair_group_id,proposed_times,agreed_time,updated_at FROM pair_schedules LIMIT 0'
+  ));
+});
+
+test('weeks and my-pair readiness pin their exact publication and schedule projections',async()=>{
+  const publication='SELECT week_label,week_id,generation_token,generation,algorithm_version, algorithm_seed,participant_count,participants_json,created_at FROM pairing_week_runs LIMIT 0';
+  const schedule='SELECT id,week_id,pair_group_id,proposed_times,agreed_time,updated_at FROM pair_schedules LIMIT 0';
+
+  const weeks=await capturedStatements(ensureDataWeeksReadiness);
+  assert.equal(weeks.includes(publication),true);
+  assert.equal(weeks.includes(schedule),false);
+  assert.equal(weeks.some(sql=>sql==='SELECT id,week_label,week_start,focus,is_demo FROM pairing_weeks LIMIT 0'),true);
+
+  const myPair=await capturedStatements(ensureMyPairDataReadiness);
+  assert.equal(myPair.includes(publication),true);
+  assert.equal(myPair.includes(schedule),true);
+  assert.equal(myPair.some(sql=>sql==='SELECT id,week_label,week_start,focus,is_demo FROM pairing_weeks LIMIT 0'),true);
 });
 
 test('data readiness coalesces by client and contract',async()=>{
@@ -58,9 +90,9 @@ test('data readiness coalesces by client and contract',async()=>{
   assert.equal(statements.length,1);
   release();
   assert.deepEqual(await Promise.all([first,second]),[true,true]);
-  assert.equal(statements.length,5);
+  assert.equal(statements.length,6);
   assert.equal(await ensureDataWeeksReadiness(db),true);
-  assert.equal(statements.length,5,'a successful contract is cached for this client');
+  assert.equal(statements.length,6,'a successful contract is cached for this client');
 });
 
 test('data readiness rejects invalid clients and retries failed probes without writes',async()=>{
