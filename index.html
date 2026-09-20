@@ -4252,6 +4252,7 @@ async function refreshMe(){
           try{ await window._randori_journey?.routeByAuth?.(); }catch{}
         }
         if(me&&Number(me.id||me.uid)===actorId) window.location.reload();
+        else try{ await window._randori_journey?.routeByAuth?.(); }catch{}
         return false;
       }
       const status=Number(error?.http_status);
