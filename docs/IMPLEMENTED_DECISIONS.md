@@ -1618,9 +1618,10 @@ records become inaccessible through normal product paths and queued delivery
 is suppressed when it has not already passed final provider preflight. The
 browser resumes archive through the existing single recent-auth continuation,
 then clears private/workspace state, broadcasts a forced context change, and
-reloads. A post-commit fallback-projection failure returns a target-bound
-refresh-required result, so the browser performs the same invalidation and
-reload instead of continuing to display the archived workspace. There is no
+reloads. An unreadable or no-longer-usable post-commit fallback projection
+returns a target-bound refresh-required result, so the browser performs the
+same invalidation and reload instead of continuing to display the archived
+workspace. There is no
 public unarchive path; recovery is a separately reviewed
 operator concern because retained memberships would become active again.
 

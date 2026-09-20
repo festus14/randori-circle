@@ -275,6 +275,27 @@ test('a post-commit context refresh failure tells the browser that archive alrea
   assert.deepEqual(calls.map(call=>call[0]),['archive','list']);
 });
 
+test('an unusable post-commit context projection also requires a browser refresh',async()=>{
+  const unusable=[
+    {...listed,active:null,selection_required:true,context_version:5},
+    {...listed,circles:[...listed.circles,{public_id:'circle-secondary',name:'Secondary',role:'owner',is_primary:false}],
+      context_version:5},
+    {...listed,context_version:4},
+  ];
+  for(const projection of unusable){
+    listed=projection;
+    calls.length=0;
+    const response=await invoke({method:'DELETE',headers:{'x-randori-circle-context-version':'4'},
+      body:{circle_public_id:'circle-secondary',expected_context_version:4}});
+    assert.equal(response.status,503);
+    assert.deepEqual(response.body,{
+      error:'circle archived; reload required',code:'circle_archive_refresh_required',
+      archived_circle_public_id:'circle-secondary',context_version:5,
+    });
+    assert.deepEqual(calls.map(call=>call[0]),['archive','list']);
+  }
+});
+
 test('disabled, unauthenticated, and unavailable context paths fail closed',async()=>{
   enabled=false;
   assert.equal((await invoke()).status,404);

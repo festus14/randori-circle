@@ -134,8 +134,19 @@ export default async function handler(req,res){
         }
         return res.status(404).json({error:'circle unavailable'});
       }
-      let listed;
-      try{ listed=await listSessionCircleContexts(db,payload); }
+      let projected;
+      try{
+        projected=responsePayload(await listSessionCircleContexts(db,payload));
+        const activePublicId=projected.active_circle?.public_id;
+        if(typeof activePublicId!=='string'||!activePublicId
+          ||activePublicId===archived.circle.public_id
+          ||!projected.circles.some(circle=>circle?.public_id===activePublicId)
+          ||projected.circles.some(circle=>circle?.public_id===archived.circle.public_id)
+          ||!Number.isSafeInteger(projected.context_version)
+          ||projected.context_version<=archiveInput.expectedContextVersion){
+          throw new Error('invalid post-archive circle projection');
+        }
+      }
       catch(error){
         captureSentryException(error,{tags:{event:'circle_archive_refresh_fail',source:'server'}});
         return res.status(503).json({
@@ -146,7 +157,7 @@ export default async function handler(req,res){
         });
       }
       return res.json({
-        ...responsePayload(listed),
+        ...projected,
         archived_circle_public_id:archived.circle.public_id,
         archived:archived.changed,
       });
