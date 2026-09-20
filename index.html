@@ -120,6 +120,23 @@ function safeProfileColor(value){
   const color=String(value||'');
   return /^(#[0-9a-f]{3,8}|var\(--(?:accent|ink|bg)(?:-[1-4])?\))$/i.test(color) ? color : '#9aa0a6';
 }
+function setUiRequestState(host,status,state,message){
+  const allowed=new Set(['idle','loading','ready','saving','saved','local','error','unavailable']);
+  const next=allowed.has(state)?state:'idle';
+  if(host){
+    host.dataset.state=next;
+    if(next==='loading'||next==='saving') host.setAttribute('aria-busy','true');
+    else host.removeAttribute('aria-busy');
+  }
+  if(status){
+    status.dataset.state=next;
+    if(typeof message==='string'&&status.textContent!==message) status.textContent=message;
+  }
+  return next;
+}
+Object.defineProperty(window,'_randori_ui_state',{
+  configurable:true,value:Object.freeze({setRequestState:setUiRequestState}),
+});
 // Legacy OAuth callbacks exposed bearer tokens in the URL. Never consume them client-side.
 try{
   const oauthParams=new URLSearchParams(window.location.search);
@@ -606,6 +623,11 @@ p{margin:0}
 .status-chip.status-success{background:var(--ok-surface); border-color:var(--ok); color:var(--ok)}
 .status-chip.status-warning{background:var(--warn-surface); border-color:var(--warn); color:var(--warn)}
 .status-chip.status-danger{background:var(--bad-surface); border-color:var(--bad); color:var(--bad)}
+.request-status[data-state="ready"],.request-status[data-state="saved"]{color:var(--ok)}
+.request-status[data-state="error"],.request-status[data-state="unavailable"]{color:var(--bad)}
+.request-status[data-state="loading"],.request-status[data-state="saving"]{color:var(--info)}
+.request-status[data-state="local"]{color:var(--warn)}
+#landingStats[data-state="error"],#psRemindRow[data-state="error"]{border-color:var(--bad)!important}
 .log-badge{display:inline-block; min-width:44px; padding:2px 6px; border-radius:999px; font-size:10px; text-transform:uppercase}
 #circleContextPanel{
   padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-3);
@@ -918,7 +940,7 @@ p{margin:0}
           </div>
           <div style="display:grid; gap:10px">
             <div class="mock-card"><div class="row" style="justify-content:space-between"><b style="font-size:12px">Example weekly cycle</b><span class="kbd">illustration</span></div><div class="pair" style="padding:8px"><div class="who"><span class="avatar" style="background:#c8f6a0">FC</span><b style="font-size:12px">You × a circle member</b></div><span class="kbd">DSA • agreed together</span></div><div class="small muted">Published pairings stay fixed for the cycle; you agree the session time together.</div></div>
-            <div id="landingStats" class="card" style="padding:12px; border:1px dashed var(--border); background:var(--bg-2)"><div class="row" style="gap:10px; flex-wrap:wrap; justify-content:space-between"><span class="small muted">Circle Pulse • live</span><span id="landingStatsUpdated" class="kbd" style="font-size:10px">loading…</span></div><div class="grid-3" style="margin-top:10px; gap:10px; display:grid; grid-template-columns:repeat(3,1fr)"><div style="text-align:center"><div id="statMembers" style="font-size:22px; font-weight:600">—</div><div class="small muted">members</div></div><div style="text-align:center"><div id="statWeeks" style="font-size:22px; font-weight:600">—</div><div class="small muted">weeks paired</div></div><div style="text-align:center"><div id="statSessions" style="font-size:22px; font-weight:600">—</div><div class="small muted">pairings made</div></div></div></div>
+            <div id="landingStats" class="card" data-state="loading" aria-busy="true" style="padding:12px; border:1px dashed var(--border); background:var(--bg-2)"><div class="row" style="gap:10px; flex-wrap:wrap; justify-content:space-between"><span class="small muted">Circle summary</span><span id="landingStatsUpdated" class="kbd request-status" data-state="loading" role="status" aria-live="polite" style="font-size:10px">Loading summary…</span></div><div class="grid-3" style="margin-top:10px; gap:10px; display:grid; grid-template-columns:repeat(3,1fr)"><div style="text-align:center"><div id="statMembers" style="font-size:22px; font-weight:600">—</div><div class="small muted">members</div></div><div style="text-align:center"><div id="statWeeks" style="font-size:22px; font-weight:600">—</div><div class="small muted">weeks paired</div></div><div style="text-align:center"><div id="statSessions" style="font-size:22px; font-weight:600">—</div><div class="small muted">pairings made</div></div></div></div>
       <div id="landingNext" class="card" style="border-color:var(--ok); background:color-mix(in srgb, var(--accent) 8%, var(--bg-2))"><div class="card-h" style="padding:10px 12px"><h2 style="font-size:13px">Next pairing run</h2><span id="landingNextCountdown" class="kbd">Loading schedule…</span></div><div class="card-b" style="padding:10px 12px"><div style="font-size:13px"><b id="landingNextLabel">Loading the next cycle…</b><div class="small muted" id="landingNextSub" style="margin-top:4px">Pairings publish once per cycle. Sign up before the displayed cutoff to be included.</div></div><div id="landingNextBar" role="progressbar" aria-label="Time elapsed in the weekly pairing cycle" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="Loading the weekly pairing schedule" style="margin-top:10px; height:6px; background:var(--bg-3); border-radius:999px; overflow:hidden"><div id="landingNextProg" style="height:100%; width:0; background:var(--accent)"></div></div></div></div>
       <div class="mock-card"><b style="font-size:12px">Private by default</b><div class="small" style="color:var(--ink-2)">Circle membership, pair rooms, and account access are authorization-gated. Exercise evaluation cases remain on the server.</div></div>
           </div>
@@ -988,7 +1010,7 @@ p{margin:0}
           </div>
           <div><label class="small muted">Interview focus</label><div id="psFocus" class="pill-choice" style="margin-top:6px"><button class="chip" data-focus="dsa">DSA</button><button class="chip" data-focus="system">System Design</button><button class="chip active" data-focus="both">Both</button></div></div>
           <div class="row" style="justify-content:space-between; align-items:center; gap:12px; padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-3)"><div><b style="font-size:12.5px">Weekly availability</b><div class="small muted">Availability belongs to a specific pairing cycle and is managed from Pairing.</div></div><button id="psAvailabilityLink" class="pill" type="button">Manage availability</button></div>
-          <div id="psRemindRow" class="row" style="justify-content:space-between; align-items:center; padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-3)"><div><b style="font-size:12.5px">Email reminders</b><div class="small muted">Receive an email when paired</div></div><label class="pill" style="cursor:pointer"><input id="psRemindEmail" type="checkbox" checked style="margin-right:4px"/> Email</label></div>
+          <div id="psRemindRow" class="row" data-state="loading" aria-busy="true" style="justify-content:space-between; align-items:center; padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-3)"><div><b style="font-size:12.5px">Email reminders</b><div class="small muted">Request an email when paired. Delivery depends on email-service readiness.</div><div id="psRemindStatus" class="small request-status" data-state="loading" role="status" aria-live="polite">Checking your reminder preference…</div></div><label class="pill" style="cursor:pointer"><input id="psRemindEmail" type="checkbox" checked aria-describedby="psRemindStatus" style="margin-right:4px"/> Email</label></div>
           <div class="row" style="justify-content:flex-end"><button id="psSave" class="btn">Save & continue →</button></div>
         </div>
       </div>
@@ -1128,9 +1150,9 @@ p{margin:0}
           </div>
         </div>
         <div class="card">
-          <div class="card-h"><h2>Sync</h2><span>automatic</span></div>
+          <div class="card-h"><h2>Sync</h2><span>browser state</span></div>
           <div class="card-b" style="display:grid; gap:10px">
-            <div class="small" style="color:var(--ink-2)">You stay in sync when signed in. Set availability for the upcoming cycle before the cutoff shown below.</div>
+            <div class="small" style="color:var(--ink-2)">Browser-tab coordination is reported below. Server-backed availability has its own loading and save states.</div>
             <div id="availabilityWrap" data-testid="availability-card" role="region" aria-labelledby="availTitle" tabindex="-1" style="display:none; border:1px solid var(--line); border-radius:10px; padding:10px; background:var(--bg-3); display:grid; gap:8px">
               <div class="row" style="justify-content:space-between"><b id="availTitle" style="font-size:13px">Upcoming availability</b><label class="pill" style="cursor:pointer"><input id="availToggle" type="checkbox" disabled aria-labelledby="availTitle availLabel" aria-describedby="availCycle availCutoff availExplan" style="margin-right:6px"/> <span id="availLabel">LOADING…</span></label></div>
               <div id="availCycle" data-testid="availability-cycle" class="small muted">Loading the upcoming pairing cycle…</div>
@@ -1139,7 +1161,7 @@ p{margin:0}
             </div>
             <div id="presencePanel" class="people"></div>
             <div class="row">
-              <span class="small muted" id="syncStatus">● synced</span>
+              <span class="small request-status" id="syncStatus" data-state="loading" role="status" aria-live="polite">Checking browser-tab sync…</span>
             </div>
             <div class="row" style="align-items:center"><div class="small muted" id="availExplan" role="status" aria-live="polite" style="display:none"></div><button id="availRetry" class="pill" type="button" hidden>Retry availability</button></div>
           </div>
@@ -3139,6 +3161,27 @@ async function refreshMe(){
   // Reminder prefs wiring — Pillar 5
   (function bindReminders(){
     const psEmail=document.getElementById('psRemindEmail');
+    const row=document.getElementById('psRemindRow');
+    const status=document.getElementById('psRemindStatus');
+    let preferenceEpoch=0;
+    let hydratedUserId=null;
+    const exactEmailPreference=value=>value===true||value===1
+      ?true:(value===false||value===0?false:null);
+    const exactPreferenceEnvelope=(result,userId)=>{
+      if(!result||result.ok!==true||!result.prefs||typeof result.prefs!=='object'
+        ||Array.isArray(result.prefs)) return null;
+      const responseUserId=result.prefs.user_id;
+      if(!Number.isSafeInteger(responseUserId)||responseUserId<1||responseUserId!==userId) return null;
+      const emailEnabled=exactEmailPreference(result.prefs.email_enabled);
+      return emailEnabled===null?null:{emailEnabled};
+    };
+    const setReminderState=(state,message)=>{
+      window._randori_ui_state?.setRequestState?.(row,status,state,message);
+      if(psEmail) psEmail.disabled=!authIdentityHydrated||state==='loading'||state==='saving';
+    };
+    const browserOnlyMessage=()=>me
+      ?'The account preference has not been checked yet.'
+      :'Stored in this browser only. Sign in to save this preference to your account.';
     try{
       const eLocal=localStorage.getItem('randori-reminder-email');
       if(eLocal!=null && psEmail) psEmail.checked = eLocal==='1';
@@ -3147,37 +3190,84 @@ async function refreshMe(){
     }catch{}
 
     async function postPrefs(){
+      const epoch=++preferenceEpoch;
+      const userId=Number(me?.id||me?.uid)||null;
       const email_enabled=psEmail?.checked??true;
       try{
         localStorage.setItem('randori-reminder-email', email_enabled?'1':'0');
       }catch{}
-      // server sync if authed
+      if(!userId){
+        setReminderState('local',browserOnlyMessage());
+        return;
+      }
+      setReminderState('saving','Saving your reminder preference…');
       try{
-        if(me){
-          await fetch('/api/notifications/prefs', {
-            method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({email_enabled}),
-          }).catch(()=>{});
-        }
-      }catch{}
+        const identityCommitted=await refreshMe();
+        if(epoch!==preferenceEpoch||userId!==(Number(me?.id||me?.uid)||null)) return;
+        if(!identityCommitted||!authIdentityHydrated) throw new Error('identity refresh failed');
+        const response=await fetch('/api/notifications/prefs', {
+          method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({email_enabled}),
+        });
+        const result=await response.json().catch(()=>null);
+        if(!response.ok) throw new Error('preference save failed');
+        if(epoch!==preferenceEpoch||userId!==(Number(me?.id||me?.uid)||null)) return;
+        const saved=exactPreferenceEnvelope(result,userId);
+        if(saved===null) throw new Error('preference response invalid');
+        psEmail.checked=saved.emailEnabled;
+        setReminderState('saved',psEmail.checked
+          ?'Preference saved. Email will be requested when paired; delivery depends on provider readiness.'
+          :'Preference saved. Email reminders are off.');
+      }catch{
+        if(epoch!==preferenceEpoch||userId!==(Number(me?.id||me?.uid)||null)) return;
+        setReminderState('error','Could not save to your account. Your browser copy is retained; retry when connected.');
+      }
     }
     function wire(el){ if(!el) return; el.addEventListener('change', postPrefs); el.addEventListener('click', (e)=>{ e.stopPropagation(); }); }
     wire(psEmail);
 
-    // hydrate from server when signed in
-    (async()=>{
+    async function hydratePrefs(){
+      const userId=Number(me?.id||me?.uid)||null;
+      if(!authIdentityHydrated){
+        hydratedUserId=null;
+        ++preferenceEpoch;
+        setReminderState('loading','Checking your account session…');
+        return;
+      }
+      if(!userId){
+        hydratedUserId=null;
+        ++preferenceEpoch;
+        setReminderState('local',browserOnlyMessage());
+        return;
+      }
+      if(hydratedUserId===userId) return;
+      const epoch=++preferenceEpoch;
+      setReminderState('loading','Checking your saved reminder preference…');
       try{
-        const r=await fetch('/api/notifications/prefs', {credentials:'same-origin'}).catch(()=>null);
-        if(!r || !r.ok) return;
+        const r=await fetch('/api/notifications/prefs', {credentials:'same-origin'});
+        if(!r.ok) throw new Error('preference load failed');
         const j=await r.json();
-        if(j && j.prefs){
-          if(psEmail) psEmail.checked = !!j.prefs.email_enabled;
+        if(epoch!==preferenceEpoch||userId!==(Number(me?.id||me?.uid)||null)) return;
+        const saved=exactPreferenceEnvelope(j,userId);
+        if(saved!==null){
+          if(psEmail) psEmail.checked=saved.emailEnabled;
           try{
-            localStorage.setItem('randori-reminder-email', j.prefs.email_enabled?'1':'0');
+            localStorage.setItem('randori-reminder-email', saved.emailEnabled?'1':'0');
           }catch{}
+          hydratedUserId=userId;
+          setReminderState('ready',psEmail?.checked
+            ?'Saved preference loaded. Delivery depends on provider readiness.'
+            :'Saved preference loaded. Email reminders are off.');
+          return;
         }
-      }catch{}
-    })();
+        throw new Error('preference response invalid');
+      }catch{
+        if(epoch!==preferenceEpoch||userId!==(Number(me?.id||me?.uid)||null)) return;
+        setReminderState('error','Reminder preference is unavailable. Your browser copy has not been sent.');
+      }
+    }
+    window.addEventListener('randori:auth-refreshed',()=>{ void hydratePrefs(); });
+    void hydratePrefs();
   })();
 
   function authFailureMessage(error,mode){
@@ -3540,8 +3630,17 @@ async function refreshMe(){
   function getCode(){ if(!(window._randori_auth&&window._randori_auth.me)) return {}; try{return JSON.parse(localStorage.getItem(CODE_KEY)||'{}')}catch{return{}} }
   function saveCode(c){ if(!(window._randori_auth&&window._randori_auth.me)) return; localStorage.setItem(CODE_KEY, JSON.stringify(c)); bc?.postMessage({type:'code',c}); }
 
-  // BroadcastChannel sync
-  const bc = ('BroadcastChannel' in window) ? new BroadcastChannel('randori-sync') : null;
+  // Browser-tab coordination is a best-effort local capability, not proof of
+  // server persistence. Report only the capability and writes we observe.
+  const syncStatus=document.getElementById('syncStatus');
+  const setBrowserSyncState=(state,message)=>window._randori_ui_state?.setRequestState?.(
+    syncStatus?.parentElement,syncStatus,state,message);
+  let bc=null;
+  try{
+    bc=('BroadcastChannel' in window)?new BroadcastChannel('randori-sync'):null;
+  }catch{
+    bc=null;
+  }
   if(bc){
     bc.onmessage=(e)=>{
       const d=e.data||{};
@@ -3563,8 +3662,15 @@ async function refreshMe(){
     m[clientId]={at:Date.now(), tab: document.visibilityState};
     // prune old >30s
     for(let k in m) if(Date.now()-m[k].at>30000) delete m[k];
-    localStorage.setItem(PRES_KEY, JSON.stringify(m));
-    bc?.postMessage({type:'presence'});
+    try{
+      localStorage.setItem(PRES_KEY, JSON.stringify(m));
+      bc?.postMessage({type:'presence'});
+      setBrowserSyncState(bc?'ready':'local',bc
+        ?'Browser-tab sync ready.'
+        :'This tab is ready; cross-tab sync is unavailable in this browser.');
+    }catch{
+      setBrowserSyncState('error','Browser-tab sync is unavailable; this tab can still be used.');
+    }
   }
   setInterval(heartbeat, 2500); heartbeat();
   function refreshPresence(){
@@ -7763,7 +7869,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const roomHint=scheduleRoomFromPair(data);
     if(!roomHint){ renderDashboardEmpty('error',data); return; }
     const inviteUrl = (location.origin||'https://randori-circle-self.vercel.app') + '/join/' + encodeURIComponent(roomHint);
-    const copyAndEmailBtns = `<button class="pill copy-invite" style="font-size:11px" data-room="${escapeHtml(roomHint)}">⎘ Copy session link</button><button class="pill email-invite" style="font-size:11px" data-room="${escapeHtml(roomHint)}">✉ Email reminder</button>`;
+    const copyAndEmailBtns = `<button class="pill copy-invite" style="font-size:11px" data-room="${escapeHtml(roomHint)}">⎘ Copy session link</button><button class="pill email-invite" style="font-size:11px" data-room="${escapeHtml(roomHint)}">✉ Draft reminder email</button>`;
     if(isSolo){
       area.innerHTML=`<div class="partner-card" data-testid="solo-practice-card" style="border-color:#c8f6a0"><div class="avatar" style="background:#c8f6a0">SP</div><div style="flex:1"><b style="font-size:14px">Solo practice</b><div class="small muted" style="margin-top:4px">The odd-member assignment is a private solo workspace. Choose an exercise from the catalogue and practise with code and the board.</div><div class="row" style="margin-top:12px; gap:8px; flex-wrap:wrap"><button id="dashJoinSession" class="btn" style="background:var(--accent); color:#0f0f10; padding:11px 18px; font-size:14px; font-weight:700">Open Solo Catalogue + Code</button><span class="kbd">current-cycle solo</span></div></div></div>`;
       document.getElementById('dashJoinSession')?.addEventListener('click', ()=>joinSessionDeterministic(false));
@@ -10017,6 +10123,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 (function(){
   const ME_KEY='randori-me';
   let landingCountdownTimer=null;
+  let homeRequestEpoch=0;
+  const currentHomeActor=()=>{
+    const actor=window._randori_auth?.me;
+    if(!actor) return 'anonymous';
+    const id=Number(actor.id||actor.uid);
+    return Number.isSafeInteger(id)&&id>0?`account:${id}`:'account:invalid';
+  };
 
   function pairingBoundaryFromStats(stats){
     const instant=new Date(stats?.next_cycle?.startsAt||stats?.next_shuffle_utc||'');
@@ -10055,11 +10168,35 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   function populateLanding(stats){
-    if(!stats) return;
-    const m=document.getElementById('statMembers'); if(m) m.textContent=String(stats.total_users ?? '—');
-    const w=document.getElementById('statWeeks'); if(w) w.textContent=String(stats.total_weeks ?? '—');
-    const s=document.getElementById('statSessions'); if(s) s.textContent=String(stats.total_sessions ?? stats.total_pairs ?? '—');
-    const up=document.getElementById('landingStatsUpdated'); if(up) up.textContent='live • just now';
+    const card=document.getElementById('landingStats');
+    const up=document.getElementById('landingStatsUpdated');
+    const m=document.getElementById('statMembers');
+    const w=document.getElementById('statWeeks');
+    const s=document.getElementById('statSessions');
+    if(!stats){
+      if(landingCountdownTimer){ clearInterval(landingCountdownTimer); landingCountdownTimer=null; }
+      for(const value of [m,w,s]) if(value) value.textContent='—';
+      window._randori_ui_state?.setRequestState?.(
+        card,up,'unavailable','Summary unavailable. Retry by reloading this page.');
+      const nextLabel=document.getElementById('landingNextLabel');
+      const nextSub=document.getElementById('landingNextSub');
+      const countdown=document.getElementById('landingNextCountdown');
+      const progress=document.getElementById('landingNextProg');
+      const progressbar=document.getElementById('landingNextBar');
+      if(nextLabel) nextLabel.textContent='Next cycle unavailable';
+      if(nextSub) nextSub.textContent='The pairing schedule could not be loaded. Reload to retry.';
+      if(countdown) countdown.textContent='Schedule unavailable';
+      if(progress) progress.style.width='0%';
+      if(progressbar){
+        progressbar.setAttribute('aria-valuenow','0');
+        progressbar.setAttribute('aria-valuetext','Pairing schedule unavailable');
+      }
+      return;
+    }
+    if(m) m.textContent=String(stats.total_users ?? '—');
+    if(w) w.textContent=String(stats.total_weeks ?? '—');
+    if(s) s.textContent=String(stats.total_sessions ?? stats.total_pairs ?? '—');
+    window._randori_ui_state?.setRequestState?.(card,up,'ready','Updated just now');
     const nextLabel=document.getElementById('landingNextLabel');
     const nextSub=document.getElementById('landingNextSub');
     const cnt=document.getElementById('landingNextCountdown');
@@ -10087,7 +10224,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(!c){ clearInterval(landingCountdownTimer); landingCountdownTimer=null; return; }
       if(Date.now()>=next.getTime()){
         clearInterval(landingCountdownTimer); landingCountdownTimer=null;
-        fetchStats(false).then(fresh=>{ if(fresh) populateLanding(fresh); });
+        const refreshEpoch=homeRequestEpoch;
+        fetchStats(false).then(fresh=>{
+          if(refreshEpoch===homeRequestEpoch&&!window._randori_auth?.me) populateLanding(fresh);
+        });
         return;
       }
       updateCountdown();
@@ -10157,18 +10297,28 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   // Bootstrapping
   async function bootHome(){
-    const isAuthed = !!(window._randori_auth && window._randori_auth.me);
+    const requestEpoch=++homeRequestEpoch;
+    const actor=currentHomeActor();
+    const isAuthed=actor!=='anonymous';
+    const canApply=()=>requestEpoch===homeRequestEpoch
+      &&actor===currentHomeActor();
     if(!isAuthed){
       // anon home = landing
+      window._randori_ui_state?.setRequestState?.(
+        document.getElementById('landingStats'),document.getElementById('landingStatsUpdated'),
+        'loading','Loading summary…');
       const stats=await fetchStats(false);
+      if(!canApply()) return;
       populateLanding(stats);
       // also tick for dash hidden
     } else {
       const stats=await fetchStats(true);
+      if(!canApply()) return;
       if(stats) populateDash(stats);
       // public stats may have more fresh anon numbers? reuse same stats if authed lacked total_users? stats includes both
       if(!stats || stats.total_users==null){
         const pub=await fetchStats(false);
+        if(!canApply()) return;
         if(pub) populateDash({...pub, ...(stats||{})});
       }
       populateHistory();
@@ -10187,6 +10337,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(currentUserId!==lastAuthUserId){ lastAuthUserId=currentUserId; setTimeout(bootHome, 500); }
   }, 1000);
   window.addEventListener('randori:auth-refreshed',event=>{
+    homeRequestEpoch+=1;
     const nextId=Number(event.detail?.userId||0)||null;
     if(nextId!==dashboardHistoryUserId){
       dashboardHistoryUserId=nextId;
