@@ -7,6 +7,7 @@ import { createClient } from '@libsql/client';
 
 import {
   CirclePairingError,
+  circlePairingFailure,
   ensureCirclePairingReadiness,
   listSecondaryPairingScopes,
   publishCirclePairing,
@@ -16,6 +17,7 @@ import {
 import { availabilityCycleKey } from '../../api/_availability.js';
 import { buildFairPairing, pairKey } from '../../api/_pairing.js';
 import { resolvePairingCycle } from '../../api/_pairing-cycle.js';
+import { PairingRecoveryError } from '../../api/_pairing-recovery.js';
 import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
 import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
 
@@ -119,6 +121,99 @@ test('secondary publication snapshots all members, ignores the legacy flag, and 
     assert.equal(Number((await item.db.execute(`SELECT COUNT(*) AS count FROM outbox_events`)).rows[0].count),0);
     assert.match(first.publication.algorithm.seed,/^circle:20:[a-f0-9]{64}:weekly$/);
   }finally{ item.close(); }
+});
+
+test('secondary owner recovery is transaction-time fenced by grace and exact scoped cycle',async()=>{
+  const item=fixture();
+  try{
+    await prepare(item.db);
+    const authority=await seedCircle(item.db);
+    const cycle=resolvePairingCycle({now:NOW});
+    const expectedCycleKey=availabilityCycleKey({kind:'circle',circleId:20},cycle);
+
+    await assert.rejects(
+      publishCirclePairing(item.db,{
+        authority,now:'2026-09-20T07:29:59.999Z',expectedCycleKey,
+      }),
+      error=>error instanceof PairingRecoveryError&&error.code==='PAIRING_RECOVERY_NOT_READY'
+        &&error.publicationState.state==='pending'
+        &&error.publicationState.can_publish_now===false,
+    );
+    assert.equal(Number((await item.db.execute(
+      `SELECT COUNT(*) AS count FROM circle_pairing_publications`,
+    )).rows[0].count),0);
+
+    await assert.rejects(
+      publishCirclePairing(item.db,{
+        authority,now:'2026-09-27T07:30:00.000Z',expectedCycleKey,
+      }),
+      error=>error instanceof PairingRecoveryError&&error.code==='PAIRING_RECOVERY_CYCLE_CHANGED'
+        &&error.publicationState.state==='overdue'
+        &&error.publicationState.cycle_key!==expectedCycleKey,
+    );
+
+    const published=await publishCirclePairing(item.db,{
+      authority,now:'2026-09-20T07:30:00.000Z',expectedCycleKey,
+    });
+    assert.equal(published.created,true);
+    assert.equal(published.publicationState.state,'published');
+    assert.equal(published.publicationState.can_publish_now,false);
+
+    const replay=await publishCirclePairing(item.db,{
+      authority,now:'2026-09-20T07:01:00.000Z',expectedCycleKey,
+    });
+    assert.equal(replay.created,false);
+    assert.equal(replay.publication.id,published.publication.id);
+    assert.equal(replay.publicationState.state,'published');
+    assert.equal(Number((await item.db.execute(
+      `SELECT COUNT(*) AS count FROM outbox_events`,
+    )).rows[0].count),0,'an exact published replay before grace creates no new side effect');
+  }finally{ item.close(); }
+});
+
+test('a secondary cycle-key recovery requires an explicit owner session authority',async()=>{
+  const item=fixture();
+  try{
+    await prepare(item.db);
+    const authority=await seedCircle(item.db);
+    const expectedCycleKey=availabilityCycleKey(
+      {kind:'circle',circleId:20},resolvePairingCycle({now:NOW}),
+    );
+    await assert.rejects(
+      publishCirclePairing(item.db,{
+        authority:{...authority,requireOwner:false},now:NOW,expectedCycleKey,
+      }),
+      error=>error instanceof CirclePairingError&&error.code==='CIRCLE_PAIRING_OWNER_REQUIRED',
+    );
+    await assert.rejects(
+      publishCirclePairing(item.db,{
+        authority:{kind:'system',circleId:20},now:NOW,expectedCycleKey,
+      }),
+      error=>error instanceof CirclePairingError&&error.code==='CIRCLE_PAIRING_OWNER_REQUIRED',
+    );
+    assert.equal(Number((await item.db.execute(
+      `SELECT COUNT(*) AS count FROM circle_pairing_publications`,
+    )).rows[0].count),0);
+  }finally{ item.close(); }
+});
+
+test('secondary recovery conflicts retain exact circle identifiers',()=>{
+  const publicationState={state:'pending',cycle_key:'a'.repeat(64)};
+  for(const [internalCode,publicCode] of [
+    ['PAIRING_RECOVERY_NOT_READY','pairing_recovery_not_ready'],
+    ['PAIRING_RECOVERY_CYCLE_CHANGED','pairing_cycle_changed'],
+  ]){
+    const error=new PairingRecoveryError(internalCode,'recovery conflict',{publicationState});
+    assert.deepEqual(circlePairingFailure(error,{
+      contextVersion:7,circlePublicId:'circle-secondary',
+    }),{
+      status:409,body:{ok:false,
+        error:publicCode==='pairing_cycle_changed'?'pairing cycle changed':'pairing recovery is not ready',
+        code:publicCode,publication_state:publicationState,
+        circle_public_id:'circle-secondary',circle_context_version:7,
+      },
+    });
+  }
 });
 
 test('secondary readiness rechecks connection, ledger, and exact v13 structure without caching',async t=>{
@@ -302,6 +397,20 @@ test('read authorization redacts a departed partner and never yields a workspace
   }finally{ item.close(); }
 });
 
+test('secondary reads return the transaction-revalidated current role',async()=>{
+  const item=fixture();
+  try{
+    await prepare(item.db);
+    const authority=await seedCircle(item.db,{userIds:[1,2]});
+    const ownerRead=await readCirclePairing(item.db,{authority,now:NOW});
+    assert.equal(ownerRead.role,'owner');
+    await item.db.execute(`UPDATE circle_memberships SET role='member'
+      WHERE circle_id=20 AND user_id=1`);
+    const memberRead=await readCirclePairing(item.db,{authority,now:NOW});
+    assert.equal(memberRead.role,'member');
+  }finally{ item.close(); }
+});
+
 test('cron scope enumeration is deterministic and rejects overflow before publication',async()=>{
   const item=fixture();
   try{
@@ -336,9 +445,12 @@ test('concurrent owner and cron publication converge on one immutable claim',asy
   try{
     await prepare(setup);
     const authority=await seedCircle(setup,{userIds:[1,2,3,4]});
+    const expectedCycleKey=availabilityCycleKey(
+      {kind:'circle',circleId:20},resolvePairingCycle({now:NOW}),
+    );
     await Promise.all([prepareMigrationConnection(ownerClient),prepareMigrationConnection(cronClient)]);
     const results=await Promise.all([
-      publishCirclePairing(ownerClient,{authority,now:NOW}),
+      publishCirclePairing(ownerClient,{authority,now:NOW,expectedCycleKey}),
       publishCirclePairing(cronClient,{authority:{kind:'system',circleId:20},now:NOW}),
     ]);
     assert.equal(results.filter(result=>result.created).length,1);
@@ -424,6 +536,58 @@ test('a pre-commit busy retry re-resolves database time and the current cycle',a
     assert.equal(result.publication.cycle.cycleId,'2026-W39');
     const cycles=await item.db.execute(`SELECT cycle_id FROM pairing_cycles ORDER BY cycle_id`);
     assert.deepEqual(cycles.rows.map(row=>String(row.cycle_id)),['2026-W39']);
+  }finally{ item.close(); }
+});
+
+test('a secondary recovery retry rejects a cycle rollover before another write',async()=>{
+  const item=fixture();
+  try{
+    await prepare(item.db);
+    const authority=await seedCircle(item.db,{userIds:[1,2]});
+    let transactions=0;
+    let clockReads=0;
+    let injected=false;
+    const instants=[new Date('2026-09-20T07:30:00.000Z'),new Date('2026-09-27T07:30:00.000Z')];
+    const expectedCycleKey=availabilityCycleKey(
+      {kind:'circle',circleId:20},resolvePairingCycle({now:instants[0]}),
+    );
+    const wrapper={
+      execute:statement=>item.db.execute(statement),
+      batch:(statements,mode)=>item.db.batch(statements,mode),
+      async transaction(mode){
+        transactions+=1;
+        const transaction=await item.db.transaction(mode);
+        return {
+          async execute(statement){
+            const sql=typeof statement==='string'?statement:String(statement?.sql||'');
+            if(!injected&&sql.includes('INSERT INTO circle_pairing_publications')){
+              injected=true;
+              throw Object.assign(new Error('database is busy'),{code:'SQLITE_BUSY'});
+            }
+            return transaction.execute(statement);
+          },
+          batch:(statements,batchMode)=>transaction.batch(statements,batchMode),
+          commit:()=>transaction.commit(),rollback:()=>transaction.rollback(),
+          close:()=>transaction.close?.(),
+        };
+      },
+    };
+    await assert.rejects(
+      publishCirclePairing(wrapper,{
+        authority,expectedCycleKey,
+        now:()=>instants[Math.min(clockReads++,instants.length-1)],
+      }),
+      error=>error instanceof PairingRecoveryError
+        &&error.code==='PAIRING_RECOVERY_CYCLE_CHANGED',
+    );
+    assert.equal(transactions,2);
+    assert.equal(clockReads,2);
+    assert.equal(Number((await item.db.execute(
+      `SELECT COUNT(*) AS count FROM circle_pairing_publications`,
+    )).rows[0].count),0);
+    assert.equal(Number((await item.db.execute(
+      `SELECT COUNT(*) AS count FROM outbox_events`,
+    )).rows[0].count),0);
   }finally{ item.close(); }
 });
 

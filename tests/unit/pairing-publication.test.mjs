@@ -6,8 +6,9 @@ import { afterEach, test } from 'node:test';
 
 import { createClient } from '@libsql/client';
 
-import { materializeAvailabilityCycle } from '../../api/_availability.js';
+import { availabilityCycleKey, materializeAvailabilityCycle } from '../../api/_availability.js';
 import { resolvePairingCycle } from '../../api/_pairing-cycle.js';
+import { PairingRecoveryError } from '../../api/_pairing-recovery.js';
 import {
   getPairingPublication,
   PairingPublicationError,
@@ -219,6 +220,107 @@ test('an all-unavailable primary circle publishes one immutable empty cycle',asy
     'an empty publication is durable and readable after restart');
 });
 
+test('primary owner recovery is transaction-time fenced by grace and exact scoped cycle',async()=>{
+  const fixture=await createDatabase();
+  await seedCircle(fixture.db,[{id:1,role:'owner'},{id:2,role:'member'}]);
+  const cycle=resolvePairingCycle({now:NOW});
+  const expectedCycleKey=availabilityCycleKey(SCOPE,cycle);
+
+  await assert.rejects(
+    publishPairingCycle(fixture.db,publicationOptions({
+      now:'2026-09-20T07:29:59.999Z',expectedCycleKey,
+    })),
+    error=>error instanceof PairingRecoveryError&&error.code==='PAIRING_RECOVERY_NOT_READY'
+      &&error.publicationState.state==='pending'
+      &&error.publicationState.can_publish_now===false,
+  );
+  assert.equal(await count(fixture.db,'pairing_week_runs'),0);
+
+  await assert.rejects(
+    publishPairingCycle(fixture.db,publicationOptions({
+      now:'2026-09-27T07:30:00.000Z',expectedCycleKey,
+    })),
+    error=>error instanceof PairingRecoveryError&&error.code==='PAIRING_RECOVERY_CYCLE_CHANGED'
+      &&error.publicationState.state==='overdue'
+      &&error.publicationState.cycle_key!==expectedCycleKey,
+  );
+  assert.equal(await count(fixture.db,'pairing_week_runs'),0);
+
+  const published=await publishPairingCycle(fixture.db,publicationOptions({
+    now:'2026-09-20T07:30:00.000Z',expectedCycleKey,
+  }));
+  assert.equal(published.created,true);
+  assert.equal(published.publicationState.state,'published');
+  assert.equal(published.publicationState.can_publish_now,false);
+
+  const replay=await publishPairingCycle(fixture.db,publicationOptions({
+    now:'2026-09-20T07:01:00.000Z',expectedCycleKey,
+  }));
+  assert.equal(replay.created,false);
+  assert.equal(replay.publication.weekId,published.publication.weekId);
+  assert.equal(replay.publicationState.state,'published');
+  assert.equal(await count(fixture.db,'outbox_events'),2,
+    'an exact published replay before grace is idempotent and creates no new side effect');
+});
+
+test('a cycle-key recovery cannot bypass explicit owner authority',async()=>{
+  const fixture=await createDatabase();
+  await seedCircle(fixture.db,[{id:1,role:'owner'},{id:2,role:'member'}]);
+  const now='2026-09-20T07:30:00.000Z';
+  const expectedCycleKey=availabilityCycleKey(SCOPE,resolvePairingCycle({now}));
+  await assert.rejects(
+    publishPairingCycle(fixture.db,publicationOptions({
+      now,callerId:null,authorizedScope:null,expectedCycleKey,
+    })),
+    error=>error instanceof PairingPublicationError&&error.code==='PAIRING_PUBLISHER_REVOKED',
+  );
+  assert.equal(await count(fixture.db,'pairing_week_runs'),0);
+});
+
+test('a recovery retry re-resolves database time and rejects a changed cycle',async()=>{
+  const fixture=await createDatabase();
+  await seedCircle(fixture.db,[{id:1,role:'owner'},{id:2,role:'member'}]);
+  const instants=['2026-09-20T07:30:00.000Z','2026-09-27T07:30:00.000Z'];
+  const expectedCycleKey=availabilityCycleKey(SCOPE,resolvePairingCycle({now:instants[0]}));
+  let clockReads=0;
+  let injected=false;
+  const wrapped={
+    execute:fixture.db.execute.bind(fixture.db),
+    batch:fixture.db.batch.bind(fixture.db),
+    async transaction(mode){
+      const transaction=await fixture.db.transaction(mode);
+      return {
+        async execute(statement){
+          const sql=typeof statement==='string'?statement:String(statement?.sql||'');
+          if(sql.includes("strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc")){
+            return {rows:[{now_utc:instants[Math.min(clockReads++,instants.length-1)]}]};
+          }
+          return transaction.execute(statement);
+        },
+        async batch(statements,batchMode){
+          if(!injected&&statements.some(statement=>String(statement?.sql||statement)
+            .includes('INSERT INTO pairing_week_runs'))){
+            injected=true;
+            throw Object.assign(new Error('database is busy'),{code:'SQLITE_BUSY'});
+          }
+          return transaction.batch(statements,batchMode);
+        },
+        commit:transaction.commit.bind(transaction),
+        rollback:transaction.rollback.bind(transaction),
+        close:transaction.close?.bind(transaction),
+      };
+    },
+  };
+  await assert.rejects(
+    publishPairingCycle(wrapped,publicationOptions({now:undefined,expectedCycleKey})),
+    error=>error instanceof PairingRecoveryError
+      &&error.code==='PAIRING_RECOVERY_CYCLE_CHANGED',
+  );
+  assert.equal(clockReads,2);
+  assert.equal(await count(fixture.db,'pairing_week_runs'),0);
+  assert.equal(await count(fixture.db,'outbox_events'),0);
+});
+
 test('concurrent empty owner and cron publications retain one claim and one outbox set',async()=>{
   const fixture=await createDatabase();
   await seedCircle(fixture.db,[{id:1,role:'owner'},{id:2,role:'member'}]);
@@ -227,10 +329,12 @@ test('concurrent empty owner and cron publications retain one claim and one outb
   await fixture.close();
   const ownerDb=await fixture.open();
   const cronDb=await fixture.open();
+  const now='2026-09-20T07:30:00.000Z';
+  const expectedCycleKey=availabilityCycleKey(SCOPE,resolvePairingCycle({now}));
 
   const [owner,cron]=await Promise.all([
-    publishPairingCycle(ownerDb,publicationOptions()),
-    publishPairingCycle(cronDb,publicationOptions({callerId:null,authorizedScope:null})),
+    publishPairingCycle(ownerDb,publicationOptions({now,expectedCycleKey})),
+    publishPairingCycle(cronDb,publicationOptions({now,callerId:null,authorizedScope:null})),
   ]);
   assert.equal(Number(owner.created)+Number(cron.created),1);
   assert.deepEqual(owner.publication,cron.publication);
@@ -307,10 +411,12 @@ test('concurrent owner and cron clients converge on one complete publication',as
   await fixture.close();
   const ownerDb=await fixture.open();
   const cronDb=await fixture.open();
+  const now='2026-09-20T07:30:00.000Z';
+  const expectedCycleKey=availabilityCycleKey(SCOPE,resolvePairingCycle({now}));
 
   const [owner,cron]=await Promise.all([
-    publishPairingCycle(ownerDb,publicationOptions()),
-    publishPairingCycle(cronDb,publicationOptions({callerId:null,authorizedScope:null})),
+    publishPairingCycle(ownerDb,publicationOptions({now,expectedCycleKey})),
+    publishPairingCycle(cronDb,publicationOptions({now,callerId:null,authorizedScope:null})),
   ]);
   assert.equal(Number(owner.created)+Number(cron.created),1);
   assert.deepEqual(owner.publication,cron.publication);

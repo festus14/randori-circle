@@ -46,6 +46,11 @@ const outboxWorkerCalls=[];
 const mockAvailabilityCycles=new Map();
 const mockAvailabilityDecisions=new Map();
 
+function pairingRecoveryBody({circleId=1,local=false,now=databaseNowOverride||new Date()}={}){
+  const scope=local?{kind:'local'}:{kind:'circle',circleId};
+  return {expected_cycle_key:availabilityCycleKey(scope,resolvePairingCycle({now}))};
+}
+
 function sqlText(statement) {
   return typeof statement === 'string' ? statement : String(statement?.sql || '');
 }
@@ -1820,11 +1825,12 @@ test('primary weeks and my-pair isolate the local test clock from production dat
   databaseNowOverride=databaseNow;
 
   executeHandler=(sql,args)=>{
-    if(sql.includes('SELECT id FROM auth_accounts')&&sql.includes('COALESCE(is_demo,0)=0')){
-      return rows([{id:2}]);
+    if(sql.includes('SELECT id,is_admin FROM auth_accounts')&&sql.includes('COALESCE(is_demo,0)=0')){
+      return rows([{id:2,is_admin:0}]);
     }
-    if(sql.includes('SELECT aa.id,c.id AS circle_id')&&sql.includes('LIMIT 2')){
-      return rows([{id:2,circle_id:1}]);
+    if((sql.includes('SELECT aa.id,c.id AS circle_id')
+      ||sql.includes('SELECT aa.id,cm.role,c.id AS circle_id'))&&sql.includes('LIMIT 2')){
+      return rows([{id:2,circle_id:1,role:'member'}]);
     }
     if(sql.includes('FROM pairing_week_runs WHERE week_label=?')){
       return args[0]===appCycle.cycleId?rows([{
@@ -3689,6 +3695,45 @@ test('operation validation rejects unsupported methods and non-admin mutations',
   }
 });
 
+test('owner recovery rejects early and stale cycles before any publication write',async()=>{
+  process.env.APP_URL='https://randori.example.test';
+  executeHandler=sql=>{
+    if(sql.includes("cm.role='owner'")||sql.includes("membership.role='owner'")){
+      return rows([{id:1,role:'owner',circle_id:1}]);
+    }
+    return rows();
+  };
+  databaseNowOverride='2026-09-20T07:29:59.999Z';
+  const expected=pairingRecoveryBody();
+  const request={
+    method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},
+    headers:{'x-test-auth':'admin'},body:expected,
+  };
+
+  for(const body of [{},{expected_cycle_key:'A'.repeat(64)},
+    {...expected,force:true},[expected]]){
+    const invalid=await invoke(opsHandler,{...request,body});
+    assert.equal(invalid.status,400);
+    assert.equal(invalid.body.code,'pairing_recovery_input_invalid');
+  }
+  assert.equal(executed.some(call=>call.sql.includes('INSERT INTO pairing_week_runs')),false);
+
+  const early=await invoke(opsHandler,request);
+  assert.equal(early.status,409);
+  assert.equal(early.body.code,'pairing_recovery_not_ready');
+  assert.equal(early.body.publication_state.state,'pending');
+  assert.equal(early.body.publication_state.can_publish_now,false);
+  assert.equal(executed.some(call=>call.sql.includes('INSERT INTO pairing_week_runs')),false);
+
+  databaseNowOverride='2026-09-27T07:30:00.000Z';
+  executed.length=0;
+  const stale=await invoke(opsHandler,request);
+  assert.equal(stale.status,409);
+  assert.equal(stale.body.code,'pairing_cycle_changed');
+  assert.notEqual(stale.body.publication_state.cycle_key,expected.expected_cycle_key);
+  assert.equal(executed.some(call=>call.sql.includes('INSERT INTO pairing_week_runs')),false);
+});
+
 test('owner publication is immutable and the legacy reshuffle URL cannot remix it', async () => {
   process.env.APP_URL='https://randori.example.test';
   const participants = [
@@ -3710,7 +3755,7 @@ test('owner publication is immutable and the legacy reshuffle URL cannot remix i
   });
   const request = {
     method: 'POST', url: '/api/pairing/run', query: { endpoint: 'pairing-run' },
-    headers: { 'x-test-auth': 'admin' }, body: {},
+    headers: { 'x-test-auth': 'admin' }, body: pairingRecoveryBody(),
   };
   const first = await invoke(opsHandler, request);
   const second = await invoke(opsHandler, {
@@ -3724,6 +3769,8 @@ test('owner publication is immutable and the legacy reshuffle URL cannot remix i
   assert.equal(first.body.available_count,3);
   assert.equal(first.body.pair_count,2);
   assert.equal(first.body.solo_count,1);
+  assert.equal(first.body.publication_state.state,'published');
+  assert.equal(first.body.publication_state.can_publish_now,false);
   assert.equal('pairs' in first.body,false,'operational responses must not expose member names or identifiers');
   assert.ok(executed.some(call=>call.sql.includes('INSERT INTO outbox_events')
     &&call.args[0]==='unavailable'&&Number(call.args[1])===2
@@ -3741,7 +3788,7 @@ test('owner publication is immutable and the legacy reshuffle URL cannot remix i
 
   const remix=await invoke(opsHandler,{...request,body:{remix:true}});
   assert.equal(remix.status,400);
-  assert.match(remix.body.error,/cannot be remixed/);
+  assert.match(remix.body.error,/expected_cycle_key/);
   assert.equal(executed.filter(call=>call.sql.includes('INSERT INTO pairing_week_runs')).length,1);
 });
 
@@ -3760,7 +3807,7 @@ test('current-cycle publication fails before its irreversible claim when scoped 
 
   const result=await invoke(opsHandler,{
     method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},
-    headers:{'x-test-auth':'admin'},body:{},
+    headers:{'x-test-auth':'admin'},body:pairingRecoveryBody(),
   });
   assert.equal(result.status,503);
   assert.deepEqual(result.body,{error:'pairing unavailable'});
@@ -3784,7 +3831,7 @@ test('manual publication revalidates owner authority inside the write transactio
 
   const result=await invoke(opsHandler,{
     method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},
-    headers:{'x-test-auth':'admin'},body:{},
+    headers:{'x-test-auth':'admin'},body:pairingRecoveryBody(),
   });
   assert.equal(result.status,403);
   assert.deepEqual(result.body,{error:'primary circle owner required'});
@@ -3826,7 +3873,7 @@ test('publication retries only vetted pre-commit lock conflicts and never an amb
     },
   };
   const request={
-    method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers:{'x-test-auth':'admin'},body:{},
+    method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers:{'x-test-auth':'admin'},body:pairingRecoveryBody(),
   };
   const retried=await invoke(opsHandler,request);
   assert.equal(retried.status,200);
@@ -3894,7 +3941,7 @@ test('concurrent handler publications across two file-backed clients converge on
       transaction:mode=>clients[transactionIndex++%clients.length].transaction(mode),
     };
     const request={
-      method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers:{'x-test-auth':'admin'},body:{},
+      method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers:{'x-test-auth':'admin'},body:pairingRecoveryBody(),
     };
     const results=await withFixedNow('2026-09-20T07:15:00.000Z',()=>Promise.all([
       invoke(opsHandler,request),invoke(opsHandler,request),
@@ -4054,8 +4101,10 @@ test('the separately flagged availability route requires and returns the exact s
 
 test('legacy pairing reads use only migration-owned schema without request DDL',async()=>{
   executeHandler=sql=>{
-    if(sql.includes('SELECT aa.id,c.id AS circle_id')&&sql.includes('JOIN circle_memberships')){
-      return rows([{id:2,circle_id:1}]);
+    if((sql.includes('SELECT aa.id,c.id AS circle_id')
+      ||sql.includes('SELECT aa.id,cm.role,c.id AS circle_id'))
+      &&sql.includes('JOIN circle_memberships')){
+      return rows([{id:2,circle_id:1,role:'member'}]);
     }
     return rows();
   };
@@ -4066,6 +4115,8 @@ test('legacy pairing reads use only migration-owned schema without request DDL',
       url:`/api/${route}`,query:{endpoint:route},headers,
     });
     assert.equal(response.status,200,JSON.stringify(response.body));
+    assert.equal(response.body.publication_state.state,'overdue');
+    assert.equal(Object.hasOwn(response.body.publication_state,'can_publish_now'),false);
     assert.equal(executed.some(({sql})=>/\b(?:CREATE|ALTER|DROP)\b/iu.test(sql)),false,
       `${route} must never repair schema on a request path`);
     assert.equal(executed.some(({sql})=>sql.includes('FROM auth_accounts LIMIT 0')),true,
@@ -4073,6 +4124,68 @@ test('legacy pairing reads use only migration-owned schema without request DDL',
     assert.equal(executed.some(({sql})=>sql.includes('FROM pairing_week_runs LIMIT 0')),true,
       `${route} must independently prove its publication contract`);
   }
+});
+
+test('primary recovery capability is revalidated after the pairing read',async()=>{
+  databaseNowOverride='2026-09-20T07:31:00.000Z';
+  executeHandler=sql=>{
+    if(sql.includes('SELECT aa.id,c.id AS circle_id,cm.role')){
+      return rows([{id:2,circle_id:1,role:'owner'}]);
+    }
+    if(sql.includes('SELECT aa.id,cm.role,c.id AS circle_id')){
+      return rows([{id:2,circle_id:1,role:'member'}]);
+    }
+    return rows();
+  };
+  const response=await invoke(dataHandler,{
+    url:'/api/weeks',query:{endpoint:'weeks'},headers:{...sameOriginHeaders,'x-test-auth':'user'},
+  });
+  assert.equal(response.status,200,JSON.stringify(response.body));
+  assert.equal(response.body.publication_state.state,'overdue');
+  assert.equal(Object.hasOwn(response.body.publication_state,'can_publish_now'),false,
+    'a role demotion after preflight must not leave an owner recovery capability');
+});
+
+test('primary pairing reads return no payload after membership or selected-session loss',async()=>{
+  databaseNowOverride='2026-09-20T07:31:00.000Z';
+  executeHandler=sql=>{
+    if(sql.includes('SELECT aa.id,c.id AS circle_id,cm.role')){
+      return rows([{id:2,circle_id:1,role:'member'}]);
+    }
+    if(sql.includes('SELECT aa.id,cm.role,c.id AS circle_id')) return rows();
+    return rows();
+  };
+  const removed=await invoke(dataHandler,{
+    url:'/api/my-pair',query:{endpoint:'my-pair'},
+    headers:{...sameOriginHeaders,'x-test-auth':'user'},
+  });
+  assert.equal(removed.status,403);
+  assert.deepEqual(removed.body,{ok:false,error:'active circle membership required'});
+  assert.equal(removed.body.publication_state,undefined);
+
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';
+  process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED='true';
+  process.env.SECONDARY_CIRCLE_COORDINATION_ENABLED='true';
+  executeHandler=sql=>{
+    if(sql.includes('ORDER BY circle.is_primary DESC,circle.id')) return rows([{
+      circle_id:1,public_id:'circle-primary',name:'Primary',is_primary:1,role:'owner',
+    }]);
+    if(sql.includes('SELECT context.circle_id,context.context_version')){
+      return rows([{circle_id:1,context_version:7}]);
+    }
+    if(sql.includes('SELECT membership.circle_id')&&sql.includes('FROM auth_sessions session')){
+      return rows([]);
+    }
+    return rows();
+  };
+  const revoked=await invoke(dataHandler,{
+    url:'/api/weeks',query:{endpoint:'weeks'},
+    headers:{...sameOriginHeaders,'x-test-auth':'user','x-randori-circle-context-version':'7'},
+  });
+  assert.equal(revoked.status,409);
+  assert.deepEqual(revoked.body,{ok:false,error:'circle context changed',code:'circle_context_changed'});
+  assert.equal(revoked.body.publication_state,undefined);
 });
 
 test('a sole secondary circle uses implicit availability GET and POST without a context header',async()=>{
@@ -4149,14 +4262,26 @@ test('selected secondary owner publishes and reads coordination without legacy w
     db=client;
     const headers={...sameOriginHeaders,'x-test-auth':'admin','x-randori-circle-context-version':'7'};
     executed.length=0;
+    const staleCycle=await invoke(opsHandler,{
+      method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers,
+      body:{expected_cycle_key:'0'.repeat(64)},
+    });
+    assert.equal(staleCycle.status,409,JSON.stringify(staleCycle.body));
+    assert.equal(staleCycle.body.code,'pairing_cycle_changed');
+    assert.equal(staleCycle.body.circle_public_id,'circle-secondary');
+    assert.equal(staleCycle.body.circle_context_version,7);
+
     const published=await invoke(opsHandler,{
-      method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers,body:{},
+      method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers,
+      body:pairingRecoveryBody({circleId:20}),
     });
     assert.equal(published.status,200,JSON.stringify(published.body));
     assert.equal(published.body.coordination_only,true);
     assert.equal(published.body.workspace_available,false);
     assert.equal(published.body.circle_public_id,'circle-secondary');
     assert.equal(published.body.circle_context_version,7);
+    assert.equal(published.body.publication_state.state,'published');
+    assert.equal(published.body.publication_state.can_publish_now,false);
     assert.equal('week_id' in published.body,false);
     assert.equal(executed.some(({sql})=>/\b(?:CREATE|ALTER)\b/i.test(sql)),false,
       'secondary publication must not run request-path DDL');
@@ -4181,11 +4306,13 @@ test('selected secondary owner publishes and reads coordination without legacy w
     assert.equal(weeks.body.workspace_available,false);
     assert.equal(weeks.body.weeks.length,1);
     assert.equal(weeks.body.weeks[0].pairs.length,2);
+    assert.equal(weeks.body.publication_state.state,'published');
+    assert.equal(weeks.body.publication_state.can_publish_now,false);
     const solo=weeks.body.weeks[0].pairs.find(pair=>pair.solo===true);
     assert.equal(solo.members.length,1);
     assert.equal('id' in weeks.body.weeks[0],false);
     assert.equal('pg_id' in weeks.body.weeks[0].pairs[0],false);
-    assert.doesNotMatch(JSON.stringify(weeks.body),/week_[1-9]|room_id|schedule/);
+    assert.doesNotMatch(JSON.stringify(weeks.body),/week_[1-9]|room_id|"schedule"\s*:/);
     assert.doesNotMatch(JSON.stringify(weeks.body),/is_ai/i);
 
     const mine=await invoke(dataHandler,{

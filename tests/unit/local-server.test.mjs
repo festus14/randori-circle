@@ -20,6 +20,7 @@ import { afterEach, test } from 'node:test';
 import { createClient } from '@libsql/client';
 
 import {createOutboxEventStatement} from '../../api/_outbox.js';
+import {resolvePairingCycle} from '../../api/_pairing-cycle.js';
 import { LATEST_MIGRATION_VERSION } from '../../db/executable-migrations.js';
 import {
   inspectMigrationState,
@@ -39,6 +40,19 @@ import {
 const REPOSITORY_ROOT=fileURLToPath(new URL('../..',import.meta.url));
 const SILENT_LOGGER=Object.freeze({log(){},error(){}});
 const cleanup=[];
+
+async function withPostGracePairingClock(callback){
+  const NativeDate=globalThis.Date;
+  const actualNow=NativeDate.now();
+  const cycle=resolvePairingCycle({now:new NativeDate(actualNow)});
+  const instant=Math.max(actualNow,NativeDate.parse(cycle.cutoffAt)+30*60*1000);
+  globalThis.Date=class FixedDate extends NativeDate{
+    constructor(...args){ super(...(args.length?args:[instant])); }
+    static now(){ return instant; }
+  };
+  try{ return await callback(); }
+  finally{ globalThis.Date=NativeDate; }
+}
 
 function temporaryDirectory(prefix='randori-local-server-'){
   const directory=realpathSync(mkdtempSync(join(tmpdir(),prefix)));
@@ -708,11 +722,26 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
   assert.equal(clientLog.status,200,clientLogPayload.text);
   assert.equal(clientLogPayload.body.inserted,1);
 
-  const pairingRequest=()=>fetch(new URL('/api/pairing/run',first.url),{
-    method:'POST',headers:{'content-type':'application/json',origin:first.url,cookie:ownerCookie},body:'{}',
+  let recoveryPayload;
+  let pairingResponses;
+  let pairingPayloads;
+  await withPostGracePairingClock(async()=>{
+    const recoveryRead=await fetch(new URL('/api/weeks',first.url),{headers:{cookie:ownerCookie}});
+    recoveryPayload=await jsonResponse(recoveryRead);
+    assert.equal(recoveryRead.status,200,recoveryPayload.text);
+    assert.equal(recoveryPayload.body.publication_state.state,'overdue');
+    assert.equal(recoveryPayload.body.publication_state.can_publish_now,true);
+    const requests=[0,1].map(()=>fetch(new URL('/api/pairing/run',first.url),{
+      method:'POST',headers:{'content-type':'application/json',origin:first.url,cookie:ownerCookie},
+      body:JSON.stringify({expected_cycle_key:recoveryPayload.body.publication_state.cycle_key}),
+    }));
+    pairingResponses=await Promise.all(requests);
+    pairingPayloads=await Promise.all(pairingResponses.map(jsonResponse));
   });
-  const pairingResponses=await Promise.all([pairingRequest(),pairingRequest()]);
-  const pairingPayloads=await Promise.all(pairingResponses.map(jsonResponse));
+  const pairingRequest=()=>fetch(new URL('/api/pairing/run',first.url),{
+    method:'POST',headers:{'content-type':'application/json',origin:first.url,cookie:ownerCookie},
+    body:JSON.stringify({expected_cycle_key:recoveryPayload.body.publication_state.cycle_key}),
+  });
   for(let index=0;index<pairingResponses.length;index+=1){
     assert.equal(pairingResponses[index].status,200,pairingPayloads[index].text);
     assert.equal(pairingPayloads[index].body.ok,true);

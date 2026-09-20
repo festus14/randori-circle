@@ -1039,7 +1039,7 @@ p{margin:0}
         <div id="recentRunsArea" class="card" style="padding:10px"><div id="recentRunsList" class="small muted">No runs yet — hit ▶ Run</div></div>
         <div id="logsArea" class="card" style="padding:10px; display:none; margin-top:12px; border-color:var(--border)"><div style="display:flex; justify-content:space-between; align-items:center"><h3 style="font-size:12.5px; margin:0; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Logs <span class="kbd" style="font-size:10px; margin-left:6px">admin</span></h3><span class="row" style="gap:6px"><select id="logsLevelSel" class="select" style="font-size:11px; padding:4px 8px"><option value="" selected>all levels</option><option value="error">error</option><option value="warn">warn</option><option value="success">success</option><option value="info">info</option><option value="debug">debug</option></select><button id="logsRefresh" class="pill" style="font-size:11px">refresh</button><button id="logsClear" class="pill" style="font-size:11px">clear view</button></span></div><div id="logsList" class="small muted" style="margin-top:8px; max-height:320px; overflow:auto; font-family:ui-monospace, monospace; font-size:11.5px; display:grid; gap:4px">Loading…</div><div class="small muted" style="margin-top:6px">Batched client+server logs — auto every 20s, admin can filter by level/event. Backed by Sentry-ready hook (see _randori_log). For prod monitoring consider Sentry or Better Stack (see console).</div></div>
         <div id="dashSignOutWrap" style="margin-top:12px;text-align:right; display:block"><button id="dashSignOut" class="pill" style="font-size:12px;opacity:.75">Sign out</button></div>
-        <div id="dashEmpty" data-testid="dashboard-pair-state" data-state="loading" style="display:none" class="card"><div class="card-b"><b id="dashEmptyTitle">Checking your current cycle…</b><div id="dashEmptyMessage" class="small muted" style="margin-top:6px">Loading durable pairing state.</div><div class="row" style="margin-top:10px"><button class="pill" id="dashSoloCatalogue" type="button">Practice solo from catalogue</button><button class="pill" id="dashHow">How it works?</button></div></div></div>
+        <div id="dashEmpty" data-testid="dashboard-pair-state" data-state="loading" style="display:none" class="card"><div class="card-b"><b id="dashEmptyTitle">Checking your current cycle…</b><div id="dashEmptyMessage" class="small muted" style="margin-top:6px">Loading durable pairing state.</div><div class="row" style="margin-top:10px"><button class="btn" id="dashPublishNow" data-testid="dashboard-publish-now" type="button" hidden>Publish now</button><button class="pill" id="dashSoloCatalogue" type="button">Practice solo from catalogue</button><button class="pill" id="dashHow">How it works?</button></div></div></div>
       </div>
     </section>
 
@@ -1139,7 +1139,7 @@ p{margin:0}
           <div class="card-h">
             <h2>This week</h2>
             <div class="row">
-              <button id="newWeekBtn" class="btn" style="display:none" title="Publish this Sunday cycle once">Run current cycle</button>
+              <button id="newWeekBtn" class="btn" style="display:none" title="Recover this cycle after the scheduled publication grace period">Publish now</button>
               <button id="demoRunBtn" class="btn" style="display:none" title="Admin: seed 6 demo users + shuffle">✦ Run Demo</button>
               <button id="demoResetBtn" class="btn secondary" style="display:none" title="Admin: remove demo data">Reset Demo</button>
             </div>
@@ -1447,6 +1447,10 @@ p{margin:0}
   let pairingPublicationAbort=null;
   let pairingListAbort=null;
   let pairingRenderEpoch=0;
+  let currentPairingPublicationState=null;
+  let currentPairingPublicationFence=null;
+  let pairingRecoveryRetryKey=null;
+  let pairingPublicationRefreshTimer=null;
   window._randoriUserNavigationEpoch=0;
   window._randoriExplicitNavigation=null;
   const AVAILABILITY_SOURCES=new Set(['user','legacy_bridge','cycle_default']);
@@ -1952,13 +1956,12 @@ async function refreshMe(){
   }
   const ADMIN_EMAIL='festusomole14@gmail.com';
   function isAdmin(){ return !!(me && (me.is_admin || me.isAdmin || (me.email && me.email.toLowerCase()===ADMIN_EMAIL))); }
-  function canRunCurrentPairing(){
-    const selectedCircleMayPublish=!authCapabilities.multiCircleControlPlane
-      ||activeCircleContext?.active_circle?.is_primary===true
-      ||authCapabilities.secondaryCircleCoordination===true;
-    return !!me&&((activeCircleRole==='owner'&&selectedCircleMayPublish)
-      ||(activeCircleRole==='legacy'&&authCapabilitiesLoaded&&!authCapabilitiesFailed
-        &&authCapabilities.registrationMode==='local_open'&&isAdmin()));
+  function currentPairingRecoveryAvailable(){
+    const state=currentPairingPublicationState;
+    const fence=currentPairingPublicationFence;
+    return !!state&&state.state==='overdue'&&state.can_publish_now===true
+      &&fence?.userId===Number(me?.id||me?.uid)
+      &&circleControlOperationMatches(fence);
   }
   function updatePairingRunAccess(){
     const button=document.getElementById('newWeekBtn');
@@ -1967,18 +1970,32 @@ async function refreshMe(){
       badge=document.createElement('span'); badge.id='adminOnlyBadge'; badge.className='kbd'; badge.style.marginLeft='8px';
       button.parentElement.appendChild(badge);
     }
-    const allowed=canRunCurrentPairing();
+    const allowed=currentPairingRecoveryAvailable();
     if(button){
       button.style.display=allowed?'inline-flex':'none';
-      button.disabled=false;
-      button.textContent='Run current cycle';
-      button.title='Publish the current Sunday cycle once';
+      button.disabled=!!pairingPublicationAbort;
+      button.textContent=pairingPublicationAbort
+        ?'Publishing…'
+        :(pairingRecoveryRetryKey===currentPairingPublicationState?.cycle_key?'Retry publication':'Publish now');
+      button.title='Recover this cycle after the scheduled publication grace period';
     }
     if(badge){
       const upcoming=availabilityState.value?.cycle;
-      badge.textContent=allowed
-        ?(activeCircleRole==='owner'?'owner • idempotent':'local admin • idempotent')
-        :(upcoming?`next cutoff ${formatAvailabilityInstant(upcoming.cutoffAt,upcoming.timeZone)}`:'weekly schedule loading…');
+      badge.textContent=currentPairingPublicationState?.state==='published'
+        ?'current cycle published'
+        :allowed
+          ?(pairingRecoveryRetryKey===currentPairingPublicationState?.cycle_key?'owner • retry ready':'owner • recovery ready')
+          :(currentPairingPublicationState?.state==='pending'
+            ?`scheduled ${formatAvailabilityInstant(currentPairingPublicationState.scheduled_at,currentPairingPublicationState.time_zone)}`
+            :(upcoming?`next cutoff ${formatAvailabilityInstant(upcoming.cutoffAt,upcoming.timeZone)}`:'weekly schedule loading…'));
+    }
+    const dashboardButton=document.getElementById('dashPublishNow');
+    if(dashboardButton){
+      dashboardButton.hidden=!allowed;
+      dashboardButton.disabled=!!pairingPublicationAbort;
+      dashboardButton.textContent=pairingPublicationAbort
+        ?'Publishing…'
+        :(pairingRecoveryRetryKey===currentPairingPublicationState?.cycle_key?'Retry publication':'Publish now');
     }
   }
   function parseAvailabilityEnvelope(payload,{contextVersion}={}){
@@ -3636,10 +3653,14 @@ async function refreshMe(){
   const setBrowserSyncState=(state,message)=>window._randori_ui_state?.setRequestState?.(
     syncStatus?.parentElement,syncStatus,state,message);
   let bc=null;
+  let pairingPublicationChannel=null;
   try{
     bc=('BroadcastChannel' in window)?new BroadcastChannel('randori-sync'):null;
+    pairingPublicationChannel=('BroadcastChannel' in window)
+      ?new BroadcastChannel('randori-pairing-publication-v1'):null;
   }catch{
     bc=null;
+    pairingPublicationChannel=null;
   }
   if(bc){
     bc.onmessage=(e)=>{
@@ -3652,6 +3673,24 @@ async function refreshMe(){
         if(String(d.room_id||'')===String(room||'')) applyBoardSnapshot(d.board,room,{persist:true,dirty:true,status:true});
       }
       if(d.type==='presence'){ refreshPresence(); }
+    };
+  }
+  if(pairingPublicationChannel){
+    pairingPublicationChannel.onmessage=event=>{
+      const value=event?.data;
+      const operation=captureCircleControlOperation();
+      if(!value||value.type!=='pairing-publication'||value.v!==1
+        ||Number(value.account_id)!==operation.userId
+        ||value.circle_public_id!==operation.circlePublicId
+        ||value.context_version!==operation.contextVersion
+        ||typeof value.cycle_key!=='string'||!/^[0-9a-f]{64}$/.test(value.cycle_key)
+        ||currentPairingPublicationState?.cycle_key!==value.cycle_key) return;
+      // The message carries identity only. Every tab obtains authoritative
+      // publication and pairing data through its own context-fenced read.
+      if(document.getElementById('view-pair')?.style.display!=='none') void renderPairs();
+      if(document.getElementById('view-dashboard')?.style.display!=='none'){
+        void window._randori_journey?.showDashboard?.();
+      }
     };
   }
 
@@ -3839,6 +3878,8 @@ async function refreshMe(){
     pairingRenderEpoch+=1;
     pairingPublicationAbort?.abort();
     pairingPublicationAbort=null;
+    if(pairingPublicationRefreshTimer!==null) clearTimeout(pairingPublicationRefreshTimer);
+    pairingPublicationRefreshTimer=null;
     pairingListAbort?.abort();
     pairingListAbort=null;
     window._randori_journey?.resetPairState?.();
@@ -3847,6 +3888,9 @@ async function refreshMe(){
     currentCloudPairingCycle=null;
     currentCloudPairingLoaded=false;
     currentCloudPairingUserId=null;
+    currentPairingPublicationState=null;
+    currentPairingPublicationFence=null;
+    pairingRecoveryRetryKey=null;
     activeCircleRole=null;
     activeCircleContext=null;
     activeCircleContextUserId=null;
@@ -5064,37 +5108,60 @@ async function refreshMe(){
 
   // ---------- pairing (one immutable publication per current server cycle) ----------
   async function publishCurrentCycle(){
-    if(!canRunCurrentPairing()){ toast('Only the circle owner can run the current cycle'); return; }
+    if(!currentPairingRecoveryAvailable()){
+      toast('Owner recovery is available only after the scheduled grace period');
+      return;
+    }
     const userId=Number(me?.id||me?.uid);
     const circleOperation=captureCircleControlOperation();
+    const expectedCycleKey=currentPairingPublicationState.cycle_key;
     pairingPublicationAbort?.abort();
     const controller=new AbortController();
     pairingPublicationAbort=controller;
-    const nb=document.getElementById('newWeekBtn');
-    if(nb){ nb.disabled=true; nb.textContent='Running current cycle…'; }
+    updatePairingRunAccess();
     const pairsList=document.getElementById('pairsList'); let overlay=null;
     if(pairsList){ overlay=document.createElement('div'); overlay.className='loader-overlay'; overlay.innerHTML='<span class="spinner spinner-lg"></span><span class="small muted" style="margin-left:8px">Publishing current cycle…</span>'; overlay.style.display='flex'; overlay.style.gap='10px'; pairsList.style.position='relative'; pairsList.appendChild(overlay); }
     try{
-      const data=await api('/api/pairing/run',{method:'POST',body:{},signal:controller.signal});
+      const data=await api('/api/pairing/run',{
+        method:'POST',body:{expected_cycle_key:expectedCycleKey},signal:controller.signal,
+      });
       if(controller.signal.aborted||Number(me?.id||me?.uid)!==userId
         ||!circleControlOperationMatches(circleOperation)
+        ||currentPairingPublicationState?.cycle_key!==expectedCycleKey
         ||!pairingResponseMatchesContext(data)) return;
+      const publishedState=parsePairingPublicationState(data);
+      if(!publishedState||publishedState.cycle_key!==expectedCycleKey
+        ||publishedState.state!=='published') throw new Error('invalid pairing publication response');
+      pairingPublicationSignal(publishedState,circleOperation);
+      const participantCount=Number(data.participant_count??data.count);
       toast(data.created
-        ?`Current cycle ready — ${data.count} participant${data.count===1?'':'s'}`
+        ?`Current cycle ready — ${Number.isFinite(participantCount)?participantCount:0} participant${participantCount===1?'':'s'}`
         :'Current cycle was already published');
+      // POST is never the UI truth source. Re-read both visible surfaces so an
+      // ambiguous response and an ordinary success converge on the same path.
       await renderPairs();
       await renderPeople();
       await renderHistory();
+      if(document.getElementById('view-dashboard')?.style.display!=='none'){
+        await window._randori_journey?.showDashboard?.();
+      }
     }catch(e){
       if(e?.name==='AbortError'||controller.signal.aborted) return;
+      if(Number(me?.id||me?.uid)!==userId||!circleControlOperationMatches(circleOperation)
+        ||currentPairingPublicationState?.cycle_key!==expectedCycleKey) return;
+      if(Number(e?.http_status)===503) pairingRecoveryRetryKey=expectedCycleKey;
       const msg=e.error||e.message||'could not publish the current cycle';
       toast(msg);
-      if(e.available_count!==undefined){
-        await showConfirm('No available members', 'At least one available member is required. A single member gets Solo practice.');
+      if(Number(e?.http_status)===503
+        ||['pairing_cycle_changed','pairing_recovery_not_ready'].includes(String(e?.code||''))){
+        if(document.getElementById('view-pair')?.style.display!=='none') await renderPairs();
+        if(document.getElementById('view-dashboard')?.style.display!=='none'){
+          await window._randori_journey?.showDashboard?.();
+        }
       }
     }finally{
       if(pairingPublicationAbort===controller) pairingPublicationAbort=null;
-      if(nb){ nb.disabled=false; nb.textContent='Run current cycle'; }
+      updatePairingRunAccess();
       try{ document.querySelectorAll('.loader-overlay').forEach(o=>o.remove()); }catch{}
     }
   }
@@ -5215,6 +5282,105 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return window._randori_cycle_ui?.formatInstant?.(value,timeZone)||'schedule pending';
   }
 
+  function pairingPublicationInstant(value,{nullable=false}={}){
+    if(nullable&&(value===null||value===undefined)) return null;
+    if(typeof value!=='string'||value.length>40) return null;
+    const millis=Date.parse(value);
+    if(!Number.isFinite(millis)) return null;
+    const normalized=new Date(millis).toISOString();
+    return normalized===value?normalized:null;
+  }
+
+  function parsePairingPublicationState(payload){
+    const raw=payload?.publication_state;
+    if(raw===undefined) return null;
+    const cycle=payload?.current_cycle||payload?.cycle;
+    const observed=pairingPublicationInstant(raw?.observed_at);
+    const scheduled=pairingPublicationInstant(raw?.scheduled_at);
+    const recovery=pairingPublicationInstant(raw?.recovery_at);
+    const published=pairingPublicationInstant(raw?.published_at,{nullable:true});
+    const cycleStarts=pairingPublicationInstant(cycle?.startsAt);
+    const cycleEnds=pairingPublicationInstant(cycle?.endsAt);
+    const hasCapability=Object.prototype.hasOwnProperty.call(raw||{},'can_publish_now');
+    const state=String(raw?.state||'');
+    if(!raw||typeof raw!=='object'||Array.isArray(raw)
+      ||!['pending','overdue','published'].includes(state)
+      ||typeof raw.cycle_key!=='string'||!/^[0-9a-f]{64}$/.test(raw.cycle_key)
+      ||!observed||!scheduled||!recovery||!cycleStarts||!cycleEnds
+      ||Date.parse(cycleStarts)>=Date.parse(cycleEnds)
+      ||Date.parse(observed)<Date.parse(cycleStarts)
+      ||Date.parse(observed)>=Date.parse(cycleEnds)
+      ||Date.parse(recovery)-Date.parse(scheduled)!==30*60*1000
+      ||scheduled!==pairingPublicationInstant(cycle?.cutoffAt)
+      ||(state==='published')!==!!published
+      ||(state!=='published'&&raw.published_at!==null)
+      ||(!published&&state!==(Date.parse(observed)>=Date.parse(recovery)?'overdue':'pending'))
+      ||(hasCapability&&typeof raw.can_publish_now!=='boolean')
+      ||raw.can_publish_now===true&&state!=='overdue'){
+      throw new Error('invalid pairing publication state');
+    }
+    return Object.freeze({
+      state,cycle_key:raw.cycle_key,observed_at:observed,scheduled_at:scheduled,
+      recovery_at:recovery,published_at:published,
+      ...(hasCapability?{can_publish_now:raw.can_publish_now}:{}),
+      time_zone:String(cycle?.timeZone||''),cycle_starts_at:cycleStarts,cycle_ends_at:cycleEnds,
+    });
+  }
+
+  function schedulePairingPublicationRefresh(state,operation){
+    if(pairingPublicationRefreshTimer!==null) clearTimeout(pairingPublicationRefreshTimer);
+    pairingPublicationRefreshTimer=null;
+    if(!state||!operation) return;
+    const observed=Date.parse(state.observed_at);
+    const targets=[Date.parse(state.cycle_ends_at)];
+    if(state.state==='pending') targets.push(Date.parse(state.recovery_at));
+    const next=Math.min(...targets.filter(target=>Number.isFinite(target)&&target>observed));
+    if(!Number.isFinite(next)) return;
+    const cycleKey=state.cycle_key;
+    pairingPublicationRefreshTimer=setTimeout(()=>{
+      pairingPublicationRefreshTimer=null;
+      if(currentPairingPublicationState?.cycle_key!==cycleKey
+        ||!circleControlOperationMatches(operation)) return;
+      currentPairingPublicationState=null;
+      currentPairingPublicationFence=null;
+      updatePairingRunAccess();
+      if(document.getElementById('view-pair')?.style.display!=='none') void renderPairs();
+      if(document.getElementById('view-dashboard')?.style.display!=='none'){
+        void window._randori_journey?.showDashboard?.();
+      }
+    },Math.min(2_147_000_000,Math.max(0,next-observed)+50));
+  }
+
+  function acceptPairingPublicationState(payload,operation){
+    const state=parsePairingPublicationState(payload);
+    if(!state){
+      currentPairingPublicationState=null;
+      currentPairingPublicationFence=null;
+      if(pairingPublicationRefreshTimer!==null) clearTimeout(pairingPublicationRefreshTimer);
+      pairingPublicationRefreshTimer=null;
+      updatePairingRunAccess();
+      return null;
+    }
+    if(!circleControlOperationMatches(operation,payload)) return null;
+    currentPairingPublicationState=state;
+    currentPairingPublicationFence=operation;
+    if(state.state==='published'||pairingRecoveryRetryKey!==state.cycle_key){
+      pairingRecoveryRetryKey=null;
+    }
+    schedulePairingPublicationRefresh(state,operation);
+    updatePairingRunAccess();
+    return state;
+  }
+
+  function pairingPublicationSignal(state,operation){
+    if(!state||!operation) return;
+    pairingPublicationChannel?.postMessage({
+      type:'pairing-publication',v:1,account_id:operation.userId,
+      circle_public_id:operation.circlePublicId,
+      context_version:operation.contextVersion,cycle_key:state.cycle_key,
+    });
+  }
+
   function renderPairsMeta(localCur, cloudCur, envelope=null){
     const meta=document.getElementById('currentWeekMeta');
     if(cloudCur){
@@ -5266,9 +5432,22 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(renderEpoch!==pairingRenderEpoch||Number(me?.id||me?.uid)!==userId
         ||!pairingResponseMatchesContext(response)
         ||!circleControlOperationMatches(circleOperation)) return;
+      let publicationState;
+      try{ publicationState=acceptPairingPublicationState(response,circleOperation); }
+      catch{
+        currentPairingPublicationState=null;
+        currentPairingPublicationFence=null;
+        updatePairingRunAccess();
+        document.getElementById('currentWeekMeta').textContent='Current-cycle publication state could not be verified.';
+        container.innerHTML='<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">Pairing recovery is unavailable until the server state can be verified.</div>';
+        return;
+      }
       const cloudWeeks=Array.isArray(response?.weeks)?response.weeks:[];
       const currentCycleId=String(response?.current_cycle?.cycleId||'');
-      const cycleState=window._randori_cycle_ui?.classify?.(response?.current_cycle)||'invalid';
+      const publicationObserved=Date.parse(publicationState?.observed_at);
+      const cycleState=window._randori_cycle_ui?.classify?.(
+        response?.current_cycle,Number.isFinite(publicationObserved)?publicationObserved:Date.now(),
+      )||'invalid';
       if(cycleState!=='current'){
         currentCloudPairingWeek=null;
         currentCloudPairingCycle=null;
@@ -5294,10 +5473,23 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         const nextCutoff=upcoming
           ?` • next cutoff ${pairingInstantLabel(upcoming.cutoffAt,upcoming.timeZone)}`
           :'';
-        meta.textContent=currentCycleId
-          ?`${currentCycleId} • awaiting current-cycle publication${nextCutoff}`
-          :'Awaiting current-cycle publication';
-        container.innerHTML='<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">No pairings have been published for the current cycle. Historical and local demo pairs are not shown here.</div>';
+        const recoveryAt=publicationState
+          ?pairingInstantLabel(publicationState.recovery_at,publicationState.time_zone):'';
+        meta.textContent=publicationState?.state==='overdue'
+          ?`${currentCycleId||'Current cycle'} • publication is late`
+          :publicationState?.state==='pending'
+            ?`${currentCycleId||'Current cycle'} • scheduled publication pending${nextCutoff}`
+            :(currentCycleId
+              ?`${currentCycleId} • awaiting current-cycle publication${nextCutoff}`
+              :'Awaiting current-cycle publication');
+        const detail=publicationState?.state==='overdue'
+          ?(publicationState.can_publish_now===true
+            ?'The scheduled run did not publish this cycle. Use Publish now; retries are safe.'
+            :'The scheduled run did not publish this cycle. The circle owner can retry it now.')
+          :publicationState?.state==='pending'
+            ?`The scheduled run is still within its grace period${recoveryAt?` until ${recoveryAt}`:''}.`
+            :'No pairings have been published for the current cycle.';
+        container.innerHTML=`<div class="small muted" data-testid="pairing-publication-copy" style="padding:10px; border:1px dashed var(--line); border-radius:10px">${escapeHtml(detail)} Historical and local demo pairs are not shown here.</div>`;
         return;
       }
       if(response.coordination_only===true&&response.workspace_available===false){
@@ -7403,6 +7595,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   // Expose for debug + empty-state buttons
   window._randori_onboard={ start:startOnboarding, next:nextOnboard, skip:skipOnboarding, get step(){return onboardStep}, get done(){return onboardCompleted} };
+  window._randori_pairing_recovery={
+    accept:acceptPairingPublicationState,
+    publish:publishCurrentCycle,
+    updateControls:updatePairingRunAccess,
+    get current(){ return currentPairingPublicationState; },
+  };
 
   // Expose room helpers for deterministic Join Session (other IIFEs)
   try{
@@ -7642,9 +7840,15 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   function dashboardCycleState(data,now=Date.now()){
     const cycle=data?.current_cycle||data?.cycle;
-    const cycleState=window._randori_cycle_ui?.classify?.(cycle,now)||'invalid';
+    const observed=Date.parse(data?.publication_state?.observed_at);
+    const cycleState=window._randori_cycle_ui?.classify?.(
+      cycle,Number.isFinite(observed)?observed:now,
+    )||'invalid';
     if(cycleState!=='current') return cycleState==='invalid'?'error':cycleState;
     if(data?.paired) return data?.pairing_status==='solo'||data?.pair?.solo_practice===true?'solo':'paired';
+    if(['pending','overdue'].includes(data?.publication_state?.state)){
+      return data.publication_state.state;
+    }
     const status=String(data?.pairing_status||'');
     if(['unpublished','unavailable','missed','partner_unavailable'].includes(status)) return status;
     if(data?.reason==='no_pairing_for_current_cycle'||data?.reason==='no_week_yet') return 'unpublished';
@@ -7662,9 +7866,20 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const upcoming=data.upcoming_cycle||window._randori_availability?.current?.cycle||null;
     const currentId=typeof current?.cycleId==='string'?current.cycleId:'';
     const nextCutoff=dashboardCycleInstant(upcoming,'cutoffAt');
+    const publication=data.publication_state||window._randori_pairing_recovery?.current;
+    const scheduled=publication
+      ?window._randori_cycle_ui?.formatInstant?.(
+        publication.scheduled_at,publication.time_zone||current?.timeZone,
+      )||'':'';
+    const recovery=publication
+      ?window._randori_cycle_ui?.formatInstant?.(
+        publication.recovery_at,publication.time_zone||current?.timeZone,
+      )||'':'';
     const copy={
       stale:{title:'Previous pairing cycle ended',message:`That assignment is no longer current${currentId?` (${currentId})`:''}. It has not been reopened as a live room.`},
       future:{title:'Future pairing is not active yet',message:`This assignment starts ${dashboardCycleInstant(current,'startsAt')||'at its published boundary'}. It will remain hidden until then.`},
+      pending:{title:'This week’s pairing is scheduled',message:`Publication is due ${scheduled||'at the weekly cutoff'}. If it is delayed, owner recovery becomes available ${recovery||'after the grace period'}.`},
+      overdue:{title:publication?.can_publish_now===true?'This week’s pairing needs publishing':'This week’s pairing is late',message:publication?.can_publish_now===true?'The scheduled run did not publish this cycle. Publish now is idempotent and safe to retry.':'The scheduled run did not publish this cycle. Your circle owner can retry it now.'},
       unpublished:{title:'Current pairing is not published yet',message:`${currentId?`${currentId} has`:'The current cycle has'} no durable publication yet.${nextCutoff?` Next cutoff: ${nextCutoff}.`:''}`},
       unavailable:{title:'Unavailable for this cycle',message:`The published eligibility snapshot records you as unavailable${currentId?` for ${currentId}`:''}.${nextCutoff?` Next cutoff: ${nextCutoff}.`:''}`},
       missed:{title:'Not in this cycle\'s snapshot',message:`The current cycle was published without your account in its eligibility snapshot.${nextCutoff?` Set availability before ${nextCutoff} for the upcoming cycle.`:''}`},
@@ -7679,6 +7894,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const title=document.getElementById('dashEmptyTitle'); if(title) title.textContent=copy.title;
     const message=document.getElementById('dashEmptyMessage'); if(message) message.textContent=copy.message;
     const sub=document.getElementById('dashSub'); if(sub) sub.textContent=copy.title;
+    window._randori_pairing_recovery?.updateControls?.();
   }
 
   function openSoloCatalogue(){
@@ -7753,6 +7969,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     try{
       const j=await window._randori_auth.api('/api/my-pair',{method:'GET',cache:'no-store',signal:controller.signal});
       if(!canApply()||!window._randori_circle_control?.matchesPairing?.(circleOperation,j)) return;
+      try{ window._randori_pairing_recovery?.accept?.(j,circleOperation); }
+      catch{ renderDashboardEmpty('error'); return; }
       const state=dashboardCycleState(j);
       if(!j.paired||!['paired','solo'].includes(state)){
         renderDashboardEmpty(state,j);
@@ -9174,6 +9392,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   // Dash profile edit button
   document.getElementById('dashProfileBtn')?.addEventListener('click', ()=>{ renderColorPicker(); populateTz(); showProfileSetup(); });
   document.getElementById('dashSoloCatalogue')?.addEventListener('click',openSoloCatalogue);
+  document.getElementById('dashPublishNow')?.addEventListener('click',()=>{
+    window._randori_pairing_recovery?.publish?.();
+  });
   document.getElementById('dashHow')?.addEventListener('click', ()=>{ if(window._randori_onboard) window._randori_onboard.start(1); });
   document.querySelector('.tabs')?.addEventListener('click',()=>{
     if(cancelDashboardPairRequest()) clearDashboardPairState();

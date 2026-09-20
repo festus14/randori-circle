@@ -10,6 +10,7 @@ import {
 import { buildFairPairing, canonicalRoomId } from './_pairing.js';
 import { pairingCronIsDue, resolvePairingCycle } from './_pairing-cycle.js';
 import { publishPairingCycle } from './_pairing-publication.js';
+import { PairingRecoveryError, parsePairingRecoveryRequest } from './_pairing-recovery.js';
 import {
   circlePairingFailure,
   listSecondaryPairingScopes,
@@ -228,7 +229,7 @@ async function requirePairingPublisher(req,res){
       };
       if(!active.membership.is_primary){
         return {
-          db,callerId,localRuntime:false,localRequest:false,mode:'secondary',
+          db,callerId,localRuntime:false,localRequest:localRuntimeRequest(req),mode:'secondary',
           circlePublicId:String(active.membership.public_id),circleContextVersion:Number(active.context_version),
           authority:{kind:'session',...circleContext,userId:callerId,requireOwner:true},
         };
@@ -767,6 +768,7 @@ function pairingPublicationPayload(result,emailDelivery){
     pair_count:publication.pairs.length,
     solo_count:soloCount,
     algorithm_version:publication.algorithm.version,
+    publication_state:result.publicationState,
     email_delivery:safeEmailDelivery(emailDelivery),
     message:result.created
       ?'Current-cycle pairings published. Solo members receive a Solo practice room.'
@@ -774,7 +776,12 @@ function pairingPublicationPayload(result,emailDelivery){
   };
 }
 
-function pairingFailure(res,error){
+function pairingFailure(res,error,context={}){
+  const pairingContext={
+    ...(context.circlePublicId?{circle_public_id:context.circlePublicId}:{}),
+    ...(context.circleContextVersion===undefined
+      ?{}:{circle_context_version:context.circleContextVersion}),
+  };
   if(error?.code==='PAIRING_CONTEXT_CHANGED'){
     return res.status(409).json({ok:false,error:'circle context changed',code:'circle_context_changed'});
   }
@@ -787,16 +794,30 @@ function pairingFailure(res,error){
   if(error?.code==='PAIRING_PUBLICATION_LEGACY_CONFLICT'){
     return res.status(409).json({error:'The current cycle cannot be published because legacy pairing data already exists.'});
   }
+  if(error?.code==='PAIRING_RECOVERY_CYCLE_CHANGED'){
+    return res.status(409).json({
+      ok:false,error:'pairing cycle changed',code:'pairing_cycle_changed',
+      publication_state:error.publicationState,...pairingContext,
+    });
+  }
+  if(error?.code==='PAIRING_RECOVERY_NOT_READY'){
+    return res.status(409).json({
+      ok:false,error:'pairing recovery is not ready',code:'pairing_recovery_not_ready',
+      publication_state:error.publicationState,...pairingContext,
+    });
+  }
   return res.status(503).json({error:'pairing unavailable'});
 }
 
 async function currentPairingResult(req,{
   db,localRuntime,localRequest=false,callerId=null,scope:authorizedScope=null,
   useApplicationClock=localRequest,circleContext=null,circlePublicId=null,circleContextVersion,
+  expectedCycleKey,
 }){
   const result=await publishPairingCycle(db,{
     localRuntime,callerId,authorizedScope,
     circleContext,
+    ...(expectedCycleKey===undefined?{}:{expectedCycleKey}),
     appUrl:process.env.APP_URL,
     // Loopback transport is independent from publication scope. Invite-bound
     // local identity still uses audited circle membership and v3 readiness.
@@ -819,25 +840,57 @@ async function currentPairingResult(req,{
   };
 }
 
+async function logPairingRecovery(event,resultOrError){
+  const success=resultOrError?.ok===true;
+  const meta=success?{
+    created:resultOrError.created===true,
+    existing:resultOrError.skipped===true,
+    participant_count:Number(resultOrError.participant_count||0),
+    pair_count:Number(resultOrError.pair_count||0),
+    solo_count:Number(resultOrError.solo_count||0),
+    publication_state:String(resultOrError.publication_state?.state||'unknown'),
+  }:{code:String(resultOrError?.code||'pairing_unavailable').slice(0,80)};
+  await logServerOps(success?'info':'warn',event,
+    success?'owner pairing recovery completed':'owner pairing recovery did not complete',meta,null);
+}
+
 async function runCurrentPairing(req,res,context){
-  try{ return res.json(await currentPairingResult(req,context)); }
-  catch(error){ return pairingFailure(res,error); }
+  try{
+    const result=await currentPairingResult(req,context);
+    if(context.expectedCycleKey!==undefined){
+      try{ await logPairingRecovery('pairing_recovery_completed',result); }catch{}
+    }
+    return res.json(result);
+  }
+  catch(error){
+    if(context.expectedCycleKey!==undefined){
+      try{ await logPairingRecovery('pairing_recovery_rejected',error); }catch{}
+    }
+    return pairingFailure(res,error,context);
+  }
 }
 
 async function handlePairingRun(req,res){
   if(req.method!=='POST') return res.status(405).json({error:'POST only'});
   const context=await requirePairingPublisher(req,res);
   if(!context) return;
-  if(context.circlePublicId) res.setHeader('Cache-Control',SECONDARY_PAIRING_CACHE_CONTROL);
-  const body=req.body===undefined?{}:req.body;
-  if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length){
-    return res.status(400).json({error:'request body must be empty; published cycles cannot be remixed'});
+  let recovery;
+  try{ recovery=parsePairingRecoveryRequest(req.body); }
+  catch(error){
+    if(error instanceof PairingRecoveryError){
+      return res.status(400).json({ok:false,error:error.message,code:'pairing_recovery_input_invalid'});
+    }
+    return res.status(400).json({ok:false,error:'invalid pairing recovery request'});
   }
+  if(context.circlePublicId) res.setHeader('Cache-Control',SECONDARY_PAIRING_CACHE_CONTROL);
   if(context.mode==='secondary'){
     try{
-      const result=await publishCirclePairing(context.db,{authority:context.authority});
+      const result=await publishCirclePairing(context.db,{
+        authority:context.authority,expectedCycleKey:recovery.expectedCycleKey,
+        ...(context.localRequest?{now:new Date()}:{}),
+      });
       const publication=result.publication;
-      return res.json({
+      const response={
         ok:true,created:result.created,skipped:!result.created,coordination_only:true,
         workspace_available:false,circle_public_id:context.circlePublicId,
         circle_context_version:context.circleContextVersion,cycle:publication.cycle,
@@ -847,16 +900,22 @@ async function handlePairingRun(req,res){
         pair_count:publication.groups.length,
         solo_count:publication.groups.filter(group=>group.isSolo).length,
         algorithm_version:publication.algorithm.version,
+        publication_state:result.publicationState,
         message:result.created
           ?'Current-cycle pairing published. Workspace tools are not enabled for this circle.'
           :'Current-cycle pairing was already published; no pairs were changed.',
-      });
+      };
+      try{ await logPairingRecovery('pairing_recovery_completed',response); }catch{}
+      return res.json(response);
     }catch(error){
-      const failure=circlePairingFailure(error,{contextVersion:context.circleContextVersion});
+      try{ await logPairingRecovery('pairing_recovery_rejected',error); }catch{}
+      const failure=circlePairingFailure(error,{
+        contextVersion:context.circleContextVersion,circlePublicId:context.circlePublicId,
+      });
       return res.status(failure.status).json(failure.body);
     }
   }
-  return runCurrentPairing(req,res,context);
+  return runCurrentPairing(req,res,{...context,expectedCycleKey:recovery.expectedCycleKey});
 }
 
 async function handleWeekly(req,res,{isDue=pairingCronIsDue}={}){

@@ -6,6 +6,11 @@ import {
 } from './_availability.js';
 import { buildFairPairing } from './_pairing.js';
 import { resolvePairingCycle } from './_pairing-cycle.js';
+import {
+  assertPairingRecoveryAllowed,
+  pairingPublicationState,
+  PairingRecoveryError,
+} from './_pairing-recovery.js';
 import { pairingSchemaV6Ready } from './_pairing-readiness.js';
 import {
   chatRetentionScopeRegistrationAvailable,
@@ -20,10 +25,11 @@ const TRANSACTION_ATTEMPTS=4;
 const CYCLE_KEY_PATTERN=/^[0-9a-f]{64}$/;
 
 export class PairingPublicationError extends Error{
-  constructor(code,message,{cause}={}){
+  constructor(code,message,{cause,publicationState}={}){
     super(message,{cause});
     this.name='PairingPublicationError';
     this.code=code;
+    if(publicationState) this.publicationState=publicationState;
   }
 }
 
@@ -605,6 +611,10 @@ export async function publishPairingCycle(db,options={}){
     ||(options.allowLocalAppUrl!==undefined&&typeof options.allowLocalAppUrl!=='boolean')){
     fail('PAIRING_PUBLICATION_INPUT_INVALID','Pairing publication options are invalid.');
   }
+  if(options.expectedCycleKey!==undefined
+    &&(options.callerId===null||options.callerId===undefined)){
+    fail('PAIRING_PUBLISHER_REVOKED','Owner authority is required for pairing recovery.');
+  }
   const appUrl=canonicalAppUrl(options.appUrl,{
     localRuntime:options.localRuntime,
     allowLocalAppUrl:options.allowLocalAppUrl===true,
@@ -627,11 +637,20 @@ export async function publishPairingCycle(db,options={}){
       });
       const cycle=cycleFromOptions({now,timeZone:options.timeZone,state:'current'});
       const existing=await readPublicationState(transaction,cycle);
+      const recoveryState=pairingPublicationState({
+        scope,cycle,observedAt:now,publishedAt:existing?.publication.publishedAt||null,
+        isOwner:options.expectedCycleKey!==undefined,
+      });
+      if(options.expectedCycleKey!==undefined){
+        assertPairingRecoveryAllowed(recoveryState,options.expectedCycleKey);
+      }
       if(existing){
         // No mutation was attempted, so end the read snapshot without creating
         // an ambiguous commit outcome on SQLite/libSQL concurrent readers.
         await transaction.rollback();
-        return Object.freeze({created:false,publication:existing.publication,appUrl});
+        return Object.freeze({
+          created:false,publication:existing.publication,publicationState:recoveryState,appUrl,
+        });
       }
       const candidates=await publicationCandidates(transaction,{scope,cycle});
       const retentionScope=await chatRetentionScopeRegistrationAvailable(transaction)?scope:null;
@@ -642,7 +661,14 @@ export async function publishPairingCycle(db,options={}){
       });
       commitStarted=true;
       await transaction.commit();
-      return Object.freeze({...result,appUrl});
+      return Object.freeze({
+        ...result,
+        publicationState:pairingPublicationState({
+          scope,cycle,observedAt:now,publishedAt:result.publication.publishedAt,
+          isOwner:options.expectedCycleKey!==undefined,
+        }),
+        appUrl,
+      });
     }catch(error){
       lastError=error;
       if(transaction){ try{ await transaction.rollback(); }catch{} }
@@ -650,12 +676,12 @@ export async function publishPairingCycle(db,options={}){
         await retryDelay(attempt);
         continue;
       }
-      if(error instanceof PairingPublicationError) throw error;
+      if(error instanceof PairingPublicationError||error instanceof PairingRecoveryError) throw error;
       fail('PAIRING_PUBLICATION_FAILED','Pairing publication failed.',error);
     }finally{
       try{ await transaction?.close?.(); }catch{}
     }
   }
-  if(lastError instanceof PairingPublicationError) throw lastError;
+  if(lastError instanceof PairingPublicationError||lastError instanceof PairingRecoveryError) throw lastError;
   fail('PAIRING_PUBLICATION_FAILED','Pairing publication failed.',lastError);
 }

@@ -965,6 +965,7 @@ test('manual and weekly production pairing queries are primary-circle scoped whe
 
   const manual=await invoke(opsHandler,{
     method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers:{'x-test-auth':'admin'},
+    body:{expected_cycle_key:'a'.repeat(64)},
   });
   assert.equal(manual.status,200);
   assert.equal(manual.body.participant_count,0);
@@ -1017,6 +1018,7 @@ test('pairing publication requires a primary-circle owner in production and only
   const local=await invoke(opsHandler,{
     method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},
     headers:{'x-test-auth':'admin',host:'127.0.0.1:3000'},
+    body:{expected_cycle_key:'a'.repeat(64)},
   });
   assert.equal(local.status,200,'an authorized local admin publishes an empty immutable cycle');
   assert.equal(local.body.participant_count,0);
@@ -1082,6 +1084,7 @@ test('production pairing stays primary-circle scoped when the rollout flag is di
 
   const manual=await invoke(opsHandler,{
     method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers:{'x-test-auth':'admin'},
+    body:{expected_cycle_key:'a'.repeat(64)},
   });
   assert.equal(manual.status,200);
   assert.equal(manual.body.participant_count,0);

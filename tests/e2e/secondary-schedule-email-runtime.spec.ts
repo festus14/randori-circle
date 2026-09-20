@@ -33,6 +33,18 @@ async function json(page,path:string,method='GET',body?:object,headers:Record<st
   },{path,method,body,headers});
 }
 
+function fixServerTime(iso:string){
+  const NativeDate=globalThis.Date;
+  const instant=new NativeDate(iso).getTime();
+  (globalThis as typeof globalThis&{Date:DateConstructor}).Date=class FixedDate extends NativeDate{
+    constructor(...args:ConstructorParameters<DateConstructor>){
+      super(...(args.length?args:[instant]));
+    }
+    static now(){ return instant; }
+  } as DateConstructor;
+  return ()=>{ globalThis.Date=NativeDate; };
+}
+
 test('a browser schedule proposal queues and captures one dashboard-only secondary email',async({page})=>{
   test.setTimeout(90_000);
   const original=Object.fromEntries(environmentKeys.map(key=>[key,process.env[key]]));
@@ -47,6 +59,7 @@ test('a browser schedule proposal queues and captures one dashboard-only seconda
   }});
   let runtime:Awaited<ReturnType<typeof startLocalDevelopmentServer>>|null=null;
   let db:ReturnType<typeof createClient>|null=null;
+  let restoreServerTime=()=>{};
   try{
     runtime=await startLocalDevelopmentServer({config,logger:silentLogger});
     process.env.CRON_SECRET='secondary-schedule-email-browser-secret';
@@ -80,7 +93,15 @@ test('a browser schedule proposal queues and captures one dashboard-only seconda
     ],'write');
 
     const context={'x-randori-circle-context-version':String(contextVersion)};
-    const publication=await json(page,'/api/pairing/run','POST',{},context);
+    const pairingState=await json(page,'/api/my-pair','GET',undefined,context);
+    expect(pairingState.status,JSON.stringify(pairingState.body)).toBe(200);
+    restoreServerTime=fixServerTime(String(
+      (pairingState.body as {publication_state:{recovery_at:string}}).publication_state.recovery_at,
+    ));
+    const publication=await json(page,'/api/pairing/run','POST',{
+      expected_cycle_key:String((pairingState.body as {publication_state:{cycle_key:string}})
+        .publication_state.cycle_key),
+    },context);
     expect(publication.status,JSON.stringify(publication.body)).toBe(200);
     expect(publication.body).toMatchObject({created:true,coordination_only:true,workspace_available:false});
     const initial=await json(page,'/api/schedule','GET',undefined,context);
@@ -121,6 +142,7 @@ test('a browser schedule proposal queues and captures one dashboard-only seconda
     })]);
     expect(JSON.stringify(body.schedule_delivery.captured)).not.toMatch(/\/join\/|room|workspace|video|chat/i);
   }finally{
+    restoreServerTime();
     await db?.close();
     await runtime?.close();
     for(const [key,value] of Object.entries(original)){
