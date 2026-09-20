@@ -761,7 +761,9 @@ for(const deniedStatus of [401,403]){
         return {ok:true,members:result,count:result.length,has_more:false,next_cursor:null,scanned:result.length};
       },
     });
-    await page.clock.install();
+    const clockStart=new Date('2026-09-20T08:00:00.000Z');
+    await page.clock.install({time:clockStart});
+    await page.clock.pauseAt(clockStart);
     await resetClientState(page,true);
     await page.goto('/',{waitUntil:'domcontentloaded'});
     // Resolve the first bootstrap identity check, then hold the remaining
@@ -815,7 +817,9 @@ test('identity bootstrap retries a transient failure and stops after the first a
     '/api/members':{ok:true,members:[{...owner,role:'owner',status:'active'}],count:1,
       has_more:false,next_cursor:null,scanned:1},
   });
-  await page.clock.install();
+  const clockStart=new Date('2026-09-20T08:00:00.000Z');
+  await page.clock.install({time:clockStart});
+  await page.clock.pauseAt(clockStart);
   await resetClientState(page,true);
   await page.goto('/',{waitUntil:'domcontentloaded'});
 
