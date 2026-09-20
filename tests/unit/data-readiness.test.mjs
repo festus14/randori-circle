@@ -61,15 +61,18 @@ test('data readiness profiles use bounded read-only projections',async()=>{
 
 test('weeks and my-pair readiness pin their exact publication and schedule projections',async()=>{
   const publication='SELECT week_label,week_id,generation_token,generation,algorithm_version, algorithm_seed,participant_count,participants_json,created_at FROM pairing_week_runs LIMIT 0';
+  const participants='SELECT week_id,user_id,position,source FROM pairing_participants LIMIT 0';
   const schedule='SELECT id,week_id,pair_group_id,proposed_times,agreed_time,updated_at FROM pair_schedules LIMIT 0';
 
   const weeks=await capturedStatements(ensureDataWeeksReadiness);
   assert.equal(weeks.includes(publication),true);
+  assert.equal(weeks.includes(participants),true);
   assert.equal(weeks.includes(schedule),false);
   assert.equal(weeks.some(sql=>sql==='SELECT id,week_label,week_start,focus,is_demo FROM pairing_weeks LIMIT 0'),true);
 
   const myPair=await capturedStatements(ensureMyPairDataReadiness);
   assert.equal(myPair.includes(publication),true);
+  assert.equal(myPair.includes(participants),true);
   assert.equal(myPair.includes(schedule),true);
   assert.equal(myPair.some(sql=>sql==='SELECT id,week_label,week_start,focus,is_demo FROM pairing_weeks LIMIT 0'),true);
 });

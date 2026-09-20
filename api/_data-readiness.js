@@ -49,7 +49,7 @@ async function probeWeeksSchema(db){
   await db.execute(`SELECT id,week_label,week_start,focus,is_demo FROM pairing_weeks LIMIT 0`);
   await db.execute(`SELECT id,week_id,user_a_id,user_b_id,user_c_id,is_ai_pair,topic,
     topic_kind FROM pairing_groups LIMIT 0`);
-  await db.execute(`SELECT week_id,user_id,source FROM pairing_participants LIMIT 0`);
+  await db.execute(`SELECT week_id,user_id,position,source FROM pairing_participants LIMIT 0`);
   await db.execute(`SELECT week_label,week_id,generation_token,generation,algorithm_version,
     algorithm_seed,participant_count,participants_json,created_at
     FROM pairing_week_runs LIMIT 0`);
@@ -82,7 +82,7 @@ async function probeMyPairSchema(db){
   await db.execute(`SELECT id,week_label,week_start,focus,is_demo FROM pairing_weeks LIMIT 0`);
   await db.execute(`SELECT id,week_id,user_a_id,user_b_id,user_c_id,is_ai_pair,topic,
     topic_kind FROM pairing_groups LIMIT 0`);
-  await db.execute(`SELECT week_id,user_id,source FROM pairing_participants LIMIT 0`);
+  await db.execute(`SELECT week_id,user_id,position,source FROM pairing_participants LIMIT 0`);
   await db.execute(`SELECT week_label,week_id,generation_token,generation,algorithm_version,
     algorithm_seed,participant_count,participants_json,created_at
     FROM pairing_week_runs LIMIT 0`);
