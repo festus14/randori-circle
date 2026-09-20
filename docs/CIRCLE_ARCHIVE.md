@@ -45,6 +45,11 @@ the distinct `circle_archive_refresh_required` outcome with the archived target
 and committed generation. The browser treats only that bound outcome as
 committed, clears private state, broadcasts the generation, and reloads to
 recover the fallback instead of leaving the retired workspace open.
+An authoritative session-loss response clears private state before the normal
+identity refresh returns the browser to signed-out UI. Owner/target loss,
+context conflict, an ambiguous commit response, or transport loss also clears
+owner and workspace state before reloading the authoritative circle context;
+the ambiguous paths never claim that archive succeeded.
 
 One `circle.archived` audit uses the deterministic `circle-archived:<circle-id>`
 dedupe key. An identical retry by any active retained owner still requires a

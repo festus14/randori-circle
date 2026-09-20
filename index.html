@@ -4239,8 +4239,34 @@ async function refreshMe(){
         }
         return false;
       }
+      if(Number(error?.http_status)===401){
+        clearPrivateCircleViewForSwitch();
+        try{ await window._randori_auth?.refreshMe?.(); }
+        catch{
+          invalidateAuthRefreshes();
+          me=null;
+          try{ localStorage.removeItem(ME_KEY); }catch{}
+          resetCircleControlForIdentityChange();
+          clearAvailability();
+          updateAuthUI();
+          try{ await window._randori_journey?.routeByAuth?.(); }catch{}
+        }
+        if(me&&Number(me.id||me.uid)===actorId) window.location.reload();
+        return false;
+      }
+      const status=Number(error?.http_status);
+      const mustReconcileContext=status===404
+        ||error?.code==='circle_context_changed'
+        ||error?.code==='circle_archive_status_unknown'
+        ||!Number.isSafeInteger(status);
+      if(mustReconcileContext){
+        clearPrivateCircleViewForSwitch();
+        circleContextChannel?.postMessage({v:1,user_id:actorId,
+          context_version:operation.contextVersion,force:true});
+        window.location.reload();
+        return false;
+      }
       publishCircleLifecycleNotice(lifecycleErrorMessage(error));
-      if(error?.code==='circle_context_changed') setTimeout(()=>window.location.reload(),80);
       return false;
     }finally{
       if(circleControlOperationMatches(operation)){
