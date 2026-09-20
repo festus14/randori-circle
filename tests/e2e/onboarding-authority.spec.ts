@@ -303,10 +303,26 @@ test('availability completes only after the active target cycle has a user save'
   await expect(page.locator('#chkAvail')).toHaveAttribute('data-state', 'ready');
   await expect(page.locator('#chkAvail')).toContainText('Save availability for 2099-W52');
   await page.locator('[data-tab="pair"]').click();
-  await expect(page.locator('#availToggle')).toBeChecked();
-  await page.locator('#availToggle').uncheck();
+  await expect(page.locator('#availAvailable')).toHaveAttribute('aria-pressed', 'false');
+  await page.locator('#availSkip').click();
   await expect(page.locator('#chkAvail')).toHaveAttribute('data-state', 'done');
   await expect(page.locator('#chkAvail')).toContainText('Availability saved for 2099-W52');
+});
+
+test('checklist and tour actions open and focus the active-circle cycle decision', async ({ page }) => {
+  await openAsMember(page);
+
+  await expect(page.locator('#chkAvailAction')).toBeVisible();
+  await page.locator('#chkAvailAction').click();
+  await expect(page.locator('#view-pair')).toBeVisible();
+  await expect(page.locator('#availAvailable')).toBeFocused();
+
+  await page.evaluate(() => window._randori_onboard?.start?.(4));
+  await expect(page.locator('#onbAvailabilityAction')).toBeVisible();
+  await page.locator('#onbAvailabilityAction').click();
+  await expect(page.locator('#onboardOverlay')).not.toHaveClass(/show/);
+  await expect(page.locator('#view-pair')).toBeVisible();
+  await expect(page.locator('#availAvailable')).toBeFocused();
 });
 
 test('an availability rollover rejects the old pair and reacquires the new published cycle', async ({ page }) => {

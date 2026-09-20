@@ -2306,6 +2306,7 @@ provider. Canary a pre-activation manual dispatch, then prove fail-closed
 missing evidence and a real scheduled success at activation. After activation,
 roll forward without moving the epoch. The complete contract and alternatives
 are in [`BACKUP_WATCHDOG_ACTIVATION.md`](BACKUP_WATCHDOG_ACTIVATION.md).
+
 ## ID-55: Derive completed sessions from unanimous participant receipts
 
 Status: candidate migration-backed private-beta measurement increment.
@@ -2348,3 +2349,33 @@ explicitly removes demo-week receipts before deleting participants. After v17
 is applied, rollback keeps the manifest and table, disables affected UI/handlers
 if necessary, and rolls forward; it never drops receipts or edits the ledger.
 The complete contract is in [`SESSION_COMPLETION.md`](SESSION_COMPLETION.md).
+
+## ID-56: Separate inherited availability from an explicit cycle decision
+
+Status: candidate client/onboarding increment; no migration.
+
+**Decision.** Keep default-included pairing compatibility, but label
+`cycle_default` and `legacy_bridge` as inherited, unsaved state. Replace the
+checkbox with explicit Available and Skip this cycle actions. Both actions use
+the existing cycle-key/version CAS even when the submitted boolean equals the
+effective inherited value; only a successful `source=user` response is shown as
+saved or completes onboarding.
+
+Profile, dashboard, checklist, and tour entry points share one navigation owner.
+It refreshes the selected circle's upcoming cycle, then scrolls and focuses the
+matching action only while account, auth generation, circle/context, navigation,
+cycle, version, source, and value still match. Rollover, switch, sign-out, newer
+navigation, stale conflict, and request failure remain fail-closed and
+accessible.
+
+**Alternatives.** Strict opt-in is clearer but can empty early circles before
+reliable reminders exist. Keeping the checkbox or fixing only navigation leaves
+the consent contradiction. Persisting on read creates hidden consent. Email
+reminders and a broad redesign remain useful later but add operational or scope
+risk without repairing this funnel. These options are deferred or rejected.
+
+**Rollout and recovery.** Ship after session completion (#218), canary inherited
+true/false confirmation, opt-out, rollover, stale responses, circle switching,
+sign-out, and every navigation entry point. Rollback is code-only; decisions
+already saved as `source=user` remain authoritative. The complete contract is in
+[`EXPLICIT_CYCLE_AVAILABILITY.md`](EXPLICIT_CYCLE_AVAILABILITY.md).

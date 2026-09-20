@@ -80,7 +80,7 @@ test('sole-primary owner can keyboard-create and immediately use an empty select
   await expect(page.locator('#peopleCount')).toHaveText('1');
   await page.locator('[data-tab="pair"]').click();
   await expect(page.getByTestId('availability-card')).toBeVisible();
-  await expect(page.locator('#availLabel')).toHaveText('ON (included)');
+  await expect(page.locator('#availLabel')).toHaveText('NOT SAVED • INCLUDED');
   await expect.poll(()=>page.evaluate(()=>(window as typeof window&{
     _randori_availability?:{current?:{source?:string;version?:number}},
   })._randori_availability?.current)).toMatchObject({source:'cycle_default',version:0});
