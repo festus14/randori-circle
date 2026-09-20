@@ -1035,6 +1035,7 @@ p{margin:0}
         <div style="margin:6px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Next session</h3><div style="flex:1;height:1px;background:var(--border)"></div></div>
         <div id="dashPairArea"></div>
         <div id="dashScheduleArea" data-testid="schedule-area"></div>
+        <div id="scheduleBoundaryStatus" data-testid="schedule-boundary-status" class="small muted" role="status" aria-live="polite" tabindex="-1"></div>
         <div id="dashChatArea"></div>
         <div style="margin:14px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Recent pairings</h3><div style="flex:1;height:1px;background:var(--border)"></div><button id="dashHistAll" class="pill" style="font-size:11px">Pairings &amp; activity →</button></div>
         <div id="dashHistoryArea" class="card" style="padding:10px"><div id="dashHistList" class="small muted">Loading recent…</div></div>
@@ -7616,7 +7617,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   const viewCircle=document.getElementById('view-circle');
   const scheduleState={room:null,kind:null,actorId:null,circlePublicId:null,contextVersion:null,cycleToken:null,
     epoch:0,version:'',schedule:null,draft:'',draftRoom:null,people:new Map(),abort:null,inFlight:false,
-    status:'waiting for pair',expiryError:'',expiryAction:null};
+    boundaryTimer:null,status:'waiting for pair',expiryError:'',expiryAction:null};
+  const MAX_SCHEDULE_BOUNDARY_DELAY_MS=2_147_000_000;
 
   function clearRequestedView(){
     window._randoriExplicitNavigation=null;
@@ -8288,9 +8290,21 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     scheduleState.inFlight=false;
   }
 
+  function clearScheduleBoundaryTimer(){
+    if(scheduleState.boundaryTimer!==null) clearTimeout(scheduleState.boundaryTimer);
+    scheduleState.boundaryTimer=null;
+  }
+
+  function setScheduleBoundaryStatus(message=''){
+    const status=document.getElementById('scheduleBoundaryStatus');
+    if(status) status.textContent=String(message||'');
+  }
+
   function stopSchedulePolling({clear=true,discardDraft=false}={}){
     rememberScheduleDraft();
     cancelScheduleRequest(true);
+    clearScheduleBoundaryTimer();
+    setScheduleBoundaryStatus();
     if(discardDraft){ scheduleState.draft=''; scheduleState.draftRoom=null; }
     if(clear){
       scheduleState.room=null; scheduleState.kind=null; scheduleState.actorId=null;
@@ -8336,6 +8350,82 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       actorId:scheduleState.actorId,circlePublicId:scheduleState.circlePublicId,
       contextVersion:scheduleState.contextVersion,cycleToken:scheduleState.cycleToken,
     });
+  }
+
+  function captureScheduleFocus(){
+    const area=document.getElementById('dashScheduleArea');
+    const active=document.activeElement;
+    if(!area?.contains(active)) return null;
+    if(active?.matches?.('[data-testid="schedule-input"]')){
+      let selectionStart=null,selectionEnd=null,selectionDirection=null;
+      try{
+        selectionStart=active.selectionStart; selectionEnd=active.selectionEnd;
+        selectionDirection=active.selectionDirection;
+      }catch{}
+      return {kind:'input',selectionStart,selectionEnd,selectionDirection};
+    }
+    const action=active?.closest?.('[data-schedule-action]');
+    if(!action) return null;
+    return {
+      kind:'action',action:String(action.dataset.scheduleAction||''),
+      proposalId:String(action.dataset.proposalId||''),
+    };
+  }
+
+  function restoreScheduleFocus(snapshot){
+    if(!snapshot) return;
+    if(snapshot.kind==='input'){
+      const input=document.querySelector('[data-testid="schedule-input"]');
+      input?.focus();
+      if(input&&Number.isInteger(snapshot.selectionStart)&&Number.isInteger(snapshot.selectionEnd)){
+        try{ input.setSelectionRange(snapshot.selectionStart,snapshot.selectionEnd,snapshot.selectionDirection||'none'); }catch{}
+      }
+      return;
+    }
+    const actions=[...document.querySelectorAll('#dashScheduleArea [data-schedule-action]')];
+    const replacement=actions.find(action=>String(action.dataset.scheduleAction||'')===snapshot.action
+      &&String(action.dataset.proposalId||'')===snapshot.proposalId);
+    if(replacement){ replacement.focus(); return; }
+    if(snapshot.action==='accept'){
+      const row=[...document.querySelectorAll('[data-testid="schedule-proposal"]')]
+        .find(item=>String(item.dataset.proposalId||'')===snapshot.proposalId);
+      if(row?.querySelector('[data-testid="schedule-expired-label"]')?.focus){
+        row.querySelector('[data-testid="schedule-expired-label"]').focus(); return;
+      }
+    }
+    if(snapshot.action==='calendar-export'
+      &&document.querySelector('[data-testid="schedule-past-agreement"]')?.focus){
+      document.querySelector('[data-testid="schedule-past-agreement"]').focus(); return;
+    }
+    const status=document.getElementById('scheduleBoundaryStatus');
+    status?.focus();
+  }
+
+  function armScheduleBoundaryTimer(schedule=scheduleState.schedule,observedAt=Date.now()){
+    clearScheduleBoundaryTimer();
+    const scope=pairedDashboardSchedule();
+    if(!scope||!schedule||!Number.isFinite(observedAt)) return;
+    const futureInstants=[
+      ...(Array.isArray(schedule.proposals)?schedule.proposals.map(item=>item?.instant):[]),
+      schedule.agreed_time,
+    ].map(value=>Date.parse(String(value||'')))
+      .filter(value=>Number.isFinite(value)&&value>observedAt);
+    if(!futureInstants.length) return;
+    const boundaryAt=Math.min(...futureInstants);
+    const captured=captureScheduleOperation(scope);
+    const capturedVersion=scheduleState.version;
+    const delay=Math.min(MAX_SCHEDULE_BOUNDARY_DELAY_MS,Math.max(1,boundaryAt-observedAt));
+    const timer=setTimeout(()=>{
+      if(scheduleState.boundaryTimer!==timer) return;
+      scheduleState.boundaryTimer=null;
+      if(!scheduleOperationMatches(captured)||scheduleState.version!==capturedVersion) return;
+      const currentTime=Date.now();
+      if(currentTime<boundaryAt){ armScheduleBoundaryTimer(schedule,currentTime); return; }
+      const focusSnapshot=captureScheduleFocus();
+      setScheduleBoundaryStatus('Schedule controls updated because a proposed or agreed time elapsed.');
+      renderScheduleView({restoreFocus:focusSnapshot});
+    },delay);
+    scheduleState.boundaryTimer=timer;
   }
 
   function pairedDashboardRoom(){
@@ -8462,7 +8552,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     document.querySelectorAll('#dashScheduleArea [data-schedule-action]').forEach(button=>{ button.disabled=!!disabled||unavailable; });
   }
 
-  function renderScheduleView(){
+  function renderScheduleView({restoreFocus=null}={}){
+    clearScheduleBoundaryTimer();
     const area=document.getElementById('dashScheduleArea');
     if(!area||!scheduleState.room||!scheduleState.schedule) return;
     rememberScheduleDraft();
@@ -8496,7 +8587,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           time.setAttribute('datetime',proposal.instant);
           detail.append(time);
           detail.append(scheduleNode('span',{className:'small muted',text:`Proposed by ${scheduleProposerLabel(proposal.proposed_by)}`}));
-          if(elapsed) detail.append(scheduleNode('span',{className:'small muted',text:'Expired · remove it or propose a future time',testId:'schedule-expired-label'}));
+          if(elapsed){
+            const expired=scheduleNode('span',{className:'small muted',text:'Expired · remove it or propose a future time',testId:'schedule-expired-label'});
+            expired.tabIndex=-1; detail.append(expired);
+          }
         }
         const actions=scheduleNode('div',{className:'row'}); actions.style.gap='6px';
         if(!proposal.legacy&&proposal.instant&&!elapsed){
@@ -8546,7 +8640,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       agreement.style.cssText='padding:8px 10px; background:var(--accent)22; border:1px solid var(--accent); border-radius:10px; font-size:12.5px';
       agreement.append(scheduleNode('b',{text:elapsed?'Past session: ':'Agreed: '}));
       const time=scheduleNode('time',{text:localScheduleTime(schedule.agreed_time)}); time.setAttribute('datetime',schedule.agreed_time); agreement.append(time);
-      if(elapsed) agreement.append(scheduleNode('div',{className:'small muted',text:'This agreement is in the past. Clear it or propose a new time.',testId:'schedule-past-agreement'}));
+      if(elapsed){
+        const past=scheduleNode('div',{className:'small muted',text:'This agreement is in the past. Clear it or propose a new time.',testId:'schedule-past-agreement'});
+        past.tabIndex=-1; agreement.append(past);
+      }
       const exportedRoom=scheduleState.room;
       const exportedKind=scheduleState.kind;
       const exportedInstant=schedule.agreed_time;
@@ -8593,7 +8690,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       requestAnimationFrame(()=>{
         if(scheduleState.expiryError&&focusTarget?.isConnected) focusTarget.focus();
       });
+    }else if(restoreFocus){
+      requestAnimationFrame(()=>{ restoreScheduleFocus(restoreFocus); });
     }
+    armScheduleBoundaryTimer(schedule,renderedAt);
   }
 
   function applySchedule(room,raw,{status='up to date',force=false}={}){
@@ -8705,6 +8805,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     rememberScheduleDraft();
     cancelScheduleRequest(true);
     const captured=captureScheduleOperation(scope);
+    armScheduleBoundaryTimer();
     const controller=new AbortController(); scheduleState.abort=controller; scheduleState.inFlight=true;
     let refreshAfterElapsed=false;
     setScheduleStatus('saving…'); toggleScheduleActions(true);
@@ -8795,8 +8896,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     window.addEventListener('randori:room-change',()=>{ stopSchedulePolling({clear:true}); });
     document.querySelector('.tabs')?.addEventListener('click',()=>{ stopSchedulePolling({clear:true}); });
     document.addEventListener('visibilitychange',()=>{
-      if(document.visibilityState==='visible') pollSchedule();
-      else cancelScheduleRequest(true);
+      if(document.visibilityState==='visible') pollSchedule({force:true});
+      else{ cancelScheduleRequest(true); clearScheduleBoundaryTimer(); }
     });
     document.addEventListener('click',event=>{
       if(event.target?.closest?.('#signOutBtn,#dashSignOut,#psSignOut,#meSignOut,#meSignOutAll')){

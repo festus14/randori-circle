@@ -47,6 +47,9 @@ clock boundary. The server database remains authoritative. The dashboard:
   Remove available;
 - labels elapsed agreements as past, keeps Clear available, and does not offer
   a new calendar export for a past session;
+- schedules an identity- and cycle-fenced one-shot refresh at the nearest
+  proposal or agreement boundary, and tears it down on navigation, sign-out,
+  visibility loss, or scope replacement;
 - presents a live, inline expiry error, retains an editable proposal draft, and
   performs an authoritative schedule GET after rejection; and
 - applies delayed mutation and refresh results only while account, schedule

@@ -52,11 +52,14 @@ function canonicalNow(clock){
 }
 
 function timestamp(value){
-  if(typeof value!=='string'
-    ||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value)) return null;
+  if(typeof value!=='string') return null;
+  const match=/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,3}))?Z$/.exec(value);
+  if(!match) return null;
   const milliseconds=Date.parse(value);
-  return Number.isFinite(milliseconds)
-    ?{milliseconds,value:new Date(milliseconds).toISOString()}:null;
+  if(!Number.isFinite(milliseconds)) return null;
+  const canonical=new Date(milliseconds).toISOString();
+  const expected=`${match[1]}.${String(match[2]||'').padEnd(3,'0')}Z`;
+  return canonical===expected?{milliseconds,value:canonical}:null;
 }
 
 function activationEpoch(value){
@@ -238,7 +241,7 @@ export function verifyDownloadedMonitor(summary,discovery,{maxRunAgeMs,activatio
     &&discoveredActivation&&expectedAt&&runCreatedAt
     &&discoveredActivation.value===configuredActivation.value
     &&expectedAt.milliseconds>=discoveredActivation.milliseconds
-    &&runCreatedAt.milliseconds>=discoveredActivation.milliseconds
+    &&runCreatedAt.milliseconds>=expectedAt.milliseconds
     &&exactKeys(summary,[
       'ok','kind','format','status','alert','category','checkedAt','owner','cadence','runId',
       'runAttempt','repoCommit','objectives','counts','checksums','cleanup',
