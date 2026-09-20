@@ -11,7 +11,8 @@ import {issueSession,verifyRequestAuth} from '../../api/_db.js';
 import {readRecentAuth} from '../../api/_recent-auth.js';
 import {EXECUTABLE_MIGRATIONS} from '../../db/executable-migrations.js';
 import {applyMigrations,inspectMigrationState,prepareMigrationConnection} from '../../db/migration-runner.js';
-import {googleProviderFetch} from '../support/google-oidc.mjs';
+import {decodeGoogleOAuthTransactionCookie,googleProviderFetch,
+  googleOAuthTransactionCookieName} from '../support/google-oidc.mjs';
 
 const originalFetch=globalThis.fetch;
 const resources=[];
@@ -94,9 +95,11 @@ test('Google reauthentication forces a fresh challenge and binds proof to the in
   assert.equal(authorization.searchParams.get('prompt'),'select_account');
   const state=authorization.searchParams.get('state');
   const startCookies=cookiesFrom(start.headers);
-  assert.ok(startCookies.some(cookie=>cookie===`randori_oauth_purpose=${encodeURIComponent(`reauth:1:${originalPayload.sessionHash}`)}`));
-  const nonce=decodeURIComponent(String(startCookies.find(cookie=>cookie.startsWith('randori_oauth_nonce=')))
-    .slice('randori_oauth_nonce='.length));
+  const transactionCookie=startCookies
+    .find(cookie=>cookie.startsWith(`${googleOAuthTransactionCookieName(state)}=`));
+  const transaction=decodeGoogleOAuthTransactionCookie(transactionCookie,state);
+  assert.equal(transaction.purpose,`reauth:1:${originalPayload.sessionHash}`);
+  const nonce=transaction.nonce;
 
   globalThis.fetch=googleProviderFetch({claims:{
     email:'google@example.test',name:'Google Member',sub:'stable-subject',nonce,

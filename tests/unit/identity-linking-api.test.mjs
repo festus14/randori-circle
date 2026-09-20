@@ -17,7 +17,8 @@ import {
 } from '../../api/_identity-linking.js';
 import {EXECUTABLE_MIGRATIONS} from '../../db/executable-migrations.js';
 import {applyMigrations,inspectMigrationState,prepareMigrationConnection} from '../../db/migration-runner.js';
-import {googleProviderFetch} from '../support/google-oidc.mjs';
+import {decodeGoogleOAuthTransactionCookie,googleProviderFetch,
+  googleOAuthTransactionCookieName} from '../support/google-oidc.mjs';
 import {adoptCredentialKeyControl} from '../support/credential-key-control.mjs';
 
 const originalFetch=globalThis.fetch;
@@ -94,9 +95,11 @@ async function addPasswordAccount(db,{id=1,email='member@example.test'}={}){
 function oauthValues(start){
   const authorization=new URL(start.body?.authorizationUrl||start.headers.location);
   const cookies=cookiesFrom(start.headers);
-  const nonce=decodeURIComponent(String(cookies.find(cookie=>cookie.startsWith('randori_oauth_nonce=')))
-    .slice('randori_oauth_nonce='.length));
-  return {authorization,cookies,nonce,state:authorization.searchParams.get('state')};
+  const state=authorization.searchParams.get('state');
+  const transactionCookie=cookies
+    .find(cookie=>cookie.startsWith(`${googleOAuthTransactionCookieName(state)}=`));
+  const transaction=decodeGoogleOAuthTransactionCookie(transactionCookie,state);
+  return {authorization,cookies,nonce:transaction.nonce,purpose:transaction.purpose,state};
 }
 
 test('production identity management stays fail-closed until explicitly enabled',async()=>{
@@ -121,9 +124,13 @@ test('production identity management stays fail-closed until explicitly enabled'
   assert.equal(providerCalls,0);
 });
 
-test('flag-disabled Google login stays compatible with managed v8',async()=>{
+test('flag-disabled existing Google login stays compatible with managed v8',async()=>{
   const db=await fixture({throughVersion:8,identityManagement:false});
-  process.env.SIGNUP_ALLOWLIST='v8-member@example.test';
+  await db.execute({sql:`INSERT INTO auth_accounts
+    (id,email,password_hash,display_name,color,google_sub) VALUES (1,?,?,?,?,?)`,
+  args:['v8-member@example.test','!oauth:opaque','V8 Member','#123456','v8-compatible-subject']});
+  await db.execute({sql:`INSERT INTO auth_provider_identities (issuer,subject,user_id) VALUES (?,?,1)`,
+    args:['https://accounts.google.com','v8-compatible-subject']});
   const start=await invoke({endpoint:'google-start'});
   const oauth=oauthValues(start);
   globalThis.fetch=googleProviderFetch({claims:{
@@ -167,10 +174,10 @@ test('Google linking is POST-only, same-origin, recent-authenticated, and bound 
     {recentAuthMethod:'password'});
   const start=await invoke({endpoint:'google-link-start',method:'POST',cookie:cookieFor(fresh),ip:'203.0.113.71'});
   assert.equal(start.statusCode,200);
-  const {authorization,cookies,nonce,state}=oauthValues(start);
+  const {authorization,cookies,nonce,purpose,state}=oauthValues(start);
   assert.equal(authorization.searchParams.get('max_age'),'0');
   assert.equal(authorization.searchParams.get('prompt'),'select_account');
-  assert.ok(cookies.some(cookie=>cookie.startsWith('randori_oauth_purpose=link%3A1%3A')));
+  assert.match(purpose,/^link:1:[a-f0-9]{64}$/);
 
   globalThis.fetch=googleProviderFetch({claims:{email:'member@example.test',sub:'explicit-subject',nonce,
     auth_time:Math.floor(Date.now()/1000)}});

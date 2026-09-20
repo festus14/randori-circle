@@ -32,9 +32,16 @@
       }).then(async response=>{
         let result=null;
         try{ result=await response.json(); }catch{}
+        const binding=typeof result?.binding==='string'&&/^[A-Za-z0-9_-]{43}$/.test(result.binding)
+          ?result.binding:null;
+        const expiresInSeconds=Number.isSafeInteger(result?.expires_in_seconds)
+          &&result.expires_in_seconds>0&&result.expires_in_seconds<=600
+          ?result.expires_in_seconds:null;
         return {
           present:true,
-          ok:response.ok&&result?.ok===true,
+          ok:response.ok&&result?.ok===true&&!!binding&&!!expiresInSeconds,
+          binding,
+          expiresInSeconds,
           rateLimited:response.status===429,
           retryAfter:Number(result?.retry_after_seconds)||null,
         };
@@ -1340,6 +1347,7 @@ p{margin:0}
     failed:false,
     rateLimited:false,
     retryAfter:null,
+    binding:null,
   };
   const activationState={active:window.location.pathname==='/verify',status:'checking',token:'',verifying:false};
   function renderActivationLanding(){
@@ -1526,6 +1534,7 @@ p{margin:0}
       if(result?.present===true) inviteState.active=true;
       if(!inviteState.active) return;
       inviteState.ready=result?.ok===true;
+      inviteState.binding=inviteState.ready?result.binding:null;
       inviteState.rateLimited=result?.rateLimited===true;
       inviteState.retryAfter=Number.isSafeInteger(result?.retryAfter)&&result.retryAfter>0?result.retryAfter:null;
       inviteState.failed=!inviteState.ready&&!inviteState.rateLimited;
@@ -1536,14 +1545,32 @@ p{margin:0}
     renderInviteLanding();
   }
   document.getElementById('inviteContinue')?.addEventListener('click',async()=>{
-    if(!inviteState.ready) return;
+    if(!inviteState.ready||!inviteState.binding) return;
     await authCapabilitiesPromise;
     if((authCapabilities.localIdentity&&authCapabilities.registrationMode==='local_invite')
       ||authCapabilities.registrationMode==='verified_invite'){
       openAuthModal('signup');
       return;
     }
-    window.location.href='/api/auth/google/start';
+    try{
+      const response=await fetch('/api/auth/google/start',{
+        method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},
+        body:JSON.stringify({purpose:'invite',invite_binding:inviteState.binding}),
+      });
+      const result=await response.json().catch(()=>({}));
+      if(!response.ok) throw result;
+      const authorization=new URL(String(result?.authorizationUrl||''));
+      if(authorization.origin!=='https://accounts.google.com'
+        ||authorization.pathname!=='/o/oauth2/v2/auth'||authorization.username||authorization.password){
+        throw new Error('invalid Google authorization URL');
+      }
+      window.location.assign(authorization.href);
+    }catch{
+      inviteState.ready=false;
+      inviteState.binding=null;
+      inviteState.failed=true;
+      renderInviteLanding();
+    }
   });
   window._randori_invite_flow={
     get active(){ return inviteState.active; },
@@ -1551,6 +1578,8 @@ p{margin:0}
     show:renderInviteLanding,
     complete(){
       inviteState.active=false;
+      inviteState.ready=false;
+      inviteState.binding=null;
       try{ window.history.replaceState({},document.title,'/'); }catch{}
     },
   };
@@ -2880,6 +2909,7 @@ async function refreshMe(){
     if(!enabled) return;
     const body=validateAuthForm(mode);
     if(!body) return;
+    if(mode==='signup'&&inviteState.binding) body.invite_binding=inviteState.binding;
     const request={controller:new AbortController()};
     authRequest=request;
     setAuthBusy(true);
@@ -2943,7 +2973,7 @@ async function refreshMe(){
     try{
       const response=await fetch('/api/auth/activation/resend',{
         method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},
-        body:JSON.stringify({email:activationPendingEmail}),
+        body:JSON.stringify({email:activationPendingEmail,invite_binding:inviteState.binding}),
       });
       const data=await response.json().catch(()=>({}));
       setAuthError(response.ok?'A new link was requested. Check your inbox.':authFailureMessage(data,'signup'));
@@ -2955,7 +2985,9 @@ async function refreshMe(){
     const match=(window.location.pathname||'').match(/^\/join\/(week_[1-9]\d*_pair_[1-9]\d*)$/);
     const ids=match?.[1]?.match(/^week_(\d+)_pair_(\d+)$/);
     const returnTo=ids&&Number.isSafeInteger(Number(ids[1]))&&Number.isSafeInteger(Number(ids[2]))?`/join/${match[1]}`:'';
-    window.location.href='/api/auth/google/start'+(returnTo?`?return_to=${encodeURIComponent(returnTo)}`:'');
+    const params=new URLSearchParams({purpose:'login'});
+    if(returnTo) params.set('return_to',returnTo);
+    window.location.href=`/api/auth/google/start?${params.toString()}`;
   }
   const authGoogleBtn=document.getElementById('authGoogle');
   if(authGoogleBtn) authGoogleBtn.onclick=beginGoogleSignIn;

@@ -616,20 +616,34 @@ test('the real local runtime persists owner, invite-bound signup, membership, se
     body:JSON.stringify({token:inviteToken}),
   });
   assert.equal(prepared.status,200,await prepared.clone().text());
+  const preparedPayload=await prepared.json();
+  assert.match(preparedPayload.binding,/^[A-Za-z0-9_-]{43}$/);
+  assert.equal(preparedPayload.expires_in_seconds,600);
   const inviteCookie=namedCookie(prepared,'randori_invite_claim');
   assert.doesNotMatch(prepared.headers.get('set-cookie')||'',/randori_invite_claim=[^;,]+[^;]*; Secure/);
+  const refreshed=await fetch(new URL('/api/invitations/prepare',first.url),{
+    method:'POST',headers:{'content-type':'application/json',origin:first.url,cookie:inviteCookie},
+    body:JSON.stringify({binding:preparedPayload.binding}),
+  });
+  const refreshedPayload=await jsonResponse(refreshed);
+  assert.equal(refreshed.status,200,refreshedPayload.text);
+  assert.equal(refreshedPayload.body.binding,preparedPayload.binding);
+  assert.ok(refreshedPayload.body.expires_in_seconds>0&&refreshedPayload.body.expires_in_seconds<=600);
+  assert.equal(refreshed.headers.get('set-cookie'),null,'refresh must not extend the claim');
 
   const wrongEmail=await fetch(new URL('/api/auth/signup',first.url),{
     method:'POST',
     headers:{'content-type':'application/json',origin:first.url,cookie:inviteCookie},
-    body:JSON.stringify({email:'wrong@example.test',password:'another correct horse battery',name:'Wrong Member'}),
+    body:JSON.stringify({email:'wrong@example.test',password:'another correct horse battery',name:'Wrong Member',
+      invite_binding:preparedPayload.binding}),
   });
   assert.equal(wrongEmail.status,403);
 
   const signup=await fetch(new URL('/api/auth/signup',first.url),{
     method:'POST',
     headers:{'content-type':'application/json',origin:first.url,cookie:inviteCookie},
-    body:JSON.stringify({email:'member@example.test',password:'another correct horse battery',name:'Invited Member'}),
+    body:JSON.stringify({email:'member@example.test',password:'another correct horse battery',name:'Invited Member',
+      invite_binding:preparedPayload.binding}),
   });
   const signupPayload=await jsonResponse(signup);
   assert.equal(signup.status,200,signupPayload.text);

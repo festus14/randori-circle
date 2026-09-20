@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {createHmac} from 'node:crypto';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -14,6 +15,8 @@ import {adoptCredentialKeyControl} from '../support/credential-key-control.mjs';
 
 let currentDb=null;
 const temporaryDirectories=[];
+const CLAIM_TEST_SECRET='circle-membership-test-secret-at-least-thirty-two-characters';
+let claimTestSecret=CLAIM_TEST_SECRET;
 
 function authPayload(req){
   const identity=req?.headers?.['x-test-auth'];
@@ -30,7 +33,7 @@ mock.module('../../api/_db.js',{
     captureSentryMessage:()=>null,
     getAdminEmails:()=>new Set(['configured-owner@example.test']),
     getClient:()=>currentDb,
-    getJwtSecret:()=>'circle-membership-test-secret-at-least-thirty-two-characters',
+    getJwtSecret:()=>claimTestSecret,
     initSentry:()=>{},
     isSentryConfigured:()=>false,
     verifyMutationOrigin:req=>req?.headers?.['x-test-cross']!=='1',
@@ -140,6 +143,7 @@ async function createCurrentDatabase(){
 }
 
 beforeEach(()=>{
+  claimTestSecret=CLAIM_TEST_SECRET;
   process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
   delete process.env.TURSO_DATABASE_URL;
 });
@@ -177,11 +181,37 @@ test('claims are signed, short lived, email bound, and never store the raw invit
   const prepared=await membership.prepareInvitationClaim(currentDb,{token});
   assert.equal(prepared.ok,true);
   assert.equal(prepared.claim.includes(token),false);
+  const binding=prepared.binding;
+  assert.match(binding,/^[A-Za-z0-9_-]{43}$/);
+  assert.equal(binding.includes(invitationId),false);
+  assert.equal(prepared.claim.includes(binding),false);
+  const claimPayload=JSON.parse(Buffer.from(prepared.claim.split('.')[0],'base64url').toString('utf8'));
+  assert.deepEqual(Object.keys(claimPayload).sort(),[
+    'binding_hash','circle_id','email_hash','exp','iat','invitation_id','token_hash','v',
+  ]);
+  assert.equal(claimPayload.v,2);
+  assert.match(claimPayload.binding_hash,/^[a-f0-9]{64}$/);
   const cookie=membership.inviteClaimCookie(prepared.claim);
-  assert.match(cookie,/Path=\/api\/auth; HttpOnly; Secure; SameSite=Lax; Max-Age=600$/);
+  assert.match(cookie,/Path=\/api; HttpOnly; Secure; SameSite=Lax; Max-Age=600$/);
   assert.equal(cookie.includes(token),false);
   const parsed=membership.readInviteClaim({headers:{cookie}});
   assert.equal(parsed.invitation_id,invitationId);
+  assert.deepEqual(membership.readBoundInviteClaim({headers:{cookie}},binding),parsed);
+  assert.equal(membership.readBoundInviteClaim({headers:{cookie}},'z'.repeat(43)),null);
+  assert.equal(membership.inviteClaimRemainingSeconds(parsed)>0,true);
+  assert.equal((await membership.validateLivePreparedClaim(currentDb,{claim:parsed})).ok,true);
+  const legacyPayload=Buffer.from(JSON.stringify({v:1,invitation_id:invitationId,circle_id:10,
+    token_hash:tokenHash,email_hash:emailHash,iat:claimPayload.iat,exp:claimPayload.exp}),'utf8')
+    .toString('base64url');
+  const legacySignature=createHmac('sha256',CLAIM_TEST_SECRET)
+    .update(`randori-circle-invite-claim-v1\0${legacyPayload}`,'utf8').digest('base64url');
+  assert.equal(membership.readInviteClaim({headers:{cookie:
+    `${membership.INVITE_CLAIM_COOKIE}=${legacyPayload}.${legacySignature}`}}),null,
+  'legacy unbound claims must fail closed');
+  claimTestSecret='rotated-circle-membership-test-secret-at-least-thirty-two-characters';
+  assert.equal(membership.readInviteClaim({headers:{cookie}}),null,
+    'prepared claims use only the active application key');
+  claimTestSecret=CLAIM_TEST_SECRET;
   assert.deepEqual(await membership.validatePreparedInvitation(currentDb,{claim:parsed,email:'wrong@example.test'}),{ok:false});
   const validated=await membership.validatePreparedInvitation(currentDb,{claim:parsed,email:'member@example.test'});
   assert.equal(validated.ok,true);
@@ -190,6 +220,68 @@ test('claims are signed, short lived, email bound, and never store the raw invit
   const stored=await currentDb.execute(`SELECT token_hash,email_hash FROM circle_invitations WHERE id='${invitationId}'`);
   assert.equal(JSON.stringify(stored.rows).includes(token),false);
   assert.equal(JSON.stringify(stored.rows).includes('member@example.test'),false);
+});
+
+test('claim bindings expire and fail closed when an older prepare cookie is paired with a newer binding',async()=>{
+  currentDb=await createDatabase();
+  const emailHash=membership.hashInvitationEmail('member@example.test');
+  const invitations=[
+    {id:'11111111-1111-4111-8111-111111111111',token:membership.createInvitationToken()},
+    {id:'22222222-2222-4222-8222-222222222222',token:membership.createInvitationToken()},
+  ];
+  for(const invitation of invitations){
+    await currentDb.execute({
+      sql:`INSERT INTO circle_invitations
+        (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at)
+        VALUES (?,?,?,?,?,datetime('now'),datetime('now','+7 days'))`,
+      args:[invitation.id,10,membership.hashInvitationToken(invitation.token),emailHash,1],
+    });
+  }
+  const prepared=[];
+  for(const invitation of invitations){
+    prepared.push(await invoke(invitationsHandler,{
+      method:'POST',url:'/api/invitations/prepare',query:{endpoint:'prepare'},
+      headers:{origin:'https://randori.example.test',host:'randori.example.test'},
+      body:{token:invitation.token},
+    }));
+  }
+  const olderCookie=prepared[0].headers['set-cookie'][1].split(';')[0];
+  assert.notEqual(prepared[0].body.binding,prepared[1].body.binding);
+  const mismatched=await invoke(invitationsHandler,{
+    method:'POST',url:'/api/invitations/prepare',query:{endpoint:'prepare'},
+    headers:{origin:'https://randori.example.test',host:'randori.example.test',cookie:olderCookie},
+    body:{binding:prepared[1].body.binding},
+  });
+  assert.equal(mismatched.status,400);
+  assert.deepEqual(mismatched.body,{error:'invitation unavailable'});
+  assert.equal(mismatched.headers['set-cookie'],undefined,
+    'a stale mismatch must not erase a newer prepared claim');
+  const newerCookie=prepared[1].headers['set-cookie'][1].split(';')[0];
+  const reverseMismatch=await invoke(invitationsHandler,{
+    method:'POST',url:'/api/invitations/prepare',query:{endpoint:'prepare'},
+    headers:{origin:'https://randori.example.test',host:'randori.example.test',cookie:newerCookie},
+    body:{binding:prepared[0].body.binding},
+  });
+  assert.equal(reverseMismatch.status,400);
+  assert.equal(reverseMismatch.headers['set-cookie'],undefined);
+
+  const refreshed=await invoke(invitationsHandler,{
+    method:'POST',url:'/api/invitations/prepare',query:{endpoint:'prepare'},
+    headers:{origin:'https://randori.example.test',host:'randori.example.test',cookie:olderCookie},
+    body:{binding:prepared[0].body.binding},
+  });
+  assert.equal(refreshed.status,200);
+  assert.equal(refreshed.body.binding,prepared[0].body.binding);
+  assert.equal(Number.isSafeInteger(refreshed.body.expires_in_seconds),true);
+  assert.equal(refreshed.body.expires_in_seconds>0&&refreshed.body.expires_in_seconds<=600,true);
+  assert.equal(refreshed.headers['set-cookie'],undefined,'refresh must not extend the signed claim');
+
+  const originalNow=Date.now;
+  const start=originalNow();
+  try{
+    Date.now=()=>start+601_000;
+    assert.equal(membership.readBoundInviteClaim({headers:{cookie:olderCookie}},prepared[0].body.binding),null);
+  }finally{ Date.now=originalNow; }
 });
 
 test('invitation acceptance is atomic, same-account idempotent, and rejects a different account',async()=>{
@@ -494,7 +586,7 @@ test('invitation preparation fails closed on an unready schema without DDL or da
   assert.deepEqual(schema.rows,[]);
 });
 
-test('owner invitation APIs create, safely list, prepare, clear stale claims, and revoke',async()=>{
+test('owner invitation APIs create, safely list, prepare without stale response clearing, and revoke',async()=>{
   currentDb=await createDatabase();
   process.env.NODE_ENV='production';
   process.env.APP_URL='https://randori.example.test';
@@ -541,7 +633,8 @@ test('owner invitation APIs create, safely list, prepare, clear stale claims, an
     body:{token:'x'.repeat(43)},
   });
   assert.equal(invalid.status,400);
-  assert.match(String(invalid.headers['set-cookie']),/Max-Age=0/);
+  assert.equal(invalid.headers['set-cookie'],undefined,
+    'a failed prepare response must not erase a successful response that arrived first');
 
   const prepared=await invoke(invitationsHandler,{
     method:'POST',url:'/api/invitations/prepare',query:{endpoint:'prepare'},
@@ -549,10 +642,13 @@ test('owner invitation APIs create, safely list, prepare, clear stale claims, an
   });
   assert.equal(prepared.status,200);
   assert.equal(prepared.headers['cache-control'],'private, no-store');
+  assert.match(prepared.body.binding,/^[A-Za-z0-9_-]{43}$/);
   assert.equal(prepared.body.expires_in_seconds,600);
   assert.equal(Array.isArray(prepared.headers['set-cookie']),true);
-  assert.match(prepared.headers['set-cookie'][0],/Max-Age=0/);
-  assert.match(prepared.headers['set-cookie'][1],/HttpOnly; Secure; SameSite=Lax; Max-Age=600/);
+  assert.match(prepared.headers['set-cookie'][0],
+    /^randori_invite_claim=; Path=\/api\/auth; HttpOnly; Secure; SameSite=Lax; Max-Age=0$/);
+  assert.match(prepared.headers['set-cookie'][1],
+    /Path=\/api; HttpOnly; Secure; SameSite=Lax; Max-Age=600/);
   assert.equal(prepared.headers['set-cookie'].join(';').includes(rawToken),false);
 
   const revoked=await invoke(invitationsHandler,{

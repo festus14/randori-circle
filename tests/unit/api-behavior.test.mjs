@@ -929,7 +929,7 @@ test('capabilities and signup enforce the same production, preview, remote-db, a
   }
 });
 
-test('Google callback validates state and establishes a cookie session without leaking a token', async () => {
+test('Google login callback validates state and establishes an existing-account session without leaking a token', async () => {
   process.env.APP_URL = 'https://preview.example.test';
   process.env.GOOGLE_CLIENT_ID = 'client';
   process.env.GOOGLE_CLIENT_SECRET = 'secret';
@@ -937,9 +937,10 @@ test('Google callback validates state and establishes a cookie session without l
     email:'oauth@example.test',name:'OAuth User',sub:'google-123',
   }});
   executeHandler = sql => {
-    if (sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return rows([]);
-    if (sql.includes('INSERT INTO auth_accounts') && sql.includes('RETURNING id')) return rows([{ id: 8 }]);
-    if (sql.includes('SELECT id FROM users')) return rows([]);
+    if(sql.includes('FROM auth_provider_identities identity JOIN auth_accounts account')) return rows([{
+      id:8,email:'oauth@example.test',is_admin:0,password_hash:'!oauth:existing',google_sub:'google-123',
+    }]);
+    if(sql.includes('UPDATE auth_accounts SET last_login')&&sql.includes('RETURNING id')) return rows([{id:8}]);
     return rows();
   };
   const state = 'state-value';

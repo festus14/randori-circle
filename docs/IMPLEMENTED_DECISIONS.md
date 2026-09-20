@@ -33,6 +33,7 @@ or merged after its parent; it must not be landed ahead of that parent.
 | 9 | [PR #97](https://github.com/festus14/randori-circle/pull/97), candidate | Enumeration-safe password recovery and reusable recent-authentication policy | v8 `password-reset-and-recent-auth` |
 | 10 | [Issue #83](https://github.com/festus14/randori-circle/issues/83), candidate | Explicit Google/password linking and identity-conflict recovery | v9 `explicit-provider-linking` |
 | 11 | [PR #96](https://github.com/festus14/randori-circle/pull/96), candidate | Durable invitation and schedule email with one fair five-type dispatcher | Reuses v6; preserves v8/v9 |
+| 12 | [Issue #186](https://github.com/festus14/randori-circle/issues/186), candidate | Generation-bound invitation authorization and concurrent-safe OAuth intent | No migration |
 
 Migration order is append-only: v4 binds an account to an OIDC issuer and
 subject, v5 makes every application JWT depend on a live hashed session row,
@@ -63,10 +64,10 @@ loop.
 
 ## ID-02: Separate production and local identity adapters
 
-**Decision.** Production enrollment uses verified Google OpenID Connect. The
-temporary private-beta allowlist controls enrollment before membership cutover;
-after cutover, a new account also requires an owner-issued, email-bound
-invitation. The isolated loopback runtime instead offers invitation-bound
+**Decision.** Production enrollment uses verified Google OpenID Connect with
+an owner-issued, email-bound invitation. The historical allowlist no longer
+permits direct OAuth account creation; ordinary Google login is existing-account
+only. The isolated loopback runtime instead offers invitation-bound
 email/password signup so the complete product can be tested without Google
 credentials. It cannot activate on Vercel, in production, against a remote
 database, or through a non-loopback request. Existing password accounts may
@@ -1870,3 +1871,60 @@ needed, and require the next genuine scheduled success before declaring the
 scheduler healthy. Rollback removes only the observer and never mutates or
 invokes the production worker. The exact contract is documented in
 `OUTBOX_DISPATCH_WATCHDOG.md`.
+
+## ID-44: Bind invitation authority to one prepared generation and explicit OAuth intent
+
+Status: candidate code-only authentication protocol; no schema migration.
+
+**Decision.** Every invitation preparation creates a random, non-identifying
+256-bit binding. The browser receives the raw 43-character base64url value;
+the exact version-2 HttpOnly claim contains only its domain-separated HMAC plus
+the existing hashed invitation fields and ten-minute deadline. Password
+signup, activation resend, and Google invitation enrollment require the raw
+binding and current claim to match in constant time. A same-tab refresh may
+present the binding but receives only the remaining lifetime and never extends
+the claim. Legacy or malformed claim versions fail closed.
+
+Google enrollment is an explicit same-origin POST with purpose `invite` and
+the binding. Ordinary Google sign-in is purpose `login`, ignores every invite
+cookie, matches only an existing issuer/subject identity, and never creates or
+claims an account. Link and reauthentication retain their explicit
+session-bound purposes. Each start stores state, PKCE verifier, nonce, safe
+return path, purpose, and expiry in one signed state-derived callback cookie.
+A callback validates then clears only its own transaction; an unknown or stale
+callback clears nothing. Invite cancellation returns to the purpose-scoped
+`/invite` recovery path; ordinary login cannot select that return path. Invite
+success returns to `/` and never reloads the consumed invitation.
+
+The current v2 invitation cookie is not cleared on mismatch or success because HTTP
+responses can arrive out of order. Its short expiry and the durable consumed
+invitation row make old claims inert, while the page-held binding prevents a
+claim from authorizing another preparation generation. Existing linked members
+can consume a fresh matching invitation, including an invitation to another
+allowed circle, but a used-by-other claim and every consumption race fail
+without issuing a session. Public password responses remain enumeration-safe,
+and the local password adapter remains isolated to the reviewed loopback
+runtime.
+
+The sole cutover exception is a successful prepare expiring the legacy v1
+cookie at its old `/api/auth` path before setting v2 at `/api`. This targets a
+different path, so it cannot erase a v2 generation; failures never send it.
+
+**Alternatives.** One fixed OAuth cookie set is simpler but lets callback A
+destroy transaction B. Clearing the invite cookie in responses appears tidy
+but reintroduces the same ordering race. Database-backed prepared sessions add
+revocation and cleanup schema that the ten-minute signed protocol does not yet
+need. Putting the raw invitation token into page state or OAuth state exposes a
+bearer credential. Dual-reading v1 preserves the unbound gap; the bounded
+ten-minute cutover instead rejects it. Email-based Google creation or linking
+is convenient but violates explicit identity and invitation intent.
+
+**Rollout and recovery.** Ship server and compatible client together. In-flight
+v1 claims expire in at most ten minutes; no migration, provider change, key
+rotation, or production mutation is part of deployment. Monitor only aggregate
+prepare, `invalid_state`, `private_beta`, and activation-delivery outcomes.
+Never log bindings, claims, invitation tokens, email addresses, provider
+subjects, or OAuth transaction contents. Rollback changes application code
+only, but restoring unbound behavior reopens the race. The exact protocol,
+invariants, tests, and operational guidance are in
+[`AUTH_CLAIM_BINDING.md`](AUTH_CLAIM_BINDING.md).

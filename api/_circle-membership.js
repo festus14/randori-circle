@@ -9,10 +9,11 @@ export const PRIMARY_CIRCLE_SLUG='randori-circle';
 
 const readinessByUrl=new Map();
 const readinessByClient=new WeakMap();
-const CLAIM_VERSION=1;
+const CLAIM_VERSION=2;
 const HASH_PATTERN=/^[0-9a-f]{64}$/;
 const INVITATION_ID_PATTERN=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TOKEN_PATTERN=/^[A-Za-z0-9_-]{43}$/;
+const CLAIM_BINDING_PATTERN=/^[A-Za-z0-9_-]{43}$/;
 
 export function circleMembershipEnabled(){
   return process.env.CIRCLE_MEMBERSHIP_ENABLED==='true';
@@ -69,18 +70,23 @@ function invitationCirclePredicate(alias){
 
 function claimSignature(payload){
   return createHmac('sha256',getJwtSecret())
-    .update(`randori-circle-invite-claim-v1\0${payload}`,'utf8')
+    .update(`randori-circle-invite-claim-v2\0${payload}`,'utf8')
     .digest('base64url');
 }
 
-export function createInviteClaim({invitationId,circleId,tokenHash,emailHash}){
+export function createInviteClaim({invitationId,circleId,tokenHash,emailHash},{
+  binding=randomBytes(32).toString('base64url'),
+}={}){
   const invitation_id=safeInvitationId(invitationId);
   const circle_id=safePositiveInteger(circleId);
   const token_hash=safeHash(tokenHash);
   const email_hash=safeHash(emailHash);
   if(!invitation_id||!circle_id||!token_hash||!email_hash) throw new TypeError('invalid invitation claim fields');
   const issuedAt=Math.floor(Date.now()/1000);
-  const payload=Buffer.from(JSON.stringify({v:CLAIM_VERSION,invitation_id,circle_id,token_hash,email_hash,iat:issuedAt,exp:issuedAt+INVITE_CLAIM_TTL_SECONDS}),'utf8').toString('base64url');
+  if(typeof binding!=='string'||!CLAIM_BINDING_PATTERN.test(binding)) throw new TypeError('invalid invitation claim binding');
+  const payload=Buffer.from(JSON.stringify({v:CLAIM_VERSION,invitation_id,circle_id,token_hash,email_hash,
+    binding_hash:hmacHex('randori-circle-invite-binding-v1',binding),iat:issuedAt,
+    exp:issuedAt+INVITE_CLAIM_TTL_SECONDS}),'utf8').toString('base64url');
   return `${payload}.${claimSignature(payload)}`;
 }
 
@@ -93,35 +99,62 @@ function parseCookie(req,name){
   return '';
 }
 
-export function readInviteClaim(req){
-  const raw=parseCookie(req,INVITE_CLAIM_COOKIE);
+function parseInviteClaim(raw){
   const match=raw.match(/^([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{43})$/);
   if(!match||!safeEqual(match[2],claimSignature(match[1]))) return null;
   let value;
   try{ value=JSON.parse(Buffer.from(match[1],'base64url').toString('utf8')); }catch{ return null; }
   if(!value||typeof value!=='object'||Array.isArray(value)) return null;
   const keys=Object.keys(value).sort();
-  const expected=['circle_id','email_hash','exp','iat','invitation_id','token_hash','v'];
+  const expected=['binding_hash','circle_id','email_hash','exp','iat','invitation_id','token_hash','v'];
   if(keys.length!==expected.length||!keys.every((key,index)=>key===expected[index])) return null;
   const invitation_id=safeInvitationId(value.invitation_id);
   const circle_id=safePositiveInteger(value.circle_id);
   const token_hash=safeHash(value.token_hash);
   const email_hash=safeHash(value.email_hash);
+  const binding_hash=safeHash(value.binding_hash);
   const now=Math.floor(Date.now()/1000);
-  if(value.v!==CLAIM_VERSION||!invitation_id||!circle_id||!token_hash||!email_hash
+  if(value.v!==CLAIM_VERSION||!invitation_id||!circle_id||!token_hash||!email_hash||!binding_hash
     ||!Number.isSafeInteger(value.iat)||!Number.isSafeInteger(value.exp)
     ||value.iat>now+30||value.exp<=now||value.exp-value.iat!==INVITE_CLAIM_TTL_SECONDS){
     return null;
   }
-  return {invitation_id,circle_id,token_hash,email_hash,iat:value.iat,exp:value.exp};
+  return {invitation_id,circle_id,token_hash,email_hash,binding_hash,iat:value.iat,exp:value.exp};
+}
+
+function rawInviteClaim(req){
+  return parseCookie(req,INVITE_CLAIM_COOKIE);
+}
+
+export function readInviteClaim(req){
+  return parseInviteClaim(rawInviteClaim(req));
+}
+
+export function readInviteClaimForBindingHash(req,bindingHash){
+  const supplied=safeHash(bindingHash);
+  const parsed=parseInviteClaim(rawInviteClaim(req));
+  if(!supplied||!parsed||!safeEqual(supplied,parsed.binding_hash)) return null;
+  return parsed;
+}
+
+export function readBoundInviteClaim(req,binding){
+  const supplied=typeof binding==='string'&&CLAIM_BINDING_PATTERN.test(binding)?binding:null;
+  const suppliedHash=supplied?hmacHex('randori-circle-invite-binding-v1',supplied):null;
+  return suppliedHash?readInviteClaimForBindingHash(req,suppliedHash):null;
+}
+
+export function inviteClaimRemainingSeconds(claim,{nowSeconds=Math.floor(Date.now()/1000)}={}){
+  if(!Number.isSafeInteger(nowSeconds)||nowSeconds<1) throw new TypeError('valid claim time is required');
+  if(!claim||!Number.isSafeInteger(claim.exp)) return 0;
+  return Math.max(0,claim.exp-nowSeconds);
 }
 
 export function inviteClaimCookie(claim,{secure=true}={}){
-  return `${INVITE_CLAIM_COOKIE}=${encodeURIComponent(claim)}; Path=/api/auth; HttpOnly${secure?'; Secure':''}; SameSite=Lax; Max-Age=${INVITE_CLAIM_TTL_SECONDS}`;
+  return `${INVITE_CLAIM_COOKIE}=${encodeURIComponent(claim)}; Path=/api; HttpOnly${secure?'; Secure':''}; SameSite=Lax; Max-Age=${INVITE_CLAIM_TTL_SECONDS}`;
 }
 
 export function clearInviteClaimCookie({secure=true}={}){
-  return `${INVITE_CLAIM_COOKIE}=; Path=/api/auth; HttpOnly${secure?'; Secure':''}; SameSite=Lax; Max-Age=0`;
+  return `${INVITE_CLAIM_COOKIE}=; Path=/api; HttpOnly${secure?'; Secure':''}; SameSite=Lax; Max-Age=0`;
 }
 
 function readinessCache(db){
@@ -233,13 +266,34 @@ export async function prepareInvitationClaim(db,{token}){
   const circleId=safePositiveInteger(row.circle_id);
   const emailHash=safeHash(row.email_hash);
   if(!invitationId||!circleId||!emailHash) return {ok:false};
+  const binding=randomBytes(32).toString('base64url');
   return {
     ok:true,
-    claim:createInviteClaim({invitationId,circleId,tokenHash,emailHash}),
+    claim:createInviteClaim({invitationId,circleId,tokenHash,emailHash},{binding}),binding,
     invitation_id:invitationId,
     circle_id:circleId,
     expires_at:String(row.expires_at),
   };
+}
+
+export async function validateLivePreparedClaim(db,{claim}){
+  const parsed=validClaimObject(claim);
+  if(!parsed) return {ok:false};
+  const result=await db.execute({
+    sql:`SELECT ci.id,ci.circle_id,ci.email_hash,ci.expires_at
+      FROM circle_invitations ci JOIN circles c ON c.id=ci.circle_id
+      WHERE ci.id=? AND ci.circle_id=? AND ci.token_hash=? AND ci.email_hash=?
+        AND ci.used_at IS NULL AND ci.used_by IS NULL AND ci.revoked_at IS NULL
+        AND datetime(ci.expires_at)>datetime('now')
+        AND ${invitationCirclePredicate('c')}
+      LIMIT 1`,
+    args:[parsed.invitation_id,parsed.circle_id,parsed.token_hash,parsed.email_hash],
+  });
+  const row=result.rows?.[0];
+  return row?{
+    ok:true,claim,invitation_id:String(row.id),circle_id:Number(row.circle_id),
+    expires_at:String(row.expires_at),
+  }:{ok:false};
 }
 
 export async function validatePreparedInvitation(db,{claim,email}){

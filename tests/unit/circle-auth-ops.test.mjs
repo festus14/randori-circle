@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import { after, beforeEach, mock, test } from 'node:test';
 import bcrypt from 'bcryptjs';
-import {googleOAuthCookieHeader,googleProviderFetch} from '../support/google-oidc.mjs';
+import {decodeGoogleOAuthTransactionCookie,googleOAuthCookieHeader,
+  googleOAuthTransactionCookieName,googleProviderFetch} from '../support/google-oidc.mjs';
 
 const JWT_SECRET='circle-auth-unit-test-secret-at-least-32-characters';
 const PASSWORD='correct horse battery';
 const PASSWORD_HASH=await bcrypt.hash(PASSWORD,4);
+const INVITE_BINDING='b'.repeat(43);
+const INVITE_BINDING_HASH='c'.repeat(64);
 const executed=[];
 let executeHandler=()=>({rows:[],rowsAffected:0});
 let membershipResult=true;
@@ -118,9 +121,15 @@ mock.module('../../api/_circle-membership.js',{
     circleMembershipEnabled:()=>process.env.CIRCLE_MEMBERSHIP_ENABLED==='true',
     circleMembershipCutoverStarted:async()=>cutoverStarted,
     circleMembershipRegistrationState:async()=>cutoverStarted?'closed':registrationState,
-    clearInviteClaimCookie:()=> 'randori_invite_claim=; Path=/api/auth; HttpOnly; Secure; SameSite=Lax; Max-Age=0',
-    readInviteClaim:req=>String(req.headers?.cookie||'').includes('randori_invite_claim=valid-claim')
-      ? {invitation_id:'invite-1',circle_id:1,token_hash:'token-hash',email_hash:'email-hash',exp:9999999999}
+    readBoundInviteClaim:(req,binding)=>binding===INVITE_BINDING
+      &&String(req.headers?.cookie||'').includes('randori_invite_claim=valid-claim')
+      ? {invitation_id:'invite-1',circle_id:1,token_hash:'token-hash',email_hash:'email-hash',
+        binding_hash:INVITE_BINDING_HASH,exp:9999999999}
+      : null,
+    readInviteClaimForBindingHash:(req,bindingHash)=>bindingHash===INVITE_BINDING_HASH
+      &&String(req.headers?.cookie||'').includes('randori_invite_claim=valid-claim')
+      ? {invitation_id:'invite-1',circle_id:1,token_hash:'token-hash',email_hash:'email-hash',
+        binding_hash:INVITE_BINDING_HASH,exp:9999999999}
       : null,
     hasActiveCircleMembership:async(_db,userId)=>{
       membershipCalls.push({kind:'any',userId});
@@ -136,6 +145,7 @@ mock.module('../../api/_circle-membership.js',{
       validationCalls.push(input);
       return validationResult;
     },
+    validateLivePreparedClaim:async()=>validationResult,
     acceptPreparedInvitation:async(_db,input)=>{
       acceptanceCalls.push(input);
       return acceptanceResult;
@@ -255,8 +265,10 @@ function accountSql(sql){
   return sql.includes('SELECT id,email,password_hash,display_name,color,is_admin FROM auth_accounts WHERE email=');
 }
 
-function oauthCookies({claim=true}={}){
-  return googleOAuthCookieHeader({invitationClaim:claim?'valid-claim':undefined});
+function oauthCookies({claim=true,purpose=claim?`invite:${INVITE_BINDING_HASH}`:'login'}={}){
+  return googleOAuthCookieHeader({
+    invitationClaim:claim?'valid-claim':undefined,purpose,jwtSecret:JWT_SECRET,
+  });
 }
 
 function oauthRequestHeaders(options){
@@ -368,17 +380,54 @@ test('prepared invitation OAuth forces explicit Google account selection',async(
   process.env.APP_URL='https://randori.example.test';
   process.env.GOOGLE_CLIENT_ID='client';
   process.env.GOOGLE_CLIENT_SECRET='secret';
+  validationResult={ok:true};
   const prepared=await invoke(authHandler,{
-    url:'/api/auth/google/start',query:{endpoint:'google-start'},headers:oauthRequestHeaders(),
+    method:'POST',url:'/api/auth/google/start',query:{endpoint:'google-start'},headers:oauthRequestHeaders(),
+    body:{purpose:'invite',invite_binding:INVITE_BINDING},
   });
-  assert.equal(prepared.status,302);
-  assert.equal(new URL(prepared.headers.location).searchParams.get('prompt'),'select_account');
+  assert.equal(prepared.status,200);
+  const preparedUrl=new URL(prepared.body.authorizationUrl);
+  assert.equal(preparedUrl.searchParams.get('prompt'),'select_account');
+  const preparedState=preparedUrl.searchParams.get('state');
+  const preparedTransaction=decodeGoogleOAuthTransactionCookie(
+    String(prepared.headers['set-cookie']),preparedState);
+  assert.equal(preparedTransaction.purpose,`invite:${INVITE_BINDING_HASH}`);
+  assert.equal(preparedTransaction.return_path,'/invite');
+  assert.doesNotMatch(preparedTransaction.purpose,new RegExp(INVITE_BINDING));
+  assert.doesNotMatch(String(prepared.headers['set-cookie']),new RegExp(INVITE_BINDING));
+  assert.doesNotMatch(prepared.body.authorizationUrl,new RegExp(INVITE_BINDING));
+  assert.match(String(prepared.headers['set-cookie']),
+    new RegExp(`^${googleOAuthTransactionCookieName(preparedState)}=`));
 
   const regular=await invoke(authHandler,{
-    url:'/api/auth/google/start',query:{endpoint:'google-start'},headers:oauthRequestHeaders({claim:false}),
+    url:'/api/auth/google/start',query:{endpoint:'google-start',purpose:'login'},headers:oauthRequestHeaders({claim:false}),
   });
   assert.equal(regular.status,302);
-  assert.equal(new URL(regular.headers.location).searchParams.get('prompt'),null);
+  const regularUrl=new URL(regular.headers.location);
+  assert.equal(regularUrl.searchParams.get('prompt'),null);
+  const regularState=regularUrl.searchParams.get('state');
+  assert.equal(decodeGoogleOAuthTransactionCookie(
+    String(regular.headers['set-cookie']),regularState).purpose,'login');
+
+  const mismatched=await invoke(authHandler,{
+    method:'POST',url:'/api/auth/google/start',query:{endpoint:'google-start'},headers:oauthRequestHeaders(),
+    body:{purpose:'invite',invite_binding:'z'.repeat(43)},
+  });
+  assert.equal(mismatched.status,403);
+  assert.deepEqual(mismatched.body,{error:'invitation unavailable'});
+  assert.equal(mismatched.headers['set-cookie'],undefined);
+
+  let providerCalls=0;
+  globalThis.fetch=async()=>{ providerCalls+=1; throw new Error('provider must not be called'); };
+  const transactionCookie=String(prepared.headers['set-cookie']).split(';')[0];
+  const cancelled=await invoke(authHandler,{
+    url:'/api/auth/google/callback',
+    query:{endpoint:'callback',error:'access_denied',state:preparedState},
+    headers:{...sameOriginHeaders,cookie:`randori_invite_claim=valid-claim; ${transactionCookie}`},
+  });
+  assert.equal(cancelled.status,302);
+  assert.equal(cancelled.headers.location,'https://randori.example.test/invite?google_error=access_denied');
+  assert.equal(providerCalls,0);
 });
 
 test('local invite signup normalizes rejection cost without looking up the submitted email',async()=>{
@@ -396,7 +445,8 @@ test('local invite signup normalizes rejection cost without looking up the submi
   };
   const request=body=>invoke(authHandler,{
     method:'POST',url:'/api/auth/signup',query:{endpoint:'signup'},
-    headers:{...localOriginHeaders,cookie:'randori_invite_claim=valid-claim'},body,
+    headers:{...localOriginHeaders,cookie:'randori_invite_claim=valid-claim'},
+    body:{...body,invite_binding:INVITE_BINDING},
   });
   const originalHash=bcrypt.hash;
   const hashes=[];
@@ -570,9 +620,6 @@ test('verified Google invitation bypasses allowlist only after validation and at
   validationResult={ok:true,circle_id:1,invitation_id:'invite-1',email_hash:'email-hash',used_by:null};
   accountAcceptanceResult={ok:true,user_id:8,is_admin:false,circle_id:1,created:true,idempotent:false};
   membershipResult=false;
-  globalThis.fetch=googleProviderFetch({claims:{
-    email:'invited@example.test',name:'Invited User',sub:'google-invited-1',
-  }});
   executeHandler=sql=>{
     if(sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return rows([]);
     if(sql.includes('INSERT INTO auth_accounts')&&sql.includes('RETURNING id')) return rows([{id:8}]);
@@ -580,21 +627,35 @@ test('verified Google invitation bypasses allowlist only after validation and at
     return rows();
   };
 
+  const started=await invoke(authHandler,{
+    method:'POST',url:'/api/auth/google/start',query:{endpoint:'google-start'},headers:oauthRequestHeaders(),
+    body:{purpose:'invite',invite_binding:INVITE_BINDING},
+  });
+  const authorization=new URL(started.body.authorizationUrl);
+  const state=authorization.searchParams.get('state');
+  const transactionCookie=String(started.headers['set-cookie']).split(';')[0];
+  const transaction=decodeGoogleOAuthTransactionCookie(transactionCookie,state);
+  globalThis.fetch=googleProviderFetch({claims:{
+    email:'invited@example.test',name:'Invited User',sub:'google-invited-1',nonce:transaction.nonce,
+  }});
+
   const result=await invoke(authHandler,{
     url:'/api/auth/google/callback',
-    query:{endpoint:'callback',code:'valid-code',state:'expected-state'},
-    headers:oauthRequestHeaders(),
+    query:{endpoint:'callback',code:'valid-code',state},
+    headers:{...sameOriginHeaders,cookie:`randori_invite_claim=valid-claim; ${transactionCookie}`},
   });
   assert.equal(result.status,302);
   assert.equal(result.headers.location,'https://randori.example.test/?google=success');
-  assert.match(String(result.headers['set-cookie']),/randori_invite_claim=; Path=\/api\/auth;.*Max-Age=0/);
+  assert.doesNotMatch(String(result.headers['set-cookie']),/randori_invite_claim=;/);
   assert.match(String(result.headers['set-cookie']),/randori_session=/);
   assert.deepEqual(validationCalls,[{
-    claim:{invitation_id:'invite-1',circle_id:1,token_hash:'token-hash',email_hash:'email-hash',exp:9999999999},
+    claim:{invitation_id:'invite-1',circle_id:1,token_hash:'token-hash',email_hash:'email-hash',
+      binding_hash:INVITE_BINDING_HASH,exp:9999999999},
     email:'invited@example.test',
   }]);
   assert.deepEqual(accountAcceptanceCalls,[{
-    claim:{invitation_id:'invite-1',circle_id:1,token_hash:'token-hash',email_hash:'email-hash',exp:9999999999},
+    claim:{invitation_id:'invite-1',circle_id:1,token_hash:'token-hash',email_hash:'email-hash',
+      binding_hash:INVITE_BINDING_HASH,exp:9999999999},
     email:'invited@example.test',
     passwordHash:accountAcceptanceCalls[0].passwordHash,
     displayName:'Invited User',color:'#123456',isAdmin:false,googleSub:'google-invited-1',
@@ -677,7 +738,6 @@ test('a stable Google subject signs into the same account after its verified ema
   process.env.APP_URL='https://randori.example.test';
   process.env.GOOGLE_CLIENT_ID='client';
   process.env.GOOGLE_CLIENT_SECRET='secret';
-  validationResult={ok:true,circle_id:1,invitation_id:'invite-1',email_hash:'email-hash',used_by:null};
   globalThis.fetch=googleProviderFetch({claims:{
     email:'new-address@example.test',name:'Existing User',sub:'stable-google-sub',
   }});
@@ -692,7 +752,7 @@ test('a stable Google subject signs into the same account after its verified ema
 
   const result=await invoke(authHandler,{
     url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
-    headers:oauthRequestHeaders(),
+    headers:oauthRequestHeaders({claim:false}),
   });
   assert.equal(result.status,302);
   assert.equal(result.headers.location,'https://randori.example.test/?google=success');
@@ -754,7 +814,7 @@ test('a stable Google subject cannot take an email already bound to another Goog
   assert.doesNotMatch(String(result.headers['set-cookie']),/randori_session=[^;]/);
 });
 
-test('disabled membership flag preserves the legacy Google shadow-user write',async()=>{
+test('direct Google login ignores a stale invite claim and never creates an unknown account',async()=>{
   process.env.APP_URL='https://randori.example.test';
   process.env.GOOGLE_CLIENT_ID='client';
   process.env.GOOGLE_CLIENT_SECRET='secret';
@@ -770,38 +830,33 @@ test('disabled membership flag preserves the legacy Google shadow-user write',as
 
   const result=await invoke(authHandler,{
     url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
-    headers:oauthRequestHeaders({claim:false}),
+    headers:oauthRequestHeaders({claim:true,purpose:'login'}),
   });
   assert.equal(result.status,302);
-  assert.equal(result.headers.location,'https://randori.example.test/?google=success');
-  assert.equal(executed.some(call=>call.sql.includes('SELECT id FROM users')),true);
-  assert.equal(executed.some(call=>call.sql.includes('INSERT INTO users')),true);
-  assert.equal(membershipCalls.length,0);
-
-  executed.length=0;
-  cutoverStarted=true;
-  const frozen=await invoke(authHandler,{
-    url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
-    headers:oauthRequestHeaders({claim:false}),
-  });
-  assert.equal(frozen.status,302);
-  assert.match(frozen.headers.location,/google_error=private_beta/);
+  assert.match(result.headers.location,/google_error=private_beta/);
   assert.equal(executed.some(call=>call.sql.includes('INSERT INTO auth_accounts')),false);
+  assert.equal(executed.some(call=>call.sql.includes('INSERT INTO users')),false);
+  assert.equal(membershipCalls.length,0);
+  assert.equal(validationCalls.length,0,'login intent must never inspect the stale invite claim');
+});
 
-  executed.length=0;
-  cutoverStarted=false;
-  executeHandler=sql=>{
-    if(sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return rows([]);
-    if(sql.includes('INSERT INTO auth_accounts')&&sql.includes('circle_membership_rollout')) return rows([]);
-    return rows();
-  };
-  const raced=await invoke(authHandler,{
+test('invite callback with a replaced claim fails before any Google provider request',async()=>{
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  process.env.APP_URL='https://randori.example.test';
+  process.env.GOOGLE_CLIENT_ID='client';
+  process.env.GOOGLE_CLIENT_SECRET='secret';
+  let providerCalls=0;
+  globalThis.fetch=async()=>{ providerCalls+=1; throw new Error('provider must not be called'); };
+
+  const result=await invoke(authHandler,{
     url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
-    headers:oauthRequestHeaders({claim:false}),
+    headers:oauthRequestHeaders({claim:false,purpose:`invite:${INVITE_BINDING_HASH}`}),
   });
-  assert.equal(raced.status,302);
-  assert.match(raced.headers.location,/google_error=private_beta/);
-  assert.equal(executed.some(call=>call.sql.includes('circle_membership_rollout WHERE id=1')),true);
+  assert.equal(result.status,302);
+  assert.match(result.headers.location,/google_error=private_beta/);
+  assert.equal(providerCalls,0);
+  assert.equal(validationCalls.length,0);
+  assert.doesNotMatch(String(result.headers['set-cookie']),/randori_session=[^;]/);
 });
 
 test('invalid, already-used-by-other, or lost-race invite claims never issue a session',async()=>{
