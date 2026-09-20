@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, copyFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -11,6 +11,7 @@ import {
   resolveLocalServerConfig,
   startLocalDevelopmentServer,
 } from '../../scripts/local-server.mjs';
+import {expectInviteGateLoaded,stageRealRuntimeClient} from './real-runtime-fixture';
 
 const repositoryRoot=fileURLToPath(new URL('../..',import.meta.url));
 const silentLogger=Object.freeze({log(){},error(){}});
@@ -19,7 +20,7 @@ test('real cron drains saturated mixed types fairly and then reports an empty qu
   test.setTimeout(45_000);
   const rootDir=realpathSync(mkdtempSync(join(tmpdir(),'randori-outbox-budget-')));
   mkdirSync(join(rootDir,'.local'),{mode:0o700});
-  copyFileSync(join(repositoryRoot,'index.html'),join(rootDir,'index.html'));
+  stageRealRuntimeClient(repositoryRoot,rootDir);
   const databaseUrl=pathToFileURL(join(rootDir,'.local','randori.sqlite')).href;
   const config=resolveLocalServerConfig({rootDir,argv:[],env:{
     NODE_ENV:'development',RANDORI_LOCAL_HOST:'127.0.0.1',RANDORI_LOCAL_PORT:'0',
@@ -46,6 +47,7 @@ test('real cron drains saturated mixed types fairly and then reports an empty qu
         maxAttempts:1,deliveryTimeoutMs:1000}));
       await db.batch(events,'write');
       await page.goto(runtime.url,{waitUntil:'domcontentloaded'});
+      await expectInviteGateLoaded(page);
       const first=await page.evaluate(async secret=>{
         const response=await fetch('/api/cron/outbox',{method:'POST',headers:{'x-cron-secret':secret}});
         return {status:response.status,body:await response.json()};

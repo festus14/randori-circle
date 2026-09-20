@@ -1928,3 +1928,114 @@ subjects, or OAuth transaction contents. Rollback changes application code
 only, but restoring unbound behavior reopens the race. The exact protocol,
 invariants, tests, and operational guidance are in
 [`AUTH_CLAIM_BINDING.md`](AUTH_CLAIM_BINDING.md).
+
+## ID-45: Bind account-creation UI to one live prepared invitation
+
+Status: accepted client increment; depends on the server binding and OAuth
+purpose contract in issue #186.
+
+**Decision.** Outside the isolated `local_open` runtime, the browser advertises
+and submits account creation only while the current tab holds one exact live
+prepared-invitation generation. Preparation returns an opaque, non-identifying
+binding and a server-bounded lifetime no longer than ten minutes. The browser
+keeps only that binding in session storage for `/invite` reload recovery and
+uses a monotonic deadline anchored before the prepare request, so neither a
+wall-clock change nor request latency can extend eligibility.
+Raw invitation bearers remain fragment-only and are scrubbed before any
+third-party script can run.
+
+Password signup, activation resend, and invite-purpose Google start carry the
+exact binding. Every operation is fenced by the invite generation and deadline,
+authentication epoch and actor, modal generation, and its own abortable request
+identity. Those values are rechecked after every network await, so expiry,
+identity change, modal reuse, or a replacement preparation makes a delayed
+response inert. Ordinary password/Google sign-in, OAuth result refresh, valid
+local signup, and existing-member flows remain available independently.
+Invite OAuth cancellation and failure return to `/invite`, refresh the same
+binding, and preserve invite-purpose retry. Enumeration-safe signup and resend
+successes remain conditional rather than claiming that mail was sent.
+Initial session hydration preserves the prepared gate for an existing member,
+but invite-bound controls stay disabled until `/api/auth/me` authoritatively
+returns `200` or `401`; rejected or already-expired preparation clears the
+tab-stored binding.
+An invite OAuth error with unavailable identity hydration remains on the inert
+invite landing without a provider retry, so only an explicit ordinary sign-in
+can choose login purpose.
+
+The client is not authorization. Issue #186 owns the signed HttpOnly claim,
+binding comparison, explicit Google `login` versus `invite` purpose, and
+transaction-time invitation validation. That contract is required before this
+increment can land because browser-only generations cannot control shared
+cookie ordering across overlapping documents or tabs.
+
+**Alternatives.** Trusting only a prepared cookie leaves the UI unable to bind a
+submit to the invitation the user saw. Retaining the bearer in browser storage
+increases disclosure risk. A wall-clock timer can be extended by clock changes.
+Hiding the entry point entirely removes useful recovery guidance. Conflating
+Google login and invite creation lets stale ambient state change authentication
+semantics. These alternatives are rejected in favor of opaque exact binding,
+monotonic expiry, a disabled action with guidance, and explicit OAuth purpose.
+
+**Rollout and recovery.** Rebase and land only after #186, then canary existing
+sign-in, both invited signup methods, reload, expiry, modal reuse, and
+out-of-order preparation. This increment changes no schema, secret, or
+production data. If account creation must be stopped, disable its server
+capability while rolling forward; do not weaken the server binding. The full
+contract and test matrix are documented in `INVITE_GATED_SIGNUP.md`.
+
+## ID-46: Quiesce bootstrap identity refreshes before the circle-switch race
+
+Status: implemented as a test-only reliability increment with no production or
+schema change.
+
+**Decision.** The identity-refresh/circle-switch browser test observes all three
+fixed bootstrap `/api/auth/me` requests and then awaits one explicit refresh
+before it starts the gated switch race. The test continues to require the
+identity-changing refresh to commit, the replacement circle data to render,
+and the released old switch callback to remain fenced.
+
+This keeps `refreshMe()`'s latest-request-wins production contract intact. A
+bootstrap refresh may correctly supersede an older explicit refresh and cause
+that older call to return `false`; treating that scheduler-dependent return as
+a product failure made otherwise identical Linux runs flaky.
+
+**Alternatives.** Removing the `true` assertion would avoid the immediate
+failure but weaken proof that the intended identity transition committed.
+Sleeping past 1.2 seconds would depend on wall-clock scheduling. Exposing a
+production-only idle hook would widen the application surface solely for a
+test. Changing refresh fencing so every caller returns success would obscure
+which response actually committed and could revive stale identity state.
+
+**Rollout and recovery.** This changes only Playwright orchestration and its
+decision record. Revert it if the bootstrap schedule is replaced by a durable
+application-ready signal, then synchronize the race through that public signal.
+
+## ID-48: Separate routine availability fixtures from the production cutoff clock
+
+Status: candidate test-only reliability increment with no production or schema
+change. ID-47 is reserved for the UI release slice.
+
+**Decision.** Availability mutations retain both clocks that protect the cutoff:
+the injected request instant selects a cycle and SQLite checks its own current
+time in the conditional commit. Routine availability and active-circle mutation
+tests use one named, explicit 2099 editable cycle so a historical fixture cannot
+expire under SQLite while CI is running. The exact boundary suite instead uses
+a narrow test database-clock adapter and proves a successful write one
+millisecond before Sunday 08:00 Europe/London, rejection at the boundary, and
+reclassification when the database clock crosses the cutoff after a request
+starts. Pairing boundary tests retain their fixed BST, GMT, DST, and ISO-year
+examples. Live local-onboarding and pairing browser tests continue to resolve
+the server's actual upcoming cycle.
+
+**Alternatives.** Trusting only the injected production clock would weaken the
+commit-time race defense. Faking SQLite time for every test would stop routine
+tests exercising the real SQL predicate. Deriving future dates from the day of
+execution would vary cycle identities and expectations. Skipping assertions
+after the cutoff would hide failures instead of making their preconditions
+explicit.
+
+**Rollout and recovery.** This increment changes tests and documentation only;
+it needs no migration, environment variable, credential, deployment setting,
+or rollback procedure. Revert it only together with an equivalent deterministic
+clock strategy. The audit and commands are recorded in
+[`AVAILABILITY_TEST_CLOCK.md`](AVAILABILITY_TEST_CLOCK.md).

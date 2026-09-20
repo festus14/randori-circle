@@ -35,6 +35,7 @@ This private-beta sync is whole-document compare-and-swap, not a CRDT: members s
 - Sessions use 12-hour `Secure`, `HttpOnly`, `SameSite=Lax` cookies.
 - Google OAuth uses cryptographic state, PKCE, and verified OpenID userinfo.
 - Production password signup is fail-closed unless invitation-bound email activation is fully configured; no account or session exists before verification.
+- Production account-creation controls require one exact live prepared invitation in the current tab; expiry or identity/modal changes fence delayed signup, resend, and invite OAuth responses. Existing-member sign-in and isolated `local_open` signup remain available. See [prepared-invitation signup gate](docs/INVITE_GATED_SIGNUP.md).
 - Existing password accounts can recover through a generic, rate-limited response; reset tokens are single-use, encrypted in the outbox, hashed at rest, and revoke every session when consumed.
 - Credential linking is explicit, recent-authenticated, and opt-in after migration v9. Matching provider email never links accounts; the stable Google subject remains authoritative when its email changes, and the final usable sign-in method cannot be removed.
 - Mutations enforce same-origin requests for cookie sessions; API callers may use pinned Bearer JWTs.
