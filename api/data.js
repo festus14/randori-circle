@@ -3,6 +3,7 @@ import { createEvaluationSuite, getPublicExercise, listPublicExercises } from '.
 import { parseCanonicalRoomPath } from './_pairing.js';
 import { resolvePairingCycle } from './_pairing-cycle.js';
 import { getPairingPublication } from './_pairing-publication.js';
+import { pairingPublicationState } from './_pairing-recovery.js';
 import { hasPrimaryUnavailableEvidence } from './_pairing-evidence.js';
 import { circlePairingFailure, readCirclePairing } from './_circle-pairing.js';
 import { authPairAccessArgs, authPairAccessSql, getAuthenticatedPairAccess } from './_pair-access.js';
@@ -29,6 +30,7 @@ import {
   secondaryCircleCoordinationEnabled,
   secondaryCircleSchedulingEnabled,
   sendMultiCircleFeatureUnavailable,
+  validateActiveCircleMutationContext,
 } from './_active-circle.js';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import {
@@ -193,12 +195,12 @@ async function requireCurrentPairingReader(req,res,db,userId){
   const localRuntime=strictLocalPairingRuntime(req);
   try{
     const result=await db.execute(localRuntime?{
-      sql:`SELECT id FROM auth_accounts
+      sql:`SELECT id,is_admin FROM auth_accounts
         WHERE id=? AND COALESCE(is_demo,0)=0
         LIMIT 2`,
       args:[userId],
     }:{
-      sql:`SELECT aa.id,c.id AS circle_id
+      sql:`SELECT aa.id,c.id AS circle_id,cm.role
         FROM auth_accounts aa
         JOIN circle_memberships cm ON cm.user_id=aa.id
         JOIN circles c ON c.id=cm.circle_id
@@ -217,7 +219,10 @@ async function requireCurrentPairingReader(req,res,db,userId){
       res.status(503).json({error:'pairing unavailable'});
       return false;
     }
-    return {localRuntime,circleId};
+    return {
+      localRuntime,circleId,userId,
+      isOwner:localRuntime?Number(rows[0].is_admin)===1:String(rows[0].role)==='owner',
+    };
   }catch{
     res.status(503).json({error:'pairing unavailable'});
     return false;
@@ -244,8 +249,9 @@ async function requireSelectedPairingReader(req,res,db,payload,userId){
     }
     const circleId=Number(active.membership.id);
     const common={
-      localRuntime:false,circleId,circlePublicId:String(active.membership.public_id),
+      localRuntime:false,circleId,userId,circlePublicId:String(active.membership.public_id),
       circleContextVersion:Number(active.context_version),
+      isOwner:active.membership.role==='owner',
       circleContext:{payload,circleId,contextVersion:Number(active.context_version),implicit:active.implicit===true},
     };
     if(active.membership.is_primary) return {...common,mode:'primary'};
@@ -269,6 +275,87 @@ function selectedPairingEnvelope(readerAccess){
   };
 }
 
+async function currentPrimaryPairingOwner(db,readerAccess){
+  if(readerAccess.circleContext){
+    const valid=await validateActiveCircleMutationContext(
+      db,readerAccess.circleContext.payload,readerAccess.circleContext,
+    );
+    if(!valid) throw Object.assign(new Error('pairing reader context changed'),{
+      code:'PAIRING_READER_CONTEXT_CHANGED',
+    });
+  }
+  const result=await db.execute(readerAccess.localRuntime?{
+    sql:`SELECT id,is_admin FROM auth_accounts
+      WHERE id=? AND COALESCE(is_demo,0)=0
+      LIMIT 2`,args:[readerAccess.userId],
+  }:{
+    sql:`SELECT aa.id,cm.role,c.id AS circle_id
+      FROM auth_accounts aa
+      JOIN circle_memberships cm ON cm.user_id=aa.id
+      JOIN circles c ON c.id=cm.circle_id
+      WHERE aa.id=? AND cm.status='active'
+        AND c.is_primary=1 AND c.archived_at IS NULL
+        AND COALESCE(aa.is_demo,0)=0
+      LIMIT 2`,args:[readerAccess.userId],
+  });
+  const rows=result.rows||[];
+  if(rows.length!==1||Number(rows[0].id)!==readerAccess.userId
+    ||(!readerAccess.localRuntime&&Number(rows[0].circle_id)!==readerAccess.circleId)){
+    throw Object.assign(new Error('pairing reader authorization changed'),{
+      code:'PAIRING_READER_REVOKED',
+    });
+  }
+  return readerAccess.localRuntime
+    ?Number(rows[0].is_admin)===1
+    :String(rows[0].role)==='owner';
+}
+
+function sendPrimaryPairingReadFailure(res,error){
+  if(error?.code==='PAIRING_READER_CONTEXT_CHANGED'){
+    return res.status(409).json({ok:false,error:'circle context changed',code:'circle_context_changed'});
+  }
+  if(error?.code==='PAIRING_READER_REVOKED'){
+    return res.status(403).json({ok:false,error:'active circle membership required'});
+  }
+  return null;
+}
+
+function primaryPublicationState(readerAccess,cycle,observedAt,publication,isOwner){
+  const scope=readerAccess.localRuntime
+    ?{kind:'local'}
+    :{kind:'circle',circleId:readerAccess.circleId};
+  return pairingPublicationState({
+    scope,cycle,observedAt,publishedAt:publication?.publishedAt||null,
+    isOwner,
+  });
+}
+
+async function readPrimaryPairingSnapshot(db,readerAccess,{useApplicationClock=false}={}){
+  const transaction=await db.transaction('read');
+  let finished=false;
+  try{
+    const now=await pairingReadInstant(transaction,{
+      localRuntime:useApplicationClock,
+    });
+    const cycle=resolvePairingCycle({now});
+    const upcomingCycle=resolvePairingCycle({now,state:'upcoming'});
+    const publication=await getPairingPublication(transaction,{now});
+    const isOwner=await currentPrimaryPairingOwner(transaction,readerAccess);
+    const accounts=publication
+      ?await loadCurrentPublicationAccounts(transaction,publication,readerAccess)
+      :new Map();
+    const publicationState=primaryPublicationState(
+      readerAccess,cycle,now,publication,isOwner,
+    );
+    await transaction.commit();
+    finished=true;
+    return Object.freeze({now,cycle,upcomingCycle,publication,publicationState,accounts});
+  }catch(error){
+    if(!finished){ try{ await transaction.rollback(); }catch{} }
+    throw error;
+  }finally{ try{ await transaction.close?.(); }catch{} }
+}
+
 function safeSecondaryGroups(read){
   if(!read.publication) return [];
   return read.publication.groups.filter(group=>{
@@ -282,11 +369,16 @@ function secondaryPairMember(account){
 }
 
 function secondaryWeeksResponse(read,readerAccess){
+  const publicationState=pairingPublicationState({
+    scope:read.scope,cycle:read.cycle,observedAt:read.observedAt,
+    publishedAt:read.publication?.publishedAt||null,isOwner:read.role==='owner',
+  });
   const base={
     ok:true,coordination_only:true,workspace_available:false,
     ...selectedPairingEnvelope({...readerAccess,circlePublicId:read.circlePublicId}),current_cycle:read.cycle,
     upcoming_cycle:resolvePairingCycle({now:new Date(read.cycle.startsAt),state:'upcoming'}),
     filtered_demo:true,current_week_id:null,
+    publication_state:publicationState,
   };
   if(!read.publication) return {...base,weeks:[]};
   const pairs=safeSecondaryGroups(read).map(group=>{
@@ -306,10 +398,15 @@ function secondaryWeeksResponse(read,readerAccess){
 }
 
 function secondaryMyPairResponse(read,readerAccess,userId){
+  const publicationState=pairingPublicationState({
+    scope:read.scope,cycle:read.cycle,observedAt:read.observedAt,
+    publishedAt:read.publication?.publishedAt||null,isOwner:read.role==='owner',
+  });
   const base={
     ok:true,coordination_only:true,workspace_available:false,
     ...selectedPairingEnvelope({...readerAccess,circlePublicId:read.circlePublicId}),cycle:read.cycle,current_cycle:read.cycle,
     upcoming_cycle:resolvePairingCycle({now:new Date(read.cycle.startsAt),state:'upcoming'}),
+    publication_state:publicationState,
   };
   if(!read.publication) return {
     ...base,paired:false,pairing_status:'unpublished',reason:'no_pairing_for_current_cycle',
@@ -799,7 +896,9 @@ async function handleWeeks(req,res){
       const read=await readCirclePairing(db,{authority:readerAccess.authority});
       return res.json(secondaryWeeksResponse(read,readerAccess));
     }catch(error){
-      const failure=circlePairingFailure(error,{contextVersion:readerAccess.circleContextVersion});
+      const failure=circlePairingFailure(error,{
+        contextVersion:readerAccess.circleContextVersion,circlePublicId:readerAccess.circlePublicId,
+      });
       return res.status(failure.status).json(failure.body);
     }
   }
@@ -809,19 +908,17 @@ async function handleWeeks(req,res){
     }
   }catch{ return res.status(503).json({error:'pairing unavailable'}); }
   try{
-    const now=await pairingReadInstant(db,{
-      localRuntime:readerAccess.localRuntime||localRuntimeRequest(req),
-    });
-    const currentCycle=resolvePairingCycle({now});
-    const upcomingCycle=resolvePairingCycle({now,state:'upcoming'});
-    const publication=await getPairingPublication(db,{now});
+    const {cycle:currentCycle,upcomingCycle,publication,publicationState,accounts:idTo}
+      =await readPrimaryPairingSnapshot(db,readerAccess,{
+        useApplicationClock:readerAccess.localRuntime||localRuntimeRequest(req),
+      });
     if(!publication){
       return res.json({
         ok:true,weeks:[],current_cycle:currentCycle,upcoming_cycle:upcomingCycle,
-        current_week_id:null,filtered_demo:true,...selectedPairingEnvelope(readerAccess),
+        current_week_id:null,filtered_demo:true,publication_state:publicationState,
+        ...selectedPairingEnvelope(readerAccess),
       });
     }
-    const idTo=await loadCurrentPublicationAccounts(db,publication,readerAccess);
     const person=id=>idTo.get(Number(id))||{name:`Member ${Number(id)}`,color:'#999'};
     const pairs=publication.pairs.map(pair=>{
       const a=person(pair.aId);
@@ -839,9 +936,12 @@ async function handleWeeks(req,res){
     };
     return res.json({
       ok:true,weeks:[week],current_cycle:publication.cycle,upcoming_cycle:upcomingCycle,
-      current_week_id:publication.weekId,filtered_demo:true,...selectedPairingEnvelope(readerAccess),
+      current_week_id:publication.weekId,filtered_demo:true,publication_state:publicationState,
+      ...selectedPairingEnvelope(readerAccess),
     });
   }catch(e){
+    const accessFailure=sendPrimaryPairingReadFailure(res,e);
+    if(accessFailure) return accessFailure;
     try{ await logServer('error','weeks_fetch_fail','current pairing publication could not be read',{code:String(e?.code||'PAIRING_READ_FAILED')},{req,source:'server'}); }catch{}
     return res.status(503).json({ok:false,error:'pairing unavailable'});
   }
@@ -1015,9 +1115,7 @@ async function handleMyPair(req,res){
       await ensureMyPairDataReadiness(db);
       legacySchemaReady=true;
     }
-  }catch{
-    return res.status(503).json({error:'pairing unavailable'});
-  }
+  }catch{ return res.status(503).json({error:'pairing unavailable'}); }
   const readerAccess=await requireSelectedPairingReader(req,res,db,payload,userId);
   if(!readerAccess) return;
   if(readerAccess.mode==='secondary'){
@@ -1025,7 +1123,9 @@ async function handleMyPair(req,res){
       const read=await readCirclePairing(db,{authority:readerAccess.authority});
       return res.json(secondaryMyPairResponse(read,readerAccess,userId));
     }catch(error){
-      const failure=circlePairingFailure(error,{contextVersion:readerAccess.circleContextVersion});
+      const failure=circlePairingFailure(error,{
+        contextVersion:readerAccess.circleContextVersion,circlePublicId:readerAccess.circlePublicId,
+      });
       return res.status(failure.status).json(failure.body);
     }
   }
@@ -1035,26 +1135,26 @@ async function handleMyPair(req,res){
     }
   }catch{ return res.status(503).json({error:'pairing unavailable'}); }
   let weekId=null, weekRow=null, cycle=null, upcomingCycle=null;
-  let publication=null;
+  let publication=null,publicationState=null;
   try{
-    const now=await pairingReadInstant(db,{
-      localRuntime:readerAccess.localRuntime||localRuntimeRequest(req),
+    const snapshot=await readPrimaryPairingSnapshot(db,readerAccess,{
+      useApplicationClock:readerAccess.localRuntime||localRuntimeRequest(req),
     });
-    cycle=resolvePairingCycle({now});
-    upcomingCycle=resolvePairingCycle({now,state:'upcoming'});
-    publication=await getPairingPublication(db,{now});
+    ({cycle,upcomingCycle,publication,publicationState}=snapshot);
     if(publication){
-      await loadCurrentPublicationAccounts(db,publication,readerAccess);
       cycle=publication.cycle;
       weekId=publication.weekId;
       weekRow={id:weekId,week_label:cycle.cycleId,week_start:cycle.startsAt,focus:'both'};
     }
-  }catch{
+  }catch(error){
+    const accessFailure=sendPrimaryPairingReadFailure(res,error);
+    if(accessFailure) return accessFailure;
     return res.status(503).json({error:'pairing unavailable'});
   }
   if (!weekId) return res.json({
     ok:true,paired:false,pairing_status:'unpublished',reason:'no_pairing_for_current_cycle',
     cycle,current_cycle:cycle,upcoming_cycle:upcomingCycle,
+    publication_state:publicationState,
     message:'No pairing has been published for the current cycle yet.',
     ...selectedPairingEnvelope(readerAccess),
   });
@@ -1077,6 +1177,7 @@ async function handleMyPair(req,res){
     return res.json({
       ok:true,paired:false,pairing_status:pairingStatus,
       cycle,current_cycle:cycle,upcoming_cycle:upcomingCycle,
+      publication_state:publicationState,
       week_id:weekId,week:weekRow||null,
       reason:unavailable?'unavailable_current_cycle':'not_paired_this_cycle',
       message:unavailable
@@ -1148,6 +1249,7 @@ async function handleMyPair(req,res){
   return res.json({
     ok:true,paired:true,pairing_status:isAI?'solo':'paired',
     cycle,current_cycle:cycle,upcoming_cycle:upcomingCycle,
+    publication_state:publicationState,
     room_id:roomId,week_id:weekId,
     week:weekRow
       ?{id:weekRow.id||weekId,week_label:weekRow.week_label,week_start:weekRow.week_start,focus:weekRow.focus}

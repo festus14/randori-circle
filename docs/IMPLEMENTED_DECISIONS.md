@@ -2167,3 +2167,52 @@ Rollback is code-only, but committed empty cycles must never be deleted or
 remixed; roll forward if an older reader cannot consume one. The complete
 contract is documented in
 [`PAIRING_PUBLICATION_TOTALITY.md`](PAIRING_PUBLICATION_TOTALITY.md).
+
+## ID-51: Recover overdue weekly publication from authoritative server state
+
+Status: candidate code-only MVP reliability increment; no migration.
+
+**Decision.** Every successful current-cycle `/api/weeks` and `/api/my-pair`
+response includes one authoritative-time `publication_state` envelope. Production
+uses database time; the already verified isolated local runtime retains its
+application-clock test seam. The envelope identifies
+the tenant-scoped cycle and reports exactly `pending`, `overdue`, or `published`.
+Owner recovery opens at the half-open boundary 30 absolute minutes after the
+already resolved `Europe/London` cutoff. The server alone grants
+`can_publish_now`; member responses do not carry that capability.
+
+An owner publishes through the existing `POST /api/pairing/run` write path with
+exactly `{expected_cycle_key}`. The write transaction revalidates the actor,
+active circle and context generation, resolves database time and the current
+cycle again, and rejects an early or changed cycle with stable `409` codes
+before eligibility, history, publication, or outbox writes. A matching durable
+publication is returned idempotently even if a replay arrives before the grace
+boundary. Cron remains keyless, keeps its Sunday `[08:00, 10:00)` UTC admission,
+and converges through the same unique publication claims and existing versioned
+notification outbox.
+
+The browser renders only a response matching its captured account, public
+circle ID, context version, and cycle key. It never treats a POST response or a
+cross-tab message as publication truth: success, stable conflict, and ambiguous
+`503` all cause authoritative GET refetches. Cross-tab messages contain only
+those identifiers. Owners keep a persistent Publish now or Retry action while
+the server says recovery is available; members receive truthful delayed copy
+without the control.
+
+**Alternatives.** A new recovery table or job queue would duplicate the durable
+publication claim and require a migration. Extending the UTC cron window would
+not give owners an immediate, visible recovery path and would confuse UTC job
+admission with the London business boundary. Client clocks, locally derived
+roles, optimistic success, and trusting BroadcastChannel payload state all
+weaken authority or race guarantees. A force/remix endpoint would violate
+immutable pairings and notification idempotency. These options are rejected.
+
+**Rollout and recovery.** Ship after the accessible shell, canary owner and
+member states in both primary and secondary circles, and monitor aggregate
+`pairing_recovery_completed` and `pairing_recovery_rejected` events alongside
+existing cron and outbox metrics. GMT recovery begins at 08:30Z; BST recovery
+begins at 07:30Z, independently of cron's UTC window. Rollback removes the UI
+and keyed manual admission but must retain every already committed publication
+and outbox event. No schema, secret, provider, or deployment migration is
+required. The full contract is in
+[`PAIRING_PUBLICATION_RECOVERY.md`](PAIRING_PUBLICATION_RECOVERY.md).

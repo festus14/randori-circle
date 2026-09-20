@@ -485,7 +485,7 @@ test('two invited members complete the durable local session journey', async ({ 
     ]);
     expect(ownerCycle).toEqual(memberCycle);
     expect(ownerCycle?.cycleId).toMatch(/^\d{4}-W\d{2}$/);
-    const publicationInstant = new Date(Date.parse(ownerCycle!.startsAt) + 1_000).toISOString();
+    const publicationInstant = new Date(Date.parse(ownerCycle!.startsAt) + 30 * 60_000).toISOString();
     restoreServerTime = fixServerTime(publicationInstant);
 
     // The cycle boundary is more than the 12-hour session lifetime away. Use
@@ -499,13 +499,14 @@ test('two invited members complete the durable local session journey', async ({ 
       email: invitedEmail, password: memberPassword,
     });
     expect(memberRelogin).toMatchObject({ status: 200, body: { user: { id: member.id } } });
+    await Promise.all(pages.slice(0, 2).map(page => page.clock.setFixedTime(publicationInstant)));
     await Promise.all([
       refreshAuthenticatedState(pages[0]),
       refreshAuthenticatedState(pages[1]),
     ]);
     await pages[0].locator('[data-tab="pair"]').click();
 
-    await expect(pages[1].getByRole('button', { name: 'Run current cycle' })).toBeHidden();
+    await expect(pages[1].locator('#newWeekBtn')).toBeHidden();
     const denied = await browserJson(pages[1], '/api/pairing/run', 'POST', {});
     expect(denied).toEqual({ status: 403, body: { error: 'primary circle owner required' } });
 
@@ -519,7 +520,7 @@ test('two invited members complete the durable local session journey', async ({ 
         END`);
       const failedResponse = pages[0].waitForResponse(response =>
         response.url().endsWith('/api/pairing/run') && response.request().method() === 'POST');
-      await pages[0].getByRole('button', { name: 'Run current cycle' }).click();
+      await pages[0].locator('#newWeekBtn').click();
       const failed = await failedResponse;
       expect(failed.status()).toBe(503);
       expect(await failed.json()).toEqual({ error: 'pairing unavailable' });
@@ -534,7 +535,7 @@ test('two invited members complete the durable local session journey', async ({ 
 
     const publishedResponse = pages[0].waitForResponse(response =>
       response.url().endsWith('/api/pairing/run') && response.request().method() === 'POST');
-    await pages[0].getByRole('button', { name: 'Run current cycle' }).click();
+    await pages[0].locator('#newWeekBtn').click();
     const published = await publishedResponse;
     const publication = await published.json();
     expect(published.status(), JSON.stringify(publication)).toBe(200);
@@ -571,7 +572,6 @@ test('two invited members complete the durable local session journey', async ({ 
       claimed:1,suppressed:1,backlog:0,
     });
 
-    await Promise.all(pages.slice(0, 2).map(page => page.clock.setFixedTime(publicationInstant)));
     await Promise.all([openDashboard(pages[0]), openDashboard(pages[1])]);
     await expect(pages[0].locator('#dashPairArea')).toContainText('Invited Member');
     await expect(pages[1].locator('#dashPairArea')).toContainText('Local Circle Owner');
@@ -870,7 +870,10 @@ test('two invited members complete the durable local session journey', async ({ 
       await scheduleOutbox.close();
     }
 
-    const repeat = await browserJson(pages[0], '/api/pairing/run', 'POST', {});
+    const currentPublication = await browserJson(pages[0], '/api/weeks');
+    const repeat = await browserJson(pages[0], '/api/pairing/run', 'POST', {
+      expected_cycle_key: currentPublication.body.publication_state.cycle_key,
+    });
     expect(repeat).toMatchObject({ status: 200, body: { ok: true, created: false, skipped: true } });
     const cycleOutbox = createClient({ url: fixture.databaseUrl });
     expect(Number((await cycleOutbox.execute(`SELECT COUNT(*) AS count FROM outbox_events
