@@ -1071,6 +1071,7 @@ async function handleDemoReset(req,res){
   try{ const cnt=await db.execute(`SELECT COUNT(*) AS c FROM pairing_weeks WHERE is_demo=1`); deletedWeeks=cnt.rows[0]?.c||0; }catch{}
   try{ const cnt=await db.execute(`SELECT COUNT(*) AS c FROM auth_accounts WHERE is_demo=1`); deletedUsers=cnt.rows[0]?.c||0; }catch{}
   await db.batch([
+    `DELETE FROM session_completion_receipts WHERE week_id IN (SELECT id FROM pairing_weeks WHERE is_demo=1)`,
     `DELETE FROM pairing_participants WHERE week_id IN (SELECT id FROM pairing_weeks WHERE is_demo=1)`,
     `DELETE FROM pairing_groups WHERE week_id IN (SELECT id FROM pairing_weeks WHERE is_demo=1)`,
     `DELETE FROM pairing_week_runs WHERE week_id IN (SELECT id FROM pairing_weeks WHERE is_demo=1)`,

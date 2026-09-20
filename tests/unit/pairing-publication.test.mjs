@@ -607,6 +607,30 @@ test('readiness pins the complete managed-v6 structure, ledger, and connection g
   await db.execute(`DROP TRIGGER unexpected_pairing_trigger`);
   assert.equal(await pairingSchemaV6Ready(db),true);
 
+  const laterTriggerTables=new Map([
+    ['trg_pairing_groups_completion_membership_guard','pairing_groups'],
+    ['trg_pairing_participants_completion_update_guard','pairing_participants'],
+    ['trg_pairing_participants_completion_delete_guard','pairing_participants'],
+    ['trg_pairing_participants_completion_insert_guard','pairing_participants'],
+  ]);
+  for(const [name,table] of laterTriggerTables){
+    const operation=EXECUTABLE_MIGRATIONS[16].operations.find(item=>item.name===name);
+    assert.ok(operation,`${name} belongs to the exact v17 migration`);
+    const installed=String((await db.execute({
+      sql:`SELECT sql FROM sqlite_schema WHERE type='trigger' AND name=?`,args:[name],
+    })).rows[0]?.sql||'');
+    assert.ok(installed.startsWith(`CREATE TRIGGER ${name}`),
+      'production introspection omits the migration-only IF NOT EXISTS clause');
+    await db.execute(`DROP TRIGGER ${name}`);
+    await db.execute(`CREATE TRIGGER ${name} AFTER INSERT ON ${table} BEGIN SELECT 1; END`);
+    assert.equal(await pairingSchemaV6Ready(db),false,
+      `${name} is tolerated only with its exact v17 definition`);
+    await db.execute(`DROP TRIGGER ${name}`);
+    await db.execute(operation.sql);
+    assert.equal(await pairingSchemaV6Ready(db),true,
+      `${name} restored directly from migration 17 is production-ready`);
+  }
+
   const membershipSql=String((await db.execute(`SELECT sql FROM sqlite_schema
     WHERE type='table' AND name='circle_memberships'`)).rows[0].sql);
   const weakenedSql=membershipSql.replace(

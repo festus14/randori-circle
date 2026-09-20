@@ -119,6 +119,9 @@ async function probePairRecapSchema(db){
   await db.execute(`SELECT id,week_id,pair_group_id,sender_id,message,created_at FROM pair_messages LIMIT 0`);
   await db.execute(`SELECT id,user_id,week_id,pair_group_id,question_slug,language,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at FROM session_runs LIMIT 0`);
   await db.execute(`SELECT room_id,week_id,pair_group_id,revision,schema_version,language,question_id,updated_at FROM pair_room_snapshots LIMIT 0`);
+  await db.execute(`SELECT week_id,pair_group_id,user_id,participant_source,
+    pair_user_a_id,pair_user_b_id,pair_user_c_id,confirmed_at
+    FROM session_completion_receipts LIMIT 0`);
 }
 
 export async function ensurePairRecapReadiness(db){

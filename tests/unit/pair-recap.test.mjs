@@ -15,6 +15,7 @@ import {
   projectRecapSchedule,
   projectRecapWorkspace,
 } from '../../api/_pair-recap.js';
+import { canonicalCompletionPair, projectSessionCompletion } from '../../api/_session-completion.js';
 
 const TEST_SECRET='pair-recap-test-secret-at-least-thirty-two-characters';
 let currentDb=null;
@@ -118,6 +119,12 @@ async function readyDatabase(){
       revision INTEGER NOT NULL,schema_version INTEGER NOT NULL,language TEXT NOT NULL,
       question_id TEXT NOT NULL,updated_at TEXT NOT NULL,code TEXT,board TEXT,
       client_id TEXT,client_seq INTEGER,updated_by INTEGER
+    )`,
+    `CREATE TABLE session_completion_receipts (
+      week_id INTEGER NOT NULL,pair_group_id INTEGER NOT NULL,user_id INTEGER NOT NULL,
+      participant_source TEXT NOT NULL,pair_user_a_id INTEGER NOT NULL,
+      pair_user_b_id INTEGER NOT NULL,pair_user_c_id INTEGER,confirmed_at TEXT NOT NULL,
+      PRIMARY KEY(week_id,pair_group_id,user_id)
     )`,
     `INSERT INTO auth_accounts (id,display_name) VALUES
       (2,'Member'),(4,'Partner'),(6,'Third'),(9,'Outsider')`,
@@ -259,6 +266,10 @@ test('pair recap returns one exact redacted historical-room response',async()=>{
   const response=await invoke();
   assert.equal(response.status,200,JSON.stringify(response.body));
   assert.equal(response.headers['cache-control'],'private, no-store');
+  const completion=projectSessionCompletion(canonicalCompletionPair({
+    pair_group_id:20,week_id:10,user_a_id:2,user_b_id:4,user_c_id:6,is_ai_pair:0,
+    user_a_source:'auth',user_b_source:'auth',user_c_source:'auth',
+  },2),[],TEST_SECRET);
   assert.deepEqual(response.body,{
     ok:true,
     room_id:'week_10_pair_20',
@@ -278,6 +289,7 @@ test('pair recap returns one exact redacted historical-room response',async()=>{
         {kind:'run',event_id:'run:12',created_at:'2026-09-18T06:01:00.000Z',actor:{id:2,display_name:'Member'},question_slug:'balanced-template-markers',question_version:1,language:'javascript',passed_count:3,total_count:3,duration_ms:18,authoritative:true},
       ],
       workspace:{artifact_available:true,revision:7,schema_version:3,question_slug:'balanced-template-markers',question_version:1,language:'javascript',updated_at:'2026-09-18T06:03:00.000Z'},
+      completion,
     },
   });
   const serialized=JSON.stringify(response.body);
@@ -286,7 +298,7 @@ test('pair recap returns one exact redacted historical-room response',async()=>{
   }
   const readBatch=calls.find(call=>call.kind==='batch');
   assert.equal(readBatch.mode,'read');
-  assert.equal(readBatch.statements.length,5);
+  assert.equal(readBatch.statements.length,6);
   for(const statement of readBatch.statements){
     assert.match(statement.sql,/pairing_groups/);
     assert.match(statement.sql,/pg\.user_a_id=\? OR pg\.user_b_id=\? OR pg\.user_c_id=\?/);
@@ -363,7 +375,12 @@ test('history reports source-snapshot storage failures without exposing database
       }
       return delegate.execute(statement);
     },
-    batch:(statements,mode)=>delegate.batch(statements,mode),
+    batch:(statements,mode)=>{
+      if(statements.some(statement=>sqlText(statement).includes('JOIN pairing_participants viewer'))){
+        throw new Error('private database diagnostic: no such table pairing_participants');
+      }
+      return delegate.batch(statements,mode);
+    },
     close:()=>delegate.close(),
   };
   const response=await invoke({url:'/api/history',query:{endpoint:'history'}});
@@ -389,9 +406,9 @@ test('pair recap readiness coalesces probes, performs no DDL, and retries failur
   assert.equal(calls.length,1);
   release();
   await Promise.all([first,second]);
-  assert.equal(calls.length,9);
+  assert.equal(calls.length,10);
   await ensurePairRecapReadiness(coalesced);
-  assert.equal(calls.length,9,'successful readiness remains cached');
+  assert.equal(calls.length,10,'successful readiness remains cached');
   assert.equal(calls.some(sql=>/\b(?:CREATE|ALTER|DROP)\b/i.test(sql)),false);
 
   let attempts=0;
@@ -404,7 +421,7 @@ test('pair recap readiness coalesces probes, performs no DDL, and retries failur
   };
   await assert.rejects(()=>ensurePairRecapReadiness(retryable),/missing table/);
   await ensurePairRecapReadiness(retryable);
-  assert.equal(attempts,10,'a failed readiness promise is evicted before the nine probes retry');
+  assert.equal(attempts,11,'a failed readiness promise is evicted before the ten probes retry');
 });
 
 test('pair recap returns the newest combined 50 events in stable ascending order',async()=>{

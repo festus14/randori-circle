@@ -43,6 +43,16 @@ const REQUIRED_INDEXES=new Set([
   'idx_auth_sessions_user_active',
   'idx_outbox_events_dispatch','idx_outbox_events_lease','idx_outbox_audit_event',
 ]);
+const LATER_UNIQUE_INDEXES=new Set([
+  'uq_pairing_groups_completion_pair','uq_pairing_groups_completion_third',
+  'uq_pairing_participants_completion_owner',
+]);
+const LATER_TRIGGER_DIGESTS=new Map([
+  ['trg_pairing_groups_completion_membership_guard','b25b7d3f592529397d0193760d8753e0cc7d2c7ca46a041d8b39d93ca0411f6f'],
+  ['trg_pairing_participants_completion_update_guard','27febbcdca9672d871414b66369252e3737661402bb3f9b0780e795464e6356e'],
+  ['trg_pairing_participants_completion_delete_guard','26c275263b2adc9bd85d0c1d754a7637227eb5ec5af2b7484d610b575c57e03f'],
+  ['trg_pairing_participants_completion_insert_guard','c8e175332e4ca596c03ad144dbe4ca5e7f2b807132534374556f74f383e5e7e1'],
+]);
 const REQUIRED_OBJECTS=new Set([...REQUIRED_TABLES,...REQUIRED_INDEXES]);
 
 function scalar(value){
@@ -118,6 +128,7 @@ export async function pairingSchemaV6Fingerprint(db){
     .filter(item=>!String(item.name).startsWith('sqlite_')
       &&!TOLERATED_TABLES.has(String(item.name))
       &&!TOLERATED_TABLES.has(String(item.tbl_name))
+      &&!(item.type==='trigger'&&LATER_TRIGGER_DIGESTS.get(String(item.name))===digest(normalizeSchemaSql(item.sql)))
       &&(REQUIRED_OBJECTS.has(String(item.name))
         ||(item.type==='trigger'&&REQUIRED_TABLES.has(String(item.tbl_name)))))
     .map(item=>({...item,sql:normalizeSchemaSql(item.sql)}));
@@ -140,6 +151,7 @@ export async function pairingSchemaV6Fingerprint(db){
     if((indexListResult.rows||[]).length>64) throw new Error('schema index limit exceeded');
     for(const row of indexListResult.rows||[]){
       const name=String(row.name||'');
+      if(LATER_UNIQUE_INDEXES.has(name)) continue;
       if(String(row.origin)==='c'&&!REQUIRED_INDEXES.has(name)&&Number(row.unique)!==1) continue;
       indexes.push({
         name:String(row.origin)==='c'?name:'<automatic>',

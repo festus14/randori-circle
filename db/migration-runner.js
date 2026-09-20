@@ -75,6 +75,7 @@ export async function withMigrationRetry(operation,options={}){
 function manifestAtVersion(version){
   const tables=new Map();
   const indexes=new Map();
+  const triggers=new Map();
   MIGRATION_PLANS.filter(plan=>plan.version<=version).forEach(plan=>plan.operations.forEach(operation=>{
     if(operation.operation==='ensure-table'){
       const {operation:_operation,...definition}=operation;
@@ -84,11 +85,16 @@ function manifestAtVersion(version){
       const {operation:_operation,...definition}=operation;
       indexes.set(operation.name,Object.freeze(definition));
     }
+    if(operation.operation==='ensure-trigger'){
+      const {operation:_operation,...definition}=operation;
+      triggers.set(operation.name,Object.freeze(definition));
+    }
   }));
   const value={
     version,
     tables:Object.freeze([...tables.values()]),
     indexes:Object.freeze([...indexes.values()]),
+    triggers:Object.freeze([...triggers.values()]),
     toleratedLegacyTables:Object.freeze([...new Set([
       ...SCHEMA_MANIFEST.toleratedLegacyTables,MIGRATION_LEDGER_TABLE,
     ])]),

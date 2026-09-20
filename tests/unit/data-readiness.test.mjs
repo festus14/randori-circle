@@ -8,6 +8,7 @@ import {
   ensureDataLogReadiness,
   ensureDataProfileReadiness,
   ensureDataRunsReadiness,
+  ensureDataSessionCompletionReadiness,
   ensureDataStatsReadiness,
   ensureDataWeeksReadiness,
   ensureMyPairDataReadiness,
@@ -41,6 +42,7 @@ test('data readiness profiles use bounded read-only projections',async()=>{
   assert.equal(await ensureDataWeeksReadiness(db),true);
   assert.equal(await ensureDataHistoryReadiness(db),true);
   assert.equal(await ensureDataStatsReadiness(db),true);
+  assert.equal(await ensureDataSessionCompletionReadiness(db),true);
   assert.equal(await ensureMyPairDataReadiness(db),true);
   assert.equal(await ensureDataRunsReadiness(db),true);
   assert.equal(await ensureDataLogReadiness(db),true);
@@ -48,7 +50,7 @@ test('data readiness profiles use bounded read-only projections',async()=>{
   assert.equal(statements.some(sql=>DDL.test(sql)||DML.test(sql)),false);
   assert.deepEqual(new Set(statements.map(sql=>sql.match(/FROM\s+(\w+)\s+LIMIT\s+0/iu)?.[1])),new Set([
     'auth_accounts','users','pairing_weeks','pairing_groups','pairing_participants',
-    'pairing_week_runs','outbox_events','pair_schedules','session_runs','app_logs',
+    'pairing_week_runs','outbox_events','pair_schedules','session_runs','session_completion_receipts','app_logs',
   ]));
   const normalized=statements.map(sql=>sql.replace(/\s+/gu,' ').trim());
   assert.ok(normalized.includes(
@@ -88,6 +90,7 @@ test('stats readiness includes columns used only by authenticated summaries',asy
     'SELECT id,week_label,week_start,is_demo FROM pairing_weeks LIMIT 0',
     'SELECT id,week_id,user_a_id,user_b_id,user_c_id,is_ai_pair FROM pairing_groups LIMIT 0',
     'SELECT week_id,user_id,source FROM pairing_participants LIMIT 0',
+    'SELECT week_id,pair_group_id,user_id,participant_source, pair_user_a_id,pair_user_b_id,pair_user_c_id,confirmed_at FROM session_completion_receipts LIMIT 0',
   ]);
 });
 

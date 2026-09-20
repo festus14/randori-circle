@@ -191,7 +191,7 @@ test('a migration prefix can be verified before the isolated restore advances to
     const preflight=compareBackupRestoreEvidence(comparisonOptions(source,restoredBefore));
     assert.equal(preflight.ok,true);
     assert.equal(source.migration.currentVersion,2);
-    assert.equal(source.migration.applicationLatestVersion,16);
+    assert.equal(source.migration.applicationLatestVersion,17);
 
     const pending=await inspectMigrationState(restoredDb);
     await applyMigrations(restoredDb,{
@@ -199,7 +199,7 @@ test('a migration prefix can be verified before the isolated restore advances to
       retry:FAST_RETRY,
     });
     const restoredAfter=await collectDatabaseEvidence(restoredDb,restoreOptions());
-    assert.equal(restoredAfter.migration.currentVersion,16);
+    assert.equal(restoredAfter.migration.currentVersion,17);
     assert.equal(restoredAfter.schema.manifestChecksum,SCHEMA_MANIFEST.checksum);
     for(const beforeTable of restoredBefore.tables){
       const afterTable=table(restoredAfter,beforeTable.name);

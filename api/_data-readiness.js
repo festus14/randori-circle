@@ -63,6 +63,9 @@ async function probeHistorySchema(db){
   await db.execute(`SELECT id,week_id,user_a_id,user_b_id,user_c_id,is_ai_pair,topic,
     topic_kind FROM pairing_groups LIMIT 0`);
   await db.execute(`SELECT week_id,user_id,source FROM pairing_participants LIMIT 0`);
+  await db.execute(`SELECT week_id,pair_group_id,user_id,participant_source,
+    pair_user_a_id,pair_user_b_id,pair_user_c_id,confirmed_at
+    FROM session_completion_receipts LIMIT 0`);
   return true;
 }
 
@@ -72,6 +75,19 @@ async function probeStatsSchema(db){
   await db.execute(`SELECT id,week_id,user_a_id,user_b_id,user_c_id,is_ai_pair
     FROM pairing_groups LIMIT 0`);
   await db.execute(`SELECT week_id,user_id,source FROM pairing_participants LIMIT 0`);
+  await db.execute(`SELECT week_id,pair_group_id,user_id,participant_source,
+    pair_user_a_id,pair_user_b_id,pair_user_c_id,confirmed_at
+    FROM session_completion_receipts LIMIT 0`);
+  return true;
+}
+
+async function probeSessionCompletionSchema(db){
+  await db.execute(`SELECT id,week_id,user_a_id,user_b_id,user_c_id,is_ai_pair
+    FROM pairing_groups LIMIT 0`);
+  await db.execute(`SELECT week_id,user_id,source FROM pairing_participants LIMIT 0`);
+  await db.execute(`SELECT week_id,pair_group_id,user_id,participant_source,
+    pair_user_a_id,pair_user_b_id,pair_user_c_id,confirmed_at
+    FROM session_completion_receipts LIMIT 0`);
   return true;
 }
 
@@ -131,6 +147,10 @@ export function ensureDataHistoryReadiness(db){
 
 export function ensureDataStatsReadiness(db){
   return ensureReadiness(db,'stats',probeStatsSchema);
+}
+
+export function ensureDataSessionCompletionReadiness(db){
+  return ensureReadiness(db,'session-completion',probeSessionCompletionSchema);
 }
 
 export function ensureMyPairDataReadiness(db){

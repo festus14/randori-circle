@@ -22,6 +22,10 @@ function index(name,tableName,keyParts,{unique=false,where=null}={}){
   });
 }
 
+function trigger(name,tableName,sql){
+  return Object.freeze({operation:'ensure-trigger',name,table:tableName,sql});
+}
+
 const AUTH_ACCOUNTS_OPERATION=table('auth_accounts',`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0, is_demo INTEGER DEFAULT 0, bio TEXT, tz TEXT, interview_focus TEXT DEFAULT 'both', leetcode_handle TEXT, phone TEXT, google_sub TEXT)`);
 
 const PLAN_1_TABLE_OPERATIONS=Object.freeze([
@@ -185,6 +189,20 @@ const PLAN_16_OPERATIONS=Object.freeze([
   index('idx_circle_pair_schedule_proposals_schedule','circle_pair_schedule_proposals',['schedule_id','created_at','id']),
 ]);
 
+const PLAN_17_OPERATIONS=Object.freeze([
+  index('uq_pairing_groups_completion_pair','pairing_groups',['id','week_id','user_a_id','user_b_id'],{unique:true}),
+  index('uq_pairing_groups_completion_third','pairing_groups',['id','week_id','user_c_id'],{unique:true}),
+  index('uq_pairing_participants_completion_owner','pairing_participants',['week_id','user_id','source'],{unique:true}),
+  table('session_completion_receipts',`CREATE TABLE IF NOT EXISTS session_completion_receipts (week_id INTEGER NOT NULL CHECK(typeof(week_id)='integer' AND week_id>0), pair_group_id INTEGER NOT NULL CHECK(typeof(pair_group_id)='integer' AND pair_group_id>0), user_id INTEGER NOT NULL CHECK(typeof(user_id)='integer' AND user_id>0), participant_source TEXT NOT NULL DEFAULT 'auth' CHECK(participant_source='auth'), pair_user_a_id INTEGER NOT NULL CHECK(typeof(pair_user_a_id)='integer' AND pair_user_a_id>0), pair_user_b_id INTEGER NOT NULL CHECK(typeof(pair_user_b_id)='integer' AND pair_user_b_id>0), pair_user_c_id INTEGER CHECK(pair_user_c_id IS NULL OR (typeof(pair_user_c_id)='integer' AND pair_user_c_id>0)), confirmed_at TEXT NOT NULL CHECK(length(confirmed_at)=24 AND confirmed_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND julianday(confirmed_at) IS NOT NULL AND strftime('%Y-%m-%dT%H:%M:%fZ',confirmed_at)=confirmed_at), PRIMARY KEY(week_id,pair_group_id,user_id), CHECK(user_id=pair_user_a_id OR user_id=pair_user_b_id OR (pair_user_c_id IS NOT NULL AND user_id=pair_user_c_id)), FOREIGN KEY(pair_group_id,week_id,pair_user_a_id,pair_user_b_id) REFERENCES pairing_groups(id,week_id,user_a_id,user_b_id) ON DELETE CASCADE, FOREIGN KEY(pair_group_id,week_id,pair_user_c_id) REFERENCES pairing_groups(id,week_id,user_c_id) ON DELETE CASCADE, FOREIGN KEY(week_id,user_id,participant_source) REFERENCES pairing_participants(week_id,user_id,source) ON DELETE RESTRICT, FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE RESTRICT)`),
+  index('idx_session_completion_receipts_user','session_completion_receipts',['user_id','week_id','pair_group_id']),
+  trigger('trg_session_completion_receipts_insert_guard','session_completion_receipts',`CREATE TRIGGER IF NOT EXISTS trg_session_completion_receipts_insert_guard BEFORE INSERT ON session_completion_receipts FOR EACH ROW WHEN NOT EXISTS (SELECT 1 FROM pairing_groups AS pg WHERE pg.id=NEW.pair_group_id AND pg.week_id=NEW.week_id AND pg.user_a_id=NEW.pair_user_a_id AND pg.user_b_id=NEW.pair_user_b_id AND pg.user_c_id IS NEW.pair_user_c_id AND (NEW.user_id=pg.user_a_id OR NEW.user_id=pg.user_b_id OR NEW.user_id=pg.user_c_id)) BEGIN SELECT RAISE(ABORT,'invalid session completion pair snapshot'); END`),
+  trigger('trg_session_completion_receipts_update_guard','session_completion_receipts',`CREATE TRIGGER IF NOT EXISTS trg_session_completion_receipts_update_guard BEFORE UPDATE ON session_completion_receipts FOR EACH ROW BEGIN SELECT RAISE(ABORT,'session completion receipts are immutable'); END`),
+  trigger('trg_pairing_groups_completion_membership_guard','pairing_groups',`CREATE TRIGGER IF NOT EXISTS trg_pairing_groups_completion_membership_guard BEFORE UPDATE OF week_id,user_a_id,user_b_id,user_c_id,is_ai_pair ON pairing_groups FOR EACH ROW WHEN EXISTS (SELECT 1 FROM session_completion_receipts AS receipt WHERE receipt.pair_group_id=OLD.id AND receipt.week_id=OLD.week_id) BEGIN SELECT RAISE(ABORT,'completed-session pair membership is immutable'); END`),
+  trigger('trg_pairing_participants_completion_update_guard','pairing_participants',`CREATE TRIGGER IF NOT EXISTS trg_pairing_participants_completion_update_guard BEFORE UPDATE OF week_id,user_id,source ON pairing_participants FOR EACH ROW WHEN EXISTS (SELECT 1 FROM pairing_groups AS pg JOIN session_completion_receipts AS receipt ON receipt.week_id=pg.week_id AND receipt.pair_group_id=pg.id WHERE pg.week_id=OLD.week_id AND (OLD.user_id=pg.user_a_id OR OLD.user_id=pg.user_b_id OR OLD.user_id=pg.user_c_id)) BEGIN SELECT RAISE(ABORT,'completed-session participant source is immutable'); END`),
+  trigger('trg_pairing_participants_completion_delete_guard','pairing_participants',`CREATE TRIGGER IF NOT EXISTS trg_pairing_participants_completion_delete_guard BEFORE DELETE ON pairing_participants FOR EACH ROW WHEN EXISTS (SELECT 1 FROM pairing_groups AS pg JOIN session_completion_receipts AS receipt ON receipt.week_id=pg.week_id AND receipt.pair_group_id=pg.id WHERE pg.week_id=OLD.week_id AND (OLD.user_id=pg.user_a_id OR OLD.user_id=pg.user_b_id OR OLD.user_id=pg.user_c_id)) BEGIN SELECT RAISE(ABORT,'completed-session participant source is immutable'); END`),
+  trigger('trg_pairing_participants_completion_insert_guard','pairing_participants',`CREATE TRIGGER IF NOT EXISTS trg_pairing_participants_completion_insert_guard BEFORE INSERT ON pairing_participants FOR EACH ROW WHEN EXISTS (SELECT 1 FROM pairing_groups AS pg JOIN session_completion_receipts AS receipt ON receipt.week_id=pg.week_id AND receipt.pair_group_id=pg.id WHERE pg.week_id=NEW.week_id AND (NEW.user_id=pg.user_a_id OR NEW.user_id=pg.user_b_id OR NEW.user_id=pg.user_c_id)) BEGIN SELECT RAISE(ABORT,'completed-session participant source is immutable'); END`),
+]);
+
 export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:1,
@@ -253,6 +271,10 @@ export const SCHEMA_OPERATION_SETS=Object.freeze([
     version:16,
     operations:PLAN_16_OPERATIONS,
   }),
+  Object.freeze({
+    version:17,
+    operations:PLAN_17_OPERATIONS,
+  }),
 ]);
 
 export function resolveCurrentArtifacts(operationSets,operation){
@@ -268,6 +290,7 @@ export function resolveCurrentArtifacts(operationSets,operation){
 
 export const TABLES=resolveCurrentArtifacts(SCHEMA_OPERATION_SETS,'ensure-table');
 export const INDEXES=resolveCurrentArtifacts(SCHEMA_OPERATION_SETS,'ensure-index');
+export const TRIGGERS=resolveCurrentArtifacts(SCHEMA_OPERATION_SETS,'ensure-trigger');
 
 export const TOLERATED_LEGACY_TABLES=Object.freeze(['ai_monthly_usage','schema_migrations']);
 
@@ -275,12 +298,13 @@ export const SCHEMA_MANIFEST_CHECKSUM=checksum({
   version:SCHEMA_MANIFEST_VERSION,
   tables:TABLES,
   indexes:INDEXES,
+  triggers:TRIGGERS,
   toleratedLegacyTables:TOLERATED_LEGACY_TABLES,
 });
 
 // Updating the schema is intentional only when this pinned checksum is updated
 // in the same reviewed change.
-export const PINNED_SCHEMA_MANIFEST_CHECKSUM='0c034ba16438b218947977cfe1a17603d7a5f8d99ea814dce764d045001d5851';
+export const PINNED_SCHEMA_MANIFEST_CHECKSUM='b5275908851fa2114cd11c5a511aa1666780a293e5a586c7d56c1c7870fb6221';
 
 if(SCHEMA_MANIFEST_CHECKSUM!==PINNED_SCHEMA_MANIFEST_CHECKSUM){
   throw new Error(`Schema manifest checksum changed: ${SCHEMA_MANIFEST_CHECKSUM}`);
@@ -291,5 +315,6 @@ export const SCHEMA_MANIFEST=Object.freeze({
   checksum:SCHEMA_MANIFEST_CHECKSUM,
   tables:TABLES,
   indexes:INDEXES,
+  triggers:TRIGGERS,
   toleratedLegacyTables:TOLERATED_LEGACY_TABLES,
 });

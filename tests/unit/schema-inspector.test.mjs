@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createClient } from '@libsql/client';
-import { INDEXES, SCHEMA_MANIFEST, TABLES } from '../../db/schema-manifest.js';
+import { INDEXES, SCHEMA_MANIFEST, TABLES, TRIGGERS } from '../../db/schema-manifest.js';
 import { MIGRATION_PLANS } from '../../db/migration-plan.js';
 import { assertReadOnlyStatement, buildReadOnlyPlan, inspectSchema, planVersionFor, readOnlyDatabase } from '../../db/schema-inspector.js';
 
@@ -9,6 +9,7 @@ async function currentDatabase({legacy=false}={}){
   const db=createClient({url:'file::memory:'});
   for(const definition of TABLES) await db.execute(definition.sql);
   for(const definition of INDEXES) await db.execute(definition.sql);
+  for(const definition of TRIGGERS) await db.execute(definition.sql);
   if(legacy) await db.execute(`CREATE TABLE ai_monthly_usage (month TEXT PRIMARY KEY)`);
   return db;
 }
@@ -22,11 +23,30 @@ test('current schema passes read-only inspection and tolerates the retired AI ta
   }},{manifest:SCHEMA_MANIFEST});
   assert.equal(status.ok,true);
   assert.deepEqual(status.summary,{
-    expectedTables:52,presentTables:52,expectedIndexes:56,presentIndexes:56,blockers:0,warnings:0,
+    expectedTables:53,presentTables:53,expectedIndexes:60,presentIndexes:60,
+    expectedTriggers:6,presentTriggers:6,blockers:0,warnings:0,
   });
   assert.deepEqual(status.tolerated.legacyTables,['ai_monthly_usage']);
   assert.ok(statements.length>50);
   assert.ok(statements.every(statement=>/^(?:SELECT|PRAGMA)\b/i.test(statement.trim())));
+  db.close();
+});
+
+test('migration-owned completion guards are required and exact',async()=>{
+  const db=await currentDatabase();
+  await db.execute(`DROP TRIGGER trg_session_completion_receipts_update_guard`);
+  let status=await inspectSchema(db,{manifest:SCHEMA_MANIFEST});
+  assert.deepEqual(status.drift.missingTriggers,['trg_session_completion_receipts_update_guard']);
+  assert.ok(status.blockers.some(blocker=>blocker.code==='missing_trigger'));
+
+  await db.execute(`CREATE TRIGGER trg_session_completion_receipts_update_guard
+    BEFORE UPDATE ON session_completion_receipts BEGIN SELECT 1; END`);
+  status=await inspectSchema(db,{manifest:SCHEMA_MANIFEST});
+  assert.equal(status.drift.missingTriggers.length,0);
+  assert.deepEqual(status.drift.triggerDrift.map(item=>item.trigger),[
+    'trg_session_completion_receipts_update_guard',
+  ]);
+  assert.ok(status.blockers.some(blocker=>blocker.code==='trigger_drift'));
   db.close();
 });
 
@@ -71,10 +91,10 @@ test('empty database produces a non-executable, checksum-bearing plan',async()=>
   const db=createClient({url:'file::memory:'});
   const status=await inspectSchema(db,{manifest:SCHEMA_MANIFEST});
   const plan=buildReadOnlyPlan(status,{manifest:SCHEMA_MANIFEST,plans:MIGRATION_PLANS});
-  assert.equal(status.blockers.length,108);
+  assert.equal(status.blockers.length,119);
   assert.equal(plan.readOnly,true);
   assert.equal(plan.executable,false);
-  assert.equal(plan.actions.length,108);
+  assert.equal(plan.actions.length,119);
   assert.ok(plan.actions.some(action=>action.artifact.name==='circles'&&action.kind==='create_table'));
   assert.ok(plan.actions.some(action=>action.artifact.name==='credential_key_controls'&&action.kind==='create_table'));
   assert.ok(plan.actions.some(action=>action.artifact.name==='uq_circles_active_primary'&&action.kind==='create_index'));
@@ -157,6 +177,7 @@ test('plan actions point to the latest replacement definition',()=>{
   assert.equal(planVersionFor('table','users',plans),3);
   assert.equal(planVersionFor('table','circles',plans),2);
   assert.equal(planVersionFor('index','missing',plans),null);
+  assert.equal(planVersionFor('trigger','missing',plans),null);
 });
 
 test('default comparison preserves quoted literal case and whitespace',async()=>{

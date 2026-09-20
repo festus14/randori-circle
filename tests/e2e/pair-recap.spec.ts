@@ -49,6 +49,14 @@ type RecapWorkspace =
     language: string;
     updated_at: string;
   };
+type Completion = {
+  state: 'not_recorded' | 'awaiting_participants' | 'completed';
+  viewer_confirmed: boolean;
+  confirmed_count: number;
+  required_count: number;
+  version: string;
+  completed_at: string | null;
+};
 type PairRecap = {
   pair: {
     id: number;
@@ -63,6 +71,7 @@ type PairRecap = {
   schedule: { agreed_time: string | null; legacy_agreed_time: string | null; updated_at: string | null } | null;
   activity: RecapActivity[];
   workspace: RecapWorkspace;
+  completion: Completion;
 };
 type WorkspaceSnapshot = {
   schema_version: 3;
@@ -168,7 +177,7 @@ function historyResponse(user: TestUser) {
   const partner = user.id === userA.id ? userB : userA;
   const row = (room: string) => {
     const { weekId, pairId } = roomParts(room);
-    return {
+    const history = {
       pg_id: pairId,
       week_id: weekId,
       week_label: `2026-W${weekId}`,
@@ -182,6 +191,13 @@ function historyResponse(user: TestUser) {
       partner_names: [partner.display_name],
       you_are_a: user.id === userA.id,
     };
+    return room === roomA ? {
+      ...history,
+      completion: {
+        state: 'completed', viewer_confirmed: true, confirmed_count: 2, required_count: 2,
+        version: 'a'.repeat(64), completed_at: '2026-09-18T18:34:00.000Z',
+      },
+    } : history;
   };
   return {
     ok: true,
@@ -250,6 +266,13 @@ function baseRecap(room: string): PairRecap {
       language: 'javascript',
       updated_at: '2026-09-18T18:33:00.000Z',
     } : { artifact_available: false },
+    completion: room === roomA ? {
+      state: 'completed', viewer_confirmed: true, confirmed_count: 2, required_count: 2,
+      version: 'a'.repeat(64), completed_at: '2026-09-18T18:34:00.000Z',
+    } : {
+      state: 'not_recorded', viewer_confirmed: false, confirmed_count: 0, required_count: 2,
+      version: '0'.repeat(64), completed_at: null,
+    },
   };
 }
 
@@ -533,7 +556,10 @@ function sharedRecap(recap: PairRecap | null) {
 function expectExactSafeProjection(response: Record<string, unknown>) {
   expect(Object.keys(response).sort()).toEqual(['ok', 'recap', 'room_id']);
   const recap = response.recap as PairRecap;
-  expect(Object.keys(recap).sort()).toEqual(['activity', 'pair', 'schedule', 'workspace']);
+  expect(Object.keys(recap).sort()).toEqual(['activity', 'completion', 'pair', 'schedule', 'workspace']);
+  expect(Object.keys(recap.completion).sort()).toEqual([
+    'completed_at', 'confirmed_count', 'required_count', 'state', 'version', 'viewer_confirmed',
+  ]);
   expect(Object.keys(recap.pair).sort()).toEqual([
     'id', 'is_ai', 'members', 'topic', 'topic_kind', 'week_id', 'week_label', 'week_start',
   ]);
@@ -572,6 +598,12 @@ test('both members see the same safe recap, literal messages, explicit updates, 
       openHistory(pages[0], userA, recaps),
       openHistory(pages[1], userB, recaps),
     ]);
+    for(const page of pages){
+      await expect(page.locator(`[data-testid="pair-history-row"][data-room-id="${roomA}"]`)
+        .getByTestId('session-completion-badge')).toHaveText('Completed');
+      await expect(page.locator(`[data-testid="pair-history-row"][data-room-id="${roomB}"]`)
+        .getByTestId('session-completion-badge')).toHaveText('Completion not recorded');
+    }
     await Promise.all(pages.map(page => openRecap(page, roomA)));
 
     expect(sharedRecap(await recapSnapshot(pages[0]))).toEqual(sharedRecap(await recapSnapshot(pages[1])));
@@ -581,6 +613,8 @@ test('both members see the same safe recap, literal messages, explicit updates, 
       .toBe(await pages[1].getByTestId('pair-recap-schedule').textContent());
     expect(await pages[0].getByTestId('pair-recap-workspace').textContent())
       .toBe(await pages[1].getByTestId('pair-recap-workspace').textContent());
+    await expect(pages[0].getByTestId('pair-recap-completion')).toContainText('Completed');
+    await expect(pages[0].getByTestId('pair-recap-completion')).toContainText('Confirmed by every participant');
 
     for (const page of pages) {
       const xssRow = page.locator('[data-event-id="message:11"]');
