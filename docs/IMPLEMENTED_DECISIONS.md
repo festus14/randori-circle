@@ -1700,3 +1700,41 @@ administrator, verify the completed rollout, then enable enforcement. A generic
 unavailable response requires inspection through the protected migration tools,
 not repeated repair attempts. Detailed behavior is recorded in
 `ADMIN_DATA_INITIALIZATION.md`.
+
+## ID-40: Make notification-preference readiness read-only
+
+Status: implemented as a DDL-removal increment with no schema migration.
+
+**Decision.** Authenticated notification-preference GET, POST, and PUT paths
+use a shared operations-readiness module to project exactly `user_id`,
+`email_enabled`, `sms_enabled`, `phone`, `email`, and `updated_at` from
+`user_notification_prefs` with `LIMIT 0`. Migration v1 remains the sole owner
+of this table. The probe executes no DDL or DML, is coalesced per concrete
+database client, caches only success, and evicts a rejected promise so a
+transient failure can retry.
+
+Origin and method rejection and authentication precede readiness. A missing
+or stale contract returns the existing generic 503 before body normalization,
+preference DML, or best-effort operational logging. Successful requests retain
+their current defaults, POST/PUT normalization, fallback update behavior, and
+response envelopes. Local and hosted requests now follow the same schema-
+read-only path. Removing the one notification-preference `CREATE TABLE`
+statement lowers the `api/ops.js` allowlist from 17 to 16 and total remaining
+request-time DDL from 25 to 24.
+
+**Alternatives.** Adding this contract to `_data-readiness.js` would blur the
+ownership boundary between data and operations routes. Keeping the cache
+inline in `ops.js` would make concurrency, retry, and per-client isolation
+harder to test. A full schema fingerprint on every preferences request would
+couple a small user setting to unrelated application tables. Keeping the
+hosted `CREATE` while local mode probes would preserve environment-specific
+behavior and hide missed migrations.
+
+**Rollout and recovery.** Do not promote until issue #43 has retained evidence
+that production is at the reviewed latest schema. Deployment performs no
+schema or provider mutation. If the probe fails, stop promotion and roll
+forward through the protected migration workflow; do not repair schema from an
+HTTP request. Reverting the application build needs no database rollback but
+reintroduces the retired DDL and is only an emergency compatibility action.
+The exact contract and verification commands are recorded in
+`NOTIFICATION_PREFERENCES_RUNTIME_DDL_RETIREMENT.md`.

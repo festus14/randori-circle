@@ -18,7 +18,7 @@ const SOURCE_EXTENSION=/\.[cm]?js$/i;
 // migration in a later slice, not silently introduced on an API request path.
 export const RUNTIME_DDL_ALLOWLIST=Object.freeze([
   Object.freeze({file:'api/ai.js',statementCount:8,digest:'0433ffdc8aadad44f242d739a544df62f0d6584538c37eee323942085b3d0082'}),
-  Object.freeze({file:'api/ops.js',statementCount:17,digest:'24595f9bbbdafc29cbe41d8fa874eb1680a5ce877eb143933cbde75a87a4c159'}),
+  Object.freeze({file:'api/ops.js',statementCount:16,digest:'c523d118106729e770b59cd01ad89dca7c5a9a6060542c63fd87c90002a72aef'}),
 ]);
 
 function sourceFiles(directory){
