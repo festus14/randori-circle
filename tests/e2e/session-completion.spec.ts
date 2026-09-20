@@ -142,6 +142,31 @@ test('a delayed completion response cannot cross an account or room boundary',as
   })).toEqual({completion:null,room:null});
 });
 
+test('the shared completion fixture rejects access after sign-out removes the session',async({page})=>{
+  await mockApi(page,{
+    '/api/auth/me':{ok:true,user},'/api/profile':{ok:true,user},
+    '/api/auth/logout':{ok:true},
+  });
+  await resetClientState(page,true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+
+  const readCompletion=()=>page.evaluate(async room=>{
+    const response=await fetch(`/api/session-completion?room_id=${encodeURIComponent(room)}`);
+    return {status:response.status,body:await response.json()};
+  },roomId);
+  await expect(readCompletion()).resolves.toMatchObject({
+    status:200,body:{ok:true,room_id:roomId},
+  });
+
+  await page.locator('#meLabel').click();
+  await page.locator('#meSignOut').click();
+  await expect(page.locator('#authBtn')).toBeVisible();
+  await page.context().clearCookies();
+  await expect(readCompletion()).resolves.toEqual({
+    status:401,body:{ok:false,error:'authentication required'},
+  });
+});
+
 test('completed-session dashboard totals never fall back to week or pairing counts',async({page})=>{
   await mockApi(page,{
     '/api/auth/me':{ok:true,user},'/api/profile':{ok:true,user},

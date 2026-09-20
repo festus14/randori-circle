@@ -8806,6 +8806,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const scope=pairedDashboardSchedule();
     if(!scope||scope.identity!==scheduleState.room||scheduleState.inFlight) return false;
     const captured=captureScheduleOperation(scope);
+    const focusSnapshot=captureScheduleFocus();
     const controller=new AbortController(); scheduleState.abort=controller; scheduleState.inFlight=true;
     setScheduleStatus('checking…'); toggleScheduleActions(true);
     try{
@@ -8841,7 +8842,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(error?.name!=='AbortError'&&scheduleOperationMatches(captured)) setScheduleStatus('retrying…');
       return false;
     }finally{
-      if(scheduleState.abort===controller){ scheduleState.abort=null; scheduleState.inFlight=false; toggleScheduleActions(false); }
+      if(scheduleState.abort===controller){
+        scheduleState.abort=null; scheduleState.inFlight=false; toggleScheduleActions(false);
+        if(focusSnapshot&&scheduleOperationMatches(captured)
+          &&[document.body,document.documentElement].includes(document.activeElement)){
+          restoreScheduleFocus(focusSnapshot);
+        }
+      }
     }
   }
 
