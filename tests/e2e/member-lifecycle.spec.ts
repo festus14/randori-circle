@@ -801,12 +801,19 @@ for(const deniedStatus of [401,403]){
 
 test('identity bootstrap retries a transient failure and stops after the first authoritative result',async({page})=>{
   let authChecks=0;
+  let markFirstAuthStarted!:()=>void;
+  let releaseFirstAuth!:()=>void;
+  const firstAuthStarted=new Promise<void>(resolve=>{ markFirstAuthStarted=resolve; });
+  const firstAuthGate=new Promise<void>(resolve=>{ releaseFirstAuth=resolve; });
   await mockApi(page,{
-    '/api/auth/me':()=>{
+    '/api/auth/me':async()=>{
       authChecks+=1;
-      return authChecks===1
-        ?{_status:503,ok:false,error:'authentication temporarily unavailable'}
-        :{ok:true,user:owner};
+      if(authChecks===1){
+        markFirstAuthStarted();
+        await firstAuthGate;
+        return {_status:503,ok:false,error:'authentication temporarily unavailable'};
+      }
+      return {ok:true,user:owner};
     },
     '/api/profile':{ok:true,user:owner},
     '/api/circle':{
@@ -817,22 +824,56 @@ test('identity bootstrap retries a transient failure and stops after the first a
     '/api/members':{ok:true,members:[{...owner,role:'owner',status:'active'}],count:1,
       has_more:false,next_cursor:null,scanned:1},
   });
-  const clockStart=new Date('2026-09-20T08:00:00.000Z');
-  await page.clock.install({time:clockStart});
-  await page.clock.pauseAt(clockStart);
+  await page.addInitScript(()=>{
+    const nativeSetTimeout=window.setTimeout.bind(window);
+    const identityBootstrapTimers:{callback:()=>void;delay:number}[]=[];
+    window.setTimeout=((callback:TimerHandler,delay=0,...args:any[])=>{
+      if(typeof callback==='function'&&String(callback).includes('retryIdentityHydration')){
+        identityBootstrapTimers.push({callback:()=>callback(...args),delay:Number(delay)||0});
+        return -identityBootstrapTimers.length;
+      }
+      return nativeSetTimeout(callback,delay,...args);
+    }) as typeof window.setTimeout;
+    (window as any).__identityBootstrapTimerDelays=()=>identityBootstrapTimers.map(timer=>timer.delay).sort((a,b)=>a-b);
+    (window as any).__runNextIdentityBootstrapTimer=()=>{
+      identityBootstrapTimers.sort((a,b)=>a.delay-b.delay);
+      const timer=identityBootstrapTimers.shift();
+      if(!timer) return false;
+      timer.callback();
+      return true;
+    };
+  });
   await resetClientState(page,true);
   await page.goto('/',{waitUntil:'domcontentloaded'});
 
-  await page.clock.fastForward(200);
-  await expect.poll(()=>authChecks).toBe(1);
-  await expect.poll(()=>page.evaluate(()=>(window as any)._randori_auth.me)).toBeNull();
+  try{
+    await expect.poll(()=>page.evaluate(()=>(window as any).__identityBootstrapTimerDelays()))
+      .toEqual([150,400,1200]);
+    expect(await page.evaluate(()=>(window as any).__runNextIdentityBootstrapTimer())).toBe(true);
+    await firstAuthStarted;
+    await page.evaluate(()=>{
+      (window as any).__authRefreshMilestone=new Promise(resolve=>{
+        window.addEventListener('randori:auth-refreshed',event=>resolve((event as CustomEvent).detail),{once:true});
+      });
+    });
+    const firstResponse=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/auth/me'
+      &&response.status()===503);
+    releaseFirstAuth();
+    const completedFirstResponse=await firstResponse;
+    await completedFirstResponse.finished();
+    await expect(page.evaluate(()=>(window as any).__authRefreshMilestone)).resolves.toMatchObject({signedIn:false});
+    await expect(page.evaluate(()=>(window as any)._randori_auth.me)).resolves.toBeNull();
 
-  await page.clock.fastForward(250);
-  await expect.poll(()=>authChecks).toBe(2);
-  await expect.poll(()=>page.evaluate(()=>(window as any)._randori_auth.me?.email)).toBe(owner.email);
+    expect(await page.evaluate(()=>(window as any).__runNextIdentityBootstrapTimer())).toBe(true);
+    await expect.poll(()=>authChecks).toBe(2);
+    await expect.poll(()=>page.evaluate(()=>(window as any)._randori_auth.me?.email)).toBe(owner.email);
 
-  await page.clock.fastForward(1_000);
-  expect(authChecks).toBe(2);
+    expect(await page.evaluate(()=>(window as any).__runNextIdentityBootstrapTimer())).toBe(true);
+    await expect.poll(()=>page.evaluate(()=>(window as any).__identityBootstrapTimerDelays())).toEqual([]);
+    expect(authChecks).toBe(2);
+  }finally{
+    releaseFirstAuth();
+  }
 });
 
 test('a delayed denial from a different actor cannot clear the current owner roster',async({page})=>{
