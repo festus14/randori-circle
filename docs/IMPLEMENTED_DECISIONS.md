@@ -2464,3 +2464,31 @@ delayed, then verify one write, stale-read fencing, two-browser convergence,
 room/account fences, and terminal behavior. Rollback is code-only and restores
 the prior blocking refresh; migration 19 and all durable aggregate rows remain
 unchanged.
+
+## ID-59: Make pair code conflict-free and execute only acknowledged state
+
+Status: candidate migration-backed primary-session increment.
+
+**Decision.** Migration 20 owns one bounded Yjs code document per exact
+two-human room, exercise version, and language. The same source-aware authority
+is repeated in bootstrap, merge, and execution statements. Yjs and y-monaco are
+exact, locally bundled dependencies; transport remains authenticated HTTPS
+polling. Board v3 stays a separate CAS aggregate and carries only a maintained
+rollback projection of code. Pair Run flushes local updates and the server
+executes only the materialized bytes at the supplied opaque document version.
+Attestation v3 binds pair, code hash, document revision/state/version, and
+result evidence while v2 history remains verifiable.
+
+**Alternatives.** Whole-document CAS still loses edits. Diff3 interrupts live
+sessions. Managed providers add secrets, cost, and a data processor. A
+self-hosted WebSocket service adds operational scope. BroadcastChannel is not
+cross-device or durable. A custom OT/CRDT is higher risk than pinned Yjs.
+Presence and remote cursors are deferred.
+
+**Rollout and recovery.** Apply additive v20 after v19, then canary overlapping
+browser edits, offline replay, duplicate/reordered updates, restart, textarea
+fallback, stale Run, completion fences, and board compatibility. Private
+documents expire after 90 days through access-time and weekly sweeps. Rollback
+retains v20 and its ledger, disables the route/client if necessary, uses the v3
+code projection for the prior binary, and rolls forward. Full details are in
+[`CONFLICT_FREE_CODE_DOCUMENTS.md`](CONFLICT_FREE_CODE_DOCUMENTS.md).

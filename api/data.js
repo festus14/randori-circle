@@ -61,6 +61,7 @@ import {
   SessionControlsInputError,
   validateSessionControlsPostQuery,
 } from './_session-controls.js';
+import { CodeDocumentInputError, readCanonicalCodeForExecution } from './_code-document.js';
 import { ensureDataAdminReadiness, ensureDataCircleReadiness, ensureDataHistoryReadiness, ensureDataLogReadiness, ensureDataMeetingLinkReadiness, ensureDataProfileReadiness, ensureDataRunsReadiness, ensureDataSessionCompletionReadiness, ensureDataSessionControlsReadiness, ensureDataStatsReadiness, ensureDataWeeksReadiness, ensureMyPairDataReadiness } from './_data-readiness.js';
 import { circleMembershipEnabled, ensureCircleMembershipReadiness } from './_circle-membership.js';
 import { initializePrimaryCircleData } from './_admin-init.js';
@@ -1998,7 +1999,16 @@ function runResultsDigest(resultsJson){
   return createHash('sha256').update(String(resultsJson||''),'utf8').digest('hex');
 }
 
-function runAttestationPayload({userId,questionSlug,questionVersion,language,passedCount,totalCount,resultsJson}){
+function runAttestationPayload(fields,attestationVersion=2){
+  const {userId,questionSlug,questionVersion,language,passedCount,totalCount,resultsJson}=fields;
+  if(attestationVersion===3){
+    return JSON.stringify([
+      3,Number(userId),Number(fields.weekId),Number(fields.pairGroupId),String(questionSlug),
+      Number(questionVersion),String(language),String(fields.codeHash),Number(fields.documentRevision),
+      String(fields.documentStateHash),String(fields.documentVersion),Number(passedCount),
+      Number(totalCount),runResultsDigest(resultsJson),
+    ]);
+  }
   return JSON.stringify([
     2,
     Number(userId),
@@ -2033,15 +2043,17 @@ function runAttestationKeyring(){
 
 function signRunAttestation(fields){
   const key=runAttestationKeyring()[0];
+  const version=fields.documentVersion?3:2;
   return {
     keyId:key.id,
     signature:createHmac('sha256',key.secret)
-      .update(`randori-run-attestation-v2\0${runAttestationPayload(fields)}`,'utf8')
+      .update(`randori-run-attestation-v${version}\0${runAttestationPayload(fields,version)}`,'utf8')
       .digest('hex'),
+    version,
   };
 }
 
-function verifyRunAttestation(signature,keyId,fields){
+function verifyRunAttestation(signature,keyId,fields,version=2){
   try{
     if(typeof signature!=='string' || !/^[a-f0-9]{64}$/.test(signature)) return false;
     if(typeof keyId!=='string' || !/^[a-f0-9]{16}$/.test(keyId)) return false;
@@ -2050,7 +2062,7 @@ function verifyRunAttestation(signature,keyId,fields){
     const supplied=Buffer.from(signature,'hex');
     const expected=Buffer.from(
       createHmac('sha256',key.secret)
-        .update(`randori-run-attestation-v2\0${runAttestationPayload(fields)}`,'utf8')
+        .update(`randori-run-attestation-v${version}\0${runAttestationPayload(fields,version)}`,'utf8')
         .digest('hex'),
       'hex',
     );
@@ -2065,10 +2077,20 @@ function runSummary(row,{includeRunner=false}={}){
     const snapshot=row.test_cases_snapshot?JSON.parse(row.test_cases_snapshot):null;
     const version=positiveInteger(snapshot?.version);
     const submittingUserId=positiveInteger(row.user_id);
+    const attestationVersion=Number(snapshot?.attestation_version);
+    const v2=attestationVersion===2;
+    const v3=attestationVersion===3
+      &&positiveInteger(row.week_id)===positiveInteger(snapshot.week_id)
+      &&positiveInteger(row.pair_group_id)===positiveInteger(snapshot.pair_group_id)
+      &&typeof row.code==='string'
+      &&createHash('sha256').update(row.code,'utf8').digest('hex')===snapshot.code_hash
+      &&positiveInteger(snapshot.document_revision)
+      &&/^[a-f0-9]{64}$/.test(String(snapshot.document_state_hash||''))
+      &&/^[a-f0-9]{64}$/.test(String(snapshot.document_version||''));
     if(
       submittingUserId
       && snapshot?.source==='original-catalog'
-      && snapshot?.attestation_version===2
+      && (v2||v3)
       && version
       && Number(snapshot.total_count)===Number(row.total_count)
     ){
@@ -2080,7 +2102,12 @@ function runSummary(row,{includeRunner=false}={}){
         passedCount:row.passed_count,
         totalCount:row.total_count,
         resultsJson:row.results_json,
-      });
+        ...(v3?{
+          weekId:row.week_id,pairGroupId:row.pair_group_id,codeHash:snapshot.code_hash,
+          documentRevision:snapshot.document_revision,documentStateHash:snapshot.document_state_hash,
+          documentVersion:snapshot.document_version,
+        }:{}),
+      },attestationVersion);
       if(authoritative) questionVersion=version;
     }
   }catch{}
@@ -2142,8 +2169,8 @@ async function handleRuns(req,res){
         const accessArgs=authPairAccessArgs({userId,weekId:room.weekId,pairGroupId:room.pairGroupId});
         let pairSql;
         let pairArgs;
-        const pairProjection=`sr.id,sr.user_id,sr.question_slug,sr.language,sr.test_cases_snapshot,sr.results_json,sr.passed_count,sr.total_count,sr.duration_ms,sr.created_at,aa.display_name AS runner_display_name`;
-        const selectedProjection=`id,user_id,question_slug,language,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at,runner_display_name`;
+        const pairProjection=`sr.id,sr.user_id,sr.week_id,sr.pair_group_id,sr.question_slug,sr.language,sr.code,sr.test_cases_snapshot,sr.results_json,sr.passed_count,sr.total_count,sr.duration_ms,sr.created_at,aa.display_name AS runner_display_name`;
+        const selectedProjection=`id,user_id,week_id,pair_group_id,question_slug,language,code,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at,runner_display_name`;
         if(pairAfterId===0){
           // Bootstrap from the newest bounded window, but return it in the same
           // ascending order used by subsequent incremental requests.
@@ -2160,7 +2187,7 @@ async function handleRuns(req,res){
           if(slug){ pairSql+=` AND sr.question_slug=?`; pairArgs.push(slug); }
           pairSql+=` ORDER BY sr.id DESC LIMIT ?)
             SELECT ${selectedProjection} FROM selected
-            UNION ALL SELECT NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL
+            UNION ALL SELECT NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL
               WHERE EXISTS (SELECT 1 FROM pair_access) AND NOT EXISTS (SELECT 1 FROM selected)
             ORDER BY id ASC`;
           pairArgs.push(pairLimit);
@@ -2178,7 +2205,7 @@ async function handleRuns(req,res){
           if(slug){ pairSql+=` AND sr.question_slug=?`; pairArgs.push(slug); }
           pairSql+=` ORDER BY sr.id ASC LIMIT ?)
             SELECT ${selectedProjection} FROM selected
-            UNION ALL SELECT NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL
+            UNION ALL SELECT NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL
               WHERE EXISTS (SELECT 1 FROM pair_access) AND NOT EXISTS (SELECT 1 FROM selected)
             ORDER BY id ASC`;
           pairArgs.push(pairLimit);
@@ -2188,7 +2215,7 @@ async function handleRuns(req,res){
         const pairRuns=pairRows.rows.filter(row=>row.id!==null&&row.id!==undefined).map(row=>runSummary(row,{includeRunner:true}));
         return res.json({ok:true,room_id:room.roomId,runs:pairRuns,after:pairRuns.length?pairRuns[pairRuns.length-1].id:pairAfterId});
       }
-      let sql = `SELECT id,user_id,week_id,pair_group_id,question_id,question_slug,language,substr(code,1,500) as code_preview,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at FROM session_runs WHERE user_id=?`;
+      let sql = `SELECT id,user_id,week_id,pair_group_id,question_id,question_slug,language,code,substr(code,1,500) as code_preview,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at FROM session_runs WHERE user_id=?`;
       let args=[userId];
       if (slug){ sql+=` AND question_slug=?`; args.push(slug); }
       sql+=` ORDER BY id DESC LIMIT ?`; args.push(limit);
@@ -2558,9 +2585,7 @@ async function handleExecute(req,res){
   const map = {js:'javascript', javascript:'javascript', py:'python', python:'python'};
   const pistonLang = map[language];
   if(!pistonLang) return res.status(400).json({error:'supported languages are javascript and python'});
-  const code = String(body.code||'');
-  if(!code) return res.status(400).json({error:'code required'});
-  if(Buffer.byteLength(code,'utf8')>20000) return res.status(413).json({error:'code exceeds the 20000-byte limit'});
+  let code = String(body.code||'');
 
   const questionSlug=String(body.question_slug||body.slug||'').trim().slice(0,120);
   if(!questionSlug) return res.status(400).json({error:'question_slug required'});
@@ -2601,15 +2626,38 @@ async function handleExecute(req,res){
   try{ db=getClient(); }
   catch{ return res.status(503).json({error:'execution service unavailable'}); }
   let accessArgs=null;
+  let canonicalDocument=null;
   if(weekId && pairId){
     try{
       const access=await getPairAccess(db,payload,weekId,pairId);
       if(!access.allowed) return res.status(404).json({error:'pair not found'});
       accessArgs=authPairAccessArgs({userId:Number(payload.id||payload.uid),weekId,pairGroupId:pairId});
-    }catch{
+      const canonical=room?await readCanonicalCodeForExecution(db,{
+        viewerId:Number(payload.id||payload.uid),room,questionSlug,questionVersion,
+        language:pistonLang,documentVersion:body.document_version,
+      }):null;
+      if(canonical?.eligible){
+        if(canonical.terminal){
+          return res.status(409).json({error:'session is completed',code:'session_completed'});
+        }
+        if(canonical.missing||canonical.stale){
+          return res.status(409).json({
+            error:'code document changed',code:'code_document_changed',
+            latest_document_version:canonical.latestVersion,
+          });
+        }
+        canonicalDocument=canonical.document;
+        code=canonicalDocument.code;
+      }
+    }catch(error){
+      if(error instanceof CodeDocumentInputError){
+        return res.status(error.status||400).json({error:error.message});
+      }
       return res.status(503).json({error:'execution service unavailable'});
     }
   }
+  if(!code) return res.status(400).json({error:'code required'});
+  if(Buffer.byteLength(code,'utf8')>20000) return res.status(413).json({error:'code exceeds the 20000-byte limit'});
 
   // Client test cases and result/count fields are deliberately ignored. The exact
   // versioned suite is resolved above from the private server catalogue.
@@ -2677,8 +2725,23 @@ async function handleExecute(req,res){
         passedCount:passed,
         totalCount:total,
         resultsJson:storedResults,
+        ...(canonicalDocument?{
+          weekId,pairGroupId:pairId,codeHash:canonicalDocument.codeHash,
+          documentRevision:canonicalDocument.revision,documentStateHash:canonicalDocument.stateHash,
+          documentVersion:canonicalDocument.version,
+        }:{}),
       });
-      const testSnapshot=JSON.stringify({source:'original-catalog',version:questionVersion,total_count:total,attestation_version:2,attestation_key_id:attestation.keyId,attestation:attestation.signature});
+      const testSnapshot=JSON.stringify({
+        source:'original-catalog',version:questionVersion,total_count:total,
+        attestation_version:attestation.version,attestation_key_id:attestation.keyId,
+        attestation:attestation.signature,
+        ...(canonicalDocument?{
+          week_id:weekId,pair_group_id:pairId,code_hash:canonicalDocument.codeHash,
+          document_revision:canonicalDocument.revision,
+          document_state_hash:canonicalDocument.stateHash,
+          document_version:canonicalDocument.version,
+        }:{}),
+      });
       const runArgs=[payload.id||payload.uid,weekId,pairId,null,questionSlug,pistonLang,code,testSnapshot,storedResults,passed,total,dur];
       const inserted=accessArgs
         ? await db.execute({

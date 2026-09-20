@@ -134,6 +134,13 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'f2b369f23cac81bc92b4afaf6c0632d1a88cfb6b8deb06a46e2b3b9fbc84031a',
     checksum:'f935fce8f84c6d43049d0aba296630fd211ba80462e05955ff1c701686f5f36b',
   }),
+  Object.freeze({
+    version:20,
+    name:'bounded-source-bound-code-documents',
+    description:'Bounded conflict-free code documents for canonical two-human rooms with source-bound pair snapshots.',
+    operationsChecksum:'55e24dffe5180d52d001fbdc207b47fb3bf03a58b0b74e5a1b20d57933647211',
+    checksum:'56dee250c58fb99eea0f4701fcb9239ec6d84dee2a3848ffad2abe088c9fd90c',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){

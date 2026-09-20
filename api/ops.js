@@ -17,6 +17,7 @@ import {
   publishCirclePairing,
   SECONDARY_PAIRING_CACHE_CONTROL,
 } from './_circle-pairing.js';
+import { purgeExpiredCodeDocuments } from './_code-document.js';
 import {
   createPairingEmailHandler,
   createResendEmailSender,
@@ -939,6 +940,9 @@ async function handleWeekly(req,res,{isDue=pairingCronIsDue}={}){
       return res.json({ok:true,skipped:true,reason:'outside_due_window',cycle,message:'Pairing publication is only due during the configured Sunday 08:00 UTC run window.'});
     }
   }catch{ return res.status(503).json({error:'pairing unavailable'}); }
+  // The authenticated due-window scheduler is also the guaranteed lifecycle
+  // sweep for private CRDT state. An unapplied v20 schema cannot block pairing.
+  try{ await purgeExpiredCodeDocuments(db); }catch{}
   const localRuntime=strictLocalPairingRuntime(req);
   if(!secondaryCircleCoordinationEnabled()||localRuntime){
     return runCurrentPairing(req,res,{db,localRuntime,localRequest:localRuntimeRequest(req)});

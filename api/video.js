@@ -2,6 +2,7 @@ import { getClient, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
 import { authPairAccessArgs, authPairAccessSql } from './_pair-access.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
 import { canUseLegacySinglePrimaryCircleFeatures, multiCircleControlPlaneEnabled, sendMultiCircleFeatureUnavailable } from './_active-circle.js';
+import { readCodeProjectionForWorkspace } from './_code-document.js';
 
 const WORKSPACE_SCHEMA_VERSION = 3;
 const MAX_WORKSPACE_CODE_BYTES = 20 * 1024;
@@ -416,12 +417,22 @@ async function handleWorkspacePost(req,res,db,auth,room){
   const storedQuestionId=workspace.question_version
     ? `${workspace.question_id}@${workspace.question_version}`
     : workspace.question_id;
-  const codeEnvelope=storedWorkspaceCode(workspace);
   const userId=authenticatedUserId(auth);
   if(!userId) return res.status(403).json({ok:false,error:'not a member of this room'});
   const initial=await readAuthorizedWorkspaceSnapshot(db,userId,room);
   if(!initial.authorized) return res.status(403).json({ok:false,error:'not a member of this room'});
   const current=initial.snapshot;
+  // Once a v20 document exists it is the code authority. Board-v3 writes keep
+  // their normal CAS semantics but carry only a rollback projection of code.
+  let canonicalCode=null;
+  if(workspace.question_version){
+    const projection=await readCodeProjectionForWorkspace(db,{
+      viewerId:userId,room,questionSlug:workspace.question_id,
+      questionVersion:workspace.question_version,language:workspace.language,
+    });
+    if(projection) canonicalCode=projection.code;
+  }
+  const codeEnvelope=storedWorkspaceCode(canonicalCode===null?workspace:{...workspace,code:canonicalCode});
   if(current && workspace.schema_version<current.schema_version){
     return res.status(409).json({
       ok:false,
