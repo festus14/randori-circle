@@ -850,7 +850,6 @@ test('flag-off legacy circle responses keep the existing roster and admin testin
 
 test('a successful one-time invitation remains copyable when the list refresh fails', async ({ page }) => {
   const rawInvite = 'C'.repeat(43);
-  let authMeCalls = 0;
   let circleRequestsInFlight = 0;
   let circleRole: 'owner' | 'member' = 'owner';
   let invitationCreated = false;
@@ -875,10 +874,7 @@ test('a successful one-time invitation remains copyable when the list refresh fa
     });
   });
   await mockApi(page, {
-    '/api/auth/me': () => {
-      authMeCalls += 1;
-      return { ok: true, user: owner };
-    },
+    '/api/auth/me': { ok: true, user: owner },
     '/api/circle': async () => {
       circleRequestsInFlight += 1;
       try {
@@ -920,14 +916,11 @@ test('a successful one-time invitation remains copyable when the list refresh fa
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await expect(page.locator('#meLabel')).toContainText('Circle Owner');
   await page.locator('[data-tab="circle"]').click();
-  // Let authoritative identity hydration suppress the remaining bootstrap
-  // retries. The race below is then driven entirely by explicit request gates.
-  await expect.poll(() => authMeCalls).toBeGreaterThanOrEqual(1);
-  await page.evaluate(async () => {
-    await (window as typeof window & {
-      _randori_auth?: { refreshMe?: () => Promise<unknown> };
-    })._randori_auth?.refreshMe?.();
-  });
+  // The owner label proves initial hydration committed. Also require this
+  // controlled refresh to commit before constructing the circle/list race.
+  expect(await page.evaluate(() => (window as typeof window & {
+    _randori_auth?: { refreshMe?: () => Promise<unknown> };
+  })._randori_auth?.refreshMe?.())).toBe(true);
   await expect.poll(() => circleRequestsInFlight).toBe(0);
   await expect(page.getByTestId('circle-invite-create')).toBeEnabled();
 
