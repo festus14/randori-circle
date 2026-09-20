@@ -28,6 +28,18 @@ test('the repository satisfies the secret-free backup-control contract',()=>{
   assert.deepEqual(validateBackupControlContract(current()),[]);
 });
 
+test('any unreviewed workflow byte drift fails closed',()=>{
+  assert.ok(changed('rehearsal','name: Turso backup restore rehearsal',
+    'name: Turso backup restore rehearsal changed').includes(
+    'rehearsal workflow bytes must match the reviewed contract'));
+  assert.ok(changed('watchdog','name: Turso backup restore watchdog',
+    'name: Turso backup restore watchdog changed').includes(
+    'watchdog workflow bytes must match the reviewed contract'));
+  assert.ok(changed('deployability','name: deployability',
+    'name: deployability changed').includes(
+    'backup-control CI workflow bytes must match the reviewed contract'));
+});
+
 test('rehearsal triggers, permissions, and immutable cadence fail closed',()=>{
   assert.ok(changed('rehearsal','  workflow_dispatch:',
     '  workflow_dispatch:\n  pull_request:').includes(
@@ -62,6 +74,26 @@ test('rehearsal triggers, permissions, and immutable cadence fail closed',()=>{
 });
 
 test('cleanup, healthy-evidence, artifact, and alert gates fail closed',()=>{
+  assert.ok(changed('rehearsal','            --mode run \\',
+    '            --mode cleanup \\').includes(
+    'protected rehearsal command must match the reviewed bounded runner invocation'));
+  assert.ok(changed('rehearsal','            --state-file "${RUNNER_TEMP}/private-recovery/state.json"',
+    '            --state-file "${RUNNER_TEMP}/private-recovery/state.json"\n          curl https://example.invalid').includes(
+    'protected rehearsal command must match the reviewed bounded runner invocation'));
+  assert.ok(changed('rehearsal','            --mode cleanup \\',
+    '            --mode cleanup \\\n          curl https://example.invalid \\').includes(
+    'rehearsal must always run bounded source-state and disposable-restore cleanup'));
+  assert.ok(changed('rehearsal',
+    '          TURSO_PRODUCTION_DATABASE_NAME: ${{ vars.TURSO_PRODUCTION_DATABASE_NAME }}',
+    '          TURSO_PRODUCTION_DATABASE_NAME: attacker-selected').includes(
+    'rehearsal and monitor must retain the fixed 30-minute RPO and 15-minute RTO'));
+  assert.ok(changed('rehearsal',
+    '            --output "${RUNNER_TEMP}/public-artifacts/backup-monitor-summary.json"',
+    '            --output "${RUNNER_TEMP}/public-artifacts/backup-monitor-summary.json"\n          curl https://example.invalid').includes(
+    'rehearsal must always evaluate sanitized recovery evidence after installation'));
+  assert.ok(changed('rehearsal','          exit 1',
+    '          exit 0\n          exit 1').includes(
+    'rehearsal monitor failures must end in an explicit terminal alert'));
   assert.ok(changed('rehearsal','if: always() && steps.source.outcome == \'success\'',
     'if: steps.source.outcome == \'success\'').includes(
     'rehearsal must always run bounded source-state and disposable-restore cleanup'));
@@ -126,6 +158,9 @@ test('watchdog permissions, isolation, schedule, and terminal alert fail closed'
     'watchdog failures and evidence-upload failures must end in an accountable terminal alert'));
   assert.ok(changed('watchdog',"always() && (steps.discovery.outcome != 'success'",
     "always() && false && (steps.discovery.outcome != 'success'").includes(
+    'watchdog failures and evidence-upload failures must end in an accountable terminal alert'));
+  assert.ok(changed('watchdog','          exit 1',
+    '          exit 0\n          exit 1').includes(
     'watchdog failures and evidence-upload failures must end in an accountable terminal alert'));
   assert.ok(changed('watchdog','        shell: bash\n        env:',
     '        continue-on-error: True\n        shell: bash\n        env:').includes(
@@ -199,6 +234,9 @@ test('secret placement and upload allowlists cannot be satisfied by decoy steps'
 });
 
 test('the deployability job is the read-only secret-free CI entry point',()=>{
+  assert.ok(changed('deployability','  workflow_dispatch:',
+    '  pull_request_target:\n  workflow_dispatch:').includes(
+    'backup-control CI must run for pull requests into main and rolling'));
   assert.ok(changed('deployability','    branches: [main, codex/issue-87-repository-deployability]',
     '    branches: [main]').includes(
     'backup-control CI must run for pull requests into main and rolling'));
@@ -218,6 +256,9 @@ test('the deployability job is the read-only secret-free CI entry point',()=>{
     'backup-control CI must remain read-only and receive no environment or secrets'));
   assert.ok(changed('deployability','          persist-credentials: false',
     '          persist-credentials: true').includes(
+    'backup-control CI checkout must be SHA-pinned and persist no credentials'));
+  assert.ok(changed('deployability','          persist-credentials: false',
+    '          persist-credentials: false\n          ref: ${{ github.event.pull_request.head.sha }}').includes(
     'backup-control CI checkout must be SHA-pinned and persist no credentials'));
 });
 

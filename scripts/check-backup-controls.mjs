@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -6,6 +7,44 @@ import {pathToFileURL} from 'node:url';
 const REHEARSAL_PATH='.github/workflows/turso-backup-restore-rehearsal.yml';
 const WATCHDOG_PATH='.github/workflows/turso-backup-restore-watchdog.yml';
 const DEPLOYABILITY_PATH='.github/workflows/deployability.yml';
+const WORKFLOW_DIGESTS=Object.freeze({
+  rehearsal:'47ef770732cc5086bf7dc6450649fb1314eb6e014ef71e90008fd86f70979bc4',
+  watchdog:'ae60ac60189df66771da959be6513f87b2fdaaec6c781f04f45093718a4d100a',
+  deployability:'1062c2f036ef8ae5726e8350f9c2b5a345c23d2b07c92ca7d8936729ef814b27',
+});
+const PROTECTED_REHEARSAL_RUN=[
+  '        run: |',
+  '          timeout --signal=TERM --kill-after=3m 28m \\',
+  '            node scripts/turso-backup-restore-rehearsal.mjs \\',
+  '            --mode run \\',
+  '            --artifact-dir "${RUNNER_TEMP}/public-artifacts" \\',
+  '            --state-file "${RUNNER_TEMP}/private-recovery/state.json"',
+].join('\n');
+const CLEANUP_RUN=[
+  '        run: |',
+  '          timeout --signal=TERM --kill-after=30s 6m \\',
+  '            node scripts/turso-backup-restore-rehearsal.mjs \\',
+  '            --mode cleanup \\',
+  '            --artifact-dir "${RUNNER_TEMP}/public-artifacts" \\',
+  '            --state-file "${RUNNER_TEMP}/private-recovery/state.json"',
+].join('\n');
+const MONITOR_RUN=[
+  '        run: |',
+  '          node scripts/turso-backup-restore-monitor.mjs \\',
+  '            --rehearsal-summary "${RUNNER_TEMP}/public-artifacts/rehearsal-summary.json" \\',
+  '            --cleanup-summary "${RUNNER_TEMP}/public-artifacts/cleanup-summary.json" \\',
+  '            --output "${RUNNER_TEMP}/public-artifacts/backup-monitor-summary.json"',
+].join('\n');
+const REHEARSAL_ALERT_RUN=[
+  '        run: |',
+  '          echo "::error title=Backup restore monitor alert::Category ${ALERT_CATEGORY}. Follow the backup restore runbook and inspect only sanitized artifacts."',
+  '          exit 1',
+].join('\n');
+const WATCHDOG_ALERT_RUN=[
+  '        run: |',
+  '          echo "::error title=Backup restore watchdog alert for @festus14::Category ${ALERT_CATEGORY}. Follow the backup restore runbook; no production credential is available to this watchdog."',
+  '          exit 1',
+].join('\n');
 
 function uncomment(source){
   return String(source??'').split('\n').map(line=>{
@@ -34,7 +73,7 @@ function block(source,heading,indentation=0){
     const indentationAtLine=lines[index].length-lines[index].trimStart().length;
     if(indentationAtLine<=indentation){ end=index; break; }
   }
-  return lines.slice(start,end).join('\n');
+  return lines.slice(start,end).join('\n').trimEnd();
 }
 
 function directKeys(source,indentation){
@@ -66,6 +105,12 @@ function exactEnvironment(source,expected){
   return exactDirectKeys(block(source,'env',8),10,expected);
 }
 
+function exactEnvironmentBlock(source,expectedLines){
+  return block(source,'env',8)===[
+    '        env:',...expectedLines.map(line=>`          ${line}`),
+  ].join('\n');
+}
+
 function environmentValue(source,key){
   return field(block(source,'env',8),key,10);
 }
@@ -85,14 +130,14 @@ function field(source,key,indentation){
   const start=lines.findIndex(line=>line.startsWith(`${prefix}${key}:`));
   if(start<0) return '';
   let end=start+1;
-  if(/:\s*>-$/.test(lines[start])){
+  if(/:\s*(?:[>|][-+]?)$/.test(lines[start])){
     for(;end<lines.length;end+=1){
       if(!lines[end].trim()) continue;
       const current=lines[end].length-lines[end].trimStart().length;
       if(current<=indentation) break;
     }
   }
-  return lines.slice(start,end).join('\n');
+  return lines.slice(start,end).join('\n').trimEnd();
 }
 
 function actionsAreExact(source,expected){
@@ -143,7 +188,8 @@ function unnamedCheckoutIsSafe(source){
     const input=/^          ([A-Za-z0-9_-]+):[ \t]*(.*?)[ \t]*$/.exec(line);
     if(input) inputs[input[1]]=input[2];
   }
-  return inputs['persist-credentials']==='false';
+  return JSON.stringify(Object.keys(inputs).sort())===JSON.stringify(['persist-credentials'])
+    &&inputs['persist-credentials']==='false';
 }
 
 function artifactPaths(source){
@@ -177,9 +223,15 @@ function add(errors,condition,message){
   if(!condition&&!errors.includes(message)) errors.push(message);
 }
 
+function exactWorkflowBytes(source,expectedDigest){
+  return createHash('sha256').update(String(source??''),'utf8').digest('hex')===expectedDigest;
+}
+
 function validateRehearsal(raw){
   const source=uncomment(raw);
   const errors=[];
+  add(errors,exactWorkflowBytes(raw,WORKFLOW_DIGESTS.rehearsal),
+    'rehearsal workflow bytes must match the reviewed contract');
   add(errors,safeYamlSubset(source),
     'rehearsal workflow must use the reviewed unambiguous YAML subset');
   add(errors,exactDirectKeys(source,0,['name','on','permissions','concurrency','jobs']),
@@ -246,17 +298,34 @@ function validateRehearsal(raw){
   ]),
   'rehearsal secret exposure must stay limited to the run, cleanup, and monitor contract');
   const rehearsalRun=step(source,'Run protected PITR rehearsal');
-  add(errors,exactEnvironment(rehearsalRun,[
-    'RESTORE_REHEARSAL_CONFIRM','REHEARSAL_WORKFLOW_PATH','REHEARSAL_GITHUB_ENVIRONMENT',
-    'TURSO_ORGANIZATION','TURSO_GROUP','TURSO_PRODUCTION_DATABASE_NAME',
-    'TURSO_PRODUCTION_DATABASE_ID','TURSO_PRODUCTION_EXPECTED_BLOCK_WRITES',
-    'TURSO_RESTORE_DATABASE_PREFIX','TURSO_PRODUCTION_PLATFORM_TOKEN',
-    'MIGRATION_DIGEST_HMAC_KEY','TURSO_PLATFORM_TIMEOUT_MS','TURSO_DATABASE_TIMEOUT_MS',
-    'REHEARSAL_MAX_SNAPSHOT_AGE_MS','REHEARSAL_MAX_EVIDENCE_AGE_MS',
-    'REHEARSAL_RPO_TARGET_MS','REHEARSAL_RTO_TARGET_MS','REHEARSAL_POLL_ATTEMPTS',
-    'REHEARSAL_POLL_INTERVAL_MS','REHEARSAL_POLL_DURATION_MS',
-    'REHEARSAL_CLEANUP_POLL_ATTEMPTS','REHEARSAL_CLEANUP_POLL_INTERVAL_MS',
-    'REHEARSAL_CLEANUP_POLL_DURATION_MS','REHEARSAL_EVIDENCE_DURATION_MS',
+  add(errors,exactDirectKeys(rehearsalRun,8,['id','timeout-minutes','env','run'])
+    &&field(rehearsalRun,'run',8)===PROTECTED_REHEARSAL_RUN,
+  'protected rehearsal command must match the reviewed bounded runner invocation');
+  add(errors,exactEnvironmentBlock(rehearsalRun,[
+    "RESTORE_REHEARSAL_CONFIRM: ${{ github.event_name == 'schedule' && 'RESTORE_DISPOSABLE_ONLY' || inputs.confirmation }}",
+    'REHEARSAL_WORKFLOW_PATH: .github/workflows/turso-backup-restore-rehearsal.yml',
+    'REHEARSAL_GITHUB_ENVIRONMENT: turso-migration-rehearsal',
+    'TURSO_ORGANIZATION: ${{ vars.TURSO_ORGANIZATION }}',
+    'TURSO_GROUP: ${{ vars.TURSO_GROUP }}',
+    'TURSO_PRODUCTION_DATABASE_NAME: ${{ vars.TURSO_PRODUCTION_DATABASE_NAME }}',
+    'TURSO_PRODUCTION_DATABASE_ID: ${{ vars.TURSO_PRODUCTION_DATABASE_ID }}',
+    'TURSO_PRODUCTION_EXPECTED_BLOCK_WRITES: ${{ vars.TURSO_PRODUCTION_EXPECTED_BLOCK_WRITES }}',
+    'TURSO_RESTORE_DATABASE_PREFIX: ${{ vars.TURSO_RESTORE_DATABASE_PREFIX }}',
+    'TURSO_PRODUCTION_PLATFORM_TOKEN: ${{ secrets.TURSO_PRODUCTION_PLATFORM_TOKEN }}',
+    'MIGRATION_DIGEST_HMAC_KEY: ${{ secrets.MIGRATION_DIGEST_HMAC_KEY }}',
+    "TURSO_PLATFORM_TIMEOUT_MS: '15000'",
+    "TURSO_DATABASE_TIMEOUT_MS: '30000'",
+    'REHEARSAL_MAX_SNAPSHOT_AGE_MS: ${{ vars.REHEARSAL_MAX_SNAPSHOT_AGE_MS }}',
+    'REHEARSAL_MAX_EVIDENCE_AGE_MS: ${{ vars.REHEARSAL_MAX_EVIDENCE_AGE_MS }}',
+    "REHEARSAL_RPO_TARGET_MS: '1800000'",
+    "REHEARSAL_RTO_TARGET_MS: '900000'",
+    "REHEARSAL_POLL_ATTEMPTS: '60'",
+    "REHEARSAL_POLL_INTERVAL_MS: '5000'",
+    "REHEARSAL_POLL_DURATION_MS: '300000'",
+    "REHEARSAL_CLEANUP_POLL_ATTEMPTS: '12'",
+    "REHEARSAL_CLEANUP_POLL_INTERVAL_MS: '2000'",
+    "REHEARSAL_CLEANUP_POLL_DURATION_MS: '120000'",
+    "REHEARSAL_EVIDENCE_DURATION_MS: '300000'",
   ])&&environmentValue(rehearsalRun,'REHEARSAL_RPO_TARGET_MS')===
       "          REHEARSAL_RPO_TARGET_MS: '1800000'"
     &&environmentValue(rehearsalRun,'REHEARSAL_RTO_TARGET_MS')===
@@ -265,24 +334,36 @@ function validateRehearsal(raw){
 
   const cleanup=step(source,'Restore source state and clean disposable restore');
   add(errors,exactDirectKeys(cleanup,8,['id','if','timeout-minutes','env','run'])
-    &&exactEnvironment(cleanup,[
-      'TURSO_ORGANIZATION','TURSO_GROUP','TURSO_PRODUCTION_DATABASE_NAME',
-      'TURSO_PRODUCTION_DATABASE_ID','TURSO_PRODUCTION_EXPECTED_BLOCK_WRITES',
-      'TURSO_RESTORE_DATABASE_PREFIX','TURSO_PRODUCTION_PLATFORM_TOKEN',
-      'TURSO_PLATFORM_TIMEOUT_MS','REHEARSAL_CLEANUP_POLL_ATTEMPTS',
-      'REHEARSAL_CLEANUP_POLL_INTERVAL_MS','REHEARSAL_CLEANUP_POLL_DURATION_MS',
+    &&exactEnvironmentBlock(cleanup,[
+      'TURSO_ORGANIZATION: ${{ vars.TURSO_ORGANIZATION }}',
+      'TURSO_GROUP: ${{ vars.TURSO_GROUP }}',
+      'TURSO_PRODUCTION_DATABASE_NAME: ${{ vars.TURSO_PRODUCTION_DATABASE_NAME }}',
+      'TURSO_PRODUCTION_DATABASE_ID: ${{ vars.TURSO_PRODUCTION_DATABASE_ID }}',
+      'TURSO_PRODUCTION_EXPECTED_BLOCK_WRITES: ${{ vars.TURSO_PRODUCTION_EXPECTED_BLOCK_WRITES }}',
+      'TURSO_RESTORE_DATABASE_PREFIX: ${{ vars.TURSO_RESTORE_DATABASE_PREFIX }}',
+      'TURSO_PRODUCTION_PLATFORM_TOKEN: ${{ secrets.TURSO_PRODUCTION_PLATFORM_TOKEN }}',
+      "TURSO_PLATFORM_TIMEOUT_MS: '15000'",
+      "REHEARSAL_CLEANUP_POLL_ATTEMPTS: '12'",
+      "REHEARSAL_CLEANUP_POLL_INTERVAL_MS: '2000'",
+      "REHEARSAL_CLEANUP_POLL_DURATION_MS: '120000'",
     ])
     &&field(cleanup,'if',8)===
     "        if: always() && steps.source.outcome == 'success' && steps.install.outcome == 'success'"
-    &&/--mode cleanup/.test(cleanup)&&/private-recovery\/state\.json/.test(cleanup),
+    &&field(cleanup,'run',8)===CLEANUP_RUN,
   'rehearsal must always run bounded source-state and disposable-restore cleanup');
   const monitor=step(source,'Evaluate backup freshness and restore evidence');
   add(errors,exactDirectKeys(monitor,8,['id','if','timeout-minutes','env','run'])
-    &&exactEnvironment(monitor,[
-      'REHEARSAL_WORKFLOW_PATH','REHEARSAL_GITHUB_ENVIRONMENT','TURSO_GROUP',
-      'TURSO_PRODUCTION_DATABASE_NAME','TURSO_PRODUCTION_DATABASE_ID',
-      'MIGRATION_DIGEST_HMAC_KEY','REHEARSAL_MAX_EVIDENCE_AGE_MS',
-      'REHEARSAL_RPO_TARGET_MS','REHEARSAL_RTO_TARGET_MS','BACKUP_MONITOR_MAX_SUCCESS_AGE_MS',
+    &&exactEnvironmentBlock(monitor,[
+      'REHEARSAL_WORKFLOW_PATH: .github/workflows/turso-backup-restore-rehearsal.yml',
+      'REHEARSAL_GITHUB_ENVIRONMENT: turso-migration-rehearsal',
+      'TURSO_GROUP: ${{ vars.TURSO_GROUP }}',
+      'TURSO_PRODUCTION_DATABASE_NAME: ${{ vars.TURSO_PRODUCTION_DATABASE_NAME }}',
+      'TURSO_PRODUCTION_DATABASE_ID: ${{ vars.TURSO_PRODUCTION_DATABASE_ID }}',
+      'MIGRATION_DIGEST_HMAC_KEY: ${{ secrets.MIGRATION_DIGEST_HMAC_KEY }}',
+      'REHEARSAL_MAX_EVIDENCE_AGE_MS: ${{ vars.REHEARSAL_MAX_EVIDENCE_AGE_MS }}',
+      "REHEARSAL_RPO_TARGET_MS: '1800000'",
+      "REHEARSAL_RTO_TARGET_MS: '900000'",
+      "BACKUP_MONITOR_MAX_SUCCESS_AGE_MS: '1800000'",
     ])
     &&environmentValue(monitor,'REHEARSAL_RPO_TARGET_MS')===
       "          REHEARSAL_RPO_TARGET_MS: '1800000'"
@@ -290,7 +371,7 @@ function validateRehearsal(raw){
       "          REHEARSAL_RTO_TARGET_MS: '900000'"
     &&field(monitor,'if',8)===
     "        if: always() && steps.source.outcome == 'success' && steps.install.outcome == 'success'"
-    &&/scripts\/turso-backup-restore-monitor\.mjs/.test(monitor),
+    &&field(monitor,'run',8)===MONITOR_RUN,
   'rehearsal must always evaluate sanitized recovery evidence after installation');
   const signedUpload=step(source,'Upload signed rehearsal attestation');
   add(errors,exactDirectKeys(signedUpload,8,['if','timeout-minutes','uses','with'])
@@ -306,7 +387,7 @@ function validateRehearsal(raw){
     &&field(alert,'if',8)===`        if: >-
           always() && (steps.monitor.outcome != 'success'
           || steps.monitor.outputs.alert != 'false')`
-    &&/^\s{10}exit 1\s*$/m.test(alert),
+    &&field(alert,'run',8)===REHEARSAL_ALERT_RUN,
   'rehearsal monitor failures must end in an explicit terminal alert');
 
   const paths=artifactPaths(source).sort();
@@ -332,6 +413,8 @@ function validateRehearsal(raw){
 function validateWatchdog(raw){
   const source=uncomment(raw);
   const errors=[];
+  add(errors,exactWorkflowBytes(raw,WORKFLOW_DIGESTS.watchdog),
+    'watchdog workflow bytes must match the reviewed contract');
   add(errors,safeYamlSubset(source),
     'watchdog workflow must use the reviewed unambiguous YAML subset');
   add(errors,exactDirectKeys(source,0,['name','on','permissions','concurrency','jobs']),
@@ -426,7 +509,7 @@ function validateWatchdog(raw){
           && (steps.download.outcome != 'success'
           || steps.verification.outcome != 'success'
           || steps.verification.outputs.alert != 'false')))`
-    &&/^\s{10}exit 1\s*$/m.test(alert),
+    &&field(alert,'run',8)===WATCHDOG_ALERT_RUN,
   'watchdog failures and evidence-upload failures must end in an accountable terminal alert');
   return errors;
 }
@@ -434,11 +517,15 @@ function validateWatchdog(raw){
 function validateCi(raw){
   const source=uncomment(raw);
   const errors=[];
+  add(errors,exactWorkflowBytes(raw,WORKFLOW_DIGESTS.deployability),
+    'backup-control CI workflow bytes must match the reviewed contract');
   add(errors,safeYamlSubset(source),
     'backup-control CI must use the reviewed unambiguous YAML subset');
   add(errors,exactDirectKeys(source,0,['name','on','permissions','concurrency','jobs']),
     'backup-control CI must contain only the reviewed top-level controls');
-  add(errors,/^  pull_request:\n    branches: \[main, codex\/issue-87-repository-deployability\]$/m
+  add(errors,exactKeys(source,'on',0,['push','pull_request','workflow_dispatch'])
+    &&/^  push:\n    branches: \[main\]$/m.test(block(source,'on',0))
+    &&/^  pull_request:\n    branches: \[main, codex\/issue-87-repository-deployability\]$/m
     .test(block(source,'on',0)),
   'backup-control CI must run for pull requests into main and rolling');
   add(errors,exactKeys(source,'jobs',0,['deployability']),

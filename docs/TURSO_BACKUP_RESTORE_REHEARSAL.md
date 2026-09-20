@@ -80,13 +80,29 @@ operating contract on pull requests into the rolling integration branch and
 `main`, and on every other run of the repository deployability workflow. It
 requires the exact weekly and hourly cadences, fixed RPO/RTO, default-branch
 fences, read-only permissions, protected rehearsal environment, shared
-database-operation lock, unconditional cleanup, terminal alerts, immutable
-action pins, non-persistent checkout credentials, and the allowlisted sanitized
+database-operation lock, unconditional cleanup, exact terminal-alert bodies,
+immutable action pins, exact provider-identity bindings, and the exact bounded
+commands run by every secret-bearing rehearsal, cleanup, and monitor step,
+non-persistent checkout credentials, and the allowlisted sanitized
 artifact paths. It also rejects provider credentials or a rehearsal-dispatch
 path in the watchdog. The validator reads only the three committed workflow
 files, emits fixed control names, and neither uses a network nor receives an
 environment or secret in CI. Its synthetic tests are a drift alarm, not recovery
 evidence: they cannot close #38 or #51 and never authorize #43.
+Complete SHA-256 pins for all three workflow files make any unanticipated byte
+change fail closed; intentional workflow maintenance updates the workflow,
+digest, mutation tests, decision record, and this runbook together.
+
+“Rolling integration branch” currently means the repository branch
+`codex/issue-87-repository-deployability`; the workflow and validator name that
+actual branch explicitly. The gate is defense in depth rather than an immutable
+authorization boundary because a pull request can change the deployability
+workflow that invokes it. An administrator-owned required workflow or
+equivalent ruleset is separately required before treating the signal as
+tamper-resistant; issue #169 tracks that administrator action. This increment
+deliberately does not change repository
+rulesets or branch protection; until that follow-up lands, reviewers must treat
+any deployability-workflow edit as security-sensitive.
 
 If this gate fails, do not bypass it or enable provider operations. Compare the
 workflow change with this runbook, restore the reviewed control or deliberately

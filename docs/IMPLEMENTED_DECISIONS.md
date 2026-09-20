@@ -1507,10 +1507,17 @@ repository permission and no protected environment or secret. The gate reads
 only the committed restore-rehearsal, watchdog, and deployability workflows. It
 pins the reviewed trigger sets and cadences, fixed RPO/RTO, default-branch
 fences, environment and concurrency boundary, bounded fail-closed cleanup and
-alerts, immutable actions, non-persistent checkout credentials, exact sanitized
+alerts and their terminal command bodies, exact provider-identity environment
+bindings and secret-bearing rehearsal/cleanup/monitor commands, immutable
+actions, non-persistent checkout credentials, exact sanitized
 artifact paths and retention, and the watchdog's read-only credential-free
 isolation. Output is limited to fixed control descriptions and explicit
 `providerNetworkRequired:false` and `externalMutation:false` claims.
+The validator also pins each complete workflow byte stream by SHA-256, so an
+unanticipated command, environment binding, checkout input, trigger, comment,
+or formatting edit fails closed even if the semantic subset parser misses it.
+An intentional workflow change must update the workflow, digest, focused
+mutations, decision record, and runbook in the same reviewed increment.
 
 Synthetic mutation tests prove that an unsafe trigger or permission, policy
 drift, lost cleanup/alert gate, private artifact path, secret-bearing or
@@ -1528,3 +1535,13 @@ Giving the watchdog provider credentials would couple detection to the system
 it observes. The selected static gate is intentionally narrower than a YAML
 policy engine, but it is deterministic, dependency-free, redacted, and covers
 the exact two workflows that own this recovery control.
+
+This check is defense in depth, not an immutable authorization boundary: a pull
+request can edit the same deployability workflow that invokes it. Repository
+administrators must add an organization-owned required workflow or equivalent
+ruleset before treating this signal as tamper-resistant. That settings change
+is tracked by issue #169 and is not performed by application code. Until then,
+changes to the deployability workflow itself require explicit review. The
+repository's rolling integration branch is currently named
+`codex/issue-87-repository-deployability`; references to “rolling” in this
+decision and runbook mean that exact branch.
