@@ -276,11 +276,13 @@ test('a post-commit context refresh failure tells the browser that archive alrea
 });
 
 test('an unusable post-commit context projection also requires a browser refresh',async()=>{
+  const primary={public_id:'circle-primary',name:'Primary',role:'owner',is_primary:true};
+  const baseline={circles:[primary],active:primary,selection_required:false,context_version:5};
   const unusable=[
-    {...listed,active:null,selection_required:true,context_version:5},
-    {...listed,circles:[...listed.circles,{public_id:'circle-secondary',name:'Secondary',role:'owner',is_primary:false}],
-      context_version:5},
-    {...listed,context_version:4},
+    {...baseline,active:null,selection_required:true},
+    {...baseline,circles:[...baseline.circles,
+      {public_id:'circle-secondary',name:'Secondary',role:'owner',is_primary:false}]},
+    {...baseline,context_version:4},
   ];
   for(const projection of unusable){
     listed=projection;
