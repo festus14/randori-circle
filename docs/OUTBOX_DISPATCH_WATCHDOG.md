@@ -1,8 +1,11 @@
 # Outbox-dispatch watchdog
 
-Status: code complete; keep the workflow on a draft branch until it is rebased
-onto the current rolling release. No migration or production credential is
-required.
+Decision:
+[ID-43](IMPLEMENTED_DECISIONS.md#id-43-treat-only-scheduled-outbox-runs-as-freshness-evidence)
+
+Status: code complete and rebased onto the current rolling release; keep the
+pull request draft until final validation completes. No migration or production
+credential is required.
 
 ## Purpose and authority
 

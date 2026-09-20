@@ -1824,6 +1824,7 @@ migration workflow, never by an HTTP request. Application rollback requires no
 database rollback but reintroduces the retired schema writes and is reserved
 for emergency compatibility. Exact contracts and tests are recorded in
 `OPERATIONS_RUNTIME_DDL_RETIREMENT.md`.
+
 ## ID-43: Treat only scheduled outbox runs as freshness evidence
 
 Status: implemented as a code-only operations increment with no migration or
@@ -1845,10 +1846,11 @@ failure states.
 
 Discovery constructs only the reviewed GitHub workflow-runs URL, validates the
 same event and branch locally, scans at most two 100-run pages, caps response
-size, and shares one monotonic ten-second API deadline. Its JSON projection contains only
-fixed status values, bounded counts, run identifiers, and timing metadata. The
-workflow has `actions: read` and `contents: read`, no production environment or
-secret, and no application, workflow-dispatch, database, or provider mutation.
+size, and shares one monotonic ten-second API deadline. Its JSON projection
+contains only fixed status values, bounded counts, run identifiers, and timing
+metadata. The workflow has `actions: read` and `contents: read`, no production
+environment or secret, and no application, workflow-dispatch, database, or
+provider mutation.
 The repository deployability contract binds reviewed digests for the workflow
 and assessor and fails if either the watchdog boundary or the source worker's
 two-minute timeout is weakened.
