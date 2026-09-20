@@ -127,10 +127,19 @@ async function archiveAttempt(db,actor,input,{nowSeconds}={}){
         await rollback(transaction); finished=true;
         return Object.freeze({ok:false,reason:'circle_unavailable'});
       }
+      const current=await transaction.execute({
+        sql:`SELECT context_version FROM auth_session_circle_contexts
+          WHERE session_hash=? AND user_id=? LIMIT 2`,args:[actor.sessionHash,actor.userId],
+      });
+      if((current.rows?.length||0)>1) fail('CIRCLE_ARCHIVE_INTEGRITY','Circle archive context is invalid.');
+      const replayVersion=current.rows?.length?Number(current.rows[0].context_version):null;
+      if(replayVersion!==null&&(!Number.isSafeInteger(replayVersion)||replayVersion<1)){
+        fail('CIRCLE_ARCHIVE_INTEGRITY','Circle archive context is invalid.');
+      }
       await rollback(transaction); finished=true;
       return Object.freeze({ok:true,changed:false,circle:Object.freeze({
         public_id:input.circlePublicId,name:String(row.name||'').slice(0,120),
-      })});
+      }),...(replayVersion===null?{}:{context_version:replayVersion})});
     }
 
     const selected=await transaction.execute({
@@ -240,7 +249,7 @@ async function archiveAttempt(db,actor,input,{nowSeconds}={}){
     await transaction.commit(); finished=true;
     return Object.freeze({ok:true,changed:true,circle:Object.freeze({
       public_id:input.circlePublicId,name:String(archived.rows[0].name||'').slice(0,120),
-    })});
+    }),context_version:Number(initiating.context_version)});
   }catch(error){
     if(!finished) await rollback(transaction);
     if(commitStarted){

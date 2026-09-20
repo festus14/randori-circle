@@ -142,13 +142,22 @@ test('cookie mutations require a same-origin request while explicit Bearer mutat
   const cookie = 'randori_session=session-value';
   assert.equal(verifyMutationOrigin({
     method: 'POST',
-    headers: { cookie, origin: 'https://randori.example', host: 'randori.example' },
+    headers: { cookie, origin: 'https://randori.example', host: 'randori.example', 'x-forwarded-proto': 'https' },
   }), true);
   assert.equal(verifyMutationOrigin({ method: 'POST', headers: { cookie, host: 'randori.example' } }), false);
   assert.equal(verifyMutationOrigin({
     method: 'POST',
-    headers: { cookie, origin: 'https://attacker.example', host: 'randori.example' },
+    headers: { cookie, origin: 'https://attacker.example', host: 'randori.example', 'x-forwarded-proto': 'https' },
   }), false);
+  assert.equal(verifyMutationOrigin({
+    method: 'POST',
+    headers: { cookie, origin: 'http://randori.example', host: 'randori.example', 'x-forwarded-proto': 'https' },
+  }), false);
+  assert.equal(verifyMutationOrigin({
+    method: 'POST',
+    headers: { cookie, origin: 'http://127.0.0.1:3000', host: '127.0.0.1:3000' },
+    socket: { encrypted: false },
+  }), true);
   assert.equal(verifyMutationOrigin({
     method: 'POST',
     headers: { authorization: 'Bearer api-client-token', origin: 'https://attacker.example' },

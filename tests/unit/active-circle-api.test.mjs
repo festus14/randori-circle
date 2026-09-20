@@ -15,8 +15,9 @@ let listed={
 let selected={ok:true,membership:listed.circles[1],context_version:1,changed:true};
 let readinessError=null;
 let creationReadinessError=null;
+let listError=null;
 let creationResult={ok:true,circle:{public_id:'circle-created',name:'Created',role:'owner',is_primary:false},context_version:2,created:true};
-let archiveResult={ok:true,changed:true,circle:{public_id:'circle-secondary',name:'Secondary'}};
+let archiveResult={ok:true,changed:true,circle:{public_id:'circle-secondary',name:'Secondary'},context_version:5};
 let archiveError=null;
 const calls=[];
 const db={};
@@ -34,8 +35,9 @@ beforeEach(()=>{
   selected={ok:true,membership:listed.circles[1],context_version:1,changed:true};
   readinessError=null;
   creationReadinessError=null;
+  listError=null;
   creationResult={ok:true,circle:{public_id:'circle-created',name:'Created',role:'owner',is_primary:false},context_version:2,created:true};
-  archiveResult={ok:true,changed:true,circle:{public_id:'circle-secondary',name:'Secondary'}};
+  archiveResult={ok:true,changed:true,circle:{public_id:'circle-secondary',name:'Secondary'},context_version:5};
   archiveError=null;
   calls.length=0;
 });
@@ -58,7 +60,11 @@ mock.module('../../api/_active-circle.js',{exports:{
     const value=req.headers?.['x-randori-circle-context-version'];
     return typeof value==='string'&&/^(?:0|[1-9]\d*)$/.test(value)?Number(value):null;
   },
-  listSessionCircleContexts:async(_db,payload)=>{ calls.push(['list',_db,payload]); return listed; },
+  listSessionCircleContexts:async(_db,payload)=>{
+    calls.push(['list',_db,payload]);
+    if(listError) throw listError;
+    return listed;
+  },
   selectActiveCircleContext:async(_db,payload,input)=>{ calls.push(['select',_db,payload,input]); return selected; },
 }});
 
@@ -245,7 +251,7 @@ test('archive failures are stable, non-leaking, and recent-auth remains actionab
     assert.equal(response.status,status);
     assert.deepEqual(response.body,body);
   }
-  archiveResult={ok:true,changed:true,circle:{public_id:'circle-secondary',name:'Secondary'}};
+  archiveResult={ok:true,changed:true,circle:{public_id:'circle-secondary',name:'Secondary'},context_version:5};
   archiveError=Object.assign(new Error('recent authentication required'),{code:'RECENT_AUTH_REQUIRED'});
   let response=await request();
   assert.equal(response.status,403);
@@ -255,6 +261,18 @@ test('archive failures are stable, non-leaking, and recent-auth remains actionab
   assert.equal(response.status,503);
   assert.deepEqual(response.body,{error:'circle archive status unknown; retry the same archive request',
     code:'circle_archive_status_unknown'});
+});
+
+test('a post-commit context refresh failure tells the browser that archive already succeeded',async()=>{
+  listError=new Error('database refresh unavailable');
+  const response=await invoke({method:'DELETE',headers:{'x-randori-circle-context-version':'4'},
+    body:{circle_public_id:'circle-secondary',expected_context_version:4}});
+  assert.equal(response.status,503);
+  assert.deepEqual(response.body,{
+    error:'circle archived; reload required',code:'circle_archive_refresh_required',
+    archived_circle_public_id:'circle-secondary',context_version:5,
+  });
+  assert.deepEqual(calls.map(call=>call[0]),['archive','list']);
 });
 
 test('disabled, unauthenticated, and unavailable context paths fail closed',async()=>{

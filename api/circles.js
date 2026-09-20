@@ -134,7 +134,17 @@ export default async function handler(req,res){
         }
         return res.status(404).json({error:'circle unavailable'});
       }
-      const listed=await listSessionCircleContexts(db,payload);
+      let listed;
+      try{ listed=await listSessionCircleContexts(db,payload); }
+      catch(error){
+        captureSentryException(error,{tags:{event:'circle_archive_refresh_fail',source:'server'}});
+        return res.status(503).json({
+          error:'circle archived; reload required',code:'circle_archive_refresh_required',
+          archived_circle_public_id:archived.circle.public_id,
+          context_version:Number.isSafeInteger(archived.context_version)
+            ?archived.context_version:archiveInput.expectedContextVersion+1,
+        });
+      }
       return res.json({
         ...responsePayload(listed),
         archived_circle_public_id:archived.circle.public_id,

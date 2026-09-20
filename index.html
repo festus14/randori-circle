@@ -4204,9 +4204,12 @@ async function refreshMe(){
         expected_context_version:operation.contextVersion,
       }});
       if(!me||Number(me.id||me.uid)!==actorId||!circleControlOperationMatches(operation)) return false;
+      const activeCirclePublicId=result?.active_circle?.public_id;
       if(result?.ok!==true||result.archived_circle_public_id!==operation.circlePublicId
         ||!Array.isArray(result.circles)||result.circles.some(circle=>circle?.public_id===operation.circlePublicId)
-        ||result.active_circle?.public_id===operation.circlePublicId
+        ||typeof activeCirclePublicId!=='string'||!activeCirclePublicId
+        ||activeCirclePublicId===operation.circlePublicId
+        ||!result.circles.some(circle=>circle?.public_id===activeCirclePublicId)
         ||!Number.isSafeInteger(result.context_version)||result.context_version<=operation.contextVersion){
         throw new Error('invalid circle archive response');
       }
@@ -4217,6 +4220,17 @@ async function refreshMe(){
       return true;
     }catch(error){
       if(!circleControlOperationMatches(operation)) return false;
+      if(error?.code==='circle_archive_refresh_required'
+        &&error?.archived_circle_public_id===operation.circlePublicId){
+        const nextVersion=Number(error.context_version);
+        if(circleLifecycleStatus) circleLifecycleStatus.textContent='Circle archived. Refreshing your remaining circles…';
+        clearPrivateCircleViewForSwitch();
+        circleContextChannel?.postMessage({v:1,user_id:actorId,
+          context_version:Number.isSafeInteger(nextVersion)&&nextVersion>operation.contextVersion
+            ?nextVersion:operation.contextVersion+1,force:true});
+        window.location.reload();
+        return true;
+      }
       if(allowRecentAuth&&(error?.code==='recent_auth_required'||error?.error==='recent authentication required')){
         if(circleLifecycleStatus) circleLifecycleStatus.textContent='Confirm your identity to continue. No change has been made yet.';
         if(!await requestLifecycleRecentAuth('archive')){

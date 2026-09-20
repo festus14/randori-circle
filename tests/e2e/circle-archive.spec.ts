@@ -126,3 +126,42 @@ test('archive control is never offered to a member or for the primary circle',as
   await page.locator('[data-tab="circle"]').click();
   await expect(page.getByTestId('circle-archive')).toBeHidden();
 });
+
+test('a known committed archive reloads even when fallback projection fails',async({page})=>{
+  let archived=false;
+  await mockApi(page,{
+    '/api/auth/capabilities':{
+      ok:true,capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,
+        multiCircleControlPlane:true,multiCircleAvailability:true},registrationMode:'private_beta',
+    },
+    '/api/auth/me':{ok:true,user:owner},
+    '/api/profile':{ok:true,user:owner},
+    '/api/circles':request=>{
+      if(request.method()==='DELETE'){
+        archived=true;
+        return {_status:503,error:'circle archived; reload required',
+          code:'circle_archive_refresh_required',archived_circle_public_id:secondary.public_id,
+          context_version:5};
+      }
+      return archived
+        ?{ok:true,circles:[primary],active_circle:primary,context_version:5,selection_required:false}
+        :{ok:true,circles:[primary,secondary],active_circle:secondary,context_version:4,selection_required:false};
+    },
+    '/api/circle':()=>({ok:true,circle_meta:{public_id:archived?primary.public_id:secondary.public_id,
+      name:archived?primary.name:secondary.name},membership:{role:'owner'},circle:[owner],count:1,
+      circle_context_version:archived?5:4}),
+    '/api/invitations':()=>({ok:true,invitations:[],count:0,circle_context_version:archived?5:4}),
+    '/api/members':()=>({ok:true,members:[{...owner,role:'owner',status:'active'}],count:1,
+      has_more:false,next_cursor:null,scanned:1,circle_context_version:archived?5:4}),
+  });
+  await resetClientState(page,true);
+  await page.goto('/?view=circle',{waitUntil:'domcontentloaded'});
+  await page.locator('[data-tab="circle"]').click();
+  const reloaded=page.waitForEvent('domcontentloaded');
+  await page.getByTestId('circle-archive').click();
+  await confirmAction(page,/Archive Secondary/);
+  await reloaded;
+  await page.locator('[data-tab="circle"]').click();
+  await expect(page.getByTestId('circle-context-select')).toHaveValue(primary.public_id);
+  await expect(page.getByTestId('circle-archive')).toBeHidden();
+});

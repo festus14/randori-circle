@@ -39,6 +39,11 @@ increments its version. Any anomalous inactive-user context with no valid
 fallback is deleted, so an archived circle never remains selected. The browser
 invalidates its private-state epoch, broadcasts a forced context refresh, and
 reloads only after the server returns the new active circle and generation.
+If the archive commits but that response projection cannot be read, the API
+returns the distinct `circle_archive_refresh_required` outcome with the
+archived target and committed generation. The browser treats only that bound
+outcome as committed, clears private state, broadcasts the generation, and
+reloads to recover the fallback instead of leaving the retired workspace open.
 
 One `circle.archived` audit uses the deterministic `circle-archived:<circle-id>`
 dedupe key. An identical retry by the archiving owner still requires a live

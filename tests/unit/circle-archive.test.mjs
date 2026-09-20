@@ -57,8 +57,8 @@ async function seed(db,{includeStranded=false}={}){
       (30,3,'owner','active')`,
     {sql:`INSERT INTO auth_sessions (session_hash,user_id,created_at,expires_at) VALUES
       (?,1,?,?),(?,1,?,?),(?,2,?,?),(?,3,?,?)`,
-    args:[SESSION_A,NOW-60,NOW+3600,SESSION_B,NOW-60,NOW+3600,
-      SESSION_C,NOW-60,NOW+3600,SESSION_D,NOW-60,NOW+3600]},
+    args:[SESSION_A,NOW-60,4_102_444_800,SESSION_B,NOW-60,4_102_444_800,
+      SESSION_C,NOW-60,4_102_444_800,SESSION_D,NOW-60,4_102_444_800]},
     {sql:`INSERT INTO auth_session_circle_contexts
       (session_hash,user_id,circle_id,context_version,updated_at) VALUES
       (?,1,20,4,?),(?,1,10,8,?),(?,2,20,7,?),(?,3,20,9,?)`,
@@ -139,7 +139,8 @@ test('owner archive retains immutable data and atomically falls every selected s
     await migrate(item.db); await seed(item.db);
     const retained=await retainedSnapshot(item.db);
     const result=await archiveSecondaryCircle(item.db,payload(),input(),{nowSeconds:NOW});
-    assert.deepEqual(result,{ok:true,changed:true,circle:{public_id:'circle-secondary',name:'Secondary'}});
+    assert.deepEqual(result,{ok:true,changed:true,
+      circle:{public_id:'circle-secondary',name:'Secondary'},context_version:5});
     const archived=await item.db.execute(`SELECT archived_at FROM circles WHERE id=20`);
     assert.match(String(archived.rows[0].archived_at),/Z$/);
     assert.deepEqual(await retainedSnapshot(item.db),retained,
@@ -174,7 +175,8 @@ test('same owner replay is idempotent while stale context and cross-circle ident
     const first=await archiveSecondaryCircle(item.db,payload(),input(),{nowSeconds:NOW});
     const replay=await archiveSecondaryCircle(item.db,payload(),input(),{nowSeconds:NOW});
     assert.equal(first.changed,true);
-    assert.deepEqual(replay,{ok:true,changed:false,circle:{public_id:'circle-secondary',name:'Secondary'}});
+    assert.deepEqual(replay,{ok:true,changed:false,
+      circle:{public_id:'circle-secondary',name:'Secondary'},context_version:5});
     assert.equal(Number((await item.db.execute(`SELECT context_version FROM auth_session_circle_contexts
       WHERE session_hash='${SESSION_A}'`)).rows[0].context_version),5);
     assert.equal(Number((await item.db.execute(`SELECT COUNT(*) AS count FROM circle_audit_events
@@ -182,6 +184,23 @@ test('same owner replay is idempotent while stale context and cross-circle ident
 
     assert.deepEqual(await archiveSecondaryCircle(item.db,payload(),input('circle-other',4),{nowSeconds:NOW}),
       {ok:false,reason:'circle_unavailable'});
+  }finally{ item.close(); }
+});
+
+test('an active non-owner and a foreign owner receive the same unavailable result without mutation',async()=>{
+  const item=fixture();
+  try{
+    await migrate(item.db); await seed(item.db);
+    const before=await retainedSnapshot(item.db);
+    assert.deepEqual(await archiveSecondaryCircle(item.db,payload(2,SESSION_C),input('circle-secondary',7),{
+      nowSeconds:NOW,
+    }),{ok:false,reason:'circle_unavailable'});
+    assert.deepEqual(await archiveSecondaryCircle(item.db,payload(),input('circle-other',4),{
+      nowSeconds:NOW,
+    }),{ok:false,reason:'circle_unavailable'});
+    assert.equal((await item.db.execute(`SELECT archived_at FROM circles WHERE id IN (20,30)
+      AND archived_at IS NOT NULL`)).rows.length,0);
+    assert.deepEqual(await retainedSnapshot(item.db),before);
   }finally{ item.close(); }
 });
 
