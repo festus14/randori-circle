@@ -66,7 +66,7 @@ test('a fresh successful scheduled default-branch run is healthy and manual runs
   ],options()).category,'run_missing');
   assert.equal(assessOutboxDispatchRuns([
     run({run_attempt:2,updated_at:'2026-09-20T12:00:00Z'}),
-  ],options()).category,'run_missing');
+  ],options()).category,'manual_rerun');
 });
 
 test('the documented grace permits boundary success and active recovery',()=>{
@@ -114,6 +114,17 @@ test('the newest scheduled run controls failure, cancellation, and skip outcomes
     assert.equal(result.category,category);
     assert.equal(result.runId,124);
   }
+});
+
+test('a rerun of the newest schedule alerts instead of exposing an older success',()=>{
+  const older=run({id:122,created_at:'2026-09-20T11:55:00Z',
+    run_started_at:'2026-09-20T11:55:01Z',updated_at:'2026-09-20T11:55:30Z'});
+  const rerun=run({id:124,run_attempt:2,created_at:'2026-09-20T12:00:00Z',
+    run_started_at:'2026-09-20T12:00:00Z',updated_at:'2026-09-20T12:00:00Z'});
+  const result=assessOutboxDispatchRuns([older,rerun],options());
+  assert.equal(result.category,'manual_rerun');
+  assert.equal(result.runId,124);
+  assert.equal(result.alert,true);
 });
 
 test('in-progress execution becomes stuck only after the dispatcher two-minute deadline',()=>{

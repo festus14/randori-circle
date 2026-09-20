@@ -266,4 +266,25 @@ test('deployability rejects a weakened or privileged outbox watchdog',()=>{
   assert.ok(validateDeploymentContract(cadence).includes(
     'outbox watchdog must run hourly on its documented offset',
   ));
+
+  for(const suffix of [' || true','; exit 0']){
+    const suppressed=cloneContract();
+    suppressed.outboxWatchdogWorkflow=suppressed.outboxWatchdogWorkflow.replace(
+      'run: node scripts/github-outbox-dispatch-watchdog.mjs',
+      `run: node scripts/github-outbox-dispatch-watchdog.mjs${suffix}`,
+    );
+    errors=validateDeploymentContract(suppressed);
+    assert.ok(errors.includes('outbox watchdog must run the reviewed assessor'));
+    assert.ok(errors.includes(
+      'outbox watchdog assessment step must retain its exact fail-closed shape'));
+  }
+
+  const continued=cloneContract();
+  continued.outboxWatchdogWorkflow=continued.outboxWatchdogWorkflow.replace(
+    'run: node scripts/github-outbox-dispatch-watchdog.mjs',
+    'continue-on-error: true\n        run: node scripts/github-outbox-dispatch-watchdog.mjs',
+  );
+  errors=validateDeploymentContract(continued);
+  assert.ok(errors.includes('outbox watchdog must remain secret-free, read-only, and non-mutating'));
+  assert.ok(errors.includes('outbox watchdog assessment step must retain its exact fail-closed shape'));
 });

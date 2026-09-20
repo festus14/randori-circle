@@ -42,6 +42,7 @@ The newest authoritative run determines the result:
 | `run_cancelled` | yes | The newest attempt was cancelled. |
 | `run_skipped` | yes | The newest attempt was skipped. |
 | `run_stuck` | yes | An in-progress run reached the dispatcher's exact two-minute job deadline. |
+| `manual_rerun` | yes | The newest scheduled occurrence was manually rerun; wait for a new initial scheduled attempt. |
 | `malformed_response` | yes | GitHub returned invalid JSON, an invalid page, or inconsistent run metadata. |
 | `api_failure` | yes | Configuration, authentication, HTTP, network, or timeout prevented a decision. |
 
@@ -65,8 +66,9 @@ credential. Exceptions are converted to a fixed category.
 
 The workflow has only `actions: read` and `contents: read`; checkout does not
 persist credentials and every action is commit-pinned. The deployability gate
-rejects removal or weakening of the watchdog, its bounds, the dispatcher's
-two-minute deadline, or the secret-free/non-mutating boundary.
+rejects removal or weakening of the watchdog, its exact fail-closed command,
+its bounds, the dispatcher's two-minute deadline, or the
+secret-free/non-mutating boundary.
 
 ## Recovery and rollout
 

@@ -15,7 +15,7 @@ const KNOWN_CONCLUSIONS=new Set([
 ]);
 const ALERT_CATEGORIES=new Set([
   'run_missing','run_stale','run_failed','run_cancelled','run_skipped','run_stuck',
-  'malformed_response','api_failure',
+  'manual_rerun','malformed_response','api_failure',
 ]);
 
 class MalformedResponseError extends Error{}
@@ -116,9 +116,6 @@ function inspectRun(value,defaultBranch,nowMilliseconds){
   if(!Number.isSafeInteger(runId)||runId<1||!Number.isSafeInteger(runAttempt)||runAttempt<1){
     return {kind:'malformed'};
   }
-  // A human-triggered rerun retains event=schedule. It can aid recovery but
-  // cannot replace evidence from the next genuine scheduled attempt.
-  if(runAttempt!==1) return {kind:'ignored'};
   if(!created||!updated||created.milliseconds>nowMilliseconds||updated.milliseconds<created.milliseconds
     ||updated.milliseconds>nowMilliseconds||!KNOWN_STATUSES.has(run.status)
     ||(run.conclusion!==null&&!KNOWN_CONCLUSIONS.has(run.conclusion))
@@ -155,6 +152,10 @@ export function assessOutboxDispatchRuns(runs,{defaultBranch,scheduleGraceMs,wor
   if(valid.length===0) return alertResult('run_missing',metadata);
   const latest=valid[0];
   metadata.run=latest;
+  // GitHub represents a human rerun as the same scheduled occurrence with a
+  // higher attempt. Select it before judging authority so an older success can
+  // never hide that manual intervention.
+  if(latest.runAttempt!==1) return alertResult('manual_rerun',metadata);
   if(latest.status==='in_progress'){
     if(now.milliseconds-latest.startedMilliseconds>=deadline) return alertResult('run_stuck',metadata);
     return freeze({...baseResult({...metadata,ok:true,status:'observing',

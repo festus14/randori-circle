@@ -192,8 +192,10 @@ function validateOutboxWatchdogWorkflow(workflow){
       'outbox watchdog pagination must remain bounded'],
     [/WATCHDOG_PER_PAGE:\s*['"]100['"]/,
       'outbox watchdog page size must remain bounded'],
-    [/node scripts\/github-outbox-dispatch-watchdog\.mjs/,
+    [/^\s{8}run:\s*node scripts\/github-outbox-dispatch-watchdog\.mjs\s*$/m,
       'outbox watchdog must run the reviewed assessor'],
+    [/      - name: Assess scheduled outbox delivery\n        timeout-minutes: 2\n        env:\n          GITHUB_TOKEN: \$\{\{ github\.token \}\}\n          WATCHDOG_DEFAULT_BRANCH: \$\{\{ github\.event\.repository\.default_branch \}\}\n          WATCHDOG_SCHEDULE_GRACE_MS: '900000'\n          WATCHDOG_WORKER_DEADLINE_MS: '120000'\n          WATCHDOG_API_TIMEOUT_MS: '10000'\n          WATCHDOG_MAX_PAGES: '2'\n          WATCHDOG_PER_PAGE: '100'\n        run: node scripts\/github-outbox-dispatch-watchdog\.mjs(?:\n|$)/,
+      'outbox watchdog assessment step must retain its exact fail-closed shape'],
     [/uses:\s+actions\/checkout@11d5960a326750d5838078e36cf38b85af677262/,
       'outbox watchdog checkout must use the reviewed immutable revision'],
     [/uses:\s+actions\/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020/,
@@ -202,7 +204,7 @@ function validateOutboxWatchdogWorkflow(workflow){
       'outbox watchdog checkout must not persist GitHub credentials'],
   ];
   for(const [pattern,message] of checks){ if(!pattern.test(workflow)) errors.push(message); }
-  if(/pull_request(?:_target)?:|permissions:[\s\S]*?\bwrite\b|environment:|secrets\.|vars\.|APP_URL|CRON_SECRET|TURSO_|RESEND_|\/api\/cron\/outbox|\bcurl\b|\bgh\s+workflow\b|\/dispatches\b/u.test(workflow)){
+  if(/pull_request(?:_target)?:|permissions:[\s\S]*?\bwrite\b|environment:|secrets\.|vars\.|APP_URL|CRON_SECRET|TURSO_|RESEND_|\/api\/cron\/outbox|\bcurl\b|\bgh\s+workflow\b|\/dispatches\b|continue-on-error:|^\s{8}if:/mu.test(workflow)){
     errors.push('outbox watchdog must remain secret-free, read-only, and non-mutating');
   }
   if(/uses:\s+actions\/(?:checkout|setup-node)@v\d+/u.test(workflow)){

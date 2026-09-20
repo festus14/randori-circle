@@ -1840,7 +1840,8 @@ The schedule has a deterministic 15-minute grace aligned to five-minute UTC
 slots. An in-progress run becomes stuck at the worker's exact two-minute job
 deadline; queued work becomes stale only after the scheduling window. Fixed
 non-sensitive outcomes distinguish healthy, grace, missing, stale, failed,
-cancelled, skipped, stuck, malformed-response, and GitHub-API failure states.
+cancelled, skipped, stuck, manual-rerun, malformed-response, and GitHub-API
+failure states.
 
 Discovery constructs only the reviewed GitHub workflow-runs URL, validates the
 same event and branch locally, scans at most two 100-run pages, caps response
