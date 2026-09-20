@@ -8,9 +8,9 @@ const REHEARSAL_PATH='.github/workflows/turso-backup-restore-rehearsal.yml';
 const WATCHDOG_PATH='.github/workflows/turso-backup-restore-watchdog.yml';
 const DEPLOYABILITY_PATH='.github/workflows/deployability.yml';
 const WORKFLOW_DIGESTS=Object.freeze({
-  rehearsal:'47ef770732cc5086bf7dc6450649fb1314eb6e014ef71e90008fd86f70979bc4',
-  watchdog:'ae60ac60189df66771da959be6513f87b2fdaaec6c781f04f45093718a4d100a',
-  deployability:'1062c2f036ef8ae5726e8350f9c2b5a345c23d2b07c92ca7d8936729ef814b27',
+  rehearsal:'4689edfeeb154ab1682bd4856a312ba9041315bedf98e658ed2a4029dbf93229',
+  watchdog:'acf0183ed4c75b9be8ceec63bd6d1238774b2aedcb9674d14bb4ff55bce204b4',
+  deployability:'e81983931c58b9abcaea6569a40967b38346ce3c4923ea14f41d6eabf75da503',
 });
 const PROTECTED_REHEARSAL_RUN=[
   '        run: |',
@@ -249,7 +249,7 @@ function validateRehearsal(raw){
   add(errors,JSON.stringify(stepHeaders(source))===JSON.stringify([
     'name:Check out the latest default branch',
     'name:Refuse a stale main checkout',
-    'uses:actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020',
+    'uses:actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',
     'name:Install locked dependencies',
     'name:Run protected PITR rehearsal',
     'name:Restore source state and clean disposable restore',
@@ -280,11 +280,11 @@ function validateRehearsal(raw){
   add(errors,checkoutIsSafe(source,'Check out the latest default branch'),
     'rehearsal checkout must be SHA-pinned and persist no credentials');
   add(errors,actionsAreExact(source,[
-    'actions/checkout@11d5960a326750d5838078e36cf38b85af677262',
-    'actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020',
-    'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02',
-    'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02',
-    'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02',
+    'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
+    'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',
+    'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
+    'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
+    'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
   ]),'rehearsal external actions must match the immutable reviewed allowlist');
   add(errors,!/\bcontinue-on-error\s*:/i.test(source),
     'rehearsal must not continue after a failed safety step');
@@ -455,10 +455,10 @@ function validateWatchdog(raw){
   add(errors,checkoutIsSafe(source,'Check out the latest default branch'),
     'watchdog checkout must be SHA-pinned and persist no credentials');
   add(errors,actionsAreExact(source,[
-    'actions/checkout@11d5960a326750d5838078e36cf38b85af677262',
-    'actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020',
-    'actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093',
-    'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02',
+    'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
+    'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',
+    'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c',
+    'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
   ]),'watchdog external actions must match the immutable reviewed allowlist');
   add(errors,!/^\s{4}environment:/m.test(source)&&!hasSecretAccess(source)
     &&!/TURSO_PRODUCTION_PLATFORM_TOKEN|MIGRATION_DIGEST_HMAC_KEY/.test(source),
@@ -534,8 +534,8 @@ function validateCi(raw){
     ['name','runs-on','timeout-minutes','steps']),
   'backup-control CI job fields must match the reviewed read-only contract');
   add(errors,JSON.stringify(stepHeaders(source))===JSON.stringify([
-    'uses:actions/checkout@11d5960a326750d5838078e36cf38b85af677262',
-    'uses:actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020',
+    'uses:actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
+    'uses:actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',
     'name:Validate repository release contract',
     'name:Validate secret-free backup controls',
     'name:Test release-contract failure modes',
@@ -550,8 +550,8 @@ function validateCi(raw){
   add(errors,unnamedCheckoutIsSafe(source),
     'backup-control CI checkout must be SHA-pinned and persist no credentials');
   add(errors,actionsAreExact(source,[
-    'actions/checkout@11d5960a326750d5838078e36cf38b85af677262',
-    'actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020',
+    'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
+    'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',
   ]),'backup-control CI external actions must match the immutable reviewed allowlist');
   return errors;
 }

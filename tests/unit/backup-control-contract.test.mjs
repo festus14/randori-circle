@@ -168,11 +168,11 @@ test('watchdog permissions, isolation, schedule, and terminal alert fail closed'
 });
 
 test('external actions and checkout credentials must remain independently safe',()=>{
-  assert.ok(changed('rehearsal','actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020',
-    'actions/setup-node@v4').includes(
+  assert.ok(changed('rehearsal','actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',
+    'actions/setup-node@v7').includes(
     'rehearsal external actions must match the immutable reviewed allowlist'));
-  assert.ok(changed('watchdog','actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093',
-    'actions/download-artifact@v4').includes(
+  assert.ok(changed('watchdog','actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c',
+    'actions/download-artifact@v8').includes(
     'watchdog external actions must match the immutable reviewed allowlist'));
   assert.ok(changed('rehearsal','          persist-credentials: false',
     '          # persist-credentials: false\n        env:\n          persist-credentials: false').includes(
@@ -181,7 +181,7 @@ test('external actions and checkout credentials must remain independently safe',
     '          persist-credentials: true').includes(
     'watchdog checkout must be SHA-pinned and persist no credentials'));
   assert.ok(changed('watchdog','      - name: Use the supported Node runtime',
-    '      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n\n      - name: Use the supported Node runtime').includes(
+    '      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n\n      - name: Use the supported Node runtime').includes(
     'watchdog steps must match the reviewed read-only sequence'));
 });
 
@@ -223,7 +223,7 @@ test('secret placement and upload allowlists cannot be satisfied by decoy steps'
 
   assert.ok(changed('watchdog','      - name: Alert the accountable backup owner',
     `      - name: Upload unsafe extra evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: unsafe-extra
           path: \${{ runner.temp }}/unsafe-extra.json

@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 const OUTBOX_WORKFLOW_PATH='.github/workflows/outbox-dispatch.yml';
 const OUTBOX_WATCHDOG_WORKFLOW_PATH='.github/workflows/outbox-dispatch-watchdog.yml';
 const OUTBOX_WATCHDOG_SCRIPT_PATH='scripts/github-outbox-dispatch-watchdog.mjs';
-const OUTBOX_WATCHDOG_WORKFLOW_SHA256='7f0a1134ee921afd1a67eea627de2bb786c2a941e3ecdaf267aefc652cb2442d';
+const OUTBOX_WATCHDOG_WORKFLOW_SHA256='7843bfeb5b444df4ca202b45974f0699a5a348514dc7eaae64e8bc14f2e997eb';
 const OUTBOX_WATCHDOG_SCRIPT_SHA256='01eecb04b859e364e824708a12f3f2aea91751cb438954ebc90999328b4f2bc8';
 const REQUIRED_ROOT_FILES = [
   'index.html', 'package-lock.json', 'package.json', 'vercel.json', OUTBOX_WORKFLOW_PATH,
@@ -203,9 +203,9 @@ function validateOutboxWatchdogWorkflow(workflow){
       'outbox watchdog must run the reviewed assessor'],
     [/      - name: Assess scheduled outbox delivery\n        timeout-minutes: 2\n        env:\n          GITHUB_TOKEN: \$\{\{ github\.token \}\}\n          WATCHDOG_DEFAULT_BRANCH: \$\{\{ github\.event\.repository\.default_branch \}\}\n          WATCHDOG_SCHEDULE_GRACE_MS: '900000'\n          WATCHDOG_WORKER_DEADLINE_MS: '120000'\n          WATCHDOG_API_TIMEOUT_MS: '10000'\n          WATCHDOG_MAX_PAGES: '2'\n          WATCHDOG_PER_PAGE: '100'\n        run: node scripts\/github-outbox-dispatch-watchdog\.mjs(?:\n|$)/,
       'outbox watchdog assessment step must retain its exact fail-closed shape'],
-    [/uses:\s+actions\/checkout@11d5960a326750d5838078e36cf38b85af677262/,
+    [/uses:\s+actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1/,
       'outbox watchdog checkout must use the reviewed immutable revision'],
-    [/uses:\s+actions\/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020/,
+    [/uses:\s+actions\/setup-node@820762786026740c76f36085b0efc47a31fe5020/,
       'outbox watchdog Node setup must use the reviewed immutable revision'],
     [/persist-credentials:\s*false/,
       'outbox watchdog checkout must not persist GitHub credentials'],
