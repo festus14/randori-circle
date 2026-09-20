@@ -184,6 +184,166 @@ test('invite reload refreshes only the opaque tab binding and preserves its boun
   expect(await page.evaluate(()=>sessionStorage.getItem('randori-invite-binding-v1'))).toBeNull();
 });
 
+test('a rate-limited binding refresh stays inert and recovers after its cooldown',async({page})=>{
+  const token='L'.repeat(43);
+  const poisonedBinding='P'.repeat(43);
+  const prepareBodies:unknown[]=[];
+  await page.clock.install();
+  await mockApi(page,{
+    '/api/auth/capabilities':verifiedInviteCapabilities,
+    '/api/invitations/prepare':request=>{
+      const body=request.postDataJSON();
+      prepareBodies.push(body);
+      if(prepareBodies.length===1){
+        expect(body).toEqual({token});
+        return {ok:true,binding:inviteBinding,expires_in_seconds:600};
+      }
+      expect(body).toEqual({binding:inviteBinding});
+      if(prepareBodies.length===2){
+        return {_status:429,error:'too many attempts',retry_after_seconds:2,
+          binding:poisonedBinding,expires_in_seconds:600};
+      }
+      return {ok:true,binding:inviteBinding,expires_in_seconds:300};
+    },
+  });
+  await resetClientState(page,false,{},true);
+
+  await page.goto(`/invite#invite=${token}`,{waitUntil:'domcontentloaded'});
+  await expect(page.getByTestId('invite-status')).toContainText('Invitation verified');
+  await page.reload({waitUntil:'domcontentloaded'});
+
+  await expect(page.getByTestId('invite-status')).toContainText('Too many attempts');
+  await expect(page.getByTestId('invite-continue')).toBeDisabled();
+  expect(await page.evaluate(()=>(window as any)._randori_invite_flow.ready)).toBe(false);
+  expect(await page.evaluate(()=>sessionStorage.getItem('randori-invite-binding-v1'))).toBe(inviteBinding);
+
+  await page.clock.fastForward(2_100);
+  await page.reload({waitUntil:'domcontentloaded'});
+  await expect(page.getByTestId('invite-status')).toContainText('Invitation verified');
+  await expect(page.getByTestId('invite-continue')).toBeEnabled();
+  expect(await page.evaluate(()=>sessionStorage.getItem('randori-invite-binding-v1'))).toBe(inviteBinding);
+  expect(prepareBodies).toEqual([{token},{binding:inviteBinding},{binding:inviteBinding}]);
+});
+
+test('a token-path rate limit cannot persist an old or response-provided binding',async({page})=>{
+  const token='N'.repeat(43);
+  const oldBinding='O'.repeat(43);
+  const responseBinding='Q'.repeat(43);
+  await mockApi(page,{
+    '/api/auth/capabilities':verifiedInviteCapabilities,
+    '/api/invitations/prepare':request=>{
+      expect(request.postDataJSON()).toEqual({token});
+      return {_status:429,error:'too many attempts',retry_after_seconds:3,
+        binding:responseBinding,expires_in_seconds:600};
+    },
+  });
+  await resetClientState(page,false,{},true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await page.evaluate(value=>sessionStorage.setItem('randori-invite-binding-v1',value),oldBinding);
+
+  await page.goto(`/invite#invite=${token}`,{waitUntil:'domcontentloaded'});
+  await expect(page.getByTestId('invite-status')).toContainText('Too many attempts');
+  await expect(page.getByTestId('invite-continue')).toBeDisabled();
+  expect(await page.evaluate(()=>sessionStorage.getItem('randori-invite-binding-v1'))).toBeNull();
+});
+
+test('evaluated invalid and server-error refreshes clear the stored binding',async({page})=>{
+  const outcomes=[
+    ...[400,401,403,404,409,410,503].map(status=>({
+      label:String(status),response:{_status:status,error:'invitation unavailable'},
+    })),
+    {label:'mismatch',response:{ok:true,binding:'M'.repeat(43),expires_in_seconds:600}},
+    {label:'lifetime',response:{ok:true,binding:inviteBinding,expires_in_seconds:601}},
+  ];
+  let responseIndex=0;
+  await mockApi(page,{
+    '/api/auth/capabilities':verifiedInviteCapabilities,
+    '/api/invitations/prepare':request=>{
+      expect(request.postDataJSON()).toEqual({binding:inviteBinding});
+      return outcomes[responseIndex++].response;
+    },
+  });
+  await resetClientState(page,false,{},true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+
+  for(const [index,outcome] of outcomes.entries()){
+    await page.evaluate(value=>sessionStorage.setItem('randori-invite-binding-v1',value),inviteBinding);
+    await page.goto(`/invite?failure=${outcome.label}-${index}`,{waitUntil:'domcontentloaded'});
+    await expect(page.getByTestId('invite-status')).toContainText('unavailable');
+    await expect(page.getByTestId('invite-continue')).toBeDisabled();
+    expect(await page.evaluate(()=>sessionStorage.getItem('randori-invite-binding-v1'))).toBeNull();
+  }
+  expect(responseIndex).toBe(outcomes.length);
+});
+
+test('malformed and network-failed binding refreshes clear stored state',async({page})=>{
+  let prepareCalls=0;
+  await page.addInitScript(()=>{
+    const originalFetch=window.fetch.bind(window);
+    window.fetch=(input,init)=>{
+      if(new URL(input instanceof Request?input.url:String(input),window.location.href).pathname
+        ==='/api/invitations/prepare') return Promise.reject(new TypeError('network unavailable'));
+      return originalFetch(input,init);
+    };
+  });
+  await mockApi(page,{
+    '/api/auth/capabilities':verifiedInviteCapabilities,
+    '/api/invitations/prepare':()=>{ prepareCalls+=1; return {ok:true}; },
+  });
+  await resetClientState(page,false,{},true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+
+  await page.evaluate(()=>sessionStorage.setItem('randori-invite-binding-v1','not-canonical'));
+  await page.goto('/invite?failure=malformed',{waitUntil:'domcontentloaded'});
+  await expect(page.getByTestId('invite-status')).toContainText('unavailable');
+  expect(await page.evaluate(()=>sessionStorage.getItem('randori-invite-binding-v1'))).toBeNull();
+  expect(prepareCalls).toBe(0);
+
+  await page.evaluate(value=>sessionStorage.setItem('randori-invite-binding-v1',value),inviteBinding);
+  await page.goto('/invite?failure=network',{waitUntil:'domcontentloaded'});
+  await expect(page.getByTestId('invite-status')).toContainText('unavailable');
+  await expect(page.getByTestId('invite-continue')).toBeDisabled();
+  expect(await page.evaluate(()=>sessionStorage.getItem('randori-invite-binding-v1'))).toBeNull();
+  expect(prepareCalls).toBe(0);
+});
+
+test('a delayed rate limit cannot restore invite state after leaving the route',async({page})=>{
+  const token='U'.repeat(43);
+  let prepareCalls=0;
+  let releaseRefresh:(()=>void)|undefined;
+  const refreshGate=new Promise<void>(resolve=>{ releaseRefresh=resolve; });
+  await mockApi(page,{
+    '/api/auth/capabilities':verifiedInviteCapabilities,
+    '/api/invitations/prepare':async request=>{
+      prepareCalls+=1;
+      if(prepareCalls===1){
+        expect(request.postDataJSON()).toEqual({token});
+        return {ok:true,binding:inviteBinding,expires_in_seconds:600};
+      }
+      expect(request.postDataJSON()).toEqual({binding:inviteBinding});
+      await refreshGate;
+      return {_status:429,error:'too many attempts',retry_after_seconds:2};
+    },
+  });
+  await resetClientState(page,false,{},true);
+  await page.goto(`/invite#invite=${token}`,{waitUntil:'domcontentloaded'});
+  await expect(page.getByTestId('invite-status')).toContainText('Invitation verified');
+
+  await page.reload({waitUntil:'domcontentloaded'});
+  await expect.poll(()=>prepareCalls).toBe(2);
+  await page.evaluate(()=>(window as any)._randori_invite_flow.complete());
+  const response=page.waitForResponse(candidate=>new URL(candidate.url()).pathname==='/api/invitations/prepare'
+    &&candidate.status()===429);
+  releaseRefresh?.();
+  await response;
+  await page.evaluate(()=>new Promise<void>(resolve=>setTimeout(resolve,0)));
+
+  await expect(page).toHaveURL('/');
+  await expect(page.getByTestId('invite-status')).toBeHidden();
+  expect(await page.evaluate(()=>(window as any)._randori_invite_flow.active)).toBe(false);
+  expect(await page.evaluate(()=>sessionStorage.getItem('randori-invite-binding-v1'))).toBeNull();
+});
+
 test('an auth change fences a delayed invitation preparation response',async({page})=>{
   const token='D'.repeat(43);
   const user={id:19,email:'member@example.test',name:'Existing Member',is_admin:false,is_available:true};
@@ -726,9 +886,9 @@ test('a pre-auth refresh cannot clear a newer successful signup identity', async
   await resetClientState(page);
   await page.goto('/', { waitUntil: 'domcontentloaded' });
 
-  // Let the three bootstrap reconciliation attempts start so the controlled
-  // request below cannot be stolen by a scheduled refresh.
-  await expect.poll(() => authMeCalls).toBeGreaterThanOrEqual(3);
+  // The authoritative signed-out result suppresses later bootstrap attempts,
+  // so the controlled request below cannot be stolen by a scheduled refresh.
+  await expect.poll(() => authMeCalls).toBeGreaterThanOrEqual(1);
   delayNextRefresh=true;
   const staleRefresh=page.evaluate(()=>(window as any)._randori_auth.refreshMe());
   await expect.poll(()=>delayedRefreshStarted).toBe(true);

@@ -2039,3 +2039,36 @@ it needs no migration, environment variable, credential, deployment setting,
 or rollback procedure. Revert it only together with an equivalent deterministic
 clock strategy. The audit and commands are recorded in
 [`AVAILABILITY_TEST_CLOCK.md`](AVAILABILITY_TEST_CLOCK.md).
+
+## ID-49: Retain only an existing prepared binding across rate limiting
+
+Status: accepted security and signup-recovery increment.
+
+**Decision.** A `429` from prepared-invitation refresh is unevaluated: the
+server applies its rate limit before checking the binding and does not revoke
+the signed claim. The browser therefore retains the exact syntactically valid
+binding that was already present in this tab only when storage still contains
+that same value. The gate remains non-ready, and signup, resend, and invite
+OAuth remain unavailable until a later `/invite` reload revalidates the binding
+and receives a fresh bounded lifetime.
+
+Raw invitation preparation never retains prior storage on `429`, and no value
+from a rate-limited response is persisted. Evaluated invalid or mismatched
+claims, malformed envelopes, non-429 errors, network failures, expiry,
+identity changes, route changes, and stale generations clear or leave cleared
+storage. Delayed responses cannot reactivate a completed invite route or
+overwrite storage owned by a newer gate generation.
+
+**Alternatives.** Clearing on every non-success response is simpler but turns a
+temporary rate limit into permanent loss of the tab's only reload credential.
+Persisting a response-provided value would let an unevaluated response replace
+trusted state. Automatically retrying would consume more rate-limit budget and
+create timer lifecycle work. Retaining only the exact pre-request value keeps
+the recovery path narrow and explicit.
+
+**Rollout and recovery.** Ship as an additive client patch with no schema,
+secret, or production-data change. Canary a successful prepare, a rate-limited
+reload, an inert cooldown state, and a successful reload after the cooldown.
+Also verify raw-token `429` and delayed stale responses cannot write storage.
+Rollback reverts this client-only retention exception; server-side claim,
+expiry, and rate-limit enforcement remain authoritative.
