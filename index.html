@@ -969,7 +969,10 @@ p{margin:0}
             <section id="circleLifecyclePanel" data-testid="circle-lifecycle" hidden aria-labelledby="circleLifecycleTitle" style="display:none;gap:10px;border-top:1px solid var(--border);padding-top:12px">
               <div class="membership-actions">
                 <div><b id="circleLifecycleTitle" style="font-size:13px">Membership settings</b><div id="circleLifecycleHelp" class="small muted" style="margin-top:3px"></div></div>
-                <button id="circleLeave" data-testid="circle-leave" class="pill membership-danger" type="button">Leave circle</button>
+                <div class="row">
+                  <button id="circleArchive" data-testid="circle-archive" class="pill membership-danger" type="button" hidden>Archive circle</button>
+                  <button id="circleLeave" data-testid="circle-leave" class="pill membership-danger" type="button">Leave circle</button>
+                </div>
               </div>
               <div id="circleLifecycleStatus" class="small muted" role="status" aria-live="polite"></div>
               <form id="circleMemberSearchForm" data-testid="circle-member-search-form" role="search" class="row" hidden style="align-items:flex-end">
@@ -3255,6 +3258,7 @@ async function refreshMe(){
   const circleMemberSearchClear=document.getElementById('circleMemberSearchClear');
   const circleMemberSearchStatus=document.getElementById('circleMemberSearchStatus');
   const circleMembersLoadMore=document.getElementById('circleMembersLoadMore');
+  const circleArchive=document.getElementById('circleArchive');
   const circleLeave=document.getElementById('circleLeave');
   const circleContextPanel=document.getElementById('circleContextPanel');
   const circleContextSelect=document.getElementById('circleContextSelect');
@@ -3674,6 +3678,7 @@ async function refreshMe(){
     if(circleMemberSearchStatus) circleMemberSearchStatus.textContent='';
     if(circleMembersLoadMore){ circleMembersLoadMore.hidden=true; circleMembersLoadMore.disabled=false; }
     if(!preserveLifecycleNotice) clearCircleLifecycleNotice();
+    if(circleArchive){ circleArchive.hidden=true; circleArchive.disabled=false; }
     if(circleLeave) circleLeave.disabled=false;
   }
 
@@ -3825,6 +3830,10 @@ async function refreshMe(){
     if(code==='member not found') return 'That member is no longer available in this circle.';
     if(code==='choose another active member') return 'Choose another active member for ownership.';
     if(code==='use leave circle for your own membership') return 'Use Leave circle to remove your own membership.';
+    if(error?.code==='member_last_circle') return 'Every active member needs another active circle before this circle can be archived.';
+    if(error?.code==='primary_circle_required') return 'The primary circle cannot be archived.';
+    if(error?.code==='circle_context_changed') return 'Your active circle changed elsewhere. Refreshing the current circle.';
+    if(code==='circle unavailable') return 'This circle is no longer available to archive.';
     return 'Membership could not be changed. Try again.';
   }
 
@@ -3860,8 +3869,11 @@ async function refreshMe(){
     const createdAt=Number(pending?.created_at);
     const currentCircleId=String(activeCircleContext?.active_circle?.public_id||'');
     const currentContextVersion=Number(activeCircleContext?.context_version||0);
-    const valid=pending?.v===1&&['deactivate','transfer'].includes(pending?.action)
-      &&Number.isSafeInteger(pending?.member_id)&&pending.member_id>0
+    const actionValid=['deactivate','transfer','archive'].includes(pending?.action);
+    const targetValid=pending?.action==='archive'
+      ?!Object.prototype.hasOwnProperty.call(pending,'member_id')
+      :Number.isSafeInteger(pending?.member_id)&&pending.member_id>0;
+    const valid=pending?.v===1&&actionValid&&targetValid
       &&Number.isSafeInteger(pending?.actor_id)&&pending.actor_id===actorId
       &&Number.isFinite(createdAt)&&createdAt<=Date.now()+30_000
       &&Date.now()-createdAt<=LIFECYCLE_RECENT_ACTION_TTL_MS
@@ -3870,13 +3882,14 @@ async function refreshMe(){
     if(consume||!valid) clearLifecycleRecentAction();
     return valid?pending:null;
   }
-  async function requestLifecycleRecentAuth(action,memberId){
+  async function requestLifecycleRecentAuth(action,memberId=null){
     const actorId=Number(me?.id||me?.uid);
-    if(!Number.isSafeInteger(actorId)||actorId<1||!['deactivate','transfer'].includes(action)
-      ||!Number.isSafeInteger(memberId)||memberId<1) return false;
+    const targetValid=action==='archive'||Number.isSafeInteger(memberId)&&memberId>0;
+    if(!Number.isSafeInteger(actorId)||actorId<1||!['deactivate','transfer','archive'].includes(action)
+      ||!targetValid) return false;
     try{
       sessionStorage.setItem(LIFECYCLE_RECENT_ACTION_KEY,JSON.stringify({
-        v:1,action,member_id:memberId,actor_id:actorId,created_at:Date.now(),
+        v:1,action,...(action==='archive'?{}:{member_id:memberId}),actor_id:actorId,created_at:Date.now(),
         ...(authCapabilities.multiCircleControlPlane?{
           circle_public_id:String(activeCircleContext?.active_circle?.public_id||''),
           context_version:Number(activeCircleContext?.context_version||0),
@@ -3889,6 +3902,8 @@ async function refreshMe(){
     }
     return window._randori_identity.confirm(action==='transfer'
       ?'Confirm your identity before transferring circle ownership.'
+      :action==='archive'
+      ?'Confirm your identity before archiving this circle.'
       :'Confirm your identity before deactivating an owner.');
   }
   async function resumeLifecycleRecentAction(){
@@ -3905,7 +3920,9 @@ async function refreshMe(){
       publishCircleLifecycleNotice('Confirmation expired or the signed-in account changed. No circle change was made.');
       return false;
     }
-    return applyMemberAction(pending.action,{id:pending.member_id},{skipPrompt:true,allowRecentAuth:false});
+    return pending.action==='archive'
+      ?archiveSelectedCircle({skipPrompt:true,allowRecentAuth:false})
+      :applyMemberAction(pending.action,{id:pending.member_id},{skipPrompt:true,allowRecentAuth:false});
   }
   window.addEventListener('randori:recent-auth-confirmed',()=>{ void resumeLifecycleRecentAction(); });
   window.addEventListener('randori:recent-auth-cancelled',event=>{
@@ -4146,6 +4163,12 @@ async function refreshMe(){
       if(circleMembersLoadMore) circleMembersLoadMore.hidden=true;
     }
     if(circleLeave){ circleLeave.disabled=false; circleLeave.textContent='Leave circle'; }
+    if(circleArchive){
+      const canArchive=role==='owner'&&authCapabilities.multiCircleControlPlane
+        &&activeCircleContext?.active_circle?.is_primary===false;
+      circleArchive.hidden=!canArchive;
+      circleArchive.disabled=false;
+    }
     if(role==='owner'&&!loadRoster){
       if(circleManageMembers) circleManageMembers.hidden=true;
       if(circleMemberSearchForm) circleMemberSearchForm.hidden=true;
@@ -4158,6 +4181,62 @@ async function refreshMe(){
     }else if(role==='owner'&&!(circleRosterLoading&&circleRosterLoadEpoch===epoch)) await loadManagedMembers(epoch);
     else if(circleLifecycleStatus&&!hasCircleLifecycleNotice()) circleLifecycleStatus.textContent='You are an active circle member.';
   }
+
+  async function archiveSelectedCircle({skipPrompt=false,allowRecentAuth=true}={}){
+    if(circleLifecyclePending||!me||activeCircleRole!=='owner'
+      ||!authCapabilities.multiCircleControlPlane
+      ||activeCircleContext?.active_circle?.is_primary!==false) return false;
+    const operation=captureCircleControlOperation();
+    if(!circleControlOperationMatches(operation)||!operation.circlePublicId
+      ||!Number.isSafeInteger(operation.contextVersion)) return false;
+    const name=String(activeCircleContext.active_circle?.name||'this circle').slice(0,120);
+    if(!skipPrompt&&!await showConfirm(`Archive ${name}?`,
+      'Every active member will immediately lose access to this circle. Pairing and schedule history is retained but will no longer be available in the app.')) return false;
+    if(!circleControlOperationMatches(operation)) return false;
+    const actorId=Number(me.id||me.uid);
+    circleLifecyclePending=true;
+    clearCircleLifecycleNotice();
+    circleLifecyclePanel?.querySelectorAll('button').forEach(button=>{ button.disabled=true; });
+    if(circleLifecycleStatus) circleLifecycleStatus.textContent='Archiving circle…';
+    try{
+      const result=await api('/api/circles',{method:'DELETE',body:{
+        circle_public_id:operation.circlePublicId,
+        expected_context_version:operation.contextVersion,
+      }});
+      if(!me||Number(me.id||me.uid)!==actorId||!circleControlOperationMatches(operation)) return false;
+      if(result?.ok!==true||result.archived_circle_public_id!==operation.circlePublicId
+        ||!Array.isArray(result.circles)||result.circles.some(circle=>circle?.public_id===operation.circlePublicId)
+        ||result.active_circle?.public_id===operation.circlePublicId
+        ||!Number.isSafeInteger(result.context_version)||result.context_version<=operation.contextVersion){
+        throw new Error('invalid circle archive response');
+      }
+      if(circleLifecycleStatus) circleLifecycleStatus.textContent='Circle archived. Loading your remaining circle…';
+      clearPrivateCircleViewForSwitch();
+      circleContextChannel?.postMessage({v:1,user_id:actorId,context_version:result.context_version,force:true});
+      window.location.reload();
+      return true;
+    }catch(error){
+      if(!circleControlOperationMatches(operation)) return false;
+      if(allowRecentAuth&&(error?.code==='recent_auth_required'||error?.error==='recent authentication required')){
+        if(circleLifecycleStatus) circleLifecycleStatus.textContent='Confirm your identity to continue. No change has been made yet.';
+        if(!await requestLifecycleRecentAuth('archive')){
+          if(!circleControlOperationMatches(operation)) return false;
+          publishCircleLifecycleNotice('Confirmation is unavailable. No circle change was made.');
+        }
+        return false;
+      }
+      publishCircleLifecycleNotice(lifecycleErrorMessage(error));
+      if(error?.code==='circle_context_changed') setTimeout(()=>window.location.reload(),80);
+      return false;
+    }finally{
+      if(circleControlOperationMatches(operation)){
+        circleLifecyclePending=false;
+        circleLifecyclePanel?.querySelectorAll('button').forEach(button=>{ button.disabled=false; });
+      }
+    }
+  }
+
+  circleArchive?.addEventListener('click',()=>{ void archiveSelectedCircle(); });
 
   circleLeave?.addEventListener('click',async()=>{
     if(circleLifecyclePending||!me||!['owner','member'].includes(activeCircleRole)) return;

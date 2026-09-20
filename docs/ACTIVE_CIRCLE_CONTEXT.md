@@ -18,6 +18,12 @@ separately default-off.
   Migration v14 binds one durable receipt to the exact account, session, name,
   circle, audit, and returned generation. Creation and selection commit in one
   transaction; see `CIRCLE_CREATION.md`.
+- `DELETE /api/circles` accepts the exact selected secondary public ID and
+  expected context version. It requires same-origin submission, a fresh
+  session-scoped authentication proof, and active ownership. The primary circle
+  and any circle whose active member lacks another active circle are protected.
+  Archive advances every affected selected session to a deterministic fallback
+  in the same transaction; see `CIRCLE_ARCHIVE.md`.
 - Migration v12 owns `auth_session_circle_contexts`, keyed by the
   hashed live session. Client-provided public IDs select a candidate; active
   membership is still rechecked in the write transaction and on every use.
@@ -111,7 +117,8 @@ refresh only until its actor, circle, context version, and TTL are revalidated.
    required credential consumer separately.
 6. Enable the control-plane flag in staging. Create a fixture account with two active circle
    memberships and verify selection, cross-tab reload, scoped roster/invitation
-   operations, last-owner rules, and the explicit pairing/workspace 409.
+   operations, last-owner rules, secondary archive/replay, every-member fallback,
+   retained coordination data, and the explicit pairing/workspace 409.
 7. Keep `MULTI_CIRCLE_AVAILABILITY_ENABLED=false`, then enable it in staging.
    Verify opposite primary/secondary decisions, exact request/response context
    versions, secondary `cycle_default`, stale-switch and membership-removal
@@ -137,13 +144,13 @@ roll back scheduling too, disable `SECONDARY_CIRCLE_SCHEDULING_ENABLED`. For a b
 `MULTI_CIRCLE_AVAILABILITY_ENABLED` to restore the legacy availability gate
 without disabling roster/invitation selection; disable
 `MULTI_CIRCLE_CONTROL_PLANE_ENABLED` only if the broader control plane must also
-roll back. Context, cycle, decision, and schedule rows can remain; no membership
-or tenant data is deleted.
+roll back. Context, cycle, decision, archive, and schedule rows can remain; no
+membership or tenant data is deleted. Do not clear an archive marker as rollback.
 
 ## Deferred work
 
-Circle archive and secondary workspace ownership remain separate increments.
-Messages, runs, snapshots, video, and AI must gain canonical `circle_id`
+Operator-reviewed archive recovery and secondary workspace ownership remain
+separate increments. Messages, runs, snapshots, video, and AI must gain canonical `circle_id`
 ownership before their secondary-circle flags can be enabled. Postgres with
 row-level security remains the preferred final tenancy boundary; a Turso
 retrofit remains possible but requires table rebuilds and application-enforced

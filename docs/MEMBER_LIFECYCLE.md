@@ -14,6 +14,7 @@ revoke pending invitations.
 | Reactivate | Active owner | Other inactive member/owner in the same circle | Membership becomes active; no session is issued |
 | Leave | Active member/owner | Self | Membership becomes inactive; all own sessions are revoked |
 | Transfer ownership | Active owner | Other active member in the same circle | Target becomes owner and actor becomes member atomically |
+| Archive secondary circle | Active owner with recent auth | Exact selected non-primary circle | Circle access ends and every selected session moves to another active circle; retained history is unchanged |
 | Revoke invitation | Active owner | Pending invitation in the same circle | Existing invitation endpoint revokes it and records its audit event |
 
 Cross-circle IDs and missing IDs produce the same response. Self-deactivation is
@@ -43,6 +44,10 @@ must authenticate again after reactivation.
   Routine non-owner membership changes and self-leave remain explicit but do
   not add credential friction. See [recent authentication for sensitive circle
   changes](LIFECYCLE_RECENT_AUTH.md).
+- Secondary archive uses the same recent-auth surface but is a circle-level
+  soft-archive transaction. It protects every active member's last circle,
+  moves all selected contexts to primary-first/lowest-ID fallbacks, and retains
+  all membership and coordination rows. See [secondary-circle archive](CIRCLE_ARCHIVE.md).
 - Production and local development use the same endpoint and domain rules. The
   membership capability remains fail-closed behind the existing readiness and
   feature checks.

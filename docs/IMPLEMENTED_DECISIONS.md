@@ -1548,8 +1548,8 @@ decision and runbook mean that exact branch.
 
 ## ID-37: Make legacy data-route readiness read-only and route-scoped
 
-Status: implemented as a DDL-removal increment with no schema migration. ID-36
-is reserved for the independently developed backup-control increment.
+Status: implemented as a DDL-removal increment with no schema migration. It
+follows the independently developed backup-control increment in ID-36.
 
 **Decision.** The ordinary `api/data.js` routes no longer create, alter, or
 index schema. Migration v1 remains the owner of the legacy account, profile,
@@ -1588,3 +1588,51 @@ protected migration workflow to roll forward. Reverting the application build
 requires no database rollback but reintroduces request-time DDL and is only an
 emergency compatibility action. The route matrix and verification commands are
 recorded in `DATA_RUNTIME_DDL_RETIREMENT.md`.
+
+## ID-38: Archive a target-explicit secondary circle as a soft authorization boundary
+
+Status: implemented behind the existing multi-circle control-plane gate with
+no schema migration. It follows the independently developed backup-control and
+runtime data-DDL increments in IDs 36 and 37.
+
+**Decision.** `DELETE /api/circles` carries the selected secondary circle's
+public ID and context generation in an exact same-origin request. The ID keeps
+an HTTP retry pinned to its original target after fallback; it never grants
+access. A first archive requires the exact live selected context, active owner
+membership, non-primary circle, and session-scoped recent-auth proof inside one
+write transaction. A conditional update also proves that every active member
+has another active membership in an unarchived circle. The transaction writes
+one deterministic `circle.archived` audit and moves all stored contexts that
+selected the target to a primary-first, then lowest-ID fallback, incrementing
+each generation. An identical owner retry validates the retained membership,
+fresh proof, archived marker, and audit before returning current context without
+another write. Bounded retries are limited to recognized pre-commit lock
+conflicts; ambiguous commit results require the same target/version retry.
+
+Archive sets only `circles.archived_at`. Memberships, invitations, creation
+receipts, availability, immutable publications and eligibility, groups,
+schedules and proposals, outbox rows, and earlier audits are retained. Existing
+authorization and delivery preflights require an unarchived circle, so those
+records become inaccessible through normal product paths and queued delivery
+is suppressed when it has not already passed final provider preflight. The
+browser resumes archive through the existing single recent-auth continuation,
+then clears private/workspace state, broadcasts a forced context change, and
+reloads. There is no public unarchive path; recovery is a separately reviewed
+operator concern because retained memberships would become active again.
+
+**Alternatives.** Archiving the server's current circle without an explicit
+target was rejected because a replay could archive the newly selected fallback.
+Hard deletion was rejected because it destroys evidence and conflicts with
+restrictive immutable-data foreign keys. Leaving a bumped context pointing at
+the archived circle was rejected because it creates avoidable selection errors.
+Revoking all affected sessions was rejected because the every-member safety
+check guarantees a usable fallback. A new receipt table and independent flag
+were rejected because the once-per-circle audit key provides durable replay
+evidence and the complete control-plane flag already dark-launches the route.
+
+**Rollout and recovery.** Reach exact managed readiness through v16 using the
+central protected sequence, deploy with `MULTI_CIRCLE_CONTROL_PLANE_ENABLED`
+false, then canary owner/non-owner, recent-auth, primary/last-circle guards,
+concurrency, fallback, stale-tab fencing, and retained historical rows in
+staging. Rollback disables the control-plane flag and preserves every marker and
+row; never clear `archived_at`, delete tenant history, or downgrade the schema.

@@ -16,6 +16,8 @@ let selected={ok:true,membership:listed.circles[1],context_version:1,changed:tru
 let readinessError=null;
 let creationReadinessError=null;
 let creationResult={ok:true,circle:{public_id:'circle-created',name:'Created',role:'owner',is_primary:false},context_version:2,created:true};
+let archiveResult={ok:true,changed:true,circle:{public_id:'circle-secondary',name:'Secondary'}};
+let archiveError=null;
 const calls=[];
 const db={};
 
@@ -33,6 +35,8 @@ beforeEach(()=>{
   readinessError=null;
   creationReadinessError=null;
   creationResult={ok:true,circle:{public_id:'circle-created',name:'Created',role:'owner',is_primary:false},context_version:2,created:true};
+  archiveResult={ok:true,changed:true,circle:{public_id:'circle-secondary',name:'Secondary'}};
+  archiveError=null;
   calls.length=0;
 });
 
@@ -50,8 +54,33 @@ mock.module('../../api/_circle-membership.js',{exports:{
 
 mock.module('../../api/_active-circle.js',{exports:{
   multiCircleControlPlaneEnabled:()=>enabled,
+  requestCircleContextVersion:req=>{
+    const value=req.headers?.['x-randori-circle-context-version'];
+    return typeof value==='string'&&/^(?:0|[1-9]\d*)$/.test(value)?Number(value):null;
+  },
   listSessionCircleContexts:async(_db,payload)=>{ calls.push(['list',_db,payload]); return listed; },
   selectActiveCircleContext:async(_db,payload,input)=>{ calls.push(['select',_db,payload,input]); return selected; },
+}});
+
+class MockCircleArchiveError extends Error{
+  constructor(code){ super(code); this.code=code; }
+}
+mock.module('../../api/_circle-archive.js',{exports:{
+  CircleArchiveError:MockCircleArchiveError,
+  parseCircleArchive:body=>{
+    if(!body||typeof body!=='object'||Array.isArray(body)
+      ||Object.keys(body).sort().join(',')!=='circle_public_id,expected_context_version'
+      ||typeof body.circle_public_id!=='string'||!body.circle_public_id
+      ||!Number.isSafeInteger(body.expected_context_version)||body.expected_context_version<0){
+      throw new MockCircleArchiveError('CIRCLE_ARCHIVE_INPUT_INVALID');
+    }
+    return {circlePublicId:body.circle_public_id,expectedContextVersion:body.expected_context_version};
+  },
+  archiveSecondaryCircle:async(_db,payload,input)=>{
+    calls.push(['archive',_db,payload,input]);
+    if(archiveError) throw archiveError;
+    return archiveResult;
+  },
 }});
 
 class MockCircleCreationError extends Error{
@@ -167,6 +196,65 @@ test('circle creation validates before storage, requires same origin, and projec
   response=await invoke({method:'POST',body:{name:'Created',request_id:'opaque_request_123456'}});
   assert.equal(response.status,409);
   assert.equal(response.body.code,'circle_ownership_limit');
+});
+
+test('secondary archive is same-origin, exact, context-bound, and projects the safe fallback',async()=>{
+  const body={circle_public_id:'circle-secondary',expected_context_version:4};
+  let response=await invoke({method:'DELETE',headers:{origin:'https://cross-origin.example',
+    'x-randori-circle-context-version':'4'},body});
+  assert.equal(response.status,403);
+  assert.equal(calls.length,0);
+
+  for(const invalid of [{},{circle_public_id:'circle-secondary'},
+    {...body,expected_context_version:'4'},{...body,extra:true}]){
+    response=await invoke({method:'DELETE',headers:{'x-randori-circle-context-version':'4'},body:invalid});
+    assert.equal(response.status,400);
+  }
+  response=await invoke({method:'DELETE',headers:{'x-randori-circle-context-version':'3'},body});
+  assert.deepEqual(response.body,{error:'circle context changed',code:'circle_context_changed'});
+  assert.equal(calls.length,0);
+
+  listed={circles:[listed.circles[0]],active:listed.circles[0],context_version:5,selection_required:false};
+  response=await invoke({method:'DELETE',headers:{'x-randori-circle-context-version':'4'},body});
+  assert.equal(response.status,200);
+  assert.deepEqual(response.body,{
+    ok:true,
+    circles:[{public_id:'circle-primary',name:'Primary',role:'owner',is_primary:true}],
+    active_circle:{public_id:'circle-primary',name:'Primary',role:'owner',is_primary:true},
+    context_version:5,selection_required:false,
+    archived_circle_public_id:'circle-secondary',archived:true,
+  });
+  assert.deepEqual(calls,[
+    ['archive',db,authPayload,{circlePublicId:'circle-secondary',expectedContextVersion:4}],
+    ['list',db,authPayload],
+  ]);
+});
+
+test('archive failures are stable, non-leaking, and recent-auth remains actionable',async()=>{
+  const request=()=>invoke({method:'DELETE',headers:{'x-randori-circle-context-version':'4'},
+    body:{circle_public_id:'circle-secondary',expected_context_version:4}});
+  for(const [reason,status,body] of [
+    ['circle_unavailable',404,{error:'circle unavailable'}],
+    ['context_changed',409,{error:'circle context changed',code:'circle_context_changed'}],
+    ['primary_circle',409,{error:'the primary circle cannot be archived',code:'primary_circle_required'}],
+    ['last_circle',409,{error:'every active member needs another circle before archive',code:'member_last_circle'}],
+    ['session_changed',401,{error:'authentication required'}],
+  ]){
+    archiveResult={ok:false,reason};
+    const response=await request();
+    assert.equal(response.status,status);
+    assert.deepEqual(response.body,body);
+  }
+  archiveResult={ok:true,changed:true,circle:{public_id:'circle-secondary',name:'Secondary'}};
+  archiveError=Object.assign(new Error('recent authentication required'),{code:'RECENT_AUTH_REQUIRED'});
+  let response=await request();
+  assert.equal(response.status,403);
+  assert.deepEqual(response.body,{error:'recent authentication required',code:'recent_auth_required'});
+  archiveError=new MockCircleArchiveError('CIRCLE_ARCHIVE_COMMIT_UNKNOWN');
+  response=await request();
+  assert.equal(response.status,503);
+  assert.deepEqual(response.body,{error:'circle archive status unknown; retry the same archive request',
+    code:'circle_archive_status_unknown'});
 });
 
 test('disabled, unauthenticated, and unavailable context paths fail closed',async()=>{
