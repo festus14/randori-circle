@@ -480,6 +480,7 @@ for(const delayedAction of ['create','resend'] as const){
 test('an identity refresh recovers from a pending circle switch without reviving its callback',async({page})=>{
   const replacement={...owner,id:7,email:'replacement@example.test',name:'Replacement Owner',display_name:'Replacement Owner'};
   let currentUser=owner;
+  let authMeCalls=0;
   let markSwitchStarted!:()=>void;
   let releaseSwitch!:()=>void;
   const switchStarted=new Promise<void>(resolve=>{ markSwitchStarted=resolve; });
@@ -494,7 +495,10 @@ test('an identity refresh recovers from a pending circle switch without reviving
       ok:true,capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,multiCircleControlPlane:true},
       registrationMode:'private_beta',
     },
-    '/api/auth/me':()=>({ok:true,user:currentUser}),
+    '/api/auth/me':()=>{
+      authMeCalls+=1;
+      return {ok:true,user:currentUser};
+    },
     '/api/profile':()=>({ok:true,user:currentUser}),
     '/api/circles':async request=>{
       if(request.method()==='PUT'){
@@ -531,6 +535,12 @@ test('an identity refresh recovers from a pending circle switch without reviving
     await page.locator('[data-tab="circle"]').click();
     const selector=page.getByTestId('circle-context-select');
     await expect(selector).toHaveValue('circle-primary');
+    // The app deliberately performs three timed bootstrap identity refreshes.
+    // Observe and supersede all of them before constructing this explicit
+    // switch/identity race, so host timer scheduling cannot cancel the refresh
+    // whose commit result is part of this test's contract.
+    await expect.poll(()=>authMeCalls).toBeGreaterThanOrEqual(3);
+    expect(await page.evaluate(()=>(window as any)._randori_auth.refreshMe())).toBe(true);
 
     const switchResponse=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/circles'
       &&response.request().method()==='PUT');
