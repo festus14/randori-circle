@@ -86,6 +86,11 @@ export const MIGRATION_CONTRACTS=Object.freeze([
     name:'participant-session-completion-receipts',
     checksum:'b75ffcc2762110d36d9b7011b6591c99076e559de9c4df76107218ed3be67ed5',
   }),
+  Object.freeze({
+    version:18,
+    name:'private-schedule-bound-meeting-links',
+    checksum:'2e4006db5baa026eafd538dda4c8694654dea6343453b222208ae53f6b962135',
+  }),
 ]);
 
 export const LATEST_MIGRATION_VERSION=MIGRATION_CONTRACTS.at(-1)?.version||0;

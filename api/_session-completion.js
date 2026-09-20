@@ -221,7 +221,7 @@ function sourceTaggedPairAccessArgs({viewerId,weekId,pairGroupId}){
   return authPairAccessArgs({userId:actor,weekId:week,pairGroupId:pair});
 }
 
-function sourceTaggedPairAccessSql(){
+export function sourceTaggedPairAccessSql(){
   const membership=process.env.CIRCLE_MEMBERSHIP_ENABLED==='true'?`
     JOIN circle_memberships AS viewer_membership
       ON viewer_membership.user_id=viewer.user_id AND viewer_membership.status='active'

@@ -2379,3 +2379,33 @@ true/false confirmation, opt-out, rollover, stale responses, circle switching,
 sign-out, and every navigation entry point. Rollback is code-only; decisions
 already saved as `source=user` remain authoritative. The complete contract is in
 [`EXPLICIT_CYCLE_AVAILABILITY.md`](EXPLICIT_CYCLE_AVAILABILITY.md).
+
+## ID-57: Bridge reliable sessions with a private schedule-bound HTTPS link
+
+Status: candidate migration-backed primary-session increment.
+
+**Decision.** Migration 18 stores one private, provider-neutral HTTPS URL bound
+to the canonical primary pair and its exact normalized accepted schedule
+instant. Actor identity and access come only from the authenticated session and
+the source-tagged pair snapshot. Set and clear use opaque meeting, schedule, and
+completion compare-and-swap versions in one write transaction. A migration-owned
+schedule trigger deletes the URL atomically on reschedule or agreement clearing,
+including while a v17 binary is active; unanimous completion hides
+it and makes mutations terminal. URLs are bounded, credential-free HTTPS and
+are never fetched, previewed, logged, copied into recap/history, or sent through
+notifications. The UI shows hostname plus an external-navigation warning and
+uses `noopener noreferrer`.
+
+**Alternatives.** LiveKit supplies integrated media but adds provider, secret,
+cost, TURN, and SFU operations. Adding TURN retains custom signalling and
+recovery. Chat links are buried and lack schedule lifecycle. Provider IDs lose
+neutrality. Application-layer encryption is deferred until the product has a
+managed envelope-key and recovery design; current access controls, retention,
+and encrypted backups remain the boundary.
+
+**Rollout and recovery.** Rehearse and apply additive migration 18 after v17,
+then canary two browsers, concurrent edits, restart, reschedule/clear,
+completion hiding, malformed URLs, and authorization isolation. Rollback keeps
+the v18 schema and private rows, disables the handler/UI if needed, and rolls
+forward. Full details are in
+[`PRIVATE_MEETING_LINKS.md`](PRIVATE_MEETING_LINKS.md).

@@ -1274,6 +1274,7 @@ p{margin:0}
             </div>
             <div id="pairRunsList" role="list" style="display:grid; gap:5px; margin-top:7px"></div>
           </section>
+          <section id="meetingLinkWorkspaceCard" data-testid="meeting-link-workspace" aria-label="Private meeting link" hidden style="border-top:1px solid var(--line); background:var(--bg-2); padding:10px"></section>
           <section id="sessionCompletionCard" data-testid="session-completion" aria-labelledby="sessionCompletionTitle" hidden style="border-top:1px solid var(--line); background:var(--bg-2); padding:10px">
             <div class="row" style="justify-content:space-between; gap:10px; flex-wrap:wrap">
               <div>
@@ -8506,6 +8507,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       scheduleState.circlePublicId=null; scheduleState.contextVersion=null; scheduleState.cycleToken=null;
       scheduleState.version=''; scheduleState.schedule=null; scheduleState.expiryError=''; scheduleState.expiryAction=null;
       scheduleState.people=new Map();
+      window.dispatchEvent(new CustomEvent('randori:schedule-observed',{detail:{room:null}}));
       const area=document.getElementById('dashScheduleArea');
       if(area) area.replaceChildren();
     }
@@ -8863,6 +8865,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         exportRow.append(calendar,scheduleNode('span',{className:'small muted',text:'60 minutes · your calendar app controls the downloaded copy'}));
         agreement.append(exportRow);
       }
+      const meeting=scheduleNode('div',{testId:'meeting-link-dashboard'});
+      meeting.style.marginTop='8px'; agreement.append(meeting);
     }else if(schedule.legacy_agreed_time){
       agreement.style.cssText='padding:8px 10px; border:1px solid var(--warn); border-radius:10px; font-size:12.5px';
       agreement.append(scheduleNode('b',{text:'Legacy agreement: '}),document.createTextNode(schedule.legacy_agreed_time));
@@ -8877,6 +8881,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       agreement.append(clear);
     }
     body.append(agreement); card.append(header,body); area.replaceChildren(card);
+    window._randori_meeting_link?.mount?.();
     toggleScheduleActions(scheduleState.inFlight);
     if(scheduleState.expiryError){
       const focusTarget=scheduleState.expiryAction==='propose'
@@ -8896,6 +8901,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const next=normalizeSchedule(raw);
     const changed=force||next.version!==scheduleState.version;
     scheduleState.version=next.version; scheduleState.schedule=next; scheduleState.status=status;
+    window.dispatchEvent(new CustomEvent('randori:schedule-observed',{detail:{
+      room,kind:scheduleState.kind,scheduleVersion:next.version,
+      agreedTime:next.agreed_time,cycleToken:scheduleState.cycleToken,
+      circlePublicId:scheduleState.circlePublicId,contextVersion:scheduleState.contextVersion,
+    }}));
     if(changed) renderScheduleView(); else setScheduleStatus(status);
     return true;
   }
@@ -12409,6 +12419,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       return;
     }
     const completion=state.completion;
+    window.dispatchEvent(new CustomEvent('randori:completion-observed',{detail:{
+      room:state.room,completionVersion:completion.version,state:completion.state,
+    }}));
     if(message) status.textContent=message;
     else if(completion.state==='not_recorded') status.textContent='Completion not recorded. Every participant must confirm.';
     else if(completion.state==='awaiting_participants'){
@@ -12433,6 +12446,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     state.epoch+=1; state.controller?.abort(); state.controller=null;
     state.room=null; state.actorId=null; state.circlePublicId=null; state.contextVersion=null; state.cycleToken=null;
     state.completion=null; state.busy=false; setHidden();
+    window.dispatchEvent(new CustomEvent('randori:completion-observed',{detail:{room:null}}));
   }
   async function load(room=window._randori_workspace?.room){
     const preliminary=captureScope(room);
@@ -12514,6 +12528,336 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(event.target?.closest?.('#signOutBtn,#dashSignOut,#psSignOut,#meSignOut,#meSignOutAll')) reset();
   },{capture:true});
   window._randori_session_completion={load,mutate,reset,normalize:normalizeCompletion,get room(){ return state.room; },get completion(){ return state.completion?{...state.completion}:null; }};
+})();
+</script>
+
+<script>
+// Private provider-neutral bridge for the currently accepted primary session.
+// The URL is rendered as text/link only; Randori never fetches or previews it.
+(function(){
+  const workspace=document.getElementById('meetingLinkWorkspaceCard');
+  const state={
+    epoch:0,controller:null,pollTimer:null,room:null,actorId:null,
+    circlePublicId:null,contextVersion:null,cycleToken:null,
+    scheduleVersion:null,completionVersion:null,acceptedScheduleAt:null,
+    lifecycle:null,meeting:null,busy:false,editing:false,draft:'',message:'',
+  };
+  const POLL_INTERVAL_MS=4000;
+  const VERSION=/^[a-f0-9]{64}$/;
+
+  function actorId(){
+    const value=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0);
+    return Number.isSafeInteger(value)&&value>0?value:null;
+  }
+  function canonicalRoom(value){ return /^week_[1-9]\d*_pair_[1-9]\d*$/.test(String(value||'')); }
+  function currentCircle(){
+    const selected=window._randori_circle_control?.scheduleContext?.()||null;
+    if(window._randori_auth?.capabilities?.multiCircleControlPlane!==true){
+      return {publicId:null,version:null};
+    }
+    if(!selected||selected.isPrimary!==true) return null;
+    return {
+      publicId:String(selected.circlePublicId||''),
+      version:Number.isSafeInteger(Number(selected.contextVersion))?Number(selected.contextVersion):null,
+    };
+  }
+  function currentCycleToken(room){
+    const pair=window._randori_pair_cache;
+    if(String(pair?.room_id||'')!==room) return `room:${room}`;
+    const cycle=pair.current_cycle||pair.cycle;
+    return cycle&&typeof cycle.cycleId==='string'&&typeof cycle.startsAt==='string'&&typeof cycle.endsAt==='string'
+      ?JSON.stringify([cycle.cycleId,cycle.startsAt,cycle.endsAt])
+      :`room:${room}`;
+  }
+  function authorizedRoom(room){
+    return canonicalRoom(room)&&actorId()!==null&&window._randori_authorized_room===room;
+  }
+  function captureScope(){
+    if(!authorizedRoom(state.room)) return null;
+    const circle=currentCircle();
+    if(!circle) return null;
+    return Object.freeze({
+      epoch:state.epoch,room:state.room,actorId:state.actorId,
+      circlePublicId:state.circlePublicId,contextVersion:state.contextVersion,
+      cycleToken:state.cycleToken,scheduleVersion:state.scheduleVersion,
+      completionVersion:state.completionVersion,
+    });
+  }
+  function matchesScope(scope){
+    return matchesIdentityScope(scope)&&scope.scheduleVersion===state.scheduleVersion
+      &&scope.completionVersion===state.completionVersion;
+  }
+  function matchesIdentityScope(scope){
+    if(!scope||scope.epoch!==state.epoch||scope.room!==state.room||scope.actorId!==state.actorId
+      ||scope.circlePublicId!==state.circlePublicId||scope.contextVersion!==state.contextVersion
+      ||scope.cycleToken!==state.cycleToken||actorId()!==scope.actorId
+      ||currentCycleToken(scope.room)!==scope.cycleToken||!authorizedRoom(scope.room)) return false;
+    const circle=currentCircle();
+    return !!circle&&circle.publicId===scope.circlePublicId&&circle.version===scope.contextVersion;
+  }
+  function validInstant(value){
+    if(typeof value!=='string') return null;
+    const epoch=Date.parse(value);
+    return Number.isFinite(epoch)&&new Date(epoch).toISOString()===value?value:null;
+  }
+  function normalize(raw){
+    if(!raw||typeof raw!=='object'||Array.isArray(raw)
+      ||!['active','unscheduled','completed'].includes(raw.lifecycle)) return null;
+    const completionVersion=VERSION.test(String(raw.completion_version||''))?String(raw.completion_version):null;
+    const scheduleVersion=VERSION.test(String(raw.schedule_version||''))?String(raw.schedule_version):null;
+    if(!completionVersion||!scheduleVersion) return null;
+    if(raw.lifecycle!=='active'){
+      if(raw.url!==null||raw.hostname!==null||raw.version!==null||raw.updated_at!==null) return null;
+      return {lifecycle:raw.lifecycle,completionVersion,scheduleVersion,
+        acceptedScheduleAt:raw.accepted_schedule_at?validInstant(raw.accepted_schedule_at):null,
+        version:null,url:null,hostname:null,updatedAt:null};
+    }
+    const acceptedScheduleAt=validInstant(raw.accepted_schedule_at);
+    const version=String(raw.version||'');
+    if(!acceptedScheduleAt||!VERSION.test(version)) return null;
+    let url=null,hostname=null;
+    if(raw.url!==null){
+      if(typeof raw.url!=='string'||typeof raw.hostname!=='string'||raw.url.length>2048) return null;
+      let parsed;
+      try{ parsed=new URL(raw.url); }catch{ return null; }
+      if(parsed.protocol!=='https:'||parsed.username||parsed.password||parsed.hostname!==raw.hostname) return null;
+      url=parsed.href; hostname=parsed.hostname;
+    }else if(raw.hostname!==null) return null;
+    const updatedAt=raw.updated_at===null?null:validInstant(raw.updated_at);
+    if(raw.updated_at!==null&&!updatedAt) return null;
+    return {lifecycle:'active',completionVersion,scheduleVersion,acceptedScheduleAt,
+      version,url,hostname,updatedAt};
+  }
+  function hosts(){
+    return [document.querySelector('[data-testid="meeting-link-dashboard"]'),workspace]
+      .filter(Boolean);
+  }
+  function hide(){
+    document.querySelector('[data-testid="meeting-link-dashboard"]')?.replaceChildren();
+    if(workspace){ workspace.replaceChildren(); workspace.hidden=true; workspace.setAttribute('aria-busy','false'); }
+  }
+  function node(tag,{text='',className='',testId=''}={}){
+    const element=document.createElement(tag);
+    if(text!=='') element.textContent=String(text);
+    if(className) element.className=className;
+    if(testId) element.dataset.testid=testId;
+    return element;
+  }
+  function renderHost(host){
+    host.replaceChildren(); host.hidden=false; host.setAttribute('aria-busy',state.busy?'true':'false');
+    const shell=node('div'); shell.style.cssText='display:grid;gap:7px';
+    const heading=node('b',{text:'Private meeting link'}); heading.style.fontSize='12.5px';
+    const status=node('div',{className:'small muted',testId:'meeting-link-status'});
+    status.setAttribute('role','status'); status.setAttribute('aria-live','polite');
+    status.textContent=state.message||(state.busy?'Checking meeting link…':(state.meeting?.url
+      ?`Ready on ${state.meeting.hostname}`:'No meeting link yet.'));
+    shell.append(heading,status);
+    if(state.meeting?.url){
+      const summary=node('div',{className:'row'}); summary.style.cssText='gap:8px;align-items:center;flex-wrap:wrap';
+      const hostName=node('span',{className:'kbd',text:state.meeting.hostname,testId:'meeting-link-hostname'});
+      const join=node('a',{className:'btn',text:'Join',testId:'meeting-link-join'});
+      join.href=state.meeting.url; join.target='_blank'; join.rel='noopener noreferrer';
+      join.setAttribute('aria-label',`Join meeting on ${state.meeting.hostname}; opens outside Randori`);
+      const change=node('button',{className:'pill',text:'Change',testId:'meeting-link-change'});
+      change.type='button'; change.disabled=state.busy; change.addEventListener('click',()=>{
+        state.editing=true; state.draft=state.meeting?.url||''; state.message=''; render();
+      });
+      const remove=node('button',{className:'pill',text:'Remove',testId:'meeting-link-remove'});
+      remove.type='button'; remove.disabled=state.busy; remove.addEventListener('click',()=>{ mutate('clear'); });
+      summary.append(hostName,join,change,remove); shell.append(summary);
+      shell.append(node('div',{className:'small muted',text:'Join opens an external website. Randori does not preview or contact this URL.'}));
+    }else if(!state.editing){
+      const add=node('button',{className:'btn secondary',text:'Add meeting link',testId:'meeting-link-add'});
+      add.type='button'; add.disabled=state.busy; add.addEventListener('click',()=>{
+        state.editing=true; state.draft=''; state.message=''; render();
+      });
+      shell.append(add);
+    }
+    if(state.editing){
+      const form=node('form',{testId:'meeting-link-form'}); form.style.cssText='display:grid;gap:6px';
+      const label=node('label',{className:'small',text:state.meeting?.url?'New HTTPS meeting URL':'HTTPS meeting URL'});
+      const input=node('input',{className:'input',testId:'meeting-link-input'});
+      input.type='url'; input.required=true; input.maxLength=2048; input.autocomplete='off'; input.spellcheck=false;
+      input.placeholder='https://meet.example.com/private-room'; input.value=state.draft;
+      input.addEventListener('input',()=>{ state.draft=input.value; input.removeAttribute('aria-invalid'); });
+      label.appendChild(input);
+      const controls=node('div',{className:'row'}); controls.style.gap='6px';
+      const save=node('button',{className:'btn',text:state.meeting?.url?'Change link':'Add link',testId:'meeting-link-save'});
+      save.type='submit'; save.disabled=state.busy;
+      const cancel=node('button',{className:'pill',text:'Cancel',testId:'meeting-link-cancel'});
+      cancel.type='button'; cancel.disabled=state.busy; cancel.addEventListener('click',()=>{
+        state.editing=false; state.draft=''; state.message=''; render();
+      });
+      controls.append(save,cancel); form.append(label,controls);
+      form.addEventListener('submit',event=>{
+        event.preventDefault();
+        let parsed;
+        try{ parsed=new URL(state.draft); }catch{ parsed=null; }
+        if(!parsed||parsed.protocol!=='https:'||parsed.username||parsed.password||state.draft.trim()!==state.draft){
+          input.setAttribute('aria-invalid','true'); state.message='Enter an HTTPS URL without embedded credentials.';
+          status.textContent=state.message; input.focus(); return;
+        }
+        mutate('set',parsed.href);
+      });
+      shell.append(form);
+    }
+    host.append(shell);
+  }
+  function render(){
+    if(!captureScope()||state.lifecycle!=='active'||!state.meeting){ hide(); return; }
+    const currentHosts=hosts();
+    if(!currentHosts.length) return;
+    currentHosts.forEach(renderHost);
+  }
+  function schedulePoll(){
+    if(state.pollTimer!==null){ clearTimeout(state.pollTimer); state.pollTimer=null; }
+    if(state.room&&state.lifecycle==='active'&&!state.busy&&document.visibilityState==='visible'){
+      state.pollTimer=setTimeout(()=>{ state.pollTimer=null; load(state.room); },POLL_INTERVAL_MS);
+    }
+  }
+  function reset(){
+    state.epoch+=1; state.controller?.abort(); state.controller=null;
+    if(state.pollTimer!==null){ clearTimeout(state.pollTimer); state.pollTimer=null; }
+    state.room=null; state.actorId=null; state.circlePublicId=null; state.contextVersion=null;
+    state.cycleToken=null; state.scheduleVersion=null; state.completionVersion=null;
+    state.acceptedScheduleAt=null; state.lifecycle=null; state.meeting=null;
+    state.busy=false; state.editing=false; state.draft=''; state.message=''; hide();
+  }
+  function adoptRoom(room){
+    room=String(room||'');
+    if(!authorizedRoom(room)) return false;
+    const circle=currentCircle(); if(!circle) return false;
+    const identityChanged=state.room!==room||state.actorId!==actorId()
+      ||state.circlePublicId!==circle.publicId||state.contextVersion!==circle.version
+      ||state.cycleToken!==currentCycleToken(room);
+    if(identityChanged){
+      state.epoch+=1; state.controller?.abort(); state.controller=null;
+      state.room=room; state.actorId=actorId(); state.circlePublicId=circle.publicId;
+      state.contextVersion=circle.version; state.cycleToken=currentCycleToken(room);
+      state.scheduleVersion=null; state.completionVersion=null; state.acceptedScheduleAt=null;
+      state.lifecycle=null; state.meeting=null; state.editing=false; state.draft=''; state.message='';
+    }
+    return true;
+  }
+  async function load(room=window._randori_workspace?.room||window._randori_schedule?.room){
+    if(!adoptRoom(room)){ reset(); return false; }
+    const scope=captureScope(); if(!scope) return false;
+    state.controller?.abort(); const controller=new AbortController(); state.controller=controller;
+    state.busy=true; state.message=''; render();
+    try{
+      const url=new URL('/api/meeting-link',location.origin); url.searchParams.set('room_id',scope.room);
+      const headers=scope.contextVersion===null?undefined:{'x-randori-circle-context-version':String(scope.contextVersion)};
+      const response=await fetch(url,{credentials:'same-origin',cache:'no-store',headers,signal:controller.signal});
+      const data=await response.json().catch(()=>({}));
+      if(!matchesIdentityScope(scope)) return false;
+      if([401,403,404].includes(response.status)){ reset(); return false; }
+      if(!response.ok||data.ok!==true||String(data.room_id||'')!==scope.room) throw new Error(data.error||'meeting link unavailable');
+      const meeting=normalize(data.meeting_link); if(!meeting) throw new Error('invalid meeting-link response');
+      if((state.scheduleVersion&&meeting.scheduleVersion!==state.scheduleVersion)
+        ||(state.completionVersion&&meeting.completionVersion!==state.completionVersion)){
+        state.epoch+=1; state.controller=null; state.scheduleVersion=null; state.completionVersion=null;
+        state.acceptedScheduleAt=null; state.lifecycle=null; state.meeting=null; state.busy=false;
+        state.editing=false; state.draft=''; state.message=''; hide();
+        queueMicrotask(()=>{ load(scope.room); });
+        return false;
+      }
+      state.scheduleVersion=meeting.scheduleVersion; state.completionVersion=meeting.completionVersion;
+      state.acceptedScheduleAt=meeting.acceptedScheduleAt; state.lifecycle=meeting.lifecycle;
+      state.meeting=meeting.lifecycle==='active'?meeting:null; state.busy=false; state.message='';
+      if(meeting.lifecycle==='completed') hide(); else render(); schedulePoll(); return true;
+    }catch(error){
+      if(error?.name!=='AbortError'&&matchesScope(scope)){
+        state.meeting=null; state.editing=false; state.draft=''; state.busy=false;
+        state.lifecycle=state.acceptedScheduleAt?'active':null;
+        state.message='Meeting link unavailable — retry.'; hide(); schedulePoll();
+      }
+      return false;
+    }finally{ if(state.controller===controller) state.controller=null; }
+  }
+  async function mutate(action,url=null){
+    const scope=captureScope(),meeting=state.meeting;
+    if(!scope||!meeting||meeting.lifecycle!=='active'||state.busy||!['set','clear'].includes(action)) return false;
+    state.controller?.abort(); const controller=new AbortController(); state.controller=controller;
+    state.busy=true; state.message='Saving meeting link…'; render();
+    try{
+      const headers={'content-type':'application/json'};
+      if(scope.contextVersion!==null) headers['x-randori-circle-context-version']=String(scope.contextVersion);
+      const body={room_id:scope.room,action,base_version:meeting.version,
+        schedule_version:meeting.scheduleVersion,completion_version:meeting.completionVersion};
+      if(action==='set') body.url=url;
+      const response=await fetch('/api/meeting-link',{
+        method:'POST',credentials:'same-origin',headers,signal:controller.signal,body:JSON.stringify(body),
+      });
+      const data=await response.json().catch(()=>({}));
+      if(!matchesScope(scope)) return false;
+      const next=normalize(data.meeting_link);
+      if(response.status===409&&String(data.room_id||'')===scope.room&&next){
+        state.scheduleVersion=next.scheduleVersion; state.completionVersion=next.completionVersion;
+        state.lifecycle=next.lifecycle; state.meeting=next.lifecycle==='active'?next:null;
+        state.acceptedScheduleAt=next.acceptedScheduleAt; state.busy=false; state.editing=false;
+        state.message=String(data.error||'Meeting link changed.').slice(0,180); render(); schedulePoll(); return false;
+      }
+      if(!response.ok||data.ok!==true||String(data.room_id||'')!==scope.room||!next) throw new Error(data.error||'meeting link unavailable');
+      state.scheduleVersion=next.scheduleVersion; state.completionVersion=next.completionVersion;
+      state.lifecycle=next.lifecycle; state.meeting=next.lifecycle==='active'?next:null;
+      state.acceptedScheduleAt=next.acceptedScheduleAt; state.busy=false; state.editing=false; state.draft='';
+      state.message=action==='set'?'Meeting link saved.':'Meeting link removed.'; render(); schedulePoll(); return true;
+    }catch(error){
+      if(error?.name!=='AbortError'&&matchesScope(scope)){
+        state.meeting=null; state.editing=false; state.draft=''; state.busy=false;
+        state.lifecycle=state.acceptedScheduleAt?'active':null;
+        state.message='Meeting-link update was not confirmed. Checking the server…'; hide();
+        queueMicrotask(()=>{ load(scope.room); });
+      }
+      return false;
+    }finally{ if(state.controller===controller) state.controller=null; }
+  }
+  function observeSchedule(detail){
+    if(!detail?.room){ if(state.room) reset(); return; }
+    if(detail.kind!=='primary'||!canonicalRoom(detail.room)){ if(state.room) reset(); return; }
+    if(!adoptRoom(detail.room)){ reset(); return; }
+    const nextVersion=VERSION.test(String(detail.scheduleVersion||''))?String(detail.scheduleVersion):null;
+    const nextAccepted=detail.agreedTime?validInstant(detail.agreedTime):null;
+    if(state.scheduleVersion&&state.scheduleVersion!==nextVersion){
+      state.epoch+=1; state.controller?.abort(); state.controller=null; state.meeting=null; state.editing=false;
+    }
+    state.scheduleVersion=nextVersion; state.acceptedScheduleAt=nextAccepted;
+    if(!nextAccepted){ state.lifecycle='unscheduled'; state.meeting=null; hide(); return; }
+    load(detail.room);
+  }
+  function observeCompletion(detail){
+    if(!detail?.room||detail.room!==state.room) return;
+    const nextVersion=VERSION.test(String(detail.completionVersion||''))?String(detail.completionVersion):null;
+    if(state.completionVersion&&state.completionVersion!==nextVersion){
+      state.epoch+=1; state.controller?.abort(); state.controller=null; state.meeting=null; state.editing=false;
+    }
+    state.completionVersion=nextVersion;
+    if(detail.state==='completed'){ state.lifecycle='completed'; state.meeting=null; hide(); return; }
+    if(state.acceptedScheduleAt) load(state.room);
+  }
+
+  window.addEventListener('randori:schedule-observed',event=>{ observeSchedule(event.detail); });
+  window.addEventListener('randori:completion-observed',event=>{ observeCompletion(event.detail); });
+  window.addEventListener('randori:workspace-hydrated',event=>{ load(event.detail?.roomId); });
+  window.addEventListener('randori:room-change',()=>{ reset(); });
+  window.addEventListener('randori:workspace-deactivated',()=>{
+    if(!document.querySelector('[data-testid="meeting-link-dashboard"]')) reset();
+  });
+  window.addEventListener('randori:auth-refreshed',event=>{
+    if(Number(event.detail?.userId||0)!==state.actorId) reset();
+  });
+  document.addEventListener('visibilitychange',()=>{
+    if(document.visibilityState==='visible'&&state.room) load(state.room);
+    else if(document.visibilityState!=='visible'){
+      state.epoch+=1; state.controller?.abort(); state.controller=null; state.busy=false;
+      if(state.pollTimer!==null){ clearTimeout(state.pollTimer); state.pollTimer=null; }
+    }
+  });
+  document.addEventListener('click',event=>{
+    if(event.target?.closest?.('#signOutBtn,#dashSignOut,#psSignOut,#meSignOut,#meSignOutAll')) reset();
+  },{capture:true});
+  window._randori_meeting_link={load,mutate,reset,mount:render,observeSchedule,observeCompletion,
+    normalize,get room(){return state.room;},get meeting(){return state.meeting?{...state.meeting}:null;}};
 })();
 </script>
 

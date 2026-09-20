@@ -91,6 +91,16 @@ async function probeSessionCompletionSchema(db){
   return true;
 }
 
+async function probeMeetingLinkSchema(db){
+  await probeSessionCompletionSchema(db);
+  await db.execute(`SELECT id,week_id,pair_group_id,proposed_times,agreed_time,updated_at
+    FROM pair_schedules LIMIT 0`);
+  await db.execute(`SELECT week_id,pair_group_id,accepted_schedule_at,meeting_url,revision,
+    updated_by,updated_by_source,pair_user_a_id,pair_user_b_id,pair_user_c_id,
+    created_at,updated_at FROM pair_meeting_links LIMIT 0`);
+  return true;
+}
+
 async function probeMyPairSchema(db){
   await db.execute(`SELECT id,display_name,color,is_demo,bio,tz,interview_focus,
     leetcode_handle FROM auth_accounts LIMIT 0`);
@@ -151,6 +161,10 @@ export function ensureDataStatsReadiness(db){
 
 export function ensureDataSessionCompletionReadiness(db){
   return ensureReadiness(db,'session-completion',probeSessionCompletionSchema);
+}
+
+export function ensureDataMeetingLinkReadiness(db){
+  return ensureReadiness(db,'meeting-link',probeMeetingLinkSchema);
 }
 
 export function ensureMyPairDataReadiness(db){

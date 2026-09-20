@@ -10,6 +10,7 @@ import { applyMigrations, inspectMigrationState, prepareMigrationConnection } fr
 
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const THROUGH_V16=EXECUTABLE_MIGRATIONS.slice(0,16);
+const THROUGH_V17=EXECUTABLE_MIGRATIONS.slice(0,17);
 const V17=EXECUTABLE_MIGRATIONS[16];
 
 function fixture(){
@@ -41,7 +42,7 @@ async function seedPair(db){
 test('v17 installs only source-bound participant completion receipts and lookup ownership',async()=>{
   const item=fixture();
   try{
-    const result=await apply(item.db);
+    const result=await apply(item.db,THROUGH_V17);
     assert.equal(result.toVersion,17);
     assert.deepEqual(V17.operations.map(operation=>operation.name),[
       'uq_pairing_groups_completion_pair','uq_pairing_groups_completion_third',
@@ -72,10 +73,10 @@ test('managed v16 upgrades exactly once to v17 without synthesizing historical c
   try{
     await apply(item.db,THROUGH_V16);
     await seedPair(item.db);
-    const before=await inspectMigrationState(item.db);
+    const before=await inspectMigrationState(item.db,{migrations:THROUGH_V17});
     assert.equal(before.currentVersion,16);
     const upgraded=await applyMigrations(item.db,{
-      expectedStateFingerprint:before.stateFingerprint,migrations:EXECUTABLE_MIGRATIONS,retry:NO_RETRY,
+      expectedStateFingerprint:before.stateFingerprint,migrations:THROUGH_V17,retry:NO_RETRY,
     });
     assert.deepEqual(upgraded.applied.map(entry=>entry.version),[17]);
     assert.equal((await item.db.execute(`SELECT COUNT(*) AS c FROM session_completion_receipts`)).rows[0].c,0);

@@ -45,13 +45,17 @@ const REQUIRED_INDEXES=new Set([
 ]);
 const LATER_UNIQUE_INDEXES=new Set([
   'uq_pairing_groups_completion_pair','uq_pairing_groups_completion_third',
-  'uq_pairing_participants_completion_owner',
+  'uq_pairing_participants_completion_owner','uq_pair_schedules_meeting_agreement',
 ]);
 const LATER_TRIGGER_DIGESTS=new Map([
   ['trg_pairing_groups_completion_membership_guard','b25b7d3f592529397d0193760d8753e0cc7d2c7ca46a041d8b39d93ca0411f6f'],
   ['trg_pairing_participants_completion_update_guard','27febbcdca9672d871414b66369252e3737661402bb3f9b0780e795464e6356e'],
   ['trg_pairing_participants_completion_delete_guard','26c275263b2adc9bd85d0c1d754a7637227eb5ec5af2b7484d610b575c57e03f'],
   ['trg_pairing_participants_completion_insert_guard','c8e175332e4ca596c03ad144dbe4ca5e7f2b807132534374556f74f383e5e7e1'],
+  ['trg_pair_schedules_meeting_link_invalidate','235b7f5353fcbe69402ae5ffa273f5814d611d3a9c69243050ddf30f0f5b0b59'],
+  ['trg_pairing_groups_meeting_link_guard','6521f4c1e3e6ef6a5e90b5142ee847502d45b91ebf696e585d3cc29cc41ec4ff'],
+  ['trg_pairing_participants_meeting_link_update_guard','825ab87f33d6243b36373058a492377753b96aa8f86e0ed85812257627c741e7'],
+  ['trg_pairing_participants_meeting_link_delete_guard','f0c541d8331ce2f55a4478cfa024d1707ddf351b6ab81efb80b693679d2801f3'],
 ]);
 const REQUIRED_OBJECTS=new Set([...REQUIRED_TABLES,...REQUIRED_INDEXES]);
 

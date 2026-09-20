@@ -120,6 +120,13 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'2a9ba0216e0451967761f8c9fc7875158226ddd66aa88fc730b886f6d6b6e490',
     checksum:'dfa4b4a609cdc436bfaf3805a2b2511d621f4924d41351de1915442ffac157d4',
   }),
+  Object.freeze({
+    version:18,
+    name:'private-schedule-bound-meeting-links',
+    description:'Private HTTPS meeting links bound to an accepted primary-room schedule and source-authenticated pair snapshot.',
+    operationsChecksum:'4249453182547eaa2fe5896b34d1765180a44ec3b8846540a0c0451e3e6c3636',
+    checksum:'5fc7d411c13a8cfc25ad4ccb8b4812612fbc462485d4939b0b7d1ae8b009ad93',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){

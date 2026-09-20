@@ -139,6 +139,10 @@
       "destination": "/api/data?endpoint=session-completion"
     },
     {
+      "source": "/api/meeting-link",
+      "destination": "/api/data?endpoint=meeting-link"
+    },
+    {
       "source": "/api/stats",
       "destination": "/api/data?endpoint=stats"
     },
