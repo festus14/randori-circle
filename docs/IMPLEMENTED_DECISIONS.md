@@ -1824,3 +1824,45 @@ migration workflow, never by an HTTP request. Application rollback requires no
 database rollback but reintroduces the retired schema writes and is reserved
 for emergency compatibility. Exact contracts and tests are recorded in
 `OPERATIONS_RUNTIME_DDL_RETIREMENT.md`.
+## ID-43: Treat only scheduled outbox runs as freshness evidence
+
+Status: implemented as a code-only operations increment with no migration or
+production credential.
+
+**Decision.** A separate hourly GitHub Actions watchdog assesses only initial
+`schedule` attempts of `outbox-dispatch.yml` on the repository default branch.
+It never treats `workflow_dispatch`, feature-branch activity, a human rerun, or
+fresh `updated_at` metadata as proof that the five-minute scheduler is healthy.
+The newest authoritative run wins, so an older success cannot hide a newer
+failure, cancellation, or skip.
+
+The schedule has a deterministic 15-minute grace aligned to five-minute UTC
+slots. An in-progress run becomes stuck at the worker's exact two-minute job
+deadline; queued work becomes stale only after the scheduling window. Fixed
+non-sensitive outcomes distinguish healthy, grace, missing, stale, failed,
+cancelled, skipped, stuck, malformed-response, and GitHub-API failure states.
+
+Discovery constructs only the reviewed GitHub workflow-runs URL, validates the
+same event and branch locally, scans at most two 100-run pages, caps response
+size, and shares one ten-second API deadline. Its JSON projection contains only
+fixed status values, bounded counts, run identifiers, and timing metadata. The
+workflow has `actions: read` and `contents: read`, no production environment or
+secret, and no application, workflow-dispatch, database, or provider mutation.
+The repository deployability contract fails if either the watchdog boundary or
+the source worker's two-minute timeout is weakened.
+
+**Alternatives.** A redundant secret-bearing scheduler could improve
+availability but duplicates privileged configuration and risks concurrent
+delivery. Application health checks do not prove scheduler health. Manual runs
+are useful for recovery but accepting them as freshness would conceal a broken
+schedule. An unbounded history scan adds risk without changing the newest-run
+decision. Terminal-event retention addresses storage rather than delivery
+detection and remains separate work.
+
+**Rollout and recovery.** Land only after rebasing onto the current rolling
+release. No database or production configuration change is required. On alert,
+inspect and repair `outbox-dispatch`, invoke its existing manual recovery if
+needed, and require the next genuine scheduled success before declaring the
+scheduler healthy. Rollback removes only the observer and never mutates or
+invokes the production worker. The exact contract is documented in
+`OUTBOX_DISPATCH_WATCHDOG.md`.

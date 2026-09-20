@@ -91,6 +91,12 @@ target rather than a strict SLA. Move the same endpoint contract to a managed
 queue/cron with delivery-lag alerting when a strict latency SLO or higher volume
 is required. Vercel Hobby cron is not used for this five-minute cadence.
 
+The separate `outbox-dispatch-watchdog` workflow checks scheduled default-branch
+runs hourly without any production credential or endpoint access. It allows a
+documented 15-minute scheduling grace, binds stuck execution to this worker's
+two-minute job deadline, and never counts manual dispatch or reruns as freshness
+evidence. See [the watchdog runbook](OUTBOX_DISPATCH_WATCHDOG.md).
+
 ## Metrics and privacy
 
 The cron response and `outbox_invocation` log contain only:

@@ -13,12 +13,15 @@ function currentContract() {
     vercel: JSON.parse(readFileSync('vercel.json', 'utf8')),
     packageJson: JSON.parse(readFileSync('package.json', 'utf8')),
     outboxWorkflow: readFileSync('.github/workflows/outbox-dispatch.yml', 'utf8'),
+    outboxWatchdogWorkflow: readFileSync('.github/workflows/outbox-dispatch-watchdog.yml', 'utf8'),
     files: new Set([
       'index.html',
       'package-lock.json',
       'package.json',
       'vercel.json',
       '.github/workflows/outbox-dispatch.yml',
+      '.github/workflows/outbox-dispatch-watchdog.yml',
+      'scripts/github-outbox-dispatch-watchdog.mjs',
       ...readdirSync('api').filter(file => file.endsWith('.js')).map(file => `api/${file}`),
     ]),
   };
@@ -201,5 +204,66 @@ test('deployability rejects an unsafe or incomplete outbox scheduler',()=>{
   );
   assert.ok(validateDeploymentContract(featureBranch).includes(
     'outbox workflow must restrict production dispatch to the default branch',
+  ));
+
+  const workerDeadline=cloneContract();
+  workerDeadline.outboxWorkflow=workerDeadline.outboxWorkflow.replace(
+    'timeout-minutes: 2','timeout-minutes: 3',
+  );
+  assert.ok(validateDeploymentContract(workerDeadline).includes(
+    'outbox workflow must retain its two-minute worker deadline',
+  ));
+});
+
+test('the outbox watchdog is hourly, bounded, read-only, and secret-free',()=>{
+  const contract=currentContract();
+  assert.deepEqual(validateDeploymentContract(contract),[]);
+  assert.match(contract.outboxWatchdogWorkflow,/cron:\s*['"]37 \* \* \* \*['"]/);
+  assert.match(contract.outboxWatchdogWorkflow,/actions:\s*read/);
+  assert.match(contract.outboxWatchdogWorkflow,/contents:\s*read/);
+  assert.match(contract.outboxWatchdogWorkflow,/WATCHDOG_WORKER_DEADLINE_MS:\s*'120000'/);
+  assert.match(contract.outboxWatchdogWorkflow,/scripts\/github-outbox-dispatch-watchdog\.mjs/);
+  assert.doesNotMatch(contract.outboxWatchdogWorkflow,
+    /environment:|secrets\.|vars\.|APP_URL|CRON_SECRET|\/api\/cron\/outbox|pull_request_target/);
+});
+
+test('deployability rejects a weakened or privileged outbox watchdog',()=>{
+  const missing=cloneContract();
+  missing.files.delete('.github/workflows/outbox-dispatch-watchdog.yml');
+  missing.outboxWatchdogWorkflow=null;
+  let errors=validateDeploymentContract(missing);
+  assert.ok(errors.includes(
+    'required deployment file is missing: .github/workflows/outbox-dispatch-watchdog.yml'));
+  assert.ok(errors.includes('outbox watchdog workflow must be readable'));
+
+  const delayed=cloneContract();
+  delayed.outboxWatchdogWorkflow=delayed.outboxWatchdogWorkflow.replace(
+    "WATCHDOG_WORKER_DEADLINE_MS: '120000'","WATCHDOG_WORKER_DEADLINE_MS: '900000'",
+  );
+  errors=validateDeploymentContract(delayed);
+  assert.ok(errors.includes('outbox watchdog must bind the two-minute dispatcher deadline'));
+
+  const privileged=cloneContract();
+  privileged.outboxWatchdogWorkflow=privileged.outboxWatchdogWorkflow.replace(
+    'contents: read','contents: write\n  environment: production\n  CRON_SECRET: ${{ secrets.CRON_SECRET }}',
+  );
+  errors=validateDeploymentContract(privileged);
+  assert.ok(errors.includes('outbox watchdog must remain secret-free, read-only, and non-mutating'));
+  assert.ok(errors.includes('outbox watchdog must have read-only contents access'));
+
+  const mutableAction=cloneContract();
+  mutableAction.outboxWatchdogWorkflow=mutableAction.outboxWatchdogWorkflow.replace(
+    'actions/checkout@11d5960a326750d5838078e36cf38b85af677262','actions/checkout@main',
+  ).replace('persist-credentials: false','persist-credentials: true');
+  errors=validateDeploymentContract(mutableAction);
+  assert.ok(errors.includes('outbox watchdog checkout must use the reviewed immutable revision'));
+  assert.ok(errors.includes('outbox watchdog checkout must not persist GitHub credentials'));
+
+  const cadence=cloneContract();
+  cadence.outboxWatchdogWorkflow=cadence.outboxWatchdogWorkflow.replace(
+    "cron: '37 * * * *'","cron: '*/5 * * * *'",
+  );
+  assert.ok(validateDeploymentContract(cadence).includes(
+    'outbox watchdog must run hourly on its documented offset',
   ));
 });
