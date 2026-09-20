@@ -2,7 +2,7 @@
 
 Status: accepted through the current rolling release
 
-Last reviewed: 2026-09-19
+Last reviewed: 2026-09-20
 
 Scope: current rolling release and independently reviewed candidate increments
 
@@ -1545,3 +1545,46 @@ changes to the deployability workflow itself require explicit review. The
 repository's rolling integration branch is currently named
 `codex/issue-87-repository-deployability`; references to “rolling” in this
 decision and runbook mean that exact branch.
+
+## ID-37: Make legacy data-route readiness read-only and route-scoped
+
+Status: implemented as a DDL-removal increment with no schema migration. ID-36
+is reserved for the independently developed backup-control increment.
+
+**Decision.** The ordinary `api/data.js` routes no longer create, alter, or
+index schema. Migration v1 remains the owner of the legacy account, profile,
+pairing, run, and application-log structures. A shared readiness module uses
+bounded `SELECT ... LIMIT 0` projections for the admin identity, profile,
+circle, weeks, my-pair, history, statistics, run-history, and log contracts.
+Each contract is coalesced per concrete database client. Only a successful
+probe is cached; a rejected probe is evicted so a transient database failure
+can recover without a process restart.
+
+Routes check only the tables and columns needed before business writes. A
+missing or incompatible contract returns that route's generic unavailable
+response; server-side diagnostic logging remains best effort and cannot repair
+its own table. The bundled question catalogue is file-backed and therefore has
+no database-readiness dependency. `/api/init` is intentionally excluded from
+this increment: its remaining schema and cleanup statements stay visible in
+the runtime-DDL allowlist until a separate, atomic data-only conversion.
+
+This removes 28 DDL statements from ordinary data request helpers and lowers
+the reviewed `api/data.js` allowance from 73 to 45. The remaining 45 statements
+are isolated in `/api/init`; the repository-wide debt falls from 104 to 76.
+
+**Alternatives.** Running the complete schema inspector on every data request
+would detect unrelated drift but couple profile, run, and logging availability
+to every product table. Attempting the operation and translating SQLite errors
+would reduce probes but could perform an earlier business write before a later
+missing-column failure. Keeping local-only auto-creation would make local and
+production behavior diverge and hide migration omissions. Route-scoped
+read-only probes preserve fast, deterministic failure boundaries while the
+whole-database deployment gate remains authoritative.
+
+**Rollout and recovery.** Do not promote this increment until issue #43 has
+retained evidence that production is on the reviewed latest schema. Deployment
+performs no schema or data mutation. If a contract is unavailable, use the
+protected migration workflow to roll forward. Reverting the application build
+requires no database rollback but reintroduces request-time DDL and is only an
+emergency compatibility action. The route matrix and verification commands are
+recorded in `DATA_RUNTIME_DDL_RETIREMENT.md`.

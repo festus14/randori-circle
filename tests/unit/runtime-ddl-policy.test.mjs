@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkRuntimeDdl, normalizeDdl, RUNTIME_DDL_ALLOWLIST, stringLiterals } from '../../scripts/check-runtime-ddl.mjs';
@@ -9,8 +9,22 @@ test('runtime DDL debt matches its deterministic reviewed allowlist',()=>{
   const result=checkRuntimeDdl('api');
   assert.equal(result.ok,true);
   assert.equal(result.snapshots.length,RUNTIME_DDL_ALLOWLIST.length);
-  assert.equal(result.snapshots.reduce((total,item)=>total+item.statementCount,0),104);
+  assert.equal(result.snapshots.reduce((total,item)=>total+item.statementCount,0),76);
   assert.equal(result.snapshots.some(item=>item.file==='api/auth.js'),false);
+  assert.equal(result.snapshots.find(item=>item.file==='api/data.js')?.statementCount,45,
+    'ordinary data-route bootstrap is retired; only the separately scoped init debt remains');
+});
+
+test('data-route DDL is isolated to the explicitly deferred admin init handler',()=>{
+  const source=readFileSync(new URL('../../api/data.js',import.meta.url),'utf8');
+  const initStart=source.indexOf('async function handleInit(req,res)');
+  const initEnd=source.indexOf('// ----- NEW ENDPOINTS:',initStart);
+  assert.ok(initStart>0&&initEnd>initStart,'the explicit init boundary must remain reviewable');
+  const ordinarySource=source.slice(0,initStart)+source.slice(initEnd);
+  const ddl=stringLiterals(ordinarySource).filter(({value})=>
+    /\b(?:CREATE\s+(?:(?:UNIQUE|TEMP(?:ORARY)?|VIRTUAL|OR\s+REPLACE)\s+)*(?:TABLE|INDEX|VIEW|TRIGGER)|ALTER\s+TABLE|DROP\s+(?:TABLE|INDEX|VIEW|TRIGGER))\b/iu.test(value)
+  );
+  assert.deepEqual(ddl,[],'ordinary api/data.js handlers must not regain schema mutation');
 });
 
 test('runtime DDL policy detects new and assembled schema writes',()=>{

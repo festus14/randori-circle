@@ -566,7 +566,10 @@ beforeEach(() => {
 });
 
 test('an unhandled data API failure is reported to Sentry exactly once', async () => {
-  executeHandler = () => { throw new Error('forced handler failure'); };
+  executeHandler = sql => {
+    if(sql.includes('FROM auth_accounts LIMIT 0')) return rows();
+    throw new Error('forced handler failure');
+  };
   const originalError=console.error;
   console.error=()=>{};
   try{
@@ -580,6 +583,32 @@ test('an unhandled data API failure is reported to Sentry exactly once', async (
     assert.match(sentryExceptionCalls[0][0].message,/forced handler failure/);
   }finally{
     console.error=originalError;
+  }
+});
+
+test('ordinary legacy data routes fail closed before writes when readiness is unavailable',async()=>{
+  const cases=[
+    {endpoint:'profile',url:'/api/profile',headers:{'x-test-auth':'user'},error:'profile unavailable'},
+    {endpoint:'circle',url:'/api/circle',headers:{'x-test-auth':'user'},error:'circle unavailable'},
+    {endpoint:'history',url:'/api/history',headers:{'x-test-auth':'user'},error:'history unavailable'},
+    {endpoint:'stats',url:'/api/stats',headers:{},error:'stats unavailable'},
+    {endpoint:'logs',url:'/api/logs',method:'POST',headers:{'x-test-auth':'user'},body:{message:'test'},error:'logging unavailable'},
+    {endpoint:'init',url:'/api/init',method:'POST',headers:{'x-test-auth':'admin'},error:'data unavailable'},
+  ];
+  for(const item of cases){
+    db=createMockDb();
+    executed.length=0;
+    executeHandler=sql=>{
+      if(/\bLIMIT\s+0\b/iu.test(sql)) throw new Error('migration-owned schema unavailable');
+      return rows();
+    };
+    const response=await invoke(dataHandler,{
+      method:item.method,url:item.url,query:{endpoint:item.endpoint},headers:item.headers,body:item.body,
+    });
+    assert.equal(response.status,503,item.endpoint);
+    assert.deepEqual(response.body,{error:item.error},item.endpoint);
+    assert.equal(executed.some(({sql})=>/^\s*(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(sql)),false,
+      `${item.endpoint} must fail before schema or business writes`);
   }
 });
 
@@ -1416,25 +1445,23 @@ test('run history verifies signed authoritative results and rejects legacy or ta
   ),true);
 });
 
-test('run schema readiness coalesces concurrent pair-feed initialization and probes before access', async () => {
-  let releaseInitialization;
-  let reportInitializationStarted;
-  const initializationGate=new Promise(resolve=>{ releaseInitialization=resolve; });
-  const initializationStarted=new Promise(resolve=>{ reportInitializationStarted=resolve; });
-  let baseInitializations=0;
+test('run schema readiness coalesces concurrent read-only probes before access', async () => {
+  let releaseProbe;
+  let reportProbeStarted;
+  const probeGate=new Promise(resolve=>{ releaseProbe=resolve; });
+  const probeStarted=new Promise(resolve=>{ reportProbeStarted=resolve; });
   let completedProbes=0;
   let accessChecks=0;
   executeHandler=async sql=>{
-    if(sql.startsWith('CREATE TABLE IF NOT EXISTS auth_accounts')){
-      baseInitializations+=1;
-      reportInitializationStarted();
-      await initializationGate;
+    if(sql.startsWith('SELECT id,display_name FROM auth_accounts LIMIT 0')){
+      reportProbeStarted();
+      await probeGate;
+      completedProbes+=1;
       return rows();
     }
-    if(sql.startsWith('SELECT id,display_name FROM auth_accounts LIMIT 0')
-      || sql.startsWith('SELECT id,week_id,user_a_id,user_b_id,user_c_id FROM pairing_groups LIMIT 0')
+    if(sql.startsWith('SELECT id,week_id,user_a_id,user_b_id,user_c_id FROM pairing_groups LIMIT 0')
       || sql.startsWith('SELECT week_id,user_id,source FROM pairing_participants LIMIT 0')
-      || sql.startsWith('SELECT id,user_id,week_id,pair_group_id,question_id,question_slug,language,code,test_cases_snapshot')){
+      || sql.startsWith('SELECT id,user_id,week_id,pair_group_id,question_id,question_slug')){
       completedProbes+=1;
       return rows();
     }
@@ -1453,26 +1480,23 @@ test('run schema readiness coalesces concurrent pair-feed initialization and pro
   };
 
   const first=invoke(dataHandler,request);
-  await initializationStarted;
+  await probeStarted;
   const second=invoke(dataHandler,request);
   await Promise.resolve();
-  assert.equal(baseInitializations,1,'concurrent requests must share one in-flight initialization');
   assert.equal(accessChecks,0,'membership checks must not race ahead of readiness');
-  releaseInitialization();
+  releaseProbe();
 
   const responses=await Promise.all([first,second]);
   assert.deepEqual(responses.map(response=>response.status),[200,200]);
-  assert.equal(baseInitializations,1);
   assert.equal(completedProbes,4,'the shared readiness promise probes each required table once');
+  assert.equal(executed.some(call=>/\b(?:CREATE|ALTER|DROP)\b/iu.test(call.sql)),false);
   assert.equal(accessChecks,2,'each request still performs its own membership authorization');
 });
 
-test('failed run schema readiness is not cached and the next request retries initialization', async () => {
-  let baseInitializations=0;
+test('failed run schema readiness is not cached and the next request retries its read-only probe', async () => {
   let authProbeAttempts=0;
   let accessChecks=0;
   executeHandler=sql=>{
-    if(sql.startsWith('CREATE TABLE IF NOT EXISTS auth_accounts')) baseInitializations+=1;
     if(sql.startsWith('SELECT id,display_name FROM auth_accounts LIMIT 0')){
       authProbeAttempts+=1;
       if(authProbeAttempts===1) throw new Error('schema probe unavailable');
@@ -1500,9 +1524,9 @@ test('failed run schema readiness is not cached and the next request retries ini
 
     const retried=await invoke(dataHandler,request);
     assert.equal(retried.status,200);
-    assert.equal(baseInitializations,2,'a rejected readiness promise must be cleared');
     assert.equal(authProbeAttempts,2);
     assert.equal(accessChecks,1);
+    assert.equal(executed.some(call=>/\b(?:CREATE|ALTER|DROP)\b/iu.test(call.sql)),false);
   }finally{
     console.error=originalError;
   }
@@ -3587,7 +3611,7 @@ test('the separately flagged availability route requires and returns the exact s
   assert.equal(pairing.body.code,'circle_feature_unavailable');
 });
 
-test('legacy pairing reads initialize base and profile schema only once per request',async()=>{
+test('legacy pairing reads use only migration-owned schema without request DDL',async()=>{
   executeHandler=sql=>{
     if(sql.includes('SELECT aa.id,c.id AS circle_id')&&sql.includes('JOIN circle_memberships')){
       return rows([{id:2,circle_id:1}]);
@@ -3595,22 +3619,19 @@ test('legacy pairing reads initialize base and profile schema only once per requ
     return rows();
   };
   const headers={...sameOriginHeaders,'x-test-auth':'user'};
+  let observedReadinessProbe=false;
   for(const route of ['weeks','my-pair']){
     executed.length=0;
     const response=await invoke(dataHandler,{
       url:`/api/${route}`,query:{endpoint:route},headers,
     });
     assert.equal(response.status,200,JSON.stringify(response.body));
-    assert.equal(executed.filter(({sql})=>
-      sql.startsWith('CREATE TABLE IF NOT EXISTS auth_accounts')).length,1,
-    `${route} must run ensureBaseTables only once`);
-    assert.equal(executed.filter(({sql})=>
-      sql.startsWith('ALTER TABLE auth_accounts ADD COLUMN')).length,8,
-    `${route} must run the eight auth-account profile migrations only once`);
-    assert.equal(executed.filter(({sql})=>
-      sql.startsWith('ALTER TABLE pairing_weeks ADD COLUMN is_demo')).length,1,
-    `${route} must run the pairing-week profile migration only once`);
+    assert.equal(executed.some(({sql})=>/\b(?:CREATE|ALTER|DROP)\b/iu.test(sql)),false,
+      `${route} must never repair schema on a request path`);
+    observedReadinessProbe ||= executed.some(({sql})=>sql.includes('FROM auth_accounts LIMIT 0'));
   }
+  assert.equal(observedReadinessProbe,true,
+    'the shared legacy-pairing readiness guard must prove its account contract');
 });
 
 test('a sole secondary circle uses implicit availability GET and POST without a context header',async()=>{
