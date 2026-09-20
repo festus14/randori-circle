@@ -89,6 +89,17 @@ async function readyDatabase({withUnique=true,url='file::memory:'}={}){
     proposed_times TEXT, agreed_time TEXT, created_at TEXT, updated_at TEXT
     ${withUnique?', UNIQUE(week_id,pair_group_id)':''}
   )`);
+  await db.execute(`CREATE TABLE pair_meeting_links (
+    week_id INTEGER NOT NULL,pair_group_id INTEGER NOT NULL,accepted_schedule_at TEXT NOT NULL,
+    meeting_url TEXT,revision INTEGER NOT NULL,updated_by INTEGER NOT NULL,updated_by_source TEXT NOT NULL,
+    pair_user_a_id INTEGER NOT NULL,pair_user_b_id INTEGER NOT NULL,pair_user_c_id INTEGER,
+    created_at TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(week_id,pair_group_id)
+  )`);
+  await db.execute(`CREATE TRIGGER trg_pair_schedules_meeting_link_invalidate
+    BEFORE UPDATE OF agreed_time ON pair_schedules FOR EACH ROW
+    WHEN NEW.agreed_time IS NOT OLD.agreed_time BEGIN
+      DELETE FROM pair_meeting_links WHERE week_id=OLD.week_id AND pair_group_id=OLD.pair_group_id;
+    END`);
   await db.execute(`CREATE TABLE outbox_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,event_type TEXT NOT NULL,event_version INTEGER NOT NULL,
     idempotency_key TEXT NOT NULL UNIQUE,payload_json TEXT NOT NULL,status TEXT NOT NULL,
@@ -697,6 +708,82 @@ test('schema readiness coalesces probes and retries after missing table or uniqu
   assert.equal(calls.filter(call=>call.sql.startsWith('PRAGMA table_info')).length,probesAfterReady);
   assert.ok(probesAfterReady>=4,'each failed readiness attempt must be evicted and retried');
   currentDb.close=()=>delegate.close();
+});
+
+test('reschedule and clear invalidate a private meeting link in the same schedule transaction',async()=>{
+  const directory=mkdtempSync(join(tmpdir(),'randori-meeting-invalidation-'));
+  const delegate=await readyDatabase({url:`file:${join(directory,'test.sqlite')}`});
+  const calls=[];
+  currentDb=tracedClient(delegate,calls);
+  assert.equal((await delegate.execute("SELECT COUNT(*) AS c FROM sqlite_schema WHERE type='table' AND name='pair_meeting_links'")).rows[0].c,1);
+  const room='week_10_pair_20';
+  const initial=await invoke({query:{endpoint:'schedule',room_id:room}});
+  assert.equal(initial.status,200,JSON.stringify(initial.body));
+  const first=await invoke({method:'POST',query:{endpoint:'schedule'},body:{
+    room_id:room,action:'propose',base_version:initial.body.schedule.version,
+    instant:'2098-09-20T18:00:00.000Z',
+  }});
+  assert.equal(first.status,200,JSON.stringify(first.body));
+  const accepted=await invoke({method:'POST',query:{endpoint:'schedule'},body:{
+    room_id:room,action:'accept',base_version:first.body.schedule.version,
+    proposal_id:first.body.schedule.proposals[0].proposal_id,
+  }});
+  assert.equal(accepted.status,200,JSON.stringify({body:accepted.body,calls:calls.map(call=>call.sql)}));
+  await delegate.execute({sql:`INSERT INTO pair_meeting_links
+    (week_id,pair_group_id,accepted_schedule_at,meeting_url,revision,updated_by,updated_by_source,
+      pair_user_a_id,pair_user_b_id,pair_user_c_id,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,args:[10,20,'2098-09-20T18:00:00.000Z',
+    'https://meet.example.test/secret',1,2,'auth',2,4,null,
+    '2098-09-20T10:00:00.000Z','2098-09-20T10:00:00.000Z']});
+  const proposed=await invoke({method:'POST',query:{endpoint:'schedule'},body:{
+    room_id:room,action:'propose',base_version:accepted.body.schedule.version,
+    instant:'2098-09-21T18:00:00.000Z',
+  }});
+  assert.equal(Number((await delegate.execute(`SELECT COUNT(*) AS c FROM pair_meeting_links`)).rows[0].c),1,
+    'proposal-only changes preserve the link for the accepted instant');
+  const rescheduled=await invoke({method:'POST',query:{endpoint:'schedule'},body:{
+    room_id:room,action:'accept',base_version:proposed.body.schedule.version,
+    proposal_id:proposed.body.schedule.proposals[1].proposal_id,
+  }});
+  assert.equal(rescheduled.status,200,JSON.stringify(rescheduled.body));
+  assert.equal(Number((await delegate.execute(`SELECT COUNT(*) AS c FROM pair_meeting_links`)).rows[0].c),0);
+
+  await delegate.execute({sql:`INSERT INTO pair_meeting_links
+    (week_id,pair_group_id,accepted_schedule_at,meeting_url,revision,updated_by,updated_by_source,
+      pair_user_a_id,pair_user_b_id,pair_user_c_id,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,args:[10,20,'2098-09-21T18:00:00.000Z',
+    'https://meet.example.test/replacement',1,4,'auth',2,4,null,
+    '2098-09-20T10:01:00.000Z','2098-09-20T10:01:00.000Z']});
+  const cleared=await invoke({method:'POST',query:{endpoint:'schedule'},body:{
+    room_id:room,action:'clear',base_version:rescheduled.body.schedule.version,
+  }});
+  assert.equal(cleared.status,200,JSON.stringify(cleared.body));
+  assert.equal(Number((await delegate.execute(`SELECT COUNT(*) AS c FROM pair_meeting_links`)).rows[0].c),0);
+  delegate.close(); currentDb=null;
+  rmSync(directory,{recursive:true,force:true});
+});
+
+test('the v18-aware schedule handler remains compatible with a v17 schema',async()=>{
+  const directory=mkdtempSync(join(tmpdir(),'randori-v17-schedule-'));
+  const delegate=await readyDatabase({url:`file:${join(directory,'test.sqlite')}`});
+  await delegate.execute(`DROP TRIGGER trg_pair_schedules_meeting_link_invalidate`);
+  await delegate.execute(`DROP TABLE pair_meeting_links`);
+  const calls=[];
+  currentDb=tracedClient(delegate,calls);
+  const room='week_10_pair_20';
+  const initial=await invoke({query:{endpoint:'schedule',room_id:room}});
+  const proposed=await invoke({method:'POST',query:{endpoint:'schedule'},body:{
+    room_id:room,action:'propose',base_version:initial.body.schedule.version,
+    instant:'2098-09-20T18:00:00.000Z',
+  }});
+  assert.equal(proposed.status,200,JSON.stringify(proposed.body));
+  const accepted=await invoke({method:'POST',query:{endpoint:'schedule'},body:{
+    room_id:room,action:'accept',base_version:proposed.body.schedule.version,
+    proposal_id:proposed.body.schedule.proposals[0].proposal_id,
+  }});
+  assert.equal(accepted.status,200,JSON.stringify({body:accepted.body,calls}));
+  delegate.close(); currentDb=null;
+  rmSync(directory,{recursive:true,force:true});
 });
 
 test('concurrent schedule reads share one in-flight schema probe',async()=>{

@@ -203,6 +203,20 @@ const PLAN_17_OPERATIONS=Object.freeze([
   trigger('trg_pairing_participants_completion_insert_guard','pairing_participants',`CREATE TRIGGER IF NOT EXISTS trg_pairing_participants_completion_insert_guard BEFORE INSERT ON pairing_participants FOR EACH ROW WHEN EXISTS (SELECT 1 FROM pairing_groups AS pg JOIN session_completion_receipts AS receipt ON receipt.week_id=pg.week_id AND receipt.pair_group_id=pg.id WHERE pg.week_id=NEW.week_id AND (NEW.user_id=pg.user_a_id OR NEW.user_id=pg.user_b_id OR NEW.user_id=pg.user_c_id)) BEGIN SELECT RAISE(ABORT,'completed-session participant source is immutable'); END`),
 ]);
 
+const PLAN_18_OPERATIONS=Object.freeze([
+  index('uq_pair_schedules_meeting_agreement','pair_schedules',[
+    'week_id','pair_group_id','agreed_time',
+  ],{unique:true}),
+  table('pair_meeting_links',`CREATE TABLE IF NOT EXISTS pair_meeting_links (week_id INTEGER NOT NULL CHECK(typeof(week_id)='integer' AND week_id>0), pair_group_id INTEGER NOT NULL CHECK(typeof(pair_group_id)='integer' AND pair_group_id>0), accepted_schedule_at TEXT NOT NULL CHECK(length(accepted_schedule_at)=24 AND accepted_schedule_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND julianday(accepted_schedule_at) IS NOT NULL AND strftime('%Y-%m-%dT%H:%M:%fZ',accepted_schedule_at)=accepted_schedule_at), meeting_url TEXT CHECK(meeting_url IS NULL OR (typeof(meeting_url)='text' AND length(meeting_url)>=9 AND length(CAST(meeting_url AS BLOB))<=2048 AND substr(meeting_url,1,8)='https://')), revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision>=1), updated_by INTEGER NOT NULL CHECK(typeof(updated_by)='integer' AND updated_by>0 AND (updated_by=pair_user_a_id OR updated_by=pair_user_b_id OR (pair_user_c_id IS NOT NULL AND updated_by=pair_user_c_id))), updated_by_source TEXT NOT NULL DEFAULT 'auth' CHECK(updated_by_source='auth'), pair_user_a_id INTEGER NOT NULL CHECK(typeof(pair_user_a_id)='integer' AND pair_user_a_id>0), pair_user_b_id INTEGER NOT NULL CHECK(typeof(pair_user_b_id)='integer' AND pair_user_b_id>0), pair_user_c_id INTEGER CHECK(pair_user_c_id IS NULL OR (typeof(pair_user_c_id)='integer' AND pair_user_c_id>0)), created_at TEXT NOT NULL CHECK(length(created_at)=24 AND created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND julianday(created_at) IS NOT NULL AND strftime('%Y-%m-%dT%H:%M:%fZ',created_at)=created_at), updated_at TEXT NOT NULL CHECK(length(updated_at)=24 AND updated_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND julianday(updated_at) IS NOT NULL AND strftime('%Y-%m-%dT%H:%M:%fZ',updated_at)=updated_at), PRIMARY KEY(week_id,pair_group_id), CHECK(julianday(updated_at)>=julianday(created_at)), FOREIGN KEY(week_id,pair_group_id,accepted_schedule_at) REFERENCES pair_schedules(week_id,pair_group_id,agreed_time) ON DELETE CASCADE, FOREIGN KEY(pair_group_id,week_id,pair_user_a_id,pair_user_b_id) REFERENCES pairing_groups(id,week_id,user_a_id,user_b_id) ON DELETE CASCADE, FOREIGN KEY(pair_group_id,week_id,pair_user_c_id) REFERENCES pairing_groups(id,week_id,user_c_id) ON DELETE CASCADE, FOREIGN KEY(week_id,updated_by,updated_by_source) REFERENCES pairing_participants(week_id,user_id,source) ON DELETE RESTRICT, FOREIGN KEY(updated_by) REFERENCES auth_accounts(id) ON DELETE RESTRICT)`),
+  index('idx_pair_meeting_links_updated_by','pair_meeting_links',['updated_by','week_id','pair_group_id']),
+  trigger('trg_pair_schedules_meeting_link_invalidate','pair_schedules',`CREATE TRIGGER IF NOT EXISTS trg_pair_schedules_meeting_link_invalidate BEFORE UPDATE OF agreed_time ON pair_schedules FOR EACH ROW WHEN NEW.agreed_time IS NOT OLD.agreed_time BEGIN DELETE FROM pair_meeting_links WHERE week_id=OLD.week_id AND pair_group_id=OLD.pair_group_id; END`),
+  trigger('trg_pair_meeting_links_insert_guard','pair_meeting_links',`CREATE TRIGGER IF NOT EXISTS trg_pair_meeting_links_insert_guard BEFORE INSERT ON pair_meeting_links FOR EACH ROW WHEN NOT EXISTS (SELECT 1 FROM pairing_groups AS pg JOIN pairing_participants AS actor ON actor.week_id=pg.week_id AND actor.user_id=NEW.updated_by AND actor.source='auth' WHERE pg.id=NEW.pair_group_id AND pg.week_id=NEW.week_id AND pg.user_a_id=NEW.pair_user_a_id AND pg.user_b_id=NEW.pair_user_b_id AND pg.user_c_id IS NEW.pair_user_c_id AND (NEW.updated_by=pg.user_a_id OR NEW.updated_by=pg.user_b_id OR NEW.updated_by=pg.user_c_id)) BEGIN SELECT RAISE(ABORT,'invalid meeting-link pair snapshot'); END`),
+  trigger('trg_pair_meeting_links_update_guard','pair_meeting_links',`CREATE TRIGGER IF NOT EXISTS trg_pair_meeting_links_update_guard BEFORE UPDATE ON pair_meeting_links FOR EACH ROW WHEN NEW.week_id<>OLD.week_id OR NEW.pair_group_id<>OLD.pair_group_id OR NEW.accepted_schedule_at<>OLD.accepted_schedule_at OR NEW.pair_user_a_id<>OLD.pair_user_a_id OR NEW.pair_user_b_id<>OLD.pair_user_b_id OR NEW.pair_user_c_id IS NOT OLD.pair_user_c_id OR NEW.created_at<>OLD.created_at OR NEW.revision<>OLD.revision+1 OR NEW.updated_by_source<>'auth' OR NOT EXISTS (SELECT 1 FROM pairing_participants AS actor WHERE actor.week_id=OLD.week_id AND actor.user_id=NEW.updated_by AND actor.source='auth') OR NOT (NEW.updated_by=OLD.pair_user_a_id OR NEW.updated_by=OLD.pair_user_b_id OR NEW.updated_by=OLD.pair_user_c_id) BEGIN SELECT RAISE(ABORT,'invalid meeting-link update'); END`),
+  trigger('trg_pairing_groups_meeting_link_guard','pairing_groups',`CREATE TRIGGER IF NOT EXISTS trg_pairing_groups_meeting_link_guard BEFORE UPDATE OF week_id,user_a_id,user_b_id,user_c_id,is_ai_pair ON pairing_groups FOR EACH ROW WHEN EXISTS (SELECT 1 FROM pair_meeting_links AS link WHERE link.pair_group_id=OLD.id AND link.week_id=OLD.week_id) BEGIN SELECT RAISE(ABORT,'meeting-link pair membership is immutable'); END`),
+  trigger('trg_pairing_participants_meeting_link_update_guard','pairing_participants',`CREATE TRIGGER IF NOT EXISTS trg_pairing_participants_meeting_link_update_guard BEFORE UPDATE OF week_id,user_id,source ON pairing_participants FOR EACH ROW WHEN EXISTS (SELECT 1 FROM pairing_groups AS pg JOIN pair_meeting_links AS link ON link.week_id=pg.week_id AND link.pair_group_id=pg.id WHERE pg.week_id=OLD.week_id AND (OLD.user_id=pg.user_a_id OR OLD.user_id=pg.user_b_id OR OLD.user_id=pg.user_c_id)) BEGIN SELECT RAISE(ABORT,'meeting-link participant source is immutable'); END`),
+  trigger('trg_pairing_participants_meeting_link_delete_guard','pairing_participants',`CREATE TRIGGER IF NOT EXISTS trg_pairing_participants_meeting_link_delete_guard BEFORE DELETE ON pairing_participants FOR EACH ROW WHEN EXISTS (SELECT 1 FROM pairing_groups AS pg JOIN pair_meeting_links AS link ON link.week_id=pg.week_id AND link.pair_group_id=pg.id WHERE pg.week_id=OLD.week_id AND (OLD.user_id=pg.user_a_id OR OLD.user_id=pg.user_b_id OR OLD.user_id=pg.user_c_id)) BEGIN SELECT RAISE(ABORT,'meeting-link participant source is immutable'); END`),
+]);
+
 export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:1,
@@ -275,6 +289,10 @@ export const SCHEMA_OPERATION_SETS=Object.freeze([
     version:17,
     operations:PLAN_17_OPERATIONS,
   }),
+  Object.freeze({
+    version:18,
+    operations:PLAN_18_OPERATIONS,
+  }),
 ]);
 
 export function resolveCurrentArtifacts(operationSets,operation){
@@ -304,7 +322,7 @@ export const SCHEMA_MANIFEST_CHECKSUM=checksum({
 
 // Updating the schema is intentional only when this pinned checksum is updated
 // in the same reviewed change.
-export const PINNED_SCHEMA_MANIFEST_CHECKSUM='b5275908851fa2114cd11c5a511aa1666780a293e5a586c7d56c1c7870fb6221';
+export const PINNED_SCHEMA_MANIFEST_CHECKSUM='9d5b31cd63ecba7f5edeb1bc48236515639649ec15a6583244804b76159063fb';
 
 if(SCHEMA_MANIFEST_CHECKSUM!==PINNED_SCHEMA_MANIFEST_CHECKSUM){
   throw new Error(`Schema manifest checksum changed: ${SCHEMA_MANIFEST_CHECKSUM}`);
