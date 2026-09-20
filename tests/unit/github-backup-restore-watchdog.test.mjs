@@ -101,7 +101,16 @@ test('activation is schedule-aligned and fails closed without post-activation ev
   assert.equal(active.expectedAt,ACTIVATION);
 
   for(const activationAt of [
+    '2026-09-21T03:17:00Z','2026-09-21T03:17:00.0Z','2026-09-21T03:17:00.00Z',ACTIVATION,
+  ]){
+    const accepted=assessScheduledRuns([],runOptions({activationAt,
+      clock:()=>Date.parse('2026-09-21T03:16:59.999Z')}));
+    assert.equal(accepted.activationAt,ACTIVATION);
+  }
+
+  for(const activationAt of [
     'invalid','2026-09-21T03:18:00.000Z','2026-09-22T03:17:00.000Z',
+    '2027-02-29T03:17:00.000Z',
   ]){
     assert.throws(()=>assessScheduledRuns([],runOptions({activationAt})),
       /control activation epoch/);
@@ -237,6 +246,7 @@ test('download verification accepts only an exact healthy PII-free monitor proje
     {...discovery(),activationAt:'2026-09-28T03:17:00.000Z'},
     {...discovery(),activationAt:'2026-09-14T03:17:00.000Z'},
     {...discovery(),activationAt:'2026-09-21T03:18:00.000Z'},
+    {...discovery(),expectedAt:'2026-09-21T03:17:00.001Z'},
     Object.fromEntries(Object.entries(discovery()).filter(([key])=>key!=='activationAt')),
   ]){
     const result=verifyDownloadedMonitor(monitorSummary(),alteredDiscovery,{
