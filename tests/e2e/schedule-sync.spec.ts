@@ -720,6 +720,93 @@ test('elapsed schedules stay recoverable and authoritative expiry errors refetch
   }
 });
 
+test('schedule controls cross the elapsed boundary without a data change and stale timers stay scoped', async ({ page }) => {
+  const observedAt = Date.now();
+  const boundaryInstant = new Date(observedAt + 2_000).toISOString();
+  const laterInstant = new Date(observedAt + 60 * 60 * 1_000).toISOString();
+  await page.clock.install({ time: observedAt });
+  const store = new ScheduleStore([roomA, roomB]);
+  store.seed(roomA, {
+    proposals: [{
+      proposal_id: opaqueId(7_101), value: boundaryInstant, instant: boundaryInstant,
+      proposed_by: userB.id, legacy: false,
+    }],
+    agreed_time: boundaryInstant,
+    legacy_agreed_time: null,
+  });
+  store.seed(roomB, {
+    proposals: [{
+      proposal_id: opaqueId(7_102), value: laterInstant, instant: laterInstant,
+      proposed_by: userB.id, legacy: false,
+    }],
+    agreed_time: laterInstant,
+    legacy_agreed_time: null,
+  });
+  let authorizedRoom = roomA;
+  await openDashboard(page, userA, store, () => authorizedRoom);
+  await expect(page.getByTestId('schedule-accept')).toBeVisible();
+  await expect(page.getByTestId('schedule-calendar-export')).toBeVisible();
+  const draft = page.getByTestId('schedule-input');
+  await draft.fill('2098-10-06T18:30');
+  await draft.focus();
+
+  await page.clock.fastForward(2_001);
+  await expect(page.getByTestId('schedule-expired-label')).toBeVisible();
+  await expect(page.getByTestId('schedule-accept')).toHaveCount(0);
+  await expect(page.getByTestId('schedule-past-agreement')).toBeVisible();
+  await expect(page.getByTestId('schedule-calendar-export')).toHaveCount(0);
+  await expect(page.getByTestId('schedule-remove')).toBeEnabled();
+  await expect(page.getByTestId('schedule-clear')).toBeEnabled();
+  await expect(draft).toHaveValue('2098-10-06T18:30');
+  await expect(draft).toBeFocused();
+  await expect(page.getByTestId('schedule-boundary-status')).toContainText(/controls updated.*time elapsed/i);
+
+  const focusedBoundaryInstant = new Date(observedAt + 4_000).toISOString();
+  store.seed(roomA, {
+    proposals: [{
+      proposal_id: opaqueId(7_103), value: focusedBoundaryInstant, instant: focusedBoundaryInstant,
+      proposed_by: userB.id, legacy: false,
+    }],
+    agreed_time: focusedBoundaryInstant,
+    legacy_agreed_time: null,
+  });
+  await refreshSchedule(page);
+  const expiringAccept=page.getByTestId('schedule-accept');
+  await expect(expiringAccept).toBeVisible();
+  await expiringAccept.focus();
+  await page.clock.fastForward(2_000);
+  await expect(page.getByTestId('schedule-accept')).toHaveCount(0);
+  await expect(page.getByTestId('schedule-expired-label')).toBeFocused();
+
+  const staleBoundaryInstant = new Date(observedAt + 7_000).toISOString();
+  store.seed(roomA, {
+    proposals: [{
+      proposal_id: opaqueId(7_104), value: staleBoundaryInstant, instant: staleBoundaryInstant,
+      proposed_by: userB.id, legacy: false,
+    }],
+    agreed_time: staleBoundaryInstant,
+    legacy_agreed_time: null,
+  });
+  await refreshSchedule(page);
+  await expect(page.getByTestId('schedule-accept')).toBeVisible();
+
+  authorizedRoom = roomB;
+  await page.locator('[data-tab="pair"]').click();
+  await page.locator('.brand').click();
+  await waitForSchedule(page, roomB);
+  await expect(page.getByTestId('schedule-accept')).toBeVisible();
+  await expect(page.getByTestId('schedule-calendar-export')).toBeVisible();
+
+  // Advancing past the old room's pending boundary cannot let its stale
+  // timer repaint the new room or hide the new room's future controls.
+  await page.clock.fastForward(3_000);
+  await expect(page.getByTestId('schedule-expired-label')).toHaveCount(0);
+  await expect(page.getByTestId('schedule-past-agreement')).toHaveCount(0);
+  await expect(page.getByTestId('schedule-accept')).toBeVisible();
+  await expect(page.getByTestId('schedule-calendar-export')).toBeVisible();
+  expect((await scheduleSnapshot(page))?.agreed_time).toBe(laterInstant);
+});
+
 test('a stale same-version proposal refreshes without losing either member draft or update', async ({ browser }) => {
   const store = new ScheduleStore([roomA]);
   const contexts = await Promise.all([
