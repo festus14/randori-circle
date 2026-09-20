@@ -101,6 +101,7 @@ async function probeNotificationPreferencesReadiness(db){
 
 async function probeAdminPromotionReadiness(db){
   await db.execute(`SELECT id,email,is_admin FROM auth_accounts LIMIT 0`);
+  await probeAuthAccountWriteConstraints(db);
   return true;
 }
 

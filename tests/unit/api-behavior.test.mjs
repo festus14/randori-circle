@@ -3063,11 +3063,36 @@ test('configured administrator synchronization follows validation and route read
   });
   assert.equal(promoted.status,200);
   const readinessIndex=executed.findIndex(call=>call.sql.includes('FROM auth_accounts LIMIT 0'));
-  const callerUpdateIndex=executed.findIndex(call=>call.sql.includes('UPDATE auth_accounts SET is_admin=1 WHERE id='));
-  const targetUpdateIndex=executed.findIndex(call=>call.sql.includes('UPDATE auth_accounts SET is_admin=1 WHERE lower(email)'));
+  const adminUpdates=executed.map((call,index)=>({call,index}))
+    .filter(({call})=>call.sql.includes('UPDATE auth_accounts SET is_admin=1 WHERE id='));
+  const callerUpdateIndex=adminUpdates[0]?.index??-1;
+  const targetUpdateIndex=adminUpdates[1]?.index??-1;
   assert.ok(readinessIndex>=0&&callerUpdateIndex>readinessIndex);
   assert.ok(targetUpdateIndex>callerUpdateIndex);
+  assert.deepEqual(adminUpdates.map(({call})=>call.args),[[1],[2]]);
   assert.equal(promoted.body.is_admin_via,'db');
+});
+
+test('promotion rejects ambiguous case-insensitive legacy identities before mutation',async()=>{
+  executeHandler=sql=>{
+    if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')){
+      return rows([{id:1,email:'admin@example.test',is_admin:1}]);
+    }
+    if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE lower(email)')){
+      return rows([
+        {id:2,email:'target@example.test',is_admin:0},
+        {id:3,email:'Target@Example.Test',is_admin:0},
+      ]);
+    }
+    return rows();
+  };
+  const response=await invoke(opsHandler,{
+    method:'POST',url:'/api/admin/reshuffle',query:{endpoint:'reshuffle'},
+    headers:{'x-test-auth':'admin'},body:{action:'promote',email:'target@example.test'},
+  });
+  assert.equal(response.status,503);
+  assert.deepEqual(response.body,{error:'admin operation unavailable'});
+  assert.equal(executed.some(call=>call.sql.includes('UPDATE auth_accounts SET is_admin=1')),false);
 });
 
 test('admin and demo operations run against a fully migrated SQLite database without runtime DDL',async()=>{

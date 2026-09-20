@@ -1794,6 +1794,13 @@ that protect account identity, publication claims, pairing participants, and
 week-label uniqueness. Contracts are coalesced per database client and route,
 cache only successful probes, and evict failures for retry.
 
+Promotion also checks the canonical account primary key and raw-email unique
+constraint. Its case-insensitive compatibility lookup is bounded to two rows;
+an ambiguous legacy case collision fails closed, and a successful promotion
+updates only the resolved account ID. A new case-folded schema index would
+change the migration contract and legacy data semantics, so it is not added by
+this request-path DDL retirement.
+
 Durable authentication and a live account read establish database or exact
 configured-email administrator authority before any readiness probe or data
 mutation. A non-admin performs no schema probe, DDL, or DML. The existing

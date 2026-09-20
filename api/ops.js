@@ -721,9 +721,10 @@ async function handleReshuffle(req,res){
   if(!adminCtx) return;
   const {db, callerEmail, callerIsAdminFlag} = adminCtx;
   try{
-    const existing = await db.execute({ sql:`SELECT id,email,is_admin FROM auth_accounts WHERE lower(email)=?`, args:[targetEmail]});
+    const existing = await db.execute({ sql:`SELECT id,email,is_admin FROM auth_accounts WHERE lower(email)=? ORDER BY id LIMIT 2`, args:[targetEmail]});
     if (!existing.rows.length){ return res.status(404).json({ ok:false, error:'user not found in auth_accounts — ask them to sign up first, then promote, or add them to ADMIN_EMAILS env var to auto-admin on signup', target:targetEmail, note:'Adding to ADMIN_EMAILS env var will auto-promote on next signup/login/Google'}); }
-    await db.execute({ sql:`UPDATE auth_accounts SET is_admin=1 WHERE lower(email)=?`, args:[targetEmail]});
+    if(existing.rows.length!==1) return res.status(503).json({error:'admin operation unavailable'});
+    await db.execute({ sql:`UPDATE auth_accounts SET is_admin=1 WHERE id=?`, args:[existing.rows[0].id]});
     return res.json({ ok:true, promoted:targetEmail, id:existing.rows[0].id, by:callerEmail, is_admin_via:callerIsAdminFlag?'db':'env', note:'User is now admin (is_admin=1). They will get admin flag on next login/token refresh.' });
   }catch(e){ return res.status(500).json({ error:'db error promoting', detail:String(e.message||e).slice(0,200)}); }
 }

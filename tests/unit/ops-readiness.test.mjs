@@ -115,6 +115,8 @@ test('admin operation readiness is exact, read-only, and route scoped',async()=>
   assert.equal(await ensureAdminPromotionReadiness(db),true);
   assert.deepEqual(statements,[
     'SELECT id,email,is_admin FROM auth_accounts LIMIT 0',
+    "SELECT name,pk FROM pragma_table_info('auth_accounts') WHERE pk>0 ORDER BY pk",
+    `SELECT list.name AS index_name,list."unique" AS is_unique, list.partial,info.seqno,info.name AS column_name FROM pragma_index_list('auth_accounts') AS list JOIN pragma_index_info(list.name) AS info WHERE list."unique"=1 AND list.partial=0 ORDER BY list.seq,info.seqno`,
   ]);
 
   statements.length=0;
@@ -160,20 +162,20 @@ test('admin operation readiness isolates caches by route and client',async()=>{
 
   await ensureAdminPromotionReadiness(first);
   await ensureAdminPromotionReadiness(first);
-  assert.equal(firstCalls,1);
+  assert.equal(firstCalls,3);
   await ensureDemoResetReadiness(first);
-  assert.equal(firstCalls,6,'a different route has an independent contract');
+  assert.equal(firstCalls,8,'a different route has an independent contract');
   await ensureAdminPromotionReadiness(second);
-  assert.equal(secondCalls,1,'a different client has an independent cache');
+  assert.equal(secondCalls,3,'a different client has an independent cache');
 });
 
 test('admin operation readiness coalesces work and retries failed contracts',async()=>{
   const gate=deferred();
   let calls=0;
-  const concurrent={execute:async()=>{
+  const concurrent={execute:async statement=>{
     calls+=1;
-    await gate.promise;
-    return {rows:[]};
+    if(calls===1) await gate.promise;
+    return operationsMetadata(statement);
   }};
   const one=ensureAdminPromotionReadiness(concurrent);
   const two=ensureAdminPromotionReadiness(concurrent);
@@ -181,6 +183,7 @@ test('admin operation readiness coalesces work and retries failed contracts',asy
   assert.equal(calls,1);
   gate.resolve();
   assert.deepEqual(await Promise.all([one,two]),[true,true]);
+  assert.equal(calls,3,'the complete promotion contract runs only once');
 
   let attempts=0;
   const retry={execute:async statement=>{

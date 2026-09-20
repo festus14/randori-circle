@@ -28,7 +28,7 @@ altered columns, so no new migration is required.
 
 | Contract | Migration-owned data |
 | --- | --- |
-| Promotion | `auth_accounts.id`, `email`, and `is_admin` |
+| Promotion | `auth_accounts.id`, `email`, and `is_admin`; primary key on `id`; unique `email` |
 | Demo seed | Account identity, password, display, availability, administrator, and demo columns; primary key on `id`; unique `email` |
 | Demo shuffle | Demo-seed account contract plus the exact week, group, run, and participant projections used to read and persist a demo pairing |
 | Demo reset | Demo account/week markers and the `week_id` references deleted from groups, runs, and participants |
@@ -64,6 +64,12 @@ readiness probe, DDL, or DML. Authentication-database or readiness failure
 returns `503 {"error":"admin operation unavailable"}` without exposing schema
 details or performing a write. Healthy validation and success response shapes
 remain unchanged.
+
+Promotion keeps its case-insensitive lookup compatibility but reads at most two
+matches, rejects ambiguous legacy case variants, and updates only the one
+resolved account ID. The canonical unique raw-email constraint and normalized
+account-creation paths remain unchanged; this DDL-removal increment does not
+rewrite account identities or append a migration.
 
 Demo semantics remain unchanged: seed creates designated demo accounts;
 shuffle uses all available demo and real accounts and marks the week as demo
