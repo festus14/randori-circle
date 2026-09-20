@@ -918,9 +918,20 @@ async function handleWeekly(req,res,{isDue=pairingCronIsDue}={}){
     }
   }
   if(secondary.failed){
-    try{ await logServerOps('error','secondary_pairing_failed','secondary pairing scope failed',secondary,req); }catch{}
+    try{ await logServerOps('error','weekly_pairing_completed','weekly pairing completed with failures',{
+      primary:{created:primary.created,existing:primary.skipped,
+        participant_count:primary.participant_count,pair_count:primary.pair_count,
+        solo_count:primary.solo_count},
+      secondary,
+    },null); }catch{}
     return res.status(503).json({ok:false,error:'pairing unavailable',retryable:true,secondary});
   }
+  try{ await logServerOps('info','weekly_pairing_completed','weekly pairing completed',{
+    primary:{created:primary.created,existing:primary.skipped,
+      participant_count:primary.participant_count,pair_count:primary.pair_count,
+      solo_count:primary.solo_count},
+    secondary,
+  },null); }catch{}
   return res.json({...primary,secondary});
 }
 

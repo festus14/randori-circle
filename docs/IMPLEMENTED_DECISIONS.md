@@ -2072,3 +2072,41 @@ reload, an inert cooldown state, and a successful reload after the cooldown.
 Also verify raw-token `429` and delayed stale responses cannot write storage.
 Rollback reverts this client-only retention exception; server-side claim,
 expiry, and rate-limit enforcement remain authoritative.
+
+## ID-50: Make weekly publication total and explicitly Sunday-bounded
+
+Status: candidate code-only pairing reliability increment; no migration.
+
+**Decision.** Authenticated cron publication is admitted only during the exact
+half-open Sunday `[08:00, 10:00)` UTC window, classified by database time while
+the existing `Europe/London` resolver continues to own the cycle boundary.
+GMT, BST, both DST transition Sundays, weekdays, and exact endpoints are pinned
+by tests. Primary reads also classify with database time in production; only
+the already verified isolated loopback runtime retains its explicit test clock.
+
+A valid primary-circle snapshot with zero available members now commits one
+immutable cycle with zero participants and zero groups. Unavailable members
+retain one versioned, idempotent durable outbox event each, owner and cron races
+still converge on one generation, and the empty primary result no longer
+prevents bounded secondary-circle processing. Current primary unavailable
+reads require exact version-1 `pairing.email.requested` evidence in
+`outbox_events`; they no longer consult the retired legacy queue. Weekly logs
+contain aggregate counts only and omit request metadata, identities, scope IDs,
+and cycle keys.
+
+**Alternatives.** Rejecting emptiness leaves a cycle perpetually overdue.
+Creating a placeholder participant violates identity and room authorization.
+A new primary eligibility table would improve model symmetry but adds an
+unnecessary migration while the durable outbox already records the unavailable
+snapshot. Reading both queues indefinitely keeps obsolete storage in the live
+truth path. A rolling two-hour interval after local cutoff is less explicit and
+can admit unintended weekdays. These options are rejected for this increment.
+
+**Rollout and recovery.** No schema, secret, provider, or production-data
+change is required. Canary both UTC retry hours, an all-unavailable primary
+cycle, secondary continuation, and the member unavailable response; monitor
+the non-identifying aggregate completion log and existing outbox metrics.
+Rollback is code-only, but committed empty cycles must never be deleted or
+remixed; roll forward if an older reader cannot consume one. The complete
+contract is documented in
+[`PAIRING_PUBLICATION_TOTALITY.md`](PAIRING_PUBLICATION_TOTALITY.md).

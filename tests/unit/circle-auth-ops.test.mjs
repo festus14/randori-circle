@@ -223,6 +223,36 @@ const localOriginHeaders={origin:'http://127.0.0.1:3000',host:'127.0.0.1:3000'};
 
 function rows(values=[],extra={}){ return {rows:values,rowsAffected:0,...extra}; }
 
+function emptyPairingStorage(handler=()=>undefined){
+  let run=null;
+  return (sql,args)=>{
+    const handled=handler(sql,args);
+    if(handled!==undefined) return handled;
+    if(sql.includes('INSERT INTO pairing_week_runs')&&sql.includes('SELECT ?,NULL,?,1')){
+      run={weekLabel:String(args[0]),generationToken:String(args[1]),algorithmVersion:String(args[2]),
+        algorithmSeed:String(args[3]),participantCount:Number(args[4]),participantsJson:String(args[5]),
+        weekStart:null};
+      return rows([],{rowsAffected:1});
+    }
+    if(sql.includes('INSERT INTO pairing_weeks')&&run){
+      run.weekStart=String(args[1]);
+      return rows([],{rowsAffected:1});
+    }
+    if(sql.includes('FROM pairing_week_runs WHERE week_label=?')&&run&&args[0]===run.weekLabel){
+      return rows([{
+        week_label:run.weekLabel,week_id:10,generation_token:run.generationToken,generation:1,
+        algorithm_version:run.algorithmVersion,algorithm_seed:run.algorithmSeed,
+        participant_count:run.participantCount,participants_json:run.participantsJson,
+        created_at:run.weekStart,
+      }]);
+    }
+    if(sql.includes('FROM pairing_weeks WHERE week_label=?')&&run&&args[0]===run.weekLabel){
+      return rows([{id:10,week_label:run.weekLabel,week_start:run.weekStart,is_demo:0}]);
+    }
+    return rows();
+  };
+}
+
 async function withFixedNow(iso,callback){
   const NativeDate=globalThis.Date;
   const instant=new NativeDate(iso).getTime();
@@ -925,17 +955,19 @@ test('manual and weekly production pairing queries are primary-circle scoped whe
   process.env.APP_URL='https://randori.example.test';
   process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
   process.env.CRON_SECRET='cron-secret';
-  executeHandler=sql=>{
+  const pairingQueries=sql=>{
     if(sql.includes("cm.role='owner'")||sql.includes("membership.role='owner'")) return rows([{id:1,role:'owner',circle_id:1}]);
     if(sql.includes('FROM auth_accounts')&&sql.includes("cm.status='active'")) return rows([]);
     if(sql.includes('FROM auth_accounts account')&&sql.includes("membership.status='active'")) return rows([]);
-    return rows();
+    return undefined;
   };
+  executeHandler=emptyPairingStorage(pairingQueries);
 
   const manual=await invoke(opsHandler,{
     method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers:{'x-test-auth':'admin'},
   });
-  assert.equal(manual.status,400);
+  assert.equal(manual.status,200);
+  assert.equal(manual.body.participant_count,0);
   let candidateQueries=executed.filter(call=>call.sql.includes('account.email')&&call.sql.includes('circle_memberships'));
   assert.equal(candidateQueries.length,1);
   for(const call of candidateQueries){
@@ -950,10 +982,12 @@ test('manual and weekly production pairing queries are primary-circle scoped whe
   assert.equal(availabilityApplications[0].cycle.state,'current');
 
   executed.length=0;
+  executeHandler=emptyPairingStorage(pairingQueries);
   const weekly=await withFixedNow('2026-09-20T08:15:00.000Z',()=>invoke(opsHandler,{
     method:'POST',url:'/api/cron/weekly',query:{endpoint:'weekly'},headers:{'x-cron-secret':'cron-secret'},
   }));
-  assert.equal(weekly.status,400);
+  assert.equal(weekly.status,200);
+  assert.equal(weekly.body.participant_count,0);
   candidateQueries=executed.filter(call=>call.sql.includes('account.email')&&call.sql.includes('circle_memberships'));
   assert.equal(candidateQueries.length,1);
   assert.equal(executed.some(call=>call.sql.includes('FROM users ORDER BY id')),false);
@@ -976,15 +1010,16 @@ test('pairing publication requires a primary-circle owner in production and only
   process.env.TURSO_DATABASE_URL='file:///tmp/randori-pairing-local.sqlite';
   process.env.APP_URL='http://127.0.0.1:3000';
   executed.length=0;
-  executeHandler=sql=>{
+  executeHandler=emptyPairingStorage(sql=>{
     if(sql.includes('SELECT id,is_admin FROM auth_accounts')) return rows([{id:1,is_admin:1}]);
-    return rows();
-  };
+    return undefined;
+  });
   const local=await invoke(opsHandler,{
     method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},
     headers:{'x-test-auth':'admin',host:'127.0.0.1:3000'},
   });
-  assert.equal(local.status,400,'an authorized local admin reaches participant validation');
+  assert.equal(local.status,200,'an authorized local admin publishes an empty immutable cycle');
+  assert.equal(local.body.participant_count,0);
   assert.equal(executed.some(call=>call.sql.includes('circle_memberships')),false);
 
   executeHandler=sql=>{
@@ -1039,22 +1074,26 @@ test('availability local scope requires every loopback and provider-isolation gu
 test('production pairing stays primary-circle scoped when the rollout flag is disabled',async()=>{
   process.env.APP_URL='https://randori.example.test';
   process.env.CRON_SECRET='cron-secret';
-  executeHandler=sql=>{
+  const pairingQueries=sql=>{
     if(sql.includes("cm.role='owner'")||sql.includes("membership.role='owner'")) return rows([{id:1,role:'owner',circle_id:1}]);
-    return rows();
+    return undefined;
   };
+  executeHandler=emptyPairingStorage(pairingQueries);
 
   const manual=await invoke(opsHandler,{
     method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers:{'x-test-auth':'admin'},
   });
-  assert.equal(manual.status,400);
+  assert.equal(manual.status,200);
+  assert.equal(manual.body.participant_count,0);
   assert.equal(executed.some(call=>call.sql.includes('circle_memberships')),true);
 
   executed.length=0;
+  executeHandler=emptyPairingStorage(pairingQueries);
   const weekly=await withFixedNow('2026-09-20T08:15:00.000Z',()=>invoke(opsHandler,{
     method:'POST',url:'/api/cron/weekly',query:{endpoint:'weekly'},headers:{'x-cron-secret':'cron-secret'},
   }));
-  assert.equal(weekly.status,400);
+  assert.equal(weekly.status,200);
+  assert.equal(weekly.body.participant_count,0);
   assert.equal(executed.some(call=>call.sql.includes('FROM users ORDER BY id')),false);
   assert.equal(executed.some(call=>call.sql.includes('circle_memberships')),true);
 });

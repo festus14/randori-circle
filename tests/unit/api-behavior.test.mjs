@@ -36,6 +36,7 @@ let activationOutboxResult=null;
 let activationOutboxMetrics=[];
 let outboxMetricsDelayMs=0;
 let outboxLogDelayMs=0;
+let databaseNowOverride=null;
 let scheduleEmailDeliveryResult=null;
 const scheduleEmailDeliveryCalls=[];
 let invitationEmailDeliveryResult=null;
@@ -51,7 +52,7 @@ function sqlText(statement) {
 
 function availabilityFixtureResult(sql,args=[]){
   if(sql.includes("strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc")){
-    return rows([{now_utc:new Date().toISOString()}]);
+    return rows([{now_utc:databaseNowOverride||new Date().toISOString()}]);
   }
   if(sql.includes("PRAGMA table_info('pairing_cycles')")) return rows([
     ['scope_key','TEXT',1,1],['circle_id','INTEGER',0,0],['cycle_key','TEXT',1,2],
@@ -553,6 +554,7 @@ beforeEach(() => {
   activationOutboxMetrics=[];
   outboxMetricsDelayMs=0;
   outboxLogDelayMs=0;
+  databaseNowOverride=null;
   scheduleEmailDeliveryResult=null;
   scheduleEmailDeliveryCalls.length=0;
   invitationEmailDeliveryResult=null;
@@ -1705,16 +1707,17 @@ test('my-pair returns only current-cycle membership and a canonical room id', as
   let paired = true;
   let solo = false;
   let unavailable = false;
+  let emptyPublication = false;
   let poisonedSchedule = false;
   executeHandler = (sql,args) => {
     if(sql.includes('SELECT aa.id')&&sql.includes('JOIN circle_memberships cm')&&sql.includes('LIMIT 2')) return rows([{id:2,circle_id:1}]);
-    const participantRows=paired
+    const participantRows=emptyPublication?[]:paired
       ?(solo?[{user_id:2,position:0,source:'auth'}]:[
         {user_id:2,position:0,source:'auth'},
         {user_id:4,position:1,source:'auth'},
       ])
       :[{user_id:4,position:0,source:'auth'}];
-    const groupRows=paired
+    const groupRows=emptyPublication?[]:paired
       ?[solo
         ?{id:20,user_a_id:2,user_b_id:2,user_c_id:null,is_ai_pair:1}
         :{id:20,user_a_id:2,user_b_id:4,user_c_id:null,is_ai_pair:0}]
@@ -1735,7 +1738,11 @@ test('my-pair returns only current-cycle membership and a canonical room id', as
         ? [{id:30,proposed_times:'not-json',agreed_time:null,updated_at:'now',access_present:1}]
         : [{id:null,proposed_times:null,agreed_time:null,updated_at:null,access_present:1}]);
     }
-    if(sql.includes('FROM pairing_email_outbox')){
+    if(sql.includes('FROM outbox_events')&&sql.includes("json_extract(payload_json,'$.kind')='unavailable'")){
+      assert.deepEqual(args,['pairing.email.requested',1,10,2,10,2]);
+      assert.match(sql,/json_type\(payload_json,'\$\.week_id'\)='integer'/);
+      assert.match(sql,/json_type\(payload_json,'\$\.user_id'\)='integer'/);
+      assert.match(sql,/json_type\(payload_json,'\$\.kind'\)='text'/);
       return rows(unavailable?[{unavailable:1}]:[]);
     }
     return rows();
@@ -1779,10 +1786,15 @@ test('my-pair returns only current-cycle membership and a canonical room id', as
   assert.equal(absent.body.paired, false);
   assert.equal(absent.body.reason, 'not_paired_this_cycle');
   assert.equal(absent.body.pairing_status,'missed');
-  assert.equal(executed.some(call=>call.sql.includes('FROM pairing_email_outbox')&&call.args[0]===10&&call.args[1]===2),true);
+  assert.equal(executed.some(call=>call.sql.includes('FROM outbox_events')
+    &&call.sql.includes("event_type=? AND event_version=?")
+    &&call.args[2]===10&&call.args[3]===2),true);
+  assert.equal(executed.some(call=>call.sql.includes('FROM pairing_email_outbox')),false,
+    'current-cycle unavailable evidence must not consult the retired legacy queue');
   assert.equal(executed.some(call => call.sql.includes('JOIN pairing_weeks')), false);
 
   unavailable=true;
+  emptyPublication=true;
   const optedOut=await invoke(dataHandler,{
     url:'/api/my-pair',query:{endpoint:'my-pair'},headers:{'x-test-auth':'user'},
   });
@@ -1790,6 +1802,115 @@ test('my-pair returns only current-cycle membership and a canonical room id', as
   assert.equal(optedOut.body.paired,false);
   assert.equal(optedOut.body.pairing_status,'unavailable');
   assert.equal(optedOut.body.reason,'unavailable_current_cycle');
+
+  const emptyWeek=await invoke(dataHandler,{
+    url:'/api/weeks',query:{endpoint:'weeks'},headers:{'x-test-auth':'user'},
+  });
+  assert.equal(emptyWeek.status,200);
+  assert.equal(emptyWeek.body.weeks.length,1);
+  assert.deepEqual(emptyWeek.body.weeks[0].pairs,[]);
+});
+
+test('primary weeks and my-pair isolate the local test clock from production database time',async()=>{
+  const appNow='2026-09-27T08:00:01.000Z';
+  const databaseNow='2026-09-20T08:00:01.000Z';
+  const appCycle=resolvePairingCycle({now:appNow});
+  const databaseCycle=resolvePairingCycle({now:databaseNow});
+  assert.notEqual(appCycle.cycleId,databaseCycle.cycleId);
+  databaseNowOverride=databaseNow;
+
+  executeHandler=(sql,args)=>{
+    if(sql.includes('SELECT id FROM auth_accounts')&&sql.includes('COALESCE(is_demo,0)=0')){
+      return rows([{id:2}]);
+    }
+    if(sql.includes('SELECT aa.id,c.id AS circle_id')&&sql.includes('LIMIT 2')){
+      return rows([{id:2,circle_id:1}]);
+    }
+    if(sql.includes('FROM pairing_week_runs WHERE week_label=?')){
+      return args[0]===appCycle.cycleId?rows([{
+        week_label:appCycle.cycleId,week_id:10,generation_token:'empty-publication',generation:1,
+        algorithm_version:'fair-seeded-v1',algorithm_seed:`${appCycle.cycleId}:weekly`,
+        participant_count:0,participants_json:'[]',created_at:appCycle.startsAt,
+      }]):rows([]);
+    }
+    if(sql.includes('FROM pairing_weeks WHERE week_label=?')){
+      return args[0]===appCycle.cycleId
+        ?rows([{id:10,week_label:appCycle.cycleId,week_start:appCycle.startsAt,is_demo:0}])
+        :rows([]);
+    }
+    if(sql.includes('FROM pairing_participants pp')
+      ||(sql.includes('FROM pairing_groups pg')&&sql.includes('JOIN pairing_week_runs pwr'))){
+      return rows([]);
+    }
+    if(sql.includes('FROM outbox_events')&&sql.includes("json_extract(payload_json,'$.kind')='unavailable'")){
+      return rows([{unavailable:1}]);
+    }
+    return rows();
+  };
+
+  const request=endpoint=>({
+    url:`/api/${endpoint}`,query:{endpoint},
+    headers:{'x-test-auth':'user',host:'127.0.0.1:3000'},
+  });
+  const invokeBoth=async()=>({
+    weeks:await invoke(dataHandler,request('weeks')),
+    myPair:await invoke(dataHandler,request('my-pair')),
+  });
+
+  Object.assign(process.env,{
+    NODE_ENV:'development',RANDORI_LOCAL_RUNTIME:'true',CIRCLE_MEMBERSHIP_ENABLED:'false',
+    TURSO_DATABASE_URL:'file:///tmp/randori-clock-contract.sqlite',TURSO_AUTH_TOKEN:'',
+    APP_URL:'http://127.0.0.1:3000',
+  });
+  executed.length=0;
+  const local=await withFixedNow(appNow,invokeBoth);
+  assert.equal(local.weeks.status,200);
+  assert.equal(local.weeks.body.current_cycle.cycleId,appCycle.cycleId);
+  assert.equal(local.weeks.body.weeks.length,1);
+  assert.equal(local.myPair.status,200);
+  assert.equal(local.myPair.body.current_cycle.cycleId,appCycle.cycleId);
+  assert.equal(local.myPair.body.pairing_status,'unavailable');
+  assert.equal(executed.some(call=>call.sql.includes("strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc")),false,
+    'the fully verified isolated runtime retains its explicit application test clock');
+
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  executed.length=0;
+  const localMembership=await withFixedNow(appNow,invokeBoth);
+  assert.equal(localMembership.weeks.status,200);
+  assert.equal(localMembership.weeks.body.current_cycle.cycleId,appCycle.cycleId);
+  assert.equal(localMembership.weeks.body.weeks.length,1);
+  assert.equal(localMembership.myPair.status,200);
+  assert.equal(localMembership.myPair.body.current_cycle.cycleId,appCycle.cycleId);
+  assert.equal(localMembership.myPair.body.pairing_status,'unavailable');
+  assert.equal(executed.some(call=>call.sql.includes("strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc")),false,
+    'the verified local membership runtime also retains its explicit application test clock');
+
+  for(const mode of ['production','failed-local-guard']){
+    if(mode==='production'){
+      Object.assign(process.env,{
+        NODE_ENV:'production',RANDORI_LOCAL_RUNTIME:'false',
+        TURSO_DATABASE_URL:'libsql://database.example.test',TURSO_AUTH_TOKEN:'remote-token',
+        APP_URL:'https://randori.example.test',
+      });
+    }else{
+      Object.assign(process.env,{
+        NODE_ENV:'development',RANDORI_LOCAL_RUNTIME:'true',
+        TURSO_DATABASE_URL:'file:///tmp/randori-clock-contract.sqlite',TURSO_AUTH_TOKEN:'unexpected-token',
+        APP_URL:'http://127.0.0.1:3000',
+      });
+    }
+    executed.length=0;
+    const result=await withFixedNow(appNow,invokeBoth);
+    assert.equal(result.weeks.status,200,mode);
+    assert.equal(result.weeks.body.current_cycle.cycleId,databaseCycle.cycleId,mode);
+    assert.deepEqual(result.weeks.body.weeks,[],mode);
+    assert.equal(result.myPair.status,200,mode);
+    assert.equal(result.myPair.body.current_cycle.cycleId,databaseCycle.cycleId,mode);
+    assert.equal(result.myPair.body.pairing_status,'unpublished',mode);
+    const clockReads=executed.filter(call=>call.sql.includes(
+      "strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc"));
+    assert.equal(clockReads.length,2,`${mode} reads both endpoints from database time`);
+  }
 });
 
 test('my-pair ignores stale and future weeks but fails closed on a current legacy week',async()=>{

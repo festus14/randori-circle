@@ -48,7 +48,7 @@ test('data readiness profiles use bounded read-only projections',async()=>{
   assert.equal(statements.some(sql=>DDL.test(sql)||DML.test(sql)),false);
   assert.deepEqual(new Set(statements.map(sql=>sql.match(/FROM\s+(\w+)\s+LIMIT\s+0/iu)?.[1])),new Set([
     'auth_accounts','users','pairing_weeks','pairing_groups','pairing_participants',
-    'pairing_week_runs','pairing_email_outbox','pair_schedules','session_runs','app_logs',
+    'pairing_week_runs','outbox_events','pair_schedules','session_runs','app_logs',
   ]));
   const normalized=statements.map(sql=>sql.replace(/\s+/gu,' ').trim());
   assert.ok(normalized.includes(
@@ -74,6 +74,10 @@ test('weeks and my-pair readiness pin their exact publication and schedule proje
   assert.equal(myPair.includes(publication),true);
   assert.equal(myPair.includes(participants),true);
   assert.equal(myPair.includes(schedule),true);
+  assert.equal(myPair.includes(
+    'SELECT event_type,event_version,idempotency_key,payload_json FROM outbox_events LIMIT 0'
+  ),true);
+  assert.equal(myPair.some(sql=>sql.includes('pairing_email_outbox')),false);
   assert.equal(myPair.some(sql=>sql==='SELECT id,week_label,week_start,focus,is_demo FROM pairing_weeks LIMIT 0'),true);
 });
 

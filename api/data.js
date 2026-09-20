@@ -3,6 +3,7 @@ import { createEvaluationSuite, getPublicExercise, listPublicExercises } from '.
 import { parseCanonicalRoomPath } from './_pairing.js';
 import { resolvePairingCycle } from './_pairing-cycle.js';
 import { getPairingPublication } from './_pairing-publication.js';
+import { hasPrimaryUnavailableEvidence } from './_pairing-evidence.js';
 import { circlePairingFailure, readCirclePairing } from './_circle-pairing.js';
 import { authPairAccessArgs, authPairAccessSql, getAuthenticatedPairAccess } from './_pair-access.js';
 import { applyScheduleMutation, nextScheduleUpdatedAt, parseScheduleMutation, projectSchedule, readScheduleState, ScheduleDataError, ScheduleInputError } from './_schedule.js';
@@ -19,6 +20,7 @@ import { ensurePairRecapReadiness, MAX_RECAP_ACTIVITY, MAX_RECAP_RUN_SCAN, newes
 import { ensureDataAdminReadiness, ensureDataCircleReadiness, ensureDataHistoryReadiness, ensureDataLogReadiness, ensureDataProfileReadiness, ensureDataRunsReadiness, ensureDataStatsReadiness, ensureDataWeeksReadiness, ensureMyPairDataReadiness } from './_data-readiness.js';
 import { circleMembershipEnabled, ensureCircleMembershipReadiness } from './_circle-membership.js';
 import { initializePrimaryCircleData } from './_admin-init.js';
+import { localRuntimeRequest } from './_local-runtime.js';
 import {
   canUseLegacySinglePrimaryCircleFeatures,
   multiCircleControlPlaneEnabled,
@@ -354,7 +356,7 @@ function secondaryMyPairResponse(read,readerAccess,userId){
 async function loadCurrentPublicationAccounts(db,publication,readerAccess){
   if(!publication.participants.every(item=>item.source==='auth')) throw new Error('unsupported pairing participant source');
   const ids=publication.participants.map(item=>item.userId);
-  if(!ids.length) throw new Error('empty pairing publication');
+  if(!ids.length) return new Map();
   const placeholders=ids.map(()=>'?').join(',');
   const result=await db.execute(readerAccess.localRuntime?{
     sql:`SELECT id,display_name AS name,color FROM auth_accounts
@@ -378,6 +380,15 @@ async function loadCurrentPublicationAccounts(db,publication,readerAccess){
     Number(row.id),
     {name:String(row.name||`Member ${row.id}`).slice(0,80),color:String(row.color||'#999').slice(0,32)},
   ]));
+}
+
+async function pairingReadInstant(db,{localRuntime=false}={}){
+  if(localRuntime) return new Date();
+  const result=await db.execute(`SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc`);
+  const raw=result.rows?.[0]?.now_utc;
+  const instant=new Date(raw);
+  if(!raw||!Number.isFinite(instant.getTime())) throw new Error('pairing time unavailable');
+  return instant;
 }
 
 async function getPairAccess(db, payload, weekId, pairId){
@@ -798,7 +809,9 @@ async function handleWeeks(req,res){
     }
   }catch{ return res.status(503).json({error:'pairing unavailable'}); }
   try{
-    const now=new Date();
+    const now=await pairingReadInstant(db,{
+      localRuntime:readerAccess.localRuntime||localRuntimeRequest(req),
+    });
     const currentCycle=resolvePairingCycle({now});
     const upcomingCycle=resolvePairingCycle({now,state:'upcoming'});
     const publication=await getPairingPublication(db,{now});
@@ -1024,7 +1037,9 @@ async function handleMyPair(req,res){
   let weekId=null, weekRow=null, cycle=null, upcomingCycle=null;
   let publication=null;
   try{
-    const now=new Date();
+    const now=await pairingReadInstant(db,{
+      localRuntime:readerAccess.localRuntime||localRuntimeRequest(req),
+    });
     cycle=resolvePairingCycle({now});
     upcomingCycle=resolvePairingCycle({now,state:'upcoming'});
     publication=await getPairingPublication(db,{now});
@@ -1054,12 +1069,7 @@ async function handleMyPair(req,res){
   if (!grp){
     let unavailable=false;
     try{
-      const snapshot=await db.execute({
-        sql:`SELECT 1 AS unavailable FROM pairing_email_outbox
-          WHERE week_id=? AND user_id=? AND kind='unavailable' LIMIT 1`,
-        args:[weekId,userId],
-      });
-      unavailable=!!snapshot.rows?.length;
+      unavailable=await hasPrimaryUnavailableEvidence(db,{weekId,userId});
     }catch{
       return res.status(503).json({error:'pairing unavailable'});
     }
