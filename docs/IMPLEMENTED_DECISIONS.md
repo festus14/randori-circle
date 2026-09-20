@@ -1928,3 +1928,30 @@ subjects, or OAuth transaction contents. Rollback changes application code
 only, but restoring unbound behavior reopens the race. The exact protocol,
 invariants, tests, and operational guidance are in
 [`AUTH_CLAIM_BINDING.md`](AUTH_CLAIM_BINDING.md).
+
+## ID-46: Quiesce bootstrap identity refreshes before the circle-switch race
+
+Status: implemented as a test-only reliability increment with no production or
+schema change.
+
+**Decision.** The identity-refresh/circle-switch browser test observes all three
+fixed bootstrap `/api/auth/me` requests and then awaits one explicit refresh
+before it starts the gated switch race. The test continues to require the
+identity-changing refresh to commit, the replacement circle data to render,
+and the released old switch callback to remain fenced.
+
+This keeps `refreshMe()`'s latest-request-wins production contract intact. A
+bootstrap refresh may correctly supersede an older explicit refresh and cause
+that older call to return `false`; treating that scheduler-dependent return as
+a product failure made otherwise identical Linux runs flaky.
+
+**Alternatives.** Removing the `true` assertion would avoid the immediate
+failure but weaken proof that the intended identity transition committed.
+Sleeping past 1.2 seconds would depend on wall-clock scheduling. Exposing a
+production-only idle hook would widen the application surface solely for a
+test. Changing refresh fencing so every caller returns success would obscure
+which response actually committed and could revive stale identity state.
+
+**Rollout and recovery.** This changes only Playwright orchestration and its
+decision record. Revert it if the bootstrap schedule is replaced by a durable
+application-ready signal, then synchronize the race through that public signal.
