@@ -1162,6 +1162,7 @@ test('data read models map database rows and expose non-mutating health probes',
     if (sql.includes('COUNT(*) as c FROM auth_accounts')) return rows([{ c: 4 }]);
     if (sql.includes('COUNT(*) as c FROM pairing_weeks')) return rows([{ c: 2 }]);
     if (sql.includes('COUNT(*) as c FROM pairing_groups pg JOIN')) return rows([{ c: 3 }]);
+    if (sql.includes('WITH completion_counts AS')) return rows([{ c: 2 }]);
     if (sql.includes('COUNT(*) as c FROM pairing_groups') && sql.includes('pairing_participants viewer')) return rows([{ c: 2 }]);
     if (sql.includes('COUNT(DISTINCT pairing_groups.week_id)')) return rows([{ c: 2 }]);
     if (sql.includes('ORDER BY pw.id DESC LIMIT 1') && sql.includes('pairing_participants viewer')) return rows([{ pg_id: 20, week_id: 10 }]);
@@ -3052,8 +3053,13 @@ test('operations cover preferences, availability, admin promotion, demo lifecycl
   const shuffled = await invoke(opsHandler, { method: 'POST', url: '/api/demo-shuffle', query: { endpoint: 'demo-shuffle' }, headers: admin });
   assert.equal(shuffled.status, 200, JSON.stringify(shuffled.body));
   assert.equal(shuffled.body.pairs.length, 1);
+  const resetStart=executed.length;
   const reset = await invoke(opsHandler, { method: 'POST', url: '/api/demo-reset', query: { endpoint: 'demo-reset' }, headers: admin });
   assert.equal(reset.body.deleted.groups, 2);
+  const resetDeletes=executed.slice(resetStart).map(call=>call.sql.trim())
+    .filter(sql=>sql.startsWith('DELETE FROM'));
+  assert.match(resetDeletes[0],/^DELETE FROM session_completion_receipts\b/);
+  assert.match(resetDeletes[1],/^DELETE FROM pairing_participants\b/);
 
   const cronDenied = await invoke(opsHandler, { method: 'POST', url: '/api/cron/weekly', query: { endpoint: 'weekly' }, headers: { 'x-cron-secret': 'wrong' } });
   assert.equal(cronDenied.status, 401);

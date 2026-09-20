@@ -10,6 +10,7 @@ import { applyMigrations, inspectMigrationState, prepareMigrationConnection } fr
 
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const THROUGH_V15=EXECUTABLE_MIGRATIONS.slice(0,15);
+const THROUGH_V16=EXECUTABLE_MIGRATIONS.slice(0,16);
 const V16=EXECUTABLE_MIGRATIONS[15];
 const CYCLE_A='a'.repeat(64);
 const CYCLE_B='b'.repeat(64);
@@ -78,7 +79,7 @@ function scheduleArgs(pairing,{scope='circle:20',circle=20,cycle=CYCLE_A,memberC
 test('v16 installs only the exact secondary scheduling ownership schema',async()=>{
   const item=fixture();
   try{
-    const result=await apply(item.db);
+    const result=await apply(item.db,THROUGH_V16);
     assert.equal(result.toVersion,16);
     assert.deepEqual(V16.operations.map(operation=>operation.name),[
       'uq_circle_pairing_groups_schedule_owner','circle_pair_schedules',
@@ -97,10 +98,10 @@ test('managed v15 upgrades exactly once to v16',async()=>{
   const item=fixture();
   try{
     await apply(item.db,THROUGH_V15);
-    const before=await inspectMigrationState(item.db);
+    const before=await inspectMigrationState(item.db,{migrations:THROUGH_V16});
     assert.equal(before.currentVersion,15);
     const upgraded=await applyMigrations(item.db,{
-      expectedStateFingerprint:before.stateFingerprint,migrations:EXECUTABLE_MIGRATIONS,retry:NO_RETRY,
+      expectedStateFingerprint:before.stateFingerprint,migrations:THROUGH_V16,retry:NO_RETRY,
     });
     assert.deepEqual(upgraded.applied.map(entry=>entry.version),[16]);
     assert.equal((await inspectMigrationState(item.db)).schemaExact,true);

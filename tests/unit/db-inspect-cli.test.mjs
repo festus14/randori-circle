@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import { createClient } from '@libsql/client';
 import {fileURLToPath} from 'node:url';
-import { INDEXES, TABLES } from '../../db/schema-manifest.js';
+import { INDEXES, TABLES, TRIGGERS } from '../../db/schema-manifest.js';
 import { databaseConfig, main, parseMode, publicCliError } from '../../scripts/db-inspect.mjs';
 
 const REPOSITORY_ROOT=fileURLToPath(new URL('../..',import.meta.url));
@@ -29,6 +29,7 @@ test('db:status emits JSON and uses read-only statements',async()=>{
   const delegate=createClient({url:'file::memory:'});
   for(const definition of TABLES) await delegate.execute(definition.sql);
   for(const definition of INDEXES) await delegate.execute(definition.sql);
+  for(const definition of TRIGGERS) await delegate.execute(definition.sql);
   const statements=[];
   let closed=false;
   const stdout=outputBuffer();
@@ -59,7 +60,7 @@ test('db:status fails closed on drift while db:plan remains inspectable',async()
     assert.equal(payload.readOnly,true);
     if(mode==='plan'){
       assert.equal(payload.executable,false);
-      assert.equal(payload.summary.actions,108);
+      assert.equal(payload.summary.actions,119);
     }
   }
 });

@@ -135,6 +135,10 @@
       "destination": "/api/data?endpoint=pair-recap"
     },
     {
+      "source": "/api/session-completion",
+      "destination": "/api/data?endpoint=session-completion"
+    },
+    {
       "source": "/api/stats",
       "destination": "/api/data?endpoint=stats"
     },

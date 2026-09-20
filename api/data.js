@@ -29,7 +29,19 @@ import {
 import { scheduleNotificationEvents } from './_schedule-email.js';
 import { ensureMessagesReadiness, MAX_MESSAGES_PER_ROOM, MAX_MESSAGES_PER_USER_PER_MINUTE, MESSAGE_RATE_RETRY_SECONDS, messageInsertStatement, messageLimitStateStatement, MessageDataError, MessageInputError, messageReadStatement, parseMessageSend, parseMessagesQuery, projectMessage, validateMessagesPostQuery } from './_messages.js';
 import { ensurePairRecapReadiness, MAX_RECAP_ACTIVITY, MAX_RECAP_RUN_SCAN, newestRecapActivity, PairRecapDataError, PairRecapInputError, parsePairRecapQuery, projectRecapMessage, projectRecapPair, projectRecapRun, projectRecapSchedule, projectRecapWorkspace } from './_pair-recap.js';
-import { ensureDataAdminReadiness, ensureDataCircleReadiness, ensureDataHistoryReadiness, ensureDataLogReadiness, ensureDataProfileReadiness, ensureDataRunsReadiness, ensureDataStatsReadiness, ensureDataWeeksReadiness, ensureMyPairDataReadiness } from './_data-readiness.js';
+import {
+  canonicalCompletionPair,
+  mutateAuthorizedSessionCompletion,
+  parseSessionCompletionMutation,
+  parseSessionCompletionQuery,
+  projectSessionCompletion,
+  readAuthorizedSessionCompletion,
+  SessionCompletionConflictError,
+  SessionCompletionDataError,
+  SessionCompletionInputError,
+  validateSessionCompletionPostQuery,
+} from './_session-completion.js';
+import { ensureDataAdminReadiness, ensureDataCircleReadiness, ensureDataHistoryReadiness, ensureDataLogReadiness, ensureDataProfileReadiness, ensureDataRunsReadiness, ensureDataSessionCompletionReadiness, ensureDataStatsReadiness, ensureDataWeeksReadiness, ensureMyPairDataReadiness } from './_data-readiness.js';
 import { circleMembershipEnabled, ensureCircleMembershipReadiness } from './_circle-membership.js';
 import { initializePrimaryCircleData } from './_admin-init.js';
 import { localRuntimeRequest } from './_local-runtime.js';
@@ -125,6 +137,7 @@ function resolveDataRoute(req,endpoint){
   if(endpoint==='my-pair'||endpoint==='mypair'||endpoint==='my_pair'
     ||path.includes('my-pair')||path.includes('my_pair')) return 'my-pair';
   if(endpoint==='pair-recap'||path.includes('/pair-recap')) return 'pair-recap';
+  if(endpoint==='session-completion'||path.includes('/session-completion')) return 'session-completion';
   if(endpoint==='schedule'||path.includes('/schedule')) return 'schedule';
   if(endpoint.includes('message')) return 'messages';
   if(endpoint==='execute'||endpoint==='run'||path.includes('/execute')) return 'execute';
@@ -965,11 +978,14 @@ async function handleHistory(req,res){
   if (!payload) return res.status(401).json({ error:'missing Bearer token' });
   let db;
   let groups;
+  let completionRows;
+  let completionVersionKey;
   const userId = payload.id || payload.uid;
   try{
     db=getClient();
     await ensureDataHistoryReadiness(db);
-    groups=await db.execute({ sql:`
+    completionVersionKey=getJwtSecret();
+    const results=await db.batch([{ sql:`
       SELECT pg.id as pg_id, pg.week_id, pg.user_a_id, pg.user_b_id, pg.user_c_id,
              pa.source AS user_a_source,pb.source AS user_b_source,pc.source AS user_c_source,
              pg.is_ai_pair, pg.topic, pg.topic_kind, pw.week_label, pw.week_start
@@ -981,7 +997,23 @@ async function handleHistory(req,res){
       LEFT JOIN pairing_participants pc ON pc.week_id=pg.week_id AND pc.user_id=pg.user_c_id
       WHERE (pg.user_a_id = ? OR pg.user_b_id = ? OR pg.user_c_id = ?)
       ORDER BY pw.week_start DESC, pg.id DESC
-    `, args:[userId,userId,userId,userId] });
+    `, args:[userId,userId,userId,userId] },{
+      sql:`SELECT receipt.week_id,receipt.pair_group_id,receipt.user_id,receipt.confirmed_at
+        FROM session_completion_receipts receipt
+        JOIN pairing_groups pg
+          ON pg.id=receipt.pair_group_id AND pg.week_id=receipt.week_id
+        JOIN pairing_participants viewer
+          ON viewer.week_id=pg.week_id AND viewer.user_id=? AND viewer.source='auth'
+        WHERE pg.user_a_id=? OR pg.user_b_id=? OR pg.user_c_id=?
+        ORDER BY receipt.week_id,receipt.pair_group_id,receipt.user_id`,
+      args:[userId,userId,userId,userId],
+    }],'read');
+    if(!Array.isArray(results)||results.length!==2
+      ||!Array.isArray(results[0]?.rows)||!Array.isArray(results[1]?.rows)){
+      throw new Error('invalid history result');
+    }
+    [groups]=results;
+    completionRows=results[1].rows;
   }catch{
     return res.status(503).json({error:'history unavailable'});
   }
@@ -1010,7 +1042,14 @@ async function handleHistory(req,res){
       rows.rows.forEach(row=>idToName.set(`users:${row.id}`,row.name));
     }catch{}
   }
-  const enriched = safeGroups.map(r=>{
+  const receiptsByPair=new Map();
+  for(const receipt of completionRows){
+    const key=`${receipt.week_id}:${receipt.pair_group_id}`;
+    const existing=receiptsByPair.get(key)||[];
+    existing.push(receipt); receiptsByPair.set(key,existing);
+  }
+  let enriched;
+  try{ enriched = safeGroups.map(r=>{
     const isA = Number(r.user_a_id)===Number(userId);
     const participants=[
       {id:r.user_a_id,source:r.user_a_source},
@@ -1022,10 +1061,70 @@ async function handleHistory(req,res){
     const partnerNames=r.is_ai_pair
       ? ['Solo practice']
       : partners.map(partner=>idToName.get(`${partner.source}:${partner.id}`)||`User ${partner.id}`);
-    return { pg_id:r.pg_id, week_id:r.week_id, week_label:r.week_label, week_start:r.week_start, is_ai:!!r.is_ai_pair, topic:r.topic, topic_kind:r.topic_kind, partner_id:partnerIds[0]??null, partner_name:partnerNames.join(' & '), partner_ids:partnerIds, partner_names:partnerNames, you_are_a:isA };
-  });
+    const pair=canonicalCompletionPair({
+      pair_group_id:r.pg_id,week_id:r.week_id,is_ai_pair:r.is_ai_pair,
+      user_a_id:r.user_a_id,user_b_id:r.user_b_id,user_c_id:r.user_c_id,
+      user_a_source:r.user_a_source,user_b_source:r.user_b_source,user_c_source:r.user_c_source,
+    },userId);
+    const completion=projectSessionCompletion(pair,
+      receiptsByPair.get(`${r.week_id}:${r.pg_id}`)||[],completionVersionKey);
+    return { pg_id:r.pg_id, week_id:r.week_id, week_label:r.week_label, week_start:r.week_start, is_ai:!!r.is_ai_pair, topic:r.topic, topic_kind:r.topic_kind, partner_id:partnerIds[0]??null, partner_name:partnerNames.join(' & '), partner_ids:partnerIds, partner_names:partnerNames, you_are_a:isA, completion };
+  }); }catch{ return res.status(503).json({error:'history unavailable'}); }
   const partnerCounts={}; enriched.forEach(e=>{ if(!e.is_ai) e.partner_names.forEach(name=>{ partnerCounts[name]=(partnerCounts[name]||0)+1; }); });
   return res.json({ ok:true, user:{ id:payload.id, name:payload.name }, history:enriched, partner_counts:partnerCounts, total:enriched.length });
+}
+
+async function handleSessionCompletion(req,res){
+  res.setHeader('Cache-Control','private, no-store');
+  const payload=await getAuthPayload(req);
+  if(!payload) return res.status(401).json({error:'authentication required'});
+  if(req.method!=='GET'&&req.method!=='POST'){
+    res.setHeader('Allow','GET, POST');
+    return res.status(405).json({error:'GET or POST only'});
+  }
+  const userId=authenticatedUserId(payload);
+  if(!userId) return res.status(401).json({error:'authentication required'});
+  let input;
+  try{
+    if(req.method==='GET') input=parseSessionCompletionQuery(req);
+    else{ validateSessionCompletionPostQuery(req); input=parseSessionCompletionMutation(req.body); }
+  }catch(error){
+    if(error instanceof SessionCompletionInputError) return res.status(400).json({error:error.message});
+    throw error;
+  }
+  let db;
+  let completionVersionKey;
+  try{
+    db=getClient();
+    await ensureDataSessionCompletionReadiness(db);
+    completionVersionKey=getJwtSecret();
+  }
+  catch{ return res.status(503).json({error:'session completion unavailable'}); }
+  try{
+    if(req.method==='GET'){
+      const read=await readAuthorizedSessionCompletion(db,{
+        viewerId:userId,weekId:input.weekId,pairGroupId:input.pairGroupId,
+        versionKey:completionVersionKey,
+      });
+      if(!read) return res.status(404).json({error:'pair not found'});
+      return res.json({ok:true,room_id:input.roomId,completion:read.completion});
+    }
+    const result=await mutateAuthorizedSessionCompletion(db,{
+      viewerId:userId,mutation:input,versionKey:completionVersionKey,
+    });
+    if(result.notFound) return res.status(404).json({error:'pair not found'});
+    return res.json({ok:true,room_id:input.roomId,completion:result.completion});
+  }catch(error){
+    if(error instanceof SessionCompletionConflictError){
+      return res.status(409).json({
+        error:error.message,code:error.code,room_id:input.roomId,completion:error.completion,
+      });
+    }
+    if(error instanceof SessionCompletionDataError){
+      return res.status(503).json({error:'session completion unavailable'});
+    }
+    return res.status(503).json({error:'session completion unavailable'});
+  }
 }
 
 async function handleInit(req,res){
@@ -1570,6 +1669,7 @@ async function handlePairRecap(req,res){
 
   const userId=Number(payload.id||payload.uid);
   let db;
+  let completionVersionKey;
   try{ db=getClient(); }
   catch{ return res.status(503).json({error:'pair recap unavailable'}); }
   const accessSql=authPairAccessSql();
@@ -1578,6 +1678,7 @@ async function handlePairRecap(req,res){
     const access=await db.execute({sql:accessSql,args:accessArgs});
     if(!access.rows?.length) return res.status(404).json({error:'pair not found'});
     await ensurePairRecapReadiness(db);
+    completionVersionKey=getJwtSecret();
   }catch{ return res.status(503).json({error:'pair recap unavailable'}); }
 
   const pairStatement={
@@ -1586,7 +1687,8 @@ async function handlePairRecap(req,res){
         pg.topic,pg.topic_kind,pg.is_ai_pair,
         pg.user_a_id,CASE pa.source WHEN 'auth' THEN COALESCE(ua.display_name,printf('User %d',pg.user_a_id)) WHEN 'users' THEN COALESCE(ula.name,printf('User %d',pg.user_a_id)) END AS user_a_name,
         pg.user_b_id,CASE pb.source WHEN 'auth' THEN COALESCE(ub.display_name,printf('User %d',pg.user_b_id)) WHEN 'users' THEN COALESCE(ulb.name,printf('User %d',pg.user_b_id)) END AS user_b_name,
-        pg.user_c_id,CASE pc.source WHEN 'auth' THEN COALESCE(uc.display_name,printf('User %d',pg.user_c_id)) WHEN 'users' THEN COALESCE(ulc.name,printf('User %d',pg.user_c_id)) END AS user_c_name
+        pg.user_c_id,CASE pc.source WHEN 'auth' THEN COALESCE(uc.display_name,printf('User %d',pg.user_c_id)) WHEN 'users' THEN COALESCE(ulc.name,printf('User %d',pg.user_c_id)) END AS user_c_name,
+        pa.source AS user_a_source,pb.source AS user_b_source,pc.source AS user_c_source
       FROM pairing_groups pg
       JOIN pairing_weeks pw ON pw.id=pg.week_id
       LEFT JOIN pairing_participants pa ON pa.week_id=pg.week_id AND pa.user_id=pg.user_a_id
@@ -1665,21 +1767,35 @@ async function handlePairRecap(req,res){
         WHERE EXISTS (SELECT 1 FROM access) AND NOT EXISTS (SELECT 1 FROM selected)`,
     args:[...accessArgs,room.roomId,room.weekId,room.pairGroupId],
   };
+  const completionStatement={
+    sql:`WITH access AS (${accessSql})
+      SELECT receipt.user_id,receipt.confirmed_at
+      FROM session_completion_receipts receipt
+      WHERE receipt.week_id=? AND receipt.pair_group_id=?
+        AND EXISTS (SELECT 1 FROM access)
+      ORDER BY receipt.user_id`,
+    args:[...accessArgs,room.weekId,room.pairGroupId],
+  };
 
   try{
     const results=await db.batch([
       pairStatement,scheduleStatement,messagesStatement,runsStatement,workspaceStatement,
+      completionStatement,
     ],'read');
-    if(!Array.isArray(results)||results.length!==5){
+    if(!Array.isArray(results)||results.length!==6){
       return res.status(503).json({error:'pair recap unavailable'});
     }
-    const [pairRows,scheduleRows,messageRows,runRows,workspaceRows]=results;
+    const [pairRows,scheduleRows,messageRows,runRows,workspaceRows,completionRows]=results;
     if(!pairRows?.rows?.length||!scheduleRows?.rows?.length||!messageRows?.rows?.length
-      ||!runRows?.rows?.length||!workspaceRows?.rows?.length){
+      ||!runRows?.rows?.length||!workspaceRows?.rows?.length||!completionRows?.rows){
       return res.status(404).json({error:'pair not found'});
     }
 
     const pair=projectRecapPair(pairRows.rows[0],userId);
+    const completionPair=canonicalCompletionPair({
+      ...pairRows.rows[0],pair_group_id:pairRows.rows[0].pair_id,
+    },userId);
+    const completion=projectSessionCompletion(completionPair,completionRows.rows,completionVersionKey);
     const memberIds=new Set(pair.members.filter(member=>!member.is_ai).map(member=>member.id));
     const scheduleRow=scheduleRows.rows.find(row=>Number(row.data_present)===1)||null;
     const schedule=projectRecapSchedule(scheduleRow);
@@ -1700,7 +1816,7 @@ async function handlePairRecap(req,res){
     }
     const workspaceRow=workspaceRows.rows.find(row=>Number(row.data_present)===1)||null;
     const workspace=projectRecapWorkspace(workspaceRow);
-    return res.json({ok:true,room_id:room.roomId,recap:{pair,schedule,activity,workspace}});
+    return res.json({ok:true,room_id:room.roomId,recap:{pair,schedule,activity,workspace,completion}});
   }catch(error){
     if(error instanceof PairRecapDataError) return res.status(503).json({error:'pair recap unavailable'});
     return res.status(503).json({error:'pair recap unavailable'});
@@ -1969,8 +2085,34 @@ async function handleStats(req,res){
       total_pairs = p2.rows[0]?.c ?? 0;
     }catch{}
   }
-  // Public stats
-  const out = { ok:true, total_users, total_weeks, total_pairs, total_sessions: total_pairs, generated_at: new Date().toISOString() };
+  const completedGroupsSql=`WITH completion_counts AS (
+      SELECT pg.id,pg.week_id,
+        (SELECT COUNT(DISTINCT participant.user_id)
+          FROM pairing_participants participant
+          WHERE participant.week_id=pg.week_id AND participant.source='auth'
+            AND participant.user_id IN (pg.user_a_id,pg.user_b_id,pg.user_c_id)) AS required_count,
+        (SELECT COUNT(*) FROM session_completion_receipts receipt
+          WHERE receipt.week_id=pg.week_id AND receipt.pair_group_id=pg.id
+            AND receipt.user_id IN (pg.user_a_id,pg.user_b_id,pg.user_c_id)
+            AND EXISTS (SELECT 1 FROM pairing_participants participant
+              WHERE participant.week_id=receipt.week_id AND participant.user_id=receipt.user_id
+                AND participant.source='auth')) AS confirmed_count,
+        (SELECT COUNT(*) FROM session_completion_receipts receipt
+          WHERE receipt.week_id=pg.week_id AND receipt.pair_group_id=pg.id) AS receipt_count
+      FROM pairing_groups pg
+      JOIN pairing_weeks pw ON pw.id=pg.week_id
+      WHERE COALESCE(pw.is_demo,0)=0
+    )`;
+  let total_sessions;
+  try{
+    const completed=await db.execute(`${completedGroupsSql}
+      SELECT COUNT(*) AS c FROM completion_counts
+      WHERE required_count>0 AND confirmed_count=required_count AND receipt_count=confirmed_count`);
+    total_sessions=Number(completed.rows[0]?.c??0);
+    if(!Number.isSafeInteger(total_sessions)||total_sessions<0) throw new Error('invalid completion count');
+  }catch{ return res.status(503).json({error:'stats unavailable'}); }
+  // Pairing counts and genuinely completed session counts are separate facts.
+  const out = { ok:true, total_users, total_weeks, total_pairs, total_sessions, generated_at: new Date().toISOString() };
   if (payload){
     const userId = payload.id || payload.uid;
     try{
@@ -1978,8 +2120,20 @@ async function handleStats(req,res){
         JOIN pairing_participants viewer
           ON viewer.week_id=pairing_groups.week_id AND viewer.user_id=? AND viewer.source='auth'
         WHERE user_a_id=? OR user_b_id=? OR user_c_id=?`, args:[userId,userId,userId,userId] });
-      out.your_sessions = my.rows[0]?.c ?? 0;
+      out.your_pairings = my.rows[0]?.c ?? 0;
     }catch{}
+    try{
+      const completed=await db.execute({sql:`${completedGroupsSql}
+        SELECT COUNT(*) AS c FROM completion_counts counts
+        JOIN pairing_groups pg ON pg.id=counts.id AND pg.week_id=counts.week_id
+        JOIN pairing_participants viewer
+          ON viewer.week_id=pg.week_id AND viewer.user_id=? AND viewer.source='auth'
+        WHERE (pg.user_a_id=? OR pg.user_b_id=? OR pg.user_c_id=?)
+          AND counts.required_count>0 AND counts.confirmed_count=counts.required_count
+          AND counts.receipt_count=counts.confirmed_count`,args:[userId,userId,userId,userId]});
+      out.your_sessions=Number(completed.rows[0]?.c??0);
+      if(!Number.isSafeInteger(out.your_sessions)||out.your_sessions<0) throw new Error('invalid completion count');
+    }catch{ return res.status(503).json({error:'stats unavailable'}); }
     try{
       const last = await db.execute({ sql:`SELECT pg.id as pg_id, pg.week_id, pw.week_label, pw.week_start, pg.is_ai_pair FROM pairing_groups pg JOIN pairing_weeks pw ON pw.id=pg.week_id
         JOIN pairing_participants viewer ON viewer.week_id=pg.week_id AND viewer.user_id=? AND viewer.source='auth'
@@ -2438,7 +2592,7 @@ async function handleExecute(req,res){
 
 const MULTI_CIRCLE_UNSCOPED_DATA_ENDPOINTS=new Set([
   'runs','session_runs','session-runs','weeks','history','stats','my-pair','mypair','my_pair',
-  'pair-recap','schedule','messages','message','execute','run',
+  'pair-recap','session-completion','schedule','messages','message','execute','run',
 ]);
 
 async function requireSingleCircleDataFeature(req,res,endpoint){
@@ -2482,13 +2636,14 @@ export default async function handler(req,res){
   if(route==='profile') return await handleProfile(req,res);
   if(route==='my-pair') return await handleMyPair(req,res);
   if(route==='pair-recap') return await handlePairRecap(req,res);
+  if(route==='session-completion') return await handleSessionCompletion(req,res);
   if(route==='schedule') return await handleSchedule(req,res);
   if(route==='messages') return await handleMessages(req,res);
   if(route==='execute') return await handleExecute(req,res);
   if(route==='health') return await handleHealth(req,res);
   if(route==='logs') return await handleLogs(req,res);
   if(route==='questions') return await handleQuestions(req,res);
-  return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['health','runs','execute','logs','leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','pair-recap','schedule','messages','questions'] });
+  return res.status(404).json({ error:`unknown data endpoint '${ep}'`, available:['health','runs','execute','logs','leetcode','leetcode-sync','circle','weeks','history','stats','init','profile','my-pair','pair-recap','session-completion','schedule','messages','questions'] });
   }catch(e){
     const failedEndpoint=getEndpoint(req);
     const failedPath=String(req?.url||'').toLowerCase();

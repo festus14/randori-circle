@@ -607,6 +607,16 @@ test('readiness pins the complete managed-v6 structure, ledger, and connection g
   await db.execute(`DROP TRIGGER unexpected_pairing_trigger`);
   assert.equal(await pairingSchemaV6Ready(db),true);
 
+  await db.execute(`DROP TRIGGER trg_pairing_groups_completion_membership_guard`);
+  await db.execute(`CREATE TRIGGER trg_pairing_groups_completion_membership_guard
+    AFTER INSERT ON pairing_groups BEGIN SELECT 1; END`);
+  assert.equal(await pairingSchemaV6Ready(db),false,
+    'a later migration guard is tolerated only with its exact reviewed definition');
+  await db.execute(`DROP TRIGGER trg_pairing_groups_completion_membership_guard`);
+  await db.execute(EXECUTABLE_MIGRATIONS[16].operations.find(operation=>
+    operation.name==='trg_pairing_groups_completion_membership_guard').sql);
+  assert.equal(await pairingSchemaV6Ready(db),true);
+
   const membershipSql=String((await db.execute(`SELECT sql FROM sqlite_schema
     WHERE type='table' AND name='circle_memberships'`)).rows[0].sql);
   const weakenedSql=membershipSql.replace(

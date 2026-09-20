@@ -1,3 +1,5 @@
+import {checksum} from './stable-checksum.js';
+
 const READ_ONLY_SELECT=/^SELECT\b/i;
 const READ_ONLY_PRAGMA=/^PRAGMA\s+(?:foreign_keys|ignore_check_constraints|(?:table_info|table_xinfo|foreign_key_list|index_list|index_info|index_xinfo)\s*\(\s*"[A-Za-z_][A-Za-z0-9_]*"\s*\))$/i;
 
@@ -444,11 +446,24 @@ function expectedIndexSignature(definition){
   };
 }
 
+function triggerSignature(sql){
+  const normalized=normalizeSqlFragment(stripSqlComments(sql),{unquoteIdentifiers:true})
+    .replace(/\bif not exists\b/,'').replace(/\s+/g,' ').trim();
+  return checksum(normalized);
+}
+
+function expectedTriggerSignature(definition){
+  return {
+    table:definition.table,
+    signature:definition.signature||triggerSignature(definition.sql),
+  };
+}
+
 export function compileSchemaReadinessManifest(manifest){
   if(!manifest||!Array.isArray(manifest.tables)||!Array.isArray(manifest.indexes)){
     throw new TypeError('a schema manifest is required');
   }
-  return {
+  const compiled={
     version:manifest.version,
     checksum:manifest.checksum,
     tables:manifest.tables.map(definition=>({
@@ -462,6 +477,11 @@ export function compileSchemaReadinessManifest(manifest){
     })),
     toleratedLegacyTables:[...manifest.toleratedLegacyTables],
   };
+  if(Array.isArray(manifest.triggers)) compiled.triggers=manifest.triggers.map(definition=>({
+    name:definition.name,
+    ...expectedTriggerSignature(definition),
+  }));
+  return compiled;
 }
 
 function quoteIdentifier(value){
@@ -507,12 +527,16 @@ export async function inspectSchema(database,{manifest,maxSchemaObjects}={}){
   const rows=schemaObjectLimitExceeded?allRows.slice(0,maxSchemaObjects):allRows;
   const tableRows=new Map(rows.filter(row=>row.type==='table').map(row=>[String(row.name),row]));
   const indexRows=new Map(rows.filter(row=>row.type==='index'&&!String(row.name).startsWith('sqlite_')).map(row=>[String(row.name),row]));
+  const triggerRows=new Map(rows.filter(row=>row.type==='trigger').map(row=>[String(row.name),row]));
+  const triggerDefinitions=manifest.triggers||[];
   const expectedTableNames=new Set(manifest.tables.map(item=>item.name));
   const expectedIndexNames=new Set(manifest.indexes.map(item=>item.name));
+  const expectedTriggerNames=new Set(triggerDefinitions.map(item=>item.name));
   const ownedScope=manifest.artifactScope==='owned';
   const unexpectedViews=rows.filter(row=>row.type==='view'&&(!ownedScope||expectedTableNames.has(String(row.tbl_name))))
     .map(row=>String(row.name)).sort();
-  const unexpectedTriggers=rows.filter(row=>row.type==='trigger'&&(!ownedScope||expectedTableNames.has(String(row.tbl_name))))
+  const unexpectedTriggers=rows.filter(row=>row.type==='trigger'&&!expectedTriggerNames.has(String(row.name))
+      &&(!ownedScope||expectedTableNames.has(String(row.tbl_name))))
     .map(row=>String(row.name)).sort();
   const toleratedLegacyTables=manifest.toleratedLegacyTables.filter(name=>tableRows.has(name));
   const missingTables=[];
@@ -641,6 +665,22 @@ export async function inspectSchema(database,{manifest,maxSchemaObjects}={}){
     if(differences.length) indexDrift.push({index:definition.name,differences});
   }
 
+  const missingTriggers=[];
+  const triggerDrift=[];
+  for(const definition of triggerDefinitions){
+    const schemaRow=triggerRows.get(definition.name);
+    if(!schemaRow){
+      missingTriggers.push(definition.name);
+      continue;
+    }
+    const expected=expectedTriggerSignature(definition);
+    const actual={table:String(schemaRow.tbl_name||''),signature:triggerSignature(schemaRow.sql)};
+    const differences=Object.keys(expected)
+      .filter(property=>expected[property]!==actual[property])
+      .map(property=>({property,expected:expected[property],actual:actual[property]}));
+    if(differences.length) triggerDrift.push({trigger:definition.name,differences});
+  }
+
   const unexpectedTables=(ownedScope?[]:[...tableRows.keys()])
     .filter(name=>!name.startsWith('sqlite_')&&!expectedTableNames.has(name)&&!manifest.toleratedLegacyTables.includes(name))
     .sort();
@@ -662,6 +702,8 @@ export async function inspectSchema(database,{manifest,maxSchemaObjects}={}){
     ...constraintDrift.map(item=>({code:'constraint_drift',artifact:{type:'table',name:item.table},constraint:item.kind,expected:item.expected,actual:item.actual})),
     ...missingIndexes.map(indexName=>({code:'missing_index',artifact:{type:'index',name:indexName}})),
     ...indexDrift.map(item=>({code:'index_drift',artifact:{type:'index',name:item.index},differences:item.differences})),
+    ...missingTriggers.map(name=>({code:'missing_trigger',artifact:{type:'trigger',name}})),
+    ...triggerDrift.map(item=>({code:'trigger_drift',artifact:{type:'trigger',name:item.trigger},differences:item.differences})),
     ...unexpectedUniqueIndexes.map(name=>({code:'unexpected_unique_index',artifact:{type:'index',name}})),
     ...unexpectedViews.map(name=>({code:'unexpected_view',artifact:{type:'view',name}})),
     ...unexpectedTriggers.map(name=>({code:'unexpected_trigger',artifact:{type:'trigger',name}})),
@@ -682,10 +724,12 @@ export async function inspectSchema(database,{manifest,maxSchemaObjects}={}){
       presentTables:manifest.tables.length-missingTables.length,
       expectedIndexes:manifest.indexes.length,
       presentIndexes:manifest.indexes.length-missingIndexes.length,
+      expectedTriggers:triggerDefinitions.length,
+      presentTriggers:triggerDefinitions.length-missingTriggers.length,
       blockers:blockers.length,
       warnings:warnings.length,
     },
-    drift:{missingTables,missingColumns,unexpectedColumns,columnDrift,constraintDrift,missingIndexes,indexDrift,unexpectedTables,unexpectedIndexes,unexpectedUniqueIndexes,unexpectedViews,unexpectedTriggers},
+    drift:{missingTables,missingColumns,unexpectedColumns,columnDrift,constraintDrift,missingIndexes,indexDrift,missingTriggers,triggerDrift,unexpectedTables,unexpectedIndexes,unexpectedUniqueIndexes,unexpectedViews,unexpectedTriggers},
     foreignKeysEnabled,
     checkConstraintsEnabled,
     tolerated:{legacyTables:toleratedLegacyTables},
@@ -696,8 +740,8 @@ export async function inspectSchema(database,{manifest,maxSchemaObjects}={}){
 
 export function planVersionFor(type,name,plans){
   if(!Array.isArray(plans)) throw new TypeError('migration plans are required');
-  const field=type==='table'?'tables':'indexes';
-  return [...plans].reverse().find(plan=>plan[field].includes(name))?.version??null;
+  const field=type==='table'?'tables':type==='index'?'indexes':'triggers';
+  return [...plans].reverse().find(plan=>(plan[field]||[]).includes(name))?.version??null;
 }
 
 export function buildReadOnlyPlan(status,{manifest,plans}={}){
@@ -706,6 +750,7 @@ export function buildReadOnlyPlan(status,{manifest,plans}={}){
   }
   const tables=new Map(manifest.tables.map(item=>[item.name,item]));
   const indexes=new Map(manifest.indexes.map(item=>[item.name,item]));
+  const triggers=new Map((manifest.triggers||[]).map(item=>[item.name,item]));
   const versionFor=(type,name)=>planVersionFor(type,name,plans);
   const actions=[];
   status.drift.missingTables.forEach(name=>actions.push({
@@ -728,6 +773,12 @@ export function buildReadOnlyPlan(status,{manifest,plans}={}){
   }));
   status.drift.indexDrift.forEach(({index:indexName,differences})=>actions.push({
     kind:'replace_incompatible_index',artifact:{type:'index',name:indexName},planVersion:versionFor('index',indexName),sql:null,blocked:true,differences,
+  }));
+  (status.drift.missingTriggers||[]).forEach(name=>actions.push({
+    kind:'create_trigger',artifact:{type:'trigger',name},planVersion:versionFor('trigger',name),sql:triggers.get(name)?.sql||null,
+  }));
+  (status.drift.triggerDrift||[]).forEach(({trigger:triggerName,differences})=>actions.push({
+    kind:'replace_incompatible_trigger',artifact:{type:'trigger',name:triggerName},planVersion:versionFor('trigger',triggerName),sql:null,blocked:true,differences,
   }));
   status.drift.unexpectedUniqueIndexes.forEach(name=>actions.push({
     kind:'review_unexpected_unique_index',artifact:{type:'index',name},planVersion:null,sql:null,blocked:true,

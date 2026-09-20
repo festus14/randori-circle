@@ -81,6 +81,11 @@ export const MIGRATION_CONTRACTS=Object.freeze([
     name:'circle-owned-pair-scheduling',
     checksum:'916a3c1b5f8108d92fe9cc3a71d17441781c378b2be9662c351a85e78a13a418',
   }),
+  Object.freeze({
+    version:17,
+    name:'participant-session-completion-receipts',
+    checksum:'b75ffcc2762110d36d9b7011b6591c99076e559de9c4df76107218ed3be67ed5',
+  }),
 ]);
 
 export const LATEST_MIGRATION_VERSION=MIGRATION_CONTRACTS.at(-1)?.version||0;

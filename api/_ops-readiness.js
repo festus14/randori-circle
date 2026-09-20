@@ -135,6 +135,7 @@ async function probeDemoResetReadiness(db){
   await db.execute(`SELECT week_id FROM pairing_groups LIMIT 0`);
   await db.execute(`SELECT week_id FROM pairing_week_runs LIMIT 0`);
   await db.execute(`SELECT week_id FROM pairing_participants LIMIT 0`);
+  await db.execute(`SELECT week_id,pair_group_id,user_id FROM session_completion_receipts LIMIT 0`);
   return true;
 }
 

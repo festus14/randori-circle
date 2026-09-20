@@ -943,7 +943,7 @@ p{margin:0}
           </div>
           <div style="display:grid; gap:10px">
             <div class="mock-card"><div class="row" style="justify-content:space-between"><b style="font-size:12px">Example weekly cycle</b><span class="kbd">illustration</span></div><div class="pair" style="padding:8px"><div class="who"><span class="avatar" style="background:#c8f6a0">FC</span><b style="font-size:12px">You × a circle member</b></div><span class="kbd">DSA • agreed together</span></div><div class="small muted">Published pairings stay fixed for the cycle; you agree the session time together.</div></div>
-            <div id="landingStats" class="card" data-state="loading" aria-busy="true" style="padding:12px; border:1px dashed var(--border); background:var(--bg-2)"><div class="row" style="gap:10px; flex-wrap:wrap; justify-content:space-between"><span class="small muted">Circle summary</span><span id="landingStatsUpdated" class="kbd request-status" data-state="loading" role="status" aria-live="polite" style="font-size:10px">Loading summary…</span></div><div class="grid-3" style="margin-top:10px; gap:10px; display:grid; grid-template-columns:repeat(3,1fr)"><div style="text-align:center"><div id="statMembers" style="font-size:22px; font-weight:600">—</div><div class="small muted">members</div></div><div style="text-align:center"><div id="statWeeks" style="font-size:22px; font-weight:600">—</div><div class="small muted">weeks paired</div></div><div style="text-align:center"><div id="statSessions" style="font-size:22px; font-weight:600">—</div><div class="small muted">pairings made</div></div></div></div>
+            <div id="landingStats" class="card" data-state="loading" aria-busy="true" style="padding:12px; border:1px dashed var(--border); background:var(--bg-2)"><div class="row" style="gap:10px; flex-wrap:wrap; justify-content:space-between"><span class="small muted">Circle summary</span><span id="landingStatsUpdated" class="kbd request-status" data-state="loading" role="status" aria-live="polite" style="font-size:10px">Loading summary…</span></div><div class="grid-3" style="margin-top:10px; gap:10px; display:grid; grid-template-columns:repeat(3,1fr)"><div style="text-align:center"><div id="statMembers" style="font-size:22px; font-weight:600">—</div><div class="small muted">members</div></div><div style="text-align:center"><div id="statWeeks" style="font-size:22px; font-weight:600">—</div><div class="small muted">weeks paired</div></div><div style="text-align:center"><div id="statSessions" style="font-size:22px; font-weight:600">—</div><div class="small muted">sessions completed</div></div></div></div>
       <div id="landingNext" class="card" style="border-color:var(--ok); background:color-mix(in srgb, var(--accent) 8%, var(--bg-2))"><div class="card-h" style="padding:10px 12px"><h2 style="font-size:13px">Next pairing run</h2><span id="landingNextCountdown" class="kbd">Loading schedule…</span></div><div class="card-b" style="padding:10px 12px"><div style="font-size:13px"><b id="landingNextLabel">Loading the next cycle…</b><div class="small muted" id="landingNextSub" style="margin-top:4px">Pairings publish once per cycle. Sign up before the displayed cutoff to be included.</div></div><div id="landingNextBar" role="progressbar" aria-label="Time elapsed in the weekly pairing cycle" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="Loading the weekly pairing schedule" style="margin-top:10px; height:6px; background:var(--bg-3); border-radius:999px; overflow:hidden"><div id="landingNextProg" style="height:100%; width:0; background:var(--accent)"></div></div></div></div>
       <div class="mock-card"><b style="font-size:12px">Private by default</b><div class="small" style="color:var(--ink-2)">Circle membership, pair rooms, and account access are authorization-gated. Exercise evaluation cases remain on the server.</div></div>
           </div>
@@ -1028,7 +1028,7 @@ p{margin:0}
           <div class="row"><span id="dashAvailBadge" class="kbd">Checking availability…</span><button id="dashProfileBtn" class="pill">Edit profile</button></div>
         </div>
         <div id="dashStatsGrid" role="list" aria-label="Circle summary" style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:14px 0">
-          <div class="card" role="listitem" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Your pairings</div><div id="dashStatYou" style="font-size:20px; font-weight:600; margin-top:4px">—</div><div class="small muted" id="dashStatYouSub" style="font-size:11px">across — weeks</div></div>
+          <div class="card" role="listitem" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Your completed sessions</div><div id="dashStatYou" style="font-size:20px; font-weight:600; margin-top:4px">—</div><div class="small muted" id="dashStatYouSub" style="font-size:11px">from — pairings</div></div>
           <div class="card" role="listitem" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Circle</div><div id="dashStatCircle" style="font-size:20px; font-weight:600; margin-top:4px">—</div><div class="small muted" style="font-size:11px"><span id="dashStatCircleSub">members</span> • <span id="dashStatWeeks">— weeks</span></div></div>
           <div class="card" role="listitem" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Next pairing run</div><div id="dashNextLabel" style="font-size:13px; font-weight:600; margin-top:4px">Loading the next cycle…</div><div class="small muted" id="dashNextCount" style="font-size:11px; margin-top:2px">calculating…</div></div>
         </div>
@@ -1266,6 +1266,15 @@ p{margin:0}
               <span id="pairRunsStatus" class="small muted" role="status" aria-live="polite">waiting for room</span>
             </div>
             <div id="pairRunsList" role="list" style="display:grid; gap:5px; margin-top:7px"></div>
+          </section>
+          <section id="sessionCompletionCard" data-testid="session-completion" aria-labelledby="sessionCompletionTitle" hidden style="border-top:1px solid var(--line); background:var(--bg-2); padding:10px">
+            <div class="row" style="justify-content:space-between; gap:10px; flex-wrap:wrap">
+              <div>
+                <b id="sessionCompletionTitle" style="font-size:12.5px">Wrap up this practice session</b>
+                <div id="sessionCompletionStatus" class="small muted" role="status" aria-live="polite" style="margin-top:4px">Loading completion status…</div>
+              </div>
+              <button id="sessionCompletionAction" class="btn" type="button" hidden></button>
+            </div>
           </section>
           <!-- AI Recording & Feedback (Groq router) -->
           <div id="aiPanel" style="border-top:1px solid var(--line); background:var(--bg-2); padding:10px; display:grid; gap:10px">
@@ -5622,6 +5631,34 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return normalized===value?normalized:null;
   }
 
+  function normalizeHistoryCompletion(raw,fallbackRequired=1){
+    if(raw===null||raw===undefined){
+      return {state:'not_recorded',viewer_confirmed:false,confirmed_count:0,required_count:fallbackRequired,version:null,completed_at:null};
+    }
+    if(typeof raw!=='object'||Array.isArray(raw)) return null;
+    const required=Number(raw.required_count),confirmed=Number(raw.confirmed_count);
+    const version=String(raw.version||'');
+    if(!['not_recorded','awaiting_participants','completed'].includes(raw.state)
+      ||typeof raw.viewer_confirmed!=='boolean'||!Number.isSafeInteger(required)||required<1||required>3
+      ||!Number.isSafeInteger(confirmed)||confirmed<0||confirmed>required||!/^[a-f0-9]{64}$/.test(version)) return null;
+    if((confirmed===0&&raw.viewer_confirmed)||raw.state==='completed'&&!raw.viewer_confirmed
+      ||raw.state==='not_recorded'&&(confirmed!==0||raw.completed_at!==null)
+      ||raw.state==='awaiting_participants'&&(confirmed===0||confirmed===required||raw.completed_at!==null)) return null;
+    const completedAt=raw.state==='completed'?historyInstant(raw.completed_at):null;
+    if(raw.state==='completed'&&(confirmed!==required||!completedAt)) return null;
+    return {state:raw.state,viewer_confirmed:raw.viewer_confirmed,confirmed_count:confirmed,required_count:required,version,completed_at:completedAt};
+  }
+
+  function completionBadge(completion){
+    const badge=document.createElement('span'); badge.className='kbd'; badge.dataset.testid='session-completion-badge'; badge.style.marginLeft='6px';
+    if(completion?.state==='completed'){
+      badge.textContent='Completed'; badge.style.color='var(--ok)';
+    }else if(completion?.state==='awaiting_participants'){
+      badge.textContent=`Awaiting ${completion.required_count-completion.confirmed_count}`; badge.style.color='var(--warn)';
+    }else badge.textContent='Completion not recorded';
+    return badge;
+  }
+
   function localTime(instant){
     try{ return new Intl.DateTimeFormat(undefined,{dateStyle:'medium',timeStyle:'short'}).format(new Date(instant)); }
     catch{ return instant; }
@@ -5736,7 +5773,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(!Number.isSafeInteger(revision)||revision<1||!Number.isSafeInteger(schemaVersion)||schemaVersion<1||schemaVersion>3||!questionSlug||!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(questionSlug)||(questionVersion!==null&&(!Number.isSafeInteger(questionVersion)||questionVersion<1))||!language||!/^[a-z][a-z0-9_+-]{0,31}$/.test(language)||!updatedAt) return null;
       workspace={artifact_available:true,revision,schema_version:schemaVersion,question_slug:questionSlug,question_version:questionVersion,language,updated_at:updatedAt};
     }
-    return {pair:{id:pairId,week_id:weekId,week_label:weekLabel,week_start:weekStart,topic,topic_kind:topicKind,is_ai:raw.pair.is_ai===true,members},schedule,activity,workspace};
+    const completion=normalizeHistoryCompletion(raw.completion,humanIds.length);
+    if(!completion) return null;
+    return {pair:{id:pairId,week_id:weekId,week_label:weekLabel,week_start:weekStart,topic,topic_kind:topicKind,is_ai:raw.pair.is_ai===true,members},schedule,activity,workspace,completion};
   }
 
   function renderPairRecap(recap,room){
@@ -5763,6 +5802,17 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const week=document.createElement('div'); week.className='small muted'; week.append('Paired '); week.appendChild(recapTimeNode(recap.pair.week_start));
     if(recap.pair.topic||recap.pair.topic_kind) week.append(` · ${recap.pair.topic||recap.pair.topic_kind}`);
     summary.append(pairing,week); body.appendChild(summary);
+
+    const completion=document.createElement('section'); completion.dataset.testid='pair-recap-completion'; completion.setAttribute('aria-label','Session completion');
+    const completionTitle=document.createElement('b'); completionTitle.textContent='Completion'; completion.appendChild(completionTitle);
+    const completionValue=document.createElement('div'); completionValue.className='small muted';
+    completionValue.appendChild(completionBadge(recap.completion));
+    if(recap.completion.state==='completed'){
+      completionValue.append(' Confirmed by every participant on '); completionValue.appendChild(recapTimeNode(recap.completion.completed_at));
+    }else if(recap.completion.state==='awaiting_participants'){
+      completionValue.append(` ${recap.completion.confirmed_count} of ${recap.completion.required_count} participants confirmed.`);
+    }
+    completion.appendChild(completionValue); body.appendChild(completion);
 
     const schedule=document.createElement('section'); schedule.dataset.testid='pair-recap-schedule'; schedule.setAttribute('aria-label','Agreed schedule');
     const scheduleTitle=document.createElement('b'); scheduleTitle.textContent='Schedule'; schedule.appendChild(scheduleTitle);
@@ -5873,6 +5923,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const label=document.createElement('span'); label.className='kbd'; label.textContent=week;
     description.append(label,` × ${partner}`);
     if(item?.topic||item?.topic_kind){ const topic=document.createElement('span'); topic.className='kbd'; topic.style.marginLeft='6px'; topic.textContent=String(item.topic||item.topic_kind).slice(0,160); description.appendChild(topic); }
+    const completion=normalizeHistoryCompletion(item?.completion,item?.is_ai?1:2);
+    if(completion) description.appendChild(completionBadge(completion));
     const button=document.createElement('button'); button.type='button'; button.className='pill'; button.dataset.testid='pair-history-view-recap'; button.dataset.roomId=room; button.textContent='View recap'; button.setAttribute('aria-label',`View recap for ${week} with ${partner}`); button.addEventListener('click',()=>{ fetchPairRecap(room); });
     row.append(description,button);
     return row;
@@ -10763,7 +10815,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }
     if(m) m.textContent=String(stats.total_users ?? '—');
     if(w) w.textContent=String(stats.total_weeks ?? '—');
-    if(s) s.textContent=String(stats.total_sessions ?? stats.total_pairs ?? '—');
+    if(s) s.textContent=String(stats.total_sessions ?? '—');
     window._randori_ui_state?.setRequestState?.(card,up,'ready','Updated just now');
     const nextLabel=document.getElementById('landingNextLabel');
     const nextSub=document.getElementById('landingNextSub');
@@ -10811,8 +10863,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const nxtLbl=document.getElementById('dashNextLabel');
     const nxtCnt=document.getElementById('dashNextCount');
     if(!stats) return;
-    if(you) you.textContent = stats.your_sessions!=null ? String(stats.your_sessions) : (stats.your_weeks!=null? String(stats.your_weeks)+' wks' : '—');
-    if(youSub) youSub.textContent = stats.your_weeks!=null ? 'across '+stats.your_weeks+' weeks' : (stats.your_last? 'last '+stats.your_last.week_label : 'no pairings yet');
+    if(you) you.textContent = stats.your_sessions!=null ? String(stats.your_sessions) : '—';
+    if(youSub) youSub.textContent = stats.your_pairings!=null ? 'from '+stats.your_pairings+' pairings' : (stats.your_last? 'last '+stats.your_last.week_label : 'no pairings yet');
     if(circ) circ.textContent = String(stats.total_users ?? '—');
     if(circSub) circSub.textContent = (stats.total_users ?? '?') + ' members';
     if(weeks) weeks.textContent = (stats.total_weeks ?? '—') + ' weeks';
@@ -10846,6 +10898,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         const label=document.createElement('span'); label.className='kbd'; label.style.fontSize='10px'; label.textContent=String(item?.week_label||'Pairing').slice(0,80);
         summary.append(label,` × ${String(item?.partner_name||'Pair member').slice(0,240)}`);
         if(item?.is_ai){ const solo=document.createElement('span'); solo.className='kbd'; solo.style.cssText='color:var(--accent);margin-left:6px'; solo.textContent='solo'; summary.appendChild(solo); }
+        const completion=typeof normalizeHistoryCompletion==='function'
+          ?normalizeHistoryCompletion(item?.completion,item?.is_ai?1:2):null;
+        if(completion&&typeof completionBadge==='function') summary.appendChild(completionBadge(completion));
         row.appendChild(summary);
         const room=window._randori_pair_recap?.roomFor?.(item?.week_id,item?.pg_id);
         if(room){
@@ -12113,6 +12168,199 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   setInterval(()=>{ if(!signedIn()) deactivate(); else if(state.room) poll(false,state.room,state.epoch); },1200);
   setInterval(()=>{ const room=activeRoom(); if(signedIn()&&canonical(room)&&room!==state.room&&window._randori_authorized_room===room) activate(room); },500);
   window._randori_workspace={activate,requestAccess,deactivate,poll,markHydrationEdit,flush:flushCurrentWorkspace,get room(){return state.room},get revision(){return state.revision},get hydrated(){return state.hydrated},get clientId(){return clientId}};
+})();
+</script>
+
+<script>
+// A practice session is complete only after every authenticated human in the
+// immutable pair snapshot confirms. This control never infers attendance from
+// workspace, chat, schedule, or run activity.
+(function(){
+  const card=document.getElementById('sessionCompletionCard');
+  const status=document.getElementById('sessionCompletionStatus');
+  const action=document.getElementById('sessionCompletionAction');
+  const state={epoch:0,controller:null,pollTimer:null,room:null,actorId:null,circlePublicId:null,contextVersion:null,cycleToken:null,completion:null,busy:false};
+  const POLL_INTERVAL_MS=5000;
+
+  function actorId(){
+    const value=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0);
+    return Number.isSafeInteger(value)&&value>0?value:null;
+  }
+  function canonicalRoom(value){
+    const match=/^week_([1-9]\d*)_pair_([1-9]\d*)$/.exec(String(value||''));
+    return !!match&&Number.isSafeInteger(Number(match[1]))&&Number.isSafeInteger(Number(match[2]));
+  }
+  function cycleToken(room){
+    const pair=window._randori_pair_cache;
+    if(String(pair?.room_id||'')!==room) return `historical:${room}`;
+    const cycle=pair.current_cycle||pair.cycle;
+    if(!cycle||typeof cycle.cycleId!=='string'||typeof cycle.startsAt!=='string'||typeof cycle.endsAt!=='string') return `room:${room}`;
+    return JSON.stringify([cycle.cycleId,cycle.startsAt,cycle.endsAt]);
+  }
+  function captureScope(room=window._randori_workspace?.room){
+    room=String(room||'');
+    const id=actorId();
+    const workspace=window._randori_workspace;
+    if(!id||!canonicalRoom(room)||window._randori_authorized_room!==room
+      ||workspace?.room!==room||workspace?.hydrated!==true) return null;
+    const selected=window._randori_circle_control?.scheduleContext?.()||null;
+    if(window._randori_auth?.capabilities?.multiCircleControlPlane===true&&(!selected||selected.isPrimary!==true)) return null;
+    return Object.freeze({
+      epoch:state.epoch,room,actorId:id,
+      circlePublicId:selected?String(selected.circlePublicId||''):null,
+      contextVersion:selected&&Number.isSafeInteger(Number(selected.contextVersion))?Number(selected.contextVersion):null,
+      cycleToken:cycleToken(room),
+    });
+  }
+  function matchesScope(scope){
+    if(!scope||scope.epoch!==state.epoch||scope.room!==state.room||scope.actorId!==state.actorId
+      ||scope.circlePublicId!==state.circlePublicId||scope.contextVersion!==state.contextVersion
+      ||scope.cycleToken!==state.cycleToken) return false;
+    const current=captureScope(scope.room);
+    return !!current&&current.actorId===scope.actorId&&current.circlePublicId===scope.circlePublicId
+      &&current.contextVersion===scope.contextVersion&&current.cycleToken===scope.cycleToken;
+  }
+  function normalizeCompletion(raw){
+    if(!raw||typeof raw!=='object'||Array.isArray(raw)) return null;
+    const required=Number(raw.required_count),confirmed=Number(raw.confirmed_count);
+    const version=String(raw.version||'');
+    if(!['not_recorded','awaiting_participants','completed'].includes(raw.state)
+      ||typeof raw.viewer_confirmed!=='boolean'||!Number.isSafeInteger(required)||required<1||required>3
+      ||!Number.isSafeInteger(confirmed)||confirmed<0||confirmed>required||!/^[a-f0-9]{64}$/.test(version)) return null;
+    if((confirmed===0&&raw.viewer_confirmed)||raw.state==='completed'&&!raw.viewer_confirmed
+      ||raw.state==='not_recorded'&&(confirmed!==0||raw.completed_at!==null)
+      ||raw.state==='awaiting_participants'&&(confirmed===0||confirmed===required||raw.completed_at!==null)) return null;
+    let completedAt=null;
+    if(raw.state==='completed'){
+      if(confirmed!==required||typeof raw.completed_at!=='string') return null;
+      const completedEpoch=Date.parse(raw.completed_at);
+      if(!Number.isFinite(completedEpoch)||new Date(completedEpoch).toISOString()!==raw.completed_at) return null;
+      completedAt=raw.completed_at;
+    }
+    return {state:raw.state,viewer_confirmed:raw.viewer_confirmed,confirmed_count:confirmed,required_count:required,version,completed_at:completedAt};
+  }
+  function setHidden(){
+    if(state.pollTimer!==null){ clearTimeout(state.pollTimer); state.pollTimer=null; }
+    if(card){ card.hidden=true; card.setAttribute('aria-busy','false'); }
+    if(action){ action.hidden=true; action.disabled=false; action.textContent=''; }
+    if(status) status.textContent='';
+  }
+  function render(message=''){
+    if(state.pollTimer!==null){ clearTimeout(state.pollTimer); state.pollTimer=null; }
+    if(!card||!status||!action||!state.room){ setHidden(); return; }
+    card.hidden=false; card.setAttribute('aria-busy',state.busy?'true':'false');
+    action.hidden=true; action.disabled=state.busy;
+    if(!state.completion){
+      status.textContent=message||(state.busy?'Loading completion status…':'Completion status unavailable.');
+      if(!state.busy){ action.hidden=false; action.textContent='Retry'; action.dataset.action='retry'; }
+      return;
+    }
+    const completion=state.completion;
+    if(message) status.textContent=message;
+    else if(completion.state==='not_recorded') status.textContent='Completion not recorded. Every participant must confirm.';
+    else if(completion.state==='awaiting_participants'){
+      const remaining=completion.required_count-completion.confirmed_count;
+      status.textContent=completion.viewer_confirmed
+        ?`You confirmed. Waiting for ${remaining} participant${remaining===1?'':'s'}.`
+        :`${completion.confirmed_count} of ${completion.required_count} participants confirmed.`;
+    }else{
+      const completed=new Date(completion.completed_at);
+      status.textContent=`Session completed ${completed.toLocaleString()}.`;
+    }
+    if(completion.state!=='completed'){
+      action.hidden=false;
+      action.dataset.action=completion.viewer_confirmed?'withdraw':'confirm';
+      action.textContent=completion.viewer_confirmed?'Withdraw confirmation':'Confirm session completed';
+      if(!state.busy&&document.visibilityState==='visible'){
+        state.pollTimer=setTimeout(()=>{ state.pollTimer=null; load(state.room); },POLL_INTERVAL_MS);
+      }
+    }
+  }
+  function reset(){
+    state.epoch+=1; state.controller?.abort(); state.controller=null;
+    state.room=null; state.actorId=null; state.circlePublicId=null; state.contextVersion=null; state.cycleToken=null;
+    state.completion=null; state.busy=false; setHidden();
+  }
+  async function load(room=window._randori_workspace?.room){
+    const preliminary=captureScope(room);
+    if(!preliminary){ reset(); return false; }
+    const preserveCurrent=state.room===preliminary.room&&state.actorId===preliminary.actorId
+      &&state.circlePublicId===preliminary.circlePublicId
+      &&state.contextVersion===preliminary.contextVersion&&state.cycleToken===preliminary.cycleToken;
+    state.epoch+=1; state.controller?.abort();
+    state.room=preliminary.room; state.actorId=preliminary.actorId;
+    state.circlePublicId=preliminary.circlePublicId; state.contextVersion=preliminary.contextVersion;
+    state.cycleToken=preliminary.cycleToken;
+    if(!preserveCurrent) state.completion=null;
+    state.busy=true;
+    const scope=captureScope(preliminary.room);
+    const controller=new AbortController(); state.controller=controller; render();
+    try{
+      const url=new URL('/api/session-completion',location.origin); url.searchParams.set('room_id',scope.room);
+      const headers=scope.contextVersion===null?undefined:{'x-randori-circle-context-version':String(scope.contextVersion)};
+      const response=await fetch(url,{credentials:'same-origin',cache:'no-store',headers,signal:controller.signal});
+      const data=await response.json().catch(()=>({}));
+      if(!matchesScope(scope)) return false;
+      if(!response.ok||data.ok!==true||String(data.room_id||'')!==scope.room) throw new Error(data.error||'completion unavailable');
+      const completion=normalizeCompletion(data.completion);
+      if(!completion) throw new Error('invalid completion response');
+      state.completion=completion; state.busy=false; render(); return true;
+    }catch(error){
+      if(error?.name!=='AbortError'&&matchesScope(scope)){ state.busy=false; render('Completion status unavailable — retry.'); }
+      return false;
+    }finally{ if(state.controller===controller) state.controller=null; }
+  }
+  async function mutate(desiredAction){
+    const scope=captureScope(state.room);
+    const completion=state.completion;
+    if(!scope||!completion||state.busy||!['confirm','withdraw'].includes(desiredAction)) return false;
+    state.busy=true; const controller=new AbortController(); state.controller=controller; render();
+    try{
+      const headers={'content-type':'application/json'};
+      if(scope.contextVersion!==null) headers['x-randori-circle-context-version']=String(scope.contextVersion);
+      const response=await fetch('/api/session-completion',{
+        method:'POST',credentials:'same-origin',headers,signal:controller.signal,
+        body:JSON.stringify({room_id:scope.room,action:desiredAction,base_version:completion.version}),
+      });
+      const data=await response.json().catch(()=>({}));
+      if(!matchesScope(scope)) return false;
+      const next=normalizeCompletion(data.completion);
+      if(response.status===409&&String(data.room_id||'')===scope.room&&next){
+        state.completion=next; state.busy=false; render(String(data.error||'Completion changed.')); return false;
+      }
+      if(!response.ok||data.ok!==true||String(data.room_id||'')!==scope.room||!next) throw new Error(data.error||'completion unavailable');
+      state.completion=next; state.busy=false; render(); return true;
+    }catch(error){
+      if(error?.name!=='AbortError'&&matchesScope(scope)){
+        state.busy=false; render('Completion update was not confirmed. Checking the server…');
+        queueMicrotask(()=>{ load(scope.room); });
+      }
+      return false;
+    }finally{ if(state.controller===controller) state.controller=null; }
+  }
+
+  action?.addEventListener('click',()=>{
+    const intent=action.dataset.action;
+    if(intent==='retry') load();
+    else mutate(intent);
+  });
+  window.addEventListener('randori:workspace-hydrated',event=>{ load(event.detail?.roomId); });
+  window.addEventListener('randori:room-change',()=>{ reset(); });
+  window.addEventListener('randori:workspace-deactivated',reset);
+  window.addEventListener('randori:auth-refreshed',event=>{
+    if(Number(event.detail?.userId||0)!==state.actorId) reset();
+  });
+  document.addEventListener('visibilitychange',()=>{
+    if(document.visibilityState==='visible'&&state.room) load(state.room);
+    else if(document.visibilityState!=='visible'){
+      state.epoch+=1; state.controller?.abort(); state.controller=null; state.busy=false;
+      if(state.pollTimer!==null){ clearTimeout(state.pollTimer); state.pollTimer=null; }
+    }
+  });
+  document.addEventListener('click',event=>{
+    if(event.target?.closest?.('#signOutBtn,#dashSignOut,#psSignOut,#meSignOut,#meSignOutAll')) reset();
+  },{capture:true});
+  window._randori_session_completion={load,mutate,reset,normalize:normalizeCompletion,get room(){ return state.room; },get completion(){ return state.completion?{...state.completion}:null; }};
 })();
 </script>
 

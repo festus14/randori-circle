@@ -1,4 +1,4 @@
-import { INDEXES, SCHEMA_OPERATION_SETS, TABLES, checksum } from './schema-manifest.js';
+import { INDEXES, SCHEMA_OPERATION_SETS, TABLES, TRIGGERS, checksum } from './schema-manifest.js';
 
 const PLAN_METADATA=Object.freeze([
   Object.freeze({
@@ -113,6 +113,13 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'15c029b4ddd845245caec54411bcc2b0461e7b5f06a070e12800b99daf33b39b',
     checksum:'cf00a453d31ae62ef43aac2230bb6dffb46c36b9930a5b9b6a5870a49dbac87c',
   }),
+  Object.freeze({
+    version:17,
+    name:'participant-session-completion-receipts',
+    description:'Source-bound participant confirmations for unanimous, terminal practice-session completion.',
+    operationsChecksum:'2a9ba0216e0451967761f8c9fc7875158226ddd66aa88fc730b886f6d6b6e490',
+    checksum:'dfa4b4a609cdc436bfaf3805a2b2511d621f4924d41351de1915442ffac157d4',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){
@@ -124,6 +131,7 @@ function definePlan(operationSet,metadata){
   const operations=operationSet.operations;
   const tables=Object.freeze(operations.filter(item=>item.operation==='ensure-table').map(item=>item.name));
   const indexes=Object.freeze(operations.filter(item=>item.operation==='ensure-index').map(item=>item.name));
+  const triggers=Object.freeze(operations.filter(item=>item.operation==='ensure-trigger').map(item=>item.name));
   const checksummed={
     version:metadata.version,
     name:metadata.name,
@@ -133,11 +141,12 @@ function definePlan(operationSet,metadata){
     tables,
     indexes,
   };
+  if(triggers.length) checksummed.triggers=triggers;
   const calculatedChecksum=checksum(checksummed);
   if(calculatedChecksum!==metadata.checksum){
     throw new Error(`Immutable migration plan ${metadata.version} checksum changed: ${calculatedChecksum}`);
   }
-  return Object.freeze({...checksummed,checksum:calculatedChecksum});
+  return Object.freeze({...checksummed,triggers,checksum:calculatedChecksum});
 }
 
 export const MIGRATION_PLANS=Object.freeze(SCHEMA_OPERATION_SETS.map((operationSet,index)=>definePlan(operationSet,PLAN_METADATA[index])));
@@ -149,11 +158,12 @@ function validateCanonicalOperation(operation,planVersion,availableTables){
   if(!operation||typeof operation!=='object'||Array.isArray(operation)){
     throw new Error(`migration plan ${planVersion} contains an invalid canonical operation`);
   }
-  if(!['ensure-table','ensure-index'].includes(operation.operation)){
+  if(!['ensure-table','ensure-index','ensure-trigger'].includes(operation.operation)){
     throw new Error(`migration plan ${planVersion} contains unsupported operation ${JSON.stringify(operation.operation)}`);
   }
   if(typeof operation.name!=='string'||!SQLITE_IDENTIFIER.test(operation.name)
-    ||typeof operation.sql!=='string'||operation.sql.includes(';')){
+    ||typeof operation.sql!=='string'
+    ||(operation.operation!=='ensure-trigger'&&operation.sql.includes(';'))){
     throw new Error(`migration plan ${planVersion} contains an invalid ${operation.operation} definition`);
   }
   if(operation.operation==='ensure-table'){
@@ -162,6 +172,15 @@ function validateCanonicalOperation(operation,planVersion,availableTables){
       throw new Error(`migration plan ${planVersion} table ${operation.name} has a non-canonical CREATE TABLE definition`);
     }
     availableTables.add(operation.name);
+    return;
+  }
+  if(operation.operation==='ensure-trigger'){
+    if(typeof operation.table!=='string'||!SQLITE_IDENTIFIER.test(operation.table)
+      ||!availableTables.has(operation.table)
+      ||operation.sql.split(';').length!==2
+      ||!new RegExp(`^CREATE\\s+TRIGGER\\s+IF\\s+NOT\\s+EXISTS\\s+${operation.name}\\s+(?:BEFORE|AFTER|INSTEAD\\s+OF)\\s+[\\s\\S]+?\\s+ON\\s+${operation.table}\\b[\\s\\S]*\\bBEGIN\\s+[\\s\\S]+;\\s*END$`,'i').test(operation.sql)){
+      throw new Error(`migration plan ${planVersion} trigger ${operation.name} has a non-canonical CREATE TRIGGER definition`);
+    }
     return;
   }
   if(typeof operation.table!=='string'||!SQLITE_IDENTIFIER.test(operation.table)
@@ -199,7 +218,9 @@ export function validateMigrationPlans(plans=MIGRATION_PLANS){
     plan.operations.forEach(operation=>validateCanonicalOperation(operation,plan.version,availableTables));
     const tables=plan.operations.filter(item=>item.operation==='ensure-table').map(item=>item.name);
     const indexes=plan.operations.filter(item=>item.operation==='ensure-index').map(item=>item.name);
-    if(JSON.stringify(tables)!==JSON.stringify(plan.tables)||JSON.stringify(indexes)!==JSON.stringify(plan.indexes)){
+    const triggers=plan.operations.filter(item=>item.operation==='ensure-trigger').map(item=>item.name);
+    if(JSON.stringify(tables)!==JSON.stringify(plan.tables)||JSON.stringify(indexes)!==JSON.stringify(plan.indexes)
+      ||JSON.stringify(triggers)!==JSON.stringify(plan.triggers||[])){
       throw new Error(`migration plan ${plan.version} artifact lists do not match its canonical operations`);
     }
     const checksummed={
@@ -211,10 +232,15 @@ export function validateMigrationPlans(plans=MIGRATION_PLANS){
       tables:plan.tables,
       indexes:plan.indexes,
     };
+    if(triggers.length) checksummed.triggers=plan.triggers;
     if(checksum(checksummed)!==plan.checksum) throw new Error(`migration plan ${plan.version} checksum does not match its metadata`);
   });
-  for(const [kind,expected] of [['table',TABLES.map(item=>item.name)],['index',INDEXES.map(item=>item.name)]]){
-    const operation=kind==='table'?'ensure-table':'ensure-index';
+  for(const [kind,expected] of [
+    ['table',TABLES.map(item=>item.name)],
+    ['index',INDEXES.map(item=>item.name)],
+    ['trigger',TRIGGERS.map(item=>item.name)],
+  ]){
+    const operation=`ensure-${kind}`;
     const declared=plans.flatMap(plan=>plan.operations.filter(item=>item.operation===operation).map(item=>item.name));
     const actual=[...new Set(declared)];
     const missing=expected.filter(name=>!actual.includes(name)).sort();

@@ -91,6 +91,15 @@ const defaultApiResponses: Record<string, ApiResponse> = {
     };
   },
   '/api/my-pair': { ok: true, paired: false, reason: 'no_week_yet' },
+  '/api/session-completion': request => ({
+    ok: true,
+    room_id: new URL(request.url()).searchParams.get('room_id')
+      || ((request.postDataJSON() as { room_id?: string } | null)?.room_id ?? ''),
+    completion: {
+      state: 'not_recorded', viewer_confirmed: false, confirmed_count: 0,
+      required_count: 2, version: '0'.repeat(64), completed_at: null,
+    },
+  }),
   '/api/profile': { ok: true, user: null },
   '/api/questions': request => hasSessionCookie(request)
     ? { ok: true, questions: [originalQuestionFixture], count: 1 }

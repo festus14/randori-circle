@@ -2306,3 +2306,45 @@ provider. Canary a pre-activation manual dispatch, then prove fail-closed
 missing evidence and a real scheduled success at activation. After activation,
 roll forward without moving the epoch. The complete contract and alternatives
 are in [`BACKUP_WATCHDOG_ACTIVATION.md`](BACKUP_WATCHDOG_ACTIVATION.md).
+## ID-55: Derive completed sessions from unanimous participant receipts
+
+Status: candidate migration-backed private-beta measurement increment.
+
+**Decision.** Migration 17 owns one confirmation receipt per exact week, pair
+group, and authenticated participant. Reads and mutations reconstruct the
+required human quorum from the existing source-tagged immutable pair snapshot;
+AI assignments require their sole human and triads require all three humans.
+The authenticated session supplies the actor. Canonical room IDs, database time,
+serialized write transactions, and a server-keyed opaque compare-and-swap
+version make confirm and pre-terminal withdraw operations idempotent and
+race-safe without exposing individual receipt times. Composite storage
+constraints plus migration-owned, schema-inspected guards bind each receipt to
+an exact pair member, including NULL-safe pair-versus-triad shape, not merely
+the week's participant roster. Receipts, group member/AI shape, and every
+member's participant-source row become immutable after the first confirmation.
+Once all required receipts exist, completion is terminal.
+
+Responses contain only state, the viewer's confirmation boolean, aggregate
+counts, an opaque version, and the shared completion timestamp. History and
+recap label old rows without receipts “Completion not recorded.” Public and
+personal session totals count only unanimous non-demo completion sets, while
+pairing totals remain explicit separate facts. Secondary coordination-only
+pairings remain unsupported.
+
+**Alternatives.** Activity inference confuses product use with attendance. A
+single participant finalizing a group is not trustworthy. A mutable group flag
+duplicates receipt truth. Nullable composite foreign keys alone do not bind
+pair-versus-triad shape in SQLite; a sentinel column would require changing the
+pre-existing pair table, so migration-owned guards keep this increment additive.
+Cancellation, no-show, disputes, provider sessions,
+and content capture require broader policy or infrastructure and are deferred.
+
+**Rollout and recovery.** Rehearse and apply additive migration 17 through the
+existing protected one-version workflow, then canary pair, triad, AI, stale-CAS,
+withdrawal, terminal, restart, history, recap, and stats paths. The runtime
+fails completion-dependent reads closed until the table exists. Receipts retain
+only identity binding and database time with pairing history. Demo reset
+explicitly removes demo-week receipts before deleting participants. After v17
+is applied, rollback keeps the manifest and table, disables affected UI/handlers
+if necessary, and rolls forward; it never drops receipts or edits the ledger.
+The complete contract is in [`SESSION_COMPLETION.md`](SESSION_COMPLETION.md).

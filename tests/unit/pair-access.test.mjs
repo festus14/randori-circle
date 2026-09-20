@@ -105,6 +105,11 @@ async function seededDatabase({source='auth'}={}){
       question_id INTEGER,question_slug TEXT,language TEXT,code TEXT NOT NULL,test_cases_snapshot TEXT,
       results_json TEXT,passed_count INTEGER,total_count INTEGER,duration_ms INTEGER,created_at TEXT
     )`,
+    `CREATE TABLE session_completion_receipts (
+      week_id INTEGER,pair_group_id INTEGER,user_id INTEGER,participant_source TEXT,
+      pair_user_a_id INTEGER,pair_user_b_id INTEGER,pair_user_c_id INTEGER,confirmed_at TEXT,
+      PRIMARY KEY(week_id,pair_group_id,user_id)
+    )`,
     `CREATE TABLE app_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,level TEXT,source TEXT,event TEXT,message TEXT,
       meta_json TEXT,user_id INTEGER,route TEXT,ua TEXT,ip TEXT,created_at TEXT

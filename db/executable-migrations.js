@@ -73,10 +73,11 @@ export function validateExecutableMigrations(migrations=EXECUTABLE_MIGRATIONS,pl
       throw new Error(`executable migration ${expectedVersion} has no operations`);
     }
     migration.operations.forEach(operation=>{
-      if(!['ensure-table','ensure-index','ensure-row'].includes(operation?.operation)){
+      if(!['ensure-table','ensure-index','ensure-trigger','ensure-row'].includes(operation?.operation)){
         throw new Error(`executable migration ${expectedVersion} contains an unsupported operation`);
       }
-      if(typeof operation.sql!=='string'||!operation.sql.trim()||operation.sql.includes(';')){
+      if(typeof operation.sql!=='string'||!operation.sql.trim()
+        ||(operation.operation!=='ensure-trigger'&&operation.sql.includes(';'))){
         throw new Error(`executable migration ${expectedVersion} contains invalid SQL`);
       }
       if(operation.operation==='ensure-row'){
