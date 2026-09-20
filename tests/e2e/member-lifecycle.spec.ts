@@ -797,6 +797,40 @@ for(const deniedStatus of [401,403]){
   });
 }
 
+test('identity bootstrap retries a transient failure and stops after the first authoritative result',async({page})=>{
+  let authChecks=0;
+  await mockApi(page,{
+    '/api/auth/me':()=>{
+      authChecks+=1;
+      return authChecks===1
+        ?{_status:503,ok:false,error:'authentication temporarily unavailable'}
+        :{ok:true,user:owner};
+    },
+    '/api/profile':{ok:true,user:owner},
+    '/api/circle':{
+      ok:true,circle_meta:{id:10,public_id:'circle_e2e',name:'E2E Circle'},
+      membership:{role:'owner'},circle:[owner],count:1,
+    },
+    '/api/invitations':{ok:true,invitations:[],count:0},
+    '/api/members':{ok:true,members:[{...owner,role:'owner',status:'active'}],count:1,
+      has_more:false,next_cursor:null,scanned:1},
+  });
+  await page.clock.install();
+  await resetClientState(page,true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+
+  await page.clock.fastForward(200);
+  await expect.poll(()=>authChecks).toBe(1);
+  await expect.poll(()=>page.evaluate(()=>(window as any)._randori_auth.me)).toBeNull();
+
+  await page.clock.fastForward(250);
+  await expect.poll(()=>authChecks).toBe(2);
+  await expect.poll(()=>page.evaluate(()=>(window as any)._randori_auth.me?.email)).toBe(owner.email);
+
+  await page.clock.fastForward(1_000);
+  expect(authChecks).toBe(2);
+});
+
 test('a delayed denial from a different actor cannot clear the current owner roster',async({page})=>{
   const nextOwner={...owner,id:9,email:'next-owner@example.test',display_name:'Next Owner',name:'Next Owner'};
   let currentUser=owner;
@@ -911,6 +945,18 @@ test('a delayed denial from a superseded circle context cannot clear the selecte
 
     const selecting=page.getByTestId('circle-context-select').selectOption('circle-secondary');
     await switchStarted;
+    // The switch has already performed its own synchronous teardown. Count
+    // any later roster reset so this test proves the stale catch is inert,
+    // rather than merely observing an already-hidden panel before reload.
+    await page.evaluate(()=>{
+      const roster=document.getElementById('circleManageMembers') as any;
+      const original=roster.replaceChildren.bind(roster);
+      (window as any).__staleRosterResetCalls=0;
+      roster.replaceChildren=(...nodes:any[])=>{
+        (window as any).__staleRosterResetCalls+=1;
+        return original(...nodes);
+      };
+    });
     const deniedResponse=page.waitForResponse(response=>{
       const url=new URL(response.url());
       return url.pathname==='/api/members'&&url.searchParams.get('q')==='slow-denied';
@@ -918,6 +964,8 @@ test('a delayed denial from a superseded circle context cannot clear the selecte
     releaseDeniedRequest();
     const completedDenial=await deniedResponse;
     await completedDenial.finished();
+    await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
+    expect(await page.evaluate(()=>(window as any).__staleRosterResetCalls)).toBe(0);
     await expect(page.getByTestId('circle-lifecycle')).toBeHidden();
 
     const reloaded=page.waitForEvent('domcontentloaded');
