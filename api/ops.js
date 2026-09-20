@@ -53,6 +53,7 @@ import {
 } from './_invitation-email.js';
 import {identityEmailKeyRotationStatus} from './_identity-linking.js';
 import { localIdentityAdapterEnabled, localRuntimeRequest } from './_local-runtime.js';
+import { ensureNotificationPreferencesReadiness } from './_ops-readiness.js';
 import { ensureCircleMembershipReadiness } from './_circle-membership.js';
 import {
   canUseLegacySinglePrimaryCircleFeatures,
@@ -91,22 +92,17 @@ async function logServerOps(level, event, message, meta, req){
   }catch(e){ try{ console.warn("[logServerOps fail]", e && e.message); }catch{} }
 }
 
-async function ensureNotifPrefs(db,req){
-  if(localIdentityAdapterEnabled(req)){
-    await db.execute(`SELECT user_id,email_enabled,sms_enabled,phone,email,updated_at FROM user_notification_prefs LIMIT 0`);
-    return;
-  }
-  try{ await db.execute("CREATE TABLE IF NOT EXISTS user_notification_prefs (user_id INTEGER PRIMARY KEY, email_enabled INTEGER DEFAULT 1, sms_enabled INTEGER DEFAULT 0, phone TEXT, email TEXT, updated_at TEXT DEFAULT (datetime('now')))"); }catch{}
-}
-
 async function handleNotificationPrefs(req,res){
   if(req.method!=="GET"&&req.method!=="POST"&&req.method!=="PUT"){
     return res.status(405).json({error:"GET or POST/PUT"});
   }
   const payload=await verifyRequestAuth(req);
   if(!payload) return res.status(401).json({error:"authentication required"});
-  const db=getClient();
-  try{ await ensureNotifPrefs(db,req); }
+  let db;
+  try{
+    db=getClient();
+    await ensureNotificationPreferencesReadiness(db);
+  }
   catch{ return res.status(503).json({error:"notification preferences unavailable"}); }
   if(req.method==="GET"){
     const uid=payload.id||payload.uid;

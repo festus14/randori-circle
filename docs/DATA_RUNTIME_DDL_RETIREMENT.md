@@ -42,7 +42,10 @@ Issue #171 removed the remaining 45 `api/data.js` DDL occurrences and the six
 membership definitions reachable from its initializer. `/api/init` now requires
 the exact current migration state and performs only the atomic primary-circle
 data cutover described in [Admin data initialization](ADMIN_DATA_INITIALIZATION.md).
-The remaining allowlisted families are `api/ai.js` and `api/ops.js`.
+The remaining allowlisted families are `api/ai.js` and `api/ops.js`. Issue #172
+subsequently removed the notification-preference table creation from the
+ordinary operations path; its scoped readiness contract is documented in
+[Notification-preference DDL retirement](NOTIFICATION_PREFERENCES_RUNTIME_DDL_RETIREMENT.md).
 
 ## Verification and rollout
 

@@ -9,10 +9,23 @@ test('runtime DDL debt matches its deterministic reviewed allowlist',()=>{
   const result=checkRuntimeDdl('api');
   assert.equal(result.ok,true);
   assert.equal(result.snapshots.length,RUNTIME_DDL_ALLOWLIST.length);
-  assert.equal(result.snapshots.reduce((total,item)=>total+item.statementCount,0),25);
+  assert.equal(result.snapshots.reduce((total,item)=>total+item.statementCount,0),24);
   assert.equal(result.snapshots.some(item=>item.file==='api/auth.js'),false);
   assert.equal(result.snapshots.some(item=>item.file==='api/data.js'),false);
   assert.equal(result.snapshots.some(item=>item.file==='api/_circle-membership.js'),false);
+});
+
+test('notification-preference requests and readiness contain no runtime DDL',()=>{
+  const opsSource=readFileSync(new URL('../../api/ops.js',import.meta.url),'utf8');
+  const readinessSource=readFileSync(new URL('../../api/_ops-readiness.js',import.meta.url),'utf8');
+  const preferenceTableDdl=stringLiterals(opsSource).filter(({value})=>
+    /\b(?:CREATE|ALTER|DROP)\b[\s\S]*\buser_notification_prefs\b/iu.test(value)
+  );
+  const readinessDdl=stringLiterals(readinessSource).filter(({value})=>
+    /\b(?:CREATE\s+(?:(?:UNIQUE|TEMP(?:ORARY)?|VIRTUAL|OR\s+REPLACE)\s+)*(?:TABLE|INDEX|VIEW|TRIGGER)|ALTER\s+TABLE|DROP\s+(?:TABLE|INDEX|VIEW|TRIGGER))\b/iu.test(value)
+  );
+  assert.deepEqual(preferenceTableDdl,[],'notification preferences must not regain schema mutation');
+  assert.deepEqual(readinessDdl,[],'ops readiness must remain read-only');
 });
 
 test('data routes, including admin init, contain no runtime DDL',()=>{

@@ -242,7 +242,7 @@ mock.module('../../api/_db.js', {
     shuffleArray: values => [...values],
     verifyRequestAuth: authPayload,
     verifySignedRequestAuth: authPayload,
-    verifyMutationOrigin: () => true,
+    verifyMutationOrigin: req => req?.headers?.['x-test-origin']!=='rejected',
     initSentry: () => {},
     isSentryConfigured: () => Boolean(process.env.SENTRY_DSN || process.env.NEXT_PUBLIC_SENTRY_DSN),
     getSentry: () => ({ Sentry: null, ready: false }),
@@ -2844,6 +2844,14 @@ test('operations cover preferences, availability, admin promotion, demo lifecycl
   });
   assert.equal(saved.body.prefs.sms_enabled, true);
 
+  const replaced = await invoke(opsHandler, {
+    method: 'PUT', url: '/api/notifications/prefs', query: { endpoint: 'notifications-prefs' }, headers: user,
+    body: { email_enabled: true, sms_enabled: false, email: 'user@example.test' },
+  });
+  assert.deepEqual(replaced.body.prefs,{
+    user_id:2,email_enabled:true,sms_enabled:false,phone:null,email:'user@example.test',
+  });
+
   const availabilityState = await invoke(opsHandler, {
     method: 'GET', url: '/api/settings/availability', query: { endpoint: 'availability' }, headers: user,
   });
@@ -2892,6 +2900,55 @@ test('operations cover preferences, availability, admin promotion, demo lifecycl
   assert.equal(weekly.body.pair_count, 1);
   assert.doesNotMatch(JSON.stringify(weekly.body),/@example\.test/);
   assert.equal(executed.some(call => !call.sql.trim()), false, 'migration arrays must not execute undefined DDL entries');
+});
+
+test('notification preferences reject origin, method, and authentication before readiness',async()=>{
+  const cases=[
+    {
+      name:'origin',
+      request:{method:'POST',url:'/api/notifications/prefs',query:{endpoint:'notifications-prefs'},
+        headers:{'x-test-auth':'user','x-test-origin':'rejected'}},
+      status:403,
+    },
+    {
+      name:'method',
+      request:{method:'PATCH',url:'/api/notifications/prefs',query:{endpoint:'notifications-prefs'},
+        headers:{'x-test-auth':'user'}},
+      status:405,
+    },
+    {
+      name:'authentication',
+      request:{method:'GET',url:'/api/notifications/prefs',query:{endpoint:'notifications-prefs'}},
+      status:401,
+    },
+  ];
+
+  for(const item of cases){
+    db=createMockDb();
+    executed.length=0;
+    const response=await invoke(opsHandler,item.request);
+    assert.equal(response.status,item.status,item.name);
+    assert.equal(executed.length,0,`${item.name} rejection must happen before readiness SQL`);
+  }
+});
+
+test('notification preferences fail closed before DML and logging when readiness is unavailable',async()=>{
+  const expectedProbe='SELECT user_id,email_enabled,sms_enabled,phone,email,updated_at FROM user_notification_prefs LIMIT 0';
+  executeHandler=sql=>{
+    if(sql===expectedProbe) throw new Error('migration-owned preference schema unavailable');
+    return rows();
+  };
+
+  const response=await invoke(opsHandler,{
+    method:'POST',url:'/api/notifications/prefs',query:{endpoint:'notifications-prefs'},
+    headers:{'x-test-auth':'user'},body:{email_enabled:false,sms_enabled:true,phone:'+440000000'},
+  });
+
+  assert.equal(response.status,503);
+  assert.deepEqual(response.body,{error:'notification preferences unavailable'});
+  assert.deepEqual(executed.map(call=>call.sql),[expectedProbe]);
+  assert.equal(executed.some(call=>/^\s*(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(call.sql)),false);
+  assert.equal(executed.some(call=>call.sql.includes('INSERT INTO app_logs')),false);
 });
 
 test('weekly publication only queues email and never invokes a provider drain', async () => {
