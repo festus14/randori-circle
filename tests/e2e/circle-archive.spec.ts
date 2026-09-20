@@ -198,6 +198,12 @@ test('archive session loss immediately clears private state and returns to signe
     app._randori_authorized_room='week_1_pair_1';
     app.__archiveRefreshCalls=0;
     app._randori_auth.refreshMe=async()=>{ app.__archiveRefreshCalls+=1; throw new Error('unexpected refresh'); };
+    localStorage.setItem('randori-token','legacy-token');
+    localStorage.setItem('randori-demo-active','1');
+    localStorage.setItem('randori-last-room','week_1_pair_1');
+    localStorage.setItem('randori-last-tab','code');
+    localStorage.setItem('randori-last-view','code');
+    localStorage.setItem('randori-code','private draft');
   });
   await page.getByTestId('circle-archive').click();
   await confirmAction(page,/Archive Secondary/);
@@ -206,8 +212,10 @@ test('archive session loss immediately clears private state and returns to signe
   await expect(page.getByTestId('circle-archive')).toBeHidden();
   expect(await page.evaluate(()=>({signedIn:(window as any)._randori_auth.signedIn,
     room:(window as any)._randori_authorized_room,
-    refreshCalls:(window as any).__archiveRefreshCalls})))
-    .toEqual({signedIn:false,room:null,refreshCalls:0});
+    refreshCalls:(window as any).__archiveRefreshCalls,
+    retained:['randori-token','randori-me','randori-demo-active','randori-last-room',
+      'randori-last-tab','randori-last-view','randori-code'].filter(key=>localStorage.getItem(key)!==null)})))
+    .toEqual({signedIn:false,room:null,refreshCalls:0,retained:[]});
 });
 
 test('archive owner loss reloads and re-resolves the selected membership role',async({page})=>{

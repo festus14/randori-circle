@@ -2779,44 +2779,9 @@ async function refreshMe(){
       try{ toast('Could not sign out safely. Please try again.'); }catch{}
       return false;
     }
-    invalidateAuthRefreshes();
-    try{
-      localStorage.removeItem(TOKEN_KEY);
-      localStorage.removeItem(ME_KEY);
-      localStorage.removeItem('randori-demo-active');
-      localStorage.removeItem('randori-last-room');
-      localStorage.removeItem('randori-code');
-      me=null;
-      resetCircleControlForIdentityChange();
-      clearAvailability();
-      // clear any in-memory video state quietly
-      try{ if(typeof videoJoined!=='undefined' && videoJoined){ videoJoined=false; } }catch{}
-      // force UI to landing
-      if(window._randori_journey && window._randori_journey.routeByAuth){
-        // clear then route (route will see no token and show landing)
-        window._randori_journey.routeByAuth().catch(()=>{});
-      }
-    }catch{}
-    try{ updateAuthUI(); }catch{}
+    await applyAuthoritativeSignedOutState();
     try{ toast(everywhere?'signed out everywhere':'signed out'); }catch{}
     setTimeout(()=>{ location.reload(); }, 250);
-    try{ renderHistory(); }catch{}
-    const av=document.getElementById('availabilityWrap'); if(av) av.style.display='none';
-    // hard fallback: if still signed in view, do full view switch
-    setTimeout(()=>{
-      try{
-        if(!me){
-          const land=document.getElementById('view-landing');
-          const dash=document.getElementById('view-dashboard');
-          const prof=document.getElementById('view-profile-setup');
-          if(land) land.style.display='';
-          if(dash) dash.style.display='none';
-          if(prof) prof.style.display='none';
-          // hide tab bar if we have one
-          document.querySelectorAll('[data-tab]').forEach(t=>t.classList.remove('active'));
-        }
-      }catch{}
-    }, 80);
     return true;
   }
   document.getElementById('signOutBtn').onclick=()=>performSignOut();
@@ -4187,14 +4152,21 @@ async function refreshMe(){
     me=null;
     resetCircleControlForIdentityChange();
     try{
+      localStorage.removeItem(TOKEN_KEY);
       localStorage.removeItem(ME_KEY);
+      localStorage.removeItem('randori-demo-active');
       localStorage.removeItem('randori-last-room');
       localStorage.removeItem('randori-last-tab');
       localStorage.removeItem('randori-last-view');
+      localStorage.removeItem('randori-code');
     }catch{}
     clearAvailability();
+    try{ if(typeof videoJoined!=='undefined'&&videoJoined) videoJoined=false; }catch{}
     try{ await updateAuthUI(); }catch{}
     try{ await window._randori_journey?.routeByAuth?.(); }catch{}
+    try{ renderHistory(); }catch{}
+    const availability=document.getElementById('availabilityWrap');
+    if(availability) availability.style.display='none';
     window._randori_workspace?.deactivate?.();
     window._randori_authorized_room=null;
     window._randori_join_room=null;
@@ -4324,32 +4296,10 @@ async function refreshMe(){
         return;
       }
       if(circleLifecycleStatus) circleLifecycleStatus.textContent='Membership ended. Signing out…';
-      try{
-        localStorage.removeItem('randori-last-room');
-        localStorage.removeItem('randori-last-tab');
-        localStorage.removeItem('randori-last-view');
-      }catch{}
-      try{ await window._randori_auth?.refreshMe?.(); }catch{}
       // The successful server transition and Set-Cookie response are
-      // authoritative. Never leave stale authenticated state visible merely
-      // because the follow-up identity refresh failed.
-      invalidateAuthRefreshes();
-      me=null;
-      resetCircleControlForIdentityChange();
-      try{ localStorage.removeItem(ME_KEY); }catch{}
-      clearAvailability();
-      updateAuthUI();
-      try{ await window._randori_journey?.routeByAuth?.(); }catch{}
-      // Treat a successful leave like logout even if another startup router is
-      // still settling. Private workspace state must not remain visible after
-      // the server has revoked the membership and its sessions.
-      window._randori_workspace?.deactivate?.();
-      window._randori_authorized_room=null;
-      window._randori_join_room=null;
-      window._randori_nav?.hideAllViews?.();
-      const landing=document.getElementById('view-landing');
-      if(landing) landing.style.display='block';
-      document.querySelectorAll('[data-tab]').forEach(tab=>tab.classList.remove('active'));
+      // authoritative. Use the same complete local cleanup as explicit logout
+      // without making a second network decision.
+      await applyAuthoritativeSignedOutState();
     }catch(error){
       if(!circleControlOperationMatches(operation)) return;
       publishCircleLifecycleNotice(lifecycleErrorMessage(error));
