@@ -289,6 +289,30 @@ test('CAS updates persist across clients and stale versions fail with the winnin
   );
 });
 
+test('confirming the same inherited value creates and advances a user decision',async()=>{
+  const {db}=await createDatabase();
+  const inherited=await getAvailabilityState(db,{userId:1,now:SAFE_EDITABLE_INSTANT});
+  assert.equal(inherited.source,'legacy_bridge');
+  assert.equal(inherited.isAvailable,false);
+  assert.equal(inherited.version,0);
+
+  const confirmed=await updateAvailability(db,{
+    userId:1,now:SAFE_EDITABLE_INSTANT,
+    body:{cycle_key:inherited.cycleKey,expected_version:0,is_available:false},
+  });
+  assert.equal(confirmed.source,'user');
+  assert.equal(confirmed.isAvailable,false);
+  assert.equal(confirmed.version,1);
+
+  const reconfirmed=await updateAvailability(db,{
+    userId:1,now:SAFE_EDITABLE_INSTANT,
+    body:{cycle_key:confirmed.cycleKey,expected_version:1,is_available:false},
+  });
+  assert.equal(reconfirmed.source,'user');
+  assert.equal(reconfirmed.isAvailable,false);
+  assert.equal(reconfirmed.version,2);
+});
+
 test('concurrent file clients allow one CAS winner and reject the stale writer',async()=>{
   const fixture=await createDatabase();
   const initial=await getAvailabilityState(fixture.db,{userId:1,now:SAFE_EDITABLE_INSTANT});

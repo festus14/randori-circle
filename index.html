@@ -352,6 +352,8 @@ p{margin:0}
 .tab.active{background:var(--bg-3); color:var(--ink); border-color:var(--border); box-shadow:0 1px 0 rgba(255,255,255,.05) inset}
 .tab:hover{color:var(--ink)}
 .kbd{border:1px solid var(--border); background:var(--bg-3); padding:2px 7px; border-radius:8px; font-size:11px; font-weight:500; color:var(--ink-2)}
+.sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
+#availActions [aria-pressed="true"]{outline:2px solid var(--accent);outline-offset:2px}
 .main{padding:20px 20px 86px; display:grid; gap:var(--gap); max-width:var(--max); width:100%; margin:0 auto; box-sizing:border-box}
 .grid-2{display:grid; grid-template-columns:1.15fr .85fr; gap:var(--gap)}
 .grid-3{display:grid; grid-template-columns:repeat(3,1fr); gap:14px}
@@ -1025,7 +1027,7 @@ p{margin:0}
       <div class="dashboard">
         <div class="dash-top">
           <div><h2 id="dashWelcome">Welcome back</h2><div id="dashSub" class="small muted">Checking pairings…</div></div>
-          <div class="row"><span id="dashAvailBadge" class="kbd">Checking availability…</span><button id="dashProfileBtn" class="pill">Edit profile</button></div>
+          <div class="row"><button id="dashAvailBadge" class="pill" type="button" aria-label="Review weekly availability" aria-describedby="dashAvailHint">Checking availability…</button><span id="dashAvailHint" class="sr-only">Opens the active circle's upcoming cycle availability choices.</span><button id="dashProfileBtn" class="pill">Edit profile</button></div>
         </div>
         <div id="dashStatsGrid" role="list" aria-label="Circle summary" style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:14px 0">
           <div class="card" role="listitem" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Your completed sessions</div><div id="dashStatYou" style="font-size:20px; font-weight:600; margin-top:4px">—</div><div class="small muted" id="dashStatYouSub" style="font-size:11px">from — pairings</div></div>
@@ -1050,7 +1052,7 @@ p{margin:0}
           <div class="row" style="justify-content:space-between"><h4 id="onboardChecklistTitle">Getting started</h4><button id="checklistToggle" class="pill" type="button" style="font-size:11px" aria-expanded="true">hide</button></div>
           <div class="check-item" id="chkSignIn" data-state="pending"><div class="check-box" aria-hidden="true">·</div><span>Sign in to your private circle</span></div>
           <div class="check-item" id="chkProfile" data-state="loading"><div class="check-box" aria-hidden="true">·</div><span>Checking saved profile…</span></div>
-          <div class="check-item" id="chkAvail" data-state="loading"><div class="check-box" aria-hidden="true">·</div><span>Checking cycle availability…</span></div>
+          <div class="check-item" id="chkAvail" data-state="loading"><div class="check-box" aria-hidden="true">·</div><span>Checking cycle availability…</span><button id="chkAvailAction" class="pill" type="button" style="margin-left:auto" hidden>Choose availability</button></div>
           <div class="check-item" id="chkPair" data-state="loading"><div class="check-box" aria-hidden="true">·</div><span>Checking current pairing…</span></div>
           <div class="check-item" id="chkRoom" data-state="pending" hidden><div class="check-box" aria-hidden="true">·</div><span>Open your current workspace</span></div>
           <div id="onboardChecklistStatus" class="small muted" role="status" aria-live="polite">Sign in to load your saved setup.</div>
@@ -1157,10 +1159,15 @@ p{margin:0}
           <div class="card-h"><h2>Sync</h2><span>browser state</span></div>
           <div class="card-b" style="display:grid; gap:10px">
             <div class="small" style="color:var(--ink-2)">Browser-tab coordination is reported below. Server-backed availability has its own loading and save states.</div>
-            <div id="availabilityWrap" data-testid="availability-card" role="region" aria-labelledby="availTitle" tabindex="-1" style="display:none; border:1px solid var(--line); border-radius:10px; padding:10px; background:var(--bg-3); display:grid; gap:8px">
-              <div class="row" style="justify-content:space-between"><b id="availTitle" style="font-size:13px">Upcoming availability</b><label class="pill" style="cursor:pointer"><input id="availToggle" type="checkbox" disabled aria-labelledby="availTitle availLabel" aria-describedby="availCycle availCutoff availExplan" style="margin-right:6px"/> <span id="availLabel">LOADING…</span></label></div>
+            <div id="availabilityWrap" data-testid="availability-card" role="region" aria-labelledby="availTitle" aria-describedby="availDecision availCycle availCutoff availExplan" tabindex="-1" style="display:none; border:1px solid var(--line); border-radius:10px; padding:10px; background:var(--bg-3); gap:8px">
+              <div class="row" style="justify-content:space-between"><b id="availTitle" style="font-size:13px">Upcoming availability</b><span id="availLabel" class="kbd">LOADING…</span></div>
+              <div id="availDecision" class="small" role="status" aria-live="polite">Loading your saved choice for this cycle…</div>
               <div id="availCycle" data-testid="availability-cycle" class="small muted">Loading the upcoming pairing cycle…</div>
               <div id="availCutoff" data-testid="availability-cutoff" class="small muted"></div>
+              <div id="availActions" class="row" role="group" aria-labelledby="availTitle" aria-describedby="availDecision availCycle availCutoff availExplan">
+                <button id="availAvailable" class="btn" type="button" aria-pressed="false" disabled>Available</button>
+                <button id="availSkip" class="pill" type="button" aria-pressed="false" disabled>Skip this cycle</button>
+              </div>
               <div id="availBanner" class="small status-chip status-warning" style="display:none; padding:8px; border-radius:8px; border-style:dashed"></div>
             </div>
             <div id="presencePanel" class="people"></div>
@@ -1471,6 +1478,7 @@ p{margin:0}
   const AVAILABILITY_ROLLOVER_RETRY_MS=30000;
   const AVAILABILITY_TIMER_MAX_MS=2147483647;
   const availabilityState={value:null,userId:null,contextKey:null,loading:false,saving:false,pendingValue:null,error:'',notice:null,request:null,rolloverTimer:null,epoch:0};
+  const availabilityNavigationState={epoch:0,trustedTabEpoch:0};
   const availabilityContextRecovery={userId:null,authEpoch:null,attempts:0};
   const AUTH_CAPABILITY_TIMEOUT_MS=8000;
   const inviteGate=(()=>{
@@ -2022,6 +2030,9 @@ async function refreshMe(){
       ||typeof availability.isAvailable!=='boolean'
       ||!Number.isSafeInteger(availability.version)||availability.version<0
       ||!AVAILABILITY_SOURCES.has(availability.source)||typeof availability.editable!=='boolean'
+      ||(availability.source==='user'
+        ?availability.version<1||typeof availability.updatedAt!=='string'||!Number.isFinite(Date.parse(availability.updatedAt))
+        :availability.version!==0||availability.updatedAt!==null)
       ||cycle.state!=='upcoming'||typeof cycle.timeZone!=='string'||!cycle.timeZone
       ||![cycle.startsAt,cycle.endsAt,cycle.cutoffAt].every(value=>typeof value==='string'&&Number.isFinite(Date.parse(value)))
       ||(contextVersion!==undefined&&payload?.circle_context_version!==contextVersion)){
@@ -2103,10 +2114,37 @@ async function refreshMe(){
       &&notice.isAvailable===availability?.isAvailable
       &&notice.editable===availability?.editable;
   }
+  function availabilityDecisionCopy(availability){
+    if(!availability) return 'Availability has not loaded.';
+    const effective=availability.isAvailable?'available':'skipping';
+    if(availability.source==='user'){
+      return availability.editable
+        ?`Saved choice: ${effective} for ${availability.cycle.cycleId}. You can replace it until the cutoff.`
+        :`Saved choice: ${effective} for ${availability.cycle.cycleId}. The cutoff is closed.`;
+    }
+    if(availability.source==='legacy_bridge'){
+      return availability.editable
+        ?`No choice is saved for this cycle. Your previous account setting is inherited as ${effective}; choose an action below to confirm it.`
+        :`No choice was saved for this cycle. Your previous account setting remains inherited as ${effective}; the cutoff is closed.`;
+    }
+    return availability.editable
+      ?`No choice is saved for this cycle. Randori currently includes you by default so early circles can still form pairs; choose an action below to confirm or skip.`
+      :`No choice was saved for this cycle. Default inclusion remains effective, and the cutoff is closed.`;
+  }
+  function availabilityBadgeCopy(availability){
+    if(!availability) return availabilityState.loading?'Checking availability…':'Review availability';
+    if(!availability.editable) return `Review closed cycle ${availability.cycle.cycleId}`;
+    if(availability.source==='cycle_default') return `Confirm default for ${availability.cycle.cycleId}`;
+    if(availability.source==='legacy_bridge') return `Confirm inherited choice for ${availability.cycle.cycleId}`;
+    return availability.isAvailable
+      ?`Available for ${availability.cycle.cycleId}`:`Skipping ${availability.cycle.cycleId}`;
+  }
   function renderAvailability(){
     const wrap=document.getElementById('availabilityWrap');
-    const toggle=document.getElementById('availToggle');
+    const availableButton=document.getElementById('availAvailable');
+    const skipButton=document.getElementById('availSkip');
     const label=document.getElementById('availLabel');
+    const decision=document.getElementById('availDecision');
     const title=document.getElementById('availTitle');
     const cycleText=document.getElementById('availCycle');
     const cutoffText=document.getElementById('availCutoff');
@@ -2114,26 +2152,42 @@ async function refreshMe(){
     const status=document.getElementById('availExplan');
     const retry=document.getElementById('availRetry');
     const dashboardBadge=document.getElementById('dashAvailBadge');
-    if(!wrap||!toggle||!label) return;
+    if(!wrap||!availableButton||!skipButton||!label) return;
     if(!me){
       wrap.style.display='none';
-      toggle.disabled=true;
+      availableButton.disabled=true;
+      skipButton.disabled=true;
+      if(dashboardBadge){
+        dashboardBadge.textContent='Review availability';
+        dashboardBadge.disabled=true;
+        dashboardBadge.setAttribute('aria-label','Review availability. Sign in to load weekly availability.');
+      }
       if(status) status.style.display='none';
       if(retry) retry.hidden=true;
       return;
     }
-    wrap.style.display='grid';
-    wrap.setAttribute('aria-busy',availabilityState.loading||availabilityState.saving?'true':'false');
     const availability=availabilityState.value;
+    // Do not expose placeholder controls before the first authoritative result.
+    // A validated value remains visible while it is revalidated, and an error
+    // remains visible so its retry action is reachable.
+    wrap.style.display=availability||availabilityState.error?'grid':'none';
+    wrap.setAttribute('aria-busy',availabilityState.loading||availabilityState.saving?'true':'false');
     const currentUserId=Number(me?.id||me?.uid);
     const noticeMessage=availabilityState.notice?.userId===currentUserId
       ?availabilityState.notice.message:'';
     const statusMessage=availabilityState.error||noticeMessage;
     if(!availability){
-      toggle.checked=false;
-      toggle.disabled=true;
+      availableButton.disabled=true;
+      skipButton.disabled=true;
+      availableButton.setAttribute('aria-pressed','false');
+      skipButton.setAttribute('aria-pressed','false');
+      availableButton.textContent='Available';
+      skipButton.textContent='Skip this cycle';
       label.textContent=availabilityState.loading?'LOADING…':'UNAVAILABLE';
       label.style.color='var(--color-text-muted)';
+      if(decision) decision.textContent=availabilityState.loading
+        ?'Loading your saved choice for this cycle…'
+        :'No active-cycle availability choice can be shown.';
       if(title) title.textContent='Upcoming availability';
       if(cycleText) cycleText.textContent=availabilityState.loading?'Loading the upcoming pairing cycle…':'Upcoming cycle could not be loaded.';
       if(cutoffText) cutoffText.textContent='';
@@ -2147,21 +2201,35 @@ async function refreshMe(){
         retry.disabled=availabilityState.loading;
       }
       if(dashboardBadge){
-        dashboardBadge.textContent=availabilityState.loading?'Checking availability…':'Availability unavailable';
+        dashboardBadge.textContent=availabilityBadgeCopy(null);
+        dashboardBadge.disabled=availabilityState.loading;
         dashboardBadge.style.background='var(--bg-3)';
+        dashboardBadge.style.color='var(--ink-2)';
+        dashboardBadge.style.borderColor='var(--border)';
+        dashboardBadge.setAttribute('aria-label',`${availabilityBadgeCopy(null)}. Review weekly availability.`);
       }
       return;
     }
     const shownValue=availabilityState.saving&&typeof availabilityState.pendingValue==='boolean'
       ?availabilityState.pendingValue:availability.isAvailable;
-    toggle.checked=shownValue;
     // A validated value remains interactive during same-account background
-    // refreshes. toggleAvailability serializes the intent behind that request.
-    toggle.disabled=availabilityState.saving||!availability.editable;
+    // refreshes. saveAvailabilityDecision serializes either explicit action behind
+    // that request, including confirmation of an equal inherited value.
+    availableButton.disabled=availabilityState.saving||!availability.editable;
+    skipButton.disabled=availabilityState.saving||!availability.editable;
+    availableButton.setAttribute('aria-pressed',availability.source==='user'&&availability.isAvailable?'true':'false');
+    skipButton.setAttribute('aria-pressed',availability.source==='user'&&!availability.isAvailable?'true':'false');
+    availableButton.textContent=availabilityState.saving&&shownValue?'Saving Available…':'Available';
+    skipButton.textContent=availabilityState.saving&&!shownValue?'Saving Skip…':'Skip this cycle';
     label.textContent=availabilityState.saving
-      ?`SAVING ${shownValue?'ON':'OFF'}…`
-      :(!availability.editable?'CLOSED':(availability.isAvailable?'ON (included)':'OFF (skipped)'));
+      ?`SAVING ${shownValue?'AVAILABLE':'SKIP'}…`
+      :(!availability.editable
+        ?`CLOSED • ${availability.source==='user'?'SAVED':'NO SAVED CHOICE'}`
+        :(availability.source==='user'
+          ?`SAVED • ${availability.isAvailable?'AVAILABLE':'SKIPPING'}`
+          :`NOT SAVED • ${availability.isAvailable?'INCLUDED':'SKIPPING'}`));
     label.style.color=shownValue?'var(--ok)':'var(--warn)';
+    if(decision) decision.textContent=availabilityDecisionCopy(availability);
     if(title) title.textContent=`Availability for ${availability.cycle.cycleId}`;
     if(cycleText){
       cycleText.textContent=`Upcoming cycle starts ${formatAvailabilityInstant(availability.cycle.startsAt,availability.cycle.timeZone)} and ends ${formatAvailabilityInstant(availability.cycle.endsAt,availability.cycle.timeZone)}.`;
@@ -2170,8 +2238,12 @@ async function refreshMe(){
       cutoffText.textContent=`Changes close ${formatAvailabilityInstant(availability.cycle.cutoffAt,availability.cycle.timeZone)} (${availability.cycle.timeZone}).`;
     }
     if(banner){
-      banner.style.display=availability.isAvailable?'none':'block';
-      banner.textContent=`You are set to skip ${availability.cycle.cycleId}. This does not change another cycle.`;
+      banner.style.display=availability.source!=='user'||!availability.isAvailable?'block':'none';
+      banner.textContent=availability.source!=='user'
+        ?(availability.source==='cycle_default'
+          ?`Default inclusion is effective for ${availability.cycle.cycleId}, but it is not your saved choice.`
+          :`Your previous setting is inherited for ${availability.cycle.cycleId}, but it is not your saved choice.`)
+        :`You chose to skip ${availability.cycle.cycleId}. This does not change another cycle.`;
     }
     if(status){
       status.style.display=statusMessage?'block':'none';
@@ -2179,11 +2251,16 @@ async function refreshMe(){
     }
     if(retry) retry.hidden=true;
     if(dashboardBadge){
-      dashboardBadge.textContent=availability.isAvailable
-        ?`Available for ${availability.cycle.cycleId}`:`Skipping ${availability.cycle.cycleId}`;
-      dashboardBadge.style.background=availability.isAvailable?'var(--ok-surface)':'var(--warn-surface)';
-      dashboardBadge.style.color=availability.isAvailable?'var(--ok)':'var(--warn)';
-      dashboardBadge.style.borderColor=availability.isAvailable?'var(--ok)':'var(--warn)';
+      dashboardBadge.textContent=availabilityBadgeCopy(availability);
+      dashboardBadge.disabled=false;
+      const saved=availability.source==='user';
+      dashboardBadge.style.background=saved
+        ?(availability.isAvailable?'var(--ok-surface)':'var(--warn-surface)'):'var(--bg-3)';
+      dashboardBadge.style.color=saved
+        ?(availability.isAvailable?'var(--ok)':'var(--warn)'):'var(--ink-2)';
+      dashboardBadge.style.borderColor=saved
+        ?(availability.isAvailable?'var(--ok)':'var(--warn)'):'var(--accent)';
+      dashboardBadge.setAttribute('aria-label',`${availabilityBadgeCopy(availability)}. Review weekly availability.`);
     }
   }
   function clearAvailability(){
@@ -2306,6 +2383,61 @@ async function refreshMe(){
     availabilityState.request=request;
     return request;
   }
+  async function openAvailabilityControl({source='direct'}={}){
+    const userId=Number(me?.id||me?.uid);
+    if(!Number.isSafeInteger(userId)||userId<1) return false;
+    const requestAuthEpoch=authSessionEpoch;
+    const initialFence=availabilityContextFence(userId);
+    const requestEpoch=++availabilityNavigationState.epoch;
+    const trustedTabEpoch=availabilityNavigationState.trustedTabEpoch;
+    const pairTab=document.querySelector('[data-tab="pair"]');
+    if(!pairTab) return false;
+    window._randoriExplicitNavigation='pair';
+    pairTab.click();
+    const requestCurrent=()=>requestEpoch===availabilityNavigationState.epoch
+      &&trustedTabEpoch===availabilityNavigationState.trustedTabEpoch
+      &&requestAuthEpoch===authSessionEpoch
+      &&Number(me?.id||me?.uid)===userId
+      &&window._randoriExplicitNavigation==='pair'
+      &&(!initialFence||availabilityContextFence(userId)?.key===initialFence.key)
+      &&document.getElementById('view-pair')?.style.display!=='none';
+    for(let attempt=0;attempt<2;attempt+=1){
+      try{ await refreshAvailability(); }
+      catch{}
+      if(!requestCurrent()) return false;
+      const fence=availabilityContextFence(userId);
+      const current=availabilityState.value;
+      if(!current||!fence||availabilityState.contextKey!==fence.key){
+        const retry=document.getElementById('availRetry');
+        if(retry&&!retry.hidden) retry.focus({preventScroll:true});
+        return false;
+      }
+      const target=Object.freeze({
+        cycleKey:current.cycleKey,contextKey:fence.key,version:current.version,
+        source:current.source,isAvailable:current.isAvailable,
+      });
+      await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+      if(!requestCurrent()) return false;
+      if(availabilityState.contextKey!==target.contextKey
+        ||availabilityState.value?.cycleKey!==target.cycleKey
+        ||availabilityState.value?.version!==target.version
+        ||availabilityState.value?.source!==target.source
+        ||availabilityState.value?.isAvailable!==target.isAvailable) continue;
+      const card=document.getElementById('availabilityWrap');
+      const action=document.getElementById(target.isAvailable?'availAvailable':'availSkip');
+      if(!card||!action||card.style.display==='none') return false;
+      card.scrollIntoView({behavior:'smooth',block:'center'});
+      (action.disabled?card:action).focus({preventScroll:true});
+      const status=document.getElementById('availExplan');
+      if(status&&!availabilityState.error&&!availabilityState.notice){
+        status.style.display='block';
+        status.textContent=`${current.cycle.cycleId} availability choices ready.`;
+      }
+      try{ window._randori_log?.info?.('availability','navigation_ready',{source:String(source).slice(0,32)}); }catch{}
+      return true;
+    }
+    return false;
+  }
   function updateAuthUI(){
     const area=document.getElementById('authArea');
     const meLabel=document.getElementById('meLabel');
@@ -2367,9 +2499,15 @@ async function refreshMe(){
     updatePairingRunAccess();
     renderAvailability();
   }
-  // availability toggle handler — defined after updateAuthUI so it can be hooked later
-  async function toggleAvailability(checked){
-    if(typeof checked!=='boolean'||availabilityState.saving) return;
+  // Explicit decision handler — equal inherited values are still meaningful
+  // writes because source=user, not the effective boolean, proves consent.
+  function availabilityMutationMatches(next,current,selectedValue){
+    return !!next&&!!current&&next.cycleKey===current.cycleKey
+      &&next.source==='user'&&next.isAvailable===selectedValue
+      &&next.version===current.version+1;
+  }
+  async function saveAvailabilityDecision(selectedValue){
+    if(typeof selectedValue!=='boolean'||availabilityState.saving) return;
     const userId=Number(me?.id||me?.uid);
     const requestAuthEpoch=authSessionEpoch;
     const fence=availabilityContextFence(userId);
@@ -2383,7 +2521,7 @@ async function refreshMe(){
       // invalidate the intent through the actor checks below.
       const request=availabilityState.request;
       availabilityState.saving=true;
-      availabilityState.pendingValue=checked;
+      availabilityState.pendingValue=selectedValue;
       availabilityState.error='';
       availabilityState.notice=null;
       renderAvailability();
@@ -2391,7 +2529,7 @@ async function refreshMe(){
       if(requestAuthEpoch!==authSessionEpoch||Number(me?.id||me?.uid)!==userId
         ||availabilityState.userId!==userId||availabilityState.contextKey!==fence.key
         ||availabilityContextFence(userId)?.key!==fence.key) return;
-      if(!availabilityState.value?.editable||availabilityState.value.isAvailable===checked){
+      if(!availabilityState.value?.editable){
         availabilityState.saving=false;
         availabilityState.pendingValue=null;
         renderAvailability();
@@ -2411,7 +2549,7 @@ async function refreshMe(){
       &&availabilityState.contextKey===fence.key&&availabilityContextFence(userId)?.key===fence.key
       &&Number(me?.id||me?.uid)===userId;
     availabilityState.saving=true;
-    availabilityState.pendingValue=checked;
+    availabilityState.pendingValue=selectedValue;
     availabilityState.error='';
     availabilityState.notice=null;
     renderAvailability();
@@ -2419,13 +2557,16 @@ async function refreshMe(){
       const data=await api('/api/settings/availability',{method:'POST',body:{
         cycle_key:current.cycleKey,
         expected_version:current.version,
-        is_available:checked,
+        is_available:selectedValue,
       }});
       const next=parseAvailabilityEnvelope(data,{contextVersion:fence.contextVersion});
       if(!isCurrentRequest()) return;
+      if(!availabilityMutationMatches(next,current,selectedValue)){
+        throw new Error('invalid availability mutation response');
+      }
       resetAvailabilityContextRecovery();
       replaceAvailability(next);
-      toast(checked?`Available for ${availabilityState.value.cycle.cycleId} ✓`:`Skipping ${availabilityState.value.cycle.cycleId}`);
+      toast(selectedValue?`Available for ${availabilityState.value.cycle.cycleId} ✓`:`Skipping ${availabilityState.value.cycle.cycleId}`);
       renderPeople();
     }catch(error){
       if(!isCurrentRequest()) return;
@@ -3180,16 +3321,29 @@ async function refreshMe(){
   }
   document.getElementById('signOutBtn').onclick=()=>performSignOut();
   document.getElementById('meSignOutAll').onclick=()=>performSignOut({everywhere:true});
-  // availability toggle binding — after DOM ready
+  // Explicit availability actions — after DOM ready.
   (function bindAvail(){
-    const cb=document.getElementById('availToggle');
-    if(!cb) return;
-    cb.addEventListener('change', ()=>{ toggleAvailability(cb.checked); });
-    cb.addEventListener('click', (e)=>{ e.stopPropagation(); });
+    document.getElementById('availAvailable')?.addEventListener('click',event=>{
+      event.stopPropagation();
+      saveAvailabilityDecision(true);
+    });
+    document.getElementById('availSkip')?.addEventListener('click',event=>{
+      event.stopPropagation();
+      saveAvailabilityDecision(false);
+    });
     document.getElementById('availRetry')?.addEventListener('click',()=>{
       resetAvailabilityContextRecovery();
       refreshAvailability().catch(()=>{});
     });
+    const tabs=document.querySelector('.tabs');
+    tabs?.addEventListener('click',event=>{
+      if(event.isTrusted) availabilityNavigationState.trustedTabEpoch+=1;
+    },{capture:true});
+    tabs?.addEventListener('keydown',event=>{
+      if(event.isTrusted&&['ArrowLeft','ArrowRight','Home','End'].includes(event.key)){
+        availabilityNavigationState.trustedTabEpoch+=1;
+      }
+    },{capture:true});
   })();
 
   // Reminder prefs wiring — Pillar 5
@@ -3603,6 +3757,9 @@ async function refreshMe(){
     get current(){ return availabilityState.value; },
     get contextKey(){ return availabilityState.contextKey; },
     refresh:refreshAvailability,
+    open:openAvailabilityControl,
+    render:renderAvailability,
+    save:saveAvailabilityDecision,
   };
   const revalidateAvailability=()=>{
     if(!me||document.visibilityState==='hidden') return;
@@ -7435,7 +7592,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     {title:'Welcome to Randori Circle', desc:'Weekly mock interviews with friends — cycle-based pairing, live rooms, whiteboard. 5-min setup, then you practice DSA + System Design together.', cta:'Get started →', target:null, extra:`<div class="row" style="gap:8px"><span class="kbd">Schedule shown from the server</span><span class="kbd">No trios — odd gets solo practice</span></div>`},
     {title:'Join your Circle', desc:'Sign in to load your private circle and saved setup from the server.', cta:'Next → Profile', target:'#authBtn', needsAuth:false, extra:`<div class="small muted">This browser never treats cached identity as proof of progress.</div>`},
     {title:'Complete your profile', desc:'Your saved display name and timezone make scheduling clear for your partner.', cta:'Next → Availability', target:'#dashProfileBtn', extra:`<div class="small muted">Profile progress comes from your authenticated server record.</div>`},
-    {title:'Save cycle availability', desc:'Availability applies only to the upcoming pairing cycle shown in Pairing. Save either Available or Skip before that cycle’s displayed cutoff.', cta:'Next → Pairing', target:'#availabilityWrap', extra:`<div class="small muted">A default toggle is not counted until this exact cycle is saved.</div>`},
+    {title:'Save cycle availability', desc:'Availability applies only to the upcoming pairing cycle shown in Pairing. Save either Available or Skip before that cycle’s displayed cutoff.', cta:'Next → Pairing', target:'#availabilityWrap', extra:`<div class="small muted">An inherited value is not counted until this exact cycle is saved.</div><div style="margin-top:8px"><button id="onbAvailabilityAction" class="pill" type="button">Open active-cycle choices</button></div>`},
     {title:'Current pair & workspace', desc:'A workspace appears only after the server publishes your assignment for the active circle and current cycle.', cta:'View current pairing →', target:'#view-pair', extra:`<div class="small muted">Old room links and browser storage never complete this step.</div>`},
   ];
 
@@ -7477,6 +7634,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     document.getElementById('onbTitle').textContent=s.title;
     document.getElementById('onbDesc').textContent=s.desc;
     document.getElementById('onbExtra').innerHTML=s.extra||'';
+    document.getElementById('onbAvailabilityAction')?.addEventListener('click',()=>{
+      setOnboardingModalVisible(false);
+      window._randori_availability?.open?.({source:'tour'});
+    });
     document.getElementById('onbNext').textContent=s.cta||'Next →';
     document.getElementById('onbCount').textContent=`${onboardStep} / 5`;
     updateOnboardProgress();
@@ -7499,7 +7660,6 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       }
       if(onboardStep===4){
         const av=document.getElementById('availabilityWrap');
-        if(av && me) av.style.display='grid';
         tgt=av && av.style.display!=='none' ? av : document.querySelector('[data-tab="pair"]');
       }
     }
@@ -7770,13 +7930,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   });
 
   document.getElementById('psAvailabilityLink')?.addEventListener('click',()=>{
-    document.querySelector('[data-tab="pair"]')?.click();
-    window._randori_availability?.refresh?.();
-    setTimeout(()=>{
-      const card=document.getElementById('availabilityWrap');
-      card?.focus({preventScroll:true});
-      card?.scrollIntoView({behavior:'smooth',block:'center'});
-    },0);
+    window._randori_availability?.open?.({source:'profile'});
   });
 
   async function fetchProfile(){
@@ -8102,18 +8256,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     document.getElementById('dashWelcome').textContent='Welcome, '+name;
     document.getElementById('dashSub').textContent='Checking the current-cycle pairing…';
     const availBadge=document.getElementById('dashAvailBadge');
-    if(availBadge){
-      const availability=window._randori_availability?.current;
-      availBadge.textContent=availability
-        ?(availability.isAvailable?`Available for ${availability.cycle.cycleId}`:`Skipping ${availability.cycle.cycleId}`)
-        :'Checking availability…';
-      availBadge.style.background=availability
-        ?(availability.isAvailable?'var(--ok-surface)':'var(--warn-surface)'):'var(--bg-3)';
-      availBadge.style.color=availability
-        ?(availability.isAvailable?'var(--ok)':'var(--warn)'):'var(--ink-2)';
-      availBadge.style.borderColor=availability
-        ?(availability.isAvailable?'var(--ok)':'var(--warn)'):'var(--border)';
-    }
+    if(availBadge) window._randori_availability?.render?.();
     // fetch my pair
     try{
       const j=await window._randori_auth.api('/api/my-pair',{method:'GET',cache:'no-store',signal:controller.signal});
@@ -9790,6 +9933,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   // Dash profile edit button
   document.getElementById('dashProfileBtn')?.addEventListener('click', ()=>{ renderColorPicker(); populateTz(); showProfileSetup(); });
+  document.getElementById('dashAvailBadge')?.addEventListener('click',()=>{
+    window._randori_availability?.open?.({source:'dashboard'});
+  });
   document.getElementById('dashSoloCatalogue')?.addEventListener('click',openSoloCatalogue);
   document.getElementById('dashPublishNow')?.addEventListener('click',()=>{
     window._randori_pairing_recovery?.publish?.();
@@ -12573,6 +12719,17 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const cycleId=availability.value?.cycle?.cycleId;
     setItem('chkAvail',availabilityDone?'done':availability.status,
       availability.status==='loading'?'Checking cycle availability…':availability.status==='error'?'Availability status unknown — retry':availabilityDone?`Availability saved for ${cycleId}`:`Save availability for ${cycleId||'the upcoming cycle'}`);
+    const availabilityAction=document.getElementById('chkAvailAction');
+    if(availabilityAction){
+      const actionable=availability.status==='ready'&&!availabilityDone;
+      availabilityAction.hidden=!actionable;
+      availabilityAction.style.display=actionable?'inline-flex':'none';
+      availabilityAction.disabled=!actionable;
+      if(actionable){
+        availabilityAction.textContent=availability.value?.isAvailable?'Confirm or skip':'Confirm skip or change';
+        availabilityAction.setAttribute('aria-label',`Choose availability for ${cycleId||'the upcoming cycle'}`);
+      }
+    }
     const pairingCycle=pairing.value?.cycle?.cycleId;
     setItem('chkPair',pairingDone?'done':pairing.status,
       pairing.status==='loading'?'Checking current pairing…':pairing.status==='error'?'Pairing status unknown — retry':pairingDone?`Current assignment published for ${pairingCycle}`:`Wait for ${pairingCycle||'the current cycle'} publication`);
@@ -12813,6 +12970,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(document.getElementById('view-dashboard')?.style.display!=='none'){
       await window._randori_journey?.showDashboard?.();
     }
+  });
+  document.getElementById('chkAvailAction')?.addEventListener('click',()=>{
+    window._randori_availability?.open?.({source:'checklist'});
   });
   window.addEventListener('randori:auth-refreshed',event=>{
     const nextId=Number(event.detail?.userId||0)||null;

@@ -272,46 +272,28 @@ async function acceptInvitation(
 
 async function optInForUpcomingCycle(page: Page) {
   await page.locator('[data-tab="pair"]').click();
-  const toggle = page.locator('#availToggle');
   await expect(page.getByTestId('availability-card')).toBeVisible();
   const initialState = await refreshAuthenticatedState(page);
-  await expect(toggle).toBeEnabled();
+  await expect(page.locator('#availAvailable')).toBeEnabled();
   await expect(page.getByTestId('availability-cycle')).toContainText('Upcoming cycle starts');
 
   const persistViaUi = async (isAvailable: boolean) => {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        const [response] = await Promise.all([
-          page.waitForResponse(candidate =>
-            candidate.url().includes('/api/settings/availability')
-              && candidate.request().method() === 'POST'),
-          toggle.evaluate((element, desired) => {
-            const input = element as HTMLInputElement;
-            if (input.disabled || input.checked === desired) {
-              throw new Error('availability toggle changed before click');
-            }
-            input.click();
-          }, isAvailable),
-        ]);
-        const payload = await response.json();
-        expect(response.status(), JSON.stringify(payload)).toBe(200);
-        expect(payload.availability?.isAvailable).toBe(isAvailable);
-        return payload;
-      } catch (error) {
-        if (!String(error).includes('availability toggle changed before click') || attempt === 2) throw error;
-        await page.evaluate(async () => {
-          await (window as typeof window & {
-            _randori_availability?: { refresh?: () => Promise<unknown> };
-          })._randori_availability?.refresh?.();
-        });
-        await expect(toggle).toBeEnabled();
-      }
-    }
-    throw new Error('availability toggle did not become actionable');
+    const action=page.locator(isAvailable?'#availAvailable':'#availSkip');
+    await expect(action).toBeEnabled();
+    const [response] = await Promise.all([
+      page.waitForResponse(candidate =>
+        candidate.url().includes('/api/settings/availability')
+          && candidate.request().method() === 'POST'),
+      action.click(),
+    ]);
+    const payload = await response.json();
+    expect(response.status(), JSON.stringify(payload)).toBe(200);
+    expect(payload.availability?.isAvailable).toBe(isAvailable);
+    return payload;
   };
 
   // Establish a deterministic off baseline through the real endpoint. The
-  // acceptance action under test is the subsequent browser checkbox opt-in;
+  // acceptance action under test is the subsequent explicit Available action;
   // bootstrap GETs can no longer restore a stale default between observation
   // and that click because the persisted source is already false.
   const current = initialState.availability;
@@ -329,9 +311,9 @@ async function optInForUpcomingCycle(page: Page) {
       _randori_availability?: { refresh?: () => Promise<unknown> };
     })._randori_availability?.refresh?.();
   });
-  await expect(toggle).not.toBeChecked();
+  await expect(page.locator('#availSkip')).toHaveAttribute('aria-pressed','true');
   const saved = await persistViaUi(true);
-  await expect(page.locator('#availLabel')).toContainText('ON (included)');
+  await expect(page.locator('#availLabel')).toContainText('SAVED • AVAILABLE');
   expect(saved.availability?.cycle?.cycleId).toMatch(/^\d{4}-W\d{2}$/);
   return JSON.parse(JSON.stringify(saved.availability?.cycle || null)) as Cycle | null;
 }

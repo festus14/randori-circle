@@ -64,6 +64,34 @@ function circle() {
   };
 }
 
+test('availability stays hidden until an authoritative state is ready', async ({ page }) => {
+  let markAvailabilityStarted!: () => void;
+  let releaseAvailability!: () => void;
+  const availabilityStarted = new Promise<void>(resolve => { markAvailabilityStarted = resolve; });
+  const availabilityGate = new Promise<void>(resolve => { releaseAvailability = resolve; });
+  await mockApi(page, {
+    '/api/auth/me': { ok: true, user },
+    '/api/circle': circle(),
+    '/api/settings/availability': async () => {
+      markAvailabilityStarted();
+      await availabilityGate;
+      return { ok: true, availability: availability() };
+    },
+  });
+  await resetClientState(page, true);
+
+  try {
+    await page.goto('/?view=pair', { waitUntil: 'domcontentloaded' });
+    await availabilityStarted;
+    await expect(page.getByTestId('availability-card')).toBeHidden();
+    releaseAvailability();
+    await expect(page.getByTestId('availability-card')).toBeVisible();
+    await expect(page.locator('#availTitle')).toHaveText('Availability for 2026-W39');
+  } finally {
+    releaseAvailability();
+  }
+});
+
 test('availability is loaded from its cycle API and posts the exact versioned boolean contract', async ({ page }) => {
   const posts: Record<string, unknown>[] = [];
   let serverAvailability = availability();
@@ -83,20 +111,21 @@ test('availability is loaded from its cycle API and posts the exact versioned bo
   await page.goto('/?view=pair', { waitUntil: 'domcontentloaded' });
 
   const card = page.getByTestId('availability-card');
-  const toggle = page.locator('#availToggle');
+  const availableButton = page.locator('#availAvailable');
+  const skipButton = page.locator('#availSkip');
   await expect(card).toBeVisible();
   await expect(page.locator('#availTitle')).toHaveText('Availability for 2026-W39');
   await expect(page.getByTestId('availability-cycle')).toContainText('Upcoming cycle starts');
   await expect(page.getByTestId('availability-cycle')).toContainText('2026');
   await expect(page.getByTestId('availability-cutoff')).toContainText('Europe/London');
-  await expect(toggle).not.toBeChecked();
-  await expect(toggle).toBeEnabled();
-  await expect(page.locator('#availLabel')).toHaveText('OFF (skipped)');
+  await expect(availableButton).toBeEnabled();
+  await expect(skipButton).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#availLabel')).toHaveText('SAVED • SKIPPING');
 
   // The old cached account boolean remains untouched and does not drive the card.
   await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('randori-me') || '{}').is_available)).toBe(true);
 
-  await toggle.check();
+  await availableButton.click();
   await expect.poll(() => posts.length).toBe(1);
   expect(posts[0]).toEqual({
     cycle_key: 'a'.repeat(64),
@@ -104,8 +133,157 @@ test('availability is loaded from its cycle API and posts the exact versioned bo
     is_available: true,
   });
   expect(typeof posts[0].is_available).toBe('boolean');
-  await expect(toggle).toBeChecked();
-  await expect(page.locator('#availLabel')).toHaveText('ON (included)');
+  await expect(availableButton).toHaveAttribute('aria-pressed', 'true');
+  await expect(skipButton).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.locator('#availLabel')).toHaveText('SAVED • AVAILABLE');
+});
+
+for (const scenario of [
+  { source: 'cycle_default' as const, isAvailable: true, action: '#availAvailable', copy: 'includes you by default', badge: 'Confirm default' },
+  { source: 'legacy_bridge' as const, isAvailable: true, action: '#availAvailable', copy: 'previous account setting', badge: 'Confirm inherited choice' },
+  { source: 'legacy_bridge' as const, isAvailable: false, action: '#availSkip', copy: 'previous account setting', badge: 'Confirm inherited choice' },
+]) {
+  test(`one explicit action persists an inherited ${scenario.source} ${scenario.isAvailable} value`, async ({ page }) => {
+    const posts: Record<string, unknown>[] = [];
+    let serverAvailability = availability({
+      source: scenario.source,
+      isAvailable: scenario.isAvailable,
+      version: 0,
+    });
+    await mockApi(page, {
+      '/api/auth/me': { ok: true, user },
+      '/api/circle': circle(),
+      '/api/settings/availability': (request: Request) => {
+        if (request.method() === 'POST') {
+          posts.push(request.postDataJSON());
+          serverAvailability = availability({
+            source: 'user',
+            isAvailable: scenario.isAvailable,
+            version: 1,
+          });
+        }
+        return { ok: true, availability: serverAvailability };
+      },
+    });
+    await resetClientState(page, true);
+    await page.goto('/?view=pair', { waitUntil: 'domcontentloaded' });
+
+    await expect(page.locator('#availLabel')).toContainText('NOT SAVED');
+    await expect(page.locator('#availDecision')).toContainText(scenario.copy);
+    await expect(page.locator('#dashAvailBadge')).toContainText(scenario.badge);
+    await expect(page.locator('#availAvailable')).toHaveAttribute('aria-pressed', 'false');
+    await expect(page.locator('#availSkip')).toHaveAttribute('aria-pressed', 'false');
+
+    await page.locator(scenario.action).click();
+    await expect.poll(() => posts.length).toBe(1);
+    expect(posts[0]).toEqual({
+      cycle_key: 'a'.repeat(64),
+      expected_version: 0,
+      is_available: scenario.isAvailable,
+    });
+    await expect(page.locator(scenario.action)).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('#availLabel')).toContainText('SAVED');
+    await expect(page.locator('#availDecision')).toContainText('Saved choice');
+  });
+}
+
+test('a failed same-value confirmation keeps inherited truth and restores both actions', async ({ page }) => {
+  await mockApi(page, {
+    '/api/auth/me': { ok: true, user },
+    '/api/circle': circle(),
+    '/api/settings/availability': (request: Request) => request.method() === 'POST'
+      ? { _status: 503, ok: false, error: 'availability unavailable' }
+      : { ok: true, availability: availability({ source: 'cycle_default', isAvailable: true, version: 0 }) },
+  });
+  await resetClientState(page, true);
+  await page.goto('/?view=pair', { waitUntil: 'domcontentloaded' });
+
+  await page.locator('#availAvailable').click();
+  await expect(page.locator('#availExplan')).toContainText('Availability was not saved');
+  await expect(page.locator('#availLabel')).toHaveText('NOT SAVED • INCLUDED');
+  await expect(page.locator('#availAvailable')).toBeEnabled();
+  await expect(page.locator('#availSkip')).toBeEnabled();
+  await expect(page.locator('#availAvailable')).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.locator('#availSkip')).toHaveAttribute('aria-pressed', 'false');
+});
+
+test('a semantically mismatched 200 write response cannot replace or complete the inherited decision', async ({ page }) => {
+  let posts = 0;
+  await mockApi(page, {
+    '/api/auth/me': { ok: true, user },
+    '/api/circle': circle(),
+    '/api/settings/availability': (request: Request) => {
+      if (request.method() === 'POST') {
+        posts += 1;
+        return {
+          ok: true,
+          availability: availability({ source: 'user', isAvailable: false, version: 1 }),
+        };
+      }
+      return {
+        ok: true,
+        availability: availability({ source: 'cycle_default', isAvailable: true, version: 0 }),
+      };
+    },
+  });
+  await resetClientState(page, true);
+  await page.goto('/?view=pair', { waitUntil: 'domcontentloaded' });
+
+  await page.locator('#availAvailable').click();
+  await expect.poll(() => posts).toBe(1);
+  await expect(page.locator('#availExplan')).toContainText('Availability was not saved');
+  await expect(page.locator('#availLabel')).toHaveText('NOT SAVED • INCLUDED');
+  await expect(page.locator('#availAvailable')).toHaveAttribute('aria-pressed', 'false');
+  expect(await page.evaluate(() => window._randori_availability?.current?.source)).toBe('cycle_default');
+});
+
+test('dashboard navigation refreshes and focuses the active-cycle decision without overriding later navigation', async ({ page }) => {
+  let holdRefresh = false;
+  let markRefreshStarted!: () => void;
+  let releaseRefresh!: () => void;
+  const refreshStarted = new Promise<void>(resolve => { markRefreshStarted = resolve; });
+  const refreshGate = new Promise<void>(resolve => { releaseRefresh = resolve; });
+  let reads = 0;
+  await mockApi(page, {
+    '/api/auth/me': { ok: true, user },
+    '/api/profile': { ok: true, user },
+    '/api/circle': circle(),
+    '/api/settings/availability': async (request: Request) => {
+      if (request.method() === 'GET') {
+        reads += 1;
+        if (holdRefresh) {
+          holdRefresh = false;
+          markRefreshStarted();
+          await refreshGate;
+        }
+      }
+      return { ok: true, availability: availability({ source: 'cycle_default', isAvailable: true, version: 0 }) };
+    },
+  });
+  try {
+    await resetClientState(page, true);
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('#view-dashboard')).toBeVisible();
+    await expect(page.locator('#dashAvailBadge')).toContainText('Confirm default');
+
+    await page.locator('#dashAvailBadge').click();
+    await expect(page.locator('#view-pair')).toBeVisible();
+    await expect(page.locator('#availAvailable')).toBeFocused();
+    expect(reads).toBeGreaterThan(0);
+
+    await page.evaluate(() => window._randori_journey?.showDashboard?.());
+    await expect(page.locator('#view-dashboard')).toBeVisible();
+    holdRefresh = true;
+    await page.locator('#dashAvailBadge').click();
+    await refreshStarted;
+    await page.locator('[data-tab="history"]').click();
+    await page.locator('[data-tab="pair"]').click();
+    releaseRefresh();
+    await expect(page.locator('#view-pair')).toBeVisible();
+    await expect(page.locator('#availAvailable')).not.toBeFocused();
+  } finally {
+    releaseRefresh?.();
+  }
 });
 
 test('an in-flight availability save cannot cross an authentication identity change', async ({ page }) => {
@@ -137,9 +315,9 @@ test('an in-flight availability save cannot cross an authentication identity cha
   });
   await resetClientState(page, true);
   await page.goto('/?view=pair', { waitUntil: 'domcontentloaded' });
-  await expect(page.locator('#availToggle')).toBeChecked();
+  await expect(page.locator('#availAvailable')).toHaveAttribute('aria-pressed', 'true');
 
-  await page.locator('#availToggle').uncheck();
+  await page.locator('#availSkip').click();
   await postStarted;
   currentUser = null;
   await page.evaluate(() => (window as typeof window & { _randori_auth?: { refreshMe(): Promise<void> } })._randori_auth?.refreshMe());
@@ -168,11 +346,11 @@ test('availability revalidates on resume and automatically advances after its cu
   });
   await resetClientState(page, true);
   await page.goto('/?view=pair', { waitUntil: 'domcontentloaded' });
-  await expect(page.locator('#availToggle')).toBeChecked();
+  await expect(page.locator('#availAvailable')).toHaveAttribute('aria-pressed', 'true');
 
   serverAvailability = availability({ isAvailable: false, version: 2 });
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
-  await expect(page.locator('#availToggle')).not.toBeChecked();
+  await expect(page.locator('#availSkip')).toHaveAttribute('aria-pressed', 'true');
 
   const cutoff = Date.now() + 3000;
   serverAvailability = availability({
@@ -190,7 +368,8 @@ test('availability revalidates on resume and automatically advances after its cu
 
   serverAvailability = availability({ cycleId: '2026-W40', isAvailable: true, version: 0 });
   await expect(page.locator('#availTitle')).toHaveText('Availability for 2026-W40', { timeout: 8000 });
-  await expect(page.locator('#availToggle')).toBeChecked();
+  await expect(page.locator('#availAvailable')).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.locator('#availSkip')).toHaveAttribute('aria-pressed', 'false');
 });
 
 test('invalid availability envelopes fail closed and expose a working retry', async ({ page }) => {
@@ -213,6 +392,7 @@ test('invalid availability envelopes fail closed and expose a working retry', as
   await page.goto('/?view=pair', { waitUntil: 'domcontentloaded' });
 
   await expect(page.locator('#availLabel')).toHaveText('UNAVAILABLE');
+  await expect(page.locator('#dashAvailBadge')).toHaveAttribute('aria-label', 'Review availability. Review weekly availability.');
   await expect(page.locator('#availRetry')).toBeVisible();
   // Once identity has resolved, make one explicit refresh newest and await the
   // availability request it starts (or coalesces with). Successful hydration
@@ -266,8 +446,9 @@ test('an availability change queued during same-account revalidation uses the re
   await resetClientState(page, true);
   await page.goto('/?view=pair', { waitUntil: 'domcontentloaded' });
 
-  const toggle = page.locator('#availToggle');
-  await expect(toggle).toBeChecked();
+  const availableButton = page.locator('#availAvailable');
+  const skipButton = page.locator('#availSkip');
+  await expect(availableButton).toHaveAttribute('aria-pressed', 'true');
   // Wait for authoritative hydration, which suppresses the remaining
   // bootstrap retries, before controlling the overlapping revalidation.
   await expect.poll(() => authMeCalls).toBeGreaterThanOrEqual(1);
@@ -279,7 +460,7 @@ test('an availability change queued during same-account revalidation uses the re
     await app._randori_auth?.refreshMe?.();
     await app._randori_availability?.refresh?.();
   });
-  await expect(toggle).toBeEnabled();
+  await expect(skipButton).toBeEnabled();
 
   holdNextGet = true;
   serverAvailability = availability({ isAvailable: true, version: 5 });
@@ -289,13 +470,13 @@ test('an availability change queued during same-account revalidation uses the re
     })._randori_availability?.refresh?.();
   });
   await getStarted;
-  await expect(toggle).toBeChecked();
-  await expect(toggle).toBeEnabled();
+  await expect(availableButton).toHaveAttribute('aria-pressed', 'true');
+  await expect(skipButton).toBeEnabled();
 
   // A validated control stays interactive during same-account revalidation;
   // the click is held visibly and serialized behind the in-flight GET.
-  await toggle.uncheck();
-  await expect(page.locator('#availLabel')).toHaveText('SAVING OFF…');
+  await skipButton.click();
+  await expect(page.locator('#availLabel')).toHaveText('SAVING SKIP…');
   releaseGet?.();
 
   await expect.poll(() => posts.length).toBe(1);
@@ -304,8 +485,8 @@ test('an availability change queued during same-account revalidation uses the re
     expected_version: 5,
     is_available: false,
   });
-  await expect(toggle).not.toBeChecked();
-  await expect(page.locator('#availLabel')).toHaveText('OFF (skipped)');
+  await expect(skipButton).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#availLabel')).toHaveText('SAVED • SKIPPING');
 });
 
 for (const scenario of [
@@ -346,8 +527,9 @@ for (const scenario of [
     await resetClientState(page, true);
     await page.goto('/?view=pair', { waitUntil: 'domcontentloaded' });
 
-    const toggle = page.locator('#availToggle');
-    await expect(toggle).toBeChecked();
+    const availableButton = page.locator('#availAvailable');
+    const skipButton = page.locator('#availSkip');
+    await expect(availableButton).toHaveAttribute('aria-pressed', 'true');
     // Authoritative hydration suppresses later bootstrap retries; overlap
     // behavior is covered explicitly above.
     await expect.poll(() => authMeCalls).toBeGreaterThanOrEqual(1);
@@ -359,15 +541,15 @@ for (const scenario of [
       await app._randori_auth?.refreshMe?.();
       await app._randori_availability?.refresh?.();
     });
-    await expect(toggle).toBeEnabled();
-    await toggle.uncheck();
+    await expect(skipButton).toBeEnabled();
+    await skipButton.click();
     await postStarted;
-    await expect(toggle).toBeDisabled();
-    await expect(page.locator('#availLabel')).toHaveText('SAVING OFF…');
+    await expect(skipButton).toBeDisabled();
+    await expect(page.locator('#availLabel')).toHaveText('SAVING SKIP…');
     releasePost?.();
 
     await expect(page.locator('#availTitle')).toHaveText(`Availability for ${scenario.cycleId}`);
-    await expect(toggle).not.toBeChecked();
+    await expect(skipButton).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('#availExplan')).toContainText(scenario.message);
     await page.evaluate(async () => {
       const api = (window as typeof window & {
@@ -376,10 +558,10 @@ for (const scenario of [
       await api?.refresh?.();
     });
     await expect(page.locator('#availExplan')).toContainText(scenario.message);
-    if (scenario.editable) await expect(toggle).toBeEnabled();
+    if (scenario.editable) await expect(skipButton).toBeEnabled();
     else {
-      await expect(toggle).toBeDisabled();
-      await expect(page.locator('#availLabel')).toHaveText('CLOSED');
+      await expect(skipButton).toBeDisabled();
+      await expect(page.locator('#availLabel')).toHaveText('CLOSED • SAVED');
     }
 
     serverAvailability = availability({
@@ -433,7 +615,7 @@ test('multi-circle availability is header-bound and rejects a mismatched respons
     await (window as typeof window&{_randori_availability?:{refresh?:()=>Promise<unknown>}})
       ._randori_availability?.refresh?.();
   });
-  await expect(page.locator('#availToggle')).toBeChecked();
+  await expect(page.locator('#availAvailable')).toHaveAttribute('aria-pressed', 'true');
   await expect.poll(()=>page.evaluate(()=>(window as typeof window&{
     _randori_availability?:{contextKey?:string};
   })._randori_availability?.contextKey)).toBe('account:1:circle:circle-secondary:context:7');
@@ -561,7 +743,7 @@ test('a delayed circle A availability read cannot replace circle B browser state
   try{
     await resetClientState(page,true);
     await page.goto('/?view=pair',{waitUntil:'domcontentloaded'});
-    await expect(page.locator('#availToggle')).not.toBeChecked();
+    await expect(page.locator('#availSkip')).toHaveAttribute('aria-pressed', 'true');
     holdPrimary=true;
     await page.evaluate(()=>{
       const target=window as typeof window&{
@@ -580,14 +762,14 @@ test('a delayed circle A availability read cannot replace circle B browser state
       await (window as typeof window&{_randori_availability?:{refresh?:()=>Promise<unknown>}})
         ._randori_availability?.refresh?.();
     });
-    await expect(page.locator('#availToggle')).toBeChecked();
+    await expect(page.locator('#availAvailable')).toHaveAttribute('aria-pressed', 'true');
     releasePrimary();
     await page.evaluate(async()=>{
       const target=window as typeof window&{_randori_pendingAvailabilityRefresh?:Promise<unknown>};
       await target._randori_pendingAvailabilityRefresh;
       delete target._randori_pendingAvailabilityRefresh;
     });
-    await expect(page.locator('#availToggle')).toBeChecked();
+    await expect(page.locator('#availAvailable')).toHaveAttribute('aria-pressed', 'true');
     await expect.poll(()=>page.evaluate(()=>(window as typeof window&{
       _randori_availability?:{contextKey?:string};
     })._randori_availability?.contextKey)).toBe('account:1:circle:circle-secondary:context:2');
@@ -638,11 +820,12 @@ test('an availability conflict notice cannot cross an authentication identity ch
   await resetClientState(page, true);
   await page.goto('/?view=pair', { waitUntil: 'domcontentloaded' });
 
-  const toggle = page.locator('#availToggle');
-  await expect(toggle).not.toBeChecked();
-  await toggle.check();
+  const availableButton = page.locator('#availAvailable');
+  const skipButton = page.locator('#availSkip');
+  await expect(skipButton).toHaveAttribute('aria-pressed', 'true');
+  await availableButton.click();
   await postStarted;
-  await expect(page.locator('#availLabel')).toHaveText('SAVING ON…');
+  await expect(page.locator('#availLabel')).toHaveText('SAVING AVAILABLE…');
   releasePost?.();
   await expect(page.locator('#availExplan')).toContainText('pairing cycle changed');
 
@@ -657,7 +840,7 @@ test('an availability conflict notice cannot cross an authentication identity ch
   await expect(page.locator('#meLabel')).toContainText('Circle Member');
   await expect(page.locator('#availExplan')).toBeHidden();
   releaseUserBGet?.();
-  await expect(toggle).not.toBeChecked();
+  await expect(skipButton).toHaveAttribute('aria-pressed', 'true');
 });
 
 test('profile saves no availability field and links to the cycle-specific control', async ({ page }) => {
@@ -692,8 +875,8 @@ test('profile saves no availability field and links to the cycle-specific contro
   await page.locator('#psAvailabilityLink').click();
   await expect(page.locator('#view-pair')).toBeVisible();
   await expect(page.getByTestId('availability-card')).toBeVisible();
-  await expect(page.getByTestId('availability-card')).toBeFocused();
-  await expect(page.locator('#availToggle')).toHaveAttribute('aria-labelledby', 'availTitle availLabel');
+  await expect(page.locator('#availAvailable')).toBeFocused();
+  await expect(page.locator('#availActions')).toHaveAttribute('aria-labelledby', 'availTitle');
   await expect(page.locator('#availTitle')).toHaveText('Availability for 2026-W39');
 });
 
