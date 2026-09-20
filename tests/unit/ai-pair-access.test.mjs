@@ -75,6 +75,16 @@ async function createDatabase(){
       month TEXT PRIMARY KEY,user_id INTEGER,calls INTEGER DEFAULT 0,
       tokens_in INTEGER DEFAULT 0,updated_at TEXT
     )`,
+    `CREATE TABLE ai_account_monthly_usage (
+      month TEXT NOT NULL,user_id INTEGER NOT NULL,calls INTEGER NOT NULL DEFAULT 0,
+      tokens_in INTEGER NOT NULL DEFAULT 0,updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY(month,user_id)
+    )`,
+    `CREATE TABLE ai_account_monthly_reservations (
+      reservation_id TEXT PRIMARY KEY,month TEXT NOT NULL,user_id INTEGER NOT NULL,
+      tokens_in INTEGER NOT NULL DEFAULT 0,session_id INTEGER UNIQUE,refunded_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`,
     `CREATE TABLE ai_consents (
       user_id INTEGER PRIMARY KEY,consented_at TEXT NOT NULL DEFAULT (datetime('now')),
       revoked_at TEXT,policy_version TEXT NOT NULL
@@ -144,6 +154,32 @@ afterEach(()=>{
   globalThis.fetch=realFetch;
 });
 
+test('AI method, authentication, consent, and input checks precede readiness',async()=>{
+  process.env.AI_ENABLED='true';
+  let databaseCalls=0;
+  activeDb={
+    async execute(){ databaseCalls+=1; throw new Error('readiness must not run'); },
+    async batch(){ databaseCalls+=1; throw new Error('readiness must not run'); },
+  };
+  const cases=[
+    {request:{method:'GET',url:'/api/ai/analyze',query:{endpoint:'analyze'},headers:{'x-test-user':'2'}},status:405},
+    {request:{method:'POST',url:'/api/ai/analyze',query:{endpoint:'analyze'},body:{ai_consent:true,transcript:'valid'}},status:401},
+    {request:{method:'POST',url:'/api/ai/analyze',query:{endpoint:'analyze'},headers:{'x-test-user':'2'},body:{transcript:'valid'}},status:403},
+    {request:{method:'POST',url:'/api/ai/analyze',query:{endpoint:'analyze'},headers:{'x-test-user':'2'},body:{ai_consent:true}},status:400},
+    {request:{method:'POST',url:'/api/ai/analyze',query:{endpoint:'analyze'},headers:{'x-test-user':'2'},body:{ai_consent:true,transcript:'valid',room_id:'not-a-room'}},status:403},
+    {request:{method:'POST',url:'/api/ai/feedback',query:{endpoint:'feedback'},headers:{'x-test-user':'2'}},status:405},
+    {request:{method:'GET',url:'/api/ai/feedback',query:{endpoint:'feedback'}},status:401},
+    {request:{method:'POST',url:'/api/ai/history',query:{endpoint:'history'},headers:{'x-test-user':'2'}},status:405},
+    {request:{method:'GET',url:'/api/ai/history',query:{endpoint:'history'}},status:401},
+  ];
+
+  for(const item of cases){
+    const response=await invoke(item.request);
+    assert.equal(response.status,item.status,JSON.stringify(item.request));
+  }
+  assert.equal(databaseCalls,0);
+});
+
 test('AI analysis rejects a colliding legacy identity and accepts the same id only with auth provenance',async()=>{
   process.env.AI_ENABLED='true';
   const client=await createDatabase();
@@ -167,6 +203,123 @@ test('AI analysis rejects a colliding legacy identity and accepts the same id on
   assert.equal(authenticated.body.session_id,1);
   assert.equal(authenticated.body.feedback_id,1);
   assert.deepEqual(await counts(client),[1,1,1,1]);
+});
+
+test('AI analysis fails closed before consent, quota, session, feedback, or provider work for every missing contract',async()=>{
+  process.env.AI_ENABLED='true';
+  process.env.GROQ_API_KEY='test-groq-key';
+  const contracts=[
+    'auth_accounts','pairing_weeks','pairing_groups','pairing_participants','ai_sessions',
+    'ai_feedback','ai_usage','ai_account_monthly_usage',
+    'ai_account_monthly_reservations','ai_consents',
+  ];
+
+  for(const table of contracts){
+    const client=await createDatabase();
+    await client.execute(`UPDATE pairing_participants SET source='auth' WHERE week_id=10 AND user_id=2`);
+    const statements=[];
+    activeDb=wrapDatabase(client,{
+      beforeExecute:async statement=>{
+        const sql=typeof statement==='string'?statement:String(statement?.sql||'');
+        statements.push(sql);
+        if(new RegExp(`FROM\\s+${table}\\s+LIMIT\\s+0`,'iu').test(sql)){
+          throw new Error(`missing ${table}`);
+        }
+      },
+    });
+    let providerCalls=0;
+    globalThis.fetch=async()=>{ providerCalls+=1; throw new Error('provider must not run'); };
+
+    const response=await analysisRequest('week_10_pair_21');
+    assert.equal(response.status,503,table);
+    assert.deepEqual(response.body,{error:'AI service temporarily unavailable'},table);
+    assert.deepEqual(await counts(client),[0,0,0,0],table);
+    assert.equal(providerCalls,0,table);
+    assert.equal(statements.some(sql=>/^\s*(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(sql)),false,table);
+    client.close();
+    activeDb=null;
+  }
+});
+
+test('AI analysis rejects missing conflict targets before any protected work',async()=>{
+  process.env.AI_ENABLED='true';
+  process.env.GROQ_API_KEY='test-groq-key';
+  for(const table of ['ai_usage','ai_account_monthly_usage','ai_consents']){
+    const client=await createDatabase();
+    await client.execute(`UPDATE pairing_participants SET source='auth' WHERE week_id=10 AND user_id=2`);
+    const statements=[];
+    activeDb={
+      async execute(statement){
+        const sql=typeof statement==='string'?statement:String(statement?.sql||'');
+        statements.push(sql);
+        if(sql.includes(`pragma_table_info('${table}')`)) return {rows:[],rowsAffected:0};
+        return client.execute(statement);
+      },
+      async batch(statementsToRun,mode){
+        statements.push(...statementsToRun.map(statement=>typeof statement==='string'?statement:String(statement?.sql||'')));
+        return client.batch(statementsToRun,mode);
+      },
+      close:()=>client.close(),
+    };
+    let providerCalls=0;
+    globalThis.fetch=async()=>{ providerCalls+=1; throw new Error('provider must not run'); };
+
+    const response=await analysisRequest('week_10_pair_21');
+    assert.equal(response.status,503,table);
+    assert.deepEqual(response.body,{error:'AI service temporarily unavailable'},table);
+    assert.deepEqual(await counts(client),[0,0,0,0],table);
+    assert.equal(providerCalls,0,table);
+    assert.equal(statements.some(sql=>/^\s*(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(sql)),false,table);
+    client.close();
+    activeDb=null;
+  }
+});
+
+test('AI feedback and history fail closed on stale route contracts without writes',async()=>{
+  for(const request of [
+    {url:'/api/ai/feedback?id=1',query:{endpoint:'feedback',id:'1'},missing:'ai_feedback'},
+    {url:'/api/ai/history',query:{endpoint:'history'},missing:'ai_usage'},
+  ]){
+    const client=await createDatabase();
+    const statements=[];
+    activeDb=wrapDatabase(client,{
+      beforeExecute:async statement=>{
+        const sql=typeof statement==='string'?statement:String(statement?.sql||'');
+        statements.push(sql);
+        if(new RegExp(`FROM\\s+${request.missing}\\s+LIMIT\\s+0`,'iu').test(sql)){
+          throw new Error(`stale ${request.missing}`);
+        }
+      },
+    });
+
+    const response=await invoke({...request,headers:{'x-test-user':'2'}});
+    assert.equal(response.status,503,request.missing);
+    assert.deepEqual(response.body,{error:'AI service temporarily unavailable'},request.missing);
+    assert.deepEqual(await counts(client),[0,0,0,0],request.missing);
+    assert.equal(statements.some(sql=>/^\s*(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(sql)),false,request.missing);
+    client.close();
+    activeDb=null;
+  }
+});
+
+test('AI logging readiness failure is read-only and cannot hide an analyze result',async()=>{
+  process.env.AI_ENABLED='true';
+  const client=await createDatabase();
+  await client.execute(`UPDATE pairing_participants SET source='auth' WHERE week_id=10 AND user_id=2`);
+  const statements=[];
+  activeDb=wrapDatabase(client,{
+    beforeExecute:async statement=>{
+      const sql=typeof statement==='string'?statement:String(statement?.sql||'');
+      statements.push(sql);
+      if(/FROM\s+app_logs\s+LIMIT\s+0/iu.test(sql)) throw new Error('diagnostic logging unavailable');
+    },
+  });
+
+  const response=await analysisRequest('week_10_pair_21');
+  assert.equal(response.status,200,JSON.stringify(response.body));
+  assert.deepEqual(await counts(client),[1,1,1,1]);
+  assert.equal(statements.some(sql=>sql.includes('INSERT INTO app_logs')),false);
+  assert.equal(statements.some(sql=>/^\s*(?:CREATE|ALTER|DROP)\b/iu.test(sql)),false);
 });
 
 test('account quota survives room deletion and same-id legacy recreation without importing the legacy ledger',async()=>{

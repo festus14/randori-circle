@@ -128,6 +128,11 @@ function createMockDb(){
         return rows([{now_seconds:Math.floor(Date.now()/1000)}]);
       }
       if(sql.includes('LEFT JOIN auth_provider_email_state')) return rows([{email_hash:null}]);
+      if(sql.includes("pragma_table_info('ai_usage')")) return rows([{name:'date',pk:1}]);
+      if(sql.includes("pragma_table_info('ai_account_monthly_usage')")){
+        return rows([{name:'month',pk:1},{name:'user_id',pk:2}]);
+      }
+      if(sql.includes("pragma_table_info('ai_consents')")) return rows([{name:'user_id',pk:1}]);
       const result = await executeHandler(sql, statement?.args || []);
       if(!(result?.rows?.length)&&sql.includes('INSERT INTO auth_provider_identities')&&sql.includes('RETURNING user_id')){
         return rows([{user_id:Number(statement?.args?.[2])}]);
@@ -2519,7 +2524,7 @@ test('AI consent path stores a template analysis and exposes owned feedback hist
       model_used: 'mock', created_by: 2, room_id: 'room', pair_label: 'Pair', confidence: 0.8,
     }]);
     if (sql.includes('FROM ai_feedback af JOIN ai_sessions ase') && sql.includes('ase.created_by=')) return rows([{ id: 71, session_id: 70 }]);
-    if (sql.includes('SELECT * FROM ai_usage')) return rows([{ calls: 3 }]);
+    if (sql.includes('SELECT date,calls,tokens_in,tokens_out,updated_at FROM ai_usage')) return rows([{ calls: 3 }]);
     return rows();
   };
   const headers = { 'x-test-auth': 'user' };
@@ -2550,6 +2555,7 @@ test('AI consent path stores a template analysis and exposes owned feedback hist
   });
   assert.equal(history.status, 200);
   assert.equal(history.body.feedbacks.length, 1);
+  assert.equal(getClientCalls,3,'analyze logging must reuse the request database client');
 });
 
 test('AI analysis requires trusted room membership and every human participant consent', async () => {
@@ -2677,6 +2683,35 @@ test('AI rejects malformed provider feedback with the generic provider error', a
         position INTEGER NOT NULL,
         source TEXT NOT NULL,
         PRIMARY KEY (week_id,user_id)
+      )`,
+      `CREATE TABLE ai_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT,pair_label TEXT,transcript TEXT,
+        code_snapshots TEXT,interviewer_questions TEXT,started_at TEXT,ended_at TEXT,
+        duration_sec INTEGER,cost_cents INTEGER DEFAULT 0,created_at TEXT DEFAULT (datetime('now')),
+        created_by INTEGER
+      )`,
+      `CREATE TABLE ai_feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,session_id INTEGER NOT NULL,role TEXT,
+        feedback_json TEXT NOT NULL,evidence TEXT,model_used TEXT,reason_for_pick TEXT,
+        estimated_cost_cents INTEGER,confidence REAL,created_at TEXT DEFAULT (datetime('now'))
+      )`,
+      `CREATE TABLE ai_usage (
+        date TEXT PRIMARY KEY,calls INTEGER DEFAULT 0,tokens_in INTEGER DEFAULT 0,
+        tokens_out INTEGER DEFAULT 0,updated_at TEXT
+      )`,
+      `CREATE TABLE ai_account_monthly_usage (
+        month TEXT NOT NULL,user_id INTEGER NOT NULL,calls INTEGER NOT NULL DEFAULT 0,
+        tokens_in INTEGER NOT NULL DEFAULT 0,updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY(month,user_id)
+      )`,
+      `CREATE TABLE ai_account_monthly_reservations (
+        reservation_id TEXT PRIMARY KEY,month TEXT NOT NULL,user_id INTEGER NOT NULL,
+        tokens_in INTEGER NOT NULL DEFAULT 0,session_id INTEGER UNIQUE,refunded_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`,
+      `CREATE TABLE ai_consents (
+        user_id INTEGER PRIMARY KEY,consented_at TEXT NOT NULL DEFAULT (datetime('now')),
+        revoked_at TEXT,policy_version TEXT NOT NULL
       )`,
       `INSERT INTO auth_accounts (id,email,is_demo) VALUES (2,'user@example.test',0)`,
       `INSERT INTO pairing_weeks (id,week_label) VALUES (10,'2026-W38')`,

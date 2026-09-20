@@ -190,7 +190,7 @@ See [Protected Turso production migration](TURSO_PRODUCTION_MIGRATION.md) for en
 
 ## Runtime DDL debt
 
-The remaining AI and operations request paths still contain 24 best-effort `CREATE` and `ALTER` statements. `npm run check:runtime-ddl` fingerprints the exact normalized statement set and occurrence counts per API module. CI fails when a statement is added, changed, assembled from string fragments, or removed without an intentional allowlist update. Authentication, data, membership initialization, and notification-preference requests contain no runtime DDL. The notification-preference boundary is documented in [Notification-preference DDL retirement](NOTIFICATION_PREFERENCES_RUNTIME_DDL_RETIREMENT.md).
+The remaining operations request paths contain 16 best-effort `CREATE` and `ALTER` statements. `npm run check:runtime-ddl` fingerprints the exact normalized statement set and occurrence counts per API module. CI fails when a statement is added, changed, assembled from string fragments, or removed without an intentional allowlist update. Authentication, data, membership initialization, notification-preference, and AI requests contain no runtime DDL. The newest boundaries are documented in [Notification-preference DDL retirement](NOTIFICATION_PREFERENCES_RUNTIME_DDL_RETIREMENT.md) and [AI DDL retirement](AI_RUNTIME_DDL_RETIREMENT.md).
 
 This is a freeze, not an endorsement. Existing statements remain temporarily for compatibility. New schema work belongs in appended, checksummed executable migrations; the allowlist should shrink as request-path DDL is removed. `/api/init` requires an exact current ledger and performs only the transaction described in [Admin data initialization](ADMIN_DATA_INITIALIZATION.md).
 

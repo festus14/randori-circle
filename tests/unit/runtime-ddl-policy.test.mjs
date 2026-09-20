@@ -9,10 +9,27 @@ test('runtime DDL debt matches its deterministic reviewed allowlist',()=>{
   const result=checkRuntimeDdl('api');
   assert.equal(result.ok,true);
   assert.equal(result.snapshots.length,RUNTIME_DDL_ALLOWLIST.length);
-  assert.equal(result.snapshots.reduce((total,item)=>total+item.statementCount,0),24);
+  assert.equal(result.snapshots.reduce((total,item)=>total+item.statementCount,0),16);
   assert.equal(result.snapshots.some(item=>item.file==='api/auth.js'),false);
   assert.equal(result.snapshots.some(item=>item.file==='api/data.js'),false);
+  assert.equal(result.snapshots.some(item=>item.file==='api/ai.js'),false);
   assert.equal(result.snapshots.some(item=>item.file==='api/_circle-membership.js'),false);
+});
+
+test('AI requests and readiness contain no runtime DDL',()=>{
+  const aiSource=readFileSync(new URL('../../api/ai.js',import.meta.url),'utf8');
+  const readinessSource=readFileSync(new URL('../../api/_ai-readiness.js',import.meta.url),'utf8');
+  const ddlPattern=/\b(?:CREATE\s+(?:(?:UNIQUE|TEMP(?:ORARY)?|VIRTUAL|OR\s+REPLACE)\s+)*(?:TABLE|INDEX|VIEW|TRIGGER)|ALTER\s+TABLE|DROP\s+(?:TABLE|INDEX|VIEW|TRIGGER))\b/iu;
+  assert.deepEqual(stringLiterals(aiSource).filter(({value})=>ddlPattern.test(value)),[],
+    'AI request paths must not regain schema mutation');
+  assert.deepEqual(stringLiterals(readinessSource).filter(({value})=>ddlPattern.test(value)),[],
+    'AI readiness must remain read-only');
+  assert.equal([...aiSource.matchAll(/INSERT INTO ai_sessions\s*\(/giu)].length,1,
+    'AI sessions must have one current-schema insert shape');
+  assert.match(aiSource,/INSERT INTO ai_sessions\s*\([\s\S]*?started_at,ended_at,duration_sec,created_by/iu);
+  assert.equal([...aiSource.matchAll(/INSERT INTO ai_feedback\s*\(/giu)].length,1,
+    'AI feedback must have one current-schema insert shape');
+  assert.match(aiSource,/INSERT INTO ai_feedback\s*\([\s\S]*?evidence,model_used,reason_for_pick,\s*estimated_cost_cents,confidence/iu);
 });
 
 test('notification-preference requests and readiness contain no runtime DDL',()=>{
