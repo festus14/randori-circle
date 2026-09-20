@@ -1628,6 +1628,12 @@ stops every retained local media track, and detaches both video elements without
 an unauthorized signaling request. A video-session epoch fences delayed poll
 and permission results from rebuilding state after cleanup. An older request
 epoch cannot clear a newer same-account login.
+As an ID-38 follow-up, the public catalogue may remember the selected exercise,
+but rendering a question no longer implies authenticated code-tab navigation.
+Only a signed-in path that actually makes the code view visible, or the existing
+server-authorized room transition, persists code-tab restoration. A catalogue
+response that completes after authoritative sign-out therefore cannot recreate
+private navigation state or move the browser away from the signed-out view.
 Owner/target loss, context conflict, ambiguous commit,
 and transport loss clear private state before an authoritative context reload,
 without presenting an uncertain archive as successful. There is no

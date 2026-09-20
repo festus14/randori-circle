@@ -1,6 +1,6 @@
 import { expect, Page, Request, test } from '@playwright/test';
 
-import { mockApi, resetClientState } from './helpers';
+import { mockApi, originalQuestionFixture, resetClientState } from './helpers';
 
 const owner={
   id:1,email:'owner@example.test',name:'Circle Owner',display_name:'Circle Owner',
@@ -166,13 +166,17 @@ test('a known committed archive reloads even when fallback projection fails',asy
   await expect(page.getByTestId('circle-archive')).toBeHidden();
 });
 
-test('archive session loss immediately clears private state and returns to signed-out UI',async({page})=>{
+test('archive session loss stays signed out after delayed catalogue and media work',async({page})=>{
   let sessionLive=true;
   const videoSignals:string[]=[];
   let markVideoPollStarted!:()=>void;
   let releaseVideoPoll!:()=>void;
+  let markCatalogueStarted!:()=>void;
+  let releaseCatalogue!:()=>void;
   const videoPollStarted=new Promise<void>(resolve=>{ markVideoPollStarted=resolve; });
   const heldVideoPoll=new Promise<void>(resolve=>{ releaseVideoPoll=resolve; });
+  const catalogueStarted=new Promise<void>(resolve=>{ markCatalogueStarted=resolve; });
+  const heldCatalogue=new Promise<void>(resolve=>{ releaseCatalogue=resolve; });
   await mockApi(page,{
     '/api/auth/capabilities':{
       ok:true,capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,
@@ -193,6 +197,11 @@ test('archive session loss immediately clears private state and returns to signe
     '/api/invitations':{ok:true,invitations:[],count:0,circle_context_version:4},
     '/api/members':{ok:true,members:[{...owner,role:'owner',status:'active'}],count:1,
       has_more:false,next_cursor:null,scanned:1,circle_context_version:4},
+    '/api/questions':async()=>{
+      markCatalogueStarted();
+      await heldCatalogue;
+      return {ok:true,questions:[originalQuestionFixture],count:1};
+    },
     '/api/video/signal':async request=>{
       if(request.method()==='POST') videoSignals.push((request.postDataJSON() as {type:string}).type);
       if(request.method()==='GET'){
@@ -208,6 +217,10 @@ test('archive session loss immediately clears private state and returns to signe
   await page.goto('/?view=circle',{waitUntil:'domcontentloaded'});
   await page.locator('[data-tab="circle"]').click();
   await expect(page.getByTestId('circle-archive')).toBeVisible();
+  await page.locator('[data-tab="code"]').click();
+  await expect.poll(()=>page.evaluate(()=>localStorage.getItem('randori-last-tab'))).toBe('code');
+  await page.locator('[data-tab="circle"]').click();
+  await catalogueStarted;
   const mediaBeforeArchive=await page.evaluate(async()=>{
     const app=window as any;
     const track=(kind:'video'|'audio')=>({kind,enabled:true,readyState:'live',stopCount:0,stop(){
@@ -262,7 +275,6 @@ test('archive session loss immediately clears private state and returns to signe
     localStorage.setItem('randori-token','legacy-token');
     localStorage.setItem('randori-demo-active','1');
     localStorage.setItem('randori-last-room','week_1_pair_1');
-    localStorage.setItem('randori-last-tab','code');
     localStorage.setItem('randori-last-view','code');
     localStorage.setItem('randori-code','private draft');
     await app._randori_video.joinVideo();
@@ -284,6 +296,11 @@ test('archive session loss immediately clears private state and returns to signe
   await expect(page.locator('#view-landing')).toBeVisible();
   await expect(page.getByTestId('circle-lifecycle')).toBeHidden();
   await expect(page.getByTestId('circle-archive')).toBeHidden();
+  expect(await page.evaluate(()=>localStorage.getItem('randori-last-tab'))).toBeNull();
+  releaseCatalogue();
+  await expect(page.locator('#qCustomCount')).toHaveText('• 1 available');
+  await expect(page.locator('#view-landing')).toBeVisible();
+  await expect(page.locator('#view-code')).toBeHidden();
   const peersBeforeStalePoll=await page.evaluate(()=>(window as any).__archivePeers.length);
   const signalsBeforeStalePoll=videoSignals.length;
   expect(videoSignals).not.toContain('leave');
@@ -294,6 +311,7 @@ test('archive session loss immediately clears private state and returns to signe
     return {signedIn:app._randori_auth.signedIn,
       room:app._randori_authorized_room,
       refreshCalls:app.__archiveRefreshCalls,
+      rememberedQuestion:localStorage.getItem('randori-last-question'),
       media:{joined:app._randori_video.joined,hasStream:app._randori_video.stream!==null,
         hasPeer:app._randori_video.pc!==null,polling:app._randori_video.polling,
         pollsInFlight:app._randori_video.pollsInFlight,
@@ -308,7 +326,8 @@ test('archive session loss immediately clears private state and returns to signe
       retained:['randori-token','randori-me','randori-demo-active','randori-last-room',
         'randori-last-tab','randori-last-view','randori-code'].filter(key=>localStorage.getItem(key)!==null)};
   }))
-    .toEqual({signedIn:false,room:null,refreshCalls:0,retained:[],media:{
+    .toEqual({signedIn:false,room:null,refreshCalls:0,
+      rememberedQuestion:originalQuestionFixture.slug,retained:[],media:{
       joined:false,hasStream:false,hasPeer:false,polling:false,pollsInFlight:0,initiatePending:false,
       roomSwitchPending:false,peerCount:peersBeforeStalePoll,openPeerCount:0,
       stopCounts:[1,1],readyStates:['ended','ended'],

@@ -57,6 +57,13 @@ context conflict, an ambiguous commit response, or transport loss also clears
 owner and workspace state before reloading the authoritative circle context;
 the ambiguous paths never claim that archive succeeded.
 
+The public catalogue can finish loading after that cleanup and may remember the
+selected public exercise. Rendering that exercise does not persist code-tab
+navigation. Code restoration is persisted only when a signed-in navigation
+actually makes the code view visible or an authorized room transition opens it,
+so a delayed catalogue response cannot recreate cleared private navigation or
+replace the signed-out landing view.
+
 One `circle.archived` audit uses the deterministic `circle-archived:<circle-id>`
 dedupe key. An identical retry by any active retained owner still requires a
 live session, recent auth, and an intact audit. This lets different owners'

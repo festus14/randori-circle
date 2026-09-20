@@ -6446,6 +6446,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       }
       document.querySelectorAll('.view').forEach(v=>v.style.display='none');
       document.getElementById('view-'+id).style.display='block';
+      // Persist code restoration only when an authenticated route actually
+      // makes the workspace visible. Background catalogue rendering is public
+      // and must not recreate navigation state after authoritative sign-out.
+      if(id==='code'&&window._randori_auth?.me){
+        try{ localStorage.setItem('randori-last-tab','code'); }catch{}
+      }
       if(id==='circle') renderPeople();
       if(id==='pair'){ renderPairs(); refreshAvailability().catch(()=>{}); }
       if(id==='board'){ setTimeout(()=>{ resizeCanvas(); renderBoard(); }, 60); }
@@ -7284,7 +7290,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
       const codeTab=document.querySelector('[data-tab="code"]'); if(codeTab) codeTab.classList.add('active');
       document.querySelectorAll('.view').forEach(v=>v.style.display='none');
-      const codeView=document.getElementById('view-code'); if(codeView) codeView.style.display='block';
+      const codeView=document.getElementById('view-code');
+      if(codeView){
+        codeView.style.display='block';
+        if(window._randori_auth?.me){
+          try{ localStorage.setItem('randori-last-tab','code'); }catch{}
+        }
+      }
       const solo=pg?.solo_practice===true||pg?.is_ai===true||pg?.is_ai_pair===true;
       if(typeof toast==='function') toast(solo?'Solo catalogue and code ready.':'Pair room ready • Code + Video + Board');
       // update video label + expose invite for button
@@ -9023,6 +9035,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     activeQuestionSlug=q.slug;
     activeQuestionVersion=positiveVersion(q.version);
     activeLanguage=document.getElementById('langSelect')?.value||activeLanguage;
+    // The selected public exercise is an independent preference; remembering
+    // it must not imply that the authenticated code workspace was visited.
+    try{ localStorage.setItem('randori-last-question',slug); }catch{}
     const titleEl=document.getElementById('qTitle'); if(titleEl) titleEl.textContent=q.title;
     const diffEl=document.getElementById('qDiff'); if(diffEl) {
       const diffColor=q.difficulty==='Easy'?'var(--ok)':q.difficulty==='Hard'?'var(--bad)':'var(--warn)';
@@ -9049,8 +9064,6 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(isSystem){
         html+=`<div style="margin-top:14px; padding:12px; border:1px dashed var(--accent); border-radius:10px; background:color-mix(in srgb, var(--accent) 10%, var(--card))"><b style="font-size:12.5px">System Design Drill</b><div class="small muted" style="margin-top:6px">Discuss requirements → estimate → high-level → deep-dive → trade-offs. Use <span class="kbd">Board</span> tab for architecture sketch, then walk through verbally. No code tests needed.</div><div class="row" style="margin-top:8px"><button class="pill" onclick="document.querySelector('[data-tab=board]').click()">Open Board</button><button class="pill" onclick="document.getElementById('aiTranscript').focus()">Add notes</button></div></div>`;
       }
-      // Store last view
-      try{ localStorage.setItem('randori-last-tab','code'); localStorage.setItem('randori-last-question', slug); }catch{}
       descEl.innerHTML=html;
     }
     const exEl=document.getElementById('qExamples'); if(exEl){
