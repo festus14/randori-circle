@@ -732,12 +732,16 @@ test('display-name search ignores stale responses and exposes screen-reader stat
 
 for(const deniedStatus of [401,403]){
   test(`a delayed same-actor ${deniedStatus} clears a newer successful roster`,async({page})=>{
+    let authChecks=0;
     let markDeniedRequestStarted!:()=>void;
     let releaseDeniedRequest!:()=>void;
     const deniedRequestStarted=new Promise<void>(resolve=>{ markDeniedRequestStarted=resolve; });
     const deniedRequestRelease=new Promise<void>(resolve=>{ releaseDeniedRequest=resolve; });
     await mockApi(page,{
-      '/api/auth/me':{ok:true,user:owner},
+      '/api/auth/me':()=>{
+        authChecks+=1;
+        return {ok:true,user:owner};
+      },
       '/api/profile':{ok:true,user:owner},
       '/api/circle':{
         ok:true,circle_meta:{id:10,public_id:'circle_e2e',name:'E2E Circle'},
@@ -757,8 +761,15 @@ for(const deniedStatus of [401,403]){
         return {ok:true,members:result,count:result.length,has_more:false,next_cursor:null,scanned:result.length};
       },
     });
+    await page.clock.install();
     await resetClientState(page,true);
     await page.goto('/',{waitUntil:'domcontentloaded'});
+    // Resolve the first bootstrap identity check, then hold the remaining
+    // scheduled retries until after the denial. Advancing the virtual clock
+    // later reproduces hosted run 35498175187 without depending on wall time.
+    await page.clock.fastForward(200);
+    await expect.poll(()=>authChecks).toBe(1);
+    await expect.poll(()=>page.evaluate(()=>(window as any)._randori_auth.me?.email)).toBe(owner.email);
     await expect(page.locator('#view-dashboard')).toBeVisible();
     await page.locator('[data-tab="circle"]').click();
     const input=page.getByTestId('circle-member-search');
@@ -779,6 +790,10 @@ for(const deniedStatus of [401,403]){
     await expect(page.locator('[data-testid="circle-member-row"]')).toHaveCount(0);
     await expect(page.getByTestId('circle-member-search-form')).toBeHidden();
     await expect(page.getByText('Newer Result',{exact:true})).toHaveCount(0);
+    await page.clock.fastForward(1_100);
+    expect(authChecks).toBe(1);
+    await expect(page.locator('[data-testid="circle-member-row"]')).toHaveCount(0);
+    await expect(page.getByTestId('circle-member-search-form')).toBeHidden();
   });
 }
 
@@ -831,6 +846,91 @@ test('a delayed denial from a different actor cannot clear the current owner ros
   await expect(page.getByText('Next Owner',{exact:true}).last()).toBeVisible();
   await expect(page.locator('[data-testid="circle-member-row"]')).toHaveCount(1);
   await expect(page.getByTestId('circle-member-search-form')).toBeVisible();
+});
+
+test('a delayed denial from a superseded circle context cannot clear the selected owner roster',async({page})=>{
+  let active:'circle-primary'|'circle-secondary'='circle-primary';
+  let contextVersion=1;
+  let markDeniedRequestStarted!:()=>void;
+  let releaseDeniedRequest!:()=>void;
+  const deniedRequestStarted=new Promise<void>(resolve=>{ markDeniedRequestStarted=resolve; });
+  const deniedRequestRelease=new Promise<void>(resolve=>{ releaseDeniedRequest=resolve; });
+  let markSwitchStarted!:()=>void;
+  let releaseSwitch!:()=>void;
+  const switchStarted=new Promise<void>(resolve=>{ markSwitchStarted=resolve; });
+  const switchRelease=new Promise<void>(resolve=>{ releaseSwitch=resolve; });
+  const circles=[
+    {id:10,public_id:'circle-primary',name:'Primary',role:'owner',is_primary:true},
+    {id:20,public_id:'circle-secondary',name:'Secondary',role:'owner',is_primary:false},
+  ];
+  await mockApi(page,{
+    '/api/auth/capabilities':{
+      ok:true,
+      capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,multiCircleControlPlane:true},
+      registrationMode:'private_beta',
+    },
+    '/api/auth/me':{ok:true,user:owner},
+    '/api/profile':{ok:true,user:owner},
+    '/api/circles':async request=>{
+      if(request.method()==='PUT'){
+        markSwitchStarted();
+        await switchRelease;
+        active='circle-secondary';
+        contextVersion=2;
+      }
+      return {ok:true,circles,active_circle:circles.find(circle=>circle.public_id===active),
+        context_version:contextVersion,selection_required:false};
+    },
+    '/api/circle':()=>({
+      ok:true,circle_meta:{id:active==='circle-primary'?10:20,public_id:active,name:active},
+      membership:{role:'owner'},circle:[owner],count:1,circle_context_version:contextVersion,
+    }),
+    '/api/invitations':()=>({ok:true,invitations:[],count:0,circle_context_version:contextVersion}),
+    '/api/members':async request=>{
+      const q=new URL(request.url()).searchParams.get('q')||'';
+      if(q==='slow-denied'){
+        markDeniedRequestStarted();
+        await deniedRequestRelease;
+        return {_status:403,error:'opaque access failure'};
+      }
+      const display_name=active==='circle-primary'?'Primary Owner':'Secondary Owner';
+      return {ok:true,members:[{...owner,display_name,role:'owner',status:'active'}],count:1,
+        has_more:false,next_cursor:null,scanned:1,circle_context_version:contextVersion};
+    },
+  });
+  try{
+    await resetClientState(page,true,{},true);
+    await page.goto('/',{waitUntil:'domcontentloaded'});
+    await expect(page.locator('#view-dashboard')).toBeVisible();
+    await page.locator('[data-tab="circle"]').click();
+    await expect(page.getByText('Primary Owner',{exact:true})).toBeVisible();
+    const search=page.getByTestId('circle-member-search');
+    await search.fill('slow-denied');
+    await search.press('Enter');
+    await deniedRequestStarted;
+
+    const selecting=page.getByTestId('circle-context-select').selectOption('circle-secondary');
+    await switchStarted;
+    const deniedResponse=page.waitForResponse(response=>{
+      const url=new URL(response.url());
+      return url.pathname==='/api/members'&&url.searchParams.get('q')==='slow-denied';
+    });
+    releaseDeniedRequest();
+    const completedDenial=await deniedResponse;
+    await completedDenial.finished();
+    await expect(page.getByTestId('circle-lifecycle')).toBeHidden();
+
+    const reloaded=page.waitForEvent('domcontentloaded');
+    releaseSwitch();
+    await selecting;
+    await reloaded;
+    await page.locator('[data-tab="circle"]').click();
+    await expect(page.getByText('Secondary Owner',{exact:true})).toBeVisible();
+    await expect(page.getByTestId('circle-member-search-form')).toBeVisible();
+  }finally{
+    releaseDeniedRequest();
+    releaseSwitch();
+  }
 });
 
 test('a revoked owner loses retained roster controls on an opaque 403 response',async({page})=>{

@@ -3436,10 +3436,19 @@ async function refreshMe(){
   updateAuthUI();
     // immediate UI to hide sign-in before network returns
   try{ updateAuthUI(); }catch{}
-  document.addEventListener('DOMContentLoaded', ()=>{ setTimeout(refreshMe, 150); });
-  setTimeout(refreshMe, 400);
+  // Stop the cold-start retry ladder as soon as a success or authoritative
+  // 401 resolves identity. Besides avoiding duplicate reads, this prevents a
+  // queued bootstrap callback from reopening owner controls immediately after
+  // a later roster denial. Transient failures leave hydration unresolved, so
+  // the remaining retries still run.
+  function retryIdentityHydration(){
+    if(authIdentityHydrated) return;
+    refreshMe();
+  }
+  document.addEventListener('DOMContentLoaded', ()=>{ setTimeout(retryIdentityHydration, 150); });
+  setTimeout(retryIdentityHydration, 400);
   // extra retry for Vercel cold start
-  setTimeout(()=>{ try{ updateAuthUI(); refreshMe(); }catch{} }, 1200);
+  setTimeout(()=>{ try{ updateAuthUI(); retryIdentityHydration(); }catch{} }, 1200);
 
   // ---------- theme ----------
   const THEME_KEY='randori-theme';
