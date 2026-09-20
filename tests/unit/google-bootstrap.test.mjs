@@ -42,7 +42,7 @@ function invoke(){
       query:{endpoint:'callback',code:'code',state:'expected-state'},
       headers:{
         host:'randori.example.test','x-forwarded-proto':'https',
-        cookie:googleOAuthCookieHeader(),
+        cookie:googleOAuthCookieHeader({jwtSecret:JWT_SECRET}),
       },
       socket:{remoteAddress:'127.0.0.1'},
     };

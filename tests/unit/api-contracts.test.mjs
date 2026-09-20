@@ -8,6 +8,7 @@ import authHandler from '../../api/auth.js';
 import dataHandler from '../../api/data.js';
 import opsHandler from '../../api/ops.js';
 import videoHandler from '../../api/video.js';
+import {googleOAuthTransactionCookieName} from '../support/google-oidc.mjs';
 import {
   JWT_AUDIENCE,
   JWT_ISSUER,
@@ -366,6 +367,7 @@ test('Google OAuth start binds state to a secure, HTTP-only cookie', async () =>
   process.env.GOOGLE_CLIENT_ID = 'test-client';
   process.env.GOOGLE_CLIENT_SECRET = 'test-secret';
   process.env.APP_URL = 'https://preview.example.test';
+  process.env.JWT_SECRET='oauth-transaction-test-secret-at-least-32-bytes';
   const result = await invoke(authHandler, {
     method: 'GET',
     url: '/api/auth/google/start',
@@ -378,14 +380,37 @@ test('Google OAuth start binds state to a secure, HTTP-only cookie', async () =>
   const state = location.searchParams.get('state');
   const cookieHeader = result.headers['set-cookie'];
   const cookies = Array.isArray(cookieHeader) ? cookieHeader : [String(cookieHeader || '')];
-  const stateCookie = cookies.find(cookie => cookie.startsWith('randori_oauth_state=')) || '';
-  const verifierCookie = cookies.find(cookie => cookie.startsWith('randori_oauth_verifier=')) || '';
   assert.ok(state, 'OAuth redirect must include state');
-  assert.match(stateCookie, new RegExp(`^randori_oauth_state=${state};`));
-  assert.ok(verifierCookie, 'OAuth start must set a PKCE verifier cookie');
-  for (const cookie of [stateCookie, verifierCookie]) {
-    assert.match(cookie, /HttpOnly/i);
-    assert.match(cookie, /Secure/i);
-    assert.match(cookie, /SameSite=Lax/i);
-  }
+  assert.equal(cookies.length,1,'OAuth secrets must share one state-scoped signed cookie');
+  const transactionCookie=cookies[0];
+  assert.match(transactionCookie,new RegExp(`^${googleOAuthTransactionCookieName(state)}=`));
+  assert.match(transactionCookie, /Path=\/api\/auth\/google\/callback/i);
+  assert.match(transactionCookie, /HttpOnly/i);
+  assert.match(transactionCookie, /Secure/i);
+  assert.match(transactionCookie, /SameSite=Lax/i);
+  assert.doesNotMatch(transactionCookie,new RegExp(`=${state};`));
+});
+
+test('OAuth transactions use only the active application signing key',async()=>{
+  process.env.NODE_ENV='production';
+  process.env.GOOGLE_CLIENT_ID='test-client';
+  process.env.GOOGLE_CLIENT_SECRET='test-secret';
+  process.env.APP_URL='https://preview.example.test';
+  process.env.JWT_SECRET='first-oauth-transaction-test-secret-at-least-32-bytes';
+  const started=await invoke(authHandler,{
+    method:'GET',url:'/api/auth/google/start?purpose=login',
+    query:{endpoint:'google-start',purpose:'login'},
+    headers:{host:'preview.example.test','x-forwarded-proto':'https'},
+  });
+  const state=new URL(started.headers.location).searchParams.get('state');
+  const cookie=String(started.headers['set-cookie']).split(';')[0];
+  process.env.JWT_SECRET='rotated-oauth-transaction-test-secret-at-least-32-bytes';
+  const callback=await invoke(authHandler,{
+    method:'GET',url:'/api/auth/google/callback',
+    query:{endpoint:'callback',state,error:'access_denied'},
+    headers:{host:'preview.example.test','x-forwarded-proto':'https',cookie},
+  });
+  assert.equal(callback.status,302);
+  assert.equal(callback.headers.location,'https://preview.example.test/?google_error=invalid_state');
+  assert.equal(callback.headers['set-cookie'],undefined);
 });

@@ -106,7 +106,13 @@ test.describe('unmocked local onboarding',()=>{
       expect(inviteUrl.pathname).toBe('/invite');
       expect(inviteUrl.hash).toMatch(/^#invite=[A-Za-z0-9_-]{43}$/);
 
+      const preparedResponse=member.waitForResponse(response=>
+        new URL(response.url()).pathname==='/api/invitations/prepare'
+          &&response.request().method()==='POST',
+      );
       await member.goto(inviteUrl.href,{waitUntil:'domcontentloaded'});
+      const preparedPayload=await (await preparedResponse).json();
+      expect(preparedPayload.binding).toMatch(/^[A-Za-z0-9_-]{43}$/);
       await expect(member).toHaveURL(/\/invite$/);
       await expect(member.getByTestId('invite-status')).toContainText('Invitation verified');
       await expect(member.getByTestId('invite-continue')).toHaveText('Create local account');
@@ -141,7 +147,17 @@ test.describe('unmocked local onboarding',()=>{
       await expect(member.locator('#dashWelcome')).toContainText('Invited Member');
       const memberCookies=await memberContext.cookies(runtime.url);
       expect(memberCookies.some(cookie=>cookie.name==='randori_session'&&cookie.httpOnly)).toBe(true);
-      expect(memberCookies.some(cookie=>cookie.name==='randori_invite_claim')).toBe(false);
+      const inertInviteClaim=memberCookies.find(cookie=>cookie.name==='randori_invite_claim');
+      expect(inertInviteClaim).toEqual(expect.objectContaining({httpOnly:true,path:'/api'}));
+
+      const reuseResponse=await memberContext.request.post(new URL('/api/auth/signup',runtime.url).href,{
+        headers:{origin:runtime.url},data:{
+          email:'second.member@example.test',password:'another correct horse battery',name:'Second Member',
+          invite_binding:preparedPayload.binding,
+        },
+      });
+      expect(reuseResponse.status()).toBe(403);
+      expect(await reuseResponse.json()).toEqual({error:'invitation unavailable or does not match this email'});
 
       const meResponse=await memberContext.request.get(new URL('/api/auth/me',runtime.url).href);
       expect(meResponse.status()).toBe(200);
