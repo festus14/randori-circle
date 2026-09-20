@@ -200,6 +200,276 @@ function recoveryBudgetPlan(bundleDurations, target) {
   return Number.isFinite(best[target]) ? best[target] : -1;
 }
 
+function mentorLevelWidths(parents) {
+  if (parents.length === 0) return [];
+  const depths = Array(parents.length).fill(0);
+  const widths = [1];
+  for (let node = 1; node < parents.length; node += 1) {
+    const depth = depths[parents[node]] + 1;
+    depths[node] = depth;
+    widths[depth] = (widths[depth] || 0) + 1;
+  }
+  return widths;
+}
+
+function thresholdPairCount(values, ceiling) {
+  let left = 0;
+  let right = values.length - 1;
+  let count = 0;
+  while (left < right) {
+    if (values[left] + values[right] <= ceiling) {
+      count += right - left;
+      left += 1;
+    } else {
+      right -= 1;
+    }
+  }
+  return count;
+}
+
+function commandPrefixCensus(commands, prefixes) {
+  const root = { count: 0, children: new Map() };
+  for (const command of commands) {
+    let node = root;
+    for (const character of command) {
+      if (!node.children.has(character)) {
+        node.children.set(character, { count: 0, children: new Map() });
+      }
+      node = node.children.get(character);
+      node.count += 1;
+    }
+  }
+  return prefixes.map(prefix => {
+    let node = root;
+    for (const character of prefix) {
+      node = node.children.get(character);
+      if (!node) return 0;
+    }
+    return node.count;
+  });
+}
+
+function releaseFeedMerge(feeds) {
+  const compare = (left, right) => (
+    left.event[0] - right.event[0]
+    || (left.event[1] < right.event[1] ? -1 : left.event[1] > right.event[1] ? 1 : 0)
+    || left.feedIndex - right.feedIndex
+    || left.eventIndex - right.eventIndex
+  );
+  const heap = [];
+  const push = item => {
+    heap.push(item);
+    let index = heap.length - 1;
+    while (index > 0) {
+      const parent = Math.floor((index - 1) / 2);
+      if (compare(heap[parent], heap[index]) <= 0) break;
+      [heap[parent], heap[index]] = [heap[index], heap[parent]];
+      index = parent;
+    }
+  };
+  const pop = () => {
+    const first = heap[0];
+    const last = heap.pop();
+    if (heap.length > 0) {
+      heap[0] = last;
+      let index = 0;
+      while (true) {
+        const left = index * 2 + 1;
+        const right = left + 1;
+        let smallest = index;
+        if (left < heap.length && compare(heap[left], heap[smallest]) < 0) smallest = left;
+        if (right < heap.length && compare(heap[right], heap[smallest]) < 0) smallest = right;
+        if (smallest === index) break;
+        [heap[index], heap[smallest]] = [heap[smallest], heap[index]];
+        index = smallest;
+      }
+    }
+    return first;
+  };
+  feeds.forEach((feed, feedIndex) => {
+    if (feed.length > 0) push({ feedIndex, eventIndex: 0, event: feed[0] });
+  });
+  const merged = [];
+  while (heap.length > 0) {
+    const current = pop();
+    merged.push(current.event[1]);
+    const eventIndex = current.eventIndex + 1;
+    if (eventIndex < feeds[current.feedIndex].length) {
+      push({
+        feedIndex: current.feedIndex,
+        eventIndex,
+        event: feeds[current.feedIndex][eventIndex],
+      });
+    }
+  }
+  return merged;
+}
+
+function compatibleReviewOrders(reviewers, blockedPairs) {
+  const indexByReviewer = new Map(reviewers.map((reviewer, index) => [reviewer, index]));
+  const blocked = Array.from({ length: reviewers.length }, () => new Set());
+  for (const [left, right] of blockedPairs) {
+    const leftIndex = indexByReviewer.get(left);
+    const rightIndex = indexByReviewer.get(right);
+    blocked[leftIndex].add(rightIndex);
+    blocked[rightIndex].add(leftIndex);
+  }
+  const memo = new Map();
+  const count = (mask, previous) => {
+    if (mask === (1 << reviewers.length) - 1) return 1;
+    const key = `${mask}:${previous}`;
+    if (memo.has(key)) return memo.get(key);
+    let total = 0;
+    for (let next = 0; next < reviewers.length; next += 1) {
+      if ((mask & (1 << next)) !== 0 || (previous >= 0 && blocked[previous].has(next))) continue;
+      total += count(mask | (1 << next), next);
+    }
+    memo.set(key, total);
+    return total;
+  };
+  return count(0, -1);
+}
+
+function connectivityCheckpoints(nodeCount, links) {
+  const parent = Array.from({ length: nodeCount }, (_, index) => index);
+  const size = Array(nodeCount).fill(1);
+  const find = node => {
+    let root = node;
+    while (parent[root] !== root) root = parent[root];
+    while (parent[node] !== node) {
+      const next = parent[node];
+      parent[node] = root;
+      node = next;
+    }
+    return root;
+  };
+  let components = nodeCount;
+  return links.map(([left, right]) => {
+    let leftRoot = find(left);
+    let rightRoot = find(right);
+    if (leftRoot !== rightRoot) {
+      if (size[leftRoot] < size[rightRoot]) [leftRoot, rightRoot] = [rightRoot, leftRoot];
+      parent[rightRoot] = leftRoot;
+      size[leftRoot] += size[rightRoot];
+      components -= 1;
+    }
+    return components;
+  });
+}
+
+function coachingRouteSums(parents, values, queries) {
+  const nodeCount = parents.length;
+  if (nodeCount === 0) return [];
+  const levelCount = Math.ceil(Math.log2(Math.max(1, nodeCount))) + 1;
+  const ancestors = Array.from({ length: levelCount }, () => Array(nodeCount).fill(0));
+  const depths = Array(nodeCount).fill(0);
+  const prefixSums = Array(nodeCount).fill(0);
+  ancestors[0][0] = 0;
+  prefixSums[0] = values[0];
+  for (let node = 1; node < nodeCount; node += 1) {
+    ancestors[0][node] = parents[node];
+    depths[node] = depths[parents[node]] + 1;
+    prefixSums[node] = prefixSums[parents[node]] + values[node];
+  }
+  for (let level = 1; level < levelCount; level += 1) {
+    for (let node = 0; node < nodeCount; node += 1) {
+      ancestors[level][node] = ancestors[level - 1][ancestors[level - 1][node]];
+    }
+  }
+  const lca = (first, second) => {
+    if (depths[first] < depths[second]) [first, second] = [second, first];
+    let difference = depths[first] - depths[second];
+    for (let level = 0; difference > 0; level += 1) {
+      if ((difference & 1) === 1) first = ancestors[level][first];
+      difference = Math.floor(difference / 2);
+    }
+    if (first === second) return first;
+    for (let level = levelCount - 1; level >= 0; level -= 1) {
+      if (ancestors[level][first] !== ancestors[level][second]) {
+        first = ancestors[level][first];
+        second = ancestors[level][second];
+      }
+    }
+    return ancestors[0][first];
+  };
+  return queries.map(([first, second]) => {
+    const common = lca(first, second);
+    return prefixSums[first] + prefixSums[second] - 2 * prefixSums[common] + values[common];
+  });
+}
+
+function commandMessageSegmentation(tokens, message) {
+  const root = { word: null, children: new Map() };
+  for (const token of tokens) {
+    let node = root;
+    for (const character of token) {
+      if (!node.children.has(character)) node.children.set(character, { word: null, children: new Map() });
+      node = node.children.get(character);
+    }
+    node.word = token;
+  }
+  const best = Array(message.length + 1).fill(null);
+  best[message.length] = [];
+  for (let start = message.length - 1; start >= 0; start -= 1) {
+    let node = root;
+    for (let end = start; end < message.length; end += 1) {
+      node = node.children.get(message[end]);
+      if (!node) break;
+      if (node.word !== null && best[end + 1] !== null) {
+        const candidate = [node.word, ...best[end + 1]];
+        const current = best[start];
+        if (
+          current === null
+          || candidate.length < current.length
+          || (candidate.length === current.length && candidate.join('\0') < current.join('\0'))
+        ) {
+          best[start] = candidate;
+        }
+      }
+    }
+  }
+  return best[0];
+}
+
+function resilientNetworkBudget(nodeCount, existingLinks, proposals) {
+  const parent = Array.from({ length: nodeCount }, (_, index) => index);
+  const size = Array(nodeCount).fill(1);
+  const find = node => {
+    let root = node;
+    while (parent[root] !== root) root = parent[root];
+    while (parent[node] !== node) {
+      const next = parent[node];
+      parent[node] = root;
+      node = next;
+    }
+    return root;
+  };
+  let components = nodeCount;
+  const join = (left, right) => {
+    let leftRoot = find(left);
+    let rightRoot = find(right);
+    if (leftRoot === rightRoot) return false;
+    if (size[leftRoot] < size[rightRoot]) [leftRoot, rightRoot] = [rightRoot, leftRoot];
+    parent[rightRoot] = leftRoot;
+    size[leftRoot] += size[rightRoot];
+    components -= 1;
+    return true;
+  };
+  for (const [left, right] of existingLinks) join(left, right);
+  const ordered = proposals
+    .map((proposal, index) => ({ proposal, index }))
+    .sort((left, right) => left.proposal[2] - right.proposal[2] || left.index - right.index);
+  let cost = 0;
+  const proposalIndices = [];
+  for (const { proposal: [left, right, price], index } of ordered) {
+    if (!join(left, right)) continue;
+    cost += price;
+    proposalIndices.push(index);
+    if (components === 1) break;
+  }
+  return components === 1 ? { cost, proposalIndices } : { cost: -1, proposalIndices: [] };
+}
+
 const SERVER_EXERCISE_DEFINITIONS = {
   'focus-block-rollup@1': {
     generateArgs(random, caseIndex) {
@@ -430,6 +700,224 @@ const SERVER_EXERCISE_DEFINITIONS = {
       return [durations, randomInteger(random, 1, 180)];
     },
     oracle: recoveryBudgetPlan,
+  },
+  'mentor-level-widths@1': {
+    generateArgs(random, caseIndex) {
+      if (caseIndex === 0) return [[]];
+      if (caseIndex === 1) return [[-1]];
+      if (caseIndex === 2) return [[-1, 0, 0, 1, 1, 2, 5]];
+      if (caseIndex === GENERATED_CASE_COUNT - 1) {
+        return [Array.from({ length: 20_000 }, (_, index) => (
+          index === 0 ? -1 : Math.floor((index - 1) / 2)
+        ))];
+      }
+      const count = randomInteger(random, 4, 24);
+      return [Array.from({ length: count }, (_, index) => (
+        index === 0 ? -1 : randomInteger(random, 0, index - 1)
+      ))];
+    },
+    oracle: mentorLevelWidths,
+  },
+  'threshold-pair-count@1': {
+    generateArgs(random, caseIndex) {
+      if (caseIndex === 0) return [[], 5];
+      if (caseIndex === 1) return [[7], 14];
+      if (caseIndex === 2) return [[-5, -2, 0, 3, 7], 3];
+      if (caseIndex === 3) return [[2, 2, 2, 2], 4];
+      if (caseIndex === GENERATED_CASE_COUNT - 1) {
+        return [Array.from({ length: 20_000 }, (_, index) => index - 10_000), -1];
+      }
+      const length = randomInteger(random, 5, 40);
+      const values = Array.from({ length }, () => randomInteger(random, -50, 50))
+        .sort((left, right) => left - right);
+      return [values, randomInteger(random, -70, 70)];
+    },
+    oracle: thresholdPairCount,
+  },
+  'command-prefix-census@1': {
+    generateArgs(random, caseIndex) {
+      if (caseIndex === 0) return [[], ['run']];
+      if (caseIndex === 1) return [['build', 'bundle', 'branch'], ['b', 'bu', 'build', 'x']];
+      if (caseIndex === 2) return [['a', 'ab', 'abc'], ['a', 'ab', 'abc', 'abcd']];
+      if (caseIndex === GENERATED_CASE_COUNT - 1) {
+        const commands = Array.from(
+          { length: 10_000 },
+          (_, index) => `route-${String(index).padStart(5, '0')}`,
+        );
+        const prefixes = Array.from(
+          { length: 2_000 },
+          (_, index) => `route-${String(index % 100).padStart(3, '0')}`,
+        );
+        return [commands, prefixes];
+      }
+      const offset = randomInteger(random, 0, 10_000);
+      const commands = Array.from(
+        { length: randomInteger(random, 5, 30) },
+        (_, index) => `task-${(offset + index).toString(36)}`,
+      );
+      const prefixes = Array.from({ length: randomInteger(random, 3, 10) }, (_, index) => {
+        const command = randomItem(random, commands);
+        if (index === 0) return 'missing';
+        return command.slice(0, randomInteger(random, 1, command.length));
+      });
+      return [commands, prefixes];
+    },
+    oracle: commandPrefixCensus,
+  },
+  'release-feed-merge@1': {
+    generateArgs(random, caseIndex) {
+      if (caseIndex === 0) return [[]];
+      if (caseIndex === 1) return [[[], [[1, 'solo'], [4, 'later']], []]];
+      if (caseIndex === 2) {
+        return [[
+          [[1, 'alpha'], [3, 'coral']],
+          [[1, 'Zulu'], [2, 'dune']],
+          [[1, '9-start']],
+        ]];
+      }
+      if (caseIndex === GENERATED_CASE_COUNT - 1) {
+        return [Array.from({ length: 100 }, (_, feedIndex) => (
+          Array.from({ length: 20 }, (_, eventIndex) => [
+            eventIndex * 100 + feedIndex,
+            (eventIndex * 100 + feedIndex).toString(36).padStart(4, '0') + 'x'.repeat(36),
+          ])
+        ))];
+      }
+      const feedCount = randomInteger(random, 2, 7);
+      const feeds = Array.from({ length: feedCount }, (_, feedIndex) => {
+        let time = randomInteger(random, -10, 10);
+        return Array.from({ length: randomInteger(random, 0, 8) }, (_, eventIndex) => {
+          time += randomInteger(random, 0, 3);
+          return [time, `f${feedIndex}-${eventIndex}`];
+        }).sort((left, right) => left[0] - right[0] || (left[1] < right[1] ? -1 : 1));
+      });
+      return [feeds];
+    },
+    oracle: releaseFeedMerge,
+  },
+  'compatible-review-orders@1': {
+    generateArgs(random, caseIndex) {
+      if (caseIndex === 0) return [['ana'], []];
+      if (caseIndex === 1) return [['ana', 'bo'], [['ana', 'bo']]];
+      if (caseIndex === 2) return [['ana', 'bo', 'cy'], [['ana', 'bo']]];
+      if (caseIndex === 3) {
+        return [['ana', 'bo', 'cy', 'dee'], [['ana', 'bo'], ['bo', 'cy'], ['cy', 'dee']]];
+      }
+      if (caseIndex === GENERATED_CASE_COUNT - 1) {
+        return [Array.from({ length: 9 }, (_, index) => `r${index}`), []];
+      }
+      const count = randomInteger(random, 4, 8);
+      const reviewers = Array.from({ length: count }, (_, index) => `reviewer-${index}`);
+      const blockedPairs = [];
+      for (let left = 0; left < count; left += 1) {
+        for (let right = left + 1; right < count; right += 1) {
+          if (randomUnit(random) < 0.28) blockedPairs.push([reviewers[left], reviewers[right]]);
+        }
+      }
+      return [randomShuffle(random, reviewers), blockedPairs];
+    },
+    oracle: compatibleReviewOrders,
+  },
+  'connectivity-checkpoints@1': {
+    generateArgs(random, caseIndex) {
+      if (caseIndex === 0) return [1, []];
+      if (caseIndex === 1) return [3, [[0, 1], [0, 1], [1, 1], [1, 2]]];
+      if (caseIndex === 2) return [5, [[0, 1], [3, 4]]];
+      if (caseIndex === GENERATED_CASE_COUNT - 1) {
+        const nodeCount = 10_000;
+        const links = Array.from({ length: nodeCount - 1 }, (_, index) => [index, index + 1]);
+        links.push([0, nodeCount - 1]);
+        return [nodeCount, links];
+      }
+      const nodeCount = randomInteger(random, 3, 30);
+      const links = Array.from({ length: randomInteger(random, 4, 50) }, () => [
+        randomInteger(random, 0, nodeCount - 1),
+        randomInteger(random, 0, nodeCount - 1),
+      ]);
+      return [nodeCount, links];
+    },
+    oracle: connectivityCheckpoints,
+  },
+  'coaching-route-sums@1': {
+    generateArgs(random, caseIndex) {
+      if (caseIndex === 0) return [[-1], [7], [[0, 0]]];
+      if (caseIndex === 1) return [[-1, 0, 0], [5, -2, 4], [[1, 2], [0, 1]]];
+      if (caseIndex === 2) {
+        return [[-1, 0, 1, 2], [1, 2, 3, 4], [[0, 3], [1, 3], [2, 2]]];
+      }
+      if (caseIndex === 3) return [[-1, 0, 0, 1, 1], [3, 1, 2, 5, -4], []];
+      if (caseIndex === GENERATED_CASE_COUNT - 1) {
+        const nodeCount = 10_000;
+        return [
+          Array.from({ length: nodeCount }, (_, index) => index === 0 ? -1 : index - 1),
+          Array(nodeCount).fill(1),
+          Array.from({ length: 5_000 }, (_, index) => [index, nodeCount - 1 - index]),
+        ];
+      }
+      const nodeCount = randomInteger(random, 5, 30);
+      const parents = Array.from({ length: nodeCount }, (_, index) => (
+        index === 0 ? -1 : randomInteger(random, 0, index - 1)
+      ));
+      const values = Array.from({ length: nodeCount }, () => randomInteger(random, -20, 20));
+      const queries = Array.from({ length: randomInteger(random, 3, 20) }, () => [
+        randomInteger(random, 0, nodeCount - 1),
+        randomInteger(random, 0, nodeCount - 1),
+      ]);
+      return [parents, values, queries];
+    },
+    oracle: coachingRouteSums,
+  },
+  'command-message-segmentation@1': {
+    generateArgs(random, caseIndex) {
+      if (caseIndex === 0) return [[], ''];
+      if (caseIndex === 1) return [[], 'status'];
+      if (caseIndex === 2) return [['ab', 'a', 'bc', 'c'], 'abc'];
+      if (caseIndex === 3) return [['re', 'view', 'review'], 'review'];
+      if (caseIndex === 4) return [['red', 'ready', 'read'], 'reader'];
+      if (caseIndex === GENERATED_CASE_COUNT - 1) {
+        const tokens = [
+          ...Array.from({ length: 20 }, (_, index) => 'a'.repeat(index + 1)),
+          ...Array.from({ length: 1_000 }, (_, index) => `z${index.toString(36)}`),
+        ];
+        return [tokens, 'a'.repeat(2_000)];
+      }
+      const tokenCount = randomInteger(random, 5, 16);
+      const tokens = Array.from({ length: tokenCount }, (_, index) => `t${index.toString(36)}`);
+      const parts = Array.from({ length: randomInteger(random, 2, 12) }, () => randomItem(random, tokens));
+      return [tokens, parts.join('') + (caseIndex === 6 ? 'x' : '')];
+    },
+    oracle: commandMessageSegmentation,
+  },
+  'resilient-network-budget@1': {
+    generateArgs(random, caseIndex) {
+      if (caseIndex === 0) return [1, [], []];
+      if (caseIndex === 1) return [4, [[0, 1], [1, 2], [2, 3]], [[0, 3, 9]]];
+      if (caseIndex === 2) return [4, [[0, 1]], [[1, 2, 4]]];
+      if (caseIndex === 3) {
+        return [4, [], [[0, 1, 5], [1, 2, 1], [2, 3, 1], [0, 3, 5], [0, 2, 2]]];
+      }
+      if (caseIndex === GENERATED_CASE_COUNT - 1) {
+        const nodeCount = 10_000;
+        const proposals = Array.from({ length: nodeCount - 1 }, (_, index) => [index, index + 1, 1]);
+        proposals.push([0, nodeCount - 1, 2]);
+        return [nodeCount, [], proposals];
+      }
+      const nodeCount = randomInteger(random, 4, 24);
+      const existingCount = randomInteger(random, 0, Math.floor(nodeCount / 3));
+      const existingLinks = Array.from({ length: existingCount }, (_, index) => [index, index + 1]);
+      const proposals = Array.from({ length: nodeCount - 1 }, (_, index) => [
+        index,
+        index + 1,
+        randomInteger(random, 1, 30),
+      ]);
+      for (let index = 0; index < nodeCount; index += 1) {
+        const left = randomInteger(random, 0, nodeCount - 1);
+        const right = randomInteger(random, 0, nodeCount - 1);
+        if (left !== right) proposals.push([left, right, randomInteger(random, 1, 30)]);
+      }
+      return [nodeCount, existingLinks, proposals];
+    },
+    oracle: resilientNetworkBudget,
   },
 };
 
