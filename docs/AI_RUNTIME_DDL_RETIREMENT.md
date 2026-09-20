@@ -1,7 +1,9 @@
 # AI request-path DDL retirement
 
-Issue: [#173](https://github.com/festus14/randori-circle/issues/173)  
-Parent: [#44](https://github.com/festus14/randori-circle/issues/44)  
+Issue: [#173](https://github.com/festus14/randori-circle/issues/173)
+
+Parent: [#44](https://github.com/festus14/randori-circle/issues/44)
+
 Decision: [ID-41](IMPLEMENTED_DECISIONS.md#id-41-make-ai-readiness-read-only-and-route-scoped)
 
 ## Boundary
