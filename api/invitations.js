@@ -10,15 +10,17 @@ import {
   INVITATION_TTL_SECONDS,
   INVITE_CLAIM_TTL_SECONDS,
   circleMembershipEnabled,
-  clearInviteClaimCookie,
   createInvitationToken,
   ensureCircleMembershipReadiness,
   getActivePrimaryCircleMembership,
   hashInvitationEmail,
   hashInvitationToken,
   inviteClaimCookie,
+  inviteClaimRemainingSeconds,
   normalizeInvitationEmail,
   prepareInvitationClaim,
+  readBoundInviteClaim,
+  validateLivePreparedClaim,
 } from './_circle-membership.js';
 import {
   multiCircleControlPlaneEnabled,
@@ -36,6 +38,10 @@ import {
   INVITATION_EMAIL_MAX_SENDS,
   INVITATION_EMAIL_RESEND_SECONDS,
 } from './_invitation-email.js';
+
+function clearLegacyInviteClaimCookie({secure=true}={}){
+  return `randori_invite_claim=; Path=/api/auth; HttpOnly${secure?'; Secure':''}; SameSite=Lax; Max-Age=0`;
+}
 import { CredentialKeyControlError } from './_credential-key-control.js';
 
 const PREPARE_RATE_LIMIT=12;
@@ -209,11 +215,10 @@ async function handlePrepare(req,res){
     return res.status(405).json({error:'POST only'});
   }
   if(!isSameOrigin(req)) return res.status(403).json({error:'cross-origin mutation rejected'});
-  // A failed same-origin replacement must not leave a previously prepared
-  // capability live. Cross-origin requests cannot mutate invitation state.
   const claimCookieOptions={secure:!localIdentityAdapterEnabled(req)};
-  res.setHeader('Set-Cookie',clearInviteClaimCookie(claimCookieOptions));
-  if(!exactObject(req.body,['token'])||typeof req.body.token!=='string'){
+  const tokenRequest=exactObject(req.body,['token'])&&typeof req.body.token==='string';
+  const bindingRequest=exactObject(req.body,['binding'])&&typeof req.body.binding==='string';
+  if(!tokenRequest&&!bindingRequest){
     return res.status(400).json({error:'invitation unavailable'});
   }
   let db;
@@ -225,13 +230,25 @@ async function handlePrepare(req,res){
       res.setHeader('Retry-After',String(rate.retryAfter));
       return res.status(429).json({error:'too many attempts',retry_after_seconds:rate.retryAfter});
     }
+    if(bindingRequest){
+      const claim=readBoundInviteClaim(req,req.body.binding);
+      const prepared=claim?await validateLivePreparedClaim(db,{claim}):{ok:false};
+      const remaining=prepared.ok?inviteClaimRemainingSeconds(claim):0;
+      if(!prepared.ok||remaining<1){
+        return res.status(400).json({error:'invitation unavailable'});
+      }
+      return res.json({ok:true,binding:req.body.binding,expires_in_seconds:remaining});
+    }
     const prepared=await prepareInvitationClaim(db,{token:req.body.token});
-    if(!prepared.ok) return res.status(400).json({error:'invitation unavailable'});
+    const binding=prepared.ok?prepared.binding:null;
+    if(!prepared.ok||!binding){
+      return res.status(400).json({error:'invitation unavailable'});
+    }
     res.setHeader('Set-Cookie',[
-      clearInviteClaimCookie(claimCookieOptions),
+      clearLegacyInviteClaimCookie(claimCookieOptions),
       inviteClaimCookie(prepared.claim,claimCookieOptions),
     ]);
-    return res.json({ok:true,expires_in_seconds:INVITE_CLAIM_TTL_SECONDS});
+    return res.json({ok:true,binding,expires_in_seconds:INVITE_CLAIM_TTL_SECONDS});
   }catch(error){
     captureSentryException(error,{tags:{event:'circle_invitation_prepare_fail',source:'server'}});
     return res.status(503).json({error:'invitations unavailable'});

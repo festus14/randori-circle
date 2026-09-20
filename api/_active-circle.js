@@ -30,6 +30,11 @@ export function secondaryCircleSchedulingEnabled(){
     &&process.env.SECONDARY_CIRCLE_SCHEDULING_ENABLED==='true';
 }
 
+export function secondaryCircleScheduleEmailEnabled(){
+  return secondaryCircleSchedulingEnabled()
+    &&process.env.SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED==='true';
+}
+
 function positiveInteger(value){
   const parsed=typeof value==='number'?value
     :(typeof value==='string'&&/^[1-9]\d*$/.test(value)?Number(value):null);

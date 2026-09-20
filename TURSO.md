@@ -42,12 +42,12 @@
    MULTI_CIRCLE_AVAILABILITY_ENABLED=false
    SECONDARY_CIRCLE_COORDINATION_ENABLED=false
    SECONDARY_CIRCLE_SCHEDULING_ENABLED=false
+   SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED=false
    SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED=false
    EMAIL_PASSWORD_ACTIVATION_ENABLED=false
    EMAIL_VERIFICATION_ENCRYPTION_KEY=... # openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
    PASSWORD_RESET_ENABLED=false
    PASSWORD_RESET_ENCRYPTION_KEY=... # generate independently with the same command
-   AUTH_SCHEMA_BOOTSTRAP_ENABLED=false
    RESEND_API_KEY=re_xxx  # omit both Resend values to keep email disabled
    RESEND_FROM=Randori <noreply@your-verified-domain.com>
    APP_URL=https://randori-circle-self.vercel.app
@@ -71,23 +71,23 @@
    restore rehearsal and status inspection for target v16, approve and apply
    only v16, and verify 52 application tables, 56 named indexes, and empty
    secondary schedule tables.
-5. Deploy the v16-aware runtime with `SECONDARY_CIRCLE_SCHEDULING_ENABLED=false`, `CIRCLE_MEMBERSHIP_ENABLED=false`, and `AUTH_SCHEMA_BOOTSTRAP_ENABLED=false`. The rollout-state checks are read-only; any legacy registration that races initialization is atomically included or rejected. Canary scheduling separately with `docs/SECONDARY_SCHEDULING.md` only after the prerequisite feature chain is healthy.
-6. Keep `AUTH_SCHEMA_BOOTSTRAP_ENABLED=false`. The legacy request-time bootstrap does not create provider identities and cannot bypass the current migration/readiness gate. Create the first account only after the protected migration workflow reports the current schema ready.
+5. Deploy the v16-aware runtime with `SECONDARY_CIRCLE_SCHEDULING_ENABLED=false` and `CIRCLE_MEMBERSHIP_ENABLED=false`. Authentication readiness and rollout-state checks are read-only; any legacy registration that races initialization is atomically included or rejected. Canary scheduling separately with `docs/SECONDARY_SCHEDULING.md` only after the prerequisite feature chain is healthy.
+6. Create the first account only after the protected migration workflow reports the current schema ready. There is no request-time authentication bootstrap or repair flag.
 7. Sign in with the bootstrap account and verify `GET /api/auth/me` reports `is_admin: true`.
-8. Call the authenticated admin-only `POST https://your-app.vercel.app/api/init`. This creates the membership schema, closes new uninvited registration, and atomically backfills existing non-demo accounts.
+8. Call the authenticated admin-only `POST https://your-app.vercel.app/api/init`. The endpoint requires the exact current migration state, atomically creates the primary-circle data and audited non-demo account memberships, and closes new uninvited registration. It never creates or repairs schema.
 9. Verify the rollout queries below before setting `CIRCLE_MEMBERSHIP_ENABLED=true` and redeploying.
 
 ### Personalization + Scaling layer (primary circle + immutable weekly publication)
 
 **Membership data:** `circles`, `circle_memberships`, hashed `circle_invitations`, `circle_audit_events`, and the singleton `circle_membership_rollout` latch.
 
-Provider-identity and other migration-managed schema changes use the protected migration workflow. Membership schema creation remains an explicit authenticated `POST /api/init` operator step; rollout-state probes and ordinary auth, circle, pairing, and invitation requests do not create it. Keep `AUTH_SCHEMA_BOOTSTRAP_ENABLED=false` so unauthenticated request-time auth bootstrap remains disabled.
+Provider-identity, membership, and all other schema changes use the protected migration workflow. The explicit authenticated `POST /api/init` step changes only primary-circle, membership, audit, and rollout data after exact readiness succeeds. Authentication and initialization have no request-time schema bootstrap or repair path.
 
 **Scaling rule:**
 - Circle = active `circle_memberships` in the one operational primary circle. The one-time migration backfills existing non-demo authenticated accounts; legacy `users` rows are never inferred as members.
 - Manual publication = **primary-circle owner only** in production. The isolated loopback/local-file development runtime permits its database admin. `POST /api/pairing/run` is idempotent: once the current London cycle is published, later calls return that publication without changing pairs.
 - Availability — each user edits the explicitly dated upcoming cycle through `/api/settings/availability`. The API returns the UTC start/end/cutoff, configured IANA timezone, cycle digest, and optimistic version. Publication reads only that exact current-cycle scope; unavailable users are skipped and can receive a reminder. The timeless account flag is frozen as a bounded rollout bridge and is never updated by the dated endpoint.
-- Secondary coordination — after the complete managed ledger through v16 is ready, the default-off `SECONDARY_CIRCLE_COORDINATION_ENABLED` flag lets a selected secondary owner publish a circle-owned current-cycle result and lets active members view it. Migration v13 owns the coordination tables, migration v14 owns circle creation, migration v15 adds credential-key controls, and migration v16 owns normalized secondary schedules. The separately default-off `SECONDARY_CIRCLE_SCHEDULING_ENABLED` flag lets a current two-person secondary group agree a time without a room/workspace capability. `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED` independently queues dashboard-only pairing-result mail and remains off until its provider canary succeeds; schedule email remains out of scope. See [the selected-circle pairing runbook](docs/SELECTED_CIRCLE_PAIRING.md) and [the scheduling runbook](docs/SECONDARY_SCHEDULING.md).
+- Secondary coordination — after the complete managed ledger through v16 is ready, the default-off `SECONDARY_CIRCLE_COORDINATION_ENABLED` flag lets a selected secondary owner publish a circle-owned current-cycle result and lets active members view it. Migration v13 owns the coordination tables, migration v14 owns circle creation, migration v15 adds credential-key controls, and migration v16 owns normalized secondary schedules. The separately default-off `SECONDARY_CIRCLE_SCHEDULING_ENABLED` flag lets a current two-person secondary group agree a time without a room/workspace capability. `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED` independently queues dashboard-only pairing-result mail. `SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED` independently queues schedule-email v2 only through the complete scheduling chain. Keep both delivery flags off until their provider canaries succeed. See [the selected-circle pairing runbook](docs/SELECTED_CIRCLE_PAIRING.md), [the scheduling runbook](docs/SECONDARY_SCHEDULING.md), and [the schedule-notification runbook](docs/SECONDARY_SCHEDULE_NOTIFICATIONS.md).
 - Circle creation — migration v14 owns the creation receipt, but this release exposes same-origin `POST /api/circles` only after the complete managed ledger through v16 is ready and all four credential controls are adopted under the central rollout. Creation writes only a secondary circle, owner membership, one creation audit, one durable idempotency receipt, and the initiating session's selected context. See [the circle creation runbook](docs/CIRCLE_CREATION.md).
 
 **Env vars added beyond section above:**
@@ -129,7 +129,8 @@ Provider-identity and other migration-managed schema changes use the protected m
 - `POST /api/admin/reshuffle` — compatibility URL only. Pairing requests delegate to the immutable current-cycle endpoint and cannot force/remix a published cycle; `action=promote` retains its separate legacy admin operation.
 - `GET /api/settings/availability` — authenticated, private/no-store read of the upcoming cycle and the caller's exact setting: `{cycle,cycleKey,isAvailable,version,source,editable,updatedAt}`.
 - `POST /api/settings/availability` — authenticated compare-and-swap update with the exact body `{cycle_key:string,expected_version:integer,is_available:boolean}`. Strings such as `"false"`, aliases, unknown fields, stale versions, changed cycles, and closed cutoffs are rejected. A `409` returns the refreshed authoritative availability state.
-- `POST /api/init` — authenticated admin-only schema migration and one-time primary-circle backfill. It also closes the durable registration latch.
+- `POST /api/init` — authenticated admin-only, data-only primary-circle backfill on the exact current schema. It atomically closes the durable registration latch and is a read-only no-op after successful initialization.
+- `POST /api/admin/reshuffle` with `action=promote`, plus `POST /api/admin/demo-seed`, `demo-shuffle`, and `demo-reset`, authorize the current administrator before running handler-specific read-only schema checks. They cannot create or repair schema; an unavailable contract returns a generic `503` before data mutation. See [operations request-path DDL retirement](docs/OPERATIONS_RUNTIME_DDL_RETIREMENT.md).
 
 **Scheduler:**
 ```json

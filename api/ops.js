@@ -10,6 +10,7 @@ import {
 import { buildFairPairing, canonicalRoomId } from './_pairing.js';
 import { pairingCronIsDue, resolvePairingCycle } from './_pairing-cycle.js';
 import { publishPairingCycle } from './_pairing-publication.js';
+import { PairingRecoveryError, parsePairingRecoveryRequest } from './_pairing-recovery.js';
 import {
   circlePairingFailure,
   listSecondaryPairingScopes,
@@ -53,6 +54,13 @@ import {
 } from './_invitation-email.js';
 import {identityEmailKeyRotationStatus} from './_identity-linking.js';
 import { localIdentityAdapterEnabled, localRuntimeRequest } from './_local-runtime.js';
+import {
+  ensureAdminPromotionReadiness,
+  ensureDemoResetReadiness,
+  ensureDemoSeedReadiness,
+  ensureDemoShuffleReadiness,
+  ensureNotificationPreferencesReadiness,
+} from './_ops-readiness.js';
 import { ensureCircleMembershipReadiness } from './_circle-membership.js';
 import {
   canUseLegacySinglePrimaryCircleFeatures,
@@ -91,22 +99,17 @@ async function logServerOps(level, event, message, meta, req){
   }catch(e){ try{ console.warn("[logServerOps fail]", e && e.message); }catch{} }
 }
 
-async function ensureNotifPrefs(db,req){
-  if(localIdentityAdapterEnabled(req)){
-    await db.execute(`SELECT user_id,email_enabled,sms_enabled,phone,email,updated_at FROM user_notification_prefs LIMIT 0`);
-    return;
-  }
-  try{ await db.execute("CREATE TABLE IF NOT EXISTS user_notification_prefs (user_id INTEGER PRIMARY KEY, email_enabled INTEGER DEFAULT 1, sms_enabled INTEGER DEFAULT 0, phone TEXT, email TEXT, updated_at TEXT DEFAULT (datetime('now')))"); }catch{}
-}
-
 async function handleNotificationPrefs(req,res){
   if(req.method!=="GET"&&req.method!=="POST"&&req.method!=="PUT"){
     return res.status(405).json({error:"GET or POST/PUT"});
   }
   const payload=await verifyRequestAuth(req);
   if(!payload) return res.status(401).json({error:"authentication required"});
-  const db=getClient();
-  try{ await ensureNotifPrefs(db,req); }
+  let db;
+  try{
+    db=getClient();
+    await ensureNotificationPreferencesReadiness(db);
+  }
   catch{ return res.status(503).json({error:"notification preferences unavailable"}); }
   if(req.method==="GET"){
     const uid=payload.id||payload.uid;
@@ -146,11 +149,6 @@ function getEndpoint(req){
     const path = u.pathname.split('/').filter(Boolean).pop();
     return (path||'').toLowerCase();
   }catch{ return (req.url||'').split('?')[0].split('/').filter(Boolean).pop()?.toLowerCase()||''; }
-}
-function isAdminCheck(email, flag){
-  if (flag) return true;
-  if (!email) return false;
-  return getAdminEmails().has(String(email).toLowerCase().trim());
 }
 function verifyCronAuth(req){
   let secret;
@@ -231,7 +229,7 @@ async function requirePairingPublisher(req,res){
       };
       if(!active.membership.is_primary){
         return {
-          db,callerId,localRuntime:false,localRequest:false,mode:'secondary',
+          db,callerId,localRuntime:false,localRequest:localRuntimeRequest(req),mode:'secondary',
           circlePublicId:String(active.membership.public_id),circleContextVersion:Number(active.context_version),
           authority:{kind:'session',...circleContext,userId:callerId,requireOwner:true},
         };
@@ -278,30 +276,6 @@ async function requirePairingPublisher(req,res){
     ?{kind:'local',scopeKey:'local',circleId:null}
     :{kind:'circle',scopeKey:`circle:${Number(row.circle_id)}`,circleId:Number(row.circle_id)};
   return {db,callerId,localRuntime,localRequest:localRuntimeRequest(req),scope,mode:'primary'};
-}
-
-async function ensureMigrations(db){
-  try{ await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0, is_demo INTEGER DEFAULT 0)`);}catch{}
-  try{ await db.execute(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`);}catch{}
-  try{ await db.execute(`CREATE TABLE IF NOT EXISTS pairing_weeks (id INTEGER PRIMARY KEY AUTOINCREMENT, week_label TEXT NOT NULL, week_start TEXT NOT NULL, focus TEXT NOT NULL DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')), is_demo INTEGER DEFAULT 0)`);}catch{}
-  try{ await db.execute(`CREATE TABLE IF NOT EXISTS pairing_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, user_a_id INTEGER NOT NULL, user_b_id INTEGER NOT NULL, user_c_id INTEGER, is_ai_pair INTEGER DEFAULT 0, topic TEXT DEFAULT 'Pick together', topic_kind TEXT DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')))`);}catch{}
-  try{ await db.execute(`CREATE TABLE IF NOT EXISTS pairing_week_runs (week_label TEXT PRIMARY KEY, week_id INTEGER, generation_token TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 1, algorithm_version TEXT NOT NULL, algorithm_seed TEXT NOT NULL, participant_count INTEGER NOT NULL, participants_json TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))`);}catch{}
-  try{ await db.execute(`CREATE TABLE IF NOT EXISTS pairing_participants (week_id INTEGER NOT NULL, user_id INTEGER NOT NULL, position INTEGER NOT NULL, source TEXT NOT NULL DEFAULT 'auth', created_at TEXT DEFAULT (datetime('now')), PRIMARY KEY (week_id, user_id))`);}catch{}
-  try{ await db.execute(`CREATE TABLE IF NOT EXISTS pairing_email_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, user_id INTEGER NOT NULL, kind TEXT NOT NULL, recipient_email TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', attempt_count INTEGER NOT NULL DEFAULT 0, claimed_at TEXT, sent_at TEXT, provider_message_id TEXT, last_error TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')), UNIQUE (week_id,user_id,kind))`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pairing_email_outbox_pending ON pairing_email_outbox(week_id,status,created_at)`);}catch{}
-  // New installs get a direct invariant; pairing_week_runs remains the concurrency guard
-  // for older databases where historical duplicate labels prevent this index.
-  try{ await db.execute(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pairing_weeks_week_label ON pairing_weeks(week_label)`);}catch{}
-  const alters=[
-    `ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`,
-    `ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`,
-    `ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`,
-    `ALTER TABLE auth_accounts ADD COLUMN is_demo INTEGER DEFAULT 0`,
-    `ALTER TABLE pairing_weeks ADD COLUMN is_demo INTEGER DEFAULT 0`,
-    `ALTER TABLE auth_accounts ADD COLUMN phone TEXT`,
-    `ALTER TABLE pairing_week_runs ADD COLUMN generation INTEGER NOT NULL DEFAULT 1`,
-];
-  for(const sql of alters){ try{ await db.execute(sql); }catch{} }
 }
 
 async function loadPairingHistory(db,weekLabel,{includeDemo=false,includeCurrent=false,strict=false,authOnly=false,managedOnly=false}={}){
@@ -637,20 +611,48 @@ async function getCallerAdmin(db, payload){
   let callerEmail = '';
   const callerId = payload.id||payload.uid;
   let callerIsAdminFlag=false, callerDbRow=null;
-  if (callerId){ try{ const cr=await db.execute({ sql:`SELECT id,email,is_admin FROM auth_accounts WHERE id=?`, args:[callerId]}); if(cr.rows.length){ callerDbRow=cr.rows[0]; callerEmail=String(cr.rows[0].email||'').toLowerCase().trim(); callerIsAdminFlag=!!cr.rows[0].is_admin; }}catch{} }
-  if (getAdminEmails().has(callerEmail) && callerDbRow && !callerIsAdminFlag){ try{ await db.execute({ sql:`UPDATE auth_accounts SET is_admin=1 WHERE id=?`, args:[callerDbRow.id]}); callerIsAdminFlag=true; }catch{} }
-  const callerIsAdmin = !!callerDbRow && isAdminCheck(callerEmail, callerIsAdminFlag);
-  return {callerEmail, callerId, callerIsAdminFlag, callerDbRow, callerIsAdmin};
+  if (callerId){
+    const cr=await db.execute({ sql:`SELECT id,email,is_admin FROM auth_accounts WHERE id=?`, args:[callerId]});
+    if(cr.rows.length){
+      callerDbRow=cr.rows[0];
+      callerEmail=String(cr.rows[0].email||'').toLowerCase().trim();
+      callerIsAdminFlag=!!cr.rows[0].is_admin;
+    }
+  }
+  const callerConfiguredAdmin=!!callerDbRow&&getAdminEmails().has(callerEmail);
+  const callerIsAdmin=!!callerDbRow&&(callerIsAdminFlag||callerConfiguredAdmin);
+  return {callerEmail, callerId, callerIsAdminFlag, callerConfiguredAdmin, callerDbRow, callerIsAdmin};
 }
 
 async function requireAdmin(req,res){
-  const payload=await verifyRequestAuth(req);
+  let payload;
+  try{ payload=await verifyRequestAuth(req); }
+  catch{ res.status(503).json({error:'admin operation unavailable'}); return null; }
   if (!payload) { res.status(401).json({ error:'authentication required' }); return null; }
-  const db = getClient();
-  await ensureMigrations(db);
-  const ctx = await getCallerAdmin(db, payload);
+  let db,ctx;
+  try{
+    db=getClient();
+    ctx=await getCallerAdmin(db,payload);
+  }catch{
+    res.status(503).json({error:'admin operation unavailable'});
+    return null;
+  }
   if (!ctx.callerIsAdmin){ res.status(403).json({ error:'forbidden: admin only' }); return null; }
   return {db, payload, ...ctx};
+}
+
+async function prepareAdminOperation(ctx,res,ensureReadiness){
+  try{
+    await ensureReadiness(ctx.db);
+    if(ctx.callerConfiguredAdmin&&!ctx.callerIsAdminFlag){
+      await ctx.db.execute({sql:`UPDATE auth_accounts SET is_admin=1 WHERE id=?`,args:[ctx.callerDbRow.id]});
+      ctx.callerIsAdminFlag=true;
+    }
+    return ctx;
+  }catch{
+    res.status(503).json({error:'admin operation unavailable'});
+    return null;
+  }
 }
 
 async function handleAvailability(req,res){
@@ -710,17 +712,20 @@ async function handleReshuffle(req,res){
   // compatibility alias for the immutable current-cycle publication. There is
   // deliberately no force/remix operation for a published cycle.
   if(action!=='promote') return handlePairingRun(req,res);
-  const adminCtx = await requireAdmin(req,res);
+  let adminCtx = await requireAdmin(req,res);
   if (!adminCtx) return;
-  const {db, callerEmail, callerIsAdminFlag} = adminCtx;
   const targetEmailRaw = body.email||body.target||req.query?.email;
   if (!targetEmailRaw) return res.status(400).json({ error:'email required for promotion', example:{ action:'promote', email:'newadmin@example.com'}});
   const targetEmail = String(targetEmailRaw).trim().toLowerCase();
   if (!targetEmail.includes('@')) return res.status(400).json({ error:'invalid email'});
+  adminCtx=await prepareAdminOperation(adminCtx,res,ensureAdminPromotionReadiness);
+  if(!adminCtx) return;
+  const {db, callerEmail, callerIsAdminFlag} = adminCtx;
   try{
-    const existing = await db.execute({ sql:`SELECT id,email,is_admin FROM auth_accounts WHERE lower(email)=?`, args:[targetEmail]});
+    const existing = await db.execute({ sql:`SELECT id,email,is_admin FROM auth_accounts WHERE lower(email)=? ORDER BY id LIMIT 2`, args:[targetEmail]});
     if (!existing.rows.length){ return res.status(404).json({ ok:false, error:'user not found in auth_accounts — ask them to sign up first, then promote, or add them to ADMIN_EMAILS env var to auto-admin on signup', target:targetEmail, note:'Adding to ADMIN_EMAILS env var will auto-promote on next signup/login/Google'}); }
-    await db.execute({ sql:`UPDATE auth_accounts SET is_admin=1 WHERE lower(email)=?`, args:[targetEmail]});
+    if(existing.rows.length!==1) return res.status(503).json({error:'admin operation unavailable'});
+    await db.execute({ sql:`UPDATE auth_accounts SET is_admin=1 WHERE id=?`, args:[existing.rows[0].id]});
     return res.json({ ok:true, promoted:targetEmail, id:existing.rows[0].id, by:callerEmail, is_admin_via:callerIsAdminFlag?'db':'env', note:'User is now admin (is_admin=1). They will get admin flag on next login/token refresh.' });
   }catch(e){ return res.status(500).json({ error:'db error promoting', detail:String(e.message||e).slice(0,200)}); }
 }
@@ -763,6 +768,7 @@ function pairingPublicationPayload(result,emailDelivery){
     pair_count:publication.pairs.length,
     solo_count:soloCount,
     algorithm_version:publication.algorithm.version,
+    publication_state:result.publicationState,
     email_delivery:safeEmailDelivery(emailDelivery),
     message:result.created
       ?'Current-cycle pairings published. Solo members receive a Solo practice room.'
@@ -770,7 +776,12 @@ function pairingPublicationPayload(result,emailDelivery){
   };
 }
 
-function pairingFailure(res,error){
+function pairingFailure(res,error,context={}){
+  const pairingContext={
+    ...(context.circlePublicId?{circle_public_id:context.circlePublicId}:{}),
+    ...(context.circleContextVersion===undefined
+      ?{}:{circle_context_version:context.circleContextVersion}),
+  };
   if(error?.code==='PAIRING_CONTEXT_CHANGED'){
     return res.status(409).json({ok:false,error:'circle context changed',code:'circle_context_changed'});
   }
@@ -783,16 +794,30 @@ function pairingFailure(res,error){
   if(error?.code==='PAIRING_PUBLICATION_LEGACY_CONFLICT'){
     return res.status(409).json({error:'The current cycle cannot be published because legacy pairing data already exists.'});
   }
+  if(error?.code==='PAIRING_RECOVERY_CYCLE_CHANGED'){
+    return res.status(409).json({
+      ok:false,error:'pairing cycle changed',code:'pairing_cycle_changed',
+      publication_state:error.publicationState,...pairingContext,
+    });
+  }
+  if(error?.code==='PAIRING_RECOVERY_NOT_READY'){
+    return res.status(409).json({
+      ok:false,error:'pairing recovery is not ready',code:'pairing_recovery_not_ready',
+      publication_state:error.publicationState,...pairingContext,
+    });
+  }
   return res.status(503).json({error:'pairing unavailable'});
 }
 
 async function currentPairingResult(req,{
   db,localRuntime,localRequest=false,callerId=null,scope:authorizedScope=null,
   useApplicationClock=localRequest,circleContext=null,circlePublicId=null,circleContextVersion,
+  expectedCycleKey,
 }){
   const result=await publishPairingCycle(db,{
     localRuntime,callerId,authorizedScope,
     circleContext,
+    ...(expectedCycleKey===undefined?{}:{expectedCycleKey}),
     appUrl:process.env.APP_URL,
     // Loopback transport is independent from publication scope. Invite-bound
     // local identity still uses audited circle membership and v3 readiness.
@@ -815,25 +840,57 @@ async function currentPairingResult(req,{
   };
 }
 
+async function logPairingRecovery(event,resultOrError){
+  const success=resultOrError?.ok===true;
+  const meta=success?{
+    created:resultOrError.created===true,
+    existing:resultOrError.skipped===true,
+    participant_count:Number(resultOrError.participant_count||0),
+    pair_count:Number(resultOrError.pair_count||0),
+    solo_count:Number(resultOrError.solo_count||0),
+    publication_state:String(resultOrError.publication_state?.state||'unknown'),
+  }:{code:String(resultOrError?.code||'pairing_unavailable').slice(0,80)};
+  await logServerOps(success?'info':'warn',event,
+    success?'owner pairing recovery completed':'owner pairing recovery did not complete',meta,null);
+}
+
 async function runCurrentPairing(req,res,context){
-  try{ return res.json(await currentPairingResult(req,context)); }
-  catch(error){ return pairingFailure(res,error); }
+  try{
+    const result=await currentPairingResult(req,context);
+    if(context.expectedCycleKey!==undefined){
+      try{ await logPairingRecovery('pairing_recovery_completed',result); }catch{}
+    }
+    return res.json(result);
+  }
+  catch(error){
+    if(context.expectedCycleKey!==undefined){
+      try{ await logPairingRecovery('pairing_recovery_rejected',error); }catch{}
+    }
+    return pairingFailure(res,error,context);
+  }
 }
 
 async function handlePairingRun(req,res){
   if(req.method!=='POST') return res.status(405).json({error:'POST only'});
   const context=await requirePairingPublisher(req,res);
   if(!context) return;
-  if(context.circlePublicId) res.setHeader('Cache-Control',SECONDARY_PAIRING_CACHE_CONTROL);
-  const body=req.body===undefined?{}:req.body;
-  if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length){
-    return res.status(400).json({error:'request body must be empty; published cycles cannot be remixed'});
+  let recovery;
+  try{ recovery=parsePairingRecoveryRequest(req.body); }
+  catch(error){
+    if(error instanceof PairingRecoveryError){
+      return res.status(400).json({ok:false,error:error.message,code:'pairing_recovery_input_invalid'});
+    }
+    return res.status(400).json({ok:false,error:'invalid pairing recovery request'});
   }
+  if(context.circlePublicId) res.setHeader('Cache-Control',SECONDARY_PAIRING_CACHE_CONTROL);
   if(context.mode==='secondary'){
     try{
-      const result=await publishCirclePairing(context.db,{authority:context.authority});
+      const result=await publishCirclePairing(context.db,{
+        authority:context.authority,expectedCycleKey:recovery.expectedCycleKey,
+        ...(context.localRequest?{now:new Date()}:{}),
+      });
       const publication=result.publication;
-      return res.json({
+      const response={
         ok:true,created:result.created,skipped:!result.created,coordination_only:true,
         workspace_available:false,circle_public_id:context.circlePublicId,
         circle_context_version:context.circleContextVersion,cycle:publication.cycle,
@@ -843,16 +900,22 @@ async function handlePairingRun(req,res){
         pair_count:publication.groups.length,
         solo_count:publication.groups.filter(group=>group.isSolo).length,
         algorithm_version:publication.algorithm.version,
+        publication_state:result.publicationState,
         message:result.created
           ?'Current-cycle pairing published. Workspace tools are not enabled for this circle.'
           :'Current-cycle pairing was already published; no pairs were changed.',
-      });
+      };
+      try{ await logPairingRecovery('pairing_recovery_completed',response); }catch{}
+      return res.json(response);
     }catch(error){
-      const failure=circlePairingFailure(error,{contextVersion:context.circleContextVersion});
+      try{ await logPairingRecovery('pairing_recovery_rejected',error); }catch{}
+      const failure=circlePairingFailure(error,{
+        contextVersion:context.circleContextVersion,circlePublicId:context.circlePublicId,
+      });
       return res.status(failure.status).json(failure.body);
     }
   }
-  return runCurrentPairing(req,res,context);
+  return runCurrentPairing(req,res,{...context,expectedCycleKey:recovery.expectedCycleKey});
 }
 
 async function handleWeekly(req,res,{isDue=pairingCronIsDue}={}){
@@ -914,17 +977,29 @@ async function handleWeekly(req,res,{isDue=pairingCronIsDue}={}){
     }
   }
   if(secondary.failed){
-    try{ await logServerOps('error','secondary_pairing_failed','secondary pairing scope failed',secondary,req); }catch{}
+    try{ await logServerOps('error','weekly_pairing_completed','weekly pairing completed with failures',{
+      primary:{created:primary.created,existing:primary.skipped,
+        participant_count:primary.participant_count,pair_count:primary.pair_count,
+        solo_count:primary.solo_count},
+      secondary,
+    },null); }catch{}
     return res.status(503).json({ok:false,error:'pairing unavailable',retryable:true,secondary});
   }
+  try{ await logServerOps('info','weekly_pairing_completed','weekly pairing completed',{
+    primary:{created:primary.created,existing:primary.skipped,
+      participant_count:primary.participant_count,pair_count:primary.pair_count,
+      solo_count:primary.solo_count},
+    secondary,
+  },null); }catch{}
   return res.json({...primary,secondary});
 }
 
 
 async function handleDemoSeed(req,res){
   if (req.method!=='POST') return res.status(405).json({ error:'POST only for demo-seed' });
-  const ctx=await requireAdmin(req,res); if(!ctx) return; const db=ctx.db;
-  await ensureMigrations(db);
+  let ctx=await requireAdmin(req,res); if(!ctx) return;
+  ctx=await prepareAdminOperation(ctx,res,ensureDemoSeedReadiness); if(!ctx) return;
+  const db=ctx.db;
   const names=['Mia Chen','Alex Rivera','Priya Shah','Jordan Kim','Samir Desai','Lena Wu'];
   const palette=['#e6c07a','#9cc0b5','#d68a8a','#a3b5d6','#c7b29a','#8ec0a5'];
   const ts=Date.now();
@@ -945,8 +1020,10 @@ async function handleDemoSeed(req,res){
 
 async function handleDemoShuffle(req,res){
   if (req.method!=='POST') return res.status(405).json({ error:'POST only for demo-shuffle' });
-  const ctx = await requireAdmin(req,res);
+  let ctx = await requireAdmin(req,res);
   if (!ctx) return;
+  ctx=await prepareAdminOperation(ctx,res,ensureDemoShuffleReadiness);
+  if(!ctx) return;
   const {db, callerEmail, callerIsAdminFlag} = ctx;
   // ensure demo users exist if less than 2
   let demoCount=0;
@@ -984,8 +1061,10 @@ async function handleDemoShuffle(req,res){
 
 async function handleDemoReset(req,res){
   if (req.method!=='POST') return res.status(405).json({ error:'POST only for demo-reset' });
-  const ctx = await requireAdmin(req,res);
+  let ctx = await requireAdmin(req,res);
   if (!ctx) return;
+  ctx=await prepareAdminOperation(ctx,res,ensureDemoResetReadiness);
+  if(!ctx) return;
   const {db} = ctx;
   let deletedGroups=0, deletedWeeks=0, deletedUsers=0;
   try{ const cnt=await db.execute(`SELECT COUNT(*) AS c FROM pairing_groups WHERE week_id IN (SELECT id FROM pairing_weeks WHERE is_demo=1)`); deletedGroups=cnt.rows[0]?.c||0; }catch{}

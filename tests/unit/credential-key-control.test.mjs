@@ -356,7 +356,7 @@ test('operator workflow is manual, protected, latest-main-only, and shares datab
   };
   const checkout=checkoutConfiguration(workflow);
   assert.match(checkout.step,
-    /^        uses: actions\/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4$/m);
+    /^        uses: actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7\.0\.1$/m);
   assert.deepEqual(checkout.inputs,{
     ref:'${{ github.event.repository.default_branch }}',
     'fetch-depth':'0',

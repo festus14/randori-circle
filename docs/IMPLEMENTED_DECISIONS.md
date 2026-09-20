@@ -2,7 +2,7 @@
 
 Status: accepted through the current rolling release
 
-Last reviewed: 2026-09-19
+Last reviewed: 2026-09-20
 
 Scope: current rolling release and independently reviewed candidate increments
 
@@ -33,6 +33,7 @@ or merged after its parent; it must not be landed ahead of that parent.
 | 9 | [PR #97](https://github.com/festus14/randori-circle/pull/97), candidate | Enumeration-safe password recovery and reusable recent-authentication policy | v8 `password-reset-and-recent-auth` |
 | 10 | [Issue #83](https://github.com/festus14/randori-circle/issues/83), candidate | Explicit Google/password linking and identity-conflict recovery | v9 `explicit-provider-linking` |
 | 11 | [PR #96](https://github.com/festus14/randori-circle/pull/96), candidate | Durable invitation and schedule email with one fair five-type dispatcher | Reuses v6; preserves v8/v9 |
+| 12 | [Issue #186](https://github.com/festus14/randori-circle/issues/186), candidate | Generation-bound invitation authorization and concurrent-safe OAuth intent | No migration |
 
 Migration order is append-only: v4 binds an account to an OIDC issuer and
 subject, v5 makes every application JWT depend on a live hashed session row,
@@ -63,10 +64,10 @@ loop.
 
 ## ID-02: Separate production and local identity adapters
 
-**Decision.** Production enrollment uses verified Google OpenID Connect. The
-temporary private-beta allowlist controls enrollment before membership cutover;
-after cutover, a new account also requires an owner-issued, email-bound
-invitation. The isolated loopback runtime instead offers invitation-bound
+**Decision.** Production enrollment uses verified Google OpenID Connect with
+an owner-issued, email-bound invitation. The historical allowlist no longer
+permits direct OAuth account creation; ordinary Google login is existing-account
+only. The isolated loopback runtime instead offers invitation-bound
 email/password signup so the complete product can be tested without Google
 credentials. It cannot activate on Vercel, in production, against a remote
 database, or through a non-loopback request. Existing password accounts may
@@ -1352,7 +1353,7 @@ available in v13, and revalidates all mutable authority at delivery time.
 
 Status: implemented behind default-off `SECONDARY_CIRCLE_SCHEDULING_ENABLED`;
 managed migration v16 and the complete secondary-coordination flag chain are
-required. Schedule email is excluded and tracked in issue #149.
+required. Schedule email is a separately gated increment in ID-34.
 
 **Decision.** Migration v16 adds one `circle_pair_schedules` row per exact
 two-person v13 pairing group and normalized `circle_pair_schedule_proposals`
@@ -1385,7 +1386,8 @@ no legacy room ID or workspace controls. Calendar export uses that opaque
 identity for a stable UID and links only to `/?view=dashboard`. Primary-circle
 request bodies, response fields, room links, storage, notifications, and
 calendar behavior remain on their existing path. Secondary writes create no
-legacy schedule/workspace row and no outbox event.
+legacy schedule/workspace row. ID-34 may atomically enqueue a versioned
+dashboard-only notification when its separate flag is enabled.
 
 **Alternatives.** Reusing `pair_schedules` would make an unscoped legacy group
 ID a cross-tenant capability and couple secondary coordination to room state.
@@ -1393,9 +1395,8 @@ Creating a hidden legacy room solely for scheduling would silently authorize
 chat, video, execution, and AI paths. A JSON proposal array would preserve the
 old representation but weaken per-proposal ownership and foreign-key proof.
 Client-supplied circle/group IDs were rejected because active session context
-is the authority. Automatically sending schedule email was rejected because
-it needs its own versioned payload, idempotency, stale-recipient checks, provider
-rehearsal, and rollback gate; issue #149 owns that increment.
+is the authority. Schedule email uses its own versioned payload, idempotency,
+stale-recipient checks, provider rehearsal, and rollback gate in ID-34.
 
 **Rollout and recovery.** Apply v16 alone through the protected one-version
 workflow after v15: fresh restore rehearsal, fresh status fingerprint, explicit
@@ -1406,3 +1407,839 @@ archive, calendar UID/link, and primary byte-compatibility. Production rollback
 disables only `SECONDARY_CIRCLE_SCHEDULING_ENABLED`. Preserve v16 rows and the
 ledger; do not downgrade or delete tenant data. Existing calendar downloads
 remain controlled by each member's calendar application.
+
+## ID-34: Reuse schedule-email v2 for secondary dashboard notifications
+
+Status: implemented behind default-off
+`SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED`; no migration after v16.
+
+**Decision.** The successful secondary schedule CAS transaction writes
+`schedule.email.requested` v2 intents before commit. Proposal and removal notify
+the partner; acceptance, change, clear, and the delayed reminder notify both
+members. Conflicts, rollbacks, ambiguous commits, and state-preserving actions
+write none; those state-preserving actions also retain the current revision.
+A real proposal/removal revision that preserves an agreement renews the two
+reminder intents, so stale-revision suppression cannot erase the only future
+reminder. The deterministic key contains only the stable schedule ID, revision,
+kind, and recipient. The exact minimal payload carries opaque
+schedule/proposal identities, revision, actor/recipient IDs, kind, template
+version, and a domain-separated instant fingerprint where current state must
+match a time. It contains no address, circle name, internal scope/group/room
+identifier, raw instant, or rendered content.
+
+Dispatch revalidates the exact v16 ownership tuple, uniquely current
+publication, secondary unarchived circle, exact pair, both active non-demo
+memberships, current revision and kind-specific state, preference/current
+address, and non-elapsed instant. Recipient membership is independent of that
+user's selected-circle session. Exact revision matching suppresses stale
+A→B→A agreement/reminder work. Rendering uses current data and links only to
+`/?view=dashboard`.
+
+Primary schedule email remains byte-compatible v1. Both versions share the
+same event type, leases, stable provider idempotency, retry/dead-letter policy,
+retention, audit trail, aggregate metric, and existing five-type fair lane.
+Rollback disables only the new flag: scheduling stays active, new v2 intents
+stop, and pending v2 work suppresses before provider access. See
+`SECONDARY_SCHEDULE_NOTIFICATIONS.md` for the recipient matrix and canary plan.
+
+**Alternatives.** A sixth event type would duplicate a delivery channel and
+weaken the existing fairness budget. Storing raw delivery data would preserve
+stale PII. Synchronous send would couple the CAS to provider availability, and
+post-commit fan-out would create an untracked durability gap. Mutable reminder
+cancellation would add races and discard audit history. Reusing the immutable
+v6 event with dispatch-time suppression keeps the increment migration-free and
+operationally bounded.
+
+## ID-35: Retire request-path authentication schema bootstrap
+
+Status: implemented as a DDL-removal increment with no schema migration. ID-34
+is reserved for the independently developed secondary-schedule notification
+increment.
+
+**Decision.** Authentication schema is created and changed only by the reviewed
+migration workflow. A shared, read-only `ensureAuthReadiness` probe projects
+every column used by ordinary authentication from `auth_accounts`, `users`,
+`auth_rate_limits`, and `auth_sessions`. The probe is coalesced per concrete
+database client, caches only a successful result, and evicts a rejected promise
+so transient failures can recover. It executes no DDL or DML.
+
+Signup, login, profile lookup, activation, password reset, recent-auth,
+identity management, signed logout, and Google link/reauth/callback paths run
+the core probe before business writes. Feature-specific readiness remains in
+place for membership, provider identity, activation, reset, and identity
+tables. The Google callback probes before exchanging its one-time provider
+code. Missing or incompatible required columns therefore return the existing
+generic temporary-unavailability response (or safe OAuth `db_error`) without a
+schema repair, account write, session write, or provider call. Invitation APIs
+retain their existing read-only membership and delivery probes; invitation-
+backed account creation is covered by the authentication core probe.
+
+All 18 `CREATE` and `ALTER` occurrences in `api/auth.js`, including the
+`AUTH_SCHEMA_BOOTSTRAP_ENABLED` branch, are removed. The runtime-DDL allowlist
+no longer contains `api/auth.js`; the remaining 104 occurrences are separate
+AI, data, operations, and membership-initialization debt owned by issue #44.
+
+**Alternatives.** Keeping a permanently false bootstrap flag retains an
+unaudited emergency write path and makes a configuration mistake destructive.
+Silently attempting DML and mapping missing-column errors to availability is
+cheaper initially but can partially create an account before a later session
+table failure. Running the complete 52-table schema inspector on every auth
+request gives stronger global drift evidence but couples login availability to
+unrelated product tables and adds unnecessary request latency. The scoped core
+projection plus existing feature probes gives the smallest independently
+shippable boundary while the deployment gate remains authoritative for exact
+whole-database readiness.
+
+**Rollout and recovery.** Do not promote this increment until issue #43 has
+retained evidence that production is on the reviewed latest schema. Deploying
+the code performs no data or schema mutation. If an auth contract is missing,
+roll forward with the protected migration workflow; do not restore a runtime
+bootstrap flag. Rollback to the preceding build changes only request behavior
+and requires no database rollback, though it reintroduces the legacy DDL path
+and is therefore an emergency compatibility action rather than normal repair.
+
+## ID-36: Enforce the recovery-control contract in secret-free CI
+
+Status: implemented as a local static gate; it produces no provider evidence
+and changes no production resource or schedule.
+
+**Decision.** The deployability job runs `check:backup-controls` with read-only
+repository permission and no protected environment or secret. The gate reads
+only the committed restore-rehearsal, watchdog, and deployability workflows. It
+pins the reviewed trigger sets and cadences, fixed RPO/RTO, default-branch
+fences, environment and concurrency boundary, bounded fail-closed cleanup and
+alerts and their terminal command bodies, exact provider-identity environment
+bindings and secret-bearing rehearsal/cleanup/monitor commands, immutable
+actions, non-persistent checkout credentials, exact sanitized
+artifact paths and retention, and the watchdog's read-only credential-free
+isolation. Output is limited to fixed control descriptions and explicit
+`providerNetworkRequired:false` and `externalMutation:false` claims.
+The validator also pins each complete workflow byte stream by SHA-256, so an
+unanticipated command, environment binding, checkout input, trigger, comment,
+or formatting edit fails closed even if the semantic subset parser misses it.
+An intentional workflow change must update the workflow, digest, focused
+mutations, decision record, and runbook in the same reviewed increment.
+
+Synthetic mutation tests prove that an unsafe trigger or permission, policy
+drift, lost cleanup/alert gate, private artifact path, secret-bearing or
+provider-dispatching watchdog, unpinned action, or credential-persisting
+checkout fails closed. They do not call GitHub or Turso. A green result proves
+only that code still expresses the reviewed policy; #38 still requires a real
+isolated provider restore, and #51 remains open until current retained provider
+evidence and alert ownership are operationally confirmed.
+
+**Alternatives.** Re-running a provider restore on every pull request would
+expose production authority to untrusted code and spend provider resources.
+Relying only on review or scattered regular expressions had no single CI entry
+point and allowed the workflow policy and runbook to drift independently.
+Giving the watchdog provider credentials would couple detection to the system
+it observes. The selected static gate is intentionally narrower than a YAML
+policy engine, but it is deterministic, dependency-free, redacted, and covers
+the exact two workflows that own this recovery control.
+
+This check is defense in depth, not an immutable authorization boundary: a pull
+request can edit the same deployability workflow that invokes it. Repository
+administrators must add an organization-owned required workflow or equivalent
+ruleset before treating this signal as tamper-resistant. That settings change
+is tracked by issue #169 and is not performed by application code. Until then,
+changes to the deployability workflow itself require explicit review. The
+repository's rolling integration branch is currently named
+`codex/issue-87-repository-deployability`; references to “rolling” in this
+decision and runbook mean that exact branch.
+
+## ID-37: Make legacy data-route readiness read-only and route-scoped
+
+Status: implemented as a DDL-removal increment with no schema migration. It
+follows the independently developed backup-control increment in ID-36.
+
+**Decision.** The ordinary `api/data.js` routes no longer create, alter, or
+index schema. Migration v1 remains the owner of the legacy account, profile,
+pairing, run, and application-log structures. A shared readiness module uses
+bounded `SELECT ... LIMIT 0` projections for the admin identity, profile,
+circle, weeks, my-pair, history, statistics, run-history, and log contracts.
+Each contract is coalesced per concrete database client. Only a successful
+probe is cached; a rejected probe is evicted so a transient database failure
+can recover without a process restart.
+
+Routes check only the tables and columns needed before business writes. A
+missing or incompatible contract returns that route's generic unavailable
+response; server-side diagnostic logging remains best effort and cannot repair
+its own table. The bundled question catalogue is file-backed and therefore has
+no database-readiness dependency. `/api/init` is intentionally excluded from
+this increment: its remaining schema and cleanup statements stay visible in
+the runtime-DDL allowlist until a separate, atomic data-only conversion.
+
+This removes 28 DDL statements from ordinary data request helpers and lowers
+the reviewed `api/data.js` allowance from 73 to 45. The remaining 45 statements
+are isolated in `/api/init`; the repository-wide debt falls from 104 to 76.
+
+**Alternatives.** Running the complete schema inspector on every data request
+would detect unrelated drift but couple profile, run, and logging availability
+to every product table. Attempting the operation and translating SQLite errors
+would reduce probes but could perform an earlier business write before a later
+missing-column failure. Keeping local-only auto-creation would make local and
+production behavior diverge and hide migration omissions. Route-scoped
+read-only probes preserve fast, deterministic failure boundaries while the
+whole-database deployment gate remains authoritative.
+
+**Rollout and recovery.** Do not promote this increment until issue #43 has
+retained evidence that production is on the reviewed latest schema. Deployment
+performs no schema or data mutation. If a contract is unavailable, use the
+protected migration workflow to roll forward. Reverting the application build
+requires no database rollback but reintroduces request-time DDL and is only an
+emergency compatibility action. The route matrix and verification commands are
+recorded in `DATA_RUNTIME_DDL_RETIREMENT.md`.
+
+## ID-38: Archive a target-explicit secondary circle as a soft authorization boundary
+
+Status: implemented behind the existing multi-circle control-plane gate with
+no schema migration. It follows the independently developed backup-control and
+runtime data-DDL increments in IDs 36 and 37.
+
+**Decision.** `DELETE /api/circles` carries the selected secondary circle's
+public ID and context generation in an exact same-origin request. The ID keeps
+an HTTP retry pinned to its original target after fallback; it never grants
+access. A first archive requires the exact live selected context, active owner
+membership, non-primary circle, and session-scoped recent-auth proof inside one
+write transaction. A conditional update also proves that every active member
+has another active membership in an unarchived circle. The transaction writes
+one deterministic `circle.archived` audit and moves all stored contexts that
+selected the target to a primary-first, then lowest-ID fallback, incrementing
+each generation. An identical retry by any active retained owner validates the
+fresh proof, archived marker, and audit before returning that caller's current
+context without another write, so different-owner races converge after the
+winning transaction moves both sessions. Bounded retries are limited to recognized pre-commit lock
+conflicts; ambiguous commit results require the same target/version retry.
+
+Archive sets only `circles.archived_at`. Memberships, invitations, creation
+receipts, availability, immutable publications and eligibility, groups,
+schedules and proposals, outbox rows, and earlier audits are retained. Existing
+authorization and delivery preflights require an unarchived circle, so those
+records become inaccessible through normal product paths and queued delivery
+is suppressed when it has not already passed final provider preflight. The
+browser resumes archive through the existing single recent-auth continuation,
+then clears private/workspace state, broadcasts a forced context change, and
+reloads. An unreadable or no-longer-usable post-commit fallback projection
+returns a target-bound refresh-required result, so the browser performs the
+same invalidation and reload instead of continuing to display the archived
+workspace. Session loss invalidates pending auth refreshes, clears identity and
+private state, and follows the normal signed-out route without another network
+decision. That common cleanup cancels pending video work, closes the peer,
+stops every retained local media track, and detaches both video elements without
+an unauthorized signaling request. A video-session epoch fences delayed poll
+and permission results from rebuilding state after cleanup. An older request
+epoch cannot clear a newer same-account login.
+As an ID-38 follow-up, the public catalogue may remember the selected exercise,
+but rendering a question no longer implies authenticated code-tab navigation.
+Only a signed-in path that actually makes the code view visible, or the existing
+server-authorized room transition, persists code-tab restoration. A catalogue
+response that completes after authoritative sign-out therefore cannot recreate
+private navigation state or move the browser away from the signed-out view.
+Owner/target loss, context conflict, ambiguous commit,
+and transport loss clear private state before an authoritative context reload,
+without presenting an uncertain archive as successful. There is no
+public unarchive path; recovery is a separately reviewed
+operator concern because retained memberships would become active again.
+
+**Alternatives.** Archiving the server's current circle without an explicit
+target was rejected because a replay could archive the newly selected fallback.
+Hard deletion was rejected because it destroys evidence and conflicts with
+restrictive immutable-data foreign keys. Leaving a bumped context pointing at
+the archived circle was rejected because it creates avoidable selection errors.
+Revoking all affected sessions was rejected because the every-member safety
+check guarantees a usable fallback. A new receipt table and independent flag
+were rejected because the once-per-circle audit key provides durable replay
+evidence and the complete control-plane flag already dark-launches the route.
+
+**Rollout and recovery.** Reach exact managed readiness through v16 using the
+central protected sequence, deploy with `MULTI_CIRCLE_CONTROL_PLANE_ENABLED`
+false, then canary owner/non-owner, recent-auth, primary/last-circle guards,
+concurrency, fallback, stale-tab fencing, and retained historical rows in
+staging. Rollback disables the control-plane flag and preserves every marker and
+row; never clear `archived_at`, delete tenant history, or downgrade the schema.
+
+## ID-39: Make admin initialization data-only and atomic
+
+Status: implemented as a DDL-removal increment with no schema migration. It
+follows the secondary-circle archive increment in ID-38.
+
+**Decision.** `POST /api/init` no longer creates, alters, indexes, deduplicates,
+or otherwise repairs schema. Migration v1 already owns the legacy tables,
+columns, schedule uniqueness, and indexes previously repeated by the handler;
+migration v2 owns the circle schema, circle indexes, Google-subject uniqueness,
+and the rollout singleton. An exact current-schema and ledger inspection now
+runs read-only inside the same write transaction as the data cutover.
+
+After readiness succeeds, the transaction revalidates the live durable session
+and current non-demo global-administrator authority. A pristine open rollout
+creates one primary circle, backfills active membership for every current
+non-demo account, writes deterministic per-account and completion audits, and
+closes registration last. A valid completed rollout rolls the read-only
+transaction back and returns the existing circle unchanged. Every failure
+before commit rolls all four data-table changes back; an ambiguous commit is
+not automatically replayed and is safe to inspect and retry.
+
+The legacy `DELETE` that retained only `MAX(id)` from duplicate schedules is
+removed. A managed current database already has both the inline and named v1
+uniqueness contracts, so such duplicates are impossible without drift. An
+unmanaged duplicate-bearing database must be remediated explicitly on a
+verified restore before adoption. Adding a no-op v17 or silently discarding
+schedule data would add risk without creating a valid upgrade path.
+
+**Alternatives.** Keeping an admin-only schema repair endpoint would still let
+HTTP traffic mutate production structure and would preserve a path that could
+erase scheduling data. A route-scoped readiness probe would miss unrelated
+ledger or schema drift during this one-time whole-application cutover. A series
+of independent writes would allow a primary circle or closed latch to survive a
+failed audit backfill. Full exact readiness and one explicit transaction are
+acceptable here because initialization is rare and operationally controlled.
+
+**Rollout and recovery.** Production must be migrated and rehearsed before this
+code is promoted; the endpoint cannot advance or adopt schema. Keep membership
+enforcement off, call the data-only endpoint as the authenticated bootstrap
+administrator, verify the completed rollout, then enable enforcement. A generic
+unavailable response requires inspection through the protected migration tools,
+not repeated repair attempts. Detailed behavior is recorded in
+`ADMIN_DATA_INITIALIZATION.md`.
+
+## ID-40: Make notification-preference readiness read-only
+
+Status: implemented as a DDL-removal increment with no schema migration.
+
+**Decision.** Authenticated notification-preference GET, POST, and PUT paths
+use a shared operations-readiness module to project exactly `user_id`,
+`email_enabled`, `sms_enabled`, `phone`, `email`, and `updated_at` from
+`user_notification_prefs` with `LIMIT 0`. Migration v1 remains the sole owner
+of this table. The probe executes no DDL or DML, is coalesced per concrete
+database client, caches only success, and evicts a rejected promise so a
+transient failure can retry.
+
+Origin and method rejection and authentication precede readiness. A missing
+or stale contract returns the existing generic 503 before body normalization,
+preference DML, or best-effort operational logging. Successful requests retain
+their current defaults, POST/PUT normalization, fallback update behavior, and
+response envelopes. Local and hosted requests now follow the same schema-
+read-only path. Removing the one notification-preference `CREATE TABLE`
+statement lowers the `api/ops.js` allowlist from 17 to 16 and total remaining
+request-time DDL from 25 to 24.
+
+**Alternatives.** Adding this contract to `_data-readiness.js` would blur the
+ownership boundary between data and operations routes. Keeping the cache
+inline in `ops.js` would make concurrency, retry, and per-client isolation
+harder to test. A full schema fingerprint on every preferences request would
+couple a small user setting to unrelated application tables. Keeping the
+hosted `CREATE` while local mode probes would preserve environment-specific
+behavior and hide missed migrations.
+
+**Rollout and recovery.** Do not promote until issue #43 has retained evidence
+that production is at the reviewed latest schema. Deployment performs no
+schema or provider mutation. If the probe fails, stop promotion and roll
+forward through the protected migration workflow; do not repair schema from an
+HTTP request. Reverting the application build needs no database rollback but
+reintroduces the retired DDL and is only an emergency compatibility action.
+The exact contract and verification commands are recorded in
+`NOTIFICATION_PREFERENCES_RUNTIME_DDL_RETIREMENT.md`.
+
+## ID-41: Make AI readiness read-only and route-scoped
+
+Status: implemented as a DDL-removal increment with no schema migration.
+
+**Decision.** Ordinary analyze, feedback, history, and AI diagnostic-log paths
+no longer create or repair schema. Migration v1 remains the sole owner of the
+six AI tables, two app-log objects, and their constraints. A shared
+`_ai-readiness.js` module now uses exact `SELECT ... LIMIT 0` projections for
+analyze, feedback, history, and logging. Probes coalesce per concrete database
+client and contract, cache only success, and evict rejected promises for retry.
+
+Method, authentication, consent/input, and canonical-room validation run
+before analyze readiness where no database contract is needed. Analyze proves
+every record, consent, quota, usage, and reservation column before consent or
+quota mutation, session persistence, or provider traffic. Read-only metadata
+checks also prove the three primary keys used as `ON CONFLICT` targets.
+Feedback and history
+fail closed before their data access. Diagnostic logging has its own read-only
+probe, reuses the request client, remains best effort, and cannot hide a valid primary result. The two
+legacy reduced-column insert retries are removed so stale schema cannot accept
+an ambiguous session or feedback shape. Existing authorization, consent,
+quota, no-refund-after-provider, timeout/fallback, and response semantics are
+preserved.
+
+**Alternatives.** A global schema fingerprint on every request would couple AI
+availability to unrelated tables and repeat deployment-gate work. Keeping
+request-time repair would let ordinary traffic hide missed migrations. Making
+app-log readiness part of analyze would turn an observability outage into a
+product outage. Retaining reduced-column insert fallbacks would silently drop
+evidence and timing data and make mixed-schema behavior non-deterministic.
+
+**Rollout and recovery.** Production must be on the reviewed migration before
+promotion; this increment performs no database or provider mutation. A primary
+readiness failure returns a generic 503 and must be repaired with the protected
+migration workflow. A logging-readiness failure affects diagnostics only. An
+application rollback requires no database rollback, but reintroduces the eight
+retired DDL statements and is reserved for emergency compatibility. Exact
+contracts and verification are recorded in `AI_RUNTIME_DDL_RETIREMENT.md`.
+
+## ID-42: Forbid runtime DDL and make admin operations readiness route-scoped
+
+Status: implemented as the final DDL-removal increment with no schema migration.
+
+**Decision.** Administrator promotion, demo seed, demo shuffle, and demo reset
+no longer invoke the shared best-effort schema bootstrap. Migration v1 already
+owns every affected account and legacy pairing table, column, and index. The
+runtime-DDL allowlist is therefore empty, and CI rejects every direct, imported,
+or assembled API/runtime schema mutation.
+
+Each operation has a read-only readiness contract containing only the columns
+it uses. Demo write contracts additionally inspect the primary and unique keys
+that protect account identity, publication claims, pairing participants, and
+week-label uniqueness. Contracts are coalesced per database client and route,
+cache only successful probes, and evict failures for retry.
+
+Promotion also checks the canonical account primary key and raw-email unique
+constraint. Its case-insensitive compatibility lookup is bounded to two rows;
+an ambiguous legacy case collision fails closed, and a successful promotion
+updates only the resolved account ID. A new case-folded schema index would
+change the migration contract and legacy data semantics, so it is not added by
+this request-path DDL retirement.
+
+Durable authentication and a live account read establish database or exact
+configured-email administrator authority before any readiness probe or data
+mutation. A non-admin performs no schema probe, DDL, or DML. The existing
+configured-administrator synchronization occurs only after the selected route
+is ready. Promotion input is validated before readiness and all business
+writes. Authentication-database and readiness failures return a generic 503;
+existing method, authentication, authorization, validation, success, demo-data,
+and pairing-uniqueness semantics remain unchanged.
+
+**Alternatives.** Full schema inspection on every request would detect unrelated
+drift but couple small administrator actions to all product tables and add
+avoidable latency. One shared superset probe would make promotion depend on the
+demo pairing schema. Relying on write failures could leave partial data. Keeping
+the bootstrap for administrators or local development would continue to hide
+missed migrations and prevent an enforceable zero-DDL boundary.
+
+**Rollout and recovery.** Promotion requires retained evidence that production
+is on the reviewed migration through v16. This increment performs no database
+or provider mutation. Missing readiness must be repaired by the protected
+migration workflow, never by an HTTP request. Application rollback requires no
+database rollback but reintroduces the retired schema writes and is reserved
+for emergency compatibility. Exact contracts and tests are recorded in
+`OPERATIONS_RUNTIME_DDL_RETIREMENT.md`.
+
+## ID-43: Treat only scheduled outbox runs as freshness evidence
+
+Status: implemented as a code-only operations increment with no migration or
+production credential.
+
+**Decision.** A separate hourly GitHub Actions watchdog assesses only initial
+`schedule` attempts of `outbox-dispatch.yml` on the repository default branch.
+It never treats `workflow_dispatch`, feature-branch activity, a human rerun, or
+fresh `updated_at` metadata as proof that the five-minute scheduler is healthy.
+The newest authoritative run wins, so an older success cannot hide a newer
+failure, cancellation, or skip.
+
+The schedule has a deterministic 15-minute grace aligned to five-minute UTC
+slots. An in-progress run becomes stuck at the worker's exact two-minute job
+deadline; queued work becomes stale only after the scheduling window. Fixed
+non-sensitive outcomes distinguish healthy, grace, missing, stale, failed,
+cancelled, skipped, stuck, manual-rerun, malformed-response, and GitHub-API
+failure states.
+
+Discovery constructs only the reviewed GitHub workflow-runs URL, validates the
+same event and branch locally, scans at most two 100-run pages, caps response
+size, and shares one monotonic ten-second API deadline. Its JSON projection
+contains only fixed status values, bounded counts, run identifiers, and timing
+metadata. The workflow has `actions: read` and `contents: read`, no production
+environment or secret, and no application, workflow-dispatch, database, or
+provider mutation.
+The repository deployability contract binds reviewed digests for the workflow
+and assessor and fails if either the watchdog boundary or the source worker's
+two-minute timeout is weakened.
+
+**Alternatives.** A redundant secret-bearing scheduler could improve
+availability but duplicates privileged configuration and risks concurrent
+delivery. Application health checks do not prove scheduler health. Manual runs
+are useful for recovery but accepting them as freshness would conceal a broken
+schedule. An unbounded history scan adds risk without changing the newest-run
+decision. Terminal-event retention addresses storage rather than delivery
+detection and remains separate work.
+
+**Rollout and recovery.** Land only after rebasing onto the current rolling
+release. No database or production configuration change is required. On alert,
+inspect and repair `outbox-dispatch`, invoke its existing manual recovery if
+needed, and require the next genuine scheduled success before declaring the
+scheduler healthy. Rollback removes only the observer and never mutates or
+invokes the production worker. The exact contract is documented in
+`OUTBOX_DISPATCH_WATCHDOG.md`.
+
+## ID-44: Bind invitation authority to one prepared generation and explicit OAuth intent
+
+Status: candidate code-only authentication protocol; no schema migration.
+
+**Decision.** Every invitation preparation creates a random, non-identifying
+256-bit binding. The browser receives the raw 43-character base64url value;
+the exact version-2 HttpOnly claim contains only its domain-separated HMAC plus
+the existing hashed invitation fields and ten-minute deadline. Password
+signup, activation resend, and Google invitation enrollment require the raw
+binding and current claim to match in constant time. A same-tab refresh may
+present the binding but receives only the remaining lifetime and never extends
+the claim. Legacy or malformed claim versions fail closed.
+
+Google enrollment is an explicit same-origin POST with purpose `invite` and
+the binding. Ordinary Google sign-in is purpose `login`, ignores every invite
+cookie, matches only an existing issuer/subject identity, and never creates or
+claims an account. Link and reauthentication retain their explicit
+session-bound purposes. Each start stores state, PKCE verifier, nonce, safe
+return path, purpose, and expiry in one signed state-derived callback cookie.
+A callback validates then clears only its own transaction; an unknown or stale
+callback clears nothing. Invite cancellation returns to the purpose-scoped
+`/invite` recovery path; ordinary login cannot select that return path. Invite
+success returns to `/` and never reloads the consumed invitation.
+
+The current v2 invitation cookie is not cleared on mismatch or success because HTTP
+responses can arrive out of order. Its short expiry and the durable consumed
+invitation row make old claims inert, while the page-held binding prevents a
+claim from authorizing another preparation generation. Existing linked members
+can consume a fresh matching invitation, including an invitation to another
+allowed circle, but a used-by-other claim and every consumption race fail
+without issuing a session. Public password responses remain enumeration-safe,
+and the local password adapter remains isolated to the reviewed loopback
+runtime.
+
+The sole cutover exception is a successful prepare expiring the legacy v1
+cookie at its old `/api/auth` path before setting v2 at `/api`. This targets a
+different path, so it cannot erase a v2 generation; failures never send it.
+
+**Alternatives.** One fixed OAuth cookie set is simpler but lets callback A
+destroy transaction B. Clearing the invite cookie in responses appears tidy
+but reintroduces the same ordering race. Database-backed prepared sessions add
+revocation and cleanup schema that the ten-minute signed protocol does not yet
+need. Putting the raw invitation token into page state or OAuth state exposes a
+bearer credential. Dual-reading v1 preserves the unbound gap; the bounded
+ten-minute cutover instead rejects it. Email-based Google creation or linking
+is convenient but violates explicit identity and invitation intent.
+
+**Rollout and recovery.** Ship server and compatible client together. In-flight
+v1 claims expire in at most ten minutes; no migration, provider change, key
+rotation, or production mutation is part of deployment. Monitor only aggregate
+prepare, `invalid_state`, `private_beta`, and activation-delivery outcomes.
+Never log bindings, claims, invitation tokens, email addresses, provider
+subjects, or OAuth transaction contents. Rollback changes application code
+only, but restoring unbound behavior reopens the race. The exact protocol,
+invariants, tests, and operational guidance are in
+[`AUTH_CLAIM_BINDING.md`](AUTH_CLAIM_BINDING.md).
+
+## ID-45: Bind account-creation UI to one live prepared invitation
+
+Status: accepted client increment; depends on the server binding and OAuth
+purpose contract in issue #186.
+
+**Decision.** Outside the isolated `local_open` runtime, the browser advertises
+and submits account creation only while the current tab holds one exact live
+prepared-invitation generation. Preparation returns an opaque, non-identifying
+binding and a server-bounded lifetime no longer than ten minutes. The browser
+keeps only that binding in session storage for `/invite` reload recovery and
+uses a monotonic deadline anchored before the prepare request, so neither a
+wall-clock change nor request latency can extend eligibility.
+Raw invitation bearers remain fragment-only and are scrubbed before any
+third-party script can run.
+
+Password signup, activation resend, and invite-purpose Google start carry the
+exact binding. Every operation is fenced by the invite generation and deadline,
+authentication epoch and actor, modal generation, and its own abortable request
+identity. Those values are rechecked after every network await, so expiry,
+identity change, modal reuse, or a replacement preparation makes a delayed
+response inert. Ordinary password/Google sign-in, OAuth result refresh, valid
+local signup, and existing-member flows remain available independently.
+Invite OAuth cancellation and failure return to `/invite`, refresh the same
+binding, and preserve invite-purpose retry. Enumeration-safe signup and resend
+successes remain conditional rather than claiming that mail was sent.
+Initial session hydration preserves the prepared gate for an existing member,
+but invite-bound controls stay disabled until `/api/auth/me` authoritatively
+returns `200` or `401`; rejected or already-expired preparation clears the
+tab-stored binding.
+An invite OAuth error with unavailable identity hydration remains on the inert
+invite landing without a provider retry, so only an explicit ordinary sign-in
+can choose login purpose.
+
+The client is not authorization. Issue #186 owns the signed HttpOnly claim,
+binding comparison, explicit Google `login` versus `invite` purpose, and
+transaction-time invitation validation. That contract is required before this
+increment can land because browser-only generations cannot control shared
+cookie ordering across overlapping documents or tabs.
+
+**Alternatives.** Trusting only a prepared cookie leaves the UI unable to bind a
+submit to the invitation the user saw. Retaining the bearer in browser storage
+increases disclosure risk. A wall-clock timer can be extended by clock changes.
+Hiding the entry point entirely removes useful recovery guidance. Conflating
+Google login and invite creation lets stale ambient state change authentication
+semantics. These alternatives are rejected in favor of opaque exact binding,
+monotonic expiry, a disabled action with guidance, and explicit OAuth purpose.
+
+**Rollout and recovery.** Rebase and land only after #186, then canary existing
+sign-in, both invited signup methods, reload, expiry, modal reuse, and
+out-of-order preparation. This increment changes no schema, secret, or
+production data. If account creation must be stopped, disable its server
+capability while rolling forward; do not weaken the server binding. The full
+contract and test matrix are documented in `INVITE_GATED_SIGNUP.md`.
+
+## ID-46: Quiesce bootstrap identity refreshes before the circle-switch race
+
+Status: implemented as a test-only reliability increment with no production or
+schema change.
+
+**Decision.** The identity-refresh/circle-switch browser test observes all three
+fixed bootstrap `/api/auth/me` requests and then awaits one explicit refresh
+before it starts the gated switch race. The test continues to require the
+identity-changing refresh to commit, the replacement circle data to render,
+and the released old switch callback to remain fenced.
+
+This keeps `refreshMe()`'s latest-request-wins production contract intact. A
+bootstrap refresh may correctly supersede an older explicit refresh and cause
+that older call to return `false`; treating that scheduler-dependent return as
+a product failure made otherwise identical Linux runs flaky.
+
+**Alternatives.** Removing the `true` assertion would avoid the immediate
+failure but weaken proof that the intended identity transition committed.
+Sleeping past 1.2 seconds would depend on wall-clock scheduling. Exposing a
+production-only idle hook would widen the application surface solely for a
+test. Changing refresh fencing so every caller returns success would obscure
+which response actually committed and could revive stale identity state.
+
+**Rollout and recovery.** This changes only Playwright orchestration and its
+decision record. Revert it if the bootstrap schedule is replaced by a durable
+application-ready signal, then synchronize the race through that public signal.
+
+## ID-47: Evolve the existing shell through semantic, observable UI states
+
+Status: candidate presentation and test increment; no protocol or schema
+change.
+
+**Decision.** Extend the #122 shell in place after invite-gated signup rather
+than merging the superseded #91/#98 branches or beginning a framework rewrite.
+Canonical semantic color aliases now own canvas, surface, text, control,
+focus, information, success, warning, and danger roles; legacy names resolve
+through those aliases during incremental migration. Primary controls identify
+their stable view with `aria-controls`, each view identifies its label, and the
+Account menu closes on Escape, Tab, outside pointer interaction, or window blur
+without overriding the user's outside focus.
+
+The 320, 390, and 640 px layouts keep the shell, invitation/auth surfaces,
+active-circle selector, availability, and pairing content within the viewport.
+Coarse pointers receive at least 44 px targets. Reduced-motion removes
+nonessential timing, and forced-colors keeps control boundaries, focus, and
+status distinctions visible.
+
+UI copy follows observed state instead of implying product readiness. Public
+stats expose loading, ready, or unavailable; browser-tab coordination reports
+ready, local-only, or error and is not described as server persistence; email
+preferences expose loading, ready, saving, saved, local-only, or error. A saved
+preference is only a request for a future email and never claims provider
+delivery. Reminder controls remain disabled until identity hydration resolves;
+reads and writes accept only an explicit successful preference envelope bound
+to the captured positive account ID, and each save revalidates that identity
+before mutation. The dashboard's mail action is labelled as opening a draft.
+
+The official `@axe-core/playwright` wrapper is exact-pinned at 4.13.0 as a
+development-only dependency. Settled-state scans fail on every WCAG 2.0/2.1/2.2
+A/AA-tagged violation with no excluded rules or nodes. `incomplete` findings
+are retained as report attachments for manual review. Targeted tests remain
+authoritative for focus, keyboard interaction, reflow, coarse pointers,
+forced-colors, reduced motion, and asynchronous state transitions that axe
+cannot validate. Linux CI stores the focused 390 px screenshots with the
+Playwright artifacts.
+
+**Alternatives.** Cherry-picking #91/#98 would revive stale auth and navigation
+assumptions. A design-system or framework migration could improve long-term
+composition but would make this usability slice too broad. Raw `axe-core`
+saves roughly 47 KB unpacked but requires custom injection, typing, frame and
+shadow handling, and diagnostics. Axe alone cannot prove focus order, reflow,
+motion preferences, or truthful asynchronous copy. Static success badges and
+optimistic delivery language are simpler but misrepresent unavailable
+services. Blanket accessibility exclusions hide regressions and are rejected.
+
+**Rollout and recovery.** Land as one three-commit presentation slice after the
+invite-gated client. First canary anonymous invitation/sign-in, then signed-in
+circle selection, weekly pairing, reminder preference, and account-menu flows
+at desktop and narrow widths. No migration, secret, provider, or production
+data change is required. Rollback reverts this presentation slice as a unit;
+the #122 shell and #185 invitation fencing remain intact. If axe exposes an
+uncertain `incomplete` result, inspect the attached evidence rather than
+weakening the WCAG violation gate.
+
+## ID-48: Separate routine availability fixtures from the production cutoff clock
+
+Status: candidate test-only reliability increment with no production or schema
+change.
+
+**Decision.** Availability mutations retain both clocks that protect the cutoff:
+the injected request instant selects a cycle and SQLite checks its own current
+time in the conditional commit. Routine availability and active-circle mutation
+tests use one named, explicit 2099 editable cycle so a historical fixture cannot
+expire under SQLite while CI is running. The exact boundary suite instead uses
+a narrow test database-clock adapter and proves a successful write one
+millisecond before Sunday 08:00 Europe/London, rejection at the boundary, and
+reclassification when the database clock crosses the cutoff after a request
+starts. Pairing boundary tests retain their fixed BST, GMT, DST, and ISO-year
+examples. Live local-onboarding and pairing browser tests continue to resolve
+the server's actual upcoming cycle.
+
+**Alternatives.** Trusting only the injected production clock would weaken the
+commit-time race defense. Faking SQLite time for every test would stop routine
+tests exercising the real SQL predicate. Deriving future dates from the day of
+execution would vary cycle identities and expectations. Skipping assertions
+after the cutoff would hide failures instead of making their preconditions
+explicit.
+
+**Rollout and recovery.** This increment changes tests and documentation only;
+it needs no migration, environment variable, credential, deployment setting,
+or rollback procedure. Revert it only together with an equivalent deterministic
+clock strategy. The audit and commands are recorded in
+[`AVAILABILITY_TEST_CLOCK.md`](AVAILABILITY_TEST_CLOCK.md).
+
+## ID-49: Retain only an existing prepared binding across rate limiting
+
+Status: accepted security and signup-recovery increment.
+
+**Decision.** A `429` from prepared-invitation refresh is unevaluated: the
+server applies its rate limit before checking the binding and does not revoke
+the signed claim. The browser therefore retains the exact syntactically valid
+binding that was already present in this tab only when storage still contains
+that same value. The gate remains non-ready, and signup, resend, and invite
+OAuth remain unavailable until a later `/invite` reload revalidates the binding
+and receives a fresh bounded lifetime.
+
+Raw invitation preparation never retains prior storage on `429`, and no value
+from a rate-limited response is persisted. Evaluated invalid or mismatched
+claims, malformed envelopes, non-429 errors, network failures, expiry,
+identity changes, route changes, and stale generations clear or leave cleared
+storage. Delayed responses cannot reactivate a completed invite route or
+overwrite storage owned by a newer gate generation.
+
+**Alternatives.** Clearing on every non-success response is simpler but turns a
+temporary rate limit into permanent loss of the tab's only reload credential.
+Persisting a response-provided value would let an unevaluated response replace
+trusted state. Automatically retrying would consume more rate-limit budget and
+create timer lifecycle work. Retaining only the exact pre-request value keeps
+the recovery path narrow and explicit.
+
+**Rollout and recovery.** Ship as an additive client patch with no schema,
+secret, or production-data change. Canary a successful prepare, a rate-limited
+reload, an inert cooldown state, and a successful reload after the cooldown.
+Also verify raw-token `429` and delayed stale responses cannot write storage.
+Rollback reverts this client-only retention exception; server-side claim,
+expiry, and rate-limit enforcement remain authoritative.
+
+## ID-50: Make weekly publication total and explicitly Sunday-bounded
+
+Status: candidate code-only pairing reliability increment; no migration.
+
+**Decision.** Authenticated cron publication is admitted only during the exact
+half-open Sunday `[08:00, 10:00)` UTC window, classified by database time while
+the existing `Europe/London` resolver continues to own the cycle boundary.
+GMT, BST, both DST transition Sundays, weekdays, and exact endpoints are pinned
+by tests. Primary reads also classify with database time in production; only
+the already verified isolated loopback runtime retains its explicit test clock.
+
+A valid primary-circle snapshot with zero available members now commits one
+immutable cycle with zero participants and zero groups. Unavailable members
+retain one versioned, idempotent durable outbox event each, owner and cron races
+still converge on one generation, and the empty primary result no longer
+prevents bounded secondary-circle processing. Current primary unavailable
+reads require exact version-1 `pairing.email.requested` evidence in
+`outbox_events`; they no longer consult the retired legacy queue. Weekly logs
+contain aggregate counts only and omit request metadata, identities, scope IDs,
+and cycle keys.
+
+**Alternatives.** Rejecting emptiness leaves a cycle perpetually overdue.
+Creating a placeholder participant violates identity and room authorization.
+A new primary eligibility table would improve model symmetry but adds an
+unnecessary migration while the durable outbox already records the unavailable
+snapshot. Reading both queues indefinitely keeps obsolete storage in the live
+truth path. A rolling two-hour interval after local cutoff is less explicit and
+can admit unintended weekdays. These options are rejected for this increment.
+
+**Rollout and recovery.** No schema, secret, provider, or production-data
+change is required. Canary both UTC retry hours, an all-unavailable primary
+cycle, secondary continuation, and the member unavailable response; monitor
+the non-identifying aggregate completion log and existing outbox metrics.
+Rollback is code-only, but committed empty cycles must never be deleted or
+remixed; roll forward if an older reader cannot consume one. The complete
+contract is documented in
+[`PAIRING_PUBLICATION_TOTALITY.md`](PAIRING_PUBLICATION_TOTALITY.md).
+
+## ID-51: Recover overdue weekly publication from authoritative server state
+
+Status: candidate code-only MVP reliability increment; no migration.
+
+**Decision.** Every successful current-cycle `/api/weeks` and `/api/my-pair`
+response includes one authoritative-time `publication_state` envelope. Production
+uses database time; the already verified isolated local runtime retains its
+application-clock test seam. The envelope identifies
+the tenant-scoped cycle and reports exactly `pending`, `overdue`, or `published`.
+Owner recovery opens at the half-open boundary 30 absolute minutes after the
+already resolved `Europe/London` cutoff. The server alone grants
+`can_publish_now`; member responses do not carry that capability.
+
+An owner publishes through the existing `POST /api/pairing/run` write path with
+exactly `{expected_cycle_key}`. The write transaction revalidates the actor,
+active circle and context generation, resolves database time and the current
+cycle again, and rejects an early or changed cycle with stable `409` codes
+before eligibility, history, publication, or outbox writes. A matching durable
+publication is returned idempotently even if a replay arrives before the grace
+boundary. Cron remains keyless, keeps its Sunday `[08:00, 10:00)` UTC admission,
+and converges through the same unique publication claims and existing versioned
+notification outbox.
+
+The browser renders only a response matching its captured account, public
+circle ID, context version, and cycle key. It never treats a POST response or a
+cross-tab message as publication truth: success, stable conflict, and ambiguous
+`503` all cause authoritative GET refetches. Cross-tab messages contain only
+those identifiers. Owners keep a persistent Publish now or Retry action while
+the server says recovery is available; members receive truthful delayed copy
+without the control.
+
+**Alternatives.** A new recovery table or job queue would duplicate the durable
+publication claim and require a migration. Extending the UTC cron window would
+not give owners an immediate, visible recovery path and would confuse UTC job
+admission with the London business boundary. Client clocks, locally derived
+roles, optimistic success, and trusting BroadcastChannel payload state all
+weaken authority or race guarantees. A force/remix endpoint would violate
+immutable pairings and notification idempotency. These options are rejected.
+
+**Rollout and recovery.** Ship after the accessible shell, canary owner and
+member states in both primary and secondary circles, and monitor aggregate
+`pairing_recovery_completed` and `pairing_recovery_rejected` events alongside
+existing cron and outbox metrics. GMT recovery begins at 08:30Z; BST recovery
+begins at 07:30Z, independently of cron's UTC window. Rollback removes the UI
+and keyed manual admission but must retain every already committed publication
+and outbox event. No schema, secret, provider, or deployment migration is
+required. The full contract is in
+[`PAIRING_PUBLICATION_RECOVERY.md`](PAIRING_PUBLICATION_RECOVERY.md).
+
+## ID-52: Derive first-run progress from authenticated product state
+
+Status: candidate client-only onboarding integrity increment; no migration.
+
+**Decision.** The setup checklist derives profile, active-circle availability,
+current pairing, and optional workspace progress from their existing
+authenticated authorities. Browser flags may dismiss the explanatory tour but
+cannot complete or suppress the checklist. Profile reads and writes remain
+independent of availability failures while carrying request, account, circle,
+and context fences. Cycle-scoped state additionally binds the upcoming cycle;
+pairing reuses the recovery parser and database `publication_state.observed_at`
+instead of browser time. Errors remain unknown and expose inline retry states.
+AI and video are omitted until a truthful readiness contract exists.
+
+**Alternatives.** Local-storage or DOM heuristics cross accounts and cycles. A
+new aggregate endpoint duplicates mature authorization paths and expands the
+protocol. Persisted onboarding flags add schema and drift from product state.
+Broad AI/video capability booleans would overstate provider, consent, quota,
+media, and room readiness. These options are rejected for this increment.
+
+**Rollout and recovery.** Ship after weekly publication recovery; canary fresh
+and returning accounts, profile and availability failures, cycle rollover,
+circle switches, published and unpublished assignments, and exact workspace
+hydration. Rollback is code-only and does not alter user, cycle, pairing, or
+workspace data. The full decision and verification plan is in
+[`SERVER_AUTHORITATIVE_ONBOARDING.md`](SERVER_AUTHORITATIVE_ONBOARDING.md).

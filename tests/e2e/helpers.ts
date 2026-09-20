@@ -81,6 +81,15 @@ const defaultApiResponses: Record<string, ApiResponse> = {
   '/api/weeks': { ok: true, weeks: [] },
   '/api/history': { ok: true, history: [], partner_counts: {}, total: 0 },
   '/api/stats': { ok: true, total_users: 0, total_weeks: 0, total_pairs: 0, total_sessions: 0 },
+  '/api/notifications/prefs': request => {
+    const requested = request.method() === 'POST'
+      ? (request.postDataJSON() as { email_enabled?: boolean } | null)?.email_enabled
+      : undefined;
+    return {
+      ok: true,
+      prefs: { user_id: 1, email_enabled: requested ?? true, sms_enabled: false, phone: null },
+    };
+  },
   '/api/my-pair': { ok: true, paired: false, reason: 'no_week_yet' },
   '/api/profile': { ok: true, user: null },
   '/api/questions': request => hasSessionCookie(request)

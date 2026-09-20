@@ -24,7 +24,7 @@ Pair chat is a private, canonical-room feed rather than a local preview. It load
 
 Authenticated History is a server-backed Pairings & Activity view. A member can explicitly load a private pairing recap containing the agreed schedule, a bounded timeline of messages and verified run summaries, and safe metadata for the latest workspace checkpoint. Source code, whiteboard shapes, hidden cases, provider output, transcripts, and unrelated users' activity are never included. Available checkpoints reopen through the existing authenticated workspace hydration path; pair assignments are not described as completed sessions until lifecycle and attendance tracking exist.
 
-Every private pair surface requires the source-tagged `pairing_participants` snapshot written by current shuffles, including current-pair discovery, schedules, chat, run feeds and execution, video signaling, workspace checkpoints, recaps, personal history, and AI consent or feedback. This prevents collisions between legacy `users` IDs and authenticated account IDs. Pre-snapshot pairings intentionally remain unavailable until an operator can audit and backfill their identity source; numeric IDs alone are never enough evidence. The admin-only `/api/init` migration installs the required snapshot table and pair-activity indexes; production rollout/backfill tracking remains in issues #27 and #30.
+Every private pair surface requires the source-tagged `pairing_participants` snapshot written by current shuffles, including current-pair discovery, schedules, chat, run feeds and execution, video signaling, workspace checkpoints, recaps, personal history, and AI consent or feedback. This prevents collisions between legacy `users` IDs and authenticated account IDs. Pre-snapshot pairings intentionally remain unavailable until an operator can audit and backfill their identity source; numeric IDs alone are never enough evidence. Migration v1 installs the required snapshot table and pair-activity indexes; `/api/init` is a data-only primary-circle cutover. Production rollout/backfill tracking remains in issues #27 and #30.
 
 The active catalogue contains 10 original exercises across arrays, windows, graphs, intervals, simulation, stacks and strings, binary search, breadth-first search, hash maps, and dynamic programming. Search, difficulty, and pattern filters run entirely in the browser against the public catalogue projection; server-owned generated cases and reference oracles stay outside browser payloads.
 
@@ -35,6 +35,7 @@ This private-beta sync is whole-document compare-and-swap, not a CRDT: members s
 - Sessions use 12-hour `Secure`, `HttpOnly`, `SameSite=Lax` cookies.
 - Google OAuth uses cryptographic state, PKCE, and verified OpenID userinfo.
 - Production password signup is fail-closed unless invitation-bound email activation is fully configured; no account or session exists before verification.
+- Production account-creation controls require one exact live prepared invitation in the current tab; expiry or identity/modal changes fence delayed signup, resend, and invite OAuth responses. Existing-member sign-in and isolated `local_open` signup remain available. See [prepared-invitation signup gate](docs/INVITE_GATED_SIGNUP.md).
 - Existing password accounts can recover through a generic, rate-limited response; reset tokens are single-use, encrypted in the outbox, hashed at rest, and revoke every session when consumed.
 - Credential linking is explicit, recent-authenticated, and opt-in after migration v9. Matching provider email never links accounts; the stable Google subject remains authoritative when its email changes, and the final usable sign-in method cannot be removed.
 - Mutations enforce same-origin requests for cookie sessions; API callers may use pinned Bearer JWTs.
@@ -66,6 +67,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_pairing.js` | deterministic fairness and canonical room identifiers |
 | `api/_pairing-publication.js` | managed-v6 readiness, transaction-bound owner/cron publication, immutable snapshots, and idempotency |
 | `api/_outbox.js` | provider-neutral leases, heartbeats, timeouts, retry/dead-letter transitions, replay audit, and aggregate metrics |
+| `scripts/github-outbox-dispatch-watchdog.mjs` | bounded, secret-free assessment of scheduled notification-worker health |
 | `api/_invitation-email.js` | encrypted invitation credentials, versioned delivery, resend bounds, and current-state suppression |
 | `api/_schedule-email.js` | versioned schedule email intents, 24-hour reminders, current-state suppression, and private rendering |
 | `api/_email-activation.js` | invitation-bound pending registrations, encrypted verification delivery, token rotation, and atomic activation |
@@ -78,8 +80,10 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_messages.js` | strict chat input, cursor, storage projection, and schema-readiness validation |
 | `api/_chat-retention.js` | tenant-safe 90-day retention planning, legal holds, fenced leases, bounded deletion, and count-only metrics |
 | `api/_health.js` | process liveness and exact, read-only database readiness probes |
+| `api/_admin-init.js` | exact-readiness-gated, transactional primary-circle data initialization |
 | `api/_pair-access.js` | shared source-aware authorization for canonical private pair rooms |
 | `api/_circle-membership.js` | primary-circle membership, keyed invite hashes, signed short-lived claims, and audited acceptance |
+| `api/_circle-archive.js` | recent-authenticated secondary-circle soft archive, every-member safety, idempotency, and deterministic context fallback |
 | `api/invitations.js` | owner-only invitation lifecycle and rate-limited public preparation |
 | `db/schema-manifest.js` | checksummed contract for 52 application tables and 56 named indexes |
 | `db/schema-inspector.js` | read-only SQLite drift inspection and non-executable planning |
@@ -96,13 +100,15 @@ Copy `.env.example` and configure at least:
 - an explicit canonical HTTPS `APP_URL` plus both `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`; OAuth stays unavailable for partial, malformed, insecure, host-mismatched, or local-runtime configuration
 - `SIGNUP_ALLOWLIST` for the legacy private-beta Google flow while circle membership enforcement is off
 - `CIRCLE_MEMBERSHIP_ENABLED=true` to enforce invitation-gated primary-circle access after the staged migration below
-- `MULTI_CIRCLE_CONTROL_PLANE_ENABLED=true` enables session-bound circle creation/selection and circle-scoped roster/invitation management whose final schema addition is migration v14. Exact runtime readiness for this release requires the complete managed ledger through v16. Keep `MULTI_CIRCLE_AVAILABILITY_ENABLED=false` until selected-circle availability is rehearsed, then keep `SECONDARY_CIRCLE_COORDINATION_ENABLED=false` until that complete ledger is ready. After protected migration v16, `SECONDARY_CIRCLE_SCHEDULING_ENABLED=true` lets a current secondary pair agree a time without a room/workspace capability. After coordination and the shared sender are rehearsed, `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED=true` independently queues dashboard-only pairing-result mail. Each dependent flag is ineffective unless its preceding chain is enabled. Secondary chat, rooms, video, execution, recap, AI, and schedule email remain unavailable. See `docs/ACTIVE_CIRCLE_CONTEXT.md`, `docs/CIRCLE_CREATION.md`, `docs/SELECTED_CIRCLE_PAIRING.md`, and `docs/SECONDARY_SCHEDULING.md`.
+- `MULTI_CIRCLE_CONTROL_PLANE_ENABLED=true` enables session-bound circle creation/selection, owner archive with deterministic fallback, and circle-scoped roster/invitation management whose final schema addition is migration v14. Exact runtime readiness for this release requires the complete managed ledger through v16. Keep `MULTI_CIRCLE_AVAILABILITY_ENABLED=false` until selected-circle availability is rehearsed, then keep `SECONDARY_CIRCLE_COORDINATION_ENABLED=false` until that complete ledger is ready. After protected migration v16, `SECONDARY_CIRCLE_SCHEDULING_ENABLED=true` lets a current secondary pair agree a time without a room/workspace capability. `SECONDARY_CIRCLE_PAIRING_EMAIL_ENABLED` independently queues dashboard-only pairing-result mail; `SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED` independently queues dashboard-only schedule mail and is effective only when scheduling is enabled. Keep both delivery flags false until their sender canaries pass. Secondary chat, rooms, video, execution, recap, and AI remain unavailable. See `docs/ACTIVE_CIRCLE_CONTEXT.md`, `docs/CIRCLE_CREATION.md`, `docs/CIRCLE_ARCHIVE.md`, `docs/SELECTED_CIRCLE_PAIRING.md`, `docs/SECONDARY_SCHEDULING.md`, and `docs/SECONDARY_SCHEDULE_NOTIFICATIONS.md`.
 - `EMAIL_PASSWORD_ACTIVATION_ENABLED=true` plus the versioned, purpose-specific `EMAIL_VERIFICATION_ENCRYPTION_*` key-ring settings to enable production invite-bound password activation after migration v7 is ready
 - the explicit `INVITATION_EMAIL_DELIVERY_ENABLED` gate and separate versioned `INVITATION_EMAIL_ENCRYPTION_*` key ring to queue owner-created invitation links without storing a plaintext bearer token
 - `PASSWORD_RESET_ENABLED=true` plus the independent versioned `PASSWORD_RESET_ENCRYPTION_*` key ring to enable recovery after migration v8 is ready
 - the dedicated versioned `IDENTITY_EMAIL_HASH_*` key ring before setting `IDENTITY_MANAGEMENT_ENABLED=true` after migration v9; Google linking also requires the complete Google OAuth configuration above
 - separate protected steps for the v13, v14, then v15 prerequisites, each with fresh rehearsal and approval, followed by protected adoption of all four configured credential purposes; then use a new rehearsal, status artifact, and approval to apply v16 separately before deploying the current runtime with secondary scheduling still disabled. `CREDENTIAL_KEY_CONTROL_MUTATIONS_ENABLED` authorizes only one operator control transition and does not disable `EMAIL_PASSWORD_ACTIVATION_ENABLED`, `PASSWORD_RESET_ENABLED`, `INVITATION_EMAIL_DELIVERY_ENABLED`, or `IDENTITY_MANAGEMENT_ENABLED`. Disable those consumer flags during the v15 transition, or hold production promotion if they cannot be disabled. Status/adoption/advance and restore rules are in `docs/KEY_ROTATION.md` and `docs/SECONDARY_SCHEDULING.md`
-- `AUTH_SCHEMA_BOOTSTRAP_ENABLED` is legacy-only and must remain false for the migrated OIDC flow; run the protected database migrations before enabling production authentication
+- authentication schema is migration-owned: signup, login, profile, activation,
+  reset, identity, and Google callback paths probe it read-only and fail closed;
+  run the protected migrations before enabling production authentication
 - `RESEND_API_KEY` and `RESEND_FROM` for invitation, pairing, schedule,
   verification, and password-reset notifications
 - Keep `CHAT_RETENTION_ENABLED=false` until migration v11, legacy scope adoption,
@@ -131,12 +137,16 @@ one fair eight-claim/45-second invocation budget, independently of the weekly
 publication endpoint. The checked-in
 `outbox-dispatch` GitHub Actions workflow provides the five-minute MVP cadence
 using protected-production `APP_URL` and `CRON_SECRET` configuration; scheduled
-runs are best effort, so use a managed queue/cron when a strict latency SLO is
-required. `POST
+runs are best effort. The separate hourly `outbox-dispatch-watchdog` reads only
+scheduled default-branch Actions metadata, applies a 15-minute grace and the
+worker's two-minute deadline, and never receives production credentials or
+counts a manual recovery run as freshness. Use a managed queue/cron when a
+strict latency SLO is required. `POST
 /api/admin/outbox/replay` lets a non-demo global administrator replay only a
 dead-letter event with one of the bounded reason codes `OPERATOR_RETRY`,
 `PROVIDER_RECOVERED`, or `CONFIGURATION_FIXED`. Replay preserves the original
 provider idempotency key. See [outbox invocation budget](docs/OUTBOX_INVOCATION_BUDGET.md),
+[outbox dispatch watchdog](docs/OUTBOX_DISPATCH_WATCHDOG.md),
 [invitation email delivery](docs/INVITATION_EMAIL_DELIVERY.md), and
 [schedule notifications](docs/SCHEDULE_NOTIFICATIONS.md) for dispatch
 fairness, suppression, limits, and remaining issue #50 work.
@@ -145,9 +155,9 @@ Google OAuth has one fail-closed configuration boundary shared by capability dis
 
 Identity management is a separate dark-launched capability. With `IDENTITY_MANAGEMENT_ENABLED=false`, production neither advertises nor enters credential-management routes, while ordinary Google sign-in and reauthentication retain their v4 compatibility. Enabling the flag without the dedicated email-hash key/version makes Google and identity-management entry points fail closed. Once v9 is ready, an authenticated member can open **Account security**, confirm a current password or Google account, explicitly link or remove a method, and is prevented from removing the final usable credential. Link initiation is same-origin POST-only and its OAuth callback is bound to the exact live session, PKCE verifier, state, nonce, stable provider subject, and fresh signed `auth_time`. Provider email is stored only as a dedicated-key HMAC plus its key version and never silently replaces the canonical account email.
 
-Sensitive circle lifecycle changes reuse that session-scoped recent-authentication boundary without depending on the identity-management feature flag. Ownership transfer and deactivation of another owner require a password or Google proof no older than ten minutes; the proof is checked inside the same write transaction as the role/status change. The browser resumes only one exact, redacted same-tab action and clears it on cancellation, OAuth error, expiry, actor change, or unavailable methods. Routine member administration and self-leave remain explicit without unnecessary step-up friction. See [docs/LIFECYCLE_RECENT_AUTH.md](docs/LIFECYCLE_RECENT_AUTH.md).
+Sensitive circle lifecycle changes reuse that session-scoped recent-authentication boundary without depending on the identity-management feature flag. Ownership transfer, deactivation of another owner, and secondary-circle archive require a password or Google proof no older than ten minutes; the proof is checked inside the same write transaction as the change. The browser resumes only one exact, redacted same-tab action and clears it on cancellation, OAuth error, expiry, actor change, circle change, or unavailable methods. Archive is a soft authorization boundary: it retains immutable coordination and schedule history while immediately moving selected sessions to safe remaining circles. Routine member administration and self-leave remain explicit without unnecessary step-up friction. See [docs/LIFECYCLE_RECENT_AUTH.md](docs/LIFECYCLE_RECENT_AUTH.md) and [docs/CIRCLE_ARCHIVE.md](docs/CIRCLE_ARCHIVE.md).
 
-To roll out circle membership without locking out operators: first complete the production backup/restore rehearsal, deploy with `CIRCLE_MEMBERSHIP_ENABLED=false`, verify an authenticated `ADMIN_EMAILS` account, call the admin-only `POST /api/init`, verify the primary circle and audited non-demo account backfill, then enable the flag. Rollout probes are read-only. Atomic registration guards ensure an account racing initialization is either included or rejected while existing accounts continue to sign in. Invitation tokens are returned only once by the create endpoint; the database stores keyed hashes, and list responses expose only an email fingerprint. Disabling the flag restores the legacy roster behavior without removing membership data, but does not reopen registration after the cutover latch is closed.
+To roll out circle membership without locking out operators: first complete the production backup/restore rehearsal and migrate to the exact current schema, deploy with `CIRCLE_MEMBERSHIP_ENABLED=false`, verify an authenticated `ADMIN_EMAILS` account, call the data-only admin `POST /api/init`, verify the primary circle and audited non-demo account backfill, then enable the flag. The endpoint cannot create or repair schema; missing, stale, or drifted state fails closed before data mutation. Atomic registration guards ensure an account racing initialization is either included or rejected while existing accounts continue to sign in. Invitation tokens are returned only once by the create endpoint; the database stores keyed hashes, and list responses expose only an email fingerprint. Disabling the flag restores the legacy roster behavior without removing membership data, but does not reopen registration after the cutover latch is closed. See [admin data initialization](docs/ADMIN_DATA_INITIALIZATION.md).
 
 The owner roster is cursor-paginated rather than capped at an inaccessible
 first 500 rows. Continuation cursors are encrypted, actor/circle/search bound,
@@ -188,7 +198,7 @@ An optional `.env.local` may set `RANDORI_LOCAL_PORT`, `RANDORI_LOCAL_HOST` (`12
 npm run dev:reset -- --confirm
 ```
 
-`npm run start:test` remains the mock-first static Playwright fixture; it intentionally does not run real API handlers or use the local MVP database.
+`npm run start:test` remains the mock-first static Playwright fixture; it intentionally does not run real API handlers or use the local MVP database. The complete isolated local-runtime journey and its failure-triage guide are documented in [two-user local session E2E](docs/TWO_USER_LOCAL_SESSION_E2E.md).
 
 ```bash
 npm run audit:prod
@@ -205,7 +215,7 @@ Catalogue validation also checks the versioned provenance manifest, review
 expiry, takedown state, and canonical content hashes. The bounded emergency
 procedure is documented in [Catalogue provenance and takedown](docs/CATALOG_PROVENANCE.md).
 
-CI tests the checked-out candidate build on localhost. It validates the provider-neutral deployment contract and catalogue, freezes the existing request-time DDL allowlist, enforces at least 52% line, branch, and function coverage across API, database-foundation, and operational-script modules, and runs the Playwright flows on Ubuntu. The merge-versus-preview policy and its one required GitHub settings change are documented in [Deployment and merge gates](docs/DEPLOYMENT_GATES.md).
+CI tests the checked-out candidate build on localhost. It validates the provider-neutral deployment contract and catalogue, rejects every API/runtime schema mutation with an exact-zero DDL allowlist, enforces at least 52% line, branch, and function coverage across API, database-foundation, and operational-script modules, and runs the Playwright flows on Ubuntu. The read-only operations boundary is documented in [Operations request-path DDL retirement](docs/OPERATIONS_RUNTIME_DDL_RETIREMENT.md); the merge-versus-preview policy and its one required GitHub settings change are documented in [Deployment and merge gates](docs/DEPLOYMENT_GATES.md).
 
 Operators can run `npm run --silent db:status` or `npm run --silent db:plan` with Turso credentials to receive structured JSON drift reports. Both commands are guarded to `SELECT`/`PRAGMA`, and the plan is non-executable. A separate fingerprint-gated `db:migrate` command supports transactional apply or verified adoption only for explicit local `file:` URLs; it rejects every remote target and does not read production credentials. See [Database schema operations](docs/DATABASE_SCHEMA_OPERATIONS.md).
 

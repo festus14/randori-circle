@@ -14,7 +14,7 @@ In Vercel Dashboard → your project → Settings → Environment Variables add:
 - `JWT_SECRET` — already required (e.g. `openssl rand -base64 48`)
 - `CRON_SECRET` — required separately from `JWT_SECRET`; protects the weekly cron
 - `SIGNUP_ALLOWLIST` — comma-separated private-beta Google email addresses used before circle-membership cutover
-- `CIRCLE_MEMBERSHIP_ENABLED` — leave `false` while running and verifying `/api/init`, then set `true` to require active primary-circle membership or an email-bound invitation
+- `CIRCLE_MEMBERSHIP_ENABLED` — leave `false` while running and verifying the data-only `/api/init` cutover on an exactly migrated database, then set `true` to require active primary-circle membership or an email-bound invitation
 - `IDENTITY_MANAGEMENT_ENABLED` — leave `false` through migration v9, then set `true` to expose explicit Google/password linking and removal
 - `IDENTITY_EMAIL_HASH_KEY` — an independent 32-byte base64url HMAC key; never reuse `JWT_SECRET` or invitation/recovery encryption material
 - `IDENTITY_EMAIL_HASH_KEY_VERSION` — start at `1` and increment whenever the identity-email HMAC key changes

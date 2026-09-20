@@ -85,6 +85,7 @@ const verifiedInviteCapabilities = {
   },
   registrationMode: 'verified_invite',
 };
+const inviteBinding='I'.repeat(43);
 
 test('production invite signup waits for email verification and offers a bounded resend action',async({page})=>{
   const token='A'.repeat(43);
@@ -92,17 +93,19 @@ test('production invite signup waits for email verification and offers a bounded
   let resendCalls=0;
   await mockApi(page,{
     '/api/auth/capabilities':verifiedInviteCapabilities,
-    '/api/invitations/prepare':{ok:true},
+    '/api/invitations/prepare':{ok:true,binding:inviteBinding,expires_in_seconds:600},
     '/api/auth/signup':request=>{
       signupCalls+=1;
       expect(request.postDataJSON()).toEqual({
         email:'invited@example.test',name:'Invited Member',password:'correct horse battery',
+        invite_binding:inviteBinding,
       });
       return {_status:202,ok:true,pending:true,message:'If this invitation can be activated, a verification email will arrive shortly.'};
     },
     '/api/auth/activation/resend':request=>{
       resendCalls+=1;
-      expect(request.postDataJSON()).toEqual({email:'invited@example.test'});
+      expect(request.postDataJSON()).toEqual({email:'invited@example.test',
+        invite_binding:inviteBinding});
       return {_status:202,ok:true,pending:true};
     },
   });
@@ -118,11 +121,456 @@ test('production invite signup waits for email verification and offers a bounded
   await page.locator('#authPass').fill('correct horse battery');
   await page.locator('#authSignup').click();
   await expect(page.getByTestId('activation-pending')).toBeVisible();
+  await expect(page.getByTestId('activation-pending')).toContainText('If this invitation can be activated');
   await expect(page.locator('#meLabel')).toBeHidden();
   expect(signupCalls).toBe(1);
   await page.locator('#authActivationResend').click();
-  await expect(page.locator('#authErr')).toContainText('new link was requested');
+  await expect(page.locator('#authErr')).toContainText('remains eligible');
   expect(resendCalls).toBe(1);
+});
+
+test('private beta keeps direct account creation closed until this tab prepares an invitation',async({page})=>{
+  let signupCalls=0;
+  await mockApi(page,{
+    '/api/auth/capabilities':privateBetaCapabilities,
+    '/api/auth/signup':()=>{ signupCalls+=1; return {_status:202,ok:true,pending:true}; },
+  });
+  await resetClientState(page);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+
+  await expect(page.locator('#landingSignup')).toBeVisible();
+  await expect(page.locator('#landingSignup')).toBeDisabled();
+  await expect(page.locator('#landingInviteHelp')).toContainText('Open the invitation link');
+
+  await page.evaluate(()=>(window as any)._randori_auth.openModal('signup'));
+  await expect(page.getByRole('dialog',{name:'Join Randori Circle'})).toBeHidden();
+  await expect(page.getByRole('dialog',{name:'Sign in to Randori'})).toBeVisible();
+  await expect(page.locator('#authGoogle')).toBeVisible();
+  await expect(page.locator('#authSignup')).toBeHidden();
+  expect(signupCalls).toBe(0);
+  await expect(page.locator('#authModeSwitch')).toBeHidden();
+});
+
+test('invite reload refreshes only the opaque tab binding and preserves its bounded lifetime',async({page})=>{
+  const token='R'.repeat(43);
+  const prepareBodies:unknown[]=[];
+  await page.clock.install();
+  await mockApi(page,{
+    '/api/auth/capabilities':verifiedInviteCapabilities,
+    '/api/invitations/prepare':request=>{
+      const body=request.postDataJSON();
+      prepareBodies.push(body);
+      if(prepareBodies.length===1){
+        expect(body).toEqual({token});
+        return {ok:true,binding:inviteBinding,expires_in_seconds:600};
+      }
+      expect(body).toEqual({binding:inviteBinding});
+      return {ok:true,binding:inviteBinding,expires_in_seconds:420};
+    },
+  });
+  await resetClientState(page,false,{},true);
+
+  await page.goto(`/invite#invite=${token}`,{waitUntil:'domcontentloaded'});
+  await expect(page.getByTestId('invite-status')).toContainText('Invitation verified');
+  await page.reload({waitUntil:'domcontentloaded'});
+  await expect(page.getByTestId('invite-status')).toContainText('Invitation verified');
+  expect(prepareBodies).toEqual([{token},{binding:inviteBinding}]);
+  expect(await page.evaluate(secret=>[
+    ...Object.values(localStorage),...Object.values(sessionStorage),
+  ].some(value=>String(value).includes(secret)),token)).toBe(false);
+
+  await page.clock.fastForward(420_100);
+  await expect(page.getByTestId('invite-status')).toContainText('expired');
+  expect(await page.evaluate(()=>sessionStorage.getItem('randori-invite-binding-v1'))).toBeNull();
+});
+
+test('a rate-limited binding refresh stays inert and recovers after its cooldown',async({page})=>{
+  const token='L'.repeat(43);
+  const poisonedBinding='P'.repeat(43);
+  const prepareBodies:unknown[]=[];
+  await page.clock.install();
+  await mockApi(page,{
+    '/api/auth/capabilities':verifiedInviteCapabilities,
+    '/api/invitations/prepare':request=>{
+      const body=request.postDataJSON();
+      prepareBodies.push(body);
+      if(prepareBodies.length===1){
+        expect(body).toEqual({token});
+        return {ok:true,binding:inviteBinding,expires_in_seconds:600};
+      }
+      expect(body).toEqual({binding:inviteBinding});
+      if(prepareBodies.length===2){
+        return {_status:429,error:'too many attempts',retry_after_seconds:2,
+          binding:poisonedBinding,expires_in_seconds:600};
+      }
+      return {ok:true,binding:inviteBinding,expires_in_seconds:300};
+    },
+  });
+  await resetClientState(page,false,{},true);
+
+  await page.goto(`/invite#invite=${token}`,{waitUntil:'domcontentloaded'});
+  await expect(page.getByTestId('invite-status')).toContainText('Invitation verified');
+  await page.reload({waitUntil:'domcontentloaded'});
+
+  await expect(page.getByTestId('invite-status')).toContainText('Too many attempts');
+  await expect(page.getByTestId('invite-continue')).toBeDisabled();
+  expect(await page.evaluate(()=>(window as any)._randori_invite_flow.ready)).toBe(false);
+  expect(await page.evaluate(()=>sessionStorage.getItem('randori-invite-binding-v1'))).toBe(inviteBinding);
+
+  await page.clock.fastForward(2_100);
+  await page.reload({waitUntil:'domcontentloaded'});
+  await expect(page.getByTestId('invite-status')).toContainText('Invitation verified');
+  await expect(page.getByTestId('invite-continue')).toBeEnabled();
+  expect(await page.evaluate(()=>sessionStorage.getItem('randori-invite-binding-v1'))).toBe(inviteBinding);
+  expect(prepareBodies).toEqual([{token},{binding:inviteBinding},{binding:inviteBinding}]);
+});
+
+test('a token-path rate limit cannot persist an old or response-provided binding',async({page})=>{
+  const token='N'.repeat(43);
+  const oldBinding='O'.repeat(43);
+  const responseBinding='Q'.repeat(43);
+  await mockApi(page,{
+    '/api/auth/capabilities':verifiedInviteCapabilities,
+    '/api/invitations/prepare':request=>{
+      expect(request.postDataJSON()).toEqual({token});
+      return {_status:429,error:'too many attempts',retry_after_seconds:3,
+        binding:responseBinding,expires_in_seconds:600};
+    },
+  });
+  await resetClientState(page,false,{},true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await page.evaluate(value=>sessionStorage.setItem('randori-invite-binding-v1',value),oldBinding);
+
+  await page.goto(`/invite#invite=${token}`,{waitUntil:'domcontentloaded'});
+  await expect(page.getByTestId('invite-status')).toContainText('Too many attempts');
+  await expect(page.getByTestId('invite-continue')).toBeDisabled();
+  expect(await page.evaluate(()=>sessionStorage.getItem('randori-invite-binding-v1'))).toBeNull();
+});
+
+test('evaluated invalid and server-error refreshes clear the stored binding',async({page})=>{
+  const outcomes=[
+    ...[400,401,403,404,409,410,503].map(status=>({
+      label:String(status),response:{_status:status,error:'invitation unavailable'},
+    })),
+    {label:'mismatch',response:{ok:true,binding:'M'.repeat(43),expires_in_seconds:600}},
+    {label:'lifetime',response:{ok:true,binding:inviteBinding,expires_in_seconds:601}},
+  ];
+  let responseIndex=0;
+  await mockApi(page,{
+    '/api/auth/capabilities':verifiedInviteCapabilities,
+    '/api/invitations/prepare':request=>{
+      expect(request.postDataJSON()).toEqual({binding:inviteBinding});
+      return outcomes[responseIndex++].response;
+    },
+  });
+  await resetClientState(page,false,{},true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+
+  for(const [index,outcome] of outcomes.entries()){
+    await page.evaluate(value=>sessionStorage.setItem('randori-invite-binding-v1',value),inviteBinding);
+    await page.goto(`/invite?failure=${outcome.label}-${index}`,{waitUntil:'domcontentloaded'});
+    await expect(page.getByTestId('invite-status')).toContainText('unavailable');
+    await expect(page.getByTestId('invite-continue')).toBeDisabled();
+    expect(await page.evaluate(()=>sessionStorage.getItem('randori-invite-binding-v1'))).toBeNull();
+  }
+  expect(responseIndex).toBe(outcomes.length);
+});
+
+test('malformed and network-failed binding refreshes clear stored state',async({page})=>{
+  let prepareCalls=0;
+  await page.addInitScript(()=>{
+    const originalFetch=window.fetch.bind(window);
+    window.fetch=(input,init)=>{
+      if(new URL(input instanceof Request?input.url:String(input),window.location.href).pathname
+        ==='/api/invitations/prepare') return Promise.reject(new TypeError('network unavailable'));
+      return originalFetch(input,init);
+    };
+  });
+  await mockApi(page,{
+    '/api/auth/capabilities':verifiedInviteCapabilities,
+    '/api/invitations/prepare':()=>{ prepareCalls+=1; return {ok:true}; },
+  });
+  await resetClientState(page,false,{},true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+
+  await page.evaluate(()=>sessionStorage.setItem('randori-invite-binding-v1','not-canonical'));
+  await page.goto('/invite?failure=malformed',{waitUntil:'domcontentloaded'});
+  await expect(page.getByTestId('invite-status')).toContainText('unavailable');
+  expect(await page.evaluate(()=>sessionStorage.getItem('randori-invite-binding-v1'))).toBeNull();
+  expect(prepareCalls).toBe(0);
+
+  await page.evaluate(value=>sessionStorage.setItem('randori-invite-binding-v1',value),inviteBinding);
+  await page.goto('/invite?failure=network',{waitUntil:'domcontentloaded'});
+  await expect(page.getByTestId('invite-status')).toContainText('unavailable');
+  await expect(page.getByTestId('invite-continue')).toBeDisabled();
+  expect(await page.evaluate(()=>sessionStorage.getItem('randori-invite-binding-v1'))).toBeNull();
+  expect(prepareCalls).toBe(0);
+});
+
+test('a delayed rate limit cannot restore invite state after leaving the route',async({page})=>{
+  const token='U'.repeat(43);
+  let prepareCalls=0;
+  let releaseRefresh:(()=>void)|undefined;
+  const refreshGate=new Promise<void>(resolve=>{ releaseRefresh=resolve; });
+  await mockApi(page,{
+    '/api/auth/capabilities':verifiedInviteCapabilities,
+    '/api/invitations/prepare':async request=>{
+      prepareCalls+=1;
+      if(prepareCalls===1){
+        expect(request.postDataJSON()).toEqual({token});
+        return {ok:true,binding:inviteBinding,expires_in_seconds:600};
+      }
+      expect(request.postDataJSON()).toEqual({binding:inviteBinding});
+      await refreshGate;
+      return {_status:429,error:'too many attempts',retry_after_seconds:2};
+    },
+  });
+  await resetClientState(page,false,{},true);
+  await page.goto(`/invite#invite=${token}`,{waitUntil:'domcontentloaded'});
+  await expect(page.getByTestId('invite-status')).toContainText('Invitation verified');
+
+  await page.reload({waitUntil:'domcontentloaded'});
+  await expect.poll(()=>prepareCalls).toBe(2);
+  await page.evaluate(()=>(window as any)._randori_invite_flow.complete());
+  const response=page.waitForResponse(candidate=>new URL(candidate.url()).pathname==='/api/invitations/prepare'
+    &&candidate.status()===429);
+  releaseRefresh?.();
+  await response;
+  await page.evaluate(()=>new Promise<void>(resolve=>setTimeout(resolve,0)));
+
+  await expect(page).toHaveURL('/');
+  await expect(page.getByTestId('invite-status')).toBeHidden();
+  expect(await page.evaluate(()=>(window as any)._randori_invite_flow.active)).toBe(false);
+  expect(await page.evaluate(()=>sessionStorage.getItem('randori-invite-binding-v1'))).toBeNull();
+});
+
+test('an auth change fences a delayed invitation preparation response',async({page})=>{
+  const token='D'.repeat(43);
+  const user={id:19,email:'member@example.test',name:'Existing Member',is_admin:false,is_available:true};
+  let signedIn=false;
+  let prepareStarted=false;
+  let releasePrepare:(()=>void)|undefined;
+  const prepareGate=new Promise<void>(resolve=>{ releasePrepare=resolve; });
+  await mockApi(page,{
+    '/api/auth/capabilities':verifiedInviteCapabilities,
+    '/api/invitations/prepare':async()=>{
+      prepareStarted=true;
+      await prepareGate;
+      return {ok:true,binding:inviteBinding,expires_in_seconds:600};
+    },
+    '/api/auth/me':()=>signedIn?{ok:true,user}:{_status:401,ok:false,error:'authentication required'},
+    '/api/auth/login':()=>{ signedIn=true; return {ok:true,user}; },
+  });
+  await resetClientState(page);
+  await page.goto(`/invite#invite=${token}`,{waitUntil:'domcontentloaded'});
+  await expect.poll(()=>prepareStarted).toBe(true);
+  await page.locator('#authBtn').click();
+  await page.locator('#authEmail').fill('member@example.test');
+  await page.locator('#authPass').fill('correct horse battery');
+  await page.locator('#authSignin').click();
+  await expect(page.locator('#meLabel')).toContainText('Existing Member');
+
+  releasePrepare?.();
+  await expect(page.getByTestId('invite-status')).toContainText('expired');
+  await expect(page.getByTestId('invite-continue')).toBeDisabled();
+  expect(await page.evaluate(()=>sessionStorage.getItem('randori-invite-binding-v1'))).toBeNull();
+});
+
+test('initial existing-member hydration preserves a delayed prepared invitation',async({page})=>{
+  const token='H'.repeat(43);
+  const user={id:1,email:'e2e@example.test',name:'E2E Tester',is_admin:false,is_available:true};
+  let prepareStarted=false;
+  let releasePrepare:(()=>void)|undefined;
+  const prepareGate=new Promise<void>(resolve=>{ releasePrepare=resolve; });
+  await mockApi(page,{
+    '/api/auth/capabilities':verifiedInviteCapabilities,
+    '/api/auth/me':{ok:true,user},
+    '/api/invitations/prepare':async()=>{
+      prepareStarted=true;
+      await prepareGate;
+      return {ok:true,binding:inviteBinding,expires_in_seconds:600};
+    },
+  });
+  await resetClientState(page,true);
+  await page.goto(`/invite#invite=${token}`,{waitUntil:'domcontentloaded'});
+  await expect.poll(()=>prepareStarted).toBe(true);
+  await expect(page.locator('#meLabel')).toContainText('E2E Tester');
+
+  releasePrepare?.();
+  await expect(page.getByTestId('invite-status')).toContainText('Invitation verified');
+  await expect(page.getByTestId('invite-continue')).toBeEnabled();
+  expect(await page.evaluate(()=>sessionStorage.getItem('randori-invite-binding-v1'))).toBe(inviteBinding);
+});
+
+test('invite-bound actions wait for authoritative identity hydration',async({page})=>{
+  const token='A'.repeat(43);
+  const user={id:1,email:'e2e@example.test',name:'E2E Tester',is_admin:false,is_available:true};
+  let meStarted=false;
+  let releaseMe:(()=>void)|undefined;
+  let providerStarts=0;
+  const meGate=new Promise<void>(resolve=>{ releaseMe=resolve; });
+  await mockApi(page,{
+    '/api/auth/capabilities':privateBetaCapabilities,
+    '/api/auth/me':async()=>{
+      meStarted=true;
+      await meGate;
+      return {ok:true,user};
+    },
+    '/api/invitations/prepare':{ok:true,binding:inviteBinding,expires_in_seconds:600},
+    '/api/auth/google/start':request=>{
+      providerStarts+=1;
+      expect(request.postDataJSON()).toEqual({purpose:'invite',invite_binding:inviteBinding});
+      return {ok:true,authorizationUrl:'https://accounts.google.com/o/oauth2/v2/auth?state=hydrated'};
+    },
+  });
+  await page.route('https://accounts.google.com/**',route=>route.fulfill({
+    status:200,contentType:'text/html',body:'<!doctype html><h1>Mock Google</h1>',
+  }));
+  await resetClientState(page,true);
+  await page.goto(`/invite#invite=${token}`,{waitUntil:'domcontentloaded'});
+
+  await expect(page.getByTestId('invite-status')).toContainText('Checking your account session');
+  await expect(page.getByTestId('invite-continue')).toBeDisabled();
+  await expect.poll(()=>meStarted).toBe(true);
+  expect(providerStarts).toBe(0);
+
+  releaseMe?.();
+  await expect(page.locator('#meLabel')).toContainText('E2E Tester');
+  await expect(page.getByTestId('invite-continue')).toBeEnabled();
+  await page.getByTestId('invite-continue').click();
+  await expect(page.getByRole('heading',{name:'Mock Google'})).toBeVisible();
+  expect(providerStarts).toBe(1);
+});
+
+test('a prepare response arriving after its advertised lifetime stores no stale binding',async({page})=>{
+  const token='T'.repeat(43);
+  let releasePrepare:(()=>void)|undefined;
+  const prepareGate=new Promise<void>(resolve=>{ releasePrepare=resolve; });
+  await page.addInitScript(()=>{
+    (window as any).__inviteTestNow=100;
+    Object.defineProperty(performance,'now',{
+      configurable:true,
+      value:()=>Number((window as any).__inviteTestNow),
+    });
+  });
+  await mockApi(page,{
+    '/api/auth/capabilities':verifiedInviteCapabilities,
+    '/api/invitations/prepare':async()=>{
+      await prepareGate;
+      return {ok:true,binding:inviteBinding,expires_in_seconds:1};
+    },
+  });
+  await resetClientState(page,false,{},true);
+  await page.goto(`/invite#invite=${token}`,{waitUntil:'domcontentloaded'});
+
+  await page.evaluate(()=>{ (window as any).__inviteTestNow=1_101; });
+  releasePrepare?.();
+
+  await expect(page.getByTestId('invite-status')).toContainText('expired');
+  await expect(page.getByTestId('invite-continue')).toBeDisabled();
+  expect(await page.evaluate(()=>sessionStorage.getItem('randori-invite-binding-v1'))).toBeNull();
+});
+
+test('invite expiry aborts an in-flight signup and fences its delayed success response',async({page})=>{
+  const token='E'.repeat(43);
+  let signupCalls=0;
+  let signupResponseReady=false;
+  let releaseSignup:(()=>void)|undefined;
+  const signupGate=new Promise<void>(resolve=>{ releaseSignup=resolve; });
+  await page.clock.install();
+  await page.addInitScript(()=>{
+    (window as any).__inviteSignupAbortObserved=false;
+    const originalFetch=window.fetch.bind(window);
+    window.fetch=(input,init)=>{
+      const requestUrl=new URL(input instanceof Request?input.url:String(input),window.location.href);
+      if(requestUrl.pathname==='/api/auth/signup'&&init?.signal){
+        init.signal.addEventListener('abort',()=>{
+          (window as any).__inviteSignupAbortObserved=true;
+        },{once:true});
+      }
+      return originalFetch(input,init);
+    };
+  });
+  await mockApi(page,{
+    '/api/auth/capabilities':verifiedInviteCapabilities,
+    '/api/invitations/prepare':{ok:true,binding:inviteBinding,expires_in_seconds:60},
+    '/api/auth/signup':async()=>{
+      signupCalls+=1;
+      await signupGate;
+      signupResponseReady=true;
+      return {_status:202,ok:true,pending:true};
+    },
+  });
+  await resetClientState(page);
+  await page.goto(`/invite#invite=${token}`,{waitUntil:'domcontentloaded'});
+  await page.evaluate(()=>(window as any)._randori_auth.refreshMe());
+  await page.getByTestId('invite-continue').click();
+  await page.locator('#authEmail').fill('invited@example.test');
+  await page.locator('#authName').fill('Invited Member');
+  await page.locator('#authPass').fill('correct horse battery');
+  await page.locator('#authSignup').click();
+  await expect.poll(()=>signupCalls).toBe(1);
+  await expect(page.locator('#authForm')).toHaveAttribute('aria-busy','true');
+
+  await page.clock.fastForward(60_100);
+  await expect(page.getByTestId('invite-status')).toContainText('expired');
+  await expect.poll(()=>page.evaluate(()=>(window as any).__inviteSignupAbortObserved)).toBe(true);
+  await expect(page.locator('#authForm')).toHaveAttribute('aria-busy','false');
+  await expect(page.locator('#authSignup')).toBeHidden();
+  releaseSignup?.();
+  await expect.poll(()=>signupResponseReady).toBe(true);
+  await expect(page.getByTestId('activation-pending')).toBeHidden();
+  expect(await page.evaluate(()=>sessionStorage.getItem('randori-invite-binding-v1'))).toBeNull();
+});
+
+test('a stale resend completion cannot clear or overwrite a newer modal request',async({page})=>{
+  const token='S'.repeat(43);
+  let resendCalls=0;
+  let firstResponseReady=false;
+  let secondResponseReady=false;
+  let releaseFirst:(()=>void)|undefined;
+  let releaseSecond:(()=>void)|undefined;
+  const firstGate=new Promise<void>(resolve=>{ releaseFirst=resolve; });
+  const secondGate=new Promise<void>(resolve=>{ releaseSecond=resolve; });
+  await mockApi(page,{
+    '/api/auth/capabilities':verifiedInviteCapabilities,
+    '/api/invitations/prepare':{ok:true,binding:inviteBinding,expires_in_seconds:600},
+    '/api/auth/signup':{_status:202,ok:true,pending:true},
+    '/api/auth/activation/resend':async request=>{
+      const call=++resendCalls;
+      expect(request.postDataJSON()).toEqual({email:'invited@example.test',invite_binding:inviteBinding});
+      await (call===1?firstGate:secondGate);
+      if(call===1) firstResponseReady=true;
+      else secondResponseReady=true;
+      return {_status:202,ok:true,pending:true};
+    },
+  });
+  await resetClientState(page);
+  await page.goto(`/invite#invite=${token}`,{waitUntil:'domcontentloaded'});
+  await page.getByTestId('invite-continue').click();
+  await page.locator('#authEmail').fill('invited@example.test');
+  await page.locator('#authName').fill('Invited Member');
+  await page.locator('#authPass').fill('correct horse battery');
+  await page.locator('#authSignup').click();
+  await expect(page.getByTestId('activation-pending')).toBeVisible();
+
+  await page.locator('#authActivationResend').click();
+  await expect.poll(()=>resendCalls).toBe(1);
+  await page.locator('#authCancel').click();
+  await page.getByTestId('invite-continue').click();
+  await expect(page.getByTestId('activation-pending')).toBeVisible();
+  await page.locator('#authActivationResend').click();
+  await expect.poll(()=>resendCalls).toBe(2);
+  await expect(page.locator('#authForm')).toHaveAttribute('aria-busy','true');
+
+  releaseFirst?.();
+  await expect.poll(()=>firstResponseReady).toBe(true);
+  await expect(page.locator('#authForm')).toHaveAttribute('aria-busy','true');
+  await expect(page.locator('#authErr')).toBeEmpty();
+  releaseSecond?.();
+  await expect.poll(()=>secondResponseReady).toBe(true);
+  await expect(page.locator('#authForm')).toHaveAttribute('aria-busy','false');
+  await expect(page.locator('#authErr')).toContainText('remains eligible');
 });
 
 test('verification landing renders success and terminal link states without exposing the token',async({page})=>{
@@ -410,7 +858,6 @@ test('a stalled signup can be cancelled without accepting a stale response and t
 test('a pre-auth refresh cannot clear a newer successful signup identity', async ({ page }) => {
   const user = { id: 4, email: 'fresh@example.test', name: 'Fresh User', is_admin: true, tz: 'Europe/London' };
   let signedUp = false;
-  let authMeCalls = 0;
   let delayNextRefresh = false;
   let delayedRefreshStarted = false;
   let releaseDelayedRefresh: (() => void) | undefined;
@@ -419,7 +866,6 @@ test('a pre-auth refresh cannot clear a newer successful signup identity', async
   await mockApi(page, {
     '/api/auth/capabilities': localCapabilities,
     '/api/auth/me': async () => {
-      authMeCalls += 1;
       if(delayNextRefresh){
         delayNextRefresh=false;
         delayedRefreshStarted=true;
@@ -435,12 +881,20 @@ test('a pre-auth refresh cannot clear a newer successful signup identity', async
       return { ok: true, user };
     },
   });
+  await page.addInitScript(()=>{
+    (window as any).__initialAuthRefreshCommitted=new Promise(resolve=>{
+      window.addEventListener('randori:auth-refreshed',event=>{
+        resolve((event as CustomEvent).detail);
+      },{once:true});
+    });
+  });
   await resetClientState(page);
   await page.goto('/', { waitUntil: 'domcontentloaded' });
 
-  // Let the three bootstrap reconciliation attempts start so the controlled
-  // request below cannot be stolen by a scheduled refresh.
-  await expect.poll(() => authMeCalls).toBeGreaterThanOrEqual(3);
+  // The authoritative signed-out result suppresses later bootstrap attempts,
+  // so the controlled request below cannot be stolen by a scheduled refresh.
+  await expect(page.evaluate(()=>(window as any).__initialAuthRefreshCommitted))
+    .resolves.toEqual({signedIn:false,userId:null});
   delayNextRefresh=true;
   const staleRefresh=page.evaluate(()=>(window as any)._randori_auth.refreshMe());
   await expect.poll(()=>delayedRefreshStarted).toBe(true);
@@ -741,21 +1195,16 @@ test('a Google-only account can add a validated password after verified Google c
   expect(addCalls).toBe(1);
 });
 
-test('private beta capabilities offer Google for joining and password only for existing members', async ({ page }) => {
+test('private beta capabilities reserve direct entry for existing members', async ({ page }) => {
   await mockApi(page, { '/api/auth/capabilities': privateBetaCapabilities });
   await resetClientState(page);
   await page.goto('/', { waitUntil: 'domcontentloaded' });
 
-  await page.locator('#landingSignup').click();
-  await expect(page.getByRole('dialog', { name: 'Join Randori Circle' })).toBeVisible();
-  await expect(page.locator('#authGoogle')).toBeVisible();
-  await expect(page.locator('#authCapabilityStatus')).toContainText('invitation');
-  await expect(page.locator('#authPasswordFields')).toBeHidden();
-  await expect(page.locator('#authSignup')).toBeHidden();
-  await expect(page.locator('#authModeSwitch')).toHaveText('Already a member? Sign in');
-
-  await page.locator('#authModeSwitch').click();
+  await expect(page.locator('#landingSignup')).toBeDisabled();
+  await expect(page.locator('#landingInviteHelp')).toContainText('Open the invitation link');
+  await page.locator('#landingSignin').click();
   await expect(page.getByRole('dialog', { name: 'Sign in to Randori' })).toBeVisible();
+  await expect(page.locator('#authGoogle')).toBeVisible();
   await expect(page.locator('#authPasswordFields')).toBeVisible();
   await expect(page.locator('#authNameField')).toBeHidden();
   await expect(page.locator('#authSignin')).toBeVisible();
@@ -781,6 +1230,8 @@ test('Google failure offers an accessible retry and a mocked provider returns th
   });
   await page.route('**/api/auth/google/start**',async route=>{
     starts+=1;
+    expect(route.request().method()).toBe('GET');
+    expect(new URL(route.request().url()).searchParams.get('purpose')).toBe('login');
     await route.fulfill({
       status:200,
       contentType:'text/html',

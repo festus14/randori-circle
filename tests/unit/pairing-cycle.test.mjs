@@ -87,16 +87,29 @@ test('upcoming cycles advance by a local calendar week rather than 168 fixed hou
   assert.equal(upcoming.state,'upcoming');
 });
 
-test('the Hobby-safe 08:00 UTC cron runs at or after the London boundary across DST',()=>{
+test('cron admission is exactly Sunday [08:00, 10:00) UTC across GMT and BST',()=>{
   assert.equal(pairingCronIsDue({now:'2026-07-05T07:00:00.000Z'}),false,'the single configured cron does not run at 07:00Z');
   assert.equal(pairingCronIsDue({now:'2026-07-05T07:59:59.999Z'}),false);
   assert.equal(pairingCronIsDue({now:'2026-07-05T08:00:00.000Z'}),true,'08:00Z is 09:00 BST and still after the cutoff');
-  assert.equal(pairingCronIsDue({now:'2026-07-05T08:59:59.999Z'}),true);
+  assert.equal(pairingCronIsDue({now:'2026-07-05T09:59:59.999Z'}),true);
+  assert.equal(pairingCronIsDue({now:'2026-07-05T10:00:00.000Z'}),false);
 
   assert.equal(pairingCronIsDue({now:'2026-12-06T07:00:00.000Z'}),false,'07:00Z is 07:00 GMT');
   assert.equal(pairingCronIsDue({now:'2026-12-06T08:00:00.000Z'}),true,'08:00Z is 08:00 GMT');
-  assert.equal(pairingCronIsDue({now:'2026-12-06T08:59:59.999Z'}),true);
-  assert.equal(pairingCronIsDue({now:'2026-12-06T09:00:00.000Z'}),false);
+  assert.equal(pairingCronIsDue({now:'2026-12-06T09:59:59.999Z'}),true);
+  assert.equal(pairingCronIsDue({now:'2026-12-06T10:00:00.000Z'}),false);
+
+  assert.equal(pairingCronIsDue({now:'2026-12-05T08:30:00.000Z'}),false,'Saturday is never admitted');
+  assert.equal(pairingCronIsDue({now:'2026-12-07T08:30:00.000Z'}),false,'Monday is never admitted');
+});
+
+test('cron admission remains UTC-stable on London DST transition Sundays',()=>{
+  for(const day of ['2026-03-29','2026-10-25']){
+    assert.equal(pairingCronIsDue({now:`${day}T07:59:59.999Z`}),false,day);
+    assert.equal(pairingCronIsDue({now:`${day}T08:00:00.000Z`}),true,day);
+    assert.equal(pairingCronIsDue({now:`${day}T09:59:59.999Z`}),true,day);
+    assert.equal(pairingCronIsDue({now:`${day}T10:00:00.000Z`}),false,day);
+  }
 });
 
 test('resolution is independent of the host timezone and honors a configured IANA zone',()=>{

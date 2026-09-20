@@ -2,7 +2,8 @@
 
 This increment lets the two active members of a selected secondary-circle
 pairing propose, remove, accept, and clear a session time. It does not create a
-legacy room or enable chat, video, execution, AI, recap, or schedule email.
+legacy room or enable chat, video, execution, AI, or recap. Schedule email is a
+separately gated delivery increment.
 
 ## Feature chain
 
@@ -16,7 +17,9 @@ gates are also true:
 5. `SECONDARY_CIRCLE_SCHEDULING_ENABLED`
 
 The flag is false by default. Pairing-result email remains independently gated.
-Secondary schedule email is outside this release and tracked in issue #149.
+`SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED` is also false by default and is
+effective only through this complete chain. See
+`SECONDARY_SCHEDULE_NOTIFICATIONS.md`.
 
 ## Storage and authorization
 
@@ -67,10 +70,13 @@ Calendar export uses it only as a stable UID and links back to
 6. Enable the complete chain in staging. Canary both members: propose, stale
    CAS conflict, accept, remove, clear, same-cycle two-circle isolation, circle
    switch, member departure, circle archive, mobile keyboard access, and stable
-   calendar UID/dashboard URL. Confirm no row appears in `pair_schedules`,
-   workspace tables, or `outbox_events`.
+   calendar UID/dashboard URL. With schedule email off, confirm no row appears
+   in `pair_schedules`, workspace tables, or `outbox_events`.
 7. Enable one production canary circle, observe generic API failure rates and
    database readiness, then expand gradually. No provider credential is needed.
+8. Separately rehearse the v2 notification and five-type outbox contract, then
+   canary `SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED` as described in the
+   notification runbook.
 
 ## Rollback
 

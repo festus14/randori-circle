@@ -387,7 +387,17 @@ export function verifyMutationOrigin(req) {
   const origin=String(req?.headers?.origin||req?.headers?.Origin||'').trim();
   const host=String(req?.headers?.['x-forwarded-host']||req?.headers?.host||'').split(',')[0].trim();
   if(!origin || !host) return false;
-  try{ return new URL(origin).host===host; }catch{ return false; }
+  const forwardedProto=String(req?.headers?.['x-forwarded-proto']||'').split(',')[0].trim().toLowerCase();
+  const protocol=forwardedProto||(
+    req?.socket?.encrypted===true?'https':req?.socket&&req.socket.encrypted!==true?'http':''
+  );
+  if(!['http','https'].includes(protocol)) return false;
+  try{
+    const supplied=new URL(origin);
+    const expected=new URL(`${protocol}://${host}`);
+    return supplied.origin===expected.origin&&supplied.pathname==='/'
+      &&!supplied.search&&!supplied.hash&&!supplied.username&&!supplied.password;
+  }catch{ return false; }
 }
 
 export function getAdminEmails() {

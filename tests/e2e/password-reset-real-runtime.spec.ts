@@ -1,4 +1,4 @@
-import {copyFileSync,mkdirSync,mkdtempSync,realpathSync,rmSync} from 'node:fs';
+import {mkdirSync,mkdtempSync,realpathSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
@@ -13,6 +13,7 @@ import {
   resolveLocalServerConfig,
   startLocalDevelopmentServer,
 } from '../../scripts/local-server.mjs';
+import {expectInviteGateLoaded,stageRealRuntimeClient} from './real-runtime-fixture';
 
 const repositoryRoot=fileURLToPath(new URL('../..',import.meta.url));
 
@@ -20,7 +21,7 @@ test('real local password recovery is isolated, fragment-safe, and revokes the p
   test.setTimeout(60_000);
   const rootDir=realpathSync(mkdtempSync(join(tmpdir(),'randori-reset-browser-')));
   mkdirSync(join(rootDir,'.local'),{mode:0o700});
-  copyFileSync(join(repositoryRoot,'index.html'),join(rootDir,'index.html'));
+  stageRealRuntimeClient(repositoryRoot,rootDir);
   const databaseUrl=pathToFileURL(join(rootDir,'.local','randori.sqlite')).href;
   const config=resolveLocalServerConfig({rootDir,argv:[],env:{
     NODE_ENV:'development',RANDORI_LOCAL_HOST:'127.0.0.1',RANDORI_LOCAL_PORT:'0',
@@ -36,6 +37,7 @@ test('real local password recovery is isolated, fragment-safe, and revokes the p
   });
   try{
     await page.goto(runtime.url,{waitUntil:'domcontentloaded'});
+    await expectInviteGateLoaded(page);
     await page.locator('#landingSignin').click();
     await page.locator('#authEmail').fill(LOCAL_OWNER_EMAIL);
     await page.locator('#authPass').fill(LOCAL_OWNER_PASSWORD);

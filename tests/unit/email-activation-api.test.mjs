@@ -95,13 +95,14 @@ async function fixture(){
   await db.execute({sql:`INSERT INTO circle_invitations
     (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at)
     VALUES (?,10,?,?,1,datetime('now'),datetime('now','+1 day'))`,args:[invitationId,tokenHash,emailHash]});
-  const claim=createInviteClaim({invitationId,circleId:10,tokenHash,emailHash});
+  const binding='b'.repeat(43);
+  const claim=createInviteClaim({invitationId,circleId:10,tokenHash,emailHash},{binding});
   resources.push(()=>{ db.close(); rmSync(directory,{recursive:true,force:true}); });
-  return {db,email,cookie:inviteClaimCookie(claim)};
+  return {db,email,cookie:inviteClaimCookie(claim),binding};
 }
 
 test('production signup stays generic, creates no account, and verification creates the session',async()=>{
-  const {db,email,cookie}=await fixture();
+  const {db,email,cookie,binding}=await fixture();
   const unrelatedKey='auth-activation/v1/33333333-3333-4333-8333-333333333333/1';
   await db.execute(createOutboxEventStatement({eventType:EMAIL_ACTIVATION_EVENT_TYPE,
     idempotencyKey:unrelatedKey,payload:{
@@ -113,17 +114,33 @@ test('production signup stays generic, creates no account, and verification crea
   assert.equal(rotation.ready,false,
     'operator retirement health remains red for unrelated legacy dead letters');
   assert.equal(rotation.legacy_v1,1);
-  const body={email,password:'correct horse battery',name:'Invited Member'};
+  const body={email,password:'correct horse battery',name:'Invited Member',invite_binding:binding};
   const acceptedStarted=Date.now();
   const accepted=await invoke({endpoint:'signup',body,cookie});
   const acceptedElapsed=Date.now()-acceptedStarted;
   const wrongStarted=Date.now();
   const wrong=await invoke({endpoint:'signup',body:{...body,email:'wrong@example.test'},cookie});
   const wrongElapsed=Date.now()-wrongStarted;
+  const mismatched=await invoke({endpoint:'signup',body:{...body,invite_binding:'Z'.repeat(43)},cookie});
   assert.equal(accepted.statusCode,202);
   assert.deepEqual(wrong.body,accepted.body);
+  assert.equal(mismatched.statusCode,202);
+  assert.deepEqual(mismatched.body,accepted.body);
+  assert.equal(mismatched.headers['set-cookie'],undefined);
   assert.ok(acceptedElapsed>=300,`eligible response completed too quickly: ${acceptedElapsed}ms`);
   assert.ok(wrongElapsed>=300,`ineligible response completed too quickly: ${wrongElapsed}ms`);
+  const mismatchedResend=await invoke({endpoint:'activation-resend',cookie,
+    body:{email,invite_binding:'Y'.repeat(43)}});
+  assert.equal(mismatchedResend.statusCode,202);
+  assert.deepEqual(mismatchedResend.body,{
+    ok:true,pending:true,message:'If a pending activation exists, a new verification email will arrive shortly.',
+  });
+  assert.equal(mismatchedResend.headers['set-cookie'],undefined);
+  assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM auth_email_activations`)).rows[0].count),1,
+    'wrong emails and mismatched bindings must not create pending activations');
+  assert.equal(Number((await db.execute({sql:`SELECT COUNT(*) AS count FROM outbox_events
+    WHERE event_type=?`,args:[EMAIL_ACTIVATION_EVENT_TYPE]})).rows[0].count),2,
+  'wrong emails and mismatched bindings must not queue delivery');
   assert.equal(Number((await db.execute({sql:'SELECT COUNT(*) AS count FROM auth_accounts WHERE email=?',args:[email]})).rows[0].count),0);
   const outbox=(await db.execute(`SELECT payload_json FROM outbox_events
     WHERE event_type='auth.emailverification.requested' ORDER BY id DESC LIMIT 1`)).rows[0];
@@ -138,7 +155,7 @@ test('production signup stays generic, creates no account, and verification crea
 });
 
 test('production activation is absent when its encryption configuration is missing',async()=>{
-  const {cookie}=await fixture();
+  const {cookie,binding}=await fixture();
   delete process.env.EMAIL_VERIFICATION_ENCRYPTION_KEY;
   const capabilities=response();
   await authHandler({method:'GET',url:'/api/auth/capabilities',query:{endpoint:'capabilities'},
@@ -146,12 +163,12 @@ test('production activation is absent when its encryption configuration is missi
   assert.equal(capabilities.body.capabilities.passwordSignup,false);
   assert.equal(capabilities.body.capabilities.verifiedEmailActivation,false);
   const signup=await invoke({endpoint:'signup',cookie,
-    body:{email:'member@example.test',password:'correct horse battery',name:'Invited Member'}});
+    body:{email:'member@example.test',password:'correct horse battery',name:'Invited Member',invite_binding:binding}});
   assert.equal(signup.statusCode,503);
 });
 
 test('production activation is absent when provider delivery configuration is incomplete',async()=>{
-  const {cookie}=await fixture();
+  const {cookie,binding}=await fixture();
   delete process.env.RESEND_FROM;
   const capabilities=response();
   await authHandler({method:'GET',url:'/api/auth/capabilities',query:{endpoint:'capabilities'},
@@ -159,7 +176,7 @@ test('production activation is absent when provider delivery configuration is in
   assert.equal(capabilities.body.capabilities.passwordSignup,false);
   assert.equal(capabilities.body.capabilities.verifiedEmailActivation,false);
   const signup=await invoke({endpoint:'signup',cookie,
-    body:{email:'member@example.test',password:'correct horse battery',name:'Invited Member'}});
+    body:{email:'member@example.test',password:'correct horse battery',name:'Invited Member',invite_binding:binding}});
   assert.equal(signup.statusCode,503);
 });
 

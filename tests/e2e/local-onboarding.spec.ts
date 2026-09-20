@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { createClient } from '@libsql/client';
 import { randomUUID } from 'node:crypto';
-import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -12,6 +12,7 @@ import {
   startLocalDevelopmentServer,
 } from '../../scripts/local-server.mjs';
 import { createInvitationToken, hashInvitationEmail, hashInvitationToken } from '../../api/_circle-membership.js';
+import {expectInviteGateLoaded,stageRealRuntimeClient} from './real-runtime-fixture';
 
 const repositoryRoot=fileURLToPath(new URL('../..',import.meta.url));
 
@@ -25,7 +26,7 @@ test.describe('unmocked local onboarding',()=>{
   test.beforeAll(async()=>{
     directory=realpathSync(mkdtempSync(join(tmpdir(),'randori-local-onboarding-e2e-')));
     mkdirSync(join(directory,'.local'),{mode:0o700});
-    copyFileSync(join(repositoryRoot,'index.html'),join(directory,'index.html'));
+    stageRealRuntimeClient(repositoryRoot,directory);
     const databaseUrl=pathToFileURL(join(directory,'.local','onboarding.sqlite')).href;
     config=resolveLocalServerConfig({
       rootDir:directory,
@@ -69,6 +70,7 @@ test.describe('unmocked local onboarding',()=>{
     const reusedInvite=await reusedInviteContext.newPage();
     try{
       await noInvite.goto(runtime.url,{waitUntil:'domcontentloaded'});
+      await expectInviteGateLoaded(noInvite);
       expect(await noInvite.evaluate(()=>(window as any).__RANDORI_LOCAL_RUNTIME__)).toBe(true);
       const noInviteSignup=await noInvite.evaluate(async()=>{
         const response=await fetch('/api/auth/signup',{
@@ -106,7 +108,13 @@ test.describe('unmocked local onboarding',()=>{
       expect(inviteUrl.pathname).toBe('/invite');
       expect(inviteUrl.hash).toMatch(/^#invite=[A-Za-z0-9_-]{43}$/);
 
+      const preparedResponse=member.waitForResponse(response=>
+        new URL(response.url()).pathname==='/api/invitations/prepare'
+          &&response.request().method()==='POST',
+      );
       await member.goto(inviteUrl.href,{waitUntil:'domcontentloaded'});
+      const preparedPayload=await (await preparedResponse).json();
+      expect(preparedPayload.binding).toMatch(/^[A-Za-z0-9_-]{43}$/);
       await expect(member).toHaveURL(/\/invite$/);
       await expect(member.getByTestId('invite-status')).toContainText('Invitation verified');
       await expect(member.getByTestId('invite-continue')).toHaveText('Create local account');
@@ -139,9 +147,19 @@ test.describe('unmocked local onboarding',()=>{
       expect(Number((await savedProfile.json()).user?.id)).toBeGreaterThan(0);
       await expect(member.locator('#view-dashboard')).toBeVisible();
       await expect(member.locator('#dashWelcome')).toContainText('Invited Member');
-      const memberCookies=await memberContext.cookies(runtime.url);
+      const memberCookies=await memberContext.cookies(new URL('/api/auth/signup',runtime.url).href);
       expect(memberCookies.some(cookie=>cookie.name==='randori_session'&&cookie.httpOnly)).toBe(true);
-      expect(memberCookies.some(cookie=>cookie.name==='randori_invite_claim')).toBe(false);
+      const inertInviteClaim=memberCookies.find(cookie=>cookie.name==='randori_invite_claim');
+      expect(inertInviteClaim).toEqual(expect.objectContaining({httpOnly:true,path:'/api'}));
+
+      const reuseResponse=await memberContext.request.post(new URL('/api/auth/signup',runtime.url).href,{
+        headers:{origin:runtime.url},data:{
+          email:'second.member@example.test',password:'another correct horse battery',name:'Second Member',
+          invite_binding:preparedPayload.binding,
+        },
+      });
+      expect(reuseResponse.status()).toBe(403);
+      expect(await reuseResponse.json()).toEqual({error:'invitation unavailable or does not match this email'});
 
       const meResponse=await memberContext.request.get(new URL('/api/auth/me',runtime.url).href);
       expect(meResponse.status()).toBe(200);

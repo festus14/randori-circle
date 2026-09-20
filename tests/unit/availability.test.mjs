@@ -27,6 +27,13 @@ import { INDEXES, TABLES } from '../../db/schema-manifest.js';
 
 const FRIDAY='2026-09-18T12:00:00.000Z';
 const SUNDAY_BOUNDARY='2026-09-20T07:00:00.000Z';
+// Successful mutations have a second, independent SQLite-clock cutoff guard.
+// These explicit future instants keep non-boundary tests deterministic without
+// weakening that production guard or replacing it with an application clock.
+const SAFE_EDITABLE_INSTANT='2099-09-18T12:00:00.000Z';
+const SAFE_LATER_EDITABLE_INSTANT='2099-09-21T12:00:00.000Z';
+const SAFE_CYCLE_BOUNDARY='2099-09-20T07:00:00.000Z';
+const SAFE_NEXT_CYCLE_BOUNDARY='2099-09-27T07:00:00.000Z';
 const cleanup=[];
 
 afterEach(async()=>{
@@ -70,6 +77,35 @@ async function createDatabase({availabilitySchema=true}={}){
 
 function expectCode(code){
   return error=>error instanceof AvailabilityError&&error.code===code;
+}
+
+function withDatabaseClock(db,instant){
+  const now=new Date(instant).toISOString();
+  const seconds=Math.floor(Date.parse(now)/1000);
+  const wrap=transaction=>({
+    async execute(value){
+      const sql=typeof value==='string'?value:String(value?.sql||'');
+      if(sql.includes("strftime('%Y-%m-%dT%H:%M:%fZ','now')")){
+        return {rows:[{now_utc:now}],rowsAffected:0};
+      }
+      if(value&&typeof value==='object'&&sql.includes("CAST(strftime('%s','now') AS INTEGER)")){
+        return transaction.execute({
+          ...value,
+          sql:sql.replaceAll("CAST(strftime('%s','now') AS INTEGER)",String(seconds)),
+        });
+      }
+      return transaction.execute(value);
+    },
+    batch:(values,mode)=>transaction.batch(values,mode),
+    commit:()=>transaction.commit(),
+    rollback:()=>transaction.rollback(),
+    close:()=>transaction.close?.(),
+  });
+  return {
+    execute:value=>db.execute(value),
+    batch:(values,mode)=>db.batch(values,mode),
+    async transaction(mode){ return wrap(await db.transaction(mode)); },
+  };
 }
 
 test('the mutation parser accepts only exact JSON booleans and a strict CAS contract',()=>{
@@ -232,9 +268,9 @@ test('an out-of-order adjacent bridge stays stable and later cycles use defaults
 
 test('CAS updates persist across clients and stale versions fail with the winning state',async()=>{
   const fixture=await createDatabase();
-  const initial=await getAvailabilityState(fixture.db,{userId:1,now:FRIDAY});
+  const initial=await getAvailabilityState(fixture.db,{userId:1,now:SAFE_EDITABLE_INSTANT});
   const body={cycle_key:initial.cycleKey,expected_version:0,is_available:true};
-  const updated=await updateAvailability(fixture.db,{userId:1,body,now:FRIDAY});
+  const updated=await updateAvailability(fixture.db,{userId:1,body,now:SAFE_EDITABLE_INSTANT});
   assert.equal(updated.isAvailable,true);
   assert.equal(updated.version,1);
   assert.equal(updated.source,'user');
@@ -244,25 +280,25 @@ test('CAS updates persist across clients and stale versions fail with the winnin
   await fixture.close();
   const reopened=createClient({url:fixture.url});
   cleanup.push(()=>reopened.close());
-  const persisted=await getAvailabilityState(reopened,{userId:1,now:FRIDAY});
+  const persisted=await getAvailabilityState(reopened,{userId:1,now:SAFE_EDITABLE_INSTANT});
   assert.equal(persisted.isAvailable,true);
   assert.equal(persisted.version,1);
   await assert.rejects(
-    updateAvailability(reopened,{userId:1,body:{...body,is_available:false},now:FRIDAY}),
+    updateAvailability(reopened,{userId:1,body:{...body,is_available:false},now:SAFE_EDITABLE_INSTANT}),
     error=>expectCode('AVAILABILITY_STALE')(error)&&error.details.state.version===1,
   );
 });
 
 test('concurrent file clients allow one CAS winner and reject the stale writer',async()=>{
   const fixture=await createDatabase();
-  const initial=await getAvailabilityState(fixture.db,{userId:1,now:FRIDAY});
+  const initial=await getAvailabilityState(fixture.db,{userId:1,now:SAFE_EDITABLE_INSTANT});
   await fixture.close();
   const first=createClient({url:fixture.url});
   const second=createClient({url:fixture.url});
   cleanup.push(()=>first.close(),()=>second.close());
   const results=await Promise.allSettled([
-    updateAvailability(first,{userId:1,body:{cycle_key:initial.cycleKey,expected_version:0,is_available:true},now:FRIDAY}),
-    updateAvailability(second,{userId:1,body:{cycle_key:initial.cycleKey,expected_version:0,is_available:false},now:FRIDAY}),
+    updateAvailability(first,{userId:1,body:{cycle_key:initial.cycleKey,expected_version:0,is_available:true},now:SAFE_EDITABLE_INSTANT}),
+    updateAvailability(second,{userId:1,body:{cycle_key:initial.cycleKey,expected_version:0,is_available:false},now:SAFE_EDITABLE_INSTANT}),
   ]);
   assert.equal(results.filter(result=>result.status==='fulfilled').length,1);
   const rejected=results.find(result=>result.status==='rejected');
@@ -275,32 +311,41 @@ test('concurrent file clients allow one CAS winner and reject the stale writer',
 test('editing a later cycle cannot retroactively alter the legacy bridge cycle',async()=>{
   const {db}=await createDatabase();
   await db.execute(`UPDATE auth_accounts SET is_available=1 WHERE id=1`);
-  const bridge=await getAvailabilityState(db,{userId:1,now:FRIDAY});
+  const bridge=await getAvailabilityState(db,{userId:1,now:SAFE_EDITABLE_INSTANT});
   assert.equal(bridge.source,'legacy_bridge');
   assert.equal(bridge.isAvailable,true);
 
-  const later=await getAvailabilityState(db,{userId:1,now:'2026-09-21T12:00:00.000Z'});
+  const later=await getAvailabilityState(db,{userId:1,now:SAFE_LATER_EDITABLE_INSTANT});
   assert.equal(later.source,'cycle_default');
   await updateAvailability(db,{
-    userId:1,now:'2026-09-21T12:00:00.000Z',
+    userId:1,now:SAFE_LATER_EDITABLE_INSTANT,
     body:{cycle_key:later.cycleKey,expected_version:0,is_available:false},
   });
 
-  const reread=await getAvailabilityState(db,{userId:1,now:FRIDAY});
+  const reread=await getAvailabilityState(db,{userId:1,now:SAFE_EDITABLE_INSTANT});
   assert.equal(reread.cycleKey,bridge.cycleKey);
   assert.equal(reread.isAvailable,true);
   assert.equal(reread.source,'legacy_bridge');
   assert.equal((await db.execute(`SELECT is_available FROM auth_accounts WHERE id=1`)).rows[0].is_available,1);
 });
 
-test('old-cycle writes fail closed at the exact cutoff and unrelated keys report cycle change',async()=>{
+test('writes succeed immediately before cutoff, fail at the exact boundary, and reject unrelated keys',async()=>{
   const {db}=await createDatabase();
-  const before=await getAvailabilityState(db,{userId:1,now:'2026-09-20T06:59:59.999Z'});
+  const beforeInstant='2026-09-20T06:59:59.999Z';
+  const beforeDb=withDatabaseClock(db,beforeInstant);
+  const before=await getAvailabilityState(beforeDb,{userId:1,now:beforeInstant});
+  const accepted=await updateAvailability(beforeDb,{
+    userId:1,now:beforeInstant,
+    body:{cycle_key:before.cycleKey,expected_version:before.version,is_available:true},
+  });
+  assert.equal(accepted.version,1);
+  assert.equal(accepted.isAvailable,true);
+
   let cutoffError;
   try{
-    await updateAvailability(db,{
+    await updateAvailability(withDatabaseClock(db,SUNDAY_BOUNDARY),{
       userId:1,now:SUNDAY_BOUNDARY,
-      body:{cycle_key:before.cycleKey,expected_version:before.version,is_available:true},
+      body:{cycle_key:before.cycleKey,expected_version:accepted.version,is_available:false},
     });
   }catch(error){ cutoffError=error; }
   assert.equal(cutoffError?.code,'AVAILABILITY_CUTOFF_CLOSED');
@@ -312,7 +357,7 @@ test('old-cycle writes fail closed at the exact cutoff and unrelated keys report
 
   let changedError;
   try{
-    await updateAvailability(db,{
+    await updateAvailability(withDatabaseClock(db,SUNDAY_BOUNDARY),{
       userId:1,now:SUNDAY_BOUNDARY,
       body:{cycle_key:'f'.repeat(64),expected_version:0,is_available:true},
     });
@@ -370,7 +415,7 @@ test('pairing availability is cycle- and scope-isolated and consults legacy only
   const {db}=await createDatabase();
   const circleScope={kind:'circle',circleId:10};
   const localScope={kind:'local'};
-  const firstCycle=resolvePairingCycle({now:SUNDAY_BOUNDARY,state:'current'});
+  const firstCycle=resolvePairingCycle({now:SAFE_CYCLE_BOUNDARY,state:'current'});
   const bridge=await applyCycleAvailability(db,{
     scope:circleScope,cycle:firstCycle,
     accounts:[{id:1,is_available:0,name:'One'},{id:2,is_available:1,name:'Two'}],
@@ -381,10 +426,10 @@ test('pairing availability is cycle- and scope-isolated and consults legacy only
 
   const localCycle=await materializeAvailabilityCycle(db,{scope:localScope,cycle:firstCycle});
   await updateAvailability(db,{
-    userId:1,localRuntime:true,now:FRIDAY,
+    userId:1,localRuntime:true,now:SAFE_EDITABLE_INSTANT,
     body:{cycle_key:localCycle.cycleKey,expected_version:0,is_available:true},
   });
-  const nextCycle=resolvePairingCycle({now:'2026-09-27T07:00:00.000Z',state:'current'});
+  const nextCycle=resolvePairingCycle({now:SAFE_NEXT_CYCLE_BOUNDARY,state:'current'});
   const defaults=await applyCycleAvailability(db,{
     scope:circleScope,cycle:nextCycle,
     accounts:[{id:1,is_available:0},{id:2,is_available:0}],
@@ -432,7 +477,7 @@ test('conflicting decisions for the same cycle remain isolated between circles',
 
 test('vetted pre-commit lock conflicts retry while unrelated failures do not',async()=>{
   const {db}=await createDatabase();
-  const initial=await getAvailabilityState(db,{userId:1,now:FRIDAY});
+  const initial=await getAvailabilityState(db,{userId:1,now:SAFE_EDITABLE_INSTANT});
   let attempts=0;
   const retrying={
     execute:value=>db.execute(value),
@@ -447,7 +492,7 @@ test('vetted pre-commit lock conflicts retry while unrelated failures do not',as
     },
   };
   const updated=await updateAvailability(retrying,{
-    userId:1,now:FRIDAY,
+    userId:1,now:SAFE_EDITABLE_INSTANT,
     body:{cycle_key:initial.cycleKey,expected_version:0,is_available:true},
   });
   assert.equal(updated.version,1);
@@ -456,7 +501,7 @@ test('vetted pre-commit lock conflicts retry while unrelated failures do not',as
   attempts=0;
   const failing={...retrying,async transaction(){ attempts+=1; throw new Error('network failed'); }};
   await assert.rejects(updateAvailability(failing,{
-    userId:1,now:FRIDAY,
+    userId:1,now:SAFE_EDITABLE_INSTANT,
     body:{cycle_key:initial.cycleKey,expected_version:1,is_available:false},
   }),expectCode('AVAILABILITY_UNAVAILABLE'));
   assert.equal(attempts,1);
@@ -483,16 +528,16 @@ test('ambiguous commit failures are not retried and public projections disclose 
       };
     },
   };
-  const initial=await getAvailabilityState(db,{userId:1,now:FRIDAY});
+  const initial=await getAvailabilityState(db,{userId:1,now:SAFE_EDITABLE_INSTANT});
   await assert.rejects(updateAvailability(wrapper,{
-    userId:1,now:FRIDAY,
+    userId:1,now:SAFE_EDITABLE_INSTANT,
     body:{cycle_key:initial.cycleKey,expected_version:0,is_available:true},
   }),expectCode('AVAILABILITY_UNAVAILABLE'));
   assert.equal(attempts,1);
   const stored=await db.execute(`SELECT version,is_available FROM pairing_cycle_availability`);
   assert.deepEqual([...stored.rows].map(row=>[Number(row.version),Number(row.is_available)]),[[1,1]]);
 
-  const publicValue=availabilityResponse(await getAvailabilityState(db,{userId:1,now:FRIDAY}));
+  const publicValue=availabilityResponse(await getAvailabilityState(db,{userId:1,now:SAFE_EDITABLE_INSTANT}));
   assert.doesNotMatch(JSON.stringify(publicValue),/@example\.test|userId|circleId/);
   assert.deepEqual(availabilityFailure(new AvailabilityError('AVAILABILITY_INPUT_INVALID','bad')),{status:400,body:{ok:false,error:'availability_input_invalid'}});
 });

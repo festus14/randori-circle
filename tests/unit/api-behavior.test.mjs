@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { after, beforeEach, mock, test } from 'node:test';
 import { createClient } from '@libsql/client';
 import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 import { availabilityCycleKey } from '../../api/_availability.js';
 import { resolvePairingCycle } from '../../api/_pairing-cycle.js';
 import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
@@ -35,6 +36,7 @@ let activationOutboxResult=null;
 let activationOutboxMetrics=[];
 let outboxMetricsDelayMs=0;
 let outboxLogDelayMs=0;
+let databaseNowOverride=null;
 let scheduleEmailDeliveryResult=null;
 const scheduleEmailDeliveryCalls=[];
 let invitationEmailDeliveryResult=null;
@@ -44,13 +46,18 @@ const outboxWorkerCalls=[];
 const mockAvailabilityCycles=new Map();
 const mockAvailabilityDecisions=new Map();
 
+function pairingRecoveryBody({circleId=1,local=false,now=databaseNowOverride||new Date()}={}){
+  const scope=local?{kind:'local'}:{kind:'circle',circleId};
+  return {expected_cycle_key:availabilityCycleKey(scope,resolvePairingCycle({now}))};
+}
+
 function sqlText(statement) {
   return typeof statement === 'string' ? statement : String(statement?.sql || '');
 }
 
 function availabilityFixtureResult(sql,args=[]){
   if(sql.includes("strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc")){
-    return rows([{now_utc:new Date().toISOString()}]);
+    return rows([{now_utc:databaseNowOverride||new Date().toISOString()}]);
   }
   if(sql.includes("PRAGMA table_info('pairing_cycles')")) return rows([
     ['scope_key','TEXT',1,1],['circle_id','INTEGER',0,0],['cycle_key','TEXT',1,2],
@@ -127,6 +134,22 @@ function createMockDb(){
         return rows([{now_seconds:Math.floor(Date.now()/1000)}]);
       }
       if(sql.includes('LEFT JOIN auth_provider_email_state')) return rows([{email_hash:null}]);
+      if(sql.includes("pragma_table_info('ai_usage')")) return rows([{name:'date',pk:1}]);
+      if(sql.includes("pragma_table_info('ai_account_monthly_usage')")){
+        return rows([{name:'month',pk:1},{name:'user_id',pk:2}]);
+      }
+      if(sql.includes("pragma_table_info('ai_consents')")) return rows([{name:'user_id',pk:1}]);
+      if(sql.includes("pragma_table_info('auth_accounts')")) return rows([{name:'id',pk:1}]);
+      if(sql.includes("pragma_index_list('auth_accounts')")) return rows([{
+        index_name:'sqlite_autoindex_auth_accounts_1',is_unique:1,partial:0,seqno:0,column_name:'email',
+      }]);
+      if(sql.includes("pragma_table_info('pairing_week_runs')")) return rows([{name:'week_label',pk:1}]);
+      if(sql.includes("pragma_table_info('pairing_participants')")) return rows([
+        {name:'week_id',pk:1},{name:'user_id',pk:2},
+      ]);
+      if(sql.includes("pragma_index_list('pairing_weeks')")) return rows([{
+        index_name:'idx_pairing_weeks_week_label',is_unique:1,partial:0,seqno:0,column_name:'week_label',
+      }]);
       const result = await executeHandler(sql, statement?.args || []);
       if(!(result?.rows?.length)&&sql.includes('INSERT INTO auth_provider_identities')&&sql.includes('RETURNING user_id')){
         return rows([{user_id:Number(statement?.args?.[2])}]);
@@ -240,8 +263,8 @@ mock.module('../../api/_db.js', {
     isoWeekLabel: () => '2026-W38',
     shuffleArray: values => [...values],
     verifyRequestAuth: authPayload,
-    verifySignedRequestAuth: () => null,
-    verifyMutationOrigin: () => true,
+    verifySignedRequestAuth: authPayload,
+    verifyMutationOrigin: req => req?.headers?.['x-test-origin']!=='rejected',
     initSentry: () => {},
     isSentryConfigured: () => Boolean(process.env.SENTRY_DSN || process.env.NEXT_PUBLIC_SENTRY_DSN),
     getSentry: () => ({ Sentry: null, ready: false }),
@@ -536,6 +559,7 @@ beforeEach(() => {
   activationOutboxMetrics=[];
   outboxMetricsDelayMs=0;
   outboxLogDelayMs=0;
+  databaseNowOverride=null;
   scheduleEmailDeliveryResult=null;
   scheduleEmailDeliveryCalls.length=0;
   invitationEmailDeliveryResult=null;
@@ -547,7 +571,7 @@ beforeEach(() => {
   executeHandler = () => rows();
   globalThis.fetch = realFetch;
   for (const key of [
-    'ADMIN_EMAILS', 'AI_ENABLED', 'APP_URL', 'CRON_SECRET', 'GOOGLE_CLIENT_ID', 'NODE_ENV',
+    'ADMIN_EMAILS', 'AI_ENABLED', 'APP_URL', 'CRON_SECRET', 'GOOGLE_CLIENT_ID', 'JWT_SECRET', 'NODE_ENV',
     'GOOGLE_CLIENT_SECRET', 'GROQ_API_KEY', 'OPENAI_API_KEY', 'RESEND_API_KEY', 'RESEND_FROM',
     'NEXT_PUBLIC_SENTRY_DSN', 'SENTRY_DSN',
     'ALLOW_OPEN_SIGNUP', 'SIGNUP_ALLOWLIST', 'LEETCODE_INGESTION_AUTHORIZED',
@@ -565,7 +589,10 @@ beforeEach(() => {
 });
 
 test('an unhandled data API failure is reported to Sentry exactly once', async () => {
-  executeHandler = () => { throw new Error('forced handler failure'); };
+  executeHandler = sql => {
+    if(sql.includes('FROM auth_accounts LIMIT 0')) return rows();
+    throw new Error('forced handler failure');
+  };
   const originalError=console.error;
   console.error=()=>{};
   try{
@@ -579,6 +606,32 @@ test('an unhandled data API failure is reported to Sentry exactly once', async (
     assert.match(sentryExceptionCalls[0][0].message,/forced handler failure/);
   }finally{
     console.error=originalError;
+  }
+});
+
+test('ordinary legacy data routes fail closed before writes when readiness is unavailable',async()=>{
+  const cases=[
+    {endpoint:'profile',url:'/api/profile',headers:{'x-test-auth':'user'},error:'profile unavailable'},
+    {endpoint:'circle',url:'/api/circle',headers:{'x-test-auth':'user'},error:'circle unavailable'},
+    {endpoint:'history',url:'/api/history',headers:{'x-test-auth':'user'},error:'history unavailable'},
+    {endpoint:'stats',url:'/api/stats',headers:{},error:'stats unavailable'},
+    {endpoint:'logs',url:'/api/logs',method:'POST',headers:{'x-test-auth':'user'},body:{message:'test'},error:'logging unavailable'},
+    {endpoint:'init',url:'/api/init',method:'POST',headers:{'x-test-auth':'admin'},error:'data unavailable'},
+  ];
+  for(const item of cases){
+    db=createMockDb();
+    executed.length=0;
+    executeHandler=sql=>{
+      if(/\bLIMIT\s+0\b/iu.test(sql)) throw new Error('migration-owned schema unavailable');
+      return rows();
+    };
+    const response=await invoke(dataHandler,{
+      method:item.method,url:item.url,query:{endpoint:item.endpoint},headers:item.headers,body:item.body,
+    });
+    assert.equal(response.status,503,item.endpoint);
+    assert.deepEqual(response.body,{error:item.error},item.endpoint);
+    assert.equal(executed.some(({sql})=>/^\s*(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(sql)),false,
+      `${item.endpoint} must fail before schema or business writes`);
   }
 });
 
@@ -883,7 +936,7 @@ test('capabilities and signup enforce the same production, preview, remote-db, a
   }
 });
 
-test('Google callback validates state and establishes a cookie session without leaking a token', async () => {
+test('Google login callback validates state and establishes an existing-account session without leaking a token', async () => {
   process.env.APP_URL = 'https://preview.example.test';
   process.env.GOOGLE_CLIENT_ID = 'client';
   process.env.GOOGLE_CLIENT_SECRET = 'secret';
@@ -891,9 +944,10 @@ test('Google callback validates state and establishes a cookie session without l
     email:'oauth@example.test',name:'OAuth User',sub:'google-123',
   }});
   executeHandler = sql => {
-    if (sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return rows([]);
-    if (sql.includes('INSERT INTO auth_accounts') && sql.includes('RETURNING id')) return rows([{ id: 8 }]);
-    if (sql.includes('SELECT id FROM users')) return rows([]);
+    if(sql.includes('FROM auth_provider_identities identity JOIN auth_accounts account')) return rows([{
+      id:8,email:'oauth@example.test',is_admin:0,password_hash:'!oauth:existing',google_sub:'google-123',
+    }]);
+    if(sql.includes('UPDATE auth_accounts SET last_login')&&sql.includes('RETURNING id')) return rows([{id:8}]);
     return rows();
   };
   const state = 'state-value';
@@ -966,6 +1020,110 @@ test('login rejects missing or cross-origin requests before credential or databa
     assert.equal(result.status, 403);
     assert.equal(executed.length, 0);
   }
+});
+
+test('auth, activation, reset, and identity request paths fail closed without schema writes',async()=>{
+  enableLocalPasswordSignup();
+  process.env.JWT_SECRET=TEST_JWT_SECRET;
+  const profileToken=jwt.sign(
+    {id:2,email:'user@example.test',jti:'G'.repeat(43)},TEST_JWT_SECRET,
+    {algorithm:'HS256',issuer:'randori-circle',audience:'randori-web',expiresIn:'5m'},
+  );
+  executeHandler=sql=>{
+    if(/FROM\s+auth_accounts\s+LIMIT\s+0/iu.test(sql)) throw new Error('auth schema unavailable');
+    return rows();
+  };
+  const resetUnreadyClient=()=>{
+    db=createMockDb();
+    executed.length=0;
+  };
+  const assertReadOnlyFailure=()=>{
+    assert.equal(executed.some(({sql})=>/^\s*(?:CREATE|ALTER|DROP|VACUUM|REINDEX)\b/iu.test(sql)),false);
+    assert.equal(executed.some(({sql})=>/^\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(sql)),false,
+      'unready auth schema must fail before business writes');
+  };
+  const requests=[
+    {
+      request:{method:'POST',url:'/api/auth/signup',query:{endpoint:'signup'},headers:localOriginHeaders,
+        body:{email:'person@example.test',password:'correct horse battery',name:'Person'}},
+      status:503,error:'signup temporarily unavailable',
+    },
+    {
+      request:{method:'POST',url:'/api/auth/login',query:{endpoint:'login'},headers:localOriginHeaders,
+        body:{email:'person@example.test',password:'correct horse battery'}},
+      status:503,error:'login temporarily unavailable',
+    },
+    {
+      request:{url:'/api/auth/me',query:{endpoint:'me'},headers:{
+        'x-test-auth':'user',cookie:`randori_session=${profileToken}`,
+      }},
+      status:503,error:'session validation temporarily unavailable',
+    },
+  ];
+  for(const item of requests){
+    resetUnreadyClient();
+    const result=await invoke(authHandler,item.request);
+    assert.equal(result.status,item.status,JSON.stringify({expected:item.error,body:result.body,executed}));
+    assert.equal(result.body.error,item.error);
+    assertReadOnlyFailure();
+  }
+
+  process.env.EMAIL_PASSWORD_ACTIVATION_ENABLED='true';
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  process.env.EMAIL_VERIFICATION_ENCRYPTION_KEY=Buffer.alloc(32,7).toString('base64url');
+  resetUnreadyClient();
+  const activation=await invoke(authHandler,{
+    method:'POST',url:'/api/auth/activation-resend',query:{endpoint:'activation-resend'},
+    headers:localOriginHeaders,body:{email:'person@example.test'},
+  });
+  assert.equal(activation.status,503);
+  assert.equal(activation.body.error,'email activation temporarily unavailable');
+  assertReadOnlyFailure();
+
+  process.env.PASSWORD_RESET_ENABLED='true';
+  process.env.PASSWORD_RESET_ENCRYPTION_KEY=Buffer.alloc(32,8).toString('base64url');
+  resetUnreadyClient();
+  const reset=await invoke(authHandler,{
+    method:'POST',url:'/api/auth/password-reset-consume',query:{endpoint:'password-reset-consume'},
+    headers:localOriginHeaders,body:{token:'x'.repeat(43),password:'correct horse battery'},
+  });
+  assert.equal(reset.status,503);
+  assert.equal(reset.body.error,'password reset temporarily unavailable');
+  assertReadOnlyFailure();
+
+  process.env.IDENTITY_MANAGEMENT_ENABLED='true';
+  resetUnreadyClient();
+  const identity=await invoke(authHandler,{
+    url:'/api/auth/identities',query:{endpoint:'identities'},headers:{'x-test-auth':'user'},
+  });
+  assert.equal(identity.status,503);
+  assert.equal(identity.body.error,'identity management temporarily unavailable');
+
+  assertReadOnlyFailure();
+});
+
+test('Google callback checks auth readiness before consuming the provider code',async()=>{
+  process.env.NODE_ENV='production';
+  process.env.APP_URL='https://randori.example.test';
+  process.env.GOOGLE_CLIENT_ID='client';
+  process.env.GOOGLE_CLIENT_SECRET='secret';
+  let providerCalls=0;
+  globalThis.fetch=async()=>{ providerCalls+=1; throw new Error('provider must not be called'); };
+  executeHandler=sql=>{
+    if(sql.includes('FROM auth_accounts LIMIT 0')) throw new Error('auth schema unavailable');
+    return rows();
+  };
+  const result=await invoke(authHandler,{
+    url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
+    headers:{
+      host:'randori.example.test','x-forwarded-proto':'https',
+      cookie:googleOAuthCookieHeader(),
+    },
+  });
+  assert.equal(result.status,302);
+  assert.equal(result.headers.location,'https://randori.example.test/?google_error=db_error');
+  assert.equal(providerCalls,0);
+  assert.equal(executed.some(({sql})=>/^\s*(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(sql)),false);
 });
 
 test('data read models map database rows and expose non-mutating health probes', async () => {
@@ -1311,25 +1469,23 @@ test('run history verifies signed authoritative results and rejects legacy or ta
   ),true);
 });
 
-test('run schema readiness coalesces concurrent pair-feed initialization and probes before access', async () => {
-  let releaseInitialization;
-  let reportInitializationStarted;
-  const initializationGate=new Promise(resolve=>{ releaseInitialization=resolve; });
-  const initializationStarted=new Promise(resolve=>{ reportInitializationStarted=resolve; });
-  let baseInitializations=0;
+test('run schema readiness coalesces concurrent read-only probes before access', async () => {
+  let releaseProbe;
+  let reportProbeStarted;
+  const probeGate=new Promise(resolve=>{ releaseProbe=resolve; });
+  const probeStarted=new Promise(resolve=>{ reportProbeStarted=resolve; });
   let completedProbes=0;
   let accessChecks=0;
   executeHandler=async sql=>{
-    if(sql.startsWith('CREATE TABLE IF NOT EXISTS auth_accounts')){
-      baseInitializations+=1;
-      reportInitializationStarted();
-      await initializationGate;
+    if(sql.startsWith('SELECT id,display_name FROM auth_accounts LIMIT 0')){
+      reportProbeStarted();
+      await probeGate;
+      completedProbes+=1;
       return rows();
     }
-    if(sql.startsWith('SELECT id,display_name FROM auth_accounts LIMIT 0')
-      || sql.startsWith('SELECT id,week_id,user_a_id,user_b_id,user_c_id FROM pairing_groups LIMIT 0')
+    if(sql.startsWith('SELECT id,week_id,user_a_id,user_b_id,user_c_id FROM pairing_groups LIMIT 0')
       || sql.startsWith('SELECT week_id,user_id,source FROM pairing_participants LIMIT 0')
-      || sql.startsWith('SELECT id,user_id,week_id,pair_group_id,question_id,question_slug,language,code,test_cases_snapshot')){
+      || sql.startsWith('SELECT id,user_id,week_id,pair_group_id,question_id,question_slug')){
       completedProbes+=1;
       return rows();
     }
@@ -1348,26 +1504,23 @@ test('run schema readiness coalesces concurrent pair-feed initialization and pro
   };
 
   const first=invoke(dataHandler,request);
-  await initializationStarted;
+  await probeStarted;
   const second=invoke(dataHandler,request);
   await Promise.resolve();
-  assert.equal(baseInitializations,1,'concurrent requests must share one in-flight initialization');
   assert.equal(accessChecks,0,'membership checks must not race ahead of readiness');
-  releaseInitialization();
+  releaseProbe();
 
   const responses=await Promise.all([first,second]);
   assert.deepEqual(responses.map(response=>response.status),[200,200]);
-  assert.equal(baseInitializations,1);
   assert.equal(completedProbes,4,'the shared readiness promise probes each required table once');
+  assert.equal(executed.some(call=>/\b(?:CREATE|ALTER|DROP)\b/iu.test(call.sql)),false);
   assert.equal(accessChecks,2,'each request still performs its own membership authorization');
 });
 
-test('failed run schema readiness is not cached and the next request retries initialization', async () => {
-  let baseInitializations=0;
+test('failed run schema readiness is not cached and the next request retries its read-only probe', async () => {
   let authProbeAttempts=0;
   let accessChecks=0;
   executeHandler=sql=>{
-    if(sql.startsWith('CREATE TABLE IF NOT EXISTS auth_accounts')) baseInitializations+=1;
     if(sql.startsWith('SELECT id,display_name FROM auth_accounts LIMIT 0')){
       authProbeAttempts+=1;
       if(authProbeAttempts===1) throw new Error('schema probe unavailable');
@@ -1395,9 +1548,9 @@ test('failed run schema readiness is not cached and the next request retries ini
 
     const retried=await invoke(dataHandler,request);
     assert.equal(retried.status,200);
-    assert.equal(baseInitializations,2,'a rejected readiness promise must be cleared');
     assert.equal(authProbeAttempts,2);
     assert.equal(accessChecks,1);
+    assert.equal(executed.some(call=>/\b(?:CREATE|ALTER|DROP)\b/iu.test(call.sql)),false);
   }finally{
     console.error=originalError;
   }
@@ -1559,16 +1712,17 @@ test('my-pair returns only current-cycle membership and a canonical room id', as
   let paired = true;
   let solo = false;
   let unavailable = false;
+  let emptyPublication = false;
   let poisonedSchedule = false;
   executeHandler = (sql,args) => {
     if(sql.includes('SELECT aa.id')&&sql.includes('JOIN circle_memberships cm')&&sql.includes('LIMIT 2')) return rows([{id:2,circle_id:1}]);
-    const participantRows=paired
+    const participantRows=emptyPublication?[]:paired
       ?(solo?[{user_id:2,position:0,source:'auth'}]:[
         {user_id:2,position:0,source:'auth'},
         {user_id:4,position:1,source:'auth'},
       ])
       :[{user_id:4,position:0,source:'auth'}];
-    const groupRows=paired
+    const groupRows=emptyPublication?[]:paired
       ?[solo
         ?{id:20,user_a_id:2,user_b_id:2,user_c_id:null,is_ai_pair:1}
         :{id:20,user_a_id:2,user_b_id:4,user_c_id:null,is_ai_pair:0}]
@@ -1589,7 +1743,11 @@ test('my-pair returns only current-cycle membership and a canonical room id', as
         ? [{id:30,proposed_times:'not-json',agreed_time:null,updated_at:'now',access_present:1}]
         : [{id:null,proposed_times:null,agreed_time:null,updated_at:null,access_present:1}]);
     }
-    if(sql.includes('FROM pairing_email_outbox')){
+    if(sql.includes('FROM outbox_events')&&sql.includes("json_extract(payload_json,'$.kind')='unavailable'")){
+      assert.deepEqual(args,['pairing.email.requested',1,10,2,10,2]);
+      assert.match(sql,/json_type\(payload_json,'\$\.week_id'\)='integer'/);
+      assert.match(sql,/json_type\(payload_json,'\$\.user_id'\)='integer'/);
+      assert.match(sql,/json_type\(payload_json,'\$\.kind'\)='text'/);
       return rows(unavailable?[{unavailable:1}]:[]);
     }
     return rows();
@@ -1633,10 +1791,15 @@ test('my-pair returns only current-cycle membership and a canonical room id', as
   assert.equal(absent.body.paired, false);
   assert.equal(absent.body.reason, 'not_paired_this_cycle');
   assert.equal(absent.body.pairing_status,'missed');
-  assert.equal(executed.some(call=>call.sql.includes('FROM pairing_email_outbox')&&call.args[0]===10&&call.args[1]===2),true);
+  assert.equal(executed.some(call=>call.sql.includes('FROM outbox_events')
+    &&call.sql.includes("event_type=? AND event_version=?")
+    &&call.args[2]===10&&call.args[3]===2),true);
+  assert.equal(executed.some(call=>call.sql.includes('FROM pairing_email_outbox')),false,
+    'current-cycle unavailable evidence must not consult the retired legacy queue');
   assert.equal(executed.some(call => call.sql.includes('JOIN pairing_weeks')), false);
 
   unavailable=true;
+  emptyPublication=true;
   const optedOut=await invoke(dataHandler,{
     url:'/api/my-pair',query:{endpoint:'my-pair'},headers:{'x-test-auth':'user'},
   });
@@ -1644,6 +1807,116 @@ test('my-pair returns only current-cycle membership and a canonical room id', as
   assert.equal(optedOut.body.paired,false);
   assert.equal(optedOut.body.pairing_status,'unavailable');
   assert.equal(optedOut.body.reason,'unavailable_current_cycle');
+
+  const emptyWeek=await invoke(dataHandler,{
+    url:'/api/weeks',query:{endpoint:'weeks'},headers:{'x-test-auth':'user'},
+  });
+  assert.equal(emptyWeek.status,200);
+  assert.equal(emptyWeek.body.weeks.length,1);
+  assert.deepEqual(emptyWeek.body.weeks[0].pairs,[]);
+});
+
+test('primary weeks and my-pair isolate the local test clock from production database time',async()=>{
+  const appNow='2026-09-27T08:00:01.000Z';
+  const databaseNow='2026-09-20T08:00:01.000Z';
+  const appCycle=resolvePairingCycle({now:appNow});
+  const databaseCycle=resolvePairingCycle({now:databaseNow});
+  assert.notEqual(appCycle.cycleId,databaseCycle.cycleId);
+  databaseNowOverride=databaseNow;
+
+  executeHandler=(sql,args)=>{
+    if(sql.includes('SELECT id,is_admin FROM auth_accounts')&&sql.includes('COALESCE(is_demo,0)=0')){
+      return rows([{id:2,is_admin:0}]);
+    }
+    if((sql.includes('SELECT aa.id,c.id AS circle_id')
+      ||sql.includes('SELECT aa.id,cm.role,c.id AS circle_id'))&&sql.includes('LIMIT 2')){
+      return rows([{id:2,circle_id:1,role:'member'}]);
+    }
+    if(sql.includes('FROM pairing_week_runs WHERE week_label=?')){
+      return args[0]===appCycle.cycleId?rows([{
+        week_label:appCycle.cycleId,week_id:10,generation_token:'empty-publication',generation:1,
+        algorithm_version:'fair-seeded-v1',algorithm_seed:`${appCycle.cycleId}:weekly`,
+        participant_count:0,participants_json:'[]',created_at:appCycle.startsAt,
+      }]):rows([]);
+    }
+    if(sql.includes('FROM pairing_weeks WHERE week_label=?')){
+      return args[0]===appCycle.cycleId
+        ?rows([{id:10,week_label:appCycle.cycleId,week_start:appCycle.startsAt,is_demo:0}])
+        :rows([]);
+    }
+    if(sql.includes('FROM pairing_participants pp')
+      ||(sql.includes('FROM pairing_groups pg')&&sql.includes('JOIN pairing_week_runs pwr'))){
+      return rows([]);
+    }
+    if(sql.includes('FROM outbox_events')&&sql.includes("json_extract(payload_json,'$.kind')='unavailable'")){
+      return rows([{unavailable:1}]);
+    }
+    return rows();
+  };
+
+  const request=endpoint=>({
+    url:`/api/${endpoint}`,query:{endpoint},
+    headers:{'x-test-auth':'user',host:'127.0.0.1:3000'},
+  });
+  const invokeBoth=async()=>({
+    weeks:await invoke(dataHandler,request('weeks')),
+    myPair:await invoke(dataHandler,request('my-pair')),
+  });
+
+  Object.assign(process.env,{
+    NODE_ENV:'development',RANDORI_LOCAL_RUNTIME:'true',CIRCLE_MEMBERSHIP_ENABLED:'false',
+    TURSO_DATABASE_URL:'file:///tmp/randori-clock-contract.sqlite',TURSO_AUTH_TOKEN:'',
+    APP_URL:'http://127.0.0.1:3000',
+  });
+  executed.length=0;
+  const local=await withFixedNow(appNow,invokeBoth);
+  assert.equal(local.weeks.status,200);
+  assert.equal(local.weeks.body.current_cycle.cycleId,appCycle.cycleId);
+  assert.equal(local.weeks.body.weeks.length,1);
+  assert.equal(local.myPair.status,200);
+  assert.equal(local.myPair.body.current_cycle.cycleId,appCycle.cycleId);
+  assert.equal(local.myPair.body.pairing_status,'unavailable');
+  assert.equal(executed.some(call=>call.sql.includes("strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc")),false,
+    'the fully verified isolated runtime retains its explicit application test clock');
+
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  executed.length=0;
+  const localMembership=await withFixedNow(appNow,invokeBoth);
+  assert.equal(localMembership.weeks.status,200);
+  assert.equal(localMembership.weeks.body.current_cycle.cycleId,appCycle.cycleId);
+  assert.equal(localMembership.weeks.body.weeks.length,1);
+  assert.equal(localMembership.myPair.status,200);
+  assert.equal(localMembership.myPair.body.current_cycle.cycleId,appCycle.cycleId);
+  assert.equal(localMembership.myPair.body.pairing_status,'unavailable');
+  assert.equal(executed.some(call=>call.sql.includes("strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc")),false,
+    'the verified local membership runtime also retains its explicit application test clock');
+
+  for(const mode of ['production','failed-local-guard']){
+    if(mode==='production'){
+      Object.assign(process.env,{
+        NODE_ENV:'production',RANDORI_LOCAL_RUNTIME:'false',
+        TURSO_DATABASE_URL:'libsql://database.example.test',TURSO_AUTH_TOKEN:'remote-token',
+        APP_URL:'https://randori.example.test',
+      });
+    }else{
+      Object.assign(process.env,{
+        NODE_ENV:'development',RANDORI_LOCAL_RUNTIME:'true',
+        TURSO_DATABASE_URL:'file:///tmp/randori-clock-contract.sqlite',TURSO_AUTH_TOKEN:'unexpected-token',
+        APP_URL:'http://127.0.0.1:3000',
+      });
+    }
+    executed.length=0;
+    const result=await withFixedNow(appNow,invokeBoth);
+    assert.equal(result.weeks.status,200,mode);
+    assert.equal(result.weeks.body.current_cycle.cycleId,databaseCycle.cycleId,mode);
+    assert.deepEqual(result.weeks.body.weeks,[],mode);
+    assert.equal(result.myPair.status,200,mode);
+    assert.equal(result.myPair.body.current_cycle.cycleId,databaseCycle.cycleId,mode);
+    assert.equal(result.myPair.body.pairing_status,'unpublished',mode);
+    const clockReads=executed.filter(call=>call.sql.includes(
+      "strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc"));
+    assert.equal(clockReads.length,2,`${mode} reads both endpoints from database time`);
+  }
 });
 
 test('my-pair ignores stale and future weeks but fails closed on a current legacy week',async()=>{
@@ -2259,35 +2532,15 @@ test('questions expose only the active original catalogue and make no LeetCode o
     'ordinary requests must not create the legacy schedule uniqueness index');
 });
 
-test('admin init never imports a bundled third-party question seed', async () => {
-  executeHandler = sql => {
-    if (sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')) return rows([{ id: 1, email: 'admin@example.test', is_admin: 1 }]);
-    if (sql.includes('SELECT id FROM circles WHERE is_primary=1')) return rows([{ id: 1 }]);
-    return rows();
-  };
+test('admin init never repairs schema, deduplicates schedules, or imports a question seed', async () => {
   executed.length = 0;
   const initialized = await invoke(dataHandler, {
     method: 'POST', url: '/api/init', query: { endpoint: 'init' }, headers: { 'x-test-auth': 'admin' },
   });
-  assert.equal(initialized.status, 200);
+  assert.equal(initialized.status, 503);
+  assert.deepEqual(initialized.body,{error:'data unavailable'});
   assert.equal(executed.some(call => call.sql.includes('INSERT INTO custom_questions')), false);
-  const dedupe = executed.findIndex(call => call.sql.includes('DELETE FROM pair_schedules WHERE id NOT IN'));
-  const uniqueIndex = executed.findIndex(call => call.sql.includes('CREATE UNIQUE INDEX IF NOT EXISTS uq_pair_schedules_week_pair'));
-  assert.ok(dedupe >= 0 && uniqueIndex > dedupe, 'legacy schedules must be deterministically deduped before the unique index');
-});
-
-test('admin init reports a visible error when the legacy schedule migration fails', async () => {
-  executeHandler = sql => {
-    if (sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')) return rows([{ id: 1, email: 'admin@example.test', is_admin: 1 }]);
-    if (sql.includes('DELETE FROM pair_schedules WHERE id NOT IN')) throw new Error('database is read only');
-    return rows();
-  };
-  const result = await invoke(dataHandler, {
-    method: 'POST', url: '/api/init', query: { endpoint: 'init' }, headers: { 'x-test-auth': 'admin' },
-  });
-  assert.equal(result.status, 500);
-  assert.match(result.body.error, /schedule uniqueness migration failed/i);
-  assert.match(result.body.detail, /read only/i);
+  assert.equal(executed.some(call => /\b(?:CREATE|ALTER|DROP|DELETE|INSERT|UPDATE|REPLACE)\b/i.test(call.sql)),false);
 });
 
 test('data validation and access-control branches reject malformed or cross-pair requests', async () => {
@@ -2410,7 +2663,7 @@ test('AI consent path stores a template analysis and exposes owned feedback hist
       model_used: 'mock', created_by: 2, room_id: 'room', pair_label: 'Pair', confidence: 0.8,
     }]);
     if (sql.includes('FROM ai_feedback af JOIN ai_sessions ase') && sql.includes('ase.created_by=')) return rows([{ id: 71, session_id: 70 }]);
-    if (sql.includes('SELECT * FROM ai_usage')) return rows([{ calls: 3 }]);
+    if (sql.includes('SELECT date,calls,tokens_in,tokens_out,updated_at FROM ai_usage')) return rows([{ calls: 3 }]);
     return rows();
   };
   const headers = { 'x-test-auth': 'user' };
@@ -2441,6 +2694,7 @@ test('AI consent path stores a template analysis and exposes owned feedback hist
   });
   assert.equal(history.status, 200);
   assert.equal(history.body.feedbacks.length, 1);
+  assert.equal(getClientCalls,3,'analyze logging must reuse the request database client');
 });
 
 test('AI analysis requires trusted room membership and every human participant consent', async () => {
@@ -2568,6 +2822,35 @@ test('AI rejects malformed provider feedback with the generic provider error', a
         position INTEGER NOT NULL,
         source TEXT NOT NULL,
         PRIMARY KEY (week_id,user_id)
+      )`,
+      `CREATE TABLE ai_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT,pair_label TEXT,transcript TEXT,
+        code_snapshots TEXT,interviewer_questions TEXT,started_at TEXT,ended_at TEXT,
+        duration_sec INTEGER,cost_cents INTEGER DEFAULT 0,created_at TEXT DEFAULT (datetime('now')),
+        created_by INTEGER
+      )`,
+      `CREATE TABLE ai_feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,session_id INTEGER NOT NULL,role TEXT,
+        feedback_json TEXT NOT NULL,evidence TEXT,model_used TEXT,reason_for_pick TEXT,
+        estimated_cost_cents INTEGER,confidence REAL,created_at TEXT DEFAULT (datetime('now'))
+      )`,
+      `CREATE TABLE ai_usage (
+        date TEXT PRIMARY KEY,calls INTEGER DEFAULT 0,tokens_in INTEGER DEFAULT 0,
+        tokens_out INTEGER DEFAULT 0,updated_at TEXT
+      )`,
+      `CREATE TABLE ai_account_monthly_usage (
+        month TEXT NOT NULL,user_id INTEGER NOT NULL,calls INTEGER NOT NULL DEFAULT 0,
+        tokens_in INTEGER NOT NULL DEFAULT 0,updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY(month,user_id)
+      )`,
+      `CREATE TABLE ai_account_monthly_reservations (
+        reservation_id TEXT PRIMARY KEY,month TEXT NOT NULL,user_id INTEGER NOT NULL,
+        tokens_in INTEGER NOT NULL DEFAULT 0,session_id INTEGER UNIQUE,refunded_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`,
+      `CREATE TABLE ai_consents (
+        user_id INTEGER PRIMARY KEY,consented_at TEXT NOT NULL DEFAULT (datetime('now')),
+        revoked_at TEXT,policy_version TEXT NOT NULL
       )`,
       `INSERT INTO auth_accounts (id,email,is_demo) VALUES (2,'user@example.test',0)`,
       `INSERT INTO pairing_weeks (id,week_label) VALUES (10,'2026-W38')`,
@@ -2735,6 +3018,14 @@ test('operations cover preferences, availability, admin promotion, demo lifecycl
   });
   assert.equal(saved.body.prefs.sms_enabled, true);
 
+  const replaced = await invoke(opsHandler, {
+    method: 'PUT', url: '/api/notifications/prefs', query: { endpoint: 'notifications-prefs' }, headers: user,
+    body: { email_enabled: true, sms_enabled: false, email: 'user@example.test' },
+  });
+  assert.deepEqual(replaced.body.prefs,{
+    user_id:2,email_enabled:true,sms_enabled:false,phone:null,email:'user@example.test',
+  });
+
   const availabilityState = await invoke(opsHandler, {
     method: 'GET', url: '/api/settings/availability', query: { endpoint: 'availability' }, headers: user,
   });
@@ -2783,6 +3074,291 @@ test('operations cover preferences, availability, admin promotion, demo lifecycl
   assert.equal(weekly.body.pair_count, 1);
   assert.doesNotMatch(JSON.stringify(weekly.body),/@example\.test/);
   assert.equal(executed.some(call => !call.sql.trim()), false, 'migration arrays must not execute undefined DDL entries');
+});
+
+test('admin operations authorize before readiness and perform no schema writes',async()=>{
+  const cases=[
+    {url:'/api/admin/reshuffle',endpoint:'reshuffle',body:{action:'promote',email:'target@example.test'}},
+    {url:'/api/demo-seed',endpoint:'demo-seed'},
+    {url:'/api/demo-shuffle',endpoint:'demo-shuffle'},
+    {url:'/api/demo-reset',endpoint:'demo-reset'},
+  ];
+  for(const item of cases){
+    db=createMockDb();
+    executed.length=0;
+    executeHandler=sql=>sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')
+      ?rows([{id:2,email:'user@example.test',is_admin:0}])
+      :rows();
+    const forbidden=await invoke(opsHandler,{
+      method:'POST',url:item.url,query:{endpoint:item.endpoint},
+      headers:{'x-test-auth':'user'},body:item.body,
+    });
+    assert.equal(forbidden.status,403,item.endpoint);
+    assert.equal(executed.length,1,`${item.endpoint} must stop after live authorization`);
+    assert.match(executed[0].sql,/SELECT id,email,is_admin FROM auth_accounts WHERE id=/);
+    assert.equal(executed.some(call=>/\bLIMIT\s+0\b/iu.test(call.sql)),false,
+      `${item.endpoint} must not probe schema for a non-admin`);
+    assert.equal(executed.some(call=>/^\s*(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(call.sql)),false,
+      `${item.endpoint} must not write for a non-admin`);
+  }
+});
+
+test('admin operations reject anonymous callers before database access',async()=>{
+  const cases=[
+    {url:'/api/admin/reshuffle',endpoint:'reshuffle',body:{action:'promote',email:'target@example.test'}},
+    {url:'/api/demo-seed',endpoint:'demo-seed'},
+    {url:'/api/demo-shuffle',endpoint:'demo-shuffle'},
+    {url:'/api/demo-reset',endpoint:'demo-reset'},
+  ];
+  for(const item of cases){
+    getClientCalls=0;
+    executed.length=0;
+    const unauthorized=await invoke(opsHandler,{
+      method:'POST',url:item.url,query:{endpoint:item.endpoint},body:item.body,
+    });
+    assert.equal(unauthorized.status,401,item.endpoint);
+    assert.equal(getClientCalls,0,`${item.endpoint} must authenticate before opening a database`);
+    assert.equal(executed.length,0,item.endpoint);
+  }
+});
+
+test('administrator lookup failures are unavailable rather than false authorization denials',async()=>{
+  executeHandler=sql=>{
+    if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')){
+      throw new Error('private database detail');
+    }
+    return rows();
+  };
+  const unavailable=await invoke(opsHandler,{
+    method:'POST',url:'/api/demo-reset',query:{endpoint:'demo-reset'},headers:{'x-test-auth':'admin'},
+  });
+  assert.equal(unavailable.status,503);
+  assert.deepEqual(unavailable.body,{error:'admin operation unavailable'});
+  assert.equal(executed.length,1);
+  assert.equal(executed.some(call=>/^\s*(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(call.sql)),false);
+});
+
+test('admin operation readiness failures are generic and precede every data mutation',async()=>{
+  const cases=[
+    {url:'/api/admin/reshuffle',endpoint:'reshuffle',body:{action:'promote',email:'target@example.test'}},
+    {url:'/api/demo-seed',endpoint:'demo-seed'},
+    {url:'/api/demo-shuffle',endpoint:'demo-shuffle'},
+    {url:'/api/demo-reset',endpoint:'demo-reset'},
+  ];
+  for(const item of cases){
+    db=createMockDb();
+    executed.length=0;
+    executeHandler=sql=>{
+      if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')){
+        return rows([{id:1,email:'admin@example.test',is_admin:0}]);
+      }
+      if(/\bLIMIT\s+0\b/iu.test(sql)) throw new Error('private schema detail');
+      return rows();
+    };
+    const unavailable=await invoke(opsHandler,{
+      method:'POST',url:item.url,query:{endpoint:item.endpoint},
+      headers:{'x-test-auth':'admin'},body:item.body,
+    });
+    assert.equal(unavailable.status,503,item.endpoint);
+    assert.deepEqual(unavailable.body,{error:'admin operation unavailable'},item.endpoint);
+    assert.equal(executed.some(call=>/^\s*(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(call.sql)),false,
+      `${item.endpoint} must fail before configured-admin or business writes`);
+  }
+});
+
+test('configured administrator synchronization follows validation and route readiness',async()=>{
+  executeHandler=sql=>{
+    if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')){
+      return rows([{id:1,email:'admin@example.test',is_admin:0}]);
+    }
+    if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE lower(email)')){
+      return rows([{id:2,email:'target@example.test',is_admin:0}]);
+    }
+    return rows();
+  };
+
+  const invalid=await invoke(opsHandler,{
+    method:'POST',url:'/api/admin/reshuffle',query:{endpoint:'reshuffle'},
+    headers:{'x-test-auth':'admin'},body:{action:'promote',email:'invalid'},
+  });
+  assert.equal(invalid.status,400);
+  assert.equal(executed.some(call=>call.sql.includes('UPDATE auth_accounts SET is_admin=1')),false);
+
+  executed.length=0;
+  const promoted=await invoke(opsHandler,{
+    method:'POST',url:'/api/admin/reshuffle',query:{endpoint:'reshuffle'},
+    headers:{'x-test-auth':'admin'},body:{action:'promote',email:'target@example.test'},
+  });
+  assert.equal(promoted.status,200);
+  const readinessIndex=executed.findIndex(call=>call.sql.includes('FROM auth_accounts LIMIT 0'));
+  const adminUpdates=executed.map((call,index)=>({call,index}))
+    .filter(({call})=>call.sql.includes('UPDATE auth_accounts SET is_admin=1 WHERE id='));
+  const callerUpdateIndex=adminUpdates[0]?.index??-1;
+  const targetUpdateIndex=adminUpdates[1]?.index??-1;
+  assert.ok(readinessIndex>=0&&callerUpdateIndex>readinessIndex);
+  assert.ok(targetUpdateIndex>callerUpdateIndex);
+  assert.deepEqual(adminUpdates.map(({call})=>call.args),[[1],[2]]);
+  assert.equal(promoted.body.is_admin_via,'db');
+});
+
+test('promotion rejects ambiguous case-insensitive legacy identities before mutation',async()=>{
+  executeHandler=sql=>{
+    if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')){
+      return rows([{id:1,email:'admin@example.test',is_admin:1}]);
+    }
+    if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE lower(email)')){
+      return rows([
+        {id:2,email:'target@example.test',is_admin:0},
+        {id:3,email:'Target@Example.Test',is_admin:0},
+      ]);
+    }
+    return rows();
+  };
+  const response=await invoke(opsHandler,{
+    method:'POST',url:'/api/admin/reshuffle',query:{endpoint:'reshuffle'},
+    headers:{'x-test-auth':'admin'},body:{action:'promote',email:'target@example.test'},
+  });
+  assert.equal(response.status,503);
+  assert.deepEqual(response.body,{error:'admin operation unavailable'});
+  assert.equal(executed.some(call=>call.sql.includes('UPDATE auth_accounts SET is_admin=1')),false);
+});
+
+test('admin and demo operations run against a fully migrated SQLite database without runtime DDL',async()=>{
+  const directory=mkdtempSync(join(tmpdir(),'randori-admin-operations-'));
+  const client=createClient({url:pathToFileURL(join(directory,'operations.sqlite')).href});
+  try{
+    await prepareMigrationConnection(client);
+    const before=await inspectMigrationState(client);
+    await applyMigrations(client,{
+      expectedStateFingerprint:before.stateFingerprint,migrations:EXECUTABLE_MIGRATIONS,
+      retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0},
+    });
+    await client.batch([
+      `INSERT INTO auth_accounts
+        (id,email,password_hash,display_name,color,is_available,is_admin,is_demo)
+        VALUES (1,'admin@example.test','hash','Admin','#111111',1,1,0),
+               (2,'target@example.test','hash','Target','#222222',1,0,0)`,
+    ],'write');
+    db=client;
+
+    const promoted=await invoke(opsHandler,{
+      method:'POST',url:'/api/admin/reshuffle',query:{endpoint:'reshuffle'},
+      headers:{'x-test-auth':'admin'},body:{action:'promote',email:'target@example.test'},
+    });
+    assert.equal(promoted.status,200,JSON.stringify(promoted.body));
+    assert.equal(promoted.body.promoted,'target@example.test');
+
+    const seeded=await invoke(opsHandler,{
+      method:'POST',url:'/api/demo-seed',query:{endpoint:'demo-seed'},headers:{'x-test-auth':'admin'},
+    });
+    assert.equal(seeded.status,200,JSON.stringify(seeded.body));
+    assert.equal(seeded.body.seeded_count,6);
+
+    const shuffled=await invoke(opsHandler,{
+      method:'POST',url:'/api/demo-shuffle',query:{endpoint:'demo-shuffle'},headers:{'x-test-auth':'admin'},
+    });
+    assert.equal(shuffled.status,200,JSON.stringify(shuffled.body));
+    assert.equal(shuffled.body.demo,true);
+    assert.equal(shuffled.body.count,8);
+    assert.equal(shuffled.body.pairs.length,4);
+
+    const reset=await invoke(opsHandler,{
+      method:'POST',url:'/api/demo-reset',query:{endpoint:'demo-reset'},headers:{'x-test-auth':'admin'},
+    });
+    assert.equal(reset.status,200,JSON.stringify(reset.body));
+    assert.deepEqual(reset.body.deleted,{groups:4,weeks:1,demo_users:6});
+    const accounts=await client.execute(`SELECT email,is_demo FROM auth_accounts ORDER BY id`);
+    assert.deepEqual(accounts.rows.map(row=>({email:String(row.email),is_demo:Number(row.is_demo)})),[
+      {email:'admin@example.test',is_demo:0},{email:'target@example.test',is_demo:0},
+    ]);
+    const demoWeeks=await client.execute(`SELECT COUNT(*) AS count FROM pairing_weeks WHERE is_demo=1`);
+    assert.equal(Number(demoWeeks.rows[0].count),0);
+  }finally{
+    db=createMockDb();
+    client.close();
+    rmSync(directory,{recursive:true,force:true});
+  }
+});
+
+test('a stale real SQLite demo schema fails before creating any demo data',async()=>{
+  const client=createClient({url:'file::memory:'});
+  try{
+    await client.execute(`CREATE TABLE auth_accounts
+      (id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,
+       display_name TEXT NOT NULL,color TEXT NOT NULL,is_available INTEGER DEFAULT 1,
+       is_admin INTEGER DEFAULT 0,is_demo INTEGER DEFAULT 0)`);
+    await client.execute(`INSERT INTO auth_accounts
+      (id,email,password_hash,display_name,color,is_available,is_admin,is_demo)
+      VALUES (1,'admin@example.test','hash','Admin','#111111',1,1,0)`);
+    const before=await client.execute(`SELECT type,name,sql FROM sqlite_schema
+      WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name`);
+    db=client;
+
+    const unavailable=await invoke(opsHandler,{
+      method:'POST',url:'/api/demo-shuffle',query:{endpoint:'demo-shuffle'},headers:{'x-test-auth':'admin'},
+    });
+    assert.equal(unavailable.status,503);
+    assert.deepEqual(unavailable.body,{error:'admin operation unavailable'});
+    const accounts=await client.execute(`SELECT id,email,is_demo FROM auth_accounts ORDER BY id`);
+    assert.deepEqual(accounts.rows.map(row=>({id:Number(row.id),email:String(row.email),is_demo:Number(row.is_demo)})),[
+      {id:1,email:'admin@example.test',is_demo:0},
+    ]);
+    const after=await client.execute(`SELECT type,name,sql FROM sqlite_schema
+      WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name`);
+    assert.deepEqual(after.rows,before.rows,'request failure must not repair or otherwise mutate schema');
+  }finally{
+    db=createMockDb();
+    client.close();
+  }
+});
+
+test('notification preferences reject origin, method, and authentication before readiness',async()=>{
+  const cases=[
+    {
+      name:'origin',
+      request:{method:'POST',url:'/api/notifications/prefs',query:{endpoint:'notifications-prefs'},
+        headers:{'x-test-auth':'user','x-test-origin':'rejected'}},
+      status:403,
+    },
+    {
+      name:'method',
+      request:{method:'PATCH',url:'/api/notifications/prefs',query:{endpoint:'notifications-prefs'},
+        headers:{'x-test-auth':'user'}},
+      status:405,
+    },
+    {
+      name:'authentication',
+      request:{method:'GET',url:'/api/notifications/prefs',query:{endpoint:'notifications-prefs'}},
+      status:401,
+    },
+  ];
+
+  for(const item of cases){
+    db=createMockDb();
+    executed.length=0;
+    const response=await invoke(opsHandler,item.request);
+    assert.equal(response.status,item.status,item.name);
+    assert.equal(executed.length,0,`${item.name} rejection must happen before readiness SQL`);
+  }
+});
+
+test('notification preferences fail closed before DML and logging when readiness is unavailable',async()=>{
+  const expectedProbe='SELECT user_id,email_enabled,sms_enabled,phone,email,updated_at FROM user_notification_prefs LIMIT 0';
+  executeHandler=sql=>{
+    if(sql===expectedProbe) throw new Error('migration-owned preference schema unavailable');
+    return rows();
+  };
+
+  const response=await invoke(opsHandler,{
+    method:'POST',url:'/api/notifications/prefs',query:{endpoint:'notifications-prefs'},
+    headers:{'x-test-auth':'user'},body:{email_enabled:false,sms_enabled:true,phone:'+440000000'},
+  });
+
+  assert.equal(response.status,503);
+  assert.deepEqual(response.body,{error:'notification preferences unavailable'});
+  assert.deepEqual(executed.map(call=>call.sql),[expectedProbe]);
+  assert.equal(executed.some(call=>/^\s*(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(call.sql)),false);
+  assert.equal(executed.some(call=>call.sql.includes('INSERT INTO app_logs')),false);
 });
 
 test('weekly publication only queues email and never invokes a provider drain', async () => {
@@ -3119,6 +3695,45 @@ test('operation validation rejects unsupported methods and non-admin mutations',
   }
 });
 
+test('owner recovery rejects early and stale cycles before any publication write',async()=>{
+  process.env.APP_URL='https://randori.example.test';
+  executeHandler=sql=>{
+    if(sql.includes("cm.role='owner'")||sql.includes("membership.role='owner'")){
+      return rows([{id:1,role:'owner',circle_id:1}]);
+    }
+    return rows();
+  };
+  databaseNowOverride='2026-09-20T07:29:59.999Z';
+  const expected=pairingRecoveryBody();
+  const request={
+    method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},
+    headers:{'x-test-auth':'admin'},body:expected,
+  };
+
+  for(const body of [{},{expected_cycle_key:'A'.repeat(64)},
+    {...expected,force:true},[expected]]){
+    const invalid=await invoke(opsHandler,{...request,body});
+    assert.equal(invalid.status,400);
+    assert.equal(invalid.body.code,'pairing_recovery_input_invalid');
+  }
+  assert.equal(executed.some(call=>call.sql.includes('INSERT INTO pairing_week_runs')),false);
+
+  const early=await invoke(opsHandler,request);
+  assert.equal(early.status,409);
+  assert.equal(early.body.code,'pairing_recovery_not_ready');
+  assert.equal(early.body.publication_state.state,'pending');
+  assert.equal(early.body.publication_state.can_publish_now,false);
+  assert.equal(executed.some(call=>call.sql.includes('INSERT INTO pairing_week_runs')),false);
+
+  databaseNowOverride='2026-09-27T07:30:00.000Z';
+  executed.length=0;
+  const stale=await invoke(opsHandler,request);
+  assert.equal(stale.status,409);
+  assert.equal(stale.body.code,'pairing_cycle_changed');
+  assert.notEqual(stale.body.publication_state.cycle_key,expected.expected_cycle_key);
+  assert.equal(executed.some(call=>call.sql.includes('INSERT INTO pairing_week_runs')),false);
+});
+
 test('owner publication is immutable and the legacy reshuffle URL cannot remix it', async () => {
   process.env.APP_URL='https://randori.example.test';
   const participants = [
@@ -3140,7 +3755,7 @@ test('owner publication is immutable and the legacy reshuffle URL cannot remix i
   });
   const request = {
     method: 'POST', url: '/api/pairing/run', query: { endpoint: 'pairing-run' },
-    headers: { 'x-test-auth': 'admin' }, body: {},
+    headers: { 'x-test-auth': 'admin' }, body: pairingRecoveryBody(),
   };
   const first = await invoke(opsHandler, request);
   const second = await invoke(opsHandler, {
@@ -3154,6 +3769,8 @@ test('owner publication is immutable and the legacy reshuffle URL cannot remix i
   assert.equal(first.body.available_count,3);
   assert.equal(first.body.pair_count,2);
   assert.equal(first.body.solo_count,1);
+  assert.equal(first.body.publication_state.state,'published');
+  assert.equal(first.body.publication_state.can_publish_now,false);
   assert.equal('pairs' in first.body,false,'operational responses must not expose member names or identifiers');
   assert.ok(executed.some(call=>call.sql.includes('INSERT INTO outbox_events')
     &&call.args[0]==='unavailable'&&Number(call.args[1])===2
@@ -3171,7 +3788,7 @@ test('owner publication is immutable and the legacy reshuffle URL cannot remix i
 
   const remix=await invoke(opsHandler,{...request,body:{remix:true}});
   assert.equal(remix.status,400);
-  assert.match(remix.body.error,/cannot be remixed/);
+  assert.match(remix.body.error,/expected_cycle_key/);
   assert.equal(executed.filter(call=>call.sql.includes('INSERT INTO pairing_week_runs')).length,1);
 });
 
@@ -3190,7 +3807,7 @@ test('current-cycle publication fails before its irreversible claim when scoped 
 
   const result=await invoke(opsHandler,{
     method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},
-    headers:{'x-test-auth':'admin'},body:{},
+    headers:{'x-test-auth':'admin'},body:pairingRecoveryBody(),
   });
   assert.equal(result.status,503);
   assert.deepEqual(result.body,{error:'pairing unavailable'});
@@ -3214,7 +3831,7 @@ test('manual publication revalidates owner authority inside the write transactio
 
   const result=await invoke(opsHandler,{
     method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},
-    headers:{'x-test-auth':'admin'},body:{},
+    headers:{'x-test-auth':'admin'},body:pairingRecoveryBody(),
   });
   assert.equal(result.status,403);
   assert.deepEqual(result.body,{error:'primary circle owner required'});
@@ -3256,7 +3873,7 @@ test('publication retries only vetted pre-commit lock conflicts and never an amb
     },
   };
   const request={
-    method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers:{'x-test-auth':'admin'},body:{},
+    method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers:{'x-test-auth':'admin'},body:pairingRecoveryBody(),
   };
   const retried=await invoke(opsHandler,request);
   assert.equal(retried.status,200);
@@ -3324,7 +3941,7 @@ test('concurrent handler publications across two file-backed clients converge on
       transaction:mode=>clients[transactionIndex++%clients.length].transaction(mode),
     };
     const request={
-      method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers:{'x-test-auth':'admin'},body:{},
+      method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers:{'x-test-auth':'admin'},body:pairingRecoveryBody(),
     };
     const results=await withFixedNow('2026-09-20T07:15:00.000Z',()=>Promise.all([
       invoke(opsHandler,request),invoke(opsHandler,request),
@@ -3482,10 +4099,12 @@ test('the separately flagged availability route requires and returns the exact s
   assert.equal(pairing.body.code,'circle_feature_unavailable');
 });
 
-test('legacy pairing reads initialize base and profile schema only once per request',async()=>{
+test('legacy pairing reads use only migration-owned schema without request DDL',async()=>{
   executeHandler=sql=>{
-    if(sql.includes('SELECT aa.id,c.id AS circle_id')&&sql.includes('JOIN circle_memberships')){
-      return rows([{id:2,circle_id:1}]);
+    if((sql.includes('SELECT aa.id,c.id AS circle_id')
+      ||sql.includes('SELECT aa.id,cm.role,c.id AS circle_id'))
+      &&sql.includes('JOIN circle_memberships')){
+      return rows([{id:2,circle_id:1,role:'member'}]);
     }
     return rows();
   };
@@ -3496,16 +4115,77 @@ test('legacy pairing reads initialize base and profile schema only once per requ
       url:`/api/${route}`,query:{endpoint:route},headers,
     });
     assert.equal(response.status,200,JSON.stringify(response.body));
-    assert.equal(executed.filter(({sql})=>
-      sql.startsWith('CREATE TABLE IF NOT EXISTS auth_accounts')).length,1,
-    `${route} must run ensureBaseTables only once`);
-    assert.equal(executed.filter(({sql})=>
-      sql.startsWith('ALTER TABLE auth_accounts ADD COLUMN')).length,8,
-    `${route} must run the eight auth-account profile migrations only once`);
-    assert.equal(executed.filter(({sql})=>
-      sql.startsWith('ALTER TABLE pairing_weeks ADD COLUMN is_demo')).length,1,
-    `${route} must run the pairing-week profile migration only once`);
+    assert.equal(response.body.publication_state.state,'overdue');
+    assert.equal(Object.hasOwn(response.body.publication_state,'can_publish_now'),false);
+    assert.equal(executed.some(({sql})=>/\b(?:CREATE|ALTER|DROP)\b/iu.test(sql)),false,
+      `${route} must never repair schema on a request path`);
+    assert.equal(executed.some(({sql})=>sql.includes('FROM auth_accounts LIMIT 0')),true,
+      `${route} must independently prove its migrated account contract`);
+    assert.equal(executed.some(({sql})=>sql.includes('FROM pairing_week_runs LIMIT 0')),true,
+      `${route} must independently prove its publication contract`);
   }
+});
+
+test('primary recovery capability is revalidated after the pairing read',async()=>{
+  databaseNowOverride='2026-09-20T07:31:00.000Z';
+  executeHandler=sql=>{
+    if(sql.includes('SELECT aa.id,c.id AS circle_id,cm.role')){
+      return rows([{id:2,circle_id:1,role:'owner'}]);
+    }
+    if(sql.includes('SELECT aa.id,cm.role,c.id AS circle_id')){
+      return rows([{id:2,circle_id:1,role:'member'}]);
+    }
+    return rows();
+  };
+  const response=await invoke(dataHandler,{
+    url:'/api/weeks',query:{endpoint:'weeks'},headers:{...sameOriginHeaders,'x-test-auth':'user'},
+  });
+  assert.equal(response.status,200,JSON.stringify(response.body));
+  assert.equal(response.body.publication_state.state,'overdue');
+  assert.equal(Object.hasOwn(response.body.publication_state,'can_publish_now'),false,
+    'a role demotion after preflight must not leave an owner recovery capability');
+});
+
+test('primary pairing reads return no payload after membership or selected-session loss',async()=>{
+  databaseNowOverride='2026-09-20T07:31:00.000Z';
+  executeHandler=sql=>{
+    if(sql.includes('SELECT aa.id,c.id AS circle_id,cm.role')){
+      return rows([{id:2,circle_id:1,role:'member'}]);
+    }
+    if(sql.includes('SELECT aa.id,cm.role,c.id AS circle_id')) return rows();
+    return rows();
+  };
+  const removed=await invoke(dataHandler,{
+    url:'/api/my-pair',query:{endpoint:'my-pair'},
+    headers:{...sameOriginHeaders,'x-test-auth':'user'},
+  });
+  assert.equal(removed.status,403);
+  assert.deepEqual(removed.body,{ok:false,error:'active circle membership required'});
+  assert.equal(removed.body.publication_state,undefined);
+
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED='true';
+  process.env.MULTI_CIRCLE_AVAILABILITY_ENABLED='true';
+  process.env.SECONDARY_CIRCLE_COORDINATION_ENABLED='true';
+  executeHandler=sql=>{
+    if(sql.includes('ORDER BY circle.is_primary DESC,circle.id')) return rows([{
+      circle_id:1,public_id:'circle-primary',name:'Primary',is_primary:1,role:'owner',
+    }]);
+    if(sql.includes('SELECT context.circle_id,context.context_version')){
+      return rows([{circle_id:1,context_version:7}]);
+    }
+    if(sql.includes('SELECT membership.circle_id')&&sql.includes('FROM auth_sessions session')){
+      return rows([]);
+    }
+    return rows();
+  };
+  const revoked=await invoke(dataHandler,{
+    url:'/api/weeks',query:{endpoint:'weeks'},
+    headers:{...sameOriginHeaders,'x-test-auth':'user','x-randori-circle-context-version':'7'},
+  });
+  assert.equal(revoked.status,409);
+  assert.deepEqual(revoked.body,{ok:false,error:'circle context changed',code:'circle_context_changed'});
+  assert.equal(revoked.body.publication_state,undefined);
 });
 
 test('a sole secondary circle uses implicit availability GET and POST without a context header',async()=>{
@@ -3582,14 +4262,26 @@ test('selected secondary owner publishes and reads coordination without legacy w
     db=client;
     const headers={...sameOriginHeaders,'x-test-auth':'admin','x-randori-circle-context-version':'7'};
     executed.length=0;
+    const staleCycle=await invoke(opsHandler,{
+      method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers,
+      body:{expected_cycle_key:'0'.repeat(64)},
+    });
+    assert.equal(staleCycle.status,409,JSON.stringify(staleCycle.body));
+    assert.equal(staleCycle.body.code,'pairing_cycle_changed');
+    assert.equal(staleCycle.body.circle_public_id,'circle-secondary');
+    assert.equal(staleCycle.body.circle_context_version,7);
+
     const published=await invoke(opsHandler,{
-      method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers,body:{},
+      method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers,
+      body:pairingRecoveryBody({circleId:20}),
     });
     assert.equal(published.status,200,JSON.stringify(published.body));
     assert.equal(published.body.coordination_only,true);
     assert.equal(published.body.workspace_available,false);
     assert.equal(published.body.circle_public_id,'circle-secondary');
     assert.equal(published.body.circle_context_version,7);
+    assert.equal(published.body.publication_state.state,'published');
+    assert.equal(published.body.publication_state.can_publish_now,false);
     assert.equal('week_id' in published.body,false);
     assert.equal(executed.some(({sql})=>/\b(?:CREATE|ALTER)\b/i.test(sql)),false,
       'secondary publication must not run request-path DDL');
@@ -3614,11 +4306,13 @@ test('selected secondary owner publishes and reads coordination without legacy w
     assert.equal(weeks.body.workspace_available,false);
     assert.equal(weeks.body.weeks.length,1);
     assert.equal(weeks.body.weeks[0].pairs.length,2);
+    assert.equal(weeks.body.publication_state.state,'published');
+    assert.equal(weeks.body.publication_state.can_publish_now,false);
     const solo=weeks.body.weeks[0].pairs.find(pair=>pair.solo===true);
     assert.equal(solo.members.length,1);
     assert.equal('id' in weeks.body.weeks[0],false);
     assert.equal('pg_id' in weeks.body.weeks[0].pairs[0],false);
-    assert.doesNotMatch(JSON.stringify(weeks.body),/week_[1-9]|room_id|schedule/);
+    assert.doesNotMatch(JSON.stringify(weeks.body),/week_[1-9]|room_id|"schedule"\s*:/);
     assert.doesNotMatch(JSON.stringify(weeks.body),/is_ai/i);
 
     const mine=await invoke(dataHandler,{

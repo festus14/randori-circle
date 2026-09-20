@@ -80,6 +80,28 @@ function upcomingAfter(current: ReturnType<typeof cycleWindow>) {
   };
 }
 
+const publicationCycleKey='a'.repeat(64);
+
+function publicationState(
+  cycle: ReturnType<typeof cycleWindow>,
+  state: 'pending' | 'overdue' | 'published',
+  owner = false,
+  observedAt?: number,
+) {
+  const scheduled=Date.parse(cycle.cutoffAt);
+  const recovery=scheduled+30*60*1000;
+  const observed=observedAt??(state==='pending'?scheduled+5*60*1000:recovery);
+  return {
+    state,
+    cycle_key:publicationCycleKey,
+    observed_at:new Date(observed).toISOString(),
+    scheduled_at:new Date(scheduled).toISOString(),
+    recovery_at:new Date(recovery).toISOString(),
+    published_at:state==='published'?new Date(observed).toISOString():null,
+    ...(owner?{can_publish_now:state==='overdue'}:{}),
+  };
+}
+
 function dashboardPair(options: {
   solo?: boolean;
   cycle?: ReturnType<typeof cycleWindow>;
@@ -147,30 +169,31 @@ async function openDashboard(
   await expect(page.locator('#view-dashboard')).toBeVisible();
 }
 
-test('the owner sees only the server-marked current cycle and can run it idempotently', async ({ page }) => {
+test('the owner recovers an overdue cycle and then sees only the published server week', async ({ page }) => {
   let pairingRuns = 0;
   const currentCycle=cycleWindow();
   await mockApi(page, {
     '/api/auth/me': { ok: true, user },
     '/api/circle': circle('owner'),
-    '/api/weeks': {
-      ok: true,
-      current_cycle: currentCycle,
-      upcoming_cycle: upcomingAfter(currentCycle),
-      current_week_id: 20,
-      weeks: [futureWeek, currentWeek],
-    },
-    '/api/pairing/run': () => {
+    '/api/weeks': () => ({
+      ok:true,current_cycle:currentCycle,upcoming_cycle:upcomingAfter(currentCycle),
+      current_week_id:pairingRuns?20:null,weeks:pairingRuns?[futureWeek,currentWeek]:[],
+      publication_state:publicationState(currentCycle,pairingRuns?'published':'overdue',true),
+    }),
+    '/api/pairing/run': request => {
       pairingRuns += 1;
+      expect(request.postDataJSON()).toEqual({expected_cycle_key:publicationCycleKey});
       return {
         ok: true,
-        created: false,
-        skipped: true,
+        created: true,
+        skipped: false,
         week_label: '2026-W38',
         week_id: 20,
         count: 2,
         pairs: [],
-        message: 'Current-cycle pairings were already published; no pairs were changed.',
+        cycle:currentCycle,
+        publication_state:publicationState(currentCycle,'published',true),
+        message: 'Current-cycle pairings published.',
       };
     },
   });
@@ -183,23 +206,23 @@ test('the owner sees only the server-marked current cycle and can run it idempot
   await page.goto('/', { waitUntil: 'domcontentloaded' });
 
   await page.locator('[data-tab="pair"]').click();
-  await expect(page.locator('#pairsList')).toContainText('Current Partner');
-  await expect(page.locator('#pairsList')).not.toContainText('Future Pair');
+  await expect(page.locator('#pairsList')).toContainText('scheduled run did not publish');
   await expect(page.locator('#pairsList')).not.toContainText('Fake local week');
-  await expect(page.locator('#roomSelect')).toHaveValue('week_20_pair_30');
+  await expect(page.locator('#roomSelect')).toHaveValue('');
   await expect(page.getByRole('button', { name: 'Remix' })).toHaveCount(0);
 
-  await page.locator('[data-tab="code"]').click();
-  await expect(page.locator('#roomSelect')).toHaveValue('week_20_pair_30');
-  await expect(page.locator('#roomSelect')).not.toContainText('fake-room');
-
-  await page.locator('[data-tab="pair"]').click();
-
-  const runButton = page.getByRole('button', { name: 'Run current cycle' });
+  const runButton = page.locator('#newWeekBtn');
+  await expect(runButton).toHaveText('Publish now');
   await expect(runButton).toBeVisible();
   await runButton.click();
   await expect.poll(() => pairingRuns).toBe(1);
   await expect(page.locator('#pairsList')).toContainText('Current Partner');
+  await expect(page.locator('#pairsList')).not.toContainText('Future Pair');
+  await expect(runButton).toBeHidden();
+
+  await page.locator('[data-tab="code"]').click();
+  await expect(page.locator('#roomSelect')).toHaveValue('week_20_pair_30');
+  await expect(page.locator('#roomSelect')).not.toContainText('fake-room');
 });
 
 test('a signed-in member never sees stale or local fallback pairs as this week', async ({ page }) => {
@@ -231,7 +254,7 @@ test('a signed-in member never sees stale or local fallback pairs as this week',
   await expect(page.locator('#pairsList')).not.toContainText('Fake Local Person');
   await expect(page.locator('#roomSelect')).toHaveValue('');
   await expect(page.locator('#roomSelect')).toContainText('No current-cycle room');
-  await expect(page.getByRole('button', { name: 'Run current cycle' })).toBeHidden();
+  await expect(page.locator('#newWeekBtn')).toBeHidden();
 
   await page.locator('[data-tab="code"]').click();
   await expect(page.locator('#roomSelect')).toHaveValue('');
@@ -357,6 +380,213 @@ for (const fixture of [
     await expect(page.locator('#roomSelect')).not.toContainText('week_3_pair_4');
   });
 }
+
+test('dashboard gives owners and members truthful pending and overdue recovery states',async({page})=>{
+  const current=cycleWindow();
+  let state:'pending'|'overdue'='pending';
+  let role:'owner'|'member'='owner';
+  await openDashboard(page,()=>({
+    ok:true,paired:false,pairing_status:'unpublished',reason:'no_pairing_for_current_cycle',
+    current_cycle:current,upcoming_cycle:upcomingAfter(current),
+    publication_state:publicationState(current,state,role==='owner'),
+  }),()=>circle(role));
+
+  await expect(page.getByTestId('dashboard-pair-state')).toHaveAttribute('data-state','pending');
+  await expect(page.getByTestId('dashboard-pair-state')).toContainText('scheduled');
+  await expect(page.getByTestId('dashboard-publish-now')).toBeHidden();
+
+  state='overdue'; role='member';
+  await page.evaluate(async()=>{
+    await (window as typeof window&{_randori_journey:{showDashboard:()=>Promise<void>}})._randori_journey.showDashboard();
+  });
+  await expect(page.getByTestId('dashboard-pair-state')).toHaveAttribute('data-state','overdue');
+  await expect(page.getByTestId('dashboard-pair-state')).toContainText('circle owner can retry');
+  await expect(page.getByTestId('dashboard-publish-now')).toBeHidden();
+});
+
+test('a pending dashboard refetches automatically when the server grace expires',async({page})=>{
+  await page.clock.install({time:Date.now()});
+  const current=cycleWindow();
+  const recovery=Date.parse(current.cutoffAt)+30*60*1000;
+  let state:'pending'|'overdue'='pending';
+  let pairReads=0;
+  await openDashboard(page,()=>{
+    pairReads+=1;
+    return {
+      ok:true,paired:false,pairing_status:'unpublished',reason:'no_pairing_for_current_cycle',
+      current_cycle:current,upcoming_cycle:upcomingAfter(current),
+      publication_state:publicationState(
+        current,state,true,state==='pending'?recovery-1000:recovery,
+      ),
+    };
+  },circle('owner'));
+  await expect(page.getByTestId('dashboard-pair-state')).toHaveAttribute('data-state','pending');
+  const before=pairReads;
+  state='overdue';
+  await page.clock.fastForward(1100);
+  await expect.poll(()=>pairReads).toBeGreaterThan(before);
+  await expect(page.getByTestId('dashboard-pair-state')).toHaveAttribute('data-state','overdue');
+  await expect(page.getByTestId('dashboard-publish-now')).toBeVisible();
+});
+
+test('an ambiguous owner publication refetches truth and leaves a persistent Retry action',async({page})=>{
+  const current=cycleWindow();
+  let pairReads=0;
+  let pairingRuns=0;
+  await page.route(/^https:\/\//,route=>route.abort());
+  await mockApi(page,{
+    '/api/auth/me':{ok:true,user},
+    '/api/profile':{ok:true,user},
+    '/api/circle':circle('owner'),
+    '/api/my-pair':()=>{
+      pairReads+=1;
+      return {
+        ok:true,paired:false,pairing_status:'unpublished',reason:'no_pairing_for_current_cycle',
+        current_cycle:current,upcoming_cycle:upcomingAfter(current),
+        publication_state:publicationState(current,'overdue',true),
+      };
+    },
+    '/api/pairing/run':request=>{
+      pairingRuns+=1;
+      expect(request.postDataJSON()).toEqual({expected_cycle_key:publicationCycleKey});
+      return {_status:503,ok:false,error:'pairing unavailable'};
+    },
+  });
+  await resetClientState(page,true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await expect(page.getByTestId('dashboard-publish-now')).toBeVisible();
+  const before=pairReads;
+  await page.getByTestId('dashboard-publish-now').click();
+  await expect.poll(()=>pairingRuns).toBe(1);
+  await expect.poll(()=>pairReads).toBeGreaterThan(before);
+  await expect(page.getByTestId('dashboard-publish-now')).toHaveText('Retry publication');
+  await expect(page.getByTestId('dashboard-publish-now')).toBeEnabled();
+});
+
+test('a cross-tab publication hint carries identifiers only and refetches matching state',async({page,context})=>{
+  const other=await context.newPage();
+  const current=cycleWindow();
+  let published=false;
+  let otherReads=0;
+  const install=async(target:Page,isOther=false)=>{
+    await target.route(/^https:\/\//,route=>route.abort());
+    await mockApi(target,{
+      '/api/auth/me':{ok:true,user},
+      '/api/profile':{ok:true,user},
+      '/api/circle':circle('owner'),
+      '/api/my-pair':()=>{
+        if(isOther) otherReads+=1;
+        return {
+          ok:true,paired:false,pairing_status:'unpublished',reason:'no_pairing_for_current_cycle',
+          current_cycle:current,upcoming_cycle:upcomingAfter(current),
+          publication_state:publicationState(current,published?'published':'overdue',true),
+        };
+      },
+      '/api/pairing/run':request=>{
+        expect(request.postDataJSON()).toEqual({expected_cycle_key:publicationCycleKey});
+        published=true;
+        return {ok:true,created:true,count:0,cycle:current,
+          publication_state:publicationState(current,'published',true)};
+      },
+    });
+    await resetClientState(target,true,{},true);
+  };
+  await Promise.all([install(page),install(other,true)]);
+  await Promise.all([
+    page.goto('/',{waitUntil:'domcontentloaded'}),
+    other.goto('/',{waitUntil:'domcontentloaded'}),
+  ]);
+  await expect(page.getByTestId('dashboard-publish-now')).toBeVisible();
+  await expect(other.getByTestId('dashboard-publish-now')).toBeVisible();
+
+  await other.evaluate(()=>{
+    const app=window as typeof window&{__pairingSignals?:unknown[]};
+    app.__pairingSignals=[];
+    const observer=new BroadcastChannel('randori-pairing-publication-v1');
+    observer.onmessage=event=>{ app.__pairingSignals?.push(event.data); };
+  });
+  const beforeWrong=otherReads;
+  await page.evaluate(key=>{
+    const channel=new BroadcastChannel('randori-pairing-publication-v1');
+    channel.postMessage({type:'pairing-publication',v:1,account_id:999,
+      circle_public_id:null,context_version:null,cycle_key:key,nonce:'wrong-actor'});
+    channel.postMessage({type:'pairing-publication',v:1,account_id:1,
+      circle_public_id:'wrong-circle',context_version:null,cycle_key:key,nonce:'wrong-circle'});
+    channel.postMessage({type:'pairing-publication',v:1,account_id:1,
+      circle_public_id:null,context_version:null,cycle_key:'b'.repeat(64),nonce:'wrong-cycle'});
+    channel.close();
+  },publicationCycleKey);
+  await expect.poll(()=>other.evaluate(()=>(window as typeof window&{__pairingSignals?:unknown[]})
+    .__pairingSignals?.length||0)).toBe(3);
+  expect(otherReads).toBe(beforeWrong);
+
+  await page.getByTestId('dashboard-publish-now').click();
+  await expect.poll(()=>otherReads).toBeGreaterThan(beforeWrong);
+  await expect(other.getByTestId('dashboard-publish-now')).toBeHidden();
+  const signal=await other.evaluate(()=>(window as typeof window&{__pairingSignals?:Record<string,unknown>[]})
+    .__pairingSignals?.find(item=>!Object.hasOwn(item,'nonce')));
+  expect(Object.keys(signal||{}).sort()).toEqual([
+    'account_id','circle_public_id','context_version','cycle_key','type','v',
+  ]);
+});
+
+test('an envelope observed outside its cycle never exposes an owner publication action',async({page})=>{
+  const current=cycleWindow();
+  await openDashboard(page,{
+    ok:true,paired:false,pairing_status:'unpublished',reason:'no_pairing_for_current_cycle',
+    current_cycle:current,upcoming_cycle:upcomingAfter(current),
+    publication_state:publicationState(current,'overdue',true,Date.parse(current.endsAt)),
+  },circle('owner'));
+  await expect(page.getByTestId('dashboard-pair-state')).toHaveAttribute('data-state','error');
+  await expect(page.getByTestId('dashboard-publish-now')).toBeHidden();
+});
+
+test('an authoritative overdue envelope ignores a skewed browser wall clock',async({page})=>{
+  const current=cycleWindow();
+  await page.clock.install({time:Date.parse(current.endsAt)+24*60*60*1000});
+  await openDashboard(page,{
+    ok:true,paired:false,pairing_status:'unpublished',reason:'no_pairing_for_current_cycle',
+    current_cycle:current,upcoming_cycle:upcomingAfter(current),
+    publication_state:publicationState(current,'overdue',true),
+  },circle('owner'));
+  await expect(page.getByTestId('dashboard-pair-state')).toHaveAttribute('data-state','overdue');
+  await expect(page.getByTestId('dashboard-publish-now')).toBeVisible();
+});
+
+test('an overdue owner action expires and refetches at the cycle boundary',async({page})=>{
+  const observed=Date.now();
+  await page.clock.install({time:observed});
+  const expiring={
+    cycleId:'expiring-cycle',startsAt:new Date(observed-60*60*1000).toISOString(),
+    endsAt:new Date(observed+1000).toISOString(),
+    cutoffAt:new Date(observed-60*60*1000).toISOString(),
+    timeZone:'Europe/London',state:'current' as const,
+  };
+  const next={
+    cycleId:'next-cycle',startsAt:expiring.endsAt,
+    endsAt:new Date(observed+7*86_400_000).toISOString(),cutoffAt:expiring.endsAt,
+    timeZone:'Europe/London',state:'current' as const,
+  };
+  let rolled=false;
+  let pairReads=0;
+  await openDashboard(page,()=>{
+    pairReads+=1;
+    const cycle=rolled?next:expiring;
+    return {
+      ok:true,paired:false,pairing_status:'unpublished',reason:'no_pairing_for_current_cycle',
+      current_cycle:cycle,upcoming_cycle:upcomingAfter(cycle),
+      publication_state:publicationState(cycle,rolled?'pending':'overdue',true,
+        rolled?observed+1100:observed),
+    };
+  },circle('owner'));
+  await expect(page.getByTestId('dashboard-publish-now')).toBeVisible();
+  const before=pairReads;
+  rolled=true;
+  await page.clock.fastForward(1100);
+  await expect.poll(()=>pairReads).toBeGreaterThan(before);
+  await expect(page.getByTestId('dashboard-pair-state')).toHaveAttribute('data-state','pending');
+  await expect(page.getByTestId('dashboard-publish-now')).toBeHidden();
+});
 
 for (const fixture of [
   { kind: 'stale', title: 'Previous pairing cycle ended' },

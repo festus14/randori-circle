@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { after, mock, test } from 'node:test';
 
 const publishedScopes=[];
+const aggregateLogs=[];
 let failingCircleId=10;
 
 const cycle=Object.freeze({
@@ -17,6 +18,10 @@ const db={
     const sql=typeof statement==='string'?statement:String(statement?.sql||'');
     if(sql.includes("strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc")){
       return {rows:[{now_utc:'2026-09-20T08:15:00.000Z'}],rowsAffected:0};
+    }
+    if(sql.includes('INSERT INTO app_logs')){
+      aggregateLogs.push({event:statement.args[2],message:statement.args[3],
+        meta:JSON.parse(statement.args[4]),route:statement.args[5],ua:statement.args[6],ip:statement.args[7]});
     }
     return {rows:[],rowsAffected:0};
   },
@@ -123,7 +128,36 @@ test('secondary weekly cron continues after an isolated first or middle scope fa
         failed:1,
       },
     });
+    assert.deepEqual(aggregateLogs.at(-1),{
+      event:'weekly_pairing_completed',message:'weekly pairing completed with failures',
+      meta:{
+        primary:{created:true,existing:false,participant_count:0,pair_count:0,solo_count:0},
+        secondary:{attempted:3,created:1,existing:1,failed:1},
+      },
+      route:null,ua:null,ip:null,
+    });
+    assert.doesNotMatch(JSON.stringify(aggregateLogs.at(-1)),/circleId|scope|cycle|user|email/i);
   }
+});
+
+test('an empty primary publication continues through every secondary scope and logs only aggregates',async()=>{
+  failingCircleId=null;
+  publishedScopes.length=0;
+  aggregateLogs.length=0;
+  const response=await invoke();
+  assert.equal(response.status,200);
+  assert.equal(response.body.participant_count,0);
+  assert.deepEqual(response.body.secondary,{attempted:3,created:2,existing:1,failed:0});
+  assert.deepEqual(publishedScopes,[10,20,30]);
+  assert.deepEqual(aggregateLogs, [{
+    event:'weekly_pairing_completed',message:'weekly pairing completed',
+    meta:{
+      primary:{created:true,existing:false,participant_count:0,pair_count:0,solo_count:0},
+      secondary:{attempted:3,created:2,existing:1,failed:0},
+    },
+    route:null,ua:null,ip:null,
+  }]);
+  assert.doesNotMatch(JSON.stringify(aggregateLogs),/circleId|scope|cycle|user|email/i);
 });
 
 after(()=>{

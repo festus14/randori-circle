@@ -17,6 +17,7 @@ const members = [
   { id: 1, display_name: 'Circle Owner', name: 'Circle Owner', color: '#c8f6a0', is_available: true, isAvailable: true, bio: '', tz: 'Europe/London', interview_focus: 'both', leetcode_handle: '', source: 'auth' },
   { id: 2, display_name: 'Team Mate', name: 'Team Mate', color: '#a9b6ff', is_available: false, isAvailable: false, bio: '', tz: 'UTC', interview_focus: 'dsa', leetcode_handle: '', source: 'auth' },
 ];
+const inviteBinding = 'I'.repeat(43);
 
 function circleResponse(role: 'owner' | 'member') {
   return {
@@ -56,9 +57,20 @@ test('fragment invitation is scrubbed before third-party code and prepared exact
   await mockApi(page, {
     '/api/invitations/prepare': request => {
       prepareBodies.push(request.postDataJSON());
-      return { ok: true, expires_in_seconds: 600 };
+      return { ok: true, binding: inviteBinding, expires_in_seconds: 600 };
+    },
+    '/api/auth/google/start': request => {
+      expect(request.method()).toBe('POST');
+      expect(new URL(request.url()).searchParams.get('return_to')).toBe('/invite');
+      expect(request.postDataJSON()).toEqual({ purpose: 'invite', invite_binding: inviteBinding });
+      return { ok: true, authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?state=invite-state' };
     },
   });
+  await page.route('https://accounts.google.com/o/oauth2/v2/auth**', route => route.fulfill({
+    status: 200,
+    contentType: 'text/html',
+    body: '<!doctype html><title>Mock Google</title>',
+  }));
   await resetClientState(page);
 
   await page.goto(`/invite#invite=${token}`, { waitUntil: 'domcontentloaded' });
@@ -93,6 +105,9 @@ test('fragment invitation is scrubbed before third-party code and prepared exact
   await page.getByTestId('invite-continue').click();
   const request = await googleStart;
   expect(request.url()).not.toContain(token);
+  expect(request.method()).toBe('POST');
+  expect(new URL(request.url()).searchParams.get('return_to')).toBe('/invite');
+  expect(request.postDataJSON()).toEqual({ purpose: 'invite', invite_binding: inviteBinding });
   expect(prepareBodies).toHaveLength(1);
 });
 
@@ -101,6 +116,7 @@ test('an invited member completes the mocked Google provider journey to an authe
   let prepared=0;
   let providerStarts=0;
   let callbacks=0;
+  let appOrigin='';
   const invitedUser={
     id:7,email:'invited@example.test',name:'Invited Member',display_name:'Invited Member',
     color:'#9cc0b5',is_admin:false,is_available:true,tz:'Europe/London',interview_focus:'both',
@@ -108,7 +124,14 @@ test('an invited member completes the mocked Google provider journey to an authe
   await mockApi(page,{
     '/api/invitations/prepare':()=>{
       prepared+=1;
-      return {ok:true,expires_in_seconds:600};
+      return {ok:true,binding:inviteBinding,expires_in_seconds:600};
+    },
+    '/api/auth/google/start':request=>{
+      providerStarts+=1;
+      expect(request.method()).toBe('POST');
+      expect(new URL(request.url()).searchParams.get('return_to')).toBe('/invite');
+      expect(request.postDataJSON()).toEqual({purpose:'invite',invite_binding:inviteBinding});
+      return {ok:true,authorizationUrl:'https://accounts.google.com/o/oauth2/v2/auth?state=mock-state'};
     },
     '/api/auth/me':async request=>/(?:^|;\s*)randori_session=mocked-provider-session(?:;|$)/
       .test((await request.headerValue('cookie'))||'')
@@ -119,13 +142,10 @@ test('an invited member completes the mocked Google provider journey to an authe
       ?circleResponse('member')
       :{_status:401,error:'authentication required'},
   });
-  await page.route('**/api/auth/google/start**',async route=>{
-    providerStarts+=1;
-    await route.fulfill({
-      status:200,contentType:'text/html',
-      body:`<!doctype html><html><body><h1>Mock Google</h1><button onclick="location.href='/api/auth/google/callback?code=one-time-code&state=mock-state'">Continue as invited@example.test</button></body></html>`,
-    });
-  });
+  await page.route('https://accounts.google.com/**',route=>route.fulfill({
+    status:200,contentType:'text/html',
+    body:`<!doctype html><html><body><h1>Mock Google</h1><button onclick="location.href='${appOrigin}/api/auth/google/callback?code=one-time-code&state=mock-state'">Continue as invited@example.test</button></body></html>`,
+  }));
   await page.route('**/api/auth/google/callback**',async route=>{
     callbacks+=1;
     await route.fulfill({
@@ -137,6 +157,7 @@ test('an invited member completes the mocked Google provider journey to an authe
   await resetClientState(page);
 
   await page.goto(`/invite#invite=${token}`,{waitUntil:'domcontentloaded'});
+  appOrigin=new URL(page.url()).origin;
   await expect(page.getByTestId('invite-status')).toContainText('Invitation verified');
   await page.getByTestId('invite-continue').click();
   await expect(page.getByRole('heading',{name:'Mock Google'})).toBeVisible();
@@ -147,6 +168,119 @@ test('an invited member completes the mocked Google provider journey to an authe
   expect(prepared).toBe(1);
   expect(providerStarts).toBe(1);
   expect(callbacks).toBe(1);
+});
+
+test('a cancelled invited Google attempt returns to the live invitation retry',async({page})=>{
+  const token='G'.repeat(43);
+  const prepareBodies:unknown[]=[];
+  let providerStarts=0;
+  let appOrigin='';
+  await mockApi(page,{
+    '/api/invitations/prepare':request=>{
+      const body=request.postDataJSON();
+      prepareBodies.push(body);
+      return {ok:true,binding:inviteBinding,expires_in_seconds:600};
+    },
+    '/api/auth/google/start':request=>{
+      providerStarts+=1;
+      expect(request.method()).toBe('POST');
+      expect(new URL(request.url()).searchParams.get('return_to')).toBe('/invite');
+      expect(request.postDataJSON()).toEqual({purpose:'invite',invite_binding:inviteBinding});
+      return {ok:true,authorizationUrl:`https://accounts.google.com/o/oauth2/v2/auth?state=invite-${providerStarts}`};
+    },
+  });
+  await page.route('https://accounts.google.com/**',route=>route.fulfill({
+    status:200,contentType:'text/html',
+    body:`<!doctype html><html><body><h1>Mock Google</h1><button onclick="location.href='${appOrigin}/invite?google_error=access_denied'">Cancel Google sign-in</button></body></html>`,
+  }));
+  await resetClientState(page,false,{},true);
+
+  await page.goto(`/invite#invite=${token}`,{waitUntil:'domcontentloaded'});
+  appOrigin=new URL(page.url()).origin;
+  await expect(page.getByTestId('invite-status')).toContainText('Invitation verified');
+  await page.getByTestId('invite-continue').click();
+  await expect(page.getByRole('heading',{name:'Mock Google'})).toBeVisible();
+  await page.getByRole('button',{name:'Cancel Google sign-in'}).click();
+
+  await expect(page).toHaveURL(/\/invite$/);
+  await expect(page.getByRole('dialog',{name:'Join Randori Circle'})).toBeVisible();
+  const retry=page.getByRole('button',{name:'Try Google sign-in again'});
+  await expect(retry).toBeVisible();
+  expect(prepareBodies).toEqual([{token},{binding:inviteBinding}]);
+
+  const retryStart=page.waitForRequest(request=>new URL(request.url()).pathname==='/api/auth/google/start');
+  await retry.click();
+  const request=await retryStart;
+  expect(request.method()).toBe('POST');
+  expect(request.postDataJSON()).toEqual({purpose:'invite',invite_binding:inviteBinding});
+  expect(providerStarts).toBe(2);
+});
+
+test('a failed invite Google start releases busy state before offering retry',async({page})=>{
+  const token='F'.repeat(43);
+  let providerStarts=0;
+  await mockApi(page,{
+    '/api/invitations/prepare':{ok:true,binding:inviteBinding,expires_in_seconds:600},
+    '/api/auth/google/start':request=>{
+      providerStarts+=1;
+      expect(request.method()).toBe('POST');
+      expect(request.postDataJSON()).toEqual({purpose:'invite',invite_binding:inviteBinding});
+      if(providerStarts===1) return {_status:503,error:'Google sign-in is unavailable'};
+      return {ok:true,authorizationUrl:'https://accounts.google.com/o/oauth2/v2/auth?state=retry'};
+    },
+  });
+  await page.route('https://accounts.google.com/**',route=>route.fulfill({
+    status:200,contentType:'text/html',body:'<!doctype html><h1>Mock Google retry</h1>',
+  }));
+  await resetClientState(page);
+  await page.goto(`/invite#invite=${token}`,{waitUntil:'domcontentloaded'});
+
+  await page.getByTestId('invite-continue').click();
+  const retry=page.getByRole('button',{name:'Try Google sign-in again'});
+  await expect(retry).toBeVisible();
+  await expect(retry).toBeEnabled();
+  await expect(page.locator('#authForm')).toHaveAttribute('aria-busy','false');
+
+  await retry.click();
+  await expect(page.getByRole('heading',{name:'Mock Google retry'})).toBeVisible();
+  expect(providerStarts).toBe(2);
+});
+
+test('an invite OAuth error cannot downgrade to login while identity hydration is unavailable',async({page})=>{
+  let meCalls=0;
+  let googleStarts=0;
+  await mockApi(page,{
+    '/api/auth/me':()=>{
+      meCalls+=1;
+      return {_status:503,ok:false,error:'authentication temporarily unavailable'};
+    },
+    '/api/invitations/prepare':request=>{
+      expect(request.postDataJSON()).toEqual({binding:inviteBinding});
+      return {ok:true,binding:inviteBinding,expires_in_seconds:600};
+    },
+    '/api/auth/google/start':()=>{
+      googleStarts+=1;
+      return {ok:true,authorizationUrl:'https://accounts.google.com/o/oauth2/v2/auth?state=unsafe-login'};
+    },
+  });
+  await resetClientState(page,false,{},true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await page.evaluate(binding=>sessionStorage.setItem('randori-invite-binding-v1',binding),inviteBinding);
+  meCalls=0;
+
+  await page.goto('/invite?google_error=access_denied',{waitUntil:'domcontentloaded'});
+
+  await expect(page.getByTestId('invite-status')).toContainText('could not be verified');
+  await expect(page.getByTestId('invite-continue')).toBeDisabled();
+  await expect(page.locator('#authGoogleRetry')).toBeHidden();
+  await expect.poll(()=>meCalls).toBeGreaterThanOrEqual(3);
+  expect(googleStarts).toBe(0);
+
+  await page.locator('#authBtn').click();
+  await expect(page.getByRole('dialog',{name:'Sign in to Randori'})).toBeVisible();
+  await expect(page.locator('#authGoogleRetry')).toBeHidden();
+  await expect(page.locator('#authGoogle')).toBeVisible();
+  expect(googleStarts).toBe(0);
 });
 
 test('circle owner can view members, create a private copy action, and revoke invitations', async ({ page }) => {
@@ -470,6 +604,7 @@ for(const delayedAction of ['create','resend'] as const){
 test('an identity refresh recovers from a pending circle switch without reviving its callback',async({page})=>{
   const replacement={...owner,id:7,email:'replacement@example.test',name:'Replacement Owner',display_name:'Replacement Owner'};
   let currentUser=owner;
+  let authMeCalls=0;
   let markSwitchStarted!:()=>void;
   let releaseSwitch!:()=>void;
   const switchStarted=new Promise<void>(resolve=>{ markSwitchStarted=resolve; });
@@ -484,7 +619,10 @@ test('an identity refresh recovers from a pending circle switch without reviving
       ok:true,capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,multiCircleControlPlane:true},
       registrationMode:'private_beta',
     },
-    '/api/auth/me':()=>({ok:true,user:currentUser}),
+    '/api/auth/me':()=>{
+      authMeCalls+=1;
+      return {ok:true,user:currentUser};
+    },
     '/api/profile':()=>({ok:true,user:currentUser}),
     '/api/circles':async request=>{
       if(request.method()==='PUT'){
@@ -521,6 +659,11 @@ test('an identity refresh recovers from a pending circle switch without reviving
     await page.locator('[data-tab="circle"]').click();
     const selector=page.getByTestId('circle-context-select');
     await expect(selector).toHaveValue('circle-primary');
+    // Wait for authoritative hydration, which suppresses the remaining timed
+    // retries, then make the explicit refresh newest before constructing the
+    // switch/identity race.
+    await expect.poll(()=>authMeCalls).toBeGreaterThanOrEqual(1);
+    expect(await page.evaluate(()=>(window as any)._randori_auth.refreshMe())).toBe(true);
 
     const switchResponse=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/circles'
       &&response.request().method()==='PUT');
@@ -707,7 +850,6 @@ test('flag-off legacy circle responses keep the existing roster and admin testin
 
 test('a successful one-time invitation remains copyable when the list refresh fails', async ({ page }) => {
   const rawInvite = 'C'.repeat(43);
-  let authMeCalls = 0;
   let circleRequestsInFlight = 0;
   let circleRole: 'owner' | 'member' = 'owner';
   let invitationCreated = false;
@@ -732,10 +874,7 @@ test('a successful one-time invitation remains copyable when the list refresh fa
     });
   });
   await mockApi(page, {
-    '/api/auth/me': () => {
-      authMeCalls += 1;
-      return { ok: true, user: owner };
-    },
+    '/api/auth/me': { ok: true, user: owner },
     '/api/circle': async () => {
       circleRequestsInFlight += 1;
       try {
@@ -777,14 +916,11 @@ test('a successful one-time invitation remains copyable when the list refresh fa
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await expect(page.locator('#meLabel')).toContainText('Circle Owner');
   await page.locator('[data-tab="circle"]').click();
-  // Let the fixed bootstrap identity schedule settle. The race below is then
-  // driven entirely by explicit request gates rather than wall-clock sleeps.
-  await expect.poll(() => authMeCalls).toBeGreaterThanOrEqual(3);
-  await page.evaluate(async () => {
-    await (window as typeof window & {
-      _randori_auth?: { refreshMe?: () => Promise<unknown> };
-    })._randori_auth?.refreshMe?.();
-  });
+  // The owner label proves initial hydration committed. Also require this
+  // controlled refresh to commit before constructing the circle/list race.
+  expect(await page.evaluate(() => (window as typeof window & {
+    _randori_auth?: { refreshMe?: () => Promise<unknown> };
+  })._randori_auth?.refreshMe?.())).toBe(true);
   await expect.poll(() => circleRequestsInFlight).toBe(0);
   await expect(page.getByTestId('circle-invite-create')).toBeEnabled();
 

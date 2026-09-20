@@ -1,4 +1,4 @@
-import {copyFileSync,mkdirSync,mkdtempSync,realpathSync,rmSync} from 'node:fs';
+import {mkdirSync,mkdtempSync,realpathSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
@@ -15,6 +15,7 @@ import {
   resolveLocalServerConfig,
   startLocalDevelopmentServer,
 } from '../../scripts/local-server.mjs';
+import {expectInviteGateLoaded,stageRealRuntimeClient} from './real-runtime-fixture';
 
 const repositoryRoot=fileURLToPath(new URL('../..',import.meta.url));
 const silentLogger=Object.freeze({log(){},error(){}});
@@ -33,13 +34,25 @@ async function json(page,path:string,method='GET',body?:object,headers:Record<st
   },{path,method,body,headers});
 }
 
+function fixServerTime(iso:string){
+  const NativeDate=globalThis.Date;
+  const instant=new NativeDate(iso).getTime();
+  (globalThis as typeof globalThis&{Date:DateConstructor}).Date=class FixedDate extends NativeDate{
+    constructor(...args:ConstructorParameters<DateConstructor>){
+      super(...(args.length?args:[instant]));
+    }
+    static now(){ return instant; }
+  } as DateConstructor;
+  return ()=>{ globalThis.Date=NativeDate; };
+}
+
 test('local capture delivers manual and weekly-route secondary publications once without room links',async({page})=>{
   test.setTimeout(90_000);
   const original=Object.fromEntries(environmentKeys.map(key=>[key,process.env[key]]));
   for(const key of rolloutFlags) process.env[key]='true';
   const rootDir=realpathSync(mkdtempSync(join(tmpdir(),'randori-secondary-email-browser-')));
   mkdirSync(join(rootDir,'.local'),{mode:0o700});
-  copyFileSync(join(repositoryRoot,'index.html'),join(rootDir,'index.html'));
+  stageRealRuntimeClient(repositoryRoot,rootDir);
   const databaseUrl=pathToFileURL(join(rootDir,'.local','randori.sqlite')).href;
   const config=resolveLocalServerConfig({rootDir,argv:[],env:{
     NODE_ENV:'development',RANDORI_LOCAL_HOST:'127.0.0.1',RANDORI_LOCAL_PORT:'0',
@@ -47,6 +60,7 @@ test('local capture delivers manual and weekly-route secondary publications once
   }});
   let runtime:Awaited<ReturnType<typeof startLocalDevelopmentServer>>|null=null;
   let db:ReturnType<typeof createClient>|null=null;
+  let restoreServerTime=()=>{};
   try{
     runtime=await startLocalDevelopmentServer({
       config,
@@ -57,6 +71,7 @@ test('local capture delivers manual and weekly-route secondary publications once
     });
     process.env.CRON_SECRET='secondary-email-browser-secret';
     await page.goto(runtime.url,{waitUntil:'domcontentloaded'});
+    await expectInviteGateLoaded(page);
     const login=await json(page,'/api/auth/login','POST',{
       email:LOCAL_OWNER_EMAIL,password:LOCAL_OWNER_PASSWORD,
     });
@@ -89,12 +104,24 @@ test('local capture delivers manual and weekly-route secondary publications once
         primaryId,ownerId,`membership-backfilled:${primaryId}:3`]},
     ],'write');
 
-    const manual=await json(page,'/api/pairing/run','POST',{},
-      {'x-randori-circle-context-version':String(manualContext)});
+    const context={'x-randori-circle-context-version':String(manualContext)};
+    const pairingState=await json(page,'/api/my-pair','GET',undefined,context);
+    expect(pairingState.status,JSON.stringify(pairingState.body)).toBe(200);
+    const recoveryAt=String(
+      (pairingState.body as {publication_state:{recovery_at:string}}).publication_state.recovery_at,
+    );
+    const recoveryBody={expected_cycle_key:String(
+      (pairingState.body as {publication_state:{cycle_key:string}}).publication_state.cycle_key,
+    )};
+    restoreServerTime=fixServerTime(new Date(Date.parse(recoveryAt)-1).toISOString());
+    const early=await json(page,'/api/pairing/run','POST',recoveryBody,context);
+    expect(early).toMatchObject({status:409,body:{code:'pairing_recovery_not_ready'}});
+    restoreServerTime();
+    restoreServerTime=fixServerTime(recoveryAt);
+    const manual=await json(page,'/api/pairing/run','POST',recoveryBody,context);
     expect(manual.status,JSON.stringify(manual.body)).toBe(200);
     expect(manual.body).toMatchObject({created:true,coordination_only:true,workspace_available:false});
-    const replay=await json(page,'/api/pairing/run','POST',{},
-      {'x-randori-circle-context-version':String(manualContext)});
+    const replay=await json(page,'/api/pairing/run','POST',recoveryBody,context);
     expect(replay.body).toMatchObject({created:false,skipped:true});
     const compact=(await db.execute(`SELECT event_version,payload_json FROM outbox_events
       WHERE event_type='pairing.email.requested' ORDER BY id`)).rows;
@@ -177,6 +204,7 @@ test('local capture delivers manual and weekly-route secondary publications once
       {'x-cron-secret':'secondary-email-browser-secret'});
     expect((emptyDrain.body as {outbox:{claimed:number}}).outbox.claimed).toBe(0);
   }finally{
+    restoreServerTime();
     await db?.close();
     await runtime?.close();
     for(const [key,value] of Object.entries(original)){

@@ -12,6 +12,11 @@ import {
 } from './_pairing-email-contract.js';
 import { buildFairPairing, PAIRING_ALGORITHM_VERSION } from './_pairing.js';
 import { resolvePairingCycle } from './_pairing-cycle.js';
+import {
+  assertPairingRecoveryAllowed,
+  pairingPublicationState,
+  PairingRecoveryError,
+} from './_pairing-recovery.js';
 import { LATEST_MIGRATION_VERSION, MIGRATION_CONTRACTS } from '../db/migration-contract.js';
 import {
   assertMigrationLedgerContract,
@@ -189,7 +194,10 @@ async function assertAuthority(db,authority){
     if(authority.requireOwner&&String(result.rows[0].role)!=='owner'){
       fail('CIRCLE_PAIRING_OWNER_REQUIRED','Circle owner permission is required.');
     }
-    return String(result.rows[0].public_id||'');
+    return Object.freeze({
+      circlePublicId:String(result.rows[0].public_id||''),
+      role:String(result.rows[0].role||''),
+    });
   }
   let result;
   try{
@@ -206,7 +214,7 @@ async function assertAuthority(db,authority){
     });
   }catch(error){ fail('CIRCLE_PAIRING_UNAVAILABLE','Pairing authorization is unavailable.',error); }
   if(result.rows?.length!==1) fail('CIRCLE_PAIRING_FORBIDDEN','Active circle membership is required.');
-  return String(result.rows[0].public_id||'');
+  return Object.freeze({circlePublicId:String(result.rows[0].public_id||''),role:'owner'});
 }
 
 async function circleAccounts(db,circleId){
@@ -480,11 +488,15 @@ async function createPublication(db,{scope,cycle,availability,notificationEnable
 }
 
 /** Publish one secondary circle from session or authenticated cron authority. */
-export async function publishCirclePairing(db,{authority,now,timeZone}={}){
+export async function publishCirclePairing(db,{authority,now,timeZone,expectedCycleKey}={}){
   if(!db||typeof db.execute!=='function'||typeof db.batch!=='function'||typeof db.transaction!=='function'){
     fail('CIRCLE_PAIRING_INPUT_INVALID','A transactional database client is required.');
   }
   const safeAuthority=authority?.kind==='system'?normalizeSystemAuthority(authority):normalizeSessionAuthority(authority);
+  if(expectedCycleKey!==undefined
+    &&(safeAuthority.kind!=='session'||safeAuthority.requireOwner!==true)){
+    fail('CIRCLE_PAIRING_OWNER_REQUIRED','Circle owner permission is required for pairing recovery.');
+  }
   const notificationEnabled=secondaryCirclePairingEmailEnabled();
   await ensureCirclePairingReadiness(db);
   let lastError;
@@ -497,21 +509,28 @@ export async function publishCirclePairing(db,{authority,now,timeZone}={}){
       const instant=await databaseNow(transaction,now);
       const resolved=currentCycle(instant,timeZone);
       const scope=scopeForCircle(safeAuthority.circleId);
+      const cycle={...resolved,cycleKey:availabilityCycleKey(scope,resolved)};
+      const existing=await readStoredPublication(transaction,{scope,cycle});
+      const recoveryState=pairingPublicationState({
+        scope,cycle:resolved,observedAt:instant,publishedAt:existing?.publishedAt||null,
+        isOwner:expectedCycleKey!==undefined,
+      });
+      if(expectedCycleKey!==undefined){
+        assertPairingRecoveryAllowed(recoveryState,expectedCycleKey);
+      }
+      if(existing){
+        await transaction.rollback();
+        return Object.freeze({created:false,publication:existing,publicationState:recoveryState});
+      }
       const accounts=await circleAccounts(transaction,scope.circleId);
       if(!accounts.length) fail('CIRCLE_PAIRING_NO_PARTICIPANTS','No eligible members are available.');
       const availability=await applyCycleAvailability(transaction,{
         scope,cycle:resolved,accounts,bridgeLegacyAvailability:false,
       });
-      const cycle={...resolved,cycleKey:availability[0]?.cycleKey};
-      if(!cycle.cycleKey){
+      if(!availability.length||availability.some(item=>item.cycleKey!==cycle.cycleKey)){
         // The scope has members, so the complete availability snapshot must
         // always carry one shared cycle key.
         fail('CIRCLE_PAIRING_INTEGRITY','Pairing eligibility is invalid.');
-      }
-      const existing=await readStoredPublication(transaction,{scope,cycle});
-      if(existing){
-        await transaction.rollback();
-        return Object.freeze({created:false,publication:existing});
       }
       const claimed=await createPublication(transaction,{
         scope,cycle:resolved,availability,notificationEnabled,
@@ -520,25 +539,37 @@ export async function publishCirclePairing(db,{authority,now,timeZone}={}){
       if(!stored) fail('CIRCLE_PAIRING_INTEGRITY','Pairing publication was not committed.');
       if(!claimed.created){
         await transaction.rollback();
-        return Object.freeze({created:false,publication:stored});
+        return Object.freeze({
+          created:false,publication:stored,
+          publicationState:pairingPublicationState({
+            scope,cycle:resolved,observedAt:instant,publishedAt:stored.publishedAt,
+            isOwner:expectedCycleKey!==undefined,
+          }),
+        });
       }
       if(stored.generationToken!==claimed.generationToken){
         fail('CIRCLE_PAIRING_INTEGRITY','Pairing publication ownership changed.');
       }
       commitStarted=true;
       await transaction.commit();
-      return Object.freeze({created:true,publication:stored});
+      return Object.freeze({
+        created:true,publication:stored,
+        publicationState:pairingPublicationState({
+          scope,cycle:resolved,observedAt:instant,publishedAt:stored.publishedAt,
+          isOwner:expectedCycleKey!==undefined,
+        }),
+      });
     }catch(error){
       lastError=error;
       if(transaction){ try{ await transaction.rollback(); }catch{} }
       if(!commitStarted&&attempt<TRANSACTION_ATTEMPTS&&retryableConflict(error)){
         await retryDelay(attempt); continue;
       }
-      if(error instanceof CirclePairingError) throw error;
+      if(error instanceof CirclePairingError||error instanceof PairingRecoveryError) throw error;
       fail('CIRCLE_PAIRING_UNAVAILABLE','Pairing publication failed.',error);
     }finally{ try{ await transaction?.close?.(); }catch{} }
   }
-  if(lastError instanceof CirclePairingError) throw lastError;
+  if(lastError instanceof CirclePairingError||lastError instanceof PairingRecoveryError) throw lastError;
   fail('CIRCLE_PAIRING_UNAVAILABLE','Pairing publication failed.',lastError);
 }
 
@@ -555,7 +586,7 @@ export async function readCirclePairing(db,{authority,now,timeZone}={}){
   const transaction=await db.transaction('read');
   let finished=false;
   try{
-    const circlePublicId=await assertAuthority(transaction,safeAuthority);
+    const authorityState=await assertAuthority(transaction,safeAuthority);
     const instant=await databaseNow(transaction,now);
     const resolved=currentCycle(instant,timeZone);
     const scope=scopeForCircle(safeAuthority.circleId);
@@ -563,7 +594,11 @@ export async function readCirclePairing(db,{authority,now,timeZone}={}){
     const publication=await readStoredPublication(transaction,{scope,cycle});
     if(!publication){
       await transaction.commit(); finished=true;
-      return Object.freeze({circlePublicId,cycle:Object.freeze({...resolved}),publication:null,accounts:new Map()});
+      return Object.freeze({
+        circlePublicId:authorityState.circlePublicId,role:authorityState.role,
+        scope,cycle:Object.freeze({...resolved}),cycleKey:cycle.cycleKey,
+        observedAt:instant.toISOString(),publication:null,accounts:new Map(),
+      });
     }
     const ids=[...new Set(publication.groups.flatMap(group=>[group.userAId,group.userBId]).filter(Boolean))];
     let result={rows:[]};
@@ -585,7 +620,11 @@ export async function readCirclePairing(db,{authority,now,timeZone}={}){
       name:String(row.display_name||'Member').slice(0,80),color:String(row.color||'#999').slice(0,32),
     })]));
     await transaction.commit(); finished=true;
-    return Object.freeze({circlePublicId,cycle:Object.freeze({...resolved}),publication,accounts});
+    return Object.freeze({
+      circlePublicId:authorityState.circlePublicId,role:authorityState.role,
+      scope,cycle:Object.freeze({...resolved}),cycleKey:cycle.cycleKey,
+      observedAt:instant.toISOString(),publication,accounts,
+    });
   }catch(error){
     if(!finished){ try{ await transaction.rollback(); }catch{} }
     if(error instanceof CirclePairingError) throw error;
@@ -620,9 +659,13 @@ export async function listSecondaryPairingScopes(db,{limit=SECONDARY_PAIRING_CRO
   return Object.freeze(rows.map(row=>positiveId(row.id)));
 }
 
-export function circlePairingFailure(error,{contextVersion}={}){
-  const code=error instanceof CirclePairingError?error.code:'CIRCLE_PAIRING_UNAVAILABLE';
-  const context=contextVersion===undefined?{}:{circle_context_version:contextVersion};
+export function circlePairingFailure(error,{contextVersion,circlePublicId}={}){
+  const code=error instanceof CirclePairingError||error instanceof PairingRecoveryError
+    ?error.code:'CIRCLE_PAIRING_UNAVAILABLE';
+  const context={
+    ...(circlePublicId?{circle_public_id:circlePublicId}:{}),
+    ...(contextVersion===undefined?{}:{circle_context_version:contextVersion}),
+  };
   if(code==='CIRCLE_PAIRING_CONTEXT_CHANGED') return {
     status:409,body:{ok:false,error:'circle context changed',code:'circle_context_changed'},
   };
@@ -634,6 +677,14 @@ export function circlePairingFailure(error,{contextVersion}={}){
   };
   if(code==='CIRCLE_PAIRING_NO_PARTICIPANTS') return {
     status:400,body:{ok:false,error:'at least one active member is required',...context},
+  };
+  if(code==='PAIRING_RECOVERY_CYCLE_CHANGED') return {
+    status:409,body:{ok:false,error:'pairing cycle changed',code:'pairing_cycle_changed',
+      publication_state:error.publicationState,...context},
+  };
+  if(code==='PAIRING_RECOVERY_NOT_READY') return {
+    status:409,body:{ok:false,error:'pairing recovery is not ready',code:'pairing_recovery_not_ready',
+      publication_state:error.publicationState,...context},
   };
   if(code==='CIRCLE_PAIRING_BATCH_OVERFLOW') return {
     status:503,body:{ok:false,error:'secondary pairing batch limit exceeded',code:'pairing_batch_overflow',retryable:true},

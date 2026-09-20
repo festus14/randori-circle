@@ -4,7 +4,9 @@ import { afterEach, mock, test } from 'node:test';
 import {
   GOOGLE_TEST_NONCE,
   GOOGLE_TEST_VERIFIER,
+  decodeGoogleOAuthTransactionCookie,
   googleOAuthCookieHeader,
+  googleOAuthTransactionCookieName,
   googleProviderFetch,
 } from '../support/google-oidc.mjs';
 
@@ -13,6 +15,13 @@ const database = {
     const sql = typeof statement === 'string' ? statement : String(statement?.sql || '');
     if (sql.includes('SELECT registrations_closed FROM circle_membership_rollout')) {
       return { rows: [{ registrations_closed: 0 }] };
+    }
+    if(sql.includes('FROM auth_provider_identities identity JOIN auth_accounts account')){
+      return {rows:[{id:41,email:'pair@example.test',is_admin:0,
+        password_hash:'!oauth:existing',google_sub:'google-pair-1'}]};
+    }
+    if(sql.includes('UPDATE auth_accounts SET last_login')&&sql.includes('RETURNING id')){
+      return {rows:[{id:41}]};
     }
     if (sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return { rows: [] };
     if (sql.includes('INSERT INTO auth_accounts') && sql.includes('RETURNING id')) return { rows: [{ id: 41 }] };
@@ -136,39 +145,42 @@ test('Google OAuth start stores only a validated canonical return path', async (
   enableGoogleOAuth();
 
   const safe = await invoke({
-    url: '/api/auth/google/start?return_to=%2Fjoin%2Fweek_12_pair_34',
-    query: { endpoint: 'google-start', return_to: '/join/week_12_pair_34' },
+    url: '/api/auth/google/start?purpose=login&return_to=%2Fjoin%2Fweek_12_pair_34',
+    query: { endpoint: 'google-start', purpose:'login',return_to: '/join/week_12_pair_34' },
     headers: oauthRequestHeaders(),
   });
-  const returnCookie = cookiesFrom(safe).find(cookie => cookie.startsWith('randori_oauth_return='));
-  const nonceCookie = cookiesFrom(safe).find(cookie => cookie.startsWith('randori_oauth_nonce='));
   const authorizationUrl=new URL(safe.headers.location);
+  const state=authorizationUrl.searchParams.get('state');
+  const transactionCookie=cookiesFrom(safe)
+    .find(cookie=>cookie.startsWith(`${googleOAuthTransactionCookieName(state)}=`));
+  const transaction=decodeGoogleOAuthTransactionCookie(transactionCookie,state);
   const nonce=authorizationUrl.searchParams.get('nonce');
-  const verifierCookie=cookiesFrom(safe).find(cookie => cookie.startsWith('randori_oauth_verifier='));
-  const verifier=decodeURIComponent(verifierCookie.split(';')[0].split('=')[1]);
-  assert.equal(nonce,decodeURIComponent(nonceCookie.split(';')[0].split('=')[1]));
-  assert.equal(authorizationUrl.searchParams.get('code_challenge'),createHash('sha256').update(verifier).digest('base64url'));
+  assert.equal(transaction.return_path,'/join/week_12_pair_34');
+  assert.equal(transaction.purpose,'login');
+  assert.equal(nonce,transaction.nonce);
+  assert.equal(authorizationUrl.searchParams.get('code_challenge'),createHash('sha256').update(transaction.verifier).digest('base64url'));
   assert.equal(authorizationUrl.searchParams.get('code_challenge_method'),'S256');
-  assert.match(nonceCookie, /^randori_oauth_nonce=[A-Za-z0-9_-]+;/);
-  assert.match(returnCookie, /^randori_oauth_return=%2Fjoin%2Fweek_12_pair_34;/);
-  assert.match(returnCookie, /Path=\/api\/auth\/google/);
-  assert.match(returnCookie, /HttpOnly/);
-  assert.match(returnCookie, /SameSite=Lax/);
-  assert.match(returnCookie, /Max-Age=600/);
-  assert.match(returnCookie, /Secure/);
+  assert.match(transactionCookie, /Path=\/api\/auth\/google\/callback/);
+  assert.match(transactionCookie, /HttpOnly/);
+  assert.match(transactionCookie, /SameSite=Lax/);
+  assert.match(transactionCookie, /Max-Age=600/);
+  assert.match(transactionCookie, /Secure/);
 
   for (const returnTo of [
     'https://evil.example', '//evil.example', '%2Fjoin%2Fweek_12_pair_34',
     '/join/week_12_pair_34?next=https://evil.example', '/join\\week_12_pair_34',
-    '/join/week_0_pair_34', '/join/week_12_pair_034',
+    '/join/week_0_pair_34', '/join/week_12_pair_034', '/invite',
   ]) {
     const rejected = await invoke({
-      url: '/api/auth/google/start',
-      query: { endpoint: 'google-start', return_to: returnTo },
+      url: '/api/auth/google/start?purpose=login',
+      query: { endpoint: 'google-start',purpose:'login', return_to: returnTo },
       headers: oauthRequestHeaders(),
     });
-    const cookie = cookiesFrom(rejected).find(item => item.startsWith('randori_oauth_return='));
-    assert.match(cookie, /^randori_oauth_return=%2F;/, returnTo);
+    const rejectedUrl=new URL(rejected.headers.location);
+    const rejectedState=rejectedUrl.searchParams.get('state');
+    const cookie=cookiesFrom(rejected)
+      .find(item=>item.startsWith(`${googleOAuthTransactionCookieName(rejectedState)}=`));
+    assert.equal(decodeGoogleOAuthTransactionCookie(cookie,rejectedState).return_path,'/',returnTo);
   }
 });
 
@@ -188,9 +200,10 @@ test('OAuth callback ignores a callback return override and consumes the stored 
   assert.equal(result.status, 302);
   assert.equal(result.headers.location, 'https://randori.example.test/join/week_12_pair_34?google_error=access_denied');
   assert.doesNotMatch(result.headers.location, /evil\.example/);
-  const cleared = cookiesFrom(result).find(cookie => cookie.startsWith('randori_oauth_return='));
-  assert.match(cleared, /^randori_oauth_return=;/);
-  assert.match(cleared, /Path=\/api\/auth\/google/);
+  const cleared = cookiesFrom(result)
+    .find(cookie => cookie.startsWith(`${googleOAuthTransactionCookieName('expected-state')}=`));
+  assert.match(cleared, new RegExp(`^${googleOAuthTransactionCookieName('expected-state')}=;`));
+  assert.match(cleared, /Path=\/api\/auth\/google\/callback/);
   assert.match(cleared, /Max-Age=0/);
 });
 
@@ -201,14 +214,16 @@ test('OAuth callback validates state before provider errors and revalidates its 
     query: { endpoint: 'callback', error: 'access_denied', state: 'wrong-state' },
     headers: oauthRequestHeaders(oauthCookies({ returnPath: '/join/week_12_pair_34' })),
   });
-  assert.equal(wrongState.headers.location, 'https://randori.example.test/join/week_12_pair_34?google_error=invalid_state');
+  assert.equal(wrongState.headers.location, 'https://randori.example.test/?google_error=invalid_state');
+  assert.equal(wrongState.headers['set-cookie'],undefined,
+    'an unknown callback state must not clear another transaction');
 
   const tamperedReturn = await invoke({
     url: '/api/auth/google/callback',
     query: { endpoint: 'callback', error: 'access_denied', state: 'expected-state' },
     headers: oauthRequestHeaders(oauthCookies({ returnPath: '//evil.example' })),
   });
-  assert.equal(tamperedReturn.headers.location, 'https://randori.example.test/?google_error=access_denied');
+  assert.equal(tamperedReturn.headers.location, 'https://randori.example.test/?google_error=invalid_state');
 
   const rawProviderError = await invoke({
     url: '/api/auth/google/callback',
@@ -217,6 +232,50 @@ test('OAuth callback validates state before provider errors and revalidates its 
   });
   assert.equal(rawProviderError.headers.location, 'https://randori.example.test/?google_error=provider_denied');
   assert.doesNotMatch(rawProviderError.headers.location,/secret-provider-diagnostic/);
+});
+
+test('concurrent OAuth callbacks clear only their own state-scoped transaction',async()=>{
+  enableGoogleOAuth();
+  const start=async returnPath=>invoke({
+    url:'/api/auth/google/start?purpose=login',
+    query:{endpoint:'google-start',purpose:'login',return_to:returnPath},
+    headers:oauthRequestHeaders(),
+  });
+  const first=await start('/join/week_1_pair_1');
+  const second=await start('/join/week_2_pair_2');
+  const firstState=new URL(first.headers.location).searchParams.get('state');
+  const secondState=new URL(second.headers.location).searchParams.get('state');
+  assert.notEqual(firstState,secondState);
+  const firstCookie=cookiesFrom(first)[0].split(';')[0];
+  const secondCookie=cookiesFrom(second)[0].split(';')[0];
+  const combined=`${firstCookie}; ${secondCookie}`;
+
+  const stale=await invoke({
+    url:'/api/auth/google/callback',
+    query:{endpoint:'callback',error:'access_denied',state:'stale-callback-state'},
+    headers:oauthRequestHeaders(combined),
+  });
+  assert.equal(stale.headers.location,'https://randori.example.test/?google_error=invalid_state');
+  assert.equal(stale.headers['set-cookie'],undefined);
+
+  const firstCallback=await invoke({
+    url:'/api/auth/google/callback',
+    query:{endpoint:'callback',error:'access_denied',state:firstState},
+    headers:oauthRequestHeaders(combined),
+  });
+  const firstClear=String(firstCallback.headers['set-cookie']);
+  assert.match(firstClear,new RegExp(`^${googleOAuthTransactionCookieName(firstState)}=;`));
+  assert.doesNotMatch(firstClear,new RegExp(`${googleOAuthTransactionCookieName(secondState)}=`));
+
+  const secondCallback=await invoke({
+    url:'/api/auth/google/callback',
+    query:{endpoint:'callback',error:'access_denied',state:secondState},
+    headers:oauthRequestHeaders(secondCookie),
+  });
+  assert.equal(secondCallback.headers.location,
+    'https://randori.example.test/join/week_2_pair_2?google_error=access_denied');
+  assert.match(String(secondCallback.headers['set-cookie']),
+    new RegExp(`^${googleOAuthTransactionCookieName(secondState)}=;`));
 });
 
 test('OAuth callback requires its nonce and a consumed browser callback cannot be replayed',async()=>{
@@ -254,7 +313,7 @@ test('OAuth callback requires its nonce and a consumed browser callback cannot b
   });
   assert.equal(first.headers.location,'https://randori.example.test/?google=success');
   assert.equal(providerRequests,2);
-  assert.match(String(first.headers['set-cookie']),/randori_oauth_nonce=;/);
+  assert.match(String(first.headers['set-cookie']),new RegExp(`${googleOAuthTransactionCookieName('expected-state')}=;`));
 
   const copiedCookieReplay=await invoke({
     url:'/api/auth/google/callback',

@@ -1,17 +1,22 @@
 import assert from 'node:assert/strict';
+import {createHmac} from 'node:crypto';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {afterEach,beforeEach,mock,test} from 'node:test';
 import {createClient} from '@libsql/client';
+import {EXECUTABLE_MIGRATIONS} from '../../db/executable-migrations.js';
 import {MIGRATION_PLANS} from '../../db/migration-plan.js';
+import {applyMigrations,inspectMigrationState,prepareMigrationConnection} from '../../db/migration-runner.js';
 import {CREDENTIAL_KEY_CONTROL_SEED_OPERATIONS} from '../../db/credential-key-control.js';
 import {createOutboxEventStatement} from '../../api/_outbox.js';
 import {adoptCredentialKeyControl} from '../support/credential-key-control.mjs';
 
 let currentDb=null;
 const temporaryDirectories=[];
+const CLAIM_TEST_SECRET='circle-membership-test-secret-at-least-thirty-two-characters';
+let claimTestSecret=CLAIM_TEST_SECRET;
 
 function authPayload(req){
   const identity=req?.headers?.['x-test-auth'];
@@ -28,11 +33,12 @@ mock.module('../../api/_db.js',{
     captureSentryMessage:()=>null,
     getAdminEmails:()=>new Set(['configured-owner@example.test']),
     getClient:()=>currentDb,
-    getJwtSecret:()=>'circle-membership-test-secret-at-least-thirty-two-characters',
+    getJwtSecret:()=>claimTestSecret,
     initSentry:()=>{},
     isSentryConfigured:()=>false,
     verifyMutationOrigin:req=>req?.headers?.['x-test-cross']!=='1',
     verifyRequestAuth:authPayload,
+    verifySignedRequestAuth:authPayload,
   },
 });
 
@@ -49,6 +55,8 @@ const credentialKeyControlOperations=[
   ...MIGRATION_PLANS[14].operations.map(operation=>operation.sql),
   ...CREDENTIAL_KEY_CONTROL_SEED_OPERATIONS.map(operation=>operation.sql),
 ];
+const schemaSql=name=>MIGRATION_PLANS.flatMap(plan=>plan.operations)
+  .find(operation=>operation.operation==='ensure-table'&&operation.name===name)?.sql;
 
 function invoke(handler,{method='GET',url='/',query={},headers={},body={}}={}){
   return new Promise((resolve,reject)=>{
@@ -87,12 +95,12 @@ async function createDatabase(){
       last_login TEXT NOT NULL,PRIMARY KEY(issuer,subject),UNIQUE(issuer,user_id),
       FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE CASCADE
     )`,
-    membership.CIRCLES_TABLE_SQL,
-    membership.CIRCLE_MEMBERSHIPS_TABLE_SQL,
-    membership.CIRCLE_INVITATIONS_TABLE_SQL,
-    membership.CIRCLE_AUDIT_EVENTS_TABLE_SQL,
-    membership.AUTH_RATE_LIMITS_TABLE_SQL,
-    membership.CIRCLE_MEMBERSHIP_ROLLOUT_TABLE_SQL,
+    schemaSql('circles'),
+    schemaSql('circle_memberships'),
+    schemaSql('circle_invitations'),
+    schemaSql('circle_audit_events'),
+    schemaSql('auth_rate_limits'),
+    schemaSql('circle_membership_rollout'),
     `CREATE TABLE auth_sessions (session_hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL,
       created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,revoked_at INTEGER,revocation_reason TEXT,
       FOREIGN KEY(user_id) REFERENCES auth_accounts(id) ON DELETE CASCADE)`,
@@ -121,7 +129,21 @@ async function createDatabase(){
   return db;
 }
 
+async function createCurrentDatabase(){
+  const directory=mkdtempSync(join(tmpdir(),'randori-circle-current-'));
+  temporaryDirectories.push(directory);
+  const db=createClient({url:pathToFileURL(join(directory,'current.sqlite')).href});
+  await prepareMigrationConnection(db);
+  const state=await inspectMigrationState(db);
+  await applyMigrations(db,{
+    expectedStateFingerprint:state.stateFingerprint,
+    retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0},
+  });
+  return db;
+}
+
 beforeEach(()=>{
+  claimTestSecret=CLAIM_TEST_SECRET;
   process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
   delete process.env.TURSO_DATABASE_URL;
 });
@@ -159,11 +181,37 @@ test('claims are signed, short lived, email bound, and never store the raw invit
   const prepared=await membership.prepareInvitationClaim(currentDb,{token});
   assert.equal(prepared.ok,true);
   assert.equal(prepared.claim.includes(token),false);
+  const binding=prepared.binding;
+  assert.match(binding,/^[A-Za-z0-9_-]{43}$/);
+  assert.equal(binding.includes(invitationId),false);
+  assert.equal(prepared.claim.includes(binding),false);
+  const claimPayload=JSON.parse(Buffer.from(prepared.claim.split('.')[0],'base64url').toString('utf8'));
+  assert.deepEqual(Object.keys(claimPayload).sort(),[
+    'binding_hash','circle_id','email_hash','exp','iat','invitation_id','token_hash','v',
+  ]);
+  assert.equal(claimPayload.v,2);
+  assert.match(claimPayload.binding_hash,/^[a-f0-9]{64}$/);
   const cookie=membership.inviteClaimCookie(prepared.claim);
-  assert.match(cookie,/Path=\/api\/auth; HttpOnly; Secure; SameSite=Lax; Max-Age=600$/);
+  assert.match(cookie,/Path=\/api; HttpOnly; Secure; SameSite=Lax; Max-Age=600$/);
   assert.equal(cookie.includes(token),false);
   const parsed=membership.readInviteClaim({headers:{cookie}});
   assert.equal(parsed.invitation_id,invitationId);
+  assert.deepEqual(membership.readBoundInviteClaim({headers:{cookie}},binding),parsed);
+  assert.equal(membership.readBoundInviteClaim({headers:{cookie}},'z'.repeat(43)),null);
+  assert.equal(membership.inviteClaimRemainingSeconds(parsed)>0,true);
+  assert.equal((await membership.validateLivePreparedClaim(currentDb,{claim:parsed})).ok,true);
+  const legacyPayload=Buffer.from(JSON.stringify({v:1,invitation_id:invitationId,circle_id:10,
+    token_hash:tokenHash,email_hash:emailHash,iat:claimPayload.iat,exp:claimPayload.exp}),'utf8')
+    .toString('base64url');
+  const legacySignature=createHmac('sha256',CLAIM_TEST_SECRET)
+    .update(`randori-circle-invite-claim-v1\0${legacyPayload}`,'utf8').digest('base64url');
+  assert.equal(membership.readInviteClaim({headers:{cookie:
+    `${membership.INVITE_CLAIM_COOKIE}=${legacyPayload}.${legacySignature}`}}),null,
+  'legacy unbound claims must fail closed');
+  claimTestSecret='rotated-circle-membership-test-secret-at-least-thirty-two-characters';
+  assert.equal(membership.readInviteClaim({headers:{cookie}}),null,
+    'prepared claims use only the active application key');
+  claimTestSecret=CLAIM_TEST_SECRET;
   assert.deepEqual(await membership.validatePreparedInvitation(currentDb,{claim:parsed,email:'wrong@example.test'}),{ok:false});
   const validated=await membership.validatePreparedInvitation(currentDb,{claim:parsed,email:'member@example.test'});
   assert.equal(validated.ok,true);
@@ -172,6 +220,68 @@ test('claims are signed, short lived, email bound, and never store the raw invit
   const stored=await currentDb.execute(`SELECT token_hash,email_hash FROM circle_invitations WHERE id='${invitationId}'`);
   assert.equal(JSON.stringify(stored.rows).includes(token),false);
   assert.equal(JSON.stringify(stored.rows).includes('member@example.test'),false);
+});
+
+test('claim bindings expire and fail closed when an older prepare cookie is paired with a newer binding',async()=>{
+  currentDb=await createDatabase();
+  const emailHash=membership.hashInvitationEmail('member@example.test');
+  const invitations=[
+    {id:'11111111-1111-4111-8111-111111111111',token:membership.createInvitationToken()},
+    {id:'22222222-2222-4222-8222-222222222222',token:membership.createInvitationToken()},
+  ];
+  for(const invitation of invitations){
+    await currentDb.execute({
+      sql:`INSERT INTO circle_invitations
+        (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at)
+        VALUES (?,?,?,?,?,datetime('now'),datetime('now','+7 days'))`,
+      args:[invitation.id,10,membership.hashInvitationToken(invitation.token),emailHash,1],
+    });
+  }
+  const prepared=[];
+  for(const invitation of invitations){
+    prepared.push(await invoke(invitationsHandler,{
+      method:'POST',url:'/api/invitations/prepare',query:{endpoint:'prepare'},
+      headers:{origin:'https://randori.example.test',host:'randori.example.test'},
+      body:{token:invitation.token},
+    }));
+  }
+  const olderCookie=prepared[0].headers['set-cookie'][1].split(';')[0];
+  assert.notEqual(prepared[0].body.binding,prepared[1].body.binding);
+  const mismatched=await invoke(invitationsHandler,{
+    method:'POST',url:'/api/invitations/prepare',query:{endpoint:'prepare'},
+    headers:{origin:'https://randori.example.test',host:'randori.example.test',cookie:olderCookie},
+    body:{binding:prepared[1].body.binding},
+  });
+  assert.equal(mismatched.status,400);
+  assert.deepEqual(mismatched.body,{error:'invitation unavailable'});
+  assert.equal(mismatched.headers['set-cookie'],undefined,
+    'a stale mismatch must not erase a newer prepared claim');
+  const newerCookie=prepared[1].headers['set-cookie'][1].split(';')[0];
+  const reverseMismatch=await invoke(invitationsHandler,{
+    method:'POST',url:'/api/invitations/prepare',query:{endpoint:'prepare'},
+    headers:{origin:'https://randori.example.test',host:'randori.example.test',cookie:newerCookie},
+    body:{binding:prepared[0].body.binding},
+  });
+  assert.equal(reverseMismatch.status,400);
+  assert.equal(reverseMismatch.headers['set-cookie'],undefined);
+
+  const refreshed=await invoke(invitationsHandler,{
+    method:'POST',url:'/api/invitations/prepare',query:{endpoint:'prepare'},
+    headers:{origin:'https://randori.example.test',host:'randori.example.test',cookie:olderCookie},
+    body:{binding:prepared[0].body.binding},
+  });
+  assert.equal(refreshed.status,200);
+  assert.equal(refreshed.body.binding,prepared[0].body.binding);
+  assert.equal(Number.isSafeInteger(refreshed.body.expires_in_seconds),true);
+  assert.equal(refreshed.body.expires_in_seconds>0&&refreshed.body.expires_in_seconds<=600,true);
+  assert.equal(refreshed.headers['set-cookie'],undefined,'refresh must not extend the signed claim');
+
+  const originalNow=Date.now;
+  const start=originalNow();
+  try{
+    Date.now=()=>start+601_000;
+    assert.equal(membership.readBoundInviteClaim({headers:{cookie:olderCookie}},prepared[0].body.binding),null);
+  }finally{ Date.now=originalNow; }
 });
 
 test('invitation acceptance is atomic, same-account idempotent, and rejects a different account',async()=>{
@@ -442,32 +552,6 @@ test('password invitation account creation rolls back on expiry and a later acce
   }
 });
 
-test('controlled initialization backfills only non-demo auth accounts and audits once',async()=>{
-  currentDb=await createDatabase();
-  assert.equal(await membership.circleMembershipCutoverStarted(currentDb),false);
-  await currentDb.execute(`DELETE FROM circle_audit_events`);
-  await currentDb.execute(`DELETE FROM circle_memberships`);
-  const result=await membership.initializePrimaryCircle(currentDb,{ownerUserId:1,ownerEmails:['configured-owner@example.test']});
-  assert.equal(result.circleId,10);
-  await currentDb.execute(`INSERT INTO auth_accounts
-    (id,email,password_hash,display_name,color,is_available,is_admin,is_demo)
-    VALUES (6,'late@example.test','x','Late account','#abcdef',1,0,0)`);
-  await currentDb.execute(`UPDATE circle_memberships SET status='inactive' WHERE circle_id=10 AND user_id=3`);
-  await membership.initializePrimaryCircle(currentDb,{ownerUserId:1,ownerEmails:['configured-owner@example.test']});
-
-  const rows=await currentDb.execute(`SELECT user_id,role,status FROM circle_memberships ORDER BY user_id`);
-  assert.deepEqual(rows.rows.map(row=>[Number(row.user_id),String(row.role),String(row.status)]),[
-    [1,'owner','active'],[2,'member','active'],[3,'member','inactive'],[4,'owner','active'],
-  ]);
-  const audit=await currentDb.execute(`SELECT subject_user_id FROM circle_audit_events
-    WHERE event_type='membership.backfilled' ORDER BY subject_user_id`);
-  assert.deepEqual(audit.rows.map(row=>Number(row.subject_user_id)),[1,2,3,4]);
-  const completed=await currentDb.execute(`SELECT COUNT(*) AS count FROM circle_audit_events
-    WHERE event_type='membership.backfill.completed'`);
-  assert.equal(Number(completed.rows[0].count),1);
-  assert.equal(await membership.circleMembershipCutoverStarted(currentDb),true);
-});
-
 test('registration-state probes do not create rollout schema before explicit initialization',async()=>{
   currentDb=createClient({url:'file::memory:'});
   assert.equal(await membership.circleMembershipRegistrationState(currentDb),'uninitialized');
@@ -479,7 +563,30 @@ test('registration-state probes do not create rollout schema before explicit ini
   assert.equal(schema.rows.length,0);
 });
 
-test('owner invitation APIs create, safely list, prepare, clear stale claims, and revoke',async()=>{
+test('invitation preparation fails closed on an unready schema without DDL or data writes',async()=>{
+  const database=createClient({url:'file::memory:'});
+  const statements=[];
+  currentDb={
+    execute(statement){
+      statements.push(typeof statement==='string'?statement:String(statement?.sql||''));
+      return database.execute(statement);
+    },
+    close(){ database.close(); },
+  };
+  const result=await invoke(invitationsHandler,{
+    method:'POST',url:'/api/invitations/prepare',query:{endpoint:'prepare'},
+    headers:{origin:'https://randori.example.test',host:'randori.example.test'},
+    body:{token:'x'.repeat(43)},
+  });
+  assert.equal(result.status,503);
+  assert.deepEqual(result.body,{error:'invitations unavailable'});
+  assert.equal(statements.some(sql=>/^\s*(?:CREATE|ALTER|DROP|VACUUM|REINDEX)\b/iu.test(sql)),false);
+  assert.equal(statements.some(sql=>/^\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(sql)),false);
+  const schema=await database.execute(`SELECT name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'`);
+  assert.deepEqual(schema.rows,[]);
+});
+
+test('owner invitation APIs create, safely list, prepare without stale response clearing, and revoke',async()=>{
   currentDb=await createDatabase();
   process.env.NODE_ENV='production';
   process.env.APP_URL='https://randori.example.test';
@@ -526,7 +633,8 @@ test('owner invitation APIs create, safely list, prepare, clear stale claims, an
     body:{token:'x'.repeat(43)},
   });
   assert.equal(invalid.status,400);
-  assert.match(String(invalid.headers['set-cookie']),/Max-Age=0/);
+  assert.equal(invalid.headers['set-cookie'],undefined,
+    'a failed prepare response must not erase a successful response that arrived first');
 
   const prepared=await invoke(invitationsHandler,{
     method:'POST',url:'/api/invitations/prepare',query:{endpoint:'prepare'},
@@ -534,10 +642,13 @@ test('owner invitation APIs create, safely list, prepare, clear stale claims, an
   });
   assert.equal(prepared.status,200);
   assert.equal(prepared.headers['cache-control'],'private, no-store');
+  assert.match(prepared.body.binding,/^[A-Za-z0-9_-]{43}$/);
   assert.equal(prepared.body.expires_in_seconds,600);
   assert.equal(Array.isArray(prepared.headers['set-cookie']),true);
-  assert.match(prepared.headers['set-cookie'][0],/Max-Age=0/);
-  assert.match(prepared.headers['set-cookie'][1],/HttpOnly; Secure; SameSite=Lax; Max-Age=600/);
+  assert.match(prepared.headers['set-cookie'][0],
+    /^randori_invite_claim=; Path=\/api\/auth; HttpOnly; Secure; SameSite=Lax; Max-Age=0$/);
+  assert.match(prepared.headers['set-cookie'][1],
+    /Path=\/api; HttpOnly; Secure; SameSite=Lax; Max-Age=600/);
   assert.equal(prepared.headers['set-cookie'].join(';').includes(rawToken),false);
 
   const revoked=await invoke(invitationsHandler,{
@@ -1029,7 +1140,7 @@ test('a stale owner session cannot manage invitations after its account is delet
   assert.deepEqual(circle.body,{error:'circle membership required'});
 });
 
-test('admin init upgrades a legacy auth schema before enforcing Google subject uniqueness',async()=>{
+test('admin init refuses to repair an unmanaged legacy auth schema',async()=>{
   currentDb=createClient({url:'file::memory:'});
   await currentDb.execute(`CREATE TABLE auth_accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,
@@ -1044,38 +1155,48 @@ test('admin init upgrades a legacy auth schema before enforcing Google subject u
   const result=await invoke(dataHandler,{
     method:'POST',url:'/api/init',query:{endpoint:'init'},headers:{'x-test-auth':'owner'},
   });
-  assert.equal(result.status,200);
+  assert.equal(result.status,503);
+  assert.deepEqual(result.body,{error:'data unavailable'});
   const columns=await currentDb.execute(`PRAGMA table_info('auth_accounts')`);
-  assert.equal(columns.rows.some(row=>row.name==='google_sub'),true);
+  assert.equal(columns.rows.some(row=>row.name==='google_sub'),false);
   const indexes=await currentDb.execute(`PRAGMA index_list('auth_accounts')`);
-  assert.equal(indexes.rows.some(row=>row.name==='uq_auth_accounts_google_sub'&&Number(row.unique)===1),true);
+  assert.equal(indexes.rows.some(row=>row.name==='uq_auth_accounts_google_sub'&&Number(row.unique)===1),false);
 });
 
-test('admin init installs membership indexes and runs the audited backfill',async()=>{
-  currentDb=await createDatabase();
-  await currentDb.execute(`DELETE FROM circle_audit_events`);
-  await currentDb.execute(`DELETE FROM circle_memberships`);
+test('admin init runs the audited data cutover on an exactly migrated database',async()=>{
+  currentDb=await createCurrentDatabase();
+  await currentDb.execute(`INSERT INTO auth_accounts
+    (id,email,password_hash,display_name,color,is_available,is_admin,is_demo)
+    VALUES
+      (1,'owner@example.test','x','Owner','#112233',1,1,0),
+      (2,'member@example.test','x','Member','#445566',1,0,0),
+      (3,'demo@example.test','x','Demo','#778899',1,1,1),
+      (4,'configured-owner@example.test','x','Configured owner','#aabbcc',1,0,0)`);
+  await currentDb.execute({
+    sql:`INSERT INTO auth_sessions
+      (session_hash,user_id,created_at,expires_at) VALUES (?,1,1,4102444800)`,
+    args:['a'.repeat(64)],
+  });
   delete process.env.CIRCLE_MEMBERSHIP_ENABLED;
   const result=await invoke(dataHandler,{
     method:'POST',url:'/api/init',query:{endpoint:'init'},headers:{'x-test-auth':'owner'},
   });
   assert.equal(result.status,200);
-
-  const indexes=await currentDb.execute(`SELECT name FROM sqlite_master
-    WHERE type='index' AND name IN (
-      'uq_circles_active_primary','idx_circle_memberships_user_active',
-      'idx_circle_invitations_circle_created','idx_circle_audit_circle_created',
-      'uq_auth_accounts_google_sub'
-    ) ORDER BY name`);
-  assert.deepEqual(indexes.rows.map(row=>String(row.name)),[
-    'idx_circle_audit_circle_created','idx_circle_invitations_circle_created',
-    'idx_circle_memberships_user_active','uq_auth_accounts_google_sub','uq_circles_active_primary',
-  ]);
+  assert.equal(result.body.ok,true);
+  assert.equal(result.body.changed,true);
+  assert.equal(result.body.message,'Primary circle data ready');
   const members=await currentDb.execute(`SELECT user_id,role FROM circle_memberships ORDER BY user_id`);
   assert.deepEqual(members.rows.map(row=>[Number(row.user_id),String(row.role)]),[
-    [1,'owner'],[2,'member'],[3,'member'],[4,'owner'],
+    [1,'owner'],[2,'member'],[4,'owner'],
   ]);
   const completed=await currentDb.execute(`SELECT COUNT(*) AS count FROM circle_audit_events
     WHERE event_type='membership.backfill.completed'`);
   assert.equal(Number(completed.rows[0].count),1);
+
+  const repeated=await invoke(dataHandler,{
+    method:'POST',url:'/api/init',query:{endpoint:'init'},headers:{'x-test-auth':'owner'},
+  });
+  assert.equal(repeated.status,200);
+  assert.equal(repeated.body.circle_id,result.body.circle_id);
+  assert.equal(repeated.body.changed,false);
 });

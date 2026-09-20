@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import { after, beforeEach, mock, test } from 'node:test';
 import bcrypt from 'bcryptjs';
-import {googleOAuthCookieHeader,googleProviderFetch} from '../support/google-oidc.mjs';
+import {decodeGoogleOAuthTransactionCookie,googleOAuthCookieHeader,
+  googleOAuthTransactionCookieName,googleProviderFetch} from '../support/google-oidc.mjs';
 
 const JWT_SECRET='circle-auth-unit-test-secret-at-least-32-characters';
 const PASSWORD='correct horse battery';
 const PASSWORD_HASH=await bcrypt.hash(PASSWORD,4);
+const INVITE_BINDING='b'.repeat(43);
+const INVITE_BINDING_HASH='c'.repeat(64);
 const executed=[];
 let executeHandler=()=>({rows:[],rowsAffected:0});
 let membershipResult=true;
@@ -103,7 +106,10 @@ mock.module('../../api/_db.js',{
       : (req.headers?.['x-test-auth']==='admin'
         ? {id:1,email:'admin@example.test',name:'Admin',is_admin:true}
         : null),
-    verifySignedRequestAuth:()=>signedSessionPayload,
+    verifySignedRequestAuth:req=>signedSessionPayload||(req.headers?.['x-test-auth']==='user'
+      ?{id:2,email:'user@example.test',name:'User'}
+      :(req.headers?.['x-test-auth']==='admin'
+        ?{id:1,email:'admin@example.test',name:'Admin',is_admin:true}:null)),
   },
 });
 
@@ -115,9 +121,15 @@ mock.module('../../api/_circle-membership.js',{
     circleMembershipEnabled:()=>process.env.CIRCLE_MEMBERSHIP_ENABLED==='true',
     circleMembershipCutoverStarted:async()=>cutoverStarted,
     circleMembershipRegistrationState:async()=>cutoverStarted?'closed':registrationState,
-    clearInviteClaimCookie:()=> 'randori_invite_claim=; Path=/api/auth; HttpOnly; Secure; SameSite=Lax; Max-Age=0',
-    readInviteClaim:req=>String(req.headers?.cookie||'').includes('randori_invite_claim=valid-claim')
-      ? {invitation_id:'invite-1',circle_id:1,token_hash:'token-hash',email_hash:'email-hash',exp:9999999999}
+    readBoundInviteClaim:(req,binding)=>binding===INVITE_BINDING
+      &&String(req.headers?.cookie||'').includes('randori_invite_claim=valid-claim')
+      ? {invitation_id:'invite-1',circle_id:1,token_hash:'token-hash',email_hash:'email-hash',
+        binding_hash:INVITE_BINDING_HASH,exp:9999999999}
+      : null,
+    readInviteClaimForBindingHash:(req,bindingHash)=>bindingHash===INVITE_BINDING_HASH
+      &&String(req.headers?.cookie||'').includes('randori_invite_claim=valid-claim')
+      ? {invitation_id:'invite-1',circle_id:1,token_hash:'token-hash',email_hash:'email-hash',
+        binding_hash:INVITE_BINDING_HASH,exp:9999999999}
       : null,
     hasActiveCircleMembership:async(_db,userId)=>{
       membershipCalls.push({kind:'any',userId});
@@ -133,6 +145,7 @@ mock.module('../../api/_circle-membership.js',{
       validationCalls.push(input);
       return validationResult;
     },
+    validateLivePreparedClaim:async()=>validationResult,
     acceptPreparedInvitation:async(_db,input)=>{
       acceptanceCalls.push(input);
       return acceptanceResult;
@@ -210,6 +223,36 @@ const localOriginHeaders={origin:'http://127.0.0.1:3000',host:'127.0.0.1:3000'};
 
 function rows(values=[],extra={}){ return {rows:values,rowsAffected:0,...extra}; }
 
+function emptyPairingStorage(handler=()=>undefined){
+  let run=null;
+  return (sql,args)=>{
+    const handled=handler(sql,args);
+    if(handled!==undefined) return handled;
+    if(sql.includes('INSERT INTO pairing_week_runs')&&sql.includes('SELECT ?,NULL,?,1')){
+      run={weekLabel:String(args[0]),generationToken:String(args[1]),algorithmVersion:String(args[2]),
+        algorithmSeed:String(args[3]),participantCount:Number(args[4]),participantsJson:String(args[5]),
+        weekStart:null};
+      return rows([],{rowsAffected:1});
+    }
+    if(sql.includes('INSERT INTO pairing_weeks')&&run){
+      run.weekStart=String(args[1]);
+      return rows([],{rowsAffected:1});
+    }
+    if(sql.includes('FROM pairing_week_runs WHERE week_label=?')&&run&&args[0]===run.weekLabel){
+      return rows([{
+        week_label:run.weekLabel,week_id:10,generation_token:run.generationToken,generation:1,
+        algorithm_version:run.algorithmVersion,algorithm_seed:run.algorithmSeed,
+        participant_count:run.participantCount,participants_json:run.participantsJson,
+        created_at:run.weekStart,
+      }]);
+    }
+    if(sql.includes('FROM pairing_weeks WHERE week_label=?')&&run&&args[0]===run.weekLabel){
+      return rows([{id:10,week_label:run.weekLabel,week_start:run.weekStart,is_demo:0}]);
+    }
+    return rows();
+  };
+}
+
 async function withFixedNow(iso,callback){
   const NativeDate=globalThis.Date;
   const instant=new NativeDate(iso).getTime();
@@ -252,8 +295,10 @@ function accountSql(sql){
   return sql.includes('SELECT id,email,password_hash,display_name,color,is_admin FROM auth_accounts WHERE email=');
 }
 
-function oauthCookies({claim=true}={}){
-  return googleOAuthCookieHeader({invitationClaim:claim?'valid-claim':undefined});
+function oauthCookies({claim=true,purpose=claim?`invite:${INVITE_BINDING_HASH}`:'login'}={}){
+  return googleOAuthCookieHeader({
+    invitationClaim:claim?'valid-claim':undefined,purpose,jwtSecret:JWT_SECRET,
+  });
 }
 
 function oauthRequestHeaders(options){
@@ -365,17 +410,54 @@ test('prepared invitation OAuth forces explicit Google account selection',async(
   process.env.APP_URL='https://randori.example.test';
   process.env.GOOGLE_CLIENT_ID='client';
   process.env.GOOGLE_CLIENT_SECRET='secret';
+  validationResult={ok:true};
   const prepared=await invoke(authHandler,{
-    url:'/api/auth/google/start',query:{endpoint:'google-start'},headers:oauthRequestHeaders(),
+    method:'POST',url:'/api/auth/google/start',query:{endpoint:'google-start'},headers:oauthRequestHeaders(),
+    body:{purpose:'invite',invite_binding:INVITE_BINDING},
   });
-  assert.equal(prepared.status,302);
-  assert.equal(new URL(prepared.headers.location).searchParams.get('prompt'),'select_account');
+  assert.equal(prepared.status,200);
+  const preparedUrl=new URL(prepared.body.authorizationUrl);
+  assert.equal(preparedUrl.searchParams.get('prompt'),'select_account');
+  const preparedState=preparedUrl.searchParams.get('state');
+  const preparedTransaction=decodeGoogleOAuthTransactionCookie(
+    String(prepared.headers['set-cookie']),preparedState);
+  assert.equal(preparedTransaction.purpose,`invite:${INVITE_BINDING_HASH}`);
+  assert.equal(preparedTransaction.return_path,'/invite');
+  assert.doesNotMatch(preparedTransaction.purpose,new RegExp(INVITE_BINDING));
+  assert.doesNotMatch(String(prepared.headers['set-cookie']),new RegExp(INVITE_BINDING));
+  assert.doesNotMatch(prepared.body.authorizationUrl,new RegExp(INVITE_BINDING));
+  assert.match(String(prepared.headers['set-cookie']),
+    new RegExp(`^${googleOAuthTransactionCookieName(preparedState)}=`));
 
   const regular=await invoke(authHandler,{
-    url:'/api/auth/google/start',query:{endpoint:'google-start'},headers:oauthRequestHeaders({claim:false}),
+    url:'/api/auth/google/start',query:{endpoint:'google-start',purpose:'login'},headers:oauthRequestHeaders({claim:false}),
   });
   assert.equal(regular.status,302);
-  assert.equal(new URL(regular.headers.location).searchParams.get('prompt'),null);
+  const regularUrl=new URL(regular.headers.location);
+  assert.equal(regularUrl.searchParams.get('prompt'),null);
+  const regularState=regularUrl.searchParams.get('state');
+  assert.equal(decodeGoogleOAuthTransactionCookie(
+    String(regular.headers['set-cookie']),regularState).purpose,'login');
+
+  const mismatched=await invoke(authHandler,{
+    method:'POST',url:'/api/auth/google/start',query:{endpoint:'google-start'},headers:oauthRequestHeaders(),
+    body:{purpose:'invite',invite_binding:'z'.repeat(43)},
+  });
+  assert.equal(mismatched.status,403);
+  assert.deepEqual(mismatched.body,{error:'invitation unavailable'});
+  assert.equal(mismatched.headers['set-cookie'],undefined);
+
+  let providerCalls=0;
+  globalThis.fetch=async()=>{ providerCalls+=1; throw new Error('provider must not be called'); };
+  const transactionCookie=String(prepared.headers['set-cookie']).split(';')[0];
+  const cancelled=await invoke(authHandler,{
+    url:'/api/auth/google/callback',
+    query:{endpoint:'callback',error:'access_denied',state:preparedState},
+    headers:{...sameOriginHeaders,cookie:`randori_invite_claim=valid-claim; ${transactionCookie}`},
+  });
+  assert.equal(cancelled.status,302);
+  assert.equal(cancelled.headers.location,'https://randori.example.test/invite?google_error=access_denied');
+  assert.equal(providerCalls,0);
 });
 
 test('local invite signup normalizes rejection cost without looking up the submitted email',async()=>{
@@ -393,7 +475,8 @@ test('local invite signup normalizes rejection cost without looking up the submi
   };
   const request=body=>invoke(authHandler,{
     method:'POST',url:'/api/auth/signup',query:{endpoint:'signup'},
-    headers:{...localOriginHeaders,cookie:'randori_invite_claim=valid-claim'},body,
+    headers:{...localOriginHeaders,cookie:'randori_invite_claim=valid-claim'},
+    body:{...body,invite_binding:INVITE_BINDING},
   });
   const originalHash=bcrypt.hash;
   const hashes=[];
@@ -535,6 +618,29 @@ test('membership lookup failures never establish or invalidate a session as a fa
   assert.equal(profile.headers['set-cookie'],undefined,'transient readiness failures must not clear a valid session');
 });
 
+test('invitation-backed Google callback checks membership readiness before provider exchange',async()=>{
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  process.env.APP_URL='https://randori.example.test';
+  process.env.GOOGLE_CLIENT_ID='client';
+  process.env.GOOGLE_CLIENT_SECRET='secret';
+  readinessError=new Error('membership schema unavailable');
+  let providerCalls=0;
+  globalThis.fetch=googleProviderFetch({
+    claims:{email:'invited@example.test',name:'Invited User',sub:'google-invited-1'},
+    onRequest:()=>{ providerCalls+=1; },
+  });
+
+  const result=await invoke(authHandler,{
+    url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
+    headers:oauthRequestHeaders(),
+  });
+  assert.equal(result.status,302);
+  assert.match(result.headers.location,/google_error=db_error/);
+  assert.equal(providerCalls,0);
+  assert.equal(validationCalls.length,0);
+  assert.equal(executed.some(call=>/^\s*(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(call.sql)),false);
+});
+
 test('verified Google invitation bypasses allowlist only after validation and atomic acceptance',async()=>{
   process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
   process.env.SIGNUP_ALLOWLIST='someone-else@example.test';
@@ -544,9 +650,6 @@ test('verified Google invitation bypasses allowlist only after validation and at
   validationResult={ok:true,circle_id:1,invitation_id:'invite-1',email_hash:'email-hash',used_by:null};
   accountAcceptanceResult={ok:true,user_id:8,is_admin:false,circle_id:1,created:true,idempotent:false};
   membershipResult=false;
-  globalThis.fetch=googleProviderFetch({claims:{
-    email:'invited@example.test',name:'Invited User',sub:'google-invited-1',
-  }});
   executeHandler=sql=>{
     if(sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return rows([]);
     if(sql.includes('INSERT INTO auth_accounts')&&sql.includes('RETURNING id')) return rows([{id:8}]);
@@ -554,21 +657,35 @@ test('verified Google invitation bypasses allowlist only after validation and at
     return rows();
   };
 
+  const started=await invoke(authHandler,{
+    method:'POST',url:'/api/auth/google/start',query:{endpoint:'google-start'},headers:oauthRequestHeaders(),
+    body:{purpose:'invite',invite_binding:INVITE_BINDING},
+  });
+  const authorization=new URL(started.body.authorizationUrl);
+  const state=authorization.searchParams.get('state');
+  const transactionCookie=String(started.headers['set-cookie']).split(';')[0];
+  const transaction=decodeGoogleOAuthTransactionCookie(transactionCookie,state);
+  globalThis.fetch=googleProviderFetch({claims:{
+    email:'invited@example.test',name:'Invited User',sub:'google-invited-1',nonce:transaction.nonce,
+  }});
+
   const result=await invoke(authHandler,{
     url:'/api/auth/google/callback',
-    query:{endpoint:'callback',code:'valid-code',state:'expected-state'},
-    headers:oauthRequestHeaders(),
+    query:{endpoint:'callback',code:'valid-code',state},
+    headers:{...sameOriginHeaders,cookie:`randori_invite_claim=valid-claim; ${transactionCookie}`},
   });
   assert.equal(result.status,302);
   assert.equal(result.headers.location,'https://randori.example.test/?google=success');
-  assert.match(String(result.headers['set-cookie']),/randori_invite_claim=; Path=\/api\/auth;.*Max-Age=0/);
+  assert.doesNotMatch(String(result.headers['set-cookie']),/randori_invite_claim=;/);
   assert.match(String(result.headers['set-cookie']),/randori_session=/);
   assert.deepEqual(validationCalls,[{
-    claim:{invitation_id:'invite-1',circle_id:1,token_hash:'token-hash',email_hash:'email-hash',exp:9999999999},
+    claim:{invitation_id:'invite-1',circle_id:1,token_hash:'token-hash',email_hash:'email-hash',
+      binding_hash:INVITE_BINDING_HASH,exp:9999999999},
     email:'invited@example.test',
   }]);
   assert.deepEqual(accountAcceptanceCalls,[{
-    claim:{invitation_id:'invite-1',circle_id:1,token_hash:'token-hash',email_hash:'email-hash',exp:9999999999},
+    claim:{invitation_id:'invite-1',circle_id:1,token_hash:'token-hash',email_hash:'email-hash',
+      binding_hash:INVITE_BINDING_HASH,exp:9999999999},
     email:'invited@example.test',
     passwordHash:accountAcceptanceCalls[0].passwordHash,
     displayName:'Invited User',color:'#123456',isAdmin:false,googleSub:'google-invited-1',
@@ -651,7 +768,6 @@ test('a stable Google subject signs into the same account after its verified ema
   process.env.APP_URL='https://randori.example.test';
   process.env.GOOGLE_CLIENT_ID='client';
   process.env.GOOGLE_CLIENT_SECRET='secret';
-  validationResult={ok:true,circle_id:1,invitation_id:'invite-1',email_hash:'email-hash',used_by:null};
   globalThis.fetch=googleProviderFetch({claims:{
     email:'new-address@example.test',name:'Existing User',sub:'stable-google-sub',
   }});
@@ -666,7 +782,7 @@ test('a stable Google subject signs into the same account after its verified ema
 
   const result=await invoke(authHandler,{
     url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
-    headers:oauthRequestHeaders(),
+    headers:oauthRequestHeaders({claim:false}),
   });
   assert.equal(result.status,302);
   assert.equal(result.headers.location,'https://randori.example.test/?google=success');
@@ -728,7 +844,7 @@ test('a stable Google subject cannot take an email already bound to another Goog
   assert.doesNotMatch(String(result.headers['set-cookie']),/randori_session=[^;]/);
 });
 
-test('disabled membership flag preserves the legacy Google shadow-user write',async()=>{
+test('direct Google login ignores a stale invite claim and never creates an unknown account',async()=>{
   process.env.APP_URL='https://randori.example.test';
   process.env.GOOGLE_CLIENT_ID='client';
   process.env.GOOGLE_CLIENT_SECRET='secret';
@@ -744,38 +860,33 @@ test('disabled membership flag preserves the legacy Google shadow-user write',as
 
   const result=await invoke(authHandler,{
     url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
-    headers:oauthRequestHeaders({claim:false}),
+    headers:oauthRequestHeaders({claim:true,purpose:'login'}),
   });
   assert.equal(result.status,302);
-  assert.equal(result.headers.location,'https://randori.example.test/?google=success');
-  assert.equal(executed.some(call=>call.sql.includes('SELECT id FROM users')),true);
-  assert.equal(executed.some(call=>call.sql.includes('INSERT INTO users')),true);
-  assert.equal(membershipCalls.length,0);
-
-  executed.length=0;
-  cutoverStarted=true;
-  const frozen=await invoke(authHandler,{
-    url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
-    headers:oauthRequestHeaders({claim:false}),
-  });
-  assert.equal(frozen.status,302);
-  assert.match(frozen.headers.location,/google_error=private_beta/);
+  assert.match(result.headers.location,/google_error=private_beta/);
   assert.equal(executed.some(call=>call.sql.includes('INSERT INTO auth_accounts')),false);
+  assert.equal(executed.some(call=>call.sql.includes('INSERT INTO users')),false);
+  assert.equal(membershipCalls.length,0);
+  assert.equal(validationCalls.length,0,'login intent must never inspect the stale invite claim');
+});
 
-  executed.length=0;
-  cutoverStarted=false;
-  executeHandler=sql=>{
-    if(sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return rows([]);
-    if(sql.includes('INSERT INTO auth_accounts')&&sql.includes('circle_membership_rollout')) return rows([]);
-    return rows();
-  };
-  const raced=await invoke(authHandler,{
+test('invite callback with a replaced claim fails before any Google provider request',async()=>{
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  process.env.APP_URL='https://randori.example.test';
+  process.env.GOOGLE_CLIENT_ID='client';
+  process.env.GOOGLE_CLIENT_SECRET='secret';
+  let providerCalls=0;
+  globalThis.fetch=async()=>{ providerCalls+=1; throw new Error('provider must not be called'); };
+
+  const result=await invoke(authHandler,{
     url:'/api/auth/google/callback',query:{endpoint:'callback',code:'code',state:'expected-state'},
-    headers:oauthRequestHeaders({claim:false}),
+    headers:oauthRequestHeaders({claim:false,purpose:`invite:${INVITE_BINDING_HASH}`}),
   });
-  assert.equal(raced.status,302);
-  assert.match(raced.headers.location,/google_error=private_beta/);
-  assert.equal(executed.some(call=>call.sql.includes('circle_membership_rollout WHERE id=1')),true);
+  assert.equal(result.status,302);
+  assert.match(result.headers.location,/google_error=private_beta/);
+  assert.equal(providerCalls,0);
+  assert.equal(validationCalls.length,0);
+  assert.doesNotMatch(String(result.headers['set-cookie']),/randori_session=[^;]/);
 });
 
 test('invalid, already-used-by-other, or lost-race invite claims never issue a session',async()=>{
@@ -844,17 +955,20 @@ test('manual and weekly production pairing queries are primary-circle scoped whe
   process.env.APP_URL='https://randori.example.test';
   process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
   process.env.CRON_SECRET='cron-secret';
-  executeHandler=sql=>{
+  const pairingQueries=sql=>{
     if(sql.includes("cm.role='owner'")||sql.includes("membership.role='owner'")) return rows([{id:1,role:'owner',circle_id:1}]);
     if(sql.includes('FROM auth_accounts')&&sql.includes("cm.status='active'")) return rows([]);
     if(sql.includes('FROM auth_accounts account')&&sql.includes("membership.status='active'")) return rows([]);
-    return rows();
+    return undefined;
   };
+  executeHandler=emptyPairingStorage(pairingQueries);
 
   const manual=await invoke(opsHandler,{
     method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers:{'x-test-auth':'admin'},
+    body:{expected_cycle_key:'a'.repeat(64)},
   });
-  assert.equal(manual.status,400);
+  assert.equal(manual.status,200);
+  assert.equal(manual.body.participant_count,0);
   let candidateQueries=executed.filter(call=>call.sql.includes('account.email')&&call.sql.includes('circle_memberships'));
   assert.equal(candidateQueries.length,1);
   for(const call of candidateQueries){
@@ -869,10 +983,12 @@ test('manual and weekly production pairing queries are primary-circle scoped whe
   assert.equal(availabilityApplications[0].cycle.state,'current');
 
   executed.length=0;
+  executeHandler=emptyPairingStorage(pairingQueries);
   const weekly=await withFixedNow('2026-09-20T08:15:00.000Z',()=>invoke(opsHandler,{
     method:'POST',url:'/api/cron/weekly',query:{endpoint:'weekly'},headers:{'x-cron-secret':'cron-secret'},
   }));
-  assert.equal(weekly.status,400);
+  assert.equal(weekly.status,200);
+  assert.equal(weekly.body.participant_count,0);
   candidateQueries=executed.filter(call=>call.sql.includes('account.email')&&call.sql.includes('circle_memberships'));
   assert.equal(candidateQueries.length,1);
   assert.equal(executed.some(call=>call.sql.includes('FROM users ORDER BY id')),false);
@@ -895,15 +1011,17 @@ test('pairing publication requires a primary-circle owner in production and only
   process.env.TURSO_DATABASE_URL='file:///tmp/randori-pairing-local.sqlite';
   process.env.APP_URL='http://127.0.0.1:3000';
   executed.length=0;
-  executeHandler=sql=>{
+  executeHandler=emptyPairingStorage(sql=>{
     if(sql.includes('SELECT id,is_admin FROM auth_accounts')) return rows([{id:1,is_admin:1}]);
-    return rows();
-  };
+    return undefined;
+  });
   const local=await invoke(opsHandler,{
     method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},
     headers:{'x-test-auth':'admin',host:'127.0.0.1:3000'},
+    body:{expected_cycle_key:'a'.repeat(64)},
   });
-  assert.equal(local.status,400,'an authorized local admin reaches participant validation');
+  assert.equal(local.status,200,'an authorized local admin publishes an empty immutable cycle');
+  assert.equal(local.body.participant_count,0);
   assert.equal(executed.some(call=>call.sql.includes('circle_memberships')),false);
 
   executeHandler=sql=>{
@@ -958,22 +1076,27 @@ test('availability local scope requires every loopback and provider-isolation gu
 test('production pairing stays primary-circle scoped when the rollout flag is disabled',async()=>{
   process.env.APP_URL='https://randori.example.test';
   process.env.CRON_SECRET='cron-secret';
-  executeHandler=sql=>{
+  const pairingQueries=sql=>{
     if(sql.includes("cm.role='owner'")||sql.includes("membership.role='owner'")) return rows([{id:1,role:'owner',circle_id:1}]);
-    return rows();
+    return undefined;
   };
+  executeHandler=emptyPairingStorage(pairingQueries);
 
   const manual=await invoke(opsHandler,{
     method:'POST',url:'/api/pairing/run',query:{endpoint:'pairing-run'},headers:{'x-test-auth':'admin'},
+    body:{expected_cycle_key:'a'.repeat(64)},
   });
-  assert.equal(manual.status,400);
+  assert.equal(manual.status,200);
+  assert.equal(manual.body.participant_count,0);
   assert.equal(executed.some(call=>call.sql.includes('circle_memberships')),true);
 
   executed.length=0;
+  executeHandler=emptyPairingStorage(pairingQueries);
   const weekly=await withFixedNow('2026-09-20T08:15:00.000Z',()=>invoke(opsHandler,{
     method:'POST',url:'/api/cron/weekly',query:{endpoint:'weekly'},headers:{'x-cron-secret':'cron-secret'},
   }));
-  assert.equal(weekly.status,400);
+  assert.equal(weekly.status,200);
+  assert.equal(weekly.body.participant_count,0);
   assert.equal(executed.some(call=>call.sql.includes('FROM users ORDER BY id')),false);
   assert.equal(executed.some(call=>call.sql.includes('circle_memberships')),true);
 });

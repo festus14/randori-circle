@@ -27,6 +27,7 @@ mock.module('../../api/_db.js',{
     isSentryConfigured:()=>false,
     verifyMutationOrigin:()=>true,
     verifyRequestAuth:authPayload,
+    verifySignedRequestAuth:authPayload,
   },
 });
 
@@ -44,10 +45,16 @@ function sqlText(statement){
 }
 
 function currentPairingFixture(sql){
+  if(sql.includes("strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc")){
+    return rows([{now_utc:new Date().toISOString()}]);
+  }
   const cycle=resolvePairingCycle();
   const cycleId=cycle.cycleId;
   const startsAt=cycle.startsAt;
-  if(sql.includes('SELECT aa.id,c.id AS circle_id')&&sql.includes('LIMIT 2')) return rows([{id:2,circle_id:1}]);
+  if((sql.includes('SELECT aa.id,c.id AS circle_id')
+    ||sql.includes('SELECT aa.id,cm.role,c.id AS circle_id'))&&sql.includes('LIMIT 2')){
+    return rows([{id:2,circle_id:1,role:'member'}]);
+  }
   if(sql.includes('FROM pairing_week_runs WHERE week_label=?')) return rows([{
     week_label:cycleId,week_id:10,generation_token:'published-token',generation:1,
     algorithm_version:'fair-v2',algorithm_seed:`${cycleId}:weekly`,participant_count:2,
@@ -81,6 +88,12 @@ function mockDb(executeHandler){
       const results=[];
       for(const statement of statements) results.push(await db.execute(statement));
       return results;
+    },
+    async transaction(){
+      return {
+        execute:db.execute.bind(db),batch:db.batch.bind(db),
+        async commit(){},async rollback(){},async close(){},
+      };
     },
   };
   return db;

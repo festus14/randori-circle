@@ -1,6 +1,9 @@
 import { createHash, randomBytes } from 'node:crypto';
 
-import { validateActiveCircleMutationContext } from './_active-circle.js';
+import {
+  secondaryCircleScheduleEmailEnabled,
+  validateActiveCircleMutationContext,
+} from './_active-circle.js';
 import { MAX_READINESS_SCHEMA_OBJECTS } from './_health.js';
 import {
   MAX_SCHEDULE_PROPOSALS,
@@ -17,6 +20,7 @@ import {
 } from '../db/migration-ledger-readiness.js';
 import { inspectSchema, readOnlyDatabase } from '../db/schema-inspector.js';
 import { READINESS_SCHEMA_MANIFEST } from '../db/schema-readiness-manifest.js';
+import { secondaryScheduleNotificationEvents } from './_secondary-schedule-email.js';
 
 const OPAQUE_ID_PATTERN=/^[a-f0-9]{64}$/;
 const UUID_V4_PATTERN=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -361,6 +365,15 @@ function nextMutation(state,mutation,userId,scope){
   return {proposals,agreedTime};
 }
 
+function mutationChangesState(state,next){
+  if(state.agreedTime!==next.agreedTime||state.proposals.length!==next.proposals.length) return true;
+  return state.proposals.some((proposal,index)=>{
+    const candidate=next.proposals[index];
+    return !candidate||proposal.proposalId!==candidate.proposalId||proposal.instant!==candidate.instant
+      ||proposal.proposedBy!==candidate.proposedBy;
+  });
+}
+
 async function rollback(transaction){
   try{ await transaction.rollback(); }catch{}
 }
@@ -406,6 +419,7 @@ export async function readSecondarySchedule(db,{authority}={}){
 export async function mutateSecondarySchedule(db,{authority,mutation}={}){
   if(!db||typeof db.transaction!=='function') fail('SECONDARY_SCHEDULE_INPUT_INVALID','A transactional database client is required.');
   const safeAuthority=normalizeAuthority(authority);
+  const notificationEnabled=secondaryCircleScheduleEmailEnabled();
   await ensureSecondaryScheduleReadiness(db);
   for(let attempt=1;attempt<=TRANSACTION_ATTEMPTS;attempt+=1){
     let transaction;
@@ -419,6 +433,11 @@ export async function mutateSecondarySchedule(db,{authority,mutation}={}){
         return Object.freeze({conflict:true,response:responseEnvelope(scope,projectState(state,safeAuthority.userId))});
       }
       const next=nextMutation(state,mutation,safeAuthority.userId,scope);
+      if(!mutationChangesState(state,next)){
+        commitStarted=true;
+        await transaction.commit(); finished=true;
+        return Object.freeze({conflict:false,response:responseEnvelope(scope,projectState(state,safeAuthority.userId))});
+      }
       const updatedAt=nextScheduleUpdatedAt(state.updatedAt);
       let scheduleId=state.scheduleId;
       if(state.exists){
@@ -477,6 +496,17 @@ export async function mutateSecondarySchedule(db,{authority,mutation}={}){
       }
       const stored=await readStoredState(transaction,scope);
       if(stored.revision!==state.revision+1) fail('SECONDARY_SCHEDULE_INTEGRITY','Schedule revision is invalid.');
+      if(notificationEnabled){
+        const notifications=secondaryScheduleNotificationEvents({
+          scope,currentState:state,nextState:stored,mutation,actorUserId:safeAuthority.userId,
+        });
+        for(const notification of notifications){
+          const queued=await transaction.execute(notification);
+          if(Number(queued.rowsAffected||0)!==1){
+            fail('SECONDARY_SCHEDULE_INTEGRITY','Schedule notification write is invalid.');
+          }
+        }
+      }
       commitStarted=true;
       await transaction.commit(); finished=true;
       return Object.freeze({conflict:false,response:responseEnvelope(scope,projectState(stored,safeAuthority.userId))});

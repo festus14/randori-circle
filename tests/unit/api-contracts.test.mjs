@@ -8,6 +8,7 @@ import authHandler from '../../api/auth.js';
 import dataHandler from '../../api/data.js';
 import opsHandler from '../../api/ops.js';
 import videoHandler from '../../api/video.js';
+import {googleOAuthTransactionCookieName} from '../support/google-oidc.mjs';
 import {
   JWT_AUDIENCE,
   JWT_ISSUER,
@@ -142,13 +143,22 @@ test('cookie mutations require a same-origin request while explicit Bearer mutat
   const cookie = 'randori_session=session-value';
   assert.equal(verifyMutationOrigin({
     method: 'POST',
-    headers: { cookie, origin: 'https://randori.example', host: 'randori.example' },
+    headers: { cookie, origin: 'https://randori.example', host: 'randori.example', 'x-forwarded-proto': 'https' },
   }), true);
   assert.equal(verifyMutationOrigin({ method: 'POST', headers: { cookie, host: 'randori.example' } }), false);
   assert.equal(verifyMutationOrigin({
     method: 'POST',
-    headers: { cookie, origin: 'https://attacker.example', host: 'randori.example' },
+    headers: { cookie, origin: 'https://attacker.example', host: 'randori.example', 'x-forwarded-proto': 'https' },
   }), false);
+  assert.equal(verifyMutationOrigin({
+    method: 'POST',
+    headers: { cookie, origin: 'http://randori.example', host: 'randori.example', 'x-forwarded-proto': 'https' },
+  }), false);
+  assert.equal(verifyMutationOrigin({
+    method: 'POST',
+    headers: { cookie, origin: 'http://127.0.0.1:3000', host: '127.0.0.1:3000' },
+    socket: { encrypted: false },
+  }), true);
   assert.equal(verifyMutationOrigin({
     method: 'POST',
     headers: { authorization: 'Bearer api-client-token', origin: 'https://attacker.example' },
@@ -209,6 +219,21 @@ test('auth endpoints reject malformed or unauthenticated requests before databas
     headers: { cookie: 'randori_session=not-a-valid-jwt' },
   });
   assert.equal(invalidCookie.status, 401);
+
+  process.env.RANDORI_LOCAL_RUNTIME='false';
+  process.env.TURSO_DATABASE_URL='file::memory:';
+  const signedButUnreadyToken=jwt.sign(
+    {id:42,email:'person@example.test',jti:'F'.repeat(43)},
+    process.env.JWT_SECRET,
+    {algorithm:'HS256',issuer:JWT_ISSUER,audience:JWT_AUDIENCE,expiresIn:'5m'},
+  );
+  assert.equal(verifySignedRequestAuth({headers:{cookie:`randori_session=${signedButUnreadyToken}`}})?.id,42);
+  const signedButUnready=await invoke(authHandler,{
+    method:'GET',url:'/api/auth/me',query:{endpoint:'me'},
+    headers:{cookie:`randori_session=${signedButUnreadyToken}`},
+  });
+  assert.equal(signedButUnready.status,503);
+  assert.deepEqual(signedButUnready.body,{error:'session validation temporarily unavailable'});
 });
 
 test('logout clears the HttpOnly session cookie', async () => {
@@ -342,6 +367,7 @@ test('Google OAuth start binds state to a secure, HTTP-only cookie', async () =>
   process.env.GOOGLE_CLIENT_ID = 'test-client';
   process.env.GOOGLE_CLIENT_SECRET = 'test-secret';
   process.env.APP_URL = 'https://preview.example.test';
+  process.env.JWT_SECRET='oauth-transaction-test-secret-at-least-32-bytes';
   const result = await invoke(authHandler, {
     method: 'GET',
     url: '/api/auth/google/start',
@@ -354,14 +380,37 @@ test('Google OAuth start binds state to a secure, HTTP-only cookie', async () =>
   const state = location.searchParams.get('state');
   const cookieHeader = result.headers['set-cookie'];
   const cookies = Array.isArray(cookieHeader) ? cookieHeader : [String(cookieHeader || '')];
-  const stateCookie = cookies.find(cookie => cookie.startsWith('randori_oauth_state=')) || '';
-  const verifierCookie = cookies.find(cookie => cookie.startsWith('randori_oauth_verifier=')) || '';
   assert.ok(state, 'OAuth redirect must include state');
-  assert.match(stateCookie, new RegExp(`^randori_oauth_state=${state};`));
-  assert.ok(verifierCookie, 'OAuth start must set a PKCE verifier cookie');
-  for (const cookie of [stateCookie, verifierCookie]) {
-    assert.match(cookie, /HttpOnly/i);
-    assert.match(cookie, /Secure/i);
-    assert.match(cookie, /SameSite=Lax/i);
-  }
+  assert.equal(cookies.length,1,'OAuth secrets must share one state-scoped signed cookie');
+  const transactionCookie=cookies[0];
+  assert.match(transactionCookie,new RegExp(`^${googleOAuthTransactionCookieName(state)}=`));
+  assert.match(transactionCookie, /Path=\/api\/auth\/google\/callback/i);
+  assert.match(transactionCookie, /HttpOnly/i);
+  assert.match(transactionCookie, /Secure/i);
+  assert.match(transactionCookie, /SameSite=Lax/i);
+  assert.doesNotMatch(transactionCookie,new RegExp(`=${state};`));
+});
+
+test('OAuth transactions use only the active application signing key',async()=>{
+  process.env.NODE_ENV='production';
+  process.env.GOOGLE_CLIENT_ID='test-client';
+  process.env.GOOGLE_CLIENT_SECRET='test-secret';
+  process.env.APP_URL='https://preview.example.test';
+  process.env.JWT_SECRET='first-oauth-transaction-test-secret-at-least-32-bytes';
+  const started=await invoke(authHandler,{
+    method:'GET',url:'/api/auth/google/start?purpose=login',
+    query:{endpoint:'google-start',purpose:'login'},
+    headers:{host:'preview.example.test','x-forwarded-proto':'https'},
+  });
+  const state=new URL(started.headers.location).searchParams.get('state');
+  const cookie=String(started.headers['set-cookie']).split(';')[0];
+  process.env.JWT_SECRET='rotated-oauth-transaction-test-secret-at-least-32-bytes';
+  const callback=await invoke(authHandler,{
+    method:'GET',url:'/api/auth/google/callback',
+    query:{endpoint:'callback',state,error:'access_denied'},
+    headers:{host:'preview.example.test','x-forwarded-proto':'https',cookie},
+  });
+  assert.equal(callback.status,302);
+  assert.equal(callback.headers.location,'https://preview.example.test/?google_error=invalid_state');
+  assert.equal(callback.headers['set-cookie'],undefined);
 });

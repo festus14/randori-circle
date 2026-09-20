@@ -22,6 +22,17 @@ const circles=[
   {public_id:'circle-secondary',name:'Secondary',role:'owner',is_primary:false},
 ];
 
+function publicationState(owner=false){
+  const scheduled=Date.parse(currentCycle.cutoffAt);
+  const observed=scheduled+31*60*1000;
+  return {
+    state:'overdue',cycle_key:'a'.repeat(64),observed_at:new Date(observed).toISOString(),
+    scheduled_at:new Date(scheduled).toISOString(),
+    recovery_at:new Date(scheduled+30*60*1000).toISOString(),published_at:null,
+    ...(owner?{can_publish_now:true}:{}),
+  };
+}
+
 function availability(){
   return {
     cycle:upcomingCycle,cycleKey:'a'.repeat(64),isAvailable:true,version:0,
@@ -98,6 +109,43 @@ test('selected secondary pairing is context-fenced coordination without room cap
   }))).toEqual({authorized:null,room:null,pair:null});
 });
 
+test('secondary recovery is persistent for owners and truthful without controls for members',async({page})=>{
+  let role:'owner'|'member'='owner';
+  await mockApi(page,{
+    '/api/auth/capabilities':{
+      ok:true,capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,
+        multiCircleControlPlane:true,multiCircleAvailability:true,secondaryCircleCoordination:true},
+      registrationMode:'private_beta',
+    },
+    '/api/auth/me':{ok:true,user},
+    '/api/profile':{ok:true,user:{...user,bio:'',leetcode_handle:''}},
+    '/api/circles':()=>({ok:true,circles,active_circle:{...circles[1],role},
+      context_version:7,selection_required:false}),
+    '/api/circle':()=>({ok:true,circle_meta:{public_id:'circle-secondary',name:'Secondary'},
+      membership:{role},circle:[user],count:1,circle_context_version:7}),
+    '/api/invitations':{ok:true,invitations:[],count:0,circle_context_version:7},
+    '/api/settings/availability':{ok:true,availability:availability(),circle_context_version:7},
+    '/api/my-pair':()=>({
+      ok:true,paired:false,pairing_status:'unpublished',reason:'no_pairing_for_current_cycle',
+      coordination_only:true,workspace_available:false,circle_public_id:'circle-secondary',
+      circle_context_version:7,current_cycle:currentCycle,upcoming_cycle:upcomingCycle,
+      publication_state:publicationState(role==='owner'),
+    }),
+  });
+  await resetClientState(page,true);
+  await page.goto('/',{waitUntil:'domcontentloaded'});
+  await expect(page.getByTestId('dashboard-pair-state')).toHaveAttribute('data-state','overdue');
+  await expect(page.getByTestId('dashboard-publish-now')).toBeVisible();
+
+  role='member';
+  await page.evaluate(async()=>{
+    await (window as typeof window&{_randori_journey:{showDashboard:()=>Promise<void>}})
+      ._randori_journey.showDashboard();
+  });
+  await expect(page.getByTestId('dashboard-pair-state')).toContainText('circle owner can retry');
+  await expect(page.getByTestId('dashboard-publish-now')).toBeHidden();
+});
+
 test('switching circles aborts an in-flight selected pairing read and fences its stale result',async({page})=>{
   let pending:Route|null=null;
   let startedResolve:()=>void=()=>{};
@@ -138,8 +186,10 @@ test('switching circles aborts an in-flight selected pairing read and fences its
     circle_public_id:'circle-secondary',circle_context_version:7,current_cycle:currentCycle,
     partner:{name:'Stale Partner',color:'#654321'},partners:[{name:'Stale Partner',color:'#654321'}],
     pair:{solo:false,workspace_available:false},
+    publication_state:publicationState(true),
   })}).catch(()=>{});
   await expect(page.getByText('Stale Partner')).toHaveCount(0);
+  await expect(page.getByTestId('dashboard-publish-now')).toBeHidden();
   expect(await page.evaluate(()=>({
     authorized:(window as typeof window&{_randori_authorized_room?:unknown})._randori_authorized_room,
     room:localStorage.getItem('randori-last-room'),pair:localStorage.getItem('randori-last-my-pair'),

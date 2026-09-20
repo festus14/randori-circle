@@ -26,6 +26,7 @@
     "chat:retention": "node scripts/chat-retention.mjs",
     "db:status": "node scripts/db-inspect.mjs status",
     "check:deployability": "node scripts/check-deployability.mjs",
+    "check:backup-controls": "node scripts/check-backup-controls.mjs",
     "check:runtime-ddl": "node scripts/check-runtime-ddl.mjs",
     "check:syntax": "node tests/static/check-syntax.mjs",
     "validate:catalog": "node scripts/validate-catalog.mjs",
@@ -40,8 +41,10 @@
     "start:test": "node tests/support/static-server.mjs"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
     "@playwright/test": "^1.48.0",
     "acorn": "^8.15.0",
-    "ms": "^2.1.3"
+    "ms": "^2.1.3",
+    "yaml": "2.9.1"
   }
 }

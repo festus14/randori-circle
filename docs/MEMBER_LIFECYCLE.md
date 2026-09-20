@@ -14,6 +14,7 @@ revoke pending invitations.
 | Reactivate | Active owner | Other inactive member/owner in the same circle | Membership becomes active; no session is issued |
 | Leave | Active member/owner | Self | Membership becomes inactive; all own sessions are revoked |
 | Transfer ownership | Active owner | Other active member in the same circle | Target becomes owner and actor becomes member atomically |
+| Archive secondary circle | Active owner with recent auth | Exact selected non-primary circle | Circle access ends and every selected session moves to another active circle; retained history is unchanged |
 | Revoke invitation | Active owner | Pending invitation in the same circle | Existing invitation endpoint revokes it and records its audit event |
 
 Cross-circle IDs and missing IDs produce the same response. Self-deactivation is
@@ -43,6 +44,10 @@ must authenticate again after reactivation.
   Routine non-owner membership changes and self-leave remain explicit but do
   not add credential friction. See [recent authentication for sensitive circle
   changes](LIFECYCLE_RECENT_AUTH.md).
+- Secondary archive uses the same recent-auth surface but is a circle-level
+  soft-archive transaction. It protects every active member's last circle,
+  moves all selected contexts to primary-first/lowest-ID fallbacks, and retains
+  all membership and coordination rows. See [secondary-circle archive](CIRCLE_ARCHIVE.md).
 - Production and local development use the same endpoint and domain rules. The
   membership capability remains fail-closed behind the existing readiness and
   feature checks.
@@ -66,6 +71,18 @@ must authenticate again after reactivation.
   showing rows that belong to the previous query. A render epoch invalidates a
   delayed initial load and starts a new one, so authentication refreshes cannot
   strand the roster in a busy state.
+- Starting an active-circle switch synchronously invalidates the current render
+  epoch and hides every lifecycle and owner surface. Every later continuation,
+  including the step after an owner-invitation read, must revalidate that epoch,
+  active role, actor, and switching state before making private controls visible.
+  A delayed member mutation remains a no-op after the switch begins, even when
+  another old-circle render is also in flight.
+- Identity bootstrap retries stop after the first successful or authoritative
+  signed-out response. Transient failures still use the full retry ladder, but
+  an already resolved identity does not issue later duplicate role/roster reads
+  that can mask a same-actor roster denial. Browser regressions advance a
+  virtual clock across that queued retry window, so this ordering is verified
+  without wall-clock sleeps.
 
 The existing role/status columns, audit table, session revocation fields, and
 invitation status model are sufficient. This increment intentionally adds no
@@ -85,6 +102,7 @@ migration; migration v9 remains available to its reserved owner.
 | Preserve active/owner/name sort | Matches the original small-roster presentation | Status and display-name changes reorder rows between requests, causing duplicates or omissions |
 | Query the account email field as well as display name | More ways to find an account | Creates an account-enumeration surface and exceeds the roster privacy requirement |
 | Scan until a search page is full | Avoids empty sparse-search pages | A rare or absent term makes a single request unbounded; capped candidate windows give a predictable limit |
+| Rely only on response-level context checks | Avoids another UI guard | A render can become stale after its last API check but before its next DOM write; each asynchronous continuation must fail closed immediately before revealing private state |
 
 ## Explicit gaps and follow-up
 
