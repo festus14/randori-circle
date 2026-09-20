@@ -4161,7 +4161,11 @@ async function refreshMe(){
       localStorage.removeItem('randori-code');
     }catch{}
     clearAvailability();
-    try{ if(typeof videoJoined!=='undefined'&&videoJoined) videoJoined=false; }catch{}
+    // A server-authoritative logout must release capture devices even when the
+    // user had previously left the call while keeping the stream for rejoin.
+    // This is deliberately local-only: the expired session cannot authorize a
+    // final signaling write.
+    try{ disposeVideoForAuthoritativeSignOut(); }catch{}
     try{ await updateAuthUI(); }catch{}
     try{ await window._randori_journey?.routeByAuth?.(); }catch{}
     try{ renderHistory(); }catch{}
@@ -5955,6 +5959,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   let localStream = null;
   let pc = null;
   let videoPollTimer = null;
+  let videoInitiateTimer = null;
+  let videoRoomSwitchTimer = null;
+  let videoSessionEpoch = 0;
   let videoLastSignalId = 0;
   let videoJoined = false;
   let videoMicEnabled = true;
@@ -6144,9 +6151,18 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         return;
       }
     }catch{}
+    const joinEpoch=++videoSessionEpoch;
     const camBtn=document.getElementById('vidCamBtn');
     const needCam = camBtn ? !camBtn.classList.contains('off') : true;
     const stream = await ensureLocalStream(needCam);
+    if(joinEpoch!==videoSessionEpoch){
+      // A sign-out may have completed while browser permission was pending.
+      // Do not let that older permission result retain live capture tracks.
+      try{ stream?.getTracks?.().forEach(track=>track.stop()); }catch{}
+      if(localStream===stream) localStream=null;
+      const lv=document.getElementById('localVideo'); if(lv) lv.srcObject=null;
+      return;
+    }
     if(!stream && !videoCamEnabled && !videoMicEnabled){
       // still allow signaling without media for fallback
     }
@@ -6156,12 +6172,16 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     document.getElementById('vidLeaveBtn').style.display='inline-flex';
     videoUpdateStatus('joining '+room.slice(0,6));
     await sendSignal('join', { peer: webrtcPeerId, name: (typeof me!=='undefined'&&me?.name)||localStorage.getItem('randori-me')?.slice?.(0,20)||'you' }, '');
+    if(!videoJoined||joinEpoch!==videoSessionEpoch) return;
     // start polling
     if(videoPollTimer) clearInterval(videoPollTimer);
     videoPollTimer = setInterval(pollSignals, 2000);
     pollSignals();
     // If we are initiator by being second, create peer soon after join to ensure we send offer
-    setTimeout(async()=>{
+    if(videoInitiateTimer) clearTimeout(videoInitiateTimer);
+    videoInitiateTimer=setTimeout(async()=>{
+      videoInitiateTimer=null;
+      if(!videoJoined||joinEpoch!==videoSessionEpoch) return;
       // check if there is at least presence >1 (tabs) to decide initiator; simple: wait 1.2s then if no remote offer yet, create peer as initiator
       if(!pc){
         const needInitiate = true; // for 2-person rooms, second joiner should initiate; lexicographic tie-breaking in handleRemoteSignal covers glare
@@ -6173,17 +6193,39 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     toast('video joined room '+room.slice(0,6)+' • polling');
   }
 
-  function leaveVideo(){
+  function clearVideoSession({releaseMedia=false}={}){
+    videoSessionEpoch+=1;
     videoJoined = false;
     if(videoPollTimer){ clearInterval(videoPollTimer); videoPollTimer=null; }
-    sendSignal('leave', { peer: webrtcPeerId }, '').catch(()=>{});
+    if(videoInitiateTimer){ clearTimeout(videoInitiateTimer); videoInitiateTimer=null; }
+    if(videoRoomSwitchTimer){ clearTimeout(videoRoomSwitchTimer); videoRoomSwitchTimer=null; }
     if(pc){ try{ pc.close(); }catch{}; pc=null; }
+    if(releaseMedia){
+      const stream=localStream;
+      localStream=null;
+      try{ stream?.getTracks?.().forEach(track=>track.stop()); }catch{}
+      videoMicEnabled=true;
+      videoCamEnabled=true;
+      const lv=document.getElementById('localVideo'); if(lv) lv.srcObject=null;
+    }
     videoUpdateStatus('off');
     const rv=document.getElementById('remoteVideo'); if(rv){ rv.srcObject=null; }
     const lbl=document.getElementById('remoteLabel'); if(lbl) lbl.textContent='pair';
     document.getElementById('vidJoinBtn').style.display='inline-flex';
     document.getElementById('vidLeaveBtn').style.display='none';
-    // keep local stream for quick rejoin but pause cam/mic UI stays
+    updateVideoMicCamUI();
+  }
+
+  function leaveVideo(){
+    sendSignal('leave', { peer: webrtcPeerId }, '').catch(()=>{});
+    // A normal room leave keeps local capture available for a quick rejoin.
+    clearVideoSession();
+  }
+
+  function disposeVideoForAuthoritativeSignOut(){
+    // No signaling: an authoritative sign-out may already have invalidated the
+    // session, and a best-effort leave request would race identity teardown.
+    clearVideoSession({releaseMedia:true});
   }
 
   // hooks
@@ -6262,13 +6304,31 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       videoLastSignalId=0;
       if(pc){ try{ pc.close(); }catch{}; pc=null; }
       // send join for new room
-      setTimeout(()=>{ sendSignal('join',{peer:webrtcPeerId},''); if(!pc) createPeer(true).catch(()=>{}); }, 600);
+      if(videoRoomSwitchTimer) clearTimeout(videoRoomSwitchTimer);
+      const switchEpoch=videoSessionEpoch;
+      videoRoomSwitchTimer=setTimeout(()=>{
+        videoRoomSwitchTimer=null;
+        if(!videoJoined||switchEpoch!==videoSessionEpoch) return;
+        sendSignal('join',{peer:webrtcPeerId},'');
+        if(!pc) createPeer(true).catch(()=>{});
+      }, 600);
     }
     videoUpdateStatus(videoJoined? 'switching' : 'off');
   });
 
   // expose for debug
-  window._randori_video = { get peerId(){return webrtcPeerId}, get joined(){return videoJoined}, joinVideo, leaveVideo, get pc(){return pc}, sendSignal };
+  window._randori_video = {
+    get peerId(){return webrtcPeerId},
+    get joined(){return videoJoined},
+    get stream(){return localStream},
+    get pc(){return pc},
+    get polling(){return videoPollTimer!==null},
+    get initiatePending(){return videoInitiateTimer!==null},
+    get roomSwitchPending(){return videoRoomSwitchTimer!==null},
+    joinVideo,
+    leaveVideo,
+    sendSignal,
+  };
 
   // ---------- tabs ----------
   const primaryTabs=[...document.querySelectorAll('.tabs .tab')];

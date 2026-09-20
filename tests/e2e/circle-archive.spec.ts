@@ -168,6 +168,7 @@ test('a known committed archive reloads even when fallback projection fails',asy
 
 test('archive session loss immediately clears private state and returns to signed-out UI',async({page})=>{
   let sessionLive=true;
+  const videoSignals:string[]=[];
   await mockApi(page,{
     '/api/auth/capabilities':{
       ok:true,capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,
@@ -188,14 +189,41 @@ test('archive session loss immediately clears private state and returns to signe
     '/api/invitations':{ok:true,invitations:[],count:0,circle_context_version:4},
     '/api/members':{ok:true,members:[{...owner,role:'owner',status:'active'}],count:1,
       has_more:false,next_cursor:null,scanned:1,circle_context_version:4},
+    '/api/video/signal':request=>{
+      if(request.method()==='POST') videoSignals.push((request.postDataJSON() as {type:string}).type);
+      return {ok:true,signals:[],after:0,count:0};
+    },
   });
   await resetClientState(page,true);
   await page.goto('/?view=circle',{waitUntil:'domcontentloaded'});
   await page.locator('[data-tab="circle"]').click();
   await expect(page.getByTestId('circle-archive')).toBeVisible();
-  await page.evaluate(()=>{
+  const mediaBeforeArchive=await page.evaluate(async()=>{
     const app=window as any;
+    const track=(kind:'video'|'audio')=>({kind,enabled:true,readyState:'live',stopCount:0,stop(){
+      this.stopCount+=1;
+      this.readyState='ended';
+    }});
+    const videoTrack=track('video');
+    const audioTrack=track('audio');
+    const tracks=[videoTrack,audioTrack];
+    const stream={
+      getTracks:()=>tracks,
+      getVideoTracks:()=>[videoTrack],
+      getAudioTracks:()=>[audioTrack],
+    };
+    Object.defineProperty(navigator,'mediaDevices',{
+      configurable:true,value:{getUserMedia:async()=>stream},
+    });
+    for(const id of ['localVideo','remoteVideo']){
+      const video=document.getElementById(id);
+      if(video) Object.defineProperty(video,'srcObject',{configurable:true,writable:true,value:null});
+    }
+    const roomSelect=document.querySelector<HTMLSelectElement>('#roomSelect');
+    roomSelect?.replaceChildren(new Option('Test pair','week_1_pair_1'));
+    if(roomSelect) roomSelect.value='week_1_pair_1';
     app._randori_authorized_room='week_1_pair_1';
+    app.__archiveMediaTracks=tracks;
     app.__archiveRefreshCalls=0;
     app._randori_auth.refreshMe=async()=>{ app.__archiveRefreshCalls+=1; throw new Error('unexpected refresh'); };
     localStorage.setItem('randori-token','legacy-token');
@@ -204,18 +232,46 @@ test('archive session loss immediately clears private state and returns to signe
     localStorage.setItem('randori-last-tab','code');
     localStorage.setItem('randori-last-view','code');
     localStorage.setItem('randori-code','private draft');
+    await app._randori_video.joinVideo();
+    return {
+      joined:app._randori_video.joined,
+      hasStream:app._randori_video.stream===stream,
+      polling:app._randori_video.polling,
+      initiatePending:app._randori_video.initiatePending,
+      stopCounts:tracks.map(item=>item.stopCount),
+    };
   });
+  expect(mediaBeforeArchive).toEqual({
+    joined:true,hasStream:true,polling:true,initiatePending:true,stopCounts:[0,0],
+  });
+  expect(videoSignals).toEqual(['join']);
   await page.getByTestId('circle-archive').click();
   await confirmAction(page,/Archive Secondary/);
   await expect(page.locator('#view-landing')).toBeVisible();
   await expect(page.getByTestId('circle-lifecycle')).toBeHidden();
   await expect(page.getByTestId('circle-archive')).toBeHidden();
-  expect(await page.evaluate(()=>({signedIn:(window as any)._randori_auth.signedIn,
-    room:(window as any)._randori_authorized_room,
-    refreshCalls:(window as any).__archiveRefreshCalls,
-    retained:['randori-token','randori-me','randori-demo-active','randori-last-room',
-      'randori-last-tab','randori-last-view','randori-code'].filter(key=>localStorage.getItem(key)!==null)})))
-    .toEqual({signedIn:false,room:null,refreshCalls:0,retained:[]});
+  expect(await page.evaluate(()=>{
+    const app=window as any;
+    return {signedIn:app._randori_auth.signedIn,
+      room:app._randori_authorized_room,
+      refreshCalls:app.__archiveRefreshCalls,
+      media:{joined:app._randori_video.joined,hasStream:app._randori_video.stream!==null,
+        hasPeer:app._randori_video.pc!==null,polling:app._randori_video.polling,
+        initiatePending:app._randori_video.initiatePending,
+        roomSwitchPending:app._randori_video.roomSwitchPending,
+        stopCounts:app.__archiveMediaTracks.map((track:{stopCount:number})=>track.stopCount),
+        readyStates:app.__archiveMediaTracks.map((track:{readyState:string})=>track.readyState),
+        localAttached:document.querySelector<HTMLVideoElement>('#localVideo')?.srcObject!==null,
+        remoteAttached:document.querySelector<HTMLVideoElement>('#remoteVideo')?.srcObject!==null},
+      retained:['randori-token','randori-me','randori-demo-active','randori-last-room',
+        'randori-last-tab','randori-last-view','randori-code'].filter(key=>localStorage.getItem(key)!==null)};
+  }))
+    .toEqual({signedIn:false,room:null,refreshCalls:0,retained:[],media:{
+      joined:false,hasStream:false,hasPeer:false,polling:false,initiatePending:false,
+      roomSwitchPending:false,stopCounts:[1,1],readyStates:['ended','ended'],
+      localAttached:false,remoteAttached:false,
+    }});
+  expect(videoSignals).toEqual(['join']);
 });
 
 test('a delayed old-session archive denial cannot clear a newer same-account login',async({page})=>{

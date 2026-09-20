@@ -47,8 +47,11 @@ committed, clears private state, broadcasts the generation, and reloads to
 recover the fallback instead of leaving the retired workspace open.
 An authoritative session-loss response invalidates pending auth refreshes,
 clears identity and private state, and runs the normal signed-out router without
-a second network decision. A response from an older auth epoch cannot clear a
-newer same-account login. Owner/target loss,
+a second network decision. That shared signed-out cleanup cancels pending video
+work, closes the peer, stops every retained camera or microphone track, and
+detaches both video elements without attempting a now-unauthorized signaling
+request. A response from an older auth epoch cannot clear a newer same-account
+login. Owner/target loss,
 context conflict, an ambiguous commit response, or transport loss also clears
 owner and workspace state before reloading the authoritative circle context;
 the ambiguous paths never claim that archive succeeded.
