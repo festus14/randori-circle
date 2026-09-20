@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,6 +24,129 @@ type Runtime = Awaited<ReturnType<typeof startLocalDevelopmentServer>>;
 type SafeUser = { id: number; email: string; name: string; is_admin: boolean };
 type Cycle = { cycleId: string; startsAt: string; endsAt: string; cutoffAt: string };
 
+function executeLocalHarness(source: string) {
+  return new Promise<{
+    stdout: string;
+    stderr: string;
+    code: number | null;
+    signal: NodeJS.Signals | null;
+  }>((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=commonjs'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let outputBytes = 0;
+    let settled = false;
+    let exitCode: number | null = null;
+    let exitSignal: NodeJS.Signals | null = null;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      const capturedStderr = Buffer.concat(stderr).toString('utf8');
+      if (error) {
+        reject(new Error(capturedStderr ? `${error.message}: ${capturedStderr.slice(0, 2_000)}` : error.message));
+      } else {
+        resolve({
+          stdout: Buffer.concat(stdout).toString('utf8'),
+          stderr: capturedStderr,
+          code: exitCode,
+          signal: exitSignal,
+        });
+      }
+    };
+    const capture = (target: Buffer[]) => (chunk: Buffer) => {
+      outputBytes += chunk.length;
+      if (outputBytes > 4 * 1024 * 1024) {
+        child.kill('SIGKILL');
+        finish(new Error('deterministic execution output exceeded 4 MiB'));
+        return;
+      }
+      target.push(chunk);
+    };
+    child.stdout.on('data', capture(stdout));
+    child.stderr.on('data', capture(stderr));
+    child.once('error', error => finish(error));
+    child.once('close', (code, signal) => {
+      exitCode = code;
+      exitSignal = signal;
+      finish();
+    });
+    child.stdin.once('error', error => finish(error));
+    const timeout = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish(new Error('deterministic execution timed out'));
+    }, 20_000);
+    child.stdin.end(source);
+  });
+}
+
+function installDeterministicLocalExecutionTransport(getRuntimeOrigin: () => string | null) {
+  const nativeFetch = globalThis.fetch;
+  const requests: Array<{ language: string; version: string; files: string[] }> = [];
+  const unexpectedExternalRequests: string[] = [];
+  const endpoint = 'https://emkc.org/api/v2/piston/execute';
+
+  const localFetch: typeof fetch = async (input, init) => {
+    const url = typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.href
+        : input.url;
+    const parsedUrl = new URL(url);
+    if (parsedUrl.origin === getRuntimeOrigin()) {
+      return nativeFetch(input, init);
+    }
+    if (url !== endpoint) {
+      unexpectedExternalRequests.push(url);
+      throw new Error(`unexpected server-side network request: ${url}`);
+    }
+    const request = JSON.parse(String(init?.body || '{}')) as {
+      language?: string;
+      version?: string;
+      files?: Array<{ name?: string; content?: string }>;
+    };
+    const files = request.files || [];
+    if (
+      init?.method !== 'POST'
+      || request.language !== 'javascript'
+      || request.version !== '18.15.0'
+      || files.length !== 1
+      || files[0]?.name !== 'main.js'
+      || typeof files[0]?.content !== 'string'
+    ) {
+      throw new Error('invalid deterministic execution request');
+    }
+    requests.push({
+      language: request.language,
+      version: request.version,
+      files: files.map(file => String(file.name)),
+    });
+    const result = await executeLocalHarness(files[0].content);
+    return new Response(JSON.stringify({
+      language: request.language,
+      version: request.version,
+      run: {
+        stdout: result.stdout,
+        stderr: result.stderr,
+        code: result.code,
+        signal: result.signal,
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  globalThis.fetch = localFetch;
+  return {
+    requests,
+    unexpectedExternalRequests,
+    restore() { globalThis.fetch = nativeFetch; },
+  };
+}
+
 function createRuntimeFixture() {
   const rootDir = realpathSync(mkdtempSync(join(tmpdir(), 'randori-real-browser-')));
   mkdirSync(join(rootDir, '.local'), { mode: 0o700 });
@@ -41,14 +165,18 @@ function createRuntimeFixture() {
   return { rootDir, databaseUrl, config };
 }
 
-async function preparePage(page: Page, externalRequests: string[]) {
+async function preparePage(
+  page: Page,
+  externalRequests: string[],
+  getRuntimeOrigin: () => string | null,
+) {
   page.on('request', request => {
     const target = new URL(request.url());
-    if (target.protocol !== 'http:' || target.hostname !== '127.0.0.1') externalRequests.push(request.url());
+    if (target.origin !== getRuntimeOrigin()) externalRequests.push(request.url());
   });
   await page.route(/^https?:\/\//, route => {
     const target = new URL(route.request().url());
-    if (target.protocol === 'http:' && target.hostname === '127.0.0.1') return route.continue();
+    if (target.origin === getRuntimeOrigin()) return route.continue();
     return route.abort('blockedbyclient');
   });
   await page.addInitScript(() => {
@@ -274,11 +402,13 @@ function fixServerTime(iso: string) {
   return () => { globalThis.Date = NativeDate; };
 }
 
-test('real invited members opt in, publish that cycle, share a room, and agree a schedule', async ({ browser }) => {
-  test.setTimeout(120_000);
+test('two invited members complete the durable local session journey', async ({ browser }) => {
+  test.setTimeout(180_000);
   const fixture = createRuntimeFixture();
   const requestSql: string[] = [];
   const externalRequests: string[] = [];
+  let runtimeOrigin: string | null = null;
+  const executionTransport = installDeterministicLocalExecutionTransport(() => runtimeOrigin);
   let runtime: Runtime | null = null;
   let restoreServerTime = () => {};
   const contexts = await Promise.all([
@@ -287,7 +417,7 @@ test('real invited members opt in, publish that cycle, share a room, and agree a
     browser.newContext({ timezoneId: 'Europe/London' }),
   ]);
   const pages = await Promise.all(contexts.map(context => context.newPage()));
-  await Promise.all(pages.map(page => preparePage(page, externalRequests)));
+  await Promise.all(pages.map(page => preparePage(page, externalRequests, () => runtimeOrigin)));
 
   try {
     runtime = await startLocalDevelopmentServer({
@@ -295,6 +425,7 @@ test('real invited members opt in, publish that cycle, share a room, and agree a
       logger: silentLogger,
       sqlObserver: (sql: string) => requestSql.push(sql),
     });
+    runtimeOrigin = new URL(runtime.url).origin;
     const owner = await signInOwner(pages[0], runtime.url);
     expect(owner).toMatchObject({ email: LOCAL_OWNER_EMAIL, is_admin: true });
 
@@ -310,6 +441,43 @@ test('real invited members opt in, publish that cycle, share a room, and agree a
       email: invitedEmail, name: 'Invited Member',
     });
     expect(member.is_admin).toBe(false);
+
+    const completedProfile = await browserJson(pages[1], '/api/profile', 'POST', {
+      display_name: 'Invited Member',
+      bio: 'Practising deterministic pair sessions.',
+      tz: 'America/New_York',
+      interview_focus: 'both',
+    });
+    expect(completedProfile).toMatchObject({
+      status: 200,
+      body: {
+        ok: true,
+        user: {
+          id: member.id,
+          email: invitedEmail,
+          display_name: 'Invited Member',
+          bio: 'Practising deterministic pair sessions.',
+          tz: 'America/New_York',
+          interview_focus: 'both',
+        },
+      },
+    });
+    const [ownerCircle, memberCircle] = await Promise.all([
+      browserJson(pages[0], '/api/circle'),
+      browserJson(pages[1], '/api/circle'),
+    ]);
+    expect(ownerCircle).toMatchObject({
+      status: 200,
+      body: { ok: true, membership: { role: 'owner' }, count: 2 },
+    });
+    expect(memberCircle).toMatchObject({
+      status: 200,
+      body: { ok: true, membership: { role: 'member' }, count: 2 },
+    });
+    expect((memberCircle.body as { circle_meta?: unknown }).circle_meta)
+      .toEqual((ownerCircle.body as { circle_meta?: unknown }).circle_meta);
+    expect((memberCircle.body as { circle?: Array<{ id: number }> }).circle?.map(item => item.id).sort())
+      .toEqual([owner.id, member.id].sort());
 
     const [ownerCycle, memberCycle] = await Promise.all([
       optInForUpcomingCycle(pages[0]),
@@ -428,6 +596,235 @@ test('real invited members opt in, publish that cycle, share a room, and agree a
     await openDashboard(pages[0]);
     await expect.poll(async () => (await roomSnapshot(pages[0])).schedule?.agreed_time).toBe(agreedTime);
 
+    const ownerMessage = await browserJson(pages[0], '/api/messages', 'POST', {
+      room_id: ownerRoom,
+      message: 'I will drive the first implementation.',
+    });
+    expect(ownerMessage).toMatchObject({
+      status: 201,
+      body: { ok: true, room_id: ownerRoom, message: { sender_id: owner.id } },
+    });
+    const memberMessage = await browserJson(pages[1], '/api/messages', 'POST', {
+      room_id: ownerRoom,
+      message: 'I will navigate and review edge cases.',
+    });
+    expect(memberMessage).toMatchObject({
+      status: 201,
+      body: { ok: true, room_id: ownerRoom, message: { sender_id: member.id } },
+    });
+    for (const page of pages.slice(0, 2)) {
+      const transcript = await browserJson(
+        page,
+        `/api/messages?room_id=${encodeURIComponent(String(ownerRoom))}&after_id=0&limit=50`,
+      );
+      expect(transcript).toMatchObject({status: 200, body: {ok: true, room_id: ownerRoom}});
+      expect((transcript.body as { messages?: Array<{ sender_id: number; message: string }> }).messages)
+        .toEqual([
+          expect.objectContaining({sender_id: owner.id, message: 'I will drive the first implementation.'}),
+          expect.objectContaining({sender_id: member.id, message: 'I will navigate and review edge cases.'}),
+        ]);
+      await page.evaluate(async () => {
+        const chat = (window as typeof window & {_randori_chat?: {refresh?: () => Promise<unknown>}})._randori_chat;
+        if (!chat?.refresh) throw new Error('chat refresh unavailable');
+        await chat.refresh();
+      });
+      await expect(page.getByTestId('pair-chat-list')).toContainText('I will drive the first implementation.');
+      await expect(page.getByTestId('pair-chat-list')).toContainText('I will navigate and review edge cases.');
+    }
+
+    const workspacePath = `/api/video/signal?channel=workspace&room_id=${encodeURIComponent(String(ownerRoom))}&after_revision=0`;
+    const initialWorkspace = await browserJson(pages[0], workspacePath);
+    expect(initialWorkspace).toEqual({status: 200, body: {ok: true, snapshot: null, revision: 0}});
+    const correctCode = `function rollUpFocusBlocks(blocks) {
+  const result = [];
+  for (const block of blocks) {
+    const previous = result.at(-1);
+    if (previous && previous.label === block.label) previous.minutes += block.minutes;
+    else result.push({ label: block.label, minutes: block.minutes });
+  }
+  return result;
+}`;
+    const firstBoard = {
+      shapes: [{id: 'session-plan', type: 'rect', x: 40, y: 50, w: 180, h: 90, color: '#c8f6a0'}],
+    };
+    const finalBoard = {
+      shapes: [
+        ...firstBoard.shapes,
+        {id: 'review-note', type: 'sticky', x: 260, y: 50, w: 180, h: 110, text: 'Review edge cases', bg: '#fff2a8'},
+      ],
+    };
+    const workspaceWrite = (baseRevision: number, clientId: string, clientSeq: number, code: string, board: object) => ({
+      room_id: ownerRoom,
+      type: 'code-sync',
+      payload: {
+        schema_version: 3,
+        base_revision: baseRevision,
+        client_id: clientId,
+        client_seq: clientSeq,
+        code,
+        language: 'javascript',
+        question_id: 'focus-block-rollup',
+        question_version: 1,
+        board,
+      },
+    });
+    const firstWorkspaceWrite = await browserJson(
+      pages[0],
+      '/api/video/signal',
+      'POST',
+      workspaceWrite(0, 'owner-e2e', 1, `${correctCode}\n`, firstBoard),
+    );
+    expect(firstWorkspaceWrite).toMatchObject({
+      status: 200,
+      body: {ok: true, idempotent: false, snapshot: {revision: 1, client_id: 'owner-e2e'}},
+    });
+
+    // The member races with a snapshot captured before the owner's write. The
+    // 409 returns the current room-scoped revision, and exactly one explicit
+    // retry advances from that authoritative state.
+    const staleWorkspaceWrite = await browserJson(
+      pages[1],
+      '/api/video/signal',
+      'POST',
+      workspaceWrite(0, 'member-e2e', 1, correctCode, finalBoard),
+    );
+    expect(staleWorkspaceWrite).toMatchObject({
+      status: 409,
+      body: {ok: false, error: 'revision conflict', current: {revision: 1, client_id: 'owner-e2e'}},
+    });
+    const recoveredWorkspaceWrite = await browserJson(
+      pages[1],
+      '/api/video/signal',
+      'POST',
+      workspaceWrite(
+        Number((staleWorkspaceWrite.body as {current?: {revision?: number}}).current?.revision),
+        'member-e2e',
+        1,
+        correctCode,
+        finalBoard,
+      ),
+    );
+    expect(recoveredWorkspaceWrite).toMatchObject({
+      status: 200,
+      body: {
+        ok: true,
+        idempotent: false,
+        snapshot: {
+          revision: 2,
+          client_id: 'member-e2e',
+          code: correctCode,
+          board: finalBoard,
+        },
+      },
+    });
+
+    for (const page of pages.slice(0, 2)) {
+      await page.goto(`${runtime.url}/join/${ownerRoom}`, {waitUntil: 'domcontentloaded'});
+      await expect(page.locator('#view-code')).toBeVisible();
+      await expect.poll(() => page.evaluate(() => (
+        window as typeof window & {_randori_workspace?: {hydrated?: boolean}}
+      )._randori_workspace?.hydrated)).toBe(true);
+      await expect(page.locator('#editor')).toBeVisible();
+      await expect(page.locator('#editor')).toHaveValue(correctCode);
+      await expect(page.locator('#questionSelect')).toHaveValue('focus-block-rollup');
+      await expect.poll(() => page.evaluate(() => JSON.parse(JSON.stringify((
+        window as typeof window & {_randori_board?: {shapes?: unknown[]}}
+      )._randori_board?.shapes || [])))).toEqual(finalBoard.shapes);
+    }
+
+    const executeResponse = pages[0].waitForResponse(response =>
+      response.url().endsWith('/api/execute') && response.request().method() === 'POST');
+    await pages[0].locator('#runBtn').click();
+    const executed = await executeResponse;
+    const execution = await executed.json();
+    expect(executed.status(), JSON.stringify(execution)).toBe(200);
+    expect(execution).toMatchObject({
+      ok: true,
+      question_slug: 'focus-block-rollup',
+      question_version: 1,
+      language: 'javascript',
+      version: '18.15.0',
+      passed_count: 8,
+      total_count: 8,
+      piston: {code: 0, signal: null, has_stderr: false},
+    });
+    expect(execution.run_id).toEqual(expect.any(Number));
+    expect(executionTransport.requests).toEqual([
+      {language: 'javascript', version: '18.15.0', files: ['main.js']},
+    ]);
+    expect(executionTransport.unexpectedExternalRequests).toEqual([]);
+
+    for (const page of pages.slice(0, 2)) {
+      await expect.poll(() => page.evaluate(() => JSON.parse(JSON.stringify((
+        window as typeof window & {_randori_pair_runs?: {items?: unknown[]}}
+      )._randori_pair_runs?.items || []))), {timeout: 10_000}).toEqual([
+        expect.objectContaining({
+          id: execution.run_id,
+          question_slug: 'focus-block-rollup',
+          question_version: 1,
+          passed_count: 8,
+          total_count: 8,
+          authoritative: true,
+          runner: {id: owner.id, display_name: 'Local Circle Owner'},
+        }),
+      ]);
+      await expect(page.locator('#pairRunsList')).toContainText('Local Circle Owner');
+      await expect(page.locator('#pairRunsList')).toContainText('8/8');
+      await expect(page.locator('#pairRunsList')).toContainText(/verified/i);
+    }
+
+    const recapPath = `/api/pair-recap?room_id=${encodeURIComponent(String(ownerRoom))}`;
+    const ownerRecap = await browserJson(pages[0], recapPath);
+    const memberRecap = await browserJson(pages[1], recapPath);
+    for (const recap of [ownerRecap, memberRecap]) {
+      expect(recap).toMatchObject({
+        status: 200,
+        body: {
+          ok: true,
+          room_id: ownerRoom,
+          recap: {
+            pair: {
+              id: Number(String(ownerRoom).split('_').at(-1)),
+              week_id: Number(String(ownerRoom).split('_')[1]),
+            },
+            schedule: {agreed_time: agreedTime},
+            workspace: {
+              artifact_available: true,
+              revision: 2,
+              schema_version: 3,
+              language: 'javascript',
+              question_slug: 'focus-block-rollup',
+              question_version: 1,
+            },
+          },
+        },
+      });
+      const activity = (recap.body as {recap?: {activity?: Array<Record<string, unknown>>}}).recap?.activity || [];
+      expect(activity.filter(item => item.kind === 'message').map(item => item.message)).toEqual(expect.arrayContaining([
+        'I will drive the first implementation.',
+        'I will navigate and review edge cases.',
+      ]));
+      expect(activity.filter(item => item.kind === 'message')).toHaveLength(2);
+      expect(activity.filter(item => item.kind === 'run')).toEqual([
+        expect.objectContaining({
+          actor: {id: owner.id, display_name: 'Local Circle Owner'},
+          authoritative: true,
+          passed_count: 8,
+          total_count: 8,
+        }),
+      ]);
+    }
+
+    await pages[1].reload({waitUntil: 'domcontentloaded'});
+    await expect(pages[1].locator('#view-code')).toBeVisible();
+    await expect.poll(() => pages[1].evaluate(() => (
+      window as typeof window & {_randori_workspace?: {hydrated?: boolean}}
+    )._randori_workspace?.hydrated)).toBe(true);
+    await expect(pages[1].locator('#editor')).toBeVisible();
+    await expect(pages[1].locator('#editor')).toHaveValue(correctCode);
+    await expect(pages[1].locator('#questionSelect')).toHaveValue('focus-block-rollup');
+    await expect(pages[1].locator('#pairRunsList')).toContainText('8/8');
+
     const scheduleOutbox = createClient({ url: fixture.databaseUrl });
     const capturedScheduleEmails: Array<{ to: string; subject: string; html: string; idempotencyKey: string }> = [];
     try {
@@ -480,6 +877,92 @@ test('real invited members opt in, publish that cycle, share a room, and agree a
       WHERE event_type IN ('pairing.email.requested','schedule.email.requested')`)).rows[0].count)).toBe(7);
     await cycleOutbox.close();
 
+    // Stop every browser poll before the ephemeral server is replaced. This
+    // keeps the network assertion bound to one exact runtime origin at a time
+    // while the browser contexts (and their real session cookies) survive.
+    await Promise.all(pages.map(page => page.goto('about:blank')));
+    await runtime.close();
+    runtime = await startLocalDevelopmentServer({
+      config: fixture.config,
+      logger: silentLogger,
+      sqlObserver: (sql: string) => requestSql.push(sql),
+    });
+    runtimeOrigin = new URL(runtime.url).origin;
+    await pages[0].goto(`${runtime.url}/join/${ownerRoom}`, {waitUntil: 'domcontentloaded'});
+    await expect(pages[0].locator('#view-code')).toBeVisible();
+    await expect.poll(() => pages[0].evaluate(() => (
+      window as typeof window & {_randori_workspace?: {hydrated?: boolean}}
+    )._randori_workspace?.hydrated)).toBe(true);
+    await expect(pages[0].locator('#editor')).toBeVisible();
+    await expect(pages[0].locator('#editor')).toHaveValue(correctCode);
+    await expect(pages[0].locator('#questionSelect')).toHaveValue('focus-block-rollup');
+    await expect.poll(() => pages[0].evaluate(() => JSON.parse(JSON.stringify((
+      window as typeof window & {_randori_board?: {shapes?: unknown[]}}
+    )._randori_board?.shapes || [])))).toEqual(finalBoard.shapes);
+    await expect(pages[0].locator('#pairRunsList')).toContainText('8/8');
+
+    const recoveredPair = await browserJson(pages[0], '/api/my-pair');
+    expect(recoveredPair).toMatchObject({
+      status: 200,
+      body: {
+        ok: true,
+        paired: true,
+        room_id: ownerRoom,
+        cycle: {cycleId: ownerCycle!.cycleId},
+        me: {id: owner.id},
+      },
+    });
+    const recoveredWorkspace = await browserJson(pages[0], workspacePath);
+    expect(recoveredWorkspace).toMatchObject({
+      status: 200,
+      body: {
+        ok: true,
+        revision: expect.any(Number),
+        snapshot: {code: correctCode, board: finalBoard},
+      },
+    });
+    const recoveredMessages = await browserJson(
+      pages[0],
+      `/api/messages?room_id=${encodeURIComponent(String(ownerRoom))}&after_id=0&limit=50`,
+    );
+    expect((recoveredMessages.body as {messages?: unknown[]}).messages).toHaveLength(2);
+    const recoveredRuns = await browserJson(
+      pages[0],
+      `/api/runs?room_id=${encodeURIComponent(String(ownerRoom))}&after_id=0&limit=20`,
+    );
+    expect(recoveredRuns).toMatchObject({
+      status: 200,
+      body: {
+        ok: true,
+        room_id: ownerRoom,
+        runs: [expect.objectContaining({
+          id: execution.run_id,
+          authoritative: true,
+          runner: expect.objectContaining({id: owner.id}),
+        })],
+      },
+    });
+    const recoveredRecap = await browserJson(pages[0], recapPath);
+    expect(recoveredRecap).toMatchObject({
+      status: 200,
+      body: {
+        ok: true,
+        room_id: ownerRoom,
+        recap: {
+          schedule: {agreed_time: agreedTime},
+          workspace: {artifact_available: true, question_slug: 'focus-block-rollup'},
+        },
+      },
+    });
+    await openDashboard(pages[0]);
+    await pages[0].evaluate(async () => {
+      const chat = (window as typeof window & {_randori_chat?: {refresh?: () => Promise<unknown>}})._randori_chat;
+      if (!chat?.refresh) throw new Error('chat refresh unavailable');
+      await chat.refresh();
+    });
+    await expect(pages[0].getByTestId('pair-chat-list')).toContainText('I will drive the first implementation.');
+    await expect(pages[0].getByTestId('pair-chat-list')).toContainText('I will navigate and review edge cases.');
+
     const laterEmail = 'later.member@example.test';
     const laterInvitation = await createInvitation(pages[0], runtime.url, laterEmail);
     const laterMember = await acceptInvitation(pages[2], runtime.url, laterInvitation, {
@@ -493,6 +976,41 @@ test('real invited members opt in, publish that cycle, share a room, and agree a
     await pages[2].clock.setFixedTime(publicationInstant);
     await openDashboard(pages[2]);
     await expect(pages[2].getByTestId('dashboard-pair-state')).toHaveAttribute('data-state', 'missed');
+
+    const nonMemberPairState = await browserJson(pages[2], '/api/my-pair');
+    expect(nonMemberPairState).toMatchObject({
+      status: 200,
+      body: {
+        ok: true,
+        paired: false,
+        pairing_status: 'missed',
+        cycle: {cycleId: ownerCycle!.cycleId},
+      },
+    });
+    const deniedPairResources = await Promise.all([
+      browserJson(pages[2], `/api/schedule?room_id=${encodeURIComponent(String(ownerRoom))}`),
+      browserJson(pages[2], `/api/messages?room_id=${encodeURIComponent(String(ownerRoom))}&after_id=0&limit=50`),
+      browserJson(pages[2], workspacePath),
+      browserJson(pages[2], `/api/runs?room_id=${encodeURIComponent(String(ownerRoom))}&after_id=0&limit=20`),
+      browserJson(pages[2], recapPath),
+      browserJson(pages[2], '/api/execute', 'POST', {
+        language: 'javascript',
+        code: correctCode,
+        question_slug: 'focus-block-rollup',
+        question_version: 1,
+        room_id: ownerRoom,
+      }),
+    ]);
+    expect(deniedPairResources.map(result => result.status)).toEqual([404, 404, 403, 404, 404, 404]);
+    expect(deniedPairResources.map(result => (result.body as {error?: string}).error)).toEqual([
+      'pair not found',
+      'pair not found',
+      'not a member of this room',
+      'pair not found',
+      'pair not found',
+      'pair not found',
+    ]);
+    expect(executionTransport.requests).toHaveLength(1);
 
     // Keep the account and browser session real, then simulate an owner/admin
     // revocation to prove authorization is rechecked independently of the
@@ -539,10 +1057,14 @@ test('real invited members opt in, publish that cycle, share a room, and agree a
       .filter(row => row.status === 'delivered')
       .every(row => /^schedule-[1-4]$/.test(String(row.provider_message_id)))).toBe(true);
     expect(reminders.rows.find(row => row.status === 'suppressed')?.provider_message_id).toBeNull();
+
+    expect(executionTransport.requests).toHaveLength(1);
+    expect(executionTransport.unexpectedExternalRequests).toEqual([]);
     expect(requestSql.filter(sql => /^\s*(?:CREATE|ALTER|DROP)\b/iu.test(sql))).toEqual([]);
     expect(externalRequests).toEqual([]);
   } finally {
     restoreServerTime();
+    executionTransport.restore();
     await runtime?.close();
     await Promise.all(contexts.map(context => context.close()));
     rmSync(fixture.rootDir, { recursive: true, force: true });
