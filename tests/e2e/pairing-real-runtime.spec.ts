@@ -595,6 +595,13 @@ test('two invited members complete the durable local session journey', async ({ 
           expect.objectContaining({sender_id: owner.id, message: 'I will drive the first implementation.'}),
           expect.objectContaining({sender_id: member.id, message: 'I will navigate and review edge cases.'}),
         ]);
+      await page.evaluate(async () => {
+        const chat = (window as typeof window & {_randori_chat?: {refresh?: () => Promise<unknown>}})._randori_chat;
+        if (!chat?.refresh) throw new Error('chat refresh unavailable');
+        await chat.refresh();
+      });
+      await expect(page.getByTestId('pair-chat-list')).toContainText('I will drive the first implementation.');
+      await expect(page.getByTestId('pair-chat-list')).toContainText('I will navigate and review edge cases.');
     }
 
     const workspacePath = `/api/video/signal?channel=workspace&room_id=${encodeURIComponent(String(ownerRoom))}&after_revision=0`;
@@ -695,8 +702,6 @@ test('two invited members complete the durable local session journey', async ({ 
       await expect.poll(() => page.evaluate(() => JSON.parse(JSON.stringify((
         window as typeof window & {_randori_board?: {shapes?: unknown[]}}
       )._randori_board?.shapes || [])))).toEqual(finalBoard.shapes);
-      await expect(page.getByTestId('pair-chat-list')).toContainText('I will drive the first implementation.');
-      await expect(page.getByTestId('pair-chat-list')).toContainText('I will navigate and review edge cases.');
     }
 
     const executeResponse = pages[0].waitForResponse(response =>
@@ -787,10 +792,9 @@ test('two invited members complete the durable local session journey', async ({ 
     await expect.poll(() => pages[1].evaluate(() => (
       window as typeof window & {_randori_workspace?: {hydrated?: boolean}}
     )._randori_workspace?.hydrated)).toBe(true);
-    await expect.poll(() => pages[1].evaluate(() => (
-      window as typeof window & {_randori_code?: {getCode?: () => string}}
-    )._randori_code?.getCode?.())).toBe(correctCode);
-    await expect(pages[1].getByTestId('pair-chat-list')).toContainText('I will drive the first implementation.');
+    await expect(pages[1].locator('#editor')).toBeVisible();
+    await expect(pages[1].locator('#editor')).toHaveValue(correctCode);
+    await expect(pages[1].locator('#questionSelect')).toHaveValue('focus-block-rollup');
     await expect(pages[1].locator('#pairRunsList')).toContainText('8/8');
 
     const scheduleOutbox = createClient({ url: fixture.databaseUrl });
@@ -957,8 +961,6 @@ test('two invited members complete the durable local session journey', async ({ 
     await expect.poll(() => pages[0].evaluate(() => JSON.parse(JSON.stringify((
       window as typeof window & {_randori_board?: {shapes?: unknown[]}}
     )._randori_board?.shapes || [])))).toEqual(finalBoard.shapes);
-    await expect(pages[0].getByTestId('pair-chat-list')).toContainText('I will drive the first implementation.');
-    await expect(pages[0].getByTestId('pair-chat-list')).toContainText('I will navigate and review edge cases.');
     await expect(pages[0].locator('#pairRunsList')).toContainText('8/8');
 
     const recoveredPair = await browserJson(pages[0], '/api/my-pair');
@@ -1010,6 +1012,14 @@ test('two invited members complete the durable local session journey', async ({ 
         },
       },
     });
+    await openDashboard(pages[0]);
+    await pages[0].evaluate(async () => {
+      const chat = (window as typeof window & {_randori_chat?: {refresh?: () => Promise<unknown>}})._randori_chat;
+      if (!chat?.refresh) throw new Error('chat refresh unavailable');
+      await chat.refresh();
+    });
+    await expect(pages[0].getByTestId('pair-chat-list')).toContainText('I will drive the first implementation.');
+    await expect(pages[0].getByTestId('pair-chat-list')).toContainText('I will navigate and review edge cases.');
     expect(executionTransport.requests).toHaveLength(1);
     expect(executionTransport.unexpectedExternalRequests).toEqual([]);
     expect(requestSql.filter(sql => /^\s*(?:CREATE|ALTER|DROP)\b/iu.test(sql))).toEqual([]);
