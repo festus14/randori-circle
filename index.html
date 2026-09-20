@@ -969,7 +969,10 @@ p{margin:0}
             <section id="circleLifecyclePanel" data-testid="circle-lifecycle" hidden aria-labelledby="circleLifecycleTitle" style="display:none;gap:10px;border-top:1px solid var(--border);padding-top:12px">
               <div class="membership-actions">
                 <div><b id="circleLifecycleTitle" style="font-size:13px">Membership settings</b><div id="circleLifecycleHelp" class="small muted" style="margin-top:3px"></div></div>
-                <button id="circleLeave" data-testid="circle-leave" class="pill membership-danger" type="button">Leave circle</button>
+                <div class="row">
+                  <button id="circleArchive" data-testid="circle-archive" class="pill membership-danger" type="button" hidden>Archive circle</button>
+                  <button id="circleLeave" data-testid="circle-leave" class="pill membership-danger" type="button">Leave circle</button>
+                </div>
               </div>
               <div id="circleLifecycleStatus" class="small muted" role="status" aria-live="polite"></div>
               <form id="circleMemberSearchForm" data-testid="circle-member-search-form" role="search" class="row" hidden style="align-items:flex-end">
@@ -2776,44 +2779,9 @@ async function refreshMe(){
       try{ toast('Could not sign out safely. Please try again.'); }catch{}
       return false;
     }
-    invalidateAuthRefreshes();
-    try{
-      localStorage.removeItem(TOKEN_KEY);
-      localStorage.removeItem(ME_KEY);
-      localStorage.removeItem('randori-demo-active');
-      localStorage.removeItem('randori-last-room');
-      localStorage.removeItem('randori-code');
-      me=null;
-      resetCircleControlForIdentityChange();
-      clearAvailability();
-      // clear any in-memory video state quietly
-      try{ if(typeof videoJoined!=='undefined' && videoJoined){ videoJoined=false; } }catch{}
-      // force UI to landing
-      if(window._randori_journey && window._randori_journey.routeByAuth){
-        // clear then route (route will see no token and show landing)
-        window._randori_journey.routeByAuth().catch(()=>{});
-      }
-    }catch{}
-    try{ updateAuthUI(); }catch{}
+    await applyAuthoritativeSignedOutState();
     try{ toast(everywhere?'signed out everywhere':'signed out'); }catch{}
     setTimeout(()=>{ location.reload(); }, 250);
-    try{ renderHistory(); }catch{}
-    const av=document.getElementById('availabilityWrap'); if(av) av.style.display='none';
-    // hard fallback: if still signed in view, do full view switch
-    setTimeout(()=>{
-      try{
-        if(!me){
-          const land=document.getElementById('view-landing');
-          const dash=document.getElementById('view-dashboard');
-          const prof=document.getElementById('view-profile-setup');
-          if(land) land.style.display='';
-          if(dash) dash.style.display='none';
-          if(prof) prof.style.display='none';
-          // hide tab bar if we have one
-          document.querySelectorAll('[data-tab]').forEach(t=>t.classList.remove('active'));
-        }
-      }catch{}
-    }, 80);
     return true;
   }
   document.getElementById('signOutBtn').onclick=()=>performSignOut();
@@ -3255,6 +3223,7 @@ async function refreshMe(){
   const circleMemberSearchClear=document.getElementById('circleMemberSearchClear');
   const circleMemberSearchStatus=document.getElementById('circleMemberSearchStatus');
   const circleMembersLoadMore=document.getElementById('circleMembersLoadMore');
+  const circleArchive=document.getElementById('circleArchive');
   const circleLeave=document.getElementById('circleLeave');
   const circleContextPanel=document.getElementById('circleContextPanel');
   const circleContextSelect=document.getElementById('circleContextSelect');
@@ -3674,6 +3643,7 @@ async function refreshMe(){
     if(circleMemberSearchStatus) circleMemberSearchStatus.textContent='';
     if(circleMembersLoadMore){ circleMembersLoadMore.hidden=true; circleMembersLoadMore.disabled=false; }
     if(!preserveLifecycleNotice) clearCircleLifecycleNotice();
+    if(circleArchive){ circleArchive.hidden=true; circleArchive.disabled=false; }
     if(circleLeave) circleLeave.disabled=false;
   }
 
@@ -3825,6 +3795,10 @@ async function refreshMe(){
     if(code==='member not found') return 'That member is no longer available in this circle.';
     if(code==='choose another active member') return 'Choose another active member for ownership.';
     if(code==='use leave circle for your own membership') return 'Use Leave circle to remove your own membership.';
+    if(error?.code==='member_last_circle') return 'Every active member needs another active circle before this circle can be archived.';
+    if(error?.code==='primary_circle_required') return 'The primary circle cannot be archived.';
+    if(error?.code==='circle_context_changed') return 'Your active circle changed elsewhere. Refreshing the current circle.';
+    if(code==='circle unavailable') return 'This circle is no longer available to archive.';
     return 'Membership could not be changed. Try again.';
   }
 
@@ -3860,8 +3834,11 @@ async function refreshMe(){
     const createdAt=Number(pending?.created_at);
     const currentCircleId=String(activeCircleContext?.active_circle?.public_id||'');
     const currentContextVersion=Number(activeCircleContext?.context_version||0);
-    const valid=pending?.v===1&&['deactivate','transfer'].includes(pending?.action)
-      &&Number.isSafeInteger(pending?.member_id)&&pending.member_id>0
+    const actionValid=['deactivate','transfer','archive'].includes(pending?.action);
+    const targetValid=pending?.action==='archive'
+      ?!Object.prototype.hasOwnProperty.call(pending,'member_id')
+      :Number.isSafeInteger(pending?.member_id)&&pending.member_id>0;
+    const valid=pending?.v===1&&actionValid&&targetValid
       &&Number.isSafeInteger(pending?.actor_id)&&pending.actor_id===actorId
       &&Number.isFinite(createdAt)&&createdAt<=Date.now()+30_000
       &&Date.now()-createdAt<=LIFECYCLE_RECENT_ACTION_TTL_MS
@@ -3870,13 +3847,14 @@ async function refreshMe(){
     if(consume||!valid) clearLifecycleRecentAction();
     return valid?pending:null;
   }
-  async function requestLifecycleRecentAuth(action,memberId){
+  async function requestLifecycleRecentAuth(action,memberId=null){
     const actorId=Number(me?.id||me?.uid);
-    if(!Number.isSafeInteger(actorId)||actorId<1||!['deactivate','transfer'].includes(action)
-      ||!Number.isSafeInteger(memberId)||memberId<1) return false;
+    const targetValid=action==='archive'||Number.isSafeInteger(memberId)&&memberId>0;
+    if(!Number.isSafeInteger(actorId)||actorId<1||!['deactivate','transfer','archive'].includes(action)
+      ||!targetValid) return false;
     try{
       sessionStorage.setItem(LIFECYCLE_RECENT_ACTION_KEY,JSON.stringify({
-        v:1,action,member_id:memberId,actor_id:actorId,created_at:Date.now(),
+        v:1,action,...(action==='archive'?{}:{member_id:memberId}),actor_id:actorId,created_at:Date.now(),
         ...(authCapabilities.multiCircleControlPlane?{
           circle_public_id:String(activeCircleContext?.active_circle?.public_id||''),
           context_version:Number(activeCircleContext?.context_version||0),
@@ -3889,6 +3867,8 @@ async function refreshMe(){
     }
     return window._randori_identity.confirm(action==='transfer'
       ?'Confirm your identity before transferring circle ownership.'
+      :action==='archive'
+      ?'Confirm your identity before archiving this circle.'
       :'Confirm your identity before deactivating an owner.');
   }
   async function resumeLifecycleRecentAction(){
@@ -3905,7 +3885,9 @@ async function refreshMe(){
       publishCircleLifecycleNotice('Confirmation expired or the signed-in account changed. No circle change was made.');
       return false;
     }
-    return applyMemberAction(pending.action,{id:pending.member_id},{skipPrompt:true,allowRecentAuth:false});
+    return pending.action==='archive'
+      ?archiveSelectedCircle({skipPrompt:true,allowRecentAuth:false})
+      :applyMemberAction(pending.action,{id:pending.member_id},{skipPrompt:true,allowRecentAuth:false});
   }
   window.addEventListener('randori:recent-auth-confirmed',()=>{ void resumeLifecycleRecentAction(); });
   window.addEventListener('randori:recent-auth-cancelled',event=>{
@@ -4146,6 +4128,12 @@ async function refreshMe(){
       if(circleMembersLoadMore) circleMembersLoadMore.hidden=true;
     }
     if(circleLeave){ circleLeave.disabled=false; circleLeave.textContent='Leave circle'; }
+    if(circleArchive){
+      const canArchive=role==='owner'&&authCapabilities.multiCircleControlPlane
+        &&activeCircleContext?.active_circle?.is_primary===false;
+      circleArchive.hidden=!canArchive;
+      circleArchive.disabled=false;
+    }
     if(role==='owner'&&!loadRoster){
       if(circleManageMembers) circleManageMembers.hidden=true;
       if(circleMemberSearchForm) circleMemberSearchForm.hidden=true;
@@ -4158,6 +4146,127 @@ async function refreshMe(){
     }else if(role==='owner'&&!(circleRosterLoading&&circleRosterLoadEpoch===epoch)) await loadManagedMembers(epoch);
     else if(circleLifecycleStatus&&!hasCircleLifecycleNotice()) circleLifecycleStatus.textContent='You are an active circle member.';
   }
+
+  async function applyAuthoritativeSignedOutState(){
+    invalidateAuthRefreshes();
+    me=null;
+    // Dispose media before circle reset: reset may render an empty room and
+    // invoke ordinary leaveVideo(), which intentionally emits a leave signal.
+    try{ disposeVideoForAuthoritativeSignOut(); }catch{}
+    resetCircleControlForIdentityChange();
+    try{
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(ME_KEY);
+      localStorage.removeItem('randori-demo-active');
+      localStorage.removeItem('randori-last-room');
+      localStorage.removeItem('randori-last-tab');
+      localStorage.removeItem('randori-last-view');
+      localStorage.removeItem('randori-code');
+    }catch{}
+    clearAvailability();
+    try{ await updateAuthUI(); }catch{}
+    try{ await window._randori_journey?.routeByAuth?.(); }catch{}
+    try{ renderHistory(); }catch{}
+    const availability=document.getElementById('availabilityWrap');
+    if(availability) availability.style.display='none';
+    window._randori_workspace?.deactivate?.();
+    window._randori_authorized_room=null;
+    window._randori_join_room=null;
+    window._randori_nav?.hideAllViews?.();
+    const landing=document.getElementById('view-landing');
+    if(landing) landing.style.display='block';
+    document.querySelectorAll('[data-tab]').forEach(tab=>tab.classList.remove('active'));
+  }
+
+  async function archiveSelectedCircle({skipPrompt=false,allowRecentAuth=true}={}){
+    if(circleLifecyclePending||!me||activeCircleRole!=='owner'
+      ||!authCapabilities.multiCircleControlPlane
+      ||activeCircleContext?.active_circle?.is_primary!==false) return false;
+    const operation=captureCircleControlOperation();
+    if(!circleControlOperationMatches(operation)||!operation.circlePublicId
+      ||!Number.isSafeInteger(operation.contextVersion)) return false;
+    const name=String(activeCircleContext.active_circle?.name||'this circle').slice(0,120);
+    if(!skipPrompt&&!await showConfirm(`Archive ${name}?`,
+      'Every active member will immediately lose access to this circle. Pairing and schedule history is retained but will no longer be available in the app.')) return false;
+    if(!circleControlOperationMatches(operation)) return false;
+    const actorId=Number(me.id||me.uid);
+    const requestAuthEpoch=authSessionEpoch;
+    circleLifecyclePending=true;
+    clearCircleLifecycleNotice();
+    circleLifecyclePanel?.querySelectorAll('button').forEach(button=>{ button.disabled=true; });
+    if(circleLifecycleStatus) circleLifecycleStatus.textContent='Archiving circle…';
+    try{
+      const result=await api('/api/circles',{method:'DELETE',body:{
+        circle_public_id:operation.circlePublicId,
+        expected_context_version:operation.contextVersion,
+      }});
+      if(!me||Number(me.id||me.uid)!==actorId||!circleControlOperationMatches(operation)) return false;
+      const activeCirclePublicId=result?.active_circle?.public_id;
+      if(result?.ok!==true||result.archived_circle_public_id!==operation.circlePublicId
+        ||!Array.isArray(result.circles)||result.circles.some(circle=>circle?.public_id===operation.circlePublicId)
+        ||typeof activeCirclePublicId!=='string'||!activeCirclePublicId
+        ||activeCirclePublicId===operation.circlePublicId
+        ||!result.circles.some(circle=>circle?.public_id===activeCirclePublicId)
+        ||!Number.isSafeInteger(result.context_version)||result.context_version<=operation.contextVersion){
+        throw new Error('invalid circle archive response');
+      }
+      if(circleLifecycleStatus) circleLifecycleStatus.textContent='Circle archived. Loading your remaining circle…';
+      clearPrivateCircleViewForSwitch();
+      circleContextChannel?.postMessage({v:1,user_id:actorId,context_version:result.context_version,force:true});
+      window.location.reload();
+      return true;
+    }catch(error){
+      if(Number(error?.http_status)===401){
+        if(requestAuthEpoch!==authSessionEpoch) return false;
+        const currentUserId=Number(me?.id||me?.uid);
+        if(!Number.isSafeInteger(currentUserId)||currentUserId===actorId){
+          await applyAuthoritativeSignedOutState();
+        }
+        return false;
+      }
+      if(!circleControlOperationMatches(operation)) return false;
+      if(error?.code==='circle_archive_refresh_required'
+        &&error?.archived_circle_public_id===operation.circlePublicId){
+        const nextVersion=Number(error.context_version);
+        if(circleLifecycleStatus) circleLifecycleStatus.textContent='Circle archived. Refreshing your remaining circles…';
+        clearPrivateCircleViewForSwitch();
+        circleContextChannel?.postMessage({v:1,user_id:actorId,
+          context_version:Number.isSafeInteger(nextVersion)&&nextVersion>operation.contextVersion
+            ?nextVersion:operation.contextVersion+1,force:true});
+        window.location.reload();
+        return true;
+      }
+      if(allowRecentAuth&&(error?.code==='recent_auth_required'||error?.error==='recent authentication required')){
+        if(circleLifecycleStatus) circleLifecycleStatus.textContent='Confirm your identity to continue. No change has been made yet.';
+        if(!await requestLifecycleRecentAuth('archive')){
+          if(!circleControlOperationMatches(operation)) return false;
+          publishCircleLifecycleNotice('Confirmation is unavailable. No circle change was made.');
+        }
+        return false;
+      }
+      const status=Number(error?.http_status);
+      const mustReconcileContext=status===404
+        ||error?.code==='circle_context_changed'
+        ||error?.code==='circle_archive_status_unknown'
+        ||!Number.isSafeInteger(status);
+      if(mustReconcileContext){
+        clearPrivateCircleViewForSwitch();
+        circleContextChannel?.postMessage({v:1,user_id:actorId,
+          context_version:operation.contextVersion,force:true});
+        window.location.reload();
+        return false;
+      }
+      publishCircleLifecycleNotice(lifecycleErrorMessage(error));
+      return false;
+    }finally{
+      if(circleControlOperationMatches(operation)){
+        circleLifecyclePending=false;
+        circleLifecyclePanel?.querySelectorAll('button').forEach(button=>{ button.disabled=false; });
+      }
+    }
+  }
+
+  circleArchive?.addEventListener('click',()=>{ void archiveSelectedCircle(); });
 
   circleLeave?.addEventListener('click',async()=>{
     if(circleLifecyclePending||!me||!['owner','member'].includes(activeCircleRole)) return;
@@ -4191,32 +4300,10 @@ async function refreshMe(){
         return;
       }
       if(circleLifecycleStatus) circleLifecycleStatus.textContent='Membership ended. Signing out…';
-      try{
-        localStorage.removeItem('randori-last-room');
-        localStorage.removeItem('randori-last-tab');
-        localStorage.removeItem('randori-last-view');
-      }catch{}
-      try{ await window._randori_auth?.refreshMe?.(); }catch{}
       // The successful server transition and Set-Cookie response are
-      // authoritative. Never leave stale authenticated state visible merely
-      // because the follow-up identity refresh failed.
-      invalidateAuthRefreshes();
-      me=null;
-      resetCircleControlForIdentityChange();
-      try{ localStorage.removeItem(ME_KEY); }catch{}
-      clearAvailability();
-      updateAuthUI();
-      try{ await window._randori_journey?.routeByAuth?.(); }catch{}
-      // Treat a successful leave like logout even if another startup router is
-      // still settling. Private workspace state must not remain visible after
-      // the server has revoked the membership and its sessions.
-      window._randori_workspace?.deactivate?.();
-      window._randori_authorized_room=null;
-      window._randori_join_room=null;
-      window._randori_nav?.hideAllViews?.();
-      const landing=document.getElementById('view-landing');
-      if(landing) landing.style.display='block';
-      document.querySelectorAll('[data-tab]').forEach(tab=>tab.classList.remove('active'));
+      // authoritative. Use the same complete local cleanup as explicit logout
+      // without making a second network decision.
+      await applyAuthoritativeSignedOutState();
     }catch(error){
       if(!circleControlOperationMatches(operation)) return;
       publishCircleLifecycleNotice(lifecycleErrorMessage(error));
@@ -5870,6 +5957,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   let localStream = null;
   let pc = null;
   let videoPollTimer = null;
+  let videoInitiateTimer = null;
+  let videoRoomSwitchTimer = null;
+  let videoPollsInFlight = 0;
+  let videoSessionEpoch = 0;
   let videoLastSignalId = 0;
   let videoJoined = false;
   let videoMicEnabled = true;
@@ -5895,29 +5986,47 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return !!current&&(current.pairing_status==='solo'||current.pair?.solo_practice===true);
   }
 
-  async function ensureLocalStream(needCam = true){
+  async function ensureLocalStream(needCam = true,expectedEpoch=videoSessionEpoch){
+    if(!videoEpochMatches(expectedEpoch)) return null;
     if(localStream){
       videoCamEnabled = needCam ? videoCamEnabled : false;
       return localStream;
     }
     const constraints = { audio: true, video: needCam ? { width:{ideal:640}, height:{ideal:360} } : false };
+    let stream=null;
     try{
-      localStream = await navigator.mediaDevices.getUserMedia(constraints);
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
+      if(!videoEpochMatches(expectedEpoch)){ releaseLocalMediaStream(stream); return null; }
     }catch(e){
+      if(!videoEpochMatches(expectedEpoch)) return null;
       // fallback audio only
       try{
-        localStream = await navigator.mediaDevices.getUserMedia({ audio:true, video:false });
+        stream = await navigator.mediaDevices.getUserMedia({ audio:true, video:false });
+        if(!videoEpochMatches(expectedEpoch)){ releaseLocalMediaStream(stream); return null; }
         videoCamEnabled = false;
         toast('cam blocked — audio only fallback');
       }catch(e2){
+        if(!videoEpochMatches(expectedEpoch)) return null;
         toast('no mic/cam access — video fallback to name dots');
         return null;
       }
     }
+    if(!videoEpochMatches(expectedEpoch)){ releaseLocalMediaStream(stream); return null; }
+    if(localStream&&localStream!==stream){ releaseLocalMediaStream(stream); return localStream; }
+    localStream=stream;
     const lv=document.getElementById('localVideo');
     if(lv){ lv.srcObject=localStream; lv.play().catch(()=>{}); }
     updateVideoMicCamUI();
     return localStream;
+  }
+
+  function releaseLocalMediaStream(stream=localStream){
+    if(!stream) return;
+    const wasCurrent=localStream===stream;
+    if(wasCurrent) localStream=null;
+    try{ stream.getTracks?.().forEach(track=>track.stop()); }catch{}
+    const lv=document.getElementById('localVideo');
+    if(lv&&(wasCurrent||lv.srcObject===stream)) lv.srcObject=null;
   }
 
   function updateVideoMicCamUI(){
@@ -5953,67 +6062,101 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }catch{}
   }
 
+  function videoSessionMatches(expectedEpoch){
+    return videoJoined&&expectedEpoch===videoSessionEpoch;
+  }
+
+  function videoEpochMatches(expectedEpoch){
+    return expectedEpoch===videoSessionEpoch;
+  }
+
+  function closeVideoPeer(peer=pc){
+    if(!peer) return;
+    if(pc===peer) pc=null;
+    try{ peer.ontrack=null; peer.onicecandidate=null; peer.onconnectionstatechange=null; }catch{}
+    try{ peer.close(); }catch{}
+  }
+
   async function pollSignals(){
     if(!videoJoined) return;
+    const pollEpoch=videoSessionEpoch;
     const room_id = getVideoRoomId();
     if(!room_id) return;
+    videoPollsInFlight+=1;
     try{
       const u = new URL('/api/video/signal', location.origin);
       u.searchParams.set('room_id', room_id);
       u.searchParams.set('peer_id', webrtcPeerId);
       u.searchParams.set('after', String(videoLastSignalId));
       const r = await fetch(u.toString());
+      if(!videoSessionMatches(pollEpoch)) return;
       if(!r.ok) return;
       const data = await r.json();
+      if(!videoSessionMatches(pollEpoch)) return;
       if(!data.ok) return;
       if(data.after) videoLastSignalId = data.after;
       for(const s of data.signals||[]){
-        await handleRemoteSignal(s);
+        if(!videoSessionMatches(pollEpoch)) return;
+        await handleRemoteSignal(s,pollEpoch);
       }
-    }catch{}
+    }catch{}finally{
+      videoPollsInFlight=Math.max(0,videoPollsInFlight-1);
+    }
   }
 
-  async function handleRemoteSignal(sig){
+  async function handleRemoteSignal(sig,expectedEpoch){
     try{
+      if(!videoSessionMatches(expectedEpoch)) return;
       const type = sig.type;
       const payloadStr = sig.payload;
       let payload;
       try{ payload = JSON.parse(payloadStr); }catch{ payload = payloadStr; }
       if(type==='offer'){
-        if(!pc) await createPeer(false);
-        if(pc.signalingState!=='stable'){
+        if(!pc) await createPeer(false,expectedEpoch);
+        const peer=pc;
+        if(!videoSessionMatches(expectedEpoch)||!peer) return;
+        if(peer.signalingState!=='stable'){
           // polite handling: rollback if needed
-          try{ await pc.setLocalDescription({type:'rollback'});}catch{}
+          try{ await peer.setLocalDescription({type:'rollback'});}catch{}
         }
-        await pc.setRemoteDescription(new RTCSessionDescription(payload));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        await sendSignal('answer', pc.localDescription, sig.from_id);
+        if(!videoSessionMatches(expectedEpoch)||pc!==peer) return;
+        await peer.setRemoteDescription(new RTCSessionDescription(payload));
+        if(!videoSessionMatches(expectedEpoch)||pc!==peer) return;
+        const answer = await peer.createAnswer();
+        if(!videoSessionMatches(expectedEpoch)||pc!==peer) return;
+        await peer.setLocalDescription(answer);
+        if(!videoSessionMatches(expectedEpoch)||pc!==peer) return;
+        await sendSignal('answer', peer.localDescription, sig.from_id);
       } else if(type==='answer'){
-        if(pc) await pc.setRemoteDescription(new RTCSessionDescription(payload));
+        const peer=pc;
+        if(peer&&videoSessionMatches(expectedEpoch)) await peer.setRemoteDescription(new RTCSessionDescription(payload));
       } else if(type==='ice' || type==='candidate'){
-        if(pc && payload) {
-          try{ await pc.addIceCandidate(new RTCIceCandidate(payload)); }catch{}
+        const peer=pc;
+        if(peer&&payload&&videoSessionMatches(expectedEpoch)) {
+          try{ await peer.addIceCandidate(new RTCIceCandidate(payload)); }catch{}
         }
       } else if(type==='join'){
         // someone joined: if we already in room and are lexicographically larger, initiate offer to them
-        if(videoJoined && webrtcPeerId > sig.from_id){
-          if(!pc) await createPeer(true);
+        if(videoSessionMatches(expectedEpoch) && webrtcPeerId > sig.from_id){
+          if(!pc) await createPeer(true,expectedEpoch);
           // createOffer will happen in createPeer if initiator
         }
       }
     }catch(e){ /* ignore */ }
   }
 
-  async function createPeer(isInitiator){
-    if(pc) { try{ pc.close(); }catch{}; pc=null; }
-    pc = new RTCPeerConnection({ iceServers });
+  async function createPeer(isInitiator,expectedEpoch=videoSessionEpoch){
+    if(!videoSessionMatches(expectedEpoch)) return null;
+    if(pc) closeVideoPeer(pc);
+    const peer = new RTCPeerConnection({ iceServers });
+    pc=peer;
     videoUpdateStatus('connecting');
 
     if(localStream){
-      localStream.getTracks().forEach(track=> pc.addTrack(track, localStream));
+      localStream.getTracks().forEach(track=> peer.addTrack(track, localStream));
     }
-    pc.ontrack = (e)=>{
+    peer.ontrack = (e)=>{
+      if(!videoSessionMatches(expectedEpoch)||pc!==peer) return;
       const rv=document.getElementById('remoteVideo');
       if(rv){
         if(rv.srcObject !== e.streams[0]){
@@ -6025,13 +6168,14 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(lbl) lbl.textContent = 'pair • live';
       videoUpdateStatus('live');
     };
-    pc.onicecandidate = (e)=>{
-      if(e.candidate){
+    peer.onicecandidate = (e)=>{
+      if(e.candidate&&videoSessionMatches(expectedEpoch)&&pc===peer){
         sendSignal('ice', e.candidate, '');
       }
     };
-    pc.onconnectionstatechange = ()=>{
-      const st = pc.connectionState;
+    peer.onconnectionstatechange = ()=>{
+      if(!videoSessionMatches(expectedEpoch)||pc!==peer) return;
+      const st = peer.connectionState;
       videoUpdateStatus(st);
       if(st==='connected') toast('video connected ✓');
       if(st==='failed' || st==='disconnected'){
@@ -6041,11 +6185,14 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     };
 
     if(isInitiator){
-      const offer = await pc.createOffer({ offerToReceiveAudio:true, offerToReceiveVideo:true });
-      await pc.setLocalDescription(offer);
-      await sendSignal('offer', pc.localDescription, '');
+      const offer = await peer.createOffer({ offerToReceiveAudio:true, offerToReceiveVideo:true });
+      if(!videoSessionMatches(expectedEpoch)||pc!==peer){ closeVideoPeer(peer); return null; }
+      await peer.setLocalDescription(offer);
+      if(!videoSessionMatches(expectedEpoch)||pc!==peer){ closeVideoPeer(peer); return null; }
+      await sendSignal('offer', peer.localDescription, '');
     }
-    return pc;
+    if(!videoSessionMatches(expectedEpoch)||pc!==peer){ closeVideoPeer(peer); return null; }
+    return peer;
   }
 
   async function joinVideo(){
@@ -6059,9 +6206,16 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         return;
       }
     }catch{}
+    const joinEpoch=++videoSessionEpoch;
     const camBtn=document.getElementById('vidCamBtn');
     const needCam = camBtn ? !camBtn.classList.contains('off') : true;
-    const stream = await ensureLocalStream(needCam);
+    const stream = await ensureLocalStream(needCam,joinEpoch);
+    if(joinEpoch!==videoSessionEpoch){
+      // A sign-out may have completed while browser permission was pending.
+      // Do not let that older permission result retain live capture tracks.
+      releaseLocalMediaStream(stream);
+      return;
+    }
     if(!stream && !videoCamEnabled && !videoMicEnabled){
       // still allow signaling without media for fallback
     }
@@ -6071,34 +6225,58 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     document.getElementById('vidLeaveBtn').style.display='inline-flex';
     videoUpdateStatus('joining '+room.slice(0,6));
     await sendSignal('join', { peer: webrtcPeerId, name: (typeof me!=='undefined'&&me?.name)||localStorage.getItem('randori-me')?.slice?.(0,20)||'you' }, '');
+    if(!videoJoined||joinEpoch!==videoSessionEpoch) return;
     // start polling
     if(videoPollTimer) clearInterval(videoPollTimer);
     videoPollTimer = setInterval(pollSignals, 2000);
     pollSignals();
     // If we are initiator by being second, create peer soon after join to ensure we send offer
-    setTimeout(async()=>{
+    if(videoInitiateTimer) clearTimeout(videoInitiateTimer);
+    videoInitiateTimer=setTimeout(async()=>{
+      videoInitiateTimer=null;
+      if(!videoJoined||joinEpoch!==videoSessionEpoch) return;
       // check if there is at least presence >1 (tabs) to decide initiator; simple: wait 1.2s then if no remote offer yet, create peer as initiator
       if(!pc){
         const needInitiate = true; // for 2-person rooms, second joiner should initiate; lexicographic tie-breaking in handleRemoteSignal covers glare
         if(needInitiate){
-          await createPeer(true);
+          await createPeer(true,joinEpoch);
         }
       }
     }, 1200);
     toast('video joined room '+room.slice(0,6)+' • polling');
   }
 
-  function leaveVideo(){
+  function clearVideoSession({releaseMedia=false}={}){
+    videoSessionEpoch+=1;
     videoJoined = false;
     if(videoPollTimer){ clearInterval(videoPollTimer); videoPollTimer=null; }
-    sendSignal('leave', { peer: webrtcPeerId }, '').catch(()=>{});
-    if(pc){ try{ pc.close(); }catch{}; pc=null; }
+    if(videoInitiateTimer){ clearTimeout(videoInitiateTimer); videoInitiateTimer=null; }
+    if(videoRoomSwitchTimer){ clearTimeout(videoRoomSwitchTimer); videoRoomSwitchTimer=null; }
+    if(pc) closeVideoPeer(pc);
+    if(releaseMedia){
+      const stream=localStream;
+      releaseLocalMediaStream(stream);
+      videoMicEnabled=true;
+      videoCamEnabled=true;
+    }
     videoUpdateStatus('off');
     const rv=document.getElementById('remoteVideo'); if(rv){ rv.srcObject=null; }
     const lbl=document.getElementById('remoteLabel'); if(lbl) lbl.textContent='pair';
     document.getElementById('vidJoinBtn').style.display='inline-flex';
     document.getElementById('vidLeaveBtn').style.display='none';
-    // keep local stream for quick rejoin but pause cam/mic UI stays
+    updateVideoMicCamUI();
+  }
+
+  function leaveVideo(){
+    sendSignal('leave', { peer: webrtcPeerId }, '').catch(()=>{});
+    // A normal room leave keeps local capture available for a quick rejoin.
+    clearVideoSession();
+  }
+
+  function disposeVideoForAuthoritativeSignOut(){
+    // No signaling: an authoritative sign-out may already have invalidated the
+    // session, and a best-effort leave request would race identity teardown.
+    clearVideoSession({releaseMedia:true});
   }
 
   // hooks
@@ -6126,6 +6304,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }catch(e){ console.warn('codeJoinSession fail',e); }
   });
   document.getElementById('vidCamBtn')?.addEventListener('click', async()=>{
+    const camEpoch=videoSessionEpoch;
     videoCamEnabled = !videoCamEnabled;
     if(videoCamEnabled){
       // cam turned on – if we previously stopped tracks, need fresh getUserMedia
@@ -6133,23 +6312,32 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(!localStream || !hasLiveVideo){
         // clear stopped stream ref so ensureLocalStream grabs fresh
         if(localStream){ try{ localStream.getTracks().forEach(t=>{ if(t.kind==='video') { try{t.stop();}catch{} } }); }catch{}; localStream=null; }
-        await ensureLocalStream(true);
+        const stream=await ensureLocalStream(true,camEpoch);
+        if(!videoEpochMatches(camEpoch)){
+          releaseLocalMediaStream(stream);
+          return;
+        }
         const lv=document.getElementById('localVideo');
         if(lv && localStream){ lv.srcObject=localStream; try{ lv.play(); }catch{} }
       }
       // re-add / replace sender
       if(pc && localStream){
+        const peer=pc;
         const videoTrack = localStream.getVideoTracks().find(t=> t.readyState==='live');
         if(videoTrack){
-          const sender = pc.getSenders().find(s=> s.track && s.track.kind==='video');
+          const sender = peer.getSenders().find(s=> s.track && s.track.kind==='video');
           if(sender){ try{ await sender.replaceTrack(videoTrack); }catch{} }
-          else { try{ pc.addTrack(videoTrack, localStream); }catch{} }
+          else { try{ peer.addTrack(videoTrack, localStream); }catch{} }
+          if(!videoSessionMatches(camEpoch)||pc!==peer) return;
           // trigger renegotiation for new track
           try{
-            if(pc.signalingState==='stable'){
-              const offer=await pc.createOffer({ offerToReceiveAudio:true, offerToReceiveVideo:true });
-              await pc.setLocalDescription(offer);
+            if(peer.signalingState==='stable'){
+              const offer=await peer.createOffer({ offerToReceiveAudio:true, offerToReceiveVideo:true });
+              if(!videoSessionMatches(camEpoch)||pc!==peer) return;
+              await peer.setLocalDescription(offer);
+              if(!videoSessionMatches(camEpoch)||pc!==peer) return;
               await sendSignal('offer', offer);
+              if(!videoSessionMatches(camEpoch)||pc!==peer) return;
             }
           }catch{}
         }
@@ -6157,6 +6345,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     } else {
       // cam turning off handled in updateVideoMicCamUI (stops tracks, hides video, removes sender)
     }
+    if(!videoEpochMatches(camEpoch)) return;
     updateVideoMicCamUI();
     toast(videoCamEnabled?'cam on':'cam off');
   });
@@ -6175,15 +6364,36 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(videoJoined){
       // reset polling to new room
       videoLastSignalId=0;
-      if(pc){ try{ pc.close(); }catch{}; pc=null; }
+      videoSessionEpoch+=1;
+      if(videoInitiateTimer){ clearTimeout(videoInitiateTimer); videoInitiateTimer=null; }
+      if(pc) closeVideoPeer(pc);
       // send join for new room
-      setTimeout(()=>{ sendSignal('join',{peer:webrtcPeerId},''); if(!pc) createPeer(true).catch(()=>{}); }, 600);
+      if(videoRoomSwitchTimer) clearTimeout(videoRoomSwitchTimer);
+      const switchEpoch=videoSessionEpoch;
+      videoRoomSwitchTimer=setTimeout(()=>{
+        videoRoomSwitchTimer=null;
+        if(!videoJoined||switchEpoch!==videoSessionEpoch) return;
+        sendSignal('join',{peer:webrtcPeerId},'');
+        if(!pc) createPeer(true,switchEpoch).catch(()=>{});
+      }, 600);
     }
     videoUpdateStatus(videoJoined? 'switching' : 'off');
   });
 
   // expose for debug
-  window._randori_video = { get peerId(){return webrtcPeerId}, get joined(){return videoJoined}, joinVideo, leaveVideo, get pc(){return pc}, sendSignal };
+  window._randori_video = {
+    get peerId(){return webrtcPeerId},
+    get joined(){return videoJoined},
+    get stream(){return localStream},
+    get pc(){return pc},
+    get polling(){return videoPollTimer!==null},
+    get pollsInFlight(){return videoPollsInFlight},
+    get initiatePending(){return videoInitiateTimer!==null},
+    get roomSwitchPending(){return videoRoomSwitchTimer!==null},
+    joinVideo,
+    leaveVideo,
+    sendSignal,
+  };
 
   // ---------- tabs ----------
   const primaryTabs=[...document.querySelectorAll('.tabs .tab')];

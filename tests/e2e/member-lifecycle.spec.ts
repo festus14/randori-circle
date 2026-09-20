@@ -532,7 +532,7 @@ test('a member can leave and is returned to signed-out state immediately',async(
       expect(body).toEqual({action:'leave'});
       actions.push(body.action);
       signedIn=false;
-      return {ok:true,action:'leave'};
+      return {ok:true,action:'leave',signed_out:true};
     },
   });
   await resetClientState(page,true);

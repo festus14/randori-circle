@@ -8,6 +8,7 @@ import { ensureCircleMembershipReadiness } from './_circle-membership.js';
 import {
   listSessionCircleContexts,
   multiCircleControlPlaneEnabled,
+  requestCircleContextVersion,
   selectActiveCircleContext,
 } from './_active-circle.js';
 import {
@@ -16,6 +17,11 @@ import {
   ensureCircleCreationReadiness,
   parseCircleCreation,
 } from './_circle-creation.js';
+import {
+  archiveSecondaryCircle,
+  CircleArchiveError,
+  parseCircleArchive,
+} from './_circle-archive.js';
 
 function exactObject(value,keys){
   return !!value&&typeof value==='object'&&!Array.isArray(value)
@@ -46,15 +52,16 @@ export default async function handler(req,res){
   res.setHeader('Cache-Control','private, no-store');
   res.setHeader('Pragma','no-cache');
   if(!multiCircleControlPlaneEnabled()) return res.status(404).json({error:'not found'});
-  if(req.method!=='GET'&&req.method!=='PUT'&&req.method!=='POST'){
-    res.setHeader('Allow','GET, POST, PUT');
-    return res.status(405).json({error:'GET, POST, or PUT only'});
+  if(req.method!=='GET'&&req.method!=='PUT'&&req.method!=='POST'&&req.method!=='DELETE'){
+    res.setHeader('Allow','DELETE, GET, POST, PUT');
+    return res.status(405).json({error:'DELETE, GET, POST, or PUT only'});
   }
   if(hasQuery(req)) return res.status(400).json({error:'invalid request'});
   if(req.method!=='GET'&&!verifyMutationOrigin(req)){
     return res.status(403).json({error:'cross-origin mutation rejected'});
   }
   let creationInput=null;
+  let archiveInput=null;
   if(req.method==='POST'){
     try{ creationInput=parseCircleCreation(req.body); }
     catch(error){
@@ -62,6 +69,17 @@ export default async function handler(req,res){
         return res.status(400).json({error:'invalid circle creation'});
       }
       throw error;
+    }
+  }else if(req.method==='DELETE'){
+    try{ archiveInput=parseCircleArchive(req.body); }
+    catch(error){
+      if(error instanceof CircleArchiveError&&error.code==='CIRCLE_ARCHIVE_INPUT_INVALID'){
+        return res.status(400).json({error:'invalid circle archive'});
+      }
+      throw error;
+    }
+    if(requestCircleContextVersion(req)!==archiveInput.expectedContextVersion){
+      return res.status(409).json({error:'circle context changed',code:'circle_context_changed'});
     }
   }
   let db,payload;
@@ -99,6 +117,51 @@ export default async function handler(req,res){
         ok:true,circle:created.circle,context_version:created.context_version,
       });
     }
+    if(req.method==='DELETE'){
+      const archived=await archiveSecondaryCircle(db,payload,archiveInput);
+      if(!archived.ok){
+        if(archived.reason==='session_changed') return res.status(401).json({error:'authentication required'});
+        if(archived.reason==='context_changed'){
+          return res.status(409).json({error:'circle context changed',code:'circle_context_changed'});
+        }
+        if(archived.reason==='primary_circle'){
+          return res.status(409).json({error:'the primary circle cannot be archived',code:'primary_circle_required'});
+        }
+        if(archived.reason==='last_circle'){
+          return res.status(409).json({
+            error:'every active member needs another circle before archive',code:'member_last_circle',
+          });
+        }
+        return res.status(404).json({error:'circle unavailable'});
+      }
+      let projected;
+      try{
+        projected=responsePayload(await listSessionCircleContexts(db,payload));
+        const activePublicId=projected.active_circle?.public_id;
+        if(typeof activePublicId!=='string'||!activePublicId
+          ||activePublicId===archived.circle.public_id
+          ||!projected.circles.some(circle=>circle?.public_id===activePublicId)
+          ||projected.circles.some(circle=>circle?.public_id===archived.circle.public_id)
+          ||!Number.isSafeInteger(projected.context_version)
+          ||projected.context_version<=archiveInput.expectedContextVersion){
+          throw new Error('invalid post-archive circle projection');
+        }
+      }
+      catch(error){
+        captureSentryException(error,{tags:{event:'circle_archive_refresh_fail',source:'server'}});
+        return res.status(503).json({
+          error:'circle archived; reload required',code:'circle_archive_refresh_required',
+          archived_circle_public_id:archived.circle.public_id,
+          context_version:Number.isSafeInteger(archived.context_version)
+            ?archived.context_version:archiveInput.expectedContextVersion+1,
+        });
+      }
+      return res.json({
+        ...projected,
+        archived_circle_public_id:archived.circle.public_id,
+        archived:archived.changed,
+      });
+    }
     if(!exactObject(req.body,['circle_public_id','expected_context_version'])
       ||typeof req.body.circle_public_id!=='string'
       ||!Number.isSafeInteger(req.body.expected_context_version)||req.body.expected_context_version<0){
@@ -117,13 +180,20 @@ export default async function handler(req,res){
     const listed=await listSessionCircleContexts(db,payload);
     return res.json(responsePayload(listed));
   }catch(error){
+    if(error?.code==='RECENT_AUTH_REQUIRED'){
+      return res.status(403).json({error:'recent authentication required',code:'recent_auth_required'});
+    }
     captureSentryException(error,{tags:{event:'active_circle_context_fail',source:'server'}});
     return res.status(503).json({
       error:error instanceof CircleCreationError&&error.code==='CIRCLE_CREATE_COMMIT_UNKNOWN'
         ?'circle creation status unknown; retry with the same request_id'
+        :error instanceof CircleArchiveError&&error.code==='CIRCLE_ARCHIVE_COMMIT_UNKNOWN'
+        ?'circle archive status unknown; retry the same archive request'
         :'circles unavailable',
       ...(error instanceof CircleCreationError&&error.code==='CIRCLE_CREATE_COMMIT_UNKNOWN'
         ?{code:'circle_creation_status_unknown'}:{}),
+      ...(error instanceof CircleArchiveError&&error.code==='CIRCLE_ARCHIVE_COMMIT_UNKNOWN'
+        ?{code:'circle_archive_status_unknown'}:{}),
     });
   }
 }
