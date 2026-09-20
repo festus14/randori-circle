@@ -184,32 +184,53 @@ try{
 <style>
 :root{
   color-scheme:dark;
-  --bg:#0d0e11;
-  --bg-2:#15171c;
-  --bg-3:#1d2027;
-  --bg-4:#252933;
-  --card:#15171c;
-  --card-2:#1d2027;
-  --border:#343943;
-  --control-border:#707988;
+  /* Canonical semantic tokens. Component aliases below remain for the
+     incremental migration from the original single-file prototype. */
+  --color-canvas:#0d0e11;
+  --color-surface:#15171c;
+  --color-surface-raised:#1d2027;
+  --color-surface-active:#252933;
+  --color-border:#343943;
+  --color-control-border:#707988;
+  --color-text:#f5f5f2;
+  --color-text-secondary:#c0c5ce;
+  --color-text-muted:#a3aab5;
+  --color-action:#c8f6a0;
+  --color-success:#c8f6a0;
+  --color-warning:#f2d07a;
+  --color-danger:#ffb1c0;
+  --color-info:#a9b6ff;
+  --color-focus:#a9b6ff;
+  --color-success-surface:#233523;
+  --color-warning-surface:#342e1c;
+  --color-danger-surface:#351f27;
+  --color-info-surface:#20263b;
+  --bg:var(--color-canvas);
+  --bg-2:var(--color-surface);
+  --bg-3:var(--color-surface-raised);
+  --bg-4:var(--color-surface-active);
+  --card:var(--color-surface);
+  --card-2:var(--color-surface-raised);
+  --border:var(--color-border);
+  --control-border:var(--color-control-border);
   --line:#343943;
   --line-strong:#4c5361;
-  --ink:#f5f5f2;
-  --ink-2:#c0c5ce;
-  --ink-3:#a3aab5;
-  --accent:#c8f6a0;
+  --ink:var(--color-text);
+  --ink-2:var(--color-text-secondary);
+  --ink-3:var(--color-text-muted);
+  --accent:var(--color-action);
   --accent-2:#c8f6a0;
   --accent-3:#ffb1c0;
   --accent-4:#a9b6ff;
-  --ok:#c8f6a0;
-  --warn:#f2d07a;
-  --bad:#ffb1c0;
-  --info:#a9b6ff;
-  --focus:#a9b6ff;
-  --ok-surface:#233523;
-  --warn-surface:#342e1c;
-  --bad-surface:#351f27;
-  --info-surface:#20263b;
+  --ok:var(--color-success);
+  --warn:var(--color-warning);
+  --bad:var(--color-danger);
+  --info:var(--color-info);
+  --focus:var(--color-focus);
+  --ok-surface:var(--color-success-surface);
+  --warn-surface:var(--color-warning-surface);
+  --bad-surface:var(--color-danger-surface);
+  --info-surface:var(--color-info-surface);
   --radius:14px;
   --radius-sm:10px;
   --radius-xs:8px;
@@ -220,30 +241,28 @@ try{
 }
 :root.light{
   color-scheme:light;
-  --bg:#f5f4f0;
-  --bg-2:#ffffff;
-  --bg-3:#ebeae5;
-  --bg-4:#dfddd6;
-  --card:#ffffff;
-  --card-2:#ebeae5;
-  --border:#c8c5bd;
-  --control-border:#77736c;
+  --color-canvas:#f5f4f0;
+  --color-surface:#ffffff;
+  --color-surface-raised:#ebeae5;
+  --color-surface-active:#dfddd6;
+  --color-border:#c8c5bd;
+  --color-control-border:#77736c;
   --line:#d1cec7;
   --line-strong:#aaa69d;
-  --ink:#18171a;
-  --ink-2:#504d56;
-  --ink-3:#65616b;
+  --color-text:#18171a;
+  --color-text-secondary:#504d56;
+  --color-text-muted:#65616b;
   --accent-3:#9e2746;
   --accent-4:#324aa8;
-  --ok:#35651e;
-  --warn:#725500;
-  --bad:#9e2746;
-  --info:#324aa8;
-  --focus:#324aa8;
-  --ok-surface:#e5f1df;
-  --warn-surface:#f5ebcd;
-  --bad-surface:#f7e2e7;
-  --info-surface:#e4e8f7;
+  --color-success:#35651e;
+  --color-warning:#725500;
+  --color-danger:#9e2746;
+  --color-info:#324aa8;
+  --color-focus:#324aa8;
+  --color-success-surface:#e5f1df;
+  --color-warning-surface:#f5ebcd;
+  --color-danger-surface:#f7e2e7;
+  --color-info-surface:#e4e8f7;
 }
 *{box-sizing:border-box}
 [hidden]{display:none!important}
@@ -601,6 +620,20 @@ p{margin:0}
 #circleCreateForm label{display:grid;gap:5px;min-width:0}
 #circleCreateStatus[data-state="error"]{color:var(--bad)}
 #circleCreateStatus[data-state="success"]{color:var(--ok)}
+.view{min-width:0}
+
+@media(max-width:640px){
+  .topbar,.main,.landing{max-width:100%}
+  .card-h{align-items:flex-start;flex-wrap:wrap}
+  .grid-2,.grid-3{grid-template-columns:minmax(0,1fr)!important}
+  .row,.person,.pair,.membership-actions{min-width:0}
+  .pair{align-items:flex-start;flex-direction:column}
+  .topic-group{max-width:100%;flex-wrap:wrap}
+  #circleContextPanel,#availabilityWrap,#psRemindRow{min-width:0}
+  #circleContextPanel .row,#availabilityWrap .row,#psRemindRow{align-items:flex-start!important}
+  #circleContextSelect{min-width:0;max-width:100%}
+  #landingStats .grid-3{grid-template-columns:repeat(3,minmax(0,1fr))!important}
+}
 
 @media(max-width:520px){
   .topbar{padding:10px; display:grid; grid-template-columns:minmax(0,1fr); gap:8px}
@@ -636,8 +669,16 @@ p{margin:0}
     max-width:none; max-height:min(92dvh,760px); overflow:auto;
     border-radius:18px 18px 0 0; padding:18px 16px calc(18px + env(safe-area-inset-bottom));
   }
+  #view-invite .card-b,#view-activation .card-b,#view-password-reset .card-b{padding:16px}
+  #availabilityWrap .pill,#psRemindRow .pill{min-height:44px}
   .auth-actions-primary{width:100%; margin-left:0}
   .auth-actions-primary .btn{flex:1; justify-content:center; min-height:44px}
+}
+
+@media(pointer:coarse){
+  :where(.pill,.tab,.chip,.tool,.btn){min-height:44px}
+  :where(input[type="checkbox"],input[type="radio"]){min-width:22px;min-height:22px}
+  #meMenu [role="menuitem"]{min-height:44px}
 }
 
 @media(prefers-reduced-motion:reduce){
@@ -650,6 +691,14 @@ p{margin:0}
 
 @media(forced-colors:active){
   :where(a,button,input,select,textarea,[tabindex]):focus-visible{outline:3px solid Highlight}
+  :where(.card,.mock-card,.modal,.tabs,.pill,.btn,.input,.textarea,.select,.status-chip,#circleContextPanel,#availabilityWrap){
+    border-color:CanvasText;
+  }
+  .status-chip.status-success{color:CanvasText;border-style:double}
+  .status-chip.status-warning{color:CanvasText;border-style:dashed}
+  .status-chip.status-danger{color:CanvasText;border-style:solid;border-width:2px}
+  .dot,.spinner,.onboard-dot.active{forced-color-adjust:none;background:Highlight;border-color:Highlight}
+  .btn,.tab.active,.chip.active{forced-color-adjust:auto}
 }
 </style>
 
@@ -838,11 +887,11 @@ p{margin:0}
   </header>
   <nav aria-label="Primary navigation">
   <div class="tabs" role="group" aria-label="Application views">
-    <button id="tab-circle" class="tab active" type="button" aria-current="page" data-tab="circle">◍ Circle <span class="kbd" id="peopleCount">0</span></button>
-    <button id="tab-pair" class="tab" type="button" data-tab="pair">⇄ Pairing</button>
-    <button id="tab-code" class="tab" type="button" data-tab="code">〈〉 Code</button>
-    <button id="tab-board" class="tab" type="button" data-tab="board">◫ Board</button>
-    <button id="tab-history" class="tab" type="button" data-tab="history">↺ History</button>
+    <button id="tab-circle" class="tab active" type="button" aria-current="page" aria-controls="view-circle" data-tab="circle">◍ Circle <span class="kbd" id="peopleCount">0</span></button>
+    <button id="tab-pair" class="tab" type="button" aria-controls="view-pair" data-tab="pair">⇄ Pairing</button>
+    <button id="tab-code" class="tab" type="button" aria-controls="view-code" data-tab="code">〈〉 Code</button>
+    <button id="tab-board" class="tab" type="button" aria-controls="view-board" data-tab="board">◫ Board</button>
+    <button id="tab-history" class="tab" type="button" aria-controls="view-history" data-tab="history">↺ History</button>
   </div>
   </nav>
   <main id="appMain" class="main" tabindex="-1">
@@ -878,10 +927,10 @@ p{margin:0}
     </section>
 
     <!-- VERIFIED EMAIL ACTIVATION -->
-    <section id="view-activation" class="view" data-testid="activation-landing" style="display:none">
+    <section id="view-activation" class="view" data-testid="activation-landing" aria-labelledby="activationTitle" style="display:none">
       <div class="landing" style="max-width:680px;margin:0 auto">
         <div class="card">
-          <div class="card-h"><h2>Activate your Randori account</h2><span>email verification</span></div>
+          <div class="card-h"><h2 id="activationTitle">Activate your Randori account</h2><span>email verification</span></div>
           <div class="card-b" style="display:grid;gap:14px">
             <p id="activationStatus" data-testid="activation-status" class="small muted" role="status" aria-live="polite">Checking your verification link…</p>
             <div><button id="activationContinue" data-testid="activation-continue" class="btn" type="button" hidden>Continue to Randori</button></div>
@@ -891,10 +940,10 @@ p{margin:0}
     </section>
 
     <!-- PASSWORD RESET -->
-    <section id="view-password-reset" class="view" data-testid="password-reset-landing" style="display:none">
+    <section id="view-password-reset" class="view" data-testid="password-reset-landing" aria-labelledby="passwordResetTitle" style="display:none">
       <div class="landing" style="max-width:680px;margin:0 auto">
         <div class="card">
-          <div class="card-h"><h2>Choose a new password</h2><span>account recovery</span></div>
+          <div class="card-h"><h2 id="passwordResetTitle">Choose a new password</h2><span>account recovery</span></div>
           <form id="passwordResetForm" class="card-b auth-form" novalidate>
             <p id="passwordResetStatus" data-testid="password-reset-status" class="small muted" role="status" aria-live="polite">Enter a new password to finish recovering your account.</p>
             <label class="auth-field" for="passwordResetNew"><span>New password</span><input id="passwordResetNew" class="input" type="password" autocomplete="new-password" minlength="10" maxlength="72" required/></label>
@@ -906,10 +955,10 @@ p{margin:0}
     </section>
 
     <!-- INVITATION LANDING -->
-    <section id="view-invite" class="view" data-testid="invite-landing" style="display:none">
+    <section id="view-invite" class="view" data-testid="invite-landing" aria-labelledby="inviteTitle" style="display:none">
       <div class="landing" style="max-width:680px;margin:0 auto">
         <div class="card">
-          <div class="card-h"><h2>You’re invited to Randori</h2><span>private circle</span></div>
+          <div class="card-h"><h2 id="inviteTitle">You’re invited to Randori</h2><span>private circle</span></div>
           <div class="card-b" style="display:grid;gap:14px">
             <p id="inviteInstructions" class="small muted" style="line-height:1.6;margin:0">Checking which sign-in options are available for this single-use invitation.</p>
             <div id="inviteStatus" data-testid="invite-status" class="small muted" role="status" aria-live="polite">Checking invitation…</div>
@@ -920,9 +969,9 @@ p{margin:0}
     </section>
 
     <!-- PROFILE SETUP -->
-    <section id="view-profile-setup" class="view" style="display:none">
+    <section id="view-profile-setup" class="view" aria-labelledby="profileSetupTitle" style="display:none">
       <div class="profile-setup card">
-        <div class="card-h"><h2>Set up your profile</h2><span>step 2 of 3 • 30s</span></div>
+        <div class="card-h"><h2 id="profileSetupTitle">Set up your profile</h2><span>step 2 of 3 • 30s</span></div>
         <div class="card-b" style="display:grid; gap:14px">
           <div class="row" style="gap:10px">
             <div id="psAvatar" class="avatar" style="width:44px;height:44px;font-size:14px;background:#c8f6a0">ME</div>
@@ -946,7 +995,7 @@ p{margin:0}
     </section>
 
     <!-- DASHBOARD -->
-    <section id="view-dashboard" class="view" style="display:none">
+    <section id="view-dashboard" class="view" aria-labelledby="dashWelcome" style="display:none">
       <div class="dashboard">
         <div class="dash-top">
           <div><h2 id="dashWelcome">Welcome back</h2><div id="dashSub" class="small muted">Checking pairings…</div></div>
@@ -984,7 +1033,7 @@ p{margin:0}
       <div class="row" style="margin-top:4px"><button id="chkStartTour" class="pill" style="font-size:11px">↺ Restart tour</button><span class="small muted" id="chkProgress">0/5</span></div>
     </div>
     <!-- CIRCLE -->
-    <section id="view-circle" class="view" tabindex="0">
+    <section id="view-circle" class="view" tabindex="0" aria-labelledby="tab-circle">
       <div class="grid-2">
         <div class="card">
           <div class="card-h"><h2>Circle members</h2><span id="circleRoleLabel">private</span></div>
@@ -1062,7 +1111,7 @@ p{margin:0}
     </section>
 
     <!-- PAIRING -->
-    <section id="view-pair" class="view" tabindex="0" style="display:none">
+    <section id="view-pair" class="view" tabindex="0" aria-labelledby="tab-pair" style="display:none">
       <div class="grid-2">
         <div class="card">
           <div class="card-h">
@@ -1099,7 +1148,7 @@ p{margin:0}
     </section>
 
     <!-- CODE -->
-    <section id="view-code" class="view" tabindex="0" style="display:none">
+    <section id="view-code" class="view" tabindex="0" aria-labelledby="tab-code" style="display:none">
       <div id="videoBar" class="video-bar">
         <div class="video-bar-head">
           <div class="row small"><b style="font-size:13px">Live room</b><span class="kbd" id="videoRoomLabel">room —</span><span id="videoStatus" class="kbd">off</span></div>
@@ -1221,7 +1270,7 @@ p{margin:0}
     </section>
 
     <!-- BOARD -->
-    <section id="view-board" class="view" tabindex="0" style="display:none">
+    <section id="view-board" class="view" tabindex="0" aria-labelledby="tab-board" style="display:none">
       <div class="board-wrap">
         <div class="board-toolbar" role="toolbar" aria-label="Whiteboard tools">
           <button class="tool active" data-tool="select" title="Select/move" aria-label="Select or move a shape" aria-pressed="true">↖</button>
@@ -1251,7 +1300,7 @@ p{margin:0}
     </section>
 
     <!-- PAIRINGS / ACTIVITY HISTORY -->
-    <section id="view-history" class="view" tabindex="0" style="display:none">
+    <section id="view-history" class="view" tabindex="0" aria-labelledby="tab-history" style="display:none">
       <div class="card" data-testid="pair-history">
         <div class="card-h"><h2>Pairings &amp; activity</h2><span id="historyCount">0 pairings</span><span id="historyAuthHint" class="small muted" style="margin-left:8px">Sign in to see your pairings</span></div>
         <div class="card-b">
@@ -2030,7 +2079,7 @@ async function refreshMe(){
       toggle.checked=false;
       toggle.disabled=true;
       label.textContent=availabilityState.loading?'LOADING…':'UNAVAILABLE';
-      label.style.color='var(--muted)';
+      label.style.color='var(--color-text-muted)';
       if(title) title.textContent='Upcoming availability';
       if(cycleText) cycleText.textContent=availabilityState.loading?'Loading the upcoming pairing cycle…':'Upcoming cycle could not be loaded.';
       if(cutoffText) cutoffText.textContent='';
@@ -2705,6 +2754,7 @@ async function refreshMe(){
     trigger._menuWired=true;
     const items=()=>[...menu.querySelectorAll('[role="menuitem"]')]
       .filter(item=>!item.hidden&&!item.disabled&&item.getClientRects().length>0);
+    const isOpen=()=>trigger.getAttribute('aria-expanded')==='true';
     const setOpen=(open,focusAt=null)=>{
       menu.style.display=open?'block':'none';
       trigger.setAttribute('aria-expanded',open?'true':'false');
@@ -2742,9 +2792,16 @@ async function refreshMe(){
     menu.addEventListener('click',event=>{
       if(event.target.closest('[role="menuitem"]')) setOpen(false);
     });
-    document.addEventListener('click',event=>{
+    document.addEventListener('pointerdown',event=>{
       if(!menu.contains(event.target)&&event.target!==trigger) setOpen(false);
+    },true);
+    document.addEventListener('keydown',event=>{
+      if(event.key!=='Escape'||!isOpen()) return;
+      event.preventDefault();
+      setOpen(false);
+      trigger.focus();
     });
+    window.addEventListener('blur',()=>setOpen(false));
   })();
   const LIFECYCLE_RECENT_ACTION_KEY='randori-lifecycle-recent-action-v1';
   const identityUi={
