@@ -20,7 +20,8 @@
   let token=null;
   let binding=null;
   let preparation;
-  const gate=window._randori_invite_gate?.create?.()||null;
+  const gateApi=window._randori_invite_gate;
+  const gate=gateApi?.create?.()||null;
   let generation=null;
   try{
     const hash=String(window.location.hash||'');
@@ -63,12 +64,20 @@
           ?result.expires_in_seconds:null;
         const ok=response.ok&&result?.ok===true&&returnedBinding!==null
           &&expiresInSeconds!==null&&(!requestedBinding||returnedBinding===requestedBinding);
-        if(ok) storeBinding(returnedBinding);
-        else clearBinding();
+        const generationCurrent=gate?.generation===generation;
+        const retainStoredBinding=generationCurrent
+          &&gateApi?.shouldRetainRateLimitedBinding?.({
+            status:response.status,requestedBinding,storedBinding:readStoredBinding(),
+          })===true;
+        if(generationCurrent){
+          if(ok) storeBinding(returnedBinding);
+          else if(!retainStoredBinding) clearBinding();
+        }
         return {
           present:true,
           ok,
           rateLimited:response.status===429,
+          retainStoredBinding,
           retryAfter:Number(result?.retry_after_seconds)||null,
           expiresInSeconds,
           binding:returnedBinding,
@@ -1717,6 +1726,7 @@ p{margin:0}
     const requestIdentityHydrated=authIdentityHydrated;
     try{
       const result=await invitePreparation;
+      if(Number.isSafeInteger(result?.generation)&&result.generation!==inviteGate?.generation) return;
       if(result?.present===true) inviteState.active=true;
       if(!inviteState.active) return;
       if(requestAuthEpoch!==authSessionEpoch
@@ -1736,7 +1746,7 @@ p{margin:0}
       inviteState.rateLimited=result?.rateLimited===true;
       inviteState.retryAfter=Number.isSafeInteger(result?.retryAfter)&&result.retryAfter>0?result.retryAfter:null;
       inviteState.failed=!inviteState.ready&&!inviteState.rateLimited&&!inviteState.expired;
-      if(!inviteState.ready) clearStoredInviteBinding();
+      if(!inviteState.ready&&result?.retainStoredBinding!==true) clearStoredInviteBinding();
       const snapshot=preparedInviteSnapshot();
       if(snapshot) schedulePreparedInviteExpiry(snapshot);
     }catch{

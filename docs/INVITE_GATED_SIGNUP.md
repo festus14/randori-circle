@@ -22,6 +22,14 @@ the remaining lifetime. Leaving `/invite`, a malformed refresh, expiry,
 successful consumption, ordinary Google login, or an authoritative identity
 change clears it.
 
+A `429` received while refreshing an already stored, syntactically valid
+binding is the only unsuccessful preparation outcome that retains storage. The
+gate stays non-ready and all invitation-bound actions remain disabled; after
+the advertised cooldown, reloading `/invite` retries the same opaque binding.
+This exception never applies to a raw-token preparation or to a binding copied
+from the response. Evaluated invalid claims, malformed responses, expiry,
+network failures, and stale generations still clear or leave cleared storage.
+
 Password signup, activation resend, and invite-purpose Google initiation carry
 the exact live `invite_binding`. Ordinary Google sign-in uses the explicit
 `login` purpose and cannot consume a stale invitation. The server remains the
@@ -82,8 +90,9 @@ in a hosted preview before production promotion:
 2. valid Google and verified-password invitation signup;
 3. cancel/reopen and resend while an invitation remains live;
 4. expiry during delayed prepare, signup, resend, and Google-start requests;
-5. overlapping invitations whose cookie responses arrive out of order; and
-6. local `local_open` signup and invitation reload.
+5. overlapping invitations whose cookie responses arrive out of order;
+6. local `local_open` signup and invitation reload; and
+7. stored-binding rate limiting, cooldown reload, and stale response fencing.
 
 No schema, secret, or production-data change is part of #185. A client rollback
 restores the previous presentation but weakens fail-closed guidance and race

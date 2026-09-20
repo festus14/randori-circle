@@ -14,6 +14,27 @@ function loadGate(){
 const BINDING_A='A'.repeat(43);
 const BINDING_B='B'.repeat(43);
 
+test('only an exact pre-existing binding survives an unevaluated rate limit',()=>{
+  const api=loadGate();
+  assert.equal(api.shouldRetainRateLimitedBinding({
+    status:429,requestedBinding:BINDING_A,storedBinding:BINDING_A,
+  }),true);
+  for(const status of [200,400,401,403,404,409,410,500]){
+    assert.equal(api.shouldRetainRateLimitedBinding({
+      status,requestedBinding:BINDING_A,storedBinding:BINDING_A,
+    }),false);
+  }
+  assert.equal(api.shouldRetainRateLimitedBinding({
+    status:429,requestedBinding:BINDING_A,storedBinding:BINDING_B,
+  }),false);
+  assert.equal(api.shouldRetainRateLimitedBinding({
+    status:429,requestedBinding:'not-canonical',storedBinding:'not-canonical',
+  }),false);
+  assert.equal(api.shouldRetainRateLimitedBinding({
+    status:429,requestedBinding:null,storedBinding:BINDING_A,
+  }),false);
+});
+
 test('prepared invitation gate accepts only a bounded exact generation and binding',()=>{
   let now=100;
   const api=loadGate();
