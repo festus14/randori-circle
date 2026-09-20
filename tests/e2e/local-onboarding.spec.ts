@@ -25,7 +25,9 @@ test.describe('unmocked local onboarding',()=>{
   test.beforeAll(async()=>{
     directory=realpathSync(mkdtempSync(join(tmpdir(),'randori-local-onboarding-e2e-')));
     mkdirSync(join(directory,'.local'),{mode:0o700});
+    mkdirSync(join(directory,'assets'));
     copyFileSync(join(repositoryRoot,'index.html'),join(directory,'index.html'));
+    copyFileSync(join(repositoryRoot,'assets','invite-gate.js'),join(directory,'assets','invite-gate.js'));
     const databaseUrl=pathToFileURL(join(directory,'.local','onboarding.sqlite')).href;
     config=resolveLocalServerConfig({
       rootDir:directory,

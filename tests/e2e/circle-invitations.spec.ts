@@ -216,6 +216,36 @@ test('a cancelled invited Google attempt returns to the live invitation retry',a
   expect(providerStarts).toBe(2);
 });
 
+test('a failed invite Google start releases busy state before offering retry',async({page})=>{
+  const token='F'.repeat(43);
+  let providerStarts=0;
+  await mockApi(page,{
+    '/api/invitations/prepare':{ok:true,binding:inviteBinding,expires_in_seconds:600},
+    '/api/auth/google/start':request=>{
+      providerStarts+=1;
+      expect(request.method()).toBe('POST');
+      expect(request.postDataJSON()).toEqual({purpose:'invite',invite_binding:inviteBinding});
+      if(providerStarts===1) return {_status:503,error:'Google sign-in is unavailable'};
+      return {ok:true,authorizationUrl:'https://accounts.google.com/o/oauth2/v2/auth?state=retry'};
+    },
+  });
+  await page.route('https://accounts.google.com/**',route=>route.fulfill({
+    status:200,contentType:'text/html',body:'<!doctype html><h1>Mock Google retry</h1>',
+  }));
+  await resetClientState(page);
+  await page.goto(`/invite#invite=${token}`,{waitUntil:'domcontentloaded'});
+
+  await page.getByTestId('invite-continue').click();
+  const retry=page.getByRole('button',{name:'Try Google sign-in again'});
+  await expect(retry).toBeVisible();
+  await expect(retry).toBeEnabled();
+  await expect(page.locator('#authForm')).toHaveAttribute('aria-busy','false');
+
+  await retry.click();
+  await expect(page.getByRole('heading',{name:'Mock Google retry'})).toBeVisible();
+  expect(providerStarts).toBe(2);
+});
+
 test('an invite OAuth error cannot downgrade to login while identity hydration is unavailable',async({page})=>{
   let meCalls=0;
   let googleStarts=0;

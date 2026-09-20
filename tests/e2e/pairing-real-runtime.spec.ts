@@ -25,7 +25,9 @@ type Cycle = { cycleId: string; startsAt: string; endsAt: string; cutoffAt: stri
 function createRuntimeFixture() {
   const rootDir = realpathSync(mkdtempSync(join(tmpdir(), 'randori-real-browser-')));
   mkdirSync(join(rootDir, '.local'), { mode: 0o700 });
+  mkdirSync(join(rootDir, 'assets'));
   copyFileSync(join(repositoryRoot, 'index.html'), join(rootDir, 'index.html'));
+  copyFileSync(join(repositoryRoot, 'assets', 'invite-gate.js'), join(rootDir, 'assets', 'invite-gate.js'));
   const databaseUrl = pathToFileURL(join(rootDir, '.local', 'randori.sqlite')).href;
   const config = resolveLocalServerConfig({
     rootDir,

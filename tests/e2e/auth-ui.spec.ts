@@ -325,7 +325,7 @@ test('invite expiry aborts an in-flight signup and fences its delayed success re
   });
   await resetClientState(page);
   await page.goto(`/invite#invite=${token}`,{waitUntil:'domcontentloaded'});
-  await page.clock.fastForward(200);
+  await page.evaluate(()=>(window as any)._randori_auth.refreshMe());
   await page.getByTestId('invite-continue').click();
   await page.locator('#authEmail').fill('invited@example.test');
   await page.locator('#authName').fill('Invited Member');

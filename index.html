@@ -3283,8 +3283,11 @@ async function refreshMe(){
     }catch(error){
       if(googleInviteStartRequest!==request||request.controller.signal.aborted
         ||!authInteractionMatches(operation)) return false;
-      setAuthError(authFailureMessage(error,'signup'));
-      openAuthModal('signup',{message:authFailureMessage(error,'signup'),googleRetry:true});
+      googleInviteStartRequest=null;
+      authBusy=false;
+      const message=authFailureMessage(error,'signup');
+      setAuthError(message);
+      openAuthModal('signup',{message,googleRetry:true});
       return false;
     }finally{
       if(googleInviteStartRequest===request){
