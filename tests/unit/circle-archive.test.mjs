@@ -120,6 +120,16 @@ async function retainedSnapshot(db){
   return result;
 }
 
+async function archiveStateSnapshot(db){
+  const circles=await db.execute(`SELECT id,archived_at FROM circles ORDER BY id`);
+  const contexts=await db.execute(`SELECT session_hash,user_id,circle_id,context_version,updated_at
+    FROM auth_session_circle_contexts ORDER BY session_hash,user_id`);
+  return {
+    circles:circles.rows.map(row=>({...row})),
+    contexts:contexts.rows.map(row=>({...row})),
+  };
+}
+
 test('archive input is exact and accepts only a public circle id plus context CAS',()=>{
   assert.deepEqual(parseCircleArchive({
     circle_public_id:'circle-secondary',expected_context_version:4,
@@ -219,6 +229,7 @@ test('primary, last-circle, stale-context, and recent-auth safety fail before mu
       if(scenario==='stale') archiveInput=input('circle-secondary',3);
       if(scenario==='recent') await item.db.execute({sql:`DELETE FROM auth_recent_proofs WHERE session_hash=?`,args:[SESSION_A]});
       const before=await retainedSnapshot(item.db);
+      const beforeArchiveState=await archiveStateSnapshot(item.db);
       if(scenario==='recent'){
         await assert.rejects(
           archiveSecondaryCircle(item.db,payload(),archiveInput,{nowSeconds:NOW}),
@@ -230,7 +241,8 @@ test('primary, last-circle, stale-context, and recent-auth safety fail before mu
         assert.deepEqual(result,{ok:false,reason:scenario==='primary'?'primary_circle'
           :scenario==='last'?'last_circle':'context_changed'});
       }
-      assert.equal((await item.db.execute(`SELECT archived_at FROM circles WHERE id=20`)).rows[0].archived_at,null);
+      assert.deepEqual(await archiveStateSnapshot(item.db),beforeArchiveState,
+        'every circle marker and affected session context remains unchanged');
       assert.deepEqual(await retainedSnapshot(item.db),before);
       assert.equal(Number((await item.db.execute(`SELECT COUNT(*) AS count FROM circle_audit_events
         WHERE event_type='circle.archived'`)).rows[0].count),0);
@@ -317,6 +329,7 @@ test('pre-commit retry revalidates the live session and audit failure rolls back
     const item=fixture();
     try{
       await migrate(item.db); await seed(item.db);
+      const beforeArchiveState=await archiveStateSnapshot(item.db);
       let attempts=0;
       const guardedDb={
         async transaction(mode){
@@ -354,9 +367,8 @@ test('pre-commit retry revalidates the live session and audit failure rolls back
           nowSeconds:NOW,maxAttempts:1,baseDelayMs:0,
         }),/forced audit failure/);
       }
-      assert.equal((await item.db.execute(`SELECT archived_at FROM circles WHERE id=20`)).rows[0].archived_at,null);
-      assert.equal(Number((await item.db.execute({sql:`SELECT context_version
-        FROM auth_session_circle_contexts WHERE session_hash=?`,args:[SESSION_A]})).rows[0].context_version),4);
+      assert.deepEqual(await archiveStateSnapshot(item.db),beforeArchiveState,
+        'retry/session and audit failures preserve every archive marker and selected context');
       assert.equal(Number((await item.db.execute(`SELECT COUNT(*) AS count FROM circle_audit_events
         WHERE event_type='circle.archived'`)).rows[0].count),0);
     }finally{ item.close(); }
