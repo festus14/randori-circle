@@ -1849,8 +1849,9 @@ size, and shares one ten-second API deadline. Its JSON projection contains only
 fixed status values, bounded counts, run identifiers, and timing metadata. The
 workflow has `actions: read` and `contents: read`, no production environment or
 secret, and no application, workflow-dispatch, database, or provider mutation.
-The repository deployability contract fails if either the watchdog boundary or
-the source worker's two-minute timeout is weakened.
+The repository deployability contract binds reviewed digests for the workflow
+and assessor and fails if either the watchdog boundary or the source worker's
+two-minute timeout is weakened.
 
 **Alternatives.** A redundant secret-bearing scheduler could improve
 availability but duplicates privileged configuration and risks concurrent

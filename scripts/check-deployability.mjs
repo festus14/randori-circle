@@ -1,10 +1,13 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
 
 const OUTBOX_WORKFLOW_PATH='.github/workflows/outbox-dispatch.yml';
 const OUTBOX_WATCHDOG_WORKFLOW_PATH='.github/workflows/outbox-dispatch-watchdog.yml';
 const OUTBOX_WATCHDOG_SCRIPT_PATH='scripts/github-outbox-dispatch-watchdog.mjs';
+const OUTBOX_WATCHDOG_WORKFLOW_SHA256='7f0a1134ee921afd1a67eea627de2bb786c2a941e3ecdaf267aefc652cb2442d';
+const OUTBOX_WATCHDOG_SCRIPT_SHA256='3a803ee2f2150f63879e41ab05432470a42ee14fee8191cc1269affc1d63ccd7';
 const REQUIRED_ROOT_FILES = [
   'index.html', 'package-lock.json', 'package.json', 'vercel.json', OUTBOX_WORKFLOW_PATH,
   OUTBOX_WATCHDOG_WORKFLOW_PATH, OUTBOX_WATCHDOG_SCRIPT_PATH,
@@ -21,6 +24,10 @@ const SUPPORTED_NODE_RANGE = '24.x';
 
 function record(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function sha256(value){
+  return typeof value==='string'?createHash('sha256').update(value,'utf8').digest('hex'):null;
 }
 
 function routeHeaders(headers, source) {
@@ -214,7 +221,7 @@ function validateOutboxWatchdogWorkflow(workflow){
 }
 
 export function validateDeploymentContract({ vercel, packageJson, files, outboxWorkflow,
-  outboxWatchdogWorkflow }) {
+  outboxWatchdogWorkflow, outboxWatchdogScript }) {
   const errors = [];
   const config = record(vercel);
   const manifest = record(packageJson);
@@ -237,6 +244,12 @@ export function validateDeploymentContract({ vercel, packageJson, files, outboxW
 
   errors.push(...validateOutboxWorkflow(outboxWorkflow));
   errors.push(...validateOutboxWatchdogWorkflow(outboxWatchdogWorkflow));
+  if(sha256(outboxWatchdogWorkflow)!==OUTBOX_WATCHDOG_WORKFLOW_SHA256){
+    errors.push('outbox watchdog workflow must match its reviewed immutable contract');
+  }
+  if(sha256(outboxWatchdogScript)!==OUTBOX_WATCHDOG_SCRIPT_SHA256){
+    errors.push('outbox watchdog assessor must match its reviewed immutable contract');
+  }
 
   if (!Array.isArray(config.rewrites) || config.rewrites.length === 0) {
     errors.push('vercel.json must define rewrites');
@@ -341,6 +354,7 @@ export function inspectDeploymentContract(rootDirectory = process.cwd()) {
   let packageJson;
   let outboxWorkflow;
   let outboxWatchdogWorkflow;
+  let outboxWatchdogScript;
   try {
     vercel = JSON.parse(readFileSync(resolve(root, 'vercel.json'), 'utf8'));
   } catch (error) {
@@ -364,8 +378,14 @@ export function inspectDeploymentContract(rootDirectory = process.cwd()) {
     outboxWatchdogWorkflow = null;
   }
 
+  try {
+    outboxWatchdogScript = readFileSync(resolve(root, OUTBOX_WATCHDOG_SCRIPT_PATH), 'utf8');
+  } catch {
+    outboxWatchdogScript = null;
+  }
+
   return validateDeploymentContract({ vercel, packageJson, files, outboxWorkflow,
-    outboxWatchdogWorkflow });
+    outboxWatchdogWorkflow, outboxWatchdogScript });
 }
 
 function main() {

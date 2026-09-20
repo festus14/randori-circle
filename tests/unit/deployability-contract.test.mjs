@@ -14,6 +14,7 @@ function currentContract() {
     packageJson: JSON.parse(readFileSync('package.json', 'utf8')),
     outboxWorkflow: readFileSync('.github/workflows/outbox-dispatch.yml', 'utf8'),
     outboxWatchdogWorkflow: readFileSync('.github/workflows/outbox-dispatch-watchdog.yml', 'utf8'),
+    outboxWatchdogScript: readFileSync('scripts/github-outbox-dispatch-watchdog.mjs', 'utf8'),
     files: new Set([
       'index.html',
       'package-lock.json',
@@ -287,4 +288,17 @@ test('deployability rejects a weakened or privileged outbox watchdog',()=>{
   errors=validateDeploymentContract(continued);
   assert.ok(errors.includes('outbox watchdog must remain secret-free, read-only, and non-mutating'));
   assert.ok(errors.includes('outbox watchdog assessment step must retain its exact fail-closed shape'));
+
+  const extraShell=cloneContract();
+  extraShell.outboxWatchdogWorkflow=extraShell.outboxWatchdogWorkflow.replace(
+    'run: node scripts/github-outbox-dispatch-watchdog.mjs',
+    "run: node scripts/github-outbox-dispatch-watchdog.mjs\n        shell: bash -c 'true' -- {0}",
+  );
+  assert.ok(validateDeploymentContract(extraShell).includes(
+    'outbox watchdog workflow must match its reviewed immutable contract'));
+
+  const replacedAssessor=cloneContract();
+  replacedAssessor.outboxWatchdogScript='process.exitCode=0;\n';
+  assert.ok(validateDeploymentContract(replacedAssessor).includes(
+    'outbox watchdog assessor must match its reviewed immutable contract'));
 });

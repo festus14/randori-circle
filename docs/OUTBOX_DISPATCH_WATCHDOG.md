@@ -68,7 +68,9 @@ The workflow has only `actions: read` and `contents: read`; checkout does not
 persist credentials and every action is commit-pinned. The deployability gate
 rejects removal or weakening of the watchdog, its exact fail-closed command,
 its bounds, the dispatcher's two-minute deadline, or the
-secret-free/non-mutating boundary.
+secret-free/non-mutating boundary. Reviewed SHA-256 digests bind both the
+workflow and assessor, so adding an unreviewed step or changing executable
+behavior requires an explicit contract update.
 
 ## Recovery and rollout
 
