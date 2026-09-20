@@ -130,6 +130,7 @@ Provider-identity, membership, and all other schema changes use the protected mi
 - `GET /api/settings/availability` — authenticated, private/no-store read of the upcoming cycle and the caller's exact setting: `{cycle,cycleKey,isAvailable,version,source,editable,updatedAt}`.
 - `POST /api/settings/availability` — authenticated compare-and-swap update with the exact body `{cycle_key:string,expected_version:integer,is_available:boolean}`. Strings such as `"false"`, aliases, unknown fields, stale versions, changed cycles, and closed cutoffs are rejected. A `409` returns the refreshed authoritative availability state.
 - `POST /api/init` — authenticated admin-only, data-only primary-circle backfill on the exact current schema. It atomically closes the durable registration latch and is a read-only no-op after successful initialization.
+- `POST /api/admin/reshuffle` with `action=promote`, plus `POST /api/admin/demo-seed`, `demo-shuffle`, and `demo-reset`, authorize the current administrator before running handler-specific read-only schema checks. They cannot create or repair schema; an unavailable contract returns a generic `503` before data mutation. See [operations request-path DDL retirement](docs/OPERATIONS_RUNTIME_DDL_RETIREMENT.md).
 
 **Scheduler:**
 ```json

@@ -5,15 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkRuntimeDdl, normalizeDdl, RUNTIME_DDL_ALLOWLIST, stringLiterals } from '../../scripts/check-runtime-ddl.mjs';
 
-test('runtime DDL debt matches its deterministic reviewed allowlist',()=>{
+test('runtime DDL is absent and the reviewed allowlist is exact zero',()=>{
   const result=checkRuntimeDdl('api');
   assert.equal(result.ok,true);
-  assert.equal(result.snapshots.length,RUNTIME_DDL_ALLOWLIST.length);
-  assert.equal(result.snapshots.reduce((total,item)=>total+item.statementCount,0),16);
-  assert.equal(result.snapshots.some(item=>item.file==='api/auth.js'),false);
-  assert.equal(result.snapshots.some(item=>item.file==='api/data.js'),false);
-  assert.equal(result.snapshots.some(item=>item.file==='api/ai.js'),false);
-  assert.equal(result.snapshots.some(item=>item.file==='api/_circle-membership.js'),false);
+  assert.deepEqual(RUNTIME_DDL_ALLOWLIST,[]);
+  assert.deepEqual(result.snapshots,[]);
+  assert.deepEqual(result.entries,[]);
 });
 
 test('AI requests and readiness contain no runtime DDL',()=>{
@@ -43,6 +40,15 @@ test('notification-preference requests and readiness contain no runtime DDL',()=
   );
   assert.deepEqual(preferenceTableDdl,[],'notification preferences must not regain schema mutation');
   assert.deepEqual(readinessDdl,[],'ops readiness must remain read-only');
+});
+
+test('admin and demo operation requests and readiness contain no runtime DDL',()=>{
+  const opsSource=readFileSync(new URL('../../api/ops.js',import.meta.url),'utf8');
+  const readinessSource=readFileSync(new URL('../../api/_ops-readiness.js',import.meta.url),'utf8');
+  const ddlPattern=/\b(?:CREATE\s+(?:(?:UNIQUE|TEMP(?:ORARY)?|VIRTUAL|OR\s+REPLACE)\s+)*(?:TABLE|INDEX|VIEW|TRIGGER)|ALTER\s+TABLE|DROP\s+(?:TABLE|INDEX|VIEW|TRIGGER))\b/iu;
+  assert.deepEqual(stringLiterals(opsSource).filter(({value})=>ddlPattern.test(value)),[]);
+  assert.deepEqual(stringLiterals(readinessSource).filter(({value})=>ddlPattern.test(value)),[]);
+  assert.doesNotMatch(opsSource,/ensureMigrations/);
 });
 
 test('data routes, including admin init, contain no runtime DDL',()=>{
