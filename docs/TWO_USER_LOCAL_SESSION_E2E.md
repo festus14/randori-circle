@@ -28,11 +28,13 @@ The journey crosses the same scoped boundaries as the product:
 6. Both browsers join the canonical room and hydrate the same workspace. The
    owner executes the saved solution, and both members observe its attested
    room run in the feed.
-7. Both read the same safe recap projection. The unpaired circle member is
-   denied schedule, chat, workspace, run, recap, and execution access.
-8. The server is closed and restarted with the same database and local secret.
-   A real session then rehydrates the pairing, schedule, chat, workspace, run,
-   and recap from durable state.
+7. Both read the same safe recap projection. The server is then closed and
+   restarted with the same database and local secret, and a real session
+   rehydrates the pairing, schedule, chat, workspace, run, and recap.
+8. After recovery, the unpaired circle member is denied schedule, chat,
+   workspace, run, recap, and execution access. Its final revocation check runs
+   only after restart so deliberately invalid membership state cannot weaken
+   the startup-readiness assertion.
 
 Browser traffic is allowed only to the runtime's `127.0.0.1` origin. The one
 normally external execution boundary is replaced inside this test process by a

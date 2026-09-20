@@ -25,7 +25,12 @@ type SafeUser = { id: number; email: string; name: string; is_admin: boolean };
 type Cycle = { cycleId: string; startsAt: string; endsAt: string; cutoffAt: string };
 
 function executeLocalHarness(source: string) {
-  return new Promise<{stdout: string; stderr: string}>((resolve, reject) => {
+  return new Promise<{
+    stdout: string;
+    stderr: string;
+    code: number | null;
+    signal: NodeJS.Signals | null;
+  }>((resolve, reject) => {
     const child = spawn(process.execPath, ['--input-type=commonjs'], {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -33,12 +38,23 @@ function executeLocalHarness(source: string) {
     const stderr: Buffer[] = [];
     let outputBytes = 0;
     let settled = false;
+    let exitCode: number | null = null;
+    let exitSignal: NodeJS.Signals | null = null;
     const finish = (error?: Error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      if (error) reject(error);
-      else resolve({stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8')});
+      const capturedStderr = Buffer.concat(stderr).toString('utf8');
+      if (error) {
+        reject(new Error(capturedStderr ? `${error.message}: ${capturedStderr.slice(0, 2_000)}` : error.message));
+      } else {
+        resolve({
+          stdout: Buffer.concat(stdout).toString('utf8'),
+          stderr: capturedStderr,
+          code: exitCode,
+          signal: exitSignal,
+        });
+      }
     };
     const capture = (target: Buffer[]) => (chunk: Buffer) => {
       outputBytes += chunk.length;
@@ -52,9 +68,10 @@ function executeLocalHarness(source: string) {
     child.stdout.on('data', capture(stdout));
     child.stderr.on('data', capture(stderr));
     child.once('error', error => finish(error));
-    child.once('close', code => {
-      if (code !== 0) finish(new Error(`deterministic execution exited with code ${code}`));
-      else finish();
+    child.once('close', (code, signal) => {
+      exitCode = code;
+      exitSignal = signal;
+      finish();
     });
     child.stdin.once('error', error => finish(error));
     const timeout = setTimeout(() => {
@@ -110,7 +127,12 @@ function installDeterministicLocalExecutionTransport() {
     return new Response(JSON.stringify({
       language: request.language,
       version: request.version,
-      run: { stdout: result.stdout, stderr: result.stderr, code: 0, signal: null },
+      run: {
+        stdout: result.stdout,
+        stderr: result.stderr,
+        code: result.code,
+        signal: result.signal,
+      },
     }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
@@ -849,6 +871,83 @@ test('two invited members complete the durable local session journey', async ({ 
       WHERE event_type IN ('pairing.email.requested','schedule.email.requested')`)).rows[0].count)).toBe(7);
     await cycleOutbox.close();
 
+    await runtime.close();
+    runtime = await startLocalDevelopmentServer({
+      config: fixture.config,
+      logger: silentLogger,
+      sqlObserver: (sql: string) => requestSql.push(sql),
+    });
+    await pages[0].goto(`${runtime.url}/join/${ownerRoom}`, {waitUntil: 'domcontentloaded'});
+    await expect(pages[0].locator('#view-code')).toBeVisible();
+    await expect.poll(() => pages[0].evaluate(() => (
+      window as typeof window & {_randori_workspace?: {hydrated?: boolean}}
+    )._randori_workspace?.hydrated)).toBe(true);
+    await expect(pages[0].locator('#editor')).toBeVisible();
+    await expect(pages[0].locator('#editor')).toHaveValue(correctCode);
+    await expect(pages[0].locator('#questionSelect')).toHaveValue('focus-block-rollup');
+    await expect.poll(() => pages[0].evaluate(() => JSON.parse(JSON.stringify((
+      window as typeof window & {_randori_board?: {shapes?: unknown[]}}
+    )._randori_board?.shapes || [])))).toEqual(finalBoard.shapes);
+    await expect(pages[0].locator('#pairRunsList')).toContainText('8/8');
+
+    const recoveredPair = await browserJson(pages[0], '/api/my-pair');
+    expect(recoveredPair).toMatchObject({
+      status: 200,
+      body: {
+        ok: true,
+        paired: true,
+        room_id: ownerRoom,
+        cycle: {cycleId: ownerCycle!.cycleId},
+        me: {id: owner.id},
+      },
+    });
+    const recoveredWorkspace = await browserJson(pages[0], workspacePath);
+    expect(recoveredWorkspace).toMatchObject({
+      status: 200,
+      body: {
+        ok: true,
+        revision: expect.any(Number),
+        snapshot: {code: correctCode, board: finalBoard},
+      },
+    });
+    const recoveredMessages = await browserJson(
+      pages[0],
+      `/api/messages?room_id=${encodeURIComponent(String(ownerRoom))}&after_id=0&limit=50`,
+    );
+    expect((recoveredMessages.body as {messages?: unknown[]}).messages).toHaveLength(2);
+    const recoveredRuns = await browserJson(
+      pages[0],
+      `/api/runs?room_id=${encodeURIComponent(String(ownerRoom))}&after_id=0&limit=20`,
+    );
+    expect(recoveredRuns).toMatchObject({
+      status: 200,
+      body: {
+        ok: true,
+        room_id: ownerRoom,
+        runs: [expect.objectContaining({id: execution.run_id, authoritative: true, runner: {id: owner.id}})],
+      },
+    });
+    const recoveredRecap = await browserJson(pages[0], recapPath);
+    expect(recoveredRecap).toMatchObject({
+      status: 200,
+      body: {
+        ok: true,
+        room_id: ownerRoom,
+        recap: {
+          schedule: {agreed_time: agreedTime},
+          workspace: {artifact_available: true, question_slug: 'focus-block-rollup'},
+        },
+      },
+    });
+    await openDashboard(pages[0]);
+    await pages[0].evaluate(async () => {
+      const chat = (window as typeof window & {_randori_chat?: {refresh?: () => Promise<unknown>}})._randori_chat;
+      if (!chat?.refresh) throw new Error('chat refresh unavailable');
+      await chat.refresh();
+    });
+    await expect(pages[0].getByTestId('pair-chat-list')).toContainText('I will drive the first implementation.');
+    await expect(pages[0].getByTestId('pair-chat-list')).toContainText('I will navigate and review edge cases.');
+
     const laterEmail = 'later.member@example.test';
     const laterInvitation = await createInvitation(pages[0], runtime.url, laterEmail);
     const laterMember = await acceptInvitation(pages[2], runtime.url, laterInvitation, {
@@ -944,82 +1043,6 @@ test('two invited members complete the durable local session journey', async ({ 
       .every(row => /^schedule-[1-4]$/.test(String(row.provider_message_id)))).toBe(true);
     expect(reminders.rows.find(row => row.status === 'suppressed')?.provider_message_id).toBeNull();
 
-    await runtime.close();
-    runtime = await startLocalDevelopmentServer({
-      config: fixture.config,
-      logger: silentLogger,
-      sqlObserver: (sql: string) => requestSql.push(sql),
-    });
-    await pages[0].goto(`${runtime.url}/join/${ownerRoom}`, {waitUntil: 'domcontentloaded'});
-    await expect(pages[0].locator('#view-code')).toBeVisible();
-    await expect.poll(() => pages[0].evaluate(() => (
-      window as typeof window & {_randori_workspace?: {hydrated?: boolean}}
-    )._randori_workspace?.hydrated)).toBe(true);
-    await expect(pages[0].locator('#editor')).toBeVisible();
-    await expect(pages[0].locator('#editor')).toHaveValue(correctCode);
-    await expect(pages[0].locator('#questionSelect')).toHaveValue('focus-block-rollup');
-    await expect.poll(() => pages[0].evaluate(() => JSON.parse(JSON.stringify((
-      window as typeof window & {_randori_board?: {shapes?: unknown[]}}
-    )._randori_board?.shapes || [])))).toEqual(finalBoard.shapes);
-    await expect(pages[0].locator('#pairRunsList')).toContainText('8/8');
-
-    const recoveredPair = await browserJson(pages[0], '/api/my-pair');
-    expect(recoveredPair).toMatchObject({
-      status: 200,
-      body: {
-        ok: true,
-        paired: true,
-        room_id: ownerRoom,
-        cycle: {cycleId: ownerCycle!.cycleId},
-        me: {id: owner.id},
-      },
-    });
-    const recoveredWorkspace = await browserJson(pages[0], workspacePath);
-    expect(recoveredWorkspace).toMatchObject({
-      status: 200,
-      body: {
-        ok: true,
-        revision: expect.any(Number),
-        snapshot: {code: correctCode, board: finalBoard},
-      },
-    });
-    const recoveredMessages = await browserJson(
-      pages[0],
-      `/api/messages?room_id=${encodeURIComponent(String(ownerRoom))}&after_id=0&limit=50`,
-    );
-    expect((recoveredMessages.body as {messages?: unknown[]}).messages).toHaveLength(2);
-    const recoveredRuns = await browserJson(
-      pages[0],
-      `/api/runs?room_id=${encodeURIComponent(String(ownerRoom))}&after_id=0&limit=20`,
-    );
-    expect(recoveredRuns).toMatchObject({
-      status: 200,
-      body: {
-        ok: true,
-        room_id: ownerRoom,
-        runs: [expect.objectContaining({id: execution.run_id, authoritative: true, runner: {id: owner.id}})],
-      },
-    });
-    const recoveredRecap = await browserJson(pages[0], recapPath);
-    expect(recoveredRecap).toMatchObject({
-      status: 200,
-      body: {
-        ok: true,
-        room_id: ownerRoom,
-        recap: {
-          schedule: {agreed_time: agreedTime},
-          workspace: {artifact_available: true, question_slug: 'focus-block-rollup'},
-        },
-      },
-    });
-    await openDashboard(pages[0]);
-    await pages[0].evaluate(async () => {
-      const chat = (window as typeof window & {_randori_chat?: {refresh?: () => Promise<unknown>}})._randori_chat;
-      if (!chat?.refresh) throw new Error('chat refresh unavailable');
-      await chat.refresh();
-    });
-    await expect(pages[0].getByTestId('pair-chat-list')).toContainText('I will drive the first implementation.');
-    await expect(pages[0].getByTestId('pair-chat-list')).toContainText('I will navigate and review edge cases.');
     expect(executionTransport.requests).toHaveLength(1);
     expect(executionTransport.unexpectedExternalRequests).toEqual([]);
     expect(requestSql.filter(sql => /^\s*(?:CREATE|ALTER|DROP)\b/iu.test(sql))).toEqual([]);
