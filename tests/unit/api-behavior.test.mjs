@@ -29,13 +29,16 @@ let persistedPairingParticipants = [];
 let pairingEmailDeliveryResult = null;
 const pairingEmailDeliveryCalls=[];
 let legacyPairingMigrationDelayMs=0;
+let legacyPairingMigrationDelayedCompletions=0;
 const legacyPairingMigrationCalls=[];
 let outboxReplayResult = true;
 const outboxReplayCalls=[];
 let activationOutboxResult=null;
 let activationOutboxMetrics=[];
 let outboxMetricsDelayMs=0;
+let outboxMetricsDelayedCompletions=0;
 let outboxLogDelayMs=0;
+let outboxLogDelayedCompletions=0;
 let databaseNowOverride=null;
 let scheduleEmailDeliveryResult=null;
 const scheduleEmailDeliveryCalls=[];
@@ -126,6 +129,7 @@ function createMockDb(){
       executed.push({ sql, args: statement?.args || [] });
       if(outboxLogDelayMs>0&&sql.includes('INSERT INTO app_logs')){
         await new Promise(resolve=>setTimeout(resolve,outboxLogDelayMs));
+        outboxLogDelayedCompletions+=1;
       }
       if (databaseDelegate) return databaseDelegate.execute(statement);
       const availabilityResult=availabilityFixtureResult(sql,statement?.args||[]);
@@ -289,6 +293,7 @@ mock.module('../../api/_pairing-email.js',{
       legacyPairingMigrationCalls.push(options);
       if(legacyPairingMigrationDelayMs>0){
         await new Promise(resolve=>setTimeout(resolve,legacyPairingMigrationDelayMs));
+        legacyPairingMigrationDelayedCompletions+=1;
       }
       return 0;
     },
@@ -355,6 +360,7 @@ mock.module('../../api/_outbox.js',{
     readOutboxMetrics:async(_db,options)=>{
       if(outboxMetricsDelayMs>0){
         await new Promise(resolve=>setTimeout(resolve,outboxMetricsDelayMs));
+        outboxMetricsDelayedCompletions+=1;
       }
       if(options?.eventType==='auth.emailverification.requested') return activationOutboxMetrics;
       if(options?.eventType) return [];
@@ -552,13 +558,16 @@ beforeEach(() => {
   pairingEmailDeliveryResult = null;
   pairingEmailDeliveryCalls.length=0;
   legacyPairingMigrationDelayMs=0;
+  legacyPairingMigrationDelayedCompletions=0;
   legacyPairingMigrationCalls.length=0;
   outboxReplayResult = true;
   outboxReplayCalls.length=0;
   activationOutboxResult=null;
   activationOutboxMetrics=[];
   outboxMetricsDelayMs=0;
+  outboxMetricsDelayedCompletions=0;
   outboxLogDelayMs=0;
+  outboxLogDelayedCompletions=0;
   databaseNowOverride=null;
   scheduleEmailDeliveryResult=null;
   scheduleEmailDeliveryCalls.length=0;
@@ -3615,12 +3624,15 @@ test('outbox preparation and metrics stop consuming the request after their abso
     db,'https://randori.example.test',request,preparationStarted+60,
     {maxClaims:2,finalizationReserveMs:20,minimumDispatchWindowMs:20},
   );
-  assert.ok(performance.now()-preparationStarted<100);
+  assert.equal(legacyPairingMigrationDelayedCompletions,0,
+    'the response must not await the delayed reconciliation');
   assert.equal(preparationTimeout.metrics.deadline_reached,true);
   assert.equal(preparationTimeout.metrics.legacy_reconciliation_complete,false);
   assert.equal(preparationTimeout.metrics.metrics_complete,false);
   assert.equal(outboxWorkerCalls.length,0,'a timed-out reconciliation cannot fall through to providers');
   await new Promise(resolve=>setTimeout(resolve,90));
+  assert.equal(legacyPairingMigrationDelayedCompletions,1,
+    'the abandoned reconciliation remains rejection-observed until it settles');
 
   legacyPairingMigrationDelayMs=0;
   outboxMetricsDelayMs=80;
@@ -3629,7 +3641,8 @@ test('outbox preparation and metrics stop consuming the request after their abso
     db,'https://randori.example.test',request,metricsStarted+60,
     {maxClaims:2,finalizationReserveMs:10,minimumDispatchWindowMs:10},
   );
-  assert.ok(performance.now()-metricsStarted<100);
+  assert.equal(outboxMetricsDelayedCompletions,0,
+    'the response must not await the delayed metrics read');
   assert.equal(metricsTimeout.metrics.deadline_reached,true);
   assert.equal(metricsTimeout.metrics.legacy_reconciliation_complete,true);
   assert.equal(metricsTimeout.metrics.metrics_complete,false);
@@ -3640,6 +3653,8 @@ test('outbox preparation and metrics stop consuming the request after their abso
     &&call.args[2]==='outbox_invocation'),false,
   'deadline-exhausted telemetry is skipped rather than delaying teardown');
   await new Promise(resolve=>setTimeout(resolve,90));
+  assert.equal(outboxMetricsDelayedCompletions,1,
+    'the abandoned metrics read remains rejection-observed until it settles');
 
   outboxMetricsDelayMs=0;
   outboxLogDelayMs=80;
@@ -3648,7 +3663,8 @@ test('outbox preparation and metrics stop consuming the request after their abso
     db,'https://randori.example.test',request,logStarted+60,
     {maxClaims:2,finalizationReserveMs:10,minimumDispatchWindowMs:10},
   );
-  assert.ok(performance.now()-logStarted<100);
+  assert.equal(outboxLogDelayedCompletions,0,
+    'the response must not await delayed telemetry');
   assert.equal(logTimeout.metrics.metrics_complete,true);
   assert.equal(logTimeout.metrics.logging_complete,false);
   assert.equal(logTimeout.metrics.deadline_reached,true);
@@ -3656,6 +3672,8 @@ test('outbox preparation and metrics stop consuming the request after their abso
     &&call.args[2]==='outbox_invocation'),true,
   'telemetry starts while budget remains but cannot extend the response deadline');
   await new Promise(resolve=>setTimeout(resolve,90));
+  assert.equal(outboxLogDelayedCompletions,1,
+    'the abandoned telemetry write remains rejection-observed until it settles');
 });
 
 test('operation validation rejects unsupported methods and non-admin mutations', async () => {
