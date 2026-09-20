@@ -45,6 +45,12 @@ mock.module('../../api/_db.js',{exports:{
     cross:{id:3,email:'three@example.test',sessionHash:'d'.repeat(64)},
     outsider:{id:4,email:'outsider@example.test',sessionHash:'c'.repeat(64)},
   }[req?.headers?.['x-test-auth']]||null),
+  verifySignedRequestAuth:req=>({
+    member:{id:1,email:'one@example.test',sessionHash:SESSION_HASH},
+    partner:{id:2,email:'two@example.test',sessionHash:PARTNER_SESSION_HASH},
+    cross:{id:3,email:'three@example.test',sessionHash:'d'.repeat(64)},
+    outsider:{id:4,email:'outsider@example.test',sessionHash:'c'.repeat(64)},
+  }[req?.headers?.['x-test-auth']]||null),
 }});
 const {default:dataHandler}=await import('../../api/data.js');
 

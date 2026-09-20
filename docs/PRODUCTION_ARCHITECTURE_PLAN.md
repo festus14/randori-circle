@@ -115,7 +115,7 @@ Before adding new features:
 5. Rotate JWT and cron secrets after the XSS and fallback-secret fixes.
 6. Remove emails and private profile fields from public responses.
 7. Enforce pair membership on chat, schedule, AI-session, and signaling reads and writes.
-8. Disable anonymous code execution, AI analysis, video signaling, schema initialization, and unrestricted log ingestion.
+8. Disable anonymous code execution, AI analysis, video signaling, admin data initialization, and unrestricted log ingestion until their production prerequisites are ready.
 9. Stop the existing E2E workflow from writing to production.
 10. Back up the Turso database before migration and define a rollback window.
 

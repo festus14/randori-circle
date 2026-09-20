@@ -1,4 +1,4 @@
-import { captureSentryException, captureSentryMessage, getClient, getAdminEmails, getJwtSecret, initSentry, isSentryConfigured, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
+import { captureSentryException, captureSentryMessage, getClient, getAdminEmails, getJwtSecret, initSentry, isSentryConfigured, verifyMutationOrigin, verifyRequestAuth, verifySignedRequestAuth } from './_db.js';
 import { createEvaluationSuite, getPublicExercise, listPublicExercises } from './_catalog.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
 import { resolvePairingCycle } from './_pairing-cycle.js';
@@ -17,17 +17,8 @@ import { scheduleNotificationEvents } from './_schedule-email.js';
 import { ensureMessagesReadiness, MAX_MESSAGES_PER_ROOM, MAX_MESSAGES_PER_USER_PER_MINUTE, MESSAGE_RATE_RETRY_SECONDS, messageInsertStatement, messageLimitStateStatement, MessageDataError, MessageInputError, messageReadStatement, parseMessageSend, parseMessagesQuery, projectMessage, validateMessagesPostQuery } from './_messages.js';
 import { ensurePairRecapReadiness, MAX_RECAP_ACTIVITY, MAX_RECAP_RUN_SCAN, newestRecapActivity, PairRecapDataError, PairRecapInputError, parsePairRecapQuery, projectRecapMessage, projectRecapPair, projectRecapRun, projectRecapSchedule, projectRecapWorkspace } from './_pair-recap.js';
 import { ensureDataAdminReadiness, ensureDataCircleReadiness, ensureDataHistoryReadiness, ensureDataLogReadiness, ensureDataProfileReadiness, ensureDataRunsReadiness, ensureDataStatsReadiness, ensureDataWeeksReadiness, ensureMyPairDataReadiness } from './_data-readiness.js';
-import {
-  AUTH_RATE_LIMITS_TABLE_SQL,
-  CIRCLE_AUDIT_EVENTS_TABLE_SQL,
-  CIRCLE_INVITATIONS_TABLE_SQL,
-  CIRCLE_MEMBERSHIP_ROLLOUT_TABLE_SQL,
-  CIRCLE_MEMBERSHIPS_TABLE_SQL,
-  CIRCLES_TABLE_SQL,
-  circleMembershipEnabled,
-  ensureCircleMembershipReadiness,
-  initializePrimaryCircle,
-} from './_circle-membership.js';
+import { circleMembershipEnabled, ensureCircleMembershipReadiness } from './_circle-membership.js';
+import { initializePrimaryCircleData } from './_admin-init.js';
 import {
   canUseLegacySinglePrimaryCircleFeatures,
   multiCircleControlPlaneEnabled,
@@ -915,159 +906,31 @@ async function handleHistory(req,res){
 
 async function handleInit(req,res){
   if (req.method!=='POST') return res.status(405).json({ error:'POST only' });
-  const adminCtx=await requireAdminDT(req,res);
-  if(!adminCtx) return;
-  const db = adminCtx.db;
-  await db.batch([
-    `CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`,
-    `CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0, is_demo INTEGER DEFAULT 0, bio TEXT, tz TEXT, interview_focus TEXT DEFAULT 'both', leetcode_handle TEXT, google_sub TEXT)`,
-    `CREATE TABLE IF NOT EXISTS pairing_weeks (id INTEGER PRIMARY KEY AUTOINCREMENT, week_label TEXT NOT NULL, week_start TEXT NOT NULL, focus TEXT NOT NULL DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')), is_demo INTEGER DEFAULT 0)`,
-    `CREATE TABLE IF NOT EXISTS pairing_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL REFERENCES pairing_weeks(id) ON DELETE CASCADE, user_a_id INTEGER NOT NULL, user_b_id INTEGER NOT NULL, user_c_id INTEGER, is_ai_pair INTEGER DEFAULT 0, topic TEXT DEFAULT 'Pick together', topic_kind TEXT DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')))`,
-    `CREATE TABLE IF NOT EXISTS pairing_participants (week_id INTEGER NOT NULL, user_id INTEGER NOT NULL, position INTEGER NOT NULL, source TEXT NOT NULL DEFAULT 'auth', created_at TEXT DEFAULT (datetime('now')), PRIMARY KEY (week_id, user_id))`,
-    `CREATE TABLE IF NOT EXISTS questions (id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT UNIQUE NOT NULL, title TEXT NOT NULL, type TEXT NOT NULL, difficulty TEXT NOT NULL, category TEXT NOT NULL, description TEXT NOT NULL)`,
-    `CREATE TABLE IF NOT EXISTS video_signals (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT NOT NULL, from_id TEXT NOT NULL, to_id TEXT, type TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`,
-    `CREATE TABLE IF NOT EXISTS pair_room_snapshots (
-      room_id TEXT PRIMARY KEY,
-      week_id INTEGER NOT NULL,
-      pair_group_id INTEGER NOT NULL,
-      revision INTEGER NOT NULL,
-      schema_version INTEGER NOT NULL,
-      client_id TEXT NOT NULL,
-      client_seq INTEGER NOT NULL,
-      language TEXT NOT NULL,
-      question_id TEXT NOT NULL,
-      code TEXT NOT NULL,
-      updated_by INTEGER NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      UNIQUE(week_id,pair_group_id),
-      FOREIGN KEY(pair_group_id) REFERENCES pairing_groups(id) ON DELETE CASCADE
-    )`,
-    `CREATE TABLE IF NOT EXISTS ai_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT, pair_label TEXT, transcript TEXT, code_snapshots TEXT, interviewer_questions TEXT, started_at TEXT DEFAULT (datetime('now')), ended_at TEXT, duration_sec INTEGER, cost_cents INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now')), created_by INTEGER)`,
-    `CREATE TABLE IF NOT EXISTS ai_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL REFERENCES ai_sessions(id) ON DELETE CASCADE, role TEXT DEFAULT 'both', feedback_json TEXT NOT NULL, evidence TEXT, model_used TEXT, reason_for_pick TEXT, estimated_cost_cents INTEGER, confidence REAL DEFAULT 0.85, created_at TEXT DEFAULT (datetime('now')))`,
-    `CREATE TABLE IF NOT EXISTS ai_usage (date TEXT PRIMARY KEY, calls INTEGER DEFAULT 0, tokens_in INTEGER DEFAULT 0, tokens_out INTEGER DEFAULT 0, updated_at TEXT DEFAULT (datetime('now')))`,
-    `CREATE TABLE IF NOT EXISTS ai_account_monthly_usage (month TEXT NOT NULL CHECK(length(month)=7 AND month GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]'), user_id INTEGER NOT NULL CHECK(user_id>0), calls INTEGER NOT NULL DEFAULT 0 CHECK(calls>=0), tokens_in INTEGER NOT NULL DEFAULT 0 CHECK(tokens_in>=0), updated_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY(month,user_id))`,
-    `CREATE TABLE IF NOT EXISTS ai_account_monthly_reservations (reservation_id TEXT PRIMARY KEY, month TEXT NOT NULL, user_id INTEGER NOT NULL CHECK(user_id>0), tokens_in INTEGER NOT NULL DEFAULT 0 CHECK(tokens_in>=0), session_id INTEGER UNIQUE, refunded_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')))`,
-    CIRCLES_TABLE_SQL,
-    CIRCLE_MEMBERSHIPS_TABLE_SQL,
-    CIRCLE_INVITATIONS_TABLE_SQL,
-    CIRCLE_AUDIT_EVENTS_TABLE_SQL,
-    AUTH_RATE_LIMITS_TABLE_SQL,
-    CIRCLE_MEMBERSHIP_ROLLOUT_TABLE_SQL,
-    `CREATE TABLE IF NOT EXISTS pair_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL, sender_id INTEGER NOT NULL, message TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`,
-    `CREATE TABLE IF NOT EXISTS pair_schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL, proposed_times TEXT, agreed_time TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')), UNIQUE(week_id,pair_group_id))`,
-    `CREATE TABLE IF NOT EXISTS custom_questions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      slug TEXT UNIQUE NOT NULL,
-      title TEXT NOT NULL,
-      type TEXT DEFAULT 'dsa',
-      difficulty TEXT DEFAULT 'Medium',
-      category TEXT DEFAULT 'custom',
-      description TEXT NOT NULL,
-      input_format TEXT,
-      constraints_text TEXT,
-      examples TEXT,
-      test_cases TEXT NOT NULL,
-      starter_per_lang TEXT,
-      author_id INTEGER,
-      source TEXT DEFAULT 'custom',
-      leetcode_slug TEXT,
-      created_at TEXT DEFAULT (datetime('now'))
-    )`,
-    `CREATE TABLE IF NOT EXISTS app_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      level TEXT NOT NULL,
-      source TEXT NOT NULL,
-      event TEXT,
-      message TEXT NOT NULL,
-      meta_json TEXT,
-      user_id INTEGER,
-      route TEXT,
-      ua TEXT,
-      ip TEXT,
-      created_at TEXT DEFAULT (datetime('now'))
-    )`,
-    `CREATE TABLE IF NOT EXISTS session_runs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER,
-      week_id INTEGER,
-      pair_group_id INTEGER,
-      question_id INTEGER,
-      question_slug TEXT,
-      language TEXT,
-      code TEXT NOT NULL,
-      test_cases_snapshot TEXT,
-      results_json TEXT,
-      passed_count INTEGER DEFAULT 0,
-      total_count INTEGER DEFAULT 0,
-      duration_ms INTEGER,
-      created_at TEXT DEFAULT (datetime('now'))
-    )`
-  ],"write");
-  const migrations=[`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`,`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`,`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`,`ALTER TABLE auth_accounts ADD COLUMN is_demo INTEGER DEFAULT 0`,`ALTER TABLE auth_accounts ADD COLUMN bio TEXT`,`ALTER TABLE auth_accounts ADD COLUMN tz TEXT`,`ALTER TABLE auth_accounts ADD COLUMN interview_focus TEXT DEFAULT 'both'`,`ALTER TABLE auth_accounts ADD COLUMN leetcode_handle TEXT`,`ALTER TABLE auth_accounts ADD COLUMN google_sub TEXT`,`ALTER TABLE pairing_weeks ADD COLUMN is_demo INTEGER DEFAULT 0`];
-  for(const sql of migrations){ try{ await db.execute(sql);}catch(_){} }
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_video_signals_room ON video_signals(room_id, created_at)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_video_signals_room_id ON video_signals(room_id, id)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_sched_pair ON pair_schedules(pair_group_id)`);}catch{}
+  const nowSeconds=Math.floor(Date.now()/1000);
+  let actor;
+  try{ actor=verifySignedRequestAuth(req,{nowSeconds}); }
+  catch{ return res.status(503).json({error:'data unavailable'}); }
+  if(!actor) return res.status(401).json({error:'authentication required'});
   try{
-    // This one-time cleanup is intentionally admin-triggered: it can delete legacy
-    // duplicates and must never run as a side effect of an ordinary API request.
-    await db.execute(`DELETE FROM pair_schedules WHERE id NOT IN (SELECT MAX(id) FROM pair_schedules GROUP BY week_id,pair_group_id)`);
-    await db.execute(`CREATE UNIQUE INDEX IF NOT EXISTS uq_pair_schedules_week_pair ON pair_schedules(week_id,pair_group_id)`);
-  }catch(e){
-    return res.status(500).json({
-      ok:false,
-      error:'pair schedule uniqueness migration failed',
-      detail:String(e.message||e).slice(0,300),
+    const initialized=await initializePrimaryCircleData(getClient(),{
+      actor,adminEmails:[...getAdminEmails()],nowSeconds,
     });
-  }
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_cq_slug ON custom_questions(slug)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_cq_author ON custom_questions(author_id)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_user ON session_runs(user_id, created_at DESC)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_question ON session_runs(question_slug)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_pair_activity ON session_runs(week_id,pair_group_id,julianday(created_at) DESC,id DESC)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_room_snapshots_updated_at ON pair_room_snapshots(updated_at)`);}catch{}
-  try{
-    await db.execute(`CREATE UNIQUE INDEX IF NOT EXISTS uq_auth_accounts_google_sub
-      ON auth_accounts(google_sub) WHERE google_sub IS NOT NULL`);
-  }catch(error){
-    return res.status(500).json({
-      ok:false,
-      error:'Google identity uniqueness migration failed',
-      detail:String(error?.message||error).slice(0,300),
-    });
-  }
-  try{
-    await db.batch([
-      `CREATE UNIQUE INDEX IF NOT EXISTS uq_circles_active_primary ON circles(is_primary) WHERE is_primary=1 AND archived_at IS NULL`,
-      `CREATE INDEX IF NOT EXISTS idx_circle_memberships_user_active ON circle_memberships(user_id,status,circle_id)`,
-      `CREATE INDEX IF NOT EXISTS idx_circle_memberships_circle_active ON circle_memberships(circle_id,status,user_id)`,
-      `CREATE INDEX IF NOT EXISTS idx_circle_invitations_circle_created ON circle_invitations(circle_id,created_at DESC)`,
-      `CREATE INDEX IF NOT EXISTS idx_circle_invitations_email ON circle_invitations(circle_id,email_hash,expires_at)`,
-      `CREATE INDEX IF NOT EXISTS idx_circle_audit_circle_created ON circle_audit_events(circle_id,created_at DESC,id DESC)`,
-    ],'write');
-  }catch(error){
-    return res.status(500).json({
-      ok:false,
-      error:'circle membership index migration failed',
-      detail:String(error?.message||error).slice(0,300),
-    });
-  }
-  try{
-    // Stage schema and the audited one-time legacy-account backfill before the
-    // enforcement flag is enabled, avoiding a rollout deadlock.
-    await initializePrimaryCircle(db,{
-      ownerUserId:adminCtx.callerId,
-      ownerEmails:[...getAdminEmails()],
+    if(!initialized.ok){
+      if(initialized.reason==='authentication_required'){
+        return res.status(401).json({error:'authentication required'});
+      }
+      return res.status(403).json({error:'admin only',you_are:initialized.email||'unknown'});
+    }
+    return res.json({
+      ok:true,
+      message:'Primary circle data ready',
+      circle_id:initialized.circleId,
+      changed:initialized.changed,
     });
   }catch(error){
-    return res.status(500).json({
-      ok:false,
-      error:'circle membership initialization failed',
-      detail:String(error?.message||error).slice(0,300),
-    });
+    try{ captureSentryException(error,{tags:{event:'admin_init_failed',source:'server'}}); }catch{}
+    return res.status(503).json({error:'data unavailable'});
   }
-  return res.json({ ok:true, message:"Tables ready (incl custom_questions + profile + pair_messages + pair_schedules + session_runs)" });
 }
 
 // ----- NEW ENDPOINTS: profile, my-pair, schedule, messages, questions -----
