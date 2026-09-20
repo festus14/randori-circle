@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, copyFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -13,6 +13,7 @@ import {
   resolveLocalServerConfig,
   startLocalDevelopmentServer,
 } from '../../scripts/local-server.mjs';
+import {expectInviteGateLoaded,stageRealRuntimeClient} from './real-runtime-fixture';
 
 const repositoryRoot=fileURLToPath(new URL('../..',import.meta.url));
 const silentLogger=Object.freeze({log(){},error(){}});
@@ -29,9 +30,7 @@ test('owner queues, resends, and locally delivers a rotated invitation that the 
   test.setTimeout(90_000);
   const rootDir=realpathSync(mkdtempSync(join(tmpdir(),'randori-invitation-runtime-')));
   mkdirSync(join(rootDir,'.local'),{mode:0o700});
-  mkdirSync(join(rootDir,'assets'));
-  copyFileSync(join(repositoryRoot,'index.html'),join(rootDir,'index.html'));
-  copyFileSync(join(repositoryRoot,'assets','invite-gate.js'),join(rootDir,'assets','invite-gate.js'));
+  stageRealRuntimeClient(repositoryRoot,rootDir);
   const databaseUrl=pathToFileURL(join(rootDir,'.local','randori.sqlite')).href;
   const config=resolveLocalServerConfig({rootDir,argv:[],env:{
     NODE_ENV:'development',RANDORI_LOCAL_HOST:'127.0.0.1',RANDORI_LOCAL_PORT:'0',
@@ -64,6 +63,7 @@ test('owner queues, resends, and locally delivers a rotated invitation that the 
   try{
     runtime=await startLocalDevelopmentServer({config,logger:silentLogger});
     await ownerPage.goto(runtime.url,{waitUntil:'domcontentloaded'});
+    await expectInviteGateLoaded(ownerPage);
     const login=await json(ownerPage,'/api/auth/login','POST',{
       email:LOCAL_OWNER_EMAIL,password:LOCAL_OWNER_PASSWORD,
     });

@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { createClient } from '@libsql/client';
 import { randomUUID } from 'node:crypto';
-import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -12,6 +12,7 @@ import {
   startLocalDevelopmentServer,
 } from '../../scripts/local-server.mjs';
 import { createInvitationToken, hashInvitationEmail, hashInvitationToken } from '../../api/_circle-membership.js';
+import {expectInviteGateLoaded,stageRealRuntimeClient} from './real-runtime-fixture';
 
 const repositoryRoot=fileURLToPath(new URL('../..',import.meta.url));
 
@@ -25,9 +26,7 @@ test.describe('unmocked local onboarding',()=>{
   test.beforeAll(async()=>{
     directory=realpathSync(mkdtempSync(join(tmpdir(),'randori-local-onboarding-e2e-')));
     mkdirSync(join(directory,'.local'),{mode:0o700});
-    mkdirSync(join(directory,'assets'));
-    copyFileSync(join(repositoryRoot,'index.html'),join(directory,'index.html'));
-    copyFileSync(join(repositoryRoot,'assets','invite-gate.js'),join(directory,'assets','invite-gate.js'));
+    stageRealRuntimeClient(repositoryRoot,directory);
     const databaseUrl=pathToFileURL(join(directory,'.local','onboarding.sqlite')).href;
     config=resolveLocalServerConfig({
       rootDir:directory,
@@ -71,6 +70,7 @@ test.describe('unmocked local onboarding',()=>{
     const reusedInvite=await reusedInviteContext.newPage();
     try{
       await noInvite.goto(runtime.url,{waitUntil:'domcontentloaded'});
+      await expectInviteGateLoaded(noInvite);
       expect(await noInvite.evaluate(()=>(window as any).__RANDORI_LOCAL_RUNTIME__)).toBe(true);
       const noInviteSignup=await noInvite.evaluate(async()=>{
         const response=await fetch('/api/auth/signup',{

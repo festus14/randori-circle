@@ -1,4 +1,4 @@
-import {copyFileSync,mkdirSync,mkdtempSync,realpathSync,rmSync} from 'node:fs';
+import {mkdirSync,mkdtempSync,realpathSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
@@ -15,6 +15,7 @@ import {
   resolveLocalServerConfig,
   startLocalDevelopmentServer,
 } from '../../scripts/local-server.mjs';
+import {expectInviteGateLoaded,stageRealRuntimeClient} from './real-runtime-fixture';
 
 const repositoryRoot=fileURLToPath(new URL('../..',import.meta.url));
 const silentLogger=Object.freeze({log(){},error(){}});
@@ -39,7 +40,7 @@ test('local capture delivers manual and weekly-route secondary publications once
   for(const key of rolloutFlags) process.env[key]='true';
   const rootDir=realpathSync(mkdtempSync(join(tmpdir(),'randori-secondary-email-browser-')));
   mkdirSync(join(rootDir,'.local'),{mode:0o700});
-  copyFileSync(join(repositoryRoot,'index.html'),join(rootDir,'index.html'));
+  stageRealRuntimeClient(repositoryRoot,rootDir);
   const databaseUrl=pathToFileURL(join(rootDir,'.local','randori.sqlite')).href;
   const config=resolveLocalServerConfig({rootDir,argv:[],env:{
     NODE_ENV:'development',RANDORI_LOCAL_HOST:'127.0.0.1',RANDORI_LOCAL_PORT:'0',
@@ -57,6 +58,7 @@ test('local capture delivers manual and weekly-route secondary publications once
     });
     process.env.CRON_SECRET='secondary-email-browser-secret';
     await page.goto(runtime.url,{waitUntil:'domcontentloaded'});
+    await expectInviteGateLoaded(page);
     const login=await json(page,'/api/auth/login','POST',{
       email:LOCAL_OWNER_EMAIL,password:LOCAL_OWNER_PASSWORD,
     });
