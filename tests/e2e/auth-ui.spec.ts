@@ -92,17 +92,18 @@ test('production invite signup waits for email verification and offers a bounded
   let resendCalls=0;
   await mockApi(page,{
     '/api/auth/capabilities':verifiedInviteCapabilities,
-    '/api/invitations/prepare':{ok:true},
+    '/api/invitations/prepare':{ok:true,binding:'B'.repeat(43),expires_in_seconds:600},
     '/api/auth/signup':request=>{
       signupCalls+=1;
       expect(request.postDataJSON()).toEqual({
         email:'invited@example.test',name:'Invited Member',password:'correct horse battery',
+        invite_binding:'B'.repeat(43),
       });
       return {_status:202,ok:true,pending:true,message:'If this invitation can be activated, a verification email will arrive shortly.'};
     },
     '/api/auth/activation/resend':request=>{
       resendCalls+=1;
-      expect(request.postDataJSON()).toEqual({email:'invited@example.test'});
+      expect(request.postDataJSON()).toEqual({email:'invited@example.test',invite_binding:'B'.repeat(43)});
       return {_status:202,ok:true,pending:true};
     },
   });
@@ -781,6 +782,8 @@ test('Google failure offers an accessible retry and a mocked provider returns th
   });
   await page.route('**/api/auth/google/start**',async route=>{
     starts+=1;
+    expect(route.request().method()).toBe('GET');
+    expect(new URL(route.request().url()).searchParams.get('purpose')).toBe('login');
     await route.fulfill({
       status:200,
       contentType:'text/html',

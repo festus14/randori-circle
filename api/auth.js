@@ -13,20 +13,20 @@ import {
 } from './_db.js';
 import { ensureAuthReadiness } from './_auth-readiness.js';
 import bcrypt from 'bcryptjs';
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { parseCanonicalRoomPath } from './_pairing.js';
 import {
-  INVITE_CLAIM_COOKIE,
   acceptPreparedInvitation,
   circleMembershipRegistrationState,
   circleMembershipEnabled,
-  clearInviteClaimCookie,
   createGoogleAccountFromPreparedInvitation,
   createPasswordAccountFromPreparedInvitation,
   ensureCircleMembershipReadiness,
   hasActiveCircleMembership,
   hasActivePrimaryCircleMembership,
-  readInviteClaim,
+  readBoundInviteClaim,
+  readInviteClaimForBindingHash,
+  validateLivePreparedClaim,
   validatePreparedInvitation,
 } from './_circle-membership.js';
 import {
@@ -77,15 +77,14 @@ function hasEligibleCircleMembership(db,userId){
 }
 
 const SESSION_COOKIE = 'randori_session';
-const OAUTH_STATE_COOKIE = 'randori_oauth_state';
-const OAUTH_VERIFIER_COOKIE = 'randori_oauth_verifier';
-const OAUTH_NONCE_COOKIE = 'randori_oauth_nonce';
-const OAUTH_RETURN_COOKIE = 'randori_oauth_return';
-const OAUTH_PURPOSE_COOKIE = 'randori_oauth_purpose';
+const OAUTH_TRANSACTION_COOKIE_PREFIX='randori_oauth_tx_';
+const OAUTH_TRANSACTION_VERSION=1;
+const OAUTH_TRANSACTION_TTL_SECONDS=10*60;
 const PASSWORD_MIN_BYTES = 10;
 const PASSWORD_MAX_BYTES = 72;
 const ACTIVATION_RESPONSE_FLOOR_MS = 350;
 const DUMMY_LOGIN_PASSWORD_HASH = '$2a$10$PBpMY4NLVseWPP6G9VtPveLltge4ovpON5/cJwqL8JU.khDEvJ9De';
+const INVITE_BINDING_PATTERN=/^[A-Za-z0-9_-]{43}$/;
 
 function cookieValue(req, name){
   const raw=String(req.headers?.cookie||'');
@@ -114,10 +113,6 @@ function sessionCookie(req, token){
   return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200${cookieSecurity(req)}`;
 }
 
-function transientCookie(req, name, value){
-  return `${name}=${encodeURIComponent(value)}; Path=/api/auth/google; HttpOnly; SameSite=Lax; Max-Age=600${cookieSecurity(req)}`;
-}
-
 function clearCookie(req, name, path='/'){
   return `${name}=; Path=${path}; HttpOnly; SameSite=Lax; Max-Age=0${cookieSecurity(req)}`;
 }
@@ -128,13 +123,94 @@ function constantTimeEqual(a,b){
   return left.length===right.length && timingSafeEqual(left,right);
 }
 
-function safeOAuthReturnPath(value){
+function oauthTransactionCookieName(state){
+  if(typeof state!=='string'||!/^[A-Za-z0-9_-]{8,128}$/.test(state)) return null;
+  const suffix=createHash('sha256').update(`randori-google-oauth-state-cookie-v1\0${state}`,'utf8').digest('base64url');
+  return `${OAUTH_TRANSACTION_COOKIE_PREFIX}${suffix}`;
+}
+
+function oauthTransactionSignature(payload){
+  return createHmac('sha256',getJwtSecret())
+    .update(`randori-google-oauth-transaction-v1\0${payload}`,'utf8')
+    .digest('base64url');
+}
+
+function validOAuthPurpose(value){
+  return value==='login'||/^invite:[a-f0-9]{64}$/.test(value)
+    ||/^(?:link|reauth):[1-9]\d*:[a-f0-9]{64}$/.test(value);
+}
+
+function createOAuthTransaction({state,verifier,nonce,returnPath,purpose}){
+  if(!oauthTransactionCookieName(state)||typeof verifier!=='string'||!/^[A-Za-z0-9_-]{43,128}$/.test(verifier)
+    ||typeof nonce!=='string'||!/^[A-Za-z0-9_-]{8,128}$/.test(nonce)||!validOAuthPurpose(purpose)){
+    throw new TypeError('invalid OAuth transaction');
+  }
+  const issuedAt=Math.floor(Date.now()/1000);
+  const payload=Buffer.from(JSON.stringify({v:OAUTH_TRANSACTION_VERSION,state,verifier,nonce,
+    return_path:safeOAuthReturnPath(returnPath,{allowInvite:purpose.startsWith('invite:')}),purpose,iat:issuedAt,
+    exp:issuedAt+OAUTH_TRANSACTION_TTL_SECONDS}),'utf8').toString('base64url');
+  return `${payload}.${oauthTransactionSignature(payload)}`;
+}
+
+function readOAuthTransaction(req,state){
+  const name=oauthTransactionCookieName(state);
+  if(!name) return null;
+  const raw=cookieValue(req,name);
+  const match=raw.match(/^([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{43})$/);
+  if(!match||!constantTimeEqual(match[2],oauthTransactionSignature(match[1]))) return null;
+  let value;
+  try{ value=JSON.parse(Buffer.from(match[1],'base64url').toString('utf8')); }catch{ return null; }
+  if(!value||typeof value!=='object'||Array.isArray(value)) return null;
+  const keys=Object.keys(value).sort();
+  const expected=['exp','iat','nonce','purpose','return_path','state','v','verifier'];
+  const now=Math.floor(Date.now()/1000);
+  if(keys.length!==expected.length||!keys.every((key,index)=>key===expected[index])
+    ||value.v!==OAUTH_TRANSACTION_VERSION||!constantTimeEqual(value.state,state)
+    ||typeof value.verifier!=='string'||!/^[A-Za-z0-9_-]{43,128}$/.test(value.verifier)
+    ||typeof value.nonce!=='string'||!/^[A-Za-z0-9_-]{8,128}$/.test(value.nonce)
+    ||safeOAuthReturnPath(value.return_path,{allowInvite:value.purpose.startsWith('invite:')})!==value.return_path
+    ||!validOAuthPurpose(value.purpose)
+    ||!Number.isSafeInteger(value.iat)||!Number.isSafeInteger(value.exp)
+    ||value.iat>now+30||value.exp<=now||value.exp-value.iat!==OAUTH_TRANSACTION_TTL_SECONDS){
+    return null;
+  }
+  return value;
+}
+
+function oauthTransactionCookie(req,state,transaction){
+  const name=oauthTransactionCookieName(state);
+  if(!name) throw new TypeError('invalid OAuth state');
+  return `${name}=${encodeURIComponent(transaction)}; Path=/api/auth/google/callback; HttpOnly; SameSite=Lax; Max-Age=${OAUTH_TRANSACTION_TTL_SECONDS}${cookieSecurity(req)}`;
+}
+
+function clearOAuthTransactionCookie(req,state){
+  const name=oauthTransactionCookieName(state);
+  return name?`${name}=; Path=/api/auth/google/callback; HttpOnly; SameSite=Lax; Max-Age=0${cookieSecurity(req)}`:null;
+}
+
+function exactObject(value,keys){
+  return !!value&&typeof value==='object'&&!Array.isArray(value)
+    &&Object.keys(value).length===keys.length
+    &&keys.every(key=>Object.prototype.hasOwnProperty.call(value,key));
+}
+
+function requestInviteBinding(req){
+  const value=req?.body?.invite_binding;
+  return typeof value==='string'&&INVITE_BINDING_PATTERN.test(value)?value:null;
+}
+
+function boundInviteClaim(req,binding=requestInviteBinding(req)){
+  return binding?readBoundInviteClaim(req,binding):null;
+}
+
+function safeOAuthReturnPath(value,{allowInvite=false}={}){
+  if(allowInvite&&value==='/invite') return '/invite';
   return parseCanonicalRoomPath(value)?.path || '/';
 }
 
-function oauthResultLocation(appUrl, returnPath, key, value){
+function oauthResultLocation(appUrl,returnPath,key,value,{allowInvite=false}={}){
   const query=new URLSearchParams({[key]:String(value)});
-  return `${appUrl}${safeOAuthReturnPath(returnPath)}?${query.toString()}`;
+  return `${appUrl}${safeOAuthReturnPath(returnPath,{allowInvite})}?${query.toString()}`;
 }
 
 export function validSignupPassword(value){
@@ -302,7 +378,7 @@ async function handleSignup(req,res){
   if(display.length<2) return res.status(400).json({ error:'display name must be 2-32 chars' });
   const membershipRequired=circleMembershipEnabled();
   if(verifiedEmailActivation){
-    const inviteClaim=readInviteClaim(req);
+    const inviteClaim=boundInviteClaim(req);
     const db=getClient();
     try{
       await ensureAuthReadiness(db);
@@ -333,8 +409,10 @@ async function handleSignup(req,res){
     if(!localIdentityAdapterEnabled(req)){
       return res.status(403).json({error:'private beta signup requires a Google invitation'});
     }
-    const inviteClaim=readInviteClaim(req);
-    if(!inviteClaim) return res.status(403).json({error:'a valid local invitation is required'});
+    const inviteClaim=boundInviteClaim(req);
+    if(!inviteClaim){
+      return res.status(403).json({error:'a valid local invitation is required'});
+    }
     const db=getClient();
     try{
       await ensureAuthReadiness(db);
@@ -369,7 +447,7 @@ async function handleSignup(req,res){
     try{ token=await issueSession(db,{id:registered.user_id,email:e,name:display,color,is_admin:false},
       {recentAuthMethod:'password'}); }
     catch{ return res.status(503).json({error:'signup temporarily unavailable'}); }
-    appendCookies(res,[sessionCookie(req,token),clearInviteClaimCookie({secure:false})]);
+    appendCookies(res,[sessionCookie(req,token)]);
     return res.json({
       ok:true,
       user:{id:registered.user_id,email:e,name:display,color,is_admin:false,isAdmin:false},
@@ -430,11 +508,12 @@ async function handleActivationResend(req,res){
   const db=getClient();
   const responseStartedAt=Date.now();
   let activationFailed=null;
+  const inviteClaim=boundInviteClaim(req);
   try{
     await ensureAuthReadiness(db);
     await ensureEmailActivationReadiness(db);
     await enforceAuthRateLimit(db,req,'signup',email);
-    await resendEmailActivation(db,{claim:readInviteClaim(req),email});
+    await resendEmailActivation(db,{claim:inviteClaim,email});
   }catch(error){ activationFailed=error; }
   await completeActivationResponseFloor(responseStartedAt);
   if(activationFailed?.statusCode===429) return res.status(429).json({error:'too many activation requests; try again later'});
@@ -461,7 +540,7 @@ async function handleActivationVerify(req,res){
     return res.status(503).json({error:'email activation temporarily unavailable'});
   }
   if(result.status!=='verified') return res.status(409).json({ok:false,status:result.status});
-  appendCookies(res,[sessionCookie(req,result.sessionToken),clearInviteClaimCookie()]);
+  appendCookies(res,[sessionCookie(req,result.sessionToken)]);
   return res.json({ok:true,status:'verified',user:result.user});
 }
 
@@ -802,14 +881,40 @@ async function handleGoogleStart(req,res){
   const endpoint=getEndpoint(req);
   const linking=endpoint.includes('link')||String(req.url||'').includes('/google/link/');
   const reauthenticate=!linking&&(String(req.query?.reauth||'')==='1'||endpoint.includes('reauth'));
+  const ordinary=!linking&&!reauthenticate;
+  const inviteStart=ordinary&&req.method==='POST';
   if(linking&&req.method!=='POST') return res.status(405).json({error:'POST only'});
   if(reauthenticate&&req.method!=='POST') return res.status(405).json({error:'POST only'});
-  if(!linking&&!reauthenticate&&req.method!=='GET') return res.status(405).json({error:'GET only'});
+  if(ordinary&&!['GET','POST'].includes(req.method)) return res.status(405).json({error:'GET or POST only'});
   if(reauthenticate){
     const body=req.body??{};
     if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length){
       return res.status(400).json({error:'invalid request'});
     }
+  }
+  let inviteBinding=null;
+  let inviteClaim=null;
+  if(inviteStart){
+    if(!circleMembershipEnabled()||!exactObject(req.body,['purpose','invite_binding'])||req.body.purpose!=='invite'
+      ||!(inviteBinding=requestInviteBinding(req))){
+      return res.status(403).json({error:'invitation unavailable'});
+    }
+    inviteClaim=boundInviteClaim(req,inviteBinding);
+    if(!inviteClaim){
+      return res.status(403).json({error:'invitation unavailable'});
+    }
+    try{
+      const db=getClient();
+      await ensureCircleMembershipReadiness(db);
+      const live=await validateLivePreparedClaim(db,{claim:inviteClaim});
+      if(!live.ok){
+        return res.status(403).json({error:'invitation unavailable'});
+      }
+    }catch{
+      return res.status(503).json({error:'Google sign-in is unavailable'});
+    }
+  }else if(ordinary&&String(req.query?.purpose||'login')!=='login'){
+    return res.status(400).json({error:'invalid Google sign-in purpose'});
   }
   if(!reauthenticate&&identityManagementRequested(req)&&!identityManagementEnabled(req)){
     return res.status(503).json({error:'Google sign-in is unavailable'});
@@ -832,9 +937,9 @@ async function handleGoogleStart(req,res){
   const verifier=randomBytes(48).toString('base64url');
   const nonce=randomBytes(32).toString('base64url');
   const challenge=createHash('sha256').update(verifier).digest('base64url');
-  const returnPath=safeOAuthReturnPath(req.query?.return_to);
+  const returnPath=inviteStart?'/invite':safeOAuthReturnPath(req.query?.return_to);
   const params = new URLSearchParams({ client_id:clientId, redirect_uri:redirectUri, response_type:'code', scope:'openid email profile', access_type:'online', state, nonce, code_challenge:challenge, code_challenge_method:'S256' });
-  let purpose='login';
+  let purpose=inviteStart?`invite:${inviteClaim.binding_hash}`:'login';
   if(linking){
     try{
       const db=getClient();
@@ -865,16 +970,11 @@ async function handleGoogleStart(req,res){
     params.set('max_age','0');
     params.set('prompt','select_account');
   }
-  if(circleMembershipEnabled()&&readInviteClaim(req)) params.set('prompt','select_account');
+  if(inviteStart) params.set('prompt','select_account');
   const url = `${GOOGLE_AUTHORIZATION_ENDPOINT}?${params.toString()}`;
-  appendCookies(res,[
-    transientCookie(req,OAUTH_STATE_COOKIE,state),
-    transientCookie(req,OAUTH_VERIFIER_COOKIE,verifier),
-    transientCookie(req,OAUTH_NONCE_COOKIE,nonce),
-    transientCookie(req,OAUTH_RETURN_COOKIE,returnPath),
-    transientCookie(req,OAUTH_PURPOSE_COOKIE,purpose),
-  ]);
-  if(linking||reauthenticate) return res.json({ok:true,authorizationUrl:url});
+  const transaction=createOAuthTransaction({state,verifier,nonce,returnPath,purpose});
+  appendCookies(res,[oauthTransactionCookie(req,state,transaction)]);
+  if(linking||reauthenticate||inviteStart) return res.json({ok:true,authorizationUrl:url});
   res.writeHead(302, { Location:url });
   res.end();
 }
@@ -886,26 +986,28 @@ async function handleGoogleCallback(req,res){
   if(!configuration) return res.status(503).json({error:'Google sign-in is unavailable'});
   const {appOrigin:appUrl,clientId,clientSecret,redirectUri}=configuration;
   const { code, error, state } = req.query || {};
-  const expectedState=cookieValue(req,OAUTH_STATE_COOKIE);
-  const verifier=cookieValue(req,OAUTH_VERIFIER_COOKIE);
-  const nonce=cookieValue(req,OAUTH_NONCE_COOKIE);
-  const returnPath=safeOAuthReturnPath(cookieValue(req,OAUTH_RETURN_COOKIE));
-  const purpose=cookieValue(req,OAUTH_PURPOSE_COOKIE)||'login';
-  const inviteClaimPresent=Boolean(cookieValue(req,INVITE_CLAIM_COOKIE));
-  const inviteClaim=readInviteClaim(req);
-  const redirectError=errorCode=>oauthResultLocation(appUrl,returnPath,'google_error',errorCode);
-  appendCookies(res,[
-    clearCookie(req,OAUTH_STATE_COOKIE,'/api/auth/google'),
-    clearCookie(req,OAUTH_VERIFIER_COOKIE,'/api/auth/google'),
-    clearCookie(req,OAUTH_NONCE_COOKIE,'/api/auth/google'),
-    clearCookie(req,OAUTH_RETURN_COOKIE,'/api/auth/google'),
-    clearCookie(req,OAUTH_PURPOSE_COOKIE,'/api/auth/google'),
-  ]);
-  if(!state || !expectedState || !verifier || !nonce || !constantTimeEqual(state,expectedState)){
+  const transaction=readOAuthTransaction(req,state);
+  const expectedState=transaction?.state||'';
+  const verifier=transaction?.verifier||'';
+  const nonce=transaction?.nonce||'';
+  const returnPath=transaction?.return_path||'/';
+  const purpose=transaction?.purpose||'';
+  const invitePurpose=/^invite:([a-f0-9]{64})$/.exec(purpose);
+  const loginPurpose=purpose==='login';
+  const inviteClaim=invitePurpose?readInviteClaimForBindingHash(req,invitePurpose[1]):null;
+  const inviteReturnOptions={allowInvite:Boolean(invitePurpose)};
+  const redirectError=errorCode=>oauthResultLocation(
+    appUrl,returnPath,'google_error',errorCode,inviteReturnOptions);
+  if(!state || !expectedState || !verifier || !nonce || !constantTimeEqual(state,expectedState)
+    ||(!loginPurpose&&!invitePurpose&&!purpose.startsWith('link:')&&!purpose.startsWith('reauth:'))){
     res.writeHead(302,{Location:redirectError('invalid_state')}); return res.end();
   }
+  appendCookies(res,[clearOAuthTransactionCookie(req,state)]);
   if (error){ res.writeHead(302, { Location:redirectError(publicGoogleAuthorizationError(error))}); return res.end(); }
   if (!code){ res.writeHead(302, { Location:redirectError('missing_code')}); return res.end(); }
+  if(invitePurpose&&!inviteClaim){
+    res.writeHead(302,{Location:redirectError('private_beta')}); return res.end();
+  }
   const identityRequested=identityManagementRequested(req);
   const identityEnabled=identityManagementEnabled(req);
   const reauthenticate=purpose.startsWith('reauth:');
@@ -1030,15 +1132,13 @@ async function handleGoogleCallback(req,res){
     return res.end();
   }
   const membershipRequired=circleMembershipEnabled();
-  let registrationState=membershipRequired?'closed':null;
-  if(!membershipRequired){
-    try{ registrationState=await circleMembershipRegistrationState(db); }
-    catch{ res.writeHead(302,{Location:redirectError('db_error')}); return res.end(); }
-  }
   let preparedInvitation={ok:false};
-  if(membershipRequired && inviteClaim){
+  if(membershipRequired&&invitePurpose&&inviteClaim){
     try{ preparedInvitation=await validatePreparedInvitation(db,{claim:inviteClaim,email}); }
     catch{ res.writeHead(302,{Location:redirectError('db_error')}); return res.end(); }
+  }
+  if(invitePurpose&&(!membershipRequired||!preparedInvitation?.ok)){
+    res.writeHead(302,{Location:redirectError('private_beta')}); return res.end();
   }
   let authId,is_admin_final=false,invitationAcceptedDuringAccountCreation=false;
   let sessionEmail=email;
@@ -1103,10 +1203,9 @@ async function handleGoogleCallback(req,res){
           const errorCode=account.google_sub?'identity_mismatch':'account_exists_use_password';
           res.writeHead(302,{Location:redirectError(errorCode)}); return res.end();
         }else{
-          const invitationMayRegister=membershipRequired&&preparedInvitation?.ok&&preparedInvitation.used_by===null;
-          const legacyMayRegister=!membershipRequired&&registrationState!=='closed'&&registrationAllowed(email);
-          if(!invitationMayRegister&&!legacyMayRegister){
-            if(inviteClaimPresent) appendCookies(res,[clearInviteClaimCookie()]);
+          const invitationMayRegister=Boolean(invitePurpose)&&membershipRequired
+            &&preparedInvitation?.ok&&preparedInvitation.used_by===null;
+          if(!invitationMayRegister){
             res.writeHead(302,{Location:redirectError('private_beta')}); return res.end();
           }
           is_admin_final=getAdminEmails().has(email);
@@ -1117,29 +1216,12 @@ async function handleGoogleCallback(req,res){
               isAdmin:is_admin_final,googleIssuer,googleSub,
             });
             if(!registered?.ok){
-              if(inviteClaimPresent) appendCookies(res,[clearInviteClaimCookie()]);
               res.writeHead(302,{Location:redirectError('private_beta')}); return res.end();
             }
             authId=registered.user_id;
             sessionEmail=email;
             is_admin_final=registered.is_admin;
             invitationAcceptedDuringAccountCreation=true;
-          }else{
-            const registrationGuard=registrationState==='uninitialized'
-              ? `NOT EXISTS (SELECT 1 FROM sqlite_schema WHERE type='table' AND name='circle_membership_rollout')`
-              : `EXISTS (SELECT 1 FROM circle_membership_rollout WHERE id=1 AND registrations_closed=0)`;
-            const ins=await db.execute({
-              sql:`INSERT INTO auth_accounts (email,password_hash,display_name,color,last_login,is_available,is_admin,google_sub)
-                SELECT ?,?,?,?,datetime('now'),1,?,?
-                WHERE ${registrationGuard}
-                RETURNING id`,
-              args:[email,passwordHash,finalName,color,is_admin_final?1:0,googleSub],
-            });
-            if(!ins.rows?.length){
-              res.writeHead(302,{Location:redirectError('private_beta')}); return res.end();
-            }
-            authId=ins.rows[0].id;
-            sessionEmail=email;
           }
         }
       }
@@ -1164,18 +1246,20 @@ async function handleGoogleCallback(req,res){
   }catch(e){ res.writeHead(302,{ Location:redirectError('db_error')}); return res.end(); }
   if(membershipRequired){
     let hasMembership=invitationAcceptedDuringAccountCreation;
-    if(!hasMembership){
+    if(!hasMembership&&!invitePurpose){
       try{ hasMembership=await hasEligibleCircleMembership(db,authId); }
       catch{ res.writeHead(302,{Location:redirectError('db_error')}); return res.end(); }
     }
-    if(preparedInvitation?.ok&&!invitationAcceptedDuringAccountCreation){
+    if(invitePurpose&&!invitationAcceptedDuringAccountCreation){
+      if(preparedInvitation.used_by!==null&&Number(preparedInvitation.used_by)!==Number(authId)){
+        res.writeHead(302,{Location:redirectError('private_beta')}); return res.end();
+      }
       let accepted;
       try{ accepted=await acceptPreparedInvitation(db,{claim:inviteClaim,email,userId:authId}); }
       catch{ res.writeHead(302,{Location:redirectError('db_error')}); return res.end(); }
-      hasMembership=hasMembership||accepted?.ok===true;
+      hasMembership=accepted?.ok===true;
     }
     if(!hasMembership){
-      if(inviteClaimPresent) appendCookies(res,[clearInviteClaimCookie()]);
       res.writeHead(302,{Location:redirectError('private_beta')}); return res.end();
     }
   }
@@ -1183,7 +1267,7 @@ async function handleGoogleCallback(req,res){
   try{ ourJwt=await issueSession(db,{uid:authId,id:authId,email:sessionEmail,name:finalName,is_admin:is_admin_final},
     {recentAuthMethod:'google'}); }
   catch{ res.writeHead(302,{Location:redirectError('session_error')}); return res.end(); }
-  appendCookies(res,[sessionCookie(req,ourJwt),...(inviteClaimPresent?[clearInviteClaimCookie()]:[])]);
+  appendCookies(res,[sessionCookie(req,ourJwt)]);
   const destination=new URL(oauthResultLocation(appUrl,returnPath,'google','success'));
   if(providerEmailChanged) destination.searchParams.set('identity_notice','provider_email_changed');
   const dest=destination.toString();
@@ -1202,12 +1286,13 @@ export default async function handler(req,res){
   }
   const credentialMutation=['signup','login','activation-resend','activation-verify','password-reset-request',
     'password-reset-consume','recent-auth','identity-password','identity-google-unlink','google-link-start',
-    'google-reauth-start']
+    'google-reauth-start','google-start']
     .some(name=>ep===name||ep.includes(name))
     ||urlPath.includes('/activation/resend')||urlPath.includes('/activation/verify')
     ||urlPath.includes('/password-reset/')||urlPath.includes('/recent-auth')
     ||urlPath.includes('/identities/password')||urlPath.includes('/identities/google')
-    ||urlPath.includes('/google/link/start')||urlPath.includes('/google/reauth/start');
+    ||urlPath.includes('/google/start')||urlPath.includes('/google/link/start')
+    ||urlPath.includes('/google/reauth/start');
   if(req.method==='POST'&&!logoutMutation&&credentialMutation&&!verifyAuthMutationOrigin(req)){
     return res.status(403).json({error:'same-origin request required'});
   }

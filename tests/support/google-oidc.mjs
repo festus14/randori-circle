@@ -1,10 +1,11 @@
-import {generateKeyPairSync} from 'node:crypto';
+import {createHash,createHmac,generateKeyPairSync} from 'node:crypto';
 import jwt from 'jsonwebtoken';
 
 export const GOOGLE_TEST_CLIENT_ID='client';
 export const GOOGLE_TEST_NONCE='test-nonce-value';
 export const GOOGLE_TEST_VERIFIER='v'.repeat(64);
 export const GOOGLE_TEST_KEY_ID='randori-google-test-key';
+export const GOOGLE_TEST_JWT_SECRET='unit-test-secret-at-least-thirty-two-characters';
 
 const {privateKey,publicKey}=generateKeyPairSync('rsa',{modulusLength:2048});
 const publicJwk=publicKey.export({format:'jwk'});
@@ -48,15 +49,36 @@ export function googleOAuthCookieHeader({
   state='expected-state',
   verifier=GOOGLE_TEST_VERIFIER,
   nonce=GOOGLE_TEST_NONCE,
-  returnPath,
+  returnPath='/',
   invitationClaim,
+  purpose='login',
+  jwtSecret=GOOGLE_TEST_JWT_SECRET,
+  issuedAt=Math.floor(Date.now()/1000),
 }={}){
-  const values=[
-    `randori_oauth_state=${encodeURIComponent(state)}`,
-    `randori_oauth_verifier=${encodeURIComponent(verifier)}`,
-    `randori_oauth_nonce=${encodeURIComponent(nonce)}`,
-  ];
-  if(returnPath!==undefined) values.push(`randori_oauth_return=${encodeURIComponent(returnPath)}`);
+  const cookieName=googleOAuthTransactionCookieName(state);
+  const payload=Buffer.from(JSON.stringify({
+    v:1,state,verifier,nonce,return_path:returnPath,purpose,iat:issuedAt,exp:issuedAt+600,
+  }),'utf8').toString('base64url');
+  const signature=createHmac('sha256',jwtSecret)
+    .update(`randori-google-oauth-transaction-v1\0${payload}`,'utf8')
+    .digest('base64url');
+  const values=[`${cookieName}=${encodeURIComponent(`${payload}.${signature}`)}`];
   if(invitationClaim!==undefined) values.push(`randori_invite_claim=${encodeURIComponent(invitationClaim)}`);
   return values.join('; ');
+}
+
+export function googleOAuthTransactionCookieName(state='expected-state'){
+  const suffix=createHash('sha256')
+    .update(`randori-google-oauth-state-cookie-v1\0${state}`,'utf8')
+    .digest('base64url');
+  return `randori_oauth_tx_${suffix}`;
+}
+
+export function decodeGoogleOAuthTransactionCookie(cookie,state='expected-state'){
+  const prefix=`${googleOAuthTransactionCookieName(state)}=`;
+  const pair=String(cookie||'').split(';')[0];
+  if(!pair.startsWith(prefix)) return null;
+  const [payload]=decodeURIComponent(pair.slice(prefix.length)).split('.');
+  try{ return JSON.parse(Buffer.from(payload,'base64url').toString('utf8')); }
+  catch{ return null; }
 }

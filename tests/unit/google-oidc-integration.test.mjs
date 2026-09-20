@@ -28,7 +28,7 @@ mock.module('../../api/_db.js',{
 const {default:authHandler}=await import('../../api/auth.js');
 const originalFetch=globalThis.fetch;
 
-function invoke({code='one-time-code',cookie=googleOAuthCookieHeader()}={}){
+function invoke({code='one-time-code',cookie=googleOAuthCookieHeader({jwtSecret:JWT_SECRET})}={}){
   return new Promise((resolve,reject)=>{
     let status=200;
     let settled=false;
@@ -68,23 +68,28 @@ after(()=>{
   rmSync(directory,{recursive:true,force:true});
 });
 
-test('migrated OAuth persists issuer plus subject, follows stable identity, and refuses email auto-linking',async()=>{
+test('migrated OAuth follows an existing stable identity and refuses email auto-linking',async()=>{
   process.env.NODE_ENV='production';
   process.env.APP_URL='https://randori.example.test';
   process.env.GOOGLE_CLIENT_ID='client';
   process.env.GOOGLE_CLIENT_SECRET='secret';
-  process.env.SIGNUP_ALLOWLIST='first@example.test';
   process.env.CIRCLE_MEMBERSHIP_ENABLED='false';
   await prepareMigrationConnection(db);
   const fresh=await inspectMigrationState(db);
   await applyMigrations(db,{expectedStateFingerprint:fresh.stateFingerprint,retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
+  await db.batch([
+    `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,google_sub)
+      VALUES (1,'first@example.test','!oauth:existing','First Identity','#123456','stable-google-subject')`,
+    `INSERT INTO auth_provider_identities (issuer,subject,user_id)
+      VALUES ('https://accounts.google.com','stable-google-subject',1)`,
+  ],'write');
 
   globalThis.fetch=googleProviderFetch({claims:{
     email:'first@example.test',name:'First Identity',sub:'stable-google-subject',
   }});
-  const created=await invoke();
-  assert.equal(created.headers.location,'https://randori.example.test/?google=success');
-  assert.match(String(created.headers['set-cookie']),/randori_session=/);
+  const signedIn=await invoke();
+  assert.equal(signedIn.headers.location,'https://randori.example.test/?google=success');
+  assert.match(String(signedIn.headers['set-cookie']),/randori_session=/);
   let accounts=await db.execute(`SELECT id,email,google_sub FROM auth_accounts ORDER BY id`);
   assert.deepEqual(accounts.rows.map(row=>[Number(row.id),String(row.email),String(row.google_sub)]),[
     [1,'first@example.test','stable-google-subject'],
