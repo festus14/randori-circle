@@ -4182,6 +4182,28 @@ async function refreshMe(){
     else if(circleLifecycleStatus&&!hasCircleLifecycleNotice()) circleLifecycleStatus.textContent='You are an active circle member.';
   }
 
+  async function applyAuthoritativeSignedOutState(){
+    invalidateAuthRefreshes();
+    me=null;
+    resetCircleControlForIdentityChange();
+    try{
+      localStorage.removeItem(ME_KEY);
+      localStorage.removeItem('randori-last-room');
+      localStorage.removeItem('randori-last-tab');
+      localStorage.removeItem('randori-last-view');
+    }catch{}
+    clearAvailability();
+    try{ await updateAuthUI(); }catch{}
+    try{ await window._randori_journey?.routeByAuth?.(); }catch{}
+    window._randori_workspace?.deactivate?.();
+    window._randori_authorized_room=null;
+    window._randori_join_room=null;
+    window._randori_nav?.hideAllViews?.();
+    const landing=document.getElementById('view-landing');
+    if(landing) landing.style.display='block';
+    document.querySelectorAll('[data-tab]').forEach(tab=>tab.classList.remove('active'));
+  }
+
   async function archiveSelectedCircle({skipPrompt=false,allowRecentAuth=true}={}){
     if(circleLifecyclePending||!me||activeCircleRole!=='owner'
       ||!authCapabilities.multiCircleControlPlane
@@ -4219,6 +4241,13 @@ async function refreshMe(){
       window.location.reload();
       return true;
     }catch(error){
+      if(Number(error?.http_status)===401){
+        const currentUserId=Number(me?.id||me?.uid);
+        if(!Number.isSafeInteger(currentUserId)||currentUserId===actorId){
+          await applyAuthoritativeSignedOutState();
+        }
+        return false;
+      }
       if(!circleControlOperationMatches(operation)) return false;
       if(error?.code==='circle_archive_refresh_required'
         &&error?.archived_circle_public_id===operation.circlePublicId){
@@ -4237,22 +4266,6 @@ async function refreshMe(){
           if(!circleControlOperationMatches(operation)) return false;
           publishCircleLifecycleNotice('Confirmation is unavailable. No circle change was made.');
         }
-        return false;
-      }
-      if(Number(error?.http_status)===401){
-        clearPrivateCircleViewForSwitch();
-        try{ await window._randori_auth?.refreshMe?.(); }
-        catch{
-          invalidateAuthRefreshes();
-          me=null;
-          try{ localStorage.removeItem(ME_KEY); }catch{}
-          resetCircleControlForIdentityChange();
-          clearAvailability();
-          updateAuthUI();
-          try{ await window._randori_journey?.routeByAuth?.(); }catch{}
-        }
-        if(me&&Number(me.id||me.uid)===actorId) window.location.reload();
-        else try{ await window._randori_journey?.routeByAuth?.(); }catch{}
         return false;
       }
       const status=Number(error?.http_status);

@@ -193,14 +193,21 @@ test('archive session loss immediately clears private state and returns to signe
   await page.goto('/?view=circle',{waitUntil:'domcontentloaded'});
   await page.locator('[data-tab="circle"]').click();
   await expect(page.getByTestId('circle-archive')).toBeVisible();
-  await page.evaluate(()=>{ (window as any)._randori_authorized_room='week_1_pair_1'; });
+  await page.evaluate(()=>{
+    const app=window as any;
+    app._randori_authorized_room='week_1_pair_1';
+    app.__archiveRefreshCalls=0;
+    app._randori_auth.refreshMe=async()=>{ app.__archiveRefreshCalls+=1; throw new Error('unexpected refresh'); };
+  });
   await page.getByTestId('circle-archive').click();
   await confirmAction(page,/Archive Secondary/);
   await expect(page.locator('#view-landing')).toBeVisible();
   await expect(page.getByTestId('circle-lifecycle')).toBeHidden();
   await expect(page.getByTestId('circle-archive')).toBeHidden();
   expect(await page.evaluate(()=>({signedIn:(window as any)._randori_auth.signedIn,
-    room:(window as any)._randori_authorized_room}))).toEqual({signedIn:false,room:null});
+    room:(window as any)._randori_authorized_room,
+    refreshCalls:(window as any).__archiveRefreshCalls})))
+    .toEqual({signedIn:false,room:null,refreshCalls:0});
 });
 
 test('archive owner loss reloads and re-resolves the selected membership role',async({page})=>{
