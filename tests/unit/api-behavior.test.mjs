@@ -133,6 +133,17 @@ function createMockDb(){
         return rows([{name:'month',pk:1},{name:'user_id',pk:2}]);
       }
       if(sql.includes("pragma_table_info('ai_consents')")) return rows([{name:'user_id',pk:1}]);
+      if(sql.includes("pragma_table_info('auth_accounts')")) return rows([{name:'id',pk:1}]);
+      if(sql.includes("pragma_index_list('auth_accounts')")) return rows([{
+        index_name:'sqlite_autoindex_auth_accounts_1',is_unique:1,partial:0,seqno:0,column_name:'email',
+      }]);
+      if(sql.includes("pragma_table_info('pairing_week_runs')")) return rows([{name:'week_label',pk:1}]);
+      if(sql.includes("pragma_table_info('pairing_participants')")) return rows([
+        {name:'week_id',pk:1},{name:'user_id',pk:2},
+      ]);
+      if(sql.includes("pragma_index_list('pairing_weeks')")) return rows([{
+        index_name:'idx_pairing_weeks_week_label',is_unique:1,partial:0,seqno:0,column_name:'week_label',
+      }]);
       const result = await executeHandler(sql, statement?.args || []);
       if(!(result?.rows?.length)&&sql.includes('INSERT INTO auth_provider_identities')&&sql.includes('RETURNING user_id')){
         return rows([{user_id:Number(statement?.args?.[2])}]);
@@ -2935,6 +2946,150 @@ test('operations cover preferences, availability, admin promotion, demo lifecycl
   assert.equal(weekly.body.pair_count, 1);
   assert.doesNotMatch(JSON.stringify(weekly.body),/@example\.test/);
   assert.equal(executed.some(call => !call.sql.trim()), false, 'migration arrays must not execute undefined DDL entries');
+});
+
+test('admin operations authorize before readiness and perform no schema writes',async()=>{
+  const cases=[
+    {url:'/api/admin/reshuffle',endpoint:'reshuffle',body:{action:'promote',email:'target@example.test'}},
+    {url:'/api/demo-seed',endpoint:'demo-seed'},
+    {url:'/api/demo-shuffle',endpoint:'demo-shuffle'},
+    {url:'/api/demo-reset',endpoint:'demo-reset'},
+  ];
+  for(const item of cases){
+    db=createMockDb();
+    executed.length=0;
+    executeHandler=sql=>sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')
+      ?rows([{id:2,email:'user@example.test',is_admin:0}])
+      :rows();
+    const forbidden=await invoke(opsHandler,{
+      method:'POST',url:item.url,query:{endpoint:item.endpoint},
+      headers:{'x-test-auth':'user'},body:item.body,
+    });
+    assert.equal(forbidden.status,403,item.endpoint);
+    assert.equal(executed.length,1,`${item.endpoint} must stop after live authorization`);
+    assert.match(executed[0].sql,/SELECT id,email,is_admin FROM auth_accounts WHERE id=/);
+    assert.equal(executed.some(call=>/\bLIMIT\s+0\b/iu.test(call.sql)),false,
+      `${item.endpoint} must not probe schema for a non-admin`);
+    assert.equal(executed.some(call=>/^\s*(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(call.sql)),false,
+      `${item.endpoint} must not write for a non-admin`);
+  }
+});
+
+test('admin operation readiness failures are generic and precede every data mutation',async()=>{
+  const cases=[
+    {url:'/api/admin/reshuffle',endpoint:'reshuffle',body:{action:'promote',email:'target@example.test'}},
+    {url:'/api/demo-seed',endpoint:'demo-seed'},
+    {url:'/api/demo-shuffle',endpoint:'demo-shuffle'},
+    {url:'/api/demo-reset',endpoint:'demo-reset'},
+  ];
+  for(const item of cases){
+    db=createMockDb();
+    executed.length=0;
+    executeHandler=sql=>{
+      if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')){
+        return rows([{id:1,email:'admin@example.test',is_admin:0}]);
+      }
+      if(/\bLIMIT\s+0\b/iu.test(sql)) throw new Error('private schema detail');
+      return rows();
+    };
+    const unavailable=await invoke(opsHandler,{
+      method:'POST',url:item.url,query:{endpoint:item.endpoint},
+      headers:{'x-test-auth':'admin'},body:item.body,
+    });
+    assert.equal(unavailable.status,503,item.endpoint);
+    assert.deepEqual(unavailable.body,{error:'admin operation unavailable'},item.endpoint);
+    assert.equal(executed.some(call=>/^\s*(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(call.sql)),false,
+      `${item.endpoint} must fail before configured-admin or business writes`);
+  }
+});
+
+test('configured administrator synchronization follows validation and route readiness',async()=>{
+  executeHandler=sql=>{
+    if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')){
+      return rows([{id:1,email:'admin@example.test',is_admin:0}]);
+    }
+    if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE lower(email)')){
+      return rows([{id:2,email:'target@example.test',is_admin:0}]);
+    }
+    return rows();
+  };
+
+  const invalid=await invoke(opsHandler,{
+    method:'POST',url:'/api/admin/reshuffle',query:{endpoint:'reshuffle'},
+    headers:{'x-test-auth':'admin'},body:{action:'promote',email:'invalid'},
+  });
+  assert.equal(invalid.status,400);
+  assert.equal(executed.some(call=>call.sql.includes('UPDATE auth_accounts SET is_admin=1')),false);
+
+  executed.length=0;
+  const promoted=await invoke(opsHandler,{
+    method:'POST',url:'/api/admin/reshuffle',query:{endpoint:'reshuffle'},
+    headers:{'x-test-auth':'admin'},body:{action:'promote',email:'target@example.test'},
+  });
+  assert.equal(promoted.status,200);
+  const readinessIndex=executed.findIndex(call=>call.sql.includes('FROM auth_accounts LIMIT 0'));
+  const callerUpdateIndex=executed.findIndex(call=>call.sql.includes('UPDATE auth_accounts SET is_admin=1 WHERE id='));
+  const targetUpdateIndex=executed.findIndex(call=>call.sql.includes('UPDATE auth_accounts SET is_admin=1 WHERE lower(email)'));
+  assert.ok(readinessIndex>=0&&callerUpdateIndex>readinessIndex);
+  assert.ok(targetUpdateIndex>callerUpdateIndex);
+  assert.equal(promoted.body.is_admin_via,'db');
+});
+
+test('admin and demo operations run against a fully migrated SQLite database without runtime DDL',async()=>{
+  const directory=mkdtempSync(join(tmpdir(),'randori-admin-operations-'));
+  const client=createClient({url:pathToFileURL(join(directory,'operations.sqlite')).href});
+  try{
+    await prepareMigrationConnection(client);
+    const before=await inspectMigrationState(client);
+    await applyMigrations(client,{
+      expectedStateFingerprint:before.stateFingerprint,migrations:EXECUTABLE_MIGRATIONS,
+      retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0},
+    });
+    await client.batch([
+      `INSERT INTO auth_accounts
+        (id,email,password_hash,display_name,color,is_available,is_admin,is_demo)
+        VALUES (1,'admin@example.test','hash','Admin','#111111',1,1,0),
+               (2,'target@example.test','hash','Target','#222222',1,0,0)`,
+    ],'write');
+    db=client;
+
+    const promoted=await invoke(opsHandler,{
+      method:'POST',url:'/api/admin/reshuffle',query:{endpoint:'reshuffle'},
+      headers:{'x-test-auth':'admin'},body:{action:'promote',email:'target@example.test'},
+    });
+    assert.equal(promoted.status,200,JSON.stringify(promoted.body));
+    assert.equal(promoted.body.promoted,'target@example.test');
+
+    const seeded=await invoke(opsHandler,{
+      method:'POST',url:'/api/demo-seed',query:{endpoint:'demo-seed'},headers:{'x-test-auth':'admin'},
+    });
+    assert.equal(seeded.status,200,JSON.stringify(seeded.body));
+    assert.equal(seeded.body.seeded_count,6);
+
+    const shuffled=await invoke(opsHandler,{
+      method:'POST',url:'/api/demo-shuffle',query:{endpoint:'demo-shuffle'},headers:{'x-test-auth':'admin'},
+    });
+    assert.equal(shuffled.status,200,JSON.stringify(shuffled.body));
+    assert.equal(shuffled.body.demo,true);
+    assert.equal(shuffled.body.count,8);
+    assert.equal(shuffled.body.pairs.length,4);
+
+    const reset=await invoke(opsHandler,{
+      method:'POST',url:'/api/demo-reset',query:{endpoint:'demo-reset'},headers:{'x-test-auth':'admin'},
+    });
+    assert.equal(reset.status,200,JSON.stringify(reset.body));
+    assert.deepEqual(reset.body.deleted,{groups:4,weeks:1,demo_users:6});
+    const accounts=await client.execute(`SELECT email,is_demo FROM auth_accounts ORDER BY id`);
+    assert.deepEqual(accounts.rows.map(row=>({email:String(row.email),is_demo:Number(row.is_demo)})),[
+      {email:'admin@example.test',is_demo:0},{email:'target@example.test',is_demo:0},
+    ]);
+    const demoWeeks=await client.execute(`SELECT COUNT(*) AS count FROM pairing_weeks WHERE is_demo=1`);
+    assert.equal(Number(demoWeeks.rows[0].count),0);
+  }finally{
+    db=createMockDb();
+    client.close();
+    rmSync(directory,{recursive:true,force:true});
+  }
 });
 
 test('notification preferences reject origin, method, and authentication before readiness',async()=>{

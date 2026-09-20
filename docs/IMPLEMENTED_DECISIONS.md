@@ -1777,3 +1777,43 @@ migration workflow. A logging-readiness failure affects diagnostics only. An
 application rollback requires no database rollback, but reintroduces the eight
 retired DDL statements and is reserved for emergency compatibility. Exact
 contracts and verification are recorded in `AI_RUNTIME_DDL_RETIREMENT.md`.
+
+## ID-42: Forbid runtime DDL and make admin operations readiness route-scoped
+
+Status: implemented as the final DDL-removal increment with no schema migration.
+
+**Decision.** Administrator promotion, demo seed, demo shuffle, and demo reset
+no longer invoke the shared best-effort schema bootstrap. Migration v1 already
+owns every affected account and legacy pairing table, column, and index. The
+runtime-DDL allowlist is therefore empty, and CI rejects every direct, imported,
+or assembled API/runtime schema mutation.
+
+Each operation has a read-only readiness contract containing only the columns
+it uses. Demo write contracts additionally inspect the primary and unique keys
+that protect account identity, publication claims, pairing participants, and
+week-label uniqueness. Contracts are coalesced per database client and route,
+cache only successful probes, and evict failures for retry.
+
+Durable authentication and a live account read establish database or exact
+configured-email administrator authority before any readiness probe or data
+mutation. A non-admin performs no schema probe, DDL, or DML. The existing
+configured-administrator synchronization occurs only after the selected route
+is ready. Promotion input is validated before readiness and all business
+writes. Authentication-database and readiness failures return a generic 503;
+existing method, authentication, authorization, validation, success, demo-data,
+and pairing-uniqueness semantics remain unchanged.
+
+**Alternatives.** Full schema inspection on every request would detect unrelated
+drift but couple small administrator actions to all product tables and add
+avoidable latency. One shared superset probe would make promotion depend on the
+demo pairing schema. Relying on write failures could leave partial data. Keeping
+the bootstrap for administrators or local development would continue to hide
+missed migrations and prevent an enforceable zero-DDL boundary.
+
+**Rollout and recovery.** Promotion requires retained evidence that production
+is on the reviewed migration through v16. This increment performs no database
+or provider mutation. Missing readiness must be repaired by the protected
+migration workflow, never by an HTTP request. Application rollback requires no
+database rollback but reintroduces the retired schema writes and is reserved
+for emergency compatibility. Exact contracts and tests are recorded in
+`OPERATIONS_RUNTIME_DDL_RETIREMENT.md`.

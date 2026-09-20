@@ -13,12 +13,9 @@ const DDL_PATTERN=new RegExp(
 );
 const SOURCE_EXTENSION=/\.[cm]?js$/i;
 
-// This allowlist records the request-time schema debt that existed when the
-// migration foundation was introduced. New DDL must be added to a versioned
-// migration in a later slice, not silently introduced on an API request path.
-export const RUNTIME_DDL_ALLOWLIST=Object.freeze([
-  Object.freeze({file:'api/ops.js',statementCount:16,digest:'c523d118106729e770b59cd01ad89dca7c5a9a6060542c63fd87c90002a72aef'}),
-]);
+// Runtime DDL is forbidden. Schema changes belong only in reviewed, versioned
+// migrations and may never be introduced from an API request path.
+export const RUNTIME_DDL_ALLOWLIST=Object.freeze([]);
 
 function sourceFiles(directory){
   return readdirSync(directory,{withFileTypes:true}).flatMap(entry=>{
