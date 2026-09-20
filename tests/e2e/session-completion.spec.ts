@@ -143,9 +143,11 @@ test('a delayed completion response cannot cross an account or room boundary',as
 });
 
 test('the shared completion fixture rejects access after sign-out removes the session',async({page})=>{
+  let signedIn=true;
   await mockApi(page,{
-    '/api/auth/me':{ok:true,user},'/api/profile':{ok:true,user},
-    '/api/auth/logout':{ok:true},
+    '/api/auth/me':()=>signedIn?{ok:true,user}:{_status:401,ok:false,error:'authentication required'},
+    '/api/profile':{ok:true,user},
+    '/api/auth/logout':()=>{ signedIn=false; return {ok:true}; },
   });
   await resetClientState(page,true);
   await page.goto('/',{waitUntil:'domcontentloaded'});
@@ -159,8 +161,12 @@ test('the shared completion fixture rejects access after sign-out removes the se
   });
 
   await page.locator('#meLabel').click();
+  const reloaded=page.waitForEvent('load');
   await page.locator('#meSignOut').click();
+  await reloaded;
   await expect(page.locator('#authBtn')).toBeVisible();
+  // The route fixture cannot emit the production logout response's Set-Cookie
+  // deletion, so model that server-side session removal before the API probe.
   await page.context().clearCookies();
   await expect(readCompletion()).resolves.toEqual({
     status:401,body:{ok:false,error:'authentication required'},
