@@ -80,7 +80,9 @@ are `login`, `link:<user>:<session-hash>`, and
 Invite transactions use the exact purpose-scoped return path `/invite`, while
 ordinary login continues to allow only `/` or a canonical pair-room path. A
 provider cancellation or safe callback error therefore returns to invitation
-recovery without downgrading the transaction to login intent.
+recovery without downgrading the transaction to login intent. A successful
+invite callback returns to `/`, where the authenticated dashboard loads; it
+does not revisit a now-consumed invitation.
 
 Each OAuth start creates one signed ten-minute transaction containing exact
 state, PKCE verifier, nonce, canonical return path, purpose, and timestamps.

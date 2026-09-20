@@ -620,9 +620,6 @@ test('verified Google invitation bypasses allowlist only after validation and at
   validationResult={ok:true,circle_id:1,invitation_id:'invite-1',email_hash:'email-hash',used_by:null};
   accountAcceptanceResult={ok:true,user_id:8,is_admin:false,circle_id:1,created:true,idempotent:false};
   membershipResult=false;
-  globalThis.fetch=googleProviderFetch({claims:{
-    email:'invited@example.test',name:'Invited User',sub:'google-invited-1',
-  }});
   executeHandler=sql=>{
     if(sql.includes('SELECT id, email, is_admin, password_hash, google_sub')) return rows([]);
     if(sql.includes('INSERT INTO auth_accounts')&&sql.includes('RETURNING id')) return rows([{id:8}]);
@@ -630,10 +627,22 @@ test('verified Google invitation bypasses allowlist only after validation and at
     return rows();
   };
 
+  const started=await invoke(authHandler,{
+    method:'POST',url:'/api/auth/google/start',query:{endpoint:'google-start'},headers:oauthRequestHeaders(),
+    body:{purpose:'invite',invite_binding:INVITE_BINDING},
+  });
+  const authorization=new URL(started.body.authorizationUrl);
+  const state=authorization.searchParams.get('state');
+  const transactionCookie=String(started.headers['set-cookie']).split(';')[0];
+  const transaction=decodeGoogleOAuthTransactionCookie(transactionCookie,state);
+  globalThis.fetch=googleProviderFetch({claims:{
+    email:'invited@example.test',name:'Invited User',sub:'google-invited-1',nonce:transaction.nonce,
+  }});
+
   const result=await invoke(authHandler,{
     url:'/api/auth/google/callback',
-    query:{endpoint:'callback',code:'valid-code',state:'expected-state'},
-    headers:oauthRequestHeaders(),
+    query:{endpoint:'callback',code:'valid-code',state},
+    headers:{...sameOriginHeaders,cookie:`randori_invite_claim=valid-claim; ${transactionCookie}`},
   });
   assert.equal(result.status,302);
   assert.equal(result.headers.location,'https://randori.example.test/?google=success');

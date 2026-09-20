@@ -1268,8 +1268,7 @@ async function handleGoogleCallback(req,res){
     {recentAuthMethod:'google'}); }
   catch{ res.writeHead(302,{Location:redirectError('session_error')}); return res.end(); }
   appendCookies(res,[sessionCookie(req,ourJwt)]);
-  const destination=new URL(oauthResultLocation(
-    appUrl,returnPath,'google','success',inviteReturnOptions));
+  const destination=new URL(oauthResultLocation(appUrl,returnPath,'google','success'));
   if(providerEmailChanged) destination.searchParams.set('identity_notice','provider_email_changed');
   const dest=destination.toString();
   res.writeHead(302, { Location:dest });
