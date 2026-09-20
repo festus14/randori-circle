@@ -75,8 +75,8 @@ test('secondary partners schedule and export from the dashboard without a room c
         if(scheduleConflict){
           scheduleConflict=false;
           current=schedule('3'.repeat(64),[{
-            proposal_id:'d'.repeat(64),value:'2026-10-07T17:30:00.000Z',
-            instant:'2026-10-07T17:30:00.000Z',proposed_by:'partner',legacy:false,
+            proposal_id:'d'.repeat(64),value:'2098-10-07T17:30:00.000Z',
+            instant:'2098-10-07T17:30:00.000Z',proposed_by:'partner',legacy:false,
           }]);
           return {_status:409,ok:false,error:'schedule changed',coordination_only:true,
             workspace_available:false,circle_public_id:'circle-secondary',circle_context_version:7,
@@ -101,7 +101,7 @@ test('secondary partners schedule and export from the dashboard without a room c
     return {room:value?.room,version:value?.version};
   })).toEqual({room:scheduleId,version:'1'.repeat(64)});
 
-  await page.getByTestId('schedule-input').fill('2026-10-06T18:30');
+  await page.getByTestId('schedule-input').fill('2098-10-06T18:30');
   await page.getByTestId('schedule-propose').click();
   await expect(page.getByTestId('schedule-proposal')).toContainText('Proposed by You');
   expect(requests.some(item=>item.method==='GET'&&item.query==='')).toBe(true);
@@ -112,14 +112,14 @@ test('secondary partners schedule and export from the dashboard without a room c
   }))).toEqual({authorized:null,legacyRoom:null});
 
   scheduleConflict=true;
-  await page.getByTestId('schedule-input').fill('2026-10-07T18:30');
+  await page.getByTestId('schedule-input').fill('2098-10-07T18:30');
   await page.getByTestId('schedule-propose').click();
   await expect.poll(()=>page.evaluate(()=>(window as typeof window&{
     _randori_schedule?:{version?:string}
   })._randori_schedule?.version)).toBe('3'.repeat(64));
   await expect(page.getByTestId('schedule-proposal')).toContainText('Proposed by Your partner');
 
-  current=schedule('4'.repeat(64),current.proposals,'2026-10-06T17:30:00.000Z');
+  current=schedule('4'.repeat(64),current.proposals,'2098-10-06T17:30:00.000Z');
   await page.evaluate(()=>
     (window as typeof window&{_randori_schedule?:{refresh?:()=>Promise<boolean>}})._randori_schedule?.refresh?.());
   const downloadPromise=page.waitForEvent('download');
@@ -215,7 +215,7 @@ test('explicitly selected primary scheduling retains its room contract and sends
   await page.evaluate(()=>(window as typeof window&{
     _randori_schedule?:{refresh?:()=>Promise<boolean>}
   })._randori_schedule?.refresh?.());
-  await page.getByTestId('schedule-input').fill('2026-10-06T18:30');
+  await page.getByTestId('schedule-input').fill('2098-10-06T18:30');
   await page.getByTestId('schedule-propose').click();
   await expect(page.getByTestId('schedule-proposal')).toBeVisible();
   expect(requests.some(item=>item.method==='GET'&&item.query===`?room_id=${room}`)).toBe(true);

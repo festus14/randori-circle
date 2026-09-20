@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 export const MAX_SCHEDULE_PROPOSALS=12;
+export const SCHEDULE_INSTANT_ELAPSED_CODE='schedule_instant_elapsed';
 const MAX_STORED_PROPOSALS=20;
 const MAX_STORED_PROPOSALS_BYTES=32*1024;
 const MAX_LEGACY_VALUE_BYTES=4*1024;
@@ -20,6 +21,17 @@ export class ScheduleDataError extends Error {
   constructor(message){
     super(message);
     this.name='ScheduleDataError';
+  }
+}
+
+export class ScheduleTemporalError extends ScheduleInputError {
+  constructor(action){
+    super(action==='accept'
+      ?'That proposal has elapsed. Remove it or choose a future time.'
+      :'Choose a future time. That proposed time has elapsed.');
+    this.name='ScheduleTemporalError';
+    this.code=SCHEDULE_INSTANT_ELAPSED_CODE;
+    this.reason=action==='accept'?'accept_elapsed':'propose_elapsed';
   }
 }
 
@@ -54,6 +66,30 @@ export function normalizeScheduleInstant(value){
     const normalized=new Date(epoch).toISOString();
     return RFC3339_PATTERN.test(normalized)?normalized:null;
   }catch{ return null; }
+}
+
+export async function readScheduleDatabaseNow(db){
+  if(!db||typeof db.execute!=='function') throw new ScheduleDataError('database schedule clock is unavailable');
+  let result;
+  try{
+    result=await db.execute("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc");
+  }catch(error){
+    throw new ScheduleDataError('database schedule clock is unavailable',{cause:error});
+  }
+  const raw=result?.rows?.length===1?String(result.rows[0]?.now_utc||''):'';
+  const normalized=normalizeScheduleInstant(raw);
+  if(!normalized||normalized!==raw) throw new ScheduleDataError('database schedule clock is invalid');
+  return normalized;
+}
+
+export function assertFutureScheduleInstant(action,instant,nowUtc){
+  if(action!=='propose'&&action!=='accept') return;
+  const normalizedInstant=normalizeScheduleInstant(instant);
+  const normalizedNow=normalizeScheduleInstant(nowUtc);
+  if(!normalizedInstant||normalizedInstant!==instant||!normalizedNow||normalizedNow!==nowUtc){
+    throw new ScheduleDataError('schedule temporal comparison is invalid');
+  }
+  if(Date.parse(normalizedInstant)<=Date.parse(normalizedNow)) throw new ScheduleTemporalError(action);
 }
 
 function positiveSafeInteger(value){

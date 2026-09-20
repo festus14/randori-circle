@@ -2243,3 +2243,66 @@ circle switches, published and unpublished assignments, and exact workspace
 hydration. Rollback is code-only and does not alter user, cycle, pairing, or
 workspace data. The full decision and verification plan is in
 [`SERVER_AUTHORITATIVE_ONBOARDING.md`](SERVER_AUTHORITATIVE_ONBOARDING.md).
+
+## ID-53: Make actionable schedules strictly future by database time
+
+Status: candidate code-only scheduling reliability increment; no migration.
+
+**Decision.** Primary and secondary proposal and acceptance paths resolve the
+current schedule, optimistic version, selected proposal, and one validated UTC
+database instant inside the write transaction. An instant must be strictly
+later than database time; equality returns the stable
+`schedule_instant_elapsed` error. Invalid or unavailable database time fails
+closed. Rejection commits no schedule or outbox mutation, while stale CAS still
+wins before temporal policy.
+
+Elapsed stored proposals remain readable and removable. Elapsed agreements
+remain readable as past and clearable; neither is automatically rewritten.
+The dashboard supplies a local `datetime-local` minimum only as guidance,
+labels expired/past state, retains drafts on an accessible inline error, and
+refetches authoritative state. Delayed results are fenced by actor,
+room/schedule identity, circle context, and cycle. Aggregate telemetry records
+only primary/secondary plus `propose_elapsed` or `accept_elapsed`.
+
+**Alternatives.** Client-only validation is bypassable and affected by clock
+skew. Application-server time can disagree across instances and with the
+transaction owner. A minimum lead time is a separate product policy. Automatic
+deletion loses history, while relying only on dispatch suppression leaves users
+with a misleading accepted session. These options are rejected.
+
+**Rollout and recovery.** No schema, provider, or production-data change is
+required. Canary equality, one-millisecond-future, boundary-crossing acceptance,
+and elapsed-state recovery in both scopes. Rollback is code-only; existing rows
+remain intact and dispatch-time elapsed suppression remains defense in depth.
+The complete contract is in [`SCHEDULE_EXPIRY.md`](SCHEDULE_EXPIRY.md).
+
+## ID-54: Activate the backup watchdog at a reviewed rehearsal slot
+
+Status: candidate operations-control hardening; no provider or secret change.
+
+**Decision.** The independent backup watchdog uses the immutable, schedule-aligned
+activation epoch `2026-09-21T03:17:00.000Z`. Before that instant it emits a
+sanitized, non-alerting but explicitly non-ready `setup_pending` artifact, with
+the activation time and stable operator action but no invented `expectedAt` or
+run identity. Both scheduled and manual watchdog runs use the same committed
+constant.
+
+At activation, earlier runs cannot count and missing evidence immediately
+retains `run_missing`. Every later candidate and healthy result carries an
+expected slot no earlier than activation; download verification rechecks the
+activation/expected/run ordering. Existing stuck, failed, stale, missing,
+expired, corrupt, and API alerts remain fail closed. Only a real scheduled run
+with its exact independently validated healthy monitor artifact proves
+readiness.
+
+**Alternatives.** A fixed grace derived from first observation or deployment
+slides on reruns. A repository variable can silently postpone an active control
+outside code review. Inferring workflow history depends on retention,
+pagination, and API availability. Calling bootstrap healthy overstates recovery
+readiness. These options are rejected.
+
+**Rollout and recovery.** This change mutates no schema, secret, environment, or
+provider. Canary a pre-activation manual dispatch, then prove fail-closed
+missing evidence and a real scheduled success at activation. After activation,
+roll forward without moving the epoch. The complete contract and alternatives
+are in [`BACKUP_WATCHDOG_ACTIVATION.md`](BACKUP_WATCHDOG_ACTIVATION.md).

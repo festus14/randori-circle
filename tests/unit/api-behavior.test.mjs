@@ -1348,17 +1348,17 @@ test('profile, pair schedule, and messages enforce ownership while catalogue and
 
   const schedule = await invoke(dataHandler, {
     method: 'POST', url: '/api/schedule', query: { endpoint: 'schedule' }, headers,
-    body: { room_id:'week_10_pair_20', action:'propose', base_version:initialSchedule.body.schedule.version, instant:'2026-09-20T08:00:00+01:00' },
+    body: { room_id:'week_10_pair_20', action:'propose', base_version:initialSchedule.body.schedule.version, instant:'2098-09-20T08:00:00+01:00' },
   });
   assert.equal(schedule.status, 200);
-  assert.equal(schedule.body.schedule.proposals[0].instant,'2026-09-20T07:00:00.000Z');
+  assert.equal(schedule.body.schedule.proposals[0].instant,'2098-09-20T07:00:00.000Z');
   assert.equal(schedule.body.schedule.proposals[0].proposed_by,2);
 
   const accepted = await invoke(dataHandler, {
     method: 'POST', url: '/api/schedule', query: { endpoint: 'schedule' }, headers,
     body: { room_id:'week_10_pair_20', action:'accept', base_version:schedule.body.schedule.version, proposal_id:schedule.body.schedule.proposals[0].proposal_id },
   });
-  assert.equal(accepted.body.schedule.agreed_time,'2026-09-20T07:00:00.000Z');
+  assert.equal(accepted.body.schedule.agreed_time,'2098-09-20T07:00:00.000Z');
 
   const clearedAgreement = await invoke(dataHandler, {
     method: 'POST', url: '/api/schedule', query: { endpoint: 'schedule' }, headers,

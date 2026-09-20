@@ -9,7 +9,7 @@ const WATCHDOG_PATH='.github/workflows/turso-backup-restore-watchdog.yml';
 const DEPLOYABILITY_PATH='.github/workflows/deployability.yml';
 const WORKFLOW_DIGESTS=Object.freeze({
   rehearsal:'4689edfeeb154ab1682bd4856a312ba9041315bedf98e658ed2a4029dbf93229',
-  watchdog:'acf0183ed4c75b9be8ceec63bd6d1238774b2aedcb9674d14bb4ff55bce204b4',
+  watchdog:'d635165fe7b0ee986c10852583d16d440839388cc4dfdc17516998aa80d35df8',
   deployability:'e81983931c58b9abcaea6569a40967b38346ce3c4923ea14f41d6eabf75da503',
 });
 const PROTECTED_REHEARSAL_RUN=[
@@ -468,7 +468,8 @@ function validateWatchdog(raw){
   const discovery=step(source,'Discover authoritative scheduled rehearsal evidence');
   const verification=step(source,'Verify downloaded monitor evidence');
   add(errors,exactEnvironment(discovery,[
-    'GITHUB_TOKEN','WATCHDOG_DEFAULT_BRANCH','WATCHDOG_MAX_RUN_AGE_MS',
+    'GITHUB_TOKEN','WATCHDOG_DEFAULT_BRANCH','WATCHDOG_CONTROL_ACTIVATION_AT',
+    'WATCHDOG_MAX_RUN_AGE_MS',
     'WATCHDOG_STUCK_AFTER_MS','WATCHDOG_SLOT_GRACE_MS','WATCHDOG_SLOT_DEADLINE_MS',
   ])&&environmentValue(discovery,'WATCHDOG_MAX_RUN_AGE_MS')===
       "          WATCHDOG_MAX_RUN_AGE_MS: '691200000'"
@@ -478,10 +479,15 @@ function validateWatchdog(raw){
       "          WATCHDOG_SLOT_GRACE_MS: '7200000'"
     &&environmentValue(discovery,'WATCHDOG_SLOT_DEADLINE_MS')===
       "          WATCHDOG_SLOT_DEADLINE_MS: '12600000'"
-    &&exactEnvironment(verification,['WATCHDOG_MAX_RUN_AGE_MS'])
+    &&exactEnvironment(verification,['WATCHDOG_CONTROL_ACTIVATION_AT','WATCHDOG_MAX_RUN_AGE_MS'])
+    &&environmentValue(verification,'WATCHDOG_CONTROL_ACTIVATION_AT')===
+      "          WATCHDOG_CONTROL_ACTIVATION_AT: '2026-09-21T03:17:00.000Z'"
     &&environmentValue(verification,'WATCHDOG_MAX_RUN_AGE_MS')===
       "          WATCHDOG_MAX_RUN_AGE_MS: '691200000'",
   'watchdog freshness, stuck-run, grace, and absolute-deadline policy must remain fixed');
+  add(errors,environmentValue(discovery,'WATCHDOG_CONTROL_ACTIVATION_AT')===
+      "          WATCHDOG_CONTROL_ACTIVATION_AT: '2026-09-21T03:17:00.000Z'",
+  'watchdog activation must remain the reviewed first Monday rehearsal slot');
   add(errors,!/turso-backup-restore-rehearsal\.mjs|gh\s+workflow\s+run|\/dispatches\b/.test(source),
     'watchdog must never dispatch or execute the protected provider rehearsal');
   add(errors,!/\bcontinue-on-error\s*:/i.test(source),

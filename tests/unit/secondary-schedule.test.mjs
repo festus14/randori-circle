@@ -61,6 +61,34 @@ function fixture(){
   return {db,url,close(){ db.close(); rmSync(directory,{recursive:true,force:true}); }};
 }
 
+function sqlText(statement){
+  return typeof statement==='string'?statement:String(statement?.sql||'');
+}
+
+function databaseClockClient(delegate,readClock){
+  const execute=(target,statement)=>{
+    if(sqlText(statement).includes("strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc")){
+      const nowUtc=readClock();
+      if(nowUtc instanceof Error) throw nowUtc;
+      return Promise.resolve({rows:[{now_utc:nowUtc}],rowsAffected:0});
+    }
+    return target.execute(statement);
+  };
+  return {
+    execute:statement=>execute(delegate,statement),
+    batch:(statements,mode)=>delegate.batch(statements,mode),
+    async transaction(mode){
+      const transaction=await delegate.transaction(mode);
+      return {
+        execute:statement=>execute(transaction,statement),
+        batch:(statements,batchMode)=>transaction.batch(statements,batchMode),
+        commit:()=>transaction.commit(),rollback:()=>transaction.rollback(),close:()=>transaction.close?.(),
+      };
+    },
+    close:()=>delegate.close(),
+  };
+}
+
 async function apply(db){
   await prepareMigrationConnection(db);
   const before=await inspectMigrationState(db);
@@ -186,7 +214,7 @@ test('secondary schedule proposes, accepts, removes, and clears through normaliz
     assert.equal(initial.dashboard_path,'/?view=dashboard');
     assert.deepEqual(initial.schedule.proposals,[]);
     const proposed=await mutateSecondarySchedule(item.db,{authority:authority(),mutation:{
-      action:'propose',baseVersion:initial.schedule.version,instant:'2026-09-20T09:00:00.000Z',
+      action:'propose',baseVersion:initial.schedule.version,instant:'2098-09-20T09:00:00.000Z',
     }});
     assert.equal(proposed.conflict,false);
     assert.equal(proposed.response.schedule.proposals[0].proposed_by,'self');
@@ -202,12 +230,12 @@ test('secondary schedule proposes, accepts, removes, and clears through normaliz
         action:'accept',baseVersion:partnerView.schedule.version,proposalId,
       },
     });
-    assert.equal(accepted.response.schedule.agreed_time,'2026-09-20T09:00:00.000Z');
+    assert.equal(accepted.response.schedule.agreed_time,'2098-09-20T09:00:00.000Z');
     const removed=await mutateSecondarySchedule(item.db,{authority:authority(),mutation:{
       action:'remove',baseVersion:accepted.response.schedule.version,proposalId,
     }});
     assert.deepEqual(removed.response.schedule.proposals,[]);
-    assert.equal(removed.response.schedule.agreed_time,'2026-09-20T09:00:00.000Z');
+    assert.equal(removed.response.schedule.agreed_time,'2098-09-20T09:00:00.000Z');
     const cleared=await mutateSecondarySchedule(item.db,{authority:authority(),mutation:{
       action:'clear',baseVersion:removed.response.schedule.version,
     }});
@@ -218,6 +246,90 @@ test('secondary schedule proposes, accepts, removes, and clears through normaliz
     await assert.rejects(()=>readSecondarySchedule(item.db,{authority:authority()}),error=>
       error instanceof SecondaryScheduleError&&error.code==='SECONDARY_SCHEDULE_INTEGRITY');
   }finally{ item.close(); currentDb=null; }
+});
+
+test('secondary API uses transaction time for elapsed rejection and preserves recoverable stored state',async()=>{
+  const item=fixture();
+  let databaseNow='2098-09-20T08:00:00.000Z';
+  currentDb=databaseClockClient(item.db,()=>databaseNow);
+  try{
+    await apply(item.db); await seed(item.db); enableSecondaryScheduleEmail();
+    const initial=await invoke();
+    const exact=await invoke({method:'POST',body:{
+      action:'propose',base_version:initial.body.schedule.version,instant:databaseNow,
+    }});
+    assert.equal(exact.status,400);
+    assert.equal(exact.body.code,'schedule_instant_elapsed');
+    assert.equal(Number((await item.db.execute('SELECT COUNT(*) AS count FROM circle_pair_schedules')).rows[0].count),0);
+    assert.equal((await scheduleEvents(item.db)).length,0);
+
+    const justFuture='2098-09-20T08:00:00.001Z';
+    const proposed=await invoke({method:'POST',body:{
+      action:'propose',base_version:initial.body.schedule.version,instant:justFuture,
+    }});
+    assert.equal(proposed.status,200);
+    assert.equal((await scheduleEvents(item.db)).length,1);
+    const proposalId=proposed.body.schedule.proposals[0].proposal_id;
+
+    const stale=await invoke({method:'POST',body:{
+      action:'propose',base_version:initial.body.schedule.version,instant:'2098-09-20T07:59:59.999Z',
+    }});
+    assert.equal(stale.status,409,'CAS is evaluated before temporal policy');
+
+    databaseNow=justFuture;
+    const revisionBefore=Number((await item.db.execute(
+      'SELECT revision FROM circle_pair_schedules',
+    )).rows[0].revision);
+    const expiredAccept=await invoke({method:'POST',body:{
+      action:'accept',base_version:proposed.body.schedule.version,proposal_id:proposalId,
+    }});
+    assert.equal(expiredAccept.status,400);
+    assert.equal(expiredAccept.body.code,'schedule_instant_elapsed');
+    assert.equal(Number((await item.db.execute(
+      'SELECT revision FROM circle_pair_schedules',
+    )).rows[0].revision),revisionBefore);
+    assert.equal((await scheduleEvents(item.db)).length,1);
+
+    databaseNow='2098-09-20T08:00:00.000Z';
+    const accepted=await invoke({method:'POST',body:{
+      action:'accept',base_version:proposed.body.schedule.version,proposal_id:proposalId,
+    }});
+    assert.equal(accepted.status,200);
+    databaseNow='2098-09-20T09:00:00.000Z';
+    const cleared=await invoke({method:'POST',body:{
+      action:'clear',base_version:accepted.body.schedule.version,
+    }});
+    assert.equal(cleared.status,200,'an elapsed stored agreement remains clearable');
+    const removed=await invoke({method:'POST',body:{
+      action:'remove',base_version:cleared.body.schedule.version,proposal_id:proposalId,
+    }});
+    assert.equal(removed.status,200,'an elapsed stored proposal remains removable');
+    assert.deepEqual(removed.body.schedule.proposals,[]);
+
+    const stableRevision=Number((await item.db.execute(
+      'SELECT revision FROM circle_pair_schedules',
+    )).rows[0].revision);
+    const stableOutbox=(await scheduleEvents(item.db)).length;
+    databaseNow='invalid';
+    const invalidClock=await invoke({method:'POST',body:{
+      action:'propose',base_version:removed.body.schedule.version,instant:'2098-09-20T10:00:00.000Z',
+    }});
+    assert.equal(invalidClock.status,503);
+    assert.equal(Number((await item.db.execute(
+      'SELECT revision FROM circle_pair_schedules',
+    )).rows[0].revision),stableRevision);
+    assert.equal((await scheduleEvents(item.db)).length,stableOutbox);
+
+    const logs=(await item.db.execute(`SELECT event,message,meta_json,user_id,route,ua,ip
+      FROM app_logs WHERE event='schedule_temporal_rejected' ORDER BY id`)).rows;
+    assert.deepEqual(logs.map(row=>JSON.parse(String(row.meta_json))),[
+      {scope:'secondary',reason:'propose_elapsed'},
+      {scope:'secondary',reason:'accept_elapsed'},
+    ]);
+    assert.equal(logs.every(row=>row.message==='schedule mutation rejected by database time'
+      &&row.user_id==null&&row.route==null&&row.ua==null&&row.ip==null),true);
+    assert.equal(JSON.stringify(logs).includes('2098-09-20'),false);
+  }finally{ currentDb=null; item.close(); }
 });
 
 test('successful secondary CAS writes compact v2 recipient intents and no-op or stale writes queue nothing',async()=>{
@@ -384,7 +496,7 @@ test('stale versions conflict and circle switching isolates same-cycle schedules
     await apply(item.db); await seed(item.db);
     const first=await readSecondarySchedule(item.db,{authority:authority()});
     const written=await mutateSecondarySchedule(item.db,{authority:authority(),mutation:{
-      action:'propose',baseVersion:first.schedule.version,instant:'2026-09-20T09:00:00.000Z',
+      action:'propose',baseVersion:first.schedule.version,instant:'2098-09-20T09:00:00.000Z',
     }});
     const conflict=await mutateSecondarySchedule(item.db,{authority:authority(),mutation:{
       action:'clear',baseVersion:first.schedule.version,
@@ -454,7 +566,7 @@ test('schedule API derives secondary scope and emits no workspace or internal id
     assert.equal(JSON.stringify(initial.body).includes('group_id'),false);
     assert.equal(JSON.stringify(initial.body).includes('room_id'),false);
     const proposed=await invoke({method:'POST',body:{
-      action:'propose',base_version:initial.body.schedule.version,instant:'2026-09-20T09:00:00.000Z',
+      action:'propose',base_version:initial.body.schedule.version,instant:'2098-09-20T09:00:00.000Z',
     }});
     assert.equal(proposed.status,200);
     assert.equal(proposed.body.schedule.proposals.length,1);
@@ -516,7 +628,7 @@ test('concurrent secondary writers produce one winner and one latest-state confl
     const initial=await readSecondarySchedule(item.db,{authority:authority()});
     const writes=[item.db,second].map((db,index)=>mutateSecondarySchedule(db,{authority:authority(),mutation:{
       action:'propose',baseVersion:initial.schedule.version,
-      instant:`2026-09-20T0${index+8}:00:00.000Z`,
+      instant:`2098-09-20T0${index+8}:00:00.000Z`,
     }}));
     const results=await Promise.all(writes);
     assert.deepEqual(results.map(result=>result.conflict).sort(),[false,true]);
@@ -549,7 +661,7 @@ test('an applied-but-throwing commit is not replayed',async()=>{
       },
     };
     await assert.rejects(()=>mutateSecondarySchedule(ambiguous,{authority:authority(),mutation:{
-      action:'propose',baseVersion:initial.schedule.version,instant:'2026-09-20T08:00:00.000Z',
+      action:'propose',baseVersion:initial.schedule.version,instant:'2098-09-20T08:00:00.000Z',
     }}),error=>error instanceof SecondaryScheduleError&&error.code==='SECONDARY_SCHEDULE_UNAVAILABLE');
     assert.equal(transactionCount,1);
     const stored=await readSecondarySchedule(item.db,{authority:authority()});
