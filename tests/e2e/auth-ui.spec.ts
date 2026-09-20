@@ -886,9 +886,9 @@ test('a pre-auth refresh cannot clear a newer successful signup identity', async
   await resetClientState(page);
   await page.goto('/', { waitUntil: 'domcontentloaded' });
 
-  // Let the three bootstrap reconciliation attempts start so the controlled
-  // request below cannot be stolen by a scheduled refresh.
-  await expect.poll(() => authMeCalls).toBeGreaterThanOrEqual(3);
+  // The authoritative signed-out result suppresses later bootstrap attempts,
+  // so the controlled request below cannot be stolen by a scheduled refresh.
+  await expect.poll(() => authMeCalls).toBeGreaterThanOrEqual(1);
   delayNextRefresh=true;
   const staleRefresh=page.evaluate(()=>(window as any)._randori_auth.refreshMe());
   await expect.poll(()=>delayedRefreshStarted).toBe(true);

@@ -77,6 +77,12 @@ must authenticate again after reactivation.
   active role, actor, and switching state before making private controls visible.
   A delayed member mutation remains a no-op after the switch begins, even when
   another old-circle render is also in flight.
+- Identity bootstrap retries stop after the first successful or authoritative
+  signed-out response. Transient failures still use the full retry ladder, but
+  an already resolved identity does not issue later duplicate role/roster reads
+  that can mask a same-actor roster denial. Browser regressions advance a
+  virtual clock across that queued retry window, so this ordering is verified
+  without wall-clock sleeps.
 
 The existing role/status columns, audit table, session revocation fields, and
 invitation status model are sufficient. This increment intentionally adds no

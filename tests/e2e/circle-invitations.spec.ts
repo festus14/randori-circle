@@ -659,11 +659,10 @@ test('an identity refresh recovers from a pending circle switch without reviving
     await page.locator('[data-tab="circle"]').click();
     const selector=page.getByTestId('circle-context-select');
     await expect(selector).toHaveValue('circle-primary');
-    // The app deliberately performs three timed bootstrap identity refreshes.
-    // Observe and supersede all of them before constructing this explicit
-    // switch/identity race, so host timer scheduling cannot cancel the refresh
-    // whose commit result is part of this test's contract.
-    await expect.poll(()=>authMeCalls).toBeGreaterThanOrEqual(3);
+    // Wait for authoritative hydration, which suppresses the remaining timed
+    // retries, then make the explicit refresh newest before constructing the
+    // switch/identity race.
+    await expect.poll(()=>authMeCalls).toBeGreaterThanOrEqual(1);
     expect(await page.evaluate(()=>(window as any)._randori_auth.refreshMe())).toBe(true);
 
     const switchResponse=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/circles'
@@ -921,9 +920,9 @@ test('a successful one-time invitation remains copyable when the list refresh fa
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await expect(page.locator('#meLabel')).toContainText('Circle Owner');
   await page.locator('[data-tab="circle"]').click();
-  // Let the fixed bootstrap identity schedule settle. The race below is then
-  // driven entirely by explicit request gates rather than wall-clock sleeps.
-  await expect.poll(() => authMeCalls).toBeGreaterThanOrEqual(3);
+  // Let authoritative identity hydration suppress the remaining bootstrap
+  // retries. The race below is then driven entirely by explicit request gates.
+  await expect.poll(() => authMeCalls).toBeGreaterThanOrEqual(1);
   await page.evaluate(async () => {
     await (window as typeof window & {
       _randori_auth?: { refreshMe?: () => Promise<unknown> };
