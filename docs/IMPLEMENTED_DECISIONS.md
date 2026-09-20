@@ -1604,9 +1604,10 @@ write transaction. A conditional update also proves that every active member
 has another active membership in an unarchived circle. The transaction writes
 one deterministic `circle.archived` audit and moves all stored contexts that
 selected the target to a primary-first, then lowest-ID fallback, incrementing
-each generation. An identical owner retry validates the retained membership,
-fresh proof, archived marker, and audit before returning current context without
-another write. Bounded retries are limited to recognized pre-commit lock
+each generation. An identical retry by any active retained owner validates the
+fresh proof, archived marker, and audit before returning that caller's current
+context without another write, so different-owner races converge after the
+winning transaction moves both sessions. Bounded retries are limited to recognized pre-commit lock
 conflicts; ambiguous commit results require the same target/version retry.
 
 Archive sets only `circles.archived_at`. Memberships, invitations, creation

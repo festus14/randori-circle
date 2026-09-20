@@ -255,6 +255,32 @@ test('concurrent duplicate archive requests converge on one audit and one contex
   }finally{ try{ second?.close(); }catch{} item.close(); }
 });
 
+test('concurrent active owners converge after both selected sessions fall back',async()=>{
+  const item=fixture(); let second;
+  try{
+    await migrate(item.db); await seed(item.db);
+    await item.db.execute({sql:`INSERT INTO auth_recent_proofs
+      (session_hash,user_id,authenticated_at,method) VALUES (?,3,?,'password')`,args:[SESSION_D,NOW-10]});
+    second=item.client(); await prepareMigrationConnection(second);
+    const outcomes=await Promise.all([
+      archiveSecondaryCircle(item.db,payload(),input(),{nowSeconds:NOW,maxAttempts:6,baseDelayMs:2}),
+      archiveSecondaryCircle(second,payload(3,SESSION_D),input('circle-secondary',9),{
+        nowSeconds:NOW,maxAttempts:6,baseDelayMs:2,
+      }),
+    ]);
+    assert.deepEqual(new Set(outcomes.map(result=>result.changed)),new Set([true,false]));
+    assert.deepEqual(new Set(outcomes.map(result=>result.context_version)),new Set([5,10]));
+    assert.equal(Number((await item.db.execute(`SELECT COUNT(*) AS count FROM circle_audit_events
+      WHERE event_type='circle.archived'`)).rows[0].count),1);
+    const contexts=await item.db.execute({sql:`SELECT session_hash,circle_id,context_version
+      FROM auth_session_circle_contexts WHERE session_hash IN (?,?) ORDER BY session_hash`,
+    args:[SESSION_A,SESSION_D]});
+    assert.deepEqual(contexts.rows.map(row=>[
+      String(row.session_hash),Number(row.circle_id),Number(row.context_version),
+    ]),[[SESSION_A,10,5],[SESSION_D,30,10]]);
+  }finally{ try{ second?.close(); }catch{} item.close(); }
+});
+
 test('an applied-but-throwing commit is not retried and the exact external replay converges',async()=>{
   const item=fixture();
   try{

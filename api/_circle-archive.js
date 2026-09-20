@@ -122,7 +122,8 @@ async function archiveAttempt(db,actor,input,{nowSeconds}={}){
     }
 
     if(row.archived_at!==null){
-      if(Number(row.archived_by)!==actor.userId||String(row.archive_event_type)!=='circle.archived'
+      const archivedBy=Number(row.archived_by);
+      if(!Number.isSafeInteger(archivedBy)||archivedBy<1||String(row.archive_event_type)!=='circle.archived'
         ||String(row.archive_dedupe_key)!==`circle-archived:${circleId}`){
         await rollback(transaction); finished=true;
         return Object.freeze({ok:false,reason:'circle_unavailable'});

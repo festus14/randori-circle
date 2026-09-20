@@ -46,9 +46,11 @@ outcome as committed, clears private state, broadcasts the generation, and
 reloads to recover the fallback instead of leaving the retired workspace open.
 
 One `circle.archived` audit uses the deterministic `circle-archived:<circle-id>`
-dedupe key. An identical retry by the archiving owner still requires a live
-session, active retained owner membership, recent auth, and an intact audit.
-It then returns the current fallback without another audit or version bump.
+dedupe key. An identical retry by any active retained owner still requires a
+live session, recent auth, and an intact audit. This lets different owners'
+concurrent attempts converge after the winning transaction has already moved
+both selected sessions. The retry returns that caller's current fallback
+without another audit or version bump.
 Known lock conflicts retry only before commit begins. An ambiguous commit is
 reported as unknown and the same target/version request is safe to retry.
 
