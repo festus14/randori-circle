@@ -27,6 +27,7 @@ mock.module('../../api/_db.js',{
     isSentryConfigured:()=>false,
     verifyMutationOrigin:()=>true,
     verifyRequestAuth:authPayload,
+    verifySignedRequestAuth:authPayload,
   },
 });
 

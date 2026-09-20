@@ -1,15 +1,62 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkRuntimeDdl, normalizeDdl, RUNTIME_DDL_ALLOWLIST, stringLiterals } from '../../scripts/check-runtime-ddl.mjs';
 
-test('runtime DDL debt matches its deterministic reviewed allowlist',()=>{
+test('runtime DDL is absent and the reviewed allowlist is exact zero',()=>{
   const result=checkRuntimeDdl('api');
   assert.equal(result.ok,true);
-  assert.equal(result.snapshots.length,RUNTIME_DDL_ALLOWLIST.length);
-  assert.ok(result.entries.length>80);
+  assert.deepEqual(RUNTIME_DDL_ALLOWLIST,[]);
+  assert.deepEqual(result.snapshots,[]);
+  assert.deepEqual(result.entries,[]);
+});
+
+test('AI requests and readiness contain no runtime DDL',()=>{
+  const aiSource=readFileSync(new URL('../../api/ai.js',import.meta.url),'utf8');
+  const readinessSource=readFileSync(new URL('../../api/_ai-readiness.js',import.meta.url),'utf8');
+  const ddlPattern=/\b(?:CREATE\s+(?:(?:UNIQUE|TEMP(?:ORARY)?|VIRTUAL|OR\s+REPLACE)\s+)*(?:TABLE|INDEX|VIEW|TRIGGER)|ALTER\s+TABLE|DROP\s+(?:TABLE|INDEX|VIEW|TRIGGER))\b/iu;
+  assert.deepEqual(stringLiterals(aiSource).filter(({value})=>ddlPattern.test(value)),[],
+    'AI request paths must not regain schema mutation');
+  assert.deepEqual(stringLiterals(readinessSource).filter(({value})=>ddlPattern.test(value)),[],
+    'AI readiness must remain read-only');
+  assert.equal([...aiSource.matchAll(/INSERT INTO ai_sessions\s*\(/giu)].length,1,
+    'AI sessions must have one current-schema insert shape');
+  assert.match(aiSource,/INSERT INTO ai_sessions\s*\([\s\S]*?started_at,ended_at,duration_sec,created_by/iu);
+  assert.equal([...aiSource.matchAll(/INSERT INTO ai_feedback\s*\(/giu)].length,1,
+    'AI feedback must have one current-schema insert shape');
+  assert.match(aiSource,/INSERT INTO ai_feedback\s*\([\s\S]*?evidence,model_used,reason_for_pick,\s*estimated_cost_cents,confidence/iu);
+});
+
+test('notification-preference requests and readiness contain no runtime DDL',()=>{
+  const opsSource=readFileSync(new URL('../../api/ops.js',import.meta.url),'utf8');
+  const readinessSource=readFileSync(new URL('../../api/_ops-readiness.js',import.meta.url),'utf8');
+  const preferenceTableDdl=stringLiterals(opsSource).filter(({value})=>
+    /\b(?:CREATE|ALTER|DROP)\b[\s\S]*\buser_notification_prefs\b/iu.test(value)
+  );
+  const readinessDdl=stringLiterals(readinessSource).filter(({value})=>
+    /\b(?:CREATE\s+(?:(?:UNIQUE|TEMP(?:ORARY)?|VIRTUAL|OR\s+REPLACE)\s+)*(?:TABLE|INDEX|VIEW|TRIGGER)|ALTER\s+TABLE|DROP\s+(?:TABLE|INDEX|VIEW|TRIGGER))\b/iu.test(value)
+  );
+  assert.deepEqual(preferenceTableDdl,[],'notification preferences must not regain schema mutation');
+  assert.deepEqual(readinessDdl,[],'ops readiness must remain read-only');
+});
+
+test('admin and demo operation requests and readiness contain no runtime DDL',()=>{
+  const opsSource=readFileSync(new URL('../../api/ops.js',import.meta.url),'utf8');
+  const readinessSource=readFileSync(new URL('../../api/_ops-readiness.js',import.meta.url),'utf8');
+  const ddlPattern=/\b(?:CREATE\s+(?:(?:UNIQUE|TEMP(?:ORARY)?|VIRTUAL|OR\s+REPLACE)\s+)*(?:TABLE|INDEX|VIEW|TRIGGER)|ALTER\s+TABLE|DROP\s+(?:TABLE|INDEX|VIEW|TRIGGER))\b/iu;
+  assert.deepEqual(stringLiterals(opsSource).filter(({value})=>ddlPattern.test(value)),[]);
+  assert.deepEqual(stringLiterals(readinessSource).filter(({value})=>ddlPattern.test(value)),[]);
+  assert.doesNotMatch(opsSource,/ensureMigrations/);
+});
+
+test('data routes, including admin init, contain no runtime DDL',()=>{
+  const source=readFileSync(new URL('../../api/data.js',import.meta.url),'utf8');
+  const ddl=stringLiterals(source).filter(({value})=>
+    /\b(?:CREATE\s+(?:(?:UNIQUE|TEMP(?:ORARY)?|VIRTUAL|OR\s+REPLACE)\s+)*(?:TABLE|INDEX|VIEW|TRIGGER)|ALTER\s+TABLE|DROP\s+(?:TABLE|INDEX|VIEW|TRIGGER))\b/iu.test(value)
+  );
+  assert.deepEqual(ddl,[],'api/data.js must not regain schema mutation');
 });
 
 test('runtime DDL policy detects new and assembled schema writes',()=>{

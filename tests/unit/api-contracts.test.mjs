@@ -142,13 +142,22 @@ test('cookie mutations require a same-origin request while explicit Bearer mutat
   const cookie = 'randori_session=session-value';
   assert.equal(verifyMutationOrigin({
     method: 'POST',
-    headers: { cookie, origin: 'https://randori.example', host: 'randori.example' },
+    headers: { cookie, origin: 'https://randori.example', host: 'randori.example', 'x-forwarded-proto': 'https' },
   }), true);
   assert.equal(verifyMutationOrigin({ method: 'POST', headers: { cookie, host: 'randori.example' } }), false);
   assert.equal(verifyMutationOrigin({
     method: 'POST',
-    headers: { cookie, origin: 'https://attacker.example', host: 'randori.example' },
+    headers: { cookie, origin: 'https://attacker.example', host: 'randori.example', 'x-forwarded-proto': 'https' },
   }), false);
+  assert.equal(verifyMutationOrigin({
+    method: 'POST',
+    headers: { cookie, origin: 'http://randori.example', host: 'randori.example', 'x-forwarded-proto': 'https' },
+  }), false);
+  assert.equal(verifyMutationOrigin({
+    method: 'POST',
+    headers: { cookie, origin: 'http://127.0.0.1:3000', host: '127.0.0.1:3000' },
+    socket: { encrypted: false },
+  }), true);
   assert.equal(verifyMutationOrigin({
     method: 'POST',
     headers: { authorization: 'Bearer api-client-token', origin: 'https://attacker.example' },
@@ -209,6 +218,21 @@ test('auth endpoints reject malformed or unauthenticated requests before databas
     headers: { cookie: 'randori_session=not-a-valid-jwt' },
   });
   assert.equal(invalidCookie.status, 401);
+
+  process.env.RANDORI_LOCAL_RUNTIME='false';
+  process.env.TURSO_DATABASE_URL='file::memory:';
+  const signedButUnreadyToken=jwt.sign(
+    {id:42,email:'person@example.test',jti:'F'.repeat(43)},
+    process.env.JWT_SECRET,
+    {algorithm:'HS256',issuer:JWT_ISSUER,audience:JWT_AUDIENCE,expiresIn:'5m'},
+  );
+  assert.equal(verifySignedRequestAuth({headers:{cookie:`randori_session=${signedButUnreadyToken}`}})?.id,42);
+  const signedButUnready=await invoke(authHandler,{
+    method:'GET',url:'/api/auth/me',query:{endpoint:'me'},
+    headers:{cookie:`randori_session=${signedButUnreadyToken}`},
+  });
+  assert.equal(signedButUnready.status,503);
+  assert.deepEqual(signedButUnready.body,{error:'session validation temporarily unavailable'});
 });
 
 test('logout clears the HttpOnly session cookie', async () => {

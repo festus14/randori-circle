@@ -11,6 +11,7 @@ import {
   verifyRequestAuth,
   verifySignedRequestAuth,
 } from './_db.js';
+import { ensureAuthReadiness } from './_auth-readiness.js';
 import bcrypt from 'bcryptjs';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { parseCanonicalRoomPath } from './_pairing.js';
@@ -262,20 +263,6 @@ function localFirstUserAdminEnabled(){
   }
 }
 
-async function bootstrapGoogleAuthSchema(db){
-  if(process.env.AUTH_SCHEMA_BOOTSTRAP_ENABLED!=='true') return;
-  await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0, google_sub TEXT)`);
-  await db.execute(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`);
-  for(const sql of [
-    `ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`,
-    `ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`,
-    `ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`,
-    `ALTER TABLE auth_accounts ADD COLUMN google_sub TEXT`,
-  ]){
-    try{ await db.execute(sql); }catch{}
-  }
-}
-
 function verifyAuthMutationOrigin(req){
   const origin=String(req.headers?.origin||req.headers?.Origin||'').trim();
   const host=String(req.headers?.['x-forwarded-host']||req.headers?.host||'').split(',')[0].trim();
@@ -318,6 +305,7 @@ async function handleSignup(req,res){
     const inviteClaim=readInviteClaim(req);
     const db=getClient();
     try{
+      await ensureAuthReadiness(db);
       await ensureCircleMembershipReadiness(db);
       await ensureEmailActivationReadiness(db);
       await enforceAuthRateLimit(db,req,'signup',e);
@@ -348,7 +336,10 @@ async function handleSignup(req,res){
     const inviteClaim=readInviteClaim(req);
     if(!inviteClaim) return res.status(403).json({error:'a valid local invitation is required'});
     const db=getClient();
-    try{ await ensureCircleMembershipReadiness(db); }
+    try{
+      await ensureAuthReadiness(db);
+      await ensureCircleMembershipReadiness(db);
+    }
     catch{ return res.status(503).json({error:'signup temporarily unavailable'}); }
     try{ await enforceAuthRateLimit(db,req,'signup',e); }
     catch(err){
@@ -388,6 +379,7 @@ async function handleSignup(req,res){
   const db = getClient();
   let registrationState;
   try{
+    await ensureAuthReadiness(db);
     registrationState=await circleMembershipRegistrationState(db);
     if(registrationState==='closed'){
       return res.status(403).json({error:'private beta signup requires a Google invitation'});
@@ -395,11 +387,6 @@ async function handleSignup(req,res){
   }catch{
     return res.status(503).json({error:'signup temporarily unavailable'});
   }
-  await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0)`);
-  await db.execute(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`);
-  try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`);}catch{}
-  try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`);}catch{}
-  try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`);}catch{}
   try{ await enforceAuthRateLimit(db,req,'signup',e); }catch(err){
     if(err?.statusCode===429) return res.status(429).json({error:'too many signup attempts; try again later'});
     return res.status(503).json({error:'signup temporarily unavailable'});
@@ -444,6 +431,7 @@ async function handleActivationResend(req,res){
   const responseStartedAt=Date.now();
   let activationFailed=null;
   try{
+    await ensureAuthReadiness(db);
     await ensureEmailActivationReadiness(db);
     await enforceAuthRateLimit(db,req,'signup',email);
     await resendEmailActivation(db,{claim:readInviteClaim(req),email});
@@ -464,6 +452,7 @@ async function handleActivationVerify(req,res){
   let result;
   try{
     const db=getClient();
+    await ensureAuthReadiness(db);
     await ensureEmailActivationReadiness(db);
     await enforceAuthRateLimit(db,req,'activation-verify','');
     result=await verifyEmailActivation(db,{token});
@@ -487,6 +476,7 @@ async function handlePasswordResetRequest(req,res){
   let failure=null;
   try{
     const db=getClient();
+    await ensureAuthReadiness(db);
     await ensurePasswordResetReadiness(db);
     await enforceAuthRateLimit(db,req,'password-reset-request',email);
     await requestPasswordReset(db,{email});
@@ -507,6 +497,7 @@ async function handlePasswordResetConsume(req,res){
   let db;
   try{
     db=getClient();
+    await ensureAuthReadiness(db);
     await ensurePasswordResetReadiness(db);
     await enforceAuthRateLimit(db,req,'password-reset-consume','');
   }catch(error){
@@ -529,6 +520,7 @@ async function handleRecentAuth(req,res){
   let db,payload;
   try{
     db=getClient();
+    await ensureAuthReadiness(db);
     await ensurePasswordResetReadiness(db,{requireDeliveryKey:false});
     payload=await verifyRequestAuth(req,db);
   }catch{ return res.status(503).json({error:'recent authentication temporarily unavailable'}); }
@@ -584,6 +576,7 @@ async function identityRequestContext(req){
     throw error;
   }
   const db=getClient();
+  await ensureAuthReadiness(db);
   await ensureIdentityLinkingReadiness(db);
   const payload=await verifyRequestAuth(req,db);
   if(!payload){
@@ -668,15 +661,10 @@ async function handleLogin(req,res){
   if (!email || !password) return res.status(400).json({ error:'email,password required' });
   const e = String(email).trim().toLowerCase();
   const db = getClient();
-  if(localIdentityAdapterEnabled(req)){
-    try{ await ensureCircleMembershipReadiness(db); }
-    catch{ return res.status(503).json({error:'login temporarily unavailable'}); }
-  }else{
-    await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0)`);
-    try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`);}catch{}
-    try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`);}catch{}
-    try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`);}catch{}
-  }
+  try{
+    await ensureAuthReadiness(db);
+    if(localIdentityAdapterEnabled(req)) await ensureCircleMembershipReadiness(db);
+  }catch{ return res.status(503).json({error:'login temporarily unavailable'}); }
   try{ await enforceAuthRateLimit(db,req,'login',e); }catch(err){
     if(err?.statusCode===429) return res.status(429).json({error:'too many login attempts; try again later'});
     return res.status(503).json({error:'login temporarily unavailable'});
@@ -715,21 +703,22 @@ async function handleLogin(req,res){
 // --- me ---
 async function handleMe(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
-  let payload;
-  try{ payload=await verifyRequestAuth(req); }
+  let signedPayload;
+  try{ signedPayload=verifySignedRequestAuth(req); }
   catch{ return res.status(503).json({error:'session validation temporarily unavailable'}); }
-  if (!payload) return res.status(401).json({ error:'authentication required' });
+  if (!signedPayload) return res.status(401).json({ error:'authentication required' });
   const localIdentity=localIdentityAdapterEnabled(req);
+  let db,payload;
   try{
-    const db = getClient();
+    db=getClient();
+    await ensureAuthReadiness(db);
+    payload=await verifyRequestAuth(req,db);
+  }catch{ return res.status(503).json({error:'session validation temporarily unavailable'}); }
+  if(!payload) return res.status(401).json({error:'authentication required'});
+  try{
     if(localIdentity){
       try{ await ensureCircleMembershipReadiness(db); }
       catch{ return res.status(503).json({error:'session validation temporarily unavailable'}); }
-    }
-    else{
-      try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`);}catch{}
-      try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`);}catch{}
-      try{ await db.execute(`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`);}catch{}
     }
     const id = payload.id || payload.uid;
     if (!id) return res.status(401).json({ error:'invalid token payload' });
@@ -762,7 +751,11 @@ async function handleMe(req,res){
 async function handleLogout(req,res){
   if(req.method!=='POST') return res.status(405).json({error:'POST only'});
   if(verifySignedRequestAuth(req)){
-    try{ await revokeRequestSession(getClient(),req); }
+    try{
+      const db=getClient();
+      await ensureAuthReadiness(db);
+      await revokeRequestSession(db,req);
+    }
     catch{ return res.status(503).json({error:'logout temporarily unavailable'}); }
   }
   appendCookies(res,[clearCookie(req,SESSION_COOKIE)]);
@@ -774,6 +767,7 @@ async function handleLogoutAll(req,res){
   let db,payload;
   try{
     db=getClient();
+    await ensureAuthReadiness(db);
     payload=await verifyRequestAuth(req,db);
   }catch{ return res.status(503).json({error:'logout temporarily unavailable'}); }
   if(!payload){
@@ -826,7 +820,11 @@ async function handleGoogleStart(req,res){
   const configuration=googleOAuthRequestConfiguration(req);
   if(!configuration) return res.status(503).json({error:'Google sign-in is unavailable'});
   if(identityManagementRequested(req)&&!reauthenticate){
-    try{ await ensureIdentityLinkingReadiness(getClient()); }
+    try{
+      const db=getClient();
+      await ensureAuthReadiness(db);
+      await ensureIdentityLinkingReadiness(db);
+    }
     catch{ return res.status(503).json({error:'Google sign-in is unavailable'}); }
   }
   const {appOrigin:appUrl,clientId,redirectUri}=configuration;
@@ -840,6 +838,7 @@ async function handleGoogleStart(req,res){
   if(linking){
     try{
       const db=getClient();
+      await ensureAuthReadiness(db);
       await ensureIdentityLinkingReadiness(db);
       const current=await verifyRequestAuth(req,db);
       if(!current) return res.status(401).json({error:'authentication required'});
@@ -853,6 +852,7 @@ async function handleGoogleStart(req,res){
     let current;
     try{
       const db=getClient();
+      await ensureAuthReadiness(db);
       await ensurePasswordResetReadiness(db,{requireDeliveryKey:false});
       current=await verifyRequestAuth(req,db);
       if(current) await enforceAuthRateLimit(db,req,'recent-auth-google',String(current.id));
@@ -918,6 +918,8 @@ async function handleGoogleCallback(req,res){
   }
   const db=getClient();
   try{
+    await ensureAuthReadiness(db);
+    if(circleMembershipEnabled()) await ensureCircleMembershipReadiness(db);
     // Normal sign-in and reauthentication retain their v4 compatibility.
     // The opt-in linking flow consumes a provider code only after the complete
     // v9 identity-management contract is known ready.
@@ -1028,10 +1030,6 @@ async function handleGoogleCallback(req,res){
     return res.end();
   }
   const membershipRequired=circleMembershipEnabled();
-  if(!membershipRequired&&process.env.AUTH_SCHEMA_BOOTSTRAP_ENABLED==='true'){
-    try{ await bootstrapGoogleAuthSchema(db); }
-    catch{ res.writeHead(302,{Location:redirectError('db_error')}); return res.end(); }
-  }
   let registrationState=membershipRequired?'closed':null;
   if(!membershipRequired){
     try{ registrationState=await circleMembershipRegistrationState(db); }

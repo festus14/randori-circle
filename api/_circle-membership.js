@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { getJwtSecret } from './_db.js';
 import { multiCircleControlPlaneEnabled } from './_active-circle.js';
 
@@ -7,71 +7,8 @@ export const INVITE_CLAIM_TTL_SECONDS=10*60;
 export const INVITATION_TTL_SECONDS=7*24*60*60;
 export const PRIMARY_CIRCLE_SLUG='randori-circle';
 
-export const CIRCLES_TABLE_SQL=`CREATE TABLE IF NOT EXISTS circles (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  public_id TEXT NOT NULL UNIQUE,
-  slug TEXT NOT NULL UNIQUE,
-  name TEXT NOT NULL,
-  is_primary INTEGER NOT NULL DEFAULT 0 CHECK(is_primary IN (0,1)),
-  created_by INTEGER,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  archived_at TEXT
-)`;
-
-export const CIRCLE_MEMBERSHIPS_TABLE_SQL=`CREATE TABLE IF NOT EXISTS circle_memberships (
-  circle_id INTEGER NOT NULL,
-  user_id INTEGER NOT NULL,
-  role TEXT NOT NULL CHECK(role IN ('owner','member')),
-  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','inactive')),
-  invited_by INTEGER,
-  joined_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY(circle_id,user_id),
-  FOREIGN KEY(circle_id) REFERENCES circles(id) ON DELETE CASCADE
-)`;
-
-export const CIRCLE_INVITATIONS_TABLE_SQL=`CREATE TABLE IF NOT EXISTS circle_invitations (
-  id TEXT PRIMARY KEY,
-  circle_id INTEGER NOT NULL,
-  token_hash TEXT NOT NULL UNIQUE CHECK(length(token_hash)=64),
-  email_hash TEXT NOT NULL CHECK(length(email_hash)=64),
-  created_by INTEGER NOT NULL,
-  created_at TEXT NOT NULL,
-  expires_at TEXT NOT NULL,
-  used_at TEXT,
-  used_by INTEGER,
-  revoked_at TEXT,
-  FOREIGN KEY(circle_id) REFERENCES circles(id) ON DELETE CASCADE
-)`;
-
-export const CIRCLE_AUDIT_EVENTS_TABLE_SQL=`CREATE TABLE IF NOT EXISTS circle_audit_events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  circle_id INTEGER NOT NULL,
-  event_type TEXT NOT NULL,
-  actor_user_id INTEGER,
-  subject_user_id INTEGER,
-  invitation_id TEXT,
-  dedupe_key TEXT UNIQUE,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  FOREIGN KEY(circle_id) REFERENCES circles(id) ON DELETE CASCADE
-)`;
-
-export const AUTH_RATE_LIMITS_TABLE_SQL=`CREATE TABLE IF NOT EXISTS auth_rate_limits (
-  key TEXT PRIMARY KEY,
-  attempts INTEGER NOT NULL DEFAULT 0,
-  expires_at INTEGER NOT NULL
-)`;
-
-export const CIRCLE_MEMBERSHIP_ROLLOUT_TABLE_SQL=`CREATE TABLE IF NOT EXISTS circle_membership_rollout (
-  id INTEGER PRIMARY KEY CHECK(id=1),
-  registrations_closed INTEGER NOT NULL DEFAULT 0 CHECK(registrations_closed IN (0,1)),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-)`;
-
 const readinessByUrl=new Map();
 const readinessByClient=new WeakMap();
-const rolloutReadinessByUrl=new Map();
-const rolloutReadinessByClient=new WeakMap();
 const CLAIM_VERSION=1;
 const HASH_PATTERN=/^[0-9a-f]{64}$/;
 const INVITATION_ID_PATTERN=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -245,23 +182,6 @@ export async function hasActiveCircleMembership(db,userId){
     args:[normalizedUserId],
   });
   return result.rows?.length===1;
-}
-
-async function ensureCircleMembershipRolloutControl(db){
-  if(!db||typeof db.execute!=='function') throw new TypeError('database client is required');
-  const databaseUrl=String(process.env.TURSO_DATABASE_URL||'').trim();
-  const cache=databaseUrl?rolloutReadinessByUrl:rolloutReadinessByClient;
-  const key=databaseUrl||db;
-  const existing=cache.get(key);
-  if(existing) return existing;
-  const pending=db.batch([
-    CIRCLE_MEMBERSHIP_ROLLOUT_TABLE_SQL,
-    `INSERT INTO circle_membership_rollout (id,registrations_closed,updated_at)
-      VALUES (1,0,datetime('now')) ON CONFLICT(id) DO NOTHING`,
-  ],'write');
-  cache.set(key,pending);
-  try{ return await pending; }
-  catch(error){ if(cache.get(key)===pending) cache.delete(key); throw error; }
 }
 
 export async function circleMembershipRegistrationState(db){
@@ -576,62 +496,4 @@ export async function createPasswordAccountFromPreparedInvitation(db,{
     if(!finished){ try{ await transaction.rollback(); }catch{} }
     throw error;
   }
-}
-
-export async function initializePrimaryCircle(db,{ownerUserId,ownerEmails=[]}={}){
-  const ownerId=safePositiveInteger(ownerUserId);
-  if(!ownerId) throw new TypeError('ownerUserId must be a positive safe integer');
-  const publicId=randomUUID();
-  await ensureCircleMembershipRolloutControl(db);
-  await db.execute({
-    sql:`INSERT INTO circles (public_id,slug,name,is_primary,created_by,created_at)
-      SELECT ?,?,'Randori Circle',1,?,datetime('now')
-      WHERE NOT EXISTS (SELECT 1 FROM circles WHERE is_primary=1 AND archived_at IS NULL)
-      ON CONFLICT(slug) DO NOTHING`,
-    args:[publicId,PRIMARY_CIRCLE_SLUG,ownerId],
-  });
-  const primary=await db.execute(`SELECT id FROM circles WHERE is_primary=1 AND archived_at IS NULL ORDER BY id LIMIT 1`);
-  const circleId=safePositiveInteger(primary.rows?.[0]?.id);
-  if(!circleId) throw new Error('primary circle unavailable');
-  const normalizedOwners=[...new Set(ownerEmails.map(normalizeInvitationEmail).filter(Boolean))];
-  const ownerEmailSql=normalizedOwners.length
-    ? ` OR lower(email) IN (${normalizedOwners.map(()=>'?').join(',')})`
-    : '';
-  const now=new Date().toISOString();
-  const backfillKey=`primary-membership-backfill:${circleId}:v1`;
-  await db.batch([{
-      sql:`UPDATE circle_membership_rollout
-        SET registrations_closed=1,updated_at=? WHERE id=1`,
-      args:[now],
-    },{
-      sql:`INSERT INTO circle_memberships (circle_id,user_id,role,status,invited_by,joined_at,updated_at)
-        SELECT ?,id,CASE WHEN COALESCE(is_admin,0)=1 OR id=?${ownerEmailSql} THEN 'owner' ELSE 'member' END,
-          'active',NULL,?,?
-        FROM auth_accounts WHERE COALESCE(is_demo,0)=0
-          AND NOT EXISTS (SELECT 1 FROM circle_audit_events WHERE dedupe_key=?)
-        ON CONFLICT(circle_id,user_id) DO UPDATE SET
-          role=CASE WHEN excluded.role='owner' THEN 'owner' ELSE circle_memberships.role END,
-          updated_at=CASE WHEN excluded.role='owner' AND circle_memberships.role<>'owner'
-            THEN excluded.updated_at ELSE circle_memberships.updated_at END`,
-      args:[circleId,ownerId,...normalizedOwners,now,now,backfillKey],
-    },{
-      sql:`INSERT INTO circle_audit_events
-          (circle_id,event_type,actor_user_id,subject_user_id,invitation_id,dedupe_key,created_at)
-        SELECT ?, 'membership.backfilled', ?, account.id, NULL,
-          printf('membership-backfilled:%d:%d',?,account.id), ?
-        FROM auth_accounts account
-        JOIN circle_memberships membership ON membership.circle_id=? AND membership.user_id=account.id
-        WHERE COALESCE(account.is_demo,0)=0
-          AND NOT EXISTS (SELECT 1 FROM circle_audit_events WHERE dedupe_key=?)
-        ON CONFLICT(dedupe_key) DO NOTHING`,
-      args:[circleId,ownerId,circleId,now,circleId,backfillKey],
-    },{
-      sql:`INSERT INTO circle_audit_events
-          (circle_id,event_type,actor_user_id,subject_user_id,invitation_id,dedupe_key,created_at)
-        SELECT ?,'membership.backfill.completed',?,NULL,NULL,?,?
-        WHERE NOT EXISTS (SELECT 1 FROM circle_audit_events WHERE dedupe_key=?)
-        ON CONFLICT(dedupe_key) DO NOTHING`,
-      args:[circleId,ownerId,backfillKey,now,backfillKey],
-    }], 'write');
-  return {circleId};
 }

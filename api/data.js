@@ -1,4 +1,4 @@
-import { captureSentryException, captureSentryMessage, getClient, getAdminEmails, getJwtSecret, initSentry, isSentryConfigured, verifyMutationOrigin, verifyRequestAuth } from './_db.js';
+import { captureSentryException, captureSentryMessage, getClient, getAdminEmails, getJwtSecret, initSentry, isSentryConfigured, verifyMutationOrigin, verifyRequestAuth, verifySignedRequestAuth } from './_db.js';
 import { createEvaluationSuite, getPublicExercise, listPublicExercises } from './_catalog.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
 import { resolvePairingCycle } from './_pairing-cycle.js';
@@ -16,18 +16,9 @@ import {
 import { scheduleNotificationEvents } from './_schedule-email.js';
 import { ensureMessagesReadiness, MAX_MESSAGES_PER_ROOM, MAX_MESSAGES_PER_USER_PER_MINUTE, MESSAGE_RATE_RETRY_SECONDS, messageInsertStatement, messageLimitStateStatement, MessageDataError, MessageInputError, messageReadStatement, parseMessageSend, parseMessagesQuery, projectMessage, validateMessagesPostQuery } from './_messages.js';
 import { ensurePairRecapReadiness, MAX_RECAP_ACTIVITY, MAX_RECAP_RUN_SCAN, newestRecapActivity, PairRecapDataError, PairRecapInputError, parsePairRecapQuery, projectRecapMessage, projectRecapPair, projectRecapRun, projectRecapSchedule, projectRecapWorkspace } from './_pair-recap.js';
-import {
-  AUTH_RATE_LIMITS_TABLE_SQL,
-  CIRCLE_AUDIT_EVENTS_TABLE_SQL,
-  CIRCLE_INVITATIONS_TABLE_SQL,
-  CIRCLE_MEMBERSHIP_ROLLOUT_TABLE_SQL,
-  CIRCLE_MEMBERSHIPS_TABLE_SQL,
-  CIRCLES_TABLE_SQL,
-  circleMembershipEnabled,
-  ensureCircleMembershipReadiness,
-  initializePrimaryCircle,
-} from './_circle-membership.js';
-import { localRuntimeRequest } from './_local-runtime.js';
+import { ensureDataAdminReadiness, ensureDataCircleReadiness, ensureDataHistoryReadiness, ensureDataLogReadiness, ensureDataProfileReadiness, ensureDataRunsReadiness, ensureDataStatsReadiness, ensureDataWeeksReadiness, ensureMyPairDataReadiness } from './_data-readiness.js';
+import { circleMembershipEnabled, ensureCircleMembershipReadiness } from './_circle-membership.js';
+import { initializePrimaryCircleData } from './_admin-init.js';
 import {
   canUseLegacySinglePrimaryCircleFeatures,
   multiCircleControlPlaneEnabled,
@@ -65,7 +56,14 @@ async function getCallerAdmin(db, payload){
 async function requireAdminDT(req,res){
   const payload=await verifyRequestAuth(req);
   if (!payload){ res.status(401).json({ error:'authentication required' }); return null; }
-  const db=getClient(); await ensureBaseTables(db,req); await ensureProfileMigrations(db,req);
+  let db;
+  try{
+    db=getClient();
+    await ensureDataAdminReadiness(db);
+  }catch{
+    res.status(503).json({error:'data unavailable'});
+    return null;
+  }
   const ctx=await getCallerAdmin(db,payload);
   if(!ctx.callerIsAdmin){ res.status(403).json({ error:'admin only', you_are:ctx.callerEmail||'unknown' }); return null; }
   return {db, payload, ...ctx};
@@ -396,103 +394,6 @@ async function getPairAccess(db, payload, weekId, pairId){
   }
 }
 
-async function ensureBaseTables(db,req){
-  if(localRuntimeRequest(req)){
-    await db.execute(`SELECT id,email,password_hash,display_name,color,created_at,last_login,is_available,availability_updated_at,is_admin,is_demo FROM auth_accounts LIMIT 0`);
-    await db.execute(`SELECT id,name,color,created_at FROM users LIMIT 0`);
-    await db.execute(`SELECT id,week_label,week_start,focus,created_at,is_demo FROM pairing_weeks LIMIT 0`);
-    await db.execute(`SELECT id,week_id,user_a_id,user_b_id,user_c_id,is_ai_pair,topic,topic_kind,created_at FROM pairing_groups LIMIT 0`);
-    return;
-  }
-  try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0, is_demo INTEGER DEFAULT 0)`);
-  } catch {}
-  try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`);
-  } catch {}
-  try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS pairing_weeks (id INTEGER PRIMARY KEY AUTOINCREMENT, week_label TEXT NOT NULL, week_start TEXT NOT NULL, focus TEXT NOT NULL DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')), is_demo INTEGER DEFAULT 0)`);
-  } catch {}
-  try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS pairing_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, user_a_id INTEGER NOT NULL, user_b_id INTEGER NOT NULL, user_c_id INTEGER, is_ai_pair INTEGER DEFAULT 0, topic TEXT DEFAULT 'Pick together', topic_kind TEXT DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')))`);
-  } catch {}
-}
-
-async function ensureCustomQuestions(db){
-  try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS custom_questions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      slug TEXT UNIQUE NOT NULL,
-      title TEXT NOT NULL,
-      type TEXT DEFAULT 'dsa',
-      difficulty TEXT DEFAULT 'Medium',
-      category TEXT DEFAULT 'custom',
-      description TEXT NOT NULL,
-      input_format TEXT,
-      constraints_text TEXT,
-      examples TEXT,
-      test_cases TEXT NOT NULL,
-      starter_per_lang TEXT,
-      author_id INTEGER,
-      source TEXT DEFAULT 'custom',
-      leetcode_slug TEXT,
-      created_at TEXT DEFAULT (datetime('now'))
-    )`);
-  }catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_cq_slug ON custom_questions(slug)`); }catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_cq_author ON custom_questions(author_id)`); }catch{}
-}
-
-async function ensureSessionRuns(db){
-  try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS session_runs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER,
-      week_id INTEGER,
-      pair_group_id INTEGER,
-      question_id INTEGER,
-      question_slug TEXT,
-      language TEXT,
-      code TEXT NOT NULL,
-      test_cases_snapshot TEXT,
-      results_json TEXT,
-      passed_count INTEGER DEFAULT 0,
-      total_count INTEGER DEFAULT 0,
-      duration_ms INTEGER,
-      created_at TEXT DEFAULT (datetime('now'))
-    )`);
-  }catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_user ON session_runs(user_id, created_at DESC)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_question ON session_runs(question_slug)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_user_q ON session_runs(user_id, question_slug)`);}catch{}
-}
-
-async function ensureAppLogs(db,req){
-  if(localRuntimeRequest(req)){
-    await db.execute(`SELECT id,level,source,event,message,meta_json,user_id,route,ua,ip,created_at FROM app_logs LIMIT 0`);
-    return;
-  }
-  try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS app_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      level TEXT NOT NULL,
-      source TEXT NOT NULL,
-      event TEXT,
-      message TEXT NOT NULL,
-      meta_json TEXT,
-      user_id INTEGER,
-      route TEXT,
-      ua TEXT,
-      ip TEXT,
-      created_at TEXT DEFAULT (datetime('now'))
-    )`);
-  }catch(e){ /* ignore */ }
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_logs_level_created ON app_logs(level, created_at DESC)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_logs_event_created ON app_logs(event, created_at DESC)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_logs_source_created ON app_logs(source, created_at DESC)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_logs_created ON app_logs(created_at DESC)`);}catch{}
-}
-
 // In-memory rate limit map for client logs per IP
 const __logRateMap = new Map(); // ip -> [timestamps]
 const __activeExecutionsByUser = new Set();
@@ -541,7 +442,7 @@ async function handleHealth(req,res){
 async function logServer(level, event, message, meta, reqCtx){
   try{
     const db=getClient();
-    if(!reqCtx?.skipEnsure) await ensureAppLogs(db,reqCtx?.req||reqCtx);
+    if(!reqCtx?.skipEnsure) await ensureDataLogReadiness(db);
     const allowed=['info','warn','error','success','debug'];
     let lvl=String(level||'info').toLowerCase();
     if(!allowed.includes(lvl)) lvl='info';
@@ -596,88 +497,12 @@ async function logServer(level, event, message, meta, reqCtx){
   }
 }
 
-async function ensureProfileMigrations(db,req){
-  if(localRuntimeRequest(req)){
-    await db.execute(`SELECT id,bio,tz,interview_focus,leetcode_handle,google_sub FROM auth_accounts LIMIT 0`);
-    await db.execute(`SELECT id,week_id,pair_group_id,sender_id,message,created_at FROM pair_messages LIMIT 0`);
-    await db.execute(`SELECT id,week_id,pair_group_id,proposed_times,agreed_time,created_at,updated_at FROM pair_schedules LIMIT 0`);
-    await db.execute(`SELECT id,slug,title,test_cases,starter_per_lang FROM custom_questions LIMIT 0`);
-    await db.execute(`SELECT id,user_id,week_id,pair_group_id,question_slug,language,code,results_json FROM session_runs LIMIT 0`);
-    await db.execute(`SELECT id,level,source,event,message,created_at FROM app_logs LIMIT 0`);
-    return;
-  }
-  const alters=[
-    `ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`,
-    `ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`,
-    `ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`,
-    `ALTER TABLE auth_accounts ADD COLUMN is_demo INTEGER DEFAULT 0`,
-    `ALTER TABLE auth_accounts ADD COLUMN bio TEXT`,
-    `ALTER TABLE auth_accounts ADD COLUMN tz TEXT`,
-    `ALTER TABLE auth_accounts ADD COLUMN interview_focus TEXT DEFAULT 'both'`,
-    `ALTER TABLE auth_accounts ADD COLUMN leetcode_handle TEXT`,
-    `ALTER TABLE pairing_weeks ADD COLUMN is_demo INTEGER DEFAULT 0`,
-  ];
-  for(const sql of alters){ try{ await db.execute(sql); }catch{} }
-  // new tables
-  try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS pair_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL, sender_id INTEGER NOT NULL, message TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`);
-  }catch{}
-  try{
-    await db.execute(`CREATE TABLE IF NOT EXISTS pair_schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL, proposed_times TEXT, agreed_time TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')), UNIQUE(week_id,pair_group_id))`);
-  }catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_sched_pair ON pair_schedules(pair_group_id)`);}catch{}
-  await ensureCustomQuestions(db);
-  await ensureSessionRuns(db);
-  try{ await ensureAppLogs(db); }catch{}
-}
-
 // Serverless instances may serve many pair-feed polls during their lifetime.
-// Cache readiness by database URL (or by client in tests/local use) so those
-// requests share both an in-flight initialization and its successful result.
-const __runsReadinessByDatabaseUrl=new Map();
-const __runsReadinessByClient=new WeakMap();
+// Schedule readiness remains local because its unique constraint is part of
+// the route's concurrency contract; the other data contracts live in the
+// shared read-only readiness module.
 const __scheduleReadinessByDatabaseUrl=new Map();
 const __scheduleReadinessByClient=new WeakMap();
-
-function runsReadinessCache(db){
-  const databaseUrl=String(process.env.TURSO_DATABASE_URL||'').trim();
-  return databaseUrl
-    ? {cache:__runsReadinessByDatabaseUrl,key:databaseUrl}
-    : {cache:__runsReadinessByClient,key:db};
-}
-
-async function probeRunsSchema(db){
-  // The DDL helpers intentionally tolerate already-applied migrations, so
-  // explicit reads are the success boundary for the schema this route uses.
-  await db.execute(`SELECT id,display_name FROM auth_accounts LIMIT 0`);
-  await db.execute(`SELECT id,week_id,user_a_id,user_b_id,user_c_id FROM pairing_groups LIMIT 0`);
-  await db.execute(`SELECT week_id,user_id,source FROM pairing_participants LIMIT 0`);
-  await db.execute(`SELECT id,user_id,week_id,pair_group_id,question_id,question_slug,language,code,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at FROM session_runs LIMIT 0`);
-}
-
-async function ensureRunsReadiness(db,req){
-  const {cache,key}=runsReadinessCache(db);
-  const existing=cache.get(key);
-  if(existing) return existing;
-
-  const pending=(async()=>{
-    if(localRuntimeRequest(req)){
-      await probeRunsSchema(db);
-      return;
-    }
-    await ensureBaseTables(db);
-    await ensureProfileMigrations(db);
-    await ensureSessionRuns(db);
-    await probeRunsSchema(db);
-  })();
-  cache.set(key,pending);
-  try{
-    return await pending;
-  }catch(error){
-    if(cache.get(key)===pending) cache.delete(key);
-    throw error;
-  }
-}
 
 function scheduleReadinessCache(db){
   const databaseUrl=String(process.env.TURSO_DATABASE_URL||'').trim();
@@ -732,11 +557,12 @@ async function handleLogs(req,res){
   if(req.method==='POST'){
     const payload = await getAuthPayload(req);
     if(!payload) return res.status(401).json({error:'authentication required'});
-    const db = getClient();
-    try{ await ensureAppLogs(db,req); }
-    catch{
-      if(localRuntimeRequest(req)) return res.status(503).json({error:'logging unavailable'});
+    let db;
+    try{
+      db=getClient();
+      await ensureDataLogReadiness(db);
     }
+    catch{ return res.status(503).json({error:'logging unavailable'}); }
     // rate limit by IP
     let ip='';
     try{ ip=(req.headers['x-forwarded-for']||req.headers['x-real-ip']||'').toString().split(',')[0].trim(); if(!ip && req.headers['x-forwarded-for']){ ip=req.headers['x-forwarded-for']; } }catch{}
@@ -791,10 +617,8 @@ async function handleLogs(req,res){
     const adminCtx = await requireAdminDT(req,res);
     if(!adminCtx) return;
     const db=adminCtx.db;
-    try{ await ensureAppLogs(db,req); }
-    catch{
-      if(localRuntimeRequest(req)) return res.status(503).json({error:'logging unavailable'});
-    }
+    try{ await ensureDataLogReadiness(db); }
+    catch{ return res.status(503).json({error:'logging unavailable'}); }
     const url = new URL(req.url,'http://localhost');
     const level = (req.query?.level || url.searchParams.get('level') || '').toString().toLowerCase().trim();
     const event = (req.query?.event || url.searchParams.get('event') || '').toString().trim().slice(0,80);
@@ -908,9 +732,12 @@ async function handleCircle(req,res){
       return res.status(503).json({error:'circle unavailable'});
     }
   }
-  const db = getClient();
-  await ensureBaseTables(db,req);
-  await ensureProfileMigrations(db,req);
+  let db;
+  try{
+    db=getClient();
+    await ensureDataCircleReadiness(db);
+  }
+  catch{ return res.status(503).json({error:'circle unavailable'}); }
   const includeDemo = (req.query?.include_demo === '1' || req.query?.includeDemo === '1' || req.query?.demo === '1');
   try{
     let sql = includeDemo
@@ -950,8 +777,7 @@ async function handleWeeks(req,res){
   try{
     db=getClient();
     if(!secondaryCircleCoordinationEnabled()||strictLocalPairingRuntime(req)){
-      await ensureBaseTables(db,req);
-      await ensureProfileMigrations(db,req);
+      await ensureDataWeeksReadiness(db);
       legacySchemaReady=true;
     }
   }catch{ return res.status(503).json({error:'pairing unavailable'}); }
@@ -968,8 +794,7 @@ async function handleWeeks(req,res){
   }
   try{
     if(!legacySchemaReady){
-      await ensureBaseTables(db,req);
-      await ensureProfileMigrations(db,req);
+      await ensureDataWeeksReadiness(db);
     }
   }catch{ return res.status(503).json({error:'pairing unavailable'}); }
   try{
@@ -1019,7 +844,7 @@ async function handleHistory(req,res){
   const userId = payload.id || payload.uid;
   try{
     db=getClient();
-    await ensureProfileMigrations(db,req);
+    await ensureDataHistoryReadiness(db);
     groups=await db.execute({ sql:`
       SELECT pg.id as pg_id, pg.week_id, pg.user_a_id, pg.user_b_id, pg.user_c_id,
              pa.source AS user_a_source,pb.source AS user_b_source,pc.source AS user_c_source,
@@ -1081,159 +906,31 @@ async function handleHistory(req,res){
 
 async function handleInit(req,res){
   if (req.method!=='POST') return res.status(405).json({ error:'POST only' });
-  const adminCtx=await requireAdminDT(req,res);
-  if(!adminCtx) return;
-  const db = adminCtx.db;
-  await db.batch([
-    `CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`,
-    `CREATE TABLE IF NOT EXISTS auth_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), last_login TEXT, is_available INTEGER DEFAULT 1, availability_updated_at TEXT, is_admin INTEGER DEFAULT 0, is_demo INTEGER DEFAULT 0, bio TEXT, tz TEXT, interview_focus TEXT DEFAULT 'both', leetcode_handle TEXT, google_sub TEXT)`,
-    `CREATE TABLE IF NOT EXISTS pairing_weeks (id INTEGER PRIMARY KEY AUTOINCREMENT, week_label TEXT NOT NULL, week_start TEXT NOT NULL, focus TEXT NOT NULL DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')), is_demo INTEGER DEFAULT 0)`,
-    `CREATE TABLE IF NOT EXISTS pairing_groups (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL REFERENCES pairing_weeks(id) ON DELETE CASCADE, user_a_id INTEGER NOT NULL, user_b_id INTEGER NOT NULL, user_c_id INTEGER, is_ai_pair INTEGER DEFAULT 0, topic TEXT DEFAULT 'Pick together', topic_kind TEXT DEFAULT 'both', created_at TEXT DEFAULT (datetime('now')))`,
-    `CREATE TABLE IF NOT EXISTS pairing_participants (week_id INTEGER NOT NULL, user_id INTEGER NOT NULL, position INTEGER NOT NULL, source TEXT NOT NULL DEFAULT 'auth', created_at TEXT DEFAULT (datetime('now')), PRIMARY KEY (week_id, user_id))`,
-    `CREATE TABLE IF NOT EXISTS questions (id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT UNIQUE NOT NULL, title TEXT NOT NULL, type TEXT NOT NULL, difficulty TEXT NOT NULL, category TEXT NOT NULL, description TEXT NOT NULL)`,
-    `CREATE TABLE IF NOT EXISTS video_signals (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT NOT NULL, from_id TEXT NOT NULL, to_id TEXT, type TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`,
-    `CREATE TABLE IF NOT EXISTS pair_room_snapshots (
-      room_id TEXT PRIMARY KEY,
-      week_id INTEGER NOT NULL,
-      pair_group_id INTEGER NOT NULL,
-      revision INTEGER NOT NULL,
-      schema_version INTEGER NOT NULL,
-      client_id TEXT NOT NULL,
-      client_seq INTEGER NOT NULL,
-      language TEXT NOT NULL,
-      question_id TEXT NOT NULL,
-      code TEXT NOT NULL,
-      updated_by INTEGER NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      UNIQUE(week_id,pair_group_id),
-      FOREIGN KEY(pair_group_id) REFERENCES pairing_groups(id) ON DELETE CASCADE
-    )`,
-    `CREATE TABLE IF NOT EXISTS ai_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT, pair_label TEXT, transcript TEXT, code_snapshots TEXT, interviewer_questions TEXT, started_at TEXT DEFAULT (datetime('now')), ended_at TEXT, duration_sec INTEGER, cost_cents INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now')), created_by INTEGER)`,
-    `CREATE TABLE IF NOT EXISTS ai_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL REFERENCES ai_sessions(id) ON DELETE CASCADE, role TEXT DEFAULT 'both', feedback_json TEXT NOT NULL, evidence TEXT, model_used TEXT, reason_for_pick TEXT, estimated_cost_cents INTEGER, confidence REAL DEFAULT 0.85, created_at TEXT DEFAULT (datetime('now')))`,
-    `CREATE TABLE IF NOT EXISTS ai_usage (date TEXT PRIMARY KEY, calls INTEGER DEFAULT 0, tokens_in INTEGER DEFAULT 0, tokens_out INTEGER DEFAULT 0, updated_at TEXT DEFAULT (datetime('now')))`,
-    `CREATE TABLE IF NOT EXISTS ai_account_monthly_usage (month TEXT NOT NULL CHECK(length(month)=7 AND month GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]'), user_id INTEGER NOT NULL CHECK(user_id>0), calls INTEGER NOT NULL DEFAULT 0 CHECK(calls>=0), tokens_in INTEGER NOT NULL DEFAULT 0 CHECK(tokens_in>=0), updated_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY(month,user_id))`,
-    `CREATE TABLE IF NOT EXISTS ai_account_monthly_reservations (reservation_id TEXT PRIMARY KEY, month TEXT NOT NULL, user_id INTEGER NOT NULL CHECK(user_id>0), tokens_in INTEGER NOT NULL DEFAULT 0 CHECK(tokens_in>=0), session_id INTEGER UNIQUE, refunded_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')))`,
-    CIRCLES_TABLE_SQL,
-    CIRCLE_MEMBERSHIPS_TABLE_SQL,
-    CIRCLE_INVITATIONS_TABLE_SQL,
-    CIRCLE_AUDIT_EVENTS_TABLE_SQL,
-    AUTH_RATE_LIMITS_TABLE_SQL,
-    CIRCLE_MEMBERSHIP_ROLLOUT_TABLE_SQL,
-    `CREATE TABLE IF NOT EXISTS pair_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL, sender_id INTEGER NOT NULL, message TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')))`,
-    `CREATE TABLE IF NOT EXISTS pair_schedules (id INTEGER PRIMARY KEY AUTOINCREMENT, week_id INTEGER NOT NULL, pair_group_id INTEGER NOT NULL, proposed_times TEXT, agreed_time TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')), UNIQUE(week_id,pair_group_id))`,
-    `CREATE TABLE IF NOT EXISTS custom_questions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      slug TEXT UNIQUE NOT NULL,
-      title TEXT NOT NULL,
-      type TEXT DEFAULT 'dsa',
-      difficulty TEXT DEFAULT 'Medium',
-      category TEXT DEFAULT 'custom',
-      description TEXT NOT NULL,
-      input_format TEXT,
-      constraints_text TEXT,
-      examples TEXT,
-      test_cases TEXT NOT NULL,
-      starter_per_lang TEXT,
-      author_id INTEGER,
-      source TEXT DEFAULT 'custom',
-      leetcode_slug TEXT,
-      created_at TEXT DEFAULT (datetime('now'))
-    )`,
-    `CREATE TABLE IF NOT EXISTS app_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      level TEXT NOT NULL,
-      source TEXT NOT NULL,
-      event TEXT,
-      message TEXT NOT NULL,
-      meta_json TEXT,
-      user_id INTEGER,
-      route TEXT,
-      ua TEXT,
-      ip TEXT,
-      created_at TEXT DEFAULT (datetime('now'))
-    )`,
-    `CREATE TABLE IF NOT EXISTS session_runs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER,
-      week_id INTEGER,
-      pair_group_id INTEGER,
-      question_id INTEGER,
-      question_slug TEXT,
-      language TEXT,
-      code TEXT NOT NULL,
-      test_cases_snapshot TEXT,
-      results_json TEXT,
-      passed_count INTEGER DEFAULT 0,
-      total_count INTEGER DEFAULT 0,
-      duration_ms INTEGER,
-      created_at TEXT DEFAULT (datetime('now'))
-    )`
-  ],"write");
-  const migrations=[`ALTER TABLE auth_accounts ADD COLUMN is_available INTEGER DEFAULT 1`,`ALTER TABLE auth_accounts ADD COLUMN availability_updated_at TEXT`,`ALTER TABLE auth_accounts ADD COLUMN is_admin INTEGER DEFAULT 0`,`ALTER TABLE auth_accounts ADD COLUMN is_demo INTEGER DEFAULT 0`,`ALTER TABLE auth_accounts ADD COLUMN bio TEXT`,`ALTER TABLE auth_accounts ADD COLUMN tz TEXT`,`ALTER TABLE auth_accounts ADD COLUMN interview_focus TEXT DEFAULT 'both'`,`ALTER TABLE auth_accounts ADD COLUMN leetcode_handle TEXT`,`ALTER TABLE auth_accounts ADD COLUMN google_sub TEXT`,`ALTER TABLE pairing_weeks ADD COLUMN is_demo INTEGER DEFAULT 0`];
-  for(const sql of migrations){ try{ await db.execute(sql);}catch(_){} }
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_video_signals_room ON video_signals(room_id, created_at)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_video_signals_room_id ON video_signals(room_id, id)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_sched_pair ON pair_schedules(pair_group_id)`);}catch{}
+  const nowSeconds=Math.floor(Date.now()/1000);
+  let actor;
+  try{ actor=verifySignedRequestAuth(req,{nowSeconds}); }
+  catch{ return res.status(503).json({error:'data unavailable'}); }
+  if(!actor) return res.status(401).json({error:'authentication required'});
   try{
-    // This one-time cleanup is intentionally admin-triggered: it can delete legacy
-    // duplicates and must never run as a side effect of an ordinary API request.
-    await db.execute(`DELETE FROM pair_schedules WHERE id NOT IN (SELECT MAX(id) FROM pair_schedules GROUP BY week_id,pair_group_id)`);
-    await db.execute(`CREATE UNIQUE INDEX IF NOT EXISTS uq_pair_schedules_week_pair ON pair_schedules(week_id,pair_group_id)`);
-  }catch(e){
-    return res.status(500).json({
-      ok:false,
-      error:'pair schedule uniqueness migration failed',
-      detail:String(e.message||e).slice(0,300),
+    const initialized=await initializePrimaryCircleData(getClient(),{
+      actor,adminEmails:[...getAdminEmails()],nowSeconds,
     });
-  }
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_cq_slug ON custom_questions(slug)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_cq_author ON custom_questions(author_id)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_user ON session_runs(user_id, created_at DESC)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_question ON session_runs(question_slug)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_runs_pair_activity ON session_runs(week_id,pair_group_id,julianday(created_at) DESC,id DESC)`);}catch{}
-  try{ await db.execute(`CREATE INDEX IF NOT EXISTS idx_pair_room_snapshots_updated_at ON pair_room_snapshots(updated_at)`);}catch{}
-  try{
-    await db.execute(`CREATE UNIQUE INDEX IF NOT EXISTS uq_auth_accounts_google_sub
-      ON auth_accounts(google_sub) WHERE google_sub IS NOT NULL`);
-  }catch(error){
-    return res.status(500).json({
-      ok:false,
-      error:'Google identity uniqueness migration failed',
-      detail:String(error?.message||error).slice(0,300),
-    });
-  }
-  try{
-    await db.batch([
-      `CREATE UNIQUE INDEX IF NOT EXISTS uq_circles_active_primary ON circles(is_primary) WHERE is_primary=1 AND archived_at IS NULL`,
-      `CREATE INDEX IF NOT EXISTS idx_circle_memberships_user_active ON circle_memberships(user_id,status,circle_id)`,
-      `CREATE INDEX IF NOT EXISTS idx_circle_memberships_circle_active ON circle_memberships(circle_id,status,user_id)`,
-      `CREATE INDEX IF NOT EXISTS idx_circle_invitations_circle_created ON circle_invitations(circle_id,created_at DESC)`,
-      `CREATE INDEX IF NOT EXISTS idx_circle_invitations_email ON circle_invitations(circle_id,email_hash,expires_at)`,
-      `CREATE INDEX IF NOT EXISTS idx_circle_audit_circle_created ON circle_audit_events(circle_id,created_at DESC,id DESC)`,
-    ],'write');
-  }catch(error){
-    return res.status(500).json({
-      ok:false,
-      error:'circle membership index migration failed',
-      detail:String(error?.message||error).slice(0,300),
-    });
-  }
-  try{
-    // Stage schema and the audited one-time legacy-account backfill before the
-    // enforcement flag is enabled, avoiding a rollout deadlock.
-    await initializePrimaryCircle(db,{
-      ownerUserId:adminCtx.callerId,
-      ownerEmails:[...getAdminEmails()],
+    if(!initialized.ok){
+      if(initialized.reason==='authentication_required'){
+        return res.status(401).json({error:'authentication required'});
+      }
+      return res.status(403).json({error:'admin only',you_are:initialized.email||'unknown'});
+    }
+    return res.json({
+      ok:true,
+      message:'Primary circle data ready',
+      circle_id:initialized.circleId,
+      changed:initialized.changed,
     });
   }catch(error){
-    return res.status(500).json({
-      ok:false,
-      error:'circle membership initialization failed',
-      detail:String(error?.message||error).slice(0,300),
-    });
+    try{ captureSentryException(error,{tags:{event:'admin_init_failed',source:'server'}}); }catch{}
+    return res.status(503).json({error:'data unavailable'});
   }
-  return res.json({ ok:true, message:"Tables ready (incl custom_questions + profile + pair_messages + pair_schedules + session_runs)" });
 }
 
 // ----- NEW ENDPOINTS: profile, my-pair, schedule, messages, questions -----
@@ -1241,9 +938,12 @@ async function handleInit(req,res){
 async function handleProfile(req,res){
   const payload = await getAuthPayload(req);
   if (!payload) return res.status(401).json({ error:'missing Bearer token' });
-  const db = getClient();
-  await ensureBaseTables(db,req);
-  await ensureProfileMigrations(db,req);
+  let db;
+  try{
+    db=getClient();
+    await ensureDataProfileReadiness(db);
+  }
+  catch{ return res.status(503).json({error:'profile unavailable'}); }
   const userId = payload.id || payload.uid;
   if (!userId) return res.status(401).json({ error:'invalid token payload' });
   if (req.method === 'GET'){
@@ -1299,8 +999,7 @@ async function handleMyPair(req,res){
   try{
     db=getClient();
     if(!secondaryCircleCoordinationEnabled()||strictLocalPairingRuntime(req)){
-      await ensureBaseTables(db,req);
-      await ensureProfileMigrations(db,req);
+      await ensureMyPairDataReadiness(db);
       legacySchemaReady=true;
     }
   }catch{
@@ -1319,8 +1018,7 @@ async function handleMyPair(req,res){
   }
   try{
     if(!legacySchemaReady){
-      await ensureBaseTables(db,req);
-      await ensureProfileMigrations(db,req);
+      await ensureMyPairDataReadiness(db);
     }
   }catch{ return res.status(503).json({error:'pairing unavailable'}); }
   let weekId=null, weekRow=null, cycle=null, upcomingCycle=null;
@@ -2022,7 +1720,7 @@ async function handleRuns(req,res){
   let db;
   try{
     db=getClient();
-    await ensureRunsReadiness(db,req);
+    await ensureDataRunsReadiness(db);
   }catch{
     return res.status(503).json({error:'runs unavailable'});
   }
@@ -2098,9 +1796,12 @@ async function handleRuns(req,res){
 
 async function handleStats(req,res){
   if (req.method !== 'GET') return res.status(405).json({ error:'GET only' });
-  const db = getClient();
-  await ensureBaseTables(db,req);
-  await ensureProfileMigrations(db,req);
+  let db;
+  try{
+    db=getClient();
+    await ensureDataStatsReadiness(db);
+  }
+  catch{ return res.status(503).json({error:'stats unavailable'}); }
   const payload = await getAuthPayload(req); // optional
   let total_users=0, total_weeks=0, total_pairs=0;
   try{

@@ -2,7 +2,7 @@
 
 Status: accepted through the current rolling release
 
-Last reviewed: 2026-09-19
+Last reviewed: 2026-09-20
 
 Scope: current rolling release and independently reviewed candidate increments
 
@@ -1448,3 +1448,379 @@ post-commit fan-out would create an untracked durability gap. Mutable reminder
 cancellation would add races and discard audit history. Reusing the immutable
 v6 event with dispatch-time suppression keeps the increment migration-free and
 operationally bounded.
+
+## ID-35: Retire request-path authentication schema bootstrap
+
+Status: implemented as a DDL-removal increment with no schema migration. ID-34
+is reserved for the independently developed secondary-schedule notification
+increment.
+
+**Decision.** Authentication schema is created and changed only by the reviewed
+migration workflow. A shared, read-only `ensureAuthReadiness` probe projects
+every column used by ordinary authentication from `auth_accounts`, `users`,
+`auth_rate_limits`, and `auth_sessions`. The probe is coalesced per concrete
+database client, caches only a successful result, and evicts a rejected promise
+so transient failures can recover. It executes no DDL or DML.
+
+Signup, login, profile lookup, activation, password reset, recent-auth,
+identity management, signed logout, and Google link/reauth/callback paths run
+the core probe before business writes. Feature-specific readiness remains in
+place for membership, provider identity, activation, reset, and identity
+tables. The Google callback probes before exchanging its one-time provider
+code. Missing or incompatible required columns therefore return the existing
+generic temporary-unavailability response (or safe OAuth `db_error`) without a
+schema repair, account write, session write, or provider call. Invitation APIs
+retain their existing read-only membership and delivery probes; invitation-
+backed account creation is covered by the authentication core probe.
+
+All 18 `CREATE` and `ALTER` occurrences in `api/auth.js`, including the
+`AUTH_SCHEMA_BOOTSTRAP_ENABLED` branch, are removed. The runtime-DDL allowlist
+no longer contains `api/auth.js`; the remaining 104 occurrences are separate
+AI, data, operations, and membership-initialization debt owned by issue #44.
+
+**Alternatives.** Keeping a permanently false bootstrap flag retains an
+unaudited emergency write path and makes a configuration mistake destructive.
+Silently attempting DML and mapping missing-column errors to availability is
+cheaper initially but can partially create an account before a later session
+table failure. Running the complete 52-table schema inspector on every auth
+request gives stronger global drift evidence but couples login availability to
+unrelated product tables and adds unnecessary request latency. The scoped core
+projection plus existing feature probes gives the smallest independently
+shippable boundary while the deployment gate remains authoritative for exact
+whole-database readiness.
+
+**Rollout and recovery.** Do not promote this increment until issue #43 has
+retained evidence that production is on the reviewed latest schema. Deploying
+the code performs no data or schema mutation. If an auth contract is missing,
+roll forward with the protected migration workflow; do not restore a runtime
+bootstrap flag. Rollback to the preceding build changes only request behavior
+and requires no database rollback, though it reintroduces the legacy DDL path
+and is therefore an emergency compatibility action rather than normal repair.
+
+## ID-36: Enforce the recovery-control contract in secret-free CI
+
+Status: implemented as a local static gate; it produces no provider evidence
+and changes no production resource or schedule.
+
+**Decision.** The deployability job runs `check:backup-controls` with read-only
+repository permission and no protected environment or secret. The gate reads
+only the committed restore-rehearsal, watchdog, and deployability workflows. It
+pins the reviewed trigger sets and cadences, fixed RPO/RTO, default-branch
+fences, environment and concurrency boundary, bounded fail-closed cleanup and
+alerts and their terminal command bodies, exact provider-identity environment
+bindings and secret-bearing rehearsal/cleanup/monitor commands, immutable
+actions, non-persistent checkout credentials, exact sanitized
+artifact paths and retention, and the watchdog's read-only credential-free
+isolation. Output is limited to fixed control descriptions and explicit
+`providerNetworkRequired:false` and `externalMutation:false` claims.
+The validator also pins each complete workflow byte stream by SHA-256, so an
+unanticipated command, environment binding, checkout input, trigger, comment,
+or formatting edit fails closed even if the semantic subset parser misses it.
+An intentional workflow change must update the workflow, digest, focused
+mutations, decision record, and runbook in the same reviewed increment.
+
+Synthetic mutation tests prove that an unsafe trigger or permission, policy
+drift, lost cleanup/alert gate, private artifact path, secret-bearing or
+provider-dispatching watchdog, unpinned action, or credential-persisting
+checkout fails closed. They do not call GitHub or Turso. A green result proves
+only that code still expresses the reviewed policy; #38 still requires a real
+isolated provider restore, and #51 remains open until current retained provider
+evidence and alert ownership are operationally confirmed.
+
+**Alternatives.** Re-running a provider restore on every pull request would
+expose production authority to untrusted code and spend provider resources.
+Relying only on review or scattered regular expressions had no single CI entry
+point and allowed the workflow policy and runbook to drift independently.
+Giving the watchdog provider credentials would couple detection to the system
+it observes. The selected static gate is intentionally narrower than a YAML
+policy engine, but it is deterministic, dependency-free, redacted, and covers
+the exact two workflows that own this recovery control.
+
+This check is defense in depth, not an immutable authorization boundary: a pull
+request can edit the same deployability workflow that invokes it. Repository
+administrators must add an organization-owned required workflow or equivalent
+ruleset before treating this signal as tamper-resistant. That settings change
+is tracked by issue #169 and is not performed by application code. Until then,
+changes to the deployability workflow itself require explicit review. The
+repository's rolling integration branch is currently named
+`codex/issue-87-repository-deployability`; references to “rolling” in this
+decision and runbook mean that exact branch.
+
+## ID-37: Make legacy data-route readiness read-only and route-scoped
+
+Status: implemented as a DDL-removal increment with no schema migration. It
+follows the independently developed backup-control increment in ID-36.
+
+**Decision.** The ordinary `api/data.js` routes no longer create, alter, or
+index schema. Migration v1 remains the owner of the legacy account, profile,
+pairing, run, and application-log structures. A shared readiness module uses
+bounded `SELECT ... LIMIT 0` projections for the admin identity, profile,
+circle, weeks, my-pair, history, statistics, run-history, and log contracts.
+Each contract is coalesced per concrete database client. Only a successful
+probe is cached; a rejected probe is evicted so a transient database failure
+can recover without a process restart.
+
+Routes check only the tables and columns needed before business writes. A
+missing or incompatible contract returns that route's generic unavailable
+response; server-side diagnostic logging remains best effort and cannot repair
+its own table. The bundled question catalogue is file-backed and therefore has
+no database-readiness dependency. `/api/init` is intentionally excluded from
+this increment: its remaining schema and cleanup statements stay visible in
+the runtime-DDL allowlist until a separate, atomic data-only conversion.
+
+This removes 28 DDL statements from ordinary data request helpers and lowers
+the reviewed `api/data.js` allowance from 73 to 45. The remaining 45 statements
+are isolated in `/api/init`; the repository-wide debt falls from 104 to 76.
+
+**Alternatives.** Running the complete schema inspector on every data request
+would detect unrelated drift but couple profile, run, and logging availability
+to every product table. Attempting the operation and translating SQLite errors
+would reduce probes but could perform an earlier business write before a later
+missing-column failure. Keeping local-only auto-creation would make local and
+production behavior diverge and hide migration omissions. Route-scoped
+read-only probes preserve fast, deterministic failure boundaries while the
+whole-database deployment gate remains authoritative.
+
+**Rollout and recovery.** Do not promote this increment until issue #43 has
+retained evidence that production is on the reviewed latest schema. Deployment
+performs no schema or data mutation. If a contract is unavailable, use the
+protected migration workflow to roll forward. Reverting the application build
+requires no database rollback but reintroduces request-time DDL and is only an
+emergency compatibility action. The route matrix and verification commands are
+recorded in `DATA_RUNTIME_DDL_RETIREMENT.md`.
+
+## ID-38: Archive a target-explicit secondary circle as a soft authorization boundary
+
+Status: implemented behind the existing multi-circle control-plane gate with
+no schema migration. It follows the independently developed backup-control and
+runtime data-DDL increments in IDs 36 and 37.
+
+**Decision.** `DELETE /api/circles` carries the selected secondary circle's
+public ID and context generation in an exact same-origin request. The ID keeps
+an HTTP retry pinned to its original target after fallback; it never grants
+access. A first archive requires the exact live selected context, active owner
+membership, non-primary circle, and session-scoped recent-auth proof inside one
+write transaction. A conditional update also proves that every active member
+has another active membership in an unarchived circle. The transaction writes
+one deterministic `circle.archived` audit and moves all stored contexts that
+selected the target to a primary-first, then lowest-ID fallback, incrementing
+each generation. An identical retry by any active retained owner validates the
+fresh proof, archived marker, and audit before returning that caller's current
+context without another write, so different-owner races converge after the
+winning transaction moves both sessions. Bounded retries are limited to recognized pre-commit lock
+conflicts; ambiguous commit results require the same target/version retry.
+
+Archive sets only `circles.archived_at`. Memberships, invitations, creation
+receipts, availability, immutable publications and eligibility, groups,
+schedules and proposals, outbox rows, and earlier audits are retained. Existing
+authorization and delivery preflights require an unarchived circle, so those
+records become inaccessible through normal product paths and queued delivery
+is suppressed when it has not already passed final provider preflight. The
+browser resumes archive through the existing single recent-auth continuation,
+then clears private/workspace state, broadcasts a forced context change, and
+reloads. An unreadable or no-longer-usable post-commit fallback projection
+returns a target-bound refresh-required result, so the browser performs the
+same invalidation and reload instead of continuing to display the archived
+workspace. Session loss invalidates pending auth refreshes, clears identity and
+private state, and follows the normal signed-out route without another network
+decision. That common cleanup cancels pending video work, closes the peer,
+stops every retained local media track, and detaches both video elements without
+an unauthorized signaling request. A video-session epoch fences delayed poll
+and permission results from rebuilding state after cleanup. An older request
+epoch cannot clear a newer same-account login.
+As an ID-38 follow-up, the public catalogue may remember the selected exercise,
+but rendering a question no longer implies authenticated code-tab navigation.
+Only a signed-in path that actually makes the code view visible, or the existing
+server-authorized room transition, persists code-tab restoration. A catalogue
+response that completes after authoritative sign-out therefore cannot recreate
+private navigation state or move the browser away from the signed-out view.
+Owner/target loss, context conflict, ambiguous commit,
+and transport loss clear private state before an authoritative context reload,
+without presenting an uncertain archive as successful. There is no
+public unarchive path; recovery is a separately reviewed
+operator concern because retained memberships would become active again.
+
+**Alternatives.** Archiving the server's current circle without an explicit
+target was rejected because a replay could archive the newly selected fallback.
+Hard deletion was rejected because it destroys evidence and conflicts with
+restrictive immutable-data foreign keys. Leaving a bumped context pointing at
+the archived circle was rejected because it creates avoidable selection errors.
+Revoking all affected sessions was rejected because the every-member safety
+check guarantees a usable fallback. A new receipt table and independent flag
+were rejected because the once-per-circle audit key provides durable replay
+evidence and the complete control-plane flag already dark-launches the route.
+
+**Rollout and recovery.** Reach exact managed readiness through v16 using the
+central protected sequence, deploy with `MULTI_CIRCLE_CONTROL_PLANE_ENABLED`
+false, then canary owner/non-owner, recent-auth, primary/last-circle guards,
+concurrency, fallback, stale-tab fencing, and retained historical rows in
+staging. Rollback disables the control-plane flag and preserves every marker and
+row; never clear `archived_at`, delete tenant history, or downgrade the schema.
+
+## ID-39: Make admin initialization data-only and atomic
+
+Status: implemented as a DDL-removal increment with no schema migration. It
+follows the secondary-circle archive increment in ID-38.
+
+**Decision.** `POST /api/init` no longer creates, alters, indexes, deduplicates,
+or otherwise repairs schema. Migration v1 already owns the legacy tables,
+columns, schedule uniqueness, and indexes previously repeated by the handler;
+migration v2 owns the circle schema, circle indexes, Google-subject uniqueness,
+and the rollout singleton. An exact current-schema and ledger inspection now
+runs read-only inside the same write transaction as the data cutover.
+
+After readiness succeeds, the transaction revalidates the live durable session
+and current non-demo global-administrator authority. A pristine open rollout
+creates one primary circle, backfills active membership for every current
+non-demo account, writes deterministic per-account and completion audits, and
+closes registration last. A valid completed rollout rolls the read-only
+transaction back and returns the existing circle unchanged. Every failure
+before commit rolls all four data-table changes back; an ambiguous commit is
+not automatically replayed and is safe to inspect and retry.
+
+The legacy `DELETE` that retained only `MAX(id)` from duplicate schedules is
+removed. A managed current database already has both the inline and named v1
+uniqueness contracts, so such duplicates are impossible without drift. An
+unmanaged duplicate-bearing database must be remediated explicitly on a
+verified restore before adoption. Adding a no-op v17 or silently discarding
+schedule data would add risk without creating a valid upgrade path.
+
+**Alternatives.** Keeping an admin-only schema repair endpoint would still let
+HTTP traffic mutate production structure and would preserve a path that could
+erase scheduling data. A route-scoped readiness probe would miss unrelated
+ledger or schema drift during this one-time whole-application cutover. A series
+of independent writes would allow a primary circle or closed latch to survive a
+failed audit backfill. Full exact readiness and one explicit transaction are
+acceptable here because initialization is rare and operationally controlled.
+
+**Rollout and recovery.** Production must be migrated and rehearsed before this
+code is promoted; the endpoint cannot advance or adopt schema. Keep membership
+enforcement off, call the data-only endpoint as the authenticated bootstrap
+administrator, verify the completed rollout, then enable enforcement. A generic
+unavailable response requires inspection through the protected migration tools,
+not repeated repair attempts. Detailed behavior is recorded in
+`ADMIN_DATA_INITIALIZATION.md`.
+
+## ID-40: Make notification-preference readiness read-only
+
+Status: implemented as a DDL-removal increment with no schema migration.
+
+**Decision.** Authenticated notification-preference GET, POST, and PUT paths
+use a shared operations-readiness module to project exactly `user_id`,
+`email_enabled`, `sms_enabled`, `phone`, `email`, and `updated_at` from
+`user_notification_prefs` with `LIMIT 0`. Migration v1 remains the sole owner
+of this table. The probe executes no DDL or DML, is coalesced per concrete
+database client, caches only success, and evicts a rejected promise so a
+transient failure can retry.
+
+Origin and method rejection and authentication precede readiness. A missing
+or stale contract returns the existing generic 503 before body normalization,
+preference DML, or best-effort operational logging. Successful requests retain
+their current defaults, POST/PUT normalization, fallback update behavior, and
+response envelopes. Local and hosted requests now follow the same schema-
+read-only path. Removing the one notification-preference `CREATE TABLE`
+statement lowers the `api/ops.js` allowlist from 17 to 16 and total remaining
+request-time DDL from 25 to 24.
+
+**Alternatives.** Adding this contract to `_data-readiness.js` would blur the
+ownership boundary between data and operations routes. Keeping the cache
+inline in `ops.js` would make concurrency, retry, and per-client isolation
+harder to test. A full schema fingerprint on every preferences request would
+couple a small user setting to unrelated application tables. Keeping the
+hosted `CREATE` while local mode probes would preserve environment-specific
+behavior and hide missed migrations.
+
+**Rollout and recovery.** Do not promote until issue #43 has retained evidence
+that production is at the reviewed latest schema. Deployment performs no
+schema or provider mutation. If the probe fails, stop promotion and roll
+forward through the protected migration workflow; do not repair schema from an
+HTTP request. Reverting the application build needs no database rollback but
+reintroduces the retired DDL and is only an emergency compatibility action.
+The exact contract and verification commands are recorded in
+`NOTIFICATION_PREFERENCES_RUNTIME_DDL_RETIREMENT.md`.
+
+## ID-41: Make AI readiness read-only and route-scoped
+
+Status: implemented as a DDL-removal increment with no schema migration.
+
+**Decision.** Ordinary analyze, feedback, history, and AI diagnostic-log paths
+no longer create or repair schema. Migration v1 remains the sole owner of the
+six AI tables, two app-log objects, and their constraints. A shared
+`_ai-readiness.js` module now uses exact `SELECT ... LIMIT 0` projections for
+analyze, feedback, history, and logging. Probes coalesce per concrete database
+client and contract, cache only success, and evict rejected promises for retry.
+
+Method, authentication, consent/input, and canonical-room validation run
+before analyze readiness where no database contract is needed. Analyze proves
+every record, consent, quota, usage, and reservation column before consent or
+quota mutation, session persistence, or provider traffic. Read-only metadata
+checks also prove the three primary keys used as `ON CONFLICT` targets.
+Feedback and history
+fail closed before their data access. Diagnostic logging has its own read-only
+probe, reuses the request client, remains best effort, and cannot hide a valid primary result. The two
+legacy reduced-column insert retries are removed so stale schema cannot accept
+an ambiguous session or feedback shape. Existing authorization, consent,
+quota, no-refund-after-provider, timeout/fallback, and response semantics are
+preserved.
+
+**Alternatives.** A global schema fingerprint on every request would couple AI
+availability to unrelated tables and repeat deployment-gate work. Keeping
+request-time repair would let ordinary traffic hide missed migrations. Making
+app-log readiness part of analyze would turn an observability outage into a
+product outage. Retaining reduced-column insert fallbacks would silently drop
+evidence and timing data and make mixed-schema behavior non-deterministic.
+
+**Rollout and recovery.** Production must be on the reviewed migration before
+promotion; this increment performs no database or provider mutation. A primary
+readiness failure returns a generic 503 and must be repaired with the protected
+migration workflow. A logging-readiness failure affects diagnostics only. An
+application rollback requires no database rollback, but reintroduces the eight
+retired DDL statements and is reserved for emergency compatibility. Exact
+contracts and verification are recorded in `AI_RUNTIME_DDL_RETIREMENT.md`.
+
+## ID-42: Forbid runtime DDL and make admin operations readiness route-scoped
+
+Status: implemented as the final DDL-removal increment with no schema migration.
+
+**Decision.** Administrator promotion, demo seed, demo shuffle, and demo reset
+no longer invoke the shared best-effort schema bootstrap. Migration v1 already
+owns every affected account and legacy pairing table, column, and index. The
+runtime-DDL allowlist is therefore empty, and CI rejects every direct, imported,
+or assembled API/runtime schema mutation.
+
+Each operation has a read-only readiness contract containing only the columns
+it uses. Demo write contracts additionally inspect the primary and unique keys
+that protect account identity, publication claims, pairing participants, and
+week-label uniqueness. Contracts are coalesced per database client and route,
+cache only successful probes, and evict failures for retry.
+
+Promotion also checks the canonical account primary key and raw-email unique
+constraint. Its case-insensitive compatibility lookup is bounded to two rows;
+an ambiguous legacy case collision fails closed, and a successful promotion
+updates only the resolved account ID. A new case-folded schema index would
+change the migration contract and legacy data semantics, so it is not added by
+this request-path DDL retirement.
+
+Durable authentication and a live account read establish database or exact
+configured-email administrator authority before any readiness probe or data
+mutation. A non-admin performs no schema probe, DDL, or DML. The existing
+configured-administrator synchronization occurs only after the selected route
+is ready. Promotion input is validated before readiness and all business
+writes. Authentication-database and readiness failures return a generic 503;
+existing method, authentication, authorization, validation, success, demo-data,
+and pairing-uniqueness semantics remain unchanged.
+
+**Alternatives.** Full schema inspection on every request would detect unrelated
+drift but couple small administrator actions to all product tables and add
+avoidable latency. One shared superset probe would make promotion depend on the
+demo pairing schema. Relying on write failures could leave partial data. Keeping
+the bootstrap for administrators or local development would continue to hide
+missed migrations and prevent an enforceable zero-DDL boundary.
+
+**Rollout and recovery.** Promotion requires retained evidence that production
+is on the reviewed migration through v16. This increment performs no database
+or provider mutation. Missing readiness must be repaired by the protected
+migration workflow, never by an HTTP request. Application rollback requires no
+database rollback but reintroduces the retired schema writes and is reserved
+for emergency compatibility. Exact contracts and tests are recorded in
+`OPERATIONS_RUNTIME_DDL_RETIREMENT.md`.

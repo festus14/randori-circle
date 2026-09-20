@@ -13,16 +13,9 @@ const DDL_PATTERN=new RegExp(
 );
 const SOURCE_EXTENSION=/\.[cm]?js$/i;
 
-// This allowlist records the request-time schema debt that existed when the
-// migration foundation was introduced. New DDL must be added to a versioned
-// migration in a later slice, not silently introduced on an API request path.
-export const RUNTIME_DDL_ALLOWLIST=Object.freeze([
-  Object.freeze({file:'api/_circle-membership.js',statementCount:6,digest:'5177c04805431cf5514ea3f9f6083e843e68f7220851ed58efcde85e6abc1dad'}),
-  Object.freeze({file:'api/ai.js',statementCount:8,digest:'0433ffdc8aadad44f242d739a544df62f0d6584538c37eee323942085b3d0082'}),
-  Object.freeze({file:'api/auth.js',statementCount:18,digest:'9f4bf63e774b04f5c02fc304dc01d528498648db128c00e76a93b772a1d068f3'}),
-  Object.freeze({file:'api/data.js',statementCount:73,digest:'8de7c9de33af142f1ebd558716e2d55192ca5d79b4ecba79076de6316c71be38'}),
-  Object.freeze({file:'api/ops.js',statementCount:17,digest:'24595f9bbbdafc29cbe41d8fa874eb1680a5ce877eb143933cbde75a87a4c159'}),
-]);
+// Runtime DDL is forbidden. Schema changes belong only in reviewed, versioned
+// migrations and may never be introduced from an API request path.
+export const RUNTIME_DDL_ALLOWLIST=Object.freeze([]);
 
 function sourceFiles(directory){
   return readdirSync(directory,{withFileTypes:true}).flatMap(entry=>{
