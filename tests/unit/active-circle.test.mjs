@@ -22,6 +22,10 @@ import { applyMigrations, inspectMigrationState, prepareMigrationConnection } fr
 
 const JWT_SECRET='active-circle-test-secret-at-least-thirty-two-bytes';
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
+// Availability writes also consult SQLite's real clock as a commit-time guard.
+// Keep non-boundary tests on an explicit distant cycle so their injected app
+// clock cannot become older than the database clock as the calendar advances.
+const SAFE_EDITABLE_INSTANT='2099-09-18T12:00:00.000Z';
 const resources=[];
 const originalEnvironment={
   JWT_SECRET:process.env.JWT_SECRET,
@@ -157,7 +161,7 @@ test('active-circle availability is independently scoped across switches on the 
   });
   let active=await resolveActiveCircleContext(db,ownerPayload);
   const primaryContext=availabilityContext(ownerPayload,active);
-  const primary=await getAvailabilityState(db,{userId:1,now:'2026-09-18T12:00:00.000Z',circleContext:primaryContext});
+  const primary=await getAvailabilityState(db,{userId:1,now:SAFE_EDITABLE_INSTANT,circleContext:primaryContext});
   assert.equal(primary.source,'legacy_bridge');
   assert.equal(primary.isAvailable,false);
 
@@ -166,11 +170,11 @@ test('active-circle availability is independently scoped across switches on the 
   });
   active=await resolveActiveCircleContext(db,ownerPayload);
   const secondaryContext=availabilityContext(ownerPayload,active);
-  const secondary=await getAvailabilityState(db,{userId:1,now:'2026-09-18T12:00:00.000Z',circleContext:secondaryContext});
+  const secondary=await getAvailabilityState(db,{userId:1,now:SAFE_EDITABLE_INSTANT,circleContext:secondaryContext});
   assert.equal(secondary.source,'cycle_default');
   assert.equal(secondary.isAvailable,true);
   const secondaryUpdated=await updateAvailability(db,{
-    userId:1,now:'2026-09-18T12:00:00.000Z',circleContext:secondaryContext,
+    userId:1,now:SAFE_EDITABLE_INSTANT,circleContext:secondaryContext,
     body:{cycle_key:secondary.cycleKey,expected_version:0,is_available:false},
   });
   assert.equal(secondaryUpdated.isAvailable,false);
@@ -180,7 +184,7 @@ test('active-circle availability is independently scoped across switches on the 
   });
   active=await resolveActiveCircleContext(db,ownerPayload);
   const primaryAgain=await getAvailabilityState(db,{
-    userId:1,now:'2026-09-18T12:00:00.000Z',circleContext:availabilityContext(ownerPayload,active),
+    userId:1,now:SAFE_EDITABLE_INSTANT,circleContext:availabilityContext(ownerPayload,active),
   });
   assert.equal(primaryAgain.cycleKey,primary.cycleKey);
   assert.equal(primaryAgain.isAvailable,false);
@@ -201,14 +205,14 @@ test('stale and removed contexts fail before availability materialization',async
     circlePublicId:'circle-secondary',expectedContextVersion:selected.context_version,
   });
   await assert.rejects(getAvailabilityState(db,{
-    userId:1,now:'2026-09-18T12:00:00.000Z',circleContext:staleContext,
+    userId:1,now:SAFE_EDITABLE_INSTANT,circleContext:staleContext,
   }),error=>error?.code==='AVAILABILITY_CONTEXT_CHANGED');
   assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM pairing_cycles`)).rows[0].count),0);
 
   const live=await resolveActiveCircleContext(db,ownerPayload);
   await db.execute(`UPDATE circle_memberships SET status='inactive' WHERE circle_id=20 AND user_id=1`);
   await assert.rejects(updateAvailability(db,{
-    userId:1,now:'2026-09-18T12:00:00.000Z',circleContext:availabilityContext(ownerPayload,live),
+    userId:1,now:SAFE_EDITABLE_INSTANT,circleContext:availabilityContext(ownerPayload,live),
     body:{cycle_key:'a'.repeat(64),expected_version:0,is_available:false},
   }),error=>error?.code==='AVAILABILITY_CONTEXT_CHANGED');
   assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM pairing_cycle_availability`)).rows[0].count),0);
@@ -224,13 +228,13 @@ test('an implicit sole-secondary context supports independent GET and POST with 
   assert.equal(implicitSecondary.membership.is_primary,false);
   const context=availabilityContext(otherPayload,implicitSecondary);
   const initial=await getAvailabilityState(db,{
-    userId:3,now:'2026-09-18T12:00:00.000Z',circleContext:context,
+    userId:3,now:SAFE_EDITABLE_INSTANT,circleContext:context,
   });
   assert.equal(initial.source,'cycle_default');
   assert.equal(initial.isAvailable,true,'a secondary circle must not inherit the account-global false value');
   assert.equal(initial.version,0);
   const updated=await updateAvailability(db,{
-    userId:3,now:'2026-09-18T12:00:00.000Z',circleContext:availabilityContext(otherPayload,implicitSecondary),
+    userId:3,now:SAFE_EDITABLE_INSTANT,circleContext:availabilityContext(otherPayload,implicitSecondary),
     body:{cycle_key:initial.cycleKey,expected_version:0,is_available:false},
   });
   assert.equal(updated.isAvailable,false);
@@ -253,7 +257,7 @@ test('implicit sole-primary availability retains the legacy bridge without a sto
   const active=await resolveActiveCircleContext(db,ownerPayload);
   assert.equal(active.implicit,true);
   const state=await getAvailabilityState(db,{
-    userId:1,now:'2026-09-18T12:00:00.000Z',circleContext:availabilityContext(ownerPayload,active),
+    userId:1,now:SAFE_EDITABLE_INSTANT,circleContext:availabilityContext(ownerPayload,active),
   });
   assert.equal(state.source,'legacy_bridge');
   assert.equal(state.isAvailable,false);
@@ -266,7 +270,7 @@ test('availability rejects archived circles and revoked sessions without creatin
   });
   await db.execute(`UPDATE circles SET archived_at='2026-09-19T00:00:00.000Z' WHERE id=20`);
   await assert.rejects(getAvailabilityState(db,{
-    userId:1,now:'2026-09-18T12:00:00.000Z',
+    userId:1,now:SAFE_EDITABLE_INSTANT,
     circleContext:{payload:ownerPayload,circleId:20,contextVersion:first.context_version,implicit:false},
   }),error=>error?.code==='AVAILABILITY_CONTEXT_CHANGED');
   await db.execute(`UPDATE circles SET archived_at=NULL WHERE id=20`);
@@ -277,7 +281,7 @@ test('availability rejects archived circles and revoked sessions without creatin
   await db.execute({sql:`UPDATE auth_sessions SET revoked_at=?,revocation_reason='current_logout' WHERE session_hash=?`,
     args:[Math.floor(Date.now()/1000),secondPayload.sessionHash]});
   await assert.rejects(getAvailabilityState(db,{
-    userId:1,now:'2026-09-18T12:00:00.000Z',
+    userId:1,now:SAFE_EDITABLE_INSTANT,
     circleContext:{payload:secondPayload,circleId:20,contextVersion:second.context_version,implicit:false},
   }),error=>error?.code==='AVAILABILITY_CONTEXT_CHANGED');
   assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM pairing_cycles`)).rows[0].count),0);
@@ -311,7 +315,7 @@ test('availability revalidates the exact context on every transaction retry',asy
     },
   };
   const state=await getAvailabilityState(wrapper,{
-    userId:1,now:'2026-09-18T12:00:00.000Z',
+    userId:1,now:SAFE_EDITABLE_INSTANT,
     circleContext:{payload:ownerPayload,circleId:20,contextVersion:selected.context_version,implicit:false},
   });
   assert.equal(state.source,'cycle_default');

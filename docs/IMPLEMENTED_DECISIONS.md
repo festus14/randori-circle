@@ -1448,3 +1448,33 @@ post-commit fan-out would create an untracked durability gap. Mutable reminder
 cancellation would add races and discard audit history. Reusing the immutable
 v6 event with dispatch-time suppression keeps the increment migration-free and
 operationally bounded.
+
+## ID-48: Separate routine availability fixtures from the production cutoff clock
+
+Status: implemented as a test-only reliability increment with no production or
+schema change. ID-47 is reserved for the UI release slice.
+
+**Decision.** Availability mutations retain both clocks that protect the cutoff:
+the injected request instant selects a cycle and SQLite checks its own current
+time in the conditional commit. Routine availability and active-circle mutation
+tests use one named, explicit 2099 editable cycle so a historical fixture cannot
+expire under SQLite while CI is running. The exact boundary suite instead uses
+a narrow test database-clock adapter and proves a successful write one
+millisecond before Sunday 08:00 Europe/London, rejection at the boundary, and
+reclassification when the database clock crosses the cutoff after a request
+starts. Pairing boundary tests retain their fixed BST, GMT, DST, and ISO-year
+examples. Live local-onboarding and pairing browser tests continue to resolve
+the server's actual upcoming cycle.
+
+**Alternatives.** Trusting only the injected production clock would weaken the
+commit-time race defense. Faking SQLite time for every test would stop routine
+tests exercising the real SQL predicate. Deriving future dates from the day of
+execution would vary cycle identities and expectations. Skipping assertions
+after the cutoff would hide failures instead of making their preconditions
+explicit.
+
+**Rollout and recovery.** This increment changes tests and documentation only;
+it needs no migration, environment variable, credential, deployment setting,
+or rollback procedure. Revert it only together with an equivalent deterministic
+clock strategy. The audit and commands are recorded in
+[`AVAILABILITY_TEST_CLOCK.md`](AVAILABILITY_TEST_CLOCK.md).
