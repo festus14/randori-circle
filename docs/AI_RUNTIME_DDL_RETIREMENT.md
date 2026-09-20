@@ -24,6 +24,12 @@ ownership, usage, and quota columns used by those routes. Logging has a
 separate app-log projection so diagnostic availability cannot become a
 dependency of a valid primary response.
 
+Because analyze writes use three `ON CONFLICT` targets, readiness additionally
+checks the migration-owned primary-key order for `ai_usage(date)`,
+`ai_account_monthly_usage(month,user_id)`, and `ai_consents(user_id)` through
+read-only table metadata. A column-compatible table without those constraints
+is not ready.
+
 Each contract is coalesced per concrete database client. Only a successful
 probe is retained. A rejected promise is evicted, allowing the next request to
 retry after an operator restores the migration-owned schema; clients never
@@ -44,7 +50,8 @@ share readiness state.
   executing a partially compatible query.
 - App logging checks only its own read-only projection. Failure is swallowed
   as best-effort diagnostics and cannot replace an analyze result or trigger
-  schema repair.
+  schema repair. Logging reuses the request database client when one already
+  exists, preserving the same per-client isolation without another connection.
 - The obsolete reduced-column session and feedback insert retries are removed;
   current writes have one unambiguous migration-owned shape.
 

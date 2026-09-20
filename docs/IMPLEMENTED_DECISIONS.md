@@ -1753,9 +1753,11 @@ client and contract, cache only success, and evict rejected promises for retry.
 Method, authentication, consent/input, and canonical-room validation run
 before analyze readiness where no database contract is needed. Analyze proves
 every record, consent, quota, usage, and reservation column before consent or
-quota mutation, session persistence, or provider traffic. Feedback and history
+quota mutation, session persistence, or provider traffic. Read-only metadata
+checks also prove the three primary keys used as `ON CONFLICT` targets.
+Feedback and history
 fail closed before their data access. Diagnostic logging has its own read-only
-probe, remains best effort, and cannot hide a valid primary result. The two
+probe, reuses the request client, remains best effort, and cannot hide a valid primary result. The two
 legacy reduced-column insert retries are removed so stale schema cannot accept
 an ambiguous session or feedback shape. Existing authorization, consent,
 quota, no-refund-after-provider, timeout/fallback, and response semantics are

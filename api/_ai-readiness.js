@@ -34,6 +34,32 @@ async function probePairAccessSchema(db,{includeWeek=false}={}){
   }
 }
 
+function requirePrimaryKey(result,expected){
+  const actual=(result?.rows||[])
+    .map(row=>({name:String(row?.name||''),position:Number(row?.pk)}))
+    .filter(column=>Number.isSafeInteger(column.position)&&column.position>0)
+    .sort((left,right)=>left.position-right.position)
+    .map(column=>column.name);
+  if(actual.length!==expected.length||actual.some((name,index)=>name!==expected[index])){
+    throw new Error('AI schema constraint unavailable');
+  }
+}
+
+async function probeAnalyzeConflictTargets(db){
+  requirePrimaryKey(
+    await db.execute(`SELECT name,pk FROM pragma_table_info('ai_usage') WHERE pk>0 ORDER BY pk`),
+    ['date'],
+  );
+  requirePrimaryKey(
+    await db.execute(`SELECT name,pk FROM pragma_table_info('ai_account_monthly_usage') WHERE pk>0 ORDER BY pk`),
+    ['month','user_id'],
+  );
+  requirePrimaryKey(
+    await db.execute(`SELECT name,pk FROM pragma_table_info('ai_consents') WHERE pk>0 ORDER BY pk`),
+    ['user_id'],
+  );
+}
+
 async function probeAnalyzeSchema(db){
   await db.execute(`SELECT id,is_demo FROM auth_accounts LIMIT 0`);
   await probePairAccessSchema(db,{includeWeek:true});
@@ -50,6 +76,7 @@ async function probeAnalyzeSchema(db){
     refunded_at,created_at FROM ai_account_monthly_reservations LIMIT 0`);
   await db.execute(`SELECT user_id,consented_at,revoked_at,policy_version
     FROM ai_consents LIMIT 0`);
+  await probeAnalyzeConflictTargets(db);
   return true;
 }
 

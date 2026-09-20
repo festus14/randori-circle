@@ -128,6 +128,11 @@ function createMockDb(){
         return rows([{now_seconds:Math.floor(Date.now()/1000)}]);
       }
       if(sql.includes('LEFT JOIN auth_provider_email_state')) return rows([{email_hash:null}]);
+      if(sql.includes("pragma_table_info('ai_usage')")) return rows([{name:'date',pk:1}]);
+      if(sql.includes("pragma_table_info('ai_account_monthly_usage')")){
+        return rows([{name:'month',pk:1},{name:'user_id',pk:2}]);
+      }
+      if(sql.includes("pragma_table_info('ai_consents')")) return rows([{name:'user_id',pk:1}]);
       const result = await executeHandler(sql, statement?.args || []);
       if(!(result?.rows?.length)&&sql.includes('INSERT INTO auth_provider_identities')&&sql.includes('RETURNING user_id')){
         return rows([{user_id:Number(statement?.args?.[2])}]);
@@ -2519,7 +2524,7 @@ test('AI consent path stores a template analysis and exposes owned feedback hist
       model_used: 'mock', created_by: 2, room_id: 'room', pair_label: 'Pair', confidence: 0.8,
     }]);
     if (sql.includes('FROM ai_feedback af JOIN ai_sessions ase') && sql.includes('ase.created_by=')) return rows([{ id: 71, session_id: 70 }]);
-    if (sql.includes('SELECT * FROM ai_usage')) return rows([{ calls: 3 }]);
+    if (sql.includes('SELECT date,calls,tokens_in,tokens_out,updated_at FROM ai_usage')) return rows([{ calls: 3 }]);
     return rows();
   };
   const headers = { 'x-test-auth': 'user' };
@@ -2550,6 +2555,7 @@ test('AI consent path stores a template analysis and exposes owned feedback hist
   });
   assert.equal(history.status, 200);
   assert.equal(history.body.feedbacks.length, 1);
+  assert.equal(getClientCalls,3,'analyze logging must reuse the request database client');
 });
 
 test('AI analysis requires trusted room membership and every human participant consent', async () => {

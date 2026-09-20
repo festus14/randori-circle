@@ -28,7 +28,7 @@ function currentMonthISO(){ return todayISO().slice(0,7); }
 
 async function logServer(level, event, message, meta, reqCtx){
   try{
-    const db=getClient();
+    const db=reqCtx?.db&&typeof reqCtx.db.execute==='function'?reqCtx.db:getClient();
     await ensureAiLogReadiness(db);
     const allowed=['info','warn','error','success','debug'];
     let lvl=String(level||'info').toLowerCase();
@@ -609,11 +609,11 @@ async function handleAnalyze(req,res){
       const du=await db.execute({sql:`SELECT calls FROM ai_usage WHERE date=?`, args:[todayCheck]});
       const todayCalls=du.rows[0]?.calls||0;
       if(isDemo && todayCalls>=100){
-        await logServer('warn','ai_quota_daily_demo', `demo daily 100 reached (${todayCalls})`, {userId, todayCalls}, {req, source:'server-ai'});
+        await logServer('warn','ai_quota_daily_demo', `demo daily 100 reached (${todayCalls})`, {userId, todayCalls}, {req, db, source:'server-ai'});
         return res.status(429).json({ ok:false, error:'daily demo limit 100 reached', detail:`${todayCalls} calls today — regular users have 14.4k/day`, calls_today:todayCalls, limit:100, demo:true });
       }
       if(todayCalls>=14400){
-        await logServer('warn','ai_quota_daily_global', `global 14.4k reached`, {todayCalls}, {req, source:'server-ai'});
+        await logServer('warn','ai_quota_daily_global', `global 14.4k reached`, {todayCalls}, {req, db, source:'server-ai'});
         return res.status(429).json({ ok:false, error:'free-tier daily pool 14,400 exhausted', calls_today:todayCalls });
       }
     }catch{}
@@ -622,7 +622,7 @@ async function handleAnalyze(req,res){
   try{ monthlyQuota=await checkMonthlyQuota(db,numericUserId,isDemo); }
   catch{ return res.status(503).json({error:'AI quota temporarily unavailable'}); }
   if(monthlyQuota.blocked){
-    await logServer('warn','ai_quota_blocked', `quota blocked user ${userId||'anon'} ${monthlyQuota.reason}`, {userId, isDemo, count:monthlyQuota.count, limit:monthlyQuota.limit}, {req, source:'server-ai', payload:payloadCtx});
+    await logServer('warn','ai_quota_blocked', `quota blocked user ${userId||'anon'} ${monthlyQuota.reason}`, {userId, isDemo, count:monthlyQuota.count, limit:monthlyQuota.limit}, {req, db, source:'server-ai', payload:payloadCtx});
     return res.status(429).json({ ok:false, error:'quota exceeded', reason:monthlyQuota.reason, count:monthlyQuota.count, limit:monthlyQuota.limit });
   }
 
@@ -654,7 +654,7 @@ async function handleAnalyze(req,res){
     return res.status(503).json({error:'AI quota temporarily unavailable'});
   }
   if(reservation.blocked){
-    await logServer('warn','ai_quota_blocked', `quota blocked user ${userId||'anon'} ${reservation.reason}`, {userId, isDemo, count:reservation.count, limit:reservation.limit}, {req, source:'server-ai', payload:payloadCtx});
+    await logServer('warn','ai_quota_blocked', `quota blocked user ${userId||'anon'} ${reservation.reason}`, {userId, isDemo, count:reservation.count, limit:reservation.limit}, {req, db, source:'server-ai', payload:payloadCtx});
     return res.status(429).json({ ok:false, error:'quota exceeded', reason:reservation.reason, count:reservation.count, limit:reservation.limit });
   }
   monthlyQuota=reservation;
@@ -669,7 +669,7 @@ async function handleAnalyze(req,res){
   }catch(error){
     try{ await refundMonthlyQuota(db,reservation); }catch{}
     if(error instanceof AiPairAccessError) return res.status(403).json({error:'trusted room membership required'});
-    await logServer('error','ai_session_insert_fail',String(error?.message||error).slice(0,300),{room_id},{req,source:'server-ai'});
+    await logServer('error','ai_session_insert_fail',String(error?.message||error).slice(0,300),{room_id},{req,db,source:'server-ai'});
     return res.status(500).json({error:'session create failed'});
   }
 
@@ -693,7 +693,7 @@ async function handleAnalyze(req,res){
       costCents=Math.ceil((estIn/1e6*0.15 + estOut/1e6*0.6)*100);
     } else {
       if(oRes.invalid_response){
-        await logServer('error','ai_provider_invalid_envelope','AI provider returned an invalid response envelope',{room_id,model:modelUsed},{req,source:'server-ai'});
+        await logServer('error','ai_provider_invalid_envelope','AI provider returned an invalid response envelope',{room_id,model:modelUsed},{req,db,source:'server-ai'});
         return res.status(502).json({ok:false,error:'AI provider temporarily unavailable',session_id:sessId});
       }
       mocked=true; reason+=' | openai failed '+ (oRes.error||'unknown');
@@ -721,11 +721,11 @@ async function handleAnalyze(req,res){
           if(groqUsage?.completion_tokens) estOut=groqUsage.completion_tokens;
           costCents=Math.ceil((estIn/1e6*0.15 + estOut/1e6*0.6)*100);
         }else{
-          await logServer('error','ai_groq_fail', groqRes.error.slice(0,300), {room_id}, {req, source:'server-ai'});
+          await logServer('error','ai_groq_fail', groqRes.error.slice(0,300), {room_id}, {req, db, source:'server-ai'});
           return res.status(502).json({ ok:false, error:'AI provider temporarily unavailable', session_id:sessId });
         }
       } else {
-        await logServer('error','ai_groq_fail', groqRes.error.slice(0,300), {room_id}, {req, source:'server-ai'});
+        await logServer('error','ai_groq_fail', groqRes.error.slice(0,300), {room_id}, {req, db, source:'server-ai'});
         return res.status(502).json({ ok:false, error:'AI provider temporarily unavailable', session_id:sessId });
       }
     }
@@ -738,7 +738,7 @@ async function handleAnalyze(req,res){
 
   feedbackJson=normalizeFeedback(feedbackJson);
   if(!feedbackJson){
-    await logServer('error','ai_provider_invalid_feedback','AI provider returned invalid feedback JSON',{room_id,model:modelUsed},{req,source:'server-ai'});
+    await logServer('error','ai_provider_invalid_feedback','AI provider returned invalid feedback JSON',{room_id,model:modelUsed},{req,db,source:'server-ai'});
     return res.status(502).json({ok:false,error:'AI provider temporarily unavailable',session_id:sessId});
   }
 
@@ -754,7 +754,7 @@ async function handleAnalyze(req,res){
     });
   }catch(error){
     if(error instanceof AiPairAccessError) return res.status(403).json({error:'trusted room membership required'});
-    await logServer('error','ai_feedback_insert_fail',String(error?.message||error).slice(0,300),{room_id,session_id:sessId},{req,source:'server-ai'});
+    await logServer('error','ai_feedback_insert_fail',String(error?.message||error).slice(0,300),{room_id,session_id:sessId},{req,db,source:'server-ai'});
     return res.status(500).json({error:'feedback create failed'});
   }
 
@@ -769,7 +769,7 @@ async function handleAnalyze(req,res){
     });
   }catch{}
 
-  try{ await logServer('success','ai_analyze_success', `${anonMode?'anon':'user '+userId} -> ${modelUsed} ${verification.validated}/${verification.total} evidence cost ${costCents}c`, {session_id:sessId, feedback_id:fbId, model_used:modelUsed, mocked, openaiFallback, costCents, tokens_in:estIn, tokens_out:estOut, room_id, anon:anonMode, isDemo}, {req, source:'server-ai', user_id:userId, payload:payloadCtx}); }catch{}
+  try{ await logServer('success','ai_analyze_success', `${anonMode?'anon':'user '+userId} -> ${modelUsed} ${verification.validated}/${verification.total} evidence cost ${costCents}c`, {session_id:sessId, feedback_id:fbId, model_used:modelUsed, mocked, openaiFallback, costCents, tokens_in:estIn, tokens_out:estOut, room_id, anon:anonMode, isDemo}, {req, db, source:'server-ai', user_id:userId, payload:payloadCtx}); }catch{}
 
   return res.json({ ok:true, mocked, openaiFallback, anon:anonMode, session_id:sessId, feedback_id:fbId, model_used:modelUsed, reason_for_pick:reason, estimated_cost:{ cents:costCents, usd:(costCents/100).toFixed(4), tokens_in:estIn, tokens_out:estOut, groq_usage:groqUsage||null }, evidence_validated:verification, feedback:feedbackJson, quota:{ demo:isDemo, calls_this_month:monthlyQuota.count } });
 }

@@ -241,6 +241,40 @@ test('AI analysis fails closed before consent, quota, session, feedback, or prov
   }
 });
 
+test('AI analysis rejects missing conflict targets before any protected work',async()=>{
+  process.env.AI_ENABLED='true';
+  process.env.GROQ_API_KEY='test-groq-key';
+  for(const table of ['ai_usage','ai_account_monthly_usage','ai_consents']){
+    const client=await createDatabase();
+    await client.execute(`UPDATE pairing_participants SET source='auth' WHERE week_id=10 AND user_id=2`);
+    const statements=[];
+    activeDb={
+      async execute(statement){
+        const sql=typeof statement==='string'?statement:String(statement?.sql||'');
+        statements.push(sql);
+        if(sql.includes(`pragma_table_info('${table}')`)) return {rows:[],rowsAffected:0};
+        return client.execute(statement);
+      },
+      async batch(statementsToRun,mode){
+        statements.push(...statementsToRun.map(statement=>typeof statement==='string'?statement:String(statement?.sql||'')));
+        return client.batch(statementsToRun,mode);
+      },
+      close:()=>client.close(),
+    };
+    let providerCalls=0;
+    globalThis.fetch=async()=>{ providerCalls+=1; throw new Error('provider must not run'); };
+
+    const response=await analysisRequest('week_10_pair_21');
+    assert.equal(response.status,503,table);
+    assert.deepEqual(response.body,{error:'AI service temporarily unavailable'},table);
+    assert.deepEqual(await counts(client),[0,0,0,0],table);
+    assert.equal(providerCalls,0,table);
+    assert.equal(statements.some(sql=>/^\s*(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(sql)),false,table);
+    client.close();
+    activeDb=null;
+  }
+});
+
 test('AI feedback and history fail closed on stale route contracts without writes',async()=>{
   for(const request of [
     {url:'/api/ai/feedback?id=1',query:{endpoint:'feedback',id:'1'},missing:'ai_feedback'},

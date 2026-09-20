@@ -11,13 +11,23 @@ import {
 const WRITE=/^\s*(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE|VACUUM|REINDEX)\b/iu;
 
 function normalized(statement){ return String(statement).replace(/\s+/gu,' ').trim(); }
+function primaryKeyRows(statement){
+  const sql=normalized(statement);
+  if(sql.includes("pragma_table_info('ai_usage')")) return [{name:'date',pk:1}];
+  if(sql.includes("pragma_table_info('ai_account_monthly_usage')")){
+    return [{name:'month',pk:1},{name:'user_id',pk:2}];
+  }
+  if(sql.includes("pragma_table_info('ai_consents')")) return [{name:'user_id',pk:1}];
+  return [];
+}
+
 function database(execute){ return {execute}; }
 
 async function statementsFor(guard){
   const statements=[];
   const db=database(async statement=>{
     statements.push(normalized(statement));
-    return {rows:[],rowsAffected:0};
+    return {rows:primaryKeyRows(statement),rowsAffected:0};
   });
   assert.equal(await guard(db),true);
   assert.equal(statements.some(sql=>WRITE.test(sql)),false);
@@ -36,6 +46,9 @@ test('AI readiness uses exact route-scoped read-only projections',async()=>{
     'SELECT month,user_id,calls,tokens_in,updated_at FROM ai_account_monthly_usage LIMIT 0',
     'SELECT reservation_id,month,user_id,tokens_in,session_id, refunded_at,created_at FROM ai_account_monthly_reservations LIMIT 0',
     'SELECT user_id,consented_at,revoked_at,policy_version FROM ai_consents LIMIT 0',
+    "SELECT name,pk FROM pragma_table_info('ai_usage') WHERE pk>0 ORDER BY pk",
+    "SELECT name,pk FROM pragma_table_info('ai_account_monthly_usage') WHERE pk>0 ORDER BY pk",
+    "SELECT name,pk FROM pragma_table_info('ai_consents') WHERE pk>0 ORDER BY pk",
   ]);
 
   assert.deepEqual(await statementsFor(ensureAiFeedbackReadiness),[
@@ -79,7 +92,7 @@ test('AI readiness coalesces per client and contract and caches only success',as
   const db=database(async statement=>{
     statements.push(normalized(statement));
     if(statements.length===1) await gate;
-    return {rows:[],rowsAffected:0};
+    return {rows:primaryKeyRows(statement),rowsAffected:0};
   });
 
   const first=ensureAiAnalyzeReadiness(db);
@@ -88,19 +101,33 @@ test('AI readiness coalesces per client and contract and caches only success',as
   assert.equal(statements.length,1);
   release();
   assert.deepEqual(await Promise.all([first,second]),[true,true]);
-  assert.equal(statements.length,10);
+  assert.equal(statements.length,13);
   assert.equal(await ensureAiAnalyzeReadiness(db),true);
-  assert.equal(statements.length,10,'a successful contract is cached for the concrete client');
+  assert.equal(statements.length,13,'a successful contract is cached for the concrete client');
 
   assert.equal(await ensureAiLogReadiness(db),true);
-  assert.equal(statements.length,11,'a distinct route contract has its own probe');
+  assert.equal(statements.length,14,'a distinct route contract has its own probe');
 
   const other=database(async statement=>{
     statements.push(normalized(statement));
     return {rows:[],rowsAffected:0};
   });
   assert.equal(await ensureAiLogReadiness(other),true);
-  assert.equal(statements.length,12,'different clients never share readiness');
+  assert.equal(statements.length,15,'different clients never share readiness');
+});
+
+test('analyze readiness rejects stale conflict targets without writes',async()=>{
+  for(const target of ['ai_usage','ai_account_monthly_usage','ai_consents']){
+    const statements=[];
+    const db=database(async statement=>{
+      const sql=normalized(statement);
+      statements.push(sql);
+      if(sql.includes(`pragma_table_info('${target}')`)) return {rows:[],rowsAffected:0};
+      return {rows:primaryKeyRows(statement),rowsAffected:0};
+    });
+    await assert.rejects(ensureAiAnalyzeReadiness(db),/AI schema constraint unavailable/,target);
+    assert.equal(statements.some(sql=>WRITE.test(sql)),false,target);
+  }
 });
 
 test('AI readiness rejects invalid clients and retries failed probes',async()=>{
