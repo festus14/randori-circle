@@ -10,6 +10,13 @@
       : null;
   }
 
+  function shouldRetainRateLimitedBinding({ status, requestedBinding, storedBinding } = {}) {
+    return status === 429
+      && typeof requestedBinding === 'string'
+      && BINDING_PATTERN.test(requestedBinding)
+      && storedBinding === requestedBinding;
+  }
+
   function createInviteGate({ now } = {}) {
     const readClock = typeof now === 'function'
       ? now
@@ -128,6 +135,7 @@
   root._randori_invite_gate = Object.freeze({
     MAX_PREPARED_INVITE_SECONDS,
     create: createInviteGate,
+    shouldRetainRateLimitedBinding,
     validLifetimeSeconds,
   });
 })(typeof window !== 'undefined' ? window : globalThis);
