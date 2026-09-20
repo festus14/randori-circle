@@ -2243,3 +2243,35 @@ circle switches, published and unpublished assignments, and exact workspace
 hydration. Rollback is code-only and does not alter user, cycle, pairing, or
 workspace data. The full decision and verification plan is in
 [`SERVER_AUTHORITATIVE_ONBOARDING.md`](SERVER_AUTHORITATIVE_ONBOARDING.md).
+
+## ID-53: Make actionable schedules strictly future by database time
+
+Status: candidate code-only scheduling reliability increment; no migration.
+
+**Decision.** Primary and secondary proposal and acceptance paths resolve the
+current schedule, optimistic version, selected proposal, and one validated UTC
+database instant inside the write transaction. An instant must be strictly
+later than database time; equality returns the stable
+`schedule_instant_elapsed` error. Invalid or unavailable database time fails
+closed. Rejection commits no schedule or outbox mutation, while stale CAS still
+wins before temporal policy.
+
+Elapsed stored proposals remain readable and removable. Elapsed agreements
+remain readable as past and clearable; neither is automatically rewritten.
+The dashboard supplies a local `datetime-local` minimum only as guidance,
+labels expired/past state, retains drafts on an accessible inline error, and
+refetches authoritative state. Delayed results are fenced by actor,
+room/schedule identity, circle context, and cycle. Aggregate telemetry records
+only primary/secondary plus `propose_elapsed` or `accept_elapsed`.
+
+**Alternatives.** Client-only validation is bypassable and affected by clock
+skew. Application-server time can disagree across instances and with the
+transaction owner. A minimum lead time is a separate product policy. Automatic
+deletion loses history, while relying only on dispatch suppression leaves users
+with a misleading accepted session. These options are rejected.
+
+**Rollout and recovery.** No schema, provider, or production-data change is
+required. Canary equality, one-millisecond-future, boundary-crossing acceptance,
+and elapsed-state recovery in both scopes. Rollback is code-only; existing rows
+remain intact and dispatch-time elapsed suppression remains defense in depth.
+The complete contract is in [`SCHEDULE_EXPIRY.md`](SCHEDULE_EXPIRY.md).

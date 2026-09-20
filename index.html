@@ -7614,7 +7614,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   const viewProfile=document.getElementById('view-profile-setup');
   const viewDashboard=document.getElementById('view-dashboard');
   const viewCircle=document.getElementById('view-circle');
-  const scheduleState={room:null,kind:null,circlePublicId:null,contextVersion:null,epoch:0,version:'',schedule:null,draft:'',draftRoom:null,people:new Map(),abort:null,inFlight:false,status:'waiting for pair'};
+  const scheduleState={room:null,kind:null,actorId:null,circlePublicId:null,contextVersion:null,cycleToken:null,
+    epoch:0,version:'',schedule:null,draft:'',draftRoom:null,people:new Map(),abort:null,inFlight:false,
+    status:'waiting for pair',expiryError:'',expiryAction:null};
 
   function clearRequestedView(){
     window._randoriExplicitNavigation=null;
@@ -8291,12 +8293,49 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     cancelScheduleRequest(true);
     if(discardDraft){ scheduleState.draft=''; scheduleState.draftRoom=null; }
     if(clear){
-      scheduleState.room=null; scheduleState.kind=null; scheduleState.circlePublicId=null;
-      scheduleState.contextVersion=null; scheduleState.version=''; scheduleState.schedule=null;
+      scheduleState.room=null; scheduleState.kind=null; scheduleState.actorId=null;
+      scheduleState.circlePublicId=null; scheduleState.contextVersion=null; scheduleState.cycleToken=null;
+      scheduleState.version=''; scheduleState.schedule=null; scheduleState.expiryError=''; scheduleState.expiryAction=null;
       scheduleState.people=new Map();
       const area=document.getElementById('dashScheduleArea');
       if(area) area.replaceChildren();
     }
+  }
+
+  function scheduleActorId(){
+    const value=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid);
+    return Number.isSafeInteger(value)&&value>0?value:null;
+  }
+
+  function scheduleCycleToken(data){
+    const cycle=data?.current_cycle||data?.cycle;
+    const cycleId=typeof cycle?.cycleId==='string'?cycle.cycleId:'';
+    const startsAt=typeof cycle?.startsAt==='string'?cycle.startsAt:'';
+    const endsAt=typeof cycle?.endsAt==='string'?cycle.endsAt:'';
+    if(cycleId&&startsAt&&endsAt) return JSON.stringify([cycleId,startsAt,endsAt]);
+    const room=scheduleRoomFromPair(data);
+    if(room) return `primary-room:${room}`;
+    const scheduleId=String(data?.schedule_id||'');
+    return /^[a-f0-9]{64}$/.test(scheduleId)?`secondary-schedule:${scheduleId}`:null;
+  }
+
+  function scheduleOperationMatches(captured){
+    const active=pairedDashboardSchedule();
+    return !!captured&&scheduleState.epoch===captured.epoch
+      &&scheduleState.room===captured.room&&scheduleState.kind===captured.kind
+      &&scheduleState.actorId===captured.actorId&&scheduleActorId()===captured.actorId
+      &&scheduleState.circlePublicId===captured.circlePublicId
+      &&scheduleState.contextVersion===captured.contextVersion
+      &&scheduleState.cycleToken===captured.cycleToken
+      &&active?.identity===captured.room&&active?.kind===captured.kind;
+  }
+
+  function captureScheduleOperation(scope){
+    return Object.freeze({
+      room:scope.identity,kind:scope.kind,epoch:scheduleState.epoch,
+      actorId:scheduleState.actorId,circlePublicId:scheduleState.circlePublicId,
+      contextVersion:scheduleState.contextVersion,cycleToken:scheduleState.cycleToken,
+    });
   }
 
   function pairedDashboardRoom(){
@@ -8310,6 +8349,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   function pairedDashboardSchedule(){
+    if(!scheduleState.actorId||scheduleActorId()!==scheduleState.actorId||!scheduleState.cycleToken) return null;
     if(scheduleState.kind==='secondary'){
       const identity=String(scheduleState.room||'');
       const selected=window._randori_circle_control?.scheduleContext?.();
@@ -8322,7 +8362,14 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       return {kind:'secondary',identity};
     }
     const room=pairedDashboardRoom();
-    return room?{kind:'primary',identity:room}:null;
+    if(!room) return null;
+    const selected=window._randori_circle_control?.scheduleContext?.();
+    if(scheduleState.circlePublicId!==null&&(
+      String(selected?.circlePublicId||'')!==scheduleState.circlePublicId
+      ||Number(selected?.contextVersion)!==scheduleState.contextVersion
+      ||selected?.isPrimary!==true
+    )) return null;
+    return {kind:'primary',identity:room};
   }
 
   function primaryScheduleHeaders(json=false){
@@ -8362,6 +8409,31 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return date.toISOString();
   }
 
+  function scheduleLocalMinimum(now=Date.now()){
+    const date=new Date(now);
+    if(!Number.isFinite(date.getTime())) return '';
+    const part=value=>String(value).padStart(2,'0');
+    return `${date.getFullYear()}-${part(date.getMonth()+1)}-${part(date.getDate())}T${part(date.getHours())}:${part(date.getMinutes())}`;
+  }
+
+  function clearScheduleExpiryError(){
+    scheduleState.expiryError=''; scheduleState.expiryAction=null;
+    const error=document.querySelector('[data-testid="schedule-expiry-error"]');
+    if(error){ error.textContent=''; error.hidden=true; }
+    document.querySelector('[data-testid="schedule-input"]')?.removeAttribute('aria-invalid');
+  }
+
+  function showScheduleExpiryError(action){
+    scheduleState.expiryAction=action;
+    scheduleState.expiryError=action==='accept'
+      ?'That proposal expired before it could be accepted. Remove it or choose a future time.'
+      :'That time has already passed. Choose a future date and time.';
+    renderScheduleView();
+    const error=document.querySelector('[data-testid="schedule-expiry-error"]');
+    if(action==='propose') document.querySelector('[data-testid="schedule-input"]')?.focus();
+    else error?.focus();
+  }
+
   function scheduleProposerLabel(proposedBy){
     if(proposedBy==='self') return 'You';
     if(proposedBy==='partner') return 'Your partner';
@@ -8395,6 +8467,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(!area||!scheduleState.room||!scheduleState.schedule) return;
     rememberScheduleDraft();
     const schedule=scheduleState.schedule;
+    const renderedAt=Date.now();
     const timezone=(()=>{ try{return Intl.DateTimeFormat().resolvedOptions().timeZone||'local timezone';}catch{return 'local timezone';} })();
     const card=scheduleNode('div',{className:'card'});
     const header=scheduleNode('div',{className:'card-h'});
@@ -8414,6 +8487,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         row.style.cssText='justify-content:space-between; align-items:center; gap:8px; font-size:12.5px; flex-wrap:wrap';
         row.dataset.proposalId=proposal.proposal_id;
         const detail=document.createElement('div'); detail.style.cssText='display:grid; gap:3px';
+        const elapsed=!proposal.legacy&&proposal.instant&&Date.parse(proposal.instant)<=renderedAt;
         if(proposal.legacy){
           detail.append(scheduleNode('span',{className:'kbd',text:proposal.value||'Legacy schedule text'}));
           detail.append(scheduleNode('span',{className:'small muted',text:'Legacy proposal · not directly acceptable'}));
@@ -8422,9 +8496,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           time.setAttribute('datetime',proposal.instant);
           detail.append(time);
           detail.append(scheduleNode('span',{className:'small muted',text:`Proposed by ${scheduleProposerLabel(proposal.proposed_by)}`}));
+          if(elapsed) detail.append(scheduleNode('span',{className:'small muted',text:'Expired · remove it or propose a future time',testId:'schedule-expired-label'}));
         }
         const actions=scheduleNode('div',{className:'row'}); actions.style.gap='6px';
-        if(!proposal.legacy&&proposal.instant){
+        if(!proposal.legacy&&proposal.instant&&!elapsed){
           const accept=scheduleNode('button',{className:'pill',text:'✓ Accept',testId:'schedule-accept'});
           accept.type='button'; accept.dataset.scheduleAction='accept'; accept.dataset.proposalId=proposal.proposal_id;
           accept.setAttribute('aria-label',`Accept ${localScheduleTime(proposal.instant)}`);
@@ -8443,8 +8518,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const inputActions=scheduleNode('div',{className:'row',testId:'schedule-actions'}); inputActions.style.cssText='gap:8px; flex-wrap:wrap';
     const input=scheduleNode('input',{className:'input',testId:'schedule-input'});
     input.id='newProposed'; input.type='datetime-local'; input.value=scheduleState.draft; input.style.flex='1';
+    input.min=scheduleLocalMinimum(renderedAt);
     input.setAttribute('aria-label',`Proposed time in ${timezone}`);
-    input.addEventListener('input',()=>{ scheduleState.draft=input.value; scheduleState.draftRoom=scheduleState.room; });
+    input.setAttribute('aria-describedby','schedule-time-guidance schedule-expiry-error');
+    if(scheduleState.expiryError&&scheduleState.expiryAction==='propose') input.setAttribute('aria-invalid','true');
+    input.addEventListener('input',()=>{
+      scheduleState.draft=input.value; scheduleState.draftRoom=scheduleState.room; clearScheduleExpiryError();
+    });
     const propose=scheduleNode('button',{className:'btn secondary',text:'Add proposal',testId:'schedule-propose'});
     propose.id='addProposed'; propose.type='button'; propose.dataset.scheduleAction='propose';
     propose.addEventListener('click',()=>{
@@ -8453,34 +8533,44 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       mutateSchedule('propose',{instant});
     });
     inputActions.append(input,propose); body.append(inputActions);
+    const guidance=scheduleNode('div',{className:'small muted',text:'Choose a future local time. Randori verifies it against the server database clock when you save.'});
+    guidance.id='schedule-time-guidance'; body.append(guidance);
+    const expiryError=scheduleNode('div',{className:'small',text:scheduleState.expiryError,testId:'schedule-expiry-error'});
+    expiryError.id='schedule-expiry-error'; expiryError.setAttribute('role','alert'); expiryError.setAttribute('aria-live','assertive');
+    expiryError.tabIndex=-1; expiryError.hidden=!scheduleState.expiryError; expiryError.style.color='var(--warn)';
+    body.append(expiryError);
 
     const agreement=scheduleNode('div');
     if(schedule.agreed_time){
+      const elapsed=Date.parse(schedule.agreed_time)<=renderedAt;
       agreement.style.cssText='padding:8px 10px; background:var(--accent)22; border:1px solid var(--accent); border-radius:10px; font-size:12.5px';
-      agreement.append(scheduleNode('b',{text:'Agreed: '}));
+      agreement.append(scheduleNode('b',{text:elapsed?'Past session: ':'Agreed: '}));
       const time=scheduleNode('time',{text:localScheduleTime(schedule.agreed_time)}); time.setAttribute('datetime',schedule.agreed_time); agreement.append(time);
+      if(elapsed) agreement.append(scheduleNode('div',{className:'small muted',text:'This agreement is in the past. Clear it or propose a new time.',testId:'schedule-past-agreement'}));
       const exportedRoom=scheduleState.room;
       const exportedKind=scheduleState.kind;
       const exportedInstant=schedule.agreed_time;
-      const exportRow=scheduleNode('div',{className:'row'}); exportRow.style.cssText='margin-top:8px; gap:8px; align-items:center; flex-wrap:wrap';
-      const calendar=scheduleNode('button',{className:'btn secondary',text:'Add to calendar',testId:'schedule-calendar-export'});
-      calendar.type='button'; calendar.dataset.scheduleAction='calendar-export';
-      calendar.setAttribute('aria-label',`Add the agreed ${localScheduleTime(exportedInstant)} session to your calendar`);
-      calendar.addEventListener('click',()=>{
-        const activeSchedule=pairedDashboardSchedule();
-        const stillCurrent=scheduleState.room===exportedRoom&&scheduleState.kind===exportedKind
-          &&scheduleState.schedule?.agreed_time===exportedInstant;
-        const downloaded=stillCurrent&&activeSchedule?.identity===exportedRoom
-          &&activeSchedule.kind===exportedKind&&window._randori_calendar_export?.download?.({
-          ...(exportedKind==='secondary'
-            ?{scheduleId:exportedRoom,dashboardPath:'/?view=dashboard'}:{roomId:exportedRoom}),
-          agreedTime:exportedInstant,
-          appOrigin:location.origin,
+      if(!elapsed){
+        const exportRow=scheduleNode('div',{className:'row'}); exportRow.style.cssText='margin-top:8px; gap:8px; align-items:center; flex-wrap:wrap';
+        const calendar=scheduleNode('button',{className:'btn secondary',text:'Add to calendar',testId:'schedule-calendar-export'});
+        calendar.type='button'; calendar.dataset.scheduleAction='calendar-export';
+        calendar.setAttribute('aria-label',`Add the agreed ${localScheduleTime(exportedInstant)} session to your calendar`);
+        calendar.addEventListener('click',()=>{
+          const activeSchedule=pairedDashboardSchedule();
+          const stillCurrent=scheduleState.room===exportedRoom&&scheduleState.kind===exportedKind
+            &&scheduleState.schedule?.agreed_time===exportedInstant;
+          const downloaded=stillCurrent&&activeSchedule?.identity===exportedRoom
+            &&activeSchedule.kind===exportedKind&&window._randori_calendar_export?.download?.({
+            ...(exportedKind==='secondary'
+              ?{scheduleId:exportedRoom,dashboardPath:'/?view=dashboard'}:{roomId:exportedRoom}),
+            agreedTime:exportedInstant,
+            appOrigin:location.origin,
+          });
+          if(typeof toast==='function') toast(downloaded?'Private calendar file downloaded ✓':'Calendar export is unavailable. Refresh and try again.');
         });
-        if(typeof toast==='function') toast(downloaded?'Private calendar file downloaded ✓':'Calendar export is unavailable. Refresh and try again.');
-      });
-      exportRow.append(calendar,scheduleNode('span',{className:'small muted',text:'60 minutes · your calendar app controls the downloaded copy'}));
-      agreement.append(exportRow);
+        exportRow.append(calendar,scheduleNode('span',{className:'small muted',text:'60 minutes · your calendar app controls the downloaded copy'}));
+        agreement.append(exportRow);
+      }
     }else if(schedule.legacy_agreed_time){
       agreement.style.cssText='padding:8px 10px; border:1px solid var(--warn); border-radius:10px; font-size:12.5px';
       agreement.append(scheduleNode('b',{text:'Legacy agreement: '}),document.createTextNode(schedule.legacy_agreed_time));
@@ -8496,6 +8586,14 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }
     body.append(agreement); card.append(header,body); area.replaceChildren(card);
     toggleScheduleActions(scheduleState.inFlight);
+    if(scheduleState.expiryError){
+      const focusTarget=scheduleState.expiryAction==='propose'
+        ?document.querySelector('[data-testid="schedule-input"]')
+        :document.querySelector('[data-testid="schedule-expiry-error"]');
+      requestAnimationFrame(()=>{
+        if(scheduleState.expiryError&&focusTarget?.isConnected) focusTarget.focus();
+      });
+    }
   }
 
   function applySchedule(room,raw,{status='up to date',force=false}={}){
@@ -8516,7 +8614,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(scheduleState.draftRoom!==room) scheduleState.draft='';
       scheduleState.draftRoom=room; scheduleState.room=room; scheduleState.version='';
     }
-    scheduleState.kind='primary'; scheduleState.circlePublicId=null; scheduleState.contextVersion=null;
+    const selected=window._randori_circle_control?.scheduleContext?.();
+    scheduleState.kind='primary'; scheduleState.actorId=scheduleActorId();
+    scheduleState.circlePublicId=typeof data?.circle_public_id==='string'
+      ?data.circle_public_id:(selected?.circlePublicId||null);
+    scheduleState.contextVersion=Number.isSafeInteger(Number(data?.circle_context_version))
+      ?Number(data.circle_context_version):(Number.isSafeInteger(selected?.contextVersion)?selected.contextVersion:null);
+    scheduleState.cycleToken=scheduleCycleToken(data); scheduleState.expiryError=''; scheduleState.expiryAction=null;
     scheduleState.people=new Map((Array.isArray(data.partners)?data.partners:[data.partner]).filter(Boolean).map(person=>[
       Number(person.id),String(person.display_name||person.name||'Pair member').slice(0,80),
     ]));
@@ -8537,17 +8641,19 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       scheduleState.draftRoom=scheduleId; scheduleState.room=scheduleId; scheduleState.version='';
     }
     scheduleState.kind='secondary';
+    scheduleState.actorId=scheduleActorId();
     scheduleState.circlePublicId=String(data.circle_public_id||'');
     scheduleState.contextVersion=Number(data.circle_context_version);
+    scheduleState.cycleToken=scheduleCycleToken(data); scheduleState.expiryError=''; scheduleState.expiryAction=null;
     scheduleState.people=new Map();
     applySchedule(scheduleId,data.schedule,{status:data.schedule?'up to date':'checking…',force:true});
     if(!scheduleState.version) setTimeout(()=>{ pollSchedule(); },0);
   }
 
-  async function pollSchedule(){
+  async function pollSchedule({force=false}={}){
     const scope=pairedDashboardSchedule();
     if(!scope||scope.identity!==scheduleState.room||scheduleState.inFlight) return false;
-    const captured={room:scope.identity,kind:scope.kind,epoch:scheduleState.epoch};
+    const captured=captureScheduleOperation(scope);
     const controller=new AbortController(); scheduleState.abort=controller; scheduleState.inFlight=true;
     setScheduleStatus('checking…'); toggleScheduleActions(true);
     try{
@@ -8561,13 +8667,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         data=await response.json().catch(()=>({}));
       }
       if(response&&(response.status===401||response.status===403)){
-        if(scheduleState.room===captured.room&&scheduleState.epoch===captured.epoch) stopSchedulePolling({clear:true});
+        if(scheduleOperationMatches(captured)) stopSchedulePolling({clear:true});
         return false;
       }
       if(response&&!response.ok) throw new Error(data.error||`schedule ${response.status}`);
       if(
-        scheduleState.room!==captured.room||scheduleState.epoch!==captured.epoch||
-        pairedDashboardSchedule()?.identity!==captured.room
+        !scheduleOperationMatches(captured)
       ) return false;
       if(captured.kind==='secondary'){
         if(String(data.schedule_id||'')!==captured.room
@@ -8575,14 +8680,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           throw new Error('schedule scope mismatch');
         }
       }else if(String(data.room_id||'')!==captured.room) throw new Error('schedule room mismatch');
-      return applySchedule(captured.room,data.schedule);
+      return applySchedule(captured.room,data.schedule,{force});
     }catch(error){
-      if([401,403,404,409].includes(Number(error?.http_status))
-        &&scheduleState.room===captured.room&&scheduleState.epoch===captured.epoch){
+      if([401,403,404,409].includes(Number(error?.http_status))&&scheduleOperationMatches(captured)){
         stopSchedulePolling({clear:true});
         return false;
       }
-      if(error?.name!=='AbortError'&&scheduleState.room===captured.room&&scheduleState.epoch===captured.epoch) setScheduleStatus('retrying…');
+      if(error?.name!=='AbortError'&&scheduleOperationMatches(captured)) setScheduleStatus('retrying…');
       return false;
     }finally{
       if(scheduleState.abort===controller){ scheduleState.abort=null; scheduleState.inFlight=false; toggleScheduleActions(false); }
@@ -8600,8 +8704,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }
     rememberScheduleDraft();
     cancelScheduleRequest(true);
-    const captured={room,kind:scope.kind,epoch:scheduleState.epoch};
+    const captured=captureScheduleOperation(scope);
     const controller=new AbortController(); scheduleState.abort=controller; scheduleState.inFlight=true;
+    let refreshAfterElapsed=false;
     setScheduleStatus('saving…'); toggleScheduleActions(true);
     try{
       let response=null,data;
@@ -8610,8 +8715,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         try{
           data=await window._randori_auth.api('/api/schedule',{method:'POST',signal:controller.signal,body});
         }catch(error){
-          if(error?.http_status!==409||!error?.schedule
-            ||String(error?.schedule_id||'')!==captured.room) throw error;
+          const temporal=error?.http_status===400&&error?.code==='schedule_instant_elapsed';
+          if(!temporal&&(error?.http_status!==409||!error?.schedule
+            ||String(error?.schedule_id||'')!==captured.room)) throw error;
           data=error;
         }
       }else{
@@ -8622,11 +8728,15 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         data=await response.json().catch(()=>({}));
       }
       if(
-        scheduleState.room!==captured.room||scheduleState.epoch!==captured.epoch||
-        pairedDashboardSchedule()?.identity!==captured.room
+        !scheduleOperationMatches(captured)
       ) return false;
       if(response&&(response.status===401||response.status===403)){ stopSchedulePolling({clear:true}); return false; }
       const status=response?.status||data?.http_status||200;
+      if(status===400&&data?.code==='schedule_instant_elapsed'){
+        showScheduleExpiryError(action);
+        refreshAfterElapsed=true;
+        return false;
+      }
       if(status===409){
         if(captured.kind==='secondary'){
           if(String(data.schedule_id||'')!==captured.room
@@ -8649,23 +8759,26 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         scheduleState.draft=''; scheduleState.draftRoom=room;
         const input=document.querySelector('[data-testid="schedule-input"]'); if(input) input.value='';
       }
+      clearScheduleExpiryError();
       applySchedule(captured.room,data.schedule,{status:'up to date',force:true});
       if(typeof toast==='function') toast('Schedule updated ✓');
       return true;
     }catch(error){
-      if([401,403,404,409].includes(Number(error?.http_status))
-        &&scheduleState.room===captured.room&&scheduleState.epoch===captured.epoch){
+      if([401,403,404,409].includes(Number(error?.http_status))&&scheduleOperationMatches(captured)){
         stopSchedulePolling({clear:true});
         if(typeof toast==='function') toast('Schedule access changed. Refreshing your current circle…');
         return false;
       }
-      if(error?.name!=='AbortError'&&scheduleState.room===captured.room&&scheduleState.epoch===captured.epoch){
+      if(error?.name!=='AbortError'&&scheduleOperationMatches(captured)){
         setScheduleStatus('retrying…');
         if(typeof toast==='function') toast('Schedule update failed: '+String(error?.message||error?.error||'try again').slice(0,120));
       }
       return false;
     }finally{
-      if(scheduleState.abort===controller){ scheduleState.abort=null; scheduleState.inFlight=false; toggleScheduleActions(false); }
+      if(scheduleState.abort===controller){
+        scheduleState.abort=null; scheduleState.inFlight=false; toggleScheduleActions(false);
+        if(refreshAfterElapsed&&scheduleOperationMatches(captured)) setTimeout(()=>{ pollSchedule({force:true}); },0);
+      }
     }
   }
 
