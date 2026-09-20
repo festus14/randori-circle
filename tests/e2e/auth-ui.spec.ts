@@ -154,6 +154,7 @@ test('private beta keeps direct account creation closed until this tab prepares 
 test('invite reload refreshes only the opaque tab binding and preserves its bounded lifetime',async({page})=>{
   const token='R'.repeat(43);
   const prepareBodies:unknown[]=[];
+  await page.clock.install();
   await mockApi(page,{
     '/api/auth/capabilities':verifiedInviteCapabilities,
     '/api/invitations/prepare':request=>{
@@ -177,6 +178,10 @@ test('invite reload refreshes only the opaque tab binding and preserves its boun
   expect(await page.evaluate(secret=>[
     ...Object.values(localStorage),...Object.values(sessionStorage),
   ].some(value=>String(value).includes(secret)),token)).toBe(false);
+
+  await page.clock.fastForward(420_100);
+  await expect(page.getByTestId('invite-status')).toContainText('expired');
+  expect(await page.evaluate(()=>sessionStorage.getItem('randori-invite-binding-v1'))).toBeNull();
 });
 
 test('an auth change fences a delayed invitation preparation response',async({page})=>{
@@ -313,6 +318,19 @@ test('invite expiry aborts an in-flight signup and fences its delayed success re
   let releaseSignup:(()=>void)|undefined;
   const signupGate=new Promise<void>(resolve=>{ releaseSignup=resolve; });
   await page.clock.install();
+  await page.addInitScript(()=>{
+    (window as any).__inviteSignupAbortObserved=false;
+    const originalFetch=window.fetch.bind(window);
+    window.fetch=(input,init)=>{
+      const requestUrl=new URL(input instanceof Request?input.url:String(input),window.location.href);
+      if(requestUrl.pathname==='/api/auth/signup'&&init?.signal){
+        init.signal.addEventListener('abort',()=>{
+          (window as any).__inviteSignupAbortObserved=true;
+        },{once:true});
+      }
+      return originalFetch(input,init);
+    };
+  });
   await mockApi(page,{
     '/api/auth/capabilities':verifiedInviteCapabilities,
     '/api/invitations/prepare':{ok:true,binding:inviteBinding,expires_in_seconds:60},
@@ -336,6 +354,7 @@ test('invite expiry aborts an in-flight signup and fences its delayed success re
 
   await page.clock.fastForward(60_100);
   await expect(page.getByTestId('invite-status')).toContainText('expired');
+  await expect.poll(()=>page.evaluate(()=>(window as any).__inviteSignupAbortObserved)).toBe(true);
   await expect(page.locator('#authForm')).toHaveAttribute('aria-busy','false');
   await expect(page.locator('#authSignup')).toBeHidden();
   releaseSignup?.();
