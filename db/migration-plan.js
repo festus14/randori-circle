@@ -127,6 +127,13 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'4249453182547eaa2fe5896b34d1765180a44ec3b8846540a0c0451e3e6c3636',
     checksum:'5fc7d411c13a8cfc25ad4ccb8b4812612fbc462485d4939b0b7d1ae8b009ad93',
   }),
+  Object.freeze({
+    version:19,
+    name:'durable-pair-session-controls',
+    description:'Source-bound pair roles and a durable database-clock focus timer with monotonic concurrency control.',
+    operationsChecksum:'f2b369f23cac81bc92b4afaf6c0632d1a88cfb6b8deb06a46e2b3b9fbc84031a',
+    checksum:'f935fce8f84c6d43049d0aba296630fd211ba80462e05955ff1c701686f5f36b',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){

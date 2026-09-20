@@ -1258,8 +1258,8 @@ p{margin:0}
               <span id="lintStatus" class="kbd" style="display:none; background:var(--bg-3)">lint: —</span>
             </div>
             <div class="row" style="gap:6px">
-              <button id="roleToggle" class="pill">○ candidate</button>
-              <button id="timerBtn" class="pill">⏱ <span id="timerText">25:00</span></button>
+              <button id="roleToggle" class="pill" type="button" aria-label="Change shared participant roles">○ candidate</button>
+              <button id="timerBtn" class="pill" type="button" aria-label="Start shared focus timer">⏱ <span id="timerText">25:00</span></button>
               <span class="pill"><span class="dot"></span><span id="presenceText">you alone</span></span>
             </div>
           </div>
@@ -1275,6 +1275,26 @@ p{margin:0}
             <div id="pairRunsList" role="list" style="display:grid; gap:5px; margin-top:7px"></div>
           </section>
           <section id="meetingLinkWorkspaceCard" data-testid="meeting-link-workspace" aria-label="Private meeting link" hidden style="border-top:1px solid var(--line); background:var(--bg-2); padding:10px"></section>
+          <section id="sessionControlsCard" data-testid="session-controls" aria-labelledby="sessionControlsTitle" hidden style="border-top:1px solid var(--line); background:var(--bg-2); padding:10px">
+            <div style="display:grid;gap:8px">
+              <div class="row" style="justify-content:space-between;gap:10px;flex-wrap:wrap">
+                <div>
+                  <b id="sessionControlsTitle" style="font-size:12.5px">Shared session controls</b>
+                  <div id="sessionControlsRoles" class="small muted" data-testid="session-controls-roles" style="margin-top:4px">Loading participant roles…</div>
+                </div>
+                <output id="sessionControlsCountdown" data-testid="session-controls-countdown" aria-label="Focus timer remaining" style="font-variant-numeric:tabular-nums;font-size:20px;font-weight:700">25:00</output>
+              </div>
+              <div class="row" style="gap:7px;flex-wrap:wrap;align-items:end">
+                <label class="small" for="sessionControlsCandidate">Candidate
+                  <select id="sessionControlsCandidate" class="select" data-testid="session-controls-candidate" style="display:block;min-width:160px;margin-top:3px"></select>
+                </label>
+                <button id="sessionControlsStartPause" class="btn" data-testid="session-controls-start-pause" type="button">Start</button>
+                <button id="sessionControlsReset" class="pill" data-testid="session-controls-reset" type="button">Reset to 25:00</button>
+                <button id="sessionControlsRetry" class="pill" data-testid="session-controls-retry" type="button" hidden>Retry</button>
+              </div>
+              <div id="sessionControlsStatus" class="small muted" data-testid="session-controls-status" role="status" aria-live="polite">Loading shared controls…</div>
+            </div>
+          </section>
           <section id="sessionCompletionCard" data-testid="session-completion" aria-labelledby="sessionCompletionTitle" hidden style="border-top:1px solid var(--line); background:var(--bg-2); padding:10px">
             <div class="row" style="justify-content:space-between; gap:10px; flex-wrap:wrap">
               <div>
@@ -6272,8 +6292,6 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(qId) qSel.value=qId;
       document.getElementById('editor').value=hasStoredCode?storedCode:'';
     }
-    timerSec=entry.timerSec ?? 25*60;
-    updateTimerLabel();
     document.getElementById('runOut').innerHTML='';
     bc?.postMessage({type:'presence'});
     window.dispatchEvent(new CustomEvent('randori:room-change',{detail:{roomId}}));
@@ -6285,7 +6303,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const lang=document.getElementById('langSelect').value;
     const e=map[currentRoom]||{codes:{}};
     const selectedQuestion=window._randori_questions?.selectedIdentity?.()||{slug:qSel.value,version:null};
-    e.lang=lang; e.qId=selectedQuestion.slug; e.qVersion=selectedQuestion.version; e.codes=e.codes||{}; e.codes[lang]=document.getElementById('editor').value; e.timerSec=timerSec;
+    e.lang=lang; e.qId=selectedQuestion.slug; e.qVersion=selectedQuestion.version; e.codes=e.codes||{}; e.codes[lang]=document.getElementById('editor').value;
     map[currentRoom]=e; saveCode(map);
     window.dispatchEvent(new CustomEvent('randori:workspace-edit',{detail:{roomId:currentRoom}}));
   }
@@ -6515,19 +6533,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   };
 
 
-  // timer
+  // Shared timer/role handlers are installed by the authoritative controls
+  // module after workspace hydration. These toolbar buttons are compact mirrors.
   function updateTimerLabel(){ const m=Math.floor(timerSec/60), s=timerSec%60; document.getElementById('timerText').textContent=`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; }
-  document.getElementById('timerBtn').onclick=()=>{
-    if(timerRun){ clearInterval(timerInt); timerRun=false; document.getElementById('timerBtn').style.background=''; }
-    else { timerRun=true; timerInt=setInterval(()=>{ timerSec=Math.max(0,timerSec-1); updateTimerLabel(); persistRoom(); if(timerSec===0){ clearInterval(timerInt); timerRun=false; toast('time'); }},1000); }
-    updateTimerLabel();
-  };
-
-  document.getElementById('roleToggle').onclick=(e)=>{
-    role = role==='candidate'? 'interviewer':'candidate';
-    e.currentTarget.textContent = role==='candidate'? '○ candidate' : '● interviewer';
-    toast(`you are ${role}`);
-  };
+  document.getElementById('timerBtn').onclick=()=>window._randori_session_controls?.toggleTimer?.();
+  document.getElementById('roleToggle').onclick=()=>window._randori_session_controls?.toggleCandidate?.();
 
   // ---------- board ----------
   const canvas=document.getElementById('board');
@@ -11351,7 +11361,6 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       let map={}; try{ map=JSON.parse(localStorage.getItem(CODE_KEY)||'{}'); }catch{ map={}; }
       const e=map[room]||{codes:{}};
       e.lang=lang; e.qId=qId; e.qVersion=selectedQuestion.version; e.codes=e.codes||{}; e.codes[lang]=code;
-      try{ const tsEl=document.getElementById('timerText'); if(tsEl){ const txt=tsEl.textContent||'25:00'; const parts=txt.split(':'); const sec=(parseInt(parts[0]||'25',10)*60)+(parseInt(parts[1]||'0',10)); e.timerSec=sec; } }catch{}
       map[room]=e;
       localStorage.setItem(CODE_KEY, JSON.stringify(map));
       window.dispatchEvent(new CustomEvent('randori:workspace-edit',{detail:{roomId:room}}));
@@ -12528,6 +12537,363 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(event.target?.closest?.('#signOutBtn,#dashSignOut,#psSignOut,#meSignOut,#meSignOutAll')) reset();
   },{capture:true});
   window._randori_session_completion={load,mutate,reset,normalize:normalizeCompletion,get room(){ return state.room; },get completion(){ return state.completion?{...state.completion}:null; }};
+})();
+</script>
+
+<script>
+// Pair roles and the focus timer are one server-authoritative aggregate. The
+// browser only animates the last observed remaining duration between bounded
+// reconciliations; it never persists a countdown tick.
+(function(){
+  const card=document.getElementById('sessionControlsCard');
+  const status=document.getElementById('sessionControlsStatus');
+  const roles=document.getElementById('sessionControlsRoles');
+  const countdown=document.getElementById('sessionControlsCountdown');
+  const candidate=document.getElementById('sessionControlsCandidate');
+  const startPause=document.getElementById('sessionControlsStartPause');
+  const resetButton=document.getElementById('sessionControlsReset');
+  const retry=document.getElementById('sessionControlsRetry');
+  const toolbarRole=document.getElementById('roleToggle');
+  const toolbarTimer=document.getElementById('timerBtn');
+  const state={
+    epoch:0,requestEpoch:0,controller:null,pollTimer:null,tickTimer:null,
+    room:null,actorId:null,circlePublicId:null,contextVersion:null,cycleToken:null,
+    controls:null,receivedAt:0,busy:false,message:'',completionVersion:null,announcedExpiryVersion:null,
+  };
+  const VERSION=/^[a-f0-9]{64}$/;
+  const RUNNING_POLL_MS=2000;
+  const IDLE_POLL_MS=5000;
+
+  function actorId(){
+    const value=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0);
+    return Number.isSafeInteger(value)&&value>0?value:null;
+  }
+  function canonicalRoom(value){ return /^week_[1-9]\d*_pair_[1-9]\d*$/.test(String(value||'')); }
+  function currentCircle(){
+    const selected=window._randori_circle_control?.scheduleContext?.()||null;
+    if(window._randori_auth?.capabilities?.multiCircleControlPlane!==true) return {publicId:null,version:null};
+    if(!selected||selected.isPrimary!==true) return null;
+    return {publicId:String(selected.circlePublicId||''),
+      version:Number.isSafeInteger(Number(selected.contextVersion))?Number(selected.contextVersion):null};
+  }
+  function currentCycleToken(room){
+    const pair=window._randori_pair_cache;
+    if(String(pair?.room_id||'')!==room) return `room:${room}`;
+    const cycle=pair.current_cycle||pair.cycle;
+    return cycle&&typeof cycle.cycleId==='string'&&typeof cycle.startsAt==='string'&&typeof cycle.endsAt==='string'
+      ?JSON.stringify([cycle.cycleId,cycle.startsAt,cycle.endsAt]):`room:${room}`;
+  }
+  function authorizedRoom(room){
+    const workspace=window._randori_workspace;
+    return canonicalRoom(room)&&actorId()!==null&&window._randori_authorized_room===room
+      &&workspace?.room===room&&workspace?.hydrated===true;
+  }
+  function identityScope(){
+    if(!authorizedRoom(state.room)) return null;
+    const circle=currentCircle(); if(!circle) return null;
+    return Object.freeze({
+      epoch:state.epoch,requestEpoch:state.requestEpoch,room:state.room,actorId:state.actorId,
+      circlePublicId:state.circlePublicId,contextVersion:state.contextVersion,
+      cycleToken:state.cycleToken,version:state.controls?.version||null,
+      completionVersion:state.completionVersion,
+    });
+  }
+  function matchesIdentity(scope){
+    if(!scope||scope.epoch!==state.epoch||scope.requestEpoch!==state.requestEpoch
+      ||scope.room!==state.room||scope.actorId!==state.actorId
+      ||scope.circlePublicId!==state.circlePublicId||scope.contextVersion!==state.contextVersion
+      ||scope.cycleToken!==state.cycleToken||actorId()!==scope.actorId
+      ||currentCycleToken(scope.room)!==scope.cycleToken||!authorizedRoom(scope.room)) return false;
+    const circle=currentCircle();
+    return !!circle&&circle.publicId===scope.circlePublicId&&circle.version===scope.contextVersion;
+  }
+  function matchesMutation(scope){
+    return matchesIdentity(scope)&&scope.version===state.controls?.version
+      &&scope.completionVersion===state.completionVersion;
+  }
+  function validInstant(value){
+    if(typeof value!=='string') return null;
+    const epoch=Date.parse(value);
+    return Number.isFinite(epoch)&&new Date(epoch).toISOString()===value?value:null;
+  }
+  function normalize(raw){
+    if(!raw||typeof raw!=='object'||Array.isArray(raw)) return null;
+    const duration=Number(raw.duration_ms),remaining=Number(raw.remaining_ms);
+    const candidateId=Number(raw.candidate_user_id),partnerId=Number(raw.partner_user_id);
+    const observedAt=validInstant(raw.observed_at);
+    const updatedAt=raw.updated_at===null?null:validInstant(raw.updated_at);
+    if(!['paused','running','expired'].includes(raw.timer_state)
+      ||!Number.isSafeInteger(duration)||duration!==25*60*1000
+      ||!Number.isSafeInteger(remaining)||remaining<0||remaining>duration
+      ||(raw.timer_state==='expired')!==(remaining===0)
+      ||!Number.isSafeInteger(candidateId)||candidateId<1
+      ||!Number.isSafeInteger(partnerId)||partnerId<1||partnerId===actorId()
+      ||![actorId(),partnerId].includes(candidateId)
+      ||!['candidate','interviewer'].includes(raw.viewer_role)
+      ||!['candidate','interviewer'].includes(raw.partner_role)
+      ||raw.viewer_role===raw.partner_role
+      ||(candidateId===actorId())!==(raw.viewer_role==='candidate')
+      ||typeof raw.terminal!=='boolean'||!VERSION.test(String(raw.version||''))
+      ||!VERSION.test(String(raw.completion_version||''))||!observedAt
+      ||raw.updated_at!==null&&!updatedAt) return null;
+    return {
+      timerState:raw.timer_state,remainingMs:remaining,durationMs:duration,
+      candidateUserId:candidateId,partnerUserId:partnerId,viewerRole:raw.viewer_role,
+      partnerRole:raw.partner_role,terminal:raw.terminal,version:String(raw.version),
+      completionVersion:String(raw.completion_version),observedAt,updatedAt,
+    };
+  }
+  function effectiveRemaining(now=Date.now()){
+    const controls=state.controls;
+    if(!controls) return 25*60*1000;
+    if(controls.timerState!=='running'||controls.terminal) return controls.remainingMs;
+    return Math.max(0,controls.remainingMs-Math.max(0,now-state.receivedAt));
+  }
+  function formatRemaining(milliseconds){
+    const seconds=Math.ceil(Math.max(0,milliseconds)/1000);
+    return `${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;
+  }
+  function partnerName(){
+    const pair=window._randori_pair_cache;
+    return String(pair?.partner?.name||pair?.partner?.display_name||pair?.partners?.[0]?.name||'Partner').slice(0,80);
+  }
+  function clearTick(){
+    if(state.tickTimer!==null){ clearInterval(state.tickTimer); state.tickTimer=null; }
+  }
+  function clearPoll(){
+    if(state.pollTimer!==null){ clearTimeout(state.pollTimer); state.pollTimer=null; }
+  }
+  function hide(){
+    clearTick(); clearPoll();
+    if(card){ card.hidden=true; card.setAttribute('aria-busy','false'); }
+    if(toolbarRole){ toolbarRole.disabled=true; toolbarRole.textContent='○ role'; }
+    if(toolbarTimer){ toolbarTimer.disabled=true; toolbarTimer.style.background=''; const label=toolbarTimer.querySelector('#timerText'); if(label) label.textContent='25:00'; }
+  }
+  function renderTimer(){
+    const remaining=effectiveRemaining();
+    const label=formatRemaining(remaining);
+    if(countdown) countdown.textContent=label;
+    if(toolbarTimer){
+      const timerLabel=toolbarTimer.querySelector('#timerText'); if(timerLabel) timerLabel.textContent=label;
+      toolbarTimer.style.background=state.controls?.timerState==='running'&&remaining>0&&!state.controls?.terminal?'var(--accent)':'';
+      toolbarTimer.setAttribute('aria-label',state.controls?.timerState==='running'&&remaining>0?'Pause shared focus timer':'Start shared focus timer');
+    }
+    if(remaining===0){
+      if(startPause){ startPause.textContent='Start'; startPause.disabled=true; }
+      if(toolbarTimer){ toolbarTimer.disabled=true; toolbarTimer.setAttribute('aria-label','Shared focus timer expired; reset required'); }
+    }
+    timerSec=Math.ceil(remaining/1000); timerRun=state.controls?.timerState==='running'&&remaining>0&&!state.controls?.terminal;
+    if(remaining===0&&state.controls?.timerState==='running'
+      &&state.announcedExpiryVersion!==state.controls.version){
+      state.announcedExpiryVersion=state.controls.version;
+      state.message='Time is up. Reset the timer to begin another focus block.';
+      if(status) status.textContent=state.message;
+      clearTick(); schedulePoll();
+    }
+  }
+  function scheduleTick(){
+    clearTick();
+    if(state.controls?.timerState==='running'&&!state.controls.terminal&&effectiveRemaining()>0
+      &&document.visibilityState==='visible'){
+      state.tickTimer=setInterval(renderTimer,250);
+    }
+  }
+  function schedulePoll(){
+    clearPoll();
+    if(!state.room||state.busy||state.controls?.terminal||document.visibilityState!=='visible') return;
+    const delay=state.controls?.timerState==='running'&&effectiveRemaining()>0?RUNNING_POLL_MS:IDLE_POLL_MS;
+    state.pollTimer=setTimeout(()=>{ state.pollTimer=null; load(state.room); },delay);
+  }
+  function render(){
+    clearPoll(); clearTick();
+    if(!card||!state.room){ hide(); return; }
+    card.hidden=false; card.setAttribute('aria-busy',state.busy?'true':'false');
+    if(!state.controls){
+      if(roles) roles.textContent='Participant roles unavailable.';
+      if(countdown) countdown.textContent='25:00';
+      if(candidate){ candidate.replaceChildren(); candidate.disabled=true; }
+      if(startPause){ startPause.disabled=true; startPause.textContent='Start'; }
+      if(resetButton) resetButton.disabled=true;
+      if(retry){ retry.hidden=state.busy; retry.disabled=state.busy; }
+      if(status) status.textContent=state.message||(state.busy?'Loading shared controls…':'Shared controls unavailable — retry.');
+      if(toolbarRole) toolbarRole.disabled=true;
+      if(toolbarTimer) toolbarTimer.disabled=true;
+      return;
+    }
+    const controls=state.controls;
+    role=controls.viewerRole;
+    if(roles) roles.textContent=`You are ${controls.viewerRole}. ${partnerName()} is ${controls.partnerRole}.`;
+    if(candidate){
+      const current=String(controls.candidateUserId);
+      candidate.replaceChildren();
+      for(const [id,label] of [[state.actorId,'You'],[controls.partnerUserId,partnerName()]]){
+        const option=document.createElement('option'); option.value=String(id); option.textContent=label;
+        candidate.appendChild(option);
+      }
+      candidate.value=current;
+      candidate.disabled=state.busy||controls.terminal;
+    }
+    const remaining=effectiveRemaining();
+    if(startPause){
+      startPause.textContent=controls.timerState==='running'&&remaining>0?'Pause':'Start';
+      startPause.disabled=state.busy||controls.terminal||remaining===0;
+    }
+    if(resetButton) resetButton.disabled=state.busy||controls.terminal;
+    if(retry){ retry.hidden=true; retry.disabled=false; }
+    if(toolbarRole){
+      toolbarRole.disabled=state.busy||controls.terminal;
+      toolbarRole.textContent=controls.viewerRole==='candidate'?'○ candidate':'● interviewer';
+      toolbarRole.setAttribute('aria-label',`You are ${controls.viewerRole}; switch shared participant roles`);
+    }
+    if(toolbarTimer) toolbarTimer.disabled=state.busy||controls.terminal||remaining===0;
+    if(status){
+      status.textContent=state.message||(controls.terminal
+        ?'Session completed. The shared timer and roles are now read-only.'
+        :(remaining===0?'Time is up. Reset the timer to begin another focus block.'
+          :(controls.timerState==='running'?'Shared focus timer is running.':'Shared focus timer is paused.')));
+    }
+    renderTimer(); scheduleTick(); schedulePoll();
+  }
+  function reset(){
+    state.epoch+=1; state.requestEpoch+=1; state.controller?.abort(); state.controller=null;
+    clearPoll(); clearTick();
+    state.room=null; state.actorId=null; state.circlePublicId=null; state.contextVersion=null;
+    state.cycleToken=null; state.controls=null; state.receivedAt=0; state.busy=false; state.message='';
+    state.completionVersion=null; state.announcedExpiryVersion=null;
+    role='both'; timerRun=false; timerSec=25*60;
+    hide();
+  }
+  function adoptRoom(room){
+    room=String(room||'');
+    if(!authorizedRoom(room)) return false;
+    const circle=currentCircle(); if(!circle) return false;
+    const nextActor=actorId(),nextCycle=currentCycleToken(room);
+    const changed=state.room!==room||state.actorId!==nextActor||state.circlePublicId!==circle.publicId
+      ||state.contextVersion!==circle.version||state.cycleToken!==nextCycle;
+    if(changed){
+      state.epoch+=1; state.requestEpoch+=1; state.controller?.abort(); state.controller=null;
+      clearPoll(); clearTick();
+      state.room=room; state.actorId=nextActor; state.circlePublicId=circle.publicId;
+      state.contextVersion=circle.version; state.cycleToken=nextCycle; state.controls=null;
+      state.receivedAt=0; state.busy=false; state.message=''; state.completionVersion=null;
+      state.announcedExpiryVersion=null;
+    }
+    return true;
+  }
+  async function load(room=window._randori_workspace?.room){
+    if(!adoptRoom(room)){ reset(); return false; }
+    const priorControls=state.controls;
+    state.requestEpoch+=1; state.controller?.abort();
+    const controller=new AbortController(); state.controller=controller;
+    state.busy=true; state.message=''; const scope=identityScope(); render();
+    try{
+      const url=new URL('/api/session-controls',location.origin); url.searchParams.set('room_id',scope.room);
+      const headers=scope.contextVersion===null?undefined:{'x-randori-circle-context-version':String(scope.contextVersion)};
+      const response=await fetch(url,{credentials:'same-origin',cache:'no-store',headers,signal:controller.signal});
+      const data=await response.json().catch(()=>({}));
+      if(!matchesIdentity(scope)) return false;
+      if([401,403,404].includes(response.status)){ reset(); return false; }
+      if(!response.ok||data.ok!==true||String(data.room_id||'')!==scope.room) throw new Error(data.error||'session controls unavailable');
+      const controls=normalize(data.session_controls); if(!controls) throw new Error('invalid session-controls response');
+      state.controls=controls; state.completionVersion=controls.completionVersion;
+      state.receivedAt=Date.now(); state.busy=false;
+      state.message=priorControls&&priorControls.candidateUserId!==controls.candidateUserId
+        ?`Participant roles updated. You are ${controls.viewerRole}.`:'';
+      render(); return true;
+    }catch(error){
+      if(error?.name!=='AbortError'&&matchesIdentity(scope)){
+        state.controls=null; state.receivedAt=0; state.busy=false;
+        state.message='Shared controls unavailable — retry.'; render();
+      }
+      return false;
+    }finally{ if(state.controller===controller) state.controller=null; }
+  }
+  async function mutate(action,candidateUserId=null){
+    const controls=state.controls;
+    if(!controls||state.busy||controls.terminal||!['start','pause','reset','set_candidate'].includes(action)) return false;
+    state.requestEpoch+=1; state.controller?.abort();
+    const controller=new AbortController(); state.controller=controller;
+    state.busy=true; state.message='Saving shared controls…'; const scope=identityScope(); render();
+    try{
+      const headers={'content-type':'application/json'};
+      if(scope.contextVersion!==null) headers['x-randori-circle-context-version']=String(scope.contextVersion);
+      const body={room_id:scope.room,action,base_version:controls.version};
+      if(action==='set_candidate') body.candidate_user_id=Number(candidateUserId);
+      const response=await fetch('/api/session-controls',{
+        method:'POST',credentials:'same-origin',headers,signal:controller.signal,body:JSON.stringify(body),
+      });
+      const data=await response.json().catch(()=>({}));
+      if(!matchesMutation(scope)) return false;
+      const next=normalize(data.session_controls);
+      if(response.status===409&&String(data.room_id||'')===scope.room&&next){
+        state.controls=next; state.completionVersion=next.completionVersion; state.receivedAt=Date.now();
+        state.busy=false; state.message=String(data.error||'Shared controls changed.').slice(0,180); render(); return false;
+      }
+      if(!response.ok||data.ok!==true||String(data.room_id||'')!==scope.room||!next) throw new Error(data.error||'session controls unavailable');
+      state.controls=next; state.completionVersion=next.completionVersion; state.receivedAt=Date.now();
+      state.busy=false;
+      state.message=action==='start'?'Shared timer started.':action==='pause'?'Shared timer paused.':
+        action==='reset'?'Shared timer reset to 25 minutes.':'Participant roles updated.';
+      render(); return true;
+    }catch(error){
+      if(error?.name!=='AbortError'&&matchesMutation(scope)){
+        state.controls=null; state.receivedAt=0; state.busy=false;
+        state.message='The update was not confirmed. Retry to read the shared state.'; render();
+      }
+      return false;
+    }finally{ if(state.controller===controller) state.controller=null; }
+  }
+  function toggleTimer(){
+    if(!state.controls) return load(state.room);
+    if(state.controls.timerState==='running'&&effectiveRemaining()>0) return mutate('pause');
+    if(effectiveRemaining()>0) return mutate('start');
+    return false;
+  }
+  function toggleCandidate(){
+    if(!state.controls) return load(state.room);
+    const next=state.controls.candidateUserId===state.actorId?state.controls.partnerUserId:state.actorId;
+    return mutate('set_candidate',next);
+  }
+
+  candidate?.addEventListener('change',()=>{ mutate('set_candidate',Number(candidate.value)); });
+  startPause?.addEventListener('click',toggleTimer);
+  resetButton?.addEventListener('click',()=>mutate('reset'));
+  retry?.addEventListener('click',()=>load(state.room));
+  window.addEventListener('randori:workspace-hydrated',event=>{ load(event.detail?.roomId); });
+  window.addEventListener('randori:room-change',()=>{ reset(); });
+  window.addEventListener('randori:workspace-deactivated',reset);
+  window.addEventListener('randori:completion-observed',event=>{
+    if(!event.detail?.room||event.detail.room!==state.room) return;
+    const completionVersion=VERSION.test(String(event.detail.completionVersion||''))?String(event.detail.completionVersion):null;
+    if(completionVersion&&completionVersion!==state.completionVersion){
+      state.epoch+=1; state.requestEpoch+=1; state.controller?.abort(); state.controller=null;
+      clearPoll(); clearTick(); state.completionVersion=completionVersion;
+      if(event.detail.state==='completed'&&state.controls){
+        state.controls={...state.controls,terminal:true,completionVersion};
+        state.receivedAt=Date.now(); state.busy=false; state.message=''; render();
+        // Completion stops local animation immediately. Re-read once so the
+        // visible remainder is capped at the database-recorded completion time.
+        queueMicrotask(()=>{ load(state.room); });
+      }else queueMicrotask(()=>{ load(state.room); });
+    }
+  });
+  window.addEventListener('randori:auth-refreshed',event=>{
+    if(Number(event.detail?.userId||0)!==state.actorId) reset();
+  });
+  document.addEventListener('visibilitychange',()=>{
+    if(document.visibilityState==='visible'&&state.room) load(state.room);
+    else if(document.visibilityState!=='visible'){
+      state.epoch+=1; state.requestEpoch+=1; state.controller?.abort(); state.controller=null;
+      state.busy=false; clearPoll(); clearTick();
+    }
+  });
+  document.addEventListener('click',event=>{
+    if(event.target?.closest?.('#signOutBtn,#dashSignOut,#psSignOut,#meSignOut,#meSignOutAll')) reset();
+  },{capture:true});
+  hide();
+  window._randori_session_controls={load,mutate,reset,normalize,toggleTimer,toggleCandidate,
+    get room(){return state.room;},get controls(){return state.controls?{...state.controls}:null;},
+    get remainingMs(){return effectiveRemaining();}};
 })();
 </script>
 

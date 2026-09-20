@@ -137,6 +137,7 @@ test('admin operation readiness is exact, read-only, and route scoped',async()=>
     'SELECT week_id FROM pairing_participants LIMIT 0',
     'SELECT week_id,pair_group_id,user_id FROM session_completion_receipts LIMIT 0',
     'SELECT week_id,pair_group_id FROM pair_meeting_links LIMIT 0',
+    'SELECT week_id,pair_group_id FROM pair_session_controls LIMIT 0',
   ]);
 
   statements.length=0;
@@ -166,7 +167,7 @@ test('admin operation readiness isolates caches by route and client',async()=>{
   await ensureAdminPromotionReadiness(first);
   assert.equal(firstCalls,3);
   await ensureDemoResetReadiness(first);
-  assert.equal(firstCalls,10,'a different route has an independent contract');
+  assert.equal(firstCalls,11,'a different route has an independent contract');
   await ensureAdminPromotionReadiness(second);
   assert.equal(secondCalls,3,'a different client has an independent cache');
 });
@@ -195,7 +196,7 @@ test('admin operation readiness coalesces work and retries failed contracts',asy
   }};
   await assert.rejects(ensureDemoResetReadiness(retry),/temporary database failure/);
   assert.equal(await ensureDemoResetReadiness(retry),true);
-  assert.equal(attempts,8,'a failed route probe is evicted before retry');
+  assert.equal(attempts,9,'a failed route probe is evicted before retry');
 });
 
 test('demo write readiness rejects missing primary and unique conflict targets',async()=>{
@@ -231,6 +232,7 @@ test('all operation readiness contracts accept their canonical SQLite structures
       `CREATE TABLE pairing_participants (week_id INTEGER NOT NULL,user_id INTEGER NOT NULL,position INTEGER NOT NULL,source TEXT NOT NULL DEFAULT 'auth',created_at TEXT DEFAULT (datetime('now')),PRIMARY KEY(week_id,user_id))`,
       `CREATE TABLE session_completion_receipts (week_id INTEGER NOT NULL,pair_group_id INTEGER NOT NULL,user_id INTEGER NOT NULL,PRIMARY KEY(week_id,pair_group_id,user_id))`,
       `CREATE TABLE pair_meeting_links (week_id INTEGER NOT NULL,pair_group_id INTEGER NOT NULL,PRIMARY KEY(week_id,pair_group_id))`,
+      `CREATE TABLE pair_session_controls (week_id INTEGER NOT NULL,pair_group_id INTEGER NOT NULL,PRIMARY KEY(week_id,pair_group_id))`,
       `CREATE UNIQUE INDEX idx_pairing_weeks_week_label ON pairing_weeks(week_label)`,
     ],'write');
 

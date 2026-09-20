@@ -56,6 +56,11 @@ const LATER_TRIGGER_DIGESTS=new Map([
   ['trg_pairing_groups_meeting_link_guard','6521f4c1e3e6ef6a5e90b5142ee847502d45b91ebf696e585d3cc29cc41ec4ff'],
   ['trg_pairing_participants_meeting_link_update_guard','825ab87f33d6243b36373058a492377753b96aa8f86e0ed85812257627c741e7'],
   ['trg_pairing_participants_meeting_link_delete_guard','f0c541d8331ce2f55a4478cfa024d1707ddf351b6ab81efb80b693679d2801f3'],
+  ['trg_pair_session_controls_insert_guard','d840a0fee37729a241019fc27439830d7f7fd62e17a923c5ae264cb6a805add5'],
+  ['trg_pair_session_controls_update_guard','00567597d31480f3faca1c1531b94fe1f1b9047e24c427a4f3e8f62372747609'],
+  ['trg_pairing_groups_session_controls_invalidate','1acae7b562421cfffff40b88b7d92f0a3d9d4cf542c7981f5a0b6f96236afa23'],
+  ['trg_pairing_participants_session_controls_update_invalidate','5fdbfb3fbe20f5f49c0a76b9f38a0a7ed67a51bdae88a17ad6467182c000c242'],
+  ['trg_pairing_participants_session_controls_delete_invalidate','474386ae7dee046bba7a6f6607b87fec7d340f5bdb707636c839a829eb2d99c8'],
 ]);
 const REQUIRED_OBJECTS=new Set([...REQUIRED_TABLES,...REQUIRED_INDEXES]);
 

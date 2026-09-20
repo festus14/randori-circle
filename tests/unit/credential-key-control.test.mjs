@@ -116,7 +116,7 @@ test('a managed v14 restore advances to explicit uninitialized controls',async()
   assert.equal(before.currentVersion,14);
   const upgraded=await applyMigrations(db,{expectedStateFingerprint:before.stateFingerprint,
     retry:NO_RETRY});
-  assert.deepEqual(upgraded.applied.map(migration=>migration.version),[15,16,17,18]);
+  assert.deepEqual(upgraded.applied.map(migration=>migration.version),[15,16,17,18,19]);
   const controls=await inspectCredentialKeyControlReadiness(db);
   assert.deepEqual({ok:controls.ok,initialized:controls.initialized,total:controls.total,
     blockers:controls.blockers},{ok:true,initialized:0,total:4,blockers:[]});
