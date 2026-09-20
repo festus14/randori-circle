@@ -300,6 +300,30 @@ test('a backward wall-clock adjustment cannot extend the monotonic API budget',a
   assert.equal(result.pagesScanned,1);
 });
 
+test('the CLI path preserves its monotonic budget across a backward wall-clock adjustment',async()=>{
+  const wallTicks=[NOW,NOW-60*60*1000];
+  const monotonicTicks=[100,100,6100,6100,10100];
+  const delays=[];
+  let calls=0;
+  let output='';
+  const execution=await main({argv:[],environment:environment({
+    WATCHDOG_API_TIMEOUT_MS:'10000',WATCHDOG_MAX_PAGES:'2',WATCHDOG_PER_PAGE:'1',
+  }),
+  fetchImpl:async()=>{
+    calls+=1;
+    return response({total_count:3,workflow_runs:[run({id:300+calls})]});
+  },
+  clock:()=>wallTicks.shift()??NOW-60*60*1000,
+  monotonicClock:()=>monotonicTicks.shift()??10100,
+  setTimer:(_callback,delay)=>{ delays.push(delay); return delay; },
+  clearTimer:()=>{},stdout:{write(value){ output+=value; }}});
+  assert.equal(calls,2);
+  assert.deepEqual(delays,[10000,4000]);
+  assert.equal(execution.exitCode,1);
+  assert.equal(execution.result.category,'api_failure');
+  assert.deepEqual(JSON.parse(output),execution.result);
+});
+
 test('CLI emits one bounded document and fails only alert outcomes',async()=>{
   let healthyOutput='';
   const healthy=await main({argv:[],environment:environment(),clock:()=>NOW,

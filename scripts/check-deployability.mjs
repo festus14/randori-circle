@@ -7,7 +7,7 @@ const OUTBOX_WORKFLOW_PATH='.github/workflows/outbox-dispatch.yml';
 const OUTBOX_WATCHDOG_WORKFLOW_PATH='.github/workflows/outbox-dispatch-watchdog.yml';
 const OUTBOX_WATCHDOG_SCRIPT_PATH='scripts/github-outbox-dispatch-watchdog.mjs';
 const OUTBOX_WATCHDOG_WORKFLOW_SHA256='7f0a1134ee921afd1a67eea627de2bb786c2a941e3ecdaf267aefc652cb2442d';
-const OUTBOX_WATCHDOG_SCRIPT_SHA256='3a9c703e75048b9c30ed185e295a369e81d151be954e85a5e08001e83426ae02';
+const OUTBOX_WATCHDOG_SCRIPT_SHA256='01eecb04b859e364e824708a12f3f2aea91751cb438954ebc90999328b4f2bc8';
 const REQUIRED_ROOT_FILES = [
   'index.html', 'package-lock.json', 'package.json', 'vercel.json', OUTBOX_WORKFLOW_PATH,
   OUTBOX_WATCHDOG_WORKFLOW_PATH, OUTBOX_WATCHDOG_SCRIPT_PATH,

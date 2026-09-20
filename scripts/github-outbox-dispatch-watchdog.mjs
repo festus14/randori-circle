@@ -299,7 +299,7 @@ export async function discoverOutboxDispatchStatus(environment,{fetchImpl=fetch,
 
 export async function main({argv=process.argv.slice(2),environment=process.env,stdout=process.stdout,
   fetchImpl=fetch,clock=Date.now,setTimer=setTimeout,clearTimer=clearTimeout,
-  monotonicClock=Date.now}={}){
+  monotonicClock=()=>performance.now()}={}){
   let result;
   try{
     if(argv.length!==0) throw new TypeError('watchdog usage is invalid');
