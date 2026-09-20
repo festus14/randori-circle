@@ -38,9 +38,7 @@ function positiveId(value,code='PAIRING_PUBLICATION_INPUT_INVALID'){
 }
 
 function normalizeParticipants(value){
-  if(!Array.isArray(value)||value.length<1){
-    fail('PAIRING_PUBLICATION_NO_PARTICIPANTS','At least one eligible participant is required.');
-  }
+  if(!Array.isArray(value)) fail('PAIRING_PUBLICATION_INPUT_INVALID','Pairing publication input is invalid.');
   const seen=new Set();
   const participants=value.map(participant=>{
     if(!participant||typeof participant!=='object'||Array.isArray(participant)){
@@ -168,7 +166,7 @@ function freezePublication({cycle,run,participants,groups}){
 function validateCompletePublication({cycle,run,weeks,participants,groups}){
   if(!Number.isSafeInteger(Number(run.week_id))||Number(run.week_id)<1
     ||!Number.isSafeInteger(Number(run.generation))||Number(run.generation)<1
-    ||!Number.isSafeInteger(Number(run.participant_count))||Number(run.participant_count)<1
+    ||!Number.isSafeInteger(Number(run.participant_count))||Number(run.participant_count)<0
     ||!String(run.generation_token||'')||!String(run.algorithm_version||'')
     ||!String(run.algorithm_seed||'')||!String(run.created_at||'')){
     fail('PAIRING_PUBLICATION_INTEGRITY','Stored pairing publication is incomplete.');

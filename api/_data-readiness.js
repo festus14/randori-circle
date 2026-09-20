@@ -86,7 +86,8 @@ async function probeMyPairSchema(db){
   await db.execute(`SELECT week_label,week_id,generation_token,generation,algorithm_version,
     algorithm_seed,participant_count,participants_json,created_at
     FROM pairing_week_runs LIMIT 0`);
-  await db.execute(`SELECT week_id,user_id,kind FROM pairing_email_outbox LIMIT 0`);
+  await db.execute(`SELECT event_type,event_version,idempotency_key,payload_json
+    FROM outbox_events LIMIT 0`);
   await db.execute(`SELECT id,week_id,pair_group_id,proposed_times,agreed_time,updated_at
     FROM pair_schedules LIMIT 0`);
   return true;

@@ -2,8 +2,8 @@ export const DEFAULT_PAIRING_TIME_ZONE='Europe/London';
 
 const BOUNDARY_HOUR=8;
 const DAY_MILLISECONDS=24*60*60*1000;
-const CRON_UTC_HOUR=8;
-const CRON_WINDOW_MILLISECONDS=2*60*60*1000;
+const CRON_UTC_START_MILLISECONDS=8*60*60*1000;
+const CRON_UTC_END_MILLISECONDS=10*60*60*1000;
 const formatters=new Map();
 
 function validInstant(value){
@@ -141,9 +141,9 @@ export function resolvePairingCycle(options={}){
 
 /**
  * Vercel Hobby permits one invocation per day, so the scheduler fires at
- * 08:00 UTC. That is the cycle boundary in GMT and one hour after it in BST.
- * The accepted UTC hour and post-boundary window cover both offsets without
- * allowing a pre-cutoff publication.
+ * Sunday 08:00 UTC. That is the cycle boundary in GMT and one hour after it in
+ * BST. The explicit half-open Sunday [08:00, 10:00) UTC admission window gives
+ * the scheduler one bounded retry hour without admitting another weekday.
  */
 export function pairingCronIsDue(options={}){
   if(!options||typeof options!=='object'||Array.isArray(options)){
@@ -152,7 +152,10 @@ export function pairingCronIsDue(options={}){
   const now=validInstant(options.now===undefined?new Date():options.now);
   const cycle=resolvePairingCycle({now,timeZone:options.timeZone});
   const startsAt=Date.parse(cycle.startsAt);
-  return now.getUTCHours()===CRON_UTC_HOUR
-    &&now.getTime()>=startsAt
-    &&now.getTime()<startsAt+CRON_WINDOW_MILLISECONDS;
+  const utcMilliseconds=(now.getUTCHours()*60*60*1000)
+    +(now.getUTCMinutes()*60*1000)+(now.getUTCSeconds()*1000)+now.getUTCMilliseconds();
+  return now.getUTCDay()===0
+    &&utcMilliseconds>=CRON_UTC_START_MILLISECONDS
+    &&utcMilliseconds<CRON_UTC_END_MILLISECONDS
+    &&now.getTime()>=startsAt;
 }

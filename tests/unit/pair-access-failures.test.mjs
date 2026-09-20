@@ -45,6 +45,9 @@ function sqlText(statement){
 }
 
 function currentPairingFixture(sql){
+  if(sql.includes("strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc")){
+    return rows([{now_utc:new Date().toISOString()}]);
+  }
   const cycle=resolvePairingCycle();
   const cycleId=cycle.cycleId;
   const startsAt=cycle.startsAt;
