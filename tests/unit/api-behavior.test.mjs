@@ -2975,6 +2975,41 @@ test('admin operations authorize before readiness and perform no schema writes',
   }
 });
 
+test('admin operations reject anonymous callers before database access',async()=>{
+  const cases=[
+    {url:'/api/admin/reshuffle',endpoint:'reshuffle',body:{action:'promote',email:'target@example.test'}},
+    {url:'/api/demo-seed',endpoint:'demo-seed'},
+    {url:'/api/demo-shuffle',endpoint:'demo-shuffle'},
+    {url:'/api/demo-reset',endpoint:'demo-reset'},
+  ];
+  for(const item of cases){
+    getClientCalls=0;
+    executed.length=0;
+    const unauthorized=await invoke(opsHandler,{
+      method:'POST',url:item.url,query:{endpoint:item.endpoint},body:item.body,
+    });
+    assert.equal(unauthorized.status,401,item.endpoint);
+    assert.equal(getClientCalls,0,`${item.endpoint} must authenticate before opening a database`);
+    assert.equal(executed.length,0,item.endpoint);
+  }
+});
+
+test('administrator lookup failures are unavailable rather than false authorization denials',async()=>{
+  executeHandler=sql=>{
+    if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')){
+      throw new Error('private database detail');
+    }
+    return rows();
+  };
+  const unavailable=await invoke(opsHandler,{
+    method:'POST',url:'/api/demo-reset',query:{endpoint:'demo-reset'},headers:{'x-test-auth':'admin'},
+  });
+  assert.equal(unavailable.status,503);
+  assert.deepEqual(unavailable.body,{error:'admin operation unavailable'});
+  assert.equal(executed.length,1);
+  assert.equal(executed.some(call=>/^\s*(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE)\b/iu.test(call.sql)),false);
+});
+
 test('admin operation readiness failures are generic and precede every data mutation',async()=>{
   const cases=[
     {url:'/api/admin/reshuffle',endpoint:'reshuffle',body:{action:'promote',email:'target@example.test'}},
@@ -3089,6 +3124,38 @@ test('admin and demo operations run against a fully migrated SQLite database wit
     db=createMockDb();
     client.close();
     rmSync(directory,{recursive:true,force:true});
+  }
+});
+
+test('a stale real SQLite demo schema fails before creating any demo data',async()=>{
+  const client=createClient({url:'file::memory:'});
+  try{
+    await client.execute(`CREATE TABLE auth_accounts
+      (id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,
+       display_name TEXT NOT NULL,color TEXT NOT NULL,is_available INTEGER DEFAULT 1,
+       is_admin INTEGER DEFAULT 0,is_demo INTEGER DEFAULT 0)`);
+    await client.execute(`INSERT INTO auth_accounts
+      (id,email,password_hash,display_name,color,is_available,is_admin,is_demo)
+      VALUES (1,'admin@example.test','hash','Admin','#111111',1,1,0)`);
+    const before=await client.execute(`SELECT type,name,sql FROM sqlite_schema
+      WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name`);
+    db=client;
+
+    const unavailable=await invoke(opsHandler,{
+      method:'POST',url:'/api/demo-shuffle',query:{endpoint:'demo-shuffle'},headers:{'x-test-auth':'admin'},
+    });
+    assert.equal(unavailable.status,503);
+    assert.deepEqual(unavailable.body,{error:'admin operation unavailable'});
+    const accounts=await client.execute(`SELECT id,email,is_demo FROM auth_accounts ORDER BY id`);
+    assert.deepEqual(accounts.rows.map(row=>({id:Number(row.id),email:String(row.email),is_demo:Number(row.is_demo)})),[
+      {id:1,email:'admin@example.test',is_demo:0},
+    ]);
+    const after=await client.execute(`SELECT type,name,sql FROM sqlite_schema
+      WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name`);
+    assert.deepEqual(after.rows,before.rows,'request failure must not repair or otherwise mutate schema');
+  }finally{
+    db=createMockDb();
+    client.close();
   }
 });
 
