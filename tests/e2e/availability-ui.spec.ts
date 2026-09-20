@@ -268,9 +268,9 @@ test('an availability change queued during same-account revalidation uses the re
 
   const toggle = page.locator('#availToggle');
   await expect(toggle).toBeChecked();
-  // Wait for all three scheduled bootstrap identity refreshes so this test
-  // controls the only revalidation that can overlap the user intent.
-  await expect.poll(() => authMeCalls).toBeGreaterThanOrEqual(3);
+  // Wait for authoritative hydration, which suppresses the remaining
+  // bootstrap retries, before controlling the overlapping revalidation.
+  await expect.poll(() => authMeCalls).toBeGreaterThanOrEqual(1);
   await page.evaluate(async () => {
     const app = window as typeof window & {
       _randori_auth?: { refreshMe?: () => Promise<unknown> };
@@ -348,9 +348,9 @@ for (const scenario of [
 
     const toggle = page.locator('#availToggle');
     await expect(toggle).toBeChecked();
-    // Remove bootstrap identity refreshes from this conflict-contract test;
-    // overlap behavior is covered explicitly above.
-    await expect.poll(() => authMeCalls).toBeGreaterThanOrEqual(3);
+    // Authoritative hydration suppresses later bootstrap retries; overlap
+    // behavior is covered explicitly above.
+    await expect.poll(() => authMeCalls).toBeGreaterThanOrEqual(1);
     await page.evaluate(async () => {
       const app = window as typeof window & {
         _randori_auth?: { refreshMe?: () => Promise<unknown> };
@@ -502,7 +502,7 @@ test('repeated context errors perform one automatic reload and then stabilize',a
     await firstAvailabilityStarted;
     releaseFirstAvailability();
     await expect.poll(()=>availabilityRequests).toBeGreaterThanOrEqual(2);
-    await expect.poll(()=>authRequests).toBeGreaterThanOrEqual(3);
+    await expect.poll(()=>authRequests).toBeGreaterThanOrEqual(1);
     await expect(page.locator('#availLabel')).toHaveText('UNAVAILABLE');
     await expect(page.locator('#availExplan')).toContainText('Circle context changed again');
     await page.waitForTimeout(250);
