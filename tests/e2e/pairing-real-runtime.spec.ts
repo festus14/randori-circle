@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -13,6 +13,7 @@ import {
   resolveLocalServerConfig,
   startLocalDevelopmentServer,
 } from '../../scripts/local-server.mjs';
+import {expectInviteGateLoaded,stageRealRuntimeClient} from './real-runtime-fixture';
 
 const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url));
 const silentLogger = Object.freeze({ log() {}, error() {} });
@@ -25,7 +26,7 @@ type Cycle = { cycleId: string; startsAt: string; endsAt: string; cutoffAt: stri
 function createRuntimeFixture() {
   const rootDir = realpathSync(mkdtempSync(join(tmpdir(), 'randori-real-browser-')));
   mkdirSync(join(rootDir, '.local'), { mode: 0o700 });
-  copyFileSync(join(repositoryRoot, 'index.html'), join(rootDir, 'index.html'));
+  stageRealRuntimeClient(repositoryRoot, rootDir);
   const databaseUrl = pathToFileURL(join(rootDir, '.local', 'randori.sqlite')).href;
   const config = resolveLocalServerConfig({
     rootDir,
@@ -83,6 +84,7 @@ async function refreshAuthenticatedState(page: Page) {
 
 async function signInOwner(page: Page, baseUrl: string) {
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+  await expectInviteGateLoaded(page);
   await page.locator('#landingSignin').click();
   await expect(page.getByRole('dialog', { name: 'Sign in to Randori' })).toBeVisible();
   await page.locator('#authEmail').fill(LOCAL_OWNER_EMAIL);

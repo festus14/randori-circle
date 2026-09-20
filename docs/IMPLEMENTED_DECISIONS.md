@@ -1929,6 +1929,60 @@ only, but restoring unbound behavior reopens the race. The exact protocol,
 invariants, tests, and operational guidance are in
 [`AUTH_CLAIM_BINDING.md`](AUTH_CLAIM_BINDING.md).
 
+## ID-45: Bind account-creation UI to one live prepared invitation
+
+Status: accepted client increment; depends on the server binding and OAuth
+purpose contract in issue #186.
+
+**Decision.** Outside the isolated `local_open` runtime, the browser advertises
+and submits account creation only while the current tab holds one exact live
+prepared-invitation generation. Preparation returns an opaque, non-identifying
+binding and a server-bounded lifetime no longer than ten minutes. The browser
+keeps only that binding in session storage for `/invite` reload recovery and
+uses a monotonic deadline anchored before the prepare request, so neither a
+wall-clock change nor request latency can extend eligibility.
+Raw invitation bearers remain fragment-only and are scrubbed before any
+third-party script can run.
+
+Password signup, activation resend, and invite-purpose Google start carry the
+exact binding. Every operation is fenced by the invite generation and deadline,
+authentication epoch and actor, modal generation, and its own abortable request
+identity. Those values are rechecked after every network await, so expiry,
+identity change, modal reuse, or a replacement preparation makes a delayed
+response inert. Ordinary password/Google sign-in, OAuth result refresh, valid
+local signup, and existing-member flows remain available independently.
+Invite OAuth cancellation and failure return to `/invite`, refresh the same
+binding, and preserve invite-purpose retry. Enumeration-safe signup and resend
+successes remain conditional rather than claiming that mail was sent.
+Initial session hydration preserves the prepared gate for an existing member,
+but invite-bound controls stay disabled until `/api/auth/me` authoritatively
+returns `200` or `401`; rejected or already-expired preparation clears the
+tab-stored binding.
+An invite OAuth error with unavailable identity hydration remains on the inert
+invite landing without a provider retry, so only an explicit ordinary sign-in
+can choose login purpose.
+
+The client is not authorization. Issue #186 owns the signed HttpOnly claim,
+binding comparison, explicit Google `login` versus `invite` purpose, and
+transaction-time invitation validation. That contract is required before this
+increment can land because browser-only generations cannot control shared
+cookie ordering across overlapping documents or tabs.
+
+**Alternatives.** Trusting only a prepared cookie leaves the UI unable to bind a
+submit to the invitation the user saw. Retaining the bearer in browser storage
+increases disclosure risk. A wall-clock timer can be extended by clock changes.
+Hiding the entry point entirely removes useful recovery guidance. Conflating
+Google login and invite creation lets stale ambient state change authentication
+semantics. These alternatives are rejected in favor of opaque exact binding,
+monotonic expiry, a disabled action with guidance, and explicit OAuth purpose.
+
+**Rollout and recovery.** Rebase and land only after #186, then canary existing
+sign-in, both invited signup methods, reload, expiry, modal reuse, and
+out-of-order preparation. This increment changes no schema, secret, or
+production data. If account creation must be stopped, disable its server
+capability while rolling forward; do not weaken the server binding. The full
+contract and test matrix are documented in `INVITE_GATED_SIGNUP.md`.
+
 ## ID-46: Quiesce bootstrap identity refreshes before the circle-switch race
 
 Status: implemented as a test-only reliability increment with no production or
