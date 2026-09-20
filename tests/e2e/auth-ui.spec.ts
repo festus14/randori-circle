@@ -315,7 +315,7 @@ test('invite expiry aborts an in-flight signup and fences its delayed success re
   await page.clock.install();
   await mockApi(page,{
     '/api/auth/capabilities':verifiedInviteCapabilities,
-    '/api/invitations/prepare':{ok:true,binding:inviteBinding,expires_in_seconds:1},
+    '/api/invitations/prepare':{ok:true,binding:inviteBinding,expires_in_seconds:60},
     '/api/auth/signup':async()=>{
       signupCalls+=1;
       await signupGate;
@@ -334,7 +334,7 @@ test('invite expiry aborts an in-flight signup and fences its delayed success re
   await expect.poll(()=>signupCalls).toBe(1);
   await expect(page.locator('#authForm')).toHaveAttribute('aria-busy','true');
 
-  await page.clock.fastForward(1_100);
+  await page.clock.fastForward(60_100);
   await expect(page.getByTestId('invite-status')).toContainText('expired');
   await expect(page.locator('#authForm')).toHaveAttribute('aria-busy','false');
   await expect(page.locator('#authSignup')).toBeHidden();
