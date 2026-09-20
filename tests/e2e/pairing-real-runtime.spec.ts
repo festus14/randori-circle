@@ -924,7 +924,11 @@ test('two invited members complete the durable local session journey', async ({ 
       body: {
         ok: true,
         room_id: ownerRoom,
-        runs: [expect.objectContaining({id: execution.run_id, authoritative: true, runner: {id: owner.id}})],
+        runs: [expect.objectContaining({
+          id: execution.run_id,
+          authoritative: true,
+          runner: expect.objectContaining({id: owner.id}),
+        })],
       },
     });
     const recoveredRecap = await browserJson(pages[0], recapPath);
