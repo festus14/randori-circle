@@ -689,9 +689,9 @@ test('two invited members complete the durable local session journey', async ({ 
       await expect.poll(() => page.evaluate(() => (
         window as typeof window & {_randori_workspace?: {hydrated?: boolean}}
       )._randori_workspace?.hydrated)).toBe(true);
-      await expect.poll(() => page.evaluate(() => (
-        window as typeof window & {_randori_code?: {getCode?: () => string}}
-      )._randori_code?.getCode?.())).toBe(correctCode);
+      await expect(page.locator('#editor')).toBeVisible();
+      await expect(page.locator('#editor')).toHaveValue(correctCode);
+      await expect(page.locator('#questionSelect')).toHaveValue('focus-block-rollup');
       await expect.poll(() => page.evaluate(() => JSON.parse(JSON.stringify((
         window as typeof window & {_randori_board?: {shapes?: unknown[]}}
       )._randori_board?.shapes || [])))).toEqual(finalBoard.shapes);
@@ -951,9 +951,9 @@ test('two invited members complete the durable local session journey', async ({ 
     await expect.poll(() => pages[0].evaluate(() => (
       window as typeof window & {_randori_workspace?: {hydrated?: boolean}}
     )._randori_workspace?.hydrated)).toBe(true);
-    await expect.poll(() => pages[0].evaluate(() => (
-      window as typeof window & {_randori_code?: {getCode?: () => string}}
-    )._randori_code?.getCode?.())).toBe(correctCode);
+    await expect(pages[0].locator('#editor')).toBeVisible();
+    await expect(pages[0].locator('#editor')).toHaveValue(correctCode);
+    await expect(pages[0].locator('#questionSelect')).toHaveValue('focus-block-rollup');
     await expect.poll(() => pages[0].evaluate(() => JSON.parse(JSON.stringify((
       window as typeof window & {_randori_board?: {shapes?: unknown[]}}
     )._randori_board?.shapes || [])))).toEqual(finalBoard.shapes);
