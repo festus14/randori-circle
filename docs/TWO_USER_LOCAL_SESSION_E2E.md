@@ -48,6 +48,29 @@ The runtime SQL observer covers all API requests before and after restart and
 must observe zero `CREATE`, `ALTER`, or `DROP` statements. Migration DDL remains
 startup-only.
 
+Before its explicit workspace writes, the test asks the authenticated catalogue
+to reach its loaded state and observes the workspace module's own lifecycle. An
+inactive workspace is an explicit clean no-op. An active workspace must complete
+its flush successfully; a false flush result remains a failure. The subsequent
+server read fixes the exact durable revision used for the stale-write conflict,
+bounded retry, recap, and restart assertions.
+
+## Design choices and alternatives
+
+| Choice | Why it is the default | Alternative considered | Tradeoff |
+| --- | --- | --- | --- |
+| Real loopback HTTP handlers and a file-backed migrated database | Proves the same auth, transaction, scoping, and server-lifecycle boundaries used by the local product | Mock the API | Faster and more targeted, but cannot prove the complete user journey or durable recovery |
+| Create happy-path setup and user state through product endpoints | Proves invitation, authentication, onboarding, and setup transitions produce a usable state. Direct database writes are limited to test-only fault injection, reminder-clock advancement, and post-restart membership revocation | Seed application rows directly | A seeded file database can prove later persistence and recovery more quickly, but skips setup boundaries and can construct states the product cannot reach |
+| Three isolated browser contexts | Keeps the owner, invited partner, and unpaired member cookies and client state independent | Switch accounts in one context or call every endpoint from Node | Uses more browser memory, but catches session and browser-state leakage that direct API tests miss |
+| Production execution envelope with a process-local deterministic transport | Exercises validation, lease, harness, result parsing, persistence, and the run feed while blocking and recording all current browser HTTP(S) and server `fetch` egress | Call Piston, fake `/api/execute`, or add a production runtime flag | A live provider is nondeterministic and leaks network; faking the route skips the boundary under test; a runtime flag would weaken production isolation. This is an application-transport assertion, not an operating-system network namespace |
+| One explicit compare-and-swap conflict and one retry | Proves stale-client recovery is bounded and uses the returned authoritative revision | Sleep-driven concurrent writes or an automatic retry loop | Timing races are flaky; an open-ended loop can hide a broken convergence contract |
+| Close and recreate the HTTP server and database client over the same files and secret | Proves persisted sessions and room data survive a complete server lifecycle inside the Playwright worker | Reload the page, spawn a second Node process, or create a new test-only recovery API | Reload proves browser hydration only; a separate process would additionally clear module caches but adds orchestration cost; a test-only API would not exercise startup and readiness |
+| Linux Actions is authoritative for Chromium | Uses the repository-pinned browser and dependencies in a reproducible host | Treat each developer's desktop Chromium as the gate | Desktop runs are useful diagnostics, but host policy and browser installation differences must not block a valid candidate |
+
+Focused API and browser suites remain the cheaper place for edge-case matrices.
+This journey intentionally proves one representative happy path plus the
+highest-value failure boundaries instead of duplicating every focused test.
+
 ## Running it
 
 ```bash
