@@ -6,10 +6,13 @@ import {
 } from './_active-circle.js';
 import { MAX_READINESS_SCHEMA_OBJECTS } from './_health.js';
 import {
+  assertFutureScheduleInstant,
   MAX_SCHEDULE_PROPOSALS,
   nextScheduleUpdatedAt,
   normalizeScheduleInstant,
+  readScheduleDatabaseNow,
   ScheduleInputError,
+  ScheduleTemporalError,
 } from './_schedule.js';
 import { LATEST_MIGRATION_VERSION, MIGRATION_CONTRACTS } from '../db/migration-contract.js';
 import {
@@ -433,12 +436,17 @@ export async function mutateSecondarySchedule(db,{authority,mutation}={}){
         return Object.freeze({conflict:true,response:responseEnvelope(scope,projectState(state,safeAuthority.userId))});
       }
       const next=nextMutation(state,mutation,safeAuthority.userId,scope);
+      const nowUtc=['propose','accept'].includes(mutation.action)
+        ?await readScheduleDatabaseNow(transaction):null;
+      if(nowUtc) assertFutureScheduleInstant(
+        mutation.action,mutation.action==='propose'?mutation.instant:next.agreedTime,nowUtc,
+      );
       if(!mutationChangesState(state,next)){
         commitStarted=true;
         await transaction.commit(); finished=true;
         return Object.freeze({conflict:false,response:responseEnvelope(scope,projectState(state,safeAuthority.userId))});
       }
-      const updatedAt=nextScheduleUpdatedAt(state.updatedAt);
+      const updatedAt=nextScheduleUpdatedAt(state.updatedAt,nowUtc?Date.parse(nowUtc):Date.now());
       let scheduleId=state.scheduleId;
       if(state.exists){
         const updated=await transaction.execute({
@@ -525,6 +533,9 @@ export async function mutateSecondarySchedule(db,{authority,mutation}={}){
 
 export function secondaryScheduleFailure(error,{contextVersion}={}){
   const context=contextVersion===undefined?{}:{circle_context_version:contextVersion};
+  if(error instanceof ScheduleTemporalError){
+    return {status:400,body:{ok:false,error:error.message,code:error.code,...context}};
+  }
   if(error instanceof ScheduleInputError){
     return {status:400,body:{ok:false,error:error.message,...context}};
   }

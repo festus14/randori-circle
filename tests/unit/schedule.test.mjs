@@ -6,14 +6,17 @@ import { afterEach, beforeEach, mock, test } from 'node:test';
 import { createClient } from '@libsql/client';
 import {
   applyScheduleMutation,
+  assertFutureScheduleInstant,
   MAX_SCHEDULE_PROPOSALS,
   nextScheduleUpdatedAt,
   normalizeScheduleInstant,
   parseScheduleMutation,
   projectSchedule,
+  readScheduleDatabaseNow,
   readScheduleState,
   ScheduleDataError,
   ScheduleInputError,
+  ScheduleTemporalError,
   scheduleVersion,
 } from '../../api/_schedule.js';
 
@@ -93,6 +96,10 @@ async function readyDatabase({withUnique=true,url='file::memory:'}={}){
     max_attempts INTEGER NOT NULL,delivery_timeout_ms INTEGER NOT NULL,created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`);
+  await db.execute(`CREATE TABLE app_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,level TEXT,source TEXT,event TEXT,message TEXT,
+    meta_json TEXT,user_id INTEGER,route TEXT,ua TEXT,ip TEXT,created_at TEXT
+  )`);
   return db;
 }
 
@@ -119,6 +126,30 @@ function tracedClient(delegate,calls){
   };
 }
 
+function databaseClockClient(delegate,readClock){
+  const execute=(target,statement)=>{
+    if(sqlText(statement).includes("strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc")){
+      const nowUtc=readClock();
+      if(nowUtc instanceof Error) throw nowUtc;
+      return Promise.resolve({rows:[{now_utc:nowUtc}],rowsAffected:0});
+    }
+    return target.execute(statement);
+  };
+  return {
+    execute:statement=>execute(delegate,statement),
+    batch:(statements,mode)=>delegate.batch(statements,mode),
+    async transaction(mode){
+      const transaction=await delegate.transaction(mode);
+      return {
+        execute:statement=>execute(transaction,statement),
+        batch:(statements,batchMode)=>transaction.batch(statements,batchMode),
+        commit:()=>transaction.commit(),rollback:()=>transaction.rollback(),close:()=>transaction.close?.(),
+      };
+    },
+    close:()=>delegate.close(),
+  };
+}
+
 beforeEach(()=>{
   currentDb=null;
   delete process.env.TURSO_DATABASE_URL;
@@ -139,6 +170,21 @@ test('strict RFC3339 instants normalize offsets and reject ambiguous or impossib
     '2026-09-20T08:00:00+24:00','2026-09-20 08:00:00Z','x'.repeat(81),42,null,
     '0000-01-01T00:00:00+23:59','9999-12-31T23:59:59-23:59',
   ]) assert.equal(normalizeScheduleInstant(invalid),null,String(invalid));
+});
+
+test('database schedule time is strict and the actionable boundary is exclusive',async()=>{
+  const now='2098-09-20T08:00:00.000Z';
+  assert.equal(await readScheduleDatabaseNow({execute:async()=>({rows:[{now_utc:now}]})}),now);
+  await assert.rejects(()=>readScheduleDatabaseNow({execute:async()=>({rows:[{now_utc:'not-time'}]})}),ScheduleDataError);
+  await assert.rejects(()=>readScheduleDatabaseNow({execute:async()=>{ throw new Error('offline'); }}),ScheduleDataError);
+  for(const action of ['propose','accept']){
+    assert.throws(()=>assertFutureScheduleInstant(action,now,now),error=>
+      error instanceof ScheduleTemporalError&&error.code==='schedule_instant_elapsed'
+        &&error.reason===`${action}_elapsed`);
+    assert.doesNotThrow(()=>assertFutureScheduleInstant(action,'2098-09-20T08:00:00.001Z',now));
+  }
+  assert.doesNotThrow(()=>assertFutureScheduleInstant('remove',null,now));
+  assert.throws(()=>assertFutureScheduleInstant('propose','2098-09-20T08:00:00.001Z','bad'),ScheduleDataError);
 });
 
 test('projection preserves legacy values, hides raw storage, and derives stable opaque identifiers',()=>{
@@ -398,7 +444,7 @@ test('missing-row CAS permits one concurrent insert and returns the winning sche
   assert.deepEqual(initial.body.schedule.proposals,[]);
   const base=initial.body.schedule.version;
   gateReads=true;
-  const requests=['2026-09-20T08:00:00Z','2026-09-20T09:00:00Z'].map(instant=>invoke({
+  const requests=['2098-09-20T08:00:00Z','2098-09-20T09:00:00Z'].map(instant=>invoke({
     method:'POST',body:{room_id:'week_10_pair_20',action:'propose',base_version:base,instant},
   }));
   const responses=await Promise.all(requests);
@@ -473,7 +519,7 @@ test('existing-row raw CAS rejects a concurrent stale writer without losing lega
   const [first,second]=await Promise.all([
     invoke({method:'POST',body:{
       room_id:'week_10_pair_20',action:'propose',base_version:initial.body.schedule.version,
-      instant:'2026-09-20T08:00:00Z',
+      instant:'2098-09-20T08:00:00Z',
     }}),
     invoke({method:'POST',body:{
       room_id:'week_10_pair_20',action:'remove',base_version:initial.body.schedule.version,proposal_id:legacyId,
@@ -521,6 +567,99 @@ test('schedule mutation and notification intent commit or roll back together',as
   assert.equal(JSON.stringify(queued).includes('@'),false);
   db.close(); currentDb=null;
   rmSync(directory,{recursive:true,force:true});
+});
+
+test('primary schedule rejects elapsed writes by transaction time without schedule or outbox effects',async()=>{
+  const directory=mkdtempSync(join(tmpdir(),'randori-schedule-expiry-'));
+  const delegate=await readyDatabase({url:`file:${join(directory,'schedule.sqlite')}`});
+  let databaseNow='2098-09-20T08:00:00.000Z';
+  currentDb=databaseClockClient(delegate,()=>databaseNow);
+  try{
+    const initial=await invoke({
+      url:'/api/schedule?room_id=week_10_pair_20',query:{endpoint:'schedule',room_id:'week_10_pair_20'},
+    });
+    const atBoundary=await invoke({method:'POST',body:{
+      room_id:'week_10_pair_20',action:'propose',base_version:initial.body.schedule.version,
+      instant:databaseNow,
+    }});
+    assert.equal(atBoundary.status,400);
+    assert.equal(atBoundary.body.code,'schedule_instant_elapsed');
+    assert.equal(Number((await delegate.execute('SELECT COUNT(*) AS count FROM pair_schedules')).rows[0].count),0);
+    assert.equal(Number((await delegate.execute('SELECT COUNT(*) AS count FROM outbox_events')).rows[0].count),0);
+
+    const justFuture='2098-09-20T08:00:00.001Z';
+    const proposed=await invoke({method:'POST',body:{
+      room_id:'week_10_pair_20',action:'propose',base_version:initial.body.schedule.version,
+      instant:justFuture,
+    }});
+    assert.equal(proposed.status,200);
+    const beforeRejectedAccept=(await delegate.execute(
+      'SELECT proposed_times,agreed_time,updated_at FROM pair_schedules',
+    )).rows[0];
+    databaseNow=justFuture;
+    const expiredAccept=await invoke({method:'POST',body:{
+      room_id:'week_10_pair_20',action:'accept',base_version:proposed.body.schedule.version,
+      proposal_id:proposed.body.schedule.proposals[0].proposal_id,
+    }});
+    assert.equal(expiredAccept.status,400);
+    assert.equal(expiredAccept.body.code,'schedule_instant_elapsed');
+    assert.deepEqual((await delegate.execute(
+      'SELECT proposed_times,agreed_time,updated_at FROM pair_schedules',
+    )).rows[0],beforeRejectedAccept);
+    assert.equal(Number((await delegate.execute('SELECT COUNT(*) AS count FROM outbox_events')).rows[0].count),1);
+
+    const stale=await invoke({method:'POST',body:{
+      room_id:'week_10_pair_20',action:'propose',base_version:initial.body.schedule.version,
+      instant:'2098-09-20T07:59:59.999Z',
+    }});
+    assert.equal(stale.status,409,'CAS is evaluated before temporal policy');
+
+    databaseNow='2098-09-20T08:00:00.000Z';
+    const accepted=await invoke({method:'POST',body:{
+      room_id:'week_10_pair_20',action:'accept',base_version:proposed.body.schedule.version,
+      proposal_id:proposed.body.schedule.proposals[0].proposal_id,
+    }});
+    assert.equal(accepted.status,200);
+    databaseNow='invalid';
+    const cleared=await invoke({method:'POST',body:{
+      room_id:'week_10_pair_20',action:'clear',base_version:accepted.body.schedule.version,
+    }});
+    assert.equal(cleared.status,200,'an elapsed stored agreement remains clearable without a clock read');
+    const removed=await invoke({method:'POST',body:{
+      room_id:'week_10_pair_20',action:'remove',base_version:cleared.body.schedule.version,
+      proposal_id:proposed.body.schedule.proposals[0].proposal_id,
+    }});
+    assert.equal(removed.status,200,'an elapsed stored proposal remains removable without a clock read');
+    const stableSchedule=(await delegate.execute(
+      'SELECT proposed_times,agreed_time,updated_at FROM pair_schedules',
+    )).rows[0];
+    const stableOutbox=Number((await delegate.execute(
+      'SELECT COUNT(*) AS count FROM outbox_events',
+    )).rows[0].count);
+    const invalidClock=await invoke({method:'POST',body:{
+      room_id:'week_10_pair_20',action:'propose',base_version:removed.body.schedule.version,
+      instant:'2098-09-20T09:00:00.000Z',
+    }});
+    assert.equal(invalidClock.status,503);
+    assert.deepEqual((await delegate.execute(
+      'SELECT proposed_times,agreed_time,updated_at FROM pair_schedules',
+    )).rows[0],stableSchedule);
+    assert.equal(Number((await delegate.execute('SELECT COUNT(*) AS count FROM outbox_events')).rows[0].count),stableOutbox);
+
+    const logs=(await delegate.execute(`SELECT event,message,meta_json,user_id,route,ua,ip
+      FROM app_logs ORDER BY id`)).rows;
+    assert.deepEqual(logs.map(row=>JSON.parse(String(row.meta_json))),[
+      {scope:'primary',reason:'propose_elapsed'},
+      {scope:'primary',reason:'accept_elapsed'},
+    ]);
+    assert.equal(logs.every(row=>row.event==='schedule_temporal_rejected'
+      &&row.message==='schedule mutation rejected by database time'
+      &&row.user_id==null&&row.route==null&&row.ua==null&&row.ip==null),true);
+    assert.equal(JSON.stringify(logs).includes('2098-09-20'),false);
+  }finally{
+    currentDb.close(); currentDb=null;
+    rmSync(directory,{recursive:true,force:true});
+  }
 });
 
 test('schema readiness coalesces probes and retries after missing table or unique constraint',async()=>{

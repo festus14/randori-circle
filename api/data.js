@@ -7,7 +7,18 @@ import { pairingPublicationState } from './_pairing-recovery.js';
 import { hasPrimaryUnavailableEvidence } from './_pairing-evidence.js';
 import { circlePairingFailure, readCirclePairing } from './_circle-pairing.js';
 import { authPairAccessArgs, authPairAccessSql, getAuthenticatedPairAccess } from './_pair-access.js';
-import { applyScheduleMutation, nextScheduleUpdatedAt, parseScheduleMutation, projectSchedule, readScheduleState, ScheduleDataError, ScheduleInputError } from './_schedule.js';
+import {
+  applyScheduleMutation,
+  assertFutureScheduleInstant,
+  nextScheduleUpdatedAt,
+  parseScheduleMutation,
+  projectSchedule,
+  readScheduleDatabaseNow,
+  readScheduleState,
+  ScheduleDataError,
+  ScheduleInputError,
+  ScheduleTemporalError,
+} from './_schedule.js';
 import {
   mutateSecondarySchedule,
   parseSecondaryScheduleMutation,
@@ -1280,6 +1291,13 @@ async function fetchAuthorizedScheduleState(db,accessArgs,weekId,pairId){
   return {authorized:true,state:readScheduleState(row)};
 }
 
+async function logScheduleTemporalRejection(scope,error){
+  if(!(error instanceof ScheduleTemporalError)) return;
+  await logServer('info','schedule_temporal_rejected','schedule mutation rejected by database time',{
+    scope:scope==='secondary'?'secondary':'primary',reason:error.reason,
+  },{source:'server',skipEnsure:true,skipSentry:true});
+}
+
 async function handleSchedule(req,res){
   if(req.method!=='GET' && req.method!=='POST') return res.status(405).json({error:'GET or POST only'});
   const payload=await getAuthPayload(req);
@@ -1306,6 +1324,7 @@ async function handleSchedule(req,res){
         return res.status(result.conflict?409:200).json(result.conflict
           ?{...result.response,error:'schedule changed'}:result.response);
       }catch(error){
+        try{ await logScheduleTemporalRejection('secondary',error); }catch{}
         const failure=secondaryScheduleFailure(error,{contextVersion:readerAccess.circleContextVersion});
         return res.status(failure.status).json(failure.body);
       }
@@ -1346,46 +1365,57 @@ async function handleSchedule(req,res){
   try{ await ensureScheduleReadiness(db); }
   catch{ return res.status(503).json({error:'schedule unavailable'}); }
 
-  let current;
-  try{
-    const fetched=await fetchAuthorizedScheduleState(db,accessArgs,room.weekId,room.pairGroupId);
-    if(!fetched.authorized) return res.status(404).json({error:'pair not found'});
-    current=fetched.state;
-  }
-  catch(error){
-    if(error instanceof ScheduleDataError) return res.status(503).json({error:'schedule unavailable'});
-    return res.status(503).json({error:'schedule unavailable'});
-  }
   if(req.method==='GET'){
-    return res.json({ok:true,room_id:room.roomId,schedule:projectSchedule(current)});
+    try{
+      const fetched=await fetchAuthorizedScheduleState(db,accessArgs,room.weekId,room.pairGroupId);
+      if(!fetched.authorized) return res.status(404).json({error:'pair not found'});
+      return res.json({ok:true,room_id:room.roomId,schedule:projectSchedule(fetched.state)});
+    }catch{
+      return res.status(503).json({error:'schedule unavailable'});
+    }
   }
-  if(mutation.baseVersion!==current.version){
-    return res.status(409).json({error:'schedule changed',room_id:room.roomId,schedule:projectSchedule(current)});
-  }
-
-  let nextValues;
-  try{ nextValues=applyScheduleMutation(current,mutation,userId); }
-  catch(error){
-    if(error instanceof ScheduleInputError) return res.status(400).json({error:error.message});
-    throw error;
-  }
-  const nextUpdatedAt=nextScheduleUpdatedAt(current.rawUpdatedAt);
 
   try{
-    const currentSchedule=projectSchedule(current);
-    const nextState=readScheduleState({
-      proposed_times:nextValues.proposedTimes,agreed_time:nextValues.agreedTime,updated_at:nextUpdatedAt,
-    });
-    const nextSchedule=projectSchedule(nextState);
-    const notifications=scheduleNotificationEvents({
-      weekId:room.weekId,pairGroupId:room.pairGroupId,actorUserId:userId,
-      participants:[accessRow.user_a_id,accessRow.user_b_id,accessRow.user_c_id],
-      mutation,currentSchedule,nextSchedule,
-    });
+    // The version, selected proposal, and database clock are resolved in the
+    // same write transaction. A proposal cannot cross the boundary between a
+    // preflight read and its compare-and-swap write.
     const transaction=await db.transaction('write');
     let finished=false;
-    let written;
     try{
+      const fetched=await fetchAuthorizedScheduleState(
+        transaction,accessArgs,room.weekId,room.pairGroupId,
+      );
+      if(!fetched.authorized){
+        await transaction.rollback(); finished=true;
+        return res.status(404).json({error:'pair not found'});
+      }
+      const current=fetched.state;
+      if(mutation.baseVersion!==current.version){
+        await transaction.rollback(); finished=true;
+        return res.status(409).json({
+          error:'schedule changed',room_id:room.roomId,schedule:projectSchedule(current),
+        });
+      }
+      const nextValues=applyScheduleMutation(current,mutation,userId);
+      const nowUtc=['propose','accept'].includes(mutation.action)
+        ?await readScheduleDatabaseNow(transaction):null;
+      if(nowUtc) assertFutureScheduleInstant(
+        mutation.action,mutation.action==='propose'?mutation.instant:nextValues.agreedTime,nowUtc,
+      );
+      const nextUpdatedAt=nextScheduleUpdatedAt(
+        current.rawUpdatedAt,nowUtc?Date.parse(nowUtc):Date.now(),
+      );
+      const currentSchedule=projectSchedule(current);
+      const nextState=readScheduleState({
+        proposed_times:nextValues.proposedTimes,agreed_time:nextValues.agreedTime,updated_at:nextUpdatedAt,
+      });
+      const nextSchedule=projectSchedule(nextState);
+      const notifications=scheduleNotificationEvents({
+        weekId:room.weekId,pairGroupId:room.pairGroupId,actorUserId:userId,
+        participants:[accessRow.user_a_id,accessRow.user_b_id,accessRow.user_c_id],
+        mutation,currentSchedule,nextSchedule,
+      });
+      let written;
       if(current.exists){
         written=await transaction.execute({
           sql:`UPDATE pair_schedules
@@ -1419,7 +1449,12 @@ async function handleSchedule(req,res){
       if(!finished){ try{ await transaction.rollback(); }catch{} }
       throw error;
     }finally{ try{ await transaction.close?.(); }catch{} }
-  }catch{
+  }catch(error){
+    if(error instanceof ScheduleTemporalError){
+      try{ await logScheduleTemporalRejection('primary',error); }catch{}
+      return res.status(400).json({error:error.message,code:error.code});
+    }
+    if(error instanceof ScheduleInputError) return res.status(400).json({error:error.message});
     return res.status(503).json({error:'schedule unavailable'});
   }
 }

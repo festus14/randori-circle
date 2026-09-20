@@ -4,10 +4,10 @@ import { mockApi } from './helpers';
 const roomA = 'week_42_pair_7';
 const roomB = 'week_43_pair_8';
 const testOrigin = `http://127.0.0.1:${Number(process.env.E2E_PORT || 4173)}`;
-const londonDraft = '2026-10-06T18:30';
-const londonInstant = '2026-10-06T17:30:00.000Z';
-const losAngelesDraft = '2026-10-06T18:30';
-const losAngelesInstant = '2026-10-07T01:30:00.000Z';
+const londonDraft = '2098-10-06T18:30';
+const londonInstant = '2098-10-06T17:30:00.000Z';
+const losAngelesDraft = '2098-10-06T18:30';
+const losAngelesInstant = '2098-10-07T01:30:00.000Z';
 
 type TestUser = {
   id: number;
@@ -113,6 +113,7 @@ class ScheduleStore {
   private readonly schedules = new Map<string, ScheduleSnapshot>();
   private revision = 0;
   private proposalSequence = 10_000;
+  private nextTemporalAction: string | null = null;
   private deferredGet: {
     room: string;
     response: Record<string, unknown> | null;
@@ -167,6 +168,10 @@ class ScheduleStore {
     const delivered = new Promise<void>(resolve => { markDelivered = resolve; });
     this.deferredPost = { userId, gate, markStarted, markDelivered };
     return { started, delivered, release };
+  }
+
+  rejectNextElapsed(action: 'propose' | 'accept') {
+    this.nextTemporalAction = action;
   }
 
   route = async (route: Route, user: TestUser, authorizedRoom: () => string) => {
@@ -242,6 +247,17 @@ class ScheduleStore {
           error: 'schedule changed',
           room_id: room,
           schedule: current,
+        });
+        return;
+      }
+      if (this.nextTemporalAction === action) {
+        this.nextTemporalAction = null;
+        await this.fulfill(route, {
+          _status: 400,
+          error: action === 'accept'
+            ? 'That proposal has elapsed. Remove it or choose a future time.'
+            : 'Choose a future time. That proposed time has elapsed.',
+          code: 'schedule_instant_elapsed',
         });
         return;
       }
@@ -523,12 +539,12 @@ test('accepted schedule exports privately at 320px, reschedules in place, and di
   const firstContent = await downloadText(firstDownload);
   expect(firstDownload.suggestedFilename()).toBe(`randori-${roomA}.ics`);
   expect(firstContent).toContain(`UID:${roomA}@calendar.randori-circle`);
-  expect(firstContent).toContain('DTSTART:20261006T173000Z');
-  expect(firstContent).toContain('DTEND:20261006T183000Z');
+  expect(firstContent).toContain('DTSTART:20981006T173000Z');
+  expect(firstContent).toContain('DTEND:20981006T183000Z');
   expect(firstContent).toContain(`URL:${testOrigin}/join/${roomA}`);
   expect(firstContent).not.toMatch(/candidate|example\.test|token|source code|private chat/i);
 
-  const rescheduledInstant = '2026-10-08T19:00:00.000Z';
+  const rescheduledInstant = '2098-10-08T19:00:00.000Z';
   store.seed(roomA, { agreed_time: rescheduledInstant, legacy_agreed_time: null });
   await refreshSchedule(page);
   await expect(page.getByTestId('schedule-area').locator(`time[datetime="${rescheduledInstant}"]`)).toHaveCount(1);
@@ -537,9 +553,9 @@ test('accepted schedule exports privately at 320px, reschedules in place, and di
   await page.getByTestId('schedule-calendar-export').click();
   const secondContent = await downloadText(await secondDownloadPromise);
   expect(secondContent).toContain(`UID:${roomA}@calendar.randori-circle`);
-  expect(secondContent).toContain('DTSTART:20261008T190000Z');
-  expect(secondContent).toContain('DTEND:20261008T200000Z');
-  expect(secondContent).not.toContain('DTSTART:20261006T173000Z');
+  expect(secondContent).toContain('DTSTART:20981008T190000Z');
+  expect(secondContent).toContain('DTEND:20981008T200000Z');
+  expect(secondContent).not.toContain('DTSTART:20981006T173000Z');
 
   await page.getByTestId('schedule-clear').click();
   await expect.poll(() => store.snapshot(roomA).agreed_time).toBeNull();
@@ -610,6 +626,95 @@ test('a nonexistent daylight-saving wall time is rejected without a schedule mut
     }));
     expect(store.postBodies).toHaveLength(0);
     await expect.poll(() => scheduleSnapshot(page)).toMatchObject({ proposals: [] });
+  } finally {
+    await context.close();
+  }
+});
+
+test('elapsed schedules stay recoverable and authoritative expiry errors refetch without crossing scope', async ({ browser }) => {
+  const store = new ScheduleStore([roomA, roomB]);
+  const elapsedInstant = '2025-10-26T01:30:00.000Z';
+  const elapsedProposalId = opaqueId(7_001);
+  store.seed(roomA, {
+    proposals: [{
+      proposal_id: elapsedProposalId,
+      value: elapsedInstant,
+      instant: elapsedInstant,
+      proposed_by: userB.id,
+      legacy: false,
+    }],
+    agreed_time: elapsedInstant,
+    legacy_agreed_time: null,
+  });
+  let authorizedRoom = roomA;
+  const context = await browser.newContext({ timezoneId: 'Europe/London' });
+  const page = await context.newPage();
+  try {
+    await openDashboard(page, userA, store, () => authorizedRoom);
+    const input = page.getByTestId('schedule-input');
+    await expect(input).toHaveAttribute('min', /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
+    await expect(input).toHaveAttribute('aria-describedby', /schedule-time-guidance.*schedule-expiry-error/);
+    await expect(page.getByTestId('schedule-expired-label')).toContainText(/expired.*remove.*future/i);
+    await expect(page.getByTestId('schedule-proposal').locator('time')).toHaveText(
+      await localDisplay(page, elapsedInstant),
+    );
+    await expect(page.getByTestId('schedule-accept')).toHaveCount(0);
+    await expect(page.getByTestId('schedule-remove')).toBeEnabled();
+    await expect(page.getByTestId('schedule-past-agreement')).toContainText(/past.*clear.*new time/i);
+    await expect(page.getByTestId('schedule-clear')).toBeEnabled();
+    await expect(page.getByTestId('schedule-calendar-export')).toHaveCount(0);
+
+    await page.getByTestId('schedule-remove').click();
+    await expect(page.getByTestId('schedule-proposal')).toHaveCount(0);
+    await page.getByTestId('schedule-clear').click();
+    await expect(page.getByTestId('schedule-past-agreement')).toHaveCount(0);
+
+    const getsBeforeProposal = store.getRequests.length;
+    store.rejectNextElapsed('propose');
+    await input.fill('2098-10-06T18:30');
+    await page.getByTestId('schedule-propose').click();
+    const error = page.getByTestId('schedule-expiry-error');
+    await expect(error).toBeVisible();
+    await expect(error).toHaveAttribute('role', 'alert');
+    await expect(error).toContainText(/already passed.*future/i);
+    await expect(page.getByTestId('schedule-input')).toHaveValue('2098-10-06T18:30');
+    await expect(page.getByTestId('schedule-input')).toHaveAttribute('aria-invalid','true');
+    await expect.poll(() => store.getRequests.length).toBeGreaterThan(getsBeforeProposal);
+    await page.getByTestId('schedule-input').fill('2098-10-06T18:31');
+    await expect(error).toBeHidden();
+    await expect(page.getByTestId('schedule-input')).not.toHaveAttribute('aria-invalid','true');
+
+    const futureInstant = '2098-10-06T17:30:00.000Z';
+    store.seed(roomA, {
+      proposals: [{
+        proposal_id: opaqueId(7_002),value: futureInstant,instant: futureInstant,
+        proposed_by: userB.id,legacy: false,
+      }],
+      agreed_time: null,
+      legacy_agreed_time: null,
+    });
+    await refreshSchedule(page);
+    store.rejectNextElapsed('accept');
+    await page.getByTestId('schedule-accept').click();
+    await expect(error).toBeVisible();
+    await expect(error).toContainText(/expired before.*remove.*future/i);
+    await expect(error).toBeFocused();
+
+    await page.getByTestId('schedule-input').fill('2098-10-06T18:32');
+    store.rejectNextElapsed('propose');
+    const delayed = store.deferNextPost(userA.id);
+    await page.getByTestId('schedule-propose').click();
+    await delayed.started;
+    authorizedRoom = roomB;
+    await page.locator('[data-tab="pair"]').click();
+    await page.locator('.brand').click();
+    await waitForSchedule(page, roomB);
+    delayed.release();
+    await delayed.delivered;
+    await expect(page.getByTestId('schedule-expiry-error')).toBeHidden();
+    await expect.poll(() => page.evaluate(() => (
+      window as typeof window & { _randori_schedule?: { room?: string | null } }
+    )._randori_schedule?.room ?? null)).toBe(roomB);
   } finally {
     await context.close();
   }
@@ -704,7 +809,7 @@ test('legacy values remain removable and stale polling cannot cross pair or dash
     agreed_time: null,
     legacy_agreed_time: legacyAgreement,
   });
-  const roomBInstant = '2026-10-08T19:00:00.000Z';
+  const roomBInstant = '2098-10-08T19:00:00.000Z';
   store.seed(roomB, {
     proposals: [{
       proposal_id: opaqueId(8_002),
