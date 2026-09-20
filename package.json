@@ -41,6 +41,7 @@
     "start:test": "node tests/support/static-server.mjs"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
     "@playwright/test": "^1.48.0",
     "acorn": "^8.15.0",
     "ms": "^2.1.3"

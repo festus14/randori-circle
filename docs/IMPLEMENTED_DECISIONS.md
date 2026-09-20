@@ -2010,10 +2010,67 @@ which response actually committed and could revive stale identity state.
 decision record. Revert it if the bootstrap schedule is replaced by a durable
 application-ready signal, then synchronize the race through that public signal.
 
+## ID-47: Evolve the existing shell through semantic, observable UI states
+
+Status: candidate presentation and test increment; no protocol or schema
+change.
+
+**Decision.** Extend the #122 shell in place after invite-gated signup rather
+than merging the superseded #91/#98 branches or beginning a framework rewrite.
+Canonical semantic color aliases now own canvas, surface, text, control,
+focus, information, success, warning, and danger roles; legacy names resolve
+through those aliases during incremental migration. Primary controls identify
+their stable view with `aria-controls`, each view identifies its label, and the
+Account menu closes on Escape, Tab, outside pointer interaction, or window blur
+without overriding the user's outside focus.
+
+The 320, 390, and 640 px layouts keep the shell, invitation/auth surfaces,
+active-circle selector, availability, and pairing content within the viewport.
+Coarse pointers receive at least 44 px targets. Reduced-motion removes
+nonessential timing, and forced-colors keeps control boundaries, focus, and
+status distinctions visible.
+
+UI copy follows observed state instead of implying product readiness. Public
+stats expose loading, ready, or unavailable; browser-tab coordination reports
+ready, local-only, or error and is not described as server persistence; email
+preferences expose loading, ready, saving, saved, local-only, or error. A saved
+preference is only a request for a future email and never claims provider
+delivery. Reminder controls remain disabled until identity hydration resolves;
+reads and writes accept only an explicit successful preference envelope bound
+to the captured positive account ID, and each save revalidates that identity
+before mutation. The dashboard's mail action is labelled as opening a draft.
+
+The official `@axe-core/playwright` wrapper is exact-pinned at 4.13.0 as a
+development-only dependency. Settled-state scans fail on every WCAG 2.0/2.1/2.2
+A/AA-tagged violation with no excluded rules or nodes. `incomplete` findings
+are retained as report attachments for manual review. Targeted tests remain
+authoritative for focus, keyboard interaction, reflow, coarse pointers,
+forced-colors, reduced motion, and asynchronous state transitions that axe
+cannot validate. Linux CI stores the focused 390 px screenshots with the
+Playwright artifacts.
+
+**Alternatives.** Cherry-picking #91/#98 would revive stale auth and navigation
+assumptions. A design-system or framework migration could improve long-term
+composition but would make this usability slice too broad. Raw `axe-core`
+saves roughly 47 KB unpacked but requires custom injection, typing, frame and
+shadow handling, and diagnostics. Axe alone cannot prove focus order, reflow,
+motion preferences, or truthful asynchronous copy. Static success badges and
+optimistic delivery language are simpler but misrepresent unavailable
+services. Blanket accessibility exclusions hide regressions and are rejected.
+
+**Rollout and recovery.** Land as one three-commit presentation slice after the
+invite-gated client. First canary anonymous invitation/sign-in, then signed-in
+circle selection, weekly pairing, reminder preference, and account-menu flows
+at desktop and narrow widths. No migration, secret, provider, or production
+data change is required. Rollback reverts this presentation slice as a unit;
+the #122 shell and #185 invitation fencing remain intact. If axe exposes an
+uncertain `incomplete` result, inspect the attached evidence rather than
+weakening the WCAG violation gate.
+
 ## ID-48: Separate routine availability fixtures from the production cutoff clock
 
 Status: candidate test-only reliability increment with no production or schema
-change. ID-47 is reserved for the UI release slice.
+change.
 
 **Decision.** Availability mutations retain both clocks that protect the cutoff:
 the injected request instant selects a cycle and SQLite checks its own current

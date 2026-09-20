@@ -1,4 +1,5 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+import { expect, test, type Locator, type Page, type TestInfo } from '@playwright/test';
 import { mockApi, resetClientState } from './helpers';
 
 const member = {
@@ -28,6 +29,25 @@ async function expectDocumentFitsViewport(page: Page) {
     innerWidth: window.innerWidth,
   }));
   expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.innerWidth);
+}
+
+async function expectWcagClean(page: Page, testInfo: TestInfo, name: string, scope: string) {
+  const results = await new AxeBuilder({ page })
+    .include(scope)
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
+    .analyze();
+  await testInfo.attach(`${name}-axe-incomplete`, {
+    body: Buffer.from(JSON.stringify(results.incomplete, null, 2)),
+    contentType: 'application/json',
+  });
+  expect(results.violations, `${name} WCAG violations`).toEqual([]);
+}
+
+async function attachUiScreenshot(page: Page, testInfo: TestInfo, name: string) {
+  await testInfo.attach(name, {
+    body: await page.screenshot({ fullPage: true }),
+    contentType: 'image/png',
+  });
 }
 
 async function renderedStatusContrast(page: Page) {
@@ -87,7 +107,7 @@ async function renderedControlBoundary(locator: Locator) {
   });
 }
 
-test('anonymous shell has landmarks, truthful copy, AA themes, and reduced motion', async ({ page }) => {
+test('anonymous shell has landmarks, truthful copy, AA themes, and reduced motion', async ({ page }, testInfo) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await mockApi(page);
   await resetClientState(page);
@@ -104,6 +124,8 @@ test('anonymous shell has landmarks, truthful copy, AA themes, and reduced motio
   await expect(page.locator('#landingSignup')).toHaveText('Use an invitation');
   await expect(page.locator('#view-landing')).toContainText('Invite-only private beta');
   await expect(page.locator('#view-landing')).toContainText('Private by default');
+  await expect(page.locator('#landingStats')).toHaveAttribute('data-state', 'ready');
+  await expect(page.locator('#landingStatsUpdated')).toHaveText('Updated just now');
   await expect(page.locator('#questionPanel')).toContainText('Approved original exercise catalogue');
   await expect(page.locator('#copyLinkBtn')).toHaveCount(0);
   await expect(page.locator('#vidScreenBtn')).toHaveCount(0);
@@ -137,6 +159,7 @@ test('anonymous shell has landmarks, truthful copy, AA themes, and reduced motio
     expect(boundary.interiorRatio).toBeGreaterThanOrEqual(3);
     expect(boundary.exteriorRatio).toBeGreaterThanOrEqual(3);
   }
+  await expectWcagClean(page, testInfo, 'signin-dialog', '#authDialog');
   await page.keyboard.press('Escape');
   await page.locator('#themeToggle').click();
   await expect(page.locator('html')).toHaveClass(/light/);
@@ -151,6 +174,7 @@ test('anonymous shell has landmarks, truthful copy, AA themes, and reduced motio
     expect(boundary.exteriorRatio).toBeGreaterThanOrEqual(3);
   }
   await page.keyboard.press('Escape');
+  await expectWcagClean(page, testInfo, 'anonymous-landing', '#view-landing');
 });
 
 test('account menu starts at the first visible enabled action and supports keyboard navigation', async ({ page }) => {
@@ -200,6 +224,12 @@ test('account menu starts at the first visible enabled action and supports keybo
   await expect(trigger).toBeVisible();
   await expect(trigger).toBeFocused();
   await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+
+  await page.keyboard.press('ArrowDown');
+  await expect(page.getByRole('menu')).toBeVisible();
+  await page.locator('#themeToggle').click();
+  await expect(page.getByRole('menu')).toBeHidden();
+  await expect(page.locator('#themeToggle')).toBeFocused();
 });
 
 test('view navigation is tabbable and arrow activation shows the matching panel', async ({ page }) => {
@@ -214,6 +244,8 @@ test('view navigation is tabbable and arrow activation shows the matching panel'
   const navigation = page.getByRole('navigation', { name: 'Primary navigation' });
   const circle = navigation.getByRole('button', { name: /Circle/ });
   const pairing = navigation.getByRole('button', { name: 'Pairing' });
+  await expect(circle).toHaveAttribute('aria-controls', 'view-circle');
+  await expect(pairing).toHaveAttribute('aria-controls', 'view-pair');
   await circle.focus();
   await page.keyboard.press('Tab');
   await expect(pairing).toBeFocused();
@@ -227,6 +259,17 @@ test('view navigation is tabbable and arrow activation shows the matching panel'
   expect(view).toBe('pair');
   await expect(page.locator(`#view-${view}`)).toBeVisible();
   await expect(page.locator('#view-circle')).toBeHidden();
+  const history = navigation.getByRole('button', { name: 'History' });
+  await history.focus();
+  await page.keyboard.press('Tab');
+  const pairingView = page.locator('#view-pair');
+  await expect(pairingView).toBeFocused();
+  const focusStyle = await pairingView.evaluate(element => {
+    const style = getComputedStyle(element);
+    return { style: style.outlineStyle, width: Number.parseFloat(style.outlineWidth) };
+  });
+  expect(focusStyle.style).not.toBe('none');
+  expect(focusStyle.width).toBeGreaterThanOrEqual(3);
 });
 
 test('an explicit early pointer navigation survives initial identity hydration', async ({ page }) => {
@@ -283,7 +326,7 @@ test('an explicit early keyboard navigation survives initial identity hydration'
   await expect(code).toHaveAttribute('aria-current', 'page');
 });
 
-test('shell and authentication remain inside 320px and 390px viewports', async ({ page }) => {
+test('shell and authentication remain inside 320px, 390px, and 640px viewports', async ({ page }, testInfo) => {
   await mockApi(page, {
     '/api/auth/capabilities': {
       ok: true,
@@ -293,7 +336,7 @@ test('shell and authentication remain inside 320px and 390px viewports', async (
   });
   await resetClientState(page);
 
-  for (const width of [320, 390]) {
+  for (const width of [320, 390, 640]) {
     await page.setViewportSize({ width, height: 720 });
     await page.goto('/', { waitUntil: 'domcontentloaded' });
     await expect(page.locator('#view-landing')).toBeVisible();
@@ -303,6 +346,7 @@ test('shell and authentication remain inside 320px and 390px viewports', async (
     await expectInsideViewport(page.locator('main#appMain'), width);
     await expectInsideViewport(page.locator('#view-landing .hero'), width);
     await expectDocumentFitsViewport(page);
+    if (width === 390) await attachUiScreenshot(page, testInfo, 'anonymous-landing-390');
     await page.locator('#landingSignin').click();
     const dialog = page.getByRole('dialog', { name: 'Sign in to Randori' });
     await expect(dialog).toBeVisible();
@@ -313,14 +357,14 @@ test('shell and authentication remain inside 320px and 390px viewports', async (
   }
 });
 
-test('signed-in dashboard, navigation, panels, and account menu fit mobile viewports', async ({ page }) => {
+test('signed-in dashboard, navigation, panels, and account menu fit mobile viewports', async ({ page }, testInfo) => {
   await mockApi(page, {
     '/api/auth/me': { ok: true, user: member },
     '/api/profile': { ok: true, user: member },
   });
   await resetClientState(page, true, {}, true);
 
-  for (const width of [320, 390]) {
+  for (const width of [320, 390, 640]) {
     await page.setViewportSize({ width, height: 760 });
     await page.goto('/', { waitUntil: 'domcontentloaded' });
     await expect(page.locator('#view-dashboard')).toBeVisible();
@@ -330,6 +374,7 @@ test('signed-in dashboard, navigation, panels, and account menu fit mobile viewp
     await expectInsideViewport(page.locator('#view-dashboard'), width);
     await expectInsideViewport(page.locator('#dashStatsGrid'), width);
     await expectDocumentFitsViewport(page);
+    if (width === 390) await attachUiScreenshot(page, testInfo, 'signed-in-dashboard-390');
 
     const trigger = page.locator('#meLabel');
     await trigger.click();
@@ -338,6 +383,296 @@ test('signed-in dashboard, navigation, panels, and account menu fit mobile viewp
     await expectInsideViewport(menu, width);
     await expectDocumentFitsViewport(page);
     await trigger.click();
+  }
+});
+
+test('settled signed-in pairing view has no WCAG-tagged axe violations', async ({ page }, testInfo) => {
+  await mockApi(page, {
+    '/api/auth/me': { ok: true, user: member },
+    '/api/profile': { ok: true, user: member },
+  });
+  await resetClientState(page, true);
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.locator('[data-tab="pair"]').click();
+  await expect(page.locator('#availabilityWrap')).toHaveAttribute('aria-busy', 'false');
+  await expect(page.locator('#syncStatus')).toHaveAttribute('data-state', /ready|local/);
+  await expectWcagClean(page, testInfo, 'signed-in-pairing', '#view-pair');
+});
+
+test('landing and reminder controls report request outcomes without delivery promises', async ({ page }) => {
+  let preferenceSave = 0;
+  await mockApi(page, {
+    '/api/stats': { _status: 503, ok: false, error: 'stats unavailable' },
+  });
+  await resetClientState(page);
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await expect(page.locator('#landingStats')).toHaveAttribute('data-state', 'unavailable');
+  await expect(page.locator('#landingStatsUpdated')).toHaveText(/Summary unavailable/);
+  await expect(page.locator('#landingNextBar')).toHaveAttribute('aria-valuetext', 'Pairing schedule unavailable');
+
+  await page.unroute('**/api/**');
+  await mockApi(page, {
+    '/api/auth/me': { ok: true, user: member },
+    '/api/profile': { ok: true, user: { ...member, tz: '' } },
+    '/api/notifications/prefs': request => {
+      if (request.method() === 'GET') {
+        return { ok: true, prefs: { user_id: 1, email_enabled: true } };
+      }
+      preferenceSave += 1;
+      if (preferenceSave === 1) {
+        return { ok: true, prefs: { user_id: 1, email_enabled: false } };
+      }
+      return { _status: 503, ok: false, error: 'notification preferences unavailable' };
+    },
+  });
+  await resetClientState(page, true, { 'randori-profile-done': '' });
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await expect(page.locator('#view-profile-setup')).toBeVisible();
+  const reminder = page.locator('#psRemindEmail');
+  const reminderStatus = page.locator('#psRemindStatus');
+  await expect(reminderStatus).toHaveAttribute('data-state', 'ready');
+  await reminder.uncheck();
+  await expect(reminderStatus).toHaveAttribute('data-state', 'saved');
+  await expect(reminderStatus).toHaveText('Preference saved. Email reminders are off.');
+  await reminder.check();
+  await expect(reminderStatus).toHaveAttribute('data-state', 'error');
+  await expect(reminderStatus).toContainText('Could not save to your account');
+});
+
+test('a delayed landing summary cannot replace the result of a newer home request', async ({ page }) => {
+  let initialStatsCalls = 0;
+  await mockApi(page, {
+    '/api/stats': () => {
+      initialStatsCalls += 1;
+      return { ok: true, total_users: 1, total_weeks: 1, total_pairs: 1, total_sessions: 1 };
+    },
+  });
+  await resetClientState(page);
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await expect.poll(() => initialStatsCalls).toBeGreaterThanOrEqual(2);
+  await expect(page.locator('#landingStats')).toHaveAttribute('data-state', 'ready');
+
+  let releaseOld!: () => void;
+  let markOldStarted!: () => void;
+  const oldGate = new Promise<void>(resolve => { releaseOld = resolve; });
+  const oldStarted = new Promise<void>(resolve => { markOldStarted = resolve; });
+  let request = 0;
+  await page.route('**/api/stats*', async route => {
+    request += 1;
+    if (request === 1) {
+      markOldStarted();
+      await oldGate;
+      await route.fulfill({
+        status: 200,
+        headers: { 'x-ui-generation': 'old' },
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true, total_users: 99, total_weeks: 99, total_pairs: 99, total_sessions: 99 }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: true, total_users: 2, total_weeks: 2, total_pairs: 2, total_sessions: 2 }),
+    });
+  });
+
+  await page.evaluate(() => { void (window as any)._randori_home.bootHome(); });
+  await oldStarted;
+  await page.evaluate(() => (window as any)._randori_home.bootHome());
+  await expect(page.locator('#statMembers')).toHaveText('2');
+  const oldResponse = page.waitForResponse(response => response.headers()['x-ui-generation'] === 'old');
+  releaseOld();
+  await oldResponse;
+  await expect(page.locator('#statMembers')).toHaveText('2');
+  await expect(page.locator('#landingStats')).toHaveAttribute('data-state', 'ready');
+});
+
+test('a delayed account summary cannot cross an authenticated identity change', async ({ page }) => {
+  const secondMember = { ...member, id: 2, email: 'second@example.test', name: 'Second Member' };
+  let actor = member;
+  let initialStatsCalls = 0;
+  await mockApi(page, {
+    '/api/auth/me': () => ({ ok: true, user: actor }),
+    '/api/profile': { ok: true, user: member },
+    '/api/stats': () => {
+      initialStatsCalls += 1;
+      return { ok: true, your_sessions: 1, your_weeks: 1, total_users: 2, total_weeks: 1, total_sessions: 1 };
+    },
+  });
+  await resetClientState(page, true);
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await expect(page.locator('#view-dashboard')).toBeVisible();
+  await expect.poll(() => initialStatsCalls).toBeGreaterThanOrEqual(2);
+
+  let releaseFirst!: () => void;
+  let markFirstStarted!: () => void;
+  const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+  const firstStarted = new Promise<void>(resolve => { markFirstStarted = resolve; });
+  let request = 0;
+  await page.route('**/api/stats*', async route => {
+    request += 1;
+    if (request === 1) {
+      markFirstStarted();
+      await firstGate;
+      await route.fulfill({
+        status: 200,
+        headers: { 'x-ui-generation': 'first-account' },
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true, your_sessions: 99, your_weeks: 99, total_users: 99, total_weeks: 99, total_sessions: 99 }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: true, your_sessions: 2, your_weeks: 2, total_users: 2, total_weeks: 2, total_sessions: 2 }),
+    });
+  });
+
+  await page.evaluate(() => { void (window as any)._randori_home.bootHome(); });
+  await firstStarted;
+  actor = secondMember;
+  await page.evaluate(() => (window as any)._randori_auth.refreshMe());
+  await page.evaluate(() => (window as any)._randori_home.bootHome());
+  await expect(page.locator('#dashStatYou')).toHaveText('2');
+  const oldResponse = page.waitForResponse(response => response.headers()['x-ui-generation'] === 'first-account');
+  releaseFirst();
+  await oldResponse;
+  await expect(page.locator('#dashStatYou')).toHaveText('2');
+  await expect(page.locator('#dashWelcome')).toContainText('Second Member');
+});
+
+for (const invalid of [
+  {
+    label: 'malformed',
+    envelope: { ok: true, prefs: { user_id: member.id, email_enabled: 'yes' } },
+  },
+  {
+    label: 'wrong-account',
+    envelope: { ok: true, prefs: { user_id: member.id + 1, email_enabled: false } },
+  },
+  {
+    label: 'ok-false',
+    envelope: { ok: false, prefs: { user_id: member.id, email_enabled: false } },
+  },
+] as const) {
+  test(`${invalid.label} reminder preference envelopes never report ready or saved`, async ({ page }) => {
+    let returnValidGet = false;
+    let preferencePosts = 0;
+    await mockApi(page, {
+      '/api/auth/me': { ok: true, user: member },
+      '/api/profile': { ok: true, user: { ...member, tz: '' } },
+      '/api/notifications/prefs': request => {
+        if (request.method() === 'GET') {
+          return returnValidGet
+            ? { ok: true, prefs: { user_id: member.id, email_enabled: true } }
+            : invalid.envelope;
+        }
+        preferencePosts += 1;
+        return invalid.envelope;
+      },
+    });
+    await resetClientState(page, true, { 'randori-profile-done': '' });
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('#view-profile-setup')).toBeVisible();
+    const reminder = page.locator('#psRemindEmail');
+    const status = page.locator('#psRemindStatus');
+    await expect(status).toHaveAttribute('data-state', 'error');
+    await expect(status).toContainText('unavailable');
+    expect(await page.evaluate(() => localStorage.getItem('randori-reminder-email'))).toBeNull();
+
+    returnValidGet = true;
+    await page.evaluate(() => window.dispatchEvent(new Event('randori:auth-refreshed')));
+    await expect(status).toHaveAttribute('data-state', 'ready');
+    await reminder.uncheck();
+    await expect.poll(() => preferencePosts).toBe(1);
+    await expect(status).toHaveAttribute('data-state', 'error');
+    await expect(status).toContainText('Could not save to your account');
+  });
+}
+
+test('a reminder save revalidates identity and cannot mutate a newly authenticated account', async ({ page }) => {
+  const secondMember = { ...member, id: 2, email: 'second@example.test', name: 'Second Member' };
+  let actor = member;
+  let holdIdentityRefresh = false;
+  let markIdentityRefreshStarted!: () => void;
+  let releaseIdentityRefresh!: () => void;
+  const identityRefreshStarted = new Promise<void>(resolve => { markIdentityRefreshStarted = resolve; });
+  const identityRefreshGate = new Promise<void>(resolve => { releaseIdentityRefresh = resolve; });
+  const preferenceGets: number[] = [];
+  let preferencePosts = 0;
+  await mockApi(page, {
+    '/api/auth/me': async () => {
+      if (holdIdentityRefresh) {
+        holdIdentityRefresh = false;
+        markIdentityRefreshStarted();
+        await identityRefreshGate;
+      }
+      return { ok: true, user: actor };
+    },
+    '/api/profile': () => ({ ok: true, user: { ...actor, tz: '' } }),
+    '/api/notifications/prefs': request => {
+      if (request.method() === 'GET') {
+        preferenceGets.push(actor.id);
+        return { ok: true, prefs: { user_id: actor.id, email_enabled: true } };
+      }
+      preferencePosts += 1;
+      return { ok: true, prefs: { user_id: actor.id, email_enabled: false } };
+    },
+  });
+  try {
+    await resetClientState(page, true, { 'randori-profile-done': '' });
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('#view-profile-setup')).toBeVisible();
+    const reminder = page.locator('#psRemindEmail');
+    const status = page.locator('#psRemindStatus');
+    await expect(status).toHaveAttribute('data-state', 'ready');
+    await expect(reminder).toBeChecked();
+
+    holdIdentityRefresh = true;
+    await reminder.uncheck();
+    await identityRefreshStarted;
+    actor = secondMember;
+    releaseIdentityRefresh();
+
+    await expect.poll(() => page.evaluate(() => (window as any)._randori_auth.me?.id)).toBe(secondMember.id);
+    await expect(status).toHaveAttribute('data-state', 'ready');
+    await expect(reminder).toBeChecked();
+    expect(preferencePosts).toBe(0);
+    expect(preferenceGets).toEqual([member.id, secondMember.id]);
+  } finally {
+    releaseIdentityRefresh?.();
+  }
+});
+
+test('coarse pointers get touch targets and forced colors retain state distinctions', async ({ browser }) => {
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 760 },
+    hasTouch: true,
+    isMobile: true,
+  });
+  try {
+    const page = await context.newPage();
+    await mockApi(page);
+    await resetClientState(page);
+    await page.emulateMedia({ forcedColors: 'active', reducedMotion: 'reduce' });
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    const targetHeight = await page.locator('#landingSignin').evaluate(element =>
+      Number.parseFloat(getComputedStyle(element).minHeight));
+    expect(targetHeight).toBeGreaterThanOrEqual(44);
+    const styles = await page.locator('#landingStatsUpdated').evaluate(element => ({
+      color: getComputedStyle(element).color,
+      motion: getComputedStyle(document.querySelector('.motion-probe')!).animationDuration,
+    }));
+    expect(styles.color).not.toBe('rgba(0, 0, 0, 0)');
+    const motionMs = styles.motion.endsWith('ms')
+      ? Number.parseFloat(styles.motion)
+      : Number.parseFloat(styles.motion) * 1000;
+    expect(motionMs).toBeLessThanOrEqual(0.01);
+    await expectDocumentFitsViewport(page);
+  } finally {
+    await context.close();
   }
 });
 
