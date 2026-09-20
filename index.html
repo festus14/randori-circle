@@ -5986,25 +5986,34 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return !!current&&(current.pairing_status==='solo'||current.pair?.solo_practice===true);
   }
 
-  async function ensureLocalStream(needCam = true){
+  async function ensureLocalStream(needCam = true,expectedEpoch=videoSessionEpoch){
+    if(!videoEpochMatches(expectedEpoch)) return null;
     if(localStream){
       videoCamEnabled = needCam ? videoCamEnabled : false;
       return localStream;
     }
     const constraints = { audio: true, video: needCam ? { width:{ideal:640}, height:{ideal:360} } : false };
+    let stream=null;
     try{
-      localStream = await navigator.mediaDevices.getUserMedia(constraints);
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
+      if(!videoEpochMatches(expectedEpoch)){ releaseLocalMediaStream(stream); return null; }
     }catch(e){
+      if(!videoEpochMatches(expectedEpoch)) return null;
       // fallback audio only
       try{
-        localStream = await navigator.mediaDevices.getUserMedia({ audio:true, video:false });
+        stream = await navigator.mediaDevices.getUserMedia({ audio:true, video:false });
+        if(!videoEpochMatches(expectedEpoch)){ releaseLocalMediaStream(stream); return null; }
         videoCamEnabled = false;
         toast('cam blocked — audio only fallback');
       }catch(e2){
+        if(!videoEpochMatches(expectedEpoch)) return null;
         toast('no mic/cam access — video fallback to name dots');
         return null;
       }
     }
+    if(!videoEpochMatches(expectedEpoch)){ releaseLocalMediaStream(stream); return null; }
+    if(localStream&&localStream!==stream){ releaseLocalMediaStream(stream); return localStream; }
+    localStream=stream;
     const lv=document.getElementById('localVideo');
     if(lv){ lv.srcObject=localStream; lv.play().catch(()=>{}); }
     updateVideoMicCamUI();
@@ -6200,7 +6209,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const joinEpoch=++videoSessionEpoch;
     const camBtn=document.getElementById('vidCamBtn');
     const needCam = camBtn ? !camBtn.classList.contains('off') : true;
-    const stream = await ensureLocalStream(needCam);
+    const stream = await ensureLocalStream(needCam,joinEpoch);
     if(joinEpoch!==videoSessionEpoch){
       // A sign-out may have completed while browser permission was pending.
       // Do not let that older permission result retain live capture tracks.
@@ -6303,7 +6312,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(!localStream || !hasLiveVideo){
         // clear stopped stream ref so ensureLocalStream grabs fresh
         if(localStream){ try{ localStream.getTracks().forEach(t=>{ if(t.kind==='video') { try{t.stop();}catch{} } }); }catch{}; localStream=null; }
-        const stream=await ensureLocalStream(true);
+        const stream=await ensureLocalStream(true,camEpoch);
         if(!videoEpochMatches(camEpoch)){
           releaseLocalMediaStream(stream);
           return;

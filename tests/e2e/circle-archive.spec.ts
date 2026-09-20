@@ -319,7 +319,7 @@ test('archive session loss immediately clears private state and returns to signe
   expect(videoSignals).not.toContain('answer');
 });
 
-test('archive session loss rejects camera permission that resolves after cleanup',async({page})=>{
+test('archive session loss discards camera permission that resolves after cleanup',async({page})=>{
   await mockApi(page,{
     '/api/auth/capabilities':{
       ok:true,capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,
@@ -372,6 +372,71 @@ test('archive session loss rejects camera permission that resolves after cleanup
     attached:document.querySelector<HTMLVideoElement>('#localVideo')?.srcObject!==null,
     states:(window as any).__lateCameraTracks.map((track:{readyState:string})=>track.readyState),
   }))).toEqual({hasStream:false,attached:false,states:['ended','ended']});
+});
+
+test('archive session loss cannot start an audio fallback after a late camera rejection',async({page})=>{
+  await mockApi(page,{
+    '/api/auth/capabilities':{
+      ok:true,capabilities:{passwordLogin:true,passwordSignup:false,googleOAuth:true,
+        multiCircleControlPlane:true,multiCircleAvailability:true},registrationMode:'private_beta',
+    },
+    '/api/auth/me':{ok:true,user:owner},
+    '/api/profile':{ok:true,user:owner},
+    '/api/circles':request=>request.method()==='DELETE'
+      ?{_status:401,error:'authentication required'}
+      :{ok:true,circles:[primary,secondary],active_circle:secondary,
+        context_version:4,selection_required:false},
+    '/api/circle':{ok:true,circle_meta:{public_id:secondary.public_id,name:secondary.name},
+      membership:{role:'owner'},circle:[owner],count:1,circle_context_version:4},
+    '/api/invitations':{ok:true,invitations:[],count:0,circle_context_version:4},
+    '/api/members':{ok:true,members:[{...owner,role:'owner',status:'active'}],count:1,
+      has_more:false,next_cursor:null,scanned:1,circle_context_version:4},
+  });
+  await resetClientState(page,true);
+  await page.goto('/?view=circle',{waitUntil:'domcontentloaded'});
+  await page.locator('[data-tab="circle"]').click();
+  await expect(page.getByTestId('circle-archive')).toBeVisible();
+  await page.evaluate(()=>{
+    const app=window as any;
+    const fallbackTracks=['video','audio'].map(kind=>({kind,enabled:true,readyState:'live',stopCount:0,stop(){
+      this.stopCount+=1;
+      this.readyState='ended';
+    }}));
+    const fallbackStream={getTracks:()=>fallbackTracks,getVideoTracks:()=>[fallbackTracks[0]],
+      getAudioTracks:()=>[fallbackTracks[1]]};
+    let rejectPermission!:(reason?:unknown)=>void;
+    const permission=new Promise((_,reject)=>{ rejectPermission=reject; });
+    app.__cameraPermissionCalls=0;
+    app.__cameraPermissionSettled=false;
+    app.__rejectCameraPermission=()=>rejectPermission(new Error('camera denied after sign-out'));
+    app.__fallbackTracks=fallbackTracks;
+    Object.defineProperty(navigator,'mediaDevices',{
+      configurable:true,value:{getUserMedia:async()=>{
+        app.__cameraPermissionCalls+=1;
+        if(app.__cameraPermissionCalls===1){
+          try{ return await permission; }finally{ app.__cameraPermissionSettled=true; }
+        }
+        return fallbackStream;
+      }},
+    });
+    const localVideo=document.getElementById('localVideo');
+    if(localVideo) Object.defineProperty(localVideo,'srcObject',{configurable:true,writable:true,value:null});
+    document.getElementById('vidCamBtn')?.click();
+    document.getElementById('vidCamBtn')?.click();
+  });
+  await expect.poll(()=>page.evaluate(()=>(window as any).__cameraPermissionCalls)).toBe(1);
+  await page.getByTestId('circle-archive').click();
+  await confirmAction(page,/Archive Secondary/);
+  await expect(page.locator('#view-landing')).toBeVisible();
+  await page.evaluate(()=>(window as any).__rejectCameraPermission());
+  await page.waitForFunction(()=>(window as any).__cameraPermissionSettled===true);
+  await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>resolve())));
+  expect(await page.evaluate(()=>({
+    calls:(window as any).__cameraPermissionCalls,
+    hasStream:(window as any)._randori_video.stream!==null,
+    attached:document.querySelector<HTMLVideoElement>('#localVideo')?.srcObject!==null,
+    fallbackStops:(window as any).__fallbackTracks.map((track:{stopCount:number})=>track.stopCount),
+  }))).toEqual({calls:1,hasStream:false,attached:false,fallbackStops:[0,0]});
 });
 
 test('a delayed old-session archive denial cannot clear a newer same-account login',async({page})=>{
