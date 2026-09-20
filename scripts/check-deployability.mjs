@@ -1,10 +1,16 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
 
 const OUTBOX_WORKFLOW_PATH='.github/workflows/outbox-dispatch.yml';
+const OUTBOX_WATCHDOG_WORKFLOW_PATH='.github/workflows/outbox-dispatch-watchdog.yml';
+const OUTBOX_WATCHDOG_SCRIPT_PATH='scripts/github-outbox-dispatch-watchdog.mjs';
+const OUTBOX_WATCHDOG_WORKFLOW_SHA256='7f0a1134ee921afd1a67eea627de2bb786c2a941e3ecdaf267aefc652cb2442d';
+const OUTBOX_WATCHDOG_SCRIPT_SHA256='01eecb04b859e364e824708a12f3f2aea91751cb438954ebc90999328b4f2bc8';
 const REQUIRED_ROOT_FILES = [
   'index.html', 'package-lock.json', 'package.json', 'vercel.json', OUTBOX_WORKFLOW_PATH,
+  OUTBOX_WATCHDOG_WORKFLOW_PATH, OUTBOX_WATCHDOG_SCRIPT_PATH,
 ];
 const REQUIRED_SECURITY_HEADERS = [
   'content-security-policy',
@@ -18,6 +24,10 @@ const SUPPORTED_NODE_RANGE = '24.x';
 
 function record(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function sha256(value){
+  return typeof value==='string'?createHash('sha256').update(value,'utf8').digest('hex'):null;
 }
 
 function routeHeaders(headers, source) {
@@ -130,6 +140,8 @@ function validateOutboxWorkflow(workflow){
       'outbox workflow must run on the five-minute MVP cadence'],
     [/^\s{2}workflow_dispatch:\s*$/m,'outbox workflow must support manual recovery runs'],
     [/^\s{2}contents:\s*read\s*$/m,'outbox workflow permissions must be read-only'],
+    [/^\s{4}timeout-minutes:\s*2\s*$/m,
+      'outbox workflow must retain its two-minute worker deadline'],
     [/^\s{4}if:\s*github\.ref == format\('refs\/heads\/\{0\}', github\.event\.repository\.default_branch\)\s*$/m,
       'outbox workflow must restrict production dispatch to the default branch'],
     [/^\s{4}environment:\s*production\s*$/m,
@@ -154,7 +166,62 @@ function validateOutboxWorkflow(workflow){
   return errors;
 }
 
-export function validateDeploymentContract({ vercel, packageJson, files, outboxWorkflow }) {
+function validateOutboxWatchdogWorkflow(workflow){
+  if(typeof workflow!=='string'||!workflow.trim()){
+    return ['outbox watchdog workflow must be readable'];
+  }
+  const errors=[];
+  const checks=[
+    [/^name:\s*outbox-dispatch-watchdog\s*$/m,
+      'outbox watchdog must have its stable workflow name'],
+    [/^\s{2}schedule:\s*$/m,'outbox watchdog must define a scheduled trigger'],
+    [/^\s{4}- cron:\s*['"]37 \* \* \* \*['"]\s*$/m,
+      'outbox watchdog must run hourly on its documented offset'],
+    [/^\s{2}workflow_dispatch:\s*$/m,'outbox watchdog must support manual diagnosis'],
+    [/^\s{2}actions:\s*read\s*$/m,'outbox watchdog must have read-only Actions access'],
+    [/^\s{2}contents:\s*read\s*$/m,'outbox watchdog must have read-only contents access'],
+    [/^permissions:\n  actions: read\n  contents: read\n\nconcurrency:/m,
+      'outbox watchdog must grant only read access to Actions and contents'],
+    [/^\s{4}if:\s*github\.ref == format\('refs\/heads\/\{0\}', github\.event\.repository\.default_branch\)\s*$/m,
+      'outbox watchdog must inspect only from the default branch'],
+    [/^\s{4}timeout-minutes:\s*5\s*$/m,'outbox watchdog job must be time bounded'],
+    [/GITHUB_TOKEN:\s*\$\{\{\s*github\.token\s*\}\}/,
+      'outbox watchdog must use only the scoped GitHub token'],
+    [/WATCHDOG_DEFAULT_BRANCH:\s*\$\{\{\s*github\.event\.repository\.default_branch\s*\}\}/,
+      'outbox watchdog must bind the repository default branch'],
+    [/WATCHDOG_SCHEDULE_GRACE_MS:\s*['"]900000['"]/,
+      'outbox watchdog must retain its fifteen-minute schedule grace'],
+    [/WATCHDOG_WORKER_DEADLINE_MS:\s*['"]120000['"]/,
+      'outbox watchdog must bind the two-minute dispatcher deadline'],
+    [/WATCHDOG_API_TIMEOUT_MS:\s*['"]10000['"]/,
+      'outbox watchdog API request must remain time bounded'],
+    [/WATCHDOG_MAX_PAGES:\s*['"]2['"]/,
+      'outbox watchdog pagination must remain bounded'],
+    [/WATCHDOG_PER_PAGE:\s*['"]100['"]/,
+      'outbox watchdog page size must remain bounded'],
+    [/^\s{8}run:\s*node scripts\/github-outbox-dispatch-watchdog\.mjs\s*$/m,
+      'outbox watchdog must run the reviewed assessor'],
+    [/      - name: Assess scheduled outbox delivery\n        timeout-minutes: 2\n        env:\n          GITHUB_TOKEN: \$\{\{ github\.token \}\}\n          WATCHDOG_DEFAULT_BRANCH: \$\{\{ github\.event\.repository\.default_branch \}\}\n          WATCHDOG_SCHEDULE_GRACE_MS: '900000'\n          WATCHDOG_WORKER_DEADLINE_MS: '120000'\n          WATCHDOG_API_TIMEOUT_MS: '10000'\n          WATCHDOG_MAX_PAGES: '2'\n          WATCHDOG_PER_PAGE: '100'\n        run: node scripts\/github-outbox-dispatch-watchdog\.mjs(?:\n|$)/,
+      'outbox watchdog assessment step must retain its exact fail-closed shape'],
+    [/uses:\s+actions\/checkout@11d5960a326750d5838078e36cf38b85af677262/,
+      'outbox watchdog checkout must use the reviewed immutable revision'],
+    [/uses:\s+actions\/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020/,
+      'outbox watchdog Node setup must use the reviewed immutable revision'],
+    [/persist-credentials:\s*false/,
+      'outbox watchdog checkout must not persist GitHub credentials'],
+  ];
+  for(const [pattern,message] of checks){ if(!pattern.test(workflow)) errors.push(message); }
+  if(/pull_request(?:_target)?:|permissions:[\s\S]*?\bwrite\b|environment:|secrets\.|vars\.|APP_URL|CRON_SECRET|TURSO_|RESEND_|\/api\/cron\/outbox|\bcurl\b|\bgh\s+workflow\b|\/dispatches\b|continue-on-error:|^\s{8}if:/mu.test(workflow)){
+    errors.push('outbox watchdog must remain secret-free, read-only, and non-mutating');
+  }
+  if(/uses:\s+actions\/(?:checkout|setup-node)@v\d+/u.test(workflow)){
+    errors.push('outbox watchdog actions must be pinned to immutable commits');
+  }
+  return errors;
+}
+
+export function validateDeploymentContract({ vercel, packageJson, files, outboxWorkflow,
+  outboxWatchdogWorkflow, outboxWatchdogScript }) {
   const errors = [];
   const config = record(vercel);
   const manifest = record(packageJson);
@@ -176,6 +243,13 @@ export function validateDeploymentContract({ vercel, packageJson, files, outboxW
   }
 
   errors.push(...validateOutboxWorkflow(outboxWorkflow));
+  errors.push(...validateOutboxWatchdogWorkflow(outboxWatchdogWorkflow));
+  if(sha256(outboxWatchdogWorkflow)!==OUTBOX_WATCHDOG_WORKFLOW_SHA256){
+    errors.push('outbox watchdog workflow must match its reviewed immutable contract');
+  }
+  if(sha256(outboxWatchdogScript)!==OUTBOX_WATCHDOG_SCRIPT_SHA256){
+    errors.push('outbox watchdog assessor must match its reviewed immutable contract');
+  }
 
   if (!Array.isArray(config.rewrites) || config.rewrites.length === 0) {
     errors.push('vercel.json must define rewrites');
@@ -279,6 +353,8 @@ export function inspectDeploymentContract(rootDirectory = process.cwd()) {
   let vercel;
   let packageJson;
   let outboxWorkflow;
+  let outboxWatchdogWorkflow;
+  let outboxWatchdogScript;
   try {
     vercel = JSON.parse(readFileSync(resolve(root, 'vercel.json'), 'utf8'));
   } catch (error) {
@@ -296,7 +372,20 @@ export function inspectDeploymentContract(rootDirectory = process.cwd()) {
     outboxWorkflow = null;
   }
 
-  return validateDeploymentContract({ vercel, packageJson, files, outboxWorkflow });
+  try {
+    outboxWatchdogWorkflow = readFileSync(resolve(root, OUTBOX_WATCHDOG_WORKFLOW_PATH), 'utf8');
+  } catch {
+    outboxWatchdogWorkflow = null;
+  }
+
+  try {
+    outboxWatchdogScript = readFileSync(resolve(root, OUTBOX_WATCHDOG_SCRIPT_PATH), 'utf8');
+  } catch {
+    outboxWatchdogScript = null;
+  }
+
+  return validateDeploymentContract({ vercel, packageJson, files, outboxWorkflow,
+    outboxWatchdogWorkflow, outboxWatchdogScript });
 }
 
 function main() {

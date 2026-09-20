@@ -21,6 +21,10 @@ The `deployability` workflow is intentionally fast and provider-neutral. It has 
 - API cache-safety and minimum-safe browser security-header values remain intact; and
 - every scheduled job has a valid five-field schedule and a matching route.
 
+It also pins the five-minute outbox worker and its secret-free hourly watchdog:
+the worker retains its protected two-minute deadline, while the watchdog keeps
+read-only GitHub permissions, fixed time/page bounds, and no production access.
+
 The unit suite exercises fail-closed cases and runs the command with an unreachable HTTPS proxy, an unusable provider token, and a simulated exhausted-quota marker. That proves this gate does not consume preview quota or need the preview service to be reachable.
 
 This check does **not** prove that a provider can allocate quota, that protected environment variables are correct, or that the deployed edge returns the expected headers. Preview and production deployment telemetry remain the evidence for those provider-owned properties. Production readiness and health probes continue to fail closed when database or migration state is incomplete.
