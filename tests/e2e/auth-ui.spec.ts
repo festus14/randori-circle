@@ -858,7 +858,6 @@ test('a stalled signup can be cancelled without accepting a stale response and t
 test('a pre-auth refresh cannot clear a newer successful signup identity', async ({ page }) => {
   const user = { id: 4, email: 'fresh@example.test', name: 'Fresh User', is_admin: true, tz: 'Europe/London' };
   let signedUp = false;
-  let authMeCalls = 0;
   let delayNextRefresh = false;
   let delayedRefreshStarted = false;
   let releaseDelayedRefresh: (() => void) | undefined;
@@ -867,7 +866,6 @@ test('a pre-auth refresh cannot clear a newer successful signup identity', async
   await mockApi(page, {
     '/api/auth/capabilities': localCapabilities,
     '/api/auth/me': async () => {
-      authMeCalls += 1;
       if(delayNextRefresh){
         delayNextRefresh=false;
         delayedRefreshStarted=true;
@@ -883,12 +881,20 @@ test('a pre-auth refresh cannot clear a newer successful signup identity', async
       return { ok: true, user };
     },
   });
+  await page.addInitScript(()=>{
+    (window as any).__initialAuthRefreshCommitted=new Promise(resolve=>{
+      window.addEventListener('randori:auth-refreshed',event=>{
+        resolve((event as CustomEvent).detail);
+      },{once:true});
+    });
+  });
   await resetClientState(page);
   await page.goto('/', { waitUntil: 'domcontentloaded' });
 
   // The authoritative signed-out result suppresses later bootstrap attempts,
   // so the controlled request below cannot be stolen by a scheduled refresh.
-  await expect.poll(() => authMeCalls).toBeGreaterThanOrEqual(1);
+  await expect(page.evaluate(()=>(window as any).__initialAuthRefreshCommitted))
+    .resolves.toEqual({signedIn:false,userId:null});
   delayNextRefresh=true;
   const staleRefresh=page.evaluate(()=>(window as any)._randori_auth.refreshMe());
   await expect.poll(()=>delayedRefreshStarted).toBe(true);
