@@ -210,14 +210,14 @@ test('a focused timer action supersedes an in-flight background reconciliation',
   await page.evaluate(()=>{ void window._randori_session_controls?.load(); });
   await delayed.started;
 
-  await expect(button).toBeFocused();
-  await expect(button).toBeEnabled();
   await expect(page.getByTestId('session-controls')).toHaveAttribute('aria-busy','false');
   await expect(page.getByTestId('session-controls-candidate')).toBeEnabled();
   await expect(page.getByTestId('session-controls-reset')).toBeEnabled();
   await expect(page.locator('#roleToggle')).toBeEnabled();
   await expect(page.locator('#timerBtn')).toBeEnabled();
-  await page.keyboard.press('Enter');
+  await expect(button).toBeEnabled();
+  await expect(button).toBeFocused();
+  await button.press('Enter');
   await expect(page.getByTestId('session-controls-status')).toHaveText('Shared timer started.');
   await expect(button).toHaveText('Pause');
   expect(store.requests.filter(request=>request.method==='POST').map(request=>request.body)).toEqual([
