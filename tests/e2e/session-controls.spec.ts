@@ -27,14 +27,15 @@ class ControlsStore{
   terminal=false;
   completionVersion=completionVersion;
   requests:Array<{actorId:number;method:string;body:Record<string,unknown>|null;status:number}>=[];
-  private delayed:null|{started:()=>void;gate:Promise<void>}=null;
+  private delayed:null|{started:()=>void;gate:Promise<void>;finished:()=>void}=null;
 
   delayNext(){
-    let release=()=>{}; let startedResolve=()=>{};
+    let release=()=>{}; let startedResolve=()=>{}; let finishedResolve=()=>{};
     const started=new Promise<void>(resolve=>{ startedResolve=resolve; });
     const gate=new Promise<void>(resolve=>{ release=resolve; });
-    this.delayed={started:startedResolve,gate};
-    return {started,release};
+    const finished=new Promise<void>(resolve=>{ finishedResolve=resolve; });
+    this.delayed={started:startedResolve,gate,finished:finishedResolve};
+    return {started,release,finished};
   }
 
   effectiveRemaining(){
@@ -62,41 +63,47 @@ class ControlsStore{
   route=async(route:Route,actorId:number)=>{
     const request=route.request();
     const body=request.method()==='POST'?(request.postDataJSON() as Record<string,unknown>):null;
-    if(this.delayed){ const delayed=this.delayed; this.delayed=null; delayed.started(); await delayed.gate; }
-    if(!body){
-      this.requests.push({actorId,method:'GET',body:null,status:200});
+    const readSnapshot=body?null:this.payload(actorId);
+    const delayed=this.delayed;
+    if(delayed){ this.delayed=null; delayed.started(); await delayed.gate; }
+    try{
+      if(!body){
+        this.requests.push({actorId,method:'GET',body:null,status:200});
+        await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(readSnapshot)});
+        return;
+      }
+      if(this.terminal){
+        this.requests.push({actorId,method:'POST',body,status:409});
+        await route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({
+          ...this.payload(actorId),error:'Session controls are read-only.',code:'session_controls_completed',
+        })}); return;
+      }
+      const action=String(body.action||'');
+      const desiredAlready=(action==='start'&&this.timerState==='running'&&this.effectiveRemaining()>0)
+        ||(action==='pause'&&(this.timerState==='paused'||this.effectiveRemaining()===0))
+        ||(action==='reset'&&this.timerState==='paused'&&this.remainingMs===25*60*1000)
+        ||(action==='set_candidate'&&Number(body.candidate_user_id)===this.candidateId);
+      if(!desiredAlready&&body.base_version!==this.version()){
+        this.requests.push({actorId,method:'POST',body,status:409});
+        await route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({
+          ...this.payload(actorId),error:'Session controls changed.',code:'session_controls_changed',
+        })}); return;
+      }
+      if(!desiredAlready){
+        if(action==='start'){
+          this.remainingMs=this.effectiveRemaining(); this.timerState='running'; this.anchorMs=Date.now();
+        }else if(action==='pause'){
+          this.remainingMs=this.effectiveRemaining(); this.timerState='paused'; this.anchorMs=null;
+        }else if(action==='reset'){
+          this.timerState='paused'; this.remainingMs=25*60*1000; this.anchorMs=null;
+        }else if(action==='set_candidate') this.candidateId=Number(body.candidate_user_id);
+        this.revision+=1;
+      }
+      this.requests.push({actorId,method:'POST',body,status:200});
       await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(this.payload(actorId))});
-      return;
+    }finally{
+      delayed?.finished();
     }
-    if(this.terminal){
-      this.requests.push({actorId,method:'POST',body,status:409});
-      await route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({
-        ...this.payload(actorId),error:'Session controls are read-only.',code:'session_controls_completed',
-      })}); return;
-    }
-    const action=String(body.action||'');
-    const desiredAlready=(action==='start'&&this.timerState==='running'&&this.effectiveRemaining()>0)
-      ||(action==='pause'&&(this.timerState==='paused'||this.effectiveRemaining()===0))
-      ||(action==='reset'&&this.timerState==='paused'&&this.remainingMs===25*60*1000)
-      ||(action==='set_candidate'&&Number(body.candidate_user_id)===this.candidateId);
-    if(!desiredAlready&&body.base_version!==this.version()){
-      this.requests.push({actorId,method:'POST',body,status:409});
-      await route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({
-        ...this.payload(actorId),error:'Session controls changed.',code:'session_controls_changed',
-      })}); return;
-    }
-    if(!desiredAlready){
-      if(action==='start'){
-        this.remainingMs=this.effectiveRemaining(); this.timerState='running'; this.anchorMs=Date.now();
-      }else if(action==='pause'){
-        this.remainingMs=this.effectiveRemaining(); this.timerState='paused'; this.anchorMs=null;
-      }else if(action==='reset'){
-        this.timerState='paused'; this.remainingMs=25*60*1000; this.anchorMs=null;
-      }else if(action==='set_candidate') this.candidateId=Number(body.candidate_user_id);
-      this.revision+=1;
-    }
-    this.requests.push({actorId,method:'POST',body,status:200});
-    await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(this.payload(actorId))});
   };
 }
 
@@ -135,6 +142,30 @@ async function openWorkspace(page:Page,store:ControlsStore,actorId:1|2){
   await expect(page.getByTestId('session-controls-status')).not.toContainText('Loading');
 }
 
+test('initial loading and writes remain explicitly blocking',async({page})=>{
+  const store=new ControlsStore(); await openWorkspace(page,store,1);
+  await page.evaluate(()=>window._randori_session_controls?.reset());
+  const initial=store.delayNext();
+  await page.evaluate(room=>{ void window._randori_session_controls?.load(room); },roomId);
+  await initial.started;
+  await expect(page.getByTestId('session-controls')).toHaveAttribute('aria-busy','true');
+  await expect(page.getByTestId('session-controls-start-pause')).toBeDisabled();
+  initial.release();
+  await initial.finished;
+  await expect(page.getByTestId('session-controls-status')).not.toContainText('Loading');
+
+  const write=store.delayNext();
+  await page.getByTestId('session-controls-start-pause').click();
+  await write.started;
+  await expect(page.getByTestId('session-controls')).toHaveAttribute('aria-busy','true');
+  await expect(page.getByTestId('session-controls-candidate')).toBeDisabled();
+  await expect(page.getByTestId('session-controls-reset')).toBeDisabled();
+  await expect(page.locator('#roleToggle')).toBeDisabled();
+  await expect(page.locator('#timerBtn')).toBeDisabled();
+  write.release();
+  await expect(page.getByTestId('session-controls-status')).toHaveText('Shared timer started.');
+});
+
 test('two participants converge on roles and a durable timer across restart',async({browser})=>{
   const store=new ControlsStore();
   const first=await browser.newPage(); const second=await browser.newPage();
@@ -169,6 +200,35 @@ test('two participants converge on roles and a durable timer across restart',asy
     await expect(second.getByTestId('session-controls-status')).toHaveAttribute('aria-live','polite');
     await expect(second.getByTestId('session-controls-countdown')).not.toHaveAttribute('aria-live');
   }finally{ await first.close(); await second.close(); }
+});
+
+test('a focused timer action supersedes an in-flight background reconciliation',async({page})=>{
+  const store=new ControlsStore(); await openWorkspace(page,store,1);
+  const button=page.getByTestId('session-controls-start-pause');
+  await button.focus();
+  const delayed=store.delayNext();
+  await page.evaluate(()=>{ void window._randori_session_controls?.load(); });
+  await delayed.started;
+
+  await expect(page.getByTestId('session-controls')).toHaveAttribute('aria-busy','false');
+  await expect(page.getByTestId('session-controls-candidate')).toBeEnabled();
+  await expect(page.getByTestId('session-controls-reset')).toBeEnabled();
+  await expect(page.locator('#roleToggle')).toBeEnabled();
+  await expect(page.locator('#timerBtn')).toBeEnabled();
+  await expect(button).toBeEnabled();
+  await expect(button).toBeFocused();
+  await button.press('Enter');
+  await expect(page.getByTestId('session-controls-status')).toHaveText('Shared timer started.');
+  await expect(button).toHaveText('Pause');
+  expect(store.requests.filter(request=>request.method==='POST').map(request=>request.body)).toEqual([
+    {room_id:roomId,action:'start',base_version:'0'.repeat(64)},
+  ]);
+
+  delayed.release();
+  await delayed.finished;
+  await expect(page.getByTestId('session-controls-status')).toHaveText('Shared timer started.');
+  await expect(button).toHaveText('Pause');
+  expect(await page.evaluate(()=>window._randori_session_controls?.controls?.version)).toBe('1'.padStart(64,'0'));
 });
 
 test('simultaneous actions expose the winner through safe conflict reconciliation',async({browser})=>{
