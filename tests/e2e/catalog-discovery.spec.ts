@@ -85,6 +85,69 @@ const catalogue = [
     'Medium',
     ['dynamic-programming', 'optimization'],
   ),
+  publicQuestion(
+    'mentor-level-widths',
+    'Mentor Level Widths',
+    'tree-traversal',
+    'Easy',
+    ['trees', 'breadth-first-search'],
+  ),
+  publicQuestion(
+    'threshold-pair-count',
+    'Threshold Pair Count',
+    'two-pointers',
+    'Easy',
+    ['arrays', 'two-pointers'],
+  ),
+  publicQuestion(
+    'command-prefix-census',
+    'Command Prefix Census',
+    'trie',
+    'Easy',
+    ['tries', 'strings'],
+  ),
+  publicQuestion(
+    'release-feed-merge',
+    'Release Feed Merge',
+    'heap',
+    'Medium',
+    ['heaps', 'multiway-merge'],
+  ),
+  publicQuestion(
+    'compatible-review-orders',
+    'Compatible Review Orders',
+    'backtracking',
+    'Medium',
+    ['backtracking', 'bitmasking'],
+  ),
+  publicQuestion(
+    'connectivity-checkpoints',
+    'Connectivity Checkpoints',
+    'disjoint-set',
+    'Medium',
+    ['disjoint-set', 'graphs'],
+  ),
+  publicQuestion(
+    'coaching-route-sums',
+    'Coaching Route Sums',
+    'tree-queries',
+    'Hard',
+    ['trees', 'lowest-common-ancestor'],
+  ),
+  publicQuestion(
+    'command-message-segmentation',
+    'Command Message Segmentation',
+    'trie-dynamic-programming',
+    'Hard',
+    ['tries', 'dynamic-programming'],
+  ),
+  publicQuestion(
+    'resilient-network-budget',
+    'Resilient Network Budget',
+    'minimum-spanning-forest',
+    'Hard',
+    ['disjoint-set', 'greedy', 'graphs'],
+  ),
 ];
 
 const privateFieldPattern = /^(?:tests?|test[_-]?cases?|hidden[_-]?cases?|oracle|generators?|reference[_-]?solutions?|solutions?)$/i;
@@ -156,11 +219,20 @@ test('discovers exercises by title, tag, difficulty, and type without refetching
   ))).toEqual([
     'all',
     'array-processing',
+    'backtracking',
     'binary-search',
+    'disjoint-set',
     'dynamic-programming',
     'graph-traversal',
     'hash-map',
+    'heap',
+    'minimum-spanning-forest',
     'stack-string',
+    'tree-queries',
+    'tree-traversal',
+    'trie',
+    'trie-dynamic-programming',
+    'two-pointers',
   ]);
 
   await search.fill('  CAPACITY upgrade  ');
@@ -178,12 +250,20 @@ test('discovers exercises by title, tag, difficulty, and type without refetching
   await expect(questionSelect).toHaveValue('shortest-handoff-path');
   await expect(page.locator('#qTitle')).toHaveText('Shortest Handoff Path');
 
+  await search.fill('resilient disjoint-set');
+  await expectVisibleSlugs(page, ['resilient-network-budget']);
+  await expect(questionSelect).toHaveValue('resilient-network-budget');
+  await expect(page.locator('#qTitle')).toHaveText('Resilient Network Budget');
+
   await search.fill('');
   await difficulty.selectOption('Easy');
   await expectVisibleSlugs(page, [
     'focus-block-rollup',
     'balanced-template-markers',
     'capacity-upgrade-index',
+    'mentor-level-widths',
+    'threshold-pair-count',
+    'command-prefix-census',
   ]);
   await expect(questionSelect).toHaveValue('focus-block-rollup');
 

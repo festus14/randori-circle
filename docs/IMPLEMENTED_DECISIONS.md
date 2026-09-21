@@ -2464,3 +2464,30 @@ delayed, then verify one write, stale-read fencing, two-browser convergence,
 room/account fences, and terminal behavior. Rollback is code-only and restores
 the prior blocking refresh; migration 19 and all durable aggregate rows remain
 unchanged.
+
+## ID-60: Broaden the executable catalogue with a bounded original pack
+
+Status: reviewed content increment; no migration.
+
+**Decision.** Add nine independently authored `slug@1` exercises in an even
+Easy, Medium, and Hard split. The pack fills trees, two pointers, tries, heaps,
+backtracking, and disjoint-set gaps while retaining every existing active and
+retired identity. Each exercise ships JavaScript and Python starters, explicit
+tie rules, eight deterministic-shape server-owned cases with randomized bounded
+variants, an efficient oracle, and one-to-one original-content provenance with
+a canonical hash and bounded review expiry. No third-party account, private
+endpoint, copied wording, or derived test data is part of the design.
+
+**Alternatives.** Premium-platform crawling is rejected on rights, terms,
+privacy, availability, and provenance grounds. External links do not deliver
+in-app execution. A bulk catalogue import is harder to review and roll back.
+A smaller pack without Hard exercises leaves weekly progression incomplete.
+
+**Rollout and recovery.** Ship through existing catalogue, provenance,
+coverage, API-execution, and Linux browser gates; canary discovery plus one run
+per language. No schema change is required. Rollback removes only the nine new
+records, runtime definitions, and matching manifest entries while never
+reassigning their versioned identities. Use the existing fail-closed takedown
+path for a specific rights or correctness concern. Full selection, originality,
+runtime, and recovery detail is in
+[`CATALOGUE_PACK_V3.md`](CATALOGUE_PACK_V3.md).
