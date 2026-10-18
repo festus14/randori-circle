@@ -27,6 +27,9 @@ persistence; it never pushes repository changes and needs no Git credential.
 The backup-control allowlists and exact workflow digests advance with the
 reviewed bytes.
 
+Runner images are pinned separately to `ubuntu-24.04`. Issue #238 records the
+pin and the Ubuntu 26 canary in `docs/UBUNTU_RUNNER_PINNING.md`.
+
 ## Compatibility choice
 
 `download-artifact@v8` fails on an artifact digest mismatch by default. Randori
