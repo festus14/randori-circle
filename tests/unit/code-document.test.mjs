@@ -9,6 +9,7 @@ import * as Y from 'yjs';
 import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
 import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
 import {
+  CODE_DOCUMENT_RETENTION_BATCH_LIMIT,
   CodeDocumentDataError,
   CodeDocumentInputError,
   getAuthorizedCodeDocument,
@@ -302,10 +303,36 @@ test('retention scrubs only an expired matching code projection and preserves bo
       VALUES (10,20,'focus-block-rollup',1,'javascript',?,?,?,?,1,'auth',2,'auth',NULL,1,'auth',
         'client_old',2,'2020-01-01T00:00:00.000Z','2020-01-01T00:00:00.000Z')`,
       args:[privateDocument.state,privateDocument.stateHash,privateDocument.codeHash,privateDocument.revision]});
-    assert.deepEqual(await purgeExpiredCodeDocuments(item.db),{purged:1});
+    assert.deepEqual(await purgeExpiredCodeDocuments(item.db),{purged:1,more:false});
     const rows=(await item.db.execute(`SELECT language FROM pair_code_documents ORDER BY language`)).rows;
     assert.deepEqual(rows.map(row=>row.language),['python']);
     const snapshot=(await item.db.execute(`SELECT code FROM pair_room_snapshots`)).rows[0];
     assert.deepEqual(JSON.parse(snapshot.code),{code:'',board:{shapes:[]}});
+  }finally{ item.close(); }
+});
+
+test('retention bounds each sweep and leaves the remaining backlog for a later sweep',async()=>{
+  const item=fixture();
+  try{
+    await migrate(item.db); await seed(item.db,{workspace:false});
+    const document=(await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY})).document;
+    await item.db.execute(`DELETE FROM pair_code_documents`);
+    for(const version of [1,2,3]){
+      await item.db.execute({sql:`INSERT INTO pair_code_documents
+        (week_id,pair_group_id,question_slug,question_version,language,y_state_base64,state_hash,code_hash,
+         revision,pair_user_a_id,pair_user_a_source,pair_user_b_id,pair_user_b_source,pair_user_c_id,
+         last_actor_id,last_actor_source,last_client_id,last_client_seq,created_at,updated_at)
+        VALUES (10,20,'focus-block-rollup',?,'javascript',?,?,?,?,1,'auth',2,'auth',NULL,1,'auth',
+          'client_old',2,'2020-01-01T00:00:00.000Z',?)`,
+        args:[version,document.state,document.stateHash,document.codeHash,document.revision,
+          `2020-01-0${version}T00:00:00.000Z`]});
+    }
+    assert.equal(CODE_DOCUMENT_RETENTION_BATCH_LIMIT,100);
+    assert.deepEqual(await purgeExpiredCodeDocuments(item.db,{limit:2}),{purged:2,more:true});
+    const remaining=(await item.db.execute(`SELECT question_version FROM pair_code_documents`)).rows;
+    assert.deepEqual(remaining.map(row=>Number(row.question_version)),[3]);
+    assert.deepEqual(await purgeExpiredCodeDocuments(item.db,{limit:2}),{purged:1,more:false});
+    assert.deepEqual(await purgeExpiredCodeDocuments(item.db,{limit:2}),{purged:0,more:false});
+    await assert.rejects(purgeExpiredCodeDocuments(item.db,{limit:0}),TypeError);
   }finally{ item.close(); }
 });

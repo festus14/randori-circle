@@ -80,7 +80,9 @@ History recomputes the code hash. Historical v2 and solo runs remain compatible.
 Responses are private and `no-store`. Documents contain code only—no board,
 chat, transcript, meeting URL, presence, provider credential, or hidden test.
 A strict 90-day cutoff runs before access and from the authenticated weekly
-scheduler. Workspace reads redact an expired projection even when recent board
+scheduler. Each scheduler sweep purges at most 100 expired documents in one
+write transaction and leaves any backlog for later due-window sweeps; there is
+no internal retry loop. Workspace reads redact an expired projection even when recent board
 activity kept the envelope fresh. Pair deletion, pair-shape change, or
 participant provenance change atomically invalidates both the document and the
 entire old-pair workspace (including its private board). Signed run evidence

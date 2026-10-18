@@ -9,6 +9,9 @@ export const CODE_DOCUMENT_STATE_LIMIT_BYTES=256*1024;
 export const CODE_DOCUMENT_UPDATE_LIMIT_BYTES=64*1024;
 export const CODE_DOCUMENT_CODE_LIMIT_BYTES=20*1024;
 export const CODE_DOCUMENT_RETENTION_DAYS=90;
+// One sweep holds a single write transaction; bound it and leave any backlog
+// for the next authenticated sweep or access-time purge.
+export const CODE_DOCUMENT_RETENTION_BATCH_LIMIT=100;
 const DOCUMENT_VERSION=/^[a-f0-9]{64}$/;
 const CLIENT_ID=/^[A-Za-z0-9_-]{8,64}$/;
 const QUESTION_SLUG=/^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -427,17 +430,20 @@ async function purgeExpiredCodeDocumentIdentity(db,identity){
   return true;
 }
 
-export async function purgeExpiredCodeDocuments(db){
+export async function purgeExpiredCodeDocuments(db,{limit=CODE_DOCUMENT_RETENTION_BATCH_LIMIT}={}){
   if(!db||typeof db.execute!=='function') throw new TypeError('database client is required');
+  if(!Number.isSafeInteger(limit)||limit<1) throw new TypeError('retention limit must be a positive integer');
   const ownsTransaction=typeof db.transaction==='function';
   const transaction=ownsTransaction?await db.transaction('write'):db; let finished=false;
   try{
-    const stale=await transaction.execute(`SELECT week_id,pair_group_id,question_slug,question_version,language
+    const stale=await transaction.execute({sql:`SELECT week_id,pair_group_id,question_slug,question_version,language
       FROM pair_code_documents WHERE updated_at < ${RETENTION_CUTOFF_SQL}
-      ORDER BY updated_at,week_id,pair_group_id,question_slug,question_version,language`);
+      ORDER BY updated_at,week_id,pair_group_id,question_slug,question_version,language
+      LIMIT ?`,
+    args:[limit+1]});
     if(!Array.isArray(stale?.rows)) throw new CodeDocumentDataError('retention query is invalid');
     let purged=0;
-    for(const row of stale.rows){
+    for(const row of stale.rows.slice(0,limit)){
       const identity={
         weekId:positiveSafeInteger(row.week_id),pairGroupId:positiveSafeInteger(row.pair_group_id),
         roomId:`week_${row.week_id}_pair_${row.pair_group_id}`,questionSlug:String(row.question_slug||''),
@@ -451,7 +457,7 @@ export async function purgeExpiredCodeDocuments(db){
     }
     if(ownsTransaction) await finish(transaction,'commit');
     finished=true;
-    return {purged};
+    return {purged,more:stale.rows.length>limit};
   }catch(error){
     if(ownsTransaction&&!finished){ try{ await finish(transaction,'rollback'); }catch{} }
     throw error;
