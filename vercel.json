@@ -1,5 +1,6 @@
 {
   "cleanUrls": true,
+  "regions": ["dub1"],
   "headers": [
     {
       "source": "/api/(.*)",
