@@ -2178,6 +2178,42 @@ test('execution uses only server-owned versioned cases and persists exact author
     assert.equal(executed.some(call=>/CREATE TABLE|ALTER TABLE|CREATE INDEX/i.test(call.sql)),false);
   }
 
+  const v3Question=listPublicExercises().find(candidate=>candidate.slug==='threshold-pair-count');
+  assert.ok(v3Question);
+  for(const language of ['javascript','python']){
+    executed.length=0;
+    const code=language==='javascript'
+      ? `function thresholdPairCount(values, ceiling) {
+          let left=0,right=values.length-1,count=0;
+          while(left<right){
+            if(values[left]+values[right]<=ceiling){count+=right-left;left+=1;}
+            else right-=1;
+          }
+          return count;
+        }`
+      : `def threshold_pair_count(values, ceiling):
+          left, right, count = 0, len(values) - 1, 0
+          while left < right:
+              if values[left] + values[right] <= ceiling:
+                  count += right - left
+                  left += 1
+              else:
+                  right -= 1
+          return count`;
+    const result=await invoke(dataHandler,{
+      method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers,
+      body:{language,code,question_slug:v3Question.slug,question_version:v3Question.version},
+    });
+    assert.equal(result.status,200,language);
+    assert.equal(result.body.question_slug,v3Question.slug);
+    assert.equal(result.body.question_version,1);
+    assert.equal(result.body.passed_count,8);
+    assert.equal(result.body.total_count,8);
+    const insert=executed.find(call=>call.sql.includes('INSERT INTO session_runs')&&call.sql.includes('RETURNING id'));
+    assert.ok(insert,`pack v3 ${language} result is persisted`);
+    assert.equal(insert.args.slice(-12)[4],v3Question.slug);
+  }
+
   for(const language of ['javascript','python']){
     const suite=createEvaluationSuite(question.slug,question.version,language,{random:()=>0.5});
     const code=language==='javascript'
@@ -2504,8 +2540,10 @@ test('questions expose only the active original catalogue and make no LeetCode o
     url: '/api/questions', query: { endpoint: 'questions' }, headers: { 'x-test-auth': 'user' },
   });
   assert.equal(questions.status, 200);
-  assert.equal(questions.body.questions.length,10);
+  assert.equal(questions.body.questions.length,19);
   assert.equal(questions.body.questions.every(question=>question.source==='randori-original' && question.status==='active'),true);
+  assert.deepEqual(new Set(questions.body.questions.map(question=>question.difficulty)),new Set(['Easy','Medium','Hard']));
+  assert.equal(questions.body.questions.some(question=>question.slug==='resilient-network-budget'),true);
   assert.equal(questions.body.questions.some(question=>question.slug==='archived-session-streak'),false);
   for(const question of questions.body.questions){
     const serialized=JSON.stringify(question);

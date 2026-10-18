@@ -11630,7 +11630,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const host=getHost(); const ta=getTA(); const note=document.getElementById(fallbackNoteId);
     try{ host && host.querySelectorAll('.monaco-loader').forEach(l=>l.remove()); }catch{}
     if(host){ host.style.display='none'; }
-    if(ta){ ta.style.display='block'; ta.style.minHeight='420px'; ta.focus && ta.focus(); }
+    // An asset failure (or its delayed retry) must never steal keyboard focus
+    // from a control the user is already operating.
+    const focusFree=!document.activeElement||document.activeElement===document.body;
+    if(ta){ ta.style.display='block'; ta.style.minHeight='420px'; if(focusFree) ta.focus && ta.focus(); }
     if(note){ note.style.display='block'; note.title=reason||''; note.innerHTML=LOCAL_RUNTIME
       ?'Local mode uses the plain editor with lint off.'
       :'Monaco failed to load ('+escapeHtml(reason||'unknown')+') — using plain editor with lint off. <button id="monacoRetry" class="pill" style="margin-left:8px">Retry CDN</button>'; }

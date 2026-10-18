@@ -85,7 +85,7 @@ test('the bundled original catalogue passes strict validation', () => {
   assert.equal(Object.hasOwn(raw, 'evaluationSuites'), false);
   assert.doesNotMatch(JSON.stringify(raw), /"evaluationSuites"|"serverTests"|"tests":/);
   const result = validateCatalog(raw);
-  assert.deepEqual(result, { valid: true, exerciseCount: 11 });
+  assert.deepEqual(result, { valid: true, exerciseCount: 20 });
   assert.deepEqual(SUPPORTED_LANGUAGES, ['javascript', 'python']);
 });
 
@@ -120,12 +120,12 @@ test('a warm runtime rechecks review expiry on every catalogue operation', () =>
   } finally {
     globalThis.Date = RealDate;
   }
-  assert.equal(listPublicExercises().length, 10);
+  assert.equal(listPublicExercises().length, 19);
 });
 
 test('public listing returns full active exercises without server-owned test data', () => {
   const exercises = listPublicExercises();
-  assert.equal(exercises.length, 10);
+  assert.equal(exercises.length, 19);
   assert.deepEqual(
     exercises.map(exercise => exercise.slug),
     [
@@ -139,6 +139,15 @@ test('public listing returns full active exercises without server-owned test dat
       'shortest-handoff-path',
       'message-frequency-leaders',
       'recovery-budget-plan',
+      'mentor-level-widths',
+      'threshold-pair-count',
+      'command-prefix-census',
+      'release-feed-merge',
+      'compatible-review-orders',
+      'connectivity-checkpoints',
+      'coaching-route-sums',
+      'command-message-segmentation',
+      'resilient-network-budget',
     ],
   );
   for (const exercise of exercises) {
@@ -187,6 +196,256 @@ test('the original content pack exposes the intended concepts and complete publi
     getPublicExercise('capacity-upgrade-index',1).prompt,
     /input must not be modified/i,
   );
+});
+
+test('catalogue pack v3 fills core pattern gaps with an even difficulty split', () => {
+  const expected = {
+    'mentor-level-widths': ['Easy', 'tree-traversal', ['trees', 'breadth-first-search']],
+    'threshold-pair-count': ['Easy', 'two-pointers', ['arrays', 'two-pointers']],
+    'command-prefix-census': ['Easy', 'trie', ['tries', 'strings']],
+    'release-feed-merge': ['Medium', 'heap', ['heaps', 'multiway-merge']],
+    'compatible-review-orders': ['Medium', 'backtracking', ['backtracking', 'bitmasking']],
+    'connectivity-checkpoints': ['Medium', 'disjoint-set', ['disjoint-set', 'graphs']],
+    'coaching-route-sums': ['Hard', 'tree-queries', ['trees', 'lowest-common-ancestor']],
+    'command-message-segmentation': ['Hard', 'trie-dynamic-programming', ['tries', 'dynamic-programming']],
+    'resilient-network-budget': ['Hard', 'minimum-spanning-forest', ['disjoint-set', 'greedy', 'graphs']],
+  };
+  const difficulties = { Easy: 0, Medium: 0, Hard: 0 };
+  for (const [slug, [difficulty, type, tags]] of Object.entries(expected)) {
+    const exercise = getPublicExercise(slug, 1);
+    assert.ok(exercise, slug);
+    assert.equal(exercise.difficulty, difficulty);
+    assert.equal(exercise.type, type);
+    assert.deepEqual(exercise.tags, tags);
+    assert.ok(exercise.prompt.length > 180);
+    assert.ok(exercise.constraints.length >= 3);
+    assert.ok(exercise.examples.length >= 2);
+    assert.equal(exercise.reviewDate, '2026-09-19');
+    assert.equal(exercise.contentProvenance.expiresAt, '2027-09-19');
+    assert.equal(exercise.contentProvenance.licenseIdentifier, 'LicenseRef-Randori-Original');
+    difficulties[difficulty] += 1;
+  }
+  assert.deepEqual(difficulties, { Easy: 3, Medium: 3, Hard: 3 });
+});
+
+test('catalogue pack v3 guarantees boundary, tie, duplicate, impossible, and scale cases', () => {
+  const suite = slug => createEvaluationSuite(slug, 1, 'javascript', { random: seededRandom(235) }).tests;
+
+  const mentor = suite('mentor-level-widths');
+  assert.deepEqual(mentor.slice(0, 3).map(testCase => testCase.expected), [[], [1], [1, 2, 3, 1]]);
+  assert.equal(mentor.at(-1).args[0].length, 20_000);
+  assert.deepEqual(mentor.at(-1).expected.slice(0, 4), [1, 2, 4, 8]);
+
+  const pairs = suite('threshold-pair-count');
+  assert.deepEqual(pairs.slice(0, 4).map(testCase => testCase.expected), [0, 0, 7, 6]);
+  assert.equal(pairs.at(-1).args[0].length, 20_000);
+  assert.equal(Number.isSafeInteger(pairs.at(-1).expected), true);
+
+  const prefixes = suite('command-prefix-census');
+  assert.deepEqual(prefixes[0].expected, [0]);
+  assert.deepEqual(prefixes[1].expected, [3, 2, 1, 0]);
+  assert.equal(prefixes.at(-1).args[0].length, 10_000);
+  assert.equal(prefixes.at(-1).args[1].length, 2_000);
+  assert.equal(prefixes.at(-1).expected.every(count => count === 100), true);
+
+  const feeds = suite('release-feed-merge');
+  assert.deepEqual(feeds.slice(0, 3).map(testCase => testCase.expected), [
+    [],
+    ['solo', 'later'],
+    ['9-start', 'Zulu', 'alpha', 'dune', 'coral'],
+  ]);
+  assert.equal(feeds.at(-1).expected.length, 2_000);
+  assert.equal(feeds.at(-1).expected.every(id => id.length === 40), true);
+
+  const orders = suite('compatible-review-orders');
+  assert.deepEqual(orders.slice(0, 4).map(testCase => testCase.expected), [1, 0, 2, 2]);
+  assert.equal(orders.at(-1).expected, 362_880);
+
+  const connectivity = suite('connectivity-checkpoints');
+  assert.deepEqual(connectivity[0].expected, []);
+  assert.deepEqual(connectivity[1].expected, [2, 2, 2, 1]);
+  assert.deepEqual(connectivity[2].expected, [4, 3]);
+  assert.equal(connectivity.at(-1).expected.length, 10_000);
+  assert.equal(connectivity.at(-1).expected.at(-1), 1);
+
+  const routes = suite('coaching-route-sums');
+  assert.deepEqual(routes[0].expected, [7]);
+  assert.deepEqual(routes[1].expected, [7, 3]);
+  assert.deepEqual(routes[2].expected, [10, 9, 3]);
+  assert.deepEqual(routes[3].expected, []);
+  assert.equal(routes.at(-1).args[0].length, 10_000);
+  assert.equal(routes.at(-1).expected.length, 5_000);
+
+  const segmentation = suite('command-message-segmentation');
+  assert.deepEqual(segmentation.slice(0, 5).map(testCase => testCase.expected), [
+    [], null, ['a', 'bc'], ['review'], null,
+  ]);
+  assert.equal(segmentation.at(-1).args[1].length, 2_000);
+  assert.equal(segmentation.at(-1).expected.length, 100);
+  assert.equal(segmentation.at(-1).expected.every(token => token.length === 20), true);
+
+  const network = suite('resilient-network-budget');
+  assert.deepEqual(network.slice(0, 4).map(testCase => testCase.expected), [
+    { cost: 0, proposalIndices: [] },
+    { cost: 0, proposalIndices: [] },
+    { cost: -1, proposalIndices: [] },
+    { cost: 4, proposalIndices: [1, 2, 4] },
+  ]);
+  assert.deepEqual(network.at(-1).expected, {
+    cost: 9_999,
+    proposalIndices: Array.from({ length: 9_999 }, (_, index) => index),
+  });
+});
+
+test('catalogue pack v3 generated cases agree with independent small-input references', () => {
+  const references = {
+    'mentor-level-widths': parents => {
+      const widths = [];
+      for (let node = 0; node < parents.length; node += 1) {
+        let depth = 0;
+        for (let current = node; current > 0; current = parents[current]) depth += 1;
+        widths[depth] = (widths[depth] || 0) + 1;
+      }
+      return widths;
+    },
+    'threshold-pair-count': (values, ceiling) => {
+      let count = 0;
+      for (let left = 0; left < values.length; left += 1) {
+        for (let right = left + 1; right < values.length; right += 1) {
+          if (values[left] + values[right] <= ceiling) count += 1;
+        }
+      }
+      return count;
+    },
+    'command-prefix-census': (commands, prefixes) => (
+      prefixes.map(prefix => commands.filter(command => command.startsWith(prefix)).length)
+    ),
+    'release-feed-merge': feeds => feeds.flat()
+      .sort((left, right) => left[0] - right[0] || (left[1] < right[1] ? -1 : 1))
+      .map(event => event[1]),
+    'compatible-review-orders': (reviewers, blockedPairs) => {
+      const blocked = new Set(blockedPairs.flatMap(([left, right]) => [`${left}\0${right}`, `${right}\0${left}`]));
+      const visit = (used, previous) => {
+        if (used.size === reviewers.length) return 1;
+        let count = 0;
+        for (const reviewer of reviewers) {
+          if (used.has(reviewer) || (previous !== null && blocked.has(`${previous}\0${reviewer}`))) continue;
+          used.add(reviewer);
+          count += visit(used, reviewer);
+          used.delete(reviewer);
+        }
+        return count;
+      };
+      return visit(new Set(), null);
+    },
+    'connectivity-checkpoints': (nodeCount, links) => {
+      const active = [];
+      return links.map(link => {
+        active.push(link);
+        const adjacency = Array.from({ length: nodeCount }, () => []);
+        for (const [left, right] of active) {
+          adjacency[left].push(right);
+          adjacency[right].push(left);
+        }
+        const seen = new Set();
+        let components = 0;
+        for (let node = 0; node < nodeCount; node += 1) {
+          if (seen.has(node)) continue;
+          components += 1;
+          const stack = [node];
+          seen.add(node);
+          while (stack.length > 0) {
+            for (const next of adjacency[stack.pop()]) {
+              if (!seen.has(next)) {
+                seen.add(next);
+                stack.push(next);
+              }
+            }
+          }
+        }
+        return components;
+      });
+    },
+    'coaching-route-sums': (parents, values, queries) => queries.map(([first, second]) => {
+      const firstSums = new Map();
+      let total = 0;
+      for (let node = first; node !== -1; node = parents[node]) {
+        total += values[node];
+        firstSums.set(node, total);
+      }
+      let secondTotal = 0;
+      let node = second;
+      while (!firstSums.has(node)) {
+        secondTotal += values[node];
+        node = parents[node];
+      }
+      return firstSums.get(node) + secondTotal;
+    }),
+    'command-message-segmentation': (tokens, message) => {
+      const memo = new Map([[message.length, []]]);
+      const solve = start => {
+        if (memo.has(start)) return memo.get(start);
+        let best = null;
+        for (const token of tokens) {
+          if (!message.startsWith(token, start)) continue;
+          const suffix = solve(start + token.length);
+          if (suffix === null) continue;
+          const candidate = [token, ...suffix];
+          if (best === null || candidate.length < best.length || (
+            candidate.length === best.length && candidate.join('\0') < best.join('\0')
+          )) best = candidate;
+        }
+        memo.set(start, best);
+        return best;
+      };
+      return solve(0);
+    },
+    'resilient-network-budget': (nodeCount, existingLinks, proposals) => {
+      const groups = Array.from({ length: nodeCount }, (_, index) => index);
+      let components = nodeCount;
+      const join = (left, right) => {
+        const leftGroup = groups[left];
+        const rightGroup = groups[right];
+        if (leftGroup === rightGroup) return false;
+        for (let index = 0; index < groups.length; index += 1) {
+          if (groups[index] === rightGroup) groups[index] = leftGroup;
+        }
+        components -= 1;
+        return true;
+      };
+      existingLinks.forEach(([left, right]) => join(left, right));
+      const ordered = proposals.map((proposal, index) => ({ proposal, index }))
+        .sort((left, right) => left.proposal[2] - right.proposal[2] || left.index - right.index);
+      let cost = 0;
+      const proposalIndices = [];
+      for (const { proposal: [left, right, price], index } of ordered) {
+        if (!join(left, right)) continue;
+        cost += price;
+        proposalIndices.push(index);
+        if (components === 1) break;
+      }
+      return components === 1 ? { cost, proposalIndices } : { cost: -1, proposalIndices: [] };
+    },
+  };
+  const randomStarts = {
+    'mentor-level-widths': 3,
+    'threshold-pair-count': 4,
+    'command-prefix-census': 3,
+    'release-feed-merge': 3,
+    'compatible-review-orders': 4,
+    'connectivity-checkpoints': 3,
+    'coaching-route-sums': 4,
+    'command-message-segmentation': 5,
+    'resilient-network-budget': 4,
+  };
+  for (const seed of [1, 17, 235]) {
+    for (const [slug, reference] of Object.entries(references)) {
+      const tests = createEvaluationSuite(slug, 1, 'javascript', { random: seededRandom(seed) }).tests;
+      for (const testCase of tests.slice(randomStarts[slug], -1)) {
+        assert.deepEqual(reference(...structuredClone(testCase.args)), testCase.expected, `${slug} seed ${seed}`);
+      }
+    }
+  }
 });
 
 test('balanced marker suites always include meaningful valid and invalid marker strings',()=>{
@@ -518,6 +777,15 @@ test('every generator retains randomised non-boundary cases', () => {
     'shortest-handoff-path': 4,
     'message-frequency-leaders': 4,
     'recovery-budget-plan': 5,
+    'mentor-level-widths': 3,
+    'threshold-pair-count': 4,
+    'command-prefix-census': 3,
+    'release-feed-merge': 3,
+    'compatible-review-orders': 4,
+    'connectivity-checkpoints': 3,
+    'coaching-route-sums': 4,
+    'command-message-segmentation': 5,
+    'resilient-network-budget': 4,
   };
   for (const exercise of listPublicExercises()) {
     const first = createEvaluationSuite(
