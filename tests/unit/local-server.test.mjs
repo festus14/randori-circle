@@ -1028,6 +1028,10 @@ test('runtime environment disables ambient providers and restores the caller env
     LEETCODE_INGESTION_AUTHORIZED:'true',
     RUN_ATTESTATION_SECRET:'ambient-run-attestation-secret',
     RUN_ATTESTATION_PREVIOUS_SECRETS:'ambient-previous-attestation-secrets',
+    EXECUTION_PROVIDER:'vercel-sandbox',
+    EXECUTION_API_URL:'https://ambient-runner.example.test/api/v2/execute',
+    EXECUTION_API_TOKEN:'ambient-execution-token',
+    VERCEL_OIDC_TOKEN:'ambient-oidc-token',
   };
   const config=resolveLocalServerConfig({rootDir:directory,argv:[],env:envTarget});
   const original={...envTarget};
@@ -1049,6 +1053,10 @@ test('runtime environment disables ambient providers and restores the caller env
           aiEnabled:envTarget.AI_ENABLED,
           runAttestationSecret:envTarget.RUN_ATTESTATION_SECRET,
           previousAttestationSecrets:envTarget.RUN_ATTESTATION_PREVIOUS_SECRETS,
+          executionProvider:envTarget.EXECUTION_PROVIDER,
+          executionUrl:envTarget.EXECUTION_API_URL,
+          executionToken:envTarget.EXECUTION_API_TOKEN,
+          oidcToken:envTarget.VERCEL_OIDC_TOKEN,
           membershipEnabled:envTarget.CIRCLE_MEMBERSHIP_ENABLED,
           localIdentity:envTarget.RANDORI_LOCAL_IDENTITY,
           openSignup:envTarget.ALLOW_OPEN_SIGNUP,
@@ -1070,6 +1078,10 @@ test('runtime environment disables ambient providers and restores the caller env
     aiEnabled:'false',
     runAttestationSecret:'',
     previousAttestationSecrets:'',
+    executionProvider:'',
+    executionUrl:'',
+    executionToken:'',
+    oidcToken:'',
     membershipEnabled:'true',
     localIdentity:'true',
     openSignup:'false',

@@ -977,6 +977,12 @@ function installRuntimeEnvironment(config,url,secret,envTarget=process.env){
     OPENAI_API_KEY:'',
     SENTRY_DSN:'',
     NEXT_PUBLIC_SENTRY_DSN:'',
+    // Code execution stays unavailable locally: the loopback runtime never
+    // inherits a hosted sandbox or remote execution endpoint.
+    EXECUTION_PROVIDER:'',
+    EXECUTION_API_URL:'',
+    EXECUTION_API_TOKEN:'',
+    VERCEL_OIDC_TOKEN:'',
     TWILIO_AUTH_TOKEN:'',
     ADMIN_EMAILS:'',
     SIGNUP_ALLOWLIST:'',

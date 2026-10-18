@@ -545,6 +545,8 @@ function invoke(handler, { method = 'GET', url = '/', query = {}, headers = {}, 
   });
 }
 
+const TEST_EXECUTION_API_URL='https://execution.test.example/api/v2/piston/execute';
+
 beforeEach(() => {
   db=createMockDb();
   executed.length = 0;
@@ -594,7 +596,12 @@ beforeEach(() => {
     'TURSO_AUTH_TOKEN', 'TURSO_DATABASE_URL', 'VERCEL', 'VERCEL_ENV', 'VERCEL_URL',
     'RUN_ATTESTATION_SECRET', 'RUN_ATTESTATION_PREVIOUS_SECRETS',
     'TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM',
+    'EXECUTION_PROVIDER', 'EXECUTION_API_URL', 'EXECUTION_API_TOKEN',
   ]) delete process.env[key];
+  // Execution tests target the provider abstraction through a self-hosted
+  // Piston-compatible endpoint whose transport each test replaces.
+  process.env.EXECUTION_PROVIDER='piston';
+  process.env.EXECUTION_API_URL=TEST_EXECUTION_API_URL;
 });
 
 test('an unhandled data API failure is reported to Sentry exactly once', async () => {
@@ -1637,7 +1644,7 @@ test('pair run feed is member-scoped, incremental, private, and verifies the sub
       after:83,
     });
     assert.equal(JSON.stringify(feed.body).includes('PRIVATE'),false);
-    for(const field of ['code','code_preview','test_cases_snapshot','results_json','attestation','email','piston','stdout','stderr']){
+    for(const field of ['code','code_preview','test_cases_snapshot','results_json','attestation','email','piston','execution','stdout','stderr']){
       assert.equal(Object.hasOwn(feed.body.runs[0],field),false,`${field} must stay private`);
     }
 
@@ -2074,8 +2081,8 @@ test('execution uses only server-owned versioned cases and persists exact author
     return rows();
   };
   globalThis.fetch = async (url,options) => {
-    assert.match(String(url),/piston\/execute/);
-    assert.doesNotMatch(String(url),/leetcode/i);
+    assert.equal(String(url),TEST_EXECUTION_API_URL);
+    assert.doesNotMatch(String(url),/leetcode|emkc\.org/i);
     const submission=JSON.parse(options.body);
     submitted.push(submission);
     const source=submission.files[0].content;
@@ -2138,8 +2145,10 @@ test('execution uses only server-owned versioned cases and persists exact author
     assert.equal(submitted.at(-1).files[0].name,expectedFile);
     assert.equal(JSON.stringify(result.body).includes('CLIENT_FORGED_SECRET'),false);
     assert.equal('test_cases' in result.body,false);
-    assert.equal('stdout' in result.body.piston,false);
-    assert.equal('stderr' in result.body.piston,false);
+    assert.equal(result.body.execution.provider,'piston');
+    assert.equal('stdout' in result.body.execution,false);
+    assert.equal('stderr' in result.body.execution,false);
+    assert.equal('piston' in result.body,false);
     assert.deepEqual(Object.keys(result.body.results[0]).sort(),['error','idx','pass']);
 
     const encoded=submitted.at(-1).files[0].content.match(/(?:Buffer\.from|b64decode)\('([A-Za-z0-9+/=]+)'/)?.[1];
@@ -2372,23 +2381,72 @@ test('execution failures never run request-time schema DDL', async () => {
   }
 });
 
-test('Piston failures are reported without leaking provider output or persisting a partial run', async () => {
+test('provider failures are reported without leaking provider output or persisting a partial run', async () => {
   const question=listPublicExercises()[0];
   executeHandler=sql=>sql.includes("'execute_lease_start'") && sql.includes('RETURNING id')?rows([{id:202}]):rows();
   process.env.NEXT_PUBLIC_SENTRY_DSN='https://public@example.test/1';
   globalThis.fetch=async url=>{
-    assert.match(String(url),/piston\/execute/);
+    assert.equal(String(url),TEST_EXECUTION_API_URL);
     return new Response('UPSTREAM_ECHOED_HIDDEN_HARNESS',{status:502});
   };
   const failed=await invoke(dataHandler,{
     method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers:{'x-test-auth':'user'},
     body:{language:'javascript',code:'function answer(){}',question_slug:question.slug},
   });
-  assert.equal(failed.status,500);
+  assert.equal(failed.status,503);
+  assert.equal(failed.body.code,'execution_unavailable');
   assert.equal(JSON.stringify(failed.body).includes('UPSTREAM_ECHOED_HIDDEN_HARNESS'),false);
   assert.equal(executed.some(call=>call.sql.includes('INSERT INTO session_runs')),false);
   assert.equal(sentryMessageCalls.length,1);
+  assert.equal(sentryMessageCalls[0][1].tags.event,'execute_unavailable');
+
+  // The lease is released in the handler's finally block after the response.
+  await new Promise(resolve=>setImmediate(resolve));
+  sentryMessageCalls.length=0;
+  globalThis.fetch=async()=>new Response('UPSTREAM_NOT_JSON',{status:200});
+  const malformed=await invoke(dataHandler,{
+    method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers:{'x-test-auth':'user'},
+    body:{language:'javascript',code:'function answer(){}',question_slug:question.slug},
+  });
+  assert.equal(malformed.status,500);
+  assert.deepEqual(malformed.body,{ok:false,error:'code execution failed',code:'execution_failed',language:'javascript'});
+  assert.equal(executed.some(call=>call.sql.includes('INSERT INTO session_runs')),false);
   assert.equal(sentryMessageCalls[0][1].tags.event,'execute_fail');
+});
+
+test('execution fails closed with a clear unavailable error when no provider is configured', async () => {
+  const question=listPublicExercises()[0];
+  let networkCalls=0;
+  globalThis.fetch=async()=>{ networkCalls+=1; throw new Error('no provider means no network'); };
+  executeHandler=sql=>{
+    if(sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')) return rows([{pair_group_id:20,week_id:10,user_a_id:2,user_b_id:9,user_c_id:null}]);
+    throw new Error(`unconfigured execution must not write: ${sql}`);
+  };
+  for(const env of [
+    {},
+    {EXECUTION_PROVIDER:'judge0'},
+    {EXECUTION_PROVIDER:'piston'},
+    {EXECUTION_PROVIDER:'piston',EXECUTION_API_URL:'https://emkc.org/api/v2/piston/execute'},
+    {EXECUTION_PROVIDER:'piston',EXECUTION_API_URL:'http://runner.example.test/api/v2/execute'},
+  ]){
+    delete process.env.EXECUTION_PROVIDER;
+    delete process.env.EXECUTION_API_URL;
+    Object.assign(process.env,env);
+    executed.length=0;
+    const result=await invoke(dataHandler,{
+      method:'POST',url:'/api/execute',query:{endpoint:'execute'},headers:{'x-test-auth':'user'},
+      body:{language:'python',code:'def f(): pass',question_slug:question.slug,week_id:10,pair_group_id:20},
+    });
+    assert.equal(result.status,503,JSON.stringify(env));
+    assert.deepEqual(result.body,{
+      ok:false,
+      error:'code execution is temporarily unavailable; your code was not run',
+      code:'execution_unavailable',
+      language:'python',
+    });
+    assert.equal(executed.some(call=>call.sql.includes('INSERT INTO')),false);
+  }
+  assert.equal(networkCalls,0);
 });
 
 test('a concurrent execution by the same user is rejected before a second Piston call', async () => {

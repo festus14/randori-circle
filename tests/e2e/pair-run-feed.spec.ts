@@ -250,7 +250,7 @@ class PairRunStore {
       total_count: run.total_count,
       duration_ms: run.duration_ms,
       results: [0, 1, 2].map(idx => ({ idx, pass: true })),
-      piston: { code: 0, signal: null, has_stderr: false },
+      execution: { provider: 'vercel-sandbox', code: 0, signal: null, timed_out: false, has_stderr: false },
     });
   }
 

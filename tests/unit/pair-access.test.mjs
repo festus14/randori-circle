@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {afterEach,mock,test} from 'node:test';
+import {afterEach,beforeEach,mock,test} from 'node:test';
 import {createClient} from '@libsql/client';
 
 let currentDb=null;
@@ -149,7 +149,14 @@ function tracedClient(delegate,onExecute=()=>{}){
   };
 }
 
+beforeEach(()=>{
+  process.env.EXECUTION_PROVIDER='piston';
+  process.env.EXECUTION_API_URL='https://execution.test.example/api/v2/execute';
+});
+
 afterEach(()=>{
+  delete process.env.EXECUTION_PROVIDER;
+  delete process.env.EXECUTION_API_URL;
   try{ currentDb?.close?.(); }catch{}
   currentDb=null;
   providerCalls=0;

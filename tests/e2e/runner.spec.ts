@@ -105,7 +105,7 @@ test('selects an original exercise and renders authoritative server results with
         passed_count: 3,
         total_count: 3,
         results: [0, 1, 2].map(idx => ({ idx, pass: true })),
-        piston: { code: 0 },
+        execution: { provider: 'vercel-sandbox', code: 0, signal: null, timed_out: false, has_stderr: false },
       };
     },
   });
@@ -155,7 +155,7 @@ test('displays a failed authoritative result without calculating against public 
         passed_count: 0,
         total_count: 3,
         results: [0, 1, 2].map(idx => ({ idx, pass: false })),
-        piston: { code: 0 },
+        execution: { provider: 'vercel-sandbox', code: 0, signal: null, timed_out: false, has_stderr: false },
       };
     },
   });
@@ -170,6 +170,42 @@ test('displays a failed authoritative result without calculating against public 
   await expect(page.locator('#runOut')).toContainText('Case 1 ✗ fail');
   expect(executePayload).toMatchObject({ question_version: originalQuestion.version });
   expect(executePayload).not.toHaveProperty('test_cases');
+});
+
+test('shows a clear unavailable state when no isolated execution provider is reachable', async ({ page }) => {
+  let executeCalls = 0;
+  await mockApi(page, {
+    '/api/auth/me': { ok: true, user: signedInUser },
+    '/api/questions': { ok: true, questions: [originalQuestion], count: 1 },
+    '/api/execute': async () => {
+      executeCalls += 1;
+      return {
+        _status: 503,
+        ok: false,
+        error: 'code execution is temporarily unavailable; your code was not run',
+        code: 'execution_unavailable',
+        language: 'javascript',
+      };
+    },
+  });
+  await resetClientState(page, true);
+  await page.goto('/?view=code', { waitUntil: 'domcontentloaded' });
+  await page.locator('[data-tab="code"]').click();
+  await selectQuestion(page, originalQuestion.slug);
+  await setCode(page, correctSolution);
+  await page.locator('#runBtn').click();
+
+  const unavailable = page.locator('#runOut [data-execution-unavailable]');
+  await expect(unavailable).toContainText('Code execution is temporarily unavailable.');
+  await expect(unavailable).toContainText('Your code was not run');
+  await expect(page.locator('#runOut')).not.toContainText('Execution failed');
+  await expect(page.locator('#runOut')).not.toContainText('Check your code');
+  expect(executeCalls).toBe(1);
+  await expect.poll(() => page.evaluate(() => (
+    (window as typeof window & { _randori_code?: { getCode?: () => string } })._randori_code?.getCode?.()
+      || document.querySelector<HTMLTextAreaElement>('#editor')?.value
+      || ''
+  ))).toBe(correctSolution);
 });
 
 test('language changes update the active editor and preserve each language draft', async ({ page }) => {

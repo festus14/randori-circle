@@ -16,7 +16,7 @@ test('the plain editor remains usable when Monaco and formatter CDNs are unavail
         passed_count: 3,
         total_count: 3,
         results: [0, 1, 2].map(idx => ({ idx, pass: true })),
-        piston: { code: 0, stdout: '', stderr: '' },
+        execution: { provider: 'vercel-sandbox', code: 0, signal: null, timed_out: false, has_stderr: false },
       };
     },
   });

@@ -6507,7 +6507,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       }
     } else {
       if(tcs && tcs.length){
-        cards.push(`<div class="test" style="border-style:dashed"><div class="small"><b>${title||'Tests'}</b> — ${tcs.length} case(s) • lang <span class="kbd">${lang}</span> — JS local exec. Other langs via Piston (opt-in).</div></div>`);
+        cards.push(`<div class="test" style="border-style:dashed"><div class="small"><b>${title||'Tests'}</b> — ${tcs.length} case(s) • lang <span class="kbd">${lang}</span> — evaluated by the server execution gateway.</div></div>`);
         tcs.slice(0,8).forEach((tc,i)=>{
           let inN=_normalizeInput(tc.input||tc.raw);
           let exN=_normalizeExpect(tc.expect);
@@ -10784,6 +10784,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           if(window.toast) window.toast('Run '+lang+' '+passedCount+'/'+totalCount+' '+(passedCount===totalCount?'✓':'')+' verified by server');
         }catch(e){
           try{ if(window._randori_ui && window._randori_ui.hideLoader) window._randori_ui.hideLoader(); }catch{}
+          if(e && e.code==='execution_unavailable'){
+            if(runOutEl){ runOutEl.innerHTML='<div class="test" data-execution-unavailable style="border-color:var(--warn)"><div class="small"><b>Code execution is temporarily unavailable.</b> Your code was not run and nothing was recorded.<div class="small muted">Your editor contents are kept — try again in a few minutes.</div></div></div>'; runOutEl.scrollTop=runOutEl.scrollHeight; }
+            if(window.toast) window.toast('Code execution is temporarily unavailable');
+            return;
+          }
           const msg = (e && (e.error||e.detail||e.message))||String(e).slice(0,300);
           if(runOutEl){ runOutEl.innerHTML='<div class="test" style="border-color:var(--accent-3)"><div class="small">Execution failed: '+escapeHtml(String(msg).slice(0,400))+'<div class="small muted">Check your code and try again.</div></div></div>'; runOutEl.scrollTop=runOutEl.scrollHeight; }
           if(window.toast) window.toast('Execution error: '+String(msg).slice(0,120));
