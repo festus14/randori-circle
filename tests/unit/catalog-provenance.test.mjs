@@ -40,7 +40,7 @@ test('bundled provenance covers every exercise with current canonical hashes', (
   const { catalog, manifest } = fixtures();
   assert.deepEqual(
     validateProvenanceManifest(manifest, catalog, { now: '2026-09-19T12:00:00Z' }),
-    { valid: true, recordCount: 11 },
+    { valid: true, recordCount: 20 },
   );
   assert.equal(manifest.records.length, catalog.exercises.length);
   assert.equal(manifest.records.every(record => record.source.type === 'original'), true);
