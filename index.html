@@ -3487,6 +3487,7 @@ async function refreshMe(){
     }
     if(code==='email already registered') return 'That email already has an account. Sign in instead.';
     if(code==='invalid credentials') return 'Email or password is incorrect.';
+    if(code==='active circle membership required') return 'Your circle membership is no longer active. Ask the circle owner for a new invitation.';
     if(code.includes('temporarily unavailable')) return mode==='signup'
       ?'Account creation is temporarily unavailable. Try again.'
       :(mode==='reset'?'Password recovery is temporarily unavailable. Try again.':'Sign in is temporarily unavailable. Try again.');
