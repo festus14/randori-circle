@@ -53,7 +53,9 @@ export default async function handler(req,res){
   if(req.method==='GET'&&!safeReadOrigin(req)){
     return res.status(403).json({ok:false,error:'cross-origin read rejected'});
   }
-  const auth=await verifyRequestAuth(req);
+  let auth;
+  try{ auth=await verifyRequestAuth(req); }
+  catch{ return res.status(503).json({ok:false,error:'code document unavailable'}); }
   const viewerId=authenticatedUserId(auth);
   if(!viewerId) return res.status(401).json({ok:false,error:'authentication required'});
   let db;

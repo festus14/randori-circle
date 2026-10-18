@@ -13,6 +13,7 @@ let currentDb=null;
 let directory=null;
 
 function auth(req){
+  if(req?.headers?.['x-test-auth-failure']) return Promise.reject(new Error('session store unavailable'));
   const id=Number(req?.headers?.['x-test-user']);
   return Number.isSafeInteger(id)&&id>0?{id}:null;
 }
@@ -80,6 +81,18 @@ test('code-document API is private, no-store, and returns the same 404 for denie
   const futureCursor=await invoke({query:{...query,after_revision:'999'},user:1});
   assert.equal(futureCursor.status,200); assert.equal(futureCursor.body.changed,true);
   assert.equal(typeof futureCursor.body.state,'string');
+});
+
+test('code-document API returns the controlled 503 when session verification rejects',async()=>{
+  currentDb=await database();
+  for(const method of ['GET','POST']){
+    const failed=await invoke({method,query,headers:{'x-test-auth-failure':'1'}});
+    assert.equal(failed.status,503);
+    assert.deepEqual(failed.body,{ok:false,error:'code document unavailable'});
+  }
+  const anonymous=await invoke({query,user:null});
+  assert.equal(anonymous.status,401);
+  assert.deepEqual(anonymous.body,{ok:false,error:'authentication required'});
 });
 
 test('code-document API merges a canonical update and duplicate delivery is no-write success',async()=>{
