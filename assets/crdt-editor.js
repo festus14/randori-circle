@@ -9056,6 +9056,7 @@ ${err.toString()}`);
   var CLIENT_KEY = "randori-crdt-client-v1";
   var POLL_MS = 1200;
   var SEND_DEBOUNCE_MS = 120;
+  var AWAIT_PREREQUISITES_MS = 500;
   var RETRY_MAX_MS = 8e3;
   var QUEUE_RETENTION_MS = 90 * 24 * 60 * 60 * 1e3;
   var MAX_UPDATE_BYTES = 64 * 1024;
@@ -9590,7 +9591,14 @@ ${err.toString()}`);
     const owner = actorId();
     if (!owner || !identity || window._randori_workspace?.hydrated !== true || window._randori_workspace?.room !== identity.room || window._randori_authorized_room !== identity.room) {
       const room = String(window._randori_authorized_room || "");
-      deactivate({ awaitingRoom: !!owner && ROOM.test(room) });
+      const awaiting = !!owner && ROOM.test(room);
+      deactivate({ awaitingRoom: awaiting });
+      if (awaiting) {
+        const awaitingEpoch = state.epoch;
+        setTimeout(() => {
+          if (awaitingEpoch === state.epoch && state.awaitingRoom && document.visibilityState !== "hidden") activate();
+        }, AWAIT_PREREQUISITES_MS);
+      }
       return false;
     }
     if (sameIdentity(identity, state.identity) && owner === state.actorId && state.hydrated) return true;

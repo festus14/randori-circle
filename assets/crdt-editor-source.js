@@ -5,6 +5,7 @@ const PENDING_KEY='randori-crdt-pending-v1';
 const CLIENT_KEY='randori-crdt-client-v1';
 const POLL_MS=1200;
 const SEND_DEBOUNCE_MS=120;
+const AWAIT_PREREQUISITES_MS=500;
 const RETRY_MAX_MS=8000;
 const QUEUE_RETENTION_MS=90*24*60*60*1000;
 const MAX_UPDATE_BYTES=64*1024;
@@ -425,7 +426,20 @@ async function activate(){
   if(!owner||!identity||window._randori_workspace?.hydrated!==true
     ||window._randori_workspace?.room!==identity.room||window._randori_authorized_room!==identity.room){
     const room=String(window._randori_authorized_room||'');
-    deactivate({awaitingRoom:!!owner&&ROOM.test(room)}); return false;
+    const awaiting=!!owner&&ROOM.test(room);
+    deactivate({awaitingRoom:awaiting});
+    // A first-ever room hydrates with no workspace snapshot, so no selection
+    // event follows once the catalogue selection or workspace checkpoint
+    // becomes available. Re-check on a bounded cadence while this exact
+    // awaiting epoch is current; any fence, room change, or sign-out bumps
+    // the epoch and stops the loop.
+    if(awaiting){
+      const awaitingEpoch=state.epoch;
+      setTimeout(()=>{
+        if(awaitingEpoch===state.epoch&&state.awaitingRoom&&document.visibilityState!=='hidden') activate();
+      },AWAIT_PREREQUISITES_MS);
+    }
+    return false;
   }
   if(sameIdentity(identity,state.identity)&&owner===state.actorId&&state.hydrated) return true;
   // The v3 workspace owns code until its exact selection checkpoint is
