@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import { readCheckConstraintsEnforced } from '../db/check-constraint-state.js';
 import { inspectCompletedMembershipRollout } from '../db/membership-readiness.js';
 import { MIGRATION_CONTRACTS } from '../db/migration-contract.js';
 
@@ -193,9 +194,8 @@ export async function pairingSchemaV6Ready(db,{requireClosedMembership=false}={}
   if(!db||typeof db.execute!=='function') return false;
   try{
     const foreignKeys=await db.execute('PRAGMA foreign_keys');
-    const checks=await db.execute('PRAGMA ignore_check_constraints');
     if(Number(foreignKeys.rows?.[0]?.foreign_keys)!==1
-      ||Number(checks.rows?.[0]?.ignore_check_constraints)!==0
+      ||!(await readCheckConstraintsEnforced(db))
       ||!(await validateLedger(db))) return false;
     if((await pairingSchemaV6Fingerprint(db))!==PAIRING_SCHEMA_V6_FINGERPRINT) return false;
     if(requireClosedMembership){
