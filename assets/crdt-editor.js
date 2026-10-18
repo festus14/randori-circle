@@ -3189,6 +3189,16 @@ ${err.toString()}`);
     }
     throw unexpectedCase();
   };
+  var isParentOf = (parent, child) => {
+    while (child !== null) {
+      if (child.parent === parent) {
+        return true;
+      }
+      child = /** @type {AbstractType<any>} */
+      child.parent._item;
+    }
+    return false;
+  };
   var RelativePosition = class {
     /**
      * @param {ID|null} type
@@ -3691,6 +3701,310 @@ ${err.toString()}`);
     }
     return result;
   };
+  var StackItem = class {
+    /**
+     * @param {DeleteSet} deletions
+     * @param {DeleteSet} insertions
+     */
+    constructor(deletions, insertions) {
+      this.insertions = insertions;
+      this.deletions = deletions;
+      this.meta = /* @__PURE__ */ new Map();
+    }
+  };
+  var clearUndoManagerStackItem = (tr, um, stackItem) => {
+    iterateDeletedStructs(tr, stackItem.deletions, (item) => {
+      if (item instanceof Item && um.scope.some((type) => type === tr.doc || isParentOf(
+        /** @type {AbstractType<any>} */
+        type,
+        item
+      ))) {
+        keepItem(item, false);
+      }
+    });
+  };
+  var popStackItem = (undoManager, stack, eventType) => {
+    let _tr = null;
+    const doc2 = undoManager.doc;
+    const scope = undoManager.scope;
+    transact(doc2, (transaction) => {
+      while (stack.length > 0 && undoManager.currStackItem === null) {
+        const store = doc2.store;
+        const stackItem = (
+          /** @type {StackItem} */
+          stack.pop()
+        );
+        const itemsToRedo = /* @__PURE__ */ new Set();
+        const itemsToDelete = [];
+        let performedChange = false;
+        iterateDeletedStructs(transaction, stackItem.insertions, (struct) => {
+          if (struct instanceof Item) {
+            if (struct.redone !== null) {
+              let { item, diff } = followRedone(store, struct.id);
+              if (diff > 0) {
+                item = getItemCleanStart(transaction, createID(item.id.client, item.id.clock + diff));
+              }
+              struct = item;
+            }
+            if (!struct.deleted && scope.some((type) => type === transaction.doc || isParentOf(
+              /** @type {AbstractType<any>} */
+              type,
+              /** @type {Item} */
+              struct
+            ))) {
+              itemsToDelete.push(struct);
+            }
+          }
+        });
+        iterateDeletedStructs(transaction, stackItem.deletions, (struct) => {
+          if (struct instanceof Item && scope.some((type) => type === transaction.doc || isParentOf(
+            /** @type {AbstractType<any>} */
+            type,
+            struct
+          )) && // Never redo structs in stackItem.insertions because they were created and deleted in the same capture interval.
+          !isDeleted(stackItem.insertions, struct.id)) {
+            itemsToRedo.add(struct);
+          }
+        });
+        itemsToRedo.forEach((struct) => {
+          performedChange = redoItem(transaction, struct, itemsToRedo, stackItem.insertions, undoManager.ignoreRemoteMapChanges, undoManager) !== null || performedChange;
+        });
+        for (let i = itemsToDelete.length - 1; i >= 0; i--) {
+          const item = itemsToDelete[i];
+          if (undoManager.deleteFilter(item)) {
+            item.delete(transaction);
+            performedChange = true;
+          }
+        }
+        undoManager.currStackItem = performedChange ? stackItem : null;
+      }
+      transaction.changed.forEach((subProps, type) => {
+        if (subProps.has(null) && type._searchMarker) {
+          type._searchMarker.length = 0;
+        }
+      });
+      _tr = transaction;
+    }, undoManager);
+    const res = undoManager.currStackItem;
+    if (res != null) {
+      const changedParentTypes = _tr.changedParentTypes;
+      undoManager.emit("stack-item-popped", [{ stackItem: res, type: eventType, changedParentTypes, origin: undoManager }, undoManager]);
+      undoManager.currStackItem = null;
+    }
+    return res;
+  };
+  var UndoManager = class extends ObservableV2 {
+    /**
+     * @param {Doc|AbstractType<any>|Array<AbstractType<any>>} typeScope Limits the scope of the UndoManager. If this is set to a ydoc instance, all changes on that ydoc will be undone. If set to a specific type, only changes on that type or its children will be undone. Also accepts an array of types.
+     * @param {UndoManagerOptions} options
+     */
+    constructor(typeScope, {
+      captureTimeout = 500,
+      captureTransaction = (_tr) => true,
+      deleteFilter = () => true,
+      trackedOrigins = /* @__PURE__ */ new Set([null]),
+      ignoreRemoteMapChanges = false,
+      doc: doc2 = (
+        /** @type {Doc} */
+        isArray(typeScope) ? typeScope[0].doc : typeScope instanceof Doc ? typeScope : typeScope.doc
+      )
+    } = {}) {
+      super();
+      this.scope = [];
+      this.doc = doc2;
+      this.addToScope(typeScope);
+      this.deleteFilter = deleteFilter;
+      trackedOrigins.add(this);
+      this.trackedOrigins = trackedOrigins;
+      this.captureTransaction = captureTransaction;
+      this.undoStack = [];
+      this.redoStack = [];
+      this.undoing = false;
+      this.redoing = false;
+      this.currStackItem = null;
+      this.lastChange = 0;
+      this.ignoreRemoteMapChanges = ignoreRemoteMapChanges;
+      this.captureTimeout = captureTimeout;
+      this.afterTransactionHandler = (transaction) => {
+        if (!this.captureTransaction(transaction) || !this.scope.some((type) => transaction.changedParentTypes.has(
+          /** @type {AbstractType<any>} */
+          type
+        ) || type === this.doc) || !this.trackedOrigins.has(transaction.origin) && (!transaction.origin || !this.trackedOrigins.has(transaction.origin.constructor))) {
+          return;
+        }
+        const undoing = this.undoing;
+        const redoing = this.redoing;
+        const stack = undoing ? this.redoStack : this.undoStack;
+        if (undoing) {
+          this.stopCapturing();
+        } else if (!redoing) {
+          this.clear(false, true);
+        }
+        const insertions = new DeleteSet();
+        transaction.afterState.forEach((endClock, client) => {
+          const startClock = transaction.beforeState.get(client) || 0;
+          const len = endClock - startClock;
+          if (len > 0) {
+            addToDeleteSet(insertions, client, startClock, len);
+          }
+        });
+        const now = getUnixTime();
+        let didAdd = false;
+        if (this.lastChange > 0 && now - this.lastChange < this.captureTimeout && stack.length > 0 && !undoing && !redoing) {
+          const lastOp = stack[stack.length - 1];
+          lastOp.deletions = mergeDeleteSets([lastOp.deletions, transaction.deleteSet]);
+          lastOp.insertions = mergeDeleteSets([lastOp.insertions, insertions]);
+        } else {
+          stack.push(new StackItem(transaction.deleteSet, insertions));
+          didAdd = true;
+        }
+        if (!undoing && !redoing) {
+          this.lastChange = now;
+        }
+        iterateDeletedStructs(
+          transaction,
+          transaction.deleteSet,
+          /** @param {Item|GC} item */
+          (item) => {
+            if (item instanceof Item && this.scope.some((type) => type === transaction.doc || isParentOf(
+              /** @type {AbstractType<any>} */
+              type,
+              item
+            ))) {
+              keepItem(item, true);
+            }
+          }
+        );
+        const changeEvent = [{ stackItem: stack[stack.length - 1], origin: transaction.origin, type: undoing ? "redo" : "undo", changedParentTypes: transaction.changedParentTypes }, this];
+        if (didAdd) {
+          this.emit("stack-item-added", changeEvent);
+        } else {
+          this.emit("stack-item-updated", changeEvent);
+        }
+      };
+      this.doc.on("afterTransaction", this.afterTransactionHandler);
+      this.doc.on("destroy", () => {
+        this.destroy();
+      });
+    }
+    /**
+     * Extend the scope.
+     *
+     * @param {Array<AbstractType<any> | Doc> | AbstractType<any> | Doc} ytypes
+     */
+    addToScope(ytypes) {
+      const tmpSet = new Set(this.scope);
+      ytypes = isArray(ytypes) ? ytypes : [ytypes];
+      ytypes.forEach((ytype) => {
+        if (!tmpSet.has(ytype)) {
+          tmpSet.add(ytype);
+          if (ytype instanceof AbstractType ? ytype.doc !== this.doc : ytype !== this.doc) warn("[yjs#509] Not same Y.Doc");
+          this.scope.push(ytype);
+        }
+      });
+    }
+    /**
+     * @param {any} origin
+     */
+    addTrackedOrigin(origin) {
+      this.trackedOrigins.add(origin);
+    }
+    /**
+     * @param {any} origin
+     */
+    removeTrackedOrigin(origin) {
+      this.trackedOrigins.delete(origin);
+    }
+    clear(clearUndoStack = true, clearRedoStack = true) {
+      if (clearUndoStack && this.canUndo() || clearRedoStack && this.canRedo()) {
+        this.doc.transact((tr) => {
+          if (clearUndoStack) {
+            this.undoStack.forEach((item) => clearUndoManagerStackItem(tr, this, item));
+            this.undoStack = [];
+          }
+          if (clearRedoStack) {
+            this.redoStack.forEach((item) => clearUndoManagerStackItem(tr, this, item));
+            this.redoStack = [];
+          }
+          this.emit("stack-cleared", [{ undoStackCleared: clearUndoStack, redoStackCleared: clearRedoStack }]);
+        });
+      }
+    }
+    /**
+     * UndoManager merges Undo-StackItem if they are created within time-gap
+     * smaller than `options.captureTimeout`. Call `um.stopCapturing()` so that the next
+     * StackItem won't be merged.
+     *
+     *
+     * @example
+     *     // without stopCapturing
+     *     ytext.insert(0, 'a')
+     *     ytext.insert(1, 'b')
+     *     um.undo()
+     *     ytext.toString() // => '' (note that 'ab' was removed)
+     *     // with stopCapturing
+     *     ytext.insert(0, 'a')
+     *     um.stopCapturing()
+     *     ytext.insert(0, 'b')
+     *     um.undo()
+     *     ytext.toString() // => 'a' (note that only 'b' was removed)
+     *
+     */
+    stopCapturing() {
+      this.lastChange = 0;
+    }
+    /**
+     * Undo last changes on type.
+     *
+     * @return {StackItem?} Returns StackItem if a change was applied
+     */
+    undo() {
+      this.undoing = true;
+      let res;
+      try {
+        res = popStackItem(this, this.undoStack, "undo");
+      } finally {
+        this.undoing = false;
+      }
+      return res;
+    }
+    /**
+     * Redo last undo operation.
+     *
+     * @return {StackItem?} Returns StackItem if a change was applied
+     */
+    redo() {
+      this.redoing = true;
+      let res;
+      try {
+        res = popStackItem(this, this.redoStack, "redo");
+      } finally {
+        this.redoing = false;
+      }
+      return res;
+    }
+    /**
+     * Are undo steps available?
+     *
+     * @return {boolean} `true` if undo is possible
+     */
+    canUndo() {
+      return this.undoStack.length > 0;
+    }
+    /**
+     * Are redo steps available?
+     *
+     * @return {boolean} `true` if redo is possible
+     */
+    canRedo() {
+      return this.redoStack.length > 0;
+    }
+    destroy() {
+      this.trackedOrigins.delete(this);
+      this.doc.off("afterTransaction", this.afterTransactionHandler);
+      super.destroy();
+    }
+  };
   function* lazyStructReaderGenerator(decoder) {
     const numOfStateUpdates = readVarUint(decoder.restDecoder);
     for (let i = 0; i < numOfStateUpdates; i++) {
@@ -3767,6 +4081,7 @@ ${err.toString()}`);
       this.clientStructs = [];
     }
   };
+  var mergeUpdates = (updates) => mergeUpdatesV2(updates, UpdateDecoderV1, UpdateEncoderV1);
   var sliceStruct = (left, diff) => {
     if (left.constructor === GC) {
       const { client, clock } = left.id;
@@ -7931,6 +8246,13 @@ ${err.toString()}`);
       diff
     };
   };
+  var keepItem = (item, keep) => {
+    while (item !== null && item.keep !== keep) {
+      item.keep = keep;
+      item = /** @type {AbstractType<any>} */
+      item.parent._item;
+    }
+  };
   var splitItem = (transaction, leftItem, diff) => {
     const { client, clock } = leftItem.id;
     const rightItem = new Item(
@@ -7962,6 +8284,101 @@ ${err.toString()}`);
     }
     leftItem.length = diff;
     return rightItem;
+  };
+  var isDeletedByUndoStack = (stack, id2) => some(
+    stack,
+    /** @param {StackItem} s */
+    (s) => isDeleted(s.deletions, id2)
+  );
+  var redoItem = (transaction, item, redoitems, itemsToDelete, ignoreRemoteMapChanges, um) => {
+    const doc2 = transaction.doc;
+    const store = doc2.store;
+    const ownClientID = doc2.clientID;
+    const redone = item.redone;
+    if (redone !== null) {
+      return getItemCleanStart(transaction, redone);
+    }
+    let parentItem = (
+      /** @type {AbstractType<any>} */
+      item.parent._item
+    );
+    let left = null;
+    let right;
+    if (parentItem !== null && parentItem.deleted === true) {
+      if (parentItem.redone === null && (!redoitems.has(parentItem) || redoItem(transaction, parentItem, redoitems, itemsToDelete, ignoreRemoteMapChanges, um) === null)) {
+        return null;
+      }
+      while (parentItem.redone !== null) {
+        parentItem = getItemCleanStart(transaction, parentItem.redone);
+      }
+    }
+    const parentType = parentItem === null ? (
+      /** @type {AbstractType<any>} */
+      item.parent
+    ) : (
+      /** @type {ContentType} */
+      parentItem.content.type
+    );
+    if (item.parentSub === null) {
+      left = item.left;
+      right = item;
+      while (left !== null) {
+        let leftTrace = left;
+        while (leftTrace !== null && /** @type {AbstractType<any>} */
+        leftTrace.parent._item !== parentItem) {
+          leftTrace = leftTrace.redone === null ? null : getItemCleanStart(transaction, leftTrace.redone);
+        }
+        if (leftTrace !== null && /** @type {AbstractType<any>} */
+        leftTrace.parent._item === parentItem) {
+          left = leftTrace;
+          break;
+        }
+        left = left.left;
+      }
+      while (right !== null) {
+        let rightTrace = right;
+        while (rightTrace !== null && /** @type {AbstractType<any>} */
+        rightTrace.parent._item !== parentItem) {
+          rightTrace = rightTrace.redone === null ? null : getItemCleanStart(transaction, rightTrace.redone);
+        }
+        if (rightTrace !== null && /** @type {AbstractType<any>} */
+        rightTrace.parent._item === parentItem) {
+          right = rightTrace;
+          break;
+        }
+        right = right.right;
+      }
+    } else {
+      right = null;
+      if (item.right && !ignoreRemoteMapChanges) {
+        left = item;
+        while (left !== null && left.right !== null && (left.right.redone || isDeleted(itemsToDelete, left.right.id) || isDeletedByUndoStack(um.undoStack, left.right.id) || isDeletedByUndoStack(um.redoStack, left.right.id))) {
+          left = left.right;
+          while (left.redone) left = getItemCleanStart(transaction, left.redone);
+        }
+        if (left && left.right !== null) {
+          return null;
+        }
+      } else {
+        left = parentType._map.get(item.parentSub) || null;
+      }
+    }
+    const nextClock = getState(store, ownClientID);
+    const nextId = createID(ownClientID, nextClock);
+    const redoneItem = new Item(
+      nextId,
+      left,
+      left && left.lastId,
+      right,
+      right && right.id,
+      parentType,
+      item.parentSub,
+      item.content.copy()
+    );
+    item.redone = nextId;
+    keepItem(redoneItem, true);
+    redoneItem.integrate(transaction, 0);
+    return redoneItem;
   };
   var Item = class _Item extends AbstractStruct {
     /**
@@ -8638,11 +9055,15 @@ ${err.toString()}`);
   var PENDING_KEY = "randori-crdt-pending-v1";
   var CLIENT_KEY = "randori-crdt-client-v1";
   var POLL_MS = 1200;
+  var SEND_DEBOUNCE_MS = 120;
   var RETRY_MAX_MS = 8e3;
+  var QUEUE_RETENTION_MS = 90 * 24 * 60 * 60 * 1e3;
+  var MAX_UPDATE_BYTES = 64 * 1024;
   var VERSION = /^[a-f0-9]{64}$/;
   var ROOM = /^week_[1-9]\d*_pair_[1-9]\d*$/;
   var ORIGIN_REMOTE = Symbol("remote");
   var ORIGIN_PENDING = Symbol("pending");
+  var memoryQueues = /* @__PURE__ */ new Map();
   var state = {
     epoch: 0,
     room: null,
@@ -8653,7 +9074,9 @@ ${err.toString()}`);
     binding: null,
     textObserver: null,
     textareaHandler: null,
+    textareaKeyHandler: null,
     updateHandler: null,
+    undoManager: null,
     revision: 0,
     version: null,
     hydrated: false,
@@ -8662,7 +9085,8 @@ ${err.toString()}`);
     pollTimer: null,
     retryMs: 500,
     status: "local",
-    completed: false
+    completed: false,
+    awaitingRoom: false
   };
   function actorId() {
     const id2 = Number(window._randori_auth?.me?.id || window._randori_auth?.me?.uid || 0);
@@ -8696,27 +9120,88 @@ ${err.toString()}`);
   }
   function readQueue(identity = state.identity) {
     if (!identity || !state.actorId) return [];
+    const key = identityKey(identity, state.actorId);
+    if (memoryQueues.has(key)) return [...memoryQueues.get(key)];
     try {
       const all2 = JSON.parse(localStorage.getItem(PENDING_KEY) || "{}");
-      const queue = all2[identityKey(identity, state.actorId)];
-      return Array.isArray(queue) ? queue.filter((item) => typeof item === "string").slice(-128) : [];
+      const entry = all2[key];
+      if (!entry || typeof entry !== "object" || Array.isArray(entry) || !Array.isArray(entry.updates) || !Number.isSafeInteger(entry.updated_at) || Date.now() - entry.updated_at >= QUEUE_RETENTION_MS) {
+        if (Object.prototype.hasOwnProperty.call(all2, key)) {
+          delete all2[key];
+          localStorage.setItem(PENDING_KEY, JSON.stringify(all2));
+        }
+        return [];
+      }
+      const queue = entry.updates.filter((item) => typeof item === "string");
+      memoryQueues.set(key, queue);
+      return [...queue];
     } catch {
       return [];
     }
   }
+  function compactQueue(queue) {
+    const compact = [];
+    for (const encoded of queue) {
+      if (typeof encoded !== "string") continue;
+      if (!compact.length) {
+        compact.push(encoded);
+        continue;
+      }
+      try {
+        const merged = mergeUpdates([base64ToBytes(compact[compact.length - 1]), base64ToBytes(encoded)]);
+        if (merged.byteLength <= MAX_UPDATE_BYTES) {
+          compact[compact.length - 1] = bytesToBase64(merged);
+          continue;
+        }
+      } catch {
+      }
+      compact.push(encoded);
+    }
+    return compact;
+  }
   function writeQueue(queue, identity = state.identity) {
-    if (!identity || !state.actorId) return;
+    if (!identity || !state.actorId) return false;
+    const key = identityKey(identity, state.actorId);
+    const compact = compactQueue(queue);
+    if (compact.length) memoryQueues.set(key, compact);
+    else memoryQueues.delete(key);
     try {
       const all2 = JSON.parse(localStorage.getItem(PENDING_KEY) || "{}");
-      const key = identityKey(identity, state.actorId);
-      if (queue.length) all2[key] = queue.slice(-128);
+      if (compact.length) all2[key] = { updated_at: Date.now(), updates: compact };
       else delete all2[key];
       localStorage.setItem(PENDING_KEY, JSON.stringify(all2));
+      return true;
     } catch {
+      return false;
+    }
+  }
+  function purgeExpiredQueues() {
+    try {
+      const all2 = JSON.parse(localStorage.getItem(PENDING_KEY) || "{}");
+      let changed = false;
+      for (const [key, entry] of Object.entries(all2)) {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry) || !Array.isArray(entry.updates) || !Number.isSafeInteger(entry.updated_at) || Date.now() - entry.updated_at >= QUEUE_RETENTION_MS) {
+          delete all2[key];
+          changed = true;
+        }
+      }
+      if (changed) localStorage.setItem(PENDING_KEY, JSON.stringify(all2));
+    } catch {
+      try {
+        localStorage.removeItem(PENDING_KEY);
+      } catch {
+      }
     }
   }
   function clearActorQueue(owner) {
     if (!owner) return;
+    for (const key of memoryQueues.keys()) {
+      try {
+        if (JSON.parse(key)[0] === owner) memoryQueues.delete(key);
+      } catch {
+        memoryQueues.delete(key);
+      }
+    }
     try {
       const all2 = JSON.parse(localStorage.getItem(PENDING_KEY) || "{}");
       for (const key of Object.keys(all2)) {
@@ -8727,6 +9212,20 @@ ${err.toString()}`);
         }
       }
       localStorage.setItem(PENDING_KEY, JSON.stringify(all2));
+    } catch {
+    }
+  }
+  function clearLegacyDraft(identity) {
+    try {
+      const all2 = JSON.parse(localStorage.getItem("randori-code") || "{}");
+      const entry = all2[identity.room];
+      if (!entry || typeof entry !== "object") return;
+      if (entry.codes && typeof entry.codes === "object") delete entry.codes[identity.language];
+      entry.lang = identity.language;
+      entry.qId = identity.questionSlug;
+      entry.qVersion = identity.questionVersion;
+      all2[identity.room] = entry;
+      localStorage.setItem("randori-code", JSON.stringify(all2));
     } catch {
     }
   }
@@ -8743,8 +9242,10 @@ ${err.toString()}`);
     }
   }
   var stableClientId = clientId();
+  purgeExpiredQueues();
   var clientSeq = 0;
   function setStatus(value, message = "") {
+    if (state.completed && value !== "error") return;
     state.status = value;
     const node = document.getElementById("codeSyncStatus");
     const labels = { local: "local editor", connecting: "connecting\u2026", syncing: "syncing\u2026", synced: "synced", offline: "offline \u2014 changes queued", retry: "sync interrupted \u2014 retrying", error: "sync unavailable" };
@@ -8753,11 +9254,27 @@ ${err.toString()}`);
       node.textContent = message || labels[value] || value;
     }
     const run = document.getElementById("runBtn");
-    if (run && state.identity) run.disabled = !isAcknowledged();
+    if (run && (state.identity || state.awaitingRoom)) run.disabled = !isAcknowledged();
     window.dispatchEvent(new CustomEvent("randori:code-sync-state", { detail: { room: state.room, state: value, acknowledged: isAcknowledged() } }));
   }
   function isAcknowledged() {
     return !!state.identity && state.hydrated && !state.inFlight && readQueue().length === 0 && VERSION.test(String(state.version || "")) && state.status === "synced" && !state.completed;
+  }
+  function setEditorReadOnly(readOnly) {
+    try {
+      window._randori_code?.getEditor?.()?.updateOptions?.({ readOnly });
+    } catch {
+    }
+    const textarea = document.getElementById("editor");
+    if (textarea) textarea.readOnly = readOnly;
+  }
+  function completeIdentity() {
+    const identity = state.identity;
+    state.completed = true;
+    if (identity) writeQueue([], identity);
+    disposeDocument();
+    setEditorReadOnly(true);
+    setStatus("error", "session completed \u2014 editing closed");
   }
   function currentCode() {
     try {
@@ -8787,23 +9304,57 @@ ${err.toString()}`);
     const textarea = document.getElementById("editor");
     if (state.textObserver) state.text.unobserve(state.textObserver);
     if (state.textareaHandler && textarea) textarea.removeEventListener("input", state.textareaHandler);
+    if (state.textareaKeyHandler && textarea) textarea.removeEventListener("keydown", state.textareaKeyHandler);
+    state.undoManager?.destroy?.();
+    state.undoManager = null;
     const editor = window._randori_code?.getEditor?.();
     if (editor?.getModel?.() && window.monaco) {
       state.binding = new MonacoBinding(state.text, editor.getModel(), /* @__PURE__ */ new Set([editor]), null);
     } else if (textarea) {
       textarea.value = state.text.toString();
-      state.textObserver = () => {
+      state.undoManager = new UndoManager(state.text, { trackedOrigins: /* @__PURE__ */ new Set(["textarea"]), captureTimeout: 500 });
+      state.textObserver = (event, transaction) => {
+        if (transaction.origin === "textarea") return;
         const next = state.text?.toString() || "";
         if (textarea.value !== next) {
-          const start = Math.min(textarea.selectionStart || 0, next.length);
-          const end = Math.min(textarea.selectionEnd || start, next.length);
+          const transform = (offset) => {
+            let oldOffset = 0, newOffset = 0;
+            for (const operation of event.delta || []) {
+              if (operation.retain) {
+                if (offset < oldOffset + operation.retain) return newOffset + (offset - oldOffset);
+                oldOffset += operation.retain;
+                newOffset += operation.retain;
+              } else if (operation.insert !== void 0) {
+                newOffset += typeof operation.insert === "string" ? operation.insert.length : 1;
+              } else if (operation.delete) {
+                if (offset <= oldOffset + operation.delete) return newOffset;
+                oldOffset += operation.delete;
+              }
+            }
+            return newOffset + Math.max(0, offset - oldOffset);
+          };
+          const start = Math.min(transform(textarea.selectionStart || 0), next.length);
+          const end = Math.min(transform(textarea.selectionEnd ?? start), next.length);
           textarea.value = next;
           textarea.setSelectionRange?.(start, end);
         }
       };
       state.text.observe(state.textObserver);
       state.textareaHandler = () => replaceText(textarea.value, "textarea");
+      state.textareaKeyHandler = (event) => {
+        const modifier = event.metaKey || event.ctrlKey;
+        if (!modifier || event.altKey) return;
+        if (event.key.toLowerCase() === "z") {
+          event.preventDefault();
+          if (event.shiftKey) state.undoManager?.redo();
+          else state.undoManager?.undo();
+        } else if (event.key.toLowerCase() === "y") {
+          event.preventDefault();
+          state.undoManager?.redo();
+        }
+      };
       textarea.addEventListener("input", state.textareaHandler);
+      textarea.addEventListener("keydown", state.textareaKeyHandler);
     }
   }
   function endpoint(identity, { afterRevision = 0 } = {}) {
@@ -8876,23 +9427,24 @@ ${err.toString()}`);
       state.revision = Number(result.data.revision);
       state.version = result.data.document_version;
       state.updateHandler = (update, origin) => {
-        if (origin === ORIGIN_REMOTE || origin === ORIGIN_PENDING || !sameIdentity(identity, state.identity)) return;
+        if (state.completed || origin === ORIGIN_REMOTE || origin === ORIGIN_PENDING || !sameIdentity(identity, state.identity)) return;
         const queue = readQueue(identity);
         queue.push(bytesToBase64(update));
-        writeQueue(queue, identity);
-        setStatus(navigator.onLine ? "syncing" : "offline");
-        schedule(0);
+        const persisted = writeQueue(queue, identity);
+        if (!persisted && !navigator.onLine) setStatus("error", "not saved locally \u2014 keep this tab open");
+        else setStatus(navigator.onLine ? "syncing" : "offline");
+        schedule(SEND_DEBOUNCE_MS);
       };
       doc2.on("update", state.updateHandler);
       for (const pending of readQueue(identity)) applyUpdate(doc2, base64ToBytes(pending), ORIGIN_PENDING);
       const localNow = currentCode();
-      if (result.data.created === true && text2.length === 0 && localNow) replaceText(localNow, "bootstrap-local");
-      else if (localNow !== localBefore && localNow !== text2.toString()) replaceText(localNow, "pre-hydration-edit");
+      if (localNow !== localBefore && localNow !== text2.toString()) replaceText(localNow, "pre-hydration-edit");
       attachEditor(epoch);
       if (readQueue(identity).length) {
         setStatus(navigator.onLine ? "syncing" : "offline");
         await drain();
       } else setStatus("synced");
+      clearLegacyDraft(identity);
       schedule();
       window.dispatchEvent(new CustomEvent("randori:code-document-hydrated", { detail: { room: identity.room, revision: state.revision } }));
       return true;
@@ -8936,8 +9488,7 @@ ${err.toString()}`);
         return false;
       }
       if (result.response.status === 409 && result.data.code === "session_completed") {
-        state.completed = true;
-        setStatus("error", "session completed \u2014 editing closed");
+        completeIdentity();
         return false;
       }
       if (!result.response.ok) throw new Error(result.data.error || "code sync failed");
@@ -8999,49 +9550,81 @@ ${err.toString()}`);
     const textarea = document.getElementById("editor");
     if (state.text && state.textObserver) state.text.unobserve(state.textObserver);
     if (textarea && state.textareaHandler) textarea.removeEventListener("input", state.textareaHandler);
+    if (textarea && state.textareaKeyHandler) textarea.removeEventListener("keydown", state.textareaKeyHandler);
     if (state.doc && state.updateHandler) state.doc.off("update", state.updateHandler);
+    state.undoManager?.destroy?.();
+    state.undoManager = null;
     state.doc?.destroy?.();
     state.doc = null;
     state.text = null;
     state.textObserver = null;
     state.textareaHandler = null;
+    state.textareaKeyHandler = null;
     state.updateHandler = null;
     state.hydrated = false;
     state.inFlight = false;
     state.revision = 0;
     state.version = null;
   }
-  function deactivate({ keepIdentity = false } = {}) {
+  function deactivate({ keepIdentity = false, awaitingRoom = false } = {}) {
     state.epoch += 1;
     disposeDocument();
+    state.awaitingRoom = awaitingRoom;
     if (!keepIdentity) {
       state.room = null;
       state.identity = null;
       state.actorId = null;
       state.completed = false;
-      setStatus("local");
+      setEditorReadOnly(false);
+      setStatus(awaitingRoom ? "connecting" : "local");
     } else setStatus(navigator.onLine ? "connecting" : "offline");
     const run = document.getElementById("runBtn");
-    if (run && !state.identity) run.disabled = false;
+    if (run && !state.identity && !state.awaitingRoom) run.disabled = false;
+  }
+  function fenceIdentityChange(room = window._randori_authorized_room) {
+    room = String(room || "");
+    deactivate({ awaitingRoom: ROOM.test(room) && window._randori_authorized_room === room && !!actorId() });
   }
   async function activate() {
     const identity = selectionIdentity();
     const owner = actorId();
     if (!owner || !identity || window._randori_workspace?.hydrated !== true || window._randori_workspace?.room !== identity.room || window._randori_authorized_room !== identity.room) {
-      deactivate();
+      const room = String(window._randori_authorized_room || "");
+      deactivate({ awaitingRoom: !!owner && ROOM.test(room) });
       return false;
     }
     if (sameIdentity(identity, state.identity) && owner === state.actorId && state.hydrated) return true;
-    deactivate();
+    deactivate({ awaitingRoom: true });
+    const activationEpoch = state.epoch;
+    const canApply = () => activationEpoch === state.epoch && owner === actorId() && sameIdentity(identity, selectionIdentity()) && window._randori_workspace?.hydrated === true && window._randori_workspace?.room === identity.room && window._randori_authorized_room === identity.room;
+    if (window._randori_session_completion?.completion?.state === "completed") {
+      state.awaitingRoom = false;
+      state.room = identity.room;
+      state.identity = identity;
+      state.actorId = owner;
+      completeIdentity();
+      return false;
+    }
+    let checkpointed = false;
+    try {
+      checkpointed = await window._randori_workspace?.flush?.(4e3, canApply) === true;
+    } catch {
+    }
+    if (!checkpointed) {
+      if (canApply()) {
+        setStatus(navigator.onLine ? "retry" : "offline", "waiting for workspace acknowledgement");
+        setTimeout(() => {
+          if (activationEpoch === state.epoch) activate();
+        }, state.retryMs);
+      }
+      return false;
+    }
+    if (!canApply()) return false;
+    state.awaitingRoom = false;
     state.room = identity.room;
     state.identity = identity;
     state.actorId = owner;
-    state.completed = window._randori_session_completion?.completion?.state === "completed";
     const epoch = ++state.epoch;
-    if (state.completed) {
-      setStatus("error", "session completed \u2014 editing closed");
-      return false;
-    }
     return hydrate(identity, epoch);
   }
   async function flush(timeoutMs = 12e3) {
@@ -9064,20 +9647,26 @@ ${err.toString()}`);
     }, 0);
   }
   window.addEventListener("randori:workspace-hydrated", scheduleActivation);
-  window.addEventListener("randori:room-change", () => deactivate());
+  window.addEventListener("randori:room-change", (event) => {
+    const room = String(event.detail?.roomId || "");
+    fenceIdentityChange(room);
+    scheduleActivation();
+  });
   window.addEventListener("randori:workspace-deactivated", () => deactivate());
+  window.addEventListener("randori:workspace-selection-applied", scheduleActivation);
   window.addEventListener("randori:monaco-ready", () => {
     if (state.hydrated) attachEditor(state.epoch);
   });
+  window.addEventListener("randori:auth-refreshed", scheduleActivation);
   window.addEventListener("randori:completion-observed", (event) => {
     if (event.detail?.room === state.room && event.detail?.state === "completed") {
-      state.completed = true;
-      disposeDocument();
-      setStatus("error", "session completed \u2014 editing closed");
+      completeIdentity();
     }
   });
   document.getElementById("questionSelect")?.addEventListener("change", scheduleActivation);
   document.getElementById("langSelect")?.addEventListener("change", scheduleActivation);
+  document.getElementById("questionSelect")?.addEventListener("change", () => fenceIdentityChange(), true);
+  document.getElementById("langSelect")?.addEventListener("change", () => fenceIdentityChange(), true);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") activate();
     else if (state.identity) {
@@ -9099,11 +9688,14 @@ ${err.toString()}`);
       deactivate();
     }
   }, { capture: true });
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", scheduleActivation, { once: true });
+  else scheduleActivation();
   window._randori_crdt = {
     activate,
     deactivate,
     poll,
     flush,
+    fence: fenceIdentityChange,
     ownsCodeFor(room) {
       return !!state.identity && state.identity.room === room;
     },

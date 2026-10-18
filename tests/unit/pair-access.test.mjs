@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
+import {mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {afterEach,mock,test} from 'node:test';
 import {createClient} from '@libsql/client';
 import * as Y from 'yjs';
 
 let currentDb=null;
 let providerCalls=0;
+const databaseDirectories=[];
 const originalMembershipFlag=process.env.CIRCLE_MEMBERSHIP_ENABLED;
 
 function authPayload(req){
@@ -70,7 +74,9 @@ function invoke({method='GET',url='/',query={},headers={'x-test-auth':'member'},
 }
 
 async function seededDatabase({source='auth'}={}){
-  const db=createClient({url:'file::memory:'});
+  const directory=mkdtempSync(join(tmpdir(),'randori-pair-access-'));
+  databaseDirectories.push(directory);
+  const db=createClient({url:`file:${join(directory,'test.sqlite')}`});
   const cycle=resolvePairingCycle();
   const cycleId=cycle.cycleId;
   await db.batch([
@@ -161,6 +167,18 @@ function tracedClient(delegate,onExecute=()=>{}){
       return delegate.execute(statement);
     },
     batch(statements,mode){ return delegate.batch(statements,mode); },
+    async transaction(mode){
+      const transaction=await delegate.transaction(mode);
+      return {
+        async execute(statement){
+          await onExecute(sqlText(statement),statement?.args||[]);
+          return transaction.execute(statement);
+        },
+        commit(){ return transaction.commit(); },
+        rollback(){ return transaction.rollback(); },
+        close(){ return transaction.close(); },
+      };
+    },
     close(){ return delegate.close(); },
   };
 }
@@ -187,6 +205,7 @@ afterEach(()=>{
   try{ currentDb?.close?.(); }catch{}
   currentDb=null;
   providerCalls=0;
+  for(const directory of databaseDirectories.splice(0)) rmSync(directory,{recursive:true,force:true});
   if(originalMembershipFlag===undefined) delete process.env.CIRCLE_MEMBERSHIP_ENABLED;
   else process.env.CIRCLE_MEMBERSHIP_ENABLED=originalMembershipFlag;
 });
@@ -330,6 +349,12 @@ test('pair execution ignores submitted code and v3 attestation binds the canonic
     submittedHarness=JSON.parse(options.body).files[0].content;
     return new Response(JSON.stringify({run:{code:0,stdout:'',stderr:''}}),{status:200});
   };
+  const numericBypass=await invoke({method:'POST',url:'/api/execute',query:{endpoint:'execute'},body:{
+    week_id:10,pair_group_id:20,language:'javascript',question_slug:question.slug,
+    question_version:question.version,code:'throw new Error("numeric bypass")',
+  }});
+  assert.equal(numericBypass.status,400,JSON.stringify(numericBypass.body)); assert.match(numericBypass.body.error,/document_version/);
+  assert.equal(providerCalls,0);
   const execution=await invoke({method:'POST',url:'/api/execute',query:{endpoint:'execute'},body:{
     room_id:'week_10_pair_20',language:'javascript',question_slug:question.slug,
     question_version:question.version,code:'throw new Error("client body must be ignored")',
@@ -358,4 +383,46 @@ test('pair execution ignores submitted code and v3 attestation binds the canonic
   const tampered=await invoke({url:'/api/runs?room_id=week_10_pair_20&after_id=0&limit=20',
     query:{endpoint:'runs',room_id:'week_10_pair_20',after_id:'0',limit:'20'}});
   assert.equal(tampered.body.runs[0].authoritative,false);
+
+  globalThis.fetch=async()=>{
+    providerCalls+=1;
+    await database.batch([
+      `INSERT INTO session_completion_receipts VALUES (10,20,2,'auth',2,4,NULL,datetime('now'))`,
+      `INSERT INTO session_completion_receipts VALUES (10,20,4,'auth',2,4,NULL,datetime('now'))`,
+    ],'write');
+    return new Response(JSON.stringify({run:{code:0,stdout:'',stderr:''}}),{status:200});
+  };
+  const completionRace=await invoke({method:'POST',url:'/api/execute',query:{endpoint:'execute'},body:{
+    room_id:'week_10_pair_20',language:'javascript',question_slug:question.slug,
+    question_version:question.version,code:canonicalCode,document_version:documentVersion,
+  }});
+  assert.equal(completionRace.status,409); assert.equal(completionRace.body.code,'session_completed');
+  assert.equal(Number((await database.execute(`SELECT COUNT(*) AS count FROM session_runs`)).rows[0].count),1);
+});
+
+test('solo practice keeps the legacy execution path without requiring a shared document',async()=>{
+  const database=await seededDatabase(); currentDb=database;
+  await database.execute(`UPDATE pairing_groups SET user_b_id=2,is_ai_pair=1 WHERE id=20`);
+  const question=listPublicExercises()[0];
+  const entrypoint=question.languages.javascript.entrypoint;
+  const submittedCode=`function ${entrypoint}(){ return null; }`;
+  let submittedHarness='';
+  globalThis.fetch=async(_url,options)=>{
+    providerCalls+=1;
+    submittedHarness=JSON.parse(options.body).files[0].content;
+    return new Response(JSON.stringify({run:{code:0,stdout:'',stderr:''}}),{status:200});
+  };
+
+  const execution=await invoke({method:'POST',url:'/api/execute',query:{endpoint:'execute'},body:{
+    week_id:10,pair_group_id:20,language:'javascript',question_slug:question.slug,
+    question_version:question.version,code:submittedCode,
+  }});
+
+  assert.equal(execution.status,200,JSON.stringify(execution.body));
+  assert.equal(providerCalls,1);
+  const encodedSource=submittedHarness.match(/const __randori_source=Buffer\.from\('([^']+)'/)?.[1];
+  assert.equal(Buffer.from(encodedSource,'base64').toString('utf8'),submittedCode);
+  const stored=(await database.execute(`SELECT code,test_cases_snapshot FROM session_runs`)).rows[0];
+  assert.equal(stored.code,submittedCode);
+  assert.equal(JSON.parse(stored.test_cases_snapshot).attestation_version,2);
 });

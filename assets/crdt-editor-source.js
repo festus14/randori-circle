@@ -4,14 +4,19 @@ import { MonacoBinding } from 'y-monaco';
 const PENDING_KEY='randori-crdt-pending-v1';
 const CLIENT_KEY='randori-crdt-client-v1';
 const POLL_MS=1200;
+const SEND_DEBOUNCE_MS=120;
 const RETRY_MAX_MS=8000;
+const QUEUE_RETENTION_MS=90*24*60*60*1000;
+const MAX_UPDATE_BYTES=64*1024;
 const VERSION=/^[a-f0-9]{64}$/;
 const ROOM=/^week_[1-9]\d*_pair_[1-9]\d*$/;
 const ORIGIN_REMOTE=Symbol('remote');
 const ORIGIN_PENDING=Symbol('pending');
+const memoryQueues=new Map();
 const state={epoch:0,room:null,identity:null,actorId:null,doc:null,text:null,binding:null,
-  textObserver:null,textareaHandler:null,updateHandler:null,revision:0,version:null,
-  hydrated:false,inFlight:false,controller:null,pollTimer:null,retryMs:500,status:'local',completed:false};
+  textObserver:null,textareaHandler:null,textareaKeyHandler:null,updateHandler:null,undoManager:null,revision:0,version:null,
+  hydrated:false,inFlight:false,controller:null,pollTimer:null,retryMs:500,status:'local',completed:false,
+  awaitingRoom:false};
 
 function actorId(){
   const id=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0);
@@ -52,31 +57,83 @@ function base64ToBytes(value){
 
 function readQueue(identity=state.identity){
   if(!identity||!state.actorId) return [];
+  const key=identityKey(identity,state.actorId);
+  if(memoryQueues.has(key)) return [...memoryQueues.get(key)];
   try{
     const all=JSON.parse(localStorage.getItem(PENDING_KEY)||'{}');
-    const queue=all[identityKey(identity,state.actorId)];
-    return Array.isArray(queue)?queue.filter(item=>typeof item==='string').slice(-128):[];
+    const entry=all[key];
+    if(!entry||typeof entry!=='object'||Array.isArray(entry)||!Array.isArray(entry.updates)
+      ||!Number.isSafeInteger(entry.updated_at)||Date.now()-entry.updated_at>=QUEUE_RETENTION_MS){
+      if(Object.prototype.hasOwnProperty.call(all,key)){ delete all[key]; localStorage.setItem(PENDING_KEY,JSON.stringify(all)); }
+      return [];
+    }
+    const queue=entry.updates.filter(item=>typeof item==='string');
+    memoryQueues.set(key,queue);
+    return [...queue];
   }catch{ return []; }
 }
 
+function compactQueue(queue){
+  const compact=[];
+  for(const encoded of queue){
+    if(typeof encoded!=='string') continue;
+    if(!compact.length){ compact.push(encoded); continue; }
+    try{
+      const merged=Y.mergeUpdates([base64ToBytes(compact[compact.length-1]),base64ToBytes(encoded)]);
+      if(merged.byteLength<=MAX_UPDATE_BYTES){ compact[compact.length-1]=bytesToBase64(merged); continue; }
+    }catch{}
+    compact.push(encoded);
+  }
+  return compact;
+}
+
 function writeQueue(queue,identity=state.identity){
-  if(!identity||!state.actorId) return;
+  if(!identity||!state.actorId) return false;
+  const key=identityKey(identity,state.actorId); const compact=compactQueue(queue);
+  if(compact.length) memoryQueues.set(key,compact); else memoryQueues.delete(key);
   try{
     const all=JSON.parse(localStorage.getItem(PENDING_KEY)||'{}');
-    const key=identityKey(identity,state.actorId);
-    if(queue.length) all[key]=queue.slice(-128); else delete all[key];
+    if(compact.length) all[key]={updated_at:Date.now(),updates:compact}; else delete all[key];
     localStorage.setItem(PENDING_KEY,JSON.stringify(all));
-  }catch{}
+    return true;
+  }catch{ return false; }
+}
+
+function purgeExpiredQueues(){
+  try{
+    const all=JSON.parse(localStorage.getItem(PENDING_KEY)||'{}'); let changed=false;
+    for(const [key,entry] of Object.entries(all)){
+      if(!entry||typeof entry!=='object'||Array.isArray(entry)||!Array.isArray(entry.updates)
+        ||!Number.isSafeInteger(entry.updated_at)||Date.now()-entry.updated_at>=QUEUE_RETENTION_MS){
+        delete all[key]; changed=true;
+      }
+    }
+    if(changed) localStorage.setItem(PENDING_KEY,JSON.stringify(all));
+  }catch{ try{ localStorage.removeItem(PENDING_KEY); }catch{} }
 }
 
 function clearActorQueue(owner){
   if(!owner) return;
+  for(const key of memoryQueues.keys()){
+    try{ if(JSON.parse(key)[0]===owner) memoryQueues.delete(key); }catch{ memoryQueues.delete(key); }
+  }
   try{
     const all=JSON.parse(localStorage.getItem(PENDING_KEY)||'{}');
     for(const key of Object.keys(all)){
       try{ if(JSON.parse(key)[0]===owner) delete all[key]; }catch{ delete all[key]; }
     }
     localStorage.setItem(PENDING_KEY,JSON.stringify(all));
+  }catch{}
+}
+
+function clearLegacyDraft(identity){
+  try{
+    const all=JSON.parse(localStorage.getItem('randori-code')||'{}');
+    const entry=all[identity.room];
+    if(!entry||typeof entry!=='object') return;
+    if(entry.codes&&typeof entry.codes==='object') delete entry.codes[identity.language];
+    entry.lang=identity.language; entry.qId=identity.questionSlug; entry.qVersion=identity.questionVersion;
+    all[identity.room]=entry; localStorage.setItem('randori-code',JSON.stringify(all));
   }catch{}
 }
 
@@ -92,21 +149,37 @@ function clientId(){
 }
 
 const stableClientId=clientId();
+purgeExpiredQueues();
 let clientSeq=0;
 
 function setStatus(value,message=''){
+  if(state.completed&&value!=='error') return;
   state.status=value;
   const node=document.getElementById('codeSyncStatus');
   const labels={local:'local editor',connecting:'connecting…',syncing:'syncing…',synced:'synced',offline:'offline — changes queued',retry:'sync interrupted — retrying',error:'sync unavailable'};
   if(node){ node.dataset.state=value; node.textContent=message||labels[value]||value; }
   const run=document.getElementById('runBtn');
-  if(run&&state.identity) run.disabled=!isAcknowledged();
+  if(run&&(state.identity||state.awaitingRoom)) run.disabled=!isAcknowledged();
   window.dispatchEvent(new CustomEvent('randori:code-sync-state',{detail:{room:state.room,state:value,acknowledged:isAcknowledged()}}));
 }
 
 function isAcknowledged(){
   return !!state.identity&&state.hydrated&&!state.inFlight&&readQueue().length===0
     &&VERSION.test(String(state.version||''))&&state.status==='synced'&&!state.completed;
+}
+
+function setEditorReadOnly(readOnly){
+  try{ window._randori_code?.getEditor?.()?.updateOptions?.({readOnly}); }catch{}
+  const textarea=document.getElementById('editor'); if(textarea) textarea.readOnly=readOnly;
+}
+
+function completeIdentity(){
+  const identity=state.identity;
+  state.completed=true;
+  if(identity) writeQueue([],identity);
+  disposeDocument();
+  setEditorReadOnly(true);
+  setStatus('error','session completed — editing closed');
 }
 
 function currentCode(){
@@ -136,22 +209,52 @@ function attachEditor(epoch){
   const textarea=document.getElementById('editor');
   if(state.textObserver) state.text.unobserve(state.textObserver);
   if(state.textareaHandler&&textarea) textarea.removeEventListener('input',state.textareaHandler);
+  if(state.textareaKeyHandler&&textarea) textarea.removeEventListener('keydown',state.textareaKeyHandler);
+  state.undoManager?.destroy?.(); state.undoManager=null;
   const editor=window._randori_code?.getEditor?.();
   if(editor?.getModel?.()&&window.monaco){
     state.binding=new MonacoBinding(state.text,editor.getModel(),new Set([editor]),null);
   }else if(textarea){
     textarea.value=state.text.toString();
-    state.textObserver=()=>{
+    state.undoManager=new Y.UndoManager(state.text,{trackedOrigins:new Set(['textarea']),captureTimeout:500});
+    state.textObserver=(event,transaction)=>{
+      if(transaction.origin==='textarea') return;
       const next=state.text?.toString()||'';
       if(textarea.value!==next){
-        const start=Math.min(textarea.selectionStart||0,next.length);
-        const end=Math.min(textarea.selectionEnd||start,next.length);
+        const transform=offset=>{
+          let oldOffset=0,newOffset=0;
+          for(const operation of event.delta||[]){
+            if(operation.retain){
+              if(offset<oldOffset+operation.retain) return newOffset+(offset-oldOffset);
+              oldOffset+=operation.retain; newOffset+=operation.retain;
+            }else if(operation.insert!==undefined){
+              newOffset+=typeof operation.insert==='string'?operation.insert.length:1;
+            }else if(operation.delete){
+              if(offset<=oldOffset+operation.delete) return newOffset;
+              oldOffset+=operation.delete;
+            }
+          }
+          return newOffset+Math.max(0,offset-oldOffset);
+        };
+        const start=Math.min(transform(textarea.selectionStart||0),next.length);
+        const end=Math.min(transform(textarea.selectionEnd??start),next.length);
         textarea.value=next; textarea.setSelectionRange?.(start,end);
       }
     };
     state.text.observe(state.textObserver);
     state.textareaHandler=()=>replaceText(textarea.value,'textarea');
+    state.textareaKeyHandler=event=>{
+      const modifier=event.metaKey||event.ctrlKey;
+      if(!modifier||event.altKey) return;
+      if(event.key.toLowerCase()==='z'){
+        event.preventDefault();
+        if(event.shiftKey) state.undoManager?.redo(); else state.undoManager?.undo();
+      }else if(event.key.toLowerCase()==='y'){
+        event.preventDefault(); state.undoManager?.redo();
+      }
+    };
     textarea.addEventListener('input',state.textareaHandler);
+    textarea.addEventListener('keydown',state.textareaKeyHandler);
   }
 }
 
@@ -215,18 +318,21 @@ async function hydrate(identity,epoch){
     state.doc=doc; state.text=text; state.hydrated=true; state.revision=Number(result.data.revision);
     state.version=result.data.document_version;
     state.updateHandler=(update,origin)=>{
-      if(origin===ORIGIN_REMOTE||origin===ORIGIN_PENDING||!sameIdentity(identity,state.identity)) return;
-      const queue=readQueue(identity); queue.push(bytesToBase64(update)); writeQueue(queue,identity);
-      setStatus(navigator.onLine?'syncing':'offline'); schedule(0);
+      if(state.completed||origin===ORIGIN_REMOTE||origin===ORIGIN_PENDING||!sameIdentity(identity,state.identity)) return;
+      const queue=readQueue(identity); queue.push(bytesToBase64(update));
+      const persisted=writeQueue(queue,identity);
+      if(!persisted&&!navigator.onLine) setStatus('error','not saved locally — keep this tab open');
+      else setStatus(navigator.onLine?'syncing':'offline');
+      schedule(SEND_DEBOUNCE_MS);
     };
     doc.on('update',state.updateHandler);
     for(const pending of readQueue(identity)) Y.applyUpdate(doc,base64ToBytes(pending),ORIGIN_PENDING);
     const localNow=currentCode();
-    if(result.data.created===true&&text.length===0&&localNow) replaceText(localNow,'bootstrap-local');
-    else if(localNow!==localBefore&&localNow!==text.toString()) replaceText(localNow,'pre-hydration-edit');
+    if(localNow!==localBefore&&localNow!==text.toString()) replaceText(localNow,'pre-hydration-edit');
     attachEditor(epoch);
     if(readQueue(identity).length) { setStatus(navigator.onLine?'syncing':'offline'); await drain(); }
     else setStatus('synced');
+    clearLegacyDraft(identity);
     schedule();
     window.dispatchEvent(new CustomEvent('randori:code-document-hydrated',{detail:{room:identity.room,revision:state.revision}}));
     return true;
@@ -252,7 +358,7 @@ async function drain(){
     if(result.stale) return false;
     if(result.response.status===401||result.response.status===404){ deactivate(); return false; }
     if(result.response.status===409&&result.data.code==='session_completed'){
-      state.completed=true; setStatus('error','session completed — editing closed'); return false;
+      completeIdentity(); return false;
     }
     if(!result.response.ok) throw new Error(result.data.error||'code sync failed');
     if(!acceptResponse(result.data,epoch,identity)) throw new Error('invalid code document response');
@@ -294,29 +400,60 @@ function disposeDocument(){
   const textarea=document.getElementById('editor');
   if(state.text&&state.textObserver) state.text.unobserve(state.textObserver);
   if(textarea&&state.textareaHandler) textarea.removeEventListener('input',state.textareaHandler);
+  if(textarea&&state.textareaKeyHandler) textarea.removeEventListener('keydown',state.textareaKeyHandler);
   if(state.doc&&state.updateHandler) state.doc.off('update',state.updateHandler);
-  state.doc?.destroy?.(); state.doc=null; state.text=null; state.textObserver=null; state.textareaHandler=null; state.updateHandler=null;
+  state.undoManager?.destroy?.(); state.undoManager=null;
+  state.doc?.destroy?.(); state.doc=null; state.text=null; state.textObserver=null; state.textareaHandler=null; state.textareaKeyHandler=null; state.updateHandler=null;
   state.hydrated=false; state.inFlight=false; state.revision=0; state.version=null;
 }
 
-function deactivate({keepIdentity=false}={}){
+function deactivate({keepIdentity=false,awaitingRoom=false}={}){
   state.epoch+=1; disposeDocument();
-  if(!keepIdentity){ state.room=null; state.identity=null; state.actorId=null; state.completed=false; setStatus('local'); }
+  state.awaitingRoom=awaitingRoom;
+  if(!keepIdentity){ state.room=null; state.identity=null; state.actorId=null; state.completed=false; setEditorReadOnly(false); setStatus(awaitingRoom?'connecting':'local'); }
   else setStatus(navigator.onLine?'connecting':'offline');
-  const run=document.getElementById('runBtn'); if(run&&!state.identity) run.disabled=false;
+  const run=document.getElementById('runBtn'); if(run&&!state.identity&&!state.awaitingRoom) run.disabled=false;
+}
+
+function fenceIdentityChange(room=window._randori_authorized_room){
+  room=String(room||'');
+  deactivate({awaitingRoom:ROOM.test(room)&&window._randori_authorized_room===room&&!!actorId()});
 }
 
 async function activate(){
   const identity=selectionIdentity(); const owner=actorId();
   if(!owner||!identity||window._randori_workspace?.hydrated!==true
     ||window._randori_workspace?.room!==identity.room||window._randori_authorized_room!==identity.room){
-    deactivate(); return false;
+    const room=String(window._randori_authorized_room||'');
+    deactivate({awaitingRoom:!!owner&&ROOM.test(room)}); return false;
   }
   if(sameIdentity(identity,state.identity)&&owner===state.actorId&&state.hydrated) return true;
-  deactivate(); state.room=identity.room; state.identity=identity; state.actorId=owner;
-  state.completed=window._randori_session_completion?.completion?.state==='completed';
+  // The v3 workspace owns code until its exact selection checkpoint is
+  // acknowledged. Do not claim CRDT ownership early: doing so would suppress
+  // the workspace text write and let an empty bootstrap replace local edits.
+  deactivate({awaitingRoom:true});
+  const activationEpoch=state.epoch;
+  const canApply=()=>activationEpoch===state.epoch&&owner===actorId()
+    &&sameIdentity(identity,selectionIdentity())
+    &&window._randori_workspace?.hydrated===true
+    &&window._randori_workspace?.room===identity.room
+    &&window._randori_authorized_room===identity.room;
+  if(window._randori_session_completion?.completion?.state==='completed'){
+    state.awaitingRoom=false; state.room=identity.room; state.identity=identity; state.actorId=owner;
+    completeIdentity(); return false;
+  }
+  let checkpointed=false;
+  try{ checkpointed=await window._randori_workspace?.flush?.(4000,canApply)===true; }catch{}
+  if(!checkpointed){
+    if(canApply()){
+      setStatus(navigator.onLine?'retry':'offline','waiting for workspace acknowledgement');
+      setTimeout(()=>{ if(activationEpoch===state.epoch) activate(); },state.retryMs);
+    }
+    return false;
+  }
+  if(!canApply()) return false;
+  state.awaitingRoom=false; state.room=identity.room; state.identity=identity; state.actorId=owner;
   const epoch=++state.epoch;
-  if(state.completed){ setStatus('error','session completed — editing closed'); return false; }
   return hydrate(identity,epoch);
 }
 
@@ -335,16 +472,24 @@ async function flush(timeoutMs=12000){
 
 function scheduleActivation(){ setTimeout(()=>{ activate(); },0); }
 window.addEventListener('randori:workspace-hydrated',scheduleActivation);
-window.addEventListener('randori:room-change',()=>deactivate());
+window.addEventListener('randori:room-change',event=>{
+  const room=String(event.detail?.roomId||'');
+  fenceIdentityChange(room);
+  scheduleActivation();
+});
 window.addEventListener('randori:workspace-deactivated',()=>deactivate());
+window.addEventListener('randori:workspace-selection-applied',scheduleActivation);
 window.addEventListener('randori:monaco-ready',()=>{ if(state.hydrated) attachEditor(state.epoch); });
+window.addEventListener('randori:auth-refreshed',scheduleActivation);
 window.addEventListener('randori:completion-observed',event=>{
   if(event.detail?.room===state.room&&event.detail?.state==='completed'){
-    state.completed=true; disposeDocument(); setStatus('error','session completed — editing closed');
+    completeIdentity();
   }
 });
 document.getElementById('questionSelect')?.addEventListener('change',scheduleActivation);
 document.getElementById('langSelect')?.addEventListener('change',scheduleActivation);
+document.getElementById('questionSelect')?.addEventListener('change',()=>fenceIdentityChange(),true);
+document.getElementById('langSelect')?.addEventListener('change',()=>fenceIdentityChange(),true);
 document.addEventListener('visibilitychange',()=>{
   if(document.visibilityState==='visible') activate();
   else if(state.identity){ state.epoch+=1; disposeDocument(); setStatus('offline','paused while this tab is hidden'); }
@@ -360,7 +505,10 @@ document.addEventListener('click',event=>{
   }
 },{capture:true});
 
-window._randori_crdt={activate,deactivate,poll,flush,
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',scheduleActivation,{once:true});
+else scheduleActivation();
+
+window._randori_crdt={activate,deactivate,poll,flush,fence:fenceIdentityChange,
   ownsCodeFor(room){ return !!state.identity&&state.identity.room===room; },
   reconcile(){ return poll(); },get acknowledged(){ return isAcknowledged(); },
   get documentVersion(){ return isAcknowledged()?state.version:null; },get room(){ return state.room; },

@@ -16,7 +16,10 @@ Yjs `13.6.27`, y-monaco `0.1.6`, y-protocols `1.0.6`, and esbuild `0.25.9`
 are exact package-lock dependencies. `assets/crdt-editor.js` is a checked-in,
 same-origin bundle produced by `npm run build:crdt`; it loads no CRDT provider,
 CDN module, or secret. y-monaco binds the shared `Y.Text` to Monaco. The
-textarea fallback applies a bounded single-splice diff to that same type.
+lockfile-resolved Monaco `0.56.0` peer is build-only and aliased to the local
+API shim, so no second Monaco runtime enters the bundle. `npm run check:crdt`
+rebuilds in memory and rejects source/bundle drift. The textarea fallback
+applies a bounded single-splice diff to that same type.
 
 ## Authority and merge protocol
 
@@ -42,16 +45,24 @@ oversize, or contended writes fail closed without returning code.
 
 Each successful change refreshes code in the matching v3 workspace envelope
 while preserving its board. That field is only a rollback projection after a
-v20 document exists; workspace writes cannot reclaim code authority.
+v20 document exists. A workspace CAS includes an atomic absent-or-exact
+document guard: if the workspace wins, later bootstrap sees its bytes; if the
+document wins, the workspace retries with canonical code. Workspace writes
+therefore cannot reclaim code authority during the handoff.
 
 ## Client and execution lifecycle
 
 Pending updates are stored under an actor- and document-scoped local key before
-sending. Reconnect hydrates remote state, reapplies the queue, and retries safely.
+sending. Adjacent queued Yjs updates are compacted without discarding edits,
+and abandoned browser queues expire at the same 90-day boundary as server
+documents. Reconnect hydrates remote state, reapplies the queue, and retries safely.
 Responses are fenced by account, room, question version, language, visibility,
 and document epoch. Room/question/language changes destroy the old Y.Doc and
 binding. Sign-out clears that actor's queue. Hidden tabs stop requests.
-Unanimous completion destroys the binding and the server rejects later writes.
+Activation waits for the matching v3 selection/code checkpoint; a failed or
+timed-out checkpoint leaves local code untouched and Run disabled. Unanimous
+completion destroys the binding, clears the unsendable queue, makes both Monaco
+and the textarea read-only, and the server rejects later writes.
 
 An accessible status announces connecting, syncing, synced, offline, retry,
 and terminal states. Pair Run is disabled until local changes are acknowledged.
@@ -69,14 +80,21 @@ History recomputes the code hash. Historical v2 and solo runs remain compatible.
 Responses are private and `no-store`. Documents contain code only—no board,
 chat, transcript, meeting URL, presence, provider credential, or hidden test.
 A strict 90-day cutoff runs before access and from the authenticated weekly
-scheduler. Pair or provenance changes invalidate documents. Signed run evidence
+scheduler. Workspace reads redact an expired projection even when recent board
+activity kept the envelope fresh. Pair deletion, pair-shape change, or
+participant provenance change atomically invalidates both the document and the
+entire old-pair workspace (including its private board). Signed run evidence
 keeps the existing run-retention policy and is not deleted with live documents.
 
 Roll out after additive migration 20 is applied and readiness is green. Canary
 two-browser overlap, offline replay, restart, fallback textarea, stale Run,
-completion, and board writes. Rollback is forward-only: keep v20 and its ledger,
-disable the client/API if necessary, use the maintained v3 code projection for
-the prior binary, and roll forward. Never drop the table or edit the ledger.
+completion, and board writes. Migration 20 is a forward-only boundary: a
+pre-v20 binary is not a valid rollback because it rejects the newer ledger and
+could acknowledge edits only to the non-authoritative v3 projection. During an
+incident, keep the v20-capable API deployed, stop pair editing at the
+application/edge maintenance boundary, preserve both tables and the ledger,
+and roll forward. Do not admit legacy workspace edits while maintenance is in
+effect, drop the table, or edit the ledger.
 
 ## Alternatives considered
 

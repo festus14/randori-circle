@@ -78,6 +78,15 @@ export const OUTBOX_CRON_FINALIZATION_RESERVE_MS=5_000;
 export const OUTBOX_CRON_MAX_CLAIMS=8;
 const OUTBOX_CRON_MIN_DISPATCH_WINDOW_MS=100;
 
+function codeDocumentSchemaNotInstalled(error){
+  let current=error;
+  for(let depth=0;current&&depth<5;depth+=1){
+    if(/no such table:\s*(?:main\.)?pair_code_documents\b/i.test(String(current.message||''))) return true;
+    current=current.cause;
+  }
+  return false;
+}
+
 const OUTBOX_DELIVERY_TYPES=Object.freeze([
   Object.freeze({type:PAIRING_EMAIL_EVENT_TYPE,key:'email_delivery',label:'email reminder'}),
   Object.freeze({type:SCHEDULE_EMAIL_EVENT_TYPE,key:'schedule_delivery',label:'schedule email'}),
@@ -941,8 +950,15 @@ async function handleWeekly(req,res,{isDue=pairingCronIsDue}={}){
     }
   }catch{ return res.status(503).json({error:'pairing unavailable'}); }
   // The authenticated due-window scheduler is also the guaranteed lifecycle
-  // sweep for private CRDT state. An unapplied v20 schema cannot block pairing.
-  try{ await purgeExpiredCodeDocuments(db); }catch{}
+  // sweep for private CRDT state. Only the expected pre-v20 rollout state is
+  // optional; operational/storage failures are visible and fail the job.
+  try{ await purgeExpiredCodeDocuments(db); }
+  catch(error){
+    if(!codeDocumentSchemaNotInstalled(error)){
+      try{ await logServerOps('error','code_document_retention_failed','code document retention failed',{},req); }catch{}
+      return res.status(503).json({error:'code document retention unavailable'});
+    }
+  }
   const localRuntime=strictLocalPairingRuntime(req);
   if(!secondaryCircleCoordinationEnabled()||localRuntime){
     return runCurrentPairing(req,res,{db,localRuntime,localRequest:localRuntimeRequest(req)});

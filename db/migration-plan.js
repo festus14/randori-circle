@@ -138,8 +138,8 @@ const PLAN_METADATA=Object.freeze([
     version:20,
     name:'bounded-source-bound-code-documents',
     description:'Bounded conflict-free code documents for canonical two-human rooms with source-bound pair snapshots.',
-    operationsChecksum:'55e24dffe5180d52d001fbdc207b47fb3bf03a58b0b74e5a1b20d57933647211',
-    checksum:'56dee250c58fb99eea0f4701fcb9239ec6d84dee2a3848ffad2abe088c9fd90c',
+    operationsChecksum:'4a0e0ef2e9ed1aabe0c47c7f6d255aa356eea0630fa7fa8fb44d3164fa3ed016',
+    checksum:'af1d5003c19f80d077dccae545768c76cb38d849d6edc3c731061d4243fe5104',
   }),
 ]);
 

@@ -61,7 +61,7 @@ import {
   SessionControlsInputError,
   validateSessionControlsPostQuery,
 } from './_session-controls.js';
-import { CodeDocumentInputError, readCanonicalCodeForExecution } from './_code-document.js';
+import { CodeDocumentInputError, codeDocumentAccessSql, readCanonicalCodeForExecution } from './_code-document.js';
 import { ensureDataAdminReadiness, ensureDataCircleReadiness, ensureDataHistoryReadiness, ensureDataLogReadiness, ensureDataMeetingLinkReadiness, ensureDataProfileReadiness, ensureDataRunsReadiness, ensureDataSessionCompletionReadiness, ensureDataSessionControlsReadiness, ensureDataStatsReadiness, ensureDataWeeksReadiness, ensureMyPairDataReadiness } from './_data-readiness.js';
 import { circleMembershipEnabled, ensureCircleMembershipReadiness } from './_circle-membership.js';
 import { initializePrimaryCircleData } from './_admin-init.js';
@@ -1882,7 +1882,7 @@ async function handlePairRecap(req,res){
   };
   const runsStatement={
     sql:`WITH access AS (${accessSql}), selected AS (
-        SELECT sr.id,sr.user_id,sr.question_slug,sr.language,sr.test_cases_snapshot,
+        SELECT sr.id,sr.user_id,sr.week_id,sr.pair_group_id,sr.question_slug,sr.language,sr.code,sr.test_cases_snapshot,
           sr.results_json,sr.passed_count,sr.total_count,sr.duration_ms,sr.created_at,
           CASE runner.source WHEN 'auth' THEN COALESCE(aa.display_name,printf('User %d',sr.user_id)) WHEN 'users' THEN COALESCE(legacy.name,printf('User %d',sr.user_id)) END AS runner_display_name
         FROM session_runs sr LEFT JOIN auth_accounts aa ON aa.id=sr.user_id
@@ -1892,10 +1892,10 @@ async function handlePairRecap(req,res){
           AND EXISTS (SELECT 1 FROM access)
         ORDER BY julianday(sr.created_at) DESC,sr.id DESC LIMIT ?
       )
-      SELECT id,user_id,question_slug,language,test_cases_snapshot,results_json,
+      SELECT id,user_id,week_id,pair_group_id,question_slug,language,code,test_cases_snapshot,results_json,
         passed_count,total_count,duration_ms,created_at,runner_display_name,1 AS data_present
         FROM selected
-      UNION ALL SELECT NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,0
+      UNION ALL SELECT NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,0
         WHERE EXISTS (SELECT 1 FROM access) AND NOT EXISTS (SELECT 1 FROM selected)
       ORDER BY id DESC`,
     args:[...accessArgs,room.weekId,room.pairGroupId,MAX_RECAP_RUN_SCAN+1],
@@ -2632,10 +2632,14 @@ async function handleExecute(req,res){
       const access=await getPairAccess(db,payload,weekId,pairId);
       if(!access.allowed) return res.status(404).json({error:'pair not found'});
       accessArgs=authPairAccessArgs({userId:Number(payload.id||payload.uid),weekId,pairGroupId:pairId});
-      const canonical=room?await readCanonicalCodeForExecution(db,{
-        viewerId:Number(payload.id||payload.uid),room,questionSlug,questionVersion,
+      const executionRoom=room||{roomId:`week_${weekId}_pair_${pairId}`,weekId,pairGroupId:pairId};
+      const canonical=await readCanonicalCodeForExecution(db,{
+        viewerId:Number(payload.id||payload.uid),room:executionRoom,questionSlug,questionVersion,
         language:pistonLang,documentVersion:body.document_version,
-      }):null;
+      });
+      const exactHumanShape=positiveInteger(access.row?.user_a_id)!==positiveInteger(access.row?.user_b_id)
+        &&access.row?.user_c_id==null;
+      if(exactHumanShape&&!canonical) return res.status(404).json({error:'pair not found'});
       if(canonical?.eligible){
         if(canonical.terminal){
           return res.status(409).json({error:'session is completed',code:'session_completed'});
@@ -2743,7 +2747,28 @@ async function handleExecute(req,res){
         }:{}),
       });
       const runArgs=[payload.id||payload.uid,weekId,pairId,null,questionSlug,pistonLang,code,testSnapshot,storedResults,passed,total,dur];
-      const inserted=accessArgs
+      const inserted=canonicalDocument
+        ?await db.execute({
+          sql:`WITH pair_access AS (${codeDocumentAccessSql()})
+            INSERT INTO session_runs (user_id,week_id,pair_group_id,question_id,question_slug,language,code,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at)
+            SELECT ?,?,?,?,?,?,?,?,?,?,?,?,datetime('now')
+            WHERE EXISTS (SELECT 1 FROM pair_code_documents document
+              JOIN pair_access access
+                ON document.week_id=access.week_id AND document.pair_group_id=access.pair_group_id
+               AND document.pair_user_a_id=access.user_a_id AND document.pair_user_a_source='auth'
+               AND document.pair_user_b_id=access.user_b_id AND document.pair_user_b_source='auth'
+               AND document.pair_user_c_id IS NULL
+              WHERE document.week_id=? AND document.pair_group_id=? AND document.question_slug=?
+                AND document.question_version=? AND document.language=? AND document.revision=?
+                AND document.state_hash=? AND document.code_hash=?)
+              AND (SELECT COUNT(*) FROM session_completion_receipts receipt
+                WHERE receipt.week_id=? AND receipt.pair_group_id=? AND receipt.participant_source='auth'
+                  AND receipt.user_id IN (SELECT user_a_id FROM pair_access UNION ALL SELECT user_b_id FROM pair_access))<2
+            RETURNING id`,
+          args:[...accessArgs,...runArgs,weekId,pairId,questionSlug,questionVersion,pistonLang,
+            canonicalDocument.revision,canonicalDocument.stateHash,canonicalDocument.codeHash,weekId,pairId],
+        })
+        :accessArgs
         ? await db.execute({
           sql:`WITH pair_access AS (${authPairAccessSql()})
             INSERT INTO session_runs (user_id,week_id,pair_group_id,question_id,question_slug,language,code,test_cases_snapshot,results_json,passed_count,total_count,duration_ms,created_at)
@@ -2758,6 +2783,17 @@ async function handleExecute(req,res){
           args:runArgs,
         });
       if(accessArgs&&!inserted.rows.length){
+        if(canonicalDocument){
+          const latest=await readCanonicalCodeForExecution(db,{
+            viewerId:userId,room:room||{roomId:`week_${weekId}_pair_${pairId}`,weekId,pairGroupId:pairId},
+            questionSlug,questionVersion,language:pistonLang,documentVersion:canonicalDocument.version,
+          });
+          if(!latest) return res.status(404).json({error:'pair not found'});
+          if(latest.terminal) return res.status(409).json({error:'session is completed',code:'session_completed'});
+          if(latest.missing||latest.stale) return res.status(409).json({
+            error:'code document changed',code:'code_document_changed',latest_document_version:latest.latestVersion,
+          });
+        }
         const latest=await getPairAccess(db,payload,weekId,pairId);
         if(!latest.allowed) return res.status(404).json({error:'pair not found'});
         throw new Error('authorized run insert returned no row');

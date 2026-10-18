@@ -20,6 +20,16 @@ function authenticatedUserId(payload){
   return Number.isSafeInteger(userId)&&userId>0?userId:null;
 }
 
+function safeReadOrigin(req){
+  const authorization=String(req?.headers?.authorization||req?.headers?.Authorization||'');
+  if(/^Bearer\s+\S+/i.test(authorization)) return true;
+  const cookie=String(req?.headers?.cookie||req?.headers?.Cookie||'');
+  if(!/(?:^|;\s*)randori_session=/.test(cookie)) return true;
+  const site=String(req?.headers?.['sec-fetch-site']||req?.headers?.['Sec-Fetch-Site']||'').toLowerCase();
+  if(site) return site==='same-origin';
+  return verifyMutationOrigin({...req,method:'POST'});
+}
+
 function sendFailure(res,error){
   if(error instanceof CodeDocumentInputError){
     return res.status(error.status||400).json({ok:false,error:error.message});
@@ -39,6 +49,9 @@ export default async function handler(req,res){
   }
   if(req.method==='POST'&&!verifyMutationOrigin(req)){
     return res.status(403).json({ok:false,error:'cross-origin mutation rejected'});
+  }
+  if(req.method==='GET'&&!safeReadOrigin(req)){
+    return res.status(403).json({ok:false,error:'cross-origin read rejected'});
   }
   const auth=await verifyRequestAuth(req);
   const viewerId=authenticatedUserId(auth);

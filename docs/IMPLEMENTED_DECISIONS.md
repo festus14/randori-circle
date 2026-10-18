@@ -2465,7 +2465,7 @@ room/account fences, and terminal behavior. Rollback is code-only and restores
 the prior blocking refresh; migration 19 and all durable aggregate rows remain
 unchanged.
 
-## ID-59: Make pair code conflict-free and execute only acknowledged state
+## ID-61: Make pair code conflict-free and execute only acknowledged state
 
 Status: candidate migration-backed primary-session increment.
 
@@ -2489,6 +2489,8 @@ Presence and remote cursors are deferred.
 browser edits, offline replay, duplicate/reordered updates, restart, textarea
 fallback, stale Run, completion fences, and board compatibility. Private
 documents expire after 90 days through access-time and weekly sweeps. Rollback
-retains v20 and its ledger, disables the route/client if necessary, uses the v3
-code projection for the prior binary, and rolls forward. Full details are in
+retains v20 and its ledger, keeps the v20-capable API deployed, stops pair
+editing at the maintenance boundary, and rolls forward. A pre-v20 binary is
+not compatible with the v20 ledger and must not accept projection-only edits.
+Full details are in
 [`CONFLICT_FREE_CODE_DOCUMENTS.md`](CONFLICT_FREE_CODE_DOCUMENTS.md).

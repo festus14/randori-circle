@@ -56,6 +56,7 @@ const BOARD_SHAPE_FIELDS = {
 };
 let lastCleanupTimestamp=0;
 const CLEANUP_INTERVAL_MS=5*60*1000;
+const workspaceTails=new Map();
 
 function getEndpoint(req){
   const q=req.query?.endpoint;
@@ -406,8 +407,68 @@ async function readAuthorizedWorkspaceSnapshot(db,userId,room){
   };
 }
 
+async function redactExpiredWorkspaceCode(db,room,snapshot){
+  if(!snapshot||snapshot.schema_version<3||!snapshot.question_version) return snapshot;
+  try{
+    const result=await db.execute({
+      sql:`SELECT 1 AS expired FROM pair_code_documents
+        WHERE week_id=? AND pair_group_id=? AND question_slug=? AND question_version=? AND language=?
+          AND updated_at < strftime('%Y-%m-%dT%H:%M:%fZ','now','-90 days') LIMIT 1`,
+      args:[room.weekId,room.pairGroupId,snapshot.question_id,snapshot.question_version,snapshot.language],
+    });
+    return result?.rows?.length?{...snapshot,code:''}:snapshot;
+  }catch(error){
+    if(/(?:^|:\s*)no such table:\s*pair_code_documents$/i.test(String(error?.message||''))) return snapshot;
+    throw error;
+  }
+}
+
 function workspaceConflict(res,current){
   return res.status(409).json({ok:false,error:'revision conflict',current});
+}
+
+function retryableWorkspaceConflict(error){
+  let current=error;
+  for(let depth=0;current&&depth<6;depth+=1){
+    const codes=[current.code,current.rawCode].filter(Boolean).map(value=>String(value).toUpperCase());
+    if(codes.some(code=>[
+      'SQLITE_BUSY','SQLITE_BUSY_SNAPSHOT','SQLITE_LOCKED','SQLITE_LOCKED_SHAREDCACHE',
+      'TRANSACTION_CONFLICT','LIBSQL_TRANSACTION_BUSY',
+    ].includes(code))) return true;
+    const message=String(current.message||'').trim();
+    if(/^(?:SQLITE_(?:BUSY|LOCKED)(?::|\s+-)\s*)?database (?:table )?is locked$/i.test(message)
+      ||/^database is busy$/i.test(message)) return true;
+    current=current.cause;
+  }
+  return false;
+}
+
+function workspaceRetryDelay(attempt,seed=''){
+  let jitter=0;
+  for(const character of String(seed)) jitter=(jitter*33+character.charCodeAt(0))%31;
+  return new Promise(resolve=>setTimeout(resolve,Math.min(500,30*(2**attempt)+jitter)));
+}
+
+async function hasCodeDocumentTable(db){
+  try{ await db.execute(`SELECT 1 FROM pair_code_documents LIMIT 1`); return true; }
+  catch(error){
+    if(/(?:^|:\s*)no such table:\s*pair_code_documents$/i.test(String(error?.message||''))) return false;
+    throw error;
+  }
+}
+
+async function withWorkspaceLock(room,operation){
+  const key=`${room.weekId}:${room.pairGroupId}`;
+  const previous=workspaceTails.get(key)||Promise.resolve();
+  let release;
+  const turn=new Promise(resolve=>{ release=resolve; });
+  workspaceTails.set(key,turn);
+  await previous.catch(()=>{});
+  try{ return await operation(); }
+  finally{
+    release();
+    if(workspaceTails.get(key)===turn) workspaceTails.delete(key);
+  }
 }
 
 async function handleWorkspacePost(req,res,db,auth,room){
@@ -419,79 +480,81 @@ async function handleWorkspacePost(req,res,db,auth,room){
     : workspace.question_id;
   const userId=authenticatedUserId(auth);
   if(!userId) return res.status(403).json({ok:false,error:'not a member of this room'});
-  const initial=await readAuthorizedWorkspaceSnapshot(db,userId,room);
-  if(!initial.authorized) return res.status(403).json({ok:false,error:'not a member of this room'});
-  const current=initial.snapshot;
-  // Once a v20 document exists it is the code authority. Board-v3 writes keep
-  // their normal CAS semantics but carry only a rollback projection of code.
-  let canonicalCode=null;
-  if(workspace.question_version){
-    const projection=await readCodeProjectionForWorkspace(db,{
-      viewerId:userId,room,questionSlug:workspace.question_id,
-      questionVersion:workspace.question_version,language:workspace.language,
-    });
-    if(projection) canonicalCode=projection.code;
-  }
-  const codeEnvelope=storedWorkspaceCode(canonicalCode===null?workspace:{...workspace,code:canonicalCode});
-  if(current && workspace.schema_version<current.schema_version){
-    return res.status(409).json({
-      ok:false,
-      error:`schema version ${workspace.schema_version} cannot overwrite workspace schema version ${current.schema_version}`,
-      current,
-    });
-  }
-  if(current?.client_id===workspace.client_id && current.client_seq===workspace.client_seq){
-    return res.json({ok:true,idempotent:true,snapshot:current});
-  }
-  if((current?.revision||0)!==workspace.base_revision){
-    return workspaceConflict(res,current);
-  }
+  const outcome=await withWorkspaceLock(room,async()=>{
+    const documentsAvailable=workspace.question_version?await hasCodeDocumentTable(db):false;
+    for(let attempt=0;attempt<6;attempt+=1){
+      try{
+        const initial=await readAuthorizedWorkspaceSnapshot(db,userId,room);
+        if(!initial.authorized) return {kind:'denied'};
+        const current=initial.snapshot;
+        let projection=null;
+        if(documentsAvailable){
+          projection=await readCodeProjectionForWorkspace(db,{
+            viewerId:userId,room,questionSlug:workspace.question_id,
+            questionVersion:workspace.question_version,language:workspace.language,
+          });
+        }
+        const codeEnvelope=storedWorkspaceCode(projection===null?workspace:{...workspace,code:projection.code});
+        if(current&&workspace.schema_version<current.schema_version) return {kind:'downgrade',current};
+        if(current?.client_id===workspace.client_id&&current.client_seq===workspace.client_seq){
+          return {kind:'idempotent',snapshot:current};
+        }
+        if((current?.revision||0)!==workspace.base_revision) return {kind:'conflict',current};
 
-  let writeResult;
-  if(current){
-    writeResult=await db.execute({
-      sql:`WITH access AS (${authPairAccessSql()})
-        UPDATE pair_room_snapshots
-        SET revision=revision+1,schema_version=?,client_id=?,client_seq=?,language=?,question_id=?,code=?,updated_by=?,updated_at=datetime('now')
-        WHERE room_id=? AND week_id=? AND pair_group_id=? AND revision=?
-          AND EXISTS (SELECT 1 FROM access)
-        RETURNING room_id,revision,schema_version,client_id,client_seq,language,question_id,code,updated_by,updated_at`,
-      args:[
-        ...pairAccessArgs(userId,room),
-        workspace.schema_version,workspace.client_id,workspace.client_seq,workspace.language,
-        storedQuestionId,codeEnvelope,userId,room.roomId,room.weekId,room.pairGroupId,workspace.base_revision,
-      ],
-    });
-  }else{
-    writeResult=await db.execute({
-      sql:`WITH access AS (${authPairAccessSql()})
-        INSERT INTO pair_room_snapshots
-        (room_id,week_id,pair_group_id,revision,schema_version,client_id,client_seq,language,question_id,code,updated_by)
-        SELECT ?,?,?,1,?,?,?,?,?,?,?
-        WHERE EXISTS (SELECT 1 FROM access)
-        ON CONFLICT DO NOTHING
-        RETURNING room_id,revision,schema_version,client_id,client_seq,language,question_id,code,updated_by,updated_at`,
-      args:[
-        ...pairAccessArgs(userId,room),
-        room.roomId,room.weekId,room.pairGroupId,workspace.schema_version,workspace.client_id,
-        workspace.client_seq,workspace.language,storedQuestionId,codeEnvelope,
-        userId,
-      ],
-    });
-  }
-
-  const written=snapshotFromRow(writeResult.rows?.[0]);
-  if(written) return res.json({ok:true,idempotent:false,snapshot:written});
-
-  // A competing request may have won the compare-and-swap, or membership may
-  // have changed since the initial read. Re-authorize before returning data.
-  const latest=await readAuthorizedWorkspaceSnapshot(db,userId,room);
-  if(!latest.authorized) return res.status(403).json({ok:false,error:'not a member of this room'});
-  const raced=latest.snapshot;
-  if(raced?.client_id===workspace.client_id && raced.client_seq===workspace.client_seq){
-    return res.json({ok:true,idempotent:true,snapshot:raced});
-  }
-  return workspaceConflict(res,raced);
+        const documentGuard=documentsAvailable
+          ?projection
+            ?`AND EXISTS (SELECT 1 FROM pair_code_documents document
+                WHERE document.week_id=? AND document.pair_group_id=? AND document.question_slug=?
+                  AND document.question_version=? AND document.language=? AND document.revision=?
+                  AND document.state_hash=? AND document.code_hash=?)`
+            :`AND NOT EXISTS (SELECT 1 FROM pair_code_documents document
+                WHERE document.week_id=? AND document.pair_group_id=? AND document.question_slug=?
+                  AND document.question_version=? AND document.language=?)`
+          :'';
+        const documentArgs=!documentsAvailable?[]:projection
+          ?[room.weekId,room.pairGroupId,workspace.question_id,workspace.question_version,
+            workspace.language,projection.revision,projection.stateHash,projection.codeHash]
+          :[room.weekId,room.pairGroupId,workspace.question_id,workspace.question_version,workspace.language];
+        const writeResult=current
+          ?await db.execute({
+            sql:`WITH access AS (${authPairAccessSql()}) UPDATE pair_room_snapshots
+              SET revision=revision+1,schema_version=?,client_id=?,client_seq=?,language=?,question_id=?,code=?,updated_by=?,updated_at=datetime('now')
+              WHERE room_id=? AND week_id=? AND pair_group_id=? AND revision=?
+                AND EXISTS (SELECT 1 FROM access) ${documentGuard}`,
+            args:[...pairAccessArgs(userId,room),workspace.schema_version,workspace.client_id,
+              workspace.client_seq,workspace.language,storedQuestionId,codeEnvelope,userId,
+              room.roomId,room.weekId,room.pairGroupId,workspace.base_revision,...documentArgs],
+          })
+          :await db.execute({
+            sql:`WITH access AS (${authPairAccessSql()}) INSERT INTO pair_room_snapshots
+              (room_id,week_id,pair_group_id,revision,schema_version,client_id,client_seq,language,question_id,code,updated_by)
+              SELECT ?,?,?,1,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM access) ${documentGuard}
+              ON CONFLICT DO NOTHING`,
+            args:[...pairAccessArgs(userId,room),room.roomId,room.weekId,room.pairGroupId,
+              workspace.schema_version,workspace.client_id,workspace.client_seq,workspace.language,
+              storedQuestionId,codeEnvelope,userId,...documentArgs],
+          });
+        const latest=await readAuthorizedWorkspaceSnapshot(db,userId,room);
+        if(!latest.authorized) return {kind:'denied'};
+        if(Number(writeResult?.rowsAffected)===1) return {kind:'written',snapshot:latest.snapshot};
+        if(latest.snapshot?.client_id===workspace.client_id&&latest.snapshot.client_seq===workspace.client_seq){
+          return {kind:'idempotent',snapshot:latest.snapshot};
+        }
+        if((latest.snapshot?.revision||0)!==(current?.revision||0)) return {kind:'conflict',current:latest.snapshot};
+      }catch(error){
+        if(attempt===5||!retryableWorkspaceConflict(error)) throw error;
+      }
+      await workspaceRetryDelay(attempt,workspace.client_id);
+    }
+    throw new Error('workspace update contention exceeded its retry bound');
+  });
+  if(outcome.kind==='denied') return res.status(403).json({ok:false,error:'not a member of this room'});
+  if(outcome.kind==='downgrade') return res.status(409).json({
+    ok:false,error:`schema version ${workspace.schema_version} cannot overwrite workspace schema version ${outcome.current.schema_version}`,
+    current:outcome.current,
+  });
+  if(outcome.kind==='conflict') return workspaceConflict(res,outcome.current);
+  return res.json({ok:true,idempotent:outcome.kind==='idempotent',snapshot:outcome.snapshot});
 }
 
 function parseAfterRevision(value){
@@ -511,7 +574,7 @@ async function handleWorkspaceGet(req,res,db,userId,room){
   if(afterRevision===null) return res.status(400).json({ok:false,error:'after_revision must be a safe non-negative integer'});
   const result=await readAuthorizedWorkspaceSnapshot(db,userId,room);
   if(!result.authorized) return res.status(403).json({ok:false,error:'not a member of this room'});
-  const current=result.snapshot;
+  const current=await redactExpiredWorkspaceCode(db,room,result.snapshot);
   return res.json({
     ok:true,
     snapshot:current && current.revision>afterRevision ? current : null,

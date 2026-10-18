@@ -324,7 +324,9 @@ test('canonical execution stops before the provider when room access storage fai
 
 test('canonical execution redacts guarded persistence failures after provider work',async()=>{
   currentDb=mockDb(sql=>{
-    if(sql.startsWith('SELECT pg.id AS pair_group_id')) return rows([pairAccess()]);
+    if(sql.startsWith('SELECT pg.id AS pair_group_id')) return rows([{
+      ...pairAccess(),user_b_id:2,is_ai_pair:1,
+    }]);
     if(sql.includes("'execute_lease_start'")) return rows([{id:91}]);
     if(sql.includes('WITH pair_access AS')&&sql.includes('INSERT INTO session_runs')){
       throw new Error(SECRET_DATABASE_ERROR);

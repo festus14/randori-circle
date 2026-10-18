@@ -23,7 +23,7 @@ mock.module('../../api/_db.js',{exports:{
 
 const {default:handler}=await import('../../api/code-document.js');
 
-function invoke({method='GET',query={},body={},user=1}={}){
+function invoke({method='GET',query={},body={},user=1,headers:requestHeaders={}}={}){
   const search=new URLSearchParams(query).toString();
   return new Promise((resolve,reject)=>{
     let status=200; const headers={}; let settled=false;
@@ -31,7 +31,7 @@ function invoke({method='GET',query={},body={},user=1}={}){
     const res={status(value){ status=value; return this; },setHeader(name,value){ headers[String(name).toLowerCase()]=value; },
       json(value){ finish(value); return this; },end(value){ finish(value); return this; }};
     const req={method,url:`/api/code-document${search?`?${search}`:''}`,query,body,
-      headers:user?{'x-test-user':String(user)}:{}};
+      headers:{...(user?{'x-test-user':String(user)}:{}),...requestHeaders}};
     Promise.resolve(handler(req,res)).then(()=>finish(undefined)).catch(reject);
   });
 }
@@ -68,6 +68,8 @@ afterEach(()=>{
 test('code-document API is private, no-store, and returns the same 404 for denied rooms',async()=>{
   currentDb=await database();
   const anonymous=await invoke({query,user:null}); assert.equal(anonymous.status,401);
+  const crossSite=await invoke({query,headers:{cookie:'randori_session=test','sec-fetch-site':'cross-site'}});
+  assert.equal(crossSite.status,403);
   const outsider=await invoke({query,user:9}); assert.equal(outsider.status,404);
   assert.deepEqual(outsider.body,{ok:false,error:'code document not found'});
   const malformed=await invoke({query:{...query,room_id:'week_10_pair_020'}}); assert.equal(malformed.status,400);
@@ -75,6 +77,9 @@ test('code-document API is private, no-store, and returns the same 404 for denie
   assert.equal(member.status,200); assert.equal(member.headers['cache-control'],'private, no-store');
   assert.equal(member.body.ok,true); assert.equal(member.body.created,true);
   assert.match(member.body.document_version,/^[a-f0-9]{64}$/);
+  const futureCursor=await invoke({query:{...query,after_revision:'999'},user:1});
+  assert.equal(futureCursor.status,200); assert.equal(futureCursor.body.changed,true);
+  assert.equal(typeof futureCursor.body.state,'string');
 });
 
 test('code-document API merges a canonical update and duplicate delivery is no-write success',async()=>{

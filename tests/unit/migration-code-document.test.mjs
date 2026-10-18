@@ -51,8 +51,12 @@ test('v20 is additive, empty, indexed, guarded, and exact after v19',async()=>{
       'pair_code_documents','idx_pair_code_documents_retention','idx_pair_code_documents_actor',
       'trg_pair_code_documents_insert_guard','trg_pair_code_documents_update_guard',
       'trg_pairing_groups_code_documents_invalidate',
+      'trg_pairing_groups_code_workspace_update_invalidate',
+      'trg_pairing_groups_code_workspace_delete_invalidate',
       'trg_pairing_participants_code_documents_update_invalidate',
       'trg_pairing_participants_code_documents_delete_invalidate',
+      'trg_pairing_participants_code_workspace_update_invalidate',
+      'trg_pairing_participants_code_workspace_delete_invalidate',
     ]);
     assert.equal((await item.db.execute(`SELECT COUNT(*) AS c FROM pair_code_documents`)).rows[0].c,0);
     assert.equal((await inspectMigrationState(item.db)).schemaExact,true);
@@ -63,14 +67,24 @@ test('v20 storage guards exact pair provenance, revisions, and rollback invalida
   const item=fixture();
   try{
     await apply(item.db); await seedPair(item.db); await item.db.execute(insert);
+    await item.db.execute(`INSERT INTO pair_room_snapshots
+      (room_id,week_id,pair_group_id,revision,schema_version,client_id,client_seq,language,question_id,code,updated_by)
+      VALUES ('week_10_pair_20',10,20,1,3,'workspace_client',1,'javascript','focus-block-rollup@1',
+        '{"code":"TOP_SECRET","board":{"shapes":[]}}',1)`);
     await assert.rejects(()=>item.db.execute(`UPDATE pair_code_documents SET revision=3 WHERE week_id=10`),/invalid code-document update/i);
     await item.db.execute(`UPDATE pair_code_documents SET revision=2,last_actor_id=2,last_client_seq=2,
       updated_at='2026-09-20T10:01:00.000Z' WHERE week_id=10 AND pair_group_id=20`);
     await item.db.execute(`UPDATE pairing_groups SET user_b_id=3 WHERE id=20`);
     assert.equal((await item.db.execute(`SELECT COUNT(*) AS c FROM pair_code_documents`)).rows[0].c,0);
+    assert.equal((await item.db.execute(`SELECT COUNT(*) AS c FROM pair_room_snapshots`)).rows[0].c,0);
     await item.db.execute(`UPDATE pairing_groups SET user_b_id=2 WHERE id=20`); await item.db.execute(insert);
+    await item.db.execute(`INSERT INTO pair_room_snapshots
+      (room_id,week_id,pair_group_id,revision,schema_version,client_id,client_seq,language,question_id,code,updated_by)
+      VALUES ('week_10_pair_20',10,20,1,3,'workspace_client',1,'javascript','focus-block-rollup@1',
+        '{"code":"TOP_SECRET","board":{"shapes":[]}}',1)`);
     await item.db.execute(`DELETE FROM pairing_participants WHERE week_id=10 AND user_id=2`);
     assert.equal((await item.db.execute(`SELECT COUNT(*) AS c FROM pair_code_documents`)).rows[0].c,0);
+    assert.equal((await item.db.execute(`SELECT COUNT(*) AS c FROM pair_room_snapshots`)).rows[0].c,0);
   }finally{ item.close(); }
 });
 

@@ -99,7 +99,7 @@ export const MIGRATION_CONTRACTS=Object.freeze([
   Object.freeze({
     version:20,
     name:'bounded-source-bound-code-documents',
-    checksum:'edbf09b22ebc056b3c7ccada00241f7c225d196cde8437d3ce821b3bb0b84b0a',
+    checksum:'e9ddba8da87a5e6a5ccbb29fb9c4956de6b66ee1430c5e58c49cbd3688c9e3c6',
   }),
 ]);
 

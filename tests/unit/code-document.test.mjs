@@ -15,7 +15,9 @@ import {
   mergeAuthorizedCodeDocument,
   parseCodeDocumentMutation,
   parseCodeDocumentQuery,
+  purgeExpiredCodeDocuments,
   readCanonicalCodeForExecution,
+  readCodeProjectionForWorkspace,
 } from '../../api/_code-document.js';
 
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
@@ -27,6 +29,7 @@ function fixture(){
   const path=join(directory,'test.sqlite');
   let db=createClient({url:`file:${path}`});
   return {get db(){ return db; },restart(){ db.close(); db=createClient({url:`file:${path}`}); return db; },
+    client(){ return createClient({url:`file:${path}`}); },
     close(){ db.close(); rmSync(directory,{recursive:true,force:true}); }};
 }
 
@@ -107,6 +110,54 @@ test('concurrent same-offset updates merge in either delivery order and duplicat
   }
 });
 
+test('simultaneous merges on independent database clients retry and preserve both edits',async()=>{
+  const item=fixture(); let peer;
+  try{
+    await migrate(item.db); await seed(item.db);
+    peer=item.client(); await prepareMigrationConnection(peer);
+    const initial=(await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY})).document;
+    const left=updateFromState(initial.state,text=>text.insert(7,'A'));
+    const right=updateFromState(initial.state,text=>text.insert(7,'B'));
+    await Promise.all([
+      mergeAuthorizedCodeDocument(item.db,input(left,{clientId:'client_left',clientSeq:1})),
+      mergeAuthorizedCodeDocument(peer,input(right,{clientId:'client_right',clientSeq:1})),
+    ]);
+    const final=(await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY})).document;
+    assert.ok(final.code.includes('A')&&final.code.includes('B'));
+    assert.equal(final.revision,3);
+  }finally{ peer?.close(); item.close(); }
+});
+
+test('execution and workspace projection remain available during a cross-client writer',async()=>{
+  const item=fixture(); let peer;
+  try{
+    await migrate(item.db); await seed(item.db);
+    const created=await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY});
+    peer=item.client(); await prepareMigrationConnection(peer);
+    for(const operation of [
+      ()=>readCanonicalCodeForExecution(item.db,{viewerId:1,room:IDENTITY,
+        questionSlug:IDENTITY.questionSlug,questionVersion:IDENTITY.questionVersion,
+        language:IDENTITY.language,documentVersion:created.document.version}),
+      ()=>readCodeProjectionForWorkspace(item.db,{viewerId:1,room:IDENTITY,
+        questionSlug:IDENTITY.questionSlug,questionVersion:IDENTITY.questionVersion,
+        language:IDENTITY.language}),
+    ]){
+      const blocker=await peer.transaction('write');
+      await blocker.execute(`UPDATE pair_room_snapshots SET updated_at=updated_at WHERE room_id='week_10_pair_20'`);
+      const pending=operation();
+      let released;
+      const release=new Promise(resolve=>{ released=resolve; });
+      setTimeout(async()=>{
+        try{ await blocker.rollback(); }catch{}
+        finally{ try{ await blocker.close(); }catch{} released(); }
+      },55);
+      const result=await pending;
+      assert.ok(result,'a transient peer lock must be retried');
+      await release;
+    }
+  }finally{ peer?.close(); item.close(); }
+});
+
 test('overlapping delete and insert converge without whole-document overwrite',async()=>{
   const item=fixture();
   try{
@@ -131,6 +182,15 @@ test('input bounds and corrupt stored state fail closed without mutation',async(
   try{
     await migrate(item.db); await seed(item.db);
     await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY});
+    const hidden=new Y.Doc(); hidden.getMap('hidden').set('secret','private');
+    await assert.rejects(()=>mergeAuthorizedCodeDocument(item.db,input(
+      Buffer.from(Y.encodeStateAsUpdate(hidden)).toString('base64'),
+    )),CodeDocumentInputError);
+    const rich=new Y.Doc(); rich.getText('code').insert(0,'styled',{bold:true});
+    await assert.rejects(()=>mergeAuthorizedCodeDocument(item.db,input(
+      Buffer.from(Y.encodeStateAsUpdate(rich)).toString('base64'),
+    )),CodeDocumentInputError);
+    assert.equal((await item.db.execute(`SELECT revision FROM pair_code_documents`)).rows[0].revision,1);
     await item.db.execute(`UPDATE pair_code_documents SET y_state_base64='AAAA',state_hash='${'0'.repeat(64)}',
       code_hash='${'0'.repeat(64)}',revision=revision+1,last_actor_id=1`);
     await assert.rejects(()=>getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY}),CodeDocumentDataError);
@@ -191,5 +251,61 @@ test('expired documents are deleted before access and rebuilt without retaining 
       args:[privateDocument.state,privateDocument.stateHash,privateDocument.codeHash,privateDocument.revision]});
     const rebuilt=await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY});
     assert.equal(rebuilt.created,true); assert.equal(rebuilt.document.code,'');
+  }finally{ item.close(); }
+});
+
+test('an expired document and rollback projection are purged before a direct mutation',async()=>{
+  const item=fixture();
+  try{
+    await migrate(item.db); await seed(item.db);
+    const initial=(await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY})).document;
+    const privateUpdate=updateFromState(initial.state,text=>text.insert(text.length,' private'));
+    const privateDocument=(await mergeAuthorizedCodeDocument(item.db,input(privateUpdate))).document;
+    await item.db.execute(`DELETE FROM pair_code_documents`);
+    await item.db.execute({sql:`INSERT INTO pair_code_documents
+      (week_id,pair_group_id,question_slug,question_version,language,y_state_base64,state_hash,code_hash,
+       revision,pair_user_a_id,pair_user_a_source,pair_user_b_id,pair_user_b_source,pair_user_c_id,
+       last_actor_id,last_actor_source,last_client_id,last_client_seq,created_at,updated_at)
+      VALUES (10,20,'focus-block-rollup',1,'javascript',?,?,?,?,1,'auth',2,'auth',NULL,1,'auth',
+        'client_old',2,'2020-01-01T00:00:00.000Z','2020-01-01T00:00:00.000Z')`,
+      args:[privateDocument.state,privateDocument.stateHash,privateDocument.codeHash,privateDocument.revision]});
+    const fresh=new Y.Doc(); fresh.getText('code').insert(0,'fresh');
+    const result=await mergeAuthorizedCodeDocument(item.db,input(
+      Buffer.from(Y.encodeStateAsUpdate(fresh)).toString('base64'),
+      {clientId:'client_fresh',clientSeq:3},
+    ));
+    assert.equal(result.document.code,'fresh');
+    const snapshot=(await item.db.execute(`SELECT schema_version,code FROM pair_room_snapshots`)).rows[0];
+    assert.equal(Number(snapshot.schema_version),3);
+    assert.deepEqual(JSON.parse(snapshot.code),{code:'fresh',board:{shapes:[]}});
+  }finally{ item.close(); }
+});
+
+test('retention scrubs only an expired matching code projection and preserves board plus active siblings',async()=>{
+  const item=fixture();
+  try{
+    await migrate(item.db); await seed(item.db);
+    const javascript=(await getAuthorizedCodeDocument(item.db,{viewerId:1,...IDENTITY})).document;
+    const privateUpdate=updateFromState(javascript.state,text=>text.insert(text.length,' secret'));
+    const privateDocument=(await mergeAuthorizedCodeDocument(item.db,input(privateUpdate))).document;
+    const pythonIdentity={...IDENTITY,language:'python'};
+    const python=(await getAuthorizedCodeDocument(item.db,{viewerId:1,...pythonIdentity})).document;
+    const pythonDoc=new Y.Doc(); Y.applyUpdate(pythonDoc,Buffer.from(python.state,'base64'));
+    const vector=Y.encodeStateVector(pythonDoc); pythonDoc.getText('code').insert(0,'active');
+    await mergeAuthorizedCodeDocument(item.db,{...input(Buffer.from(Y.encodeStateAsUpdate(pythonDoc,vector)).toString('base64')),
+      ...pythonIdentity,clientId:'client_python'});
+    await item.db.execute(`DELETE FROM pair_code_documents WHERE language='javascript'`);
+    await item.db.execute({sql:`INSERT INTO pair_code_documents
+      (week_id,pair_group_id,question_slug,question_version,language,y_state_base64,state_hash,code_hash,
+       revision,pair_user_a_id,pair_user_a_source,pair_user_b_id,pair_user_b_source,pair_user_c_id,
+       last_actor_id,last_actor_source,last_client_id,last_client_seq,created_at,updated_at)
+      VALUES (10,20,'focus-block-rollup',1,'javascript',?,?,?,?,1,'auth',2,'auth',NULL,1,'auth',
+        'client_old',2,'2020-01-01T00:00:00.000Z','2020-01-01T00:00:00.000Z')`,
+      args:[privateDocument.state,privateDocument.stateHash,privateDocument.codeHash,privateDocument.revision]});
+    assert.deepEqual(await purgeExpiredCodeDocuments(item.db),{purged:1});
+    const rows=(await item.db.execute(`SELECT language FROM pair_code_documents ORDER BY language`)).rows;
+    assert.deepEqual(rows.map(row=>row.language),['python']);
+    const snapshot=(await item.db.execute(`SELECT code FROM pair_room_snapshots`)).rows[0];
+    assert.deepEqual(JSON.parse(snapshot.code),{code:'',board:{shapes:[]}});
   }finally{ item.close(); }
 });
