@@ -82,8 +82,12 @@ async function signOutThroughMenu(page:Page){
   await page.locator('#meLabel').click();
   await expect(page.locator('#meSignOut')).toBeVisible();
   const logout=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/auth/logout');
+  // Sign-out reloads the document shortly after the server revokes the session.
+  const reloaded=page.waitForEvent('domcontentloaded');
   await page.locator('#meSignOut').click();
   expect((await logout).status()).toBe(200);
+  await reloaded;
+  await expectInviteGateLoaded(page);
   await expect(page.locator('#authBtn')).toBeVisible();
 }
 
