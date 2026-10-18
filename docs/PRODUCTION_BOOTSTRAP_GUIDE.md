@@ -237,7 +237,7 @@ Scope every value to **Production** only.
 | `GOOGLE_CLIENT_SECRET` | From section 5 |
 | `RESEND_API_KEY` | From section 6 |
 | `RESEND_FROM` | From section 6, e.g. `Randori <noreply@mail.example.com>` |
-| `EXECUTION_PROVIDER` | `vercel-sandbox`. Enables "Run" in a per-run Vercel Sandbox microVM using the project's OIDC token (no extra secret). Leave unset to keep execution explicitly unavailable. See ID-61 |
+| `EXECUTION_PROVIDER` | `vercel-sandbox`. Enables "Run" in a per-run Vercel Sandbox microVM using the project's OIDC token (no extra secret). Leave unset to keep execution explicitly unavailable. See ID-62 |
 
 ### Key rings (staged dark; must equal the GitHub copies byte for byte)
 
