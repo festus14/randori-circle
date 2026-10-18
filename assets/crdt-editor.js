@@ -9087,7 +9087,8 @@ ${err.toString()}`);
     retryMs: 500,
     status: "local",
     completed: false,
-    awaitingRoom: false
+    awaitingRoom: false,
+    hydrationLockEpoch: null
   };
   function actorId() {
     const id2 = Number(window._randori_auth?.me?.id || window._randori_auth?.me?.uid || 0);
@@ -9403,9 +9404,16 @@ ${err.toString()}`);
       if (state.controller === controller) state.controller = null;
     }
   }
+  function releaseHydrationLock(epoch) {
+    if (state.hydrationLockEpoch !== epoch) return;
+    state.hydrationLockEpoch = null;
+    if (!state.completed) setEditorReadOnly(false);
+  }
   async function hydrate(identity, epoch) {
     setStatus(navigator.onLine ? "connecting" : "offline");
     if (!navigator.onLine) return false;
+    state.hydrationLockEpoch = epoch;
+    setEditorReadOnly(true);
     const localBefore = currentCode();
     try {
       const result = await fetchJson(endpoint(identity), {}, epoch, identity);
@@ -9441,6 +9449,7 @@ ${err.toString()}`);
       const localNow = currentCode();
       if (localNow !== localBefore && localNow !== text2.toString()) replaceText(localNow, "pre-hydration-edit");
       attachEditor(epoch);
+      releaseHydrationLock(epoch);
       if (readQueue(identity).length) {
         setStatus(navigator.onLine ? "syncing" : "offline");
         await drain();
@@ -9456,6 +9465,8 @@ ${err.toString()}`);
         state.retryMs = Math.min(state.retryMs * 2, RETRY_MAX_MS);
       }
       return false;
+    } finally {
+      releaseHydrationLock(epoch);
     }
   }
   async function drain() {

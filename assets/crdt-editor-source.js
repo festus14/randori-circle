@@ -17,7 +17,7 @@ const memoryQueues=new Map();
 const state={epoch:0,room:null,identity:null,actorId:null,doc:null,text:null,binding:null,
   textObserver:null,textareaHandler:null,textareaKeyHandler:null,updateHandler:null,undoManager:null,revision:0,version:null,
   hydrated:false,inFlight:false,controller:null,pollTimer:null,retryMs:500,status:'local',completed:false,
-  awaitingRoom:false};
+  awaitingRoom:false,hydrationLockEpoch:null};
 
 function actorId(){
   const id=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0);
@@ -304,9 +304,20 @@ async function fetchJson(url,options,epoch,identity){
   }
 }
 
+function releaseHydrationLock(epoch){
+  // Only the newest hydration owns the lock; a stale attempt must not unlock
+  // an editor that a later hydration has locked again.
+  if(state.hydrationLockEpoch!==epoch) return;
+  state.hydrationLockEpoch=null;
+  if(!state.completed) setEditorReadOnly(false);
+}
+
 async function hydrate(identity,epoch){
   setStatus(navigator.onLine?'connecting':'offline');
   if(!navigator.onLine) return false;
+  // Keystrokes made while the canonical document is in flight would be
+  // replayed as a diff against it and could delete partner edits.
+  state.hydrationLockEpoch=epoch; setEditorReadOnly(true);
   const localBefore=currentCode();
   try{
     const result=await fetchJson(endpoint(identity),{},epoch,identity);
@@ -331,6 +342,7 @@ async function hydrate(identity,epoch){
     const localNow=currentCode();
     if(localNow!==localBefore&&localNow!==text.toString()) replaceText(localNow,'pre-hydration-edit');
     attachEditor(epoch);
+    releaseHydrationLock(epoch);
     if(readQueue(identity).length) { setStatus(navigator.onLine?'syncing':'offline'); await drain(); }
     else setStatus('synced');
     clearLegacyDraft(identity);
@@ -340,7 +352,7 @@ async function hydrate(identity,epoch){
   }catch(error){
     if(matches(epoch,identity)){ setStatus(navigator.onLine?'retry':'offline'); schedule(state.retryMs); state.retryMs=Math.min(state.retryMs*2,RETRY_MAX_MS); }
     return false;
-  }
+  }finally{ releaseHydrationLock(epoch); }
 }
 
 async function drain(){
