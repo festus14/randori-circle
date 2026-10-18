@@ -117,7 +117,9 @@ Copy `.env.example` and configure at least:
   production dry run are complete; see the retention runbook for the protected
   control generation and evidence settings
 
-See [GOOGLE_OAUTH.md](GOOGLE_OAUTH.md) and [TURSO.md](TURSO.md) for provider setup. Back up the database before first deploying migrations.
+Start with the owner-facing [production bootstrap checklist](docs/PRODUCTION_BOOTSTRAP_GUIDE.md),
+then use [GOOGLE_OAUTH.md](GOOGLE_OAUTH.md) and [TURSO.md](TURSO.md) for the
+detailed provider contracts. Back up the database before first deploying migrations.
 Key changes use the staged, forward-only [key rotation runbook](docs/KEY_ROTATION.md); never replace a configured key in place, bypass its durable v15 control, or remove an old key while its actionable or retained count is nonzero.
 
 The protected Turso recovery workflow performs a monitored isolated restore every Monday at 03:17 UTC and remains manually dispatchable. A separate hourly, production-credential-free watchdog queries the authoritative GitHub run and artifact records; after a two-hour scheduling grace it requires a run from the current weekly slot, and an unfinished run has an absolute 06:47 UTC deadline that a delayed start cannot reset. Absent, stuck, failed, stale, expired, or corrupt drills therefore fail visibly. Retained evidence is limited to PII-free RPO/RTO timings, checksums, aggregate counts, and cleanup state. See the [backup/restore rehearsal runbook](docs/TURSO_BACKUP_RESTORE_REHEARSAL.md).

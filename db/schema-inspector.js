@@ -1,3 +1,4 @@
+import {readCheckConstraintsEnforced} from './check-constraint-state.js';
 import {checksum} from './stable-checksum.js';
 
 const READ_ONLY_SELECT=/^SELECT\b/i;
@@ -690,9 +691,7 @@ export async function inspectSchema(database,{manifest,maxSchemaObjects}={}){
   const unexpectedUniqueIndexes=unexpectedIndexes.filter(name=>parseIndexSql(indexRows.get(name)?.sql)?.unique);
   const foreignKeyResult=await db.execute('PRAGMA foreign_keys');
   const foreignKeysEnabled=asNumber(foreignKeyResult.rows?.[0]?.foreign_keys)===1;
-  const checkConstraintResult=await db.execute('PRAGMA ignore_check_constraints');
-  const checkConstraintsEnabled=checkConstraintResult.rows?.length===1
-    &&asNumber(checkConstraintResult.rows[0].ignore_check_constraints)===0;
+  const checkConstraintsEnabled=await readCheckConstraintsEnforced(db);
   const blockers=[
     ...(schemaObjectLimitExceeded?[{code:'schema_object_limit_exceeded',artifact:{type:'schema',name:'object_limit'}}]:[]),
     ...missingTables.map(tableName=>({code:'missing_table',artifact:{type:'table',name:tableName}})),

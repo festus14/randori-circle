@@ -750,6 +750,433 @@
       }
     },
     {
+      "slug": "mentor-level-widths",
+      "version": 1,
+      "status": "active",
+      "title": "Mentor Level Widths",
+      "difficulty": "Easy",
+      "type": "tree-traversal",
+      "tags": ["trees", "breadth-first-search"],
+      "prompt": "A mentoring map is stored as a parent array. Node 0 is the lead mentor and has parent -1; every later node names an earlier node as its direct mentor. Return the number of people at each depth, starting with the lead at depth 0. The result stops after the deepest occupied level. Return an empty list for an empty map.",
+      "constraints": [
+        "0 <= parents.length <= 20000",
+        "When the array is non-empty, parents[0] is -1",
+        "For every node i greater than 0, 0 <= parents[i] < i"
+      ],
+      "examples": [
+        {
+          "input": [[-1, 0, 0, 1, 1, 2, 5]],
+          "output": [1, 2, 3, 1],
+          "explanation": "The lead is alone, two mentors report to the lead, three people are two links away, and one person is at depth three."
+        },
+        {
+          "input": [[]],
+          "output": [],
+          "explanation": "An empty mentoring map has no occupied levels."
+        }
+      ],
+      "languages": {
+        "javascript": {
+          "entrypoint": "mentorLevelWidths",
+          "signature": "function mentorLevelWidths(parents)",
+          "starter": "function mentorLevelWidths(parents) {\n  // Return the number of nodes at every tree depth.\n}\n"
+        },
+        "python": {
+          "entrypoint": "mentor_level_widths",
+          "signature": "def mentor_level_widths(parents):",
+          "starter": "def mentor_level_widths(parents):\n    # Return the number of nodes at every tree depth.\n    pass\n"
+        }
+      },
+      "governance": {
+        "rightsOwner": "Randori Circle project contributors",
+        "provenance": "Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate": "2026-09-19",
+        "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement": {"status":"active","retiredAt":null,"reason":null,"replacement":null},
+        "takedown": {"status":"none","requestedAt":null,"reference":null}
+      }
+    },
+    {
+      "slug": "threshold-pair-count",
+      "version": 1,
+      "status": "active",
+      "title": "Threshold Pair Count",
+      "difficulty": "Easy",
+      "type": "two-pointers",
+      "tags": ["arrays", "two-pointers"],
+      "prompt": "A sorted list records the signed load change from each available workshop station. Count index pairs [i, j], with i smaller than j, whose combined load is no greater than ceiling. Equal values at different indices form different pairs. Return only the number of qualifying pairs, and do not reorder or modify the input.",
+      "constraints": [
+        "0 <= values.length <= 20000",
+        "values is sorted in non-decreasing order and may contain duplicates",
+        "Every value and ceiling is an integer from -1000000 to 1000000"
+      ],
+      "examples": [
+        {
+          "input": [[-5, -2, 0, 3, 7], 3],
+          "output": 7,
+          "explanation": "Seven distinct index pairs have a sum at most three."
+        },
+        {
+          "input": [[2, 2, 2, 2], 4],
+          "output": 6,
+          "explanation": "All six choices of two indices qualify even though their values are equal."
+        }
+      ],
+      "languages": {
+        "javascript": {
+          "entrypoint": "thresholdPairCount",
+          "signature": "function thresholdPairCount(values, ceiling)",
+          "starter": "function thresholdPairCount(values, ceiling) {\n  // Count qualifying index pairs in the sorted array.\n}\n"
+        },
+        "python": {
+          "entrypoint": "threshold_pair_count",
+          "signature": "def threshold_pair_count(values, ceiling):",
+          "starter": "def threshold_pair_count(values, ceiling):\n    # Count qualifying index pairs in the sorted list.\n    pass\n"
+        }
+      },
+      "governance": {
+        "rightsOwner": "Randori Circle project contributors",
+        "provenance": "Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate": "2026-09-19",
+        "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement": {"status":"active","retiredAt":null,"reason":null,"replacement":null},
+        "takedown": {"status":"none","requestedAt":null,"reference":null}
+      }
+    },
+    {
+      "slug": "command-prefix-census",
+      "version": 1,
+      "status": "active",
+      "title": "Command Prefix Census",
+      "difficulty": "Easy",
+      "type": "trie",
+      "tags": ["tries", "strings"],
+      "prompt": "A team registers distinct command names. For every requested prefix, report how many registered commands begin with that exact, case-sensitive prefix. Return counts in the same order as the prefix requests. Repeated prefix requests are allowed, and a prefix that matches nothing contributes zero.",
+      "constraints": [
+        "0 <= commands.length <= 10000 and 1 <= prefixes.length <= 2000",
+        "Command names are distinct strings of 1 to 40 lowercase ASCII letters, digits, or hyphens",
+        "Each prefix contains 1 to 40 lowercase ASCII letters, digits, or hyphens"
+      ],
+      "examples": [
+        {
+          "input": [["build", "bundle", "branch"], ["b", "bu", "build", "x"]],
+          "output": [3, 2, 1, 0],
+          "explanation": "Every command starts with b, two start with bu, and only build matches itself."
+        },
+        {
+          "input": [["a", "ab", "abc"], ["a", "ab", "abc", "abcd"]],
+          "output": [3, 2, 1, 0],
+          "explanation": "A complete command can also be a prefix of a longer command."
+        }
+      ],
+      "languages": {
+        "javascript": {
+          "entrypoint": "commandPrefixCensus",
+          "signature": "function commandPrefixCensus(commands, prefixes)",
+          "starter": "function commandPrefixCensus(commands, prefixes) {\n  // Return one matching-command count per requested prefix.\n}\n"
+        },
+        "python": {
+          "entrypoint": "command_prefix_census",
+          "signature": "def command_prefix_census(commands, prefixes):",
+          "starter": "def command_prefix_census(commands, prefixes):\n    # Return one matching-command count per requested prefix.\n    pass\n"
+        }
+      },
+      "governance": {
+        "rightsOwner": "Randori Circle project contributors",
+        "provenance": "Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate": "2026-09-19",
+        "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement": {"status":"active","retiredAt":null,"reason":null,"replacement":null},
+        "takedown": {"status":"none","requestedAt":null,"reference":null}
+      }
+    },
+    {
+      "slug": "release-feed-merge",
+      "version": 1,
+      "status": "active",
+      "title": "Release Feed Merge",
+      "difficulty": "Medium",
+      "type": "heap",
+      "tags": ["heaps", "multiway-merge"],
+      "prompt": "Several services publish release events as separate sorted feeds. Each event is [time, id], every id is globally unique, and each feed is sorted by time then id. Merge all feeds and return only the ids in global order: lower time first, then ascending ASCII id when times tie. Empty feeds may appear and the input feeds must not be modified.",
+      "constraints": [
+        "0 <= feeds.length <= 200 and the total number of events is at most 2000",
+        "Each time is an integer from -1000000 to 1000000",
+        "Every id is a globally unique string of 1 to 40 ASCII letters, digits, or hyphens",
+        "Each feed is already sorted by time, then by ascending ASCII id"
+      ],
+      "examples": [
+        {
+          "input": [[[[1, "alpha"], [3, "coral"]], [[1, "Zulu"], [2, "dune"]], [[1, "9-start"]]]],
+          "output": ["9-start", "Zulu", "alpha", "dune", "coral"],
+          "explanation": "At the shared time, ASCII orders the digit before uppercase Z and lowercase a; later events follow by time."
+        },
+        {
+          "input": [[[], [[1, "solo"], [4, "later"]], []]],
+          "output": ["solo", "later"],
+          "explanation": "Empty feeds do not change the merged order."
+        }
+      ],
+      "languages": {
+        "javascript": {
+          "entrypoint": "releaseFeedMerge",
+          "signature": "function releaseFeedMerge(feeds)",
+          "starter": "function releaseFeedMerge(feeds) {\n  // Return event ids in global time-and-id order.\n}\n"
+        },
+        "python": {
+          "entrypoint": "release_feed_merge",
+          "signature": "def release_feed_merge(feeds):",
+          "starter": "def release_feed_merge(feeds):\n    # Return event ids in global time-and-id order.\n    pass\n"
+        }
+      },
+      "governance": {
+        "rightsOwner": "Randori Circle project contributors",
+        "provenance": "Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate": "2026-09-19",
+        "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement": {"status":"active","retiredAt":null,"reason":null,"replacement":null},
+        "takedown": {"status":"none","requestedAt":null,"reference":null}
+      }
+    },
+    {
+      "slug": "compatible-review-orders",
+      "version": 1,
+      "status": "active",
+      "title": "Compatible Review Orders",
+      "difficulty": "Medium",
+      "type": "backtracking",
+      "tags": ["backtracking", "bitmasking"],
+      "prompt": "A review circle wants to arrange every named reviewer in one line. Some unordered reviewer pairs must not stand next to each other. Return the number of complete arrangements that obey every blocked pair. Reversals count as different arrangements, and each reviewer name is distinct and case-sensitive.",
+      "constraints": [
+        "1 <= reviewers.length <= 9",
+        "Reviewer names are distinct non-empty strings",
+        "Each blocked pair names two different reviewers and no unordered pair is repeated"
+      ],
+      "examples": [
+        {
+          "input": [["ana", "bo", "cy"], [["ana", "bo"]]],
+          "output": 2,
+          "explanation": "Only ana-cy-bo and bo-cy-ana keep ana and bo apart."
+        },
+        {
+          "input": [["ana", "bo"], [["ana", "bo"]]],
+          "output": 0,
+          "explanation": "Two reviewers must be adjacent, so blocking that pair leaves no arrangement."
+        }
+      ],
+      "languages": {
+        "javascript": {
+          "entrypoint": "compatibleReviewOrders",
+          "signature": "function compatibleReviewOrders(reviewers, blockedPairs)",
+          "starter": "function compatibleReviewOrders(reviewers, blockedPairs) {\n  // Count complete arrangements with no blocked neighbours.\n}\n"
+        },
+        "python": {
+          "entrypoint": "compatible_review_orders",
+          "signature": "def compatible_review_orders(reviewers, blocked_pairs):",
+          "starter": "def compatible_review_orders(reviewers, blocked_pairs):\n    # Count complete arrangements with no blocked neighbours.\n    pass\n"
+        }
+      },
+      "governance": {
+        "rightsOwner": "Randori Circle project contributors",
+        "provenance": "Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate": "2026-09-19",
+        "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement": {"status":"active","retiredAt":null,"reason":null,"replacement":null},
+        "takedown": {"status":"none","requestedAt":null,"reference":null}
+      }
+    },
+    {
+      "slug": "connectivity-checkpoints",
+      "version": 1,
+      "status": "active",
+      "title": "Connectivity Checkpoints",
+      "difficulty": "Medium",
+      "type": "disjoint-set",
+      "tags": ["disjoint-set", "graphs"],
+      "prompt": "A lab begins with nodeCount isolated devices numbered from 0. Links are activated one at a time. After each activation, return the current number of connected device groups. A repeated link or a link from a device to itself changes nothing but still produces an output entry.",
+      "constraints": [
+        "1 <= nodeCount <= 10000 and 0 <= links.length <= 10000",
+        "Every link is [left, right] with both endpoints from 0 through nodeCount - 1",
+        "Links may repeat and self-links are allowed"
+      ],
+      "examples": [
+        {
+          "input": [3, [[0, 1], [0, 1], [1, 1], [1, 2]]],
+          "output": [2, 2, 2, 1],
+          "explanation": "Only the first and last activations join previously separate groups."
+        },
+        {
+          "input": [5, [[0, 1], [3, 4]]],
+          "output": [4, 3],
+          "explanation": "Two separate two-device groups form while node 2 remains isolated."
+        }
+      ],
+      "languages": {
+        "javascript": {
+          "entrypoint": "connectivityCheckpoints",
+          "signature": "function connectivityCheckpoints(nodeCount, links)",
+          "starter": "function connectivityCheckpoints(nodeCount, links) {\n  // Return the component count after every link activation.\n}\n"
+        },
+        "python": {
+          "entrypoint": "connectivity_checkpoints",
+          "signature": "def connectivity_checkpoints(node_count, links):",
+          "starter": "def connectivity_checkpoints(node_count, links):\n    # Return the component count after every link activation.\n    pass\n"
+        }
+      },
+      "governance": {
+        "rightsOwner": "Randori Circle project contributors",
+        "provenance": "Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate": "2026-09-19",
+        "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement": {"status":"active","retiredAt":null,"reason":null,"replacement":null},
+        "takedown": {"status":"none","requestedAt":null,"reference":null}
+      }
+    },
+    {
+      "slug": "coaching-route-sums",
+      "version": 1,
+      "status": "active",
+      "title": "Coaching Route Sums",
+      "difficulty": "Hard",
+      "type": "tree-queries",
+      "tags": ["trees", "lowest-common-ancestor"],
+      "prompt": "A coaching organisation is a rooted tree stored as a parent array, with node 0 at the root and every later node attached to an earlier node. Each node has a signed score. For every query [a, b], return the sum of scores on the unique route from a to b, including both endpoints and their lowest common ancestor. Preserve query order.",
+      "constraints": [
+        "1 <= parents.length = values.length <= 10000",
+        "parents[0] is -1; for every i greater than 0, 0 <= parents[i] < i",
+        "Each score is an integer from -1000 to 1000",
+        "0 <= queries.length <= 5000 and every queried node index is valid"
+      ],
+      "examples": [
+        {
+          "input": [[-1, 0, 0, 1, 1], [3, 1, 2, 5, -4], [[3, 2], [3, 4]]],
+          "output": [11, 2],
+          "explanation": "The first route scores 5+1+3+2; the second scores 5+1-4."
+        },
+        {
+          "input": [[-1, 0, 1, 2], [1, 2, 3, 4], [[0, 3], [2, 2]]],
+          "output": [10, 3],
+          "explanation": "A root-to-leaf route includes every node, while a same-node route includes one score."
+        }
+      ],
+      "languages": {
+        "javascript": {
+          "entrypoint": "coachingRouteSums",
+          "signature": "function coachingRouteSums(parents, values, queries)",
+          "starter": "function coachingRouteSums(parents, values, queries) {\n  // Return one inclusive tree-route sum per query.\n}\n"
+        },
+        "python": {
+          "entrypoint": "coaching_route_sums",
+          "signature": "def coaching_route_sums(parents, values, queries):",
+          "starter": "def coaching_route_sums(parents, values, queries):\n    # Return one inclusive tree-route sum per query.\n    pass\n"
+        }
+      },
+      "governance": {
+        "rightsOwner": "Randori Circle project contributors",
+        "provenance": "Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate": "2026-09-19",
+        "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement": {"status":"active","retiredAt":null,"reason":null,"replacement":null},
+        "takedown": {"status":"none","requestedAt":null,"reference":null}
+      }
+    },
+    {
+      "slug": "command-message-segmentation",
+      "version": 1,
+      "status": "active",
+      "title": "Command Message Segmentation",
+      "difficulty": "Hard",
+      "type": "trie-dynamic-programming",
+      "tags": ["tries", "dynamic-programming"],
+      "prompt": "A compact message was formed by joining registered command tokens without separators. Recover a token sequence that reproduces the whole message using the fewest tokens. If several minimum-length sequences exist, return the lexicographically smallest token list when compared from left to right. Return an empty list for an empty message and null when no complete segmentation exists.",
+      "constraints": [
+        "0 <= tokens.length <= 1020 and 0 <= message.length <= 2000",
+        "Tokens are distinct strings of 1 to 20 lowercase ASCII letters or digits",
+        "The message contains only lowercase ASCII letters or digits",
+        "Tokens may be reused any number of times"
+      ],
+      "examples": [
+        {
+          "input": [["ab", "a", "bc", "c"], "abc"],
+          "output": ["a", "bc"],
+          "explanation": "Both a+bc and ab+c use two tokens, and [a,bc] is lexicographically smaller."
+        },
+        {
+          "input": [["re", "view", "review"], "review"],
+          "output": ["review"],
+          "explanation": "The single-token reconstruction is preferred over re+view."
+        }
+      ],
+      "languages": {
+        "javascript": {
+          "entrypoint": "commandMessageSegmentation",
+          "signature": "function commandMessageSegmentation(tokens, message)",
+          "starter": "function commandMessageSegmentation(tokens, message) {\n  // Return the minimum, lexicographically first full segmentation.\n}\n"
+        },
+        "python": {
+          "entrypoint": "command_message_segmentation",
+          "signature": "def command_message_segmentation(tokens, message):",
+          "starter": "def command_message_segmentation(tokens, message):\n    # Return the minimum, lexicographically first full segmentation.\n    pass\n"
+        }
+      },
+      "governance": {
+        "rightsOwner": "Randori Circle project contributors",
+        "provenance": "Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate": "2026-09-19",
+        "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement": {"status":"active","retiredAt":null,"reason":null,"replacement":null},
+        "takedown": {"status":"none","requestedAt":null,"reference":null}
+      }
+    },
+    {
+      "slug": "resilient-network-budget",
+      "version": 1,
+      "status": "active",
+      "title": "Resilient Network Budget",
+      "difficulty": "Hard",
+      "type": "minimum-spanning-forest",
+      "tags": ["disjoint-set", "greedy", "graphs"],
+      "prompt": "A practice network has numbered nodes, some free existing links, and priced repair proposals [left, right, cost]. Build a deterministic minimum-cost plan that connects every node: process proposals by ascending cost, breaking equal-cost ties by their original zero-based position, and accept a proposal only when it joins two currently separate groups. Return cost and proposalIndices in acceptance order. If full connection is impossible, return cost -1 with an empty index list.",
+      "constraints": [
+        "1 <= nodeCount <= 10000",
+        "0 <= existingLinks.length <= 10000 and 0 <= proposals.length <= 10000",
+        "Every link names two different valid node indices; duplicate endpoint pairs are allowed",
+        "Every proposal cost is an integer from 1 to 1000000"
+      ],
+      "examples": [
+        {
+          "input": [4, [], [[0, 1, 5], [1, 2, 1], [2, 3, 1], [0, 3, 5], [0, 2, 2]]],
+          "output": {"cost": 4, "proposalIndices": [1, 2, 4]},
+          "explanation": "The two cost-one links and proposal 4 connect all four nodes for total cost four."
+        },
+        {
+          "input": [4, [[0, 1]], [[1, 2, 4]]],
+          "output": {"cost": -1, "proposalIndices": []},
+          "explanation": "Node 3 has no possible link, so no complete plan exists."
+        }
+      ],
+      "languages": {
+        "javascript": {
+          "entrypoint": "resilientNetworkBudget",
+          "signature": "function resilientNetworkBudget(nodeCount, existingLinks, proposals)",
+          "starter": "function resilientNetworkBudget(nodeCount, existingLinks, proposals) {\n  // Return { cost, proposalIndices } for the deterministic repair plan.\n}\n"
+        },
+        "python": {
+          "entrypoint": "resilient_network_budget",
+          "signature": "def resilient_network_budget(node_count, existing_links, proposals):",
+          "starter": "def resilient_network_budget(node_count, existing_links, proposals):\n    # Return {\"cost\": ..., \"proposalIndices\": [...]} for the repair plan.\n    pass\n"
+        }
+      },
+      "governance": {
+        "rightsOwner": "Randori Circle project contributors",
+        "provenance": "Original exercise authored for Randori Circle; not copied or adapted from a third-party problem bank.",
+        "reviewDate": "2026-09-19",
+        "attribution": "© 2026 Randori Circle project contributors. Original exercise.",
+        "retirement": {"status":"active","retiredAt":null,"reason":null,"replacement":null},
+        "takedown": {"status":"none","requestedAt":null,"reference":null}
+      }
+    },
+    {
       "slug": "archived-session-streak",
       "version": 1,
       "status": "retired",
