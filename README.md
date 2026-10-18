@@ -96,7 +96,7 @@ Copy `.env.example` and configure at least:
 
 - `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`
 - `JWT_SECRET` with at least 32 random bytes and a separate `CRON_SECRET`; `RUN_ATTESTATION_SECRET` is optional and falls back to `JWT_SECRET` when blank
-- `EXECUTION_PROVIDER=vercel-sandbox` to enable "Run" for catalogue exercises. Each run gets a fresh, non-persistent Vercel Sandbox microVM (Node.js 24 or Python 3.14) with all egress denied; on Vercel it authenticates with the project's OIDC token, so no extra secret is needed. Alternatively set `EXECUTION_PROVIDER=piston` with `EXECUTION_API_URL` (a self-hosted Piston-compatible `https://…/api/v2/execute` endpoint) and optional `EXECUTION_API_TOKEN`. When unset or invalid, `/api/execute` returns `503` with `code: "execution_unavailable"` and the editor shows that execution is temporarily unavailable. The public emkc.org Piston API is retired and rejected. See ID-60 in `docs/IMPLEMENTED_DECISIONS.md`; after deploying, `npm run smoke:execution` checks the sandbox path with an OIDC token from `vercel env pull .env.local` (it creates five real sandboxes)
+- `EXECUTION_PROVIDER=vercel-sandbox` to enable "Run" for catalogue exercises. Each run gets a fresh, non-persistent Vercel Sandbox microVM (Node.js 24 or Python 3.14) with all egress denied; on Vercel it authenticates with the project's OIDC token, so no extra secret is needed. Alternatively set `EXECUTION_PROVIDER=piston` with `EXECUTION_API_URL` (a self-hosted Piston-compatible `https://…/api/v2/execute` endpoint) and optional `EXECUTION_API_TOKEN`. When unset or invalid, `/api/execute` returns `503` with `code: "execution_unavailable"` and the editor shows that execution is temporarily unavailable. The public emkc.org Piston API is retired and rejected. See ID-61 in `docs/IMPLEMENTED_DECISIONS.md`; after deploying, `npm run smoke:execution` checks the sandbox path with an OIDC token from `vercel env pull .env.local` (it creates five real sandboxes)
 - `PAIRING_TIME_ZONE=Europe/London`; each pairing cycle runs from Sunday 08:00 in that zone until the next Sunday boundary
 - an explicit canonical HTTPS `APP_URL` plus both `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`; OAuth stays unavailable for partial, malformed, insecure, host-mismatched, or local-runtime configuration
 - `SIGNUP_ALLOWLIST` for the legacy private-beta Google flow while circle membership enforcement is off
@@ -117,7 +117,9 @@ Copy `.env.example` and configure at least:
   production dry run are complete; see the retention runbook for the protected
   control generation and evidence settings
 
-See [GOOGLE_OAUTH.md](GOOGLE_OAUTH.md) and [TURSO.md](TURSO.md) for provider setup. Back up the database before first deploying migrations.
+Start with the owner-facing [production bootstrap checklist](docs/PRODUCTION_BOOTSTRAP_GUIDE.md),
+then use [GOOGLE_OAUTH.md](GOOGLE_OAUTH.md) and [TURSO.md](TURSO.md) for the
+detailed provider contracts. Back up the database before first deploying migrations.
 Key changes use the staged, forward-only [key rotation runbook](docs/KEY_ROTATION.md); never replace a configured key in place, bypass its durable v15 control, or remove an old key while its actionable or retained count is nonzero.
 
 The protected Turso recovery workflow performs a monitored isolated restore every Monday at 03:17 UTC and remains manually dispatchable. A separate hourly, production-credential-free watchdog queries the authoritative GitHub run and artifact records; after a two-hour scheduling grace it requires a run from the current weekly slot, and an unfinished run has an absolute 06:47 UTC deadline that a delayed start cannot reset. Absent, stuck, failed, stale, expired, or corrupt drills therefore fail visibly. Retained evidence is limited to PII-free RPO/RTO timings, checksums, aggregate counts, and cleanup state. See the [backup/restore rehearsal runbook](docs/TURSO_BACKUP_RESTORE_REHEARSAL.md).

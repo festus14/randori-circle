@@ -1,6 +1,29 @@
 import { expect, test } from '@playwright/test';
 import { focusBlockRollupCorrect, mockApi, resetClientState } from './helpers';
 
+test('the delayed editor fallback retry never steals keyboard focus', async ({ page }) => {
+  await page.route(/(cdnjs\.cloudflare\.com|cdn\.jsdelivr\.net|unpkg\.com)/, route => route.abort());
+  await mockApi(page, {
+    '/api/auth/me': {
+      ok: true,
+      user: { id: 1, email: 'e2e@example.test', display_name: 'E2E Tester', is_admin: false },
+    },
+  });
+  await resetClientState(page, true);
+  await page.clock.install();
+  await page.goto('/?view=code', { waitUntil: 'domcontentloaded' });
+  await page.locator('[data-tab="code"]').click();
+  await page.clock.runFor(500);
+  await expect(page.locator('#monacoFallbackNote')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { __monacoRetryScheduled?: boolean }).__monacoRetryScheduled)).toBe(true);
+
+  const language = page.locator('#langSelect');
+  await language.focus();
+  await page.clock.runFor(3_500);
+  await expect(page.locator('#monacoFallbackNote')).toBeVisible();
+  await expect(language).toBeFocused();
+});
+
 test('the plain editor remains usable when Monaco and formatter CDNs are unavailable', async ({ page }) => {
   let executePayload: Record<string, unknown> | undefined;
   await page.route(/(cdnjs\.cloudflare\.com|cdn\.jsdelivr\.net|unpkg\.com)/, route => route.abort());
