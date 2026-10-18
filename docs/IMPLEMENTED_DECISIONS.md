@@ -2491,3 +2491,29 @@ reassigning their versioned identities. Use the existing fail-closed takedown
 path for a specific rights or correctness concern. Full selection, originality,
 runtime, and recovery detail is in
 [`CATALOGUE_PACK_V3.md`](CATALOGUE_PACK_V3.md).
+
+## ID-61: Treat Turso's disallowed CHECK-constraint pragma as enforced
+
+Status: production hotfix; no migration.
+
+**Decision.** Turso's remote server rejects `PRAGMA ignore_check_constraints`
+in both its read and `=ON`/`=OFF` forms with
+`SQL_PARSE_ERROR: SQL not allowed statement: PRAGMA ignore_check_constraints`.
+A remote client therefore cannot disable CHECK constraints, so that exact
+rejection means enforcement is on. One shared helper,
+`db/check-constraint-state.js`, now reads the state for schema inspection
+(`db:status`, `/api/health` readiness, the migrator, and the restore
+rehearsal) and for pairing publication readiness. It also performs the
+`=OFF` step when a migration connection is prepared. Only a single row with
+value 0, or that exact `SQL_PARSE_ERROR` rejection naming this pragma, counts
+as enforced. Any other error, a missing row, or a non-zero value still fails
+closed. Local file databases keep reading and setting the pragma directly.
+
+**Alternatives.** Dropping the CHECK-state check would also hide a local
+connection with enforcement disabled. Skipping it for every remote URL, or
+treating any parse error as success, is broader than the observed behaviour.
+
+**Rollout and recovery.** Deploy the code-only change, then confirm that
+`npm run db:status` and `/api/health?probe=ready` report ready against
+production. Rollback restores the previous fail-closed behaviour. That
+behaviour keeps remote readiness unavailable.
