@@ -16,7 +16,7 @@ Production deploys from `main` through Vercel. Development is iterative; see the
 6. Members choose from the original, provenance-checked catalogue; JavaScript and Python are evaluated against server-owned cases and the authoritative result is saved by the API.
 7. Both partners see a room-scoped feed of verified run summaries; source code, hidden cases, provider output, and unrelated personal runs remain private.
 
-Pair workspaces now persist authenticated, revisioned code and whiteboard snapshots across devices. A completed board gesture is saved locally immediately and then synced; if the network is unavailable, the room keeps a dirty local checkpoint and retries after hydration. Viewport, selected tool, and colour are intentionally device-local. Snapshots expire after 90 days, and v1/v2 code-only rooms upgrade without losing their draft.
+Pair workspaces persist authenticated, revisioned whiteboard snapshots across devices, while code in canonical two-person rooms is a conflict-free shared document: overlapping edits from both partners merge without loss, offline edits replay after reconnect, and Run executes only the server-acknowledged document version. See [conflict-free pair code documents](docs/CONFLICT_FREE_CODE_DOCUMENTS.md). A completed board gesture is saved locally immediately and then synced; if the network is unavailable, the room keeps a dirty local checkpoint and retries after hydration. Viewport, selected tool, and colour are intentionally device-local. Snapshots expire after 90 days, and v1/v2 code-only rooms upgrade without losing their draft.
 
 Pair scheduling uses timezone-aware instants: each browser displays the same UTC value in its local timezone, while compare-and-swap updates prevent one partner from silently overwriting the other. The dashboard polls only while it is visible, preserves unsent input through conflicts, and keeps older free-text schedule values visible and removable during migration. A normalized accepted session can be downloaded as a private 60-minute RFC 5545 calendar file generated entirely in the browser. Its stable primary-room or opaque secondary-schedule identity supports reschedule imports without including partner details, tokens, code, or chat; secondary exports link only to the dashboard, and proposals, legacy text, invalid times, and cleared agreements are not exportable. The member's calendar app controls the downloaded copy; see [private calendar export](docs/CALENDAR_EXPORT.md).
 
@@ -28,7 +28,7 @@ Every private pair surface requires the source-tagged `pairing_participants` sna
 
 The active catalogue contains 10 original exercises across arrays, windows, graphs, intervals, simulation, stacks and strings, binary search, breadth-first search, hash maps, and dynamic programming. Search, difficulty, and pattern filters run entirely in the browser against the public catalogue projection; server-owned generated cases and reference oracles stay outside browser payloads.
 
-This private-beta sync is whole-document compare-and-swap, not a CRDT: members see durable checkpoints rather than each pointer stroke in real time. Managed realtime collaboration, video, production AI coaching, circle tenancy, and authorised third-party content adapters remain later increments.
+Pair code uses a pinned, locally bundled Yjs document over authenticated HTTPS polling; the whiteboard remains whole-snapshot compare-and-swap, so members see durable board checkpoints rather than each pointer stroke in real time. Presence and remote cursors are not implemented. Managed realtime collaboration, video, production AI coaching, circle tenancy, and authorised third-party content adapters remain later increments.
 
 ## Security baseline
 
@@ -82,6 +82,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_health.js` | process liveness and exact, read-only database readiness probes |
 | `api/_admin-init.js` | exact-readiness-gated, transactional primary-circle data initialization |
 | `api/_pair-access.js` | shared source-aware authorization for canonical private pair rooms |
+| `api/_code-document.js` | bounded source-bound Yjs pair code documents, transactional merge, idempotent hashing, retention, and acknowledged-version execution |
 | `api/_circle-membership.js` | primary-circle membership, keyed invite hashes, signed short-lived claims, and audited acceptance |
 | `api/_circle-archive.js` | recent-authenticated secondary-circle soft archive, every-member safety, idempotency, and deterministic context fallback |
 | `api/invitations.js` | owner-only invitation lifecycle and rate-limited public preparation |
@@ -222,7 +223,7 @@ Operators can run `npm run --silent db:status` or `npm run --silent db:plan` wit
 ## Next increments
 
 1. Pilot the secure weekly coordination loop and measure completed sessions.
-2. Move collaborative editing from revisioned snapshots to a managed realtime/CRDT service as usage grows.
+2. Add presence, remote cursors, and a lower-latency realtime transport for the conflict-free code document as usage grows.
 3. Move code execution from the shared Piston service to dedicated isolated workers with queueing and quotas.
 4. Add managed video after the coordination workflow is reliable.
 5. Add durable session artifacts and consented AI coaching, then expand only with original, licensed, or formally authorised question sources.

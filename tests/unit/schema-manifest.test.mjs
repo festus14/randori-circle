@@ -79,8 +79,12 @@ test('schema manifest pins all current tables and named indexes',()=>{
     'trg_pairing_participants_session_controls_delete_invalidate',
     'trg_pair_code_documents_insert_guard','trg_pair_code_documents_update_guard',
     'trg_pairing_groups_code_documents_invalidate',
+    'trg_pairing_groups_code_workspace_update_invalidate',
+    'trg_pairing_groups_code_workspace_delete_invalidate',
     'trg_pairing_participants_code_documents_update_invalidate',
     'trg_pairing_participants_code_documents_delete_invalidate',
+    'trg_pairing_participants_code_workspace_update_invalidate',
+    'trg_pairing_participants_code_workspace_delete_invalidate',
   ]);
   assert.equal(new Set(TABLES.map(item=>item.name)).size,TABLES.length);
   assert.equal(new Set(INDEXES.map(item=>item.name)).size,INDEXES.length);

@@ -35,6 +35,8 @@ jobs:
         run: npm run check:runtime-ddl
       - name: Check JavaScript syntax
         run: npm run check:syntax
+      - name: Verify checked-in CRDT bundle matches pinned sources
+        run: npm run check:crdt
       - name: Rehearse local database migrations
         run: npm run test:migrations
       - name: Run API tests with enforced coverage
