@@ -385,6 +385,9 @@ test('attestation verifier rejects tampering, replay, expiry, schema drift, and 
     invalid.push(resignAttestation(result,value=>{
       value.payload.pitr.authoritativeAt='2026-09-18T11:59:59.000Z';
     }));
+    invalid.push(resignAttestation(result,value=>{
+      value.payload.pitr.authoritativeAt='2026-09-18T12:30:00.001Z';
+    }));
     const alteredEvidence=structuredClone(result);
     alteredEvidence.payload.evidence.comparisonDigest='0'.repeat(64);
     invalid.push(alteredEvidence);
@@ -891,6 +894,52 @@ test('a parent or exact-ID mismatch prevents deletion and records private cleanu
     assert.equal(serialized.includes('wrong-parent-id'),false);
     assert.equal(serialized.includes('private provider detail'),false);
   }finally{ item.close(); }
+});
+
+test('a provider branch instant inside the write-blocked window is accepted as authoritative',async()=>{
+  const item=fixture();
+  const recovery=[];
+  try{
+    await installManaged(item.sourcePath,2);
+    const platform=platformMock(item,{
+      restoreValue(value){
+        return {...value,parent:{...value.parent,branchedAt:'2026-09-18T12:00:03.174Z'}};
+      },
+    });
+    const result=await runBackupRestoreRehearsal(options(platform,recovery),dependencies(item));
+    assert.equal(result.payload.pitr.requestedAt,'2026-09-18T12:00:00.000Z');
+    assert.equal(result.payload.pitr.authoritativeAt,'2026-09-18T12:00:03.174Z');
+    assert.equal(platform.state.restoreDeleted,true);
+    assert.equal(recovery.length,0);
+    const verified=verifyRehearsalAttestation(result,{
+      hmacKey:HMAC_KEY,repoCommit:COMMIT,context:ATTESTATION_CONTEXT,
+      sourceIdentity:SOURCE_ID,
+      backupRef:`turso-pitr:${SOURCE_ID}:production:default`,
+      rpoTargetMs:30*60*1000,rtoTargetMs:15*60*1000,
+      runConclusion:'success',maxAgeMs:30*60*1000,clock:()=>NOW,
+    });
+    assert.equal(verified.pitr.authoritativeAt,'2026-09-18T12:00:03.174Z');
+  }finally{ item.close(); }
+});
+
+test('a provider branch instant outside the write-blocked window prevents deletion',async()=>{
+  for(const branchedAt of ['2026-09-18T11:59:59.999Z','2026-09-18T12:00:05.001Z']){
+    const item=fixture();
+    const recovery=[];
+    try{
+      await installManaged(item.sourcePath,2);
+      const platform=platformMock(item,{
+        restoreValue(value){ return {...value,parent:{...value.parent,branchedAt}}; },
+      });
+      await assert.rejects(
+        runBackupRestoreRehearsal(options(platform,recovery),dependencies(item)),
+        error=>error.code==='REHEARSAL_RESTORE_CLEANUP_REQUIRED',
+      );
+      assert.equal(platform.state.calls.some(call=>call[0]==='delete'),false);
+      assert.equal(platform.state.blockWrites,false);
+      assert.equal(recovery[0].items[0].reason,'restore_identity_mismatch');
+    }finally{ item.close(); }
+  }
 });
 
 test('evidence mismatch cleans the exact restore and restores source writes',async()=>{
