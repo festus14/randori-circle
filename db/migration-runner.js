@@ -12,6 +12,7 @@ import {
 import { MIGRATION_PLANS } from './migration-plan.js';
 import { inspectMembershipAdoptionReadiness } from './membership-readiness.js';
 import { inspectCredentialKeyControlReadiness } from './credential-key-control.js';
+import { enforceCheckConstraints } from './check-constraint-state.js';
 import { inspectSchema } from './schema-inspector.js';
 import { SCHEMA_MANIFEST, checksum } from './schema-manifest.js';
 
@@ -149,7 +150,7 @@ export async function inspectMembershipAdoption(db){
 
 export async function prepareMigrationConnection(db){
   await db.execute('PRAGMA foreign_keys=ON');
-  await db.execute('PRAGMA ignore_check_constraints=OFF');
+  await enforceCheckConstraints(db);
 }
 
 export async function inspectMigrationState(db,{migrations=EXECUTABLE_MIGRATIONS}={}){

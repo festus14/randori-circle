@@ -3,6 +3,20 @@ import { defineConfig, devices } from '@playwright/test';
 const port = Number(process.env.E2E_PORT || 4173);
 const baseURL = `http://127.0.0.1:${port}`;
 
+// index.html loads the production Sentry loader. In browser tests that SDK
+// would report CI sessions to production and, worse, its iframe-based
+// native-timer probing races Playwright's fake clock injection: in roughly
+// one run in ten, page.clock.fastForward() stops reaching the clock that owns
+// the app's timers, so fake-clock tests (e.g. invite expiry) wait on real
+// time and fail. Make the telemetry hosts unresolvable for every context.
+// page.route() still intercepts first, so tests that substitute the loader
+// with a probe keep working.
+const telemetryHostResolverRules = [
+  'MAP js-de.sentry-cdn.com ~NOTFOUND',
+  'MAP browser.sentry-cdn.com ~NOTFOUND',
+  'MAP *.sentry.io ~NOTFOUND',
+].join(', ');
+
 export default defineConfig({
   testDir: './tests/e2e',
   timeout: 35000,
@@ -21,6 +35,7 @@ export default defineConfig({
     video: 'off',
     actionTimeout: 12000,
     navigationTimeout: 20000,
+    launchOptions: { args: [`--host-resolver-rules=${telemetryHostResolverRules}`] },
   },
   webServer: {
     command: 'npm run start:test',
