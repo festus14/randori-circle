@@ -58,6 +58,7 @@ import {
   requestPasswordReset,
 } from './_password-reset.js';
 import { readRecentAuth, recordRecentAuth, requireRecentAuth } from './_recent-auth.js';
+import { deliverCommittedOutboxEvents } from './_outbox-immediate.js';
 import {
   GOOGLE_ISSUER,
   addPasswordCredential,
@@ -395,15 +396,19 @@ async function handleSignup(req,res){
     const color=deterministicColor(display.toLowerCase());
     const hash=await bcrypt.hash(password,10);
     let activationFailed=false;
+    let activation=null;
     try{
-      await requestEmailActivation(db,{claim:inviteClaim,email:e,passwordHash:hash,displayName:display,color});
+      activation=await requestEmailActivation(db,{claim:inviteClaim,email:e,passwordHash:hash,displayName:display,color});
     }catch{ activationFailed=true; }
     await completeActivationResponseFloor(responseStartedAt);
     if(activationFailed) return res.status(503).json({error:'signup temporarily unavailable'});
-    return res.status(202).json({
+    res.status(202).json({
       ok:true,pending:true,
       message:'If this invitation can be activated, a verification email will arrive shortly.',
     });
+    // After the identical, floored response: deliver only what was committed.
+    deliverCommittedOutboxEvents(req,activation?.outboxEvents);
+    return;
   }
   if(membershipRequired){
     if(!localIdentityAdapterEnabled(req)){
@@ -508,20 +513,23 @@ async function handleActivationResend(req,res){
   const db=getClient();
   const responseStartedAt=Date.now();
   let activationFailed=null;
+  let resent=null;
   const inviteClaim=boundInviteClaim(req);
   try{
     await ensureAuthReadiness(db);
     await ensureEmailActivationReadiness(db);
     await enforceAuthRateLimit(db,req,'signup',email);
-    await resendEmailActivation(db,{claim:inviteClaim,email});
+    resent=await resendEmailActivation(db,{claim:inviteClaim,email});
   }catch(error){ activationFailed=error; }
   await completeActivationResponseFloor(responseStartedAt);
   if(activationFailed?.statusCode===429) return res.status(429).json({error:'too many activation requests; try again later'});
   if(activationFailed) return res.status(503).json({error:'email activation temporarily unavailable'});
-  return res.status(202).json({
+  res.status(202).json({
     ok:true,pending:true,
     message:'If a pending activation exists, a new verification email will arrive shortly.',
   });
+  deliverCommittedOutboxEvents(req,resent?.outboxEvents);
+  return;
 }
 
 async function handleActivationVerify(req,res){
@@ -553,18 +561,23 @@ async function handlePasswordResetRequest(req,res){
   }
   const responseStartedAt=Date.now();
   let failure=null;
+  let requested=null;
   try{
     const db=getClient();
     await ensureAuthReadiness(db);
     await ensurePasswordResetReadiness(db);
     await enforceAuthRateLimit(db,req,'password-reset-request',email);
-    await requestPasswordReset(db,{email});
+    requested=await requestPasswordReset(db,{email});
   }catch(error){ failure=error; }
   await completeActivationResponseFloor(responseStartedAt);
   if(failure?.statusCode===429) return res.status(429).json({error:'too many reset requests; try again later'});
   if(failure) return res.status(503).json({error:'password reset temporarily unavailable'});
-  return res.status(202).json({ok:true,pending:true,
+  res.status(202).json({ok:true,pending:true,
     message:'If that account can use password recovery, a reset email will arrive shortly.'});
+  // Scheduled strictly after the floored response is written, so whether an
+  // account exists cannot be observed through response body or timing.
+  deliverCommittedOutboxEvents(req,requested?.outboxEvents);
+  return;
 }
 
 async function handlePasswordResetConsume(req,res){

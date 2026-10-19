@@ -16,6 +16,7 @@ import {
   sealCredentialEnvelope,
 } from './_key-rotation.js';
 import { createOutboxEventStatement, OutboxDeliveryError, readOutboxMetrics, runOutboxWorker } from './_outbox.js';
+import { outboxStatementIdentity } from './_outbox-identity.js';
 import {
   assertCredentialKeyControl,
   credentialKeyControlStatus,
@@ -252,11 +253,12 @@ export async function requestEmailActivation(db,input,{nowSeconds=null}={}){
       await transaction.commit(); finished=true;
       return Object.freeze({accepted:false});
     }
-    await transaction.execute(activationEvent({
+    const statement=activationEvent({
       activationId:String(row.id),email,token,sendCount:Number(row.send_count),
-    }));
+    });
+    await transaction.execute(statement);
     await transaction.commit(); finished=true;
-    return Object.freeze({accepted:true});
+    return Object.freeze({accepted:true,outboxEvents:Object.freeze([outboxStatementIdentity(statement)])});
   }catch(error){
     if(!finished){ try{ await transaction.rollback(); }catch{} }
     throw error;
@@ -296,11 +298,14 @@ export async function resendEmailActivation(db,{claim,email},{nowSeconds=null}={
         parsed.tokenHash,emailHash,normalizedEmail],
     });
     const row=rotated.rows?.[0];
-    if(row) await transaction.execute(activationEvent({
+    const statement=row?activationEvent({
       activationId:String(row.id),email:normalizedEmail,token,sendCount:Number(row.send_count),
-    }));
+    }):null;
+    if(statement) await transaction.execute(statement);
     await transaction.commit(); finished=true;
-    return Object.freeze({accepted:Boolean(row)});
+    return Object.freeze(statement
+      ?{accepted:true,outboxEvents:Object.freeze([outboxStatementIdentity(statement)])}
+      :{accepted:false});
   }catch(error){
     if(!finished){ try{ await transaction.rollback(); }catch{} }
     throw error;

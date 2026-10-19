@@ -15,6 +15,12 @@ can also be run manually for recovery. A missing or unhealthy schedule can
 delay pairing, scheduling, invitation, activation, and password-reset mail even
 when the durable outbox and provider configuration are healthy.
 
+Since [ID-63](IMPLEMENTED_DECISIONS.md#id-63-deliver-auth-and-invitation-email-immediately-after-commit),
+password-reset, activation, invitation, and schedule mail is normally sent
+right after its request commits, so a delayed schedule mainly delays pairing
+mail and retries. The scheduler is still the only backstop, and its cadence
+and this watchdog's thresholds are unchanged.
+
 `.github/workflows/outbox-dispatch-watchdog.yml` checks that scheduler once per
 hour at minute 37 and can be run manually for diagnosis. It queries only the
 GitHub Actions history for `outbox-dispatch.yml`. It never calls the application,

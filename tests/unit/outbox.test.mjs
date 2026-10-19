@@ -9,7 +9,9 @@ import { createClient } from '@libsql/client';
 import {
   claimOutboxEvent,
   createOutboxEventStatement,
+  deliverOutboxEventsNow,
   enqueueOutboxEvent,
+  outboxStatementIdentity,
   heartbeatOutboxLease,
   OutboxDeliveryError,
   readOutboxMetrics,
@@ -942,4 +944,130 @@ test('metrics expose aggregate state only and never payload or idempotency data'
   }]);
   const serialized=JSON.stringify(metrics);
   assert.doesNotMatch(serialized,/private@example\.test|secret-token|test\/v1\/1/);
+});
+
+function inline(db,handlers,events,overrides={}){
+  return deliverOutboxEventsNow({
+    db,workerId:overrides.workerId||'inline-test',handlers,events,
+    deadlineAtMs:performance.now()+(overrides.budgetMs??5_000),
+    leaseDurationMs:overrides.leaseDurationMs||5_000,heartbeatIntervalMs:0,
+    baseBackoffMs:60_000,maxBackoffMs:60_000,
+  });
+}
+
+const target=(sequence=1)=>({eventType:'test.notification',idempotencyKey:`test/v1/${sequence}`});
+
+test('statement identity exposes the committed event key without changing the statement shape',()=>{
+  const statement=createOutboxEventStatement(event({sequence:7}));
+  assert.deepEqual(Object.keys(statement).sort(),['args','sql']);
+  assert.deepEqual(outboxStatementIdentity(statement),target(7));
+  assert.equal(outboxStatementIdentity({sql:statement.sql,args:statement.args}),null);
+});
+
+test('inline delivery sends exactly the targeted event and leaves others for the scheduler',async()=>{
+  const {db}=await fixture();
+  await enqueueOutboxEvent(db,event({sequence:1}));
+  await enqueueOutboxEvent(db,event({sequence:2}));
+  const delivered=[];
+  const result=await inline(db,{'test.notification':async current=>{
+    delivered.push(current.idempotencyKey);
+    return {providerName:'test',providerMessageId:'m-2'};
+  }},[target(2)]);
+  assert.deepEqual(delivered,['test/v1/2']);
+  assert.equal(result.delivered,1);
+  assert.equal((await row(db,2)).status,'delivered');
+  assert.equal((await row(db,1)).status,'pending');
+  assert.equal(Number((await row(db,1)).attempt_count),0);
+});
+
+test('inline delivery skips an event the cron currently leases, so a race cannot double-send',async()=>{
+  const {db}=await fixture();
+  await enqueueOutboxEvent(db,event());
+  let release;
+  const gate=new Promise(resolve=>{ release=resolve; });
+  let sends=0;
+  const handler=async()=>{ sends+=1; await gate; return {providerName:'test',providerMessageId:'m'}; };
+  const cron=runOutboxInvocation({db,workerId:'cron',handlers:{'test.notification':handler},
+    eventTypes:['test.notification'],leaseDurationMs:5_000,heartbeatIntervalMs:0,
+    deadlineAtMs:performance.now()+10_000});
+  while((await row(db)).status!=='processing') await new Promise(resolve=>setTimeout(resolve,5));
+  const raced=await inline(db,{'test.notification':handler},[target()]);
+  assert.equal(raced.claimed,0,'a live cron lease blocks the inline claim');
+  release();
+  const swept=await cron;
+  assert.equal(swept.delivered,1);
+  assert.equal(sends,1);
+  const after=await inline(db,{'test.notification':handler},[target()]);
+  assert.equal(after.claimed,0,'a delivered event is never reclaimed');
+  assert.equal(sends,1);
+});
+
+test('the cron skips an event the inline attempt currently leases and never re-sends it',async()=>{
+  const {db}=await fixture();
+  await enqueueOutboxEvent(db,event());
+  let release;
+  const gate=new Promise(resolve=>{ release=resolve; });
+  let sends=0;
+  const handler=async()=>{ sends+=1; await gate; return {providerName:'test',providerMessageId:'m'}; };
+  const attempt=inline(db,{'test.notification':handler},[target()]);
+  while((await row(db)).status!=='processing') await new Promise(resolve=>setTimeout(resolve,5));
+  const cron=await runOutboxInvocation({db,workerId:'cron',handlers:{'test.notification':handler},
+    eventTypes:['test.notification'],heartbeatIntervalMs:0,deadlineAtMs:performance.now()+10_000});
+  assert.equal(cron.claimed,0);
+  release();
+  assert.equal((await attempt).delivered,1);
+  const later=await runOutboxInvocation({db,workerId:'cron-2',handlers:{'test.notification':handler},
+    eventTypes:['test.notification'],heartbeatIntervalMs:0,deadlineAtMs:performance.now()+10_000});
+  assert.equal(later.claimed,0);
+  assert.equal(sends,1);
+  const claims=(await db.execute(`SELECT actor_ref FROM outbox_audit_events WHERE action='claimed'`)).rows;
+  assert.deepEqual(claims.map(item=>item.actor_ref),['inline-test']);
+});
+
+test('concurrent inline attempts on separate connections produce one provider call',async()=>{
+  const {clients}=await fixture(2);
+  await enqueueOutboxEvent(clients[0],event());
+  let sends=0;
+  const handler=async()=>{ sends+=1; await new Promise(resolve=>setTimeout(resolve,20));
+    return {providerName:'test',providerMessageId:'m'}; };
+  const results=await Promise.all(clients.map((db,index)=>inline(db,{'test.notification':handler},
+    [target()],{workerId:`inline-${index}`})));
+  assert.equal(sends,1);
+  assert.equal(results.reduce((sum,item)=>sum+item.delivered,0),1);
+});
+
+test('an inline provider failure becomes a normal backoff retry the cron later completes with the same key',async()=>{
+  const {db}=await fixture();
+  await enqueueOutboxEvent(db,event());
+  const keys=[];
+  const failing=await inline(db,{'test.notification':async current=>{
+    keys.push(current.idempotencyKey);
+    throw new OutboxDeliveryError('PROVIDER_5XX',{retryable:true});
+  }},[target()]);
+  assert.equal(failing.retried,1);
+  const stored=await row(db);
+  assert.equal(stored.status,'retry');
+  assert.equal(stored.last_error_code,'PROVIDER_5XX');
+  assert.equal(Number(stored.attempt_count),1);
+  await db.execute(`UPDATE outbox_events SET next_attempt_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 second')`);
+  const cron=await worker(db,{'test.notification':async current=>{
+    keys.push(current.idempotencyKey);
+    return {providerName:'test',providerMessageId:'m'};
+  }});
+  assert.equal(cron.delivered,1);
+  assert.deepEqual(keys,['test/v1/1','test/v1/1']);
+});
+
+test('inline delivery ignores future-scheduled events and stops at its deadline without provider work',async()=>{
+  const {db}=await fixture();
+  await enqueueOutboxEvent(db,event({notBefore:'2999-01-01T00:00:00.000Z'}));
+  let sends=0;
+  const handler=async()=>{ sends+=1; return {}; };
+  assert.equal((await inline(db,{'test.notification':handler},[target()])).claimed,0);
+  await enqueueOutboxEvent(db,event({sequence:2}));
+  const late=await inline(db,{'test.notification':handler},[target(2)],{budgetMs:0});
+  assert.equal(late.deadlineReached,true);
+  assert.equal(late.claimed,0);
+  assert.equal(sends,0);
+  assert.equal((await row(db,2)).status,'pending');
 });
