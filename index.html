@@ -3267,7 +3267,7 @@ async function refreshMe(){
       password.required=authMode!=='reset';
       password.minLength=authMode==='signup'?10:0;
       password.autocomplete=authMode==='signup'?'new-password':'current-password';
-      password.placeholder=authMode==='signup'?'At least 10 characters':'Your password';
+      password.placeholder=authMode==='signup'?'Choose a password':'Your password';
     }
     const submitting=authBusy&&!activationResendRequest;
     if(signup){
