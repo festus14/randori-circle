@@ -339,7 +339,11 @@ test('confirmation dialogs trap focus, start on Cancel and return focus on Escap
   await mockApi(page, { '/api/auth/capabilities': memberCapabilities });
   await resetClientState(page);
   await page.goto('/', { waitUntil: 'domcontentloaded' });
+  // Let the app finish its first routing pass, which may move focus itself.
+  await page.waitForLoadState('networkidle');
+  await expect(page.locator('#landingSignin')).toBeEnabled();
   await page.locator('#landingSignin').focus();
+  await expect(page.locator('#landingSignin')).toBeFocused();
   const answer = page.evaluate(() => new Promise(resolve => {
     // showConfirm is private to the app; the board's Clear action is one caller.
     (document.getElementById('clearBtn') as HTMLButtonElement | null)?.click();
@@ -374,12 +378,15 @@ for (const theme of ['dark', 'light'] as const) {
     const dialog = page.locator('#authDialog');
     await expect(dialog).toBeVisible();
     await expect(page.locator('#authErr')).not.toBeEmpty();
+    // Bottom sheet: full width and anchored to the bottom edge once its
+    // slide-up animation settles.
+    await expect.poll(async () => {
+      const box = await dialog.boundingBox();
+      return box ? Math.round(box.y + box.height) : null;
+    }).toBe(852);
     const box = await dialog.boundingBox();
-    expect(box).not.toBeNull();
     expect(box!.x).toBeGreaterThanOrEqual(-0.5);
     expect(box!.x + box!.width).toBeLessThanOrEqual(393.5);
-    // Bottom sheet: anchored to the bottom edge on small screens.
-    expect(Math.abs(box!.y + box!.height - 852)).toBeLessThanOrEqual(1);
     await page.locator('#authSignin').click();
     await expect(page.locator('#authEmailError')).toBeVisible();
     await expectWcagClean(page, testInfo, `signin-sheet-${theme}`, '#authDialog');

@@ -669,9 +669,11 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .auth-alert[data-tone="success"],.identity-status[data-tone="success"]{background:var(--ok-surface); border-color:color-mix(in srgb,var(--ok) 55%,var(--border));
   --auth-alert-icon:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='m8 12.5 2.7 2.7L16 9.5'/%3E%3C/svg%3E")}
 .auth-alert[data-tone="success"]::before,.identity-status[data-tone="success"]::before{color:var(--ok)}
-.identity-status[data-tone="info"],.identity-status[data-tone="loading"],.identity-status[data-tone="none"]{background:var(--color-surface-raised); border-color:var(--border); color:var(--ink-2)}
+.identity-status[data-tone="info"]{background:var(--color-surface-raised); border-color:var(--border); color:var(--ink-2)}
 .identity-status[data-tone="info"]::before{color:var(--info)}
-.identity-status[data-tone="loading"]::before,.identity-status[data-tone="none"]::before{color:var(--ink-3)}
+/* Routine guidance and loading read as quiet helper text, not an alert box. */
+.identity-status[data-tone="loading"],.identity-status[data-tone="none"]{background:none; border-color:transparent; padding:0; color:var(--ink-2)}
+.identity-status[data-tone="loading"]::before,.identity-status[data-tone="none"]::before{display:none}
 .auth-google,.auth-google-retry{width:100%; justify-content:center; gap:var(--space-3)}
 .auth-google{background:var(--color-field); color:var(--ink); border-color:var(--control-border)}
 .auth-google:hover{background:var(--card-2); color:var(--ink); border-color:var(--ink-3)}
@@ -743,6 +745,11 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   .identity-method-action{grid-column:1 / -1; width:100%; justify-content:center; min-height:var(--tap-min)}
   .identity-recent-actions .btn,.dialog-actions .btn{flex:1 1 auto; justify-content:center; min-height:var(--tap-min)}
   .auth-link{min-height:var(--tap-min)}
+  /* The first-visit banner's buttons overflowed 393 px screens, which widened
+     the page and pushed the create-account sheet off-screen (audit section 3).
+     WP-O removes the banner; until then let it wrap. */
+  .onboard-banner{flex-wrap:wrap; margin-inline:var(--space-3)}
+  .onboard-banner > *{min-width:0; max-width:100%}
 }
 @keyframes rc-sheet-in{from{transform:translateY(24px)} to{transform:none}}
 @media(pointer:coarse){
@@ -3577,7 +3584,7 @@ async function refreshMe(){
     if(status){
       const text=identityUi.message||view.defaultStatus;
       status.textContent=text;
-      status.dataset.tone=identityUi.message?authUi.messageTone(text):(data?'info':'loading');
+      status.dataset.tone=identityUi.message?authUi.messageTone(text):(data?'none':'loading');
     }
     const recentPanel=document.getElementById('identityRecent');
     if(recentPanel) recentPanel.hidden=view.recent.hidden;
