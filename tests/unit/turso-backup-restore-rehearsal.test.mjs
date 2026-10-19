@@ -842,9 +842,14 @@ test('SIGTERM interrupts forward database work but confirms source restoration b
       if(stdout.includes('blocked\n')) resolve(true);
     });
   });
+  // A generous backstop (not a start-up deadline) keeps a wedged child from
+  // hanging the run; finally still kills it and removes the directory.
+  let backstop;
+  const wedged=new Promise(resolve=>{ backstop=setTimeout(()=>resolve('wedged'),120_000); });
   try{
-    const signalled=await Promise.race([ready,closed.then(()=>false)]);
-    assert.equal(signalled,true,`fixture exited before blocking writes: ${stderr}`);
+    const signalled=await Promise.race([ready,closed.then(()=>'exited'),wedged]);
+    clearTimeout(backstop);
+    assert.equal(signalled,true,`fixture did not signal blocked writes (${signalled}): ${stderr}`);
     assert.equal(existsSync(blockedPath),true,stderr);
     child.kill('SIGTERM');
     const outcome=await closed;
@@ -857,6 +862,7 @@ test('SIGTERM interrupts forward database work but confirms source restoration b
     assert.equal(result.events.findIndex(event=>event[0]==='block'&&event[1]===false)
       <result.events.findIndex(event=>event[0]==='close'),true);
   }finally{
+    clearTimeout(backstop);
     if(child.exitCode===null) child.kill('SIGKILL');
     rmSync(directory,{recursive:true,force:true});
   }
