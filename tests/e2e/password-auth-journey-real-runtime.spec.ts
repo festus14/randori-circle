@@ -314,6 +314,15 @@ test('production-shaped invite activation verifies email before the account can 
     await page.getByTestId('activation-continue').click();
     await expect(page.locator('#meLabel')).toContainText('Verified Member');
     expect((await json(page,'/api/circle')).status).toBe(200);
+    // The activated member finishes the first-run profile and lands on the
+    // circle dashboard (golden path 1).
+    await expect(page.locator('#view-profile-setup')).toBeVisible();
+    const profileSaved=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/profile'
+      &&response.request().method()==='POST');
+    await page.locator('#psSave').click();
+    expect((await profileSaved).status()).toBe(200);
+    await expect(page.locator('#view-dashboard')).toBeVisible();
+    await expect(page.locator('#dashWelcome')).toContainText('Verified Member');
 
     await signOutThroughMenu(page);
     const login=await signInThroughForm(page,email,'verified-member-password');
