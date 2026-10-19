@@ -497,6 +497,23 @@ Change only these in Vercel Production, redeploying after each step:
    `vercel env pull .env.local && npm run smoke:execution` from a linked
    checkout and complete one JavaScript and one Python run in the product.
 
+After every production deploy the `production-smoke` workflow (also daily and
+on demand) runs `npm run smoke:production`: anonymous, read-only GETs that
+check client routes (`/invite`, `/verify`, `/reset-password`, `/join/...`, an
+unknown path) serve the app shell, `/index.html` redirects, health probes,
+`/api/auth/capabilities`, a static asset, and security headers. It is not a
+required check. Run it locally with `npm run smoke:production` (behind a proxy
+add `NODE_USE_ENV_PROXY=1`). After intentionally changing an auth flag, either
+update the defaults in `scripts/production-smoke.mjs` or pass
+`SMOKE_EXPECTED_CAPABILITIES='{"googleOAuth":false}'` (use `null` to skip a key).
+
+`npm run smoke:execution` is deliberately not in CI. The Vercel Sandbox SDK
+authenticates with the project's `VERCEL_OIDC_TOKEN`, which only exists inside
+Vercel functions or after `vercel env pull` (needs a Vercel login or a
+`VERCEL_TOKEN`). GitHub Actions has neither without adding a new long-lived
+Vercel secret. The SDK also opens its own undici connections, so it fails
+behind TLS-intercepting corporate proxies. Run it from a personal network.
+
 Everything else stays exactly as in section 4: multi-circle control plane and
 availability, secondary-circle flags, email/password activation, password reset,
 identity management, chat retention, AI, and open signup. With

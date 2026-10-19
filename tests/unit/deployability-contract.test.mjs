@@ -15,6 +15,7 @@ function currentContract() {
     outboxWorkflow: readFileSync('.github/workflows/outbox-dispatch.yml', 'utf8'),
     outboxWatchdogWorkflow: readFileSync('.github/workflows/outbox-dispatch-watchdog.yml', 'utf8'),
     outboxWatchdogScript: readFileSync('scripts/github-outbox-dispatch-watchdog.mjs', 'utf8'),
+    productionSmokeWorkflow: readFileSync('.github/workflows/production-smoke.yml', 'utf8'),
     files: new Set([
       'index.html',
       'package-lock.json',
@@ -23,6 +24,8 @@ function currentContract() {
       '.github/workflows/outbox-dispatch.yml',
       '.github/workflows/outbox-dispatch-watchdog.yml',
       'scripts/github-outbox-dispatch-watchdog.mjs',
+      '.github/workflows/production-smoke.yml',
+      'scripts/production-smoke.mjs',
       ...readdirSync('api').filter(file => file.endsWith('.js')).map(file => `api/${file}`),
     ]),
   };
@@ -308,4 +311,36 @@ test('deployability rejects a weakened or privileged outbox watchdog',()=>{
   replacedAssessor.outboxWatchdogScript='process.exitCode=0;\n';
   assert.ok(validateDeploymentContract(replacedAssessor).includes(
     'outbox watchdog assessor must match its reviewed immutable contract'));
+});
+
+test('deployability rejects a production smoke workflow that gains secrets, writes, or broader triggers',()=>{
+  assert.deepEqual(validateDeploymentContract(cloneContract()),[]);
+  const unsafe='production smoke must remain secret-free, read-only, and non-mutating';
+  for(const [from,to] of [
+    ['  contents: read\n','  contents: write\n'],
+    ['  deployment_status:\n','  deployment_status:\n  pull_request_target:\n'],
+    ['          SMOKE_BASE_URL: ${{ inputs.base_url }}','          SMOKE_BASE_URL: ${{ secrets.APP_URL }}'],
+    ['    runs-on: ubuntu-24.04','    environment: production\n    runs-on: ubuntu-24.04'],
+  ]){
+    const original=cloneContract().productionSmokeWorkflow;
+    const mutated=cloneContract();
+    mutated.productionSmokeWorkflow=original.replace(from,to);
+    assert.notEqual(mutated.productionSmokeWorkflow,original);
+    assert.ok(validateDeploymentContract(mutated).includes(unsafe),`expected rejection for ${to.trim()}`);
+  }
+
+  const anyEnvironment=cloneContract();
+  anyEnvironment.productionSmokeWorkflow=anyEnvironment.productionSmokeWorkflow.replace(
+    "github.event.deployment.environment == 'Production'",'true');
+  assert.ok(validateDeploymentContract(anyEnvironment).includes(
+    'production smoke must run only for the Vercel Production environment'));
+
+  const missing=cloneContract();
+  missing.productionSmokeWorkflow=null;
+  assert.ok(validateDeploymentContract(missing).includes('production smoke workflow must be readable'));
+
+  const renamedScript=cloneContract();
+  renamedScript.packageJson.scripts['smoke:production']='node -e 0';
+  assert.ok(validateDeploymentContract(renamedScript).includes(
+    'package.json must define smoke:production as node scripts/production-smoke.mjs'));
 });

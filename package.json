@@ -36,6 +36,7 @@
     "check:crdt": "node scripts/check-crdt-bundle.mjs",
     "build:crdt": "esbuild assets/crdt-editor-source.js --bundle --format=iife --platform=browser --target=es2020 --alias:monaco-editor/esm/vs/editor/editor.api.js=./assets/monaco-api-shim.js --outfile=assets/crdt-editor.js",
     "smoke:execution": "node --env-file-if-exists=.env.local scripts/execution-smoke.mjs",
+    "smoke:production": "node scripts/production-smoke.mjs",
     "validate:catalog": "node scripts/validate-catalog.mjs",
     "catalog:takedown": "node scripts/catalog-provenance.mjs takedown",
     "test:unit": "node --experimental-test-module-mocks --test tests/unit/*.test.mjs",
