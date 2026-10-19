@@ -21,7 +21,7 @@ const inviteBinding = 'I'.repeat(43);
 async function expectWcagClean(page: Page, testInfo: TestInfo, name: string, scope: string) {
   const results = await new AxeBuilder({ page })
     .include(scope)
-    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22a', 'wcag22aa'])
     .analyze();
   await testInfo.attach(`${name}-axe-incomplete`, {
     body: Buffer.from(JSON.stringify(results.incomplete, null, 2)),
@@ -338,9 +338,14 @@ test('account security explains disabled actions and asks for a recent sign-in b
 test('confirmation dialogs trap focus, start on Cancel and return focus on Escape', async ({ page }) => {
   await mockApi(page, { '/api/auth/capabilities': memberCapabilities });
   await resetClientState(page);
+  await page.addInitScript(() => {
+    (window as any).__firstAuthRefresh = new Promise(resolve => {
+      window.addEventListener('randori:auth-refreshed', () => resolve(true), { once: true });
+    });
+  });
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   // Let the app finish its first routing pass, which may move focus itself.
-  await page.waitForLoadState('networkidle');
+  await expect(page.evaluate(() => (window as any).__firstAuthRefresh)).resolves.toBe(true);
   await expect(page.locator('#landingSignin')).toBeEnabled();
   await page.locator('#landingSignin').focus();
   await expect(page.locator('#landingSignin')).toBeFocused();

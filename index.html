@@ -2616,7 +2616,9 @@ async function refreshMe(){
     // A sign-in dialog opened before the session finished loading (for
     // example by a /join/<room> deep link) is moot once the server confirms
     // the member is already signed in. Sign-up and recovery stay open.
+    // A dialog that is showing a message (such as a Google error) stays open.
     if(!previousUserId&&refreshedUserId&&authMode==='signin'&&!authBusy
+      &&!document.getElementById('authErr')?.textContent
       &&document.getElementById('authOverlay')?.classList.contains('show')) closeAuthModal();
     if((!identityWasHydrated&&authIdentityHydrated)
       ||hydrationWasUnavailable!==authIdentityHydrationUnavailable) renderInviteGateState();
