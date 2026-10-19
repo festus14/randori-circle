@@ -61,6 +61,27 @@ export function syncHomeTab(doc) {
   return active;
 }
 
+// Landing and the public recovery pages are for visitors: anonymous people
+// get no app navigation there (Sign in stays in the topbar). Members, and
+// anyone whose identity is still loading, keep the tabs.
+export const PUBLIC_VIEW_IDS = Object.freeze(['view-landing', 'view-activation', 'view-password-reset', 'view-invite']);
+
+export function hidesAppNavigation({ auth, identity, publicSurface }) {
+  return auth === 'anonymous' && identity === 'resolved' && !!publicSurface;
+}
+
+export function syncPublicSurface(doc) {
+  const body = doc?.body;
+  if (!body) return false;
+  const publicSurface = PUBLIC_VIEW_IDS.some(id => isDisplayed(doc.getElementById(id)));
+  const surface = publicSurface ? 'public' : 'app';
+  if (body.dataset.surface !== surface) body.dataset.surface = surface;
+  const hidden = hidesAppNavigation({ auth: body.dataset.auth, identity: body.dataset.identity, publicSurface });
+  const nav = hidden ? 'hidden' : 'shown';
+  if (body.dataset.nav !== nav) body.dataset.nav = nav;
+  return hidden;
+}
+
 export function createToastController(element, {
   duration = TOAST_DURATION_MS,
   setTimer = (callback, delay) => setTimeout(callback, delay),
@@ -145,16 +166,17 @@ export function installShell({
   const currentTheme = () => (doc.documentElement.classList.contains('light') ? 'light' : 'dark');
   renderThemeControl(themeButton, currentTheme());
 
-  const sync = () => syncHomeTab(doc);
+  const sync = () => { syncPublicSurface(doc); return syncHomeTab(doc); };
   if (typeof MutationObserverImpl === 'function') {
     const navObserver = new MutationObserverImpl(sync);
-    for (const id of ['view-dashboard', 'view-landing', 'view-profile-setup']) {
+    for (const id of ['view-dashboard', 'view-profile-setup', ...PUBLIC_VIEW_IDS]) {
       const view = doc.getElementById(id);
       if (view) navObserver.observe(view, { attributes: true, attributeFilter: ['style', 'hidden'] });
     }
     for (const tab of doc.querySelectorAll('.tabs .tab')) {
       navObserver.observe(tab, { attributes: true, attributeFilter: ['class'] });
     }
+    if (doc.body) navObserver.observe(doc.body, { attributes: true, attributeFilter: ['data-auth', 'data-identity'] });
     const themeObserver = new MutationObserverImpl(() => renderThemeControl(themeButton, currentTheme()));
     themeObserver.observe(doc.documentElement, { attributes: true, attributeFilter: ['class'] });
   }

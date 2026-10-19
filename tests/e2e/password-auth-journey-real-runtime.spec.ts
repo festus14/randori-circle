@@ -321,6 +321,12 @@ test('production-shaped invite activation verifies email before the account can 
       &&response.request().method()==='POST');
     await page.locator('#psSave').click();
     expect((await profileSaved).status()).toBe(200);
+    // The stepper continues; availability is skippable ("Decide later").
+    await expect(page.locator('#setupStepAvailability')).toBeVisible();
+    await expect(page.locator('#setupAvailabilityNext')).toHaveText('Decide later');
+    await page.locator('#setupAvailabilityNext').click();
+    await expect(page.locator('#setupStepNext')).toBeVisible();
+    await page.locator('#setupFinish').click();
     await expect(page.locator('#view-dashboard')).toBeVisible();
     await expect(page.locator('#dashWelcome')).toContainText('Verified Member');
 

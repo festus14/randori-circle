@@ -14,6 +14,13 @@ const member = {
   interview_focus: 'both',
 };
 
+// Email reminders live on the stepper's "What happens next" step (WP-O).
+// Jump there directly so these reminder tests do not also save a profile.
+async function showReminderStep(page: Page) {
+  await page.evaluate(() => (window as any)._randori_journey.setSetupStep('next', { focus: false }));
+  await expect(page.locator('#setupStepNext')).toBeVisible();
+}
+
 async function expectInsideViewport(locator: Locator, width: number) {
   const bounds = await locator.boundingBox();
   expect(bounds, `${await locator.getAttribute('id') || 'element'} must render`).not.toBeNull();
@@ -210,6 +217,10 @@ test('account menu starts at the first visible enabled action and supports keybo
   await expect(page.getByRole('menu')).toBeVisible();
   await expect(page.getByRole('menuitem', { name: 'Account security' })).toBeFocused();
   await page.keyboard.press('ArrowDown');
+  await expect(page.getByRole('menuitem', { name: 'Edit profile' })).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await expect(page.getByRole('menuitem', { name: 'Setup guide' })).toBeFocused();
+  await page.keyboard.press('ArrowDown');
   await expect(page.getByRole('menuitem', { name: 'Sign out', exact: true })).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(trigger).toBeFocused();
@@ -342,7 +353,8 @@ test('shell and authentication remain inside 320px, 390px, and 640px viewports',
     await expect(page.locator('#view-landing')).toBeVisible();
     await expect(page.locator('#landingSignup')).toHaveText('Create an account');
     await expectInsideViewport(page.locator('header.topbar'), width);
-    await expectInsideViewport(page.locator('.tabs'), width);
+    // Visitors get no app navigation on the landing page (WP-O).
+    await expect(page.locator('.tabs')).toBeHidden();
     await expectInsideViewport(page.locator('main#appMain'), width);
     await expectInsideViewport(page.locator('#view-landing .hero'), width);
     await expectDocumentFitsViewport(page);
@@ -431,6 +443,7 @@ test('the public landing shows no live statistics and reminder controls report r
   await resetClientState(page, true, { 'randori-profile-done': '' });
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await expect(page.locator('#view-profile-setup')).toBeVisible();
+  await showReminderStep(page);
   const reminder = page.locator('#psRemindEmail');
   const reminderStatus = page.locator('#psRemindStatus');
   await expect(reminderStatus).toHaveAttribute('data-state', 'ready');
@@ -550,6 +563,7 @@ for (const invalid of [
     await resetClientState(page, true, { 'randori-profile-done': '' });
     await page.goto('/', { waitUntil: 'domcontentloaded' });
     await expect(page.locator('#view-profile-setup')).toBeVisible();
+    await showReminderStep(page);
     const reminder = page.locator('#psRemindEmail');
     const status = page.locator('#psRemindStatus');
     await expect(status).toHaveAttribute('data-state', 'error');
@@ -599,6 +613,7 @@ test('a reminder save revalidates identity and cannot mutate a newly authenticat
     await resetClientState(page, true, { 'randori-profile-done': '' });
     await page.goto('/', { waitUntil: 'domcontentloaded' });
     await expect(page.locator('#view-profile-setup')).toBeVisible();
+    await showReminderStep(page);
     const reminder = page.locator('#psRemindEmail');
     const status = page.locator('#psRemindStatus');
     await expect(status).toHaveAttribute('data-state', 'ready');
