@@ -71,6 +71,23 @@ const TELEMETRY_RESOLVER_RULES = [
 
 const sleep = ms => new Promise(done => setTimeout(done, ms));
 
+// Clicks through the real control; if a layout bug (for example an
+// overflowing mobile sheet) blocks Playwright's actionability checks, fall
+// back to a DOM click so one layout defect does not hide later screens.
+async function tap(page, selector) {
+  const target = typeof selector === 'string' ? page.locator(selector) : selector;
+  try { await target.first().click({ timeout: 8_000 }); }
+  catch { await target.first().evaluate(element => element.click()); }
+}
+
+// A response wait that never becomes an unhandled rejection when the action
+// that should trigger it fails first.
+function responseOf(page, predicate, timeout = 30_000) {
+  const pending = page.waitForResponse(predicate, { timeout });
+  pending.catch(() => {});
+  return pending;
+}
+
 function parseOptions(env = process.env) {
   const scope = String(env.UI_SCREENSHOTS_SCOPE || 'all').trim();
   if (!['all', 'public', 'local'].includes(scope)) throw new Error(`invalid UI_SCREENSHOTS_SCOPE: ${scope}`);
@@ -191,20 +208,20 @@ async function capturePublic(browser, viewportName, origin, recorder) {
     await recorder.shot(page, viewportName, 'landing-returning');
   });
   await recorder.step(`${viewportName}:public-signin`, async () => {
-    await page.locator('#landingSignin').click();
+    await tap(page, '#landingSignin');
     await waitForAuthDialog(page);
     await recorder.shot(page, viewportName, 'signin-dialog', { fullPage: false });
   });
   await recorder.step(`${viewportName}:public-forgot`, async () => {
     const forgot = page.locator('#authForgot');
     await forgot.waitFor({ state: 'visible', timeout: 10_000 });
-    await forgot.click();
+    await tap(page, forgot);
     await sleep(400);
     await recorder.shot(page, viewportName, 'forgot-password-dialog', { fullPage: false });
   });
   await recorder.step(`${viewportName}:public-invite-help`, async () => {
     await visit(page, '/');
-    await page.locator('#landingSignup').click();
+    await tap(page, '#landingSignup');
     await sleep(500);
     await recorder.shot(page, viewportName, 'landing-use-invitation-clicked');
   });
@@ -317,7 +334,7 @@ async function refreshState(page) {
 }
 
 async function openTab(page, tab) {
-  await page.locator(`[data-tab="${tab}"]`).click();
+  await tap(page, `[data-tab="${tab}"]`);
   await page.locator(`#view-${tab}`).waitFor({ state: 'visible', timeout: 10_000 });
 }
 
@@ -384,13 +401,13 @@ async function captureLocal(browser, viewportName, recorder) {
 
     await recorder.step(`${v}:owner-signin`, async () => {
       await op.goto(base, { waitUntil: 'domcontentloaded' });
-      await op.locator('#landingSignin').click();
+      await tap(op, '#landingSignin');
       await waitForAuthDialog(op);
       await op.locator('#authEmail').fill(LOCAL_OWNER_EMAIL);
       await op.locator('#authPass').fill(LOCAL_OWNER_PASSWORD);
       await recorder.shot(op, v, 'app-signin-filled', { fullPage: false, settle: 200 });
-      const login = op.waitForResponse(r => r.url() === `${base}/api/auth/login` && r.request().method() === 'POST');
-      await op.locator('#authSignin').click();
+      const login = responseOf(op, r => r.url() === `${base}/api/auth/login` && r.request().method() === 'POST');
+      await tap(op, '#authSignin');
       const response = await login;
       if (response.status() !== 200) throw new Error(`owner login ${response.status()}`);
       await op.locator('#meLabel').waitFor({ state: 'visible' });
@@ -406,7 +423,7 @@ async function captureLocal(browser, viewportName, recorder) {
     });
 
     await recorder.step(`${v}:account-menu`, async () => {
-      await op.locator('#meLabel').click();
+      await tap(op, '#meLabel');
       await op.locator('#meMenu').waitFor({ state: 'visible' });
       await recorder.shot(op, v, 'account-menu-open', { fullPage: false, settle: 300 });
       await op.keyboard.press('Escape');
@@ -421,8 +438,8 @@ async function captureLocal(browser, viewportName, recorder) {
     let inviteUrl = null;
     await recorder.step(`${v}:circle-invite`, async () => {
       await op.getByTestId('circle-invite-email').fill(MEMBER_EMAIL);
-      const created = op.waitForResponse(r => r.url() === `${base}/api/invitations` && r.request().method() === 'POST');
-      await op.getByTestId('circle-invite-create').click();
+      const created = responseOf(op, r => r.url() === `${base}/api/invitations` && r.request().method() === 'POST');
+      await tap(op, op.getByTestId('circle-invite-create'));
       const response = await created;
       const payload = await response.json();
       if (response.status() !== 201) throw new Error(`invite ${response.status()}`);
@@ -436,14 +453,14 @@ async function captureLocal(browser, viewportName, recorder) {
       await mp.goto(inviteUrl, { waitUntil: 'domcontentloaded' });
       await mp.getByTestId('invite-status').filter({ hasText: 'Invitation verified' }).waitFor({ timeout: 15_000 });
       await recorder.shot(mp, v, 'onboarding-1-invite-verified');
-      await mp.getByTestId('invite-continue').click();
+      await tap(mp, mp.getByTestId('invite-continue'));
       await waitForAuthDialog(mp);
       await recorder.shot(mp, v, 'onboarding-2-create-account', { fullPage: false });
       await mp.locator('#authEmail').fill(MEMBER_EMAIL);
       await mp.locator('#authName').fill(MEMBER_NAME);
       await mp.locator('#authPass').fill(MEMBER_PASSWORD);
-      const signup = mp.waitForResponse(r => r.url() === `${base}/api/auth/signup` && r.request().method() === 'POST');
-      await mp.locator('#authSignup').click();
+      const signup = responseOf(mp, r => r.url() === `${base}/api/auth/signup` && r.request().method() === 'POST');
+      await tap(mp, '#authSignup');
       const response = await signup;
       if (response.status() !== 200) throw new Error(`signup ${response.status()}`);
       await mp.locator('#meLabel').waitFor({ state: 'visible' });
@@ -458,8 +475,8 @@ async function captureLocal(browser, viewportName, recorder) {
       await sleep(800);
       await recorder.shot(mp, v, 'onboarding-4-profile-setup');
       await mp.locator('#psBio').fill('Practising DSA and system design before onsite loops.');
-      const saved = mp.waitForResponse(r => r.url().includes('/api/profile') && r.request().method() === 'POST');
-      await mp.locator('#psSave').click();
+      const saved = responseOf(mp, r => r.url().includes('/api/profile') && r.request().method() === 'POST');
+      await tap(mp, '#psSave');
       await saved;
       await sleep(1500);
       await recorder.shot(mp, v, 'onboarding-5-after-profile-save');
@@ -470,9 +487,9 @@ async function captureLocal(browser, viewportName, recorder) {
       await mp.evaluate(() => window._randori_onboard?.start?.(1));
       await mp.locator('#onboardOverlay.show').waitFor({ state: 'visible' });
       await recorder.shot(mp, v, 'onboarding-tour-step-1', { fullPage: false, settle: 400 });
-      await mp.locator('#onbNext').click();
-      await mp.locator('#onbNext').click();
-      await mp.locator('#onbNext').click();
+      await tap(mp, '#onbNext');
+      await tap(mp, '#onbNext');
+      await tap(mp, '#onbNext');
       await sleep(500);
       await recorder.shot(mp, v, 'onboarding-tour-step-4', { fullPage: false, settle: 400 });
       await dismissTour(mp);
@@ -497,8 +514,8 @@ async function captureLocal(browser, viewportName, recorder) {
       });
       await page.evaluate(async () => { await window._randori_availability?.refresh?.(); });
       await page.waitForFunction(() => !document.getElementById('availAvailable')?.disabled, null, { timeout: 15_000 });
-      const saved = page.waitForResponse(r => r.url().includes('/api/settings/availability') && r.request().method() === 'POST');
-      await page.locator('#availAvailable').click();
+      const saved = responseOf(page, r => r.url().includes('/api/settings/availability') && r.request().method() === 'POST');
+      await tap(page, '#availAvailable');
       const response = await saved;
       const payload = await response.json();
       return payload.availability?.cycle || null;
@@ -524,8 +541,8 @@ async function captureLocal(browser, viewportName, recorder) {
       await Promise.all([refreshState(op), refreshState(mp)]);
       await openTab(op, 'pair');
       await op.locator('#newWeekBtn').waitFor({ state: 'visible', timeout: 15_000 });
-      const published = op.waitForResponse(r => r.url().endsWith('/api/pairing/run') && r.request().method() === 'POST');
-      await op.locator('#newWeekBtn').click();
+      const published = responseOf(op, r => r.url().endsWith('/api/pairing/run') && r.request().method() === 'POST');
+      await tap(op, '#newWeekBtn');
       const response = await published;
       if (response.status() !== 200) throw new Error(`publish ${response.status()}`);
       await sleep(1200);
@@ -550,7 +567,7 @@ async function captureLocal(browser, viewportName, recorder) {
         return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}:${pad(at.getMinutes())}`;
       });
       await op.getByTestId('schedule-input').fill(value);
-      await op.getByTestId('schedule-propose').click();
+      await tap(op, op.getByTestId('schedule-propose'));
       await op.waitForFunction(() => (window._randori_schedule?.schedule?.proposals || []).length === 1, null, { timeout: 15_000 });
       await sleep(600);
       await recorder.shot(op, v, 'schedule-proposal-sent');
@@ -558,7 +575,7 @@ async function captureLocal(browser, viewportName, recorder) {
       await mp.waitForFunction(() => (window._randori_schedule?.schedule?.proposals || []).length === 1, null, { timeout: 15_000 });
       await sleep(600);
       await recorder.shot(mp, v, 'schedule-proposal-received');
-      await mp.getByTestId('schedule-accept').click();
+      await tap(mp, mp.getByTestId('schedule-accept'));
       await mp.waitForFunction(() => Boolean(window._randori_schedule?.schedule?.agreed_time), null, { timeout: 15_000 });
       await sleep(600);
       await recorder.shot(mp, v, 'schedule-agreed');
@@ -616,8 +633,8 @@ async function captureLocal(browser, viewportName, recorder) {
     });
 
     await recorder.step(`${v}:workspace-run`, async () => {
-      const executed = op.waitForResponse(r => r.url().endsWith('/api/execute') && r.request().method() === 'POST', { timeout: 30_000 });
-      await op.locator('#runBtn').click();
+      const executed = responseOf(op, r => r.url().endsWith('/api/execute') && r.request().method() === 'POST');
+      await tap(op, '#runBtn');
       await executed;
       await sleep(2500);
       await recorder.shot(op, v, 'workspace-after-run');
@@ -636,13 +653,13 @@ async function captureLocal(browser, viewportName, recorder) {
 
     await recorder.step(`${v}:light-theme`, async () => {
       await openTab(op, 'code');
-      await op.locator('#themeToggle').click();
+      await tap(op, '#themeToggle');
       await sleep(500);
       await recorder.shot(op, v, 'workspace-editor-light');
       await openDashboard(op);
       await sleep(1000);
       await recorder.shot(op, v, 'dashboard-paired-light');
-      await op.locator('#themeToggle').click();
+      await tap(op, '#themeToggle');
     });
 
     await recorder.step(`${v}:catalogue`, async () => {
@@ -679,10 +696,10 @@ async function captureLocal(browser, viewportName, recorder) {
 
     await recorder.step(`${v}:account-security`, async () => {
       await openDashboard(op);
-      await op.locator('#meLabel').click();
+      await tap(op, '#meLabel');
       const identity = op.locator('#meIdentity');
       await identity.waitFor({ state: 'visible', timeout: 8_000 });
-      await identity.click();
+      await tap(op, identity);
       await op.locator('#identityOverlay.show').waitFor({ state: 'visible', timeout: 10_000 });
       await sleep(1200);
       await recorder.shot(op, v, 'account-security-dialog', { fullPage: false });
@@ -763,6 +780,9 @@ export async function main(env = process.env) {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+  process.on('unhandledRejection', error => {
+    process.stdout.write(`unhandled rejection: ${String(error?.message || error).split('\n')[0]}\n`);
+  });
   main().catch(error => {
     process.stderr.write(`${String(error?.stack || error)}\n`);
     process.exitCode = 1;
