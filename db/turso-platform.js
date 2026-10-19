@@ -37,9 +37,11 @@ function boundedInteger(value,name,{minimum=1,maximum=Number.MAX_SAFE_INTEGER}={
   return value;
 }
 
-function platformName(value,name){
+// Caller input is TURSO_PLATFORM_INVALID; names read from provider responses
+// are TURSO_PLATFORM_RESPONSE_INVALID.
+function platformName(value,name,code='TURSO_PLATFORM_INVALID'){
   if(typeof value!=='string'||!NAME.test(value)||value.length>64){
-    fail('TURSO_PLATFORM_INVALID',`${name} is invalid`);
+    fail(code,`${name} is invalid`);
   }
   return value;
 }
@@ -96,11 +98,11 @@ function canonicalDatabase(value,{created=false}={}){
   }
   const result={
     id:opaque(database.DbId,'database ID'),
-    name:platformName(database.Name,'database name'),
+    name:platformName(database.Name,'database name','TURSO_PLATFORM_RESPONSE_INVALID'),
     hostname:hostname(database.Hostname),
   };
   if(!created){
-    result.group=platformName(database.group,'database group');
+    result.group=platformName(database.group,'database group','TURSO_PLATFORM_RESPONSE_INVALID');
     if(typeof database.block_writes!=='boolean'){
       fail('TURSO_PLATFORM_RESPONSE_INVALID','database write state is invalid');
     }
@@ -112,7 +114,7 @@ function canonicalDatabase(value,{created=false}={}){
     }else{
       result.parent=Object.freeze({
         id:opaque(database.parent?.id,'parent database ID'),
-        name:platformName(database.parent?.name,'parent database name'),
+        name:platformName(database.parent?.name,'parent database name','TURSO_PLATFORM_RESPONSE_INVALID'),
         branchedAt:providerTimestamp(database.parent?.branched_at,'parent branch timestamp'),
       });
     }

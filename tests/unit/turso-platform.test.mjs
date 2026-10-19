@@ -302,9 +302,11 @@ test('database identity, parent, and configuration responses are validated field
     {...DATABASE,parent:{id:SOURCE_ID,name:'production',branched_at:'yesterday'}},
     {...DATABASE,parent:{id:SOURCE_ID,name:'production',branched_at:'2026-13-45T99:99:99Z'}},
     {...DATABASE,parent:{id:SOURCE_ID,name:'Bad Name',branched_at:'2026-09-18T12:00:00Z'}},
+    {...DATABASE,Name:'Bad_Name'},
+    {...DATABASE,group:''},
   ]){
     const error=await platformError(client(recorder([json(body)])).getDatabase('production'));
-    assert.ok(error.code==='TURSO_PLATFORM_RESPONSE_INVALID'||error.code==='TURSO_PLATFORM_INVALID',JSON.stringify(body));
+    assert.equal(error.code,'TURSO_PLATFORM_RESPONSE_INVALID',JSON.stringify(body));
   }
   for(const body of [[],{block_writes:'yes'},{}]){
     await assert.rejects(client(recorder([json(body)])).getDatabaseConfiguration('production'),invalidResponse);

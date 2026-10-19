@@ -89,16 +89,19 @@ function invoke(handler,{method='GET',url='/',query={},headers={},body,auth,remo
 }
 
 // A client whose execute() fails for statements matching `pattern`.
+// `hits` proves the intended failure path was actually exercised.
 function failingClient(pattern,error=new Error('simulated database failure')){
-  return {
+  const client={
+    hits:0,
     execute(statement){
       const sql=typeof statement==='string'?statement:statement.sql;
-      if(pattern.test(sql)) return Promise.reject(error);
+      if(pattern.test(sql)){ client.hits+=1; return Promise.reject(error); }
       return realDb.execute(statement);
     },
     batch:(...args)=>realDb.batch(...args),
     transaction:(...args)=>realDb.transaction(...args),
   };
+  return client;
 }
 
 async function scalar(sql,args=[]){
@@ -160,13 +163,20 @@ test('ops notification preferences: method, auth, readiness, defaults and persis
   assert.ok(await scalar(`SELECT COUNT(*) FROM app_logs WHERE event='notif_prefs_updated'`)>=2);
 
   // The upsert falls back to INSERT OR IGNORE + UPDATE when the conflict clause fails.
-  clientOverride=failingClient(/ON CONFLICT\(user_id\) DO UPDATE/);
-  const fallback=await invoke(opsHandler,{...prefs,method:'POST',auth:'admin',body:{sms_enabled:0}});
+  const upsertFailure=failingClient(/ON CONFLICT\(user_id\) DO UPDATE/);
+  clientOverride=upsertFailure;
+  const fallback=await invoke(opsHandler,{...prefs,method:'POST',auth:'admin',body:{sms_enabled:1,email_enabled:0}});
   assert.equal(fallback.body.ok,true);
+  assert.equal(upsertFailure.hits,1);
+  assert.equal(Number(await scalar('SELECT sms_enabled FROM user_notification_prefs WHERE user_id=1')),1);
+  assert.equal(Number(await scalar('SELECT email_enabled FROM user_notification_prefs WHERE user_id=1')),0);
+  await invoke(opsHandler,{...prefs,method:'POST',auth:'admin',body:{sms_enabled:0}});
   assert.equal(Number(await scalar('SELECT email_enabled FROM user_notification_prefs WHERE user_id=1')),1);
 
-  clientOverride=failingClient(/FROM user_notification_prefs WHERE user_id=\?/);
+  const readFailure=failingClient(/FROM user_notification_prefs WHERE user_id=\?/);
+  clientOverride=readFailure;
   assert.deepEqual((await invoke(opsHandler,{...prefs,auth:'member'})).body,{error:'fetch failed'});
+  assert.equal(readFailure.hits,1);
 });
 
 test('ops routing resolves endpoints from query, search and path, and rejects unknown or cross-origin calls', async ()=>{
@@ -214,10 +224,12 @@ test('admin promotion requires a database or configured admin and a single exist
   assert.equal(Number(await scalar('SELECT is_admin FROM auth_accounts WHERE id=3')),1);
   await realDb.execute('UPDATE auth_accounts SET is_admin=0 WHERE id IN (2,3)');
 
-  clientOverride=failingClient(/WHERE lower\(email\)=\?/);
+  const lookupFailure=failingClient(/WHERE lower\(email\)=\?/);
+  clientOverride=lookupFailure;
   const dbError=await invoke(opsHandler,{...promote,auth:'admin',body:{action:'promote',email:'member@example.test'}});
   assert.equal(dbError.status,500);
   assert.equal(dbError.body.error,'db error promoting');
+  assert.equal(lookupFailure.hits,1);
 });
 
 test('demo seed, shuffle and reset operate only on demo data and require an admin', async ()=>{
@@ -248,10 +260,16 @@ test('demo seed, shuffle and reset operate only on demo data and require an admi
   assert.equal(Number(await scalar('SELECT COUNT(*) FROM auth_accounts WHERE is_demo=0')),3);
   assert.equal(Number(await scalar('SELECT COUNT(*) FROM pairing_weeks WHERE is_demo=1')),0);
 
-  // Count probes are best-effort; the reset still runs if they fail.
-  clientOverride=failingClient(/SELECT COUNT\(\*\) AS c FROM pairing_/);
+  // Count probes are best-effort; the reset still deletes demo rows if they fail.
+  await invoke(opsHandler,{url:'/api/ops/demo-seed',method:'POST',auth:'admin'});
+  assert.equal(Number(await scalar('SELECT COUNT(*) FROM auth_accounts WHERE is_demo=1')),6);
+  const probeFailure=failingClient(/SELECT COUNT\(\*\) AS c FROM (pairing_|auth_accounts WHERE is_demo=1)/);
+  clientOverride=probeFailure;
   const blind=await invoke(opsHandler,{url:'/api/ops/demo-reset',method:'POST',auth:'admin'});
+  assert.equal(blind.status,200);
+  assert.equal(probeFailure.hits,3);
   assert.deepEqual(blind.body.deleted,{groups:0,weeks:0,demo_users:0});
+  assert.equal(Number(await scalar('SELECT COUNT(*) FROM auth_accounts WHERE is_demo=1')),0);
 });
 
 test('outbox replay validates the operator and the request shape before touching the outbox', async ()=>{
@@ -263,8 +281,10 @@ test('outbox replay validates the operator and the request shape before touching
   assert.equal((await invoke(opsHandler,{...replay,auth:'ghost',body:{}})).status,403);
   clientOverride=new Error('no database');
   assert.equal((await invoke(opsHandler,{...replay,auth:'admin',body:{}})).status,503);
-  clientOverride=failingClient(/SELECT id,is_admin,is_demo FROM auth_accounts/);
+  const operatorFailure=failingClient(/SELECT id,is_admin,is_demo FROM auth_accounts/);
+  clientOverride=operatorFailure;
   assert.equal((await invoke(opsHandler,{...replay,auth:'admin',body:{}})).status,503);
+  assert.equal(operatorFailure.hits,1);
   clientOverride=null;
 
   for(const body of [null,[],{event_id:1,extra:true}]){
@@ -273,8 +293,10 @@ test('outbox replay validates the operator and the request shape before touching
   assert.equal((await invoke(opsHandler,{...replay,auth:'admin',body:{event_id:'x',reason_code:'nope'}})).status,400);
   const missing=await invoke(opsHandler,{...replay,auth:'admin',body:{event_id:424242,reason_code:'OPERATOR_RETRY'}});
   assert.equal(missing.status,409,JSON.stringify(missing.body));
-  clientOverride=failingClient(/strftime/);
+  const clockFailure=failingClient(/strftime/);
+  clientOverride=clockFailure;
   assert.equal((await invoke(opsHandler,{...replay,auth:'admin',body:{event_id:1,reason_code:'OPERATOR_RETRY'}})).status,503);
+  assert.ok(clockFailure.hits>=1);
 });
 
 test('cron routes require the shared secret and fail closed on configuration or clock problems', async ()=>{
@@ -384,10 +406,12 @@ test('admin log reads are filtered, bounded and tolerate non-JSON metadata', asy
   process.env.ADMIN_EMAILS='env-admin@example.test';
   assert.equal((await invoke(dataHandler,{url:'/api/data/logs?limit=1',auth:'envadmin'})).status,200);
 
-  clientOverride=failingClient(/FROM app_logs ORDER BY id DESC|FROM app_logs WHERE/);
+  const logsFailure=failingClient(/FROM app_logs ORDER BY id DESC|FROM app_logs WHERE/);
+  clientOverride=logsFailure;
   const failed=await invoke(dataHandler,{url:'/api/data/logs?limit=1',auth:'admin'});
   assert.equal(failed.status,500);
   assert.equal(failed.body.error,'logs fetch failed');
+  assert.equal(logsFailure.hits,1);
   clientOverride=null;
   assert.equal((await invoke(dataHandler,{url:'/api/data/logs',method:'PATCH',auth:'admin'})).status,405);
 });
@@ -424,10 +448,12 @@ test('profile reads and updates normalise fields and refuse availability writes'
   assert.equal(read.body.user.interview_focus,'both');
   assert.equal(read.body.user.bio,'');
 
-  clientOverride=failingClient(/^UPDATE auth_accounts SET/);
+  const updateFailure=failingClient(/^UPDATE auth_accounts SET/);
+  clientOverride=updateFailure;
   const failed=await invoke(dataHandler,{...profile,method:'POST',auth:'member',body:{tz:'UTC'}});
   assert.equal(failed.status,500);
   assert.equal(failed.body.error,'update failed');
+  assert.equal(updateFailure.hits,1);
   clientOverride=null;
   assert.equal((await invoke(dataHandler,{...profile,method:'DELETE',auth:'member'})).status,405);
 });
@@ -440,10 +466,13 @@ test('data routing reports unknown endpoints and sanitises unhandled failures', 
 
   // A failure after readiness reaches the top-level handler, which logs and reports it once.
   process.env.SENTRY_DSN='https://public@example.invalid/1';
-  clientOverride=failingClient(/SELECT id,email,display_name,color,created_at,last_login/,new Error('disk I/O error'));
+  const profileFailure=failingClient(/SELECT id,email,display_name,color,created_at,last_login/,new Error('disk I/O error'));
+  clientOverride=profileFailure;
   const failed=await invoke(dataHandler,{url:'/api/data/profile',auth:'member',headers:{'user-agent':'ua','x-forwarded-for':'192.0.2.1'}});
   assert.equal(failed.status,500);
-  assert.deepEqual(failed.body,{error:'internal',detail:'disk I/O error'});
+  // Raw database errors are logged and reported, never returned to the client.
+  assert.deepEqual(failed.body,{error:'internal'});
+  assert.equal(profileFailure.hits,1);
   assert.equal(sentryCalls.filter(([kind])=>kind==='exception').length,1);
   const logged=(await realDb.execute(`SELECT level,source,event,route FROM app_logs WHERE event='api_unhandled' ORDER BY id DESC LIMIT 1`)).rows[0];
   assert.deepEqual({...logged},{level:'error',source:'server',event:'api_unhandled',route:'/api/data/profile'});

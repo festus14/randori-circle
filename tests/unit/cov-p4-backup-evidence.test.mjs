@@ -200,7 +200,12 @@ test('authentic but internally inconsistent evidence is rejected with a specific
   const restoreCases=[
     ['timestamp', e=>{ e.timings.restoreDurationMs+=1; }],
     ['timestamp', e=>{ e.timings.rtoMet=false; }],
-    ['timestamp', e=>{ e.timings.restoreStartedAt='2026-09-18T09:00:00.000Z'; e.timings.restoreDurationMs+=3*HOUR-50*60*1000; }],
+    // Restore start before the PITR, with duration and RTO kept consistent so only that check fails.
+    ['timestamp', e=>{
+      e.timings.restoreStartedAt='2026-09-18T09:00:00.000Z';
+      e.timings.restoreDurationMs=Date.parse(e.timings.restoreCompletedAt)-Date.parse('2026-09-18T09:00:00.000Z');
+      e.timings.rtoMet=false;
+    }],
   ];
   for(const [reason,mutate] of restoreCases){
     const result=compareError(source,resign(restored,mutate));
