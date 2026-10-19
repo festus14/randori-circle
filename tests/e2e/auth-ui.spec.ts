@@ -1213,8 +1213,10 @@ test('private beta capabilities reserve direct entry for existing members', asyn
   await resetClientState(page);
   await page.goto('/', { waitUntil: 'domcontentloaded' });
 
-  await expect(page.locator('#landingSignup')).toBeDisabled();
-  await expect(page.locator('#landingInviteHelp')).toContainText('Open the invitation link');
+  await expect(page.locator('#landingSignup')).toHaveAttribute('data-action', 'help');
+  await page.locator('#landingSignup').click();
+  await expect(page.locator('#landingInviteHelp')).toContainText('Open the link from your invitation email');
+  await expect(page.getByRole('dialog', { name: 'Join Randori Circle' })).toBeHidden();
   await page.locator('#landingSignin').click();
   await expect(page.getByRole('dialog', { name: 'Sign in to Randori' })).toBeVisible();
   await expect(page.locator('#authGoogle')).toBeVisible();
