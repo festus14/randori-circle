@@ -152,13 +152,43 @@ try{
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 
-<!-- Sentry — DE loader provided by user (contains DSN, auto-inits) -->
+<!-- Sentry — environment-scoped (#252). The DE loader below carries the DSN and
+     calls window.sentryOnLoad before it initialises, so this config decides the
+     environment and whether anything is sent. Only the canonical production
+     origin reports; previews, localhost, the local runtime and automated
+     browsers are tagged but disabled. Keep the origin in sync with APP_URL. -->
+<script id="randoriSentryConfig">
+(function(){
+  var PRODUCTION_ORIGIN='https://randori-circle-self.vercel.app';
+  var loc=window.location||{};
+  var origin=String(loc.origin||'');
+  var host=String(loc.hostname||'').toLowerCase();
+  var environment=origin===PRODUCTION_ORIGIN?'production':(/\.vercel\.app$/.test(host)?'preview':'development');
+  var automated=Boolean(window.navigator&&window.navigator.webdriver);
+  var enabled=environment==='production'&&!window.__RANDORI_LOCAL_RUNTIME__&&!automated;
+  function gate(event){
+    try{ return enabled&&String(window.location.origin)===PRODUCTION_ORIGIN?event:null; }catch(e){ return null; }
+  }
+  window.__randoriSentry=Object.freeze({environment:environment,enabled:enabled,productionOrigin:PRODUCTION_ORIGIN});
+  window.sentryOnLoad=function(){
+    try{
+      window.Sentry.init({
+        environment:environment,
+        enabled:enabled,
+        sendDefaultPii:false,
+        beforeSend:gate,
+        beforeSendTransaction:gate
+      });
+    }catch(e){}
+  };
+})();
+</script>
 <script src="https://js-de.sentry-cdn.com/b4aa012a94edbcd36c8c92ef1aaeddfa.min.js" crossorigin="anonymous"></script>
 <script>
 (function(){
-  // DE loader auto-inits Sentry; just augment with Randori context + logger forwarding
+  // Augment the scoped SDK with Randori context + logger forwarding (production origin only)
   try{
-    if(window.Sentry){
+    if(window.Sentry&&window.__randoriSentry&&window.__randoriSentry.enabled){
       window._sentryReady=true;
       // expose last event for tagging
       if(!window._randori_log) window._randori_log={_lastEvent:''};
@@ -168,7 +198,7 @@ try{
           try{
             const last = window._randori_log && window._randori_log._lastEvent;
             if(last){ event.tags = event.tags||{}; event.tags.randori_event=last; }
-            event.tags = event.tags||{}; event.tags.app='randori-circle';
+            event.tags = event.tags||{}; event.tags.app='randori-circle'; event.environment = window.__randoriSentry.environment;
           }catch{} return event;
         });
       }catch{}
@@ -192,7 +222,7 @@ try{
       console.log('[sentry] DE loader ready');
     } else {
       window._sentryReady=false;
-      console.warn('sentry loader failed to create window.Sentry');
+      if(window.__randoriSentry&&window.__randoriSentry.enabled) console.warn('sentry loader failed to create window.Sentry');
     }
   }catch(e){ console.warn('sentry augment fail',e); window._sentryReady=false; }
 })();

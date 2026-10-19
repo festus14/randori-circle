@@ -174,3 +174,31 @@ export function sanitizeSentryContext(context) {
   if (!context || typeof context !== 'object' || Array.isArray(context)) return {};
   return sanitizeValue(context, [], new WeakSet()) || {};
 }
+
+// ---- Environment scoping (#252) ----
+// Sentry only reports from the deployed production runtime by default. Vercel
+// sets VERCEL_ENV on every deployment; SENTRY_ENVIRONMENT is a fallback for
+// non-Vercel hosts. Local runtime, CI and tests never initialise the SDK, and
+// preview deployments stay silent unless SENTRY_ENABLE_PREVIEW=true.
+export const SENTRY_ENVIRONMENTS = Object.freeze(['production', 'preview', 'development']);
+
+function exactEnvironment(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return SENTRY_ENVIRONMENTS.includes(normalized) ? normalized : null;
+}
+
+function truthyFlag(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return normalized !== '' && normalized !== '0' && normalized !== 'false';
+}
+
+export function resolveSentryRuntime(env = process.env) {
+  const environment = exactEnvironment(env.VERCEL_ENV) || exactEnvironment(env.SENTRY_ENVIRONMENT) || 'development';
+  let reason = null;
+  if (env.RANDORI_LOCAL_RUNTIME === 'true') reason = 'local_runtime';
+  else if (env.NODE_ENV === 'test') reason = 'test';
+  else if ((truthyFlag(env.CI) || truthyFlag(env.GITHUB_ACTIONS)) && !env.VERCEL) reason = 'ci';
+  else if (environment === 'development') reason = 'development';
+  else if (environment === 'preview' && env.SENTRY_ENABLE_PREVIEW !== 'true') reason = 'preview_disabled';
+  return Object.freeze({ environment, enabled: reason === null, reason });
+}

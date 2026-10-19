@@ -32,6 +32,7 @@
     "check:backup-controls": "node scripts/check-backup-controls.mjs",
     "check:runtime-ddl": "node scripts/check-runtime-ddl.mjs",
     "check:syntax": "node tests/static/check-syntax.mjs",
+    "check:turso-sql": "node scripts/check-turso-remote-sql.mjs",
     "check:crdt": "node scripts/check-crdt-bundle.mjs",
     "build:crdt": "esbuild assets/crdt-editor-source.js --bundle --format=iife --platform=browser --target=es2020 --alias:monaco-editor/esm/vs/editor/editor.api.js=./assets/monaco-api-shim.js --outfile=assets/crdt-editor.js",
     "smoke:execution": "node --env-file-if-exists=.env.local scripts/execution-smoke.mjs",
