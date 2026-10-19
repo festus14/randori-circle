@@ -117,6 +117,33 @@ test('workspace wrap-up confirms, waits for the partner, and renders terminal co
   await expect(action).toBeHidden();
 });
 
+test('confirming while the bounded reconciliation read is in flight is never swallowed',async({page})=>{
+  // Regression: the 5 s poll set the card busy and disabled Confirm, so a
+  // click that landed while a read was in flight did nothing at all.
+  const completion=new CompletionStore();
+  await openWorkspace(page,completion);
+  const status=page.locator('#sessionCompletionStatus');
+  const action=page.locator('#sessionCompletionAction');
+  await expect(status).toHaveText('Completion not recorded. Every participant must confirm.');
+  const delayed=completion.delayNext();
+  await page.evaluate(()=>{
+    void (window as typeof window & {_randori_session_completion?:{load:()=>Promise<boolean>}})
+      ._randori_session_completion?.load();
+  });
+  await delayed.started;
+  await expect(action).toBeEnabled();
+  await expect(page.getByTestId('session-completion')).toHaveAttribute('aria-busy','false');
+  await action.click();
+  await expect(status).toHaveText('You confirmed. Waiting for 1 participant.');
+  expect(completion.requests.filter(request=>request.method==='POST').map(request=>request.body?.action)).toEqual(['confirm']);
+  // The superseded read was aborted; releasing it cannot roll the receipt back.
+  delayed.release();
+  await page.evaluate(()=>(window as typeof window & {_randori_session_completion?:{load:()=>Promise<boolean>}})
+    ._randori_session_completion?.load());
+  await expect(status).toHaveText('You confirmed. Waiting for 1 participant.');
+  await expect(action).toHaveText('Withdraw confirmation');
+});
+
 test('a delayed completion response cannot cross an account or room boundary',async({page})=>{
   const completion=new CompletionStore();
   await openWorkspace(page,completion);
