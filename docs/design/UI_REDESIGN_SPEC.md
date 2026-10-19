@@ -657,6 +657,43 @@ markup in later packages.
   text are forced to `--color-on-action` until WP-Z purges inline colors.
 - The production CSP no longer lists the Google Fonts hosts.
 
+### 9.2 What WP-S shipped (shell and navigation)
+
+- **Topbar:** one 56 px row at every width (it was about 120 px on phones):
+  mark and wordmark, an icon-only theme toggle (`#themeToggle`, sun/moon from
+  the sprite, label "Switch to light/dark theme"), and the account trigger
+  (`#meLabel`: initials avatar on the profile color with a contrast-checked
+  ink, name, chevron; the name is visually hidden below 600 px but stays in
+  the text and the accessible name). The 11 px tagline is gone.
+- **Primary navigation** is still the `<nav aria-label="Primary navigation">`
+  group of `[data-tab]` buttons, with a new first item **Home** (`#tab-home`,
+  `data-nav="home"`, no `data-tab`). Home asks the journey router for the
+  right home (dashboard, profile setup, or the landing page for visitors) and
+  is `aria-current="page"` while that surface is visible.
+  - Below 600 px: a fixed **bottom tab bar** (icon over label, safe-area
+    padding). All destinations are direct buttons: six items are at least
+    53 px wide at 320 px, so nothing is clipped and no "More" sheet is
+    needed yet. Revisit the "4 items plus More" layout once WP-R folds Board
+    into the Room and the item set changes.
+  - 600–1023 px, and visitors at any width: compact horizontal tabs below the
+    topbar (icons hidden at 600–767 px so the row always fits).
+  - Members at 1024 px and wider: a **left sidebar** (`--sidebar-w`), sticky
+    under the topbar. Arrow keys, Home and End keep working.
+- **Account menu:** token-styled `.account-menu` / `.account-menu-item` with
+  icons. Items, order and keyboard behaviour are unchanged (Account security,
+  Sign out, Sign out everywhere). Theme stays in the topbar so visitors can
+  reach it; Profile and Notifications join the menu with WP-O / WP-H.
+- **Toast** (`#toast`): `role="status"`, polite and atomic, one at a time,
+  5 s auto-dismiss paused on hover or focus, click to dismiss. Bottom-right on
+  wide screens, centred above the tab bar on phones.
+- **Offline banner** (`#shellConnectionBanner`): a page-level warning banner
+  driven by the browser `online`/`offline` events only. API-down detection
+  stays with the feature packages.
+- The stored theme is applied in `<head>` before first paint.
+- Logic lives in `assets/app-shell.js` (ES module, unit-tested in
+  `tests/unit/app-shell.test.mjs`); golden paths are in
+  `tests/e2e/app-shell-navigation.spec.ts`.
+
 ## 10. Phased implementation plan
 
 ### 10.1 Global constraints for every package

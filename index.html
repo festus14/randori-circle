@@ -11,6 +11,7 @@
 <link rel="apple-touch-icon" href="/assets/brand/apple-touch-icon.png"/>
 <link rel="preload" href="/assets/fonts/geist-sans-latin-var.woff2" as="font" type="font/woff2" crossorigin/>
 <title>Randori Circle</title>
+<script>/* Apply the stored theme before first paint so light mode does not flash dark. */try{if(localStorage.getItem('randori-theme')==='light')document.documentElement.classList.add('light')}catch{}</script>
 <script src="/assets/invite-gate.js"></script>
 <script src="/assets/landing.js"></script>
 <script>
@@ -309,7 +310,7 @@ try{
   --dur-1:120ms; --dur-2:180ms; --dur-3:260ms;
 
   /* layout and controls */
-  --content-max:1200px; --reading-max:680px; --sidebar-w:240px; --topbar-h:56px;
+  --content-max:1200px; --reading-max:680px; --sidebar-w:240px; --topbar-h:56px; --bottom-nav-h:64px;
   --tap-min:44px; --control-sm:32px; --control-md:40px; --control-lg:48px;
   --focus-width:3px; --focus-offset:2px;
 
@@ -442,7 +443,7 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .rc-icon{width:20px; height:20px; flex:0 0 auto; display:inline-block; vertical-align:middle; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round}
 .rc-icon--sm{width:16px; height:16px}
 
-/* ---------- Shell ---------- */
+/* ---------- Shell (WP-S): topbar, primary navigation, account menu ---------- */
 .shell{min-height:100%; display:flex; flex-direction:column}
 .topbar{
   position:sticky; top:0; z-index:var(--z-sticky);
@@ -452,7 +453,7 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   background:color-mix(in srgb, var(--bg) 86%, transparent);
   border-bottom:1px solid var(--border);
   display:flex; align-items:center; justify-content:space-between;
-  gap:var(--space-4); padding:var(--space-2) var(--space-5);
+  gap:var(--space-3); padding:var(--space-2) var(--space-5);
   max-width:100%;
 }
 .brand{display:flex; align-items:center; gap:var(--space-2); min-width:0}
@@ -461,10 +462,9 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   color:var(--ink);
 }
 .mark .mark-accent{stroke:var(--color-action)}
-.brand h1{font-size:var(--text-lg); line-height:var(--leading-sm); font-weight:var(--weight-heading); letter-spacing:var(--tracking-tight); white-space:nowrap}
+.brand h1{font-size:var(--text-lg); line-height:var(--leading-sm); font-weight:var(--weight-heading); letter-spacing:var(--tracking-tight); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
 .brand h1 .wordmark-light{font-weight:var(--weight-body); color:var(--ink-2)}
-.brand small{display:block; font-size:var(--text-xs); line-height:var(--leading-xs); color:var(--ink-3); margin-top:1px; font-weight:var(--weight-body)}
-.top-actions{display:flex; align-items:center; gap:var(--space-2)}
+.top-actions{display:flex; align-items:center; gap:var(--space-2); min-width:0; flex:0 1 auto}
 .pill{
   border:1px solid var(--control-border); background:var(--card);
   border-radius:var(--radius-full); padding:var(--space-1) var(--space-3);
@@ -479,24 +479,75 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .pill:disabled,.pill[aria-disabled="true"]{cursor:not-allowed; color:var(--ink-3); background:var(--bg-4); border-color:var(--border)}
 .dot{width:8px; height:8px; border-radius:var(--radius-full); background:var(--ok); box-shadow:0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent); flex:0 0 auto}
 
-/* tabs (in-page and current primary navigation) */
+.theme-toggle{
+  width:var(--control-md); height:var(--control-md); flex:0 0 auto; display:inline-grid; place-items:center;
+  border:1px solid transparent; border-radius:var(--radius-full); background:transparent; color:var(--ink-2); cursor:pointer;
+  transition:background-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.theme-toggle:hover{background:var(--bg-3); color:var(--ink)}
+.account-area{position:relative; display:flex; align-items:center; gap:var(--space-2); min-width:0}
+.account-trigger{max-width:260px; min-width:0; padding:var(--space-1) var(--space-2) var(--space-1) var(--space-1); gap:var(--space-2)}
+.account-avatar{width:28px; height:28px; font-size:var(--text-xs); background:var(--color-action-subtle); color:var(--ink)}
+.account-name{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.account-chevron{color:var(--ink-3)}
+.account-trigger[aria-expanded="true"] .account-chevron{transform:rotate(180deg)}
+.account-menu{
+  position:absolute; top:calc(100% + var(--space-2)); right:0; z-index:var(--z-dropdown);
+  min-width:220px; max-width:calc(100vw - var(--space-6)); padding:var(--space-1);
+  background:var(--card); border:1px solid var(--border); border-radius:var(--radius-md); box-shadow:var(--shadow-3);
+}
+.account-menu-item{
+  display:flex; align-items:center; gap:var(--space-3); width:100%; min-height:var(--control-md);
+  padding:var(--space-2) var(--space-3); border:0; border-radius:var(--radius-sm); background:none;
+  color:var(--ink); font:inherit; font-size:var(--text-sm); font-weight:var(--weight-emphasis); text-align:left; cursor:pointer;
+}
+.account-menu-item .rc-icon{order:-1; color:var(--ink-3)}
+.account-menu-item--warning,.account-menu-item--warning .rc-icon{color:var(--warn)}
+.account-menu-item:hover,.account-menu-item:focus-visible{background:var(--bg-3)}
+.shell-banner{margin:var(--space-3) var(--space-5) 0; align-items:center}
+.shell-banner[hidden]{display:none}
+.shell-banner .rc-icon{color:var(--warn)}
+
+/* Primary navigation: horizontal tabs (tablet and visitors), a bottom tab bar
+   below 600 px, and a left sidebar for members at 1024 px and wider. The
+   tabs remain the existing [data-tab] buttons; only their presentation moves. */
 .tabs,.rc-tabs{
   display:flex; gap:var(--space-1); padding:var(--space-1); margin:var(--space-4) auto 0;
   background:var(--card); border:1px solid var(--border); border-radius:var(--radius-full);
-  width:fit-content; max-width:100%; flex-wrap:wrap; justify-content:center;
-  box-shadow:var(--shadow-1);
+  width:fit-content; max-width:calc(100% - 2 * var(--space-4)); flex-wrap:nowrap; justify-content:center;
+  overflow-x:auto; overscroll-behavior-inline:contain; box-shadow:var(--shadow-1);
 }
 .tab,.rc-tab{
-  flex:0 0 auto; padding:var(--space-2) var(--space-4); border-radius:var(--radius-full);
+  flex:0 0 auto; padding:var(--space-2) var(--space-3); border-radius:var(--radius-full);
   min-height:36px;
   border:1px solid transparent; background:transparent;
   font-size:var(--text-sm); line-height:var(--leading-sm); font-weight:var(--weight-emphasis); color:var(--ink-3); cursor:pointer;
   display:inline-flex; align-items:center; gap:var(--space-2); white-space:nowrap;
   transition:background-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
 }
-.tab:hover,.rc-tab:hover{color:var(--ink); background:var(--bg-3)}
+.tab .rc-icon{width:18px; height:18px}
+/* Hover only where a real pointer hovers: touch taps must not leave a stale highlight. */
+@media(hover:hover){ .tab:hover,.rc-tab:hover{color:var(--ink); background:var(--bg-3)} }
 .tab.active,.tab[aria-current="page"],.rc-tab[aria-selected="true"]{background:var(--color-action-subtle); color:var(--ink); border-color:color-mix(in srgb, var(--color-action) 45%, var(--border))}
+.tab.active .rc-icon,.tab[aria-current="page"] .rc-icon{color:var(--color-action)}
 .tab.active .kbd,.tab[aria-current="page"] .kbd{border-color:color-mix(in srgb, var(--color-action) 40%, var(--border))}
+@media(min-width:600px) and (max-width:767px){ .tab .rc-icon{display:none} }
+@media(min-width:1024px){
+  body[data-auth="member"] .shell{display:grid; grid-template-columns:var(--sidebar-w) minmax(0,1fr); grid-template-rows:auto auto 1fr}
+  body[data-auth="member"] .topbar{grid-column:1 / -1}
+  body[data-auth="member"] .shell > nav{grid-column:1; grid-row:2 / span 2; border-right:1px solid var(--border)}
+  body[data-auth="member"] .shell-banner{grid-column:2; grid-row:2}
+  body[data-auth="member"] .main{grid-column:2; grid-row:3}
+  body[data-auth="member"] .tabs{
+    position:sticky; top:calc(var(--topbar-h) + var(--space-4));
+    flex-direction:column; align-items:stretch; gap:var(--space-1);
+    width:auto; max-width:none; margin:var(--space-4) var(--space-3); padding:0;
+    background:transparent; border:0; border-radius:0; box-shadow:none;
+  }
+  body[data-auth="member"] .tab{justify-content:flex-start; min-height:var(--control-md); padding:var(--space-2) var(--space-3); border-radius:var(--radius-sm); font-size:var(--text-md)}
+  body[data-auth="member"] .tab .rc-icon{width:20px; height:20px}
+  body[data-auth="member"] .tab .tab-count{margin-left:auto}
+}
 
 /* badges: .kbd is the legacy badge, real <kbd> is styled above */
 .kbd,.rc-badge{
@@ -618,15 +669,17 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 #board{position:absolute; inset:0; width:100%; height:100%; cursor:crosshair; touch-action:none}
 
 /* toast */
+/* One polite toast at a time: bottom-right on wide screens, centred above the
+   bottom tab bar on phones. Hover or focus pauses the 5 s auto-dismiss. */
 .toast,.rc-toast{
-  position:fixed; bottom:var(--space-6); left:50%; transform:translateX(-50%);
-  max-width:min(560px, calc(100vw - 32px)); width:max-content;
+  position:fixed; right:var(--space-6); bottom:var(--space-6);
+  max-width:min(420px, calc(100vw - 2 * var(--space-4))); width:max-content;
   background:var(--ink); color:var(--bg); padding:var(--space-3) var(--space-4); border-radius:var(--radius-md);
   font-size:var(--text-sm); line-height:var(--leading-sm); font-weight:var(--weight-emphasis);
-  box-shadow:var(--shadow-3); z-index:var(--z-toast); display:none;
+  box-shadow:var(--shadow-3); z-index:var(--z-toast); display:none; cursor:default; overflow-wrap:anywhere;
 }
 .toast.show,.rc-toast.show{display:block; animation:rc-toast-in var(--dur-2) var(--ease-out)}
-@keyframes rc-toast-in{from{transform:translate(-50%, 8px)} to{transform:translate(-50%, 0)}}
+@keyframes rc-toast-in{from{transform:translateY(8px); opacity:0} to{transform:none; opacity:1}}
 
 /* dialogs and overlays */
 .overlay{position:fixed; inset:0; background:var(--color-scrim); backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px); z-index:var(--z-modal); display:none; align-items:center; justify-content:center; padding:var(--space-5)}
@@ -693,6 +746,7 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   .topbar{padding:var(--space-2) var(--space-4)}
   .main{padding:var(--space-4) var(--space-4) 88px}
   .tabs{margin:var(--space-3) auto 0}
+  .shell-banner{margin:var(--space-3) var(--space-4) 0}
   .overlay{padding:var(--space-4)}
 }
 
@@ -893,9 +947,6 @@ a.btn{text-decoration:none}
   border-color:var(--focus); background-color:var(--color-field);
   box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 24%,transparent);
 }
-#authArea{position:relative}
-#meLabel{max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
-#meMenu button:hover,#meMenu button:focus-visible{background:var(--bg-3)}
 .status-chip{background:var(--info-surface); border-color:var(--info); color:var(--info)}
 .status-chip.status-success{background:var(--ok-surface); border-color:var(--ok); color:var(--ok)}
 .status-chip.status-warning{background:var(--warn-surface); border-color:var(--warn); color:var(--warn)}
@@ -937,23 +988,44 @@ a.btn{text-decoration:none}
   #circleContextSelect{min-width:0;max-width:100%}
 }
 
-@media(max-width:520px){
-  .topbar{padding:var(--space-2) var(--space-3); display:grid; grid-template-columns:minmax(0,1fr); gap:var(--space-2)}
-  .brand{gap:var(--space-2); min-width:0}
-  .mark{width:28px; height:28px; flex:0 0 auto}
-  .brand small{display:none}
-  .top-actions{width:100%; gap:var(--space-2); min-width:0; justify-content:space-between}
-  #authArea{min-width:0; flex:1}
-  #meLabel{max-width:min(210px,65vw); min-height:var(--tap-min)}
-  #meMenu{top:48px!important; right:0!important; min-width:190px!important}
-  #themeToggle{min-height:var(--tap-min); padding-inline:var(--space-3)}
+/* Phones: one 56 px topbar row and a bottom tab bar that shows every
+   destination (at 320 px each item is still at least 53 px wide). */
+@media(max-width:599px){
+  body{padding-bottom:calc(var(--bottom-nav-h) + env(safe-area-inset-bottom))}
+  .topbar{padding:var(--space-2) var(--space-3); gap:var(--space-2)}
+  .brand h1{font-size:var(--text-md)}
+  .top-actions{gap:var(--space-1)}
+  .account-trigger{padding:var(--space-1); gap:var(--space-1)}
+  .account-name{position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap}
+  .account-menu{right:0; min-width:min(240px, calc(100vw - var(--space-6)))}
+  .shell-banner{margin:var(--space-3) var(--space-3) 0}
   .tabs{
-    width:calc(100% - 24px); margin:var(--space-3) var(--space-3) 0; border-radius:var(--radius-md);
-    flex-wrap:nowrap; justify-content:flex-start; overflow-x:auto; overscroll-behavior-inline:contain;
-    scrollbar-width:thin;
+    position:fixed; left:0; right:0; bottom:0; z-index:var(--z-sticky);
+    width:auto; max-width:none; margin:0; gap:0; justify-content:stretch;
+    padding:var(--space-1) var(--space-1) calc(var(--space-1) + env(safe-area-inset-bottom));
+    background:color-mix(in srgb, var(--card) 94%, transparent);
+    backdrop-filter:blur(16px) saturate(1.4); -webkit-backdrop-filter:blur(16px) saturate(1.4);
+    border:0; border-top:1px solid var(--border); border-radius:0; box-shadow:0 -4px 16px rgb(0 0 0 / .12);
   }
-  .tab{min-height:var(--tap-min); padding:var(--space-2) var(--space-3); border-radius:var(--radius-sm)}
-  .main{padding:var(--space-3) var(--space-3) 76px}
+  .tabs .tab{
+    position:relative; flex:1 1 0; min-width:0; flex-direction:column; justify-content:center; gap:2px;
+    min-height:calc(var(--bottom-nav-h) - var(--space-2)); padding:var(--space-1) 2px; border-radius:var(--radius-sm);
+    font-size:var(--text-xs); line-height:var(--leading-xs);
+  }
+  .tab .rc-icon{width:22px; height:22px}
+  .tab-label{max-width:100%; overflow:hidden; text-overflow:ellipsis}
+  .tab.active,.tab[aria-current="page"]{background:transparent; border-color:transparent; color:var(--color-action)}
+  .tab.active::before,.tab[aria-current="page"]::before{
+    content:""; position:absolute; top:calc(-1 * var(--space-1)); left:50%; width:24px; height:3px; transform:translateX(-50%);
+    border-radius:0 0 var(--radius-full) var(--radius-full); background:var(--color-action);
+  }
+  .tab .tab-count{position:absolute; top:2px; left:calc(50% + 6px); min-width:18px; padding:0 4px; font-size:10px; line-height:14px; text-align:center}
+  .toast,.rc-toast{left:50%; right:auto; transform:translateX(-50%); bottom:calc(var(--bottom-nav-h) + env(safe-area-inset-bottom) + var(--space-3))}
+  @keyframes rc-toast-in{from{transform:translate(-50%, 8px); opacity:0} to{transform:translate(-50%, 0); opacity:1}}
+}
+
+@media(max-width:520px){
+  .main{padding:var(--space-3) var(--space-3) var(--space-6)}
   h1{font-size:var(--text-xl); line-height:var(--leading-xl)}
   #circleCreateForm{grid-template-columns:minmax(0,1fr)}
   #circleCreateSubmit{width:100%;min-height:var(--tap-min)}
@@ -991,6 +1063,7 @@ a.btn{text-decoration:none}
   .pill,.tab,.chip,.tool,.btn,.rc-btn,.rc-tab{min-height:var(--tap-min)}
   :where(input[type="checkbox"],input[type="radio"]){min-width:22px;min-height:22px}
   #meMenu [role="menuitem"]{min-height:44px}
+  .theme-toggle{width:var(--tap-min); height:var(--tap-min)}
   .link-btn{min-height:var(--tap-min); padding-inline:var(--space-2)}
   /* 16 px fields stop iOS Safari from zooming on focus. */
   .input,.textarea,.select{font-size:var(--text-md)}
@@ -1016,6 +1089,8 @@ a.btn{text-decoration:none}
   .status-chip.status-danger{color:CanvasText;border-style:solid;border-width:2px}
   .dot,.spinner,.onboard-dot.active{forced-color-adjust:none;background:Highlight;border-color:Highlight}
   .btn,.tab.active,.chip.active{forced-color-adjust:auto}
+  .tab[aria-current="page"]{border-color:Highlight; text-decoration:underline; text-underline-offset:4px}
+  .tab.active::before,.tab[aria-current="page"]::before{background:Highlight}
   .btn:disabled{color:GrayText;border-color:GrayText}
   .mark{forced-color-adjust:auto}
   .mark .mark-accent{stroke:CanvasText}
@@ -1193,34 +1268,33 @@ a.btn{text-decoration:none}
         </g>
         <circle cx="16" cy="16" r="3.4" fill="currentColor"/>
       </svg>
-      <div>
-        <h1><span class="wordmark-strong">Randori</span> <span class="wordmark-light">Circle</span></h1>
-        <small>Practice DSA + System Design together — Sunday pairing, live rooms, whiteboard.</small>
-      </div>
+      <h1><span class="wordmark-strong">Randori</span> <span class="wordmark-light">Circle</span></h1>
     </div>
     <div class="top-actions">
-      <div id="authArea" class="row" style="gap:6px">
-        <button id="meLabel" class="pill" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="meMenu" style="display:none"></button>
-      <div id="meMenu" role="menu" aria-label="Account" style="display:none; position:absolute; top:44px; right:0; background:var(--bg-2); border:1px solid var(--border); border-radius:10px; padding:6px; min-width:170px; z-index:50; box-shadow:0 8px 24px rgba(0,0,0,.3)">
-        <button id="meIdentity" role="menuitem" tabindex="-1" hidden disabled style="width:100%; text-align:left; background:none; border:none; color:var(--ink); padding:8px 10px; border-radius:8px; font-size:12.5px; cursor:pointer">Account security</button>
-        <button id="meSignOut" role="menuitem" tabindex="-1" style="width:100%; text-align:left; background:none; border:none; color:var(--ink); padding:8px 10px; border-radius:8px; font-size:12.5px; cursor:pointer">Sign out</button>
-        <button id="meSignOutAll" role="menuitem" tabindex="-1" style="width:100%; text-align:left; background:none; border:none; color:var(--warn); padding:8px 10px; border-radius:8px; font-size:12.5px; cursor:pointer">Sign out everywhere</button>
-      </div>
-        <button id="authBtn" class="pill" title="Sign in / up">Sign in</button>
+      <button id="themeToggle" class="theme-toggle" type="button" title="Switch to light theme" aria-label="Switch to light theme"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-sun"/></svg><span id="themeLabel" class="sr-only">dark</span></button>
+      <div id="authArea" class="account-area">
+        <button id="meLabel" class="pill account-trigger" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="meMenu" style="display:none"></button>
+        <div id="meMenu" role="menu" class="account-menu" aria-label="Account" style="display:none">
+          <button id="meIdentity" role="menuitem" class="account-menu-item" tabindex="-1" hidden disabled>Account security<svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-shield"/></svg></button>
+          <button id="meSignOut" role="menuitem" class="account-menu-item" tabindex="-1">Sign out<svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-signout"/></svg></button>
+          <button id="meSignOutAll" role="menuitem" class="account-menu-item account-menu-item--warning" tabindex="-1">Sign out everywhere<svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-signout"/></svg></button>
+        </div>
+        <button id="authBtn" class="btn sm" title="Sign in / up">Sign in</button>
         <button id="signOutBtn" class="pill" style="display:none" title="Sign out">Sign out</button>
       </div>
-      <button id="themeToggle" class="pill" type="button" title="Toggle theme" aria-label="Switch to light theme">◐ <span id="themeLabel">dark</span></button>
     </div>
   </header>
   <nav aria-label="Primary navigation">
   <div class="tabs" role="group" aria-label="Application views">
-    <button id="tab-circle" class="tab active" type="button" aria-current="page" aria-controls="view-circle" data-tab="circle">◍ Circle <span class="kbd" id="peopleCount">0</span></button>
-    <button id="tab-pair" class="tab" type="button" aria-controls="view-pair" data-tab="pair">⇄ Pairing</button>
-    <button id="tab-code" class="tab" type="button" aria-controls="view-code" data-tab="code">〈〉 Code</button>
-    <button id="tab-board" class="tab" type="button" aria-controls="view-board" data-tab="board">◫ Board</button>
-    <button id="tab-history" class="tab" type="button" aria-controls="view-history" data-tab="history">↺ History</button>
+    <button id="tab-home" class="tab" type="button" data-nav="home"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-home"/></svg><span class="tab-label">Home</span></button>
+    <button id="tab-circle" class="tab active" type="button" aria-current="page" aria-controls="view-circle" data-tab="circle"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-users"/></svg><span class="tab-label">Circle</span> <span class="kbd tab-count" id="peopleCount">0</span></button>
+    <button id="tab-pair" class="tab" type="button" aria-controls="view-pair" data-tab="pair"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-swap"/></svg><span class="tab-label">Pairing</span></button>
+    <button id="tab-code" class="tab" type="button" aria-controls="view-code" data-tab="code"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-code"/></svg><span class="tab-label">Code</span></button>
+    <button id="tab-board" class="tab" type="button" aria-controls="view-board" data-tab="board"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-pen"/></svg><span class="tab-label">Board</span></button>
+    <button id="tab-history" class="tab" type="button" aria-controls="view-history" data-tab="history"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-history"/></svg><span class="tab-label">History</span></button>
   </div>
   </nav>
+  <div id="shellConnectionBanner" class="rc-banner rc-banner--warning shell-banner" role="status" hidden><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-alert"/></svg><span><b>You are offline.</b> Randori cannot load or save changes until your connection is back.</span></div>
   <main id="appMain" class="main" tabindex="-1">
 
     <!-- LANDING (anonymous only) — UI redesign WP-L1, spec section 7.1 -->
@@ -1844,7 +1918,7 @@ a.btn{text-decoration:none}
   </div>
 </div>
 
-<div id="toast" class="toast"></div>
+<div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <script>
 (() => {
@@ -2877,6 +2951,29 @@ async function refreshMe(){
     }
     return false;
   }
+  // Account trigger: initials avatar, name, and a menu chevron. Text is set
+  // through textContent only; the profile color is validated before use.
+  function renderAccountTrigger(button, name, color){
+    if(!button) return;
+    const words=String(name||'').replace(/\(admin\)$/,'').trim().split(/\s+/).filter(Boolean);
+    const initials=(words.length>1?words[0][0]+words[words.length-1][0]:(words[0]||'?').slice(0,2)).toUpperCase();
+    const avatar=document.createElement('span');
+    avatar.className='avatar account-avatar'; avatar.setAttribute('aria-hidden','true'); avatar.textContent=initials;
+    const hex=/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(String(color||'')) ? String(color) : '';
+    if(hex){
+      const full=hex.length===4?'#'+[...hex.slice(1)].map(c=>c+c).join(''):hex;
+      const [r,g,b]=[1,3,5].map(i=>parseInt(full.slice(i,i+2),16)/255).map(v=>v<=0.04045?v/12.92:((v+0.055)/1.055)**2.4);
+      avatar.style.background=full;
+      avatar.style.color=(0.2126*r+0.7152*g+0.0722*b)>0.18?'#0B0D12':'#FFFFFF';
+    }
+    const label=document.createElement('span'); label.className='account-name'; label.textContent=String(name||'');
+    const chevron=document.createElementNS('http://www.w3.org/2000/svg','svg');
+    chevron.setAttribute('class','rc-icon rc-icon--sm account-chevron'); chevron.setAttribute('aria-hidden','true'); chevron.setAttribute('focusable','false');
+    const use=document.createElementNS('http://www.w3.org/2000/svg','use'); use.setAttribute('href','/assets/brand/icons.svg#i-chevron-down');
+    chevron.appendChild(use);
+    button.replaceChildren(avatar,label,chevron);
+    button.style.removeProperty('background'); button.style.removeProperty('border-color');
+  }
   function updateAuthUI(){
     const area=document.getElementById('authArea');
     const meLabel=document.getElementById('meLabel');
@@ -2884,6 +2981,7 @@ async function refreshMe(){
     const outBtn=document.getElementById('signOutBtn');
     const hint=document.getElementById('historyAuthHint');
     const effectiveSignedIn = !!me;
+    if(document.body) document.body.dataset.auth=effectiveSignedIn?'member':'anonymous';
     const circleTab=document.querySelector('[data-tab="circle"]');
     if(circleTab) circleTab.style.display=effectiveSignedIn?'':'none';
     if(effectiveSignedIn){
@@ -2896,8 +2994,7 @@ async function refreshMe(){
             meLabel.setAttribute('aria-label',`Account menu for ${nm}`);
           }
         }catch{}
-        meLabel.textContent = '● '+ nm + (isAdmin()?' (admin)':'');
-        if(me && me.color){ const color=safeProfileColor(me.color); meLabel.style.background = color+'22'; meLabel.style.borderColor='var(--control-border)'; }
+        renderAccountTrigger(meLabel, nm + (isAdmin()?' (admin)':''), me && me.color);
       }catch{}
       if(authBtn){ authBtn.style.display='none'; authBtn.hidden=true; authBtn.setAttribute('hidden',''); authBtn.setAttribute('aria-hidden','true'); }
       if(outBtn){ outBtn.style.display='none'; outBtn.hidden=true; outBtn.setAttribute('hidden',''); outBtn.setAttribute('aria-hidden','true'); }
@@ -4239,7 +4336,11 @@ async function refreshMe(){
     document.documentElement.classList.toggle('light',t==='light');
     localStorage.setItem(THEME_KEY,t);
     document.getElementById('themeLabel').textContent=t;
-    document.getElementById('themeToggle')?.setAttribute('aria-label',`Switch to ${t==='light'?'dark':'light'} theme`);
+    const toggle=document.getElementById('themeToggle');
+    const next=t==='light'?'dark':'light';
+    toggle?.setAttribute('aria-label',`Switch to ${next} theme`);
+    toggle?.setAttribute('title',`Switch to ${next} theme`);
+    toggle?.querySelector('use')?.setAttribute('href',`/assets/brand/icons.svg#${next==='light'?'i-sun':'i-moon'}`);
   }
   applyTheme(theme);
   document.getElementById('themeToggle').onclick=()=>{ theme=theme==='dark'?'light':'dark'; applyTheme(theme); renderBoard(); };
@@ -4408,7 +4509,10 @@ async function refreshMe(){
   // -------------------------------
 
   let _toastTimer;
-  function toast(msg){ const el=document.getElementById('toast'); if(!el) return; el.textContent=msg; el.classList.add('show'); clearTimeout(_toastTimer); _toastTimer=setTimeout(()=>el.classList.remove('show'),2400); }
+  function toast(msg){
+    if(window._randori_shell?.toast){ window._randori_shell.toast(msg); return; }
+    const el=document.getElementById('toast'); if(!el) return; el.classList.add('show'); el.textContent=msg; clearTimeout(_toastTimer); _toastTimer=setTimeout(()=>el.classList.remove('show'),5000);
+  }
   try{ if(typeof window!=='undefined'){ if(typeof window.toast!=='function'){ window.toast=toast; } } }catch{}
   // early toast guard for Monaco fails before Monaco block loads
 
@@ -7816,7 +7920,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   const primaryTabObserver=new MutationObserver(syncPrimaryNavigation);
   primaryTabs.forEach(tab=>primaryTabObserver.observe(tab,{attributes:true,attributeFilter:['class','style','hidden']}));
   syncPrimaryNavigation();
-  document.querySelectorAll('.tab').forEach(t=>{
+  // Home (#tab-home) has no data-tab view: the journey router resolves it.
+  document.querySelectorAll('.tab[data-tab]').forEach(t=>{
     t.onclick=event=>{
       window._randoriUserNavigationEpoch=(Number(window._randoriUserNavigationEpoch)||0)+1;
       const id=t.getAttribute('data-tab');
@@ -10371,6 +10476,15 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   // Initial routing after page load
   document.getElementById('homeBtn')?.addEventListener('click', ()=>{ clearRequestedView(); requestAutomaticRoute({force:true}).catch(()=>{}); window.scrollTo({top:0,behavior:'smooth'}); });
+  // Primary-navigation Home: the dashboard for members, the landing page for
+  // visitors, or profile setup while it is incomplete (server-authoritative).
+  document.getElementById('tab-home')?.addEventListener('click', ()=>{
+    window._randoriUserNavigationEpoch=(Number(window._randoriUserNavigationEpoch)||0)+1;
+    clearRequestedView();
+    requestAutomaticRoute({force:true}).catch(()=>{});
+    const reduce=window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+    window.scrollTo({top:0,behavior:reduce?'auto':'smooth'});
+  });
     document.querySelector('.brand')?.addEventListener('click', (e)=>{ if(e.target.closest('button')) return; clearRequestedView(); requestAutomaticRoute({force:true}).catch(()=>{}); window.scrollTo({top:0,behavior:'smooth'}); });
     try{ document.querySelector('.brand').style.cursor='pointer'; }catch{}
   const scheduleInitialRoute=()=>{ setTimeout(()=>{ requestAutomaticRoute(); },300); };
@@ -12043,6 +12157,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
 
 <script type="module" src="/assets/calendar-export.js"></script>
+<script type="module" src="/assets/app-shell.js"></script>
 <script src="/assets/crdt-editor.js" defer></script>
 <script type="module">
 // --- Pillar 3 Fix: rewired AI frontend (Groq router + anon demo + quota + loader/toast) ---
