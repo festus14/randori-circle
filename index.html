@@ -11217,6 +11217,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   window.addEventListener('randori:auth-refreshed',()=>{
     const nextActorId=currentProfileUserId();
     if(profileEditorActorId!==null&&nextActorId!==profileEditorActorId){
+      setupStep='profile';
       profileEditorEpoch+=1;
       profileSaveController?.abort();
       profileSaveController=null;
