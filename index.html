@@ -868,6 +868,9 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .home-agreed-tools .btn{gap:var(--space-2)}
 .home-agreed-tools [data-testid="schedule-clear"]{margin-left:auto}
 .home-meeting:empty{display:none}
+#dashPairArea:empty,#dashScheduleArea:empty,#dashChatArea:empty{display:none}
+/* Kept in the accessibility tree so later announcements are spoken. */
+#scheduleBoundaryStatus:empty{position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%)}
 .home-subhead{display:block; margin:0; font-size:var(--text-sm); font-weight:var(--weight-emphasis); color:var(--ink)}
 .home-proposals{display:grid; gap:var(--space-2)}
 .home-proposal{display:flex; justify-content:space-between; align-items:center; gap:var(--space-3); flex-wrap:wrap; padding:var(--space-3); border:1px solid var(--border); border-radius:var(--radius-md)}
@@ -8710,7 +8713,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(!document.getElementById('dashPairArea')?.childElementCount) setDashboardHomeState('loading');
     const m = (()=>{ try{ return JSON.parse(localStorage.getItem(ME_KEY)||'null')}catch{return null} })();
     try{
-      const hist=document.getElementById('dashHistList'); if(hist && /Loading/.test(hist.textContent||'')){ window._randori_ui?.showSkeleton?.(hist,3); }
+      // A history read abandoned while the dashboard was hidden leaves its loading text; reload instead of masking it.
+      const hist=document.getElementById('dashHistList'); if(hist && (/Loading/.test(hist.textContent||'')||hist.querySelector('.skeleton,.rc-skeleton'))){ setTimeout(()=>window._randori_home?.bootHome?.(),0); }
     }catch{}
     const name=m?.name||m?.display_name||'friend';
     document.getElementById('dashWelcome').textContent='Welcome, '+name;
@@ -9451,7 +9455,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           when.append(time);
           const rel=elapsed?null:scheduleRelative(proposal.instant,renderedAt); if(rel) when.append(' ',rel);
           detail.append(when);
-          detail.append(scheduleNode('span',{className:'small muted',text:`Proposed by ${scheduleProposerLabel(proposal.proposed_by)}${mine&&!elapsed?' · waiting for your partner':''}`}));
+          const agreedProposal=!!schedule.agreed_time&&proposal.instant===schedule.agreed_time;
+          detail.append(scheduleNode('span',{className:'small muted',text:`Proposed by ${scheduleProposerLabel(proposal.proposed_by)}${agreedProposal?' · agreed':(mine&&!elapsed?' · waiting for your partner':'')}`}));
           if(elapsed){
             const expired=scheduleNode('span',{className:'small muted',text:'Expired · remove it or propose a future time',testId:'schedule-expired-label'});
             expired.tabIndex=-1; detail.append(expired);
