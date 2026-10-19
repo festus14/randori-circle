@@ -83,6 +83,9 @@ async function main() {
     const probe = await executeProgram({ language: 'javascript', source: EGRESS_PROBE }, { env });
     console.log(`execution smoke: egress probe -> ${probe.stdout.trim() || '(no output)'}`);
     if (probe.stdout.includes('EGRESS_OPEN')) fail('sandbox egress is not denied');
+    else if (probe.timedOut || !probe.stdout.includes('EGRESS_BLOCKED')) {
+      fail('sandbox egress probe did not positively confirm that egress is denied');
+    }
   }
 
   if (!process.exitCode) console.log('execution smoke: OK');
