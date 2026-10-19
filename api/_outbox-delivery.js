@@ -23,6 +23,11 @@ import {
   invitationEmailConfiguration,
   INVITATION_EMAIL_EVENT_TYPE,
 } from './_invitation-email.js';
+import {
+  createInviteRequestNotificationHandler,
+  INVITE_REQUEST_EVENT_TYPE,
+  inviteRequestNotificationConfiguration,
+} from './_invite-request-notification.js';
 import { localIdentityAdapterEnabled } from './_local-runtime.js';
 
 // Single registry of outbox delivery adapters. Both the scheduled worker
@@ -34,6 +39,7 @@ export const OUTBOX_DELIVERY_TYPES=Object.freeze([
   Object.freeze({type:INVITATION_EMAIL_EVENT_TYPE,key:'invitation_delivery',label:'invitation email'}),
   Object.freeze({type:EMAIL_ACTIVATION_EVENT_TYPE,key:'activation_delivery',label:'activation email'}),
   Object.freeze({type:PASSWORD_RESET_EVENT_TYPE,key:'password_reset_delivery',label:'password reset email'}),
+  Object.freeze({type:INVITE_REQUEST_EVENT_TYPE,key:'invite_request_delivery',label:'invite request notification'}),
 ]);
 
 export function configuredOutboxBaseUrl(){
@@ -56,7 +62,8 @@ function localCaptureSender(captured,type){
         ?String(message.kind):(String(message.subject).includes('missed')?'unavailable':'paired'))
       :type===SCHEDULE_EMAIL_EVENT_TYPE?'schedule'
         :type===INVITATION_EMAIL_EVENT_TYPE?'invitation'
-          :type===PASSWORD_RESET_EVENT_TYPE?'password-reset':'activation';
+          :type===PASSWORD_RESET_EVENT_TYPE?'password-reset'
+            :type===INVITE_REQUEST_EVENT_TYPE?'invite-request':'activation';
     captured.get(type).push({recipient_email:String(message.to),kind,subject:String(message.subject),
       links:[...message.html.matchAll(/href="([^"]+)"/gu)].map(match=>match[1]).slice(0,4)});
     return {providerName:'local-capture',providerMessageId:`local-${randomUUID()}`};
@@ -88,6 +95,7 @@ export async function outboxDeliveryPlan(db,baseUrl,req,{types=null}={}){
   const invitationSend=sender(INVITATION_EMAIL_EVENT_TYPE);
   const activationSend=sender(EMAIL_ACTIVATION_EVENT_TYPE);
   const passwordResetSend=sender(PASSWORD_RESET_EVENT_TYPE);
+  const inviteRequestSend=sender(INVITE_REQUEST_EVENT_TYPE);
   if(include(PAIRING_EMAIL_EVENT_TYPE)&&pairingSend) handlers.set(PAIRING_EMAIL_EVENT_TYPE,
     createPairingEmailHandler({db,baseUrl,send:pairingSend,localRuntime:local}));
   if(include(SCHEDULE_EMAIL_EVENT_TYPE)&&scheduleSend) handlers.set(SCHEDULE_EMAIL_EVENT_TYPE,
@@ -105,6 +113,12 @@ export async function outboxDeliveryPlan(db,baseUrl,req,{types=null}={}){
   if(include(PASSWORD_RESET_EVENT_TYPE)&&passwordResetConfiguration()&&passwordResetSend){
     handlers.set(PASSWORD_RESET_EVENT_TYPE,createPasswordResetHandler({
       db,baseUrl,send:passwordResetSend,
+    }));
+  }
+  if(include(INVITE_REQUEST_EVENT_TYPE)&&inviteRequestNotificationConfiguration({localRuntime:local})
+    &&inviteRequestSend){
+    handlers.set(INVITE_REQUEST_EVENT_TYPE,createInviteRequestNotificationHandler({
+      db,baseUrl,send:inviteRequestSend,localRuntime:local,
     }));
   }
   return {local,captured,handlers};

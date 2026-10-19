@@ -46,7 +46,7 @@ test('v20 is additive, empty, indexed, guarded, and exact after v19',async()=>{
     await apply(item.db,EXECUTABLE_MIGRATIONS.slice(0,19)); await seedPair(item.db);
     const before=await inspectMigrationState(item.db); assert.equal(before.currentVersion,19);
     const result=await applyMigrations(item.db,{expectedStateFingerprint:before.stateFingerprint,retry:NO_RETRY});
-    assert.deepEqual(result.applied.map(entry=>entry.version),[20]);
+    assert.deepEqual(result.applied.map(entry=>entry.version),[20,21]);
     assert.deepEqual(V20.operations.map(operation=>operation.name),[
       'pair_code_documents','idx_pair_code_documents_retention','idx_pair_code_documents_actor',
       'trg_pair_code_documents_insert_guard','trg_pair_code_documents_update_guard',

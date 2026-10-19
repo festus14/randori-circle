@@ -474,6 +474,32 @@ async function captureLocal(browser, viewportName, recorder) {
     const op = owner.page;
     const mp = member.page;
 
+    // WP-A dialogs as rendered by this checkout (the public shots above come
+    // from production). Anonymous contexts, so the owner session is untouched.
+    for (const theme of ['dark', 'light']) {
+      const suffix = theme === 'light' ? '-light' : '';
+      await recorder.step(`${v}:auth-dialogs${suffix}`, async () => {
+        const anon = await newLocalPage(browser, v, 'Europe/London', getOrigin);
+        contexts.push(anon.context);
+        await anon.context.addInitScript(value => { try { localStorage.setItem('randori-theme', value); } catch {} }, theme);
+        const page = anon.page;
+        await page.goto(base, { waitUntil: 'domcontentloaded' });
+        await tap(page, '#landingSignin');
+        await waitForAuthDialog(page);
+        await recorder.shot(page, v, `auth-signin-dialog${suffix}`, { fullPage: false });
+        await tap(page, '#authSignin');
+        await recorder.shot(page, v, `auth-signin-validation${suffix}`, { fullPage: false, settle: 300 });
+        if (await page.locator('#authForgot').isVisible()) {
+          await tap(page, '#authForgot');
+          await recorder.shot(page, v, `auth-forgot-dialog${suffix}`, { fullPage: false, settle: 300 });
+        }
+        await page.goto(`${base}/?google_error=identity_invalid`, { waitUntil: 'domcontentloaded' });
+        await waitForAuthDialog(page);
+        await recorder.shot(page, v, `auth-google-error-dialog${suffix}`, { fullPage: false });
+        await anon.context.close();
+      });
+    }
+
     await recorder.step(`${v}:owner-signin`, async () => {
       await op.goto(base, { waitUntil: 'domcontentloaded' });
       await tap(op, '#landingSignin');
@@ -756,11 +782,21 @@ async function captureLocal(browser, viewportName, recorder) {
       await mp.evaluate(() => window._randori_room?.show?.('problem'));
       await mp.getByTestId('catalog-status').filter({ hasNotText: 'Loading' }).waitFor({ timeout: 15_000 }).catch(() => {});
       await sleep(1000);
+      // WP-K: the problem statement first, then the opened card list.
+      await recorder.shot(mp, v, 'catalogue-problem');
+      await mp.evaluate(() => { const browse = document.getElementById('catalogBrowseList'); if (browse) browse.open = true; });
       await recorder.shot(mp, v, 'catalogue-browse');
       await mp.getByTestId('catalog-search').fill('zzzz-no-such-exercise');
       await sleep(600);
       await recorder.shot(mp, v, 'catalogue-empty-filter');
+      await tap(mp, '#themeToggle');
+      await sleep(500);
+      await recorder.shot(mp, v, 'catalogue-empty-filter-light');
       await mp.getByTestId('catalog-search').fill('');
+      await sleep(400);
+      await recorder.shot(mp, v, 'catalogue-browse-light');
+      await tap(mp, '#themeToggle');
+      await mp.evaluate(() => { const browse = document.getElementById('catalogBrowseList'); if (browse) browse.open = false; });
     });
 
     await recorder.step(`${v}:history`, async () => {
@@ -784,6 +820,41 @@ async function captureLocal(browser, viewportName, recorder) {
       await recorder.shot(mp, v, 'circle-member-view');
     });
 
+    // WP-C: light theme for the circle and history surfaces.
+    await recorder.step(`${v}:circle-history-light`, async () => {
+      await tap(op, '#themeToggle');
+      await openTab(op, 'circle');
+      await sleep(1000);
+      await recorder.shot(op, v, 'circle-owner-light');
+      await openTab(op, 'history');
+      await sleep(1500);
+      const recap = op.locator('#historyPersonal button').first();
+      if (await recap.count()) {
+        await recap.click().catch(() => {});
+        await sleep(1500);
+      }
+      await recorder.shot(op, v, 'history-recap-light');
+      await tap(op, '#themeToggle');
+    });
+
+    // WP-C: owner "Invite requests" panel with real requests submitted through
+    // the public WP-L2 endpoint on the loopback runtime (flag on locally).
+    await recorder.step(`${v}:circle-invite-requests`, async () => {
+      await mp.evaluate(async viewport => {
+        for (const [name, note] of [['Ada Lovelace', 'Preparing for system design loops in November.'], ['Grace Hopper', null]]) {
+          await fetch('/api/invite-requests', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ name, email: `${name.split(' ')[0].toLowerCase()}.${viewport}@example.test`, note }),
+          });
+        }
+      }, v);
+      await op.reload({ waitUntil: 'domcontentloaded' });
+      await openTab(op, 'circle');
+      await op.getByTestId('circle-invite-requests').waitFor({ state: 'visible', timeout: 10_000 }).catch(() => {});
+      await sleep(800);
+      await recorder.shot(op, v, 'circle-owner-invite-requests');
+    });
+
     await recorder.step(`${v}:account-security`, async () => {
       await openDashboard(op);
       await tap(op, '#meLabel');
@@ -793,7 +864,33 @@ async function captureLocal(browser, viewportName, recorder) {
       await op.locator('#identityOverlay.show').waitFor({ state: 'visible', timeout: 10_000 });
       await sleep(1200);
       await recorder.shot(op, v, 'account-security-dialog', { fullPage: false });
+      await op.evaluate(() => document.documentElement.classList.add('light'));
+      await recorder.shot(op, v, 'account-security-dialog-light', { fullPage: false, settle: 300 });
+      await op.evaluate(() => document.documentElement.classList.remove('light'));
       await op.locator('#identityClose').click().catch(() => {});
+    });
+
+    // The same dialog when the Randori sign-in is older than 10 minutes. Only
+    // the browser's copy of the identity state is altered, for the picture.
+    await recorder.step(`${v}:account-security-confirm-needed`, async () => {
+      await op.route('**/api/auth/identities', async route => {
+        const response = await route.fetch();
+        const payload = await response.json();
+        if (payload?.identity) payload.identity.recentAuth = { ok: false, reason: 'recent_auth_required' };
+        await route.fulfill({ response, json: payload });
+      });
+      try {
+        await tap(op, '#meLabel');
+        await tap(op, op.locator('#meIdentity'));
+        await op.locator('#identityRecent').waitFor({ state: 'visible', timeout: 10_000 });
+        await recorder.shot(op, v, 'account-security-confirm-needed', { fullPage: false });
+        await op.evaluate(() => document.documentElement.classList.add('light'));
+        await recorder.shot(op, v, 'account-security-confirm-needed-light', { fullPage: false, settle: 300 });
+        await op.evaluate(() => document.documentElement.classList.remove('light'));
+        await op.locator('#identityClose').click().catch(() => {});
+      } finally {
+        await op.unroute('**/api/auth/identities');
+      }
     });
 
     // Loading and error states: same signed-in owner, with data APIs held or
