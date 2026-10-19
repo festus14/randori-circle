@@ -146,10 +146,14 @@ beforeEach(()=>{
   providerCalls=0;
   globalThis.fetch=realFetch;
   delete process.env.TURSO_DATABASE_URL;
+  process.env.EXECUTION_PROVIDER='piston';
+  process.env.EXECUTION_API_URL='https://execution.test.example/api/v2/execute';
 });
 
 afterEach(()=>{
   globalThis.fetch=realFetch;
+  delete process.env.EXECUTION_PROVIDER;
+  delete process.env.EXECUTION_API_URL;
 });
 
 test('my-pair reports source-aware membership query failures as generic unavailable',async()=>{

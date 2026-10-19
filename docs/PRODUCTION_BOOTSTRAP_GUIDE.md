@@ -237,6 +237,7 @@ Scope every value to **Production** only.
 | `GOOGLE_CLIENT_SECRET` | From section 5 |
 | `RESEND_API_KEY` | From section 6 |
 | `RESEND_FROM` | From section 6, e.g. `Randori <noreply@mail.example.com>` |
+| `EXECUTION_PROVIDER` | `vercel-sandbox`. Enables "Run" in a per-run Vercel Sandbox microVM using the project's OIDC token (no extra secret). Leave unset to keep execution explicitly unavailable. See ID-62 |
 
 ### Key rings (staged dark; must equal the GitHub copies byte for byte)
 
@@ -486,6 +487,9 @@ Change only these in Vercel Production, redeploying after each step:
    works), pairing, and scheduling. `SIGNUP_ALLOWLIST` no longer governs access.
 2. `INVITATION_EMAIL_DELIVERY_ENABLED=true` (after Resend is Verified, the
    `invitation-email` control is accepted, and `outbox-dispatch` runs green).
+3. `EXECUTION_PROVIDER=vercel-sandbox` (if not already set), then run
+   `vercel env pull .env.local && npm run smoke:execution` from a linked
+   checkout and complete one JavaScript and one Python run in the product.
 
 Everything else stays exactly as in section 4: multi-circle control plane and
 availability, secondary-circle flags, email/password activation, password reset,

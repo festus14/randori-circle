@@ -96,6 +96,7 @@ Copy `.env.example` and configure at least:
 
 - `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`
 - `JWT_SECRET` with at least 32 random bytes and a separate `CRON_SECRET`; `RUN_ATTESTATION_SECRET` is optional and falls back to `JWT_SECRET` when blank
+- `EXECUTION_PROVIDER=vercel-sandbox` to enable "Run" for catalogue exercises. Each run gets a fresh, non-persistent Vercel Sandbox microVM (Node.js 24 or Python 3.14) with all egress denied; on Vercel it authenticates with the project's OIDC token, so no extra secret is needed. Alternatively set `EXECUTION_PROVIDER=piston` with `EXECUTION_API_URL` (a self-hosted Piston-compatible `https://…/api/v2/execute` endpoint) and optional `EXECUTION_API_TOKEN`. When unset or invalid, `/api/execute` returns `503` with `code: "execution_unavailable"` and the editor shows that execution is temporarily unavailable. The public emkc.org Piston API is retired and rejected. See ID-62 in `docs/IMPLEMENTED_DECISIONS.md`; after deploying, `npm run smoke:execution` checks the sandbox path with an OIDC token from `vercel env pull .env.local` (it creates five real sandboxes)
 - `PAIRING_TIME_ZONE=Europe/London`; each pairing cycle runs from Sunday 08:00 in that zone until the next Sunday boundary
 - an explicit canonical HTTPS `APP_URL` plus both `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`; OAuth stays unavailable for partial, malformed, insecure, host-mismatched, or local-runtime configuration
 - `SIGNUP_ALLOWLIST` for the legacy private-beta Google flow while circle membership enforcement is off
@@ -225,6 +226,6 @@ Operators can run `npm run --silent db:status` or `npm run --silent db:plan` wit
 
 1. Pilot the secure weekly coordination loop and measure completed sessions.
 2. Move collaborative editing from revisioned snapshots to a managed realtime/CRDT service as usage grows.
-3. Move code execution from the shared Piston service to dedicated isolated workers with queueing and quotas.
+3. Add queueing, per-circle quotas, and pre-warmed snapshots to the isolated execution gateway as usage grows beyond the Vercel Hobby Sandbox allowance.
 4. Add managed video after the coordination workflow is reliable.
 5. Add durable session artifacts and consented AI coaching, then expand only with original, licensed, or formally authorised question sources.

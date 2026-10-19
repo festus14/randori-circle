@@ -1,9 +1,10 @@
 {
   "dependencies": {
     "@libsql/client": "^0.12.0",
+    "@sentry/node": "^10.75.0",
+    "@vercel/sandbox": "^3.8.0",
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",
-    "@sentry/node": "^10.75.0",
     "resend": "^4.0.0"
   },
   "name": "randori-circle",
@@ -29,6 +30,7 @@
     "check:backup-controls": "node scripts/check-backup-controls.mjs",
     "check:runtime-ddl": "node scripts/check-runtime-ddl.mjs",
     "check:syntax": "node tests/static/check-syntax.mjs",
+    "smoke:execution": "node --env-file-if-exists=.env.local scripts/execution-smoke.mjs",
     "validate:catalog": "node scripts/validate-catalog.mjs",
     "catalog:takedown": "node scripts/catalog-provenance.mjs takedown",
     "test:unit": "node --experimental-test-module-mocks --test tests/unit/*.test.mjs",

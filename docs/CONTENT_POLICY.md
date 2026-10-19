@@ -56,7 +56,7 @@ Evaluation cases are generated afresh by the server for each run using cryptogra
 
 Randori Circle is a public repository. Its generators, constraints, and reference oracles are inspectable and are not represented as secret or as exam-grade anti-cheating protection. Runtime randomisation prevents clients from choosing the evaluated inputs or forging pass and total counts; it does not make an open-source oracle unknowable.
 
-The remote Piston runtime receives generated inputs and the submitted program, but never server-computed expected outputs. It returns candidate values to the application server, where comparison occurs. The application must not put complete generated suites or expected outputs in browser payloads, logs, analytics, exception context, run snapshots, or user-authored database fields.
+The isolated execution provider (Vercel Sandbox or a self-hosted Piston-compatible endpoint) receives generated inputs and the submitted program, but never server-computed expected outputs. It returns candidate values to the application server, where comparison occurs. The application must not put complete generated suites or expected outputs in browser payloads, logs, analytics, exception context, run snapshots, or user-authored database fields.
 
 ## Content review checklist
 
