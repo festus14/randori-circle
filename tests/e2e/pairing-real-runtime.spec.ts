@@ -323,7 +323,7 @@ async function optInForUpcomingCycle(page: Page) {
   });
   await expect(page.locator('#availSkip')).toHaveAttribute('aria-pressed','true');
   const saved = await persistViaUi(true);
-  await expect(page.locator('#availLabel')).toContainText('SAVED • AVAILABLE');
+  await expect(page.locator('#availLabel')).toContainText("Saved · You're in");
   expect(saved.availability?.cycle?.cycleId).toMatch(/^\d{4}-W\d{2}$/);
   return JSON.parse(JSON.stringify(saved.availability?.cycle || null)) as Cycle | null;
 }
