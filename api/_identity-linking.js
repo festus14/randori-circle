@@ -292,15 +292,14 @@ export async function readIdentityState(db,payload,{nowSeconds}={}){
 }
 
 async function linkGoogleCredentialAttempt(db,payload,{
-  issuer,subject,providerEmail,providerAuthenticatedAt,nowSeconds,
+  issuer,subject,providerEmail,nowSeconds,
 }={}){
   const id=userId(payload?.id??payload?.uid);
   const currentSessionHash=sessionHash(payload?.sessionHash);
   const normalizedSubject=googleSubject(subject);
   const normalizedEmail=normalizeInvitationEmail(providerEmail);
   if(!db||typeof db.transaction!=='function'||!id||!currentSessionHash
-    ||issuer!==GOOGLE_ISSUER||!normalizedSubject||!normalizedEmail
-    ||!Number.isSafeInteger(providerAuthenticatedAt)){
+    ||issuer!==GOOGLE_ISSUER||!normalizedSubject||!normalizedEmail){
     throw new TypeError('valid explicit Google link proof is required');
   }
   const emailHashConfiguration=identityEmailHashConfiguration();
@@ -320,9 +319,6 @@ async function linkGoogleCredentialAttempt(db,payload,{
     });
     await assertIdentityEmailHashVersion(transaction,emailHashConfiguration);
     const now=await databaseNow(transaction,nowSeconds);
-    if(providerAuthenticatedAt>now+60||providerAuthenticatedAt<now-180){
-      throw new TypeError('fresh Google authentication is required');
-    }
     await requireRecentAuth(transaction,{id,sessionHash:currentSessionHash},{nowSeconds:now});
     const state=await accountState(transaction,id);
     if(!state) throw new Error('identity account unavailable');

@@ -25,6 +25,10 @@ import {EXECUTABLE_MIGRATIONS} from '../../db/executable-migrations.js';
 import {applyMigrations,inspectMigrationState,prepareMigrationConnection} from '../../db/migration-runner.js';
 import {adoptCredentialKeyControl} from '../support/credential-key-control.mjs';
 
+// Committed-event identities are internal (used for post-commit delivery);
+// assert their count rather than random keys.
+const acceptance=result=>({accepted:result.accepted,queued:(result.outboxEvents||[]).length});
+
 const JWT_SECRET='password-reset-test-secret-at-least-thirty-two-bytes';
 const ENCRYPTION_KEY=Buffer.alloc(32,11).toString('base64url');
 const NOW=Math.floor(Date.now()/1000);
@@ -82,7 +86,7 @@ test('reset stores only hashes, delivers a fragment link, changes the password, 
   const {db}=await fixture();
   const oldSession=await issueSession(db,{id:1,email:'member@example.test',name:'Member'},
     {nowSeconds:NOW-100,recentAuthMethod:'password'});
-  assert.deepEqual(await requestPasswordReset(db,{email:'member@example.test'},{nowSeconds:NOW}),{accepted:true});
+  assert.deepEqual(acceptance(await requestPasswordReset(db,{email:'member@example.test'},{nowSeconds:NOW})),{accepted:true,queued:1});
   const {payload,token}=await queuedToken(db);
   assert.match(token,/^[A-Za-z0-9_-]{43}$/);
   assert.equal(JSON.stringify((await db.execute(`SELECT * FROM auth_password_resets`)).rows).includes(token),false);
@@ -114,12 +118,12 @@ test('unknown and ineligible emails are equivalent and OAuth-only identities get
   const knownCounter={count:0};
   const unknownCounter={count:0};
   const oauthCounter={count:0};
-  assert.deepEqual(await requestPasswordReset(countTransactionStatements(db,knownCounter),
-    {email:'member@example.test'},{nowSeconds:NOW}),{accepted:true});
-  assert.deepEqual(await requestPasswordReset(countTransactionStatements(db,unknownCounter),
-    {email:'unknown@example.test'},{nowSeconds:NOW}),{accepted:false});
-  assert.deepEqual(await requestPasswordReset(countTransactionStatements(db,oauthCounter),
-    {email:'oauth@example.test'},{nowSeconds:NOW}),{accepted:false});
+  assert.deepEqual(acceptance(await requestPasswordReset(countTransactionStatements(db,knownCounter),
+    {email:'member@example.test'},{nowSeconds:NOW})),{accepted:true,queued:1});
+  assert.deepEqual(acceptance(await requestPasswordReset(countTransactionStatements(db,unknownCounter),
+    {email:'unknown@example.test'},{nowSeconds:NOW})),{accepted:false,queued:0});
+  assert.deepEqual(acceptance(await requestPasswordReset(countTransactionStatements(db,oauthCounter),
+    {email:'oauth@example.test'},{nowSeconds:NOW})),{accepted:false,queued:0});
   assert.deepEqual([knownCounter.count,unknownCounter.count,oauthCounter.count],[3,3,3]);
   assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM auth_password_resets`)).rows[0].count),1);
 });
@@ -128,12 +132,12 @@ test('resends rotate tokens, enforce cooldown and lifetime bounds, and suppress 
   const {db}=await fixture();
   await requestPasswordReset(db,{email:'member@example.test'},{nowSeconds:NOW});
   const first=(await queuedToken(db)).token;
-  assert.deepEqual(await requestPasswordReset(db,{email:'member@example.test'},{nowSeconds:NOW+1}),{accepted:false});
+  assert.deepEqual(acceptance(await requestPasswordReset(db,{email:'member@example.test'},{nowSeconds:NOW+1})),{accepted:false,queued:0});
   for(let send=2;send<=5;send+=1){
-    assert.deepEqual(await requestPasswordReset(db,{email:'member@example.test'},
-      {nowSeconds:NOW+(send-1)*PASSWORD_RESET_RESEND_SECONDS}),{accepted:true});
+    assert.deepEqual(acceptance(await requestPasswordReset(db,{email:'member@example.test'},
+      {nowSeconds:NOW+(send-1)*PASSWORD_RESET_RESEND_SECONDS})),{accepted:true,queued:1});
   }
-  assert.deepEqual(await requestPasswordReset(db,{email:'member@example.test'},{nowSeconds:NOW+1_000}),{accepted:false});
+  assert.deepEqual(acceptance(await requestPasswordReset(db,{email:'member@example.test'},{nowSeconds:NOW+1_000})),{accepted:false,queued:0});
   const latest=(await queuedToken(db)).token;
   assert.notEqual(first,latest);
   const sent=[];

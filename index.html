@@ -1256,6 +1256,7 @@ p{margin:0}
               <button id="copyStarterBtn" class="pill" title="Copy starter for current lang">⎘ Copy starter</button>
               <button id="editorResetBtn" class="pill" title="Reset editor to starter">↺ Reset</button>
               <span id="lintStatus" class="kbd" style="display:none; background:var(--bg-3)">lint: —</span>
+              <span id="codeSyncStatus" class="kbd" data-state="local" role="status" aria-live="polite">local editor</span>
             </div>
             <div class="row" style="gap:6px">
               <button id="roleToggle" class="pill" type="button" aria-label="Change shared participant roles">○ candidate</button>
@@ -6285,6 +6286,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       window._randori_workspace.requestAccess(roomId);
       return;
     }
+    window._randori_crdt?.fence?.(roomId);
     currentRoom=roomId;
     window._randori_board?.load?.(roomId);
     document.getElementById('roomLabel').textContent=`room ${roomId.slice(0,4)}`;
@@ -6316,7 +6318,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const lang=document.getElementById('langSelect').value;
     const e=map[currentRoom]||{codes:{}};
     const selectedQuestion=window._randori_questions?.selectedIdentity?.()||{slug:qSel.value,version:null};
-    e.lang=lang; e.qId=selectedQuestion.slug; e.qVersion=selectedQuestion.version; e.codes=e.codes||{}; e.codes[lang]=document.getElementById('editor').value;
+    e.lang=lang; e.qId=selectedQuestion.slug; e.qVersion=selectedQuestion.version; e.codes=e.codes||{};
+    if(window._randori_crdt?.ownsCodeFor?.(currentRoom)) delete e.codes[lang];
+    else e.codes[lang]=document.getElementById('editor').value;
     map[currentRoom]=e; saveCode(map);
     window.dispatchEvent(new CustomEvent('randori:workspace-edit',{detail:{roomId:currentRoom}}));
   }
@@ -10762,7 +10766,14 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           let apiFn = window.api || null;
           const payload = { language: lang, code, question_slug: customQ.slug||customQ.id, question_version:customQ.version };
           const executionRoom=authorizedPairExecutionRoom();
-          if(executionRoom) payload.room_id=executionRoom;
+          if(executionRoom){
+            payload.room_id=executionRoom;
+            if(window._randori_crdt?.ownsCodeFor?.(executionRoom)){
+              const documentVersion=await window._randori_crdt.flush();
+              if(!documentVersion) throw {error:'Wait for shared code to finish syncing before running.'};
+              payload.document_version=documentVersion;
+            }
+          }
           let j;
           if(apiFn){
             j = await apiFn('/api/execute', {method:'POST', body: payload});
@@ -10803,6 +10814,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
             return;
           }
           const msg = (e && (e.error||e.detail||e.message))||String(e).slice(0,300);
+          if(e?.code==='code_document_changed'){
+            try{ await window._randori_crdt?.reconcile?.(); }catch{}
+          }
           if(runOutEl){ runOutEl.innerHTML='<div class="test" style="border-color:var(--accent-3)"><div class="small">Execution failed: '+escapeHtml(String(msg).slice(0,400))+'<div class="small muted">Check your code and try again.</div></div></div>'; runOutEl.scrollTop=runOutEl.scrollHeight; }
           if(window.toast) window.toast('Execution error: '+String(msg).slice(0,120));
         }
@@ -11378,7 +11392,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       const code=monacoEditor? monacoEditor.getValue() : (getTA()?.value||'');
       let map={}; try{ map=JSON.parse(localStorage.getItem(CODE_KEY)||'{}'); }catch{ map={}; }
       const e=map[room]||{codes:{}};
-      e.lang=lang; e.qId=qId; e.qVersion=selectedQuestion.version; e.codes=e.codes||{}; e.codes[lang]=code;
+      e.lang=lang; e.qId=qId; e.qVersion=selectedQuestion.version; e.codes=e.codes||{};
+      if(window._randori_crdt?.ownsCodeFor?.(room)) delete e.codes[lang];
+      else e.codes[lang]=code;
       map[room]=e;
       localStorage.setItem(CODE_KEY, JSON.stringify(map));
       window.dispatchEvent(new CustomEvent('randori:workspace-edit',{detail:{roomId:room}}));
@@ -11557,6 +11573,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         // also map to window._randori_code.currentRoom getter/setter already defined earlier? Ensure it still works
         // expose for video/lang bridge
         window._randori_monaco = { get editor(){return monacoEditor}, formatCode, get ready(){return monacoReady} };
+        window.dispatchEvent(new CustomEvent('randori:monaco-ready'));
 
         // hook language select
         const langSel=document.getElementById('langSelect');
@@ -11669,6 +11686,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
 
 <script type="module" src="/assets/calendar-export.js"></script>
+<script src="/assets/crdt-editor.js" defer></script>
 <script type="module">
 // --- Pillar 3 Fix: rewired AI frontend (Groq router + anon demo + quota + loader/toast) ---
 (function(){
@@ -11958,6 +11976,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return !!match&&Number.isSafeInteger(Number(match[1]))&&Number.isSafeInteger(Number(match[2]));
   }
   function activeRoom(){ return window._randori_code?.currentRoom||window.currentRoom||document.getElementById('roomSelect')?.value||null; }
+  function crdtOwnsCode(room=state.room){ return window._randori_crdt?.ownsCodeFor?.(room)===true; }
   function currentCode(){
     try{ return window._randori_code?.getCode?.()??window._randori_code?.getEditor?.()?.getValue?.()??document.getElementById('editor')?.value??''; }
     catch{ return document.getElementById('editor')?.value||''; }
@@ -11978,7 +11997,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       board:window._randori_board?.snapshot?.()||null,
     };
   }
-  function sameCode(left,right){ return !!left&&!!right&&left.code===right.code&&left.language===right.language&&left.question_id===right.question_id&&left.question_version===right.question_version; }
+  function sameSelection(left,right){ return !!left&&!!right&&left.language===right.language&&left.question_id===right.question_id&&left.question_version===right.question_version; }
+  function sameCode(left,right){ return sameSelection(left,right)&&left.code===right.code; }
+  function codeDomainDirty(left,right){ return crdtOwnsCode()? !sameSelection(left,right):!sameCode(left,right); }
   function sameBoard(left,right){ return !!left?.board&&!!right?.board&&JSON.stringify(left.board)===JSON.stringify(right.board); }
   function same(left,right){ return sameCode(left,right)&&sameBoard(left,right); }
   function unpack(data){
@@ -11997,7 +12018,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }:null;
     return {revision:Number(envelope.revision??data?.revision??candidate?.revision??0),snapshot};
   }
-  function persistLocal(room,snapshot){
+  function persistLocal(room,snapshot,{omitCode=crdtOwnsCode(room)}={}){
     if(!signedIn()||!room||!snapshot) return;
     try{
       let map={}; try{ map=JSON.parse(localStorage.getItem(CODE_KEY)||'{}'); }catch{}
@@ -12006,7 +12027,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       entry.qId=snapshot.question_id;
       entry.qVersion=snapshot.question_version;
       entry.codes=entry.codes||{};
-      entry.codes[snapshot.language]=snapshot.code;
+      if(omitCode) delete entry.codes[snapshot.language];
+      else entry.codes[snapshot.language]=snapshot.code;
       map[room]=entry;
       localStorage.setItem(CODE_KEY,JSON.stringify(map));
       localStorage.setItem('randori-last-room',room);
@@ -12019,12 +12041,18 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     state.applying=true;
     try{
       if(domains.code){
+        const owned=crdtOwnsCode(room);
+        const selectionChanged=!sameSelection(draft(),snapshot);
+        if(owned&&selectionChanged) window._randori_crdt?.fence?.(room);
         const lang=document.getElementById('langSelect'); if(lang) lang.value=snapshot.language;
         const question=document.getElementById('questionSelect');
         if(question) window._randori_questions?.selectWorkspaceQuestion?.(snapshot.question_id,snapshot.question_version);
-        if(window._randori_code?.setCode) window._randori_code.setCode(snapshot.code,snapshot.language);
-        const textarea=document.getElementById('editor'); if(textarea) textarea.value=snapshot.code;
-        persistLocal(room,snapshot);
+        if(!owned){
+          if(window._randori_code?.setCode) window._randori_code.setCode(snapshot.code,snapshot.language);
+          const textarea=document.getElementById('editor'); if(textarea) textarea.value=snapshot.code;
+        }
+        persistLocal(room,snapshot,{omitCode:owned});
+        if(selectionChanged) queueMicrotask(()=>window.dispatchEvent(new CustomEvent('randori:workspace-selection-applied',{detail:{roomId:room}})));
       }
       if(domains.board&&snapshot.schema_version>=3) window._randori_board?.applySnapshot?.(snapshot.board,room,{persist:true,authoritative:true,status:true});
     }finally{
@@ -12032,7 +12060,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }
   }
   function domainDirty(domain,local=draft(),authoritative=state.authoritative){
-    if(domain==='code') return !sameCode(local,authoritative);
+    if(domain==='code') return codeDomainDirty(local,authoritative);
     return !!local.board&&!sameBoard(local,authoritative);
   }
   function refreshPending(){
@@ -12040,7 +12068,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const local=draft();
     const codeTarget=state.inFlight?.codeDirty?state.inFlight.change:state.authoritative;
     const boardTarget=state.inFlight?.boardDirty?state.inFlight.change:state.authoritative;
-    const codeDirty=!sameCode(local,codeTarget);
+    const codeDirty=codeDomainDirty(local,codeTarget);
     const boardDirty=!!local.board&&(state.forceBoardUpgrade||window._randori_board?.dirty===true||!sameBoard(local,boardTarget));
     state.pending=codeDirty||boardDirty?{codeDirty,boardDirty}:null;
   }
@@ -12186,7 +12214,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(state.applying||state.hydrated||!state.room) return;
     if(window._randori_programmatic_editor_updates) return;
     if(domain==='board') state.hydrationDirtyBoard=true;
-    else state.hydrationDirtyCode=true;
+    else if(!crdtOwnsCode()) state.hydrationDirtyCode=true;
   }
   function retrySave(room,epoch){
     if(state.room!==room||state.epoch!==epoch) return false;
@@ -12258,7 +12286,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       state.lastAckSeq=Math.max(state.lastAckSeq,clientSeq);
       if(next.snapshot){
         const local=draft();
-        const preserveCode=!!state.pending?.codeDirty||!sameCode(local,change);
+        const preserveCode=!!state.pending?.codeDirty||codeDomainDirty(local,change);
         const preserveBoard=!!state.pending?.boardDirty||!sameBoard(local,change);
         state.forceBoardUpgrade=false;
         applySnapshot(next.snapshot,next.revision,room,epoch,{code:!preserveCode,board:!preserveBoard});
@@ -12349,6 +12377,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     // Generic persistence events also come from catalogue/Monaco setup. Only
     // direct user input/change handlers below may claim a pre-hydration edit.
     scheduleSave('code');
+  });
+  window.addEventListener('randori:code-document-hydrated',event=>{
+    if(String(event.detail?.room||'')!==String(state.room||'')) return;
+    refreshPending();
+    if(state.pending?.codeDirty) scheduleSave('code');
   });
   window.addEventListener('randori:board-edit',event=>{
     const room=event.detail?.roomId;

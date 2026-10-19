@@ -219,6 +219,39 @@ test('same-email Google login conflicts until the signed-in account explicitly l
   assert.equal(state.body.identity.google.linked,true);
 });
 
+test('linking succeeds when Google returns an old or missing auth_time on an already signed-in device',async()=>{
+  for(const [label,authTime] of [['old',Math.floor(Date.now()/1000)-7*24*3600],['missing',undefined]]){
+    const db=await fixture();
+    await addPasswordAccount(db);
+    const token=await issueSession(db,{id:1,email:'member@example.test',name:'Member'},{recentAuthMethod:'password'});
+    const start=await invoke({endpoint:'google-link-start',method:'POST',cookie:cookieFor(token),ip:'203.0.113.73'});
+    const link=oauthValues(start);
+    const claims={email:'member@example.test',sub:`subject-${label}`,nonce:link.nonce};
+    if(authTime!==undefined) claims.auth_time=authTime;
+    globalThis.fetch=googleProviderFetch({claims});
+    const callback=await invoke({endpoint:'google-callback',query:{code:`code-${label}`,state:link.state},
+      cookie:[cookieFor(token),...link.cookies].join('; ')});
+    assert.equal(callback.headers.location,'https://randori.example.test/?identity_link=linked',label);
+    assert.deepEqual((await db.execute(`SELECT subject,user_id FROM auth_provider_identities`)).rows,
+      [{subject:`subject-${label}`,user_id:1}],label);
+  }
+});
+
+test('linking still requires recent Randori authentication even with a fresh Google auth_time',async()=>{
+  const db=await fixture();
+  await addPasswordAccount(db);
+  const fresh=await issueSession(db,{id:1,email:'member@example.test',name:'Member'},{recentAuthMethod:'password'});
+  const start=await invoke({endpoint:'google-link-start',method:'POST',cookie:cookieFor(fresh),ip:'203.0.113.74'});
+  const link=oauthValues(start);
+  await db.execute(`UPDATE auth_recent_proofs SET authenticated_at=authenticated_at-3600`);
+  globalThis.fetch=googleProviderFetch({claims:{email:'member@example.test',sub:'late-subject',nonce:link.nonce,
+    auth_time:Math.floor(Date.now()/1000)}});
+  const callback=await invoke({endpoint:'google-callback',query:{code:'late-code',state:link.state},
+    cookie:[cookieFor(fresh),...link.cookies].join('; ')});
+  assert.match(callback.headers.location,/identity_link_error=recent_auth_required/);
+  assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM auth_provider_identities`)).rows[0].count),0);
+});
+
 test('password credential add and unlink expose safe final-credential states and enforce CSRF',async()=>{
   const db=await fixture();
   await db.execute({sql:`INSERT INTO auth_accounts

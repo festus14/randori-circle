@@ -58,6 +58,7 @@ import {
   requestPasswordReset,
 } from './_password-reset.js';
 import { readRecentAuth, recordRecentAuth, requireRecentAuth } from './_recent-auth.js';
+import { deliverCommittedOutboxEvents } from './_outbox-immediate.js';
 import {
   GOOGLE_ISSUER,
   addPasswordCredential,
@@ -395,15 +396,19 @@ async function handleSignup(req,res){
     const color=deterministicColor(display.toLowerCase());
     const hash=await bcrypt.hash(password,10);
     let activationFailed=false;
+    let activation=null;
     try{
-      await requestEmailActivation(db,{claim:inviteClaim,email:e,passwordHash:hash,displayName:display,color});
+      activation=await requestEmailActivation(db,{claim:inviteClaim,email:e,passwordHash:hash,displayName:display,color});
     }catch{ activationFailed=true; }
     await completeActivationResponseFloor(responseStartedAt);
     if(activationFailed) return res.status(503).json({error:'signup temporarily unavailable'});
-    return res.status(202).json({
+    res.status(202).json({
       ok:true,pending:true,
       message:'If this invitation can be activated, a verification email will arrive shortly.',
     });
+    // After the identical, floored response: deliver only what was committed.
+    deliverCommittedOutboxEvents(req,activation?.outboxEvents);
+    return;
   }
   if(membershipRequired){
     if(!localIdentityAdapterEnabled(req)){
@@ -508,20 +513,23 @@ async function handleActivationResend(req,res){
   const db=getClient();
   const responseStartedAt=Date.now();
   let activationFailed=null;
+  let resent=null;
   const inviteClaim=boundInviteClaim(req);
   try{
     await ensureAuthReadiness(db);
     await ensureEmailActivationReadiness(db);
     await enforceAuthRateLimit(db,req,'signup',email);
-    await resendEmailActivation(db,{claim:inviteClaim,email});
+    resent=await resendEmailActivation(db,{claim:inviteClaim,email});
   }catch(error){ activationFailed=error; }
   await completeActivationResponseFloor(responseStartedAt);
   if(activationFailed?.statusCode===429) return res.status(429).json({error:'too many activation requests; try again later'});
   if(activationFailed) return res.status(503).json({error:'email activation temporarily unavailable'});
-  return res.status(202).json({
+  res.status(202).json({
     ok:true,pending:true,
     message:'If a pending activation exists, a new verification email will arrive shortly.',
   });
+  deliverCommittedOutboxEvents(req,resent?.outboxEvents);
+  return;
 }
 
 async function handleActivationVerify(req,res){
@@ -553,18 +561,23 @@ async function handlePasswordResetRequest(req,res){
   }
   const responseStartedAt=Date.now();
   let failure=null;
+  let requested=null;
   try{
     const db=getClient();
     await ensureAuthReadiness(db);
     await ensurePasswordResetReadiness(db);
     await enforceAuthRateLimit(db,req,'password-reset-request',email);
-    await requestPasswordReset(db,{email});
+    requested=await requestPasswordReset(db,{email});
   }catch(error){ failure=error; }
   await completeActivationResponseFloor(responseStartedAt);
   if(failure?.statusCode===429) return res.status(429).json({error:'too many reset requests; try again later'});
   if(failure) return res.status(503).json({error:'password reset temporarily unavailable'});
-  return res.status(202).json({ok:true,pending:true,
+  res.status(202).json({ok:true,pending:true,
     message:'If that account can use password recovery, a reset email will arrive shortly.'});
+  // Scheduled strictly after the floored response is written, so whether an
+  // account exists cannot be observed through response body or timing.
+  deliverCommittedOutboxEvents(req,requested?.outboxEvents);
+  return;
 }
 
 async function handlePasswordResetConsume(req,res){
@@ -1047,8 +1060,11 @@ async function handleGoogleCallback(req,res){
   try{
     identity=await exchangeGoogleAuthorizationCode({
       clientId,clientSecret,redirectUri,code:String(code),codeVerifier:verifier,nonce,
-      maxAuthAgeSeconds:purpose.startsWith('reauth:')||purpose.startsWith('link:')
-        ?GOOGLE_REAUTH_MAX_AGE_SECONDS:null,
+      // Only Google step-up reauthentication needs a fresh signed auth_time.
+      // Google does not reliably force re-entry for max_age=0 on an already
+      // signed-in device, so linking instead relies on Randori recent auth plus
+      // this just-issued PKCE/nonce-bound code (see ID-63).
+      maxAuthAgeSeconds:purpose.startsWith('reauth:')?GOOGLE_REAUTH_MAX_AGE_SECONDS:null,
     });
   }catch(providerError){
     res.writeHead(302,{Location:redirectError(publicGoogleErrorCode(providerError))}); return res.end();
@@ -1076,7 +1092,6 @@ async function handleGoogleCallback(req,res){
       await requireRecentAuth(db,current);
       const result=await linkGoogleCredential(db,current,{
         issuer:googleIssuer,subject:googleSub,providerEmail:email,
-        providerAuthenticatedAt:identity.authTime,
       });
       if(!['linked','already_linked'].includes(result.status)){
         res.writeHead(302,{Location:oauthResultLocation(appUrl,returnPath,'identity_link_error',result.status)});

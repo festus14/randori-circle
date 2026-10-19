@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { parseCanonicalRoomPath } from './_pairing.js';
 import { normalizeMessageTimestamp, projectMessage } from './_messages.js';
 import { normalizeScheduleInstant } from './_schedule.js';
@@ -230,7 +232,17 @@ export function projectRecapRun(row,verifyAttestation){
   catch{ return null; }
   const questionVersion=positiveSafeInteger(snapshot?.version);
   const snapshotTotal=nonNegativeSafeInteger(snapshot?.total_count);
-  if(snapshot?.source!=='original-catalog'||snapshot?.attestation_version!==2||!questionVersion
+  const attestationVersion=Number(snapshot?.attestation_version);
+  const v2=attestationVersion===2;
+  const v3=attestationVersion===3
+    &&positiveSafeInteger(row.week_id)===positiveSafeInteger(snapshot.week_id)
+    &&positiveSafeInteger(row.pair_group_id)===positiveSafeInteger(snapshot.pair_group_id)
+    &&typeof row.code==='string'&&byteLength(row.code)<=20*1024
+    &&createHash('sha256').update(row.code,'utf8').digest('hex')===snapshot.code_hash
+    &&positiveSafeInteger(snapshot.document_revision)
+    &&/^[a-f0-9]{64}$/.test(String(snapshot.document_state_hash||''))
+    &&/^[a-f0-9]{64}$/.test(String(snapshot.document_version||''));
+  if(snapshot?.source!=='original-catalog'||(!v2&&!v3)||!questionVersion
     ||snapshotTotal===null||typeof verifyAttestation!=='function'){
     return null;
   }
@@ -260,7 +272,12 @@ export function projectRecapRun(row,verifyAttestation){
     passedCount,
     totalCount,
     resultsJson:row.results_json,
-  });
+    ...(v3?{
+      weekId:row.week_id,pairGroupId:row.pair_group_id,codeHash:snapshot.code_hash,
+      documentRevision:snapshot.document_revision,documentStateHash:snapshot.document_state_hash,
+      documentVersion:snapshot.document_version,
+    }:{}),
+  },attestationVersion);
   if(!authoritative) return null;
   return {
     kind:'run',
