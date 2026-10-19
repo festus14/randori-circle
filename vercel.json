@@ -104,6 +104,14 @@
       "destination": "/api/invitations?endpoint=prepare"
     },
     {
+      "source": "/api/invite-requests",
+      "destination": "/api/invitations?endpoint=invite-requests"
+    },
+    {
+      "source": "/api/invite-requests/decision",
+      "destination": "/api/invitations?endpoint=invite-request-decision"
+    },
+    {
       "source": "/api/invitations/:id",
       "destination": "/api/invitations?endpoint=invitations&id=:id"
     },

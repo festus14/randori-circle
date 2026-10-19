@@ -6,6 +6,8 @@ const aggregateLogs=[];
 let failingCircleId=10;
 let retentionFailure=false;
 const retentionStatements=[];
+const inviteRetentionStatements=[];
+let inviteRetentionError=null;
 
 const cycle=Object.freeze({
   cycleId:'2026-W39',
@@ -20,6 +22,10 @@ const db={
     const sql=typeof statement==='string'?statement:String(statement?.sql||'');
     if(sql.includes('FROM pair_code_documents WHERE updated_at <')) retentionStatements.push(statement);
     if(retentionFailure&&sql.includes('FROM pair_code_documents')) throw new Error('retention storage unavailable');
+    if(/^\s*(?:UPDATE|DELETE FROM) invite_requests/.test(sql)){
+      inviteRetentionStatements.push(statement);
+      if(inviteRetentionError) throw inviteRetentionError;
+    }
     if(sql.includes("strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc")){
       return {rows:[{now_utc:'2026-09-20T08:15:00.000Z'}],rowsAffected:0};
     }
@@ -132,6 +138,31 @@ test('weekly cron runs one bounded retention batch before publication',async()=>
   assert.equal(retentionStatements.length,1);
   assert.match(retentionStatements[0].sql,/LIMIT \?/);
   assert.deepEqual(retentionStatements[0].args,[101]);
+});
+
+test('weekly cron runs bounded invite-request retention on database time',async()=>{
+  inviteRetentionStatements.length=0;
+  await invoke();
+  assert.equal(inviteRetentionStatements.length,2);
+  const expectedNow=Math.floor(Date.parse('2026-09-20T08:15:00.000Z')/1000);
+  assert.match(inviteRetentionStatements[0].sql,/^\s*UPDATE invite_requests SET status='expired'/);
+  assert.deepEqual(inviteRetentionStatements[0].args,[expectedNow,expectedNow,200]);
+  assert.match(inviteRetentionStatements[1].sql,/^\s*DELETE FROM invite_requests/);
+  assert.deepEqual(inviteRetentionStatements[1].args,[expectedNow-30*24*60*60,200]);
+});
+
+test('invite-request retention failures never block publication and pre-v21 schema is silent',async()=>{
+  for(const [error,logged] of [[new Error('disk I/O error'),true],[new Error('no such table: invite_requests'),false]]){
+    inviteRetentionError=error; publishedScopes.length=0; aggregateLogs.length=0;
+    const previousFailingCircleId=failingCircleId;
+    failingCircleId=null;
+    try{
+      const response=await invoke();
+      assert.equal(response.status,200,error.message);
+      assert.equal(aggregateLogs.some(log=>log.event==='invite_request_retention_failed'),logged,error.message);
+      assert.deepEqual(publishedScopes,[10,20,30],'publication still runs every scope');
+    }finally{ inviteRetentionError=null; failingCircleId=previousFailingCircleId; }
+  }
 });
 
 test('secondary weekly cron continues after an isolated first or middle scope failure',async()=>{

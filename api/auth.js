@@ -58,6 +58,7 @@ import {
   requestPasswordReset,
 } from './_password-reset.js';
 import { readRecentAuth, recordRecentAuth, requireRecentAuth } from './_recent-auth.js';
+import { ensureInviteRequestReadiness, inviteRequestsEnabled } from './_invite-request-config.js';
 import { deliverCommittedOutboxEvents } from './_outbox-immediate.js';
 import {
   GOOGLE_ISSUER,
@@ -293,15 +294,19 @@ async function handleCapabilities(req,res){
   const activationConfigured=!localIdentity&&Boolean(emailActivationConfiguration());
   const resetConfigured=Boolean(passwordResetConfiguration());
   const identityConfigured=identityManagementEnabled(req);
-  let verifiedEmailActivation=false,passwordReset=false,identityManagement=false;
-  if(activationConfigured||resetConfigured||identityConfigured){
+  const inviteRequestsConfigured=inviteRequestsEnabled();
+  let verifiedEmailActivation=false,passwordReset=false,identityManagement=false,inviteRequests=false;
+  if(activationConfigured||resetConfigured||identityConfigured||inviteRequestsConfigured){
     let db;
     try{
       db=getClient();
-      [verifiedEmailActivation,passwordReset,identityManagement]=await Promise.all([
+      [verifiedEmailActivation,passwordReset,identityManagement,inviteRequests]=await Promise.all([
         activationConfigured?ensureEmailActivationReadiness(db).then(()=>true,()=>false):false,
         resetConfigured?ensurePasswordResetReadiness(db).then(()=>true,()=>false):false,
         identityConfigured?ensureIdentityLinkingReadiness(db).then(()=>true,()=>false):false,
+        // Advertised only when the flag is on and migration v21 is installed,
+        // so the landing form never appears for an endpoint that would fail.
+        inviteRequestsConfigured?ensureInviteRequestReadiness(db).then(()=>true,()=>false):false,
       ]);
     }catch{}
   }
@@ -319,6 +324,7 @@ async function handleCapabilities(req,res){
       googleOAuth,
       recentAuthMaxAgeSeconds:10*60,
       identityManagement,
+      ...(inviteRequests?{inviteRequests:true}:{}),
       ...(circleMembershipEnabled()&&process.env.MULTI_CIRCLE_CONTROL_PLANE_ENABLED==='true'
         ?{multiCircleControlPlane:true}:{}),
       ...(multiCircleAvailabilityEnabled()?{multiCircleAvailability:true}:{}),

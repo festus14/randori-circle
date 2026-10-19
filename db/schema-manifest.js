@@ -242,6 +242,19 @@ const PLAN_20_OPERATIONS=Object.freeze([
   trigger('trg_pairing_participants_code_workspace_delete_invalidate','pairing_participants',`CREATE TRIGGER IF NOT EXISTS trg_pairing_participants_code_workspace_delete_invalidate BEFORE DELETE ON pairing_participants FOR EACH ROW BEGIN DELETE FROM pair_room_snapshots WHERE week_id=OLD.week_id AND pair_group_id IN (SELECT id FROM pairing_groups WHERE week_id=OLD.week_id AND OLD.user_id IN (user_a_id,user_b_id)); END`),
 ]);
 
+// Public invite requests: one bounded row per requester and primary circle.
+// Pending rows carry the minimum contact data the owner needs to decide; a
+// decision or expiry scrubs name, email, and note in the same statement, and
+// decided rows are purged by the bounded weekly retention sweep.
+const PLAN_21_OPERATIONS=Object.freeze([
+  table('invite_requests',`CREATE TABLE IF NOT EXISTS invite_requests (id TEXT PRIMARY KEY NOT NULL CHECK(length(id)=36), circle_id INTEGER NOT NULL CHECK(typeof(circle_id)='integer' AND circle_id>0), email_hash TEXT NOT NULL CHECK(length(email_hash)=64 AND email_hash NOT GLOB '*[^0-9a-f]*'), email TEXT CHECK(email IS NULL OR (length(email)>=3 AND length(email)<=254 AND email=lower(trim(email)))), name TEXT CHECK(name IS NULL OR (length(name)>=2 AND length(name)<=60 AND name=trim(name))), note TEXT CHECK(note IS NULL OR (length(note)>=1 AND length(note)<=280)), status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','declined','expired')), created_at INTEGER NOT NULL CHECK(typeof(created_at)='integer' AND created_at>0), expires_at INTEGER NOT NULL CHECK(typeof(expires_at)='integer' AND expires_at>created_at), decided_at INTEGER CHECK(decided_at IS NULL OR (typeof(decided_at)='integer' AND decided_at>=created_at)), decided_by INTEGER CHECK(decided_by IS NULL OR (typeof(decided_by)='integer' AND decided_by>0)), invitation_id TEXT CHECK(invitation_id IS NULL OR length(invitation_id)=36), CHECK((status='pending' AND email IS NOT NULL AND name IS NOT NULL AND decided_at IS NULL AND decided_by IS NULL AND invitation_id IS NULL) OR (status='approved' AND email IS NULL AND name IS NULL AND note IS NULL AND decided_at IS NOT NULL AND decided_by IS NOT NULL AND invitation_id IS NOT NULL) OR (status='declined' AND email IS NULL AND name IS NULL AND note IS NULL AND decided_at IS NOT NULL AND decided_by IS NOT NULL AND invitation_id IS NULL) OR (status='expired' AND email IS NULL AND name IS NULL AND note IS NULL AND decided_at IS NOT NULL AND decided_by IS NULL AND invitation_id IS NULL)), FOREIGN KEY(circle_id) REFERENCES circles(id) ON DELETE CASCADE)`),
+  index('uq_invite_requests_pending_email','invite_requests',['circle_id','email_hash'],{unique:true,where:"status='pending'"}),
+  index('idx_invite_requests_circle_status','invite_requests',['circle_id','status','created_at DESC','id DESC']),
+  index('idx_invite_requests_email','invite_requests',['circle_id','email_hash','status','decided_at']),
+  index('idx_invite_requests_pending_expiry','invite_requests',['status','expires_at','id']),
+  index('idx_invite_requests_decided','invite_requests',['decided_at','id'],{where:'decided_at IS NOT NULL'}),
+]);
+
 export const SCHEMA_OPERATION_SETS=Object.freeze([
   Object.freeze({
     version:1,
@@ -326,6 +339,10 @@ export const SCHEMA_OPERATION_SETS=Object.freeze([
     version:20,
     operations:PLAN_20_OPERATIONS,
   }),
+  Object.freeze({
+    version:21,
+    operations:PLAN_21_OPERATIONS,
+  }),
 ]);
 
 export function resolveCurrentArtifacts(operationSets,operation){
@@ -355,7 +372,7 @@ export const SCHEMA_MANIFEST_CHECKSUM=checksum({
 
 // Updating the schema is intentional only when this pinned checksum is updated
 // in the same reviewed change.
-export const PINNED_SCHEMA_MANIFEST_CHECKSUM='85887040fb27d1409c7fc2c56f0140b46e8c8a1ce6395dca6cb1484e2e987ff4';
+export const PINNED_SCHEMA_MANIFEST_CHECKSUM='71e2a694f50309e4caa19948534f6de2dda5e0dd885bbad7ef6fe5c6a9606489';
 
 if(SCHEMA_MANIFEST_CHECKSUM!==PINNED_SCHEMA_MANIFEST_CHECKSUM){
   throw new Error(`Schema manifest checksum changed: ${SCHEMA_MANIFEST_CHECKSUM}`);

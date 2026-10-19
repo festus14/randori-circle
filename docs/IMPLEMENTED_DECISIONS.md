@@ -2711,3 +2711,54 @@ editing at the maintenance boundary, and rolls forward. A pre-v20 binary is
 not compatible with the v20 ledger and must not accept projection-only edits.
 Full details are in
 [`CONFLICT_FREE_CODE_DOCUMENTS.md`](CONFLICT_FREE_CODE_DOCUMENTS.md).
+
+## ID-66: Accept public invite requests without enumeration
+
+Status: candidate migration-backed increment (WP-L2); flag default-off.
+
+**Context.** The landing page needs a "Request an invite" form (UI redesign
+spec §7.2–§7.3). A public write endpoint that touches identity data must not
+reveal whether an email is a member, invited, or already waiting, must not let
+the form relay arbitrary text through the circle's sending domain, and must
+not add a second invitation path.
+
+**Decision.** Migration 21 adds `invite_requests` (UUID id, primary circle,
+email HMAC, plaintext normalized email, name ≤60, note ≤280, status
+`pending|approved|declined|expired`, epoch timestamps). A table CHECK forces
+every non-pending row to have email, name, and note scrubbed; a partial unique
+index allows one pending row per email. `POST /api/invite-requests` requires a
+same-origin `Origin`, validates bounded fields, short-circuits a filled
+`website` honeypot, consumes `auth_rate_limits` per IP (5/h), per email hash
+(3/h), and globally (50/day), and then stores a request only when the email is
+not an active member, has no live invitation, is not already pending, and was
+not declined in the last 30 days. Every accepted outcome returns the same 202
+body after the 350 ms floor shared with password reset; owner digest delivery
+is scheduled only afterwards through the ID-64 `waitUntil` path. Primary-circle
+owners list pending requests and approve or decline with a compare-and-swap on
+`pending`; approval calls the extracted `insertOwnerInvitation`, the same
+writer as owner "invite by email", in the same transaction as the request
+update and audit row, and queues the existing invitation email. Repeating the
+same decision replays idempotently. The digest event
+`inviterequest.email.requested` v1 (one per owner per hour) carries only ids
+and renders only the pending count and a dashboard link; it honours
+`email_enabled=0`. The weekly cron runs a bounded (≤200/statement) expiry and
+30-day purge that never blocks publication. `INVITE_REQUESTS_ENABLED`
+(with circle membership) gates all endpoints and the `inviteRequests`
+capability, which is also hidden until the v21 readiness probe passes.
+
+**Alternatives.** Encrypting the pending email would need a fifth
+credential-key purpose and a `credential_key_controls` schema change for data
+that already lives in plaintext in accounts and activations; scrubbing on
+decision and 30-day expiry bound the exposure instead. Including the
+requester's name and note in the owner email (allowed by the spec) would let
+anyone send chosen text to the owner from the circle's domain; the count-only
+digest avoids that. A distinct 409/200 for duplicates or members would make
+the form an enumeration oracle. Running retention on request paths would put
+deletes behind public traffic. A separate Vercel function would add to the
+function count; the endpoints are routed through `api/invitations.js`.
+
+**Rollout and recovery.** Merge with the flag off; apply additive v21 through
+the protected migration workflow; enable the flag; canary submit → digest →
+approve → accept. Recovery is disabling the flag (endpoints 404, capability
+hidden); rows continue to expire and purge weekly. Full contract in
+[`INVITE_REQUESTS.md`](INVITE_REQUESTS.md).

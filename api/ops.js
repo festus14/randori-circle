@@ -18,6 +18,8 @@ import {
   SECONDARY_PAIRING_CACHE_CONTROL,
 } from './_circle-pairing.js';
 import { purgeExpiredCodeDocuments } from './_code-document.js';
+import { inviteRequestSchemaNotInstalled, purgeInviteRequests } from './_invite-request-config.js';
+import { INVITE_REQUEST_EVENT_TYPE } from './_invite-request-notification.js';
 import {
   migrateLegacyPairingEmails,
   PAIRING_EMAIL_EVENT_TYPE,
@@ -393,6 +395,7 @@ function unavailableDeliverySummary(type,status){
   if(type===SCHEDULE_EMAIL_EVENT_TYPE) return 'schedule email delivery unavailable';
   if(type===INVITATION_EMAIL_EVENT_TYPE) return 'invitation email delivery unavailable';
   if(type===PASSWORD_RESET_EVENT_TYPE) return 'password reset email delivery unavailable';
+  if(type===INVITE_REQUEST_EVENT_TYPE) return 'invite request notification delivery unavailable';
   return 'activation email delivery unavailable';
 }
 
@@ -873,6 +876,19 @@ async function handleWeekly(req,res,{isDue=pairingCronIsDue}={}){
     if(!codeDocumentSchemaNotInstalled(error)){
       try{ await logServerOps('error','code_document_retention_failed','code document retention failed',{},req); }catch{}
       return res.status(503).json({error:'code document retention unavailable'});
+    }
+  }
+  // Invite-request retention (30 days) shares the guaranteed weekly sweep. It
+  // is bounded per run and, unlike CRDT state, never blocks pairing
+  // publication: a failure is logged as an ops error and retried next week.
+  try{
+    const retention=await purgeInviteRequests(db,{nowSeconds:Math.floor(now.getTime()/1000)});
+    if(retention.expired||retention.purged){
+      try{ await logServerOps('info','invite_request_retention','invite request retention completed',retention,null); }catch{}
+    }
+  }catch(error){
+    if(!inviteRequestSchemaNotInstalled(error)){
+      try{ await logServerOps('error','invite_request_retention_failed','invite request retention failed',{},req); }catch{}
     }
   }
   const localRuntime=strictLocalPairingRuntime(req);
