@@ -1008,7 +1008,8 @@ test('existing members recover from a wrong password and can sign out after logi
   releaseDelayedRefresh?.();
   await staleRefresh;
   await expect(page.locator('#authBtn')).toBeVisible();
-  expect(await page.evaluate(()=>(window as any)._randori_auth.me)).toBeNull();
+  // Sign out reloads the page shortly after; read the identity once it settles.
+  await expect.poll(()=>page.evaluate(()=>(window as any)._randori_auth?.me??null).catch(()=>'navigating')).toBeNull();
 });
 
 test('an authenticated member can sign out every session from the account menu',async({page})=>{
