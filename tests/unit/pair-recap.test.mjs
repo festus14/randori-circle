@@ -111,7 +111,7 @@ async function readyDatabase(){
     )`,
     `CREATE TABLE session_runs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,week_id INTEGER,pair_group_id INTEGER,
-      question_slug TEXT,language TEXT,test_cases_snapshot TEXT,results_json TEXT,
+      question_slug TEXT,language TEXT,code TEXT,test_cases_snapshot TEXT,results_json TEXT,
       passed_count INTEGER,total_count INTEGER,duration_ms INTEGER,created_at TEXT
     )`,
     `CREATE TABLE pair_room_snapshots (
@@ -236,6 +236,23 @@ test('pair recap projection validates pair, schedule, run, and workspace storage
   },()=>true),null,'an invalid attestation envelope is omitted rather than trusted');
   assert.equal(projectRecapRun({test_cases_snapshot:null},()=>true),null,
     'legacy runs without an attestation envelope are omitted before unrelated fields are parsed');
+  const code='function solve(){ return 1; }'; let verification=null;
+  const v3=projectRecapRun({
+    id:2,user_id:2,week_id:10,pair_group_id:20,runner_display_name:'Member',
+    question_slug:'balanced-template-markers',language:'javascript',code,
+    passed_count:1,total_count:1,duration_ms:8,created_at:'2026-09-18 06:07:08',results_json:'[]',
+    test_cases_snapshot:JSON.stringify({source:'original-catalog',version:1,total_count:1,
+      attestation_version:3,attestation_key_id:'0'.repeat(16),attestation:'1'.repeat(64),
+      week_id:10,pair_group_id:20,code_hash:createHash('sha256').update(code).digest('hex'),
+      document_revision:4,document_state_hash:'2'.repeat(64),document_version:'3'.repeat(64)}),
+  },(...args)=>{ verification=args; return true; });
+  assert.equal(v3.authoritative,true); assert.equal(verification[3],3);
+  assert.deepEqual(verification[2],{
+    userId:2,questionSlug:'balanced-template-markers',questionVersion:1,language:'javascript',
+    passedCount:1,totalCount:1,resultsJson:'[]',weekId:10,pairGroupId:20,
+    codeHash:createHash('sha256').update(code).digest('hex'),documentRevision:4,
+    documentStateHash:'2'.repeat(64),documentVersion:'3'.repeat(64),
+  });
 
   const tied=newestRecapActivity([
     {kind:'message',event_id:'message:9',created_at:'2026-09-18T06:00:00.000Z'},

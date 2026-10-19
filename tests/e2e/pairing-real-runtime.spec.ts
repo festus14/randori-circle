@@ -14,6 +14,7 @@ import {
   resolveLocalServerConfig,
   startLocalDevelopmentServer,
 } from '../../scripts/local-server.mjs';
+import {setCode} from './helpers';
 import {expectInviteGateLoaded,stageRealRuntimeClient} from './real-runtime-fixture';
 
 const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url));
@@ -842,29 +843,6 @@ test('two invited members complete the durable local session journey', async ({ 
     for (const page of pages.slice(0, 2)) {
       quiescedWorkspaces.push(await quiesceWorkspace(page, String(ownerRoom)));
     }
-    const workspacePath = `/api/video/signal?channel=workspace&room_id=${encodeURIComponent(String(ownerRoom))}&after_revision=0`;
-    const initialWorkspace = await browserJson(pages[0], workspacePath);
-    expect(initialWorkspace).toMatchObject({status: 200, body: {ok: true, revision: expect.any(Number)}});
-    const baselineRevision = Number((initialWorkspace.body as {revision?: number}).revision);
-    expect(Number.isSafeInteger(baselineRevision)).toBe(true);
-    expect(baselineRevision).toBeGreaterThanOrEqual(0);
-    expect(baselineRevision).toBe(Math.max(...quiescedWorkspaces.map(item => item.afterRevision)));
-    if (baselineRevision === 0) {
-      expect(initialWorkspace).toEqual({status: 200, body: {ok: true, snapshot: null, revision: 0}});
-    } else {
-      const baselineQuestion = quiescedWorkspaces.find(item => item.afterRevision === baselineRevision)!.question;
-      expect(initialWorkspace).toMatchObject({
-        body: {
-          snapshot: {
-            revision: baselineRevision,
-            schema_version: 3,
-            room_id: ownerRoom,
-            question_id: baselineQuestion.slug,
-            question_version: baselineQuestion.version,
-          },
-        },
-      });
-    }
     const correctCode = `function rollUpFocusBlocks(blocks) {
   const result = [];
   for (const block of blocks) {
@@ -874,6 +852,48 @@ test('two invited members complete the durable local session journey', async ({ 
   }
   return result;
 }`;
+    // Code is owned by the v20 document. Persist it through the editor before
+    // exercising the board v3 CAS path so every workspace response projects
+    // the acknowledged canonical code instead of trusting request payloads.
+    await expect.poll(()=>pages[0].evaluate(()=>{
+      const crdt=(window as typeof window & {
+        _randori_crdt?: {identity?:{room?:string}|null;status?:string};
+      })._randori_crdt;
+      return {room:crdt?.identity?.room||null,status:crdt?.status||null};
+    }),{timeout:12_000}).toEqual({room:ownerRoom,status:'synced'});
+    await setCode(pages[0], correctCode);
+    const canonicalVersion=await pages[0].evaluate(async()=>{
+      const crdt=(window as typeof window & {
+        _randori_crdt?: {flush?:()=>Promise<string|null>};
+      })._randori_crdt;
+      if(!crdt?.flush) throw new Error('code document flush unavailable');
+      return crdt.flush();
+    });
+    expect(canonicalVersion).toMatch(/^[a-f0-9]{64}$/);
+
+    const workspacePath = `/api/video/signal?channel=workspace&room_id=${encodeURIComponent(String(ownerRoom))}&after_revision=0`;
+    const initialWorkspace = await browserJson(pages[0], workspacePath);
+    expect(initialWorkspace).toMatchObject({status: 200, body: {ok: true, revision: expect.any(Number)}});
+    const baselineRevision = Number((initialWorkspace.body as {revision?: number}).revision);
+    expect(Number.isSafeInteger(baselineRevision)).toBe(true);
+    expect(baselineRevision).toBeGreaterThanOrEqual(0);
+    expect(baselineRevision).toBeGreaterThanOrEqual(Math.max(...quiescedWorkspaces.map(item => item.afterRevision)));
+    if (baselineRevision === 0) {
+      expect(initialWorkspace).toEqual({status: 200, body: {ok: true, snapshot: null, revision: 0}});
+    } else {
+      expect(initialWorkspace).toMatchObject({
+        body: {
+          snapshot: {
+            revision: baselineRevision,
+            schema_version: 3,
+            room_id: ownerRoom,
+            question_id: 'focus-block-rollup',
+            question_version: 1,
+            code: correctCode,
+          },
+        },
+      });
+    }
     const firstBoard = {
       shapes: [{id: 'session-plan', type: 'rect', x: 40, y: 50, w: 180, h: 90, color: '#c8f6a0'}],
     };
@@ -965,6 +985,7 @@ test('two invited members complete the durable local session journey', async ({ 
       await expect(page.locator('#editor')).toBeVisible();
       await expect(page.locator('#editor')).toHaveValue(correctCode);
       await expect(page.locator('#questionSelect')).toHaveValue('focus-block-rollup');
+      await expect(page.locator('#codeSyncStatus')).toHaveText('synced', {timeout: 12_000});
       await expect.poll(() => page.evaluate(() => JSON.parse(JSON.stringify((
         window as typeof window & {_randori_board?: {shapes?: unknown[]}}
       )._randori_board?.shapes || [])))).toEqual(finalBoard.shapes);
@@ -972,6 +993,7 @@ test('two invited members complete the durable local session journey', async ({ 
 
     const executeResponse = pages[0].waitForResponse(response =>
       response.url().endsWith('/api/execute') && response.request().method() === 'POST');
+    await expect(pages[0].locator('#runBtn')).toBeEnabled();
     await pages[0].locator('#runBtn').click();
     const executed = await executeResponse;
     const execution = await executed.json();

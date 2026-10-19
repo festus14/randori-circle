@@ -6,7 +6,8 @@
     "@vercel/sandbox": "^3.8.0",
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",
-    "resend": "^4.0.0"
+    "resend": "^4.0.0",
+    "yjs": "13.6.27"
   },
   "name": "randori-circle",
   "private": true,
@@ -32,6 +33,8 @@
     "check:runtime-ddl": "node scripts/check-runtime-ddl.mjs",
     "check:syntax": "node tests/static/check-syntax.mjs",
     "check:turso-sql": "node scripts/check-turso-remote-sql.mjs",
+    "check:crdt": "node scripts/check-crdt-bundle.mjs",
+    "build:crdt": "esbuild assets/crdt-editor-source.js --bundle --format=iife --platform=browser --target=es2020 --alias:monaco-editor/esm/vs/editor/editor.api.js=./assets/monaco-api-shim.js --outfile=assets/crdt-editor.js",
     "smoke:execution": "node --env-file-if-exists=.env.local scripts/execution-smoke.mjs",
     "validate:catalog": "node scripts/validate-catalog.mjs",
     "catalog:takedown": "node scripts/catalog-provenance.mjs takedown",
@@ -41,14 +44,17 @@
     "test:coverage": "node --experimental-test-module-mocks --experimental-test-coverage --test-coverage-include='api/*.js' --test-coverage-include='db/*.js' --test-coverage-include='scripts/*.mjs' --test-coverage-lines=52 --test-coverage-branches=52 --test-coverage-functions=52 --test tests/unit/*.test.mjs",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "test": "npm run check:deployability && npm run validate:catalog && npm run check:runtime-ddl && npm run check:syntax && npm run test:coverage && npm run test:e2e",
+    "test": "npm run check:deployability && npm run validate:catalog && npm run check:runtime-ddl && npm run check:syntax && npm run check:crdt && npm run test:coverage && npm run test:e2e",
     "start:test": "node tests/support/static-server.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",
     "@playwright/test": "^1.48.0",
     "acorn": "^8.15.0",
+    "esbuild": "0.25.9",
     "ms": "^2.1.3",
+    "y-monaco": "0.1.6",
+    "y-protocols": "1.0.6",
     "yaml": "2.9.1"
   }
 }
