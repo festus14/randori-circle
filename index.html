@@ -15,6 +15,7 @@
 <script src="/assets/invite-gate.js"></script>
 <script src="/assets/landing.js"></script>
 <script src="/assets/pairing-view.js"></script>
+<script src="/assets/catalogue-view.js"></script>
 <script src="/assets/home-dashboard.js"></script>
 <script>
 /* Consume invitation capabilities before any telemetry or third-party script can observe the URL. */
@@ -778,27 +779,100 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .room-panel:has(> .room-section:not([hidden])) .session-empty{display:none}
 .room-panel-empty{margin:0; padding:var(--space-2) var(--space-1)}
 
-/* Problem panel (catalogue browse moves to WP-K) */
+/* Problem panel (WP-K): browse, filter and the current problem statement */
 .q-pane{display:block; padding:0}
 .q-head{padding:var(--space-3) var(--space-4); border-bottom:1px solid var(--border); display:grid; gap:var(--space-3)}
-.q-pick{flex-wrap:nowrap; gap:var(--space-2)}
-.q-pick .select{flex:1 1 auto; min-width:0; width:auto}
-.catalog-filters{display:grid; grid-template-columns:1fr 1fr; gap:var(--space-2)}
-.catalog-filters label{display:grid; gap:var(--space-1)}
-.catalog-search,.catalog-wide{grid-column:1 / -1}
-.catalog-empty{padding:var(--space-2); border:1px dashed var(--border); border-radius:var(--radius-sm)}
-.q-body{padding:var(--space-4); display:grid; gap:var(--space-3); font-size:var(--text-sm); line-height:var(--leading-sm); color:var(--ink-2)}
+.catalog-browse-head{display:flex; align-items:baseline; justify-content:space-between; gap:var(--space-2); flex-wrap:wrap}
+.q-pick{display:grid; gap:var(--space-1)}
+.q-pick .select{min-width:0; width:100%}
+.catalog-filters{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:var(--space-2); align-items:end}
+.catalog-filters label{display:grid; gap:var(--space-1); min-width:0}
+.catalog-search,.catalog-filter-actions{grid-column:1 / -1}
+.catalog-filter-actions{display:flex; justify-content:flex-end}
+.catalog-filter-actions:has(> [hidden]:only-child){display:none}
+@media(max-width:520px){ .catalog-filters{grid-template-columns:repeat(2,minmax(0,1fr))} .catalog-filters label:last-of-type{grid-column:1 / -1} }
+.catalog-filters .select,.catalog-filters .input,.q-pick .select{min-width:0; max-width:100%; text-overflow:ellipsis}
+.catalog-disclosure{display:grid; gap:var(--space-2)}
+.catalog-summary{
+  display:flex; align-items:center; justify-content:space-between; gap:var(--space-2); min-height:var(--tap-min);
+  padding:var(--space-2) var(--space-3); border:1px solid var(--border); border-radius:var(--radius-sm);
+  background:var(--card); color:var(--ink); font-size:var(--text-sm); font-weight:var(--weight-emphasis); cursor:pointer; list-style:none;
+}
+.catalog-summary::-webkit-details-marker{display:none}
+.catalog-summary:focus-visible{outline:3px solid var(--color-focus); outline-offset:2px}
+.catalog-summary .rc-icon{width:16px; height:16px; transition:transform var(--dur-2) var(--ease-out)}
+.catalog-disclosure[open] > .catalog-summary .rc-icon{transform:rotate(180deg)}
+.catalog-disclosure[open] > .catalog-summary{margin-bottom:var(--space-2)}
+.catalog-list{
+  list-style:none; margin:0; padding:var(--space-1); display:grid; gap:var(--space-2);
+  max-height:min(46vh,420px); overflow:auto; overscroll-behavior:contain;
+  border:1px solid var(--border); border-radius:var(--radius-md); background:var(--bg-2);
+}
+.catalog-item{min-width:0}
+.catalog-card{
+  display:grid; gap:var(--space-1); width:100%; min-height:var(--tap-min); text-align:left;
+  padding:var(--space-3); border:1px solid var(--border); border-radius:var(--radius-sm);
+  background:var(--card); color:var(--ink); font:inherit; cursor:pointer;
+  transition:border-color var(--dur-1) var(--ease-out), background-color var(--dur-1) var(--ease-out);
+}
+@media(hover:hover){ .catalog-card:hover{border-color:var(--color-control-border); background:var(--color-surface-raised)} }
+.catalog-card:focus-visible{outline:3px solid var(--color-focus); outline-offset:2px}
+.catalog-card[aria-current="true"]{border-color:var(--color-action); background:var(--color-action-subtle)}
+.catalog-card-head{display:flex; align-items:flex-start; justify-content:space-between; gap:var(--space-2)}
+.catalog-card-title{font-size:var(--text-sm); line-height:var(--leading-sm); font-weight:var(--weight-heading); overflow-wrap:anywhere}
+.catalog-card-summary{font-size:var(--text-sm); line-height:var(--leading-sm); color:var(--ink-2)}
+.catalog-card-meta{display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-1)}
+.catalog-card-current{font-size:var(--text-xs); line-height:var(--leading-xs); font-weight:var(--weight-emphasis); color:var(--color-action)}
+.catalog-difficulty{flex:0 0 auto}
+.catalog-chip{
+  display:inline-flex; align-items:center; padding:0 var(--space-2); border-radius:var(--radius-full);
+  border:1px solid var(--border); background:var(--bg-3); color:var(--ink-2);
+  font-size:var(--text-xs); line-height:var(--leading-xs); font-weight:var(--weight-emphasis);
+}
+.catalog-chip--pattern{color:var(--ink)}
+.catalog-item--skeleton{display:grid; gap:var(--space-2); padding:var(--space-3); border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--card)}
+.catalog-skeleton-title{display:block; height:14px; width:55%; border-radius:var(--radius-xs)}
+.catalog-skeleton-line{display:block; height:12px; width:90%; border-radius:var(--radius-xs)}
+.catalog-state-title{margin:0; font-size:var(--text-sm); line-height:var(--leading-sm); font-weight:var(--weight-heading); color:var(--ink)}
+.catalog-empty{padding:var(--space-5) var(--space-4); border:1px dashed var(--border); border-radius:var(--radius-md)}
+.catalog-empty > .catalog-state-title{color:var(--ink)}
+.catalog-empty p{margin:0}
+.catalog-error{flex-wrap:wrap; align-items:center; justify-content:space-between}
+.catalog-error p{margin:0}
+.q-body{padding:var(--space-4); display:grid; gap:var(--space-4); font-size:var(--text-sm); line-height:var(--leading-sm); color:var(--ink-2); max-width:var(--reading-max)}
+.q-eyebrow{margin:0 0 calc(-1 * var(--space-3)); font-size:var(--text-xs); line-height:var(--leading-xs); font-weight:var(--weight-emphasis); color:var(--ink-3)}
 .q-body h3{font-size:var(--text-lg); line-height:var(--leading-lg); color:var(--ink); margin:0}
-.q-examples{display:grid; gap:var(--space-2)}
+.q-badges{display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-2); margin-top:calc(-1 * var(--space-2))}
+.catalog-version{font-size:var(--text-xs); line-height:var(--leading-xs); color:var(--ink-3)}
+.q-prose{display:grid; gap:var(--space-3); font-size:var(--text-md); line-height:var(--leading-md); color:var(--ink-2)}
+.q-prose p{margin:0}
+.q-tags{margin:0; display:flex; flex-wrap:wrap; gap:var(--space-1)}
+.q-section-title{margin:0 0 var(--space-2); font-size:var(--text-sm); line-height:var(--leading-sm); color:var(--ink)}
+.q-examples{display:grid; gap:var(--space-3)}
+.q-examples > .q-section-title{margin-bottom:0}
+.q-example{margin:0; display:grid; gap:var(--space-2); padding:var(--space-3); border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--bg-3)}
+.q-example-label{font-size:var(--text-xs); line-height:var(--leading-xs); font-weight:var(--weight-emphasis); color:var(--ink-2)}
+.q-example-io{margin:0; display:grid; grid-template-columns:auto minmax(0,1fr); gap:var(--space-1) var(--space-3); align-items:baseline}
+.q-example-io dt{font-size:var(--text-xs); line-height:var(--leading-xs); font-weight:var(--weight-emphasis); color:var(--ink-3)}
+.q-example-io dd{margin:0; min-width:0}
+.q-example-io pre{margin:0; font-family:var(--font-mono); font-size:var(--text-xs); line-height:1.6; color:var(--ink); white-space:pre-wrap; overflow-wrap:anywhere}
+.q-example-note{margin:0; color:var(--ink-2)}
+.q-constraints-list{margin:0; padding-left:var(--space-5); display:grid; gap:var(--space-1); font-family:var(--font-mono); font-size:var(--text-xs); line-height:1.6; color:var(--ink-2)}
+.q-run{padding:var(--space-3); border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--bg-2)}
+.q-run .q-section-title{margin:0}
+.q-start-coding{justify-self:start}
+.q-start-coding .rc-icon{width:16px; height:16px}
+@media(min-width:1100px){ .q-start-coding{display:none} }
 .q-source{display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-1) var(--space-2); padding-top:var(--space-3); border-top:1px solid var(--border)}
 .q-source-note{flex-basis:100%}
+.q-source-note:empty{display:none}
 .tests{display:grid; gap:var(--space-2)}
 .test{border:1px solid var(--border); border-radius:var(--radius-sm); padding:var(--space-2) var(--space-3); background:var(--bg-3); font-size:var(--text-sm)}
 .test pre,.run-out pre{font-size:var(--text-xs)}
 
 /* Results panel: one summary, then compact case rows */
 .run-out{display:grid; gap:var(--space-1); font-variant-numeric:tabular-nums}
-.run-out:empty::before{content:"Run your code to see server-verified results here."; color:var(--ink-3); font-size:var(--text-sm)}
+.run-out:empty::before{content:"Press Run to check your code on the server. Results appear here."; color:var(--ink-3); font-size:var(--text-sm)}
 .run-out .test{border-left-width:3px}
 .run-summary{padding:var(--space-3); margin-bottom:var(--space-1)}
 .run-summary[data-status="pass"]{border-color:var(--ok); background:var(--ok-surface)}
@@ -1658,6 +1732,7 @@ a.btn{text-decoration:none}
 })();
 </script>
 
+<link rel="stylesheet" href="/assets/circle-history.css"/>
 </head>
 <body>
 <a class="skip-link" href="#appMain">Skip to main content</a>
@@ -1942,79 +2017,101 @@ a.btn{text-decoration:none}
       </div>
     </section>
     <!-- CIRCLE -->
-    <section id="view-circle" class="view" tabindex="0" aria-labelledby="tab-circle">
-      <div class="grid-2">
-        <div class="card">
-          <div class="card-h"><h2>Circle members</h2><span id="circleRoleLabel">private</span></div>
-          <div class="card-b" style="display:grid; gap:10px">
-            <div class="row" id="legacyCircleAddActions" style="display:none" aria-hidden="true">
-              <input id="personName" class="input" placeholder="Teammate name (testing only)" maxlength="32" />
-              <button id="addPerson" class="btn">Add</button>
-            </div>
-            <div id="circleContextPanel" data-state="hidden" hidden style="display:none;gap:5px">
-              <label class="small muted" for="circleContextSelect">Active circle</label>
-              <select id="circleContextSelect" data-testid="circle-context-select" class="select" aria-describedby="circleContextStatus"></select>
-              <div id="circleContextStatus" class="small muted" role="status" aria-live="polite"></div>
-              <button id="circleContextRetry" class="pill" type="button" hidden>Retry circle selection</button>
-              <form id="circleCreateForm" data-testid="circle-create-form" aria-describedby="circleCreateHelp circleCreateStatus" novalidate>
-                <label class="small muted" for="circleCreateName">Create another private circle
-                  <input id="circleCreateName" data-testid="circle-create-name" class="input" name="circle-name" autocomplete="off" maxlength="80" required placeholder="e.g. Saturday practice" />
+    <section id="view-circle" class="view circle-view" tabindex="0" aria-labelledby="tab-circle">
+      <header class="circle-header">
+        <div class="circle-header-text">
+          <h2 id="circleTitle" class="circle-title">Your circle</h2>
+          <p id="circleAutoNote" class="small muted">Loading your private circle…</p>
+        </div>
+        <span id="circleRoleLabel" class="rc-badge circle-role-badge">private</span>
+      </header>
+      <section id="circleContextPanel" data-state="hidden" hidden class="card circle-card circle-context-card" aria-labelledby="circleContextTitle" style="display:none">
+        <div class="card-h"><h3 id="circleContextTitle" class="circle-card-title">Your circles</h3></div>
+        <div class="card-b circle-card-body">
+          <label class="small muted circle-field" for="circleContextSelect">Active circle
+            <select id="circleContextSelect" data-testid="circle-context-select" class="select" aria-describedby="circleContextStatus"></select>
+          </label>
+          <div id="circleContextStatus" class="small muted" role="status" aria-live="polite"></div>
+          <button id="circleContextRetry" class="btn secondary sm" type="button" hidden>Retry circle selection</button>
+          <form id="circleCreateForm" data-testid="circle-create-form" class="circle-create-form" aria-describedby="circleCreateHelp circleCreateStatus" novalidate>
+            <label class="small muted circle-field" for="circleCreateName">Create another private circle
+              <input id="circleCreateName" data-testid="circle-create-name" class="input" name="circle-name" autocomplete="off" maxlength="80" required placeholder="e.g. Saturday practice" />
+            </label>
+            <button id="circleCreateSubmit" data-testid="circle-create-submit" class="btn secondary" type="submit">Create &amp; select</button>
+          </form>
+          <div id="circleCreateHelp" class="small muted">Up to 10 active circles you own. New circles start with only you and no workspace history.</div>
+          <div id="circleCreateStatus" data-testid="circle-create-status" class="small muted" role="status" aria-live="polite"></div>
+        </div>
+      </section>
+      <div class="circle-layout">
+        <section id="circleMembersCard" class="card circle-card circle-members-card" aria-labelledby="circleMembersTitle">
+          <div class="card-h"><h3 id="circleMembersTitle" class="circle-card-title">Members</h3><span id="circleMembersMeta" class="circle-card-meta"></span></div>
+          <div class="card-b circle-card-body">
+            <div id="peopleList" data-testid="circle-members" class="people circle-roster" aria-live="polite" aria-busy="true"></div>
+            <section id="circleLifecyclePanel" data-testid="circle-lifecycle" class="circle-lifecycle" hidden aria-labelledby="circleLifecycleTitle" style="display:none">
+              <form id="circleMemberSearchForm" data-testid="circle-member-search-form" role="search" class="circle-search" hidden>
+                <label class="small muted circle-field" for="circleMemberSearch">Search members by name
+                  <input id="circleMemberSearch" data-testid="circle-member-search" class="input" type="search" maxlength="80" autocomplete="off" placeholder="e.g. Ada" />
                 </label>
-                <button id="circleCreateSubmit" data-testid="circle-create-submit" class="btn secondary" type="submit">Create &amp; select</button>
+                <button id="circleMemberSearchSubmit" class="btn secondary" type="submit">Search</button>
+                <button id="circleMemberSearchClear" class="btn ghost" type="button" hidden>Clear</button>
               </form>
-              <div id="circleCreateHelp" class="small muted">Up to 10 active circles you own. New circles start with only you and no workspace history.</div>
-              <div id="circleCreateStatus" data-testid="circle-create-status" class="small muted" role="status" aria-live="polite"></div>
-            </div>
-            <div id="circleAutoNote" class="small muted">Loading your private circle…</div>
-            <div id="peopleList" data-testid="circle-members" class="people" aria-live="polite" aria-busy="true"></div>
-            <div id="circleOwnerPanel" hidden style="display:none;gap:10px;border-top:1px solid var(--border);padding-top:12px">
-              <div><b style="font-size:13px">Invite a member</b><div class="small muted" style="margin-top:3px">Invitations are email-bound, single-use, and expire after seven days.</div></div>
-              <form id="circleInviteForm" class="row" style="align-items:flex-end">
-                <label class="small muted" style="display:grid;gap:5px;flex:1">Invited member email
-                  <input id="circleInviteEmail" data-testid="circle-invite-email" class="input" type="email" autocomplete="email" required placeholder="teammate@example.com" />
-                </label>
-                <button id="circleInviteCreate" data-testid="circle-invite-create" class="btn" type="submit">Create invite</button>
-              </form>
-              <div id="circleInviteStatus" class="small muted" role="status" aria-live="polite"></div>
-              <button id="circleInviteLink" data-testid="circle-invite-link" class="pill" type="button" hidden>Copy invitation link</button>
-              <div id="circleInvites" data-testid="circle-invites" class="people"></div>
-            </div>
-            <section id="circleLifecyclePanel" data-testid="circle-lifecycle" hidden aria-labelledby="circleLifecycleTitle" style="display:none;gap:10px;border-top:1px solid var(--border);padding-top:12px">
-              <div class="membership-actions">
-                <div><b id="circleLifecycleTitle" style="font-size:13px">Membership settings</b><div id="circleLifecycleHelp" class="small muted" style="margin-top:3px"></div></div>
-                <div class="row">
-                  <button id="circleArchive" data-testid="circle-archive" class="pill membership-danger" type="button" hidden>Archive circle</button>
-                  <button id="circleLeave" data-testid="circle-leave" class="pill membership-danger" type="button">Leave circle</button>
+              <div id="circleMemberSearchStatus" class="small muted" role="status" aria-live="polite"></div>
+              <div id="circleManageMembers" data-testid="circle-manage-members" class="people circle-member-list" hidden aria-busy="false"></div>
+              <button id="circleMembersLoadMore" data-testid="circle-members-load-more" class="btn secondary" type="button" aria-controls="circleManageMembers" hidden>Load more members</button>
+              <div class="membership-actions circle-membership-footer">
+                <div><h4 id="circleLifecycleTitle" class="circle-subtitle">Your membership</h4><div id="circleLifecycleHelp" class="small muted"></div></div>
+                <div class="membership-controls">
+                  <button id="circleArchive" data-testid="circle-archive" class="btn secondary membership-danger" type="button" hidden>Archive circle</button>
+                  <button id="circleLeave" data-testid="circle-leave" class="btn secondary membership-danger" type="button">Leave circle</button>
                 </div>
               </div>
               <div id="circleLifecycleStatus" class="small muted" role="status" aria-live="polite"></div>
-              <form id="circleMemberSearchForm" data-testid="circle-member-search-form" role="search" class="row" hidden style="align-items:flex-end">
-                <label class="small muted" for="circleMemberSearch" style="display:grid;gap:5px;flex:1">Search member display names
-                  <input id="circleMemberSearch" data-testid="circle-member-search" class="input" type="search" maxlength="80" autocomplete="off" placeholder="e.g. Ada" />
-                </label>
-                <button id="circleMemberSearchSubmit" class="pill" type="submit">Search</button>
-                <button id="circleMemberSearchClear" class="pill" type="button" hidden>Clear</button>
-              </form>
-              <div id="circleMemberSearchStatus" class="small muted" role="status" aria-live="polite"></div>
-              <div id="circleManageMembers" data-testid="circle-manage-members" class="people" hidden aria-busy="false" aria-label="Manage circle members"></div>
-              <button id="circleMembersLoadMore" data-testid="circle-members-load-more" class="pill" type="button" aria-controls="circleManageMembers" hidden>Load more members</button>
             </section>
           </div>
-        </div>
-        <div class="card">
-          <div class="card-h"><h2>How Randori works</h2><span>randori = free practice</span></div>
-          <div class="card-b" style="display:grid; gap:12px">
-            <p class="small" style="line-height:1.6; color:var(--ink-2); margin:0">You don't pick your partner. Each Sunday the circle publishes one pairing cycle. If the count is odd, one member gets Solo practice — no trios, no one sits out. After pairing, you choose <b style="color:var(--ink)">DSA / System Design / Both</b> yourselves. Published pairs do not change during the cycle.</p>
-            <div class="grid-3">
-              <div class="card" style="border-style:dashed"><div class="card-b small"><b>1</b> Add crew<br/><span class="muted">2-12 people</span></div></div>
-              <div class="card" style="border-style:dashed"><div class="card-b small"><b>2</b> Publish pairs<br/><span class="muted">Solo practice if odd</span></div></div>
-              <div class="card" style="border-style:dashed"><div class="card-b small"><b>3</b> Pick topic & drill<br/><span class="muted">same link</span></div></div>
+        </section>
+        <div class="circle-side">
+          <section id="circleOwnerPanel" class="card circle-card" hidden aria-labelledby="circleInvitesTitle" style="display:none">
+            <div class="card-h"><h3 id="circleInvitesTitle" class="circle-card-title">Invitations</h3><span id="circleInvitesMeta" class="circle-card-meta"></span></div>
+            <div class="card-b circle-card-body">
+              <p class="small muted circle-help">Each invitation works once, only for the email you enter, and expires after 7 days. For privacy, the address is shown only in the browser that sent it.</p>
+              <form id="circleInviteForm" class="circle-invite-form">
+                <label class="small muted circle-field">Email address
+                  <input id="circleInviteEmail" data-testid="circle-invite-email" class="input" type="email" autocomplete="email" required placeholder="teammate@example.com" />
+                </label>
+                <button id="circleInviteCreate" data-testid="circle-invite-create" class="btn" type="submit">Send invitation</button>
+              </form>
+              <div class="circle-invite-result">
+                <div id="circleInviteStatus" class="small muted" role="status" aria-live="polite"></div>
+                <button id="circleInviteLink" data-testid="circle-invite-link" class="btn secondary sm" type="button" hidden>Copy invitation link</button>
+              </div>
+              <div id="circleInvites" data-testid="circle-invites" class="circle-invites"></div>
             </div>
-            <div class="row" id="legacyCircleDemoActions" style="display:none" aria-hidden="true">
-              <button class="btn secondary" id="demoBtn">Load demo crew (4)</button>
-              <button class="btn ghost" id="clearAllBtn">Clear circle</button>
+          </section>
+          <section id="circleInviteRequestsPanel" data-testid="circle-invite-requests" class="card circle-card" hidden aria-labelledby="circleInviteRequestsTitle" style="display:none">
+            <div class="card-h"><h3 id="circleInviteRequestsTitle" class="circle-card-title">Invite requests</h3><span id="circleInviteRequestsCount" class="rc-badge" data-testid="circle-invite-requests-count">None waiting</span></div>
+            <div class="card-b circle-card-body">
+              <p class="small muted circle-help">People who asked to join from the home page. Approving sends them a normal invitation. Declining is silent.</p>
+              <div id="circleInviteRequestsStatus" class="small muted" role="status" aria-live="polite"></div>
+              <ul id="circleInviteRequests" data-testid="circle-invite-requests-list" class="people circle-request-list" aria-label="Pending invite requests"></ul>
+              <button id="circleInviteRequestsMore" data-testid="circle-invite-requests-more" class="btn secondary" type="button" hidden>Load more requests</button>
             </div>
-          </div>
+          </section>
+          <details id="circleDiagnostics" class="card circle-card circle-diagnostics" hidden>
+            <summary class="circle-diagnostics-summary">Diagnostics (admin testing only)</summary>
+            <div class="card-b circle-card-body">
+              <p class="small muted">Local test data for this browser only. Never mixed with your real circle.</p>
+              <div class="row" id="legacyCircleAddActions" style="display:none" aria-hidden="true">
+                <label class="sr-only" for="personName">Test teammate name</label>
+                <input id="personName" class="input" placeholder="Teammate name (testing only)" maxlength="32" />
+                <button id="addPerson" class="btn secondary">Add</button>
+              </div>
+              <div class="row" id="legacyCircleDemoActions" style="display:none" aria-hidden="true">
+                <button class="btn secondary" id="demoBtn">Load demo crew (4)</button>
+                <button class="btn ghost" id="clearAllBtn">Clear circle</button>
+              </div>
+            </div>
+          </details>
         </div>
       </div>
     </section>
@@ -2171,15 +2268,18 @@ a.btn{text-decoration:none}
 
           <div id="roomSide" class="room-side" hidden>
             <div id="roomPanel-problem" class="room-panel q-pane" role="tabpanel" aria-labelledby="roomTab-problem" data-room-panel="problem" hidden>
-              <div class="q-head">
-                <div class="row q-pick">
-                  <label class="sr-only" for="questionSelect">Exercise</label>
-                  <select id="questionSelect" class="select" aria-label="Exercise"></select>
-                  <span id="qDiff" class="kbd"></span>
+              <section id="catalogBrowse" class="q-head catalog-browse" data-state="loading" aria-labelledby="catalogHeading">
+                <div class="catalog-browse-head">
+                  <h3 id="catalogHeading" class="room-section-title">Practice exercises</h3>
+                  <span id="catalogFilterStatus" data-testid="catalog-status" class="small muted" role="status" aria-live="polite">Loading exercises…</span>
+                </div>
+                <div class="q-pick">
+                  <label class="small muted" for="questionSelect">Exercise</label>
+                  <select id="questionSelect" class="select"></select>
                 </div>
                 <div data-testid="catalog-filters" class="catalog-filters">
-                  <label class="small muted catalog-search">Search exercises
-                    <input id="catalogSearch" data-testid="catalog-search" class="input" type="search" autocomplete="off" placeholder="Title, pattern, or tag" />
+                  <label class="small muted catalog-search">Search
+                    <input id="catalogSearch" data-testid="catalog-search" class="input" type="search" autocomplete="off" placeholder="Title, pattern or topic" />
                   </label>
                   <label class="small muted">Difficulty
                     <select id="catalogDifficulty" data-testid="catalog-difficulty" class="select"><option value="all">All</option><option value="Easy">Easy</option><option value="Medium">Medium</option><option value="Hard">Hard</option></select>
@@ -2187,23 +2287,50 @@ a.btn{text-decoration:none}
                   <label class="small muted">Pattern
                     <select id="catalogType" data-testid="catalog-type" class="select"><option value="all">All</option></select>
                   </label>
-                  <span id="catalogFilterStatus" data-testid="catalog-status" class="small muted catalog-wide" role="status" aria-live="polite">Loading exercises…</span>
-                  <div id="catalogFilterEmpty" data-testid="catalog-empty" class="small muted catalog-wide catalog-empty" hidden>No public exercises match these filters. Clear or adjust them to continue.</div>
+                  <label class="small muted">Language
+                    <select id="catalogLanguage" data-testid="catalog-language" class="select"><option value="all">All</option></select>
+                  </label>
+                  <div class="catalog-filter-actions">
+                    <button id="catalogClearFilters" data-testid="catalog-clear" class="btn ghost sm" type="button" hidden>Clear filters</button>
+                  </div>
                 </div>
-              </div>
-              <div class="q-body">
+                <details id="catalogBrowseList" class="catalog-disclosure" data-testid="catalog-browse">
+                  <summary class="catalog-summary"><span>Browse exercises</span><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-chevron-down"/></svg></summary>
+                  <ul id="catalogList" data-testid="catalog-list" class="catalog-list" aria-label="Exercises" aria-busy="true"></ul>
+                  <div id="catalogFilterEmpty" data-testid="catalog-empty" class="rc-empty catalog-empty" hidden>
+                    <p id="catalogEmptyTitle" class="catalog-state-title">No exercises match these filters</p>
+                    <p id="catalogEmptyMessage" class="small muted">No public exercises match these filters. Clear the filters to see every exercise.</p>
+                    <button id="catalogEmptyClear" class="btn secondary sm" type="button">Clear filters</button>
+                  </div>
+                </details>
+                <div id="catalogError" data-testid="catalog-error" class="rc-banner rc-banner--warning catalog-error" role="alert" hidden>
+                  <div>
+                    <p id="catalogErrorTitle" class="catalog-state-title">Exercises could not load</p>
+                    <p id="catalogErrorMessage" class="small">Something went wrong while loading the catalogue. Your code stays in the editor.</p>
+                  </div>
+                  <button id="catalogRetryBtn" class="btn secondary sm" type="button" hidden>Try again</button>
+                  <button id="catalogSignInBtn" class="btn sm" type="button" hidden>Sign in</button>
+                </div>
+              </section>
+              <article class="q-body" aria-labelledby="qTitle">
+                <p class="q-eyebrow">Current exercise</p>
                 <h3 id="qTitle"></h3>
-                <div id="qDesc"></div>
+                <div id="qDiff" class="q-badges" hidden></div>
+                <div id="qDesc" class="q-prose"></div>
                 <div id="qExamples" class="q-examples"></div>
-                <div id="qConstraints" class="small muted"></div>
-                <div class="tests"><div class="small muted">Evaluation</div><div id="qTests"></div></div>
+                <div id="qConstraints" class="q-constraints"></div>
+                <div class="tests q-run">
+                  <h4 class="q-section-title">Run your code</h4>
+                  <div id="qTests"></div>
+                  <button id="qStartCoding" class="btn sm q-start-coding" type="button"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-play"/></svg>Open the editor</button>
+                </div>
                 <div id="questionPanel" class="q-source small muted">
                   <span>Approved original exercise catalogue</span>
                   <span id="qCustomCount">• loading…</span>
-                  <button id="catalogRetryBtn" class="pill" type="button" hidden>Retry catalogue</button>
-                  <span class="q-source-note">Examples are public; evaluation cases stay on the server.</span>
+                  <span id="qAttribution" class="q-source-note"></span>
+                  <span class="q-source-note">Examples are public. The test cases stay on the server.</span>
                 </div>
-              </div>
+              </article>
             </div>
 
             <div id="roomPanel-results" class="room-panel" role="tabpanel" aria-labelledby="roomTab-results" data-room-panel="results" hidden>
@@ -2333,16 +2460,25 @@ a.btn{text-decoration:none}
     </section>
 
     <!-- PAIRINGS / ACTIVITY HISTORY -->
-    <section id="view-history" class="view" tabindex="0" aria-labelledby="tab-history" style="display:none">
-      <div class="card" data-testid="pair-history">
-        <div class="card-h"><h2>Pairings &amp; activity</h2><span id="historyCount">0 pairings</span><span id="historyAuthHint" class="small muted" style="margin-left:8px">Sign in to see your pairings</span></div>
-        <div class="card-b">
-          <div id="historyList" class="weeks"></div>
-          <div id="pairRecapArea" style="margin-top:12px" data-testid="pair-recap"></div>
-          <div id="historyPersonal" class="weeks" style="margin-top:12px" data-testid="pair-history-list"></div>
+    <section id="view-history" class="view history-view" tabindex="0" aria-labelledby="tab-history" style="display:none">
+      <div data-testid="pair-history" class="history-page">
+        <header class="circle-header history-header">
+          <div class="circle-header-text">
+            <h2 id="historyTitle" class="circle-title">History</h2>
+            <p id="historyAuthHint" class="small muted">Sign in to see your pairings</p>
+          </div>
+          <span id="historyCount" class="rc-badge">0 pairings</span>
+        </header>
+        <div class="history-layout">
+          <div class="history-list-column">
+            <div id="historyList" class="weeks history-local"></div>
+            <div id="historyPersonal" class="history-personal" data-testid="pair-history-list"></div>
+          </div>
+          <div id="pairRecapArea" class="history-recap" data-testid="pair-recap"></div>
         </div>
       </div>
     </section>
+    <script src="/assets/circle-ui.js"></script>
   </main>
 </div>
 <!-- ---------- WP-A dialogs: confirm, prompt, sign-in and account security ---------- -->
@@ -3586,7 +3722,8 @@ async function refreshMe(){
     if(addRow){
       addRow.style.display='none';
       addRow.setAttribute('aria-hidden','true');
-      if(addInfo) addInfo.textContent=me?'Loading your private circle…':'Sign in to view your private circle.';
+      // Signed-in summaries come from renderPeople(); only the signed-out copy is set here.
+      if(addInfo&&!me) addInfo.textContent='Sign in to view your private circle.';
     }
     // shuffle buttons admin-only (+ demo e2e)
     const demoRun=document.getElementById('demoRunBtn');
@@ -4981,6 +5118,8 @@ async function refreshMe(){
   // expose for debug
   window._randori_auth={
     get token(){return ''}, get me(){return me}, get signedIn(){return !!me},
+    // True once /api/auth/me has answered authoritatively or proved unavailable.
+    get identitySettled(){return authIdentityHydrated||authIdentityHydrationUnavailable},
     get capabilities(){return {...authCapabilities}},
     canStartSignup,
     api,refreshMe,openModal:openAuthModal,closeModal:closeAuthModal,
@@ -5291,6 +5430,22 @@ async function refreshMe(){
   const circleCreateStatus=document.getElementById('circleCreateStatus');
   const legacyCircleAddActions=document.getElementById('legacyCircleAddActions');
   const legacyCircleDemoActions=document.getElementById('legacyCircleDemoActions');
+  const circleUi=window.RandoriCircleUI;
+  const circleDiagnostics=document.getElementById('circleDiagnostics');
+  const circleTitle=document.getElementById('circleTitle');
+  const circleMembersMeta=document.getElementById('circleMembersMeta');
+  const circleInvitesMeta=document.getElementById('circleInvitesMeta');
+  const inviteRequestsPanel=document.getElementById('circleInviteRequestsPanel');
+  const inviteRequestsList=document.getElementById('circleInviteRequests');
+  const inviteRequestsStatus=document.getElementById('circleInviteRequestsStatus');
+  const inviteRequestsCount=document.getElementById('circleInviteRequestsCount');
+  const inviteRequestsMore=document.getElementById('circleInviteRequestsMore');
+  // Addresses the owner typed (or approved) in this tab, keyed by invitation
+  // id. The server only returns an email fingerprint, so this lets the owner
+  // recognise invitations they just sent. Memory only; cleared on any circle
+  // or identity change.
+  const circleInviteEmails=new Map();
+  let inviteRequestsState={requests:[],nextCursor:null,pendingCount:0,loading:false,request:0,pendingDecision:null};
   let circleRenderEpoch=0;
   let circleControlEpoch=0;
   let circleContextSwitching=false;
@@ -5368,6 +5523,10 @@ async function refreshMe(){
     circleLifecyclePending=false;
     resetOwnerInvites({allowRosterPreservation:false});
     clearLatestInvite();
+    circleInviteEmails.clear();
+    if(circleTitle) circleTitle.textContent='Your circle';
+    const circleNote=document.getElementById('circleAutoNote');
+    if(circleNote) circleNote.textContent='Loading your private circle…';
     if(!preserveLifecycleRecentAction) clearLifecycleRecentAction();
     window._randori_workspace?.deactivate?.();
     window._randori_authorized_room=null;
@@ -5688,15 +5847,18 @@ async function refreshMe(){
     circleRosterLoading=false;
     circleRosterLoadEpoch=0;
     circleRosterState={query:'',members:[],nextCursor:null,hasMore:false,loaded:false};
-    if(!Number.isSafeInteger(currentUserId)||currentUserId!==latestInviteOwnerId) clearLatestInvite();
+    if(!Number.isSafeInteger(currentUserId)||currentUserId!==latestInviteOwnerId){ clearLatestInvite(); circleInviteEmails.clear(); }
     if(circleOwnerPanel){ circleOwnerPanel.hidden=true; circleOwnerPanel.style.display='none'; }
     if(circleInvites) circleInvites.replaceChildren();
+    if(circleInvitesMeta) circleInvitesMeta.textContent='';
     if(circleInviteStatus) circleInviteStatus.textContent='';
+    resetInviteRequests();
     if(circleInviteLink) circleInviteLink.hidden=true;
     if(circleLifecyclePanel){ circleLifecyclePanel.hidden=true; circleLifecyclePanel.style.display='none'; }
     if(circleManageMembers){
       circleManageMembers.hidden=true;
       circleManageMembers.setAttribute('aria-busy','false');
+      delete circleManageMembers.dataset.state;
       circleManageMembers.replaceChildren();
     }
     if(circleMemberSearchForm) circleMemberSearchForm.hidden=true;
@@ -5718,6 +5880,12 @@ async function refreshMe(){
       controls.style.display=allowed?'flex':'none';
       controls.setAttribute('aria-hidden',allowed?'false':'true');
     }
+    if(circleDiagnostics){
+      // Admin-only legacy testing mode: the clearly labelled disclosure opens
+      // so the tools are usable, but never sits inside the real member list.
+      circleDiagnostics.hidden=!allowed;
+      circleDiagnostics.open=allowed;
+    }
   }
 
   function retryCircleContext(){
@@ -5732,95 +5900,134 @@ async function refreshMe(){
     const note=document.getElementById('circleAutoNote');
     if(note) note.textContent='We could not load your private circle.';
     if(!circleContextPanel?.hidden) setCircleContextState('error','Could not load the active circle. Try again.');
+    if(circleMembersMeta) circleMembersMeta.textContent='';
     listEl.replaceChildren();
     listEl.setAttribute('aria-busy','false');
     const message=document.createElement('div');
     message.className='small muted';
-    message.textContent='Circle unavailable. Your member list has not been replaced with local or demo data.';
+    message.textContent='Circle unavailable. We could not load your members, and nothing was changed.';
     const retry=document.createElement('button');
-    retry.type='button'; retry.className='pill'; retry.textContent='Retry';
+    retry.type='button'; retry.className='btn secondary sm'; retry.textContent='Retry';
     retry.addEventListener('click',retryCircleContext);
     listEl.append(message,retry);
+  }
+
+  function invitationResendButton(id){
+    const resend=document.createElement('button');
+    resend.type='button'; resend.className='btn secondary sm'; resend.dataset.testid='circle-invite-resend';
+    resend.textContent='Resend'; resend.setAttribute('aria-label','Resend invitation email');
+    resend.addEventListener('click',async()=>{
+      if(activeCircleRole!=='owner'||!me) return;
+      const operation=captureCircleControlOperation();
+      if(!circleControlOperationMatches(operation)) return;
+      const userId=Number(me.id||me.uid);
+      resend.disabled=true;
+      if(circleInviteStatus) circleInviteStatus.textContent='Sending a fresh invitation email…';
+      try{
+        const result=await api(`/api/invitations/${encodeURIComponent(id)}`,{
+          method:'POST',body:{action:'resend'},
+        });
+        if(!me||Number(me.id||me.uid)!==userId
+          ||!circleControlOperationMatches(operation,result)) return;
+        const inviteUrl=String(result?.invitation?.invite_url||'');
+        if(result?.ok!==true||!/^\/invite#invite=[A-Za-z0-9_-]{43}$/.test(inviteUrl)){
+          throw new Error('invalid invitation response');
+        }
+        latestInviteUrl=new URL(inviteUrl,window.location.origin).href;
+        latestInviteId=id; latestInviteOwnerId=userId;
+        if(circleInviteLink) circleInviteLink.hidden=false;
+        if(circleInviteStatus) circleInviteStatus.textContent='Fresh invitation email queued. The old link no longer works. Copy the new link as a fallback.';
+        await loadOwnerInvitations(circleRenderEpoch);
+      }catch{
+        if(!circleControlOperationMatches(operation)) return;
+        resend.disabled=false;
+        if(circleInviteStatus) circleInviteStatus.textContent='Could not resend yet. Use your saved link or send a new invitation.';
+      }
+    });
+    return resend;
+  }
+
+  function invitationRevokeButton(id){
+    const revoke=document.createElement('button');
+    revoke.type='button'; revoke.className='btn secondary sm membership-danger'; revoke.dataset.testid='circle-invite-revoke';
+    revoke.textContent='Revoke'; revoke.setAttribute('aria-label','Revoke invitation');
+    revoke.addEventListener('click',async()=>{
+      if(activeCircleRole!=='owner') return;
+      const operation=captureCircleControlOperation();
+      if(!circleControlOperationMatches(operation)) return;
+      revoke.disabled=true;
+      if(circleInviteStatus) circleInviteStatus.textContent='Revoking invitation…';
+      try{
+        const result=await api(`/api/invitations/${encodeURIComponent(String(id))}`,{method:'DELETE'});
+        if(!circleControlOperationMatches(operation,result)) return;
+        if(latestInviteId===id) clearLatestInvite();
+        if(circleInviteStatus) circleInviteStatus.textContent='Invitation revoked. Its link no longer works.';
+        await loadOwnerInvitations(circleRenderEpoch);
+      }catch{
+        if(!circleControlOperationMatches(operation)) return;
+        revoke.disabled=false;
+        if(circleInviteStatus) circleInviteStatus.textContent='Could not revoke invitation. Try again.';
+      }
+    });
+    return revoke;
+  }
+
+  function invitationRow(invitation){
+    const view=circleUi.describeInvitation(invitation,{knownEmail:circleInviteEmails.get(String(invitation?.id||'').toLowerCase())||null});
+    if(!view) return null;
+    const row=document.createElement('li'); row.className='circle-row circle-invite-row';
+    row.dataset.invitationId=view.id; row.dataset.invitationStatus=view.status;
+    const icon=document.createElement('span'); icon.className='circle-row-icon'; icon.appendChild(circleUi.iconNode(document,'i-mail'));
+    const details=document.createElement('div'); details.className='circle-row-main';
+    const title=document.createElement('div'); title.className='circle-row-title';
+    const name=document.createElement('b'); name.textContent=view.title; if(view.emailKnown) name.className='circle-row-email';
+    title.append(name,circleUi.badgeNode(document,view.label,view.tone));
+    const meta=document.createElement('div'); meta.className='small muted'; meta.textContent=view.detail;
+    if(view.expiresTitle) meta.title=`Expires ${view.expiresTitle}`;
+    details.append(title,meta);
+    row.append(icon,details);
+    if(view.active){
+      const actions=document.createElement('div'); actions.className='circle-row-actions';
+      if(latestInviteId===view.id&&latestInviteUrl){
+        const copy=document.createElement('button'); copy.type='button'; copy.className='btn secondary sm'; copy.dataset.testid='circle-invite-copy';
+        copy.textContent='Copy link'; copy.setAttribute('aria-label',`Copy link for ${view.title}`);
+        copy.addEventListener('click',()=>{ void copyLatestInviteLink(); });
+        actions.appendChild(copy);
+      }
+      actions.append(invitationResendButton(view.id),invitationRevokeButton(view.id));
+      row.appendChild(actions);
+    }
+    return row;
   }
 
   function renderInvitationRows(invitations){
     if(!circleInvites) return;
     circleInvites.replaceChildren();
-    if(!invitations.length){
-      const empty=document.createElement('div'); empty.className='small muted'; empty.textContent='No invitations yet.';
+    const {active,past}=circleUi.partitionInvitations(invitations);
+    if(!active.length&&!past.length){
+      const empty=document.createElement('p'); empty.className='small muted circle-empty'; empty.textContent='No invitations yet. Send one above to add someone to your circle.';
       circleInvites.appendChild(empty);
       return;
     }
-    invitations.forEach(invitation=>{
-      const id=String(invitation?.id||'').toLowerCase();
-      if(!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)) return;
-      const row=document.createElement('div'); row.className='person';
-      const details=document.createElement('div'); details.style.minWidth='0';
-      const fingerprint=document.createElement('b'); fingerprint.style.fontSize='13px';
-      fingerprint.textContent=String(invitation?.email_fingerprint||'private recipient');
-      const meta=document.createElement('div'); meta.className='small muted'; meta.style.marginTop='3px';
-      const status=String(invitation?.status||'pending');
-      meta.textContent=`${status}${invitation?.expires_at?` • expires ${String(invitation.expires_at)}`:''}`;
-      details.append(fingerprint,meta);
-      row.appendChild(details);
-      if(status==='pending'){
-        const actions=document.createElement('div'); actions.className='row'; actions.style.gap='6px';
-        const resend=document.createElement('button');
-        resend.type='button'; resend.className='pill'; resend.dataset.testid='circle-invite-resend';
-        resend.textContent='Resend email'; resend.setAttribute('aria-label','Resend invitation email');
-        resend.addEventListener('click',async()=>{
-          if(activeCircleRole!=='owner'||!me) return;
-          const operation=captureCircleControlOperation();
-          if(!circleControlOperationMatches(operation)) return;
-          const userId=Number(me.id||me.uid);
-          resend.disabled=true;
-          if(circleInviteStatus) circleInviteStatus.textContent='Queueing a fresh invitation email…';
-          try{
-            const result=await api(`/api/invitations/${encodeURIComponent(id)}`,{
-              method:'POST',body:{action:'resend'},
-            });
-            if(!me||Number(me.id||me.uid)!==userId
-              ||!circleControlOperationMatches(operation,result)) return;
-            const inviteUrl=String(result?.invitation?.invite_url||'');
-            if(result?.ok!==true||!/^\/invite#invite=[A-Za-z0-9_-]{43}$/.test(inviteUrl)){
-              throw new Error('invalid invitation response');
-            }
-            latestInviteUrl=new URL(inviteUrl,window.location.origin).href;
-            latestInviteId=id; latestInviteOwnerId=userId;
-            if(circleInviteLink) circleInviteLink.hidden=false;
-            if(circleInviteStatus) circleInviteStatus.textContent='Fresh invitation email queued. Copy the new link as a fallback.';
-            await loadOwnerInvitations(circleRenderEpoch);
-          }catch{
-            if(!circleControlOperationMatches(operation)) return;
-            resend.disabled=false;
-            if(circleInviteStatus) circleInviteStatus.textContent='Could not resend yet. Use your saved link or create a new invitation.';
-          }
-        });
-        const revoke=document.createElement('button');
-        revoke.type='button'; revoke.className='pill'; revoke.dataset.testid='circle-invite-revoke';
-        revoke.textContent='Revoke'; revoke.setAttribute('aria-label','Revoke invitation');
-        revoke.addEventListener('click',async()=>{
-          if(activeCircleRole!=='owner') return;
-          const operation=captureCircleControlOperation();
-          if(!circleControlOperationMatches(operation)) return;
-          revoke.disabled=true;
-          if(circleInviteStatus) circleInviteStatus.textContent='Revoking invitation…';
-          try{
-            const result=await api(`/api/invitations/${encodeURIComponent(String(id))}`,{method:'DELETE'});
-            if(!circleControlOperationMatches(operation,result)) return;
-            if(latestInviteId===id) clearLatestInvite();
-            if(circleInviteStatus) circleInviteStatus.textContent='Invitation revoked.';
-            await loadOwnerInvitations(circleRenderEpoch);
-          }catch{
-            if(!circleControlOperationMatches(operation)) return;
-            revoke.disabled=false;
-            if(circleInviteStatus) circleInviteStatus.textContent='Could not revoke invitation. Try again.';
-          }
-        });
-        actions.append(resend,revoke); row.appendChild(actions);
-      }
-      circleInvites.appendChild(row);
-    });
+    if(active.length){
+      const activeTitle=document.createElement('h4'); activeTitle.className='circle-subtitle'; activeTitle.id='circleInvitesPendingTitle';
+      activeTitle.textContent=`Pending (${active.length})`;
+      circleInvites.appendChild(activeTitle);
+      const list=document.createElement('ul'); list.className='people circle-invite-list'; list.setAttribute('aria-labelledby','circleInvitesPendingTitle');
+      active.forEach(invitation=>{ const row=invitationRow(invitation); if(row) list.appendChild(row); });
+      circleInvites.appendChild(list);
+    }else{
+      const none=document.createElement('p'); none.className='small muted circle-empty'; none.textContent='No pending invitations.';
+      circleInvites.appendChild(none);
+    }
+    if(past.length){
+      const earlier=document.createElement('details'); earlier.className='circle-invite-history';
+      const summary=document.createElement('summary'); summary.textContent=`Earlier invitations (${past.length})`;
+      const list=document.createElement('ul'); list.className='people circle-invite-list';
+      past.forEach(invitation=>{ const row=invitationRow(invitation); if(row) list.appendChild(row); });
+      earlier.append(summary,list);
+      circleInvites.appendChild(earlier);
+    }
   }
 
   async function loadOwnerInvitations(epoch=circleRenderEpoch){
@@ -5828,26 +6035,194 @@ async function refreshMe(){
     const operation=captureCircleControlOperation();
     if(!circleControlOperationMatches(operation)) return;
     const userId=Number(me.id||me.uid);
-    if(circleInviteStatus) circleInviteStatus.textContent='Loading invitations…';
+    if(circleInvitesMeta) circleInvitesMeta.textContent='Loading…';
+    if(circleInvites&&!circleInvites.children.length){
+      const loading=document.createElement('p'); loading.className='small muted'; loading.textContent='Loading invitations…';
+      circleInvites.appendChild(loading);
+    }
     try{
       const result=await api('/api/invitations',{method:'GET'});
       if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==userId
         ||!circleControlOperationMatches(operation,result)) return;
       const invitations=Array.isArray(result?.invitations)?result.invitations:[];
       renderInvitationRows(invitations);
-      if(circleInviteStatus) circleInviteStatus.textContent=`${invitations.length} invitation${invitations.length===1?'':'s'}.`;
+      if(circleInvitesMeta) circleInvitesMeta.textContent=circleUi.invitationSummary(invitations).replace(/\.$/,'');
     }catch{
       if(epoch!==circleRenderEpoch||activeCircleRole!=='owner'||Number(me?.id||me?.uid)!==userId
         ||!circleControlOperationMatches(operation)) return;
       if(circleInvites){
         circleInvites.replaceChildren();
-        const retry=document.createElement('button'); retry.type='button'; retry.className='pill'; retry.textContent='Retry invitations';
+        const retry=document.createElement('button'); retry.type='button'; retry.className='btn secondary sm'; retry.textContent='Retry invitations';
         retry.addEventListener('click',()=>{ loadOwnerInvitations(circleRenderEpoch); });
         circleInvites.appendChild(retry);
       }
+      if(circleInvitesMeta) circleInvitesMeta.textContent='';
       if(circleInviteStatus) circleInviteStatus.textContent='Invitations unavailable. Try again.';
     }
   }
+
+  // ---------- owner invite requests (WP-L2 contract, docs/INVITE_REQUESTS.md) ----------
+  // Shown only when /api/auth/capabilities advertises inviteRequests and the
+  // viewer owns the active primary circle. The server stays authoritative for
+  // ownership; a 403/404 simply hides the panel again.
+  function setInviteRequestsCount(count){
+    if(inviteRequestsCount){
+      inviteRequestsCount.textContent=circleUi.inviteRequestCountLabel(count);
+      inviteRequestsCount.className=`rc-badge${count>0?' rc-badge--warning':''}`;
+    }
+  }
+
+  function resetInviteRequests(){
+    inviteRequestsState={requests:[],nextCursor:null,pendingCount:0,loading:false,request:inviteRequestsState.request+1,pendingDecision:null};
+    if(inviteRequestsPanel){ inviteRequestsPanel.hidden=true; inviteRequestsPanel.style.display='none'; }
+    inviteRequestsList?.replaceChildren();
+    if(inviteRequestsStatus) inviteRequestsStatus.textContent='';
+    if(inviteRequestsMore){ inviteRequestsMore.hidden=true; inviteRequestsMore.disabled=false; }
+    setInviteRequestsCount(0);
+  }
+
+  function inviteRequestRow(request){
+    const view=circleUi.inviteRequestView(request);
+    const row=document.createElement('li'); row.className='circle-row circle-request-row'; row.dataset.testid='circle-invite-request-row'; row.dataset.requestId=request.id;
+    const avatar=circleUi.avatarNode(document,{label:view.initials});
+    const main=document.createElement('div'); main.className='circle-row-main';
+    const title=document.createElement('div'); title.className='circle-row-title';
+    const name=document.createElement('b'); name.textContent=view.name; title.appendChild(name);
+    const email=document.createElement('div'); email.className='small circle-row-email'; email.textContent=view.email;
+    main.append(title,email);
+    if(view.note){
+      const note=document.createElement('p'); note.className='small circle-request-note'; note.textContent=view.note;
+      main.appendChild(note);
+    }
+    const meta=document.createElement('div'); meta.className='small muted'; meta.textContent=view.detail;
+    main.appendChild(meta);
+    const actions=document.createElement('div'); actions.className='circle-row-actions';
+    const approve=document.createElement('button'); approve.type='button'; approve.className='btn sm'; approve.dataset.testid='circle-invite-request-approve';
+    approve.textContent='Approve'; approve.setAttribute('aria-label',`Approve ${view.name} and send an invitation`);
+    const decline=document.createElement('button'); decline.type='button'; decline.className='btn secondary sm membership-danger'; decline.dataset.testid='circle-invite-request-decline';
+    decline.textContent='Decline'; decline.setAttribute('aria-label',`Decline ${view.name}`);
+    approve.addEventListener('click',()=>{ void decideInviteRequest(request,'approve'); });
+    decline.addEventListener('click',()=>{ void decideInviteRequest(request,'decline'); });
+    actions.append(approve,decline);
+    row.append(avatar,main,actions);
+    return row;
+  }
+
+  function renderInviteRequests(){
+    if(!inviteRequestsList) return;
+    inviteRequestsList.replaceChildren();
+    const {requests,pendingCount,nextCursor}=inviteRequestsState;
+    setInviteRequestsCount(pendingCount);
+    if(!requests.length){
+      const empty=document.createElement('li'); empty.className='small muted circle-empty'; empty.textContent='No one is waiting. New requests from the home page appear here.';
+      inviteRequestsList.appendChild(empty);
+    }else requests.forEach(request=>inviteRequestsList.appendChild(inviteRequestRow(request)));
+    if(inviteRequestsMore){ inviteRequestsMore.hidden=!nextCursor; inviteRequestsMore.disabled=false; }
+  }
+
+  async function loadInviteRequests(epoch=circleRenderEpoch,{append=false}={}){
+    if(!authCapabilitiesLoaded){
+      try{ await authCapabilitiesPromise; }catch{}
+      if(epoch!==circleRenderEpoch) return false;
+    }
+    if(!inviteRequestsPanel||!me||!circleUi.inviteRequestsVisible({
+      capabilities:authCapabilities,role:activeCircleRole,activeCircle:activeCircleContext?.active_circle,
+    })){
+      if(!append) resetInviteRequests();
+      return false;
+    }
+    const cursor=append?inviteRequestsState.nextCursor:null;
+    if(append&&!cursor) return false;
+    const operation=captureCircleControlOperation();
+    if(!circleControlOperationMatches(operation)) return false;
+    const userId=Number(me.id||me.uid);
+    const requestId=++inviteRequestsState.request;
+    inviteRequestsState.loading=true;
+    inviteRequestsPanel.hidden=false; inviteRequestsPanel.style.display='grid';
+    inviteRequestsList?.setAttribute('aria-busy','true');
+    if(inviteRequestsMore) inviteRequestsMore.disabled=true;
+    if(!append&&!inviteRequestsState.requests.length&&inviteRequestsStatus) inviteRequestsStatus.textContent='Loading invite requests…';
+    try{
+      const params=new URLSearchParams({status:'pending',limit:'20'});
+      if(cursor) params.set('cursor',cursor);
+      const result=await api(`/api/invite-requests?${params.toString()}`,{method:'GET'});
+      if(requestId!==inviteRequestsState.request||epoch!==circleRenderEpoch||activeCircleRole!=='owner'
+        ||Number(me?.id||me?.uid)!==userId||!circleControlOperationMatches(operation)) return false;
+      const page=circleUi.normalizeInviteRequestsResponse(result);
+      if(!page) throw new Error('invalid invite request response');
+      const seen=new Set(append?inviteRequestsState.requests.map(request=>request.id):[]);
+      const requests=append?[...inviteRequestsState.requests,...page.requests.filter(request=>!seen.has(request.id))]:page.requests;
+      inviteRequestsState={...inviteRequestsState,requests,nextCursor:page.nextCursor,pendingCount:Math.max(page.pendingCount,requests.length),loading:false};
+      renderInviteRequests();
+      if(inviteRequestsStatus&&inviteRequestsStatus.textContent==='Loading invite requests…') inviteRequestsStatus.textContent='';
+      return true;
+    }catch(error){
+      if(requestId!==inviteRequestsState.request||Number(me?.id||me?.uid)!==userId||!circleControlOperationMatches(operation)) return false;
+      inviteRequestsState.loading=false;
+      if([403,404].includes(Number(error?.http_status))){
+        // The feature is off or this circle is not the owner's primary circle.
+        resetInviteRequests();
+        return false;
+      }
+      if(inviteRequestsMore){ inviteRequestsMore.disabled=false; inviteRequestsMore.hidden=!inviteRequestsState.nextCursor; }
+      if(inviteRequestsStatus) inviteRequestsStatus.textContent=append
+        ?'More requests could not be loaded. The list above is unchanged.'
+        :'Invite requests are unavailable right now.';
+      if(!append&&inviteRequestsList&&!inviteRequestsState.requests.length){
+        inviteRequestsList.replaceChildren();
+        const item=document.createElement('li');
+        const retry=document.createElement('button'); retry.type='button'; retry.className='btn secondary sm'; retry.textContent='Retry invite requests';
+        retry.addEventListener('click',()=>{ void loadInviteRequests(circleRenderEpoch); });
+        item.appendChild(retry); inviteRequestsList.appendChild(item);
+      }
+      return false;
+    }finally{
+      if(requestId===inviteRequestsState.request) inviteRequestsList?.setAttribute('aria-busy','false');
+    }
+  }
+
+  async function decideInviteRequest(request,decision){
+    if(inviteRequestsState.pendingDecision||activeCircleRole!=='owner'||!me) return false;
+    if(decision==='decline'&&!await showConfirm(`Decline ${request.name}?`,
+      'They are not notified, and their details are deleted. They can ask again after 30 days.')) return false;
+    const operation=captureCircleControlOperation();
+    if(!circleControlOperationMatches(operation)) return false;
+    const userId=Number(me.id||me.uid);
+    inviteRequestsState.pendingDecision=request.id;
+    inviteRequestsList?.querySelectorAll('button').forEach(button=>{ button.disabled=true; });
+    if(inviteRequestsStatus) inviteRequestsStatus.textContent=decision==='approve'?`Approving ${request.name}…`:`Declining ${request.name}…`;
+    try{
+      const result=await api('/api/invite-requests/decision',{method:'POST',body:{id:request.id,decision,expected_status:'pending'}});
+      if(Number(me?.id||me?.uid)!==userId||!circleControlOperationMatches(operation)) return false;
+      const outcome=circleUi.inviteRequestDecisionOutcome(decision,result,request);
+      if(!outcome) throw new Error('invalid invite request decision response');
+      if(outcome.invitation?.id&&outcome.invitation.email) circleInviteEmails.set(outcome.invitation.id,outcome.invitation.email);
+      if(outcome.invitation?.inviteUrl){
+        const absolute=new URL(outcome.invitation.inviteUrl,window.location.origin);
+        if(absolute.origin===window.location.origin&&absolute.pathname==='/invite'&&!absolute.search){
+          latestInviteUrl=absolute.href; latestInviteId=outcome.invitation.id; latestInviteOwnerId=userId;
+          if(circleInviteLink) circleInviteLink.hidden=false;
+        }
+      }
+      if(inviteRequestsStatus) inviteRequestsStatus.textContent=outcome.message;
+      if(decision==='approve'&&circleInviteStatus) circleInviteStatus.textContent=outcome.message;
+      inviteRequestsState.pendingDecision=null;
+      await Promise.all([loadInviteRequests(circleRenderEpoch),decision==='approve'?loadOwnerInvitations(circleRenderEpoch):null]);
+      return true;
+    }catch(error){
+      if(Number(me?.id||me?.uid)!==userId||!circleControlOperationMatches(operation)) return false;
+      inviteRequestsState.pendingDecision=null;
+      if(inviteRequestsStatus) inviteRequestsStatus.textContent=circleUi.inviteRequestErrorMessage(error);
+      const status=Number(error?.http_status);
+      if(status===409||status===404) await loadInviteRequests(circleRenderEpoch);
+      else inviteRequestsList?.querySelectorAll('button').forEach(button=>{ button.disabled=false; });
+      return false;
+    }finally{
+      if(inviteRequestsState.pendingDecision===request.id) inviteRequestsState.pendingDecision=null;
+    }
+  }
+
+  inviteRequestsMore?.addEventListener('click',()=>{ void loadInviteRequests(circleRenderEpoch,{append:true}); });
 
   function lifecycleErrorMessage(error){
     const code=String(error?.error||'');
@@ -6022,35 +6397,45 @@ async function refreshMe(){
     if(!circleManageMembers) return;
     circleManageMembers.replaceChildren();
     const actorId=Number(me?.id||me?.uid);
+    const list=document.createElement('ul'); list.className='people circle-member-rows'; list.setAttribute('aria-label','Circle members');
     members.forEach(member=>{
-      const id=Number(member?.id);
-      const role=['owner','member'].includes(member?.role)?member.role:null;
-      const status=['active','inactive'].includes(member?.status)?member.status:null;
-      if(!Number.isSafeInteger(id)||id<1||!role||!status) return;
-      const row=document.createElement('div'); row.className='person membership-actions'; row.dataset.testid='circle-member-row'; row.dataset.memberId=String(id);
-      const identity=document.createElement('div');
-      const name=document.createElement('b'); name.style.fontSize='13px'; name.textContent=String(member.display_name||'Member').slice(0,80);
-      const meta=document.createElement('div'); meta.className='small muted'; meta.textContent=`${role} • ${status}${id===actorId?' • you':''}`;
-      identity.append(name,meta); row.appendChild(identity);
-      if(id!==actorId){
-        const controls=document.createElement('div'); controls.className='membership-controls';
-        if(status==='inactive'){
-          const reactivate=document.createElement('button'); reactivate.type='button'; reactivate.className='pill'; reactivate.dataset.testid='circle-member-reactivate'; reactivate.textContent='Reactivate'; reactivate.setAttribute('aria-label',`Reactivate ${name.textContent}`);
-          reactivate.addEventListener('click',()=>{ applyMemberAction('reactivate',member); }); controls.appendChild(reactivate);
-        }else{
-          if(role==='member'){
-            const transfer=document.createElement('button'); transfer.type='button'; transfer.className='pill'; transfer.dataset.testid='circle-member-transfer'; transfer.textContent='Make owner'; transfer.setAttribute('aria-label',`Transfer ownership to ${name.textContent}`);
-            transfer.addEventListener('click',()=>{ applyMemberAction('transfer',member); }); controls.appendChild(transfer);
+      const view=circleUi.memberView(member,{actorId});
+      if(!view) return;
+      const row=document.createElement('li'); row.className='circle-row circle-member-row'; row.dataset.testid='circle-member-row';
+      row.dataset.memberId=String(view.id); row.dataset.memberRole=view.role; row.dataset.memberStatus=view.status;
+      if(view.status==='inactive') row.classList.add('is-inactive');
+      const avatar=circleUi.avatarNode(document,{label:view.initials,color:safeProfileColor(member?.color)});
+      const identity=document.createElement('div'); identity.className='circle-row-main';
+      const title=document.createElement('div'); title.className='circle-row-title';
+      const name=document.createElement('b'); name.textContent=view.name;
+      title.appendChild(name);
+      if(view.isSelf){ const you=document.createElement('span'); you.className='circle-you'; you.textContent='(you)'; title.appendChild(you); }
+      const badges=document.createElement('div'); badges.className='circle-row-badges';
+      badges.append(circleUi.badgeNode(document,view.roleLabel,view.role==='owner'?'info':null),circleUi.badgeNode(document,view.statusLabel,view.statusTone));
+      identity.append(title,badges);
+      if(view.joined){ const joined=document.createElement('div'); joined.className='small muted'; joined.textContent=view.joined; identity.appendChild(joined); }
+      row.append(avatar,identity);
+      if(view.actions.length){
+        const controls=document.createElement('div'); controls.className='circle-row-actions membership-controls';
+        view.actions.forEach(action=>{
+          const button=document.createElement('button'); button.type='button';
+          if(action==='reactivate'){
+            button.className='btn secondary sm'; button.dataset.testid='circle-member-reactivate'; button.textContent='Reactivate'; button.setAttribute('aria-label',`Reactivate ${view.name}`);
+          }else if(action==='transfer'){
+            button.className='btn secondary sm'; button.dataset.testid='circle-member-transfer'; button.textContent='Transfer ownership'; button.setAttribute('aria-label',`Transfer ownership to ${view.name}`);
+          }else{
+            button.className='btn secondary sm membership-danger'; button.dataset.testid='circle-member-deactivate'; button.textContent='Deactivate'; button.setAttribute('aria-label',`Deactivate ${view.name}`);
           }
-          const deactivate=document.createElement('button'); deactivate.type='button'; deactivate.className='pill membership-danger'; deactivate.dataset.testid='circle-member-deactivate'; deactivate.textContent='Deactivate'; deactivate.setAttribute('aria-label',`Deactivate ${name.textContent}`);
-          deactivate.addEventListener('click',()=>{ applyMemberAction('deactivate',member); }); controls.appendChild(deactivate);
-        }
+          button.addEventListener('click',()=>{ applyMemberAction(action,member); });
+          controls.appendChild(button);
+        });
         row.appendChild(controls);
       }
-      circleManageMembers.appendChild(row);
+      list.appendChild(row);
     });
-    if(!circleManageMembers.children.length){
-      const empty=document.createElement('div'); empty.className='small muted'; empty.textContent=circleRosterState.query?'No matching members in this page.':'No manageable members found.'; circleManageMembers.appendChild(empty);
+    if(list.children.length) circleManageMembers.appendChild(list);
+    else{
+      const empty=document.createElement('p'); empty.className='small muted circle-empty'; empty.textContent=circleRosterState.query?'No members match that name.':'No members found.'; circleManageMembers.appendChild(empty);
     }
   }
 
@@ -6082,8 +6467,9 @@ async function refreshMe(){
     if(circleMembersLoadMore){ circleMembersLoadMore.disabled=true; circleMembersLoadMore.textContent=append?'Loading more…':'Load more members'; }
     if(!append){
       circleRosterState={query:normalizedQuery,members:[],nextCursor:null,hasMore:false,loaded:hadLoadedRoster};
+      if(!hadLoadedRoster) circleManageMembers.dataset.state='loading';
       circleManageMembers.replaceChildren();
-      const loading=document.createElement('div'); loading.className='small muted'; loading.textContent=normalizedQuery?'Searching members…':'Loading member controls…'; circleManageMembers.appendChild(loading);
+      const loading=document.createElement('div'); loading.className='small muted'; loading.textContent=normalizedQuery?'Searching members…':'Loading members…'; circleManageMembers.appendChild(loading);
     }
     if(circleMemberSearchStatus) circleMemberSearchStatus.textContent=append?'Loading more members…':normalizedQuery?'Searching member display names…':'Loading members…';
     try{
@@ -6101,6 +6487,7 @@ async function refreshMe(){
       circleRosterLoadEpoch=0;
       circleRosterState={query:normalizedQuery,members:unique,nextCursor:result.next_cursor,hasMore:result.has_more,loaded:true};
       renderManagedMemberRows(unique);
+      circleManageMembers.dataset.state='ready';
       circleManageMembers.setAttribute('aria-busy','false');
       if(circleMemberSearchClear) circleMemberSearchClear.hidden=!normalizedQuery;
       if(circleMembersLoadMore){
@@ -6112,7 +6499,9 @@ async function refreshMe(){
         ?`${unique.length} matching member${unique.length===1?'':'s'} shown${result.has_more?'. More results may be available.':'. Search complete.'}`
         :`${unique.length} membership${unique.length===1?'':'s'} shown${result.has_more?'. More members are available.':'. All members loaded.'}`;
       if(circleLifecycleStatus&&noticeGeneration===circleLifecycleNoticeGeneration&&!hasCircleLifecycleNotice(actorId)){
-        circleLifecycleStatus.textContent='Owner controls are ready.';
+        // Keep action results (for example "Member deactivated") visible; only
+        // clear stale recovery copy from an earlier failed load.
+        if(/^(Your circle remains unchanged|Roster access changed)/.test(circleLifecycleStatus.textContent)) circleLifecycleStatus.textContent='';
       }
       return true;
     }catch(error){
@@ -6134,9 +6523,10 @@ async function refreshMe(){
       circleRosterLoadEpoch=0;
       circleManageMembers.setAttribute('aria-busy','false');
       if(!append){
+        circleManageMembers.dataset.state='error';
         circleManageMembers.replaceChildren();
-        const error=document.createElement('div'); error.className='small muted'; error.textContent='Member controls are temporarily unavailable.';
-        const retry=document.createElement('button'); retry.type='button'; retry.className='pill'; retry.textContent='Retry members'; retry.addEventListener('click',()=>{ loadManagedMembers(circleRenderEpoch,{query:normalizedQuery}); });
+        const error=document.createElement('div'); error.className='small muted'; error.textContent='Members could not be loaded. Nothing was changed.';
+        const retry=document.createElement('button'); retry.type='button'; retry.className='btn secondary sm'; retry.textContent='Retry members'; retry.addEventListener('click',()=>{ loadManagedMembers(circleRenderEpoch,{query:normalizedQuery}); });
         circleManageMembers.append(error,retry);
       }
       if(circleMembersLoadMore){ circleMembersLoadMore.hidden=!append; circleMembersLoadMore.disabled=false; circleMembersLoadMore.textContent=normalizedQuery?'Retry more matches':'Retry more members'; }
@@ -6173,7 +6563,7 @@ async function refreshMe(){
       ||Number(me?.id||me?.uid)!==activeCircleUserId) return;
     circleLifecyclePanel.hidden=false; circleLifecyclePanel.style.display='grid';
     if(circleLifecycleHelp) circleLifecycleHelp.textContent=role==='owner'
-      ?'Manage active and inactive members in bounded pages. Search uses display names only. Ownership transfer is immediate and keeps one active owner.'
+      ?'Deactivated members are signed out until you reactivate them. Ownership transfer is immediate; if you are the only owner, transfer it before leaving.'
       :'Leaving signs you out and removes access to private rooms immediately.';
     if(circleManageMembers) circleManageMembers.hidden=role!=='owner';
     if(circleMemberSearchForm) circleMemberSearchForm.hidden=role!=='owner';
@@ -6385,6 +6775,8 @@ async function refreshMe(){
     const note=document.getElementById('circleAutoNote');
     const roleLabel=document.getElementById('circleRoleLabel');
     if(roleLabel) roleLabel.textContent='private';
+    if(circleTitle&&!me) circleTitle.textContent='Your circle';
+    if(circleMembersMeta) circleMembersMeta.textContent='';
     listEl.replaceChildren();
     listEl.setAttribute('aria-busy','true');
     if(circleContextSwitching){
@@ -6428,21 +6820,28 @@ async function refreshMe(){
       if(gatedRole!=='owner') clearLatestInvite();
       setLegacyCircleControls(legacyEnvelope);
       pCount.textContent=String(people.length);
+      const circleName=legacyEnvelope?'Your circle':(String(res.circle_meta?.name||'').trim().slice(0,120)||'Your circle');
+      if(circleTitle) circleTitle.textContent=usingLocalLegacy?'Local testing circle':circleName;
       if(note) note.textContent=legacyEnvelope
-        ? (usingLocalLegacy?'Local testing circle • membership enforcement is not enabled':`Your circle • ${people.length} member${people.length===1?'':'s'}`)
-        : `${String(res.circle_meta?.name||'Your circle')} • ${people.length} active member${people.length===1?'':'s'}`;
+        ? (usingLocalLegacy?'Browser-only test data. Membership rules are not enforced.':`${people.length} member${people.length===1?'':'s'}`)
+        : `${people.length} active member${people.length===1?'':'s'}${gatedRole==='owner'?' · you manage this circle':''}`;
+      if(circleMembersMeta) circleMembersMeta.textContent=`${people.length} active`;
       if(roleLabel) roleLabel.textContent=legacyEnvelope?'legacy':activeCircleRole;
+      const rosterList=document.createElement('ul'); rosterList.className='people circle-roster-list'; rosterList.setAttribute('aria-label','Active members');
       people.forEach((person,index)=>{
-        const displayName=String(person?.display_name||person?.name||'Member');
-        const color=safeProfileColor(person?.color);
-        const row=document.createElement('div'); row.className='person';
-        const identity=document.createElement('div'); identity.className='row';
-        const avatar=document.createElement('div'); avatar.className='avatar'; avatar.style.background=color; avatar.textContent=displayName.slice(0,2).toUpperCase();
-        const name=document.createElement('b'); name.style.fontSize='13px'; name.textContent=displayName;
-        identity.append(avatar,name); row.appendChild(identity);
+        const view=circleUi.rosterPersonView(person,{actorId:userId});
+        const row=document.createElement('li'); row.className='person circle-row';
+        const avatar=circleUi.avatarNode(document,{label:view.initials,color:safeProfileColor(person?.color)});
+        const identity=document.createElement('div'); identity.className='circle-row-main';
+        const title=document.createElement('div'); title.className='circle-row-title';
+        const name=document.createElement('b'); name.textContent=view.name; title.appendChild(name);
+        if(view.isSelf){ const you=document.createElement('span'); you.className='circle-you'; you.textContent='(you)'; title.appendChild(you); }
+        identity.appendChild(title);
+        if(view.focus){ const focus=document.createElement('div'); focus.className='small muted'; focus.textContent=`Practising ${view.focus}`; identity.appendChild(focus); }
+        row.append(avatar,identity);
         if(usingLocalLegacy&&isAdmin()){
-          const actions=document.createElement('div'); actions.className='row';
-          const edit=document.createElement('button'); edit.type='button'; edit.className='pill'; edit.textContent='edit';
+          const actions=document.createElement('div'); actions.className='circle-row-actions';
+          const edit=document.createElement('button'); edit.type='button'; edit.className='btn ghost sm'; edit.textContent='Rename';
           edit.addEventListener('click',async()=>{
             const current=getPeople(); const selected=current[index]; if(!selected) return;
             const next=await showPrompt('Rename person',selected.name);
@@ -6451,7 +6850,7 @@ async function refreshMe(){
               renderPeople(); renderPairs(); renderRoomSelect(); toast('renamed');
             }
           });
-          const remove=document.createElement('button'); remove.type='button'; remove.className='pill'; remove.textContent='remove';
+          const remove=document.createElement('button'); remove.type='button'; remove.className='btn ghost sm membership-danger'; remove.textContent='Remove';
           remove.addEventListener('click',async()=>{
             const current=getPeople(); const selected=current[index]; if(!selected) return;
             if(await showConfirm(`Remove ${selected.name}?`,`Remove ${selected.name} from circle`)){
@@ -6460,10 +6859,11 @@ async function refreshMe(){
           });
           actions.append(edit,remove); row.appendChild(actions);
         }
-        listEl.appendChild(row);
+        rosterList.appendChild(row);
       });
+      if(people.length) listEl.appendChild(rosterList);
       if(!people.length){
-        const empty=document.createElement('div'); empty.className='small muted'; empty.textContent='No active members are in this circle.'; listEl.appendChild(empty);
+        const empty=document.createElement('p'); empty.className='small muted circle-empty'; empty.textContent='No active members are in this circle yet.'; listEl.appendChild(empty);
       }
       listEl.setAttribute('aria-busy','false');
       if(gatedRole==='owner'&&circleOwnerPanel){
@@ -6472,6 +6872,7 @@ async function refreshMe(){
         if(createButton) createButton.disabled=circleInviteCreatePending;
         if(circleInviteLink) circleInviteLink.hidden=!latestInviteUrl;
         await loadOwnerInvitations(epoch);
+        void loadInviteRequests(epoch);
       }
       await showCircleLifecycle(gatedRole,epoch,{loadRoster:!skipManagedRoster});
     }catch{
@@ -6494,7 +6895,7 @@ async function refreshMe(){
     if(!circleControlOperationMatches(operation)) return;
     circleInviteCreatePending=true;
     if(button) button.disabled=true;
-    if(circleInviteStatus) circleInviteStatus.textContent='Creating invitation…';
+    if(circleInviteStatus) circleInviteStatus.textContent='Sending invitation…';
     try{
       const result=await api('/api/invitations',{method:'POST',body:{email}});
       // A same-account roster refresh may advance the render epoch while this
@@ -6511,15 +6912,16 @@ async function refreshMe(){
       latestInviteUrl=absoluteInviteUrl.href;
       latestInviteId=invitationId;
       latestInviteOwnerId=userId;
+      circleInviteEmails.set(invitationId,email);
       if(input) input.value='';
       if(circleInviteLink) circleInviteLink.hidden=false;
       if(circleInviteStatus) circleInviteStatus.textContent=result?.email_delivery?.queued===true
-        ?'Invitation email queued. Copy the link as a fallback.'
-        :'Invitation created. Copy the link and send it privately.';
+        ?`Invitation email on its way to ${email}. You can also copy the link as a fallback.`
+        :`Invitation ready for ${email}. Copy the link and send it privately.`;
       if(activeCircleRole==='owner') await loadOwnerInvitations(circleRenderEpoch);
     }catch{
       if(!circleControlOperationMatches(operation)) return;
-      if(circleInviteStatus) circleInviteStatus.textContent='Could not create invitation. Check the email and try again.';
+      if(circleInviteStatus) circleInviteStatus.textContent='Could not send the invitation. Check the email address and try again.';
     }finally{
       if(circleControlOperationMatches(operation)){
         circleInviteCreatePending=false;
@@ -6527,7 +6929,7 @@ async function refreshMe(){
       }
     }
   });
-  circleInviteLink?.addEventListener('click',async()=>{
+  async function copyLatestInviteLink(){
     if(activeCircleRole!=='owner'||!latestInviteUrl) return;
     const operation=captureCircleControlOperation();
     if(!circleControlOperationMatches(operation)) return;
@@ -6535,12 +6937,13 @@ async function refreshMe(){
     try{
       await navigator.clipboard.writeText(inviteUrl);
       if(!circleControlOperationMatches(operation)||latestInviteUrl!==inviteUrl) return;
-      if(circleInviteStatus) circleInviteStatus.textContent='Invitation link copied.';
+      if(circleInviteStatus) circleInviteStatus.textContent='Invitation link copied. Send it privately; it works once.';
     }catch{
       if(!circleControlOperationMatches(operation)||latestInviteUrl!==inviteUrl) return;
-      if(circleInviteStatus) circleInviteStatus.textContent='Copy failed. Create a new invitation and try again.';
+      if(circleInviteStatus) circleInviteStatus.textContent='Copy failed. Resend the invitation to get a fresh link.';
     }
-  });
+  }
+  circleInviteLink?.addEventListener('click',()=>{ void copyLatestInviteLink(); });
   window.addEventListener('randori:auth-refreshed',()=>{
     renderPeople();
     // The first paint is anonymous/local while the cookie session is being
@@ -7192,12 +7595,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   function completionBadge(completion){
-    const badge=document.createElement('span'); badge.className='kbd'; badge.dataset.testid='session-completion-badge'; badge.style.marginLeft='6px';
+    const badge=document.createElement('span'); badge.dataset.testid='session-completion-badge';
     if(completion?.state==='completed'){
-      badge.textContent='Completed'; badge.style.color='var(--ok)';
+      badge.className='rc-badge rc-badge--success'; badge.textContent='Completed';
     }else if(completion?.state==='awaiting_participants'){
-      badge.textContent=`Awaiting ${completion.required_count-completion.confirmed_count}`; badge.style.color='var(--warn)';
-    }else badge.textContent='Completion not recorded';
+      badge.className='rc-badge rc-badge--warning'; badge.textContent=`Awaiting ${completion.required_count-completion.confirmed_count}`;
+    }else{ badge.className='rc-badge'; badge.textContent='Completion not recorded'; }
     return badge;
   }
 
@@ -7320,33 +7723,52 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return {pair:{id:pairId,week_id:weekId,week_label:weekLabel,week_start:weekStart,topic,topic_kind:topicKind,is_ai:raw.pair.is_ai===true,members},schedule,activity,workspace,completion};
   }
 
+  function recapSection(testid,label,title){
+    const section=document.createElement('section'); section.className='recap-section';
+    if(testid) section.dataset.testid=testid;
+    section.setAttribute('aria-label',label);
+    const heading=document.createElement('h4'); heading.className='circle-subtitle'; heading.textContent=title;
+    section.appendChild(heading);
+    return section;
+  }
+
+  function markActiveHistoryRow(room){
+    document.querySelectorAll('#historyPersonal [data-testid="pair-history-row"]').forEach(row=>{
+      if(row.dataset.roomId===room) row.setAttribute('aria-current','true');
+      else row.removeAttribute('aria-current');
+    });
+  }
+
   function renderPairRecap(recap,room){
     const area=document.getElementById('pairRecapArea');
     if(!area||pairRecapState.room!==room) return;
     area.replaceChildren();
-    const card=document.createElement('article'); card.className='card'; card.setAttribute('aria-labelledby','pairRecapTitle');
-    const head=document.createElement('div'); head.className='card-h';
-    const title=document.createElement('h3'); title.id='pairRecapTitle'; title.tabIndex=-1; title.style.fontSize='14px'; title.textContent=`${recap.pair.week_label} recap`;
-    const actions=document.createElement('div'); actions.className='row';
-    const refresh=document.createElement('button'); refresh.type='button'; refresh.className='pill'; refresh.dataset.testid='pair-recap-refresh'; refresh.textContent='Refresh'; refresh.addEventListener('click',()=>{ fetchPairRecap(room); });
+    const card=document.createElement('article'); card.className='card circle-card recap-card'; card.setAttribute('aria-labelledby','pairRecapTitle');
+    const head=document.createElement('div'); head.className='card-h recap-head';
+    const heading=document.createElement('div'); heading.className='recap-heading';
+    const title=document.createElement('h3'); title.id='pairRecapTitle'; title.className='circle-card-title'; title.tabIndex=-1; title.textContent=`${recap.pair.week_label} recap`;
+    const names=document.createElement('div'); names.className='small recap-names';
+    names.textContent=recap.pair.members.map(member=>member.is_me?`${member.display_name} (you)`:member.display_name).join(' × ');
+    heading.append(title,names);
+    const actions=document.createElement('div'); actions.className='circle-row-actions';
+    const refresh=document.createElement('button'); refresh.type='button'; refresh.className='btn ghost sm'; refresh.dataset.testid='pair-recap-refresh'; refresh.appendChild(circleUi.iconNode(document,'i-retry')); refresh.append('Refresh'); refresh.addEventListener('click',()=>{ fetchPairRecap(room); });
     actions.appendChild(refresh);
     if(recap.workspace.artifact_available){
-      const reopen=document.createElement('button'); reopen.type='button'; reopen.className='btn'; reopen.dataset.testid='pair-recap-reopen'; reopen.textContent='Reopen workspace'; reopen.addEventListener('click',()=>{ reopenPairWorkspace(room); });
+      const reopen=document.createElement('button'); reopen.type='button'; reopen.className='btn sm'; reopen.dataset.testid='pair-recap-reopen'; reopen.textContent='Reopen workspace'; reopen.addEventListener('click',()=>{ reopenPairWorkspace(room); });
       actions.appendChild(reopen);
     }
-    head.append(title,actions); card.appendChild(head);
-    const body=document.createElement('div'); body.className='card-b'; body.style.display='grid'; body.style.gap='12px';
+    head.append(heading,actions); card.appendChild(head);
+    const body=document.createElement('div'); body.className='card-b recap-body';
     const status=document.createElement('div'); status.className='small muted'; status.dataset.testid='pair-recap-status'; status.setAttribute('role','status'); status.setAttribute('aria-live','polite'); status.textContent='Recap loaded'; body.appendChild(status);
 
-    const summary=document.createElement('section'); summary.setAttribute('aria-label','Pairing summary');
-    const names=recap.pair.members.map(member=>member.is_me?`${member.display_name} (you)`:member.display_name).join(' × ');
-    const pairing=document.createElement('div'); pairing.className='small'; pairing.textContent=names;
-    const week=document.createElement('div'); week.className='small muted'; week.append('Paired '); week.appendChild(recapTimeNode(recap.pair.week_start));
+    const facts=document.createElement('div'); facts.className='recap-facts';
+    const summary=document.createElement('section'); summary.className='recap-section'; summary.setAttribute('aria-label','Pairing summary');
+    const summaryTitle=document.createElement('h4'); summaryTitle.className='circle-subtitle'; summaryTitle.textContent='Paired';
+    const week=document.createElement('div'); week.className='small muted'; week.appendChild(recapTimeNode(recap.pair.week_start));
     if(recap.pair.topic||recap.pair.topic_kind) week.append(` · ${recap.pair.topic||recap.pair.topic_kind}`);
-    summary.append(pairing,week); body.appendChild(summary);
+    summary.append(summaryTitle,week); facts.appendChild(summary);
 
-    const completion=document.createElement('section'); completion.dataset.testid='pair-recap-completion'; completion.setAttribute('aria-label','Session completion');
-    const completionTitle=document.createElement('b'); completionTitle.textContent='Completion'; completion.appendChild(completionTitle);
+    const completion=recapSection('pair-recap-completion','Session completion','Completion');
     const completionValue=document.createElement('div'); completionValue.className='small muted';
     completionValue.appendChild(completionBadge(recap.completion));
     if(recap.completion.state==='completed'){
@@ -7354,56 +7776,66 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }else if(recap.completion.state==='awaiting_participants'){
       completionValue.append(` ${recap.completion.confirmed_count} of ${recap.completion.required_count} participants confirmed.`);
     }
-    completion.appendChild(completionValue); body.appendChild(completion);
+    completion.appendChild(completionValue); facts.appendChild(completion);
 
-    const schedule=document.createElement('section'); schedule.dataset.testid='pair-recap-schedule'; schedule.setAttribute('aria-label','Agreed schedule');
-    const scheduleTitle=document.createElement('b'); scheduleTitle.textContent='Schedule'; schedule.appendChild(scheduleTitle);
+    const schedule=recapSection('pair-recap-schedule','Agreed schedule','Schedule');
     const scheduleValue=document.createElement('div'); scheduleValue.className='small muted';
     if(recap.schedule?.agreed_time){ scheduleValue.append('Agreed for '); scheduleValue.appendChild(recapTimeNode(recap.schedule.agreed_time)); }
-    else if(recap.schedule?.legacy_agreed_time) scheduleValue.textContent=`Legacy schedule: ${recap.schedule.legacy_agreed_time}`;
+    else if(recap.schedule?.legacy_agreed_time) scheduleValue.textContent=`Agreed: ${recap.schedule.legacy_agreed_time}`;
     else scheduleValue.textContent='No agreed time recorded.';
-    schedule.appendChild(scheduleValue); body.appendChild(schedule);
+    schedule.appendChild(scheduleValue); facts.appendChild(schedule);
 
-    const activitySection=document.createElement('section'); activitySection.setAttribute('aria-label','Pair activity');
-    const activityTitle=document.createElement('b'); activityTitle.textContent='Activity'; activitySection.appendChild(activityTitle);
+    const workspace=recapSection('pair-recap-workspace','Workspace checkpoint','Saved code');
+    const workspaceValue=document.createElement('div'); workspaceValue.className='small muted';
+    if(recap.workspace.artifact_available){
+      workspaceValue.append(`Checkpoint r${recap.workspace.revision} · ${recap.workspace.question_slug}${recap.workspace.question_version===null?'':` v${recap.workspace.question_version}`} · ${circleUi.languageLabel(recap.workspace.language)} · updated `);
+      workspaceValue.appendChild(recapTimeNode(recap.workspace.updated_at));
+    }else workspaceValue.textContent='No recoverable workspace checkpoint is available.';
+    workspace.appendChild(workspaceValue); facts.appendChild(workspace);
+    body.appendChild(facts);
+
+    const activitySection=recapSection(null,'Pair activity','Activity');
     if(!recap.activity.length){
-      const empty=document.createElement('div'); empty.className='small muted'; empty.dataset.testid='pair-recap-empty'; empty.textContent='No saved messages or verified runs for this pairing.'; activitySection.appendChild(empty);
+      const empty=document.createElement('p'); empty.className='small muted circle-empty'; empty.dataset.testid='pair-recap-empty'; empty.textContent='No saved messages or verified runs for this pairing.'; activitySection.appendChild(empty);
     }else{
-      const list=document.createElement('ol'); list.className='weeks'; list.dataset.testid='pair-recap-activity';
+      const list=document.createElement('ol'); list.className='recap-timeline'; list.dataset.testid='pair-recap-activity';
       recap.activity.forEach(event=>{
-        const item=document.createElement('li'); item.className='small'; item.dataset.eventId=event.event_id;
-        const meta=document.createElement('div'); meta.className='muted';
+        const item=document.createElement('li'); item.className='recap-event small'; item.dataset.eventId=event.event_id; item.dataset.kind=event.kind;
+        const avatar=circleUi.avatarNode(document,{label:circleUi.initials(event.actor.display_name),size:'sm'});
+        const content=document.createElement('div'); content.className='recap-event-body';
+        const meta=document.createElement('div'); meta.className='muted recap-event-meta';
         const actor=document.createElement('b'); actor.textContent=event.actor.display_name; meta.append(actor,' · '); meta.appendChild(recapTimeNode(event.created_at));
-        const detail=document.createElement('div');
+        const detail=document.createElement('div'); detail.className='recap-event-detail';
         if(event.kind==='message') detail.textContent=event.message;
-        else detail.textContent=`Verified run · ${event.question_slug} v${event.question_version} · ${event.language} · ${event.passed_count}/${event.total_count} passed${event.duration_ms===null?'':` · ${event.duration_ms} ms`}`;
-        item.append(meta,detail); list.appendChild(item);
+        else{
+          const run=circleUi.runSummary(event);
+          const runTitle=document.createElement('span'); runTitle.className='recap-run-title'; runTitle.textContent=run.title;
+          const runMeta=document.createElement('span'); runMeta.className=`recap-run-meta${run.allPassed?' is-pass':''}`; runMeta.textContent=` · ${run.meta}`;
+          detail.append(runTitle,runMeta);
+        }
+        content.append(meta,detail);
+        item.append(avatar,content); list.appendChild(item);
       });
       activitySection.appendChild(list);
     }
     body.appendChild(activitySection);
-
-    const workspace=document.createElement('section'); workspace.dataset.testid='pair-recap-workspace'; workspace.setAttribute('aria-label','Workspace checkpoint');
-    const workspaceTitle=document.createElement('b'); workspaceTitle.textContent='Workspace'; workspace.appendChild(workspaceTitle);
-    const workspaceValue=document.createElement('div'); workspaceValue.className='small muted';
-    if(recap.workspace.artifact_available){
-      workspaceValue.append(`Checkpoint r${recap.workspace.revision} · ${recap.workspace.question_slug}${recap.workspace.question_version===null?'':` v${recap.workspace.question_version}`} · ${recap.workspace.language} · updated `);
-      workspaceValue.appendChild(recapTimeNode(recap.workspace.updated_at));
-    }else workspaceValue.textContent='No recoverable workspace checkpoint is available.';
-    workspace.appendChild(workspaceValue); body.appendChild(workspace);
     card.appendChild(body); area.appendChild(card);
     pairRecapState.status='loaded';
+    markActiveHistoryRow(room);
     title.focus({preventScroll:true});
     area.scrollIntoView({block:'nearest'});
   }
 
   function renderPairRecapLoading(room){
     const area=document.getElementById('pairRecapArea'); if(!area) return;
-    const card=document.createElement('article'); card.className='card';
-    const body=document.createElement('div'); body.className='card-b';
+    const card=document.createElement('article'); card.className='card circle-card recap-card';
+    const body=document.createElement('div'); body.className='card-b recap-body';
     const status=document.createElement('div'); status.className='small muted'; status.dataset.testid='pair-recap-status'; status.setAttribute('role','status'); status.setAttribute('aria-live','polite'); status.textContent='Loading pairing recap…';
-    body.appendChild(status); card.appendChild(body); area.replaceChildren(card);
+    const skeleton=document.createElement('div'); skeleton.className='recap-skeleton'; skeleton.setAttribute('aria-hidden','true');
+    for(let index=0;index<3;index+=1){ const line=document.createElement('span'); line.className='rc-skeleton'; skeleton.appendChild(line); }
+    body.append(status,skeleton); card.appendChild(body); area.replaceChildren(card);
     pairRecapState.room=room; pairRecapState.recap=null; pairRecapState.status='loading';
+    markActiveHistoryRow(room);
   }
 
   async function fetchPairRecap(room){
@@ -7431,7 +7863,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       pairRecapState.recap=null; pairRecapState.status='error';
       const area=document.getElementById('pairRecapArea'); if(area) area.replaceChildren();
       const status=document.createElement('div'); status.className='small muted'; status.dataset.testid='pair-recap-status'; status.setAttribute('role','status'); status.textContent='Pairing recap unavailable — try again.';
-      const retry=document.createElement('button'); retry.type='button'; retry.className='pill'; retry.dataset.testid='pair-recap-refresh'; retry.textContent='Retry'; retry.addEventListener('click',()=>{ fetchPairRecap(room); });
+      const retry=document.createElement('button'); retry.type='button'; retry.className='btn secondary sm'; retry.dataset.testid='pair-recap-refresh'; retry.textContent='Retry'; retry.addEventListener('click',()=>{ fetchPairRecap(room); });
       area?.append(status,retry);
       return false;
     }finally{ if(pairRecapState.abort===controller) pairRecapState.abort=null; }
@@ -7456,19 +7888,22 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   function historyRow(item){
-    const room=canonicalHistoryRoom(item?.week_id,item?.pg_id);
-    if(!room) return null;
-    const partner=historyText(item?.partner_name,240)||'Pair member';
-    const week=historyText(item?.week_label,80)||`Week ${item.week_id}`;
-    const row=document.createElement('li'); row.className='row small'; row.style.justifyContent='space-between'; row.style.gap='10px'; row.dataset.testid='pair-history-row'; row.dataset.roomId=room;
-    const description=document.createElement('span');
-    const label=document.createElement('span'); label.className='kbd'; label.textContent=week;
-    description.append(label,` × ${partner}`);
-    if(item?.topic||item?.topic_kind){ const topic=document.createElement('span'); topic.className='kbd'; topic.style.marginLeft='6px'; topic.textContent=String(item.topic||item.topic_kind).slice(0,160); description.appendChild(topic); }
+    const view=circleUi.historyRowView(item);
+    if(!view||canonicalHistoryRoom(item?.week_id,item?.pg_id)!==view.room) return null;
+    const room=view.room;
+    const row=document.createElement('li'); row.className='circle-row history-row'; row.dataset.testid='pair-history-row'; row.dataset.roomId=room;
+    if(pairRecapState.room===room) row.setAttribute('aria-current','true');
+    const avatar=circleUi.avatarNode(document,{label:view.partnerInitials});
+    const main=document.createElement('div'); main.className='circle-row-main';
+    const title=document.createElement('div'); title.className='circle-row-title';
+    const partner=document.createElement('b'); partner.textContent=`With ${view.partner}`; title.appendChild(partner);
+    const meta=document.createElement('div'); meta.className='small muted history-row-meta'; meta.textContent=view.meta;
+    main.append(title,meta);
     const completion=normalizeHistoryCompletion(item?.completion,item?.is_ai?1:2);
-    if(completion) description.appendChild(completionBadge(completion));
-    const button=document.createElement('button'); button.type='button'; button.className='pill'; button.dataset.testid='pair-history-view-recap'; button.dataset.roomId=room; button.textContent='View recap'; button.setAttribute('aria-label',`View recap for ${week} with ${partner}`); button.addEventListener('click',()=>{ fetchPairRecap(room); });
-    row.append(description,button);
+    if(completion){ const badges=document.createElement('div'); badges.className='circle-row-badges'; badges.appendChild(completionBadge(completion)); main.appendChild(badges); }
+    const button=document.createElement('button'); button.type='button'; button.className='btn secondary sm'; button.dataset.testid='pair-history-view-recap'; button.dataset.roomId=room; button.textContent='View recap'; button.setAttribute('aria-label',`View recap for ${view.week} with ${view.partner}`); button.addEventListener('click',()=>{ fetchPairRecap(room); });
+    const actions=document.createElement('div'); actions.className='circle-row-actions'; actions.appendChild(button);
+    row.append(avatar,main,actions);
     return row;
   }
 
@@ -7478,7 +7913,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(!userId){
       pairRecapState.historyUserId=null;
       cont.replaceChildren();
-      const status=document.createElement('div'); status.className='small muted'; status.style.padding='8px'; status.textContent='Sign in to see your pairings and activity.'; cont.appendChild(status);
+      const status=document.createElement('p'); status.className='small muted circle-empty'; status.textContent='Sign in to see your pairings and recaps.'; cont.appendChild(status);
       return false;
     }
     if(!historyViewVisible()) return false;
@@ -7488,6 +7923,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const controller=new AbortController(); pairRecapState.historyAbort=controller;
     cont.replaceChildren(); cont.setAttribute('aria-busy','true');
     const loading=document.createElement('div'); loading.className='small muted'; loading.setAttribute('role','status'); loading.dataset.testid='pair-history-status'; loading.textContent='Loading pairings…'; cont.appendChild(loading);
+    const skeleton=document.createElement('div'); skeleton.className='history-skeleton'; skeleton.setAttribute('aria-hidden','true');
+    for(let index=0;index<3;index+=1){ const line=document.createElement('span'); line.className='rc-skeleton'; skeleton.appendChild(line); }
+    cont.appendChild(skeleton);
     try{
       const response=await fetch('/api/history',{credentials:'same-origin',cache:'no-store',signal:controller.signal});
       const data=await response.json().catch(()=>({}));
@@ -7495,16 +7933,17 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(!response.ok||data.ok!==true||Number(data.user?.id)!==userId||!Array.isArray(data.history)) throw new Error('history unavailable');
       const rows=data.history.slice(0,100).map(historyRow).filter(Boolean);
       cont.replaceChildren(); cont.setAttribute('aria-busy','false');
-      const status=document.createElement('div'); status.className='small muted'; status.setAttribute('role','status'); status.dataset.testid='pair-history-status'; status.textContent=rows.length?`${rows.length} pairing${rows.length===1?'':'s'} loaded`:'No pairings yet — your first pairing will appear after the Sunday shuffle.'; cont.appendChild(status);
-      if(rows.length){ const list=document.createElement('ol'); list.className='weeks'; list.setAttribute('aria-label','Your pairings'); rows.forEach(row=>list.appendChild(row)); cont.appendChild(list); }
-      const count=document.getElementById('historyCount'); if(count) count.textContent=`${rows.length} pairing${rows.length===1?'':'s'}`;
-      const hint=document.getElementById('historyAuthHint'); if(hint) hint.textContent='Server-backed pairings and saved activity';
+      const status=document.createElement('div'); status.className=rows.length?'sr-only':'small muted circle-empty'; status.setAttribute('role','status'); status.dataset.testid='pair-history-status'; status.textContent=rows.length?`${rows.length} pairing${rows.length===1?'':'s'} loaded`:'No pairings yet. Your first pairing appears here after the weekly shuffle.'; cont.appendChild(status);
+      if(rows.length){ const list=document.createElement('ol'); list.className='people history-list'; list.setAttribute('aria-label','Your pairings, newest first'); rows.forEach(row=>list.appendChild(row)); cont.appendChild(list); }
+      const count=document.getElementById('historyCount'); if(count) count.textContent=circleUi.historyCountLabel(rows.length);
+      const hint=document.getElementById('historyAuthHint'); if(hint) hint.textContent=rows.length?'Your past pairings. Open one to see its recap.':'Your past pairings will appear here.';
       return true;
     }catch(error){
       if(controller.signal.aborted||pairRecapState.historyEpoch!==epoch||currentHistoryUserId()!==userId||!historyViewVisible()) return false;
       cont.replaceChildren(); cont.setAttribute('aria-busy','false');
-      const status=document.createElement('div'); status.className='small muted'; status.setAttribute('role','status'); status.dataset.testid='pair-history-status'; status.textContent='Pairing history unavailable — retry by reopening History.'; cont.appendChild(status);
-      const count=document.getElementById('historyCount'); if(count) count.textContent='Pairings unavailable';
+      const status=document.createElement('div'); status.className='small muted'; status.setAttribute('role','status'); status.dataset.testid='pair-history-status'; status.textContent='Pairing history unavailable right now.'; cont.appendChild(status);
+      const retry=document.createElement('button'); retry.type='button'; retry.className='btn secondary sm'; retry.textContent='Retry'; retry.addEventListener('click',()=>{ void renderPersonalHistory(); }); cont.appendChild(retry);
+      const count=document.getElementById('historyCount'); if(count) count.textContent='Unavailable';
       return false;
     }finally{ if(pairRecapState.historyAbort===controller) pairRecapState.historyAbort=null; }
   }
@@ -7515,8 +7954,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const hint=document.getElementById('historyAuthHint');
     if(currentHistoryUserId()){
       local?.replaceChildren();
-      document.getElementById('historyCount').textContent='Loading pairings…';
-      if(hint) hint.textContent='Server-backed pairings and saved activity';
+      document.getElementById('historyCount').textContent='Loading…';
+      if(hint) hint.textContent='Your past pairings. Open one to see its recap.';
       renderPersonalHistory();
       return;
     }
@@ -7566,7 +8005,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       ||pairRecapState.userId!==null&&pairRecapState.userId!==nextId;
     if(changed){
       stopPairRecap({clear:true});
-      const count=document.getElementById('historyCount'); if(count) count.textContent=nextId?'Loading pairings…':'0 pairings';
+      const count=document.getElementById('historyCount'); if(count) count.textContent=nextId?'Loading…':'0 pairings';
       const hint=document.getElementById('historyAuthHint'); if(hint) hint.textContent=nextId?'Loading your private pairings…':'Sign in to see your pairings';
       queueMicrotask(()=>{ if(nextId&&historyViewVisible()) renderHistory(); });
     }
@@ -7584,7 +8023,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   if(qSel){
     const loadingOption=document.createElement('option');
     loadingOption.value='';
-    loadingOption.textContent='Loading original exercises…';
+    loadingOption.textContent='Loading exercises…';
     qSel.appendChild(loadingOption);
     qSel.disabled=true;
   }
@@ -7896,7 +8335,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   // cases or calling a runtime provider directly from the browser.
   document.getElementById('runBtn').onclick=()=>{
     const out=document.getElementById('runOut');
-    if(out) out.innerHTML='<div class="small muted">Loading the approved server catalogue…</div>';
+    if(out) out.innerHTML='<div class="small muted">Loading exercises…</div>';
   };
 
 
@@ -8790,12 +9229,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   renderPeople(); renderPairs(); renderHistory(); renderRoomSelect();
   // The server catalogue is the source of truth. Avoid presenting legacy
   // built-ins while the public exercise projection is loading.
-  document.getElementById('qTitle').textContent='Loading original exercises…';
+  document.getElementById('qTitle').textContent='Loading exercises…';
   document.getElementById('qDiff').textContent='';
-  document.getElementById('qDesc').innerHTML='<div class="small muted">Fetching the approved catalogue…</div>';
+  document.getElementById('qDesc').replaceChildren();
   document.getElementById('qExamples').innerHTML='';
   document.getElementById('qConstraints').textContent='';
-  document.getElementById('qTests').innerHTML='<div class="small muted">Evaluation cases remain private on the server.</div>';
+  document.getElementById('qTests').textContent='Run checks your code on the server once an exercise is open.';
 
   // ---------- AI Recording + Groq Feedback (video-aware, evidence-enforced) ----------
   let aiRecording = false;
@@ -9576,12 +10015,18 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   function openSoloCatalogue(){
     clearDashboardPairState();
     document.querySelector('[data-tab="code"]')?.click();
-    if(typeof toast==='function') toast('Solo catalogue ready — choose an exercise to begin.');
+    window._randori_room?.show?.('problem');
+    const browse=document.getElementById('catalogBrowseList'); if(browse) browse.open=true;
+    if(typeof toast==='function') toast('Solo practice: choose an exercise to begin.');
   }
 
   async function showDashboard(){
     const previousRoom=String(window._randori_authorized_room||window._randori_workspace?.room||'');
     cancelDashboardPairRequest();
+    // Showing Home answers any earlier explicit view request (e.g. the
+    // availability badge's jump to Pairing). Left set, a later automatic
+    // route would pull the member off the dashboard they are now using.
+    window._randoriExplicitNavigation=null;
     hideAllViews();
     if(viewDashboard) viewDashboard.style.display='block';
     window._randori_onboarding_authority?.render?.();
@@ -10420,7 +10865,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     body.append(composer);
     card.append(header,body); area.replaceChildren(card);
     window._randori_meeting_link?.mount?.();
-    toggleScheduleActions(scheduleState.inFlight);
+    toggleScheduleActions(scheduleState.inFlight==='write');
     renderHomeNextStep();
     if(scheduleState.expiryError){
       const focusTarget=scheduleState.expiryAction==='propose'
@@ -10499,8 +10944,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(!scope||scope.identity!==scheduleState.room||scheduleState.inFlight) return false;
     const captured=captureScheduleOperation(scope);
     const focusSnapshot=captureScheduleFocus();
-    const controller=new AbortController(); scheduleState.abort=controller; scheduleState.inFlight=true;
-    setScheduleStatus('checking…'); toggleScheduleActions(true);
+    // A background read leaves every control usable: a write started now
+    // supersedes it (mutateSchedule cancels the read), so a click that lands
+    // while the bounded poll is running is never swallowed by a disabled button.
+    const controller=new AbortController(); scheduleState.abort=controller; scheduleState.inFlight='poll';
+    setScheduleStatus('checking…');
     try{
       let response=null,data;
       if(captured.kind==='secondary'){
@@ -10546,7 +10994,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   async function mutateSchedule(action,extra={}){
     const scope=pairedDashboardSchedule();
-    if(!scope||scope.identity!==scheduleState.room||scheduleState.inFlight) return false;
+    if(!scope||scope.identity!==scheduleState.room||scheduleState.inFlight==='write') return false;
     const room=scope.identity;
     if(!/^[a-f0-9]{64}$/.test(scheduleState.version)){
       setScheduleStatus('checking…');
@@ -10557,7 +11005,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     cancelScheduleRequest(true);
     const captured=captureScheduleOperation(scope);
     armScheduleBoundaryTimer();
-    const controller=new AbortController(); scheduleState.abort=controller; scheduleState.inFlight=true;
+    const controller=new AbortController(); scheduleState.abort=controller; scheduleState.inFlight='write';
     let refreshAfterElapsed=false;
     setScheduleStatus('saving…'); toggleScheduleActions(true);
     try{
@@ -11202,6 +11650,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   let joinRequestEpoch=0;
   let joinAuthUserId=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null;
   let joinAuthIdentityHydrated=false;
+  let joinSignInPrompted=false;
   document.querySelector('.tabs')?.addEventListener('click',()=>{
     joinRequestEpoch+=1;
     joinRequest=null;
@@ -11318,14 +11767,25 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     // hide all first? We decide
     const tabsEl=document.querySelector('.tabs');
     if(!signedIn){
+      // A view the visitor picked while /api/auth/me is still in flight is
+      // not overridden by a provisional "signed out" route; the route runs
+      // again once identity settles and decides with an authoritative answer.
+      if(window._randori_auth?.identitySettled!==true&&window._randoriExplicitNavigation) return;
       // Canonical pair invites are private capabilities: preserve the URL and require sign-in.
       hideAllViews();
       if(viewLanding) viewLanding.style.display='block';
       if(tabsEl) tabsEl.style.display='flex';
       if(joinRoom){
         window._randori_pending_join_room=joinRoom;
-        window._randori_auth?.openModal?.('signin');
-        const title=document.getElementById('authTitle'); if(title) title.textContent='Sign in to join your pairing room';
+        // Until /api/auth/me settles, "no user yet" is not "signed out": a
+        // member opening their own pair link must not get a sign-in dialog
+        // stacked over the room that hydration is about to open. The route is
+        // re-evaluated when identity settles (see automaticRouteKey).
+        if(window._randori_auth?.identitySettled===true){
+          joinSignInPrompted=true;
+          window._randori_auth?.openModal?.('signin');
+          const title=document.getElementById('authTitle'); if(title) title.textContent='Sign in to join your pairing room';
+        }
       }
       // hide circle tab for non-admin anon
       try{ document.querySelector('[data-tab="circle"]')?.style.setProperty('display','none'); }catch{ const ct=document.querySelector('[data-tab="circle"]'); if(ct) ct.style.display='none'; }
@@ -11358,6 +11818,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }
     // signed in
     if(tabsEl) tabsEl.style.display='flex';
+    if(joinSignInPrompted){
+      // The join sign-in prompt has been answered (here or in another tab).
+      joinSignInPrompted=false;
+      if(document.getElementById('authOverlay')?.classList.contains('show')) window._randori_auth?.closeModal?.();
+    }
     if(joinRoom){
       const allowed=await openAuthorizedJoin(joinRoom,{canApply:canApplyRoute});
       if(!canApplyRoute()) return;
@@ -11428,7 +11893,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   let lastAutomaticRouteKey=null;
   function automaticRouteKey(){
     const user=window._randori_auth?.me;
-    return `${user?.id||user?.uid||user?.email||'anonymous'}|${location.pathname}${location.search}${location.hash}`;
+    // Identity settling is part of the key so an anonymous route taken before
+    // /api/auth/me answered is re-run once it has (it may now prompt sign-in).
+    const settled=window._randori_auth?.identitySettled===true?'settled':'pending';
+    return `${user?.id||user?.uid||user?.email||'anonymous'}|${settled}|${location.pathname}${location.search}${location.hash}`;
   }
   async function requestAutomaticRoute({force=false}={}){
     const key=automaticRouteKey();
@@ -11573,7 +12041,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   let activeQuestionSlug='';
   let activeQuestionVersion=null;
   let activeLanguage=document.getElementById('langSelect')?.value||'javascript';
-  const catalogueFilterState={search:'',difficulty:'all',type:'all',visibleSlugs:[]};
+  const catalogueView=window._randori_catalogue_view;
+  const catalogueFilterState={search:'',difficulty:'all',type:'all',language:'all',visibleSlugs:[]};
+  let catalogueFailureReason='error';
   const CATALOGUE_FILTER_EMPTY='__randori_catalog_filter_empty__';
   const sessionDrafts=new Map();
   const MAX_CATALOGUE_AUTO_RETRIES=2;
@@ -11632,6 +12102,14 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return {slug,version:optionVersion??(option?.dataset?.workspacePlaceholder==='1'?null:positiveVersion(catalogQuestion?.version))};
   }
 
+  // The catalogue record for the exact selected slug and pinned version, or
+  // null when the selection is unpinned, retired or not loaded.
+  function selectedCatalogueQuestion(){
+    const selected=selectedIdentity();
+    if(!selected.slug||selected.version==null) return null;
+    return CUSTOM_QUESTIONS.find(question=>question.slug===selected.slug&&question.version===selected.version)||null;
+  }
+
   function storedRoomDraft(question,language){
     const room=activeRoom();
     if(!room||!signedIn()) return undefined;
@@ -11666,11 +12144,22 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     activeQuestionVersion=positiveVersion(version);
     activeLanguage=document.getElementById('langSelect')?.value||activeLanguage;
     const title=document.getElementById('qTitle'); if(title) title.textContent='Exercise unavailable';
-    const diff=document.getElementById('qDiff'); if(diff){ diff.textContent='unavailable'; diff.style.display='inline-flex'; }
-    const desc=document.getElementById('qDesc'); if(desc) desc.innerHTML=`<div class="small muted">This workspace references an exercise that is ${escapeHtml(reason)}. Your code is preserved; choose an available exercise to continue.</div>`;
-    const examples=document.getElementById('qExamples'); if(examples) examples.innerHTML='';
-    const constraints=document.getElementById('qConstraints'); if(constraints) constraints.textContent='';
-    const tests=document.getElementById('qTests'); if(tests) tests.innerHTML='<div class="small muted">Unavailable exercises cannot be executed.</div>';
+    const diff=document.getElementById('qDiff');
+    if(diff){
+      const badge=document.createElement('span'); badge.className='rc-badge'; badge.textContent='Unavailable';
+      diff.replaceChildren(badge); diff.hidden=false;
+    }
+    const desc=document.getElementById('qDesc');
+    if(desc){
+      const message=document.createElement('p');
+      message.textContent=`This room's exercise is ${String(reason||'unavailable')}. Your code is kept. Choose an exercise from the list to continue.`;
+      desc.replaceChildren(message);
+    }
+    const examples=document.getElementById('qExamples'); if(examples) examples.replaceChildren();
+    const constraints=document.getElementById('qConstraints'); if(constraints) constraints.replaceChildren();
+    const tests=document.getElementById('qTests'); if(tests) tests.textContent='Unavailable exercises cannot be run.';
+    const attribution=document.getElementById('qAttribution'); if(attribution) attribution.textContent='';
+    renderCatalogueList();
   }
 
   function removeFilteredWorkspaceOptions(sel,except=null){
@@ -11694,7 +12183,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   function catalogueFiltersActive(){
-    return !!catalogueFilterState.search||catalogueFilterState.difficulty!=='all'||catalogueFilterState.type!=='all';
+    return catalogueView.filtersActive(catalogueFilterState);
   }
 
   function hydratedWorkspaceOwnsSelection(identity){
@@ -11708,14 +12197,51 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   function filteredCatalogueQuestions(){
-    const terms=catalogueFilterState.search.toLocaleLowerCase().split(/\s+/).filter(Boolean);
-    return CUSTOM_QUESTIONS.filter(question=>{
-      if(catalogueFilterState.difficulty!=='all'&&String(question.difficulty||'')!==catalogueFilterState.difficulty) return false;
-      if(catalogueFilterState.type!=='all'&&String(question.type||'')!==catalogueFilterState.type) return false;
-      const tags=Array.isArray(question.tags)?question.tags:[];
-      const searchable=[question.title,question.slug,question.type,...tags].map(value=>String(value||'').toLocaleLowerCase()).join(' ');
-      return terms.every(term=>searchable.includes(term));
-    });
+    return catalogueView.filterQuestions(CUSTOM_QUESTIONS,catalogueFilterState);
+  }
+
+  // Browse state for the Problem panel: loading skeleton, loaded list (or
+  // empty state), and one recovery action when the catalogue cannot load.
+  function setCatalogueBrowseState(state){
+    const browse=document.getElementById('catalogBrowse'); if(browse) browse.dataset.state=state;
+    const list=document.getElementById('catalogList');
+    const error=document.getElementById('catalogError');
+    const retry=document.getElementById('catalogRetryBtn');
+    const signIn=document.getElementById('catalogSignInBtn');
+    const status=document.getElementById('catalogFilterStatus');
+    const empty=document.getElementById('catalogFilterEmpty');
+    if(state==='loading'){
+      catalogueView.renderListSkeleton(document,list);
+      if(error) error.hidden=true;
+      if(empty) empty.hidden=true;
+      if(status) status.textContent=catalogueView.statusText({state});
+      return;
+    }
+    if(state==='loaded'){ if(error) error.hidden=true; return; }
+    const failure=catalogueView.failureView(state==='signin'||state==='offline'?state:'error');
+    if(list){ list.replaceChildren(); list.hidden=true; list.setAttribute('aria-busy','false'); }
+    if(empty) empty.hidden=true;
+    if(error) error.hidden=false;
+    const title=document.getElementById('catalogErrorTitle'); if(title) title.textContent=failure.title;
+    const message=document.getElementById('catalogErrorMessage'); if(message) message.textContent=failure.message;
+    if(retry) retry.hidden=failure.action!=='retry';
+    if(signIn) signIn.hidden=failure.action!=='signin'||!document.getElementById('authBtn');
+    if(status) status.textContent=catalogueView.statusText({state:failure.state});
+  }
+
+  function currentExerciseTitle(){
+    const question=CUSTOM_QUESTIONS.find(item=>item.slug===activeQuestionSlug&&(activeQuestionVersion==null||item.version===activeQuestionVersion));
+    return question?.title||'';
+  }
+
+  // Exercise cards for the current filter result. The selected exercise is
+  // marked; it never changes because a filter hides it.
+  function renderCatalogueList(){
+    if(catalogueFetchState!=='loaded') return;
+    const list=document.getElementById('catalogList');
+    const matches=catalogueFiltersActive()?filteredCatalogueQuestions():CUSTOM_QUESTIONS;
+    const selected={slug:activeQuestionSlug,version:activeQuestionVersion};
+    catalogueView.renderExerciseList(document,list,matches.map(question=>catalogueView.exerciseCard(question,selected)));
   }
 
   function appendCatalogueOption(sel,question){
@@ -11762,34 +12288,40 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return option;
   }
 
+  function fillFilterSelect(select,options,key){
+    if(!select) return;
+    const previous=catalogueFilterState[key];
+    select.replaceChildren();
+    const all=document.createElement('option'); all.value='all'; all.textContent='All'; select.appendChild(all);
+    options.forEach(({value,label})=>{
+      const option=document.createElement('option'); option.value=value; option.textContent=label;
+      select.appendChild(option);
+    });
+    catalogueFilterState[key]=[...select.options].some(option=>option.value===previous)?previous:'all';
+    select.value=catalogueFilterState[key];
+  }
+
   function updateCatalogueFilterControls(){
-    const typeSelect=document.getElementById('catalogType');
-    if(!typeSelect) return;
-    const previous=catalogueFilterState.type;
-    typeSelect.replaceChildren();
-    const all=document.createElement('option'); all.value='all'; all.textContent='All'; typeSelect.appendChild(all);
-    [...new Set(CUSTOM_QUESTIONS.map(question=>String(question.type||'')).filter(Boolean))]
-      .sort((left,right)=>left.localeCompare(right))
-      .forEach(type=>{
-        const option=document.createElement('option'); option.value=type;
-        option.textContent=type.replace(/[-_]+/g,' ').replace(/\b\w/g,letter=>letter.toUpperCase());
-        typeSelect.appendChild(option);
-      });
-    catalogueFilterState.type=[...typeSelect.options].some(option=>option.value===previous)?previous:'all';
-    typeSelect.value=catalogueFilterState.type;
+    fillFilterSelect(document.getElementById('catalogType'),catalogueView.patternOptions(CUSTOM_QUESTIONS),'type');
+    fillFilterSelect(document.getElementById('catalogLanguage'),catalogueView.languageOptions(CUSTOM_QUESTIONS),'language');
   }
 
   function updateCatalogueFilterFeedback(count){
     const total=CUSTOM_QUESTIONS.length;
+    const active=catalogueFiltersActive();
+    setCatalogueBrowseState('loaded');
     const status=document.getElementById('catalogFilterStatus');
-    if(status) status.textContent=`${count} of ${total} exercise${total===1?'':'s'}`;
+    if(status) status.textContent=catalogueView.statusText({state:'loaded',count,total,active});
+    const clear=document.getElementById('catalogClearFilters'); if(clear) clear.hidden=!active;
     const empty=document.getElementById('catalogFilterEmpty');
     if(empty){
+      const view=catalogueView.emptyStateView({total,current:currentExerciseTitle()});
       empty.hidden=count!==0;
-      empty.textContent=total
-        ? 'No public exercises match these filters. Clear or adjust them to continue.'
-        : 'No public exercises are currently available.';
+      const title=document.getElementById('catalogEmptyTitle'); if(title) title.textContent=view.title;
+      const message=document.getElementById('catalogEmptyMessage'); if(message) message.textContent=view.message;
+      const action=document.getElementById('catalogEmptyClear'); if(action) action.hidden=view.action!=='clear';
     }
+    renderCatalogueList();
   }
 
   function applyCatalogueFilters(){
@@ -11825,22 +12357,23 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   function showCatalogueFailure(){
-    const el=document.getElementById('qCustomCount'); if(el) el.textContent='• catalogue unavailable';
-    const retry=document.getElementById('catalogRetryBtn'); if(retry) retry.hidden=false;
+    const el=document.getElementById('qCustomCount'); if(el) el.textContent='• not loaded';
+    setCatalogueBrowseState(catalogueFailureReason);
     const sel=document.getElementById('questionSelect');
     const previous=selectedIdentity();
     if(sel){
       sel.innerHTML='';
       if(previous.slug){ const option=appendUnavailableOption(sel,previous.slug,{unpinned:previous.version==null,version:previous.version}); sel.value=option.value; }
-      else { const option=document.createElement('option'); option.value=''; option.textContent='Catalogue unavailable'; sel.appendChild(option); }
+      else { const option=document.createElement('option'); option.value=''; option.textContent=catalogueFailureReason==='signin'?'Sign in to choose an exercise':'Exercises not loaded'; sel.appendChild(option); }
       sel.disabled=!previous.slug;
     }
-    const filterStatus=document.getElementById('catalogFilterStatus'); if(filterStatus) filterStatus.textContent='Catalogue unavailable';
-    const filterEmpty=document.getElementById('catalogFilterEmpty'); if(filterEmpty) filterEmpty.hidden=true;
     if(previous.slug) renderUnavailableQuestion(previous.slug,previous.version==null?'not pinned to a catalogue version':'temporarily unavailable',previous.version);
     else{
-      const title=document.getElementById('qTitle'); if(title) title.textContent='Catalogue unavailable';
-      const desc=document.getElementById('qDesc'); if(desc) desc.innerHTML='<div class="small muted">Try again shortly or use Retry catalogue. Exercises and evaluation are served from the approved catalogue.</div>';
+      const failure=catalogueView.failureView(catalogueFailureReason);
+      const title=document.getElementById('qTitle'); if(title) title.textContent=failure.title;
+      const diff=document.getElementById('qDiff'); if(diff){ diff.replaceChildren(); diff.hidden=true; }
+      const desc=document.getElementById('qDesc');
+      if(desc){ const message=document.createElement('p'); message.textContent=failure.message; desc.replaceChildren(message); }
     }
   }
 
@@ -11848,7 +12381,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   async function fetchCustomQuestions(){
     if(catalogueFetchState==='loading'||catalogueFetchState==='loaded') return CUSTOM_QUESTIONS;
     catalogueFetchState='loading';
-    const retry=document.getElementById('catalogRetryBtn'); if(retry) retry.hidden=true;
+    setCatalogueBrowseState('loading');
     const controller=new AbortController();
     const timeout=setTimeout(()=>controller.abort(),8000);
     try{ const badge=document.getElementById('qCustomCount'); if(badge){ const already=badge.textContent||''; if(already.includes('loading')||already.includes('…')) badge.innerHTML='<span class="spinner spinner-sm"></span> loading…'; } }catch{}
@@ -11864,9 +12397,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         document.getElementById('qCustomCount').textContent='• '+j.questions.length+' available';
         return j.questions;
       }
+      catalogueFailureReason=r.status===401?'signin':'error';
       if(r.status!==408&&r.status!==429&&r.status<500) throw Object.assign(new Error(j.error||'catalogue unavailable'),{retryable:false});
     }catch(e){
       console.warn('custom fetch fail',e);
+      if(e?.retryable!==false) catalogueFailureReason=navigator.onLine===false?'offline':'error';
       if(e?.retryable===false) catalogueFailureCount=MAX_CATALOGUE_AUTO_RETRIES;
     }finally{
       clearTimeout(timeout);
@@ -11939,63 +12474,22 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     // The selected public exercise is an independent preference; remembering
     // it must not imply that the authenticated code workspace was visited.
     try{ localStorage.setItem('randori-last-question',slug); }catch{}
-    const titleEl=document.getElementById('qTitle'); if(titleEl) titleEl.textContent=q.title;
-    const diffEl=document.getElementById('qDiff'); if(diffEl) {
-      const diffColor=q.difficulty==='Easy'?'var(--ok)':q.difficulty==='Hard'?'var(--bad)':'var(--warn)';
-      diffEl.textContent='';
-      const difficulty=document.createElement('span'); difficulty.style.color=diffColor; difficulty.textContent=String(q.difficulty||'');
-      diffEl.appendChild(difficulty);
-      diffEl.appendChild(document.createTextNode(' • original'+(q.version!=null?' v'+q.version:'')+(q.type?' • '+q.type:'')));
-      diffEl.style.display='inline-flex';
-    }
-    const isSystem = (q.type==='system') || (q.difficulty==='System') || (q.category==='system-design') || (q.slug||'').includes('system') || (q.slug||'').includes('design');
-    const descEl=document.getElementById('qDesc'); 
-    if(descEl){
-      // Question content is untrusted. Render it as escaped text while preserving line breaks.
-      const safeDesc=escapeHtml(String(q.prompt||q.description||'').slice(0,6000)).replace(/\r?\n/g,'<br/>');
-      let html=`<div style="color:var(--ink-2); line-height:1.7; font-size:13.5px">${safeDesc}</div>`;
-      if(q.input_format) html+=`<div class="small muted" style="margin-top:10px"><b>Input:</b> ${escapeHtml(q.input_format)}</div>`;
-      const constraintText=Array.isArray(q.constraints)?q.constraints.join('\n'):(q.constraints||q.constraints_text||'');
-      if(constraintText) html+=`<div class="small muted" style="margin-top:6px; white-space:pre-wrap"><b>Constraints:</b> ${escapeHtml(constraintText)}</div>`;
-      if(q.tags||q.topicTags){
-        const tags = q.tags|| (q.topicTags||[]).map((t)=>t.name||t.slug);
-        if(tags && tags.length) html+=`<div class="row" style="margin-top:8px; flex-wrap:wrap; gap:6px">${tags.slice(0,6).map((tg)=>`<span class="kbd" style="font-size:11px">${escapeHtml(tg)}</span>`).join('')}</div>`;
-      }
-      // System design special UI
-      if(isSystem){
-        html+=`<div style="margin-top:14px; padding:12px; border:1px dashed var(--accent); border-radius:10px; background:color-mix(in srgb, var(--accent) 10%, var(--card))"><b style="font-size:12.5px">System Design Drill</b><div class="small muted" style="margin-top:6px">Discuss requirements → estimate → high-level → deep-dive → trade-offs. Use <span class="kbd">Board</span> tab for architecture sketch, then walk through verbally. No code tests needed.</div><div class="row" style="margin-top:8px"><button class="pill" onclick="document.querySelector('[data-tab=board]').click()">Open Board</button><button class="pill" onclick="document.getElementById('aiTranscript').focus()">Add notes</button></div></div>`;
-      }
-      descEl.innerHTML=html;
-    }
-    const exEl=document.getElementById('qExamples'); if(exEl){
-      if(isSystem){
-        exEl.innerHTML=`<div class="small muted">System design — examples are in description. Sketch on board, discuss scalability.</div>`;
-      } else {
-        const exs=q.examples||[];
-        if(exs && exs.length){
-          exEl.innerHTML=exs.slice(0,3).map((e,i)=>{
-            if(typeof e==='string') return `<div class="test"><div class="small"><b>Example ${i+1}:</b> ${escapeHtml(e.slice(0,300))}</div></div>`;
-            if(e && e.input!==undefined) return `<div class="test"><div class="small"><b>Example ${i+1}:</b> Input: <span class="kbd">${escapeHtml(JSON.stringify(e.input).slice(0,140))}</span> → <span class="kbd">${escapeHtml(JSON.stringify(e.output??e.expect??'').slice(0,120))}</span></div>${e.explanation? `<div class="small muted">${escapeHtml(e.explanation.slice(0,200))}</div>`:''}</div>`;
-            return `<div class="test"><div class="small"><b>Example ${i+1}:</b> ${escapeHtml(JSON.stringify(e).slice(0,200))}</div></div>`;
-          }).join('');
-        } else {
-          exEl.innerHTML='<div class="small muted">No public examples for this exercise.</div>';
-        }
-      }
-    }
-    const consEl=document.getElementById('qConstraints'); if(consEl) consEl.textContent=isSystem?'Discuss latency, throughput, consistency': (Array.isArray(q.constraints)?q.constraints.join('\n'):(q.constraints||q.constraints_text||''));
-    const testsEl=document.getElementById('qTests'); if(testsEl){
-      if(isSystem){
-        testsEl.innerHTML=`<div class="small muted" style="padding:8px; border:1px dashed var(--border); border-radius:8px">System design — no auto tests. Use Run to save notes + whiteboard snapshot.</div>`;
-      } else {
-        testsEl.innerHTML='<div class="small muted" style="padding:8px; border:1px dashed var(--border); border-radius:8px">Fresh server-generated cases run when you submit. Only authoritative pass/fail results are shown.</div>';
-      }
-    }
+    const lang=document.getElementById('langSelect')?.value||'javascript';
+    catalogueView.renderStatement(document,{
+      title:document.getElementById('qTitle'),
+      badges:document.getElementById('qDiff'),
+      description:document.getElementById('qDesc'),
+      examples:document.getElementById('qExamples'),
+      constraints:document.getElementById('qConstraints'),
+    },q,{language:lang});
+    const testsEl=document.getElementById('qTests');
+    if(testsEl) testsEl.textContent='Write your solution in the editor, then press Run. Run checks your code on the server against fresh test cases and shows pass or fail for each one.';
+    const attributionEl=document.getElementById('qAttribution'); if(attributionEl) attributionEl.textContent=catalogueView.attributionText(q);
+    renderCatalogueList();
     // Load the public starter without relying on server-owned evaluation data.
     try{
-      const lang=document.getElementById('langSelect')?.value||'javascript';
       let starter=starterFor(q,lang);
-      if(!starter && !isSystem){
+      if(!starter){
         // generate minimal starter from slug
         const proposedFnName = String(q.slug||'solve').replace(/-./g,(x)=> x[1].toUpperCase());
         const fnName = /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(proposedFnName) ? proposedFnName : 'solve';
@@ -12003,7 +12497,6 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         const safeTitle=String(q.title||'').replace(/[\r\n\u2028\u2029]/g,' ');
         starter = lang==='javascript' ? `function ${fnName}(){\n  // ${safeTitle}\n}` : lang==='python' ? `def ${pyName}():\n    # ${safeTitle}\n    pass` : `// ${safeTitle}\n// starter for ${lang}`;
       }
-      if(isSystem) starter = `// System Design: ${q.title}\n// Notes:\n// 1. Requirements (functional / non-functional)\n// 2. Estimation\n// 3. High-level design\n// 4. Deep dives\n// 5. Trade-offs, monitoring\n`;
       const curCode=currentEditorCode();
       const shouldLoad=starterMode==='force'||(starterMode==='if-empty'&&!curCode.trim());
       if(shouldLoad){
@@ -12046,6 +12539,54 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   catalogType?.addEventListener('change',()=>{
     catalogueFilterState.type=String(catalogType.value||'all');
     applyCatalogueFilters();
+  });
+  const catalogLanguage=document.getElementById('catalogLanguage');
+  catalogLanguage?.addEventListener('change',()=>{
+    catalogueFilterState.language=String(catalogLanguage.value||'all');
+    applyCatalogueFilters();
+  });
+  // Filtering is browsing: show the cards (and any empty state) as soon as
+  // the user narrows the list. Clearing leaves the disclosure as it is.
+  function revealCatalogueList(){
+    const browse=document.getElementById('catalogBrowseList');
+    if(browse&&catalogueFiltersActive()) browse.open=true;
+  }
+  ['input','change'].forEach(type=>document.querySelector('[data-testid="catalog-filters"]')?.addEventListener(type,revealCatalogueList));
+  function clearCatalogueFilters(){
+    Object.assign(catalogueFilterState,{search:'',difficulty:'all',type:'all',language:'all'});
+    if(catalogSearch) catalogSearch.value='';
+    if(catalogDifficulty) catalogDifficulty.value='all';
+    if(catalogType) catalogType.value='all';
+    if(catalogLanguage) catalogLanguage.value='all';
+    applyCatalogueFilters();
+    catalogSearch?.focus();
+  }
+  document.getElementById('catalogClearFilters')?.addEventListener('click',clearCatalogueFilters);
+  document.getElementById('catalogEmptyClear')?.addEventListener('click',clearCatalogueFilters);
+  // Choosing a card goes through the exercise select, so drafts, the shared
+  // workspace and the pinned version follow the same path as the dropdown.
+  document.getElementById('catalogList')?.addEventListener('click',event=>{
+    const card=event.target?.closest?.('.catalog-card[data-slug]');
+    if(!card||!qSel||qSel.disabled) return;
+    const slug=card.getAttribute('data-slug')||'';
+    const version=positiveVersion(card.getAttribute('data-version'));
+    const option=[...qSel.options].find(item=>
+      item.value===slug
+      && item.dataset.workspacePlaceholder!=='1'
+      && (version==null||positiveVersion(item.dataset.questionVersion)===version)
+    );
+    if(!option) return;
+    if(slug===activeQuestionSlug&&(version==null||version===activeQuestionVersion)&&qSel.value===option.value) return;
+    qSel.value=option.value;
+    qSel.dispatchEvent(new Event('change',{bubbles:true}));
+  });
+  document.getElementById('qStartCoding')?.addEventListener('click',()=>{
+    window._randori_room?.show?.('code');
+    const target=document.querySelector('#monacoHost textarea')||document.getElementById('editor');
+    if(target&&target.offsetParent!==null) target.focus();
+  });
+  document.getElementById('catalogSignInBtn')?.addEventListener('click',()=>{
+    document.getElementById('authBtn')?.click();
   });
 
   function handleLanguageChange(language){
@@ -12201,7 +12742,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       detail.textContent=String(run.language||'unknown').slice(0,24)+' · '+duration+' · '+formatPairRunTime(run.created_at);
       const verification=document.createElement('span'); verification.className='kbd'; verification.style.fontSize='10px';
       verification.textContent=run.authoritative===true?'verified':'unverified';
-      verification.title=run.authoritative===true?'Server attestation verified for this runner.':'Legacy or invalid attestation; do not treat as authoritative.';
+      verification.title=run.authoritative===true?'Checked on the server.':'This older result was not checked on the server.';
       meta.append(detail,verification);
       item.append(top,meta); pairRunsList.appendChild(item);
     });
@@ -12291,8 +12832,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
   async function upgradedRun(){
     try{
-    const selVal=document.getElementById('questionSelect')?.value||'';
-    const customQ=CUSTOM_QUESTIONS.find(q=>q.slug===selVal)||null;
+    // The selected identity survives a filter that hides it, so Run keeps
+    // working on the current exercise while the list shows an empty state.
+    const selected=selectedIdentity();
+    const customQ=selectedCatalogueQuestion();
     const lang=document.getElementById('langSelect')?.value||'javascript';
     const code=getEditorCode();
     let passedCount=0, totalCount=0;
@@ -12300,7 +12843,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(customQ){
       // --- Server path for all languages including JS/TS for parity ---
       const cards=[];
-      if(runOutEl) runOutEl.innerHTML='<div class="small muted"><span class="spinner-sm"></span> Running '+escapeHtml(lang)+' against server-owned tests…</div>';
+      if(runOutEl) runOutEl.innerHTML='<div class="small muted"><span class="spinner-sm"></span> Checking your '+escapeHtml(catalogueView.languageLabel(lang))+' code on the server…</div>';
       try{ if(window._randori_ui && window._randori_ui.showLoader) window._randori_ui.showLoader('Running '+lang+'…'); }catch{}
       (async()=>{
         try{
@@ -12329,8 +12872,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           const passed = j.passed_count ?? results.filter(r=>r.pass===true).length;
           passedCount = passed;
           totalCount = j.total_count ?? results.length;
-          const summaryStatus = passedCount===totalCount ? 'pass' : (passedCount>0?'partial':'fail');
-          cards.unshift('<div class="test run-summary" data-status="'+summaryStatus+'"><div class="small"><b>Result: '+escapeHtml(passedCount)+'/'+escapeHtml(totalCount)+' passed</b> '+(passedCount===totalCount?'✓':'✗')+' • '+escapeHtml(lang)+' • authoritative server result</div></div>');
+          const summary = catalogueView.runSummaryView({passed:passedCount,total:totalCount,language:lang});
+          cards.unshift('<div class="test run-summary" data-status="'+summary.status+'"><div class="small"><b>'+escapeHtml(summary.headline)+'</b> '+summary.mark+' · '+escapeHtml(summary.detail)+'</div></div>');
           results.forEach((r,i)=>{
             const idx = (r.idx!=null? r.idx+1 : i+1);
             const pass = !!r.pass;
@@ -12344,11 +12887,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           if(results.length===0){
             cards.push('<div class="test"><div class="small muted">The server returned no per-case details.</div></div>');
           }else{
-            cards.push('<p class="small muted run-footnote">Each case runs against a fresh server-generated input.</p>');
+            cards.push('<p class="small muted run-footnote">Each case uses a fresh input generated on the server.</p>');
           }
           if(runOutEl){ runOutEl.innerHTML=cards.join(''); }
           try{ window._randori_runs && window._randori_runs.refresh && window._randori_runs.refresh(); }catch{}
-          if(window.toast) window.toast('Run '+lang+' '+passedCount+'/'+totalCount+' '+(passedCount===totalCount?'✓':'')+' verified by server');
+          if(window.toast) window.toast(summary.headline+' · checked on the server');
         }catch(e){
           try{ if(window._randori_ui && window._randori_ui.hideLoader) window._randori_ui.hideLoader(); }catch{}
           if(e && e.code==='execution_unavailable'){
@@ -12366,7 +12909,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       })();
       return;
     }
-    if(runOutEl) runOutEl.innerHTML='<div class="small muted">Select an approved catalog question to run code through the authenticated execution gateway.</div>';
+    if(runOutEl){
+      // Say why the selected exercise cannot run instead of a generic prompt.
+      const reason=!selected.slug?'':selected.version==null?'is not pinned to a catalogue version':catalogueFetchState==='loaded'?'is retired or no longer in the catalogue':'has not loaded yet';
+      runOutEl.innerHTML=reason
+        ?'<div class="test run-summary" data-status="partial" data-run-unavailable><div class="small"><b>This exercise cannot be run.</b> It '+escapeHtml(reason)+'. Your code is kept.<div class="small muted">Choose an exercise in the Problem panel, then press Run.</div></div></div>'
+        :'<div class="small muted">Choose an exercise in the Problem panel, then press Run to check your code on the server.</div>';
+    }
     }catch(e){
       try{
         const msg=String(e&&e.message||e).slice(0,500);
@@ -12400,7 +12949,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   function renderRunsList(runs){
     const el=document.getElementById('recentRunsList');
     if(!el) return;
-    if(!runs.length){ el.innerHTML='<div class="small muted">No runs yet — hit ▶ Run for server-verified results.</div>'; return; }
+    if(!runs.length){ el.innerHTML='<div class="small muted">No runs yet. Press Run to check your code on the server.</div>'; return; }
     el.innerHTML=runs.map(r=>{
       const ok = r.total_count? (r.passed_count+'/'+r.total_count) : (r.passed_count+' pass');
       const dt=new Date(r.created_at||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
@@ -12484,6 +13033,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     loadRoomState,
     selectWorkspaceQuestion,
     selectedIdentity,
+    selectedQuestion:selectedCatalogueQuestion,
   };
   window._randori_catalog_filters={
     get state(){
@@ -13101,7 +13651,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         // initial lint
         setTimeout(updateLintFromMarkers, 800);
 
-        try{ if(typeof window.toast==='function') (typeof window.toast==='function' && window.toast)('Monaco IDE ready — TS lint + Prettier format'); }catch{}
+        // No "editor ready" toast: Monaco loads on every page, including the
+        // dashboard, and an unsolicited toast covered controls there.
 
       }catch(e){
         console.error('monaco init error',e);
@@ -13149,28 +13700,25 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       document.getElementById('copyStarterBtn')?.addEventListener('click', ()=>{
         try{
           const lang=document.getElementById('langSelect')?.value||'javascript';
-          const qId=document.getElementById('questionSelect')?.value||null;
-          let starter='';
-          // try built-in QUESTIONS first
-          try{ const qs = QUESTIONS.find(x=>x.id===qId); if(qs){ starter = qs.starters?.[lang]||qs.starters?.javascript||''; } }catch{}
-          // fallback custom questions cache
-          if(!starter && window._randori_code?.getCustomQuestion){
-            const cq = window._randori_code.getCustomQuestion?.(qId);
-            if(cq){ const mp=cq.starter_per_lang||{}; starter=cq.languages?.[lang]?.starter||mp[lang]||cq.languages?.javascript?.starter||mp.javascript||''; }
-          }
-          if(!starter) starter = (monacoEditor? monacoEditor.getValue() : (document.getElementById('editor')?.value||'')).slice(0,1200);
+          // Only the exact selected slug and pinned version has a starter. An
+          // unavailable or retired selection must not borrow a newer version's.
+          const cq=window._randori_questions?.selectedQuestion?.()||null;
+          if(!cq){ if(window.toast) window.toast('This exercise is unavailable, so there is no starter to copy.'); return; }
+          const mp=cq.starter_per_lang||{};
+          const starter=cq.languages?.[lang]?.starter||mp[lang]||cq.languages?.javascript?.starter||mp.javascript||'';
           if(starter){ navigator.clipboard.writeText(starter).then(()=>{ if(window.toast) window.toast('Starter copied ✓'); }).catch(()=>{ prompt('Copy starter', starter); }); }
         }catch(e){ console.warn('copy starter fail',e); }
       });
       document.getElementById('editorResetBtn')?.addEventListener('click', async ()=>{
         try{
+          // Resolve the exact slug and pinned version first; an unavailable
+          // selection keeps the user's code untouched.
+          const cq=window._randori_questions?.selectedQuestion?.()||null;
+          if(!cq){ if(window.toast) window.toast('This exercise is unavailable, so your code was not reset.'); return; }
           if(!await window.showConfirm?.('Reset editor?', 'Load fresh starter — current edits moved to other language store.')) return;
           const lang=document.getElementById('langSelect')?.value||'javascript';
-          const qId=document.getElementById('questionSelect')?.value||null;
-          let starter='';
-          try{ const qs=QUESTIONS.find(x=>x.id===qId); if(qs) starter=qs.starters?.[lang]||qs.starters?.javascript||''; }catch{}
-          if(!starter && window._randori_code?.getCustomQuestion){ const cq=window._randori_code.getCustomQuestion?.(qId); if(cq){ starter=cq.languages?.[lang]?.starter||(cq.starter_per_lang||{})[lang]||''; } }
-          if(!starter) starter='// '+ (qId||'reset');
+          const starter=cq.languages?.[lang]?.starter||(cq.starter_per_lang||{})[lang]||cq.languages?.javascript?.starter||'';
+          if(!starter){ if(window.toast) window.toast('This exercise has no starter for this language.'); return; }
           if(monacoEditor){ monacoEditor.setValue(starter); try{ if(typeof syncTextareaToMirror==='function') syncTextareaToMirror(); }catch{}; try{ if(typeof persistLikeOld==='function') persistLikeOld(); }catch{}; if(window.toast) window.toast('Reset ✓'); }
           else { const ta=document.getElementById('editor'); if(ta){ ta.value=starter; ta.dispatchEvent(new Event('input',{bubbles:true})); } }
         }catch(e){ console.warn('reset fail',e); }
@@ -14005,14 +14553,22 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const preserveCurrent=state.room===preliminary.room&&state.actorId===preliminary.actorId
       &&state.circlePublicId===preliminary.circlePublicId
       &&state.contextVersion===preliminary.contextVersion&&state.cycleToken===preliminary.cycleToken;
+    // A confirmation or withdrawal in flight owns the request generation; a
+    // reconciliation read must never cancel the participant's action.
+    if(preserveCurrent&&state.busy&&state.completion) return false;
     state.epoch+=1; state.controller?.abort();
     state.room=preliminary.room; state.actorId=preliminary.actorId;
     state.circlePublicId=preliminary.circlePublicId; state.contextVersion=preliminary.contextVersion;
     state.cycleToken=preliminary.cycleToken;
     if(!preserveCurrent) state.completion=null;
-    state.busy=true;
+    // Background reconciliation keeps the last authoritative receipt
+    // interactive: the bounded poll must not swallow a click on Confirm.
+    const background=state.completion!==null;
+    state.busy=!background;
     const scope=captureScope(preliminary.room);
-    const controller=new AbortController(); state.controller=controller; render();
+    const controller=new AbortController(); state.controller=controller;
+    if(state.pollTimer!==null){ clearTimeout(state.pollTimer); state.pollTimer=null; }
+    if(!background) render();
     try{
       const url=new URL('/api/session-completion',location.origin); url.searchParams.set('room_id',scope.room);
       const headers=scope.contextVersion===null?undefined:{'x-randori-circle-context-version':String(scope.contextVersion)};
@@ -14029,9 +14585,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }finally{ if(state.controller===controller) state.controller=null; }
   }
   async function mutate(desiredAction){
-    const scope=captureScope(state.room);
     const completion=state.completion;
-    if(!scope||!completion||state.busy||!['confirm','withdraw'].includes(desiredAction)) return false;
+    if(!captureScope(state.room)||!completion||state.busy||!['confirm','withdraw'].includes(desiredAction)) return false;
+    // The participant's action supersedes any background read still in flight
+    // so a stale poll response cannot overwrite the receipt this write returns.
+    state.epoch+=1; state.controller?.abort();
+    const scope=captureScope(state.room);
     state.busy=true; const controller=new AbortController(); state.controller=controller; render();
     try{
       const headers={'content-type':'application/json'};

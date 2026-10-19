@@ -562,6 +562,47 @@ test('accepted schedule exports privately at 320px, reschedules in place, and di
   await expect(page.getByTestId('schedule-calendar-export')).toHaveCount(0);
 });
 
+test('a click that lands while the bounded schedule read is in flight still exports and saves', async ({ page }) => {
+  // Regression: every poll disabled all schedule actions (including the
+  // purely local calendar export) and mutations refused to start, so a click
+  // during the 3 s reconciliation read was silently lost.
+  const store = new ScheduleStore([roomA]);
+  store.seed(roomA, { agreed_time: londonInstant, legacy_agreed_time: null });
+  await openDashboard(page, userA, store, () => roomA);
+  await page.waitForFunction(() => Boolean((window as typeof window & {
+    _randori_calendar_export?: { download?: unknown };
+  })._randori_calendar_export?.download));
+
+  const delayed = store.deferNextGet(roomA);
+  try {
+    const refreshPromise = refreshSchedule(page);
+    await delayed.started;
+    await expect(page.getByTestId('schedule-status')).toHaveText('checking…');
+
+    const exportAction = page.getByTestId('schedule-calendar-export');
+    await expect(exportAction).toBeEnabled();
+    const downloadPromise = page.waitForEvent('download');
+    await exportAction.click();
+    expect((await downloadPromise).suggestedFilename()).toBe(`randori-${roomA}.ics`);
+
+    const proposedVersion = store.snapshot(roomA).version;
+    await page.getByTestId('schedule-input').fill('2098-10-09T18:30');
+    await expect(page.getByTestId('schedule-propose')).toBeEnabled();
+    await page.getByTestId('schedule-propose').click();
+    await expect.poll(() => store.postBodies.length).toBe(1);
+    expect(store.postBodies[0].body).toMatchObject({ room_id: roomA, action: 'propose', base_version: proposedVersion });
+    await expect(page.getByTestId('schedule-proposal')).toHaveCount(1);
+
+    // The superseded read was cancelled and cannot roll the proposal back.
+    delayed.release();
+    expect(await refreshPromise).toBe(false);
+    await refreshSchedule(page);
+    await expect(page.getByTestId('schedule-proposal')).toHaveCount(1);
+  } finally {
+    delayed.release();
+  }
+});
+
 test('calendar export stays hidden for proposals, legacy text, cleared schedules, and invalid accepted values', async ({ page }) => {
   const store = new ScheduleStore([roomA]);
   store.seed(roomA, {

@@ -118,7 +118,7 @@ test('selects an original exercise and renders authoritative server results with
   await expect(page.locator('#qTitle')).toHaveText(originalQuestion.title);
   await expect(page.locator('#qDesc')).toContainText(originalQuestion.prompt);
   await expect(page.locator('#qExamples')).toContainText('Adjacent code blocks are combined');
-  await expect(page.locator('#qTests')).toContainText('Fresh server-generated cases');
+  await expect(page.locator('#qTests')).toContainText('Run checks your code on the server');
   await expect(page.locator('#qLeetBtn')).toHaveCount(0);
   await expect(page.locator('#qUploadBtn')).toHaveCount(0);
 
@@ -127,7 +127,7 @@ test('selects an original exercise and renders authoritative server results with
   await page.locator('#runBtn').click();
 
   await expect(page.locator('#runOut')).toContainText('Result: 3/3 passed');
-  await expect(page.locator('#runOut')).toContainText('authoritative server result');
+  await expect(page.locator('#runOut')).toContainText('Checked on the server');
   await expect(page.locator('#runOut')).toContainText('Case 1 ✓ pass');
   await expect.poll(() => executePayload).toEqual({
     language: 'javascript',

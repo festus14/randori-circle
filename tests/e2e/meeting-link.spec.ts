@@ -68,7 +68,7 @@ class MeetingStore{
   };
 }
 
-async function configure(page:Page,store:MeetingStore){
+async function configure(page:Page,store:MeetingStore,extra:Parameters<typeof mockApi>[1]={}){
   await page.route(/^https:\/\/(?!127\.0\.0\.1)/,route=>route.abort());
   let workspaceRevision=0;
   await mockApi(page,{
@@ -92,6 +92,7 @@ async function configure(page:Page,store:MeetingStore){
       workspaceRevision+=1;
       return {ok:true,room_id:roomId,revision:workspaceRevision,snapshot:{...body.payload,revision:workspaceRevision}};
     },
+    ...extra,
   });
   await page.route(/\/api\/meeting-link(?:\?.*)?$/,store.route);
   await resetClientState(page,true);
@@ -140,6 +141,31 @@ test('two browsers add, join, change, and remove the same private meeting link',
     expect(store.requests.filter(request=>request.method==='POST').map(request=>request.body?.action)).toEqual(['set','set','clear']);
     expect(JSON.stringify(store.requests)).not.toContain('user_id');
   }finally{ await first.close(); await second.close(); }
+});
+
+test('a member opening their pair link before identity settles is never shown the join sign-in dialog',async({page})=>{
+  // Regression: the initial route ran while /api/auth/me was still in flight,
+  // treated the member as signed out, and left "Sign in to join your pairing
+  // room" over the room that hydration then opened (intercepting every click).
+  let releaseIdentity!:()=>void;
+  const identityGate=new Promise<void>(resolve=>{ releaseIdentity=resolve; });
+  const store=new MeetingStore();
+  await configure(page,store,{'/api/auth/me':async()=>{ await identityGate; return {ok:true,user}; }});
+  try{
+    await page.goto(`/join/${roomId}`,{waitUntil:'domcontentloaded'});
+    // The anonymous branch of the initial route has run (it records the join).
+    await expect.poll(()=>page.evaluate(()=>({
+      pending:(window as typeof window&{_randori_pending_join_room?:string})._randori_pending_join_room??null,
+      settled:(window as typeof window&{_randori_auth?:{identitySettled?:boolean}})._randori_auth?.identitySettled??null,
+    }))).toEqual({pending:roomId,settled:false});
+    await expect(page.locator('#authOverlay')).not.toHaveClass(/\bshow\b/);
+    releaseIdentity();
+    await expect.poll(()=>page.evaluate(()=>(window as typeof window&{_randori_authorized_room?:string})._randori_authorized_room??null)).toBe(roomId);
+    await expect(page.locator('#view-code')).toBeVisible();
+    await expect(page.locator('#authOverlay')).not.toHaveClass(/\bshow\b/);
+    await openRoomPanel(page,'session');
+    await expect(page.getByTestId('meeting-link-workspace')).toBeVisible();
+  }finally{ releaseIdentity(); }
 });
 
 test('accepted dashboard time exposes the meeting controls and malformed URLs never leave the browser',async({page})=>{
