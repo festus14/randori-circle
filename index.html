@@ -2515,6 +2515,11 @@ async function refreshMe(){
       &&(!Number.isSafeInteger(refreshedUserId)||refreshedUserId<1
         ||availabilityState.userId!==refreshedUserId)) clearAvailability();
     updateAuthUI();
+    // A sign-in dialog opened before the session finished loading (for
+    // example by a /join/<room> deep link) is moot once the server confirms
+    // the member is already signed in. Sign-up and recovery stay open.
+    if(!previousUserId&&refreshedUserId&&authMode==='signin'&&!authBusy
+      &&document.getElementById('authOverlay')?.classList.contains('show')) closeAuthModal();
     if((!identityWasHydrated&&authIdentityHydrated)
       ||hydrationWasUnavailable!==authIdentityHydrationUnavailable) renderInviteGateState();
     if(me) refreshAvailability().catch(()=>{});
