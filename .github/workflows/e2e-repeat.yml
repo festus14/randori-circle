@@ -100,12 +100,13 @@ jobs:
               await page.setContent(`<style>html{scroll-behavior:smooth}
                 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
                 .spacer{height:2400px}</style>
-                <div class="spacer"></div><button id="b">Go</button><div class="spacer"></div>
+                <div class="spacer"></div><div><input id="i" type="datetime-local"><button id="b">Go</button></div><div class="spacer"></div>
                 <script>window.clicks=0;document.getElementById('b').addEventListener('click',()=>{window.clicks+=1;});
                 setInterval(()=>{const end=performance.now()+25;while(performance.now()<end){}},40);</script>`);
               const attempts = 60;
               for (let i = 0; i < attempts; i += 1) {
                 await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+                await page.locator('#i').fill('2098-10-06T18:30');
                 await page.locator('#b').click();
               }
               const clicks = await page.evaluate(() => window.clicks);
