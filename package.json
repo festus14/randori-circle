@@ -31,6 +31,7 @@
     "check:runtime-ddl": "node scripts/check-runtime-ddl.mjs",
     "check:syntax": "node tests/static/check-syntax.mjs",
     "smoke:execution": "node --env-file-if-exists=.env.local scripts/execution-smoke.mjs",
+    "smoke:production": "node scripts/production-smoke.mjs",
     "validate:catalog": "node scripts/validate-catalog.mjs",
     "catalog:takedown": "node scripts/catalog-provenance.mjs takedown",
     "test:unit": "node --experimental-test-module-mocks --test tests/unit/*.test.mjs",

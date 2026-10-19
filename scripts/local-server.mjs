@@ -863,7 +863,9 @@ function unsafeEncodedPath(pathname){
     ||decoded.split('/').some(part=>part==='.'||part==='..'||part.startsWith('.'));
 }
 
-function navigationPath(pathname){
+// Exported for the routing contract test: every path served here as the app
+// shell must also be served by vercel.json in production.
+export function navigationPath(pathname){
   return pathname==='/'||pathname==='/invite'||pathname==='/verify'||pathname==='/reset-password'
     ||/^\/join\/[^/]+$/.test(pathname);
 }

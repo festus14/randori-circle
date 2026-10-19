@@ -1,0 +1,49 @@
+name: production-smoke
+
+# Read-only synthetic check of the live production origin. The Vercel GitHub
+# integration emits deployment_status events for environment "Production"
+# (and "Preview"); only successful Production deployments run the check.
+# This workflow is informational and must never be a required status check.
+on:
+  deployment_status:
+  schedule:
+    - cron: '17 7 * * *'
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Origin to check (defaults to the production alias)
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-smoke
+  cancel-in-progress: false
+
+jobs:
+  production-smoke:
+    name: production-smoke
+    if: >-
+      github.event_name != 'deployment_status' || (
+      github.event.deployment_status.state == 'success' &&
+      github.event.deployment.environment == 'Production')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Check the live production origin (read-only)
+        timeout-minutes: 3
+        env:
+          SMOKE_BASE_URL: ${{ inputs.base_url }}
+        run: |
+          if ! npm run smoke:production; then
+            echo "::error title=Production smoke failed::A read-only production check failed. Inspect the run log and the latest Vercel production deployment."
+            exit 1
+          fi
