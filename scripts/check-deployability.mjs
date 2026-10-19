@@ -6,7 +6,11 @@ import { createHash } from 'node:crypto';
 const OUTBOX_WORKFLOW_PATH='.github/workflows/outbox-dispatch.yml';
 const OUTBOX_WATCHDOG_WORKFLOW_PATH='.github/workflows/outbox-dispatch-watchdog.yml';
 const OUTBOX_WATCHDOG_SCRIPT_PATH='scripts/github-outbox-dispatch-watchdog.mjs';
-const OUTBOX_WATCHDOG_WORKFLOW_SHA256='7843bfeb5b444df4ca202b45974f0699a5a348514dc7eaae64e8bc14f2e997eb';
+// With `cleanUrls`, Vercel serves index.html at `/` and 308-redirects
+// `/index.html`, so a rewrite to `/index.html` resolves to nothing and every
+// client route (/invite, /verify, /reset-password, /join/...) returns 404.
+const SPA_FALLBACK_DESTINATION='/';
+const OUTBOX_WATCHDOG_WORKFLOW_SHA256='ba0726ad285bc9765e8d2e34f5ea81128eca4e1d064007699eb12202c46160b0';
 const OUTBOX_WATCHDOG_SCRIPT_SHA256='01eecb04b859e364e824708a12f3f2aea91751cb438954ebc90999328b4f2bc8';
 const REQUIRED_ROOT_FILES = [
   'index.html', 'package-lock.json', 'package.json', 'vercel.json', OUTBOX_WORKFLOW_PATH,
@@ -265,7 +269,7 @@ export function validateDeploymentContract({ vercel, packageJson, files, outboxW
 
       const isFallback = index === config.rewrites.length - 1
         && rewrite.source === '/(.*)'
-        && rewrite.destination === '/index.html';
+        && rewrite.destination === SPA_FALLBACK_DESTINATION;
       if (!isFallback) {
         const handler = requiredHandler(rewrite.destination);
         if (!handler) {
@@ -277,8 +281,8 @@ export function validateDeploymentContract({ vercel, packageJson, files, outboxW
     }
 
     const fallback = config.rewrites.at(-1);
-    if (fallback?.source !== '/(.*)' || fallback?.destination !== '/index.html') {
-      errors.push('the final rewrite must be the SPA fallback /(.*) -> /index.html');
+    if (fallback?.source !== '/(.*)' || fallback?.destination !== SPA_FALLBACK_DESTINATION) {
+      errors.push(`the final rewrite must be the SPA fallback /(.*) -> ${SPA_FALLBACK_DESTINATION}`);
     }
   }
 

@@ -320,7 +320,7 @@ test('LeetCode detail and sync routes reject anonymous callers without network a
 test('LeetCode synchronization has no runtime ingestion implementation', () => {
   const source = readFileSync(new URL('../../api/data.js', import.meta.url), 'utf8');
   const start = source.indexOf('async function handleLeetcodeSync');
-  const end = source.indexOf('async function pistonVersions', start);
+  const end = source.indexOf('function positiveInteger', start);
   assert.ok(start >= 0 && end > start, 'could not locate the LeetCode sync handler');
 
   const handlerSource = source.slice(start, end);

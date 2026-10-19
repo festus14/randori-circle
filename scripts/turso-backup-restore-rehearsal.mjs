@@ -35,6 +35,23 @@ const REHEARSAL_ENVIRONMENT='turso-migration-rehearsal';
 const ATTESTATION_KEY_DOMAIN='randori:turso-rehearsal-attestation:v2:key';
 const ATTESTATION_SIGNATURE_DOMAIN='randori:turso-rehearsal-attestation:v2:payload';
 const MAX_ATTESTATION_AGE_MS=30*60*1000;
+// Turso reports parent.branched_at as the instant the branch was materialized,
+// not the requested seed timestamp. Production writes stay blocked from before
+// the requested instant until after the create call returns, so any branch
+// point inside that window holds identical data. Allow a small provider clock
+// skew on the upper bound only.
+const PROVIDER_CLOCK_SKEW_MS=5_000;
+const MAX_PITR_BRANCH_LAG_MS=REHEARSAL_RPO_TARGET_MS;
+
+function branchedWithinWindow(branchedAt,pitrAt,branchedBy=null){
+  const branched=typeof branchedAt==='string'?Date.parse(branchedAt):Number.NaN;
+  const requested=typeof pitrAt==='string'?Date.parse(pitrAt):Number.NaN;
+  if(!Number.isFinite(branched)||!Number.isFinite(requested)) return false;
+  const upper=Number.isSafeInteger(branchedBy)
+    ?Math.min(branchedBy+PROVIDER_CLOCK_SKEW_MS,requested+MAX_PITR_BRANCH_LAG_MS)
+    :requested+MAX_PITR_BRANCH_LAG_MS;
+  return branched>=requested&&branched<=upper;
+}
 
 const PUBLIC_MESSAGES=Object.freeze({
   REHEARSAL_INVALID:'Backup/restore rehearsal configuration is invalid.',
@@ -362,7 +379,7 @@ function validateAttestationPayload(payload,expectedContext,now,maxAgeMs){
   if(!exactObjectKeys(payload.pitr,['requestedAt','authoritativeAt'])) attestationFailure();
   canonicalAttestationTimestamp(payload.pitr.requestedAt);
   canonicalAttestationTimestamp(payload.pitr.authoritativeAt);
-  if(payload.pitr.requestedAt!==payload.pitr.authoritativeAt) attestationFailure();
+  if(!branchedWithinWindow(payload.pitr.authoritativeAt,payload.pitr.requestedAt)) attestationFailure();
 
   if(!exactObjectKeys(payload.evidence,[
     'sourceEvidenceDigest','restoredEvidenceDigest','postMigrationEvidenceDigest',
@@ -466,7 +483,7 @@ function restoreIdentity(database,expected){
   if(database?.id!==expected.id||database?.name!==expected.name||database?.group!==expected.group
     ||database?.id===expected.sourceId||database?.name===expected.sourceName
     ||database?.parent?.id!==expected.sourceId||database?.parent?.name!==expected.sourceName
-    ||database?.parent?.branchedAt!==expected.pitrAt){
+    ||!branchedWithinWindow(database?.parent?.branchedAt,expected.pitrAt,expected.branchedBy)){
     fail('REHEARSAL_RESTORE_IDENTITY_MISMATCH','restore identity mismatch','restore_ready');
   }
   return database;
@@ -1001,7 +1018,7 @@ export async function runBackupRestoreRehearsal(rawOptions={},dependencies={}){
   const safety={};
   const restoreState={
     attempted:false,id:null,name:options.restoreName,group:options.source.group,
-    sourceId:options.source.id,sourceName:options.source.name,pitrAt:null,
+    sourceId:options.source.id,sourceName:options.source.name,pitrAt:null,branchedBy:null,
   };
   let phase='source_identity';
   let originalWriteState;
@@ -1072,6 +1089,7 @@ export async function runBackupRestoreRehearsal(rawOptions={},dependencies={}){
       fail('REHEARSAL_RESTORE_IDENTITY_MISMATCH','created restore identity is invalid','restore_create');
     }
     restoreState.id=created.id;
+    restoreState.branchedBy=milliseconds(options.clock);
     journal.restore.id=created.id;
     await persistJournal(options,journal,'write_state_restore');
 

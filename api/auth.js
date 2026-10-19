@@ -1047,8 +1047,11 @@ async function handleGoogleCallback(req,res){
   try{
     identity=await exchangeGoogleAuthorizationCode({
       clientId,clientSecret,redirectUri,code:String(code),codeVerifier:verifier,nonce,
-      maxAuthAgeSeconds:purpose.startsWith('reauth:')||purpose.startsWith('link:')
-        ?GOOGLE_REAUTH_MAX_AGE_SECONDS:null,
+      // Only Google step-up reauthentication needs a fresh signed auth_time.
+      // Google does not reliably force re-entry for max_age=0 on an already
+      // signed-in device, so linking instead relies on Randori recent auth plus
+      // this just-issued PKCE/nonce-bound code (see ID-63).
+      maxAuthAgeSeconds:purpose.startsWith('reauth:')?GOOGLE_REAUTH_MAX_AGE_SECONDS:null,
     });
   }catch(providerError){
     res.writeHead(302,{Location:redirectError(publicGoogleErrorCode(providerError))}); return res.end();
@@ -1076,7 +1079,6 @@ async function handleGoogleCallback(req,res){
       await requireRecentAuth(db,current);
       const result=await linkGoogleCredential(db,current,{
         issuer:googleIssuer,subject:googleSub,providerEmail:email,
-        providerAuthenticatedAt:identity.authTime,
       });
       if(!['linked','already_linked'].includes(result.status)){
         res.writeHead(302,{Location:oauthResultLocation(appUrl,returnPath,'identity_link_error',result.status)});

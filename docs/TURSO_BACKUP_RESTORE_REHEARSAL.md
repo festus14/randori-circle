@@ -6,7 +6,7 @@ This runbook exercises Turso point-in-time recovery (PITR) without migrating or 
 
 The workflow will stop unless the Platform API returns the configured production database name, immutable `DbId`, group, explicit null parent, and expected `block_writes` value. It writes a private recovery journal before its first mutation, confirms writes are blocked through both database metadata and configuration, and only then selects the PITR timestamp. As soon as the PITR create request returns, it restores and confirms the original source value before waiting for or migrating the restore. Signal handling and a separate `always()` cleanup process retain the same restoration fallback on failure.
 
-PITR always creates a new, disposable database. The workflow requires its new `DbId`, exact generated name and group, and an exact parent `{id, name, branched_at}` binding to production and the requested recovery instant before connecting. Adoption and migration run only through the disposable restore client. Production is never passed to the migration runner or delete operation.
+PITR always creates a new, disposable database. The workflow requires its new `DbId`, exact generated name and group, and an exact parent `{id, name}` binding to production before connecting. Turso reports `branched_at` as the instant the branch was materialized rather than the requested seed timestamp, so the provider instant must fall inside the write-blocked window: no earlier than the requested recovery instant and no later than five seconds (provider clock-skew allowance) after the create call returned, which is before production writes are unblocked. The attestation records both the requested and authoritative instants. Adoption and migration run only through the disposable restore client. Production is never passed to the migration runner or delete operation.
 
 Turso's documented delete endpoint accepts a database name, not an ID or conditional identity. The script therefore re-fetches and verifies the returned `DbId`, parent, and PITR timestamp immediately before name-based deletion and serializes rehearsals with a unique run/attempt name. This closes accidental-target errors but cannot make the provider operation atomic against an out-of-band delete-and-recreate race. The protected maintenance window must prohibit other database create, rename, and delete operations.
 
@@ -53,7 +53,7 @@ The workflow fetches `origin/main` after checkout and refuses to continue if `HE
 2. blocks and confirms writes, then selects the PITR timestamp;
 3. authenticates source evidence for its exact managed or unmanaged migration prefix;
 4. requests an isolated PITR restore, journals its returned ID, and immediately restores source writes;
-5. requires the retrieved restore's ID, parent, group, and provider `branched_at` to match the request;
+5. requires the retrieved restore's ID, parent, and group to match the request and the provider `branched_at` to fall inside the write-blocked window;
 6. authenticates matching pre-migration restore evidence;
 7. adopts an unmanaged ledger only on the restore, applies pending migrations only there, and verifies prior data plus the exact canonical migration-added table state; and
 8. re-verifies the disposable identity immediately before its guarded name-based deletion.

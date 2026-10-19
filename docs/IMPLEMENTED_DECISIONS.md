@@ -2,7 +2,7 @@
 
 Status: accepted through the current rolling release
 
-Last reviewed: 2026-09-20
+Last reviewed: 2026-10-18
 
 Scope: current rolling release and independently reviewed candidate increments
 
@@ -2518,7 +2518,89 @@ treating any parse error as success, is broader than the observed behaviour.
 production. Rollback restores the previous fail-closed behaviour. That
 behaviour keeps remote readiness unavailable.
 
-## ID-62: Make pair code conflict-free and execute only acknowledged state
+## ID-62: Execute catalogue runs in an isolated, configurable provider
+
+Status: candidate code-only increment; no migration.
+
+**Context.** The public emkc.org Piston API became whitelist-only on
+2026-02-15, so every production "Run" failed while CI stayed green because the
+end-to-end suite replaced that endpoint.
+
+**Decision.** `api/_execution.js` is the only execution boundary. It selects a
+provider from `EXECUTION_PROVIDER` and fails closed when it is unset, unknown,
+or misconfigured:
+
+- `vercel-sandbox` (recommended for production) creates one Vercel Sandbox
+  Firecracker microVM per run from the managed `vercel/sandbox/node:24` or
+  `vercel/sandbox/python:3.14` image with 1 vCPU, `networkPolicy: 'deny-all'`,
+  `persistent: false`, no environment variables, a 60-second session ceiling,
+  and a 10-second command deadline. The microVM is deleted after every run. On
+  Vercel the SDK authenticates with the project's OIDC token, so no additional
+  account or secret is required.
+- `piston` posts the same single-file envelope to a self-hosted
+  Piston-compatible `https://` `EXECUTION_API_URL`, optionally with
+  `EXECUTION_API_TOKEN` as a Bearer token. The retired emkc.org host is rejected
+  even when configured explicitly.
+
+The API process still only generates the harness, embeds inputs but never
+expected outputs, reads at most 256 KiB of combined output, compares results with
+its oracle, signs the attested run, and persists it. Provider configuration is
+checked after authentication, validation, and pair authorization but before any
+lease or quota write. An unavailable provider (unset configuration, SDK or
+credential failure, sandbox quota exhausted, endpoint unreachable or non-2xx)
+returns `503 {code: "execution_unavailable"}` and the editor shows that the code
+was not run. Malformed or oversized provider output returns
+`500 {code: "execution_failed"}`. A command that exceeds its deadline is killed
+and recorded as a run whose unreported cases fail, matching the prior provider's
+behaviour. The loopback `npm run dev` runtime clears all execution settings, so
+local execution is explicitly unavailable.
+
+**Alternatives.** Running submissions in the function process (even with
+`node:vm` or restricted Python builtins) is not a security boundary and is
+rejected. Self-hosted Piston needs a separately operated host with container
+isolation, patching, and abuse controls; it remains a supported fallback through
+the same abstraction. Judge0 CE / RapidAPI and similar hosted APIs need a new
+account and API key and send code to another third party. E2B was the earlier
+spike candidate but also needs a new account. Vercel Sandbox is generally
+available and uses only the existing Vercel project.
+
+**Limits.** The Vercel Hobby allowance is 5,000 sandbox creations, 5 active-CPU
+hours, and 420 GB-hours of provisioned memory per month, with 10 concurrent
+sandboxes. Memory is billed in one-minute minimum increments, so each 1-vCPU
+(2 GB) run consumes about 0.033 GB-hours: the memory allowance supports roughly
+12,000 runs and creations cap usage at 5,000 runs per month. When the allowance
+is exhausted creation pauses, which surfaces as `execution_unavailable` rather
+than a charge. The existing per-user lease and 10-runs-per-minute quota still
+apply. Each run includes microVM start-up latency.
+
+**Rollout and recovery.** Set `EXECUTION_PROVIDER=vercel-sandbox` for
+Production, confirm OIDC federation is enabled for the project, deploy, then run
+`npm run smoke:execution` with a token from `vercel env pull .env.local` and
+complete one JavaScript and one Python run in the product. Rollback is to unset
+`EXECUTION_PROVIDER`; runs then fail closed with the clear unavailable state and
+no data changes.
+
+## ID-63: Link Google with Randori recent auth, not a fresh Google `auth_time`
+
+- **Status:** implemented.
+- **Problem:** explicit Google linking required the signed ID token's
+  `auth_time` to be at most two minutes old. On a device already signed in to
+  Google, Google does not reliably force credential re-entry for `max_age=0`
+  (and does not support `prompt=login`), so it returns the original sign-in
+  time. Every production link attempt therefore failed with
+  `identity_invalid` ("We could not verify that Google account").
+- **Decision:** linking no longer checks Google `auth_time`. It still requires
+  (1) Randori recent authentication for the exact initiating session, checked
+  inside the link transaction; (2) a just-issued authorization code bound to
+  this browser by state, PKCE and nonce; (3) explicit account selection; and
+  (4) the existing session-binding, ownership-conflict and audit rules.
+  Google step-up reauthentication (`reauth:`) keeps the fresh `auth_time`
+  requirement because there Google is the recent-auth proof itself.
+- **Verification:** `tests/unit/identity-linking-api.test.mjs` links with an
+  old and a missing `auth_time`, and refuses a fresh Google token when Randori
+  recent auth has expired.
+
+## ID-64: Make pair code conflict-free and execute only acknowledged state
 
 Status: candidate migration-backed primary-session increment.
 

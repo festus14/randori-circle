@@ -1,5 +1,6 @@
 import { captureSentryException, captureSentryMessage, getClient, getAdminEmails, getJwtSecret, initSentry, isSentryConfigured, verifyMutationOrigin, verifyRequestAuth, verifySignedRequestAuth } from './_db.js';
 import { createEvaluationSuite, getPublicExercise, listPublicExercises } from './_catalog.js';
+import { buildExecutionHarness, executeProgram, ExecutionUnavailableError, executionRuntimeVersion, normalizeRunnerResults, resolveExecutionProvider } from './_execution.js';
 import { parseCanonicalRoomPath } from './_pairing.js';
 import { resolvePairingCycle } from './_pairing-cycle.js';
 import { getPairingPublication } from './_pairing-publication.js';
@@ -117,16 +118,6 @@ async function requireAdminDT(req,res){
   return {db, payload, ...ctx};
 }
 
-async function fetchWithTimeout(url, opts={}, timeoutMs=6000){
-  const ctrl = new AbortController();
-  const id = setTimeout(()=>ctrl.abort(), timeoutMs);
-  try{
-    const r = await fetch(url, {...opts, signal: ctrl.signal});
-    clearTimeout(id);
-    return r;
-  }catch(e){ clearTimeout(id); throw e; }
-  finally{ clearTimeout(id); }
-}
 function getEndpoint(req){
   const q = req.query?.endpoint;
   if (q) return String(q).toLowerCase();
@@ -2374,162 +2365,6 @@ async function handleLeetcodeSync(req,res){
 }
 
 
-async function pistonVersions(){
-  try{
-    const r = await fetchWithTimeout('https://emkc.org/api/v2/piston/runtimes', {}, 6000);
-    if(r.ok){ const j=await r.json(); return j; }
-  }catch{} return [];
-}
-
-async function callPistonAPI(language, version, files){
-  const body = { language, version, files: files.map(f=>({name:f.name, content:f.content})) };
-  const controller=new AbortController();
-  const timeout=setTimeout(()=>controller.abort(),12000);
-  const maxResponseBytes=256*1024;
-  try{
-    const r=await fetch('https://emkc.org/api/v2/piston/execute',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify(body),
-      signal:controller.signal,
-    });
-    if(!r.ok) throw new Error(`piston request failed with status ${r.status}`);
-    const declaredLength=Number(r.headers.get('content-length'));
-    if(Number.isFinite(declaredLength) && declaredLength>maxResponseBytes){
-      controller.abort();
-      throw new Error('piston response exceeded size limit');
-    }
-    const reader=r.body?.getReader?.();
-    if(!reader){
-      const text=await r.text();
-      if(Buffer.byteLength(text,'utf8')>maxResponseBytes) throw new Error('piston response exceeded size limit');
-      return JSON.parse(text);
-    }
-    const chunks=[];
-    let received=0;
-    while(true){
-      const {done,value}=await reader.read();
-      if(done) break;
-      received+=value.byteLength;
-      if(received>maxResponseBytes){
-        await reader.cancel().catch(()=>{});
-        throw new Error('piston response exceeded size limit');
-      }
-      chunks.push(Buffer.from(value));
-    }
-    return JSON.parse(Buffer.concat(chunks,received).toString('utf8'));
-  }finally{
-    clearTimeout(timeout);
-  }
-}
-
-function encodeRunnerPayload(value){
-  return Buffer.from(JSON.stringify(value),'utf8').toString('base64');
-}
-
-function buildJsHarness(userCode,testSuite,resultPrefix){
-  const encodedSuite=encodeRunnerPayload({
-    entrypoint:testSuite.entrypoint,
-    tests:testSuite.tests.map(test=>({args:test.args})),
-  });
-  const encodedCode=Buffer.from(userCode,'utf8').toString('base64');
-  return `;(function(){
-  const __randori_bundle=JSON.parse(Buffer.from('${encodedSuite}','base64').toString('utf8'));
-  const __randori_source=Buffer.from('${encodedCode}','base64').toString('utf8');
-  const __randori_vm=require('node:vm');
-  const __randori_context=__randori_vm.createContext(Object.create(null),{codeGeneration:{strings:false,wasm:false}});
-  let __randori_ready=true;
-  try{ __randori_vm.runInContext(__randori_source,__randori_context,{timeout:1000}); }catch{ __randori_ready=false; }
-  for(let index=0;index<__randori_bundle.tests.length;index++){
-    const test=__randori_bundle.tests[index];
-    let got=null, ok=false, error=null;
-    try{
-      if(!__randori_ready) throw new Error('submission did not load');
-      __randori_context.__randori_args_json__=JSON.stringify(test.args);
-      const expression='JSON.stringify('+__randori_bundle.entrypoint+'(...JSON.parse(__randori_args_json__)))';
-      const serialized=__randori_vm.runInContext(expression,__randori_context,{timeout:1000});
-      got=JSON.parse(serialized);
-      ok=true;
-    }catch{ error='runtime error'; }
-    process.stdout.write('${resultPrefix}'+JSON.stringify({idx:index,ok,got,error})+'\\n');
-  }
-})();
-`;
-}
-
-function buildPythonHarness(userCode,testSuite,resultPrefix){
-  const encodedSuite=encodeRunnerPayload({
-    entrypoint:testSuite.entrypoint,
-    tests:testSuite.tests.map(test=>({args:test.args})),
-  });
-  const encodedCode=Buffer.from(userCode,'utf8').toString('base64');
-  return `import base64 as __randori_base64
-import json as __randori_json
-
-def __randori_run():
-    bundle=__randori_json.loads(__randori_base64.b64decode('${encodedSuite}').decode('utf-8'))
-    source=__randori_base64.b64decode('${encodedCode}').decode('utf-8')
-    safe_builtins={
-        'Exception':Exception,'IndexError':IndexError,'KeyError':KeyError,'TypeError':TypeError,
-        'ValueError':ValueError,'abs':abs,'all':all,'any':any,'bool':bool,'chr':chr,'dict':dict,'divmod':divmod,
-        'enumerate':enumerate,'filter':filter,'float':float,'int':int,'isinstance':isinstance,
-        'len':len,'list':list,'map':map,'max':max,'min':min,'next':next,'object':object,'ord':ord,
-        'pow':pow,'range':range,'reversed':reversed,'round':round,'set':set,'sorted':sorted,
-        'str':str,'sum':sum,'tuple':tuple,'zip':zip,
-    }
-    namespace={'__builtins__':safe_builtins}
-    ready=True
-    try:
-        exec(compile(source,'submission.py','exec'),namespace,namespace)
-    except Exception:
-        ready=False
-    fn=namespace.get(bundle['entrypoint'])
-    for index,test in enumerate(bundle['tests']):
-        ok=False
-        got=None
-        error=None
-        try:
-            if not ready or not callable(fn):
-                raise RuntimeError('entrypoint not found')
-            got=fn(*test['args'])
-            __randori_json.dumps(got,separators=(',',':'))
-            ok=True
-        except Exception:
-            error='runtime error'
-        print('${resultPrefix}'+__randori_json.dumps({'idx':index,'ok':ok,'got':got,'error':error},separators=(',',':')))
-
-__randori_run()
-`;
-}
-
-function runnerValuesEqual(a,b){
-  if(Object.is(a,b)) return true;
-  if(Array.isArray(a) && Array.isArray(b)){
-    return a.length===b.length && a.every((value,index)=>runnerValuesEqual(value,b[index]));
-  }
-  if(a && b && typeof a==='object' && typeof b==='object'){
-    const aKeys=Object.keys(a), bKeys=Object.keys(b);
-    return aKeys.length===bKeys.length
-      && aKeys.every(key=>Object.prototype.hasOwnProperty.call(b,key) && runnerValuesEqual(a[key],b[key]));
-  }
-  return false;
-}
-
-function normalizeRunnerResults(stdout,resultPrefix,tests){
-  const byIndex=new Map();
-  for(const line of String(stdout||'').split('\n')){
-    const value=line.trim();
-    if(!value.startsWith(resultPrefix) || value.length>100000) continue;
-    try{
-      const parsed=JSON.parse(value.slice(resultPrefix.length));
-      if(!Number.isInteger(parsed.idx) || parsed.idx<0 || parsed.idx>=tests.length || typeof parsed.ok!=='boolean') continue;
-      const pass=parsed.ok && runnerValuesEqual(parsed.got,tests[parsed.idx].expected);
-      byIndex.set(parsed.idx,{idx:parsed.idx,pass,error:parsed.error ? 'runtime error' : null});
-    }catch{}
-  }
-  return tests.map((_,idx)=>byIndex.get(idx)||{idx,pass:false,error:'no result'});
-}
-
 function positiveInteger(value){
   const parsed=Number(value);
   return Number.isInteger(parsed) && parsed>0 ? parsed : null;
@@ -2575,6 +2410,15 @@ async function releaseExecutionLease(db,userId,leaseId,req){
   }
 }
 
+function executionUnavailableBody(language){
+  return {
+    ok:false,
+    error:'code execution is temporarily unavailable; your code was not run',
+    code:'execution_unavailable',
+    language,
+  };
+}
+
 async function handleExecute(req,res){
   const _execStart=Date.now();
   if(req.method!=='POST') return res.status(405).json({error:'POST only for execute'});
@@ -2583,8 +2427,8 @@ async function handleExecute(req,res){
   const body = req.body || {};
   const language = String(body.language||body.lang||'javascript').toLowerCase();
   const map = {js:'javascript', javascript:'javascript', py:'python', python:'python'};
-  const pistonLang = map[language];
-  if(!pistonLang) return res.status(400).json({error:'supported languages are javascript and python'});
+  const executionLanguage = map[language];
+  if(!executionLanguage) return res.status(400).json({error:'supported languages are javascript and python'});
   let code = String(body.code||'');
 
   const questionSlug=String(body.question_slug||body.slug||'').trim().slice(0,120);
@@ -2596,7 +2440,7 @@ async function handleExecute(req,res){
   if(rawQuestionVersion!=null && rawQuestionVersion!=='' && !questionVersion){
     return res.status(400).json({error:'question_version must be a positive integer'});
   }
-  const testSuite=createEvaluationSuite(questionSlug,questionVersion,pistonLang);
+  const testSuite=createEvaluationSuite(questionSlug,questionVersion,executionLanguage);
   if(!testSuite) return res.status(404).json({error:'question not found or unavailable'});
 
   const hasRoomId=Object.prototype.hasOwnProperty.call(body,'room_id');
@@ -2635,7 +2479,7 @@ async function handleExecute(req,res){
       const executionRoom=room||{roomId:`week_${weekId}_pair_${pairId}`,weekId,pairGroupId:pairId};
       const canonical=await readCanonicalCodeForExecution(db,{
         viewerId:Number(payload.id||payload.uid),room:executionRoom,questionSlug,questionVersion,
-        language:pistonLang,documentVersion:body.document_version,
+        language:executionLanguage,documentVersion:body.document_version,
       });
       const exactHumanShape=positiveInteger(access.row?.user_a_id)!==positiveInteger(access.row?.user_b_id)
         &&access.row?.user_c_id==null;
@@ -2663,15 +2507,18 @@ async function handleExecute(req,res){
   if(!code) return res.status(400).json({error:'code required'});
   if(Buffer.byteLength(code,'utf8')>20000) return res.status(413).json({error:'code exceeds the 20000-byte limit'});
 
+  // Authorization is settled before provider configuration is disclosed. With
+  // no isolated provider configured, fail closed before leases or quota writes.
+  const executionProvider=resolveExecutionProvider();
+  if(!executionProvider.configured){
+    return res.status(503).json(executionUnavailableBody(executionLanguage));
+  }
+
   // Client test cases and result/count fields are deliberately ignored. The exact
   // versioned suite is resolved above from the private server catalogue.
-  const runtimeVersions={javascript:'18.15.0',python:'3.10.0'};
-  const runtimeVersion=runtimeVersions[pistonLang];
+  const runtimeVersion=executionRuntimeVersion(executionProvider.provider,executionLanguage);
   const resultPrefix=`__RANDORI_RESULT_${randomBytes(16).toString('hex')}__:`;
-  const harness=pistonLang==='javascript'
-    ? buildJsHarness(code,testSuite,resultPrefix)
-    : buildPythonHarness(code,testSuite,resultPrefix);
-  const filename=pistonLang==='javascript' ? 'main.js' : 'main.py';
+  const harness=buildExecutionHarness(executionLanguage,code,testSuite,resultPrefix);
 
   const userId=positiveInteger(payload.id||payload.uid);
   if(!userId) return res.status(401).json({error:'authentication required'});
@@ -2682,14 +2529,14 @@ async function handleExecute(req,res){
   __activeExecutionsByUser.add(executionKey);
   let leaseId=null;
   try{
-    leaseId=await acquireExecutionLease(db,userId,req,{question_slug:questionSlug,question_version:questionVersion,language:pistonLang});
+    leaseId=await acquireExecutionLease(db,userId,req,{question_slug:questionSlug,question_version:questionVersion,language:executionLanguage});
     if(!leaseId){
       __activeExecutionsByUser.delete(executionKey);
       return res.status(429).json({error:'an execution is already in progress',retry_after_seconds:30});
     }
     const rateResults=await db.batch([{
       sql:`INSERT INTO app_logs (level, source, event, message, meta_json, user_id, route, ua, ip, created_at) VALUES ('info','runner','execute_attempt','execution requested',?,?,?,?,?, datetime('now'))`,
-      args:[JSON.stringify({question_slug:questionSlug,question_version:questionVersion,language:pistonLang}),userId,String(req.url||'').slice(0,300),String(req.headers?.['user-agent']||'').slice(0,300),String(req.headers?.['x-forwarded-for']||'').split(',')[0].trim().slice(0,80)],
+      args:[JSON.stringify({question_slug:questionSlug,question_version:questionVersion,language:executionLanguage}),userId,String(req.url||'').slice(0,300),String(req.headers?.['user-agent']||'').slice(0,300),String(req.headers?.['x-forwarded-for']||'').split(',')[0].trim().slice(0,80)],
     },{
       sql:`SELECT COUNT(*) as c FROM app_logs WHERE user_id=? AND source='runner' AND event='execute_attempt' AND datetime(created_at)>=datetime('now','-1 minute')`,
       args:[userId],
@@ -2710,10 +2557,9 @@ async function handleExecute(req,res){
   }
 
   try{
-    const pistonRes = await callPistonAPI(pistonLang,runtimeVersion,[{name:filename,content:harness}]);
-    const run = pistonRes.run || {};
-    const stdout = String(run.stdout||'');
-    const stderr = String(run.stderr||'');
+    const run = await executeProgram({language:executionLanguage,source:harness});
+    const stdout = run.stdout;
+    const stderr = run.stderr;
     const results=normalizeRunnerResults(stdout,resultPrefix,testSuite.tests);
     const passed = results.filter(r=>r.pass===true).length;
     const dur = Date.now()-_execStart;
@@ -2725,7 +2571,7 @@ async function handleExecute(req,res){
         userId,
         questionSlug,
         questionVersion,
-        language:pistonLang,
+        language:executionLanguage,
         passedCount:passed,
         totalCount:total,
         resultsJson:storedResults,
@@ -2746,7 +2592,7 @@ async function handleExecute(req,res){
           document_version:canonicalDocument.version,
         }:{}),
       });
-      const runArgs=[payload.id||payload.uid,weekId,pairId,null,questionSlug,pistonLang,code,testSnapshot,storedResults,passed,total,dur];
+      const runArgs=[payload.id||payload.uid,weekId,pairId,null,questionSlug,executionLanguage,code,testSnapshot,storedResults,passed,total,dur];
       const inserted=canonicalDocument
         ?await db.execute({
           sql:`WITH pair_access AS (${codeDocumentAccessSql()})
@@ -2765,7 +2611,7 @@ async function handleExecute(req,res){
                 WHERE receipt.week_id=? AND receipt.pair_group_id=? AND receipt.participant_source='auth'
                   AND receipt.user_id IN (SELECT user_a_id FROM pair_access UNION ALL SELECT user_b_id FROM pair_access))<2
             RETURNING id`,
-          args:[...accessArgs,...runArgs,weekId,pairId,questionSlug,questionVersion,pistonLang,
+          args:[...accessArgs,...runArgs,weekId,pairId,questionSlug,questionVersion,executionLanguage,
             canonicalDocument.revision,canonicalDocument.stateHash,canonicalDocument.codeHash,weekId,pairId],
         })
         :accessArgs
@@ -2786,7 +2632,7 @@ async function handleExecute(req,res){
         if(canonicalDocument){
           const latest=await readCanonicalCodeForExecution(db,{
             viewerId:userId,room:room||{roomId:`week_${weekId}_pair_${pairId}`,weekId,pairGroupId:pairId},
-            questionSlug,questionVersion,language:pistonLang,documentVersion:canonicalDocument.version,
+            questionSlug,questionVersion,language:executionLanguage,documentVersion:canonicalDocument.version,
           });
           if(!latest) return res.status(404).json({error:'pair not found'});
           if(latest.terminal) return res.status(409).json({error:'session is completed',code:'session_completed'});
@@ -2804,7 +2650,7 @@ async function handleExecute(req,res){
       if(accessArgs) return res.status(503).json({ok:false,error:'execution service unavailable'});
       return res.status(500).json({ok:false,error:'execution result could not be saved'});
     }
-    try{ await logServer(passed===total?'success':'info','execute_success',`piston ${pistonLang} ${passed}/${total} in ${dur}ms`,{language:pistonLang,runtimeVersion,questionSlug,questionVersion,passed,total,dur,hasStderr:!!stderr,runId},{req,payload,source:'runner',route:req.url,skipEnsure:true}); }catch{}
+    try{ await logServer(passed===total?'success':'info','execute_success',`${run.provider} ${executionLanguage} ${passed}/${total} in ${dur}ms`,{provider:run.provider,language:executionLanguage,runtimeVersion,timedOut:run.timedOut,questionSlug,questionVersion,passed,total,dur,hasStderr:!!stderr,runId},{req,payload,source:'runner',route:req.url,skipEnsure:true}); }catch{}
     await releaseExecutionLease(db,userId,leaseId,req);
     leaseId=null;
     __activeExecutionsByUser.delete(executionKey);
@@ -2812,12 +2658,14 @@ async function handleExecute(req,res){
       ok:true,
       question_slug:questionSlug,
       question_version:questionVersion,
-      language:pistonLang,
+      language:executionLanguage,
       version:runtimeVersion,
       runtime_version:runtimeVersion,
-      piston:{
+      execution:{
+        provider:run.provider,
         code:Number.isInteger(run.code)?run.code:null,
         signal:typeof run.signal==='string'?run.signal.slice(0,64):null,
+        timed_out:run.timedOut===true,
         has_stderr:!!stderr,
       },
       results,
@@ -2826,8 +2674,10 @@ async function handleExecute(req,res){
       run_id:runId,
     });
   }catch(e){
-    try{ await logServer('error','execute_fail',`piston ${pistonLang} request failed`,{language:pistonLang},{req,source:'runner',route:req.url,skipEnsure:true}); }catch{}
-    return res.status(500).json({ok:false,error:'piston execute failed',language:pistonLang});
+    const unavailable=e instanceof ExecutionUnavailableError;
+    try{ await logServer('error',unavailable?'execute_unavailable':'execute_fail',`${executionProvider.provider} ${executionLanguage} ${unavailable?'unavailable':'request failed'}`,{provider:executionProvider.provider,language:executionLanguage,reason:String(e?.message||'').slice(0,200)},{req,source:'runner',route:req.url,skipEnsure:true}); }catch{}
+    if(unavailable) return res.status(503).json(executionUnavailableBody(executionLanguage));
+    return res.status(500).json({ok:false,error:'code execution failed',code:'execution_failed',language:executionLanguage});
   }finally{
     await releaseExecutionLease(db,userId,leaseId,req);
     __activeExecutionsByUser.delete(executionKey);

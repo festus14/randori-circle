@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {afterEach,mock,test} from 'node:test';
+import {afterEach,beforeEach,mock,test} from 'node:test';
 import {createClient} from '@libsql/client';
 import * as Y from 'yjs';
 
@@ -201,7 +201,14 @@ async function seedCodeDocument(db,question,code){
   return version;
 }
 
+beforeEach(()=>{
+  process.env.EXECUTION_PROVIDER='piston';
+  process.env.EXECUTION_API_URL='https://execution.test.example/api/v2/execute';
+});
+
 afterEach(()=>{
+  delete process.env.EXECUTION_PROVIDER;
+  delete process.env.EXECUTION_API_URL;
   try{ currentDb?.close?.(); }catch{}
   currentDb=null;
   providerCalls=0;

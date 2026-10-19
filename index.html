@@ -1693,9 +1693,14 @@ p{margin:0}
       const data=await response.json().catch(()=>({}));
       activationState.status=response.ok&&data?.status==='verified'?'verified':String(data?.status||'unavailable');
       if(response.ok&&data?.user){
+        // A startup /me refresh that began before verification must not
+        // overwrite the newly issued session, and the header must reflect it.
+        invalidateAuthRefreshes();
         me=data.user;
         resetCircleControlForIdentityChange();
         try{ localStorage.setItem(ME_KEY,JSON.stringify(data.user)); }catch{}
+        try{ updateAuthUI(); }catch{}
+        try{ window.dispatchEvent(new CustomEvent('randori:auth-refreshed',{detail:{signedIn:true,userId:me.id||me.uid||null}})); }catch{}
       }
     }catch{ activationState.status='unavailable'; }
     activationState.verifying=false;
@@ -3488,6 +3493,7 @@ async function refreshMe(){
     }
     if(code==='email already registered') return 'That email already has an account. Sign in instead.';
     if(code==='invalid credentials') return 'Email or password is incorrect.';
+    if(code==='active circle membership required') return 'Your circle membership is no longer active. Ask the circle owner for a new invitation.';
     if(code.includes('temporarily unavailable')) return mode==='signup'
       ?'Account creation is temporarily unavailable. Try again.'
       :(mode==='reset'?'Password recovery is temporarily unavailable. Try again.':'Sign in is temporarily unavailable. Try again.');
@@ -6511,7 +6517,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       }
     } else {
       if(tcs && tcs.length){
-        cards.push(`<div class="test" style="border-style:dashed"><div class="small"><b>${title||'Tests'}</b> — ${tcs.length} case(s) • lang <span class="kbd">${lang}</span> — JS local exec. Other langs via Piston (opt-in).</div></div>`);
+        cards.push(`<div class="test" style="border-style:dashed"><div class="small"><b>${title||'Tests'}</b> — ${tcs.length} case(s) • lang <span class="kbd">${lang}</span> — evaluated by the server execution gateway.</div></div>`);
         tcs.slice(0,8).forEach((tc,i)=>{
           let inN=_normalizeInput(tc.input||tc.raw);
           let exN=_normalizeExpect(tc.expect);
@@ -10795,6 +10801,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           if(window.toast) window.toast('Run '+lang+' '+passedCount+'/'+totalCount+' '+(passedCount===totalCount?'✓':'')+' verified by server');
         }catch(e){
           try{ if(window._randori_ui && window._randori_ui.hideLoader) window._randori_ui.hideLoader(); }catch{}
+          if(e && e.code==='execution_unavailable'){
+            if(runOutEl){ runOutEl.innerHTML='<div class="test" data-execution-unavailable style="border-color:var(--warn)"><div class="small"><b>Code execution is temporarily unavailable.</b> Your code was not run and nothing was recorded.<div class="small muted">Your editor contents are kept — try again in a few minutes.</div></div></div>'; runOutEl.scrollTop=runOutEl.scrollHeight; }
+            if(window.toast) window.toast('Code execution is temporarily unavailable');
+            return;
+          }
           const msg = (e && (e.error||e.detail||e.message))||String(e).slice(0,300);
           if(e?.code==='code_document_changed'){
             try{ await window._randori_crdt?.reconcile?.(); }catch{}

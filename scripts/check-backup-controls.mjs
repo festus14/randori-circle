@@ -8,9 +8,9 @@ const REHEARSAL_PATH='.github/workflows/turso-backup-restore-rehearsal.yml';
 const WATCHDOG_PATH='.github/workflows/turso-backup-restore-watchdog.yml';
 const DEPLOYABILITY_PATH='.github/workflows/deployability.yml';
 const WORKFLOW_DIGESTS=Object.freeze({
-  rehearsal:'4689edfeeb154ab1682bd4856a312ba9041315bedf98e658ed2a4029dbf93229',
-  watchdog:'d635165fe7b0ee986c10852583d16d440839388cc4dfdc17516998aa80d35df8',
-  deployability:'e81983931c58b9abcaea6569a40967b38346ce3c4923ea14f41d6eabf75da503',
+  rehearsal:'b2b9d31604a0e0ae19f2251212c23b4326e22226a887b972b38553dd0f8f34c1',
+  watchdog:'e324e944d6f36f326229ae99c078b9adcad4e53188ea6db2fefbe7515525813b',
+  deployability:'be850fb1f41452d17b0b8ae1069fd50da61448e24e1ab1f938d3648edb2c3858',
 });
 const PROTECTED_REHEARSAL_RUN=[
   '        run: |',

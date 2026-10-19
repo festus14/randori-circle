@@ -38,11 +38,14 @@ The journey crosses the same scoped boundaries as the product:
 
 Browser traffic is allowed only to the runtime's `127.0.0.1` origin. The one
 normally external execution boundary is replaced inside this test process by a
-deterministic local transport. It accepts only the exact Piston JavaScript
+deterministic local transport. The test configures the execution gateway's
+self-hosted Piston-compatible provider (`EXECUTION_PROVIDER=piston`) with a
+reserved `.invalid` endpoint, and the transport accepts only that exact JavaScript
 envelope, executes the production-generated VM harness in an isolated child
 Node process, and returns the provider-shaped result. It rejects and records
-every other server-side network destination. This does not add a runtime flag,
-change `api/data.js`, or weaken the production Piston/sandbox boundary.
+every other server-side network destination. This uses only the production
+provider configuration, adds no test-only runtime flag, and does not weaken the
+production sandbox boundary.
 
 The runtime SQL observer covers all API requests before and after restart and
 must observe zero `CREATE`, `ALTER`, or `DROP` statements. Migration DDL remains

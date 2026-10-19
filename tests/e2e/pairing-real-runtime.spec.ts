@@ -83,11 +83,20 @@ function executeLocalHarness(source: string) {
   });
 }
 
+const E2E_EXECUTION_API_URL = 'https://execution.e2e.invalid/api/v2/execute';
+
+function configureExecutionProvider() {
+  process.env.EXECUTION_PROVIDER = 'piston';
+  process.env.EXECUTION_API_URL = E2E_EXECUTION_API_URL;
+}
+
 function installDeterministicLocalExecutionTransport(getRuntimeOrigin: () => string | null) {
   const nativeFetch = globalThis.fetch;
   const requests: Array<{ language: string; version: string; files: string[] }> = [];
   const unexpectedExternalRequests: string[] = [];
-  const endpoint = 'https://emkc.org/api/v2/piston/execute';
+  // The production execution gateway is configured for a self-hosted
+  // Piston-compatible provider whose transport this process replaces.
+  const endpoint = E2E_EXECUTION_API_URL;
 
   const localFetch: typeof fetch = async (input, init) => {
     const url = typeof input === 'string'
@@ -608,6 +617,9 @@ test('two invited members complete the durable local session journey', async ({ 
       sqlObserver: (sql: string) => requestSql.push(sql),
     });
     runtimeOrigin = new URL(runtime.url).origin;
+    // The loopback runtime clears ambient execution configuration at start and
+    // restores the caller's environment on close.
+    configureExecutionProvider();
     const owner = await signInOwner(pages[0], runtime.url);
     expect(owner).toMatchObject({ email: LOCAL_OWNER_EMAIL, is_admin: true });
 
@@ -994,7 +1006,7 @@ test('two invited members complete the durable local session journey', async ({ 
       version: '18.15.0',
       passed_count: 8,
       total_count: 8,
-      piston: {code: 0, signal: null, has_stderr: false},
+      execution: {provider: 'piston', code: 0, signal: null, timed_out: false, has_stderr: false},
     });
     expect(execution.run_id).toEqual(expect.any(Number));
     expect(executionTransport.requests).toEqual([
@@ -1179,6 +1191,7 @@ test('two invited members complete the durable local session journey', async ({ 
       sqlObserver: (sql: string) => requestSql.push(sql),
     });
     runtimeOrigin = new URL(runtime.url).origin;
+    configureExecutionProvider();
     await pages[0].goto(`${runtime.url}/join/${ownerRoom}`, {waitUntil: 'domcontentloaded'});
     await expect(pages[0].locator('#view-code')).toBeVisible();
     await expect.poll(() => pages[0].evaluate(() => (
