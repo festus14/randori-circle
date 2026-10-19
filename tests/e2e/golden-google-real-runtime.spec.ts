@@ -219,7 +219,10 @@ test('an unlinked Google account with the same email is told to use its password
     await page.locator('#authGoogle').click();
     await expect(page).toHaveURL(`${golden.url}/`);
     await expect(page.getByRole('dialog',{name:'Sign in to Randori'})).toBeVisible();
-    await expect(page.locator('#authErr')).toHaveText('This email already uses password sign-in. Sign in with your password.');
+    await expect(page.locator('#authErr')).toHaveText('This email already signs in with a password. Sign in with your email and password, then link Google from Account security.');
+    // Retrying Google cannot help here, so the email form leads.
+    await expect(page.locator('#authGoogleRetry')).toBeHidden();
+    await expect(page.locator('#authEmail')).toBeFocused();
     await expect(page.locator('#meLabel')).toBeHidden();
     expect(await withDatabase(golden,async db=>Number((await db.execute(
       `SELECT COUNT(*) AS n FROM auth_provider_identities`)).rows[0].n))).toBe(0);
