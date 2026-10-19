@@ -68,5 +68,12 @@ test('browser tests never load the production telemetry SDK', async ({ page }) =
   await page.goto('/', { waitUntil: 'load' });
   await expect.poll(() => page.evaluate(() => (window as typeof window & { _sentryReady?: boolean })._sentryReady)).toBe(false);
   expect(await page.evaluate(() => typeof (window as typeof window & { Sentry?: unknown }).Sentry)).toBe('undefined');
+  // Even if the loader resolved, the environment-scoped config (#252) keeps
+  // non-production origins and automated browsers disabled.
+  expect(await page.evaluate(() => (window as typeof window & { __randoriSentry?: unknown }).__randoriSentry)).toEqual({
+    environment: 'development',
+    enabled: false,
+    productionOrigin: 'https://randori-circle-self.vercel.app',
+  });
   expect(telemetryFailures).toEqual(['net::ERR_NAME_NOT_RESOLVED']);
 });
