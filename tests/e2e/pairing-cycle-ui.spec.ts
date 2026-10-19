@@ -352,7 +352,7 @@ test('client cycle classification uses half-open start and end boundaries',async
 for (const fixture of [
   { status: 'unpublished', title: 'Current pairing is not published yet' },
   { status: 'unavailable', title: 'Unavailable for this cycle' },
-  { status: 'missed', title: "Not in this cycle's snapshot" },
+  { status: 'missed', title: 'You’re not in this week’s pairing' },
 ] as const) {
   test(`dashboard renders the durable ${fixture.status} state with safe solo practice`, async ({ page }) => {
     const current = cycleWindow();
