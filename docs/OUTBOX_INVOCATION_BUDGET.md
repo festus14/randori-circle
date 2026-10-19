@@ -92,7 +92,7 @@ queue/cron with delivery-lag alerting when a strict latency SLO or higher volume
 is required. Vercel Hobby cron is not used for this five-minute cadence.
 
 Latency-sensitive mail does not depend on this cadence. Since
-[ID-63](IMPLEMENTED_DECISIONS.md#id-63-deliver-auth-and-invitation-email-immediately-after-commit)
+[ID-64](IMPLEMENTED_DECISIONS.md#id-64-deliver-auth-and-invitation-email-immediately-after-commit)
 (issue #250), password-reset, activation, invitation, and schedule requests
 attempt their just-committed rows after responding, through `waitUntil`, using
 the same lease-guarded claim, handlers, retry policy, and provider idempotency
@@ -147,7 +147,7 @@ No migration is required; this is scheduling around the schema-v6 outbox.
 | Vercel Hobby cron | Co-located scheduling | Does not support the required five-minute MVP cadence; rejected |
 | Managed queue/cron | Stronger latency and retry guarantees | Added operating cost and infrastructure; preferred upgrade when strict delivery SLOs are needed |
 | Parallel fair rounds | Later types start even when an earlier provider is slow | Adds controlled concurrency; chosen with a global cap and shared deadline |
-| Post-commit targeted attempt (ID-63) | Auth/invitation mail in seconds despite scheduler throttling | Lease-guarded claim of only the request's own rows after the response; chosen, with this worker as backstop |
+| Post-commit targeted attempt (ID-64) | Auth/invitation mail in seconds despite scheduler throttling | Lease-guarded claim of only the request's own rows after the response; chosen, with this worker as backstop |
 
 ## Issue #94 completion boundary
 

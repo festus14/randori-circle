@@ -15,7 +15,7 @@ can also be run manually for recovery. A missing or unhealthy schedule can
 delay pairing, scheduling, invitation, activation, and password-reset mail even
 when the durable outbox and provider configuration are healthy.
 
-Since [ID-63](IMPLEMENTED_DECISIONS.md#id-63-deliver-auth-and-invitation-email-immediately-after-commit),
+Since [ID-64](IMPLEMENTED_DECISIONS.md#id-64-deliver-auth-and-invitation-email-immediately-after-commit),
 password-reset, activation, invitation, and schedule mail is normally sent
 right after its request commits, so a delayed schedule mainly delays pairing
 mail and retries. The scheduler is still the only backstop, and its cadence
