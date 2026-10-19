@@ -30,6 +30,7 @@
     "check:backup-controls": "node scripts/check-backup-controls.mjs",
     "check:runtime-ddl": "node scripts/check-runtime-ddl.mjs",
     "check:syntax": "node tests/static/check-syntax.mjs",
+    "check:turso-sql": "node scripts/check-turso-remote-sql.mjs",
     "smoke:execution": "node --env-file-if-exists=.env.local scripts/execution-smoke.mjs",
     "validate:catalog": "node scripts/validate-catalog.mjs",
     "catalog:takedown": "node scripts/catalog-provenance.mjs takedown",
