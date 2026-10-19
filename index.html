@@ -656,7 +656,7 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .cycle-choices{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--space-2)}
 .cycle-choice{
   display:flex; align-items:center; justify-content:center; gap:var(--space-2);
-  min-height:var(--control-lg); padding:var(--space-2) var(--space-4);
+  min-height:var(--control-lg); padding:var(--space-2) var(--space-3);
   border:1px solid var(--control-border); border-radius:var(--radius-md);
   background:var(--card); color:var(--ink); font:inherit; font-weight:var(--weight-emphasis); cursor:pointer;
   transition:background-color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
@@ -674,7 +674,9 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .rc-badge[data-tone="danger"]{background:var(--bad-surface); border-color:var(--bad); color:var(--bad)}
 .rc-badge[data-tone="info"]{background:var(--info-surface); border-color:var(--info); color:var(--info)}
 .cycle-pairs-list{position:relative; gap:var(--space-2)}
-.cycle-pair .who{min-width:0}
+.cycle-pair{flex-direction:column; align-items:flex-start; gap:var(--space-2)}
+.cycle-pair .who{min-width:0; row-gap:var(--space-2)}
+.cycle-member{display:inline-flex; align-items:center; gap:var(--space-2); min-width:0}
 .cycle-pair-name{font-size:var(--text-sm); overflow-wrap:anywhere}
 .cycle-pair.is-mine{border-color:var(--color-action); background:var(--color-action-subtle)}
 .cycle-pairs-foot{margin-top:var(--space-1)}
@@ -695,7 +697,6 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 }
 @media(max-width:640px){
   .cycle-card{padding:var(--space-4)}
-  .cycle-pair{flex-direction:column; align-items:flex-start}
 }
 @media(max-width:359px){ .cycle-choices{grid-template-columns:minmax(0,1fr)} }
 @media(forced-colors:active){
@@ -6921,7 +6922,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   function pairRowNode(pair,{coordination=false}={}){
     const view=window._randori_pairing_view;
-    const {members,solo,mine}=view.pairMembers(pair,Number(me?.id||me?.uid));
+    const {members,solo,mine,identityKnown}=view.pairMembers(pair,Number(me?.id||me?.uid));
     const row=pairingNode('div',{
       className:`pair cycle-pair${mine?' is-mine':''}`,
       testId:coordination?'secondary-pair-row':'',
@@ -6929,17 +6930,17 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(!coordination&&pair?.pg_id!==undefined&&pair?.pg_id!==null) row.dataset.pg=String(pair.pg_id);
     const who=pairingNode('div',{className:'who'});
     members.forEach((member,index)=>{
-      if(index>0){
-        const joiner=pairingNode('span',{className:'muted small',text:'and'});
-        who.append(joiner);
-      }
+      if(index>0) who.append(pairingNode('span',{className:'muted small',text:'and'}));
+      // Each member stays one unit so names wrap between people, not inside.
+      const unit=pairingNode('span',{className:'cycle-member'});
       const avatar=pairingNode('span',{className:'avatar',text:member.initials});
       const color=safeProfileColor(member.color||PALETTE[index%PALETTE.length]);
       avatar.style.background=color;
       const ink=view.avatarInk(color);
       if(ink) avatar.style.color=ink;
       avatar.setAttribute('aria-hidden','true');
-      who.append(avatar,pairingNode('b',{className:'cycle-pair-name',text:member.isMe?`${member.name} (you)`:member.name}));
+      unit.append(avatar,pairingNode('b',{className:'cycle-pair-name',text:member.isMe?`${member.name} (you)`:member.name}));
+      who.append(unit);
     });
     if(solo) who.append(pairingNode('span',{className:'rc-badge',text:'Solo practice'}));
     const side=pairingNode('div',{className:'topic-group'});
@@ -6949,12 +6950,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       text:coordination?'Coordination only · Workspace not enabled':'Choose the focus together in your room',
     }));
     row.append(who,side);
-    return {row,mine};
+    return {row,mine,identityKnown};
   }
 
   function renderPairRows(container,pairs,{coordination=false}={}){
     const rows=[];
     let mine=false;
+    let identityKnown=false;
     for(const pair of pairs){
       if(coordination){
         const members=Array.isArray(pair?.members)?pair.members:[];
@@ -6963,10 +6965,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       }
       const built=pairRowNode(pair,{coordination});
       mine=mine||built.mine;
+      identityKnown=identityKnown||built.identityKnown;
       rows.push(built.row);
     }
     const footer=[];
-    if(!mine) footer.push('You aren’t in a pair this cycle.');
+    if(!mine&&identityKnown) footer.push('You aren’t in a pair this cycle.');
     footer.push(coordination
       ?'This circle coordinates pairs only. No shared room or workspace is created.'
       :'People who skipped this cycle aren’t paired.');
@@ -7034,6 +7037,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       let publicationState;
       try{ publicationState=acceptPairingPublicationState(response,circleOperation); }
       catch{
+        // Unverifiable data must not leave an earlier week or room reusable.
+        clearCurrentCloudPairing();
         markPairingPublicationUnknown();
         renderPairsStatus(container,'unverified');
         return;
