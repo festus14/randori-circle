@@ -15,6 +15,8 @@ const DEFAULT_TIMEOUT_MS=15_000;
 const DEFAULT_MAX_RESPONSE_BYTES=256*1024;
 const NAME=/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const EXPIRATION=/^(?:[1-9][0-9]*[wdhms])+$/;
+// Distinguishes an explicit 404 from a 200 whose JSON body is literally null.
+const NOT_FOUND=Symbol('turso-platform-not-found');
 
 export class TursoPlatformError extends Error{
   constructor(code,message,{cause,status,retryable=false}={}){
@@ -239,7 +241,7 @@ export function createTursoPlatformClient(options={}){
       }
       if(!response.ok){
         const code=publicCodeForStatus(response.status);
-        if(allowNotFound&&response.status===404) return null;
+        if(allowNotFound&&response.status===404) return NOT_FOUND;
         throw new TursoPlatformError(code,'platform request was rejected',{
           status:response.status,retryable:response.status===429||response.status>=500,
         });
@@ -253,7 +255,7 @@ export function createTursoPlatformClient(options={}){
   return freeze({
     async getDatabase(name,{allowNotFound=false}={}){
       const value=await request('GET',databasePath(name),{allowNotFound});
-      return value===null?null:canonicalDatabase(value);
+      return value===NOT_FOUND?null:canonicalDatabase(value);
     },
     async getDatabaseConfiguration(name){
       return canonicalConfiguration(await request('GET',`${databasePath(name)}/configuration`));
