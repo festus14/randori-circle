@@ -1,5 +1,5 @@
 import { expect, Page, Request, Route, test } from '@playwright/test';
-import { mockApi, originalQuestionFixture, resetClientState } from './helpers';
+import { mockApi, openRoomPanel, originalQuestionFixture, resetClientState } from './helpers';
 
 const roomId='week_42_pair_7';
 const user={
@@ -90,6 +90,7 @@ async function openWorkspace(page:Page,completion:CompletionStore){
   await expect.poll(()=>page.evaluate(()=>(window as typeof window & {
     _randori_workspace?:{hydrated?:boolean};
   })._randori_workspace?.hydrated)).toBe(true);
+  await openRoomPanel(page,'session');
   await expect(page.getByTestId('session-completion')).toBeVisible();
 }
 

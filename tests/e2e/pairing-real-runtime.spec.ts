@@ -14,7 +14,7 @@ import {
   resolveLocalServerConfig,
   startLocalDevelopmentServer,
 } from '../../scripts/local-server.mjs';
-import {setCode} from './helpers';
+import {openRoomPanel, setCode} from './helpers';
 import {expectInviteGateLoaded,stageRealRuntimeClient} from './real-runtime-fixture';
 
 const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url));
@@ -1089,6 +1089,7 @@ test('two invited members complete the durable local session journey', async ({ 
     // assigns the candidate, the other starts the timer, and both reconcile to
     // the same opaque version without writing once per displayed second.
     const controlsPath = `/api/session-controls?room_id=${encodeURIComponent(String(ownerRoom))}`;
+    for (const page of pages) await openRoomPanel(page, 'session');
     await expect(pages[0].getByTestId('session-controls')).toBeVisible();
     await expect(pages[1].getByTestId('session-controls')).toBeVisible();
     const roleResponse = pages[0].waitForResponse(response =>
@@ -1204,6 +1205,7 @@ test('two invited members complete the durable local session journey', async ({ 
       window as typeof window & {_randori_board?: {shapes?: unknown[]}}
     )._randori_board?.shapes || [])))).toEqual(finalBoard.shapes);
     await expect(pages[0].locator('#pairRunsList')).toContainText('8/8');
+    await openRoomPanel(pages[0], 'session');
     await expect(pages[0].getByTestId('session-controls')).toBeVisible();
     await expect(pages[0].getByTestId('session-controls-start-pause')).toHaveText('Pause');
     await expect(pages[0].getByTestId('session-controls-roles')).toContainText('You are interviewer.');

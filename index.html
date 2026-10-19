@@ -639,31 +639,169 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .chip:hover{border-color:var(--ink-3); color:var(--ink)}
 .chip.active,.chip[aria-pressed="true"]{background:var(--color-action-subtle); color:var(--ink); border-color:var(--color-action)}
 
-/* code room */
-.code-layout{display:grid; grid-template-columns:300px 1fr; gap:0; min-height:560px; border-radius:var(--radius); overflow:hidden; border:1px solid var(--border); background:var(--card)}
-.q-pane{background:var(--card); border-right:1px solid var(--border); display:flex; flex-direction:column; min-width:0}
-.q-head{padding:var(--space-3) var(--space-4); border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:var(--space-2); background:var(--card)}
-.q-body{padding:var(--space-4); overflow:auto; display:grid; gap:var(--space-3); font-size:var(--text-sm); line-height:var(--leading-sm); color:var(--ink-2)}
+/* pair room (WP-R): an editor-first workspace that fits the viewport. Phones
+   and tablets show one panel at a time (Code by default); at 1100 px and wider
+   the editor sits beside a tabbed side panel. Panels scroll inside the room,
+   so the page itself does not grow with results or notes. */
+.room{
+  --room-offset:calc(var(--topbar-h) + var(--space-6) + 88px + 62px);
+  display:flex; flex-direction:column; gap:var(--space-2); min-width:0;
+  height:calc(100dvh - var(--room-offset)); min-height:520px;
+}
+.room-bar{
+  display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:var(--space-2) var(--space-3);
+  padding:var(--space-2) var(--space-3); background:var(--card); border:1px solid var(--border); border-radius:var(--radius-md);
+}
+.room-bar-context{display:flex; align-items:center; gap:var(--space-2); min-width:0; flex:1 1 260px}
+.room-select{flex:1 1 auto; width:auto; min-width:0; max-width:340px}
+.room-presence{display:inline-flex; align-items:center; gap:var(--space-2); white-space:nowrap}
+.room-sync{white-space:nowrap}
+.room-board-title{font-size:var(--text-md); line-height:var(--leading-md); font-weight:var(--weight-heading); margin:0}
+.room-bar-actions{display:flex; align-items:center; gap:var(--space-2); flex-wrap:wrap}
+.room-chip{font-variant-numeric:tabular-nums}
+.room-chip .rc-icon,.room-bar .btn .rc-icon{width:16px; height:16px}
+.room-timer[data-running]{background:var(--color-action-subtle); border-color:var(--color-action); color:var(--ink)}
+.room-modes{display:inline-flex; gap:2px; padding:2px; background:var(--bg-3); border:1px solid var(--border); border-radius:var(--radius-sm)}
+.room-mode{
+  display:inline-flex; align-items:center; gap:var(--space-1); min-height:var(--control-sm); padding:0 var(--space-3);
+  border:1px solid transparent; border-radius:var(--radius-xs); background:transparent; color:var(--ink-2);
+  font:inherit; font-size:var(--text-sm); font-weight:var(--weight-emphasis); cursor:pointer;
+  transition:background-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
+}
+.room-mode .rc-icon{width:16px; height:16px}
+@media(hover:hover){ .room-mode:hover{color:var(--ink)} }
+.room-mode[aria-current="true"]{background:var(--card); color:var(--ink); border-color:var(--border); box-shadow:var(--shadow-1)}
+
+.room-tabs{
+  display:grid; grid-auto-flow:column; grid-auto-columns:minmax(0,1fr); gap:var(--space-1); padding:var(--space-1);
+  background:var(--card); border:1px solid var(--border); border-radius:var(--radius-md);
+}
+.room-tab{justify-content:center; min-width:0; padding:var(--space-1) var(--space-2); border-radius:var(--radius-sm); overflow:hidden; text-overflow:ellipsis}
+
+.code-layout{display:flex; flex-direction:column; flex:1 1 auto; min-height:0}
+.code-layout [hidden],.room [hidden]{display:none!important}
+.editor-pane,.room-side{
+  flex:1 1 auto; min-height:0; min-width:0;
+  background:var(--card); border:1px solid var(--border); border-radius:var(--radius-md); overflow:hidden;
+}
+.editor-pane{display:flex; flex-direction:column; background:var(--color-code-bg)}
+.room-side{overflow:auto; overscroll-behavior:contain}
+.editor-top{display:flex; align-items:center; gap:var(--space-2); padding:var(--space-2) var(--space-3); border-bottom:1px solid var(--border); background:var(--card); flex-wrap:nowrap}
+.editor-lang{width:auto; min-width:132px}
+.editor-run{padding-inline:var(--space-4)}
+.editor-run .rc-icon{width:16px; height:16px}
+.editor-more{position:relative; margin-left:auto}
+.editor-more-menu{min-width:200px}
+#monacoHost{flex:1 1 auto; min-height:220px; position:relative; background:var(--color-code-bg)}
+#monacoHost .monaco-editor{border-radius:0}
+.editor{
+  flex:1 1 auto; min-height:220px; width:100%; background:var(--color-code-bg); color:var(--ink); border:0; outline:none; padding:var(--space-4);
+  font-family:var(--font-mono); font-size:var(--text-sm); line-height:1.6; resize:none; tab-size:2;
+}
+.editor:focus-visible{box-shadow:inset 0 0 0 2px var(--color-focus)}
+.editor-note{display:flex; align-items:center; gap:var(--space-2); flex-wrap:wrap; padding:var(--space-2) var(--space-3); background:var(--bg-3); border-top:1px solid var(--border)}
+.monaco-loader{position:absolute; inset:0; display:grid; place-items:center; background:var(--bg-3); color:var(--ink-3); font-size:var(--text-sm); z-index:2}
+
+.room-panel{display:grid; gap:var(--space-3); align-content:start; padding:var(--space-3)}
+.room-section{display:grid; gap:var(--space-3); padding:var(--space-3) var(--space-4); background:var(--bg-2); border:1px solid var(--border); border-radius:var(--radius-md); min-width:0}
+.room-section-head{display:flex; justify-content:space-between; align-items:flex-start; gap:var(--space-3); flex-wrap:wrap}
+.room-section-title{font-size:var(--text-sm); line-height:var(--leading-sm); font-weight:var(--weight-heading); margin:0}
+.room-panel:has(> .room-section:not([hidden])) .session-empty{display:none}
+.room-panel-empty{margin:0; padding:var(--space-2) var(--space-1)}
+
+/* Problem panel (catalogue browse moves to WP-K) */
+.q-pane{display:block; padding:0}
+.q-head{padding:var(--space-3) var(--space-4); border-bottom:1px solid var(--border); display:grid; gap:var(--space-3)}
+.q-pick{flex-wrap:nowrap; gap:var(--space-2)}
+.q-pick .select{flex:1 1 auto; min-width:0; width:auto}
+.catalog-filters{display:grid; grid-template-columns:1fr 1fr; gap:var(--space-2)}
+.catalog-filters label{display:grid; gap:var(--space-1)}
+.catalog-search,.catalog-wide{grid-column:1 / -1}
+.catalog-empty{padding:var(--space-2); border:1px dashed var(--border); border-radius:var(--radius-sm)}
+.q-body{padding:var(--space-4); display:grid; gap:var(--space-3); font-size:var(--text-sm); line-height:var(--leading-sm); color:var(--ink-2)}
+.q-body h3{font-size:var(--text-lg); line-height:var(--leading-lg); color:var(--ink); margin:0}
+.q-examples{display:grid; gap:var(--space-2)}
+.q-source{display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-1) var(--space-2); padding-top:var(--space-3); border-top:1px solid var(--border)}
+.q-source-note{flex-basis:100%}
 .tests{display:grid; gap:var(--space-2)}
 .test{border:1px solid var(--border); border-radius:var(--radius-sm); padding:var(--space-2) var(--space-3); background:var(--bg-3); font-size:var(--text-sm)}
 .test pre,.run-out pre{font-size:var(--text-xs)}
-.editor-pane{display:flex; flex-direction:column; min-width:0; background:var(--bg-3)}
-.editor-top{display:flex; align-items:center; justify-content:space-between; gap:var(--space-2); padding:var(--space-2) var(--space-3); border-bottom:1px solid var(--border); flex-wrap:wrap; background:var(--card)}
-.editor{
-  flex:1; min-height:360px; background:var(--color-code-bg); color:var(--ink); border:0; outline:none; padding:var(--space-4); font-family:var(--font-mono); font-size:var(--text-sm); line-height:1.6; resize:none; tab-size:2;
+
+/* Results panel: one summary, then compact case rows */
+.run-out{display:grid; gap:var(--space-1); font-variant-numeric:tabular-nums}
+.run-out:empty::before{content:"Run your code to see server-verified results here."; color:var(--ink-3); font-size:var(--text-sm)}
+.run-out .test{border-left-width:3px}
+.run-summary{padding:var(--space-3); margin-bottom:var(--space-1)}
+.run-summary[data-status="pass"]{border-color:var(--ok); background:var(--ok-surface)}
+.run-summary[data-status="partial"]{border-color:var(--warn); background:var(--warn-surface)}
+.run-summary[data-status="fail"]{border-color:var(--bad); background:var(--bad-surface)}
+.run-case{padding:var(--space-1) var(--space-3)}
+.run-case[data-status="pass"]{border-left-color:var(--ok)}
+.run-case[data-status="fail"]{border-left-color:var(--bad)}
+.run-case-error{color:var(--bad); overflow-wrap:anywhere}
+.run-footnote{margin:var(--space-1) 0 0}
+.pair-runs{display:grid; gap:var(--space-1)}
+
+/* Session panel */
+.session-countdown{font-variant-numeric:tabular-nums; font-size:var(--text-xl); line-height:var(--leading-xl); font-weight:var(--weight-heading)}
+.session-actions{display:flex; flex-wrap:wrap; align-items:flex-end; gap:var(--space-2)}
+.session-actions label{display:grid; gap:var(--space-1)}
+.session-actions .select{min-width:160px}
+
+/* Notes panel: notes first; AI feedback is opt-in */
+.notes-field{display:grid; gap:var(--space-1); color:var(--ink-2); font-weight:var(--weight-emphasis)}
+.notes-field .textarea{min-height:96px; font-weight:var(--weight-body)}
+.ai-optin{display:grid; gap:var(--space-1); padding-top:var(--space-3); border-top:1px solid var(--border)}
+.ai-switch{display:inline-flex; align-items:center; gap:var(--space-2); font-size:var(--text-sm); font-weight:var(--weight-emphasis); cursor:pointer}
+.ai-switch input{width:18px; height:18px; accent-color:var(--color-action)}
+.ai-tools{display:grid; gap:var(--space-3)}
+.ai-actions{gap:var(--space-2); flex-wrap:wrap}
+#aiRecordBtn[aria-pressed="true"]{border-color:var(--bad); color:var(--bad)}
+#aiStatus[data-error]{color:var(--bad)}
+.ai-debug{padding:var(--space-2); border:1px dashed var(--border); border-radius:var(--radius-sm); background:var(--bg-3); font-size:var(--text-xs); line-height:1.5}
+.ai-feedback{display:grid; gap:var(--space-3)}
+
+@media(min-width:1100px){
+  #view-code .room{
+    display:grid; grid-template-columns:minmax(0,1fr) minmax(340px,38%); grid-template-rows:auto auto auto minmax(0,1fr);
+    column-gap:var(--space-3); row-gap:0;
+  }
+  .room-bar,.video-bar{grid-column:1 / -1; margin-bottom:var(--space-2)}
+  .room-bar{grid-row:1}
+  .video-bar{grid-row:2}
+  .code-layout{display:contents}
+  .editor-pane{grid-column:1; grid-row:3 / span 2}
+  .room-tabs{grid-column:2; grid-row:3; margin-bottom:var(--space-2)}
+  .room-tabs [data-room-tab="code"]{display:none}
+  .room-side{grid-column:2; grid-row:4}
 }
-#monacoHost .monaco-editor{border-radius:0}
-.monaco-loader{position:absolute; inset:0; display:grid; place-items:center; background:var(--bg-3); color:var(--ink-3); font-size:var(--text-sm); z-index:2}
-.run-out{border-top:1px solid var(--border); background:var(--card); max-height:200px; overflow:auto; padding:var(--space-3); display:grid; gap:var(--space-2); font-variant-numeric:tabular-nums}
+
+@media(min-width:1024px){ body[data-auth="member"] .room{--room-offset:calc(var(--topbar-h) + var(--space-6) + 88px)} }
+@media(max-width:920px){ .room{--room-offset:calc(var(--topbar-h) + 58px + var(--space-4) + 88px)} }
+@media(max-width:599px){ .room{--room-offset:calc(var(--topbar-h) + var(--space-4) + 88px + var(--bottom-nav-h) + env(safe-area-inset-bottom))} }
+@media(max-width:520px){
+  .room{--room-offset:calc(var(--topbar-h) + var(--space-3) + var(--space-6) + var(--bottom-nav-h) + env(safe-area-inset-bottom))}
+  .room-label{position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap}
+  .room-presence,.room-timer .rc-icon{display:none}
+  .room-bar{padding:var(--space-2)}
+  .room-bar-actions{width:100%}
+  .room-modes{margin-left:auto}
+  .room-panel{padding:var(--space-2)}
+  .room-section{padding:var(--space-3)}
+}
 
 /* whiteboard */
-.board-wrap{border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; background:var(--card); display:flex; flex-direction:column}
-.board-toolbar{display:flex; gap:var(--space-2); align-items:center; flex-wrap:wrap; padding:var(--space-2) var(--space-3); border-bottom:1px solid var(--border); background:var(--card)}
+.board-wrap{flex:1 1 auto; min-height:0; border:1px solid var(--border); border-radius:var(--radius-md); overflow:hidden; background:var(--card); display:flex; flex-direction:column}
+.board-toolbar{display:flex; gap:var(--space-2) var(--space-3); align-items:center; flex-wrap:wrap; padding:var(--space-2) var(--space-3); border-bottom:1px solid var(--border); background:var(--card)}
+.board-tools,.board-view-tools{display:flex; gap:var(--space-1); align-items:center; flex-wrap:wrap}
+.board-view-tools{margin-left:auto}
+.board-colors{gap:var(--space-2)}
 .tool{width:36px; height:36px; border-radius:var(--radius-sm); border:1px solid var(--control-border); background:var(--card); display:grid; place-items:center; cursor:pointer; color:var(--ink-2); transition:background-color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out)}
+.tool .rc-icon{width:18px; height:18px}
 .tool:hover{background:var(--bg-3); color:var(--ink)}
 .tool.active,.tool[aria-pressed="true"]{background:var(--color-action-subtle); color:var(--ink); border-color:var(--color-action)}
 .color-dot{width:20px; height:20px; border-radius:var(--radius-full); border:2px solid var(--card); cursor:pointer; box-shadow:0 0 0 1px var(--control-border)}
-.canvas-host{position:relative; flex:1; min-height:520px; overflow:hidden; background:
+.canvas-host{position:relative; flex:1 1 auto; min-height:320px; overflow:hidden; background:
   radial-gradient(circle at 1px 1px, var(--border) 1px, transparent 0) 0 0/24px 24px, var(--card)}
 #board{position:absolute; inset:0; width:100%; height:100%; cursor:crosshair; touch-action:none}
 
@@ -715,18 +853,17 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .rc-empty > :first-child{color:var(--ink-3)}
 .rc-segmented{display:inline-flex; padding:var(--space-1); gap:var(--space-1); background:var(--bg-3); border:1px solid var(--border); border-radius:var(--radius-md)}
 
-/* video */
+/* video: the call strip stays collapsed until the member joins */
 .video-bar{
-  display:flex; flex-direction:column; gap:var(--space-3);
+  display:flex; flex-direction:column; gap:var(--space-2);
   background:var(--card); border:1px solid var(--border);
-  border-radius:var(--radius); padding:var(--space-3);
-  box-shadow:var(--shadow-soft);
+  border-radius:var(--radius-md); padding:var(--space-2) var(--space-3);
 }
-.video-bar-head{display:flex; align-items:center; justify-content:space-between; gap:var(--space-3); flex-wrap:wrap}
-.video-tiles{display:flex; gap:var(--space-3); flex-wrap:wrap}
+.video-bar-head{display:flex; align-items:center; justify-content:space-between; gap:var(--space-2) var(--space-3); flex-wrap:wrap}
+.video-tiles{display:flex; gap:var(--space-2); flex-wrap:nowrap}
 .video-tile{
-  position:relative; width:280px; max-width:100%; aspect-ratio:16/9;
-  background:var(--bg-3); border:1px solid var(--border); border-radius:var(--radius-md);
+  position:relative; width:200px; max-width:calc(50% - var(--space-1)); aspect-ratio:16/9;
+  background:var(--bg-3); border:1px solid var(--border); border-radius:var(--radius-sm);
   overflow:hidden; display:flex; flex-direction:column;
 }
 .video-tile.local{border-color:var(--line-strong)}
@@ -736,11 +873,12 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   color:#EEF0F6; font-size:var(--text-xs); font-weight:var(--weight-emphasis); padding:var(--space-1) var(--space-2); border-radius:var(--radius-full); backdrop-filter:blur(6px);
   border:1px solid rgb(255 255 255 / .1)
 }
+.video-tile .vid-mute{position:absolute; top:var(--space-2); right:var(--space-2); background:rgb(11 13 18 / .72); color:#EEF0F6; font-size:var(--text-xs); padding:0 var(--space-2); border-radius:var(--radius-full)}
 .video-controls{display:flex; gap:var(--space-2); align-items:center; flex-wrap:wrap}
+.video-controls .rc-icon{width:16px; height:16px}
+.video-controls .pill.off{color:var(--ink-3); text-decoration:line-through}
 @media(max-width:920px){
   .grid-2{grid-template-columns:1fr}
-  .code-layout{grid-template-columns:1fr}
-  .q-pane{border-right:0; border-bottom:1px solid var(--border)}
   .grid-3{grid-template-columns:1fr}
   .topbar{padding:var(--space-2) var(--space-4)}
   .main{padding:var(--space-4) var(--space-4) 88px}
@@ -1483,187 +1621,245 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
       </div>
     </section>
 
-    <!-- CODE -->
-    <section id="view-code" class="view" tabindex="0" aria-labelledby="tab-code" style="display:none">
-      <div id="videoBar" class="video-bar">
-        <div class="video-bar-head">
-          <div class="row small"><b style="font-size:13px">Live room</b><span class="kbd" id="videoRoomLabel">room —</span><span id="videoStatus" class="kbd">off</span></div>
-          <div class="video-controls">
-            <button id="vidCamBtn" class="pill">📷 cam</button>
-            <button id="vidMicBtn" class="pill">🎤 mic</button>
-            <button id="vidJoinBtn" class="btn">Join video</button>
-            <button id="vidLeaveBtn" class="pill" style="display:none">Leave</button>
+    <!-- CODE: the pair room (WP-R). Editor first; the side panel (wide) or the
+         segmented tabs (narrow) switch Problem / Results / Session / Notes. -->
+    <section id="view-code" class="view room-view" tabindex="0" aria-labelledby="tab-code" style="display:none">
+      <div class="room">
+        <div class="room-bar">
+          <div class="room-bar-context">
+            <label class="sr-only" for="roomSelect">Pair room</label>
+            <select id="roomSelect" class="select room-select"></select>
+            <span id="roomLabel" class="sr-only">room —</span>
+            <span class="room-presence small muted"><span class="dot" aria-hidden="true"></span><span id="presenceText">you alone</span></span>
+            <span id="codeSyncStatus" class="kbd room-sync" data-state="local" role="status" aria-live="polite">local editor</span>
           </div>
-        </div>
-        <div class="video-tiles" id="videoTiles">
-          <div class="video-tile local" id="tileLocal">
-            <video id="localVideo" autoplay muted playsinline></video>
-            <div class="vid-label" id="localLabel">you</div>
-            <div class="vid-mute" id="localMuteBadge" style="display:none">muted</div>
-          </div>
-          <div class="video-tile" id="tileRemote">
-            <video id="remoteVideo" autoplay playsinline></video>
-            <div class="vid-label" id="remoteLabel">pair</div>
-          </div>
-        </div>
-        <div class="small muted">Video + code stay in sync. If your camera is blocked, you’ll still see names.</div>
-      </div>
-      <div class="code-layout">
-        <div class="q-pane">
-          <div class="q-head">
-            <div class="row">
-              <select id="questionSelect" class="select" aria-label="Exercise" style="width:200px"></select>
-              <span id="qDiff" class="kbd"></span>
-            </div>
-            <div class="row small"><span id="roomLabel" class="kbd">room —</span></div>
-            <div data-testid="catalog-filters" style="width:100%; display:grid; grid-template-columns:1fr 1fr; gap:6px">
-              <label class="small muted" style="grid-column:1 / -1; display:grid; gap:3px">Search exercises
-                <input id="catalogSearch" data-testid="catalog-search" class="input" type="search" autocomplete="off" placeholder="Title, pattern, or tag" />
-              </label>
-              <label class="small muted" style="display:grid; gap:3px">Difficulty
-                <select id="catalogDifficulty" data-testid="catalog-difficulty" class="select"><option value="all">All</option><option value="Easy">Easy</option><option value="Medium">Medium</option><option value="Hard">Hard</option></select>
-              </label>
-              <label class="small muted" style="display:grid; gap:3px">Pattern
-                <select id="catalogType" data-testid="catalog-type" class="select"><option value="all">All</option></select>
-              </label>
-              <span id="catalogFilterStatus" data-testid="catalog-status" class="small muted" role="status" aria-live="polite" style="grid-column:1 / -1">Loading exercises…</span>
-              <div id="catalogFilterEmpty" data-testid="catalog-empty" class="small muted" hidden style="grid-column:1 / -1; padding:7px; border:1px dashed var(--border); border-radius:8px">No public exercises match these filters. Clear or adjust them to continue.</div>
+          <div class="room-bar-actions" role="group" aria-label="Session">
+            <button id="roleToggle" class="pill room-chip" type="button" aria-label="Change shared participant roles">Role</button>
+            <button id="timerBtn" class="pill room-chip room-timer" type="button" aria-label="Start shared focus timer"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-clock"/></svg><span id="timerText">25:00</span></button>
+            <button id="vidJoinBtn" class="btn secondary sm" type="button"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-camera"/></svg><span class="room-label">Join call</span></button>
+            <button id="vidLeaveBtn" class="btn danger sm" type="button" style="display:none">Leave call</button>
+            <div class="room-modes" role="group" aria-label="Room mode">
+              <button class="room-mode" type="button" data-room-mode="code" aria-current="true"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-code"/></svg><span class="room-label">Code</span></button>
+              <button class="room-mode" type="button" data-room-mode="board"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-pen"/></svg><span class="room-label">Board</span></button>
             </div>
           </div>
-          <div class="q-body">
-            <h3 id="qTitle" style="font-size:18px; color:var(--ink)"></h3>
-            <div id="qDesc"></div>
-            <div id="qExamples" style="display:grid; gap:8px"></div>
-            <div id="qConstraints" class="small muted"></div>
-            <div class="tests"><div class="small muted" style="margin-bottom:4px">Evaluation</div><div id="qTests"></div></div>
+        </div>
+
+        <div id="videoBar" class="video-bar" data-call="off" hidden aria-label="Live call">
+          <div class="video-bar-head">
+            <div class="row small"><b>Live call</b><span class="kbd" id="videoRoomLabel">room —</span><span id="videoStatus" class="kbd" role="status">off</span></div>
+            <div class="video-controls">
+              <button id="vidCamBtn" class="pill" type="button" aria-label="Turn camera on or off"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-camera"/></svg>Camera</button>
+              <button id="vidMicBtn" class="pill" type="button" aria-label="Turn microphone on or off"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-mic"/></svg>Mic</button>
+            </div>
+          </div>
+          <div class="video-tiles" id="videoTiles">
+            <div class="video-tile local" id="tileLocal">
+              <video id="localVideo" autoplay muted playsinline></video>
+              <div class="vid-label" id="localLabel">you</div>
+              <div class="vid-mute" id="localMuteBadge" style="display:none">muted</div>
+            </div>
+            <div class="video-tile" id="tileRemote">
+              <video id="remoteVideo" autoplay playsinline></video>
+              <div class="vid-label" id="remoteLabel">pair</div>
+            </div>
           </div>
         </div>
-        <div class="editor-pane">
-          <div id="questionPanel" style="padding:8px 10px; border-bottom:1px solid var(--border); display:flex; gap:6px; flex-wrap:wrap; align-items:center; background:var(--card)">
-            <b style="font-size:11px; color:var(--ink-3); text-transform:uppercase; letter-spacing:.04em">Approved original exercise catalogue</b>
-            <span class="small muted" id="qCustomCount" style="margin-left:6px">• loading…</span>
-            <button id="catalogRetryBtn" class="pill" type="button" hidden>Retry catalogue</button>
-            <span class="small muted" style="margin-left:auto">Examples are public; evaluation cases stay on the server.</span>
-          </div>
-          <div class="editor-top">
-            <div class="row">
-              <select id="langSelect" class="select" style="width:140px">
-                <option value="javascript">javascript</option>
-                <option value="python">python</option>
+
+        <div id="roomPanelTabs" class="room-tabs" role="tablist" aria-label="Room panels">
+          <button id="roomTab-code" class="rc-tab room-tab" type="button" role="tab" data-room-tab="code" aria-controls="roomPanel-code" aria-selected="true">Code</button>
+          <button id="roomTab-problem" class="rc-tab room-tab" type="button" role="tab" data-room-tab="problem" aria-controls="roomPanel-problem" aria-selected="false" tabindex="-1">Problem</button>
+          <button id="roomTab-results" class="rc-tab room-tab" type="button" role="tab" data-room-tab="results" aria-controls="roomPanel-results" aria-selected="false" tabindex="-1">Results</button>
+          <button id="roomTab-session" class="rc-tab room-tab" type="button" role="tab" data-room-tab="session" aria-controls="roomPanel-session" aria-selected="false" tabindex="-1">Session</button>
+          <button id="roomTab-notes" class="rc-tab room-tab" type="button" role="tab" data-room-tab="notes" aria-controls="roomPanel-notes" aria-selected="false" tabindex="-1">Notes</button>
+        </div>
+
+        <div id="roomLayout" class="code-layout" data-panel="code">
+          <div id="roomPanel-code" class="editor-pane" role="tabpanel" aria-labelledby="roomTab-code" data-room-panel="code">
+            <div class="editor-top" role="toolbar" aria-label="Editor">
+              <label class="sr-only" for="langSelect">Language</label>
+              <select id="langSelect" class="select editor-lang">
+                <option value="javascript">JavaScript</option>
+                <option value="python">Python</option>
               </select>
-              <select id="roomSelect" class="select" style="width:130px"></select>
-              <button id="runBtn" class="btn">▶ Run</button>
-              <button id="codeJoinSessionBtn" class="btn" style="background:var(--accent,#c8f6a0);color:#0f0f10;font-weight:700;padding:7px 12px">▶ Join Session</button>
-              <label class="small muted" style="display:inline-flex; align-items:center; gap:4px; margin-left:6px; font-size:11px"><input type="checkbox" id="useServerRunner" checked disabled style="accent-color:var(--accent)"> <span title="Code always runs through the authenticated execution gateway">secure server</span></label>
-              <button id="formatBtn" class="pill" title="Format code (Shift+Alt+F) — Prettier where possible">↥ Format</button>
-              <button id="copyStarterBtn" class="pill" title="Copy starter for current lang">⎘ Copy starter</button>
-              <button id="editorResetBtn" class="pill" title="Reset editor to starter">↺ Reset</button>
-              <span id="lintStatus" class="kbd" style="display:none; background:var(--bg-3)">lint: —</span>
-              <span id="codeSyncStatus" class="kbd" data-state="local" role="status" aria-live="polite">local editor</span>
-            </div>
-            <div class="row" style="gap:6px">
-              <button id="roleToggle" class="pill" type="button" aria-label="Change shared participant roles">○ candidate</button>
-              <button id="timerBtn" class="pill" type="button" aria-label="Start shared focus timer">⏱ <span id="timerText">25:00</span></button>
-              <span class="pill"><span class="dot"></span><span id="presenceText">you alone</span></span>
-            </div>
-          </div>
-          <div id="monacoHost" style="flex:1; min-height:420px; position:relative; border-top:1px solid var(--border); border-bottom:1px solid var(--border); background:#101013"></div>
-          <textarea id="editor" class="editor" spellcheck="false" style="display:none; flex:1; min-height:360px"></textarea>
-          <div id="monacoFallbackNote" class="small muted" style="display:none; padding:6px 10px; background:var(--bg-3); border-bottom:1px solid var(--border)">Monaco failed to load — using plain editor. <button id="monacoRetry" class="pill" style="margin-left:8px">Retry</button></div>
-          <div id="runOut" class="run-out"></div>
-          <section id="pairRunsCard" aria-labelledby="pairRunsTitle" style="display:none; border-top:1px solid var(--line); background:var(--bg-2); padding:9px 10px">
-            <div class="row" style="justify-content:space-between; gap:8px">
-              <b id="pairRunsTitle" style="font-size:12px">Pair results</b>
-              <span id="pairRunsStatus" class="small muted" role="status" aria-live="polite">waiting for room</span>
-            </div>
-            <div id="pairRunsList" role="list" style="display:grid; gap:5px; margin-top:7px"></div>
-          </section>
-          <section id="meetingLinkWorkspaceCard" data-testid="meeting-link-workspace" aria-label="Private meeting link" hidden style="border-top:1px solid var(--line); background:var(--bg-2); padding:10px"></section>
-          <section id="sessionControlsCard" data-testid="session-controls" aria-labelledby="sessionControlsTitle" hidden style="border-top:1px solid var(--line); background:var(--bg-2); padding:10px">
-            <div style="display:grid;gap:8px">
-              <div class="row" style="justify-content:space-between;gap:10px;flex-wrap:wrap">
-                <div>
-                  <b id="sessionControlsTitle" style="font-size:12.5px">Shared session controls</b>
-                  <div id="sessionControlsRoles" class="small muted" data-testid="session-controls-roles" style="margin-top:4px">Loading participant roles…</div>
+              <button id="runBtn" class="btn editor-run" type="button"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-play"/></svg>Run</button>
+              <span id="lintStatus" class="kbd" style="display:none">lint: —</span>
+              <div class="editor-more">
+                <button id="editorMoreBtn" class="btn ghost sm rc-btn--icon" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="editorMoreMenu" aria-label="More editor actions" title="More editor actions"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-more"/></svg></button>
+                <div id="editorMoreMenu" class="account-menu editor-more-menu" role="menu" aria-label="Editor actions" hidden>
+                  <button id="formatBtn" class="account-menu-item" type="button" role="menuitem" title="Format code (Shift+Alt+F)">Format code</button>
+                  <button id="copyStarterBtn" class="account-menu-item" type="button" role="menuitem" title="Copy the starter code for the current language"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-copy"/></svg>Copy starter</button>
+                  <button id="editorResetBtn" class="account-menu-item account-menu-item--warning" type="button" role="menuitem" title="Reset the editor to the starter code"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-retry"/></svg>Reset to starter</button>
                 </div>
-                <output id="sessionControlsCountdown" data-testid="session-controls-countdown" aria-label="Focus timer remaining" style="font-variant-numeric:tabular-nums;font-size:20px;font-weight:700">25:00</output>
               </div>
-              <div class="row" style="gap:7px;flex-wrap:wrap;align-items:end">
-                <label class="small" for="sessionControlsCandidate">Candidate
-                  <select id="sessionControlsCandidate" class="select" data-testid="session-controls-candidate" style="display:block;min-width:160px;margin-top:3px"></select>
+              <span hidden><input type="checkbox" id="useServerRunner" checked disabled aria-label="Code runs on the secure server"></span>
+            </div>
+            <div id="monacoHost"></div>
+            <textarea id="editor" class="editor" spellcheck="false" aria-label="Code editor" style="display:none"></textarea>
+            <div id="monacoFallbackNote" class="small muted editor-note" style="display:none">The full editor did not load, so this is the plain editor. <button id="monacoRetry" class="pill" type="button">Retry</button></div>
+          </div>
+
+          <div id="roomSide" class="room-side" hidden>
+            <div id="roomPanel-problem" class="room-panel q-pane" role="tabpanel" aria-labelledby="roomTab-problem" data-room-panel="problem" hidden>
+              <div class="q-head">
+                <div class="row q-pick">
+                  <label class="sr-only" for="questionSelect">Exercise</label>
+                  <select id="questionSelect" class="select" aria-label="Exercise"></select>
+                  <span id="qDiff" class="kbd"></span>
+                </div>
+                <div data-testid="catalog-filters" class="catalog-filters">
+                  <label class="small muted catalog-search">Search exercises
+                    <input id="catalogSearch" data-testid="catalog-search" class="input" type="search" autocomplete="off" placeholder="Title, pattern, or tag" />
+                  </label>
+                  <label class="small muted">Difficulty
+                    <select id="catalogDifficulty" data-testid="catalog-difficulty" class="select"><option value="all">All</option><option value="Easy">Easy</option><option value="Medium">Medium</option><option value="Hard">Hard</option></select>
+                  </label>
+                  <label class="small muted">Pattern
+                    <select id="catalogType" data-testid="catalog-type" class="select"><option value="all">All</option></select>
+                  </label>
+                  <span id="catalogFilterStatus" data-testid="catalog-status" class="small muted catalog-wide" role="status" aria-live="polite">Loading exercises…</span>
+                  <div id="catalogFilterEmpty" data-testid="catalog-empty" class="small muted catalog-wide catalog-empty" hidden>No public exercises match these filters. Clear or adjust them to continue.</div>
+                </div>
+              </div>
+              <div class="q-body">
+                <h3 id="qTitle"></h3>
+                <div id="qDesc"></div>
+                <div id="qExamples" class="q-examples"></div>
+                <div id="qConstraints" class="small muted"></div>
+                <div class="tests"><div class="small muted">Evaluation</div><div id="qTests"></div></div>
+                <div id="questionPanel" class="q-source small muted">
+                  <span>Approved original exercise catalogue</span>
+                  <span id="qCustomCount">• loading…</span>
+                  <button id="catalogRetryBtn" class="pill" type="button" hidden>Retry catalogue</button>
+                  <span class="q-source-note">Examples are public; evaluation cases stay on the server.</span>
+                </div>
+              </div>
+            </div>
+
+            <div id="roomPanel-results" class="room-panel" role="tabpanel" aria-labelledby="roomTab-results" data-room-panel="results" hidden>
+              <section class="room-section" aria-labelledby="runOutTitle">
+                <h3 id="runOutTitle" class="room-section-title">Your run</h3>
+                <div id="runOut" class="run-out"></div>
+              </section>
+              <section id="pairRunsCard" class="room-section" aria-labelledby="pairRunsTitle" style="display:none">
+                <div class="room-section-head">
+                  <h3 id="pairRunsTitle" class="room-section-title">Pair run feed</h3>
+                  <span id="pairRunsStatus" class="small muted" role="status" aria-live="polite">waiting for room</span>
+                </div>
+                <div id="pairRunsList" class="pair-runs" role="list"></div>
+              </section>
+            </div>
+
+            <div id="roomPanel-session" class="room-panel" role="tabpanel" aria-labelledby="roomTab-session" data-room-panel="session" hidden>
+              <section id="sessionControlsCard" class="room-section" data-testid="session-controls" aria-labelledby="sessionControlsTitle" hidden>
+                <div class="room-section-head">
+                  <div>
+                    <h3 id="sessionControlsTitle" class="room-section-title">Roles and focus timer</h3>
+                    <div id="sessionControlsRoles" class="small muted" data-testid="session-controls-roles">Loading participant roles…</div>
+                  </div>
+                  <output id="sessionControlsCountdown" class="session-countdown" data-testid="session-controls-countdown" aria-label="Focus timer remaining">25:00</output>
+                </div>
+                <div class="session-actions">
+                  <label class="small" for="sessionControlsCandidate">Candidate
+                    <select id="sessionControlsCandidate" class="select" data-testid="session-controls-candidate"></select>
+                  </label>
+                  <button id="sessionControlsStartPause" class="btn" data-testid="session-controls-start-pause" type="button">Start</button>
+                  <button id="sessionControlsReset" class="btn secondary" data-testid="session-controls-reset" type="button">Reset to 25:00</button>
+                  <button id="sessionControlsRetry" class="btn secondary" data-testid="session-controls-retry" type="button" hidden>Retry</button>
+                </div>
+                <div id="sessionControlsStatus" class="small muted" data-testid="session-controls-status" role="status" aria-live="polite">Loading shared controls…</div>
+              </section>
+              <section id="meetingLinkWorkspaceCard" class="room-section" data-testid="meeting-link-workspace" aria-label="Private meeting link" hidden></section>
+              <section id="sessionCompletionCard" class="room-section" data-testid="session-completion" aria-labelledby="sessionCompletionTitle" hidden>
+                <div class="room-section-head">
+                  <div>
+                    <h3 id="sessionCompletionTitle" class="room-section-title">Wrap up this practice session</h3>
+                    <div id="sessionCompletionStatus" class="small muted" role="status" aria-live="polite">Loading completion status…</div>
+                  </div>
+                  <button id="sessionCompletionAction" class="btn" type="button" hidden></button>
+                </div>
+              </section>
+              <p class="small muted room-panel-empty session-empty">Roles, the focus timer, the meeting link and wrap-up appear here once your pair room is ready.</p>
+            </div>
+
+            <div id="roomPanel-notes" class="room-panel" role="tabpanel" aria-labelledby="roomTab-notes" data-room-panel="notes" hidden>
+              <section id="aiPanel" class="room-section room-notes" aria-labelledby="aiPanelTitle">
+                <h3 id="aiPanelTitle" class="room-section-title">Session notes</h3>
+                <label class="small notes-field" for="aiTranscript">Notes and transcript
+                  <textarea id="aiTranscript" class="textarea" placeholder="Interviewer: Can you explain the time complexity?&#10;Candidate: I used a hash map because…&#10;Interviewer: What if the input has 100,000 items?"></textarea>
                 </label>
-                <button id="sessionControlsStartPause" class="btn" data-testid="session-controls-start-pause" type="button">Start</button>
-                <button id="sessionControlsReset" class="pill" data-testid="session-controls-reset" type="button">Reset to 25:00</button>
-                <button id="sessionControlsRetry" class="pill" data-testid="session-controls-retry" type="button" hidden>Retry</button>
-              </div>
-              <div id="sessionControlsStatus" class="small muted" data-testid="session-controls-status" role="status" aria-live="polite">Loading shared controls…</div>
+                <label class="small notes-field" for="aiInterviewerQs">Interviewer questions
+                  <textarea id="aiInterviewerQs" class="textarea" placeholder="Which edge case would you test next?&#10;How would you explain the complexity trade-off?"></textarea>
+                </label>
+                <p class="small muted">Notes stay in this browser unless you request AI feedback.</p>
+                <div class="ai-optin">
+                  <label class="ai-switch" for="aiFeedbackToggle">
+                    <input id="aiFeedbackToggle" type="checkbox" role="switch" aria-describedby="aiFeedbackHint">
+                    <span>AI feedback <span class="rc-badge">Beta</span></span>
+                  </label>
+                  <p id="aiFeedbackHint" class="small muted">Off. Turn it on to record code snapshots and request AI feedback on this session.</p>
+                </div>
+                <div id="aiFeedbackTools" class="ai-tools" hidden>
+                  <div class="row ai-actions">
+                    <button id="aiRecordBtn" class="btn secondary sm" type="button" aria-pressed="false" disabled>Record</button>
+                    <button id="aiAnalyzeBtn" class="btn sm" type="button" disabled>Get feedback</button>
+                    <button id="aiHistoryBtn" class="btn ghost sm" type="button" disabled>Past feedback</button>
+                  </div>
+                  <div id="aiStatus" class="small muted" role="status" aria-live="polite">Feedback needs a signed-in account and server AI. Nothing is sent until you choose Get feedback.</div>
+                  <div id="aiRouterDebug" class="small ai-debug" style="display:none"></div>
+                  <div id="aiFeedback" class="ai-feedback"></div>
+                </div>
+              </section>
             </div>
-          </section>
-          <section id="sessionCompletionCard" data-testid="session-completion" aria-labelledby="sessionCompletionTitle" hidden style="border-top:1px solid var(--line); background:var(--bg-2); padding:10px">
-            <div class="row" style="justify-content:space-between; gap:10px; flex-wrap:wrap">
-              <div>
-                <b id="sessionCompletionTitle" style="font-size:12.5px">Wrap up this practice session</b>
-                <div id="sessionCompletionStatus" class="small muted" role="status" aria-live="polite" style="margin-top:4px">Loading completion status…</div>
-              </div>
-              <button id="sessionCompletionAction" class="btn" type="button" hidden></button>
-            </div>
-          </section>
-          <!-- AI Recording & Feedback (Groq router) -->
-          <div id="aiPanel" style="border-top:1px solid var(--line); background:var(--bg-2); padding:10px; display:grid; gap:10px">
-            <div class="row" style="justify-content:space-between; flex-wrap:wrap">
-              <b style="font-size:12.5px">AI Recording & Feedback <span class="kbd status-chip status-warning">Groq</span></b>
-              <div class="row" style="gap:6px">
-                <button id="aiRecordBtn" class="pill" title="Record code edits + transcript notes">● Record</button>
-                <button id="aiAnalyzeBtn" class="btn" style="font-size:11.5px">⚡ Get AI Feedback</button>
-                <button id="aiHistoryBtn" class="pill" style="font-size:11px">history</button>
-              </div>
-            </div>
-            <div class="grid-2" style="grid-template-columns:1fr 1fr; gap:8px">
-              <div>
-                <div class="small muted" style="margin-bottom:4px">Transcript / notes (what was said, questions asked) — this becomes evidence</div>
-                <textarea id="aiTranscript" class="textarea" placeholder="e.g. Interviewer: 'Can you explain time complexity?'\nCandidate: 'I used hashmap because...'\nInterviewer question: 'What if nums length is 10^5?'\n(candidate types fast but forgets edge-case)" style="min-height:90px; font-size:12.5px"></textarea>
-              </div>
-              <div>
-                <div class="small muted" style="margin-bottom:4px">Interviewer questions (for interviewer coaching)</div>
-                <textarea id="aiInterviewerQs" class="textarea" placeholder="e.g. Q1: Which edge case would you test next?\nQ2: How would you explain the complexity trade-off?" style="min-height:90px; font-size:12.5px"></textarea>
-              </div>
-            </div>
-            <div id="aiStatus" class="small muted" style="min-height:16px">Recording stays in this browser until you choose Analyze. Analysis requires signed-in access and configured server AI.</div>
-            <div id="aiRouterDebug" class="small" style="display:none; padding:8px; border:1px dashed var(--line); border-radius:8px; background:var(--bg-3); font-size:11px; line-height:1.5"></div>
-            <div id="aiFeedback" style="display:grid; gap:10px"></div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- BOARD -->
-    <section id="view-board" class="view" tabindex="0" aria-labelledby="tab-board" style="display:none">
-      <div class="board-wrap">
-        <div class="board-toolbar" role="toolbar" aria-label="Whiteboard tools">
-          <button class="tool active" data-tool="select" title="Select/move" aria-label="Select or move a shape" aria-pressed="true">↖</button>
-          <button class="tool" data-tool="pan" title="Pan" aria-label="Pan the whiteboard" aria-pressed="false">✋</button>
-          <button class="tool" data-tool="pen" title="Pen" aria-label="Draw with the pen" aria-pressed="false">✎</button>
-          <button class="tool" data-tool="rect" title="Rect" aria-label="Draw a rectangle" aria-pressed="false">▭</button>
-          <button class="tool" data-tool="ellipse" title="Ellipse" aria-label="Draw an ellipse" aria-pressed="false">◯</button>
-          <button class="tool" data-tool="arrow" title="Arrow" aria-label="Draw an arrow" aria-pressed="false">↗</button>
-          <button class="tool" data-tool="text" title="Text" aria-label="Add text" aria-pressed="false">T</button>
-          <button class="tool" data-tool="sticky" title="Sticky" aria-label="Add a sticky note" aria-pressed="false">☆</button>
-          <button class="tool" data-tool="eraser" title="Eraser" aria-label="Erase a shape" aria-pressed="false">⌫</button>
-          <div style="width:1px; height:24px; background:var(--line); margin:0 4px"></div>
-          <div class="row" id="colorPalette"></div>
-          <div style="flex:1"></div>
-          <span class="kbd" id="boardSyncStatus" role="status" aria-live="polite">local only</span>
-          <button class="tool" id="undoBtn" title="Undo" aria-label="Undo whiteboard change">↩</button>
-          <button class="tool" id="redoBtn" title="Redo" aria-label="Redo whiteboard change">↪</button>
-          <button class="tool" id="clearBtn" title="Clear" aria-label="Clear whiteboard">✕</button>
-          <button class="tool" id="zoomOut" title="Zoom out" aria-label="Zoom whiteboard out">−</button>
-          <span class="kbd" id="zoomLabel" aria-label="Whiteboard zoom">100%</span>
-          <button class="tool" id="zoomIn" title="Zoom in" aria-label="Zoom whiteboard in">+</button>
-          <button class="tool" id="fitBtn" title="Fit" aria-label="Reset whiteboard viewport">⊡</button>
+    <!-- BOARD: a mode of the room. Primary navigation still reaches it through
+         [data-tab="board"]; the room bar's mode switch uses the same button. -->
+    <section id="view-board" class="view room-view" tabindex="0" aria-labelledby="tab-board" style="display:none">
+      <div class="room">
+        <div class="room-bar">
+          <div class="room-bar-context">
+            <h2 class="room-board-title">Whiteboard</h2>
+            <span class="kbd room-sync" id="boardSyncStatus" role="status" aria-live="polite">local only</span>
+          </div>
+          <div class="room-bar-actions">
+            <div class="room-modes" role="group" aria-label="Room mode">
+              <button class="room-mode" type="button" data-room-mode="code"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-code"/></svg><span class="room-label">Code</span></button>
+              <button class="room-mode" type="button" data-room-mode="board" aria-current="true"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-pen"/></svg><span class="room-label">Board</span></button>
+            </div>
+          </div>
         </div>
-        <div class="canvas-host" id="canvasHost"><canvas id="board" tabindex="0" role="img" aria-label="Shared interview whiteboard" aria-describedby="boardSyncHint"></canvas></div>
+        <div class="board-wrap">
+          <div class="board-toolbar" role="toolbar" aria-label="Whiteboard tools">
+            <div class="board-tools">
+              <button class="tool active" type="button" data-tool="select" title="Select or move" aria-label="Select or move a shape" aria-pressed="true"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-pointer"/></svg></button>
+              <button class="tool" type="button" data-tool="pan" title="Pan" aria-label="Pan the whiteboard" aria-pressed="false"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-hand"/></svg></button>
+              <button class="tool" type="button" data-tool="pen" title="Pen" aria-label="Draw with the pen" aria-pressed="false"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-pen"/></svg></button>
+              <button class="tool" type="button" data-tool="rect" title="Rectangle" aria-label="Draw a rectangle" aria-pressed="false"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-square"/></svg></button>
+              <button class="tool" type="button" data-tool="ellipse" title="Ellipse" aria-label="Draw an ellipse" aria-pressed="false"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-circle"/></svg></button>
+              <button class="tool" type="button" data-tool="arrow" title="Arrow" aria-label="Draw an arrow" aria-pressed="false"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-arrow"/></svg></button>
+              <button class="tool" type="button" data-tool="text" title="Text" aria-label="Add text" aria-pressed="false"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-type"/></svg></button>
+              <button class="tool" type="button" data-tool="sticky" title="Sticky note" aria-label="Add a sticky note" aria-pressed="false"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-sticky"/></svg></button>
+              <button class="tool" type="button" data-tool="eraser" title="Eraser" aria-label="Erase a shape" aria-pressed="false"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-eraser"/></svg></button>
+            </div>
+            <div class="row board-colors" id="colorPalette"></div>
+            <div class="board-view-tools">
+              <button class="tool" type="button" id="undoBtn" title="Undo" aria-label="Undo whiteboard change"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-undo"/></svg></button>
+              <button class="tool" type="button" id="redoBtn" title="Redo" aria-label="Redo whiteboard change"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-redo"/></svg></button>
+              <button class="tool" type="button" id="clearBtn" title="Clear" aria-label="Clear whiteboard"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-trash"/></svg></button>
+              <button class="tool" type="button" id="zoomOut" title="Zoom out" aria-label="Zoom whiteboard out"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-minus"/></svg></button>
+              <span class="kbd" id="zoomLabel" aria-label="Whiteboard zoom">100%</span>
+              <button class="tool" type="button" id="zoomIn" title="Zoom in" aria-label="Zoom whiteboard in"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-plus"/></svg></button>
+              <button class="tool" type="button" id="fitBtn" title="Reset view" aria-label="Reset whiteboard viewport"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-maximize"/></svg></button>
+            </div>
+          </div>
+          <div class="canvas-host" id="canvasHost"><canvas id="board" tabindex="0" role="img" aria-label="Shared interview whiteboard" aria-describedby="boardSyncHint"></canvas></div>
+        </div>
+        <div class="small muted" id="boardSyncHint">Draw together. Finished changes sync to both members of this pair room and come back after a refresh.</div>
       </div>
-      <div class="small muted" id="boardSyncHint" style="margin-top:8px">Draw together — completed changes sync to authenticated members of this pair room and recover after refresh.</div>
     </section>
 
     <!-- PAIRINGS / ACTIVITY HISTORY -->
@@ -7074,10 +7270,15 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(boardHist.length>40){ boardHist.shift(); boardHistIdx--; }
   }
 
+  // The canvas paints the theme's card surface (WP-R) instead of a fixed brown.
+  function boardSurfaceColor(){
+    try{ const value=getComputedStyle(host||document.documentElement).getPropertyValue('--card').trim(); if(value) return value; }catch{}
+    return document.documentElement.classList.contains('light') ? '#ffffff' : '#12151C';
+  }
   function renderBoard(){
     const rect=host.getBoundingClientRect();
     // background
-    ctx.fillStyle = (document.documentElement.classList.contains('light') ? '#ffffff' : '#1c1916');
+    ctx.fillStyle = boardSurfaceColor();
     ctx.fillRect(0,0,rect.width,rect.height);
     // grid dots already in css; draw viewport grid logically
     ctx.save();
@@ -7295,7 +7496,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     // TURN fallback can be added via env: { urls:'turn:global.relay.metered.ca:80', username:'...', credential:'...' }
   ];
 
-  function videoUpdateStatus(txt){ const el=document.getElementById('videoStatus'); if(el) el.textContent=txt; const rl=document.getElementById('videoRoomLabel'); if(rl){ const r=getVideoRoomId(); rl.textContent=r?'room '+String(r).slice(0,6):'room —'; } }
+  function videoUpdateStatus(txt){ const el=document.getElementById('videoStatus'); if(el) el.textContent=txt; const rl=document.getElementById('videoRoomLabel'); if(rl){ const r=getVideoRoomId(); rl.textContent=r?'room '+String(r).slice(0,6):'room —'; }
+    // The call strip stays collapsed until this member joins (WP-R).
+    try{ window._randori_room?.setCall?.(videoJoined); }catch{} }
 
   function getVideoRoomId(){
     const room=String(currentRoom||document.getElementById('roomSelect')?.value||'');
@@ -7356,8 +7559,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const muteBadge=document.getElementById('localMuteBadge');
     const lv=document.getElementById('localVideo');
     const tile=document.getElementById('tileLocal');
-    if(camBtn) camBtn.classList.toggle('off', !videoCamEnabled);
-    if(micBtn) micBtn.classList.toggle('off', !videoMicEnabled);
+    if(camBtn){ camBtn.classList.toggle('off', !videoCamEnabled); camBtn.setAttribute('aria-pressed', String(!!videoCamEnabled)); }
+    if(micBtn){ micBtn.classList.toggle('off', !videoMicEnabled); micBtn.setAttribute('aria-pressed', String(!!videoMicEnabled)); }
     if(muteBadge) muteBadge.style.display = videoMicEnabled ? 'none' : 'block';
     if(tile) tile.classList.toggle('cam-off', !videoCamEnabled);
     if(lv) lv.style.display = videoCamEnabled ? '' : 'none';
@@ -7603,27 +7806,6 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   // hooks
   document.getElementById('vidJoinBtn')?.addEventListener('click', joinVideo);
   document.getElementById('vidLeaveBtn')?.addEventListener('click', leaveVideo);
-  // Prominent Join Session button in code toolbar copies room link / triggers deterministic join
-  document.getElementById('codeJoinSessionBtn')?.addEventListener('click', async()=>{
-    try{
-      const room = getVideoRoomId();
-      if(!room || room==='lobby'){
-        // try deterministic from dashboard cache if no room yet
-        if(window._randori_join && typeof window._randori_join==='function'){
-          window._randori_join();
-          return;
-        }
-        toast('Pick a room or Join from Dashboard — creates a deterministic room');
-        return;
-      }
-      const link = location.origin + location.pathname + '?room=' + encodeURIComponent(room);
-      try{ await navigator.clipboard.writeText(link); toast('Link copied • '+room.slice(0,12)+' — send to partner'); }catch{ toast('Room '+room.slice(0,12)+' • share id with partner'); }
-      // also ensure video joins if not yet
-      if(!videoJoined){
-        joinVideo().catch(()=>{});
-      }
-    }catch(e){ console.warn('codeJoinSession fail',e); }
-  });
   document.getElementById('vidCamBtn')?.addEventListener('click', async()=>{
     const camEpoch=videoSessionEpoch;
     videoCamEnabled = !videoCamEnabled;
@@ -7812,7 +7994,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   function aiSetStatus(msg, isError){
     if(!aiStatus) return;
     aiStatus.textContent = msg;
-    aiStatus.style.color = isError ? 'var(--accent-3)' : 'var(--ink-3)';
+    aiStatus.toggleAttribute('data-error', !!isError);
   }
 
   if (aiRecordBtn) {
@@ -7823,22 +8005,20 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         aiCodeSnaps = [];
         const curCode = document.getElementById('editor')?.value || '';
         aiCodeSnaps.push({ at: 0, code: curCode.slice(0,4000), note: 'start' });
-        aiSetStatus('● Recording — code edits + transcript being captured…');
-        aiRecordBtn.textContent = '■ Stop';
-        aiRecordBtn.style.background = '#e6c07a';
-        aiRecordBtn.style.color = '#12100f';
+        aiSetStatus('Recording code snapshots in this browser…');
+        aiRecordBtn.textContent = 'Stop recording';
+        aiRecordBtn.setAttribute('aria-pressed','true');
         // capture edits every 8s debounced via existing persistRoom input handler hook
         document.getElementById('editor')?.addEventListener('input', aiCaptureEdit);
         if (aiRecordTimer) clearInterval(aiRecordTimer);
-        aiRecordTimer = setInterval(()=>{ if(aiRecording) aiSetStatus(`● Recording ${Math.round((Date.now()-aiStartTime)/1000)}s — ${aiCodeSnaps.length} snapshots, ${ (aiTranscript?.value||'').length} transcript chars`); }, 5000);
+        aiRecordTimer = setInterval(()=>{ if(aiRecording) aiSetStatus(`Recording for ${Math.round((Date.now()-aiStartTime)/1000)} s: ${aiCodeSnaps.length} code snapshots, ${(aiTranscript?.value||'').length} characters of notes.`); }, 5000);
       } else {
         aiRecording = false;
         if (aiRecordTimer) clearInterval(aiRecordTimer);
         document.getElementById('editor')?.removeEventListener('input', aiCaptureEdit);
-        aiRecordBtn.textContent = '● Record';
-        aiRecordBtn.style.background = '';
-        aiRecordBtn.style.color = '';
-        aiSetStatus(`Paused — ${aiCodeSnaps.length} code snapshots, ready to Analyze`);
+        aiRecordBtn.textContent = 'Record';
+        aiRecordBtn.setAttribute('aria-pressed','false');
+        aiSetStatus(`Paused with ${aiCodeSnaps.length} code snapshots. Choose Get feedback when you are ready.`);
       }
     };
   }
@@ -7863,10 +8043,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const durationSec = aiStartTime ? Math.round((Date.now()-aiStartTime)/1000) : (timerSec ? (25*60 - timerSec) : 0);
 
     if (!transcript && !combinedCode) { toast('Add transcript or have code to analyze'); return; }
-    if (!me) { toast('Sign in to use Groq AI — free tier 14k req/day'); return; }
+    if (!me) { toast('Sign in to request AI feedback'); return; }
 
-    aiSetStatus('⚡ Calling Groq router — picking model by session…');
-    if (aiAnalyzeBtn) { aiAnalyzeBtn.disabled = true; aiAnalyzeBtn.textContent = '…analyzing'; }
+    aiSetStatus('Requesting AI feedback…');
+    if (aiAnalyzeBtn) { aiAnalyzeBtn.disabled = true; aiAnalyzeBtn.textContent = 'Requesting feedback…'; }
     if (aiDebug) { aiDebug.style.display='block'; aiDebug.innerHTML = '⏳ picking model: short→8b-instant, long/system-design→70b-versatile, respecting free-tier…'; }
     if (aiFeedbackEl) aiFeedbackEl.innerHTML = '';
 
@@ -7920,7 +8100,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if (aiDebug) aiDebug.innerHTML += `<br><span style="color:var(--accent-3)">Error: ${escapeHtml(msg)}</span>`;
       toast(`AI: ${msg}`);
     } finally {
-      if (aiAnalyzeBtn) { aiAnalyzeBtn.disabled = false; aiAnalyzeBtn.textContent = '⚡ Get AI Feedback'; }
+      if (aiAnalyzeBtn) { aiAnalyzeBtn.disabled = false; aiAnalyzeBtn.textContent = 'Get feedback'; }
     }
   }
 
@@ -11137,28 +11317,30 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           const passed = j.passed_count ?? results.filter(r=>r.pass===true).length;
           passedCount = passed;
           totalCount = j.total_count ?? results.length;
-          const statusColor = passedCount===totalCount ? 'var(--ok)' : (passedCount>0?'var(--warn)':'var(--accent-3)');
-          cards.unshift('<div class="test" style="border-color:'+statusColor+'; background:color-mix(in srgb, var(--bg-3) 90%, '+statusColor+' 8%)"><div class="small"><b>Result: '+escapeHtml(passedCount)+'/'+escapeHtml(totalCount)+' passed</b> '+(passedCount===totalCount?'✓':'✗')+' • '+escapeHtml(lang)+' • authoritative server result</div></div>');
+          const summaryStatus = passedCount===totalCount ? 'pass' : (passedCount>0?'partial':'fail');
+          cards.unshift('<div class="test run-summary" data-status="'+summaryStatus+'"><div class="small"><b>Result: '+escapeHtml(passedCount)+'/'+escapeHtml(totalCount)+' passed</b> '+(passedCount===totalCount?'✓':'✗')+' • '+escapeHtml(lang)+' • authoritative server result</div></div>');
           results.forEach((r,i)=>{
             const idx = (r.idx!=null? r.idx+1 : i+1);
             const pass = !!r.pass;
             const err = r.error || r.stderr || '';
             if(r.note){
-              cards.push('<div class="test" style="border-color:var(--line)"><div class="small">Case '+escapeHtml(idx)+': '+escapeHtml(String(r.note).slice(0,300))+'</div></div>');
+              cards.push('<div class="test run-case"><div class="small">Case '+escapeHtml(idx)+': '+escapeHtml(String(r.note).slice(0,300))+'</div></div>');
             }else{
-              cards.push('<div class="test" style="border-color:'+(pass?'var(--ok)':'var(--accent-3)')+'"><div class="small"><b>Case '+escapeHtml(idx)+'</b> '+(pass?'✓ pass':'✗ fail')+(err?' <div class="small muted" style="color:var(--accent-3)">'+escapeHtml(String(err).slice(0,200))+'</div>':'')+'<div class="small muted">Evaluated against a fresh server-generated case.</div></div></div>');
+              cards.push('<div class="test run-case" data-status="'+(pass?'pass':'fail')+'"><div class="small"><b>Case '+escapeHtml(idx)+'</b> '+(pass?'✓ pass':'✗ fail')+(err?' <div class="small run-case-error">'+escapeHtml(String(err).slice(0,200))+'</div>':'')+'</div></div>');
             }
           });
           if(results.length===0){
             cards.push('<div class="test"><div class="small muted">The server returned no per-case details.</div></div>');
+          }else{
+            cards.push('<p class="small muted run-footnote">Each case runs against a fresh server-generated input.</p>');
           }
-          if(runOutEl){ runOutEl.innerHTML=cards.join(''); runOutEl.scrollTop=runOutEl.scrollHeight; try{ runOutEl.scrollIntoView({behavior:'smooth', block:'nearest'});}catch{} }
+          if(runOutEl){ runOutEl.innerHTML=cards.join(''); }
           try{ window._randori_runs && window._randori_runs.refresh && window._randori_runs.refresh(); }catch{}
           if(window.toast) window.toast('Run '+lang+' '+passedCount+'/'+totalCount+' '+(passedCount===totalCount?'✓':'')+' verified by server');
         }catch(e){
           try{ if(window._randori_ui && window._randori_ui.hideLoader) window._randori_ui.hideLoader(); }catch{}
           if(e && e.code==='execution_unavailable'){
-            if(runOutEl){ runOutEl.innerHTML='<div class="test" data-execution-unavailable style="border-color:var(--warn)"><div class="small"><b>Code execution is temporarily unavailable.</b> Your code was not run and nothing was recorded.<div class="small muted">Your editor contents are kept — try again in a few minutes.</div></div></div>'; runOutEl.scrollTop=runOutEl.scrollHeight; }
+            if(runOutEl){ runOutEl.innerHTML='<div class="test run-summary" data-status="partial" data-execution-unavailable><div class="small"><b>Code execution is temporarily unavailable.</b> Your code was not run and nothing was recorded.<div class="small muted">Your editor contents are kept — try again in a few minutes.</div></div></div>'; runOutEl.scrollTop=runOutEl.scrollHeight; }
             if(window.toast) window.toast('Code execution is temporarily unavailable');
             return;
           }
@@ -11166,7 +11348,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           if(e?.code==='code_document_changed'){
             try{ await window._randori_crdt?.reconcile?.(); }catch{}
           }
-          if(runOutEl){ runOutEl.innerHTML='<div class="test" style="border-color:var(--accent-3)"><div class="small">Execution failed: '+escapeHtml(String(msg).slice(0,400))+'<div class="small muted">Check your code and try again.</div></div></div>'; runOutEl.scrollTop=runOutEl.scrollHeight; }
+          if(runOutEl){ runOutEl.innerHTML='<div class="test run-summary" data-status="fail"><div class="small">Execution failed: '+escapeHtml(String(msg).slice(0,400))+'<div class="small muted">Check your code and try again.</div></div></div>'; runOutEl.scrollTop=runOutEl.scrollHeight; }
           if(window.toast) window.toast('Execution error: '+String(msg).slice(0,120));
         }
       })();
@@ -11807,7 +11989,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         try{ if(typeof window.toast==='function') (typeof window.toast==='function' && window.toast)('format error: '+(e.message||'').slice(0,120)); }catch{}
         console.warn('prettier error',e);
         formatted=null;
-      } finally{ if(btn){ btn.disabled=false; btn.textContent=btn.dataset.old||'↥ Format'; } }
+      } finally{ if(btn){ btn.disabled=false; btn.textContent=btn.dataset.old||'Format code'; } }
     }
     if(formatted && formatted!==code){
       monacoEditor.setValue(formatted);
@@ -11966,39 +12148,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
         // format button
         const fbtn=document.getElementById(formatBtnId);
-        if(fbtn){ fbtn.addEventListener('click', formatCode); }
-        // copy starter / reset
-        try{
-          document.getElementById('copyStarterBtn')?.addEventListener('click', ()=>{
-            try{
-              const lang=document.getElementById('langSelect')?.value||'javascript';
-              const qId=document.getElementById('questionSelect')?.value||null;
-              let starter='';
-              // try built-in QUESTIONS first
-              try{ const qs = QUESTIONS.find(x=>x.id===qId); if(qs){ starter = qs.starters?.[lang]||qs.starters?.javascript||''; } }catch{}
-              // fallback custom questions cache
-              if(!starter && window._randori_code?.getCustomQuestion){
-                const cq = window._randori_code.getCustomQuestion?.(qId);
-                if(cq){ const mp=cq.starter_per_lang||{}; starter=cq.languages?.[lang]?.starter||mp[lang]||cq.languages?.javascript?.starter||mp.javascript||''; }
-              }
-              if(!starter) starter = (monacoEditor? monacoEditor.getValue() : (document.getElementById('editor')?.value||'')).slice(0,1200);
-              if(starter){ navigator.clipboard.writeText(starter).then(()=>{ if(window.toast) window.toast('Starter copied ✓'); }).catch(()=>{ prompt('Copy starter', starter); }); }
-            }catch(e){ console.warn('copy starter fail',e); }
-          });
-          document.getElementById('editorResetBtn')?.addEventListener('click', async ()=>{
-            try{
-              if(!await window.showConfirm?.('Reset editor?', 'Load fresh starter — current edits moved to other language store.')) return;
-              const lang=document.getElementById('langSelect')?.value||'javascript';
-              const qId=document.getElementById('questionSelect')?.value||null;
-              let starter='';
-              try{ const qs=QUESTIONS.find(x=>x.id===qId); if(qs) starter=qs.starters?.[lang]||qs.starters?.javascript||''; }catch{}
-              if(!starter && window._randori_code?.getCustomQuestion){ const cq=window._randori_code.getCustomQuestion?.(qId); if(cq){ starter=cq.languages?.[lang]?.starter||(cq.starter_per_lang||{})[lang]||''; } }
-              if(!starter) starter='// '+ (qId||'reset');
-              if(monacoEditor){ monacoEditor.setValue(starter); try{ if(typeof syncTextareaToMirror==='function') syncTextareaToMirror(); }catch{}; try{ if(typeof persistLikeOld==='function') persistLikeOld(); }catch{}; if(window.toast) window.toast('Reset ✓'); }
-              else { const ta=document.getElementById('editor'); if(ta){ ta.value=starter; ta.dispatchEvent(new Event('input',{bubbles:true})); } }
-            }catch(e){ console.warn('reset fail',e); }
-          });
-        }catch{}
+        if(fbtn){ fbtn.disabled=false; fbtn.removeAttribute('title'); fbtn.textContent='Format code'; if(!fbtn._randoriFormatWired){ fbtn._randoriFormatWired=true; fbtn.addEventListener('click', formatCode); } }
+        // copy starter / reset are wired once by wireStarterActions(); they also work in the plain editor.
 
         // initial lint
         setTimeout(updateLintFromMarkers, 800);
@@ -12027,17 +12178,59 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     try{ if(!LOCAL_RUNTIME&&!window.__monacoRetryScheduled){ window.__monacoRetryScheduled=true; setTimeout(()=>{ try{ if(!monacoReady){ const host=getHost(); if(host) host.style.display=''; const note=document.getElementById(fallbackNoteId); if(note) note.style.display='none'; if(!monacoTriedFallback) loadMonacoLoaderFallback((e)=>{ if(!e) initMonaco(); }); else initMonaco(); } }catch{} }, 3000); } }catch{}
     monacoReady=false;
     const host=getHost(); const ta=getTA(); const note=document.getElementById(fallbackNoteId);
+    // Formatting needs Monaco; the plain editor keeps Copy starter and Reset.
+    const fmt=document.getElementById(formatBtnId); if(fmt){ fmt.disabled=true; fmt.title='Formatting needs the full editor'; fmt.textContent='Format code (full editor only)'; }
     try{ host && host.querySelectorAll('.monaco-loader').forEach(l=>l.remove()); }catch{}
     if(host){ host.style.display='none'; }
     // An asset failure (or its delayed retry) must never steal keyboard focus
     // from a control the user is already operating.
     const focusFree=!document.activeElement||document.activeElement===document.body;
-    if(ta){ ta.style.display='block'; ta.style.minHeight='420px'; if(focusFree) ta.focus && ta.focus(); }
+    if(ta){ ta.style.display='block'; if(focusFree) ta.focus && ta.focus(); }
     if(note){ note.style.display='block'; note.title=reason||''; note.innerHTML=LOCAL_RUNTIME
-      ?'Local mode uses the plain editor with lint off.'
-      :'Monaco failed to load ('+escapeHtml(reason||'unknown')+') — using plain editor with lint off. <button id="monacoRetry" class="pill" style="margin-left:8px">Retry CDN</button>'; }
+      ?'This local runtime uses the plain editor.'
+      :'The full editor did not load, so this is the plain editor. <button id="monacoRetry" class="pill" type="button">Try again</button>'; }
     if(!LOCAL_RUNTIME) document.getElementById('monacoRetry')?.addEventListener('click', ()=>{ if(host) host.style.display=''; if(note) note.style.display='none'; initMonaco(); });
   }
+
+  // Copy starter and Reset work with Monaco and with the plain editor, so they
+  // are wired once at start instead of on every Monaco initialisation (WP-R).
+  let starterActionsWired=false;
+  function wireStarterActions(){
+    if(starterActionsWired) return;
+    starterActionsWired=true;
+    try{
+      document.getElementById('copyStarterBtn')?.addEventListener('click', ()=>{
+        try{
+          const lang=document.getElementById('langSelect')?.value||'javascript';
+          const qId=document.getElementById('questionSelect')?.value||null;
+          let starter='';
+          // try built-in QUESTIONS first
+          try{ const qs = QUESTIONS.find(x=>x.id===qId); if(qs){ starter = qs.starters?.[lang]||qs.starters?.javascript||''; } }catch{}
+          // fallback custom questions cache
+          if(!starter && window._randori_code?.getCustomQuestion){
+            const cq = window._randori_code.getCustomQuestion?.(qId);
+            if(cq){ const mp=cq.starter_per_lang||{}; starter=cq.languages?.[lang]?.starter||mp[lang]||cq.languages?.javascript?.starter||mp.javascript||''; }
+          }
+          if(!starter) starter = (monacoEditor? monacoEditor.getValue() : (document.getElementById('editor')?.value||'')).slice(0,1200);
+          if(starter){ navigator.clipboard.writeText(starter).then(()=>{ if(window.toast) window.toast('Starter copied ✓'); }).catch(()=>{ prompt('Copy starter', starter); }); }
+        }catch(e){ console.warn('copy starter fail',e); }
+      });
+      document.getElementById('editorResetBtn')?.addEventListener('click', async ()=>{
+        try{
+          if(!await window.showConfirm?.('Reset editor?', 'Load fresh starter — current edits moved to other language store.')) return;
+          const lang=document.getElementById('langSelect')?.value||'javascript';
+          const qId=document.getElementById('questionSelect')?.value||null;
+          let starter='';
+          try{ const qs=QUESTIONS.find(x=>x.id===qId); if(qs) starter=qs.starters?.[lang]||qs.starters?.javascript||''; }catch{}
+          if(!starter && window._randori_code?.getCustomQuestion){ const cq=window._randori_code.getCustomQuestion?.(qId); if(cq){ starter=cq.languages?.[lang]?.starter||(cq.starter_per_lang||{})[lang]||''; } }
+          if(!starter) starter='// '+ (qId||'reset');
+          if(monacoEditor){ monacoEditor.setValue(starter); try{ if(typeof syncTextareaToMirror==='function') syncTextareaToMirror(); }catch{}; try{ if(typeof persistLikeOld==='function') persistLikeOld(); }catch{}; if(window.toast) window.toast('Reset ✓'); }
+          else { const ta=document.getElementById('editor'); if(ta){ ta.value=starter; ta.dispatchEvent(new Event('input',{bubbles:true})); } }
+        }catch(e){ console.warn('reset fail',e); }
+      });
+    }catch{}
+  }
+  wireStarterActions();
 
   // start after DOM + a tick to allow other IIFEs to set up CODE_KEY
   if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', ()=> setTimeout(initMonaco, 450)); }
@@ -12051,6 +12244,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
 <script type="module" src="/assets/calendar-export.js"></script>
 <script type="module" src="/assets/app-shell.js"></script>
+<script type="module" src="/assets/room-layout.js"></script>
 <script src="/assets/crdt-editor.js" defer></script>
 <script type="module">
 // --- Pillar 3 Fix: rewired AI frontend (Groq router + anon demo + quota + loader/toast) ---
@@ -12092,7 +12286,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const transcript = (extra && extra.transcript) || transcriptEl?.value?.trim() || '';
     const interviewerQs = (extra && extra.interviewer_questions) || (extra && extra.interviewerQuestions) || iqEl?.value?.trim() || '';
     const duration = (extra && (extra.duration_sec||extra.duration)) || (window._randori_ai && window._randori_ai._startTime ? Math.round((Date.now()-window._randori_ai._startTime)/1000) : 0);
-    const roleEl = document.getElementById('roleToggle'); const role = (extra && extra.role) || (roleEl?.textContent?.includes('interviewer') ? 'interviewer' : 'both');
+    const roleEl = document.getElementById('roleToggle'); const role = (extra && extra.role) || (roleEl?.textContent?.toLowerCase?.().includes('interviewer') ? 'interviewer' : 'both');
     let combinedCode = codeW;
     if(snaps && snaps.length){ try{ combinedCode = JSON.stringify(snaps).slice(0,12000) + '\nLATEST:\n' + String(codeW).slice(0,8000); }catch{ combinedCode=codeW; } }
     if(extra && extra.code) combinedCode = extra.code;
@@ -12147,7 +12341,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     // loader
     let loaderTarget = fbEl || aiPanel;
     const spin=showLoader(loaderTarget);
-    if(statusEl) statusEl.textContent='⚡ Calling Groq router — picking model by session…';
+    if(statusEl) statusEl.textContent='Requesting AI feedback…';
     if(dbgEl){ dbgEl.style.display='block'; dbgEl.innerHTML='⏳ picking model: short→8b-instant, long/system-design→70b-versatile, respecting free-tier…'; }
 
     if(fbEl) fbEl.innerHTML=''; if(listAlias) listAlias.innerHTML='';
@@ -12297,24 +12491,6 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           }catch{}
         }, 50);
       });
-    }
-  }catch{}
-
-  // Ensure an additional feedback card appears below the whiteboard when space allows.
-  try{
-    if(!document.getElementById('aiFeedbackCardBelowBoard')){
-      const videoBar=document.getElementById('videoBar');
-      const codeLayout=document.querySelector('.code-layout');
-      const card=document.createElement('div');
-      card.id='aiFeedbackCardBelowBoard';
-      card.className='card';
-      card.style.cssText='margin:10px; border-style:dashed; background:var(--bg-2)';
-      card.innerHTML=`<div class="card-h"><h3 style="font-size:12.5px">AI Interview Feedback</h3><span class="kbd">Groq router • evidence-checked</span></div><div class="card-b small" style="display:grid;gap:8px"><div>Record toggles capture, Analyze sends transcript + code snapshots to <span class="kbd">/api/ai/analyze</span> using your secure session. Quota: 100/mo demo, 500/mo regular.</div><div class="row" style="gap:6px; flex-wrap:wrap"><button class="btn" onclick="window._randori_ai && window._randori_ai.analyze && window._randori_ai.analyze()" style="font-size:11.5px">⚡ Analyze current session</button><button class="pill" onclick="window._randori_ai && window._randori_ai.listHistory && window._randori_ai.listHistory()">history</button><span class="small muted">Shows evidence quotes + overall score + checklist</span></div><div id="aiFeedbackList" style="display:grid;gap:8px"></div></div>`;
-      if(codeLayout && codeLayout.parentElement){
-        codeLayout.parentElement.insertBefore(card, codeLayout.nextSibling);
-      }else if(videoBar && videoBar.parentElement){
-        videoBar.parentElement.insertBefore(card, videoBar.nextSibling);
-      }
     }
   }catch{}
 
@@ -13085,8 +13261,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   function hide(){
     clearTick(); clearPoll();
     if(card){ card.hidden=true; card.setAttribute('aria-busy','false'); }
-    if(toolbarRole){ toolbarRole.disabled=true; toolbarRole.textContent='○ role'; }
-    if(toolbarTimer){ toolbarTimer.disabled=true; toolbarTimer.style.background=''; const label=toolbarTimer.querySelector('#timerText'); if(label) label.textContent='25:00'; }
+    if(toolbarRole){ toolbarRole.disabled=true; toolbarRole.textContent='Role'; }
+    if(toolbarTimer){ toolbarTimer.disabled=true; toolbarTimer.removeAttribute('data-running'); const label=toolbarTimer.querySelector('#timerText'); if(label) label.textContent='25:00'; }
   }
   function renderTimer(){
     const remaining=effectiveRemaining();
@@ -13094,7 +13270,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(countdown) countdown.textContent=label;
     if(toolbarTimer){
       const timerLabel=toolbarTimer.querySelector('#timerText'); if(timerLabel) timerLabel.textContent=label;
-      toolbarTimer.style.background=state.controls?.timerState==='running'&&remaining>0&&!state.controls?.terminal?'var(--accent)':'';
+      toolbarTimer.toggleAttribute('data-running',state.controls?.timerState==='running'&&remaining>0&&!state.controls?.terminal);
       toolbarTimer.setAttribute('aria-label',state.controls?.timerState==='running'&&remaining>0?'Pause shared focus timer':'Start shared focus timer');
     }
     if(remaining===0){
@@ -13161,7 +13337,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(retry){ retry.hidden=true; retry.disabled=false; }
     if(toolbarRole){
       toolbarRole.disabled=state.busy||controls.terminal;
-      toolbarRole.textContent=controls.viewerRole==='candidate'?'○ candidate':'● interviewer';
+      toolbarRole.textContent=controls.viewerRole==='candidate'?'Candidate':'Interviewer';
       toolbarRole.setAttribute('aria-label',`You are ${controls.viewerRole}; switch shared participant roles`);
     }
     if(toolbarTimer) toolbarTimer.disabled=state.busy||controls.terminal||remaining===0;
