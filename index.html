@@ -15,6 +15,7 @@
 <script src="/assets/invite-gate.js"></script>
 <script src="/assets/landing.js"></script>
 <script src="/assets/pairing-view.js"></script>
+<script src="/assets/catalogue-view.js"></script>
 <script src="/assets/home-dashboard.js"></script>
 <script>
 /* Consume invitation capabilities before any telemetry or third-party script can observe the URL. */
@@ -778,27 +779,99 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .room-panel:has(> .room-section:not([hidden])) .session-empty{display:none}
 .room-panel-empty{margin:0; padding:var(--space-2) var(--space-1)}
 
-/* Problem panel (catalogue browse moves to WP-K) */
+/* Problem panel (WP-K): browse, filter and the current problem statement */
 .q-pane{display:block; padding:0}
 .q-head{padding:var(--space-3) var(--space-4); border-bottom:1px solid var(--border); display:grid; gap:var(--space-3)}
-.q-pick{flex-wrap:nowrap; gap:var(--space-2)}
-.q-pick .select{flex:1 1 auto; min-width:0; width:auto}
-.catalog-filters{display:grid; grid-template-columns:1fr 1fr; gap:var(--space-2)}
-.catalog-filters label{display:grid; gap:var(--space-1)}
-.catalog-search,.catalog-wide{grid-column:1 / -1}
-.catalog-empty{padding:var(--space-2); border:1px dashed var(--border); border-radius:var(--radius-sm)}
-.q-body{padding:var(--space-4); display:grid; gap:var(--space-3); font-size:var(--text-sm); line-height:var(--leading-sm); color:var(--ink-2)}
+.catalog-browse-head{display:flex; align-items:baseline; justify-content:space-between; gap:var(--space-2); flex-wrap:wrap}
+.q-pick{display:grid; gap:var(--space-1)}
+.q-pick .select{min-width:0; width:100%}
+.catalog-filters{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:var(--space-2); align-items:end}
+.catalog-filters label{display:grid; gap:var(--space-1); min-width:0}
+.catalog-search,.catalog-filter-actions{grid-column:1 / -1}
+.catalog-filter-actions{display:flex; justify-content:flex-end}
+.catalog-filter-actions:has(> [hidden]:only-child){display:none}
+@media(max-width:520px){ .catalog-filters{grid-template-columns:1fr 1fr} .catalog-filters label:last-of-type{grid-column:1 / -1} }
+.catalog-disclosure{display:grid; gap:var(--space-2)}
+.catalog-summary{
+  display:flex; align-items:center; justify-content:space-between; gap:var(--space-2); min-height:var(--tap-min);
+  padding:var(--space-2) var(--space-3); border:1px solid var(--border); border-radius:var(--radius-sm);
+  background:var(--card); color:var(--ink); font-size:var(--text-sm); font-weight:var(--weight-emphasis); cursor:pointer; list-style:none;
+}
+.catalog-summary::-webkit-details-marker{display:none}
+.catalog-summary:focus-visible{outline:3px solid var(--color-focus); outline-offset:2px}
+.catalog-summary .rc-icon{width:16px; height:16px; transition:transform var(--dur-2) var(--ease-out)}
+.catalog-disclosure[open] > .catalog-summary .rc-icon{transform:rotate(180deg)}
+.catalog-disclosure[open] > .catalog-summary{margin-bottom:var(--space-2)}
+.catalog-list{
+  list-style:none; margin:0; padding:var(--space-1); display:grid; gap:var(--space-2);
+  max-height:min(46vh,420px); overflow:auto; overscroll-behavior:contain;
+  border:1px solid var(--border); border-radius:var(--radius-md); background:var(--bg-2);
+}
+.catalog-item{min-width:0}
+.catalog-card{
+  display:grid; gap:var(--space-1); width:100%; min-height:var(--tap-min); text-align:left;
+  padding:var(--space-3); border:1px solid var(--border); border-radius:var(--radius-sm);
+  background:var(--card); color:var(--ink); font:inherit; cursor:pointer;
+  transition:border-color var(--dur-1) var(--ease-out), background-color var(--dur-1) var(--ease-out);
+}
+@media(hover:hover){ .catalog-card:hover{border-color:var(--color-control-border); background:var(--color-surface-raised)} }
+.catalog-card:focus-visible{outline:3px solid var(--color-focus); outline-offset:2px}
+.catalog-card[aria-current="true"]{border-color:var(--color-action); background:var(--color-action-subtle)}
+.catalog-card-head{display:flex; align-items:flex-start; justify-content:space-between; gap:var(--space-2)}
+.catalog-card-title{font-size:var(--text-sm); line-height:var(--leading-sm); font-weight:var(--weight-heading); overflow-wrap:anywhere}
+.catalog-card-summary{font-size:var(--text-sm); line-height:var(--leading-sm); color:var(--ink-2)}
+.catalog-card-meta{display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-1)}
+.catalog-card-current{font-size:var(--text-xs); line-height:var(--leading-xs); font-weight:var(--weight-emphasis); color:var(--color-action)}
+.catalog-difficulty{flex:0 0 auto}
+.catalog-chip{
+  display:inline-flex; align-items:center; padding:0 var(--space-2); border-radius:var(--radius-full);
+  border:1px solid var(--border); background:var(--bg-3); color:var(--ink-2);
+  font-size:var(--text-xs); line-height:var(--leading-xs); font-weight:var(--weight-emphasis);
+}
+.catalog-chip--pattern{color:var(--ink)}
+.catalog-item--skeleton{display:grid; gap:var(--space-2); padding:var(--space-3); border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--card)}
+.catalog-skeleton-title{display:block; height:14px; width:55%; border-radius:var(--radius-xs)}
+.catalog-skeleton-line{display:block; height:12px; width:90%; border-radius:var(--radius-xs)}
+.catalog-state-title{margin:0; font-size:var(--text-sm); line-height:var(--leading-sm); font-weight:var(--weight-heading); color:var(--ink)}
+.catalog-empty{padding:var(--space-5) var(--space-4); border:1px dashed var(--border); border-radius:var(--radius-md)}
+.catalog-empty > .catalog-state-title{color:var(--ink)}
+.catalog-empty p{margin:0}
+.catalog-error{flex-wrap:wrap; align-items:center; justify-content:space-between}
+.catalog-error p{margin:0}
+.q-body{padding:var(--space-4); display:grid; gap:var(--space-4); font-size:var(--text-sm); line-height:var(--leading-sm); color:var(--ink-2); max-width:var(--reading-max)}
+.q-eyebrow{margin:0 0 calc(-1 * var(--space-3)); font-size:var(--text-xs); line-height:var(--leading-xs); font-weight:var(--weight-emphasis); color:var(--ink-3)}
 .q-body h3{font-size:var(--text-lg); line-height:var(--leading-lg); color:var(--ink); margin:0}
-.q-examples{display:grid; gap:var(--space-2)}
+.q-badges{display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-2); margin-top:calc(-1 * var(--space-2))}
+.catalog-version{font-size:var(--text-xs); line-height:var(--leading-xs); color:var(--ink-3)}
+.q-prose{display:grid; gap:var(--space-3); font-size:var(--text-md); line-height:var(--leading-md); color:var(--ink-2)}
+.q-prose p{margin:0}
+.q-tags{margin:0; display:flex; flex-wrap:wrap; gap:var(--space-1)}
+.q-section-title{margin:0 0 var(--space-2); font-size:var(--text-sm); line-height:var(--leading-sm); color:var(--ink)}
+.q-examples{display:grid; gap:var(--space-3)}
+.q-examples > .q-section-title{margin-bottom:0}
+.q-example{margin:0; display:grid; gap:var(--space-2); padding:var(--space-3); border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--bg-3)}
+.q-example-label{font-size:var(--text-xs); line-height:var(--leading-xs); font-weight:var(--weight-emphasis); color:var(--ink-2)}
+.q-example-io{margin:0; display:grid; grid-template-columns:auto minmax(0,1fr); gap:var(--space-1) var(--space-3); align-items:baseline}
+.q-example-io dt{font-size:var(--text-xs); line-height:var(--leading-xs); font-weight:var(--weight-emphasis); color:var(--ink-3)}
+.q-example-io dd{margin:0; min-width:0}
+.q-example-io pre{margin:0; font-family:var(--font-mono); font-size:var(--text-xs); line-height:1.6; color:var(--ink); white-space:pre-wrap; overflow-wrap:anywhere}
+.q-example-note{margin:0; color:var(--ink-2)}
+.q-constraints-list{margin:0; padding-left:var(--space-5); display:grid; gap:var(--space-1); font-family:var(--font-mono); font-size:var(--text-xs); line-height:1.6; color:var(--ink-2)}
+.q-run{padding:var(--space-3); border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--bg-2)}
+.q-run .q-section-title{margin:0}
+.q-start-coding{justify-self:start}
+.q-start-coding .rc-icon{width:16px; height:16px}
+@media(min-width:1100px){ .q-start-coding{display:none} }
 .q-source{display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-1) var(--space-2); padding-top:var(--space-3); border-top:1px solid var(--border)}
 .q-source-note{flex-basis:100%}
+.q-source-note:empty{display:none}
 .tests{display:grid; gap:var(--space-2)}
 .test{border:1px solid var(--border); border-radius:var(--radius-sm); padding:var(--space-2) var(--space-3); background:var(--bg-3); font-size:var(--text-sm)}
 .test pre,.run-out pre{font-size:var(--text-xs)}
 
 /* Results panel: one summary, then compact case rows */
 .run-out{display:grid; gap:var(--space-1); font-variant-numeric:tabular-nums}
-.run-out:empty::before{content:"Run your code to see server-verified results here."; color:var(--ink-3); font-size:var(--text-sm)}
+.run-out:empty::before{content:"Press Run to check your code on the server. Results appear here."; color:var(--ink-3); font-size:var(--text-sm)}
 .run-out .test{border-left-width:3px}
 .run-summary{padding:var(--space-3); margin-bottom:var(--space-1)}
 .run-summary[data-status="pass"]{border-color:var(--ok); background:var(--ok-surface)}
@@ -2065,15 +2138,18 @@ a.btn{text-decoration:none}
 
           <div id="roomSide" class="room-side" hidden>
             <div id="roomPanel-problem" class="room-panel q-pane" role="tabpanel" aria-labelledby="roomTab-problem" data-room-panel="problem" hidden>
-              <div class="q-head">
-                <div class="row q-pick">
-                  <label class="sr-only" for="questionSelect">Exercise</label>
-                  <select id="questionSelect" class="select" aria-label="Exercise"></select>
-                  <span id="qDiff" class="kbd"></span>
+              <section id="catalogBrowse" class="q-head catalog-browse" data-state="loading" aria-labelledby="catalogHeading">
+                <div class="catalog-browse-head">
+                  <h3 id="catalogHeading" class="room-section-title">Practice exercises</h3>
+                  <span id="catalogFilterStatus" data-testid="catalog-status" class="small muted" role="status" aria-live="polite">Loading exercises…</span>
+                </div>
+                <div class="q-pick">
+                  <label class="small muted" for="questionSelect">Exercise</label>
+                  <select id="questionSelect" class="select"></select>
                 </div>
                 <div data-testid="catalog-filters" class="catalog-filters">
-                  <label class="small muted catalog-search">Search exercises
-                    <input id="catalogSearch" data-testid="catalog-search" class="input" type="search" autocomplete="off" placeholder="Title, pattern, or tag" />
+                  <label class="small muted catalog-search">Search
+                    <input id="catalogSearch" data-testid="catalog-search" class="input" type="search" autocomplete="off" placeholder="Title, pattern or topic" />
                   </label>
                   <label class="small muted">Difficulty
                     <select id="catalogDifficulty" data-testid="catalog-difficulty" class="select"><option value="all">All</option><option value="Easy">Easy</option><option value="Medium">Medium</option><option value="Hard">Hard</option></select>
@@ -2081,23 +2157,50 @@ a.btn{text-decoration:none}
                   <label class="small muted">Pattern
                     <select id="catalogType" data-testid="catalog-type" class="select"><option value="all">All</option></select>
                   </label>
-                  <span id="catalogFilterStatus" data-testid="catalog-status" class="small muted catalog-wide" role="status" aria-live="polite">Loading exercises…</span>
-                  <div id="catalogFilterEmpty" data-testid="catalog-empty" class="small muted catalog-wide catalog-empty" hidden>No public exercises match these filters. Clear or adjust them to continue.</div>
+                  <label class="small muted">Language
+                    <select id="catalogLanguage" data-testid="catalog-language" class="select"><option value="all">All</option></select>
+                  </label>
+                  <div class="catalog-filter-actions">
+                    <button id="catalogClearFilters" data-testid="catalog-clear" class="btn ghost sm" type="button" hidden>Clear filters</button>
+                  </div>
                 </div>
-              </div>
-              <div class="q-body">
+                <details id="catalogBrowseList" class="catalog-disclosure" data-testid="catalog-browse">
+                  <summary class="catalog-summary"><span>Browse exercises</span><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-chevron-down"/></svg></summary>
+                  <ul id="catalogList" data-testid="catalog-list" class="catalog-list" aria-label="Exercises" aria-busy="true"></ul>
+                  <div id="catalogFilterEmpty" data-testid="catalog-empty" class="rc-empty catalog-empty" hidden>
+                    <p id="catalogEmptyTitle" class="catalog-state-title">No exercises match these filters</p>
+                    <p id="catalogEmptyMessage" class="small muted">No public exercises match these filters. Clear the filters to see every exercise.</p>
+                    <button id="catalogEmptyClear" class="btn secondary sm" type="button">Clear filters</button>
+                  </div>
+                </details>
+                <div id="catalogError" data-testid="catalog-error" class="rc-banner rc-banner--warning catalog-error" role="alert" hidden>
+                  <div>
+                    <p id="catalogErrorTitle" class="catalog-state-title">Exercises could not load</p>
+                    <p id="catalogErrorMessage" class="small">Something went wrong while loading the catalogue. Your code stays in the editor.</p>
+                  </div>
+                  <button id="catalogRetryBtn" class="btn secondary sm" type="button" hidden>Try again</button>
+                  <button id="catalogSignInBtn" class="btn sm" type="button" hidden>Sign in</button>
+                </div>
+              </section>
+              <article class="q-body" aria-labelledby="qTitle">
+                <p class="q-eyebrow">Current exercise</p>
                 <h3 id="qTitle"></h3>
-                <div id="qDesc"></div>
+                <div id="qDiff" class="q-badges" hidden></div>
+                <div id="qDesc" class="q-prose"></div>
                 <div id="qExamples" class="q-examples"></div>
-                <div id="qConstraints" class="small muted"></div>
-                <div class="tests"><div class="small muted">Evaluation</div><div id="qTests"></div></div>
+                <div id="qConstraints" class="q-constraints"></div>
+                <div class="tests q-run">
+                  <h4 class="q-section-title">Run your code</h4>
+                  <div id="qTests"></div>
+                  <button id="qStartCoding" class="btn sm q-start-coding" type="button"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-play"/></svg>Open the editor</button>
+                </div>
                 <div id="questionPanel" class="q-source small muted">
                   <span>Approved original exercise catalogue</span>
                   <span id="qCustomCount">• loading…</span>
-                  <button id="catalogRetryBtn" class="pill" type="button" hidden>Retry catalogue</button>
-                  <span class="q-source-note">Examples are public; evaluation cases stay on the server.</span>
+                  <span id="qAttribution" class="q-source-note"></span>
+                  <span class="q-source-note">Examples are public. The test cases stay on the server.</span>
                 </div>
-              </div>
+              </article>
             </div>
 
             <div id="roomPanel-results" class="room-panel" role="tabpanel" aria-labelledby="roomTab-results" data-room-panel="results" hidden>
@@ -7228,7 +7331,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   if(qSel){
     const loadingOption=document.createElement('option');
     loadingOption.value='';
-    loadingOption.textContent='Loading original exercises…';
+    loadingOption.textContent='Loading exercises…';
     qSel.appendChild(loadingOption);
     qSel.disabled=true;
   }
@@ -7540,7 +7643,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   // cases or calling a runtime provider directly from the browser.
   document.getElementById('runBtn').onclick=()=>{
     const out=document.getElementById('runOut');
-    if(out) out.innerHTML='<div class="small muted">Loading the approved server catalogue…</div>';
+    if(out) out.innerHTML='<div class="small muted">Loading exercises…</div>';
   };
 
 
@@ -8434,12 +8537,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   renderPeople(); renderPairs(); renderHistory(); renderRoomSelect();
   // The server catalogue is the source of truth. Avoid presenting legacy
   // built-ins while the public exercise projection is loading.
-  document.getElementById('qTitle').textContent='Loading original exercises…';
+  document.getElementById('qTitle').textContent='Loading exercises…';
   document.getElementById('qDiff').textContent='';
-  document.getElementById('qDesc').innerHTML='<div class="small muted">Fetching the approved catalogue…</div>';
+  document.getElementById('qDesc').replaceChildren();
   document.getElementById('qExamples').innerHTML='';
   document.getElementById('qConstraints').textContent='';
-  document.getElementById('qTests').innerHTML='<div class="small muted">Evaluation cases remain private on the server.</div>';
+  document.getElementById('qTests').textContent='Run checks your code on the server once an exercise is open.';
 
   // ---------- AI Recording + Groq Feedback (video-aware, evidence-enforced) ----------
   let aiRecording = false;
@@ -9220,7 +9323,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   function openSoloCatalogue(){
     clearDashboardPairState();
     document.querySelector('[data-tab="code"]')?.click();
-    if(typeof toast==='function') toast('Solo catalogue ready — choose an exercise to begin.');
+    window._randori_room?.show?.('problem');
+    const browse=document.getElementById('catalogBrowseList'); if(browse) browse.open=true;
+    if(typeof toast==='function') toast('Solo practice: choose an exercise to begin.');
   }
 
   async function showDashboard(){
@@ -11244,7 +11349,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   let activeQuestionSlug='';
   let activeQuestionVersion=null;
   let activeLanguage=document.getElementById('langSelect')?.value||'javascript';
-  const catalogueFilterState={search:'',difficulty:'all',type:'all',visibleSlugs:[]};
+  const catalogueView=window._randori_catalogue_view;
+  const catalogueFilterState={search:'',difficulty:'all',type:'all',language:'all',visibleSlugs:[]};
+  let catalogueFailureReason='error';
   const CATALOGUE_FILTER_EMPTY='__randori_catalog_filter_empty__';
   const sessionDrafts=new Map();
   const MAX_CATALOGUE_AUTO_RETRIES=2;
@@ -11337,11 +11444,22 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     activeQuestionVersion=positiveVersion(version);
     activeLanguage=document.getElementById('langSelect')?.value||activeLanguage;
     const title=document.getElementById('qTitle'); if(title) title.textContent='Exercise unavailable';
-    const diff=document.getElementById('qDiff'); if(diff){ diff.textContent='unavailable'; diff.style.display='inline-flex'; }
-    const desc=document.getElementById('qDesc'); if(desc) desc.innerHTML=`<div class="small muted">This workspace references an exercise that is ${escapeHtml(reason)}. Your code is preserved; choose an available exercise to continue.</div>`;
-    const examples=document.getElementById('qExamples'); if(examples) examples.innerHTML='';
-    const constraints=document.getElementById('qConstraints'); if(constraints) constraints.textContent='';
-    const tests=document.getElementById('qTests'); if(tests) tests.innerHTML='<div class="small muted">Unavailable exercises cannot be executed.</div>';
+    const diff=document.getElementById('qDiff');
+    if(diff){
+      const badge=document.createElement('span'); badge.className='rc-badge'; badge.textContent='Unavailable';
+      diff.replaceChildren(badge); diff.hidden=false;
+    }
+    const desc=document.getElementById('qDesc');
+    if(desc){
+      const message=document.createElement('p');
+      message.textContent=`This room's exercise is ${String(reason||'unavailable')}. Your code is kept. Choose an exercise from the list to continue.`;
+      desc.replaceChildren(message);
+    }
+    const examples=document.getElementById('qExamples'); if(examples) examples.replaceChildren();
+    const constraints=document.getElementById('qConstraints'); if(constraints) constraints.replaceChildren();
+    const tests=document.getElementById('qTests'); if(tests) tests.textContent='Unavailable exercises cannot be run.';
+    const attribution=document.getElementById('qAttribution'); if(attribution) attribution.textContent='';
+    renderCatalogueList();
   }
 
   function removeFilteredWorkspaceOptions(sel,except=null){
@@ -11365,7 +11483,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   function catalogueFiltersActive(){
-    return !!catalogueFilterState.search||catalogueFilterState.difficulty!=='all'||catalogueFilterState.type!=='all';
+    return catalogueView.filtersActive(catalogueFilterState);
   }
 
   function hydratedWorkspaceOwnsSelection(identity){
@@ -11379,14 +11497,51 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   function filteredCatalogueQuestions(){
-    const terms=catalogueFilterState.search.toLocaleLowerCase().split(/\s+/).filter(Boolean);
-    return CUSTOM_QUESTIONS.filter(question=>{
-      if(catalogueFilterState.difficulty!=='all'&&String(question.difficulty||'')!==catalogueFilterState.difficulty) return false;
-      if(catalogueFilterState.type!=='all'&&String(question.type||'')!==catalogueFilterState.type) return false;
-      const tags=Array.isArray(question.tags)?question.tags:[];
-      const searchable=[question.title,question.slug,question.type,...tags].map(value=>String(value||'').toLocaleLowerCase()).join(' ');
-      return terms.every(term=>searchable.includes(term));
-    });
+    return catalogueView.filterQuestions(CUSTOM_QUESTIONS,catalogueFilterState);
+  }
+
+  // Browse state for the Problem panel: loading skeleton, loaded list (or
+  // empty state), and one recovery action when the catalogue cannot load.
+  function setCatalogueBrowseState(state){
+    const browse=document.getElementById('catalogBrowse'); if(browse) browse.dataset.state=state;
+    const list=document.getElementById('catalogList');
+    const error=document.getElementById('catalogError');
+    const retry=document.getElementById('catalogRetryBtn');
+    const signIn=document.getElementById('catalogSignInBtn');
+    const status=document.getElementById('catalogFilterStatus');
+    const empty=document.getElementById('catalogFilterEmpty');
+    if(state==='loading'){
+      catalogueView.renderListSkeleton(document,list);
+      if(error) error.hidden=true;
+      if(empty) empty.hidden=true;
+      if(status) status.textContent=catalogueView.statusText({state});
+      return;
+    }
+    if(state==='loaded'){ if(error) error.hidden=true; return; }
+    const failure=catalogueView.failureView(state==='signin'||state==='offline'?state:'error');
+    if(list){ list.replaceChildren(); list.hidden=true; list.setAttribute('aria-busy','false'); }
+    if(empty) empty.hidden=true;
+    if(error) error.hidden=false;
+    const title=document.getElementById('catalogErrorTitle'); if(title) title.textContent=failure.title;
+    const message=document.getElementById('catalogErrorMessage'); if(message) message.textContent=failure.message;
+    if(retry) retry.hidden=failure.action!=='retry';
+    if(signIn) signIn.hidden=failure.action!=='signin'||!document.getElementById('authBtn');
+    if(status) status.textContent=catalogueView.statusText({state:failure.state});
+  }
+
+  function currentExerciseTitle(){
+    const question=CUSTOM_QUESTIONS.find(item=>item.slug===activeQuestionSlug&&(activeQuestionVersion==null||item.version===activeQuestionVersion));
+    return question?.title||'';
+  }
+
+  // Exercise cards for the current filter result. The selected exercise is
+  // marked; it never changes because a filter hides it.
+  function renderCatalogueList(){
+    if(catalogueFetchState!=='loaded') return;
+    const list=document.getElementById('catalogList');
+    const matches=catalogueFiltersActive()?filteredCatalogueQuestions():CUSTOM_QUESTIONS;
+    const selected={slug:activeQuestionSlug,version:activeQuestionVersion};
+    catalogueView.renderExerciseList(document,list,matches.map(question=>catalogueView.exerciseCard(question,selected)));
   }
 
   function appendCatalogueOption(sel,question){
@@ -11433,34 +11588,40 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return option;
   }
 
+  function fillFilterSelect(select,options,key){
+    if(!select) return;
+    const previous=catalogueFilterState[key];
+    select.replaceChildren();
+    const all=document.createElement('option'); all.value='all'; all.textContent='All'; select.appendChild(all);
+    options.forEach(({value,label})=>{
+      const option=document.createElement('option'); option.value=value; option.textContent=label;
+      select.appendChild(option);
+    });
+    catalogueFilterState[key]=[...select.options].some(option=>option.value===previous)?previous:'all';
+    select.value=catalogueFilterState[key];
+  }
+
   function updateCatalogueFilterControls(){
-    const typeSelect=document.getElementById('catalogType');
-    if(!typeSelect) return;
-    const previous=catalogueFilterState.type;
-    typeSelect.replaceChildren();
-    const all=document.createElement('option'); all.value='all'; all.textContent='All'; typeSelect.appendChild(all);
-    [...new Set(CUSTOM_QUESTIONS.map(question=>String(question.type||'')).filter(Boolean))]
-      .sort((left,right)=>left.localeCompare(right))
-      .forEach(type=>{
-        const option=document.createElement('option'); option.value=type;
-        option.textContent=type.replace(/[-_]+/g,' ').replace(/\b\w/g,letter=>letter.toUpperCase());
-        typeSelect.appendChild(option);
-      });
-    catalogueFilterState.type=[...typeSelect.options].some(option=>option.value===previous)?previous:'all';
-    typeSelect.value=catalogueFilterState.type;
+    fillFilterSelect(document.getElementById('catalogType'),catalogueView.patternOptions(CUSTOM_QUESTIONS),'type');
+    fillFilterSelect(document.getElementById('catalogLanguage'),catalogueView.languageOptions(CUSTOM_QUESTIONS),'language');
   }
 
   function updateCatalogueFilterFeedback(count){
     const total=CUSTOM_QUESTIONS.length;
+    const active=catalogueFiltersActive();
+    setCatalogueBrowseState('loaded');
     const status=document.getElementById('catalogFilterStatus');
-    if(status) status.textContent=`${count} of ${total} exercise${total===1?'':'s'}`;
+    if(status) status.textContent=catalogueView.statusText({state:'loaded',count,total,active});
+    const clear=document.getElementById('catalogClearFilters'); if(clear) clear.hidden=!active;
     const empty=document.getElementById('catalogFilterEmpty');
     if(empty){
+      const view=catalogueView.emptyStateView({total,current:currentExerciseTitle()});
       empty.hidden=count!==0;
-      empty.textContent=total
-        ? 'No public exercises match these filters. Clear or adjust them to continue.'
-        : 'No public exercises are currently available.';
+      const title=document.getElementById('catalogEmptyTitle'); if(title) title.textContent=view.title;
+      const message=document.getElementById('catalogEmptyMessage'); if(message) message.textContent=view.message;
+      const action=document.getElementById('catalogEmptyClear'); if(action) action.hidden=view.action!=='clear';
     }
+    renderCatalogueList();
   }
 
   function applyCatalogueFilters(){
@@ -11496,22 +11657,23 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   function showCatalogueFailure(){
-    const el=document.getElementById('qCustomCount'); if(el) el.textContent='• catalogue unavailable';
-    const retry=document.getElementById('catalogRetryBtn'); if(retry) retry.hidden=false;
+    const el=document.getElementById('qCustomCount'); if(el) el.textContent='• not loaded';
+    setCatalogueBrowseState(catalogueFailureReason);
     const sel=document.getElementById('questionSelect');
     const previous=selectedIdentity();
     if(sel){
       sel.innerHTML='';
       if(previous.slug){ const option=appendUnavailableOption(sel,previous.slug,{unpinned:previous.version==null,version:previous.version}); sel.value=option.value; }
-      else { const option=document.createElement('option'); option.value=''; option.textContent='Catalogue unavailable'; sel.appendChild(option); }
+      else { const option=document.createElement('option'); option.value=''; option.textContent=catalogueFailureReason==='signin'?'Sign in to choose an exercise':'Exercises not loaded'; sel.appendChild(option); }
       sel.disabled=!previous.slug;
     }
-    const filterStatus=document.getElementById('catalogFilterStatus'); if(filterStatus) filterStatus.textContent='Catalogue unavailable';
-    const filterEmpty=document.getElementById('catalogFilterEmpty'); if(filterEmpty) filterEmpty.hidden=true;
     if(previous.slug) renderUnavailableQuestion(previous.slug,previous.version==null?'not pinned to a catalogue version':'temporarily unavailable',previous.version);
     else{
-      const title=document.getElementById('qTitle'); if(title) title.textContent='Catalogue unavailable';
-      const desc=document.getElementById('qDesc'); if(desc) desc.innerHTML='<div class="small muted">Try again shortly or use Retry catalogue. Exercises and evaluation are served from the approved catalogue.</div>';
+      const failure=catalogueView.failureView(catalogueFailureReason);
+      const title=document.getElementById('qTitle'); if(title) title.textContent=failure.title;
+      const diff=document.getElementById('qDiff'); if(diff){ diff.replaceChildren(); diff.hidden=true; }
+      const desc=document.getElementById('qDesc');
+      if(desc){ const message=document.createElement('p'); message.textContent=failure.message; desc.replaceChildren(message); }
     }
   }
 
@@ -11519,7 +11681,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   async function fetchCustomQuestions(){
     if(catalogueFetchState==='loading'||catalogueFetchState==='loaded') return CUSTOM_QUESTIONS;
     catalogueFetchState='loading';
-    const retry=document.getElementById('catalogRetryBtn'); if(retry) retry.hidden=true;
+    setCatalogueBrowseState('loading');
     const controller=new AbortController();
     const timeout=setTimeout(()=>controller.abort(),8000);
     try{ const badge=document.getElementById('qCustomCount'); if(badge){ const already=badge.textContent||''; if(already.includes('loading')||already.includes('…')) badge.innerHTML='<span class="spinner spinner-sm"></span> loading…'; } }catch{}
@@ -11535,9 +11697,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         document.getElementById('qCustomCount').textContent='• '+j.questions.length+' available';
         return j.questions;
       }
+      catalogueFailureReason=r.status===401?'signin':'error';
       if(r.status!==408&&r.status!==429&&r.status<500) throw Object.assign(new Error(j.error||'catalogue unavailable'),{retryable:false});
     }catch(e){
       console.warn('custom fetch fail',e);
+      if(e?.retryable!==false) catalogueFailureReason=navigator.onLine===false?'offline':'error';
       if(e?.retryable===false) catalogueFailureCount=MAX_CATALOGUE_AUTO_RETRIES;
     }finally{
       clearTimeout(timeout);
@@ -11610,63 +11774,22 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     // The selected public exercise is an independent preference; remembering
     // it must not imply that the authenticated code workspace was visited.
     try{ localStorage.setItem('randori-last-question',slug); }catch{}
-    const titleEl=document.getElementById('qTitle'); if(titleEl) titleEl.textContent=q.title;
-    const diffEl=document.getElementById('qDiff'); if(diffEl) {
-      const diffColor=q.difficulty==='Easy'?'var(--ok)':q.difficulty==='Hard'?'var(--bad)':'var(--warn)';
-      diffEl.textContent='';
-      const difficulty=document.createElement('span'); difficulty.style.color=diffColor; difficulty.textContent=String(q.difficulty||'');
-      diffEl.appendChild(difficulty);
-      diffEl.appendChild(document.createTextNode(' • original'+(q.version!=null?' v'+q.version:'')+(q.type?' • '+q.type:'')));
-      diffEl.style.display='inline-flex';
-    }
-    const isSystem = (q.type==='system') || (q.difficulty==='System') || (q.category==='system-design') || (q.slug||'').includes('system') || (q.slug||'').includes('design');
-    const descEl=document.getElementById('qDesc'); 
-    if(descEl){
-      // Question content is untrusted. Render it as escaped text while preserving line breaks.
-      const safeDesc=escapeHtml(String(q.prompt||q.description||'').slice(0,6000)).replace(/\r?\n/g,'<br/>');
-      let html=`<div style="color:var(--ink-2); line-height:1.7; font-size:13.5px">${safeDesc}</div>`;
-      if(q.input_format) html+=`<div class="small muted" style="margin-top:10px"><b>Input:</b> ${escapeHtml(q.input_format)}</div>`;
-      const constraintText=Array.isArray(q.constraints)?q.constraints.join('\n'):(q.constraints||q.constraints_text||'');
-      if(constraintText) html+=`<div class="small muted" style="margin-top:6px; white-space:pre-wrap"><b>Constraints:</b> ${escapeHtml(constraintText)}</div>`;
-      if(q.tags||q.topicTags){
-        const tags = q.tags|| (q.topicTags||[]).map((t)=>t.name||t.slug);
-        if(tags && tags.length) html+=`<div class="row" style="margin-top:8px; flex-wrap:wrap; gap:6px">${tags.slice(0,6).map((tg)=>`<span class="kbd" style="font-size:11px">${escapeHtml(tg)}</span>`).join('')}</div>`;
-      }
-      // System design special UI
-      if(isSystem){
-        html+=`<div style="margin-top:14px; padding:12px; border:1px dashed var(--accent); border-radius:10px; background:color-mix(in srgb, var(--accent) 10%, var(--card))"><b style="font-size:12.5px">System Design Drill</b><div class="small muted" style="margin-top:6px">Discuss requirements → estimate → high-level → deep-dive → trade-offs. Use <span class="kbd">Board</span> tab for architecture sketch, then walk through verbally. No code tests needed.</div><div class="row" style="margin-top:8px"><button class="pill" onclick="document.querySelector('[data-tab=board]').click()">Open Board</button><button class="pill" onclick="document.getElementById('aiTranscript').focus()">Add notes</button></div></div>`;
-      }
-      descEl.innerHTML=html;
-    }
-    const exEl=document.getElementById('qExamples'); if(exEl){
-      if(isSystem){
-        exEl.innerHTML=`<div class="small muted">System design — examples are in description. Sketch on board, discuss scalability.</div>`;
-      } else {
-        const exs=q.examples||[];
-        if(exs && exs.length){
-          exEl.innerHTML=exs.slice(0,3).map((e,i)=>{
-            if(typeof e==='string') return `<div class="test"><div class="small"><b>Example ${i+1}:</b> ${escapeHtml(e.slice(0,300))}</div></div>`;
-            if(e && e.input!==undefined) return `<div class="test"><div class="small"><b>Example ${i+1}:</b> Input: <span class="kbd">${escapeHtml(JSON.stringify(e.input).slice(0,140))}</span> → <span class="kbd">${escapeHtml(JSON.stringify(e.output??e.expect??'').slice(0,120))}</span></div>${e.explanation? `<div class="small muted">${escapeHtml(e.explanation.slice(0,200))}</div>`:''}</div>`;
-            return `<div class="test"><div class="small"><b>Example ${i+1}:</b> ${escapeHtml(JSON.stringify(e).slice(0,200))}</div></div>`;
-          }).join('');
-        } else {
-          exEl.innerHTML='<div class="small muted">No public examples for this exercise.</div>';
-        }
-      }
-    }
-    const consEl=document.getElementById('qConstraints'); if(consEl) consEl.textContent=isSystem?'Discuss latency, throughput, consistency': (Array.isArray(q.constraints)?q.constraints.join('\n'):(q.constraints||q.constraints_text||''));
-    const testsEl=document.getElementById('qTests'); if(testsEl){
-      if(isSystem){
-        testsEl.innerHTML=`<div class="small muted" style="padding:8px; border:1px dashed var(--border); border-radius:8px">System design — no auto tests. Use Run to save notes + whiteboard snapshot.</div>`;
-      } else {
-        testsEl.innerHTML='<div class="small muted" style="padding:8px; border:1px dashed var(--border); border-radius:8px">Fresh server-generated cases run when you submit. Only authoritative pass/fail results are shown.</div>';
-      }
-    }
+    const lang=document.getElementById('langSelect')?.value||'javascript';
+    catalogueView.renderStatement(document,{
+      title:document.getElementById('qTitle'),
+      badges:document.getElementById('qDiff'),
+      description:document.getElementById('qDesc'),
+      examples:document.getElementById('qExamples'),
+      constraints:document.getElementById('qConstraints'),
+    },q,{language:lang});
+    const testsEl=document.getElementById('qTests');
+    if(testsEl) testsEl.textContent='Write your solution in the editor, then press Run. Run checks your code on the server against fresh test cases and shows pass or fail for each one.';
+    const attributionEl=document.getElementById('qAttribution'); if(attributionEl) attributionEl.textContent=catalogueView.attributionText(q);
+    renderCatalogueList();
     // Load the public starter without relying on server-owned evaluation data.
     try{
-      const lang=document.getElementById('langSelect')?.value||'javascript';
       let starter=starterFor(q,lang);
-      if(!starter && !isSystem){
+      if(!starter){
         // generate minimal starter from slug
         const proposedFnName = String(q.slug||'solve').replace(/-./g,(x)=> x[1].toUpperCase());
         const fnName = /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(proposedFnName) ? proposedFnName : 'solve';
@@ -11674,7 +11797,6 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         const safeTitle=String(q.title||'').replace(/[\r\n\u2028\u2029]/g,' ');
         starter = lang==='javascript' ? `function ${fnName}(){\n  // ${safeTitle}\n}` : lang==='python' ? `def ${pyName}():\n    # ${safeTitle}\n    pass` : `// ${safeTitle}\n// starter for ${lang}`;
       }
-      if(isSystem) starter = `// System Design: ${q.title}\n// Notes:\n// 1. Requirements (functional / non-functional)\n// 2. Estimation\n// 3. High-level design\n// 4. Deep dives\n// 5. Trade-offs, monitoring\n`;
       const curCode=currentEditorCode();
       const shouldLoad=starterMode==='force'||(starterMode==='if-empty'&&!curCode.trim());
       if(shouldLoad){
@@ -11717,6 +11839,54 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   catalogType?.addEventListener('change',()=>{
     catalogueFilterState.type=String(catalogType.value||'all');
     applyCatalogueFilters();
+  });
+  const catalogLanguage=document.getElementById('catalogLanguage');
+  catalogLanguage?.addEventListener('change',()=>{
+    catalogueFilterState.language=String(catalogLanguage.value||'all');
+    applyCatalogueFilters();
+  });
+  // Filtering is browsing: show the cards (and any empty state) as soon as
+  // the user narrows the list. Clearing leaves the disclosure as it is.
+  function revealCatalogueList(){
+    const browse=document.getElementById('catalogBrowseList');
+    if(browse&&catalogueFiltersActive()) browse.open=true;
+  }
+  ['input','change'].forEach(type=>document.querySelector('[data-testid="catalog-filters"]')?.addEventListener(type,revealCatalogueList));
+  function clearCatalogueFilters(){
+    Object.assign(catalogueFilterState,{search:'',difficulty:'all',type:'all',language:'all'});
+    if(catalogSearch) catalogSearch.value='';
+    if(catalogDifficulty) catalogDifficulty.value='all';
+    if(catalogType) catalogType.value='all';
+    if(catalogLanguage) catalogLanguage.value='all';
+    applyCatalogueFilters();
+    catalogSearch?.focus();
+  }
+  document.getElementById('catalogClearFilters')?.addEventListener('click',clearCatalogueFilters);
+  document.getElementById('catalogEmptyClear')?.addEventListener('click',clearCatalogueFilters);
+  // Choosing a card goes through the exercise select, so drafts, the shared
+  // workspace and the pinned version follow the same path as the dropdown.
+  document.getElementById('catalogList')?.addEventListener('click',event=>{
+    const card=event.target?.closest?.('.catalog-card[data-slug]');
+    if(!card||!qSel||qSel.disabled) return;
+    const slug=card.getAttribute('data-slug')||'';
+    const version=positiveVersion(card.getAttribute('data-version'));
+    const option=[...qSel.options].find(item=>
+      item.value===slug
+      && item.dataset.workspacePlaceholder!=='1'
+      && (version==null||positiveVersion(item.dataset.questionVersion)===version)
+    );
+    if(!option) return;
+    if(slug===activeQuestionSlug&&(version==null||version===activeQuestionVersion)&&qSel.value===option.value) return;
+    qSel.value=option.value;
+    qSel.dispatchEvent(new Event('change',{bubbles:true}));
+  });
+  document.getElementById('qStartCoding')?.addEventListener('click',()=>{
+    window._randori_room?.show?.('code');
+    const target=document.querySelector('#monacoHost textarea')||document.getElementById('editor');
+    if(target&&target.offsetParent!==null) target.focus();
+  });
+  document.getElementById('catalogSignInBtn')?.addEventListener('click',()=>{
+    document.getElementById('authBtn')?.click();
   });
 
   function handleLanguageChange(language){
@@ -11872,7 +12042,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       detail.textContent=String(run.language||'unknown').slice(0,24)+' · '+duration+' · '+formatPairRunTime(run.created_at);
       const verification=document.createElement('span'); verification.className='kbd'; verification.style.fontSize='10px';
       verification.textContent=run.authoritative===true?'verified':'unverified';
-      verification.title=run.authoritative===true?'Server attestation verified for this runner.':'Legacy or invalid attestation; do not treat as authoritative.';
+      verification.title=run.authoritative===true?'Checked on the server.':'This older result was not checked on the server.';
       meta.append(detail,verification);
       item.append(top,meta); pairRunsList.appendChild(item);
     });
@@ -11962,8 +12132,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
   async function upgradedRun(){
     try{
-    const selVal=document.getElementById('questionSelect')?.value||'';
-    const customQ=CUSTOM_QUESTIONS.find(q=>q.slug===selVal)||null;
+    // The selected identity survives a filter that hides it, so Run keeps
+    // working on the current exercise while the list shows an empty state.
+    const selected=selectedIdentity();
+    const customQ=selected.version==null?null:CUSTOM_QUESTIONS.find(q=>q.slug===selected.slug&&q.version===selected.version)||null;
     const lang=document.getElementById('langSelect')?.value||'javascript';
     const code=getEditorCode();
     let passedCount=0, totalCount=0;
@@ -11971,7 +12143,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(customQ){
       // --- Server path for all languages including JS/TS for parity ---
       const cards=[];
-      if(runOutEl) runOutEl.innerHTML='<div class="small muted"><span class="spinner-sm"></span> Running '+escapeHtml(lang)+' against server-owned tests…</div>';
+      if(runOutEl) runOutEl.innerHTML='<div class="small muted"><span class="spinner-sm"></span> Checking your '+escapeHtml(catalogueView.languageLabel(lang))+' code on the server…</div>';
       try{ if(window._randori_ui && window._randori_ui.showLoader) window._randori_ui.showLoader('Running '+lang+'…'); }catch{}
       (async()=>{
         try{
@@ -12000,8 +12172,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           const passed = j.passed_count ?? results.filter(r=>r.pass===true).length;
           passedCount = passed;
           totalCount = j.total_count ?? results.length;
-          const summaryStatus = passedCount===totalCount ? 'pass' : (passedCount>0?'partial':'fail');
-          cards.unshift('<div class="test run-summary" data-status="'+summaryStatus+'"><div class="small"><b>Result: '+escapeHtml(passedCount)+'/'+escapeHtml(totalCount)+' passed</b> '+(passedCount===totalCount?'✓':'✗')+' • '+escapeHtml(lang)+' • authoritative server result</div></div>');
+          const summary = catalogueView.runSummaryView({passed:passedCount,total:totalCount,language:lang});
+          cards.unshift('<div class="test run-summary" data-status="'+summary.status+'"><div class="small"><b>'+escapeHtml(summary.headline)+'</b> '+summary.mark+' · '+escapeHtml(summary.detail)+'</div></div>');
           results.forEach((r,i)=>{
             const idx = (r.idx!=null? r.idx+1 : i+1);
             const pass = !!r.pass;
@@ -12015,11 +12187,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           if(results.length===0){
             cards.push('<div class="test"><div class="small muted">The server returned no per-case details.</div></div>');
           }else{
-            cards.push('<p class="small muted run-footnote">Each case runs against a fresh server-generated input.</p>');
+            cards.push('<p class="small muted run-footnote">Each case uses a fresh input generated on the server.</p>');
           }
           if(runOutEl){ runOutEl.innerHTML=cards.join(''); }
           try{ window._randori_runs && window._randori_runs.refresh && window._randori_runs.refresh(); }catch{}
-          if(window.toast) window.toast('Run '+lang+' '+passedCount+'/'+totalCount+' '+(passedCount===totalCount?'✓':'')+' verified by server');
+          if(window.toast) window.toast(summary.headline+' · checked on the server');
         }catch(e){
           try{ if(window._randori_ui && window._randori_ui.hideLoader) window._randori_ui.hideLoader(); }catch{}
           if(e && e.code==='execution_unavailable'){
@@ -12037,7 +12209,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       })();
       return;
     }
-    if(runOutEl) runOutEl.innerHTML='<div class="small muted">Select an approved catalog question to run code through the authenticated execution gateway.</div>';
+    if(runOutEl) runOutEl.innerHTML='<div class="small muted">Choose an exercise in the Problem panel, then press Run to check your code on the server.</div>';
     }catch(e){
       try{
         const msg=String(e&&e.message||e).slice(0,500);
@@ -12071,7 +12243,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   function renderRunsList(runs){
     const el=document.getElementById('recentRunsList');
     if(!el) return;
-    if(!runs.length){ el.innerHTML='<div class="small muted">No runs yet — hit ▶ Run for server-verified results.</div>'; return; }
+    if(!runs.length){ el.innerHTML='<div class="small muted">No runs yet. Press Run to check your code on the server.</div>'; return; }
     el.innerHTML=runs.map(r=>{
       const ok = r.total_count? (r.passed_count+'/'+r.total_count) : (r.passed_count+' pass');
       const dt=new Date(r.created_at||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
@@ -12821,7 +12993,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       document.getElementById('copyStarterBtn')?.addEventListener('click', ()=>{
         try{
           const lang=document.getElementById('langSelect')?.value||'javascript';
-          const qId=document.getElementById('questionSelect')?.value||null;
+          const qId=window._randori_questions?.selectedIdentity?.()?.slug||document.getElementById('questionSelect')?.value||null;
           let starter='';
           // try built-in QUESTIONS first
           try{ const qs = QUESTIONS.find(x=>x.id===qId); if(qs){ starter = qs.starters?.[lang]||qs.starters?.javascript||''; } }catch{}
@@ -12838,7 +13010,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         try{
           if(!await window.showConfirm?.('Reset editor?', 'Load fresh starter — current edits moved to other language store.')) return;
           const lang=document.getElementById('langSelect')?.value||'javascript';
-          const qId=document.getElementById('questionSelect')?.value||null;
+          const qId=window._randori_questions?.selectedIdentity?.()?.slug||document.getElementById('questionSelect')?.value||null;
           let starter='';
           try{ const qs=QUESTIONS.find(x=>x.id===qId); if(qs) starter=qs.starters?.[lang]||qs.starters?.javascript||''; }catch{}
           if(!starter && window._randori_code?.getCustomQuestion){ const cq=window._randori_code.getCustomQuestion?.(qId); if(cq){ starter=cq.languages?.[lang]?.starter||(cq.starter_per_lang||{})[lang]||''; } }

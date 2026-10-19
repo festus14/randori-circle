@@ -1,5 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
-import { mockApi, originalQuestionFixture, resetClientState, setCode } from './helpers';
+import { mockApi, openRoomPanel, originalQuestionFixture, resetClientState, setCode } from './helpers';
 
 const workspaceRoom = 'week_24_pair_24';
 
@@ -590,4 +590,136 @@ test('keeps an off-filter hydrated workspace question versioned when editing and
       _randori_questions?: { selectedIdentity?: () => { slug: string; version: number | null } };
     })._randori_questions?.selectedIdentity?.()
   ))).toEqual({ slug: 'message-frequency-leaders', version: 1 });
+});
+
+test('golden path: browse cards, filter to an empty state, clear, open an exercise and run it solo', async ({ page }) => {
+  const executePayloads: Array<Record<string, unknown>> = [];
+  await page.route(/^https:\/\//, route => route.abort());
+  await mockApi(page, {
+    '/api/auth/me': { ok: true, user: signedInUser },
+    '/api/questions': { ok: true, questions: catalogue, count: catalogue.length },
+    '/api/execute': async request => {
+      const body = request.postDataJSON() as Record<string, unknown>;
+      executePayloads.push(body);
+      return {
+        ok: true,
+        question_slug: body.question_slug,
+        question_version: body.question_version,
+        language: body.language,
+        passed_count: 2,
+        total_count: 2,
+        results: [{ idx: 0, pass: true }, { idx: 1, pass: true }],
+      };
+    },
+  });
+  await resetClientState(page, true);
+  await page.goto('/?view=code', { waitUntil: 'domcontentloaded' });
+  await expect(page.locator('#view-code')).toBeVisible();
+  await openRoomPanel(page, 'problem');
+
+  // Browse: one readable card per exercise, the current one marked.
+  const list = page.getByTestId('catalog-list');
+  const cards = list.locator('.catalog-card');
+  await expect(cards).toHaveCount(catalogue.length);
+  await expect(page.getByTestId('catalog-status')).toHaveText(`${catalogue.length} exercises`);
+  const capacityCard = list.locator('.catalog-card[data-slug="capacity-upgrade-index"]');
+  await expect(capacityCard).toContainText('Capacity Upgrade Index');
+  await expect(capacityCard).toContainText('Easy');
+  await expect(capacityCard).toContainText('Binary Search');
+  await expect(capacityCard).toContainText('Solve the original Capacity Upgrade Index exercise.');
+  await expect(list.locator('.catalog-card[aria-current="true"]')).toHaveCount(1);
+
+  // Filters: difficulty + language narrow the cards and offer Clear filters.
+  await page.getByTestId('catalog-difficulty').selectOption('Hard');
+  await page.getByTestId('catalog-language').selectOption('python');
+  await expect(cards).toHaveCount(3);
+  await expect(page.getByTestId('catalog-browse')).toHaveAttribute('open', '');
+  await expect(list).toBeVisible();
+  await expect(page.getByTestId('catalog-status')).toHaveText(`3 of ${catalogue.length} exercises`);
+  await expect(page.getByTestId('catalog-clear')).toBeVisible();
+
+  // Open an exercise from its card; the statement and starter follow.
+  await list.locator('.catalog-card[data-slug="resilient-network-budget"]').click();
+  await expect(page.locator('#questionSelect')).toHaveValue('resilient-network-budget');
+  await expect(page.locator('#qTitle')).toHaveText('Resilient Network Budget');
+  await expect(page.locator('#qDiff')).toContainText('Hard');
+  await expect(page.locator('#qExamples')).toContainText('Example 1');
+  await expect(page.locator('#qConstraints li')).toHaveText(['Return a deterministic result without modifying the input.']);
+  await expect(list.locator('.catalog-card[aria-current="true"]')).toHaveAttribute('data-slug', 'resilient-network-budget');
+  const solution = 'function resilientNetworkBudget(items) { return items; }';
+  await setCode(page, solution);
+
+  // A search with no results keeps the selected exercise (never "unavailable").
+  await page.getByTestId('catalog-search').fill('zzzz-no-such-exercise');
+  const empty = page.getByTestId('catalog-empty');
+  await expect(empty).toBeVisible();
+  await expect(empty).toContainText('No exercises match these filters');
+  await expect(empty).toContainText('You are still working on Resilient Network Budget');
+  await expect(list).toBeHidden();
+  await expect(page.locator('#qTitle')).toHaveText('Resilient Network Budget');
+  await expect(page.locator('#view-code')).not.toContainText('Exercise unavailable');
+  await expect(page.locator('#view-code')).not.toContainText('Unavailable workspace exercise');
+
+  // Run still checks the selected exercise while the filter hides it.
+  await page.locator('#runBtn').click();
+  await expect(page.locator('#runOut')).toContainText('Result: 2/2 passed');
+  await expect(page.locator('#runOut')).toContainText('JavaScript · Checked on the server');
+  expect(executePayloads.at(-1)).toMatchObject({ question_slug: 'resilient-network-budget', question_version: 1, code: solution });
+
+  // Clear restores every card, the filters and the same selection.
+  await openRoomPanel(page, 'problem');
+  await page.locator('#catalogEmptyClear').click();
+  await expect(empty).toBeHidden();
+  await expect(cards).toHaveCount(catalogue.length);
+  await expect(page.getByTestId('catalog-search')).toHaveValue('');
+  await expect(page.getByTestId('catalog-search')).toBeFocused();
+  await expect(page.getByTestId('catalog-difficulty')).toHaveValue('all');
+  await expect(page.getByTestId('catalog-language')).toHaveValue('all');
+  await expect(page.getByTestId('catalog-clear')).toBeHidden();
+  await expect(page.locator('#questionSelect')).toHaveValue('resilient-network-budget');
+  await expect(page.locator('#qTitle')).toHaveText('Resilient Network Budget');
+});
+
+test('phone layout: the Problem panel browses cards and opens the editor to run', async ({ page }) => {
+  await page.setViewportSize({ width: 393, height: 852 });
+  await page.route(/^https:\/\//, route => route.abort());
+  await mockApi(page, {
+    '/api/auth/me': { ok: true, user: signedInUser },
+    '/api/questions': { ok: true, questions: catalogue, count: catalogue.length },
+  });
+  await resetClientState(page, true);
+  await page.goto('/?view=code', { waitUntil: 'domcontentloaded' });
+  await openRoomPanel(page, 'problem');
+  await expect(page.getByTestId('catalog-list').locator('.catalog-card')).toHaveCount(catalogue.length);
+  // The statement stays in view; the cards sit behind one disclosure.
+  await expect(page.getByTestId('catalog-list')).toBeHidden();
+  await page.getByTestId('catalog-browse').locator('summary').click();
+  await expect(page.getByTestId('catalog-list')).toBeVisible();
+  await page.getByTestId('catalog-list').locator('.catalog-card[data-slug="threshold-pair-count"]').click();
+  await expect(page.locator('#qTitle')).toHaveText('Threshold Pair Count');
+  const openEditor = page.locator('#qStartCoding');
+  await openEditor.scrollIntoViewIfNeeded();
+  await expect(openEditor).toBeVisible();
+  await openEditor.click();
+  await expect(page.locator('#roomPanel-code')).toBeVisible();
+  await expect(page.locator('#roomPanel-problem')).toBeHidden();
+  await expect(page.locator('#runBtn')).toBeVisible();
+});
+
+test('anonymous code view asks visitors to sign in instead of reporting a broken catalogue', async ({ page }) => {
+  await page.route(/^https:\/\//, route => route.abort());
+  await mockApi(page, {
+    '/api/auth/me': { _status: 401, ok: false, error: 'unauthenticated' },
+    '/api/questions': { _status: 401, ok: false, error: 'unauthenticated' },
+  });
+  await resetClientState(page, false);
+  await page.goto('/?view=code', { waitUntil: 'domcontentloaded' });
+  await expect(page.locator('#view-code')).toBeVisible();
+  await openRoomPanel(page, 'problem');
+  const error = page.getByTestId('catalog-error');
+  await expect(error).toBeVisible();
+  await expect(error).toContainText('Sign in to practise');
+  await expect(page.locator('#catalogSignInBtn')).toBeVisible();
+  await expect(page.locator('#catalogRetryBtn')).toBeHidden();
+  await expect(page.getByTestId('catalog-status')).toHaveText('Sign in to browse exercises');
 });
