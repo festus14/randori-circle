@@ -790,7 +790,8 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .catalog-search,.catalog-filter-actions{grid-column:1 / -1}
 .catalog-filter-actions{display:flex; justify-content:flex-end}
 .catalog-filter-actions:has(> [hidden]:only-child){display:none}
-@media(max-width:520px){ .catalog-filters{grid-template-columns:1fr 1fr} .catalog-filters label:last-of-type{grid-column:1 / -1} }
+@media(max-width:520px){ .catalog-filters{grid-template-columns:repeat(2,minmax(0,1fr))} .catalog-filters label:last-of-type{grid-column:1 / -1} }
+.catalog-filters .select,.catalog-filters .input,.q-pick .select{min-width:0; max-width:100%; text-overflow:ellipsis}
 .catalog-disclosure{display:grid; gap:var(--space-2)}
 .catalog-summary{
   display:flex; align-items:center; justify-content:space-between; gap:var(--space-2); min-height:var(--tap-min);
@@ -11410,6 +11411,14 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return {slug,version:optionVersion??(option?.dataset?.workspacePlaceholder==='1'?null:positiveVersion(catalogQuestion?.version))};
   }
 
+  // The catalogue record for the exact selected slug and pinned version, or
+  // null when the selection is unpinned, retired or not loaded.
+  function selectedCatalogueQuestion(){
+    const selected=selectedIdentity();
+    if(!selected.slug||selected.version==null) return null;
+    return CUSTOM_QUESTIONS.find(question=>question.slug===selected.slug&&question.version===selected.version)||null;
+  }
+
   function storedRoomDraft(question,language){
     const room=activeRoom();
     if(!room||!signedIn()) return undefined;
@@ -12135,7 +12144,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     // The selected identity survives a filter that hides it, so Run keeps
     // working on the current exercise while the list shows an empty state.
     const selected=selectedIdentity();
-    const customQ=selected.version==null?null:CUSTOM_QUESTIONS.find(q=>q.slug===selected.slug&&q.version===selected.version)||null;
+    const customQ=selectedCatalogueQuestion();
     const lang=document.getElementById('langSelect')?.value||'javascript';
     const code=getEditorCode();
     let passedCount=0, totalCount=0;
@@ -12209,7 +12218,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       })();
       return;
     }
-    if(runOutEl) runOutEl.innerHTML='<div class="small muted">Choose an exercise in the Problem panel, then press Run to check your code on the server.</div>';
+    if(runOutEl){
+      // Say why the selected exercise cannot run instead of a generic prompt.
+      const reason=!selected.slug?'':selected.version==null?'is not pinned to a catalogue version':catalogueFetchState==='loaded'?'is retired or no longer in the catalogue':'has not loaded yet';
+      runOutEl.innerHTML=reason
+        ?'<div class="test run-summary" data-status="partial" data-run-unavailable><div class="small"><b>This exercise cannot be run.</b> It '+escapeHtml(reason)+'. Your code is kept.<div class="small muted">Choose an exercise in the Problem panel, then press Run.</div></div></div>'
+        :'<div class="small muted">Choose an exercise in the Problem panel, then press Run to check your code on the server.</div>';
+    }
     }catch(e){
       try{
         const msg=String(e&&e.message||e).slice(0,500);
@@ -12327,6 +12342,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     loadRoomState,
     selectWorkspaceQuestion,
     selectedIdentity,
+    selectedQuestion:selectedCatalogueQuestion,
   };
   window._randori_catalog_filters={
     get state(){
@@ -12993,28 +13009,25 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       document.getElementById('copyStarterBtn')?.addEventListener('click', ()=>{
         try{
           const lang=document.getElementById('langSelect')?.value||'javascript';
-          const qId=window._randori_questions?.selectedIdentity?.()?.slug||document.getElementById('questionSelect')?.value||null;
-          let starter='';
-          // try built-in QUESTIONS first
-          try{ const qs = QUESTIONS.find(x=>x.id===qId); if(qs){ starter = qs.starters?.[lang]||qs.starters?.javascript||''; } }catch{}
-          // fallback custom questions cache
-          if(!starter && window._randori_code?.getCustomQuestion){
-            const cq = window._randori_code.getCustomQuestion?.(qId);
-            if(cq){ const mp=cq.starter_per_lang||{}; starter=cq.languages?.[lang]?.starter||mp[lang]||cq.languages?.javascript?.starter||mp.javascript||''; }
-          }
-          if(!starter) starter = (monacoEditor? monacoEditor.getValue() : (document.getElementById('editor')?.value||'')).slice(0,1200);
+          // Only the exact selected slug and pinned version has a starter. An
+          // unavailable or retired selection must not borrow a newer version's.
+          const cq=window._randori_questions?.selectedQuestion?.()||null;
+          if(!cq){ if(window.toast) window.toast('This exercise is unavailable, so there is no starter to copy.'); return; }
+          const mp=cq.starter_per_lang||{};
+          const starter=cq.languages?.[lang]?.starter||mp[lang]||cq.languages?.javascript?.starter||mp.javascript||'';
           if(starter){ navigator.clipboard.writeText(starter).then(()=>{ if(window.toast) window.toast('Starter copied ✓'); }).catch(()=>{ prompt('Copy starter', starter); }); }
         }catch(e){ console.warn('copy starter fail',e); }
       });
       document.getElementById('editorResetBtn')?.addEventListener('click', async ()=>{
         try{
+          // Resolve the exact slug and pinned version first; an unavailable
+          // selection keeps the user's code untouched.
+          const cq=window._randori_questions?.selectedQuestion?.()||null;
+          if(!cq){ if(window.toast) window.toast('This exercise is unavailable, so your code was not reset.'); return; }
           if(!await window.showConfirm?.('Reset editor?', 'Load fresh starter — current edits moved to other language store.')) return;
           const lang=document.getElementById('langSelect')?.value||'javascript';
-          const qId=window._randori_questions?.selectedIdentity?.()?.slug||document.getElementById('questionSelect')?.value||null;
-          let starter='';
-          try{ const qs=QUESTIONS.find(x=>x.id===qId); if(qs) starter=qs.starters?.[lang]||qs.starters?.javascript||''; }catch{}
-          if(!starter && window._randori_code?.getCustomQuestion){ const cq=window._randori_code.getCustomQuestion?.(qId); if(cq){ starter=cq.languages?.[lang]?.starter||(cq.starter_per_lang||{})[lang]||''; } }
-          if(!starter) starter='// '+ (qId||'reset');
+          const starter=cq.languages?.[lang]?.starter||(cq.starter_per_lang||{})[lang]||cq.languages?.javascript?.starter||'';
+          if(!starter){ if(window.toast) window.toast('This exercise has no starter for this language.'); return; }
           if(monacoEditor){ monacoEditor.setValue(starter); try{ if(typeof syncTextareaToMirror==='function') syncTextareaToMirror(); }catch{}; try{ if(typeof persistLikeOld==='function') persistLikeOld(); }catch{}; if(window.toast) window.toast('Reset ✓'); }
           else { const ta=document.getElementById('editor'); if(ta){ ta.value=starter; ta.dispatchEvent(new Event('input',{bubbles:true})); } }
         }catch(e){ console.warn('reset fail',e); }

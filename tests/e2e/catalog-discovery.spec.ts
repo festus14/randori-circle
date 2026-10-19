@@ -695,6 +695,10 @@ test('phone layout: the Problem panel browses cards and opens the editor to run'
   await expect(page.getByTestId('catalog-list')).toBeHidden();
   await page.getByTestId('catalog-browse').locator('summary').click();
   await expect(page.getByTestId('catalog-list')).toBeVisible();
+  // Long pattern names must not push the room wider than the phone.
+  await page.getByTestId('catalog-type').selectOption('trie-dynamic-programming');
+  await page.getByTestId('catalog-type').selectOption('all');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0);
   await page.getByTestId('catalog-list').locator('.catalog-card[data-slug="threshold-pair-count"]').click();
   await expect(page.locator('#qTitle')).toHaveText('Threshold Pair Count');
   const openEditor = page.locator('#qStartCoding');
@@ -722,4 +726,41 @@ test('anonymous code view asks visitors to sign in instead of reporting a broken
   await expect(page.locator('#catalogSignInBtn')).toBeVisible();
   await expect(page.locator('#catalogRetryBtn')).toBeHidden();
   await expect(page.getByTestId('catalog-status')).toHaveText('Sign in to browse exercises');
+});
+
+test('an unavailable selection explains why it cannot run and keeps the code on reset', async ({ page }) => {
+  let executeCalls = 0;
+  await page.route(/^https:\/\//, route => route.abort());
+  await mockApi(page, {
+    '/api/auth/me': { ok: true, user: signedInUser },
+    '/api/questions': { ok: true, questions: catalogue, count: catalogue.length },
+    '/api/execute': () => { executeCalls += 1; return { ok: true, passed_count: 0, total_count: 0, results: [] }; },
+  });
+  await resetClientState(page, true);
+  await page.goto('/?view=code', { waitUntil: 'domcontentloaded' });
+  await expect(page.locator('#questionSelect option')).toHaveCount(catalogue.length);
+  const kept = 'function keepMe() { return "kept"; }';
+  await setCode(page, kept);
+
+  // A newer active version exists for this slug; the room pins a retired one.
+  await page.evaluate(() => (window as typeof window & {
+    _randori_questions?: { selectWorkspaceQuestion?: (slug: string, version: number) => boolean };
+  })._randori_questions?.selectWorkspaceQuestion?.('capacity-upgrade-index', 7));
+  await openRoomPanel(page, 'problem');
+  await expect(page.locator('#qTitle')).toHaveText('Exercise unavailable');
+
+  await page.locator('#runBtn').click();
+  const unavailable = page.locator('#runOut [data-run-unavailable]');
+  await expect(unavailable).toContainText('This exercise cannot be run');
+  await expect(unavailable).toContainText('retired or no longer in the catalogue');
+  expect(executeCalls).toBe(0);
+
+  await openRoomPanel(page, 'code');
+  await page.locator('#editorMoreBtn').click();
+  await page.getByRole('menuitem', { name: 'Reset to starter' }).click();
+  await expect(page.locator('#toast')).toContainText('your code was not reset');
+  await expect.poll(() => page.evaluate(() => (
+    (window as typeof window & { _randori_code?: { getCode?: () => string } })._randori_code?.getCode?.()
+      ?? document.querySelector<HTMLTextAreaElement>('#editor')?.value
+  ))).toBe(kept);
 });
