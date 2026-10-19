@@ -837,6 +837,7 @@ test('flag-off legacy circle responses keep the existing roster and admin testin
     },
   });
   await resetClientState(page, true);
+  await page.clock.install();
 
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await expect(page.locator('#meLabel')).toContainText('Circle Owner');
@@ -846,6 +847,12 @@ test('flag-off legacy circle responses keep the existing roster and admin testin
   await expect(page.locator('#legacyCircleAddActions')).toBeVisible();
   await expect(page.locator('#legacyCircleDemoActions')).toBeVisible();
   await expect(page.getByTestId('circle-invite-email')).toBeHidden();
+  // The cold-start auth UI refresh (1.2 s after load) used to hide the admin
+  // controls whenever the roster rendered before it fired. Run past it.
+  await page.clock.runFor(2_000);
+  await expect(page.locator('#circleRoleLabel')).toHaveText('legacy');
+  await expect(page.locator('#legacyCircleAddActions')).toBeVisible();
+  await expect(page.locator('#circleAutoNote')).toHaveText('Your circle • 2 members');
 });
 
 test('a successful one-time invitation remains copyable when the list refresh fails', async ({ page }) => {

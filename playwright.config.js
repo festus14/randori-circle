@@ -38,6 +38,7 @@ export default defineConfig({
     actionTimeout: 12000,
     navigationTimeout: 20000,
     launchOptions: { args: [`--host-resolver-rules=${telemetryHostResolverRules}`] },
+    ...(process.env.E2E_REDUCED_MOTION === '1' ? { reducedMotion: 'reduce' } : {}),
   },
   webServer: {
     command: 'npm run start:test',

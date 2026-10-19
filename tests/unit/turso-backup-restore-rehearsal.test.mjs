@@ -213,7 +213,11 @@ if(process.env.RANDORI_REHEARSAL_SIGNAL_FIXTURE==='1'){
     setBlock(_name,value,state){
       events.push(['block',value]);
       state.blockWrites=value;
-      if(value) writeFileSync(blockedPath,'blocked');
+      if(value){
+        writeFileSync(blockedPath,'blocked');
+        // Readiness signal for the parent: forward work is now blocked.
+        process.stdout.write('blocked\n');
+      }
       return {blockWrites:value};
     },
   });
@@ -827,13 +831,23 @@ test('SIGTERM interrupts forward database work but confirms source restoration b
   });
   let stderr='';
   child.stderr.on('data',chunk=>{ stderr+=chunk; });
+  // Child start-up (Node boot, module graph, fixture) can take seconds on a
+  // loaded runner, so wait on the child's readiness signal rather than a
+  // fixed deadline. An early exit ends the wait so failures stay prompt.
+  const closed=new Promise(resolve=>child.once('close',(code,signal)=>resolve({code,signal})));
+  let stdout='';
+  const ready=new Promise(resolve=>{
+    child.stdout.on('data',chunk=>{
+      stdout+=chunk;
+      if(stdout.includes('blocked\n')) resolve(true);
+    });
+  });
   try{
-    for(let attempt=0;attempt<100&&!existsSync(blockedPath);attempt+=1){
-      await new Promise(resolve=>setTimeout(resolve,10));
-    }
+    const signalled=await Promise.race([ready,closed.then(()=>false)]);
+    assert.equal(signalled,true,`fixture exited before blocking writes: ${stderr}`);
     assert.equal(existsSync(blockedPath),true,stderr);
     child.kill('SIGTERM');
-    const outcome=await new Promise(resolve=>child.once('close',(code,signal)=>resolve({code,signal})));
+    const outcome=await closed;
     assert.deepEqual(outcome,{code:130,signal:null},stderr);
     const result=JSON.parse(readFileSync(resultPath,'utf8'));
     assert.equal(result.interrupted,true);

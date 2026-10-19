@@ -3466,14 +3466,17 @@ async function refreshMe(){
       if(outBtn){ outBtn.style.display='none'; outBtn.hidden=true; outBtn.setAttribute('aria-hidden','true'); }
       if(hint) hint.textContent='Sign in to see your pairings';
     }
-    // circle admin UI toggle
+    // Circle admin UI: renderPeople() owns showing the legacy testing controls
+    // and the roster note. This shared refresh (also run by the cold-start
+    // timer) may only revoke them, so a late call cannot hide controls or
+    // reset the note after the roster has rendered.
     const addRow=document.querySelector('#personName')?.parentElement;
     const addInfo=document.getElementById('circleAutoNote');
-    if(addRow){
+    if(addRow&&!isAdmin()){
       addRow.style.display='none';
       addRow.setAttribute('aria-hidden','true');
-      if(addInfo) addInfo.textContent=me?'Loading your private circle…':'Sign in to view your private circle.';
     }
+    if(addInfo&&!me) addInfo.textContent='Sign in to view your private circle.';
     // shuffle buttons admin-only (+ demo e2e)
     const demoRun=document.getElementById('demoRunBtn');
     const demoReset=document.getElementById('demoResetBtn');

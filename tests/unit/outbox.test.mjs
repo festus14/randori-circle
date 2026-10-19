@@ -304,8 +304,11 @@ test('a global invocation drains saturated event types in fair rounds within one
     db,workerId:'fair-invocation',
     handlers:{'alpha.notification':handler,'beta.notification':handler,'gamma.notification':handler},
     eventTypes:['alpha.notification','beta.notification','gamma.notification'],maxClaims:4,
-    deadlineAtMs:performance.now()+2_000,finalizationReserveMs:100,minimumDispatchWindowMs:100,
-    leaseDurationMs:1000,heartbeatIntervalMs:0,
+    deadlineAtMs:2_000,finalizationReserveMs:100,minimumDispatchWindowMs:100,
+    // Fairness, not wall-clock speed, is under test: a frozen monotonic clock
+    // keeps a loaded host from crossing the dispatch deadline mid-drain, and
+    // a long database lease cannot expire between claim and finalization.
+    leaseDurationMs:30_000,heartbeatIntervalMs:0,clock:controlledMonotonicClock().clock,
   });
   assert.deepEqual(started.slice(0,3).sort(),[
     'alpha.notification','beta.notification','gamma.notification',
@@ -346,8 +349,8 @@ test('a real database gives all five application event types a fair first claim 
   const result=await runOutboxInvocation({
     db,workerId:'five-type-fair-invocation',
     handlers:Object.fromEntries(eventTypes.map(type=>[type,handler])),eventTypes,maxClaims:8,
-    deadlineAtMs:performance.now()+2_000,finalizationReserveMs:100,minimumDispatchWindowMs:100,
-    leaseDurationMs:1000,heartbeatIntervalMs:0,
+    deadlineAtMs:2_000,finalizationReserveMs:100,minimumDispatchWindowMs:100,
+    leaseDurationMs:30_000,heartbeatIntervalMs:0,clock:controlledMonotonicClock().clock,
   });
   assert.deepEqual([...new Set(started.slice(0,5))].sort(),[...eventTypes].sort());
   assert.equal(result.claimed,8);

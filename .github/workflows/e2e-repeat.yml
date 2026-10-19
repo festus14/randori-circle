@@ -1,0 +1,133 @@
+name: e2e-repeat (temporary)
+# Temporary flake-hunting workflow for the round-2 flake PR. Removed before merge.
+on:
+  push:
+    branches: [codex/e2e-flakes-round2]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-repeat-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-timing:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Timing-sensitive unit tests x40 under CPU saturation
+        run: |
+          for i in $(seq 1 8); do (timeout 900 yes > /dev/null &); done
+          pass=0; fail=0
+          for round in $(seq 1 5); do
+            pids=()
+            for i in $(seq 1 8); do
+              node --experimental-test-module-mocks --test \
+                --test-name-pattern="SIGTERM|saturat|fair rounds" \
+                tests/unit/turso-backup-restore-rehearsal.test.mjs tests/unit/outbox.test.mjs \
+                > "unit-$round-$i.txt" 2>&1 &
+              pids+=($!)
+            done
+            for pid in "${pids[@]}"; do if wait "$pid"; then pass=$((pass+1)); else fail=$((fail+1)); fi; done
+          done
+          pkill yes || true
+          grep -h "^✖\|^✔" unit-*.txt | sed -E 's/ \([0-9.]+ms\)//' | sort | uniq -c
+          echo "process runs: pass=$pass fail=$fail"
+          test "$fail" -eq 0
+
+  targeted:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        motion: ['default', 'reduced']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Targeted specs x10
+        env:
+          CI: '1'
+          E2E_REDUCED_MOTION: ${{ matrix.motion == 'reduced' && '1' || '0' }}
+        run: >-
+          npx playwright test --repeat-each=10 --reporter=list
+          tests/e2e/schedule-sync.spec.ts tests/e2e/circle-invitations.spec.ts
+          tests/e2e/app-shell-navigation.spec.ts tests/e2e/board-sync.spec.ts
+          tests/e2e/secondary-schedule.spec.ts tests/e2e/session-controls.spec.ts
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: targeted-${{ matrix.motion }}
+          path: test-results
+          retention-days: 3
+          if-no-files-found: ignore
+
+  journeys:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Real-runtime journeys x6
+        env:
+          CI: '1'
+        run: >-
+          npx playwright test --repeat-each=6 --reporter=list
+          tests/e2e/golden-pair-room-real-runtime.spec.ts tests/e2e/pairing-real-runtime.spec.ts
+          tests/e2e/password-auth-journey-real-runtime.spec.ts
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: journeys
+          path: test-results
+          retention-days: 3
+          if-no-files-found: ignore
+
+  full-suite:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Full suite x2 on the canary image
+        env:
+          CI: '1'
+        run: npx playwright test --repeat-each=2 --reporter=list
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: full-suite
+          path: test-results
+          retention-days: 3
+          if-no-files-found: ignore
