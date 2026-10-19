@@ -8,6 +8,7 @@ export function stageRealRuntimeClient(repositoryRoot:string,rootDir:string){
   copyFileSync(join(repositoryRoot,'index.html'),join(rootDir,'index.html'));
   copyFileSync(join(repositoryRoot,'assets','crdt-editor.js'),join(rootDir,'assets','crdt-editor.js'));
   copyFileSync(join(repositoryRoot,'assets','invite-gate.js'),join(rootDir,'assets','invite-gate.js'));
+  copyFileSync(join(repositoryRoot,'assets','auth-dialog.js'),join(rootDir,'assets','auth-dialog.js'));
 }
 
 export async function expectInviteGateLoaded(page:Page){

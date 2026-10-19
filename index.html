@@ -638,16 +638,121 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 @keyframes rc-dialog-in{from{transform:translateY(8px) scale(.98)} to{transform:none}}
 .modal h3{font-size:var(--text-lg); line-height:var(--leading-lg); font-weight:var(--weight-heading); letter-spacing:var(--tracking-tight)}
 .modal .row{justify-content:flex-end}
+/* ---------- WP-A: sign-in, account security and confirmation dialogs ---------- */
+.dialog-close{position:absolute; top:var(--space-3); right:var(--space-3); color:var(--ink-2)}
+.dialog-close .rc-icon{width:18px; height:18px}
+.dialog-text{color:var(--ink-2); font-size:var(--text-sm); line-height:var(--leading-sm)}
+.dialog-title{font-size:var(--text-lg); line-height:var(--leading-lg); font-weight:var(--weight-heading); letter-spacing:var(--tracking-tight); color:var(--ink)}
+.dialog-actions{display:flex; justify-content:flex-end; gap:var(--space-2); flex-wrap:wrap}
+.auth-dialog,.identity-dialog{position:relative; max-width:440px; padding:var(--space-8) var(--space-6) var(--space-6); max-height:min(92dvh,820px); overflow:auto; overscroll-behavior:contain}
+.identity-dialog{max-width:520px; gap:var(--space-4)}
 .auth-form{display:grid; gap:var(--space-4)}
-.auth-fields{display:grid; gap:var(--space-3)}
-.auth-field{display:grid; gap:var(--space-1)}
-.auth-field > span{font-size:var(--text-sm); color:var(--ink-2); font-weight:var(--weight-emphasis)}
-.auth-divider{display:flex; align-items:center; gap:var(--space-3); color:var(--ink-3); font-size:var(--text-xs)}
+.auth-head,.identity-head{display:grid; justify-items:center; text-align:center; gap:var(--space-2); padding:0 var(--space-6)}
+.identity-head{justify-items:start; text-align:left; padding:0 var(--space-8) 0 0}
+.auth-mark{width:36px; height:36px; color:var(--ink); margin-bottom:var(--space-1)}
+.auth-mark .auth-mark-accent{stroke:var(--color-action)}
+.auth-head h3,.identity-head h3{font-size:var(--text-xl); line-height:var(--leading-xl); font-weight:var(--weight-heading); letter-spacing:var(--tracking-tight)}
+.auth-sub{color:var(--ink-2); font-size:var(--text-sm); line-height:var(--leading-sm); text-wrap:pretty; overflow-wrap:anywhere}
+.identity-head-icon{display:grid; place-items:center; width:40px; height:40px; border-radius:var(--radius-md); background:var(--color-action-subtle); color:var(--color-action)}
+.auth-status{margin:0; font-size:var(--text-sm); line-height:var(--leading-sm); color:var(--ink-2); text-align:center}
+.auth-status[data-tone="loading"]{color:var(--ink-3)}
+.auth-status[data-tone="warning"],.auth-status[data-tone="info"]{text-align:left; padding:var(--space-3); border-radius:var(--radius-md); border:1px solid var(--color-border)}
+.auth-status[data-tone="warning"]{background:var(--warn-surface); border-color:color-mix(in srgb,var(--warn) 55%,var(--border)); color:var(--ink)}
+.auth-status[data-tone="info"]{background:var(--color-surface-raised); color:var(--ink-2)}
+.auth-status[data-routine="true"]{position:absolute!important; width:1px!important; height:1px!important; margin:-1px!important; padding:0!important; overflow:hidden!important; clip:rect(0,0,0,0)!important; white-space:nowrap!important; border:0!important}
+.auth-alert,.identity-status{margin:0; font-size:var(--text-sm); line-height:var(--leading-sm); padding:var(--space-3) var(--space-3) var(--space-3) var(--space-10); border-radius:var(--radius-md); border:1px solid; position:relative; color:var(--ink); overflow-wrap:anywhere}
+.auth-alert:empty{display:none}
+.auth-alert::before,.identity-status::before{content:""; position:absolute; left:var(--space-3); top:calc(var(--space-3) + 1px); width:18px; height:18px; border-radius:var(--radius-full); background:currentColor; -webkit-mask:var(--auth-alert-icon) center/18px no-repeat; mask:var(--auth-alert-icon) center/18px no-repeat}
+.auth-alert,.identity-status{--auth-alert-icon:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 7.5v5.5M12 16.5h.01'/%3E%3C/svg%3E")}
+.auth-alert[data-tone="error"],.identity-status[data-tone="error"]{background:var(--bad-surface); border-color:color-mix(in srgb,var(--bad) 60%,var(--border))}
+.auth-alert[data-tone="error"]::before,.identity-status[data-tone="error"]::before{color:var(--bad)}
+.auth-alert[data-tone="success"],.identity-status[data-tone="success"]{background:var(--ok-surface); border-color:color-mix(in srgb,var(--ok) 55%,var(--border));
+  --auth-alert-icon:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='m8 12.5 2.7 2.7L16 9.5'/%3E%3C/svg%3E")}
+.auth-alert[data-tone="success"]::before,.identity-status[data-tone="success"]::before{color:var(--ok)}
+.identity-status[data-tone="info"],.identity-status[data-tone="loading"],.identity-status[data-tone="none"]{background:var(--color-surface-raised); border-color:var(--border); color:var(--ink-2)}
+.identity-status[data-tone="info"]::before{color:var(--info)}
+.identity-status[data-tone="loading"]::before,.identity-status[data-tone="none"]::before{color:var(--ink-3)}
+.auth-google,.auth-google-retry{width:100%; justify-content:center; gap:var(--space-3)}
+.auth-google{background:var(--color-field); color:var(--ink); border-color:var(--control-border)}
+.auth-google:hover{background:var(--card-2); color:var(--ink); border-color:var(--ink-3)}
+.auth-google-logo{flex:0 0 auto}
+.auth-google[aria-busy="true"] .auth-google-logo{opacity:.55}
+.auth-divider{display:flex; align-items:center; gap:var(--space-3); color:var(--ink-3); font-size:var(--text-xs); line-height:var(--leading-xs); font-weight:var(--weight-emphasis)}
 .auth-divider::before,.auth-divider::after{content:""; height:1px; background:var(--border); flex:1}
-.auth-status{min-height:20px; margin:0}
-.auth-error{color:var(--accent-3); min-height:20px; margin:0}
+.auth-fields{display:grid; gap:var(--space-4)}
+.auth-field{display:grid; gap:var(--space-1); min-width:0}
+.auth-field > label{font-size:var(--text-sm); line-height:var(--leading-sm); color:var(--ink); font-weight:var(--weight-emphasis)}
+.auth-field > span{font-size:var(--text-sm); color:var(--ink-2); font-weight:var(--weight-emphasis)}
+.auth-dialog .auth-field .input,.identity-dialog .auth-field .input{min-height:var(--control-lg)}
+.auth-hint{font-size:var(--text-xs); line-height:var(--leading-xs); color:var(--ink-3)}
+.auth-field-error{display:flex; gap:var(--space-1); align-items:flex-start; font-size:var(--text-sm); line-height:var(--leading-sm); color:var(--bad); font-weight:var(--weight-emphasis)}
+.auth-field-error::before{content:""; flex:0 0 auto; width:16px; height:16px; margin-top:2px; background:currentColor; -webkit-mask:var(--auth-field-icon) center/16px no-repeat; mask:var(--auth-field-icon) center/16px no-repeat;
+  --auth-field-icon:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.4' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 7.5v5.5M12 16.5h.01'/%3E%3C/svg%3E")}
+.auth-input-wrap{position:relative; display:flex; align-items:center}
+.auth-input-wrap .input{padding-right:var(--space-12)}
+.auth-reveal{position:absolute; right:var(--space-1); top:50%; transform:translateY(-50%); width:var(--control-md); height:var(--control-md); display:grid; place-items:center; border:0; border-radius:var(--radius-sm); background:transparent; color:var(--ink-2); cursor:pointer}
+.auth-reveal:hover{background:var(--bg-3); color:var(--ink)}
+.auth-reveal:disabled{color:var(--ink-3); cursor:not-allowed; background:transparent}
+.auth-reveal .auth-reveal-hide,.auth-reveal[aria-pressed="true"] .auth-reveal-show{display:none}
+.auth-reveal[aria-pressed="true"] .auth-reveal-hide{display:inline-block}
+.auth-link{appearance:none; border:0; background:none; padding:var(--space-1) 0; min-height:var(--control-sm); color:var(--color-action); font:inherit; font-size:var(--text-sm); line-height:var(--leading-sm); font-weight:var(--weight-emphasis); cursor:pointer; text-decoration:underline; text-decoration-color:transparent; text-underline-offset:.2em; transition:text-decoration-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out)}
+.auth-link:hover{color:var(--color-action-hover); text-decoration-color:currentColor}
+.auth-link:disabled{color:var(--ink-3); cursor:not-allowed; text-decoration:none}
+.auth-forgot{justify-self:end}
 .auth-actions{display:flex; align-items:center; justify-content:space-between; gap:var(--space-3); flex-wrap:wrap}
-.auth-actions-primary{display:flex; align-items:center; justify-content:flex-end; gap:var(--space-2); margin-left:auto}
+.auth-dialog-actions{display:grid; gap:var(--space-3); justify-items:center; margin-top:var(--space-1)}
+.auth-submit{width:100%; justify-content:center}
+.auth-submit[aria-busy="true"]::before{content:""; width:16px; height:16px; border-radius:var(--radius-full); border:2px solid currentColor; border-right-color:transparent; animation:spin .7s linear infinite}
+.auth-pending{display:grid; grid-template-columns:auto 1fr; gap:var(--space-3); padding:var(--space-4); border-radius:var(--radius-md); background:var(--ok-surface); border:1px solid color-mix(in srgb,var(--ok) 50%,var(--border))}
+.auth-pending-icon{color:var(--ok); margin-top:2px}
+.auth-pending-body{display:grid; gap:var(--space-2); min-width:0}
+.auth-pending-title{font-weight:var(--weight-heading); font-size:var(--text-md); line-height:var(--leading-md)}
+.auth-pending .muted{color:var(--ink-2)}
+.auth-pending-actions{display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-2) var(--space-4); margin-top:var(--space-1)}
+.identity-recent{display:grid; gap:var(--space-3); padding:var(--space-4); border-radius:var(--radius-md); background:var(--color-action-subtle); border:1px solid color-mix(in srgb,var(--color-action) 40%,var(--border))}
+.identity-recent-title{font-weight:var(--weight-heading); font-size:var(--text-md); line-height:var(--leading-md)}
+.identity-recent .small{color:var(--ink-2)}
+.identity-recent-actions{display:flex; flex-wrap:wrap; gap:var(--space-2)}
+.identity-recent-ok{display:flex; gap:var(--space-2); align-items:flex-start; font-size:var(--text-sm); line-height:var(--leading-sm); color:var(--ink-2)}
+.identity-recent-ok::before{content:""; flex:0 0 auto; width:16px; height:16px; margin-top:2px; background:var(--ok); -webkit-mask:var(--identity-ok-icon) center/16px no-repeat; mask:var(--identity-ok-icon) center/16px no-repeat;
+  --identity-ok-icon:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3 4.5 6v6c0 4.5 3.2 7.8 7.5 9 4.3-1.2 7.5-4.5 7.5-9V6z'/%3E%3Cpath d='m9 12 2.2 2.2L15.5 10'/%3E%3C/svg%3E")}
+.identity-method{display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:var(--space-3); align-items:start; padding:var(--space-4); border:1px solid var(--border); border-radius:var(--radius-md); background:var(--card)}
+.identity-method-icon{display:grid; place-items:center; width:36px; height:36px; border-radius:var(--radius-sm); background:var(--color-surface-raised); color:var(--ink-2); border:1px solid var(--border)}
+.identity-method-body{display:grid; gap:var(--space-1); min-width:0}
+.identity-method-name{display:flex; align-items:center; gap:var(--space-2); flex-wrap:wrap; font-weight:var(--weight-heading); font-size:var(--text-md); line-height:var(--leading-md)}
+.identity-method-help{color:var(--ink-2)}
+.identity-method-action{align-self:center}
+.identity-method-action.danger-outline:not(:disabled){color:var(--bad); border-color:color-mix(in srgb,var(--bad) 60%,var(--border))}
+.identity-method-action.danger-outline:not(:disabled):hover{background:var(--bad-surface); color:var(--bad)}
+.identity-badge[data-state="linked"]{background:var(--ok-surface); border-color:color-mix(in srgb,var(--ok) 60%,var(--border)); color:var(--ok)}
+.identity-badge[data-state="not linked"]{background:var(--bg-3); color:var(--ink-2)}
+.identity-password-add{display:grid; gap:var(--space-3); margin-top:var(--space-2)}
+.dialog-compact{max-width:420px}
+@media(max-width:599px){
+  .auth-overlay,.identity-overlay,#confirmOverlay,#promptOverlay{padding:0; align-items:flex-end}
+  .auth-dialog,.identity-dialog,#confirmOverlay .modal,#promptOverlay .modal{
+    max-width:none; width:100%; max-height:min(94dvh,820px); overflow:auto;
+    border-radius:var(--radius-xl) var(--radius-xl) 0 0; border-bottom:0;
+    padding:var(--space-8) var(--space-4) calc(var(--space-5) + env(safe-area-inset-bottom));
+  }
+  .auth-dialog::before,.identity-dialog::before,#confirmOverlay .modal::before,#promptOverlay .modal::before{content:""; position:absolute; top:var(--space-2); left:50%; width:36px; height:4px; margin-left:-18px; border-radius:var(--radius-full); background:var(--line-strong)}
+  .overlay.show .auth-dialog,.overlay.show .identity-dialog,#confirmOverlay.show .modal,#promptOverlay.show .modal{animation:rc-sheet-in var(--dur-3) var(--ease-out)}
+  .auth-head{padding:0 var(--space-8)}
+  .identity-head{padding-right:var(--space-10)}
+  .identity-method{grid-template-columns:auto minmax(0,1fr)}
+  .identity-method-action{grid-column:1 / -1; width:100%; justify-content:center; min-height:var(--tap-min)}
+  .identity-recent-actions .btn,.dialog-actions .btn{flex:1 1 auto; justify-content:center; min-height:var(--tap-min)}
+  .auth-link{min-height:var(--tap-min)}
+}
+@keyframes rc-sheet-in{from{transform:translateY(24px)} to{transform:none}}
+@media(pointer:coarse){
+  .auth-reveal{width:var(--tap-min); height:var(--tap-min); right:0}
+  .auth-link{min-height:var(--tap-min)}
+}
+@media(forced-colors:active){
+  .auth-alert,.identity-status,.auth-status[data-tone],.auth-pending,.identity-recent,.identity-method{border-color:CanvasText}
+  .auth-alert::before,.identity-status::before,.auth-field-error::before,.identity-recent-ok::before,.dialog-close{forced-color-adjust:auto}
+}
 
 /* banners / inline alerts */
 .rc-banner{display:flex; gap:var(--space-3); align-items:flex-start; padding:var(--space-3) var(--space-4); border:1px solid var(--info); border-radius:var(--radius-md); background:var(--info-surface); color:var(--ink); font-size:var(--text-sm)}
@@ -907,14 +1012,8 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   #dashInviteHint .kbd{display:inline; overflow-wrap:anywhere; word-break:break-word}
   .card-b{padding:var(--space-4)}
   .overlay{padding:0; align-items:flex-end}
-  #authDialog,#identityDialog{
-    max-width:none; max-height:min(92dvh,760px); overflow:auto;
-    border-radius:var(--radius-xl) var(--radius-xl) 0 0; padding:var(--space-5) var(--space-4) calc(var(--space-5) + env(safe-area-inset-bottom));
-  }
   #view-invite .card-b,#view-activation .card-b,#view-password-reset .card-b{padding:var(--space-4)}
   #availabilityWrap .pill,#psRemindRow .pill{min-height:var(--tap-min)}
-  .auth-actions-primary{width:100%; margin-left:0}
-  .auth-actions-primary .btn{flex:1; justify-content:center; min-height:var(--tap-min)}
 }
 
 @media(pointer:coarse){
@@ -1605,65 +1704,120 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
     </section>
   </main>
 </div>
-<div id="confirmOverlay" class="overlay" aria-hidden="true"><div class="modal"><h3 id="confirmTitle">Confirm?</h3><p id="confirmMsg" class="small" style="color:var(--ink-2); margin:0"></p><div class="row"><button id="confirmCancel" class="btn secondary">Cancel</button><button id="confirmOk" class="btn">Confirm</button></div></div></div>
-<div id="promptOverlay" class="overlay" aria-hidden="true"><div class="modal"><h3 id="promptTitle">Enter value</h3><input id="promptInput" class="input"/><div class="row"><button id="promptCancel" class="btn secondary">Cancel</button><button id="promptOk" class="btn">Save</button></div></div></div>
-<div id="authOverlay" class="overlay" aria-hidden="true">
-  <div id="authDialog" class="modal" style="max-width:420px" role="dialog" aria-modal="true" aria-labelledby="authTitle" aria-describedby="authDescription" tabindex="-1">
+<!-- ---------- WP-A dialogs: confirm, prompt, sign-in and account security ---------- -->
+<div id="confirmOverlay" class="overlay" aria-hidden="true"><div class="modal rc-dialog dialog-compact" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMsg" tabindex="-1"><h3 id="confirmTitle">Confirm?</h3><p id="confirmMsg" class="dialog-text"></p><div class="dialog-actions"><button id="confirmCancel" class="btn secondary" type="button">Cancel</button><button id="confirmOk" class="btn" type="button">Confirm</button></div></div></div>
+<div id="promptOverlay" class="overlay" aria-hidden="true"><div class="modal rc-dialog dialog-compact" role="dialog" aria-modal="true" aria-labelledby="promptTitle" tabindex="-1"><label id="promptTitle" for="promptInput" class="dialog-title">Enter value</label><input id="promptInput" class="input" autocomplete="off"/><div class="dialog-actions"><button id="promptCancel" class="btn secondary" type="button">Cancel</button><button id="promptOk" class="btn" type="button">Save</button></div></div></div>
+<div id="authOverlay" class="overlay auth-overlay" aria-hidden="true">
+  <div id="authDialog" class="modal rc-dialog auth-dialog" role="dialog" aria-modal="true" aria-labelledby="authTitle" aria-describedby="authDescription" tabindex="-1">
     <form id="authForm" class="auth-form" novalidate>
-      <div>
+      <header class="auth-head">
+        <button id="authCancel" class="btn ghost rc-btn--icon dialog-close" type="button" aria-label="Close"><svg class="rc-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M6 6l12 12"/><path d="M18 6 6 18"/></svg></button>
+        <svg class="auth-mark" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true" focusable="false">
+          <g fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round">
+            <path d="M18.85 5.37A11 11 0 0 1 26.63 18.85"/>
+            <path class="auth-mark-accent" d="M23.78 23.78A11 11 0 0 1 8.22 23.78"/>
+            <path d="M5.37 18.85A11 11 0 0 1 13.15 5.37"/>
+          </g>
+          <circle cx="16" cy="16" r="3.4" fill="currentColor"/>
+        </svg>
         <h3 id="authTitle">Sign in to Randori</h3>
-        <p id="authDescription" class="small" style="color:var(--ink-2);margin:6px 0 0">Use an enabled sign-in method to access your private pairing history.</p>
-      </div>
-      <p id="authCapabilityStatus" class="small muted auth-status" role="status" aria-live="polite">Checking sign-in options…</p>
-      <button id="authGoogle" class="btn" type="button" hidden style="width:100%;justify-content:center;background:#fff;color:#1d1a16;border-color:#e6deD1">Continue with Google</button>
+        <p id="authDescription" class="auth-sub">Welcome back. Your pairings and practice rooms are waiting.</p>
+      </header>
+      <p id="authCapabilityStatus" class="auth-status" data-tone="loading" role="status" aria-live="polite">Checking sign-in options…</p>
+      <p id="authErr" class="auth-alert" data-tone="error" role="alert" aria-live="assertive"></p>
+      <button id="authGoogle" class="btn secondary lg auth-google" type="button" hidden><svg class="auth-google-logo" viewBox="0 0 18 18" width="18" height="18" aria-hidden="true" focusable="false"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62z"/><path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.83.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.97 10.72A5.4 5.4 0 0 1 3.68 9c0-.6.1-1.18.29-1.72V4.95H.96A9 9 0 0 0 0 9c0 1.45.35 2.83.96 4.05l3.01-2.33z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z"/></svg><span id="authGoogleLabel">Continue with Google</span></button>
+      <button id="authGoogleRetry" class="btn lg auth-google-retry" type="button" hidden aria-describedby="authErr"><svg class="rc-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.7L20 8.5"/><path d="M20 3.5v5h-5"/></svg><span>Try Google sign-in again</span></button>
       <div id="authDivider" class="auth-divider" hidden>or use email</div>
       <div id="authPasswordFields" class="auth-fields" hidden>
-        <label class="auth-field" for="authEmail"><span>Email</span><input id="authEmail" class="input" placeholder="email@example.com" type="email" inputmode="email" autocomplete="email" maxlength="254" aria-describedby="authErr" required/></label>
-        <label id="authNameField" class="auth-field" for="authName" hidden><span>Display name</span><input id="authName" class="input" placeholder="How your pair will see you" type="text" autocomplete="name" minlength="2" maxlength="32" aria-describedby="authErr"/></label>
-        <label id="authPasswordField" class="auth-field" for="authPass"><span>Password</span><input id="authPass" class="input" placeholder="10–72 UTF-8 bytes" type="password" autocomplete="current-password" maxlength="72" aria-describedby="authErr" required/></label>
+        <div class="auth-field">
+          <label for="authEmail">Email</label>
+          <input id="authEmail" class="input" placeholder="name@example.com" type="email" inputmode="email" autocomplete="email" autocapitalize="off" spellcheck="false" maxlength="254" aria-describedby="authEmailError" required/>
+          <p id="authEmailError" class="auth-field-error" hidden></p>
+        </div>
+        <div id="authNameField" class="auth-field" hidden>
+          <label for="authName">Display name</label>
+          <input id="authName" class="input" placeholder="How your pair will see you" type="text" autocomplete="name" minlength="2" maxlength="32" aria-describedby="authNameHint authNameError"/>
+          <p id="authNameHint" class="auth-hint">2–32 characters. Your pair sees this name.</p>
+          <p id="authNameError" class="auth-field-error" hidden></p>
+        </div>
+        <div id="authPasswordField" class="auth-field">
+          <label for="authPass">Password</label>
+          <div class="auth-input-wrap">
+            <input id="authPass" class="input" placeholder="Your password" type="password" autocomplete="current-password" maxlength="72" aria-describedby="authPassHint authPassError" required/>
+            <button id="authPassToggle" class="auth-reveal" type="button" aria-controls="authPass" aria-pressed="false" aria-label="Show password"><svg class="rc-icon rc-icon--sm auth-reveal-show" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2.5 12S6 5 12 5s9.5 7 9.5 7-3.5 7-9.5 7-9.5-7-9.5-7z"/><circle cx="12" cy="12" r="3"/></svg><svg class="rc-icon rc-icon--sm auth-reveal-hide" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 3l18 18"/><path d="M10.6 5.1A10 10 0 0 1 12 5c6 0 9.5 7 9.5 7a17 17 0 0 1-2.9 3.9"/><path d="M6.6 6.6A16.6 16.6 0 0 0 2.5 12S6 19 12 19a9.6 9.6 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg></button>
+          </div>
+          <p id="authPassHint" class="auth-hint" hidden>At least 10 characters.</p>
+          <p id="authPassError" class="auth-field-error" hidden></p>
+          <button id="authForgot" class="auth-link auth-forgot" type="button" hidden>Forgot password?</button>
+        </div>
       </div>
-      <p id="authErr" class="small auth-error" role="alert" aria-live="assertive"></p>
-      <div id="authActivationPending" data-testid="activation-pending" class="auth-fields" hidden>
-        <p class="small muted">If this invitation can be activated, a single-use verification link will arrive shortly and expire in 30 minutes.</p>
-        <button id="authActivationResend" class="btn secondary" type="button">Request another link</button>
+      <div id="authActivationPending" data-testid="activation-pending" class="auth-pending" hidden>
+        <svg class="rc-icon auth-pending-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 6.5 8.5 7 8.5-7"/></svg>
+        <div class="auth-pending-body">
+          <p class="auth-pending-title">Check your email</p>
+          <p class="small">If this invitation can be activated, a single-use verification link will arrive shortly<span id="authActivationEmail"></span> and expire in 30 minutes.</p>
+          <p class="small muted">Nothing yet? Check spam, then request another link.</p>
+          <div class="auth-pending-actions">
+            <button id="authActivationResend" class="btn secondary" type="button">Request another link</button>
+            <button id="authActivationChangeEmail" class="auth-link" type="button">Use a different email</button>
+          </div>
+        </div>
       </div>
-      <button id="authGoogleRetry" class="btn secondary" type="button" hidden aria-describedby="authErr" style="width:100%;justify-content:center">Try Google sign-in again</button>
-      <div class="auth-actions">
-        <span><button id="authModeSwitch" class="btn ghost" type="button" hidden></button><button id="authForgot" class="btn ghost" type="button" hidden>Forgot password?</button></span>
-        <span class="auth-actions-primary"><button id="authCancel" class="btn secondary" type="button">Cancel</button><button id="authSignup" class="btn" type="submit" hidden>Sign up</button><button id="authSignin" class="btn" type="submit" hidden>Sign in</button><button id="authResetRequest" class="btn" type="submit" hidden>Send reset email</button></span>
+      <div class="auth-dialog-actions">
+        <button id="authSignup" class="btn lg auth-submit" type="submit" hidden>Sign up</button>
+        <button id="authSignin" class="btn lg auth-submit" type="submit" hidden>Sign in</button>
+        <button id="authResetRequest" class="btn lg auth-submit" type="submit" hidden>Send reset email</button>
+        <button id="authModeSwitch" class="auth-link auth-mode-switch" type="button" hidden></button>
       </div>
     </form>
   </div>
 </div>
-<div id="identityOverlay" class="overlay" aria-hidden="true" style="z-index:90">
-  <div id="identityDialog" class="modal" style="max-width:500px" role="dialog" aria-modal="true" aria-labelledby="identityTitle" aria-describedby="identityDescription" tabindex="-1">
-    <div style="display:grid;gap:14px">
-      <div><h3 id="identityTitle">Account security</h3><p id="identityDescription" class="small muted" style="margin:6px 0 0">Manage the sign-in methods attached to this exact Randori account.</p></div>
-      <p id="identityStatus" data-testid="identity-status" class="small muted" role="status" aria-live="polite">Loading sign-in methods…</p>
-      <div id="identityRecent" class="card" style="padding:12px;display:grid;gap:9px">
-        <b style="font-size:13px">Confirm it is you</b>
-        <p id="identityRecentHint" class="small muted">Sensitive changes require a recent password or Google confirmation.</p>
-        <label id="identityPasswordConfirmField" class="small muted" style="display:grid;gap:5px">Current password
-          <input id="identityPasswordConfirm" class="input" type="password" autocomplete="current-password" maxlength="72" />
-        </label>
-        <div class="row"><button id="identityConfirmPassword" class="btn secondary" type="button">Confirm password</button><button id="identityConfirmGoogle" class="btn secondary" type="button">Confirm with Google</button></div>
-      </div>
-      <div id="identityGoogleCard" class="card" style="padding:12px;display:grid;gap:9px">
-        <div class="row" style="justify-content:space-between"><span><b>Google</b><span id="identityGoogleState" class="small muted" style="margin-left:7px">checking…</span></span><button id="identityGoogleAction" class="btn secondary" type="button" disabled>Manage</button></div>
-        <p id="identityGoogleHelp" class="small muted">Google is linked only after an explicit, fresh provider confirmation.</p>
-      </div>
-      <div id="identityPasswordCard" class="card" style="padding:12px;display:grid;gap:9px">
-        <div class="row" style="justify-content:space-between"><span><b>Password</b><span id="identityPasswordState" class="small muted" style="margin-left:7px">checking…</span></span><button id="identityPasswordAction" class="btn secondary" type="button" disabled>Manage</button></div>
-        <div id="identityPasswordAdd" hidden style="display:grid;gap:8px">
-          <label class="small muted" style="display:grid;gap:5px">New password<input id="identityNewPassword" class="input" type="password" autocomplete="new-password" maxlength="72" /></label>
-          <label class="small muted" style="display:grid;gap:5px">Confirm new password<input id="identityNewPasswordConfirm" class="input" type="password" autocomplete="new-password" maxlength="72" /></label>
+<div id="identityOverlay" class="overlay identity-overlay" aria-hidden="true">
+  <div id="identityDialog" class="modal rc-dialog identity-dialog" role="dialog" aria-modal="true" aria-labelledby="identityTitle" aria-describedby="identityDescription" tabindex="-1">
+    <header class="identity-head">
+      <button id="identityClose" class="btn ghost rc-btn--icon dialog-close" type="button" aria-label="Close"><svg class="rc-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M6 6l12 12"/><path d="M18 6 6 18"/></svg></button>
+      <span class="identity-head-icon" aria-hidden="true"><svg class="rc-icon" focusable="false" viewBox="0 0 24 24"><path d="M12 3 4.5 6v6c0 4.5 3.2 7.8 7.5 9 4.3-1.2 7.5-4.5 7.5-9V6z"/></svg></span>
+      <h3 id="identityTitle">Account security</h3>
+      <p id="identityDescription" class="auth-sub">Manage the sign-in methods attached to this Randori account.</p>
+    </header>
+    <p id="identityStatus" data-testid="identity-status" class="identity-status" data-tone="loading" role="status" aria-live="polite">Loading sign-in methods…</p>
+    <form id="identityRecent" class="identity-recent" novalidate hidden>
+      <p class="identity-recent-title">Confirm it's you</p>
+      <p id="identityRecentHint" class="small">Changing how you sign in needs a Randori sign-in from the last 10 minutes.</p>
+      <div id="identityPasswordConfirmField" class="auth-field">
+        <label for="identityPasswordConfirm">Current password</label>
+        <div class="auth-input-wrap">
+          <input id="identityPasswordConfirm" class="input" type="password" autocomplete="current-password" maxlength="72" aria-describedby="identityPasswordConfirmError"/>
+          <button id="identityPasswordConfirmToggle" class="auth-reveal" type="button" aria-controls="identityPasswordConfirm" aria-pressed="false" aria-label="Show password"><svg class="rc-icon rc-icon--sm auth-reveal-show" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2.5 12S6 5 12 5s9.5 7 9.5 7-3.5 7-9.5 7-9.5-7-9.5-7z"/><circle cx="12" cy="12" r="3"/></svg><svg class="rc-icon rc-icon--sm auth-reveal-hide" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 3l18 18"/><path d="M10.6 5.1A10 10 0 0 1 12 5c6 0 9.5 7 9.5 7a17 17 0 0 1-2.9 3.9"/><path d="M6.6 6.6A16.6 16.6 0 0 0 2.5 12S6 19 12 19a9.6 9.6 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg></button>
         </div>
-        <p id="identityPasswordHelp" class="small muted">Adding a password requires verified control of the linked Google account.</p>
+        <p id="identityPasswordConfirmError" class="auth-field-error" hidden></p>
       </div>
-      <div class="auth-actions"><span></span><button id="identityClose" class="btn secondary" type="button">Close</button></div>
+      <div class="identity-recent-actions"><button id="identityConfirmPassword" class="btn" type="submit">Confirm password</button><button id="identityConfirmGoogle" class="btn secondary" type="button">Confirm with Google</button></div>
+    </form>
+    <p id="identityRecentOk" class="identity-recent-ok" hidden></p>
+    <div id="identityGoogleCard" class="identity-method">
+      <span class="identity-method-icon" aria-hidden="true"><svg viewBox="0 0 18 18" width="18" height="18" focusable="false"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62z"/><path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.83.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.97 10.72A5.4 5.4 0 0 1 3.68 9c0-.6.1-1.18.29-1.72V4.95H.96A9 9 0 0 0 0 9c0 1.45.35 2.83.96 4.05l3.01-2.33z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z"/></svg></span>
+      <div class="identity-method-body">
+        <p class="identity-method-name">Google <span id="identityGoogleState" class="rc-badge identity-badge" data-state="unknown">checking…</span></p>
+        <p id="identityGoogleHelp" class="small identity-method-help">Google is linked only after an explicit, fresh provider confirmation.</p>
+      </div>
+      <button id="identityGoogleAction" class="btn secondary identity-method-action" type="button" aria-describedby="identityGoogleHelp" disabled>Manage</button>
+    </div>
+    <div id="identityPasswordCard" class="identity-method">
+      <span class="identity-method-icon" aria-hidden="true"><svg class="rc-icon" focusable="false" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span>
+      <div class="identity-method-body">
+        <p class="identity-method-name">Password <span id="identityPasswordState" class="rc-badge identity-badge" data-state="unknown">checking…</span></p>
+        <p id="identityPasswordHelp" class="small identity-method-help">Adding a password requires verified control of the linked Google account.</p>
+        <div id="identityPasswordAdd" class="identity-password-add" hidden>
+          <div class="auth-field"><label for="identityNewPassword">New password</label><input id="identityNewPassword" class="input" type="password" autocomplete="new-password" maxlength="72" aria-describedby="identityPasswordHelp"/></div>
+          <div class="auth-field"><label for="identityNewPasswordConfirm">Confirm new password</label><input id="identityNewPasswordConfirm" class="input" type="password" autocomplete="new-password" maxlength="72"/></div>
+        </div>
+      </div>
+      <button id="identityPasswordAction" class="btn secondary identity-method-action" type="button" aria-describedby="identityPasswordHelp" disabled>Manage</button>
     </div>
   </div>
 </div>
+<script src="/assets/auth-dialog.js"></script>
 <div id="welcomeBanner" class="onboard-banner" style="display:none">
   <div class="small"><b>Welcome to Randori Circle</b> — weekly mock interviews with friends. Pair Sunday, practice DSA + System Design together. <span class="kbd" style="margin-left:6px">5-min setup</span></div>
   <div class="row" style="gap:8px"><button id="welcomeStartBtn" class="btn">Start → Sign in</button><button id="welcomeHowBtn" class="btn secondary">See how it works</button><button id="welcomeDismiss" class="pill">✕</button></div>
@@ -1702,6 +1856,7 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   let authReturnFocus=null;
   let authModalGeneration=0;
   let googleRetryPending=false;
+  let googleLeaving=false;
   let googleInviteStartRequest=null;
   let activationPendingEmail='';
   let activationResendRequest=null;
@@ -1732,6 +1887,55 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   const availabilityNavigationState={epoch:0,trustedTabEpoch:0};
   const availabilityContextRecovery={userId:null,authEpoch:null,attempts:0};
   const AUTH_CAPABILITY_TIMEOUT_MS=8000;
+  // Dialog copy and control views come from /assets/auth-dialog.js (pure,
+  // unit tested). If that file fails to load, a generic fallback keeps every
+  // flow usable; all security decisions stay in this file either way.
+  const authUi=window._randori_auth_ui||(()=>{
+    const bytes=value=>new TextEncoder().encode(String(value??'')).length;
+    const generic='Something went wrong. Try again.';
+    return Object.freeze({
+      validateAuthFields({mode,email,emailValid,name,password}){
+        const body={email:String(email||'').trim().toLowerCase()};
+        if(!body.email||!emailValid) return {ok:false,errors:{email:'Enter a valid email address.'},first:'email'};
+        if(mode==='reset') return {ok:true,body};
+        const trimmed=String(name||'').trim();
+        if(mode==='signup'&&(trimmed.length<2||trimmed.length>32)) return {ok:false,errors:{name:'Enter a display name with 2–32 characters.'},first:'name'};
+        const size=bytes(password);
+        if(!password||(mode==='signup'&&(size<10||size>72))) return {ok:false,errors:{password:'Use a password with 10–72 characters.'},first:'password'};
+        return {ok:true,body:mode==='signup'?{email:body.email,password,name:trimmed}:{email:body.email,password}};
+      },
+      fieldProblem:()=>'',
+      newPasswordProblem:(password,confirmation)=>bytes(password)<10||bytes(password)>72
+        ?'Use a password with 10–72 characters.':(password!==confirmation?'Passwords do not match.':''),
+      authFailureMessage:()=>generic,
+      googleFailure:()=>({message:'Google sign-in did not complete. Please try again.',preferPassword:false}),
+      identityErrorMessage:()=>'Account security is temporarily unavailable. Please try again.',
+      googleConfirmationStartFailure:(error,{lifecycle=false}={})=>({reason:'google_unavailable',
+        message:`Google confirmation is temporarily unavailable. Try again.${lifecycle?' No circle change was made.':''}`}),
+      authStatus:state=>({text:state?.loaded?'Choose how to continue.':'Checking sign-in options…',tone:state?.loaded?'info':'loading',routine:false}),
+      authCopy:(mode,{busy=false}={})=>mode==='signup'
+        ?{title:'Join Randori Circle',description:'',submit:busy?'Creating account…':'Create account',modeSwitch:'Already a member? Sign in'}
+        :(mode==='reset'?{title:'Reset your password',description:'',submit:busy?'Sending…':'Send reset email',modeSwitch:'Back to sign in'}
+          :{title:'Sign in to Randori',description:'',submit:busy?'Signing in…':'Sign in',modeSwitch:'New here? Create an account'}),
+      identityView({mode='manage',data=null,methods=null,busy=false,googleOAuth=false}={}){
+        const confirm=mode==='confirm';
+        const recent=data?.recentAuth?.ok===true;
+        const pw=confirm?methods?.password===true:data?.password?.linked===true;
+        const gl=confirm?methods?.google===true:data?.google?.linked===true;
+        const viaGoogle=data?.recentAuth?.method==='google';
+        return {title:confirm?'Confirm this sensitive change':'Account security',description:'',
+          defaultStatus:data?(confirm?'Choose an available confirmation method.':'Choose a sign-in method to manage.'):'Loading sign-in methods…',
+          recent:{hidden:confirm?false:(!data||recent),hint:'',showPassword:pw,showGoogle:gl&&(confirm||googleOAuth===true),ok:''},
+          google:{hidden:confirm,state:gl?'linked':'not linked',action:gl?'Remove Google':'Link Google',help:'',danger:gl,
+            disabled:busy||!data||!recent||(gl?!data.google?.canUnlink:googleOAuth!==true)},
+          password:{hidden:confirm,state:pw?'linked':'not linked',action:pw?'Remove password':'Add password',help:'',danger:pw,
+            disabled:busy||!data||!recent||(pw?!data.password?.canUnlink:!(data.password?.canAdd&&viaGoogle)),
+            showAdd:!pw&&data?.password?.canAdd===true&&recent&&viaGoogle}};
+      },
+      identityActionMessage:()=>'Done.',
+      messageTone:()=>'info',
+    });
+  })();
   const inviteGate=(()=>{
     try{
       const gate=window.__randoriInviteGate;
@@ -2894,43 +3098,43 @@ async function refreshMe(){
       registrationMode:mode,
     });
   }
-  function setAuthError(message=''){
+  const AUTH_FIELD_ERRORS=Object.freeze({authEmail:'authEmailError',authName:'authNameError',authPass:'authPassError'});
+  function setAuthError(message='',tone='error'){
     const error=document.getElementById('authErr');
-    if(error) error.textContent=String(message||'');
+    if(!error) return;
+    error.dataset.tone=tone==='success'||tone==='info'?'success':'error';
+    error.textContent=String(message||'');
+  }
+  function setAuthFieldError(inputId,message=''){
+    const input=document.getElementById(inputId);
+    const error=document.getElementById(AUTH_FIELD_ERRORS[inputId]||'');
+    const text=String(message||'');
+    if(input){ if(text) input.setAttribute('aria-invalid','true'); else input.removeAttribute('aria-invalid'); }
+    if(error){ error.textContent=text; error.hidden=!text; }
   }
   function clearAuthValidation({clearError=true}={}){
-    for(const input of document.querySelectorAll('#authPasswordFields input')) input.removeAttribute('aria-invalid');
+    for(const id of Object.keys(AUTH_FIELD_ERRORS)) setAuthFieldError(id,'');
     if(clearError) setAuthError('');
   }
-  function authStatusMessage(){
-    if(!authCapabilitiesLoaded) return 'Checking sign-in options…';
-    if(authCapabilitiesFailed) return 'New-account options could not be verified. Existing members can still try password sign-in.';
-    if(authMode==='reset') return 'Enter your account email. The response is the same whether or not an eligible account exists.';
-    if(authMode==='signup'&&signupRequiresPreparedInvite()&&!preparedInviteSnapshot()){
-      return 'Open the invitation link you received, or ask a circle owner for a new invitation. Existing members can sign in below.';
+  function setPasswordVisibility(inputId,toggleId,visible){
+    const input=document.getElementById(inputId);
+    const toggle=document.getElementById(toggleId);
+    if(input) input.type=visible?'text':'password';
+    if(toggle){
+      toggle.setAttribute('aria-pressed',visible?'true':'false');
+      toggle.setAttribute('aria-label',visible?'Hide password':'Show password');
     }
-    if(authMode==='signup'&&authCapabilities.passwordSignup){
-      if(authCapabilities.registrationMode==='local_invite'){
-        return inviteState.ready
-          ?'This local account will use the verified invitation and join the private circle.'
-          :'A valid local invitation is required before creating an account.';
-      }
-      if(authCapabilities.registrationMode==='verified_invite'){
-        return inviteState.ready
-          ?'Use the invited email. Your account activates only after you open the verification link.'
-          :'A valid invitation is required before requesting email verification.';
-      }
-      return authCapabilities.registrationMode==='local_open'
-        ? 'Create a local account. The first account can manage weekly pairing.'
-        : 'Create your account to join the circle.';
-    }
-    if(authMode==='signup'&&authCapabilities.googleOAuth){
-      return 'New members join with an invitation and their verified Google account.';
-    }
-    if(authCapabilities.googleOAuth&&authCapabilities.passwordLogin) return 'Use your existing password or Google account.';
-    if(authCapabilities.googleOAuth) return 'Continue with your verified Google account.';
-    if(authCapabilities.passwordLogin) return 'Sign in with your existing email and password.';
-    return 'No sign-in method is currently available.';
+  }
+  function authStatusView(){
+    return authUi.authStatus({
+      loaded:authCapabilitiesLoaded,
+      failed:authCapabilitiesFailed,
+      mode:authMode,
+      requiresInvite:signupRequiresPreparedInvite(),
+      hasInvite:preparedInviteSnapshot()!==null,
+      inviteReady:inviteState.ready,
+      capabilities:authCapabilities,
+    });
   }
   function updateAuthEntryPoints(){
     const joinConfigured=authCapabilities.registrationMode==='local_open'
@@ -2990,6 +3194,7 @@ async function refreshMe(){
     const description=document.getElementById('authDescription');
     const status=document.getElementById('authCapabilityStatus');
     const google=document.getElementById('authGoogle');
+    const googleLabel=document.getElementById('authGoogleLabel');
     const googleRetry=document.getElementById('authGoogleRetry');
     const divider=document.getElementById('authDivider');
     const fields=document.getElementById('authPasswordFields');
@@ -2997,6 +3202,8 @@ async function refreshMe(){
     const name=document.getElementById('authName');
     const password=document.getElementById('authPass');
     const passwordField=document.getElementById('authPasswordField');
+    const passwordHint=document.getElementById('authPassHint');
+    const passwordToggle=document.getElementById('authPassToggle');
     const signup=document.getElementById('authSignup');
     const signin=document.getElementById('authSignin');
     const resetRequest=document.getElementById('authResetRequest');
@@ -3004,48 +3211,72 @@ async function refreshMe(){
     const modeSwitch=document.getElementById('authModeSwitch');
     const cancel=document.getElementById('authCancel');
     const activationPending=document.getElementById('authActivationPending');
+    const activationEmail=document.getElementById('authActivationEmail');
+    const activationResend=document.getElementById('authActivationResend');
+    const activationChange=document.getElementById('authActivationChangeEmail');
     const pending=authMode==='signup'&&!!activationPendingEmail;
-    if(title) title.textContent=authMode==='signup'?'Join Randori Circle'
-      :(authMode==='reset'?'Reset your password':'Sign in to Randori');
-    if(description) description.textContent=authMode==='signup'
-      ?'Create an account to join weekly practice pairings.'
-      :(authMode==='reset'?'We will send a single-use recovery link if this account is eligible.'
-        :'Access your private pairing history and practice rooms.');
-    if(status) status.textContent=authStatusMessage();
-    if(google){ google.hidden=!authCapabilitiesLoaded||!googleEnabled||googleRetryPending; google.disabled=authBusy||!authCapabilitiesLoaded; }
+    const googleOpening=googleLeaving||!!googleInviteStartRequest;
+    const copy=authUi.authCopy(authMode,{registrationMode:authCapabilities.registrationMode,busy:authBusy});
+    if(title) title.textContent=copy.title;
+    if(description) description.textContent=pending
+      ?'One more step: confirm your email address.'
+      :copy.description;
+    if(status){
+      const view=authStatusView();
+      status.textContent=view.text;
+      status.dataset.tone=view.tone;
+      status.dataset.routine=view.routine?'true':'false';
+      status.hidden=pending;
+    }
+    if(google){
+      google.hidden=!authCapabilitiesLoaded||!googleEnabled||googleRetryPending;
+      google.disabled=authBusy||!authCapabilitiesLoaded||googleLeaving;
+      google.setAttribute('aria-busy',googleOpening?'true':'false');
+      if(googleLabel) googleLabel.textContent=googleOpening?'Opening Google…':'Continue with Google';
+    }
     if(googleRetry){
       googleRetry.hidden=!googleRetryPending||!authCapabilitiesLoaded||!googleEnabled;
-      googleRetry.disabled=authBusy||!authCapabilitiesLoaded;
+      googleRetry.disabled=authBusy||!authCapabilitiesLoaded||googleLeaving;
     }
     if(fields) fields.hidden=pending||!authCapabilitiesLoaded||!passwordEnabled;
     if(activationPending) activationPending.hidden=!pending;
+    if(activationEmail) activationEmail.textContent=pending?` at ${activationPendingEmail}`:'';
+    if(activationResend){
+      activationResend.disabled=authBusy;
+      activationResend.setAttribute('aria-busy',authBusy&&!!activationResendRequest?'true':'false');
+      activationResend.textContent=authBusy&&activationResendRequest?'Sending…':'Request another link';
+    }
+    if(activationChange) activationChange.disabled=authBusy;
     if(divider) divider.hidden=pending||!authCapabilitiesLoaded||!googleEnabled||!passwordEnabled;
     if(nameField) nameField.hidden=authMode!=='signup'||!passwordEnabled;
     if(name) name.required=authMode==='signup'&&passwordEnabled;
     if(passwordField) passwordField.hidden=authMode==='reset';
+    if(passwordHint) passwordHint.hidden=authMode!=='signup';
     if(password){
       password.required=authMode!=='reset';
       password.minLength=authMode==='signup'?10:0;
       password.autocomplete=authMode==='signup'?'new-password':'current-password';
       password.placeholder=authMode==='signup'?'At least 10 characters':'Your password';
     }
+    const submitting=authBusy&&!activationResendRequest;
     if(signup){
       signup.hidden=pending||!authCapabilitiesLoaded||authMode!=='signup'
         ||!authCapabilities.passwordSignup||!signupAllowed;
       signup.disabled=authBusy||!authCapabilitiesLoaded||!signupAllowed;
-      signup.textContent=authBusy&&authMode==='signup'
-        ?(authCapabilities.registrationMode==='verified_invite'?'Submitting…':'Creating account…')
-        :(authCapabilities.registrationMode==='verified_invite'?'Send verification email':'Create account');
+      signup.textContent=authMode==='signup'?copy.submit:authUi.authCopy('signup',{registrationMode:authCapabilities.registrationMode}).submit;
+      signup.setAttribute('aria-busy',submitting&&authMode==='signup'?'true':'false');
     }
     if(signin){
       signin.hidden=!authCapabilitiesLoaded||authMode!=='signin'||!authCapabilities.passwordLogin;
       signin.disabled=authBusy||!authCapabilitiesLoaded;
-      signin.textContent=authBusy&&authMode==='signin'?'Signing in…':'Sign in';
+      signin.textContent=authMode==='signin'?copy.submit:'Sign in';
+      signin.setAttribute('aria-busy',submitting&&authMode==='signin'?'true':'false');
     }
     if(resetRequest){
       resetRequest.hidden=!authCapabilitiesLoaded||authMode!=='reset'||!authCapabilities.passwordReset;
       resetRequest.disabled=authBusy||!authCapabilitiesLoaded;
-      resetRequest.textContent=authBusy?'Requesting…':'Send reset email';
+      resetRequest.textContent=authMode==='reset'?copy.submit:'Send reset email';
+      resetRequest.setAttribute('aria-busy',submitting&&authMode==='reset'?'true':'false');
     }
     if(forgot){
       forgot.hidden=!authCapabilitiesLoaded||authMode!=='signin'||!authCapabilities.passwordReset;
@@ -3058,10 +3289,10 @@ async function refreshMe(){
     if(modeSwitch){
       modeSwitch.hidden=pending||!authCapabilitiesLoaded||!alternateAvailable;
       modeSwitch.disabled=authBusy;
-      modeSwitch.textContent=authMode==='signup'?'Already a member? Sign in'
-        :(authMode==='reset'?'Back to sign in':'New here? Create an account');
+      modeSwitch.textContent=copy.modeSwitch;
     }
     for(const input of document.querySelectorAll('#authPasswordFields input')) input.disabled=authBusy||!authCapabilitiesLoaded||!passwordEnabled;
+    if(passwordToggle) passwordToggle.disabled=authBusy||!authCapabilitiesLoaded||!passwordEnabled;
     if(cancel) cancel.disabled=false;
     document.getElementById('authForm')?.setAttribute('aria-busy',authBusy?'true':'false');
     updateAuthEntryPoints();
@@ -3107,10 +3338,11 @@ async function refreshMe(){
     activationPendingEmail='';
     googleRetryPending=false;
     clearAuthValidation();
+    setPasswordVisibility('authPass','authPassToggle',false);
     renderAuthModal();
     focusAuthControl();
   }
-  function openAuthModal(mode='signin',{message='',googleRetry=false}={}){
+  function openAuthModal(mode='signin',{message='',googleRetry=false,tone='error'}={}){
     const overlay=document.getElementById('authOverlay');
     if(!overlay) return;
     authModalGeneration+=1;
@@ -3122,7 +3354,8 @@ async function refreshMe(){
     authMode=resolvedAuthMode(mode);
     googleRetryPending=googleRetry===true;
     clearAuthValidation({clearError:false});
-    setAuthError(message);
+    setAuthError(message,tone);
+    setPasswordVisibility('authPass','authPassToggle',false);
     overlay.classList.add('show');
     overlay.setAttribute('aria-hidden','false');
     document.dispatchEvent(new CustomEvent('randori:auth-modal-opened'));
@@ -3153,6 +3386,7 @@ async function refreshMe(){
     if(!preparedInviteSnapshot()) activationPendingEmail='';
     const password=document.getElementById('authPass');
     if(password) password.value='';
+    setPasswordVisibility('authPass','authPassToggle',false);
     const returnFocus=authReturnFocus;
     authReturnFocus=null;
     queueMicrotask(()=>{
@@ -3196,10 +3430,47 @@ async function refreshMe(){
   document.addEventListener('keydown',authDialogKeydown,true);
   for(const input of document.querySelectorAll('#authPasswordFields input')){
     input.addEventListener('input',()=>{
-      input.removeAttribute('aria-invalid');
+      setAuthFieldError(input.id,'');
       if(document.getElementById('authErr')?.textContent) setAuthError('');
     });
+    // Inline validation on blur stays quiet for empty fields until submit.
+    input.addEventListener('blur',event=>{
+      const overlay=document.getElementById('authOverlay');
+      if(!overlay?.classList.contains('show')||authBusy) return;
+      // Leaving a field to close or switch mode must not flash an error.
+      const next=event.relatedTarget;
+      if(next&&['authCancel','authModeSwitch','authForgot','authPassToggle','authGoogle','authGoogleRetry'].includes(next.id)) return;
+      const field=input.id==='authEmail'?'email':(input.id==='authName'?'name':'password');
+      const problem=authUi.fieldProblem(field,{mode:authMode,value:input.value,valid:input.validity.valid});
+      if(problem) setAuthFieldError(input.id,problem);
+    });
   }
+  function wirePasswordToggle(inputId,toggleId){
+    document.getElementById(toggleId)?.addEventListener('click',()=>{
+      const input=document.getElementById(inputId);
+      if(!input||input.disabled) return;
+      const start=input.selectionStart;
+      const end=input.selectionEnd;
+      setPasswordVisibility(inputId,toggleId,input.type==='password');
+      try{ if(start!==null&&end!==null) input.setSelectionRange(start,end); }catch{}
+    });
+  }
+  wirePasswordToggle('authPass','authPassToggle');
+  document.getElementById('authActivationChangeEmail')?.addEventListener('click',()=>{
+    if(authBusy) return;
+    abortActivationResend();
+    activationPendingEmail='';
+    setAuthError('');
+    renderAuthModal();
+    document.getElementById('authEmail')?.focus();
+  });
+  // Returning from Google with the browser Back button restores this page
+  // from the back/forward cache; the Google button must not stay "Opening…".
+  window.addEventListener('pageshow',event=>{
+    if(!event.persisted||!googleLeaving) return;
+    googleLeaving=false;
+    renderAuthModal();
+  });
   (()=>{
     const wireSignOut=(id)=>{
       const button=document.getElementById(id);
@@ -3280,86 +3551,82 @@ async function refreshMe(){
       &&document.getElementById('identityOverlay')?.classList.contains('show');
   }
   function identityErrorMessage(error){
-    const code=String(error?.status||error?.code||error?.error||'');
-    if(code==='recent_auth_required'||code.includes('recent authentication')) return 'Confirm your password or Google account, then try again.';
-    if(code==='provider_in_use') return 'That Google identity already belongs to another Randori account. Sign in there and add another method before unlinking it.';
-    if(code==='provider_already_linked') return 'This account already has a different Google identity linked.';
-    if(code==='final_credential'||code.includes('before removing')) return 'Add another sign-in method before removing this one.';
-    if(code==='verified_control_required'||code.includes('confirm your linked Google')) return 'Confirm the linked Google account before adding a password.';
-    return 'Account security is temporarily unavailable. Please try again.';
+    return authUi.identityErrorMessage(error);
   }
-  function googleConfirmationStartFailure(error,{lifecycle=false}={}){
-    const detail=String(error?.error||error?.message||'');
-    const result=detail.includes('too many')
-      ?{reason:'google_rate_limited',message:'Too many Google confirmation attempts. Try again later.'}
-      :(detail.includes('authentication required')
-        ?{reason:'session_changed',message:'Your session changed. Sign in again before retrying.'}
-        :{reason:'google_unavailable',message:'Google confirmation is temporarily unavailable. Try again.'});
-    return lifecycle?{...result,message:`${result.message} No circle change was made.`}:result;
+  function googleConfirmationStartFailure(error,options={}){
+    return authUi.googleConfirmationStartFailure(error,options);
+  }
+  function setIdentityConfirmError(message=''){
+    const input=document.getElementById('identityPasswordConfirm');
+    const error=document.getElementById('identityPasswordConfirmError');
+    if(input){ if(message) input.setAttribute('aria-invalid','true'); else input.removeAttribute('aria-invalid'); }
+    if(error){ error.textContent=message; error.hidden=!message; }
   }
   function renderIdentity(){
     const data=identityUi.data;
     const confirmation=identityUi.mode==='confirm';
+    const view=authUi.identityView({
+      mode:identityUi.mode,data,methods:identityUi.methods,busy:identityUi.busy,
+      googleOAuth:authCapabilities.googleOAuth===true,nowMs:Date.now(),
+    });
     const title=document.getElementById('identityTitle');
     const description=document.getElementById('identityDescription');
-    if(title) title.textContent=confirmation?'Confirm this sensitive change':'Account security';
-    if(description) description.textContent=confirmation
-      ?'Confirm your identity to continue the exact pending circle action.'
-      :'Manage the sign-in methods attached to this exact Randori account.';
+    if(title) title.textContent=view.title;
+    if(description&&view.description) description.textContent=view.description;
     const status=document.getElementById('identityStatus');
-    if(status) status.textContent=identityUi.message||(data
-      ?(confirmation?'Choose an available confirmation method.':'Choose a sign-in method to manage.')
-      :'Loading sign-in methods…');
-    const recent=data?.recentAuth?.ok===true;
+    if(status){
+      const text=identityUi.message||view.defaultStatus;
+      status.textContent=text;
+      status.dataset.tone=identityUi.message?authUi.messageTone(text):(data?'info':'loading');
+    }
     const recentPanel=document.getElementById('identityRecent');
-    if(recentPanel) recentPanel.hidden=confirmation?false:Boolean(recent);
-    const passwordLinked=confirmation?identityUi.methods?.password===true:data?.password?.linked===true;
-    const googleLinked=confirmation?identityUi.methods?.google===true:data?.google?.linked===true;
+    if(recentPanel) recentPanel.hidden=view.recent.hidden;
+    const recentHint=document.getElementById('identityRecentHint');
+    if(recentHint&&view.recent.hint) recentHint.textContent=view.recent.hint;
+    const recentOk=document.getElementById('identityRecentOk');
+    if(recentOk){ recentOk.textContent=view.recent.ok||''; recentOk.hidden=!view.recent.ok; }
     const googleCard=document.getElementById('identityGoogleCard');
     const passwordCard=document.getElementById('identityPasswordCard');
-    if(googleCard) googleCard.hidden=confirmation;
-    if(passwordCard) passwordCard.hidden=confirmation;
+    if(googleCard) googleCard.hidden=view.google.hidden;
+    if(passwordCard) passwordCard.hidden=view.password.hidden;
     const passwordState=document.getElementById('identityPasswordState');
     const googleState=document.getElementById('identityGoogleState');
-    if(passwordState) passwordState.textContent=passwordLinked?'linked':'not linked';
-    if(googleState) googleState.textContent=googleLinked?'linked':'not linked';
+    if(passwordState){ passwordState.textContent=view.password.state; passwordState.dataset.state=data||confirmation?view.password.state:'unknown'; }
+    if(googleState){ googleState.textContent=view.google.state; googleState.dataset.state=data||confirmation?view.google.state:'unknown'; }
     const passwordConfirmField=document.getElementById('identityPasswordConfirmField');
     const passwordConfirm=document.getElementById('identityConfirmPassword');
     const googleConfirm=document.getElementById('identityConfirmGoogle');
-    if(passwordConfirmField) passwordConfirmField.hidden=!passwordLinked;
-    if(passwordConfirm) passwordConfirm.hidden=!passwordLinked;
-    if(googleConfirm) googleConfirm.hidden=!googleLinked||(!confirmation&&authCapabilities.googleOAuth!==true);
+    if(passwordConfirmField) passwordConfirmField.hidden=!view.recent.showPassword;
+    if(passwordConfirm) passwordConfirm.hidden=!view.recent.showPassword;
+    if(googleConfirm){
+      googleConfirm.hidden=!view.recent.showGoogle;
+      // With no password, Google is the only (primary) way to confirm.
+      googleConfirm.classList.toggle('secondary',view.recent.showPassword);
+    }
     const googleAction=document.getElementById('identityGoogleAction');
     if(googleAction){
-      googleAction.textContent=googleLinked?'Remove Google':'Link Google';
-      googleAction.disabled=identityUi.busy||!data||!recent||(googleLinked?!data.google.canUnlink:authCapabilities.googleOAuth!==true);
+      googleAction.textContent=view.google.action;
+      googleAction.disabled=view.google.disabled;
+      googleAction.classList.toggle('danger-outline',view.google.danger);
     }
     const passwordAction=document.getElementById('identityPasswordAction');
     if(passwordAction){
-      passwordAction.textContent=passwordLinked?'Remove password':'Add password';
-      passwordAction.disabled=identityUi.busy||!data||!recent
-        ||(passwordLinked?!data.password.canUnlink:!(data.password.canAdd&&data.recentAuth?.method==='google'));
+      passwordAction.textContent=view.password.action;
+      passwordAction.disabled=view.password.disabled;
+      passwordAction.classList.toggle('danger-outline',view.password.danger);
     }
     const passwordAdd=document.getElementById('identityPasswordAdd');
-    const showPasswordAdd=!passwordLinked&&data?.password?.canAdd&&recent&&data?.recentAuth?.method==='google';
-    if(passwordAdd){ passwordAdd.hidden=!showPasswordAdd; passwordAdd.style.display=showPasswordAdd?'grid':'none'; }
+    if(passwordAdd) passwordAdd.hidden=!view.password.showAdd;
     const googleHelp=document.getElementById('identityGoogleHelp');
-    if(googleHelp) googleHelp.textContent=confirmation
-      ?''
-      :(googleLinked&&!data?.google?.canUnlink
-        ?'Add a password before removing your final sign-in method.'
-        :'Google linking always requires an explicit, fresh provider confirmation.');
+    if(googleHelp){ googleHelp.textContent=view.google.help; googleHelp.hidden=!view.google.help; }
     const passwordHelp=document.getElementById('identityPasswordHelp');
-    if(passwordHelp) passwordHelp.textContent=confirmation
-      ?''
-      :(passwordLinked&&!data?.password?.canUnlink
-        ?'Link Google before removing your final sign-in method.'
-        :'Adding a password requires verified control of the linked Google account.');
+    if(passwordHelp){ passwordHelp.textContent=view.password.help; passwordHelp.hidden=!view.password.help; }
     for(const control of document.querySelectorAll('#identityOverlay input,#identityOverlay button')){
       if(control.id!=='identityClose'&&!['identityGoogleAction','identityPasswordAction'].includes(control.id)){
         control.disabled=identityUi.busy;
       }
     }
+    document.getElementById('identityDialog')?.setAttribute('aria-busy',identityUi.busy?'true':'false');
   }
   async function refreshIdentity(){
     identityUi.busy=true; identityUi.message='Loading sign-in methods…'; renderIdentity();
@@ -3444,6 +3711,8 @@ async function refreshMe(){
     for(const id of ['identityPasswordConfirm','identityNewPassword','identityNewPasswordConfirm']){
       const input=document.getElementById(id); if(input) input.value='';
     }
+    setIdentityConfirmError('');
+    setPasswordVisibility('identityPasswordConfirm','identityPasswordConfirmToggle',false);
     identityUi.mode='manage'; identityUi.methods=null;
     const requestedTarget=identityUi.returnFocus; identityUi.returnFocus=null;
     const accountTrigger=document.getElementById('meLabel');
@@ -3453,24 +3722,51 @@ async function refreshMe(){
     target?.focus();
     if(cancelled) recentConfirmationCancelled('cancelled');
   }
-  async function identityAction(work,message){
+  function identityErrorCode(error){
+    return String(error?.status||error?.code||error?.error||'');
+  }
+  async function identityAction(work,message,{onError=null}={}){
     if(identityUi.busy) return;
     identityUi.busy=true; identityUi.message=message; renderIdentity();
+    let focusAfter=null;
     try{
       const result=await work();
       identityUi.data=result.identity||identityUi.data;
-      identityUi.message=result.status==='unlinked'?'Sign-in method removed.'
-        :(result.status==='not_linked'?'That sign-in method is already removed.'
-        :(result.status==='already_linked'?'That sign-in method is already linked.'
-        :(result.status==='redirecting'?'Continue with Google to finish linking.'
-        :(result.status==='confirmed'?'Identity confirmed.':'Sign-in method linked.'))));
-    }catch(error){ identityUi.message=identityErrorMessage(error); }
-    finally{ identityUi.busy=false; renderIdentity(); }
+      identityUi.message=authUi.identityActionMessage(result.status);
+    }catch(error){
+      identityUi.message=identityErrorMessage(error);
+      const code=identityErrorCode(error);
+      // The server is the authority on recent auth. When it says the
+      // confirmation lapsed, show the confirm step again instead of a dead end.
+      if(identityUi.mode==='manage'&&identityUi.data
+        &&(code==='recent_auth_required'||code==='recent authentication required')){
+        identityUi.data={...identityUi.data,recentAuth:{ok:false,reason:'recent_auth_required'}};
+        focusAfter='identityPasswordConfirm';
+      }
+      focusAfter=onError?.(error,code)||focusAfter;
+    }
+    finally{
+      identityUi.busy=false; renderIdentity();
+      const target=focusAfter&&document.getElementById(focusAfter);
+      if(target&&!target.disabled&&target.getClientRects().length>0) target.focus();
+    }
   }
   document.getElementById('meIdentity')?.addEventListener('click',openIdentity);
   document.getElementById('identityClose')?.addEventListener('click',closeIdentity);
   document.getElementById('identityOverlay')?.addEventListener('click',event=>{ if(event.target===event.currentTarget) closeIdentity(); });
-  document.getElementById('identityConfirmPassword')?.addEventListener('click',()=>identityAction(async()=>{
+  document.getElementById('identityRecent')?.addEventListener('submit',event=>event.preventDefault());
+  document.getElementById('identityPasswordConfirm')?.addEventListener('input',()=>setIdentityConfirmError(''));
+  wirePasswordToggle('identityPasswordConfirm','identityPasswordConfirmToggle');
+  document.getElementById('identityConfirmPassword')?.addEventListener('click',()=>{
+    if(identityUi.busy) return;
+    const confirmInput=document.getElementById('identityPasswordConfirm');
+    if(!confirmInput?.value){
+      setIdentityConfirmError('Enter your current password.');
+      confirmInput?.focus();
+      return;
+    }
+    setIdentityConfirmError('');
+    return identityAction(async()=>{
     const input=document.getElementById('identityPasswordConfirm');
     const result=await api('/api/auth/recent-auth',{method:'POST',body:{password:input?.value||''}});
     if(input) input.value='';
@@ -3482,7 +3778,14 @@ async function refreshMe(){
     }
     await refreshIdentity();
     return {status:'confirmed',identity:identityUi.data,recentAuth:result.recentAuth};
-  },'Confirming your password…'));
+  },'Confirming your password…',{onError:(error,code)=>{
+    if(code!=='invalid credentials'&&code!=='password required') return null;
+    // Show this next to the field only, not twice.
+    setIdentityConfirmError(identityErrorMessage(error));
+    identityUi.message='';
+    return 'identityPasswordConfirm';
+  }});
+  });
   async function beginGoogleReauthentication(){
     if(identityUi.busy) return;
     const mode=identityUi.mode;
@@ -3541,9 +3844,12 @@ async function refreshMe(){
     }
     const password=document.getElementById('identityNewPassword')?.value||'';
     const confirmation=document.getElementById('identityNewPasswordConfirm')?.value||'';
-    const bytes=new TextEncoder().encode(password).length;
-    if(bytes<10||bytes>72){ identityUi.message='Password must be 10–72 UTF-8 bytes.'; renderIdentity(); return; }
-    if(password!==confirmation){ identityUi.message='Passwords do not match.'; renderIdentity(); return; }
+    const problem=authUi.newPasswordProblem(password,confirmation);
+    if(problem){
+      identityUi.message=problem; renderIdentity();
+      document.getElementById(problem==='Passwords do not match.'?'identityNewPasswordConfirm':'identityNewPassword')?.focus();
+      return;
+    }
     await identityAction(()=>api('/api/auth/identities/password',{method:'POST',body:{action:'add',password}}),'Adding password sign-in…');
     document.getElementById('identityNewPassword').value='';
     document.getElementById('identityNewPasswordConfirm').value='';
@@ -3722,40 +4028,29 @@ async function refreshMe(){
   })();
 
   function authFailureMessage(error,mode){
-    const code=String(error?.error||error?.message||'');
-    if(code==='invitation context changed'||code==='invitation unavailable'
-      ||code.includes('valid local invitation')){
-      return 'This prepared invitation changed or expired. Reopen the original invitation link.';
-    }
-    if(code==='email already registered') return 'That email already has an account. Sign in instead.';
-    if(code==='invalid credentials') return 'Email or password is incorrect.';
-    if(code==='active circle membership required') return 'Your circle membership is no longer active. Ask the circle owner for a new invitation.';
-    if(code.includes('temporarily unavailable')) return mode==='signup'
-      ?'Account creation is temporarily unavailable. Try again.'
-      :(mode==='reset'?'Password recovery is temporarily unavailable. Try again.':'Sign in is temporarily unavailable. Try again.');
-    if(code.includes('too many')) return 'Too many attempts. Wait a few minutes and try again.';
-    if(code.includes('cross-origin')||code.includes('same-origin')) return 'This sign-in request was rejected. Refresh and try again.';
-    return code||(mode==='signup'?'Account creation failed. Try again.'
-      :(mode==='reset'?'Password recovery failed. Try again.':'Sign in failed. Try again.'));
+    return authUi.authFailureMessage(error,mode);
   }
   function validateAuthForm(mode){
     const emailInput=document.getElementById('authEmail');
     const nameInput=document.getElementById('authName');
     const passwordInput=document.getElementById('authPass');
-    for(const input of [emailInput,nameInput,passwordInput]) input.removeAttribute('aria-invalid');
-    const email=emailInput.value.trim().toLowerCase();
-    const name=nameInput.value.trim();
-    const password=passwordInput.value;
-    if(!email||!emailInput.validity.valid){ setAuthError('Enter a valid email address.'); emailInput.setAttribute('aria-invalid','true'); emailInput.focus(); return null; }
-    if(mode==='reset'){ setAuthError(''); return {email}; }
-    if(mode==='signup'&&(name.length<2||name.length>32)){ setAuthError('Display name must be 2–32 characters.'); nameInput.setAttribute('aria-invalid','true'); nameInput.focus(); return null; }
-    if(!password){ setAuthError('Enter your password.'); passwordInput.setAttribute('aria-invalid','true'); passwordInput.focus(); return null; }
-    const passwordBytes=new TextEncoder().encode(password).length;
-    if(mode==='signup'&&(passwordBytes<10||passwordBytes>72)){
-      setAuthError('Password must be 10–72 UTF-8 bytes.'); passwordInput.setAttribute('aria-invalid','true'); passwordInput.focus(); return null;
-    }
+    const result=authUi.validateAuthFields({
+      mode,
+      email:emailInput.value,
+      emailValid:emailInput.validity.valid,
+      name:nameInput.value,
+      password:passwordInput.value,
+    });
+    const errors=result.ok?{}:result.errors;
+    setAuthFieldError('authEmail',errors.email||'');
+    setAuthFieldError('authName',mode==='signup'?errors.name||'':'');
+    setAuthFieldError('authPass',mode==='reset'?'':errors.password||'');
     setAuthError('');
-    return mode==='signup'?{email,password,name}:{email,password};
+    if(!result.ok){
+      ({email:emailInput,name:nameInput,password:passwordInput})[result.first]?.focus();
+      return null;
+    }
+    return result.body;
   }
   async function submitAuth(mode){
     if(authBusy||!authCapabilitiesLoaded) return;
@@ -3788,7 +4083,7 @@ async function refreshMe(){
       if(response.ok&&mode==='reset'&&data?.pending===true){
         authRequest=null;
         setAuthBusy(false);
-        setAuthError('If that account is eligible, a reset link will arrive shortly.');
+        setAuthError('If that account is eligible, a reset link will arrive shortly. It works once and expires in 30 minutes.','success');
         return;
       }
       if(response.ok&&mode==='signup'&&data?.pending===true){
@@ -3799,7 +4094,9 @@ async function refreshMe(){
         renderAuthModal();
         return;
       }
-      if(!response.ok||!data?.user) throw data||new Error('authentication unavailable');
+      if(!response.ok||!data?.user){
+        throw Object.assign(data&&typeof data==='object'?data:{error:'authentication unavailable'},{http_status:response.status});
+      }
       authRequest=null;
       setAuthBusy(false);
       invalidateAuthRefreshes();
@@ -3820,12 +4117,24 @@ async function refreshMe(){
     }catch(error){
       if(authRequest!==request||request.controller.signal.aborted||!authInteractionMatches(operation)) return;
       setAuthError(authFailureMessage(error,mode));
+      request.failed=true;
     }finally{
       if(authRequest===request){
         authRequest=null;
         setAuthBusy(false);
+        if(request.failed) restoreAuthFocusAfterFailure(mode);
       }
     }
+  }
+  // While busy, focus parks on Close so it never lands on a disabled control.
+  // After a failure, return it to where the person can fix the problem.
+  function restoreAuthFocusAfterFailure(mode){
+    const overlay=document.getElementById('authOverlay');
+    const active=document.activeElement;
+    if(!overlay?.classList.contains('show')) return;
+    if(active&&active!==document.body&&active.id!=='authCancel'&&active.id!=='authDialog') return;
+    const target=document.getElementById(mode==='signin'?'authPass':(mode==='reset'?'authEmail':'authSignup'));
+    if(target&&!target.disabled&&target.getClientRects().length>0) target.focus();
   }
   document.getElementById('authForm').addEventListener('submit',event=>{
     event.preventDefault();
@@ -3836,7 +4145,7 @@ async function refreshMe(){
     const operation=captureAuthInteraction({requireInvite:true});
     if(!operation){
       activationPendingEmail='';
-      setAuthError('This prepared invitation expired. Reopen the original invitation link.');
+      setAuthError('This invitation link expired. Reopen the link from your invitation email.');
       renderAuthModal();
       return;
     }
@@ -3853,7 +4162,8 @@ async function refreshMe(){
       if(activationResendRequest!==request||!authInteractionMatches(operation)) return;
       setAuthError(response.ok
         ?'If this invitation remains eligible, another verification link will arrive shortly.'
-        :authFailureMessage(data,'signup'));
+        :authFailureMessage({...(data&&typeof data==='object'?data:{}),http_status:response.status},'activation'),
+      response.ok?'success':'error');
     }catch(error){
       if(activationResendRequest!==request||request.controller.signal.aborted
         ||!authInteractionMatches(operation)) return;
@@ -3907,7 +4217,7 @@ async function refreshMe(){
     }
   }
   function beginGoogleSignIn(){
-    if(authBusy||!authCapabilitiesLoaded||!authCapabilities.googleOAuth) return;
+    if(authBusy||googleLeaving||!authCapabilitiesLoaded||!authCapabilities.googleOAuth) return;
     if(authMode==='signup'&&signupRequiresPreparedInvite()){
       void beginGoogleInviteSignIn();
       return;
@@ -3918,6 +4228,10 @@ async function refreshMe(){
     if(inviteState.active) invalidatePreparedInvite('login');
     const params=new URLSearchParams({purpose:'login'});
     if(returnTo) params.set('return_to',returnTo);
+    googleLeaving=true;
+    renderAuthModal();
+    // If the navigation never happens, give the control back.
+    setTimeout(()=>{ if(googleLeaving){ googleLeaving=false; renderAuthModal(); } },15000);
     window.location.href=`/api/auth/google/start?${params.toString()}`;
   }
   const authGoogleBtn=document.getElementById('authGoogle');
@@ -3925,17 +4239,7 @@ async function refreshMe(){
   const authGoogleRetryBtn=document.getElementById('authGoogleRetry');
   if(authGoogleRetryBtn) authGoogleRetryBtn.onclick=beginGoogleSignIn;
   function googleFailureMessage(code){
-    switch(code){
-      case 'access_denied': return 'Google sign-in was cancelled. You can try again when ready.';
-      case 'invalid_state': return 'Your Google sign-in session expired. Start again to continue safely.';
-      case 'provider_unavailable': return 'Google sign-in is temporarily unavailable. Please try again.';
-      case 'identity_invalid':
-      case 'provider_response_invalid': return 'We could not verify that Google account. Please try again.';
-      case 'account_exists_use_password': return 'This email already uses password sign-in. Sign in with your password.';
-      case 'identity_mismatch': return 'That Google account conflicts with an existing identity. Contact the circle owner.';
-      case 'private_beta': return 'A valid invitation for this Google account is required.';
-      default: return 'Google sign-in did not complete. Please try again.';
-    }
+    return authUi.googleFailure(code).message;
   }
   async function refreshAuthForOAuthResult(maxAttempts=3){
     for(let attempt=0;attempt<maxAttempts;attempt+=1){
@@ -3967,13 +4271,16 @@ async function refreshMe(){
             if(!authIdentityHydrated) await refreshAuthForOAuthResult();
             const inviteRetry=authIdentityHydrated&&inviteState.active
               &&preparedInviteSnapshot()!==null;
+            const failure=authUi.googleFailure(ge);
             if(inviteRetry){
-              openAuthModal('signup',{message:googleFailureMessage(ge),googleRetry:true});
+              openAuthModal('signup',{message:failure.message,googleRetry:true});
             }else if(inviteState.active){
-              try{ toast(googleFailureMessage(ge)); }catch{}
+              try{ toast(failure.message); }catch{}
               renderInviteGateState();
             }else{
-              openAuthModal('signin',{message:googleFailureMessage(ge),googleRetry:true});
+              // When Google cannot help (the email already signs in with a
+              // password), lead with the email form instead of a retry.
+              openAuthModal('signin',{message:failure.message,googleRetry:!failure.preferPassword});
             }
           }
           let authRefreshCommitted=true;
@@ -4160,18 +4467,50 @@ async function refreshMe(){
   setInterval(refreshPresence, 2000);
 
   // ---------- modal helpers (no alert/confirm/prompt — iframe blocked) ----------
+  // Small promise dialogs: focus moves in, Tab stays inside, Escape or the
+  // scrim cancels, and focus returns to the control that opened them.
+  function openPromiseDialog(overlay,{initialFocus,onCancel,onEnter=null}){
+    const returnFocus=document.activeElement;
+    overlay.classList.add('show');
+    overlay.setAttribute('aria-hidden','false');
+    const keydown=event=>{
+      if(!overlay.classList.contains('show')) return;
+      if(event.key==='Escape'){ event.preventDefault(); event.stopImmediatePropagation(); onCancel(); return; }
+      if(event.key==='Enter'&&onEnter&&event.target?.tagName==='INPUT'){ event.preventDefault(); onEnter(); return; }
+      if(event.key!=='Tab') return;
+      const focusable=[...overlay.querySelectorAll('button:not([disabled]),input:not([disabled])')]
+        .filter(element=>element.getClientRects().length>0);
+      if(!focusable.length) return;
+      const first=focusable[0];
+      const last=focusable[focusable.length-1];
+      if(!overlay.contains(document.activeElement)){ event.preventDefault(); first.focus(); }
+      else if(event.shiftKey&&document.activeElement===first){ event.preventDefault(); last.focus(); }
+      else if(!event.shiftKey&&document.activeElement===last){ event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener('keydown',keydown,true);
+    setTimeout(()=>{ if(overlay.classList.contains('show')) initialFocus?.focus(); },30);
+    return ()=>{
+      document.removeEventListener('keydown',keydown,true);
+      overlay.classList.remove('show');
+      overlay.setAttribute('aria-hidden','true');
+      if(returnFocus&&returnFocus!==document.body&&returnFocus.isConnected
+        &&returnFocus.getClientRects().length>0&&!returnFocus.disabled) returnFocus.focus();
+    };
+  }
   function showConfirm(title, msg){
     return new Promise(res=>{
       const ov=document.getElementById('confirmOverlay');
       document.getElementById('confirmTitle').textContent=title;
       document.getElementById('confirmMsg').textContent=msg||'';
-      ov.classList.add('show');
       const ok=document.getElementById('confirmOk'), cancel=document.getElementById('confirmCancel');
-      const cleanup=()=>{ ov.classList.remove('show'); ok.removeEventListener('click', onOk); cancel.removeEventListener('click', onCancel); ov.removeEventListener('click', onOv); };
+      let close=()=>{};
+      const cleanup=()=>{ ok.removeEventListener('click', onOk); cancel.removeEventListener('click', onCancel); ov.removeEventListener('click', onOv); close(); };
       const onOk=()=>{ cleanup(); res(true); };
       const onCancel=()=>{ cleanup(); res(false); };
       const onOv=(e)=>{ if(e.target===ov){ cleanup(); res(false);} };
       ok.addEventListener('click', onOk); cancel.addEventListener('click', onCancel); ov.addEventListener('click', onOv);
+      // Cancel takes focus first: confirmations are often destructive.
+      close=openPromiseDialog(ov,{initialFocus:cancel,onCancel});
     });
   }
   function showPrompt(title, defVal){
@@ -4179,14 +4518,15 @@ async function refreshMe(){
       const ov=document.getElementById('promptOverlay');
       document.getElementById('promptTitle').textContent=title;
       const input=document.getElementById('promptInput');
-      input.value=defVal||''; ov.classList.add('show'); setTimeout(()=>input.focus(), 30);
+      input.value=defVal||'';
       const ok=document.getElementById('promptOk'), cancel=document.getElementById('promptCancel');
-      const cleanup=()=>{ ov.classList.remove('show'); ok.removeEventListener('click', onOk); cancel.removeEventListener('click', onCancel); ov.removeEventListener('click', onOv); input.removeEventListener('keydown', onKey); };
+      let close=()=>{};
+      const cleanup=()=>{ ok.removeEventListener('click', onOk); cancel.removeEventListener('click', onCancel); ov.removeEventListener('click', onOv); close(); };
       const onOk=()=>{ const v=input.value; cleanup(); res(v); };
       const onCancel=()=>{ cleanup(); res(null); };
       const onOv=(e)=>{ if(e.target===ov){ cleanup(); res(null);} };
-      const onKey=(e)=>{ if(e.key==='Enter') onOk(); if(e.key==='Escape') onCancel(); };
-      ok.addEventListener('click', onOk); cancel.addEventListener('click', onCancel); ov.addEventListener('click', onOv); input.addEventListener('keydown', onKey);
+      ok.addEventListener('click', onOk); cancel.addEventListener('click', onCancel); ov.addEventListener('click', onOv);
+      close=openPromiseDialog(ov,{initialFocus:input,onCancel,onEnter:onOk});
     });
   }
   
