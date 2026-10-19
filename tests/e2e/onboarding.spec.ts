@@ -97,7 +97,7 @@ test('a new member completes profile basics, availability and what happens next 
   await expect(page.locator('#setupStepText')).toHaveText('Step 4 of 5');
   await expect(page.locator('#setupAvailabilityTitle')).toBeFocused();
   expect(profilePosts[0]).toMatchObject({ display_name: 'Ada Lovelace', tz: 'Europe/London', interview_focus: 'dsa' });
-  await expect(page.locator('#setupAvailabilityTitle')).toHaveText(/^Your availability for the week of \d{1,2} [A-Z][a-z]{2,3}$/);
+  await expect(page.locator('#setupAvailabilityTitle')).toHaveText(/^Are you in for the week of \d{1,2} [A-Z][a-z]{2,3}\?$/);
   await expect(page.locator('#setupAvailabilityNote')).toContainText('Not decided yet');
   await expect(page.locator('#setupAvailabilityNext')).toHaveText('Decide later');
   const card = page.locator('#setupStepAvailability #availabilityWrap');

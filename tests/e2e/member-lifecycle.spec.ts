@@ -88,16 +88,22 @@ test('an owner deactivates, reactivates, and safely transfers ownership',async({
   await expect(panel).toBeVisible();
   await expect(panel.getByText('2 memberships shown. All members loaded.')).toBeVisible();
   const memberRow=panel.locator('[data-testid="circle-member-row"][data-member-id="2"]');
-  await expect(memberRow).toContainText('member • active');
+  await expect(memberRow).toHaveAttribute('data-member-status','active');
+  await expect(memberRow).toHaveAttribute('data-member-role','member');
+  await expect(memberRow).toContainText('Active');
 
   await memberRow.getByRole('button',{name:'Deactivate Circle Member'}).click();
   await confirmAction(page,/Deactivate Circle Member/);
-  await expect(memberRow).toContainText('member • inactive');
+  await expect(memberRow).toHaveAttribute('data-member-status','inactive');
+  await expect(memberRow).toHaveAttribute('data-member-role','member');
+  await expect(memberRow).toContainText('Inactive');
   await expect(memberRow.getByRole('button',{name:'Reactivate Circle Member'})).toBeVisible();
 
   await memberRow.getByRole('button',{name:'Reactivate Circle Member'}).click();
   await confirmAction(page,/Reactivate Circle Member/);
-  await expect(memberRow).toContainText('member • active');
+  await expect(memberRow).toHaveAttribute('data-member-status','active');
+  await expect(memberRow).toHaveAttribute('data-member-role','member');
+  await expect(memberRow).toContainText('Active');
 
   await memberRow.getByRole('button',{name:'Transfer ownership to Circle Member'}).click();
   await confirmAction(page,/Transfer ownership to Circle Member/);
@@ -208,7 +214,7 @@ test('Google confirmation resumes exact owner deactivation once without identity
   await expect(page.locator('#view-dashboard')).toBeVisible();
   await page.locator('[data-tab="circle"]').click();
   await expect(page.locator('[data-testid="circle-member-row"][data-member-id="2"]'))
-    .toContainText('owner • inactive');
+    .toHaveAttribute('data-member-status','inactive');
   expect(patches).toEqual([
     {action:'deactivate',member_id:2},
     {action:'deactivate',member_id:2},
@@ -465,7 +471,9 @@ test('a delayed member mutation cannot restore an old-circle roster during a swi
     const selector=page.getByTestId('circle-context-select');
     await expect(selector).toHaveValue('circle-primary');
     const target=page.locator('[data-testid="circle-member-row"][data-member-id="2"]');
-    await expect(target).toContainText('member • active');
+    await expect(target).toHaveAttribute('data-member-status','active');
+    await expect(target).toHaveAttribute('data-member-role','member');
+    await expect(target).toContainText('Active');
 
     const mutationResponse=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/members'
       &&response.request().method()==='PATCH');

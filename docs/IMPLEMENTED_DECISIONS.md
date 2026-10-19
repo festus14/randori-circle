@@ -219,10 +219,12 @@ slower editorially but deployable now and legally controllable.
 
 **Decision.** Every candidate runs on Node.js 24 and must pass production-
 dependency audit, original-catalogue validation, runtime-DDL boundary, syntax
-checks, migration rehearsal, unit tests with at least 52% line, branch, and
-function coverage, and Ubuntu Playwright flows. The threshold deliberately
-exceeds the requested 50% floor and applies across API, database, and operations
-modules rather than only well-tested files. Failed browser runs retain trace,
+checks, migration rehearsal, unit tests meeting the measured line, branch, and
+function coverage baseline (`docs/testing/COVERAGE_BASELINE.md`; target 80% on
+every metric), and Ubuntu Playwright flows. Coverage is collected as raw V8
+coverage and merged by c8 because Node 24's built-in merger attributes
+`mock.module()` stand-ins to the real file. The gate applies across API,
+database, and operations modules rather than only well-tested files. Failed browser runs retain trace,
 screenshot, and report artifacts.
 
 Feature work uses scoped branches and a linear PR stack. Required automated

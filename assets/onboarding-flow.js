@@ -147,7 +147,7 @@
   function availabilityStep(value, { timeZone } = {}) {
     if (!value || typeof value !== 'object' || !value.cycle) {
       return {
-        title: 'Your availability for the next cycle',
+        title: 'Are you in for the next cycle?',
         lead: 'Checking the next pairing cycle…',
         next: 'Decide later',
         decided: false,
@@ -166,7 +166,7 @@
     else if (decided) note = `Saved. You can change it until ${by}.`;
     else note = `Not decided yet. Choose by ${by}, or decide later — until then you’re ${inherited} (${value.source === 'legacy_bridge' ? 'your previous setting' : 'the circle default'}).`;
     return {
-      title: `Your availability for ${week}`,
+      title: `Are you in for ${week}?`,
       lead: 'Pairs are made from members who say they’re in. Choose for this cycle only.',
       next: decided || !value.editable ? 'Continue' : 'Decide later',
       decided,

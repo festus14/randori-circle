@@ -54,7 +54,9 @@ test('the owner revokes an invitation, sees a new member join the roster, and re
     await expect(owner.page.getByTestId('circle-members')).toContainText('Removable Member');
     const panel=owner.page.getByTestId('circle-lifecycle');
     const row=panel.locator(`[data-testid="circle-member-row"][data-member-id="${joined.id}"]`);
-    await expect(row).toContainText('member • active');
+    await expect(row).toHaveAttribute('data-member-status','active');
+    await expect(row).toHaveAttribute('data-member-role','member');
+    await expect(row).toContainText('Active');
 
     // Remove (deactivate) the member through the owner controls.
     await row.getByRole('button',{name:'Deactivate Removable Member'}).click();
@@ -62,7 +64,9 @@ test('the owner revokes an invitation, sees a new member join the roster, and re
     const deactivated=owner.page.waitForResponse(pathIs('/api/members','PATCH'));
     await owner.page.locator('#confirmOk').click();
     expect((await deactivated).status()).toBe(200);
-    await expect(row).toContainText('member • inactive');
+    await expect(row).toHaveAttribute('data-member-status','inactive');
+    await expect(row).toHaveAttribute('data-member-role','member');
+    await expect(row).toContainText('Inactive');
 
     // The removed member's existing session no longer reaches circle data,
     // the app returns them to signed-out, and signing in again is refused.
@@ -126,7 +130,7 @@ test('solo practice browses, filters and searches the catalogue, opens an exerci
     expect(execution.status()).toBe(200);
     expect(await execution.json()).toMatchObject({ok:true,question_slug:'focus-block-rollup',passed_count:8,total_count:8});
     await expect(page.locator('#runOut')).toContainText('Result: 8/8 passed');
-    await expect(page.locator('#runOut')).toContainText('authoritative server result');
+    await expect(page.locator('#runOut')).toContainText('Checked on the server');
     expect(transport.requests).toEqual([{language:'javascript',version:'18.15.0',files:['main.js']}]);
 
     // A wrong solution reports the authoritative failure rather than passing.

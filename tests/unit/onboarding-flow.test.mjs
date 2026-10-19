@@ -136,7 +136,7 @@ test('availability step explains saved, inherited, closed and unknown states hon
   assert.match(loading.lead, /Checking/);
 
   const inherited = flow.availabilityStep(availability(), { timeZone: 'Europe/London' });
-  assert.equal(inherited.title, 'Your availability for the week of 25 Oct');
+  assert.equal(inherited.title, 'Are you in for the week of 25 Oct?');
   assert.equal(inherited.next, 'Decide later');
   assert.match(inherited.note, /Not decided yet/);
   assert.match(inherited.note, /Choose by Sun 25 Oct,? 08:00 GMT your time/);
