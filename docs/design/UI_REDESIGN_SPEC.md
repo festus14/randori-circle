@@ -35,8 +35,9 @@ committed. Re-run the workflow on `main` to regenerate it. File names follow
 `<viewport>__<screen>.png`.
 
 Local-runtime caveat: the loopback CSP removes CDN scripts, so local
-screenshots show the plain `<textarea>` editor instead of Monaco and use system
-fonts instead of Inter. Production renders Monaco and Inter.
+screenshots show the plain `<textarea>` editor instead of Monaco. Production
+renders Monaco. Since WP-F both runtimes render the self-hosted Geist Sans
+(the baseline captures predate it and show Inter or system fonts).
 
 ## 1. Owner decisions (2026-10-19)
 
@@ -306,12 +307,21 @@ The production CSP allows `font-src 'self'`, and the local CSP allows only
 Fonts `<link>` once the self-hosted fonts land, and keep the Google Fonts
 entries out of the CSP.
 
-- **Option A (recommended):** **Geist Sans** (variable, 400–700) for UI and
-  **Geist Mono** for code, kbd and timers. Both are SIL OFL. Subset to
-  Latin plus Latin-1 to keep the total under 90 KB WOFF2. Fallback stack:
-  `system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`.
-- **Option B:** **Inter** variable for UI and **JetBrains Mono** for code. Both
-  are OFL. This option is safer and more familiar, but less distinctive.
+- **Option A (approved 2026-10-19, amended):** **Geist Sans** only (variable,
+  400–700, SIL OFL) for all UI text, including timers, countdowns and stats,
+  which use `font-variant-numeric: tabular-nums`. **No Geist Mono is
+  shipped.** Code-editing surfaces (the editor textarea and Monaco, `code`,
+  `pre`, `kbd`, run output) use the system monospace stack through the
+  `--font-mono` token:
+  `ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace`.
+  Geist Sans is subset to Latin plus Latin-1 and common punctuation
+  (`assets/fonts/geist-sans-latin-var.woff2`, about 23 KB), preloaded, with
+  `font-display: swap`. Sans fallback stack:
+  `system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`. The OFL text is
+  in `assets/fonts/OFL.txt`.
+- **Option B (not chosen):** **Inter** variable for UI and **JetBrains Mono**
+  for code. Both are OFL. This option is safer and more familiar, but less
+  distinctive.
 
 Type scale (1.200 minor third, rem-based, 16 px root; today the root is 14 px):
 
@@ -589,6 +599,37 @@ pointers.
 | Timeline | cycle timeline, recap activity | `ol` in the recap, landing progress bar |
 | Code toolbar | language, exercise, Run (primary), more-menu (format, copy starter, reset) | `.editor-top` wrapping rows |
 | Test result list | compact rows: case n · pass/fail · expand | stacked case cards |
+
+### 9.1 What WP-F shipped (foundations)
+
+WP-F restyles the existing classes in place, so every screen picks up the brand
+without markup changes, and adds `rc-` names that share the same rules for new
+markup in later packages.
+
+| Legacy class | `rc-` equivalent | Notes |
+|---|---|---|
+| `.btn`, `.btn.secondary`, `.btn.ghost`, `.btn.danger`, `.btn.sm`, `.btn.lg` | `.rc-btn`, `--secondary`, `--ghost`, `--danger`, `--sm`, `--lg`, `--icon` | 32/40/48 px heights; 44 px on coarse pointers. Disabled buttons use a dashed border, the active-surface fill and muted text (legible, clearly unavailable). Light-mode primary is `#4F5BD5` with white text (5.5:1). |
+| `.input`, `.textarea`, `.select` | — | Field background `--color-field` (dark: canvas, light: white) so the control border is at least 3:1 inside and outside. Custom select chevron per theme. `aria-invalid="true"` turns the border red. 16 px text on coarse pointers. |
+| `.card` | `.rc-card`, `.rc-card--raised` | 16 px radius, flat border plus `--shadow-1`. |
+| `.kbd` (badge use), `.status-chip` | `.rc-badge`, `--success`/`--warning`/`--danger`/`--info` | Real `<kbd>`, `<code>`, `<pre>` use `--font-mono`. |
+| `.tabs`, `.tab` | `.rc-tabs`, `.rc-tab` | Active tab: indigo-tinted surface and border. |
+| `.overlay`, `.modal` | `.rc-dialog` | Scrim `--color-scrim`, `--z-modal`, bottom sheet at 520 px and below (unchanged). |
+| `.toast` | `.rc-toast` | Inverse colors, `--z-toast` (above dialogs). |
+| — | `.rc-banner` (+ status variants), `.rc-empty`, `.rc-segmented`, `.rc-avatar`, `.rc-skeleton`, `.rc-table`, `.rc-icon` | Building blocks for WP-S onwards. |
+
+- Logo: `assets/brand/mark.svg` (Concept A), `assets/brand/favicon.svg` (mark on
+  a `#4F5BD5` rounded square), `assets/brand/apple-touch-icon.png` (180 px). The
+  header renders the mark inline (`svg.mark`, accent arc via `.mark-accent`)
+  next to the wordmark "**Randori** Circle".
+- Icons: `assets/brand/icons.svg` is an original stroke-icon sprite
+  (`<svg class="rc-icon"><use href="/assets/brand/icons.svg#i-play"/></svg>`).
+  Later packages replace the emoji and unicode glyphs with it.
+- z-index: the sticky topbar uses `--z-sticky`, overlays `--z-modal`, toasts
+  `--z-toast` and the skip link `--z-skip-link`. `#onboardOverlay` and
+  `#identityOverlay` keep their historical order above other overlays.
+- Compatibility shim: inline styles that pair an accent fill with `#0f0f10`
+  text are forced to `--color-on-action` until WP-Z purges inline colors.
+- The production CSP no longer lists the Google Fonts hosts.
 
 ## 10. Phased implementation plan
 
