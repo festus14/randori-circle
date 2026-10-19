@@ -42,7 +42,7 @@ test('shell markup exposes landmarks, focus controls, and live state semantics',
   assert.match(html, /id="meLabel"[^>]+aria-haspopup="menu"[^>]+aria-expanded="false"/);
   assert.match(html, /id="meMenu" role="menu"/);
   assert.match(html, /id="meIdentity" role="menuitem"[^>]+>Account security</);
-  assert.match(html, /id="landingNextBar" role="progressbar"[^>]+aria-valuenow="0"/);
+  assert.match(html, /<section id="view-landing" class="view" aria-labelledby="landingTitle"/);
   assert.match(html, /id="circleContextPanel" data-state="hidden"/);
   assert.match(html, /id="circleContextRetry"[^>]+hidden/);
   assert.match(html, /class="motion-probe" aria-hidden="true"/);
@@ -66,9 +66,8 @@ test('visible shell copy does not promise unsupported integrations or deployment
   assert.doesNotMatch(html, /AI fills odd/);
   assert.doesNotMatch(html, /Join 50\+ mock interviewers|What people say|Works offline, calls Groq/);
   assert.match(html, /Approved original exercise catalogue/);
-  assert.match(html, /authorization-gated/);
+  assert.doesNotMatch(html, /authorization-gated|id="landingStats"|id="landingNextBar"/);
   assert.match(html, /Copy session link/);
-  assert.match(html, /id="landingStats"[^>]+data-state="loading"[^>]+aria-busy="true"/);
   assert.match(html, /id="psRemindStatus"[^>]+data-state="loading"[^>]+role="status"/);
   assert.match(html, /id="syncStatus"[^>]+data-state="loading"[^>]+role="status"/);
   assert.match(html, /setUiRequestState\(host,status,state,message\)/);
