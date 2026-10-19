@@ -3,7 +3,8 @@ import { expect, Page, test } from '@playwright/test';
 import { mockApi, resetClientState } from './helpers';
 
 // WP-C owner "Invite requests" panel against the WP-L2 contract
-// (docs/INVITE_REQUESTS.md). The API is mocked until the backend merges.
+// (docs/INVITE_REQUESTS.md). The API is mocked here so every decision path
+// (approve, decline, 409, hidden states) is deterministic.
 
 const owner = {
   id: 1, email: 'owner@example.test', name: 'Circle Owner', display_name: 'Circle Owner',

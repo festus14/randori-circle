@@ -801,34 +801,22 @@ async function captureLocal(browser, viewportName, recorder) {
       await tap(op, '#themeToggle');
     });
 
-    // WP-C: owner "Invite requests" panel. The WP-L2 API is mocked in the
-    // browser (capability plus a pending list) until that backend ships.
-    await recorder.step(`${v}:circle-invite-requests-mocked`, async () => {
-      const now = Date.now();
-      await op.route('**/api/auth/capabilities', async route => {
-        const response = await route.fetch();
-        const body = await response.json();
-        body.capabilities = { ...(body.capabilities || {}), inviteRequests: true };
-        await route.fulfill({ response, json: body });
-      });
-      await op.route('**/api/invite-requests**', route => route.fulfill({ json: {
-        ok: true, status: 'pending', pending_count: 2, next_cursor: null,
-        requests: [
-          { id: '0f8fad5b-d9cb-469f-a165-70867728950e', name: 'Ada Lovelace', email: 'ada@example.com',
-            note: 'Preparing for system design loops in November.',
-            created_at: new Date(now - 2 * 86_400_000).toISOString(), expires_at: new Date(now + 28 * 86_400_000).toISOString() },
-          { id: '7c9e6679-7425-40de-944b-e07fc1f90ae7', name: 'Grace Hopper', email: 'grace@example.com', note: null,
-            created_at: new Date(now - 3_600_000).toISOString(), expires_at: new Date(now + 30 * 86_400_000).toISOString() },
-        ],
-      } }));
+    // WP-C: owner "Invite requests" panel with real requests submitted through
+    // the public WP-L2 endpoint on the loopback runtime (flag on locally).
+    await recorder.step(`${v}:circle-invite-requests`, async () => {
+      await mp.evaluate(async viewport => {
+        for (const [name, note] of [['Ada Lovelace', 'Preparing for system design loops in November.'], ['Grace Hopper', null]]) {
+          await fetch('/api/invite-requests', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ name, email: `${name.split(' ')[0].toLowerCase()}.${viewport}@example.test`, note }),
+          });
+        }
+      }, v);
       await op.reload({ waitUntil: 'domcontentloaded' });
       await openTab(op, 'circle');
       await op.getByTestId('circle-invite-requests').waitFor({ state: 'visible', timeout: 10_000 }).catch(() => {});
       await sleep(800);
       await recorder.shot(op, v, 'circle-owner-invite-requests');
-      await op.unroute('**/api/invite-requests**');
-      await op.unroute('**/api/auth/capabilities');
-      await op.reload({ waitUntil: 'domcontentloaded' });
     });
 
     await recorder.step(`${v}:account-security`, async () => {
