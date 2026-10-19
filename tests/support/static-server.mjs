@@ -22,6 +22,13 @@ function sendJson(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
+// Exported for the routing contract test: every path served here as the app
+// shell must also be served by vercel.json in production.
+export function isStaticAppRoute(pathname) {
+  return pathname === '/' || pathname === '/invite' || pathname === '/verify'
+    || pathname === '/reset-password' || pathname.startsWith('/join/');
+}
+
 const server = createServer((request, response) => {
   const url = new URL(request.url || '/', 'http://127.0.0.1');
 
@@ -32,8 +39,7 @@ const server = createServer((request, response) => {
     return;
   }
 
-  const requested = url.pathname === '/' || url.pathname === '/invite' || url.pathname === '/verify'
-    || url.pathname === '/reset-password' || url.pathname.startsWith('/join/')
+  const requested = isStaticAppRoute(url.pathname)
     ? 'index.html'
     : decodeURIComponent(url.pathname).replace(/^\/+/, '');
   const file = resolve(root, requested);
@@ -55,10 +61,12 @@ const server = createServer((request, response) => {
   }
 });
 
-server.listen(port, '127.0.0.1', () => {
-  console.log(`Local test server listening on http://127.0.0.1:${port}`);
-});
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  server.listen(port, '127.0.0.1', () => {
+    console.log(`Local test server listening on http://127.0.0.1:${port}`);
+  });
 
-for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.on(signal, () => server.close(() => process.exit(0)));
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.on(signal, () => server.close(() => process.exit(0)));
+  }
 }
