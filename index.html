@@ -11113,6 +11113,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     // signed in
     if(tabsEl) tabsEl.style.display='flex';
     if(joinRoom){
+      // The sign-in sheet opened for this deep link before the session had
+      // loaded is moot now that the member is signed in.
+      if(window._randori_pending_join_room===joinRoom
+        &&document.getElementById('authOverlay')?.classList.contains('show')){
+        window._randori_pending_join_room=null;
+        window._randori_auth?.closeModal?.();
+      }
       const allowed=await openAuthorizedJoin(joinRoom,{canApply:canApplyRoute});
       if(!canApplyRoute()) return;
       if(allowed) return;
