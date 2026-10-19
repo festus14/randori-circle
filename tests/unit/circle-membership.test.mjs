@@ -12,6 +12,7 @@ import {applyMigrations,inspectMigrationState,prepareMigrationConnection} from '
 import {CREDENTIAL_KEY_CONTROL_SEED_OPERATIONS} from '../../db/credential-key-control.js';
 import {createOutboxEventStatement} from '../../api/_outbox.js';
 import {adoptCredentialKeyControl} from '../support/credential-key-control.mjs';
+import {installWaitUntilCapture,stubResendFetch} from '../support/immediate-delivery.mjs';
 
 let currentDb=null;
 const temporaryDirectories=[];
@@ -39,6 +40,9 @@ mock.module('../../api/_db.js',{
     verifyMutationOrigin:req=>req?.headers?.['x-test-cross']!=='1',
     verifyRequestAuth:authPayload,
     verifySignedRequestAuth:authPayload,
+    // Imported by the delivery adapters loaded for post-commit email delivery.
+    issueSessionInTransaction:async()=>{ throw new Error('not used by invitation delivery'); },
+    revokeAccountSessions:async()=>{ throw new Error('not used by invitation delivery'); },
   },
 });
 
@@ -1199,4 +1203,55 @@ test('admin init runs the audited data cutover on an exactly migrated database',
   assert.equal(repeated.status,200);
   assert.equal(repeated.body.circle_id,result.body.circle_id);
   assert.equal(repeated.body.changed,false);
+});
+
+test('owner invitation create and resend emails are sent right after commit with stable keys',async t=>{
+  currentDb=await createDatabase();
+  process.env.NODE_ENV='production';
+  process.env.APP_URL='https://randori.example.test';
+  process.env.RESEND_API_KEY='re_invitation_test';
+  process.env.RESEND_FROM='Randori <invite@randori.example.test>';
+  process.env.INVITATION_EMAIL_DELIVERY_ENABLED='true';
+  process.env.INVITATION_EMAIL_ENCRYPTION_KEY=Buffer.alloc(32,9).toString('base64url');
+  process.env.INVITATION_EMAIL_ENCRYPTION_KEY_VERSION='1';
+  process.env.INVITATION_EMAIL_ENVELOPE_WRITE_VERSION='2';
+  process.env.OUTBOX_IMMEDIATE_DELIVERY='true';
+  await adoptCredentialKeyControl(currentDb,invitationEmail.invitationKeyRing());
+  const provider=stubResendFetch({delayMs:50});
+  const callsAtRegistration=[];
+  const background=installWaitUntilCapture({onRegister:()=>callsAtRegistration.push(provider.calls.length)});
+  t.after(()=>{ provider.restore(); background.restore(); delete process.env.OUTBOX_IMMEDIATE_DELIVERY; });
+  const events=async()=>(await currentDb.execute(`SELECT idempotency_key,status FROM outbox_events
+    WHERE event_type='invitation.email.requested' ORDER BY id`)).rows;
+  const headers={'x-test-auth':'owner',origin:'https://randori.example.test',host:'randori.example.test'};
+
+  const created=await invoke(invitationsHandler,{method:'POST',url:'/api/invitations',
+    query:{endpoint:'invitations'},headers,body:{email:'invitee@example.test'}});
+  assert.equal(created.status,201);
+  assert.deepEqual(created.body.email_delivery,{queued:true});
+  assert.equal((await events())[0].status,'pending','the create response is not held for delivery');
+  assert.equal((await background.settle())[0].delivered,1);
+  const firstToken=created.body.invitation.invite_url.split('=')[1];
+  assert.equal(provider.calls.length,1);
+  assert.equal(provider.calls[0].to,'invitee@example.test');
+  assert.ok(provider.calls[0].html.includes(firstToken),'the delivered link carries the committed token');
+
+  await currentDb.execute(`UPDATE outbox_events SET created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-61 seconds')`);
+  const id=created.body.invitation.id;
+  const resent=await invoke(invitationsHandler,{method:'POST',url:`/api/invitations/${id}`,
+    query:{endpoint:'invitations',id},headers,body:{action:'resend'}});
+  assert.equal(resent.status,200);
+  assert.equal((await background.settle())[0].delivered,1);
+  const secondToken=resent.body.invitation.invite_url.split('=')[1];
+  assert.ok(provider.calls[1].html.includes(secondToken));
+  const stored=await events();
+  assert.deepEqual(stored.map(row=>row.status),['delivered','delivered']);
+  assert.deepEqual(provider.calls.map(call=>call.idempotencyKey),
+    [`invitation-email/v1/${id}/1`,`invitation-email/v1/${id}/2`]);
+  assert.deepEqual(callsAtRegistration,[0,1]);
+
+  const rejected=await invoke(invitationsHandler,{method:'POST',url:`/api/invitations/${id}`,
+    query:{endpoint:'invitations',id},headers,body:{action:'resend'}});
+  assert.equal(rejected.status,429);
+  assert.equal(background.promises.length,0,'a rejected resend schedules nothing');
 });

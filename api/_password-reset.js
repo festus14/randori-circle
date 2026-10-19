@@ -16,6 +16,7 @@ import {
   sealCredentialEnvelope,
 } from './_key-rotation.js';
 import { createOutboxEventStatement, OutboxDeliveryError, readOutboxMetrics, runOutboxWorker } from './_outbox.js';
+import { outboxStatementIdentity } from './_outbox-identity.js';
 import {
   assertCredentialKeyControl,
   credentialKeyControlStatus,
@@ -204,15 +205,20 @@ export async function requestPasswordReset(db,{email},{nowSeconds=null}={}){
     }else{
       await transaction.execute({sql:`SELECT id FROM auth_password_resets WHERE token_hash=? LIMIT 1`,args:[tokenHash]});
     }
+    let queued=null;
     if(row){
-      await transaction.execute(resetEvent({resetId:String(row.id),email:normalizedEmail,
-        token,sendCount:Number(row.send_count)}));
+      const statement=resetEvent({resetId:String(row.id),email:normalizedEmail,
+        token,sendCount:Number(row.send_count)});
+      await transaction.execute(statement);
+      queued=outboxStatementIdentity(statement);
     }else{
       await transaction.execute({sql:`SELECT id FROM outbox_events WHERE idempotency_key=? LIMIT 1`,
         args:[`password-reset/v1/${resetId}/1`]});
     }
     await transaction.commit(); finished=true;
-    return Object.freeze({accepted:Boolean(row)});
+    // The committed event identity lets the caller request immediate delivery
+    // after its enumeration-safe response; it is never sent to the client.
+    return Object.freeze(row?{accepted:true,outboxEvents:Object.freeze([queued])}:{accepted:false});
   }catch(error){
     if(!finished){ try{ await transaction.rollback(); }catch{} }
     throw error;
