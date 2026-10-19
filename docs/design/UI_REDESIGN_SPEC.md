@@ -379,7 +379,7 @@ until WP-Z removes the aliases.
 Rules:
 
 - Color comes only from tokens. Inline `style="color:#…"`, `background:#c8f6a0`
-  and hard-coded `#0f0f10` must go. There are about 400 inline `style=`
+  and hard-coded `#0f0f10` must go. There are 388 inline `style=`
   attributes in `index.html` today.
 - Spacing comes only from `--space-*`. Gaps of 6, 7, 9, 10 and 14 px are snapped
   to the 4/8 grid.
