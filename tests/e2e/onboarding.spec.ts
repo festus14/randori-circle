@@ -97,7 +97,7 @@ test('a new member completes profile basics, availability and what happens next 
   await expect(page.locator('#setupStepText')).toHaveText('Step 4 of 5');
   await expect(page.locator('#setupAvailabilityTitle')).toBeFocused();
   expect(profilePosts[0]).toMatchObject({ display_name: 'Ada Lovelace', tz: 'Europe/London', interview_focus: 'dsa' });
-  await expect(page.locator('#setupAvailabilityTitle')).toHaveText(/^Are you in for the week of \d{1,2} [A-Z][a-z]{2}\?$/);
+  await expect(page.locator('#setupAvailabilityTitle')).toHaveText(/^Your availability for the week of \d{1,2} [A-Z][a-z]{2,3}$/);
   await expect(page.locator('#setupAvailabilityNote')).toContainText('Not decided yet');
   await expect(page.locator('#setupAvailabilityNext')).toHaveText('Decide later');
   const card = page.locator('#setupStepAvailability #availabilityWrap');
@@ -123,7 +123,7 @@ test('a new member completes profile basics, availability and what happens next 
   await expect(page.locator('#view-pair #availabilityWrap')).toHaveCount(1);
   await expect(page.locator('#welcomeBanner')).toHaveCount(0);
   await expect(page.locator('#onboardOverlay')).toHaveCount(0);
-  await expect(page.locator('#dashAvailBadge')).toContainText(/Available for the week of \d{1,2} [A-Z][a-z]{2}/);
+  await expect(page.locator('#dashAvailBadge')).toContainText(/Available for the week of \d{1,2} [A-Z][a-z]{2,3}/);
   await expect(page.locator('#dashAvailBadge')).not.toContainText(/\d{4}-W\d{2}/);
 });
 
@@ -153,7 +153,7 @@ test('skipping profile details saves only the required minimum and availability 
   await expect(page.locator('#onboardChecklistTitle')).toHaveText('Setup guide');
   await expect(page.locator('#chkProfile')).toHaveAttribute('data-state', 'done');
   await expect(page.locator('#chkAvail')).toHaveAttribute('data-state', 'ready');
-  await expect(page.locator('#chkAvail')).toContainText(/Save availability for the week of \d{1,2} [A-Z][a-z]{2}/);
+  await expect(page.locator('#chkAvail')).toContainText(/Save availability for the week of \d{1,2} [A-Z][a-z]{2,3}/);
   await expect(page.locator('#onboardChecklist')).not.toContainText(/\d{4}-W\d{2}/);
 
   // Reopen the stepper from the account menu at the first unfinished step.
@@ -169,7 +169,10 @@ test('skipping profile details saves only the required minimum and availability 
   await expect(page.locator('#onboardChecklist')).toBeVisible();
   await page.locator('#checklistToggle').click();
   await expect(page.locator('#onboardChecklist')).toBeHidden();
-  await page.reload({ waitUntil: 'domcontentloaded' });
+  await expect(page.locator('#meLabel')).toBeFocused();
+  expect(await page.evaluate(() => localStorage.getItem('randori-setup-guide-dismissed:1'))).toBe('1');
+  await page.locator('[data-tab="history"]').click();
+  await page.locator('#tab-home').click();
   await expect(page.locator('#view-dashboard')).toBeVisible();
   await expect(page.locator('#onboardChecklist')).toBeHidden();
 });
@@ -267,6 +270,6 @@ test('a member who joined after this week’s cutoff is told when they will be i
   await resetClientState(page, true);
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await expect(page.locator('#view-dashboard')).toBeVisible();
-  await expect(page.locator('#dashEmptyTitle')).toHaveText(/^You’ll be included from the week of \d{1,2} [A-Z][a-z]{2}$/);
+  await expect(page.locator('#dashEmptyTitle')).toHaveText(/^You’ll be included from the week of \d{1,2} [A-Z][a-z]{2,3}$/);
   await expect(page.locator('#dashEmpty')).not.toContainText(/late/i);
 });

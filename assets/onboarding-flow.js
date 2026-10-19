@@ -147,7 +147,7 @@
   function availabilityStep(value, { timeZone } = {}) {
     if (!value || typeof value !== 'object' || !value.cycle) {
       return {
-        title: 'Are you in for the next cycle?',
+        title: 'Your availability for the next cycle',
         lead: 'Checking the next pairing cycle…',
         next: 'Decide later',
         decided: false,
@@ -155,15 +155,18 @@
       };
     }
     const week = weekPhrase(value.cycle, 'the next cycle');
+    // The card below already shows the cutoff in the circle's zone; this note
+    // repeats it in the member's own zone ("your time").
     const cutoff = formatMoment(value.cycle.cutoffAt, timeZone || value.cycle.timeZone);
     const decided = value.source === 'user';
     const inherited = value.isAvailable ? 'counted as in' : 'counted as skipping';
+    const by = cutoff ? `${cutoff} your time` : 'the cutoff';
     let note;
     if (!value.editable) note = `The cutoff for ${week} has passed. You’ll be able to choose for the following cycle.`;
-    else if (decided) note = `Saved. You can change it until ${cutoff || 'the cutoff'}.`;
-    else note = `Not decided yet. If you don’t choose before ${cutoff || 'the cutoff'}, you’ll be ${inherited} (${value.source === 'legacy_bridge' ? 'your previous setting' : 'the circle default'}).`;
+    else if (decided) note = `Saved. You can change it until ${by}.`;
+    else note = `Not decided yet. Choose by ${by}, or decide later — until then you’re ${inherited} (${value.source === 'legacy_bridge' ? 'your previous setting' : 'the circle default'}).`;
     return {
-      title: `Are you in for ${week}?`,
+      title: `Your availability for ${week}`,
       lead: 'Pairs are made from members who say they’re in. Choose for this cycle only.',
       next: decided || !value.editable ? 'Continue' : 'Decide later',
       decided,
@@ -251,7 +254,7 @@
       availabilityActionLabel: `Choose availability for ${availWeek}`,
       pairing: pairing.status === 'loading' ? 'Checking current pairing…'
         : pairing.status === 'error' ? 'Pairing status unknown — retry'
-          : pairingDone ? `Current assignment published for ${pairWeek}` : `Wait for ${pairWeek} to be published`,
+          : pairingDone ? `Current assignment published for ${pairWeek}` : 'Your next pairing appears on Home once it is published',
       room: roomDone ? 'Current workspace opened' : 'Open your current workspace',
     };
   }

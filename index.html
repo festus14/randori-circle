@@ -1848,7 +1848,7 @@ a.btn{text-decoration:none}
         </div>
 
         <div id="setupStepAvailability" class="card onboarding-step onboarding-flow-only" data-step-panel="availability" hidden>
-          <div class="card-h"><h2 id="setupAvailabilityTitle" tabindex="-1">Are you in for the next cycle?</h2><p id="setupAvailabilityLead" class="onboarding-lead">Pairs are made from members who say they’re in. Choose for this cycle only.</p></div>
+          <div class="card-h"><h2 id="setupAvailabilityTitle" tabindex="-1">Your availability for the next cycle</h2><p id="setupAvailabilityLead" class="onboarding-lead">Pairs are made from members who say they’re in. Choose for this cycle only.</p></div>
           <div class="card-b onboarding-body">
             <div id="setupAvailabilityHost"></div>
             <p id="setupAvailabilityNote" class="field-help" role="status" aria-live="polite"></p>
@@ -8708,6 +8708,21 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(typeof toast==='function') toast('Setup guide hidden. Open it again from the account menu.');
   });
 
+  // Keep the historical startup binding: once the shell has settled, global
+  // updateAuthUI() calls refresh the header and the setup guide only. Routing
+  // after identity changes stays with randori:auth-refreshed in the journey,
+  // so a late header refresh never pulls the member off the page they chose.
+  setTimeout(()=>{
+    if(typeof updateAuthUI!=='function'||window._onbWrapped) return;
+    const base=updateAuthUI;
+    window.updateAuthUI=function(){
+      const result=base.apply(this,arguments);
+      try{ updateChecklist(); }catch{}
+      return result;
+    };
+    window._onbWrapped=true;
+  },400);
+
   // Read by the onboarding authority, which itself never touches storage.
   window._randori_setup_guide={
     dismissed:userId=>window._randori_onboarding_flow?.guideDismissed?.(localStorage,userId)===true,
@@ -12268,7 +12283,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const cycle=stats?.next_cycle;
     if(cycle?.startsAt&&cycle?.timeZone){
       const label=window._randori_cycle_ui?.formatInstant?.(cycle.startsAt,cycle.timeZone);
-      if(label&&label!=='Unknown time') return `${label} • ${cycle.cycleId||'upcoming cycle'}`;
+      if(label&&label!=='Unknown time') return label;
     }
     return typeof stats?.next_shuffle_label==='string'&&stats.next_shuffle_label
       ?stats.next_shuffle_label

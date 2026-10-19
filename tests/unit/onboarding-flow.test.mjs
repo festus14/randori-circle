@@ -136,11 +136,11 @@ test('availability step explains saved, inherited, closed and unknown states hon
   assert.match(loading.lead, /Checking/);
 
   const inherited = flow.availabilityStep(availability(), { timeZone: 'Europe/London' });
-  assert.equal(inherited.title, 'Are you in for the week of 25 Oct?');
+  assert.equal(inherited.title, 'Your availability for the week of 25 Oct');
   assert.equal(inherited.next, 'Decide later');
   assert.match(inherited.note, /Not decided yet/);
-  assert.match(inherited.note, /Sun 25 Oct,? 08:00 GMT/);
-  assert.match(inherited.note, /counted as in \(the circle default\)/);
+  assert.match(inherited.note, /Choose by Sun 25 Oct,? 08:00 GMT your time/);
+  assert.match(inherited.note, /you’re counted as in \(the circle default\)/);
 
   const legacySkip = flow.availabilityStep(availability({ source: 'legacy_bridge', isAvailable: false }));
   assert.match(legacySkip.note, /counted as skipping \(your previous setting\)/);
@@ -155,7 +155,7 @@ test('availability step explains saved, inherited, closed and unknown states hon
   assert.match(closed.note, /cutoff for the week of 25 Oct has passed/);
 
   const noCutoff = flow.availabilityStep(availability({ cycle: upcoming({ cutoffAt: 'bad' }) }));
-  assert.match(noCutoff.note, /before the cutoff/);
+  assert.match(noCutoff.note, /Choose by the cutoff/);
   const savedNoCutoff = flow.availabilityStep(availability({ source: 'user', cycle: upcoming({ cutoffAt: 'bad' }) }));
   assert.match(savedNoCutoff.note, /until the cutoff/);
 });
@@ -209,7 +209,7 @@ test('setup guide copy reflects authority states with human dates', () => {
   assert.equal(pending.availability, 'Save availability for the week of 25 Oct');
   assert.equal(pending.availabilityAction, 'Confirm or skip');
   assert.equal(pending.availabilityActionLabel, 'Choose availability for the week of 25 Oct');
-  assert.equal(pending.pairing, 'Wait for the week of 18 Oct to be published');
+  assert.equal(pending.pairing, 'Your next pairing appears on Home once it is published');
   assert.equal(pending.room, 'Open your current workspace');
 
   const done = flow.checklistCopy({
@@ -232,7 +232,7 @@ test('setup guide copy reflects authority states with human dates', () => {
   assert.equal(failed.availability, 'Availability status unknown — retry');
   assert.equal(failed.pairing, 'Pairing status unknown — retry');
   assert.equal(flow.checklistCopy().availability, 'Save availability for the upcoming cycle');
-  assert.equal(flow.checklistCopy().pairing, 'Wait for the current cycle to be published');
+  assert.equal(flow.checklistCopy().pairing, 'Your next pairing appears on Home once it is published');
 });
 
 test('next unfinished setup step follows authority completion', () => {
