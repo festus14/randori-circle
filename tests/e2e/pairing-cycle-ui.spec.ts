@@ -310,7 +310,11 @@ test('Pairing failure revokes a previously authorized live-room fallback',async(
 });
 
 test('the home countdown uses the server cycle boundary instead of a fixed UTC hour',async({page})=>{
+  // The public landing no longer shows a countdown (UI redesign WP-L1); the
+  // signed-in dashboard renders the same server-cycle label and countdown.
   await mockApi(page,{
+    '/api/auth/me':{ok:true,user},
+    '/api/profile':{ok:true,user},
     '/api/stats':{
       ok:true,total_users:0,total_weeks:0,total_pairs:0,total_sessions:0,
       next_cycle:{
@@ -321,12 +325,14 @@ test('the home countdown uses the server cycle boundary instead of a fixed UTC h
       next_shuffle_label:'server fallback should not win',
     },
   });
-  await resetClientState(page);
+  await resetClientState(page,true);
   await page.goto('/',{waitUntil:'domcontentloaded'});
 
-  await expect(page.locator('#landingNextLabel')).toContainText('2099-W44');
-  await expect(page.locator('#landingNextLabel')).not.toContainText('London');
-  await expect(page.locator('#landingNextCountdown')).toHaveText(/^\d{4,}d \d+h to pairing$/);
+  await expect(page.locator('#view-dashboard')).toBeVisible();
+  await expect(page.locator('#dashNextLabel')).toContainText('2099-W44');
+  await expect(page.locator('#dashNextLabel')).not.toContainText('London');
+  await expect(page.locator('#dashNextLabel')).not.toContainText('server fallback');
+  await expect(page.locator('#dashNextCount')).toHaveText(/^\d{4,}d \d+h to pairing$/);
 });
 
 test('client cycle classification uses half-open start and end boundaries',async({page})=>{

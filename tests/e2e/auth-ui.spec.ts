@@ -138,9 +138,15 @@ test('private beta keeps direct account creation closed until this tab prepares 
   await resetClientState(page);
   await page.goto('/',{waitUntil:'domcontentloaded'});
 
-  await expect(page.locator('#landingSignup')).toBeVisible();
-  await expect(page.locator('#landingSignup')).toBeDisabled();
-  await expect(page.locator('#landingInviteHelp')).toContainText('Open the invitation link');
+  const inviteButton=page.locator('#landingSignup');
+  await expect(inviteButton).toBeVisible();
+  await expect(inviteButton).toBeEnabled();
+  await expect(inviteButton).toHaveText('I have an invitation');
+  await expect(inviteButton).toHaveAttribute('aria-expanded','false');
+  await inviteButton.click();
+  await expect(inviteButton).toHaveAttribute('aria-expanded','true');
+  await expect(page.locator('#landingInviteHelp')).toContainText('Open the link from your invitation email');
+  await expect(page.getByRole('dialog',{name:'Join Randori Circle'})).toBeHidden();
 
   await page.evaluate(()=>(window as any)._randori_auth.openModal('signup'));
   await expect(page.getByRole('dialog',{name:'Join Randori Circle'})).toBeHidden();

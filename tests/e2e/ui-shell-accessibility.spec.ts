@@ -120,12 +120,12 @@ test('anonymous shell has landmarks, truthful copy, AA themes, and reduced motio
   await expect(navigation.getByRole('tablist')).toHaveCount(0);
   await expect(page.locator('main#appMain')).toBeVisible();
   await expect(page.locator('#view-landing')).toBeVisible();
-  await expect(page.getByRole('progressbar', { name: 'Time elapsed in the weekly pairing cycle' })).toHaveAttribute('aria-valuenow', /\d+/);
-  await expect(page.locator('#landingSignup')).toHaveText('Use an invitation');
-  await expect(page.locator('#view-landing')).toContainText('Invite-only private beta');
+  await expect(page.getByRole('heading', { level: 1, name: 'Mock interviews with people you trust.' })).toBeVisible();
+  await expect(page.locator('#landingSignup')).toHaveText('I have an invitation');
+  await expect(page.locator('#view-landing')).toContainText('Private · invite-only');
   await expect(page.locator('#view-landing')).toContainText('Private by default');
-  await expect(page.locator('#landingStats')).toHaveAttribute('data-state', 'ready');
-  await expect(page.locator('#landingStatsUpdated')).toHaveText('Updated just now');
+  await expect(page.getByTestId('request-invite-closed')).toContainText('Invite-only — ask a member for an invitation.');
+  await expect(page.getByRole('progressbar')).toHaveCount(0);
   await expect(page.locator('#questionPanel')).toContainText('Approved original exercise catalogue');
   await expect(page.locator('#copyLinkBtn')).toHaveCount(0);
   await expect(page.locator('#vidScreenBtn')).toHaveCount(0);
@@ -399,16 +399,18 @@ test('settled signed-in pairing view has no WCAG-tagged axe violations', async (
   await expectWcagClean(page, testInfo, 'signed-in-pairing', '#view-pair');
 });
 
-test('landing and reminder controls report request outcomes without delivery promises', async ({ page }) => {
+test('the public landing shows no live statistics and reminder controls report request outcomes', async ({ page }) => {
   let preferenceSave = 0;
+  let anonymousStatsCalls = 0;
   await mockApi(page, {
-    '/api/stats': { _status: 503, ok: false, error: 'stats unavailable' },
+    '/api/stats': () => { anonymousStatsCalls += 1; return { _status: 503, ok: false, error: 'stats unavailable' }; },
   });
   await resetClientState(page);
   await page.goto('/', { waitUntil: 'domcontentloaded' });
-  await expect(page.locator('#landingStats')).toHaveAttribute('data-state', 'unavailable');
-  await expect(page.locator('#landingStatsUpdated')).toHaveText(/Summary unavailable/);
-  await expect(page.locator('#landingNextBar')).toHaveAttribute('aria-valuetext', 'Pairing schedule unavailable');
+  await expect(page.locator('#view-landing')).toBeVisible();
+  await page.evaluate(() => (window as any)._randori_home.bootHome());
+  await expect(page.locator('#view-landing')).not.toContainText(/members|weeks paired|sessions completed|Summary unavailable/);
+  expect(anonymousStatsCalls).toBe(0);
 
   await page.unroute('**/api/**');
   await mockApi(page, {
@@ -439,53 +441,24 @@ test('landing and reminder controls report request outcomes without delivery pro
   await expect(reminderStatus).toContainText('Could not save to your account');
 });
 
-test('a delayed landing summary cannot replace the result of a newer home request', async ({ page }) => {
-  let initialStatsCalls = 0;
+test('anonymous home refreshes never fetch or render circle statistics', async ({ page }) => {
+  let statsCalls = 0;
   await mockApi(page, {
     '/api/stats': () => {
-      initialStatsCalls += 1;
-      return { ok: true, total_users: 1, total_weeks: 1, total_pairs: 1, total_sessions: 1 };
+      statsCalls += 1;
+      return { ok: true, total_users: 99, total_weeks: 99, total_pairs: 99, total_sessions: 99 };
     },
   });
   await resetClientState(page);
   await page.goto('/', { waitUntil: 'domcontentloaded' });
-  await expect.poll(() => initialStatsCalls).toBeGreaterThanOrEqual(2);
-  await expect(page.locator('#landingStats')).toHaveAttribute('data-state', 'ready');
-
-  let releaseOld!: () => void;
-  let markOldStarted!: () => void;
-  const oldGate = new Promise<void>(resolve => { releaseOld = resolve; });
-  const oldStarted = new Promise<void>(resolve => { markOldStarted = resolve; });
-  let request = 0;
-  await page.route('**/api/stats*', async route => {
-    request += 1;
-    if (request === 1) {
-      markOldStarted();
-      await oldGate;
-      await route.fulfill({
-        status: 200,
-        headers: { 'x-ui-generation': 'old' },
-        contentType: 'application/json',
-        body: JSON.stringify({ ok: true, total_users: 99, total_weeks: 99, total_pairs: 99, total_sessions: 99 }),
-      });
-      return;
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ ok: true, total_users: 2, total_weeks: 2, total_pairs: 2, total_sessions: 2 }),
-    });
+  await expect(page.locator('#view-landing')).toBeVisible();
+  await page.evaluate(async () => {
+    const home = (window as any)._randori_home;
+    await Promise.all([home.bootHome(), home.bootHome()]);
   });
-
-  await page.evaluate(() => { void (window as any)._randori_home.bootHome(); });
-  await oldStarted;
-  await page.evaluate(() => (window as any)._randori_home.bootHome());
-  await expect(page.locator('#statMembers')).toHaveText('2');
-  const oldResponse = page.waitForResponse(response => response.headers()['x-ui-generation'] === 'old');
-  releaseOld();
-  await oldResponse;
-  await expect(page.locator('#statMembers')).toHaveText('2');
-  await expect(page.locator('#landingStats')).toHaveAttribute('data-state', 'ready');
+  await page.waitForTimeout(1200);
+  expect(statsCalls).toBe(0);
+  await expect(page.locator('#view-landing')).not.toContainText('99');
 });
 
 test('a delayed account summary cannot cross an authenticated identity change', async ({ page }) => {
@@ -661,7 +634,7 @@ test('coarse pointers get touch targets and forced colors retain state distincti
     const targetHeight = await page.locator('#landingSignin').evaluate(element =>
       Number.parseFloat(getComputedStyle(element).minHeight));
     expect(targetHeight).toBeGreaterThanOrEqual(44);
-    const styles = await page.locator('#landingStatsUpdated').evaluate(element => ({
+    const styles = await page.getByTestId('request-invite-closed').evaluate(element => ({
       color: getComputedStyle(element).color,
       motion: getComputedStyle(document.querySelector('.motion-probe')!).animationDuration,
     }));
