@@ -2146,7 +2146,10 @@ a.btn{text-decoration:none}
     const done=['reset','used','expired','revoked','invalid'].includes(passwordResetState.status);
     const canRequestNew=['expired','revoked','invalid'].includes(passwordResetState.status);
     for(const input of [document.getElementById('passwordResetNew'),document.getElementById('passwordResetConfirm')]){
-      if(input){ input.disabled=passwordResetState.busy||done||passwordResetState.status==='invalid'; input.hidden=done; }
+      if(input){
+        input.disabled=passwordResetState.busy||done||passwordResetState.status==='invalid'; input.hidden=done;
+        const field=input.closest('.auth-field'); if(field) field.hidden=done;
+      }
     }
     const submit=document.getElementById('passwordResetSubmit');
     if(submit){ submit.hidden=done||passwordResetState.status==='invalid'; submit.disabled=passwordResetState.busy; }

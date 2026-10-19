@@ -409,7 +409,8 @@ test('the public landing shows no live statistics and reminder controls report r
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await expect(page.locator('#view-landing')).toBeVisible();
   await page.evaluate(() => (window as any)._randori_home.bootHome());
-  await expect(page.locator('#view-landing')).not.toContainText(/members|weeks paired|sessions completed|Summary unavailable/);
+  await expect(page.locator('#view-landing')).not.toContainText(/Circle summary|weeks paired|sessions completed|Summary unavailable/);
+  await expect(page.locator('#landingStats')).toHaveCount(0);
   expect(anonymousStatsCalls).toBe(0);
 
   await page.unroute('**/api/**');
