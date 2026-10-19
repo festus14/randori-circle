@@ -2579,3 +2579,23 @@ Production, confirm OIDC federation is enabled for the project, deploy, then run
 complete one JavaScript and one Python run in the product. Rollback is to unset
 `EXECUTION_PROVIDER`; runs then fail closed with the clear unavailable state and
 no data changes.
+
+## ID-63: Link Google with Randori recent auth, not a fresh Google `auth_time`
+
+- **Status:** implemented.
+- **Problem:** explicit Google linking required the signed ID token's
+  `auth_time` to be at most two minutes old. On a device already signed in to
+  Google, Google does not reliably force credential re-entry for `max_age=0`
+  (and does not support `prompt=login`), so it returns the original sign-in
+  time. Every production link attempt therefore failed with
+  `identity_invalid` ("We could not verify that Google account").
+- **Decision:** linking no longer checks Google `auth_time`. It still requires
+  (1) Randori recent authentication for the exact initiating session, checked
+  inside the link transaction; (2) a just-issued authorization code bound to
+  this browser by state, PKCE and nonce; (3) explicit account selection; and
+  (4) the existing session-binding, ownership-conflict and audit rules.
+  Google step-up reauthentication (`reauth:`) keeps the fresh `auth_time`
+  requirement because there Google is the recent-auth proof itself.
+- **Verification:** `tests/unit/identity-linking-api.test.mjs` links with an
+  old and a missing `auth_time`, and refuses a fresh Google token when Randori
+  recent auth has expired.
