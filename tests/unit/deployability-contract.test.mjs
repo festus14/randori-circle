@@ -50,7 +50,14 @@ test('missing route handlers and an early SPA fallback fail closed', () => {
 
   const errors = validateDeploymentContract(contract);
   assert.ok(errors.includes('rewrite /api/settings/availability targets missing handler api/ops.js'));
-  assert.ok(errors.includes('the final rewrite must be the SPA fallback /(.*) -> /index.html'));
+  assert.ok(errors.includes('the final rewrite must be the SPA fallback /(.*) -> /'));
+});
+
+test('the SPA fallback must target the clean root, not /index.html', () => {
+  const contract = cloneContract();
+  contract.vercel.rewrites.at(-1).destination = '/index.html';
+  const errors = validateDeploymentContract(contract);
+  assert.ok(errors.includes('the final rewrite must be the SPA fallback /(.*) -> /'));
 });
 
 test('every non-fallback rewrite must target a local one-segment API handler', () => {
