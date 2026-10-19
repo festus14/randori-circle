@@ -1,5 +1,6 @@
 {
   "cleanUrls": true,
+  "git": { "deploymentEnabled": { "main": true, "codex/**": false } },
   "regions": ["dub1"],
   "headers": [
     {
