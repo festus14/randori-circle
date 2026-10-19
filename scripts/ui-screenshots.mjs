@@ -363,6 +363,79 @@ async function newLocalPage(browser, viewportName, timezoneId, getOrigin, { firs
   return { context, page: await context.newPage() };
 }
 
+// Public landing and recovery pages rendered from the local runtime, so a
+// branch's landing can be reviewed before it reaches production. The
+// request-an-invite form is shown even when the runtime does not advertise
+// the capability yet (screen names say so); its submission is answered
+// locally with the contract's generic 202 and never reaches a database.
+async function captureLocalPublic(browser, v, base, getOrigin, contexts, recorder) {
+  const open = async ({ theme = 'dark', forceInviteRequests = false } = {}) => {
+    const local = await newLocalPage(browser, v, 'Europe/London', getOrigin);
+    contexts.push(local.context);
+    await local.context.addInitScript(preferredTheme => {
+      try { localStorage.setItem('randori-theme', preferredTheme); } catch {}
+    }, theme);
+    if (forceInviteRequests) {
+      await local.page.route(/\/api\/auth\/capabilities(?:\?|$)/, async route => {
+        const response = await route.fetch();
+        const payload = await response.json().catch(() => null);
+        if (payload?.capabilities) payload.capabilities.inviteRequests = true;
+        await route.fulfill({ status: response.status(), json: payload });
+      });
+      await local.page.route(/\/api\/invite-requests(?:\?|$)/, route => route.fulfill({
+        status: 202,
+        json: { ok: true, message: 'Thanks — if the circle has room, you’ll get an invitation by email.' },
+      }));
+    }
+    return local.page;
+  };
+  const visit = async (page, path) => {
+    await page.goto(`${base}${path}`, { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
+    await sleep(600);
+  };
+
+  await recorder.step(`${v}:local-landing`, async () => {
+    for (const theme of ['dark', 'light']) {
+      const page = await open({ theme });
+      await visit(page, '/');
+      await recorder.shot(page, v, `local-landing${theme === 'light' ? '-light' : ''}`);
+      if (theme === 'dark') {
+        await recorder.shot(page, v, 'local-landing-above-fold', { fullPage: false });
+        await tap(page, '#landingSignup');
+        await recorder.shot(page, v, 'local-landing-invitation-help', { fullPage: false, settle: 300 });
+      }
+    }
+  });
+  await recorder.step(`${v}:local-landing-request-form`, async () => {
+    for (const theme of ['dark', 'light']) {
+      const page = await open({ theme, forceInviteRequests: true });
+      await visit(page, '/');
+      await recorder.shot(page, v, `local-landing-request-form${theme === 'light' ? '-light' : ''}`);
+      if (theme !== 'dark') continue;
+      await tap(page, '#landingRequestInvite');
+      await tap(page, '#requestInviteSubmit');
+      await recorder.shot(page, v, 'local-landing-request-validation', { fullPage: false, settle: 400 });
+      await page.locator('#requestInviteName').fill('Ada Lovelace');
+      await page.locator('#requestInviteEmail').fill('ada@example.test');
+      await page.locator('#requestInviteNote').fill('Onsite loops in March: graphs and system design.');
+      await tap(page, '#requestInviteSubmit');
+      await page.getByTestId('request-invite-done').waitFor({ state: 'visible', timeout: 10_000 });
+      await recorder.shot(page, v, 'local-landing-request-success', { fullPage: false, settle: 400 });
+    }
+  });
+  await recorder.step(`${v}:local-recovery`, async () => {
+    for (const theme of ['dark', 'light']) {
+      const page = await open({ theme, forceInviteRequests: true });
+      const suffix = theme === 'light' ? '-light' : '';
+      for (const [path, name] of [['/invite', 'invite-no-token'], ['/verify', 'verify-no-token'], ['/reset-password', 'reset-password-no-token']]) {
+        await visit(page, path);
+        await recorder.shot(page, v, `local-${name}${suffix}`);
+      }
+    }
+  });
+}
+
 async function captureLocal(browser, viewportName, recorder) {
   const v = viewportName;
   const rootDir = realpathSync(mkdtempSync(join(tmpdir(), 'randori-ui-screens-')));
@@ -391,6 +464,8 @@ async function captureLocal(browser, viewportName, recorder) {
     process.env.EXECUTION_PROVIDER = 'piston';
     process.env.EXECUTION_API_URL = EXECUTION_API_URL;
     const base = runtime.url;
+
+    await captureLocalPublic(browser, v, base, getOrigin, contexts, recorder);
 
     // Owner is a returning user; the member experiences the real first run.
     const owner = await newLocalPage(browser, v, 'Europe/London', getOrigin);
