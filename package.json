@@ -2,6 +2,7 @@
   "dependencies": {
     "@libsql/client": "^0.12.0",
     "@sentry/node": "^10.75.0",
+    "@vercel/functions": "^3.10.1",
     "@vercel/sandbox": "^3.8.0",
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",

@@ -24,6 +24,10 @@ import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
 import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
 import {adoptCredentialKeyControl} from '../support/credential-key-control.mjs';
 
+// Committed-event identities are internal (used for post-commit delivery);
+// assert their count rather than random keys.
+const acceptance=result=>({accepted:result.accepted,queued:(result.outboxEvents||[]).length});
+
 const JWT_SECRET='email-activation-test-secret-at-least-thirty-two-bytes';
 const ENCRYPTION_KEY=Buffer.alloc(32,7).toString('base64url');
 const NOW=Math.floor(Date.now()/1000);
@@ -107,7 +111,7 @@ function countTransactionStatements(db,counter){
 test('activation stores only hashes, delivers through the outbox, and verifies atomically',async()=>{
   const {db}=await fixture();
   const claim=await invite(db,'member@example.test');
-  assert.deepEqual(await request(db,claim),{accepted:true});
+  assert.deepEqual(acceptance(await request(db,claim)),{accepted:true,queued:1});
   const {payload,token}=await queuedToken(db);
   assert.match(token,/^[A-Za-z0-9_-]{43}$/);
   const persisted=JSON.stringify((await db.execute(`SELECT * FROM auth_email_activations`)).rows);
@@ -140,7 +144,7 @@ test('activation stores only hashes, delivers through the outbox, and verifies a
 test('wrong email, revoked invitation, expiry, and rotated tokens fail without accounts',async()=>{
   const {db}=await fixture();
   const claim=await invite(db,'member@example.test');
-  assert.deepEqual(await request(db,claim,'wrong@example.test'),{accepted:false});
+  assert.deepEqual(acceptance(await request(db,claim,'wrong@example.test')),{accepted:false,queued:0});
   assert.equal(Number((await db.execute(`SELECT COUNT(*) AS count FROM auth_email_activations`)).rows[0].count),0);
   await request(db,claim);
   const first=(await queuedToken(db)).token;
@@ -159,16 +163,16 @@ test('eligible, wrong-email, and existing-account requests use the same bounded 
   const {db}=await fixture();
   const memberClaim=await invite(db,'member@example.test');
   const wrongCounter={count:0};
-  assert.deepEqual(await request(countTransactionStatements(db,wrongCounter),memberClaim,'wrong@example.test'),
-    {accepted:false});
+  assert.deepEqual(acceptance(await request(countTransactionStatements(db,wrongCounter),memberClaim,'wrong@example.test')),
+    {accepted:false,queued:0});
 
   const eligibleCounter={count:0};
-  assert.deepEqual(await request(countTransactionStatements(db,eligibleCounter),memberClaim),{accepted:true});
+  assert.deepEqual(acceptance(await request(countTransactionStatements(db,eligibleCounter),memberClaim)),{accepted:true,queued:1});
 
   const ownerClaim=await invite(db,'owner@example.test',{id:'44444444-4444-4444-8444-444444444444'});
   const existingCounter={count:0};
-  assert.deepEqual(await request(countTransactionStatements(db,existingCounter),ownerClaim,'owner@example.test'),
-    {accepted:false});
+  assert.deepEqual(acceptance(await request(countTransactionStatements(db,existingCounter),ownerClaim,'owner@example.test')),
+    {accepted:false,queued:0});
   assert.deepEqual([wrongCounter.count,eligibleCounter.count,existingCounter.count],[3,3,3]);
 });
 
@@ -176,14 +180,14 @@ test('resends are cooldown and lifetime bounded while stale queued messages supp
   const {db}=await fixture();
   const claim=await invite(db,'member@example.test');
   await request(db,claim);
-  assert.deepEqual(await resendEmailActivation(db,{claim,email:'member@example.test'},
-    {nowSeconds:NOW+1}),{accepted:false});
+  assert.deepEqual(acceptance(await resendEmailActivation(db,{claim,email:'member@example.test'},
+    {nowSeconds:NOW+1})),{accepted:false,queued:0});
   for(let count=2;count<=5;count+=1){
-    assert.deepEqual(await resendEmailActivation(db,{claim,email:'member@example.test'},
-      {nowSeconds:NOW+(count-1)*EMAIL_ACTIVATION_RESEND_SECONDS}),{accepted:true});
+    assert.deepEqual(acceptance(await resendEmailActivation(db,{claim,email:'member@example.test'},
+      {nowSeconds:NOW+(count-1)*EMAIL_ACTIVATION_RESEND_SECONDS})),{accepted:true,queued:1});
   }
-  assert.deepEqual(await resendEmailActivation(db,{claim,email:'member@example.test'},
-    {nowSeconds:NOW+1_000}),{accepted:false});
+  assert.deepEqual(acceptance(await resendEmailActivation(db,{claim,email:'member@example.test'},
+    {nowSeconds:NOW+1_000})),{accepted:false,queued:0});
   assert.equal(Number((await db.execute(`SELECT send_count FROM auth_email_activations`)).rows[0].send_count),5);
   const sent=[];
   const handler=createEmailActivationHandler({db,baseUrl:'https://randori.example.test',send:message=>{

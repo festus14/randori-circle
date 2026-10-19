@@ -26,12 +26,13 @@ import {
 import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
 import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
 import {adoptCredentialKeyControl} from '../support/credential-key-control.mjs';
+import {installWaitUntilCapture,stubResendFetch} from '../support/immediate-delivery.mjs';
 
 const resources=[];
 
 afterEach(()=>{
   for(const key of ['APP_URL','CIRCLE_MEMBERSHIP_ENABLED','EMAIL_PASSWORD_ACTIVATION_ENABLED',
-    'EMAIL_VERIFICATION_ENCRYPTION_KEY','JWT_SECRET','NODE_ENV','RESEND_API_KEY','RESEND_FROM',
+    'EMAIL_VERIFICATION_ENCRYPTION_KEY','JWT_SECRET','NODE_ENV','OUTBOX_IMMEDIATE_DELIVERY','RESEND_API_KEY','RESEND_FROM',
     'TURSO_AUTH_TOKEN','TURSO_DATABASE_URL']){
     delete process.env[key];
   }
@@ -191,4 +192,39 @@ test('verification attempts are durably IP-rate-limited before untrusted tokens 
   const limits=await db.execute(`SELECT attempts FROM auth_rate_limits`);
   assert.equal(limits.rows.length,1);
   assert.equal(Number(limits.rows[0].attempts),21);
+});
+
+test('verification email is sent right after the signup and resend commits, without changing responses',async t=>{
+  const {db,email,cookie,binding}=await fixture();
+  process.env.OUTBOX_IMMEDIATE_DELIVERY='true';
+  const provider=stubResendFetch({delayMs:100});
+  const callsAtRegistration=[];
+  const background=installWaitUntilCapture({onRegister:()=>callsAtRegistration.push(provider.calls.length)});
+  t.after(()=>{ provider.restore(); background.restore(); });
+  const events=async()=>(await db.execute({sql:`SELECT idempotency_key,status FROM outbox_events
+    WHERE event_type=? ORDER BY id`,args:[EMAIL_ACTIVATION_EVENT_TYPE]})).rows;
+
+  const body={email,password:'correct horse battery',name:'Invited Member',invite_binding:binding};
+  const wrong=await invoke({endpoint:'signup',body:{...body,email:'wrong@example.test'},cookie});
+  assert.equal(wrong.statusCode,202);
+  assert.equal(background.promises.length,0,'an ineligible signup schedules nothing');
+  const accepted=await invoke({endpoint:'signup',body,cookie});
+  assert.deepEqual(accepted.body,wrong.body);
+  assert.equal((await events())[0].status,'pending','the response is not held for delivery');
+  assert.equal(background.promises.length,1);
+  assert.equal((await background.settle())[0].delivered,1);
+  const [first]=await events();
+  assert.equal(first.status,'delivered');
+  assert.deepEqual(provider.calls.map(call=>call.idempotencyKey),[first.idempotency_key]);
+
+  await db.execute(`UPDATE auth_email_activations SET created_at=created_at-3600,last_sent_at=last_sent_at-3600`);
+  const resent=await invoke({endpoint:'activation-resend',cookie,body:{email,invite_binding:binding}});
+  assert.equal(resent.statusCode,202);
+  assert.equal(background.promises.length,1);
+  assert.equal((await background.settle())[0].delivered,1);
+  const stored=await events();
+  assert.equal(stored.length,2);
+  assert.deepEqual(stored.map(row=>row.status),['delivered','delivered']);
+  assert.deepEqual(provider.calls.map(call=>call.idempotencyKey),stored.map(row=>row.idempotency_key));
+  assert.deepEqual(callsAtRegistration,[0,1],'each attempt is registered before its provider I/O');
 });

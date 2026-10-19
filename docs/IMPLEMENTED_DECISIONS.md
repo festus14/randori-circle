@@ -2600,7 +2600,89 @@ no data changes.
   old and a missing `auth_time`, and refuses a fresh Google token when Randori
   recent auth has expired.
 
-## ID-64: Make pair code conflict-free and execute only acknowledged state
+## ID-64: Deliver auth and invitation email immediately after commit
+
+Status: code-only increment for
+[issue #250](https://github.com/festus14/randori-circle/issues/250); no
+migration, no new secret.
+
+**Context.** Email is written to the durable outbox in the same transaction as
+its credential and is sent only when `/api/cron/outbox` runs. That worker is
+triggered by the `outbox-dispatch` GitHub Actions schedule (`*/5`), which GitHub
+throttled to one run every two to four hours. In production a password-reset
+email sat `pending` for over an hour; a second request rotated the token, so the
+only email the user eventually received was already invalid. A 30-minute reset
+link, email verification, and invitations are unusable at that latency.
+
+**Decision.** After the enqueue transaction commits, the request schedules one
+bounded, best-effort delivery attempt for exactly the rows it wrote, using
+`waitUntil` from `@vercel/functions` so it runs after the response:
+
+- Paths: password-reset request, verified-signup activation and activation
+  resend, owner invitation create and resend, and primary/secondary schedule
+  notifications. Weekly pairing publication stays queue-only (bulk fan-out,
+  [outbox invocation budget](OUTBOX_INVOCATION_BUDGET.md)) and is drained by the cron.
+- `createOutboxEventStatement` records each statement's
+  `{eventType, idempotencyKey}` out of band (`api/_outbox-identity.js`), so
+  callers name the committed rows without changing the `{sql,args}` shape.
+  `requestPasswordReset`, `requestEmailActivation`, and `resendEmailActivation`
+  return those identities (`outboxEvents`) only when they actually queued mail;
+  they never reach the client.
+- `deliverOutboxEventsNow` claims each row by idempotency key through the same
+  lease-guarded `claimOutboxEvent` predicate as the cron (due, not leased, not
+  terminal, attempts remaining). A row the cron is processing is skipped; a row
+  the inline attempt is processing is skipped by the cron; a delivered row is
+  never reclaimed. Delivery, provider timeout, heartbeat, retry/backoff,
+  dead-letter, and lease-owned finalization are the cron's code paths, and the
+  provider idempotency key is the stored key, so a crash after send retries
+  under the same Resend `Idempotency-Key`.
+- Handlers come from the single registry now in `api/_outbox-delivery.js`, which
+  the cron also uses.
+- Budget: 8 seconds per request (capped by the platform invocation deadline via
+  `getDeadline()` minus 2 seconds), at most 8 events, 2-second finalization
+  reserve, provider wait `min(event timeout, remaining)`. A claim that commits
+  after the window closes is finalized to a bounded `INVOCATION_DEADLINE` retry
+  without provider work, as in the cron. Future-dated rows (schedule reminders)
+  are not due and are left to the cron.
+- The attempt starts after `res.json()` (an extra `setImmediate` yield), never
+  awaits in the handler, and every failure is swallowed and logged as
+  `[outbox_immediate_fail]` with only event types and an error code. The row
+  stays `pending`/`retry` for the cron.
+- Enumeration safety: password-reset and activation responses are unchanged,
+  still complete the 350 ms floor, and are sent before anything is scheduled.
+  An unknown or ineligible account writes no outbox row and schedules nothing;
+  because scheduling happens after the response, its presence is not
+  observable in body, headers, or timing.
+- Switch: on by default on Vercel (`VERCEL=1`); `OUTBOX_IMMEDIATE_DELIVERY=false`
+  turns it off (mail then waits for the cron), `true` enables it elsewhere. It
+  is a no-op for the local identity adapter so development capture still
+  appears in the cron response.
+
+**Alternatives.** Claim-and-send inline before responding would add provider
+latency (up to the 10-second event timeout) to the user's request and to the
+password-reset/activation timing floor, making account existence observable;
+rejected. A Vercel Cron cannot provide the needed cadence on Hobby (one run per
+day), so none is added for #250. An external cron service or managed queue
+would add an account and secret and still leaves minutes of latency; it remains
+the upgrade path if the GitHub schedule itself must be replaced.
+
+**Scheduler and watchdog.** `outbox-dispatch` remains the sole scheduled
+fan-out and the backstop for anything the immediate attempt did not finish
+(provider failure, platform termination, kill switch, pairing mail). Its
+cadence, `CRON_SECRET` authentication, and fair per-invocation budget (#96) are
+unchanged, so the pinned watchdog workflow and threshold are not changed here.
+The p95 enqueue-to-send delay for auth and invitation mail becomes the request
+duration plus provider latency (seconds) when the immediate attempt succeeds;
+measure it after deploy from `outbox_events.created_at` to `delivered_at` for
+those event types.
+
+**Rollout and recovery.** No migration. Deploy; confirm a password reset and an
+invitation arrive within seconds and that their outbox rows are `delivered`
+with a single `claimed` audit by an `inline-*` worker. Recovery is
+`OUTBOX_IMMEDIATE_DELIVERY=false` and a redeploy; queued mail then follows the
+scheduled worker exactly as before.
+
+## ID-65: Make pair code conflict-free and execute only acknowledged state
 
 Status: candidate migration-backed primary-session increment.
 

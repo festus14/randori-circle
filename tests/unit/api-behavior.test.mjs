@@ -2455,7 +2455,7 @@ test('execution fails closed with a clear unavailable error when no provider is 
   let networkCalls=0;
   globalThis.fetch=async()=>{ networkCalls+=1; throw new Error('no provider means no network'); };
   // A solo room authorizes without a canonical code document; exact two-human
-  // rooms additionally require an acknowledged document version (ID-64).
+  // rooms additionally require an acknowledged document version (ID-65).
   executeHandler=sql=>{
     if(sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')) return rows([{pair_group_id:20,week_id:10,user_a_id:2,user_b_id:2,user_c_id:null}]);
     throw new Error(`unconfigured execution must not write: ${sql}`);
