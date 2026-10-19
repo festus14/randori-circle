@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 import {
   captureSentryException,
   getClient,
@@ -7,13 +7,11 @@ import {
   verifyRequestAuth,
 } from './_db.js';
 import {
-  INVITATION_TTL_SECONDS,
   INVITE_CLAIM_TTL_SECONDS,
   circleMembershipEnabled,
   createInvitationToken,
   ensureCircleMembershipReadiness,
   getActivePrimaryCircleMembership,
-  hashInvitationEmail,
   hashInvitationToken,
   inviteClaimCookie,
   inviteClaimRemainingSeconds,
@@ -44,6 +42,9 @@ function clearLegacyInviteClaimCookie({secure=true}={}){
 }
 import { CredentialKeyControlError } from './_credential-key-control.js';
 import { deliverCommittedOutboxEvents, outboxEventsFromStatements } from './_outbox-immediate.js';
+import { insertOwnerInvitation } from './_invitation-create.js';
+import { clientAddress } from './_client-address.js';
+import { handleInviteRequestRoute, INVITE_REQUEST_ENDPOINTS } from './_invite-request-api.js';
 
 const PREPARE_RATE_LIMIT=12;
 const PREPARE_RATE_WINDOW_SECONDS=10*60;
@@ -111,10 +112,6 @@ function isSameOrigin(req){
   try{ return new URL(origin).host===host; }catch{ return false; }
 }
 
-function clientAddress(req){
-  return String(req?.headers?.['x-forwarded-for']||req?.socket?.remoteAddress||'unknown')
-    .split(',')[0].trim().slice(0,128)||'unknown';
-}
 
 function prepareRateKey(req){
   return createHmac('sha256',getJwtSecret())
@@ -262,12 +259,6 @@ async function handleCreate(req,res){
   if(!email) return res.status(400).json({error:'valid email required'});
   const context=await ownerContext(req,res);
   if(!context) return;
-  const token=createInvitationToken();
-  const tokenHash=hashInvitationToken(token);
-  const emailHash=hashInvitationEmail(email);
-  const id=randomUUID();
-  const createdAt=new Date().toISOString();
-  const expiresAt=new Date(Date.now()+INVITATION_TTL_SECONDS*1000).toISOString();
   const localRuntime=localIdentityAdapterEnabled(req);
   let emailConfiguration=invitationEmailConfiguration({localRuntime});
   try{
@@ -286,57 +277,26 @@ async function handleCreate(req,res){
         await transaction.rollback(); finished=true;
         return res.status(409).json({error:'circle context changed',code:'circle_context_changed'});
       }
-      const created=await transaction.execute({
-        sql:`INSERT INTO circle_invitations
-          (id,circle_id,token_hash,email_hash,created_by,created_at,expires_at)
-        SELECT ?,membership.circle_id,?,?,?,?,?
-        FROM circle_memberships membership JOIN circles circle ON circle.id=membership.circle_id
-        WHERE membership.user_id=? AND membership.role='owner' AND membership.status='active'
-          AND membership.circle_id=? AND circle.archived_at IS NULL
-        RETURNING id,circle_id`,
-        args:[id,tokenHash,emailHash,context.userId,createdAt,expiresAt,context.userId,Number(context.membership.circle_id??context.membership.id)],
+      const created=await insertOwnerInvitation(transaction,{
+        ownerUserId:context.userId,circleId:Number(context.membership.circle_id??context.membership.id),
+        email,emailConfiguration,localRuntime,
       });
-      if(!created?.rows?.length){
+      if(!created.ok){
         await transaction.rollback(); finished=true;
         return res.status(403).json({error:'circle owner required'});
       }
-      const audited=await transaction.execute({
-        sql:`INSERT INTO circle_audit_events
-          (circle_id,event_type,actor_user_id,subject_user_id,invitation_id,dedupe_key,created_at)
-        SELECT invitation.circle_id,'invitation.created',?,NULL,invitation.id,?,?
-        FROM circle_invitations invitation
-        JOIN circle_memberships membership ON membership.circle_id=invitation.circle_id
-          AND membership.user_id=? AND membership.role='owner' AND membership.status='active'
-        JOIN circles circle ON circle.id=invitation.circle_id
-          AND circle.id=? AND circle.archived_at IS NULL
-        WHERE invitation.id=?
-        RETURNING id`,
-        args:[context.userId,`invitation-created:${id}`,createdAt,context.userId,
-          Number(context.membership.circle_id??context.membership.id),id],
-      });
-      if(!audited?.rows?.length) throw new Error('invitation creation audit missing');
-      let emailQueued=false;
-      let emailStatement=null;
-      if(emailConfiguration){
-        emailStatement=createInvitationEmailEvent({
-          invitationId:id,circleId:Number(created.rows[0].circle_id),actorUserId:context.userId,
-          email,token,sendSequence:1,localRuntime,
-        });
-        const queued=await transaction.execute(emailStatement);
-        if(Number(queued.rowsAffected||0)!==1) throw new Error('invitation email intent missing');
-        emailQueued=true;
-      }
+      const {emailStatement}=created;
       await transaction.commit(); finished=true;
       res.status(201).json({
         ok:true,
         invitation:{
-          id,
-          email,
-          expires_at:expiresAt,
+          id:created.invitation.id,
+          email:created.invitation.email,
+          expires_at:created.invitation.expiresAt,
           status:'pending',
-          invite_url:`/invite#invite=${token}`,
+          invite_url:`/invite#invite=${created.invitation.token}`,
         },
-        email_delivery:{queued:emailQueued},
+        email_delivery:{queued:created.emailQueued},
         ...(multiCircleControlPlaneEnabled()?{circle_context_version:context.contextVersion}:{}),
       });
       // Post-response, lease-guarded attempt; the cron remains the backstop.
@@ -593,6 +553,7 @@ export default async function handler(req,res){
   const requestedEndpoint=queryValue(req,'endpoint');
   const route=endpoint(req);
   if(!circleMembershipEnabled()) return res.status(404).json({error:'not found'});
+  if(INVITE_REQUEST_ENDPOINTS.has(requestedEndpoint)) return handleInviteRequestRoute(req,res,requestedEndpoint);
   if(requestedEndpoint!==undefined&&requestedEndpoint!=='prepare'&&requestedEndpoint!=='invitations'){
     return res.status(400).json({error:'invalid request'});
   }
