@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 const OUTBOX_WORKFLOW_PATH='.github/workflows/outbox-dispatch.yml';
 const OUTBOX_WATCHDOG_WORKFLOW_PATH='.github/workflows/outbox-dispatch-watchdog.yml';
 const OUTBOX_WATCHDOG_SCRIPT_PATH='scripts/github-outbox-dispatch-watchdog.mjs';
-const OUTBOX_WATCHDOG_WORKFLOW_SHA256='7843bfeb5b444df4ca202b45974f0699a5a348514dc7eaae64e8bc14f2e997eb';
+const OUTBOX_WATCHDOG_WORKFLOW_SHA256='ba0726ad285bc9765e8d2e34f5ea81128eca4e1d064007699eb12202c46160b0';
 const OUTBOX_WATCHDOG_SCRIPT_SHA256='01eecb04b859e364e824708a12f3f2aea91751cb438954ebc90999328b4f2bc8';
 const REQUIRED_ROOT_FILES = [
   'index.html', 'package-lock.json', 'package.json', 'vercel.json', OUTBOX_WORKFLOW_PATH,
