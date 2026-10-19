@@ -75,6 +75,48 @@ jobs:
           retention-days: 3
           if-no-files-found: ignore
 
+  smooth-scroll-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Clicks on off-screen buttons under html{scroll-behavior:smooth}
+        run: |
+          mkdir -p /tmp/probe
+          cat > /tmp/probe/probe.spec.mjs <<'SPEC'
+          import { test, expect } from '@playwright/test';
+          for (const motion of ['no-preference', 'reduce']) {
+            test(`smooth-scroll click probe (${motion})`, async ({ browser }) => {
+              const context = await browser.newContext({ reducedMotion: motion });
+              const page = await context.newPage();
+              await page.setContent(`<style>html{scroll-behavior:smooth}
+                @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+                .spacer{height:2400px}</style>
+                <div class="spacer"></div><button id="b">Go</button><div class="spacer"></div>
+                <script>window.clicks=0;document.getElementById('b').addEventListener('click',()=>{window.clicks+=1;});</script>`);
+              const attempts = 60;
+              for (let i = 0; i < attempts; i += 1) {
+                await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+                await page.locator('#b').click();
+              }
+              const clicks = await page.evaluate(() => window.clicks);
+              console.log(`PROBE motion=${motion} attempts=${attempts} clicks=${clicks} lost=${attempts - clicks}`);
+              await context.close();
+              if (motion === 'reduce') expect(clicks).toBe(attempts);
+            });
+          }
+          SPEC
+          cp /tmp/probe/probe.spec.mjs tests/e2e/zz-probe.spec.mjs
+          npx playwright test tests/e2e/zz-probe.spec.mjs --reporter=list --workers=1 | grep -E "PROBE|passed|failed"
+
   circle-regression-proof:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
