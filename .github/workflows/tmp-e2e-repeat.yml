@@ -16,11 +16,9 @@ jobs:
       matrix:
         include:
           - name: targeted-mocked-x10
-            args: --repeat-each=10 tests/e2e/meeting-link.spec.ts tests/e2e/session-completion.spec.ts tests/e2e/schedule-sync.spec.ts tests/e2e/secondary-schedule.spec.ts tests/e2e/availability-ui.spec.ts tests/e2e/app-shell-navigation.spec.ts tests/e2e/board-sync.spec.ts tests/e2e/code-document-sync.spec.ts tests/e2e/session-controls.spec.ts tests/e2e/pair-run-feed.spec.ts
-          - name: golden-pair-room-x10
-            args: --repeat-each=10 tests/e2e/golden-pair-room-real-runtime.spec.ts
-          - name: pairing-real-runtime-x6
-            args: --repeat-each=6 tests/e2e/pairing-real-runtime.spec.ts
+            args: --repeat-each=10 tests/e2e/meeting-link.spec.ts tests/e2e/session-completion.spec.ts tests/e2e/schedule-sync.spec.ts tests/e2e/secondary-schedule.spec.ts tests/e2e/availability-ui.spec.ts tests/e2e/app-shell-navigation.spec.ts tests/e2e/board-sync.spec.ts tests/e2e/code-document-sync.spec.ts tests/e2e/session-controls.spec.ts tests/e2e/pair-run-feed.spec.ts tests/e2e/ui-shell-accessibility.spec.ts
+          - name: golden-and-pairing-runtime-x5
+            args: --repeat-each=5 tests/e2e/golden-pair-room-real-runtime.spec.ts tests/e2e/pairing-real-runtime.spec.ts
           - name: full-suite-x2
             args: --repeat-each=2
     name: ${{ matrix.name }}

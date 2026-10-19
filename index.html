@@ -10970,6 +10970,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     // hide all first? We decide
     const tabsEl=document.querySelector('.tabs');
     if(!signedIn){
+      // A view the visitor picked while /api/auth/me is still in flight is
+      // not overridden by a provisional "signed out" route; the route runs
+      // again once identity settles and decides with an authoritative answer.
+      if(window._randori_auth?.identitySettled!==true&&window._randoriExplicitNavigation) return;
       // Canonical pair invites are private capabilities: preserve the URL and require sign-in.
       hideAllViews();
       if(viewLanding) viewLanding.style.display='block';
