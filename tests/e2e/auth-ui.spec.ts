@@ -682,30 +682,37 @@ test('password reset landing scrubs the fragment and submits a matching policy-c
   expect(calls).toBe(1);
 });
 
-test('expired and revoked password reset links expose a terminal recovery path',async({page})=>{
+test('expired, replaced and invalid password reset links explain why and offer a new link',async({page})=>{
   const token='T'.repeat(43);
   let terminalStatus='expired';
   await mockApi(page,{
+    '/api/auth/capabilities':recoveryCapabilities,
     '/api/auth/password-reset/consume':()=>({
       _status:409,ok:false,status:terminalStatus,
     }),
   });
   await resetClientState(page);
 
-  for(const status of ['expired','revoked']){
+  const expected={expired:'valid for 30 minutes',revoked:'newer reset email replaced it',invalid:'replaced by a newer reset email'};
+  for(const status of ['expired','revoked','invalid']){
     terminalStatus=status;
     await page.goto(`/reset-password?state=${status}#token=${token}`,{waitUntil:'domcontentloaded'});
+    await expect(page.getByTestId('password-reset-status')).toContainText('expire 30 minutes');
     await page.locator('#passwordResetNew').fill('replacement password');
     await page.locator('#passwordResetConfirm').fill('replacement password');
     await page.locator('#passwordResetSubmit').click();
-    await expect(page.getByTestId('password-reset-status')).toContainText(
-      status==='expired'?'expired':'no longer available',
-    );
+    await expect(page.getByTestId('password-reset-status')).toContainText(expected[status]);
     await expect(page.locator('#passwordResetNew')).toBeHidden();
     await expect(page.locator('#passwordResetConfirm')).toBeHidden();
     await expect(page.locator('#passwordResetSubmit')).toBeHidden();
     await expect(page.locator('#passwordResetSignin')).toBeVisible();
+    await expect(page.getByTestId('password-reset-request-new')).toBeVisible();
   }
+
+  await page.getByTestId('password-reset-request-new').click();
+  await expect(page.getByRole('dialog',{name:'Reset your password'})).toBeVisible();
+  await expect(page.locator('#authResetRequest')).toBeVisible();
+  await expect(page).toHaveURL(/\/$/);
 });
 
 test('local capabilities expose an accessible signup flow with validation and one in-flight submit', async ({ page }) => {
