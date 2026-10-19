@@ -121,12 +121,16 @@ test('anonymous shell has landmarks, truthful copy, AA themes, and reduced motio
   await page.goto('/', { waitUntil: 'domcontentloaded' });
 
   await expect(page.locator('header.topbar')).toBeVisible();
-  const navigation = page.getByRole('navigation', { name: 'Primary navigation' });
+  // The landmark stays in the markup; visitors on the landing page just do
+  // not see it (WP-O), so query it including hidden elements.
+  const navigation = page.getByRole('navigation', { name: 'Primary navigation', includeHidden: true });
   await expect(navigation).toBeAttached();
-  await expect(navigation.getByRole('group', { name: 'Application views' })).toBeAttached();
-  await expect(navigation.getByRole('tablist')).toHaveCount(0);
+  await expect(navigation.getByRole('group', { name: 'Application views', includeHidden: true })).toBeAttached();
+  await expect(navigation.getByRole('tablist', { includeHidden: true })).toHaveCount(0);
   await expect(page.locator('main#appMain')).toBeVisible();
   await expect(page.locator('#view-landing')).toBeVisible();
+  await expect(page.locator('body')).toHaveAttribute('data-nav', 'hidden');
+  await expect(navigation).toBeHidden();
   await expect(page.getByRole('heading', { level: 1, name: 'Mock interviews with people you trust.' })).toBeVisible();
   await expect(page.locator('#landingSignup')).toHaveText('I have an invitation');
   await expect(page.locator('#view-landing')).toContainText('Private · invite-only');
