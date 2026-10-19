@@ -11129,6 +11129,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         return;
       }
     }catch{}
+    // A member part-way through the stepper (availability or what happens
+    // next) stays there: a late identity refresh must not jump to Home.
+    if(viewProfile?.style.display!=='none'&&setupMode!=='edit'&&setupStep!=='profile') return;
     // fetch profile to see if incomplete
     let profile;
     try{ profile=await fetchProfile(); }
