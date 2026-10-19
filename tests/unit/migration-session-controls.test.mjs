@@ -49,7 +49,7 @@ test('v19 installs only the durable pair-session-control aggregate and migration
   const item=fixture();
   try{
     const result=await apply(item.db);
-    assert.equal(result.toVersion,19);
+    assert.equal(result.toVersion,20);
     assert.deepEqual(V19.operations.map(operation=>operation.name),[
       'pair_session_controls','idx_pair_session_controls_updated_by',
       'trg_pair_session_controls_insert_guard','trg_pair_session_controls_update_guard',
@@ -78,7 +78,7 @@ test('managed v18 upgrades once without inventing browser-local timer or role st
     const upgraded=await applyMigrations(item.db,{
       expectedStateFingerprint:before.stateFingerprint,migrations:EXECUTABLE_MIGRATIONS,retry:NO_RETRY,
     });
-    assert.deepEqual(upgraded.applied.map(entry=>entry.version),[19]);
+    assert.deepEqual(upgraded.applied.map(entry=>entry.version),[19,20]);
     assert.equal((await item.db.execute(`SELECT COUNT(*) AS c FROM pair_session_controls`)).rows[0].c,0);
     assert.equal((await inspectMigrationState(item.db)).schemaExact,true);
   }finally{ item.close(); }

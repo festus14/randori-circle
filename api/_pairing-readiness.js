@@ -62,6 +62,13 @@ const LATER_TRIGGER_DIGESTS=new Map([
   ['trg_pairing_groups_session_controls_invalidate','1acae7b562421cfffff40b88b7d92f0a3d9d4cf542c7981f5a0b6f96236afa23'],
   ['trg_pairing_participants_session_controls_update_invalidate','5fdbfb3fbe20f5f49c0a76b9f38a0a7ed67a51bdae88a17ad6467182c000c242'],
   ['trg_pairing_participants_session_controls_delete_invalidate','474386ae7dee046bba7a6f6607b87fec7d340f5bdb707636c839a829eb2d99c8'],
+  ['trg_pairing_groups_code_documents_invalidate','b5ff0537fdfdeeea171ca5da5af9efa76d9dd5510f5b96c568a57dafc235d4fe'],
+  ['trg_pairing_participants_code_documents_update_invalidate','dd0ec7efa7c69cbbc79c4b68a4a09210544babbae1edc08ff20da5e9c8da2910'],
+  ['trg_pairing_participants_code_documents_delete_invalidate','7ef30b21d9b778c53aff9983d29bfe897630dd3bac6f815ceff61f4473b797db'],
+  ['trg_pairing_groups_code_workspace_update_invalidate','65e765fc16615ba12ac14dc20d5d404880bd51d607a061dbb8364089a79f40f7'],
+  ['trg_pairing_groups_code_workspace_delete_invalidate','c06f77aec1df1d9fb688d477a357074d6be26846ccf546d826bf7f89a6ff63b6'],
+  ['trg_pairing_participants_code_workspace_update_invalidate','3d8693aa687328eda817680b5a96603761ea3bb76632cdf97c5db8014909b68c'],
+  ['trg_pairing_participants_code_workspace_delete_invalidate','ddc18378a7f876784a1debfaef1ed9ace7e95c89758a9fa879c45cdacdea9c2e'],
 ]);
 const REQUIRED_OBJECTS=new Set([...REQUIRED_TABLES,...REQUIRED_INDEXES]);
 

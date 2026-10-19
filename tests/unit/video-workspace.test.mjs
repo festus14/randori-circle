@@ -1,8 +1,16 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { after, before, beforeEach, mock, test } from 'node:test';
 import { createClient } from '@libsql/client';
+import { getAuthorizedCodeDocument } from '../../api/_code-document.js';
 
-const db=createClient({url:'file::memory:'});
+const databaseDirectory=mkdtempSync(join(tmpdir(),'randori-video-workspace-'));
+const databasePath=join(databaseDirectory,'test.sqlite');
+const db=createClient({url:`file:${databasePath}`});
+const documentIdentity={roomId:'week_10_pair_20',weekId:10,pairGroupId:20,
+  questionSlug:'focus-block-rollup',questionVersion:1,language:'javascript'};
 
 function authPayload(req){
   const value=Number(req?.headers?.['x-test-user']);
@@ -129,9 +137,17 @@ before(async()=>{
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(week_id,pair_group_id)
   )`);
+  await db.execute(`CREATE TABLE pair_code_documents (
+    week_id INTEGER,pair_group_id INTEGER,question_slug TEXT,question_version INTEGER,language TEXT,
+    y_state_base64 TEXT,state_hash TEXT,code_hash TEXT,revision INTEGER,pair_user_a_id INTEGER,
+    pair_user_a_source TEXT,pair_user_b_id INTEGER,pair_user_b_source TEXT,pair_user_c_id INTEGER,
+    last_actor_id INTEGER,last_actor_source TEXT,last_client_id TEXT,last_client_seq INTEGER,
+    created_at TEXT,updated_at TEXT,PRIMARY KEY(week_id,pair_group_id,question_slug,question_version,language)
+  )`);
 });
 
 beforeEach(async()=>{
+  await db.execute(`DELETE FROM pair_code_documents`);
   await db.execute(`DELETE FROM pair_room_snapshots`);
   await db.execute(`DELETE FROM video_signals`);
   await db.execute(`DELETE FROM pairing_participants`);
@@ -147,7 +163,7 @@ beforeEach(async()=>{
   ],'write');
 });
 
-after(()=>db.close());
+after(()=>{ db.close(); rmSync(databaseDirectory,{recursive:true,force:true}); });
 
 test('workspace reads and writes require authentication and exact room membership', async()=>{
   const anonymous=await invoke({
@@ -504,4 +520,38 @@ test('workspace query parameters can be parsed from the URL without framework qu
   });
   assert.equal(result.status,200);
   assert.equal(result.body.revision,0);
+});
+
+test('first document creation and a workspace CAS serialize to one code authority',async()=>{
+  await db.execute(`UPDATE pairing_groups SET user_c_id=NULL WHERE id=20`);
+  const first=await post(workspaceV3({code:'const authority = "old";'}));
+  assert.equal(first.status,200);
+  const peer=createClient({url:`file:${databasePath}`});
+  try{
+    const [workspaceResult,documentResult]=await Promise.all([
+      post(workspaceV3({base_revision:1,client_id:'client_race',client_seq:2,
+        code:'const authority = "new";'})),
+      getAuthorizedCodeDocument(peer,{viewerId:2,...documentIdentity}),
+    ]);
+    assert.equal(workspaceResult.status,200,JSON.stringify(workspaceResult.body));
+    const finalDocument=(await getAuthorizedCodeDocument(db,{viewerId:2,...documentIdentity})).document;
+    const finalWorkspace=await get();
+    assert.equal(finalWorkspace.status,200);
+    assert.equal(finalWorkspace.body.snapshot.code,finalDocument.code);
+    assert.equal(workspaceResult.body.snapshot.code,finalDocument.code);
+    assert.equal(documentResult.document.code,finalDocument.code);
+  }finally{ peer.close(); }
+});
+
+test('workspace reads redact an expired canonical code projection while preserving its board',async()=>{
+  await db.execute(`UPDATE pairing_groups SET user_c_id=NULL WHERE id=20`);
+  const board=sampleBoard();
+  assert.equal((await post(workspaceV3({code:'private old code',board}))).status,200);
+  await getAuthorizedCodeDocument(db,{viewerId:2,...documentIdentity});
+  await db.execute(`UPDATE pair_code_documents SET updated_at='2020-01-01T00:00:00.000Z'`);
+
+  const response=await get();
+  assert.equal(response.status,200);
+  assert.equal(response.body.snapshot.code,'');
+  assert.deepEqual(response.body.snapshot.board,board);
 });

@@ -1,4 +1,6 @@
+import { createHash } from 'node:crypto';
 import { expect, Page, Request, Route, test } from '@playwright/test';
+import * as Y from 'yjs';
 import { mockApi, originalQuestionFixture, setCode } from './helpers';
 
 const roomA = 'week_42_pair_7';
@@ -153,6 +155,77 @@ class WorkspaceStore {
   };
 }
 
+type CodeDocument = {
+  doc: Y.Doc;
+  revision: number;
+  state: string;
+};
+
+class CodeDocumentStore {
+  private readonly documents = new Map<string, CodeDocument>();
+
+  constructor(rooms: string[]) {
+    for (const room of rooms) {
+      const doc = new Y.Doc();
+      doc.getText('code').insert(0, starterCode);
+      this.documents.set(room, { doc, revision: 1, state: this.encode(doc) });
+    }
+  }
+
+  version(room: string): string {
+    const current = this.require(room);
+    return createHash('sha256')
+      .update(JSON.stringify([room, current.revision, current.state, current.doc.getText('code').toString()]))
+      .digest('hex');
+  }
+
+  handle = (request: Request): Record<string, unknown> => {
+    const url = new URL(request.url());
+    const body = request.method() === 'POST'
+      ? request.postDataJSON() as { room_id?: string; update?: string }
+      : null;
+    const room = String(body?.room_id || url.searchParams.get('room_id') || '');
+    const current = this.documents.get(room);
+    if (!current) return { _status: 404, ok: false, error: 'code document not found' };
+
+    if (request.method() === 'POST') {
+      if (typeof body?.update !== 'string') return { _status: 400, ok: false, error: 'invalid update' };
+      const previous = current.state;
+      Y.applyUpdate(current.doc, Buffer.from(body.update, 'base64'));
+      current.state = this.encode(current.doc);
+      const idempotent = current.state === previous;
+      if (!idempotent) current.revision += 1;
+      return { ...this.response(room, current, 0), idempotent };
+    }
+
+    return this.response(room, current, Number(url.searchParams.get('after_revision') || 0));
+  };
+
+  private response(room: string, current: CodeDocument, after: number): Record<string, unknown> {
+    const changed = current.revision > after;
+    return {
+      ok: true,
+      changed,
+      created: false,
+      revision: current.revision,
+      document_version: this.version(room),
+      state: changed ? current.state : null,
+      code_hash: createHash('sha256').update(current.doc.getText('code').toString()).digest('hex'),
+      updated_at: '2026-09-20T10:00:00.000Z',
+    };
+  }
+
+  private encode(doc: Y.Doc): string {
+    return Buffer.from(Y.encodeStateAsUpdate(doc)).toString('base64');
+  }
+
+  private require(room: string): CodeDocument {
+    const current = this.documents.get(room);
+    if (!current) throw new Error(`missing code document for ${room}`);
+    return current;
+  }
+}
+
 type DeferredFeed = {
   room: string;
   started: Promise<void>;
@@ -209,7 +282,7 @@ class PairRunStore {
   async routeExecute(route: Route, user: TestUser) {
     const request = route.request();
     const body = request.postDataJSON() as Record<string, unknown>;
-    const expectedFields = ['code', 'language', 'question_slug', 'question_version', 'room_id'];
+    const expectedFields = ['code', 'document_version', 'language', 'question_slug', 'question_version', 'room_id'];
     if (request.method() !== 'POST' || Object.keys(body).sort().join(',') !== expectedFields.join(',')) {
       await this.fulfill(route, { _status: 400, ok: false, error: 'invalid execute request' });
       return;
@@ -377,6 +450,7 @@ async function openPairRoom(
   user: TestUser,
   store: PairRunStore,
   workspace: WorkspaceStore,
+  codeDocuments: CodeDocumentStore,
   authorizedRoom: () => string = () => room,
 ) {
   await page.route(/^https:\/\//, route => route.abort());
@@ -386,6 +460,7 @@ async function openPairRoom(
     '/api/questions': { ok: true, questions: [originalQuestionFixture], count: 1 },
     '/api/my-pair': () => pairResponse(authorizedRoom(), user),
     '/api/video/signal': workspace.handle,
+    '/api/code-document': codeDocuments.handle,
   });
   // These are registered after the broad API mock so Playwright gives the
   // contract-sensitive handlers precedence.
@@ -401,6 +476,7 @@ async function waitForRoom(page: Page, room: string) {
   await expect.poll(() => page.evaluate(() => (
     window as typeof window & { _randori_workspace?: { hydrated?: boolean } }
   )._randori_workspace?.hydrated)).toBe(true);
+  await expect(page.locator('#codeSyncStatus')).toHaveText('synced');
   await expect.poll(() => page.evaluate(() => {
     const feed = (window as typeof window & {
       _randori_pair_runs?: { room?: string };
@@ -442,6 +518,7 @@ function assertSafeFeedResponses(responses: Array<Record<string, unknown>>) {
 test('both pair members see a verified safe room run after execution and refresh', async ({ browser }) => {
   const store = new PairRunStore();
   const workspace = new WorkspaceStore([roomA, roomB]);
+  const codeDocuments = new CodeDocumentStore([roomA, roomB]);
   store.add(storedRun(null, userA, 'personal-private-run'));
   store.add(storedRun(roomB, userB, 'other-room-private-run'));
   const contexts = await Promise.all([browser.newContext(), browser.newContext()]);
@@ -450,8 +527,8 @@ test('both pair members see a verified safe room run after execution and refresh
 
   try {
     await Promise.all([
-      openPairRoom(pages[0], roomA, userA, store, workspace),
-      openPairRoom(pages[1], roomA, userB, store, workspace),
+      openPairRoom(pages[0], roomA, userA, store, workspace, codeDocuments),
+      openPairRoom(pages[1], roomA, userB, store, workspace, codeDocuments),
     ]);
     await setCode(pages[0], submittedCode);
     await pages[0].locator('#runBtn').click();
@@ -460,6 +537,7 @@ test('both pair members see a verified safe room run after execution and refresh
     expect(store.executeBodies[0]).toEqual({
       language: 'javascript',
       code: submittedCode,
+      document_version: codeDocuments.version(roomA),
       question_slug: originalQuestionFixture.slug,
       question_version: originalQuestionFixture.version,
       room_id: roomA,
@@ -491,9 +569,10 @@ test('both pair members see a verified safe room run after execution and refresh
   }
 });
 
-test('a run started before workspace hydration is still attributed to the authorized pair room', async ({ page }) => {
+test('a pair run waits for acknowledged document hydration and stays attributed to its room', async ({ page }) => {
   const store = new PairRunStore();
   const workspace = new WorkspaceStore([roomA]);
+  const codeDocuments = new CodeDocumentStore([roomA]);
   let releaseHydration!: () => void;
   let markHydrationStarted!: () => void;
   const hydrationGate = new Promise<void>(resolve => { releaseHydration = resolve; });
@@ -520,6 +599,7 @@ test('a run started before workspace hydration is still attributed to the author
       }
       return workspace.handle(request);
     },
+    '/api/code-document': codeDocuments.handle,
   });
   await page.route(/\/api\/runs(?:\?|$)/, route => store.routeRuns(route, userA));
   await page.route('**/api/execute', route => store.routeExecute(route, userA));
@@ -530,7 +610,7 @@ test('a run started before workspace hydration is still attributed to the author
     await hydrationStarted;
     await expect(page.locator('#view-code')).toBeVisible();
     await expect(page.locator('#runBtn')).toBeVisible();
-    await expect(page.locator('#runBtn')).toBeEnabled();
+    await expect(page.locator('#runBtn')).toBeDisabled();
     await expect(page.locator('#questionSelect')).toHaveValue(originalQuestionFixture.slug);
     await expect.poll(() => page.evaluate(room => {
       const app = window as typeof window & {
@@ -544,6 +624,9 @@ test('a run started before workspace hydration is still attributed to the author
       };
     }, roomA)).toEqual({ authorized: true, workspaceRoom: roomA, hydrated: false });
 
+    releaseHydration();
+    await waitForRoom(page, roomA);
+    await expect(page.locator('#runBtn')).toBeEnabled();
     const codeAtExecution = await page.evaluate(() => (
       (window as typeof window & { _randori_code?: { getCode?: () => string } })._randori_code?.getCode?.()
       || document.querySelector<HTMLTextAreaElement>('#editor')?.value
@@ -556,6 +639,7 @@ test('a run started before workspace hydration is still attributed to the author
     expect(store.executeBodies[0]).toEqual({
       language: 'javascript',
       code: codeAtExecution,
+      document_version: codeDocuments.version(roomA),
       question_slug: originalQuestionFixture.slug,
       question_version: originalQuestionFixture.version,
       room_id: roomA,
@@ -563,8 +647,6 @@ test('a run started before workspace hydration is still attributed to the author
     const [roomRun] = store.records.filter(run => run.room_id === roomA);
     if (!roomRun) throw new Error('execute result was not attributed to the pair room');
 
-    releaseHydration();
-    await waitForRoom(page, roomA);
     await expect.poll(() => feedItems(page), { timeout: 10_000 }).toHaveLength(1);
     await expect.poll(async () => (await feedItems(page))[0]?.id).toBe(roomRun.id);
     await expect(page.locator('#pairRunsList')).toContainText('Candidate A');
@@ -577,9 +659,10 @@ test('a run started before workspace hydration is still attributed to the author
 test('a delayed old-room response cannot render after switching rooms', async ({ page }) => {
   const store = new PairRunStore();
   const workspace = new WorkspaceStore([roomA, roomB]);
+  const codeDocuments = new CodeDocumentStore([roomA, roomB]);
   store.add(storedRun(roomB, userB, 'room-b-current-run'));
   let authorizedRoom = roomA;
-  await openPairRoom(page, roomA, userA, store, workspace, () => authorizedRoom);
+  await openPairRoom(page, roomA, userA, store, workspace, codeDocuments, () => authorizedRoom);
   await expect.poll(() => store.pairFeedRequests.filter(request => request.room_id === roomA).length)
     .toBeGreaterThan(0);
 
