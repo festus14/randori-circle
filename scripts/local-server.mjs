@@ -683,6 +683,10 @@ function apiRoute(pathname,query){
     query.endpoint=authEndpoints.get(pathname);
     return 'auth';
   }
+  if(pathname==='/api/invite-requests'||pathname==='/api/invite-requests/decision'){
+    query.endpoint=pathname.endsWith('/decision')?'invite-request-decision':'invite-requests';
+    return 'invitations';
+  }
   if(pathname==='/api/invitations/prepare'){
     query.endpoint='prepare';
     return 'invitations';
@@ -966,6 +970,7 @@ function installRuntimeEnvironment(config,url,secret,envTarget=process.env){
     ALLOW_OPEN_SIGNUP:'false',
     CIRCLE_MEMBERSHIP_ENABLED:'true',
     PASSWORD_RESET_ENABLED:'true',
+    INVITE_REQUESTS_ENABLED:'true',
     IDENTITY_MANAGEMENT_ENABLED:'false',
     IDENTITY_EMAIL_HASH_KEY:identityEmailHashKey,
     IDENTITY_EMAIL_HASH_KEY_VERSION:'1',
