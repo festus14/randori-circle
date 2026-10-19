@@ -2869,7 +2869,8 @@ async function refreshMe(){
     if(addRow){
       addRow.style.display='none';
       addRow.setAttribute('aria-hidden','true');
-      if(addInfo) addInfo.textContent=me?'Loading your private circle…':'Sign in to view your private circle.';
+      // Signed-in summaries come from renderPeople(); only the signed-out copy is set here.
+      if(addInfo&&!me) addInfo.textContent='Sign in to view your private circle.';
     }
     // shuffle buttons admin-only (+ demo e2e)
     const demoRun=document.getElementById('demoRunBtn');
@@ -4495,6 +4496,8 @@ async function refreshMe(){
     clearLatestInvite();
     circleInviteEmails.clear();
     if(circleTitle) circleTitle.textContent='Your circle';
+    const circleNote=document.getElementById('circleAutoNote');
+    if(circleNote) circleNote.textContent='Loading your private circle…';
     if(!preserveLifecycleRecentAction) clearLifecycleRecentAction();
     window._randori_workspace?.deactivate?.();
     window._randori_authorized_room=null;
@@ -4915,7 +4918,7 @@ async function refreshMe(){
 
   function invitationRevokeButton(id){
     const revoke=document.createElement('button');
-    revoke.type='button'; revoke.className='btn ghost sm membership-danger'; revoke.dataset.testid='circle-invite-revoke';
+    revoke.type='button'; revoke.className='btn secondary sm membership-danger'; revoke.dataset.testid='circle-invite-revoke';
     revoke.textContent='Revoke'; revoke.setAttribute('aria-label','Revoke invitation');
     revoke.addEventListener('click',async()=>{
       if(activeCircleRole!=='owner') return;
@@ -4975,15 +4978,15 @@ async function refreshMe(){
       circleInvites.appendChild(empty);
       return;
     }
-    const activeTitle=document.createElement('h4'); activeTitle.className='circle-subtitle'; activeTitle.id='circleInvitesPendingTitle';
-    activeTitle.textContent=`Pending (${active.length})`;
-    circleInvites.appendChild(activeTitle);
     if(active.length){
+      const activeTitle=document.createElement('h4'); activeTitle.className='circle-subtitle'; activeTitle.id='circleInvitesPendingTitle';
+      activeTitle.textContent=`Pending (${active.length})`;
+      circleInvites.appendChild(activeTitle);
       const list=document.createElement('ul'); list.className='people circle-invite-list'; list.setAttribute('aria-labelledby','circleInvitesPendingTitle');
       active.forEach(invitation=>{ const row=invitationRow(invitation); if(row) list.appendChild(row); });
       circleInvites.appendChild(list);
     }else{
-      const none=document.createElement('p'); none.className='small muted'; none.textContent='No pending invitations.';
+      const none=document.createElement('p'); none.className='small muted circle-empty'; none.textContent='No pending invitations.';
       circleInvites.appendChild(none);
     }
     if(past.length){
@@ -5065,7 +5068,7 @@ async function refreshMe(){
     const actions=document.createElement('div'); actions.className='circle-row-actions';
     const approve=document.createElement('button'); approve.type='button'; approve.className='btn sm'; approve.dataset.testid='circle-invite-request-approve';
     approve.textContent='Approve'; approve.setAttribute('aria-label',`Approve ${view.name} and send an invitation`);
-    const decline=document.createElement('button'); decline.type='button'; decline.className='btn ghost sm membership-danger'; decline.dataset.testid='circle-invite-request-decline';
+    const decline=document.createElement('button'); decline.type='button'; decline.className='btn secondary sm membership-danger'; decline.dataset.testid='circle-invite-request-decline';
     decline.textContent='Decline'; decline.setAttribute('aria-label',`Decline ${view.name}`);
     approve.addEventListener('click',()=>{ void decideInviteRequest(request,'approve'); });
     decline.addEventListener('click',()=>{ void decideInviteRequest(request,'decline'); });
@@ -5388,9 +5391,9 @@ async function refreshMe(){
           if(action==='reactivate'){
             button.className='btn secondary sm'; button.dataset.testid='circle-member-reactivate'; button.textContent='Reactivate'; button.setAttribute('aria-label',`Reactivate ${view.name}`);
           }else if(action==='transfer'){
-            button.className='btn ghost sm'; button.dataset.testid='circle-member-transfer'; button.textContent='Transfer ownership'; button.setAttribute('aria-label',`Transfer ownership to ${view.name}`);
+            button.className='btn secondary sm'; button.dataset.testid='circle-member-transfer'; button.textContent='Transfer ownership'; button.setAttribute('aria-label',`Transfer ownership to ${view.name}`);
           }else{
-            button.className='btn ghost sm membership-danger'; button.dataset.testid='circle-member-deactivate'; button.textContent='Deactivate'; button.setAttribute('aria-label',`Deactivate ${view.name}`);
+            button.className='btn secondary sm membership-danger'; button.dataset.testid='circle-member-deactivate'; button.textContent='Deactivate'; button.setAttribute('aria-label',`Deactivate ${view.name}`);
           }
           button.addEventListener('click',()=>{ applyMemberAction(action,member); });
           controls.appendChild(button);
@@ -5465,7 +5468,9 @@ async function refreshMe(){
         ?`${unique.length} matching member${unique.length===1?'':'s'} shown${result.has_more?'. More results may be available.':'. Search complete.'}`
         :`${unique.length} membership${unique.length===1?'':'s'} shown${result.has_more?'. More members are available.':'. All members loaded.'}`;
       if(circleLifecycleStatus&&noticeGeneration===circleLifecycleNoticeGeneration&&!hasCircleLifecycleNotice(actorId)){
-        circleLifecycleStatus.textContent='Owner controls are ready.';
+        // Keep action results (for example "Member deactivated") visible; only
+        // clear stale recovery copy from an earlier failed load.
+        if(/^(Your circle remains unchanged|Roster access changed)/.test(circleLifecycleStatus.textContent)) circleLifecycleStatus.textContent='';
       }
       return true;
     }catch(error){

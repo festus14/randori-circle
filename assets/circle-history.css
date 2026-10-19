@@ -36,7 +36,8 @@
 .circle-layout { display: grid; gap: var(--space-4); align-items: start; }
 .circle-side { display: grid; gap: var(--space-4); min-width: 0; }
 @media (min-width: 1024px) {
-  .circle-layout { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); }
+  .circle-layout:has(.circle-side > :not([hidden])) { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); }
+  .circle-layout:not(:has(.circle-side > :not([hidden]))) { max-width: var(--reading-max, 680px); }
 }
 
 /* Form rows */
@@ -157,3 +158,38 @@
   .circle-row { border-color: CanvasText; }
   .history-row[aria-current="true"] { outline: 2px solid Highlight; }
 }
+
+/* Destructive actions read as destructive in every button variant. */
+.circle-view .btn.membership-danger {
+  color: var(--color-danger); border-color: color-mix(in srgb, var(--color-danger) 55%, var(--color-border));
+}
+.circle-view .btn.membership-danger:hover:not(:disabled) {
+  background: var(--color-danger-surface); border-color: var(--color-danger); color: var(--color-danger);
+}
+
+/* The side column is narrow: actions sit under the text so addresses never break mid-word. */
+.circle-side .circle-row { grid-template-columns: auto minmax(0, 1fr); }
+.circle-side .circle-row-actions { grid-column: 2 / -1; justify-content: flex-start; }
+.circle-row-email { word-break: normal; overflow-wrap: anywhere; }
+
+/* Disclosure affordance for "Earlier invitations" and Diagnostics. */
+.circle-invite-history > summary,
+.circle-diagnostics-summary { list-style: none; gap: var(--space-2); }
+.circle-invite-history > summary::-webkit-details-marker,
+.circle-diagnostics-summary::-webkit-details-marker { display: none; }
+.circle-invite-history > summary::before,
+.circle-diagnostics-summary::before {
+  content: ""; width: 8px; height: 8px; flex: 0 0 auto;
+  border-right: 2px solid currentColor; border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg); transition: transform var(--dur-1) var(--ease-out);
+}
+.circle-invite-history[open] > summary::before,
+.circle-diagnostics[open] > .circle-diagnostics-summary::before { transform: rotate(45deg); }
+@media (prefers-reduced-motion: reduce) {
+  .circle-invite-history > summary::before,
+  .circle-diagnostics-summary::before { transition: none; }
+}
+
+/* Tall rows keep the avatar beside the name, not floating mid-row. */
+.circle-row > .circle-avatar,
+.circle-row > .circle-row-icon { align-self: start; }
