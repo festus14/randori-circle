@@ -130,7 +130,7 @@ test('solo practice browses, filters and searches the catalogue, opens an exerci
     expect(execution.status()).toBe(200);
     expect(await execution.json()).toMatchObject({ok:true,question_slug:'focus-block-rollup',passed_count:8,total_count:8});
     await expect(page.locator('#runOut')).toContainText('Result: 8/8 passed');
-    await expect(page.locator('#runOut')).toContainText('authoritative server result');
+    await expect(page.locator('#runOut')).toContainText('Checked on the server');
     expect(transport.requests).toEqual([{language:'javascript',version:'18.15.0',files:['main.js']}]);
 
     // A wrong solution reports the authoritative failure rather than passing.

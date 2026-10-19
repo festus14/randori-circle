@@ -756,11 +756,21 @@ async function captureLocal(browser, viewportName, recorder) {
       await mp.evaluate(() => window._randori_room?.show?.('problem'));
       await mp.getByTestId('catalog-status').filter({ hasNotText: 'Loading' }).waitFor({ timeout: 15_000 }).catch(() => {});
       await sleep(1000);
+      // WP-K: the problem statement first, then the opened card list.
+      await recorder.shot(mp, v, 'catalogue-problem');
+      await mp.evaluate(() => { const browse = document.getElementById('catalogBrowseList'); if (browse) browse.open = true; });
       await recorder.shot(mp, v, 'catalogue-browse');
       await mp.getByTestId('catalog-search').fill('zzzz-no-such-exercise');
       await sleep(600);
       await recorder.shot(mp, v, 'catalogue-empty-filter');
+      await tap(mp, '#themeToggle');
+      await sleep(500);
+      await recorder.shot(mp, v, 'catalogue-empty-filter-light');
       await mp.getByTestId('catalog-search').fill('');
+      await sleep(400);
+      await recorder.shot(mp, v, 'catalogue-browse-light');
+      await tap(mp, '#themeToggle');
+      await mp.evaluate(() => { const browse = document.getElementById('catalogBrowseList'); if (browse) browse.open = false; });
     });
 
     await recorder.step(`${v}:history`, async () => {
