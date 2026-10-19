@@ -694,6 +694,36 @@ markup in later packages.
   `tests/unit/app-shell.test.mjs`); golden paths are in
   `tests/e2e/app-shell-navigation.spec.ts`.
 
+### 9.3 What WP-P shipped (availability and pairing)
+
+- `#view-pair` is now **This week's cycle**: the availability card for the
+  next cycle, then the current cycle's pairs, then an owner-only **Owner
+  tools** card, then an admin-only **Diagnostics** disclosure. The "Sync /
+  Browser state" card is gone; browser-tab presence (`#syncStatus`,
+  `#presencePanel`) and the demo buttons live in Diagnostics.
+- **Availability card** (`#availabilityWrap`): "Are you in for week N?", the
+  dated cycle range, two choice buttons (`#availAvailable` "I'm in",
+  `#availSkip` "Skip this cycle", `aria-pressed` only for a saved
+  `source=user` choice), the decision sentence, and "Decide by <cutoff>
+  (<zone>) · N days M hours left" (urgent styling in the final day). The
+  badge (`#availLabel`) uses sentence case with a `data-tone`. The dashed
+  inherited-choice banner is gone; `#availBanner` is now only the offline
+  notice, and both choices are disabled with that reason while offline.
+- **Pairs card** (`#pairsList`): pair rows built from DOM nodes, with the
+  viewer's pair highlighted ("Your pair", "(you)"); a skeleton while the first
+  read is in flight; one status block per state (load error or offline,
+  unverified, not started or ended, not yet published with the scheduled time)
+  with one Retry action. A failed read clears the cached publication state so
+  owner status never says "Published" next to an error.
+- **Owner tools** (`#pairOwnerPanel`, visible to circle owners or whenever the
+  server allows recovery): status badge (Checking, Scheduled, Publication is
+  late, Published, Status unavailable), an explanation, the next cutoff, and
+  `#newWeekBtn` (Publish now / Retry publication, still server-gated by
+  `can_publish_now` and the cycle key).
+- Logic lives in `assets/pairing-view.js` (classic script, unit-tested in
+  `tests/unit/pairing-view.test.mjs`); golden paths are in
+  `tests/e2e/availability-ui.spec.ts` and `tests/e2e/pairing-cycle-ui.spec.ts`.
+
 ## 10. Phased implementation plan
 
 ### 10.1 Global constraints for every package

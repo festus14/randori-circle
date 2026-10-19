@@ -86,7 +86,7 @@ test('availability stays hidden until an authoritative state is ready', async ({
     await expect(page.getByTestId('availability-card')).toBeHidden();
     releaseAvailability();
     await expect(page.getByTestId('availability-card')).toBeVisible();
-    await expect(page.locator('#availTitle')).toHaveText('Availability for 2026-W39');
+    await expect(page.locator('#availTitle')).toHaveText('Are you in for week 39?');
   } finally {
     releaseAvailability();
   }
@@ -114,13 +114,13 @@ test('availability is loaded from its cycle API and posts the exact versioned bo
   const availableButton = page.locator('#availAvailable');
   const skipButton = page.locator('#availSkip');
   await expect(card).toBeVisible();
-  await expect(page.locator('#availTitle')).toHaveText('Availability for 2026-W39');
+  await expect(page.locator('#availTitle')).toHaveText('Are you in for week 39?');
   await expect(page.getByTestId('availability-cycle')).toContainText('Upcoming cycle starts');
   await expect(page.getByTestId('availability-cycle')).toContainText('2026');
   await expect(page.getByTestId('availability-cutoff')).toContainText('Europe/London');
   await expect(availableButton).toBeEnabled();
   await expect(skipButton).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.locator('#availLabel')).toHaveText('SAVED • SKIPPING');
+  await expect(page.locator('#availLabel')).toHaveText('Saved · Skipping');
 
   // The old cached account boolean remains untouched and does not drive the card.
   await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('randori-me') || '{}').is_available)).toBe(true);
@@ -135,7 +135,41 @@ test('availability is loaded from its cycle API and posts the exact versioned bo
   expect(typeof posts[0].is_available).toBe('boolean');
   await expect(availableButton).toHaveAttribute('aria-pressed', 'true');
   await expect(skipButton).toHaveAttribute('aria-pressed', 'false');
-  await expect(page.locator('#availLabel')).toHaveText('SAVED • AVAILABLE');
+  await expect(page.locator('#availLabel')).toHaveText("Saved · You're in");
+});
+
+test('the cycle decision shows a dated cutoff and stays truthful while offline', async ({ page }) => {
+  const cutoffAt = new Date(Date.now() + 2 * 86_400_000 + 3 * 3_600_000 + 60_000).toISOString();
+  await mockApi(page, {
+    '/api/auth/me': { ok: true, user },
+    '/api/circle': circle(),
+    '/api/settings/availability': () => ({
+      ok: true,
+      availability: availability({ isAvailable: true, version: 5, cutoffAt }),
+    }),
+  });
+  await resetClientState(page, true);
+  await page.goto('/?view=pair', { waitUntil: 'domcontentloaded' });
+
+  await expect(page.locator('#availTitle')).toHaveText('Are you in for week 39?');
+  await expect(page.locator('#availLabel')).toHaveText("Saved · You're in");
+  await expect(page.locator('#availLabel')).toHaveAttribute('data-tone', 'success');
+  await expect(page.getByTestId('availability-cutoff')).toContainText('Decide by');
+  await expect(page.getByTestId('availability-cutoff')).toContainText('2 days 3 hours left');
+  await expect(page.locator('#availAvailable')).toHaveText("I'm in");
+  await expect(page.locator('#availBanner')).toBeHidden();
+  await expect(page.getByTestId('availability-card')).not.toContainText('2026-W39');
+
+  await page.context().setOffline(true);
+  await expect(page.locator('#availBanner')).toBeVisible();
+  await expect(page.locator('#availBanner')).toContainText("You're offline");
+  await expect(page.locator('#availAvailable')).toBeDisabled();
+  await expect(page.locator('#availSkip')).toBeDisabled();
+  await expect(page.locator('#availAvailable')).toHaveAttribute('aria-pressed', 'true');
+
+  await page.context().setOffline(false);
+  await expect(page.locator('#availBanner')).toBeHidden();
+  await expect(page.locator('#availSkip')).toBeEnabled();
 });
 
 for (const scenario of [
@@ -168,7 +202,7 @@ for (const scenario of [
     await resetClientState(page, true);
     await page.goto('/?view=pair', { waitUntil: 'domcontentloaded' });
 
-    await expect(page.locator('#availLabel')).toContainText('NOT SAVED');
+    await expect(page.locator('#availLabel')).toContainText('Not saved');
     await expect(page.locator('#availDecision')).toContainText(scenario.copy);
     await expect(page.locator('#dashAvailBadge')).toContainText(scenario.badge);
     await expect(page.locator('#availAvailable')).toHaveAttribute('aria-pressed', 'false');
@@ -182,7 +216,7 @@ for (const scenario of [
       is_available: scenario.isAvailable,
     });
     await expect(page.locator(scenario.action)).toHaveAttribute('aria-pressed', 'true');
-    await expect(page.locator('#availLabel')).toContainText('SAVED');
+    await expect(page.locator('#availLabel')).toContainText('Saved');
     await expect(page.locator('#availDecision')).toContainText('Saved choice');
   });
 }
@@ -200,7 +234,7 @@ test('a failed same-value confirmation keeps inherited truth and restores both a
 
   await page.locator('#availAvailable').click();
   await expect(page.locator('#availExplan')).toContainText('Availability was not saved');
-  await expect(page.locator('#availLabel')).toHaveText('NOT SAVED • INCLUDED');
+  await expect(page.locator('#availLabel')).toHaveText('Not saved · Included');
   await expect(page.locator('#availAvailable')).toBeEnabled();
   await expect(page.locator('#availSkip')).toBeEnabled();
   await expect(page.locator('#availAvailable')).toHaveAttribute('aria-pressed', 'false');
@@ -232,7 +266,7 @@ test('a semantically mismatched 200 write response cannot replace or complete th
   await page.locator('#availAvailable').click();
   await expect.poll(() => posts).toBe(1);
   await expect(page.locator('#availExplan')).toContainText('Availability was not saved');
-  await expect(page.locator('#availLabel')).toHaveText('NOT SAVED • INCLUDED');
+  await expect(page.locator('#availLabel')).toHaveText('Not saved · Included');
   await expect(page.locator('#availAvailable')).toHaveAttribute('aria-pressed', 'false');
   expect(await page.evaluate(() => window._randori_availability?.current?.source)).toBe('cycle_default');
 });
@@ -367,7 +401,7 @@ test('availability revalidates on resume and automatically advances after its cu
   })).toBe(3);
 
   serverAvailability = availability({ cycleId: '2026-W40', isAvailable: true, version: 0 });
-  await expect(page.locator('#availTitle')).toHaveText('Availability for 2026-W40', { timeout: 8000 });
+  await expect(page.locator('#availTitle')).toHaveText('Are you in for week 40?', { timeout: 8000 });
   await expect(page.locator('#availAvailable')).toHaveAttribute('aria-pressed', 'false');
   await expect(page.locator('#availSkip')).toHaveAttribute('aria-pressed', 'false');
 });
@@ -391,7 +425,7 @@ test('invalid availability envelopes fail closed and expose a working retry', as
   await resetClientState(page, true);
   await page.goto('/?view=pair', { waitUntil: 'domcontentloaded' });
 
-  await expect(page.locator('#availLabel')).toHaveText('UNAVAILABLE');
+  await expect(page.locator('#availLabel')).toHaveText("Couldn't load");
   await expect(page.locator('#dashAvailBadge')).toHaveAttribute('aria-label', 'Review availability. Review weekly availability.');
   await expect(page.locator('#availRetry')).toBeVisible();
   // Once identity has resolved, make one explicit refresh newest and await the
@@ -410,7 +444,7 @@ test('invalid availability envelopes fail closed and expose a working retry', as
   await expect(page.locator('#availRetry')).toBeVisible();
   returnValid = true;
   await page.locator('#availRetry').click();
-  await expect(page.locator('#availTitle')).toHaveText('Availability for 2026-W39');
+  await expect(page.locator('#availTitle')).toHaveText('Are you in for week 39?');
   await expect(page.locator('#availRetry')).toBeHidden();
 });
 
@@ -476,7 +510,7 @@ test('an availability change queued during same-account revalidation uses the re
   // A validated control stays interactive during same-account revalidation;
   // the click is held visibly and serialized behind the in-flight GET.
   await skipButton.click();
-  await expect(page.locator('#availLabel')).toHaveText('SAVING SKIP…');
+  await expect(page.locator('#availLabel')).toHaveText('Saving: skip…');
   releaseGet?.();
 
   await expect.poll(() => posts.length).toBe(1);
@@ -486,7 +520,7 @@ test('an availability change queued during same-account revalidation uses the re
     is_available: false,
   });
   await expect(skipButton).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.locator('#availLabel')).toHaveText('SAVED • SKIPPING');
+  await expect(page.locator('#availLabel')).toHaveText('Saved · Skipping');
 });
 
 for (const scenario of [
@@ -545,10 +579,10 @@ for (const scenario of [
     await skipButton.click();
     await postStarted;
     await expect(skipButton).toBeDisabled();
-    await expect(page.locator('#availLabel')).toHaveText('SAVING SKIP…');
+    await expect(page.locator('#availLabel')).toHaveText('Saving: skip…');
     releasePost?.();
 
-    await expect(page.locator('#availTitle')).toHaveText(`Availability for ${scenario.cycleId}`);
+    await expect(page.locator('#availTitle')).toHaveText(`Are you in for week ${Number(scenario.cycleId.slice(-2))}?`);
     await expect(skipButton).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('#availExplan')).toContainText(scenario.message);
     await page.evaluate(async () => {
@@ -561,7 +595,7 @@ for (const scenario of [
     if (scenario.editable) await expect(skipButton).toBeEnabled();
     else {
       await expect(skipButton).toBeDisabled();
-      await expect(page.locator('#availLabel')).toHaveText('CLOSED • SAVED');
+      await expect(page.locator('#availLabel')).toHaveText('Closed · Saved');
     }
 
     serverAvailability = availability({
@@ -607,7 +641,7 @@ test('multi-circle availability is header-bound and rejects a mismatched respons
     await (window as typeof window&{_randori_availability?:{refresh?:()=>Promise<unknown>}})
       ._randori_availability?.refresh?.();
   });
-  await expect(page.locator('#availLabel')).toHaveText('UNAVAILABLE');
+  await expect(page.locator('#availLabel')).toHaveText("Couldn't load");
   expect(requestVersions.every(version=>version==='7')).toBe(true);
 
   responseVersion=7;
@@ -642,7 +676,7 @@ test('selection-required accounts do not request or expose availability',async({
   });
   await resetClientState(page,true);
   await page.goto('/?view=pair',{waitUntil:'domcontentloaded'});
-  await expect(page.locator('#availLabel')).toHaveText('UNAVAILABLE');
+  await expect(page.locator('#availLabel')).toHaveText("Couldn't load");
   await expect(page.locator('#availExplan')).toContainText('Choose an active circle');
   await page.waitForTimeout(500);
   expect(availabilityRequests).toBe(0);
@@ -685,7 +719,7 @@ test('repeated context errors perform one automatic reload and then stabilize',a
     releaseFirstAvailability();
     await expect.poll(()=>availabilityRequests).toBeGreaterThanOrEqual(2);
     await expect.poll(()=>authRequests).toBeGreaterThanOrEqual(1);
-    await expect(page.locator('#availLabel')).toHaveText('UNAVAILABLE');
+    await expect(page.locator('#availLabel')).toHaveText("Couldn't load");
     await expect(page.locator('#availExplan')).toContainText('Circle context changed again');
     await page.waitForTimeout(250);
     const stable={availabilityRequests,circleRequests};
@@ -825,7 +859,7 @@ test('an availability conflict notice cannot cross an authentication identity ch
   await expect(skipButton).toHaveAttribute('aria-pressed', 'true');
   await availableButton.click();
   await postStarted;
-  await expect(page.locator('#availLabel')).toHaveText('SAVING AVAILABLE…');
+  await expect(page.locator('#availLabel')).toHaveText("Saving: I'm in…");
   releasePost?.();
   await expect(page.locator('#availExplan')).toContainText('pairing cycle changed');
 
@@ -877,7 +911,7 @@ test('profile saves no availability field and links to the cycle-specific contro
   await expect(page.getByTestId('availability-card')).toBeVisible();
   await expect(page.locator('#availAvailable')).toBeFocused();
   await expect(page.locator('#availActions')).toHaveAttribute('aria-labelledby', 'availTitle');
-  await expect(page.locator('#availTitle')).toHaveText('Availability for 2026-W39');
+  await expect(page.locator('#availTitle')).toHaveText('Are you in for week 39?');
 });
 
 test('the circle roster does not label legacy account flags as cycle availability', async ({ page }) => {
