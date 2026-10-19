@@ -280,7 +280,13 @@ ALLOW_OPEN_SIGNUP=false
 ```
 
 Leave `GROQ_API_KEY`, `OPENAI_API_KEY`, and `SENTRY_DSN` unset unless
-deliberately enabling those optional providers. After saving, redeploy the
+deliberately enabling those optional providers. Sentry is environment-scoped
+(#252): the server reports only when Vercel's own `VERCEL_ENV` is `production`
+(or, off Vercel, `SENTRY_ENVIRONMENT=production`), never under the local
+runtime, `NODE_ENV=test` or CI, and previews stay silent unless
+`SENTRY_ENABLE_PREVIEW=true` is set for the Preview environment. The browser
+loader in `index.html` reports only from `https://randori-circle-self.vercel.app`;
+update its `PRODUCTION_ORIGIN` together with `APP_URL`. After saving, redeploy the
 latest production deployment (Deployments → ⋯ → Redeploy); Vercel reads
 variables only at build/deploy time.
 

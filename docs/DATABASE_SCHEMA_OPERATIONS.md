@@ -208,6 +208,56 @@ only the transaction described in [Admin data initialization](ADMIN_DATA_INITIAL
 The final operations boundary and its handler-specific contracts are documented
 in [Operations request-path DDL retirement](OPERATIONS_RUNTIME_DDL_RETIREMENT.md).
 
+## Turso remote SQL compatibility
+
+CI runs only against local libSQL file databases, but Turso's remote server
+classifies every statement and rejects some that local libSQL accepts, with
+`SQL_PARSE_ERROR: SQL not allowed statement: ...` (#246, #251).
+`npm run check:turso-sql` (also enforced by
+`tests/unit/turso-remote-sql-compat.test.mjs` in `npm run test:unit`) parses
+every `.js`/`.mjs` file under `api/`, `db/` and `scripts/`, folds assembled SQL
+(template literals, `+`, `String.raw`, `[...].join()`, `.concat()`, `const`
+bindings) and fails on any PRAGMA that is not in the reviewed allowlist in
+`scripts/check-turso-remote-sql.mjs`:
+
+| PRAGMA | Allowed forms | Turso remote |
+| --- | --- | --- |
+| `foreign_keys` | read, `=ON`, `=OFF` | accepted |
+| `integrity_check` | `(1)` only | accepted |
+| `table_info`, `table_xinfo`, `foreign_key_list`, `index_list`, `index_info`, `index_xinfo` | one quoted or `quoteIdentifier`-interpolated identifier | accepted |
+| `ignore_check_constraints` | read, `=OFF`, **only in `db/check-constraint-state.js`** | **rejected** (read and set); the helper treats the exact rejection as "cannot be disabled" and fails closed on anything else |
+
+Table-valued functions inside a `SELECT` (`pragma_table_info`,
+`pragma_table_xinfo`, `pragma_index_list`, `pragma_index_info`,
+`pragma_index_xinfo`, `pragma_foreign_key_list`, `pragma_foreign_key_check`)
+run as read statements and are allowlisted separately. Dynamic pragma names,
+dangling `PRAGMA` keywords, schema-qualified pragmas and the unverified
+statement classes `ATTACH`, `DETACH DATABASE`, `VACUUM` and `load_extension()`
+also fail. HTTP `Pragma: no-cache` headers, comments and regex literals are
+ignored.
+
+Sources: the accepted/rejected results above were observed against Turso
+remote while fixing #246 and in its follow-up checks. Turso's statement classifier lives
+in `libsql-server/src/query_analysis.rs` in
+[tursodatabase/libsql](https://github.com/tursodatabase/libsql); its PRAGMA
+match arm names the pragmas the server accepts (for example `foreign_keys`,
+`foreign_key_list`, `foreign_key_check`, `table_info`, `index_list`), and any
+pragma it does not name is rejected.
+
+To extend the allowlist:
+
+1. Confirm the pragma and the exact argument form are accepted by Turso
+   remote. Check the current `query_analysis.rs` and run the statement
+   read-only against a disposable Turso branch or restored copy (never
+   production) with `turso db shell`.
+2. Add an entry to `TURSO_REMOTE_PRAGMA_ALLOWLIST` (or
+   `TURSO_REMOTE_PRAGMA_FUNCTION_ALLOWLIST`) with the narrowest argument
+   pattern and a `verified` note. If Turso rejects it but local code still
+   needs it, route it through a tolerant helper like
+   `db/check-constraint-state.js` and restrict the entry with `files`.
+3. Update the table above and add a case to
+   `tests/unit/turso-remote-sql-compat.test.mjs`.
+
 ## Operator sequence
 
 1. Rehearse locally first. Never point `db:migrate` at a remote URL.
