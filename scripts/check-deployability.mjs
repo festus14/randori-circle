@@ -6,6 +6,8 @@ import { createHash } from 'node:crypto';
 const OUTBOX_WORKFLOW_PATH='.github/workflows/outbox-dispatch.yml';
 const OUTBOX_WATCHDOG_WORKFLOW_PATH='.github/workflows/outbox-dispatch-watchdog.yml';
 const OUTBOX_WATCHDOG_SCRIPT_PATH='scripts/github-outbox-dispatch-watchdog.mjs';
+const PRODUCTION_SMOKE_WORKFLOW_PATH='.github/workflows/production-smoke.yml';
+const PRODUCTION_SMOKE_SCRIPT_PATH='scripts/production-smoke.mjs';
 // With `cleanUrls`, Vercel serves index.html at `/` and 308-redirects
 // `/index.html`, so a rewrite to `/index.html` resolves to nothing and every
 // client route (/invite, /verify, /reset-password, /join/...) returns 404.
@@ -14,9 +16,10 @@ const OUTBOX_WATCHDOG_WORKFLOW_SHA256='ba0726ad285bc9765e8d2e34f5ea81128eca4e1d0
 const OUTBOX_WATCHDOG_SCRIPT_SHA256='01eecb04b859e364e824708a12f3f2aea91751cb438954ebc90999328b4f2bc8';
 const REQUIRED_ROOT_FILES = [
   'index.html', 'package-lock.json', 'package.json', 'vercel.json', OUTBOX_WORKFLOW_PATH,
-  OUTBOX_WATCHDOG_WORKFLOW_PATH, OUTBOX_WATCHDOG_SCRIPT_PATH,
+  OUTBOX_WATCHDOG_WORKFLOW_PATH, OUTBOX_WATCHDOG_SCRIPT_PATH, PRODUCTION_SMOKE_WORKFLOW_PATH,
+  PRODUCTION_SMOKE_SCRIPT_PATH,
 ];
-const REQUIRED_SECURITY_HEADERS = [
+export const REQUIRED_SECURITY_HEADERS = [
   'content-security-policy',
   'permissions-policy',
   'referrer-policy',
@@ -81,7 +84,7 @@ function strictTransportSecurityIsSafe(value) {
     && directives.get('includesubdomains') === null;
 }
 
-function securityHeaderIsSafe(key, value) {
+export function securityHeaderIsSafe(key, value) {
   const normalized = value.trim();
   if (!normalized) return false;
   switch (key) {
@@ -224,8 +227,36 @@ function validateOutboxWatchdogWorkflow(workflow){
   return errors;
 }
 
+function validateProductionSmokeWorkflow(workflow){
+  if(typeof workflow!=='string'||!workflow.trim()){
+    return ['production smoke workflow must be readable'];
+  }
+  const errors=[];
+  const checks=[
+    [/^name:\s*production-smoke\s*$/m,'production smoke workflow must have the stable production-smoke name'],
+    [/^\s{2}deployment_status:\s*$/m,'production smoke must run after Vercel deployment status events'],
+    [/github\.event\.deployment_status\.state == 'success'/,
+      'production smoke must run only for successful deployments'],
+    [/github\.event\.deployment\.environment == 'Production'/,
+      'production smoke must run only for the Vercel Production environment'],
+    [/^\s{2}schedule:\s*$/m,'production smoke must define a scheduled trigger'],
+    [/^\s{2}workflow_dispatch:\s*$/m,'production smoke must support manual runs'],
+    [/^permissions:\n  contents: read\n\n/m,'production smoke permissions must be contents: read only'],
+    [/^\s{4}runs-on:\s*ubuntu-24\.04\s*$/m,'production smoke must run on the pinned ubuntu-24.04 image'],
+    [/^\s{4}timeout-minutes:\s*\d+\s*$/m,'production smoke job must be time bounded'],
+    [/persist-credentials:\s*false/,'production smoke checkout must not persist GitHub credentials'],
+    [/npm run smoke:production/,'production smoke must run the reviewed read-only smoke script'],
+  ];
+  for(const [pattern,message] of checks){ if(!pattern.test(workflow)) errors.push(message); }
+  if(/pull_request(?:_target)?:|:\s*write\b|write-all|^\s*environment:|secrets\.|vars\.|CRON_SECRET|VERCEL_TOKEN|TURSO_|RESEND_|continue-on-error:/mu
+    .test(workflow)){
+    errors.push('production smoke must remain secret-free, read-only, and non-mutating');
+  }
+  return errors;
+}
+
 export function validateDeploymentContract({ vercel, packageJson, files, outboxWorkflow,
-  outboxWatchdogWorkflow, outboxWatchdogScript }) {
+  outboxWatchdogWorkflow, outboxWatchdogScript, productionSmokeWorkflow }) {
   const errors = [];
   const config = record(vercel);
   const manifest = record(packageJson);
@@ -248,6 +279,10 @@ export function validateDeploymentContract({ vercel, packageJson, files, outboxW
 
   errors.push(...validateOutboxWorkflow(outboxWorkflow));
   errors.push(...validateOutboxWatchdogWorkflow(outboxWatchdogWorkflow));
+  errors.push(...validateProductionSmokeWorkflow(productionSmokeWorkflow));
+  if (manifest && manifest.scripts?.['smoke:production'] !== `node ${PRODUCTION_SMOKE_SCRIPT_PATH}`) {
+    errors.push(`package.json must define smoke:production as node ${PRODUCTION_SMOKE_SCRIPT_PATH}`);
+  }
   if(sha256(outboxWatchdogWorkflow)!==OUTBOX_WATCHDOG_WORKFLOW_SHA256){
     errors.push('outbox watchdog workflow must match its reviewed immutable contract');
   }
@@ -359,6 +394,7 @@ export function inspectDeploymentContract(rootDirectory = process.cwd()) {
   let outboxWorkflow;
   let outboxWatchdogWorkflow;
   let outboxWatchdogScript;
+  let productionSmokeWorkflow;
   try {
     vercel = JSON.parse(readFileSync(resolve(root, 'vercel.json'), 'utf8'));
   } catch (error) {
@@ -388,8 +424,14 @@ export function inspectDeploymentContract(rootDirectory = process.cwd()) {
     outboxWatchdogScript = null;
   }
 
+  try {
+    productionSmokeWorkflow = readFileSync(resolve(root, PRODUCTION_SMOKE_WORKFLOW_PATH), 'utf8');
+  } catch {
+    productionSmokeWorkflow = null;
+  }
+
   return validateDeploymentContract({ vercel, packageJson, files, outboxWorkflow,
-    outboxWatchdogWorkflow, outboxWatchdogScript });
+    outboxWatchdogWorkflow, outboxWatchdogScript, productionSmokeWorkflow });
 }
 
 function main() {
