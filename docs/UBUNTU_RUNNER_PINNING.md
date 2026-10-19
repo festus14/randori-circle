@@ -37,6 +37,7 @@ and `scripts/check-backup-controls.mjs` were updated to match the new bytes.
 | `credential-key-control.yml` | Manual production operation | `ubuntu-24.04` |
 | `chat-retention.yml` | Manual protected operation | `ubuntu-24.04` |
 | `ubuntu-26-canary.yml` | Optional compatibility canary | `ubuntu-26.04` |
+| `ui-screenshots.yml` | Manual design-review capture, read-only, no secrets | `ubuntu-24.04` |
 
 ## Canary
 

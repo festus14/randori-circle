@@ -1,0 +1,53 @@
+name: ui-screenshots
+# Design-review aid, not a release gate. Renders read-only public production
+# pages and signed-in screens from the repository's loopback runtime over a
+# fresh temporary database, then uploads full-page PNGs. No secrets are used.
+on:
+  workflow_dispatch:
+    inputs:
+      prod_url:
+        description: Public origin to capture read-only (https)
+        required: false
+        default: https://randori-circle-self.vercel.app
+      scope:
+        description: all, public, or local
+        required: false
+        default: all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ui-screenshots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+      - name: Capture screenshots
+        env:
+          UI_SCREENSHOTS_PROD_URL: ${{ inputs.prod_url }}
+          UI_SCREENSHOTS_SCOPE: ${{ inputs.scope }}
+          UI_SCREENSHOTS_OUT: ui-screenshots
+        run: node scripts/ui-screenshots.mjs
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ui-screenshots-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ui-screenshots
+          retention-days: 30
+          if-no-files-found: warn
