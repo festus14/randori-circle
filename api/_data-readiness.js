@@ -110,6 +110,19 @@ async function probeSessionControlsSchema(db){
   return true;
 }
 
+async function probeCodeDocumentSchema(db){
+  await db.execute(`SELECT id,week_id,user_a_id,user_b_id,user_c_id,is_ai_pair
+    FROM pairing_groups LIMIT 0`);
+  await db.execute(`SELECT week_id,user_id,source FROM pairing_participants LIMIT 0`);
+  await db.execute(`SELECT room_id,week_id,pair_group_id,schema_version,language,question_id,code
+    FROM pair_room_snapshots LIMIT 0`);
+  await db.execute(`SELECT week_id,pair_group_id,question_slug,question_version,language,
+    y_state_base64,state_hash,code_hash,revision,pair_user_a_id,pair_user_a_source,
+    pair_user_b_id,pair_user_b_source,pair_user_c_id,last_actor_id,last_actor_source,
+    last_client_id,last_client_seq,created_at,updated_at FROM pair_code_documents LIMIT 0`);
+  return true;
+}
+
 async function probeMyPairSchema(db){
   await db.execute(`SELECT id,display_name,color,is_demo,bio,tz,interview_focus,
     leetcode_handle FROM auth_accounts LIMIT 0`);
@@ -178,6 +191,10 @@ export function ensureDataMeetingLinkReadiness(db){
 
 export function ensureDataSessionControlsReadiness(db){
   return ensureReadiness(db,'session-controls',probeSessionControlsSchema);
+}
+
+export function ensureCodeDocumentReadiness(db){
+  return ensureReadiness(db,'code-document',probeCodeDocumentSchema);
 }
 
 export function ensureMyPairDataReadiness(db){
