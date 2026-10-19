@@ -724,7 +724,53 @@ markup in later packages.
   `tests/unit/pairing-view.test.mjs`); golden paths are in
   `tests/e2e/availability-ui.spec.ts` and `tests/e2e/pairing-cycle-ui.spec.ts`.
 
-### 9.4 What WP-O shipped (onboarding)
+### 9.4 What WP-R shipped (pair room)
+
+- **Editor first, sized to the screen.** `#view-code` is a `.room` that fills
+  the viewport below the topbar (and above the bottom tab bar on phones).
+  Panels scroll inside the room, so the page no longer grows with results,
+  notes or session cards (mobile workspace: about 3,900 CSS px tall before,
+  one screen after).
+- **Room bar** (`.room-bar`): the room select at full width, presence, the
+  code sync badge, the compact role and timer chips (`#roleToggle`,
+  `#timerBtn`, mirrors of the shared session controls), a single **Join call**
+  (`#vidJoinBtn`; the toolbar "Join Session" button is gone), and a
+  **Code / Board** mode switch (`[data-room-mode]`).
+- **Call strip** (`#videoBar`) is `hidden` with `data-call="off"` until the
+  member joins; then it shows small tiles and the camera / mic toggles
+  (`aria-pressed`).
+- **Panels** (`#roomPanelTabs`, `role="tablist"`): Code, Problem, Results,
+  Session, Notes. Below 1100 px one panel is visible at a time and Code is the
+  default. At 1100 px and wider the editor stays visible on the left and the
+  tabs drive a side panel on the right (Problem by default; the Code tab is
+  hidden there). Arrow keys, Home and End move between tabs. Run brings
+  Results forward. The editor is never detached, so Monaco, the CRDT binding
+  and the hydration lock are unaffected.
+- **Results**: one summary row ("Result: n/m passed") followed by compact case
+  rows (`.run-summary`, `.run-case[data-status]`), then the pair run feed.
+- **Session**: shared roles and timer, the private meeting link and wrap-up,
+  with an empty-state line until the pair room is ready.
+- **Notes**: notes and interviewer questions first (real line breaks in the
+  placeholders). The two AI panels are merged into one **AI feedback (Beta)**
+  section that is off by default (`#aiFeedbackToggle`, `role="switch"`); the
+  preference is a presentation setting in `localStorage`
+  (`randori-ai-feedback`).
+- **Editor toolbar**: language, Run (primary) and a more-menu (Format, Copy
+  starter, Reset). Copy starter and Reset now work in the plain editor too;
+  Format is disabled there with a visible reason.
+- **Board** stays reachable through `[data-tab="board"]` in the primary
+  navigation (no nav change in this package); inside the room it is a mode of
+  the same room bar. Tools use new sprite icons (`i-pointer`, `i-square`,
+  `i-circle`, `i-arrow`, `i-type`, `i-sticky`, `i-undo`, `i-redo`, `i-trash`,
+  `i-minus`, `i-maximize`), and the canvas paints the theme card surface
+  instead of a fixed brown. Folding Board out of the primary nav (and the
+  "4 items plus More" bar) is left for a follow-up coordinated with WP-S.
+- Logic lives in `assets/room-layout.js` (ES module, unit-tested in
+  `tests/unit/room-layout.test.mjs`); golden paths are in
+  `tests/e2e/pair-workspace-layout.spec.ts`. E2E specs that use Session or
+  Results controls open the panel first with `openRoomPanel()` from
+  `tests/e2e/helpers.ts`.
+### 9.5 What WP-O shipped (onboarding)
 
 - **One stepper** (`.rc-stepper`, `<ol aria-label="Setup progress">`, the
   current item has `aria-current="step"`, plus "Step n of 5" text) for
