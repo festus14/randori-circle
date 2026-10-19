@@ -12,6 +12,7 @@ import authHandler from '../../api/auth.js';
 import {issueSession,verifyRequestAuth} from '../../api/_db.js';
 import {
   PASSWORD_RESET_EVENT_TYPE,
+  deliverPasswordResets,
   openPasswordResetToken,
   passwordResetKeyRing,
   passwordResetKeyRotationStatus,
@@ -173,4 +174,86 @@ test('production reset capability fails closed without the dedicated encryption 
   assert.equal(capabilities.body.capabilities.passwordReset,false);
   const request=await invoke({endpoint:'password-reset-request',body:{email:'member@example.test'}});
   assert.equal(request.statusCode,503);
+});
+
+async function resetEventCount(db){
+  return Number((await db.execute(`SELECT count(*) AS n FROM outbox_events
+    WHERE event_type='auth.passwordreset.requested'`)).rows[0].n);
+}
+
+test('membership-gated password login and recovery stay generic for ineligible and Google-only accounts',async()=>{
+  const {db}=await fixture();
+  process.env.CIRCLE_MEMBERSHIP_ENABLED='true';
+  await db.execute(`INSERT INTO circles (id,public_id,slug,name,is_primary) VALUES (1,'primary-circle','primary','Primary',1)`);
+  await db.execute(`INSERT INTO circle_memberships (circle_id,user_id,role,status) VALUES (1,1,'member','active')`);
+  await db.execute({sql:`INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_admin,google_sub)
+    VALUES (2,'google.only@example.test',?,'Google Only','#654321',0,'google-subject-2')`,
+  args:['!oauth:'+'g'.repeat(32)]});
+  await db.execute(`INSERT INTO circle_memberships (circle_id,user_id,role,status) VALUES (1,2,'member','active')`);
+
+  const login=await invoke({endpoint:'login',body:{email:'  MEMBER@Example.TEST ',password:'old correct horse'},ip:'203.0.113.50'});
+  assert.equal(login.statusCode,200,'login normalises case and whitespace like signup');
+  const cookie=[].concat(login.headers['set-cookie']).find(value=>String(value).startsWith('randori_session='));
+  assert.match(cookie,/; Path=\/; HttpOnly; SameSite=Lax; Max-Age=43200; Secure$/);
+  const wrong=await invoke({endpoint:'login',body:{email:'member@example.test',password:'wrong password!'},ip:'203.0.113.51'});
+  const unknown=await invoke({endpoint:'login',body:{email:'missing@example.test',password:'wrong password!'},ip:'203.0.113.52'});
+  const google=await invoke({endpoint:'login',body:{email:'google.only@example.test',password:'!oauth:'+'g'.repeat(32)},ip:'203.0.113.53'});
+  for(const failure of [wrong,unknown,google]){
+    assert.equal(failure.statusCode,401);
+    assert.deepEqual(failure.body,{error:'invalid credentials'});
+  }
+
+  const generic=await invoke({endpoint:'password-reset-request',body:{email:'missing@example.test'},ip:'203.0.113.54'});
+  const googleReset=await invoke({endpoint:'password-reset-request',body:{email:'google.only@example.test'},ip:'203.0.113.55'});
+  assert.equal(googleReset.statusCode,202);
+  assert.deepEqual(googleReset.body,generic.body);
+  assert.equal(await resetEventCount(db),0,'Google-only accounts never receive a reset credential');
+  assert.match(String((await db.execute(`SELECT password_hash FROM auth_accounts WHERE id=2`)).rows[0].password_hash),/^!oauth:/);
+
+  await db.execute(`UPDATE circle_memberships SET status='inactive' WHERE user_id=1`);
+  const removedReset=await invoke({endpoint:'password-reset-request',body:{email:'member@example.test'},ip:'203.0.113.56'});
+  assert.deepEqual(removedReset.body,generic.body);
+  assert.equal(await resetEventCount(db),0,'inactive members never receive a reset credential');
+  const removedLogin=await invoke({endpoint:'login',body:{email:'member@example.test',password:'old correct horse'},ip:'203.0.113.57'});
+  assert.equal(removedLogin.statusCode,403);
+  assert.deepEqual(removedLogin.body,{error:'active circle membership required'});
+  const removedWrong=await invoke({endpoint:'login',body:{email:'member@example.test',password:'wrong password!'},ip:'203.0.113.58'});
+  assert.deepEqual(removedWrong.body,{error:'invalid credentials'});
+
+  await db.execute(`UPDATE circle_memberships SET status='active' WHERE user_id=1`);
+  const accepted=await invoke({endpoint:'password-reset-request',body:{email:'Member@Example.test'},ip:'203.0.113.59'});
+  assert.deepEqual(accepted.body,generic.body);
+  const sent=[];
+  const delivered=await deliverPasswordResets({db,baseUrl:process.env.APP_URL,workerId:'reset-api-test',
+    send:async message=>{ sent.push(message); return {providerName:'test',providerMessageId:'reset-1'}; },
+    workerOptions:{heartbeatIntervalMs:0,leaseDurationMs:1000}});
+  assert.equal(delivered.delivered,1);
+  assert.equal(sent[0].to,'member@example.test');
+  assert.equal(sent[0].subject,'Reset your Randori password');
+  const link=/href="([^"]+)"/.exec(sent[0].html)?.[1];
+  assert.match(link,/^https:\/\/randori\.example\.test\/reset-password#token=[A-Za-z0-9_-]{43}$/);
+  const token=new URL(link).hash.slice('#token='.length);
+  const reset=await invoke({endpoint:'password-reset-consume',body:{token,password:'brand new horse'},ip:'203.0.113.60'});
+  assert.equal(reset.statusCode,200);
+  const replaced=await invoke({endpoint:'me',method:'GET',cookie:String(cookie).split(';')[0],ip:'203.0.113.61'});
+  assert.equal(replaced.statusCode,401,'the pre-reset session is revoked');
+  const old=await invoke({endpoint:'login',body:{email:'member@example.test',password:'old correct horse'},ip:'203.0.113.62'});
+  assert.equal(old.statusCode,401);
+  const fresh=await invoke({endpoint:'login',body:{email:'member@example.test',password:'brand new horse'},ip:'203.0.113.63'});
+  assert.equal(fresh.statusCode,200);
+});
+
+test('password login is rate limited per email and recovers in the next window',async()=>{
+  const {db}=await fixture();
+  const statuses=[];
+  for(let attempt=0;attempt<11;attempt+=1){
+    statuses.push((await invoke({endpoint:'login',body:{email:'member@example.test',password:'wrong password!'},
+      ip:`203.0.113.${100+attempt}`})).statusCode);
+  }
+  assert.deepEqual(statuses,[...Array(10).fill(401),429]);
+  const limited=await invoke({endpoint:'login',body:{email:'member@example.test',password:'old correct horse'},ip:'203.0.113.120'});
+  assert.equal(limited.statusCode,429,'a correct password does not bypass an exhausted window');
+  await db.execute(`DELETE FROM auth_rate_limits`);
+  const recovered=await invoke({endpoint:'login',body:{email:'member@example.test',password:'old correct horse'},ip:'203.0.113.121'});
+  assert.equal(recovered.statusCode,200);
 });
