@@ -660,6 +660,7 @@ function apiRoute(pathname,query){
     '/api/ops':['ops',null],
     '/api/ai':['ai',null],
     '/api/video':['video',null],
+    '/api/code-document':['codeDocument',null],
   };
   if(direct[pathname]){
     const [handler,endpoint]=direct[pathname];
@@ -735,14 +736,15 @@ function apiRoute(pathname,query){
 }
 
 async function loadDefaultRuntime(){
-  const [auth,data,invitations,members,circles,ops,ai,video,database]=await Promise.all([
+  const [auth,data,invitations,members,circles,ops,ai,video,codeDocument,database]=await Promise.all([
     import('../api/auth.js'),import('../api/data.js'),import('../api/invitations.js'),import('../api/members.js'),
-    import('../api/circles.js'),import('../api/ops.js'),import('../api/ai.js'),import('../api/video.js'),import('../api/_db.js'),
+    import('../api/circles.js'),import('../api/ops.js'),import('../api/ai.js'),import('../api/video.js'),
+    import('../api/code-document.js'),import('../api/_db.js'),
   ]);
   return Object.freeze({
     handlers:Object.freeze({
       auth:auth.default,data:data.default,invitations:invitations.default,members:members.default,
-      circles:circles.default,ops:ops.default,ai:ai.default,video:video.default,
+      circles:circles.default,ops:ops.default,ai:ai.default,video:video.default,codeDocument:codeDocument.default,
     }),
     closeDatabase:database.closeLocalDevelopmentClient,
     installSqlObserver:database.installLocalDevelopmentSqlObserver,
@@ -1125,7 +1127,7 @@ export async function createLocalDevelopmentServer({
       closeRequestDatabase=defaultRuntime.closeDatabase;
       restoreSqlObserver=defaultRuntime.installSqlObserver(sqlObserver);
       runtimeHandlers={...defaultRuntime.handlers,...(handlers||{})};
-      for(const name of ['auth','data','invitations','ops','ai','video']){
+      for(const name of ['auth','data','invitations','ops','ai','video','codeDocument']){
         if(typeof runtimeHandlers[name]!=='function'){
           throw new LocalServerError('LOCAL_INTERNAL_ERROR',`Missing local API handler: ${name}`);
         }

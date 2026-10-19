@@ -4,6 +4,8 @@ import { after, mock, test } from 'node:test';
 const publishedScopes=[];
 const aggregateLogs=[];
 let failingCircleId=10;
+let retentionFailure=false;
+const retentionStatements=[];
 
 const cycle=Object.freeze({
   cycleId:'2026-W39',
@@ -16,6 +18,8 @@ const cycle=Object.freeze({
 const db={
   async execute(statement){
     const sql=typeof statement==='string'?statement:String(statement?.sql||'');
+    if(sql.includes('FROM pair_code_documents WHERE updated_at <')) retentionStatements.push(statement);
+    if(retentionFailure&&sql.includes('FROM pair_code_documents')) throw new Error('retention storage unavailable');
     if(sql.includes("strftime('%Y-%m-%dT%H:%M:%fZ','now') AS now_utc")){
       return {rows:[{now_utc:'2026-09-20T08:15:00.000Z'}],rowsAffected:0};
     }
@@ -110,6 +114,25 @@ function invoke(){
     },response)).catch(reject);
   });
 }
+
+test('weekly cron reports unexpected code-document retention failures before publication',async()=>{
+  retentionFailure=true; publishedScopes.length=0; aggregateLogs.length=0;
+  try{
+    const response=await invoke();
+    assert.equal(response.status,503);
+    assert.deepEqual(response.body,{error:'code document retention unavailable'});
+    assert.deepEqual(publishedScopes,[]);
+    assert.equal(aggregateLogs.at(-1)?.event,'code_document_retention_failed');
+  }finally{ retentionFailure=false; }
+});
+
+test('weekly cron runs one bounded retention batch before publication',async()=>{
+  retentionStatements.length=0;
+  await invoke();
+  assert.equal(retentionStatements.length,1);
+  assert.match(retentionStatements[0].sql,/LIMIT \?/);
+  assert.deepEqual(retentionStatements[0].args,[101]);
+});
 
 test('secondary weekly cron continues after an isolated first or middle scope failure',async()=>{
   for(const failedId of [10,20]){

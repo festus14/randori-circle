@@ -2248,14 +2248,14 @@ test('execution uses only server-owned versioned cases and persists exact author
   }
 });
 
-test('canonical room execution authorizes membership before work and persists the derived pair', async () => {
+test('canonical solo room execution authorizes membership before work and persists the derived pair', async () => {
   const question=listPublicExercises()[0];
   const entrypoint=question.languages.javascript.entrypoint;
   let networkCalls=0;
   executeHandler=(sql,args)=>{
     if(sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')){
       assert.deepEqual(args,[2,20,42,2,2,2]);
-      return rows([{pair_group_id:20,week_id:42,user_a_id:2,user_b_id:4,user_c_id:null}]);
+      return rows([{pair_group_id:20,week_id:42,user_a_id:2,user_b_id:2,user_c_id:null}]);
     }
     if(sql.includes("'execute_lease_start'") && sql.includes('RETURNING id')) return rows([{id:220}]);
     if(sql.includes("event='execute_attempt'")) return rows([{c:1}]);
@@ -2454,8 +2454,10 @@ test('execution fails closed with a clear unavailable error when no provider is 
   const question=listPublicExercises()[0];
   let networkCalls=0;
   globalThis.fetch=async()=>{ networkCalls+=1; throw new Error('no provider means no network'); };
+  // A solo room authorizes without a canonical code document; exact two-human
+  // rooms additionally require an acknowledged document version (ID-65).
   executeHandler=sql=>{
-    if(sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')) return rows([{pair_group_id:20,week_id:10,user_a_id:2,user_b_id:9,user_c_id:null}]);
+    if(sql.trimStart().startsWith('SELECT pg.id AS pair_group_id')) return rows([{pair_group_id:20,week_id:10,user_a_id:2,user_b_id:2,user_c_id:null}]);
     throw new Error(`unconfigured execution must not write: ${sql}`);
   };
   for(const env of [

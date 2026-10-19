@@ -461,7 +461,10 @@ test('an edit made during initial hydration is preserved and rebased onto the se
   }
 });
 
-test('two authenticated browser contexts hydrate from the server and exchange ordered workspace revisions', async ({ browser }) => {
+// Rooms without a conflict-free code document (the API answers 404, as for AI
+// and triad rooms) keep the whole-snapshot CAS path. Two-person convergence of
+// overlapping code edits is covered by code-document-sync.spec.ts.
+test('rooms without a code document hydrate from the server and exchange ordered workspace revisions', async ({ browser }) => {
   let revision = 1;
   let snapshot = {
     schema_version: 3,
@@ -530,6 +533,7 @@ test('two authenticated browser contexts hydrate from the server and exchange or
         '/api/profile': { ok: true, user: signedInUser },
         '/api/my-pair': pairResponse(),
         '/api/video/signal': workspace,
+        '/api/code-document': { _status: 404, ok: false, error: 'not found' },
       });
       await resetClientState(page, true);
       await page.goto(`/join/${roomId}`, { waitUntil: 'domcontentloaded' });

@@ -96,6 +96,11 @@ export const MIGRATION_CONTRACTS=Object.freeze([
     name:'durable-pair-session-controls',
     checksum:'b61e5a5e55a0bc5012815ba7aa07c645776b269faf2ef796faf359a1385dd483',
   }),
+  Object.freeze({
+    version:20,
+    name:'bounded-source-bound-code-documents',
+    checksum:'e9ddba8da87a5e6a5ccbb29fb9c4956de6b66ee1430c5e58c49cbd3688c9e3c6',
+  }),
 ]);
 
 export const LATEST_MIGRATION_VERSION=MIGRATION_CONTRACTS.at(-1)?.version||0;
