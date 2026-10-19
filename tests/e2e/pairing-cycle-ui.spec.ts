@@ -225,6 +225,50 @@ test('the owner recovers an overdue cycle and then sees only the published serve
   await expect(page.locator('#roomSelect')).not.toContainText('fake-room');
 });
 
+test('owner tools show publication truth and a failed reread never claims publication', async ({ page }) => {
+  const currentCycle = cycleWindow();
+  let failWeeks = false;
+  await mockApi(page, {
+    '/api/auth/me': { ok: true, user },
+    '/api/circle': circle('owner'),
+    '/api/weeks': () => failWeeks
+      ? { _status: 503, ok: false, error: 'pairing unavailable' }
+      : {
+        ok: true,
+        current_cycle: currentCycle,
+        upcoming_cycle: upcomingAfter(currentCycle),
+        current_week_id: 20,
+        weeks: [currentWeek],
+        publication_state: publicationState(currentCycle, 'published', true),
+      },
+  });
+  await resetClientState(page, true);
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.locator('[data-tab="pair"]').click();
+
+  await expect(page.locator('#pairOwnerPanel')).toBeVisible();
+  await expect(page.locator('#pairOwnerBadge')).toHaveText('Published');
+  await expect(page.locator('#newWeekBtn')).toBeHidden();
+  await expect(page.locator('#currentWeekMeta')).toContainText('Week 38 · 1 pair');
+  await expect(page.locator('#pairsList .cycle-pair.is-mine')).toContainText('Current Owner (you)');
+  await expect(page.locator('#pairsList .cycle-pair.is-mine')).toContainText('Your pair');
+  await expect(page.locator('#pairDiagnostics')).toBeHidden();
+  await expect(page.locator('#view-pair')).not.toContainText(/browser state|Browser-tab/i);
+
+  failWeeks = true;
+  await page.locator('[data-tab="history"]').click();
+  await page.locator('[data-tab="pair"]').click();
+  await expect(page.locator('#pairsList')).toContainText("Pairs couldn't be loaded");
+  await expect(page.locator('#pairsList')).not.toContainText('Current Partner');
+  await expect(page.locator('#pairOwnerBadge')).toHaveText('Status unavailable');
+  await expect(page.locator('#pairOwnerPanel')).not.toContainText('Published');
+
+  failWeeks = false;
+  await page.locator('#pairsRetryBtn').click();
+  await expect(page.locator('#pairOwnerBadge')).toHaveText('Published');
+  await expect(page.locator('#pairsList')).toContainText('Current Partner');
+});
+
 test('a signed-in member never sees stale or local fallback pairs as this week', async ({ page }) => {
   const currentCycle=cycleWindow();
   await mockApi(page, {
@@ -352,7 +396,7 @@ test('client cycle classification uses half-open start and end boundaries',async
 for (const fixture of [
   { status: 'unpublished', title: 'Current pairing is not published yet' },
   { status: 'unavailable', title: 'Unavailable for this cycle' },
-  { status: 'missed', title: "Not in this cycle's snapshot" },
+  { status: 'missed', title: 'You’re not in this week’s pairing' },
 ] as const) {
   test(`dashboard renders the durable ${fixture.status} state with safe solo practice`, async ({ page }) => {
     const current = cycleWindow();

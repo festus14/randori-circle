@@ -13,6 +13,8 @@
 <title>Randori Circle</title>
 <script>/* Apply the stored theme before first paint so light mode does not flash dark. */try{if(localStorage.getItem('randori-theme')==='light')document.documentElement.classList.add('light')}catch{}</script>
 <script src="/assets/invite-gate.js"></script>
+<script src="/assets/pairing-view.js"></script>
+<script src="/assets/home-dashboard.js"></script>
 <script>
 /* Consume invitation capabilities before any telemetry or third-party script can observe the URL. */
 (()=>{
@@ -555,7 +557,6 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   font-variant-numeric:tabular-nums; letter-spacing:0;
 }
 .sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
-#availActions [aria-pressed="true"]{outline:2px solid var(--accent);outline-offset:2px}
 .main{padding:var(--space-6) var(--space-5) 88px; display:grid; gap:var(--gap); max-width:var(--max); width:100%; margin:0 auto; box-sizing:border-box}
 .grid-2{display:grid; grid-template-columns:1.15fr .85fr; gap:var(--gap)}
 .grid-3{display:grid; grid-template-columns:repeat(3,1fr); gap:var(--space-4)}
@@ -635,6 +636,72 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 }
 .pair .who{display:flex; align-items:center; gap:var(--space-2); flex-wrap:wrap}
 .topic-group{display:flex; gap:var(--space-2); flex-shrink:0}
+/* WP-P: availability and pairing ("This week's cycle" view) */
+.cycle-view{display:grid; gap:var(--space-5)}
+.cycle-view-head{display:grid; gap:var(--space-1)}
+.cycle-view-head h2{font-size:var(--text-xl); line-height:var(--leading-xl); font-weight:var(--weight-heading)}
+.cycle-view-head p{max-width:65ch; color:var(--ink-2)}
+.cycle-layout{display:grid; gap:var(--gap); grid-template-columns:minmax(0,1fr); align-items:start}
+.cycle-card{padding:var(--space-5); display:grid; gap:var(--space-3); align-content:start}
+.cycle-card-head{display:flex; justify-content:space-between; align-items:flex-start; gap:var(--space-3); flex-wrap:wrap}
+.cycle-card-titles{display:grid; gap:var(--space-1); min-width:0}
+.cycle-card h3{font-size:var(--text-lg); line-height:var(--leading-lg); font-weight:var(--weight-heading)}
+.cycle-eyebrow{font-size:var(--text-xs); line-height:var(--leading-xs); font-weight:var(--weight-emphasis); color:var(--ink-2)}
+.cycle-dates,.cycle-cutoff,#availExplan{color:var(--ink-2)}
+.cycle-cutoff{font-variant-numeric:tabular-nums}
+.cycle-cutoff:empty{display:none}
+.cycle-cutoff[data-urgent]{color:var(--warn); font-weight:var(--weight-emphasis)}
+#availExplan[data-tone="danger"]{color:var(--bad)}
+.cycle-choices{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--space-2)}
+.cycle-choice{
+  display:flex; align-items:center; justify-content:center; gap:var(--space-2);
+  min-height:var(--control-lg); padding:var(--space-2) var(--space-4);
+  border:1px solid var(--control-border); border-radius:var(--radius-md);
+  background:var(--card); color:var(--ink); font:inherit; font-weight:var(--weight-emphasis); cursor:pointer;
+  transition:background-color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
+}
+.cycle-choice::before{content:""; flex:0 0 auto; box-sizing:border-box; width:16px; height:16px; border:2px solid var(--control-border); border-radius:var(--radius-full)}
+.cycle-choice[aria-pressed="true"]{background:var(--color-action-subtle); border-color:var(--color-action); box-shadow:inset 0 0 0 1px var(--color-action)}
+.cycle-choice[aria-pressed="true"]::before{border-color:var(--color-action); background:var(--color-action); box-shadow:inset 0 0 0 3px var(--card)}
+.cycle-choice:disabled{cursor:not-allowed; color:var(--ink-3); background:var(--bg-3); border-style:dashed}
+.cycle-choice[aria-pressed="true"]:disabled{color:var(--ink-2); border-style:solid}
+@media(hover:hover){ .cycle-choice:hover:not(:disabled){border-color:var(--color-action)} }
+.cycle-status-row{display:flex; gap:var(--space-2); align-items:center; flex-wrap:wrap}
+.cycle-status-row:has(> #availExplan[style*="display:none"]):has(> #availRetry[hidden]){display:none}
+.rc-badge[data-tone="success"]{background:var(--ok-surface); border-color:var(--ok); color:var(--ok)}
+.rc-badge[data-tone="warning"]{background:var(--warn-surface); border-color:var(--warn); color:var(--warn)}
+.rc-badge[data-tone="danger"]{background:var(--bad-surface); border-color:var(--bad); color:var(--bad)}
+.rc-badge[data-tone="info"]{background:var(--info-surface); border-color:var(--info); color:var(--info)}
+.cycle-pairs-list{position:relative; gap:var(--space-2)}
+.cycle-pair .who{min-width:0}
+.cycle-pair-name{font-size:var(--text-sm); overflow-wrap:anywhere}
+.cycle-pair.is-mine{border-color:var(--color-action); background:var(--color-action-subtle)}
+.cycle-pairs-foot{margin-top:var(--space-1)}
+.cycle-pairs-loading{display:grid; gap:var(--space-2)}
+.cycle-pair-skeleton{height:56px; border-radius:var(--radius-md)}
+.cycle-empty{display:grid; gap:var(--space-2); justify-items:start; padding:var(--space-4); border:1px solid var(--border); border-radius:var(--radius-md); background:var(--bg-3); color:var(--ink)}
+.cycle-empty[data-tone="warning"]{border-color:var(--warn); background:var(--warn-surface)}
+.cycle-empty[data-tone="danger"]{border-color:var(--bad); background:var(--bad-surface)}
+.cycle-empty-title{font-weight:var(--weight-heading)}
+.cycle-publishing{gap:var(--space-2); color:var(--ink)}
+.cycle-owner{background:var(--card-2); border-color:var(--color-border-strong)}
+.cycle-diagnostics{padding:0; gap:0}
+.cycle-diagnostics > summary{padding:var(--space-4) var(--space-5); min-height:var(--tap-min); box-sizing:border-box; cursor:pointer; font-weight:var(--weight-emphasis); color:var(--ink-2)}
+.cycle-diagnostics-body{padding:0 var(--space-5) var(--space-5); display:grid; gap:var(--space-3)}
+@media(min-width:1024px){
+  .cycle-layout{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .cycle-owner,.cycle-diagnostics{grid-column:1 / -1}
+}
+@media(max-width:640px){
+  .cycle-card{padding:var(--space-4)}
+  .cycle-pair{flex-direction:column; align-items:flex-start}
+}
+@media(max-width:359px){ .cycle-choices{grid-template-columns:minmax(0,1fr)} }
+@media(forced-colors:active){
+  .cycle-choice[aria-pressed="true"]{border-width:2px}
+  .cycle-choice[aria-pressed="true"]::before{forced-color-adjust:none; background:Highlight; border-color:Highlight}
+  .cycle-empty,.cycle-owner{border-color:CanvasText}
+}
 .chip{border:1px solid var(--control-border); background:var(--card); color:var(--ink-2); padding:var(--space-1) var(--space-3); min-height:var(--control-sm); border-radius:var(--radius-full); font-size:var(--text-sm); font-weight:var(--weight-emphasis); cursor:pointer; transition:background-color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out)}
 .chip:hover{border-color:var(--ink-3); color:var(--ink)}
 .chip.active,.chip[aria-pressed="true"]{background:var(--color-action-subtle); color:var(--ink); border-color:var(--color-action)}
@@ -957,18 +1024,107 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 }
 .pill-choice{display:flex; gap:var(--space-2); flex-wrap:wrap}
 .pill-choice .chip.active{background:var(--accent); color:var(--color-on-action); border-color:var(--accent)}
-.dashboard{display:grid; gap:var(--space-5)}
-.dash-top{display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:var(--space-3)}
-.partner-card{
-  display:grid; grid-template-columns:52px 1fr; gap:var(--space-4); padding:var(--space-4); background:var(--card); border:1px solid var(--border); border-radius:var(--radius-lg); box-shadow:var(--shadow-soft)
+/* WP-H Home: "This week" hero, pair card, schedule and chat, then the circle summary. */
+.dashboard{display:grid; gap:var(--space-8); max-width:960px}
+.home-head{display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:var(--space-3)}
+.home-head h2{font-size:var(--text-xl); line-height:var(--leading-xl)}
+.home-sub{margin:var(--space-1) 0 0; color:var(--ink-2); font-size:var(--text-sm)}
+.home-head-actions{display:flex; gap:var(--space-2); flex-wrap:wrap}
+.home-week,.home-circle{display:grid; gap:var(--space-4); min-width:0}
+.home-section-title{font-size:var(--text-sm); line-height:var(--leading-sm); color:var(--ink-3); font-weight:var(--weight-emphasis)}
+.home-hero{
+  display:grid; gap:var(--space-3); padding:var(--space-6); min-width:0;
+  background:var(--card); border:1px solid var(--border); border-left:4px solid var(--color-action);
+  border-radius:var(--radius-lg); box-shadow:var(--shadow-1);
 }
-.schedule-box{padding:var(--space-3); border:1px solid var(--border); border-radius:var(--radius-md); background:var(--bg-3)}
-.chat-box{border:1px solid var(--border); border-radius:var(--radius-md); background:var(--card); display:flex; flex-direction:column; max-height:360px}
-.chat-list{flex:1; overflow:auto; padding:var(--space-3); display:grid; gap:var(--space-2)}
-.msg{padding:var(--space-2) var(--space-3); border-radius:var(--radius-md); background:var(--bg-3); font-size:var(--text-sm)}
-.msg.mine{background:var(--color-action-subtle); border:1px solid color-mix(in srgb, var(--accent) 30%, transparent)}
-.msg-body{white-space:pre-wrap; overflow-wrap:anywhere; margin-top:2px}
-.chat-input{border-top:1px solid var(--border); padding:var(--space-2); display:flex; gap:var(--space-2)}
+.home-hero[data-tone="info"]{border-left-color:var(--color-info)}
+.home-hero[data-tone="warning"]{border-left-color:var(--color-warning)}
+.home-hero[data-tone="danger"]{border-left-color:var(--color-danger)}
+.home-eyebrow{margin:0; font-size:var(--text-xs); line-height:var(--leading-xs); font-weight:var(--weight-emphasis); color:var(--ink-3); letter-spacing:.02em}
+.home-hero-title{margin:0; font-size:var(--text-lg); line-height:var(--leading-lg); font-weight:var(--weight-heading); color:var(--ink)}
+.home-hero-detail{margin:0; color:var(--ink-2); font-size:var(--text-sm); line-height:var(--leading-sm); max-width:var(--reading-max)}
+.home-actions{display:flex; flex-wrap:wrap; gap:var(--space-2); align-items:center; margin-top:var(--space-1)}
+.home-actions .btn{gap:var(--space-2)}
+/* Publish is the owner's primary action; when it shows, availability steps back. */
+#dashPublishNow:not([hidden]) ~ #dashSetAvailability{background:var(--card); color:var(--ink); border-color:var(--control-border)}
+.home-skeleton{border-left-color:var(--border)}
+.home-skel-line{display:block; height:14px; width:100%}
+.home-skel-line--short{width:28%}
+.home-skel-line--mid{width:62%}
+.home-pair-head{display:flex; gap:var(--space-4); align-items:center; min-width:0}
+.home-pair-text{display:grid; gap:var(--space-1); min-width:0}
+.home-avatar{width:48px; height:48px; font-size:var(--text-sm)}
+.home-avatar--solo{background:var(--color-action-subtle); color:var(--ink)}
+.home-pair-name{font-size:var(--text-lg); line-height:var(--leading-lg); overflow-wrap:anywhere}
+.home-pair-meta{display:flex; flex-wrap:wrap; gap:var(--space-2); align-items:center; margin:0; color:var(--ink-3); font-size:var(--text-xs)}
+.home-pair-bio{margin:0; color:var(--ink-2); font-size:var(--text-sm); overflow-wrap:anywhere}
+.home-next{display:grid; gap:var(--space-1); padding:var(--space-4); border-radius:var(--radius-md); background:var(--color-action-subtle)}
+.home-next[data-tone="success"]{background:var(--color-success-surface)}
+.home-next[data-tone="warning"]{background:var(--color-warning-surface)}
+.home-next[data-tone="neutral"],.home-next[data-tone="info"]{background:var(--bg-3)}
+.home-fine{margin:0; color:var(--ink-3); font-size:var(--text-xs); line-height:var(--leading-xs)}
+.home-rel{color:var(--ink-3); font-weight:var(--weight-body)}
+.home-sync{font-size:var(--text-xs)}
+.home-card-title{font-size:var(--text-lg); line-height:var(--leading-lg)}
+.home-schedule .card-h{border-bottom:0; padding-bottom:0}
+.home-schedule-body{display:grid; gap:var(--space-4)}
+.home-agreed{display:grid; gap:var(--space-2)}
+.home-agreed[data-state="agreed"]{padding:var(--space-4); border-radius:var(--radius-md); background:var(--color-success-surface)}
+.home-agreed[data-state="past"],.home-agreed[data-state="legacy"]{padding:var(--space-4); border-radius:var(--radius-md); background:var(--color-warning-surface)}
+.home-agreed-line{margin:0; font-size:var(--text-md)}
+.home-agreed-tools{display:flex; flex-wrap:wrap; gap:var(--space-2); align-items:center}
+.home-agreed-tools .btn{gap:var(--space-2)}
+.home-agreed-tools [data-testid="schedule-clear"]{margin-left:auto}
+.home-meeting:empty{display:none}
+#dashPairArea:empty,#dashScheduleArea:empty,#dashChatArea:empty{display:none}
+/* Kept in the accessibility tree so later announcements are spoken. */
+#scheduleBoundaryStatus:empty{position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%)}
+.home-subhead{display:block; margin:0; font-size:var(--text-sm); font-weight:var(--weight-emphasis); color:var(--ink)}
+.home-proposals{display:grid; gap:var(--space-2)}
+.home-proposal{display:flex; justify-content:space-between; align-items:center; gap:var(--space-3); flex-wrap:wrap; padding:var(--space-3); border:1px solid var(--border); border-radius:var(--radius-md)}
+.home-proposal-detail{display:grid; gap:2px; min-width:0}
+.home-proposal-time{font-weight:var(--weight-emphasis); color:var(--ink); overflow-wrap:anywhere}
+.home-proposal-actions{display:flex; gap:var(--space-2)}
+.home-proposal-actions .btn{gap:var(--space-1)}
+.home-propose{display:grid; gap:var(--space-2)}
+.home-propose-row{display:flex; gap:var(--space-2); flex-wrap:wrap}
+.home-propose-row .input{flex:1 1 220px; min-width:0}
+.home-error{color:var(--color-warning)}
+.chat-box{border:1px solid var(--border); border-radius:var(--radius-lg); background:var(--card); display:flex; flex-direction:column; max-height:min(480px, 70vh); min-width:0}
+.home-chat-head{border-bottom:1px solid var(--border)}
+.chat-list{flex:1; overflow:auto; padding:var(--space-4); display:flex; flex-direction:column; gap:var(--space-2); min-height:120px}
+.msg{max-width:min(80%, 520px); align-self:flex-start; padding:var(--space-2) var(--space-3); border-radius:var(--radius-md) var(--radius-md) var(--radius-md) var(--radius-xs); background:var(--bg-3); font-size:var(--text-sm)}
+.msg.mine{align-self:flex-end; background:var(--color-action-subtle); border:1px solid color-mix(in srgb, var(--color-action) 40%, transparent); border-radius:var(--radius-md) var(--radius-md) var(--radius-xs) var(--radius-md)}
+.msg-meta{display:flex; gap:var(--space-2); align-items:baseline; font-size:var(--text-xs); color:var(--ink-3)}
+.msg-sender{color:var(--ink-2); font-weight:var(--weight-emphasis)}
+.msg-body{white-space:pre-wrap; overflow-wrap:anywhere; margin-top:2px; color:var(--ink)}
+.home-chat-empty{margin:auto; padding:var(--space-4); color:var(--ink-3); font-size:var(--text-sm); text-align:center}
+.chat-input{border-top:1px solid var(--border); padding:var(--space-3); display:flex; gap:var(--space-2)}
+.chat-input .input{flex:1; min-width:0}
+.home-chat-foot{display:grid; gap:var(--space-1); padding:0 var(--space-3) var(--space-3)}
+.home-chat-status:empty{display:none}
+.home-stats{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:var(--space-3)}
+.home-stat{display:grid; gap:2px; padding:var(--space-3) var(--space-4); border:1px solid var(--border); border-radius:var(--radius-md); background:var(--card); min-width:0}
+.home-stat-label{font-size:var(--text-xs); color:var(--ink-3)}
+.home-stat-value{font-size:var(--text-lg); font-weight:var(--weight-heading); color:var(--ink)}
+.home-stat-value--text{font-size:var(--text-sm); line-height:var(--leading-sm)}
+.home-stat-sub{font-size:var(--text-xs); color:var(--ink-3); overflow-wrap:anywhere}
+.home-list-head{display:flex; justify-content:space-between; align-items:center; gap:var(--space-3); margin-top:var(--space-2)}
+.home-list-head h4{font-size:var(--text-sm); margin:0}
+.home-list{padding:var(--space-3) var(--space-4); border:1px solid var(--border); border-radius:var(--radius-md); background:var(--card); min-width:0}
+.home-diagnostics{border:1px dashed var(--border); border-radius:var(--radius-md); padding:var(--space-3) var(--space-4)}
+.home-diagnostics > summary{cursor:pointer; font-size:var(--text-sm); color:var(--ink-2); min-height:var(--control-sm); display:flex; align-items:center}
+.home-logs{margin-top:var(--space-3)}
+/* The hero is authoritative for the current pair: a checklist whose only
+   unresolved item is an unverifiable pairing check would contradict it. */
+#view-dashboard:is([data-home-state="paired"],[data-home-state="solo"]) #onboardChecklist[data-state="error"]:not(:has(#chkProfile[data-state="error"],#chkAvail[data-state="error"])){display:none!important}
+@media(max-width:640px){
+  .home-stats{grid-template-columns:minmax(0,1fr)}
+  .home-hero{padding:var(--space-4)}
+  .home-actions .btn{flex:1 1 auto; justify-content:center}
+  .home-agreed-tools [data-testid="schedule-clear"]{margin-left:0}
+  .msg{max-width:92%}
+}
 @media(max-width:840px){ .hero{grid-template-columns:1fr} }
 
 /* Loaders, spinners and skeletons */
@@ -1114,11 +1270,8 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   .hero h1{font-size:var(--text-2xl); line-height:var(--leading-2xl)}
   .cta-row .btn{width:100%; justify-content:center; min-height:var(--control-lg)}
   .profile-setup{padding:0}
-  #dashStatsGrid{grid-template-columns:1fr!important}
-  .dashboard,.dashboard .card,.dashboard .card-b,.partner-card>div{min-width:0}
-  .partner-card{grid-template-columns:1fr; padding:var(--space-4)}
-  .partner-card .btn{max-width:100%; white-space:normal; text-align:left}
-  #dashInviteHint .kbd{display:inline; overflow-wrap:anywhere; word-break:break-word}
+  .dashboard,.dashboard .card,.dashboard .card-b{min-width:0}
+  .home-actions .btn{max-width:100%; white-space:normal}
   .card-b{padding:var(--space-4)}
   .overlay{padding:0; align-items:flex-end}
   #authDialog,#identityDialog{
@@ -1469,29 +1622,21 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 
     <!-- DASHBOARD -->
     <section id="view-dashboard" class="view" aria-labelledby="dashWelcome" style="display:none">
-      <div class="dashboard">
-        <div class="dash-top">
-          <div><h2 id="dashWelcome">Welcome back</h2><div id="dashSub" class="small muted">Checking pairings…</div></div>
-          <div class="row"><button id="dashAvailBadge" class="pill" type="button" aria-label="Review weekly availability" aria-describedby="dashAvailHint">Checking availability…</button><span id="dashAvailHint" class="sr-only">Opens the active circle's upcoming cycle availability choices.</span><button id="dashProfileBtn" class="pill">Edit profile</button></div>
-        </div>
-        <div id="dashStatsGrid" role="list" aria-label="Circle summary" style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:14px 0">
-          <div class="card" role="listitem" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Your completed sessions</div><div id="dashStatYou" style="font-size:20px; font-weight:600; margin-top:4px">—</div><div class="small muted" id="dashStatYouSub" style="font-size:11px">from — pairings</div></div>
-          <div class="card" role="listitem" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Circle</div><div id="dashStatCircle" style="font-size:20px; font-weight:600; margin-top:4px">—</div><div class="small muted" style="font-size:11px"><span id="dashStatCircleSub">members</span> • <span id="dashStatWeeks">— weeks</span></div></div>
-          <div class="card" role="listitem" style="padding:10px; background:var(--bg-2)"><div class="small muted" style="font-size:11px; text-transform:uppercase">Next pairing run</div><div id="dashNextLabel" style="font-size:13px; font-weight:600; margin-top:4px">Loading the next cycle…</div><div class="small muted" id="dashNextCount" style="font-size:11px; margin-top:2px">calculating…</div></div>
-        </div>
-        <div style="margin:6px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Next session</h3><div style="flex:1;height:1px;background:var(--border)"></div></div>
-        <div id="dashPairArea"></div>
-        <div id="dashScheduleArea" data-testid="schedule-area"></div>
-        <div id="scheduleBoundaryStatus" data-testid="schedule-boundary-status" class="small muted" role="status" aria-live="polite" tabindex="-1"></div>
-        <div id="dashChatArea"></div>
-        <div style="margin:14px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Recent pairings</h3><div style="flex:1;height:1px;background:var(--border)"></div><button id="dashHistAll" class="pill" style="font-size:11px">Pairings &amp; activity →</button></div>
-        <div id="dashHistoryArea" class="card" style="padding:10px"><div id="dashHistList" class="small muted">Loading recent…</div></div>
-        <div style="margin:14px 0 10px; display:flex; align-items:center; gap:8px"><h3 style="font-size:13px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Recent runs</h3><div style="flex:1;height:1px;background:var(--border)"></div><button id="recentRunsRefresh" class="pill" style="font-size:11px">refresh</button></div>
-
-        <div id="recentRunsArea" class="card" style="padding:10px"><div id="recentRunsList" class="small muted">No runs yet — hit ▶ Run</div></div>
-        <div id="logsArea" class="card" style="padding:10px; display:none; margin-top:12px; border-color:var(--border)"><div style="display:flex; justify-content:space-between; align-items:center"><h3 style="font-size:12.5px; margin:0; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Logs <span class="kbd" style="font-size:10px; margin-left:6px">admin</span></h3><span class="row" style="gap:6px"><select id="logsLevelSel" class="select" style="font-size:11px; padding:4px 8px"><option value="" selected>all levels</option><option value="error">error</option><option value="warn">warn</option><option value="success">success</option><option value="info">info</option><option value="debug">debug</option></select><button id="logsRefresh" class="pill" style="font-size:11px">refresh</button><button id="logsClear" class="pill" style="font-size:11px">clear view</button></span></div><div id="logsList" class="small muted" style="margin-top:8px; max-height:320px; overflow:auto; font-family:ui-monospace, monospace; font-size:11.5px; display:grid; gap:4px">Loading…</div><div class="small muted" style="margin-top:6px">Batched client+server logs — auto every 20s, admin can filter by level/event. Backed by Sentry-ready hook (see _randori_log). For prod monitoring consider Sentry or Better Stack (see console).</div></div>
-        <div id="dashSignOutWrap" style="margin-top:12px;text-align:right; display:block"><button id="dashSignOut" class="pill" style="font-size:12px;opacity:.75">Sign out</button></div>
-        <div id="dashEmpty" data-testid="dashboard-pair-state" data-state="loading" style="display:none" class="card"><div class="card-b"><b id="dashEmptyTitle">Checking your current cycle…</b><div id="dashEmptyMessage" class="small muted" style="margin-top:6px">Loading durable pairing state.</div><div class="row" style="margin-top:10px"><button class="btn" id="dashPublishNow" data-testid="dashboard-publish-now" type="button" hidden>Publish now</button><button class="pill" id="dashSoloCatalogue" type="button">Practice solo from catalogue</button><button class="pill" id="dashHow">How it works?</button></div></div></div>
+      <div class="dashboard home">
+        <header class="dash-top home-head">
+          <div class="home-head-text"><h2 id="dashWelcome">Welcome back</h2><p id="dashSub" class="home-sub">Checking this week…</p></div>
+          <div class="home-head-actions"><button id="dashAvailBadge" class="pill" type="button" aria-label="Review weekly availability" aria-describedby="dashAvailHint">Checking availability…</button><span id="dashAvailHint" class="sr-only">Opens the active circle's upcoming cycle availability choices.</span><button id="dashProfileBtn" class="pill" type="button">Edit profile</button></div>
+        </header>
+        <!-- WP-H: "This week" is the hero. Unpaired states render in #dashEmpty; a verified pair renders the pair card (with the next step), schedule and chat. -->
+        <section class="home-week" aria-labelledby="homeWeekTitle">
+          <h3 id="homeWeekTitle" class="home-section-title">This week</h3>
+          <div id="dashLoading" class="home-hero home-skeleton" data-testid="dashboard-loading" aria-hidden="true" hidden><span class="rc-skeleton home-skel-line home-skel-line--short"></span><span class="rc-skeleton home-skel-line"></span><span class="rc-skeleton home-skel-line home-skel-line--mid"></span></div>
+          <div id="dashEmpty" data-testid="dashboard-pair-state" data-state="loading" data-tone="info" style="display:none" class="home-hero home-state" role="region" aria-labelledby="dashEmptyTitle"><p class="home-eyebrow">Next step</p><h4 id="dashEmptyTitle" class="home-hero-title">Checking your current cycle…</h4><p id="dashEmptyMessage" class="home-hero-detail">Loading this week’s pairing.</p><div class="home-actions"><button class="btn" id="dashPublishNow" data-testid="dashboard-publish-now" type="button" hidden>Publish now</button><button class="btn" id="dashSetAvailability" data-testid="dashboard-set-availability" type="button" hidden>Set availability</button><button class="btn" id="dashRetry" data-testid="dashboard-retry" type="button" hidden>Try again</button><button class="btn secondary" id="dashSoloCatalogue" type="button">Practice solo from catalogue</button><button class="btn ghost" id="dashHow" type="button">How it works</button></div></div>
+          <div id="dashPairArea"></div>
+          <div id="dashScheduleArea" data-testid="schedule-area"></div>
+          <div id="scheduleBoundaryStatus" data-testid="schedule-boundary-status" class="small muted" role="status" aria-live="polite" tabindex="-1"></div>
+          <div id="dashChatArea"></div>
+        </section>
         <!-- Onboarding Checklist -->
         <div id="onboardChecklist" class="checklist" data-state="idle" role="region" aria-labelledby="onboardChecklistTitle" aria-busy="false" style="display:none">
           <div class="row" style="justify-content:space-between"><h4 id="onboardChecklistTitle">Getting started</h4><button id="checklistToggle" class="pill" type="button" style="font-size:11px" aria-expanded="true">hide</button></div>
@@ -1503,6 +1648,22 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
           <div id="onboardChecklistStatus" class="small muted" role="status" aria-live="polite">Sign in to load your saved setup.</div>
           <div class="row" style="margin-top:4px"><button id="chkStartTour" class="pill" type="button" style="font-size:11px">↺ Restart tour</button><button id="chkRetry" class="pill" type="button" hidden>Retry setup checks</button><span class="small muted" id="chkProgress">0/4</span></div>
         </div>
+        <section class="home-circle" aria-labelledby="homeCircleTitle">
+          <h3 id="homeCircleTitle" class="home-section-title">Your circle</h3>
+          <div id="dashStatsGrid" class="home-stats" role="list" aria-label="Circle summary">
+            <div class="home-stat" role="listitem"><div class="home-stat-label">Next pairing</div><div id="dashNextLabel" class="home-stat-value home-stat-value--text">Loading the next cycle…</div><div class="home-stat-sub" id="dashNextCount">calculating…</div></div>
+            <div class="home-stat" role="listitem"><div class="home-stat-label">Circle</div><div id="dashStatCircle" class="home-stat-value">—</div><div class="home-stat-sub"><span id="dashStatCircleSub">members</span> · <span id="dashStatWeeks">— weeks</span></div></div>
+            <div class="home-stat" role="listitem"><div class="home-stat-label">Sessions you completed</div><div id="dashStatYou" class="home-stat-value">—</div><div class="home-stat-sub" id="dashStatYouSub">from — pairings</div></div>
+          </div>
+          <div class="home-list-head"><h4>Recent pairings</h4><button id="dashHistAll" class="btn ghost sm" type="button">All pairings</button></div>
+          <div id="dashHistoryArea" class="home-list"><div id="dashHistList" class="small muted">Loading recent…</div></div>
+          <div class="home-list-head"><h4>Recent runs</h4><button id="recentRunsRefresh" class="btn ghost sm" type="button">Refresh</button></div>
+          <div id="recentRunsArea" class="home-list"><div id="recentRunsList" class="small muted">No runs yet — hit ▶ Run</div></div>
+        </section>
+        <details id="dashDiagnostics" class="home-diagnostics" hidden>
+          <summary>Owner diagnostics</summary>
+          <div id="logsArea" class="home-logs" style="display:none"><div style="display:flex; justify-content:space-between; align-items:center"><h3 style="font-size:12.5px; margin:0; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Logs <span class="kbd" style="font-size:10px; margin-left:6px">admin</span></h3><span class="row" style="gap:6px"><select id="logsLevelSel" class="select" style="font-size:11px; padding:4px 8px"><option value="" selected>all levels</option><option value="error">error</option><option value="warn">warn</option><option value="success">success</option><option value="info">info</option><option value="debug">debug</option></select><button id="logsRefresh" class="pill" style="font-size:11px">refresh</button><button id="logsClear" class="pill" style="font-size:11px">clear view</button></span></div><div id="logsList" class="small muted" style="margin-top:8px; max-height:320px; overflow:auto; font-family:ui-monospace, monospace; font-size:11.5px; display:grid; gap:4px">Loading…</div><div class="small muted" style="margin-top:6px">Batched client+server logs — auto every 20s, admin can filter by level/event. Backed by Sentry-ready hook (see _randori_log). For prod monitoring consider Sentry or Better Stack (see console).</div></div>
+        </details>
       </div>
     </section>
     <!-- CIRCLE -->
@@ -1585,42 +1746,72 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 
     <!-- PAIRING -->
     <section id="view-pair" class="view" tabindex="0" aria-labelledby="tab-pair" style="display:none">
-      <div class="grid-2">
-        <div class="card">
-          <div class="card-h">
-            <h2>This week</h2>
-            <div class="row">
-              <button id="newWeekBtn" class="btn" style="display:none" title="Recover this cycle after the scheduled publication grace period">Publish now</button>
-              <button id="demoRunBtn" class="btn" style="display:none" title="Admin: seed 6 demo users + shuffle">✦ Run Demo</button>
-              <button id="demoResetBtn" class="btn secondary" style="display:none" title="Admin: remove demo data">Reset Demo</button>
-            </div>
-          </div>
-          <div class="card-b">
-            <div id="currentWeekMeta" class="small muted" style="margin-bottom:10px">Current-cycle pairs stay fixed once published. Set the next cycle’s availability in Sync before its displayed cutoff.</div>
-            <div id="pairsList" class="weeks"></div>
-          </div>
-        </div>
-        <div class="card">
-          <div class="card-h"><h2>Sync</h2><span>browser state</span></div>
-          <div class="card-b" style="display:grid; gap:10px">
-            <div class="small" style="color:var(--ink-2)">Browser-tab coordination is reported below. Server-backed availability has its own loading and save states.</div>
-            <div id="availabilityWrap" data-testid="availability-card" role="region" aria-labelledby="availTitle" aria-describedby="availDecision availCycle availCutoff availExplan" tabindex="-1" style="display:none; border:1px solid var(--line); border-radius:10px; padding:10px; background:var(--bg-3); gap:8px">
-              <div class="row" style="justify-content:space-between"><b id="availTitle" style="font-size:13px">Upcoming availability</b><span id="availLabel" class="kbd">LOADING…</span></div>
-              <div id="availDecision" class="small" role="status" aria-live="polite">Loading your saved choice for this cycle…</div>
-              <div id="availCycle" data-testid="availability-cycle" class="small muted">Loading the upcoming pairing cycle…</div>
-              <div id="availCutoff" data-testid="availability-cutoff" class="small muted"></div>
-              <div id="availActions" class="row" role="group" aria-labelledby="availTitle" aria-describedby="availDecision availCycle availCutoff availExplan">
-                <button id="availAvailable" class="btn" type="button" aria-pressed="false" disabled>Available</button>
-                <button id="availSkip" class="pill" type="button" aria-pressed="false" disabled>Skip this cycle</button>
+      <!-- WP-P: "This week's cycle" — availability decision, cutoff, published pairs, owner tools. -->
+      <div class="cycle-view">
+        <header class="cycle-view-head">
+          <h2 id="cycleViewTitle">This week’s cycle</h2>
+          <p class="small muted">Say whether you’re in for the next cycle before its cutoff. Pairs are published automatically at the cutoff and stay fixed for the week.</p>
+        </header>
+        <div class="cycle-layout">
+          <div id="availabilityWrap" class="rc-card cycle-card cycle-availability" data-testid="availability-card" role="region" aria-labelledby="availTitle" aria-describedby="availDecision availCycle availCutoff availExplan" tabindex="-1" style="display:none;">
+            <div class="cycle-card-head">
+              <div class="cycle-card-titles">
+                <span class="cycle-eyebrow">Next cycle</span>
+                <h3 id="availTitle">Your availability</h3>
               </div>
-              <div id="availBanner" class="small status-chip status-warning" style="display:none; padding:8px; border-radius:8px; border-style:dashed"></div>
+              <span id="availLabel" class="rc-badge" data-tone="neutral">Loading…</span>
             </div>
-            <div id="presencePanel" class="people"></div>
-            <div class="row">
-              <span class="small request-status" id="syncStatus" data-state="loading" role="status" aria-live="polite">Checking browser-tab sync…</span>
+            <p id="availCycle" data-testid="availability-cycle" class="small cycle-dates">Loading the upcoming pairing cycle…</p>
+            <div id="availActions" class="cycle-choices" role="group" aria-labelledby="availTitle" aria-describedby="availDecision availCycle availCutoff availExplan">
+              <button id="availAvailable" class="cycle-choice" type="button" aria-pressed="false" disabled>I'm in</button>
+              <button id="availSkip" class="cycle-choice" type="button" aria-pressed="false" disabled>Skip this cycle</button>
             </div>
-            <div class="row" style="align-items:center"><div class="small muted" id="availExplan" role="status" aria-live="polite" style="display:none"></div><button id="availRetry" class="pill" type="button" hidden>Retry availability</button></div>
+            <p id="availDecision" class="small cycle-decision" role="status" aria-live="polite">Loading your saved choice for the next cycle…</p>
+            <p id="availCutoff" data-testid="availability-cutoff" class="small cycle-cutoff"></p>
+            <div id="availBanner" class="rc-banner rc-banner--warning small" role="note" hidden></div>
+            <div class="cycle-status-row">
+              <p class="small" id="availExplan" role="status" aria-live="polite" style="display:none"></p>
+              <button id="availRetry" class="btn secondary sm" type="button" hidden>Retry availability</button>
+            </div>
           </div>
+          <section class="rc-card cycle-card cycle-pairs" aria-labelledby="pairsTitle">
+            <div class="cycle-card-head">
+              <div class="cycle-card-titles">
+                <span class="cycle-eyebrow">Current cycle</span>
+                <h3 id="pairsTitle">This week’s pairs</h3>
+              </div>
+            </div>
+            <p id="currentWeekMeta" class="small muted" role="status" aria-live="polite">Loading this week’s pairs…</p>
+            <div id="pairsList" class="weeks cycle-pairs-list"></div>
+          </section>
+          <section id="pairOwnerPanel" class="rc-card cycle-card cycle-owner" aria-labelledby="pairOwnerTitle" hidden>
+            <div class="cycle-card-head">
+              <div class="cycle-card-titles">
+                <span class="cycle-eyebrow">Circle owner</span>
+                <h3 id="pairOwnerTitle">Owner tools</h3>
+              </div>
+              <span id="pairOwnerBadge" class="rc-badge" data-tone="neutral">Checking…</span>
+            </div>
+            <p id="pairOwnerStatus" class="small" role="status" aria-live="polite">Checking the publication status for this cycle…</p>
+            <p id="pairOwnerHint" class="small muted" hidden></p>
+            <div class="row">
+              <button id="newWeekBtn" class="btn" type="button" style="display:none" title="Recover this cycle after the scheduled publication grace period">Publish now</button>
+            </div>
+          </section>
+          <details id="pairDiagnostics" class="rc-card cycle-card cycle-diagnostics" hidden>
+            <summary>Diagnostics</summary>
+            <div class="cycle-diagnostics-body">
+              <p class="small muted">Admin-only tools. Demo data never appears in a real circle’s published pairs.</p>
+              <div class="row">
+                <button id="demoRunBtn" class="btn secondary sm" type="button" style="display:none" title="Admin: seed 6 demo users and pair them">Run demo</button>
+                <button id="demoResetBtn" class="btn secondary sm" type="button" style="display:none" title="Admin: remove demo data">Reset demo</button>
+              </div>
+              <div class="row">
+                <span class="small request-status" id="syncStatus" data-state="loading" role="status" aria-live="polite">Checking open tabs…</span>
+              </div>
+              <div id="presencePanel" class="people"></div>
+            </div>
+          </details>
         </div>
       </div>
     </section>
@@ -1996,6 +2187,8 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   let currentPairingPublicationFence=null;
   let pairingRecoveryRetryKey=null;
   let pairingPublicationRefreshTimer=null;
+  let pairingPublicationLoadFailed=false;
+  let currentPairingUpcomingCycle=null;
   window._randoriUserNavigationEpoch=0;
   window._randoriExplicitNavigation=null;
   const AVAILABILITY_SOURCES=new Set(['user','legacy_bridge','cycle_default']);
@@ -2524,37 +2717,47 @@ async function refreshMe(){
   }
   function updatePairingRunAccess(){
     const button=document.getElementById('newWeekBtn');
-    let badge=document.getElementById('adminOnlyBadge');
-    if(!badge&&button?.parentElement){
-      badge=document.createElement('span'); badge.id='adminOnlyBadge'; badge.className='kbd'; badge.style.marginLeft='8px';
-      button.parentElement.appendChild(badge);
-    }
     const allowed=currentPairingRecoveryAvailable();
+    const view=window._randori_pairing_view;
+    const online=navigator.onLine!==false;
+    const retryReady=pairingRecoveryRetryKey===currentPairingPublicationState?.cycle_key;
+    const model=view?.publicationView({
+      signedIn:!!me,
+      isOwner:activeCircleRole==='owner',
+      publication:currentPairingPublicationState,
+      allowed,
+      publishing:!!pairingPublicationAbort,
+      retryReady,
+      upcoming:currentPairingUpcomingCycle||availabilityState.value?.cycle||null,
+      loadFailed:pairingPublicationLoadFailed,
+      online,
+    });
+    const actionText=pairingPublicationAbort?'Publishing…':(retryReady?'Retry publication':'Publish now');
     if(button){
       button.style.display=allowed?'inline-flex':'none';
-      button.disabled=!!pairingPublicationAbort;
-      button.textContent=pairingPublicationAbort
-        ?'Publishing…'
-        :(pairingRecoveryRetryKey===currentPairingPublicationState?.cycle_key?'Retry publication':'Publish now');
+      button.disabled=!!pairingPublicationAbort||!online;
+      button.textContent=actionText;
+      button.setAttribute('aria-busy',pairingPublicationAbort?'true':'false');
       button.title='Recover this cycle after the scheduled publication grace period';
     }
-    if(badge){
-      const upcoming=availabilityState.value?.cycle;
-      badge.textContent=currentPairingPublicationState?.state==='published'
-        ?'current cycle published'
-        :allowed
-          ?(pairingRecoveryRetryKey===currentPairingPublicationState?.cycle_key?'owner • retry ready':'owner • recovery ready')
-          :(currentPairingPublicationState?.state==='pending'
-            ?`scheduled ${formatAvailabilityInstant(currentPairingPublicationState.scheduled_at,currentPairingPublicationState.time_zone)}`
-            :(upcoming?`next cutoff ${formatAvailabilityInstant(upcoming.cutoffAt,upcoming.timeZone)}`:'weekly schedule loading…'));
+    const panel=document.getElementById('pairOwnerPanel');
+    if(panel&&model){
+      panel.hidden=!model.visible;
+      panel.dataset.state=model.state;
+      const badge=document.getElementById('pairOwnerBadge');
+      if(badge){ badge.textContent=model.title; badge.dataset.tone=model.tone; }
+      const status=document.getElementById('pairOwnerStatus');
+      if(status) status.textContent=model.text;
+      const hint=document.getElementById('pairOwnerHint');
+      if(hint){ hint.hidden=!model.hint; hint.textContent=model.hint; }
     }
+    const diagnostics=document.getElementById('pairDiagnostics');
+    if(diagnostics) diagnostics.hidden=!(me&&isAdmin());
     const dashboardButton=document.getElementById('dashPublishNow');
     if(dashboardButton){
       dashboardButton.hidden=!allowed;
       dashboardButton.disabled=!!pairingPublicationAbort;
-      dashboardButton.textContent=pairingPublicationAbort
-        ?'Publishing…'
-        :(pairingRecoveryRetryKey===currentPairingPublicationState?.cycle_key?'Retry publication':'Publish now');
+      dashboardButton.textContent=actionText;
     }
   }
   function parseAvailabilityEnvelope(payload,{contextVersion}={}){
@@ -2651,23 +2854,6 @@ async function refreshMe(){
       &&notice.isAvailable===availability?.isAvailable
       &&notice.editable===availability?.editable;
   }
-  function availabilityDecisionCopy(availability){
-    if(!availability) return 'Availability has not loaded.';
-    const effective=availability.isAvailable?'available':'skipping';
-    if(availability.source==='user'){
-      return availability.editable
-        ?`Saved choice: ${effective} for ${availability.cycle.cycleId}. You can replace it until the cutoff.`
-        :`Saved choice: ${effective} for ${availability.cycle.cycleId}. The cutoff is closed.`;
-    }
-    if(availability.source==='legacy_bridge'){
-      return availability.editable
-        ?`No choice is saved for this cycle. Your previous account setting is inherited as ${effective}; choose an action below to confirm it.`
-        :`No choice was saved for this cycle. Your previous account setting remains inherited as ${effective}; the cutoff is closed.`;
-    }
-    return availability.editable
-      ?`No choice is saved for this cycle. Randori currently includes you by default so early circles can still form pairs; choose an action below to confirm or skip.`
-      :`No choice was saved for this cycle. Default inclusion remains effective, and the cutoff is closed.`;
-  }
   function availabilityBadgeCopy(availability){
     if(!availability) return availabilityState.loading?'Checking availability…':'Review availability';
     if(!availability.editable) return `Review closed cycle ${availability.cycle.cycleId}`;
@@ -2676,129 +2862,94 @@ async function refreshMe(){
     return availability.isAvailable
       ?`Available for ${availability.cycle.cycleId}`:`Skipping ${availability.cycle.cycleId}`;
   }
+  function renderAvailabilityDashboardBadge(availability){
+    const dashboardBadge=document.getElementById('dashAvailBadge');
+    if(!dashboardBadge) return;
+    if(!me){
+      dashboardBadge.textContent='Review availability';
+      dashboardBadge.disabled=true;
+      dashboardBadge.setAttribute('aria-label','Review availability. Sign in to load weekly availability.');
+      return;
+    }
+    if(!availability){
+      dashboardBadge.textContent=availabilityBadgeCopy(null);
+      dashboardBadge.disabled=availabilityState.loading;
+      dashboardBadge.style.background='var(--bg-3)';
+      dashboardBadge.style.color='var(--ink-2)';
+      dashboardBadge.style.borderColor='var(--border)';
+      dashboardBadge.setAttribute('aria-label',`${availabilityBadgeCopy(null)}. Review weekly availability.`);
+      return;
+    }
+    dashboardBadge.textContent=availabilityBadgeCopy(availability);
+    dashboardBadge.disabled=false;
+    const saved=availability.source==='user';
+    dashboardBadge.style.background=saved
+      ?(availability.isAvailable?'var(--ok-surface)':'var(--warn-surface)'):'var(--bg-3)';
+    dashboardBadge.style.color=saved
+      ?(availability.isAvailable?'var(--ok)':'var(--warn)'):'var(--ink-2)';
+    dashboardBadge.style.borderColor=saved
+      ?(availability.isAvailable?'var(--ok)':'var(--warn)'):'var(--accent)';
+    dashboardBadge.setAttribute('aria-label',`${availabilityBadgeCopy(availability)}. Review weekly availability.`);
+  }
+  // Presentation comes from assets/pairing-view.js (unit-tested); this
+  // renderer only applies it. Availability state stays server-authoritative.
   function renderAvailability(){
     const wrap=document.getElementById('availabilityWrap');
     const availableButton=document.getElementById('availAvailable');
     const skipButton=document.getElementById('availSkip');
     const label=document.getElementById('availLabel');
-    const decision=document.getElementById('availDecision');
-    const title=document.getElementById('availTitle');
-    const cycleText=document.getElementById('availCycle');
-    const cutoffText=document.getElementById('availCutoff');
-    const banner=document.getElementById('availBanner');
-    const status=document.getElementById('availExplan');
-    const retry=document.getElementById('availRetry');
-    const dashboardBadge=document.getElementById('dashAvailBadge');
-    if(!wrap||!availableButton||!skipButton||!label) return;
-    if(!me){
-      wrap.style.display='none';
-      availableButton.disabled=true;
-      skipButton.disabled=true;
-      if(dashboardBadge){
-        dashboardBadge.textContent='Review availability';
-        dashboardBadge.disabled=true;
-        dashboardBadge.setAttribute('aria-label','Review availability. Sign in to load weekly availability.');
-      }
-      if(status) status.style.display='none';
-      if(retry) retry.hidden=true;
-      return;
-    }
-    const availability=availabilityState.value;
+    const view=window._randori_pairing_view;
+    if(!wrap||!availableButton||!skipButton||!label||!view) return;
+    const availability=me?availabilityState.value:null;
+    const currentUserId=Number(me?.id||me?.uid);
+    const model=view.availabilityView({
+      signedIn:!!me,
+      value:availability,
+      loading:availabilityState.loading,
+      saving:availabilityState.saving,
+      pendingValue:availabilityState.pendingValue,
+      error:availabilityState.error,
+      notice:availabilityState.notice?.userId===currentUserId?availabilityState.notice.message:'',
+      online:navigator.onLine!==false,
+    });
     // Do not expose placeholder controls before the first authoritative result.
     // A validated value remains visible while it is revalidated, and an error
     // remains visible so its retry action is reachable.
-    wrap.style.display=availability||availabilityState.error?'grid':'none';
-    wrap.setAttribute('aria-busy',availabilityState.loading||availabilityState.saving?'true':'false');
-    const currentUserId=Number(me?.id||me?.uid);
-    const noticeMessage=availabilityState.notice?.userId===currentUserId
-      ?availabilityState.notice.message:'';
-    const statusMessage=availabilityState.error||noticeMessage;
-    if(!availability){
-      availableButton.disabled=true;
-      skipButton.disabled=true;
-      availableButton.setAttribute('aria-pressed','false');
-      skipButton.setAttribute('aria-pressed','false');
-      availableButton.textContent='Available';
-      skipButton.textContent='Skip this cycle';
-      label.textContent=availabilityState.loading?'LOADING…':'UNAVAILABLE';
-      label.style.color='var(--color-text-muted)';
-      if(decision) decision.textContent=availabilityState.loading
-        ?'Loading your saved choice for this cycle…'
-        :'No active-cycle availability choice can be shown.';
-      if(title) title.textContent='Upcoming availability';
-      if(cycleText) cycleText.textContent=availabilityState.loading?'Loading the upcoming pairing cycle…':'Upcoming cycle could not be loaded.';
-      if(cutoffText) cutoffText.textContent='';
-      if(banner) banner.style.display='none';
-      if(status){
-        status.style.display=statusMessage?'block':'none';
-        status.textContent=statusMessage;
-      }
-      if(retry){
-        retry.hidden=!availabilityState.error;
-        retry.disabled=availabilityState.loading;
-      }
-      if(dashboardBadge){
-        dashboardBadge.textContent=availabilityBadgeCopy(null);
-        dashboardBadge.disabled=availabilityState.loading;
-        dashboardBadge.style.background='var(--bg-3)';
-        dashboardBadge.style.color='var(--ink-2)';
-        dashboardBadge.style.borderColor='var(--border)';
-        dashboardBadge.setAttribute('aria-label',`${availabilityBadgeCopy(null)}. Review weekly availability.`);
-      }
-      return;
-    }
-    const shownValue=availabilityState.saving&&typeof availabilityState.pendingValue==='boolean'
-      ?availabilityState.pendingValue:availability.isAvailable;
+    wrap.style.display=model.visible?'grid':'none';
+    wrap.setAttribute('aria-busy',model.busy?'true':'false');
     // A validated value remains interactive during same-account background
     // refreshes. saveAvailabilityDecision serializes either explicit action behind
     // that request, including confirmation of an equal inherited value.
-    availableButton.disabled=availabilityState.saving||!availability.editable;
-    skipButton.disabled=availabilityState.saving||!availability.editable;
-    availableButton.setAttribute('aria-pressed',availability.source==='user'&&availability.isAvailable?'true':'false');
-    skipButton.setAttribute('aria-pressed',availability.source==='user'&&!availability.isAvailable?'true':'false');
-    availableButton.textContent=availabilityState.saving&&shownValue?'Saving Available…':'Available';
-    skipButton.textContent=availabilityState.saving&&!shownValue?'Saving Skip…':'Skip this cycle';
-    label.textContent=availabilityState.saving
-      ?`SAVING ${shownValue?'AVAILABLE':'SKIP'}…`
-      :(!availability.editable
-        ?`CLOSED • ${availability.source==='user'?'SAVED':'NO SAVED CHOICE'}`
-        :(availability.source==='user'
-          ?`SAVED • ${availability.isAvailable?'AVAILABLE':'SKIPPING'}`
-          :`NOT SAVED • ${availability.isAvailable?'INCLUDED':'SKIPPING'}`));
-    label.style.color=shownValue?'var(--ok)':'var(--warn)';
-    if(decision) decision.textContent=availabilityDecisionCopy(availability);
-    if(title) title.textContent=`Availability for ${availability.cycle.cycleId}`;
-    if(cycleText){
-      cycleText.textContent=`Upcoming cycle starts ${formatAvailabilityInstant(availability.cycle.startsAt,availability.cycle.timeZone)} and ends ${formatAvailabilityInstant(availability.cycle.endsAt,availability.cycle.timeZone)}.`;
+    for(const [button,state] of [[availableButton,model.available],[skipButton,model.skip]]){
+      button.disabled=state.disabled;
+      button.setAttribute('aria-pressed',state.pressed?'true':'false');
+      button.textContent=state.text;
     }
-    if(cutoffText){
-      cutoffText.textContent=`Changes close ${formatAvailabilityInstant(availability.cycle.cutoffAt,availability.cycle.timeZone)} (${availability.cycle.timeZone}).`;
-    }
+    label.textContent=model.badge.text;
+    label.dataset.tone=model.badge.tone;
+    const setText=(id,text)=>{ const node=document.getElementById(id); if(node) node.textContent=text; };
+    setText('availTitle',model.title);
+    setText('availDecision',model.decision);
+    setText('availCycle',model.cycleText);
+    setText('availCutoff',model.cutoffText);
+    document.getElementById('availCutoff')?.toggleAttribute('data-urgent',!!model.cutoffUrgent);
+    const banner=document.getElementById('availBanner');
     if(banner){
-      banner.style.display=availability.source!=='user'||!availability.isAvailable?'block':'none';
-      banner.textContent=availability.source!=='user'
-        ?(availability.source==='cycle_default'
-          ?`Default inclusion is effective for ${availability.cycle.cycleId}, but it is not your saved choice.`
-          :`Your previous setting is inherited for ${availability.cycle.cycleId}, but it is not your saved choice.`)
-        :`You chose to skip ${availability.cycle.cycleId}. This does not change another cycle.`;
+      banner.hidden=!model.note;
+      banner.textContent=model.note?.text||'';
     }
+    const status=document.getElementById('availExplan');
     if(status){
-      status.style.display=statusMessage?'block':'none';
-      status.textContent=statusMessage;
+      status.style.display=model.status?'block':'none';
+      status.textContent=model.status;
+      status.dataset.tone=availabilityState.error?'danger':'info';
     }
-    if(retry) retry.hidden=true;
-    if(dashboardBadge){
-      dashboardBadge.textContent=availabilityBadgeCopy(availability);
-      dashboardBadge.disabled=false;
-      const saved=availability.source==='user';
-      dashboardBadge.style.background=saved
-        ?(availability.isAvailable?'var(--ok-surface)':'var(--warn-surface)'):'var(--bg-3)';
-      dashboardBadge.style.color=saved
-        ?(availability.isAvailable?'var(--ok)':'var(--warn)'):'var(--ink-2)';
-      dashboardBadge.style.borderColor=saved
-        ?(availability.isAvailable?'var(--ok)':'var(--warn)'):'var(--accent)';
-      dashboardBadge.setAttribute('aria-label',`${availabilityBadgeCopy(availability)}. Review weekly availability.`);
+    const retry=document.getElementById('availRetry');
+    if(retry){
+      retry.hidden=model.retry.hidden;
+      retry.disabled=model.retry.disabled;
     }
+    renderAvailabilityDashboardBadge(availability);
   }
   function clearAvailability(){
     clearAvailabilityRolloverTimer();
@@ -2963,12 +3114,12 @@ async function refreshMe(){
       const card=document.getElementById('availabilityWrap');
       const action=document.getElementById(target.isAvailable?'availAvailable':'availSkip');
       if(!card||!action||card.style.display==='none') return false;
-      card.scrollIntoView({behavior:'smooth',block:'center'});
+      card.scrollIntoView({behavior:window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches?'auto':'smooth',block:'center'});
       (action.disabled?card:action).focus({preventScroll:true});
       const status=document.getElementById('availExplan');
       if(status&&!availabilityState.error&&!availabilityState.notice){
         status.style.display='block';
-        status.textContent=`${current.cycle.cycleId} availability choices ready.`;
+        status.textContent=`Choose your availability for ${window._randori_pairing_view?.weekLabel?.(current.cycle.cycleId)||'the next cycle'}.`;
       }
       try{ window._randori_log?.info?.('availability','navigation_ready',{source:String(source).slice(0,32)}); }catch{}
       return true;
@@ -3043,13 +3194,10 @@ async function refreshMe(){
     const demoRun=document.getElementById('demoRunBtn');
     const demoReset=document.getElementById('demoResetBtn');
     if(demoRun){
+      // Demo tools live in the admin-only Diagnostics disclosure.
       if(isAdmin()){
         demoRun.style.display='inline-flex';
-        // show Reset only if demo active flag
-        const demoActive = localStorage.getItem('randori-demo-active')==='1';
-        if(demoReset) demoReset.style.display = demoActive ? 'inline-flex' : 'inline-flex';
-        if(demoActive && demoReset){ demoReset.disabled=false; } // keep visible but enabled when active
-        if(!demoActive && demoReset){ demoReset.style.opacity='0.7'; }
+        if(demoReset) demoReset.style.display='inline-flex';
       } else {
         demoRun.style.display='none';
         if(demoReset) demoReset.style.display='none';
@@ -3126,7 +3274,7 @@ async function refreshMe(){
       }
       resetAvailabilityContextRecovery();
       replaceAvailability(next);
-      toast(selectedValue?`Available for ${availabilityState.value.cycle.cycleId} ✓`:`Skipping ${availabilityState.value.cycle.cycleId}`);
+      toast(window._randori_pairing_view?.savedToast?.(availabilityState.value)||'Availability saved');
       renderPeople();
     }catch(error){
       if(!isCurrentRequest()) return;
@@ -3895,6 +4043,20 @@ async function refreshMe(){
       resetAvailabilityContextRecovery();
       refreshAvailability().catch(()=>{});
     });
+    // Connectivity and the cutoff countdown change presentation only; every
+    // decision and publication still goes through the versioned server calls.
+    const pairViewVisible=()=>document.getElementById('view-pair')?.style.display!=='none';
+    window.addEventListener('offline',()=>{ renderAvailability(); updatePairingRunAccess(); });
+    window.addEventListener('online',()=>{
+      renderAvailability();
+      updatePairingRunAccess();
+      if(!me) return;
+      refreshAvailability().catch(()=>{});
+      if(pairViewVisible()) void renderPairs();
+    });
+    setInterval(()=>{
+      if(me&&document.visibilityState==='visible'&&pairViewVisible()) renderAvailability();
+    },60_000);
     const tabs=document.querySelector('.tabs');
     tabs?.addEventListener('click',event=>{
       if(event.isTrusted) availabilityNavigationState.trustedTabEpoch+=1;
@@ -4444,10 +4606,10 @@ async function refreshMe(){
       localStorage.setItem(PRES_KEY, JSON.stringify(m));
       bc?.postMessage({type:'presence'});
       setBrowserSyncState(bc?'ready':'local',bc
-        ?'Browser-tab sync ready.'
-        :'This tab is ready; cross-tab sync is unavailable in this browser.');
+        ?'Other open tabs stay in sync.'
+        :'This tab works; syncing with other tabs is not supported in this browser.');
     }catch{
-      setBrowserSyncState('error','Browser-tab sync is unavailable; this tab can still be used.');
+      setBrowserSyncState('error','Syncing with other tabs is unavailable; this tab still works.');
     }
   }
   setInterval(heartbeat, 2500); heartbeat();
@@ -4455,7 +4617,28 @@ async function refreshMe(){
     let m={}; try{m=JSON.parse(localStorage.getItem(PRES_KEY)||'{}')}catch{}
     let count=Object.keys(m).length;
     let el=document.getElementById('presencePanel');
-    if(el) el.innerHTML = Object.entries(m).slice(0,8).map(([id,v])=>`<div class="person" style="padding:8px"><span class="small">● tab ${escapeHtml(id.slice(0,4))} • ${escapeHtml(Math.round((Date.now()-v.at)/1000))}s ago</span><span class="kbd">${escapeHtml(v.tab)}</span></div>`).join('') || '<div class="small muted">no other tabs yet — open another to see sync</div>';
+    // Only the open, admin-only Diagnostics disclosure shows tab presence.
+    if(el&&el.closest('details')?.open!==false){
+      const rows=Object.entries(m).slice(0,8).map(([id,v],index)=>{
+        const row=document.createElement('div');
+        row.className='person';
+        const label=document.createElement('span');
+        label.className='small';
+        label.textContent=`${id===clientId?'This tab':`Tab ${index+1}`} · active ${Math.max(0,Math.round((Date.now()-v.at)/1000))}s ago`;
+        const state=document.createElement('span');
+        state.className='rc-badge';
+        state.textContent=v.tab==='visible'?'Visible':'In background';
+        row.append(label,state);
+        return row;
+      });
+      if(!rows.length){
+        const empty=document.createElement('div');
+        empty.className='small muted';
+        empty.textContent='No other open tabs.';
+        rows.push(empty);
+      }
+      el.replaceChildren(...rows);
+    }
     document.getElementById('presenceText').textContent = count<=1? 'you alone' : `${count} tabs live`;
   }
   setInterval(refreshPresence, 2000);
@@ -5862,8 +6045,20 @@ async function refreshMe(){
     const controller=new AbortController();
     pairingPublicationAbort=controller;
     updatePairingRunAccess();
-    const pairsList=document.getElementById('pairsList'); let overlay=null;
-    if(pairsList){ overlay=document.createElement('div'); overlay.className='loader-overlay'; overlay.innerHTML='<span class="spinner spinner-lg"></span><span class="small muted" style="margin-left:8px">Publishing current cycle…</span>'; overlay.style.display='flex'; overlay.style.gap='10px'; pairsList.style.position='relative'; pairsList.appendChild(overlay); }
+    const pairsList=document.getElementById('pairsList');
+    if(pairsList){
+      const overlay=document.createElement('div');
+      overlay.className='loader-overlay cycle-publishing';
+      overlay.setAttribute('role','status');
+      const spinner=document.createElement('span');
+      spinner.className='spinner';
+      spinner.setAttribute('aria-hidden','true');
+      const label=document.createElement('span');
+      label.className='small';
+      label.textContent='Publishing this cycle…';
+      overlay.append(spinner,label);
+      pairsList.appendChild(overlay);
+    }
     try{
       const data=await api('/api/pairing/run',{
         method:'POST',body:{expected_cycle_key:expectedCycleKey},signal:controller.signal,
@@ -5945,7 +6140,7 @@ async function refreshMe(){
       const msg=e.error||e.message||'demo failed';
       toast(msg);
     }finally{
-      if(runBtn){ runBtn.disabled=false; runBtn.textContent='✦ Run Demo'; }
+      if(runBtn){ runBtn.disabled=false; runBtn.textContent='Run demo'; }
     }
   }
 
@@ -5966,7 +6161,7 @@ async function refreshMe(){
     }catch(e){
       toast(e.error||e.message||'reset failed');
     }finally{
-      if(resetBtn){ resetBtn.disabled=false; resetBtn.textContent='Reset Demo'; resetBtn.style.opacity='0.7'; }
+      if(resetBtn){ resetBtn.disabled=false; resetBtn.textContent='Reset demo'; }
     }
   }
 
@@ -6128,12 +6323,123 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const meta=document.getElementById('currentWeekMeta');
     if(cloudCur){
       const cycle=envelope?.current_cycle;
-      const starts=cycle?pairingInstantLabel(cycle.startsAt,cycle.timeZone):new Date(cloudCur.week_start||cloudCur.created_at).toLocaleString();
-      meta.textContent=`${cloudCur.week_label} • ${cloudCur.pairs.length} assignment(s) • current since ${starts}`;
+      meta.textContent=window._randori_pairing_view?.publishedMeta?.({
+        cycleId:cloudCur.week_label,count:Array.isArray(cloudCur.pairs)?cloudCur.pairs.length:0,
+        startsAt:cycle?.startsAt||cloudCur.week_start||null,timeZone:cycle?.timeZone||'',
+      })||'';
       return;
     }
-    if(!localCur){ meta.textContent='The weekly pairing schedule is loading — set yourself Available to join the upcoming cycle.'; return; }
+    if(!localCur){ meta.textContent='Sign in to see this week’s pairs.'; return; }
     meta.textContent=`${localCur.label} • ${localCur.pairs.length} pair(s) • ${new Date(localCur.date).toLocaleString()}`;
+  }
+
+  // Node builders for the pairs card. Server strings only ever reach
+  // textContent; colors pass safeProfileColor.
+  function pairingNode(tag,{className='',text='',testId=''}={}){
+    const node=document.createElement(tag);
+    if(className) node.className=className;
+    if(text) node.textContent=text;
+    if(testId) node.dataset.testid=testId;
+    return node;
+  }
+
+  function renderPairsStatus(container,kind,options={}){
+    const view=window._randori_pairing_view;
+    if(!container||!view) return;
+    const model=view.pairsStatusView(kind,{...options,online:navigator.onLine!==false});
+    const meta=document.getElementById('currentWeekMeta');
+    if(meta) meta.textContent=model.meta;
+    const box=pairingNode('div',{className:'cycle-empty'});
+    box.dataset.tone=model.tone;
+    box.dataset.state=kind;
+    box.append(pairingNode('p',{className:'cycle-empty-title',text:model.title}));
+    if(model.body) box.append(pairingNode('p',{className:'small',text:model.body,testId:'pairing-publication-copy'}));
+    if(model.retry){
+      const retry=pairingNode('button',{className:'btn secondary sm',text:'Retry'});
+      retry.type='button';
+      retry.id='pairsRetryBtn';
+      retry.addEventListener('click',()=>{ void renderPairs(); });
+      box.append(retry);
+    }
+    container.replaceChildren(box);
+  }
+
+  function renderPairsLoading(container){
+    // Only the visible view shows a skeleton; hidden containers stay empty
+    // after a circle reset until authoritative data arrives.
+    if(!container||container.childElementCount
+      ||document.getElementById('view-pair')?.style.display==='none') return;
+    const meta=document.getElementById('currentWeekMeta');
+    if(meta) meta.textContent=window._randori_pairing_view?.pairsStatusView?.('loading')?.meta||'';
+    const skeletons=[0,1].map(()=>pairingNode('div',{className:'rc-skeleton cycle-pair-skeleton'}));
+    const wrap=pairingNode('div',{className:'cycle-pairs-loading'});
+    wrap.setAttribute('aria-hidden','true');
+    wrap.append(...skeletons);
+    container.replaceChildren(wrap);
+  }
+
+  function pairRowNode(pair,{coordination=false}={}){
+    const view=window._randori_pairing_view;
+    const {members,solo,mine}=view.pairMembers(pair,Number(me?.id||me?.uid));
+    const row=pairingNode('div',{
+      className:`pair cycle-pair${mine?' is-mine':''}`,
+      testId:coordination?'secondary-pair-row':'',
+    });
+    if(!coordination&&pair?.pg_id!==undefined&&pair?.pg_id!==null) row.dataset.pg=String(pair.pg_id);
+    const who=pairingNode('div',{className:'who'});
+    members.forEach((member,index)=>{
+      if(index>0){
+        const joiner=pairingNode('span',{className:'muted small',text:'and'});
+        who.append(joiner);
+      }
+      const avatar=pairingNode('span',{className:'avatar',text:member.initials});
+      const color=safeProfileColor(member.color||PALETTE[index%PALETTE.length]);
+      avatar.style.background=color;
+      const ink=view.avatarInk(color);
+      if(ink) avatar.style.color=ink;
+      avatar.setAttribute('aria-hidden','true');
+      who.append(avatar,pairingNode('b',{className:'cycle-pair-name',text:member.isMe?`${member.name} (you)`:member.name}));
+    });
+    if(solo) who.append(pairingNode('span',{className:'rc-badge',text:'Solo practice'}));
+    const side=pairingNode('div',{className:'topic-group'});
+    if(mine) side.append(pairingNode('span',{className:'rc-badge rc-badge--success',text:'Your pair'}));
+    side.append(pairingNode('span',{
+      className:'small muted',
+      text:coordination?'Coordination only · Workspace not enabled':'Choose the focus together in your room',
+    }));
+    row.append(who,side);
+    return {row,mine};
+  }
+
+  function renderPairRows(container,pairs,{coordination=false}={}){
+    const rows=[];
+    let mine=false;
+    for(const pair of pairs){
+      if(coordination){
+        const members=Array.isArray(pair?.members)?pair.members:[];
+        const solo=pair?.solo===true;
+        if((solo&&members.length!==1)||(!solo&&members.length!==2)) continue;
+      }
+      const built=pairRowNode(pair,{coordination});
+      mine=mine||built.mine;
+      rows.push(built.row);
+    }
+    const footer=[];
+    if(!mine) footer.push('You aren’t in a pair this cycle.');
+    footer.push(coordination
+      ?'This circle coordinates pairs only. No shared room or workspace is created.'
+      :'People who skipped this cycle aren’t paired.');
+    rows.push(pairingNode('p',{className:'small muted cycle-pairs-foot',text:footer.join(' ')}));
+    container.replaceChildren(...rows);
+  }
+
+  function markPairingPublicationUnknown(){
+    currentPairingPublicationState=null;
+    currentPairingPublicationFence=null;
+    if(pairingPublicationRefreshTimer!==null) clearTimeout(pairingPublicationRefreshTimer);
+    pairingPublicationRefreshTimer=null;
+    pairingPublicationLoadFailed=true;
+    updatePairingRunAccess();
   }
 
   async function renderPairs(){
@@ -6141,6 +6447,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const container=document.getElementById('pairsList');
     if(me){
       const userId=Number(me.id||me.uid);
+      renderPairsLoading(container);
       if(authCapabilities.multiCircleControlPlane&&!activeCircleContext){
         try{ await ensureActiveCircleContext(userId); }catch{}
       }
@@ -6165,24 +6472,29 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         currentCloudPairingCycle=null;
         currentCloudPairingLoaded=true;
         renderSignedInRoomSelect();
-        document.getElementById('currentWeekMeta').textContent='Current-cycle pairings could not be loaded.';
-        container.innerHTML='<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">Pairings are unavailable. Local or cached pairs are not shown while signed in. <button id="pairsRetryBtn" class="pill" type="button" style="margin-left:8px">Retry</button></div>';
-        document.getElementById('pairsRetryBtn')?.addEventListener('click',renderPairs);
+        // A failed read cannot confirm any publication state, so owner status
+        // and recovery controls must not keep showing an older result.
+        markPairingPublicationUnknown();
+        renderPairsStatus(container,'load-error');
         return;
       }finally{
         if(pairingListAbort===controller) pairingListAbort=null;
       }
       if(renderEpoch!==pairingRenderEpoch||Number(me?.id||me?.uid)!==userId
         ||!pairingResponseMatchesContext(response)
-        ||!circleControlOperationMatches(circleOperation)) return;
+        ||!circleControlOperationMatches(circleOperation)){
+        // A superseded response never leaves a skeleton behind as if loading.
+        if(renderEpoch===pairingRenderEpoch) container?.querySelector('.cycle-pairs-loading')?.remove();
+        return;
+      }
+      pairingPublicationLoadFailed=false;
+      currentPairingUpcomingCycle=response?.upcoming_cycle&&typeof response.upcoming_cycle==='object'
+        ?response.upcoming_cycle:null;
       let publicationState;
       try{ publicationState=acceptPairingPublicationState(response,circleOperation); }
       catch{
-        currentPairingPublicationState=null;
-        currentPairingPublicationFence=null;
-        updatePairingRunAccess();
-        document.getElementById('currentWeekMeta').textContent='Current-cycle publication state could not be verified.';
-        container.innerHTML='<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">Pairing recovery is unavailable until the server state can be verified.</div>';
+        markPairingPublicationUnknown();
+        renderPairsStatus(container,'unverified');
         return;
       }
       const cloudWeeks=Array.isArray(response?.weeks)?response.weeks:[];
@@ -6196,13 +6508,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         currentCloudPairingCycle=null;
         currentCloudPairingLoaded=true;
         renderSignedInRoomSelect();
-        const stateCopy=cycleState==='future'
-          ?'The returned pairing cycle has not started yet.'
-          :cycleState==='stale'
-            ?'The returned pairing cycle has ended.'
-            :'The current pairing cycle could not be verified.';
-        document.getElementById('currentWeekMeta').textContent=stateCopy;
-        container.innerHTML='<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">No prior or unverified pairing room is shown. Retry after the server schedule is available.</div>';
+        renderPairsStatus(container,['future','stale'].includes(cycleState)?cycleState:'invalid');
         return;
       }
       const cloudWeek=cloudWeeks.find(week=>week?.is_current===true&&(!currentCycleId||String(week.week_label)===currentCycleId))||null;
@@ -6211,58 +6517,23 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       currentCloudPairingWeek=cloudWeek;
       if(!cloudWeek){
         renderSignedInRoomSelect();
-        const meta=document.getElementById('currentWeekMeta');
-        const upcoming=response?.upcoming_cycle;
-        const nextCutoff=upcoming
-          ?` • next cutoff ${pairingInstantLabel(upcoming.cutoffAt,upcoming.timeZone)}`
-          :'';
-        const recoveryAt=publicationState
-          ?pairingInstantLabel(publicationState.recovery_at,publicationState.time_zone):'';
-        meta.textContent=publicationState?.state==='overdue'
-          ?`${currentCycleId||'Current cycle'} • publication is late`
-          :publicationState?.state==='pending'
-            ?`${currentCycleId||'Current cycle'} • scheduled publication pending${nextCutoff}`
-            :(currentCycleId
-              ?`${currentCycleId} • awaiting current-cycle publication${nextCutoff}`
-              :'Awaiting current-cycle publication');
-        const detail=publicationState?.state==='overdue'
-          ?(publicationState.can_publish_now===true
-            ?'The scheduled run did not publish this cycle. Use Publish now; retries are safe.'
-            :'The scheduled run did not publish this cycle. The circle owner can retry it now.')
-          :publicationState?.state==='pending'
-            ?`The scheduled run is still within its grace period${recoveryAt?` until ${recoveryAt}`:''}.`
-            :'No pairings have been published for the current cycle.';
-        container.innerHTML=`<div class="small muted" data-testid="pairing-publication-copy" style="padding:10px; border:1px dashed var(--line); border-radius:10px">${escapeHtml(detail)} Historical and local demo pairs are not shown here.</div>`;
+        renderPairsStatus(container,'unpublished',{
+          cycleId:currentCycleId,publication:publicationState,
+          allowed:publicationState?.can_publish_now===true,upcoming:response?.upcoming_cycle||null,
+        });
         return;
       }
+      const pairs=Array.isArray(cloudWeek.pairs)?cloudWeek.pairs:[];
       if(response.coordination_only===true&&response.workspace_available===false){
         renderPairsMeta(null,cloudWeek,response);
         currentCloudPairingWeek=null;
         renderSignedInRoomSelect();
-        container.innerHTML=cloudWeek.pairs.map(pair=>{
-          const members=Array.isArray(pair?.members)?pair.members:[];
-          const solo=pair?.solo===true;
-          if((solo&&members.length!==1)||(!solo&&members.length!==2)) return '';
-          const first=members[0]||{};
-          const firstName=String(first.name||'Member');
-          const firstColor=safeProfileColor(first.color||PALETTE[0]);
-          const partner=solo
-            ?'<span class="kbd" style="color:var(--accent)">solo practice</span>'
-            :(()=>{ const second=members[1]||{}; const secondName=String(second.name||'Member'); const secondColor=safeProfileColor(second.color||PALETTE[1]); return `<span class="muted small">×</span><span class="avatar" style="background:${secondColor}">${escapeHtml(secondName.slice(0,2).toUpperCase())}</span><b style="font-size:12.5px">${escapeHtml(secondName)}</b>`; })();
-          return `<div class="pair" data-testid="secondary-pair-row"><div class="who"><span class="avatar" style="background:${firstColor}">${escapeHtml(firstName.slice(0,2).toUpperCase())}</span><b style="font-size:12.5px">${escapeHtml(firstName)}</b>${partner}</div><div class="topic-group"><span class="small muted">Coordination only • workspace not enabled</span></div></div>`;
-        }).join('')+'<div class="row" style="margin-top:10px"><span class="small muted">Current-circle coordination only. No room or workspace capability was created.</span></div>';
+        renderPairRows(container,pairs,{coordination:true});
         return;
       }
       renderPairsMeta(null, cloudWeek, response);
       renderSignedInRoomSelect(cloudWeek);
-      container.innerHTML = cloudWeek.pairs.map(p=>{
-        const aName=p.a_name||'??'; const bName=p.is_ai?'Solo practice':(p.b_name||'—');
-        const aCol=safeProfileColor(p.a_color||PALETTE[0]); const bCol=safeProfileColor(p.is_ai?'var(--accent)':(p.b_color||PALETTE[1]));
-        return `<div class="pair" data-pg="${escapeHtml(p.pg_id)}">
-          <div class="who"><span class="avatar" style="background:${aCol}">${escapeHtml(aName.slice(0,2).toUpperCase())}</span><b style="font-size:12.5px">${escapeHtml(aName)}</b><span class="muted small">×</span><span class="avatar" style="background:${bCol}">${escapeHtml(bName.slice(0,2).toUpperCase())}</span><b style="font-size:12.5px">${escapeHtml(bName)}</b>${p.is_ai? '<span class="kbd" style="color:var(--accent)">solo</span>':''}</div>
-          <div class="topic-group"><span class="small muted">Choose the focus together in your room</span></div>
-        </div>`
-      }).join('') + `<div class="row" style="margin-top:10px"><span class="small muted">${cloudWeeks.length} week(s) of pairings. Unavailable teammates are skipped automatically.</span></div>`;
+      renderPairRows(container,pairs);
       return;
     }
 
@@ -8706,11 +8977,18 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     return window._randori_cycle_ui?.formatInstant?.(cycle[key],cycle.timeZone)||'';
   }
 
+  function homeUi(){ return window._randori_home_ui||null; }
+
+  function setDashboardHomeState(state){
+    if(viewDashboard) viewDashboard.dataset.homeState=String(state||'loading');
+    const loading=document.getElementById('dashLoading');
+    if(loading) loading.hidden=state!=='loading';
+  }
+
   function renderDashboardEmpty(state,data={}){
     clearDashboardPairState();
     const current=data.current_cycle||data.cycle||null;
     const upcoming=data.upcoming_cycle||window._randori_availability?.current?.cycle||null;
-    const currentId=typeof current?.cycleId==='string'?current.cycleId:'';
     const nextCutoff=dashboardCycleInstant(upcoming,'cutoffAt');
     const publication=data.publication_state||window._randori_pairing_recovery?.current;
     const scheduled=publication
@@ -8721,26 +8999,32 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       ?window._randori_cycle_ui?.formatInstant?.(
         publication.recovery_at,publication.time_zone||current?.timeZone,
       )||'':'';
-    const copy={
-      stale:{title:'Previous pairing cycle ended',message:`That assignment is no longer current${currentId?` (${currentId})`:''}. It has not been reopened as a live room.`},
-      future:{title:'Future pairing is not active yet',message:`This assignment starts ${dashboardCycleInstant(current,'startsAt')||'at its published boundary'}. It will remain hidden until then.`},
-      pending:{title:'This week’s pairing is scheduled',message:`Publication is due ${scheduled||'at the weekly cutoff'}. If it is delayed, owner recovery becomes available ${recovery||'after the grace period'}.`},
-      overdue:{title:publication?.can_publish_now===true?'This week’s pairing needs publishing':'This week’s pairing is late',message:publication?.can_publish_now===true?'The scheduled run did not publish this cycle. Publish now is idempotent and safe to retry.':'The scheduled run did not publish this cycle. Your circle owner can retry it now.'},
-      unpublished:{title:'Current pairing is not published yet',message:`${currentId?`${currentId} has`:'The current cycle has'} no durable publication yet.${nextCutoff?` Next cutoff: ${nextCutoff}.`:''}`},
-      unavailable:{title:'Unavailable for this cycle',message:`The published eligibility snapshot records you as unavailable${currentId?` for ${currentId}`:''}.${nextCutoff?` Next cutoff: ${nextCutoff}.`:''}`},
-      missed:{title:'Not in this cycle\'s snapshot',message:`The current cycle was published without your account in its eligibility snapshot.${nextCutoff?` Set availability before ${nextCutoff} for the upcoming cycle.`:''}`},
-      partner_unavailable:{title:'Partner unavailable',message:'Your pairing partner is no longer an active member of this circle. No identity or workspace access is shown.'},
-      error:{title:'Pairing is temporarily unavailable',message:'The current-cycle state could not be verified. No cached or previous room has been opened.'},
-    }[state]||{title:'No current pairing',message:'No verified current-cycle assignment is available.'};
+    const copy=homeUi()?.pairStateCopy?.(state,{
+      week:homeUi()?.cycleWeekLabel?.(current)||'',
+      nextCutoff,scheduled,recovery,
+      startsAt:dashboardCycleInstant(current,'startsAt'),
+      canPublishNow:publication?.can_publish_now===true,
+    })||{title:'No current pairing',message:'There is no pairing for you this week.',tone:'info',availability:false,retry:false};
     document.getElementById('dashPairArea')?.replaceChildren();
     document.getElementById('dashScheduleArea')?.replaceChildren();
     document.getElementById('dashChatArea')?.replaceChildren();
+    setDashboardHomeState(state);
     const empty=document.getElementById('dashEmpty');
-    if(empty){ empty.style.display='block'; empty.dataset.state=state; }
+    if(empty){ empty.style.display='block'; empty.dataset.state=state; empty.dataset.tone=copy.tone||'info'; }
     const title=document.getElementById('dashEmptyTitle'); if(title) title.textContent=copy.title;
     const message=document.getElementById('dashEmptyMessage'); if(message) message.textContent=copy.message;
+    const availabilityButton=document.getElementById('dashSetAvailability');
+    if(availabilityButton) availabilityButton.hidden=!(copy.availability&&window._randori_availability?.current?.editable!==false);
+    const retry=document.getElementById('dashRetry'); if(retry) retry.hidden=!copy.retry;
     const sub=document.getElementById('dashSub'); if(sub) sub.textContent=copy.title;
     window._randori_pairing_recovery?.updateControls?.();
+  }
+
+  function dashboardPairedSubtitle(state,data){
+    const week=homeUi()?.cycleWeekLabel?.(data?.current_cycle||data?.cycle)||'This week';
+    if(state==='solo') return `${week} · solo practice`;
+    const partner=String(data?.partner?.name||'').trim();
+    return partner?`${week} · paired with ${partner.slice(0,80)}`:`${week} · paired`;
   }
 
   function openSoloCatalogue(){
@@ -8785,22 +9069,18 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       &&viewDashboard?.style.display!=='none';
     const empty=document.getElementById('dashEmpty');
     if(empty){ empty.style.display='none'; empty.dataset.state='loading'; }
-    try{
-      const pairEl=document.getElementById('dashPairArea');
-      if(pairEl && window._randori_ui) window._randori_ui.showLoader(pairEl);
-      const sub=document.getElementById('dashSub'); if(sub) sub.textContent='Checking the current-cycle pairing…';
-    }catch{}
-    // update welcome
+    // Skeleton placeholder in the hero slot until the server answers.
+    if(!document.getElementById('dashPairArea')?.childElementCount) setDashboardHomeState('loading');
     const m = (()=>{ try{ return JSON.parse(localStorage.getItem(ME_KEY)||'null')}catch{return null} })();
     try{
-      const sg=document.getElementById('dashStatsGrid'); if(sg && window._randori_ui){ /* subtle skeleton for stats if empty */ 
-        ['dashStatYou','dashStatCircle','dashNextLabel'].forEach(id=>{ const el=document.getElementById(id); if(el && el.textContent.trim()==='—') el.innerHTML='<span class="spinner spinner-sm" style="display:inline-block"></span>'; });
-      }
-      const hist=document.getElementById('dashHistList'); if(hist && /Loading/.test(hist.textContent||'')){ window._randori_ui.showSkeleton(hist,3); }
+      // A history read abandoned while the dashboard was hidden leaves its loading text; reload instead of masking it.
+      const hist=document.getElementById('dashHistList');
+      if(hist && window._randori_home && !window._randori_home.historyInFlight
+        && (/Loading/.test(hist.textContent||'')||hist.querySelector('.skeleton,.rc-skeleton'))){ window._randori_home.refreshHistory?.(); }
     }catch{}
     const name=m?.name||m?.display_name||'friend';
     document.getElementById('dashWelcome').textContent='Welcome, '+name;
-    document.getElementById('dashSub').textContent='Checking the current-cycle pairing…';
+    document.getElementById('dashSub').textContent='Checking this week…';
     const availBadge=document.getElementById('dashAvailBadge');
     if(availBadge) window._randori_availability?.render?.();
     // fetch my pair
@@ -8823,9 +9103,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(j.coordination_only===true&&j.workspace_available===false){
         clearDashboardPairState();
         document.getElementById('dashEmpty').style.display='none';
-        document.getElementById('dashSub').textContent=state==='solo'
-          ?`Solo pairing for ${j.current_cycle?.cycleId||'the current cycle'}`
-          :`Paired for ${j.current_cycle?.cycleId||'the current cycle'}`;
+        setDashboardHomeState(state);
+        document.getElementById('dashSub').textContent=dashboardPairedSubtitle(state,j);
         renderSecondaryPairCard(j);
         if(j.schedule_available===true
           &&window._randori_auth?.capabilities?.secondaryCircleScheduling===true){
@@ -8837,9 +9116,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(!room){ renderDashboardEmpty('error',j); return; }
       if(previousRoom&&previousRoom!==room) clearDashboardPairState();
       document.getElementById('dashEmpty').style.display='none';
-      document.getElementById('dashSub').textContent=state==='solo'
-        ?`Solo practice for ${j.week?.week_label||j.current_cycle?.cycleId||'the current cycle'}`
-        :`Paired for ${j.week?.week_label||j.current_cycle?.cycleId||'the current cycle'}`;
+      setDashboardHomeState(state);
+      document.getElementById('dashSub').textContent=dashboardPairedSubtitle(state,j);
       currentPair=j.pair;
       currentWeekId=j.week_id||j.week?.id;
       window._randori_authorized_room=room;
@@ -8923,33 +9201,157 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   // expose
   try{ window._randori_join=joinSessionDeterministic; }catch{}
 
+  function homeNode(tag,{className='',text='',testId='',id=''}={}){
+    const node=document.createElement(tag);
+    if(className) node.className=className;
+    if(text!=='') node.textContent=String(text);
+    if(testId) node.dataset.testid=testId;
+    if(id) node.id=id;
+    return node;
+  }
+
+  function homeIcon(name){
+    const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+    svg.setAttribute('class','rc-icon'); svg.setAttribute('aria-hidden','true'); svg.setAttribute('focusable','false');
+    const use=document.createElementNS('http://www.w3.org/2000/svg','use');
+    use.setAttribute('href',`/assets/brand/icons.svg#${name}`);
+    svg.append(use);
+    return svg;
+  }
+
+  function homeAvatar(name,color){
+    const avatar=homeNode('div',{className:'avatar home-avatar',text:String(name||'?').slice(0,2).toUpperCase()});
+    avatar.style.background=safeProfileColor(color);
+    avatar.setAttribute('aria-hidden','true');
+    return avatar;
+  }
+
+  function homeFocusLabel(value){
+    return {dsa:'DSA',system_design:'System design',sysdesign:'System design',both:'DSA + system design'}[String(value||'').toLowerCase()]||'';
+  }
+
+  function homeNextStepNodes(){
+    const region=document.getElementById('dashNextStep');
+    if(!region) return null;
+    return {
+      region,
+      title:document.getElementById('dashNextTitle'),
+      detail:document.getElementById('dashNextDetail'),
+      action:document.getElementById('dashNextAction'),
+      join:document.getElementById('dashJoinSession'),
+    };
+  }
+
+  // Re-derives the hero's next step from the server schedule in scheduleState.
+  function renderHomeNextStep(){
+    const nodes=homeNextStepNodes();
+    const ui=homeUi();
+    if(!nodes||!ui) return;
+    const room=nodes.region.dataset.room||'';
+    const schedule=scheduleState.room===room&&scheduleState.kind==='primary'?scheduleState.schedule:null;
+    ui.applyNextStep(nodes,ui.nextStep({
+      schedule,meId:scheduleActorId(),partnerName:nodes.region.dataset.partner||'',now:Date.now(),
+      chatAvailable:!!document.getElementById('chatIn'),
+    }));
+  }
+
+  function runHomeNextAction(button){
+    const kind=button?.dataset.kind||'';
+    const reduce=window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+    const reveal=target=>{
+      if(!target) return false;
+      try{ target.scrollIntoView({block:'center',behavior:reduce?'auto':'smooth'}); }catch{}
+      target.focus({preventScroll:true});
+      return true;
+    };
+    if(kind==='propose') reveal(document.querySelector('[data-testid="schedule-input"]'));
+    else if(kind==='chat') reveal(document.getElementById('chatIn'));
+    else if(kind==='review'){
+      const id=button.dataset.proposalId||'';
+      const accept=[...document.querySelectorAll('#dashScheduleArea [data-testid="schedule-accept"]')]
+        .find(item=>String(item.dataset.proposalId||'')===id)
+        ||document.querySelector('#dashScheduleArea [data-testid="schedule-accept"]');
+      reveal(accept);
+    }
+  }
+
   function renderPairCard(data){
     const partner=data.partner;
     const isSolo=data.pairing_status==='solo'||data.pair?.solo_practice===true||data.pair?.is_ai===true||partner?.solo_practice===true;
     const area=document.getElementById('dashPairArea');
-    const weekId=data.week_id||data.week?.id;
-    const pg=data.pair;
     const roomHint=scheduleRoomFromPair(data);
     if(!roomHint){ renderDashboardEmpty('error',data); return; }
-    const inviteUrl = (location.origin||'https://randori-circle-self.vercel.app') + '/join/' + encodeURIComponent(roomHint);
-    const copyAndEmailBtns = `<button class="pill copy-invite" style="font-size:11px" data-room="${escapeHtml(roomHint)}">⎘ Copy session link</button><button class="pill email-invite" style="font-size:11px" data-room="${escapeHtml(roomHint)}">✉ Draft reminder email</button>`;
+    try{ area.querySelectorAll('.spinner').forEach(s=>s.remove()); delete area.dataset.hasLoader; }catch{}
     if(isSolo){
-      area.innerHTML=`<div class="partner-card" data-testid="solo-practice-card" style="border-color:#c8f6a0"><div class="avatar" style="background:#c8f6a0">SP</div><div style="flex:1"><b style="font-size:14px">Solo practice</b><div class="small muted" style="margin-top:4px">The odd-member assignment is a private solo workspace. Choose an exercise from the catalogue and practise with code and the board.</div><div class="row" style="margin-top:12px; gap:8px; flex-wrap:wrap"><button id="dashJoinSession" class="btn" style="background:var(--accent); color:#0f0f10; padding:11px 18px; font-size:14px; font-weight:700">Open Solo Catalogue + Code</button><span class="kbd">current-cycle solo</span></div></div></div>`;
-      document.getElementById('dashJoinSession')?.addEventListener('click', ()=>joinSessionDeterministic(false));
-      try{ const pe=document.getElementById('dashPairArea'); if(pe) { pe.querySelectorAll('.spinner').forEach(s=>s.remove()); delete pe.dataset.hasLoader; } }catch{}
+      const card=homeNode('article',{className:'home-hero home-pair-card',testId:'solo-practice-card'});
+      card.dataset.tone='action';
+      const head=homeNode('div',{className:'home-pair-head'});
+      const avatar=homeNode('div',{className:'avatar home-avatar home-avatar--solo',text:'SP'}); avatar.setAttribute('aria-hidden','true');
+      const text=homeNode('div',{className:'home-pair-text'});
+      text.append(homeNode('p',{className:'home-eyebrow',text:'Next step'}),homeNode('h4',{className:'home-hero-title',text:'Solo practice this week'}));
+      head.append(avatar,text);
+      const detail=homeNode('p',{className:'home-hero-detail',text:'The odd-member assignment is a private solo workspace. Choose an exercise from the catalogue and practise with code and the board.'});
+      const actions=homeNode('div',{className:'home-actions'});
+      const join=homeNode('button',{className:'btn',id:'dashJoinSession',text:'Open Solo Catalogue + Code'}); join.type='button';
+      join.addEventListener('click',()=>joinSessionDeterministic(false));
+      actions.append(join);
+      card.append(head,detail,actions);
+      area.replaceChildren(card);
       return;
     }
-    const focus = partner?.interview_focus || data.partner?.interview_focus || 'both';
     const partnerName=String(partner?.name||'partner');
-    const partnerColor=safeProfileColor(partner?.color);
-    area.innerHTML=`<div class="partner-card"><div class="avatar" style="background:${partnerColor}">${escapeHtml(partnerName.slice(0,2).toUpperCase())}</div><div style="flex:1"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px"><b style="font-size:14px">You're paired with ${escapeHtml(partnerName)} ✨</b><span class="kbd">${escapeHtml(focus)}</span></div><div class="small muted" style="margin-top:4px">${escapeHtml(partner?.bio||'No bio yet — ask them what they’re prepping for.')} • ${escapeHtml(partner?.tz||'TZ unknown')} • LeetCode: ${escapeHtml(partner?.leetcode_handle||'—')}</div><div class="small muted" data-testid="pair-focus-copy" style="margin-top:10px">Choose DSA, System Design, or both together in the session. A focus is not shared until you agree it with your partner.</div><div class="row" style="margin-top:12px; flex-wrap:wrap; gap:8px"><button id="dashJoinSession" class="btn" style="background:var(--accent); color:#0f0f10; padding:11px 18px; font-size:14px; font-weight:700">▶ Join Session — Code + Video + Board</button><span class="pill" style="font-size:11px">room ${escapeHtml(roomHint.slice(-6))}</span>${copyAndEmailBtns}<span class="small muted">agree time first, then jump in</span></div><div class="small muted" id="dashInviteHint" style="margin-top:6px">Session link: <span class="kbd" style="font-size:10.5px">${escapeHtml(inviteUrl)}</span></div></div></div>`;
-    document.getElementById('dashJoinSession')?.addEventListener('click', ()=>joinSessionDeterministic(false));
-    area.querySelectorAll('.copy-invite').forEach(b=>b.addEventListener('click',()=>{ const r=b.dataset.room; localStorage.setItem('randori-last-room', r); const inv=(location.origin||'')+'/join/'+encodeURIComponent(r); try{ navigator.clipboard.writeText(inv); toast('Session link copied ✓'); }catch{ prompt('Copy session link', inv); } }));
-    area.querySelectorAll('.email-invite').forEach(b=>b.addEventListener('click',()=>{
-      const room=b.dataset.room; const inv=(location.origin||'')+'/join/'+encodeURIComponent(room);
-      const sub='Randori mock interview — join '+room; const body='Hi '+ (partner?.name||'there') +'!\\n\\nLets jump into our mock session.\\nRoom: '+room+'\\nLink: '+inv+'\\nTime: see agreed slot in dashboard\\n\\n— Randori Circle';
-      window.open('mailto:?subject='+encodeURIComponent(sub)+'&body='+encodeURIComponent(body));
-    }));
+    const card=homeNode('article',{className:'home-hero home-pair-card',testId:'pair-card'});
+    card.setAttribute('aria-labelledby','dashPartnerName');
+    const head=homeNode('div',{className:'home-pair-head'});
+    const text=homeNode('div',{className:'home-pair-text'});
+    text.append(homeNode('p',{className:'home-eyebrow',text:'Your partner this week'}));
+    const name=homeNode('h4',{className:'home-pair-name',id:'dashPartnerName',text:partnerName});
+    text.append(name);
+    const meta=homeNode('p',{className:'home-pair-meta'});
+    const focus=homeFocusLabel(partner?.interview_focus);
+    if(focus) meta.append(homeNode('span',{className:'rc-badge',text:focus}));
+    if(partner?.tz) meta.append(homeNode('span',{text:String(partner.tz).replace(/_/g,' ').slice(0,64)}));
+    if(partner?.leetcode_handle) meta.append(homeNode('span',{text:`LeetCode ${String(partner.leetcode_handle).slice(0,64)}`}));
+    if(meta.childElementCount) text.append(meta);
+    head.append(homeAvatar(partnerName,partner?.color),text);
+    const bio=homeNode('p',{className:'home-pair-bio',text:String(partner?.bio||'').slice(0,500)||'No bio yet — ask what they’re preparing for.'});
+
+    const next=homeNode('div',{className:'home-next',id:'dashNextStep',testId:'dashboard-next-step'});
+    next.setAttribute('role','status'); next.setAttribute('aria-live','polite');
+    next.dataset.room=roomHint; next.dataset.partner=partnerName;
+    next.append(
+      homeNode('p',{className:'home-eyebrow',text:'Next step'}),
+      homeNode('p',{className:'home-hero-title',id:'dashNextTitle',text:'Checking your session time…'}),
+      homeNode('p',{className:'home-hero-detail',id:'dashNextDetail'}),
+    );
+    const actions=homeNode('div',{className:'home-actions'});
+    const action=homeNode('button',{className:'btn',id:'dashNextAction',testId:'dashboard-next-action'}); action.type='button'; action.hidden=true;
+    action.addEventListener('click',()=>runHomeNextAction(action));
+    const join=homeNode('button',{className:'btn secondary',id:'dashJoinSession'}); join.type='button';
+    join.append(homeIcon('i-play'),document.createTextNode('Join session'));
+    join.setAttribute('aria-label',`Join session with ${partnerName}: code, video and board`);
+    join.addEventListener('click',()=>joinSessionDeterministic(false));
+    const copy=homeNode('button',{className:'btn ghost sm copy-invite'}); copy.type='button';
+    copy.append(homeIcon('i-copy'),document.createTextNode('Copy session link'));
+    copy.addEventListener('click',()=>{
+      localStorage.setItem('randori-last-room',roomHint);
+      const invite=(location.origin||'')+'/join/'+encodeURIComponent(roomHint);
+      const fallback=()=>prompt('Copy session link',invite);
+      try{ Promise.resolve(navigator.clipboard.writeText(invite)).then(()=>toast('Session link copied'),fallback); }catch{ fallback(); }
+    });
+    const email=homeNode('button',{className:'btn ghost sm email-invite'}); email.type='button';
+    email.append(homeIcon('i-mail'),document.createTextNode('Email a reminder'));
+    email.addEventListener('click',()=>{
+      const invite=(location.origin||'')+'/join/'+encodeURIComponent(roomHint);
+      const subject='Randori practice session';
+      const body=`Hi ${partner?.name||'there'}!\n\nReady for our practice session?\nJoin here: ${invite}\nOur agreed time is on the Randori dashboard.\n\n— Randori Circle`;
+      window.open('mailto:?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body));
+    });
+    actions.append(action,join,copy,email);
+    const focusCopy=homeNode('p',{className:'home-fine',testId:'pair-focus-copy',text:'Choose DSA, System Design, or both together in the session. A focus is not shared until you agree it with your partner.'});
+    card.append(head,bio,next,actions,focusCopy);
+    area.replaceChildren(card);
+    renderHomeNextStep();
   }
 
   function renderSecondaryPairCard(data){
@@ -8958,12 +9360,21 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const partner=data.partner||{};
     const solo=data.pairing_status==='solo'||data?.pair?.solo===true;
     const name=solo?'Solo practice':String(partner.name||'Pairing partner');
-    const color=safeProfileColor(partner.color||(solo?'#c8f6a0':'#9aa0a6'));
     const detail=!solo&&data.schedule_available===true
       &&window._randori_auth?.capabilities?.secondaryCircleScheduling===true
       ?'Agree a time below. Chat, room links, video, execution, and AI controls remain unavailable.'
       :'Workspace not enabled for this circle yet. Scheduling, chat, room links, video, execution, and AI controls remain unavailable.';
-    area.innerHTML=`<div class="partner-card" data-testid="secondary-pair-card"><div class="avatar" style="background:${color}">${escapeHtml(name.slice(0,2).toUpperCase())}</div><div style="flex:1"><b style="font-size:14px">${solo?'Solo practice assigned':`You're paired with ${escapeHtml(name)} ✨`}</b><div class="small muted" style="margin-top:6px">${detail}</div><div class="row" style="margin-top:12px"><span class="kbd">coordination only</span></div></div></div>`;
+    const card=homeNode('article',{className:'home-hero home-pair-card',testId:'secondary-pair-card'});
+    const head=homeNode('div',{className:'home-pair-head'});
+    const text=homeNode('div',{className:'home-pair-text'});
+    text.append(
+      homeNode('p',{className:'home-eyebrow',text:solo?'This week':'Your partner this week'}),
+      homeNode('h4',{className:'home-pair-name',text:solo?'Solo practice assigned':name}),
+    );
+    head.append(homeAvatar(solo?'SP':name,partner.color||(solo?'#8B97FF':'#9aa0a6')),text);
+    const badge=homeNode('p',{className:'home-pair-meta'}); badge.append(homeNode('span',{className:'rc-badge',text:'Scheduling only'}));
+    card.append(head,homeNode('p',{className:'home-hero-detail',text:detail}),badge);
+    area.replaceChildren(card);
     document.getElementById('dashScheduleArea')?.replaceChildren();
     document.getElementById('dashChatArea')?.replaceChildren();
   }
@@ -9055,6 +9466,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       window.dispatchEvent(new CustomEvent('randori:schedule-observed',{detail:{room:null}}));
       const area=document.getElementById('dashScheduleArea');
       if(area) area.replaceChildren();
+      renderHomeNextStep();
     }
   }
 
@@ -9294,6 +9706,18 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     document.querySelectorAll('#dashScheduleArea [data-schedule-action]').forEach(button=>{ button.disabled=!!disabled||unavailable; });
   }
 
+  function scheduleRelative(instant,now){
+    const text=homeUi()?.relativeTime?.(instant,now)||'';
+    return text?scheduleNode('span',{className:'home-rel',text:`(${text})`}):null;
+  }
+
+  function scheduleIconButton(label,icon,{className='btn secondary sm',testId=''}={}){
+    const button=scheduleNode('button',{className,testId}); button.type='button';
+    if(icon&&typeof homeIcon==='function') button.append(homeIcon(icon));
+    button.append(document.createTextNode(label));
+    return button;
+  }
+
   function renderScheduleView({restoreFocus=null}={}){
     clearScheduleBoundaryTimer();
     const area=document.getElementById('dashScheduleArea');
@@ -9302,86 +9726,28 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const schedule=scheduleState.schedule;
     const renderedAt=Date.now();
     const timezone=(()=>{ try{return Intl.DateTimeFormat().resolvedOptions().timeZone||'local timezone';}catch{return 'local timezone';} })();
-    const card=scheduleNode('div',{className:'card'});
+    const agreedFuture=!!schedule.agreed_time&&Date.parse(schedule.agreed_time)>renderedAt;
+    const card=scheduleNode('section',{className:'card home-schedule'});
+    card.setAttribute('aria-labelledby','scheduleTitle');
+    card.dataset.state=schedule.agreed_time?(agreedFuture?'agreed':'past'):(schedule.legacy_agreed_time?'legacy':(schedule.proposals.length?'proposed':'empty'));
     const header=scheduleNode('div',{className:'card-h'});
-    header.append(scheduleNode('h2',{text:'Agree a time'}));
-    const status=scheduleNode('span',{className:'small muted',text:scheduleState.status||'up to date',testId:'schedule-status'});
+    const heading=scheduleNode('h3',{className:'home-card-title',text:schedule.agreed_time?'Session time':'Agree a time'}); heading.id='scheduleTitle';
+    header.append(heading);
+    const status=scheduleNode('span',{className:'small muted home-sync',text:scheduleState.status||'up to date',testId:'schedule-status'});
     status.setAttribute('role','status'); status.setAttribute('aria-live','polite');
     header.append(status);
-    const body=scheduleNode('div',{className:'card-b'}); body.style.cssText='display:grid; gap:10px';
-    body.append(scheduleNode('div',{className:'small muted',text:`Times are shown in ${timezone}. During the repeated hour when clocks go back, your browser uses the earlier occurrence.`}));
+    const body=scheduleNode('div',{className:'card-b home-schedule-body'});
 
-    const proposals=scheduleNode('div',{testId:'schedule-proposals'}); proposals.id='proposedList'; proposals.style.cssText='display:grid; gap:6px';
-    if(!schedule.proposals.length){
-      proposals.append(scheduleNode('span',{className:'small muted',text:'No proposals yet — add one below.'}));
-    }else{
-      schedule.proposals.forEach(proposal=>{
-        const row=scheduleNode('div',{className:'row',testId:'schedule-proposal'});
-        row.style.cssText='justify-content:space-between; align-items:center; gap:8px; font-size:12.5px; flex-wrap:wrap';
-        row.dataset.proposalId=proposal.proposal_id;
-        const detail=document.createElement('div'); detail.style.cssText='display:grid; gap:3px';
-        const elapsed=!proposal.legacy&&proposal.instant&&Date.parse(proposal.instant)<=renderedAt;
-        if(proposal.legacy){
-          detail.append(scheduleNode('span',{className:'kbd',text:proposal.value||'Legacy schedule text'}));
-          detail.append(scheduleNode('span',{className:'small muted',text:'Legacy proposal · not directly acceptable'}));
-        }else{
-          const time=scheduleNode('time',{className:'kbd',text:localScheduleTime(proposal.instant)});
-          time.setAttribute('datetime',proposal.instant);
-          detail.append(time);
-          detail.append(scheduleNode('span',{className:'small muted',text:`Proposed by ${scheduleProposerLabel(proposal.proposed_by)}`}));
-          if(elapsed){
-            const expired=scheduleNode('span',{className:'small muted',text:'Expired · remove it or propose a future time',testId:'schedule-expired-label'});
-            expired.tabIndex=-1; detail.append(expired);
-          }
-        }
-        const actions=scheduleNode('div',{className:'row'}); actions.style.gap='6px';
-        if(!proposal.legacy&&proposal.instant&&!elapsed){
-          const accept=scheduleNode('button',{className:'pill',text:'✓ Accept',testId:'schedule-accept'});
-          accept.type='button'; accept.dataset.scheduleAction='accept'; accept.dataset.proposalId=proposal.proposal_id;
-          accept.setAttribute('aria-label',`Accept ${localScheduleTime(proposal.instant)}`);
-          accept.addEventListener('click',()=>{ mutateSchedule('accept',{proposal_id:proposal.proposal_id}); });
-          actions.append(accept);
-        }
-        const remove=scheduleNode('button',{className:'pill',text:'Remove',testId:'schedule-remove'});
-        remove.type='button'; remove.dataset.scheduleAction='remove'; remove.dataset.proposalId=proposal.proposal_id;
-        remove.setAttribute('aria-label',`Remove ${proposal.legacy?String(proposal.value||'legacy proposal').slice(0,80):localScheduleTime(proposal.instant)}`);
-        remove.addEventListener('click',()=>{ mutateSchedule('remove',{proposal_id:proposal.proposal_id}); });
-        actions.append(remove); row.append(detail,actions); proposals.append(row);
-      });
-    }
-    body.append(proposals);
-
-    const inputActions=scheduleNode('div',{className:'row',testId:'schedule-actions'}); inputActions.style.cssText='gap:8px; flex-wrap:wrap';
-    const input=scheduleNode('input',{className:'input',testId:'schedule-input'});
-    input.id='newProposed'; input.type='datetime-local'; input.value=scheduleState.draft; input.style.flex='1';
-    input.min=scheduleLocalMinimum(renderedAt);
-    input.setAttribute('aria-label',`Proposed time in ${timezone}`);
-    input.setAttribute('aria-describedby','schedule-time-guidance schedule-expiry-error');
-    if(scheduleState.expiryError&&scheduleState.expiryAction==='propose') input.setAttribute('aria-invalid','true');
-    input.addEventListener('input',()=>{
-      scheduleState.draft=input.value; scheduleState.draftRoom=scheduleState.room; clearScheduleExpiryError();
-    });
-    const propose=scheduleNode('button',{className:'btn secondary',text:'Add proposal',testId:'schedule-propose'});
-    propose.id='addProposed'; propose.type='button'; propose.dataset.scheduleAction='propose';
-    propose.addEventListener('click',()=>{
-      const instant=scheduleInstantFromLocal(input.value);
-      if(!instant){ if(typeof toast==='function') toast('Choose a valid local date and time. This time may not exist because clocks change.'); return; }
-      mutateSchedule('propose',{instant});
-    });
-    inputActions.append(input,propose); body.append(inputActions);
-    const guidance=scheduleNode('div',{className:'small muted',text:'Choose a future local time. Randori verifies it against the server database clock when you save.'});
-    guidance.id='schedule-time-guidance'; body.append(guidance);
-    const expiryError=scheduleNode('div',{className:'small',text:scheduleState.expiryError,testId:'schedule-expiry-error'});
-    expiryError.id='schedule-expiry-error'; expiryError.setAttribute('role','alert'); expiryError.setAttribute('aria-live','assertive');
-    expiryError.tabIndex=-1; expiryError.hidden=!scheduleState.expiryError; expiryError.style.color='var(--warn)';
-    body.append(expiryError);
-
-    const agreement=scheduleNode('div');
+    const agreement=scheduleNode('div',{className:'home-agreed'});
     if(schedule.agreed_time){
-      const elapsed=Date.parse(schedule.agreed_time)<=renderedAt;
-      agreement.style.cssText='padding:8px 10px; background:var(--accent)22; border:1px solid var(--accent); border-radius:10px; font-size:12.5px';
-      agreement.append(scheduleNode('b',{text:elapsed?'Past session: ':'Agreed: '}));
-      const time=scheduleNode('time',{text:localScheduleTime(schedule.agreed_time)}); time.setAttribute('datetime',schedule.agreed_time); agreement.append(time);
+      const elapsed=!agreedFuture;
+      agreement.dataset.state=elapsed?'past':'agreed';
+      const line=scheduleNode('p',{className:'home-agreed-line'});
+      line.append(scheduleNode('b',{text:elapsed?'Past session: ':'Agreed: '}));
+      const time=scheduleNode('time',{text:localScheduleTime(schedule.agreed_time)}); time.setAttribute('datetime',schedule.agreed_time);
+      line.append(time);
+      const rel=scheduleRelative(schedule.agreed_time,renderedAt); if(rel) line.append(' ',rel);
+      agreement.append(line);
       if(elapsed){
         const past=scheduleNode('div',{className:'small muted',text:'This agreement is in the past. Clear it or propose a new time.',testId:'schedule-past-agreement'});
         past.tabIndex=-1; agreement.append(past);
@@ -9389,10 +9755,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       const exportedRoom=scheduleState.room;
       const exportedKind=scheduleState.kind;
       const exportedInstant=schedule.agreed_time;
+      const tools=scheduleNode('div',{className:'home-agreed-tools'});
       if(!elapsed){
-        const exportRow=scheduleNode('div',{className:'row'}); exportRow.style.cssText='margin-top:8px; gap:8px; align-items:center; flex-wrap:wrap';
-        const calendar=scheduleNode('button',{className:'btn secondary',text:'Add to calendar',testId:'schedule-calendar-export'});
-        calendar.type='button'; calendar.dataset.scheduleAction='calendar-export';
+        const calendar=scheduleIconButton('Add to calendar','i-calendar',{testId:'schedule-calendar-export'});
+        calendar.dataset.scheduleAction='calendar-export';
         calendar.setAttribute('aria-label',`Add the agreed ${localScheduleTime(exportedInstant)} session to your calendar`);
         calendar.addEventListener('click',()=>{
           const activeSchedule=pairedDashboardSchedule();
@@ -9405,29 +9771,111 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
             agreedTime:exportedInstant,
             appOrigin:location.origin,
           });
-          if(typeof toast==='function') toast(downloaded?'Private calendar file downloaded ✓':'Calendar export is unavailable. Refresh and try again.');
+          if(typeof toast==='function') toast(downloaded?'Calendar file downloaded':'Calendar export is unavailable. Refresh and try again.');
         });
-        exportRow.append(calendar,scheduleNode('span',{className:'small muted',text:'60 minutes · your calendar app controls the downloaded copy'}));
-        agreement.append(exportRow);
+        tools.append(calendar,scheduleNode('span',{className:'home-fine',text:'60 minutes · your calendar app controls the downloaded copy'}));
       }
-      const meeting=scheduleNode('div',{testId:'meeting-link-dashboard'});
-      meeting.style.marginTop='8px'; agreement.append(meeting);
-    }else if(schedule.legacy_agreed_time){
-      agreement.style.cssText='padding:8px 10px; border:1px solid var(--warn); border-radius:10px; font-size:12.5px';
-      agreement.append(scheduleNode('b',{text:'Legacy agreement: '}),document.createTextNode(schedule.legacy_agreed_time));
-      agreement.append(scheduleNode('div',{className:'small muted',text:'Legacy text is not a normalized instant. Clear it and agree on a proposal.'}));
-    }else{
-      agreement.append(scheduleNode('div',{className:'small muted',text:'No time agreed yet.'}));
-    }
-    if(schedule.agreed_time||schedule.legacy_agreed_time){
-      const clear=scheduleNode('button',{className:'pill',text:'Clear agreement',testId:'schedule-clear'});
-      clear.type='button'; clear.dataset.scheduleAction='clear'; clear.style.marginTop='7px';
+      const clear=scheduleIconButton('Clear agreement','',{className:'btn ghost sm',testId:'schedule-clear'});
+      clear.dataset.scheduleAction='clear';
       clear.addEventListener('click',()=>{ mutateSchedule('clear'); });
-      agreement.append(clear);
+      tools.append(clear);
+      agreement.append(tools);
+      const meeting=scheduleNode('div',{className:'home-meeting',testId:'meeting-link-dashboard'});
+      agreement.append(meeting);
+    }else if(schedule.legacy_agreed_time){
+      agreement.dataset.state='legacy';
+      const line=scheduleNode('p',{className:'home-agreed-line'});
+      line.append(scheduleNode('b',{text:'Legacy agreement: '}),document.createTextNode(schedule.legacy_agreed_time));
+      agreement.append(line,scheduleNode('div',{className:'small muted',text:'This older agreement isn’t a precise time. Clear it and agree on a proposal.'}));
+      const clear=scheduleIconButton('Clear agreement','',{className:'btn ghost sm',testId:'schedule-clear'});
+      clear.dataset.scheduleAction='clear';
+      clear.addEventListener('click',()=>{ mutateSchedule('clear'); });
+      const tools=scheduleNode('div',{className:'home-agreed-tools'}); tools.append(clear); agreement.append(tools);
+    }else{
+      agreement.dataset.state='none';
+      agreement.append(scheduleNode('p',{className:'home-agreed-line muted',text:'No time agreed yet.'}));
     }
-    body.append(agreement); card.append(header,body); area.replaceChildren(card);
+    body.append(agreement);
+
+    const proposals=scheduleNode('div',{className:'home-proposals',testId:'schedule-proposals'}); proposals.id='proposedList';
+    if(!schedule.proposals.length){
+      if(!schedule.agreed_time) proposals.append(scheduleNode('p',{className:'small muted',text:'No proposed times yet. Propose one below.'}));
+    }else{
+      proposals.append(scheduleNode('h4',{className:'home-subhead',text:'Proposed times'}));
+      schedule.proposals.forEach(proposal=>{
+        const row=scheduleNode('div',{className:'home-proposal',testId:'schedule-proposal'});
+        row.dataset.proposalId=proposal.proposal_id;
+        const detail=scheduleNode('div',{className:'home-proposal-detail'});
+        const elapsed=!proposal.legacy&&proposal.instant&&Date.parse(proposal.instant)<=renderedAt;
+        const mine=homeUi()?.proposalIsMine?.(proposal.proposed_by,scheduleActorId())===true;
+        if(proposal.legacy){
+          detail.append(scheduleNode('span',{className:'home-proposal-time',text:proposal.value||'Legacy schedule text'}));
+          detail.append(scheduleNode('span',{className:'small muted',text:'Legacy proposal · not directly acceptable'}));
+        }else{
+          const when=scheduleNode('span',{className:'home-proposal-time'});
+          const time=scheduleNode('time',{text:localScheduleTime(proposal.instant)});
+          time.setAttribute('datetime',proposal.instant);
+          when.append(time);
+          const rel=elapsed?null:scheduleRelative(proposal.instant,renderedAt); if(rel) when.append(' ',rel);
+          detail.append(when);
+          const agreedProposal=!!schedule.agreed_time&&proposal.instant===schedule.agreed_time;
+          detail.append(scheduleNode('span',{className:'small muted',text:`Proposed by ${scheduleProposerLabel(proposal.proposed_by)}${agreedProposal?' · agreed':(mine&&!elapsed?' · waiting for your partner':'')}`}));
+          if(elapsed){
+            const expired=scheduleNode('span',{className:'small muted',text:'Expired · remove it or propose a future time',testId:'schedule-expired-label'});
+            expired.tabIndex=-1; detail.append(expired);
+          }
+        }
+        const actions=scheduleNode('div',{className:'home-proposal-actions'});
+        // The proposer waits for their partner; only the other member accepts.
+        if(!proposal.legacy&&proposal.instant&&!elapsed&&!mine){
+          const accept=scheduleIconButton('Accept','i-check',{className:'btn sm',testId:'schedule-accept'});
+          accept.dataset.scheduleAction='accept'; accept.dataset.proposalId=proposal.proposal_id;
+          accept.setAttribute('aria-label',`Accept ${localScheduleTime(proposal.instant)}`);
+          accept.addEventListener('click',()=>{ mutateSchedule('accept',{proposal_id:proposal.proposal_id}); });
+          actions.append(accept);
+        }
+        const remove=scheduleIconButton('Remove','',{className:'btn ghost sm',testId:'schedule-remove'});
+        remove.dataset.scheduleAction='remove'; remove.dataset.proposalId=proposal.proposal_id;
+        remove.setAttribute('aria-label',`Remove ${proposal.legacy?String(proposal.value||'legacy proposal').slice(0,80):localScheduleTime(proposal.instant)}`);
+        remove.addEventListener('click',()=>{ mutateSchedule('remove',{proposal_id:proposal.proposal_id}); });
+        actions.append(remove); row.append(detail,actions); proposals.append(row);
+      });
+    }
+    body.append(proposals);
+
+    const composer=scheduleNode('div',{className:'home-propose'});
+    const label=scheduleNode('label',{className:'home-subhead',text:schedule.agreed_time?'Need another time?':'Propose a time'});
+    label.htmlFor='newProposed';
+    const inputActions=scheduleNode('div',{className:'home-propose-row',testId:'schedule-actions'});
+    const input=scheduleNode('input',{className:'input',testId:'schedule-input'});
+    input.id='newProposed'; input.type='datetime-local'; input.value=scheduleState.draft;
+    input.min=scheduleLocalMinimum(renderedAt);
+    input.setAttribute('aria-label',`Proposed time in ${timezone}`);
+    input.setAttribute('aria-describedby','schedule-time-guidance schedule-expiry-error');
+    if(scheduleState.expiryError&&scheduleState.expiryAction==='propose') input.setAttribute('aria-invalid','true');
+    input.addEventListener('input',()=>{
+      scheduleState.draft=input.value; scheduleState.draftRoom=scheduleState.room; clearScheduleExpiryError();
+    });
+    const propose=scheduleNode('button',{className:agreedFuture?'btn secondary':'btn',text:'Propose',testId:'schedule-propose'});
+    propose.id='addProposed'; propose.type='button'; propose.dataset.scheduleAction='propose';
+    propose.addEventListener('click',()=>{
+      const instant=scheduleInstantFromLocal(input.value);
+      if(!instant){ if(typeof toast==='function') toast('Choose a valid local date and time. This time may not exist because clocks change.'); return; }
+      mutateSchedule('propose',{instant});
+    });
+    inputActions.append(input,propose);
+    const guidance=scheduleNode('div',{className:'home-fine',text:`Times are in ${timezone}. Pick a future time; if it has passed when you save, you’ll be asked to choose again.`});
+    guidance.id='schedule-time-guidance';
+    const expiryError=scheduleNode('div',{className:'small home-error',text:scheduleState.expiryError,testId:'schedule-expiry-error'});
+    expiryError.id='schedule-expiry-error'; expiryError.setAttribute('role','alert'); expiryError.setAttribute('aria-live','assertive');
+    expiryError.tabIndex=-1; expiryError.hidden=!scheduleState.expiryError;
+    const dst=scheduleNode('div',{className:'home-fine',text:'When clocks go back, the repeated hour uses the earlier occurrence.'});
+    composer.append(label,inputActions,guidance,expiryError,dst);
+    body.append(composer);
+    card.append(header,body); area.replaceChildren(card);
     window._randori_meeting_link?.mount?.();
     toggleScheduleActions(scheduleState.inFlight);
+    renderHomeNextStep();
     if(scheduleState.expiryError){
       const focusTarget=scheduleState.expiryAction==='propose'
         ?document.querySelector('[data-testid="schedule-input"]')
@@ -9451,7 +9899,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       agreedTime:next.agreed_time,cycleToken:scheduleState.cycleToken,
       circlePublicId:scheduleState.circlePublicId,contextVersion:scheduleState.contextVersion,
     }}));
-    if(changed) renderScheduleView(); else setScheduleStatus(status);
+    if(changed) renderScheduleView(); else{ setScheduleStatus(status); renderHomeNextStep(); }
     return true;
   }
 
@@ -9859,20 +10307,27 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   function localChatTime(instant){
     const date=new Date(instant);
-    try{ return new Intl.DateTimeFormat(undefined,{dateStyle:'medium',timeStyle:'short'}).format(date); }
-    catch{ return date.toLocaleString(); }
+    const sameDay=date.toDateString()===new Date().toDateString();
+    try{
+      return new Intl.DateTimeFormat(undefined,sameDay
+        ?{hour:'2-digit',minute:'2-digit'}
+        :{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}).format(date);
+    }catch{ return date.toLocaleString(); }
   }
 
   function updateChatMessageNode(item,message){
-    item.className='msg'+(message.sender_id===chatUserId()?' mine':'');
+    const mine=message.sender_id===chatUserId();
+    item.className='msg'+(mine?' mine':'');
     item.dataset.messageId=String(message.id);
     item.setAttribute('role','listitem');
-    const sender=chatNode('b',{text:message.sender_name});
-    sender.style.cssText='font-size:11px; color:var(--ink-3)';
+    const meta=chatNode('div',{className:'msg-meta'});
+    const sender=chatNode('b',{className:'msg-sender',text:message.sender_name});
+    const time=chatNode('time',{className:'msg-time',text:localChatTime(message.created_at)});
+    time.dateTime=message.created_at;
+    try{ time.title=new Intl.DateTimeFormat(undefined,{dateStyle:'medium',timeStyle:'short'}).format(new Date(message.created_at)); }catch{}
+    meta.append(sender,time);
     const body=chatNode('div',{className:'msg-body',text:message.message});
-    const time=chatNode('time',{className:'small muted',text:localChatTime(message.created_at)});
-    time.dateTime=message.created_at; time.style.cssText='font-size:10px; margin-top:2px';
-    item.replaceChildren(sender,body,time);
+    item.replaceChildren(meta,body);
   }
 
   function renderChatMessages({changedIds=new Set()}={}){
@@ -9883,7 +10338,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(!ordered.length){
       list.querySelectorAll('[data-message-id]').forEach(node=>node.remove());
       let empty=list.querySelector('[data-testid="pair-chat-empty"]');
-      if(!empty){ empty=chatNode('div',{className:'small muted',testId:'pair-chat-empty'}); empty.style.padding='8px'; list.append(empty); }
+      if(!empty){ empty=chatNode('div',{className:'home-chat-empty',testId:'pair-chat-empty'}); list.append(empty); }
       const emptyText=chatState.loaded?'No messages yet — say hello.':'Loading messages…';
       if(empty.textContent!==emptyText) empty.textContent=emptyText;
     }else{
@@ -9936,28 +10391,27 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   function renderChatView(room){
     const area=document.getElementById('dashChatArea');
     if(!area) return;
-    const box=chatNode('section',{className:'chat-box',testId:'pair-chat'});
+    const box=chatNode('section',{className:'chat-box home-chat',testId:'pair-chat'});
     box.setAttribute('role','region'); box.setAttribute('aria-labelledby','pairChatTitle'); box.setAttribute('aria-busy','false');
-    const header=chatNode('div',{className:'card-h'}); header.style.padding='10px 12px';
-    const title=chatNode('h2',{text:'Pair chat'}); title.id='pairChatTitle'; title.style.fontSize='13px';
-    const roomLabel=chatNode('span',{className:'kbd',text:room});
-    header.append(title,roomLabel);
+    const header=chatNode('div',{className:'card-h home-chat-head'});
+    const title=chatNode('h3',{className:'home-card-title',text:'Pair chat'}); title.id='pairChatTitle';
+    header.append(title);
+    const list=chatNode('div',{className:'chat-list',testId:'pair-chat-list'}); list.id='chatList';
+    list.setAttribute('role','log'); list.setAttribute('aria-live','off'); list.setAttribute('aria-relevant','additions');
+    list.setAttribute('aria-label','Messages'); list.tabIndex=0;
+    const controls=chatNode('div',{className:'chat-input'});
+    const label=chatNode('label',{className:'sr-only',text:'Message your pair'}); label.htmlFor='chatIn';
+    const input=chatNode('input',{className:'input',testId:'pair-chat-input'}); input.id='chatIn'; input.type='text';
+    input.autocomplete='off'; input.placeholder='Message your pair…'; input.value=chatState.drafts.get(room)||'';
+    input.setAttribute('aria-describedby','pairChatStatus');
+    const send=chatNode('button',{className:'btn',text:'Send',testId:'pair-chat-send'}); send.id='chatSend'; send.type='button';
+    const status=chatNode('span',{className:'small muted home-chat-status',text:chatState.status,testId:'pair-chat-status'}); status.id='pairChatStatus';
+    status.setAttribute('role','status'); status.setAttribute('aria-live','polite');
     const policy=chatNode('p',{
-      className:'small muted',
+      className:'home-fine home-chat-policy',
       text:'Private-beta chat retention is 90 days. Legal or export holds and safety pauses may retain messages longer.',
       testId:'pair-chat-retention-policy',
     });
-    policy.style.margin='6px 12px';
-    const list=chatNode('div',{className:'chat-list',testId:'pair-chat-list'}); list.id='chatList';
-    list.setAttribute('role','log'); list.setAttribute('aria-live','off'); list.setAttribute('aria-relevant','additions');
-    const controls=chatNode('div',{className:'chat-input'}); controls.style.flexWrap='wrap';
-    const label=chatNode('label',{className:'small muted',text:'Message your pair'}); label.htmlFor='chatIn'; label.style.width='100%';
-    const input=chatNode('input',{className:'input',testId:'pair-chat-input'}); input.id='chatIn'; input.type='text';
-    input.autocomplete='off'; input.placeholder='Write a message…'; input.style.flex='1'; input.value=chatState.drafts.get(room)||'';
-    input.setAttribute('aria-describedby','pairChatStatus');
-    const send=chatNode('button',{className:'btn',text:'Send',testId:'pair-chat-send'}); send.id='chatSend'; send.type='button';
-    const status=chatNode('span',{className:'small muted',text:chatState.status,testId:'pair-chat-status'}); status.id='pairChatStatus';
-    status.setAttribute('role','status'); status.setAttribute('aria-live','polite'); status.style.width='100%';
     input.addEventListener('input',()=>{
       if(chatState.room!==room) return;
       chatState.drafts.set(room,input.value);
@@ -9974,8 +10428,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     input.addEventListener('keydown',event=>{
       if(event.key==='Enter'&&!event.isComposing){ event.preventDefault(); send.click(); }
     });
-    controls.append(label,input,send,status); box.append(header,policy,list,controls); area.replaceChildren(box);
+    controls.append(label,input,send);
+    const footer=chatNode('div',{className:'home-chat-foot'});
+    footer.append(status,policy);
+    box.append(header,list,controls,footer); area.replaceChildren(box);
     renderChatMessages(); setChatBusy();
+    if(typeof renderHomeNextStep==='function') renderHomeNextStep();
   }
 
   function scheduleChatPoll(delay=CHAT_POLL_MS){
@@ -10504,6 +10962,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   document.getElementById('dashPublishNow')?.addEventListener('click',()=>{
     window._randori_pairing_recovery?.publish?.();
   });
+  document.getElementById('dashSetAvailability')?.addEventListener('click',()=>{
+    window._randori_availability?.open?.({source:'dashboard'});
+  });
+  document.getElementById('dashRetry')?.addEventListener('click',()=>{ showDashboard(); });
   document.getElementById('dashHow')?.addEventListener('click', ()=>{ if(window._randori_onboard) window._randori_onboard.start(1); });
   document.querySelector('.tabs')?.addEventListener('click',()=>{
     if(cancelDashboardPairRequest()) clearDashboardPairState();
@@ -11628,9 +12090,17 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   let dashboardHistoryUserId=null;
+  let dashboardHistorySeq=0;
+  let dashboardHistoryInFlight=false;
   async function populateHistory(){
     const listEl=document.getElementById('dashHistList');
     if(!listEl) return;
+    const seq=++dashboardHistorySeq;
+    dashboardHistoryInFlight=true;
+    try{ await loadDashboardHistory(listEl,seq); }
+    finally{ if(seq===dashboardHistorySeq) dashboardHistoryInFlight=false; }
+  }
+  async function loadDashboardHistory(listEl,seq){
     if(!(window._randori_auth && window._randori_auth.me)){
       dashboardHistoryUserId=null; listEl.replaceChildren();
       const signedOut=document.createElement('span'); signedOut.className='small muted'; signedOut.textContent='Sign in to see your history'; listEl.appendChild(signedOut); return;
@@ -11642,7 +12112,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     try{
       const r=await fetch('/api/history',{credentials:'same-origin',cache:'no-store'});
       const j=await r.json();
-      if(userId!==(Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null)||document.getElementById('view-dashboard')?.style.display==='none') return;
+      if(seq!==dashboardHistorySeq||userId!==(Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null)||document.getElementById('view-dashboard')?.style.display==='none') return;
       if(!r.ok) throw j;
       if(!j.history || !j.history.length){ listEl.replaceChildren(); const empty=document.createElement('div'); empty.className='small muted'; empty.textContent='No pairings yet — your first pairing will appear after a cycle is published.'; listEl.appendChild(empty); return; }
       const last5=j.history.slice(0,5);
@@ -11668,7 +12138,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       });
       const total=document.createElement('div'); total.className='small muted'; total.style.marginTop='8px'; total.textContent=`Total pairings: ${Number.isSafeInteger(Number(j.total))?Number(j.total):last5.length}`; listEl.appendChild(total);
     }catch(e){
-      if(userId!==(Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null)||document.getElementById('view-dashboard')?.style.display==='none') return;
+      if(seq!==dashboardHistorySeq||userId!==(Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null)||document.getElementById('view-dashboard')?.style.display==='none') return;
       listEl.replaceChildren(); const error=document.createElement('div'); error.className='small muted'; error.textContent=`History: ${String(e.error||e.message||'offline').slice(0,200)} — try Pairings & activity.`; listEl.appendChild(error);
     }
   }
@@ -11704,7 +12174,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   // expose
-  window._randori_home={bootHome, fetchStats};
+  window._randori_home={bootHome, fetchStats, refreshHistory:populateHistory, get historyInFlight(){ return dashboardHistoryInFlight; }};
 
   // Trigger on route changes
   document.addEventListener('DOMContentLoaded', ()=> setTimeout(bootHome, 600));
