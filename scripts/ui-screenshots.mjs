@@ -685,6 +685,9 @@ async function captureLocal(browser, viewportName, recorder) {
       await openDashboard(op);
       await sleep(1000);
       await recorder.shot(op, v, 'dashboard-paired-light');
+      await openTab(op, 'pair');
+      await sleep(1000);
+      await recorder.shot(op, v, 'pairing-owner-published-light');
       await tap(op, '#themeToggle');
     });
 
