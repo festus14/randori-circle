@@ -652,7 +652,7 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:var(--space-2) var(--space-3);
   padding:var(--space-2) var(--space-3); background:var(--card); border:1px solid var(--border); border-radius:var(--radius-md);
 }
-.room-bar-context{display:flex; align-items:center; gap:var(--space-2); min-width:0; flex:1 1 260px}
+.room-bar-context{display:flex; align-items:center; gap:var(--space-2); min-width:0; flex:1 1 200px}
 .room-select{flex:1 1 auto; width:auto; min-width:0; max-width:340px}
 .room-presence{display:inline-flex; align-items:center; gap:var(--space-2); white-space:nowrap}
 .room-sync{white-space:nowrap}
@@ -738,6 +738,7 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .run-case{padding:var(--space-1) var(--space-3)}
 .run-case[data-status="pass"]{border-left-color:var(--ok)}
 .run-case[data-status="fail"]{border-left-color:var(--bad)}
+.run-case > .small{display:flex; flex-wrap:wrap; align-items:baseline; column-gap:var(--space-2)}
 .run-case-error{color:var(--bad); overflow-wrap:anywhere}
 .run-footnote{margin:var(--space-1) 0 0}
 .pair-runs{display:grid; gap:var(--space-1)}
@@ -784,8 +785,11 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   .room-label{position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap}
   .room-presence,.room-timer .rc-icon{display:none}
   .room-bar{padding:var(--space-2)}
-  .room-bar-actions{width:100%}
+  #view-code .room-bar-actions{width:100%}
   .room-modes{margin-left:auto}
+  .board-toolbar{display:grid; justify-content:stretch}
+  .board-tools{flex-wrap:nowrap; overflow-x:auto; overscroll-behavior-inline:contain; padding-bottom:2px}
+  .board-view-tools{margin-left:0}
   .room-panel{padding:var(--space-2)}
   .room-section{padding:var(--space-3)}
 }
@@ -7308,10 +7312,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         const ang=Math.atan2(s.y2-s.y1, s.x2-s.x1); const len=12;
         ctx.beginPath(); ctx.moveTo(s.x2,s.y2); ctx.lineTo(s.x2-len*Math.cos(ang-Math.PI/6), s.y2-len*Math.sin(ang-Math.PI/6)); ctx.lineTo(s.x2-len*Math.cos(ang+Math.PI/6), s.y2-len*Math.sin(ang+Math.PI/6)); ctx.closePath(); ctx.fill();
       } else if(s.type==='text'){
-        ctx.font=`${s.size||16}px "Fragment Mono", monospace`; ctx.fillStyle=s.color; ctx.fillText(s.text, s.x, s.y);
+        ctx.font=`${s.size||16}px ui-monospace, SFMono-Regular, Menlo, monospace`; ctx.fillStyle=s.color; ctx.fillText(s.text, s.x, s.y);
       } else if(s.type==='sticky'){
         ctx.fillStyle=s.bg||'#e6c07a'; ctx.fillRect(s.x,s.y,s.w,s.h);
-        ctx.fillStyle='#12100f'; ctx.font=`13px "Fragment Mono"`; const lines=(s.text||'').split('\n').slice(0,8); lines.forEach((ln,i)=>{ ctx.fillText(ln.slice(0,28), s.x+8, s.y+18+i*16); });
+        ctx.fillStyle='#12100f'; ctx.font=`13px ui-monospace, SFMono-Regular, Menlo, monospace`; const lines=(s.text||'').split('\n').slice(0,8); lines.forEach((ln,i)=>{ ctx.fillText(ln.slice(0,28), s.x+8, s.y+18+i*16); });
         ctx.strokeStyle='rgba(0,0,0,.15)'; ctx.strokeRect(s.x,s.y,s.w,s.h);
       }
       ctx.shadowBlur=0;

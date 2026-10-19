@@ -674,6 +674,8 @@ async function captureLocal(browser, viewportName, recorder) {
 
     await recorder.step(`${v}:catalogue`, async () => {
       await openTab(mp, 'code');
+      // The catalogue lives in the room's Problem panel (WP-R).
+      await mp.evaluate(() => window._randori_room?.show?.('problem'));
       await mp.getByTestId('catalog-status').filter({ hasNotText: 'Loading' }).waitFor({ timeout: 15_000 }).catch(() => {});
       await sleep(1000);
       await recorder.shot(mp, v, 'catalogue-browse');
