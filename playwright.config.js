@@ -23,7 +23,9 @@ export default defineConfig({
   expect: { timeout: 9000 },
   forbidOnly: Boolean(process.env.CI),
   retries: 0,
-  workers: process.env.CI ? 2 : undefined,
+  // Real-runtime journeys each own a private server and database, so they
+  // parallelize safely; the hosted Linux runner has four vCPUs.
+  workers: process.env.CI ? 3 : undefined,
   reporter: process.env.CI
     ? [['github'], ['html', { open: 'never' }]]
     : [['list'], ['html', { open: 'never' }]],

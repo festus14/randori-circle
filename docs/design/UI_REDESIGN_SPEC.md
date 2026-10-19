@@ -35,8 +35,9 @@ committed. Re-run the workflow on `main` to regenerate it. File names follow
 `<viewport>__<screen>.png`.
 
 Local-runtime caveat: the loopback CSP removes CDN scripts, so local
-screenshots show the plain `<textarea>` editor instead of Monaco and use system
-fonts instead of Inter. Production renders Monaco and Inter.
+screenshots show the plain `<textarea>` editor instead of Monaco. Production
+renders Monaco. Since WP-F both runtimes render the self-hosted Geist Sans
+(the baseline captures predate it and show Inter or system fonts).
 
 ## 1. Owner decisions (2026-10-19)
 
@@ -306,12 +307,21 @@ The production CSP allows `font-src 'self'`, and the local CSP allows only
 Fonts `<link>` once the self-hosted fonts land, and keep the Google Fonts
 entries out of the CSP.
 
-- **Option A (recommended):** **Geist Sans** (variable, 400–700) for UI and
-  **Geist Mono** for code, kbd and timers. Both are SIL OFL. Subset to
-  Latin plus Latin-1 to keep the total under 90 KB WOFF2. Fallback stack:
-  `system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`.
-- **Option B:** **Inter** variable for UI and **JetBrains Mono** for code. Both
-  are OFL. This option is safer and more familiar, but less distinctive.
+- **Option A (approved 2026-10-19, amended):** **Geist Sans** only (variable,
+  400–700, SIL OFL) for all UI text, including timers, countdowns and stats,
+  which use `font-variant-numeric: tabular-nums`. **No Geist Mono is
+  shipped.** Code-editing surfaces (the editor textarea and Monaco, `code`,
+  `pre`, `kbd`, run output) use the system monospace stack through the
+  `--font-mono` token:
+  `ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace`.
+  Geist Sans is subset to Latin plus Latin-1 and common punctuation
+  (`assets/fonts/geist-sans-latin-var.woff2`, about 23 KB), preloaded, with
+  `font-display: swap`. Sans fallback stack:
+  `system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`. The OFL text is
+  in `assets/fonts/OFL.txt`.
+- **Option B (not chosen):** **Inter** variable for UI and **JetBrains Mono**
+  for code. Both are OFL. This option is safer and more familiar, but less
+  distinctive.
 
 Type scale (1.200 minor third, rem-based, 16 px root; today the root is 14 px):
 
@@ -601,6 +611,104 @@ pointers.
 | Timeline | cycle timeline, recap activity | `ol` in the recap, landing progress bar |
 | Code toolbar | language, exercise, Run (primary), more-menu (format, copy starter, reset) | `.editor-top` wrapping rows |
 | Test result list | compact rows: case n · pass/fail · expand | stacked case cards |
+
+### 9.1 What WP-F shipped (foundations)
+
+WP-F restyles the existing classes in place, so every screen picks up the brand
+without markup changes, and adds `rc-` names that share the same rules for new
+markup in later packages.
+
+| Legacy class | `rc-` equivalent | Notes |
+|---|---|---|
+| `.btn`, `.btn.secondary`, `.btn.ghost`, `.btn.danger`, `.btn.sm`, `.btn.lg` | `.rc-btn`, `--secondary`, `--ghost`, `--danger`, `--sm`, `--lg`, `--icon` | 32/40/48 px heights; 44 px on coarse pointers. Disabled buttons use a dashed border, the active-surface fill and muted text (legible, clearly unavailable). Light-mode primary is `#4F5BD5` with white text (5.5:1). |
+| `.input`, `.textarea`, `.select` | — | Field background `--color-field` (dark: canvas, light: white) so the control border is at least 3:1 inside and outside. Custom select chevron per theme. `aria-invalid="true"` turns the border red. 16 px text on coarse pointers. |
+| `.card` | `.rc-card`, `.rc-card--raised` | 16 px radius, flat border plus `--shadow-1`. |
+| `.kbd` (badge use), `.status-chip` | `.rc-badge`, `--success`/`--warning`/`--danger`/`--info` | Real `<kbd>`, `<code>`, `<pre>` use `--font-mono`. |
+| `.tabs`, `.tab` | `.rc-tabs`, `.rc-tab` | Active tab: indigo-tinted surface and border. |
+| `.overlay`, `.modal` | `.rc-dialog` | Scrim `--color-scrim`, `--z-modal`, bottom sheet at 520 px and below (unchanged). |
+| `.toast` | `.rc-toast` | Inverse colors, `--z-toast` (above dialogs). |
+| — | `.rc-banner` (+ status variants), `.rc-empty`, `.rc-segmented`, `.rc-avatar`, `.rc-skeleton`, `.rc-table`, `.rc-icon` | Building blocks for WP-S onwards. |
+
+- Logo: `assets/brand/mark.svg` (Concept A), `assets/brand/favicon.svg` (mark on
+  a `#4F5BD5` rounded square), `assets/brand/apple-touch-icon.png` (180 px). The
+  header renders the mark inline (`svg.mark`, accent arc via `.mark-accent`)
+  next to the wordmark "**Randori** Circle".
+- Icons: `assets/brand/icons.svg` is an original stroke-icon sprite
+  (`<svg class="rc-icon"><use href="/assets/brand/icons.svg#i-play"/></svg>`).
+  Later packages replace the emoji and unicode glyphs with it.
+- z-index: the sticky topbar uses `--z-sticky`, overlays `--z-modal`, toasts
+  `--z-toast` and the skip link `--z-skip-link`. `#onboardOverlay` and
+  `#identityOverlay` keep their historical order above other overlays.
+- Compatibility shim: inline styles that pair an accent fill with `#0f0f10`
+  text are forced to `--color-on-action` until WP-Z purges inline colors.
+- The production CSP no longer lists the Google Fonts hosts.
+
+### 9.2 What WP-S shipped (shell and navigation)
+
+- **Topbar:** one 56 px row at every width (it was about 120 px on phones):
+  mark and wordmark, an icon-only theme toggle (`#themeToggle`, sun/moon from
+  the sprite, label "Switch to light/dark theme"), and the account trigger
+  (`#meLabel`: initials avatar on the profile color with a contrast-checked
+  ink, name, chevron; the name is visually hidden below 600 px but stays in
+  the text and the accessible name). The 11 px tagline is gone.
+- **Primary navigation** is still the `<nav aria-label="Primary navigation">`
+  group of `[data-tab]` buttons, with a new first item **Home** (`#tab-home`,
+  `data-nav="home"`, no `data-tab`). Home asks the journey router for the
+  right home (dashboard, profile setup, or the landing page for visitors) and
+  is `aria-current="page"` while that surface is visible.
+  - Below 600 px: a fixed **bottom tab bar** (icon over label, safe-area
+    padding). All destinations are direct buttons: six items are at least
+    53 px wide at 320 px, so nothing is clipped and no "More" sheet is
+    needed yet. Revisit the "4 items plus More" layout once WP-R folds Board
+    into the Room and the item set changes.
+  - 600–1023 px, and visitors at any width: compact horizontal tabs below the
+    topbar (icons hidden at 600–767 px so the row always fits).
+  - Members at 1024 px and wider: a **left sidebar** (`--sidebar-w`), sticky
+    under the topbar. Arrow keys, Home and End keep working.
+- **Account menu:** token-styled `.account-menu` / `.account-menu-item` with
+  icons. Items, order and keyboard behaviour are unchanged (Account security,
+  Sign out, Sign out everywhere). Theme stays in the topbar so visitors can
+  reach it; Profile and Notifications join the menu with WP-O / WP-H.
+- **Toast** (`#toast`): `role="status"`, polite and atomic, one at a time,
+  5 s auto-dismiss paused on hover or focus, click to dismiss. Bottom-right on
+  wide screens, centred above the tab bar on phones.
+- **Offline banner** (`#shellConnectionBanner`): a page-level warning banner
+  driven by the browser `online`/`offline` events only. API-down detection
+  stays with the feature packages.
+- The stored theme is applied in `<head>` before first paint.
+- Logic lives in `assets/app-shell.js` (ES module, unit-tested in
+  `tests/unit/app-shell.test.mjs`); golden paths are in
+  `tests/e2e/app-shell-navigation.spec.ts`.
+
+### 9.3 What WP-P shipped (availability and pairing)
+
+- `#view-pair` is now **This week's cycle**: the availability card for the
+  next cycle, then the current cycle's pairs, then an owner-only **Owner
+  tools** card, then an admin-only **Diagnostics** disclosure. The "Sync /
+  Browser state" card is gone; browser-tab presence (`#syncStatus`,
+  `#presencePanel`) and the demo buttons live in Diagnostics.
+- **Availability card** (`#availabilityWrap`): "Are you in for week N?", the
+  dated cycle range, two choice buttons (`#availAvailable` "I'm in",
+  `#availSkip` "Skip this cycle", `aria-pressed` only for a saved
+  `source=user` choice), the decision sentence, and "Decide by <cutoff>
+  (<zone>) · N days M hours left" (urgent styling in the final day). The
+  badge (`#availLabel`) uses sentence case with a `data-tone`. The dashed
+  inherited-choice banner is gone; `#availBanner` is now only the offline
+  notice, and both choices are disabled with that reason while offline.
+- **Pairs card** (`#pairsList`): pair rows built from DOM nodes, with the
+  viewer's pair highlighted ("Your pair", "(you)"); a skeleton while the first
+  read is in flight; one status block per state (load error or offline,
+  unverified, not started or ended, not yet published with the scheduled time)
+  with one Retry action. A failed read clears the cached publication state so
+  owner status never says "Published" next to an error.
+- **Owner tools** (`#pairOwnerPanel`, visible to circle owners or whenever the
+  server allows recovery): status badge (Checking, Scheduled, Publication is
+  late, Published, Status unavailable), an explanation, the next cutoff, and
+  `#newWeekBtn` (Publish now / Retry publication, still server-gated by
+  `can_publish_now` and the cycle key).
+- Logic lives in `assets/pairing-view.js` (classic script, unit-tested in
+  `tests/unit/pairing-view.test.mjs`); golden paths are in
+  `tests/e2e/availability-ui.spec.ts` and `tests/e2e/pairing-cycle-ui.spec.ts`.
 
 ## 10. Phased implementation plan
 
