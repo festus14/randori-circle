@@ -13,6 +13,7 @@
 <title>Randori Circle</title>
 <script>/* Apply the stored theme before first paint so light mode does not flash dark. */try{if(localStorage.getItem('randori-theme')==='light')document.documentElement.classList.add('light')}catch{}</script>
 <script src="/assets/invite-gate.js"></script>
+<script src="/assets/pairing-view.js"></script>
 <script src="/assets/home-dashboard.js"></script>
 <script>
 /* Consume invitation capabilities before any telemetry or third-party script can observe the URL. */
@@ -556,7 +557,6 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   font-variant-numeric:tabular-nums; letter-spacing:0;
 }
 .sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
-#availActions [aria-pressed="true"]{outline:2px solid var(--accent);outline-offset:2px}
 .main{padding:var(--space-6) var(--space-5) 88px; display:grid; gap:var(--gap); max-width:var(--max); width:100%; margin:0 auto; box-sizing:border-box}
 .grid-2{display:grid; grid-template-columns:1.15fr .85fr; gap:var(--gap)}
 .grid-3{display:grid; grid-template-columns:repeat(3,1fr); gap:var(--space-4)}
@@ -636,6 +636,72 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 }
 .pair .who{display:flex; align-items:center; gap:var(--space-2); flex-wrap:wrap}
 .topic-group{display:flex; gap:var(--space-2); flex-shrink:0}
+/* WP-P: availability and pairing ("This week's cycle" view) */
+.cycle-view{display:grid; gap:var(--space-5)}
+.cycle-view-head{display:grid; gap:var(--space-1)}
+.cycle-view-head h2{font-size:var(--text-xl); line-height:var(--leading-xl); font-weight:var(--weight-heading)}
+.cycle-view-head p{max-width:65ch; color:var(--ink-2)}
+.cycle-layout{display:grid; gap:var(--gap); grid-template-columns:minmax(0,1fr); align-items:start}
+.cycle-card{padding:var(--space-5); display:grid; gap:var(--space-3); align-content:start}
+.cycle-card-head{display:flex; justify-content:space-between; align-items:flex-start; gap:var(--space-3); flex-wrap:wrap}
+.cycle-card-titles{display:grid; gap:var(--space-1); min-width:0}
+.cycle-card h3{font-size:var(--text-lg); line-height:var(--leading-lg); font-weight:var(--weight-heading)}
+.cycle-eyebrow{font-size:var(--text-xs); line-height:var(--leading-xs); font-weight:var(--weight-emphasis); color:var(--ink-2)}
+.cycle-dates,.cycle-cutoff,#availExplan{color:var(--ink-2)}
+.cycle-cutoff{font-variant-numeric:tabular-nums}
+.cycle-cutoff:empty{display:none}
+.cycle-cutoff[data-urgent]{color:var(--warn); font-weight:var(--weight-emphasis)}
+#availExplan[data-tone="danger"]{color:var(--bad)}
+.cycle-choices{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--space-2)}
+.cycle-choice{
+  display:flex; align-items:center; justify-content:center; gap:var(--space-2);
+  min-height:var(--control-lg); padding:var(--space-2) var(--space-4);
+  border:1px solid var(--control-border); border-radius:var(--radius-md);
+  background:var(--card); color:var(--ink); font:inherit; font-weight:var(--weight-emphasis); cursor:pointer;
+  transition:background-color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
+}
+.cycle-choice::before{content:""; flex:0 0 auto; box-sizing:border-box; width:16px; height:16px; border:2px solid var(--control-border); border-radius:var(--radius-full)}
+.cycle-choice[aria-pressed="true"]{background:var(--color-action-subtle); border-color:var(--color-action); box-shadow:inset 0 0 0 1px var(--color-action)}
+.cycle-choice[aria-pressed="true"]::before{border-color:var(--color-action); background:var(--color-action); box-shadow:inset 0 0 0 3px var(--card)}
+.cycle-choice:disabled{cursor:not-allowed; color:var(--ink-3); background:var(--bg-3); border-style:dashed}
+.cycle-choice[aria-pressed="true"]:disabled{color:var(--ink-2); border-style:solid}
+@media(hover:hover){ .cycle-choice:hover:not(:disabled){border-color:var(--color-action)} }
+.cycle-status-row{display:flex; gap:var(--space-2); align-items:center; flex-wrap:wrap}
+.cycle-status-row:has(> #availExplan[style*="display:none"]):has(> #availRetry[hidden]){display:none}
+.rc-badge[data-tone="success"]{background:var(--ok-surface); border-color:var(--ok); color:var(--ok)}
+.rc-badge[data-tone="warning"]{background:var(--warn-surface); border-color:var(--warn); color:var(--warn)}
+.rc-badge[data-tone="danger"]{background:var(--bad-surface); border-color:var(--bad); color:var(--bad)}
+.rc-badge[data-tone="info"]{background:var(--info-surface); border-color:var(--info); color:var(--info)}
+.cycle-pairs-list{position:relative; gap:var(--space-2)}
+.cycle-pair .who{min-width:0}
+.cycle-pair-name{font-size:var(--text-sm); overflow-wrap:anywhere}
+.cycle-pair.is-mine{border-color:var(--color-action); background:var(--color-action-subtle)}
+.cycle-pairs-foot{margin-top:var(--space-1)}
+.cycle-pairs-loading{display:grid; gap:var(--space-2)}
+.cycle-pair-skeleton{height:56px; border-radius:var(--radius-md)}
+.cycle-empty{display:grid; gap:var(--space-2); justify-items:start; padding:var(--space-4); border:1px solid var(--border); border-radius:var(--radius-md); background:var(--bg-3); color:var(--ink)}
+.cycle-empty[data-tone="warning"]{border-color:var(--warn); background:var(--warn-surface)}
+.cycle-empty[data-tone="danger"]{border-color:var(--bad); background:var(--bad-surface)}
+.cycle-empty-title{font-weight:var(--weight-heading)}
+.cycle-publishing{gap:var(--space-2); color:var(--ink)}
+.cycle-owner{background:var(--card-2); border-color:var(--color-border-strong)}
+.cycle-diagnostics{padding:0; gap:0}
+.cycle-diagnostics > summary{padding:var(--space-4) var(--space-5); min-height:var(--tap-min); box-sizing:border-box; cursor:pointer; font-weight:var(--weight-emphasis); color:var(--ink-2)}
+.cycle-diagnostics-body{padding:0 var(--space-5) var(--space-5); display:grid; gap:var(--space-3)}
+@media(min-width:1024px){
+  .cycle-layout{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .cycle-owner,.cycle-diagnostics{grid-column:1 / -1}
+}
+@media(max-width:640px){
+  .cycle-card{padding:var(--space-4)}
+  .cycle-pair{flex-direction:column; align-items:flex-start}
+}
+@media(max-width:359px){ .cycle-choices{grid-template-columns:minmax(0,1fr)} }
+@media(forced-colors:active){
+  .cycle-choice[aria-pressed="true"]{border-width:2px}
+  .cycle-choice[aria-pressed="true"]::before{forced-color-adjust:none; background:Highlight; border-color:Highlight}
+  .cycle-empty,.cycle-owner{border-color:CanvasText}
+}
 .chip{border:1px solid var(--control-border); background:var(--card); color:var(--ink-2); padding:var(--space-1) var(--space-3); min-height:var(--control-sm); border-radius:var(--radius-full); font-size:var(--text-sm); font-weight:var(--weight-emphasis); cursor:pointer; transition:background-color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out)}
 .chip:hover{border-color:var(--ink-3); color:var(--ink)}
 .chip.active,.chip[aria-pressed="true"]{background:var(--color-action-subtle); color:var(--ink); border-color:var(--color-action)}
@@ -1538,42 +1604,72 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 
     <!-- PAIRING -->
     <section id="view-pair" class="view" tabindex="0" aria-labelledby="tab-pair" style="display:none">
-      <div class="grid-2">
-        <div class="card">
-          <div class="card-h">
-            <h2>This week</h2>
-            <div class="row">
-              <button id="newWeekBtn" class="btn" style="display:none" title="Recover this cycle after the scheduled publication grace period">Publish now</button>
-              <button id="demoRunBtn" class="btn" style="display:none" title="Admin: seed 6 demo users + shuffle">✦ Run Demo</button>
-              <button id="demoResetBtn" class="btn secondary" style="display:none" title="Admin: remove demo data">Reset Demo</button>
-            </div>
-          </div>
-          <div class="card-b">
-            <div id="currentWeekMeta" class="small muted" style="margin-bottom:10px">Current-cycle pairs stay fixed once published. Set the next cycle’s availability in Sync before its displayed cutoff.</div>
-            <div id="pairsList" class="weeks"></div>
-          </div>
-        </div>
-        <div class="card">
-          <div class="card-h"><h2>Sync</h2><span>browser state</span></div>
-          <div class="card-b" style="display:grid; gap:10px">
-            <div class="small" style="color:var(--ink-2)">Browser-tab coordination is reported below. Server-backed availability has its own loading and save states.</div>
-            <div id="availabilityWrap" data-testid="availability-card" role="region" aria-labelledby="availTitle" aria-describedby="availDecision availCycle availCutoff availExplan" tabindex="-1" style="display:none; border:1px solid var(--line); border-radius:10px; padding:10px; background:var(--bg-3); gap:8px">
-              <div class="row" style="justify-content:space-between"><b id="availTitle" style="font-size:13px">Upcoming availability</b><span id="availLabel" class="kbd">LOADING…</span></div>
-              <div id="availDecision" class="small" role="status" aria-live="polite">Loading your saved choice for this cycle…</div>
-              <div id="availCycle" data-testid="availability-cycle" class="small muted">Loading the upcoming pairing cycle…</div>
-              <div id="availCutoff" data-testid="availability-cutoff" class="small muted"></div>
-              <div id="availActions" class="row" role="group" aria-labelledby="availTitle" aria-describedby="availDecision availCycle availCutoff availExplan">
-                <button id="availAvailable" class="btn" type="button" aria-pressed="false" disabled>Available</button>
-                <button id="availSkip" class="pill" type="button" aria-pressed="false" disabled>Skip this cycle</button>
+      <!-- WP-P: "This week's cycle" — availability decision, cutoff, published pairs, owner tools. -->
+      <div class="cycle-view">
+        <header class="cycle-view-head">
+          <h2 id="cycleViewTitle">This week’s cycle</h2>
+          <p class="small muted">Say whether you’re in for the next cycle before its cutoff. Pairs are published automatically at the cutoff and stay fixed for the week.</p>
+        </header>
+        <div class="cycle-layout">
+          <div id="availabilityWrap" class="rc-card cycle-card cycle-availability" data-testid="availability-card" role="region" aria-labelledby="availTitle" aria-describedby="availDecision availCycle availCutoff availExplan" tabindex="-1" style="display:none;">
+            <div class="cycle-card-head">
+              <div class="cycle-card-titles">
+                <span class="cycle-eyebrow">Next cycle</span>
+                <h3 id="availTitle">Your availability</h3>
               </div>
-              <div id="availBanner" class="small status-chip status-warning" style="display:none; padding:8px; border-radius:8px; border-style:dashed"></div>
+              <span id="availLabel" class="rc-badge" data-tone="neutral">Loading…</span>
             </div>
-            <div id="presencePanel" class="people"></div>
-            <div class="row">
-              <span class="small request-status" id="syncStatus" data-state="loading" role="status" aria-live="polite">Checking browser-tab sync…</span>
+            <p id="availCycle" data-testid="availability-cycle" class="small cycle-dates">Loading the upcoming pairing cycle…</p>
+            <div id="availActions" class="cycle-choices" role="group" aria-labelledby="availTitle" aria-describedby="availDecision availCycle availCutoff availExplan">
+              <button id="availAvailable" class="cycle-choice" type="button" aria-pressed="false" disabled>I'm in</button>
+              <button id="availSkip" class="cycle-choice" type="button" aria-pressed="false" disabled>Skip this cycle</button>
             </div>
-            <div class="row" style="align-items:center"><div class="small muted" id="availExplan" role="status" aria-live="polite" style="display:none"></div><button id="availRetry" class="pill" type="button" hidden>Retry availability</button></div>
+            <p id="availDecision" class="small cycle-decision" role="status" aria-live="polite">Loading your saved choice for the next cycle…</p>
+            <p id="availCutoff" data-testid="availability-cutoff" class="small cycle-cutoff"></p>
+            <div id="availBanner" class="rc-banner rc-banner--warning small" role="note" hidden></div>
+            <div class="cycle-status-row">
+              <p class="small" id="availExplan" role="status" aria-live="polite" style="display:none"></p>
+              <button id="availRetry" class="btn secondary sm" type="button" hidden>Retry availability</button>
+            </div>
           </div>
+          <section class="rc-card cycle-card cycle-pairs" aria-labelledby="pairsTitle">
+            <div class="cycle-card-head">
+              <div class="cycle-card-titles">
+                <span class="cycle-eyebrow">Current cycle</span>
+                <h3 id="pairsTitle">This week’s pairs</h3>
+              </div>
+            </div>
+            <p id="currentWeekMeta" class="small muted" role="status" aria-live="polite">Loading this week’s pairs…</p>
+            <div id="pairsList" class="weeks cycle-pairs-list"></div>
+          </section>
+          <section id="pairOwnerPanel" class="rc-card cycle-card cycle-owner" aria-labelledby="pairOwnerTitle" hidden>
+            <div class="cycle-card-head">
+              <div class="cycle-card-titles">
+                <span class="cycle-eyebrow">Circle owner</span>
+                <h3 id="pairOwnerTitle">Owner tools</h3>
+              </div>
+              <span id="pairOwnerBadge" class="rc-badge" data-tone="neutral">Checking…</span>
+            </div>
+            <p id="pairOwnerStatus" class="small" role="status" aria-live="polite">Checking the publication status for this cycle…</p>
+            <p id="pairOwnerHint" class="small muted" hidden></p>
+            <div class="row">
+              <button id="newWeekBtn" class="btn" type="button" style="display:none" title="Recover this cycle after the scheduled publication grace period">Publish now</button>
+            </div>
+          </section>
+          <details id="pairDiagnostics" class="rc-card cycle-card cycle-diagnostics" hidden>
+            <summary>Diagnostics</summary>
+            <div class="cycle-diagnostics-body">
+              <p class="small muted">Admin-only tools. Demo data never appears in a real circle’s published pairs.</p>
+              <div class="row">
+                <button id="demoRunBtn" class="btn secondary sm" type="button" style="display:none" title="Admin: seed 6 demo users and pair them">Run demo</button>
+                <button id="demoResetBtn" class="btn secondary sm" type="button" style="display:none" title="Admin: remove demo data">Reset demo</button>
+              </div>
+              <div class="row">
+                <span class="small request-status" id="syncStatus" data-state="loading" role="status" aria-live="polite">Checking open tabs…</span>
+              </div>
+              <div id="presencePanel" class="people"></div>
+            </div>
+          </details>
         </div>
       </div>
     </section>
@@ -1891,6 +1987,8 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   let currentPairingPublicationFence=null;
   let pairingRecoveryRetryKey=null;
   let pairingPublicationRefreshTimer=null;
+  let pairingPublicationLoadFailed=false;
+  let currentPairingUpcomingCycle=null;
   window._randoriUserNavigationEpoch=0;
   window._randoriExplicitNavigation=null;
   const AVAILABILITY_SOURCES=new Set(['user','legacy_bridge','cycle_default']);
@@ -2419,37 +2517,47 @@ async function refreshMe(){
   }
   function updatePairingRunAccess(){
     const button=document.getElementById('newWeekBtn');
-    let badge=document.getElementById('adminOnlyBadge');
-    if(!badge&&button?.parentElement){
-      badge=document.createElement('span'); badge.id='adminOnlyBadge'; badge.className='kbd'; badge.style.marginLeft='8px';
-      button.parentElement.appendChild(badge);
-    }
     const allowed=currentPairingRecoveryAvailable();
+    const view=window._randori_pairing_view;
+    const online=navigator.onLine!==false;
+    const retryReady=pairingRecoveryRetryKey===currentPairingPublicationState?.cycle_key;
+    const model=view?.publicationView({
+      signedIn:!!me,
+      isOwner:activeCircleRole==='owner',
+      publication:currentPairingPublicationState,
+      allowed,
+      publishing:!!pairingPublicationAbort,
+      retryReady,
+      upcoming:currentPairingUpcomingCycle||availabilityState.value?.cycle||null,
+      loadFailed:pairingPublicationLoadFailed,
+      online,
+    });
+    const actionText=pairingPublicationAbort?'Publishing…':(retryReady?'Retry publication':'Publish now');
     if(button){
       button.style.display=allowed?'inline-flex':'none';
-      button.disabled=!!pairingPublicationAbort;
-      button.textContent=pairingPublicationAbort
-        ?'Publishing…'
-        :(pairingRecoveryRetryKey===currentPairingPublicationState?.cycle_key?'Retry publication':'Publish now');
+      button.disabled=!!pairingPublicationAbort||!online;
+      button.textContent=actionText;
+      button.setAttribute('aria-busy',pairingPublicationAbort?'true':'false');
       button.title='Recover this cycle after the scheduled publication grace period';
     }
-    if(badge){
-      const upcoming=availabilityState.value?.cycle;
-      badge.textContent=currentPairingPublicationState?.state==='published'
-        ?'current cycle published'
-        :allowed
-          ?(pairingRecoveryRetryKey===currentPairingPublicationState?.cycle_key?'owner • retry ready':'owner • recovery ready')
-          :(currentPairingPublicationState?.state==='pending'
-            ?`scheduled ${formatAvailabilityInstant(currentPairingPublicationState.scheduled_at,currentPairingPublicationState.time_zone)}`
-            :(upcoming?`next cutoff ${formatAvailabilityInstant(upcoming.cutoffAt,upcoming.timeZone)}`:'weekly schedule loading…'));
+    const panel=document.getElementById('pairOwnerPanel');
+    if(panel&&model){
+      panel.hidden=!model.visible;
+      panel.dataset.state=model.state;
+      const badge=document.getElementById('pairOwnerBadge');
+      if(badge){ badge.textContent=model.title; badge.dataset.tone=model.tone; }
+      const status=document.getElementById('pairOwnerStatus');
+      if(status) status.textContent=model.text;
+      const hint=document.getElementById('pairOwnerHint');
+      if(hint){ hint.hidden=!model.hint; hint.textContent=model.hint; }
     }
+    const diagnostics=document.getElementById('pairDiagnostics');
+    if(diagnostics) diagnostics.hidden=!(me&&isAdmin());
     const dashboardButton=document.getElementById('dashPublishNow');
     if(dashboardButton){
       dashboardButton.hidden=!allowed;
       dashboardButton.disabled=!!pairingPublicationAbort;
-      dashboardButton.textContent=pairingPublicationAbort
-        ?'Publishing…'
-        :(pairingRecoveryRetryKey===currentPairingPublicationState?.cycle_key?'Retry publication':'Publish now');
+      dashboardButton.textContent=actionText;
     }
   }
   function parseAvailabilityEnvelope(payload,{contextVersion}={}){
@@ -2546,23 +2654,6 @@ async function refreshMe(){
       &&notice.isAvailable===availability?.isAvailable
       &&notice.editable===availability?.editable;
   }
-  function availabilityDecisionCopy(availability){
-    if(!availability) return 'Availability has not loaded.';
-    const effective=availability.isAvailable?'available':'skipping';
-    if(availability.source==='user'){
-      return availability.editable
-        ?`Saved choice: ${effective} for ${availability.cycle.cycleId}. You can replace it until the cutoff.`
-        :`Saved choice: ${effective} for ${availability.cycle.cycleId}. The cutoff is closed.`;
-    }
-    if(availability.source==='legacy_bridge'){
-      return availability.editable
-        ?`No choice is saved for this cycle. Your previous account setting is inherited as ${effective}; choose an action below to confirm it.`
-        :`No choice was saved for this cycle. Your previous account setting remains inherited as ${effective}; the cutoff is closed.`;
-    }
-    return availability.editable
-      ?`No choice is saved for this cycle. Randori currently includes you by default so early circles can still form pairs; choose an action below to confirm or skip.`
-      :`No choice was saved for this cycle. Default inclusion remains effective, and the cutoff is closed.`;
-  }
   function availabilityBadgeCopy(availability){
     if(!availability) return availabilityState.loading?'Checking availability…':'Review availability';
     if(!availability.editable) return `Review closed cycle ${availability.cycle.cycleId}`;
@@ -2571,129 +2662,94 @@ async function refreshMe(){
     return availability.isAvailable
       ?`Available for ${availability.cycle.cycleId}`:`Skipping ${availability.cycle.cycleId}`;
   }
+  function renderAvailabilityDashboardBadge(availability){
+    const dashboardBadge=document.getElementById('dashAvailBadge');
+    if(!dashboardBadge) return;
+    if(!me){
+      dashboardBadge.textContent='Review availability';
+      dashboardBadge.disabled=true;
+      dashboardBadge.setAttribute('aria-label','Review availability. Sign in to load weekly availability.');
+      return;
+    }
+    if(!availability){
+      dashboardBadge.textContent=availabilityBadgeCopy(null);
+      dashboardBadge.disabled=availabilityState.loading;
+      dashboardBadge.style.background='var(--bg-3)';
+      dashboardBadge.style.color='var(--ink-2)';
+      dashboardBadge.style.borderColor='var(--border)';
+      dashboardBadge.setAttribute('aria-label',`${availabilityBadgeCopy(null)}. Review weekly availability.`);
+      return;
+    }
+    dashboardBadge.textContent=availabilityBadgeCopy(availability);
+    dashboardBadge.disabled=false;
+    const saved=availability.source==='user';
+    dashboardBadge.style.background=saved
+      ?(availability.isAvailable?'var(--ok-surface)':'var(--warn-surface)'):'var(--bg-3)';
+    dashboardBadge.style.color=saved
+      ?(availability.isAvailable?'var(--ok)':'var(--warn)'):'var(--ink-2)';
+    dashboardBadge.style.borderColor=saved
+      ?(availability.isAvailable?'var(--ok)':'var(--warn)'):'var(--accent)';
+    dashboardBadge.setAttribute('aria-label',`${availabilityBadgeCopy(availability)}. Review weekly availability.`);
+  }
+  // Presentation comes from assets/pairing-view.js (unit-tested); this
+  // renderer only applies it. Availability state stays server-authoritative.
   function renderAvailability(){
     const wrap=document.getElementById('availabilityWrap');
     const availableButton=document.getElementById('availAvailable');
     const skipButton=document.getElementById('availSkip');
     const label=document.getElementById('availLabel');
-    const decision=document.getElementById('availDecision');
-    const title=document.getElementById('availTitle');
-    const cycleText=document.getElementById('availCycle');
-    const cutoffText=document.getElementById('availCutoff');
-    const banner=document.getElementById('availBanner');
-    const status=document.getElementById('availExplan');
-    const retry=document.getElementById('availRetry');
-    const dashboardBadge=document.getElementById('dashAvailBadge');
-    if(!wrap||!availableButton||!skipButton||!label) return;
-    if(!me){
-      wrap.style.display='none';
-      availableButton.disabled=true;
-      skipButton.disabled=true;
-      if(dashboardBadge){
-        dashboardBadge.textContent='Review availability';
-        dashboardBadge.disabled=true;
-        dashboardBadge.setAttribute('aria-label','Review availability. Sign in to load weekly availability.');
-      }
-      if(status) status.style.display='none';
-      if(retry) retry.hidden=true;
-      return;
-    }
-    const availability=availabilityState.value;
+    const view=window._randori_pairing_view;
+    if(!wrap||!availableButton||!skipButton||!label||!view) return;
+    const availability=me?availabilityState.value:null;
+    const currentUserId=Number(me?.id||me?.uid);
+    const model=view.availabilityView({
+      signedIn:!!me,
+      value:availability,
+      loading:availabilityState.loading,
+      saving:availabilityState.saving,
+      pendingValue:availabilityState.pendingValue,
+      error:availabilityState.error,
+      notice:availabilityState.notice?.userId===currentUserId?availabilityState.notice.message:'',
+      online:navigator.onLine!==false,
+    });
     // Do not expose placeholder controls before the first authoritative result.
     // A validated value remains visible while it is revalidated, and an error
     // remains visible so its retry action is reachable.
-    wrap.style.display=availability||availabilityState.error?'grid':'none';
-    wrap.setAttribute('aria-busy',availabilityState.loading||availabilityState.saving?'true':'false');
-    const currentUserId=Number(me?.id||me?.uid);
-    const noticeMessage=availabilityState.notice?.userId===currentUserId
-      ?availabilityState.notice.message:'';
-    const statusMessage=availabilityState.error||noticeMessage;
-    if(!availability){
-      availableButton.disabled=true;
-      skipButton.disabled=true;
-      availableButton.setAttribute('aria-pressed','false');
-      skipButton.setAttribute('aria-pressed','false');
-      availableButton.textContent='Available';
-      skipButton.textContent='Skip this cycle';
-      label.textContent=availabilityState.loading?'LOADING…':'UNAVAILABLE';
-      label.style.color='var(--color-text-muted)';
-      if(decision) decision.textContent=availabilityState.loading
-        ?'Loading your saved choice for this cycle…'
-        :'No active-cycle availability choice can be shown.';
-      if(title) title.textContent='Upcoming availability';
-      if(cycleText) cycleText.textContent=availabilityState.loading?'Loading the upcoming pairing cycle…':'Upcoming cycle could not be loaded.';
-      if(cutoffText) cutoffText.textContent='';
-      if(banner) banner.style.display='none';
-      if(status){
-        status.style.display=statusMessage?'block':'none';
-        status.textContent=statusMessage;
-      }
-      if(retry){
-        retry.hidden=!availabilityState.error;
-        retry.disabled=availabilityState.loading;
-      }
-      if(dashboardBadge){
-        dashboardBadge.textContent=availabilityBadgeCopy(null);
-        dashboardBadge.disabled=availabilityState.loading;
-        dashboardBadge.style.background='var(--bg-3)';
-        dashboardBadge.style.color='var(--ink-2)';
-        dashboardBadge.style.borderColor='var(--border)';
-        dashboardBadge.setAttribute('aria-label',`${availabilityBadgeCopy(null)}. Review weekly availability.`);
-      }
-      return;
-    }
-    const shownValue=availabilityState.saving&&typeof availabilityState.pendingValue==='boolean'
-      ?availabilityState.pendingValue:availability.isAvailable;
+    wrap.style.display=model.visible?'grid':'none';
+    wrap.setAttribute('aria-busy',model.busy?'true':'false');
     // A validated value remains interactive during same-account background
     // refreshes. saveAvailabilityDecision serializes either explicit action behind
     // that request, including confirmation of an equal inherited value.
-    availableButton.disabled=availabilityState.saving||!availability.editable;
-    skipButton.disabled=availabilityState.saving||!availability.editable;
-    availableButton.setAttribute('aria-pressed',availability.source==='user'&&availability.isAvailable?'true':'false');
-    skipButton.setAttribute('aria-pressed',availability.source==='user'&&!availability.isAvailable?'true':'false');
-    availableButton.textContent=availabilityState.saving&&shownValue?'Saving Available…':'Available';
-    skipButton.textContent=availabilityState.saving&&!shownValue?'Saving Skip…':'Skip this cycle';
-    label.textContent=availabilityState.saving
-      ?`SAVING ${shownValue?'AVAILABLE':'SKIP'}…`
-      :(!availability.editable
-        ?`CLOSED • ${availability.source==='user'?'SAVED':'NO SAVED CHOICE'}`
-        :(availability.source==='user'
-          ?`SAVED • ${availability.isAvailable?'AVAILABLE':'SKIPPING'}`
-          :`NOT SAVED • ${availability.isAvailable?'INCLUDED':'SKIPPING'}`));
-    label.style.color=shownValue?'var(--ok)':'var(--warn)';
-    if(decision) decision.textContent=availabilityDecisionCopy(availability);
-    if(title) title.textContent=`Availability for ${availability.cycle.cycleId}`;
-    if(cycleText){
-      cycleText.textContent=`Upcoming cycle starts ${formatAvailabilityInstant(availability.cycle.startsAt,availability.cycle.timeZone)} and ends ${formatAvailabilityInstant(availability.cycle.endsAt,availability.cycle.timeZone)}.`;
+    for(const [button,state] of [[availableButton,model.available],[skipButton,model.skip]]){
+      button.disabled=state.disabled;
+      button.setAttribute('aria-pressed',state.pressed?'true':'false');
+      button.textContent=state.text;
     }
-    if(cutoffText){
-      cutoffText.textContent=`Changes close ${formatAvailabilityInstant(availability.cycle.cutoffAt,availability.cycle.timeZone)} (${availability.cycle.timeZone}).`;
-    }
+    label.textContent=model.badge.text;
+    label.dataset.tone=model.badge.tone;
+    const setText=(id,text)=>{ const node=document.getElementById(id); if(node) node.textContent=text; };
+    setText('availTitle',model.title);
+    setText('availDecision',model.decision);
+    setText('availCycle',model.cycleText);
+    setText('availCutoff',model.cutoffText);
+    document.getElementById('availCutoff')?.toggleAttribute('data-urgent',!!model.cutoffUrgent);
+    const banner=document.getElementById('availBanner');
     if(banner){
-      banner.style.display=availability.source!=='user'||!availability.isAvailable?'block':'none';
-      banner.textContent=availability.source!=='user'
-        ?(availability.source==='cycle_default'
-          ?`Default inclusion is effective for ${availability.cycle.cycleId}, but it is not your saved choice.`
-          :`Your previous setting is inherited for ${availability.cycle.cycleId}, but it is not your saved choice.`)
-        :`You chose to skip ${availability.cycle.cycleId}. This does not change another cycle.`;
+      banner.hidden=!model.note;
+      banner.textContent=model.note?.text||'';
     }
+    const status=document.getElementById('availExplan');
     if(status){
-      status.style.display=statusMessage?'block':'none';
-      status.textContent=statusMessage;
+      status.style.display=model.status?'block':'none';
+      status.textContent=model.status;
+      status.dataset.tone=availabilityState.error?'danger':'info';
     }
-    if(retry) retry.hidden=true;
-    if(dashboardBadge){
-      dashboardBadge.textContent=availabilityBadgeCopy(availability);
-      dashboardBadge.disabled=false;
-      const saved=availability.source==='user';
-      dashboardBadge.style.background=saved
-        ?(availability.isAvailable?'var(--ok-surface)':'var(--warn-surface)'):'var(--bg-3)';
-      dashboardBadge.style.color=saved
-        ?(availability.isAvailable?'var(--ok)':'var(--warn)'):'var(--ink-2)';
-      dashboardBadge.style.borderColor=saved
-        ?(availability.isAvailable?'var(--ok)':'var(--warn)'):'var(--accent)';
-      dashboardBadge.setAttribute('aria-label',`${availabilityBadgeCopy(availability)}. Review weekly availability.`);
+    const retry=document.getElementById('availRetry');
+    if(retry){
+      retry.hidden=model.retry.hidden;
+      retry.disabled=model.retry.disabled;
     }
+    renderAvailabilityDashboardBadge(availability);
   }
   function clearAvailability(){
     clearAvailabilityRolloverTimer();
@@ -2858,12 +2914,12 @@ async function refreshMe(){
       const card=document.getElementById('availabilityWrap');
       const action=document.getElementById(target.isAvailable?'availAvailable':'availSkip');
       if(!card||!action||card.style.display==='none') return false;
-      card.scrollIntoView({behavior:'smooth',block:'center'});
+      card.scrollIntoView({behavior:window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches?'auto':'smooth',block:'center'});
       (action.disabled?card:action).focus({preventScroll:true});
       const status=document.getElementById('availExplan');
       if(status&&!availabilityState.error&&!availabilityState.notice){
         status.style.display='block';
-        status.textContent=`${current.cycle.cycleId} availability choices ready.`;
+        status.textContent=`Choose your availability for ${window._randori_pairing_view?.weekLabel?.(current.cycle.cycleId)||'the next cycle'}.`;
       }
       try{ window._randori_log?.info?.('availability','navigation_ready',{source:String(source).slice(0,32)}); }catch{}
       return true;
@@ -2938,13 +2994,10 @@ async function refreshMe(){
     const demoRun=document.getElementById('demoRunBtn');
     const demoReset=document.getElementById('demoResetBtn');
     if(demoRun){
+      // Demo tools live in the admin-only Diagnostics disclosure.
       if(isAdmin()){
         demoRun.style.display='inline-flex';
-        // show Reset only if demo active flag
-        const demoActive = localStorage.getItem('randori-demo-active')==='1';
-        if(demoReset) demoReset.style.display = demoActive ? 'inline-flex' : 'inline-flex';
-        if(demoActive && demoReset){ demoReset.disabled=false; } // keep visible but enabled when active
-        if(!demoActive && demoReset){ demoReset.style.opacity='0.7'; }
+        if(demoReset) demoReset.style.display='inline-flex';
       } else {
         demoRun.style.display='none';
         if(demoReset) demoReset.style.display='none';
@@ -3021,7 +3074,7 @@ async function refreshMe(){
       }
       resetAvailabilityContextRecovery();
       replaceAvailability(next);
-      toast(selectedValue?`Available for ${availabilityState.value.cycle.cycleId} ✓`:`Skipping ${availabilityState.value.cycle.cycleId}`);
+      toast(window._randori_pairing_view?.savedToast?.(availabilityState.value)||'Availability saved');
       renderPeople();
     }catch(error){
       if(!isCurrentRequest()) return;
@@ -3790,6 +3843,20 @@ async function refreshMe(){
       resetAvailabilityContextRecovery();
       refreshAvailability().catch(()=>{});
     });
+    // Connectivity and the cutoff countdown change presentation only; every
+    // decision and publication still goes through the versioned server calls.
+    const pairViewVisible=()=>document.getElementById('view-pair')?.style.display!=='none';
+    window.addEventListener('offline',()=>{ renderAvailability(); updatePairingRunAccess(); });
+    window.addEventListener('online',()=>{
+      renderAvailability();
+      updatePairingRunAccess();
+      if(!me) return;
+      refreshAvailability().catch(()=>{});
+      if(pairViewVisible()) void renderPairs();
+    });
+    setInterval(()=>{
+      if(me&&document.visibilityState==='visible'&&pairViewVisible()) renderAvailability();
+    },60_000);
     const tabs=document.querySelector('.tabs');
     tabs?.addEventListener('click',event=>{
       if(event.isTrusted) availabilityNavigationState.trustedTabEpoch+=1;
@@ -4339,10 +4406,10 @@ async function refreshMe(){
       localStorage.setItem(PRES_KEY, JSON.stringify(m));
       bc?.postMessage({type:'presence'});
       setBrowserSyncState(bc?'ready':'local',bc
-        ?'Browser-tab sync ready.'
-        :'This tab is ready; cross-tab sync is unavailable in this browser.');
+        ?'Other open tabs stay in sync.'
+        :'This tab works; syncing with other tabs is not supported in this browser.');
     }catch{
-      setBrowserSyncState('error','Browser-tab sync is unavailable; this tab can still be used.');
+      setBrowserSyncState('error','Syncing with other tabs is unavailable; this tab still works.');
     }
   }
   setInterval(heartbeat, 2500); heartbeat();
@@ -4350,7 +4417,28 @@ async function refreshMe(){
     let m={}; try{m=JSON.parse(localStorage.getItem(PRES_KEY)||'{}')}catch{}
     let count=Object.keys(m).length;
     let el=document.getElementById('presencePanel');
-    if(el) el.innerHTML = Object.entries(m).slice(0,8).map(([id,v])=>`<div class="person" style="padding:8px"><span class="small">● tab ${escapeHtml(id.slice(0,4))} • ${escapeHtml(Math.round((Date.now()-v.at)/1000))}s ago</span><span class="kbd">${escapeHtml(v.tab)}</span></div>`).join('') || '<div class="small muted">no other tabs yet — open another to see sync</div>';
+    // Only the open, admin-only Diagnostics disclosure shows tab presence.
+    if(el&&el.closest('details')?.open!==false){
+      const rows=Object.entries(m).slice(0,8).map(([id,v],index)=>{
+        const row=document.createElement('div');
+        row.className='person';
+        const label=document.createElement('span');
+        label.className='small';
+        label.textContent=`${id===clientId?'This tab':`Tab ${index+1}`} · active ${Math.max(0,Math.round((Date.now()-v.at)/1000))}s ago`;
+        const state=document.createElement('span');
+        state.className='rc-badge';
+        state.textContent=v.tab==='visible'?'Visible':'In background';
+        row.append(label,state);
+        return row;
+      });
+      if(!rows.length){
+        const empty=document.createElement('div');
+        empty.className='small muted';
+        empty.textContent='No other open tabs.';
+        rows.push(empty);
+      }
+      el.replaceChildren(...rows);
+    }
     document.getElementById('presenceText').textContent = count<=1? 'you alone' : `${count} tabs live`;
   }
   setInterval(refreshPresence, 2000);
@@ -5757,8 +5845,20 @@ async function refreshMe(){
     const controller=new AbortController();
     pairingPublicationAbort=controller;
     updatePairingRunAccess();
-    const pairsList=document.getElementById('pairsList'); let overlay=null;
-    if(pairsList){ overlay=document.createElement('div'); overlay.className='loader-overlay'; overlay.innerHTML='<span class="spinner spinner-lg"></span><span class="small muted" style="margin-left:8px">Publishing current cycle…</span>'; overlay.style.display='flex'; overlay.style.gap='10px'; pairsList.style.position='relative'; pairsList.appendChild(overlay); }
+    const pairsList=document.getElementById('pairsList');
+    if(pairsList){
+      const overlay=document.createElement('div');
+      overlay.className='loader-overlay cycle-publishing';
+      overlay.setAttribute('role','status');
+      const spinner=document.createElement('span');
+      spinner.className='spinner';
+      spinner.setAttribute('aria-hidden','true');
+      const label=document.createElement('span');
+      label.className='small';
+      label.textContent='Publishing this cycle…';
+      overlay.append(spinner,label);
+      pairsList.appendChild(overlay);
+    }
     try{
       const data=await api('/api/pairing/run',{
         method:'POST',body:{expected_cycle_key:expectedCycleKey},signal:controller.signal,
@@ -5840,7 +5940,7 @@ async function refreshMe(){
       const msg=e.error||e.message||'demo failed';
       toast(msg);
     }finally{
-      if(runBtn){ runBtn.disabled=false; runBtn.textContent='✦ Run Demo'; }
+      if(runBtn){ runBtn.disabled=false; runBtn.textContent='Run demo'; }
     }
   }
 
@@ -5861,7 +5961,7 @@ async function refreshMe(){
     }catch(e){
       toast(e.error||e.message||'reset failed');
     }finally{
-      if(resetBtn){ resetBtn.disabled=false; resetBtn.textContent='Reset Demo'; resetBtn.style.opacity='0.7'; }
+      if(resetBtn){ resetBtn.disabled=false; resetBtn.textContent='Reset demo'; }
     }
   }
 
@@ -6023,12 +6123,123 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const meta=document.getElementById('currentWeekMeta');
     if(cloudCur){
       const cycle=envelope?.current_cycle;
-      const starts=cycle?pairingInstantLabel(cycle.startsAt,cycle.timeZone):new Date(cloudCur.week_start||cloudCur.created_at).toLocaleString();
-      meta.textContent=`${cloudCur.week_label} • ${cloudCur.pairs.length} assignment(s) • current since ${starts}`;
+      meta.textContent=window._randori_pairing_view?.publishedMeta?.({
+        cycleId:cloudCur.week_label,count:Array.isArray(cloudCur.pairs)?cloudCur.pairs.length:0,
+        startsAt:cycle?.startsAt||cloudCur.week_start||null,timeZone:cycle?.timeZone||'',
+      })||'';
       return;
     }
-    if(!localCur){ meta.textContent='The weekly pairing schedule is loading — set yourself Available to join the upcoming cycle.'; return; }
+    if(!localCur){ meta.textContent='Sign in to see this week’s pairs.'; return; }
     meta.textContent=`${localCur.label} • ${localCur.pairs.length} pair(s) • ${new Date(localCur.date).toLocaleString()}`;
+  }
+
+  // Node builders for the pairs card. Server strings only ever reach
+  // textContent; colors pass safeProfileColor.
+  function pairingNode(tag,{className='',text='',testId=''}={}){
+    const node=document.createElement(tag);
+    if(className) node.className=className;
+    if(text) node.textContent=text;
+    if(testId) node.dataset.testid=testId;
+    return node;
+  }
+
+  function renderPairsStatus(container,kind,options={}){
+    const view=window._randori_pairing_view;
+    if(!container||!view) return;
+    const model=view.pairsStatusView(kind,{...options,online:navigator.onLine!==false});
+    const meta=document.getElementById('currentWeekMeta');
+    if(meta) meta.textContent=model.meta;
+    const box=pairingNode('div',{className:'cycle-empty'});
+    box.dataset.tone=model.tone;
+    box.dataset.state=kind;
+    box.append(pairingNode('p',{className:'cycle-empty-title',text:model.title}));
+    if(model.body) box.append(pairingNode('p',{className:'small',text:model.body,testId:'pairing-publication-copy'}));
+    if(model.retry){
+      const retry=pairingNode('button',{className:'btn secondary sm',text:'Retry'});
+      retry.type='button';
+      retry.id='pairsRetryBtn';
+      retry.addEventListener('click',()=>{ void renderPairs(); });
+      box.append(retry);
+    }
+    container.replaceChildren(box);
+  }
+
+  function renderPairsLoading(container){
+    // Only the visible view shows a skeleton; hidden containers stay empty
+    // after a circle reset until authoritative data arrives.
+    if(!container||container.childElementCount
+      ||document.getElementById('view-pair')?.style.display==='none') return;
+    const meta=document.getElementById('currentWeekMeta');
+    if(meta) meta.textContent=window._randori_pairing_view?.pairsStatusView?.('loading')?.meta||'';
+    const skeletons=[0,1].map(()=>pairingNode('div',{className:'rc-skeleton cycle-pair-skeleton'}));
+    const wrap=pairingNode('div',{className:'cycle-pairs-loading'});
+    wrap.setAttribute('aria-hidden','true');
+    wrap.append(...skeletons);
+    container.replaceChildren(wrap);
+  }
+
+  function pairRowNode(pair,{coordination=false}={}){
+    const view=window._randori_pairing_view;
+    const {members,solo,mine}=view.pairMembers(pair,Number(me?.id||me?.uid));
+    const row=pairingNode('div',{
+      className:`pair cycle-pair${mine?' is-mine':''}`,
+      testId:coordination?'secondary-pair-row':'',
+    });
+    if(!coordination&&pair?.pg_id!==undefined&&pair?.pg_id!==null) row.dataset.pg=String(pair.pg_id);
+    const who=pairingNode('div',{className:'who'});
+    members.forEach((member,index)=>{
+      if(index>0){
+        const joiner=pairingNode('span',{className:'muted small',text:'and'});
+        who.append(joiner);
+      }
+      const avatar=pairingNode('span',{className:'avatar',text:member.initials});
+      const color=safeProfileColor(member.color||PALETTE[index%PALETTE.length]);
+      avatar.style.background=color;
+      const ink=view.avatarInk(color);
+      if(ink) avatar.style.color=ink;
+      avatar.setAttribute('aria-hidden','true');
+      who.append(avatar,pairingNode('b',{className:'cycle-pair-name',text:member.isMe?`${member.name} (you)`:member.name}));
+    });
+    if(solo) who.append(pairingNode('span',{className:'rc-badge',text:'Solo practice'}));
+    const side=pairingNode('div',{className:'topic-group'});
+    if(mine) side.append(pairingNode('span',{className:'rc-badge rc-badge--success',text:'Your pair'}));
+    side.append(pairingNode('span',{
+      className:'small muted',
+      text:coordination?'Coordination only · Workspace not enabled':'Choose the focus together in your room',
+    }));
+    row.append(who,side);
+    return {row,mine};
+  }
+
+  function renderPairRows(container,pairs,{coordination=false}={}){
+    const rows=[];
+    let mine=false;
+    for(const pair of pairs){
+      if(coordination){
+        const members=Array.isArray(pair?.members)?pair.members:[];
+        const solo=pair?.solo===true;
+        if((solo&&members.length!==1)||(!solo&&members.length!==2)) continue;
+      }
+      const built=pairRowNode(pair,{coordination});
+      mine=mine||built.mine;
+      rows.push(built.row);
+    }
+    const footer=[];
+    if(!mine) footer.push('You aren’t in a pair this cycle.');
+    footer.push(coordination
+      ?'This circle coordinates pairs only. No shared room or workspace is created.'
+      :'People who skipped this cycle aren’t paired.');
+    rows.push(pairingNode('p',{className:'small muted cycle-pairs-foot',text:footer.join(' ')}));
+    container.replaceChildren(...rows);
+  }
+
+  function markPairingPublicationUnknown(){
+    currentPairingPublicationState=null;
+    currentPairingPublicationFence=null;
+    if(pairingPublicationRefreshTimer!==null) clearTimeout(pairingPublicationRefreshTimer);
+    pairingPublicationRefreshTimer=null;
+    pairingPublicationLoadFailed=true;
+    updatePairingRunAccess();
   }
 
   async function renderPairs(){
@@ -6036,6 +6247,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const container=document.getElementById('pairsList');
     if(me){
       const userId=Number(me.id||me.uid);
+      renderPairsLoading(container);
       if(authCapabilities.multiCircleControlPlane&&!activeCircleContext){
         try{ await ensureActiveCircleContext(userId); }catch{}
       }
@@ -6060,24 +6272,29 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         currentCloudPairingCycle=null;
         currentCloudPairingLoaded=true;
         renderSignedInRoomSelect();
-        document.getElementById('currentWeekMeta').textContent='Current-cycle pairings could not be loaded.';
-        container.innerHTML='<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">Pairings are unavailable. Local or cached pairs are not shown while signed in. <button id="pairsRetryBtn" class="pill" type="button" style="margin-left:8px">Retry</button></div>';
-        document.getElementById('pairsRetryBtn')?.addEventListener('click',renderPairs);
+        // A failed read cannot confirm any publication state, so owner status
+        // and recovery controls must not keep showing an older result.
+        markPairingPublicationUnknown();
+        renderPairsStatus(container,'load-error');
         return;
       }finally{
         if(pairingListAbort===controller) pairingListAbort=null;
       }
       if(renderEpoch!==pairingRenderEpoch||Number(me?.id||me?.uid)!==userId
         ||!pairingResponseMatchesContext(response)
-        ||!circleControlOperationMatches(circleOperation)) return;
+        ||!circleControlOperationMatches(circleOperation)){
+        // A superseded response never leaves a skeleton behind as if loading.
+        if(renderEpoch===pairingRenderEpoch) container?.querySelector('.cycle-pairs-loading')?.remove();
+        return;
+      }
+      pairingPublicationLoadFailed=false;
+      currentPairingUpcomingCycle=response?.upcoming_cycle&&typeof response.upcoming_cycle==='object'
+        ?response.upcoming_cycle:null;
       let publicationState;
       try{ publicationState=acceptPairingPublicationState(response,circleOperation); }
       catch{
-        currentPairingPublicationState=null;
-        currentPairingPublicationFence=null;
-        updatePairingRunAccess();
-        document.getElementById('currentWeekMeta').textContent='Current-cycle publication state could not be verified.';
-        container.innerHTML='<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">Pairing recovery is unavailable until the server state can be verified.</div>';
+        markPairingPublicationUnknown();
+        renderPairsStatus(container,'unverified');
         return;
       }
       const cloudWeeks=Array.isArray(response?.weeks)?response.weeks:[];
@@ -6091,13 +6308,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         currentCloudPairingCycle=null;
         currentCloudPairingLoaded=true;
         renderSignedInRoomSelect();
-        const stateCopy=cycleState==='future'
-          ?'The returned pairing cycle has not started yet.'
-          :cycleState==='stale'
-            ?'The returned pairing cycle has ended.'
-            :'The current pairing cycle could not be verified.';
-        document.getElementById('currentWeekMeta').textContent=stateCopy;
-        container.innerHTML='<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">No prior or unverified pairing room is shown. Retry after the server schedule is available.</div>';
+        renderPairsStatus(container,['future','stale'].includes(cycleState)?cycleState:'invalid');
         return;
       }
       const cloudWeek=cloudWeeks.find(week=>week?.is_current===true&&(!currentCycleId||String(week.week_label)===currentCycleId))||null;
@@ -6106,58 +6317,23 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       currentCloudPairingWeek=cloudWeek;
       if(!cloudWeek){
         renderSignedInRoomSelect();
-        const meta=document.getElementById('currentWeekMeta');
-        const upcoming=response?.upcoming_cycle;
-        const nextCutoff=upcoming
-          ?` • next cutoff ${pairingInstantLabel(upcoming.cutoffAt,upcoming.timeZone)}`
-          :'';
-        const recoveryAt=publicationState
-          ?pairingInstantLabel(publicationState.recovery_at,publicationState.time_zone):'';
-        meta.textContent=publicationState?.state==='overdue'
-          ?`${currentCycleId||'Current cycle'} • publication is late`
-          :publicationState?.state==='pending'
-            ?`${currentCycleId||'Current cycle'} • scheduled publication pending${nextCutoff}`
-            :(currentCycleId
-              ?`${currentCycleId} • awaiting current-cycle publication${nextCutoff}`
-              :'Awaiting current-cycle publication');
-        const detail=publicationState?.state==='overdue'
-          ?(publicationState.can_publish_now===true
-            ?'The scheduled run did not publish this cycle. Use Publish now; retries are safe.'
-            :'The scheduled run did not publish this cycle. The circle owner can retry it now.')
-          :publicationState?.state==='pending'
-            ?`The scheduled run is still within its grace period${recoveryAt?` until ${recoveryAt}`:''}.`
-            :'No pairings have been published for the current cycle.';
-        container.innerHTML=`<div class="small muted" data-testid="pairing-publication-copy" style="padding:10px; border:1px dashed var(--line); border-radius:10px">${escapeHtml(detail)} Historical and local demo pairs are not shown here.</div>`;
+        renderPairsStatus(container,'unpublished',{
+          cycleId:currentCycleId,publication:publicationState,
+          allowed:publicationState?.can_publish_now===true,upcoming:response?.upcoming_cycle||null,
+        });
         return;
       }
+      const pairs=Array.isArray(cloudWeek.pairs)?cloudWeek.pairs:[];
       if(response.coordination_only===true&&response.workspace_available===false){
         renderPairsMeta(null,cloudWeek,response);
         currentCloudPairingWeek=null;
         renderSignedInRoomSelect();
-        container.innerHTML=cloudWeek.pairs.map(pair=>{
-          const members=Array.isArray(pair?.members)?pair.members:[];
-          const solo=pair?.solo===true;
-          if((solo&&members.length!==1)||(!solo&&members.length!==2)) return '';
-          const first=members[0]||{};
-          const firstName=String(first.name||'Member');
-          const firstColor=safeProfileColor(first.color||PALETTE[0]);
-          const partner=solo
-            ?'<span class="kbd" style="color:var(--accent)">solo practice</span>'
-            :(()=>{ const second=members[1]||{}; const secondName=String(second.name||'Member'); const secondColor=safeProfileColor(second.color||PALETTE[1]); return `<span class="muted small">×</span><span class="avatar" style="background:${secondColor}">${escapeHtml(secondName.slice(0,2).toUpperCase())}</span><b style="font-size:12.5px">${escapeHtml(secondName)}</b>`; })();
-          return `<div class="pair" data-testid="secondary-pair-row"><div class="who"><span class="avatar" style="background:${firstColor}">${escapeHtml(firstName.slice(0,2).toUpperCase())}</span><b style="font-size:12.5px">${escapeHtml(firstName)}</b>${partner}</div><div class="topic-group"><span class="small muted">Coordination only • workspace not enabled</span></div></div>`;
-        }).join('')+'<div class="row" style="margin-top:10px"><span class="small muted">Current-circle coordination only. No room or workspace capability was created.</span></div>';
+        renderPairRows(container,pairs,{coordination:true});
         return;
       }
       renderPairsMeta(null, cloudWeek, response);
       renderSignedInRoomSelect(cloudWeek);
-      container.innerHTML = cloudWeek.pairs.map(p=>{
-        const aName=p.a_name||'??'; const bName=p.is_ai?'Solo practice':(p.b_name||'—');
-        const aCol=safeProfileColor(p.a_color||PALETTE[0]); const bCol=safeProfileColor(p.is_ai?'var(--accent)':(p.b_color||PALETTE[1]));
-        return `<div class="pair" data-pg="${escapeHtml(p.pg_id)}">
-          <div class="who"><span class="avatar" style="background:${aCol}">${escapeHtml(aName.slice(0,2).toUpperCase())}</span><b style="font-size:12.5px">${escapeHtml(aName)}</b><span class="muted small">×</span><span class="avatar" style="background:${bCol}">${escapeHtml(bName.slice(0,2).toUpperCase())}</span><b style="font-size:12.5px">${escapeHtml(bName)}</b>${p.is_ai? '<span class="kbd" style="color:var(--accent)">solo</span>':''}</div>
-          <div class="topic-group"><span class="small muted">Choose the focus together in your room</span></div>
-        </div>`
-      }).join('') + `<div class="row" style="margin-top:10px"><span class="small muted">${cloudWeeks.length} week(s) of pairings. Unavailable teammates are skipped automatically.</span></div>`;
+      renderPairRows(container,pairs);
       return;
     }
 
