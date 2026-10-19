@@ -1,5 +1,5 @@
 import { Page, Request, Route, expect, test } from '@playwright/test';
-import { mockApi, originalQuestionFixture, resetClientState } from './helpers';
+import { mockApi, openRoomPanel, originalQuestionFixture, resetClientState } from './helpers';
 
 const roomId='week_42_pair_7';
 const completionVersion='c'.repeat(64);
@@ -138,6 +138,7 @@ async function openWorkspace(page:Page,store:ControlsStore,actorId:1|2){
   await page.goto(`/join/${roomId}`,{waitUntil:'domcontentloaded'});
   await expect(page.locator('#view-code')).toBeVisible();
   await expect.poll(()=>page.evaluate(()=>(window as typeof window & {_randori_workspace?:{hydrated?:boolean}})._randori_workspace?.hydrated)).toBe(true);
+  await openRoomPanel(page,'session');
   await expect(page.getByTestId('session-controls')).toBeVisible();
   await expect(page.getByTestId('session-controls-status')).not.toContainText('Loading');
 }

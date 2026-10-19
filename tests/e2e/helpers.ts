@@ -285,7 +285,17 @@ export async function selectLanguage(page: Page, language: string) {
   await page.locator('#langSelect').selectOption(language);
 }
 
+// WP-R: the room shows one side panel at a time (all panels on phones).
+// Bring a panel forward before interacting with controls inside it.
+export async function openRoomPanel(page: Page, panel: 'code' | 'problem' | 'results' | 'session' | 'notes') {
+  const tab = page.locator(`[data-room-tab="${panel}"]`);
+  if (await tab.isVisible()) await tab.click();
+  else await page.evaluate(name => (window as typeof window & { _randori_room?: { show?: (panel: string) => string } })._randori_room?.show?.(name), panel);
+  await expect(page.locator(`#roomPanel-${panel}`)).toBeVisible();
+}
+
 export async function selectQuestion(page: Page, slug: string) {
+  await openRoomPanel(page, 'problem');
   await page.locator('#questionSelect').selectOption(slug);
   const overlay = page.locator('#confirmOverlay.show');
   if (await overlay.isVisible()) await page.locator('#confirmOk').click();
