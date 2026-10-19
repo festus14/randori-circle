@@ -656,7 +656,7 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .cycle-choices{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--space-2)}
 .cycle-choice{
   display:flex; align-items:center; justify-content:center; gap:var(--space-2);
-  min-height:var(--control-lg); padding:var(--space-2) var(--space-4);
+  min-height:var(--control-lg); padding:var(--space-2) var(--space-3);
   border:1px solid var(--control-border); border-radius:var(--radius-md);
   background:var(--card); color:var(--ink); font:inherit; font-weight:var(--weight-emphasis); cursor:pointer;
   transition:background-color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
@@ -674,7 +674,9 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .rc-badge[data-tone="danger"]{background:var(--bad-surface); border-color:var(--bad); color:var(--bad)}
 .rc-badge[data-tone="info"]{background:var(--info-surface); border-color:var(--info); color:var(--info)}
 .cycle-pairs-list{position:relative; gap:var(--space-2)}
-.cycle-pair .who{min-width:0}
+.cycle-pair{flex-direction:column; align-items:flex-start; gap:var(--space-2)}
+.cycle-pair .who{min-width:0; row-gap:var(--space-2)}
+.cycle-member{display:inline-flex; align-items:center; gap:var(--space-2); min-width:0}
 .cycle-pair-name{font-size:var(--text-sm); overflow-wrap:anywhere}
 .cycle-pair.is-mine{border-color:var(--color-action); background:var(--color-action-subtle)}
 .cycle-pairs-foot{margin-top:var(--space-1)}
@@ -695,7 +697,6 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 }
 @media(max-width:640px){
   .cycle-card{padding:var(--space-4)}
-  .cycle-pair{flex-direction:column; align-items:flex-start}
 }
 @media(max-width:359px){ .cycle-choices{grid-template-columns:minmax(0,1fr)} }
 @media(forced-colors:active){
@@ -4655,6 +4656,8 @@ async function refreshMe(){
   // expose for debug
   window._randori_auth={
     get token(){return ''}, get me(){return me}, get signedIn(){return !!me},
+    // True once /api/auth/me has answered authoritatively or proved unavailable.
+    get identitySettled(){return authIdentityHydrated||authIdentityHydrationUnavailable},
     get capabilities(){return {...authCapabilities}},
     canStartSignup,
     api,refreshMe,openModal:openAuthModal,closeModal:closeAuthModal,
@@ -6563,7 +6566,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   function pairRowNode(pair,{coordination=false}={}){
     const view=window._randori_pairing_view;
-    const {members,solo,mine}=view.pairMembers(pair,Number(me?.id||me?.uid));
+    const {members,solo,mine,identityKnown}=view.pairMembers(pair,Number(me?.id||me?.uid));
     const row=pairingNode('div',{
       className:`pair cycle-pair${mine?' is-mine':''}`,
       testId:coordination?'secondary-pair-row':'',
@@ -6571,17 +6574,17 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(!coordination&&pair?.pg_id!==undefined&&pair?.pg_id!==null) row.dataset.pg=String(pair.pg_id);
     const who=pairingNode('div',{className:'who'});
     members.forEach((member,index)=>{
-      if(index>0){
-        const joiner=pairingNode('span',{className:'muted small',text:'and'});
-        who.append(joiner);
-      }
+      if(index>0) who.append(pairingNode('span',{className:'muted small',text:'and'}));
+      // Each member stays one unit so names wrap between people, not inside.
+      const unit=pairingNode('span',{className:'cycle-member'});
       const avatar=pairingNode('span',{className:'avatar',text:member.initials});
       const color=safeProfileColor(member.color||PALETTE[index%PALETTE.length]);
       avatar.style.background=color;
       const ink=view.avatarInk(color);
       if(ink) avatar.style.color=ink;
       avatar.setAttribute('aria-hidden','true');
-      who.append(avatar,pairingNode('b',{className:'cycle-pair-name',text:member.isMe?`${member.name} (you)`:member.name}));
+      unit.append(avatar,pairingNode('b',{className:'cycle-pair-name',text:member.isMe?`${member.name} (you)`:member.name}));
+      who.append(unit);
     });
     if(solo) who.append(pairingNode('span',{className:'rc-badge',text:'Solo practice'}));
     const side=pairingNode('div',{className:'topic-group'});
@@ -6591,12 +6594,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       text:coordination?'Coordination only · Workspace not enabled':'Choose the focus together in your room',
     }));
     row.append(who,side);
-    return {row,mine};
+    return {row,mine,identityKnown};
   }
 
   function renderPairRows(container,pairs,{coordination=false}={}){
     const rows=[];
     let mine=false;
+    let identityKnown=false;
     for(const pair of pairs){
       if(coordination){
         const members=Array.isArray(pair?.members)?pair.members:[];
@@ -6605,10 +6609,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       }
       const built=pairRowNode(pair,{coordination});
       mine=mine||built.mine;
+      identityKnown=identityKnown||built.identityKnown;
       rows.push(built.row);
     }
     const footer=[];
-    if(!mine) footer.push('You aren’t in a pair this cycle.');
+    if(!mine&&identityKnown) footer.push('You aren’t in a pair this cycle.');
     footer.push(coordination
       ?'This circle coordinates pairs only. No shared room or workspace is created.'
       :'People who skipped this cycle aren’t paired.');
@@ -6676,6 +6681,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       let publicationState;
       try{ publicationState=acceptPairingPublicationState(response,circleOperation); }
       catch{
+        // Unverifiable data must not leave an earlier week or room reusable.
+        clearCurrentCloudPairing();
         markPairingPublicationUnknown();
         renderPairsStatus(container,'unverified');
         return;
@@ -9219,6 +9226,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   async function showDashboard(){
     const previousRoom=String(window._randori_authorized_room||window._randori_workspace?.room||'');
     cancelDashboardPairRequest();
+    // Showing Home answers any earlier explicit view request (e.g. the
+    // availability badge's jump to Pairing). Left set, a later automatic
+    // route would pull the member off the dashboard they are now using.
+    window._randoriExplicitNavigation=null;
     hideAllViews();
     if(viewDashboard) viewDashboard.style.display='block';
     window._randori_onboarding_authority?.render?.();
@@ -10057,7 +10068,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     body.append(composer);
     card.append(header,body); area.replaceChildren(card);
     window._randori_meeting_link?.mount?.();
-    toggleScheduleActions(scheduleState.inFlight);
+    toggleScheduleActions(scheduleState.inFlight==='write');
     renderHomeNextStep();
     if(scheduleState.expiryError){
       const focusTarget=scheduleState.expiryAction==='propose'
@@ -10136,8 +10147,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(!scope||scope.identity!==scheduleState.room||scheduleState.inFlight) return false;
     const captured=captureScheduleOperation(scope);
     const focusSnapshot=captureScheduleFocus();
-    const controller=new AbortController(); scheduleState.abort=controller; scheduleState.inFlight=true;
-    setScheduleStatus('checking…'); toggleScheduleActions(true);
+    // A background read leaves every control usable: a write started now
+    // supersedes it (mutateSchedule cancels the read), so a click that lands
+    // while the bounded poll is running is never swallowed by a disabled button.
+    const controller=new AbortController(); scheduleState.abort=controller; scheduleState.inFlight='poll';
+    setScheduleStatus('checking…');
     try{
       let response=null,data;
       if(captured.kind==='secondary'){
@@ -10183,7 +10197,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   async function mutateSchedule(action,extra={}){
     const scope=pairedDashboardSchedule();
-    if(!scope||scope.identity!==scheduleState.room||scheduleState.inFlight) return false;
+    if(!scope||scope.identity!==scheduleState.room||scheduleState.inFlight==='write') return false;
     const room=scope.identity;
     if(!/^[a-f0-9]{64}$/.test(scheduleState.version)){
       setScheduleStatus('checking…');
@@ -10194,7 +10208,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     cancelScheduleRequest(true);
     const captured=captureScheduleOperation(scope);
     armScheduleBoundaryTimer();
-    const controller=new AbortController(); scheduleState.abort=controller; scheduleState.inFlight=true;
+    const controller=new AbortController(); scheduleState.abort=controller; scheduleState.inFlight='write';
     let refreshAfterElapsed=false;
     setScheduleStatus('saving…'); toggleScheduleActions(true);
     try{
@@ -10839,6 +10853,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   let joinRequestEpoch=0;
   let joinAuthUserId=Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null;
   let joinAuthIdentityHydrated=false;
+  let joinSignInPrompted=false;
   document.querySelector('.tabs')?.addEventListener('click',()=>{
     joinRequestEpoch+=1;
     joinRequest=null;
@@ -10955,14 +10970,25 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     // hide all first? We decide
     const tabsEl=document.querySelector('.tabs');
     if(!signedIn){
+      // A view the visitor picked while /api/auth/me is still in flight is
+      // not overridden by a provisional "signed out" route; the route runs
+      // again once identity settles and decides with an authoritative answer.
+      if(window._randori_auth?.identitySettled!==true&&window._randoriExplicitNavigation) return;
       // Canonical pair invites are private capabilities: preserve the URL and require sign-in.
       hideAllViews();
       if(viewLanding) viewLanding.style.display='block';
       if(tabsEl) tabsEl.style.display='flex';
       if(joinRoom){
         window._randori_pending_join_room=joinRoom;
-        window._randori_auth?.openModal?.('signin');
-        const title=document.getElementById('authTitle'); if(title) title.textContent='Sign in to join your pairing room';
+        // Until /api/auth/me settles, "no user yet" is not "signed out": a
+        // member opening their own pair link must not get a sign-in dialog
+        // stacked over the room that hydration is about to open. The route is
+        // re-evaluated when identity settles (see automaticRouteKey).
+        if(window._randori_auth?.identitySettled===true){
+          joinSignInPrompted=true;
+          window._randori_auth?.openModal?.('signin');
+          const title=document.getElementById('authTitle'); if(title) title.textContent='Sign in to join your pairing room';
+        }
       }
       // hide circle tab for non-admin anon
       try{ document.querySelector('[data-tab="circle"]')?.style.setProperty('display','none'); }catch{ const ct=document.querySelector('[data-tab="circle"]'); if(ct) ct.style.display='none'; }
@@ -10995,6 +11021,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }
     // signed in
     if(tabsEl) tabsEl.style.display='flex';
+    if(joinSignInPrompted){
+      // The join sign-in prompt has been answered (here or in another tab).
+      joinSignInPrompted=false;
+      if(document.getElementById('authOverlay')?.classList.contains('show')) window._randori_auth?.closeModal?.();
+    }
     if(joinRoom){
       const allowed=await openAuthorizedJoin(joinRoom,{canApply:canApplyRoute});
       if(!canApplyRoute()) return;
@@ -11065,7 +11096,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   let lastAutomaticRouteKey=null;
   function automaticRouteKey(){
     const user=window._randori_auth?.me;
-    return `${user?.id||user?.uid||user?.email||'anonymous'}|${location.pathname}${location.search}${location.hash}`;
+    // Identity settling is part of the key so an anonymous route taken before
+    // /api/auth/me answered is re-run once it has (it may now prompt sign-in).
+    const settled=window._randori_auth?.identitySettled===true?'settled':'pending';
+    return `${user?.id||user?.uid||user?.email||'anonymous'}|${settled}|${location.pathname}${location.search}${location.hash}`;
   }
   async function requestAutomaticRoute({force=false}={}){
     const key=automaticRouteKey();
@@ -12738,7 +12772,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         // initial lint
         setTimeout(updateLintFromMarkers, 800);
 
-        try{ if(typeof window.toast==='function') (typeof window.toast==='function' && window.toast)('Monaco IDE ready — TS lint + Prettier format'); }catch{}
+        // No "editor ready" toast: Monaco loads on every page, including the
+        // dashboard, and an unsolicited toast covered controls there.
 
       }catch(e){
         console.error('monaco init error',e);
@@ -13642,14 +13677,22 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const preserveCurrent=state.room===preliminary.room&&state.actorId===preliminary.actorId
       &&state.circlePublicId===preliminary.circlePublicId
       &&state.contextVersion===preliminary.contextVersion&&state.cycleToken===preliminary.cycleToken;
+    // A confirmation or withdrawal in flight owns the request generation; a
+    // reconciliation read must never cancel the participant's action.
+    if(preserveCurrent&&state.busy&&state.completion) return false;
     state.epoch+=1; state.controller?.abort();
     state.room=preliminary.room; state.actorId=preliminary.actorId;
     state.circlePublicId=preliminary.circlePublicId; state.contextVersion=preliminary.contextVersion;
     state.cycleToken=preliminary.cycleToken;
     if(!preserveCurrent) state.completion=null;
-    state.busy=true;
+    // Background reconciliation keeps the last authoritative receipt
+    // interactive: the bounded poll must not swallow a click on Confirm.
+    const background=state.completion!==null;
+    state.busy=!background;
     const scope=captureScope(preliminary.room);
-    const controller=new AbortController(); state.controller=controller; render();
+    const controller=new AbortController(); state.controller=controller;
+    if(state.pollTimer!==null){ clearTimeout(state.pollTimer); state.pollTimer=null; }
+    if(!background) render();
     try{
       const url=new URL('/api/session-completion',location.origin); url.searchParams.set('room_id',scope.room);
       const headers=scope.contextVersion===null?undefined:{'x-randori-circle-context-version':String(scope.contextVersion)};
@@ -13666,9 +13709,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }finally{ if(state.controller===controller) state.controller=null; }
   }
   async function mutate(desiredAction){
-    const scope=captureScope(state.room);
     const completion=state.completion;
-    if(!scope||!completion||state.busy||!['confirm','withdraw'].includes(desiredAction)) return false;
+    if(!captureScope(state.room)||!completion||state.busy||!['confirm','withdraw'].includes(desiredAction)) return false;
+    // The participant's action supersedes any background read still in flight
+    // so a stale poll response cannot overwrite the receipt this write returns.
+    state.epoch+=1; state.controller?.abort();
+    const scope=captureScope(state.room);
     state.busy=true; const controller=new AbortController(); state.controller=controller; render();
     try{
       const headers={'content-type':'application/json'};

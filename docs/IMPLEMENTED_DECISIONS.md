@@ -2713,3 +2713,66 @@ editing at the maintenance boundary, and rolls forward. A pre-v20 binary is
 not compatible with the v20 ledger and must not accept projection-only edits.
 Full details are in
 [`CONFLICT_FREE_CODE_DOCUMENTS.md`](CONFLICT_FREE_CODE_DOCUMENTS.md).
+
+## ID-66: Accept public invite requests without enumeration
+
+Status: candidate migration-backed increment (WP-L2); flag default-off.
+
+**Context.** The landing page needs a "Request an invite" form (UI redesign
+spec §7.2–§7.3). A public write endpoint that touches identity data must not
+reveal whether an email is a member, invited, or already waiting, must not let
+the form relay arbitrary text through the circle's sending domain, and must
+not add a second invitation path.
+
+**Decision.** Migration 21 adds `invite_requests` (UUID id, primary circle,
+email HMAC, plaintext normalized email, name ≤60, note ≤280, status
+`pending|approved|declined|expired`, epoch timestamps). A table CHECK forces
+every non-pending row to have email, name, and note scrubbed; a partial unique
+index allows one pending row per email. `POST /api/invite-requests` requires an
+exact same-origin `Origin` (scheme, host, port), validates bounded fields
+(ASCII-only email), short-circuits a filled `website` honeypot, consumes
+`auth_rate_limits` per client address (5/h, IPv6 keyed by /64) and per email
+hash (3/h), enforces a rolling 24-hour cap of 50 *stored* requests before any
+email-specific check, and then stores a request only when the email is
+not an active member, has no live invitation, is not already pending, and was
+not declined in the last 30 days. Every accepted outcome returns the same 202
+body after a 750 ms floor (overruns are logged without data); owner digest delivery
+is scheduled only afterwards through the ID-64 `waitUntil` path. Primary-circle
+owners list pending requests and approve or decline with a compare-and-swap on
+`pending`; approval calls the extracted `insertOwnerInvitation`, the same
+writer as owner "invite by email", in the same transaction as the request
+update and audit row, and queues the existing invitation email. Repeating the
+same decision replays idempotently. The digest event
+`inviterequest.email.requested` v1 (one per owner per hour) carries only ids
+and renders only the pending count and a dashboard link; it honours
+`email_enabled=0`. Approval re-checks membership and live invitations inside
+its transaction (409 `invite_request_already_member|already_invited`). The
+weekly cron runs capped, repeated bounded batches (≤500/statement, ≤10
+batches) of expiry and 30-day purge that never block publication, and the owner
+list scrubs overdue rows on read. `INVITE_REQUESTS_ENABLED`
+(with circle membership) gates all endpoints and the `inviteRequests`
+capability, which is also hidden until the v21 readiness probe passes.
+
+**Alternatives.** Encrypting the pending email would need a fifth
+credential-key purpose and a `credential_key_controls` schema change for data
+that already lives in plaintext in accounts and activations; scrubbing on
+decision and 30-day expiry bound the exposure instead. Including the
+requester's name and note in the owner email (allowed by the spec) would let
+anyone send chosen text to the owner from the circle's domain; the count-only
+digest avoids that. A distinct 409/200 for duplicates or members would make
+the form an enumeration oracle. Running retention on request paths would put
+deletes behind public traffic. A separate Vercel function would add to the
+function count; the endpoints are routed through `api/invitations.js`.
+
+**Residual risk.** Someone with many addresses and fresh emails can fill the
+50/day stored cap and make intake return 429 for everyone until the window
+rolls (no enumeration; owners can still invite directly; the flag is the kill
+switch). CAPTCHA or proof-of-work is the upgrade path.
+
+**Rollout and recovery.** Merge with the flag off. The merged code requires
+v21, so `/api/health/ready` is 503 until v21 is applied: apply it through the
+protected migration workflow immediately after merge, not near the Sunday
+08:00 UTC pairing run; enable the flag; canary submit → digest →
+approve → accept. Recovery is disabling the flag (endpoints 404, capability
+hidden); rows continue to expire and purge weekly. Full contract in
+[`INVITE_REQUESTS.md`](INVITE_REQUESTS.md).
