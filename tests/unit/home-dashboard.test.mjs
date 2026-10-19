@@ -174,7 +174,8 @@ test('nextStep marks the session window as live and then past', () => {
   assert.equal(soon.step, 'live');
   assert.equal(soon.title, 'Your session starts soon');
   const on = home.nextStep({ schedule: { agreed_time: iso(-30 * 60 * 1000) }, now: NOW });
-  assert.equal(on.title, 'Your session is on now');
+  assert.equal(on.title, 'Your session has started');
+  assert.match(on.detail, /propose a new time/);
   assert.equal(on.joinPrimary, true);
   const past = home.nextStep({ schedule: { agreed_time: iso(-2 * HOUR) }, now: NOW });
   assert.equal(past.step, 'past');

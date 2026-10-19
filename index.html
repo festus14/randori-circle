@@ -8714,7 +8714,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const m = (()=>{ try{ return JSON.parse(localStorage.getItem(ME_KEY)||'null')}catch{return null} })();
     try{
       // A history read abandoned while the dashboard was hidden leaves its loading text; reload instead of masking it.
-      const hist=document.getElementById('dashHistList'); if(hist && (/Loading/.test(hist.textContent||'')||hist.querySelector('.skeleton,.rc-skeleton'))){ setTimeout(()=>window._randori_home?.bootHome?.(),0); }
+      const hist=document.getElementById('dashHistList');
+      if(hist && window._randori_home && !window._randori_home.historyInFlight
+        && (/Loading/.test(hist.textContent||'')||hist.querySelector('.skeleton,.rc-skeleton'))){ window._randori_home.refreshHistory?.(); }
     }catch{}
     const name=m?.name||m?.display_name||'friend';
     document.getElementById('dashWelcome').textContent='Welcome, '+name;
@@ -8974,7 +8976,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     copy.addEventListener('click',()=>{
       localStorage.setItem('randori-last-room',roomHint);
       const invite=(location.origin||'')+'/join/'+encodeURIComponent(roomHint);
-      try{ navigator.clipboard.writeText(invite); toast('Session link copied'); }catch{ prompt('Copy session link',invite); }
+      const fallback=()=>prompt('Copy session link',invite);
+      try{ Promise.resolve(navigator.clipboard.writeText(invite)).then(()=>toast('Session link copied'),fallback); }catch{ fallback(); }
     });
     const email=homeNode('button',{className:'btn ghost sm email-invite'}); email.type='button';
     email.append(homeIcon('i-mail'),document.createTextNode('Email a reminder'));
@@ -11725,9 +11728,17 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   let dashboardHistoryUserId=null;
+  let dashboardHistorySeq=0;
+  let dashboardHistoryInFlight=false;
   async function populateHistory(){
     const listEl=document.getElementById('dashHistList');
     if(!listEl) return;
+    const seq=++dashboardHistorySeq;
+    dashboardHistoryInFlight=true;
+    try{ await loadDashboardHistory(listEl,seq); }
+    finally{ if(seq===dashboardHistorySeq) dashboardHistoryInFlight=false; }
+  }
+  async function loadDashboardHistory(listEl,seq){
     if(!(window._randori_auth && window._randori_auth.me)){
       dashboardHistoryUserId=null; listEl.replaceChildren();
       const signedOut=document.createElement('span'); signedOut.className='small muted'; signedOut.textContent='Sign in to see your history'; listEl.appendChild(signedOut); return;
@@ -11739,7 +11750,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     try{
       const r=await fetch('/api/history',{credentials:'same-origin',cache:'no-store'});
       const j=await r.json();
-      if(userId!==(Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null)||document.getElementById('view-dashboard')?.style.display==='none') return;
+      if(seq!==dashboardHistorySeq||userId!==(Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null)||document.getElementById('view-dashboard')?.style.display==='none') return;
       if(!r.ok) throw j;
       if(!j.history || !j.history.length){ listEl.replaceChildren(); const empty=document.createElement('div'); empty.className='small muted'; empty.textContent='No pairings yet — your first pairing will appear after a cycle is published.'; listEl.appendChild(empty); return; }
       const last5=j.history.slice(0,5);
@@ -11765,7 +11776,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       });
       const total=document.createElement('div'); total.className='small muted'; total.style.marginTop='8px'; total.textContent=`Total pairings: ${Number.isSafeInteger(Number(j.total))?Number(j.total):last5.length}`; listEl.appendChild(total);
     }catch(e){
-      if(userId!==(Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null)||document.getElementById('view-dashboard')?.style.display==='none') return;
+      if(seq!==dashboardHistorySeq||userId!==(Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null)||document.getElementById('view-dashboard')?.style.display==='none') return;
       listEl.replaceChildren(); const error=document.createElement('div'); error.className='small muted'; error.textContent=`History: ${String(e.error||e.message||'offline').slice(0,200)} — try Pairings & activity.`; listEl.appendChild(error);
     }
   }
@@ -11801,7 +11812,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   // expose
-  window._randori_home={bootHome, fetchStats};
+  window._randori_home={bootHome, fetchStats, refreshHistory:populateHistory, get historyInFlight(){ return dashboardHistoryInFlight; }};
 
   // Trigger on route changes
   document.addEventListener('DOMContentLoaded', ()=> setTimeout(bootHome, 600));

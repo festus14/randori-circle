@@ -9,8 +9,10 @@
   const MINUTE_MS = 60 * 1000;
   const HOUR_MS = 60 * MINUTE_MS;
   const DAY_MS = 24 * HOUR_MS;
-  // The calendar export describes a 60 minute session; the hero treats the
-  // session as "on now" from 15 minutes before until it ends.
+  // The calendar export describes a 60 minute session; the hero promotes Join
+  // from 15 minutes before the start until it ends. Once the start passes the
+  // schedule card already calls the agreement past, so the hero says the
+  // session "has started" and offers rescheduling rather than "on now".
   const SESSION_LENGTH_MS = 60 * MINUTE_MS;
   const STARTING_SOON_MS = 15 * MINUTE_MS;
 
@@ -100,8 +102,11 @@
       }
       if (now <= agreed + SESSION_LENGTH_MS) {
         return {
-          step: 'live', tone: 'success', title: now < agreed ? 'Your session starts soon' : 'Your session is on now',
-          detail: `${at(agreed)}. Join ${partner} in the pair room.`, action: null, joinPrimary: true,
+          step: 'live', tone: 'success', title: now < agreed ? 'Your session starts soon' : 'Your session has started',
+          detail: now < agreed
+            ? `${at(agreed)}. Join ${partner} in the pair room.`
+            : `It started at ${at(agreed)}. Join ${partner} now if you are practising, or propose a new time below.`,
+          action: null, joinPrimary: true,
         };
       }
       return {
