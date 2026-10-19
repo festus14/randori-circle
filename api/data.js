@@ -28,6 +28,7 @@ import {
   secondaryScheduleIdentity,
 } from './_secondary-schedule.js';
 import { scheduleNotificationEvents } from './_schedule-email.js';
+import { deliverCommittedOutboxEvents, outboxEventsFromStatements } from './_outbox-immediate.js';
 import { ensureMessagesReadiness, MAX_MESSAGES_PER_ROOM, MAX_MESSAGES_PER_USER_PER_MINUTE, MESSAGE_RATE_RETRY_SECONDS, messageInsertStatement, messageLimitStateStatement, MessageDataError, MessageInputError, messageReadStatement, parseMessageSend, parseMessagesQuery, projectMessage, validateMessagesPostQuery } from './_messages.js';
 import { ensurePairRecapReadiness, MAX_RECAP_ACTIVITY, MAX_RECAP_RUN_SCAN, newestRecapActivity, PairRecapDataError, PairRecapInputError, parsePairRecapQuery, projectRecapMessage, projectRecapPair, projectRecapRun, projectRecapSchedule, projectRecapWorkspace } from './_pair-recap.js';
 import {
@@ -1556,8 +1557,10 @@ async function handleSchedule(req,res){
         if(req.method==='GET') return res.json(await readSecondarySchedule(db,{authority:readerAccess.authority}));
         const mutation=parseSecondaryScheduleMutation(req.body);
         const result=await mutateSecondarySchedule(db,{authority:readerAccess.authority,mutation});
-        return res.status(result.conflict?409:200).json(result.conflict
+        res.status(result.conflict?409:200).json(result.conflict
           ?{...result.response,error:'schedule changed'}:result.response);
+        if(!result.conflict) deliverCommittedOutboxEvents(req,outboxEventsFromStatements(result.outboxStatements));
+        return;
       }catch(error){
         try{ await logScheduleTemporalRejection('secondary',error); }catch{}
         const failure=secondaryScheduleFailure(error,{contextVersion:readerAccess.circleContextVersion});
@@ -1679,7 +1682,10 @@ async function handleSchedule(req,res){
       }
       for(const notification of notifications) await transaction.execute(notification);
       await transaction.commit(); finished=true;
-      return res.json({ok:true,room_id:room.roomId,schedule:nextSchedule});
+      res.json({ok:true,room_id:room.roomId,schedule:nextSchedule});
+      // Future reminders stay ineligible (not_before) and are left to the cron.
+      deliverCommittedOutboxEvents(req,outboxEventsFromStatements(notifications));
+      return;
     }catch(error){
       if(!finished){ try{ await transaction.rollback(); }catch{} }
       throw error;

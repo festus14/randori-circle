@@ -22,11 +22,12 @@ import {createOutboxEventStatement} from '../../api/_outbox.js';
 import {EXECUTABLE_MIGRATIONS} from '../../db/executable-migrations.js';
 import {applyMigrations,inspectMigrationState,prepareMigrationConnection} from '../../db/migration-runner.js';
 import {adoptCredentialKeyControl} from '../support/credential-key-control.mjs';
+import {installWaitUntilCapture,stubResendFetch} from '../support/immediate-delivery.mjs';
 
 const resources=[];
 
 afterEach(()=>{
-  for(const key of ['APP_URL','CIRCLE_MEMBERSHIP_ENABLED','PASSWORD_RESET_ENABLED',
+  for(const key of ['APP_URL','CIRCLE_MEMBERSHIP_ENABLED','OUTBOX_IMMEDIATE_DELIVERY','PASSWORD_RESET_ENABLED',
     'PASSWORD_RESET_ENCRYPTION_KEY','JWT_SECRET','NODE_ENV','RESEND_API_KEY','RESEND_FROM',
     'TURSO_AUTH_TOKEN','TURSO_DATABASE_URL']) delete process.env[key];
   while(resources.length){ try{ resources.pop()(); }catch{} }
@@ -256,4 +257,101 @@ test('password login is rate limited per email and recovers in the next window',
   await db.execute(`DELETE FROM auth_rate_limits`);
   const recovered=await invoke({endpoint:'login',body:{email:'member@example.test',password:'old correct horse'},ip:'203.0.113.121'});
   assert.equal(recovered.statusCode,200);
+});
+
+async function resetEvents(db){
+  return (await db.execute(`SELECT idempotency_key,status,attempt_count,last_error_code,provider_message_id
+    FROM outbox_events WHERE event_type='auth.passwordreset.requested' ORDER BY id`)).rows;
+}
+
+function immediateDelivery(t,{fetchOptions={},onRegister=null}={}){
+  process.env.OUTBOX_IMMEDIATE_DELIVERY='true';
+  const provider=stubResendFetch(fetchOptions);
+  const background=installWaitUntilCapture({onRegister});
+  t.after(()=>{ provider.restore(); background.restore(); });
+  return {provider,background};
+}
+
+test('a reset email is sent right after commit and after the response, with the stable outbox key',async t=>{
+  const {db}=await fixture();
+  const observed=[];
+  const {provider,background}=immediateDelivery(t,{fetchOptions:{delayMs:1500},onRegister:()=>{
+    observed.push({providerCalls:provider.calls.length});
+  }});
+  const started=Date.now();
+  const known=await invoke({endpoint:'password-reset-request',body:{email:'member@example.test'},ip:'203.0.113.41'});
+  const elapsed=Date.now()-started;
+  assert.equal(known.statusCode,202);
+  assert.deepEqual(known.body,{ok:true,pending:true,
+    message:'If that account can use password recovery, a reset email will arrive shortly.'});
+  assert.deepEqual(observed,[{providerCalls:0}],'delivery is registered with waitUntil before any provider I/O');
+  const [queued]=await resetEvents(db);
+  assert.notEqual(queued.status,'delivered','the response does not wait for the provider');
+  assert.ok(elapsed<1500,`response waited for delivery: ${elapsed}ms`);
+  const [result]=await background.settle();
+  assert.equal(result.delivered,1);
+  const [stored]=await resetEvents(db);
+  assert.equal(stored.status,'delivered');
+  assert.equal(stored.provider_message_id,'msg_1');
+  assert.equal(provider.calls.length,1);
+  assert.equal(provider.calls[0].idempotencyKey,stored.idempotency_key);
+  assert.deepEqual(provider.calls[0].to,'member@example.test');
+  const token=await resetToken(db);
+  assert.ok(provider.calls[0].html.includes(token),'the delivered link carries the committed token');
+});
+
+test('an unknown account gets the identical floored response and enqueues or schedules nothing',async t=>{
+  const {db}=await fixture();
+  const {provider,background}=immediateDelivery(t);
+  const knownStarted=Date.now();
+  const known=await invoke({endpoint:'password-reset-request',body:{email:'member@example.test'},ip:'203.0.113.42'});
+  const knownElapsed=Date.now()-knownStarted;
+  assert.equal(background.promises.length,1);
+  await background.settle();
+  const before=(await resetEvents(db)).length;
+  const unknownStarted=Date.now();
+  const unknown=await invoke({endpoint:'password-reset-request',body:{email:'missing@example.test'},ip:'203.0.113.43'});
+  const unknownElapsed=Date.now()-unknownStarted;
+  assert.equal(unknown.statusCode,known.statusCode);
+  assert.deepEqual(unknown.body,known.body);
+  assert.deepEqual(unknown.headers,known.headers);
+  assert.ok(knownElapsed>=340,`known response skipped the floor: ${knownElapsed}ms`);
+  assert.ok(unknownElapsed>=340,`unknown response skipped the floor: ${unknownElapsed}ms`);
+  assert.equal(background.promises.length,0,'no background work is registered for an unknown account');
+  assert.equal((await resetEvents(db)).length,before,'no outbox event is written for an unknown account');
+  assert.equal(provider.calls.length,1,'only the known account reached the provider');
+});
+
+test('provider and scheduling failures never change the reset response and leave a cron retry',async t=>{
+  const {db}=await fixture();
+  const {background}=immediateDelivery(t,{fetchOptions:{status:500}});
+  const failed=await invoke({endpoint:'password-reset-request',body:{email:'member@example.test'},ip:'203.0.113.44'});
+  assert.equal(failed.statusCode,202);
+  const [result]=await background.settle();
+  assert.equal(result.retried,1);
+  const [stored]=await resetEvents(db);
+  assert.equal(stored.status,'retry');
+  assert.equal(Number(stored.attempt_count),1);
+
+  background.restore();
+  const throwing=installWaitUntilCapture({onRegister:()=>{ throw new Error('runtime unavailable'); }});
+  t.after(()=>throwing.restore());
+  await db.execute(`DELETE FROM auth_password_resets`);
+  const unaffected=await invoke({endpoint:'password-reset-request',body:{email:'member@example.test'},ip:'203.0.113.45'});
+  assert.equal(unaffected.statusCode,202);
+  assert.deepEqual(unaffected.body,failed.body);
+});
+
+test('immediate delivery is off unless running on Vercel or explicitly enabled, and has a kill switch',async t=>{
+  const {db}=await fixture();
+  const provider=stubResendFetch();
+  const background=installWaitUntilCapture();
+  t.after(()=>{ provider.restore(); background.restore(); delete process.env.VERCEL; });
+  process.env.VERCEL='1';
+  process.env.OUTBOX_IMMEDIATE_DELIVERY='false';
+  const disabled=await invoke({endpoint:'password-reset-request',body:{email:'member@example.test'},ip:'203.0.113.46'});
+  assert.equal(disabled.statusCode,202);
+  assert.equal(background.promises.length,0);
+  assert.equal(provider.calls.length,0);
+  assert.equal((await resetEvents(db))[0].status,'pending','the scheduler remains the delivery path');
 });

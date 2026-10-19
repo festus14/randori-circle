@@ -43,6 +43,7 @@ function clearLegacyInviteClaimCookie({secure=true}={}){
   return `randori_invite_claim=; Path=/api/auth; HttpOnly${secure?'; Secure':''}; SameSite=Lax; Max-Age=0`;
 }
 import { CredentialKeyControlError } from './_credential-key-control.js';
+import { deliverCommittedOutboxEvents, outboxEventsFromStatements } from './_outbox-immediate.js';
 
 const PREPARE_RATE_LIMIT=12;
 const PREPARE_RATE_WINDOW_SECONDS=10*60;
@@ -315,16 +316,18 @@ async function handleCreate(req,res){
       });
       if(!audited?.rows?.length) throw new Error('invitation creation audit missing');
       let emailQueued=false;
+      let emailStatement=null;
       if(emailConfiguration){
-        const queued=await transaction.execute(createInvitationEmailEvent({
+        emailStatement=createInvitationEmailEvent({
           invitationId:id,circleId:Number(created.rows[0].circle_id),actorUserId:context.userId,
           email,token,sendSequence:1,localRuntime,
-        }));
+        });
+        const queued=await transaction.execute(emailStatement);
         if(Number(queued.rowsAffected||0)!==1) throw new Error('invitation email intent missing');
         emailQueued=true;
       }
       await transaction.commit(); finished=true;
-      return res.status(201).json({
+      res.status(201).json({
         ok:true,
         invitation:{
           id,
@@ -336,6 +339,9 @@ async function handleCreate(req,res){
         email_delivery:{queued:emailQueued},
         ...(multiCircleControlPlaneEnabled()?{circle_context_version:context.contextVersion}:{}),
       });
+      // Post-response, lease-guarded attempt; the cron remains the backstop.
+      if(emailStatement) deliverCommittedOutboxEvents(req,outboxEventsFromStatements([emailStatement]));
+      return;
     }catch(error){
       if(!finished){ try{ await transaction.rollback(); }catch{} }
       throw error;
@@ -460,10 +466,11 @@ async function handleResend(req,res){
           ) RETURNING id,circle_id`,args:[tokenHash,id,invitation.circle_id,invitation.token_hash,
       invitation.email_hash,context.userId,Number(context.membership.circle_id??context.membership.id)]});
     if(rotated.rows?.length!==1) throw new Error('invitation resend lost authorization');
-    const queued=await transaction.execute(createInvitationEmailEvent({
+    const emailStatement=createInvitationEmailEvent({
       invitationId:id,circleId:Number(invitation.circle_id),actorUserId:context.userId,
       email:prior.email,token,sendSequence,localRuntime,
-    }));
+    });
+    const queued=await transaction.execute(emailStatement);
     if(Number(queued.rowsAffected||0)!==1) throw new Error('invitation resend intent missing');
     const audited=await transaction.execute({sql:`INSERT INTO circle_audit_events
         (circle_id,event_type,actor_user_id,subject_user_id,invitation_id,dedupe_key,created_at)
@@ -472,10 +479,12 @@ async function handleResend(req,res){
     args:[invitation.circle_id,context.userId,id,`invitation-resent:${id}:${sendSequence}`]});
     if(audited.rows?.length!==1) throw new Error('invitation resend audit missing');
     await transaction.commit(); finished=true;
-    return res.json({ok:true,invitation:{id,expires_at:String(invitation.expires_at),status:'pending',
+    res.json({ok:true,invitation:{id,expires_at:String(invitation.expires_at),status:'pending',
       invite_url:`/invite#invite=${token}`},email_delivery:{queued:true},
       ...(multiCircleControlPlaneEnabled()?{circle_context_version:context.contextVersion}:{}),
     });
+    deliverCommittedOutboxEvents(req,outboxEventsFromStatements([emailStatement]));
+    return;
   }catch(error){
     if(transaction&&!finished){ try{ await transaction.rollback(); }catch{} }
     captureSentryException(error,{tags:{event:'circle_invitation_resend_fail',source:'server'}});

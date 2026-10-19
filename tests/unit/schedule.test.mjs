@@ -19,6 +19,7 @@ import {
   ScheduleTemporalError,
   scheduleVersion,
 } from '../../api/_schedule.js';
+import { installWaitUntilCapture, stubResendFetch } from '../support/immediate-delivery.mjs';
 
 let currentDb=null;
 
@@ -40,6 +41,9 @@ mock.module('../../api/_db.js',{
     verifyMutationOrigin:()=>true,
     verifyRequestAuth:authPayload,
     verifySignedRequestAuth:authPayload,
+    // Imported by the delivery adapters loaded for post-commit email delivery.
+    issueSessionInTransaction:async()=>{ throw new Error('not used by schedule delivery'); },
+    revokeAccountSessions:async()=>{ throw new Error('not used by schedule delivery'); },
   },
 });
 
@@ -829,4 +833,39 @@ test('concurrent schedule reads share one in-flight schema probe',async()=>{
   const responses=await Promise.all([first,second]);
   assert.deepEqual(responses.map(response=>response.status),[200,200]);
   assert.equal(tableProbes,1);
+});
+
+test('a committed schedule notification gets a post-commit attempt whose failure leaves the response and row intact',async t=>{
+  const directory=mkdtempSync(join(tmpdir(),'randori-schedule-immediate-'));
+  const db=await readyDatabase({url:`file:${join(directory,'schedule.sqlite')}`});
+  currentDb=db;
+  for(const [key,value] of Object.entries({OUTBOX_IMMEDIATE_DELIVERY:'true',APP_URL:'https://randori.example.test',
+    RESEND_API_KEY:'re_schedule_test',RESEND_FROM:'Randori <schedule@randori.example.test>'})) process.env[key]=value;
+  const provider=stubResendFetch();
+  const background=installWaitUntilCapture();
+  t.after(()=>{
+    provider.restore(); background.restore();
+    for(const key of ['OUTBOX_IMMEDIATE_DELIVERY','APP_URL','RESEND_API_KEY','RESEND_FROM']) delete process.env[key];
+    rmSync(directory,{recursive:true,force:true});
+  });
+  const initial=await invoke({
+    url:'/api/schedule?room_id=week_10_pair_20',query:{endpoint:'schedule',room_id:'week_10_pair_20'},
+  });
+  assert.equal(background.promises.length,0,'reads schedule nothing');
+  const proposed=await invoke({method:'POST',body:{
+    room_id:'week_10_pair_20',action:'propose',base_version:initial.body.schedule.version,
+    instant:'2035-09-20T08:00:00Z',
+  }});
+  assert.equal(proposed.status,200);
+  assert.equal(proposed.body.ok,true);
+  assert.equal(background.promises.length,1);
+  // This minimal schema has no outbox audit table, so the lease claim fails;
+  // the failure is contained and the committed intent stays for the cron.
+  assert.deepEqual(await background.settle(),[null]);
+  const queued=(await db.execute(`SELECT idempotency_key,status,attempt_count FROM outbox_events`)).rows;
+  assert.equal(queued.length,1);
+  assert.match(queued[0].idempotency_key,/^schedule-email\/v1\/10\/20\/proposal\//);
+  assert.equal(queued[0].status,'pending');
+  assert.equal(Number(queued[0].attempt_count),0);
+  assert.equal(provider.calls.length,0);
 });

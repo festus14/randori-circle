@@ -504,8 +504,9 @@ export async function mutateSecondarySchedule(db,{authority,mutation}={}){
       }
       const stored=await readStoredState(transaction,scope);
       if(stored.revision!==state.revision+1) fail('SECONDARY_SCHEDULE_INTEGRITY','Schedule revision is invalid.');
+      let notifications=[];
       if(notificationEnabled){
-        const notifications=secondaryScheduleNotificationEvents({
+        notifications=secondaryScheduleNotificationEvents({
           scope,currentState:state,nextState:stored,mutation,actorUserId:safeAuthority.userId,
         });
         for(const notification of notifications){
@@ -517,7 +518,8 @@ export async function mutateSecondarySchedule(db,{authority,mutation}={}){
       }
       commitStarted=true;
       await transaction.commit(); finished=true;
-      return Object.freeze({conflict:false,response:responseEnvelope(scope,projectState(stored,safeAuthority.userId))});
+      return Object.freeze({conflict:false,response:responseEnvelope(scope,projectState(stored,safeAuthority.userId)),
+        ...(notifications.length?{outboxStatements:Object.freeze([...notifications])}:{})});
     }catch(error){
       if(transaction&&!finished) await rollback(transaction);
       if(!commitStarted&&attempt<TRANSACTION_ATTEMPTS&&retryableConflict(error)){
