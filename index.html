@@ -4852,8 +4852,10 @@ async function refreshMe(){
       controls.setAttribute('aria-hidden',allowed?'false':'true');
     }
     if(circleDiagnostics){
+      // Admin-only legacy testing mode: the clearly labelled disclosure opens
+      // so the tools are usable, but never sits inside the real member list.
       circleDiagnostics.hidden=!allowed;
-      if(!allowed) circleDiagnostics.open=false;
+      circleDiagnostics.open=allowed;
     }
   }
 
@@ -4874,7 +4876,7 @@ async function refreshMe(){
     listEl.setAttribute('aria-busy','false');
     const message=document.createElement('div');
     message.className='small muted';
-    message.textContent='We could not load your circle members. Nothing was changed.';
+    message.textContent='Circle unavailable. We could not load your members, and nothing was changed.';
     const retry=document.createElement('button');
     retry.type='button'; retry.className='btn secondary sm'; retry.textContent='Retry';
     retry.addEventListener('click',retryCircleContext);
