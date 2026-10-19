@@ -183,5 +183,6 @@ test('completed-session dashboard totals never fall back to week or pairing coun
   await expect(page.locator('#view-dashboard')).toBeVisible();
   await expect(page.locator('#dashStatYou')).toHaveText('—');
   await expect(page.locator('#dashStatYouSub')).toHaveText('from 6 pairings');
-  await expect(page.locator('#statSessions')).toHaveText('—');
+  // The public landing no longer renders a sessions total (UI redesign WP-L1).
+  await expect(page.locator('#statSessions')).toHaveCount(0);
 });

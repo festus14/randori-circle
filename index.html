@@ -13,6 +13,7 @@
 <title>Randori Circle</title>
 <script>/* Apply the stored theme before first paint so light mode does not flash dark. */try{if(localStorage.getItem('randori-theme')==='light')document.documentElement.classList.add('light')}catch{}</script>
 <script src="/assets/invite-gate.js"></script>
+<script src="/assets/landing.js"></script>
 <script src="/assets/pairing-view.js"></script>
 <script src="/assets/home-dashboard.js"></script>
 <script>
@@ -860,20 +861,84 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .check-box{width:18px; height:18px; border-radius:var(--radius-xs); border:1.5px solid var(--control-border); display:grid; place-items:center; font-size:11px; font-weight:700; background:var(--color-field); flex:0 0 auto}
 
 /* Landing, profile and dashboard */
+/* Public landing and recovery pages (WP-L1, spec 7.1). Mobile-first, centred, tokens only. */
 .landing{
-  max-width:var(--max); margin:0 auto; padding:var(--space-6) var(--space-5) var(--space-16); display:grid; gap:var(--space-8);
+  max-width:var(--max); margin:0 auto; padding:var(--space-6) var(--space-5) var(--space-12); display:grid; gap:var(--space-12);
 }
 .hero{
-  display:grid; grid-template-columns:1.15fr .85fr; gap:var(--space-8); align-items:center;
-  padding:var(--space-8); background:radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--accent) 12%, var(--card)) 0%, var(--card) 55%); border:1px solid var(--border); border-radius:var(--radius-xl); box-shadow:var(--shadow-2);
+  display:grid; justify-items:center; gap:var(--space-4); text-align:center;
+  max-width:720px; width:100%; margin:0 auto; padding:var(--space-12) var(--space-2) var(--space-4);
 }
-.hero h1{font-size:clamp(1.75rem, 4vw, 2.5rem); line-height:1.1; letter-spacing:-0.03em}
-.hero-sub{color:var(--ink-2); font-size:var(--text-md); line-height:var(--leading-md); margin-top:var(--space-3); max-width:var(--reading-max)}
-.bullets{display:grid; gap:var(--space-3); margin-top:var(--space-4)}
-.bullet{display:flex; gap:var(--space-3); align-items:flex-start; font-size:var(--text-sm); color:var(--ink-2)}
-.bullet b{color:var(--ink)}
-.cta-row{display:flex; gap:var(--space-3); margin-top:var(--space-5); flex-wrap:wrap}
+.landing-eyebrow{margin:0}
+.hero h1{font-size:var(--text-display); line-height:var(--leading-display); letter-spacing:-0.035em; max-width:16ch}
+.hero-sub{color:var(--ink-2); font-size:var(--text-lg); line-height:var(--leading-lg); margin:0; max-width:var(--reading-max)}
+.cta-row{display:flex; gap:var(--space-3); margin-top:var(--space-3); flex-wrap:wrap; justify-content:center}
 .cta-row .btn{min-height:var(--control-lg)}
+a.btn{text-decoration:none}
+.landing-help{
+  max-width:520px; text-align:left; padding:var(--space-4); display:grid; gap:var(--space-2);
+  background:var(--card); border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:var(--radius-md); box-shadow:var(--shadow-1);
+}
+.landing-help p{margin:0; font-size:var(--text-sm); line-height:var(--leading-sm); color:var(--ink-2)}
+.landing-help b{color:var(--ink)}
+.landing-signin{margin:0; font-size:var(--text-sm); color:var(--ink-2)}
+.link-btn{
+  background:none; border:0; padding:var(--space-1) var(--space-1); margin:0; font:inherit; font-weight:var(--weight-emphasis);
+  color:var(--accent); text-decoration:underline; text-underline-offset:3px; cursor:pointer; border-radius:var(--radius-xs);
+}
+.link-btn:hover{color:var(--color-action-hover)}
+.landing a:not(.btn),.recovery a:not(.btn){color:var(--accent); text-underline-offset:3px}
+.landing-section{display:grid; gap:var(--space-5); max-width:960px; width:100%; margin:0 auto}
+.landing-section > h2{font-size:var(--text-2xl); line-height:var(--leading-2xl); text-align:center}
+.landing-steps{list-style:none; margin:0; padding:0; display:grid; gap:var(--space-4); grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr)); counter-reset:landing-step}
+.landing-step{
+  counter-increment:landing-step; display:grid; gap:var(--space-2); align-content:start; padding:var(--space-5);
+  background:var(--card); border:1px solid var(--border); border-radius:var(--radius-lg); box-shadow:var(--shadow-1);
+}
+.landing-step h3{font-size:var(--text-lg); line-height:var(--leading-lg); display:flex; gap:var(--space-2); align-items:baseline}
+.landing-step h3::before{content:counter(landing-step) "."; color:var(--ink-3); font-variant-numeric:tabular-nums; font-weight:var(--weight-emphasis)}
+.landing-step p{margin:0; color:var(--ink-2); font-size:var(--text-sm); line-height:var(--leading-sm)}
+.landing-step-icon{
+  width:40px; height:40px; display:grid; place-items:center; border-radius:var(--radius-md);
+  background:var(--color-action-subtle); color:var(--accent); margin-bottom:var(--space-1);
+}
+.landing-trust{list-style:none; margin:0; padding:0; display:grid; gap:var(--space-3); grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr))}
+.landing-trust li{display:flex; gap:var(--space-3); align-items:flex-start; padding:var(--space-4); border:1px solid var(--border); border-radius:var(--radius-md); background:var(--bg-2); color:var(--ink-2); font-size:var(--text-sm); line-height:var(--leading-sm)}
+.landing-trust li .rc-icon{color:var(--accent); margin-top:2px}
+.landing-trust b{color:var(--ink)}
+.landing-privacy{max-width:var(--reading-max); width:100%; margin:0 auto; border:1px solid var(--border); border-radius:var(--radius-md); background:var(--card); padding:0 var(--space-4)}
+.landing-privacy summary{cursor:pointer; min-height:var(--tap-min); display:flex; align-items:center; font-weight:var(--weight-emphasis); color:var(--ink)}
+.landing-privacy p{margin:0 0 var(--space-3); color:var(--ink-2); font-size:var(--text-sm); line-height:var(--leading-sm)}
+.landing-request{max-width:560px; scroll-margin-top:var(--space-6)}
+.landing-request:focus{outline:none}
+.landing-closed,.landing-form{
+  display:grid; gap:var(--space-4); padding:var(--space-6); background:var(--card); border:1px solid var(--border); border-radius:var(--radius-lg); box-shadow:var(--shadow-2);
+}
+.landing-closed{justify-items:center; text-align:center}
+.landing-closed p,.landing-form-intro{margin:0; color:var(--ink-2); font-size:var(--text-md); line-height:var(--leading-md)}
+.landing-closed b{color:var(--ink)}
+.landing-field{display:grid; gap:var(--space-1)}
+.landing-field label{font-size:var(--text-sm); font-weight:var(--weight-emphasis); color:var(--ink)}
+.landing-optional{font-weight:var(--weight-body); color:var(--ink-3)}
+.landing-field-meta{display:flex; justify-content:space-between; gap:var(--space-3); margin:0; font-size:var(--text-xs); line-height:var(--leading-xs); color:var(--ink-3)}
+.landing-count{font-variant-numeric:tabular-nums; flex:0 0 auto}
+.field-error{margin:0; font-size:var(--text-sm); line-height:var(--leading-sm); color:var(--bad); font-weight:var(--weight-emphasis)}
+.landing-hp{position:absolute!important; left:-10000px!important; top:auto!important; width:1px!important; height:1px!important; overflow:hidden!important}
+.landing-form-actions{display:grid; gap:var(--space-2); justify-items:start}
+.landing-form-actions p{margin:0}
+#requestInviteDone{font-size:var(--text-md); line-height:var(--leading-md); padding:var(--space-5)}
+#requestInviteDone:focus,#requestInviteFormError:focus{outline:3px solid var(--color-focus); outline-offset:2px}
+.landing-footer{display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:var(--space-3); padding-top:var(--space-6); border-top:1px solid var(--border); color:var(--ink-3); font-size:var(--text-sm)}
+.landing-footer p{margin:0}
+.landing-footer-links{display:flex; gap:var(--space-4); align-items:center}
+.recovery{max-width:var(--reading-max); padding-top:var(--space-10)}
+.recovery-body{display:grid; gap:var(--space-4)}
+.recovery-lead,.recovery-status{margin:0; color:var(--ink-2); font-size:var(--text-md); line-height:var(--leading-md)}
+.recovery-steps{display:grid; gap:var(--space-3); padding-top:var(--space-4); border-top:1px solid var(--border)}
+.recovery-steps h3{font-size:var(--text-md); line-height:var(--leading-md)}
+.recovery-steps ul{margin:0; padding-left:var(--space-5); display:grid; gap:var(--space-2); color:var(--ink-2); font-size:var(--text-sm); line-height:var(--leading-sm)}
+.recovery-actions{display:flex; flex-wrap:wrap; gap:var(--space-2)}
+.recovery-home{margin:0; font-size:var(--text-sm)}
 .mock-card{
   background:var(--bg-3); border:1px solid var(--border); border-radius:var(--radius-md); padding:var(--space-4); display:grid; gap:var(--space-2);
 }
@@ -983,7 +1048,6 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   .home-agreed-tools [data-testid="schedule-clear"]{margin-left:0}
   .msg{max-width:92%}
 }
-@media(max-width:840px){ .hero{grid-template-columns:1fr} }
 
 /* Loaders, spinners and skeletons */
 .spinner{
@@ -1047,7 +1111,7 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .request-status[data-state="error"],.request-status[data-state="unavailable"]{color:var(--bad)}
 .request-status[data-state="loading"],.request-status[data-state="saving"]{color:var(--info)}
 .request-status[data-state="local"]{color:var(--warn)}
-#landingStats[data-state="error"],#psRemindRow[data-state="error"]{border-color:var(--bad)!important}
+#psRemindRow[data-state="error"]{border-color:var(--bad)!important}
 .log-badge{display:inline-block; min-width:44px; padding:2px 6px; border-radius:var(--radius-full); font-size:10px; text-transform:uppercase}
 #circleContextPanel{
   padding:var(--space-3); border:1px solid var(--border); border-radius:var(--radius-md); background:var(--bg-3);
@@ -1078,8 +1142,6 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   #circleContextPanel,#availabilityWrap,#psRemindRow{min-width:0}
   #circleContextPanel .row,#availabilityWrap .row,#psRemindRow{align-items:flex-start!important}
   #circleContextSelect{min-width:0;max-width:100%}
-  #landingStats .grid-3{grid-template-columns:repeat(3,minmax(0,1fr))!important}
-  .hero{padding:var(--space-6)}
 }
 
 /* Phones: one 56 px topbar row and a bottom tab bar that shows every
@@ -1123,10 +1185,18 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   h1{font-size:var(--text-xl); line-height:var(--leading-xl)}
   #circleCreateForm{grid-template-columns:minmax(0,1fr)}
   #circleCreateSubmit{width:100%;min-height:var(--tap-min)}
-  .landing{padding:var(--space-2) 0 var(--space-10); gap:var(--space-4)}
-  .hero{padding:var(--space-5) var(--space-4); gap:var(--space-5); border-radius:var(--radius-lg)}
-  .hero h1{font-size:var(--text-2xl); line-height:var(--leading-2xl)}
+  .landing{padding:var(--space-2) 0 var(--space-10); gap:var(--space-10)}
+  .hero{padding:var(--space-8) 0 0; gap:var(--space-4)}
+  .hero h1{font-size:var(--text-display); line-height:var(--leading-display)}
+  .hero-sub{font-size:var(--text-md); line-height:var(--leading-md)}
+  .cta-row{width:100%; flex-direction:column}
   .cta-row .btn{width:100%; justify-content:center; min-height:var(--control-lg)}
+  .landing-section > h2{font-size:var(--text-xl); line-height:var(--leading-xl)}
+  .landing-closed,.landing-form{padding:var(--space-5) var(--space-4)}
+  .landing-form-actions .btn{width:100%; justify-content:center}
+  .landing-footer{flex-direction:column; align-items:flex-start}
+  .recovery{padding-top:var(--space-2)}
+  .recovery-actions .btn{flex:1 1 100%; justify-content:center}
   .profile-setup{padding:0}
   .dashboard,.dashboard .card,.dashboard .card-b{min-width:0}
   .home-actions .btn{max-width:100%; white-space:normal}
@@ -1147,6 +1217,7 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   :where(input[type="checkbox"],input[type="radio"]){min-width:22px;min-height:22px}
   #meMenu [role="menuitem"]{min-height:44px}
   .theme-toggle{width:var(--tap-min); height:var(--tap-min)}
+  .link-btn{min-height:var(--tap-min); padding-inline:var(--space-2)}
   /* 16 px fields stop iOS Safari from zooming on focus. */
   .input,.textarea,.select{font-size:var(--text-md)}
 }
@@ -1379,44 +1450,120 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   <div id="shellConnectionBanner" class="rc-banner rc-banner--warning shell-banner" role="status" hidden><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-alert"/></svg><span><b>You are offline.</b> Randori cannot load or save changes until your connection is back.</span></div>
   <main id="appMain" class="main" tabindex="-1">
 
-    <!-- LANDING (anonymous only) -->
+    <!-- LANDING (anonymous only) — UI redesign WP-L1, spec section 7.1 -->
     <section id="view-landing" class="view" aria-labelledby="landingTitle" style="display:none">
       <div class="landing">
         <div class="hero">
-          <div>
-            <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><span class="kbd" style="background:var(--accent);color:#0f0f10;border-color:var(--accent)">new</span><span class="small muted">Sunday pairing • DSA + System Design</span></div>
-            <h1 id="landingTitle">Randori Circle<br/>Practice <span style="background:var(--accent); color:#0f0f10; padding:0 8px; border-radius:8px">together</span></h1>
-            <div class="hero-sub">A small circle of friends who mock-interview each other on a weekly cycle. No recruiters, no trios — an odd member gets a solo practice room.</div>
-            <div class="bullets">
-              <div class="bullet"><span class="dot" style="margin-top:6px"></span><span><b>Join a private circle</b> — use an invitation with the sign-in options enabled by its owner.</span></div>
-              <div class="bullet"><span class="dot" style="margin-top:6px;background:#a9b6ff"></span><span><b>Pick your focus</b> — DSA, System Design, or both. You decide with your partner.</span></div>
-              <div class="bullet"><span class="dot" style="margin-top:6px;background:#e8a0b0"></span><span><b>Meet + drill</b> — agree a time, chat, then jump into live code / whiteboard / video.</span></div>
-            </div>
-            <div class="cta-row">
-              <button id="landingSignup" class="btn" style="padding:11px 18px; font-size:14px">Use an invitation</button>
-              <button id="landingSignin" class="btn secondary" style="padding:11px 18px;">Sign in</button>
-            </div>
-            <div id="landingInviteHelp" class="small muted" role="status" hidden style="margin-top:10px">Open the invitation link you received, or ask a circle owner for a new invitation.</div>
-            <div class="small muted" style="margin-top:10px">Invite-only private beta • Weekly practice with your circle</div>
+          <p class="landing-eyebrow"><span class="rc-badge">Private · invite-only</span></p>
+          <h1 id="landingTitle">Mock interviews with people you trust.</h1>
+          <p class="hero-sub">A small private circle that pairs you with a fellow member every week. Agree a time, then solve real coding problems together in a shared editor and whiteboard.</p>
+          <div class="cta-row">
+            <a id="landingRequestInvite" class="btn lg" href="#request-invite" data-testid="landing-request-invite" hidden>Request an invite</a>
+            <button id="landingSignup" class="btn secondary lg" type="button" aria-expanded="false" aria-controls="landingInviteHelp">I have an invitation</button>
           </div>
-          <div style="display:grid; gap:10px">
-            <div class="mock-card"><div class="row" style="justify-content:space-between"><b style="font-size:12px">Example weekly cycle</b><span class="kbd">illustration</span></div><div class="pair" style="padding:8px"><div class="who"><span class="avatar" style="background:#c8f6a0">FC</span><b style="font-size:12px">You × a circle member</b></div><span class="kbd">DSA • agreed together</span></div><div class="small muted">Published pairings stay fixed for the cycle; you agree the session time together.</div></div>
-            <div id="landingStats" class="card" data-state="loading" aria-busy="true" style="padding:12px; border:1px dashed var(--border); background:var(--bg-2)"><div class="row" style="gap:10px; flex-wrap:wrap; justify-content:space-between"><span class="small muted">Circle summary</span><span id="landingStatsUpdated" class="kbd request-status" data-state="loading" role="status" aria-live="polite" style="font-size:10px">Loading summary…</span></div><div class="grid-3" style="margin-top:10px; gap:10px; display:grid; grid-template-columns:repeat(3,1fr)"><div style="text-align:center"><div id="statMembers" style="font-size:22px; font-weight:600">—</div><div class="small muted">members</div></div><div style="text-align:center"><div id="statWeeks" style="font-size:22px; font-weight:600">—</div><div class="small muted">weeks paired</div></div><div style="text-align:center"><div id="statSessions" style="font-size:22px; font-weight:600">—</div><div class="small muted">sessions completed</div></div></div></div>
-      <div id="landingNext" class="card" style="border-color:var(--ok); background:color-mix(in srgb, var(--accent) 8%, var(--bg-2))"><div class="card-h" style="padding:10px 12px"><h2 style="font-size:13px">Next pairing run</h2><span id="landingNextCountdown" class="kbd">Loading schedule…</span></div><div class="card-b" style="padding:10px 12px"><div style="font-size:13px"><b id="landingNextLabel">Loading the next cycle…</b><div class="small muted" id="landingNextSub" style="margin-top:4px">Pairings publish once per cycle. Sign up before the displayed cutoff to be included.</div></div><div id="landingNextBar" role="progressbar" aria-label="Time elapsed in the weekly pairing cycle" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="Loading the weekly pairing schedule" style="margin-top:10px; height:6px; background:var(--bg-3); border-radius:999px; overflow:hidden"><div id="landingNextProg" style="height:100%; width:0; background:var(--accent)"></div></div></div></div>
-      <div class="mock-card"><b style="font-size:12px">Private by default</b><div class="small" style="color:var(--ink-2)">Circle membership, pair rooms, and account access are authorization-gated. Exercise evaluation cases remain on the server.</div></div>
+          <div id="landingInviteHelp" class="landing-help" data-testid="landing-invite-help" hidden>
+            <p><b>Open the link from your invitation email.</b> It brings you back here, checks the invitation and walks you through creating your account.</p>
+            <p class="small muted">Each link works once and expires. If yours has, ask the member who invited you to send a new one.</p>
           </div>
+          <p class="landing-signin">Already a member? <button id="landingSignin" class="link-btn" type="button">Sign in</button></p>
+        </div>
+
+        <section class="landing-section" aria-labelledby="landingHowTitle">
+          <h2 id="landingHowTitle">How it works</h2>
+          <ol class="landing-steps">
+            <li class="landing-step">
+              <span class="landing-step-icon" aria-hidden="true"><svg class="rc-icon" focusable="false"><use href="/assets/brand/icons.svg#i-users"/></svg></span>
+              <h3>Get paired</h3>
+              <p>Each week the circle pairs available members. Odd number? Someone gets a solo practice room.</p>
+            </li>
+            <li class="landing-step">
+              <span class="landing-step-icon" aria-hidden="true"><svg class="rc-icon" focusable="false"><use href="/assets/brand/icons.svg#i-calendar"/></svg></span>
+              <h3>Agree a time</h3>
+              <p>Propose times in your own time zone and chat with your partner.</p>
+            </li>
+            <li class="landing-step">
+              <span class="landing-step-icon" aria-hidden="true"><svg class="rc-icon" focusable="false"><use href="/assets/brand/icons.svg#i-code"/></svg></span>
+              <h3>Practise together</h3>
+              <p>Shared editor, whiteboard, and verified test runs in JavaScript or Python. Swap interviewer and candidate.</p>
+            </li>
+          </ol>
+        </section>
+
+        <section class="landing-section" aria-labelledby="landingTrustTitle">
+          <h2 id="landingTrustTitle">Private by default</h2>
+          <ul class="landing-trust">
+            <li><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-shield"/></svg><span><b>Invite-only.</b> Members are approved by the circle owner.</span></li>
+            <li><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-users"/></svg><span><b>Just you and your partner.</b> Your sessions stay private to the two of you.</span></li>
+            <li><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-check"/></svg><span><b>No noise.</b> No recruiters, no ads, no public profiles.</span></li>
+          </ul>
+          <details id="landingPrivacy" class="landing-privacy">
+            <summary>Privacy note</summary>
+            <p>Randori Circle is a private practice space run by its owner. Members see the names of the people in their circle. Your editor, whiteboard and chat in a pairing room are shared only with your partner for that week.</p>
+            <p>If you request an invite, the circle owner sees your name, email and note so they can decide. A request that isn’t answered expires after 30 days. Once the owner approves or declines it, your name, email and note are removed from the request. If you’re approved, you get a normal invitation email.</p>
+          </details>
+        </section>
+
+        <section id="request-invite" class="landing-section landing-request" aria-labelledby="requestInviteTitle" tabindex="-1">
+          <h2 id="requestInviteTitle">Request an invite</h2>
+          <div id="requestInviteClosed" class="landing-closed" data-testid="request-invite-closed">
+            <p><b>Invite-only — ask a member for an invitation.</b> New members join through an invitation from someone already in the circle.</p>
+            <button id="requestInviteSignin" class="btn secondary" type="button">Sign in</button>
+          </div>
+          <form id="requestInviteForm" class="landing-form" data-testid="request-invite-form" novalidate hidden aria-busy="false">
+            <p class="landing-form-intro">Tell the circle owner a little about yourself. They review every request.</p>
+            <div id="requestInviteFormError" class="rc-banner rc-banner--danger" data-testid="request-invite-error" role="alert" tabindex="-1" hidden></div>
+            <div class="landing-field">
+              <label for="requestInviteName">Name</label>
+              <input id="requestInviteName" name="name" class="input" type="text" autocomplete="name" maxlength="60" required aria-describedby="requestInviteNameError"/>
+              <p id="requestInviteNameError" class="field-error" hidden></p>
+            </div>
+            <div class="landing-field">
+              <label for="requestInviteEmail">Email</label>
+              <input id="requestInviteEmail" name="email" class="input" type="email" inputmode="email" autocomplete="email" spellcheck="false" maxlength="254" required aria-describedby="requestInviteEmailError"/>
+              <p id="requestInviteEmailError" class="field-error" hidden></p>
+            </div>
+            <div class="landing-field">
+              <label for="requestInviteNote">What are you preparing for? <span class="landing-optional">(optional)</span></label>
+              <textarea id="requestInviteNote" name="note" class="textarea" rows="3" maxlength="280" aria-describedby="requestInviteNoteHint requestInviteNoteCount requestInviteNoteError"></textarea>
+              <p class="landing-field-meta"><span id="requestInviteNoteHint">For example: “Big-tech onsite in March, mostly graphs and system design.”</span><span id="requestInviteNoteCount" class="landing-count">0 / 280</span></p>
+              <p id="requestInviteNoteError" class="field-error" hidden></p>
+            </div>
+            <div class="landing-hp" aria-hidden="true">
+              <label for="requestInviteWebsite">Website</label>
+              <input id="requestInviteWebsite" name="website" type="text" tabindex="-1" autocomplete="off" aria-hidden="true"/>
+            </div>
+            <div class="landing-form-actions">
+              <button id="requestInviteSubmit" class="btn lg" type="submit">Request an invite</button>
+              <p class="small muted">We only use your email to reply to this request. <a href="#landingPrivacy">Privacy note</a></p>
+            </div>
+          </form>
+          <div id="requestInviteDone" class="rc-banner rc-banner--success" data-testid="request-invite-done" role="status" tabindex="-1" hidden></div>
+        </section>
+
+        <div class="landing-footer">
+          <p>© Randori Circle · a private mock-interview circle</p>
+          <p class="landing-footer-links"><a href="#landingPrivacy">Privacy</a><button id="landingThemeToggle" class="link-btn" type="button">Switch theme</button></p>
         </div>
       </div>
     </section>
 
     <!-- VERIFIED EMAIL ACTIVATION -->
     <section id="view-activation" class="view" data-testid="activation-landing" aria-labelledby="activationTitle" style="display:none">
-      <div class="landing" style="max-width:680px;margin:0 auto">
+      <div class="landing recovery">
         <div class="card">
-          <div class="card-h"><h2 id="activationTitle">Activate your Randori account</h2><span>email verification</span></div>
-          <div class="card-b" style="display:grid;gap:14px">
-            <p id="activationStatus" data-testid="activation-status" class="small muted" role="status" aria-live="polite">Checking your verification link…</p>
+          <div class="card-h"><h2 id="activationTitle">Activate your Randori account</h2></div>
+          <div class="card-b recovery-body">
+            <p id="activationStatus" data-testid="activation-status" class="recovery-status" role="status" aria-live="polite">Checking your verification link…</p>
             <div><button id="activationContinue" data-testid="activation-continue" class="btn" type="button" hidden>Continue to Randori</button></div>
+            <div id="activationNextSteps" class="recovery-steps" data-testid="activation-next-steps" hidden>
+              <h3>What you can do</h3>
+              <ul>
+                <li>Open the newest email from Randori and use its link. Older links stop working.</li>
+                <li>Already finished signing up? Sign in with your email and password.</li>
+                <li>Still stuck? Ask the member who invited you to send a new invitation.</li>
+              </ul>
+              <div class="recovery-actions"><button id="activationSignin" class="btn" type="button">Sign in</button><a class="btn ghost" href="/">Go to the home page</a></div>
+            </div>
           </div>
         </div>
       </div>
@@ -1424,14 +1571,23 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 
     <!-- PASSWORD RESET -->
     <section id="view-password-reset" class="view" data-testid="password-reset-landing" aria-labelledby="passwordResetTitle" style="display:none">
-      <div class="landing" style="max-width:680px;margin:0 auto">
+      <div class="landing recovery">
         <div class="card">
-          <div class="card-h"><h2 id="passwordResetTitle">Choose a new password</h2><span>account recovery</span></div>
-          <form id="passwordResetForm" class="card-b auth-form" novalidate>
-            <p id="passwordResetStatus" data-testid="password-reset-status" class="small muted" role="status" aria-live="polite">Enter a new password to finish recovering your account.</p>
+          <div class="card-h"><h2 id="passwordResetTitle">Choose a new password</h2></div>
+          <form id="passwordResetForm" class="card-b auth-form recovery-body" novalidate>
+            <p id="passwordResetStatus" data-testid="password-reset-status" class="recovery-status" role="status" aria-live="polite">Enter a new password to finish recovering your account.</p>
             <label class="auth-field" for="passwordResetNew"><span>New password</span><input id="passwordResetNew" class="input" type="password" autocomplete="new-password" minlength="10" maxlength="72" required/></label>
             <label class="auth-field" for="passwordResetConfirm"><span>Confirm new password</span><input id="passwordResetConfirm" class="input" type="password" autocomplete="new-password" minlength="10" maxlength="72" required/></label>
             <div class="auth-actions"><button id="passwordResetSignin" class="btn ghost" type="button" hidden>Return to sign in</button><button id="passwordResetRequestNew" data-testid="password-reset-request-new" class="btn" type="button" hidden>Request a new link</button><button id="passwordResetSubmit" class="btn" type="submit">Reset password</button></div>
+            <div id="passwordResetNextSteps" class="recovery-steps" data-testid="password-reset-next-steps" hidden>
+              <h3>What you can do</h3>
+              <ul>
+                <li>Use the newest reset email. Each new request replaces older links.</li>
+                <li>Or request a new link above. It arrives within a few minutes and works for 30 minutes.</li>
+                <li>Remembered your password? Return to sign in.</li>
+              </ul>
+            </div>
+            <p class="recovery-home"><a href="/">Back to the home page</a></p>
           </form>
         </div>
       </div>
@@ -1439,13 +1595,22 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 
     <!-- INVITATION LANDING -->
     <section id="view-invite" class="view" data-testid="invite-landing" aria-labelledby="inviteTitle" style="display:none">
-      <div class="landing" style="max-width:680px;margin:0 auto">
+      <div class="landing recovery">
         <div class="card">
-          <div class="card-h"><h2 id="inviteTitle">You’re invited to Randori</h2><span>private circle</span></div>
-          <div class="card-b" style="display:grid;gap:14px">
-            <p id="inviteInstructions" class="small muted" style="line-height:1.6;margin:0">Checking which sign-in options are available for this single-use invitation.</p>
-            <div id="inviteStatus" data-testid="invite-status" class="small muted" role="status" aria-live="polite">Checking invitation…</div>
+          <div class="card-h"><h2 id="inviteTitle">You’re invited to Randori</h2></div>
+          <div class="card-b recovery-body">
+            <p id="inviteInstructions" class="recovery-lead">Checking which sign-in options are available for this single-use invitation.</p>
+            <div id="inviteStatus" data-testid="invite-status" class="recovery-status" role="status" aria-live="polite">Checking invitation…</div>
             <div><button id="inviteContinue" data-testid="invite-continue" class="btn" type="button" disabled>Continue</button></div>
+            <div id="inviteNextSteps" class="recovery-steps" data-testid="invite-next-steps" hidden>
+              <h3>What you can do</h3>
+              <ul>
+                <li>Open the newest invitation email and use its link again. Each link works once and expires.</li>
+                <li>Ask the member who invited you to send a new invitation.</li>
+                <li>Already a member? Sign in instead.</li>
+              </ul>
+              <div class="recovery-actions"><button id="inviteSignin" class="btn" type="button">Sign in</button><a class="btn secondary" href="/#request-invite" data-invite-request-link hidden>Request an invite</a><a class="btn ghost" href="/">Go to the home page</a></div>
+            </div>
           </div>
         </div>
       </div>
@@ -1956,7 +2121,7 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   let authRefreshSequence=0;
   let authIdentityHydrated=false;
   let authIdentityHydrationUnavailable=false;
-  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,passwordReset:false,localIdentity:false,verifiedEmailActivation:false,googleOAuth:false,identityManagement:false,multiCircleControlPlane:false,multiCircleAvailability:false,secondaryCircleCoordination:false,secondaryCircleScheduling:false,registrationMode:'private_beta'});
+  const CLOSED_AUTH_CAPABILITIES=Object.freeze({passwordLogin:true,passwordSignup:false,passwordReset:false,localIdentity:false,verifiedEmailActivation:false,googleOAuth:false,identityManagement:false,multiCircleControlPlane:false,multiCircleAvailability:false,secondaryCircleCoordination:false,secondaryCircleScheduling:false,inviteRequests:false,registrationMode:'private_beta'});
   let authCapabilities=CLOSED_AUTH_CAPABILITIES;
   let authCapabilitiesLoaded=false;
   let authCapabilitiesFailed=false;
@@ -2163,6 +2328,7 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
       unavailable:'Verification is temporarily unavailable. Please retry shortly.',
     };
     if(status) status.textContent=messages[activationState.status]||messages.invalid;
+    window._randori_landing?.applyRecovery?.('activation',messages[activationState.status]?activationState.status:'invalid');
     const button=document.getElementById('activationContinue');
     if(button){
       button.hidden=!['verified','used','unavailable'].includes(activationState.status);
@@ -2243,10 +2409,14 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
       unavailable:'Password reset is temporarily unavailable. Please retry shortly.',
     };
     if(status) status.textContent=messages[passwordResetState.status]||messages.invalid;
+    window._randori_landing?.applyRecovery?.('passwordReset',messages[passwordResetState.status]?passwordResetState.status:'invalid');
     const done=['reset','used','expired','revoked','invalid'].includes(passwordResetState.status);
     const canRequestNew=['expired','revoked','invalid'].includes(passwordResetState.status);
     for(const input of [document.getElementById('passwordResetNew'),document.getElementById('passwordResetConfirm')]){
-      if(input){ input.disabled=passwordResetState.busy||done||passwordResetState.status==='invalid'; input.hidden=done; }
+      if(input){
+        input.disabled=passwordResetState.busy||done||passwordResetState.status==='invalid'; input.hidden=done;
+        const field=input.closest('.auth-field'); if(field) field.hidden=done;
+      }
     }
     const submit=document.getElementById('passwordResetSubmit');
     if(submit){ submit.hidden=done||passwordResetState.status==='invalid'; submit.disabled=passwordResetState.busy; }
@@ -2338,7 +2508,13 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
               :(verifiedInvite?'Invitation verified. Continue to create your account.':'Invitation verified. Continue with the invited Google account.'))
             :'Checking invitation…')));
     }
+    // Dead ends (expired or unusable links) swap the disabled CTA for next steps.
+    const inviteRecovery=googleInviteStartRequest||(liveInvite&&!authIdentityHydrated)||inviteState.rateLimited?'live'
+      :(inviteState.expired||(inviteState.ready&&!liveInvite)?'expired':(inviteState.failed?'failed':'live'));
+    const inviteDeadEnd=window._randori_landing?.applyRecovery?.('invite',inviteRecovery)?.showNextSteps===true;
+    if(instructions) instructions.hidden=inviteDeadEnd;
     if(button){
+      button.hidden=inviteDeadEnd;
       button.disabled=!!googleInviteStartRequest||!liveInvite||!authCapabilitiesLoaded||!authIdentityHydrated
         ||(!localInvite&&!verifiedInvite&&!googleInvite);
       button.textContent=!authCapabilitiesLoaded?'Continue'
@@ -3122,6 +3298,7 @@ async function refreshMe(){
       ||(capabilities.multiCircleAvailability!==undefined&&typeof capabilities.multiCircleAvailability!=='boolean')
       ||(capabilities.secondaryCircleCoordination!==undefined&&typeof capabilities.secondaryCircleCoordination!=='boolean')
       ||(capabilities.secondaryCircleScheduling!==undefined&&typeof capabilities.secondaryCircleScheduling!=='boolean')
+      ||(capabilities.inviteRequests!==undefined&&typeof capabilities.inviteRequests!=='boolean')
       ||typeof capabilities.googleOAuth!=='boolean'
       ||!['local_open','local_invite','verified_invite','private_beta'].includes(mode)) throw new Error('invalid auth capabilities');
     return Object.freeze({
@@ -3136,6 +3313,7 @@ async function refreshMe(){
       multiCircleAvailability:capabilities.multiCircleAvailability===true,
       secondaryCircleCoordination:capabilities.secondaryCircleCoordination===true,
       secondaryCircleScheduling:capabilities.secondaryCircleScheduling===true,
+      inviteRequests:capabilities.inviteRequests===true,
       registrationMode:mode,
     });
   }
@@ -3189,14 +3367,15 @@ async function refreshMe(){
     const welcomeStart=document.getElementById('welcomeStartBtn');
     const identity=document.getElementById('meIdentity');
     if(join){
+      // Without a prepared invitation the button explains how invitations work
+      // (assets/landing.js) instead of sitting disabled.
       join.hidden=authCapabilitiesLoaded&&!joinConfigured;
-      join.disabled=!authCapabilitiesLoaded||!canJoin;
+      join.disabled=!authCapabilitiesLoaded;
       join.textContent=authCapabilitiesLoaded&&authCapabilities.registrationMode==='local_open'
-        ?'Create an account':'Use an invitation';
-    }
-    if(inviteHelp){
-      inviteHelp.hidden=!authCapabilitiesLoaded||!joinConfigured||canJoin
-        ||authCapabilities.registrationMode==='local_open';
+        ?'Create an account':'I have an invitation';
+      join.dataset.action=canJoin?'signup':'help';
+      if(inviteHelp&&(join.hidden||canJoin)) inviteHelp.hidden=true;
+      window._randori_landing?.syncInviteHelp?.();
     }
     if(signIn){ signIn.hidden=authCapabilitiesLoaded&&!canSignIn; signIn.disabled=!authCapabilitiesLoaded||!canSignIn; }
     if(welcomeStart){
@@ -3328,6 +3507,7 @@ async function refreshMe(){
       clearTimeout(timeout);
       authCapabilitiesLoaded=true;
       authMode=resolvedAuthMode(authMode);
+      window._randori_landing?.setCapabilities?.({loaded:true,failed:authCapabilitiesFailed,inviteRequests:authCapabilities.inviteRequests===true});
       renderAuthModal();
       renderInviteLanding();
       focusAuthControl();
@@ -8492,7 +8672,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   window._randori_nav = { showView, hideAllViews };
 
   // Landing CTA wiring
-  document.getElementById('landingSignup')?.addEventListener('click', ()=>window._randori_auth?.openModal?.('signup'));
+  // #landingSignup ("I have an invitation") is wired in assets/landing.js.
   document.getElementById('landingSignin')?.addEventListener('click', ()=>window._randori_auth?.openModal?.('signin'));
 
   // Profile setup helpers
@@ -11770,10 +11950,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
 
 <script>
-/* HOME differentiated — stats / next session / history for anon vs authed */
+/* HOME differentiated — stats / next session / history for signed-in members (the anonymous landing is static) */
 (function(){
   const ME_KEY='randori-me';
-  let landingCountdownTimer=null;
   let homeRequestEpoch=0;
   const currentHomeActor=()=>{
     const actor=window._randori_auth?.me;
@@ -11816,73 +11995,6 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(!r.ok) throw j;
       return j;
     }catch(e){ console.warn('stats failed',e); return null; }
-  }
-
-  function populateLanding(stats){
-    const card=document.getElementById('landingStats');
-    const up=document.getElementById('landingStatsUpdated');
-    const m=document.getElementById('statMembers');
-    const w=document.getElementById('statWeeks');
-    const s=document.getElementById('statSessions');
-    if(!stats){
-      if(landingCountdownTimer){ clearInterval(landingCountdownTimer); landingCountdownTimer=null; }
-      for(const value of [m,w,s]) if(value) value.textContent='—';
-      window._randori_ui_state?.setRequestState?.(
-        card,up,'unavailable','Summary unavailable. Retry by reloading this page.');
-      const nextLabel=document.getElementById('landingNextLabel');
-      const nextSub=document.getElementById('landingNextSub');
-      const countdown=document.getElementById('landingNextCountdown');
-      const progress=document.getElementById('landingNextProg');
-      const progressbar=document.getElementById('landingNextBar');
-      if(nextLabel) nextLabel.textContent='Next cycle unavailable';
-      if(nextSub) nextSub.textContent='The pairing schedule could not be loaded. Reload to retry.';
-      if(countdown) countdown.textContent='Schedule unavailable';
-      if(progress) progress.style.width='0%';
-      if(progressbar){
-        progressbar.setAttribute('aria-valuenow','0');
-        progressbar.setAttribute('aria-valuetext','Pairing schedule unavailable');
-      }
-      return;
-    }
-    if(m) m.textContent=String(stats.total_users ?? '—');
-    if(w) w.textContent=String(stats.total_weeks ?? '—');
-    if(s) s.textContent=String(stats.total_sessions ?? '—');
-    window._randori_ui_state?.setRequestState?.(card,up,'ready','Updated just now');
-    const nextLabel=document.getElementById('landingNextLabel');
-    const nextSub=document.getElementById('landingNextSub');
-    const cnt=document.getElementById('landingNextCountdown');
-    const prog=document.getElementById('landingNextProg');
-    const progressbar=document.getElementById('landingNextBar');
-    const next=pairingBoundaryFromStats(stats);
-    if(nextLabel) nextLabel.textContent=pairingLabelFromStats(stats);
-    if(nextSub) nextSub.textContent='The availability cutoff and pairing run share this boundary. '+fmtCountdown(next)+'.';
-    const updateCountdown=()=>{
-      const countdown=fmtCountdown(next);
-      if(cnt) cnt.textContent=countdown;
-      const weekMs=7*86400000;
-      const elapsed=next?weekMs-(next.getTime()-Date.now()):0;
-      const pct=Math.max(0,Math.min(100,100*elapsed/weekMs));
-      if(prog) prog.style.width=pct+'%';
-      if(progressbar){
-        progressbar.setAttribute('aria-valuenow',String(Math.round(pct)));
-        progressbar.setAttribute('aria-valuetext',next?`${countdown}; ${Math.round(pct)}% of the weekly cycle elapsed`:'Pairing schedule unavailable');
-      }
-    };
-    updateCountdown();
-    if(landingCountdownTimer) clearInterval(landingCountdownTimer);
-    if(next) landingCountdownTimer=setInterval(()=>{
-      const c=document.getElementById('landingNextCountdown');
-      if(!c){ clearInterval(landingCountdownTimer); landingCountdownTimer=null; return; }
-      if(Date.now()>=next.getTime()){
-        clearInterval(landingCountdownTimer); landingCountdownTimer=null;
-        const refreshEpoch=homeRequestEpoch;
-        fetchStats(false).then(fresh=>{
-          if(refreshEpoch===homeRequestEpoch&&!window._randori_auth?.me) populateLanding(fresh);
-        });
-        return;
-      }
-      updateCountdown();
-    },30000);
   }
 
   function populateDash(stats){
@@ -11965,14 +12077,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const canApply=()=>requestEpoch===homeRequestEpoch
       &&actor===currentHomeActor();
     if(!isAuthed){
-      // anon home = landing
-      window._randori_ui_state?.setRequestState?.(
-        document.getElementById('landingStats'),document.getElementById('landingStatsUpdated'),
-        'loading','Loading summary…');
-      const stats=await fetchStats(false);
-      if(!canApply()) return;
-      populateLanding(stats);
-      // also tick for dash hidden
+      // The public landing deliberately shows no live circle statistics
+      // (UI redesign WP-L1), so anonymous visitors make no /api/stats call.
+      return;
     } else {
       const stats=await fetchStats(true);
       if(!canApply()) return;

@@ -21,6 +21,11 @@ specified separately in section 7.
 - Signed-in screens from the loopback runtime (`scripts/local-server.mjs`) over
   a fresh temporary database. State is created through product endpoints and UI
   only, as in `tests/e2e/pairing-real-runtime.spec.ts`.
+- The public landing and recovery pages from the same loopback runtime
+  (`local-landing*`, `local-*-no-token`), so a branch can be reviewed before it
+  reaches production. `local-landing-request-*` shots force the
+  `inviteRequests` capability and answer the form with the contract's generic
+  202 locally.
 
 ```bash
 gh workflow run ui-screenshots.yml --ref <branch>     # the file is on main
@@ -454,6 +459,27 @@ Submission behaviour:
 - The form then collapses to that message.
 - Errors: field-level validation messages linked with `aria-describedby`. A
   429 shows "Too many requests — try again later."
+
+### 7.2.1 What WP-L1 shipped
+
+- `#view-landing` follows 7.1 without the product glimpse (a pipeline-captured
+  Room screenshot lands with WP-R, once the Room layout is final). The circle
+  summary, countdown, "new" badge and illustration card are gone, and the
+  anonymous landing no longer calls `/api/stats`.
+- `assets/landing.js` (unit-tested, `window._randori_landing`) owns the form,
+  the "I have an invitation" disclosure and the recovery next steps. The auth
+  layer passes it the parsed `inviteRequests` capability. Without the
+  capability the section reads "Invite-only — ask a member for an
+  invitation." with Sign in.
+- Success copy is fixed client-side (every 202 looks the same). 400 field
+  messages are shown with `textContent` next to their fields; 429, 404/503,
+  403 and network failures map to one banner each and keep the draft.
+- `/invite`, `/verify` and `/reset-password` keep their status messages and
+  #257 behaviour, retitle dead ends ("This invitation link can't be used") and
+  show "What you can do" with Sign in, Request an invite (when advertised) and
+  a home link. The disabled invitation CTA is hidden on dead ends.
+- The first-visit welcome banner still appears on the landing until WP-O
+  removes it (its markup and JS belong to WP-O).
 
 ### 7.3 Backend (work package WP-L2, its own PR)
 
