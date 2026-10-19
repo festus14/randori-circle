@@ -2,7 +2,7 @@ import {readFileSync} from 'node:fs';
 
 import {expect,Page,test} from '@playwright/test';
 
-import {setCode} from './helpers';
+import {openRoomPanel, setCode} from './helpers';
 import {
   FOCUS_BLOCK_ROLLUP_SOLUTION,
   LOCAL_OWNER_NAME,
@@ -290,7 +290,9 @@ test('partners co-edit one document without conflicts, sketch, run it into a sha
       await expect(page.locator('#pairRunsList')).toContainText(LOCAL_OWNER_NAME);
     }
 
-    // Path 9: completion needs both participants.
+    // Path 9: completion needs both participants. Wrap-up lives in the
+    // room's Session panel.
+    for(const page of [owner,member]) await openRoomPanel(page,'session');
     const ownerStatus=owner.locator('#sessionCompletionStatus');
     const memberStatus=member.locator('#sessionCompletionStatus');
     await expect(owner.locator('#sessionCompletionAction')).toHaveText('Confirm session completed');
