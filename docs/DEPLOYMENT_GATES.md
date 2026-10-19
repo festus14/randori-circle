@@ -25,6 +25,10 @@ It also pins the five-minute outbox worker and its secret-free hourly watchdog:
 the worker retains its protected two-minute deadline, while the watchdog keeps
 read-only GitHub permissions, fixed time/page bounds, and no production access.
 
+Required checks run on the pinned `ubuntu-24.04` image rather than the floating
+`ubuntu-latest`. The optional `ubuntu-26-canary` check collects Ubuntu 26
+evidence and is not required; see `docs/UBUNTU_RUNNER_PINNING.md`.
+
 The unit suite exercises fail-closed cases and runs the command with an unreachable HTTPS proxy, an unusable provider token, and a simulated exhausted-quota marker. That proves this gate does not consume preview quota or need the preview service to be reachable.
 
 This check does **not** prove that a provider can allocate quota, that protected environment variables are correct, or that the deployed edge returns the expected headers. Preview and production deployment telemetry remain the evidence for those provider-owned properties. Production readiness and health probes continue to fail closed when database or migration state is incomplete.

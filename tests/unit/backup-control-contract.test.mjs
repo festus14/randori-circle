@@ -123,22 +123,22 @@ test('watchdog permissions, isolation, schedule, and terminal alert fail closed'
     "WATCHDOG_CONTROL_ACTIVATION_AT: '2026-09-21T03:17:00.000Z'",
     "WATCHDOG_CONTROL_ACTIVATION_AT: '2026-09-28T03:17:00.000Z'").includes(
     'watchdog activation must remain the reviewed first Monday rehearsal slot'));
-  assert.ok(changed('watchdog','    runs-on: ubuntu-latest',
-    '    environment: turso-migration-rehearsal\n    runs-on: ubuntu-latest').includes(
+  assert.ok(changed('watchdog','    runs-on: ubuntu-24.04',
+    '    environment: turso-migration-rehearsal\n    runs-on: ubuntu-24.04').includes(
     'watchdog must not receive a protected environment or provider/application secrets'));
-  assert.ok(changed('watchdog','    runs-on: ubuntu-latest',
-    "    'environment': turso-migration-rehearsal\n    runs-on: ubuntu-latest").includes(
+  assert.ok(changed('watchdog','    runs-on: ubuntu-24.04',
+    "    'environment': turso-migration-rehearsal\n    runs-on: ubuntu-24.04").includes(
     'watchdog workflow must use the reviewed unambiguous YAML subset'));
-  assert.ok(changed('watchdog','    runs-on: ubuntu-latest',
-    '    ? permissions\n    : write-all\n    runs-on: ubuntu-latest').includes(
+  assert.ok(changed('watchdog','    runs-on: ubuntu-24.04',
+    '    ? permissions\n    : write-all\n    runs-on: ubuntu-24.04').includes(
     'watchdog workflow must use the reviewed unambiguous YAML subset'));
   for(const decorated of ['&p permissions: write-all','!!str permissions: write-all']){
-    assert.ok(changed('watchdog','    runs-on: ubuntu-latest',
-      `    ${decorated}\n    runs-on: ubuntu-latest`).includes(
+    assert.ok(changed('watchdog','    runs-on: ubuntu-24.04',
+      `    ${decorated}\n    runs-on: ubuntu-24.04`).includes(
       'watchdog workflow must use the reviewed unambiguous YAML subset'));
   }
-  assert.ok(changed('watchdog','    runs-on: ubuntu-latest',
-    '    permissions: write-all\n    runs-on: ubuntu-latest').includes(
+  assert.ok(changed('watchdog','    runs-on: ubuntu-24.04',
+    '    permissions: write-all\n    runs-on: ubuntu-24.04').includes(
     'watchdog permissions must be actions: read and contents: read only'));
   assert.ok(changed('watchdog','          GITHUB_TOKEN: ${{ github.token }}',
     '          GITHUB_TOKEN: ${{ github.token }}\n          TOKEN: ${{ secrets.TURSO_TOKEN }}').includes(

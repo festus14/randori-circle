@@ -1,0 +1,66 @@
+name: ubuntu-26-canary
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '23 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ubuntu-26-canary-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ubuntu-26-canary:
+    name: ubuntu-26-canary
+    runs-on: ubuntu-26.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Record platform compatibility evidence
+        run: |
+          cat /etc/os-release
+          uname -srm
+          node --version
+          npm --version
+          node -e "console.log(JSON.stringify({tz:Intl.DateTimeFormat().resolvedOptions().timeZone,locale:Intl.DateTimeFormat().resolvedOptions().locale,icu:process.versions.icu,openssl:process.versions.openssl}))"
+          node --input-type=module -e "import {createClient} from '@libsql/client'; const c=createClient({url:':memory:'}); const r=await c.execute('select sqlite_version() as v'); console.log('libsql sqlite', r.rows[0].v); c.close();"
+          ldd --version | head -n 1
+          fc-list | wc -l
+      - name: Audit production dependencies
+        run: npm run audit:prod
+      - name: Validate original exercise catalogue
+        run: npm run validate:catalog
+      - name: Enforce runtime DDL boundary
+        run: npm run check:runtime-ddl
+      - name: Check JavaScript syntax
+        run: npm run check:syntax
+      - name: Rehearse local database migrations
+        run: npm run test:migrations
+      - name: Run API tests with enforced coverage
+        run: npm run test:coverage
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+      - name: Run browser tests against checkout
+        run: npm run test:e2e
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ubuntu-26-canary-report-${{ github.run_attempt }}
+          path: |
+            playwright-report
+            test-results
+          retention-days: 7
+          if-no-files-found: ignore

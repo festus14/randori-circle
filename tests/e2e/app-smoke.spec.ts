@@ -52,3 +52,21 @@ test('the browser suite is pinned to the local checkout', async ({ page }) => {
     error: 'API not configured in local static test server',
   });
 });
+
+test('browser tests never load the production telemetry SDK', async ({ page }) => {
+  // The Sentry SDK's iframe-based timer probing races Playwright's fake clock
+  // and would report CI sessions to production. playwright.config.js makes its
+  // hosts unresolvable; this guards that contract on networked runners.
+  const telemetryFailures: string[] = [];
+  page.on('requestfailed', request => {
+    if (/sentry-cdn\.com|sentry\.io/.test(new URL(request.url()).hostname)) {
+      telemetryFailures.push(request.failure()?.errorText || '');
+    }
+  });
+  await mockApi(page);
+  await resetClientState(page);
+  await page.goto('/', { waitUntil: 'load' });
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { _sentryReady?: boolean })._sentryReady)).toBe(false);
+  expect(await page.evaluate(() => typeof (window as typeof window & { Sentry?: unknown }).Sentry)).toBe('undefined');
+  expect(telemetryFailures).toEqual(['net::ERR_NAME_NOT_RESOLVED']);
+});

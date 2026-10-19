@@ -180,8 +180,9 @@ test('two participants converge on roles and a durable timer across restart',asy
     await expect(first.getByTestId('session-controls-roles')).toHaveText('You are interviewer. Partner is candidate.');
     await expect(first.getByTestId('session-controls-status')).toHaveText('Participant roles updated. You are interviewer.');
 
-    await first.getByTestId('session-controls-start-pause').focus();
-    await first.keyboard.press('Enter');
+    // Focus and key delivery target the control itself, so no background
+    // focus change between two separate calls can swallow the keystroke.
+    await first.getByTestId('session-controls-start-pause').press('Enter');
     await expect(first.getByTestId('session-controls-status')).toHaveText('Shared timer started.');
     await second.evaluate(()=>window._randori_session_controls?.load());
     await expect(second.getByTestId('session-controls-start-pause')).toHaveText('Pause');
