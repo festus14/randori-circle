@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { expect, Page, Request, Route, test } from '@playwright/test';
 import * as Y from 'yjs';
-import { mockApi, originalQuestionFixture, setCode } from './helpers';
+import { mockApi, openRoomPanel, originalQuestionFixture, setCode } from './helpers';
 
 const roomA = 'week_42_pair_7';
 const roomB = 'week_43_pair_8';
@@ -483,6 +483,7 @@ async function waitForRoom(page: Page, room: string) {
     })._randori_pair_runs;
     return feed?.room || null;
   })).toBe(room);
+  await openRoomPanel(page, 'results');
   await expect(page.locator('#pairRunsCard')).toBeVisible();
 }
 
