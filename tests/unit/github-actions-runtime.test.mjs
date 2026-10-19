@@ -124,3 +124,36 @@ test('comments and block scalar text cannot create phantom action references',()
   e2e.source+='\n# uses: attacker/action@main\nx-action-example: |\n  uses: attacker/action@main\n';
   assert.doesNotThrow(()=>assertApprovedWorkflowActions(harmlessText));
 });
+
+const PINNED_RUNNER='ubuntu-24.04';
+const CANARY_RUNNERS=new Map([['ubuntu-26-canary.yml',new Map([['ubuntu-26-canary','ubuntu-26.04']])]]);
+
+function assertPinnedRunners(workflows){
+  for(const {name,source} of workflows){
+    assert.doesNotMatch(source,/ubuntu-latest/u,`${name} must not use the floating ubuntu-latest image`);
+    const document=parseDocument(source,{prettyErrors:false,uniqueKeys:true});
+    assert.equal(document.errors.length,0,`${name} must contain valid YAML`);
+    const jobs=document.toJS()?.jobs;
+    assert.ok(jobs&&typeof jobs==='object',`${name} must define jobs`);
+    for(const [jobName,job] of Object.entries(jobs)){
+      const expected=CANARY_RUNNERS.get(name)?.get(jobName)??PINNED_RUNNER;
+      assert.equal(job?.['runs-on'],expected,`${name} job ${jobName} must run on ${expected}`);
+    }
+  }
+}
+
+test('every workflow job runs on a reviewed pinned Ubuntu image',()=>{
+  assertPinnedRunners(workflowSources());
+});
+
+test('floating or unreviewed runner images are rejected',()=>{
+  for(const replacement of ['ubuntu-latest','ubuntu-26.04','[ubuntu-24.04]']){
+    const mutated=workflowSources().map(item=>({...item}));
+    const e2e=mutated.find(item=>item.name==='e2e.yml');
+    e2e.source=e2e.source.replace('runs-on: ubuntu-24.04',`runs-on: ${replacement}`);
+    assert.throws(()=>assertPinnedRunners(mutated),/ubuntu-latest|must run on ubuntu-24\.04/u);
+  }
+  const hidden=workflowSources().map(item=>({...item}));
+  hidden.find(item=>item.name==='e2e.yml').source+='\n# runs-on: ubuntu-latest\n';
+  assert.throws(()=>assertPinnedRunners(hidden),/must not use the floating ubuntu-latest image/u);
+});
