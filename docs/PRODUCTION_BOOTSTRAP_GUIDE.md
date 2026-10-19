@@ -497,6 +497,44 @@ identity management, chat retention, AI, and open signup. With
 `EMAIL_PASSWORD_ACTIVATION_ENABLED=false`, invitees join with Google, so they
 must be Google test users or the Google app must be published.
 
+### 10.1 Optional: email + password sign-in, signup, and "Forgot password?"
+
+Password login (`POST /api/auth/login`) is always on; these steps let invitees
+create a password account and let password accounts recover. Do them only after
+step 1 above, one redeploy per step:
+
+1. Prerequisites: the full migration sequence and all four key-control
+   adoptions in section 8 are complete (`email-activation` and `password-reset`
+   accepted at version 1); `/api/init` succeeded; `CIRCLE_MEMBERSHIP_ENABLED=true`;
+   Resend shows the sender domain **Verified**; `RESEND_API_KEY` and
+   `RESEND_FROM` use that domain; `outbox-dispatch` runs green. With the
+   `onboarding@resend.dev` test sender Resend delivers only to the Resend
+   account owner's own address; every other recipient is rejected and the
+   event dead-letters, so invitees never receive verification or reset mail.
+2. `EMAIL_PASSWORD_ACTIVATION_ENABLED=true`. The code ignores it while
+   `CIRCLE_MEMBERSHIP_ENABLED` is not `true` or the `EMAIL_VERIFICATION_*`
+   ring/control is not ready. Capabilities then report
+   `passwordSignup:true`, `verifiedEmailActivation:true`,
+   `registrationMode:"verified_invite"`. Invitees sign up on the invitation,
+   receive a `/verify#token=…` link, and only then get an account and session.
+3. `PASSWORD_RESET_ENABLED=true`. Capabilities report `passwordReset:true` and
+   the sign-in dialog shows **Forgot password?**. Reset links are
+   `APP_URL/reset-password#token=…`, single-use, expire after 30 minutes, and
+   revoke every session when used. With membership on, only active members of
+   the primary circle who already have a password can request one;
+   everyone else (including Google-only accounts) gets the same generic 202
+   and no email.
+4. Optional, so the Google-created owner account can also sign in with a
+   password: `IDENTITY_MANAGEMENT_ENABLED=true` (needs the `IDENTITY_EMAIL_HASH_*`
+   ring and the accepted `identity-email-observation` control; without them
+   Google sign-in itself fails closed). The owner then opens **Account
+   security**, confirms with Google, and adds a password. A Google-only
+   account cannot use "Forgot password?" to create a first password.
+
+Mail is sent only when the five-minute `outbox-dispatch` workflow runs, so a
+verification or reset email normally arrives within 5–15 minutes, and later if
+GitHub delays the schedule. The links still expire after 30 minutes.
+
 ## 11. Verify
 
 ```bash

@@ -1692,9 +1692,14 @@ p{margin:0}
       const data=await response.json().catch(()=>({}));
       activationState.status=response.ok&&data?.status==='verified'?'verified':String(data?.status||'unavailable');
       if(response.ok&&data?.user){
+        // A startup /me refresh that began before verification must not
+        // overwrite the newly issued session, and the header must reflect it.
+        invalidateAuthRefreshes();
         me=data.user;
         resetCircleControlForIdentityChange();
         try{ localStorage.setItem(ME_KEY,JSON.stringify(data.user)); }catch{}
+        try{ updateAuthUI(); }catch{}
+        try{ window.dispatchEvent(new CustomEvent('randori:auth-refreshed',{detail:{signedIn:true,userId:me.id||me.uid||null}})); }catch{}
       }
     }catch{ activationState.status='unavailable'; }
     activationState.verifying=false;
@@ -3487,6 +3492,7 @@ async function refreshMe(){
     }
     if(code==='email already registered') return 'That email already has an account. Sign in instead.';
     if(code==='invalid credentials') return 'Email or password is incorrect.';
+    if(code==='active circle membership required') return 'Your circle membership is no longer active. Ask the circle owner for a new invitation.';
     if(code.includes('temporarily unavailable')) return mode==='signup'
       ?'Account creation is temporarily unavailable. Try again.'
       :(mode==='reset'?'Password recovery is temporarily unavailable. Try again.':'Sign in is temporarily unavailable. Try again.');
