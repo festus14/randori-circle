@@ -483,6 +483,18 @@ Submission behaviour:
 
 ### 7.3 Backend (work package WP-L2, its own PR)
 
+> **Implemented** as migration **v21** (`public-invite-requests`). The
+> authoritative API contract for the UI packages is
+> [`docs/INVITE_REQUESTS.md`](../INVITE_REQUESTS.md); decision ID-66. Deviations
+> from the sketch below: the id is a UUID; pending rows store the normalized
+> email in plaintext (needed to invite) and every decision or expiry scrubs
+> email, name, and note; uniqueness is a partial index on pending rows (the
+> sketched `UNIQUE (circle_id, email_hash, status)` would block a second
+> decline); the outbox event type is `inviterequest.email.requested` (event
+> types cannot contain `_`), and the owner digest carries only the pending
+> count, never name or note; the capability is `inviteRequests` and appears
+> only when the flag is on and v21 is ready.
+
 **Migration.** Use the next free version. `main` is at v19 and PR #242 reserves
 v20, so this is **v21** unless the numbering has moved by implementation time.
 Re-check `db/migration-plan.js` before writing the migration. It must be
