@@ -101,7 +101,8 @@ jobs:
                 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
                 .spacer{height:2400px}</style>
                 <div class="spacer"></div><button id="b">Go</button><div class="spacer"></div>
-                <script>window.clicks=0;document.getElementById('b').addEventListener('click',()=>{window.clicks+=1;});</script>`);
+                <script>window.clicks=0;document.getElementById('b').addEventListener('click',()=>{window.clicks+=1;});
+                setInterval(()=>{const end=performance.now()+25;while(performance.now()<end){}},40);</script>`);
               const attempts = 60;
               for (let i = 0; i < attempts; i += 1) {
                 await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
@@ -115,7 +116,9 @@ jobs:
           }
           SPEC
           cp /tmp/probe/probe.spec.mjs tests/e2e/zz-probe.spec.mjs
+          for i in $(seq 1 4); do (timeout 300 yes > /dev/null &); done
           npx playwright test tests/e2e/zz-probe.spec.mjs --reporter=list --workers=1 | grep -E "PROBE|passed|failed"
+          pkill yes || true
 
   circle-regression-proof:
     runs-on: ubuntu-24.04
