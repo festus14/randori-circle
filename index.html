@@ -11131,7 +11131,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }catch{}
     // A member part-way through the stepper (availability or what happens
     // next) stays there: a late identity refresh must not jump to Home.
-    if(viewProfile?.style.display!=='none'&&setupMode!=='edit'&&setupStep!=='profile') return;
+    const stayInStepper=()=>viewProfile?.style.display!=='none'&&setupMode!=='edit'
+      &&(setupStep!=='profile'||!!profileSaveController);
+    if(stayInStepper()) return;
     // fetch profile to see if incomplete
     let profile;
     try{ profile=await fetchProfile(); }
@@ -11141,7 +11143,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       await showProfileSetup(null,{mode:'onboarding'});
       return;
     }
-    if(!canApplyRoute()) return;
+    if(!canApplyRoute()||stayInStepper()) return;
     const profileStatus=window._randori_onboarding_authority?.snapshot?.profile?.status;
     if(!profile&&profileStatus==='error'){
       await showDashboard();
