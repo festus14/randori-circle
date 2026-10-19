@@ -483,6 +483,18 @@ Submission behaviour:
 
 ### 7.3 Backend (work package WP-L2, its own PR)
 
+> **Implemented** as migration **v21** (`public-invite-requests`). The
+> authoritative API contract for the UI packages is
+> [`docs/INVITE_REQUESTS.md`](../INVITE_REQUESTS.md); decision ID-66. Deviations
+> from the sketch below: the id is a UUID; pending rows store the normalized
+> email in plaintext (needed to invite) and every decision or expiry scrubs
+> email, name, and note; uniqueness is a partial index on pending rows (the
+> sketched `UNIQUE (circle_id, email_hash, status)` would block a second
+> decline); the outbox event type is `inviterequest.email.requested` (event
+> types cannot contain `_`), and the owner digest carries only the pending
+> count, never name or note; the capability is `inviteRequests` and appears
+> only when the flag is on and v21 is ready.
+
 **Migration.** Use the next free version. `main` is at v19 and PR #242 reserves
 v20, so this is **v21** unless the numbering has moved by implementation time.
 Re-check `db/migration-plan.js` before writing the migration. It must be
@@ -770,6 +782,50 @@ markup in later packages.
   `tests/e2e/pair-workspace-layout.spec.ts`. E2E specs that use Session or
   Results controls open the panel first with `openRoomPanel()` from
   `tests/e2e/helpers.ts`.
+
+### 9.5 What WP-K shipped (practice catalogue)
+
+- **Problem panel layout** (`#roomPanel-problem`): a "Practice exercises"
+  header with the count (`#catalogFilterStatus`), the exercise select, the
+  filters, a **Browse exercises** disclosure (`#catalogBrowseList`) and then
+  the current problem statement (`article.q-body`). The disclosure is closed
+  by default so the statement stays in view while coding. It opens when the
+  member searches or filters, and when Home's "Practice solo from catalogue"
+  opens the room.
+- **Filters:** search (title, slug, pattern, topic), Difficulty, Pattern and
+  the new Language filter (`#catalogLanguage`, built from the exercises'
+  starter languages). **Clear filters** (`#catalogClearFilters`) appears only
+  while a filter is active.
+- **Exercise cards** (`#catalogList`, `.catalog-card` buttons): title,
+  difficulty badge (`data-tone`), pattern, up to three topics and a one-line
+  summary. The current exercise is marked with `aria-current="true"` and
+  "Current exercise". Choosing a card goes through `#questionSelect`, so
+  drafts, the shared workspace and the pinned version follow the existing
+  path.
+- **States:** a skeleton list while loading; an empty state with **Clear
+  filters** that names the exercise the room keeps ("You are still working on
+  …"), never "unavailable"; one error banner (`#catalogError`) with **Try
+  again** (`#catalogRetryBtn`), an offline variant, and **Sign in** for
+  visitors on `/?view=code` (the catalogue is member-only).
+- **Run keeps the selection.** Run, Copy starter and Reset use the selected
+  exercise identity, so they still work while a filter hides that exercise.
+- **Problem statement:** difficulty, pattern and version badges; prompt
+  paragraphs and topics; examples as Input / Output blocks that name the
+  parameters from the signature (`blocks = […]`); constraints as a list; a
+  "Run your code" box with **Open the editor** (`#qStartCoding`, phones and
+  tablets only); attribution under the catalogue note. Content is rendered
+  with `textContent` only. The browser still gets only the public projection
+  (no hidden cases).
+- **Plain language:** run results say "Result: n/m passed · JavaScript ·
+  Checked on the server" (was "authoritative server result"). The loading,
+  empty and tooltip copy in this area no longer mentions gateways,
+  attestation or "approved server catalogue".
+- Logic lives in `assets/catalogue-view.js` (classic script, unit-tested in
+  `tests/unit/catalogue-view.test.mjs`). The golden paths (browse → filter →
+  empty state → clear → open → Run solo, the phone layout, and the visitor
+  sign-in state) are in `tests/e2e/catalog-discovery.spec.ts`. Screenshots:
+  `catalogue-problem`, `catalogue-browse`, `catalogue-empty-filter` and their
+  `-light` variants.
 
 ## 10. Phased implementation plan
 

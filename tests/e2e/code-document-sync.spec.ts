@@ -238,6 +238,11 @@ test('Run waits for acknowledgement and a stale document race reconciles without
     // Capture A's acknowledged version, advance the server through B, then
     // force A's next execute request to carry the stale token.
     const staleVersion=await pages[0].evaluate(()=>window._randori_crdt?.documentVersion);
+    // B must have converged on A's acknowledged edit before typing at the end:
+    // typing at a stale offset while ' queued' arrives interleaves the two
+    // concurrent inserts (valid CRDT merge, but ' peer' is then not contiguous).
+    await expect.poll(()=>store.code(),{timeout:12_000}).toContain(' queued');
+    await expect.poll(()=>editorValue(pages[1]),{timeout:12_000}).toBe(store.code());
     await insertAt(pages[1],(await editorValue(pages[1])).length,' peer');
     await expect.poll(()=>store.code(),{timeout:12_000}).toContain('peer');
     await pages[0].route('**/api/code-document?**',route=>route.abort());

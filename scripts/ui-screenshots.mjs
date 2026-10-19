@@ -756,11 +756,21 @@ async function captureLocal(browser, viewportName, recorder) {
       await mp.evaluate(() => window._randori_room?.show?.('problem'));
       await mp.getByTestId('catalog-status').filter({ hasNotText: 'Loading' }).waitFor({ timeout: 15_000 }).catch(() => {});
       await sleep(1000);
+      // WP-K: the problem statement first, then the opened card list.
+      await recorder.shot(mp, v, 'catalogue-problem');
+      await mp.evaluate(() => { const browse = document.getElementById('catalogBrowseList'); if (browse) browse.open = true; });
       await recorder.shot(mp, v, 'catalogue-browse');
       await mp.getByTestId('catalog-search').fill('zzzz-no-such-exercise');
       await sleep(600);
       await recorder.shot(mp, v, 'catalogue-empty-filter');
+      await tap(mp, '#themeToggle');
+      await sleep(500);
+      await recorder.shot(mp, v, 'catalogue-empty-filter-light');
       await mp.getByTestId('catalog-search').fill('');
+      await sleep(400);
+      await recorder.shot(mp, v, 'catalogue-browse-light');
+      await tap(mp, '#themeToggle');
+      await mp.evaluate(() => { const browse = document.getElementById('catalogBrowseList'); if (browse) browse.open = false; });
     });
 
     await recorder.step(`${v}:history`, async () => {
@@ -782,6 +792,41 @@ async function captureLocal(browser, viewportName, recorder) {
       await openTab(mp, 'circle');
       await sleep(1000);
       await recorder.shot(mp, v, 'circle-member-view');
+    });
+
+    // WP-C: light theme for the circle and history surfaces.
+    await recorder.step(`${v}:circle-history-light`, async () => {
+      await tap(op, '#themeToggle');
+      await openTab(op, 'circle');
+      await sleep(1000);
+      await recorder.shot(op, v, 'circle-owner-light');
+      await openTab(op, 'history');
+      await sleep(1500);
+      const recap = op.locator('#historyPersonal button').first();
+      if (await recap.count()) {
+        await recap.click().catch(() => {});
+        await sleep(1500);
+      }
+      await recorder.shot(op, v, 'history-recap-light');
+      await tap(op, '#themeToggle');
+    });
+
+    // WP-C: owner "Invite requests" panel with real requests submitted through
+    // the public WP-L2 endpoint on the loopback runtime (flag on locally).
+    await recorder.step(`${v}:circle-invite-requests`, async () => {
+      await mp.evaluate(async viewport => {
+        for (const [name, note] of [['Ada Lovelace', 'Preparing for system design loops in November.'], ['Grace Hopper', null]]) {
+          await fetch('/api/invite-requests', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ name, email: `${name.split(' ')[0].toLowerCase()}.${viewport}@example.test`, note }),
+          });
+        }
+      }, v);
+      await op.reload({ waitUntil: 'domcontentloaded' });
+      await openTab(op, 'circle');
+      await op.getByTestId('circle-invite-requests').waitFor({ state: 'visible', timeout: 10_000 }).catch(() => {});
+      await sleep(800);
+      await recorder.shot(op, v, 'circle-owner-invite-requests');
     });
 
     await recorder.step(`${v}:account-security`, async () => {
