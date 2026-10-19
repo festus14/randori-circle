@@ -1,4 +1,4 @@
-import {copyFileSync,mkdirSync} from 'node:fs';
+import {copyFileSync,mkdirSync,readdirSync} from 'node:fs';
 import {join} from 'node:path';
 
 import {expect,Page} from '@playwright/test';
@@ -6,9 +6,12 @@ import {expect,Page} from '@playwright/test';
 export function stageRealRuntimeClient(repositoryRoot:string,rootDir:string){
   mkdirSync(join(rootDir,'assets'));
   copyFileSync(join(repositoryRoot,'index.html'),join(rootDir,'index.html'));
-  copyFileSync(join(repositoryRoot,'assets','crdt-editor.js'),join(rootDir,'assets','crdt-editor.js'));
-  copyFileSync(join(repositoryRoot,'assets','invite-gate.js'),join(rootDir,'assets','invite-gate.js'));
-  copyFileSync(join(repositoryRoot,'assets','auth-dialog.js'),join(rootDir,'assets','auth-dialog.js'));
+  // Stage every checked-in browser asset (invite gate, CRDT bundle, calendar
+  // export, and anything a redesign adds) so the runtime serves the same
+  // client the deployment does.
+  for(const entry of readdirSync(join(repositoryRoot,'assets'),{withFileTypes:true})){
+    if(entry.isFile()) copyFileSync(join(repositoryRoot,'assets',entry.name),join(rootDir,'assets',entry.name));
+  }
 }
 
 export async function expectInviteGateLoaded(page:Page){
