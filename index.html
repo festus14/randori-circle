@@ -525,7 +525,8 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   transition:background-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
 }
 .tab .rc-icon{width:18px; height:18px}
-.tab:hover,.rc-tab:hover{color:var(--ink); background:var(--bg-3)}
+/* Hover only where a real pointer hovers: touch taps must not leave a stale highlight. */
+@media(hover:hover){ .tab:hover,.rc-tab:hover{color:var(--ink); background:var(--bg-3)} }
 .tab.active,.tab[aria-current="page"],.rc-tab[aria-selected="true"]{background:var(--color-action-subtle); color:var(--ink); border-color:color-mix(in srgb, var(--color-action) 45%, var(--border))}
 .tab.active .rc-icon,.tab[aria-current="page"] .rc-icon{color:var(--color-action)}
 .tab.active .kbd,.tab[aria-current="page"] .kbd{border-color:color-mix(in srgb, var(--color-action) 40%, var(--border))}
