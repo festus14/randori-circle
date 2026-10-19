@@ -1,7 +1,7 @@
 import { createClient } from '@libsql/client';
 import jwt from 'jsonwebtoken';
 import { createHash, randomBytes } from 'node:crypto';
-import { redactSentryText, sanitizeSentryContext, sanitizeSentryEvent } from './_sentry.js';
+import { redactSentryText, resolveSentryRuntime, sanitizeSentryContext, sanitizeSentryEvent } from './_sentry.js';
 import { recordRecentAuth } from './_recent-auth.js';
 
 export const JWT_ISSUER = 'randori-circle';
@@ -81,7 +81,7 @@ function getSentryDsn() {
 }
 
 export function isSentryConfigured() {
-  return Boolean(getSentryDsn());
+  return Boolean(getSentryDsn()) && resolveSentryRuntime(process.env).enabled;
 }
 
 export function initSentry() {
@@ -89,9 +89,11 @@ export function initSentry() {
   try {
     const dsn = getSentryDsn();
     if (!dsn) return;
+    const runtime = resolveSentryRuntime(process.env);
+    if (!runtime.enabled) return;
     Sentry.init({
       dsn,
-      environment: process.env.VERCEL_ENV || process.env.NODE_ENV || 'production',
+      environment: runtime.environment,
       tracesSampleRate: 0.1,
       sendDefaultPii: false,
       beforeSend: sanitizeSentryEvent,
