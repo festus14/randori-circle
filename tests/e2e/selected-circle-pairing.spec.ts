@@ -235,7 +235,9 @@ test('sign-out aborts an in-flight selected pairing read before clearing identit
   await resetClientState(page,true,{'randori-last-room':'week_9_pair_9','randori-last-my-pair':'unsafe'});
   await page.goto('/',{waitUntil:'domcontentloaded'});
   await started;
-  await page.locator('#dashSignOut').click();
+  // Sign out lives in the account menu (WP-S/WP-H), not the dashboard body.
+  await page.locator('#meLabel').click();
+  await page.getByRole('menuitem',{name:'Sign out',exact:true}).click();
   await logoutStarted;
   await expect.poll(()=>failed.length).toBeGreaterThan(0);
   releaseLogout();
