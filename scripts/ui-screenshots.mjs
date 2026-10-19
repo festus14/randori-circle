@@ -707,6 +707,16 @@ async function captureLocal(browser, viewportName, recorder) {
       await recorder.shot(op, v, 'workspace-editor-viewport', { fullPage: false });
     });
 
+    // WP-R: the room shows one panel at a time on phones and a tabbed side
+    // panel beside the editor on desktop. Capture each panel in the viewport.
+    await recorder.step(`${v}:workspace-panels`, async () => {
+      for (const panel of ['problem', 'session', 'notes']) {
+        await op.evaluate(name => window._randori_room?.show?.(name), panel);
+        await recorder.shot(op, v, `workspace-${panel}`, { fullPage: false, settle: 300 });
+      }
+      await op.evaluate(() => window._randori_room?.show?.('code'));
+    });
+
     await recorder.step(`${v}:workspace-run`, async () => {
       const executed = responseOf(op, r => r.url().endsWith('/api/execute') && r.request().method() === 'POST');
       await tap(op, '#runBtn');
@@ -742,6 +752,8 @@ async function captureLocal(browser, viewportName, recorder) {
 
     await recorder.step(`${v}:catalogue`, async () => {
       await openTab(mp, 'code');
+      // The catalogue lives in the room's Problem panel (WP-R).
+      await mp.evaluate(() => window._randori_room?.show?.('problem'));
       await mp.getByTestId('catalog-status').filter({ hasNotText: 'Loading' }).waitFor({ timeout: 15_000 }).catch(() => {});
       await sleep(1000);
       await recorder.shot(mp, v, 'catalogue-browse');

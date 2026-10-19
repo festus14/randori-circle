@@ -1,5 +1,5 @@
 import { Browser, Page, Request, Route, expect, test } from '@playwright/test';
-import { mockApi, originalQuestionFixture, resetClientState } from './helpers';
+import { mockApi, openRoomPanel, originalQuestionFixture, resetClientState } from './helpers';
 
 const roomId='week_42_pair_7';
 const scheduleVersion='a'.repeat(64);
@@ -107,6 +107,7 @@ async function openWorkspace(page:Page,store:MeetingStore){
     lifecycle:window._randori_meeting_link?.meeting?.lifecycle??null,
     authorized:(window as typeof window & {_randori_authorized_room?:string})._randori_authorized_room??null,
   }))).toEqual({room:roomId,lifecycle:'active',authorized:roomId});
+  await openRoomPanel(page,'session');
   await expect(page.getByTestId('meeting-link-workspace')).toBeVisible();
 }
 
