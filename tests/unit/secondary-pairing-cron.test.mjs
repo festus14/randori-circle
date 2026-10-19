@@ -146,9 +146,9 @@ test('weekly cron runs bounded invite-request retention on database time',async(
   assert.equal(inviteRetentionStatements.length,2);
   const expectedNow=Math.floor(Date.parse('2026-09-20T08:15:00.000Z')/1000);
   assert.match(inviteRetentionStatements[0].sql,/^\s*UPDATE invite_requests SET status='expired'/);
-  assert.deepEqual(inviteRetentionStatements[0].args,[expectedNow,expectedNow,200]);
+  assert.deepEqual(inviteRetentionStatements[0].args,[expectedNow,expectedNow,500]);
   assert.match(inviteRetentionStatements[1].sql,/^\s*DELETE FROM invite_requests/);
-  assert.deepEqual(inviteRetentionStatements[1].args,[expectedNow-30*24*60*60,200]);
+  assert.deepEqual(inviteRetentionStatements[1].args,[expectedNow-30*24*60*60,500]);
 });
 
 test('invite-request retention failures never block publication and pre-v21 schema is silent',async()=>{

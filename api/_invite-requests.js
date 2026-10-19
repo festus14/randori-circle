@@ -4,6 +4,7 @@ import { getJwtSecret } from './_db.js';
 import { hashInvitationEmail, normalizeInvitationEmail } from './_circle-membership.js';
 import { insertOwnerInvitation } from './_invitation-create.js';
 import { outboxStatementIdentity } from './_outbox-identity.js';
+import { rateLimitAddress } from './_client-address.js';
 import {
   INVITE_REQUEST_RETENTION_SECONDS,
   INVITE_REQUEST_SCRUB_SQL,
@@ -20,7 +21,7 @@ import {
 // waiting; owners decide in the authenticated review API, and an approval
 // reuses the one owner invitation path.
 
-export const INVITE_REQUEST_RESPONSE_FLOOR_MS=350;
+export const INVITE_REQUEST_RESPONSE_FLOOR_MS=750;
 export const INVITE_REQUEST_ACCEPTED_MESSAGE='Thanks — if the circle has room, you\'ll get an invitation by email.';
 export const INVITE_REQUEST_NAME_MIN=2;
 export const INVITE_REQUEST_NAME_MAX=60;
@@ -31,8 +32,11 @@ export const INVITE_REQUEST_MAX_NOTIFIED_OWNERS=5;
 export const INVITE_REQUEST_RATE_LIMITS=Object.freeze({
   ip:Object.freeze({limit:5,windowSeconds:60*60}),
   email:Object.freeze({limit:3,windowSeconds:60*60}),
-  global:Object.freeze({limit:50,windowSeconds:24*60*60}),
 });
+// Rolling 24-hour cap on *stored* requests (duplicates, members, invited,
+// declined, and honeypot submissions never count against it).
+export const INVITE_REQUEST_GLOBAL_DAILY_LIMIT=50;
+export const INVITE_REQUEST_GLOBAL_WINDOW_SECONDS=24*60*60;
 
 const UUID_PATTERN=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 // C0/C1 controls (newline allowed only in notes), line/paragraph separators,
@@ -80,7 +84,11 @@ export function validateInviteRequestInput(body){
       fields.name=`Use ${INVITE_REQUEST_NAME_MIN}–${INVITE_REQUEST_NAME_MAX} characters.`;
     }
   }
-  const email=normalizeInvitationEmail(body.email);
+  // Invite requests accept printable-ASCII addresses only, so control, bidi,
+  // and look-alike Unicode never reach the owner list (IDN users can use the
+  // owner's direct "invite by email" path).
+  const email=typeof body.email==='string'&&/^[\x21-\x7e]+$/.test(body.email.trim())
+    ?normalizeInvitationEmail(body.email):null;
   if(!email) fields.email='Enter a valid email address.';
   let note=null;
   if(body.note!==undefined&&body.note!==null){
@@ -105,18 +113,17 @@ function rateLimitKey(dimension,value,bucket){
 
 /**
  * Consume the public submission budget in the shared auth_rate_limits table:
- * per client address, then per email hash, then a global daily breaker. The
- * first exhausted dimension stops evaluation so later counters are untouched.
+ * per client address (IPv6 keyed by /64), then per email hash. The first
+ * exhausted dimension stops evaluation so later counters are untouched. The
+ * global cap is enforced on stored rows inside submitInviteRequest.
  */
 export async function consumeInviteRequestRateLimits(db,{ip,emailHash,nowSeconds=Math.floor(Date.now()/1000)}={}){
   if(!db||typeof db.execute!=='function') throw new TypeError('database client is required');
   if(typeof emailHash!=='string'||!/^[0-9a-f]{64}$/.test(emailHash)) throw new TypeError('email hash is required');
   if(!Number.isSafeInteger(nowSeconds)||nowSeconds<1) throw new TypeError('valid time is required');
-  const address=String(ip||'unknown').slice(0,128)||'unknown';
   const dimensions=[
-    ['ip',address,INVITE_REQUEST_RATE_LIMITS.ip],
+    ['ip',rateLimitAddress(ip),INVITE_REQUEST_RATE_LIMITS.ip],
     ['email',emailHash,INVITE_REQUEST_RATE_LIMITS.email],
-    ['global','all',INVITE_REQUEST_RATE_LIMITS.global],
   ];
   for(const [dimension,value,{limit,windowSeconds}] of dimensions){
     const bucket=Math.floor(nowSeconds/windowSeconds);
@@ -160,6 +167,16 @@ export async function submitInviteRequest(db,{name,email,note=null}={},{notifica
     const now=await inviteRequestNow(transaction,nowSeconds);
     const circleId=await primaryCircleId(transaction);
     if(!circleId) throw new InviteRequestUnavailableError('PRIMARY_CIRCLE_UNAVAILABLE');
+    // Global breaker first, before anything email-specific, so a full cap
+    // yields the same 429 for every address and cannot become an oracle.
+    const recent=await transaction.execute({
+      sql:`SELECT COUNT(*) AS count FROM invite_requests WHERE circle_id=? AND created_at>?`,
+      args:[circleId,now-INVITE_REQUEST_GLOBAL_WINDOW_SECONDS],
+    });
+    if(Number(recent.rows?.[0]?.count||0)>=INVITE_REQUEST_GLOBAL_DAILY_LIMIT){
+      await transaction.rollback(); finished=true;
+      return Object.freeze({stored:false,outcome:'global_limited',outboxEvents:Object.freeze([])});
+    }
     // At most one pending row exists per email (partial unique index), so this
     // lazy expiry touches zero or one row.
     await transaction.execute({
@@ -351,10 +368,33 @@ export async function decideInviteRequest(db,{requestId,decision,ownerUserId,ema
     }
     let created=null;
     if(decision==='approve'){
+      // The person may have joined or been invited since requesting; never
+      // issue a second live invitation or invite an existing member.
+      const recheck=await transaction.execute({
+        sql:`SELECT
+            EXISTS(SELECT 1 FROM auth_accounts account
+              JOIN circle_memberships membership ON membership.user_id=account.id
+                AND membership.circle_id=? AND membership.status='active'
+              WHERE lower(account.email)=?) AS is_member,
+            EXISTS(SELECT 1 FROM circle_invitations invitation
+              WHERE invitation.circle_id=? AND invitation.email_hash=?
+                AND invitation.used_at IS NULL AND invitation.used_by IS NULL
+                AND invitation.revoked_at IS NULL
+                AND datetime(invitation.expires_at)>datetime(?,'unixepoch')) AS is_invited`,
+        args:[circleId,String(row.email),circleId,hashInvitationEmail(String(row.email)),now],
+      });
+      const state=recheck.rows?.[0]||{};
+      if(Number(state.is_member)===1||Number(state.is_invited)===1){
+        await rollback();
+        return decisionResult({status:'conflict',currentStatus:'pending',
+          reason:Number(state.is_member)===1?'already_member':'already_invited'});
+      }
       created=await insertOwnerInvitation(transaction,{
         ownerUserId:owner,circleId,email:String(row.email),emailConfiguration,localRuntime,
       });
-      if(!created.ok){ await rollback(); return decisionResult({status:'not_found'}); }
+      // The owner check already passed in this transaction; losing it here is
+      // an integrity failure, not a missing request.
+      if(!created.ok) throw new Error('invite request approval lost owner authority');
     }
     const invitationId=created?.invitation.id||null;
     const updated=await transaction.execute({

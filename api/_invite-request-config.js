@@ -5,7 +5,9 @@
 
 export const INVITE_REQUEST_TTL_SECONDS=30*24*60*60;
 export const INVITE_REQUEST_RETENTION_SECONDS=30*24*60*60;
-export const INVITE_REQUEST_RETENTION_BATCH_LIMIT=200;
+export const INVITE_REQUEST_RETENTION_BATCH_LIMIT=500;
+export const INVITE_REQUEST_RETENTION_MAX_BATCHES=10;
+export const INVITE_REQUEST_READ_EXPIRY_LIMIT=50;
 
 const readinessByUrl=new Map();
 const readinessByClient=new WeakMap();
@@ -44,6 +46,17 @@ export async function ensureInviteRequestReadiness(db){
   cache.set(key,pending);
   try{ return await pending; }
   catch(error){ if(cache.get(key)===pending) cache.delete(key); throw error; }
+}
+
+/**
+ * Intake is available only when the schema is ready and exactly one active
+ * primary circle exists to receive requests. Used by capability discovery and
+ * before the public endpoint consumes any rate-limit budget.
+ */
+export async function inviteRequestIntakeAvailable(db){
+  await ensureInviteRequestReadiness(db);
+  const result=await db.execute(`SELECT id FROM circles WHERE is_primary=1 AND archived_at IS NULL LIMIT 2`);
+  return (result.rows||[]).length===1;
 }
 
 /** True only for the expected pre-v21 rollout state, never for other failures. */
@@ -96,4 +109,44 @@ export async function purgeInviteRequests(db,{limit=INVITE_REQUEST_RETENTION_BAT
   const expiredCount=expired.rows?.length||0;
   const purgedCount=purged.rows?.length||0;
   return Object.freeze({expired:expiredCount,purged:purgedCount,more:expiredCount===limit||purgedCount===limit});
+}
+
+/**
+ * Read-time expiry: scrub at most `limit` overdue pending rows of one circle.
+ * The owner list calls this so contact data does not outlive `expires_at` by
+ * up to a week while waiting for the weekly sweep.
+ */
+export async function expireOverdueInviteRequests(db,{circleId,limit=INVITE_REQUEST_READ_EXPIRY_LIMIT,nowSeconds=null}={}){
+  if(!db||typeof db.execute!=='function') throw new TypeError('database client is required');
+  const circle=Number(circleId);
+  if(!Number.isSafeInteger(circle)||circle<1||!Number.isSafeInteger(limit)||limit<1||limit>1000){
+    throw new TypeError('valid expiry request required');
+  }
+  const now=await inviteRequestNow(db,nowSeconds);
+  const expired=await db.execute({
+    sql:`UPDATE invite_requests SET status='expired',${INVITE_REQUEST_SCRUB_SQL},decided_at=?
+      WHERE id IN (SELECT id FROM invite_requests WHERE circle_id=? AND status='pending' AND expires_at<=?
+        ORDER BY expires_at,id LIMIT ?) AND status='pending'
+      RETURNING id`,
+    args:[now,circle,now,limit],
+  });
+  return expired.rows?.length||0;
+}
+
+/**
+ * Weekly sweep driver: repeat bounded batches while work remains, up to a
+ * fixed cap, so one run clears far more than the maximum weekly intake
+ * (50/day rolling cap => at most ~350 new rows per week).
+ */
+export async function runInviteRequestRetention(db,{nowSeconds=null,limit=INVITE_REQUEST_RETENTION_BATCH_LIMIT,
+  maxBatches=INVITE_REQUEST_RETENTION_MAX_BATCHES}={}){
+  if(!Number.isSafeInteger(maxBatches)||maxBatches<1||maxBatches>100) throw new TypeError('retention batches must be 1-100');
+  const now=await inviteRequestNow(db,nowSeconds);
+  const total={expired:0,purged:0,batches:0,more:false};
+  for(let batch=0;batch<maxBatches;batch+=1){
+    const result=await purgeInviteRequests(db,{limit,nowSeconds:now});
+    total.expired+=result.expired; total.purged+=result.purged; total.batches+=1; total.more=result.more;
+    if(!result.more) break;
+  }
+  return Object.freeze(total);
 }

@@ -25,7 +25,13 @@ import {
   submitInviteRequest,
   validateInviteRequestInput,
 } from './_invite-requests.js';
-import { ensureInviteRequestReadiness, inviteRequestsEnabled } from './_invite-request-config.js';
+import {
+  ensureInviteRequestReadiness,
+  expireOverdueInviteRequests,
+  inviteRequestIntakeAvailable,
+  inviteRequestsEnabled,
+} from './_invite-request-config.js';
+import { clientAddress } from './_client-address.js';
 import { inviteRequestNotificationConfiguration } from './_invite-request-notification.js';
 
 // HTTP contract for invite requests, routed through api/invitations.js:
@@ -60,22 +66,31 @@ function onlyQueryKeys(req,allowed){
 }
 
 // The public form has no session, so the Origin header is mandatory and must
-// match the serving host (same rule as the public invitation prepare step).
-function isSameOrigin(req){
+// equal the serving origin exactly (scheme, host, and port), with no path,
+// query, fragment, or credentials. Same comparison as verifyMutationOrigin,
+// but applied unconditionally rather than only to cookie sessions.
+export function requestHasExactOrigin(req){
   const origin=String(req?.headers?.origin||req?.headers?.Origin||'').trim();
   const host=String(req?.headers?.['x-forwarded-host']||req?.headers?.host||'').split(',')[0].trim();
   if(!origin||!host) return false;
-  try{ return new URL(origin).host===host; }catch{ return false; }
-}
-
-function clientAddress(req){
-  return String(req?.headers?.['x-forwarded-for']||req?.socket?.remoteAddress||'unknown')
-    .split(',')[0].trim().slice(0,128)||'unknown';
+  const forwardedProto=String(req?.headers?.['x-forwarded-proto']||'').split(',')[0].trim().toLowerCase();
+  const protocol=forwardedProto||(req?.socket?.encrypted===true?'https':'http');
+  if(!['http','https'].includes(protocol)) return false;
+  try{
+    const supplied=new URL(origin);
+    const expected=new URL(`${protocol}://${host}`);
+    return supplied.origin===expected.origin&&supplied.pathname==='/'
+      &&!supplied.search&&!supplied.hash&&!supplied.username&&!supplied.password;
+  }catch{ return false; }
 }
 
 async function completeResponseFloor(startedAt){
-  const remaining=INVITE_REQUEST_RESPONSE_FLOOR_MS-(Date.now()-startedAt);
-  if(remaining>0) await new Promise(resolve=>setTimeout(resolve,remaining));
+  const elapsed=Date.now()-startedAt;
+  const remaining=INVITE_REQUEST_RESPONSE_FLOOR_MS-elapsed;
+  if(remaining>0){ await new Promise(resolve=>setTimeout(resolve,remaining)); return; }
+  // Work outlasted the floor, so timing may differ between outcomes. Record
+  // only the duration so the floor can be tuned; never request data.
+  try{ console.warn('[invite_request_floor_exceeded]',JSON.stringify({elapsed_ms:elapsed,floor_ms:INVITE_REQUEST_RESPONSE_FLOOR_MS})); }catch{}
 }
 
 function exactObject(value,keys){
@@ -85,7 +100,7 @@ function exactObject(value,keys){
 }
 
 async function handleSubmit(req,res){
-  if(!isSameOrigin(req)) return res.status(403).json({error:'cross-origin request rejected'});
+  if(!requestHasExactOrigin(req)) return res.status(403).json({error:'cross-origin request rejected'});
   const startedAt=Date.now();
   const input=validateInviteRequestInput(req.body);
   if(input.honeypot){
@@ -98,7 +113,8 @@ async function handleSubmit(req,res){
   let submitted=null;
   try{
     const db=getClient();
-    await ensureInviteRequestReadiness(db);
+    // Readiness and the primary circle are checked before any budget is spent.
+    if(!await inviteRequestIntakeAvailable(db)) throw new Error('invite request intake unavailable');
     rate=await consumeInviteRequestRateLimits(db,{
       ip:clientAddress(req),emailHash:hashInvitationEmail(input.value.email),
     });
@@ -106,6 +122,9 @@ async function handleSubmit(req,res){
       submitted=await submitInviteRequest(db,input.value,{
         notification:inviteRequestNotificationConfiguration({localRuntime:localIdentityAdapterEnabled(req)}),
       });
+      if(submitted.outcome==='global_limited'){
+        rate=Object.freeze({allowed:false,retryAfter:60*60});
+      }
     }
   }catch(error){ failure=error; }
   // Every accepted path (stored, member, invited, duplicate, declined) waits
@@ -160,6 +179,7 @@ async function handleList(req,res,query){
   const context=await primaryOwnerContext(req,res);
   if(!context) return;
   try{
+    await expireOverdueInviteRequests(context.db,{circleId:context.circleId});
     const page=await listPendingInviteRequests(context.db,{circleId:context.circleId,limit,cursor});
     return res.json({ok:true,status:'pending',requests:page.requests,pending_count:page.pendingCount,
       next_cursor:page.nextCursor});
@@ -205,6 +225,12 @@ async function handleDecision(req,res){
     return res.status(503).json({error:'invite requests unavailable'});
   }
   if(result.status==='not_found') return res.status(404).json({error:'invite request not found'});
+  if(result.status==='conflict'&&result.reason){
+    return res.status(409).json({
+      error:result.reason==='already_member'?'this email is already a circle member':'this email already has a live invitation',
+      code:result.reason==='already_member'?'invite_request_already_member':'invite_request_already_invited',
+      status:'pending'});
+  }
   if(result.status==='conflict'){
     return res.status(409).json({error:'invite request is no longer pending',code:'invite_request_not_pending',
       status:result.currentStatus});

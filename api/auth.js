@@ -58,7 +58,7 @@ import {
   requestPasswordReset,
 } from './_password-reset.js';
 import { readRecentAuth, recordRecentAuth, requireRecentAuth } from './_recent-auth.js';
-import { ensureInviteRequestReadiness, inviteRequestsEnabled } from './_invite-request-config.js';
+import { inviteRequestIntakeAvailable, inviteRequestsEnabled } from './_invite-request-config.js';
 import { deliverCommittedOutboxEvents } from './_outbox-immediate.js';
 import {
   GOOGLE_ISSUER,
@@ -304,9 +304,10 @@ async function handleCapabilities(req,res){
         activationConfigured?ensureEmailActivationReadiness(db).then(()=>true,()=>false):false,
         resetConfigured?ensurePasswordResetReadiness(db).then(()=>true,()=>false):false,
         identityConfigured?ensureIdentityLinkingReadiness(db).then(()=>true,()=>false):false,
-        // Advertised only when the flag is on and migration v21 is installed,
-        // so the landing form never appears for an endpoint that would fail.
-        inviteRequestsConfigured?ensureInviteRequestReadiness(db).then(()=>true,()=>false):false,
+        // Advertised only when the flag is on, migration v21 is installed, and
+        // one active primary circle exists, so the form never appears for an
+        // endpoint that would fail.
+        inviteRequestsConfigured?inviteRequestIntakeAvailable(db).catch(()=>false):false,
       ]);
     }catch{}
   }

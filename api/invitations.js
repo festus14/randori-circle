@@ -43,6 +43,7 @@ function clearLegacyInviteClaimCookie({secure=true}={}){
 import { CredentialKeyControlError } from './_credential-key-control.js';
 import { deliverCommittedOutboxEvents, outboxEventsFromStatements } from './_outbox-immediate.js';
 import { insertOwnerInvitation } from './_invitation-create.js';
+import { clientAddress } from './_client-address.js';
 import { handleInviteRequestRoute, INVITE_REQUEST_ENDPOINTS } from './_invite-request-api.js';
 
 const PREPARE_RATE_LIMIT=12;
@@ -111,10 +112,6 @@ function isSameOrigin(req){
   try{ return new URL(origin).host===host; }catch{ return false; }
 }
 
-function clientAddress(req){
-  return String(req?.headers?.['x-forwarded-for']||req?.socket?.remoteAddress||'unknown')
-    .split(',')[0].trim().slice(0,128)||'unknown';
-}
 
 function prepareRateKey(req){
   return createHmac('sha256',getJwtSecret())

@@ -18,7 +18,7 @@ import {
   SECONDARY_PAIRING_CACHE_CONTROL,
 } from './_circle-pairing.js';
 import { purgeExpiredCodeDocuments } from './_code-document.js';
-import { inviteRequestSchemaNotInstalled, purgeInviteRequests } from './_invite-request-config.js';
+import { inviteRequestSchemaNotInstalled, runInviteRequestRetention } from './_invite-request-config.js';
 import { INVITE_REQUEST_EVENT_TYPE } from './_invite-request-notification.js';
 import {
   migrateLegacyPairingEmails,
@@ -879,10 +879,10 @@ async function handleWeekly(req,res,{isDue=pairingCronIsDue}={}){
     }
   }
   // Invite-request retention (30 days) shares the guaranteed weekly sweep. It
-  // is bounded per run and, unlike CRDT state, never blocks pairing
+  // repeats bounded batches (capped) while work remains and, unlike CRDT state, never blocks pairing
   // publication: a failure is logged as an ops error and retried next week.
   try{
-    const retention=await purgeInviteRequests(db,{nowSeconds:Math.floor(now.getTime()/1000)});
+    const retention=await runInviteRequestRetention(db,{nowSeconds:Math.floor(now.getTime()/1000)});
     if(retention.expired||retention.purged){
       try{ await logServerOps('info','invite_request_retention','invite request retention completed',retention,null); }catch{}
     }

@@ -82,7 +82,7 @@ function invoke(handler,{method='GET',url='/',query={},headers={},body}={}){
 }
 
 function submit(body,{ip='198.51.100.1',origin=ORIGIN,query={endpoint:'invite-requests'},method='POST'}={}){
-  const headers={host:'randori.example.test','x-forwarded-for':ip};
+  const headers={host:'randori.example.test','x-forwarded-proto':'https','x-forwarded-for':ip};
   if(origin!==null) headers.origin=origin;
   return invoke(invitationsHandler,{method,url:'/api/invite-requests',query,headers,body});
 }
@@ -167,6 +167,9 @@ test('input validation is bounded, Unicode-aware, field-specific, and honeypot-f
     [{name:'x'.repeat(61),email:'a@b.co'},{name:'Use 2–60 characters.'}],
     [{name:'Ada‮evil',email:'a@b.co'},{name:'Remove unsupported characters from your name.'}],
     [{name:'Ada',email:'not-an-email'},{email:'Enter a valid email address.'}],
+    [{name:'Ada',email:'ädä@example.test'},{email:'Enter a valid email address.'}],
+    [{name:'Ada',email:'ada‮@example.test'},{email:'Enter a valid email address.'}],
+    [{name:'Ada',email:42},{email:'Enter a valid email address.'}],
     [{name:'Ada',email:'a@b.co',note:42},{note:'Enter text.'}],
     [{name:'Ada',email:'a@b.co',note:'x'.repeat(281)},{note:'Use at most 280 characters.'}],
     [{name:'Ada',email:'a@b.co',note:'bell\u0007'},{note:'Remove unsupported characters.'}],
@@ -222,6 +225,18 @@ test('the feature flag and routing gate every invite-request endpoint before dat
   assert.equal((await invoke(invitationsHandler,{url:'/api/invite-requests?status=a&status=b',
     query:{endpoint:'invite-requests'},headers:{'x-test-auth':'owner'}})).status,400);
   assert.equal((await list(null)).status,401);
+  for(const [origin,proto] of [['http://randori.example.test','https'],['https://randori.example.test/path','https'],
+    ['https://user:pw@randori.example.test','https'],['https://randori.example.test:8443','https'],
+    ['https://randori.example.test?x=1','https'],['https://randori.example.test','ftp']]){
+    const response=await invoke(invitationsHandler,{method:'POST',url:'/api/invite-requests',
+      query:{endpoint:'invite-requests'},headers:{origin,host:'randori.example.test','x-forwarded-proto':proto},
+      body:{name:'Ada',email:'ada@example.test'}});
+    assert.equal(response.status,403,`${origin} via ${proto}`);
+  }
+  const plainHttp=await invoke(invitationsHandler,{method:'POST',url:'/api/invite-requests',
+    query:{endpoint:'invite-requests'},headers:{origin:'https://randori.example.test',host:'randori.example.test'},
+    body:{name:'Ada',email:'ada@example.test'}});
+  assert.equal(plainHttp.status,403,'an https Origin on a plain-http socket is rejected');
 });
 
 test('a filled honeypot gets the generic accepted response without storing or rate limiting',async()=>{
@@ -313,13 +328,14 @@ test('per-IP, per-email, and global limits use auth_rate_limits and stop at the 
     emailHash:hash('fresh@example.test'),nowSeconds:now+3600})).allowed,true,'the hourly window resets');
   const keys=await rows(`SELECT key FROM auth_rate_limits`);
   assert.ok(keys.every(row=>/^[0-9a-f]{64}$/.test(String(row.key))),'keys are HMACs, never raw IPs or emails');
-  let global=null;
-  for(let attempt=0;attempt<60&&!global;attempt+=1){
-    const result=await requests.consumeInviteRequestRateLimits(currentDb,{ip:`192.0.2.${attempt}`,
-      emailHash:hash(`global${attempt}@example.test`),nowSeconds:now+7200});
-    if(!result.allowed) global=result;
+  for(let host=1;host<=5;host+=1){
+    assert.equal((await requests.consumeInviteRequestRateLimits(currentDb,{ip:`2001:db8:aa:bb::${host}`,
+      emailHash:hash(`v6-${host}@example.test`),nowSeconds:now})).allowed,true);
   }
-  assert.equal(global?.dimension,'global');
+  assert.equal((await requests.consumeInviteRequestRateLimits(currentDb,{ip:'2001:db8:aa:bb:ffff:1:2:3',
+    emailHash:hash('v6-6@example.test'),nowSeconds:now})).dimension,'ip','one IPv6 /64 shares a single budget');
+  assert.equal((await requests.consumeInviteRequestRateLimits(currentDb,{ip:'2001:db8:aa:cc::1',
+    emailHash:hash('v6-7@example.test'),nowSeconds:now})).allowed,true,'a different /64 has its own budget');
   await assert.rejects(requests.consumeInviteRequestRateLimits(currentDb,{ip:'x',emailHash:'nope'}),TypeError);
   await assert.rejects(requests.consumeInviteRequestRateLimits(null,{}),TypeError);
   await assert.rejects(requests.consumeInviteRequestRateLimits(currentDb,{emailHash:hash('a@b.co'),nowSeconds:0}),TypeError);
@@ -338,6 +354,46 @@ test('the public endpoint returns 429 with Retry-After once the client address i
   assert.equal(limited.body.error,'too many requests; try again later');
   assert.ok(limited.elapsedMs>=requests.INVITE_REQUEST_RESPONSE_FLOOR_MS-5);
   assert.equal((await rows(`SELECT COUNT(*) AS count FROM invite_requests`))[0].count,5);
+});
+
+test('the stored-only global cap returns the same 429 for every email and ignores non-stored outcomes',async()=>{
+  currentDb=await migratedDatabase();
+  const now=Math.floor(Date.now()/1000);
+  for(let attempt=0;attempt<3;attempt+=1){
+    assert.equal((await submit({name:'Member',email:'member@example.test'},{ip:`198.51.100.${30+attempt}`})).status,202);
+    assert.equal((await submit({name:'Bot',email:`bot${attempt}@example.test`,website:'x'},{ip:'198.51.100.40'})).status,202);
+  }
+  assert.equal((await rows(`SELECT COUNT(*) AS count FROM invite_requests`))[0].count,0);
+  await currentDb.execute({sql:`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<50)
+    INSERT INTO invite_requests (id,circle_id,email_hash,email,name,status,created_at,expires_at)
+    SELECT printf('00000000-0000-4000-8000-%012d',n),10,printf('%064x',n),printf('cap%d@example.test',n),
+      'Cap','pending',?-n,?+86400 FROM seq`,args:[now,now]});
+  const fresh=await submit({name:'Fresh',email:'fresh@example.test'},{ip:'198.51.100.50'});
+  const member=await submit({name:'Owner',email:'owner@example.test'},{ip:'198.51.100.51'});
+  for(const response of [fresh,member]){
+    assert.equal(response.status,429);
+    assert.equal(response.headers['retry-after'],'3600');
+    assert.deepEqual(response.body,{error:'too many requests; try again later',retry_after_seconds:3600});
+  }
+  assert.equal((await rows(`SELECT COUNT(*) AS count FROM invite_requests WHERE email='fresh@example.test'`))[0].count,0);
+  await currentDb.execute({sql:`UPDATE invite_requests SET created_at=created_at-86400 WHERE email LIKE 'cap%'`});
+  assert.equal((await submit({name:'Fresh',email:'fresh@example.test'},{ip:'198.51.100.52'})).status,202,
+    'the window rolls');
+  assert.equal((await rows(`SELECT COUNT(*) AS count FROM invite_requests WHERE email='fresh@example.test'`))[0].count,1);
+});
+
+test('a slow request is logged without request data when it outlasts the floor',async t=>{
+  const warnings=[];
+  t.mock.method(console,'warn',(...args)=>warnings.push(args.join(' ')));
+  currentDb={execute:async()=>{
+    await new Promise(resolve=>setTimeout(resolve,requests.INVITE_REQUEST_RESPONSE_FLOOR_MS+50));
+    throw new Error('no such table: invite_requests');
+  }};
+  const response=await submit({name:'Slow Person',email:'slow@example.test'});
+  assert.equal(response.status,503);
+  assert.equal(warnings.length,1);
+  assert.match(warnings[0],/^\[invite_request_floor_exceeded\] \{"elapsed_ms":\d+,"floor_ms":750\}$/);
+  assert.equal(warnings[0].includes('slow'),false);
 });
 
 test('an unready pre-v21 schema fails closed with a generic 503 and is recognised as not installed',async()=>{
@@ -666,6 +722,13 @@ test('capabilities advertise invite requests only when enabled and the v21 schem
   currentDb.close();
   currentDb=createClient({url:'file::memory:'});
   assert.equal('inviteRequests' in await capabilities(),false,'pre-v21 schema is not advertised');
+  currentDb.close();
+  currentDb=await migratedDatabase();
+  await currentDb.execute(`UPDATE circles SET archived_at=datetime('now') WHERE id=10`);
+  assert.equal('inviteRequests' in await capabilities(),false,'no active primary circle is not advertised');
+  assert.equal((await submit({name:'Ada',email:'ada@example.test'})).status,503);
+  assert.equal((await rows(`SELECT COUNT(*) AS count FROM auth_rate_limits`))[0].count,0,
+    'no rate-limit budget is spent when intake is unavailable');
 });
 
 test('the shared invitation writer rejects invalid input, non-owners, and missing audit or email intent',async()=>{
@@ -686,4 +749,109 @@ test('the shared invitation writer rejects invalid input, non-owners, and missin
   await assert.rejects(insertOwnerInvitation(scripted([{rows:[{id:'i',circle_id:10}]},{rows:[{id:1}]},{rowsAffected:0}]),
     {ownerUserId:1,circleId:10,email:'x@example.test',emailConfiguration:{origin:'http://127.0.0.1:4173'},localRuntime:true}),
   /email intent missing/);
+});
+
+test('approval re-checks membership and live invitations inside the transaction',async()=>{
+  currentDb=await migratedDatabase();
+  await requests.submitInviteRequest(currentDb,{name:'Joiner',email:'joiner@example.test'});
+  await requests.submitInviteRequest(currentDb,{name:'Invitee',email:'invitee@example.test'});
+  const idOf=async email=>(await rows(`SELECT id FROM invite_requests WHERE email=?`,[email]))[0].id;
+  const joinerId=await idOf('joiner@example.test');
+  const inviteeId=await idOf('invitee@example.test');
+  await currentDb.execute(`INSERT INTO auth_accounts (id,email,password_hash,display_name,color) VALUES
+    (7,'Joiner@Example.test','x','Joiner','#010101')`);
+  await currentDb.execute(`INSERT INTO circle_memberships (circle_id,user_id,role,status,joined_at,updated_at)
+    VALUES (10,7,'member','active',datetime('now'),datetime('now'))`);
+  const member=await decide({id:joinerId,decision:'approve',expected_status:'pending'});
+  assert.deepEqual([member.status,member.body.code,member.body.status],[409,'invite_request_already_member','pending']);
+  const owned=await invoke(invitationsHandler,{method:'POST',url:'/api/invitations',query:{endpoint:'invitations'},
+    headers:{'x-test-auth':'owner',origin:ORIGIN,host:'randori.example.test'},body:{email:'invitee@example.test'}});
+  assert.equal(owned.status,201);
+  const invited=await decide({id:inviteeId,decision:'approve',expected_status:'pending'});
+  assert.deepEqual([invited.status,invited.body.code],[409,'invite_request_already_invited']);
+  assert.equal((await rows(`SELECT COUNT(*) AS count FROM circle_invitations`))[0].count,1);
+  assert.deepEqual((await rows(`SELECT status FROM invite_requests ORDER BY email`)).map(row=>row.status),
+    ['pending','pending'],'the owner can still decline either request');
+  assert.equal((await decide({id:joinerId,decision:'decline',expected_status:'pending'})).status,200);
+});
+
+test('concurrent approvals from two connections create exactly one invitation',async()=>{
+  currentDb=await migratedDatabase();
+  await requests.submitInviteRequest(currentDb,{name:'Race',email:'race@example.test'});
+  const [{id}]=await rows(`SELECT id FROM invite_requests`);
+  const url=pathToFileURL(join(temporaryDirectories.at(-1),'current.sqlite')).href;
+  const clients=[createClient({url}),createClient({url})];
+  try{
+    const outcomes=await Promise.allSettled(clients.map(client=>
+      requests.decideInviteRequest(client,{requestId:id,decision:'approve',ownerUserId:1})));
+    const fulfilled=outcomes.filter(outcome=>outcome.status==='fulfilled').map(outcome=>outcome.value);
+    assert.ok(fulfilled.length>=1);
+    assert.equal(fulfilled.filter(result=>result.status==='approved'&&!result.replayed).length,1,
+      'exactly one approval writes');
+    for(const result of fulfilled) assert.equal(result.status,'approved');
+    for(const outcome of outcomes.filter(item=>item.status==='rejected')){
+      assert.match(String(outcome.reason?.code||outcome.reason?.message),/BUSY|locked/i,'only a lock conflict may fail');
+    }
+  }finally{ for(const client of clients) client.close(); }
+  assert.equal((await rows(`SELECT COUNT(*) AS count FROM circle_invitations`))[0].count,1);
+  assert.equal((await rows(`SELECT COUNT(*) AS count FROM circle_audit_events WHERE event_type='invite_request.approved'`))[0].count,1);
+});
+
+test('a secondary-circle owner who is not the primary owner cannot list or decide',async()=>{
+  currentDb=await migratedDatabase();
+  await currentDb.batch([
+    `INSERT INTO circles (id,public_id,slug,name,is_primary,created_by,created_at)
+      VALUES (20,'4d31d5eb-2a17-4b5b-a5fe-6a82e2ee177e','side-circle','Side Circle',0,3,datetime('now'))`,
+    `INSERT INTO circle_memberships (circle_id,user_id,role,status,joined_at,updated_at)
+      VALUES (20,3,'owner','active',datetime('now'),datetime('now'))`,
+  ],'write');
+  await requests.submitInviteRequest(currentDb,{name:'Target',email:'target@example.test'});
+  const [{id}]=await rows(`SELECT id FROM invite_requests`);
+  assert.equal((await list('outsider')).status,403);
+  assert.equal((await decide({id,decision:'approve',expected_status:'pending'},{identity:'outsider'})).status,403);
+  assert.equal((await requests.decideInviteRequest(currentDb,{requestId:id,decision:'approve',ownerUserId:3})).status,
+    'not_found','the domain layer also scopes decisions to the request circle owner');
+  assert.equal((await rows(`SELECT status FROM invite_requests`))[0].status,'pending');
+});
+
+test('retention keeps up with more than one batch and the owner list scrubs overdue rows on read',async()=>{
+  currentDb=await migratedDatabase();
+  const now=2_000_000_000;
+  await currentDb.execute({sql:`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<1200)
+    INSERT INTO invite_requests (id,circle_id,email_hash,email,name,status,created_at,expires_at)
+    SELECT printf('00000000-0000-4000-8000-%012d',n),10,printf('%064x',n),printf('old%d@example.test',n),
+      'Old','pending',?-n,?-n FROM seq`,args:[now-config.INVITE_REQUEST_TTL_SECONDS,now]});
+  const swept=await config.runInviteRequestRetention(currentDb,{nowSeconds:now});
+  assert.deepEqual({...swept},{expired:1200,purged:0,batches:3,more:false});
+  assert.equal((await rows(`SELECT COUNT(*) AS count FROM invite_requests WHERE email IS NOT NULL`))[0].count,0);
+  const capped=await config.runInviteRequestRetention(currentDb,{nowSeconds:now+31*86400,limit:100,maxBatches:2});
+  assert.deepEqual({...capped},{expired:0,purged:200,batches:2,more:true},'a run is capped and reports remaining work');
+  await assert.rejects(config.runInviteRequestRetention(currentDb,{maxBatches:0}),TypeError);
+
+  await currentDb.execute(`DELETE FROM invite_requests`);
+  const real=Math.floor(Date.now()/1000);
+  await requests.submitInviteRequest(currentDb,{name:'Lapsed',email:'lapsed@example.test'},
+    {nowSeconds:real-config.INVITE_REQUEST_TTL_SECONDS-10});
+  assert.equal((await list()).status,200);
+  assert.deepEqual({...(await rows(`SELECT status,email,name FROM invite_requests WHERE email_hash=?`,
+    [membership.hashInvitationEmail('lapsed@example.test')]))[0]},{status:'expired',email:null,name:null});
+  await assert.rejects(config.expireOverdueInviteRequests(currentDb,{circleId:0}),TypeError);
+  await assert.rejects(config.expireOverdueInviteRequests(null,{circleId:10}),TypeError);
+});
+
+test('client addresses are keyed by IPv6 /64 and IPv4-mapped addresses collapse to IPv4',async()=>{
+  const {clientAddress,rateLimitAddress}=await import('../../api/_client-address.js');
+  assert.equal(clientAddress({headers:{'x-forwarded-for':' 203.0.113.9 , 10.0.0.1'}}),'203.0.113.9');
+  assert.equal(clientAddress({socket:{remoteAddress:'198.51.100.3'}}),'198.51.100.3');
+  assert.equal(clientAddress({}),'unknown');
+  assert.equal(rateLimitAddress('2001:db8:1:2:3:4:5:6'),'2001:0db8:0001:0002::/64');
+  assert.equal(rateLimitAddress('[2001:DB8:1:2::9]'),'2001:0db8:0001:0002::/64');
+  assert.equal(rateLimitAddress('fe80::1%en0'),'fe80:0000:0000:0000::/64');
+  assert.equal(rateLimitAddress('::ffff:192.0.2.1'),'192.0.2.1');
+  assert.equal(rateLimitAddress('64:ff9b::192.0.2.1'),'0064:ff9b:0000:0000::/64');
+  assert.equal(rateLimitAddress('203.0.113.5'),'203.0.113.5');
+  for(const value of ['1::2::3','1:2:3:4:5:6:7','1:2:3:4:5:6:7:8:9','::ffff:999.0.0.1','12345::1']){
+    assert.equal(rateLimitAddress(value),value,value);
+  }
+  assert.equal(rateLimitAddress(''),'unknown');
 });
