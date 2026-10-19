@@ -1,0 +1,48 @@
+# TEMPORARY flake verification for codex/e2e-run-flakes. Removed before merge.
+name: tmp-e2e-repeat
+on:
+  push:
+    branches: [codex/e2e-run-flakes]
+
+permissions:
+  contents: read
+
+jobs:
+  repeat:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: targeted-mocked-x10
+            args: --repeat-each=10 tests/e2e/meeting-link.spec.ts tests/e2e/session-completion.spec.ts tests/e2e/schedule-sync.spec.ts tests/e2e/secondary-schedule.spec.ts tests/e2e/availability-ui.spec.ts tests/e2e/app-shell-navigation.spec.ts tests/e2e/board-sync.spec.ts tests/e2e/code-document-sync.spec.ts tests/e2e/session-controls.spec.ts tests/e2e/pair-run-feed.spec.ts
+          - name: golden-pair-room-x10
+            args: --repeat-each=10 tests/e2e/golden-pair-room-real-runtime.spec.ts
+          - name: pairing-real-runtime-x6
+            args: --repeat-each=6 tests/e2e/pairing-real-runtime.spec.ts
+          - name: full-suite-x2
+            args: --repeat-each=2
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Repeat
+        run: npx playwright test --reporter=line ${{ matrix.args }}
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: repeat-${{ matrix.name }}
+          path: |
+            playwright-report
+            test-results
+          retention-days: 3
+          if-no-files-found: ignore
