@@ -38,7 +38,14 @@ export default defineConfig({
     actionTimeout: 12000,
     navigationTimeout: 20000,
     launchOptions: { args: [`--host-resolver-rules=${telemetryHostResolverRules}`] },
-    ...(process.env.E2E_REDUCED_MOTION === '1' ? { reducedMotion: 'reduce' } : {}),
+    // index.html sets `html{scroll-behavior:smooth}` (off under reduced
+    // motion). With smooth scrolling, Playwright's scroll-into-view before a
+    // click starts an animation and the pointer events land while the target
+    // is still moving, so an off-screen button's click is silently lost (seen
+    // in schedule-sync: the page was mid-scroll across mousedown/mouseup and
+    // Propose never fired). Reduced motion makes every scroll instant and CSS
+    // transitions ~0 ms for all contexts, including browser.newContext().
+    reducedMotion: 'reduce',
   },
   webServer: {
     command: 'npm run start:test',
