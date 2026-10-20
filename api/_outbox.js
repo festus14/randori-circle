@@ -5,6 +5,7 @@ export { outboxStatementIdentity } from './_outbox-identity.js';
 
 const EVENT_TYPE_PATTERN=/^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*)+$/;
 const ERROR_CODE_PATTERN=/^[A-Z][A-Z0-9_]{0,63}$/;
+const PROVIDER_REASON_PATTERN=/^[1-5]\d\d:[a-z_]{1,30}:[a-z_]{1,30}$/u;
 const REPLAY_REASON_CODES=new Set(['OPERATOR_RETRY','PROVIDER_RECOVERED','CONFIGURATION_FIXED']);
 const TERMINAL_STATUSES=new Set(['delivered','suppressed','dead_letter']);
 // Application callers use this process-monotonic scheduler. Tests may inject
@@ -26,12 +27,15 @@ export const OUTBOX_DEFAULTS=Object.freeze({
 });
 
 export class OutboxDeliveryError extends Error{
-  constructor(code,{retryable=true,retryAfterMs=null,cause}={}){
+  constructor(code,{retryable=true,retryAfterMs=null,cause,providerReason=null}={}){
     super('Outbox delivery failed.',cause===undefined?undefined:{cause});
     this.name='OutboxDeliveryError';
     this.code=normalizeErrorCode(code);
     this.retryable=retryable===true;
     this.retryAfterMs=boundedInteger(retryAfterMs,0,OUTBOX_DEFAULTS.maxBackoffMs,null);
+    // Optional bounded, PII-free provider detail (`status:name:reason`). It is
+    // recorded as the transition audit reason; last_error_code keeps `code`.
+    this.providerReason=PROVIDER_REASON_PATTERN.test(String(providerReason??''))?String(providerReason):null;
   }
 }
 
@@ -450,17 +454,19 @@ function deliveryFailure(error,event,options){
   const exhausted=event.attemptCount>=event.maxAttempts;
   const deadLetter=!retryable||exhausted;
   const reasonCode=normalizeErrorCode(known?error.code:'DELIVERY_FAILED');
+  const auditReasonCode=known&&error.providerReason?error.providerReason:reasonCode;
   const delay=backoffMs(event.attemptCount,{
     ...options,retryAfterMs:known?error.retryAfterMs:null,
   });
-  return {deadLetter,reasonCode,delay};
+  return {deadLetter,reasonCode,auditReasonCode,delay};
 }
 
 function failedResolution(error,event,options){
   const failure=deliveryFailure(error,event,options);
+  const reasons={reasonCode:failure.reasonCode,auditReasonCode:failure.auditReasonCode};
   return {leaseLost:false,outcome:failure.deadLetter
-    ?{status:'dead_letter',reasonCode:failure.reasonCode,delayMs:0}
-    :{status:'retry',reasonCode:failure.reasonCode,delayMs:failure.delay}};
+    ?{status:'dead_letter',...reasons,delayMs:0}
+    :{status:'retry',...reasons,delayMs:failure.delay}};
 }
 
 async function finalizeOutcome(db,{event,workerId,outcome}){
@@ -484,7 +490,7 @@ async function finalizeOutcome(db,{event,workerId,outcome}){
     },
     audit:()=>auditStatement({
       eventId:event.id,action,actorType:'worker',actorRef:workerId,
-      fromStatus:'processing',toStatus:status,reasonCode:outcome.reasonCode||null,
+      fromStatus:'processing',toStatus:status,reasonCode:outcome.auditReasonCode||outcome.reasonCode||null,
       attemptNumber:event.attemptCount,
     }),
   });

@@ -162,7 +162,6 @@ gates exactly these surfaces:
   local circle editing controls.
 - Primary-circle data initialization (`POST /api/data?endpoint=init`), which
   also makes every admin an owner of the primary circle when it backfills.
-- The legacy email-based grant `POST /api/admin/reshuffle` with `{"action":"promote","email":…}` (see gaps).
 - Granting and revoking admin for other members (this increment).
 - In the isolated local runtime only, pairing publication and the pairing
   owner view, which use `is_admin` in place of primary-circle ownership.
@@ -214,9 +213,11 @@ and Make admin.
   primary-key range rather than a global directory or email lookup. It is
   optimized for privacy and predictable work, not ranked/fuzzy matching.
   Account recovery and identity changes remain separate security workflows.
-- The legacy email-based promote action of `POST /api/admin/reshuffle` remains for operators. It
-  sets `is_admin=1` without recent auth or an audit row; prefer the Members
-  card. Removing it is a follow-up.
+- The legacy email-based promote action of `POST /api/admin/reshuffle`
+  (`{"action":"promote","email":…}`), which set `is_admin=1` without recent
+  auth or an audit row, is retired. It now returns `410`
+  (`legacy_promote_retired`) without touching the database; use the Members
+  card (`PATCH /api/members` `grant_admin`/`make_owner`).
 - A co-owner's queued invitation email is suppressed if that co-owner is
   demoted before delivery; another owner can resend it.
 - Being made a co-owner counts toward the target's owned-circle creation
