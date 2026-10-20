@@ -221,7 +221,7 @@
       return `For your security, confirm it's you again. Changing sign-in methods needs a Randori sign-in from the last ${RECENT_AUTH_MINUTES} minutes.`;
     }
     if (code === 'provider_in_use') {
-      return 'That Google identity already belongs to another Randori account. Sign in there and add another method before unlinking it.';
+      return 'That Google account already belongs to another Randori account. Sign in there and add another method before unlinking it.';
     }
     if (code === 'provider_already_linked') {
       return 'This account already has a different Google account linked. Remove it first to link another one.';
@@ -390,7 +390,7 @@
     } else if (!data.password?.canAdd) {
       passwordHelp = 'Adding a password is not available for this account.';
     } else if (!recent || recentMethod !== 'google') {
-      passwordHelp = `Adding a password needs verified control of your Google account. Confirm with Google first (valid for ${RECENT_AUTH_MINUTES} minutes).`;
+      passwordHelp = `Adding a password needs your linked Google account. Confirm with Google first (valid for ${RECENT_AUTH_MINUTES} minutes).`;
     } else {
       passwordHelp = `Choose a password with at least ${PASSWORD_MIN_BYTES} characters.`;
     }
@@ -398,7 +398,7 @@
     return {
       title: confirmation ? 'Confirm this sensitive change' : 'Account security',
       description: confirmation
-        ? 'Confirm your identity to continue the exact pending circle action.'
+        ? 'Confirm it’s you to finish the circle change you started.'
         : (data?.accountEmail
           ? `Sign-in methods for ${data.accountEmail}.`
           : 'Manage the sign-in methods attached to this Randori account.'),
@@ -452,7 +452,7 @@
     'Identity confirmed.',
     'Google confirmation complete.',
     'Google sign-in is now linked to this account.',
-    'That Google identity is already linked to this account.',
+    'That Google account is already linked to this account.',
   ]);
   const NEUTRAL_MESSAGES = new Set([
     'Choose a sign-in method to manage.',

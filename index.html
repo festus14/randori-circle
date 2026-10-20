@@ -836,7 +836,6 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .catalog-skeleton-line{display:block; height:12px; width:90%; border-radius:var(--radius-xs)}
 .catalog-state-title{margin:0; font-size:var(--text-sm); line-height:var(--leading-sm); font-weight:var(--weight-heading); color:var(--ink)}
 .catalog-empty{padding:var(--space-5) var(--space-4); border:1px dashed var(--border); border-radius:var(--radius-md)}
-.catalog-empty > .catalog-state-title{color:var(--ink)}
 .catalog-empty p{margin:0}
 .catalog-error{flex-wrap:wrap; align-items:center; justify-content:space-between}
 .catalog-error p{margin:0}
@@ -1112,7 +1111,10 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .rc-badge--danger{background:var(--bad-surface); border-color:var(--bad); color:var(--bad)}
 .rc-badge--info{background:var(--info-surface); border-color:var(--info); color:var(--info)}
 .rc-empty{display:grid; justify-items:center; gap:var(--space-2); padding:var(--space-8) var(--space-4); text-align:center; color:var(--ink-2)}
-.rc-empty > :first-child{color:var(--ink-3)}
+/* Only a leading icon is muted. Empty-state titles use the body text token so
+   they keep full contrast (AA) in both themes. */
+.rc-empty > .rc-icon:first-child{color:var(--ink-3)}
+.rc-empty-title{margin:0; color:var(--color-text); font-weight:var(--weight-heading)}
 .rc-segmented{display:inline-flex; padding:var(--space-1); gap:var(--space-1); background:var(--bg-3); border:1px solid var(--border); border-radius:var(--radius-md)}
 
 /* video: the call strip stays collapsed until the member joins */
@@ -1512,10 +1514,6 @@ a.btn{text-decoration:none}
 #circleCreateStatus[data-state="error"]{color:var(--bad)}
 #circleCreateStatus[data-state="success"]{color:var(--ok)}
 .view{min-width:0}
-
-/* Compatibility shim until later packages purge inline colors: inline accent fills
-   historically paired with near-black text; keep that text on the theme's on-action color. */
-[style*="#0f0f10"]{color:var(--color-on-action)!important}
 
 @media(max-width:640px){
   .topbar,.main,.landing{max-width:100%}
@@ -2136,7 +2134,7 @@ a.btn{text-decoration:none}
         </section>
         <details id="dashDiagnostics" class="home-diagnostics" hidden>
           <summary>Owner diagnostics</summary>
-          <div id="logsArea" class="home-logs" style="display:none"><div style="display:flex; justify-content:space-between; align-items:center"><h3 style="font-size:12.5px; margin:0; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Logs <span class="kbd" style="font-size:10px; margin-left:6px">admin</span></h3><span class="row" style="gap:6px"><select id="logsLevelSel" class="select" style="font-size:11px; padding:4px 8px"><option value="" selected>all levels</option><option value="error">error</option><option value="warn">warn</option><option value="success">success</option><option value="info">info</option><option value="debug">debug</option></select><button id="logsRefresh" class="pill" style="font-size:11px">refresh</button><button id="logsClear" class="pill" style="font-size:11px">clear view</button></span></div><div id="logsList" class="small muted" style="margin-top:8px; max-height:320px; overflow:auto; font-family:ui-monospace, monospace; font-size:11.5px; display:grid; gap:4px">Loading…</div><div class="small muted" style="margin-top:6px">Batched client+server logs — auto every 20s, admin can filter by level/event. Backed by Sentry-ready hook (see _randori_log). For prod monitoring consider Sentry or Better Stack (see console).</div></div>
+          <div id="logsArea" class="home-logs" style="display:none"><div style="display:flex; justify-content:space-between; align-items:center"><h3 style="font-size:12.5px; margin:0; color:var(--ink-2); text-transform:uppercase; letter-spacing:.05em">Logs <span class="kbd" style="font-size:10px; margin-left:6px">admin</span></h3><span class="row" style="gap:6px"><select id="logsLevelSel" class="select" style="font-size:11px; padding:4px 8px"><option value="" selected>all levels</option><option value="error">error</option><option value="warn">warn</option><option value="success">success</option><option value="info">info</option><option value="debug">debug</option></select><button id="logsRefresh" class="pill" style="font-size:11px">refresh</button><button id="logsClear" class="pill" style="font-size:11px">clear view</button></span></div><div id="logsList" class="small muted" style="margin-top:8px; max-height:320px; overflow:auto; font-family:var(--font-mono); font-size:11.5px; display:grid; gap:4px">Loading…</div><div class="small muted" style="margin-top:6px">Batched client+server logs — auto every 20s, admin can filter by level/event. Backed by Sentry-ready hook (see _randori_log). For prod monitoring consider Sentry or Better Stack (see console).</div></div>
         </details>
       </div>
     </section>
@@ -2409,7 +2407,7 @@ a.btn{text-decoration:none}
             </div>
             <div id="monacoHost"></div>
             <textarea id="editor" class="editor" spellcheck="false" aria-label="Code editor" style="display:none"></textarea>
-            <div id="monacoFallbackNote" class="small muted editor-note" style="display:none">The full editor did not load, so this is the plain editor. <button id="monacoRetry" class="pill" type="button">Retry</button></div>
+            <div id="monacoFallbackNote" class="small muted editor-note" style="display:none">The full editor did not load, so this is the plain editor. <button id="monacoRetry" class="btn ghost sm" type="button">Try again</button></div>
           </div>
 
           <div id="roomSide" class="room-side" hidden>
@@ -2444,7 +2442,7 @@ a.btn{text-decoration:none}
                   <summary class="catalog-summary"><span>Browse exercises</span><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-chevron-down"/></svg></summary>
                   <ul id="catalogList" data-testid="catalog-list" class="catalog-list" aria-label="Exercises" aria-busy="true"></ul>
                   <div id="catalogFilterEmpty" data-testid="catalog-empty" class="rc-empty catalog-empty" hidden>
-                    <p id="catalogEmptyTitle" class="catalog-state-title">No exercises match these filters</p>
+                    <p id="catalogEmptyTitle" class="catalog-state-title rc-empty-title">No exercises match these filters</p>
                     <p id="catalogEmptyMessage" class="small muted">No public exercises match these filters. Clear the filters to see every exercise.</p>
                     <button id="catalogEmptyClear" class="btn secondary sm" type="button">Clear filters</button>
                   </div>
@@ -2471,7 +2469,7 @@ a.btn{text-decoration:none}
                   <button id="qStartCoding" class="btn sm q-start-coding" type="button"><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-play"/></svg>Open the editor</button>
                 </div>
                 <div id="questionPanel" class="q-source small muted">
-                  <span>Approved original exercise catalogue</span>
+                  <span>Original Randori exercises</span>
                   <span id="qCustomCount">• loading…</span>
                   <span id="qAttribution" class="q-source-note"></span>
                   <span class="q-source-note">Examples are public. The test cases stay on the server.</span>
@@ -2548,7 +2546,7 @@ a.btn{text-decoration:none}
                     <button id="aiAnalyzeBtn" class="btn sm" type="button" disabled>Get feedback</button>
                     <button id="aiHistoryBtn" class="btn ghost sm" type="button" disabled>Past feedback</button>
                   </div>
-                  <div id="aiStatus" class="small muted" role="status" aria-live="polite">Feedback needs a signed-in account and server AI. Nothing is sent until you choose Get feedback.</div>
+                  <div id="aiStatus" class="small muted" role="status" aria-live="polite">Feedback needs a signed-in account. Nothing is sent until you choose Get feedback.</div>
                   <div id="aiRouterDebug" class="small ai-debug" style="display:none"></div>
                   <div id="aiFeedback" class="ai-feedback"></div>
                 </div>
@@ -2724,7 +2722,7 @@ a.btn{text-decoration:none}
       <span class="identity-method-icon" aria-hidden="true"><svg viewBox="0 0 18 18" width="18" height="18" focusable="false"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62z"/><path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.83.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.97 10.72A5.4 5.4 0 0 1 3.68 9c0-.6.1-1.18.29-1.72V4.95H.96A9 9 0 0 0 0 9c0 1.45.35 2.83.96 4.05l3.01-2.33z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z"/></svg></span>
       <div class="identity-method-body">
         <p class="identity-method-name">Google <span id="identityGoogleState" class="rc-badge identity-badge" data-state="unknown">checking…</span></p>
-        <p id="identityGoogleHelp" class="small identity-method-help">Google is linked only after an explicit, fresh provider confirmation.</p>
+        <p id="identityGoogleHelp" class="small identity-method-help">To link Google, you confirm with your Google account first.</p>
       </div>
       <button id="identityGoogleAction" class="btn secondary identity-method-action" type="button" aria-describedby="identityGoogleHelp" disabled>Manage</button>
     </div>
@@ -2732,7 +2730,7 @@ a.btn{text-decoration:none}
       <span class="identity-method-icon" aria-hidden="true"><svg class="rc-icon" focusable="false" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span>
       <div class="identity-method-body">
         <p class="identity-method-name">Password <span id="identityPasswordState" class="rc-badge identity-badge" data-state="unknown">checking…</span></p>
-        <p id="identityPasswordHelp" class="small identity-method-help">Adding a password requires verified control of the linked Google account.</p>
+        <p id="identityPasswordHelp" class="small identity-method-help">Adding a password needs your linked Google account. Confirm with Google first.</p>
         <div id="identityPasswordAdd" class="identity-password-add" hidden>
           <div class="auth-field"><label for="identityNewPassword">New password</label><input id="identityNewPassword" class="input" type="password" autocomplete="new-password" maxlength="72" aria-describedby="identityPasswordHelp"/></div>
           <div class="auth-field"><label for="identityNewPasswordConfirm">Confirm new password</label><input id="identityNewPasswordConfirm" class="input" type="password" autocomplete="new-password" maxlength="72"/></div>
@@ -3223,7 +3221,7 @@ a.btn{text-decoration:none}
         ?'Opening Google sign-in…'
         :liveInvite&&!authIdentityHydrated
         ?(authIdentityHydrationUnavailable
-          ?'Invitation verified, but your account session could not be verified. Retry or sign in explicitly.'
+          ?'Invitation verified, but we couldn’t check whether you’re signed in. Retry, or sign in.'
           :'Invitation verified. Checking your account session…')
         :inviteState.rateLimited
         ? `Too many attempts. Try again${inviteState.retryAfter?` in ${inviteState.retryAfter} seconds`: ' later'}.`
@@ -4960,7 +4958,7 @@ async function refreshMe(){
         if(saved===null) throw new Error('preference response invalid');
         psEmail.checked=saved.emailEnabled;
         setReminderState('saved',psEmail.checked
-          ?'Preference saved. Email will be requested when paired; delivery depends on provider readiness.'
+          ?'Preference saved. We’ll try to email you when you’re paired.'
           :'Preference saved. Email reminders are off.');
       }catch{
         if(epoch!==preferenceEpoch||userId!==(Number(me?.id||me?.uid)||null)) return;
@@ -5000,8 +4998,8 @@ async function refreshMe(){
           }catch{}
           hydratedUserId=userId;
           setReminderState('ready',psEmail?.checked
-            ?'Saved preference loaded. Delivery depends on provider readiness.'
-            :'Saved preference loaded. Email reminders are off.');
+            ?'Email reminders are on. We’ll try to email you when you’re paired.'
+            :'Email reminders are off.');
           return;
         }
         throw new Error('preference response invalid');
@@ -5292,7 +5290,7 @@ async function refreshMe(){
           if(!(googleReauth||identityLinked||identityLinkError||identityNotice)||!authRefreshCommitted) return;
           await openIdentity();
           if(identityLinked) identityUi.message=identityLinked==='already_linked'
-            ?'That Google identity is already linked to this account.'
+            ?'That Google account is already linked to this account.'
             :'Google sign-in is now linked to this account.';
           if(googleReauth) identityUi.message='Google confirmation complete.';
           if(identityLinkError) identityUi.message=identityErrorMessage({status:identityLinkError});
@@ -6804,7 +6802,7 @@ async function refreshMe(){
       if(circleManageMembers) circleManageMembers.hidden=true;
       if(circleMemberSearchForm) circleMemberSearchForm.hidden=true;
       if(circleMembersLoadMore) circleMembersLoadMore.hidden=true;
-      if(circleLifecycleStatus&&!hasCircleLifecycleNotice()) circleLifecycleStatus.textContent='Member controls are no longer authorized. Refresh the circle to try again.';
+      if(circleLifecycleStatus&&!hasCircleLifecycleNotice()) circleLifecycleStatus.textContent='You can no longer manage members of this circle. Refresh the circle to try again.';
     }else if(role==='owner'&&circleRosterState.loaded&&circleRosterOwnerId===Number(me?.id||me?.uid)){
       circleManageMembers.hidden=false;
       circleMemberSearchForm.hidden=false;
@@ -7376,7 +7374,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const authorizedRoom=String(window._randori_authorized_room||'');
     if(!room&&preserveAuthorized&&/^week_[1-9]\d*_pair_[1-9]\d*$/.test(authorizedRoom)){
       room=authorizedRoom;
-      label='Authorized pairing room';
+      label='Your pair room';
     }
     if(!room&&!preserveAuthorized){
       try{ if(window._randori_video?.joined) window._randori_video.leaveVideo(); }catch{}
@@ -7395,9 +7393,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     selector.value=room;
     if(currentRoom!==room) currentRoom=null;
     const roomLabel=document.getElementById('roomLabel');
-    if(roomLabel) roomLabel.textContent=room?`room ${room.slice(0,12)}`:'room —';
+    if(roomLabel) roomLabel.textContent=window._randori_pairing_view?.roomLabel?.(room)||'room —';
     const videoLabel=document.getElementById('videoRoomLabel');
-    if(videoLabel) videoLabel.textContent=room?`room ${room.slice(0,6)}`:'room —';
+    if(videoLabel) videoLabel.textContent=window._randori_pairing_view?.roomLabel?.(room)||'room —';
   }
 
   function clearCurrentCloudPairing(){
@@ -7741,7 +7739,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     currentCloudPairingUserId=null;
     const weeks=getWeeks(); const cur=weeks[0];
     renderPairsMeta(cur, null);
-    if(!cur){ container.innerHTML=`<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">No demo pairs yet. Sign in to see the authoritative current-cycle schedule.</div>`; return; }
+    if(!cur){ container.innerHTML=`<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">No demo pairs yet. Sign in to see this week’s pairs.</div>`; return; }
     container.innerHTML = cur.pairs.map(p=>{
       const a=idToPerson(p.aId); const b=p.bId? idToPerson(p.bId):null;
       const aName=a? a.name: 'unknown'; const bName=p.isAI? 'Solo practice' : (b? b.name: '—');
@@ -7994,7 +7992,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const card=document.createElement('article'); card.className='card circle-card recap-card'; card.setAttribute('aria-labelledby','pairRecapTitle');
     const head=document.createElement('div'); head.className='card-h recap-head';
     const heading=document.createElement('div'); heading.className='recap-heading';
-    const title=document.createElement('h3'); title.id='pairRecapTitle'; title.className='circle-card-title'; title.tabIndex=-1; title.textContent=`${recap.pair.week_label} recap`;
+    const title=document.createElement('h3'); title.id='pairRecapTitle'; title.className='circle-card-title'; title.tabIndex=-1; title.textContent=`${circleUi.pairingWeekLabel(recap.pair)} recap`;
     const names=document.createElement('div'); names.className='small recap-names';
     names.textContent=recap.pair.members.map(member=>member.is_me?`${member.display_name} (you)`:member.display_name).join(' × ');
     heading.append(title,names);
@@ -8013,7 +8011,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const summary=document.createElement('section'); summary.className='recap-section'; summary.setAttribute('aria-label','Pairing summary');
     const summaryTitle=document.createElement('h4'); summaryTitle.className='circle-subtitle'; summaryTitle.textContent='Paired';
     const week=document.createElement('div'); week.className='small muted'; week.appendChild(recapTimeNode(recap.pair.week_start));
-    if(recap.pair.topic||recap.pair.topic_kind) week.append(` · ${recap.pair.topic||recap.pair.topic_kind}`);
+    if(recap.pair.topic||recap.pair.topic_kind) week.append(` · ${recap.pair.topic||circleUi.focusLabel(recap.pair.topic_kind)||recap.pair.topic_kind}`);
     summary.append(summaryTitle,week); facts.appendChild(summary);
 
     const completion=recapSection('pair-recap-completion','Session completion','Completion');
@@ -8209,7 +8207,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }
     const weeks=getWeeks();
     document.getElementById('historyCount').textContent=`${weeks.length} local week${weeks.length===1?'':'s'}`;
-    if(hint) hint.textContent='Local demo only — sign in for private server history';
+    if(hint) hint.textContent='Demo data in this browser only. Sign in to see your pairings.';
     if(!local) return;
     local.replaceChildren();
     const note=document.createElement('div'); note.className='small muted'; note.textContent='Local demo pairing history — stored only in this browser.'; local.appendChild(note);
@@ -8310,7 +8308,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     sel.innerHTML = opts.map(o=>`<option value="${escapeHtml(o.id)}">${escapeHtml(o.label)}</option>`).join('') || `<option value="">no pairs — shuffle first</option>`;
     if(curVal && opts.some(o=>o.id===curVal)) sel.value=curVal;
     const roomLabel=document.getElementById('roomLabel');
-    if(sel.value) roomLabel.textContent=`room ${sel.value.slice(0,4)}`;
+    if(sel.value) roomLabel.textContent=window._randori_pairing_view?.roomLabel?.(sel.value)||'room —';
   }
 
   function loadRoom(roomId){
@@ -8326,7 +8324,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     window._randori_crdt?.fence?.(roomId);
     currentRoom=roomId;
     window._randori_board?.load?.(roomId);
-    document.getElementById('roomLabel').textContent=`room ${roomId.slice(0,4)}`;
+    document.getElementById('roomLabel').textContent=window._randori_pairing_view?.roomLabel?.(roomId)||'room —';
     const codeMap=getCode();
     const selectedLang=document.getElementById('langSelect').value;
     const selectedQuestion=window._randori_questions?.selectedIdentity?.()||{slug:qSel.value,version:null};
@@ -8561,14 +8559,14 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       }
     } else {
       if(tcs && tcs.length){
-        cards.push(`<div class="test" style="border-style:dashed"><div class="small"><b>${title||'Tests'}</b> — ${tcs.length} case(s) • lang <span class="kbd">${lang}</span> — evaluated by the server execution gateway.</div></div>`);
+        cards.push(`<div class="test" style="border-style:dashed"><div class="small"><b>${title||'Tests'}</b> — ${tcs.length} case(s) • <span class="kbd">${lang}</span> — checked on the server.</div></div>`);
         tcs.slice(0,8).forEach((tc,i)=>{
           let inN=_normalizeInput(tc.input||tc.raw);
           let exN=_normalizeExpect(tc.expect);
           cards.push(`<div class="test"><div class="small">Case ${i+1}: in <span class="kbd">${JSON.stringify(inN).slice(0,120)}</span> → exp <span class="kbd">${JSON.stringify(exN).slice(0,120)}</span></div></div>`);
         });
         if(lang==='python' && /def\s+\w+/.test(code)){
-          cards.push('<div class="test"><div class="small muted">Python execution is available only through the authenticated server runner.</div></div>');
+          cards.push('<div class="test"><div class="small muted">Sign in to run Python code on the server.</div></div>');
         }
       } else {
         cards.push(`<div class="test"><div class="small muted">No tests — lang ${lang}</div></div>`);
@@ -9004,7 +9002,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     // TURN fallback can be added via env: { urls:'turn:global.relay.metered.ca:80', username:'...', credential:'...' }
   ];
 
-  function videoUpdateStatus(txt){ const el=document.getElementById('videoStatus'); if(el) el.textContent=txt; const rl=document.getElementById('videoRoomLabel'); if(rl){ const r=getVideoRoomId(); rl.textContent=r?'room '+String(r).slice(0,6):'room —'; }
+  function videoUpdateStatus(txt){ const el=document.getElementById('videoStatus'); if(el) el.textContent=txt; const rl=document.getElementById('videoRoomLabel'); if(rl){ const r=getVideoRoomId(); rl.textContent=window._randori_pairing_view?.roomLabel?.(r)||'room —'; }
     // The call strip stays collapsed until this member joins (WP-R).
     try{ window._randori_room?.setCall?.(videoJoined); }catch{} }
 
@@ -9555,7 +9553,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
     aiSetStatus('Requesting AI feedback…');
     if (aiAnalyzeBtn) { aiAnalyzeBtn.disabled = true; aiAnalyzeBtn.textContent = 'Requesting feedback…'; }
-    if (aiDebug) { aiDebug.style.display='block'; aiDebug.innerHTML = '⏳ picking model: short→8b-instant, long/system-design→70b-versatile, respecting free-tier…'; }
+    if (aiDebug&&window._randori_logs?.isAdmin) { aiDebug.style.display='block'; aiDebug.innerHTML = '⏳ picking model: short→8b-instant, long/system-design→70b-versatile, respecting free-tier…'; }
     if (aiFeedbackEl) aiFeedbackEl.innerHTML = '';
 
     try {
@@ -9567,7 +9565,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       const ev = j.evidence_validated;
       const dbg = j.debug;
 
-      if (aiDebug) {
+      if (aiDebug&&window._randori_logs?.isAdmin) {
         aiDebug.innerHTML = `<b>Model:</b> ${escapeHtml(model)}<br><b>Why:</b> ${escapeHtml(reason)}<br><b>Cost:</b> $${escapeHtml(cost?.usd||'0.0000')} (${escapeHtml(cost?.tokens_in||'?')} in / ${escapeHtml(cost?.tokens_out||'?')} out)${cost?.groq_usage? ' — Groq usage '+escapeHtml(JSON.stringify(cost.groq_usage)): ''}<br><b>Evidence:</b> ${escapeHtml(ev.validated)}/${escapeHtml(ev.total)} validated (${escapeHtml(Math.round((ev.score||0)*100))}%) ${ev.loweredConfidence?' — some lowered confidence due to no direct quote':''}<br><b>Free-tier:</b> ${escapeHtml(dbg?.groq_router?.free_tier_calls_today||0)}/14400 today • ${escapeHtml(dbg?.groq_router?.alternatives?.join(' vs ')||'')}<br>${j.mocked?'<span style="color:var(--warn)">Mocked — set GROQ_API_KEY in Vercel env to get real Groq</span>':''}`;
       }
 
@@ -9583,13 +9581,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       }
 
       const html = `
-        <div class="card" style="border-color:var(--ok)"><div class="card-h"><h3 style="font-size:13px">Candidate ${fb.overall_score? `<span class="kbd">${escapeHtml(fb.overall_score)}/10</span>` : ''}</h3><span class="kbd" title="session ${escapeHtml(j.session_id)}">#${escapeHtml(String(j.session_id).slice(-4))}</span></div>
+        <div class="card" style="border-color:var(--ok)"><div class="card-h"><h3 style="font-size:13px">Candidate ${fb.overall_score? `<span class="kbd">${escapeHtml(fb.overall_score)}/10</span>` : ''}</h3></div>
           <div class="card-b" style="display:grid;gap:8px">
             <div><b class="small">Strengths</b><div style="display:grid;gap:6px;margin-top:4px">${(c.strengths||[]).map(s=>`<div class="test" style="border-color:var(--ok)"><div class="small"><b>${escapeHtml(s.point)}</b> ${chipForEvidence(s.evidence)} ${s.confidence? `<span class="kbd">${escapeHtml(Math.round((s.confidence||0.8)*100))}%</span>`:''}</div></div>`).join('')||'<span class="small muted">none listed</span>'}</div></div>
             <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(c.improvements||[]).map(s=>`<div class="test" style="border-color:var(--bad)"><div class="small"><b>${escapeHtml(s.point)}</b> ${chipForEvidence(s.evidence)}<div class="small muted" style="margin-top:3px">↳ ${escapeHtml(s.suggestion||'')}</div></div></div>`).join('')||'<span class="small muted">none listed</span>'}</div></div>
           </div>
         </div>
-        <div class="card" style="border-color:var(--accent-2)"><div class="card-h"><h3 style="font-size:13px">Interviewer</h3><span class="kbd">${escapeHtml(model)}</span></div>
+        <div class="card" style="border-color:var(--accent-2)"><div class="card-h"><h3 style="font-size:13px">Interviewer</h3></div>
           <div class="card-b" style="display:grid;gap:8px">
             <div><b class="small">Strengths</b><div style="display:grid;gap:6px;margin-top:4px">${(iv.strengths||[]).map(s=>`<div class="test"><div class="small"><b>${escapeHtml(s.point)}</b> ${chipForEvidence(s.evidence)}</div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
             <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(iv.improvements||[]).map(s=>`<div class="test"><div class="small"><b>${escapeHtml(s.point)}</b> ${chipForEvidence(s.evidence)}<div class="small muted">↳ ${escapeHtml(s.suggestion||'')}</div></div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
@@ -9599,13 +9597,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       `;
 
       if (aiFeedbackEl) aiFeedbackEl.innerHTML = html;
-      aiSetStatus(`✓ Feedback ready — ${model} — evidence ${ev.validated}/${ev.total}`);
-      toast(`AI ready ${model}`);
+      aiSetStatus('AI feedback ready.');
+      toast('AI feedback ready');
 
     } catch(e){
       const msg = e.error || e.message || (e.raw?.slice?.(0,200)) || 'analyze failed';
-      aiSetStatus(`AI error: ${msg}`, true);
-      if (aiDebug) aiDebug.innerHTML += `<br><span style="color:var(--accent-3)">Error: ${escapeHtml(msg)}</span>`;
+      aiSetStatus('AI feedback is not available right now. Try again later.', true);
+      if (aiDebug&&window._randori_logs?.isAdmin) aiDebug.innerHTML += `<br><span style="color:var(--accent-3)">Error: ${escapeHtml(msg)}</span>`;
       toast(`AI: ${msg}`);
     } finally {
       if (aiAnalyzeBtn) { aiAnalyzeBtn.disabled = false; aiAnalyzeBtn.textContent = 'Get feedback'; }
@@ -9618,10 +9616,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       const j = await api('/api/ai/history', {method:'GET'});
       const list = j.feedbacks||[];
       if (!list.length) { aiSetStatus('No AI feedback yet — run one above'); return; }
-      const html = `<div class="small muted">${escapeHtml(list.length)} past sessions — calls today ${escapeHtml(j.usage_today?.calls||0)}/14400</div><div style="display:grid;gap:6px;margin-top:6px">${list.slice(0,8).map(r=>`<div class="test"><div class="small"><span class="kbd">#${escapeHtml(r.session_id)}</span> ${escapeHtml(r.pair_label||r.room_id||'room')} — <span class="kbd">${escapeHtml(r.model_used?.slice(0,18)||'model')}</span> ${r.duration_sec? `• ${escapeHtml(Math.round(r.duration_sec/60))}m`:''} <span class="kbd" style="float:right">${escapeHtml(new Date(r.created_at).toLocaleString())}</span></div></div>`).join('')}</div>`;
+      const html = `<div class="small muted">${escapeHtml(list.length)} past feedback session${list.length===1?'':'s'}</div><div style="display:grid;gap:6px;margin-top:6px">${list.slice(0,8).map(r=>`<div class="test"><div class="small"><span class="kbd">#${escapeHtml(r.session_id)}</span> ${escapeHtml(r.pair_label||r.room_id||'room')} — <span class="kbd">${escapeHtml(r.model_used?.slice(0,18)||'model')}</span> ${r.duration_sec? `• ${escapeHtml(Math.round(r.duration_sec/60))}m`:''} <span class="kbd" style="float:right">${escapeHtml(new Date(r.created_at).toLocaleString())}</span></div></div>`).join('')}</div>`;
       if (aiFeedbackEl) aiFeedbackEl.innerHTML = html;
-      aiSetStatus(`History loaded ${list.length}`);
-    }catch(e){ toast('history error: '+(e.error||e.message)); }
+      aiSetStatus(`Showing ${list.length} past feedback session${list.length===1?'':'s'}.`);
+    }catch(e){ toast('Past feedback could not load. Try again.'); }
   }
 
   if (aiAnalyzeBtn) aiAnalyzeBtn.onclick = aiAnalyze;
@@ -10444,7 +10442,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         room=`week_${weekId}_pair_${pgId}`;
       }
       if(!/^week_[1-9]\d*_pair_[1-9]\d*$/.test(String(room||''))||window._randori_authorized_room!==room){
-        if(typeof toast==='function') toast('No verified current pairing room. Use solo catalogue practice instead.');
+        if(typeof toast==='function') toast('You don’t have a pair room this week. Practise solo from the catalogue instead.');
         return null;
       }
       localStorage.setItem('randori-last-room', room);
@@ -10485,9 +10483,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         }
       }
       const solo=pg?.solo_practice===true||pg?.is_ai===true||pg?.is_ai_pair===true;
-      if(typeof toast==='function') toast(solo?'Solo catalogue and code ready.':'Pair room ready • Code + Video + Board');
+      if(typeof toast==='function') toast(solo?'Solo practice room ready.':'Pair room ready • Code + Video + Board');
       // update video label + expose invite for button
-      const vr=document.getElementById('videoRoomLabel'); if(vr) vr.textContent='room '+room.slice(0,6);
+      const vr=document.getElementById('videoRoomLabel'); if(vr) vr.textContent=window._randori_pairing_view?.roomLabel?.(room)||'room —';
       window._randori_last_invite = invite;
       if(!solo){ try{ navigator.clipboard.writeText(invite).catch(()=>{}); }catch{} }
       setTimeout(()=>{ try{ window.dispatchEvent(new Event('resize')); }catch{} },200);
@@ -10586,9 +10584,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       const text=homeNode('div',{className:'home-pair-text'});
       text.append(homeNode('p',{className:'home-eyebrow',text:'Next step'}),homeNode('h4',{className:'home-hero-title',text:'Solo practice this week'}));
       head.append(avatar,text);
-      const detail=homeNode('p',{className:'home-hero-detail',text:'The odd-member assignment is a private solo workspace. Choose an exercise from the catalogue and practise with code and the board.'});
+      const detail=homeNode('p',{className:'home-hero-detail',text:'The circle had an odd number of members this week, so you have a private solo room. Choose an exercise from the catalogue and practise with the editor and board.'});
       const actions=homeNode('div',{className:'home-actions'});
-      const join=homeNode('button',{className:'btn',id:'dashJoinSession',text:'Open Solo Catalogue + Code'}); join.type='button';
+      const join=homeNode('button',{className:'btn',id:'dashJoinSession',text:'Open solo practice'}); join.type='button';
       join.addEventListener('click',()=>joinSessionDeterministic(false));
       actions.append(join);
       card.append(head,detail,actions);
@@ -13078,8 +13076,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       const identity=document.createElement('span'); identity.className='small';
       const runner=document.createElement('b'); runner.textContent=String(run.runner?.display_name||'Pair member').slice(0,80);
       const question=document.createElement('span'); question.className='kbd'; question.style.fontSize='10px';
-      const version=Number.isSafeInteger(Number(run.question_version))&&Number(run.question_version)>0?' · v'+Number(run.question_version):' · v?';
-      question.textContent=String(run.question_slug||'exercise').slice(0,120)+version;
+      question.textContent=window.RandoriCircleUI?.exerciseLabel?.(run.question_slug)||'Exercise';
       identity.append(runner,document.createTextNode(' '),question);
       const score=document.createElement('span'); score.className='small';
       const passed=Number.isFinite(Number(run.passed_count))?Number(run.passed_count):0;
@@ -13089,8 +13086,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
       const meta=document.createElement('div'); meta.className='row small muted'; meta.style.cssText='justify-content:space-between; gap:8px; margin-top:4px; flex-wrap:wrap';
       const detail=document.createElement('span');
-      const duration=run.duration_ms!=null&&Number.isFinite(Number(run.duration_ms))&&Number(run.duration_ms)>=0?Math.round(Number(run.duration_ms))+'ms':'duration unavailable';
-      detail.textContent=String(run.language||'unknown').slice(0,24)+' · '+duration+' · '+formatPairRunTime(run.created_at);
+      const circleUiHelpers=window.RandoriCircleUI;
+      const duration=run.duration_ms!=null&&Number.isFinite(Number(run.duration_ms))&&Number(run.duration_ms)>=0?(circleUiHelpers?.durationLabel?.(Math.round(Number(run.duration_ms)))||Math.round(Number(run.duration_ms))+' ms'):null;
+      detail.textContent=[circleUiHelpers?.languageLabel?.(run.language)||String(run.language||'Unknown language').slice(0,24),duration,formatPairRunTime(run.created_at)].filter(Boolean).join(' · ');
       const verification=document.createElement('span'); verification.className='kbd'; verification.style.fontSize='10px';
       verification.textContent=run.authoritative===true?'verified':'unverified';
       verification.title=run.authoritative===true?'Checked on the server.':'This older result was not checked on the server.';
@@ -13306,8 +13304,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     el.innerHTML=runs.map(r=>{
       const ok = r.total_count? (r.passed_count+'/'+r.total_count) : (r.passed_count+' pass');
       const dt=new Date(r.created_at||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
-      const verification=r.authoritative===true?'verified':'legacy / unverified';
-      return `<div class="row" style="justify-content:space-between; padding:6px 0; border-bottom:1px dashed var(--border)"><span><span class="kbd" style="font-size:10px">${escapeHtml(r.question_slug||'custom')}</span> <span class="kbd" style="font-size:10px">${escapeHtml(r.language||'js')}</span> <span class="small">${escapeHtml(ok)}</span> <span class="kbd" style="font-size:10px">${escapeHtml(verification)}</span></span><span class="small muted" style="font-size:11px">${escapeHtml(dt)}${r.duration_ms? ' • '+escapeHtml(r.duration_ms)+'ms':''}</span></div>`;
+      const verification=r.authoritative===true?'verified':'unverified';
+      return `<div class="row" style="justify-content:space-between; padding:6px 0; border-bottom:1px dashed var(--border)"><span><span class="kbd" style="font-size:10px">${escapeHtml(window.RandoriCircleUI?.exerciseLabel?.(r.question_slug)||'Exercise')}</span> <span class="kbd" style="font-size:10px">${escapeHtml(window.RandoriCircleUI?.languageLabel?.(r.language||'javascript')||r.language||'JavaScript')}</span> <span class="small">${escapeHtml(ok)}</span> <span class="kbd" style="font-size:10px">${escapeHtml(verification)}</span></span><span class="small muted" style="font-size:11px">${escapeHtml(dt)}${r.duration_ms? ' • '+escapeHtml(window.RandoriCircleUI?.durationLabel?.(Number(r.duration_ms))||r.duration_ms+' ms'):''}</span></div>`;
     }).join('');
   }
   async function refreshRecent(){
@@ -13462,7 +13460,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const nxtCnt=document.getElementById('dashNextCount');
     if(!stats) return;
     if(you) you.textContent = stats.your_sessions!=null ? String(stats.your_sessions) : '—';
-    if(youSub) youSub.textContent = stats.your_pairings!=null ? 'from '+stats.your_pairings+' pairings' : (stats.your_last? 'last '+stats.your_last.week_label : 'no pairings yet');
+    if(youSub) youSub.textContent = stats.your_pairings!=null ? 'from '+stats.your_pairings+' pairings' : (stats.your_last? 'last: '+(window.RandoriCircleUI?.pairingWeekLabel?.(stats.your_last)||'a past pairing') : 'no pairings yet');
     if(circ) circ.textContent = String(stats.total_users ?? '—');
     if(circSub) circSub.textContent = (stats.total_users ?? '?') + ' members';
     if(weeks) weeks.textContent = (stats.total_weeks ?? '—') + ' weeks';
@@ -13501,7 +13499,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       last5.forEach(item=>{
         const row=document.createElement('div'); row.className='row'; row.style.cssText='justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px dashed var(--border)';
         const summary=document.createElement('span');
-        const label=document.createElement('span'); label.className='kbd'; label.style.fontSize='10px'; label.textContent=String(item?.week_label||'Pairing').slice(0,80);
+        const label=document.createElement('span'); label.className='kbd'; label.style.fontSize='10px'; label.textContent=window.RandoriCircleUI?.pairingWeekLabel?.(item)||'Pairing';
         summary.append(label,` × ${String(item?.partner_name||'Pair member').slice(0,240)}`);
         if(item?.is_ai){ const solo=document.createElement('span'); solo.className='kbd'; solo.style.cssText='color:var(--accent);margin-left:6px'; solo.textContent='solo'; summary.appendChild(solo); }
         const completion=typeof normalizeHistoryCompletion==='function'
@@ -13510,8 +13508,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         row.appendChild(summary);
         const room=window._randori_pair_recap?.roomFor?.(item?.week_id,item?.pg_id);
         if(room){
-          const button=document.createElement('button'); button.type='button'; button.className='pill'; button.dataset.testid='pair-history-view-recap'; button.dataset.roomId=room; button.textContent='View recap';
-          button.setAttribute('aria-label',`View recap for ${String(item?.week_label||'pairing').slice(0,80)} with ${String(item?.partner_name||'pair member').slice(0,240)}`);
+          const button=document.createElement('button'); button.type='button'; button.className='btn ghost sm'; button.dataset.testid='pair-history-view-recap'; button.dataset.roomId=room; button.textContent='View recap';
+          button.setAttribute('aria-label',`View recap for ${window.RandoriCircleUI?.pairingWeekLabel?.(item)||'pairing'} with ${String(item?.partner_name||'pair member').slice(0,240)}`);
           button.addEventListener('click',()=>{ document.querySelector('[data-tab="history"]')?.click(); window._randori_pair_recap?.open?.(room); });
           row.appendChild(button);
         }
@@ -13520,7 +13518,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       const total=document.createElement('div'); total.className='small muted'; total.style.marginTop='8px'; total.textContent=`Total pairings: ${Number.isSafeInteger(Number(j.total))?Number(j.total):last5.length}`; listEl.appendChild(total);
     }catch(e){
       if(seq!==dashboardHistorySeq||userId!==(Number(window._randori_auth?.me?.id||window._randori_auth?.me?.uid||0)||null)||document.getElementById('view-dashboard')?.style.display==='none') return;
-      listEl.replaceChildren(); const error=document.createElement('div'); error.className='small muted'; error.textContent=`History: ${String(e.error||e.message||'offline').slice(0,200)} — try Pairings & activity.`; listEl.appendChild(error);
+      listEl.replaceChildren(); const error=document.createElement('div'); error.className='small muted'; error.textContent='Recent pairings could not load. Open History to try again.'; listEl.appendChild(error);
     }
   }
 
@@ -14046,7 +14044,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(ta){ ta.style.display='block'; if(focusFree) ta.focus && ta.focus(); }
     if(note){ note.style.display='block'; note.title=reason||''; note.innerHTML=LOCAL_RUNTIME
       ?'This local runtime uses the plain editor.'
-      :'The full editor did not load, so this is the plain editor. <button id="monacoRetry" class="pill" type="button">Try again</button>'; }
+      :'The full editor did not load, so this is the plain editor. <button id="monacoRetry" class="btn ghost sm" type="button">Try again</button>'; }
     if(!LOCAL_RUNTIME) document.getElementById('monacoRetry')?.addEventListener('click', ()=>{ if(host) host.style.display=''; if(note) note.style.display='none'; initMonaco(); });
   }
 
@@ -14106,6 +14104,20 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 (function(){
   function authHeaders(extra={}){
     return {'content-type':'application/json', ...extra};
+  }
+  // Members see plain status copy. Model routing, token cost and quota
+  // details stay in the admin-only debug panel.
+  function aiDebugPanel(){
+    const el=document.getElementById('aiRouterDebug');
+    if(!el) return null;
+    if(window._randori_logs?.isAdmin) return el;
+    el.style.display='none'; el.replaceChildren();
+    return null;
+  }
+  function aiErrorText(status){
+    if(status===401||status===403) return 'Sign in to request AI feedback.';
+    if(status===429) return 'You have reached the AI feedback limit for now. Try again later.';
+    return 'AI feedback is not available right now. Try again later.';
   }
   function showLoader(el){
     try{ if(window._randori_ui && window._randori_ui.showLoader){ return window._randori_ui.showLoader(el); } }catch{}
@@ -14189,7 +14201,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
     const aiPanel=document.getElementById('aiPanel');
     const fbEl=document.getElementById('aiFeedback') || document.getElementById('aiFeedbackList');
-    const dbgEl=document.getElementById('aiRouterDebug');
+    const dbgEl=aiDebugPanel();
     const statusEl=document.getElementById('aiStatus');
     const listAlias=ensureFeedbackListAlias();
 
@@ -14206,14 +14218,14 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       const res=await fetch('/api/ai/analyze', { method:'POST', headers, body: JSON.stringify(payload) });
       const j=await res.json().catch(()=>({ok:false, error:'bad json'}));
       if(!res.ok){
-        if(statusEl){ statusEl.textContent=`AI error ${res.status}: ${j.error||j.reason||'unknown'}${j.count!==undefined?` (${j.count}/${j.limit})`:''}`; statusEl.style.color='var(--accent-3)'; }
+        if(statusEl){ statusEl.textContent=aiErrorText(res.status); statusEl.style.color='var(--accent-3)'; }
         try{ window._randori_ui && window._randori_ui.hideLoader && window._randori_ui.hideLoader(loaderTarget); }catch{}
-        try{ window.toast && window.toast(`AI: ${j.error||j.reason||'failed'} ${j.count?' — '+j.count+'/'+j.limit:''}`); }catch{}
+        try{ window.toast && window.toast(aiErrorText(res.status)); }catch{}
         if(dbgEl) dbgEl.innerHTML+=`<br><span style="color:var(--accent-3)">Error ${escapeHtml(res.status)}: ${escapeHtml((j.error||j.reason||'').slice(0,300))} ${j.count? '('+escapeHtml(j.count)+'/'+escapeHtml(j.limit)+')':''}</span>`;
         if(res.status===429){
           try{ window._randori_log && window._randori_log.warn('ai_quota', `blocked ${j.reason||j.error}`, {status:res.status, count:j.count, limit:j.limit}); }catch{}
         }
-        throw j;
+        throw {...j, http_status:res.status};
       }
 
       // success render (reuse existing render logic if available, else custom minimal)
@@ -14231,13 +14243,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       const candidate=fb?.candidate||{strengths:[], improvements:[]};
       const interviewer=fb?.interviewer||{strengths:[], improvements:[]};
       const html=`
-        <div class="card" style="border-color:var(--ok)"><div class="card-h"><h3 style="font-size:13px">Candidate ${fb?.overall_score? `<span class="kbd">${escapeHtml(fb.overall_score)}/10</span>`:''}</h3><span class="kbd" title="session ${escapeHtml(j.session_id)}">#${escapeHtml(String(j.session_id).slice(-4))}</span></div>
+        <div class="card" style="border-color:var(--ok)"><div class="card-h"><h3 style="font-size:13px">Candidate ${fb?.overall_score? `<span class="kbd">${escapeHtml(fb.overall_score)}/10</span>`:''}</h3></div>
           <div class="card-b" style="display:grid;gap:8px">
             <div><b class="small">Strengths</b><div style="display:grid;gap:6px;margin-top:4px">${(candidate.strengths||[]).map(s=>`<div class="test" style="border-color:var(--ok)"><div class="small"><b>${escapeHtml(s.point)}</b> ${chip(s.evidence)} ${s.confidence? `<span class="kbd">${escapeHtml(Math.round((s.confidence||0.8)*100))}%</span>`:''}</div></div>`).join('')||'<span class="small muted">none listed</span>'}</div></div>
             <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(candidate.improvements||[]).map(s=>`<div class="test" style="border-color:var(--bad)"><div class="small"><b>${escapeHtml(s.point)}</b> ${chip(s.evidence)}<div class="small muted" style="margin-top:3px">↳ ${escapeHtml(s.suggestion||'')}</div></div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
           </div>
         </div>
-        <div class="card" style="border-color:var(--accent-2)"><div class="card-h"><h3 style="font-size:13px">Interviewer</h3><span class="kbd">${escapeHtml(String(model||'model').slice(0,22))}</span></div>
+        <div class="card" style="border-color:var(--accent-2)"><div class="card-h"><h3 style="font-size:13px">Interviewer</h3></div>
           <div class="card-b" style="display:grid;gap:8px">
             <div><b class="small">Strengths</b><div style="display:grid;gap:6px;margin-top:4px">${(interviewer.strengths||[]).map(s=>`<div class="test"><div class="small"><b>${escapeHtml(s.point)}</b> ${chip(s.evidence)}</div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
             <div><b class="small">Improvements</b><div style="display:grid;gap:6px;margin-top:4px">${(interviewer.improvements||[]).map(s=>`<div class="test"><div class="small"><b>${escapeHtml(s.point)}</b> ${chip(s.evidence)}<div class="small muted">↳ ${escapeHtml(s.suggestion||'')}</div></div></div>`).join('')||'<span class="small muted">none</span>'}</div></div>
@@ -14248,8 +14260,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
       if(fbEl) fbEl.innerHTML=html;
       if(listAlias && listAlias!==fbEl) listAlias.innerHTML=html;
-      if(statusEl){ statusEl.textContent=`✓ AI feedback ready — ${model} (${ev?.validated||0}/${ev?.total||0} evidence)${j.anon?' — demo':''} ✓`; statusEl.style.color='var(--ok)'; }
-      try{ window.toast && window.toast(`AI feedback ready ✓`); }catch{}
+      if(statusEl){ statusEl.textContent=`AI feedback ready${j.anon?' (demo)':''}.`; statusEl.style.color='var(--ok)'; }
+      try{ window.toast && window.toast('AI feedback ready'); }catch{}
       try{ window._randori_log && window._randori_log.success && window._randori_log.success('ai_feedback_ready', `ready ${model} ${ev?.validated||0}/${ev?.total||0}`, {model, room:payload.room_id}); }catch{}
 
       // populate history widget recently
@@ -14257,12 +14269,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
     }catch(e){
       const msg=e.error||e.reason||e.message||'analyze failed';
-      if(statusEl){ statusEl.textContent=`AI error: ${msg.slice(0,250)}`; statusEl.style.color='var(--accent-3)'; }
+      if(statusEl){ statusEl.textContent=aiErrorText(Number(e?.http_status)||0); statusEl.style.color='var(--accent-3)'; }
       try{ console.warn('[ai analyze fail]', e); }catch{}
       return { ok:false, error:msg };
     }finally{
       hideLoader(loaderTarget);
-      const btn=document.getElementById('aiAnalyzeBtn'); if(btn){ btn.disabled=false; btn.textContent='⚡ Get AI Feedback'; }
+      const btn=document.getElementById('aiAnalyzeBtn'); if(btn){ btn.disabled=false; btn.textContent='Get feedback'; }
     }
   }
 
@@ -14290,16 +14302,16 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const fbEl=document.getElementById('aiFeedback');
     const listEl=document.getElementById('aiFeedbackList');
     if(!res.ok){
-      try{ window.toast && window.toast('history failed: '+(j.error||res.status)); }catch{}
+      try{ window.toast && window.toast('Past feedback could not load. Try again.'); }catch{}
       return j;
     }
     const list=j.feedbacks||[];
-    const html=`<div class="small muted">${escapeHtml(list.length)} past sessions — calls today ${escapeHtml(j.usage_today?.calls||0)}/14400 ${j.monthly? '• '+escapeHtml(j.monthly.count)+'/'+escapeHtml(j.monthly.limit)+' this month'+(j.monthly.demo?' (demo)':''):''}</div><div style="display:grid;gap:6px;margin-top:6px">${list.slice(0,10).map(r=>`<div class="test ai-feedback-history-item" data-feedback-id="${escapeHtml(r.session_id||r.id)}" style="cursor:pointer"><div class="small"><span class="kbd">#${escapeHtml(String(r.session_id||r.id).slice(-4))}</span> ${escapeHtml(r.pair_label||r.room_id||'room')} — <span class="kbd">${escapeHtml((r.model_used||'model').slice(0,18))}</span> ${r.duration_sec? '• '+escapeHtml(Math.round(r.duration_sec/60))+'m':''} <span class="kbd" style="float:right">${escapeHtml(new Date(r.created_at).toLocaleString())}</span></div></div>`).join('')||'<span class="small muted">No history yet — run an analysis above</span>'}</div>`;
+    const html=`<div class="small muted">${escapeHtml(list.length)} past feedback session${list.length===1?'':'s'}${j.monthly? ' · '+escapeHtml(j.monthly.count)+' of '+escapeHtml(j.monthly.limit)+' used this month'+(j.monthly.demo?' (demo)':''):''}</div><div style="display:grid;gap:6px;margin-top:6px">${list.slice(0,10).map(r=>`<div class="test ai-feedback-history-item" data-feedback-id="${escapeHtml(r.session_id||r.id)}" style="cursor:pointer"><div class="small">${escapeHtml(r.pair_label||'Practice session')} ${r.duration_sec? '• '+escapeHtml(Math.round(r.duration_sec/60))+'m':''} <span class="kbd" style="float:right">${escapeHtml(new Date(r.created_at).toLocaleString())}</span></div></div>`).join('')||'<span class="small muted">No history yet — run an analysis above</span>'}</div>`;
     const target = fbEl || listEl;
     if(target){ target.innerHTML=html; }
     if(listEl && listEl!==fbEl){ listEl.innerHTML=html; }
     document.querySelectorAll('.ai-feedback-history-item').forEach(el=>el.addEventListener('click', ()=>getFeedback(el.dataset.feedbackId)));
-    const statusEl=document.getElementById('aiStatus'); if(statusEl) statusEl.textContent=`History loaded — ${list.length} sessions`;
+    const statusEl=document.getElementById('aiStatus'); if(statusEl) statusEl.textContent=`Showing ${list.length} past feedback session${list.length===1?'':'s'}.`;
     return j;
   }
 
@@ -15500,11 +15512,11 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       const join=node('a',{className:'btn',text:'Join',testId:'meeting-link-join'});
       join.href=state.meeting.url; join.target='_blank'; join.rel='noopener noreferrer';
       join.setAttribute('aria-label',`Join meeting on ${state.meeting.hostname}; opens outside Randori`);
-      const change=node('button',{className:'pill',text:'Change',testId:'meeting-link-change'});
+      const change=node('button',{className:'btn secondary sm',text:'Change',testId:'meeting-link-change'});
       change.type='button'; change.disabled=state.busy; change.addEventListener('click',()=>{
         state.editing=true; state.draft=state.meeting?.url||''; state.message=''; render();
       });
-      const remove=node('button',{className:'pill',text:'Remove',testId:'meeting-link-remove'});
+      const remove=node('button',{className:'btn ghost sm',text:'Remove',testId:'meeting-link-remove'});
       remove.type='button'; remove.disabled=state.busy; remove.addEventListener('click',()=>{ mutate('clear'); });
       summary.append(hostName,join,change,remove); shell.append(summary);
       shell.append(node('div',{className:'small muted',text:'Join opens an external website. Randori does not preview or contact this URL.'}));
@@ -15517,7 +15529,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }
     if(state.editing){
       const form=node('form',{testId:'meeting-link-form'}); form.style.cssText='display:grid;gap:6px';
-      const label=node('label',{className:'small',text:state.meeting?.url?'New HTTPS meeting URL':'HTTPS meeting URL'});
+      const label=node('label',{className:'small',text:state.meeting?.url?'New meeting link (https://)':'Meeting link (https://)'});
       const input=node('input',{className:'input',testId:'meeting-link-input'});
       input.type='url'; input.required=true; input.maxLength=2048; input.autocomplete='off'; input.spellcheck=false;
       input.placeholder='https://meet.example.com/private-room'; input.value=state.draft;
@@ -15526,7 +15538,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       const controls=node('div',{className:'row'}); controls.style.gap='6px';
       const save=node('button',{className:'btn',text:state.meeting?.url?'Change link':'Add link',testId:'meeting-link-save'});
       save.type='submit'; save.disabled=state.busy;
-      const cancel=node('button',{className:'pill',text:'Cancel',testId:'meeting-link-cancel'});
+      const cancel=node('button',{className:'btn secondary sm',text:'Cancel',testId:'meeting-link-cancel'});
       cancel.type='button'; cancel.disabled=state.busy; cancel.addEventListener('click',()=>{
         state.editing=false; state.draft=''; state.message=''; render();
       });
@@ -15536,7 +15548,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         let parsed;
         try{ parsed=new URL(state.draft); }catch{ parsed=null; }
         if(!parsed||parsed.protocol!=='https:'||parsed.username||parsed.password||state.draft.trim()!==state.draft){
-          input.setAttribute('aria-invalid','true'); state.message='Enter an HTTPS URL without embedded credentials.';
+          input.setAttribute('aria-invalid','true'); state.message='Enter a link that starts with https:// and has no username or password in it.';
           status.textContent=state.message; input.focus(); return;
         }
         mutate('set',parsed.href);
@@ -15936,7 +15948,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(progress) progress.textContent=`${doneCount}/${total}`;
     const status=document.getElementById('onboardChecklistStatus');
     if(status) status.textContent=failed
-      ?'Some saved setup could not be verified. Retry to load the next honest action.'
+      ?'Some setup steps could not be verified. Retry to see what to do next.'
       :(loading?'Checking your saved setup…':(doneCount===total?'Setup complete for the active circle and cycles.':'Your next unfinished action is shown above.'));
     const retry=document.getElementById('chkRetry');
     if(retry){ retry.hidden=!failed; retry.disabled=loading; }

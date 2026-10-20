@@ -684,7 +684,7 @@ test('a delayed old-room response cannot render after switching rooms', async ({
       const list = document.getElementById('pairRunsList');
       (window as typeof window & { __sawStalePairRun?: boolean }).__sawStalePairRun = false;
       const inspect = () => {
-        if (/stale-room-a-run/i.test(list?.textContent || '')) {
+        if (/stale[- ]room[- ]a[- ]run/i.test(list?.textContent || '')) {
           (window as typeof window & { __sawStalePairRun?: boolean }).__sawStalePairRun = true;
         }
       };
