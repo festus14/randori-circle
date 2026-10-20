@@ -58,8 +58,18 @@ test('profile loading and saving expose inline live status and retry without ale
 });
 
 test('onboarding does not advertise AI or video without a readiness contract', () => {
-  const steps = html.match(/const steps=\[([\s\S]*?)\n  \];/)?.[1] || '';
+  const steps = html.match(/<section id="view-profile-setup"[\s\S]*?<\/section>/)?.[0] || '';
+  assert.ok(steps.length > 0);
   assert.doesNotMatch(steps, /\bAI\b|Groq|video/i);
-  assert.match(steps, /Current pair & workspace/);
+  assert.match(html, /id="chkRoom"[^>]*>[\s\S]*?Open your current workspace/);
   assert.match(authority, /workspaceAvailable=payload\.workspace_available!==false/);
+});
+
+test('the dashboard pairing observation is replayed instead of dropped while the cycle scope settles', () => {
+  assert.match(authority, /lastPairing:null/);
+  assert.match(authority, /if\(!state\.scope\?\.targetCycleKey\) return false;/);
+  assert.match(authority, /if\(state\.pairing\.status!=='ready'&&state\.lastPairing\) applyPairing\(state\.lastPairing\);/);
+  assert.match(authority, /observation\.revalidated=true;/);
+  // The WP-H CSS workaround that hid the contradiction is gone.
+  assert.doesNotMatch(html, /#onboardChecklist\[data-state="error"\]:not/);
 });

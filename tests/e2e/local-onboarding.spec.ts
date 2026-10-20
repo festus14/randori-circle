@@ -141,10 +141,25 @@ test.describe('unmocked local onboarding',()=>{
       const profileResponse=member.waitForResponse(response=>
         new URL(response.url()).pathname==='/api/profile'&&response.request().method()==='POST',
       );
+      await expect(member.locator('#setupStepText')).toHaveText('Step 3 of 5');
       await member.locator('#psSave').click();
       const savedProfile=await profileResponse;
       expect(savedProfile.status()).toBe(200);
       expect(Number((await savedProfile.json()).user?.id)).toBeGreaterThan(0);
+      // Golden path: the same stepper continues to availability, then what happens next.
+      await expect(member.locator('#setupStepAvailability')).toBeVisible();
+      await expect(member.locator('#setupStepText')).toHaveText('Step 4 of 5');
+      await expect(member.locator('#availAvailable')).toBeEnabled();
+      const availabilitySaved=member.waitForResponse(response=>
+        new URL(response.url()).pathname==='/api/settings/availability'&&response.request().method()==='POST',
+      );
+      await member.locator('#availAvailable').click();
+      expect((await availabilitySaved).status()).toBe(200);
+      await expect(member.locator('#setupAvailabilityNote')).toContainText('Saved');
+      await member.locator('#setupAvailabilityNext').click();
+      await expect(member.locator('#setupStepNext')).toBeVisible();
+      await expect(member.locator('#setupTimeline')).toContainText('Pairings publish');
+      await member.locator('#setupFinish').click();
       await expect(member.locator('#view-dashboard')).toBeVisible();
       await expect(member.locator('#dashWelcome')).toContainText('Invited Member');
       const memberCookies=await memberContext.cookies(new URL('/api/auth/signup',runtime.url).href);
