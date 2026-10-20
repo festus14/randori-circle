@@ -289,9 +289,9 @@
       case 'unverified':
         return {
           tone: 'danger',
-          meta: 'Current-cycle publication state could not be verified.',
-          title: "Pairs can't be verified",
-          body: 'Pairs stay hidden until the server state can be verified. Try again shortly.',
+          meta: 'This week’s pairs could not be confirmed.',
+          title: "Pairs couldn't be confirmed",
+          body: 'Pairs stay hidden until they can be confirmed. Try again shortly.',
           retry: true,
         };
       case 'future':
@@ -300,12 +300,12 @@
         return {
           tone: 'warning',
           meta: kind === 'future'
-            ? 'The returned pairing cycle has not started yet.'
+            ? 'This pairing cycle has not started yet.'
             : kind === 'stale'
-              ? 'The returned pairing cycle has ended.'
-              : 'The current pairing cycle could not be verified.',
+              ? 'This pairing cycle has ended.'
+              : 'The current pairing cycle could not be confirmed.',
           title: 'Schedule not confirmed',
-          body: 'No earlier or unverified pairing room is shown. Try again once the schedule is available.',
+          body: 'Older or unconfirmed pairs are not shown. Try again once this week’s schedule is available.',
           retry: true,
         };
       case 'unpublished': {
@@ -318,11 +318,11 @@
           ? `${week} · publication is late`
           : state === 'pending'
             ? `${week} · pairs publish ${formatMoment(publication.scheduled_at, zone, locale)}`
-            : `${week} · awaiting current-cycle publication${next}`;
+            : `${week} · pairs not published yet${next}`;
         const body = state === 'overdue'
           ? (allowed
-            ? 'The scheduled run did not publish this cycle. Use Publish now in Owner tools below; retrying is safe.'
-            : 'The scheduled run did not publish this cycle. The circle owner can publish it now.')
+            ? 'Pairs were not published automatically this cycle. Use Publish now in Owner tools below; retrying is safe.'
+            : 'Pairs were not published automatically this cycle. The circle owner can publish it now.')
           : state === 'pending'
             ? `Pairs publish automatically at ${formatMoment(publication.scheduled_at, zone, locale)}. Check back after that.`
             : 'No pairings have been published for the current cycle.';
@@ -364,9 +364,17 @@
     return { members, solo, mine: members.some(member => member.isMe), identityKnown };
   }
 
+  // Pair room ids ("week_12_pair_34") are storage keys, not names. The room
+  // bar and the call strip show a plain label instead.
+  const ROOM_ID = /^week_[1-9]\d*_pair_[1-9]\d*$/;
+  function roomLabel(roomId) {
+    return ROOM_ID.test(String(roomId || '')) ? 'Pair room' : 'room —';
+  }
+
   root._randori_pairing_view = Object.freeze({
     weekNumber,
     weekLabel,
+    roomLabel,
     formatDay,
     formatMoment,
     countdown,

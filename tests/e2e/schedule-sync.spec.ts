@@ -634,7 +634,7 @@ test('calendar export stays hidden for proposals, legacy text, cleared schedules
   });
   await refreshSchedule(page);
   await expect(page.getByTestId('schedule-calendar-export')).toHaveCount(0);
-  await expect(page.getByTestId('schedule-area')).toContainText('Legacy agreement:');
+  await expect(page.getByTestId('schedule-area')).toContainText('Earlier agreement:');
 
   await page.getByTestId('schedule-clear').click();
   await expect.poll(() => store.snapshot(roomA).legacy_agreed_time).toBeNull();

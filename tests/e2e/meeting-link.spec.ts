@@ -179,7 +179,7 @@ test('accepted dashboard time exposes the meeting controls and malformed URLs ne
   await input.fill('https://user:password@meet.example.test/private');
   await dashboard.getByTestId('meeting-link-save').click();
   await expect(input).toHaveAttribute('aria-invalid','true');
-  await expect(dashboard.getByTestId('meeting-link-status')).toContainText('without embedded credentials');
+  await expect(dashboard.getByTestId('meeting-link-status')).toContainText('no username or password');
   expect(store.requests.filter(request=>request.method==='POST')).toHaveLength(0);
 });
 

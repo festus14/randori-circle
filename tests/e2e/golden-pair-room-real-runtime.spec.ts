@@ -315,7 +315,7 @@ test('partners co-edit one document without conflicts, sketch, run it into a sha
     const recap=member.getByTestId('pair-recap');
     await expect(recap.getByTestId('pair-recap-completion')).toContainText('Completed');
     await expect(recap.getByTestId('pair-recap-workspace')).toContainText(/Checkpoint r\d+ · focus-block-rollup/);
-    await expect(recap.getByTestId('pair-recap-activity')).toContainText('Verified run · focus-block-rollup');
+    await expect(recap.getByTestId('pair-recap-activity')).toContainText('Verified run · Focus block rollup');
     await expect(recap.getByTestId('pair-recap-activity')).toContainText('8/8 passed');
     expect(transport.unexpectedExternalRequests).toEqual([]);
     expect(golden.external).toEqual([]);

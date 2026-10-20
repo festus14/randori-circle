@@ -666,7 +666,11 @@ markup in later packages.
   `--z-toast` and the skip link `--z-skip-link`. `#onboardOverlay` and
   `#identityOverlay` keep their historical order above other overlays.
 - Compatibility shim: inline styles that pair an accent fill with `#0f0f10`
-  text are forced to `--color-on-action` until WP-Z purges inline colors.
+  text were forced to `--color-on-action`. The final cleanup removed the shim
+  because no inline style uses `#0f0f10` any more.
+- Empty state: `.rc-empty` mutes only a leading `.rc-icon`. The title uses
+  `.rc-empty-title` (`--color-text`, heading weight), so it keeps full
+  contrast in both themes.
 - The production CSP no longer lists the Google Fonts hosts.
 
 ### 9.2 What WP-S shipped (shell and navigation)

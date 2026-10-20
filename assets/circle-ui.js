@@ -15,6 +15,7 @@
   const HOUR = 60 * MINUTE;
   const DAY = 24 * HOUR;
   const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  const ISO_WEEK_PATTERN = /^(\d{4})-W(\d{2})$/;
   const INVITE_URL_PATTERN = /^\/invite#invite=[A-Za-z0-9_-]{43}$/;
   const ICON_SPRITE = '/assets/brand/icons.svg';
   const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -300,13 +301,46 @@
     return `${value} pairing${value === 1 ? '' : 's'}`;
   }
 
-  function historyRowView(item) {
+  // Cycle keys such as "2026-W44" are storage identifiers; people read
+  // "Week of 26 Oct". The week's start date wins, then the ISO week number,
+  // then any other server label. `week_id` is a row id and is never shown.
+  function pairingWeekLabel(item, { locale = undefined, now = Date.now() } = {}) {
+    const start = parseInstant(item?.week_start);
+    if (start !== null) {
+      const date = new Date(start);
+      const options = { day: 'numeric', month: 'short' };
+      if (date.getFullYear() !== new Date(now).getFullYear()) options.year = 'numeric';
+      try {
+        return `Week of ${new Intl.DateTimeFormat(locale, options).format(date)}`;
+      } catch {
+        return `Week of ${new Intl.DateTimeFormat(undefined, options).format(date)}`;
+      }
+    }
+    const label = boundedText(item?.week_label, 80);
+    const iso = label ? ISO_WEEK_PATTERN.exec(label) : null;
+    if (iso) {
+      const week = Number(iso[2]);
+      return week >= 1 && week <= 53 ? `Week ${week}` : 'Pairing';
+    }
+    return label || 'Pairing';
+  }
+
+  // "focus-block-rollup" -> "Focus block rollup" for places that only have
+  // the exercise slug (recaps and run lists).
+  function exerciseLabel(slug) {
+    const text = typeof slug === 'string' ? boundedText(slug.replace(/[-_]+/gu, ' '), 120) : null;
+    if (!text) return 'Exercise';
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
+  function historyRowView(item, options) {
     const week = Number(item?.week_id);
     const pair = Number(item?.pg_id);
     if (!Number.isSafeInteger(week) || week < 1 || !Number.isSafeInteger(pair) || pair < 1) return null;
     const partner = boundedText(item?.partner_name, 240) || 'Pair member';
-    const weekLabel = boundedText(item?.week_label, 80) || `Week ${week}`;
-    const topic = boundedText(item?.topic, 160) || boundedText(item?.topic_kind, 160);
+    const weekLabel = pairingWeekLabel(item, options);
+    const kind = boundedText(item?.topic_kind, 160);
+    const topic = boundedText(item?.topic, 160) || (kind && (focusLabel(kind) || kind));
     return Object.freeze({
       room: `week_${week}_pair_${pair}`,
       partner,
@@ -337,7 +371,7 @@
     const meta = [languageLabel(event?.language), `${passed}/${total} passed`];
     if (duration) meta.push(duration);
     return Object.freeze({
-      title: `Verified run · ${event?.question_slug} v${event?.question_version}`,
+      title: `Verified run · ${exerciseLabel(event?.question_slug)}`,
       meta: meta.join(' · '),
       allPassed: Number.isSafeInteger(total) && total > 0 && passed === total,
     });
@@ -377,6 +411,7 @@
     badgeNode,
     describeInvitation,
     durationLabel,
+    exerciseLabel,
     focusLabel,
     historyCountLabel,
     historyRowView,
@@ -394,6 +429,7 @@
     normalizeInviteRequest,
     normalizeInviteRequestsResponse,
     parseInstant,
+    pairingWeekLabel,
     partitionInvitations,
     relativeTime,
     rosterPersonView,

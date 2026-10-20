@@ -65,12 +65,42 @@ test('visible shell copy does not promise unsupported integrations or deployment
   assert.doesNotMatch(html, /sms_enabled|id="psRemindSms"|id="remindPhone"/);
   assert.doesNotMatch(html, /AI fills odd/);
   assert.doesNotMatch(html, /Join 50\+ mock interviewers|What people say|Works offline, calls Groq/);
-  assert.match(html, /Approved original exercise catalogue/);
+  assert.match(html, /Original Randori exercises/);
   assert.doesNotMatch(html, /authorization-gated|id="landingStats"|id="landingNextBar"/);
   assert.match(html, /Copy session link/);
   assert.match(html, /id="psRemindStatus"[^>]+data-state="loading"[^>]+role="status"/);
   assert.match(html, /id="syncStatus"[^>]+data-state="loading"[^>]+role="status"/);
   assert.match(html, /setUiRequestState\(host,status,state,message\)/);
+});
+
+test('user-visible copy has no implementation jargon (final cleanup)', () => {
+  for (const phrase of [
+    /evaluated by the server execution gateway/, /authenticated server runner/, /server AI\./,
+    /explicit, fresh provider confirmation/, /verified control of the linked Google account/,
+    /provider readiness/, /next honest action/, /odd-member assignment/, /Open Solo Catalogue/,
+    /Legacy agreement|Legacy proposal|Legacy schedule text/, /Authorized pairing room/,
+    /No verified current pairing room/, /authoritative current-cycle schedule/,
+    /private server history/, /try Pairings & activity/, /legacy \/ unverified/,
+    /calls today/, /AI ready \$\{model\}/, /Get AI Feedback/, /embedded credentials/,
+    /HTTPS meeting URL/, /That Google identity/, /are no longer authorized/,
+  ]) assert.doesNotMatch(html, phrase);
+  // Raw pair room ids and cycle keys are replaced by labels.
+  assert.doesNotMatch(html, /`room \$\{room\.slice/);
+  assert.doesNotMatch(html, /\$\{recap\.pair\.week_label\} recap/);
+  assert.match(html, /circleUi\.pairingWeekLabel\(recap\.pair\)/);
+  // Model routing, cost and quota details are admin-only.
+  assert.match(html, /function aiDebugPanel\(\)\{[\s\S]{0,200}window\._randori_logs\?\.isAdmin/);
+  assert.match(html, /const dbgEl=aiDebugPanel\(\);/);
+});
+
+test('empty-state titles use the body text token and only the leading icon is muted', () => {
+  assert.match(html, /\.rc-empty-title\{[^}]*color:var\(--color-text\)/);
+  assert.match(html, /\.rc-empty > \.rc-icon:first-child\{color:var\(--ink-3\)\}/);
+  assert.doesNotMatch(html, /\.rc-empty > :first-child\{/);
+  assert.match(html, /id="catalogEmptyTitle" class="[^"]*\brc-empty-title\b/);
+  // The #0f0f10 inline-color shim is gone because no inline style uses it.
+  assert.doesNotMatch(html, /#0f0f10/i);
+  assert.doesNotMatch(html, /font-family:ui-monospace, monospace/);
 });
 
 test('accessibility tooling is exact-pinned and preserves incomplete review evidence', async () => {
