@@ -40,7 +40,7 @@ export const OWNER_ROSTER_PAGE_SQL=`WITH owner AS (
     LIMIT ?
   )
   SELECT owner.circle_id AS authorized_circle_id,candidates.user_id,
-    account.id AS account_id,account.display_name,account.color,account.is_demo,candidates.role,candidates.status,
+    account.id AS account_id,account.display_name,account.color,account.is_demo,account.is_admin,candidates.role,candidates.status,
     candidates.joined_at,candidates.updated_at
   FROM owner
   LEFT JOIN candidates ON 1=1
@@ -70,6 +70,7 @@ function publicMember(row){
     color:String(row?.color||'').slice(0,32),
     role,
     status,
+    is_admin:Number(row?.is_admin)===1,
     joined_at:String(row?.joined_at||''),
     updated_at:String(row?.updated_at||''),
   });
@@ -476,6 +477,200 @@ export async function transferCircleOwnership(db,{actorUserId,targetUserId,circl
     if(audit.rows?.length!==1) throw new Error('ownership transfer audit unavailable');
     await transaction.commit(); finished=true;
     return Object.freeze({ok:true,previous_owner_id:actor,owner_id:target});
+  }catch(error){
+    if(!finished) await rollback(transaction);
+    throw error;
+  }
+}
+
+const OWNER_ROLE_ACTIONS=Object.freeze({
+  make_owner:Object.freeze({from:'member',to:'owner',eventType:'ownership.granted'}),
+  remove_owner:Object.freeze({from:'owner',to:'member',eventType:'ownership.revoked'}),
+});
+
+async function insertCircleAudit(transaction,{circleId,eventType,actor,target,occurredAt}){
+  const audit=await transaction.execute({
+    sql:`INSERT INTO circle_audit_events
+        (circle_id,event_type,actor_user_id,subject_user_id,invitation_id,dedupe_key,created_at)
+      VALUES (?,?,?,?,NULL,?,?) RETURNING id`,
+    args:[circleId,eventType,actor,target,`${eventType}:${randomUUID()}`,occurredAt],
+  });
+  if(audit.rows?.length!==1) throw new Error('role change audit unavailable');
+}
+
+/**
+ * Adds or removes a co-owner without changing the actor's own role. Any
+ * active owner of the selected circle may act; there is no owner ceiling.
+ * The conditional UPDATE re-checks the actor, target, circle, and (for
+ * removal) the last-active-owner invariant inside one write transaction.
+ */
+export async function changeCircleOwnerRole(db,{actorUserId,targetUserId,circleId,action,session,nowSeconds,circleContext}={}){
+  const actor=positiveInteger(actorUserId);
+  const target=positiveInteger(targetUserId);
+  const selectedCircle=positiveInteger(circleId);
+  const transition=OWNER_ROLE_ACTIONS[action];
+  if(!db||typeof db.transaction!=='function'||!actor||!target||!selectedCircle||!transition){
+    throw new TypeError('valid owner role change required');
+  }
+  if(actor===target) return Object.freeze({ok:false,reason:'self_role_change'});
+  const occurredAt=new Date().toISOString();
+  const transaction=await db.transaction('write');
+  let finished=false;
+  const fail=async reason=>{
+    await rollback(transaction); finished=true;
+    return Object.freeze({ok:false,reason});
+  };
+  try{
+    if(!await activeMutationContextValid(transaction,circleContext,selectedCircle)) return await fail('context_changed');
+    await acquireOwnerWrite(transaction,actor,selectedCircle);
+    const before=await inspectScopedTarget(transaction,{actorUserId:actor,targetUserId:target,circleId:selectedCircle});
+    if(!before) return await fail('not_found');
+    await requireActorRecentAuth(transaction,actor,session,nowSeconds);
+    const changed=await transaction.execute({
+      sql:`UPDATE circle_memberships AS target
+        SET role=?,updated_at=?
+        WHERE target.user_id=? AND target.user_id<>? AND target.role=?
+          AND (?<>'owner' OR target.status='active')
+          AND target.circle_id=(
+            SELECT actor_membership.circle_id
+            FROM circle_memberships actor_membership
+            JOIN circles circle ON circle.id=actor_membership.circle_id
+            WHERE actor_membership.user_id=? AND actor_membership.circle_id=? AND actor_membership.role='owner'
+              AND actor_membership.status='active'
+              AND circle.archived_at IS NULL
+            LIMIT 1
+          )
+          AND (?<>'member' OR EXISTS (
+            SELECT 1 FROM circle_memberships other_owner
+            WHERE other_owner.circle_id=target.circle_id AND other_owner.role='owner'
+              AND other_owner.status='active' AND other_owner.user_id<>target.user_id
+          ))
+        RETURNING circle_id,user_id,role,status`,
+      args:[transition.to,occurredAt,target,actor,transition.from,transition.to,actor,selectedCircle,transition.to],
+    });
+    const row=changed.rows?.[0];
+    if(changed.rows?.length!==1||positiveInteger(Number(row?.user_id))!==target||row?.role!==transition.to){
+      const state=await inspectScopedTarget(transaction,{actorUserId:actor,targetUserId:target,circleId:selectedCircle});
+      if(!state) return await fail('not_found');
+      if(transition.to==='member'&&state.role==='owner'&&state.status==='active'&&Number(state.active_owner_count)<=1){
+        return await fail('last_owner');
+      }
+      return await fail('state_conflict');
+    }
+    await insertCircleAudit(transaction,{circleId:Number(row.circle_id),eventType:transition.eventType,actor,target,occurredAt});
+    await transaction.commit(); finished=true;
+    return Object.freeze({ok:true,member:Object.freeze({id:target,role:transition.to,status:String(row.status)})});
+  }catch(error){
+    if(!finished) await rollback(transaction);
+    throw error;
+  }
+}
+
+const ADMIN_ACTIONS=Object.freeze({
+  grant_admin:Object.freeze({next:1,eventType:'admin.granted'}),
+  revoke_admin:Object.freeze({next:0,eventType:'admin.revoked'}),
+});
+
+// An "active admin" is a non-demo account with is_admin=1 and at least one
+// active membership in a live circle. Only active admins count toward the
+// last-admin invariant, so an orphaned flag can never be the only one left.
+const ACTOR_ADMIN_SQL=`EXISTS (
+    SELECT 1 FROM auth_accounts actor_account
+    JOIN circle_memberships actor_membership ON actor_membership.user_id=actor_account.id
+    JOIN circles actor_circle ON actor_circle.id=actor_membership.circle_id
+    WHERE actor_account.id=? AND actor_account.is_admin=1 AND COALESCE(actor_account.is_demo,0)=0
+      AND actor_membership.circle_id=? AND actor_membership.status='active'
+      AND actor_circle.is_primary=1 AND actor_circle.archived_at IS NULL
+  )`;
+
+async function inspectAdminScope(transaction,{actorUserId,targetUserId,circleId}){
+  const result=await transaction.execute({
+    sql:`SELECT target_account.id AS target_id,target_account.email AS target_email,
+        COALESCE(target_account.is_admin,0) AS target_is_admin,target_membership.status AS target_status,
+        (SELECT COUNT(DISTINCT admin.id) FROM auth_accounts admin
+          JOIN circle_memberships admin_membership ON admin_membership.user_id=admin.id
+          JOIN circles admin_circle ON admin_circle.id=admin_membership.circle_id
+          WHERE admin.is_admin=1 AND COALESCE(admin.is_demo,0)=0
+            AND admin_membership.status='active' AND admin_circle.archived_at IS NULL) AS active_admin_count
+      FROM circles circle
+      LEFT JOIN circle_memberships target_membership
+        ON target_membership.circle_id=circle.id AND target_membership.user_id=?
+      LEFT JOIN auth_accounts target_account
+        ON target_account.id=target_membership.user_id AND COALESCE(target_account.is_demo,0)=0
+      WHERE circle.id=? AND ${ACTOR_ADMIN_SQL}
+      LIMIT 1`,
+    args:[targetUserId,circleId,actorUserId,circleId],
+  });
+  return result.rows?.length===1?result.rows[0]:null;
+}
+
+/**
+ * Grants or revokes the app-wide `auth_accounts.is_admin` flag for a member
+ * of the actor's primary circle. The actor must be an active, non-demo admin
+ * in that primary circle and must hold a fresh recent-auth proof. Revocation
+ * keeps at least one other active admin. There is no admin ceiling.
+ */
+export async function changeAppAdmin(db,{actorUserId,targetUserId,circleId,action,session,nowSeconds,circleContext,adminEmails=[]}={}){
+  const actor=positiveInteger(actorUserId);
+  const target=positiveInteger(targetUserId);
+  const selectedCircle=positiveInteger(circleId);
+  const transition=ADMIN_ACTIONS[action];
+  if(!db||typeof db.transaction!=='function'||!actor||!target||!selectedCircle||!transition){
+    throw new TypeError('valid admin change required');
+  }
+  const configured=new Set([...(adminEmails||[])].map(email=>String(email||'').trim().toLowerCase()).filter(Boolean));
+  const occurredAt=new Date().toISOString();
+  const transaction=await db.transaction('write');
+  let finished=false;
+  const fail=async reason=>{
+    await rollback(transaction); finished=true;
+    return Object.freeze({ok:false,reason});
+  };
+  try{
+    if(!await activeMutationContextValid(transaction,circleContext,selectedCircle)) return await fail('context_changed');
+    const scope=await inspectAdminScope(transaction,{actorUserId:actor,targetUserId:target,circleId:selectedCircle});
+    if(!scope) return await fail('admin_required');
+    if(!positiveInteger(Number(scope.target_id))) return await fail('not_found');
+    await requireActorRecentAuth(transaction,actor,session,nowSeconds);
+    if(transition.next===0&&configured.has(String(scope.target_email||'').trim().toLowerCase())){
+      return await fail('configured_admin');
+    }
+    const changed=await transaction.execute(transition.next===1?{
+      sql:`UPDATE auth_accounts AS target SET is_admin=1
+        WHERE target.id=? AND COALESCE(target.is_admin,0)=0 AND COALESCE(target.is_demo,0)=0
+          AND EXISTS (SELECT 1 FROM circle_memberships target_membership
+            WHERE target_membership.user_id=target.id AND target_membership.circle_id=?
+              AND target_membership.status='active')
+          AND ${ACTOR_ADMIN_SQL}
+        RETURNING id,is_admin`,
+      args:[target,selectedCircle,actor,selectedCircle],
+    }:{
+      sql:`UPDATE auth_accounts AS target SET is_admin=0
+        WHERE target.id=? AND target.is_admin=1 AND COALESCE(target.is_demo,0)=0
+          AND EXISTS (SELECT 1 FROM circle_memberships target_membership
+            WHERE target_membership.user_id=target.id AND target_membership.circle_id=?)
+          AND ${ACTOR_ADMIN_SQL}
+          AND EXISTS (
+            SELECT 1 FROM auth_accounts other
+            JOIN circle_memberships other_membership ON other_membership.user_id=other.id
+            JOIN circles other_circle ON other_circle.id=other_membership.circle_id
+            WHERE other.id<>target.id AND other.is_admin=1 AND COALESCE(other.is_demo,0)=0
+              AND other_membership.status='active' AND other_circle.archived_at IS NULL
+          )
+        RETURNING id,is_admin`,
+      args:[target,selectedCircle,actor,selectedCircle],
+    });
+    const row=changed.rows?.[0];
+    if(changed.rows?.length!==1||positiveInteger(Number(row?.id))!==target||Number(row?.is_admin)!==transition.next){
+      const state=await inspectAdminScope(transaction,{actorUserId:actor,targetUserId:target,circleId:selectedCircle});
+      if(!state) return await fail('admin_required');
+      if(!positiveInteger(Number(state.target_id))) return await fail('not_found');
+      if(transition.next===0&&Number(state.target_is_admin)===1&&Number(state.active_admin_count)<=1) return await fail('last_admin');
+      return await fail('state_conflict');
+    }
+    await insertCircleAudit(transaction,{circleId:selectedCircle,eventType:transition.eventType,actor,target,occurredAt});
+    await transaction.commit(); finished=true;
+    return Object.freeze({ok:true,member:Object.freeze({id:target,status:String(scope.target_status),is_admin:transition.next===1})});
   }catch(error){
     if(!finished) await rollback(transaction);
     throw error;
