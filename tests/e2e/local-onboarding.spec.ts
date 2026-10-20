@@ -130,7 +130,7 @@ test.describe('unmocked local onboarding',()=>{
       const rejectedIdentity=await wrongIdentityResponse;
       expect(rejectedIdentity.status()).toBe(403);
       expect(await rejectedIdentity.json()).toEqual({error:'invitation unavailable or does not match this email'});
-      await expect(member.locator('#authErr')).toContainText('invitation unavailable');
+      await expect(member.locator('#authErr')).toContainText('the address the invitation was sent to');
 
       await member.locator('#authEmail').fill('invited.member@example.test');
       await member.locator('#authName').fill('Invited Member');

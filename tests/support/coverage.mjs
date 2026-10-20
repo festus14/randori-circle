@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-// Accurate unit-test coverage for api/*.js, db/*.js and scripts/*.mjs.
+// Accurate unit-test coverage for api/*.js, db/*.js, scripts/*.mjs and the
+// browser modules with unit tests (assets/auth-dialog.js, assets/onboarding-flow.js,
+// assets/app-shell.js).
 //
 // Why not `node --experimental-test-coverage`? Node 24's built-in coverage
 // merger mis-reports any module that is also replaced with `mock.module()`:
@@ -26,8 +28,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-// Browser modules with unit tests (WP-O onboarding flow, WP-S app shell).
-const INCLUDE = ['api/*.js', 'db/*.js', 'scripts/*.mjs', 'assets/onboarding-flow.js', 'assets/app-shell.js'];
+// Browser modules with unit tests (WP-A auth dialog, WP-O onboarding flow, WP-S app shell).
+const INCLUDE = ['api/*.js', 'db/*.js', 'scripts/*.mjs', 'assets/auth-dialog.js', 'assets/onboarding-flow.js', 'assets/app-shell.js'];
 const MOCK_PARAM = 'node-test-mock';
 
 const args = process.argv.slice(2);
