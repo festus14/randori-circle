@@ -274,10 +274,32 @@
     return joined !== null && cutoff !== null && joined >= cutoff;
   }
 
-  function newMemberHeroCopy(state, { createdAt, current, upcoming } = {}) {
+  function newMemberHeroCopy(state, { createdAt, current, upcoming, availability } = {}) {
     if (!['overdue', 'missed', 'unpublished', 'pending'].includes(state)) return null;
     if (!joinedAfterCutoff({ createdAt, current })) return null;
     const next = weekPhrase(upcoming, 'the next cycle');
+    // The member already answered for that cycle: confirm it instead of
+    // asking them to set availability again.
+    const answered = availability?.source === 'user'
+      && (!upcoming?.cycleId || availability?.cycle?.cycleId === upcoming.cycleId);
+    if (answered && availability.isAvailable === true) {
+      return {
+        title: `You’re in for ${next}`,
+        message: 'You’ll be paired when that week’s pairs publish. We’ll email you when your partner is ready.',
+        tone: 'info',
+        availability: false,
+        retry: false,
+      };
+    }
+    if (answered && availability.isAvailable === false) {
+      return {
+        title: `You’re sitting out ${next}`,
+        message: 'You won’t be paired that week. You can change this until the cutoff.',
+        tone: 'info',
+        availability: true,
+        retry: false,
+      };
+    }
     return {
       title: `You’ll be included from ${next}`,
       message: 'You joined after this week’s pairs were decided. Say you’re in for the next cycle and you’ll be paired when it publishes.',

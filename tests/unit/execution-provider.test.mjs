@@ -230,6 +230,35 @@ test('the self-hosted Piston provider posts one file with an optional bearer tok
   assert.equal(Object.hasOwn(sansToken[0].headers, 'Authorization'), false);
 });
 
+test('the JavaScript harness reports a function that returns nothing as a wrong answer, not a runtime error', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const suite = { entrypoint: 'solve', tests: [{ args: [1], expected: 1 }, { args: [2], expected: null }] };
+  const stub = buildExecutionHarness('javascript', 'function solve(value) {\n  // TODO\n}', suite, '__P__:');
+  const stubResults = execFileSync(process.execPath, ['-e', stub], { encoding: 'utf8' }).trim().split('\n')
+    .map(line => JSON.parse(line.slice('__P__:'.length)));
+  assert.deepEqual(stubResults, [
+    { idx: 0, ok: false, got: null, error: null },
+    { idx: 1, ok: false, got: null, error: null },
+  ]);
+  // No return value fails every case, including one that expects null, and
+  // is not labelled a runtime error.
+  assert.deepEqual(normalizeRunnerResults(stubResults.map(r => '__P__:' + JSON.stringify(r)).join('\n'), '__P__:', suite.tests), [
+    { idx: 0, pass: false, error: null },
+    { idx: 1, pass: false, error: null },
+  ]);
+  const returnsNull = buildExecutionHarness('javascript', 'function solve() { return null; }', suite, '__P__:');
+  const nullResults = execFileSync(process.execPath, ['-e', returnsNull], { encoding: 'utf8' }).trim().split('\n')
+    .map(line => JSON.parse(line.slice('__P__:'.length)));
+  assert.deepEqual(normalizeRunnerResults(nullResults.map(r => '__P__:' + JSON.stringify(r)).join('\n'), '__P__:', suite.tests), [
+    { idx: 0, pass: false, error: null },
+    { idx: 1, pass: true, error: null },
+  ], 'an explicit null still matches a null expectation');
+  const thrower = buildExecutionHarness('javascript', 'function solve() { throw new Error("boom"); }', suite, '__P__:');
+  const thrown = execFileSync(process.execPath, ['-e', thrower], { encoding: 'utf8' }).trim().split('\n')
+    .map(line => JSON.parse(line.slice('__P__:'.length)));
+  assert.equal(thrown[0].error, 'runtime error', 'a real exception is still an error');
+});
+
 test('harnesses keep answer keys server-side and results are normalised against expected values', () => {
   const suite = { entrypoint: 'add', tests: [{ args: [1, 2], expected: 3 }, { args: [2, 2], expected: 5 }, { args: [0, 0], expected: 0 }] };
   for (const language of ['javascript', 'python']) {

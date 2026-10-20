@@ -1216,9 +1216,25 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   .rc-step-label{font-size:10px}
 }
 @media(max-width:380px){ .rc-step-label{position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap} }
-/* Visitors on the landing and recovery pages get no app navigation (WP-O handoff from WP-S). */
-body[data-nav="hidden"] .shell > nav{display:none!important}
-@media(max-width:599px){ body[data-nav="hidden"]{padding-bottom:0} }
+/* App navigation is for members only (final pass; see assets/app-shell.js).
+   It stays hidden until a member is confirmed, so visitors never see member
+   tabs, including while the identity check is in flight. */
+body:not([data-nav="shown"]) .shell > nav{display:none!important}
+@media(max-width:599px){
+  body:not([data-nav="shown"]){padding-bottom:0}
+  body:not([data-nav="shown"]) .room{--room-offset:calc(var(--topbar-h) + var(--space-4) + 88px + env(safe-area-inset-bottom))}
+}
+/* A visitor on /?view=code: say what needs an account, and hide the
+   pair-only room controls that do nothing without one. */
+.solo-bar{display:none; margin-bottom:var(--space-3); align-items:center; flex-wrap:wrap}
+.solo-bar > p{margin:0; flex:1 1 18rem}
+.solo-bar-actions{display:flex; flex-wrap:wrap; gap:var(--space-2)}
+body[data-surface="solo"] .solo-bar{display:flex}
+body[data-surface="solo"] #view-code :is(#roomSelect,#roleToggle,#vidJoinBtn,.room-presence){display:none}
+/* Shown while a returning member's session is checked, instead of
+   flashing the visitor landing page. */
+.boot-view{padding:var(--space-12) var(--space-4); text-align:center; color:var(--ink-2)}
+.boot-view .mark{color:var(--ink-3); margin:0 auto var(--space-3); display:block}
 .check-item{display:flex; align-items:center; gap:var(--space-2); font-size:var(--text-sm); color:var(--ink-2)}
 .check-item.done{color:var(--ink)}
 .check-item.done .check-box{background:var(--accent); border-color:var(--accent); color:var(--color-on-action)}
@@ -1811,6 +1827,17 @@ a.btn{text-decoration:none}
   <div id="shellConnectionBanner" class="rc-banner rc-banner--warning shell-banner" role="status" hidden><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-alert"/></svg><span><b>You are offline.</b> Randori cannot load or save changes until your connection is back.</span></div>
   <main id="appMain" class="main" tabindex="-1">
 
+    <!-- BOOT: a returning member's session is being checked (final pass). -->
+    <section id="view-boot" class="view boot-view" aria-busy="true" style="display:none">
+      <svg class="mark" viewBox="0 0 32 32" width="40" height="40" aria-hidden="true" focusable="false">
+        <g fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round">
+          <path d="M18.85 5.37A11 11 0 0 1 26.63 18.85"/><path d="M23.78 23.78A11 11 0 0 1 8.22 23.78"/><path d="M5.37 18.85A11 11 0 0 1 13.15 5.37"/>
+        </g>
+        <circle cx="16" cy="16" r="3.4" fill="currentColor"/>
+      </svg>
+      <p class="small" role="status">Loading your circle…</p>
+    </section>
+
     <!-- LANDING (anonymous only) — UI redesign WP-L1, spec section 7.1 -->
     <section id="view-landing" class="view" aria-labelledby="landingTitle" style="display:none">
       <div class="landing">
@@ -2289,6 +2316,14 @@ a.btn{text-decoration:none}
     <!-- CODE: the pair room (WP-R). Editor first; the side panel (wide) or the
          segmented tabs (narrow) switch Problem / Results / Session / Notes. -->
     <section id="view-code" class="view room-view" tabindex="0" aria-labelledby="tab-code" style="display:none">
+      <div id="soloPracticeBar" class="rc-banner solo-bar" data-testid="solo-practice-bar">
+        <svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-info"/></svg>
+        <p><b>Exercises and test runs are for circle members.</b> Sign in to practise, or request an invite to join a circle.</p>
+        <div class="solo-bar-actions">
+          <button id="soloSignIn" class="btn sm" type="button">Sign in</button>
+          <a id="soloRequestInvite" class="btn secondary sm" href="/#request-invite" data-invite-request-link hidden>Request an invite</a>
+        </div>
+      </div>
       <div class="room">
         <div class="room-bar">
           <div class="room-bar-context">
@@ -3612,6 +3647,7 @@ async function refreshMe(){
       retry.disabled=model.retry.disabled;
     }
     renderAvailabilityDashboardBadge(availability);
+    try{ window._randori_journey?.refreshJoinedLateHero?.(); }catch{}
   }
   function clearAvailability(){
     clearAvailabilityRolloverTimer();
@@ -3820,9 +3856,14 @@ async function refreshMe(){
     const effectiveSignedIn = !!me;
     if(document.body){
       document.body.dataset.auth=effectiveSignedIn?'member':'anonymous';
-      // Visitors lose app navigation on public pages only once identity has
-      // settled (signed out, or the check failed), never while it is loading.
-      document.body.dataset.identity=authIdentityHydrated||authIdentityHydrationUnavailable?'resolved':'pending';
+      const identityPending=!(authIdentityHydrated||authIdentityHydrationUnavailable);
+      document.body.dataset.identity=identityPending?'pending':'resolved';
+      // A browser that last saw a signed-in account (the cached profile is
+      // removed on sign-out and on a failed identity check) keeps member
+      // navigation while /api/auth/me is in flight; visitors never get it.
+      let returning=false;
+      if(identityPending&&!effectiveSignedIn){ try{ returning=!!localStorage.getItem(ME_KEY); }catch{} }
+      document.body.dataset.returning=returning?'true':'false';
     }
     const circleTab=document.querySelector('[data-tab="circle"]');
     if(circleTab) circleTab.style.display=effectiveSignedIn?'':'none';
@@ -4130,10 +4171,15 @@ async function refreshMe(){
     // across re-renders (for example when capabilities arrive later).
     const joining=authMode==='signin'&&!!window._randori_pending_join_room
       &&/^\/join\//.test(window.location.pathname||'');
-    if(title) title.textContent=joining?'Sign in to join your pairing room':copy.title;
+    // A signed-out deep link to a member view (/?view=pair) says where the
+    // visitor is going; the URL is kept, so signing in lands there.
+    const deepLink=authMode==='signin'&&!joining&&window._randori_pending_view
+      &&window._randori_shell?.memberDeepLinkView?.(window.location.search)===window._randori_pending_view
+      ?window._randori_shell.deepLinkSignInCopy(window._randori_pending_view):null;
+    if(title) title.textContent=joining?'Sign in to join your pairing room':(deepLink?.title||copy.title);
     if(description) description.textContent=pending
       ?'One more step: confirm your email address.'
-      :(joining?'Your pair is waiting. Sign in to open your shared room.':copy.description);
+      :(joining?'Your pair is waiting. Sign in to open your shared room.':(deepLink?.description||copy.description));
     if(status){
       const view=authStatusView();
       status.textContent=view.text;
@@ -9681,6 +9727,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   // Landing CTA wiring
   // #landingSignup ("I have an invitation") is wired in assets/landing.js.
   document.getElementById('landingSignin')?.addEventListener('click', ()=>window._randori_auth?.openModal?.('signin'));
+  document.getElementById('soloSignIn')?.addEventListener('click', ()=>window._randori_auth?.openModal?.('signin'));
 
   // Profile setup helpers
   const PALETTE=['#e6c07a','#9cc0b5','#d68a8a','#a3b5d6','#c7b29a','#8ec0a5','#d3a0cb','#9aa9c9','#e3c9b2','#82b6b7','#b8a8d8','#d9b6a3'];
@@ -10176,6 +10223,31 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(loading) loading.hidden=state!=='loading';
   }
 
+  // The joined-after-cutoff hero depends on the member's saved availability,
+  // which can load or change after Home renders. Availability renders call
+  // refreshJoinedLateHero so the hero never asks for an answer already given.
+  let lastJoinedLateInput=null;
+  function joinedLateCopy(input){
+    if(!input) return null;
+    return window._randori_onboarding_flow?.newMemberHeroCopy?.(input.state,{
+      createdAt:window._randori_auth?.me?.created_at,current:input.current,upcoming:input.upcoming,
+      availability:window._randori_availability?.current,
+    })||null;
+  }
+  function refreshJoinedLateHero(){
+    const input=lastJoinedLateInput;
+    const empty=document.getElementById('dashEmpty');
+    if(!input||input.userId!==dashboardUserId()||viewDashboard?.style.display==='none'
+      ||!empty||empty.style.display==='none'||empty.dataset.state!==input.state) return false;
+    const copy=joinedLateCopy(input);
+    if(!copy) return false;
+    const title=document.getElementById('dashEmptyTitle'); if(title&&title.textContent!==copy.title) title.textContent=copy.title;
+    const message=document.getElementById('dashEmptyMessage'); if(message&&message.textContent!==copy.message) message.textContent=copy.message;
+    const availabilityButton=document.getElementById('dashSetAvailability');
+    if(availabilityButton) availabilityButton.hidden=!(copy.availability&&window._randori_availability?.current?.editable!==false);
+    const sub=document.getElementById('dashSub'); if(sub&&sub.textContent!==copy.title) sub.textContent=copy.title;
+    return true;
+  }
   function renderDashboardEmpty(state,data={}){
     clearDashboardPairState();
     const current=data.current_cycle||data.cycle||null;
@@ -10199,9 +10271,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     // Someone who joined after this week's cutoff is never told pairing is
     // late or that they were left out; they are included from the next cycle.
     // Owners keep the publish copy because they can act on it.
-    const joinedLate=publication?.can_publish_now===true?null:window._randori_onboarding_flow?.newMemberHeroCopy?.(state,{
-      createdAt:window._randori_auth?.me?.created_at,current,upcoming,
-    });
+    const joinedLateInput=publication?.can_publish_now===true?null:{state,current,upcoming,userId:dashboardUserId()};
+    const joinedLate=joinedLateCopy(joinedLateInput);
+    lastJoinedLateInput=joinedLate?joinedLateInput:null;
     if(joinedLate) Object.assign(copy,joinedLate);
     document.getElementById('dashPairArea')?.replaceChildren();
     document.getElementById('dashScheduleArea')?.replaceChildren();
@@ -11984,10 +12056,37 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       // not overridden by a provisional "signed out" route; the route runs
       // again once identity settles and decides with an authoritative answer.
       if(window._randori_auth?.identitySettled!==true&&window._randoriExplicitNavigation) return;
+      const identitySettled=window._randori_auth?.identitySettled===true;
       // Canonical pair invites are private capabilities: preserve the URL and require sign-in.
       hideAllViews();
+      // A returning member (this browser last saw a signed-in account) gets a
+      // neutral loading view, not a flash of the visitor landing page, while
+      // /api/auth/me is in flight. The route runs again once identity settles.
+      let likelyMember=false;
+      try{ likelyMember=!!localStorage.getItem(ME_KEY); }catch{}
+      if(!identitySettled&&likelyMember){
+        const boot=document.getElementById('view-boot');
+        if(boot){
+          // Remember the pair link so the settled route can still prompt.
+          if(joinRoom) window._randori_pending_join_room=joinRoom;
+          boot.style.display='block';
+          return;
+        }
+      }
       if(viewLanding) viewLanding.style.display='block';
       if(tabsEl) tabsEl.style.display='flex';
+      // Member-only deep links (/?view=pair, ?view=history, …) ask a settled
+      // visitor to sign in and keep the URL, so the signed-in route below
+      // opens the same view afterwards.
+      const pendingView=joinRoom?'':(window._randori_shell?.memberDeepLinkView?.(window.location.search)||'');
+      // Prompt once per deep link: a dismissed dialog is not reopened by a
+      // later forced route (popstate, Home) for the same view.
+      window._randori_pending_view=pendingView||null;
+      if(pendingView&&identitySettled&&window._randori_pending_view_prompted!==pendingView
+        &&!document.getElementById('authOverlay')?.classList.contains('show')){
+        window._randori_pending_view_prompted=pendingView;
+        window._randori_auth?.openModal?.('signin');
+      }
       if(joinRoom){
         window._randori_pending_join_room=joinRoom;
         // Until /api/auth/me settles, "no user yet" is not "signed out": a
@@ -12021,6 +12120,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       return;
     }
     // signed in
+    window._randori_pending_view=null;
+    window._randori_pending_view_prompted=null;
     if(tabsEl) tabsEl.style.display='flex';
     if(joinSignInPrompted){
       // The join sign-in prompt has been answered (here or in another tab).
@@ -12051,7 +12152,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     try{
       const params=new URLSearchParams(window.location.search);
       const requestedView=params.get('view')||params.get('tab')||(window.location.hash.includes('code')?'code':null);
-      if(['pair','code','board','history'].includes(requestedView)){
+      if(['circle','pair','code','board','history'].includes(requestedView)){
         document.querySelector(`[data-tab="${requestedView}"]`)?.click();
         return;
       }
@@ -12241,7 +12342,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   // Expose
   window._randori_journey={
-    showDashboard,showProfileSetup,routeByAuth,openAuthorizedJoin,openSetupGuide,
+    showDashboard,showProfileSetup,routeByAuth,openAuthorizedJoin,openSetupGuide,refreshJoinedLateHero,
     get setupStep(){ return viewProfile?.style.display==='none'?null:setupStep; },
     setSetupStep,
     waitForProfileSaveAttempt,
