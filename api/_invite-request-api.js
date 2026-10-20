@@ -225,6 +225,10 @@ async function handleDecision(req,res){
     return res.status(503).json({error:'invite requests unavailable'});
   }
   if(result.status==='not_found') return res.status(404).json({error:'invite request not found'});
+  if(result.status==='conflict'&&result.reason==='email_invalid'){
+    return res.status(409).json({error:'this request has an email address that cannot be invited',
+      code:'invite_request_email_invalid',status:'pending'});
+  }
   if(result.status==='conflict'&&result.reason){
     return res.status(409).json({
       error:result.reason==='already_member'?'this email is already a circle member':'this email already has a live invitation',

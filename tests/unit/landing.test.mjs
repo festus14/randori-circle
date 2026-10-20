@@ -484,3 +484,20 @@ test('index.html loads the module early and keeps the landing contract hooks', (
   }
   assert.doesNotMatch(html, /authorization-gated|id="landingStats"|id="landingNextBar"|>Use an invitation</);
 });
+
+test('the request form uses the shared strict email rules once that module has loaded (ID-68)', async () => {
+  assert.equal(landing.validateInviteRequest({ name: 'Al', email: 'a..b@example.com' }).ok, true,
+    'the fallback shape check alone is permissive');
+  const { default: rules } = await import('../../assets/email-validation.js');
+  globalThis.RandoriEmailValidation = rules;
+  try {
+    assert.equal(landing.validateInviteRequest({ name: 'Al', email: 'a..b@example.com' }).errors.email,
+      'Dots can’t start, end, or repeat before the @.');
+    assert.equal(landing.validateInviteRequest({ name: 'Al', email: 'jürgen@example.com' }).errors.email,
+      'Use plain letters and digits. Enter international domains in their xn-- form.');
+    assert.equal(landing.validateInviteRequest({ name: 'Al', email: ' A+tag@Example.co ' }).payload.email, 'a+tag@example.co');
+    assert.equal(landing.validateInviteRequest({ name: 'Al', email: '' }).errors.email, 'Enter your email address.');
+  } finally {
+    delete globalThis.RandoriEmailValidation;
+  }
+});

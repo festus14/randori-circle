@@ -282,6 +282,9 @@
 
   function inviteRequestErrorMessage(error) {
     const status = Number(error?.http_status);
+    if (error?.code === 'invite_request_email_invalid') {
+      return 'This request’s email address can’t receive an invitation. Decline it instead.';
+    }
     if (error?.code === 'invite_request_not_pending' || status === 409) {
       const next = ['approved', 'declined', 'expired'].includes(error?.status) ? ` It was ${error.status}.` : '';
       return `This request was already handled.${next} The list has been refreshed.`;

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Accurate unit-test coverage for api/*.js, db/*.js, scripts/*.mjs and assets/auth-dialog.js.
+// Accurate unit-test coverage for api/*.js, db/*.js, scripts/*.mjs and the browser modules listed in INCLUDE.
 //
 // Why not `node --experimental-test-coverage`? Node 24's built-in coverage
 // merger mis-reports any module that is also replaced with `mock.module()`:
@@ -26,7 +26,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const INCLUDE = ['api/*.js', 'db/*.js', 'scripts/*.mjs', 'assets/auth-dialog.js'];
+const INCLUDE = ['api/*.js', 'db/*.js', 'scripts/*.mjs', 'assets/auth-dialog.js',
+  // Shared email rules and the bulk invite UI (ID-68).
+  'assets/email-validation.js', 'assets/bulk-invite.js'];
 const MOCK_PARAM = 'node-test-mock';
 
 const args = process.argv.slice(2);
