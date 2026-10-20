@@ -213,7 +213,11 @@ if(process.env.RANDORI_REHEARSAL_SIGNAL_FIXTURE==='1'){
     setBlock(_name,value,state){
       events.push(['block',value]);
       state.blockWrites=value;
-      if(value) writeFileSync(blockedPath,'blocked');
+      if(value){
+        writeFileSync(blockedPath,'blocked');
+        // Readiness signal for the parent: forward work is now blocked.
+        process.stdout.write('blocked\n');
+      }
       return {blockWrites:value};
     },
   });
@@ -827,13 +831,28 @@ test('SIGTERM interrupts forward database work but confirms source restoration b
   });
   let stderr='';
   child.stderr.on('data',chunk=>{ stderr+=chunk; });
+  // Child start-up (Node boot, module graph, fixture) can take seconds on a
+  // loaded runner, so wait on the child's readiness signal rather than a
+  // fixed deadline. An early exit ends the wait so failures stay prompt.
+  const closed=new Promise(resolve=>child.once('close',(code,signal)=>resolve({code,signal})));
+  let stdout='';
+  const ready=new Promise(resolve=>{
+    child.stdout.on('data',chunk=>{
+      stdout+=chunk;
+      if(stdout.includes('blocked\n')) resolve(true);
+    });
+  });
+  // A generous backstop (not a start-up deadline) keeps a wedged child from
+  // hanging the run; finally still kills it and removes the directory.
+  let backstop;
+  const wedged=new Promise(resolve=>{ backstop=setTimeout(()=>resolve('wedged'),120_000); });
   try{
-    for(let attempt=0;attempt<100&&!existsSync(blockedPath);attempt+=1){
-      await new Promise(resolve=>setTimeout(resolve,10));
-    }
+    const signalled=await Promise.race([ready,closed.then(()=>'exited'),wedged]);
+    clearTimeout(backstop);
+    assert.equal(signalled,true,`fixture did not signal blocked writes (${signalled}): ${stderr}`);
     assert.equal(existsSync(blockedPath),true,stderr);
     child.kill('SIGTERM');
-    const outcome=await new Promise(resolve=>child.once('close',(code,signal)=>resolve({code,signal})));
+    const outcome=await closed;
     assert.deepEqual(outcome,{code:130,signal:null},stderr);
     const result=JSON.parse(readFileSync(resultPath,'utf8'));
     assert.equal(result.interrupted,true);
@@ -843,6 +862,7 @@ test('SIGTERM interrupts forward database work but confirms source restoration b
     assert.equal(result.events.findIndex(event=>event[0]==='block'&&event[1]===false)
       <result.events.findIndex(event=>event[0]==='close'),true);
   }finally{
+    clearTimeout(backstop);
     if(child.exitCode===null) child.kill('SIGKILL');
     rmSync(directory,{recursive:true,force:true});
   }
