@@ -689,7 +689,7 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .cycle-empty[data-tone="danger"]{border-color:var(--bad); background:var(--bad-surface)}
 .cycle-empty-title{font-weight:var(--weight-heading)}
 .cycle-publishing{gap:var(--space-2); color:var(--ink)}
-.cycle-owner{background:var(--card-2); border-color:var(--color-border-strong)}
+.cycle-owner{background:var(--card); border-color:var(--color-border-strong)}
 .cycle-diagnostics{padding:0; gap:0}
 .cycle-diagnostics > summary{padding:var(--space-4) var(--space-5); min-height:var(--tap-min); box-sizing:border-box; cursor:pointer; font-weight:var(--weight-emphasis); color:var(--ink-2)}
 .cycle-diagnostics-body{padding:0 var(--space-5) var(--space-5); display:grid; gap:var(--space-3)}
@@ -1232,6 +1232,8 @@ body:not([data-nav="shown"]) .shell > nav{display:none!important}
 .solo-bar > p{margin:0; flex:1 1 18rem}
 .solo-bar-actions{display:flex; flex-wrap:wrap; gap:var(--space-2)}
 body[data-surface="solo"] .solo-bar{display:flex}
+/* Home's Recent runs is never a blank box (it is cleared on identity change). */
+#recentRunsList:empty::before{content:"No runs yet. Open Code, pick an exercise and press Run."}
 body[data-surface="solo"] #view-code :is(#roomSelect,#roleToggle,#vidJoinBtn,.room-presence){display:none}
 /* Shown while a returning member's session is checked, instead of
    flashing the visitor landing page. */
@@ -1293,6 +1295,9 @@ a.btn{text-decoration:none}
 .landing-trust b{color:var(--ink)}
 .landing-privacy{max-width:var(--reading-max); width:100%; margin:0 auto; border:1px solid var(--border); border-radius:var(--radius-md); background:var(--card); padding:0 var(--space-4)}
 .landing-privacy summary{cursor:pointer; min-height:var(--tap-min); display:flex; align-items:center; font-weight:var(--weight-emphasis); color:var(--ink)}
+.landing-privacy summary::-webkit-details-marker{display:none}
+.landing-privacy summary::after{content:""; width:8px; height:8px; margin-left:auto; border-right:2px solid var(--ink-3); border-bottom:2px solid var(--ink-3); transform:rotate(45deg); transition:transform var(--dur-2) var(--ease-out)}
+.landing-privacy[open] summary::after{transform:rotate(-135deg)}
 .landing-privacy p{margin:0 0 var(--space-3); color:var(--ink-2); font-size:var(--text-sm); line-height:var(--leading-sm)}
 .landing-request{max-width:560px; scroll-margin-top:var(--space-6)}
 .landing-request:focus{outline:none}
@@ -1473,7 +1478,7 @@ a.btn{text-decoration:none}
   padding:var(--space-2) var(--space-3); border-radius:var(--radius-sm); background:var(--ink); color:var(--bg);
   font-weight:var(--weight-heading); text-decoration:none;
 }
-.skip-link:focus{transform:translateY(0)}
+.skip-link:focus-visible{transform:translateY(0)}
 .motion-probe{
   position:fixed; width:1px; height:1px; overflow:hidden; clip-path:inset(50%);
   animation:spin 1s linear infinite;
@@ -1554,8 +1559,10 @@ a.btn{text-decoration:none}
     border-radius:0 0 var(--radius-full) var(--radius-full); background:var(--color-action);
   }
   .tab .tab-count{position:absolute; top:2px; left:calc(50% + 6px); min-width:18px; padding:0 4px; font-size:10px; line-height:14px; text-align:center}
-  .toast,.rc-toast{left:50%; right:auto; transform:translateX(-50%); bottom:calc(var(--bottom-nav-h) + env(safe-area-inset-bottom) + var(--space-3))}
-  @keyframes rc-toast-in{from{transform:translate(-50%, 8px); opacity:0} to{transform:translate(-50%, 0); opacity:1}}
+  /* Phones: under the topbar, so a toast never covers the primary action
+     or the bottom tab bar at the foot of the screen. */
+  .toast,.rc-toast{left:50%; right:auto; transform:translateX(-50%); top:calc(var(--topbar-h) + var(--space-2)); bottom:auto}
+  @keyframes rc-toast-in{from{transform:translate(-50%, -8px); opacity:0} to{transform:translate(-50%, 0); opacity:1}}
 }
 
 @media(max-width:520px){
@@ -1586,6 +1593,12 @@ a.btn{text-decoration:none}
 
 @media(pointer:coarse){
   .pill,.tab,.chip,.tool,.btn,.rc-btn,.rc-tab{min-height:var(--tap-min)}
+  /* Small buttons keep their look but get a full 44 px target on touch. */
+  .btn.sm,.rc-btn--sm,.room-mode{min-height:var(--tap-min)}
+  .room-mode,.tool{min-width:var(--tap-min)}
+  .rc-btn--icon{width:var(--tap-min)}
+  .color-dot{position:relative}
+  .color-dot::after{content:""; position:absolute; inset:-8px}
   :where(input[type="checkbox"],input[type="radio"]){min-width:22px;min-height:22px}
   #meMenu [role="menuitem"]{min-height:44px}
   .theme-toggle{width:var(--tap-min); height:var(--tap-min)}
@@ -2117,7 +2130,7 @@ a.btn{text-decoration:none}
           <div class="home-list-head"><h4>Recent pairings</h4><button id="dashHistAll" class="btn ghost sm" type="button">All pairings</button></div>
           <div id="dashHistoryArea" class="home-list"><div id="dashHistList" class="small muted">Loading recent…</div></div>
           <div class="home-list-head"><h4>Recent runs</h4><button id="recentRunsRefresh" class="btn ghost sm" type="button">Refresh</button></div>
-          <div id="recentRunsArea" class="home-list"><div id="recentRunsList" class="small muted">No runs yet — hit ▶ Run</div></div>
+          <div id="recentRunsArea" class="home-list"><div id="recentRunsList" class="small muted">No runs yet. Open Code, pick an exercise and press Run.</div></div>
         </section>
         <details id="dashDiagnostics" class="home-diagnostics" hidden>
           <summary>Owner diagnostics</summary>
@@ -2329,7 +2342,7 @@ a.btn{text-decoration:none}
             <select id="roomSelect" class="select room-select"></select>
             <span id="roomLabel" class="sr-only">room —</span>
             <span class="room-presence small muted"><span class="dot" aria-hidden="true"></span><span id="presenceText">you alone</span></span>
-            <span id="codeSyncStatus" class="kbd room-sync" data-state="local" role="status" aria-live="polite">local editor</span>
+            <span id="codeSyncStatus" class="kbd room-sync" data-state="local" role="status" aria-live="polite">not shared</span>
           </div>
           <div class="room-bar-actions" role="group" aria-label="Session">
             <button id="roleToggle" class="pill room-chip" type="button" aria-label="Change shared participant roles">Role</button>
@@ -5084,7 +5097,7 @@ async function refreshMe(){
       refreshAvailability().catch(()=>{});
       try{ renderHistory(); }catch{}
       try{ window.dispatchEvent(new CustomEvent('randori:auth-refreshed',{detail:{signedIn:true,userId:me.id||me.uid||null}})); }catch{}
-      toast(mode==='signup'?`welcome, ${me.name}`:`signed in as ${me.name}`);
+      toast(mode==='signup'?`Welcome, ${me.name}`:`Signed in as ${me.name}`);
       setTimeout(()=>{ try{ window._randori_journey?.routeByAuth?.(); }catch{} },0);
     }catch(error){
       if(authRequest!==request||request.controller.signal.aborted||!authInteractionMatches(operation)) return;
@@ -9873,7 +9886,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const title=document.getElementById('setupAvailabilityTitle'); if(title) title.textContent=view.title;
     const lead=document.getElementById('setupAvailabilityLead'); if(lead) lead.textContent=view.lead;
     const note=document.getElementById('setupAvailabilityNote'); if(note&&note.textContent!==view.note) note.textContent=view.note;
-    const next=document.getElementById('setupAvailabilityNext'); if(next) next.textContent=view.next;
+    const next=document.getElementById('setupAvailabilityNext');
+    if(next){
+      next.textContent=view.next;
+      // "Decide later" is the quiet way out; the choice in the card is the
+      // primary action, and "Continue" becomes primary once it is made.
+      next.classList.toggle('ghost',view.next==='Decide later');
+    }
   }
 
   function renderNextStep(){
@@ -10235,7 +10254,6 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const message=document.getElementById('dashEmptyMessage'); if(message&&message.textContent!==copy.message) message.textContent=copy.message;
     const availabilityButton=document.getElementById('dashSetAvailability');
     if(availabilityButton) availabilityButton.hidden=!(copy.availability&&window._randori_availability?.current?.editable!==false);
-    const sub=document.getElementById('dashSub'); if(sub&&sub.textContent!==copy.title) sub.textContent=copy.title;
     return true;
   }
   function renderDashboardEmpty(state,data={}){
@@ -10276,7 +10294,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const availabilityButton=document.getElementById('dashSetAvailability');
     if(availabilityButton) availabilityButton.hidden=!(copy.availability&&window._randori_availability?.current?.editable!==false);
     const retry=document.getElementById('dashRetry'); if(retry) retry.hidden=!copy.retry;
-    const sub=document.getElementById('dashSub'); if(sub) sub.textContent=copy.title;
+    // The hero already carries the title; the subtitle names the week instead
+    // of repeating it.
+    const sub=document.getElementById('dashSub'); if(sub) sub.textContent=homeUi()?.cycleWeekLabel?.(current)||'This week';
     window._randori_pairing_recovery?.updateControls?.();
   }
 
@@ -11059,13 +11079,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       const tools=scheduleNode('div',{className:'home-agreed-tools'}); tools.append(clear); agreement.append(tools);
     }else{
       agreement.dataset.state='none';
-      agreement.append(scheduleNode('p',{className:'home-agreed-line muted',text:'No time agreed yet.'}));
+      agreement.append(scheduleNode('p',{className:'home-agreed-line',text:'No time agreed yet.'}));
     }
     body.append(agreement);
 
     const proposals=scheduleNode('div',{className:'home-proposals',testId:'schedule-proposals'}); proposals.id='proposedList';
     if(!schedule.proposals.length){
-      if(!schedule.agreed_time) proposals.append(scheduleNode('p',{className:'small muted',text:'No proposed times yet. Propose one below.'}));
+      if(!schedule.agreed_time) proposals.append(scheduleNode('p',{className:'small muted',text:'Propose a time below, or wait for your partner to suggest one.'}));
     }else{
       proposals.append(scheduleNode('h4',{className:'home-subhead',text:'Proposed times'}));
       schedule.proposals.forEach(proposal=>{
@@ -13212,7 +13232,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           }
           if(runOutEl){ runOutEl.innerHTML=cards.join(''); }
           try{ window._randori_runs && window._randori_runs.refresh && window._randori_runs.refresh(); }catch{}
-          if(window.toast) window.toast(summary.headline+' · checked on the server');
+          // The Results panel already shows the outcome; the toast is for
+          // members who are looking at another panel.
+          if(window.toast&&!document.getElementById('roomPanel-results')?.checkVisibility?.()) window.toast(summary.headline);
         }catch(e){
           try{ if(window._randori_ui && window._randori_ui.hideLoader) window._randori_ui.hideLoader(); }catch{}
           if(e && e.code==='execution_unavailable'){
@@ -13270,7 +13292,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   function renderRunsList(runs){
     const el=document.getElementById('recentRunsList');
     if(!el) return;
-    if(!runs.length){ el.innerHTML='<div class="small muted">No runs yet. Press Run to check your code on the server.</div>'; return; }
+    if(!runs.length){ el.innerHTML='<div class="small muted">No runs yet. Open Code, pick an exercise and press Run.</div>'; return; }
     el.innerHTML=runs.map(r=>{
       const ok = r.total_count? (r.passed_count+'/'+r.total_count) : (r.passed_count+' pass');
       const dt=new Date(r.created_at||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
@@ -13673,10 +13695,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 <!-- Monaco + Prettier IDE layer — CDN, no extra Vercel function, Hobby-safe, resilient fallback chain -->
 <link rel="preconnect" href="https://cdnjs.cloudflare.com">
 <link rel="preconnect" href="https://cdn.jsdelivr.net">
-<script src="https://unpkg.com/prettier@3.3.3/standalone.js" onerror="console.warn('prettier standalone failed')"></script>
-<script src="https://unpkg.com/prettier@3.3.3/plugins/babel.js" onerror="console.warn('prettier babel failed')"></script>
-<script src="https://unpkg.com/prettier@3.3.3/plugins/estree.js" onerror="console.warn('prettier estree failed')"></script>
-<script src="https://unpkg.com/prettier@3.3.3/plugins/typescript.js" onerror="console.warn('prettier ts failed')"></script>
+<!-- Prettier (four unpkg scripts) loads on the first "Format code", not for every visitor. -->
 <script id="monacoLoader" src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js" onerror="window.__monacoLoaderFailed=1"></script>
 <script>
 // Monaco IDE task — replace textarea with Monaco, keep textarea as hidden mirror for legacy runCode/AI paths
@@ -13777,9 +13796,29 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }catch(e){ try{ window._randori_log && window._randori_log.warn('lint_markers_fail','updateLintFromMarkers fail', {err:String(e&&e.message||e).slice(0,300)});}catch{} }
   }
 
+  // Prettier is only needed by "Format code": fetch it on first use instead of
+  // blocking every page load (including the visitor landing page) on four
+  // parser-blocking CDN scripts.
+  const PRETTIER_SCRIPTS=['standalone.js','plugins/babel.js','plugins/estree.js','plugins/typescript.js']
+    .map(file=>`https://unpkg.com/prettier@3.3.3/${file}`);
+  let prettierLoad=null;
+  function loadPrettier(){
+    if(prettierLoad) return prettierLoad;
+    const plugins=window.prettierPlugins;
+    if(window.prettier&&plugins?.babel&&plugins?.estree&&plugins?.typescript) return Promise.resolve(true);
+    prettierLoad=PRETTIER_SCRIPTS.reduce((previous,src)=>previous.then(()=>new Promise((resolve,reject)=>{
+      const script=document.createElement('script');
+      script.src=src; script.async=false;
+      script.onload=()=>resolve();
+      script.onerror=()=>reject(new Error('prettier failed to load'));
+      document.head.appendChild(script);
+    })),Promise.resolve()).then(()=>true,error=>{ prettierLoad=null; console.warn(String(error?.message||error)); return false; });
+    return prettierLoad;
+  }
   async function formatCode(){
     try{
     if(!monacoEditor) return;
+    await loadPrettier();
     const lang=document.getElementById('langSelect')?.value||'javascript';
     const code=monacoEditor.getValue();
     const prettierLangMap = {

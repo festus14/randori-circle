@@ -12,8 +12,10 @@
 //
 // It cannot run without Vercel credentials and exits 2 when none are present.
 import { randomBytes } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { createEvaluationSuite } from '../api/_catalog.js';
 import { buildExecutionHarness, executeProgram, normalizeRunnerResults } from '../api/_execution.js';
+import { countPassed, egressFailure, smokeEnvironment, smokeFailureMessage } from './execution-smoke-checks.mjs';
 
 const SLUG = 'focus-block-rollup';
 const VERSION = 1;
@@ -49,11 +51,12 @@ function fail(message) {
 }
 
 async function main() {
-  const env = { ...process.env, EXECUTION_PROVIDER: process.env.EXECUTION_PROVIDER || 'vercel-sandbox' };
-  if (env.EXECUTION_PROVIDER === 'vercel-sandbox' && !String(env.VERCEL_OIDC_TOKEN || '').trim()) {
+  const setup = smokeEnvironment(process.env);
+  if (!setup.ok) {
     console.error('execution smoke: VERCEL_OIDC_TOKEN is not set. Run `vercel env pull .env.local` in a linked checkout and pass --env-file=.env.local.');
-    process.exit(2);
+    process.exit(setup.exitCode);
   }
+  const { env } = setup;
 
   for (const language of ['javascript', 'python']) {
     const suite = createEvaluationSuite(SLUG, VERSION, language);
@@ -65,7 +68,7 @@ async function main() {
       source: buildExecutionHarness(language, SOLUTIONS[language](suite.entrypoint), suite, prefix),
     }, { env });
     const results = normalizeRunnerResults(run.stdout, prefix, suite.tests);
-    const passed = results.filter(result => result.pass).length;
+    const passed = countPassed(results);
     console.log(`execution smoke: ${run.provider} ${language} ${run.runtimeVersion} ${passed}/${suite.tests.length} in ${Date.now() - started}ms (exit ${run.code})`);
     if (passed !== suite.tests.length) fail(`${language} reference solution did not pass every case`);
 
@@ -75,22 +78,20 @@ async function main() {
         ? `function ${suite.entrypoint}(){ return null; }`
         : `def ${suite.entrypoint}(*args):\n    return None`, suite, prefix),
     }, { env });
-    const brokenPassed = normalizeRunnerResults(broken.stdout, prefix, suite.tests).filter(result => result.pass).length;
+    const brokenPassed = countPassed(normalizeRunnerResults(broken.stdout, prefix, suite.tests));
     if (brokenPassed !== 0) fail(`${language} broken solution passed ${brokenPassed} case(s)`);
   }
 
   if (env.EXECUTION_PROVIDER === 'vercel-sandbox') {
     const probe = await executeProgram({ language: 'javascript', source: EGRESS_PROBE }, { env });
     console.log(`execution smoke: egress probe -> ${probe.stdout.trim() || '(no output)'}`);
-    if (probe.stdout.includes('EGRESS_OPEN')) fail('sandbox egress is not denied');
-    else if (probe.timedOut || !probe.stdout.includes('EGRESS_BLOCKED')) {
-      fail('sandbox egress probe did not positively confirm that egress is denied');
-    }
+    const egress = egressFailure(probe);
+    if (egress) fail(egress);
   }
 
   if (!process.exitCode) console.log('execution smoke: OK');
 }
 
-main().catch(error => {
-  fail(`${error?.name || 'Error'}: ${error?.message || error}${error?.cause ? ` (cause: ${error.cause.message || error.cause})` : ''}`);
-});
+if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+  main().catch(error => fail(smokeFailureMessage(error)));
+}

@@ -38,30 +38,13 @@ import {
   resolveLocalServerConfig,
   startLocalDevelopmentServer,
 } from './local-server.mjs';
+import { parseOptions, readOnlyRequestDecision, VIEWPORTS } from './ui-screenshots-policy.mjs';
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const DEFAULT_PROD_URL = 'https://randori-circle-self.vercel.app';
 const MEMBER_PASSWORD = 'member-password-123';
 const MEMBER_EMAIL = 'invited.member@example.test';
 const MEMBER_NAME = 'Invited Member';
 const EXECUTION_API_URL = 'https://execution.screenshots.invalid/api/v2/execute';
-
-const VIEWPORTS = Object.freeze({
-  mobile: {
-    viewport: { width: 393, height: 852 },
-    deviceScaleFactor: 3,
-    isMobile: true,
-    hasTouch: true,
-    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 '
-      + '(KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
-  },
-  desktop: {
-    viewport: { width: 1440, height: 900 },
-    deviceScaleFactor: 1,
-    isMobile: false,
-    hasTouch: false,
-  },
-});
 
 const TELEMETRY_RESOLVER_RULES = [
   'MAP js-de.sentry-cdn.com ~NOTFOUND',
@@ -86,22 +69,6 @@ function responseOf(page, predicate, timeout = 30_000) {
   const pending = page.waitForResponse(predicate, { timeout });
   pending.catch(() => {});
   return pending;
-}
-
-function parseOptions(env = process.env) {
-  const scope = String(env.UI_SCREENSHOTS_SCOPE || 'all').trim();
-  if (!['all', 'public', 'local'].includes(scope)) throw new Error(`invalid UI_SCREENSHOTS_SCOPE: ${scope}`);
-  const viewports = String(env.UI_SCREENSHOTS_VIEWPORTS || 'mobile,desktop').split(',')
-    .map(item => item.trim()).filter(Boolean);
-  for (const name of viewports) if (!VIEWPORTS[name]) throw new Error(`invalid viewport: ${name}`);
-  const prodUrl = new URL(String(env.UI_SCREENSHOTS_PROD_URL || DEFAULT_PROD_URL).trim());
-  if (prodUrl.protocol !== 'https:') throw new Error('UI_SCREENSHOTS_PROD_URL must be https');
-  return {
-    scope,
-    viewports,
-    prodOrigin: prodUrl.origin,
-    outDir: resolve(String(env.UI_SCREENSHOTS_OUT || 'ui-screenshots')),
-  };
 }
 
 class Recorder {
@@ -153,9 +120,9 @@ class Recorder {
 async function guardReadOnly(context, recorder) {
   await context.route('**/*', route => {
     const request = route.request();
-    const method = request.method();
-    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return route.continue();
-    recorder.blocked.push({ method, url: request.url().split('?')[0] });
+    const decision = readOnlyRequestDecision(request.method(), request.url());
+    if (decision.allow) return route.continue();
+    recorder.blocked.push(decision.blocked);
     return route.abort('blockedbyclient');
   });
 }
