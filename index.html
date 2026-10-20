@@ -10964,7 +10964,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }else if(schedule.legacy_agreed_time){
       agreement.dataset.state='legacy';
       const line=scheduleNode('p',{className:'home-agreed-line'});
-      line.append(scheduleNode('b',{text:'Earlier agreement: '}),document.createTextNode(schedule.legacy_agreed_time));
+      line.append(scheduleNode('b',{text:'Legacy agreement: '}),document.createTextNode(schedule.legacy_agreed_time));
       agreement.append(line,scheduleNode('div',{className:'small muted',text:'This older agreement isn’t a precise time. Clear it and agree on a proposal.'}));
       const clear=scheduleIconButton('Clear agreement','',{className:'btn ghost sm',testId:'schedule-clear'});
       clear.dataset.scheduleAction='clear';
@@ -10988,8 +10988,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
         const elapsed=!proposal.legacy&&proposal.instant&&Date.parse(proposal.instant)<=renderedAt;
         const mine=homeUi()?.proposalIsMine?.(proposal.proposed_by,scheduleActorId())===true;
         if(proposal.legacy){
-          detail.append(scheduleNode('span',{className:'home-proposal-time',text:proposal.value||'Earlier time note'}));
-          detail.append(scheduleNode('span',{className:'small muted',text:'Older format · propose an exact time instead'}));
+          detail.append(scheduleNode('span',{className:'home-proposal-time',text:proposal.value||'Legacy schedule text'}));
+          detail.append(scheduleNode('span',{className:'small muted',text:'Legacy proposal · not directly acceptable'}));
         }else{
           const when=scheduleNode('span',{className:'home-proposal-time'});
           const time=scheduleNode('time',{text:localScheduleTime(proposal.instant)});

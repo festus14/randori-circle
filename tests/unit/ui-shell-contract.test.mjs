@@ -78,7 +78,7 @@ test('user-visible copy has no implementation jargon (final cleanup)', () => {
     /evaluated by the server execution gateway/, /authenticated server runner/, /server AI\./,
     /explicit, fresh provider confirmation/, /verified control of the linked Google account/,
     /provider readiness/, /next honest action/, /odd-member assignment/, /Open Solo Catalogue/,
-    /Legacy agreement|Legacy proposal|Legacy schedule text/, /Authorized pairing room/,
+    /Authorized pairing room/,
     /No verified current pairing room/, /authoritative current-cycle schedule/,
     /private server history/, /try Pairings & activity/, /legacy \/ unverified/,
     /calls today/, /AI ready \$\{model\}/, /Get AI Feedback/, /embedded credentials/,

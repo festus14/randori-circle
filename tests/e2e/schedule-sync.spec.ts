@@ -634,7 +634,7 @@ test('calendar export stays hidden for proposals, legacy text, cleared schedules
   });
   await refreshSchedule(page);
   await expect(page.getByTestId('schedule-calendar-export')).toHaveCount(0);
-  await expect(page.getByTestId('schedule-area')).toContainText('Earlier agreement:');
+  await expect(page.getByTestId('schedule-area')).toContainText('Legacy agreement:');
 
   await page.getByTestId('schedule-clear').click();
   await expect.poll(() => store.snapshot(roomA).legacy_agreed_time).toBeNull();
@@ -952,7 +952,7 @@ test('legacy values remain removable and stale polling cannot cross pair or dash
 
   const legacyRow = page.getByTestId('schedule-proposal').filter({ hasText: legacyProposal });
   await expect(legacyRow).toBeVisible();
-  await expect(legacyRow).toContainText(/older format/i);
+  await expect(legacyRow).toContainText(/legacy proposal/i);
   await expect(legacyRow.getByTestId('schedule-accept')).toHaveCount(0);
   await expect(legacyRow.getByTestId('schedule-remove')).toHaveCount(1);
   await expect(page.getByTestId('schedule-area')).toContainText(legacyAgreement);
