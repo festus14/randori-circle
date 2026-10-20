@@ -85,6 +85,12 @@ const noPair = () => {
   };
 };
 
+// Setup-guide copy uses human week labels ("the week of 25 Oct"), computed by
+// the same unit-tested helper the page uses, never ISO keys such as 2099-W52.
+async function weekPhrase(page: Parameters<typeof resetClientState>[0], cycle: { startsAt: string; timeZone?: string }) {
+  return page.evaluate(value => (window as any)._randori_onboarding_flow.weekPhrase(value), cycle);
+}
+
 async function openAsMember(page: Parameters<typeof resetClientState>[0], overrides: Parameters<typeof mockApi>[1] = {}) {
   await mockApi(page, {
     '/api/auth/me': () => ({ ok: true, user: member }),
@@ -285,7 +291,9 @@ test('a stalled availability read does not delay profile setup or save', async (
     await page.locator('#psTz').selectOption('Europe/London');
     await page.locator('#psSave').click();
     await expect.poll(() => saves).toBe(1);
-    await expect(page.locator('#view-dashboard')).toBeVisible();
+    // The stepper moves on to availability without waiting for the stalled read.
+    await expect(page.locator('#setupStepAvailability')).toBeVisible();
+    await expect(page.locator('#setupAvailabilityNext')).toBeEnabled();
   } finally {
     releaseAvailability();
   }
@@ -300,16 +308,18 @@ test('availability completes only after the active target cycle has a user save'
     },
   });
 
+  const upcomingWeek = await weekPhrase(page, cycles().upcoming);
   await expect(page.locator('#chkAvail')).toHaveAttribute('data-state', 'ready');
-  await expect(page.locator('#chkAvail')).toContainText('Save availability for 2099-W52');
+  await expect(page.locator('#chkAvail')).toContainText(`Save availability for ${upcomingWeek}`);
+  await expect(page.locator('#onboardChecklist')).not.toContainText(/\d{4}-W\d{2}/);
   await page.locator('[data-tab="pair"]').click();
   await expect(page.locator('#availAvailable')).toHaveAttribute('aria-pressed', 'false');
   await page.locator('#availSkip').click();
   await expect(page.locator('#chkAvail')).toHaveAttribute('data-state', 'done');
-  await expect(page.locator('#chkAvail')).toContainText('Availability saved for 2099-W52');
+  await expect(page.locator('#chkAvail')).toContainText(`Availability saved for ${upcomingWeek}`);
 });
 
-test('checklist and tour actions open and focus the active-circle cycle decision', async ({ page }) => {
+test('setup guide actions open and focus the active-circle cycle decision', async ({ page }) => {
   await openAsMember(page);
 
   await expect(page.locator('#chkAvailAction')).toBeVisible();
@@ -317,12 +327,16 @@ test('checklist and tour actions open and focus the active-circle cycle decision
   await expect(page.locator('#view-pair')).toBeVisible();
   await expect(page.locator('#availAvailable')).toBeFocused();
 
-  await page.evaluate(() => window._randori_onboard?.start?.(4));
-  await expect(page.locator('#onbAvailabilityAction')).toBeVisible();
-  await page.locator('#onbAvailabilityAction').click();
-  await expect(page.locator('#onboardOverlay')).not.toHaveClass(/show/);
-  await expect(page.locator('#view-pair')).toBeVisible();
-  await expect(page.locator('#availAvailable')).toBeFocused();
+  // The account-menu Setup guide reopens the stepper at the first unfinished
+  // step; the same availability card is shown there, then returned to Pairing.
+  await page.locator('#meLabel').click();
+  await page.getByRole('menuitem', { name: 'Setup guide' }).click();
+  await expect(page.locator('#setupStepAvailability')).toBeVisible();
+  await expect(page.locator('#setupStepAvailability #availabilityWrap')).toBeVisible();
+  await expect(page.locator('#availabilityWrap')).toHaveCount(1);
+  await page.locator('[data-tab="pair"]').click();
+  await expect(page.locator('#view-pair #availabilityWrap')).toBeVisible();
+  await expect(page.locator('#availabilityWrap')).toHaveCount(1);
 });
 
 test('an availability rollover rejects the old pair and reacquires the new published cycle', async ({ page }) => {
@@ -385,8 +399,9 @@ test('an availability rollover rejects the old pair and reacquires the new publi
       return oldPair;
     },
   });
-  await expect(page.locator('#chkAvail')).toContainText('Availability saved for 2099-W52');
-  await expect(page.locator('#chkPair')).toContainText('Current assignment published for 2099-W51');
+  await expect(page.locator('#chkAvail')).toContainText(`Availability saved for ${await weekPhrase(page, value.upcoming)}`);
+  const oldPairWeek = await weekPhrase(page, value.current);
+  await expect(page.locator('#chkPair')).toContainText(`Current assignment published for ${oldPairWeek}`);
 
   holdOldPairRead = true;
   const staleDashboard = page.evaluate(() => window._randori_journey?.showDashboard?.());
@@ -426,13 +441,13 @@ test('an availability rollover rejects the old pair and reacquires the new publi
   await newReadStarted;
   releaseOldRead();
   await staleDashboard;
-  await expect(page.locator('#chkPair')).not.toContainText('2099-W51');
+  await expect(page.locator('#chkPair')).not.toContainText(oldPairWeek);
   expect(await page.evaluate(() => window._randori_onboarding_authority?.snapshot.pairing.value)).toBeNull();
 
   releaseNewRead();
-  await expect(page.locator('#chkAvail')).toContainText('Availability saved for 2100-W01');
+  await expect(page.locator('#chkAvail')).toContainText(`Availability saved for ${await weekPhrase(page, currentAvailability.availability.cycle)}`);
   await expect(page.locator('#chkPair')).toHaveAttribute('data-state', 'done');
-  await expect(page.locator('#chkPair')).toContainText('Current assignment published for 2099-W52');
+  await expect(page.locator('#chkPair')).toContainText(`Current assignment published for ${await weekPhrase(page, value.upcoming)}`);
 });
 
 test('pair and workspace completion ignore stale room storage and require exact authorized hydration', async ({ page }) => {
@@ -511,7 +526,7 @@ test('pairing uses the database observation instant instead of the browser clock
   });
 
   await expect(page.locator('#chkPair')).toHaveAttribute('data-state', 'done');
-  await expect(page.locator('#chkPair')).toContainText(`Current assignment published for ${value.current.cycleId}`);
+  await expect(page.locator('#chkPair')).toContainText(`Current assignment published for ${await weekPhrase(page, value.current)}`);
 });
 
 test('profile save uses inline error and retry states without opening a dialog', async ({ page }) => {
@@ -539,7 +554,7 @@ test('profile save uses inline error and retry states without opening a dialog',
 
   saveFails = false;
   await page.locator('#psRetry').click();
-  await expect(page.locator('#view-dashboard')).toBeVisible();
+  await expect(page.locator('#setupStepAvailability')).toBeVisible();
   expect(dialogOpened).toBe(false);
 });
 

@@ -1312,11 +1312,11 @@ test('capability failures fail closed for account creation while preserving exis
 
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog', { name: 'Sign in to Randori' })).toBeHidden();
-  await expect(page.locator('#welcomeBanner')).toBeVisible();
-  await page.locator('#welcomeStartBtn').click();
+  // The first-visit banner is gone (WP-O); the topbar Sign in is the entry point.
+  await expect(page.locator('#welcomeBanner')).toHaveCount(0);
+  await page.locator('#authBtn').click();
   await expect(page.getByRole('dialog', { name: 'Sign in to Randori' })).toBeVisible();
   await expect(page.getByRole('dialog', { name: 'Join Randori Circle' })).toBeHidden();
-  await expect(page.locator('#onboardOverlay')).not.toHaveClass(/show/);
 });
 
 test('closing auth while capabilities load does not reopen the dialog or steal focus', async ({ page }) => {

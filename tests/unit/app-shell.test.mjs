@@ -5,13 +5,16 @@ import test from 'node:test';
 import {
   ICON_SPRITE,
   TOAST_DURATION_MS,
+  PUBLIC_VIEW_IDS,
   createToastController,
+  hidesAppNavigation,
   installShell,
   isHomeActive,
   normalizeTheme,
   renderConnectionBanner,
   renderThemeControl,
   syncHomeTab,
+  syncPublicSurface,
   themeControlState,
 } from '../../assets/app-shell.js';
 
@@ -304,6 +307,53 @@ test('installShell wires toast, theme, Home state, and connectivity without rout
   assert.equal(doc.toast.textContent, 'Hello');
   shell.dismissToast();
   assert.ok(!doc.toast.classList.contains('show'));
+});
+
+test('anonymous visitors get no app navigation on the landing and recovery pages only', () => {
+  assert.deepEqual([...PUBLIC_VIEW_IDS], ['view-landing', 'view-activation', 'view-password-reset', 'view-invite']);
+  assert.equal(hidesAppNavigation({ auth: 'anonymous', identity: 'resolved', publicSurface: true }), true);
+  assert.equal(hidesAppNavigation({ auth: 'anonymous', identity: 'pending', publicSurface: true }), false, 'identity still loading');
+  assert.equal(hidesAppNavigation({ auth: 'member', identity: 'resolved', publicSurface: true }), false);
+  assert.equal(hidesAppNavigation({ auth: 'anonymous', identity: 'resolved', publicSurface: false }), false, 'solo practice keeps tabs');
+});
+
+test('syncPublicSurface marks the body from the visible view and auth state', () => {
+  const doc = fakeShellDocument({ landing: 'block' });
+  doc.body = new FakeElement({ dataset: { auth: 'anonymous', identity: 'resolved' } });
+  assert.equal(syncPublicSurface(doc), true);
+  assert.equal(doc.body.dataset.surface, 'public');
+  assert.equal(doc.body.dataset.nav, 'hidden');
+
+  doc.body.dataset.auth = 'member';
+  assert.equal(syncPublicSurface(doc), false);
+  assert.equal(doc.body.dataset.nav, 'shown');
+
+  doc.body.dataset.auth = 'anonymous';
+  doc.views['view-landing'].style.display = 'none';
+  doc.views['view-dashboard'].style.display = 'block';
+  assert.equal(syncPublicSurface(doc), false);
+  assert.equal(doc.body.dataset.surface, 'app');
+  assert.equal(doc.body.dataset.nav, 'shown');
+  assert.equal(syncPublicSurface({}), false);
+  assert.equal(syncPublicSurface(null), false);
+});
+
+test('installShell observes body auth attributes so navigation follows sign-in', () => {
+  const doc = fakeShellDocument({ landing: 'block' });
+  doc.body = new FakeElement({ dataset: { auth: 'anonymous', identity: 'pending' } });
+  const observers = [];
+  class FakeObserver {
+    constructor(callback) { this.callback = callback; this.targets = []; observers.push(this); }
+    observe(target, options) { this.targets.push({ target, options }); }
+  }
+  installShell({ document: doc, window: { navigator: {}, addEventListener() {} }, MutationObserverImpl: FakeObserver });
+  assert.equal(doc.body.dataset.nav, 'shown', 'tabs stay while identity loads');
+  const [navObserver] = observers;
+  const bodyTarget = navObserver.targets.find(entry => entry.target === doc.body);
+  assert.deepEqual(bodyTarget.options.attributeFilter, ['data-auth', 'data-identity']);
+  doc.body.dataset.identity = 'resolved';
+  navObserver.callback();
+  assert.equal(doc.body.dataset.nav, 'hidden');
 });
 
 test('installShell tolerates missing globals, observers, and optional elements', () => {

@@ -26,7 +26,11 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const INCLUDE = ['api/*.js', 'db/*.js', 'scripts/*.mjs', 'assets/auth-dialog.js',
+const INCLUDE = ['api/*.js', 'db/*.js', 'scripts/*.mjs',
+  // WP-A auth dialog.
+  'assets/auth-dialog.js',
+  // WP-O onboarding flow and WP-S app shell.
+  'assets/onboarding-flow.js', 'assets/app-shell.js',
   // Shared email rules and the bulk invite UI (ID-68).
   'assets/email-validation.js', 'assets/bulk-invite.js'];
 // Operator tools that cannot run under unit tests; see

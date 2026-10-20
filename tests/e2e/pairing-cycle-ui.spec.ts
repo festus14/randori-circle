@@ -373,7 +373,9 @@ test('the home countdown uses the server cycle boundary instead of a fixed UTC h
   await page.goto('/',{waitUntil:'domcontentloaded'});
 
   await expect(page.locator('#view-dashboard')).toBeVisible();
-  await expect(page.locator('#dashNextLabel')).toContainText('2099-W44');
+  // The server cycle's start in its own zone; ISO week keys are not shown (WP-O).
+  await expect(page.locator('#dashNextLabel')).toContainText(/Nov 1|1 Nov/);
+  await expect(page.locator('#dashNextLabel')).not.toContainText('2099-W44');
   await expect(page.locator('#dashNextLabel')).not.toContainText('London');
   await expect(page.locator('#dashNextLabel')).not.toContainText('server fallback');
   await expect(page.locator('#dashNextCount')).toHaveText(/^\d{4,}d \d+h to pairing$/);
