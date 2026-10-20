@@ -28,7 +28,6 @@ export const INVITE_REQUEST_NAME_MAX=60;
 export const INVITE_REQUEST_NOTE_MAX=280;
 export const INVITE_REQUEST_LIST_DEFAULT_LIMIT=50;
 export const INVITE_REQUEST_LIST_MAX_LIMIT=100;
-export const INVITE_REQUEST_MAX_NOTIFIED_OWNERS=5;
 export const INVITE_REQUEST_RATE_LIMITS=Object.freeze({
   ip:Object.freeze({limit:5,windowSeconds:60*60}),
   email:Object.freeze({limit:3,windowSeconds:60*60}),
@@ -217,12 +216,15 @@ export async function submitInviteRequest(db,{name,email,note=null}={},{notifica
       if(!inserted.rows?.length) outcome='duplicate';
     }
     if(outcome==='stored'&&notification){
+      // Every active owner gets one hourly digest; circles have no owner
+      // ceiling. Inline delivery is separately capped by the outbox budget,
+      // so any remainder is drained by the scheduled worker.
       const owners=await transaction.execute({
         sql:`SELECT account.id FROM circle_memberships membership
           JOIN auth_accounts account ON account.id=membership.user_id AND COALESCE(account.is_demo,0)=0
           WHERE membership.circle_id=? AND membership.role='owner' AND membership.status='active'
-          ORDER BY account.id LIMIT ?`,
-        args:[circleId,INVITE_REQUEST_MAX_NOTIFIED_OWNERS],
+          ORDER BY account.id`,
+        args:[circleId],
       });
       const digestHour=Math.floor(now/INVITE_REQUEST_DIGEST_SECONDS);
       for(const owner of owners.rows||[]){

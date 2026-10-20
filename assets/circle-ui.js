@@ -162,22 +162,95 @@
     return FOCUS_LABELS[String(value || '').trim().toLowerCase()] || null;
   }
 
-  function memberView(member, { actorId = null, now = Date.now(), locale } = {}) {
+  // Owner and admin role changes. Each one is a sensitive change that the
+  // server guards with the same recent-auth challenge as ownership transfer.
+  const MEMBER_ROLE_ACTIONS = Object.freeze({
+    make_owner: Object.freeze({
+      label: 'Make owner', testid: 'circle-member-make-owner', aria: name => `Make ${name} an owner`,
+      title: name => `Make ${name} an owner?`,
+      body: 'They get the same circle controls you have: invitations, member management and publishing pairings. You stay an owner too.',
+      pending: 'Adding owner…', done: 'Owner added.',
+      confirm: 'Confirm your identity before adding a circle owner.',
+    }),
+    remove_owner: Object.freeze({
+      label: 'Remove owner role', testid: 'circle-member-remove-owner', aria: name => `Remove owner role from ${name}`,
+      title: name => `Remove ${name} as an owner?`,
+      body: 'They stay in the circle as a member and lose owner controls immediately. At least one active owner always remains.',
+      pending: 'Removing owner role…', done: 'Owner role removed.', danger: true,
+      confirm: 'Confirm your identity before removing a circle owner.',
+    }),
+    grant_admin: Object.freeze({
+      label: 'Make admin', testid: 'circle-member-grant-admin', aria: name => `Make ${name} an app admin`,
+      title: name => `Make ${name} an app admin?`,
+      body: 'App admins can view diagnostics and app logs, replay outbox email, manage demo data, and grant or remove admin access for other members.',
+      pending: 'Granting admin access…', done: 'Admin access granted.',
+      confirm: 'Confirm your identity before granting admin access.',
+    }),
+    revoke_admin: Object.freeze({
+      label: 'Remove admin', testid: 'circle-member-revoke-admin', aria: name => `Remove app admin access from ${name}`,
+      title: name => `Remove admin access from ${name}?`,
+      body: 'They lose app admin tools immediately. At least one active admin always remains.',
+      pending: 'Removing admin access…', done: 'Admin access removed.', danger: true,
+      confirm: 'Confirm your identity before removing admin access.',
+    }),
+  });
+  const RECENT_AUTH_MEMBER_ACTIONS = Object.freeze(['deactivate', 'transfer', ...Object.keys(MEMBER_ROLE_ACTIONS)]);
+
+  function memberRoleActionCopy(action, name = 'this member') {
+    const copy = MEMBER_ROLE_ACTIONS[action];
+    if (!copy) return null;
+    const label = boundedText(name, 80) || 'this member';
+    return Object.freeze({
+      action,
+      label: copy.label,
+      testid: copy.testid,
+      ariaLabel: copy.aria(label),
+      title: copy.title(label),
+      body: copy.body,
+      pending: copy.pending,
+      done: copy.done,
+      confirm: copy.confirm,
+      danger: copy.danger === true,
+    });
+  }
+
+  function memberRoleErrorMessage(error) {
+    const code = String(error?.error || '');
+    if (code === 'another active admin is required') return 'At least one other active admin is required. Make someone else an admin first.';
+    if (code === 'admin access is managed by server configuration') return 'This admin is set in the server configuration, so it cannot be removed here.';
+    if (code === 'app admin required') return 'Only an app admin in your main circle can change admin access.';
+    if (code === 'ask another owner to change your role') return 'Ask another owner to change your own role.';
+    return null;
+  }
+
+  function memberView(member, { actorId = null, actorIsAdmin = false, now = Date.now(), locale } = {}) {
     const id = Number(member?.id);
     const role = ['owner', 'member'].includes(member?.role) ? member.role : null;
     const status = ['active', 'inactive'].includes(member?.status) ? member.status : null;
     if (!Number.isSafeInteger(id) || id < 1 || !role || !status) return null;
     const name = boundedText(member?.display_name, 80) || 'Member';
     const isSelf = Number.isSafeInteger(actorId) && id === actorId;
+    const isAdmin = member?.is_admin === true;
     const joinedAt = parseInstant(member?.joined_at);
     let actions = [];
     if (!isSelf) actions = status === 'inactive' ? ['reactivate'] : (role === 'member' ? ['transfer', 'deactivate'] : ['deactivate']);
+    const roleActions = [];
+    if (!isSelf) {
+      if (status === 'active' && role === 'member') roleActions.push('make_owner');
+      if (role === 'owner') roleActions.push('remove_owner');
+      if (actorIsAdmin === true) {
+        if (isAdmin) roleActions.push('revoke_admin');
+        else if (status === 'active') roleActions.push('grant_admin');
+      }
+    }
     return Object.freeze({
       id,
       name,
       initials: initials(name),
       role,
       status,
+      isAdmin,
+      roleActions: Object.freeze(roleActions),
       roleLabel: role === 'owner' ? 'Owner' : 'Member',
       statusLabel: status === 'active' ? 'Active' : 'Inactive',
       statusTone: status === 'active' ? 'success' : 'warning',
@@ -287,7 +360,7 @@
       return `This request was already handled.${next} The list has been refreshed.`;
     }
     if (status === 404) return 'This request is no longer available. The list has been refreshed.';
-    if (status === 403) return 'Only the owner of your main circle can review invite requests.';
+    if (status === 403) return 'Only an owner of your main circle can review invite requests.';
     if (status === 401) return 'Sign in again to review invite requests.';
     return 'Could not save that decision. Nothing changed. Try again.';
   }
@@ -368,7 +441,50 @@
     return avatar;
   }
 
+  // A compact disclosure menu for the per-member role actions. Each button
+  // calls onAction(action); the caller owns confirmation and the request.
+  function memberRoleMenuNode(doc, view, onAction) {
+    const actions = Array.isArray(view?.roleActions) ? view.roleActions.filter(action => MEMBER_ROLE_ACTIONS[action]) : [];
+    if (!actions.length) return null;
+    const menu = doc.createElement('details');
+    menu.className = 'circle-member-menu';
+    menu.setAttribute('data-testid', 'circle-member-menu');
+    const summary = doc.createElement('summary');
+    summary.className = 'btn secondary sm';
+    summary.textContent = 'Roles';
+    summary.setAttribute('aria-label', `Role options for ${view.name}`);
+    menu.appendChild(summary);
+    const group = doc.createElement('div');
+    group.className = 'circle-member-menu-items';
+    group.setAttribute('role', 'group');
+    group.setAttribute('aria-label', `Role options for ${view.name}`);
+    for (const action of actions) {
+      const copy = memberRoleActionCopy(action, view.name);
+      const button = doc.createElement('button');
+      button.type = 'button';
+      button.className = `btn secondary sm${copy.danger ? ' membership-danger' : ''}`;
+      button.setAttribute('data-testid', copy.testid);
+      button.setAttribute('aria-label', copy.ariaLabel);
+      button.textContent = copy.label;
+      button.addEventListener('click', () => {
+        menu.open = false;
+        if (typeof onAction === 'function') onAction(action);
+      });
+      group.appendChild(button);
+    }
+    menu.appendChild(group);
+    return menu;
+  }
+
+  function adminBadgeNode(doc) {
+    const badge = badgeNode(doc, 'Admin', 'success');
+    badge.setAttribute('data-testid', 'circle-member-admin-badge');
+    return badge;
+  }
+
   const api = Object.freeze({
+    RECENT_AUTH_MEMBER_ACTIONS,
+    adminBadgeNode,
     absoluteDate,
     avatarNode,
     badgeNode,
@@ -387,6 +503,9 @@
     inviteRequestView,
     inviteRequestsVisible,
     languageLabel,
+    memberRoleActionCopy,
+    memberRoleErrorMessage,
+    memberRoleMenuNode,
     memberView,
     normalizeInviteRequest,
     normalizeInviteRequestsResponse,

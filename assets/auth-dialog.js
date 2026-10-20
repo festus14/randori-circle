@@ -128,7 +128,7 @@
     const code = serverText(error);
     const status = Number(error?.http_status || error?.status) || 0;
     if (code === 'invitation unavailable or does not match this email') {
-      return "We couldn't use this invitation with that email. Use the address the invitation was sent to, or ask the circle owner for a new invitation.";
+      return "We couldn't use this invitation with that email. Use the address the invitation was sent to, or ask a circle owner for a new invitation.";
     }
     if (code === 'invitation context changed' || code === 'invitation unavailable'
       || code.includes('valid local invitation')) {
@@ -137,7 +137,7 @@
     if (code === 'email already registered') return 'That email already has an account. Sign in instead.';
     if (code === 'invalid credentials') return 'Email or password is incorrect.';
     if (code === 'active circle membership required') {
-      return 'Your circle membership is no longer active. Ask the circle owner for a new invitation.';
+      return 'Your circle membership is no longer active. Ask a circle owner for a new invitation.';
     }
     if (code === 'valid email required') return 'Enter a valid email address.';
     if (code.startsWith('display name must be')) return `Enter a display name with ${NAME_MIN}–${NAME_MAX} characters.`;
@@ -186,7 +186,7 @@
       case 'account_exists_use_password':
         return { message: 'This email already signs in with a password. Sign in with your email and password, then link Google from Account security.', preferPassword: true };
       case 'identity_mismatch':
-        return { message: 'This email is linked to a different Google account. Sign in with that Google account or your password. The circle owner can help if you are stuck.', preferPassword: true };
+        return { message: 'This email is linked to a different Google account. Sign in with that Google account or your password. A circle owner can help if you are stuck.', preferPassword: true };
       case 'private_beta':
         return { message: 'Randori is invite-only. Open the link from your invitation email, then continue with the Google account it was sent to.', preferPassword: false };
       case 'reauth_required':

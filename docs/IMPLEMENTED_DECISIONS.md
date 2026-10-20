@@ -2776,3 +2776,44 @@ protected migration workflow immediately after merge, not near the Sunday
 approve → accept. Recovery is disabling the flag (endpoints 404, capability
 hidden); rows continue to expire and purge weekly. Full contract in
 [`INVITE_REQUESTS.md`](INVITE_REQUESTS.md).
+
+## ID-68: Add co-owners and app admin grants without a schema change
+
+Status: implemented; no migration, no flag (behind the existing membership
+capability).
+
+**Context.** The only owner and admin wants another member to be a co-owner
+and app admin "like me". Ownership could only be transferred (promote the
+target, demote the actor), and `auth_accounts.is_admin` could only be set by
+`ADMIN_EMAILS` or the legacy email-based promote action, with no recent auth
+or audit. The schema already allows many owners per circle and many admins.
+
+**Decision.** `PATCH /api/members` accepts `make_owner`, `remove_owner`,
+`grant_admin`, and `revoke_admin` with the existing `{action,member_id}` body.
+Owner actions require an active owner of the selected circle; admin actions
+require an active, non-demo `is_admin=1` account in the primary circle and a
+target in that circle. Each is one write transaction that checks the
+session-scoped ten-minute recent-auth proof (the transfer flow and "Confirm
+it's you" dialog), applies one conditional `UPDATE` that re-checks actor,
+target, circle, and the last-active-owner or last-active-admin invariant in the
+statement, and writes one `circle_audit_events` row (`ownership.granted`,
+`ownership.revoked`, `admin.granted`, `admin.revoked`). Revoking an
+`ADMIN_EMAILS` account is refused because sign-in would re-grant it. Roles and
+admin stay database-read on every request, so nothing rotates sessions. The
+Members card gets a per-member "Roles" menu and an Admin badge; existing test
+IDs are unchanged. There is no owner or admin ceiling. Single-owner assumptions
+were removed: the hard-coded browser admin email, the five-owner cap on
+invite-request digests, and the migration postcondition that required the
+original backfill actor to still be an active owner.
+
+**Alternatives.** Audit in `auth_identity_audit_events` (its `event_type`
+CHECK would need a migration). A separate admin endpoint (another function and
+duplicated context handling). Returning 200 `replayed` for repeats (the
+lifecycle API already answers state replays with 409). Letting owner status
+imply admin (production admin tools are operator-level, not circle-level).
+
+**Residual risk.** Any one co-owner can demote every other co-owner, and any
+admin can revoke other admins down to one; that is the requested "similar to
+me" authority. The legacy email-based promote action still bypasses recent
+auth and audit; removing it is a follow-up. Full contract in
+[`MEMBER_LIFECYCLE.md`](MEMBER_LIFECYCLE.md#co-owners-and-app-admins).

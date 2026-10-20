@@ -1,8 +1,10 @@
-# Member lifecycle and ownership transfer
+# Member lifecycle, co-owners, and app admins
 
 This increment lets an active member leave a primary circle and lets an active
 owner list, deactivate, reactivate, or transfer ownership to a member in that
-same circle. The existing invitation screen remains the place where owners
+same circle. Owners can also add and remove co-owners, and app admins can grant
+and revoke app admin access (ID-68); see [Co-owners and app
+admins](#co-owners-and-app-admins). The existing invitation screen remains the place where owners
 revoke pending invitations.
 
 ## Authorization and state transitions
@@ -14,6 +16,10 @@ revoke pending invitations.
 | Reactivate | Active owner | Other inactive member/owner in the same circle | Membership becomes active; no session is issued |
 | Leave | Active member/owner | Self | Membership becomes inactive; all own sessions are revoked |
 | Transfer ownership | Active owner | Other active member in the same circle | Target becomes owner and actor becomes member atomically |
+| Make owner | Active owner | Other active member in the same circle | Target becomes an owner; the actor stays an owner |
+| Remove owner role | Active owner | Other owner (active or inactive) in the same circle | Target becomes a member; at least one active owner always remains |
+| Grant app admin | Active non-demo admin in the primary circle | Active non-demo member of that primary circle | `auth_accounts.is_admin` becomes 1 |
+| Revoke app admin | Active non-demo admin in the primary circle | Admin with a membership in that primary circle (self allowed) | `is_admin` becomes 0; at least one other active admin always remains |
 | Archive secondary circle | Active owner with recent auth | Exact selected non-primary circle | Circle access ends and every selected session moves to another active circle; retained history is unchanged |
 | Revoke invitation | Active owner | Pending invitation in the same circle | Existing invitation endpoint revokes it and records its audit event |
 
@@ -88,6 +94,97 @@ The existing role/status columns, audit table, session revocation fields, and
 invitation status model are sufficient. This increment intentionally adds no
 migration; migration v9 remains available to its reserved owner.
 
+## Co-owners and app admins
+
+There is no upper limit on owners per circle or on app admins. Every
+owner-only check accepts any active owner, and every admin check accepts any
+active non-demo admin; nothing selects "the" owner or "the" admin.
+
+### API contract
+
+All four actions use the existing endpoint and body shape:
+`PATCH /api/members` with exactly `{"action":"make_owner"|"remove_owner"|"grant_admin"|"revoke_admin","member_id":<positive integer>}`,
+the same-origin check, and (with the multi-circle control plane) the selected
+circle context headers.
+
+| Result | Status | Body |
+| --- | --- | --- |
+| Owner role changed | 200 | `{"ok":true,"action":"make_owner"\|"remove_owner","member":{"id","role","status"}}` |
+| Admin changed | 200 | `{"ok":true,"action":"grant_admin"\|"revoke_admin","member":{"id","status","is_admin"}}` |
+| No fresh proof | 403 | `{"error":"recent authentication required","code":"recent_auth_required"}` |
+| Missing, cross-circle, demo, or non-owner actor (owner actions) | 404 | `{"error":"member not found"}` |
+| Actor is not an active admin in the primary circle | 403 | `{"error":"app admin required"}` |
+| Replay or state changed (already owner/admin, inactive target) | 409 | `{"error":"membership state changed"}` |
+| Own owner role | 409 | `{"error":"ask another owner to change your role"}` |
+| Would remove the last active owner | 409 | `{"error":"another active owner is required"}` |
+| Would remove the last active admin | 409 | `{"error":"another active admin is required"}` |
+| Target is listed in `ADMIN_EMAILS` (sign-in would re-grant) | 409 | `{"error":"admin access is managed by server configuration"}` |
+| Circle context changed | 409 | `{"error":"circle context changed","code":"circle_context_changed"}` |
+
+Replays follow the lifecycle convention (reactivating an active member is
+also 409): a repeated grant is a 409 `membership state changed` and writes
+nothing. The owner roster now includes a boolean `is_admin` per member.
+
+### Integrity
+
+- Each action is one write transaction: actor authorization, the
+  session-scoped recent-auth proof (the same ten-minute proof and "Confirm it's
+  you" flow as ownership transfer), one conditional `UPDATE`, and one
+  `circle_audit_events` row (`ownership.granted`, `ownership.revoked`,
+  `admin.granted`, `admin.revoked`; actor and subject IDs only). Any failure
+  rolls back the whole change.
+- The conditional `UPDATE` re-checks the actor's active owner (or admin)
+  status, the target's membership and state, the live circle, and the
+  last-owner / last-admin invariant in the same statement. Write transactions
+  are serialized, so two owners demoting each other (or a ring of three) can
+  never leave zero active owners, and concurrent admin revocations always leave
+  at least one active admin.
+- An *active admin* is a non-demo account with `is_admin=1` and at least one
+  active membership in a live circle; only those count toward the last-admin
+  invariant.
+- Admin audit rows use `circle_audit_events` with the actor's primary circle.
+  `auth_identity_audit_events` was not used because its `event_type` CHECK only
+  allows credential events and would need a migration.
+- Role and admin status are read from the database on every request; neither
+  is cached in the session JWT (decision log: "Put roles in JWTs" rejected).
+  Changes take effect on the next request and never revoke sessions.
+
+### What app admin confers
+
+`is_admin=1` (or an `ADMIN_EMAILS` match, which sign-in copies into the flag)
+gates exactly these surfaces:
+
+- App logs: `GET /api/data?endpoint=logs` and the admin log panel.
+- Diagnostics panels in the Circle and Pairing tabs (`#circleDiagnostics`,
+  `#pairDiagnostics`) and the "(admin)" account label.
+- Outbox operator replay (`POST /api/admin/outbox/replay`).
+- Demo data tools (`demo-seed`, `demo-shuffle`, `demo-reset`) and the legacy
+  local circle editing controls.
+- Primary-circle data initialization (`POST /api/data?endpoint=init`), which
+  also makes every admin an owner of the primary circle when it backfills.
+- The legacy email-based grant `POST /api/admin/reshuffle` with `{"action":"promote","email":…}` (see gaps).
+- Granting and revoking admin for other members (this increment).
+- In the isolated local runtime only, pairing publication and the pairing
+  owner view, which use `is_admin` in place of primary-circle ownership.
+
+Admin does not confer circle ownership in production: publishing pairings,
+invitations, invite-request review, and member management require an active
+owner role. To make someone "an owner and admin like me", apply both Make owner
+and Make admin.
+
+### Single-owner assumptions removed
+
+- The browser no longer treats one hard-coded email address as an admin;
+  admin UI follows the server's `is_admin` only.
+- Invite-request digests go to every active non-demo owner (the previous cap of
+  five owners was removed). Inline delivery is still budgeted; the scheduled
+  outbox worker sends the rest.
+- Migration postconditions no longer require the account that ran the original
+  membership backfill to still be an active owner, so demoting or deactivating
+  that owner cannot block future migrations. The steady-state readiness
+  checks already used the canonical circle creator and an active-owner count.
+- Owner-facing copy says "a circle owner" instead of "the circle owner".
+
 ## Alternatives considered
 
 | Option | Advantage | Why it was not selected |
@@ -117,5 +214,12 @@ migration; migration v9 remains available to its reserved owner.
   primary-key range rather than a global directory or email lookup. It is
   optimized for privacy and predictable work, not ranked/fuzzy matching.
   Account recovery and identity changes remain separate security workflows.
+- The legacy email-based promote action of `POST /api/admin/reshuffle` remains for operators. It
+  sets `is_admin=1` without recent auth or an audit row; prefer the Members
+  card. Removing it is a follow-up.
+- A co-owner's queued invitation email is suppressed if that co-owner is
+  demoted before delivery; another owner can resend it.
+- Being made a co-owner counts toward the target's owned-circle creation
+  limit, but Make owner does not itself check that limit.
 - There is no bulk member administration. Each destructive action has a focused
   confirmation and its own auditable transaction.

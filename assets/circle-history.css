@@ -77,6 +77,14 @@
 .circle-avatar--neutral { background: var(--color-surface-active); color: var(--color-text); }
 .circle-row.is-inactive .circle-row-title b { color: var(--color-text-secondary); }
 .circle-row.is-inactive .circle-avatar { opacity: .6; }
+/* Per-member role menu (co-owners and app admins). */
+.circle-member-menu { position: relative; }
+.circle-member-menu > summary { list-style: none; cursor: pointer; }
+.circle-member-menu > summary::-webkit-details-marker { display: none; }
+.circle-member-menu-items {
+  display: grid; gap: var(--space-1); margin-top: var(--space-1); padding: var(--space-2);
+  border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-raised);
+}
 
 /* Owners manage everyone in one list (with roles and status), so the plain
    roster is not shown a second time while the managed list is on screen. */

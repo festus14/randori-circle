@@ -448,6 +448,24 @@ test('owner notification digests are queued once per hour and carry no requester
   }finally{ capture.restore(); resend.restore(); }
 });
 
+test('every active non-demo owner gets a digest, with no owner ceiling',async()=>{
+  currentDb=await migratedDatabase();
+  enableOwnerNotifications();
+  const extra=[];
+  for(let id=20;id<27;id+=1){
+    extra.push(`INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_demo)
+      VALUES (${id},'owner${id}@example.test','x','Owner ${id}','#123456',0)`);
+    extra.push(`INSERT INTO circle_memberships (circle_id,user_id,role,status,joined_at,updated_at)
+      VALUES (10,${id},'owner','${id===26?'inactive':'active'}',datetime('now'),datetime('now'))`);
+  }
+  await currentDb.batch(extra,'write');
+  assert.equal((await submit({name:'Many Owners',email:'many@example.test'})).status,202);
+  const events=await rows(`SELECT idempotency_key,payload_json FROM outbox_events WHERE event_type=? ORDER BY id`,
+    [notification.INVITE_REQUEST_EVENT_TYPE]);
+  assert.deepEqual(events.map(event=>JSON.parse(event.payload_json).owner_user_id),[1,20,21,22,23,24,25],
+    'seven active owners are notified; the inactive and demo owners are not');
+});
+
 test('notification configuration, payload parsing, rendering, and suppression fail closed',async()=>{
   currentDb=await migratedDatabase();
   assert.equal(notification.inviteRequestNotificationConfiguration(),null,'no provider configured');
