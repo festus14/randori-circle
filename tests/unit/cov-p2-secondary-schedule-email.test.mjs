@@ -308,8 +308,13 @@ test('provider failures are classified for retry policy',async()=>{
   assert.deepEqual([unavailable.code,unavailable.retryable],['PROVIDER_UNAVAILABLE',true]);
   const rejected=await classify({statusCode:422});
   assert.deepEqual([rejected.code,rejected.retryable],['PROVIDER_REJECTED',false]);
+  assert.equal(rejected.providerReason,'422:other:other');
+  assert.equal((await classify({statusCode:403,name:'validation_error',message:'You can only send testing emails to your own email address (owner@example.test). To send emails to other recipients, please verify a domain at resend.com/domains, and change the `from` address to an email using this domain.'})).providerReason,'403:validation_error:testing_recipient_restricted');
+  assert.equal(limited.providerReason,'429:other:other');
+  assert.equal(unavailable.providerReason,'503:other:other');
   const passthrough=new OutboxDeliveryError('CUSTOM_CODE',{retryable:false});
   assert.equal(await classify(passthrough),passthrough);
   const generic=await classify(new Error('socket hang up'));
   assert.deepEqual([generic.code,generic.retryable,generic.cause.message],['PROVIDER_FAILED',true,'socket hang up']);
+  assert.equal(generic.providerReason,null);
 });
