@@ -237,13 +237,22 @@ test('the JavaScript harness reports a function that returns nothing as a wrong 
   const stubResults = execFileSync(process.execPath, ['-e', stub], { encoding: 'utf8' }).trim().split('\n')
     .map(line => JSON.parse(line.slice('__P__:'.length)));
   assert.deepEqual(stubResults, [
-    { idx: 0, ok: true, got: null, error: null },
-    { idx: 1, ok: true, got: null, error: null },
+    { idx: 0, ok: false, got: null, error: null },
+    { idx: 1, ok: false, got: null, error: null },
   ]);
+  // No return value fails every case, including one that expects null, and
+  // is not labelled a runtime error.
   assert.deepEqual(normalizeRunnerResults(stubResults.map(r => '__P__:' + JSON.stringify(r)).join('\n'), '__P__:', suite.tests), [
     { idx: 0, pass: false, error: null },
-    { idx: 1, pass: true, error: null },
+    { idx: 1, pass: false, error: null },
   ]);
+  const returnsNull = buildExecutionHarness('javascript', 'function solve() { return null; }', suite, '__P__:');
+  const nullResults = execFileSync(process.execPath, ['-e', returnsNull], { encoding: 'utf8' }).trim().split('\n')
+    .map(line => JSON.parse(line.slice('__P__:'.length)));
+  assert.deepEqual(normalizeRunnerResults(nullResults.map(r => '__P__:' + JSON.stringify(r)).join('\n'), '__P__:', suite.tests), [
+    { idx: 0, pass: false, error: null },
+    { idx: 1, pass: true, error: null },
+  ], 'an explicit null still matches a null expectation');
   const thrower = buildExecutionHarness('javascript', 'function solve() { throw new Error("boom"); }', suite, '__P__:');
   const thrown = execFileSync(process.execPath, ['-e', thrower], { encoding: 'utf8' }).trim().split('\n')
     .map(line => JSON.parse(line.slice('__P__:'.length)));

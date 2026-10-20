@@ -12047,8 +12047,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       // visitor to sign in and keep the URL, so the signed-in route below
       // opens the same view afterwards.
       const pendingView=joinRoom?'':(window._randori_shell?.memberDeepLinkView?.(window.location.search)||'');
+      // Prompt once per deep link: a dismissed dialog is not reopened by a
+      // later forced route (popstate, Home) for the same view.
       window._randori_pending_view=pendingView||null;
-      if(pendingView&&identitySettled&&!document.getElementById('authOverlay')?.classList.contains('show')){
+      if(pendingView&&identitySettled&&window._randori_pending_view_prompted!==pendingView
+        &&!document.getElementById('authOverlay')?.classList.contains('show')){
+        window._randori_pending_view_prompted=pendingView;
         window._randori_auth?.openModal?.('signin');
       }
       if(joinRoom){
@@ -12085,6 +12089,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }
     // signed in
     window._randori_pending_view=null;
+    window._randori_pending_view_prompted=null;
     if(tabsEl) tabsEl.style.display='flex';
     if(joinSignInPrompted){
       // The join sign-in prompt has been answered (here or in another tab).

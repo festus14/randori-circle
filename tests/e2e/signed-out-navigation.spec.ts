@@ -49,7 +49,7 @@ for (const viewport of [
     test('see no app navigation on the landing, recovery, join and unknown routes', async ({ page }) => {
       await mockApi(page, { '/api/auth/capabilities': capabilities });
       await resetClientState(page);
-      for (const path of ['/', '/invite', '/verify', '/reset-password', '/reset-password#token=not-a-real-token', '/join/not-a-room']) {
+      for (const path of ['/', '/reset-password#token=not-a-real-token', '/invite', '/verify', '/reset-password', '/join/not-a-room']) {
         await page.goto(path, { waitUntil: 'domcontentloaded' });
         await settledIdentity(page);
         await expectVisitorChrome(page);
