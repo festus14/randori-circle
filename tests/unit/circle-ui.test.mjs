@@ -422,9 +422,18 @@ test('history rows and counts read as a clean list', () => {
   const fallback = ui.historyRowView({ week_id: 4, pg_id: 1, is_ai: true, topic_kind: 'system_design' });
   assert.equal(fallback.partner, 'Pair member');
   assert.equal(fallback.partnerInitials, 'AI');
-  assert.equal(fallback.week, 'Week 4');
-  assert.equal(fallback.meta, 'Week 4 · system_design');
-  assert.equal(ui.historyRowView({ week_id: 5, pg_id: 2 }).meta, 'Week 5');
+  // week_id is a row id, not a week number, so it never becomes a label.
+  assert.equal(fallback.week, 'Pairing');
+  assert.equal(fallback.meta, 'Pairing · System design');
+  assert.equal(ui.historyRowView({ week_id: 5, pg_id: 2 }).meta, 'Pairing');
+  // Raw cycle keys never reach the list: the start date wins, then the week number.
+  const dated = ui.historyRowView(
+    { week_id: 6, pg_id: 3, week_label: '2026-W44', week_start: '2026-10-26T12:00:00.000Z' },
+    { locale: 'en-GB', now: Date.parse('2026-11-02T12:00:00Z') },
+  );
+  assert.equal(dated.week, 'Week of 26 Oct');
+  assert.doesNotMatch(dated.meta, /W44/);
+  assert.equal(ui.historyRowView({ week_id: 7, pg_id: 4, week_label: '2026-W44' }).week, 'Week 44');
   assert.equal(ui.historyRowView({ week_id: 0, pg_id: 1 }), null);
   assert.equal(ui.historyRowView({ week_id: 1, pg_id: 'x' }), null);
   assert.equal(ui.historyRowView(null), null);
@@ -435,13 +444,16 @@ test('history rows and counts read as a clean list', () => {
 
 test('run summaries keep the verified-run wording and humanise language and duration', () => {
   const run = ui.runSummary({ question_slug: 'focus-block-rollup', question_version: 2, language: 'python', passed_count: 8, total_count: 8, duration_ms: 1234 });
-  assert.equal(run.title, 'Verified run · focus-block-rollup v2');
+  assert.equal(run.title, 'Verified run · Focus block rollup');
   assert.equal(run.meta, 'Python · 8/8 passed · 1.2 s');
   assert.equal(run.allPassed, true);
   const partial = ui.runSummary({ question_slug: 's', question_version: 1, language: 'elixir', passed_count: 1, total_count: 3, duration_ms: null });
   assert.equal(partial.meta, 'Elixir · 1/3 passed');
   assert.equal(partial.allPassed, false);
   assert.equal(ui.runSummary({ question_slug: 's', question_version: 1, language: '', passed_count: 0, total_count: 0 }).allPassed, false);
+  assert.equal(ui.exerciseLabel('two_sum-fast'), 'Two sum fast');
+  assert.equal(ui.exerciseLabel(''), 'Exercise');
+  assert.equal(ui.exerciseLabel(null), 'Exercise');
   assert.equal(ui.languageLabel(''), 'Unknown language');
   assert.equal(ui.languageLabel('CPP'), 'C++');
   assert.equal(ui.durationLabel(250), '250 ms');

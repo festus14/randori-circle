@@ -137,7 +137,7 @@ test('anonymous shell has landmarks, truthful copy, AA themes, and reduced motio
   await expect(page.locator('#view-landing')).toContainText('Private by default');
   await expect(page.getByTestId('request-invite-closed')).toContainText('Invite-only — ask a member for an invitation.');
   await expect(page.getByRole('progressbar')).toHaveCount(0);
-  await expect(page.locator('#questionPanel')).toContainText('Approved original exercise catalogue');
+  await expect(page.locator('#questionPanel')).toContainText('Original Randori exercises');
   await expect(page.locator('#copyLinkBtn')).toHaveCount(0);
   await expect(page.locator('#vidScreenBtn')).toHaveCount(0);
   await expect(page.locator('#psRemindSms')).toHaveCount(0);

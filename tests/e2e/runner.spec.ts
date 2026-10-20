@@ -376,8 +376,8 @@ test('authenticated run history uses server records and labels unverified legacy
 
   await page.goto('/?view=code', { waitUntil: 'domcontentloaded' });
   const history=page.locator('#recentRunsList');
-  await expect(history).toContainText('focus-block-rollup');
+  await expect(history).toContainText('Focus block rollup');
   await expect(history.getByText('verified',{exact:true})).toHaveCount(1);
-  await expect(history.getByText('legacy / unverified',{exact:true})).toHaveCount(1);
-  await expect(history).not.toContainText('forged-local-run');
+  await expect(history.getByText('unverified',{exact:true})).toHaveCount(1);
+  await expect(history).not.toContainText(/forged[- ]local[- ]run/i);
 });
