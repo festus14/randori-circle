@@ -782,6 +782,41 @@ markup in later packages.
   `tests/e2e/pair-workspace-layout.spec.ts`. E2E specs that use Session or
   Results controls open the panel first with `openRoomPanel()` from
   `tests/e2e/helpers.ts`.
+### 9.5 What WP-O shipped (onboarding)
+
+- **One stepper** (`.rc-stepper`, `<ol aria-label="Setup progress">`, the
+  current item has `aria-current="step"`, plus "Step n of 5" text) for
+  invitation → account → profile basics → availability → what happens next.
+  Steps 1–2 render on `#view-invite` (the stepper switches to "Account" while
+  the signup sheet is open); steps 3–5 are panels of `#view-profile-setup`
+  (`data-mode="onboarding"` on first run, `"guide"` from the account menu,
+  `"edit"` for Edit profile, which hides the stepper).
+- **Profile basics:** display name, time zone (detected), interview focus
+  (segmented, `aria-pressed`). Avatar colour (labelled buttons), bio and
+  LeetCode handle sit under "Add more (optional)". **Skip for now** saves only
+  `display_name`, `tz` and `interview_focus`.
+- **Availability step:** the existing `#availabilityWrap` card is moved into the
+  step (one copy of its controls, the same versioned CAS) and returned to
+  Pairing whenever the onboarding view is hidden. A note states the saved or
+  inherited choice and the cutoff in the member's time zone; "Decide later"
+  skips.
+- **What happens next:** `.rc-timeline` (publish time, email, agree a time)
+  and the email-reminder toggle, then "Go to Home".
+- The welcome banner and the 5-step modal tour are removed. "Setup guide" and
+  "Edit profile" join the account menu. Home keeps a compact **Setup guide**
+  (`#onboardChecklist`) only while setup is unfinished; members can hide it
+  (remembered per account). Week codes are shown as "Week of 25 Oct".
+- A member who joined after the current cycle's cutoff sees "You'll be
+  included from <next week>" instead of "pairing is late".
+- Visitors (signed out, identity settled) get no app navigation on the
+  landing and recovery pages (`body[data-nav="hidden"]`); solo practice keeps
+  it. A second `/reset-password#token=…` link in the same tab is picked up on
+  `hashchange`, removed from the URL and resets the form.
+- Logic lives in `assets/onboarding-flow.js` (classic script, unit-tested in
+  `tests/unit/onboarding-flow.test.mjs`) and `assets/app-shell.js`
+  (`syncPublicSurface`); golden paths are in `tests/e2e/onboarding.spec.ts`,
+  `tests/e2e/local-onboarding.spec.ts` and
+  `tests/e2e/password-auth-journey-real-runtime.spec.ts`.
 
 ### 9.5 What WP-K shipped (practice catalogue)
 

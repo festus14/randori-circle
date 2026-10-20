@@ -6,9 +6,11 @@ provider, or API protocol change.
 ## Decision
 
 First-run progress is a derived browser view over existing authenticated server
-contracts. Local storage may remember whether someone dismissed the explanatory
-tour, but it is never evidence that a product task is complete or that another
-account's checklist may be hidden.
+contracts. Local storage may remember whether an account hid the Home setup
+guide (key `randori-setup-guide-dismissed:<account id>`), but it is never
+evidence that a product task is complete or that another account's guide may be
+hidden. Since WP-O the explanatory modal tour and welcome banner are gone; the
+first-run stepper (`#view-profile-setup`) only chooses which step is on screen.
 
 | Step | Authority | Complete when |
 | --- | --- | --- |
@@ -51,7 +53,13 @@ weekly-recovery parser accepts its publication state. Current-cycle validation
 reuses that database observation instant rather than a potentially skewed
 browser clock. When the availability target rolls over, the old dashboard read
 is aborted and the visible dashboard's existing loader reacquires the new
-current-cycle assignment after the new scope is established. Workspace
+current-cycle assignment after the new scope is established. The authority keeps
+the dashboard's last fenced pairing observation and replays it once a refresh
+re-establishes the cycle scope, so the guide cannot sit on "Checking current
+pairing…" (or report "unknown") beside a pair the Home hero already shows. When
+that observation belongs to a newer cycle than the availability owner's
+upcoming cycle, availability is revalidated once before anything is reported
+as unknown. Workspace
 completion is recomputed at render time from the current published room and the
 authenticated workspace hydrator; it is not persisted separately.
 
@@ -90,7 +98,7 @@ Pros: trivial, fast, and available offline.
 
 Cons: crosses accounts in a shared browser, survives circle/cycle changes, and
 can report success while every authoritative request is failing. Rejected as a
-truth source; retained only for tour dismissal.
+truth source; retained only for per-account setup-guide dismissal.
 
 ### Add AI and video booleans to auth capabilities
 
