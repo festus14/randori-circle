@@ -13805,16 +13805,16 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     .map(file=>`https://unpkg.com/prettier@3.3.3/${file}`);
   let prettierLoad=null;
   function loadPrettier(){
-    if(window.prettier&&window.prettierPlugins) return Promise.resolve(true);
-    if(!prettierLoad){
-      prettierLoad=PRETTIER_SCRIPTS.reduce((previous,src)=>previous.then(()=>new Promise((resolve,reject)=>{
-        const script=document.createElement('script');
-        script.src=src; script.async=false;
-        script.onload=()=>resolve();
-        script.onerror=()=>reject(new Error('prettier failed to load'));
-        document.head.appendChild(script);
-      })),Promise.resolve()).then(()=>true,error=>{ prettierLoad=null; console.warn(String(error?.message||error)); return false; });
-    }
+    if(prettierLoad) return prettierLoad;
+    const plugins=window.prettierPlugins;
+    if(window.prettier&&plugins?.babel&&plugins?.estree&&plugins?.typescript) return Promise.resolve(true);
+    prettierLoad=PRETTIER_SCRIPTS.reduce((previous,src)=>previous.then(()=>new Promise((resolve,reject)=>{
+      const script=document.createElement('script');
+      script.src=src; script.async=false;
+      script.onload=()=>resolve();
+      script.onerror=()=>reject(new Error('prettier failed to load'));
+      document.head.appendChild(script);
+    })),Promise.resolve()).then(()=>true,error=>{ prettierLoad=null; console.warn(String(error?.message||error)); return false; });
     return prettierLoad;
   }
   async function formatCode(){
