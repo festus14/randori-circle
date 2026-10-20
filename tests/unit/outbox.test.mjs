@@ -275,9 +275,11 @@ test('timeout and poison events become bounded retry and dead-letter outcomes',a
   const {db}=await fixture();
   await enqueueOutboxEvent(db,event({deliveryTimeoutMs:100,maxAttempts:2}));
   await enqueueOutboxEvent(db,event({sequence:2,eventType:'unknown.event'}));
+  // A production-length lease keeps this about timeout/poison handling: on a
+  // CPU-starved runner the 1 s helper lease can expire before finalization.
   const result=await worker(db,{
     'test.notification':()=>new Promise(()=>{}),
-  });
+  },{leaseDurationMs:30_000});
   assert.equal(result.retried,1);
   assert.equal(result.deadLettered,1);
   const rows=(await db.execute('SELECT id,status,last_error_code FROM outbox_events ORDER BY id')).rows;
@@ -304,8 +306,11 @@ test('a global invocation drains saturated event types in fair rounds within one
     db,workerId:'fair-invocation',
     handlers:{'alpha.notification':handler,'beta.notification':handler,'gamma.notification':handler},
     eventTypes:['alpha.notification','beta.notification','gamma.notification'],maxClaims:4,
-    deadlineAtMs:performance.now()+2_000,finalizationReserveMs:100,minimumDispatchWindowMs:100,
-    leaseDurationMs:1000,heartbeatIntervalMs:0,
+    deadlineAtMs:2_000,finalizationReserveMs:100,minimumDispatchWindowMs:100,
+    // Fairness, not wall-clock speed, is under test: a frozen monotonic clock
+    // keeps a loaded host from crossing the dispatch deadline mid-drain, and
+    // a long database lease cannot expire between claim and finalization.
+    leaseDurationMs:30_000,heartbeatIntervalMs:0,clock:controlledMonotonicClock().clock,
   });
   assert.deepEqual(started.slice(0,3).sort(),[
     'alpha.notification','beta.notification','gamma.notification',
@@ -346,8 +351,8 @@ test('a real database gives all five application event types a fair first claim 
   const result=await runOutboxInvocation({
     db,workerId:'five-type-fair-invocation',
     handlers:Object.fromEntries(eventTypes.map(type=>[type,handler])),eventTypes,maxClaims:8,
-    deadlineAtMs:performance.now()+2_000,finalizationReserveMs:100,minimumDispatchWindowMs:100,
-    leaseDurationMs:1000,heartbeatIntervalMs:0,
+    deadlineAtMs:2_000,finalizationReserveMs:100,minimumDispatchWindowMs:100,
+    leaseDurationMs:30_000,heartbeatIntervalMs:0,clock:controlledMonotonicClock().clock,
   });
   assert.deepEqual([...new Set(started.slice(0,5))].sort(),[...eventTypes].sort());
   assert.equal(result.claimed,8);
@@ -509,7 +514,8 @@ test('one finalization failure does not strand later sent events and heartbeats 
     db:faultDb,workerId:'isolated-finalization',
     handlers:{'alpha.notification':handler,'beta.notification':handler},
     eventTypes:['alpha.notification','beta.notification'],maxClaims:2,
-    deadlineAtMs:performance.now()+2_000,finalizationReserveMs:100,minimumDispatchWindowMs:100,
+    // Generous wall-clock budget: the forced failure, not runner speed, decides the outcome.
+    deadlineAtMs:performance.now()+10_000,finalizationReserveMs:100,minimumDispatchWindowMs:100,
     leaseDurationMs:1000,heartbeatIntervalMs:10,
   });
   assert.equal(providerCalls,2);
