@@ -17,6 +17,7 @@ jobs:
   watchdog:
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-24.04
+    environment: production
     timeout-minutes: 5
     steps:
       - name: Check out the latest default branch
@@ -32,9 +33,12 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Assess scheduled outbox delivery
+      - name: Assess outbox delivery health
         timeout-minutes: 2
         env:
+          APP_URL: ${{ vars.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          WATCHDOG_DELIVERY_MAX_AGE_MS: '900000'
           GITHUB_TOKEN: ${{ github.token }}
           WATCHDOG_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           WATCHDOG_SCHEDULE_GRACE_MS: '900000'

@@ -21,9 +21,11 @@ The `deployability` workflow is intentionally fast and provider-neutral. It has 
 - API cache-safety and minimum-safe browser security-header values remain intact; and
 - every scheduled job has a valid five-field schedule and a matching route.
 
-It also pins the five-minute outbox worker and its secret-free hourly watchdog:
+It also pins the five-minute outbox worker and its hourly delivery-health watchdog:
 the worker retains its protected two-minute deadline, while the watchdog keeps
-read-only GitHub permissions, fixed time/page bounds, and no production access.
+read-only GitHub permissions and fixed time/page bounds. Its only production
+material is `vars.APP_URL` and `secrets.CRON_SECRET`, which it uses to read
+`/api/cron/outbox-health` (ID-67).
 
 Required checks run on the pinned `ubuntu-24.04` image rather than the floating
 `ubuntu-latest`. The optional `ubuntu-26-canary` check collects Ubuntu 26
