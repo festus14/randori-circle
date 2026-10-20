@@ -157,7 +157,7 @@ function setStatus(value,message=''){
   if(state.completed&&value!=='error') return;
   state.status=value;
   const node=document.getElementById('codeSyncStatus');
-  const labels={local:'local editor',connecting:'connecting…',syncing:'syncing…',synced:'synced',offline:'offline — changes queued',retry:'sync interrupted — retrying',error:'sync unavailable'};
+  const labels={local:'not shared',connecting:'connecting…',syncing:'syncing…',synced:'synced',offline:'offline — changes queued',retry:'sync interrupted — retrying',error:'sync unavailable'};
   if(node){ node.dataset.state=value; node.textContent=message||labels[value]||value; }
   const run=document.getElementById('runBtn');
   if(run&&(state.identity||state.awaitingRoom)) run.disabled=!isAcknowledged();

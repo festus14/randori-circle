@@ -501,3 +501,19 @@ test('the request form uses the shared strict email rules once that module has l
     delete globalThis.RandoriEmailValidation;
   }
 });
+
+test('privacy links open the privacy note', () => {
+  landing._reset();
+  const doc = makeDocument();
+  const note = new FakeElement(doc, 'landingPrivacy');
+  note.open = false;
+  doc.elements.set('landingPrivacy', note);
+  const privacyLinks = [new FakeElement(doc, 'privacy-link-1'), new FakeElement(doc, 'privacy-link-2')];
+  doc.querySelectorAll = selector => (selector === 'a[href="#landingPrivacy"]' ? privacyLinks
+    : selector === '[data-invite-request-link]' ? doc.links : []);
+  landing.mount(doc);
+  privacyLinks[1].click();
+  assert.equal(note.open, true);
+  doc.elements.delete('landingPrivacy');
+  privacyLinks[0].click();
+});
