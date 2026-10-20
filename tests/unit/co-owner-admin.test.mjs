@@ -11,10 +11,9 @@ import {
   listCircleMembersForOwner,
 } from '../../api/_member-lifecycle.js';
 import { issueSession, verifyRequestAuth } from '../../api/_db.js';
-import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
-import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
+import { copyMigratedDatabase } from '../support/migrated-db.mjs';
 
-const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const JWT_SECRET='co-owner-admin-test-secret-at-least-thirty-two-bytes';
 const NOW=Math.floor(Date.now()/1000);
 const originalSecret=process.env.JWT_SECRET;
@@ -31,12 +30,10 @@ afterEach(async()=>{
 // 6 member (inactive), 7 demo member. Circle 20 (secondary): 4 owner, 1 member.
 async function fixture(){
   const directory=mkdtempSync(join(tmpdir(),'randori-co-owner-'));
-  const url=`file:${join(directory,'database.sqlite')}`;
+  const url=`file:${await copyMigratedDatabase(join(directory,'database.sqlite'))}`;
   const db=createClient({url});
   resources.push(async()=>{ await db.close(); rmSync(directory,{recursive:true,force:true}); });
   await prepareMigrationConnection(db);
-  const state=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS});
-  await applyMigrations(db,{migrations:EXECUTABLE_MIGRATIONS,expectedStateFingerprint:state.stateFingerprint,retry:NO_RETRY});
   await db.batch([
     `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_admin,is_demo) VALUES
       (1,'owner@example.test','x','Owner','#112233',1,0),

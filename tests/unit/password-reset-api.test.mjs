@@ -19,10 +19,10 @@ import {
   sealPasswordResetToken,
 } from '../../api/_password-reset.js';
 import {createOutboxEventStatement} from '../../api/_outbox.js';
-import {EXECUTABLE_MIGRATIONS} from '../../db/executable-migrations.js';
-import {applyMigrations,inspectMigrationState,prepareMigrationConnection} from '../../db/migration-runner.js';
+import {prepareMigrationConnection} from '../../db/migration-runner.js';
 import {adoptCredentialKeyControl} from '../support/credential-key-control.mjs';
 import {installWaitUntilCapture,stubResendFetch} from '../support/immediate-delivery.mjs';
+import {copyMigratedDatabase} from '../support/migrated-db.mjs';
 
 const resources=[];
 
@@ -72,11 +72,9 @@ async function fixture(){
   process.env.RESEND_FROM='Randori <reset@randori.example.test>';
   process.env.JWT_SECRET='password-reset-api-test-secret-at-least-32-bytes';
   process.env.TURSO_DATABASE_URL=url;
+  await copyMigratedDatabase(path);
   const db=createClient({url});
   await prepareMigrationConnection(db);
-  const initial=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS});
-  await applyMigrations(db,{migrations:EXECUTABLE_MIGRATIONS,
-    expectedStateFingerprint:initial.stateFingerprint,retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
   await adoptCredentialKeyControl(db,passwordResetKeyRing());
   const passwordHash=await bcrypt.hash('old correct horse',4);
   await db.execute({sql:`INSERT INTO auth_accounts

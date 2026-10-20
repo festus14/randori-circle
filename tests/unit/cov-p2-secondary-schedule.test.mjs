@@ -9,8 +9,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, test } from 'node:test';
 import { createClient } from '@libsql/client';
 
-import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
-import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
+import { copyMigratedDatabaseSync, migratedTemplatePath } from '../support/migrated-db.mjs';
 import {
   ensureSecondaryScheduleReadiness,
   mutateSecondarySchedule,
@@ -26,7 +26,6 @@ const SESSION_HASH='f'.repeat(64);
 const PARTNER_SESSION_HASH='e'.repeat(64);
 const CYCLE='a'.repeat(64);
 const GENERATION='11111111-1111-4111-8111-111111111111';
-const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const FLAGS=['CIRCLE_MEMBERSHIP_ENABLED','MULTI_CIRCLE_CONTROL_PLANE_ENABLED','MULTI_CIRCLE_AVAILABILITY_ENABLED',
   'SECONDARY_CIRCLE_COORDINATION_ENABLED','SECONDARY_CIRCLE_SCHEDULING_ENABLED','SECONDARY_CIRCLE_SCHEDULE_EMAIL_ENABLED'];
 const cleanup=[];
@@ -37,18 +36,18 @@ afterEach(()=>{
   while(cleanup.length){ try{ cleanup.pop()(); }catch{} }
 });
 
-function fixture(){
+function fixture({migrated=false}={}){
   const directory=mkdtempSync(join(tmpdir(),'randori-cov-secondary-schedule-'));
+  if(migrated) copyMigratedDatabaseSync(join(directory,'test.sqlite'));
   const db=createClient({url:`file:${join(directory,'test.sqlite')}`});
   cleanup.push(()=>{ db.close(); rmSync(directory,{recursive:true,force:true}); });
   return db;
 }
 
 async function migrated({seeded=true}={}){
-  const db=fixture();
+  await migratedTemplatePath();
+  const db=fixture({migrated:true});
   await prepareMigrationConnection(db);
-  const before=await inspectMigrationState(db);
-  await applyMigrations(db,{expectedStateFingerprint:before.stateFingerprint,migrations:EXECUTABLE_MIGRATIONS,retry:NO_RETRY});
   if(!seeded) return db;
   await db.execute(`INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_demo) VALUES
     (1,'one@example.test','hash','One','#111111',0),(2,'two@example.test','hash','Two','#222222',0)`);

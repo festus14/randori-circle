@@ -6,8 +6,8 @@ import { afterEach, beforeEach, mock, test } from 'node:test';
 import { createClient } from '@libsql/client';
 import * as Y from 'yjs';
 
-import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
-import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
+import { copyMigratedDatabase } from '../support/migrated-db.mjs';
 
 let currentDb=null;
 let directory=null;
@@ -39,10 +39,9 @@ function invoke({method='GET',query={},body={},user=1,headers:requestHeaders={}}
 
 async function database(){
   directory=mkdtempSync(join(tmpdir(),'randori-code-document-api-'));
+  await copyMigratedDatabase(join(directory,'test.sqlite'));
   const db=createClient({url:`file:${join(directory,'test.sqlite')}`});
-  await prepareMigrationConnection(db); const before=await inspectMigrationState(db);
-  await applyMigrations(db,{expectedStateFingerprint:before.stateFingerprint,
-    retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
+  await prepareMigrationConnection(db);
   await db.execute(`INSERT INTO auth_accounts (id,email,password_hash,display_name,color) VALUES
     (1,'one@example.test','hash','One','#111111'),(2,'two@example.test','hash','Two','#222222'),
     (9,'outside@example.test','hash','Outside','#999999')`);

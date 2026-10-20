@@ -17,10 +17,9 @@ import {
   transferCircleOwnership,
 } from '../../api/_member-lifecycle.js';
 import { issueSession, verifyRequestAuth } from '../../api/_db.js';
-import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
-import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
+import { copyMigratedDatabase } from '../support/migrated-db.mjs';
 
-const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const JWT_SECRET='member-lifecycle-test-secret-at-least-thirty-two-bytes';
 const NOW=Math.floor(Date.now()/1000);
 const originalEnvironment={
@@ -46,11 +45,10 @@ async function fixture(){
   const directory=mkdtempSync(join(tmpdir(),'randori-member-lifecycle-'));
   const path=join(directory,'database.sqlite');
   const url=`file:${path}`;
+  await copyMigratedDatabase(path);
   const db=createClient({url});
   resources.push(async()=>{ await db.close(); rmSync(directory,{recursive:true,force:true}); });
   await prepareMigrationConnection(db);
-  const state=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS});
-  await applyMigrations(db,{migrations:EXECUTABLE_MIGRATIONS,expectedStateFingerprint:state.stateFingerprint,retry:NO_RETRY});
   await db.batch([
     `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_demo) VALUES
       (1,'owner@example.test','x','Owner','#112233',0),

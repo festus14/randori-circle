@@ -21,6 +21,7 @@ import {
 } from '../../db/migration-runner.js';
 import { inspectSchema } from '../../db/schema-inspector.js';
 import { SCHEMA_MANIFEST } from '../../db/schema-manifest.js';
+import { copyMigratedDatabase } from '../support/migrated-db.mjs';
 
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const cleanup=[];
@@ -67,13 +68,10 @@ function remoteLike(db,respond=statement=>{ throw tursoDisallowedError(String(st
 
 async function migratedDatabase(){
   const directory=mkdtempSync(join(tmpdir(),'randori-check-state-'));
+  await copyMigratedDatabase(join(directory,'state.sqlite'));
   const db=createClient({url:`file:${join(directory,'state.sqlite')}`});
   cleanup.push(async()=>{ db.close(); rmSync(directory,{recursive:true,force:true}); });
   await prepareMigrationConnection(db);
-  const initial=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS});
-  await applyMigrations(db,{
-    expectedStateFingerprint:initial.stateFingerprint,migrations:EXECUTABLE_MIGRATIONS,retry:NO_RETRY,
-  });
   return db;
 }
 

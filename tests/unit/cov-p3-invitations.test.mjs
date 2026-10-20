@@ -6,7 +6,8 @@ import { afterEach, beforeEach, mock, test } from 'node:test';
 
 import { createClient } from '@libsql/client';
 
-import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
+import { copyMigratedDatabase } from '../support/migrated-db.mjs';
 import { adoptCredentialKeyControl } from '../support/credential-key-control.mjs';
 
 const SECRET='cov-p3-invitations-secret-at-least-thirty-two-bytes';
@@ -81,11 +82,9 @@ function enableEmail(){
 async function database(){
   const directory=mkdtempSync(join(tmpdir(),'randori-cov-invitations-'));
   directories.push(directory);
+  await copyMigratedDatabase(join(directory,'invitations.sqlite'));
   const db=createClient({url:`file:${join(directory,'invitations.sqlite')}`});
   await prepareMigrationConnection(db);
-  const initial=await inspectMigrationState(db);
-  await applyMigrations(db,{expectedStateFingerprint:initial.stateFingerprint,
-    retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
   await db.batch([
     `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_admin,is_demo)
       VALUES (1,'owner@example.test','!o','Owner','#111111',1,0),(2,'member@example.test','!m','Member','#222222',0,0)`,

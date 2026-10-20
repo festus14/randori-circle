@@ -4,9 +4,7 @@
 // database; individual statements are intercepted only where a concurrent
 // change or corrupted state cannot be produced through the public API.
 import assert from 'node:assert/strict';
-import {mkdtempSync,rmSync} from 'node:fs';
-import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {rmSync} from 'node:fs';
 import {afterEach,test} from 'node:test';
 
 import {createClient} from '@libsql/client';
@@ -26,11 +24,12 @@ import {
   unlinkGoogleCredential,
   unlinkPasswordCredential,
 } from '../../api/_identity-linking.js';
-import {applyMigrations,inspectMigrationState,prepareMigrationConnection} from '../../db/migration-runner.js';
+import {prepareMigrationConnection} from '../../db/migration-runner.js';
 import {
   adoptCredentialKeyControl,
   advanceCredentialKeyControl,
 } from '../support/credential-key-control.mjs';
+import {createMigratedDatabase} from '../support/migrated-db.mjs';
 
 const resources=[];
 const NOW=1_800_000_000;
@@ -61,12 +60,9 @@ async function fixture(){
   process.env.JWT_SECRET='identity-linking-coverage-secret-at-least-32-bytes';
   process.env.CIRCLE_MEMBERSHIP_ENABLED='false';
   configureKeyV1();
-  const directory=mkdtempSync(join(tmpdir(),'randori-identity-cov-'));
-  const db=createClient({url:`file:${join(directory,'database.sqlite')}`});
+  const {directory,url}=await createMigratedDatabase({prefix:'randori-identity-cov-'});
+  const db=createClient({url});
   await prepareMigrationConnection(db);
-  const state=await inspectMigrationState(db);
-  await applyMigrations(db,{expectedStateFingerprint:state.stateFingerprint,
-    retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
   await adoptCredentialKeyControl(db,identityEmailHashConfiguration());
   resources.push(()=>{ db.close(); rmSync(directory,{recursive:true,force:true}); });
   return db;

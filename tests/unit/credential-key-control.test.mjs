@@ -36,6 +36,7 @@ import {
   runCredentialKeyControl,
   validateCredentialKeyControlRuntime,
 } from '../../scripts/credential-key-control.mjs';
+import {copyMigratedDatabase} from '../support/migrated-db.mjs';
 
 const NO_RETRY={maxAttempts:1,baseDelayMs:0,maxDelayMs:0};
 const resources=[];
@@ -68,11 +69,17 @@ async function database({clients=1,migrations=EXECUTABLE_MIGRATIONS}={}){
   const directory=mkdtempSync(join(tmpdir(),'randori-key-control-'));
   const path=join(directory,'database.sqlite');
   const url=`file:${path}`;
+  // The latest schema comes from the shared migrated template; a version
+  // prefix (a managed restore at an older version) still migrates for real.
+  const latest=migrations===EXECUTABLE_MIGRATIONS;
+  if(latest) await copyMigratedDatabase(path);
   const databases=Array.from({length:clients},()=>createClient({url}));
   for(const db of databases) await prepareMigrationConnection(db);
-  const initial=await inspectMigrationState(databases[0],{migrations});
-  await applyMigrations(databases[0],{migrations,expectedStateFingerprint:initial.stateFingerprint,
-    retry:NO_RETRY});
+  if(!latest){
+    const initial=await inspectMigrationState(databases[0],{migrations});
+    await applyMigrations(databases[0],{migrations,expectedStateFingerprint:initial.stateFingerprint,
+      retry:NO_RETRY});
+  }
   resources.push(async()=>{
     for(const db of databases) await db.close();
     rmSync(directory,{recursive:true,force:true});

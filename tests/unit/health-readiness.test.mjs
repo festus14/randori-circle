@@ -28,6 +28,7 @@ import { applyMigrations, inspectMigrationState, prepareMigrationConnection } fr
 import { assertReadOnlyStatement, compileSchemaReadinessManifest } from '../../db/schema-inspector.js';
 import { SCHEMA_MANIFEST } from '../../db/schema-manifest.js';
 import { READINESS_SCHEMA_MANIFEST } from '../../db/schema-readiness-manifest.js';
+import { copyMigratedDatabase } from '../support/migrated-db.mjs';
 
 const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 const resources=[];
@@ -42,9 +43,14 @@ async function databaseFixture({migrations=EXECUTABLE_MIGRATIONS,file=true}={}){
     directory=mkdtempSync(join(tmpdir(),'randori-health-'));
     resources.push(()=>rmSync(directory,{recursive:true,force:true}));
   }
+  // A latest-schema file copies the migrated template; a version prefix or an
+  // in-memory database still runs the real migration chain.
+  const fromTemplate=file&&migrations===EXECUTABLE_MIGRATIONS;
+  if(fromTemplate) await copyMigratedDatabase(join(directory,'database.sqlite'));
   const db=createClient({url:file?`file:${join(directory,'database.sqlite')}`:'file::memory:'});
   resources.push(()=>db.close());
   await prepareMigrationConnection(db);
+  if(fromTemplate) return {db,directory};
   const initial=await inspectMigrationState(db,{migrations});
   await applyMigrations(db,{
     migrations,

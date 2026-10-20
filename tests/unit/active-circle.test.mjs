@@ -17,11 +17,10 @@ import {
 import { getAvailabilityState, updateAvailability } from '../../api/_availability.js';
 import { changeCircleMemberStatus, leaveCircle, listCircleMembersForOwner } from '../../api/_member-lifecycle.js';
 import { issueSession, verifyRequestAuth } from '../../api/_db.js';
-import { EXECUTABLE_MIGRATIONS } from '../../db/executable-migrations.js';
-import { applyMigrations, inspectMigrationState, prepareMigrationConnection } from '../../db/migration-runner.js';
+import { prepareMigrationConnection } from '../../db/migration-runner.js';
+import { copyMigratedDatabase } from '../support/migrated-db.mjs';
 
 const JWT_SECRET='active-circle-test-secret-at-least-thirty-two-bytes';
-const NO_RETRY=Object.freeze({maxAttempts:1,baseDelayMs:0,maxDelayMs:0});
 // Availability writes also consult SQLite's real clock as a commit-time guard.
 // Keep non-boundary tests on an explicit distant cycle so their injected app
 // clock cannot become older than the database clock as the calendar advances.
@@ -78,11 +77,10 @@ function request(token){
 
 async function fixture(){
   const directory=mkdtempSync(join(tmpdir(),'randori-active-circle-'));
+  await copyMigratedDatabase(join(directory,'database.sqlite'));
   const db=createClient({url:`file:${join(directory,'database.sqlite')}`});
   resources.push(async()=>{ await db.close(); rmSync(directory,{recursive:true,force:true}); });
   await prepareMigrationConnection(db);
-  const state=await inspectMigrationState(db,{migrations:EXECUTABLE_MIGRATIONS});
-  await applyMigrations(db,{migrations:EXECUTABLE_MIGRATIONS,expectedStateFingerprint:state.stateFingerprint,retry:NO_RETRY});
   await db.batch([
     `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_demo) VALUES
       (1,'owner@example.test','x','Owner','#111111',0),

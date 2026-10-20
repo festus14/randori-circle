@@ -6,8 +6,9 @@ import {pathToFileURL} from 'node:url';
 import {afterEach,beforeEach,mock,test} from 'node:test';
 import {createClient} from '@libsql/client';
 
-import {applyMigrations,inspectMigrationState,prepareMigrationConnection} from '../../db/migration-runner.js';
+import {prepareMigrationConnection} from '../../db/migration-runner.js';
 import {adoptCredentialKeyControl} from '../support/credential-key-control.mjs';
+import {copyMigratedDatabase} from '../support/migrated-db.mjs';
 import {installWaitUntilCapture,stubResendFetch} from '../support/immediate-delivery.mjs';
 
 let currentDb=null;
@@ -100,11 +101,9 @@ function decide(body,{identity='owner',headers={},method='POST',query={endpoint:
 async function migratedDatabase(){
   const directory=mkdtempSync(join(tmpdir(),'randori-invite-requests-'));
   temporaryDirectories.push(directory);
+  await copyMigratedDatabase(join(directory,'current.sqlite'));
   const db=createClient({url:pathToFileURL(join(directory,'current.sqlite')).href});
   await prepareMigrationConnection(db);
-  const state=await inspectMigrationState(db);
-  await applyMigrations(db,{expectedStateFingerprint:state.stateFingerprint,
-    retry:{maxAttempts:1,baseDelayMs:0,maxDelayMs:0}});
   await db.batch([
     `INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_demo) VALUES
       (1,'owner@example.test','x','Owner','#112233',0),(2,'member@example.test','x','Member','#445566',0),
