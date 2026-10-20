@@ -60,9 +60,15 @@
     else if (UNSAFE_NAME.test(name)) errors.name = 'Remove unusual characters from your name.';
     else if (nameLength < NAME_MIN) errors.name = `Name must be at least ${NAME_MIN} characters.`;
     else if (nameLength > NAME_MAX) errors.name = `Name must be ${NAME_MAX} characters or fewer.`;
+    // The shared strict rules (assets/email-validation.js, also used by the
+    // server) apply once that module has loaded; the shape check is only a
+    // fallback if it failed to load. The server re-validates either way.
+    const rules = root.RandoriEmailValidation;
+    const verdict = rules && email ? rules.validateEmail(email) : null;
     if (!email) errors.email = 'Enter your email address.';
     else if (email.length > EMAIL_MAX) errors.email = `Email must be ${EMAIL_MAX} characters or fewer.`;
-    else if (!EMAIL_SHAPE.test(email)) errors.email = 'Enter an email address like name@example.com.';
+    else if (verdict && !verdict.ok) errors.email = rules.emailProblemMessage(verdict.reason);
+    else if (!verdict && !EMAIL_SHAPE.test(email)) errors.email = 'Enter an email address like name@example.com.';
     if (note !== null) {
       if (UNSAFE_NOTE.test(note)) errors.note = 'Remove unusual characters from this note.';
       else if (codePoints(note) > NOTE_MAX) errors.note = `Keep this to ${NOTE_MAX} characters or fewer.`;

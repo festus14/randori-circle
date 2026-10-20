@@ -29,6 +29,7 @@ import {
   validateLivePreparedClaim,
   validatePreparedInvitation,
 } from './_circle-membership.js';
+import { validateEmail } from '../assets/email-validation.js';
 import {
   multiCircleAvailabilityEnabled,
   multiCircleControlPlaneEnabled,
@@ -380,8 +381,10 @@ async function handleSignup(req,res){
   const { email, password, name } = req.body || {};
   if (!email || !password || !name) return res.status(400).json({ error: 'email,password,name required' });
   if(!validSignupPassword(password)) return res.status(400).json({error:'password must be 10-72 UTF-8 bytes'});
-  const e = String(email).trim().toLowerCase();
-  if (e.length>254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) return res.status(400).json({ error: 'invalid email' });
+  // New accounts use the strict shared rules (assets/email-validation.js,
+  // ID-68); sign-in and recovery keep matching existing addresses as stored.
+  const e = validateEmail(String(email)).email;
+  if (!e) return res.status(400).json({ error: 'invalid email' });
   const display = String(name).trim().slice(0,32);
   if(display.length<2) return res.status(400).json({ error:'display name must be 2-32 chars' });
   const membershipRequired=circleMembershipEnabled();

@@ -311,6 +311,8 @@ test('inviteRequestDecisionOutcome validates approve, decline and replay respons
 });
 
 test('inviteRequestErrorMessage maps contract errors to recovery copy', () => {
+  assert.match(ui.inviteRequestErrorMessage({ http_status: 409, code: 'invite_request_email_invalid' }),
+    /can’t receive an invitation\. Decline it instead\./);
   assert.equal(ui.inviteRequestErrorMessage({ http_status: 409, code: 'invite_request_not_pending', status: 'approved' }),
     'This request was already handled. It was approved. The list has been refreshed.');
   assert.equal(ui.inviteRequestErrorMessage({ code: 'invite_request_not_pending', status: 'weird' }),
