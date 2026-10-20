@@ -202,9 +202,11 @@ export async function openCodeView(
   await mockApi(page, overrides);
   await resetClientState(page);
   await page.goto('/?view=code', { waitUntil: 'domcontentloaded' });
-  const tab = page.locator('[data-tab="code"]');
-  await expect(tab).toBeVisible();
-  await tab.click();
+  // Visitors get no app navigation (members only), so the code tab is in the
+  // DOM but hidden. Activate it the way the router does.
+  await expect(page.locator('#view-code')).toBeVisible();
+  await expect(page.locator('body')).toHaveAttribute('data-surface', 'solo');
+  await page.evaluate(() => (document.querySelector('[data-tab="code"]') as HTMLButtonElement | null)?.click());
   await expect(page.locator('#view-code')).toBeVisible();
 }
 
