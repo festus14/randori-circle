@@ -141,6 +141,13 @@ const PLAN_METADATA=Object.freeze([
     operationsChecksum:'4a0e0ef2e9ed1aabe0c47c7f6d255aa356eea0630fa7fa8fb44d3164fa3ed016',
     checksum:'af1d5003c19f80d077dccae545768c76cb38d849d6edc3c731061d4243fe5104',
   }),
+  Object.freeze({
+    version:21,
+    name:'public-invite-requests',
+    description:'Bounded public invite requests for the primary circle with owner decisions, scrubbed decided rows, and retention indexes.',
+    operationsChecksum:'3bc0d64068acd2b641c3d707dc02a3c672463f65ae1b0f551195ceabe92a91b2',
+    checksum:'ad76a224af837bfb895b61f115132aeb29a36aaba36858dfb41699b31795aae2',
+  }),
 ]);
 
 function definePlan(operationSet,metadata){

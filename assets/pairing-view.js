@@ -144,13 +144,16 @@
     signedIn = false, value = null, loading = false, saving = false, pendingValue = null,
     error = '', notice = '', online = true, now = Date.now(), locale,
   } = {}) {
-    const status = String(error || notice || '');
-    const offlineNote = online ? null : {
+    // Offline with a value: keep the choice visible and explain the disabled
+    // controls. Offline without one: the shell banner already says offline, so
+    // only the retry status changes.
+    const offlineNote = online || !value ? null : {
       tone: 'warning',
-      text: value
-        ? "You're offline. Your last saved choice is shown; reconnect to change it."
-        : "You're offline. Reconnect, then try again.",
+      text: "You're offline. Your last saved choice is shown; reconnect to change it.",
     };
+    const status = !online && !value && error
+      ? "You're offline. Reconnect, then retry."
+      : String(error || notice || '');
     const idle = { disabled: true, pressed: false };
     if (!signedIn) {
       return {
@@ -355,7 +358,10 @@
         const name = String(member.name || 'Member').trim() || 'Member';
         return { name, initials: initials(name), color: member.color, isMe };
       });
-    return { members, solo, mine: members.some(member => member.isMe) };
+    // Some producers (secondary circles) withhold member ids; then the viewer's
+    // own pair cannot be identified and callers must not claim either way.
+    const identityKnown = source.some(member => Number.isSafeInteger(Number(member?.id)) && Number(member?.id) > 0);
+    return { members, solo, mine: members.some(member => member.isMe), identityKnown };
   }
 
   root._randori_pairing_view = Object.freeze({

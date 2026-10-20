@@ -2754,6 +2754,6 @@ export default async function handler(req,res){
     try{ await logServer('error','api_unhandled', String(e && e.message||e).slice(0,500), {stack: e && e.stack ? String(e.stack).slice(0,2000):'', url: req && req.url}, {req, source:'server', route: req && req.url, skipSentry:true, skipEnsure}); }catch{}
     captureSentryException(e, {tags:{event:'api_unhandled', source:'server'}, extra:{route:req && req.url}});
     try{ console.error('[api unhandled]', e && e.stack||e); }catch{}
-    return res.status(500).json({error:'internal', detail: String(e && e.message||e).slice(0,300)});
+    return res.status(500).json({error:'internal'});
   }
 }

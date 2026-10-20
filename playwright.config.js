@@ -38,6 +38,15 @@ export default defineConfig({
     actionTimeout: 12000,
     navigationTimeout: 20000,
     launchOptions: { args: [`--host-resolver-rules=${telemetryHostResolverRules}`] },
+    // index.html sets `html{scroll-behavior:smooth}` (off under reduced
+    // motion), so focusing an off-screen field (fill) starts an animated
+    // scroll. On a busy page the animation can begin after Playwright's
+    // stability check for the next click, so mousedown/mouseup land while the
+    // target is still moving and the click is silently lost (schedule-sync:
+    // the trace shows the page mid-scroll across the Propose click, and no
+    // POST). Reduced motion makes every scroll instant and CSS transitions
+    // ~0 ms for all contexts, including browser.newContext().
+    reducedMotion: 'reduce',
   },
   webServer: {
     command: 'npm run start:test',

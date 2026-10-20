@@ -213,7 +213,11 @@ if(process.env.RANDORI_REHEARSAL_SIGNAL_FIXTURE==='1'){
     setBlock(_name,value,state){
       events.push(['block',value]);
       state.blockWrites=value;
-      if(value) writeFileSync(blockedPath,'blocked');
+      if(value){
+        writeFileSync(blockedPath,'blocked');
+        // Readiness signal for the parent: forward work is now blocked.
+        process.stdout.write('blocked\n');
+      }
       return {blockWrites:value};
     },
   });
@@ -334,7 +338,7 @@ test('managed prefix rehearsal blocks writes, verifies PITR, migrates only the r
       ['source','bigint'],['restore','bigint'],
     ]);
     assert.equal((await databaseState(item.sourcePath,EXECUTABLE_MIGRATIONS.slice(0,2))).currentVersion,2);
-    assert.equal((await databaseState(item.restorePath)).currentVersion,20);
+    assert.equal((await databaseState(item.restorePath)).currentVersion,21);
 
     const serialized=JSON.stringify(result);
     for(const secret of [
@@ -698,7 +702,7 @@ test('exact unmanaged prefix is adopted and advanced only on the disposable rest
     assert.equal(result.ok,true);
     assert.equal(result.payload.migration.sourceClassification,'unmanaged');
     assert.equal(result.payload.migration.adoptedOnRestore,true);
-    assert.deepEqual(result.payload.migration.appliedVersions,[3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]);
+    assert.deepEqual(result.payload.migration.appliedVersions,[3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21]);
     const source=await databaseState(item.sourcePath,EXECUTABLE_MIGRATIONS.slice(0,2));
     assert.equal(source.classification,'unmanaged');
     assert.equal(source.ledgerPresent,false);
@@ -721,7 +725,7 @@ for(const classification of ['managed','unmanaged']){
       assert.equal(result.payload.migration.sourceVersion,1);
       assert.equal(result.payload.migration.sourceClassification,classification);
       assert.equal(result.payload.migration.adoptedOnRestore,classification==='unmanaged');
-      assert.deepEqual(result.payload.migration.appliedVersions,[2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]);
+      assert.deepEqual(result.payload.migration.appliedVersions,[2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21]);
       const restored=createClient({url:`file:${item.restorePath}`,intMode:'bigint'});
       try{
         const singleton=await restored.execute('SELECT id,registrations_closed FROM circle_membership_rollout');
@@ -827,13 +831,28 @@ test('SIGTERM interrupts forward database work but confirms source restoration b
   });
   let stderr='';
   child.stderr.on('data',chunk=>{ stderr+=chunk; });
+  // Child start-up (Node boot, module graph, fixture) can take seconds on a
+  // loaded runner, so wait on the child's readiness signal rather than a
+  // fixed deadline. An early exit ends the wait so failures stay prompt.
+  const closed=new Promise(resolve=>child.once('close',(code,signal)=>resolve({code,signal})));
+  let stdout='';
+  const ready=new Promise(resolve=>{
+    child.stdout.on('data',chunk=>{
+      stdout+=chunk;
+      if(stdout.includes('blocked\n')) resolve(true);
+    });
+  });
+  // A generous backstop (not a start-up deadline) keeps a wedged child from
+  // hanging the run; finally still kills it and removes the directory.
+  let backstop;
+  const wedged=new Promise(resolve=>{ backstop=setTimeout(()=>resolve('wedged'),120_000); });
   try{
-    for(let attempt=0;attempt<100&&!existsSync(blockedPath);attempt+=1){
-      await new Promise(resolve=>setTimeout(resolve,10));
-    }
+    const signalled=await Promise.race([ready,closed.then(()=>'exited'),wedged]);
+    clearTimeout(backstop);
+    assert.equal(signalled,true,`fixture did not signal blocked writes (${signalled}): ${stderr}`);
     assert.equal(existsSync(blockedPath),true,stderr);
     child.kill('SIGTERM');
-    const outcome=await new Promise(resolve=>child.once('close',(code,signal)=>resolve({code,signal})));
+    const outcome=await closed;
     assert.deepEqual(outcome,{code:130,signal:null},stderr);
     const result=JSON.parse(readFileSync(resultPath,'utf8'));
     assert.equal(result.interrupted,true);
@@ -843,6 +862,7 @@ test('SIGTERM interrupts forward database work but confirms source restoration b
     assert.equal(result.events.findIndex(event=>event[0]==='block'&&event[1]===false)
       <result.events.findIndex(event=>event[0]==='close'),true);
   }finally{
+    clearTimeout(backstop);
     if(child.exitCode===null) child.kill('SIGKILL');
     rmSync(directory,{recursive:true,force:true});
   }
@@ -1061,6 +1081,7 @@ test('post-migration preservation rejects missing or modified prior tables, seed
       {name:'pair_meeting_links',count:0,digest:'6'.repeat(64)},
       {name:'pair_session_controls',count:0,digest:'7'.repeat(64)},
       {name:'pair_code_documents',count:0,digest:'8'.repeat(64)},
+      {name:'invite_requests',count:0,digest:'9'.repeat(64)},
     ],
     storage:{...before.storage},
   };

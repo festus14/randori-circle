@@ -767,21 +767,29 @@ test('local capabilities expose an accessible signup flow with validation and on
   await expect(page.locator('#authSignup')).toBeVisible();
   await expect(page.locator('#authEmail')).toBeFocused();
 
+  // The close button sits before the fields in both visual and focus order.
   await page.keyboard.press('Shift+Tab');
-  await expect(page.locator('#authSignup')).toBeFocused();
+  await expect(page.locator('#authCancel')).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(page.locator('#authModeSwitch')).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
   await expect(join).toBeFocused();
 
   await join.click();
   await page.locator('#authSignup').click();
-  await expect(page.locator('#authErr')).toHaveText('Enter a valid email address.');
+  await expect(page.locator('#authEmailError')).toHaveText('Enter your email address.');
+  await expect(page.locator('#authNameError')).toBeVisible();
+  await expect(page.locator('#authPassError')).toHaveText('Choose a password.');
+  await expect(page.locator('#authErr')).toBeEmpty();
   await expect(page.locator('#authEmail')).toHaveAttribute('aria-invalid', 'true');
+  await expect(page.locator('#authEmail')).toBeFocused();
   await expect(page.locator('#authSignup')).toBeEnabled();
   expect(signupCalls).toBe(0);
 
   await page.locator('#authEmail').fill('LOCAL.User@example.test');
   await expect(page.locator('#authEmail')).not.toHaveAttribute('aria-invalid', 'true');
+  await expect(page.locator('#authEmailError')).toBeHidden();
   await expect(page.locator('#authErr')).toBeEmpty();
   await page.locator('#authName').fill('Local User');
   await page.locator('#authPass').fill('correct horse battery');
@@ -1000,7 +1008,8 @@ test('existing members recover from a wrong password and can sign out after logi
   releaseDelayedRefresh?.();
   await staleRefresh;
   await expect(page.locator('#authBtn')).toBeVisible();
-  expect(await page.evaluate(()=>(window as any)._randori_auth.me)).toBeNull();
+  // Sign out reloads the page shortly after; read the identity once it settles.
+  await expect.poll(()=>page.evaluate(()=>(window as any)._randori_auth?.me??null).catch(()=>'navigating')).toBeNull();
 });
 
 test('an authenticated member can sign out every session from the account menu',async({page})=>{

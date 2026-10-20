@@ -144,8 +144,9 @@ test('availability without an authoritative value shows loading or a retryable e
   assert.equal(retrying.retry.disabled, true);
 
   const offline = view.availabilityView({ signedIn: true, error: 'x', online: false });
-  assert.equal(offline.note.tone, 'warning');
-  assert.match(offline.note.text, /offline/);
+  assert.equal(offline.note, null, 'the page-level offline banner is not repeated');
+  assert.equal(offline.status, "You're offline. Reconnect, then retry.");
+  assert.equal(view.availabilityView({ signedIn: true, loading: true, online: false }).status, '');
 });
 
 test('a saved choice is a dated, explicit decision with a cutoff countdown', () => {
@@ -428,6 +429,11 @@ test('pair members mark the viewer and collapse solo practice', () => {
   const coordination = view.pairMembers({ solo: true, members: [{ id: 7, name: 'Ada Partner' }, null] }, 3);
   assert.equal(coordination.solo, true);
   assert.deepEqual(coordination.members.map(member => member.name), ['Ada Partner']);
+  assert.equal(coordination.identityKnown, true);
+  const withheld = view.pairMembers({ members: [{ name: 'Ada Partner' }, { name: 'Viewer' }] }, 3);
+  assert.equal(withheld.mine, false);
+  assert.equal(withheld.identityKnown, false, 'ids withheld: the viewer cannot be identified');
+  assert.equal(mine.identityKnown, true);
 });
 
 test('the pairing view keeps its test hooks and drops the browser-state framing', () => {

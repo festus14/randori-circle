@@ -131,6 +131,7 @@ test('every link generated in transactional email resolves to the app shell in p
     'api/_password-reset.js',
     'api/_pairing-email.js',
     'api/_schedule-email.js',
+    'api/_invite-request-notification.js',
   ];
   const paths = new Set();
   for (const file of files) {

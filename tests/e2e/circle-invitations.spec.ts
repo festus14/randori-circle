@@ -356,7 +356,14 @@ test('circle owner can view members, create a private copy action, and revoke in
   await page.locator('[data-tab="circle"]').click();
   await expect(page.getByTestId('circle-members')).toContainText('Team Mate');
   await expect(page.getByTestId('circle-invite-email')).toBeVisible();
-  await expect(page.getByTestId('circle-invites')).toContainText('a1b2c3d4e5f6');
+  const invites = page.getByTestId('circle-invites');
+  const firstRow = invites.locator(`[data-invitation-id="${firstInvitationId}"]`);
+  await expect(firstRow).toBeVisible();
+  await expect(firstRow).toHaveAttribute('data-invitation-status', 'pending');
+  await expect(firstRow).toContainText('Pending');
+  // Raw email fingerprints and ISO timestamps are never shown.
+  await expect(invites).not.toContainText('a1b2c3d4e5f6');
+  await expect(invites).not.toContainText('2026-09-25T12:00:00.000Z');
 
   await page.getByTestId('circle-invite-email').fill('New.Member@Example.test');
   await page.getByTestId('circle-invite-create').click();
@@ -367,7 +374,14 @@ test('circle owner can view members, create a private copy action, and revoke in
   await page.getByTestId('circle-invite-link').click();
   await expect.poll(() => copiedInvite).toBe(new URL(`/invite#invite=${rawInvite}`, page.url()).href);
 
-  await expect(page.getByTestId('circle-invites')).toContainText('f6e5d4c3b2a1');
+  const secondRow = invites.locator(`[data-invitation-id="${secondInvitationId}"]`);
+  // The owner recognises the invitation they just sent by its address (memory only).
+  await expect(secondRow).toContainText('New.Member@Example.test');
+  await expect(invites).not.toContainText('f6e5d4c3b2a1');
+  copiedInvite = '';
+  await secondRow.getByTestId('circle-invite-copy').click();
+  await expect.poll(() => copiedInvite).toBe(new URL(`/invite#invite=${rawInvite}`, page.url()).href);
+  await expect(firstRow.getByTestId('circle-invite-copy')).toHaveCount(0);
   await expect(page.getByTestId('circle-invite-revoke')).toHaveCount(2);
   await expect(page.getByTestId('circle-invite-resend')).toHaveCount(2);
   await page.getByTestId('circle-invite-resend').last().click();
@@ -379,7 +393,10 @@ test('circle owner can view members, create a private copy action, and revoke in
   await page.getByTestId('circle-invite-revoke').last().click();
   await expect.poll(() => revokedIds).toEqual([secondInvitationId]);
   await expect(page.getByTestId('circle-invite-link')).toBeHidden();
-  await expect(page.getByTestId('circle-invites')).toContainText('revoked');
+  await expect(invites.locator(`[data-invitation-id="${secondInvitationId}"][data-invitation-status="revoked"]`)).toHaveCount(1);
+  await invites.getByText('Earlier invitations (1)').click();
+  await expect(secondRow).toContainText('Revoked');
+  await expect(secondRow.getByTestId('circle-invite-resend')).toHaveCount(0);
 });
 
 test('multi-circle selection reloads into the chosen isolated roster and invitations',async({page})=>{
@@ -484,7 +501,7 @@ test('multi-circle selection reloads into the chosen isolated roster and invitat
     await expect(page.getByTestId('circle-context-select')).toHaveValue('circle-secondary');
     await expect(page.getByTestId('circle-members')).toContainText('Secondary Teammate');
     await expect(page.getByTestId('circle-members')).not.toContainText('Primary Owner');
-    await expect(page.getByTestId('circle-invites')).toContainText('secondary123');
+    await expect(page.getByTestId('circle-invites').locator('[data-invitation-id="22222222-2222-4222-8222-222222222222"]')).toHaveCount(1);
   }finally{
     releaseCapabilities();
     releaseProfile();
@@ -561,7 +578,7 @@ for(const delayedAction of ['create','resend'] as const){
       await page.locator('[data-tab="circle"]').click();
       const selector=page.getByTestId('circle-context-select');
       await expect(selector).toHaveValue('circle-primary');
-      await expect(page.getByTestId('circle-invites')).toContainText('primary-only');
+      await expect(page.getByTestId('circle-invites').locator(`[data-invitation-id="${invitationId}"]`)).toHaveCount(1);
 
       const actionResponse=page.waitForResponse(response=>{
         const request=response.request();
@@ -674,7 +691,7 @@ test('an identity refresh recovers from a pending circle switch without reviving
     currentUser=replacement;
     expect(await page.evaluate(()=>(window as any)._randori_auth.refreshMe())).toBe(true);
     await expect(page.getByTestId('circle-members')).toContainText('Replacement Owner');
-    await expect(page.getByTestId('circle-invites')).toContainText('replacement-only');
+    await expect(page.getByTestId('circle-invites').locator('[data-invitation-id="77777777-7777-4777-8777-777777777777"]')).toHaveCount(1);
 
     releaseSwitch();
     const completed=await switchResponse;
@@ -683,7 +700,7 @@ test('an identity refresh recovers from a pending circle switch without reviving
     await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
     await expect(page.getByTestId('circle-members')).toContainText('Replacement Owner');
     await expect(page.getByTestId('circle-members')).not.toContainText('Team Mate');
-    await expect(page.getByTestId('circle-invites')).toContainText('replacement-only');
+    await expect(page.getByTestId('circle-invites').locator('[data-invitation-id="77777777-7777-4777-8777-777777777777"]')).toHaveCount(1);
   }finally{
     releaseSwitch();
   }
@@ -837,6 +854,7 @@ test('flag-off legacy circle responses keep the existing roster and admin testin
     },
   });
   await resetClientState(page, true);
+  await page.clock.install();
 
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await expect(page.locator('#meLabel')).toContainText('Circle Owner');
@@ -846,6 +864,12 @@ test('flag-off legacy circle responses keep the existing roster and admin testin
   await expect(page.locator('#legacyCircleAddActions')).toBeVisible();
   await expect(page.locator('#legacyCircleDemoActions')).toBeVisible();
   await expect(page.getByTestId('circle-invite-email')).toBeHidden();
+  // The cold-start auth UI refresh (1.2 s after load) used to hide the admin
+  // controls whenever the roster rendered before it fired. Run past it.
+  await page.clock.runFor(2_000);
+  await expect(page.locator('#circleRoleLabel')).toHaveText('legacy');
+  await expect(page.locator('#legacyCircleAddActions')).toBeVisible();
+  await expect(page.locator('#circleAutoNote')).toHaveText('2 members');
 });
 
 test('a successful one-time invitation remains copyable when the list refresh fails', async ({ page }) => {

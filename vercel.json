@@ -1,5 +1,6 @@
 {
   "cleanUrls": true,
+  "git": { "deploymentEnabled": { "main": true, "codex/**": false } },
   "regions": ["dub1"],
   "headers": [
     {
@@ -102,6 +103,14 @@
     {
       "source": "/api/invitations/prepare",
       "destination": "/api/invitations?endpoint=prepare"
+    },
+    {
+      "source": "/api/invite-requests",
+      "destination": "/api/invitations?endpoint=invite-requests"
+    },
+    {
+      "source": "/api/invite-requests/decision",
+      "destination": "/api/invitations?endpoint=invite-request-decision"
     },
     {
       "source": "/api/invitations/:id",

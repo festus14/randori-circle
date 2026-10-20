@@ -101,6 +101,11 @@ export const MIGRATION_CONTRACTS=Object.freeze([
     name:'bounded-source-bound-code-documents',
     checksum:'e9ddba8da87a5e6a5ccbb29fb9c4956de6b66ee1430c5e58c49cbd3688c9e3c6',
   }),
+  Object.freeze({
+    version:21,
+    name:'public-invite-requests',
+    checksum:'b68bd2fbb88e0cae3ce125a16b2f20dac48ea3f2600e179ad9dcc5a33f3f42e8',
+  }),
 ]);
 
 export const LATEST_MIGRATION_VERSION=MIGRATION_CONTRACTS.at(-1)?.version||0;
