@@ -529,8 +529,13 @@ test('notification configuration, payload parsing, rendering, and suppression fa
     [500,'PROVIDER_FAILED',true]]){
     const failing=notification.createInviteRequestNotificationHandler({db:currentDb,baseUrl:ORIGIN,
       send:async()=>({error:Object.assign(new Error('provider'),{statusCode:status})})});
-    await assert.rejects(failing(event(payload)),error=>error.code===code&&error.retryable===retryable);
+    await assert.rejects(failing(event(payload)),error=>error.code===code&&error.retryable===retryable
+      &&error.providerReason===`${status}:other:other`);
   }
+  const restricted=notification.createInviteRequestNotificationHandler({db:currentDb,baseUrl:ORIGIN,
+    send:async()=>({error:{statusCode:403,name:'validation_error',message:'You can only send testing emails to your own email address (owner@example.test). To send emails to other recipients, please verify a domain at resend.com/domains, and change the `from` address to an email using this domain.'}})});
+  await assert.rejects(restricted(event(payload)),error=>error.code==='PROVIDER_REJECTED'
+    &&error.providerReason==='403:validation_error:testing_recipient_restricted');
   const passthrough=notification.createInviteRequestNotificationHandler({db:currentDb,baseUrl:ORIGIN,
     send:async()=>{ throw new (await import('../../api/_outbox.js')).OutboxDeliveryError('DELIVERY_TIMEOUT'); }});
   await assert.rejects(passthrough(event(payload)),error=>error.code==='DELIVERY_TIMEOUT');

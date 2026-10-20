@@ -206,7 +206,7 @@ test('the owner recovers an overdue cycle and then sees only the published serve
   await page.goto('/', { waitUntil: 'domcontentloaded' });
 
   await page.locator('[data-tab="pair"]').click();
-  await expect(page.locator('#pairsList')).toContainText('scheduled run did not publish');
+  await expect(page.locator('#pairsList')).toContainText('not published automatically');
   await expect(page.locator('#pairsList')).not.toContainText('Fake local week');
   await expect(page.locator('#roomSelect')).toHaveValue('');
   await expect(page.getByRole('button', { name: 'Remix' })).toHaveCount(0);
@@ -292,7 +292,7 @@ test('a signed-in member never sees stale or local fallback pairs as this week',
   await page.goto('/', { waitUntil: 'domcontentloaded' });
 
   await page.locator('[data-tab="pair"]').click();
-  await expect(page.locator('#currentWeekMeta')).toContainText('awaiting current-cycle publication');
+  await expect(page.locator('#currentWeekMeta')).toContainText('pairs not published yet');
   await expect(page.locator('#pairsList')).toContainText('No pairings have been published for the current cycle');
   await expect(page.locator('#pairsList')).not.toContainText('Future Pair');
   await expect(page.locator('#pairsList')).not.toContainText('Fake Local Person');
@@ -348,7 +348,7 @@ test('Pairing failure revokes a previously authorized live-room fallback',async(
 
   await expect(page.locator('#pairsList')).toContainText('Local or cached pairs are not shown');
   await expect(page.locator('#roomSelect')).toHaveValue('');
-  await expect(page.locator('#roomSelect')).not.toContainText('Authorized pairing room');
+  await expect(page.locator('#roomSelect')).not.toContainText('Your pair room');
   expect(await page.evaluate(()=>(window as typeof window&{_randori_authorized_room?:string|null})._randori_authorized_room||null)).toBeNull();
   expect(await page.evaluate(()=>localStorage.getItem('randori-last-room'))).toBeNull();
 });
@@ -662,9 +662,9 @@ test('odd-member assignment is truthful solo practice without partner or AI clai
   const card = page.getByTestId('solo-practice-card');
   await expect(card).toBeVisible();
   await expect(card).toContainText('Solo practice');
-  await expect(card).toContainText('odd-member assignment');
+  await expect(card).toContainText('odd number of members');
   await expect(card).not.toContainText(/AI partner|invite/i);
-  await expect(card.getByRole('button', { name: 'Open Solo Catalogue + Code' })).toBeVisible();
+  await expect(card.getByRole('button', { name: 'Open solo practice' })).toBeVisible();
   await expect(card.getByRole('button', { name: /copy|email|invite/i })).toHaveCount(0);
   await expect(page.locator('#dashScheduleArea')).toBeEmpty();
   await expect(page.locator('#dashChatArea')).toBeEmpty();

@@ -430,6 +430,8 @@ test('list reports derived statuses, hides raw values, and fails closed',async()
   assert.deepEqual(statuses,{[ids[0]]:'revoked',[ids[1]]:'used',[ids[2]]:'expired',[ids[3]]:'pending'});
   assert.equal(listed.body.count,4);
   assert.ok(listed.body.invitations.every(item=>item.email_fingerprint.length===12));
+  assert.deepEqual(listed.body.invitations.map(item=>item.email_rejected),
+    listed.body.invitations.map(item=>item.status==='pending'?false:undefined));
 
   const real=currentDb;
   currentDb=faulty(real,{execute:(statement)=>sqlOf(statement).includes('WITH owner AS')?Promise.resolve({rows:[]}):null});
@@ -437,6 +439,47 @@ test('list reports derived statuses, hides raw values, and fails closed',async()
   currentDb=faulty(real,{execute:(statement)=>sqlOf(statement).includes('WITH owner AS')?Promise.reject(new Error('boom')):null});
   assert.equal((await invoke({headers:OWNER})).status,503);
   assert.ok(captured.includes('circle_invitation_list_fail'));
+});
+
+test('list flags pending invitations whose latest email the provider rejected, without provider detail',async()=>{
+  enableEmail();
+  currentDb=await database();
+  await adoptCredentialKeyControl(currentDb,invitationEmail.invitationKeyRing());
+  const rejectedId=(await createInvitation({email:'rejected@example.test'})).body.invitation.id;
+  const okId=(await createInvitation({email:'fine@example.test'})).body.invitation.id;
+  const revokedId=(await createInvitation({email:'gone@example.test'})).body.invitation.id;
+  const markRejected=id=>currentDb.execute({sql:`UPDATE outbox_events SET status='dead_letter',
+      last_error_code='PROVIDER_REJECTED',dead_lettered_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+      lease_owner=NULL,lease_token=NULL,leased_until=NULL
+    WHERE json_extract(payload_json,'$.invitation_id')=?`,args:[id]});
+  await markRejected(rejectedId);
+  await markRejected(revokedId);
+  await currentDb.execute({sql:`UPDATE outbox_events SET status='dead_letter',last_error_code='PROVIDER_UNAVAILABLE',
+      lease_owner=NULL,lease_token=NULL,leased_until=NULL
+    WHERE json_extract(payload_json,'$.invitation_id')=?`,args:[okId]});
+  await currentDb.execute({sql:`UPDATE circle_invitations SET revoked_at=datetime('now') WHERE id=?`,args:[revokedId]});
+  const flags=async()=>Object.fromEntries((await invoke({headers:OWNER})).body.invitations
+    .map(item=>[item.id,item.email_rejected]));
+  const listed=await invoke({headers:OWNER});
+  assert.equal(listed.status,200);
+  assert.deepEqual(await flags(),{[rejectedId]:true,[okId]:false,[revokedId]:undefined});
+  assert.doesNotMatch(JSON.stringify(listed.body),/PROVIDER_|validation_error|@example\.test/);
+
+  // A newer send (resend) for the same invitation clears the hint.
+  await currentDb.execute({sql:`INSERT INTO outbox_events (event_type,event_version,idempotency_key,payload_json,
+      status,not_before,next_attempt_at)
+    SELECT event_type,event_version,?,payload_json,'pending',not_before,next_attempt_at
+    FROM outbox_events WHERE json_extract(payload_json,'$.invitation_id')=? ORDER BY id LIMIT 1`,
+  args:[`invitation-email/v1/${rejectedId}/2`,rejectedId]});
+  assert.equal((await flags())[rejectedId],false);
+
+  // An outbox read failure only hides the hint; the list still answers.
+  const real=currentDb;
+  currentDb=faulty(real,{execute:(statement)=>sqlOf(statement).includes("event.status='dead_letter'")
+    ?Promise.reject(new Error('boom')):null});
+  const degraded=await invoke({headers:OWNER});
+  assert.equal(degraded.status,200);
+  assert.ok(degraded.body.invitations.every(item=>item.email_rejected!==true));
 });
 
 test('revoke requires a valid target and rolls back on audit or storage failure',async()=>{

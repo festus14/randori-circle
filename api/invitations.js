@@ -655,6 +655,37 @@ async function handleResend(req,res){
   }finally{ try{ await transaction?.close?.(); }catch{} }
 }
 
+// Pending invitations whose latest invitation email was refused by the
+// provider (dead-lettered as PROVIDER_REJECTED), so the owner can share the
+// link another way. Reads dead letters only (status index) and never exposes
+// provider details. A failure here only hides the hint.
+async function rejectedInvitationEmails(db,invitations){
+  const pending=new Set(invitations.filter(item=>item.status==='pending').map(item=>item.id));
+  if(!pending.size) return new Set();
+  try{
+    const result=await db.execute({
+      sql:`SELECT json_extract(event.payload_json,'$.invitation_id') AS invitation_id
+        FROM outbox_events event
+        WHERE event.status='dead_letter' AND event.event_type=?
+          AND event.last_error_code='PROVIDER_REJECTED'
+          AND NOT EXISTS (SELECT 1 FROM outbox_events newer
+            WHERE newer.event_type=event.event_type AND newer.id>event.id
+              AND json_extract(newer.payload_json,'$.invitation_id')=json_extract(event.payload_json,'$.invitation_id'))
+        ORDER BY event.id DESC
+        LIMIT 200`,
+      args:[INVITATION_EMAIL_EVENT_TYPE],
+    });
+    const rejected=new Set();
+    for(const row of result.rows||[]){
+      const id=String(row.invitation_id??'');
+      if(pending.has(id)) rejected.add(id);
+    }
+    return rejected;
+  }catch{
+    return new Set();
+  }
+}
+
 async function handleList(req,res){
   const context=await ownerContext(req,res);
   if(!context) return;
@@ -676,13 +707,16 @@ async function handleList(req,res){
       args:[context.userId,Number(context.membership.circle_id??context.membership.id)],
     });
     if(!result.rows?.length) return res.status(403).json({error:'circle owner required'});
-    const invitations=result.rows.filter(row=>row.id!=null).map(row=>({
+    const listed=result.rows.filter(row=>row.id!=null).map(row=>({
       id:String(row.id),
       email_fingerprint:String(row.email_hash||'').slice(0,12),
       created_at:String(row.created_at),
       expires_at:String(row.expires_at),
       status:invitationStatus(row),
     }));
+    const rejected=await rejectedInvitationEmails(context.db,listed);
+    const invitations=listed.map(invitation=>invitation.status==='pending'
+      ?{...invitation,email_rejected:rejected.has(invitation.id)}:invitation);
     return res.json({ok:true,invitations,count:invitations.length,
       ...(multiCircleControlPlaneEnabled()?{circle_context_version:context.contextVersion}:{}),
     });

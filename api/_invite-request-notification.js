@@ -1,6 +1,7 @@
 import { escapeHtml } from './_pairing.js';
 import { normalizeInvitationEmail } from './_circle-membership.js';
 import { createOutboxEventStatement, OutboxDeliveryError } from './_outbox.js';
+import { emailProviderReason } from './_email-provider-reason.js';
 import { inviteRequestsEnabled } from './_invite-request-config.js';
 
 // Owner digest for new invite requests. Versioned outbox payload v1:
@@ -75,9 +76,9 @@ function notificationMetadata(event){
 function providerError(error){
   if(error instanceof OutboxDeliveryError) return error;
   const status=Number(error?.statusCode||error?.status||error?.response?.status||error?.error?.statusCode);
-  if(status===429) return new OutboxDeliveryError('PROVIDER_RATE_LIMITED',{retryable:true,cause:error});
-  if(status>=400&&status<=499) return new OutboxDeliveryError('PROVIDER_REJECTED',{retryable:false,cause:error});
-  return new OutboxDeliveryError('PROVIDER_FAILED',{retryable:true,cause:error});
+  if(status===429) return new OutboxDeliveryError('PROVIDER_RATE_LIMITED',{retryable:true,cause:error,providerReason:emailProviderReason(error)});
+  if(status>=400&&status<=499) return new OutboxDeliveryError('PROVIDER_REJECTED',{retryable:false,cause:error,providerReason:emailProviderReason(error)});
+  return new OutboxDeliveryError('PROVIDER_FAILED',{retryable:true,cause:error,providerReason:emailProviderReason(error)});
 }
 
 function validBaseOrigin(baseUrl,localRuntime){

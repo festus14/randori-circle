@@ -138,6 +138,28 @@ test('describeInvitation never exposes fingerprints and explains each lifecycle 
   assert.equal(ui.describeInvitation({ id: ID_A }, { knownEmail: 'x'.repeat(300) }).title, 'Private invitation');
 });
 
+test('a rejected invitation email shows an owner hint only for pending invitations', () => {
+  const rejected = ui.describeInvitation({ id: ID_A, status: 'pending', email_rejected: true }, { now: NOW });
+  assert.equal(rejected.emailRejected, true);
+  assert.equal(ui.invitationEmailRejectedHint(rejected, { canCopy: true }),
+    'Email couldn\u2019t be sent \u2014 use Copy link to share it privately.');
+  assert.equal(ui.invitationEmailRejectedHint(rejected),
+    'Email couldn\u2019t be sent \u2014 use Resend for a fresh link, then Copy link.');
+
+  for (const invitation of [
+    { id: ID_A, status: 'pending' },
+    { id: ID_A, status: 'pending', email_rejected: 'true' },
+    { id: ID_A, status: 'pending', email_rejected: false },
+    { id: ID_B, status: 'expired', email_rejected: true },
+    { id: ID_C, status: 'revoked', email_rejected: true },
+  ]) {
+    const view = ui.describeInvitation(invitation, { now: NOW });
+    assert.equal(view.emailRejected, false, JSON.stringify(invitation));
+    assert.equal(ui.invitationEmailRejectedHint(view, { canCopy: true }), null);
+  }
+  assert.equal(ui.invitationEmailRejectedHint(null), null);
+});
+
 test('partitionInvitations and invitationSummary separate pending from earlier invitations', () => {
   const list = [
     { id: ID_A, status: 'pending' }, { id: ID_B, status: 'revoked' }, { id: ID_C, status: 'used' },
@@ -400,9 +422,18 @@ test('history rows and counts read as a clean list', () => {
   const fallback = ui.historyRowView({ week_id: 4, pg_id: 1, is_ai: true, topic_kind: 'system_design' });
   assert.equal(fallback.partner, 'Pair member');
   assert.equal(fallback.partnerInitials, 'AI');
-  assert.equal(fallback.week, 'Week 4');
-  assert.equal(fallback.meta, 'Week 4 · system_design');
-  assert.equal(ui.historyRowView({ week_id: 5, pg_id: 2 }).meta, 'Week 5');
+  // week_id is a row id, not a week number, so it never becomes a label.
+  assert.equal(fallback.week, 'Pairing');
+  assert.equal(fallback.meta, 'Pairing · System design');
+  assert.equal(ui.historyRowView({ week_id: 5, pg_id: 2 }).meta, 'Pairing');
+  // Raw cycle keys never reach the list: the start date wins, then the week number.
+  const dated = ui.historyRowView(
+    { week_id: 6, pg_id: 3, week_label: '2026-W44', week_start: '2026-10-26T12:00:00.000Z' },
+    { locale: 'en-GB', now: Date.parse('2026-11-02T12:00:00Z') },
+  );
+  assert.equal(dated.week, 'Week of 26 Oct');
+  assert.doesNotMatch(dated.meta, /W44/);
+  assert.equal(ui.historyRowView({ week_id: 7, pg_id: 4, week_label: '2026-W44' }).week, 'Week 44');
   assert.equal(ui.historyRowView({ week_id: 0, pg_id: 1 }), null);
   assert.equal(ui.historyRowView({ week_id: 1, pg_id: 'x' }), null);
   assert.equal(ui.historyRowView(null), null);
@@ -413,13 +444,16 @@ test('history rows and counts read as a clean list', () => {
 
 test('run summaries keep the verified-run wording and humanise language and duration', () => {
   const run = ui.runSummary({ question_slug: 'focus-block-rollup', question_version: 2, language: 'python', passed_count: 8, total_count: 8, duration_ms: 1234 });
-  assert.equal(run.title, 'Verified run · focus-block-rollup v2');
+  assert.equal(run.title, 'Verified run · Focus block rollup');
   assert.equal(run.meta, 'Python · 8/8 passed · 1.2 s');
   assert.equal(run.allPassed, true);
   const partial = ui.runSummary({ question_slug: 's', question_version: 1, language: 'elixir', passed_count: 1, total_count: 3, duration_ms: null });
   assert.equal(partial.meta, 'Elixir · 1/3 passed');
   assert.equal(partial.allPassed, false);
   assert.equal(ui.runSummary({ question_slug: 's', question_version: 1, language: '', passed_count: 0, total_count: 0 }).allPassed, false);
+  assert.equal(ui.exerciseLabel('two_sum-fast'), 'Two sum fast');
+  assert.equal(ui.exerciseLabel(''), 'Exercise');
+  assert.equal(ui.exerciseLabel(null), 'Exercise');
   assert.equal(ui.languageLabel(''), 'Unknown language');
   assert.equal(ui.languageLabel('CPP'), 'C++');
   assert.equal(ui.durationLabel(250), '250 ms');

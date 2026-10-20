@@ -270,7 +270,7 @@ test('an invite OAuth error cannot downgrade to login while identity hydration i
 
   await page.goto('/invite?google_error=access_denied',{waitUntil:'domcontentloaded'});
 
-  await expect(page.getByTestId('invite-status')).toContainText('could not be verified');
+  await expect(page.getByTestId('invite-status')).toContainText('couldn’t check whether you’re signed in');
   await expect(page.getByTestId('invite-continue')).toBeDisabled();
   await expect(page.locator('#authGoogleRetry')).toBeHidden();
   await expect.poll(()=>meCalls).toBeGreaterThanOrEqual(3);

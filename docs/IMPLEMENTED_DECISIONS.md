@@ -2919,6 +2919,53 @@ imply admin (production admin tools are operator-level, not circle-level).
 
 **Residual risk.** Any one co-owner can demote every other co-owner, and any
 admin can revoke other admins down to one; that is the requested "similar to
-me" authority. The legacy email-based promote action still bypasses recent
-auth and audit; removing it is a follow-up. Full contract in
+me" authority. The legacy email-based promote action (which bypassed recent
+auth and audit) has since been retired and returns `410`. Full contract in
 [`MEMBER_LIFECYCLE.md`](MEMBER_LIFECYCLE.md#co-owners-and-app-admins).
+
+## ID-70: Retire the legacy admin promote; record non-PII email provider reject reasons
+
+Status: implemented; no migration, no flag.
+
+**Context.** `POST /api/admin/reshuffle` with `{"action":"promote","email":…}`
+set `auth_accounts.is_admin=1` by email for any admin, with no recent-auth
+proof and no audit row. ID-69 added audited, recent-auth role changes on
+`PATCH /api/members`. Separately, on 2026-10-20 all nine production
+`invitation.email.requested` events dead-lettered as `PROVIDER_REJECTED` on
+attempt 1. Only that code was stored, and Vercel Hobby keeps logs briefly, so
+the provider's reason was lost.
+
+**Decision.**
+- The promote action now returns `410` with `code: legacy_promote_retired`
+  and points to `PATCH /api/members` (`grant_admin`, `revoke_admin`,
+  `make_owner`, `remove_owner`). It returns before authentication or any
+  database access, so it cannot change roles. No UI, script, or workflow used
+  it. Reshuffle (pairing) and demo actions are unchanged.
+- Every Resend adapter (activation, password reset, invite-request digest,
+  pairing, secondary schedule, and, through the shared pairing classifier,
+  invitation and schedule mail) attaches a bounded provider reason to
+  provider 4xx/5xx errors: `status:name:reason`, for example
+  `403:validation_error:testing_recipient_restricted`. `name` is Resend's error
+  name from an allowlist, otherwise `other`. `reason` comes from matching known
+  Resend phrases (`testing_recipient_restricted`, `domain_not_verified`,
+  `invalid_from_address`, `invalid_recipient`, `api_key_invalid`,
+  `api_key_missing`, `api_key_restricted`, `quota_exceeded`, `rate_limited`,
+  `idempotency_conflict`, `missing_required_field`), otherwise `other`. The raw
+  message is never stored because it can contain addresses.
+- The reason is stored in the existing `outbox_audit_events.reason_code`
+  column (1–64 characters, no enum CHECK) of the `retry_scheduled` or
+  `dead_lettered` row. `outbox_events.last_error_code` keeps the stable code
+  (`PROVIDER_REJECTED`). No migration is needed.
+- `GET /api/cron/outbox-health` adds `recentRejectReasons`, which counts
+  24-hour dead letters by the reason on their latest `dead_lettered` audit row,
+  for example `{"domain_not_verified":9}`. It contains no rows, statuses, names,
+  or addresses.
+- `GET /api/invitations` adds `email_rejected` to pending rows when that
+  invitation's latest email dead-lettered as `PROVIDER_REJECTED`. The Circle
+  card then shows "Email couldn't be sent — use Copy link" (or "use Resend for
+  a fresh link, then Copy link" when no link is held in the tab).
+
+**Residual risk.** Phrase matching depends on Resend's wording; new wording is
+recorded as `other` with the status and error name still available. Dead
+letters from before this change keep the bare `PROVIDER_REJECTED` reason and
+are not counted.

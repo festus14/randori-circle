@@ -404,6 +404,10 @@
     const signIn = () => root._randori_auth?.openModal?.('signin');
     for (const id of ['requestInviteSignin', 'inviteSignin', 'activationSignin']) on(id, 'click', signIn);
     on('landingThemeToggle', 'click', () => el('themeToggle')?.click?.());
+    // "Privacy" links land on the note open, not on a closed disclosure.
+    for (const link of doc.querySelectorAll?.('a[href="#landingPrivacy"]') || []) {
+      link.addEventListener?.('click', () => { const note = el('landingPrivacy'); if (note) note.open = true; });
+    }
     on('requestInviteNote', 'input', updateCounter);
     on('requestInviteForm', 'submit', event => { void onSubmit(event); });
     for (const key of ['name', 'email', 'note']) {

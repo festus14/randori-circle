@@ -16,6 +16,7 @@ import {
   sealCredentialEnvelope,
 } from './_key-rotation.js';
 import { createOutboxEventStatement, OutboxDeliveryError, readOutboxMetrics, runOutboxWorker } from './_outbox.js';
+import { emailProviderReason } from './_email-provider-reason.js';
 import { outboxStatementIdentity } from './_outbox-identity.js';
 import {
   assertCredentialKeyControl,
@@ -487,9 +488,9 @@ export function createEmailActivationHandler({db,baseUrl,send}={}){
     }catch(error){
       if(error instanceof OutboxDeliveryError) throw error;
       const status=Number(error?.statusCode||error?.status||error?.response?.status||error?.error?.statusCode);
-      if(status===429) throw new OutboxDeliveryError('PROVIDER_RATE_LIMITED',{retryable:true,cause:error});
-      if(status>=400&&status<=499) throw new OutboxDeliveryError('PROVIDER_REJECTED',{retryable:false,cause:error});
-      throw new OutboxDeliveryError('PROVIDER_FAILED',{retryable:true,cause:error});
+      if(status===429) throw new OutboxDeliveryError('PROVIDER_RATE_LIMITED',{retryable:true,cause:error,providerReason:emailProviderReason(error)});
+      if(status>=400&&status<=499) throw new OutboxDeliveryError('PROVIDER_REJECTED',{retryable:false,cause:error,providerReason:emailProviderReason(error)});
+      throw new OutboxDeliveryError('PROVIDER_FAILED',{retryable:true,cause:error,providerReason:emailProviderReason(error)});
     }
   };
 }

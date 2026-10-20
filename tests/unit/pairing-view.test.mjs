@@ -357,12 +357,14 @@ test('pairs status copy matches each failure and never shows cached pairs', () =
   assert.match(offline.body, /Local or cached pairs are not shown/);
 
   const unverified = view.pairsStatusView('unverified');
-  assert.match(unverified.meta, /could not be verified/);
+  assert.match(unverified.meta, /could not be confirmed/);
+  assert.doesNotMatch(`${unverified.meta} ${unverified.body}`, /server state|verified/);
   assert.equal(unverified.retry, true);
 
   assert.match(view.pairsStatusView('future').meta, /not started/);
   assert.match(view.pairsStatusView('stale').meta, /ended/);
-  assert.match(view.pairsStatusView('invalid').meta, /could not be verified/);
+  assert.match(view.pairsStatusView('invalid').meta, /could not be confirmed/);
+  assert.doesNotMatch(view.pairsStatusView('future').meta, /returned/);
 
   const loading = view.pairsStatusView('loading');
   assert.equal(loading.retry, false);
@@ -372,10 +374,10 @@ test('pairs status copy matches each failure and never shows cached pairs', () =
 test('unpublished pairs explain the schedule for members and owners', () => {
   const upcoming = cycle({ cutoffAt: '2026-09-27T17:00:00.000Z' });
   const none = view.pairsStatusView('unpublished', { cycleId: '2026-W38', upcoming, locale: LOCALE });
-  assert.match(none.meta, /^Week 38 · awaiting current-cycle publication · next cutoff /);
+  assert.match(none.meta, /^Week 38 · pairs not published yet · next cutoff /);
   assert.equal(none.body, 'No pairings have been published for the current cycle.');
   const noNext = view.pairsStatusView('unpublished', { cycleId: '2026-W38' });
-  assert.equal(noNext.meta, 'Week 38 · awaiting current-cycle publication');
+  assert.equal(noNext.meta, 'Week 38 · pairs not published yet');
 
   const pending = view.pairsStatusView('unpublished', { cycleId: '2026-W38', publication: publication(), locale: LOCALE });
   assert.match(pending.meta, /^Week 38 · pairs publish .*18:00/);
@@ -386,7 +388,7 @@ test('unpublished pairs explain the schedule for members and owners', () => {
   });
   assert.equal(overdueOwner.tone, 'warning');
   assert.match(overdueOwner.meta, /publication is late/);
-  assert.match(overdueOwner.body, /scheduled run did not publish.*Publish now in Owner tools/);
+  assert.match(overdueOwner.body, /not published automatically.*Publish now in Owner tools/);
 
   const overdueMember = view.pairsStatusView('unpublished', { cycleId: '2026-W38', publication: publication({ state: 'overdue' }) });
   assert.match(overdueMember.body, /circle owner can publish it now/);
@@ -448,4 +450,11 @@ test('the pairing view keeps its test hooks and drops the browser-state framing'
   assert.match(section, /<details id="pairDiagnostics"[^>]+hidden/);
   assert.ok(section.indexOf('id="demoRunBtn"') > section.indexOf('id="pairDiagnostics"'), 'demo tools sit inside Diagnostics');
   assert.ok(section.indexOf('id="newWeekBtn"') > section.indexOf('id="pairOwnerPanel"'), 'publish lives in Owner tools');
+});
+
+test('room labels never show the raw pair room id', () => {
+  assert.equal(view.roomLabel('week_12_pair_34'), 'Pair room');
+  assert.equal(view.roomLabel(''), 'room —');
+  assert.equal(view.roomLabel(null), 'room —');
+  assert.equal(view.roomLabel('week_0_pair_1'), 'room —');
 });

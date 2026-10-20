@@ -366,6 +366,11 @@ test('provider failures are classified for retry by status and never leak raw er
   assert.equal(unknown.code,'PROVIDER_FAILED');
   assert.equal(unknown.retryable,true);
   assert.equal(classify(undefined).code,'PROVIDER_FAILED');
+  assert.equal(classify(undefined).providerReason,null);
+  assert.equal(classify({statusCode:403,name:'validation_error',message:'You can only send testing emails to your own email address (owner@example.test). To send emails to other recipients, please verify a domain at resend.com/domains, and change the `from` address to an email using this domain.'}).providerReason,'403:validation_error:testing_recipient_restricted');
+  assert.equal(classify({statusCode:429,name:'rate_limit_exceeded'}).providerReason,'429:rate_limit_exceeded:other');
+  assert.equal(classify({statusCode:503,name:'application_error'}).providerReason,'503:application_error:other');
+  assert.equal(limited.providerReason,'429:other:other');
 
   const primary=createPairingEmailHandler({db:primaryDb(),send:async()=>({error:{statusCode:500}}),baseUrl:BASE_URL});
   await rejectsDelivery(primary(primaryEvent()),'PROVIDER_UNAVAILABLE',true);

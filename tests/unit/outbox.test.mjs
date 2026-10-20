@@ -24,6 +24,7 @@ import {
   createResendEmailSender,
   PAIRING_EMAIL_EVENT_TYPE,
 } from '../../api/_pairing-email.js';
+import { readOutboxDeliveryHealth } from '../../api/_outbox-health.js';
 import { prepareMigrationConnection } from '../../db/migration-runner.js';
 import { createMigratedDatabase } from '../support/migrated-db.mjs';
 
@@ -687,6 +688,45 @@ test('provider 429 and 5xx errors retry without persisting provider or recipient
   assert.deepEqual(rows.map(item=>item.last_error_code),['PROVIDER_RATE_LIMITED','PROVIDER_UNAVAILABLE']);
   assert.equal(JSON.stringify({result,rows}).includes('person@example.test'),false);
   assert.equal(JSON.stringify({result,rows}).includes('secret-token'),false);
+});
+
+test('a provider rejection records a bounded, PII-free audit reason the health route aggregates',async()=>{
+  const {db}=await fixture();
+  for(const sequence of [1,2,3]) await enqueueOutboxEvent(db,event({sequence}));
+  const messages=[
+    'The example.test domain is not verified. Please, add and verify your domain on https://resend.com/domains',
+    'You can only send testing emails to your own email address (owner@example.test). To send emails to other recipients, please verify a domain at resend.com/domains, and change the `from` address to an email using this domain.',
+    'Something new happened for person@example.test',
+  ];
+  let call=0;
+  const result=await worker(db,{'test.notification':()=>{
+    const message=messages[call];
+    call+=1;
+    throw classifyPairingProviderError({statusCode:call===3?422:403,
+      name:call===3?'invalid_parameter':'validation_error',message});
+  }});
+  assert.equal(result.deadLettered,3);
+  const rows=(await db.execute('SELECT status,last_error_code FROM outbox_events ORDER BY id')).rows;
+  assert.deepEqual(rows.map(item=>[item.status,item.last_error_code]),
+    Array(3).fill(['dead_letter','PROVIDER_REJECTED']),'last_error_code keeps the stable code');
+  const audit=(await db.execute(`SELECT reason_code FROM outbox_audit_events
+    WHERE action='dead_lettered' ORDER BY outbox_event_id`)).rows.map(item=>item.reason_code);
+  assert.deepEqual(audit,['403:validation_error:domain_not_verified',
+    '403:validation_error:testing_recipient_restricted','422:invalid_parameter:other']);
+  const everything=JSON.stringify((await db.execute('SELECT * FROM outbox_audit_events')).rows);
+  assert.doesNotMatch(everything,/@|example\.test|resend\.com/);
+  const health=await readOutboxDeliveryHealth(db);
+  assert.deepEqual(health.recentRejectReasons,
+    {testing_recipient_restricted:1,domain_not_verified:1,other:1});
+});
+
+test('only well-formed provider reasons are accepted on delivery errors',()=>{
+  assert.equal(new OutboxDeliveryError('X',{providerReason:'403:validation_error:other'}).providerReason,
+    '403:validation_error:other');
+  for(const invalid of ['owner@example.test','403:validation_error','600:a:b','403:Upper:other',
+    `403:${'a'.repeat(31)}:other`,null,undefined,42]){
+    assert.equal(new OutboxDeliveryError('X',{providerReason:invalid}).providerReason,null,String(invalid));
+  }
 });
 
 test('a final failed attempt dead-letters and an audited replay preserves idempotency',async()=>{

@@ -84,13 +84,23 @@ async function insertEvent({status='pending',notBefore=iso(-1000),nextAttemptAt=
   leasedUntil=null,deliveredAt=null,deadLetteredAt=null}={}){
   sequence+=1;
   const leased=status==='processing';
-  await realDb.execute({
+  const inserted=await realDb.execute({
     sql:`INSERT INTO outbox_events (event_type,event_version,idempotency_key,payload_json,status,
       not_before,next_attempt_at,lease_owner,lease_token,leased_until,delivered_at,dead_lettered_at)
       VALUES ('health.test',1,?,?,?,?,?,?,?,?,?,?)`,
     args:[`health-key-${sequence}-private`,JSON.stringify({email:`person${sequence}@example.test`}),status,
       notBefore,nextAttemptAt,leased?'worker':null,leased?`token-${sequence}`:null,leased?leasedUntil:null,
       deliveredAt,deadLetteredAt],
+  });
+  return Number(inserted.lastInsertRowid);
+}
+
+async function insertAudit(eventId,{action='dead_lettered',reasonCode,toStatus='dead_letter'}){
+  await realDb.execute({
+    sql:`INSERT INTO outbox_audit_events
+      (outbox_event_id,action,actor_type,actor_ref,from_status,to_status,reason_code,attempt_number)
+      VALUES (?,?,'worker','worker-1','processing',?,?,1)`,
+    args:[eventId,action,toStatus,reasonCode],
   });
 }
 
@@ -203,7 +213,7 @@ test('/api/cron/outbox-health is GET-only, authenticated, uncached and aggregate
   assert.deepEqual({...empty.body,checkedAt:'x'},{
     ok:true,checkedAt:'x',oldestDueAgeMs:null,dueCount:0,processingStaleCount:0,
     oldestStaleLeaseAgeMs:null,deadLetterCount:0,deadLetterWindowMs:OUTBOX_HEALTH_DEAD_LETTER_WINDOW_MS,
-    lastDeliveredAt:null,
+    lastDeliveredAt:null,recentRejectReasons:{},
   });
   assert.ok(Math.abs(Date.parse(empty.body.checkedAt)-Date.now())<60_000);
 
@@ -230,8 +240,47 @@ test('/api/cron/outbox-health is GET-only, authenticated, uncached and aggregate
   assert.equal(health.body.deadLetterCount,1);
   assert.equal(health.body.lastDeliveredAt,deliveredAt);
   assert.deepEqual(Object.keys(health.body).sort(),['checkedAt','deadLetterCount','deadLetterWindowMs',
-    'dueCount','lastDeliveredAt','ok','oldestDueAgeMs','oldestStaleLeaseAgeMs','processingStaleCount']);
+    'dueCount','lastDeliveredAt','ok','oldestDueAgeMs','oldestStaleLeaseAgeMs','processingStaleCount',
+    'recentRejectReasons']);
   assert.doesNotMatch(JSON.stringify(health.body),/health-key|example\.test|token-|worker/);
+});
+
+test('outbox health aggregates recent dead-letter provider reject reasons without row details',async()=>{
+  const recent=iso(-60*60_000);
+  // The 2026-10-20 incident shape: invitation emails rejected on attempt 1.
+  for(let index=0;index<9;index+=1){
+    const id=await insertEvent({status:'dead_letter',deadLetteredAt:recent});
+    await insertAudit(id,{reasonCode:'403:validation_error:domain_not_verified'});
+  }
+  const testing=await insertEvent({status:'dead_letter',deadLetteredAt:recent});
+  await insertAudit(testing,{reasonCode:'403:validation_error:testing_recipient_restricted'});
+  // Only the latest dead_lettered audit row of a replayed event counts.
+  const replayed=await insertEvent({status:'dead_letter',deadLetteredAt:recent});
+  await insertAudit(replayed,{reasonCode:'422:missing_required_field:missing_required_field'});
+  await insertAudit(replayed,{action:'replayed',reasonCode:'OPERATOR_FIXED',toStatus:'pending'});
+  await insertAudit(replayed,{reasonCode:'403:validation_error:testing_recipient_restricted'});
+  // Unknown reasons, legacy error codes, old and non-dead-letter rows are ignored.
+  const unknown=await insertEvent({status:'dead_letter',deadLetteredAt:recent});
+  await insertAudit(unknown,{reasonCode:'403:validation_error:not_a_reason'});
+  const legacy=await insertEvent({status:'dead_letter',deadLetteredAt:recent});
+  await insertAudit(legacy,{reasonCode:'PROVIDER_REJECTED'});
+  const old=await insertEvent({status:'dead_letter',deadLetteredAt:iso(-48*60*60_000)});
+  await insertAudit(old,{reasonCode:'403:validation_error:domain_not_verified'});
+  const retrying=await insertEvent({status:'retry',notBefore:iso(-60_000),nextAttemptAt:iso(60*60_000)});
+  await insertAudit(retrying,{action:'retry_scheduled',toStatus:'retry',
+    reasonCode:'429:rate_limit_exceeded:rate_limited'});
+  const other=await insertEvent({status:'dead_letter',deadLetteredAt:recent});
+  await insertAudit(other,{reasonCode:'401:other:other'});
+
+  const health=await invoke(opsHandler,{url:'/api/cron/outbox-health',headers:{'x-cron-secret':CRON}});
+  assert.equal(health.status,200,JSON.stringify(health.body));
+  assert.equal(health.body.deadLetterCount,14);
+  assert.deepEqual(health.body.recentRejectReasons,{
+    testing_recipient_restricted:2,domain_not_verified:9,other:1,
+  });
+  assert.deepEqual(Object.keys(health.body.recentRejectReasons),
+    ['testing_recipient_restricted','domain_not_verified','other']);
+  assert.doesNotMatch(JSON.stringify(health.body),/example\.test|health-key|validation_error|403/);
 });
 
 test('outbox health fails closed when the database is unavailable or returns nonsense',async()=>{
@@ -241,7 +290,10 @@ test('outbox health fails closed when the database is unavailable or returns non
   assert.equal(noClient.status,503);
   assert.deepEqual(noClient.body,{ok:false,error:'outbox health unavailable'});
   for(const rows of [[],[{now_utc:'not a time'}],[{now_utc:'2026-10-19T00:00:00.000Z',due_count:-1}],
-    [{now_utc:'2026-10-19T00:00:00.000Z',due_count:0,last_delivered_at:'garbage'}]]){
+    [{now_utc:'2026-10-19T00:00:00.000Z',due_count:0,last_delivered_at:'garbage'}],
+    [{now_utc:'2026-10-19T00:00:00.000Z',due_count:0,reject_reasons_json:'not json'}],
+    [{now_utc:'2026-10-19T00:00:00.000Z',due_count:0,reject_reasons_json:'[1]'}],
+    [{now_utc:'2026-10-19T00:00:00.000Z',due_count:0,reject_reasons_json:'{"403:other:other":-1}'}]]){
     clientOverride={execute:async()=>({rows})};
     assert.equal((await invoke(opsHandler,{url:'/api/cron/outbox-health',headers})).status,503,JSON.stringify(rows));
   }

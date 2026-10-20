@@ -50,7 +50,6 @@ import {identityEmailKeyRotationStatus} from './_identity-linking.js';
 import { localRuntimeRequest } from './_local-runtime.js';
 import { configuredOutboxBaseUrl, OUTBOX_DELIVERY_TYPES, outboxDeliveryPlan } from './_outbox-delivery.js';
 import {
-  ensureAdminPromotionReadiness,
   ensureDemoResetReadiness,
   ensureDemoSeedReadiness,
   ensureDemoShuffleReadiness,
@@ -659,31 +658,33 @@ async function handleAvailability(req,res){
   }
 }
 
+// The legacy email-based promote action granted app admin with no recent-auth
+// proof and no audit row. It is retired: role changes go through
+// PATCH /api/members (owner/admin grant and revoke actions) which require a
+// recent-auth proof and write circle_audit_events. The response is a fixed 410
+// that opens no database connection, so the retired path cannot change roles.
+export const LEGACY_PROMOTE_RETIRED={
+  ok:false,
+  error:'legacy promote action retired',
+  code:'legacy_promote_retired',
+  replacement:{
+    method:'PATCH',
+    path:'/api/members',
+    actions:['grant_admin','revoke_admin','make_owner','remove_owner'],
+    note:'Requires a recent-auth proof and writes circle_audit_events.',
+  },
+};
+
 async function handleReshuffle(req,res){
-  if (req.method!=='POST') return res.status(405).json({ error:'POST only for reshuffle or promote' });
+  if (req.method!=='POST') return res.status(405).json({ error:'POST only for reshuffle' });
   const body = req.body||{};
   const queryAction=req.query?.action;
   const action=(body.action||queryAction||'').toString().toLowerCase();
-  // Preserve the legacy promotion operation, but make the old reshuffle URL a
-  // compatibility alias for the immutable current-cycle publication. There is
-  // deliberately no force/remix operation for a published cycle.
-  if(action!=='promote') return handlePairingRun(req,res);
-  let adminCtx = await requireAdmin(req,res);
-  if (!adminCtx) return;
-  const targetEmailRaw = body.email||body.target||req.query?.email;
-  if (!targetEmailRaw) return res.status(400).json({ error:'email required for promotion', example:{ action:'promote', email:'newadmin@example.com'}});
-  const targetEmail = String(targetEmailRaw).trim().toLowerCase();
-  if (!targetEmail.includes('@')) return res.status(400).json({ error:'invalid email'});
-  adminCtx=await prepareAdminOperation(adminCtx,res,ensureAdminPromotionReadiness);
-  if(!adminCtx) return;
-  const {db, callerEmail, callerIsAdminFlag} = adminCtx;
-  try{
-    const existing = await db.execute({ sql:`SELECT id,email,is_admin FROM auth_accounts WHERE lower(email)=? ORDER BY id LIMIT 2`, args:[targetEmail]});
-    if (!existing.rows.length){ return res.status(404).json({ ok:false, error:'user not found in auth_accounts — ask them to sign up first, then promote, or add them to ADMIN_EMAILS env var to auto-admin on signup', target:targetEmail, note:'Adding to ADMIN_EMAILS env var will auto-promote on next signup/login/Google'}); }
-    if(existing.rows.length!==1) return res.status(503).json({error:'admin operation unavailable'});
-    await db.execute({ sql:`UPDATE auth_accounts SET is_admin=1 WHERE id=?`, args:[existing.rows[0].id]});
-    return res.json({ ok:true, promoted:targetEmail, id:existing.rows[0].id, by:callerEmail, is_admin_via:callerIsAdminFlag?'db':'env', note:'User is now admin (is_admin=1). They will get admin flag on next login/token refresh.' });
-  }catch(e){ return res.status(500).json({ error:'db error promoting', detail:String(e.message||e).slice(0,200)}); }
+  // The old reshuffle URL is a compatibility alias for the immutable
+  // current-cycle publication. There is deliberately no force/remix operation
+  // for a published cycle.
+  if(action==='promote') return res.status(410).json(LEGACY_PROMOTE_RETIRED);
+  return handlePairingRun(req,res);
 }
 
 function safeEmailDelivery(value){
@@ -1098,7 +1099,7 @@ async function handleOps(req,res,{isWeeklyDue=pairingCronIsDue}={}){
   }
   if (pathLower.includes('reshuffle')) return handleReshuffle(req,res);
   if (pathLower.includes('weekly')) return handleWeekly(req,res,{isDue:isWeeklyDue});
-  return res.status(404).json({ error:`unknown ops endpoint '${ep}'`, available:['availability','pairing-run','weekly','outbox','outbox-health','outbox-replay','promote via reshuffle?action=promote','demo-seed','demo-shuffle','demo-reset'] });
+  return res.status(404).json({ error:`unknown ops endpoint '${ep}'`, available:['availability','pairing-run','weekly','outbox','outbox-health','outbox-replay','demo-seed','demo-shuffle','demo-reset'] });
 }
 
 export function createOpsHandler({isWeeklyDue=pairingCronIsDue}={}){
