@@ -3079,7 +3079,7 @@ test('AI rejects missing content and enforces demo quota before provider calls',
   assert.equal(limited.body.demo, true);
 });
 
-test('operations cover preferences, availability, admin promotion, demo lifecycle, and cron auth', async () => {
+test('operations cover preferences, availability, retired admin promotion, demo lifecycle, and cron auth', async () => {
   process.env.APP_URL='https://randori.example.test';
   process.env.CRON_SECRET = 'cron-secret';
   let insertedId = 100;
@@ -3153,7 +3153,8 @@ test('operations cover preferences, availability, admin promotion, demo lifecycl
     method: 'POST', url: '/api/admin/reshuffle', query: { endpoint: 'reshuffle' }, headers: admin,
     body: { action: 'promote', email: 'user@example.test' },
   });
-  assert.equal(promoted.body.promoted, 'user@example.test');
+  assert.equal(promoted.status, 410);
+  assert.equal(promoted.body.code, 'legacy_promote_retired');
 
   const seeded = await invoke(opsHandler, { method: 'POST', url: '/api/demo-seed', query: { endpoint: 'demo-seed' }, headers: admin });
   assert.equal(seeded.body.seeded_count, 6);
@@ -3193,7 +3194,6 @@ test('operations cover preferences, availability, admin promotion, demo lifecycl
 
 test('admin operations authorize before readiness and perform no schema writes',async()=>{
   const cases=[
-    {url:'/api/admin/reshuffle',endpoint:'reshuffle',body:{action:'promote',email:'target@example.test'}},
     {url:'/api/demo-seed',endpoint:'demo-seed'},
     {url:'/api/demo-shuffle',endpoint:'demo-shuffle'},
     {url:'/api/demo-reset',endpoint:'demo-reset'},
@@ -3220,7 +3220,6 @@ test('admin operations authorize before readiness and perform no schema writes',
 
 test('admin operations reject anonymous callers before database access',async()=>{
   const cases=[
-    {url:'/api/admin/reshuffle',endpoint:'reshuffle',body:{action:'promote',email:'target@example.test'}},
     {url:'/api/demo-seed',endpoint:'demo-seed'},
     {url:'/api/demo-shuffle',endpoint:'demo-shuffle'},
     {url:'/api/demo-reset',endpoint:'demo-reset'},
@@ -3255,7 +3254,6 @@ test('administrator lookup failures are unavailable rather than false authorizat
 
 test('admin operation readiness failures are generic and precede every data mutation',async()=>{
   const cases=[
-    {url:'/api/admin/reshuffle',endpoint:'reshuffle',body:{action:'promote',email:'target@example.test'}},
     {url:'/api/demo-seed',endpoint:'demo-seed'},
     {url:'/api/demo-shuffle',endpoint:'demo-shuffle'},
     {url:'/api/demo-reset',endpoint:'demo-reset'},
@@ -3281,61 +3279,52 @@ test('admin operation readiness failures are generic and precede every data muta
   }
 });
 
-test('configured administrator synchronization follows validation and route readiness',async()=>{
+test('configured administrator synchronization follows route readiness',async()=>{
   executeHandler=sql=>{
     if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')){
       return rows([{id:1,email:'admin@example.test',is_admin:0}]);
     }
-    if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE lower(email)')){
-      return rows([{id:2,email:'target@example.test',is_admin:0}]);
-    }
     return rows();
   };
-
-  const invalid=await invoke(opsHandler,{
-    method:'POST',url:'/api/admin/reshuffle',query:{endpoint:'reshuffle'},
-    headers:{'x-test-auth':'admin'},body:{action:'promote',email:'invalid'},
-  });
-  assert.equal(invalid.status,400);
-  assert.equal(executed.some(call=>call.sql.includes('UPDATE auth_accounts SET is_admin=1')),false);
-
   executed.length=0;
-  const promoted=await invoke(opsHandler,{
-    method:'POST',url:'/api/admin/reshuffle',query:{endpoint:'reshuffle'},
-    headers:{'x-test-auth':'admin'},body:{action:'promote',email:'target@example.test'},
+  const reset=await invoke(opsHandler,{
+    method:'POST',url:'/api/demo-reset',query:{endpoint:'demo-reset'},headers:{'x-test-auth':'admin'},
   });
-  assert.equal(promoted.status,200);
+  assert.equal(reset.status,200,JSON.stringify(reset.body));
   const readinessIndex=executed.findIndex(call=>call.sql.includes('FROM auth_accounts LIMIT 0'));
-  const adminUpdates=executed.map((call,index)=>({call,index}))
+  const callerUpdates=executed.map((call,index)=>({call,index}))
     .filter(({call})=>call.sql.includes('UPDATE auth_accounts SET is_admin=1 WHERE id='));
-  const callerUpdateIndex=adminUpdates[0]?.index??-1;
-  const targetUpdateIndex=adminUpdates[1]?.index??-1;
-  assert.ok(readinessIndex>=0&&callerUpdateIndex>readinessIndex);
-  assert.ok(targetUpdateIndex>callerUpdateIndex);
-  assert.deepEqual(adminUpdates.map(({call})=>call.args),[[1],[2]]);
-  assert.equal(promoted.body.is_admin_via,'db');
+  assert.ok(readinessIndex>=0);
+  assert.equal(callerUpdates.length,1);
+  assert.ok(callerUpdates[0].index>readinessIndex);
+  assert.deepEqual(callerUpdates[0].call.args,[1]);
 });
 
-test('promotion rejects ambiguous case-insensitive legacy identities before mutation',async()=>{
-  executeHandler=sql=>{
-    if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE id=')){
-      return rows([{id:1,email:'admin@example.test',is_admin:1}]);
-    }
-    if(sql.includes('SELECT id,email,is_admin FROM auth_accounts WHERE lower(email)')){
-      return rows([
-        {id:2,email:'target@example.test',is_admin:0},
-        {id:3,email:'Target@Example.Test',is_admin:0},
-      ]);
-    }
-    return rows();
-  };
-  const response=await invoke(opsHandler,{
-    method:'POST',url:'/api/admin/reshuffle',query:{endpoint:'reshuffle'},
-    headers:{'x-test-auth':'admin'},body:{action:'promote',email:'target@example.test'},
-  });
-  assert.equal(response.status,503);
-  assert.deepEqual(response.body,{error:'admin operation unavailable'});
-  assert.equal(executed.some(call=>call.sql.includes('UPDATE auth_accounts SET is_admin=1')),false);
+test('the retired legacy promote action returns 410 without opening a database or changing roles',async()=>{
+  const requests=[
+    {headers:{},body:{action:'promote',email:'target@example.test'}},
+    {headers:{'x-test-auth':'user'},body:{action:'promote',email:'target@example.test'}},
+    {headers:{'x-test-auth':'admin'},body:{action:'promote',email:'target@example.test'}},
+    {headers:{'x-test-auth':'admin'},body:{action:'PROMOTE',target:'target@example.test'}},
+    {headers:{'x-test-auth':'admin'},query:{action:'promote',email:'target@example.test'}},
+  ];
+  for(const request of requests){
+    getClientCalls=0;
+    executed.length=0;
+    const response=await invoke(opsHandler,{
+      method:'POST',url:'/api/admin/reshuffle',query:{endpoint:'reshuffle',...(request.query||{})},
+      headers:request.headers,body:request.body,
+    });
+    assert.equal(response.status,410,JSON.stringify(request));
+    assert.equal(response.body.code,'legacy_promote_retired');
+    assert.equal(response.body.replacement.method,'PATCH');
+    assert.equal(response.body.replacement.path,'/api/members');
+    assert.ok(response.body.replacement.actions.includes('grant_admin'));
+    assert.ok(response.body.replacement.actions.includes('make_owner'));
+    assert.doesNotMatch(JSON.stringify(response.body),/target@example\.test/);
+    assert.equal(getClientCalls,0,'the retired action must not open a database');
+    assert.equal(executed.length,0);
+  }
 });
 
 test('admin and demo operations run against a fully migrated SQLite database without runtime DDL',async()=>{
@@ -3356,12 +3345,13 @@ test('admin and demo operations run against a fully migrated SQLite database wit
     ],'write');
     db=client;
 
-    const promoted=await invoke(opsHandler,{
+    const retired=await invoke(opsHandler,{
       method:'POST',url:'/api/admin/reshuffle',query:{endpoint:'reshuffle'},
       headers:{'x-test-auth':'admin'},body:{action:'promote',email:'target@example.test'},
     });
-    assert.equal(promoted.status,200,JSON.stringify(promoted.body));
-    assert.equal(promoted.body.promoted,'target@example.test');
+    assert.equal(retired.status,410,JSON.stringify(retired.body));
+    const target=await client.execute(`SELECT is_admin FROM auth_accounts WHERE id=2`);
+    assert.equal(Number(target.rows[0].is_admin),0,'the retired promote action must not grant admin');
 
     const seeded=await invoke(opsHandler,{
       method:'POST',url:'/api/demo-seed',query:{endpoint:'demo-seed'},headers:{'x-test-auth':'admin'},
@@ -3808,9 +3798,9 @@ test('operation validation rejects unsupported methods and non-admin mutations',
     return rows();
   };
   for (const [body, status] of [
-    [{ action: 'promote' }, 400],
-    [{ action: 'promote', email: 'not-an-email' }, 400],
-    [{ action: 'promote', email: 'missing@example.test' }, 404],
+    [{ action: 'promote' }, 410],
+    [{ action: 'promote', email: 'not-an-email' }, 410],
+    [{ action: 'promote', email: 'missing@example.test' }, 410],
   ]) {
     const result = await invoke(opsHandler, {
       method: 'POST', url: '/api/admin/reshuffle', query: { endpoint: 'reshuffle' }, headers: admin, body,

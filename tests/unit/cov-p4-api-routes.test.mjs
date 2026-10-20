@@ -195,41 +195,26 @@ test('ops routing resolves endpoints from query, search and path, and rejects un
   assert.ok(availability.headers['cache-control']);
 });
 
-test('admin promotion requires a database or configured admin and a single existing target', async ()=>{
+test('the retired legacy promote action never changes roles for any caller', async ()=>{
   const promote={url:'/api/ops/reshuffle',method:'POST'};
   assert.equal((await invoke(opsHandler,{...promote,method:'GET'})).status,405);
-  assert.equal((await invoke(opsHandler,{...promote,body:{action:'promote',email:'x@y'}})).status,401);
-  assert.equal((await invoke(opsHandler,{...promote,auth:'member',body:{action:'promote',email:'x@y'}})).status,403);
-  assert.equal((await invoke(opsHandler,{...promote,auth:'ghost',body:{action:'promote',email:'x@y'}})).status,403);
-
-  clientOverride=new Error('no database');
-  assert.equal((await invoke(opsHandler,{...promote,auth:'admin',body:{action:'promote',email:'x@y'}})).status,503);
-  clientOverride=null;
-
-  assert.match((await invoke(opsHandler,{...promote,auth:'admin',body:{action:'promote'}})).body.error,/email required/);
-  assert.equal((await invoke(opsHandler,{...promote,auth:'admin',query:{action:'promote',email:'not-an-email'}})).body.error,'invalid email');
-  assert.equal((await invoke(opsHandler,{...promote,auth:'admin',body:{action:'promote',target:'nobody@example.test'}})).status,404);
-
-  const promoted=await invoke(opsHandler,{...promote,auth:'admin',body:{action:'PROMOTE',email:' Member@Example.test '}});
-  assert.equal(promoted.status,200);
-  assert.equal(promoted.body.promoted,'member@example.test');
-  assert.equal(promoted.body.is_admin_via,'db');
-  assert.equal(Number(await scalar('SELECT is_admin FROM auth_accounts WHERE id=2')),1);
-  await realDb.execute('UPDATE auth_accounts SET is_admin=0 WHERE id=2');
-
-  // A configured (env) admin is persisted as a database admin before acting.
+  const before=Number(await scalar('SELECT COUNT(*) FROM auth_accounts WHERE is_admin=1'));
   process.env.ADMIN_EMAILS='env-admin@example.test';
-  const viaEnv=await invoke(opsHandler,{...promote,auth:'envadmin',body:{action:'promote',email:'member@example.test'}});
-  assert.equal(viaEnv.body.is_admin_via,'db');
-  assert.equal(Number(await scalar('SELECT is_admin FROM auth_accounts WHERE id=3')),1);
-  await realDb.execute('UPDATE auth_accounts SET is_admin=0 WHERE id IN (2,3)');
-
-  const lookupFailure=failingClient(/WHERE lower\(email\)=\?/);
-  clientOverride=lookupFailure;
-  const dbError=await invoke(opsHandler,{...promote,auth:'admin',body:{action:'promote',email:'member@example.test'}});
-  assert.equal(dbError.status,500);
-  assert.equal(dbError.body.error,'db error promoting');
-  assert.equal(lookupFailure.hits,1);
+  for(const auth of [undefined,'member','ghost','admin','envadmin']){
+    for(const request of [
+      {body:{action:'promote',email:'member@example.test'}},
+      {body:{action:'PROMOTE',email:' Member@Example.test '}},
+      {query:{action:'promote',email:'member@example.test'}},
+    ]){
+      const response=await invoke(opsHandler,{...promote,auth,...request});
+      assert.equal(response.status,410,`${auth}:${JSON.stringify(request)}`);
+      assert.equal(response.body.code,'legacy_promote_retired');
+      assert.equal(response.body.replacement.path,'/api/members');
+    }
+  }
+  assert.equal(Number(await scalar('SELECT is_admin FROM auth_accounts WHERE id=2')),0);
+  assert.equal(Number(await scalar('SELECT is_admin FROM auth_accounts WHERE id=3')),0);
+  assert.equal(Number(await scalar('SELECT COUNT(*) FROM auth_accounts WHERE is_admin=1')),before);
 });
 
 test('demo seed, shuffle and reset operate only on demo data and require an admin', async ()=>{

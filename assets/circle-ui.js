@@ -138,7 +138,18 @@
       canResend: status.key === 'pending',
       canRevoke: status.key === 'pending',
       active: status.key === 'pending',
+      emailRejected: status.key === 'pending' && invitation?.email_rejected === true,
     });
+  }
+
+  // Owner-facing hint when the provider refused a pending invitation's email.
+  // A copyable link exists only for the invitation created or resent in this
+  // tab; otherwise Resend issues a fresh link that can then be copied.
+  function invitationEmailRejectedHint(view, { canCopy = false } = {}) {
+    if (!view?.emailRejected) return null;
+    return canCopy
+      ? 'Email couldn\u2019t be sent \u2014 use Copy link to share it privately.'
+      : 'Email couldn\u2019t be sent \u2014 use Resend for a fresh link, then Copy link.';
   }
 
   function partitionInvitations(invitations) {
@@ -498,6 +509,7 @@
     historyRowView,
     iconNode,
     initials,
+    invitationEmailRejectedHint,
     invitationStatus,
     invitationSummary,
     inviteRequestCountLabel,
