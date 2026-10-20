@@ -392,6 +392,14 @@ test('provider failures map to retryable and terminal outbox errors',async()=>{
   assert.equal((await outcome(()=>({error:{statusCode:503}}))).code,'PROVIDER_FAILED');
   assert.deepEqual(await outcome(()=>{ throw new OutboxDeliveryError('CUSTOM_CODE',{retryable:false}); })
     .then(({code,retryable})=>({code,retryable})),{code:'CUSTOM_CODE',retryable:false},'outbox errors pass through');
+  const reason=async send=>{
+    try{ await createPasswordResetHandler({db,send,baseUrl:'https://randori.example.test'})(event); }
+    catch(error){ return error.providerReason; }
+  };
+  assert.equal(await reason(()=>({error:{statusCode:403,name:'validation_error',message:'You can only send testing emails to your own email address (owner@example.test). To send emails to other recipients, please verify a domain at resend.com/domains, and change the `from` address to an email using this domain.'}})),'403:validation_error:testing_recipient_restricted');
+  assert.equal(await reason(()=>({error:{statusCode:429,name:'rate_limit_exceeded'}})),'429:rate_limit_exceeded:other');
+  assert.equal(await reason(()=>({error:{statusCode:503}})),'503:other:other');
+  assert.equal(await reason(()=>{ throw new Error('socket hang up'); }),null);
 });
 
 test('status counts reset events by outbox state',async()=>{

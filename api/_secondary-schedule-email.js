@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { secondaryCircleScheduleEmailEnabled } from './_active-circle.js';
 import { createOutboxEventStatement, OutboxDeliveryError } from './_outbox.js';
+import { emailProviderReason } from './_email-provider-reason.js';
 import { escapeHtml } from './_pairing.js';
 import { normalizeScheduleInstant } from './_schedule.js';
 
@@ -354,17 +355,17 @@ function providerError(error){
   if(status===429){
     const retryAfter=Number(error?.retryAfterMs||error?.retry_after_ms);
     return new OutboxDeliveryError('PROVIDER_RATE_LIMITED',{
-      retryable:true,retryAfterMs:Number.isFinite(retryAfter)?retryAfter:null,cause:error,
+      retryable:true,retryAfterMs:Number.isFinite(retryAfter)?retryAfter:null,cause:error,providerReason:emailProviderReason(error),
     });
   }
   if(status>=500&&status<=599){
-    return new OutboxDeliveryError('PROVIDER_UNAVAILABLE',{retryable:true,cause:error});
+    return new OutboxDeliveryError('PROVIDER_UNAVAILABLE',{retryable:true,cause:error,providerReason:emailProviderReason(error)});
   }
   if(status>=400&&status<=499){
-    return new OutboxDeliveryError('PROVIDER_REJECTED',{retryable:false,cause:error});
+    return new OutboxDeliveryError('PROVIDER_REJECTED',{retryable:false,cause:error,providerReason:emailProviderReason(error)});
   }
   if(error instanceof OutboxDeliveryError) return error;
-  return new OutboxDeliveryError('PROVIDER_FAILED',{retryable:true,cause:error});
+  return new OutboxDeliveryError('PROVIDER_FAILED',{retryable:true,cause:error,providerReason:emailProviderReason(error)});
 }
 
 export function createSecondaryScheduleEmailHandler({db,origin,send}={}){

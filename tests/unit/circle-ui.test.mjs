@@ -138,6 +138,28 @@ test('describeInvitation never exposes fingerprints and explains each lifecycle 
   assert.equal(ui.describeInvitation({ id: ID_A }, { knownEmail: 'x'.repeat(300) }).title, 'Private invitation');
 });
 
+test('a rejected invitation email shows an owner hint only for pending invitations', () => {
+  const rejected = ui.describeInvitation({ id: ID_A, status: 'pending', email_rejected: true }, { now: NOW });
+  assert.equal(rejected.emailRejected, true);
+  assert.equal(ui.invitationEmailRejectedHint(rejected, { canCopy: true }),
+    'Email couldn\u2019t be sent \u2014 use Copy link to share it privately.');
+  assert.equal(ui.invitationEmailRejectedHint(rejected),
+    'Email couldn\u2019t be sent \u2014 use Resend for a fresh link, then Copy link.');
+
+  for (const invitation of [
+    { id: ID_A, status: 'pending' },
+    { id: ID_A, status: 'pending', email_rejected: 'true' },
+    { id: ID_A, status: 'pending', email_rejected: false },
+    { id: ID_B, status: 'expired', email_rejected: true },
+    { id: ID_C, status: 'revoked', email_rejected: true },
+  ]) {
+    const view = ui.describeInvitation(invitation, { now: NOW });
+    assert.equal(view.emailRejected, false, JSON.stringify(invitation));
+    assert.equal(ui.invitationEmailRejectedHint(view, { canCopy: true }), null);
+  }
+  assert.equal(ui.invitationEmailRejectedHint(null), null);
+});
+
 test('partitionInvitations and invitationSummary separate pending from earlier invitations', () => {
   const list = [
     { id: ID_A, status: 'pending' }, { id: ID_B, status: 'revoked' }, { id: ID_C, status: 'used' },

@@ -376,6 +376,15 @@ test('activation provider outcomes map to delivered, retryable, and terminal sta
   assert.deepEqual(await outcome(()=>{ throw new Error('timeout'); }),{code:'PROVIDER_FAILED',retryable:true});
   assert.deepEqual(await outcome(()=>{ throw new OutboxDeliveryError('ABORTED',{retryable:false}); }),
     {code:'ABORTED',retryable:false});
+  const reason=async send=>{
+    try{ await createEmailActivationHandler({db,send,baseUrl:'https://randori.example.test'})(event); }
+    catch(error){ return error.providerReason; }
+  };
+  assert.equal(await reason(()=>({error:{statusCode:403,name:'validation_error',message:'You can only send testing emails to your own email address (owner@example.test). To send emails to other recipients, please verify a domain at resend.com/domains, and change the `from` address to an email using this domain.'}})),'403:validation_error:testing_recipient_restricted');
+  assert.equal(await reason(()=>({error:{statusCode:429,name:'rate_limit_exceeded',message:'Too many requests'}})),
+    '429:rate_limit_exceeded:rate_limited');
+  assert.equal(await reason(()=>{ throw {statusCode:500,name:'internal_server_error'}; }),'500:internal_server_error:other');
+  assert.equal(await reason(()=>{ throw new Error('timeout'); }),null);
 });
 
 test('activation status counts outbox events by delivery state',async()=>{

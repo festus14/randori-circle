@@ -6175,10 +6175,18 @@ async function refreshMe(){
     const meta=document.createElement('div'); meta.className='small muted'; meta.textContent=view.detail;
     if(view.expiresTitle) meta.title=`Expires ${view.expiresTitle}`;
     details.append(title,meta);
+    const canCopy=latestInviteId===view.id&&!!latestInviteUrl;
+    const rejectedHint=circleUi.invitationEmailRejectedHint(view,{canCopy});
+    if(rejectedHint){
+      const hint=document.createElement('div'); hint.className='small circle-invite-email-rejected';
+      hint.dataset.testid='circle-invite-email-rejected'; hint.setAttribute('role','note');
+      hint.textContent=rejectedHint;
+      details.appendChild(hint);
+    }
     row.append(icon,details);
     if(view.active){
       const actions=document.createElement('div'); actions.className='circle-row-actions';
-      if(latestInviteId===view.id&&latestInviteUrl){
+      if(canCopy){
         const copy=document.createElement('button'); copy.type='button'; copy.className='btn secondary sm'; copy.dataset.testid='circle-invite-copy';
         copy.textContent='Copy link'; copy.setAttribute('aria-label',`Copy link for ${view.title}`);
         copy.addEventListener('click',()=>{ void copyLatestInviteLink(); });

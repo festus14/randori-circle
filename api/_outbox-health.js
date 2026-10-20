@@ -1,5 +1,7 @@
 // Aggregate-only outbox delivery health for schedulers and the watchdog.
 // Never returns payloads, idempotency keys, recipients or row identifiers.
+import { EMAIL_PROVIDER_REASON_CODES, parseEmailProviderReason } from './_email-provider-reason.js';
+
 export const OUTBOX_HEALTH_DEAD_LETTER_WINDOW_MS=24*60*60*1000;
 
 const ISO_NOW=`strftime('%Y-%m-%dT%H:%M:%fZ','now')`;
@@ -15,6 +17,26 @@ function instant(value){
   const milliseconds=Date.parse(String(value));
   if(!Number.isFinite(milliseconds)) throw new Error('outbox health unavailable');
   return milliseconds;
+}
+
+// Dead letters in the window grouped by the bounded provider reason recorded
+// on their latest dead_lettered audit row (see _email-provider-reason.js).
+function rejectReasons(value){
+  const reasons={};
+  if(value===null||value===undefined||value==='') return Object.freeze(reasons);
+  let parsed;
+  try{ parsed=JSON.parse(String(value)); }catch{ throw new Error('outbox health unavailable'); }
+  if(!parsed||typeof parsed!=='object'||Array.isArray(parsed)) throw new Error('outbox health unavailable');
+  for(const [code,total] of Object.entries(parsed)){
+    const reason=parseEmailProviderReason(code);
+    if(!reason) continue;
+    reasons[reason.reason]=(reasons[reason.reason]||0)+count(total);
+  }
+  const ordered={};
+  for(const reason of EMAIL_PROVIDER_REASON_CODES){
+    if(reasons[reason]) ordered[reason]=reasons[reason];
+  }
+  return Object.freeze(ordered);
 }
 
 function ageMs(now,then){
@@ -39,7 +61,19 @@ export async function readOutboxDeliveryHealth(db){
         AND leased_until<=clock.now_utc) AS oldest_stale_lease_at,
       (SELECT COUNT(*) FROM outbox_events WHERE status='dead_letter'
         AND dead_lettered_at>=clock.dead_letter_floor) AS dead_letter_count,
-      (SELECT MAX(delivered_at) FROM outbox_events WHERE status='delivered') AS last_delivered_at
+      (SELECT MAX(delivered_at) FROM outbox_events WHERE status='delivered') AS last_delivered_at,
+      (SELECT json_group_object(reason_code,reason_count) FROM (
+        SELECT audit.reason_code,COUNT(*) AS reason_count
+        FROM outbox_events event
+        JOIN outbox_audit_events audit ON audit.id=(
+          SELECT MAX(latest.id) FROM outbox_audit_events latest
+          WHERE latest.outbox_event_id=event.id AND latest.action='dead_lettered')
+        WHERE event.status='dead_letter'
+          AND event.dead_lettered_at>=strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 day')
+          AND audit.reason_code GLOB '[1-5][0-9][0-9]:*'
+        GROUP BY audit.reason_code
+        ORDER BY audit.reason_code
+        LIMIT 64)) AS reject_reasons_json
     FROM clock`);
   const row=result?.rows?.[0];
   const now=instant(row?.now_utc);
@@ -55,5 +89,6 @@ export async function readOutboxDeliveryHealth(db){
     deadLetterCount:count(row.dead_letter_count),
     deadLetterWindowMs:OUTBOX_HEALTH_DEAD_LETTER_WINDOW_MS,
     lastDeliveredAt:lastDelivered===null?null:new Date(lastDelivered).toISOString(),
+    recentRejectReasons:rejectReasons(row.reject_reasons_json),
   });
 }
