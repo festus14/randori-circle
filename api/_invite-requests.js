@@ -3,6 +3,7 @@ import { createHmac, randomUUID } from 'node:crypto';
 import { getJwtSecret } from './_db.js';
 import { hashInvitationEmail, normalizeInvitationEmail } from './_circle-membership.js';
 import { insertOwnerInvitation } from './_invitation-create.js';
+import { validateEmail } from '../assets/email-validation.js';
 import { outboxStatementIdentity } from './_outbox-identity.js';
 import { rateLimitAddress } from './_client-address.js';
 import {
@@ -84,11 +85,10 @@ export function validateInviteRequestInput(body){
       fields.name=`Use ${INVITE_REQUEST_NAME_MIN}–${INVITE_REQUEST_NAME_MAX} characters.`;
     }
   }
-  // Invite requests accept printable-ASCII addresses only, so control, bidi,
-  // and look-alike Unicode never reach the owner list (IDN users can use the
-  // owner's direct "invite by email" path).
-  const email=typeof body.email==='string'&&/^[\x21-\x7e]+$/.test(body.email.trim())
-    ?normalizeInvitationEmail(body.email):null;
+  // Invite requests use the strict shared rules (assets/email-validation.js,
+  // ID-68): printable ASCII only, so control, bidi, and look-alike Unicode
+  // never reach the owner list (IDN users enter the xn-- form).
+  const email=validateEmail(body.email).email;
   if(!email) fields.email='Enter a valid email address.';
   let note=null;
   if(body.note!==undefined&&body.note!==null){
@@ -384,6 +384,12 @@ export async function decideInviteRequest(db,{requestId,decision,ownerUserId,ema
         args:[circleId,String(row.email),circleId,hashInvitationEmail(String(row.email)),now],
       });
       const state=recheck.rows?.[0]||{};
+      // A request stored before the strict shared rules (ID-68) may hold an
+      // address a new invitation can no longer use; refuse it explicitly.
+      if(!validateEmail(String(row.email)).ok){
+        await rollback();
+        return decisionResult({status:'conflict',currentStatus:'pending',reason:'email_invalid'});
+      }
       if(Number(state.is_member)===1||Number(state.is_invited)===1){
         await rollback();
         return decisionResult({status:'conflict',currentStatus:'pending',

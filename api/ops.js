@@ -31,6 +31,7 @@ import {
   runOutboxInvocation,
   settleBeforeDeadline,
 } from './_outbox.js';
+import { readOutboxDeliveryHealth } from './_outbox-health.js';
 import {
   emailActivationKeyRotationStatus,
 } from './_email-activation.js';
@@ -145,15 +146,33 @@ function getEndpoint(req){
     return (path||'').toLowerCase();
   }catch{ return (req.url||'').split('?')[0].split('/').filter(Boolean).pop()?.toLowerCase()||''; }
 }
-function verifyCronAuth(req){
-  let secret;
-  try{ secret=getCronSecret(); }catch{ return false; }
-  const raw = req.headers['x-cron-secret'] || req.headers['X-Cron-Secret'] || req.headers['authorization'] || req.headers['Authorization'] || '';
-  const presented = typeof raw==='string' && raw.startsWith('Bearer ') ? raw.slice(7) : String(raw||'');
-  if(!presented) return false;
+export const OUTBOX_DISPATCH_SECRET_MIN_LENGTH=32;
+
+function secretMatches(secret,presented){
+  if(typeof secret!=='string'||!secret) return false;
   const expectedBuf=Buffer.from(secret);
   const presentedBuf=Buffer.from(presented);
   return expectedBuf.length===presentedBuf.length && timingSafeEqual(expectedBuf,presentedBuf);
+}
+
+// Optional, narrowly-scoped credential for external outbox schedulers. It is
+// ignored (fail closed for this secret only) unless it is long enough and
+// distinct from CRON_SECRET, so it can never widen weekly/pairing authority.
+export function outboxDispatchSecret(cronSecret){
+  const secret=process.env.OUTBOX_DISPATCH_SECRET;
+  if(typeof secret!=='string'||secret.length<OUTBOX_DISPATCH_SECRET_MIN_LENGTH) return null;
+  return secret===cronSecret?null:secret;
+}
+
+function verifyCronAuth(req,{allowOutboxSecret=false}={}){
+  let secret=null;
+  try{ secret=getCronSecret(); }catch{}
+  const raw = req.headers['x-cron-secret'] || req.headers['X-Cron-Secret'] || req.headers['authorization'] || req.headers['Authorization'] || '';
+  const presented = typeof raw==='string' && raw.startsWith('Bearer ') ? raw.slice(7) : String(raw||'');
+  if(!presented) return false;
+  const cronMatch=secretMatches(secret,presented);
+  const outboxMatch=allowOutboxSecret&&secretMatches(outboxDispatchSecret(secret),presented);
+  return cronMatch||outboxMatch;
 }
 
 function isLoopbackHost(value){
@@ -471,7 +490,7 @@ export async function deliverPendingOutbox(db,baseUrl,req,deadlineAtMs,{
 async function handleOutboxWorker(req,res){
   const deadlineAtMs=performance.now()+OUTBOX_CRON_BUDGET_MS;
   if(req.method!=='GET'&&req.method!=='POST') return res.status(405).json({error:'GET or POST'});
-  if(!verifyCronAuth(req)) return res.status(401).json({error:'unauthorized cron'});
+  if(!verifyCronAuth(req,{allowOutboxSecret:true})) return res.status(401).json({error:'unauthorized cron'});
   const baseUrl=configuredOutboxBaseUrl();
   if(!baseUrl) return res.status(503).json({error:'outbox unavailable'});
   let db;
@@ -484,6 +503,14 @@ async function handleOutboxWorker(req,res){
   }catch{
     return res.status(503).json({error:'outbox unavailable'});
   }
+}
+
+async function handleOutboxHealth(req,res){
+  res.setHeader('Cache-Control','no-store');
+  if(req.method!=='GET') return res.status(405).json({error:'GET only'});
+  if(!verifyCronAuth(req,{allowOutboxSecret:true})) return res.status(401).json({error:'unauthorized cron'});
+  try{ return res.json(await readOutboxDeliveryHealth(getClient())); }
+  catch{ return res.status(503).json({ok:false,error:'outbox health unavailable'}); }
 }
 
 async function handleOutboxReplay(req,res){
@@ -1063,6 +1090,7 @@ async function handleOps(req,res,{isWeeklyDue=pairingCronIsDue}={}){
   if (ep==='demo-reset' || ep==='demo_reset' || pathLower.includes('demo-reset')) return handleDemoReset(req,res);
   if (ep==='pairing-run' || pathLower.includes('/pairing/run')) return handlePairingRun(req,res);
   if (ep==='outbox-replay' || pathLower.includes('/outbox/replay')) return handleOutboxReplay(req,res);
+  if (ep==='outbox-health' || pathLower.includes('/cron/outbox-health')) return handleOutboxHealth(req,res);
   if (ep==='outbox' || pathLower.includes('/cron/outbox')) return handleOutboxWorker(req,res);
   if (ep==='reshuffle' || ep==='promote' || pathLower.includes('reshuffle') || pathLower.includes('promote')) return handleReshuffle(req,res);
   if (ep==='weekly' || pathLower.includes('weekly') || pathLower.includes('/cron/')){
@@ -1070,7 +1098,7 @@ async function handleOps(req,res,{isWeeklyDue=pairingCronIsDue}={}){
   }
   if (pathLower.includes('reshuffle')) return handleReshuffle(req,res);
   if (pathLower.includes('weekly')) return handleWeekly(req,res,{isDue:isWeeklyDue});
-  return res.status(404).json({ error:`unknown ops endpoint '${ep}'`, available:['availability','pairing-run','weekly','outbox','outbox-replay','promote via reshuffle?action=promote','demo-seed','demo-shuffle','demo-reset'] });
+  return res.status(404).json({ error:`unknown ops endpoint '${ep}'`, available:['availability','pairing-run','weekly','outbox','outbox-health','outbox-replay','promote via reshuffle?action=promote','demo-seed','demo-shuffle','demo-reset'] });
 }
 
 export function createOpsHandler({isWeeklyDue=pairingCronIsDue}={}){

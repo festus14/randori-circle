@@ -12,8 +12,8 @@ const PRODUCTION_SMOKE_SCRIPT_PATH='scripts/production-smoke.mjs';
 // `/index.html`, so a rewrite to `/index.html` resolves to nothing and every
 // client route (/invite, /verify, /reset-password, /join/...) returns 404.
 const SPA_FALLBACK_DESTINATION='/';
-const OUTBOX_WATCHDOG_WORKFLOW_SHA256='ba0726ad285bc9765e8d2e34f5ea81128eca4e1d064007699eb12202c46160b0';
-const OUTBOX_WATCHDOG_SCRIPT_SHA256='01eecb04b859e364e824708a12f3f2aea91751cb438954ebc90999328b4f2bc8';
+const OUTBOX_WATCHDOG_WORKFLOW_SHA256='3808af3df03c84a1370b7df74bc6c785d349a20796ccb1cf236f5166103f3651';
+const OUTBOX_WATCHDOG_SCRIPT_SHA256='0c854c7892197b6f353fd32a96b5c7b70a6431e6b9ea86a07d2ad59fe0177b34';
 const REQUIRED_ROOT_FILES = [
   'index.html', 'package-lock.json', 'package.json', 'vercel.json', OUTBOX_WORKFLOW_PATH,
   OUTBOX_WATCHDOG_WORKFLOW_PATH, OUTBOX_WATCHDOG_SCRIPT_PATH, PRODUCTION_SMOKE_WORKFLOW_PATH,
@@ -208,7 +208,9 @@ function validateOutboxWatchdogWorkflow(workflow){
       'outbox watchdog page size must remain bounded'],
     [/^\s{8}run:\s*node scripts\/github-outbox-dispatch-watchdog\.mjs\s*$/m,
       'outbox watchdog must run the reviewed assessor'],
-    [/      - name: Assess scheduled outbox delivery\n        timeout-minutes: 2\n        env:\n          GITHUB_TOKEN: \$\{\{ github\.token \}\}\n          WATCHDOG_DEFAULT_BRANCH: \$\{\{ github\.event\.repository\.default_branch \}\}\n          WATCHDOG_SCHEDULE_GRACE_MS: '900000'\n          WATCHDOG_WORKER_DEADLINE_MS: '120000'\n          WATCHDOG_API_TIMEOUT_MS: '10000'\n          WATCHDOG_MAX_PAGES: '2'\n          WATCHDOG_PER_PAGE: '100'\n        run: node scripts\/github-outbox-dispatch-watchdog\.mjs(?:\n|$)/,
+    [/^\s{4}environment:\s*production\s*$/m,
+      'outbox watchdog must read delivery health through the protected production environment'],
+    [/      - name: Assess outbox delivery health\n        timeout-minutes: 2\n        env:\n          APP_URL: \$\{\{ vars\.APP_URL \}\}\n          CRON_SECRET: \$\{\{ secrets\.CRON_SECRET \}\}\n          WATCHDOG_DELIVERY_MAX_AGE_MS: '900000'\n          GITHUB_TOKEN: \$\{\{ github\.token \}\}\n          WATCHDOG_DEFAULT_BRANCH: \$\{\{ github\.event\.repository\.default_branch \}\}\n          WATCHDOG_SCHEDULE_GRACE_MS: '900000'\n          WATCHDOG_WORKER_DEADLINE_MS: '120000'\n          WATCHDOG_API_TIMEOUT_MS: '10000'\n          WATCHDOG_MAX_PAGES: '2'\n          WATCHDOG_PER_PAGE: '100'\n        run: node scripts\/github-outbox-dispatch-watchdog\.mjs(?:\n|$)/,
       'outbox watchdog assessment step must retain its exact fail-closed shape'],
     [/uses:\s+actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1/,
       'outbox watchdog checkout must use the reviewed immutable revision'],
@@ -218,8 +220,13 @@ function validateOutboxWatchdogWorkflow(workflow){
       'outbox watchdog checkout must not persist GitHub credentials'],
   ];
   for(const [pattern,message] of checks){ if(!pattern.test(workflow)) errors.push(message); }
-  if(/pull_request(?:_target)?:|permissions:[\s\S]*?\bwrite\b|environment:|secrets\.|vars\.|APP_URL|CRON_SECRET|TURSO_|RESEND_|\/api\/cron\/outbox|\bcurl\b|\bgh\s+workflow\b|\/dispatches\b|continue-on-error:|^\s{8}if:/mu.test(workflow)){
-    errors.push('outbox watchdog must remain secret-free, read-only, and non-mutating');
+  // The only production material the watchdog may see is APP_URL and the
+  // CRON_SECRET it needs to read aggregate delivery health.
+  const reviewedProductionAccess=workflow
+    .replace(/^ {4}environment: production\n/mu,'')
+    .replace(/^ {10}APP_URL: \$\{\{ vars\.APP_URL \}\}\n {10}CRON_SECRET: \$\{\{ secrets\.CRON_SECRET \}\}\n/mu,'');
+  if(/pull_request(?:_target)?:|permissions:[\s\S]*?\bwrite\b|environment:|secrets\.|vars\.|APP_URL|CRON_SECRET|TURSO_|RESEND_|\/api\/cron\/outbox|\bcurl\b|\bgh\s+workflow\b|\/dispatches\b|continue-on-error:|^\s{8}if:/mu.test(reviewedProductionAccess)){
+    errors.push('outbox watchdog must remain read-only, non-mutating, and limited to its reviewed health credential');
   }
   if(/uses:\s+actions\/(?:checkout|setup-node)@v\d+/u.test(workflow)){
     errors.push('outbox watchdog actions must be pinned to immutable commits');

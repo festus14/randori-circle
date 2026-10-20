@@ -52,7 +52,9 @@ Expected failures until setup finishes:
 - `outbox-dispatch` (every 5 min) fails with
   `outbox scheduler configuration missing` because `production` has no
   `APP_URL` variable or `CRON_SECRET` secret.
-- `outbox-dispatch-watchdog` (hourly :37) fails because no dispatch succeeds.
+- `outbox-dispatch-watchdog` (hourly :37) fails because it cannot read
+  `/api/cron/outbox-health` (missing `APP_URL`/`CRON_SECRET` or database not
+  ready) or because due mail is older than 15 minutes.
 - `Turso backup restore watchdog` (hourly :47) fails because no Monday
   rehearsal has succeeded since the 2026-09-21 activation epoch.
 
@@ -229,6 +231,7 @@ Scope every value to **Production** only.
 | `TURSO_AUTH_TOKEN` | DB auth token |
 | `JWT_SECRET` | Generated hex |
 | `CRON_SECRET` | Generated hex. Vercel cron sends it as `Authorization: Bearer`, and GitHub must hold the identical value |
+| `OUTBOX_DISPATCH_SECRET` | Optional. Separate generated hex (at least 32 chars, different from `CRON_SECRET`) for the external outbox scheduler. Works only on `/api/cron/outbox` and `/api/cron/outbox-health`. Store it in cron-job.org, not GitHub. See [OUTBOX_EXTERNAL_SCHEDULER.md](OUTBOX_EXTERNAL_SCHEDULER.md) |
 | `RUN_ATTESTATION_SECRET` | Generated hex (recommended) |
 | `PAIRING_TIME_ZONE` | `Europe/London` |
 | `ADMIN_EMAILS` | The owner's Google email |
@@ -334,14 +337,16 @@ dispatcher. Invitation email additionally needs
 [Environments](https://github.com/festus14/randori-circle/settings/environments).
 For each environment, set **Deployment branches → Selected branches → `main`**.
 
-### `production` (existing `Production`): outbox dispatcher
+### `production` (existing `Production`): outbox dispatcher and watchdog
 
 | Kind | Name | Value |
 | --- | --- | --- |
 | Variable | `APP_URL` | `https://randori-circle-self.vercel.app` |
 | Secret | `CRON_SECRET` | Identical to Vercel `CRON_SECRET` |
 
-Do not add a required reviewer; it runs every five minutes.
+Do not add a required reviewer; it runs every five minutes. The hourly
+`outbox-dispatch-watchdog` uses the same two values to read
+`/api/cron/outbox-health`.
 
 ### `turso-migration-rehearsal` (existing): PITR rehearsal
 
@@ -590,6 +595,7 @@ redeployed. Never weaken a gate to make a check pass.
 - [Backup/restore rehearsal](TURSO_BACKUP_RESTORE_REHEARSAL.md)
 - [Backup watchdog activation](BACKUP_WATCHDOG_ACTIVATION.md)
 - [Outbox dispatch watchdog](OUTBOX_DISPATCH_WATCHDOG.md)
+- [Outbox external scheduler](OUTBOX_EXTERNAL_SCHEDULER.md)
 - [Credential key rotation and adoption](KEY_ROTATION.md)
 - [Admin data initialization](ADMIN_DATA_INITIALIZATION.md)
 - [Invitation email delivery](INVITATION_EMAIL_DELIVERY.md)

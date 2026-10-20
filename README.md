@@ -67,7 +67,7 @@ The current deployable prototype is a single-page `index.html` backed by grouped
 | `api/_pairing.js` | deterministic fairness and canonical room identifiers |
 | `api/_pairing-publication.js` | managed-v6 readiness, transaction-bound owner/cron publication, immutable snapshots, and idempotency |
 | `api/_outbox.js` | provider-neutral leases, heartbeats, timeouts, retry/dead-letter transitions, replay audit, and aggregate metrics |
-| `scripts/github-outbox-dispatch-watchdog.mjs` | bounded, secret-free assessment of scheduled notification-worker health |
+| `scripts/github-outbox-dispatch-watchdog.mjs` | bounded delivery-health assessment of the notification outbox, with GitHub run cadence as a warning |
 | `api/_invitation-email.js` | encrypted invitation credentials, versioned delivery, resend bounds, and current-state suppression |
 | `api/_schedule-email.js` | versioned schedule email intents, 24-hour reminders, current-state suppression, and private rendering |
 | `api/_email-activation.js` | invitation-bound pending registrations, encrypted verification delivery, token rotation, and atomic activation |
@@ -142,10 +142,12 @@ one fair eight-claim/45-second invocation budget, independently of the weekly
 publication endpoint. The checked-in
 `outbox-dispatch` GitHub Actions workflow provides the five-minute MVP cadence
 using protected-production `APP_URL` and `CRON_SECRET` configuration; scheduled
-runs are best effort. The separate hourly `outbox-dispatch-watchdog` reads only
-scheduled default-branch Actions metadata, applies a 15-minute grace and the
-worker's two-minute deadline, and never receives production credentials or
-counts a manual recovery run as freshness. Use a managed queue/cron when a
+runs are best effort, so an external scheduler (cron-job.org) can call the same
+route with the narrower `OUTBOX_DISPATCH_SECRET`
+([setup](docs/OUTBOX_EXTERNAL_SCHEDULER.md)). The separate hourly
+`outbox-dispatch-watchdog` alerts when `/api/cron/outbox-health` shows due mail
+or expired leases older than 15 minutes. GitHub run staleness is reported only
+as a warning. Use a managed queue/cron when a
 strict latency SLO is required. `POST
 /api/admin/outbox/replay` lets a non-demo global administrator replay only a
 dead-letter event with one of the bounded reason codes `OPERATOR_RETRY`,

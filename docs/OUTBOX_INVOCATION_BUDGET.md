@@ -101,11 +101,12 @@ per request and is not a second fan-out: it can only claim the rows its own
 transaction wrote, and anything it does not finish remains due for this
 scheduler.
 
-The separate `outbox-dispatch-watchdog` workflow checks scheduled default-branch
-runs hourly without any production credential or endpoint access. It allows a
-documented 15-minute scheduling grace, binds stuck execution to this worker's
-two-minute job deadline, and never counts manual dispatch or reruns as freshness
-evidence. See [the watchdog runbook](OUTBOX_DISPATCH_WATCHDOG.md).
+The separate `outbox-dispatch-watchdog` workflow reads
+`/api/cron/outbox-health` every hour. It alerts when the oldest due event or
+expired lease is more than 15 minutes old. Scheduled-run freshness on GitHub is
+reported only as a warning, because an external scheduler
+([setup](OUTBOX_EXTERNAL_SCHEDULER.md)) may be doing the work. See
+[the watchdog runbook](OUTBOX_DISPATCH_WATCHDOG.md).
 
 ## Metrics and privacy
 

@@ -12,14 +12,16 @@ import {
   createInvitationToken,
   ensureCircleMembershipReadiness,
   getActivePrimaryCircleMembership,
+  hashInvitationEmail,
   hashInvitationToken,
   inviteClaimCookie,
   inviteClaimRemainingSeconds,
-  normalizeInvitationEmail,
   prepareInvitationClaim,
   readBoundInviteClaim,
   validateLivePreparedClaim,
+  validateNewEmail,
 } from './_circle-membership.js';
+import { BULK_INVITE_MAX } from '../assets/email-validation.js';
 import {
   multiCircleControlPlaneEnabled,
   requestMatchesCircleContext,
@@ -42,7 +44,12 @@ function clearLegacyInviteClaimCookie({secure=true}={}){
 }
 import { CredentialKeyControlError } from './_credential-key-control.js';
 import { deliverCommittedOutboxEvents, outboxEventsFromStatements } from './_outbox-immediate.js';
-import { insertOwnerInvitation } from './_invitation-create.js';
+import {
+  INVITATION_CREATE_DAILY_LIMIT,
+  insertOwnerInvitation,
+  invitationQuotaState,
+  reserveInvitationQuota,
+} from './_invitation-create.js';
 import { clientAddress } from './_client-address.js';
 import { handleInviteRequestRoute, INVITE_REQUEST_ENDPOINTS } from './_invite-request-api.js';
 
@@ -253,22 +260,50 @@ async function handlePrepare(req,res){
   }
 }
 
+function quotaExceeded(res,{retryAfter,remaining=0}){
+  const seconds=Math.max(1,Number(retryAfter)||1);
+  res.setHeader('Retry-After',String(seconds));
+  return res.status(429).json({error:'daily invitation limit reached',code:'invitation_quota_exceeded',
+    retry_after_seconds:seconds,remaining:Math.max(0,Number(remaining)||0),limit:INVITATION_CREATE_DAILY_LIMIT});
+}
+
+function circleIdOf(context){
+  return Number(context.membership.circle_id??context.membership.id);
+}
+
+function invitationBody(created){
+  return {
+    id:created.invitation.id,
+    email:created.invitation.email,
+    expires_at:created.invitation.expiresAt,
+    status:'pending',
+    invite_url:`/invite#invite=${created.invitation.token}`,
+  };
+}
+
+async function emailConfigurationFor(db,localRuntime){
+  let configuration=invitationEmailConfiguration({localRuntime});
+  if(configuration){
+    try{ await ensureInvitationEmailReadiness(db,{localRuntime}); }
+    catch(error){
+      if(!(error instanceof CredentialKeyControlError)) throw error;
+      configuration=null;
+    }
+  }
+  return configuration;
+}
+
 async function handleCreate(req,res){
+  if(exactObject(req.body,['emails'])) return handleBulkCreate(req,res);
   if(!exactObject(req.body,['email'])) return res.status(400).json({error:'valid email required'});
-  const email=normalizeInvitationEmail(req.body.email);
-  if(!email) return res.status(400).json({error:'valid email required'});
+  const verdict=validateNewEmail(req.body.email);
+  if(!verdict.ok) return res.status(400).json({error:'valid email required',code:'invalid_email',reason:verdict.reason});
+  const email=verdict.email;
   const context=await ownerContext(req,res);
   if(!context) return;
   const localRuntime=localIdentityAdapterEnabled(req);
-  let emailConfiguration=invitationEmailConfiguration({localRuntime});
   try{
-    if(emailConfiguration){
-      try{ await ensureInvitationEmailReadiness(context.db,{localRuntime}); }
-      catch(error){
-        if(!(error instanceof CredentialKeyControlError)) throw error;
-        emailConfiguration=null;
-      }
-    }
+    const emailConfiguration=await emailConfigurationFor(context.db,localRuntime);
     const transaction=await context.db.transaction('write');
     let finished=false;
     try{
@@ -277,8 +312,13 @@ async function handleCreate(req,res){
         await transaction.rollback(); finished=true;
         return res.status(409).json({error:'circle context changed',code:'circle_context_changed'});
       }
+      const quota=await reserveInvitationQuota(transaction,{circleId:circleIdOf(context)});
+      if(!quota.ok){
+        await transaction.rollback(); finished=true;
+        return quotaExceeded(res,{retryAfter:quota.retryAfter});
+      }
       const created=await insertOwnerInvitation(transaction,{
-        ownerUserId:context.userId,circleId:Number(context.membership.circle_id??context.membership.id),
+        ownerUserId:context.userId,circleId:circleIdOf(context),
         email,emailConfiguration,localRuntime,
       });
       if(!created.ok){
@@ -289,13 +329,7 @@ async function handleCreate(req,res){
       await transaction.commit(); finished=true;
       res.status(201).json({
         ok:true,
-        invitation:{
-          id:created.invitation.id,
-          email:created.invitation.email,
-          expires_at:created.invitation.expiresAt,
-          status:'pending',
-          invite_url:`/invite#invite=${created.invitation.token}`,
-        },
+        invitation:invitationBody(created),
         email_delivery:{queued:created.emailQueued},
         ...(multiCircleControlPlaneEnabled()?{circle_context_version:context.contextVersion}:{}),
       });
@@ -310,6 +344,175 @@ async function handleCreate(req,res){
     captureSentryException(error,{tags:{event:'circle_invitation_create_fail',source:'server'}});
     return res.status(503).json({error:'invitations unavailable'});
   }
+}
+
+const BULK_INPUT_ECHO_MAX=320;
+const BULK_STATUSES=['created','invalid','duplicate_in_request','already_member','already_invited','failed'];
+
+function bulkEcho(value){
+  return typeof value==='string'?value.slice(0,BULK_INPUT_ECHO_MAX):null;
+}
+
+/**
+ * Classify a bulk request without writing anything: shape and strict email
+ * validation, de-duplication after normalisation, then existing members and
+ * live pending invitations of the owner's circle. Returns one result slot per
+ * input (in input order) and the candidates that still need an invitation.
+ */
+async function classifyBulkEmails(db,{circleId,emails}){
+  const results=emails.map((input,index)=>({index,input:bulkEcho(input),email:null,status:null}));
+  const firstIndex=new Map();
+  const unique=[];
+  emails.forEach((input,index)=>{
+    const verdict=validateNewEmail(input);
+    const slot=results[index];
+    if(!verdict.ok){ Object.assign(slot,{status:'invalid',reason:verdict.reason}); return; }
+    slot.email=verdict.email;
+    if(firstIndex.has(verdict.email)){
+      Object.assign(slot,{status:'duplicate_in_request',duplicate_of:firstIndex.get(verdict.email)});
+      return;
+    }
+    firstIndex.set(verdict.email,index);
+    unique.push(slot);
+  });
+  if(!unique.length) return {results,candidates:[]};
+  const placeholders=unique.map(()=>'?').join(',');
+  const members=await db.execute({
+    sql:`SELECT lower(account.email) AS email,membership.status
+      FROM circle_memberships membership JOIN auth_accounts account ON account.id=membership.user_id
+      WHERE membership.circle_id=? AND lower(account.email) IN (${placeholders})`,
+    args:[circleId,...unique.map(slot=>slot.email)],
+  });
+  const memberStatus=new Map((members.rows||[]).map(row=>[String(row.email),String(row.status)]));
+  const hashes=new Map(unique.map(slot=>[slot.email,hashInvitationEmail(slot.email)]));
+  const pending=await db.execute({
+    sql:`SELECT id,email_hash FROM circle_invitations
+      WHERE circle_id=? AND email_hash IN (${placeholders})
+        AND used_at IS NULL AND used_by IS NULL AND revoked_at IS NULL
+        AND datetime(expires_at)>datetime('now')
+      ORDER BY created_at DESC,id DESC`,
+    args:[circleId,...unique.map(slot=>hashes.get(slot.email))],
+  });
+  const liveInvitation=new Map();
+  for(const row of pending.rows||[]){
+    const hash=String(row.email_hash);
+    if(!liveInvitation.has(hash)) liveInvitation.set(hash,String(row.id));
+  }
+  const candidates=[];
+  for(const slot of unique){
+    if(memberStatus.has(slot.email)){
+      Object.assign(slot,{status:'already_member',
+        member_status:memberStatus.get(slot.email)==='active'?'active':'inactive'});
+    }else if(liveInvitation.has(hashes.get(slot.email))){
+      Object.assign(slot,{status:'already_invited',invitation:{id:liveInvitation.get(hashes.get(slot.email)),status:'pending'}});
+    }else{
+      candidates.push(slot);
+    }
+  }
+  return {results,candidates};
+}
+
+/**
+ * POST /api/invitations with `{emails:[...]}` (1–BULK_INVITE_MAX strings).
+ * Every candidate gets its own write transaction through the same
+ * insertOwnerInvitation + outbox path as a single invitation, so one bad
+ * address or a transient failure never blocks the others. Responds 200 with
+ * per-email results in input order (see docs/INVITE_GATED_SIGNUP.md).
+ */
+async function handleBulkCreate(req,res){
+  const emails=req.body.emails;
+  if(!Array.isArray(emails)||emails.length<1){
+    return res.status(400).json({error:'emails must be a non-empty list',code:'bulk_invite_invalid',max:BULK_INVITE_MAX});
+  }
+  if(emails.length>BULK_INVITE_MAX){
+    return res.status(400).json({error:`at most ${BULK_INVITE_MAX} emails per request`,code:'bulk_invite_too_many',
+      max:BULK_INVITE_MAX});
+  }
+  const context=await ownerContext(req,res);
+  if(!context) return;
+  const circleId=circleIdOf(context);
+  const localRuntime=localIdentityAdapterEnabled(req);
+  let classified;
+  let emailConfiguration;
+  try{
+    classified=await classifyBulkEmails(context.db,{circleId,emails});
+    if(classified.candidates.length){
+      const quota=await invitationQuotaState(context.db,{circleId});
+      if(quota.remaining<classified.candidates.length){
+        return quotaExceeded(res,{retryAfter:quota.retryAfter,remaining:quota.remaining});
+      }
+      emailConfiguration=await emailConfigurationFor(context.db,localRuntime);
+    }
+  }catch(error){
+    captureSentryException(error,{tags:{event:'circle_invitation_bulk_fail',source:'server'}});
+    return res.status(503).json({error:'invitations unavailable'});
+  }
+  const {results,candidates}=classified;
+  const emailStatements=[];
+  let stopped=null;
+  let createdCount=0;
+  for(const slot of candidates){
+    if(stopped){ Object.assign(slot,{status:'failed',reason:stopped}); continue; }
+    let transaction=null;
+    let finished=false;
+    try{
+      transaction=await context.db.transaction('write');
+      if(emailConfiguration) await ensureInvitationEmailReadiness(transaction,{localRuntime});
+      if(!await mutationContextValid(transaction,context)){
+        await transaction.rollback(); finished=true;
+        stopped='circle_context_changed';
+        Object.assign(slot,{status:'failed',reason:stopped});
+        continue;
+      }
+      const quota=await reserveInvitationQuota(transaction,{circleId});
+      if(!quota.ok){
+        await transaction.rollback(); finished=true;
+        stopped='rate_limited';
+        Object.assign(slot,{status:'failed',reason:stopped,retry_after_seconds:quota.retryAfter});
+        continue;
+      }
+      const created=await insertOwnerInvitation(transaction,{
+        ownerUserId:context.userId,circleId,email:slot.email,emailConfiguration,localRuntime,
+      });
+      if(!created.ok){
+        await transaction.rollback(); finished=true;
+        stopped='owner_required';
+        Object.assign(slot,{status:'failed',reason:stopped});
+        continue;
+      }
+      await transaction.commit(); finished=true;
+      createdCount+=1;
+      if(created.emailStatement) emailStatements.push(created.emailStatement);
+      Object.assign(slot,{status:'created',invitation:invitationBody(created),
+        email_delivery:{queued:created.emailQueued}});
+    }catch(error){
+      if(transaction&&!finished){ try{ await transaction.rollback(); }catch{} }
+      // Tags only: never attach the address (or the input) to telemetry.
+      captureSentryException(error,{tags:{event:'circle_invitation_bulk_item_fail',source:'server'}});
+      Object.assign(slot,{status:'failed',reason:'unavailable'});
+    }finally{ try{ await transaction?.close?.(); }catch{} }
+  }
+  if(!createdCount&&stopped==='circle_context_changed'){
+    return res.status(409).json({error:'circle context changed',code:'circle_context_changed'});
+  }
+  if(!createdCount&&stopped==='owner_required') return res.status(403).json({error:'circle owner required'});
+  if(!createdCount&&stopped==='rate_limited'){
+    const limited=candidates.find(slot=>slot.reason==='rate_limited');
+    return quotaExceeded(res,{retryAfter:limited.retry_after_seconds});
+  }
+  const summary=Object.fromEntries(BULK_STATUSES.map(status=>[status,0]));
+  for(const result of results) summary[result.status]+=1;
+  res.status(200).json({
+    ok:true,
+    results,
+    summary,
+    max:BULK_INVITE_MAX,
+    email_delivery:{queued:emailStatements.length},
+    ...(multiCircleControlPlaneEnabled()?{circle_context_version:context.contextVersion}:{}),
+  });
+  // Bounded post-response attempt (ID-64 caps it per request); the rest stay
+  // pending in the outbox for the next scheduled delivery run.
+  if(emailStatements.length) deliverCommittedOutboxEvents(req,outboxEventsFromStatements(emailStatements));
 }
 
 async function handleResend(req,res){
