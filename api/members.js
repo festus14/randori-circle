@@ -1,5 +1,6 @@
 import {
   captureSentryException,
+  getAdminEmails,
   getClient,
   getJwtSecret,
   verifyMutationOrigin,
@@ -12,7 +13,9 @@ import {
 } from './_circle-membership.js';
 import { multiCircleControlPlaneEnabled, requestMatchesCircleContext, resolveActiveCircleContext } from './_active-circle.js';
 import {
+  changeAppAdmin,
   changeCircleMemberStatus,
+  changeCircleOwnerRole,
   leaveCircle,
   listCircleMembersForOwner,
   MEMBER_PAGE_DEFAULT,
@@ -20,6 +23,8 @@ import {
   MemberRosterQueryError,
   transferCircleOwnership,
 } from './_member-lifecycle.js';
+
+const MEMBER_ACTIONS=Object.freeze(['deactivate','reactivate','transfer','make_owner','remove_owner','grant_admin','revoke_admin']);
 
 function exactObject(value,keys){
   return !!value&&typeof value==='object'&&!Array.isArray(value)
@@ -67,6 +72,10 @@ function transitionFailure(res,result){
   if(result.reason==='last_owner') return res.status(409).json({error:'another active owner is required'});
   if(result.reason==='self_transition') return res.status(409).json({error:'use leave circle for your own membership'});
   if(result.reason==='self_transfer') return res.status(409).json({error:'choose another active member'});
+  if(result.reason==='self_role_change') return res.status(409).json({error:'ask another owner to change your role'});
+  if(result.reason==='last_admin') return res.status(409).json({error:'another active admin is required'});
+  if(result.reason==='configured_admin') return res.status(409).json({error:'admin access is managed by server configuration'});
+  if(result.reason==='admin_required') return res.status(403).json({error:'app admin required'});
   if(result.reason==='state_conflict') return res.status(409).json({error:'membership state changed'});
   return res.status(404).json({error:'member not found'});
 }
@@ -152,15 +161,20 @@ export default async function handler(req,res){
       });
     }
     if(!exactObject(req.body,['action','member_id'])
-      ||!['deactivate','reactivate','transfer'].includes(req.body.action)
+      ||!MEMBER_ACTIONS.includes(req.body.action)
       ||!Number.isSafeInteger(req.body.member_id)||req.body.member_id<1){
       return res.status(400).json({error:'invalid request'});
     }
-    const result=req.body.action==='transfer'
-      ?await transferCircleOwnership(db,{actorUserId:actor,targetUserId:req.body.member_id,circleId,session:authPayload,...(circleContext?{circleContext}:{})})
-      :await changeCircleMemberStatus(db,{actorUserId:actor,targetUserId:req.body.member_id,circleId,action:req.body.action,session:authPayload,...(circleContext?{circleContext}:{})});
+    const action=req.body.action;
+    const transition={actorUserId:actor,targetUserId:req.body.member_id,circleId,session:authPayload,...(circleContext?{circleContext}:{})};
+    let result;
+    if(action==='transfer') result=await transferCircleOwnership(db,transition);
+    else if(action==='make_owner'||action==='remove_owner') result=await changeCircleOwnerRole(db,{...transition,action});
+    else if(action==='grant_admin'||action==='revoke_admin'){
+      result=await changeAppAdmin(db,{...transition,action,adminEmails:[...getAdminEmails()]});
+    }else result=await changeCircleMemberStatus(db,{...transition,action});
     if(!result.ok) return transitionFailure(res,result);
-    return res.json({ok:true,action:req.body.action,member:result.member||{id:result.owner_id,role:'owner',status:'active'},
+    return res.json({ok:true,action,member:result.member||{id:result.owner_id,role:'owner',status:'active'},
       ...(multiCircleControlPlaneEnabled()?{circle_context_version:circleContextVersion}:{}),
     });
   }catch(error){

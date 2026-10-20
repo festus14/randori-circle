@@ -54,7 +54,6 @@ export async function inspectMembershipAdoptionReadiness(db){
             JOIN circle_memberships actor_membership
               ON actor_membership.circle_id=event.circle_id
               AND actor_membership.user_id=event.actor_user_id
-              AND actor_membership.role='owner' AND actor_membership.status='active'
             JOIN auth_accounts actor_account ON actor_account.id=event.actor_user_id
               AND COALESCE(actor_account.is_demo,0)=0
             WHERE event.circle_id=? AND event.event_type='membership.backfill.completed'
@@ -67,7 +66,6 @@ export async function inspectMembershipAdoptionReadiness(db){
                 JOIN circle_memberships actor_membership
                   ON actor_membership.circle_id=event.circle_id
                   AND actor_membership.user_id=event.actor_user_id
-                  AND actor_membership.role='owner' AND actor_membership.status='active'
                 JOIN auth_accounts actor_account ON actor_account.id=event.actor_user_id
                   AND COALESCE(actor_account.is_demo,0)=0
                 WHERE event.circle_id=? AND event.event_type='membership.backfilled'
@@ -91,7 +89,6 @@ export async function inspectMembershipAdoptionReadiness(db){
             LEFT JOIN circle_memberships actor_membership
               ON actor_membership.circle_id=event.circle_id
               AND actor_membership.user_id=event.actor_user_id
-              AND actor_membership.role='owner' AND actor_membership.status='active'
             LEFT JOIN auth_accounts actor_account ON actor_account.id=event.actor_user_id
               AND COALESCE(actor_account.is_demo,0)=0
             WHERE event.event_type='membership.backfilled' AND (

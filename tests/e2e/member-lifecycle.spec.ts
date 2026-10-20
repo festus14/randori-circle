@@ -589,12 +589,12 @@ test('the last-owner refusal is actionable and preserves the owner controls',asy
 
   await page.getByTestId('circle-leave').click();
   await confirmAction(page,/Leave this circle/);
-  await expect(page.locator('#circleLifecycleStatus')).toHaveText('Transfer ownership before removing the last active owner.');
+  await expect(page.locator('#circleLifecycleStatus')).toHaveText('Add or transfer an owner before removing the last active owner.');
   const refreshedRoster=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/members'
     &&response.request().method()==='GET');
   await page.evaluate(()=>document.querySelector<HTMLFormElement>('#circleMemberSearchForm')?.requestSubmit());
   await refreshedRoster;
-  await expect(page.locator('#circleLifecycleStatus')).toHaveText('Transfer ownership before removing the last active owner.');
+  await expect(page.locator('#circleLifecycleStatus')).toHaveText('Add or transfer an owner before removing the last active owner.');
   await expect(page.getByTestId('circle-manage-members')).toBeVisible();
   await expect(page.locator('#circleRoleLabel')).toHaveText('owner');
 });

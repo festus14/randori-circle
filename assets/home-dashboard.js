@@ -166,7 +166,7 @@
       },
       pending: {
         title: 'This week’s pairing is scheduled', tone: 'info',
-        message: `Pairs are published ${scheduled || 'at the weekly cutoff'}.${recovery ? ` If that is late, your circle owner can publish from ${recovery}.` : ''}`,
+        message: `Pairs are published ${scheduled || 'at the weekly cutoff'}.${recovery ? ` If that is late, a circle owner can publish from ${recovery}.` : ''}`,
       },
       overdue: canPublishNow === true
         ? {
@@ -175,7 +175,7 @@
         }
         : {
           title: 'This week’s pairing is late', tone: 'warning',
-          message: 'The scheduled run didn’t publish this week’s pairs. Your circle owner can retry it now.',
+          message: 'The scheduled run didn’t publish this week’s pairs. A circle owner can retry it now.',
         },
       unpublished: {
         title: 'Current pairing is not published yet', tone: 'info', availability: true,

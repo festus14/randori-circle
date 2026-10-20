@@ -203,6 +203,14 @@ test('completed rollout readiness permits inactive members and historical actors
   const adoption=await inspectMembershipAdoptionReadiness(db);
   assert.equal(adoption.ok,false,'one-time adoption still requires every existing account to be covered');
   assert.ok(adoption.blockers.includes('closed_rollout_has_uncovered_accounts'));
+  // The original backfill actor is no longer an active owner (multi-owner
+  // circles can demote or deactivate them); provenance must still hold.
+  assert.equal(adoption.blockers.includes('closed_rollout_backfill_audit_invalid'),false);
+  assert.equal(adoption.blockers.includes('closed_rollout_account_audit_invalid'),false);
+  await db.execute(`UPDATE circle_memberships SET role='member',status='active' WHERE circle_id=1 AND user_id=1`);
+  const demotedActor=await inspectMembershipAdoptionReadiness(db);
+  assert.deepEqual(demotedActor.blockers,adoption.blockers);
+  await db.execute(`UPDATE circle_memberships SET role='owner',status='inactive' WHERE circle_id=1 AND user_id=1`);
   assert.equal((await inspectCompletedMembershipRollout(db)).ok,true);
   assert.equal(await inspectDatabaseReadiness(db),true);
   assert.equal(await inspectDatabaseReadiness(db,{membershipRequired:true}),true);
