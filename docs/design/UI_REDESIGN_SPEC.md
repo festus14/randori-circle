@@ -782,6 +782,41 @@ markup in later packages.
   `tests/e2e/pair-workspace-layout.spec.ts`. E2E specs that use Session or
   Results controls open the panel first with `openRoomPanel()` from
   `tests/e2e/helpers.ts`.
+### 9.5 What WP-O shipped (onboarding)
+
+- **One stepper** (`.rc-stepper`, `<ol aria-label="Setup progress">`, the
+  current item has `aria-current="step"`, plus "Step n of 5" text) for
+  invitation → account → profile basics → availability → what happens next.
+  Steps 1–2 render on `#view-invite` (the stepper switches to "Account" while
+  the signup sheet is open); steps 3–5 are panels of `#view-profile-setup`
+  (`data-mode="onboarding"` on first run, `"guide"` from the account menu,
+  `"edit"` for Edit profile, which hides the stepper).
+- **Profile basics:** display name, time zone (detected), interview focus
+  (segmented, `aria-pressed`). Avatar colour (labelled buttons), bio and
+  LeetCode handle sit under "Add more (optional)". **Skip for now** saves only
+  `display_name`, `tz` and `interview_focus`.
+- **Availability step:** the existing `#availabilityWrap` card is moved into the
+  step (one copy of its controls, the same versioned CAS) and returned to
+  Pairing whenever the onboarding view is hidden. A note states the saved or
+  inherited choice and the cutoff in the member's time zone; "Decide later"
+  skips.
+- **What happens next:** `.rc-timeline` (publish time, email, agree a time)
+  and the email-reminder toggle, then "Go to Home".
+- The welcome banner and the 5-step modal tour are removed. "Setup guide" and
+  "Edit profile" join the account menu. Home keeps a compact **Setup guide**
+  (`#onboardChecklist`) only while setup is unfinished; members can hide it
+  (remembered per account). Week codes are shown as "Week of 25 Oct".
+- A member who joined after the current cycle's cutoff sees "You'll be
+  included from <next week>" instead of "pairing is late".
+- Visitors (signed out, identity settled) get no app navigation on the
+  landing and recovery pages (`body[data-nav="hidden"]`); solo practice keeps
+  it. A second `/reset-password#token=…` link in the same tab is picked up on
+  `hashchange`, removed from the URL and resets the form.
+- Logic lives in `assets/onboarding-flow.js` (classic script, unit-tested in
+  `tests/unit/onboarding-flow.test.mjs`) and `assets/app-shell.js`
+  (`syncPublicSurface`); golden paths are in `tests/e2e/onboarding.spec.ts`,
+  `tests/e2e/local-onboarding.spec.ts` and
+  `tests/e2e/password-auth-journey-real-runtime.spec.ts`.
 
 ### 9.5 What WP-K shipped (practice catalogue)
 
@@ -826,6 +861,49 @@ markup in later packages.
   sign-in state) are in `tests/e2e/catalog-discovery.spec.ts`. Screenshots:
   `catalogue-problem`, `catalogue-browse`, `catalogue-empty-filter` and their
   `-light` variants.
+
+### 9.6 What the final UX pass shipped (signed-out navigation)
+
+- **App navigation is for members only.** The tabs (and the phone bottom bar)
+  show only when `body[data-nav="shown"]`, which `assets/app-shell.js` sets only
+  for `data-auth="member"`. The CSS default is hidden
+  (`body:not([data-nav="shown"]) .shell > nav`). So visitors on the landing page,
+  `/invite`, `/verify`, `/reset-password` (with or without a token),
+  `/join/<room>` and unknown routes see only the logo, the theme toggle and
+  **Sign in**. Nothing flashes before scripts run or while `/api/auth/me` is in
+  flight, and the tabs go away as soon as a member signs out. A returning
+  member (`body[data-returning="true"]`: this browser still has the cached
+  profile, which is removed on sign-out and on a failed check) keeps the
+  navigation while the check runs, so early navigation still works. This replaces
+  WP-O's narrower rule ("visitors on public pages, once identity settles").
+- **Solo practice** (`/?view=code`, visitor): `body[data-surface="solo"]` shows
+  the code view with no tabs and a prompt (`#soloPracticeBar`,
+  `data-testid="solo-practice-bar"`): "Exercises and test runs are for circle
+  members", with **Sign in** (`#soloSignIn`) and **Request an invite**
+  (`#soloRequestInvite`, shown only while invite requests are open). The
+  pair-only room controls (room select, Role, Join call, presence) are hidden
+  for visitors.
+- **Member deep links** (`/?view=pair|board|history|circle`, or `?tab=`): a
+  signed-out visitor gets the sign-in dialog titled "Sign in to continue"
+  ("Sign in to open Pairing. You'll go straight there."). The URL is kept,
+  so after signing in the router opens that view; members can now deep-link
+  to `?view=circle` too. `/join/<room>` keeps its "Sign in to join your
+  pairing room" dialog, shown over the landing page, which has no tabs.
+- **Returning members** (this browser last saw a signed-in account) see a
+  neutral `#view-boot` ("Loading your circle…") while identity is checked,
+  instead of a flash of the visitor landing page. First-time visitors still get
+  the landing page straight away.
+- **Fixes shipped with it:** the joined-after-cutoff Home hero confirms a saved
+  answer ("You're in for the week of 25 Oct") instead of asking again; and a
+  JavaScript function that returns nothing is reported as a failed case (never
+  coerced to `null`), not a "runtime error".
+- Logic: `navigationState`, `memberDeepLinkView` and `deepLinkSignInCopy` in
+  `assets/app-shell.js` (unit-tested in `tests/unit/app-shell.test.mjs`). The
+  visible navigation for each state (every signed-out route, the join prompt,
+  solo practice, a deep link with return-to, identity loading, signed in, and
+  after sign-out) is asserted in `tests/e2e/signed-out-navigation.spec.ts` at
+  393×852 and 1440×900. Screenshots: `local-solo-practice`,
+  `local-deep-link-member-view` and `local-unknown-route` (plus `-light`).
 
 ## 10. Phased implementation plan
 

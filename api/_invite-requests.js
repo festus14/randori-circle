@@ -3,6 +3,7 @@ import { createHmac, randomUUID } from 'node:crypto';
 import { getJwtSecret } from './_db.js';
 import { hashInvitationEmail, normalizeInvitationEmail } from './_circle-membership.js';
 import { insertOwnerInvitation } from './_invitation-create.js';
+import { validateEmail } from '../assets/email-validation.js';
 import { outboxStatementIdentity } from './_outbox-identity.js';
 import { rateLimitAddress } from './_client-address.js';
 import {
@@ -28,7 +29,6 @@ export const INVITE_REQUEST_NAME_MAX=60;
 export const INVITE_REQUEST_NOTE_MAX=280;
 export const INVITE_REQUEST_LIST_DEFAULT_LIMIT=50;
 export const INVITE_REQUEST_LIST_MAX_LIMIT=100;
-export const INVITE_REQUEST_MAX_NOTIFIED_OWNERS=5;
 export const INVITE_REQUEST_RATE_LIMITS=Object.freeze({
   ip:Object.freeze({limit:5,windowSeconds:60*60}),
   email:Object.freeze({limit:3,windowSeconds:60*60}),
@@ -84,11 +84,10 @@ export function validateInviteRequestInput(body){
       fields.name=`Use ${INVITE_REQUEST_NAME_MIN}–${INVITE_REQUEST_NAME_MAX} characters.`;
     }
   }
-  // Invite requests accept printable-ASCII addresses only, so control, bidi,
-  // and look-alike Unicode never reach the owner list (IDN users can use the
-  // owner's direct "invite by email" path).
-  const email=typeof body.email==='string'&&/^[\x21-\x7e]+$/.test(body.email.trim())
-    ?normalizeInvitationEmail(body.email):null;
+  // Invite requests use the strict shared rules (assets/email-validation.js,
+  // ID-68): printable ASCII only, so control, bidi, and look-alike Unicode
+  // never reach the owner list (IDN users enter the xn-- form).
+  const email=validateEmail(body.email).email;
   if(!email) fields.email='Enter a valid email address.';
   let note=null;
   if(body.note!==undefined&&body.note!==null){
@@ -217,12 +216,15 @@ export async function submitInviteRequest(db,{name,email,note=null}={},{notifica
       if(!inserted.rows?.length) outcome='duplicate';
     }
     if(outcome==='stored'&&notification){
+      // Every active owner gets one hourly digest; circles have no owner
+      // ceiling. Inline delivery is separately capped by the outbox budget,
+      // so any remainder is drained by the scheduled worker.
       const owners=await transaction.execute({
         sql:`SELECT account.id FROM circle_memberships membership
           JOIN auth_accounts account ON account.id=membership.user_id AND COALESCE(account.is_demo,0)=0
           WHERE membership.circle_id=? AND membership.role='owner' AND membership.status='active'
-          ORDER BY account.id LIMIT ?`,
-        args:[circleId,INVITE_REQUEST_MAX_NOTIFIED_OWNERS],
+          ORDER BY account.id`,
+        args:[circleId],
       });
       const digestHour=Math.floor(now/INVITE_REQUEST_DIGEST_SECONDS);
       for(const owner of owners.rows||[]){
@@ -384,6 +386,12 @@ export async function decideInviteRequest(db,{requestId,decision,ownerUserId,ema
         args:[circleId,String(row.email),circleId,hashInvitationEmail(String(row.email)),now],
       });
       const state=recheck.rows?.[0]||{};
+      // A request stored before the strict shared rules (ID-68) may hold an
+      // address a new invitation can no longer use; refuse it explicitly.
+      if(!validateEmail(String(row.email)).ok){
+        await rollback();
+        return decisionResult({status:'conflict',currentStatus:'pending',reason:'email_invalid'});
+      }
       if(Number(state.is_member)===1||Number(state.is_invited)===1){
         await rollback();
         return decisionResult({status:'conflict',currentStatus:'pending',

@@ -305,10 +305,12 @@ export function buildJsHarness(userCode, testSuite, resultPrefix) {
     try{
       if(!__randori_ready) throw new Error('submission did not load');
       __randori_context.__randori_args_json__=JSON.stringify(test.args);
-      const expression='JSON.stringify('+__randori_bundle.entrypoint+'(...JSON.parse(__randori_args_json__)))';
+      // A function that returns nothing (or a value JSON cannot represent)
+      // is a wrong answer, not a crash. It is reported as a failed case and is
+      // never coerced to null, so it cannot match a case that expects null.
+      const expression='(()=>{const value='+__randori_bundle.entrypoint+'(...JSON.parse(__randori_args_json__));return value===undefined?undefined:JSON.stringify(value);})()';
       const serialized=__randori_vm.runInContext(expression,__randori_context,{timeout:1000});
-      got=JSON.parse(serialized);
-      ok=true;
+      if(typeof serialized==='string'){ got=JSON.parse(serialized); ok=true; }
     }catch{ error='runtime error'; }
     process.stdout.write('${resultPrefix}'+JSON.stringify({idx:index,ok,got,error})+'\\n');
   }

@@ -28,6 +28,114 @@ invitation created while email was unconfigured has no recoverable recipient or
 token in the outbox, so it cannot later be emailed: the UI preserves the copied
 link and the owner may create a new invitation after configuration is repaired.
 
+## Inviting several people at once (ID-68)
+
+The Circle invite card has an **Invite several people at once** disclosure. The
+owner pastes addresses separated by commas, semicolons, spaces, tabs or new
+lines; `Name <email>` and `"Last, First" <email>` (Gmail, Outlook, Sheets
+copies) contribute only the bracketed address, and `mailto:` prefixes and
+wrapping quotes or brackets are dropped. The preview de-duplicates after
+normalisation, marks each address **Ready** or **Fix** (with the reason), and
+blocks the button above 50 valid addresses. Only valid, unique addresses are
+sent. After the request each address gets one result row: **Invited · Copy
+link**, **Already a member** (or **Former member** for an inactive one),
+**Already invited · Resend**, **Invalid · reason**, or **Failed · Retry**.
+Invalid and failed addresses stay in the textarea so the owner can fix them and
+send again; everything else is removed. Links and addresses live only in tab
+memory and are cleared on any identity or circle change.
+
+### API contract
+
+`POST /api/invitations` keeps the single `{email}` contract and also accepts
+`{emails:[...]}` (exact key, 1–50 entries; `BULK_INVITE_MAX` in
+`assets/email-validation.js`). Same-origin and owner rules are the single
+path's (`verifyMutationOrigin`, `ownerContext`, active-circle context version).
+No new route or rewrite exists, so `vercel.json` and the local server are
+unchanged.
+
+| Response | When |
+| --- | --- |
+| `400 {code:'bulk_invite_invalid'}` | `emails` is not a non-empty array |
+| `400 {code:'bulk_invite_too_many', max:50}` | more than 50 entries (checked before authentication work) |
+| `401` / `403` / `409 circle_context_changed` | as for a single invitation; 403/409 are also returned when nothing could be created because ownership or the context changed |
+| `429 {code:'invitation_quota_exceeded', retry_after_seconds, remaining, limit}` + `Retry-After` | the batch needs more invitations than the circle has left today (nothing is created) |
+| `503 {error:'invitations unavailable'}` | the read-only classification step failed |
+| `200 {ok, results, summary, max, email_delivery:{queued:N}}` | otherwise, even if every entry is invalid |
+
+`results[i]` is in input order: `{index, input, email, status, ...}` where
+`input` echoes the submitted string (≤320 characters, `null` for non-strings)
+and `email` is the canonical address. Statuses:
+
+- `created` — `invitation` has exactly the single-path fields (`id`, `email`,
+  `expires_at`, `status:'pending'`, `invite_url`) plus `email_delivery.queued`.
+- `invalid` — `reason` is a validator code (below).
+- `duplicate_in_request` — `duplicate_of` is the index of the first occurrence.
+- `already_member` — `member_status` is `active` or `inactive`.
+- `already_invited` — `invitation:{id,status:'pending'}` of the newest live
+  invitation, so the UI can call the existing resend endpoint.
+- `failed` — `reason` is `unavailable`, `rate_limited` (with
+  `retry_after_seconds`), `owner_required`, or `circle_context_changed`.
+
+`summary` counts every status. Owners already see their members and
+invitations, so these statuses reveal nothing new to them; the endpoint never
+puts an address or input in logs or Sentry (tags only).
+
+### Transactions, quota, and delivery
+
+Classification (validation, de-duplication, membership and live-invitation
+lookups for the selected circle) is read-only. Each remaining address then gets
+**its own write transaction** running the same steps as a single invitation:
+email readiness, circle-context check, quota reservation,
+`insertOwnerInvitation` (invitation + `invitation.created` audit row + outbox
+event `invitation-email/v1/{id}/1`), commit. A failure rolls back only that
+address; it is reported as `failed` and the batch continues. Losing ownership,
+a context change, or an exhausted quota stops the rest of the batch (reported
+per address). Per-address transactions were chosen over one transaction so a
+single bad row or lock timeout cannot discard valid invitations.
+
+Owner-created invitations (single and bulk) share a fixed-window quota of
+**200 per circle per 24 hours** in `auth_rate_limits` (HMAC key
+`randori-invitation-create-circle-v1`). A bulk request first checks the
+remaining quota and returns 429 if the batch does not fit; each transaction then
+reserves one slot with a conditional upsert that never over-consumes, and a
+rollback refunds it. Approving an invite request does not use this quota (it is
+bounded by the invite-request limits).
+
+After the response, the created events go to the existing post-commit attempt
+(ID-64), which delivers at most 8 events per request inside its time budget.
+The rest stay pending in the outbox and are sent by the next scheduled
+`/api/cron/outbox` run, so in a large batch some emails can take until that run.
+The copy links are available immediately either way.
+
+### Shared email validation
+
+`assets/email-validation.js` is one dependency-free ES module imported by the
+API and loaded by the browser (`<script type="module">`), so client and server
+rules cannot drift. Canonical form is `trim()` + `toLowerCase()`, exactly as
+before. An address is valid when it is at most 254 characters, has exactly one
+`@`, a local part of 1–64 `` [a-z0-9.!#$%&'*+/=?^_`{|}~-] `` without leading,
+trailing or consecutive dots, and a domain of at least two labels of 1–63
+`[a-z0-9-]` that do not start or end with `-`, ending in an alphabetic TLD of 2+
+letters or an `xn--` punycode label. Whitespace, control, zero-width, bidi and
+any other non-ASCII characters are rejected (international domains must be
+entered as punycode). Reason codes: `invalid_type`, `empty`,
+`invalid_characters`, `too_long`, `non_ascii`, `missing_at`, `multiple_at`,
+`local_empty`, `local_too_long`, `local_invalid`, `local_dots`,
+`domain_missing`, `domain_no_dot`, `domain_empty_label`,
+`domain_label_too_long`, `domain_invalid`, `domain_hyphen`, `tld_invalid`.
+
+The strict rules apply wherever a **new** address enters the system: owner
+invitations (single, bulk, and `insertOwnerInvitation`), invite-request intake,
+and password sign-up. Paths that look up an address already on record — sign-in,
+password reset, activation resend, Google identity, invitation acceptance and
+outbox decoding — keep `normalizeInvitationEmail` (same canonical form, the
+original loose shape check), so no existing account or pending invitation is
+locked out. An invite request stored before these rules whose address now fails
+them cannot be approved (`409 invite_request_email_invalid`); the owner can
+decline it. In the browser, the single invite form, the bulk form, the sign-up
+dialog and the landing request form show the validator's message inline;
+sign-in and reset deliberately do not.
+
 ## Event and privacy contract
 
 `invitation.email.requested` event version 1 and template version 1 use:

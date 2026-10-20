@@ -38,30 +38,13 @@ import {
   resolveLocalServerConfig,
   startLocalDevelopmentServer,
 } from './local-server.mjs';
+import { parseOptions, readOnlyRequestDecision, VIEWPORTS } from './ui-screenshots-policy.mjs';
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const DEFAULT_PROD_URL = 'https://randori-circle-self.vercel.app';
 const MEMBER_PASSWORD = 'member-password-123';
 const MEMBER_EMAIL = 'invited.member@example.test';
 const MEMBER_NAME = 'Invited Member';
 const EXECUTION_API_URL = 'https://execution.screenshots.invalid/api/v2/execute';
-
-const VIEWPORTS = Object.freeze({
-  mobile: {
-    viewport: { width: 393, height: 852 },
-    deviceScaleFactor: 3,
-    isMobile: true,
-    hasTouch: true,
-    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 '
-      + '(KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
-  },
-  desktop: {
-    viewport: { width: 1440, height: 900 },
-    deviceScaleFactor: 1,
-    isMobile: false,
-    hasTouch: false,
-  },
-});
 
 const TELEMETRY_RESOLVER_RULES = [
   'MAP js-de.sentry-cdn.com ~NOTFOUND',
@@ -86,22 +69,6 @@ function responseOf(page, predicate, timeout = 30_000) {
   const pending = page.waitForResponse(predicate, { timeout });
   pending.catch(() => {});
   return pending;
-}
-
-function parseOptions(env = process.env) {
-  const scope = String(env.UI_SCREENSHOTS_SCOPE || 'all').trim();
-  if (!['all', 'public', 'local'].includes(scope)) throw new Error(`invalid UI_SCREENSHOTS_SCOPE: ${scope}`);
-  const viewports = String(env.UI_SCREENSHOTS_VIEWPORTS || 'mobile,desktop').split(',')
-    .map(item => item.trim()).filter(Boolean);
-  for (const name of viewports) if (!VIEWPORTS[name]) throw new Error(`invalid viewport: ${name}`);
-  const prodUrl = new URL(String(env.UI_SCREENSHOTS_PROD_URL || DEFAULT_PROD_URL).trim());
-  if (prodUrl.protocol !== 'https:') throw new Error('UI_SCREENSHOTS_PROD_URL must be https');
-  return {
-    scope,
-    viewports,
-    prodOrigin: prodUrl.origin,
-    outDir: resolve(String(env.UI_SCREENSHOTS_OUT || 'ui-screenshots')),
-  };
 }
 
 class Recorder {
@@ -153,9 +120,9 @@ class Recorder {
 async function guardReadOnly(context, recorder) {
   await context.route('**/*', route => {
     const request = route.request();
-    const method = request.method();
-    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return route.continue();
-    recorder.blocked.push({ method, url: request.url().split('?')[0] });
+    const decision = readOnlyRequestDecision(request.method(), request.url());
+    if (decision.allow) return route.continue();
+    recorder.blocked.push(decision.blocked);
     return route.abort('blockedbyclient');
   });
 }
@@ -343,10 +310,6 @@ async function openDashboard(page) {
   await page.locator('#view-dashboard').waitFor({ state: 'visible', timeout: 10_000 });
 }
 
-async function dismissTour(page) {
-  await page.evaluate(() => { window._randori_onboard?.skip?.(); }).catch(() => {});
-}
-
 async function newLocalPage(browser, viewportName, timezoneId, getOrigin, { firstRun = false } = {}) {
   const context = await browser.newContext({ ...VIEWPORTS[viewportName], timezoneId, locale: 'en-GB' });
   // The loopback runtime is the only reachable origin.
@@ -431,6 +394,17 @@ async function captureLocalPublic(browser, v, base, getOrigin, contexts, recorde
       for (const [path, name] of [['/invite', 'invite-no-token'], ['/verify', 'verify-no-token'], ['/reset-password', 'reset-password-no-token']]) {
         await visit(page, path);
         await recorder.shot(page, v, `local-${name}${suffix}`);
+      }
+    }
+  });
+  // Signed-out navigation (final pass): visitors get no app tabs anywhere.
+  await recorder.step(`${v}:local-signed-out-routes`, async () => {
+    for (const theme of ['dark', 'light']) {
+      const page = await open({ theme, forceInviteRequests: true });
+      const suffix = theme === 'light' ? '-light' : '';
+      for (const [path, name] of [['/?view=code', 'solo-practice'], ['/?view=pair', 'deep-link-member-view'], ['/join/not-a-room', 'unknown-route']]) {
+        await visit(page, path);
+        await recorder.shot(page, v, `local-${name}${suffix}`, { fullPage: false });
       }
     }
   });
@@ -569,34 +543,52 @@ async function captureLocal(browser, viewportName, recorder) {
       await recorder.shot(mp, v, 'onboarding-3-first-route-after-signup');
     });
 
+    // WP-O: one progressive stepper (profile basics -> availability -> what
+    // happens next), then the first-run Home with its setup guide.
+    const toggleTheme = async page => {
+      await tap(page, '#themeToggle');
+      await sleep(300);
+    };
     await recorder.step(`${v}:member-profile`, async () => {
-      await dismissTour(mp);
-      await mp.evaluate(async () => { await window._randori_journey?.showProfileSetup?.(); });
-      await mp.locator('#view-profile-setup').waitFor({ state: 'visible' });
+      await mp.locator('#view-profile-setup').waitFor({ state: 'visible', timeout: 15_000 });
+      await mp.locator('#setupStepProfile').waitFor({ state: 'visible' });
       await sleep(800);
       await recorder.shot(mp, v, 'onboarding-4-profile-setup');
+      await toggleTheme(mp);
+      await recorder.shot(mp, v, 'onboarding-4-profile-setup-light');
+      await toggleTheme(mp);
+      await tap(mp, '#psMore summary');
       await mp.locator('#psBio').fill('Practising DSA and system design before onsite loops.');
+      await recorder.shot(mp, v, 'onboarding-4b-profile-more', { settle: 300 });
       const saved = responseOf(mp, r => r.url().includes('/api/profile') && r.request().method() === 'POST');
       await tap(mp, '#psSave');
       await saved;
-      await sleep(1500);
-      await recorder.shot(mp, v, 'onboarding-5-after-profile-save');
+      await mp.locator('#setupStepAvailability').waitFor({ state: 'visible', timeout: 15_000 });
+      await mp.waitForFunction(() => !document.getElementById('availAvailable')?.disabled, null, { timeout: 15_000 });
+      await sleep(800);
+      await recorder.shot(mp, v, 'onboarding-5-availability-step');
+      const chosen = responseOf(mp, r => r.url().includes('/api/settings/availability') && r.request().method() === 'POST');
+      await tap(mp, '#availAvailable');
+      await chosen;
+      await sleep(800);
+      await recorder.shot(mp, v, 'onboarding-5b-availability-saved');
+      await tap(mp, '#setupAvailabilityNext');
+      await mp.locator('#setupStepNext').waitFor({ state: 'visible' });
+      await sleep(800);
+      await recorder.shot(mp, v, 'onboarding-6-what-happens-next');
+      await toggleTheme(mp);
+      await recorder.shot(mp, v, 'onboarding-6-what-happens-next-light');
+      await toggleTheme(mp);
     });
 
-    await recorder.step(`${v}:member-tour`, async () => {
-      await openDashboard(mp);
-      await mp.evaluate(() => window._randori_onboard?.start?.(1));
-      await mp.locator('#onboardOverlay.show').waitFor({ state: 'visible' });
-      await recorder.shot(mp, v, 'onboarding-tour-step-1', { fullPage: false, settle: 400 });
-      await tap(mp, '#onbNext');
-      await tap(mp, '#onbNext');
-      await tap(mp, '#onbNext');
-      await sleep(500);
-      await recorder.shot(mp, v, 'onboarding-tour-step-4', { fullPage: false, settle: 400 });
-      await dismissTour(mp);
-      await openDashboard(mp);
-      await sleep(1200);
+    await recorder.step(`${v}:member-first-run-home`, async () => {
+      await tap(mp, '#setupFinish');
+      await mp.locator('#view-dashboard').waitFor({ state: 'visible', timeout: 15_000 });
+      await sleep(1500);
       await recorder.shot(mp, v, 'dashboard-member-first-run-checklist');
+      await toggleTheme(mp);
+      await recorder.shot(mp, v, 'dashboard-member-first-run-light');
+      await toggleTheme(mp);
     });
 
     const optIn = async (page, label) => {

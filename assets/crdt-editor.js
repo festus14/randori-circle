@@ -9250,7 +9250,7 @@ ${err.toString()}`);
     if (state.completed && value !== "error") return;
     state.status = value;
     const node = document.getElementById("codeSyncStatus");
-    const labels = { local: "local editor", connecting: "connecting\u2026", syncing: "syncing\u2026", synced: "synced", offline: "offline \u2014 changes queued", retry: "sync interrupted \u2014 retrying", error: "sync unavailable" };
+    const labels = { local: "not shared", connecting: "connecting\u2026", syncing: "syncing\u2026", synced: "synced", offline: "offline \u2014 changes queued", retry: "sync interrupted \u2014 retrying", error: "sync unavailable" };
     if (node) {
       node.dataset.state = value;
       node.textContent = message || labels[value] || value;

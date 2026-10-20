@@ -17,6 +17,7 @@
 <script src="/assets/pairing-view.js"></script>
 <script src="/assets/catalogue-view.js"></script>
 <script src="/assets/home-dashboard.js"></script>
+<script src="/assets/onboarding-flow.js"></script>
 <script>
 /* Consume invitation capabilities before any telemetry or third-party script can observe the URL. */
 (()=>{
@@ -688,7 +689,7 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .cycle-empty[data-tone="danger"]{border-color:var(--bad); background:var(--bad-surface)}
 .cycle-empty-title{font-weight:var(--weight-heading)}
 .cycle-publishing{gap:var(--space-2); color:var(--ink)}
-.cycle-owner{background:var(--card-2); border-color:var(--color-border-strong)}
+.cycle-owner{background:var(--card); border-color:var(--color-border-strong)}
 .cycle-diagnostics{padding:0; gap:0}
 .cycle-diagnostics > summary{padding:var(--space-4) var(--space-5); min-height:var(--tap-min); box-sizing:border-box; cursor:pointer; font-weight:var(--weight-emphasis); color:var(--ink-2)}
 .cycle-diagnostics-body{padding:0 var(--space-5) var(--space-5); display:grid; gap:var(--space-3)}
@@ -972,7 +973,6 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
 .overlay{position:fixed; inset:0; background:var(--color-scrim); backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px); z-index:var(--z-modal); display:none; align-items:center; justify-content:center; padding:var(--space-5)}
 .overlay.show{display:flex}
 /* Keep the historical stacking order of the overlays that carry inline z-index values. */
-#onboardOverlay{z-index:calc(var(--z-modal) + 5)!important}
 #identityOverlay{z-index:calc(var(--z-modal) + 10)!important}
 .modal,.rc-dialog{background:var(--card); border:1px solid var(--border); border-radius:var(--radius-lg); padding:var(--space-6); width:100%; max-width:420px; box-shadow:var(--shadow-3); display:grid; gap:var(--space-4)}
 .overlay.show .modal{animation:rc-dialog-in var(--dur-2) var(--ease-out)}
@@ -1149,41 +1149,94 @@ input[type="checkbox"],input[type="radio"],input[type="range"],progress{accent-c
   .overlay{padding:var(--space-4)}
 }
 
-/* Onboarding */
-.onboard-banner{
-  margin:var(--space-4) auto 0; max-width:var(--max); padding:var(--space-3) var(--space-4); display:flex; align-items:center; justify-content:space-between; gap:var(--space-3);
-  background:var(--color-action-subtle);
-  border:1px solid color-mix(in srgb, var(--accent) 35%, var(--border)); border-radius:var(--radius-md); box-shadow:var(--shadow-soft);
-}
-.onboard-banner b{font-weight:var(--weight-heading)}
-.onboard-modal{
-  background:var(--card); border:1px solid var(--border); border-radius:var(--radius-lg); padding:var(--space-6); width:min(480px, 92vw);
-  box-shadow:var(--shadow-3); display:grid; gap:var(--space-4); animation:onboardIn var(--dur-3) var(--ease-out);
-}
-@keyframes onboardIn{from{transform:translateY(8px) scale(.98); opacity:0} to{transform:none; opacity:1}}
-.onboard-progress{display:flex; gap:var(--space-2); align-items:center}
-.onboard-dot{width:24px; height:4px; border-radius:var(--radius-full); background:var(--bg-4); transition:background-color var(--dur-2) var(--ease-out)}
-.onboard-dot.active{background:var(--accent)}
-.onboard-spotlight{
-  position:relative; z-index:var(--z-banner);
-  box-shadow:0 0 0 4px var(--accent), 0 0 0 9999px var(--color-scrim), var(--shadow-3);
-  border-radius:var(--radius-md); transition:box-shadow var(--dur-3) var(--ease-out);
-}
-.pulse{
-  animation:pulse 1.6s infinite;
-}
-@keyframes pulse{
-  0%{box-shadow:0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent)}
-  70%{box-shadow:0 0 0 14px transparent}
-  100%{box-shadow:0 0 0 0 transparent}
-}
-.onboard-actions{display:flex; justify-content:space-between; align-items:center; gap:var(--space-3)}
-.onboard-kbd{font-size:var(--text-xs); color:var(--ink-3)}
+/* Onboarding (WP-O): one progressive stepper on #view-invite and #view-profile-setup, then a compact Home setup guide. */
+.onboarding{max-width:var(--reading-max); margin:0 auto; display:grid; gap:var(--space-4)}
+.onboarding-head{display:grid; gap:var(--space-2)}
+.rc-stepper{list-style:none; margin:0; padding:0; display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:var(--space-1); counter-reset:none}
+.rc-step{display:grid; justify-items:center; gap:var(--space-1); min-width:0; text-align:center; font-size:var(--text-xs); line-height:var(--leading-xs); color:var(--ink-3); position:relative}
+.rc-step::before{content:""; position:absolute; top:13px; left:calc(-50% + 16px); right:calc(50% + 16px); height:2px; border-radius:var(--radius-full); background:var(--border)}
+.rc-step:first-child::before{display:none}
+.rc-step[data-state="done"]::before,.rc-step[data-state="current"]::before{background:var(--color-action)}
+.rc-step-marker{width:28px; height:28px; border-radius:var(--radius-full); display:grid; place-items:center; border:2px solid var(--control-border); background:var(--card); color:var(--ink-2); font-weight:var(--weight-heading); font-size:var(--text-xs); position:relative; z-index:1}
+.rc-step[data-state="done"] .rc-step-marker{background:var(--color-action); border-color:var(--color-action); color:var(--color-on-action)}
+.rc-step[data-state="current"] .rc-step-marker{border-color:var(--color-action); color:var(--ink); box-shadow:0 0 0 3px var(--color-action-subtle)}
+.rc-step[data-state="current"]{color:var(--ink); font-weight:var(--weight-emphasis)}
+.rc-step-label{max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.rc-stepper-text{margin:0; font-size:var(--text-sm); color:var(--ink-2); font-weight:var(--weight-emphasis)}
+.onboarding-step .card-h{display:grid; gap:var(--space-1); align-items:start}
+.onboarding-step h2:focus{outline:none}
+.onboarding-step h2:focus-visible{outline:var(--focus-width) solid var(--focus); outline-offset:var(--focus-offset); border-radius:var(--radius-xs)}
+.onboarding-body{display:grid; gap:var(--space-5)}
+.onboarding-lead{margin:0; color:var(--ink-2); font-size:var(--text-md); line-height:var(--leading-md)}
+.onboarding-field{display:grid; gap:var(--space-1); min-width:0; margin:0; padding:0; border:0}
+.onboarding-field > label,.onboarding-field > legend{font-size:var(--text-sm); font-weight:var(--weight-emphasis); color:var(--ink); padding:0; margin-bottom:var(--space-1)}
+.field-help{margin:0; font-size:var(--text-sm); line-height:var(--leading-sm); color:var(--ink-3)}
+.onboarding-fields-2{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--space-4)}
+.onboarding-choice{display:flex; flex-wrap:wrap; width:100%}
+.onboarding-choice .chip{flex:1 1 0; min-height:var(--control-md); justify-content:center}
+.onboarding-more{border:1px solid var(--border); border-radius:var(--radius-md); padding:var(--space-3) var(--space-4); background:var(--bg-3)}
+.onboarding-more > summary{cursor:pointer; min-height:var(--control-sm); display:flex; align-items:center; font-size:var(--text-sm); font-weight:var(--weight-emphasis); color:var(--ink)}
+.onboarding-more[open] > summary{margin-bottom:var(--space-3)}
+.onboarding-more-body{display:grid; gap:var(--space-4)}
+.onboarding-avatar-row{display:flex; align-items:center; gap:var(--space-3); flex-wrap:wrap}
+.onboarding-avatar-row .avatar{width:44px; height:44px; font-size:var(--text-sm)}
+.onboarding-colors{display:flex; flex-wrap:wrap; gap:var(--space-2)}
+.onboarding-colors .color-dot{width:28px; height:28px; padding:0}
+.onboarding-colors .color-dot[aria-pressed="true"]{box-shadow:0 0 0 2px var(--card), 0 0 0 4px var(--color-action)}
+.onboarding-row{display:flex; justify-content:space-between; align-items:center; gap:var(--space-3); padding:var(--space-3) var(--space-4); border:1px solid var(--border); border-radius:var(--radius-md); background:var(--bg-3); min-width:0}
+.onboarding-row b{font-size:var(--text-sm)}
+.onboarding-actions{display:flex; justify-content:flex-end; align-items:center; flex-wrap:wrap; gap:var(--space-2)}
+.onboarding-actions .onboarding-actions-spacer{margin-right:auto}
+#view-profile-setup:not([data-mode="edit"]) .onboarding-edit-only{display:none}
+#view-profile-setup[data-mode="edit"] .onboarding-flow-only{display:none}
+#setupAvailabilityHost #availabilityWrap{box-shadow:none; position:relative}
+/* One human heading: the step title asks the question and labels the card while it sits in this step. */
+#setupAvailabilityHost .cycle-card-titles{display:none}
+#setupAvailabilityHost .cycle-card-head{justify-content:flex-start}
+.rc-timeline{list-style:none; margin:0; padding:0; display:grid; gap:var(--space-4)}
+.rc-timeline-item{display:grid; grid-template-columns:32px minmax(0,1fr); gap:var(--space-3); align-items:start; position:relative}
+.rc-timeline-item:not(:last-child)::after{content:""; position:absolute; left:15px; top:36px; bottom:calc(-1 * var(--space-4) + 4px); width:2px; border-radius:var(--radius-full); background:var(--border)}
+.rc-timeline-marker{width:32px; height:32px; border-radius:var(--radius-full); display:grid; place-items:center; background:var(--color-action-subtle); color:var(--ink); font-weight:var(--weight-heading); font-size:var(--text-sm); border:1px solid color-mix(in srgb, var(--color-action) 45%, var(--border))}
+.rc-timeline-title{margin:4px 0 var(--space-1); font-size:var(--text-md); line-height:var(--leading-md); font-weight:var(--weight-heading)}
+.rc-timeline-detail{margin:0; color:var(--ink-2); font-size:var(--text-sm); line-height:var(--leading-sm)}
+.invite-stepper{margin-bottom:var(--space-4)}
 .checklist{
   border:1px solid var(--border); border-radius:var(--radius-md); padding:var(--space-4); background:var(--card);
   display:grid; gap:var(--space-2);
 }
 .checklist h4{font-size:var(--text-sm); margin:0}
+.checklist-head{display:flex; justify-content:space-between; align-items:center; gap:var(--space-2)}
+.checklist-actions{display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-2); margin-top:var(--space-1)}
+.checklist-actions .small{margin-left:auto}
+.check-item > span{min-width:0; overflow-wrap:anywhere}
+@media(max-width:520px){
+  .onboarding-fields-2{grid-template-columns:minmax(0,1fr)}
+  .onboarding-actions .btn{flex:1 1 auto; justify-content:center}
+  .onboarding-actions .onboarding-actions-spacer{margin-right:0}
+  .rc-step-label{font-size:10px}
+}
+@media(max-width:380px){ .rc-step-label{position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap} }
+/* App navigation is for members only (final pass; see assets/app-shell.js).
+   It stays hidden until a member is confirmed, so visitors never see member
+   tabs, including while the identity check is in flight. */
+body:not([data-nav="shown"]) .shell > nav{display:none!important}
+@media(max-width:599px){
+  body:not([data-nav="shown"]){padding-bottom:0}
+  body:not([data-nav="shown"]) .room{--room-offset:calc(var(--topbar-h) + var(--space-4) + 88px + env(safe-area-inset-bottom))}
+}
+/* A visitor on /?view=code: say what needs an account, and hide the
+   pair-only room controls that do nothing without one. */
+.solo-bar{display:none; margin-bottom:var(--space-3); align-items:center; flex-wrap:wrap}
+.solo-bar > p{margin:0; flex:1 1 18rem}
+.solo-bar-actions{display:flex; flex-wrap:wrap; gap:var(--space-2)}
+body[data-surface="solo"] .solo-bar{display:flex}
+/* Home's Recent runs is never a blank box (it is cleared on identity change). */
+#recentRunsList:empty::before{content:"No runs yet. Open Code, pick an exercise and press Run."}
+body[data-surface="solo"] #view-code :is(#roomSelect,#roleToggle,#vidJoinBtn,.room-presence){display:none}
+/* Shown while a returning member's session is checked, instead of
+   flashing the visitor landing page. */
+.boot-view{padding:var(--space-12) var(--space-4); text-align:center; color:var(--ink-2)}
+.boot-view .mark{color:var(--ink-3); margin:0 auto var(--space-3); display:block}
 .check-item{display:flex; align-items:center; gap:var(--space-2); font-size:var(--text-sm); color:var(--ink-2)}
 .check-item.done{color:var(--ink)}
 .check-item.done .check-box{background:var(--accent); border-color:var(--accent); color:var(--color-on-action)}
@@ -1240,6 +1293,9 @@ a.btn{text-decoration:none}
 .landing-trust b{color:var(--ink)}
 .landing-privacy{max-width:var(--reading-max); width:100%; margin:0 auto; border:1px solid var(--border); border-radius:var(--radius-md); background:var(--card); padding:0 var(--space-4)}
 .landing-privacy summary{cursor:pointer; min-height:var(--tap-min); display:flex; align-items:center; font-weight:var(--weight-emphasis); color:var(--ink)}
+.landing-privacy summary::-webkit-details-marker{display:none}
+.landing-privacy summary::after{content:""; width:8px; height:8px; margin-left:auto; border-right:2px solid var(--ink-3); border-bottom:2px solid var(--ink-3); transform:rotate(45deg); transition:transform var(--dur-2) var(--ease-out)}
+.landing-privacy[open] summary::after{transform:rotate(-135deg)}
 .landing-privacy p{margin:0 0 var(--space-3); color:var(--ink-2); font-size:var(--text-sm); line-height:var(--leading-sm)}
 .landing-request{max-width:560px; scroll-margin-top:var(--space-6)}
 .landing-request:focus{outline:none}
@@ -1370,9 +1426,6 @@ a.btn{text-decoration:none}
 .home-diagnostics{border:1px dashed var(--border); border-radius:var(--radius-md); padding:var(--space-3) var(--space-4)}
 .home-diagnostics > summary{cursor:pointer; font-size:var(--text-sm); color:var(--ink-2); min-height:var(--control-sm); display:flex; align-items:center}
 .home-logs{margin-top:var(--space-3)}
-/* The hero is authoritative for the current pair: a checklist whose only
-   unresolved item is an unverifiable pairing check would contradict it. */
-#view-dashboard:is([data-home-state="paired"],[data-home-state="solo"]) #onboardChecklist[data-state="error"]:not(:has(#chkProfile[data-state="error"],#chkAvail[data-state="error"])){display:none!important}
 @media(max-width:640px){
   .home-stats{grid-template-columns:minmax(0,1fr)}
   .home-hero{padding:var(--space-4)}
@@ -1423,7 +1476,7 @@ a.btn{text-decoration:none}
   padding:var(--space-2) var(--space-3); border-radius:var(--radius-sm); background:var(--ink); color:var(--bg);
   font-weight:var(--weight-heading); text-decoration:none;
 }
-.skip-link:focus{transform:translateY(0)}
+.skip-link:focus-visible{transform:translateY(0)}
 .motion-probe{
   position:fixed; width:1px; height:1px; overflow:hidden; clip-path:inset(50%);
   animation:spin 1s linear infinite;
@@ -1508,8 +1561,10 @@ a.btn{text-decoration:none}
     border-radius:0 0 var(--radius-full) var(--radius-full); background:var(--color-action);
   }
   .tab .tab-count{position:absolute; top:2px; left:calc(50% + 6px); min-width:18px; padding:0 4px; font-size:10px; line-height:14px; text-align:center}
-  .toast,.rc-toast{left:50%; right:auto; transform:translateX(-50%); bottom:calc(var(--bottom-nav-h) + env(safe-area-inset-bottom) + var(--space-3))}
-  @keyframes rc-toast-in{from{transform:translate(-50%, 8px); opacity:0} to{transform:translate(-50%, 0); opacity:1}}
+  /* Phones: under the topbar, so a toast never covers the primary action
+     or the bottom tab bar at the foot of the screen. */
+  .toast,.rc-toast{left:50%; right:auto; transform:translateX(-50%); top:calc(var(--topbar-h) + var(--space-2)); bottom:auto}
+  @keyframes rc-toast-in{from{transform:translate(-50%, -8px); opacity:0} to{transform:translate(-50%, 0); opacity:1}}
 }
 
 @media(max-width:520px){
@@ -1540,6 +1595,12 @@ a.btn{text-decoration:none}
 
 @media(pointer:coarse){
   .pill,.tab,.chip,.tool,.btn,.rc-btn,.rc-tab{min-height:var(--tap-min)}
+  /* Small buttons keep their look but get a full 44 px target on touch. */
+  .btn.sm,.rc-btn--sm,.room-mode{min-height:var(--tap-min)}
+  .room-mode,.tool{min-width:var(--tap-min)}
+  .rc-btn--icon{width:var(--tap-min)}
+  .color-dot{position:relative}
+  .color-dot::after{content:""; position:absolute; inset:-8px}
   :where(input[type="checkbox"],input[type="radio"]){min-width:22px;min-height:22px}
   #meMenu [role="menuitem"]{min-height:44px}
   .theme-toggle{width:var(--tap-min); height:var(--tap-min)}
@@ -1566,7 +1627,7 @@ a.btn{text-decoration:none}
   .status-chip.status-success{color:CanvasText;border-style:double}
   .status-chip.status-warning{color:CanvasText;border-style:dashed}
   .status-chip.status-danger{color:CanvasText;border-style:solid;border-width:2px}
-  .dot,.spinner,.onboard-dot.active{forced-color-adjust:none;background:Highlight;border-color:Highlight}
+  .dot,.spinner,.rc-step[data-state="current"] .rc-step-marker{forced-color-adjust:none;background:Highlight;border-color:Highlight}
   .btn,.tab.active,.chip.active{forced-color-adjust:auto}
   .tab[aria-current="page"]{border-color:Highlight; text-decoration:underline; text-underline-offset:4px}
   .tab.active::before,.tab[aria-current="page"]::before{background:Highlight}
@@ -1756,6 +1817,8 @@ a.btn{text-decoration:none}
         <button id="meLabel" class="pill account-trigger" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="meMenu" style="display:none"></button>
         <div id="meMenu" role="menu" class="account-menu" aria-label="Account" style="display:none">
           <button id="meIdentity" role="menuitem" class="account-menu-item" tabindex="-1" hidden disabled>Account security<svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-shield"/></svg></button>
+          <button id="meProfile" role="menuitem" class="account-menu-item" tabindex="-1">Edit profile<svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-users"/></svg></button>
+          <button id="meSetupGuide" role="menuitem" class="account-menu-item" tabindex="-1">Setup guide<svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-check"/></svg></button>
           <button id="meSignOut" role="menuitem" class="account-menu-item" tabindex="-1">Sign out<svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-signout"/></svg></button>
           <button id="meSignOutAll" role="menuitem" class="account-menu-item account-menu-item--warning" tabindex="-1">Sign out everywhere<svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-signout"/></svg></button>
         </div>
@@ -1776,6 +1839,17 @@ a.btn{text-decoration:none}
   </nav>
   <div id="shellConnectionBanner" class="rc-banner rc-banner--warning shell-banner" role="status" hidden><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-alert"/></svg><span><b>You are offline.</b> Randori cannot load or save changes until your connection is back.</span></div>
   <main id="appMain" class="main" tabindex="-1">
+
+    <!-- BOOT: a returning member's session is being checked (final pass). -->
+    <section id="view-boot" class="view boot-view" aria-busy="true" style="display:none">
+      <svg class="mark" viewBox="0 0 32 32" width="40" height="40" aria-hidden="true" focusable="false">
+        <g fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round">
+          <path d="M18.85 5.37A11 11 0 0 1 26.63 18.85"/><path d="M23.78 23.78A11 11 0 0 1 8.22 23.78"/><path d="M5.37 18.85A11 11 0 0 1 13.15 5.37"/>
+        </g>
+        <circle cx="16" cy="16" r="3.4" fill="currentColor"/>
+      </svg>
+      <p class="small" role="status">Loading your circle…</p>
+    </section>
 
     <!-- LANDING (anonymous only) — UI redesign WP-L1, spec section 7.1 -->
     <section id="view-landing" class="view" aria-labelledby="landingTitle" style="display:none">
@@ -1819,14 +1893,14 @@ a.btn{text-decoration:none}
         <section class="landing-section" aria-labelledby="landingTrustTitle">
           <h2 id="landingTrustTitle">Private by default</h2>
           <ul class="landing-trust">
-            <li><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-shield"/></svg><span><b>Invite-only.</b> Members are approved by the circle owner.</span></li>
+            <li><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-shield"/></svg><span><b>Invite-only.</b> Members are approved by a circle owner.</span></li>
             <li><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-users"/></svg><span><b>Just you and your partner.</b> Your sessions stay private to the two of you.</span></li>
             <li><svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-check"/></svg><span><b>No noise.</b> No recruiters, no ads, no public profiles.</span></li>
           </ul>
           <details id="landingPrivacy" class="landing-privacy">
             <summary>Privacy note</summary>
-            <p>Randori Circle is a private practice space run by its owner. Members see the names of the people in their circle. Your editor, whiteboard and chat in a pairing room are shared only with your partner for that week.</p>
-            <p>If you request an invite, the circle owner sees your name, email and note so they can decide. A request that isn’t answered expires after 30 days. Once the owner approves or declines it, your name, email and note are removed from the request. If you’re approved, you get a normal invitation email.</p>
+            <p>Randori Circle is a private practice space run by its owners. Members see the names of the people in their circle. Your editor, whiteboard and chat in a pairing room are shared only with your partner for that week.</p>
+            <p>If you request an invite, the circle owners see your name, email and note so they can decide. A request that isn’t answered expires after 30 days. Once an owner approves or declines it, your name, email and note are removed from the request. If you’re approved, you get a normal invitation email.</p>
           </details>
         </section>
 
@@ -1837,7 +1911,7 @@ a.btn{text-decoration:none}
             <button id="requestInviteSignin" class="btn secondary" type="button">Sign in</button>
           </div>
           <form id="requestInviteForm" class="landing-form" data-testid="request-invite-form" novalidate hidden aria-busy="false">
-            <p class="landing-form-intro">Tell the circle owner a little about yourself. They review every request.</p>
+            <p class="landing-form-intro">Tell the circle owners a little about yourself. They review every request.</p>
             <div id="requestInviteFormError" class="rc-banner rc-banner--danger" data-testid="request-invite-error" role="alert" tabindex="-1" hidden></div>
             <div class="landing-field">
               <label for="requestInviteName">Name</label>
@@ -1923,6 +1997,10 @@ a.btn{text-decoration:none}
     <!-- INVITATION LANDING -->
     <section id="view-invite" class="view" data-testid="invite-landing" aria-labelledby="inviteTitle" style="display:none">
       <div class="landing recovery">
+        <div id="inviteStepperWrap" class="onboarding-head invite-stepper" hidden>
+          <ol id="inviteStepper" class="rc-stepper" aria-label="Setup progress"></ol>
+          <p id="inviteStepText" class="rc-stepper-text">Step 1 of 5</p>
+        </div>
         <div class="card">
           <div class="card-h"><h2 id="inviteTitle">You’re invited to Randori</h2></div>
           <div class="card-b recovery-body">
@@ -1943,29 +2021,75 @@ a.btn{text-decoration:none}
       </div>
     </section>
 
-    <!-- PROFILE SETUP -->
-    <section id="view-profile-setup" class="view" aria-labelledby="profileSetupTitle" style="display:none">
-      <div class="profile-setup card">
-        <div class="card-h"><h2 id="profileSetupTitle">Set up your profile</h2><span>step 2 of 3 • 30s</span></div>
-        <div class="card-b" style="display:grid; gap:14px">
-          <div class="row" style="gap:10px">
-            <div id="psAvatar" class="avatar" style="width:44px;height:44px;font-size:14px;background:#c8f6a0">ME</div>
-            <div style="display:grid; gap:6px; flex:1">
-              <label class="small muted">Display name</label>
-              <input id="psName" class="input" placeholder="Your name" maxlength="32"/>
+    <!-- ONBOARDING (WP-O): profile basics -> availability -> what happens next, behind one stepper.
+         data-mode="onboarding" (first run), "guide" (Setup guide) or "edit" (Edit profile: no stepper). -->
+    <section id="view-profile-setup" class="view" aria-labelledby="profileSetupTitle" data-mode="onboarding" data-step="profile" style="display:none">
+      <div class="onboarding">
+        <div class="onboarding-head onboarding-flow-only">
+          <ol id="setupStepper" class="rc-stepper" aria-label="Setup progress"></ol>
+          <p id="setupStepText" class="rc-stepper-text">Step 3 of 5</p>
+        </div>
+
+        <div id="setupStepProfile" class="card onboarding-step" data-step-panel="profile">
+          <div class="card-h"><h2 id="profileSetupTitle" tabindex="-1">Set up your profile</h2><p class="onboarding-lead onboarding-flow-only">Your partner sees your name and time zone when you agree a time. It takes about 30 seconds.</p></div>
+          <div class="card-b onboarding-body">
+            <div class="onboarding-field">
+              <label for="psName">Display name</label>
+              <input id="psName" class="input" autocomplete="nickname" maxlength="32" required aria-describedby="psNameHelp"/>
+              <p id="psNameHelp" class="field-help">Shown to the members of your circle.</p>
             </div>
+            <div class="onboarding-field">
+              <label for="psTz">Time zone</label>
+              <select id="psTz" class="select" aria-describedby="psTzHelp"></select>
+              <p id="psTzHelp" class="field-help">Detected from this device. Session times are shown in this zone.</p>
+            </div>
+            <fieldset class="onboarding-field">
+              <legend id="psFocusLabel">Interview focus</legend>
+              <div id="psFocus" class="rc-segmented onboarding-choice" role="group" aria-labelledby="psFocusLabel"><button class="chip" type="button" data-focus="dsa" aria-pressed="false">DSA</button><button class="chip" type="button" data-focus="system" aria-pressed="false">System design</button><button class="chip active" type="button" data-focus="both" aria-pressed="true">Both</button></div>
+            </fieldset>
+            <details id="psMore" class="onboarding-more">
+              <summary>Add more (optional)</summary>
+              <div class="onboarding-more-body">
+                <div class="onboarding-field">
+                  <span class="onboarding-field-label" id="psColorsLabel"><b>Avatar colour</b></span>
+                  <div class="onboarding-avatar-row"><div id="psAvatar" class="avatar" aria-hidden="true">ME</div><div id="psColors" class="onboarding-colors" role="group" aria-labelledby="psColorsLabel"></div></div>
+                </div>
+                <div class="onboarding-field">
+                  <label for="psBio">Bio</label>
+                  <textarea id="psBio" class="textarea" rows="3" maxlength="280" aria-describedby="psBioHelp"></textarea>
+                  <p id="psBioHelp" class="field-help">For example: “Backend engineer preparing for system design onsites.”</p>
+                </div>
+                <div class="onboarding-field">
+                  <label for="psLeet">LeetCode handle</label>
+                  <input id="psLeet" class="input" autocomplete="off" spellcheck="false" maxlength="40"/>
+                </div>
+              </div>
+            </details>
+            <div id="psAvailabilityRow" class="onboarding-row onboarding-edit-only"><div><b>Weekly availability</b><p class="field-help">You choose availability for each pairing cycle on Pairing.</p></div><button id="psAvailabilityLink" class="btn secondary sm" type="button">Manage availability</button></div>
+            <div id="psRemindEditHost" class="onboarding-edit-only"></div>
+            <div id="psSaveStatus" data-state="idle" class="small request-status" role="status" aria-live="polite"></div>
+            <div class="onboarding-actions"><button id="psSkip" class="btn ghost onboarding-flow-only onboarding-actions-spacer" type="button">Skip for now</button><button id="psRetry" class="btn secondary" type="button" hidden>Retry profile</button><button id="psSave" class="btn" type="button" aria-describedby="psSaveStatus">Save &amp; continue</button></div>
           </div>
-          <div><label class="small muted">Avatar color</label><div id="psColors" class="row" style="gap:6px; margin-top:6px"></div></div>
-          <div><label class="small muted">Bio</label><textarea id="psBio" class="textarea" placeholder="e.g. SWE at ... prepping for Stripe/DeepL. Love DFS + API design."></textarea></div>
-          <div class="grid-2" style="grid-template-columns:1fr 1fr">
-            <div><label class="small muted">Timezone</label><select id="psTz" class="select"></select></div>
-            <div><label class="small muted">LeetCode handle (optional)</label><input id="psLeet" class="input" placeholder="leetcode username"/></div>
+        </div>
+
+        <div id="setupStepAvailability" class="card onboarding-step onboarding-flow-only" data-step-panel="availability" hidden>
+          <div class="card-h"><h2 id="setupAvailabilityTitle" tabindex="-1">Are you in for the next cycle?</h2><p id="setupAvailabilityLead" class="onboarding-lead">Pairs are made from members who say they’re in. Choose for this cycle only.</p></div>
+          <div class="card-b onboarding-body">
+            <div id="setupAvailabilityHost"></div>
+            <p id="setupAvailabilityNote" class="field-help" role="status" aria-live="polite"></p>
+            <div class="onboarding-actions"><button id="setupAvailabilityBack" class="btn ghost onboarding-actions-spacer" type="button">Back</button><button id="setupAvailabilityNext" class="btn" type="button">Decide later</button></div>
           </div>
-          <div><label class="small muted">Interview focus</label><div id="psFocus" class="pill-choice" style="margin-top:6px"><button class="chip" data-focus="dsa">DSA</button><button class="chip" data-focus="system">System Design</button><button class="chip active" data-focus="both">Both</button></div></div>
-          <div class="row" style="justify-content:space-between; align-items:center; gap:12px; padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-3)"><div><b style="font-size:12.5px">Weekly availability</b><div class="small muted">Availability belongs to a specific pairing cycle and is managed from Pairing.</div></div><button id="psAvailabilityLink" class="pill" type="button">Manage availability</button></div>
-          <div id="psRemindRow" class="row" data-state="loading" aria-busy="true" style="justify-content:space-between; align-items:center; padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--bg-3)"><div><b style="font-size:12.5px">Email reminders</b><div class="small muted">Request an email when paired. Delivery depends on email-service readiness.</div><div id="psRemindStatus" class="small request-status" data-state="loading" role="status" aria-live="polite">Checking your reminder preference…</div></div><label class="pill" style="cursor:pointer"><input id="psRemindEmail" type="checkbox" checked aria-describedby="psRemindStatus" style="margin-right:4px"/> Email</label></div>
-          <div id="psSaveStatus" data-state="idle" class="small request-status" role="status" aria-live="polite"></div>
-          <div class="row" style="justify-content:flex-end"><button id="psRetry" class="pill" type="button" hidden>Retry profile</button><button id="psSave" class="btn" type="button" aria-describedby="psSaveStatus">Save &amp; continue →</button></div>
+        </div>
+
+        <div id="setupStepNext" class="card onboarding-step onboarding-flow-only" data-step-panel="next" hidden>
+          <div class="card-h"><h2 id="setupNextTitle" tabindex="-1">What happens next</h2><p class="onboarding-lead">You’re set up. Here’s how your week works.</p></div>
+          <div class="card-b onboarding-body">
+            <ol id="setupTimeline" class="rc-timeline" aria-labelledby="setupNextTitle"></ol>
+            <div id="psRemindFlowHost">
+              <div id="psRemindRow" class="onboarding-row" data-state="loading" aria-busy="true"><div><b>Email reminders</b><p class="field-help">Get an email when you’re paired.</p><div id="psRemindStatus" class="small request-status" data-state="loading" role="status" aria-live="polite">Checking your reminder preference…</div></div><label class="chip" style="cursor:pointer; display:inline-flex; align-items:center; gap:var(--space-2)"><input id="psRemindEmail" type="checkbox" checked aria-describedby="psRemindStatus"/> Email</label></div>
+            </div>
+            <div class="onboarding-actions"><button id="setupNextBack" class="btn ghost onboarding-actions-spacer" type="button">Back</button><button id="setupFinish" class="btn" type="button">Go to Home</button></div>
+          </div>
         </div>
       </div>
     </section>
@@ -1987,16 +2111,16 @@ a.btn{text-decoration:none}
           <div id="scheduleBoundaryStatus" data-testid="schedule-boundary-status" class="small muted" role="status" aria-live="polite" tabindex="-1"></div>
           <div id="dashChatArea"></div>
         </section>
-        <!-- Onboarding Checklist -->
+        <!-- Setup guide (WP-O): server-authoritative progress while setup is unfinished; the hero above owns the pairing. -->
         <div id="onboardChecklist" class="checklist" data-state="idle" role="region" aria-labelledby="onboardChecklistTitle" aria-busy="false" style="display:none">
-          <div class="row" style="justify-content:space-between"><h4 id="onboardChecklistTitle">Getting started</h4><button id="checklistToggle" class="pill" type="button" style="font-size:11px" aria-expanded="true">hide</button></div>
+          <div class="checklist-head"><h4 id="onboardChecklistTitle">Setup guide</h4><button id="checklistToggle" class="btn ghost sm" type="button" aria-label="Hide setup guide">Hide</button></div>
           <div class="check-item" id="chkSignIn" data-state="pending"><div class="check-box" aria-hidden="true">·</div><span>Sign in to your private circle</span></div>
           <div class="check-item" id="chkProfile" data-state="loading"><div class="check-box" aria-hidden="true">·</div><span>Checking saved profile…</span></div>
-          <div class="check-item" id="chkAvail" data-state="loading"><div class="check-box" aria-hidden="true">·</div><span>Checking cycle availability…</span><button id="chkAvailAction" class="pill" type="button" style="margin-left:auto" hidden>Choose availability</button></div>
+          <div class="check-item" id="chkAvail" data-state="loading"><div class="check-box" aria-hidden="true">·</div><span>Checking cycle availability…</span><button id="chkAvailAction" class="btn secondary sm" type="button" style="margin-left:auto" hidden>Choose availability</button></div>
           <div class="check-item" id="chkPair" data-state="loading"><div class="check-box" aria-hidden="true">·</div><span>Checking current pairing…</span></div>
           <div class="check-item" id="chkRoom" data-state="pending" hidden><div class="check-box" aria-hidden="true">·</div><span>Open your current workspace</span></div>
           <div id="onboardChecklistStatus" class="small muted" role="status" aria-live="polite">Sign in to load your saved setup.</div>
-          <div class="row" style="margin-top:4px"><button id="chkStartTour" class="pill" type="button" style="font-size:11px">↺ Restart tour</button><button id="chkRetry" class="pill" type="button" hidden>Retry setup checks</button><span class="small muted" id="chkProgress">0/4</span></div>
+          <div class="checklist-actions"><button id="chkRetry" class="btn secondary sm" type="button" hidden>Retry setup checks</button><span class="small muted" id="chkProgress">0/4</span></div>
         </div>
         <section class="home-circle" aria-labelledby="homeCircleTitle">
           <h3 id="homeCircleTitle" class="home-section-title">Your circle</h3>
@@ -2008,7 +2132,7 @@ a.btn{text-decoration:none}
           <div class="home-list-head"><h4>Recent pairings</h4><button id="dashHistAll" class="btn ghost sm" type="button">All pairings</button></div>
           <div id="dashHistoryArea" class="home-list"><div id="dashHistList" class="small muted">Loading recent…</div></div>
           <div class="home-list-head"><h4>Recent runs</h4><button id="recentRunsRefresh" class="btn ghost sm" type="button">Refresh</button></div>
-          <div id="recentRunsArea" class="home-list"><div id="recentRunsList" class="small muted">No runs yet — hit ▶ Run</div></div>
+          <div id="recentRunsArea" class="home-list"><div id="recentRunsList" class="small muted">No runs yet. Open Code, pick an exercise and press Run.</div></div>
         </section>
         <details id="dashDiagnostics" class="home-diagnostics" hidden>
           <summary>Owner diagnostics</summary>
@@ -2075,16 +2199,30 @@ a.btn{text-decoration:none}
             <div class="card-h"><h3 id="circleInvitesTitle" class="circle-card-title">Invitations</h3><span id="circleInvitesMeta" class="circle-card-meta"></span></div>
             <div class="card-b circle-card-body">
               <p class="small muted circle-help">Each invitation works once, only for the email you enter, and expires after 7 days. For privacy, the address is shown only in the browser that sent it.</p>
-              <form id="circleInviteForm" class="circle-invite-form">
+              <form id="circleInviteForm" class="circle-invite-form" novalidate>
                 <label class="small muted circle-field">Email address
-                  <input id="circleInviteEmail" data-testid="circle-invite-email" class="input" type="email" autocomplete="email" required placeholder="teammate@example.com" />
+                  <input id="circleInviteEmail" data-testid="circle-invite-email" class="input" type="email" autocomplete="email" spellcheck="false" maxlength="254" required placeholder="teammate@example.com" aria-describedby="circleInviteEmailError" />
                 </label>
                 <button id="circleInviteCreate" data-testid="circle-invite-create" class="btn" type="submit">Send invitation</button>
+                <p id="circleInviteEmailError" class="field-error circle-invite-error" data-testid="circle-invite-email-error" hidden></p>
               </form>
               <div class="circle-invite-result">
                 <div id="circleInviteStatus" class="small muted" role="status" aria-live="polite"></div>
                 <button id="circleInviteLink" data-testid="circle-invite-link" class="btn secondary sm" type="button" hidden>Copy invitation link</button>
               </div>
+              <details id="circleBulkInvite" class="circle-invite-history circle-bulk" data-testid="circle-bulk-invite">
+                <summary>Invite several people at once</summary>
+                <form id="circleBulkInviteForm" class="circle-bulk-form" novalidate aria-busy="false">
+                  <label for="circleBulkInviteInput" class="small muted">Paste emails</label>
+                  <textarea id="circleBulkInviteInput" data-testid="circle-bulk-invite-input" class="textarea" rows="4" spellcheck="false" autocomplete="off" aria-describedby="circleBulkInviteHint circleBulkInviteCount"></textarea>
+                  <p id="circleBulkInviteHint" class="small muted circle-help">Separate addresses with commas, semicolons, spaces or new lines. “Name &lt;email&gt;” from your mail app works too. Up to 50 at a time.</p>
+                  <p id="circleBulkInviteCount" class="small circle-bulk-count" data-testid="circle-bulk-invite-count"></p>
+                  <ul id="circleBulkInvitePreview" class="people circle-bulk-list" data-testid="circle-bulk-invite-preview" aria-label="Addresses found" hidden></ul>
+                  <div><button id="circleBulkInviteSubmit" data-testid="circle-bulk-invite-submit" class="btn" type="submit" disabled>Invite people</button></div>
+                </form>
+                <div id="circleBulkInviteStatus" class="small muted" data-testid="circle-bulk-invite-status" role="status" aria-live="polite"></div>
+                <ul id="circleBulkInviteResults" class="people circle-bulk-list" data-testid="circle-bulk-invite-results" aria-label="Invitation results" hidden></ul>
+              </details>
               <div id="circleInvites" data-testid="circle-invites" class="circle-invites"></div>
             </div>
           </section>
@@ -2191,6 +2329,14 @@ a.btn{text-decoration:none}
     <!-- CODE: the pair room (WP-R). Editor first; the side panel (wide) or the
          segmented tabs (narrow) switch Problem / Results / Session / Notes. -->
     <section id="view-code" class="view room-view" tabindex="0" aria-labelledby="tab-code" style="display:none">
+      <div id="soloPracticeBar" class="rc-banner solo-bar" data-testid="solo-practice-bar">
+        <svg class="rc-icon" aria-hidden="true" focusable="false"><use href="/assets/brand/icons.svg#i-info"/></svg>
+        <p><b>Exercises and test runs are for circle members.</b> Sign in to practise, or request an invite to join a circle.</p>
+        <div class="solo-bar-actions">
+          <button id="soloSignIn" class="btn sm" type="button">Sign in</button>
+          <a id="soloRequestInvite" class="btn secondary sm" href="/#request-invite" data-invite-request-link hidden>Request an invite</a>
+        </div>
+      </div>
       <div class="room">
         <div class="room-bar">
           <div class="room-bar-context">
@@ -2198,7 +2344,7 @@ a.btn{text-decoration:none}
             <select id="roomSelect" class="select room-select"></select>
             <span id="roomLabel" class="sr-only">room —</span>
             <span class="room-presence small muted"><span class="dot" aria-hidden="true"></span><span id="presenceText">you alone</span></span>
-            <span id="codeSyncStatus" class="kbd room-sync" data-state="local" role="status" aria-live="polite">local editor</span>
+            <span id="codeSyncStatus" class="kbd room-sync" data-state="local" role="status" aria-live="polite">not shared</span>
           </div>
           <div class="room-bar-actions" role="group" aria-label="Session">
             <button id="roleToggle" class="pill room-chip" type="button" aria-label="Change shared participant roles">Role</button>
@@ -2479,6 +2625,8 @@ a.btn{text-decoration:none}
       </div>
     </section>
     <script src="/assets/circle-ui.js"></script>
+    <script type="module" src="/assets/email-validation.js"></script>
+    <script type="module" src="/assets/bulk-invite.js"></script>
   </main>
 </div>
 <!-- ---------- WP-A dialogs: confirm, prompt, sign-in and account security ---------- -->
@@ -2595,21 +2743,6 @@ a.btn{text-decoration:none}
   </div>
 </div>
 <script src="/assets/auth-dialog.js"></script>
-<div id="welcomeBanner" class="onboard-banner" style="display:none">
-  <div class="small"><b>Welcome to Randori Circle</b> — weekly mock interviews with friends. Pair Sunday, practice DSA + System Design together. <span class="kbd" style="margin-left:6px">5-min setup</span></div>
-  <div class="row" style="gap:8px"><button id="welcomeStartBtn" class="btn">Start → Sign in</button><button id="welcomeHowBtn" class="btn secondary">See how it works</button><button id="welcomeDismiss" class="pill">✕</button></div>
-</div>
-
-<div id="onboardOverlay" class="overlay" aria-hidden="true" style="z-index:85">
-  <div class="onboard-modal" role="dialog" aria-modal="true" aria-labelledby="onbTitle">
-    <div class="onboard-progress"><div class="onboard-dot active"></div><div class="onboard-dot"></div><div class="onboard-dot"></div><div class="onboard-dot"></div><div class="onboard-dot"></div><span class="small muted" id="onbCount" style="margin-left:8px">1 / 5</span></div>
-    <h3 id="onbTitle">Welcome to Randori Circle</h3>
-    <p id="onbDesc" class="small" style="color:var(--ink-2); line-height:1.6">Weekly mock interview pairing with friends for DSA + System Design.</p>
-    <div id="onbExtra" class="small" style="display:grid; gap:8px"></div>
-    <div class="onboard-actions"><span class="onboard-kbd">Esc to skip • remembers progress</span><span class="row"><button id="onbSkip" class="btn ghost">Skip tour</button><button id="onbNext" class="btn">Get started →</button></span></div>
-  </div>
-</div>
-
 <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <script>
@@ -2874,7 +3007,7 @@ a.btn{text-decoration:none}
       verified:'Your email is verified and your account is ready.',
       expired:'This verification link expired. Return to your invitation and request a new link.',
       used:'This verification link has already been used. Sign in with your email and password.',
-      revoked:'This activation is no longer available. Ask the circle owner for a new invitation.',
+      revoked:'This activation is no longer available. Ask a circle owner for a new invitation.',
       invalid:'This verification link is invalid or unavailable.',
       unavailable:'Verification is temporarily unavailable. Please retry shortly.',
     };
@@ -2933,13 +3066,34 @@ a.btn{text-decoration:none}
     show:renderActivationLanding,
   };
   if(activationState.active){ renderActivationLanding(); finishEmailActivation(); }
-  const passwordResetState={active:window.location.pathname==='/reset-password',status:'ready',token:'',busy:false};
-  if(passwordResetState.active){
-    const hash=new URLSearchParams(String(window.location.hash||'').replace(/^#/,''));
-    passwordResetState.token=hash.get('token')||'';
+  const passwordResetState={active:window.location.pathname==='/reset-password',status:'ready',token:'',busy:false,epoch:0};
+  // Reads the single-use token from the fragment, then removes it from the
+  // URL and history. Runs on load and on every same-document hashchange (a
+  // second reset link opened in a tab already on /reset-password only changes
+  // the hash), resetting the form so the newest link is the one in use.
+  function consumePasswordResetLink({initial=false}={}){
+    if(window.location.pathname!=='/reset-password') return false;
+    const read=window._randori_onboarding_flow?.fragmentToken;
+    const token=typeof read==='function'?read(window.location.hash)
+      :(new URLSearchParams(String(window.location.hash||'').replace(/^#/,'')).get('token')||'');
+    if(!initial&&!token) return false;
     try{ window.history.replaceState({},document.title,'/reset-password'); }catch{}
-    if(!passwordResetState.token) passwordResetState.status='invalid';
+    passwordResetState.active=true;
+    passwordResetState.epoch+=1;
+    passwordResetState.token=token;
+    passwordResetState.busy=false;
+    passwordResetState.status=token?'ready':'invalid';
+    for(const id of ['passwordResetNew','passwordResetConfirm']){
+      const input=document.getElementById(id); if(input) input.value='';
+    }
+    return true;
   }
+  if(passwordResetState.active) consumePasswordResetLink({initial:true});
+  window.addEventListener('hashchange',()=>{
+    if(!consumePasswordResetLink()) return;
+    renderPasswordResetLanding();
+    document.getElementById('passwordResetNew')?.focus?.();
+  });
   function renderPasswordResetLanding(){
     if(!passwordResetState.active) return false;
     document.querySelectorAll('.view').forEach(view=>{ view.style.display='none'; });
@@ -2986,10 +3140,13 @@ a.btn{text-decoration:none}
     if(password.value!==confirmation?.value){ passwordResetState.status='password_mismatch';
       document.getElementById('passwordResetStatus').textContent='Passwords do not match.'; confirmation?.focus(); return; }
     passwordResetState.busy=true; passwordResetState.status='submitting'; renderPasswordResetLanding();
+    const resetEpoch=passwordResetState.epoch;
     try{
       const response=await fetch('/api/auth/password-reset/consume',{method:'POST',credentials:'same-origin',
         headers:{'content-type':'application/json'},body:JSON.stringify({token:passwordResetState.token,password:password.value})});
       const data=await response.json().catch(()=>({}));
+      // A newer reset link replaced this one while the request was in flight.
+      if(resetEpoch!==passwordResetState.epoch) return;
       passwordResetState.status=response.ok&&data?.status==='reset'?'reset':String(data?.status||'unavailable');
       if(passwordResetState.status==='reset'){
         invalidateAuthRefreshes();
@@ -3002,7 +3159,10 @@ a.btn{text-decoration:none}
       }
       if(passwordResetState.status!=='unavailable') passwordResetState.token='';
       password.value=''; if(confirmation) confirmation.value='';
-    }catch{ passwordResetState.status='unavailable'; }
+    }catch{
+      if(resetEpoch!==passwordResetState.epoch) return;
+      passwordResetState.status='unavailable';
+    }
     passwordResetState.busy=false; renderPasswordResetLanding();
   });
   document.getElementById('passwordResetSignin')?.addEventListener('click',()=>{
@@ -3017,6 +3177,23 @@ a.btn{text-decoration:none}
   });
   window._randori_password_reset_flow={get active(){ return passwordResetState.active; },show:renderPasswordResetLanding};
   if(passwordResetState.active) renderPasswordResetLanding();
+  // Steps 1-2 of the onboarding stepper: the verified invitation, then the
+  // account sheet opened from it (spec section 8).
+  function renderInviteStepper(visible){
+    const wrap=document.getElementById('inviteStepperWrap');
+    if(!wrap) return;
+    wrap.hidden=!visible;
+    if(!visible) return;
+    const accountOpen=document.getElementById('authOverlay')?.classList.contains('show')&&authMode==='signup';
+    window._randori_onboarding_flow?.renderStepper?.(document.getElementById('inviteStepper'),
+      document.getElementById('inviteStepText'),accountOpen?'account':'invite');
+  }
+  const syncInviteStepper=()=>{
+    const wrap=document.getElementById('inviteStepperWrap');
+    if(inviteState.active&&wrap&&!wrap.hidden) renderInviteStepper(true);
+  };
+  document.addEventListener('randori:auth-modal-opened',syncInviteStepper);
+  document.addEventListener('randori:auth-modal-closed',syncInviteStepper);
   function renderInviteLanding(){
     if(!inviteState.active) return false;
     document.querySelectorAll('.view').forEach(view=>{ view.style.display='none'; });
@@ -3035,7 +3212,7 @@ a.btn{text-decoration:none}
     if(instructions) instructions.textContent=!authCapabilitiesLoaded
       ?'Checking which sign-in options are available for this single-use invitation.'
       :(localInvite
-        ?'Create a local account with the email that received this invitation. The development identity adapter treats that email as verified and never contacts an external provider.'
+        ?'Create your account with the email address that received this invitation.'
         :(verifiedInvite
           ?'Create an account with the invited email. We will send a single-use verification link before activating it.'
           :(googleInvite
@@ -3051,7 +3228,7 @@ a.btn{text-decoration:none}
         :inviteState.rateLimited
         ? `Too many attempts. Try again${inviteState.retryAfter?` in ${inviteState.retryAfter} seconds`: ' later'}.`
         : (inviteState.expired||(inviteState.ready&&!liveInvite)
-          ?'This prepared invitation expired. Reopen the original invitation link or ask the circle owner for a new one.'
+          ?'This prepared invitation expired. Reopen the original invitation link or ask a circle owner for a new one.'
         : (inviteState.failed
           ? 'This invitation is unavailable or has expired.'
           : (liveInvite
@@ -3064,6 +3241,7 @@ a.btn{text-decoration:none}
       :(inviteState.expired||(inviteState.ready&&!liveInvite)?'expired':(inviteState.failed?'failed':'live'));
     const inviteDeadEnd=window._randori_landing?.applyRecovery?.('invite',inviteRecovery)?.showNextSteps===true;
     if(instructions) instructions.hidden=inviteDeadEnd;
+    renderInviteStepper(!inviteDeadEnd&&liveInvite);
     if(button){
       button.hidden=inviteDeadEnd;
       button.disabled=!!googleInviteStartRequest||!liveInvite||!authCapabilitiesLoaded||!authIdentityHydrated
@@ -3240,8 +3418,9 @@ async function refreshMe(){
     }catch{}
     return true;
   }
-  const ADMIN_EMAIL='festusomole14@gmail.com';
-  function isAdmin(){ return !!(me && (me.is_admin || me.isAdmin || (me.email && me.email.toLowerCase()===ADMIN_EMAIL))); }
+  // Admin is read from the server's current account state (is_admin), never
+  // from a hard-coded address, so grants and revocations apply to everyone.
+  function isAdmin(){ return !!(me && (me.is_admin || me.isAdmin)); }
   function currentPairingRecoveryAvailable(){
     const state=currentPairingPublicationState;
     const fence=currentPairingPublicationFence;
@@ -3390,11 +3569,8 @@ async function refreshMe(){
   }
   function availabilityBadgeCopy(availability){
     if(!availability) return availabilityState.loading?'Checking availability…':'Review availability';
-    if(!availability.editable) return `Review closed cycle ${availability.cycle.cycleId}`;
-    if(availability.source==='cycle_default') return `Confirm default for ${availability.cycle.cycleId}`;
-    if(availability.source==='legacy_bridge') return `Confirm inherited choice for ${availability.cycle.cycleId}`;
-    return availability.isAvailable
-      ?`Available for ${availability.cycle.cycleId}`:`Skipping ${availability.cycle.cycleId}`;
+    // Human dates ("Week of 25 Oct"), never ISO week keys.
+    return window._randori_onboarding_flow?.availabilityBadge?.(availability)||'Review availability';
   }
   function renderAvailabilityDashboardBadge(availability){
     const dashboardBadge=document.getElementById('dashAvailBadge');
@@ -3484,6 +3660,7 @@ async function refreshMe(){
       retry.disabled=model.retry.disabled;
     }
     renderAvailabilityDashboardBadge(availability);
+    try{ window._randori_journey?.refreshJoinedLateHero?.(); }catch{}
   }
   function clearAvailability(){
     clearAvailabilityRolloverTimer();
@@ -3690,7 +3867,17 @@ async function refreshMe(){
     const outBtn=document.getElementById('signOutBtn');
     const hint=document.getElementById('historyAuthHint');
     const effectiveSignedIn = !!me;
-    if(document.body) document.body.dataset.auth=effectiveSignedIn?'member':'anonymous';
+    if(document.body){
+      document.body.dataset.auth=effectiveSignedIn?'member':'anonymous';
+      const identityPending=!(authIdentityHydrated||authIdentityHydrationUnavailable);
+      document.body.dataset.identity=identityPending?'pending':'resolved';
+      // A browser that last saw a signed-in account (the cached profile is
+      // removed on sign-out and on a failed identity check) keeps member
+      // navigation while /api/auth/me is in flight; visitors never get it.
+      let returning=false;
+      if(identityPending&&!effectiveSignedIn){ try{ returning=!!localStorage.getItem(ME_KEY); }catch{} }
+      document.body.dataset.returning=returning?'true':'false';
+    }
     const circleTab=document.querySelector('[data-tab="circle"]');
     if(circleTab) circleTab.style.display=effectiveSignedIn?'':'none';
     if(effectiveSignedIn){
@@ -3925,7 +4112,6 @@ async function refreshMe(){
     const join=document.getElementById('landingSignup');
     const inviteHelp=document.getElementById('landingInviteHelp');
     const signIn=document.getElementById('landingSignin');
-    const welcomeStart=document.getElementById('welcomeStartBtn');
     const identity=document.getElementById('meIdentity');
     if(join){
       // Without a prepared invitation the button explains how invitations work
@@ -3939,10 +4125,6 @@ async function refreshMe(){
       window._randori_landing?.syncInviteHelp?.();
     }
     if(signIn){ signIn.hidden=authCapabilitiesLoaded&&!canSignIn; signIn.disabled=!authCapabilitiesLoaded||!canSignIn; }
-    if(welcomeStart){
-      welcomeStart.disabled=!authCapabilitiesLoaded||(!canJoin&&!canSignIn);
-      welcomeStart.textContent=canJoin?'Start → Create account':'Start → Sign in';
-    }
     if(identity){
       identity.hidden=!authCapabilitiesLoaded||authCapabilities.identityManagement!==true;
       identity.disabled=!authCapabilitiesLoaded||authCapabilities.identityManagement!==true;
@@ -4002,10 +4184,15 @@ async function refreshMe(){
     // across re-renders (for example when capabilities arrive later).
     const joining=authMode==='signin'&&!!window._randori_pending_join_room
       &&/^\/join\//.test(window.location.pathname||'');
-    if(title) title.textContent=joining?'Sign in to join your pairing room':copy.title;
+    // A signed-out deep link to a member view (/?view=pair) says where the
+    // visitor is going; the URL is kept, so signing in lands there.
+    const deepLink=authMode==='signin'&&!joining&&window._randori_pending_view
+      &&window._randori_shell?.memberDeepLinkView?.(window.location.search)===window._randori_pending_view
+      ?window._randori_shell.deepLinkSignInCopy(window._randori_pending_view):null;
+    if(title) title.textContent=joining?'Sign in to join your pairing room':(deepLink?.title||copy.title);
     if(description) description.textContent=pending
       ?'One more step: confirm your email address.'
-      :(joining?'Your pair is waiting. Sign in to open your shared room.':copy.description);
+      :(joining?'Your pair is waiting. Sign in to open your shared room.':(deepLink?.description||copy.description));
     if(status){
       const view=authStatusView();
       status.textContent=view.text;
@@ -4912,7 +5099,7 @@ async function refreshMe(){
       refreshAvailability().catch(()=>{});
       try{ renderHistory(); }catch{}
       try{ window.dispatchEvent(new CustomEvent('randori:auth-refreshed',{detail:{signedIn:true,userId:me.id||me.uid||null}})); }catch{}
-      toast(mode==='signup'?`welcome, ${me.name}`:`signed in as ${me.name}`);
+      toast(mode==='signup'?`Welcome, ${me.name}`:`Signed in as ${me.name}`);
       setTimeout(()=>{ try{ window._randori_journey?.routeByAuth?.(); }catch{} },0);
     }catch(error){
       if(authRequest!==request||request.controller.signal.aborted||!authInteractionMatches(operation)) return;
@@ -5447,6 +5634,8 @@ async function refreshMe(){
   // recognise invitations they just sent. Memory only; cleared on any circle
   // or identity change.
   const circleInviteEmails=new Map();
+  // Bulk invite controller (assets/bulk-invite.js); mounted further below.
+  let bulkInviteController=null;
   let inviteRequestsState={requests:[],nextCursor:null,pendingCount:0,loading:false,request:0,pendingDecision:null};
   let circleRenderEpoch=0;
   let circleControlEpoch=0;
@@ -5526,6 +5715,7 @@ async function refreshMe(){
     resetOwnerInvites({allowRosterPreservation:false});
     clearLatestInvite();
     circleInviteEmails.clear();
+    bulkInviteController?.reset();
     if(circleTitle) circleTitle.textContent='Your circle';
     const circleNote=document.getElementById('circleAutoNote');
     if(circleNote) circleNote.textContent='Loading your private circle…';
@@ -5849,7 +6039,7 @@ async function refreshMe(){
     circleRosterLoading=false;
     circleRosterLoadEpoch=0;
     circleRosterState={query:'',members:[],nextCursor:null,hasMore:false,loaded:false};
-    if(!Number.isSafeInteger(currentUserId)||currentUserId!==latestInviteOwnerId){ clearLatestInvite(); circleInviteEmails.clear(); }
+    if(!Number.isSafeInteger(currentUserId)||currentUserId!==latestInviteOwnerId){ clearLatestInvite(); circleInviteEmails.clear(); bulkInviteController?.reset(); }
     if(circleOwnerPanel){ circleOwnerPanel.hidden=true; circleOwnerPanel.style.display='none'; }
     if(circleInvites) circleInvites.replaceChildren();
     if(circleInvitesMeta) circleInvitesMeta.textContent='';
@@ -6229,7 +6419,9 @@ async function refreshMe(){
   function lifecycleErrorMessage(error){
     const code=String(error?.error||'');
     if(error?.code==='recent_auth_required'||code==='recent authentication required') return 'Confirm your identity to continue this sensitive change.';
-    if(code==='another active owner is required') return 'Transfer ownership before removing the last active owner.';
+    const roleMessage=circleUi.memberRoleErrorMessage(error);
+    if(roleMessage) return roleMessage;
+    if(code==='another active owner is required') return 'Add or transfer an owner before removing the last active owner.';
     if(code==='membership state changed') return 'Membership changed elsewhere. Refreshing the current list.';
     if(code==='member not found') return 'That member is no longer available in this circle.';
     if(code==='choose another active member') return 'Choose another active member for ownership.';
@@ -6273,7 +6465,7 @@ async function refreshMe(){
     const createdAt=Number(pending?.created_at);
     const currentCircleId=String(activeCircleContext?.active_circle?.public_id||'');
     const currentContextVersion=Number(activeCircleContext?.context_version||0);
-    const actionValid=['deactivate','transfer','archive'].includes(pending?.action);
+    const actionValid=pending?.action==='archive'||circleUi.RECENT_AUTH_MEMBER_ACTIONS.includes(pending?.action);
     const targetValid=pending?.action==='archive'
       ?!Object.prototype.hasOwnProperty.call(pending,'member_id')
       :Number.isSafeInteger(pending?.member_id)&&pending.member_id>0;
@@ -6289,7 +6481,8 @@ async function refreshMe(){
   async function requestLifecycleRecentAuth(action,memberId=null){
     const actorId=Number(me?.id||me?.uid);
     const targetValid=action==='archive'||Number.isSafeInteger(memberId)&&memberId>0;
-    if(!Number.isSafeInteger(actorId)||actorId<1||!['deactivate','transfer','archive'].includes(action)
+    if(!Number.isSafeInteger(actorId)||actorId<1
+      ||!(action==='archive'||circleUi.RECENT_AUTH_MEMBER_ACTIONS.includes(action))
       ||!targetValid) return false;
     try{
       sessionStorage.setItem(LIFECYCLE_RECENT_ACTION_KEY,JSON.stringify({
@@ -6304,7 +6497,10 @@ async function refreshMe(){
       clearLifecycleRecentAction();
       return false;
     }
-    return window._randori_identity.confirm(action==='transfer'
+    const roleCopy=circleUi.memberRoleActionCopy(action);
+    return window._randori_identity.confirm(roleCopy
+      ?roleCopy.confirm
+      :action==='transfer'
       ?'Confirm your identity before transferring circle ownership.'
       :action==='archive'
       ?'Confirm your identity before archiving this circle.'
@@ -6352,19 +6548,20 @@ async function refreshMe(){
       reactivate:[`Reactivate ${label}?`,'They can sign in again and rejoin future pairing cycles.'],
       transfer:[`Transfer ownership to ${label}?`,'They become the owner and you become a member. This change takes effect immediately.'],
     };
-    const prompt=prompts[action];
+    const roleCopy=circleUi.memberRoleActionCopy(action,label);
+    const prompt=roleCopy?[roleCopy.title,roleCopy.body]:prompts[action];
     if(!prompt||(!skipPrompt&&!await showConfirm(prompt[0],prompt[1]))) return false;
     if(!circleControlOperationMatches(operation)) return false;
     const actorId=Number(me.id||me.uid);
     circleLifecyclePending=true;
     clearCircleLifecycleNotice();
-    if(circleLifecycleStatus) circleLifecycleStatus.textContent=`${action==='transfer'?'Transferring ownership':action==='reactivate'?'Reactivating member':'Deactivating member'}…`;
+    if(circleLifecycleStatus) circleLifecycleStatus.textContent=roleCopy?roleCopy.pending:`${action==='transfer'?'Transferring ownership':action==='reactivate'?'Reactivating member':'Deactivating member'}…`;
     circleLifecyclePanel?.querySelectorAll('button').forEach(button=>{ button.disabled=true; });
     try{
       const result=await api('/api/members',{method:'PATCH',body:{action,member_id:Number(member.id)}});
       if(!me||Number(me.id||me.uid)!==actorId
         ||!circleControlOperationMatches(operation,result)) return false;
-      if(circleLifecycleStatus) circleLifecycleStatus.textContent=action==='transfer'?'Ownership transferred.':action==='reactivate'?'Member reactivated.':'Member deactivated and signed out.';
+      if(circleLifecycleStatus) circleLifecycleStatus.textContent=roleCopy?roleCopy.done:action==='transfer'?'Ownership transferred.':action==='reactivate'?'Member reactivated.':'Member deactivated and signed out.';
       circleRosterState.loaded=false;
       circleRosterLoading=false;
       circleRosterLoadEpoch=0;
@@ -6401,7 +6598,7 @@ async function refreshMe(){
     const actorId=Number(me?.id||me?.uid);
     const list=document.createElement('ul'); list.className='people circle-member-rows'; list.setAttribute('aria-label','Circle members');
     members.forEach(member=>{
-      const view=circleUi.memberView(member,{actorId});
+      const view=circleUi.memberView(member,{actorId,actorIsAdmin:isAdmin()});
       if(!view) return;
       const row=document.createElement('li'); row.className='circle-row circle-member-row'; row.dataset.testid='circle-member-row';
       row.dataset.memberId=String(view.id); row.dataset.memberRole=view.role; row.dataset.memberStatus=view.status;
@@ -6414,6 +6611,7 @@ async function refreshMe(){
       if(view.isSelf){ const you=document.createElement('span'); you.className='circle-you'; you.textContent='(you)'; title.appendChild(you); }
       const badges=document.createElement('div'); badges.className='circle-row-badges';
       badges.append(circleUi.badgeNode(document,view.roleLabel,view.role==='owner'?'info':null),circleUi.badgeNode(document,view.statusLabel,view.statusTone));
+      if(view.isAdmin) badges.appendChild(circleUi.adminBadgeNode(document));
       identity.append(title,badges);
       if(view.joined){ const joined=document.createElement('div'); joined.className='small muted'; joined.textContent=view.joined; identity.appendChild(joined); }
       row.append(avatar,identity);
@@ -6432,6 +6630,12 @@ async function refreshMe(){
           controls.appendChild(button);
         });
         row.appendChild(controls);
+      }
+      const roleMenu=circleUi.memberRoleMenuNode(document,view,action=>{ applyMemberAction(action,member); });
+      if(roleMenu){
+        let controls=row.querySelector('.membership-controls');
+        if(!controls){ controls=document.createElement('div'); controls.className='circle-row-actions membership-controls'; row.appendChild(controls); }
+        controls.appendChild(roleMenu);
       }
       list.appendChild(row);
     });
@@ -6565,7 +6769,7 @@ async function refreshMe(){
       ||Number(me?.id||me?.uid)!==activeCircleUserId) return;
     circleLifecyclePanel.hidden=false; circleLifecyclePanel.style.display='grid';
     if(circleLifecycleHelp) circleLifecycleHelp.textContent=role==='owner'
-      ?'Deactivated members are signed out until you reactivate them. Ownership transfer is immediate; if you are the only owner, transfer it before leaving.'
+      ?'Deactivated members are signed out until you reactivate them. A circle can have several owners; use Roles to add or remove one. If you are the only owner, add or transfer an owner before leaving.'
       :'Leaving signs you out and removes access to private rooms immediately.';
     if(circleManageMembers) circleManageMembers.hidden=role!=='owner';
     if(circleMemberSearchForm) circleMemberSearchForm.hidden=role!=='owner';
@@ -6892,7 +7096,11 @@ async function refreshMe(){
     const button=document.getElementById('circleInviteCreate');
     const email=String(input?.value||'').trim();
     const userId=Number(me.id||me.uid);
-    if(!email) return;
+    // Same rules as the server (assets/email-validation.js); the server re-checks.
+    const emailRules=window.RandoriEmailValidation;
+    const verdict=emailRules?emailRules.validateEmail(email):{ok:!!email,reason:'empty'};
+    setCircleInviteEmailError(verdict.ok?'':(emailRules?emailRules.emailProblemMessage(verdict.reason):'Enter an email address.'));
+    if(!verdict.ok){ input?.focus(); return; }
     const operation=captureCircleControlOperation();
     if(!circleControlOperationMatches(operation)) return;
     circleInviteCreatePending=true;
@@ -6921,9 +7129,11 @@ async function refreshMe(){
         ?`Invitation email on its way to ${email}. You can also copy the link as a fallback.`
         :`Invitation ready for ${email}. Copy the link and send it privately.`;
       if(activeCircleRole==='owner') await loadOwnerInvitations(circleRenderEpoch);
-    }catch{
+    }catch(error){
       if(!circleControlOperationMatches(operation)) return;
-      if(circleInviteStatus) circleInviteStatus.textContent='Could not send the invitation. Check the email address and try again.';
+      if(circleInviteStatus) circleInviteStatus.textContent=Number(error?.http_status)===429
+        ?(window.RandoriBulkInvite?.bulkErrorMessage(error)||'You have reached today’s invitation limit. Try again later.')
+        :'Could not send the invitation. Check the email address and try again.';
     }finally{
       if(circleControlOperationMatches(operation)){
         circleInviteCreatePending=false;
@@ -6931,6 +7141,34 @@ async function refreshMe(){
       }
     }
   });
+  function setCircleInviteEmailError(message){
+    const input=document.getElementById('circleInviteEmail');
+    const error=document.getElementById('circleInviteEmailError');
+    if(input) input.setAttribute('aria-invalid',message?'true':'false');
+    if(error){ error.textContent=message; error.hidden=!message; }
+  }
+  document.getElementById('circleInviteEmail')?.addEventListener('input',()=>{
+    if(document.getElementById('circleInviteEmail')?.getAttribute('aria-invalid')==='true') setCircleInviteEmailError('');
+  });
+  // Bulk invitations (assets/bulk-invite.js, ID-68). The module loads after
+  // this script, so it mounts on its ready event; every request still goes
+  // through api() and the circle-context guards above.
+  function mountBulkInvite(){
+    if(bulkInviteController||!window.RandoriBulkInvite) return;
+    bulkInviteController=window.RandoriBulkInvite.mountBulkInvite({doc:document,host:{
+      origin:window.location.origin,
+      canInvite:()=>activeCircleRole==='owner'&&!!me,
+      capture:()=>captureCircleControlOperation(),
+      matches:(operation,result)=>circleControlOperationMatches(operation,result),
+      createMany:emails=>api('/api/invitations',{method:'POST',body:{emails}}),
+      resend:id=>api(`/api/invitations/${encodeURIComponent(id)}`,{method:'POST',body:{action:'resend'}}),
+      rememberEmail:(id,email)=>{ if(id&&email) circleInviteEmails.set(String(id).toLowerCase(),email); },
+      refresh:()=>activeCircleRole==='owner'?loadOwnerInvitations(circleRenderEpoch):Promise.resolve(),
+      copy:text=>navigator.clipboard.writeText(text),
+    }});
+  }
+  mountBulkInvite();
+  window.addEventListener('randori:bulk-invite-ready',mountBulkInvite);
   async function copyLatestInviteLink(){
     if(activeCircleRole!=='owner'||!latestInviteUrl) return;
     const operation=captureCircleControlOperation();
@@ -7495,7 +7733,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     currentCloudPairingUserId=null;
     const weeks=getWeeks(); const cur=weeks[0];
     renderPairsMeta(cur, null);
-    if(!cur){ container.innerHTML=`<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">No demo pairs yet. Sign in to see the authoritative current-cycle schedule. <button class="pill" onclick="window._randori_onboard && window._randori_onboard.start(4)" style="margin-left:8px">How it works?</button></div>`; return; }
+    if(!cur){ container.innerHTML=`<div class="small muted" style="padding:10px; border:1px dashed var(--line); border-radius:10px">No demo pairs yet. Sign in to see the authoritative current-cycle schedule.</div>`; return; }
     container.innerHTML = cur.pairs.map(p=>{
       const a=idToPerson(p.aId); const b=p.bId? idToPerson(p.bId):null;
       const aName=a? a.name: 'unknown'; const bName=p.isAI? 'Solo practice' : (b? b.name: '—');
@@ -9384,220 +9622,49 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   // tiny hook for parallel video subagent: expose ai globals
   window._randori_ai = { get recording(){return aiRecording}, get snaps(){return aiCodeSnaps}, analyze: aiAnalyze };
 
-  // ---------- Onboarding Journey (5-step tour + welcome + checklist) ----------
-  const ONB_KEY='randori-onboarded';
-  const ONB_STEP_KEY='randori-onboard-step';
-  const ONB_DISMISSED_BANNER='randori-banner-dismissed';
-
-  let onboardStep = parseInt(localStorage.getItem(ONB_STEP_KEY)||'0',10)||0;
-  let onboardCompleted = localStorage.getItem(ONB_KEY)==='1';
-
-  const steps=[
-    {title:'Welcome to Randori Circle', desc:'Weekly mock interviews with friends — cycle-based pairing, live rooms, whiteboard. 5-min setup, then you practice DSA + System Design together.', cta:'Get started →', target:null, extra:`<div class="row" style="gap:8px"><span class="kbd">Schedule shown from the server</span><span class="kbd">No trios — odd gets solo practice</span></div>`},
-    {title:'Join your Circle', desc:'Sign in to load your private circle and saved setup from the server.', cta:'Next → Profile', target:'#authBtn', needsAuth:false, extra:`<div class="small muted">This browser never treats cached identity as proof of progress.</div>`},
-    {title:'Complete your profile', desc:'Your saved display name and timezone make scheduling clear for your partner.', cta:'Next → Availability', target:'#dashProfileBtn', extra:`<div class="small muted">Profile progress comes from your authenticated server record.</div>`},
-    {title:'Save cycle availability', desc:'Availability applies only to the upcoming pairing cycle shown in Pairing. Save either Available or Skip before that cycle’s displayed cutoff.', cta:'Next → Pairing', target:'#availabilityWrap', extra:`<div class="small muted">An inherited value is not counted until this exact cycle is saved.</div><div style="margin-top:8px"><button id="onbAvailabilityAction" class="pill" type="button">Open active-cycle choices</button></div>`},
-    {title:'Current pair & workspace', desc:'A workspace appears only after the server publishes your assignment for the active circle and current cycle.', cta:'View current pairing →', target:'#view-pair', extra:`<div class="small muted">Old room links and browser storage never complete this step.</div>`},
-  ];
-
-  function updateOnboardProgress(){
-    const dots=document.querySelectorAll('#onboardOverlay .onboard-dot');
-    dots.forEach((d,i)=> d.classList.toggle('active', i<=onboardStep-1));
-    document.getElementById('onbCount').textContent=`${onboardStep} / 5`;
-  }
-
-  function clearSpotlight(){
-    document.querySelectorAll('.onboard-spotlight').forEach(el=> el.classList.remove('onboard-spotlight','pulse'));
-  }
-
-  function setOnboardingModalVisible(visible){
-    const overlay=document.getElementById('onboardOverlay');
-    if(!overlay) return;
-    overlay.classList.toggle('show',visible);
-    overlay.setAttribute('aria-hidden',visible?'false':'true');
-    if(!visible) clearSpotlight();
-  }
-
-  function spotlight(el){
-    clearSpotlight();
-    if(!el) return;
-    el.classList.add('onboard-spotlight');
-    // pulse for authBtn
-    if(el.id==='authBtn') el.classList.add('pulse');
-  }
-
-  function renderOnboardStep(){
-    if(onboardStep<1 || onboardStep>5){ setOnboardingModalVisible(false); return; }
-    // Auth owns the modal layer while it is open. Keep the tour step queued so
-    // it can resume after auth closes instead of stacking two aria-modal dialogs.
-    if(document.getElementById('authOverlay')?.classList.contains('show')){
-      setOnboardingModalVisible(false);
-      return;
-    }
-    const s=steps[onboardStep-1];
-    document.getElementById('onbTitle').textContent=s.title;
-    document.getElementById('onbDesc').textContent=s.desc;
-    document.getElementById('onbExtra').innerHTML=s.extra||'';
-    document.getElementById('onbAvailabilityAction')?.addEventListener('click',()=>{
-      setOnboardingModalVisible(false);
-      window._randori_availability?.open?.({source:'tour'});
-    });
-    document.getElementById('onbNext').textContent=s.cta||'Next →';
-    document.getElementById('onbCount').textContent=`${onboardStep} / 5`;
-    updateOnboardProgress();
-    setOnboardingModalVisible(true);
-    // spotlight target
-    let tgt=null;
-    if(s.target){
-      if(s.target.startsWith('#')) tgt=document.querySelector(s.target);
-      else if(s.target==='#view-pair') { document.querySelector('[data-tab="pair"]')?.click(); tgt=document.getElementById('view-pair'); }
-      else if(s.target==='#view-code') tgt=document.getElementById('view-code');
-      else tgt=document.querySelector(s.target);
-      // if not signed in on step 2 highlight sign in
-      if(onboardStep===2){
-        const signed=!!me;
-        if(!signed) tgt=document.getElementById('authBtn');
-        else {
-          document.getElementById('onbDesc').textContent='You’re in! Review the upcoming cycle and its cutoff next.';
-          document.getElementById('onbExtra').innerHTML='<div class="pill" style="background:var(--accent); color:#0f0f10">✓ Signed in — availability is set per cycle</div>';
-        }
-      }
-      if(onboardStep===4){
-        const av=document.getElementById('availabilityWrap');
-        tgt=av && av.style.display!=='none' ? av : document.querySelector('[data-tab="pair"]');
-      }
-    }
-    if(tgt) spotlight(tgt);
-    localStorage.setItem(ONB_STEP_KEY, String(onboardStep));
-    queueMicrotask(()=>{
-      if(document.getElementById('onboardOverlay')?.classList.contains('show')) document.getElementById('onbNext')?.focus();
-    });
-  }
-
-  function startOnboarding(from=1){
-    onboardStep=from;
-    onboardCompleted=false;
-    localStorage.setItem(ONB_STEP_KEY, String(onboardStep));
-    localStorage.removeItem(ONB_KEY);
-    renderOnboardStep();
-    // open checklist
-    document.getElementById('onboardChecklist').style.display='grid';
-  }
-
-  function nextOnboard(){
-    if(onboardStep<5){
-      onboardStep++;
-      renderOnboardStep();
-    } else {
-      onboardStep=0;
-      onboardCompleted=true;
-      localStorage.setItem(ONB_KEY,'1');
-      localStorage.setItem(ONB_STEP_KEY,'0');
-      setOnboardingModalVisible(false);
-      toast('You’re all set — check the dashboard for the next pairing cutoff');
-      // keep checklist but mark progress
-      updateChecklist();
-    }
-  }
-
-  function skipOnboarding(){
-    onboardStep=0;
-    onboardCompleted=true;
-    localStorage.setItem(ONB_KEY,'1');
-    localStorage.setItem(ONB_STEP_KEY,'0');
-    setOnboardingModalVisible(false);
-  }
-
-  document.getElementById('onbNext')?.addEventListener('click', nextOnboard);
-  document.getElementById('onbSkip')?.addEventListener('click', skipOnboarding);
-  document.addEventListener('keydown', e=>{
-    if(e.key==='Escape' && document.getElementById('onboardOverlay').classList.contains('show')){
-      e.preventDefault();
-      skipOnboarding();
-    }
-  });
-  document.addEventListener('randori:auth-modal-opened',()=>setOnboardingModalVisible(false));
-  document.addEventListener('randori:auth-modal-closed',()=>{
-    if(!onboardCompleted&&onboardStep>0) renderOnboardStep();
-  });
-
-  // Welcome banner for first-time visitors (no token)
-  function maybeShowWelcome(){
-    const dismissed=localStorage.getItem(ONB_DISMISSED_BANNER)==='1';
-    const wb=document.getElementById('welcomeBanner');
-    if(!wb) return;
-    // never show if already onboarded/completed/dismissed once
-    if(onboardCompleted || localStorage.getItem(ONB_KEY)==='1'){ wb.style.display='none'; return; }
-    if(!dismissed && !me){
-      wb.style.display='flex';
-    } else wb.style.display='none';
-  }
-
-  document.getElementById('welcomeStartBtn')?.addEventListener('click', ()=>{
-    openAuthModal(window._randori_auth?.canStartSignup?.()?'signup':'signin');
-    localStorage.setItem(ONB_DISMISSED_BANNER,'1');
-    document.getElementById('welcomeBanner').style.display='none';
-    if(onboardStep===0) startOnboarding(2);
-  });
-  document.getElementById('welcomeHowBtn')?.addEventListener('click', ()=>{ startOnboarding(1); localStorage.setItem(ONB_DISMISSED_BANNER,'1'); document.getElementById('welcomeBanner').style.display='none'; });
-  document.getElementById('welcomeDismiss')?.addEventListener('click', ()=>{ localStorage.setItem(ONB_DISMISSED_BANNER,'1'); localStorage.setItem(ONB_KEY,'1'); localStorage.setItem(ONB_STEP_KEY,'0'); onboardCompleted=true; onboardStep=0; document.getElementById('welcomeBanner').style.display='none'; });
-
-  // Checklist logic
+  // ---------- Setup guide (WP-O) ----------
+  // The welcome banner and the modal tour are gone: first-run setup is one
+  // progressive stepper (journey script below) and Home shows a compact,
+  // server-authoritative setup guide. The only browser state is whether this
+  // account dismissed that guide.
   function updateChecklist(){
     const authority=window._randori_onboarding_authority;
     if(authority?.render) return authority.render();
     const checklist=document.getElementById('onboardChecklist');
-    if(checklist) checklist.style.display=me?'grid':'none';
+    if(checklist) checklist.style.display='none';
   }
 
   document.getElementById('checklistToggle')?.addEventListener('click', ()=>{
-    const cl=document.getElementById('onboardChecklist');
-    const items=[...cl.querySelectorAll('.check-item'), cl.querySelector('#chkStartTour'), cl.querySelector('#chkProgress')];
-    const hidden=cl.dataset.collapsed==='1';
-    items.forEach(el=>{ if(el) el.style.display= hidden? '': 'none'; });
-    cl.dataset.collapsed= hidden? '0':'1';
-    const toggle=document.getElementById('checklistToggle');
-    toggle.textContent = hidden? 'hide':'show';
-    toggle.setAttribute('aria-expanded',hidden?'true':'false');
-  });
-  document.getElementById('chkStartTour')?.addEventListener('click', ()=> startOnboarding(1));
-
-  // Hook into existing updateAuthUI to update checklist + maybe highlight
-  const _origUpdateAuthUI = typeof updateAuthUI==='function' ? updateAuthUI : null;
-  if(_origUpdateAuthUI){
-    const origRef=_origUpdateAuthUI;
-    // wrap by monkey-patching global — we reassign after definition below? Actually updateAuthUI is hoisted function, we can override
-  }
-
-  // Enhance empty states to link to onboarding
-  const origRenderParis = typeof renderPairs==='function' ? renderPairs : null;
-
-  // Init onboarding on load — only first time ever, never again after complete/dismiss
-  setTimeout(()=>{
-    // re-read in case token changed after load
-    try{ onboardCompleted = localStorage.getItem(ONB_KEY)==='1'; }catch{}
-    if(onboardCompleted){ document.getElementById('welcomeBanner').style.display='none'; setOnboardingModalVisible(false); }
-    maybeShowWelcome();
+    const userId=Number(me?.id||me?.uid);
+    window._randori_onboarding_flow?.setGuideDismissed?.(localStorage,userId,true);
     updateChecklist();
-    if(!onboardCompleted && onboardStep===0 && !me){
-      // first-time, auto-show welcome banner already, don't auto-open modal until CTA
-    } else if(!onboardCompleted && onboardStep>0){
-      renderOnboardStep();
-    }
-    // Wrap updateAuthUI after it exists
-    if(typeof updateAuthUI==='function' && !window._onbWrapped){
-      const base=updateAuthUI;
-      window.updateAuthUI = function(){
-        const r=base.apply(this, arguments);
-        try{ updateChecklist(); }catch{}
-        return r;
-      };
-      window._onbWrapped=true;
-    }
-  }, 400);
+    document.getElementById('meLabel')?.focus?.();
+    if(typeof toast==='function') toast('Setup guide hidden. Open it again from the account menu.');
+  });
 
-  // Expose for debug + empty-state buttons
-  window._randori_onboard={ start:startOnboarding, next:nextOnboard, skip:skipOnboarding, renderChecklist:updateChecklist, get step(){return onboardStep}, get done(){return onboardCompleted} };
+  // Keep the historical startup binding: once the shell has settled, global
+  // updateAuthUI() calls refresh the header and the setup guide only. Routing
+  // after identity changes stays with randori:auth-refreshed in the journey,
+  // so a late header refresh never pulls the member off the page they chose.
+  setTimeout(()=>{
+    if(typeof updateAuthUI!=='function'||window._onbWrapped) return;
+    const base=updateAuthUI;
+    window.updateAuthUI=function(){
+      const result=base.apply(this,arguments);
+      try{ updateChecklist(); }catch{}
+      return result;
+    };
+    window._onbWrapped=true;
+  },400);
+
+  // Read by the onboarding authority, which itself never touches storage.
+  window._randori_setup_guide={
+    dismissed:userId=>window._randori_onboarding_flow?.guideDismissed?.(localStorage,userId)===true,
+  };
+  window._randori_onboard={
+    renderChecklist:updateChecklist,
+    open:(step)=>window._randori_journey?.openSetupGuide?.(step),
+  };
   window._randori_pairing_recovery={
     accept:acceptPairingPublicationState,
     publish:publishCurrentCycle,
@@ -9665,29 +9732,55 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   // Landing CTA wiring
   // #landingSignup ("I have an invitation") is wired in assets/landing.js.
   document.getElementById('landingSignin')?.addEventListener('click', ()=>window._randori_auth?.openModal?.('signin'));
+  document.getElementById('soloSignIn')?.addEventListener('click', ()=>window._randori_auth?.openModal?.('signin'));
 
   // Profile setup helpers
   const PALETTE=['#e6c07a','#9cc0b5','#d68a8a','#a3b5d6','#c7b29a','#8ec0a5','#d3a0cb','#9aa9c9','#e3c9b2','#82b6b7','#b8a8d8','#d9b6a3'];
+  function onboardingUi(){ return window._randori_onboarding_flow||null; }
+  function selectProfileColor(color){
+    const container=document.getElementById('psColors');
+    const avatar=document.getElementById('psAvatar');
+    const value=safeProfileColor(color||PALETTE[0]);
+    if(container){
+      container.dataset.selected=value;
+      for(const button of container.querySelectorAll('.color-dot')){
+        button.setAttribute('aria-pressed',button.dataset.color===value?'true':'false');
+      }
+    }
+    if(avatar) avatar.style.background=value;
+  }
   function renderColorPicker(){
     const container=document.getElementById('psColors');
     if(!container) return;
-    container.innerHTML='';
-    PALETTE.forEach(c=>{
-      const d=document.createElement('div');
-      d.className='color-dot'; d.style.background=c; d.title=c;
-      d.onclick=()=>{ document.getElementById('psAvatar').style.background=c; container.dataset.selected=c; };
-      container.appendChild(d);
+    const buttons=PALETTE.map((c,index)=>{
+      const button=document.createElement('button');
+      button.type='button'; button.className='color-dot'; button.style.background=c; button.dataset.color=c;
+      button.setAttribute('aria-label',`Colour ${index+1} of ${PALETTE.length}`);
+      button.setAttribute('aria-pressed','false');
+      button.addEventListener('click',()=>selectProfileColor(c));
+      return button;
     });
+    container.replaceChildren(...buttons);
     const tokColor = (()=>{ try{ const me=JSON.parse(localStorage.getItem(ME_KEY)||'null'); return me?.color||PALETTE[0]}catch{return PALETTE[0]} })();
-    container.dataset.selected=tokColor;
-    document.getElementById('psAvatar').style.background=tokColor;
+    selectProfileColor(tokColor);
   }
   function populateTz(){
     const sel=document.getElementById('psTz');
     if(!sel) return;
     const tzs = ['UTC','Europe/London','Europe/Berlin','Europe/Paris','US/Eastern','US/Central','US/Pacific','Asia/Dubai','Asia/Kolkata','Asia/Singapore','Asia/Tokyo','Australia/Sydney'];
-    sel.innerHTML=tzs.map(t=>`<option value="${t}">${t}</option>`).join('');
-    try{ const intl=Intl.DateTimeFormat().resolvedOptions().timeZone; if(intl && !tzs.includes(intl)) sel.innerHTML+=`<option value="${intl}">${intl} (detected)</option>`; sel.value=intl||'UTC'; }catch{ sel.value='UTC'; }
+    const detected=onboardingUi()?.detectTimeZone?.()||'UTC';
+    const options=tzs.map(t=>{ const option=document.createElement('option'); option.value=t; option.textContent=t; return option; });
+    if(detected&&!tzs.includes(detected)){
+      const option=document.createElement('option'); option.value=detected; option.textContent=`${detected} (detected)`; options.push(option);
+    }
+    sel.replaceChildren(...options);
+    sel.value=detected||'UTC';
+  }
+  function ensureTimeZoneOption(tz){
+    const sel=document.getElementById('psTz');
+    if(!sel||!tz||[...sel.options].some(option=>option.value===tz)) return;
+    if(!onboardingUi()?.validTimeZone?.(tz)) return;
+    const option=document.createElement('option'); option.value=tz; option.textContent=tz; sel.appendChild(option);
   }
   let profileFocus='both';
   let profileEditorEpoch=0;
@@ -9725,16 +9818,141 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(target<=profileSaveSettledAttempt) return Promise.resolve(Object.freeze({attempt:target}));
     return new Promise(resolve=>profileSaveWaiters.add({attempt:target,resolve}));
   }
+  function setProfileFocus(value){
+    profileFocus=['dsa','system','both'].includes(value)?value:'both';
+    document.querySelectorAll('#psFocus .chip').forEach(c=>{
+      const active=c.dataset.focus===profileFocus;
+      c.classList.toggle('active',active);
+      c.setAttribute('aria-pressed',active?'true':'false');
+    });
+  }
   document.getElementById('psFocus')?.addEventListener('click', e=>{
-    if(e.target.classList.contains('chip')){
-      document.querySelectorAll('#psFocus .chip').forEach(c=>c.classList.remove('active'));
-      e.target.classList.add('active');
-      profileFocus=e.target.dataset.focus||'both';
-    }
+    const chip=e.target.closest?.('.chip');
+    if(chip) setProfileFocus(chip.dataset.focus||'both');
   });
 
   document.getElementById('psAvailabilityLink')?.addEventListener('click',()=>{
     window._randori_availability?.open?.({source:'profile'});
+  });
+
+  // ---- One progressive onboarding stepper (WP-O, spec section 8) ----
+  // Steps 1-2 (invitation, account) happen on #view-invite and the auth
+  // sheet; this view owns profile basics, availability and what happens next.
+  // Completion stays with the onboarding authority; the stepper only decides
+  // which panel is on screen.
+  const SETUP_PANELS={profile:'setupStepProfile',availability:'setupStepAvailability',next:'setupStepNext'};
+  const SETUP_HEADINGS={profile:'profileSetupTitle',availability:'setupAvailabilityTitle',next:'setupNextTitle'};
+  let setupMode='onboarding';
+  let setupStep='profile';
+  let availabilityStepObserver=null;
+  const availabilityHome=(()=>{
+    const card=document.getElementById('availabilityWrap');
+    if(!card?.parentNode) return null;
+    const marker=document.createComment('availability card home');
+    card.parentNode.insertBefore(marker,card);
+    return marker;
+  })();
+
+  function restoreAvailabilityCard(){
+    availabilityStepObserver?.disconnect();
+    availabilityStepObserver=null;
+    const card=document.getElementById('availabilityWrap');
+    if(card&&availabilityHome?.parentNode&&card.parentNode!==availabilityHome.parentNode){
+      availabilityHome.parentNode.insertBefore(card,availabilityHome.nextSibling);
+    }
+    labelAvailabilityCard('availTitle');
+  }
+
+  // In the setup step the step title is the only visible heading, so the card
+  // and its choices are named by it; on Pairing they use the card's own title.
+  function labelAvailabilityCard(id){
+    for(const elId of ['availabilityWrap','availActions']){
+      const el=document.getElementById(elId);
+      if(el&&el.getAttribute('aria-labelledby')!==id) el.setAttribute('aria-labelledby',id);
+    }
+  }
+
+  function placeReminderRow(){
+    const row=document.getElementById('psRemindRow');
+    const host=document.getElementById(setupMode==='edit'?'psRemindEditHost':'psRemindFlowHost');
+    if(row&&host&&row.parentNode!==host) host.appendChild(row);
+  }
+
+  function setupTimeZone(){
+    return document.getElementById('psTz')?.value||onboardingUi()?.detectTimeZone?.()||undefined;
+  }
+
+  function renderAvailabilityStep(){
+    const view=onboardingUi()?.availabilityStep?.(window._randori_availability?.current||null,{timeZone:setupTimeZone()});
+    if(!view) return;
+    const title=document.getElementById('setupAvailabilityTitle'); if(title) title.textContent=view.title;
+    const lead=document.getElementById('setupAvailabilityLead'); if(lead) lead.textContent=view.lead;
+    const note=document.getElementById('setupAvailabilityNote'); if(note&&note.textContent!==view.note) note.textContent=view.note;
+    const next=document.getElementById('setupAvailabilityNext');
+    if(next){
+      next.textContent=view.next;
+      // "Decide later" is the quiet way out; the choice in the card is the
+      // primary action, and "Continue" becomes primary once it is made.
+      next.classList.toggle('ghost',view.next==='Decide later');
+    }
+  }
+
+  function renderNextStep(){
+    const items=onboardingUi()?.nextSteps?.(window._randori_availability?.current||null,{
+      timeZone:setupTimeZone(),
+      remindersOn:document.getElementById('psRemindEmail')?.checked!==false,
+    });
+    if(items) onboardingUi()?.renderTimeline?.(document.getElementById('setupTimeline'),items);
+  }
+
+  function setSetupStep(step,{focus=true}={}){
+    const target=SETUP_PANELS[step]&&(setupMode!=='edit'||step==='profile')?step:'profile';
+    setupStep=target;
+    if(viewProfile){ viewProfile.dataset.step=target; viewProfile.dataset.mode=setupMode; }
+    for(const [key,id] of Object.entries(SETUP_PANELS)){
+      const panel=document.getElementById(id);
+      if(panel) panel.hidden=key!==target;
+    }
+    onboardingUi()?.renderStepper?.(document.getElementById('setupStepper'),document.getElementById('setupStepText'),target);
+    placeReminderRow();
+    if(target==='availability'){
+      const card=document.getElementById('availabilityWrap');
+      const host=document.getElementById('setupAvailabilityHost');
+      if(card&&host&&card.parentNode!==host) host.appendChild(card);
+      labelAvailabilityCard('setupAvailabilityTitle');
+      renderAvailabilityStep();
+      if(card&&typeof MutationObserver==='function'&&!availabilityStepObserver){
+        availabilityStepObserver=new MutationObserver(()=>renderAvailabilityStep());
+        availabilityStepObserver.observe(card,{subtree:true,attributes:true,attributeFilter:['aria-pressed','data-tone','disabled'],childList:true,characterData:true});
+      }
+      window._randori_availability?.refresh?.()?.catch?.(()=>{});
+    }else{
+      restoreAvailabilityCard();
+    }
+    if(target==='next') renderNextStep();
+    if(focus){
+      const heading=document.getElementById(SETUP_HEADINGS[target]);
+      queueMicrotask(()=>{ if(viewProfile?.style.display!=='none') heading?.focus?.({preventScroll:true}); });
+      const reduce=window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+      try{ window.scrollTo({top:0,behavior:reduce?'auto':'smooth'}); }catch{}
+    }
+  }
+
+  // Leaving the onboarding view (any navigation) returns the availability
+  // card to Pairing, so there is only ever one copy of its controls.
+  if(viewProfile&&typeof MutationObserver==='function'){
+    new MutationObserver(()=>{ if(viewProfile.style.display==='none') restoreAvailabilityCard(); })
+      .observe(viewProfile,{attributes:true,attributeFilter:['style']});
+  }
+
+  document.getElementById('setupAvailabilityBack')?.addEventListener('click',()=>setSetupStep('profile'));
+  document.getElementById('setupAvailabilityNext')?.addEventListener('click',()=>setSetupStep('next'));
+  document.getElementById('setupNextBack')?.addEventListener('click',()=>setSetupStep('availability'));
+  document.getElementById('psRemindEmail')?.addEventListener('change',()=>{ if(setupStep==='next') renderNextStep(); });
+  document.getElementById('setupFinish')?.addEventListener('click',async()=>{
+    clearRequestedView();
+    await showDashboard();
+    document.getElementById('dashWelcome')?.focus?.();
   });
 
   async function fetchProfile(){
@@ -9759,14 +9977,19 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   function setProfileSaveState(status,message=''){
     const save=document.getElementById('psSave');
+    const skip=document.getElementById('psSkip');
     const retry=document.getElementById('psRetry');
     const statusEl=document.getElementById('psSaveStatus');
     const busy=status==='loading'||status==='saving';
     if(viewProfile) viewProfile.setAttribute('aria-busy',busy?'true':'false');
-    if(save){ save.disabled=busy||status==='loading_error'; save.textContent=status==='saving'?'Saving…':'Save & continue →'; }
+    if(save){
+      save.disabled=busy||status==='loading_error';
+      save.textContent=status==='saving'?'Saving…':(setupMode==='edit'?'Save profile':'Save & continue');
+    }
+    if(skip) skip.disabled=busy||status==='loading_error';
     if(retry){ retry.hidden=!['loading_error','save_error'].includes(status); retry.disabled=busy; }
     if(statusEl){ statusEl.dataset.state=status; statusEl.textContent=message; }
-    for(const input of document.querySelectorAll('#view-profile-setup input,#view-profile-setup textarea,#view-profile-setup select,#view-profile-setup .chip')){
+    for(const input of document.querySelectorAll('#setupStepProfile input,#setupStepProfile textarea,#setupStepProfile select,#setupStepProfile .chip,#setupStepProfile .color-dot')){
       input.disabled=status==='loading'||status==='loading_error'||status==='saving';
     }
   }
@@ -9776,24 +9999,26 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     document.getElementById('psName').value = user?.display_name||user?.name||me?.name||'';
     document.getElementById('psBio').value = user?.bio||'';
     document.getElementById('psLeet').value = user?.leetcode_handle||'';
-    document.getElementById('psTz').value = user?.tz|| Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-    profileFocus = user?.interview_focus||'both';
-    document.querySelectorAll('#psFocus .chip').forEach(c=>{ c.classList.toggle('active', c.dataset.focus===profileFocus); });
-    const col = safeProfileColor(user?.color||me?.color||PALETTE[0]);
-    document.getElementById('psAvatar').style.background=col;
+    const tz=user?.tz||onboardingUi()?.detectTimeZone?.()||'UTC';
+    ensureTimeZoneOption(tz);
+    document.getElementById('psTz').value = tz;
+    setProfileFocus(user?.interview_focus||'both');
+    selectProfileColor(user?.color||me?.color||PALETTE[0]);
     document.getElementById('psAvatar').textContent=( (user?.display_name||user?.name||me?.name||'ME').slice(0,2).toUpperCase());
   }
 
-  async function showProfileSetup(prefill){
+  async function showProfileSetup(prefill,{mode,step='profile'}={}){
     const epoch=++profileEditorEpoch;
     profileEditorActorId=currentProfileUserId();
     profileSaveController?.abort();
     profileSaveController=null;
+    if(mode) setupMode=['onboarding','guide','edit'].includes(mode)?mode:'onboarding';
     hideAllViews();
     viewProfile.style.display='block';
+    setSetupStep(step);
     if(prefill){
       fillProfileForm(prefill);
-      setProfileSaveState('idle','Profile loaded from your account.');
+      setProfileSaveState('idle','');
       return;
     }
     setProfileSaveState('loading','Loading your saved profile…');
@@ -9810,23 +10035,51 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       return;
     }
     fillProfileForm(user);
-    setProfileSaveState('idle','Profile loaded from your account.');
+    setProfileSaveState('idle','');
   }
 
-  document.getElementById('psSave')?.addEventListener('click', async()=>{
+  function openSetupGuide(step='profile'){
+    renderColorPicker(); populateTz();
+    return showProfileSetup(null,{mode:'guide',step});
+  }
+
+  function readProfileForm(){
+    return {
+      name:document.getElementById('psName').value.trim(),
+      bio:document.getElementById('psBio').value.trim(),
+      tz:document.getElementById('psTz').value,
+      leet:document.getElementById('psLeet').value.trim(),
+      color:document.getElementById('psColors')?.dataset.selected||undefined,
+    };
+  }
+
+  async function saveProfile({minimum=false}={}){
     const userId=currentProfileUserId();
     if(!userId){ setProfileSaveState('save_error','Sign in again before saving your profile.'); return; }
-    const name=document.getElementById('psName').value.trim();
-    const bio=document.getElementById('psBio').value.trim();
-    const tz=document.getElementById('psTz').value;
-    const leet=document.getElementById('psLeet').value.trim();
-    const color=document.getElementById('psColors')?.dataset.selected||undefined;
-    const payload={ display_name:name, bio, tz, interview_focus:profileFocus, leetcode_handle:leet, color };
-    if(!name){
-      setProfileSaveState('save_error','Enter a display name, then retry.');
-      document.getElementById('psName').setAttribute('aria-invalid','true');
-      document.getElementById('psName').focus();
-      return;
+    const form=readProfileForm();
+    let payload;
+    if(minimum){
+      // "Skip for now" saves only the server-required minimum.
+      const me=window._randori_auth?.me||{};
+      const result=onboardingUi()?.profileMinimum?.({
+        name:form.name,accountName:me.display_name||me.name||'',email:me.email||'',
+        timeZone:form.tz,detectedTimeZone:onboardingUi()?.detectTimeZone?.(),focus:profileFocus,
+      })||{ok:!!form.name,payload:{display_name:form.name,tz:form.tz,interview_focus:profileFocus}};
+      if(!result.ok){
+        setProfileSaveState('save_error',result.error||'Enter a display name, then retry.');
+        document.getElementById('psName').setAttribute('aria-invalid','true');
+        document.getElementById('psName').focus();
+        return;
+      }
+      payload=result.payload;
+    }else{
+      payload={ display_name:form.name, bio:form.bio, tz:form.tz, interview_focus:profileFocus, leetcode_handle:form.leet, color:form.color };
+      if(!form.name){
+        setProfileSaveState('save_error','Enter a display name, then retry.');
+        document.getElementById('psName').setAttribute('aria-invalid','true');
+        document.getElementById('psName').focus();
+        return;
+      }
     }
     document.getElementById('psName').removeAttribute('aria-invalid');
     const editorEpoch=++profileEditorEpoch;
@@ -9847,6 +10100,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(!canApply()) return;
     setProfileSaveState('saving','Saving your profile…');
     const saveAttempt=++profileSaveAttempt;
+    const modeAtSave=setupMode;
     try{
       const r=await fetch('/api/profile',{ method:'POST', credentials:'same-origin', headers:{'content-type':'application/json'}, body: JSON.stringify(payload),signal:controller.signal });
       const j=await r.json();
@@ -9861,8 +10115,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       setProfileSaveState('saved','Profile saved.');
       await window._randori_onboarding_authority?.refreshProfile?.({reason:'profile_saved'});
       if(!canApply()) return;
-      await showDashboard();
-      if(typeof window.toast==='function') window.toast('Profile saved ✓');
+      if(modeAtSave==='edit'){
+        await showDashboard();
+        if(typeof window.toast==='function') window.toast('Profile saved');
+      }else{
+        setSetupStep('availability');
+      }
     }catch(e){
       if(e?.name==='AbortError'||!canApply()) return;
       setProfileSaveState('save_error',`Profile was not saved. ${String(e.error||e.message||'Try again.').slice(0,180)}`);
@@ -9870,9 +10128,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(profileSaveController===controller) profileSaveController=null;
       settleProfileSaveAttempt(saveAttempt);
     }
-  });
+  }
+
+  let lastProfileSaveMinimum=false;
+  document.getElementById('psSave')?.addEventListener('click',()=>{ lastProfileSaveMinimum=false; return saveProfile(); });
+  document.getElementById('psSkip')?.addEventListener('click',()=>{ lastProfileSaveMinimum=true; return saveProfile({minimum:true}); });
   document.getElementById('psRetry')?.addEventListener('click',()=>{
-    if(document.getElementById('psSaveStatus')?.dataset.state==='save_error') document.getElementById('psSave')?.click();
+    if(document.getElementById('psSaveStatus')?.dataset.state==='save_error') saveProfile({minimum:lastProfileSaveMinimum});
     else showProfileSetup().catch(()=>{});
   });
 
@@ -9972,6 +10234,30 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(loading) loading.hidden=state!=='loading';
   }
 
+  // The joined-after-cutoff hero depends on the member's saved availability,
+  // which can load or change after Home renders. Availability renders call
+  // refreshJoinedLateHero so the hero never asks for an answer already given.
+  let lastJoinedLateInput=null;
+  function joinedLateCopy(input){
+    if(!input) return null;
+    return window._randori_onboarding_flow?.newMemberHeroCopy?.(input.state,{
+      createdAt:window._randori_auth?.me?.created_at,current:input.current,upcoming:input.upcoming,
+      availability:window._randori_availability?.current,
+    })||null;
+  }
+  function refreshJoinedLateHero(){
+    const input=lastJoinedLateInput;
+    const empty=document.getElementById('dashEmpty');
+    if(!input||input.userId!==dashboardUserId()||viewDashboard?.style.display==='none'
+      ||!empty||empty.style.display==='none'||empty.dataset.state!==input.state) return false;
+    const copy=joinedLateCopy(input);
+    if(!copy) return false;
+    const title=document.getElementById('dashEmptyTitle'); if(title&&title.textContent!==copy.title) title.textContent=copy.title;
+    const message=document.getElementById('dashEmptyMessage'); if(message&&message.textContent!==copy.message) message.textContent=copy.message;
+    const availabilityButton=document.getElementById('dashSetAvailability');
+    if(availabilityButton) availabilityButton.hidden=!(copy.availability&&window._randori_availability?.current?.editable!==false);
+    return true;
+  }
   function renderDashboardEmpty(state,data={}){
     clearDashboardPairState();
     const current=data.current_cycle||data.cycle||null;
@@ -9992,6 +10278,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       startsAt:dashboardCycleInstant(current,'startsAt'),
       canPublishNow:publication?.can_publish_now===true,
     })||{title:'No current pairing',message:'There is no pairing for you this week.',tone:'info',availability:false,retry:false};
+    // Someone who joined after this week's cutoff is never told pairing is
+    // late or that they were left out; they are included from the next cycle.
+    // Owners keep the publish copy because they can act on it.
+    const joinedLateInput=publication?.can_publish_now===true?null:{state,current,upcoming,userId:dashboardUserId()};
+    const joinedLate=joinedLateCopy(joinedLateInput);
+    lastJoinedLateInput=joinedLate?joinedLateInput:null;
+    if(joinedLate) Object.assign(copy,joinedLate);
     document.getElementById('dashPairArea')?.replaceChildren();
     document.getElementById('dashScheduleArea')?.replaceChildren();
     document.getElementById('dashChatArea')?.replaceChildren();
@@ -10003,7 +10296,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const availabilityButton=document.getElementById('dashSetAvailability');
     if(availabilityButton) availabilityButton.hidden=!(copy.availability&&window._randori_availability?.current?.editable!==false);
     const retry=document.getElementById('dashRetry'); if(retry) retry.hidden=!copy.retry;
-    const sub=document.getElementById('dashSub'); if(sub) sub.textContent=copy.title;
+    // The hero already carries the title; the subtitle names the week instead
+    // of repeating it.
+    const sub=document.getElementById('dashSub'); if(sub) sub.textContent=homeUi()?.cycleWeekLabel?.(current)||'This week';
     window._randori_pairing_recovery?.updateControls?.();
   }
 
@@ -10786,13 +11081,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       const tools=scheduleNode('div',{className:'home-agreed-tools'}); tools.append(clear); agreement.append(tools);
     }else{
       agreement.dataset.state='none';
-      agreement.append(scheduleNode('p',{className:'home-agreed-line muted',text:'No time agreed yet.'}));
+      agreement.append(scheduleNode('p',{className:'home-agreed-line',text:'No time agreed yet.'}));
     }
     body.append(agreement);
 
     const proposals=scheduleNode('div',{className:'home-proposals',testId:'schedule-proposals'}); proposals.id='proposedList';
     if(!schedule.proposals.length){
-      if(!schedule.agreed_time) proposals.append(scheduleNode('p',{className:'small muted',text:'No proposed times yet. Propose one below.'}));
+      if(!schedule.agreed_time) proposals.append(scheduleNode('p',{className:'small muted',text:'Propose a time below, or wait for your partner to suggest one.'}));
     }else{
       proposals.append(scheduleNode('h4',{className:'home-subhead',text:'Proposed times'}));
       schedule.proposals.forEach(proposal=>{
@@ -11773,10 +12068,37 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       // not overridden by a provisional "signed out" route; the route runs
       // again once identity settles and decides with an authoritative answer.
       if(window._randori_auth?.identitySettled!==true&&window._randoriExplicitNavigation) return;
+      const identitySettled=window._randori_auth?.identitySettled===true;
       // Canonical pair invites are private capabilities: preserve the URL and require sign-in.
       hideAllViews();
+      // A returning member (this browser last saw a signed-in account) gets a
+      // neutral loading view, not a flash of the visitor landing page, while
+      // /api/auth/me is in flight. The route runs again once identity settles.
+      let likelyMember=false;
+      try{ likelyMember=!!localStorage.getItem(ME_KEY); }catch{}
+      if(!identitySettled&&likelyMember){
+        const boot=document.getElementById('view-boot');
+        if(boot){
+          // Remember the pair link so the settled route can still prompt.
+          if(joinRoom) window._randori_pending_join_room=joinRoom;
+          boot.style.display='block';
+          return;
+        }
+      }
       if(viewLanding) viewLanding.style.display='block';
       if(tabsEl) tabsEl.style.display='flex';
+      // Member-only deep links (/?view=pair, ?view=history, …) ask a settled
+      // visitor to sign in and keep the URL, so the signed-in route below
+      // opens the same view afterwards.
+      const pendingView=joinRoom?'':(window._randori_shell?.memberDeepLinkView?.(window.location.search)||'');
+      // Prompt once per deep link: a dismissed dialog is not reopened by a
+      // later forced route (popstate, Home) for the same view.
+      window._randori_pending_view=pendingView||null;
+      if(pendingView&&identitySettled&&window._randori_pending_view_prompted!==pendingView
+        &&!document.getElementById('authOverlay')?.classList.contains('show')){
+        window._randori_pending_view_prompted=pendingView;
+        window._randori_auth?.openModal?.('signin');
+      }
       if(joinRoom){
         window._randori_pending_join_room=joinRoom;
         // Until /api/auth/me settles, "no user yet" is not "signed out": a
@@ -11791,16 +12113,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       }
       // hide circle tab for non-admin anon
       try{ document.querySelector('[data-tab="circle"]')?.style.setProperty('display','none'); }catch{ const ct=document.querySelector('[data-tab="circle"]'); if(ct) ct.style.display='none'; }
-      try{
-        document.getElementById('onboardChecklist').style.display='none';
-        // Fix e2e onboard first-time: don't blindly hide welcomeBanner for anon; show when first visit (no onboarded, not dismissed, no token)
-        const _onbDone = localStorage.getItem('randori-onboarded')==='1';
-        const _banDismiss = localStorage.getItem('randori-banner-dismissed')==='1';
-        const _wb=document.getElementById('welcomeBanner');
-        if(_wb){
-          if(!_onbDone && !_banDismiss){ _wb.style.display='flex'; } else { _wb.style.display='none'; }
-        }
-      }catch{}
+      const checklist=document.getElementById('onboardChecklist'); if(checklist) checklist.style.display='none';
       // If the URL requests the workspace, show it without bypassing catalogue loading.
       try{
         const urlParams=new URLSearchParams(window.location.search);
@@ -11819,6 +12132,8 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       return;
     }
     // signed in
+    window._randori_pending_view=null;
+    window._randori_pending_view_prompted=null;
     if(tabsEl) tabsEl.style.display='flex';
     if(joinSignInPrompted){
       // The join sign-in prompt has been answered (here or in another tab).
@@ -11826,6 +12141,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       if(document.getElementById('authOverlay')?.classList.contains('show')) window._randori_auth?.closeModal?.();
     }
     if(joinRoom){
+      // The sign-in sheet opened for this deep link before the session had
+      // loaded is moot now that the member is signed in.
+      if(window._randori_pending_join_room===joinRoom
+        &&document.getElementById('authOverlay')?.classList.contains('show')){
+        window._randori_pending_join_room=null;
+        window._randori_auth?.closeModal?.();
+      }
       const allowed=await openAuthorizedJoin(joinRoom,{canApply:canApplyRoute});
       if(!canApplyRoute()) return;
       if(allowed) return;
@@ -11842,21 +12164,26 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     try{
       const params=new URLSearchParams(window.location.search);
       const requestedView=params.get('view')||params.get('tab')||(window.location.hash.includes('code')?'code':null);
-      if(['pair','code','board','history'].includes(requestedView)){
+      if(['circle','pair','code','board','history'].includes(requestedView)){
         document.querySelector(`[data-tab="${requestedView}"]`)?.click();
         return;
       }
     }catch{}
+    // A member part-way through the stepper (availability or what happens
+    // next) stays there: a late identity refresh must not jump to Home.
+    const stayInStepper=()=>viewProfile?.style.display!=='none'&&setupMode!=='edit'
+      &&(setupStep!=='profile'||!!profileSaveController);
+    if(stayInStepper()) return;
     // fetch profile to see if incomplete
     let profile;
     try{ profile=await fetchProfile(); }
     catch{
       if(!canApplyRoute()) return;
       renderColorPicker(); populateTz();
-      await showProfileSetup();
+      await showProfileSetup(null,{mode:'onboarding'});
       return;
     }
-    if(!canApplyRoute()) return;
+    if(!canApplyRoute()||stayInStepper()) return;
     const profileStatus=window._randori_onboarding_authority?.snapshot?.profile?.status;
     if(!profile&&profileStatus==='error'){
       await showDashboard();
@@ -11865,16 +12192,13 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }
     if(!profile&&profileStatus!=='ready'){
       renderColorPicker(); populateTz();
-      await showProfileSetup();
+      await showProfileSetup(null,{mode:'onboarding'});
       return;
     }
     if(isProfileIncomplete(profile)){
-      // show profile setup
-      if(profile) {
-        // prefill already handled in showProfileSetup
-      }
+      // First run: the progressive stepper starts at profile basics.
       renderColorPicker(); populateTz();
-      await showProfileSetup(profile);
+      await showProfileSetup(profile,{mode:'onboarding'});
       return;
     }
     // complete -> dashboard
@@ -11938,6 +12262,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   window.addEventListener('randori:auth-refreshed',()=>{
     const nextActorId=currentProfileUserId();
     if(profileEditorActorId!==null&&nextActorId!==profileEditorActorId){
+      setupStep='profile';
       profileEditorEpoch+=1;
       profileSaveController?.abort();
       profileSaveController=null;
@@ -11970,7 +12295,21 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   else scheduleInitialRoute();
 
   // Dash profile edit button
-  document.getElementById('dashProfileBtn')?.addEventListener('click', ()=>{ renderColorPicker(); populateTz(); showProfileSetup(); });
+  document.getElementById('dashProfileBtn')?.addEventListener('click', ()=>{ renderColorPicker(); populateTz(); showProfileSetup(null,{mode:'edit'}); });
+  document.getElementById('meProfile')?.addEventListener('click', ()=>{ renderColorPicker(); populateTz(); showProfileSetup(null,{mode:'edit'}); });
+  // "Setup guide" (the old tour entry point) reopens the stepper at the first
+  // unfinished step reported by the onboarding authority.
+  function nextUnfinishedSetupStep(){
+    const snapshot=window._randori_onboarding_authority?.snapshot;
+    const profileDone=snapshot?.profile?.status==='ready'
+      &&window._randori_onboarding_authority?.profileComplete?.(snapshot.profile.user)===true;
+    const availabilityDone=snapshot?.availability?.status==='ready'&&snapshot.availability.value?.source==='user';
+    return onboardingUi()?.nextSetupStep?.({profileDone,availabilityDone})||'profile';
+  }
+  document.getElementById('meSetupGuide')?.addEventListener('click', ()=>{
+    window._randori_onboarding_flow?.setGuideDismissed?.(localStorage,currentProfileUserId(),false);
+    openSetupGuide(nextUnfinishedSetupStep());
+  });
   document.getElementById('dashAvailBadge')?.addEventListener('click',()=>{
     window._randori_availability?.open?.({source:'dashboard'});
   });
@@ -11982,7 +12321,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     window._randori_availability?.open?.({source:'dashboard'});
   });
   document.getElementById('dashRetry')?.addEventListener('click',()=>{ showDashboard(); });
-  document.getElementById('dashHow')?.addEventListener('click', ()=>{ if(window._randori_onboard) window._randori_onboard.start(1); });
+  document.getElementById('dashHow')?.addEventListener('click', ()=>{ openSetupGuide('next'); });
   document.querySelector('.tabs')?.addEventListener('click',()=>{
     if(cancelDashboardPairRequest()) clearDashboardPairState();
   });
@@ -12015,7 +12354,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   // Expose
   window._randori_journey={
-    showDashboard,showProfileSetup,routeByAuth,openAuthorizedJoin,
+    showDashboard,showProfileSetup,routeByAuth,openAuthorizedJoin,openSetupGuide,refreshJoinedLateHero,
+    get setupStep(){ return viewProfile?.style.display==='none'?null:setupStep; },
+    setSetupStep,
     waitForProfileSaveAttempt,
     get profileSaveAttempt(){ return profileSaveAttempt; },
     cancelPairRequest:cancelDashboardPairRequest,resetPairState(){
@@ -12893,7 +13234,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
           }
           if(runOutEl){ runOutEl.innerHTML=cards.join(''); }
           try{ window._randori_runs && window._randori_runs.refresh && window._randori_runs.refresh(); }catch{}
-          if(window.toast) window.toast(summary.headline+' · checked on the server');
+          // The Results panel already shows the outcome; the toast is for
+          // members who are looking at another panel.
+          if(window.toast&&!document.getElementById('roomPanel-results')?.checkVisibility?.()) window.toast(summary.headline);
         }catch(e){
           try{ if(window._randori_ui && window._randori_ui.hideLoader) window._randori_ui.hideLoader(); }catch{}
           if(e && e.code==='execution_unavailable'){
@@ -12951,7 +13294,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   function renderRunsList(runs){
     const el=document.getElementById('recentRunsList');
     if(!el) return;
-    if(!runs.length){ el.innerHTML='<div class="small muted">No runs yet. Press Run to check your code on the server.</div>'; return; }
+    if(!runs.length){ el.innerHTML='<div class="small muted">No runs yet. Open Code, pick an exercise and press Run.</div>'; return; }
     el.innerHTML=runs.map(r=>{
       const ok = r.total_count? (r.passed_count+'/'+r.total_count) : (r.passed_count+' pass');
       const dt=new Date(r.created_at||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
@@ -13073,7 +13416,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const cycle=stats?.next_cycle;
     if(cycle?.startsAt&&cycle?.timeZone){
       const label=window._randori_cycle_ui?.formatInstant?.(cycle.startsAt,cycle.timeZone);
-      if(label&&label!=='Unknown time') return `${label} • ${cycle.cycleId||'upcoming cycle'}`;
+      if(label&&label!=='Unknown time') return label;
     }
     return typeof stats?.next_shuffle_label==='string'&&stats.next_shuffle_label
       ?stats.next_shuffle_label
@@ -13315,16 +13658,6 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   // Wrap toast? Keep.
 
-  // Hook onboarding
-  try{
-    if(window._randori_onboard){
-      const origSkip=window._randori_onboard.skip;
-      if(origSkip) window._randori_onboard.skip=function(){ try{ window._randori_log&&window._randori_log.info('onboarding','skip', {step: window._randori_onboard.step}); }catch{} return origSkip.apply(this, arguments); };
-      const origNext=window._randori_onboard.next;
-      if(origNext) window._randori_onboard.next=function(){ try{ const step=window._randori_onboard.step; window._randori_log&&window._randori_log.info('onboarding','next_step', {step}); }catch{} return origNext.apply(this, arguments); };
-    }
-  }catch{}
-
   // Hook main run flows via global events — look for window.api calls or monaco run
   // Patch window.fetch for /api/execute and /api/runs to log
   const origFetch=window.fetch;
@@ -13364,10 +13697,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 <!-- Monaco + Prettier IDE layer — CDN, no extra Vercel function, Hobby-safe, resilient fallback chain -->
 <link rel="preconnect" href="https://cdnjs.cloudflare.com">
 <link rel="preconnect" href="https://cdn.jsdelivr.net">
-<script src="https://unpkg.com/prettier@3.3.3/standalone.js" onerror="console.warn('prettier standalone failed')"></script>
-<script src="https://unpkg.com/prettier@3.3.3/plugins/babel.js" onerror="console.warn('prettier babel failed')"></script>
-<script src="https://unpkg.com/prettier@3.3.3/plugins/estree.js" onerror="console.warn('prettier estree failed')"></script>
-<script src="https://unpkg.com/prettier@3.3.3/plugins/typescript.js" onerror="console.warn('prettier ts failed')"></script>
+<!-- Prettier (four unpkg scripts) loads on the first "Format code", not for every visitor. -->
 <script id="monacoLoader" src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js" onerror="window.__monacoLoaderFailed=1"></script>
 <script>
 // Monaco IDE task — replace textarea with Monaco, keep textarea as hidden mirror for legacy runCode/AI paths
@@ -13468,9 +13798,29 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     }catch(e){ try{ window._randori_log && window._randori_log.warn('lint_markers_fail','updateLintFromMarkers fail', {err:String(e&&e.message||e).slice(0,300)});}catch{} }
   }
 
+  // Prettier is only needed by "Format code": fetch it on first use instead of
+  // blocking every page load (including the visitor landing page) on four
+  // parser-blocking CDN scripts.
+  const PRETTIER_SCRIPTS=['standalone.js','plugins/babel.js','plugins/estree.js','plugins/typescript.js']
+    .map(file=>`https://unpkg.com/prettier@3.3.3/${file}`);
+  let prettierLoad=null;
+  function loadPrettier(){
+    if(prettierLoad) return prettierLoad;
+    const plugins=window.prettierPlugins;
+    if(window.prettier&&plugins?.babel&&plugins?.estree&&plugins?.typescript) return Promise.resolve(true);
+    prettierLoad=PRETTIER_SCRIPTS.reduce((previous,src)=>previous.then(()=>new Promise((resolve,reject)=>{
+      const script=document.createElement('script');
+      script.src=src; script.async=false;
+      script.onload=()=>resolve();
+      script.onerror=()=>reject(new Error('prettier failed to load'));
+      document.head.appendChild(script);
+    })),Promise.resolve()).then(()=>true,error=>{ prettierLoad=null; console.warn(String(error?.message||error)); return false; });
+    return prettierLoad;
+  }
   async function formatCode(){
     try{
     if(!monacoEditor) return;
+    await loadPrettier();
     const lang=document.getElementById('langSelect')?.value||'javascript';
     const code=monacoEditor.getValue();
     const prettierLangMap = {
@@ -15354,6 +15704,10 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     actorId:null,scope:null,phase:'idle',
     profile:{status:'idle',user:null},availability:{status:'idle',value:null},
     pairing:{status:'idle',value:null},reason:'',
+    // The dashboard's last fenced /api/my-pair observation. It is replayed
+    // once a refresh re-establishes the cycle scope, so the guide never
+    // contradicts a pair the Home hero already shows (WP-O, handoff from WP-H).
+    lastPairing:null,
   };
 
   function actorId(){
@@ -15517,7 +15871,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(!item) return;
     item.hidden=!visible;
     if(!visible){ item.style.display='none'; return; }
-    if(document.getElementById('onboardChecklist')?.dataset.collapsed!=='1') item.style.display='flex';
+    item.style.display='flex';
     item.dataset.state=status;
     item.classList.toggle('done',status==='done');
     const box=item.querySelector('.check-box');
@@ -15541,12 +15895,16 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     const pairingDone=pairing.status==='ready'&&pairing.value?.paired===true;
     const roomVisible=pairingDone&&pairing.value?.workspaceAvailable===true;
     const roomDone=roomVisible&&workspaceComplete();
-    setItem('chkSignIn','done','Signed in to your private circle');
-    setItem('chkProfile',profileDone?'done':profile.status,
-      profile.status==='loading'?'Checking saved profile…':profile.status==='error'?'Profile status unknown — retry':profileDone?'Profile saved':'Complete your profile');
-    const cycleId=availability.value?.cycle?.cycleId;
-    setItem('chkAvail',availabilityDone?'done':availability.status,
-      availability.status==='loading'?'Checking cycle availability…':availability.status==='error'?'Availability status unknown — retry':availabilityDone?`Availability saved for ${cycleId}`:`Save availability for ${cycleId||'the upcoming cycle'}`);
+    const copy=window._randori_onboarding_flow?.checklistCopy?.({profile,availability,pairing,profileDone,availabilityDone,pairingDone,roomDone})||{
+      signIn:'Signed in to your private circle',profile:profileDone?'Profile saved':'Complete your profile',
+      availability:availabilityDone?'Availability saved':'Save availability for the upcoming cycle',
+      availabilityAction:'Choose availability',availabilityActionLabel:'Choose availability for the upcoming cycle',
+      pairing:pairingDone?'Current assignment published':'Checking current pairing…',
+      room:roomDone?'Current workspace opened':'Open your current workspace',
+    };
+    setItem('chkSignIn','done',copy.signIn);
+    setItem('chkProfile',profileDone?'done':profile.status,copy.profile);
+    setItem('chkAvail',availabilityDone?'done':availability.status,copy.availability);
     const availabilityAction=document.getElementById('chkAvailAction');
     if(availabilityAction){
       const actionable=availability.status==='ready'&&!availabilityDone;
@@ -15554,14 +15912,12 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
       availabilityAction.style.display=actionable?'inline-flex':'none';
       availabilityAction.disabled=!actionable;
       if(actionable){
-        availabilityAction.textContent=availability.value?.isAvailable?'Confirm or skip':'Confirm skip or change';
-        availabilityAction.setAttribute('aria-label',`Choose availability for ${cycleId||'the upcoming cycle'}`);
+        availabilityAction.textContent=copy.availabilityAction;
+        availabilityAction.setAttribute('aria-label',copy.availabilityActionLabel);
       }
     }
-    const pairingCycle=pairing.value?.cycle?.cycleId;
-    setItem('chkPair',pairingDone?'done':pairing.status,
-      pairing.status==='loading'?'Checking current pairing…':pairing.status==='error'?'Pairing status unknown — retry':pairingDone?`Current assignment published for ${pairingCycle}`:`Wait for ${pairingCycle||'the current cycle'} publication`);
-    setItem('chkRoom',roomDone?'done':'pending',roomDone?'Current workspace opened':'Open your current workspace',roomVisible);
+    setItem('chkPair',pairingDone?'done':pairing.status,copy.pairing);
+    setItem('chkRoom',roomDone?'done':'pending',copy.room,roomVisible);
     const statuses=[profile.status,availability.status,pairing.status];
     const failed=statuses.includes('error');
     const loading=statuses.includes('loading')||state.phase==='loading';
@@ -15578,7 +15934,9 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     if(retry){ retry.hidden=!failed; retry.disabled=loading; }
     checklist.dataset.state=failed?'error':(loading?'loading':(doneCount===total?'complete':'ready'));
     checklist.setAttribute('aria-busy',loading?'true':'false');
-    checklist.style.display=doneCount===total?'none':'grid';
+    // Shown only while setup is unfinished and this account has not hidden it.
+    const dismissed=window._randori_setup_guide?.dismissed?.(userId)===true;
+    checklist.style.display=doneCount===total||dismissed?'none':'grid';
   }
 
   function reset(reason='changed'){
@@ -15596,6 +15954,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
     state.profile={status:state.actorId?'loading':'idle',user:null};
     state.availability={status:state.actorId?'loading':'idle',value:null};
     state.pairing={status:state.actorId?'loading':'idle',value:null};
+    state.lastPairing=null;
     state.reason=reason;
     render();
   }
@@ -15691,6 +16050,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
             &&Date.parse(previousPairing.value?.cycle?.endsAt)===Date.parse(scope.targetCycleStartsAt)){
             state.pairing=previousPairing;
           }
+          if(state.pairing.status!=='ready'&&state.lastPairing) applyPairing(state.lastPairing);
         }else{
           state.availability={status:'error',value:null};
           state.pairing={status:'error',value:null};
@@ -15768,9 +16128,43 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
   }
 
   function observePairing(payload,operation,publicationState){
+    const observation={payload,operation,publicationState,revalidated:false};
+    state.lastPairing=observation;
+    return applyPairing(observation);
+  }
+
+  function applyPairing(observation){
+    // A refresh is still establishing the cycle scope: keep the observation
+    // and let refresh() replay it instead of dropping it (which left the
+    // guide on "Checking current pairing…" next to a paired hero).
+    if(!state.scope?.targetCycleKey) return false;
+    const {payload,operation,publicationState}=observation;
     if(!pairingOperationMatchesScope(operation,payload)) return false;
     const pairing=canonicalPairing(payload,publicationState);
-    if(!pairing||Date.parse(pairing.cycle.endsAt)!==Date.parse(state.scope.targetCycleStartsAt)){
+    if(!pairing){
+      state.lastPairing=null;
+      state.pairing={status:'error',value:null};
+      state.phase='error'; render(); return false;
+    }
+    const target=Date.parse(state.scope.targetCycleStartsAt);
+    if(Date.parse(pairing.cycle.endsAt)!==target){
+      // The server's current cycle has moved past the upcoming cycle the
+      // availability owner last reported (its cutoff passed). Revalidate
+      // availability once; its rollover reacquires the pair for the new
+      // scope. Only a mismatch that survives revalidation is unknown.
+      if(Date.parse(pairing.cycle.startsAt)>=target&&!observation.revalidated){
+        observation.revalidated=true;
+        Promise.resolve(window._randori_availability?.refresh?.()).catch(()=>null).then(()=>{
+          if(state.lastPairing===observation) applyPairing(observation);
+        });
+        return false;
+      }
+      if(Date.parse(pairing.cycle.endsAt)<target){
+        // An older cycle's observation: stale, not an error.
+        if(state.lastPairing===observation) state.lastPairing=null;
+        return false;
+      }
+      state.lastPairing=null;
       state.pairing={status:'error',value:null};
       state.phase='error'; render(); return false;
     }
@@ -15782,6 +16176,7 @@ function idToPerson(id){ return getPeople().find(p=>p.id===id); }
 
   function observePairingError(operation){
     if(!operation||!pairingOperationMatchesScope(operation)) return false;
+    state.lastPairing=null;
     state.pairing={status:'error',value:null};
     state.phase='error'; render();
     return true;

@@ -89,6 +89,21 @@ Options: `--report` prints the per-file table; `--out=DIR` keeps
 Ratchet: when a package lands, raise the thresholds in `package.json`
 `test:coverage` to the new totals rounded down, then to 80/80/80.
 
+## Excluded from scope
+
+`tests/support/coverage.mjs` passes `EXCLUDE` to c8, so these files are not
+in the totals. Both are operator tools that cannot run inside a unit test.
+Their pass/fail logic was moved into sibling modules that are measured and
+tested (`tests/unit/cov-p5-operator-tool-policy.test.mjs`).
+
+| File | Reason | Tested sibling |
+|---|---|---|
+| `scripts/execution-smoke.mjs` | Opt-in live smoke against the real Vercel Sandbox API. It needs a `VERCEL_OIDC_TOKEN` and creates five billable sandboxes per run, so it never runs in `npm test` or CI. | `scripts/execution-smoke-checks.mjs`: refusing to run without credentials (exit 2), counting only explicit passes, the egress verdict (passes only on positive proof that egress is blocked), and failure message formatting. |
+| `scripts/ui-screenshots.mjs` | Manual design-review tool. It drives Playwright Chromium against production and a local runtime and writes PNGs. It is not a test, and it runs only from the manual `ui-screenshots.yml` workflow. | `scripts/ui-screenshots-policy.mjs`: option parsing (scope, viewports, https-only origin) and the read-only request guard (only GET/HEAD/OPTIONS go through; blocked URLs are recorded without query or fragment). |
+
+The main guard of `execution-smoke.mjs` now only runs when the file is
+executed directly, so importing it has no side effects.
+
 ## Gap list (files below 80% on any metric, worst first)
 
 "Lines with uncovered branches" are source lines that hold at least one branch with zero hits (the first 40 per file are listed).
@@ -153,7 +168,7 @@ Ratchet: when a package lands, raise the thresholds in `package.json`
 - `scripts/turso-production-migrate.mjs` — L 86.57 / B 79.47 / F 91.89. Uncovered branches: 47 (need +2 for 80%). Uncovered functions: `timeoutError@249`, `batch@281`, `environmentOptions@615`. Lines with uncovered branches: 89, 105, 114, 115, 159, 163, 183, 205, 219, 230, 232, 240, 289, 295, 321, 327, 341, 347, 387, 415, 418, 419, 420, 421, 424, 488, 506, 509, 518, 521, 542, 546, 555, 561, 575, 581, 585, 591, 599, 605, ... (+5 more).
 - `db/turso-platform.js` — L 89.96 / B 79.84 / F 100. Uncovered branches: 26 (need +1 for 80%). Uncovered functions: none. Lines with uncovered branches: 32, 63, 65, 72, 76, 82, 91, 92, 123, 130, 144, 157, 161, 168, 176, 185, 192, 196, 197, 202, 235, 237, 262, 266, 283, 303.
 
-**Never-loaded files.** `scripts/ui-screenshots.mjs` (Playwright screenshot tool, 868 lines), `scripts/execution-smoke.mjs` (live sandbox smoke test), `scripts/local-reset.mjs`, `scripts/generate-schema-readiness.mjs` and `scripts/validate-catalog.mjs` are not imported by any unit test. Together they count for about 2% of aggregate lines. The owner has to choose: unit-test them (move side effects behind `main()` guards and test the pure parts), or exclude the browser/live-network tools from the coverage scope with a written reason.
+**Never-loaded files.** `scripts/ui-screenshots.mjs` (Playwright screenshot tool, 868 lines), `scripts/execution-smoke.mjs` (live sandbox smoke test), `scripts/local-reset.mjs`, `scripts/generate-schema-readiness.mjs` and `scripts/validate-catalog.mjs` are not imported by any unit test. Together they count for about 2% of aggregate lines. Resolved by P5: the two browser/live-network tools are excluded (see "Excluded from scope"), and the other three now have `main()` guards and real tests.
 
 ## Proposed test-writing packages
 
@@ -260,6 +275,41 @@ All files: `api/_catalog-provenance.js`, `api/_catalog.js`, `api/_chat-retention
 | `scripts/turso-backup-restore-rehearsal.mjs` | 91.41 | 78.19 | 96.55 | 10 | 0 |
 | `scripts/github-backup-restore-watchdog.mjs` | 94.63 | 78.75 | 100 | 3 | 0 |
 | `scripts/turso-production-migrate.mjs` | 86.57 | 79.47 | 91.89 | 2 | 0 |
+
+#### P5 results
+
+Measured on the P5 branch with `npm run test:coverage:report` (all unit
+tests). Every P5 file in scope is at 80% or more on all three metrics.
+
+| File | Before L / B / F | After L / B / F |
+|---|---|---|
+| `api/_catalog-provenance.js` | 87.79 / 73.94 / 95 | 99.1 / 100 / 95 |
+| `api/_chat-retention.js` | 93.65 / 63.4 / 95 | 98.48 / 98.88 / 100 |
+| `scripts/catalog-provenance.mjs` | 89.28 / 75.78 / 90.47 | 98.21 / 93.95 / 100 |
+| `scripts/chat-retention.mjs` | 40.49 / 57.89 / 57.14 | 100 / 100 / 100 |
+| `scripts/check-crdt-bundle.mjs` | 84.37 / 40 / 100 | 100 / 90 / 100 |
+| `scripts/check-deployability.mjs` | 91.81 / 74.82 / 100 | 100 / 98.52 / 100 |
+| `scripts/generate-schema-readiness.mjs` | 0 / 0 / 0 | 100 / 88.88 / 100 |
+| `scripts/github-backup-restore-watchdog.mjs` | 94.63 / 78.75 / 100 | 100 / 96.81 / 100 |
+| `scripts/local-reset.mjs` | 0 / 0 / 0 | 100 / 85.71 / 100 |
+| `scripts/local-server.mjs` | 86.56 / 71.88 / 85.93 | 94.9 / 88.37 / 93.75 |
+| `scripts/production-smoke.mjs` | 95.03 / 76.06 / 100 | 99.23 / 97.29 / 100 |
+| `scripts/turso-backup-restore-monitor.mjs` | 93.97 / 73.46 / 100 | 100 / 96.05 / 100 |
+| `scripts/turso-backup-restore-rehearsal.mjs` | 91.41 / 78.19 / 96.55 | 93.95 / 84.13 / 97.7 |
+| `scripts/turso-production-migrate.mjs` | 86.57 / 79.47 / 91.89 | 96.5 / 89.31 / 97.29 |
+| `scripts/validate-catalog.mjs` | 0 / 0 / 0 | 100 / 80 / 100 |
+| `scripts/execution-smoke-checks.mjs` (new) | n/a | 100 / 100 / 100 |
+| `scripts/ui-screenshots-policy.mjs` (new) | n/a | 100 / 100 / 100 |
+| `scripts/execution-smoke.mjs` | 0 / 0 / 0 | excluded |
+| `scripts/ui-screenshots.mjs` | 0 / 0 / 0 | excluded |
+
+The other P5 scripts were already above 80% and were not changed.
+`api/_catalog-provenance.js` functions stay at 95% because
+`requireNullableText` has no callers; it is dead code. What is still
+uncovered, on purpose: signal handlers that only run in a real CLI process
+(`local-server` `stop`/`notReadyHandler`, rehearsal `interrupt`), the
+`local-server` IPv6 display path, lock-file races in `catalog-provenance.mjs`,
+and the `process.argv[1] || ''` fallback in main guards.
 
 ## Full per-file table
 

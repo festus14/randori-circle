@@ -201,6 +201,10 @@
       "destination": "/api/ops?endpoint=weekly"
     },
     {
+      "source": "/api/cron/outbox-health",
+      "destination": "/api/ops?endpoint=outbox-health"
+    },
+    {
       "source": "/api/cron/outbox",
       "destination": "/api/ops?endpoint=outbox"
     },

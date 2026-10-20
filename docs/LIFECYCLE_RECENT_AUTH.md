@@ -1,6 +1,7 @@
 # Recent authentication for sensitive circle changes
 
-Ownership transfer and deactivating another owner require recent control of a
+Ownership transfer, adding or removing a co-owner, granting or revoking app
+admin access, and deactivating another owner require recent control of a
 credential. The policy is enforced by the API inside the same write transaction
 as the membership change; the browser is only responsible for guiding the user
 through confirmation and retrying the exact action once.
@@ -11,6 +12,8 @@ through confirmation and retrying the exact action once.
 | --- | --- | --- |
 | Transfer ownership | Yes | Changes the account that controls the circle |
 | Deactivate another owner | Yes | Removes a peer with administrative authority and revokes their sessions |
+| Make owner / Remove owner role | Yes | Adds or removes full circle control for another account |
+| Grant / revoke app admin | Yes | Changes app-wide operator access (logs, outbox replay, demo tools, admin grants) |
 | Deactivate or reactivate a non-owner member | No | An owner already has this routine membership authority |
 | Leave the circle | No | A member may remove their own access without credential friction |
 | Revoke an invitation | No | The invitation is unaccepted and the existing endpoint is already owner-scoped |
@@ -59,8 +62,11 @@ The browser stores one pending object in `sessionStorage`:
 {"v":1,"action":"transfer","member_id":2,"actor_id":1,"created_at":1789812000000}
 ```
 
-It contains no email, display name, credential, or provider identifier. The
-object is accepted only for the two sensitive actions, the exact signed-in
+`action` is one of `deactivate`, `transfer`, `make_owner`, `remove_owner`,
+`grant_admin`, `revoke_admin` (all with `member_id`), or `archive` (without
+one); the allowlist is `RandoriCircleUI.RECENT_AUTH_MEMBER_ACTIONS` plus
+`archive`. It contains no email, display name, credential, or provider
+identifier. The object is accepted only for those sensitive actions, the exact signed-in
 actor, a positive target ID, and at most ten minutes. It is consumed before the
 single retry. Cancellation, OAuth error, expiry, account change, unavailable
 method, or malformed state clears it and performs no mutation. A forged success

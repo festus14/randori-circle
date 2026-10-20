@@ -61,6 +61,75 @@ export function syncHomeTab(doc) {
   return active;
 }
 
+// App navigation (the tabs and the phone bottom bar) is for members only.
+// Every member destination needs an account, so a visitor would only be
+// bounced to sign-in by it. Visitors keep the logo, theme toggle and Sign in.
+// The navigation is hidden by default and shows for a confirmed member
+// (`data-auth="member"`, set only after /api/auth/me answers with a user), or
+// for a returning member while that check is in flight. A visitor therefore
+// never sees member tabs, even before scripts run, and the tabs go away as
+// soon as the member signs out.
+//
+// The body gets two attributes:
+//   data-nav:     "shown" for members, "hidden" for everyone else.
+//   data-surface: "public" on the landing and recovery pages; "solo" when a
+//                 visitor opens the code view (/?view=code), which shows a
+//                 sign-in / request-an-invite prompt; "app" otherwise.
+export const PUBLIC_VIEW_IDS = Object.freeze(['view-landing', 'view-activation', 'view-password-reset', 'view-invite']);
+export const SOLO_VIEW_ID = 'view-code';
+
+// A returning member (this browser last saw a signed-in account) keeps the
+// navigation while their identity check is in flight, so they can move
+// around straight away; a visitor never has that cached account.
+export function hidesAppNavigation({ auth, identity, returning } = {}) {
+  if (auth === 'member') return false;
+  return !(identity === 'pending' && returning === 'true');
+}
+
+export function navigationState({ auth, identity, returning, publicSurface = false, soloSurface = false } = {}) {
+  const hidden = hidesAppNavigation({ auth, identity, returning });
+  const surface = publicSurface ? 'public' : (hidden && soloSurface ? 'solo' : 'app');
+  return { nav: hidden ? 'hidden' : 'shown', surface };
+}
+
+// Member-only views a visitor can deep-link to (`/?view=pair`, `?tab=history`).
+// A signed-out visitor is asked to sign in, and the URL is kept so the router
+// opens the same view once they have.
+export const MEMBER_DEEP_LINK_VIEWS = Object.freeze({
+  pair: 'Pairing',
+  board: 'the whiteboard',
+  history: 'your history',
+  circle: 'your circle',
+});
+
+export function memberDeepLinkView(search) {
+  let params;
+  try { params = new URLSearchParams(String(search ?? '')); } catch { return ''; }
+  const view = params.get('view') || params.get('tab') || '';
+  return Object.hasOwn(MEMBER_DEEP_LINK_VIEWS, view) ? view : '';
+}
+
+export function deepLinkSignInCopy(view) {
+  const name = Object.hasOwn(MEMBER_DEEP_LINK_VIEWS, String(view)) ? MEMBER_DEEP_LINK_VIEWS[view] : '';
+  if (!name) return null;
+  return { title: 'Sign in to continue', description: `Sign in to open ${name}. You'll go straight there.` };
+}
+
+export function syncPublicSurface(doc) {
+  const body = doc?.body;
+  if (!body) return false;
+  const state = navigationState({
+    auth: body.dataset.auth,
+    identity: body.dataset.identity,
+    returning: body.dataset.returning,
+    publicSurface: PUBLIC_VIEW_IDS.some(id => isDisplayed(doc.getElementById(id))),
+    soloSurface: isDisplayed(doc.getElementById(SOLO_VIEW_ID)),
+  });
+  if (body.dataset.surface !== state.surface) body.dataset.surface = state.surface;
+  if (body.dataset.nav !== state.nav) body.dataset.nav = state.nav;
+  return state.nav === 'hidden';
+}
+
 export function createToastController(element, {
   duration = TOAST_DURATION_MS,
   setTimer = (callback, delay) => setTimeout(callback, delay),
@@ -145,16 +214,17 @@ export function installShell({
   const currentTheme = () => (doc.documentElement.classList.contains('light') ? 'light' : 'dark');
   renderThemeControl(themeButton, currentTheme());
 
-  const sync = () => syncHomeTab(doc);
+  const sync = () => { syncPublicSurface(doc); return syncHomeTab(doc); };
   if (typeof MutationObserverImpl === 'function') {
     const navObserver = new MutationObserverImpl(sync);
-    for (const id of ['view-dashboard', 'view-landing', 'view-profile-setup']) {
+    for (const id of ['view-dashboard', 'view-profile-setup', SOLO_VIEW_ID, ...PUBLIC_VIEW_IDS]) {
       const view = doc.getElementById(id);
       if (view) navObserver.observe(view, { attributes: true, attributeFilter: ['style', 'hidden'] });
     }
     for (const tab of doc.querySelectorAll('.tabs .tab')) {
       navObserver.observe(tab, { attributes: true, attributeFilter: ['class'] });
     }
+    if (doc.body) navObserver.observe(doc.body, { attributes: true, attributeFilter: ['data-auth', 'data-identity', 'data-returning'] });
     const themeObserver = new MutationObserverImpl(() => renderThemeControl(themeButton, currentTheme()));
     themeObserver.observe(doc.documentElement, { attributes: true, attributeFilter: ['class'] });
   }
@@ -170,6 +240,8 @@ export function installShell({
     toast: message => toastController.show(message),
     dismissToast: () => toastController.dismiss(),
     syncHome: sync,
+    memberDeepLinkView,
+    deepLinkSignInCopy,
     renderTheme: theme => renderThemeControl(themeButton, theme ?? currentTheme()),
   });
   win._randori_shell = shell;

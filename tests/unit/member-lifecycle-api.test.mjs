@@ -9,6 +9,8 @@ let listResult={ok:true,members:[],has_more:false,next_cursor:null,scanned:0};
 let statusResult={ok:true,member:{id:2,role:'member',status:'inactive'},revoked_sessions:1};
 let leaveResult={ok:true,member:{id:1,role:'member',status:'inactive'},revoked_sessions:1};
 let transferResult={ok:true,previous_owner_id:1,owner_id:2};
+let roleResult={ok:true,member:{id:2,role:'owner',status:'active'}};
+let adminResult={ok:true,member:{id:2,status:'active',is_admin:true}};
 let transitionError=null;
 let multiEnabled=false;
 let activeContext={ok:true,membership:{id:20,public_id:'circle-secondary',role:'owner'},context_version:3};
@@ -18,6 +20,7 @@ const db={};
 
 mock.module('../../api/_db.js',{exports:{
   captureSentryException:(error,context)=>captured.push({error,context}),
+  getAdminEmails:()=>new Set(['configured@example.test']),
   getClient:()=>db,
   getJwtSecret:()=> 'member-lifecycle-api-secret-at-least-thirty-two-bytes',
   verifyMutationOrigin:req=>req.headers?.origin!=='https://cross-origin.example',
@@ -43,6 +46,8 @@ mock.module('../../api/_member-lifecycle.js',{exports:{
   changeCircleMemberStatus:async(_db,input)=>{ calls.push(['status',_db,input]); if(transitionError) throw transitionError; return statusResult; },
   leaveCircle:async(_db,input)=>{ calls.push(['leave',_db,input]); return leaveResult; },
   transferCircleOwnership:async(_db,input)=>{ calls.push(['transfer',_db,input]); if(transitionError) throw transitionError; return transferResult; },
+  changeCircleOwnerRole:async(_db,input)=>{ calls.push(['role',_db,input]); if(transitionError) throw transitionError; return roleResult; },
+  changeAppAdmin:async(_db,input)=>{ calls.push(['admin',_db,input]); if(transitionError) throw transitionError; return adminResult; },
 }});
 
 mock.module('../../api/_active-circle.js',{exports:{
@@ -81,6 +86,8 @@ beforeEach(()=>{
   statusResult={ok:true,member:{id:2,role:'member',status:'inactive'},revoked_sessions:1};
   leaveResult={ok:true,member:{id:1,role:'member',status:'inactive'},revoked_sessions:1};
   transferResult={ok:true,previous_owner_id:1,owner_id:2};
+  roleResult={ok:true,member:{id:2,role:'owner',status:'active'}};
+  adminResult={ok:true,member:{id:2,status:'active',is_admin:true}};
   transitionError=null;
   multiEnabled=false;
   activeContext={ok:true,membership:{id:20,public_id:'circle-secondary',role:'owner'},context_version:3};
@@ -147,6 +154,58 @@ test('deactivate, reactivate, and transfer use only the authenticated actor and 
   assert.equal(response.status,200);
   assert.deepEqual(response.body,{ok:true,action:'transfer',member:{id:2,role:'owner',status:'active'}});
   assert.deepEqual(calls.pop(),['transfer',db,{actorUserId:1,targetUserId:2,circleId:10,session:authPayload}]);
+});
+
+test('co-owner and admin actions route to their transactional services with the exact actor and target',async()=>{
+  for(const action of ['make_owner','remove_owner']){
+    roleResult={ok:true,member:{id:2,role:action==='make_owner'?'owner':'member',status:'active'}};
+    const response=await invoke({method:'PATCH',body:{action,member_id:2}});
+    assert.equal(response.status,200);
+    assert.deepEqual(response.body,{ok:true,action,member:roleResult.member});
+    assert.deepEqual(calls.pop(),['role',db,{actorUserId:1,targetUserId:2,circleId:10,action,session:authPayload}]);
+  }
+  for(const action of ['grant_admin','revoke_admin']){
+    adminResult={ok:true,member:{id:3,status:'active',is_admin:action==='grant_admin'}};
+    const response=await invoke({method:'PATCH',body:{action,member_id:3}});
+    assert.equal(response.status,200);
+    assert.deepEqual(response.body,{ok:true,action,member:adminResult.member});
+    assert.deepEqual(calls.pop(),['admin',db,{actorUserId:1,targetUserId:3,circleId:10,action,session:authPayload,
+      adminEmails:['configured@example.test']}]);
+  }
+  multiEnabled=true;
+  const response=await invoke({method:'PATCH',body:{action:'make_owner',member_id:2}});
+  assert.equal(response.status,200);
+  assert.equal(response.body.circle_context_version,3);
+  const [,,input]=calls.pop();
+  assert.equal(input.circleId,20);
+  assert.deepEqual(input.circleContext,{payload:authPayload,contextVersion:3,implicit:false});
+});
+
+test('co-owner and admin failures map to stable, non-enumerating responses',async()=>{
+  const cases=[
+    ['make_owner',{reason:'not_found'},404,{error:'member not found'}],
+    ['make_owner',{reason:'self_role_change'},409,{error:'ask another owner to change your role'}],
+    ['make_owner',{reason:'state_conflict'},409,{error:'membership state changed'}],
+    ['remove_owner',{reason:'last_owner'},409,{error:'another active owner is required'}],
+    ['remove_owner',{reason:'context_changed'},409,{error:'circle context changed',code:'circle_context_changed'}],
+    ['grant_admin',{reason:'admin_required'},403,{error:'app admin required'}],
+    ['grant_admin',{reason:'not_found'},404,{error:'member not found'}],
+    ['revoke_admin',{reason:'last_admin'},409,{error:'another active admin is required'}],
+    ['revoke_admin',{reason:'configured_admin'},409,{error:'admin access is managed by server configuration'}],
+  ];
+  for(const [action,result,status,body] of cases){
+    if(action.endsWith('_owner')) roleResult={ok:false,...result}; else adminResult={ok:false,...result};
+    const response=await invoke({method:'PATCH',body:{action,member_id:2}});
+    assert.equal(response.status,status,`${action} ${result.reason}`);
+    assert.deepEqual(response.body,body);
+  }
+  transitionError=Object.assign(new Error('recent authentication required'),{code:'RECENT_AUTH_REQUIRED',statusCode:403});
+  for(const action of ['make_owner','remove_owner','grant_admin','revoke_admin']){
+    const response=await invoke({method:'PATCH',body:{action,member_id:2}});
+    assert.equal(response.status,403);
+    assert.deepEqual(response.body,{error:'recent authentication required',code:'recent_auth_required'});
+  }
+  assert.equal(captured.length,0);
 });
 
 test('cross-circle and missing targets share one opaque response while owner invariants stay actionable',async()=>{

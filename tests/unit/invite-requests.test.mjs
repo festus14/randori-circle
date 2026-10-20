@@ -448,6 +448,24 @@ test('owner notification digests are queued once per hour and carry no requester
   }finally{ capture.restore(); resend.restore(); }
 });
 
+test('every active non-demo owner gets a digest, with no owner ceiling',async()=>{
+  currentDb=await migratedDatabase();
+  enableOwnerNotifications();
+  const extra=[];
+  for(let id=20;id<27;id+=1){
+    extra.push(`INSERT INTO auth_accounts (id,email,password_hash,display_name,color,is_demo)
+      VALUES (${id},'owner${id}@example.test','x','Owner ${id}','#123456',0)`);
+    extra.push(`INSERT INTO circle_memberships (circle_id,user_id,role,status,joined_at,updated_at)
+      VALUES (10,${id},'owner','${id===26?'inactive':'active'}',datetime('now'),datetime('now'))`);
+  }
+  await currentDb.batch(extra,'write');
+  assert.equal((await submit({name:'Many Owners',email:'many@example.test'})).status,202);
+  const events=await rows(`SELECT idempotency_key,payload_json FROM outbox_events WHERE event_type=? ORDER BY id`,
+    [notification.INVITE_REQUEST_EVENT_TYPE]);
+  assert.deepEqual(events.map(event=>JSON.parse(event.payload_json).owner_user_id),[1,20,21,22,23,24,25],
+    'seven active owners are notified; the inactive and demo owners are not');
+});
+
 test('notification configuration, payload parsing, rendering, and suppression fail closed',async()=>{
   currentDb=await migratedDatabase();
   assert.equal(notification.inviteRequestNotificationConfiguration(),null,'no provider configured');
@@ -854,4 +872,21 @@ test('client addresses are keyed by IPv6 /64 and IPv4-mapped addresses collapse 
     assert.equal(rateLimitAddress(value),value,value);
   }
   assert.equal(rateLimitAddress(''),'unknown');
+});
+
+test('intake uses the shared strict rules and a legacy row the rules now reject cannot be approved (ID-68)',async()=>{
+  for(const email of ['a..b@example.test','a@b.c','jürgen@example.test','a@localhost']){
+    assert.equal(requests.validateInviteRequestInput({name:'Al',email}).fields.email,'Enter a valid email address.',email);
+  }
+  assert.equal(requests.validateInviteRequestInput({name:'Al',email:' Al+Prep@Example.Test '}).value.email,
+    'al+prep@example.test');
+
+  currentDb=await migratedDatabase();
+  // Stored before ID-68, when only the loose shape was required.
+  await requests.submitInviteRequest(currentDb,{name:'Legacy',email:'legacy@example.c'});
+  const [{id}]=await rows(`SELECT id FROM invite_requests WHERE email='legacy@example.c'`);
+  const refused=await decide({id,decision:'approve',expected_status:'pending'});
+  assert.deepEqual([refused.status,refused.body.code,refused.body.status],[409,'invite_request_email_invalid','pending']);
+  assert.equal((await rows(`SELECT COUNT(*) AS count FROM circle_invitations`))[0].count,0);
+  assert.equal((await decide({id,decision:'decline',expected_status:'pending'})).status,200,'the owner can still decline it');
 });

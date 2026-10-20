@@ -20,6 +20,7 @@ class FakeNode {
   }
   setAttribute(name, value) { this.attributes[name] = String(value); }
   appendChild(child) { this.children.push(child); return child; }
+  addEventListener(type, listener) { (this.listeners ||= {})[type] = listener; }
 }
 const fakeDoc = {
   createElement: tag => new FakeNode(tag),
@@ -197,6 +198,73 @@ test('memberView exposes role, status and the allowed owner actions', () => {
   assert.equal(ui.memberView({ id: 6, role: 'member', status: 'active' }).isSelf, false);
 });
 
+test('memberView offers co-owner and admin role actions without changing existing actions', () => {
+  const member = ui.memberView({ id: 2, role: 'member', status: 'active', display_name: 'Bob', is_admin: false }, { actorId: 1, actorIsAdmin: true });
+  assert.deepEqual(member.actions, ['transfer', 'deactivate']);
+  assert.deepEqual(member.roleActions, ['make_owner', 'grant_admin']);
+  assert.equal(member.isAdmin, false);
+  const coOwner = ui.memberView({ id: 3, role: 'owner', status: 'active', display_name: 'Co', is_admin: true }, { actorId: 1, actorIsAdmin: true });
+  assert.deepEqual(coOwner.roleActions, ['remove_owner', 'revoke_admin']);
+  assert.equal(coOwner.isAdmin, true);
+  const nonAdminActor = ui.memberView({ id: 3, role: 'owner', status: 'active', is_admin: true }, { actorId: 1 });
+  assert.deepEqual(nonAdminActor.roleActions, ['remove_owner'], 'only admins see admin actions');
+  const inactive = ui.memberView({ id: 4, role: 'member', status: 'inactive', is_admin: false }, { actorId: 1, actorIsAdmin: true });
+  assert.deepEqual(inactive.roleActions, [], 'inactive members cannot be promoted');
+  const inactiveAdminOwner = ui.memberView({ id: 5, role: 'owner', status: 'inactive', is_admin: true }, { actorId: 1, actorIsAdmin: true });
+  assert.deepEqual(inactiveAdminOwner.roleActions, ['remove_owner', 'revoke_admin'], 'privileges can always be removed');
+  const self = ui.memberView({ id: 1, role: 'owner', status: 'active', is_admin: true }, { actorId: 1, actorIsAdmin: true });
+  assert.deepEqual(self.roleActions, []);
+  assert.equal(ui.memberView({ id: 6, role: 'member', status: 'active', is_admin: 1 }).isAdmin, false, 'only a boolean true counts');
+});
+
+test('role action copy, recent-auth allowlist, and role errors are explicit', () => {
+  assert.deepEqual([...ui.RECENT_AUTH_MEMBER_ACTIONS], ['deactivate', 'transfer', 'make_owner', 'remove_owner', 'grant_admin', 'revoke_admin']);
+  const make = ui.memberRoleActionCopy('make_owner', 'Bob');
+  assert.equal(make.title, 'Make Bob an owner?');
+  assert.match(make.body, /You stay an owner too/);
+  assert.equal(make.testid, 'circle-member-make-owner');
+  assert.equal(make.danger, false);
+  assert.match(make.confirm, /Confirm your identity/);
+  const revoke = ui.memberRoleActionCopy('revoke_admin', '');
+  assert.equal(revoke.title, 'Remove admin access from this member?');
+  assert.equal(revoke.danger, true);
+  assert.equal(ui.memberRoleActionCopy('remove_owner').ariaLabel, 'Remove owner role from this member');
+  assert.equal(ui.memberRoleActionCopy('grant_admin', 'Ana').done, 'Admin access granted.');
+  assert.equal(ui.memberRoleActionCopy('transfer', 'Bob'), null);
+  assert.match(ui.memberRoleErrorMessage({ error: 'another active admin is required' }), /other active admin/);
+  assert.match(ui.memberRoleErrorMessage({ error: 'admin access is managed by server configuration' }), /server configuration/);
+  assert.match(ui.memberRoleErrorMessage({ error: 'app admin required' }), /Only an app admin/);
+  assert.match(ui.memberRoleErrorMessage({ error: 'ask another owner to change your role' }), /another owner/);
+  assert.equal(ui.memberRoleErrorMessage({ error: 'membership state changed' }), null);
+  assert.equal(ui.memberRoleErrorMessage(null), null);
+});
+
+test('memberRoleMenuNode renders one labelled button per role action and the admin badge', () => {
+  const view = ui.memberView({ id: 2, role: 'owner', status: 'active', display_name: 'Bob', is_admin: true }, { actorId: 1, actorIsAdmin: true });
+  const chosen = [];
+  const menu = ui.memberRoleMenuNode(fakeDoc, view, action => chosen.push(action));
+  assert.equal(menu.tagName, 'details');
+  assert.equal(menu.attributes['data-testid'], 'circle-member-menu');
+  const [summary, group] = menu.children;
+  assert.equal(summary.textContent, 'Roles');
+  assert.equal(summary.attributes['aria-label'], 'Role options for Bob');
+  assert.deepEqual(group.children.map(button => button.attributes['data-testid']), ['circle-member-remove-owner', 'circle-member-revoke-admin']);
+  assert.match(group.children[0].className, /membership-danger/);
+  menu.open = true;
+  group.children[1].listeners.click();
+  assert.equal(menu.open, false);
+  assert.deepEqual(chosen, ['revoke_admin']);
+  const noHandler = ui.memberRoleMenuNode(fakeDoc, view);
+  noHandler.children[1].children[0].listeners.click();
+  assert.equal(ui.memberRoleMenuNode(fakeDoc, { name: 'x', roleActions: [] }), null);
+  assert.equal(ui.memberRoleMenuNode(fakeDoc, { name: 'x', roleActions: ['transfer'] }), null);
+  assert.equal(ui.memberRoleMenuNode(fakeDoc, null), null);
+  const badge = ui.adminBadgeNode(fakeDoc);
+  assert.equal(badge.textContent, 'Admin');
+  assert.equal(badge.attributes['data-testid'], 'circle-member-admin-badge');
+  assert.match(badge.className, /rc-badge--success/);
+});
+
 test('rosterPersonView marks the viewer and shows the practice focus without availability', () => {
   const view = ui.rosterPersonView({ id: 7, display_name: 'Team Mate', interview_focus: 'dsa', is_available: false }, { actorId: 7 });
   assert.deepEqual({ ...view }, { name: 'Team Mate', initials: 'TM', isSelf: true, focus: 'DSA' });
@@ -311,12 +379,14 @@ test('inviteRequestDecisionOutcome validates approve, decline and replay respons
 });
 
 test('inviteRequestErrorMessage maps contract errors to recovery copy', () => {
+  assert.match(ui.inviteRequestErrorMessage({ http_status: 409, code: 'invite_request_email_invalid' }),
+    /can’t receive an invitation\. Decline it instead\./);
   assert.equal(ui.inviteRequestErrorMessage({ http_status: 409, code: 'invite_request_not_pending', status: 'approved' }),
     'This request was already handled. It was approved. The list has been refreshed.');
   assert.equal(ui.inviteRequestErrorMessage({ code: 'invite_request_not_pending', status: 'weird' }),
     'This request was already handled. The list has been refreshed.');
   assert.match(ui.inviteRequestErrorMessage({ http_status: 404 }), /no longer available/);
-  assert.match(ui.inviteRequestErrorMessage({ http_status: 403 }), /Only the owner/);
+  assert.match(ui.inviteRequestErrorMessage({ http_status: 403 }), /Only an owner/);
   assert.match(ui.inviteRequestErrorMessage({ http_status: 401 }), /Sign in again/);
   assert.match(ui.inviteRequestErrorMessage({ http_status: 503 }), /Nothing changed/);
   assert.match(ui.inviteRequestErrorMessage(null), /Nothing changed/);

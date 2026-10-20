@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Accurate unit-test coverage for api/*.js, db/*.js, scripts/*.mjs and assets/auth-dialog.js.
+// Accurate unit-test coverage for api/*.js, db/*.js, scripts/*.mjs and the browser modules listed in INCLUDE.
 //
 // Why not `node --experimental-test-coverage`? Node 24's built-in coverage
 // merger mis-reports any module that is also replaced with `mock.module()`:
@@ -26,7 +26,20 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const INCLUDE = ['api/*.js', 'db/*.js', 'scripts/*.mjs', 'assets/auth-dialog.js'];
+const INCLUDE = ['api/*.js', 'db/*.js', 'scripts/*.mjs',
+  // WP-A auth dialog.
+  'assets/auth-dialog.js',
+  // WP-O onboarding flow and WP-S app shell.
+  'assets/onboarding-flow.js', 'assets/app-shell.js',
+  // Shared email rules and the bulk invite UI (ID-68).
+  'assets/email-validation.js', 'assets/bulk-invite.js'];
+// Operator tools that cannot run under unit tests; see
+// docs/testing/COVERAGE_BASELINE.md ("Excluded from scope"). Their pure
+// decision logic lives in sibling modules that are measured.
+export const EXCLUDE = [
+  'scripts/execution-smoke.mjs', // live Vercel Sandbox smoke; needs a VERCEL_OIDC_TOKEN and spends sandbox quota
+  'scripts/ui-screenshots.mjs', // Playwright browser capture of production and a local runtime
+];
 const MOCK_PARAM = 'node-test-mock';
 
 const args = process.argv.slice(2);
@@ -96,6 +109,7 @@ function main() {
       '--all',
       '--exclude-node-modules',
       ...INCLUDE.map((glob) => `--include=${glob}`),
+      ...EXCLUDE.map((glob) => `--exclude=${glob}`),
       `--reporter=${flag('report') ? 'text' : 'text-summary'}`,
       ...(outDir ? ['--reporter=json-summary', '--reporter=json', '--reporter=lcovonly'] : []),
     ];

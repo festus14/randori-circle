@@ -322,7 +322,7 @@
         const body = state === 'overdue'
           ? (allowed
             ? 'The scheduled run did not publish this cycle. Use Publish now in Owner tools below; retrying is safe.'
-            : 'The scheduled run did not publish this cycle. The circle owner can publish it now.')
+            : 'The scheduled run did not publish this cycle. A circle owner can publish it now.')
           : state === 'pending'
             ? `Pairs publish automatically at ${formatMoment(publication.scheduled_at, zone, locale)}. Check back after that.`
             : 'No pairings have been published for the current cycle.';
