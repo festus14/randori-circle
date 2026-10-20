@@ -30,7 +30,8 @@ test('the checked-out app boots without JavaScript exceptions and its tabs navig
   // Visitors on the landing page get no app navigation (WP-O).
   await expect(page.getByRole('navigation', { name: 'Primary navigation' })).toBeHidden();
 
-  // Solo practice (/?view=code) keeps the tabs for anonymous visitors.
+  // Solo practice (/?view=code): visitors get the code view with a sign-in
+  // prompt, and still no app navigation (every other view needs an account).
   await page.goto('/?view=code', { waitUntil: 'domcontentloaded' });
   await page.clock.fastForward(1_300);
   await page.evaluate(async () => {
@@ -39,15 +40,18 @@ test('the checked-out app boots without JavaScript exceptions and its tabs navig
     })._randori_auth?.refreshMe?.();
   });
   await expect(page.locator('#view-code')).toBeVisible();
-  await expect(page.getByRole('navigation', { name: 'Primary navigation' })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Primary navigation' })).toBeHidden();
+  await expect(page.getByTestId('solo-practice-bar')).toBeVisible();
 
+  // The tab handlers still boot cleanly; the buttons are just not shown to
+  // visitors, so drive them through the DOM.
   for (const [tab, view] of [
     ['pair', '#view-pair'],
     ['code', '#view-code'],
     ['board', '#view-board'],
     ['history', '#view-history'],
   ] as const) {
-    await page.locator(`[data-tab="${tab}"]`).click();
+    await page.evaluate(name => (document.querySelector(`[data-tab="${name}"]`) as HTMLButtonElement).click(), tab);
     await expect(page.locator(view)).toBeVisible();
   }
 

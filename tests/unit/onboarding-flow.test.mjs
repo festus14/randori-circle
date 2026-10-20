@@ -260,6 +260,28 @@ test('members who joined after the cutoff are told when they will be included', 
   assert.equal(flow.newMemberHeroCopy('pending'), null);
 });
 
+test('the joined-late hero confirms an availability answer instead of asking again', () => {
+  const current = { startsAt: '2026-10-18T07:00:00.000Z', cutoffAt: '2026-10-18T07:00:00.000Z' };
+  const next = upcoming();
+  const joined = { createdAt: '2026-10-19T10:00:00.000Z', current, upcoming: next };
+  const saved = isAvailable => ({ source: 'user', isAvailable, cycle: { cycleId: next.cycleId } });
+
+  const inCopy = flow.newMemberHeroCopy('overdue', { ...joined, availability: saved(true) });
+  assert.equal(inCopy.title, 'You’re in for the week of 25 Oct');
+  assert.equal(inCopy.availability, false, 'no "Set availability" once answered');
+  assert.match(inCopy.message, /email you/);
+
+  const outCopy = flow.newMemberHeroCopy('missed', { ...joined, availability: saved(false) });
+  assert.equal(outCopy.title, 'You’re sitting out the week of 25 Oct');
+  assert.equal(outCopy.availability, true, 'they can still change their mind');
+
+  // Inherited defaults and answers for another cycle still ask.
+  assert.equal(flow.newMemberHeroCopy('overdue', { ...joined, availability: { ...saved(true), source: 'default' } }).availability, true);
+  assert.equal(flow.newMemberHeroCopy('overdue', { ...joined, availability: { ...saved(true), cycle: { cycleId: '2026-W01' } } }).availability, true);
+  // Without a known upcoming cycle, the member's own answer is trusted.
+  assert.equal(flow.newMemberHeroCopy('overdue', { createdAt: joined.createdAt, current, availability: saved(true) }).title, 'You’re in for the next cycle');
+});
+
 test('setup guide dismissal is remembered per account only', () => {
   const store = new Map();
   const storage = { getItem: key => store.get(key) ?? null, setItem: (key, value) => store.set(key, value), removeItem: key => store.delete(key) };
@@ -301,7 +323,7 @@ test('index.html wires the stepper, removes the banner and tour, and keeps teste
     assert.match(html, new RegExp(`id="${id}"`), id);
   }
   assert.match(html, /window\.addEventListener\('hashchange'/);
-  assert.match(html, /body\[data-nav="hidden"\] \.shell > nav\{display:none!important\}/);
+  assert.match(html, /body:not\(\[data-nav="shown"\]\) \.shell > nav\{display:none!important\}/);
 });
 
 test('the onboarding steps do not advertise AI or video', async () => {

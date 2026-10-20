@@ -430,6 +430,17 @@ async function captureLocalPublic(browser, v, base, getOrigin, contexts, recorde
       }
     }
   });
+  // Signed-out navigation (final pass): visitors get no app tabs anywhere.
+  await recorder.step(`${v}:local-signed-out-routes`, async () => {
+    for (const theme of ['dark', 'light']) {
+      const page = await open({ theme, forceInviteRequests: true });
+      const suffix = theme === 'light' ? '-light' : '';
+      for (const [path, name] of [['/?view=code', 'solo-practice'], ['/?view=pair', 'deep-link-member-view'], ['/join/not-a-room', 'unknown-route']]) {
+        await visit(page, path);
+        await recorder.shot(page, v, `local-${name}${suffix}`, { fullPage: false });
+      }
+    }
+  });
 }
 
 async function captureLocal(browser, viewportName, recorder) {
